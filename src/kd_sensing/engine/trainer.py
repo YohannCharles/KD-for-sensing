@@ -82,8 +82,35 @@ def _write_tensorboard_scalars(writer, history: dict, step: int) -> None:
     writer.add_scalar("loss/val", history["val_loss"][-1], step)
     writer.add_scalar("accuracy/train", history["train_acc"][-1], step)
     writer.add_scalar("accuracy/val", history["val_acc"][-1], step)
+    writer.add_scalar("accuracy/val_atop3", history["val_atop3"][-1], step)
+    writer.add_scalar("accuracy/val_atop5", history["val_atop5"][-1], step)
+    writer.add_scalar("dba/val_adba", history["val_adba"][-1], step)
     writer.add_scalar("learning_rate/main", history["learning_rates"][-1], step)
     writer.flush()
+
+
+def _mean_valid_slots(values, totals) -> float:
+    values_arr = np.asarray(values, dtype=float)
+    totals_arr = np.asarray(totals, dtype=float)
+    length = min(values_arr.size, totals_arr.size)
+    if length == 0:
+        return 0.0
+
+    values_arr = values_arr[:length]
+    valid_slots = totals_arr[:length] > 0
+    if not np.any(valid_slots):
+        return 0.0
+    return float(np.mean(values_arr[valid_slots]))
+
+
+def _aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
+    topk = val_metrics.get("topk", {})
+    total = val_metrics.get("total", [])
+    return {
+        "val_atop3": _mean_valid_slots(topk.get("3", []), total),
+        "val_atop5": _mean_valid_slots(topk.get("5", []), total),
+        "val_adba": _mean_valid_slots(val_metrics.get("dba", []), total),
+    }
 
 
 def _close_tensorboard_writer(writer) -> None:
@@ -130,6 +157,9 @@ def train(cfg: dict) -> dict:
         "train_acc": [],
         "val_loss": [],
         "val_acc": [],
+        "val_atop3": [],
+        "val_atop5": [],
+        "val_adba": [],
         "learning_rates": [],
     }
 
@@ -262,12 +292,16 @@ def train(cfg: dict) -> dict:
             val_loss = val_metrics["loss"]
             top1 = val_metrics["topk"].get("1", [0.0])
             val_acc = float(top1[0]) if top1 else 0.0
+            validation_curve_metrics = _aggregate_validation_metrics(val_metrics)
             history["train_loss"].append(float(running_loss))
             history["train_task_loss"].append(float(running_task_loss))
             history["train_distill_loss"].append(float(running_distill_loss))
             history["train_acc"].append(float(running_acc))
             history["val_loss"].append(float(val_loss))
             history["val_acc"].append(val_acc)
+            history["val_atop3"].append(validation_curve_metrics["val_atop3"])
+            history["val_atop5"].append(validation_curve_metrics["val_atop5"])
+            history["val_adba"].append(validation_curve_metrics["val_adba"])
             _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
             save_checkpoint(
                 {

@@ -10,7 +10,13 @@
 #### Scenario: 训练过程中写入 TensorBoard 标量日志
 - **WHEN** 一次训练任务完成至少一个 epoch 且 TensorBoard 日志启用
 - **THEN** 系统 MUST 在当前运行目录下写入 TensorBoard event 文件
-- **AND** event 文件 MUST 记录训练总损失、训练任务损失、训练蒸馏损失、训练准确率、验证损失、验证准确率和学习率标量
+- **AND** event 文件 MUST 记录训练总损失、训练任务损失、训练蒸馏损失、训练准确率、验证损失、验证准确率、学习率、验证 `ATop-3`、验证 `ATop-5` 和验证 `ADBA` 标量
+
+#### Scenario: TensorBoard 记录跨时隙平均验证指标
+- **WHEN** 一次训练 epoch 的验证阶段产出 per-slot Top-K accuracy 和 DBA 结果
+- **THEN** 系统 MUST 将 `ATop-3` 计算为所有 `J + 1` 个目标时隙 Top-3 accuracy 的平均值
+- **AND** 系统 MUST 将 `ATop-5` 计算为所有 `J + 1` 个目标时隙 Top-5 accuracy 的平均值
+- **AND** 系统 MUST 将 `ADBA` 计算为所有 `J + 1` 个目标时隙 DBA 的平均值，且 DBA MUST 使用 Top-3 预测 beam 计算
 
 #### Scenario: 通过配置关闭 TensorBoard 日志
 - **WHEN** 用户在训练配置中关闭 TensorBoard 日志

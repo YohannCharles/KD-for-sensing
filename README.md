@@ -85,6 +85,12 @@ python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.d
 tensorboard --logdir outputs
 ```
 
+TensorBoard 标量包含基础训练曲线和验证平均指标：
+
+- `accuracy/val_atop3`：所有 `J + 1` 个目标时隙 Top-3 accuracy 的平均值。
+- `accuracy/val_atop5`：所有 `J + 1` 个目标时隙 Top-5 accuracy 的平均值。
+- `dba/val_adba`：所有 `J + 1` 个目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算。
+
 ## 评估
 
 ```bash
