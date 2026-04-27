@@ -102,5 +102,8 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "log_dir": "tensorboard",
         },
+        "progress": {
+            "enabled": True,
+        },
     },
 }

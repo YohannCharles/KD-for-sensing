@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.batch import (
@@ -121,6 +122,10 @@ def _close_tensorboard_writer(writer) -> None:
     writer.close()
 
 
+def _progress_enabled(cfg: dict) -> bool:
+    return cfg.get("output", {}).get("progress", {}).get("enabled", True)
+
+
 def train(cfg: dict) -> dict:
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     run_dir = create_run_dir(cfg)
@@ -163,22 +168,42 @@ def train(cfg: dict) -> dict:
         "val_adba": [],
         "learning_rates": [],
     }
+    epoch_logs = []
 
     tensorboard_writer = _create_tensorboard_writer(cfg, run_dir)
+    progress_enabled = _progress_enabled(cfg)
+    start_epoch = training_cfg.get("start_epoch", 0)
+    total_epochs = training_cfg.get("epochs", 100)
     try:
-        for epoch in range(training_cfg.get("start_epoch", 0), training_cfg.get("epochs", 100)):
+        epoch_progress = tqdm(
+            range(start_epoch, total_epochs),
+            desc="Training",
+            unit="epoch",
+            disable=not progress_enabled,
+        )
+        for epoch in epoch_progress:
             student_model.train()
             running_loss = 0.0
             running_task_loss = 0.0
             running_distill_loss = 0.0
             running_acc = 0.0
+            batch_count = 0
             current_alpha = cfg["distillation"].get("alpha", 0.4)
             warmup_epochs = cfg["distillation"].get("alpha_warmup_epochs", 0)
             if warmup_epochs and epoch < warmup_epochs:
                 current_alpha = current_alpha * (epoch / warmup_epochs)
-            history["learning_rates"].append(optimizer.param_groups[0]["lr"])
+            current_lr = optimizer.param_groups[0]["lr"]
+            history["learning_rates"].append(current_lr)
 
-            for step, raw_batch in enumerate(dataloaders["train"]):
+            batch_progress = tqdm(
+                dataloaders["train"],
+                desc=f"Epoch {epoch + 1}/{total_epochs}",
+                unit="batch",
+                leave=False,
+                disable=not progress_enabled,
+            )
+            for step, raw_batch in enumerate(batch_progress):
+                batch_count = step + 1
                 batch = normalize_batch(raw_batch)
                 labels = prepare_labels(
                     batch,
@@ -239,6 +264,13 @@ def train(cfg: dict) -> dict:
                 running_task_loss = (task_loss.item() + step * running_task_loss) / (step + 1)
                 running_distill_loss = (distill_loss.item() + step * running_distill_loss) / (step + 1)
                 running_acc = (acc + step * running_acc) / (step + 1)
+                batch_progress.set_postfix(
+                    loss=f"{running_loss:.4f}",
+                    task=f"{running_task_loss:.4f}",
+                    distill=f"{running_distill_loss:.4f}",
+                    acc=f"{running_acc:.4f}",
+                    lr=f"{current_lr:.2e}",
+                )
 
             if scheduler is not None:
                 scheduler.step()
@@ -263,6 +295,29 @@ def train(cfg: dict) -> dict:
             history["val_atop3"].append(validation_curve_metrics["val_atop3"])
             history["val_atop5"].append(validation_curve_metrics["val_atop5"])
             history["val_adba"].append(validation_curve_metrics["val_adba"])
+            epoch_logs.append(
+                {
+                    "epoch": epoch + 1,
+                    "total_epochs": total_epochs,
+                    "train_batches": batch_count,
+                    "train_loss": float(running_loss),
+                    "train_task_loss": float(running_task_loss),
+                    "train_distill_loss": float(running_distill_loss),
+                    "train_acc": float(running_acc),
+                    "val_loss": float(val_loss),
+                    "val_acc": val_acc,
+                    "val_atop3": validation_curve_metrics["val_atop3"],
+                    "val_atop5": validation_curve_metrics["val_atop5"],
+                    "val_adba": validation_curve_metrics["val_adba"],
+                    "learning_rate": float(current_lr),
+                }
+            )
+            epoch_progress.set_postfix(
+                train_loss=f"{running_loss:.4f}",
+                val_loss=f"{float(val_loss):.4f}",
+                val_acc=f"{val_acc:.4f}",
+                lr=f"{current_lr:.2e}",
+            )
             _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
             save_checkpoint(
                 {
@@ -287,12 +342,14 @@ def train(cfg: dict) -> dict:
         _close_tensorboard_writer(tensorboard_writer)
 
     np.savez(run_dir / "training_outputs.npz", **{k: np.asarray(v) for k, v in history.items()})
+    train_log = {**history, "epoch_logs": epoch_logs}
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2)
+        json.dump(train_log, f, indent=2)
     plot_training_curves(history, run_dir)
     return {
         "run_dir": str(run_dir),
         "history": history,
+        "epoch_logs": epoch_logs,
         "best_val_loss": best_val_loss,
     }
 
