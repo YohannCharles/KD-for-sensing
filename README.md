@@ -57,6 +57,11 @@ python scripts/train.py --config configs/fusion/logits_kd.yaml
 python scripts/train.py --config configs/fusion/rkd.yaml
 ```
 
+这些配置复现 `All_models/*Std*.pth` 时会使用轻量 student 架构：image-only student 为
+`image_student`，image+radar student 为 `fusion_student`。teacher 仍分别使用
+`image_teacher` 和 `fusion_teacher`。上游旧训练脚本中 teacher-as-student 的实例化残留
+不作为本项目配置驱动流程的语义依据。
+
 可以使用点号分隔的键覆盖配置值：
 
 ```bash
