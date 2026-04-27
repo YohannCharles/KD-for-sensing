@@ -1,0 +1,74 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local dependency state
+.venv/
+venv/
+env/
+ENV/
+.conda/
+pip-wheel-metadata/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and operating system files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Dataset downloads and extracted local data
+dataset/*
+!dataset/.gitkeep
+
+# Training logs and experiment outputs
+runs/
+logs/
+wandb/
+tensorboard/
+lightning_logs/
+checkpoints/
+outputs/
+results/
+
+# Generated model/checkpoint artifacts
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Large generated data and archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.mat
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
