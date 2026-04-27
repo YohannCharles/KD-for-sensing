@@ -20,7 +20,7 @@ python -c "import kd_sensing"
 ```text
 configs/
   image/          # 仅图像模型：无 KD、logits KD、RKD 配置
-  radar/          # 仅雷达模型：RadarTeacher 无 KD 基线配置
+  radar/          # 仅雷达模型：无 KD、logits KD、RKD 配置
   fusion/         # 图像+雷达模型：无 KD、logits KD、RKD 配置
   preprocess/     # CSV、雷达、序列预处理配置
 scripts/
@@ -54,6 +54,8 @@ python scripts/train.py --config configs/image/logits_kd.yaml
 python scripts/train.py --config configs/image/rkd.yaml
 
 python scripts/train.py --config configs/radar/no_kd.yaml
+python scripts/train.py --config configs/radar/logits_kd.yaml
+python scripts/train.py --config configs/radar/rkd.yaml
 
 python scripts/train.py --config configs/fusion/no_kd.yaml
 python scripts/train.py --config configs/fusion/logits_kd.yaml
@@ -65,9 +67,19 @@ python scripts/train.py --config configs/fusion/rkd.yaml
 `image_teacher` 和 `fusion_teacher`。上游旧训练脚本中 teacher-as-student 的实例化残留
 不作为本项目配置驱动流程的语义依据。
 
-Radar-only 基线用于复现论文表格中的 Radar 对照项。`configs/radar/no_kd.yaml`
-将训练主模型 `model.student.type` 设置为 `radar_teacher`，表示在无 KD 模式下直接训练
-RadarTeacher 架构；该配置不依赖仓库未提供的预训练 RadarTeacher 权重。
+Radar-only 配置用于复现论文表格中的 Radar 对照项，并提供三种模式：
+`no_kd` 不加载 teacher，只用任务 loss 直接训练 `radar_teacher` 主模型；
+`logits_kd` 加载冻结的 RadarTeacher，用 temperature soft logits 的 KL loss 做蒸馏；
+`rkd` 加载冻结的 RadarTeacher，对齐 teacher/student 输出特征的样本间距离和角度关系。
+当前仓库没有内置 `All_models/RadarTeacher*.pth`，因此 radar KD 配置默认读取先运行
+`configs/radar/no_kd.yaml` 生成的 `outputs/radar_no_kd/checkpoints/best.pth`。如果使用自定义
+RadarTeacher 权重，可以覆盖路径：
+
+```bash
+python scripts/train.py --config configs/radar/logits_kd.yaml \
+  --override paths.weights_dir=/path/to/checkpoints \
+  --override distillation.teacher_model_name=best.pth
+```
 
 可以使用点号分隔的键覆盖配置值：
 

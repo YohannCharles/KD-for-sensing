@@ -34,6 +34,13 @@ FUSION_CONFIGS = [
 
 RADAR_CONFIGS = [
     "configs/radar/no_kd.yaml",
+    "configs/radar/logits_kd.yaml",
+    "configs/radar/rkd.yaml",
+]
+
+RADAR_KD_CONFIGS = [
+    ("configs/radar/logits_kd.yaml", "logits_kd"),
+    ("configs/radar/rkd.yaml", "rkd"),
 ]
 
 STUDENT_WEIGHTS = [
@@ -88,16 +95,41 @@ def test_fusion_configs_build_lightweight_student(config_path: str):
 
 
 @pytest.mark.parametrize("config_path", RADAR_CONFIGS)
-def test_radar_configs_build_teacher_baseline(config_path: str):
+def test_radar_configs_build_teacher_model(config_path: str):
     model, cfg = _build_student(config_path)
 
     assert cfg["experiment"]["task"] == "radar"
     assert cfg["model"]["teacher"]["type"] == "radar_teacher"
     assert cfg["model"]["student"]["type"] == "radar_teacher"
-    assert cfg["distillation"]["type"] == "no_kd"
-    assert cfg["distillation"]["teacher_model_name"] is None
     assert isinstance(model, RadarTeacherNet)
     assert model.GRU.num_layers == 2
+
+
+def test_radar_no_kd_config_does_not_load_teacher():
+    _, cfg = _build_student("configs/radar/no_kd.yaml")
+
+    assert cfg["distillation"]["type"] == "no_kd"
+    assert cfg["distillation"]["teacher_model_name"] is None
+
+
+@pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
+def test_radar_kd_configs_use_radar_teacher_checkpoint(config_path: str, kd_type: str):
+    _, cfg = _build_student(config_path)
+
+    assert cfg["distillation"]["type"] == kd_type
+    assert cfg["distillation"]["teacher_model_name"] == "best.pth"
+    assert cfg["paths"]["weights_dir"] == "outputs/radar_no_kd/checkpoints"
+    assert cfg["distillation"]["temperature"] == 3.0
+    assert cfg["distillation"]["alpha"] == 0.4
+    assert cfg["distillation"]["alpha_warmup_epochs"] == 0
+
+
+def test_radar_rkd_config_sets_relational_weights():
+    _, cfg = _build_student("configs/radar/rkd.yaml")
+
+    assert cfg["distillation"]["rkd_pairs_per_anchor"] == 4
+    assert cfg["distillation"]["rkd_distance_weight"] == 10.0
+    assert cfg["distillation"]["rkd_angle_weight"] == 10.0
 
 
 def test_radar_teacher_forward_contract():
