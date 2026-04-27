@@ -1,12 +1,13 @@
 from .fusion import FusionModalityNet, RadarFeatureExtractor, StudentModalityNet
 from .image import ImageFeatureExtractor, ImageModalityNet, ImageStudentModalityNet
-from .radar import RadarTeacherNet
+from .radar import RadarStudentNet, RadarTeacherNet
 
 __all__ = [
     "ImageFeatureExtractor",
     "ImageModalityNet",
     "ImageStudentModalityNet",
     "RadarFeatureExtractor",
+    "RadarStudentNet",
     "RadarTeacherNet",
     "FusionModalityNet",
     "StudentModalityNet",

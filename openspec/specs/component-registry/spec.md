@@ -30,6 +30,11 @@ TBD - created by archiving change reorganize-project-structure. Update Purpose a
 - **THEN** 用户 MUST 能在配置中选择该模型，并复用 radar-only 训练和评估流程
 - **AND** 模型 MUST 保持统一的 `(pred, features, output_features)` 输出约定
 
+#### Scenario: 新增 radar-only student
+- **WHEN** 开发者实现并注册一个新的 radar-only student 模型
+- **THEN** 用户 MUST 能在配置中选择该模型，并复用 radar-only 训练、评估和 KD 流程
+- **AND** 模型 MUST 保持统一的 `(pred, features, output_features)` 输出约定
+
 ### Requirement: 可扩展蒸馏方法
 新增 KD 方法时，开发者 MUST 能通过新增 distiller 或 loss 组件并注册名称扩展系统。训练流程 MUST 将 student logits/features、teacher logits/features 和 labels 传入蒸馏组件，避免在训练循环内硬编码每种 KD 算法。
 
@@ -62,4 +67,3 @@ TBD - created by archiving change reorganize-project-structure. Update Purpose a
 #### Scenario: 按文档新增 metric
 - **WHEN** 开发者按照 README 或扩展指南新增并注册一个 metric
 - **THEN** 该 metric MUST 能被评估配置引用，并出现在评估结果输出中
-

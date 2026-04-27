@@ -14,7 +14,7 @@ if str(SRC) not in sys.path:
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.models.fusion import StudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageStudentModalityNet  # noqa: E402
-from kd_sensing.models.radar import RadarTeacherNet  # noqa: E402
+from kd_sensing.models.radar import RadarStudentNet, RadarTeacherNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -32,8 +32,8 @@ FUSION_CONFIGS = [
     "configs/fusion/rkd.yaml",
 ]
 
-RADAR_CONFIGS = [
-    "configs/radar/no_kd.yaml",
+RADAR_STUDENT_CONFIGS = [
+    "configs/radar/student_no_kd.yaml",
     "configs/radar/logits_kd.yaml",
     "configs/radar/rkd.yaml",
 ]
@@ -56,6 +56,11 @@ STUDENT_WEIGHTS = [
 def _build_student(config_path: str):
     cfg = load_config(ROOT / config_path)
     return MODELS.build(cfg["model"]["student"]), cfg
+
+
+def _build_teacher_and_student(config_path: str):
+    cfg = load_config(ROOT / config_path)
+    return MODELS.build(cfg["model"]["teacher"]), MODELS.build(cfg["model"]["student"]), cfg
 
 
 def _load_state_dict(weight_path: str) -> dict[str, torch.Tensor]:
@@ -94,8 +99,8 @@ def test_fusion_configs_build_lightweight_student(config_path: str):
     assert model.GRU.num_layers == 1
 
 
-@pytest.mark.parametrize("config_path", RADAR_CONFIGS)
-def test_radar_configs_build_teacher_model(config_path: str):
+def test_radar_teacher_baseline_config_builds_teacher_model():
+    config_path = "configs/radar/no_kd.yaml"
     model, cfg = _build_student(config_path)
 
     assert cfg["experiment"]["task"] == "radar"
@@ -105,11 +110,46 @@ def test_radar_configs_build_teacher_model(config_path: str):
     assert model.GRU.num_layers == 2
 
 
-def test_radar_no_kd_config_does_not_load_teacher():
+@pytest.mark.parametrize("config_path", RADAR_STUDENT_CONFIGS)
+def test_radar_student_configs_build_lightweight_student(config_path: str):
+    model, cfg = _build_student(config_path)
+
+    assert cfg["experiment"]["task"] == "radar"
+    assert cfg["model"]["teacher"]["type"] == "radar_teacher"
+    assert cfg["model"]["student"]["type"] == "radar_student"
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert isinstance(model, RadarStudentNet)
+    assert model.GRU.num_layers == 1
+
+
+@pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
+def test_radar_kd_configs_build_teacher_and_student(config_path: str, kd_type: str):
+    teacher, student, cfg = _build_teacher_and_student(config_path)
+
+    assert cfg["distillation"]["type"] == kd_type
+    assert isinstance(teacher, RadarTeacherNet)
+    assert isinstance(student, RadarStudentNet)
+    assert cfg["model"]["teacher"]["type"] == "radar_teacher"
+    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
+    assert cfg["model"]["student"]["type"] == "radar_student"
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
+
+
+def test_radar_teacher_no_kd_config_does_not_load_teacher():
     _, cfg = _build_student("configs/radar/no_kd.yaml")
 
     assert cfg["distillation"]["type"] == "no_kd"
     assert cfg["distillation"]["teacher_model_name"] is None
+
+
+def test_radar_student_no_kd_config_does_not_load_teacher():
+    model, cfg = _build_student("configs/radar/student_no_kd.yaml")
+
+    assert cfg["distillation"]["type"] == "no_kd"
+    assert cfg["distillation"]["teacher_model_name"] is None
+    assert cfg["model"]["student"]["type"] == "radar_student"
+    assert isinstance(model, RadarStudentNet)
 
 
 @pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
@@ -153,6 +193,26 @@ def test_radar_teacher_forward_contract():
     assert enhanced.shape == (2, 10, 64)
 
 
+def test_radar_student_forward_contract():
+    model = MODELS.build(
+        {
+            "type": "radar_student",
+            "feature_size": 64,
+            "num_classes": 64,
+            "gru_params": [64, 64, 1],
+            "radar_channels": 2,
+        }
+    )
+    model.eval()
+
+    with torch.no_grad():
+        pred, features, output_features = model(torch.randn(2, 10, 2, 128, 64))
+
+    assert pred.shape == (2, 10, 64)
+    assert features.shape == (2, 10, 64)
+    assert output_features.shape == (2, 10, 64)
+
+
 def test_radar_teacher_rejects_invalid_attention_heads():
     with pytest.raises(ValueError, match="divisible by num_heads"):
         MODELS.build(
@@ -163,6 +223,32 @@ def test_radar_teacher_rejects_invalid_attention_heads():
                 "gru_params": [64, 66, 2],
                 "radar_channels": 2,
                 "num_heads": 8,
+            }
+        )
+
+
+def test_radar_student_rejects_invalid_gru_params_length():
+    with pytest.raises(ValueError, match="gru_params must contain"):
+        MODELS.build(
+            {
+                "type": "radar_student",
+                "feature_size": 64,
+                "num_classes": 64,
+                "gru_params": [64, 64],
+                "radar_channels": 2,
+            }
+        )
+
+
+def test_radar_student_rejects_input_size_mismatch():
+    with pytest.raises(ValueError, match="must equal feature_size"):
+        MODELS.build(
+            {
+                "type": "radar_student",
+                "feature_size": 64,
+                "num_classes": 64,
+                "gru_params": [32, 64, 1],
+                "radar_channels": 2,
             }
         )
 

@@ -1,7 +1,5 @@
-paths:
-  weights_dir: outputs/radar_no_kd/checkpoints
 experiment:
-  name: radar_rkd
+  name: radar_student_no_kd
   task: radar
   seed: 0
   device: auto
@@ -39,14 +37,8 @@ model:
     gru_params: [64, 64, 1]
     radar_channels: 2
 distillation:
-  type: rkd
-  temperature: 3.0
-  alpha: 0.4
-  alpha_warmup_epochs: 0
-  teacher_model_name: best.pth
-  rkd_pairs_per_anchor: 4
-  rkd_distance_weight: 10.0
-  rkd_angle_weight: 10.0
+  type: no_kd
+  teacher_model_name: null
 training:
   epochs: 100
   lr: 0.00075
@@ -57,4 +49,4 @@ training:
   min_delta: 0.0001
 output:
   dir: outputs
-  run_name: radar_rkd
+  run_name: radar_student_no_kd

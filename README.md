@@ -54,6 +54,7 @@ python scripts/train.py --config configs/image/logits_kd.yaml
 python scripts/train.py --config configs/image/rkd.yaml
 
 python scripts/train.py --config configs/radar/no_kd.yaml
+python scripts/train.py --config configs/radar/student_no_kd.yaml
 python scripts/train.py --config configs/radar/logits_kd.yaml
 python scripts/train.py --config configs/radar/rkd.yaml
 
@@ -67,10 +68,12 @@ python scripts/train.py --config configs/fusion/rkd.yaml
 `image_teacher` 和 `fusion_teacher`。上游旧训练脚本中 teacher-as-student 的实例化残留
 不作为本项目配置驱动流程的语义依据。
 
-Radar-only 配置用于复现论文表格中的 Radar 对照项，并提供三种模式：
-`no_kd` 不加载 teacher，只用任务 loss 直接训练 `radar_teacher` 主模型；
-`logits_kd` 加载冻结的 RadarTeacher，用 temperature soft logits 的 KL loss 做蒸馏；
-`rkd` 加载冻结的 RadarTeacher，对齐 teacher/student 输出特征的样本间距离和角度关系。
+Radar-only 配置中，`configs/radar/no_kd.yaml` 是 RadarTeacher baseline：
+不加载 teacher，只用任务 loss 直接训练 `radar_teacher` 主模型，并作为 radar KD 的默认
+teacher checkpoint 来源。`configs/radar/student_no_kd.yaml` 直接训练轻量
+`radar_student`，用于对比无蒸馏的小模型表现。`logits_kd` 和 `rkd` 默认加载冻结的
+`radar_teacher`，分别用 temperature soft logits KL loss 和关系蒸馏 loss 训练可训练的
+`radar_student`。
 当前仓库没有内置 `All_models/RadarTeacher*.pth`，因此 radar KD 配置默认读取先运行
 `configs/radar/no_kd.yaml` 生成的 `outputs/radar_no_kd/checkpoints/best.pth`。如果使用自定义
 RadarTeacher 权重，可以覆盖路径：
@@ -115,6 +118,7 @@ TensorBoard 标量包含基础训练曲线和验证平均指标：
 ```bash
 python scripts/evaluate.py --config configs/image/no_kd.yaml --weights All_models/ImageTeacher_noKD.pth
 python scripts/evaluate.py --config configs/radar/no_kd.yaml --weights outputs/radar_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/radar_student_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models/BothStd_RKD.pth
 ```
 
