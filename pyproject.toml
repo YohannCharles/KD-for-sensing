@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kd-sensing"
+version = "0.1.0"
+description = "Knowledge distillation workflows for image and radar beam prediction."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pillow",
+    "pyyaml",
+    "scipy",
+    "scikit-image",
+    "torch",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytorch-model-summary",
+    "thop",
+]
+
+[project.scripts]
+kd-sensing-train = "kd_sensing.cli.train:main"
+kd-sensing-evaluate = "kd_sensing.cli.evaluate:main"
+kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

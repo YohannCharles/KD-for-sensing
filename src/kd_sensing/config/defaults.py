@@ -1,0 +1,103 @@
+"""Default configuration migrated from the original argparse scripts."""
+
+from __future__ import annotations
+
+DEFAULT_CONFIG = {
+    "experiment": {
+        "name": "kd_sensing",
+        "task": "image",
+        "seed": 0,
+        "device": "auto",
+    },
+    "paths": {
+        "data_root": "dataset/scenario9",
+        "weights_dir": "All_models",
+        "output_dir": "outputs",
+    },
+    "data": {
+        "dataset": {
+            "type": "scenario9",
+            "data_root": "dataset/scenario9",
+            "train_csv_name": "train_seqs_RA.csv",
+            "test_csv_name": "test_seqs_RA.csv",
+            "seq_len": 8,
+            "num_pred": 3,
+            "portion": 1.0,
+            "image_size": [224, 224],
+            "fft_tuple": [64, 256, 128],
+            "clipped_range": 128,
+        },
+        "dataloader": {
+            "train_batch_size": 3,
+            "test_batch_size": 3,
+            "num_workers": 8,
+        },
+    },
+    "model": {
+        "feature_size": 64,
+        "gru_hidden_size": 64,
+        "num_classes": 64,
+        "seq_length_teacher": 8,
+        "seq_length_student": 8,
+        "num_pred": 3,
+        "downsample_ratio": 1,
+        "teacher": {
+            "type": "image_teacher",
+            "feature_size": 64,
+            "num_classes": 64,
+            "gru_params": [64, 64, 1],
+        },
+        "student": {
+            "type": "image_teacher",
+            "feature_size": 64,
+            "num_classes": 64,
+            "gru_params": [64, 64, 1],
+        },
+    },
+    "loss": {
+        "type": "focal_loss",
+        "alpha": 1,
+        "gamma": 2,
+    },
+    "distillation": {
+        "type": "no_kd",
+        "temperature": 3.0,
+        "alpha": 0.4,
+        "alpha_warmup_epochs": 0,
+        "teacher_model_name": "ImageTeacher_best.pth",
+        "rkd_pairs_per_anchor": 4,
+        "rkd_distance_weight": 10.0,
+        "rkd_angle_weight": 10.0,
+    },
+    "training": {
+        "epochs": 100,
+        "lr": 7.5e-4,
+        "weight_decay": 0.0,
+        "grad_clip": 10.0,
+        "patience": 20,
+        "use_early_stopping": True,
+        "min_delta": 1e-4,
+        "resume": False,
+        "start_epoch": 0,
+    },
+    "scheduler": {
+        "type": "cosine_warm_restarts",
+        "T_0": 10,
+        "T_mult": 2,
+        "eta_min": 1e-6,
+    },
+    "evaluation": {
+        "k_values": [1, 2, 3, 5, 10],
+        "dba_delta": 5,
+        "record_latency": False,
+        "latency_samples_amount": 10,
+        "latency_runs": 30,
+        "latency_warmup": 5,
+    },
+    "output": {
+        "dir": "outputs",
+        "run_name": None,
+        "debug": False,
+    },
+}
+

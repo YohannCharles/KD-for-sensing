@@ -1,46 +1,118 @@
+# KD for Sensing
 
+This repository is now organized as an installable `src/kd_sensing` package with config-driven training, evaluation, and preprocessing entry points.
 
-## Dataset Preparation
+## Install
 
-1. Download the project and extract it to your local machine.
+```bash
+conda activate kd_mm_beam
+pip install -e .
+```
 
-2. Download **Scenario 9** from:  
-   https://www.deepsense6g.net/scenarios/Scenarios%201-9/scenario-9
+The package import is side-effect free:
 
-3. Extract the dataset to form the file structure:
+```bash
+python -c "import kd_sensing"
+```
+
+## Structure
 
 ```text
-dataset/
-└── scenario9/
-    ├── unit1/
-    └── scenario9.csv
- ```
-4. Run the preprocessing scripts CSV_process.py and gen_data_seq.py in order
+configs/
+  image/          # image-only no-KD, logits KD, RKD configs
+  fusion/         # image+radar no-KD, logits KD, RKD configs
+  preprocess/     # CSV/radar/sequence preprocessing configs
+scripts/
+  train.py
+  evaluate.py
+  preprocess.py
+src/kd_sensing/
+  cli/
+  config/
+  data/
+  distillation/
+  engine/
+  evaluation/
+  models/
+  preprocessing/
+  utils/
+```
 
-## Training model:
--- run train_both.py to train model based on both image and radar data. 
+Large data and pretrained weights stay in their existing locations:
 
--- run train_image.py to train model based on only image data. 
+- `dataset/`
+- `All_models/`
 
-1) kd_mode=0: no KD 2) kd_mode=1: conventional KD 3) kd_mode=2: relational KD
+Relative paths in configs are resolved from the project root, so commands can be launched from subdirectories.
 
-## Testing model
-All trained model along with the hyparameters are under the folder: All_models/
+## Train
 
--- run test_model_both.py to test the model based on both modalities
+```bash
+python scripts/train.py --config configs/image/no_kd.yaml
+python scripts/train.py --config configs/image/logits_kd.yaml
+python scripts/train.py --config configs/image/rkd.yaml
 
--- run test_model_image.py to test the model based only image
+python scripts/train.py --config configs/fusion/no_kd.yaml
+python scripts/train.py --config configs/fusion/logits_kd.yaml
+python scripts/train.py --config configs/fusion/rkd.yaml
+```
 
-### Models and hyperparameters:
-Nine models contained: 
-1) BothTeacher_best.pth: Best teacher model based on both modalitis
-2) ImageTeacher_noKD.pth: Best image-based teacher model without self-KD refinement
-3) ImageTeacher_best.pth: Best image-based teacher model with self-KD refinement
-4) ImageStd_noKD.pth:  Image-based student model without KD
-5) ImageStd_KD.pth: Image-based student model with conventional KD
-6) ImageStd_RKD.pth: Image-based student model with relational KD
-7) BothStd_noKD.pth: Student model based on both modalities without KD
-8) BothStd_KD.pth: Student model based on both modalities with conventional KD
-9) BothStd_RKD.pth: Student model based on both modalities with relational KD
-   
-The hyperparameters are shown in the txt files.
+Override config values with dotted keys:
+
+```bash
+python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.dataset.portion=0.05
+```
+
+Outputs are written under `outputs/<run_name>/` and include:
+
+- `final_config.yaml`
+- `checkpoints/last.pth`
+- `checkpoints/best.pth`
+- `metrics.json`
+- `train_log.json`
+- `training_outputs.npz`
+- training curves
+
+## Evaluate
+
+```bash
+python scripts/evaluate.py --config configs/image/no_kd.yaml --weights All_models/ImageTeacher_noKD.pth
+python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models/BothStd_RKD.pth
+```
+
+Evaluation writes metrics and `test_report.json` to the configured output directory.
+
+## Preprocess
+
+```bash
+python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml
+python scripts/preprocess.py --config configs/preprocess/radar_da.yaml
+python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
+```
+
+## Breaking Change
+
+The old top-level entry scripts were removed. Use the new commands instead:
+
+| Old command | New command |
+| --- | --- |
+| `python train_image.py ...` | `python scripts/train.py --config configs/image/<mode>.yaml ...` |
+| `python train_both.py ...` | `python scripts/train.py --config configs/fusion/<mode>.yaml ...` |
+| `python test_model_image.py ...` | `python scripts/evaluate.py --config configs/image/<mode>.yaml --weights <path>` |
+| `python test_model_both.py ...` | `python scripts/evaluate.py --config configs/fusion/<mode>.yaml --weights <path>` |
+| `python CSV_process.py ...` | `python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml` |
+| `python gen_data_seq.py ...` | `python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml` |
+
+## Components
+
+Built-in registries live in `kd_sensing.registries`:
+
+- `MODELS`
+- `DATASETS`
+- `LOSSES`
+- `METRICS`
+- `DISTILLERS`
+- `PREPROCESSORS`
+
+See [docs/extension_guide.md](docs/extension_guide.md) for adding new components.
+
