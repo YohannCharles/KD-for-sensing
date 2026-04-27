@@ -98,6 +98,9 @@ DEFAULT_CONFIG = {
         "dir": "outputs",
         "run_name": None,
         "debug": False,
+        "tensorboard": {
+            "enabled": True,
+            "log_dir": "tensorboard",
+        },
     },
 }
-

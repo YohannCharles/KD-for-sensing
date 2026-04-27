@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml",
     "scipy",
     "scikit-image",
+    "tensorboard",
     "torch",
     "tqdm",
 ]

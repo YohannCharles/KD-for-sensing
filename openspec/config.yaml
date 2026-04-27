@@ -2,6 +2,13 @@ schema: spec-driven
 context: |
   语言：中文（简体）
   所有产出物必须用简体中文撰写。
+  Python 环境约束：
+  - 所有项目相关 Python 命令、训练验证和依赖安装必须使用 conda 环境 `kd_mm_beam`。
+  - 推荐命令格式：`conda run -n kd_mm_beam <command>`。
+
+rules:
+  tasks:
+    - 涉及 Python 命令、训练验证或依赖安装的任务，必须明确使用 `conda run -n kd_mm_beam`。
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.

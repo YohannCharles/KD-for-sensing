@@ -72,6 +72,13 @@ python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.d
 - `train_log.json`
 - `training_outputs.npz`
 - 训练曲线
+- `tensorboard/` TensorBoard event 日志
+
+可以用 TensorBoard 查看和对比训练曲线：
+
+```bash
+tensorboard --logdir outputs
+```
 
 ## 评估
 
