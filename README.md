@@ -1,27 +1,27 @@
 # KD for Sensing
 
-This repository is now organized as an installable `src/kd_sensing` package with config-driven training, evaluation, and preprocessing entry points.
+本仓库现已整理为可安装的 `src/kd_sensing` 包，并提供基于配置文件的训练、评估和预处理入口。
 
-## Install
+## 安装
 
 ```bash
 conda activate kd_mm_beam
 pip install -e .
 ```
 
-The package import is side-effect free:
+包导入过程不会产生副作用：
 
 ```bash
 python -c "import kd_sensing"
 ```
 
-## Structure
+## 目录结构
 
 ```text
 configs/
-  image/          # image-only no-KD, logits KD, RKD configs
-  fusion/         # image+radar no-KD, logits KD, RKD configs
-  preprocess/     # CSV/radar/sequence preprocessing configs
+  image/          # 仅图像模型：无 KD、logits KD、RKD 配置
+  fusion/         # 图像+雷达模型：无 KD、logits KD、RKD 配置
+  preprocess/     # CSV、雷达、序列预处理配置
 scripts/
   train.py
   evaluate.py
@@ -38,14 +38,14 @@ src/kd_sensing/
   utils/
 ```
 
-Large data and pretrained weights stay in their existing locations:
+大型数据和预训练权重继续保留在原有位置：
 
 - `dataset/`
 - `All_models/`
 
-Relative paths in configs are resolved from the project root, so commands can be launched from subdirectories.
+配置文件中的相对路径会从项目根目录解析，因此可以在子目录中启动命令。
 
-## Train
+## 训练
 
 ```bash
 python scripts/train.py --config configs/image/no_kd.yaml
@@ -57,13 +57,13 @@ python scripts/train.py --config configs/fusion/logits_kd.yaml
 python scripts/train.py --config configs/fusion/rkd.yaml
 ```
 
-Override config values with dotted keys:
+可以使用点号分隔的键覆盖配置值：
 
 ```bash
 python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.dataset.portion=0.05
 ```
 
-Outputs are written under `outputs/<run_name>/` and include:
+输出会写入 `outputs/<run_name>/`，包括：
 
 - `final_config.yaml`
 - `checkpoints/last.pth`
@@ -71,18 +71,18 @@ Outputs are written under `outputs/<run_name>/` and include:
 - `metrics.json`
 - `train_log.json`
 - `training_outputs.npz`
-- training curves
+- 训练曲线
 
-## Evaluate
+## 评估
 
 ```bash
 python scripts/evaluate.py --config configs/image/no_kd.yaml --weights All_models/ImageTeacher_noKD.pth
 python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models/BothStd_RKD.pth
 ```
 
-Evaluation writes metrics and `test_report.json` to the configured output directory.
+评估会将指标和 `test_report.json` 写入配置的输出目录。
 
-## Preprocess
+## 预处理
 
 ```bash
 python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml
@@ -90,11 +90,11 @@ python scripts/preprocess.py --config configs/preprocess/radar_da.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
 ```
 
-## Breaking Change
+## 破坏性变更
 
-The old top-level entry scripts were removed. Use the new commands instead:
+旧的顶层入口脚本已移除。请改用以下新命令：
 
-| Old command | New command |
+| 旧命令 | 新命令 |
 | --- | --- |
 | `python train_image.py ...` | `python scripts/train.py --config configs/image/<mode>.yaml ...` |
 | `python train_both.py ...` | `python scripts/train.py --config configs/fusion/<mode>.yaml ...` |
@@ -103,9 +103,9 @@ The old top-level entry scripts were removed. Use the new commands instead:
 | `python CSV_process.py ...` | `python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml` |
 | `python gen_data_seq.py ...` | `python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml` |
 
-## Components
+## 组件
 
-Built-in registries live in `kd_sensing.registries`:
+内置注册表位于 `kd_sensing.registries`：
 
 - `MODELS`
 - `DATASETS`
@@ -114,5 +114,4 @@ Built-in registries live in `kd_sensing.registries`:
 - `DISTILLERS`
 - `PREPROCESSORS`
 
-See [docs/extension_guide.md](docs/extension_guide.md) for adding new components.
-
+关于如何添加新组件，请参见 [docs/extension_guide.md](docs/extension_guide.md)。
