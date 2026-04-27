@@ -11,6 +11,7 @@ from kd_sensing.engine.batch import (
     prepare_fusion_inputs,
     prepare_image_inputs,
     prepare_labels,
+    prepare_radar_inputs,
 )
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 
@@ -43,6 +44,14 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                     device=device,
                 )
                 outputs, _, _ = forward_model(model, task, image_batch, radar_batch)
+            elif task == "radar":
+                radar_batch = prepare_radar_inputs(
+                    batch,
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    device=device,
+                )
+                outputs, _, _ = forward_model(model, task, radar_batch=radar_batch)
             else:
                 image_batch = prepare_image_inputs(
                     batch,
@@ -80,4 +89,3 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
         with (target / "metrics.json").open("w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2)
     return metrics
-

@@ -14,6 +14,7 @@ from kd_sensing.engine.batch import (
     prepare_fusion_inputs,
     prepare_image_inputs,
     prepare_labels,
+    prepare_radar_inputs,
 )
 from kd_sensing.engine.builders import (
     build_dataloaders,
@@ -186,70 +187,30 @@ def train(cfg: dict) -> dict:
                     device=device,
                 )
                 optimizer.zero_grad()
-                if task == "fusion":
-                    student_image, student_radar = prepare_fusion_inputs(
-                        batch,
-                        seq_length=seq_length_student,
-                        num_pred=num_pred,
-                        device=device,
-                    )
-                    student_outputs, student_input_features, student_out_features = forward_model(
-                        student_model,
-                        task,
-                        student_image,
-                        student_radar,
-                    )
-                    if teacher_model is not None:
-                        with torch.no_grad():
-                            teacher_image, teacher_radar = prepare_fusion_inputs(
-                                batch,
-                                seq_length=seq_length_teacher,
-                                num_pred=num_pred,
-                                device=device,
-                            )
-                            teacher_outputs, teacher_input_features, teacher_out_features = forward_model(
-                                teacher_model,
-                                task,
-                                teacher_image,
-                                teacher_radar,
-                            )
-                    else:
-                        teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
-                            student_outputs,
-                            student_input_features,
-                            student_out_features,
+                student_outputs, student_input_features, student_out_features = _forward_for_task(
+                    student_model,
+                    task,
+                    batch,
+                    seq_length=seq_length_student,
+                    num_pred=num_pred,
+                    device=device,
+                )
+                if teacher_model is not None:
+                    with torch.no_grad():
+                        teacher_outputs, teacher_input_features, teacher_out_features = _forward_for_task(
+                            teacher_model,
+                            task,
+                            batch,
+                            seq_length=seq_length_teacher,
+                            num_pred=num_pred,
+                            device=device,
                         )
                 else:
-                    student_image = prepare_image_inputs(
-                        batch,
-                        seq_length=seq_length_student,
-                        num_pred=num_pred,
-                        device=device,
+                    teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
+                        student_outputs,
+                        student_input_features,
+                        student_out_features,
                     )
-                    student_outputs, student_input_features, student_out_features = forward_model(
-                        student_model,
-                        task,
-                        student_image,
-                    )
-                    if teacher_model is not None:
-                        with torch.no_grad():
-                            teacher_image = prepare_image_inputs(
-                                batch,
-                                seq_length=seq_length_teacher,
-                                num_pred=num_pred,
-                                device=device,
-                            )
-                            teacher_outputs, teacher_input_features, teacher_out_features = forward_model(
-                                teacher_model,
-                                task,
-                                teacher_image,
-                            )
-                    else:
-                        teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
-                            student_outputs,
-                            student_input_features,
-                            student_out_features,
-                        )
 
                 student_outputs = student_outputs[:, -(num_pred + 1) :, :]
                 teacher_outputs = teacher_outputs[:, -(num_pred + 1) :, :]
@@ -342,3 +303,37 @@ def _dummy_teacher(student_outputs: torch.Tensor, student_input_features: torch.
         torch.zeros_like(student_input_features),
         torch.zeros_like(student_out_features),
     )
+
+
+def _forward_for_task(
+    model,
+    task: str,
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+):
+    if task == "fusion":
+        image_batch, radar_batch = prepare_fusion_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+        return forward_model(model, task, image_batch, radar_batch)
+    if task == "radar":
+        radar_batch = prepare_radar_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+        return forward_model(model, task, radar_batch=radar_batch)
+    image_batch = prepare_image_inputs(
+        batch,
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+    )
+    return forward_model(model, task, image_batch)

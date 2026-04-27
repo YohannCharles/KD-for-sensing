@@ -70,6 +70,22 @@ def prepare_fusion_inputs(
         num_pred=num_pred,
         device=device,
     )
+    radar_batch = prepare_radar_inputs(
+        batch,
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+    )
+    return image_batch, radar_batch
+
+
+def prepare_radar_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+) -> torch.Tensor:
     radar_ra = batch["radar_ra"].to(device)
     radar_da = batch["radar_da"].to(device)
     if radar_ra.ndim == 4:
@@ -92,13 +108,24 @@ def prepare_fusion_inputs(
     zeros_da = torch.zeros_like(zeros_ra)
     radar_ra = torch.cat([radar_ra, zeros_ra], dim=1)
     radar_da = torch.cat([radar_da, zeros_da], dim=1)
-    return image_batch, torch.cat([radar_ra, radar_da], dim=2)
+    return torch.cat([radar_ra, radar_da], dim=2)
 
 
-def forward_model(model, task: str, image_batch: torch.Tensor, radar_batch: torch.Tensor | None = None):
+def forward_model(
+    model,
+    task: str,
+    image_batch: torch.Tensor | None = None,
+    radar_batch: torch.Tensor | None = None,
+):
     if task == "fusion":
-        if radar_batch is None:
-            raise ValueError("Fusion task requires radar_batch")
+        if image_batch is None or radar_batch is None:
+            raise ValueError("Fusion task requires image_batch and radar_batch")
         return model(image_batch, radar_batch)
+    if task == "radar":
+        radar_input = radar_batch if radar_batch is not None else image_batch
+        if radar_input is None:
+            raise ValueError("Radar task requires radar_batch")
+        return model(radar_input)
+    if image_batch is None:
+        raise ValueError("Image task requires image_batch")
     return model(image_batch)
-

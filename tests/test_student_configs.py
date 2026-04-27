@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.models.fusion import StudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageStudentModalityNet  # noqa: E402
+from kd_sensing.models.radar import RadarTeacherNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -29,6 +30,10 @@ FUSION_CONFIGS = [
     "configs/fusion/no_kd.yaml",
     "configs/fusion/logits_kd.yaml",
     "configs/fusion/rkd.yaml",
+]
+
+RADAR_CONFIGS = [
+    "configs/radar/no_kd.yaml",
 ]
 
 STUDENT_WEIGHTS = [
@@ -80,6 +85,54 @@ def test_fusion_configs_build_lightweight_student(config_path: str):
     assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
     assert isinstance(model, StudentModalityNet)
     assert model.GRU.num_layers == 1
+
+
+@pytest.mark.parametrize("config_path", RADAR_CONFIGS)
+def test_radar_configs_build_teacher_baseline(config_path: str):
+    model, cfg = _build_student(config_path)
+
+    assert cfg["experiment"]["task"] == "radar"
+    assert cfg["model"]["teacher"]["type"] == "radar_teacher"
+    assert cfg["model"]["student"]["type"] == "radar_teacher"
+    assert cfg["distillation"]["type"] == "no_kd"
+    assert cfg["distillation"]["teacher_model_name"] is None
+    assert isinstance(model, RadarTeacherNet)
+    assert model.GRU.num_layers == 2
+
+
+def test_radar_teacher_forward_contract():
+    model = MODELS.build(
+        {
+            "type": "radar_teacher",
+            "feature_size": 64,
+            "num_classes": 64,
+            "gru_params": [64, 64, 2],
+            "radar_channels": 2,
+            "num_heads": 8,
+        }
+    )
+    model.eval()
+
+    with torch.no_grad():
+        pred, features, enhanced = model(torch.randn(2, 10, 2, 128, 64))
+
+    assert pred.shape == (2, 10, 64)
+    assert features.shape == (2, 10, 64)
+    assert enhanced.shape == (2, 10, 64)
+
+
+def test_radar_teacher_rejects_invalid_attention_heads():
+    with pytest.raises(ValueError, match="divisible by num_heads"):
+        MODELS.build(
+            {
+                "type": "radar_teacher",
+                "feature_size": 64,
+                "num_classes": 64,
+                "gru_params": [64, 66, 2],
+                "radar_channels": 2,
+                "num_heads": 8,
+            }
+        )
 
 
 @pytest.mark.parametrize(("config_path", "weight_path"), STUDENT_WEIGHTS)

@@ -14,6 +14,16 @@ TBD - created by archiving change reorganize-project-structure. Update Purpose a
 - **WHEN** 用户通过新 CLI 传入 fusion 训练配置
 - **THEN** 系统 MUST 构建同时包含图像和雷达输入的 dataset、fusion teacher/student 模型、KD/loss、optimizer 和 scheduler，并进入训练流程
 
+#### Scenario: 使用配置启动 radar-only 训练
+- **WHEN** 用户通过新 CLI 传入 radar-only 训练配置
+- **THEN** 系统 MUST 构建包含雷达输入的 dataset、`radar_teacher` 主模型、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** 训练流程 MUST 不要求模型接收图像输入
+
+#### Scenario: 使用配置启动 radar-only 评估
+- **WHEN** 用户通过新 CLI 传入 radar-only 评估配置和 RadarTeacher 权重
+- **THEN** 系统 MUST 构建 `radar_teacher` 模型并只使用雷达输入完成评估
+- **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
+
 ### Requirement: 命令行覆盖配置
 实验入口 MUST 支持在命令行覆盖配置值。新 CLI MUST 支持显式传入配置文件和关键参数覆盖；旧脚本 argparse 参数不得作为兼容入口保留，只能作为迁移默认值参考。
 

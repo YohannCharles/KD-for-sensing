@@ -20,6 +20,7 @@ python -c "import kd_sensing"
 ```text
 configs/
   image/          # 仅图像模型：无 KD、logits KD、RKD 配置
+  radar/          # 仅雷达模型：RadarTeacher 无 KD 基线配置
   fusion/         # 图像+雷达模型：无 KD、logits KD、RKD 配置
   preprocess/     # CSV、雷达、序列预处理配置
 scripts/
@@ -52,6 +53,8 @@ python scripts/train.py --config configs/image/no_kd.yaml
 python scripts/train.py --config configs/image/logits_kd.yaml
 python scripts/train.py --config configs/image/rkd.yaml
 
+python scripts/train.py --config configs/radar/no_kd.yaml
+
 python scripts/train.py --config configs/fusion/no_kd.yaml
 python scripts/train.py --config configs/fusion/logits_kd.yaml
 python scripts/train.py --config configs/fusion/rkd.yaml
@@ -61,6 +64,10 @@ python scripts/train.py --config configs/fusion/rkd.yaml
 `image_student`，image+radar student 为 `fusion_student`。teacher 仍分别使用
 `image_teacher` 和 `fusion_teacher`。上游旧训练脚本中 teacher-as-student 的实例化残留
 不作为本项目配置驱动流程的语义依据。
+
+Radar-only 基线用于复现论文表格中的 Radar 对照项。`configs/radar/no_kd.yaml`
+将训练主模型 `model.student.type` 设置为 `radar_teacher`，表示在无 KD 模式下直接训练
+RadarTeacher 架构；该配置不依赖仓库未提供的预训练 RadarTeacher 权重。
 
 可以使用点号分隔的键覆盖配置值：
 
@@ -95,6 +102,7 @@ TensorBoard 标量包含基础训练曲线和验证平均指标：
 
 ```bash
 python scripts/evaluate.py --config configs/image/no_kd.yaml --weights All_models/ImageTeacher_noKD.pth
+python scripts/evaluate.py --config configs/radar/no_kd.yaml --weights outputs/radar_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models/BothStd_RKD.pth
 ```
 

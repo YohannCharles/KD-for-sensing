@@ -3,49 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.registries import MODELS
-
-
-@MODELS.register("radar_feature_extractor")
-class RadarFeatureExtractor(nn.Module):
-    def __init__(self, n_feature: int, in_channels: int = 1):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 4, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(4),
-            nn.ReLU(),
-            nn.Conv2d(4, 16, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-        )
-        self.flatten = nn.Flatten()
-        self.fc_layer = nn.Sequential(
-            nn.Linear(64 * 8 * 4, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, n_feature),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_length, _, _, _ = x.size()
-        spatial_features = []
-        for t in range(seq_length):
-            frame_features = self.net(x[:, t, :, :, :])
-            frame_features = self.flatten(frame_features)
-            spatial_features.append(self.fc_layer(frame_features))
-        return torch.stack(spatial_features, dim=1)
 
 
 class FusionImageFeatureExtractor(nn.Module):
@@ -259,4 +218,3 @@ class StudentModalityNet(nn.Module):
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
         return pred, features, seq_out
-
