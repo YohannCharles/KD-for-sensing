@@ -16,6 +16,7 @@ from kd_sensing.engine.batch import (
     prepare_gps_inputs,
     prepare_image_inputs,
     prepare_labels,
+    prepare_lidar_inputs,
     prepare_radar_inputs,
 )
 from kd_sensing.engine.builders import (
@@ -400,6 +401,14 @@ def _forward_for_task(
             device=device,
         )
         return forward_model(model, task, gps_batch=gps_batch)
+    if task == "lidar":
+        lidar_batch = prepare_lidar_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+        return forward_model(model, task, lidar_batch=lidar_batch)
     image_batch = prepare_image_inputs(
         batch,
         seq_length=seq_length,

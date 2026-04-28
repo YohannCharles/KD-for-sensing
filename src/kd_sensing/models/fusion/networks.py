@@ -4,11 +4,12 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.models.gps import GpsFeatureExtractor
+from kd_sensing.models.lidar import LidarFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.registries import MODELS
 
 
-VALID_FUSION_MODALITIES = ("image", "radar", "gps")
+VALID_FUSION_MODALITIES = ("image", "radar", "gps", "lidar")
 
 
 def _normalize_modalities(modalities: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -91,6 +92,7 @@ class FusionModalityNet(nn.Module):
         image_channels: int = 1,
         radar_channels: int = 2,
         gps_input_size: int = 3,
+        lidar_channels: int = 3,
         num_heads: int = 8,
         modalities: list[str] | tuple[str, ...] | None = None,
     ):
@@ -108,6 +110,8 @@ class FusionModalityNet(nn.Module):
             self.radar_feature_extractor = RadarFeatureExtractor(feature_size, radar_channels)
         if "gps" in self.modalities:
             self.gps_feature_extractor = GpsFeatureExtractor(feature_size, gps_input_size)
+        if "lidar" in self.modalities:
+            self.lidar_feature_extractor = LidarFeatureExtractor(feature_size, lidar_channels)
         self.fusion_layer = nn.Sequential(
             nn.Linear(feature_size * len(self.modalities), feature_size),
             nn.ReLU(),
@@ -142,6 +146,7 @@ class FusionModalityNet(nn.Module):
         image_batch: torch.Tensor | None = None,
         radar_batch: torch.Tensor | None = None,
         gps_batch: torch.Tensor | None = None,
+        lidar_batch: torch.Tensor | None = None,
     ):
         modality_features = []
         batch_size = None
@@ -173,6 +178,15 @@ class FusionModalityNet(nn.Module):
                 seq_len,
             )
             modality_features.append(gps_features)
+        if "lidar" in self.modalities:
+            lidar_features = self.lidar_feature_extractor(_require_tensor(lidar_batch, "lidar"))
+            batch_size, seq_len = _check_temporal_features(
+                lidar_features,
+                "lidar",
+                batch_size,
+                seq_len,
+            )
+            modality_features.append(lidar_features)
         fused_features = torch.cat(modality_features, dim=2)
         features = self.fusion_layer(fused_features)
         features = self.layer_norm(features)
@@ -193,6 +207,7 @@ class StudentModalityNet(nn.Module):
         image_channels: int = 1,
         radar_channels: int = 2,
         gps_input_size: int = 3,
+        lidar_channels: int = 3,
         modalities: list[str] | tuple[str, ...] | None = None,
     ):
         super().__init__()
@@ -257,6 +272,18 @@ class StudentModalityNet(nn.Module):
                 nn.ReLU(inplace=True),
             )
             branch_dims.append(96)
+        if "lidar" in self.modalities:
+            self.lidar_cnn_layers = nn.Sequential(
+                nn.Conv2d(lidar_channels, 12, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(12),
+                nn.ReLU(inplace=True),
+                ds_conv_block(12, 16, stride=2),
+                ds_conv_block(16, 24, stride=2),
+                ds_conv_block(24, 96, stride=2),
+            )
+            self.lidar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
+            self.lidar_global_max_pool = nn.AdaptiveMaxPool2d(1)
+            branch_dims.append(96 * 2)
         self.fusion_layer = nn.Sequential(
             nn.Linear(sum(branch_dims), 128),
             nn.ReLU(inplace=True),
@@ -286,6 +313,7 @@ class StudentModalityNet(nn.Module):
         image_batch: torch.Tensor | None = None,
         radar_batch: torch.Tensor | None = None,
         gps_batch: torch.Tensor | None = None,
+        lidar_batch: torch.Tensor | None = None,
         beam=None,
     ):
         batch_size = None
@@ -337,6 +365,23 @@ class StudentModalityNet(nn.Module):
             )
             gps_flat = gps_batch.reshape(batch_size * seq_len, gps_dim)
             pooled_features.append(self.gps_projection(gps_flat))
+        if "lidar" in self.modalities:
+            lidar_batch = _require_tensor(lidar_batch, "lidar")
+            batch_size, seq_len, lidar_channels, lidar_height, lidar_width = _check_sequence_tensor(
+                lidar_batch,
+                "lidar",
+                batch_size,
+                seq_len,
+                expected_ndim=5,
+            )
+            lidar = lidar_batch.reshape(batch_size * seq_len, lidar_channels, lidar_height, lidar_width)
+            lidar_feat = self.lidar_cnn_layers(lidar)
+            pooled_features.extend(
+                [
+                    self.lidar_global_avg_pool(lidar_feat).flatten(1),
+                    self.lidar_global_max_pool(lidar_feat).flatten(1),
+                ]
+            )
 
         fused = torch.cat(pooled_features, dim=1)
         fused_features = self.fusion_layer(fused).view(batch_size, seq_len, -1)

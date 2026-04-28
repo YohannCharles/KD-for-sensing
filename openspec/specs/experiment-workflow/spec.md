@@ -205,3 +205,145 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **THEN** 系统 MUST 构建包含全部三种模态分支的 fusion teacher/student
 - **AND** 系统 MUST 使用统一训练、验证和评估流程输出指标
 
+### Requirement: LiDAR 配置驱动实验
+项目 MUST 支持通过配置文件启动 LiDAR-only 训练和评估。LiDAR-only 配置 MUST 使用 `experiment.task: lidar`，并通过统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
+
+#### Scenario: 使用配置启动 LiDAR-only 训练
+- **WHEN** 用户通过新 CLI 传入 LiDAR-only 训练配置
+- **THEN** 系统 MUST 构建包含 LiDAR 输入的 dataset、配置指定的 LiDAR teacher/student 模型、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** 训练流程 MUST 不要求图像、雷达或 GPS 输入
+- **AND** LiDAR 输入 MUST 使用 BEV 张量格式
+
+#### Scenario: 使用配置启动 LiDAR-only 评估
+- **WHEN** 用户通过新 CLI 传入 LiDAR-only 评估配置和 LiDAR 模型权重
+- **THEN** 系统 MUST 构建配置指定的 LiDAR 模型并只使用 LiDAR 输入完成评估
+- **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
+
+### Requirement: LiDAR fusion 配置驱动实验
+项目 MUST 支持通过 fusion `modalities` 配置启用 LiDAR。包含 LiDAR 的 fusion 配置 MUST 复用统一 fusion 训练和评估流程。
+
+#### Scenario: 使用配置启动 image+radar+gps+lidar fusion 训练
+- **WHEN** 用户通过训练入口传入 `modalities: ["image", "radar", "gps", "lidar"]` 的 fusion 配置
+- **THEN** 系统 MUST 构建四个模态输入所需的 dataset 字段和 fusion teacher/student 模型
+- **AND** 系统 MUST 在 batch 准备阶段构造 image、radar、gps 和 lidar 输入
+
+#### Scenario: 使用配置启动 LiDAR 参与的双模态 fusion 训练
+- **WHEN** 用户通过训练入口传入包含 `lidar` 的任意合法双模态 fusion 配置
+- **THEN** 系统 MUST 只准备 `modalities` 中列出的模态输入
+- **AND** 未启用的模态字段 MUST 不影响训练启动
+
+### Requirement: LiDAR 默认实验配置
+项目 MUST 提供 LiDAR-only no-KD、LiDAR student no-KD、LiDAR logits KD、LiDAR RKD 和包含 LiDAR 的 fusion 示例配置。所有默认 LiDAR teacher/student 配置 MUST 使用 `gru_params: [64, 64, 2]`。
+
+#### Scenario: LiDAR 默认配置可构建
+- **WHEN** 开发者加载 `configs/lidar/*.yaml`
+- **THEN** 系统 MUST 能构建对应 dataset、model、loss、distiller、optimizer 和 scheduler
+- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 2]`
+
+#### Scenario: LiDAR fusion 示例配置可构建
+- **WHEN** 开发者加载包含 LiDAR 的 `configs/fusion/*.yaml`
+- **THEN** 系统 MUST 能构建对应 fusion teacher 和 fusion student
+- **AND** fusion `modalities` MUST 只包含合法模态名称
+
+### Requirement: LiDAR 预处理入口
+预处理 CLI MUST 支持生成带 LiDAR 路径列的序列 CSV，并支持按配置离线生成 LiDAR BEV 缓存。
+
+#### Scenario: 生成 LiDAR 序列 CSV
+- **WHEN** 用户运行预处理入口并选择 sequence CSV 生成且启用 LiDAR
+- **THEN** 系统 MUST 输出包含 `lidar1..lidarN` 的 train/test 序列 CSV
+
+#### Scenario: 生成 LiDAR BEV 缓存
+- **WHEN** 用户运行预处理入口并选择 LiDAR BEV 缓存生成
+- **THEN** 系统 MUST 根据配置读取点云、应用裁剪和 BEV 构造，并写出可被 dataset 读取的 `.npy` 缓存
+
+### Requirement: LiDAR dry-run 训练
+项目 MUST 提供可在小数据或 fixture 上运行的 LiDAR smoke test 路径，用于验证 LiDAR forward、loss、backward、validation 和 checkpoint 保存。
+
+#### Scenario: LiDAR dry-run 训练
+- **WHEN** 开发者使用 synthetic、fixture 或小比例数据运行一次 LiDAR 短训练 smoke test
+- **THEN** 训练流程 MUST 完成 forward、loss、backward、optimizer step、validation 和 checkpoint 保存的核心路径
+
+### Requirement: 单模态 canonical 配置矩阵
+项目 MUST 为每个受支持单模态 `image`、`radar`、`gps` 和 `lidar` 提供统一命名的 canonical 配置矩阵。每个单模态目录 MUST 包含 `teacher_no_kd.yaml`、`student_no_kd.yaml`、`logits_kd.yaml` 和 `rkd.yaml`。canonical 配置 MUST 使用统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和输出目录语义。
+
+#### Scenario: 单模态 teacher no-KD 配置
+- **WHEN** 开发者加载 `configs/<modality>/teacher_no_kd.yaml`
+- **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
+- **AND** 配置 MUST 设置 `distillation.type: no_kd`
+- **AND** 配置 MUST 设置 `distillation.teacher_model_name: null`
+- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_teacher`
+- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_teacher_no_kd`
+
+#### Scenario: 单模态 student no-KD 配置
+- **WHEN** 开发者加载 `configs/<modality>/student_no_kd.yaml`
+- **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
+- **AND** 配置 MUST 设置 `distillation.type: no_kd`
+- **AND** 配置 MUST 设置 `distillation.teacher_model_name: null`
+- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_student`
+- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_student_no_kd`
+
+#### Scenario: 单模态 logits KD 配置
+- **WHEN** 开发者加载 `configs/<modality>/logits_kd.yaml`
+- **THEN** 配置 MUST 设置 `distillation.type: logits_kd`
+- **AND** 配置 MUST 构建 frozen `<modality>_teacher`
+- **AND** 配置 MUST 构建可训练 `<modality>_student`
+- **AND** 配置 MUST 默认解析对应 canonical teacher no-KD 输出中的 `best.pth`
+
+#### Scenario: 单模态 RKD 配置
+- **WHEN** 开发者加载 `configs/<modality>/rkd.yaml`
+- **THEN** 配置 MUST 设置 `distillation.type: rkd`
+- **AND** 配置 MUST 构建 frozen `<modality>_teacher`
+- **AND** 配置 MUST 构建可训练 `<modality>_student`
+- **AND** 配置 MUST 提供 `rkd_pairs_per_anchor`、`rkd_distance_weight` 和 `rkd_angle_weight`
+- **AND** 配置 MUST 默认解析对应 canonical teacher no-KD 输出中的 `best.pth`
+
+### Requirement: 单模态 legacy no-KD 入口兼容
+项目 MUST 保留现有 `configs/<modality>/no_kd.yaml` 入口作为兼容配置，并 MUST 在文档中说明其历史语义和推荐替代入口。legacy 入口不得改变 canonical 配置矩阵的语义。
+
+#### Scenario: image legacy no-KD 保持 student baseline
+- **WHEN** 用户运行 `configs/image/no_kd.yaml`
+- **THEN** 系统 MUST 继续训练 `image_student`
+- **AND** 文档 MUST 引导新实验优先使用 `configs/image/student_no_kd.yaml`
+
+#### Scenario: radar GPS LiDAR legacy no-KD 保持 teacher baseline
+- **WHEN** 用户运行 `configs/radar/no_kd.yaml`、`configs/gps/no_kd.yaml` 或 `configs/lidar/no_kd.yaml`
+- **THEN** 系统 MUST 继续训练对应 teacher baseline
+- **AND** 文档 MUST 引导新实验优先使用对应 `teacher_no_kd.yaml`
+
+### Requirement: teacher/student 角色不得受原脚本残留影响
+配置驱动流程 MUST 以 YAML 中的 `model.student` 作为 no-KD 时的被训练主模型，并 MUST 只在 `distillation.type` 非 `no_kd` 时构建 frozen teacher。默认 canonical student baseline 和 KD 配置 MUST 使用 lightweight student，不得默认使用 teacher-as-student 残留。
+
+#### Scenario: no-KD 只训练配置中的主模型
+- **WHEN** 配置设置 `distillation.type: no_kd`
+- **THEN** 训练流程 MUST 不构建或加载 frozen teacher
+- **AND** optimizer MUST 只更新 `model.student` 构建出的主模型
+
+#### Scenario: canonical student baseline 使用 lightweight student
+- **WHEN** 开发者加载任意 canonical `student_no_kd.yaml`
+- **THEN** `model.student.type` MUST 为对应 lightweight student 注册名
+- **AND** `model.student.type` MUST NOT 等于对应 teacher 注册名
+
+#### Scenario: canonical KD 使用 teacher 蒸馏 student
+- **WHEN** 开发者加载任意 canonical `logits_kd.yaml` 或 `rkd.yaml`
+- **THEN** `model.teacher.type` MUST 为对应 teacher 注册名
+- **AND** `model.student.type` MUST 为对应 lightweight student 注册名
+- **AND** teacher 和 student 的输出 hidden size MUST 对齐以支持 RKD
+
+### Requirement: canonical 配置命名与输出目录一致
+canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher checkpoint 来源。默认路径 MUST 便于用户按 teacher baseline -> student baseline/KD 的顺序运行实验，并 MUST 支持命令行覆盖。
+
+#### Scenario: canonical run name 与文件语义一致
+- **WHEN** 开发者加载任意 canonical 配置
+- **THEN** `experiment.name` MUST 与不含 `.yaml` 的文件 stem 一致
+- **AND** `output.run_name` MUST 与 `experiment.name` 一致
+
+#### Scenario: canonical KD 默认读取 teacher baseline 输出
+- **WHEN** 用户未覆盖 canonical KD 配置中的 teacher 权重字段
+- **THEN** 系统 MUST 从对应 canonical `teacher_no_kd` 输出目录解析 teacher checkpoint
+- **AND** 默认 checkpoint 文件名 MUST 为 `best.pth`
+
+#### Scenario: canonical KD checkpoint 可覆盖
+- **WHEN** 用户通过命令行覆盖 `paths.weights_dir` 或 `distillation.teacher_model_name`
+- **THEN** 系统 MUST 使用覆盖后的 teacher checkpoint 来源
+- **AND** 系统 MUST 保持该配置的 teacher/student 模型角色不变
+

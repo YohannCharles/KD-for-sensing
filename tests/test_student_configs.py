@@ -12,61 +12,162 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.models.fusion import StudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
-from kd_sensing.models.image import ImageStudentModalityNet  # noqa: E402
+from kd_sensing.models.image import ImageModalityNet, ImageStudentModalityNet  # noqa: E402
+from kd_sensing.models.lidar import LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.models.radar import RadarModalityNet, RadarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
 
 
-IMAGE_CONFIGS = [
-    "configs/image/no_kd.yaml",
-    "configs/image/logits_kd.yaml",
-    "configs/image/rkd.yaml",
-]
+GRU_PARAMS = [64, 64, 2]
+SINGLE_CONFIG_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
+FUSION_CONFIG_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
 
-FUSION_CONFIGS = [
-    "configs/fusion/no_kd.yaml",
-    "configs/fusion/logits_kd.yaml",
-    "configs/fusion/rkd.yaml",
-]
+MODALITY_SPECS = {
+    "image": {
+        "task": "image",
+        "teacher_type": "image_teacher",
+        "student_type": "image_student",
+        "teacher_cls": ImageModalityNet,
+        "student_cls": ImageStudentModalityNet,
+    },
+    "radar": {
+        "task": "radar",
+        "teacher_type": "radar_teacher",
+        "student_type": "radar_student",
+        "teacher_cls": RadarModalityNet,
+        "student_cls": RadarStudentModalityNet,
+    },
+    "gps": {
+        "task": "gps",
+        "teacher_type": "gps_teacher",
+        "student_type": "gps_student",
+        "teacher_cls": GpsModalityNet,
+        "student_cls": GpsStudentModalityNet,
+    },
+    "lidar": {
+        "task": "lidar",
+        "teacher_type": "lidar_teacher",
+        "student_type": "lidar_student",
+        "teacher_cls": LidarModalityNet,
+        "student_cls": LidarStudentModalityNet,
+    },
+}
 
-RADAR_STUDENT_CONFIGS = [
-    "configs/radar/student_no_kd.yaml",
-    "configs/radar/logits_kd.yaml",
-    "configs/radar/rkd.yaml",
-]
+FUSION_SLUGS = {
+    "image_radar": ["image", "radar"],
+    "image_gps": ["image", "gps"],
+    "image_lidar": ["image", "lidar"],
+    "radar_gps": ["radar", "gps"],
+    "radar_lidar": ["radar", "lidar"],
+    "gps_lidar": ["gps", "lidar"],
+    "image_radar_gps": ["image", "radar", "gps"],
+    "image_radar_lidar": ["image", "radar", "lidar"],
+    "image_gps_lidar": ["image", "gps", "lidar"],
+    "radar_gps_lidar": ["radar", "gps", "lidar"],
+    "image_radar_gps_lidar": ["image", "radar", "gps", "lidar"],
+}
 
-RADAR_KD_CONFIGS = [
-    ("configs/radar/logits_kd.yaml", "logits_kd"),
-    ("configs/radar/rkd.yaml", "rkd"),
-]
-
-GPS_STUDENT_CONFIGS = [
-    "configs/gps/student_no_kd.yaml",
-    "configs/gps/logits_kd.yaml",
-    "configs/gps/rkd.yaml",
-]
-
-GPS_KD_CONFIGS = [
-    ("configs/gps/logits_kd.yaml", "logits_kd"),
-    ("configs/gps/rkd.yaml", "rkd"),
-]
-
-GPS_REL_POLAR_CONFIGS = [
-    "configs/gps/no_kd.yaml",
-    "configs/gps/student_no_kd.yaml",
-    "configs/gps/logits_kd.yaml",
-    "configs/gps/rkd.yaml",
-    "configs/gps/ablation_relative_polar.yaml",
-]
-
-GPS_FUSION_CONFIGS = [
-    "configs/fusion/image_gps_no_kd.yaml",
-    "configs/fusion/radar_gps_no_kd.yaml",
-    "configs/fusion/all_modalities_no_kd.yaml",
+LEGACY_CONFIG_EXPECTATIONS = [
+    (
+        "configs/image/no_kd.yaml",
+        "image",
+        "no_kd",
+        "image_student",
+        None,
+        "configs/image/student_no_kd.yaml",
+    ),
+    (
+        "configs/radar/no_kd.yaml",
+        "radar",
+        "no_kd",
+        "radar_teacher",
+        None,
+        "configs/radar/teacher_no_kd.yaml",
+    ),
+    (
+        "configs/gps/no_kd.yaml",
+        "gps",
+        "no_kd",
+        "gps_teacher",
+        None,
+        "configs/gps/teacher_no_kd.yaml",
+    ),
+    (
+        "configs/lidar/no_kd.yaml",
+        "lidar",
+        "no_kd",
+        "lidar_teacher",
+        None,
+        "configs/lidar/teacher_no_kd.yaml",
+    ),
+    (
+        "configs/fusion/no_kd.yaml",
+        "fusion",
+        "no_kd",
+        "fusion_student",
+        ["image", "radar"],
+        "configs/fusion/image_radar_student_no_kd.yaml",
+    ),
+    (
+        "configs/fusion/logits_kd.yaml",
+        "fusion",
+        "logits_kd",
+        "fusion_student",
+        ["image", "radar"],
+        "configs/fusion/image_radar_logits_kd.yaml",
+    ),
+    (
+        "configs/fusion/rkd.yaml",
+        "fusion",
+        "rkd",
+        "fusion_student",
+        ["image", "radar"],
+        "configs/fusion/image_radar_rkd.yaml",
+    ),
+    (
+        "configs/fusion/image_gps_no_kd.yaml",
+        "fusion",
+        "no_kd",
+        "fusion_student",
+        ["image", "gps"],
+        "configs/fusion/image_gps_student_no_kd.yaml",
+    ),
+    (
+        "configs/fusion/radar_gps_no_kd.yaml",
+        "fusion",
+        "no_kd",
+        "fusion_student",
+        ["radar", "gps"],
+        "configs/fusion/radar_gps_student_no_kd.yaml",
+    ),
+    (
+        "configs/fusion/radar_lidar_no_kd.yaml",
+        "fusion",
+        "no_kd",
+        "fusion_student",
+        ["radar", "lidar"],
+        "configs/fusion/radar_lidar_student_no_kd.yaml",
+    ),
+    (
+        "configs/fusion/all_modalities_no_kd.yaml",
+        "fusion",
+        "no_kd",
+        "fusion_student",
+        ["image", "radar", "gps"],
+        "configs/fusion/image_radar_gps_student_no_kd.yaml",
+    ),
+    (
+        "configs/fusion/all_modalities_lidar_no_kd.yaml",
+        "fusion",
+        "no_kd",
+        "fusion_student",
+        ["image", "radar", "gps", "lidar"],
+        "configs/fusion/image_radar_gps_lidar_student_no_kd.yaml",
+    ),
 ]
 
 LEGACY_STUDENT_WEIGHTS = [
@@ -79,13 +180,19 @@ LEGACY_STUDENT_WEIGHTS = [
 ]
 
 
+def _load(config_path: str) -> dict:
+    path = ROOT / config_path
+    assert path.exists(), f"Missing config: {config_path}"
+    return load_config(path)
+
+
 def _build_student(config_path: str):
-    cfg = load_config(ROOT / config_path)
+    cfg = _load(config_path)
     return MODELS.build(cfg["model"]["student"]), cfg
 
 
 def _build_teacher_and_student(config_path: str):
-    cfg = load_config(ROOT / config_path)
+    cfg = _load(config_path)
     return MODELS.build(cfg["model"]["teacher"]), MODELS.build(cfg["model"]["student"]), cfg
 
 
@@ -104,113 +211,167 @@ def _is_stats_key(key: str) -> bool:
     return key.endswith("total_ops") or key.endswith("total_params")
 
 
-@pytest.mark.parametrize("config_path", IMAGE_CONFIGS)
-def test_image_configs_build_lightweight_student(config_path: str):
-    model, cfg = _build_student(config_path)
+def _single_config_cases():
+    return [
+        (modality, mode, f"configs/{modality}/{mode}.yaml")
+        for modality in MODALITY_SPECS
+        for mode in SINGLE_CONFIG_MODES
+    ]
 
-    assert cfg["model"]["student"]["type"] == "image_student"
-    assert isinstance(model, ImageStudentModalityNet)
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
+
+def _fusion_config_cases():
+    return [
+        (slug, modalities, mode, f"configs/fusion/{slug}_{mode}.yaml")
+        for slug, modalities in FUSION_SLUGS.items()
+        for mode in FUSION_CONFIG_MODES
+    ]
+
+
+@pytest.mark.parametrize(("modality", "mode", "config_path"), _single_config_cases())
+def test_canonical_single_modality_config_matrix(modality: str, mode: str, config_path: str):
+    spec = MODALITY_SPECS[modality]
+    model, cfg = _build_student(config_path)
+    expected_name = f"{modality}_{mode}"
+
+    assert cfg["experiment"]["name"] == expected_name
+    assert cfg["experiment"]["task"] == spec["task"]
+    assert cfg["output"]["run_name"] == expected_name
+    assert cfg["model"]["teacher"]["type"] == spec["teacher_type"]
+    assert cfg["model"]["teacher"]["gru_params"] == GRU_PARAMS
+    assert cfg["model"]["student"]["gru_params"] == GRU_PARAMS
+
+    expected_student_type = spec["teacher_type"] if mode == "teacher_no_kd" else spec["student_type"]
+    expected_student_cls = spec["teacher_cls"] if mode == "teacher_no_kd" else spec["student_cls"]
+    assert cfg["model"]["student"]["type"] == expected_student_type
+    assert isinstance(model, expected_student_cls)
     assert model.GRU.num_layers == 2
 
+    if mode in {"teacher_no_kd", "student_no_kd"}:
+        assert cfg["distillation"]["type"] == "no_kd"
+        assert cfg["distillation"]["teacher_model_name"] is None
+    else:
+        teacher, student, kd_cfg = _build_teacher_and_student(config_path)
+        assert kd_cfg["distillation"]["type"] == mode
+        assert kd_cfg["paths"]["weights_dir"] == f"outputs/{modality}_teacher_no_kd/checkpoints"
+        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
+        assert isinstance(teacher, spec["teacher_cls"])
+        assert isinstance(student, spec["student_cls"])
+        assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
+        if mode == "rkd":
+            assert kd_cfg["distillation"]["rkd_pairs_per_anchor"] == 4
+            assert kd_cfg["distillation"]["rkd_distance_weight"] == 10.0
+            assert kd_cfg["distillation"]["rkd_angle_weight"] == 10.0
 
-@pytest.mark.parametrize("config_path", FUSION_CONFIGS)
-def test_fusion_configs_build_lightweight_student(config_path: str):
-    model, cfg = _build_student(config_path)
+    if mode == "student_no_kd":
+        assert cfg["model"]["student"]["type"] != spec["teacher_type"]
 
+    _assert_modality_data_fields(cfg, [modality])
+
+
+@pytest.mark.parametrize(("slug", "modalities", "mode", "config_path"), _fusion_config_cases())
+def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: str, config_path: str):
+    student, cfg = _build_student(config_path)
+    stem = Path(config_path).stem
+
+    assert cfg["experiment"]["name"] == stem
+    assert cfg["experiment"]["task"] == "fusion"
+    assert cfg["output"]["run_name"] == stem
     assert cfg["model"]["teacher"]["type"] == "fusion_teacher"
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["type"] == "fusion_student"
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["modalities"] == ["image", "radar"]
-    assert isinstance(model, StudentModalityNet)
-    assert model.modalities == ("image", "radar")
-    assert model.GRU.num_layers == 2
+    assert cfg["model"]["teacher"]["modalities"] == modalities
+    assert cfg["model"]["student"]["modalities"] == modalities
+    assert cfg["model"]["teacher"]["gru_params"] == GRU_PARAMS
+    assert cfg["model"]["student"]["gru_params"] == GRU_PARAMS
+
+    expected_student_type = "fusion_teacher" if mode == "teacher_no_kd" else "fusion_student"
+    expected_student_cls = FusionModalityNet if mode == "teacher_no_kd" else StudentModalityNet
+    assert cfg["model"]["student"]["type"] == expected_student_type
+    assert isinstance(student, expected_student_cls)
+    assert student.modalities == tuple(modalities)
+    assert student.GRU.num_layers == 2
+
+    if mode in {"teacher_no_kd", "student_no_kd"}:
+        assert cfg["distillation"]["type"] == "no_kd"
+        assert cfg["distillation"]["teacher_model_name"] is None
+    else:
+        teacher, kd_student, kd_cfg = _build_teacher_and_student(config_path)
+        assert kd_cfg["distillation"]["type"] == mode
+        assert kd_cfg["paths"]["weights_dir"] == f"outputs/{slug}_teacher_no_kd/checkpoints"
+        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
+        assert isinstance(teacher, FusionModalityNet)
+        assert isinstance(kd_student, StudentModalityNet)
+        assert teacher.modalities == kd_student.modalities == tuple(modalities)
+        if mode == "rkd":
+            assert kd_cfg["distillation"]["rkd_pairs_per_anchor"] == 4
+            assert kd_cfg["distillation"]["rkd_distance_weight"] == 10.0
+            assert kd_cfg["distillation"]["rkd_angle_weight"] == 10.0
+
+    _assert_modality_data_fields(cfg, modalities)
 
 
-def test_radar_teacher_baseline_config_builds_teacher_model():
-    config_path = "configs/radar/no_kd.yaml"
+@pytest.mark.parametrize(
+    (
+        "config_path",
+        "task",
+        "distillation_type",
+        "student_type",
+        "modalities",
+        "canonical_path",
+    ),
+    LEGACY_CONFIG_EXPECTATIONS,
+)
+def test_legacy_configs_keep_compatible_semantics(
+    config_path: str,
+    task: str,
+    distillation_type: str,
+    student_type: str,
+    modalities: list[str] | None,
+    canonical_path: str,
+):
     model, cfg = _build_student(config_path)
 
-    assert cfg["experiment"]["task"] == "radar"
-    assert cfg["model"]["teacher"]["type"] == "radar_teacher"
-    assert cfg["model"]["student"]["type"] == "radar_teacher"
-    assert isinstance(model, RadarModalityNet)
-    assert model.GRU.num_layers == 2
+    assert (ROOT / canonical_path).exists()
+    assert cfg["experiment"]["task"] == task
+    assert cfg["distillation"]["type"] == distillation_type
+    assert cfg["model"]["student"]["type"] == student_type
+    assert cfg["model"]["student"]["gru_params"] == GRU_PARAMS
+
+    if distillation_type == "no_kd":
+        assert cfg["distillation"]["teacher_model_name"] is None
+    elif config_path.startswith("configs/fusion/"):
+        assert cfg["paths"]["weights_dir"] == "All_models"
+        assert cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
+
+    if modalities is not None:
+        assert cfg["model"]["teacher"]["modalities"] == modalities
+        assert cfg["model"]["student"]["modalities"] == modalities
+        assert isinstance(model, (FusionModalityNet, StudentModalityNet))
+        assert model.modalities == tuple(modalities)
+
+    _assert_modality_data_fields(cfg, modalities or [task])
 
 
-@pytest.mark.parametrize("config_path", RADAR_STUDENT_CONFIGS)
-def test_radar_student_configs_build_lightweight_student(config_path: str):
-    model, cfg = _build_student(config_path)
+def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
+    dataset_cfg = cfg["data"]["dataset"]
+    teacher_cfg = cfg["model"]["teacher"]
+    student_cfg = cfg["model"]["student"]
 
-    assert cfg["experiment"]["task"] == "radar"
-    assert cfg["model"]["teacher"]["type"] == "radar_teacher"
-    assert cfg["model"]["student"]["type"] == "radar_student"
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
-    assert isinstance(model, RadarStudentModalityNet)
-    assert model.GRU.num_layers == 2
+    if "gps" in modalities:
+        assert dataset_cfg["use_gps"] is True
+        assert dataset_cfg["gps_feature_mode"] == "relative_polar"
+        assert teacher_cfg["gps_input_size"] == 3
+        assert student_cfg["gps_input_size"] == 3
+    else:
+        assert dataset_cfg.get("use_gps", False) is False
 
-
-@pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
-def test_radar_kd_configs_build_teacher_and_student(config_path: str, kd_type: str):
-    teacher, student, cfg = _build_teacher_and_student(config_path)
-
-    assert cfg["distillation"]["type"] == kd_type
-    assert isinstance(teacher, RadarModalityNet)
-    assert isinstance(student, RadarStudentModalityNet)
-    assert cfg["model"]["teacher"]["type"] == "radar_teacher"
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["type"] == "radar_student"
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
-    assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
-
-
-def test_radar_teacher_no_kd_config_does_not_load_teacher():
-    _, cfg = _build_student("configs/radar/no_kd.yaml")
-
-    assert cfg["distillation"]["type"] == "no_kd"
-    assert cfg["distillation"]["teacher_model_name"] is None
-
-
-@pytest.mark.parametrize("config_path", GPS_STUDENT_CONFIGS)
-def test_gps_student_configs_build_lightweight_student(config_path: str):
-    model, cfg = _build_student(config_path)
-
-    assert cfg["experiment"]["task"] == "gps"
-    assert cfg["data"]["dataset"]["use_gps"] is True
-    assert cfg["model"]["teacher"]["type"] == "gps_teacher"
-    assert cfg["model"]["student"]["type"] == "gps_student"
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
-    assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
-    assert cfg["model"]["student"]["gps_input_size"] == 3
-    assert isinstance(model, GpsStudentModalityNet)
-    assert model.GRU.num_layers == 2
-
-
-@pytest.mark.parametrize(("config_path", "kd_type"), GPS_KD_CONFIGS)
-def test_gps_kd_configs_build_teacher_and_student(config_path: str, kd_type: str):
-    teacher, student, cfg = _build_teacher_and_student(config_path)
-
-    assert cfg["distillation"]["type"] == kd_type
-    assert isinstance(teacher, GpsModalityNet)
-    assert isinstance(student, GpsStudentModalityNet)
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
-    assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
-
-
-@pytest.mark.parametrize("config_path", GPS_REL_POLAR_CONFIGS)
-def test_gps_configs_use_relative_polar_features(config_path: str):
-    model, cfg = _build_student(config_path)
-
-    assert cfg["experiment"]["task"] == "gps"
-    assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
-    assert cfg["model"]["teacher"]["gps_input_size"] == 3
-    assert cfg["model"]["student"]["gps_input_size"] == 3
-    assert isinstance(model, (GpsModalityNet, GpsStudentModalityNet))
+    if "lidar" in modalities:
+        assert dataset_cfg["use_lidar"] is True
+        assert dataset_cfg["lidar_bev_size"] == [224, 224]
+        assert dataset_cfg["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+        assert dataset_cfg["lidar_normalize"] is True
+        assert teacher_cfg["lidar_channels"] == 3
+        assert student_cfg["lidar_channels"] == 3
+    else:
+        assert dataset_cfg.get("use_lidar", False) is False
 
 
 def test_unsupported_gps_ablation_configs_are_not_shipped():
@@ -223,48 +384,6 @@ def test_unsupported_gps_ablation_configs_are_not_shipped():
     ]
 
     assert [path for path in unsupported if (ROOT / path).exists()] == []
-
-
-@pytest.mark.parametrize("config_path", GPS_FUSION_CONFIGS)
-def test_gps_fusion_configs_use_relative_polar_features(config_path: str):
-    model, cfg = _build_student(config_path)
-
-    assert cfg["experiment"]["task"] == "fusion"
-    assert cfg["data"]["dataset"]["use_gps"] is True
-    assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
-    assert "gps" in cfg["model"]["student"]["modalities"]
-    assert cfg["model"]["teacher"]["gps_input_size"] == 3
-    assert cfg["model"]["student"]["gps_input_size"] == 3
-    assert isinstance(model, StudentModalityNet)
-
-
-def test_radar_student_no_kd_config_does_not_load_teacher():
-    model, cfg = _build_student("configs/radar/student_no_kd.yaml")
-
-    assert cfg["distillation"]["type"] == "no_kd"
-    assert cfg["distillation"]["teacher_model_name"] is None
-    assert cfg["model"]["student"]["type"] == "radar_student"
-    assert isinstance(model, RadarStudentModalityNet)
-
-
-@pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
-def test_radar_kd_configs_use_radar_teacher_checkpoint(config_path: str, kd_type: str):
-    _, cfg = _build_student(config_path)
-
-    assert cfg["distillation"]["type"] == kd_type
-    assert cfg["distillation"]["teacher_model_name"] == "best.pth"
-    assert cfg["paths"]["weights_dir"] == "outputs/radar_no_kd/checkpoints"
-    assert cfg["distillation"]["temperature"] == 3.0
-    assert cfg["distillation"]["alpha"] == 0.4
-    assert cfg["distillation"]["alpha_warmup_epochs"] == 0
-
-
-def test_radar_rkd_config_sets_relational_weights():
-    _, cfg = _build_student("configs/radar/rkd.yaml")
-
-    assert cfg["distillation"]["rkd_pairs_per_anchor"] == 4
-    assert cfg["distillation"]["rkd_distance_weight"] == 10.0
-    assert cfg["distillation"]["rkd_angle_weight"] == 10.0
 
 
 def test_radar_teacher_forward_contract():

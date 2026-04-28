@@ -18,6 +18,8 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg["split"] = split
     if _config_uses_gps(cfg):
         dataset_cfg.setdefault("use_gps", True)
+    if _config_uses_lidar(cfg):
+        dataset_cfg.setdefault("use_lidar", True)
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
         csv_key = "train_csv_name" if split == "train" else "test_csv_name"
         dataset_cfg["csv_name"] = dataset_cfg.get(csv_key)
@@ -31,6 +33,8 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     dataset_kwargs = {}
     if getattr(train_dataset, "use_gps", False):
         dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
+    if getattr(train_dataset, "use_lidar", False):
+        dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
         "train": DataLoader(
@@ -61,6 +65,23 @@ def _config_uses_gps(cfg: dict[str, Any]) -> bool:
     for role in ("student", "teacher"):
         modalities = model_cfg.get(role, {}).get("modalities")
         if modalities and "gps" in modalities:
+            return True
+    return False
+
+
+def _config_uses_lidar(cfg: dict[str, Any]) -> bool:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("use_lidar", False):
+        return True
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "lidar":
+        return True
+    if task != "fusion":
+        return False
+    model_cfg = cfg.get("model", {})
+    for role in ("student", "teacher"):
+        modalities = model_cfg.get(role, {}).get("modalities")
+        if modalities and "lidar" in modalities:
             return True
     return False
 

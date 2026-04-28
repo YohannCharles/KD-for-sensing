@@ -88,6 +88,13 @@ def prepare_fusion_inputs(
             num_pred=num_pred,
             device=device,
         )
+    if "lidar" in selected:
+        inputs["lidar_batch"] = prepare_lidar_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
     return inputs
 
 
@@ -148,15 +155,50 @@ def prepare_radar_inputs(
     return torch.cat([radar_ra, radar_da], dim=2)
 
 
+def prepare_lidar_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+) -> torch.Tensor:
+    if "lidar" not in batch:
+        raise ValueError("LiDAR input is required but batch does not contain a 'lidar' field.")
+    lidar = batch["lidar"].to(device)
+    if lidar.ndim == 4:
+        lidar = lidar.unsqueeze(2)
+    if lidar.ndim != 5:
+        raise ValueError(f"LiDAR input must have shape [B, T, C, H, W], got {tuple(lidar.shape)}.")
+    lidar = lidar[:, -seq_length:, ...]
+    batch_size, _, channels, height, width = lidar.shape
+    pad_steps = max(num_pred - 1, 0)
+    zeros = torch.zeros(
+        batch_size,
+        pad_steps,
+        channels,
+        height,
+        width,
+        dtype=lidar.dtype,
+        device=device,
+    )
+    return torch.cat([lidar, zeros], dim=1)
+
+
 def forward_model(
     model,
     task: str,
     image_batch: torch.Tensor | None = None,
     radar_batch: torch.Tensor | None = None,
     gps_batch: torch.Tensor | None = None,
+    lidar_batch: torch.Tensor | None = None,
 ):
     if task == "fusion":
-        return model(image_batch=image_batch, radar_batch=radar_batch, gps_batch=gps_batch)
+        return model(
+            image_batch=image_batch,
+            radar_batch=radar_batch,
+            gps_batch=gps_batch,
+            lidar_batch=lidar_batch,
+        )
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch
         if radar_input is None:
@@ -166,6 +208,10 @@ def forward_model(
         if gps_batch is None:
             raise ValueError("GPS task requires gps_batch")
         return model(gps_batch)
+    if task == "lidar":
+        if lidar_batch is None:
+            raise ValueError("LiDAR task requires lidar_batch")
+        return model(lidar_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
     return model(image_batch)

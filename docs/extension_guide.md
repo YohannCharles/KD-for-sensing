@@ -41,9 +41,13 @@ model:
     gru_params: [64, 64, 2]
 ```
 
-Image models receive `[B, T, 1, 224, 224]`. Radar models receive `[B, T, 2, 128, 64]`. GPS models receive GPS-Rel-Polar tensors shaped `[B, T, 3]`. Fusion models receive only the tensors listed in `modalities`, using keyword inputs `image_batch`, `radar_batch`, and `gps_batch`. Models must return `(logits, input_features, output_features)`.
+Image models receive `[B, T, 1, 224, 224]`. Radar models receive `[B, T, 2, 128, 64]`. GPS models receive GPS-Rel-Polar tensors shaped `[B, T, 3]`. LiDAR models receive BEV tensors shaped `[B, T, 3, H, W]`. Fusion models receive only the tensors listed in `modalities`, using keyword inputs `image_batch`, `radar_batch`, `gps_batch`, and `lidar_batch`. Models must return `(logits, input_features, output_features)`.
 
-Built-in model configs default to `gru_params: [64, 64, 2]`. Radar config names remain `radar_teacher` and `radar_student`; the corresponding Python classes are `RadarModalityNet` and `RadarStudentModalityNet`.
+Built-in model configs default to `gru_params: [64, 64, 2]`. Canonical experiment configs use
+`teacher_no_kd`, `student_no_kd`, `logits_kd`, and `rkd`; `experiment.name` and `output.run_name`
+match the config stem. In no-KD configs the trainable main model is `model.student`, so a
+teacher baseline config sets `model.student.type` to the teacher registry name. Radar config names remain
+`radar_teacher` and `radar_student`; the corresponding Python classes are `RadarModalityNet` and `RadarStudentModalityNet`.
 
 Built-in GPS model names follow the same teacher/student pattern as image and radar:
 
@@ -77,6 +81,35 @@ model:
     gru_params: [64, 64, 2]
 ```
 
+Built-in fusion configs cover the canonical slug set generated in fixed order
+`image -> radar -> gps -> lidar`:
+
+```text
+image_radar, image_gps, image_lidar, radar_gps, radar_lidar, gps_lidar
+image_radar_gps, image_radar_lidar, image_gps_lidar, radar_gps_lidar
+image_radar_gps_lidar
+```
+
+Each slug has `<slug>_teacher_no_kd.yaml`, `<slug>_student_no_kd.yaml`,
+`<slug>_logits_kd.yaml`, and `<slug>_rkd.yaml`. Teacher and student `modalities` must stay identical
+within a config. Enable `use_gps`, `gps_feature_mode: relative_polar`, and `gps_input_size: 3` whenever
+the slug includes GPS; enable `use_lidar`, LiDAR BEV fields, and `lidar_channels: 3` whenever it includes
+LiDAR.
+
+LiDAR model names follow the same teacher/student pattern:
+
+```yaml
+model:
+  student:
+    type: lidar_student
+    lidar_channels: 3
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+```
+
+LiDAR BEV inputs are produced from `lidar1..lidarN` sequence CSV columns. The default BEV channels are height, intensity, and density. The built-in reader supports `.mat`, `.npy` point arrays, ASCII PCD, and numeric text/CSV point files. Binary PCD is intentionally not supported by default; convert it to ASCII PCD or `.npy` before training.
+
 ## Add a Dataset
 
 ```python
@@ -91,12 +124,13 @@ class MyDataset(Dataset):
             "radar_ra": radar_ra,
             "radar_da": radar_da,
             "gps": gps,
+            "lidar": lidar,
             "input_beam": input_beam,
             "target_beam": target_beam,
         }
 ```
 
-The engine expects the field names above for enabled modalities. GPS is optional for old image/radar configs, but GPS-only and GPS-enabled fusion configs require `gps`.
+The engine expects the field names above for enabled modalities. GPS and LiDAR are optional for old image/radar configs, but GPS-only, LiDAR-only, and enabled fusion configs require the corresponding fields.
 
 Scenario 9 GPS preprocessing supports one public `gps_feature_mode` value:
 

@@ -1,0 +1,68 @@
+paths:
+  weights_dir: outputs/radar_gps_lidar_teacher_no_kd/checkpoints
+experiment:
+  name: radar_gps_lidar_logits_kd
+  task: fusion
+  seed: 0
+  device: auto
+data:
+  dataset:
+    type: scenario9
+    data_root: dataset/scenario9
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 8
+    num_pred: 3
+    portion: 1.0
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_lidar: true
+    lidar_bev_size: [224, 224]
+    lidar_roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+    lidar_normalize: true
+  dataloader:
+    train_batch_size: 3
+    test_batch_size: 3
+    num_workers: 8
+model:
+  feature_size: 64
+  gru_hidden_size: 64
+  num_classes: 64
+  seq_length_teacher: 8
+  seq_length_student: 8
+  num_pred: 3
+  downsample_ratio: 1
+  teacher:
+    type: fusion_teacher
+    modalities: [radar, gps, lidar]
+    gps_input_size: 3
+    lidar_channels: 3
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+  student:
+    type: fusion_student
+    modalities: [radar, gps, lidar]
+    gps_input_size: 3
+    lidar_channels: 3
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+distillation:
+  type: logits_kd
+  temperature: 3.0
+  alpha: 0.4
+  alpha_warmup_epochs: 0
+  teacher_model_name: best.pth
+training:
+  epochs: 100
+  lr: 0.00075
+  weight_decay: 0.0001
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  min_delta: 0.0001
+output:
+  dir: outputs
+  run_name: radar_gps_lidar_logits_kd

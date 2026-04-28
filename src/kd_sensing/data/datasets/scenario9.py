@@ -9,9 +9,14 @@ from torch.utils.data import Dataset
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.transforms import (
     GPSStandardScaler,
+    DEFAULT_LIDAR_BEV_SIZE,
+    DEFAULT_LIDAR_ROI,
+    LidarBEVNormalizer,
     SUPPORTED_GPS_FEATURE_MODE,
     build_image_transform,
     joined_resource,
+    load_lidar_background_points,
+    load_lidar_bev_sequence,
     load_gps_feature_sequence,
     load_motion_masks,
     load_radar_maps,
@@ -43,6 +48,22 @@ class Scenario9Dataset(Dataset):
         gps_normalize: bool = True,
         gps_smooth_window: int = 3,
         gps_scaler: GPSStandardScaler | None = None,
+        use_lidar: bool = False,
+        lidar_bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+        lidar_roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+        lidar_fov_degrees: list[float] | tuple[float, float] | None = None,
+        lidar_remove_ground: bool = False,
+        lidar_ground_z_threshold: float = 0.1,
+        lidar_background_path: str | None = None,
+        lidar_background_distance_threshold: float = 0.2,
+        lidar_cache_dir: str | None = None,
+        lidar_use_cache: bool = False,
+        lidar_write_cache: bool = False,
+        lidar_normalize: bool = True,
+        lidar_normalizer: LidarBEVNormalizer | None = None,
+        lidar_augment: bool = False,
+        lidar_point_dropout: float = 0.0,
+        lidar_jitter_std: float = 0.0,
         **_: object,
     ):
         self.data_root = resolve_path(data_root)
@@ -63,11 +84,31 @@ class Scenario9Dataset(Dataset):
         self.gps_smooth_window = gps_smooth_window
         self.gps_scaler = gps_scaler
         self._gps_feature_cache: dict[int, np.ndarray] = {}
+        self.use_lidar = use_lidar
+        self.lidar_bev_size = tuple(lidar_bev_size)
+        self.lidar_roi = tuple(lidar_roi)
+        self.lidar_fov_degrees = tuple(lidar_fov_degrees) if lidar_fov_degrees is not None else None
+        self.lidar_remove_ground = lidar_remove_ground
+        self.lidar_ground_z_threshold = lidar_ground_z_threshold
+        self.lidar_background_distance_threshold = lidar_background_distance_threshold
+        self.lidar_use_cache = lidar_use_cache
+        self.lidar_write_cache = lidar_write_cache
+        self.lidar_normalize = lidar_normalize
+        self.lidar_normalizer = lidar_normalizer
+        self.lidar_augment = lidar_augment
+        self.lidar_point_dropout = lidar_point_dropout
+        self.lidar_jitter_std = lidar_jitter_std
+        self.lidar_cache_dir = self._resolve_lidar_cache_dir(lidar_cache_dir)
+        self.lidar_background_points = load_lidar_background_points(self.data_root, lidar_background_path)
+        self._lidar_bev_cache: dict[int, np.ndarray] = {}
         self.transform = build_image_transform(image_size)
         self.samples = create_samples(self.root_csv, portion=portion)
         if self.use_gps:
             self._ensure_gps_columns()
             self._prepare_gps_scaler()
+        if self.use_lidar:
+            self._ensure_lidar_columns()
+            self._prepare_lidar_normalizer()
 
     def __len__(self) -> int:
         return len(self.samples.rgb_paths)
@@ -107,6 +148,14 @@ class Scenario9Dataset(Dataset):
             if self.gps_scaler is not None:
                 gps_features = self.gps_scaler.transform(gps_features)
             sample["gps"] = torch.tensor(gps_features, dtype=torch.float32)
+        if self.use_lidar:
+            lidar_bev = self._lidar_bev_for_index(
+                idx,
+                augment=self.split == "train" and self.lidar_augment,
+            )
+            if self.lidar_normalizer is not None:
+                lidar_bev = self.lidar_normalizer.transform(lidar_bev)
+            sample["lidar"] = torch.tensor(lidar_bev, dtype=torch.float32)
         return sample
 
     def _ensure_gps_columns(self) -> None:
@@ -154,3 +203,60 @@ class Scenario9Dataset(Dataset):
                 smooth_window=self.gps_smooth_window,
             )
         return self._gps_feature_cache[idx]
+
+    def _resolve_lidar_cache_dir(self, lidar_cache_dir: str | None) -> Path | None:
+        if not lidar_cache_dir:
+            return None
+        path = Path(lidar_cache_dir).expanduser()
+        if path.is_absolute():
+            return path
+        return self.data_root / path
+
+    def _ensure_lidar_columns(self) -> None:
+        if self.samples.lidar_paths is None:
+            raise ValueError(
+                f"LiDAR is enabled but {self.root_csv} does not contain lidar1..lidarN columns. "
+                "Regenerate sequence CSVs with include_lidar: true."
+            )
+
+    def _prepare_lidar_normalizer(self) -> None:
+        if not self.lidar_normalize:
+            self.lidar_normalizer = None
+            return
+        if self.lidar_normalizer is not None:
+            return
+        if self.split != "train":
+            raise ValueError(
+                "LiDAR normalization for non-train split requires a train-fitted lidar_normalizer. "
+                "Use build_dataloaders/evaluate so the train normalizer can be reused."
+            )
+        all_bev = [self._lidar_bev_for_index(idx, augment=False) for idx in range(len(self))]
+        stacked = np.concatenate(all_bev, axis=0)
+        self.lidar_normalizer = LidarBEVNormalizer().fit(stacked)
+
+    def _lidar_bev_for_index(self, idx: int, *, augment: bool) -> np.ndarray:
+        if not augment and idx in self._lidar_bev_cache:
+            return self._lidar_bev_cache[idx]
+        if self.samples.lidar_paths is None:
+            raise ValueError("LiDAR paths are unavailable for this dataset.")
+        bev = load_lidar_bev_sequence(
+            self.data_root,
+            self.samples.lidar_paths[idx],
+            seq_len=self.seq_len,
+            bev_size=self.lidar_bev_size,
+            roi=self.lidar_roi,
+            fov_degrees=self.lidar_fov_degrees,
+            remove_ground=self.lidar_remove_ground,
+            ground_z_threshold=self.lidar_ground_z_threshold,
+            background_points=self.lidar_background_points,
+            background_distance_threshold=self.lidar_background_distance_threshold,
+            cache_dir=self.lidar_cache_dir,
+            use_cache=self.lidar_use_cache,
+            write_cache=self.lidar_write_cache and not augment,
+            augment=augment,
+            point_dropout=self.lidar_point_dropout,
+            jitter_std=self.lidar_jitter_std,
+        )
+        if not augment:
+            self._lidar_bev_cache[idx] = bev
+        return bev

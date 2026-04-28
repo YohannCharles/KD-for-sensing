@@ -1,5 +1,5 @@
 paths:
-  weights_dir: outputs/gps_no_kd/checkpoints
+  weights_dir: outputs/gps_teacher_no_kd/checkpoints
 experiment:
   name: gps_logits_kd
   task: gps

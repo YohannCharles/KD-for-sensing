@@ -23,6 +23,11 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     if _evaluation_uses_gps(cfg):
         train_dataset = build_dataset(cfg, "train")
         dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
+        if getattr(train_dataset, "use_lidar", False):
+            dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
+    elif _evaluation_uses_lidar(cfg):
+        train_dataset = build_dataset(cfg, "train")
+        dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     dataset = build_dataset(cfg, "test", **dataset_kwargs)
     loader_cfg = cfg["data"]["dataloader"]
     dataloader = DataLoader(
@@ -58,5 +63,21 @@ def _evaluation_uses_gps(cfg: dict) -> bool:
     for role in ("student", "teacher"):
         modalities = cfg.get("model", {}).get(role, {}).get("modalities")
         if modalities and "gps" in modalities:
+            return True
+    return False
+
+
+def _evaluation_uses_lidar(cfg: dict) -> bool:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("use_lidar", False):
+        return True
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "lidar":
+        return True
+    if task != "fusion":
+        return False
+    for role in ("student", "teacher"):
+        modalities = cfg.get("model", {}).get(role, {}).get("modalities")
+        if modalities and "lidar" in modalities:
             return True
     return False

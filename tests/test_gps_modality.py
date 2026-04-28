@@ -12,17 +12,34 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
 from kd_sensing.data.transforms import (  # noqa: E402
     GPSStandardScaler,
     build_gps_features,
     read_gps_latlon,
 )
+from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
 from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
+
+
+GPS_CANONICAL_FUSION_CONFIGS = [
+    f"configs/fusion/{slug}_{mode}.yaml"
+    for slug in [
+        "image_gps",
+        "radar_gps",
+        "gps_lidar",
+        "image_radar_gps",
+        "image_gps_lidar",
+        "radar_gps_lidar",
+        "image_radar_gps_lidar",
+    ]
+    for mode in ["teacher_no_kd", "student_no_kd", "logits_kd", "rkd"]
+]
 
 
 def test_read_gps_latlon_supports_scientific_notation(tmp_path: Path):
@@ -163,11 +180,34 @@ def test_fusion_modalities_default_and_gps_forward():
     assert output_features.shape == (2, 10, 64)
 
 
+def test_gps_fusion_batch_path_does_not_require_disabled_modalities():
+    batch = {"gps": torch.randn(2, 8, 3)}
+
+    fusion_inputs = prepare_fusion_inputs(
+        batch,
+        seq_length=8,
+        num_pred=3,
+        device=torch.device("cpu"),
+        modalities=["gps"],
+    )
+
+    assert sorted(fusion_inputs) == ["gps_batch"]
+    assert fusion_inputs["gps_batch"].shape == (2, 10, 3)
+    with pytest.raises(ValueError, match="GPS input is required"):
+        prepare_fusion_inputs(
+            {},
+            seq_length=8,
+            num_pred=3,
+            device=torch.device("cpu"),
+            modalities=["gps"],
+        )
+
+
 def test_fusion_modalities_validate_invalid_and_missing_inputs():
     with pytest.raises(ValueError, match="at least one"):
         StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
     with pytest.raises(ValueError, match="Unknown fusion modalities"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["lidar"])
+        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["thermal"])
     with pytest.raises(ValueError, match="duplicates"):
         StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
 
@@ -180,6 +220,23 @@ def test_fusion_modalities_validate_invalid_and_missing_inputs():
     )
     with pytest.raises(ValueError, match="requires 'gps' input"):
         model()
+
+
+@pytest.mark.parametrize("config_path", GPS_CANONICAL_FUSION_CONFIGS)
+def test_gps_canonical_fusion_configs_build_and_use_relative_polar(config_path: str):
+    cfg = load_config(ROOT / config_path)
+    teacher = MODELS.build(cfg["model"]["teacher"])
+    student = MODELS.build(cfg["model"]["student"])
+
+    assert cfg["experiment"]["task"] == "fusion"
+    assert "gps" in cfg["model"]["teacher"]["modalities"]
+    assert cfg["model"]["teacher"]["modalities"] == cfg["model"]["student"]["modalities"]
+    assert cfg["data"]["dataset"]["use_gps"] is True
+    assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
+    assert cfg["model"]["teacher"]["gps_input_size"] == 3
+    assert cfg["model"]["student"]["gps_input_size"] == 3
+    assert isinstance(teacher, FusionModalityNet)
+    assert isinstance(student, (FusionModalityNet, StudentModalityNet))
 
 
 def _write_gps_files(root: Path, prefix: str, lat: float, lon: float) -> tuple[list[str], list[str]]:

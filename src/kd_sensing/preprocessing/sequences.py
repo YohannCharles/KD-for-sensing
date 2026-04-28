@@ -20,6 +20,9 @@ def generate_sequence_data(
     gps_column: str = "unit2_loc_cal",
     gps_fallback_column: str | None = "unit2_loc",
     bs_gps_column: str = "unit1_loc",
+    include_lidar: bool = False,
+    lidar_column: str = "unit1_lidar",
+    lidar_fallback_column: str | None = "unit1_lidar_SCR",
 ) -> tuple[Path, Path]:
     csv_path = resolve_path(csv_path)
     data_root = resolve_path(data_root)
@@ -28,6 +31,7 @@ def generate_sequence_data(
     all_seq_split = []
     base_columns = ["unit1_rgb", "unit1_radar", "unit1_pwr_60ghz", "seq_index"]
     gps_source_column = gps_column
+    lidar_source_column = lidar_column
     if include_gps:
         if gps_source_column not in all_data.columns:
             if gps_fallback_column and gps_fallback_column in all_data.columns:
@@ -40,6 +44,16 @@ def generate_sequence_data(
         if bs_gps_column not in all_data.columns:
             raise ValueError(f"BS GPS column '{bs_gps_column}' not found in {csv_path}.")
         base_columns.extend([gps_source_column, bs_gps_column])
+    if include_lidar:
+        if lidar_source_column not in all_data.columns:
+            if lidar_fallback_column and lidar_fallback_column in all_data.columns:
+                lidar_source_column = lidar_fallback_column
+            else:
+                raise ValueError(
+                    f"LiDAR column '{lidar_column}' not found in {csv_path}; "
+                    f"fallback '{lidar_fallback_column}' is also unavailable."
+                )
+        base_columns.append(lidar_source_column)
     for seq_idx in all_seq_idx:
         tmp = all_data[all_data["seq_index"] == seq_idx]
         all_seq_split.append(tmp[base_columns])
@@ -51,16 +65,18 @@ def generate_sequence_data(
             radar = seq["unit1_radar"][start : start + in_len].tolist()
             gps = seq[gps_source_column][start : start + in_len].tolist() if include_gps else []
             bs_gps = seq[bs_gps_column][start : start + in_len].tolist() if include_gps else []
+            lidar = seq[lidar_source_column][start : start + in_len].tolist() if include_lidar else []
             in_beam = seq["unit1_pwr_60ghz"][start : start + in_len].tolist()
             out_beam = seq["unit1_pwr_60ghz"][start + in_len : start + in_len + out_len].tolist()
             seq_idx = seq["seq_index"][0:1].tolist()
-            all_seqs.append(image + radar + gps + bs_gps + in_beam + out_beam + seq_idx)
+            all_seqs.append(image + radar + gps + bs_gps + lidar + in_beam + out_beam + seq_idx)
             start += 1
     col_names = (
         [f"camera{i}" for i in range(1, in_len + 1)]
         + [f"radar{i}" for i in range(1, in_len + 1)]
         + ([f"gps{i}" for i in range(1, in_len + 1)] if include_gps else [])
         + ([f"bs_gps{i}" for i in range(1, in_len + 1)] if include_gps else [])
+        + ([f"lidar{i}" for i in range(1, in_len + 1)] if include_lidar else [])
         + [f"beam{i}" for i in range(1, in_len + 1)]
         + [f"future_beam{i}" for i in range(1, out_len + 1)]
         + ["seq_index"]
