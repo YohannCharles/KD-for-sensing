@@ -1,8 +1,5 @@
-# radar-student-model Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-radar-student. Update Purpose after archive.
-## Requirements
 ### Requirement: RadarStudent 模型结构
 系统 MUST 提供已注册的 `radar_student` 模型，用于 radar-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarStudentModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。
 
@@ -27,18 +24,6 @@ TBD - created by archiving change add-radar-student. Update Purpose after archiv
 - **THEN** 系统 MUST 暴露 `RadarStudentModalityNet`
 - **AND** 仓库内代码、测试和主文档 MUST 不再引用旧 radar student 类名
 
-### Requirement: RadarStudent 轻量特征提取
-RadarStudent MUST 使用轻量雷达特征提取路径，避免复用 RadarTeacher 的固定 flatten 全连接 embedding 作为主干。轻量特征提取 MUST 使用 depthwise separable convolution block 或等价轻量卷积结构，并通过 adaptive pooling 生成固定长度帧特征。
-
-#### Scenario: 不依赖固定 flatten 尺寸
-- **WHEN** RadarStudent 对每个雷达时隙提取空间特征
-- **THEN** 系统 MUST 使用 adaptive pooling 将空间特征聚合为固定长度向量
-- **AND** 模型 MUST 不依赖 `64 * 8 * 4` 这类 teacher flatten 输入尺寸
-
-#### Scenario: 输出 feature size 对齐
-- **WHEN** `feature_size` 配置为 64
-- **THEN** RadarStudent 的投影层 MUST 为每个时隙输出 64 维输入特征
-
 ### Requirement: RadarStudent 蒸馏兼容
 `RadarStudentModalityNet` MUST 与现有 radar-only 训练、验证、评估和蒸馏流程兼容。系统 MUST 能将 `RadarModalityNet` 作为 frozen teacher，将 `RadarStudentModalityNet` 作为可训练 student，并复用 logits KD 与 RKD distiller。默认 radar student 配置 MUST 使用 `gru_params: [64, 64, 2]`。
 
@@ -53,4 +38,3 @@ RadarStudent MUST 使用轻量雷达特征提取路径，避免复用 RadarTeach
 - **THEN** `RadarStudentModalityNet` MUST 返回可用于 RKD 的 output_features
 - **AND** 默认配置 MUST 保持 teacher/student output hidden size 一致
 - **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 2]`
-

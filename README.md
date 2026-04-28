@@ -69,10 +69,11 @@ python scripts/train.py --config configs/gps/logits_kd.yaml
 python scripts/train.py --config configs/gps/rkd.yaml
 ```
 
-这些配置复现 `All_models/*Std*.pth` 时会使用轻量 student 架构：image-only student 为
-`image_student`，image+radar student 为 `fusion_student`。teacher 仍分别使用
-`image_teacher` 和 `fusion_teacher`。上游旧训练脚本中 teacher-as-student 的实例化残留
-不作为本项目配置驱动流程的语义依据。
+默认配置统一使用 `gru_params: [64, 64, 2]`，即所有内置单模态和多模态
+teacher/student 都使用 2 层 GRU。仓库中随附的 `All_models/*Std*.pth` 和部分
+`ImageTeacher*.pth` 是旧的一层 GRU 历史权重，不能作为当前默认配置的严格兼容权重；
+按当前配置复现实验时需要重新训练或提供对应二层 GRU checkpoint。上游旧训练脚本中
+teacher-as-student 的实例化残留不作为本项目配置驱动流程的语义依据。
 
 Radar-only 配置中，`configs/radar/no_kd.yaml` 是 RadarTeacher baseline：
 不加载 teacher，只用任务 loss 直接训练 `radar_teacher` 主模型，并作为 radar KD 的默认
@@ -80,6 +81,9 @@ teacher checkpoint 来源。`configs/radar/student_no_kd.yaml` 直接训练轻�
 `radar_student`，用于对比无蒸馏的小模型表现。`logits_kd` 和 `rkd` 默认加载冻结的
 `radar_teacher`，分别用 temperature soft logits KL loss 和关系蒸馏 loss 训练可训练的
 `radar_student`。
+配置注册名保持 `radar_teacher` 和 `radar_student`；对应 Python 类名分别为
+`RadarModalityNet` 和 `RadarStudentModalityNet`，与 image/GPS 的 `*ModalityNet`
+命名风格一致。
 当前仓库没有内置 `All_models/RadarTeacher*.pth`，因此 radar KD 配置默认读取先运行
 `configs/radar/no_kd.yaml` 生成的 `outputs/radar_no_kd/checkpoints/best.pth`。如果使用自定义
 RadarTeacher 权重，可以覆盖路径：
@@ -138,11 +142,11 @@ TensorBoard 标量包含基础训练曲线和验证平均指标：
 ## 评估
 
 ```bash
-python scripts/evaluate.py --config configs/image/no_kd.yaml --weights All_models/ImageTeacher_noKD.pth
+python scripts/evaluate.py --config configs/image/no_kd.yaml --weights outputs/image_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/radar/no_kd.yaml --weights outputs/radar_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/radar_student_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/gps/no_kd.yaml --weights outputs/gps_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models/BothStd_RKD.pth
+python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights outputs/fusion_rkd/checkpoints/best.pth
 ```
 
 评估会将指标和 `test_report.json` 写入配置的输出目录。

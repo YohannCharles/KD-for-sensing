@@ -45,13 +45,13 @@ DEFAULT_CONFIG = {
             "type": "image_teacher",
             "feature_size": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 1],
+            "gru_params": [64, 64, 2],
         },
         "student": {
             "type": "image_student",
             "feature_size": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 1],
+            "gru_params": [64, 64, 2],
         },
     },
     "loss": {

@@ -35,7 +35,7 @@ model:
     modalities: [image, radar]
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 1]
+    gru_params: [64, 64, 2]
 distillation:
   type: no_kd
   teacher_model_name: null

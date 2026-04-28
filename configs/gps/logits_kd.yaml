@@ -40,7 +40,7 @@ model:
     gps_input_size: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 1]
+    gru_params: [64, 64, 2]
 distillation:
   type: logits_kd
   temperature: 3.0

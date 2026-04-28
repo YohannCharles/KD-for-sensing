@@ -109,7 +109,7 @@ def test_gps_teacher_and_student_forward_contracts():
                 "gps_input_size": 3,
                 "feature_size": 64,
                 "num_classes": 64,
-                "gru_params": [64, 64, 1],
+                "gru_params": [64, 64, 2],
             }
         )
         assert isinstance(model, expected_cls)
@@ -145,13 +145,13 @@ def test_gps_model_rejects_invalid_params():
 
 
 def test_fusion_modalities_default_and_gps_forward():
-    default_model = StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 1])
+    default_model = StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
     assert default_model.modalities == ("image", "radar")
 
     gps_model = StudentModalityNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 1],
+        gru_params=[64, 64, 2],
         modalities=["gps"],
         gps_input_size=3,
     )
@@ -165,11 +165,11 @@ def test_fusion_modalities_default_and_gps_forward():
 
 def test_fusion_modalities_validate_invalid_and_missing_inputs():
     with pytest.raises(ValueError, match="at least one"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 1], modalities=[])
+        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
     with pytest.raises(ValueError, match="Unknown fusion modalities"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 1], modalities=["lidar"])
+        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["lidar"])
     with pytest.raises(ValueError, match="duplicates"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 1], modalities=["gps", "gps"])
+        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
 
     model = FusionModalityNet(
         feature_size=64,

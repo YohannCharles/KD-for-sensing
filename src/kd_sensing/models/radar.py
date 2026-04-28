@@ -48,7 +48,7 @@ class RadarFeatureExtractor(nn.Module):
 
 
 @MODELS.register("radar_student")
-class RadarStudentNet(nn.Module):
+class RadarStudentModalityNet(nn.Module):
     def __init__(
         self,
         feature_size: int,
@@ -57,7 +57,7 @@ class RadarStudentNet(nn.Module):
         radar_channels: int = 2,
     ):
         super().__init__()
-        self.name = "RadarStudentNet"
+        self.name = "RadarStudentModalityNet"
         if len(gru_params) != 3:
             raise ValueError("gru_params must contain [input_size, hidden_size, num_layers].")
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
@@ -130,7 +130,7 @@ class RadarStudentNet(nn.Module):
 
 
 @MODELS.register("radar_teacher")
-class RadarTeacherNet(nn.Module):
+class RadarModalityNet(nn.Module):
     def __init__(
         self,
         feature_size: int,
@@ -140,7 +140,7 @@ class RadarTeacherNet(nn.Module):
         num_heads: int = 8,
     ):
         super().__init__()
-        self.name = "RadarTeacherNet"
+        self.name = "RadarModalityNet"
         if len(gru_params) != 3:
             raise ValueError("gru_params must contain [input_size, hidden_size, num_layers].")
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params

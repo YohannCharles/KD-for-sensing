@@ -15,7 +15,7 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.models.fusion import StudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageStudentModalityNet  # noqa: E402
-from kd_sensing.models.radar import RadarStudentNet, RadarTeacherNet  # noqa: E402
+from kd_sensing.models.radar import RadarModalityNet, RadarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -69,7 +69,7 @@ GPS_FUSION_CONFIGS = [
     "configs/fusion/all_modalities_no_kd.yaml",
 ]
 
-STUDENT_WEIGHTS = [
+LEGACY_STUDENT_WEIGHTS = [
     ("configs/image/no_kd.yaml", "All_models/ImageStd_noKD.pth"),
     ("configs/image/logits_kd.yaml", "All_models/ImageStd_KD.pth"),
     ("configs/image/rkd.yaml", "All_models/ImageStd_RKD.pth"),
@@ -110,7 +110,9 @@ def test_image_configs_build_lightweight_student(config_path: str):
 
     assert cfg["model"]["student"]["type"] == "image_student"
     assert isinstance(model, ImageStudentModalityNet)
-    assert model.GRU.num_layers == 1
+    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
+    assert model.GRU.num_layers == 2
 
 
 @pytest.mark.parametrize("config_path", FUSION_CONFIGS)
@@ -120,11 +122,11 @@ def test_fusion_configs_build_lightweight_student(config_path: str):
     assert cfg["model"]["teacher"]["type"] == "fusion_teacher"
     assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
     assert cfg["model"]["student"]["type"] == "fusion_student"
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
     assert cfg["model"]["student"]["modalities"] == ["image", "radar"]
     assert isinstance(model, StudentModalityNet)
     assert model.modalities == ("image", "radar")
-    assert model.GRU.num_layers == 1
+    assert model.GRU.num_layers == 2
 
 
 def test_radar_teacher_baseline_config_builds_teacher_model():
@@ -134,7 +136,7 @@ def test_radar_teacher_baseline_config_builds_teacher_model():
     assert cfg["experiment"]["task"] == "radar"
     assert cfg["model"]["teacher"]["type"] == "radar_teacher"
     assert cfg["model"]["student"]["type"] == "radar_teacher"
-    assert isinstance(model, RadarTeacherNet)
+    assert isinstance(model, RadarModalityNet)
     assert model.GRU.num_layers == 2
 
 
@@ -145,9 +147,10 @@ def test_radar_student_configs_build_lightweight_student(config_path: str):
     assert cfg["experiment"]["task"] == "radar"
     assert cfg["model"]["teacher"]["type"] == "radar_teacher"
     assert cfg["model"]["student"]["type"] == "radar_student"
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
-    assert isinstance(model, RadarStudentNet)
-    assert model.GRU.num_layers == 1
+    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
+    assert isinstance(model, RadarStudentModalityNet)
+    assert model.GRU.num_layers == 2
 
 
 @pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
@@ -155,12 +158,12 @@ def test_radar_kd_configs_build_teacher_and_student(config_path: str, kd_type: s
     teacher, student, cfg = _build_teacher_and_student(config_path)
 
     assert cfg["distillation"]["type"] == kd_type
-    assert isinstance(teacher, RadarTeacherNet)
-    assert isinstance(student, RadarStudentNet)
+    assert isinstance(teacher, RadarModalityNet)
+    assert isinstance(student, RadarStudentModalityNet)
     assert cfg["model"]["teacher"]["type"] == "radar_teacher"
     assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
     assert cfg["model"]["student"]["type"] == "radar_student"
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
     assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
 
 
@@ -179,11 +182,12 @@ def test_gps_student_configs_build_lightweight_student(config_path: str):
     assert cfg["data"]["dataset"]["use_gps"] is True
     assert cfg["model"]["teacher"]["type"] == "gps_teacher"
     assert cfg["model"]["student"]["type"] == "gps_student"
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
     assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
     assert cfg["model"]["student"]["gps_input_size"] == 3
     assert isinstance(model, GpsStudentModalityNet)
-    assert model.GRU.num_layers == 1
+    assert model.GRU.num_layers == 2
 
 
 @pytest.mark.parametrize(("config_path", "kd_type"), GPS_KD_CONFIGS)
@@ -194,7 +198,7 @@ def test_gps_kd_configs_build_teacher_and_student(config_path: str, kd_type: str
     assert isinstance(teacher, GpsModalityNet)
     assert isinstance(student, GpsStudentModalityNet)
     assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
     assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
 
 
@@ -240,7 +244,7 @@ def test_radar_student_no_kd_config_does_not_load_teacher():
     assert cfg["distillation"]["type"] == "no_kd"
     assert cfg["distillation"]["teacher_model_name"] is None
     assert cfg["model"]["student"]["type"] == "radar_student"
-    assert isinstance(model, RadarStudentNet)
+    assert isinstance(model, RadarStudentModalityNet)
 
 
 @pytest.mark.parametrize(("config_path", "kd_type"), RADAR_KD_CONFIGS)
@@ -290,7 +294,7 @@ def test_radar_student_forward_contract():
             "type": "radar_student",
             "feature_size": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 1],
+            "gru_params": [64, 64, 2],
             "radar_channels": 2,
         }
     )
@@ -344,8 +348,8 @@ def test_radar_student_rejects_input_size_mismatch():
         )
 
 
-@pytest.mark.parametrize(("config_path", "weight_path"), STUDENT_WEIGHTS)
-def test_student_configs_match_packaged_student_weights(config_path: str, weight_path: str):
+@pytest.mark.parametrize(("config_path", "weight_path"), LEGACY_STUDENT_WEIGHTS)
+def test_packaged_student_weights_are_legacy_one_layer(config_path: str, weight_path: str):
     model, _ = _build_student(config_path)
     state = _load_state_dict(weight_path)
     model_state = model.state_dict()
@@ -358,6 +362,12 @@ def test_student_configs_match_packaged_student_weights(config_path: str, weight
     )
     unexpected_non_stats = sorted(key for key in state if key not in model_state and not _is_stats_key(key))
 
-    assert missing == []
+    assert {key for key in missing if key.startswith("GRU.")} == {
+        "GRU.bias_hh_l1",
+        "GRU.bias_ih_l1",
+        "GRU.weight_hh_l1",
+        "GRU.weight_ih_l1",
+    }
+    assert [key for key in missing if not key.startswith("GRU.")] == []
     assert shape_mismatches == []
     assert unexpected_non_stats == []

@@ -38,10 +38,12 @@ model:
     type: my_image_student
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 1]
+    gru_params: [64, 64, 2]
 ```
 
 Image models receive `[B, T, 1, 224, 224]`. Radar models receive `[B, T, 2, 128, 64]`. GPS models receive GPS-Rel-Polar tensors shaped `[B, T, 3]`. Fusion models receive only the tensors listed in `modalities`, using keyword inputs `image_batch`, `radar_batch`, and `gps_batch`. Models must return `(logits, input_features, output_features)`.
+
+Built-in model configs default to `gru_params: [64, 64, 2]`. Radar config names remain `radar_teacher` and `radar_student`; the corresponding Python classes are `RadarModalityNet` and `RadarStudentModalityNet`.
 
 Built-in GPS model names follow the same teacher/student pattern as image and radar:
 
@@ -52,7 +54,7 @@ model:
     gps_input_size: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 1]
+    gru_params: [64, 64, 2]
 ```
 
 Fusion modality selection is configured on both teacher and student:
@@ -72,7 +74,7 @@ model:
     gps_input_size: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 1]
+    gru_params: [64, 64, 2]
 ```
 
 ## Add a Dataset
