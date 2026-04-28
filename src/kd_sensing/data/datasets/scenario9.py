@@ -24,9 +24,13 @@ from kd_sensing.data.transforms import (
     load_gps_feature_sequence,
     load_motion_masks,
     load_radar_maps,
+    parameterized_lidar_cache_dir,
 )
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
+
+
+VALID_MODALITIES = ("image", "radar", "gps", "lidar")
 
 
 @DATASETS.register("scenario9")
@@ -39,8 +43,8 @@ class Scenario9Dataset(Dataset):
         csv_name: str | None = None,
         root_csv: str | None = None,
         split: str = "train",
-        train_csv_name: str = "train_seqs_RA.csv",
-        test_csv_name: str = "test_seqs_RA.csv",
+        train_csv_name: str = "train_seqs_RA_GPS_LIDAR.csv",
+        test_csv_name: str = "test_seqs_RA_GPS_LIDAR.csv",
         seq_len: int = 8,
         num_pred: int = 3,
         image_size: list[int] | tuple[int, int] = (224, 224),
@@ -70,6 +74,7 @@ class Scenario9Dataset(Dataset):
         lidar_augment: bool = False,
         lidar_point_dropout: float = 0.0,
         lidar_jitter_std: float = 0.0,
+        enabled_modalities: list[str] | tuple[str, ...] | None = None,
         **_: object,
     ):
         self.data_root = resolve_path(data_root)
@@ -84,19 +89,21 @@ class Scenario9Dataset(Dataset):
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
-        self.use_gps = use_gps
+        self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar)
+        self.use_gps = "gps" in self.enabled_modalities
         self.gps_feature_mode = gps_feature_mode
         self.gps_normalize = gps_normalize
         self.gps_smooth_window = gps_smooth_window
         self.gps_scaler = gps_scaler
         self._gps_feature_cache: dict[int, np.ndarray] = {}
-        self.use_lidar = use_lidar
+        self.use_lidar = "lidar" in self.enabled_modalities
         self.lidar_bev_size = tuple(lidar_bev_size)
         self.lidar_roi = tuple(lidar_roi)
         self.lidar_fov_degrees = tuple(lidar_fov_degrees) if lidar_fov_degrees is not None else None
         self.lidar_remove_ground = lidar_remove_ground
         self.lidar_ground_z_threshold = lidar_ground_z_threshold
         self.lidar_background_distance_threshold = lidar_background_distance_threshold
+        self.lidar_background_path = lidar_background_path
         self.lidar_use_cache = lidar_use_cache
         self.lidar_write_cache = lidar_write_cache
         self.lidar_normalization = self._resolve_lidar_normalization(lidar_normalize, lidar_normalization)
@@ -114,8 +121,14 @@ class Scenario9Dataset(Dataset):
         self.lidar_cache_dir = self._resolve_lidar_cache_dir(lidar_cache_dir)
         self.lidar_background_points = load_lidar_background_points(self.data_root, lidar_background_path)
         self._lidar_bev_cache: OrderedDict[int, np.ndarray] = OrderedDict()
-        self.transform = build_image_transform(image_size)
-        self.samples = create_samples(self.root_csv, portion=portion)
+        self.transform = build_image_transform(image_size) if "image" in self.enabled_modalities else None
+        self.samples = create_samples(
+            self.root_csv,
+            portion=portion,
+            enabled_modalities=self.enabled_modalities,
+            seq_len=seq_len,
+            num_pred=num_pred,
+        )
         if self.use_gps:
             self._ensure_gps_columns()
             self._prepare_gps_scaler()
@@ -124,22 +137,11 @@ class Scenario9Dataset(Dataset):
             self._prepare_lidar_normalizer_from_config()
 
     def __len__(self) -> int:
-        return len(self.samples.rgb_paths)
+        return len(self.samples.input_beam_paths)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        samples_rgb = self.samples.rgb_paths[idx][-self.seq_len :]
-        samples_radar = self.samples.radar_paths[idx][-self.seq_len :]
         beam_paths = self.samples.input_beam_paths[idx][-self.seq_len :]
         future_beam_paths = self.samples.future_beam_paths[idx][: self.num_pred]
-
-        image = load_motion_masks(self.data_root, samples_rgb, self.seq_len, self.transform)
-        radar_ra, radar_da = load_radar_maps(
-            self.data_root,
-            samples_radar,
-            self.seq_len,
-            self.fft_tuple,
-            self.clipped_range,
-        )
 
         input_beam = [
             int(np.argmax(np.loadtxt(joined_resource(self.data_root, beam_path))))
@@ -150,12 +152,25 @@ class Scenario9Dataset(Dataset):
             for beam_path in future_beam_paths
         ]
         sample = {
-            "image": image,
-            "radar_ra": radar_ra,
-            "radar_da": radar_da,
             "input_beam": torch.tensor(input_beam, dtype=torch.int64),
-            "target_beam": torch.tensor(target_beam, dtype=torch.int64).squeeze(),
+            "target_beam": torch.tensor(target_beam, dtype=torch.int64),
         }
+        if "image" in self.enabled_modalities:
+            if self.transform is None:
+                raise ValueError("Image modality is enabled but image transform is unavailable.")
+            samples_rgb = self.samples.rgb_paths[idx][-self.seq_len :]
+            sample["image"] = load_motion_masks(self.data_root, samples_rgb, self.seq_len, self.transform)
+        if "radar" in self.enabled_modalities:
+            samples_radar = self.samples.radar_paths[idx][-self.seq_len :]
+            radar_ra, radar_da = load_radar_maps(
+                self.data_root,
+                samples_radar,
+                self.seq_len,
+                self.fft_tuple,
+                self.clipped_range,
+            )
+            sample["radar_ra"] = radar_ra
+            sample["radar_da"] = radar_da
         if self.use_gps:
             gps_features = self._gps_features_for_index(idx)
             if self.gps_scaler is not None:
@@ -176,6 +191,29 @@ class Scenario9Dataset(Dataset):
                 lidar_bev = self.lidar_normalizer.transform(lidar_bev)
             sample["lidar"] = torch.tensor(lidar_bev, dtype=torch.float32)
         return sample
+
+    def _resolve_enabled_modalities(
+        self,
+        enabled_modalities: list[str] | tuple[str, ...] | None,
+        use_gps: bool,
+        use_lidar: bool,
+    ) -> tuple[str, ...]:
+        if enabled_modalities is None:
+            selected = ["image", "radar"]
+            if use_gps:
+                selected.append("gps")
+            if use_lidar:
+                selected.append("lidar")
+        else:
+            selected = [str(modality) for modality in enabled_modalities]
+        if not selected:
+            raise ValueError("Scenario9Dataset requires at least one enabled modality.")
+        invalid = [name for name in selected if name not in VALID_MODALITIES]
+        if invalid:
+            raise ValueError(f"Unknown Scenario 9 modalities: {invalid}.")
+        if len(set(selected)) != len(selected):
+            raise ValueError(f"Scenario 9 modalities must not contain duplicates: {selected}.")
+        return tuple(name for name in VALID_MODALITIES if name in set(selected))
 
     def _ensure_gps_columns(self) -> None:
         if self.samples.gps_paths is None:
@@ -228,8 +266,19 @@ class Scenario9Dataset(Dataset):
             return None
         path = Path(lidar_cache_dir).expanduser()
         if path.is_absolute():
-            return path
-        return self.data_root / path
+            base = path
+        else:
+            base = self.data_root / path
+        return parameterized_lidar_cache_dir(
+            base,
+            bev_size=self.lidar_bev_size,
+            roi=self.lidar_roi,
+            fov_degrees=self.lidar_fov_degrees,
+            remove_ground=self.lidar_remove_ground,
+            ground_z_threshold=self.lidar_ground_z_threshold,
+            background_path=self.lidar_background_path,
+            background_distance_threshold=self.lidar_background_distance_threshold,
+        )
 
     def _resolve_lidar_stats_path(self, stats_path: str | None) -> Path | None:
         if not stats_path:

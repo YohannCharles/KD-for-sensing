@@ -40,6 +40,8 @@ def prepare_image_inputs(
     num_pred: int,
     device: torch.device,
 ) -> torch.Tensor:
+    if "image" not in batch:
+        raise ValueError("Image input is required but batch does not contain an 'image' field.")
     image = batch["image"].to(device)
     if image.ndim == 4:
         image = image.unsqueeze(2)
@@ -130,6 +132,8 @@ def prepare_radar_inputs(
     num_pred: int,
     device: torch.device,
 ) -> torch.Tensor:
+    if "radar_ra" not in batch or "radar_da" not in batch:
+        raise ValueError("Radar input is required but batch does not contain 'radar_ra' and 'radar_da' fields.")
     radar_ra = batch["radar_ra"].to(device)
     radar_da = batch["radar_da"].to(device)
     if radar_ra.ndim == 4:

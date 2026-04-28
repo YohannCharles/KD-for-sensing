@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import datetime as dt
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ from kd_sensing.engine.builders import (
     build_optimizer,
     build_scheduler,
     build_task_criterion,
+    dataloaders_run_metadata,
     resolve_weight_path,
 )
 from kd_sensing.engine.validator import validate
@@ -43,9 +45,61 @@ def create_run_dir(cfg: dict) -> Path:
         timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"{cfg.get('experiment', {}).get('name', 'run')}_{timestamp}"
     path = base / run_name
+    if _should_make_unique_run_dir(cfg, path):
+        path = _unique_run_path(path)
     path.mkdir(parents=True, exist_ok=True)
     (path / "checkpoints").mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _should_make_unique_run_dir(cfg: dict, path: Path) -> bool:
+    if not path.exists():
+        return False
+    output_cfg = cfg.get("output", {})
+    if output_cfg.get("overwrite", False):
+        return False
+    if cfg.get("training", {}).get("resume") is True:
+        return False
+    return True
+
+
+def _unique_run_path(path: Path) -> Path:
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = path.with_name(f"{path.name}_{timestamp}")
+    if not candidate.exists():
+        return candidate
+    index = 1
+    while True:
+        indexed = path.with_name(f"{path.name}_{timestamp}_{index}")
+        if not indexed.exists():
+            return indexed
+        index += 1
+
+
+def create_eval_run_dir(cfg: dict, output_dir: str | None = None) -> Path:
+    if output_dir:
+        path = resolve_output_dir(output_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    base = resolve_output_dir(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
+    run_name = cfg.get("output", {}).get("evaluation_run_name") or cfg.get("output", {}).get("run_name")
+    if not run_name:
+        run_name = cfg.get("experiment", {}).get("name", "run")
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = base / f"evaluation_{run_name}_{timestamp}"
+    path = _unique_run_path(path) if path.exists() else path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def final_config_with_runtime(cfg: dict, *, run_dir: Path, split_metadata: dict | None = None) -> dict:
+    final_cfg = deepcopy(cfg)
+    runtime = final_cfg.setdefault("runtime", {})
+    runtime["run_dir"] = str(run_dir)
+    runtime["output_overwrite"] = bool(cfg.get("output", {}).get("overwrite", False))
+    if split_metadata is not None:
+        runtime["splits"] = split_metadata
+    return final_cfg
 
 
 def _teacher_enabled(cfg: dict) -> bool:
@@ -158,8 +212,9 @@ def train(cfg: dict) -> dict:
     if cfg.get("training", {}).get("resume") is True and not cfg.get("output", {}).get("run_name"):
         raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
     run_dir = create_run_dir(cfg)
-    dump_config(cfg, run_dir / "final_config.yaml")
     dataloaders = build_dataloaders(cfg)
+    split_metadata = dataloaders_run_metadata(dataloaders)
+    dump_config(final_config_with_runtime(cfg, run_dir=run_dir, split_metadata=split_metadata), run_dir / "final_config.yaml")
     device = build_device(cfg)
     task = cfg["experiment"].get("task", "image")
     model_cfg = cfg["model"]
@@ -398,7 +453,16 @@ def train(cfg: dict) -> dict:
         _close_tensorboard_writer(tensorboard_writer)
 
     np.savez(run_dir / "training_outputs.npz", **{k: np.asarray(v) for k, v in history.items()})
-    train_log = {**history, "epoch_logs": epoch_logs, "checkpoint_loads": checkpoint_loads}
+    train_log = {
+        **history,
+        "epoch_logs": epoch_logs,
+        "checkpoint_loads": checkpoint_loads,
+        "runtime": {
+            "run_dir": str(run_dir),
+            "output_overwrite": bool(cfg.get("output", {}).get("overwrite", False)),
+            "splits": split_metadata,
+        },
+    }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
         json.dump(train_log, f, indent=2)
     plot_training_curves(history, run_dir)
@@ -408,6 +472,7 @@ def train(cfg: dict) -> dict:
         "epoch_logs": epoch_logs,
         "best_val_loss": best_val_loss,
         "checkpoint_loads": checkpoint_loads,
+        "split_metadata": split_metadata,
     }
 
 

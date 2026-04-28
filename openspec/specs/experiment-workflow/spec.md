@@ -54,11 +54,26 @@ TBD - created by archiving change reorganize-project-structure. Update Purpose a
 - **THEN** 系统 MUST 构建对应蒸馏逻辑，并保持该模式下原有损失计算语义
 
 ### Requirement: 统一实验输出
-训练和评估流程 MUST 将运行产物写入统一输出目录。输出目录 MUST 至少包含本次运行的有效配置、checkpoint 或权重引用、metrics、训练曲线或日志，以及测试报告。训练流程 MUST 在启用 TensorBoard 时写入可由 TensorBoard 读取的标量 event 日志，并且 MUST 支持通过配置关闭该日志写入。训练流程 MUST 在启用进度显示时提供 `tqdm` 训练进度条，并且 MUST 将每个 epoch 的进度摘要保存到运行日志。
+训练和评估流程 MUST 将运行产物写入统一输出目录。输出目录 MUST 至少包含本次运行的有效配置、checkpoint 或权重引用、metrics、训练曲线或日志，以及测试报告。训练和评估流程 MUST 默认创建互不覆盖的运行目录；只有在用户显式启用覆盖、显式恢复训练或传入确定性输出目录时，系统才 MAY 复用既有目录。训练流程 MUST 在启用 TensorBoard 时写入可由 TensorBoard 读取的标量 event 日志，并且 MUST 支持通过配置关闭该日志写入。训练流程 MUST 在启用进度显示时提供 `tqdm` 训练进度条，并且 MUST 将每个 epoch 的进度摘要保存到运行日志。
 
 #### Scenario: 训练完成后保存运行配置
 - **WHEN** 一次训练任务启动并创建输出目录
 - **THEN** 系统 MUST 保存解析和覆盖后的最终配置，便于后续复现实验
+
+#### Scenario: 固定 run_name 默认不覆盖旧实验
+- **WHEN** 用户设置 `output.run_name` 且目标运行目录已存在，并且未启用覆盖或 resume
+- **THEN** 系统 MUST 创建带唯一 run id、时间戳或等价后缀的新运行目录
+- **AND** 系统 MUST 不覆盖既有 `final_config.yaml`、`metrics.json`、checkpoint、TensorBoard event 或 `train_log.json`
+
+#### Scenario: 显式恢复训练复用运行目录
+- **WHEN** 用户设置 `training.resume: true` 且提供固定 `output.run_name`
+- **THEN** 系统 MUST 从该运行目录下的 checkpoint 恢复训练
+- **AND** 系统 MUST 不自动追加新的 run id
+
+#### Scenario: 显式覆盖运行目录
+- **WHEN** 用户显式启用输出覆盖配置并设置 `output.run_name`
+- **THEN** 系统 MAY 复用该运行目录
+- **AND** 系统 MUST 在最终配置或运行日志中记录覆盖行为
 
 #### Scenario: 训练过程中显示 tqdm 进度
 - **WHEN** 一次训练任务启动且进度显示配置启用
@@ -94,6 +109,34 @@ TBD - created by archiving change reorganize-project-structure. Update Purpose a
 #### Scenario: 评估完成后保存指标
 - **WHEN** 一次评估任务完成
 - **THEN** 系统 MUST 在输出目录保存 Top-K、DBA、loss、latency 或当前评估入口支持的指标结果
+
+#### Scenario: 评估默认不覆盖旧报告
+- **WHEN** 用户多次运行评估入口且未显式指定覆盖同一输出目录
+- **THEN** 系统 MUST 为每次评估创建互不覆盖的评估运行目录
+- **AND** 系统 MUST 不固定覆盖 `outputs/evaluation/test_report.json`
+
+#### Scenario: 输出记录 split 和样本数
+- **WHEN** 训练或评估构建 train/test dataset
+- **THEN** 系统 MUST 在最终配置、运行日志或测试报告中记录实际使用的 train/test CSV 路径
+- **AND** 系统 MUST 记录每个 split 的样本数，便于判断不同实验是否可横向比较
+
+### Requirement: 跨模态可比较 split 配置
+项目 MUST 提供可用于单模态和多模态横向比较的统一 split 配置方式。默认和 canonical 实验配置 MUST 让 image、radar、GPS、LiDAR 和 fusion 实验引用同一组 train/test CSV。
+
+#### Scenario: 使用统一 split 运行单模态实验
+- **WHEN** 用户将 image、radar、GPS 和 LiDAR 单模态配置指向同一组 train/test CSV
+- **THEN** 系统 MUST 使用相同样本集合构建各模态 dataset
+- **AND** 训练或评估输出 MUST 记录相同的 CSV 路径和样本数
+
+#### Scenario: 使用统一 split 运行 fusion 实验
+- **WHEN** 用户将 fusion 配置指向与单模态相同的 train/test CSV
+- **THEN** 系统 MUST 使用相同样本集合构建 fusion dataset
+- **AND** 未启用模态不得影响该 split 的可用性
+
+#### Scenario: 默认配置使用统一 split
+- **WHEN** 开发者查看默认 image、radar、GPS、LiDAR 和 fusion 实验配置
+- **THEN** 每个配置 MUST 指向 `train_seqs_RA_GPS_LIDAR.csv` 和 `test_seqs_RA_GPS_LIDAR.csv`
+- **AND** 输出 MUST 清晰记录该统一 split 的路径和样本数
 
 ### Requirement: 训练与评估行为等价
 结构重构后，默认 image-only、radar-only、GPS-only、LiDAR-only 和 fusion 工作流 MUST 通过新脚本保持当前算法的核心训练、验证和评估语义，包括默认序列长度、预测步数、类别数、KD 模式、teacher 权重选择、student 架构选择、early stopping、gradient clipping、checkpoint 恢复和指标计算。上游原代码实际覆盖的 image-only 与 image+radar 配置 MUST 按原代码和随附参数文件对齐 GRU 层数与训练超参数；radar-only、GPS-only 和 LiDAR-only 是本项目新增单模态配置，MUST 在共享字段上与 image 单模态配置保持一致。
@@ -361,4 +404,3 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **WHEN** 用户通过命令行覆盖 `paths.weights_dir` 或 `distillation.teacher_model_name`
 - **THEN** 系统 MUST 使用覆盖后的 teacher checkpoint 来源
 - **AND** 系统 MUST 保持该配置的 teacher/student 模型角色不变
-

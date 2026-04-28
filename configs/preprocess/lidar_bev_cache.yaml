@@ -1,6 +1,6 @@
 preprocessing:
   type: lidar_bev_cache
-  csv_path: dataset/scenario9/train_seqs_RA_LIDAR.csv
+  csv_path: dataset/scenario9/train_seqs_RA_GPS_LIDAR.csv
   data_root: dataset/scenario9
   cache_dir: dataset/scenario9/lidar_bev_cache
   lidar_prefix: lidar

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import io as text_io
+import json
 
 import numpy as np
 import torch
@@ -357,6 +358,51 @@ def lidar_cache_path(cache_dir: str | Path, rel_path: str) -> Path:
     safe_name = rel.replace("/", "__").replace("..", "__")
     stem = Path(safe_name).with_suffix("").name
     return Path(cache_dir) / f"{stem}_{digest}.npy"
+
+
+def lidar_cache_config_hash(
+    *,
+    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_path: str | None = None,
+    background_distance_threshold: float = 0.2,
+) -> str:
+    payload = {
+        "bev_size": [int(value) for value in bev_size],
+        "roi": [float(value) for value in roi],
+        "fov_degrees": None if fov_degrees is None else [float(value) for value in fov_degrees],
+        "remove_ground": bool(remove_ground),
+        "ground_z_threshold": float(ground_z_threshold),
+        "background_path": str(background_path) if background_path else None,
+        "background_distance_threshold": float(background_distance_threshold),
+    }
+    digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return f"bev_{digest}"
+
+
+def parameterized_lidar_cache_dir(
+    cache_dir: str | Path,
+    *,
+    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_path: str | None = None,
+    background_distance_threshold: float = 0.2,
+) -> Path:
+    return Path(cache_dir) / lidar_cache_config_hash(
+        bev_size=bev_size,
+        roi=roi,
+        fov_degrees=fov_degrees,
+        remove_ground=remove_ground,
+        ground_z_threshold=ground_z_threshold,
+        background_path=background_path,
+        background_distance_threshold=background_distance_threshold,
+    )
 
 
 def load_lidar_background_points(data_root: str | Path, background_path: str | None) -> np.ndarray | None:

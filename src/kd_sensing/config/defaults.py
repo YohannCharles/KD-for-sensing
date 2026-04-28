@@ -18,8 +18,8 @@ DEFAULT_CONFIG = {
         "dataset": {
             "type": "scenario9",
             "data_root": "dataset/scenario9",
-            "train_csv_name": "train_seqs_RA.csv",
-            "test_csv_name": "test_seqs_RA.csv",
+            "train_csv_name": "train_seqs_RA_GPS_LIDAR.csv",
+            "test_csv_name": "test_seqs_RA_GPS_LIDAR.csv",
             "seq_len": 8,
             "num_pred": 3,
             "portion": 1.0,
@@ -34,8 +34,8 @@ DEFAULT_CONFIG = {
             "lidar_ground_z_threshold": 0.1,
             "lidar_background_path": None,
             "lidar_background_distance_threshold": 0.2,
-            "lidar_cache_dir": None,
-            "lidar_use_cache": False,
+            "lidar_cache_dir": "lidar_bev_cache",
+            "lidar_use_cache": True,
             "lidar_write_cache": False,
             "lidar_normalize": False,
             "lidar_normalization": None,
@@ -47,7 +47,12 @@ DEFAULT_CONFIG = {
         "dataloader": {
             "train_batch_size": 32,
             "test_batch_size": 32,
-            "num_workers": 8,
+            "num_workers": 4,
+            "pin_memory": True,
+            "persistent_workers": True,
+            "prefetch_factor": 2,
+            "train_drop_last": False,
+            "test_drop_last": False,
         },
     },
     "model": {
@@ -114,6 +119,8 @@ DEFAULT_CONFIG = {
     "output": {
         "dir": "outputs",
         "run_name": None,
+        "overwrite": False,
+        "evaluation_run_name": None,
         "debug": False,
         "tensorboard": {
             "enabled": True,

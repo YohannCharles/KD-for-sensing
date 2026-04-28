@@ -4,8 +4,8 @@ experiment:
   seed: 42
 data:
   dataset:
-    train_csv_name: train_seqs_RA_GPS.csv
-    test_csv_name: test_seqs_RA_GPS.csv
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     use_gps: true
     gps_feature_mode: relative_polar
     gps_normalize: true

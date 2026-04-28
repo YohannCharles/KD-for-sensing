@@ -11,6 +11,7 @@ from kd_sensing.data.transforms import (
     build_lidar_bev,
     lidar_cache_path,
     load_lidar_background_points,
+    parameterized_lidar_cache_dir,
 )
 from kd_sensing.registries import PREPROCESSORS
 from kd_sensing.utils.paths import resolve_path
@@ -32,7 +33,16 @@ def generate_lidar_bev_cache(
 ) -> dict[str, str | int]:
     csv_path = resolve_path(csv_path)
     data_root = resolve_path(data_root)
-    cache_dir = resolve_path(cache_dir)
+    cache_dir = parameterized_lidar_cache_dir(
+        resolve_path(cache_dir),
+        bev_size=bev_size,
+        roi=roi,
+        fov_degrees=fov_degrees,
+        remove_ground=remove_ground,
+        ground_z_threshold=ground_z_threshold,
+        background_path=background_path,
+        background_distance_threshold=background_distance_threshold,
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     frame = pd.read_csv(csv_path, na_values="").fillna("")

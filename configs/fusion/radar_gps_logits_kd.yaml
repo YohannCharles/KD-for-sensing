@@ -9,8 +9,8 @@ data:
   dataset:
     type: scenario9
     data_root: dataset/scenario9
-    train_csv_name: train_seqs_RA_GPS.csv
-    test_csv_name: test_seqs_RA_GPS.csv
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     seq_len: 8
     num_pred: 3
     portion: 1.0

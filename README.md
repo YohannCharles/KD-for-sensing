@@ -223,17 +223,18 @@ python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.
 python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
-GPS 实验需要带 `gps1..gps8` 和 `bs_gps1..bs_gps8` 列的序列 CSV。运行
-`configs/preprocess/sequences_ra_gps.yaml` 后会生成 `train_seqs_RA_GPS.csv` 和
-`test_seqs_RA_GPS.csv`，供 GPS-only 和启用 GPS 的 fusion 配置使用。GPS scaler 只在训练集
-上 fit，并复用于测试集。
+所有单模态和 fusion 实验默认使用同一组包含 camera、radar、GPS 和 LiDAR 列的序列 CSV：
+`train_seqs_RA_GPS_LIDAR.csv` / `test_seqs_RA_GPS_LIDAR.csv`。运行
+`configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；GPS scaler 只在训练集上 fit，
+并复用于测试集。
 
-LiDAR 实验需要带 `lidar1..lidar8` 列的序列 CSV。运行
-`configs/preprocess/sequences_ra_lidar.yaml` 后会生成 `train_seqs_RA_LIDAR.csv` 和
-`test_seqs_RA_LIDAR.csv`；运行 `configs/preprocess/sequences_ra_gps_lidar.yaml` 后会生成同时带
-GPS 和 LiDAR 列的 fusion CSV。`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为
-`.npy` BEV 缓存；训练配置中将 `lidar_cache_dir` 指向该目录并启用 `lidar_use_cache` 后可复用缓存。
+`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存；训练配置中将
+`lidar_cache_dir` 指向该目录并启用 `lidar_use_cache` 后可复用缓存。
+BEV cache 会按 BEV 尺寸、ROI、FoV、ground/background 过滤参数自动分区，避免参数变化后误用旧缓存。
 BEV cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时全量载入 cache 目录。
+
+训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径和样本数，用于确认不同实验确实在
+同一训练/测试集合上比较。
 
 ## 破坏性变更
 
