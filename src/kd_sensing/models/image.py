@@ -83,7 +83,7 @@ class ImageModalityNet(nn.Module):
             input_size=gru_input_size,
             hidden_size=gru_hidden_size,
             num_layers=gru_num_layers,
-            dropout=0.8,
+            dropout=0.8 if gru_num_layers > 1 else 0.0,
             batch_first=True,
         )
         self.temporal_attention = nn.Sequential(
@@ -188,7 +188,7 @@ class ImageStudentModalityNet(nn.Module):
             input_size=gru_input_size,
             hidden_size=gru_hidden_size,
             num_layers=gru_num_layers,
-            dropout=0.8,
+            dropout=0.8 if gru_num_layers > 1 else 0.0,
             batch_first=True,
         )
         self.temporal_attention = nn.Sequential(
@@ -219,4 +219,3 @@ class ImageStudentModalityNet(nn.Module):
         enhanced_seq_out = seq_out + context_vector.unsqueeze(1).expand(-1, seq_len, -1)
         pred = self.classifier(enhanced_seq_out)
         return pred, features, enhanced_seq_out
-

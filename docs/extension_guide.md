@@ -38,16 +38,26 @@ model:
     type: my_image_student
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params: [64, 64, 1]
 ```
 
-Image models receive `[B, T, 1, 224, 224]`. Radar models receive `[B, T, 2, 128, 64]`. GPS models receive GPS-Rel-Polar tensors shaped `[B, T, 3]`. LiDAR models receive BEV tensors shaped `[B, T, 3, H, W]`. Fusion models receive only the tensors listed in `modalities`, using keyword inputs `image_batch`, `radar_batch`, `gps_batch`, and `lidar_batch`. Models must return `(logits, input_features, output_features)`.
+Image models receive `[B, T, 1, 224, 224]`. Radar models receive `[B, T, 2, 128, 64]`. These image
+and radar sizes are structural constraints for the built-in compatibility models; changing them requires
+updating the motion-mask path, fixed FC inputs, or radar branch. GPS models receive GPS-Rel-Polar tensors
+shaped `[B, T, 3]`. LiDAR models receive BEV tensors shaped `[B, T, 3, H, W]`. Fusion models receive only
+the tensors listed in `modalities`, using keyword inputs `image_batch`, `radar_batch`, `gps_batch`, and
+`lidar_batch`. Models must return `(logits, input_features, output_features)`.
 
-Built-in model configs default to `gru_params: [64, 64, 2]`. Canonical experiment configs use
+Built-in single-modality configs use `gru_params: [64, 64, 1]`; radar/GPS/LiDAR single-modality
+configs inherit the image single-modality training and KD parameters for shared fields. Image+radar
+fusion compatibility configs use a two-layer teacher and one-layer student. Other fusion configs remain
+extension configs and may use their own GRU depth. Canonical experiment configs use
 `teacher_no_kd`, `student_no_kd`, `logits_kd`, and `rkd`; `experiment.name` and `output.run_name`
 match the config stem. In no-KD configs the trainable main model is `model.student`, so a
 teacher baseline config sets `model.student.type` to the teacher registry name. Radar config names remain
 `radar_teacher` and `radar_student`; the corresponding Python classes are `RadarModalityNet` and `RadarStudentModalityNet`.
+Checkpoint loading is strict by default; set `checkpoint.strict_load: false` only when intentionally
+inspecting a partially compatible checkpoint, and check the reported missing/unexpected keys.
 
 Built-in GPS model names follow the same teacher/student pattern as image and radar:
 
@@ -58,7 +68,7 @@ model:
     gps_input_size: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params: [64, 64, 1]
 ```
 
 Fusion modality selection is configured on both teacher and student:
@@ -105,7 +115,7 @@ model:
     lidar_channels: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params: [64, 64, 1]
 ```
 
 LiDAR BEV inputs are produced from `lidar1..lidarN` sequence CSV columns. The default BEV channels are height, intensity, and density. The built-in reader supports `.mat`, `.npy` point arrays, ASCII PCD, and numeric text/CSV point files. Binary PCD is intentionally not supported by default; convert it to ASCII PCD or `.npy` before training.

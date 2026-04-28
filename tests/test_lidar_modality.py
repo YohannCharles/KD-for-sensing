@@ -362,8 +362,8 @@ def test_lidar_configs_build(config_path: str):
     assert cfg["experiment"]["task"] == "lidar"
     assert cfg["data"]["dataset"]["use_lidar"] is True
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
+    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 1]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
     assert isinstance(model, (LidarModalityNet, LidarStudentModalityNet))
 
 

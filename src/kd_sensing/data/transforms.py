@@ -43,17 +43,27 @@ def load_motion_masks(
     transform=None,
 ) -> torch.Tensor:
     transform = transform or build_image_transform()
-    image_val = np.zeros((seq_len, 224, 224))
-    image_motion_masks = np.zeros((seq_len - 1, 224, 224))
+    image_val = None
+    image_motion_masks = None
     for i, rel_path in enumerate(rgb_paths[-seq_len:]):
         img = transform(io.imread(joined_resource(data_root, rel_path)))
         img = rgb2gray(np.asarray(img))
+        if image_val is None:
+            height, width = img.shape
+            image_val = np.zeros((seq_len, height, width))
+            image_motion_masks = np.zeros((seq_len - 1, height, width))
+        elif img.shape != image_val.shape[1:]:
+            raise ValueError(
+                f"Motion mask frames must share one image size, got {img.shape} and {image_val.shape[1:]}."
+            )
         image_val[i, ...] = gaussian_filter(img, sigma=1)
         if i >= 1:
             diff = np.abs(image_val[i, ...] - image_val[i - 1, ...])
             max_pixel_value = np.max(diff)
             threshold_value = 0.1 * max_pixel_value
             image_motion_masks[i - 1, ...] = (diff > threshold_value).astype(np.uint8)
+    if image_motion_masks is None:
+        image_motion_masks = np.zeros((seq_len - 1, 224, 224))
     return torch.tensor(image_motion_masks, dtype=torch.float32)
 
 

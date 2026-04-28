@@ -1,9 +1,9 @@
 paths:
-  weights_dir: outputs/image_teacher_no_kd/checkpoints
+  weights_dir: All_models
 experiment:
   name: image_rkd
   task: image
-  seed: 0
+  seed: 42
   device: auto
 data:
   dataset:
@@ -15,8 +15,8 @@ data:
     num_pred: 3
     portion: 1.0
   dataloader:
-    train_batch_size: 3
-    test_batch_size: 3
+    train_batch_size: 32
+    test_batch_size: 32
     num_workers: 8
 model:
   feature_size: 64
@@ -30,24 +30,30 @@ model:
     type: image_teacher
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params:
+    - 64
+    - 64
+    - 1
   student:
     type: image_student
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params:
+    - 64
+    - 64
+    - 1
 distillation:
   type: rkd
   temperature: 3.0
-  alpha: 0.4
+  alpha: 0.1
   alpha_warmup_epochs: 0
-  teacher_model_name: best.pth
+  teacher_model_name: ImageTeacher_best.pth
   rkd_pairs_per_anchor: 4
-  rkd_distance_weight: 10.0
-  rkd_angle_weight: 10.0
+  rkd_distance_weight: 100.0
+  rkd_angle_weight: 100.0
 training:
   epochs: 100
-  lr: 0.00075
+  lr: 0.0005
   weight_decay: 0.0
   grad_clip: 10.0
   patience: 20
@@ -56,3 +62,8 @@ training:
 output:
   dir: outputs
   run_name: image_rkd
+scheduler:
+  type: cosine_warm_restarts
+  T_0: 10
+  T_mult: 2
+  eta_min: 1.0e-06

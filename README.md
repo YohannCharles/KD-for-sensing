@@ -50,7 +50,9 @@ src/kd_sensing/
 
 ## 训练
 
-推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。每个 canonical KD 配置默认读取同一模态或同一 fusion slug 的 teacher baseline：
+推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。Image 与 image+radar
+兼容 KD 配置默认读取随附 `All_models` 中的一层 image teacher 或二层 image+radar teacher
+权重；radar/GPS/LiDAR 单模态 KD 配置默认读取同模态
 `outputs/<slug>_teacher_no_kd/checkpoints/best.pth`。也可以通过 `paths.weights_dir` 和
 `distillation.teacher_model_name` 覆盖 teacher checkpoint。
 
@@ -96,11 +98,12 @@ python scripts/train.py --config configs/fusion/image_radar_logits_kd.yaml
 python scripts/train.py --config configs/fusion/image_radar_rkd.yaml
 ```
 
-默认配置统一使用 `gru_params: [64, 64, 2]`，即所有内置单模态和多模态
-teacher/student 都使用 2 层 GRU。仓库中随附的 `All_models/*Std*.pth` 和部分
-`ImageTeacher*.pth` 是旧的一层 GRU 历史权重，保留为 legacy/pretrained 兼容参考，不作为
-canonical 配置矩阵的默认 teacher 来源；按当前配置复现实验时需要重新训练或提供对应二层
-GRU checkpoint。上游旧训练脚本中 teacher-as-student 的实例化残留不作为本项目配置驱动流程的语义依据。
+单模态配置统一使用 `gru_params: [64, 64, 1]`。其中 image 参数来自上游 image 单模态脚本和
+`All_models/params_Image*.txt`，radar/GPS/LiDAR 是本项目新增单模态，默认继承 image 同角色
+配置参数。Image+radar fusion 按上游 `train_both.py` 和 `All_models/params_Both*.txt` 保持
+teacher 二层 GRU、student 一层 GRU；其它 fusion 组合属于扩展配置，不声明为原论文结果复现。
+Checkpoint 加载默认严格校验 missing/unexpected keys，结构不匹配会直接报错；需要兼容性调试时可显式设置
+`checkpoint.strict_load=false`。
 
 legacy 入口继续保留，但新实验优先使用上面的 canonical 名称：
 
@@ -163,6 +166,11 @@ Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` �
 python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.dataset.portion=0.05
 ```
 
+当前兼容模型对输入尺寸有结构性限制：image-only 和包含 image 的 fusion 配置要求
+`data.dataset.image_size: [224, 224]`；radar-only 和包含 radar 的 fusion 配置要求 RA/DA
+输入为 `128x64`，即默认 `clipped_range: 128` 和 `fft_tuple` 的第一/第三项为 `64/128`。
+这些限制来自 motion mask、image/fusion teacher FC 输入和 radar branch 结构。
+
 输出会写入 `outputs/<run_name>/`，包括：
 
 - `final_config.yaml`
@@ -173,6 +181,9 @@ python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.d
 - `training_outputs.npz`
 - 训练曲线
 - `tensorboard/` TensorBoard event 日志
+
+恢复训练时设置 `training.resume=true` 会从当前 `output.run_name/checkpoints/last.pth` 恢复；也可以将
+`training.resume` 设为 checkpoint 文件路径。恢复会加载模型、optimizer、scheduler、epoch 和最佳验证损失。
 
 可以用 TensorBoard 查看和对比训练曲线：
 

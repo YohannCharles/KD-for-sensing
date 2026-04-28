@@ -12,19 +12,66 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.engine.evaluator import evaluate  # noqa: E402
+from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageModalityNet, ImageStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.models.radar import RadarModalityNet, RadarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
+from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
 
 
-GRU_PARAMS = [64, 64, 2]
+SINGLE_GRU_PARAMS = [64, 64, 1]
+FUSION_TEACHER_GRU_PARAMS = [64, 64, 2]
+FUSION_STUDENT_GRU_PARAMS = [64, 64, 1]
 SINGLE_CONFIG_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
 FUSION_CONFIG_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
+
+SINGLE_EXPECTED_PARAMS = {
+    "teacher_no_kd": {
+        "lr": 0.0001,
+        "weight_decay": 0.0001,
+        "temperature": 3.0,
+        "alpha": 0.5,
+        "rkd_distance_weight": 10.0,
+        "rkd_angle_weight": 10.0,
+    },
+    "student_no_kd": {
+        "lr": 0.001,
+        "weight_decay": 0.0,
+        "temperature": 3.0,
+        "alpha": 0.4,
+        "rkd_distance_weight": 50.0,
+        "rkd_angle_weight": 50.0,
+    },
+    "logits_kd": {
+        "lr": 0.0008,
+        "weight_decay": 0.0,
+        "temperature": 4.0,
+        "alpha": 0.3,
+        "rkd_distance_weight": 100.0,
+        "rkd_angle_weight": 100.0,
+    },
+    "rkd": {
+        "lr": 0.0005,
+        "weight_decay": 0.0,
+        "temperature": 3.0,
+        "alpha": 0.1,
+        "rkd_distance_weight": 100.0,
+        "rkd_angle_weight": 100.0,
+    },
+}
+
+FUSION_IMAGE_RADAR_EXPECTED_PARAMS = {
+    "teacher_no_kd": {"lr": 0.00075, "weight_decay": 0.0001, "temperature": 3.0, "alpha": 0.4},
+    "student_no_kd": {"lr": 0.0004, "weight_decay": 0.0, "temperature": 3.0, "alpha": 0.4},
+    "logits_kd": {"lr": 0.00095, "weight_decay": 0.0, "temperature": 2.0, "alpha": 0.4},
+    "rkd": {"lr": 0.00095, "weight_decay": 0.0, "temperature": 2.0, "alpha": 0.3},
+}
 
 MODALITY_SPECS = {
     "image": {
@@ -232,19 +279,40 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     spec = MODALITY_SPECS[modality]
     model, cfg = _build_student(config_path)
     expected_name = f"{modality}_{mode}"
+    expected_params = SINGLE_EXPECTED_PARAMS[mode]
 
     assert cfg["experiment"]["name"] == expected_name
     assert cfg["experiment"]["task"] == spec["task"]
+    assert cfg["experiment"]["seed"] == 42
     assert cfg["output"]["run_name"] == expected_name
+    assert cfg["data"]["dataloader"]["train_batch_size"] == 32
+    assert cfg["data"]["dataloader"]["test_batch_size"] == 32
+    assert cfg["data"]["dataloader"]["num_workers"] == 8
     assert cfg["model"]["teacher"]["type"] == spec["teacher_type"]
-    assert cfg["model"]["teacher"]["gru_params"] == GRU_PARAMS
-    assert cfg["model"]["student"]["gru_params"] == GRU_PARAMS
+    assert cfg["model"]["teacher"]["gru_params"] == SINGLE_GRU_PARAMS
+    assert cfg["model"]["student"]["gru_params"] == SINGLE_GRU_PARAMS
+    assert cfg["training"]["epochs"] == 100
+    assert cfg["training"]["lr"] == expected_params["lr"]
+    assert cfg["training"]["weight_decay"] == expected_params["weight_decay"]
+    assert cfg["training"]["grad_clip"] == 10.0
+    assert cfg["training"]["patience"] == 20
+    assert cfg["training"]["use_early_stopping"] is True
+    assert cfg["training"]["min_delta"] == 0.0001
+    assert cfg["scheduler"]["T_0"] == 10
+    assert cfg["scheduler"]["T_mult"] == 2
+    assert cfg["scheduler"]["eta_min"] == 1e-6
+    assert cfg["distillation"]["temperature"] == expected_params["temperature"]
+    assert cfg["distillation"]["alpha"] == expected_params["alpha"]
+    assert cfg["distillation"]["alpha_warmup_epochs"] == 0
+    assert cfg["distillation"]["rkd_pairs_per_anchor"] == 4
+    assert cfg["distillation"]["rkd_distance_weight"] == expected_params["rkd_distance_weight"]
+    assert cfg["distillation"]["rkd_angle_weight"] == expected_params["rkd_angle_weight"]
 
     expected_student_type = spec["teacher_type"] if mode == "teacher_no_kd" else spec["student_type"]
     expected_student_cls = spec["teacher_cls"] if mode == "teacher_no_kd" else spec["student_cls"]
     assert cfg["model"]["student"]["type"] == expected_student_type
     assert isinstance(model, expected_student_cls)
-    assert model.GRU.num_layers == 2
+    assert model.GRU.num_layers == 1
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
         assert cfg["distillation"]["type"] == "no_kd"
@@ -252,15 +320,19 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     else:
         teacher, student, kd_cfg = _build_teacher_and_student(config_path)
         assert kd_cfg["distillation"]["type"] == mode
-        assert kd_cfg["paths"]["weights_dir"] == f"outputs/{modality}_teacher_no_kd/checkpoints"
-        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
+        if modality == "image":
+            assert kd_cfg["paths"]["weights_dir"] == "All_models"
+            assert kd_cfg["distillation"]["teacher_model_name"] == "ImageTeacher_best.pth"
+        else:
+            assert kd_cfg["paths"]["weights_dir"] == f"outputs/{modality}_teacher_no_kd/checkpoints"
+            assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, spec["teacher_cls"])
         assert isinstance(student, spec["student_cls"])
         assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
         if mode == "rkd":
             assert kd_cfg["distillation"]["rkd_pairs_per_anchor"] == 4
-            assert kd_cfg["distillation"]["rkd_distance_weight"] == 10.0
-            assert kd_cfg["distillation"]["rkd_angle_weight"] == 10.0
+            assert kd_cfg["distillation"]["rkd_distance_weight"] == 100.0
+            assert kd_cfg["distillation"]["rkd_angle_weight"] == 100.0
 
     if mode == "student_no_kd":
         assert cfg["model"]["student"]["type"] != spec["teacher_type"]
@@ -279,15 +351,32 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     assert cfg["model"]["teacher"]["type"] == "fusion_teacher"
     assert cfg["model"]["teacher"]["modalities"] == modalities
     assert cfg["model"]["student"]["modalities"] == modalities
-    assert cfg["model"]["teacher"]["gru_params"] == GRU_PARAMS
-    assert cfg["model"]["student"]["gru_params"] == GRU_PARAMS
+    assert cfg["model"]["teacher"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
+    expected_student_gru = (
+        FUSION_TEACHER_GRU_PARAMS
+        if mode == "teacher_no_kd"
+        else FUSION_STUDENT_GRU_PARAMS
+        if slug == "image_radar"
+        else FUSION_TEACHER_GRU_PARAMS
+    )
+    assert cfg["model"]["student"]["gru_params"] == expected_student_gru
 
     expected_student_type = "fusion_teacher" if mode == "teacher_no_kd" else "fusion_student"
     expected_student_cls = FusionModalityNet if mode == "teacher_no_kd" else StudentModalityNet
     assert cfg["model"]["student"]["type"] == expected_student_type
     assert isinstance(student, expected_student_cls)
     assert student.modalities == tuple(modalities)
-    assert student.GRU.num_layers == 2
+    assert student.GRU.num_layers == expected_student_gru[-1]
+
+    if slug == "image_radar":
+        expected_params = FUSION_IMAGE_RADAR_EXPECTED_PARAMS[mode]
+        assert cfg["experiment"]["seed"] == 42
+        assert cfg["data"]["dataloader"]["train_batch_size"] == 32
+        assert cfg["data"]["dataloader"]["test_batch_size"] == 32
+        assert cfg["training"]["lr"] == expected_params["lr"]
+        assert cfg["training"]["weight_decay"] == expected_params["weight_decay"]
+        assert cfg["distillation"]["temperature"] == expected_params["temperature"]
+        assert cfg["distillation"]["alpha"] == expected_params["alpha"]
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
         assert cfg["distillation"]["type"] == "no_kd"
@@ -295,11 +384,17 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     else:
         teacher, kd_student, kd_cfg = _build_teacher_and_student(config_path)
         assert kd_cfg["distillation"]["type"] == mode
-        assert kd_cfg["paths"]["weights_dir"] == f"outputs/{slug}_teacher_no_kd/checkpoints"
-        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
+        if slug == "image_radar":
+            assert kd_cfg["paths"]["weights_dir"] == "All_models"
+            assert kd_cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
+        else:
+            assert kd_cfg["paths"]["weights_dir"] == f"outputs/{slug}_teacher_no_kd/checkpoints"
+            assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, FusionModalityNet)
         assert isinstance(kd_student, StudentModalityNet)
         assert teacher.modalities == kd_student.modalities == tuple(modalities)
+        assert teacher.GRU.num_layers == 2
+        assert kd_student.GRU.num_layers == expected_student_gru[-1]
         if mode == "rkd":
             assert kd_cfg["distillation"]["rkd_pairs_per_anchor"] == 4
             assert kd_cfg["distillation"]["rkd_distance_weight"] == 10.0
@@ -333,7 +428,13 @@ def test_legacy_configs_keep_compatible_semantics(
     assert cfg["experiment"]["task"] == task
     assert cfg["distillation"]["type"] == distillation_type
     assert cfg["model"]["student"]["type"] == student_type
-    assert cfg["model"]["student"]["gru_params"] == GRU_PARAMS
+    if task == "fusion" and modalities == ["image", "radar"]:
+        assert cfg["model"]["teacher"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
+        assert cfg["model"]["student"]["gru_params"] == FUSION_STUDENT_GRU_PARAMS
+    elif task == "fusion":
+        assert cfg["model"]["student"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
+    else:
+        assert cfg["model"]["student"]["gru_params"] == SINGLE_GRU_PARAMS
 
     if distillation_type == "no_kd":
         assert cfg["distillation"]["teacher_model_name"] is None
@@ -468,25 +569,119 @@ def test_radar_student_rejects_input_size_mismatch():
 
 
 @pytest.mark.parametrize(("config_path", "weight_path"), LEGACY_STUDENT_WEIGHTS)
-def test_packaged_student_weights_are_legacy_one_layer(config_path: str, weight_path: str):
+def test_packaged_student_weights_match_one_layer_configs(config_path: str, weight_path: str):
     model, _ = _build_student(config_path)
     state = _load_state_dict(weight_path)
     model_state = model.state_dict()
+    state_without_stats = {key: value for key, value in state.items() if not _is_stats_key(key)}
 
-    missing = sorted(set(model_state) - set(state))
+    missing = sorted(set(model_state) - set(state_without_stats))
     shape_mismatches = sorted(
         key
         for key, tensor in model_state.items()
-        if key in state and tuple(state[key].shape) != tuple(tensor.shape)
+        if key in state_without_stats and tuple(state_without_stats[key].shape) != tuple(tensor.shape)
     )
     unexpected_non_stats = sorted(key for key in state if key not in model_state and not _is_stats_key(key))
 
-    assert {key for key in missing if key.startswith("GRU.")} == {
-        "GRU.bias_hh_l1",
-        "GRU.bias_ih_l1",
-        "GRU.weight_hh_l1",
-        "GRU.weight_ih_l1",
-    }
-    assert [key for key in missing if not key.startswith("GRU.")] == []
+    assert missing == []
     assert shape_mismatches == []
     assert unexpected_non_stats == []
+    model.load_state_dict(state_without_stats, strict=True)
+
+
+def test_strict_checkpoint_loading_reports_missing_gru_layer(tmp_path: Path):
+    source = ImageStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 1])
+    target = ImageStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
+    checkpoint_path = tmp_path / "one_layer.pth"
+    torch.save(source.state_dict(), checkpoint_path)
+
+    with pytest.raises(CheckpointLoadError, match="GRU.weight_ih_l1"):
+        load_model_state(checkpoint_path, target, role="student", strict=True)
+
+
+def test_evaluate_strict_checkpoint_loading_rejects_mismatch(tmp_path: Path):
+    weights = tmp_path / "gps_one_layer.pth"
+    torch.save(
+        GpsStudentModalityNet(gps_input_size=3, feature_size=64, num_classes=64, gru_params=[64, 64, 1]).state_dict(),
+        weights,
+    )
+    cfg = _gps_synthetic_eval_cfg(tmp_path, strict=True)
+
+    with pytest.raises(CheckpointLoadError, match="GRU.weight_ih_l1"):
+        evaluate(cfg, weights=str(weights), output_dir=str(tmp_path / "eval_strict"))
+
+
+def test_evaluate_non_strict_checkpoint_loading_records_mismatch(tmp_path: Path):
+    weights = tmp_path / "gps_one_layer.pth"
+    torch.save(
+        GpsStudentModalityNet(gps_input_size=3, feature_size=64, num_classes=64, gru_params=[64, 64, 1]).state_dict(),
+        weights,
+    )
+    cfg = _gps_synthetic_eval_cfg(tmp_path, strict=False)
+
+    result = evaluate(cfg, weights=str(weights), output_dir=str(tmp_path / "eval_nonstrict"))
+
+    assert "GRU.weight_ih_l1" in result["checkpoint_load"]["missing_keys"]
+    assert result["checkpoint_load"]["strict"] is False
+
+
+def test_training_resume_restores_epoch_optimizer_and_scheduler(tmp_path: Path):
+    cfg = _gps_synthetic_train_cfg(tmp_path, epochs=1, resume=False)
+    first = train(cfg)
+    last_checkpoint = Path(first["run_dir"]) / "checkpoints" / "last.pth"
+    assert last_checkpoint.exists()
+
+    resumed_cfg = _gps_synthetic_train_cfg(tmp_path, epochs=2, resume=True)
+    second = train(resumed_cfg)
+    resumed_checkpoint = torch.load(Path(second["run_dir"]) / "checkpoints" / "last.pth", map_location="cpu")
+
+    assert resumed_checkpoint["epoch"] == 2
+    assert resumed_checkpoint["optimizer"]
+    assert resumed_checkpoint["scheduler"]
+    assert resumed_checkpoint["best_val_loss"] == second["best_val_loss"]
+    assert second["checkpoint_loads"][0]["role"] == "resume"
+
+
+def test_config_validation_rejects_unsupported_image_and_radar_sizes():
+    with pytest.raises(ValueError, match="224x224"):
+        load_config(ROOT / "configs/image/student_no_kd.yaml", ["data.dataset.image_size=[112,112]"])
+    with pytest.raises(ValueError, match="128x64"):
+        load_config(ROOT / "configs/radar/student_no_kd.yaml", ["data.dataset.radar_size=[64,32]"])
+
+
+def _gps_synthetic_eval_cfg(tmp_path: Path, *, strict: bool) -> dict:
+    return load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "data.dataset.type=synthetic",
+            "data.dataset.length=1",
+            "data.dataset.seed=7",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "model.student.gru_params=[64,64,2]",
+            f"checkpoint.strict_load={str(strict).lower()}",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+        ],
+    )
+
+
+def _gps_synthetic_train_cfg(tmp_path: Path, *, epochs: int, resume: bool) -> dict:
+    return load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataset.seed=11",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            f"training.epochs={epochs}",
+            f"training.resume={str(resume).lower()}",
+            "output.run_name=resume_test",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+        ],
+    )

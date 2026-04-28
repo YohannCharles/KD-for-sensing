@@ -1,6 +1,7 @@
 experiment:
   name: gps_relative_polar_no_kd
   task: gps
+  seed: 42
 data:
   dataset:
     train_csv_name: train_seqs_RA_GPS.csv
@@ -8,21 +9,57 @@ data:
     use_gps: true
     gps_feature_mode: relative_polar
     gps_normalize: true
+  dataloader:
+    train_batch_size: 32
+    test_batch_size: 32
+    num_workers: 8
 model:
   teacher:
     type: gps_teacher
     gps_input_size: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params:
+    - 64
+    - 64
+    - 1
   student:
     type: gps_teacher
     gps_input_size: 3
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params:
+    - 64
+    - 64
+    - 1
+  feature_size: 64
+  gru_hidden_size: 64
+  num_classes: 64
+  seq_length_teacher: 8
+  seq_length_student: 8
+  num_pred: 3
+  downsample_ratio: 1
 distillation:
   type: no_kd
   teacher_model_name: null
+  temperature: 3.0
+  alpha: 0.5
+  alpha_warmup_epochs: 0
+  rkd_pairs_per_anchor: 4
+  rkd_distance_weight: 10.0
+  rkd_angle_weight: 10.0
 output:
   run_name: gps_relative_polar_no_kd
+scheduler:
+  type: cosine_warm_restarts
+  T_0: 10
+  T_mult: 2
+  eta_min: 1.0e-06
+training:
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.0001
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  min_delta: 0.0001

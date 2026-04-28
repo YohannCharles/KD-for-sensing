@@ -30,8 +30,8 @@ from kd_sensing.engine.builders import (
     resolve_weight_path,
 )
 from kd_sensing.engine.validator import validate
-from kd_sensing.utils.checkpoint import save_checkpoint
-from kd_sensing.utils.paths import output_dir as resolve_output_dir
+from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
+from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.plotting import plot_training_curves
 from kd_sensing.utils.seed import set_seed
 
@@ -52,17 +52,42 @@ def _teacher_enabled(cfg: dict) -> bool:
     return cfg.get("distillation", {}).get("type", "no_kd") != "no_kd"
 
 
-def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> None:
+def _checkpoint_strict(cfg: dict) -> bool:
+    return bool(cfg.get("checkpoint", {}).get("strict_load", True))
+
+
+def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> dict | None:
     weight_name = cfg.get("distillation", {}).get("teacher_model_name")
     weight_path = resolve_weight_path(cfg, weight_name)
     if weight_path is None:
-        return
+        return None
     if not weight_path.exists():
         raise FileNotFoundError(f"Teacher weight not found: {weight_path}")
-    state_dict = torch.load(weight_path, map_location=device)
-    if isinstance(state_dict, dict) and "state_dict" in state_dict:
-        state_dict = state_dict["state_dict"]
-    teacher_model.load_state_dict(state_dict, strict=False)
+    load_result = load_model_state(
+        weight_path,
+        teacher_model,
+        role="teacher",
+        map_location=device,
+        strict=_checkpoint_strict(cfg),
+    )
+    return checkpoint_load_summary(load_result)
+
+
+def _resolve_resume_checkpoint(cfg: dict, run_dir: Path) -> Path | None:
+    resume = cfg.get("training", {}).get("resume", False)
+    if not resume:
+        return None
+    if resume is True:
+        if not cfg.get("output", {}).get("run_name"):
+            raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
+        checkpoint_path = run_dir / "checkpoints" / "last.pth"
+    elif isinstance(resume, str):
+        checkpoint_path = resolve_path(resume)
+    else:
+        raise ValueError("training.resume must be false, true, or a checkpoint path string.")
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
 
 
 def _create_tensorboard_writer(cfg: dict, run_dir: Path):
@@ -130,6 +155,8 @@ def _progress_enabled(cfg: dict) -> bool:
 
 def train(cfg: dict) -> dict:
     set_seed(cfg.get("experiment", {}).get("seed", 0))
+    if cfg.get("training", {}).get("resume") is True and not cfg.get("output", {}).get("run_name"):
+        raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
     run_dir = create_run_dir(cfg)
     dump_config(cfg, run_dir / "final_config.yaml")
     dataloaders = build_dataloaders(cfg)
@@ -144,9 +171,12 @@ def train(cfg: dict) -> dict:
 
     student_model = build_model(model_cfg["student"]).to(device)
     teacher_model = None
+    checkpoint_loads = []
     if _teacher_enabled(cfg):
         teacher_model = build_model(model_cfg["teacher"]).to(device)
-        _load_teacher_if_needed(cfg, teacher_model, device)
+        teacher_load_info = _load_teacher_if_needed(cfg, teacher_model, device)
+        if teacher_load_info is not None:
+            checkpoint_loads.append(teacher_load_info)
         teacher_model.eval()
         for param in teacher_model.parameters():
             param.requires_grad = False
@@ -176,6 +206,21 @@ def train(cfg: dict) -> dict:
     progress_enabled = _progress_enabled(cfg)
     start_epoch = training_cfg.get("start_epoch", 0)
     total_epochs = training_cfg.get("epochs", 100)
+    resume_path = _resolve_resume_checkpoint(cfg, run_dir)
+    if resume_path is not None:
+        checkpoint = load_checkpoint(
+            resume_path,
+            student_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            strict=_checkpoint_strict(cfg),
+            role="resume",
+            map_location=device,
+        )
+        checkpoint_loads.append(checkpoint.get("_load_info"))
+        start_epoch = int(checkpoint.get("epoch", start_epoch))
+        best_val_loss = float(checkpoint.get("best_val_loss", checkpoint.get("test_loss", best_val_loss)))
+        epochs_without_improvement = int(checkpoint.get("epochs_without_improvement", 0))
     try:
         epoch_progress = tqdm(
             range(start_epoch, total_epochs),
@@ -323,6 +368,13 @@ def train(cfg: dict) -> dict:
                 lr=f"{current_lr:.2e}",
             )
             _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
+            improved = val_loss < best_val_loss - training_cfg.get("min_delta", 0.0)
+            if improved:
+                best_val_loss = val_loss
+                epochs_without_improvement = 0
+                torch.save(student_model.state_dict(), run_dir / "checkpoints" / "best.pth")
+            else:
+                epochs_without_improvement += 1
             save_checkpoint(
                 {
                     "epoch": epoch + 1,
@@ -330,23 +382,23 @@ def train(cfg: dict) -> dict:
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "test_loss": val_loss,
+                    "best_val_loss": best_val_loss,
+                    "epochs_without_improvement": epochs_without_improvement,
                 },
                 run_dir / "checkpoints",
                 "last.pth",
             )
-            if val_loss < best_val_loss - training_cfg.get("min_delta", 0.0):
-                best_val_loss = val_loss
-                epochs_without_improvement = 0
-                torch.save(student_model.state_dict(), run_dir / "checkpoints" / "best.pth")
-            else:
-                epochs_without_improvement += 1
-                if training_cfg.get("use_early_stopping", True) and epochs_without_improvement >= training_cfg.get("patience", 20):
-                    break
+            if (
+                not improved
+                and training_cfg.get("use_early_stopping", True)
+                and epochs_without_improvement >= training_cfg.get("patience", 20)
+            ):
+                break
     finally:
         _close_tensorboard_writer(tensorboard_writer)
 
     np.savez(run_dir / "training_outputs.npz", **{k: np.asarray(v) for k, v in history.items()})
-    train_log = {**history, "epoch_logs": epoch_logs}
+    train_log = {**history, "epoch_logs": epoch_logs, "checkpoint_loads": checkpoint_loads}
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
         json.dump(train_log, f, indent=2)
     plot_training_curves(history, run_dir)
@@ -355,6 +407,7 @@ def train(cfg: dict) -> dict:
         "history": history,
         "epoch_logs": epoch_logs,
         "best_val_loss": best_val_loss,
+        "checkpoint_loads": checkpoint_loads,
     }
 
 

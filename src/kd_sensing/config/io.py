@@ -25,6 +25,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
         cfg = deep_merge(cfg, file_cfg)
     if overrides:
         cfg = deep_merge(cfg, parse_overrides(overrides))
+    validate_config(cfg)
     return cfg
 
 
@@ -88,6 +89,57 @@ def safe_load_yaml(text: str) -> dict[str, Any]:
     if yaml is not None:
         return yaml.safe_load(text)
     return parse_simple_yaml(text)
+
+
+def validate_config(cfg: dict[str, Any]) -> None:
+    """Validate structural constraints that current model implementations rely on."""
+
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if _uses_image(cfg):
+        image_size = tuple(dataset_cfg.get("image_size", [224, 224]))
+        if image_size != (224, 224):
+            raise ValueError(
+                "Current image-only/fusion teacher and motion mask path require image_size "
+                f"[224, 224] (224x224), got {list(image_size)}."
+            )
+    if _uses_radar(cfg):
+        radar_size = dataset_cfg.get("radar_size")
+        if radar_size is not None and tuple(radar_size) != (128, 64):
+            raise ValueError(
+                "Current radar branch requires RA/DA input size 128x64, "
+                f"got radar_size {list(radar_size)}."
+            )
+        fft_tuple = tuple(dataset_cfg.get("fft_tuple", [64, 256, 128]))
+        clipped_range = int(dataset_cfg.get("clipped_range", 128))
+        if len(fft_tuple) < 3 or clipped_range != 128 or int(fft_tuple[0]) != 64 or int(fft_tuple[2]) != 128:
+            raise ValueError(
+                "Current radar branch requires RA/DA input size 128x64. "
+                f"Use clipped_range=128 and fft_tuple first/third values 64/128; "
+                f"got clipped_range={clipped_range}, fft_tuple={list(fft_tuple)}."
+            )
+
+
+def _uses_image(cfg: dict[str, Any]) -> bool:
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "image":
+        return True
+    return task == "fusion" and "image" in _fusion_modalities(cfg)
+
+
+def _uses_radar(cfg: dict[str, Any]) -> bool:
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "radar":
+        return True
+    return task == "fusion" and "radar" in _fusion_modalities(cfg)
+
+
+def _fusion_modalities(cfg: dict[str, Any]) -> set[str]:
+    modalities: set[str] = set()
+    for role in ("teacher", "student"):
+        role_modalities = cfg.get("model", {}).get(role, {}).get("modalities")
+        if role_modalities:
+            modalities.update(str(name) for name in role_modalities)
+    return modalities
 
 
 def parse_simple_yaml(text: str) -> dict[str, Any]:

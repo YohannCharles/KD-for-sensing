@@ -1,7 +1,7 @@
 experiment:
   name: fusion_rkd
   task: fusion
-  seed: 0
+  seed: 42
   device: auto
 data:
   dataset:
@@ -13,8 +13,8 @@ data:
     num_pred: 3
     portion: 1.0
   dataloader:
-    train_batch_size: 3
-    test_batch_size: 3
+    train_batch_size: 32
+    test_batch_size: 32
     num_workers: 8
 model:
   feature_size: 64
@@ -26,20 +26,30 @@ model:
   downsample_ratio: 1
   teacher:
     type: fusion_teacher
-    modalities: [image, radar]
+    modalities:
+    - image
+    - radar
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params:
+    - 64
+    - 64
+    - 2
   student:
     type: fusion_student
-    modalities: [image, radar]
+    modalities:
+    - image
+    - radar
     feature_size: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    gru_params:
+    - 64
+    - 64
+    - 1
 distillation:
   type: rkd
-  temperature: 3.0
-  alpha: 0.4
+  temperature: 2.0
+  alpha: 0.3
   alpha_warmup_epochs: 0
   teacher_model_name: BothTeacher_best.pth
   rkd_pairs_per_anchor: 4
@@ -47,8 +57,8 @@ distillation:
   rkd_angle_weight: 10.0
 training:
   epochs: 100
-  lr: 0.00075
-  weight_decay: 0.0001
+  lr: 0.00095
+  weight_decay: 0.0
   grad_clip: 10.0
   patience: 20
   use_early_stopping: true
@@ -56,3 +66,10 @@ training:
 output:
   dir: outputs
   run_name: fusion_rkd
+scheduler:
+  type: cosine_warm_restarts
+  T_0: 10
+  T_mult: 2
+  eta_min: 1.0e-06
+paths:
+  weights_dir: All_models

@@ -6,7 +6,7 @@ DEFAULT_CONFIG = {
     "experiment": {
         "name": "kd_sensing",
         "task": "image",
-        "seed": 0,
+        "seed": 42,
         "device": "auto",
     },
     "paths": {
@@ -45,8 +45,8 @@ DEFAULT_CONFIG = {
             "lidar_jitter_std": 0.0,
         },
         "dataloader": {
-            "train_batch_size": 3,
-            "test_batch_size": 3,
+            "train_batch_size": 32,
+            "test_batch_size": 32,
             "num_workers": 8,
         },
     },
@@ -62,13 +62,13 @@ DEFAULT_CONFIG = {
             "type": "image_teacher",
             "feature_size": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 2],
+            "gru_params": [64, 64, 1],
         },
         "student": {
             "type": "image_student",
             "feature_size": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 2],
+            "gru_params": [64, 64, 1],
         },
     },
     "loss": {
@@ -83,12 +83,12 @@ DEFAULT_CONFIG = {
         "alpha_warmup_epochs": 0,
         "teacher_model_name": "ImageTeacher_best.pth",
         "rkd_pairs_per_anchor": 4,
-        "rkd_distance_weight": 10.0,
-        "rkd_angle_weight": 10.0,
+        "rkd_distance_weight": 50.0,
+        "rkd_angle_weight": 50.0,
     },
     "training": {
         "epochs": 100,
-        "lr": 7.5e-4,
+        "lr": 1e-3,
         "weight_decay": 0.0,
         "grad_clip": 10.0,
         "patience": 20,
@@ -122,5 +122,8 @@ DEFAULT_CONFIG = {
         "progress": {
             "enabled": True,
         },
+    },
+    "checkpoint": {
+        "strict_load": True,
     },
 }

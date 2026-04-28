@@ -15,6 +15,7 @@ from kd_sensing.engine.builders import (
     prepare_lidar_normalizer,
 )
 from kd_sensing.engine.validator import validate
+from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.seed import set_seed
 
@@ -46,17 +47,22 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     )
     model = build_model(cfg["model"]["student"]).to(device)
     weight_path = weights or cfg.get("evaluation", {}).get("weights")
+    checkpoint_load = None
     if weight_path:
         resolved = resolve_path(weight_path)
-        state_dict = torch.load(resolved, map_location=device)
-        if isinstance(state_dict, dict) and "state_dict" in state_dict:
-            state_dict = state_dict["state_dict"]
-        model.load_state_dict(state_dict, strict=False)
+        load_result = load_model_state(
+            resolved,
+            model,
+            role="evaluation",
+            map_location=device,
+            strict=bool(cfg.get("checkpoint", {}).get("strict_load", True)),
+        )
+        checkpoint_load = checkpoint_load_summary(load_result)
     criterion = build_task_criterion(cfg)
     metrics = validate(model, dataloader, cfg, criterion, device, output_dir=run_dir)
     with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
-    return {"run_dir": str(run_dir), "metrics": metrics}
+    return {"run_dir": str(run_dir), "metrics": metrics, "checkpoint_load": checkpoint_load}
 
 
 def _evaluation_uses_gps(cfg: dict) -> bool:
