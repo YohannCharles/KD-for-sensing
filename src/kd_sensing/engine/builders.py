@@ -30,6 +30,7 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
 def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     loader_cfg = cfg["data"]["dataloader"]
     train_dataset = build_dataset(cfg, "train")
+    prepare_lidar_normalizer(cfg, train_dataset)
     dataset_kwargs = {}
     if getattr(train_dataset, "use_gps", False):
         dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
@@ -50,6 +51,13 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
             num_workers=loader_cfg.get("num_workers", 0),
         ),
     }
+
+
+def prepare_lidar_normalizer(cfg: dict[str, Any], dataset: Any) -> None:
+    if not getattr(dataset, "needs_lidar_streaming_stats", False):
+        return
+    progress_enabled = cfg.get("output", {}).get("progress", {}).get("enabled", True)
+    dataset.fit_lidar_normalizer_streaming(progress_enabled=progress_enabled)
 
 
 def _config_uses_gps(cfg: dict[str, Any]) -> bool:

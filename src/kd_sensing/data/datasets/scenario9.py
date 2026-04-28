@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from tqdm.auto import tqdm
 
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.transforms import (
@@ -12,6 +15,7 @@ from kd_sensing.data.transforms import (
     DEFAULT_LIDAR_BEV_SIZE,
     DEFAULT_LIDAR_ROI,
     LidarBEVNormalizer,
+    LidarBEVStreamingStats,
     SUPPORTED_GPS_FEATURE_MODE,
     build_image_transform,
     joined_resource,
@@ -59,8 +63,10 @@ class Scenario9Dataset(Dataset):
         lidar_cache_dir: str | None = None,
         lidar_use_cache: bool = False,
         lidar_write_cache: bool = False,
-        lidar_normalize: bool = True,
+        lidar_normalize: bool = False,
+        lidar_normalization: dict[str, Any] | None = None,
         lidar_normalizer: LidarBEVNormalizer | None = None,
+        lidar_memory_cache: bool | dict[str, Any] = False,
         lidar_augment: bool = False,
         lidar_point_dropout: float = 0.0,
         lidar_jitter_std: float = 0.0,
@@ -93,14 +99,21 @@ class Scenario9Dataset(Dataset):
         self.lidar_background_distance_threshold = lidar_background_distance_threshold
         self.lidar_use_cache = lidar_use_cache
         self.lidar_write_cache = lidar_write_cache
-        self.lidar_normalize = lidar_normalize
+        self.lidar_normalization = self._resolve_lidar_normalization(lidar_normalize, lidar_normalization)
+        self.lidar_normalize = self.lidar_normalization["enabled"]
+        self.lidar_normalization_mode = self.lidar_normalization["mode"]
+        self.lidar_stats_path = self._resolve_lidar_stats_path(self.lidar_normalization.get("stats_path"))
+        self.lidar_stats_recompute = bool(self.lidar_normalization.get("recompute", False))
         self.lidar_normalizer = lidar_normalizer
+        self.lidar_memory_cache_enabled, self.lidar_memory_cache_max_items = self._resolve_lidar_memory_cache(
+            lidar_memory_cache
+        )
         self.lidar_augment = lidar_augment
         self.lidar_point_dropout = lidar_point_dropout
         self.lidar_jitter_std = lidar_jitter_std
         self.lidar_cache_dir = self._resolve_lidar_cache_dir(lidar_cache_dir)
         self.lidar_background_points = load_lidar_background_points(self.data_root, lidar_background_path)
-        self._lidar_bev_cache: dict[int, np.ndarray] = {}
+        self._lidar_bev_cache: OrderedDict[int, np.ndarray] = OrderedDict()
         self.transform = build_image_transform(image_size)
         self.samples = create_samples(self.root_csv, portion=portion)
         if self.use_gps:
@@ -108,7 +121,7 @@ class Scenario9Dataset(Dataset):
             self._prepare_gps_scaler()
         if self.use_lidar:
             self._ensure_lidar_columns()
-            self._prepare_lidar_normalizer()
+            self._prepare_lidar_normalizer_from_config()
 
     def __len__(self) -> int:
         return len(self.samples.rgb_paths)
@@ -153,7 +166,13 @@ class Scenario9Dataset(Dataset):
                 idx,
                 augment=self.split == "train" and self.lidar_augment,
             )
-            if self.lidar_normalizer is not None:
+            if self.lidar_normalize:
+                if self.lidar_normalizer is None:
+                    raise ValueError(
+                        "LiDAR normalization is enabled but no normalizer is available. "
+                        "Use build_dataloaders/evaluate, provide lidar_normalization.stats_path, "
+                        "or disable LiDAR normalization."
+                    )
                 lidar_bev = self.lidar_normalizer.transform(lidar_bev)
             sample["lidar"] = torch.tensor(lidar_bev, dtype=torch.float32)
         return sample
@@ -212,6 +231,50 @@ class Scenario9Dataset(Dataset):
             return path
         return self.data_root / path
 
+    def _resolve_lidar_stats_path(self, stats_path: str | None) -> Path | None:
+        if not stats_path:
+            return None
+        return resolve_path(stats_path)
+
+    def _resolve_lidar_normalization(
+        self,
+        legacy_enabled: bool,
+        config: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if config is None:
+            enabled = bool(legacy_enabled)
+            mode = "streaming_stats" if enabled else "none"
+            stats_path = None
+            recompute = False
+        else:
+            enabled = bool(config.get("enabled", False))
+            mode = str(config.get("mode", "streaming_stats" if enabled else "none"))
+            stats_path = config.get("stats_path")
+            recompute = bool(config.get("recompute", False))
+        if not enabled:
+            mode = "none"
+        if mode not in {"none", "streaming_stats"}:
+            raise ValueError(f"Unsupported LiDAR normalization mode '{mode}'.")
+        return {
+            "enabled": enabled,
+            "mode": mode,
+            "stats_path": stats_path,
+            "recompute": recompute,
+        }
+
+    def _resolve_lidar_memory_cache(self, config: bool | dict[str, Any]) -> tuple[bool, int | None]:
+        if isinstance(config, dict):
+            enabled = bool(config.get("enabled", False))
+            max_items = config.get("max_items")
+        else:
+            enabled = bool(config)
+            max_items = None
+        if max_items is not None:
+            max_items = int(max_items)
+            if max_items <= 0:
+                raise ValueError("lidar_memory_cache.max_items must be positive when provided.")
+        return enabled, max_items
+
     def _ensure_lidar_columns(self) -> None:
         if self.samples.lidar_paths is None:
             raise ValueError(
@@ -219,23 +282,51 @@ class Scenario9Dataset(Dataset):
                 "Regenerate sequence CSVs with include_lidar: true."
             )
 
-    def _prepare_lidar_normalizer(self) -> None:
+    def _prepare_lidar_normalizer_from_config(self) -> None:
         if not self.lidar_normalize:
             self.lidar_normalizer = None
             return
         if self.lidar_normalizer is not None:
             return
+        if self.lidar_stats_path is not None and self.lidar_stats_path.exists() and not self.lidar_stats_recompute:
+            self.lidar_normalizer = LidarBEVNormalizer.load(self.lidar_stats_path)
+            return
         if self.split != "train":
             raise ValueError(
-                "LiDAR normalization for non-train split requires a train-fitted lidar_normalizer. "
-                "Use build_dataloaders/evaluate so the train normalizer can be reused."
+                "LiDAR normalization for non-train split requires a train-fitted lidar_normalizer "
+                "or an existing lidar_normalization.stats_path. Use build_dataloaders/evaluate so "
+                "the train normalizer can be reused."
             )
-        all_bev = [self._lidar_bev_for_index(idx, augment=False) for idx in range(len(self))]
-        stacked = np.concatenate(all_bev, axis=0)
-        self.lidar_normalizer = LidarBEVNormalizer().fit(stacked)
+
+    @property
+    def needs_lidar_streaming_stats(self) -> bool:
+        return (
+            self.use_lidar
+            and self.lidar_normalize
+            and self.lidar_normalization_mode == "streaming_stats"
+            and self.lidar_normalizer is None
+            and self.split == "train"
+        )
+
+    def fit_lidar_normalizer_streaming(self, *, progress_enabled: bool = False) -> LidarBEVNormalizer:
+        if not self.needs_lidar_streaming_stats:
+            if self.lidar_normalizer is None:
+                raise ValueError("LiDAR streaming stats were requested but the dataset is not fit-ready.")
+            return self.lidar_normalizer
+        stats = LidarBEVStreamingStats()
+        iterator = range(len(self))
+        if progress_enabled:
+            iterator = tqdm(iterator, desc="LiDAR stats", unit="sample")
+        for idx in iterator:
+            stats.update(self._lidar_bev_for_index(idx, augment=False))
+        self.lidar_normalizer = stats.finalize()
+        if self.lidar_stats_path is not None:
+            self.lidar_normalizer.save(self.lidar_stats_path)
+        return self.lidar_normalizer
 
     def _lidar_bev_for_index(self, idx: int, *, augment: bool) -> np.ndarray:
-        if not augment and idx in self._lidar_bev_cache:
+        if not augment and self.lidar_memory_cache_enabled and idx in self._lidar_bev_cache:
+            self._lidar_bev_cache.move_to_end(idx)
             return self._lidar_bev_cache[idx]
         if self.samples.lidar_paths is None:
             raise ValueError("LiDAR paths are unavailable for this dataset.")
@@ -257,6 +348,10 @@ class Scenario9Dataset(Dataset):
             point_dropout=self.lidar_point_dropout,
             jitter_std=self.lidar_jitter_std,
         )
-        if not augment:
+        if not augment and self.lidar_memory_cache_enabled:
             self._lidar_bev_cache[idx] = bev
+            self._lidar_bev_cache.move_to_end(idx)
+            if self.lidar_memory_cache_max_items is not None:
+                while len(self._lidar_bev_cache) > self.lidar_memory_cache_max_items:
+                    self._lidar_bev_cache.popitem(last=False)
         return bev

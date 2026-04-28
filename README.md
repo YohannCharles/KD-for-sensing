@@ -139,6 +139,18 @@ LiDAR-only 配置使用 `lidar1..lidar8` 序列列读取点云，并在线转换
 默认通道为 height、intensity、density，默认尺寸为 `224x224`，默认 ROI 为
 `[-30, 30, -30, 30, -3, 5]`。内置读取器支持 `.mat`、`.npy` 点云数组、ASCII PCD 和
 文本/CSV 数值点云；二进制 PCD 需要先离线转换为 ASCII PCD 或 `.npy`。
+LiDAR 默认按样本懒加载，不在 Dataset 初始化阶段扫描全训练集计算 z-score；BEV 构造本身会输出
+稳定的局部归一化范围。需要全局通道统计时，显式启用流式统计：
+
+```bash
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/lidar/teacher_no_kd.yaml \
+  -o data.dataset.lidar_normalization.enabled=true \
+  -o data.dataset.lidar_normalization.mode=streaming_stats \
+  -o data.dataset.lidar_normalization.stats_path=outputs/cache/lidar_stats_train.npz
+```
+
+使用 `conda run` 训练时建议加 `--no-capture-output` 和 `python -u`，否则 tqdm/stderr 可能不会实时显示。
 
 Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` 选择参与融合的模态，
 可用值为 `image`、`radar`、`gps`、`lidar`。canonical fusion 配置中 teacher/student 的
@@ -210,6 +222,7 @@ LiDAR 实验需要带 `lidar1..lidar8` 列的序列 CSV。运行
 `test_seqs_RA_LIDAR.csv`；运行 `configs/preprocess/sequences_ra_gps_lidar.yaml` 后会生成同时带
 GPS 和 LiDAR 列的 fusion CSV。`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为
 `.npy` BEV 缓存；训练配置中将 `lidar_cache_dir` 指向该目录并启用 `lidar_use_cache` 后可复用缓存。
+BEV cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时全量载入 cache 目录。
 
 ## 破坏性变更
 

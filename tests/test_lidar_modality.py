@@ -17,6 +17,7 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
 from kd_sensing.data.transforms import (  # noqa: E402
     LidarBEVNormalizer,
+    LidarBEVStreamingStats,
     build_lidar_bev,
     filter_lidar_points,
     lidar_points_to_bev,
@@ -124,11 +125,77 @@ def test_lidar_dataset_returns_lidar_tensor_and_keeps_old_behavior(tmp_path: Pat
 
     assert sample["lidar"].shape == (3, 3, 16, 16)
     assert sample["lidar"].dtype == torch.float32
+    assert len(lidar_dataset._lidar_bev_cache) == 0
     assert "lidar" not in old_sample
 
 
-def test_lidar_normalizer_fits_train_and_reuses_for_test(tmp_path: Path):
+def test_lidar_dataset_initialization_does_not_materialize_lidar(monkeypatch, tmp_path: Path):
     csv_path = tmp_path / "seq.csv"
+    _write_dataset_fixture(tmp_path, csv_path)
+
+    def fail_if_called(self, idx: int, *, augment: bool):  # noqa: ARG001
+        raise AssertionError("LiDAR BEV should not be read during dataset initialization")
+
+    monkeypatch.setattr(Scenario9Dataset, "_lidar_bev_for_index", fail_if_called)
+
+    dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=3,
+        num_pred=1,
+        fft_tuple=[4, 8, 6],
+        clipped_range=4,
+        use_lidar=True,
+        lidar_bev_size=[16, 16],
+        lidar_normalization={"enabled": True, "mode": "streaming_stats"},
+    )
+
+    assert dataset.lidar_normalizer is None
+    assert dataset.needs_lidar_streaming_stats is True
+
+    legacy_dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=3,
+        num_pred=1,
+        fft_tuple=[4, 8, 6],
+        clipped_range=4,
+        use_lidar=True,
+        lidar_bev_size=[16, 16],
+        lidar_normalize=True,
+    )
+
+    assert legacy_dataset.lidar_normalization_mode == "streaming_stats"
+    assert legacy_dataset.needs_lidar_streaming_stats is True
+
+
+def test_lidar_streaming_stats_matches_direct_channel_math():
+    first = np.arange(2 * 3 * 4 * 4, dtype=np.float32).reshape(2, 3, 4, 4) / 100.0
+    second = np.full((1, 3, 4, 4), 0.25, dtype=np.float32)
+
+    stats = LidarBEVStreamingStats()
+    stats.update(first)
+    stats.update(second)
+    normalizer = stats.finalize()
+
+    channel_values = np.moveaxis(first, 1, 0).reshape(3, -1)
+    second_values = np.moveaxis(second, 1, 0).reshape(3, -1)
+    expected_sum = channel_values.sum(axis=1) + second_values.sum(axis=1)
+    expected_sumsq = np.square(channel_values).sum(axis=1) + np.square(second_values).sum(axis=1)
+    expected_count = channel_values.shape[1] + second_values.shape[1]
+    expected_mean = expected_sum / expected_count
+    expected_std = np.sqrt(expected_sumsq / expected_count - np.square(expected_mean))
+
+    np.testing.assert_allclose(normalizer.mean_.reshape(-1), expected_mean, rtol=1e-6)
+    np.testing.assert_allclose(normalizer.scale_.reshape(-1), expected_std, rtol=1e-6)
+    assert normalizer.count_ == expected_count
+
+
+def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    stats_path = tmp_path / "lidar_stats.npz"
     _write_dataset_fixture(tmp_path, csv_path)
 
     train_dataset = Scenario9Dataset(
@@ -141,7 +208,13 @@ def test_lidar_normalizer_fits_train_and_reuses_for_test(tmp_path: Path):
         clipped_range=4,
         use_lidar=True,
         lidar_bev_size=[16, 16],
+        lidar_normalization={
+            "enabled": True,
+            "mode": "streaming_stats",
+            "stats_path": str(stats_path),
+        },
     )
+    train_normalizer = train_dataset.fit_lidar_normalizer_streaming()
     test_dataset = Scenario9Dataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
@@ -152,11 +225,17 @@ def test_lidar_normalizer_fits_train_and_reuses_for_test(tmp_path: Path):
         clipped_range=4,
         use_lidar=True,
         lidar_bev_size=[16, 16],
-        lidar_normalizer=train_dataset.lidar_normalizer,
+        lidar_normalization={
+            "enabled": True,
+            "mode": "streaming_stats",
+            "stats_path": str(stats_path),
+        },
     )
 
-    assert isinstance(train_dataset.lidar_normalizer, LidarBEVNormalizer)
-    assert test_dataset.lidar_normalizer is train_dataset.lidar_normalizer
+    assert isinstance(train_normalizer, LidarBEVNormalizer)
+    assert stats_path.exists()
+    np.testing.assert_allclose(test_dataset.lidar_normalizer.mean_, train_normalizer.mean_)
+    np.testing.assert_allclose(test_dataset.lidar_normalizer.scale_, train_normalizer.scale_)
     with pytest.raises(ValueError, match="requires a train-fitted lidar_normalizer"):
         Scenario9Dataset(
             data_root=str(tmp_path),
@@ -168,7 +247,24 @@ def test_lidar_normalizer_fits_train_and_reuses_for_test(tmp_path: Path):
             clipped_range=4,
             use_lidar=True,
             lidar_bev_size=[16, 16],
+            lidar_normalization={"enabled": True, "mode": "streaming_stats"},
         )
+
+
+def test_lidar_structured_normalization_config_override():
+    cfg = load_config(
+        ROOT / "configs/lidar/teacher_no_kd.yaml",
+        [
+            "data.dataset.lidar_normalization.enabled=true",
+            "data.dataset.lidar_normalization.mode=streaming_stats",
+            "data.dataset.lidar_normalization.stats_path=outputs/cache/lidar_stats.npz",
+        ],
+    )
+
+    assert cfg["data"]["dataset"]["lidar_normalize"] is False
+    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is True
+    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "streaming_stats"
+    assert cfg["data"]["dataset"]["lidar_normalization"]["stats_path"] == "outputs/cache/lidar_stats.npz"
 
 
 def test_lidar_models_forward_contracts_and_param_validation():
@@ -265,6 +361,7 @@ def test_lidar_configs_build(config_path: str):
 
     assert cfg["experiment"]["task"] == "lidar"
     assert cfg["data"]["dataset"]["use_lidar"] is True
+    assert cfg["data"]["dataset"]["lidar_normalize"] is False
     assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
     assert cfg["model"]["student"]["gru_params"] == [64, 64, 2]
     assert isinstance(model, (LidarModalityNet, LidarStudentModalityNet))
@@ -283,7 +380,7 @@ def test_lidar_fusion_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["use_lidar"] is True
     assert cfg["data"]["dataset"]["lidar_bev_size"] == [224, 224]
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
-    assert cfg["data"]["dataset"]["lidar_normalize"] is True
+    assert cfg["data"]["dataset"]["lidar_normalize"] is False
     assert cfg["model"]["teacher"]["lidar_channels"] == 3
     assert cfg["model"]["student"]["lidar_channels"] == 3
     assert isinstance(teacher, FusionModalityNet)

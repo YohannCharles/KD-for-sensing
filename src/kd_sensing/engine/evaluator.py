@@ -7,7 +7,13 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.config.io import dump_config
-from kd_sensing.engine.builders import build_dataset, build_device, build_model, build_task_criterion
+from kd_sensing.engine.builders import (
+    build_dataset,
+    build_device,
+    build_model,
+    build_task_criterion,
+    prepare_lidar_normalizer,
+)
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.seed import set_seed
@@ -22,11 +28,13 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     dataset_kwargs = {}
     if _evaluation_uses_gps(cfg):
         train_dataset = build_dataset(cfg, "train")
+        prepare_lidar_normalizer(cfg, train_dataset)
         dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
         if getattr(train_dataset, "use_lidar", False):
             dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     elif _evaluation_uses_lidar(cfg):
         train_dataset = build_dataset(cfg, "train")
+        prepare_lidar_normalizer(cfg, train_dataset)
         dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     dataset = build_dataset(cfg, "test", **dataset_kwargs)
     loader_cfg = cfg["data"]["dataloader"]

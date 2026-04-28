@@ -557,6 +557,7 @@ class GPSStandardScaler:
 class LidarBEVNormalizer:
     mean_: np.ndarray | None = None
     scale_: np.ndarray | None = None
+    count_: int | None = None
 
     def fit(self, bev_sequences: np.ndarray) -> "LidarBEVNormalizer":
         features = np.asarray(bev_sequences, dtype=np.float64)
@@ -567,6 +568,7 @@ class LidarBEVNormalizer:
         self.mean_ = features.mean(axis=(0, 2, 3), keepdims=True)
         self.scale_ = features.std(axis=(0, 2, 3), keepdims=True)
         self.scale_[self.scale_ < 1e-8] = 1.0
+        self.count_ = int(features.shape[0] * features.shape[2] * features.shape[3])
         return self
 
     def transform(self, bev_sequence: np.ndarray) -> np.ndarray:
@@ -581,3 +583,89 @@ class LidarBEVNormalizer:
 
     def fit_transform(self, bev_sequences: np.ndarray) -> np.ndarray:
         return self.fit(bev_sequences).transform(bev_sequences)
+
+    def save(self, path: str | Path) -> None:
+        if self.mean_ is None or self.scale_ is None:
+            raise ValueError("LiDAR normalizer has not been fit.")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "mean": np.asarray(self.mean_, dtype=np.float32),
+            "scale": np.asarray(self.scale_, dtype=np.float32),
+            "std": np.asarray(self.scale_, dtype=np.float32),
+            "count": int(self.count_ or 0),
+        }
+        if target.suffix.lower() == ".pt":
+            torch.save(payload, target)
+        else:
+            np.savez(target, **payload)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "LidarBEVNormalizer":
+        source = Path(path)
+        if source.suffix.lower() == ".pt":
+            try:
+                payload = torch.load(source, map_location="cpu", weights_only=True)
+            except TypeError:  # pragma: no cover - older torch
+                payload = torch.load(source, map_location="cpu")
+            mean = np.asarray(payload["mean"], dtype=np.float32)
+            scale_key = "scale" if "scale" in payload else "std"
+            scale = np.asarray(payload[scale_key], dtype=np.float32)
+            count = int(payload.get("count", 0) or 0)
+        else:
+            with np.load(source) as payload:
+                mean = np.asarray(payload["mean"], dtype=np.float32)
+                scale_key = "scale" if "scale" in payload else "std"
+                scale = np.asarray(payload[scale_key], dtype=np.float32)
+                count = int(np.asarray(payload["count"]).item()) if "count" in payload else 0
+        return cls(mean_=cls._coerce_channel_stats(mean), scale_=cls._coerce_channel_stats(scale), count_=count)
+
+    @staticmethod
+    def _coerce_channel_stats(values: np.ndarray) -> np.ndarray:
+        array = np.asarray(values, dtype=np.float32)
+        if array.ndim == 1:
+            return array.reshape(1, array.shape[0], 1, 1)
+        if array.ndim == 3:
+            return array[None, ...]
+        if array.ndim == 4:
+            return array
+        raise ValueError(f"LiDAR channel stats must be 1D, 3D, or 4D, got {array.shape}.")
+
+
+@dataclass
+class LidarBEVStreamingStats:
+    sum_: np.ndarray | None = None
+    sumsq_: np.ndarray | None = None
+    count_: int = 0
+
+    def update(self, bev_sequence: np.ndarray) -> "LidarBEVStreamingStats":
+        features = np.asarray(bev_sequence, dtype=np.float64)
+        if features.ndim == 3:
+            features = features[None, ...]
+        if features.ndim != 4:
+            raise ValueError(f"LiDAR streaming stats expects [T, C, H, W] or [C, H, W], got {features.shape}.")
+        channel_values = np.moveaxis(features, 1, 0).reshape(features.shape[1], -1)
+        if self.sum_ is None:
+            self.sum_ = np.zeros(channel_values.shape[0], dtype=np.float64)
+            self.sumsq_ = np.zeros(channel_values.shape[0], dtype=np.float64)
+        if self.sum_.shape[0] != channel_values.shape[0]:
+            raise ValueError(
+                f"LiDAR channel count changed from {self.sum_.shape[0]} to {channel_values.shape[0]}."
+            )
+        self.sum_ += channel_values.sum(axis=1)
+        self.sumsq_ += np.square(channel_values).sum(axis=1)
+        self.count_ += int(channel_values.shape[1])
+        return self
+
+    def finalize(self) -> LidarBEVNormalizer:
+        if self.sum_ is None or self.sumsq_ is None or self.count_ <= 0:
+            raise ValueError("Cannot finalize LiDAR stats without any samples.")
+        mean = self.sum_ / self.count_
+        variance = self.sumsq_ / self.count_ - np.square(mean)
+        scale = np.sqrt(np.maximum(variance, 1e-12))
+        scale[scale < 1e-8] = 1.0
+        return LidarBEVNormalizer(
+            mean_=mean.astype(np.float32).reshape(1, -1, 1, 1),
+            scale_=scale.astype(np.float32).reshape(1, -1, 1, 1),
+            count_=self.count_,
+        )
