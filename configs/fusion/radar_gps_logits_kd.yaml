@@ -18,8 +18,8 @@ data:
     gps_feature_mode: relative_polar
     gps_normalize: true
   dataloader:
-    train_batch_size: 3
-    test_batch_size: 3
+    train_batch_size: 32
+    test_batch_size: 32
     num_workers: 8
 model:
   feature_size: 64
