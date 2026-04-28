@@ -19,7 +19,11 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     run_dir = resolve_output_dir(output_dir or cfg.get("output", {}).get("dir", "outputs")) / "evaluation"
     run_dir.mkdir(parents=True, exist_ok=True)
     dump_config(cfg, run_dir / "final_config.yaml")
-    dataset = build_dataset(cfg, "test")
+    dataset_kwargs = {}
+    if _evaluation_uses_gps(cfg):
+        train_dataset = build_dataset(cfg, "train")
+        dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
+    dataset = build_dataset(cfg, "test", **dataset_kwargs)
     loader_cfg = cfg["data"]["dataloader"]
     dataloader = DataLoader(
         dataset,
@@ -41,3 +45,18 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
         json.dump(metrics, f, indent=2)
     return {"run_dir": str(run_dir), "metrics": metrics}
 
+
+def _evaluation_uses_gps(cfg: dict) -> bool:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("use_gps", False):
+        return True
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "gps":
+        return True
+    if task != "fusion":
+        return False
+    for role in ("student", "teacher"):
+        modalities = cfg.get("model", {}).get(role, {}).get("modalities")
+        if modalities and "gps" in modalities:
+            return True
+    return False

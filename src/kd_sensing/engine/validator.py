@@ -9,6 +9,7 @@ from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
     prepare_fusion_inputs,
+    prepare_gps_inputs,
     prepare_image_inputs,
     prepare_labels,
     prepare_radar_inputs,
@@ -37,13 +38,14 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                 device=device,
             )
             if task == "fusion":
-                image_batch, radar_batch = prepare_fusion_inputs(
+                fusion_inputs = prepare_fusion_inputs(
                     batch,
                     seq_length=seq_length,
                     num_pred=num_pred,
                     device=device,
+                    modalities=cfg["model"]["student"].get("modalities"),
                 )
-                outputs, _, _ = forward_model(model, task, image_batch, radar_batch)
+                outputs, _, _ = forward_model(model, task, **fusion_inputs)
             elif task == "radar":
                 radar_batch = prepare_radar_inputs(
                     batch,
@@ -52,6 +54,14 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                     device=device,
                 )
                 outputs, _, _ = forward_model(model, task, radar_batch=radar_batch)
+            elif task == "gps":
+                gps_batch = prepare_gps_inputs(
+                    batch,
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    device=device,
+                )
+                outputs, _, _ = forward_model(model, task, gps_batch=gps_batch)
             else:
                 image_batch = prepare_image_inputs(
                     batch,

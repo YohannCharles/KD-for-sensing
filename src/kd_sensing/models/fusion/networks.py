@@ -3,8 +3,33 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.registries import MODELS
+
+
+VALID_FUSION_MODALITIES = ("image", "radar", "gps")
+
+
+def _normalize_modalities(modalities: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    selected = tuple(("image", "radar") if modalities is None else modalities)
+    if not selected:
+        raise ValueError("Fusion modalities must contain at least one modality.")
+    duplicates = sorted({name for name in selected if selected.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"Fusion modalities cannot contain duplicates: {duplicates}.")
+    invalid = [name for name in selected if name not in VALID_FUSION_MODALITIES]
+    if invalid:
+        raise ValueError(
+            f"Unknown fusion modalities {invalid}. Available modalities: {list(VALID_FUSION_MODALITIES)}."
+        )
+    return selected
+
+
+def _require_tensor(tensor: torch.Tensor | None, modality: str) -> torch.Tensor:
+    if tensor is None:
+        raise ValueError(f"Fusion model requires '{modality}' input because it is enabled in modalities.")
+    return tensor
 
 
 class FusionImageFeatureExtractor(nn.Module):
@@ -65,19 +90,26 @@ class FusionModalityNet(nn.Module):
         gru_params: list[int] | tuple[int, int, int],
         image_channels: int = 1,
         radar_channels: int = 2,
+        gps_input_size: int = 3,
         num_heads: int = 8,
+        modalities: list[str] | tuple[str, ...] | None = None,
     ):
         super().__init__()
         self.name = "FusionModalityNet"
+        self.modalities = _normalize_modalities(modalities)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
                 f"gru_input_size ({gru_input_size}) must equal feature_size ({feature_size})"
             )
-        self.image_feature_extractor = FusionImageFeatureExtractor(feature_size, image_channels)
-        self.radar_feature_extractor = RadarFeatureExtractor(feature_size, radar_channels)
+        if "image" in self.modalities:
+            self.image_feature_extractor = FusionImageFeatureExtractor(feature_size, image_channels)
+        if "radar" in self.modalities:
+            self.radar_feature_extractor = RadarFeatureExtractor(feature_size, radar_channels)
+        if "gps" in self.modalities:
+            self.gps_feature_extractor = GpsFeatureExtractor(feature_size, gps_input_size)
         self.fusion_layer = nn.Sequential(
-            nn.Linear(64 + 64, feature_size),
+            nn.Linear(feature_size * len(self.modalities), feature_size),
             nn.ReLU(),
             nn.Dropout(0.3),
         )
@@ -105,10 +137,43 @@ class FusionModalityNet(nn.Module):
             nn.Linear(64, num_classes),
         )
 
-    def forward(self, image_batch: torch.Tensor, radar_batch: torch.Tensor):
-        image_features = self.image_feature_extractor(image_batch)
-        radar_features = self.radar_feature_extractor(radar_batch)
-        fused_features = torch.cat([image_features, radar_features], dim=2)
+    def forward(
+        self,
+        image_batch: torch.Tensor | None = None,
+        radar_batch: torch.Tensor | None = None,
+        gps_batch: torch.Tensor | None = None,
+    ):
+        modality_features = []
+        batch_size = None
+        seq_len = None
+        if "image" in self.modalities:
+            image_features = self.image_feature_extractor(_require_tensor(image_batch, "image"))
+            batch_size, seq_len = _check_temporal_features(
+                image_features,
+                "image",
+                batch_size,
+                seq_len,
+            )
+            modality_features.append(image_features)
+        if "radar" in self.modalities:
+            radar_features = self.radar_feature_extractor(_require_tensor(radar_batch, "radar"))
+            batch_size, seq_len = _check_temporal_features(
+                radar_features,
+                "radar",
+                batch_size,
+                seq_len,
+            )
+            modality_features.append(radar_features)
+        if "gps" in self.modalities:
+            gps_features = self.gps_feature_extractor(_require_tensor(gps_batch, "gps"))
+            batch_size, seq_len = _check_temporal_features(
+                gps_features,
+                "gps",
+                batch_size,
+                seq_len,
+            )
+            modality_features.append(gps_features)
+        fused_features = torch.cat(modality_features, dim=2)
         features = self.fusion_layer(fused_features)
         features = self.layer_norm(features)
         seq_out, _ = self.GRU(features)
@@ -127,9 +192,12 @@ class StudentModalityNet(nn.Module):
         gru_params: list[int] | tuple[int, int, int],
         image_channels: int = 1,
         radar_channels: int = 2,
+        gps_input_size: int = 3,
+        modalities: list[str] | tuple[str, ...] | None = None,
     ):
         super().__init__()
         self.name = "StudentModalityNet"
+        self.modalities = _normalize_modalities(modalities)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
@@ -154,29 +222,43 @@ class StudentModalityNet(nn.Module):
                 nn.ReLU(inplace=True),
             )
 
-        self.image_cnn_layers = nn.Sequential(
-            nn.Conv2d(image_channels, 12, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(12),
-            nn.ReLU(inplace=True),
-            ds_conv_block(12, 16, stride=2),
-            ds_conv_block(16, 24, stride=2),
-            ds_conv_block(24, 40, stride=2),
-            ds_conv_block(40, 96, stride=2),
-        )
-        self.radar_cnn_layers = nn.Sequential(
-            nn.Conv2d(radar_channels, 12, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(12),
-            nn.ReLU(inplace=True),
-            ds_conv_block(12, 16, stride=2),
-            ds_conv_block(16, 24, stride=2),
-            ds_conv_block(24, 96, stride=2),
-        )
-        self.image_global_avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.image_global_max_pool = nn.AdaptiveMaxPool2d(1)
-        self.radar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.radar_global_max_pool = nn.AdaptiveMaxPool2d(1)
+        branch_dims = []
+        if "image" in self.modalities:
+            self.image_cnn_layers = nn.Sequential(
+                nn.Conv2d(image_channels, 12, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(12),
+                nn.ReLU(inplace=True),
+                ds_conv_block(12, 16, stride=2),
+                ds_conv_block(16, 24, stride=2),
+                ds_conv_block(24, 40, stride=2),
+                ds_conv_block(40, 96, stride=2),
+            )
+            self.image_global_avg_pool = nn.AdaptiveAvgPool2d(1)
+            self.image_global_max_pool = nn.AdaptiveMaxPool2d(1)
+            branch_dims.append(96 * 2)
+        if "radar" in self.modalities:
+            self.radar_cnn_layers = nn.Sequential(
+                nn.Conv2d(radar_channels, 12, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(12),
+                nn.ReLU(inplace=True),
+                ds_conv_block(12, 16, stride=2),
+                ds_conv_block(16, 24, stride=2),
+                ds_conv_block(24, 96, stride=2),
+            )
+            self.radar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
+            self.radar_global_max_pool = nn.AdaptiveMaxPool2d(1)
+            branch_dims.append(96 * 2)
+        if "gps" in self.modalities:
+            self.gps_projection = nn.Sequential(
+                nn.Linear(gps_input_size, 64),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.1),
+                nn.Linear(64, 96),
+                nn.ReLU(inplace=True),
+            )
+            branch_dims.append(96)
         self.fusion_layer = nn.Sequential(
-            nn.Linear(96 * 4, 128),
+            nn.Linear(sum(branch_dims), 128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
             nn.Linear(128, feature_size),
@@ -199,22 +281,96 @@ class StudentModalityNet(nn.Module):
             nn.Linear(64, num_classes),
         )
 
-    def forward(self, image_batch: torch.Tensor, radar_batch: torch.Tensor, beam=None):
-        batch_size, seq_len, channels, height, width = image_batch.shape
-        radar_batch_size, radar_seq_len, radar_channels, radar_height, radar_width = radar_batch.shape
-        if batch_size != radar_batch_size or seq_len != radar_seq_len:
-            raise ValueError("Image and radar batches must share batch and sequence dimensions.")
-        img = image_batch.reshape(batch_size * seq_len, channels, height, width)
-        rad = radar_batch.reshape(batch_size * seq_len, radar_channels, radar_height, radar_width)
-        img_feat = self.image_cnn_layers(img)
-        rad_feat = self.radar_cnn_layers(rad)
-        img_avg = self.image_global_avg_pool(img_feat).flatten(1)
-        img_max = self.image_global_max_pool(img_feat).flatten(1)
-        rad_avg = self.radar_global_avg_pool(rad_feat).flatten(1)
-        rad_max = self.radar_global_max_pool(rad_feat).flatten(1)
-        fused = torch.cat([img_avg, img_max, rad_avg, rad_max], dim=1)
+    def forward(
+        self,
+        image_batch: torch.Tensor | None = None,
+        radar_batch: torch.Tensor | None = None,
+        gps_batch: torch.Tensor | None = None,
+        beam=None,
+    ):
+        batch_size = None
+        seq_len = None
+        pooled_features = []
+
+        if "image" in self.modalities:
+            image_batch = _require_tensor(image_batch, "image")
+            batch_size, seq_len, channels, height, width = _check_sequence_tensor(
+                image_batch,
+                "image",
+                batch_size,
+                seq_len,
+                expected_ndim=5,
+            )
+            img = image_batch.reshape(batch_size * seq_len, channels, height, width)
+            img_feat = self.image_cnn_layers(img)
+            pooled_features.extend(
+                [
+                    self.image_global_avg_pool(img_feat).flatten(1),
+                    self.image_global_max_pool(img_feat).flatten(1),
+                ]
+            )
+        if "radar" in self.modalities:
+            radar_batch = _require_tensor(radar_batch, "radar")
+            batch_size, seq_len, radar_channels, radar_height, radar_width = _check_sequence_tensor(
+                radar_batch,
+                "radar",
+                batch_size,
+                seq_len,
+                expected_ndim=5,
+            )
+            rad = radar_batch.reshape(batch_size * seq_len, radar_channels, radar_height, radar_width)
+            rad_feat = self.radar_cnn_layers(rad)
+            pooled_features.extend(
+                [
+                    self.radar_global_avg_pool(rad_feat).flatten(1),
+                    self.radar_global_max_pool(rad_feat).flatten(1),
+                ]
+            )
+        if "gps" in self.modalities:
+            gps_batch = _require_tensor(gps_batch, "gps")
+            batch_size, seq_len, gps_dim = _check_sequence_tensor(
+                gps_batch,
+                "gps",
+                batch_size,
+                seq_len,
+                expected_ndim=3,
+            )
+            gps_flat = gps_batch.reshape(batch_size * seq_len, gps_dim)
+            pooled_features.append(self.gps_projection(gps_flat))
+
+        fused = torch.cat(pooled_features, dim=1)
         fused_features = self.fusion_layer(fused).view(batch_size, seq_len, -1)
         features = self.layer_norm(fused_features)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
         return pred, features, seq_out
+
+
+def _check_temporal_features(
+    features: torch.Tensor,
+    modality: str,
+    batch_size: int | None,
+    seq_len: int | None,
+) -> tuple[int, int]:
+    if features.ndim != 3:
+        raise ValueError(f"{modality} features must have shape [B, T, D], got {tuple(features.shape)}.")
+    current_batch, current_seq = int(features.shape[0]), int(features.shape[1])
+    if batch_size is not None and (current_batch != batch_size or current_seq != seq_len):
+        raise ValueError("Enabled fusion modalities must share batch and sequence dimensions.")
+    return current_batch, current_seq
+
+
+def _check_sequence_tensor(
+    tensor: torch.Tensor,
+    modality: str,
+    batch_size: int | None,
+    seq_len: int | None,
+    *,
+    expected_ndim: int,
+) -> tuple[int, ...]:
+    if tensor.ndim != expected_ndim:
+        raise ValueError(f"{modality} input must have {expected_ndim} dimensions, got {tuple(tensor.shape)}.")
+    current_batch, current_seq = int(tensor.shape[0]), int(tensor.shape[1])
+    if batch_size is not None and (current_batch != batch_size or current_seq != seq_len):
+        raise ValueError("Enabled fusion modalities must share batch and sequence dimensions.")
+    return tuple(int(dim) for dim in tensor.shape)

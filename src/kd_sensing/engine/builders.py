@@ -11,21 +11,27 @@ from kd_sensing.registries import DATASETS, DISTILLERS, LOSSES, METRICS, MODELS,
 from kd_sensing.utils.paths import resolve_path
 
 
-def build_dataset(cfg: dict[str, Any], split: str):
+def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     import_default_components()
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
     dataset_type = dataset_cfg.get("type")
     dataset_cfg["split"] = split
+    if _config_uses_gps(cfg):
+        dataset_cfg.setdefault("use_gps", True)
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
         csv_key = "train_csv_name" if split == "train" else "test_csv_name"
         dataset_cfg["csv_name"] = dataset_cfg.get(csv_key)
+    dataset_cfg.update(extra_dataset_kwargs)
     return DATASETS.build(dataset_cfg)
 
 
 def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     loader_cfg = cfg["data"]["dataloader"]
     train_dataset = build_dataset(cfg, "train")
-    test_dataset = build_dataset(cfg, "test")
+    dataset_kwargs = {}
+    if getattr(train_dataset, "use_gps", False):
+        dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
+    test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
         "train": DataLoader(
             train_dataset,
@@ -40,6 +46,23 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
             num_workers=loader_cfg.get("num_workers", 0),
         ),
     }
+
+
+def _config_uses_gps(cfg: dict[str, Any]) -> bool:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("use_gps", False):
+        return True
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "gps":
+        return True
+    if task != "fusion":
+        return False
+    model_cfg = cfg.get("model", {})
+    for role in ("student", "teacher"):
+        modalities = model_cfg.get(role, {}).get("modalities")
+        if modalities and "gps" in modalities:
+            return True
+    return False
 
 
 def build_model(model_cfg: dict[str, Any]):

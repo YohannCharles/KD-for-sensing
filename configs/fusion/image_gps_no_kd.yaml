@@ -1,5 +1,5 @@
 experiment:
-  name: fusion_logits_kd
+  name: fusion_image_gps_no_kd
   task: fusion
   seed: 0
   device: auto
@@ -7,11 +7,14 @@ data:
   dataset:
     type: scenario9
     data_root: dataset/scenario9
-    train_csv_name: train_seqs_RA.csv
-    test_csv_name: test_seqs_RA.csv
+    train_csv_name: train_seqs_RA_GPS.csv
+    test_csv_name: test_seqs_RA_GPS.csv
     seq_len: 8
     num_pred: 3
     portion: 1.0
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
   dataloader:
     train_batch_size: 3
     test_batch_size: 3
@@ -26,22 +29,21 @@ model:
   downsample_ratio: 1
   teacher:
     type: fusion_teacher
-    modalities: [image, radar]
+    modalities: [image, gps]
+    gps_input_size: 3
     feature_size: 64
     num_classes: 64
     gru_params: [64, 64, 2]
   student:
     type: fusion_student
-    modalities: [image, radar]
+    modalities: [image, gps]
+    gps_input_size: 3
     feature_size: 64
     num_classes: 64
     gru_params: [64, 64, 1]
 distillation:
-  type: logits_kd
-  temperature: 3.0
-  alpha: 0.4
-  alpha_warmup_epochs: 0
-  teacher_model_name: BothTeacher_best.pth
+  type: no_kd
+  teacher_model_name: null
 training:
   epochs: 100
   lr: 0.00075
@@ -52,4 +54,4 @@ training:
   min_delta: 0.0001
 output:
   dir: outputs
-  run_name: fusion_logits_kd
+  run_name: fusion_image_gps_no_kd

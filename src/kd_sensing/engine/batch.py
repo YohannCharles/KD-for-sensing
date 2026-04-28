@@ -63,20 +63,57 @@ def prepare_fusion_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    image_batch = prepare_image_inputs(
-        batch,
-        seq_length=seq_length,
-        num_pred=num_pred,
+    modalities: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, torch.Tensor]:
+    selected = tuple(modalities or ("image", "radar"))
+    inputs: dict[str, torch.Tensor] = {}
+    if "image" in selected:
+        inputs["image_batch"] = prepare_image_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+    if "radar" in selected:
+        inputs["radar_batch"] = prepare_radar_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+    if "gps" in selected:
+        inputs["gps_batch"] = prepare_gps_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+    return inputs
+
+
+def prepare_gps_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+) -> torch.Tensor:
+    if "gps" not in batch:
+        raise ValueError("GPS input is required but batch does not contain a 'gps' field.")
+    gps = batch["gps"].to(device)
+    if gps.ndim == 2:
+        gps = gps.unsqueeze(0)
+    gps = gps[:, -seq_length:, :]
+    batch_size, _, feature_dim = gps.shape
+    pad_steps = max(num_pred - 1, 0)
+    zeros = torch.zeros(
+        batch_size,
+        pad_steps,
+        feature_dim,
+        dtype=gps.dtype,
         device=device,
     )
-    radar_batch = prepare_radar_inputs(
-        batch,
-        seq_length=seq_length,
-        num_pred=num_pred,
-        device=device,
-    )
-    return image_batch, radar_batch
+    return torch.cat([gps, zeros], dim=1)
 
 
 def prepare_radar_inputs(
@@ -116,16 +153,19 @@ def forward_model(
     task: str,
     image_batch: torch.Tensor | None = None,
     radar_batch: torch.Tensor | None = None,
+    gps_batch: torch.Tensor | None = None,
 ):
     if task == "fusion":
-        if image_batch is None or radar_batch is None:
-            raise ValueError("Fusion task requires image_batch and radar_batch")
-        return model(image_batch, radar_batch)
+        return model(image_batch=image_batch, radar_batch=radar_batch, gps_batch=gps_batch)
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch
         if radar_input is None:
             raise ValueError("Radar task requires radar_batch")
         return model(radar_input)
+    if task == "gps":
+        if gps_batch is None:
+            raise ValueError("GPS task requires gps_batch")
+        return model(gps_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
     return model(image_batch)

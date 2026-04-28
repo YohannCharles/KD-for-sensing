@@ -21,7 +21,8 @@ python -c "import kd_sensing"
 configs/
   image/          # 仅图像模型：无 KD、logits KD、RKD 配置
   radar/          # 仅雷达模型：无 KD、logits KD、RKD 配置
-  fusion/         # 图像+雷达模型：无 KD、logits KD、RKD 配置
+  gps/            # 仅 GPS/position 模型：无 KD、KD 和 GPS-Rel-Polar 配置
+  fusion/         # 可选 image/radar/gps 融合模型配置
   preprocess/     # CSV、雷达、序列预处理配置
 scripts/
   train.py
@@ -61,6 +62,11 @@ python scripts/train.py --config configs/radar/rkd.yaml
 python scripts/train.py --config configs/fusion/no_kd.yaml
 python scripts/train.py --config configs/fusion/logits_kd.yaml
 python scripts/train.py --config configs/fusion/rkd.yaml
+
+python scripts/train.py --config configs/gps/no_kd.yaml
+python scripts/train.py --config configs/gps/student_no_kd.yaml
+python scripts/train.py --config configs/gps/logits_kd.yaml
+python scripts/train.py --config configs/gps/rkd.yaml
 ```
 
 这些配置复现 `All_models/*Std*.pth` 时会使用轻量 student 架构：image-only student 为
@@ -82,6 +88,22 @@ RadarTeacher 权重，可以覆盖路径：
 python scripts/train.py --config configs/radar/logits_kd.yaml \
   --override paths.weights_dir=/path/to/checkpoints \
   --override distillation.teacher_model_name=best.pth
+```
+
+GPS-only 配置统一使用 `gps_feature_mode: relative_polar`，即基于 UE-BS 相对 UTM 坐标构造
+`[dist, sin_theta, cos_theta]`。六组 GPS 预处理对比后，主路径只保留 GPS-Rel-Polar：
+
+```bash
+python scripts/train.py --config configs/gps/ablation_relative_polar.yaml
+```
+
+Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` 选择参与融合的模态，
+可用值为 `image`、`radar`、`gps`。旧配置显式保留 `modalities: [image, radar]`；新增示例：
+
+```bash
+python scripts/train.py --config configs/fusion/image_gps_no_kd.yaml
+python scripts/train.py --config configs/fusion/radar_gps_no_kd.yaml
+python scripts/train.py --config configs/fusion/all_modalities_no_kd.yaml
 ```
 
 可以使用点号分隔的键覆盖配置值：
@@ -119,6 +141,7 @@ TensorBoard 标量包含基础训练曲线和验证平均指标：
 python scripts/evaluate.py --config configs/image/no_kd.yaml --weights All_models/ImageTeacher_noKD.pth
 python scripts/evaluate.py --config configs/radar/no_kd.yaml --weights outputs/radar_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/radar_student_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/gps/no_kd.yaml --weights outputs/gps_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models/BothStd_RKD.pth
 ```
 
@@ -130,7 +153,13 @@ python scripts/evaluate.py --config configs/fusion/rkd.yaml --weights All_models
 python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml
 python scripts/preprocess.py --config configs/preprocess/radar_da.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
+python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps.yaml
 ```
+
+GPS 实验需要带 `gps1..gps8` 和 `bs_gps1..bs_gps8` 列的序列 CSV。运行
+`configs/preprocess/sequences_ra_gps.yaml` 后会生成 `train_seqs_RA_GPS.csv` 和
+`test_seqs_RA_GPS.csv`，供 GPS-only 和启用 GPS 的 fusion 配置使用。GPS scaler 只在训练集
+上 fit，并复用于测试集。
 
 ## 破坏性变更
 

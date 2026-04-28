@@ -13,6 +13,7 @@ from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
     prepare_fusion_inputs,
+    prepare_gps_inputs,
     prepare_image_inputs,
     prepare_labels,
     prepare_radar_inputs,
@@ -216,6 +217,7 @@ def train(cfg: dict) -> dict:
                     student_model,
                     task,
                     batch,
+                    model_cfg=model_cfg["student"],
                     seq_length=seq_length_student,
                     num_pred=num_pred,
                     device=device,
@@ -226,6 +228,7 @@ def train(cfg: dict) -> dict:
                             teacher_model,
                             task,
                             batch,
+                            model_cfg=model_cfg["teacher"],
                             seq_length=seq_length_teacher,
                             num_pred=num_pred,
                             device=device,
@@ -367,18 +370,20 @@ def _forward_for_task(
     task: str,
     batch: dict[str, torch.Tensor],
     *,
+    model_cfg: dict | None = None,
     seq_length: int,
     num_pred: int,
     device: torch.device,
 ):
     if task == "fusion":
-        image_batch, radar_batch = prepare_fusion_inputs(
+        fusion_inputs = prepare_fusion_inputs(
             batch,
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            modalities=(model_cfg or {}).get("modalities"),
         )
-        return forward_model(model, task, image_batch, radar_batch)
+        return forward_model(model, task, **fusion_inputs)
     if task == "radar":
         radar_batch = prepare_radar_inputs(
             batch,
@@ -387,6 +392,14 @@ def _forward_for_task(
             device=device,
         )
         return forward_model(model, task, radar_batch=radar_batch)
+    if task == "gps":
+        gps_batch = prepare_gps_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+        )
+        return forward_model(model, task, gps_batch=gps_batch)
     image_batch = prepare_image_inputs(
         batch,
         seq_length=seq_length,

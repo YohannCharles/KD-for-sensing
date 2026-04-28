@@ -1,0 +1,28 @@
+experiment:
+  name: gps_relative_polar_no_kd
+  task: gps
+data:
+  dataset:
+    train_csv_name: train_seqs_RA_GPS.csv
+    test_csv_name: test_seqs_RA_GPS.csv
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+model:
+  teacher:
+    type: gps_teacher
+    gps_input_size: 3
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+  student:
+    type: gps_teacher
+    gps_input_size: 3
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+distillation:
+  type: no_kd
+  teacher_model_name: null
+output:
+  run_name: gps_relative_polar_no_kd
