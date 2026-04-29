@@ -7,13 +7,13 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer
+from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer, MmWaveStandardScaler
 from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blocking
 from kd_sensing.registries import DATASETS, DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
 from kd_sensing.utils.paths import resolve_path
 
 
-VALID_MODALITIES = ("image", "radar", "gps", "lidar")
+VALID_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
 
 
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
@@ -25,6 +25,7 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg["enabled_modalities"] = list(enabled_modalities)
     dataset_cfg["use_gps"] = "gps" in enabled_modalities
     dataset_cfg["use_lidar"] = "lidar" in enabled_modalities
+    dataset_cfg["use_mmwave"] = "mmwave" in enabled_modalities
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
         csv_key = "train_csv_name" if split == "train" else "test_csv_name"
         dataset_cfg["csv_name"] = dataset_cfg.get(csv_key)
@@ -41,6 +42,8 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
     if getattr(train_dataset, "use_lidar", False):
         dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
+    if getattr(train_dataset, "use_mmwave", False):
+        dataset_kwargs["mmwave_scaler"] = getattr(train_dataset, "mmwave_scaler", None)
     test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
         "train": build_dataloader(train_dataset, loader_cfg, split="train"),
@@ -94,7 +97,7 @@ def _normalize_modalities(modalities: list[str] | tuple[str, ...]) -> tuple[str,
 
 
 def _validate_dataset_modality_flags(dataset_cfg: dict[str, Any], selected: tuple[str, ...]) -> None:
-    for modality, key in (("gps", "use_gps"), ("lidar", "use_lidar")):
+    for modality, key in (("gps", "use_gps"), ("lidar", "use_lidar"), ("mmwave", "use_mmwave")):
         if dataset_cfg.get(key, False) and modality not in selected:
             raise ValueError(
                 f"data.dataset.{key}=true conflicts with enabled modalities {list(selected)}. "
@@ -141,6 +144,8 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     lidar_cache_dir = getattr(dataset, "lidar_cache_dir", None)
     if lidar_cache_dir is not None:
         metadata["lidar_cache_dir"] = str(lidar_cache_dir)
+    if getattr(dataset, "use_mmwave", False):
+        metadata["mmwave_normalize"] = bool(getattr(dataset, "mmwave_normalize", False))
     image_motion_cache_dir = getattr(dataset, "image_motion_cache_dir", None)
     if image_motion_cache_dir is not None:
         metadata["image_motion_cache_dir"] = str(image_motion_cache_dir)
@@ -227,6 +232,12 @@ def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: st
         lidar_path = artifact_dir / "lidar_normalizer.npz"
         lidar_normalizer.save(lidar_path)
         artifacts["lidar_normalizer"] = str(lidar_path)
+
+    mmwave_scaler = getattr(train_dataset, "mmwave_scaler", None)
+    if mmwave_scaler is not None and getattr(train_dataset, "mmwave_normalize", False):
+        mmwave_path = artifact_dir / "mmwave_scaler.npz"
+        mmwave_scaler.save(mmwave_path)
+        artifacts["mmwave_scaler"] = str(mmwave_path)
     return artifacts
 
 
@@ -247,6 +258,12 @@ def load_normalization_artifacts(metadata: dict[str, Any] | None) -> dict[str, A
         if not path.exists():
             raise FileNotFoundError(f"LiDAR normalizer artifact not found: {path}")
         dataset_kwargs["lidar_normalizer"] = LidarBEVNormalizer.load(path)
+    mmwave_path = artifacts.get("mmwave_scaler")
+    if mmwave_path:
+        path = Path(mmwave_path)
+        if not path.exists():
+            raise FileNotFoundError(f"mmWave scaler artifact not found: {path}")
+        dataset_kwargs["mmwave_scaler"] = MmWaveStandardScaler.load(path)
     return dataset_kwargs
 
 
@@ -271,6 +288,10 @@ def _config_uses_gps(cfg: dict[str, Any]) -> bool:
 
 def _config_uses_lidar(cfg: dict[str, Any]) -> bool:
     return "lidar" in resolve_enabled_modalities(cfg)
+
+
+def _config_uses_mmwave(cfg: dict[str, Any]) -> bool:
+    return "mmwave" in resolve_enabled_modalities(cfg)
 
 
 def build_model(model_cfg: dict[str, Any]):

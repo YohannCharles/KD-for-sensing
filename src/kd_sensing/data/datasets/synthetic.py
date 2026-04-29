@@ -24,6 +24,8 @@ class SyntheticSequenceDataset(Dataset):
         gps_input_size: int = 3,
         use_lidar: bool = False,
         lidar_channels: int = 3,
+        use_mmwave: bool = False,
+        mmwave_input_size: int = 64,
         seed: int = 0,
         **_: object,
     ):
@@ -38,6 +40,8 @@ class SyntheticSequenceDataset(Dataset):
         self.gps_input_size = gps_input_size
         self.use_lidar = use_lidar
         self.lidar_channels = lidar_channels
+        self.use_mmwave = use_mmwave
+        self.mmwave_input_size = mmwave_input_size
         self.generator = torch.Generator().manual_seed(seed)
 
     def __len__(self) -> int:
@@ -63,4 +67,6 @@ class SyntheticSequenceDataset(Dataset):
                 (self.seq_len, self.lidar_channels, *self.lidar_size),
                 generator=self.generator,
             )
+        if self.use_mmwave:
+            sample["mmwave"] = torch.rand((self.seq_len, self.mmwave_input_size), generator=self.generator)
         return sample

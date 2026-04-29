@@ -16,12 +16,15 @@ from kd_sensing.data.transforms import (
     DEFAULT_LIDAR_ROI,
     LidarBEVNormalizer,
     LidarBEVStreamingStats,
+    MMWAVE_POWER_DIM,
+    MmWaveStandardScaler,
     SUPPORTED_GPS_FEATURE_MODE,
     build_image_transform,
     joined_resource,
     load_lidar_background_points,
     load_lidar_bev_sequence,
     load_gps_feature_sequence,
+    load_mmwave_feature_sequence,
     load_motion_masks,
     load_radar_maps,
     parameterized_image_motion_cache_dir,
@@ -31,7 +34,7 @@ from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
 
 
-VALID_MODALITIES = ("image", "radar", "gps", "lidar")
+VALID_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
 
 
 @DATASETS.register("scenario9")
@@ -65,6 +68,9 @@ class Scenario9Dataset(Dataset):
         gps_feature_mode: str = SUPPORTED_GPS_FEATURE_MODE,
         gps_normalize: bool = True,
         gps_scaler: GPSStandardScaler | None = None,
+        use_mmwave: bool = False,
+        mmwave_normalize: bool = True,
+        mmwave_scaler: MmWaveStandardScaler | None = None,
         use_lidar: bool = False,
         lidar_bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
         lidar_roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
@@ -109,7 +115,7 @@ class Scenario9Dataset(Dataset):
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
-        self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar)
+        self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar, use_mmwave)
         if "image" in self.enabled_modalities:
             self.image_motion_cache_dir = self._resolve_image_motion_cache_dir(image_motion_cache_dir)
         self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
@@ -119,6 +125,10 @@ class Scenario9Dataset(Dataset):
         self.gps_normalize = gps_normalize
         self.gps_scaler = gps_scaler
         self._gps_feature_cache: dict[int, np.ndarray] = {}
+        self.use_mmwave = "mmwave" in self.enabled_modalities
+        self.mmwave_normalize = bool(mmwave_normalize)
+        self.mmwave_scaler = mmwave_scaler
+        self._mmwave_feature_cache: dict[int, np.ndarray] = {}
         self.use_lidar = "lidar" in self.enabled_modalities
         self.lidar_bev_size = tuple(lidar_bev_size)
         self.lidar_roi = tuple(lidar_roi)
@@ -159,6 +169,9 @@ class Scenario9Dataset(Dataset):
         if self.use_gps:
             self._ensure_gps_columns()
             self._prepare_gps_scaler()
+        if self.use_mmwave:
+            self._ensure_mmwave_columns()
+            self._prepare_mmwave_scaler()
         if self.use_lidar:
             self._ensure_lidar_columns()
             self._prepare_lidar_normalizer_from_config()
@@ -216,6 +229,11 @@ class Scenario9Dataset(Dataset):
             if self.gps_scaler is not None:
                 gps_features = self.gps_scaler.transform(gps_features)
             sample["gps"] = torch.tensor(gps_features, dtype=torch.float32)
+        if self.use_mmwave:
+            mmwave_features = self._mmwave_features_for_index(idx)
+            if self.mmwave_scaler is not None:
+                mmwave_features = self.mmwave_scaler.transform(mmwave_features)
+            sample["mmwave"] = torch.tensor(mmwave_features, dtype=torch.float32)
         if self.use_lidar:
             lidar_bev = self._lidar_bev_for_index(
                 idx,
@@ -237,6 +255,7 @@ class Scenario9Dataset(Dataset):
         enabled_modalities: list[str] | tuple[str, ...] | None,
         use_gps: bool,
         use_lidar: bool,
+        use_mmwave: bool,
     ) -> tuple[str, ...]:
         if enabled_modalities is None:
             selected = ["image", "radar"]
@@ -244,6 +263,8 @@ class Scenario9Dataset(Dataset):
                 selected.append("gps")
             if use_lidar:
                 selected.append("lidar")
+            if use_mmwave:
+                selected.append("mmwave")
         else:
             selected = [str(modality) for modality in enabled_modalities]
         if not selected:
@@ -356,6 +377,41 @@ class Scenario9Dataset(Dataset):
                 mode=self.gps_feature_mode,
             )
         return self._gps_feature_cache[idx]
+
+    def _ensure_mmwave_columns(self) -> None:
+        if self.samples.mmwave_paths is None:
+            raise ValueError(
+                f"mmWave is enabled but {self.root_csv} does not contain mmwave1..mmwaveN columns. "
+                "Regenerate sequence CSVs with include_mmwave: true."
+            )
+
+    def _prepare_mmwave_scaler(self) -> None:
+        if not self.mmwave_normalize:
+            self.mmwave_scaler = None
+            return
+        if self.mmwave_scaler is not None:
+            return
+        if self.split != "train":
+            raise ValueError(
+                "mmWave normalization for non-train split requires a train-fitted mmwave_scaler. "
+                "Use build_dataloaders/evaluate with a checkpoint that records mmwave_scaler, "
+                "provide mmwave_scaler explicitly, or disable mmWave normalization."
+            )
+        all_features = [self._mmwave_features_for_index(idx) for idx in range(len(self))]
+        stacked = np.concatenate(all_features, axis=0)
+        self.mmwave_scaler = MmWaveStandardScaler().fit(stacked)
+
+    def _mmwave_features_for_index(self, idx: int) -> np.ndarray:
+        if idx not in self._mmwave_feature_cache:
+            if self.samples.mmwave_paths is None:
+                raise ValueError("mmWave paths are unavailable for this dataset.")
+            self._mmwave_feature_cache[idx] = load_mmwave_feature_sequence(
+                self.data_root,
+                self.samples.mmwave_paths[idx],
+                seq_len=self.seq_len,
+                expected_dim=MMWAVE_POWER_DIM,
+            )
+        return self._mmwave_feature_cache[idx]
 
     def _resolve_lidar_cache_dir(self, lidar_cache_dir: str | None) -> Path | None:
         if not lidar_cache_dir:

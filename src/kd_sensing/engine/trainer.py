@@ -18,6 +18,7 @@ from kd_sensing.engine.batch import (
     prepare_image_inputs,
     prepare_labels,
     prepare_lidar_inputs,
+    prepare_mmwave_inputs,
     prepare_radar_inputs,
 )
 from kd_sensing.engine.builders import (
@@ -631,6 +632,15 @@ def _forward_for_task(
             non_blocking=non_blocking,
         )
         return forward_model(model, task, lidar_batch=lidar_batch)
+    if task == "mmwave":
+        mmwave_batch = prepare_mmwave_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+            non_blocking=non_blocking,
+        )
+        return forward_model(model, task, mmwave_batch=mmwave_batch)
     image_batch = prepare_image_inputs(
         batch,
         seq_length=seq_length,

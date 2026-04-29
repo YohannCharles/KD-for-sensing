@@ -104,6 +104,14 @@ def prepare_fusion_inputs(
             device=device,
             non_blocking=non_blocking,
         )
+    if "mmwave" in selected:
+        inputs["mmwave_batch"] = prepare_mmwave_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+            non_blocking=non_blocking,
+        )
     return inputs
 
 
@@ -198,6 +206,34 @@ def prepare_lidar_inputs(
     return torch.cat([lidar, zeros], dim=1)
 
 
+def prepare_mmwave_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    if "mmwave" not in batch:
+        raise ValueError("mmWave input is required but batch does not contain a 'mmwave' field.")
+    mmwave = batch["mmwave"].to(device, non_blocking=non_blocking)
+    if mmwave.ndim == 2:
+        mmwave = mmwave.unsqueeze(0)
+    if mmwave.ndim != 3:
+        raise ValueError(f"mmWave input must have shape [B, T, 64], got {tuple(mmwave.shape)}.")
+    mmwave = mmwave[:, -seq_length:, :]
+    batch_size, _, feature_dim = mmwave.shape
+    pad_steps = max(num_pred - 1, 0)
+    zeros = torch.zeros(
+        batch_size,
+        pad_steps,
+        feature_dim,
+        dtype=mmwave.dtype,
+        device=device,
+    )
+    return torch.cat([mmwave, zeros], dim=1)
+
+
 def forward_model(
     model,
     task: str,
@@ -205,6 +241,7 @@ def forward_model(
     radar_batch: torch.Tensor | None = None,
     gps_batch: torch.Tensor | None = None,
     lidar_batch: torch.Tensor | None = None,
+    mmwave_batch: torch.Tensor | None = None,
 ):
     if task == "fusion":
         return model(
@@ -212,6 +249,7 @@ def forward_model(
             radar_batch=radar_batch,
             gps_batch=gps_batch,
             lidar_batch=lidar_batch,
+            mmwave_batch=mmwave_batch,
         )
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch
@@ -226,6 +264,10 @@ def forward_model(
         if lidar_batch is None:
             raise ValueError("LiDAR task requires lidar_batch")
         return model(lidar_batch)
+    if task == "mmwave":
+        if mmwave_batch is None:
+            raise ValueError("mmWave task requires mmwave_batch")
+        return model(mmwave_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
     return model(image_batch)

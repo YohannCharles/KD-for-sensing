@@ -37,6 +37,8 @@ DEFAULT_CONFIG = {
             "fft_tuple": [64, 256, 128],
             "clipped_range": 128,
             "beam_label_cache": "lazy",
+            "use_mmwave": False,
+            "mmwave_normalize": True,
             "use_lidar": False,
             "lidar_bev_size": [224, 224],
             "lidar_roi": [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0],
@@ -69,6 +71,7 @@ DEFAULT_CONFIG = {
     "model": {
         "feature_size": 64,
         "gru_hidden_size": 64,
+        "mmwave_input_size": 64,
         "num_classes": 64,
         "seq_length_teacher": 8,
         "seq_length_student": 8,

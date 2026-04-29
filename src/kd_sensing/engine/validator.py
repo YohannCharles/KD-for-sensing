@@ -13,6 +13,7 @@ from kd_sensing.engine.batch import (
     prepare_image_inputs,
     prepare_labels,
     prepare_lidar_inputs,
+    prepare_mmwave_inputs,
     prepare_radar_inputs,
 )
 from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, transfer_non_blocking
@@ -80,6 +81,15 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         non_blocking=non_blocking,
                     )
                     outputs, _, _ = forward_model(model, task, lidar_batch=lidar_batch)
+                elif task == "mmwave":
+                    mmwave_batch = prepare_mmwave_inputs(
+                        batch,
+                        seq_length=seq_length,
+                        num_pred=num_pred,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    outputs, _, _ = forward_model(model, task, mmwave_batch=mmwave_batch)
                 else:
                     image_batch = prepare_image_inputs(
                         batch,

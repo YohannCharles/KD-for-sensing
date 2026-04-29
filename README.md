@@ -23,7 +23,8 @@ configs/
   radar/          # 仅雷达模型：无 KD、logits KD、RKD 配置
   gps/            # 仅 GPS/position 模型：无 KD、KD 和 GPS-Rel-Polar 配置
   lidar/          # 仅 LiDAR BEV 模型：无 KD、logits KD、RKD 配置
-  fusion/         # 可选 image/radar/gps/lidar 融合模型配置
+  mmwave/         # 仅 mmWave power vector 模型：无 KD、logits KD、RKD 配置
+  fusion/         # 可选 image/radar/gps/lidar/mmwave 融合模型配置
   preprocess/     # CSV、雷达、序列预处理配置
 scripts/
   train.py
@@ -66,6 +67,7 @@ teacher no-KD 的最高验证 Top-1 权重，缺失时再回退到
 | radar | `configs/radar/teacher_no_kd.yaml` | `configs/radar/student_no_kd.yaml` | `configs/radar/logits_kd.yaml`, `configs/radar/rkd.yaml` |
 | gps | `configs/gps/teacher_no_kd.yaml` | `configs/gps/student_no_kd.yaml` | `configs/gps/logits_kd.yaml`, `configs/gps/rkd.yaml` |
 | lidar | `configs/lidar/teacher_no_kd.yaml` | `configs/lidar/student_no_kd.yaml` | `configs/lidar/logits_kd.yaml`, `configs/lidar/rkd.yaml` |
+| mmwave | `configs/mmwave/teacher_no_kd.yaml` | `configs/mmwave/student_no_kd.yaml` | `configs/mmwave/logits_kd.yaml`, `configs/mmwave/rkd.yaml` |
 
 ```bash
 python scripts/train.py --config configs/image/teacher_no_kd.yaml
@@ -74,12 +76,16 @@ python scripts/train.py --config configs/image/logits_kd.yaml
 python scripts/train.py --config configs/image/rkd.yaml
 ```
 
-Fusion canonical 配置覆盖固定顺序 `image -> radar -> gps -> lidar` 下的 11 个 slug：
+Fusion canonical 配置覆盖固定顺序 `image -> radar -> gps -> lidar -> mmwave` 下的 26 个多模态 slug：
 
 ```text
 image_radar, image_gps, image_lidar, radar_gps, radar_lidar, gps_lidar
 image_radar_gps, image_radar_lidar, image_gps_lidar, radar_gps_lidar
 image_radar_gps_lidar
+
+以及包含 mmwave 的所有双模态、三模态、四模态和五模态组合，例如
+image_mmwave, radar_mmwave, gps_mmwave, lidar_mmwave, image_radar_mmwave,
+image_radar_gps_lidar_mmwave
 ```
 
 每个 slug 都有四个配置：
@@ -101,7 +107,7 @@ python scripts/train.py --config configs/fusion/image_radar_rkd.yaml
 ```
 
 单模态配置统一使用 `gru_params: [64, 64, 1]`。其中 image 参数来自上游 image 单模态脚本和
-`All_models/params_Image*.txt`，radar/GPS/LiDAR 是本项目新增单模态，默认继承 image 同角色
+`All_models/params_Image*.txt`，radar/GPS/LiDAR/mmWave 是本项目新增单模态，默认继承 image 同角色
 配置参数。Image+radar fusion 按上游 `train_both.py` 和 `All_models/params_Both*.txt` 保持
 teacher 二层 GRU、student 一层 GRU；其它 fusion 组合属于扩展配置，不声明为原论文结果复现。
 Checkpoint 加载默认严格校验 missing/unexpected keys，结构不匹配会直接报错；需要兼容性调试时可显式设置
@@ -164,10 +170,21 @@ conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
 
 使用 `conda run` 训练时建议加 `--no-capture-output` 和 `python -u`，否则 tqdm/stderr 可能不会实时显示。
 
+mmWave-only 配置使用 `mmwave1..mmwave8` 序列列读取 `unit1_pwr_60ghz` /
+`unit1/mmWave_data/mmWave_power_*.txt` 的 64 维 receive-power vector，先做 finite 清洗和 dB 压缩，
+再用训练集 fit 的 `MmWaveStandardScaler` 做 z-score。模型注册名为 `mmwave_teacher` 和
+`mmwave_student`，feature extractor 注册名为 `mmwave_feature_extractor`；训练会保存
+`artifacts/mmwave_scaler.npz`，评估 registry checkpoint 时会复用该 scaler。
+
+注意：当前默认 mmWave 输入和 beam label 都来自同一个 power vector，因此当前时隙 beam 对 mmWave
+接近“答案可见”，未来 3 步更像预测。默认仍保持 8 个历史输入 + 3 步预测，便于跨模态比较；论文或实验表
+建议分开报告当前步和未来步，后续可另做只使用 `t-1` 历史的 lagged mmWave 消融。
+
 Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` 选择参与融合的模态，
-可用值为 `image`、`radar`、`gps`、`lidar`。canonical fusion 配置中 teacher/student 的
+可用值为 `image`、`radar`、`gps`、`lidar`、`mmwave`。canonical fusion 配置中 teacher/student 的
 `modalities` 始终一致；启用 GPS 的配置使用 `gps_feature_mode: relative_polar` 和
-`gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`。
+`gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`，启用 mmWave 的配置使用
+`mmwave_input_size: 64` 和 `mmwave_normalize: true`。
 
 可以使用点号分隔的键覆盖配置值：
 
@@ -224,7 +241,7 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 - `metrics.json`
 - `train_log.json`
 - `training_outputs.npz`
-- `artifacts/gps_scaler.npz` 或 `artifacts/lidar_normalizer.npz`，仅在对应归一化启用时写入
+- `artifacts/gps_scaler.npz`、`artifacts/lidar_normalizer.npz` 或 `artifacts/mmwave_scaler.npz`，仅在对应归一化启用时写入
 - 训练曲线
 - `tensorboard/` TensorBoard event 日志
 
@@ -252,12 +269,13 @@ python scripts/evaluate.py --config configs/radar/teacher_no_kd.yaml --weights o
 python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/radar_student_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/gps/teacher_no_kd.yaml --weights outputs/gps_teacher_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/lidar/teacher_no_kd.yaml --weights outputs/lidar_teacher_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/mmwave/teacher_no_kd.yaml --weights outputs/mmwave_teacher_no_kd/checkpoints/best.pth
 python scripts/evaluate.py --config configs/fusion/image_radar_rkd.yaml --weights outputs/image_radar_rkd/checkpoints/best.pth
 ```
 
 评估会将指标和 `test_report.json` 写入配置的输出目录。未传 `--weights` 时，评估会尝试从
-registry 中加载与当前配置匹配的最高验证 Top-1 checkpoint；如果 sidecar 记录了 GPS scaler 或
-LiDAR normalizer，评估会直接复用训练时工件，不再为了重新 fit 归一化状态扫描 train split。
+registry 中加载与当前配置匹配的最高验证 Top-1 checkpoint；如果 sidecar 记录了 GPS scaler、
+LiDAR normalizer 或 mmWave scaler，评估会直接复用训练时工件，不再为了重新 fit 归一化状态扫描 train split。
 如果 registry 缺失匹配项，则继续使用配置中的旧式权重路径回退。
 
 ## 预处理
@@ -273,10 +291,10 @@ python scripts/preprocess.py --config configs/preprocess/image_motion_cache.yaml
 python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
-所有单模态和 fusion 实验默认使用同一组包含 camera、radar、GPS 和 LiDAR 列的序列 CSV：
+所有单模态和 fusion 实验默认使用同一组包含 camera、radar、GPS、LiDAR 和可选 mmWave 列的序列 CSV：
 `train_seqs_RA_GPS_LIDAR.csv` / `test_seqs_RA_GPS_LIDAR.csv`。运行
-`configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；GPS scaler 只在训练集上 fit，
-并复用于测试集。
+`configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；该配置会写出
+`mmwave1..mmwave8`，默认来源列为 `unit1_pwr_60ghz`。GPS/mmWave scaler 只在训练集上 fit，并复用于测试集。
 
 `configs/preprocess/image_motion_cache.yaml` 可把相邻 camera 帧 pair 的 motion mask 提前缓存为
 `.npy` `uint8` 文件；训练配置中将 `image_motion_cache_dir` 指向该目录并启用

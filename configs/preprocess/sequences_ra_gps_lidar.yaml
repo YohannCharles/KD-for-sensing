@@ -13,3 +13,6 @@ preprocessing:
   include_lidar: true
   lidar_column: unit1_lidar
   lidar_fallback_column: unit1_lidar_SCR
+  include_mmwave: true
+  mmwave_column: unit1_pwr_60ghz
+  mmwave_fallback_column: null

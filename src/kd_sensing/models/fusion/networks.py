@@ -5,11 +5,12 @@ import torch.nn as nn
 
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
+from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.registries import MODELS
 
 
-VALID_FUSION_MODALITIES = ("image", "radar", "gps", "lidar")
+VALID_FUSION_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
 
 
 def _normalize_modalities(modalities: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -93,6 +94,7 @@ class FusionModalityNet(nn.Module):
         radar_channels: int = 2,
         gps_input_size: int = 3,
         lidar_channels: int = 3,
+        mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         num_heads: int = 8,
         modalities: list[str] | tuple[str, ...] | None = None,
     ):
@@ -112,6 +114,11 @@ class FusionModalityNet(nn.Module):
             self.gps_feature_extractor = GpsFeatureExtractor(feature_size, gps_input_size)
         if "lidar" in self.modalities:
             self.lidar_feature_extractor = LidarFeatureExtractor(feature_size, lidar_channels)
+        if "mmwave" in self.modalities:
+            self.mmwave_feature_extractor = MmWaveFeatureExtractor(
+                feature_size=feature_size,
+                mmwave_input_size=mmwave_input_size,
+            )
         self.fusion_layer = nn.Sequential(
             nn.Linear(feature_size * len(self.modalities), feature_size),
             nn.ReLU(),
@@ -147,6 +154,7 @@ class FusionModalityNet(nn.Module):
         radar_batch: torch.Tensor | None = None,
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
+        mmwave_batch: torch.Tensor | None = None,
     ):
         modality_features = []
         batch_size = None
@@ -187,6 +195,15 @@ class FusionModalityNet(nn.Module):
                 seq_len,
             )
             modality_features.append(lidar_features)
+        if "mmwave" in self.modalities:
+            mmwave_features = self.mmwave_feature_extractor(_require_tensor(mmwave_batch, "mmwave"))
+            batch_size, seq_len = _check_temporal_features(
+                mmwave_features,
+                "mmwave",
+                batch_size,
+                seq_len,
+            )
+            modality_features.append(mmwave_features)
         fused_features = torch.cat(modality_features, dim=2)
         features = self.fusion_layer(fused_features)
         features = self.layer_norm(features)
@@ -208,6 +225,7 @@ class StudentModalityNet(nn.Module):
         radar_channels: int = 2,
         gps_input_size: int = 3,
         lidar_channels: int = 3,
+        mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         modalities: list[str] | tuple[str, ...] | None = None,
     ):
         super().__init__()
@@ -284,6 +302,18 @@ class StudentModalityNet(nn.Module):
             self.lidar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
             self.lidar_global_max_pool = nn.AdaptiveMaxPool2d(1)
             branch_dims.append(96 * 2)
+        if "mmwave" in self.modalities:
+            if int(mmwave_input_size) != MMWAVE_INPUT_SIZE:
+                raise ValueError(f"mmwave_input_size ({mmwave_input_size}) must equal {MMWAVE_INPUT_SIZE}.")
+            self.mmwave_input_size = int(mmwave_input_size)
+            self.mmwave_projection = nn.Sequential(
+                nn.Linear(self.mmwave_input_size, 64),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.1),
+                nn.Linear(64, 96),
+                nn.ReLU(inplace=True),
+            )
+            branch_dims.append(96)
         self.fusion_layer = nn.Sequential(
             nn.Linear(sum(branch_dims), 128),
             nn.ReLU(inplace=True),
@@ -314,6 +344,7 @@ class StudentModalityNet(nn.Module):
         radar_batch: torch.Tensor | None = None,
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
+        mmwave_batch: torch.Tensor | None = None,
         beam=None,
     ):
         batch_size = None
@@ -382,6 +413,22 @@ class StudentModalityNet(nn.Module):
                     self.lidar_global_max_pool(lidar_feat).flatten(1),
                 ]
             )
+        if "mmwave" in self.modalities:
+            mmwave_batch = _require_tensor(mmwave_batch, "mmwave")
+            batch_size, seq_len, mmwave_dim = _check_sequence_tensor(
+                mmwave_batch,
+                "mmwave",
+                batch_size,
+                seq_len,
+                expected_ndim=3,
+            )
+            if int(mmwave_dim) != self.mmwave_input_size:
+                raise ValueError(
+                    f"mmWave input feature_dim ({mmwave_dim}) must equal mmwave_input_size "
+                    f"({self.mmwave_input_size})."
+                )
+            mmwave_flat = mmwave_batch.reshape(batch_size * seq_len, mmwave_dim)
+            pooled_features.append(self.mmwave_projection(mmwave_flat))
 
         fused = torch.cat(pooled_features, dim=1)
         fused_features = self.fusion_layer(fused).view(batch_size, seq_len, -1)

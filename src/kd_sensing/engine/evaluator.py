@@ -36,6 +36,12 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             split_metadata["train"] = recorded_splits["train"]
     needs_train_gps = _evaluation_uses_gps(cfg) and "gps_scaler" not in dataset_kwargs
     needs_train_lidar = _evaluation_uses_lidar(cfg) and "lidar_normalizer" not in dataset_kwargs
+    if _evaluation_uses_mmwave(cfg) and _mmwave_normalization_enabled(cfg) and "mmwave_scaler" not in dataset_kwargs:
+        raise ValueError(
+            "mmWave evaluation requires a train-fitted mmwave_scaler. "
+            "Use a registry checkpoint with normalization metadata, provide a mmWave scaler artifact, "
+            "or disable data.dataset.mmwave_normalize."
+        )
     if needs_train_gps:
         train_dataset = build_dataset(cfg, "train")
         prepare_lidar_normalizer(cfg, train_dataset)
@@ -148,3 +154,23 @@ def _evaluation_uses_lidar(cfg: dict) -> bool:
         if modalities and "lidar" in modalities:
             return True
     return False
+
+
+def _evaluation_uses_mmwave(cfg: dict) -> bool:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("use_mmwave", False):
+        return True
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "mmwave":
+        return True
+    if task != "fusion":
+        return False
+    for role in ("student", "teacher"):
+        modalities = cfg.get("model", {}).get(role, {}).get("modalities")
+        if modalities and "mmwave" in modalities:
+            return True
+    return False
+
+
+def _mmwave_normalization_enabled(cfg: dict) -> bool:
+    return bool(cfg.get("data", {}).get("dataset", {}).get("mmwave_normalize", True))
