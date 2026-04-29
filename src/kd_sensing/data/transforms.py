@@ -536,7 +536,6 @@ def build_gps_features(
     bs_latlon: np.ndarray | None = None,
     *,
     mode: str = SUPPORTED_GPS_FEATURE_MODE,
-    smooth_window: int = 3,
 ) -> np.ndarray:
     if mode != SUPPORTED_GPS_FEATURE_MODE:
         raise ValueError(
@@ -567,7 +566,6 @@ def load_gps_feature_sequence(
     *,
     seq_len: int,
     mode: str = SUPPORTED_GPS_FEATURE_MODE,
-    smooth_window: int = 3,
 ) -> np.ndarray:
     selected_gps = gps_paths[-seq_len:]
     ue_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_gps], dtype=np.float64)
@@ -575,7 +573,7 @@ def load_gps_feature_sequence(
         raise ValueError(f"gps_feature_mode '{mode}' requires bs_gps columns in the sequence CSV.")
     selected_bs = bs_gps_paths[-seq_len:]
     bs_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_bs], dtype=np.float64)
-    return build_gps_features(ue_latlon, bs_latlon, mode=mode, smooth_window=smooth_window)
+    return build_gps_features(ue_latlon, bs_latlon, mode=mode)
 
 
 def _relative_polar_features(rel_xy: np.ndarray) -> np.ndarray:
@@ -607,6 +605,26 @@ class GPSStandardScaler:
 
     def fit_transform(self, features: np.ndarray) -> np.ndarray:
         return self.fit(features).transform(features)
+
+    def save(self, path: str | Path) -> None:
+        if self.mean_ is None or self.scale_ is None:
+            raise ValueError("GPS scaler has not been fit.")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            target,
+            mean=np.asarray(self.mean_, dtype=np.float32),
+            scale=np.asarray(self.scale_, dtype=np.float32),
+            std=np.asarray(self.scale_, dtype=np.float32),
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> "GPSStandardScaler":
+        with np.load(Path(path)) as payload:
+            mean = np.asarray(payload["mean"], dtype=np.float32)
+            scale_key = "scale" if "scale" in payload else "std"
+            scale = np.asarray(payload[scale_key], dtype=np.float32)
+        return cls(mean_=mean, scale_=scale)
 
 
 @dataclass

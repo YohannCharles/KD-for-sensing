@@ -52,9 +52,11 @@ src/kd_sensing/
 
 推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。Image 与 image+radar
 兼容 KD 配置默认读取随附 `All_models` 中的一层 image teacher 或二层 image+radar teacher
-权重；radar/GPS/LiDAR 单模态 KD 配置默认读取同模态
+权重；radar/GPS/LiDAR 单模态 KD 配置会优先从最佳 checkpoint registry 读取同模态
+teacher no-KD 的最高验证 Top-1 权重，缺失时再回退到
 `outputs/<slug>_teacher_no_kd/checkpoints/best.pth`。也可以通过 `paths.weights_dir` 和
-`distillation.teacher_model_name` 覆盖 teacher checkpoint。
+`distillation.teacher_model_name` 覆盖旧式 teacher checkpoint 路径；绝对路径和评估入口
+`--weights` 始终优先于 registry。
 
 单模态 canonical 配置矩阵：
 
@@ -104,6 +106,13 @@ python scripts/train.py --config configs/fusion/image_radar_rkd.yaml
 teacher 二层 GRU、student 一层 GRU；其它 fusion 组合属于扩展配置，不声明为原论文结果复现。
 Checkpoint 加载默认严格校验 missing/unexpected keys，结构不匹配会直接报错；需要兼容性调试时可显式设置
 `checkpoint.strict_load=false`。
+
+训练会将当前配置最高验证 Top-1 checkpoint 复制到默认 registry 目录
+`outputs/best_checkpoints/`，文件名包含配置 slug、角色/KD 模式和精度，例如
+`gps_teacher_no_kd_acc_0.8123.pth`。同名 checkpoint 会写入 `.json` sidecar，记录源运行目录、
+epoch、split 样本数、加载来源和 GPS/LiDAR 归一化工件。可通过
+`checkpoint.registry.dir`、`checkpoint.registry.enabled` 和 `checkpoint.registry.prefer` 调整目录、
+开关和加载优先级。
 
 legacy 入口继续保留，但新实验优先使用上面的 canonical 名称：
 
@@ -176,9 +185,11 @@ python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.d
 - `final_config.yaml`
 - `checkpoints/last.pth`
 - `checkpoints/best.pth`
+- `checkpoints/best_top1.pth`
 - `metrics.json`
 - `train_log.json`
 - `training_outputs.npz`
+- `artifacts/gps_scaler.npz` 或 `artifacts/lidar_normalizer.npz`，仅在对应归一化启用时写入
 - 训练曲线
 - `tensorboard/` TensorBoard event 日志
 
@@ -209,7 +220,10 @@ python scripts/evaluate.py --config configs/lidar/teacher_no_kd.yaml --weights o
 python scripts/evaluate.py --config configs/fusion/image_radar_rkd.yaml --weights outputs/image_radar_rkd/checkpoints/best.pth
 ```
 
-评估会将指标和 `test_report.json` 写入配置的输出目录。
+评估会将指标和 `test_report.json` 写入配置的输出目录。未传 `--weights` 时，评估会尝试从
+registry 中加载与当前配置匹配的最高验证 Top-1 checkpoint；如果 sidecar 记录了 GPS scaler 或
+LiDAR normalizer，评估会直接复用训练时工件，不再为了重新 fit 归一化状态扫描 train split。
+如果 registry 缺失匹配项，则继续使用配置中的旧式权重路径回退。
 
 ## 预处理
 

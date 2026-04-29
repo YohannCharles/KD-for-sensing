@@ -7,6 +7,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
+from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer
 from kd_sensing.registries import DATASETS, DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
 from kd_sensing.utils.paths import resolve_path
 
@@ -139,11 +140,55 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     lidar_cache_dir = getattr(dataset, "lidar_cache_dir", None)
     if lidar_cache_dir is not None:
         metadata["lidar_cache_dir"] = str(lidar_cache_dir)
+    sample_metadata = getattr(getattr(dataset, "samples", None), "metadata", None)
+    if sample_metadata is not None:
+        metadata["sampling"] = sample_metadata
     return metadata
 
 
 def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, Any]:
     return {split: dataset_run_metadata(loader.dataset) for split, loader in dataloaders.items()}
+
+
+def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: str | Path) -> dict[str, str]:
+    artifacts: dict[str, str] = {}
+    train_dataset = dataloaders.get("train").dataset if dataloaders.get("train") is not None else None
+    if train_dataset is None:
+        return artifacts
+    artifact_dir = Path(run_dir) / "artifacts"
+
+    gps_scaler = getattr(train_dataset, "gps_scaler", None)
+    if gps_scaler is not None:
+        gps_path = artifact_dir / "gps_scaler.npz"
+        gps_scaler.save(gps_path)
+        artifacts["gps_scaler"] = str(gps_path)
+
+    lidar_normalizer = getattr(train_dataset, "lidar_normalizer", None)
+    if lidar_normalizer is not None and getattr(train_dataset, "lidar_normalize", False):
+        lidar_path = artifact_dir / "lidar_normalizer.npz"
+        lidar_normalizer.save(lidar_path)
+        artifacts["lidar_normalizer"] = str(lidar_path)
+    return artifacts
+
+
+def load_normalization_artifacts(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    artifacts = metadata.get("normalization_artifacts") or {}
+    dataset_kwargs: dict[str, Any] = {}
+    gps_path = artifacts.get("gps_scaler")
+    if gps_path:
+        path = Path(gps_path)
+        if not path.exists():
+            raise FileNotFoundError(f"GPS scaler artifact not found: {path}")
+        dataset_kwargs["gps_scaler"] = GPSStandardScaler.load(path)
+    lidar_path = artifacts.get("lidar_normalizer")
+    if lidar_path:
+        path = Path(lidar_path)
+        if not path.exists():
+            raise FileNotFoundError(f"LiDAR normalizer artifact not found: {path}")
+        dataset_kwargs["lidar_normalizer"] = LidarBEVNormalizer.load(path)
+    return dataset_kwargs
 
 
 def _split_family(csv_name: str | None) -> str | None:

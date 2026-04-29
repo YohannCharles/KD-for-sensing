@@ -630,6 +630,8 @@ def test_training_resume_restores_epoch_optimizer_and_scheduler(tmp_path: Path):
     first = train(cfg)
     last_checkpoint = Path(first["run_dir"]) / "checkpoints" / "last.pth"
     assert last_checkpoint.exists()
+    assert Path(first["checkpoint_registry"]["path"]).exists()
+    assert first["checkpoint_registry"]["source"] == "registry"
 
     resumed_cfg = _gps_synthetic_train_cfg(tmp_path, epochs=2, resume=True)
     second = train(resumed_cfg)
@@ -663,6 +665,7 @@ def _gps_synthetic_eval_cfg(tmp_path: Path, *, strict: bool) -> dict:
             "output.progress.enabled=false",
             "output.tensorboard.enabled=false",
             f"output.dir={tmp_path}",
+            f"checkpoint.registry.dir={tmp_path / 'registry'}",
         ],
     )
 

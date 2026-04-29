@@ -54,7 +54,6 @@ class Scenario9Dataset(Dataset):
         use_gps: bool = False,
         gps_feature_mode: str = SUPPORTED_GPS_FEATURE_MODE,
         gps_normalize: bool = True,
-        gps_smooth_window: int = 3,
         gps_scaler: GPSStandardScaler | None = None,
         use_lidar: bool = False,
         lidar_bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
@@ -75,6 +74,8 @@ class Scenario9Dataset(Dataset):
         lidar_point_dropout: float = 0.0,
         lidar_jitter_std: float = 0.0,
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
+        portion_strategy: str = "even",
+        portion_seed: int = 42,
         **_: object,
     ):
         self.data_root = resolve_path(data_root)
@@ -93,7 +94,6 @@ class Scenario9Dataset(Dataset):
         self.use_gps = "gps" in self.enabled_modalities
         self.gps_feature_mode = gps_feature_mode
         self.gps_normalize = gps_normalize
-        self.gps_smooth_window = gps_smooth_window
         self.gps_scaler = gps_scaler
         self._gps_feature_cache: dict[int, np.ndarray] = {}
         self.use_lidar = "lidar" in self.enabled_modalities
@@ -128,6 +128,8 @@ class Scenario9Dataset(Dataset):
             enabled_modalities=self.enabled_modalities,
             seq_len=seq_len,
             num_pred=num_pred,
+            portion_strategy=portion_strategy,
+            portion_seed=portion_seed,
         )
         if self.use_gps:
             self._ensure_gps_columns()
@@ -257,7 +259,6 @@ class Scenario9Dataset(Dataset):
                 bs_paths,
                 seq_len=self.seq_len,
                 mode=self.gps_feature_mode,
-                smooth_window=self.gps_smooth_window,
             )
         return self._gps_feature_cache[idx]
 

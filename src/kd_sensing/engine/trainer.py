@@ -29,9 +29,10 @@ from kd_sensing.engine.builders import (
     build_scheduler,
     build_task_criterion,
     dataloaders_run_metadata,
-    resolve_weight_path,
+    save_normalization_artifacts,
 )
 from kd_sensing.engine.validator import validate
+from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.plotting import plot_training_curves
@@ -92,13 +93,24 @@ def create_eval_run_dir(cfg: dict, output_dir: str | None = None) -> Path:
     return path
 
 
-def final_config_with_runtime(cfg: dict, *, run_dir: Path, split_metadata: dict | None = None) -> dict:
+def final_config_with_runtime(
+    cfg: dict,
+    *,
+    run_dir: Path,
+    split_metadata: dict | None = None,
+    normalization_artifacts: dict | None = None,
+    checkpoint_registry: dict | None = None,
+) -> dict:
     final_cfg = deepcopy(cfg)
     runtime = final_cfg.setdefault("runtime", {})
     runtime["run_dir"] = str(run_dir)
     runtime["output_overwrite"] = bool(cfg.get("output", {}).get("overwrite", False))
     if split_metadata is not None:
         runtime["splits"] = split_metadata
+    if normalization_artifacts is not None:
+        runtime["normalization_artifacts"] = normalization_artifacts
+    if checkpoint_registry is not None:
+        runtime["checkpoint_registry"] = checkpoint_registry
     return final_cfg
 
 
@@ -112,19 +124,29 @@ def _checkpoint_strict(cfg: dict) -> bool:
 
 def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> dict | None:
     weight_name = cfg.get("distillation", {}).get("teacher_model_name")
-    weight_path = resolve_weight_path(cfg, weight_name)
-    if weight_path is None:
+    resolution = resolve_teacher_checkpoint(cfg, weight_name)
+    if resolution.path is None and resolution.source == "none":
         return None
-    if not weight_path.exists():
-        raise FileNotFoundError(f"Teacher weight not found: {weight_path}")
+    if resolution.path is None or not resolution.path.exists():
+        raise FileNotFoundError(f"Teacher weight not found. Resolution: {resolution.to_dict()}")
     load_result = load_model_state(
-        weight_path,
+        resolution.path,
         teacher_model,
         role="teacher",
         map_location=device,
         strict=_checkpoint_strict(cfg),
     )
-    return checkpoint_load_summary(load_result)
+    summary = checkpoint_load_summary(load_result)
+    if summary is not None:
+        summary.update(
+            {
+                "source": resolution.source,
+                "registry_dir": str(resolution.registry_dir) if resolution.registry_dir is not None else None,
+                "legacy_path": str(resolution.legacy_path) if resolution.legacy_path is not None else None,
+                "metadata": resolution.metadata,
+            }
+        )
+    return summary
 
 
 def _resolve_resume_checkpoint(cfg: dict, run_dir: Path) -> Path | None:
@@ -214,7 +236,16 @@ def train(cfg: dict) -> dict:
     run_dir = create_run_dir(cfg)
     dataloaders = build_dataloaders(cfg)
     split_metadata = dataloaders_run_metadata(dataloaders)
-    dump_config(final_config_with_runtime(cfg, run_dir=run_dir, split_metadata=split_metadata), run_dir / "final_config.yaml")
+    normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
+    dump_config(
+        final_config_with_runtime(
+            cfg,
+            run_dir=run_dir,
+            split_metadata=split_metadata,
+            normalization_artifacts=normalization_artifacts,
+        ),
+        run_dir / "final_config.yaml",
+    )
     device = build_device(cfg)
     task = cfg["experiment"].get("task", "image")
     model_cfg = cfg["model"]
@@ -242,6 +273,9 @@ def train(cfg: dict) -> dict:
     scheduler = build_scheduler(cfg, optimizer)
     training_cfg = cfg["training"]
     best_val_loss = float("inf")
+    best_val_top1 = float("-inf")
+    best_top1_epoch = 0
+    registry_checkpoint = None
     epochs_without_improvement = 0
     history = {
         "train_loss": [],
@@ -275,6 +309,9 @@ def train(cfg: dict) -> dict:
         checkpoint_loads.append(checkpoint.get("_load_info"))
         start_epoch = int(checkpoint.get("epoch", start_epoch))
         best_val_loss = float(checkpoint.get("best_val_loss", checkpoint.get("test_loss", best_val_loss)))
+        best_val_top1 = float(checkpoint.get("best_val_top1", best_val_top1))
+        best_top1_epoch = int(checkpoint.get("best_top1_epoch", best_top1_epoch))
+        registry_checkpoint = checkpoint.get("checkpoint_registry", registry_checkpoint)
         epochs_without_improvement = int(checkpoint.get("epochs_without_improvement", 0))
     try:
         epoch_progress = tqdm(
@@ -430,6 +467,21 @@ def train(cfg: dict) -> dict:
                 torch.save(student_model.state_dict(), run_dir / "checkpoints" / "best.pth")
             else:
                 epochs_without_improvement += 1
+            top1_improved = val_acc > best_val_top1
+            if top1_improved:
+                best_val_top1 = val_acc
+                best_top1_epoch = epoch + 1
+                best_top1_path = run_dir / "checkpoints" / "best_top1.pth"
+                torch.save(student_model.state_dict(), best_top1_path)
+                registry_checkpoint = archive_best_checkpoint(
+                    cfg,
+                    source_checkpoint=best_top1_path,
+                    val_top1=best_val_top1,
+                    epoch=best_top1_epoch,
+                    run_dir=run_dir,
+                    split_metadata=split_metadata,
+                    normalization_artifacts=normalization_artifacts,
+                )
             save_checkpoint(
                 {
                     "epoch": epoch + 1,
@@ -438,7 +490,11 @@ def train(cfg: dict) -> dict:
                     "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "test_loss": val_loss,
                     "best_val_loss": best_val_loss,
+                    "best_val_top1": best_val_top1,
+                    "best_top1_epoch": best_top1_epoch,
                     "epochs_without_improvement": epochs_without_improvement,
+                    "normalization_artifacts": normalization_artifacts,
+                    "checkpoint_registry": registry_checkpoint,
                 },
                 run_dir / "checkpoints",
                 "last.pth",
@@ -457,20 +513,37 @@ def train(cfg: dict) -> dict:
         **history,
         "epoch_logs": epoch_logs,
         "checkpoint_loads": checkpoint_loads,
+        "normalization_artifacts": normalization_artifacts,
+        "checkpoint_registry": registry_checkpoint,
         "runtime": {
             "run_dir": str(run_dir),
             "output_overwrite": bool(cfg.get("output", {}).get("overwrite", False)),
             "splits": split_metadata,
+            "normalization_artifacts": normalization_artifacts,
+            "checkpoint_registry": registry_checkpoint,
         },
     }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
         json.dump(train_log, f, indent=2)
     plot_training_curves(history, run_dir)
+    dump_config(
+        final_config_with_runtime(
+            cfg,
+            run_dir=run_dir,
+            split_metadata=split_metadata,
+            normalization_artifacts=normalization_artifacts,
+            checkpoint_registry=registry_checkpoint,
+        ),
+        run_dir / "final_config.yaml",
+    )
     return {
         "run_dir": str(run_dir),
         "history": history,
         "epoch_logs": epoch_logs,
         "best_val_loss": best_val_loss,
+        "best_val_top1": best_val_top1,
+        "checkpoint_registry": registry_checkpoint,
+        "normalization_artifacts": normalization_artifacts,
         "checkpoint_loads": checkpoint_loads,
         "split_metadata": split_metadata,
     }

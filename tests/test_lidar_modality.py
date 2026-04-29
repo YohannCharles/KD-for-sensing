@@ -24,6 +24,7 @@ from kd_sensing.data.transforms import (  # noqa: E402
     read_lidar_point_cloud,
 )
 from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_lidar_inputs  # noqa: E402
+from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
 from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -234,6 +235,8 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
 
     assert isinstance(train_normalizer, LidarBEVNormalizer)
     assert stats_path.exists()
+    artifacts = save_normalization_artifacts({"train": _Loader(train_dataset)}, tmp_path / "run")
+    assert Path(artifacts["lidar_normalizer"]).exists()
     np.testing.assert_allclose(test_dataset.lidar_normalizer.mean_, train_normalizer.mean_)
     np.testing.assert_allclose(test_dataset.lidar_normalizer.scale_, train_normalizer.scale_)
     with pytest.raises(ValueError, match="requires a train-fitted lidar_normalizer"):
@@ -422,3 +425,8 @@ def _write_dataset_fixture(root: Path, csv_path: Path) -> None:
         + ["future_0.txt", "1"]
     )
     csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+
+class _Loader:
+    def __init__(self, dataset):
+        self.dataset = dataset

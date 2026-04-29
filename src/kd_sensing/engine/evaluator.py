@@ -12,12 +12,13 @@ from kd_sensing.engine.builders import (
     build_model,
     build_task_criterion,
     dataset_run_metadata,
+    load_normalization_artifacts,
     prepare_lidar_normalizer,
 )
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
+from kd_sensing.utils.artifact_registry import resolve_evaluation_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
-from kd_sensing.utils.paths import resolve_path
 from kd_sensing.utils.seed import set_seed
 
 
@@ -25,48 +26,91 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     device = build_device(cfg)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)
-    dataset_kwargs = {}
+    checkpoint_resolution = resolve_evaluation_checkpoint(cfg, weights)
+    dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}
-    if _evaluation_uses_gps(cfg):
+    if checkpoint_resolution.metadata and checkpoint_resolution.metadata.get("split_metadata"):
+        recorded_splits = checkpoint_resolution.metadata["split_metadata"]
+        if "train" in recorded_splits:
+            split_metadata["train"] = recorded_splits["train"]
+    needs_train_gps = _evaluation_uses_gps(cfg) and "gps_scaler" not in dataset_kwargs
+    needs_train_lidar = _evaluation_uses_lidar(cfg) and "lidar_normalizer" not in dataset_kwargs
+    if needs_train_gps:
         train_dataset = build_dataset(cfg, "train")
         prepare_lidar_normalizer(cfg, train_dataset)
         split_metadata["train"] = dataset_run_metadata(train_dataset)
         dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
-        if getattr(train_dataset, "use_lidar", False):
+        if needs_train_lidar and getattr(train_dataset, "use_lidar", False):
             dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
-    elif _evaluation_uses_lidar(cfg):
+    elif needs_train_lidar:
         train_dataset = build_dataset(cfg, "train")
         prepare_lidar_normalizer(cfg, train_dataset)
         split_metadata["train"] = dataset_run_metadata(train_dataset)
         dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     dataset = build_dataset(cfg, "test", **dataset_kwargs)
     split_metadata["test"] = dataset_run_metadata(dataset)
-    dump_config(final_config_with_runtime(cfg, run_dir=run_dir, split_metadata=split_metadata), run_dir / "final_config.yaml")
+    normalization_artifacts = {}
+    if checkpoint_resolution.metadata:
+        normalization_artifacts = checkpoint_resolution.metadata.get("normalization_artifacts", {})
+    dump_config(
+        final_config_with_runtime(
+            cfg,
+            run_dir=run_dir,
+            split_metadata=split_metadata,
+            normalization_artifacts=normalization_artifacts,
+            checkpoint_registry=checkpoint_resolution.to_dict(),
+        ),
+        run_dir / "final_config.yaml",
+    )
     loader_cfg = cfg["data"]["dataloader"]
     dataloader = build_dataloader(dataset, loader_cfg, split="test")
     model = build_model(cfg["model"]["student"]).to(device)
-    weight_path = weights or cfg.get("evaluation", {}).get("weights")
     checkpoint_load = None
-    if weight_path:
-        resolved = resolve_path(weight_path)
+    if checkpoint_resolution.path is not None:
+        if not checkpoint_resolution.path.exists():
+            raise FileNotFoundError(f"Evaluation checkpoint not found. Resolution: {checkpoint_resolution.to_dict()}")
         load_result = load_model_state(
-            resolved,
+            checkpoint_resolution.path,
             model,
             role="evaluation",
             map_location=device,
             strict=bool(cfg.get("checkpoint", {}).get("strict_load", True)),
         )
         checkpoint_load = checkpoint_load_summary(load_result)
+        if checkpoint_load is not None:
+            checkpoint_load.update(
+                {
+                    "source": checkpoint_resolution.source,
+                    "registry_dir": str(checkpoint_resolution.registry_dir)
+                    if checkpoint_resolution.registry_dir is not None
+                    else None,
+                    "legacy_path": str(checkpoint_resolution.legacy_path)
+                    if checkpoint_resolution.legacy_path is not None
+                    else None,
+                    "metadata": checkpoint_resolution.metadata,
+                }
+            )
     criterion = build_task_criterion(cfg)
     metrics = validate(model, dataloader, cfg, criterion, device, output_dir=run_dir)
     report = {
         **metrics,
         "checkpoint_load": checkpoint_load,
-        "runtime": {"run_dir": str(run_dir), "splits": split_metadata},
+        "runtime": {
+            "run_dir": str(run_dir),
+            "splits": split_metadata,
+            "checkpoint_resolution": checkpoint_resolution.to_dict(),
+            "normalization_artifacts": normalization_artifacts,
+        },
     }
     with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
-    return {"run_dir": str(run_dir), "metrics": metrics, "checkpoint_load": checkpoint_load, "split_metadata": split_metadata}
+    return {
+        "run_dir": str(run_dir),
+        "metrics": metrics,
+        "checkpoint_load": checkpoint_load,
+        "checkpoint_resolution": checkpoint_resolution.to_dict(),
+        "split_metadata": split_metadata,
+    }
 
 
 def _evaluation_uses_gps(cfg: dict) -> bool:

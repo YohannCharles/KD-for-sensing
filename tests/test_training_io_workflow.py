@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 from torch.utils.data import DataLoader
@@ -20,6 +21,12 @@ from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.engine.batch import prepare_labels  # noqa: E402
 from kd_sensing.engine.builders import build_dataloader_kwargs, resolve_enabled_modalities  # noqa: E402
 from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir  # noqa: E402
+from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E402
+from kd_sensing.utils.artifact_registry import (  # noqa: E402
+    archive_best_checkpoint,
+    find_registry_checkpoint,
+    resolve_teacher_checkpoint,
+)
 
 
 @pytest.mark.parametrize(
@@ -86,6 +93,54 @@ def test_create_samples_validates_only_enabled_modality_columns(tmp_path: Path):
         create_samples(csv_path, enabled_modalities=["gps"], seq_len=1, num_pred=1)
     with pytest.raises(ValueError, match="lidar is enabled"):
         create_samples(csv_path, enabled_modalities=["lidar"], seq_len=1, num_pred=1)
+
+
+def test_create_samples_portion_uses_even_global_sampling(tmp_path: Path):
+    csv_path = tmp_path / "many.csv"
+    columns = ["camera1", "beam1", "future_beam1", "seq_index"]
+    rows = [
+        [f"camera_{idx}.jpg", f"beam_{idx}.txt", f"future_{idx}.txt", str(idx)]
+        for idx in range(100)
+    ]
+    csv_path.write_text(
+        ",".join(columns) + "\n" + "\n".join(",".join(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    samples = create_samples(csv_path, portion=0.05, enabled_modalities=["image"], seq_len=1, num_pred=1)
+
+    assert len(samples.input_beam_paths) == 5
+    assert [item[0] for item in samples.input_beam_paths] != [f"beam_{idx}.txt" for idx in range(5)]
+    assert samples.metadata["portion_strategy"] == "even"
+    assert samples.metadata["seq_index_min"] == 0
+    assert samples.metadata["seq_index_max"] == 99
+
+
+def test_generate_sequence_data_includes_last_legal_window(tmp_path: Path):
+    source = tmp_path / "scenario9.csv"
+    rows = []
+    for idx in range(5):
+        rows.append([f"camera_{idx}.jpg", f"radar_{idx}.npy", f"beam_{idx}.txt", "1"])
+    source.write_text(
+        "unit1_rgb,unit1_radar,unit1_pwr_60ghz,seq_index\n"
+        + "\n".join(",".join(row) for row in rows)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    train_path, _ = generate_sequence_data(
+        source,
+        tmp_path,
+        "_test",
+        in_len=3,
+        out_len=2,
+        training_set_pct=1.0,
+    )
+
+    frame = pd.read_csv(train_path)
+    assert len(frame) == 1
+    assert frame.loc[0, "camera1"] == "camera_0.jpg"
+    assert frame.loc[0, "future_beam2"] == "beam_4.txt"
 
 
 def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Path):
@@ -175,6 +230,51 @@ def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
     assert second.exists()
     assert first.name.startswith("evaluation_fixed")
     assert second.name.startswith("evaluation_fixed")
+
+
+def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path: Path):
+    registry_dir = tmp_path / "registry"
+    teacher_cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
+        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
+        "distillation": {"type": "no_kd"},
+        "output": {"run_name": "gps_teacher_no_kd"},
+    }
+    low = tmp_path / "low.pth"
+    high = tmp_path / "high.pth"
+    torch.save({"value": torch.tensor([1])}, low)
+    torch.save({"value": torch.tensor([2])}, high)
+
+    first = archive_best_checkpoint(
+        teacher_cfg,
+        source_checkpoint=high,
+        val_top1=0.75,
+        epoch=2,
+        run_dir=tmp_path / "run_high",
+    )
+    second = archive_best_checkpoint(
+        teacher_cfg,
+        source_checkpoint=low,
+        val_top1=0.25,
+        epoch=3,
+        run_dir=tmp_path / "run_low",
+    )
+    found = find_registry_checkpoint(teacher_cfg, target_slug="gps_teacher_no_kd", role="teacher_no_kd")
+    kd_cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
+        "paths": {"weights_dir": str(tmp_path / "missing")},
+        "experiment": {"name": "gps_logits_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
+        "distillation": {"type": "logits_kd", "teacher_model_name": "best.pth"},
+    }
+    resolved = resolve_teacher_checkpoint(kd_cfg, "best.pth")
+
+    assert first["updated"] is True
+    assert second["updated"] is False
+    assert found.path == resolved.path
+    assert resolved.source == "registry"
+    assert "acc_0.7500" in resolved.path.name
 
 
 def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):

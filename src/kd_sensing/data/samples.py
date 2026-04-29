@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -15,6 +16,7 @@ class SequenceSamples:
     gps_paths: list[list[str]] | None = None
     bs_gps_paths: list[list[str]] | None = None
     lidar_paths: list[list[str]] | None = None
+    metadata: dict | None = None
 
 
 def create_samples(
@@ -24,9 +26,16 @@ def create_samples(
     enabled_modalities: list[str] | tuple[str, ...] | set[str] | None = None,
     seq_len: int | None = None,
     num_pred: int | None = None,
+    portion_strategy: str = "even",
+    portion_seed: int = 42,
 ) -> SequenceSamples:
     frame = pd.read_csv(csv_path, na_values="").fillna(-99)
-    num_data = int(len(frame) * portion)
+    selected_frame, metadata = _select_portion(
+        frame,
+        portion=portion,
+        strategy=portion_strategy,
+        seed=portion_seed,
+    )
     selected_modalities = tuple(enabled_modalities or ("image", "radar"))
     data_samples_rgb = []
     data_samples_radar = []
@@ -55,7 +64,7 @@ def create_samples(
         seq_len=seq_len,
         num_pred=num_pred,
     )
-    for _, row in frame.head(num_data).iterrows():
+    for _, row in selected_frame.iterrows():
         if "image" in selected_modalities:
             data_samples_rgb.append(row[camera_cols].tolist())
         if "radar" in selected_modalities:
@@ -75,7 +84,77 @@ def create_samples(
         gps_paths=data_samples_gps or None,
         bs_gps_paths=data_samples_bs_gps or None,
         lidar_paths=data_samples_lidar or None,
+        metadata=metadata,
     )
+
+
+def _select_portion(
+    frame: pd.DataFrame,
+    *,
+    portion: float,
+    strategy: str,
+    seed: int,
+) -> tuple[pd.DataFrame, dict]:
+    if portion <= 0:
+        raise ValueError(f"portion must be positive, got {portion}.")
+    total = len(frame)
+    if portion >= 1.0 or total == 0:
+        selected = frame
+        selected_indices = list(range(total))
+        effective_strategy = "all"
+    else:
+        selected_count = max(1, int(total * portion))
+        selected_count = min(selected_count, total)
+        effective_strategy = strategy or "even"
+        if effective_strategy == "head":
+            selected_indices = list(range(selected_count))
+        elif effective_strategy == "random":
+            rng = np.random.default_rng(int(seed))
+            selected_indices = sorted(int(idx) for idx in rng.choice(total, size=selected_count, replace=False))
+        elif effective_strategy in {"even", "deterministic_even", "stratified_even"}:
+            selected_indices = _even_indices(total, selected_count)
+            effective_strategy = "even"
+        else:
+            raise ValueError(f"Unsupported portion_strategy '{strategy}'.")
+        selected = frame.iloc[selected_indices]
+    metadata = {
+        "total_rows": int(total),
+        "selected_rows": int(len(selected)),
+        "portion": float(portion),
+        "portion_strategy": effective_strategy,
+        "portion_seed": int(seed),
+    }
+    if "seq_index" in frame.columns and len(selected) > 0:
+        seq_values = selected["seq_index"]
+        metadata.update(
+            {
+                "seq_index_min": _safe_scalar(seq_values.min()),
+                "seq_index_max": _safe_scalar(seq_values.max()),
+                "seq_index_count": int(seq_values.nunique()),
+            }
+        )
+    return selected, metadata
+
+
+def _even_indices(total: int, selected_count: int) -> list[int]:
+    if selected_count >= total:
+        return list(range(total))
+    if selected_count == 1:
+        return [total // 2]
+    raw = np.linspace(0, total - 1, selected_count)
+    indices = sorted({int(round(value)) for value in raw})
+    candidate = 0
+    while len(indices) < selected_count:
+        if candidate not in indices:
+            indices.append(candidate)
+        candidate += 1
+    return sorted(indices[:selected_count])
+
+
+def _safe_scalar(value):
+    if hasattr(value, "item"):
+        return value.item()
+    return value
 
 
 def _validate_required_columns(

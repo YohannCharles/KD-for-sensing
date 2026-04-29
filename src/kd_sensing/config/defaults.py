@@ -23,6 +23,8 @@ DEFAULT_CONFIG = {
             "seq_len": 8,
             "num_pred": 3,
             "portion": 1.0,
+            "portion_strategy": "even",
+            "portion_seed": 42,
             "image_size": [224, 224],
             "fft_tuple": [64, 256, 128],
             "clipped_range": 128,
@@ -132,5 +134,12 @@ DEFAULT_CONFIG = {
     },
     "checkpoint": {
         "strict_load": True,
+        "registry": {
+            "enabled": True,
+            "dir": "outputs/best_checkpoints",
+            "prefer": True,
+            "metric": "val_top1",
+            "filename": "{slug}_{role}_acc_{acc}.pth",
+        },
     },
 }

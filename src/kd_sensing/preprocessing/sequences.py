@@ -60,7 +60,7 @@ def generate_sequence_data(
     all_seqs = []
     for seq in all_seq_split:
         start = 0
-        while start + in_len + out_len < seq.shape[0]:
+        while start + in_len + out_len <= seq.shape[0]:
             image = seq["unit1_rgb"][start : start + in_len].tolist()
             radar = seq["unit1_radar"][start : start + in_len].tolist()
             gps = seq[gps_source_column][start : start + in_len].tolist() if include_gps else []
