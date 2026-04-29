@@ -24,6 +24,7 @@ from kd_sensing.data.transforms import (
     load_gps_feature_sequence,
     load_motion_masks,
     load_radar_maps,
+    parameterized_image_motion_cache_dir,
     parameterized_lidar_cache_dir,
 )
 from kd_sensing.registries import DATASETS
@@ -48,9 +49,18 @@ class Scenario9Dataset(Dataset):
         seq_len: int = 8,
         num_pred: int = 3,
         image_size: list[int] | tuple[int, int] = (224, 224),
+        image_motion_cache_dir: str | None = None,
+        image_motion_use_cache: bool = False,
+        image_motion_write_cache: bool = False,
+        image_motion_cache_version: str = "v1",
+        image_motion_gaussian_sigma: float = 1.0,
+        image_motion_threshold_ratio: float = 0.1,
+        image_motion_threshold_strategy: str = "relative_max",
+        image_motion_grayscale: str = "rgb2gray",
         fft_tuple: list[int] | tuple[int, int, int] = (64, 256, 128),
         clipped_range: int = 128,
         portion: float = 1.0,
+        beam_label_cache: bool | str = "lazy",
         use_gps: bool = False,
         gps_feature_mode: str = SUPPORTED_GPS_FEATURE_MODE,
         gps_normalize: bool = True,
@@ -87,10 +97,23 @@ class Scenario9Dataset(Dataset):
             self.root_csv = self.data_root / self.root_csv
         self.seq_len = seq_len
         self.num_pred = num_pred
+        self.image_size = tuple(image_size)
+        self.image_motion_use_cache = bool(image_motion_use_cache)
+        self.image_motion_write_cache = bool(image_motion_write_cache)
+        self.image_motion_cache_version = str(image_motion_cache_version)
+        self.image_motion_gaussian_sigma = float(image_motion_gaussian_sigma)
+        self.image_motion_threshold_ratio = float(image_motion_threshold_ratio)
+        self.image_motion_threshold_strategy = str(image_motion_threshold_strategy)
+        self.image_motion_grayscale = str(image_motion_grayscale)
+        self.image_motion_cache_dir: Path | None = None
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
         self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar)
+        if "image" in self.enabled_modalities:
+            self.image_motion_cache_dir = self._resolve_image_motion_cache_dir(image_motion_cache_dir)
+        self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
+        self._beam_label_cache: dict[str, int] = {}
         self.use_gps = "gps" in self.enabled_modalities
         self.gps_feature_mode = gps_feature_mode
         self.gps_normalize = gps_normalize
@@ -131,6 +154,8 @@ class Scenario9Dataset(Dataset):
             portion_strategy=portion_strategy,
             portion_seed=portion_seed,
         )
+        if self.beam_label_cache_mode == "eager":
+            self._prepare_beam_label_cache()
         if self.use_gps:
             self._ensure_gps_columns()
             self._prepare_gps_scaler()
@@ -146,11 +171,11 @@ class Scenario9Dataset(Dataset):
         future_beam_paths = self.samples.future_beam_paths[idx][: self.num_pred]
 
         input_beam = [
-            int(np.argmax(np.loadtxt(joined_resource(self.data_root, beam_path))))
+            self._beam_label(beam_path)
             for beam_path in beam_paths
         ]
         target_beam = [
-            int(np.argmax(np.loadtxt(joined_resource(self.data_root, beam_path))))
+            self._beam_label(beam_path)
             for beam_path in future_beam_paths
         ]
         sample = {
@@ -161,7 +186,20 @@ class Scenario9Dataset(Dataset):
             if self.transform is None:
                 raise ValueError("Image modality is enabled but image transform is unavailable.")
             samples_rgb = self.samples.rgb_paths[idx][-self.seq_len :]
-            sample["image"] = load_motion_masks(self.data_root, samples_rgb, self.seq_len, self.transform)
+            sample["image"] = load_motion_masks(
+                self.data_root,
+                samples_rgb,
+                self.seq_len,
+                self.transform,
+                image_size=self.image_size,
+                gaussian_sigma=self.image_motion_gaussian_sigma,
+                threshold_ratio=self.image_motion_threshold_ratio,
+                threshold_strategy=self.image_motion_threshold_strategy,
+                grayscale=self.image_motion_grayscale,
+                cache_dir=self.image_motion_cache_dir,
+                use_cache=self.image_motion_use_cache,
+                write_cache=self.image_motion_write_cache,
+            )
         if "radar" in self.enabled_modalities:
             samples_radar = self.samples.radar_paths[idx][-self.seq_len :]
             radar_ra, radar_da = load_radar_maps(
@@ -216,6 +254,63 @@ class Scenario9Dataset(Dataset):
         if len(set(selected)) != len(selected):
             raise ValueError(f"Scenario 9 modalities must not contain duplicates: {selected}.")
         return tuple(name for name in VALID_MODALITIES if name in set(selected))
+
+    def _resolve_image_motion_cache_dir(self, image_motion_cache_dir: str | None) -> Path | None:
+        if not image_motion_cache_dir:
+            return None
+        path = Path(image_motion_cache_dir).expanduser()
+        base = path if path.is_absolute() else self.data_root / path
+        return parameterized_image_motion_cache_dir(
+            base,
+            image_size=self.image_size,
+            gaussian_sigma=self.image_motion_gaussian_sigma,
+            threshold_ratio=self.image_motion_threshold_ratio,
+            threshold_strategy=self.image_motion_threshold_strategy,
+            grayscale=self.image_motion_grayscale,
+            cache_version=self.image_motion_cache_version,
+        )
+
+    def _resolve_beam_label_cache(self, config: bool | str) -> str:
+        if isinstance(config, bool):
+            return "eager" if config else "off"
+        mode = str(config).lower()
+        if mode in {"true", "yes", "on"}:
+            return "eager"
+        if mode in {"false", "no", "off", "none"}:
+            return "off"
+        if mode not in {"eager", "lazy"}:
+            raise ValueError("beam_label_cache must be one of eager, lazy, off, true, or false.")
+        return mode
+
+    def _prepare_beam_label_cache(self) -> None:
+        unique_paths = {
+            str(path)
+            for paths in [*self.samples.input_beam_paths, *self.samples.future_beam_paths]
+            for path in paths
+            if str(path).strip() and str(path).strip() != "-99"
+        }
+        for beam_path in sorted(unique_paths):
+            self._beam_label_cache[beam_path] = self._read_beam_label(beam_path)
+
+    def _beam_label(self, beam_path: str) -> int:
+        key = str(beam_path)
+        if self.beam_label_cache_mode != "off" and key in self._beam_label_cache:
+            return self._beam_label_cache[key]
+        label = self._read_beam_label(key)
+        if self.beam_label_cache_mode != "off":
+            self._beam_label_cache[key] = label
+        return label
+
+    def _read_beam_label(self, beam_path: str) -> int:
+        path = joined_resource(self.data_root, beam_path)
+        try:
+            values = np.loadtxt(path)
+        except Exception as exc:
+            raise ValueError(f"Failed to read beam label file {path}: {exc}") from exc
+        values = np.asarray(values)
+        if values.size == 0:
+            raise ValueError(f"Beam label file {path} is empty.")
+        return int(np.argmax(values))
 
     def _ensure_gps_columns(self) -> None:
         if self.samples.gps_paths is None:

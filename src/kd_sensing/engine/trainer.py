@@ -30,7 +30,9 @@ from kd_sensing.engine.builders import (
     build_task_criterion,
     dataloaders_run_metadata,
     save_normalization_artifacts,
+    throughput_run_metadata,
 )
+from kd_sensing.engine.runtime import autocast_context, make_grad_scaler, resolve_amp_settings, transfer_non_blocking
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
@@ -100,6 +102,7 @@ def final_config_with_runtime(
     split_metadata: dict | None = None,
     normalization_artifacts: dict | None = None,
     checkpoint_registry: dict | None = None,
+    throughput_metadata: dict | None = None,
 ) -> dict:
     final_cfg = deepcopy(cfg)
     runtime = final_cfg.setdefault("runtime", {})
@@ -111,6 +114,8 @@ def final_config_with_runtime(
         runtime["normalization_artifacts"] = normalization_artifacts
     if checkpoint_registry is not None:
         runtime["checkpoint_registry"] = checkpoint_registry
+    if throughput_metadata is not None:
+        runtime["throughput"] = throughput_metadata
     return final_cfg
 
 
@@ -237,16 +242,20 @@ def train(cfg: dict) -> dict:
     dataloaders = build_dataloaders(cfg)
     split_metadata = dataloaders_run_metadata(dataloaders)
     normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
+    device = build_device(cfg)
+    throughput_metadata = throughput_run_metadata(cfg, dataloaders, device)
     dump_config(
         final_config_with_runtime(
             cfg,
             run_dir=run_dir,
             split_metadata=split_metadata,
             normalization_artifacts=normalization_artifacts,
+            throughput_metadata=throughput_metadata,
         ),
         run_dir / "final_config.yaml",
     )
-    device = build_device(cfg)
+    non_blocking = transfer_non_blocking(cfg)
+    amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     task = cfg["experiment"].get("task", "image")
     model_cfg = cfg["model"]
     num_pred = model_cfg.get("num_pred", 3)
@@ -271,6 +280,7 @@ def train(cfg: dict) -> dict:
     distiller = build_distiller(cfg, task_criterion).to(device)
     optimizer = build_optimizer(cfg, student_model)
     scheduler = build_scheduler(cfg, optimizer)
+    grad_scaler = make_grad_scaler(cfg, amp_enabled)
     training_cfg = cfg["training"]
     best_val_loss = float("inf")
     best_val_top1 = float("-inf")
@@ -349,55 +359,67 @@ def train(cfg: dict) -> dict:
                     num_pred=num_pred,
                     downsample_ratio=downsample_ratio,
                     device=device,
+                    non_blocking=non_blocking,
                 )
                 optimizer.zero_grad()
-                student_outputs, student_input_features, student_out_features = _forward_for_task(
-                    student_model,
-                    task,
-                    batch,
-                    model_cfg=model_cfg["student"],
-                    seq_length=seq_length_student,
-                    num_pred=num_pred,
-                    device=device,
-                )
-                if teacher_model is not None:
-                    with torch.no_grad():
-                        teacher_outputs, teacher_input_features, teacher_out_features = _forward_for_task(
-                            teacher_model,
-                            task,
-                            batch,
-                            model_cfg=model_cfg["teacher"],
-                            seq_length=seq_length_teacher,
-                            num_pred=num_pred,
-                            device=device,
-                        )
-                else:
-                    teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
-                        student_outputs,
-                        student_input_features,
-                        student_out_features,
+                with autocast_context(amp_enabled, device, amp_dtype):
+                    student_outputs, student_input_features, student_out_features = _forward_for_task(
+                        student_model,
+                        task,
+                        batch,
+                        model_cfg=model_cfg["student"],
+                        seq_length=seq_length_student,
+                        num_pred=num_pred,
+                        device=device,
+                        non_blocking=non_blocking,
                     )
+                    if teacher_model is not None:
+                        with torch.no_grad():
+                            teacher_outputs, teacher_input_features, teacher_out_features = _forward_for_task(
+                                teacher_model,
+                                task,
+                                batch,
+                                model_cfg=model_cfg["teacher"],
+                                seq_length=seq_length_teacher,
+                                num_pred=num_pred,
+                                device=device,
+                                non_blocking=non_blocking,
+                            )
+                    else:
+                        teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
+                            student_outputs,
+                            student_input_features,
+                            student_out_features,
+                        )
 
-                student_outputs = student_outputs[:, -(num_pred + 1) :, :]
-                teacher_outputs = teacher_outputs[:, -(num_pred + 1) :, :]
-                student_logits = student_outputs.reshape(-1, num_classes)
-                teacher_logits = teacher_outputs.reshape(-1, num_classes)
-                targets = labels.flatten()
-                total_loss, task_loss, distill_loss = distiller(
-                    student_logits,
-                    teacher_logits,
-                    targets,
-                    student_input_features[:, : seq_length_student - 1, :],
-                    teacher_input_features[:, : seq_length_teacher - 1, :],
-                    student_out_features[:, -(num_pred + 1) :, :],
-                    teacher_out_features[:, -(num_pred + 1) :, :],
-                    current_alpha,
-                )
-                total_loss.backward()
+                    student_outputs = student_outputs[:, -(num_pred + 1) :, :]
+                    teacher_outputs = teacher_outputs[:, -(num_pred + 1) :, :]
+                    student_logits = student_outputs.reshape(-1, num_classes)
+                    teacher_logits = teacher_outputs.reshape(-1, num_classes)
+                    targets = labels.flatten()
+                    total_loss, task_loss, distill_loss = distiller(
+                        student_logits,
+                        teacher_logits,
+                        targets,
+                        student_input_features[:, : seq_length_student - 1, :],
+                        teacher_input_features[:, : seq_length_teacher - 1, :],
+                        student_out_features[:, -(num_pred + 1) :, :],
+                        teacher_out_features[:, -(num_pred + 1) :, :],
+                        current_alpha,
+                    )
                 grad_clip = training_cfg.get("grad_clip", None)
-                if grad_clip:
-                    torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
-                optimizer.step()
+                if grad_scaler.is_enabled():
+                    grad_scaler.scale(total_loss).backward()
+                    if grad_clip:
+                        grad_scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
+                    grad_scaler.step(optimizer)
+                    grad_scaler.update()
+                else:
+                    total_loss.backward()
+                    if grad_clip:
+                        torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
+                    optimizer.step()
                 prediction = torch.argmax(student_outputs, dim=-1)
                 valid = torch.sum(labels != -100).item()
                 acc = (prediction == labels).sum().item() / max(valid, 1)
@@ -515,12 +537,14 @@ def train(cfg: dict) -> dict:
         "checkpoint_loads": checkpoint_loads,
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_registry": registry_checkpoint,
+        "throughput": throughput_metadata,
         "runtime": {
             "run_dir": str(run_dir),
             "output_overwrite": bool(cfg.get("output", {}).get("overwrite", False)),
             "splits": split_metadata,
             "normalization_artifacts": normalization_artifacts,
             "checkpoint_registry": registry_checkpoint,
+            "throughput": throughput_metadata,
         },
     }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
@@ -533,6 +557,7 @@ def train(cfg: dict) -> dict:
             split_metadata=split_metadata,
             normalization_artifacts=normalization_artifacts,
             checkpoint_registry=registry_checkpoint,
+            throughput_metadata=throughput_metadata,
         ),
         run_dir / "final_config.yaml",
     )
@@ -546,6 +571,7 @@ def train(cfg: dict) -> dict:
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_loads": checkpoint_loads,
         "split_metadata": split_metadata,
+        "throughput": throughput_metadata,
     }
 
 
@@ -566,6 +592,7 @@ def _forward_for_task(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    non_blocking: bool = False,
 ):
     if task == "fusion":
         fusion_inputs = prepare_fusion_inputs(
@@ -574,6 +601,7 @@ def _forward_for_task(
             num_pred=num_pred,
             device=device,
             modalities=(model_cfg or {}).get("modalities"),
+            non_blocking=non_blocking,
         )
         return forward_model(model, task, **fusion_inputs)
     if task == "radar":
@@ -582,6 +610,7 @@ def _forward_for_task(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
         return forward_model(model, task, radar_batch=radar_batch)
     if task == "gps":
@@ -590,6 +619,7 @@ def _forward_for_task(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
         return forward_model(model, task, gps_batch=gps_batch)
     if task == "lidar":
@@ -598,6 +628,7 @@ def _forward_for_task(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
         return forward_model(model, task, lidar_batch=lidar_batch)
     image_batch = prepare_image_inputs(
@@ -605,5 +636,6 @@ def _forward_for_task(
         seq_length=seq_length,
         num_pred=num_pred,
         device=device,
+        non_blocking=non_blocking,
     )
     return forward_model(model, task, image_batch)

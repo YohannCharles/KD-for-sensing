@@ -16,10 +16,13 @@ if str(SRC) not in sys.path:
 
 import kd_sensing.data.transforms as transforms  # noqa: E402
 import kd_sensing.data.datasets.scenario9 as scenario9_module  # noqa: E402
+import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
 from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
-from kd_sensing.engine.batch import prepare_labels  # noqa: E402
+from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.engine.builders import build_dataloader_kwargs, resolve_enabled_modalities  # noqa: E402
+from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
+from kd_sensing.preprocessing.image import generate_image_motion_cache  # noqa: E402
 from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir  # noqa: E402
 from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E402
 from kd_sensing.utils.artifact_registry import (  # noqa: E402
@@ -359,6 +362,192 @@ def test_lidar_cache_initialization_does_not_load_cache(monkeypatch, tmp_path: P
     assert dataset.lidar_cache_dir is not None
 
 
+def test_image_motion_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
+    _write_camera_files(tmp_path, count=2)
+
+    dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=1,
+        enabled_modalities=["image"],
+        image_size=[8, 8],
+        image_motion_cache_dir="motion_cache",
+        image_motion_use_cache=True,
+        image_motion_write_cache=True,
+    )
+    sample = dataset[0]
+    cache_files = list(dataset.image_motion_cache_dir.glob("*.npy"))
+
+    assert sample["image"].shape == (1, 8, 8)
+    assert len(cache_files) == 1
+
+    monkeypatch.setattr(transforms, "build_motion_mask_pair", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+    cached_dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=1,
+        enabled_modalities=["image"],
+        image_size=[8, 8],
+        image_motion_cache_dir="motion_cache",
+        image_motion_use_cache=True,
+    )
+    changed_param_dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=1,
+        enabled_modalities=["image"],
+        image_size=[8, 8],
+        image_motion_cache_dir="motion_cache",
+        image_motion_use_cache=True,
+        image_motion_gaussian_sigma=2.0,
+    )
+
+    assert cached_dataset[0]["image"].shape == (1, 8, 8)
+    assert cached_dataset.image_motion_cache_dir == dataset.image_motion_cache_dir
+    assert changed_param_dataset.image_motion_cache_dir != dataset.image_motion_cache_dir
+
+
+def test_image_motion_cache_preprocessor_writes_metadata(tmp_path: Path):
+    csv_path = tmp_path / "image_seq.csv"
+    _write_camera_files(tmp_path, count=3)
+    csv_path.write_text(
+        "camera1,camera2,camera3\ncamera_0.jpg,camera_1.jpg,camera_2.jpg\n",
+        encoding="utf-8",
+    )
+
+    first = generate_image_motion_cache(
+        csv_paths=[csv_path],
+        data_root=tmp_path,
+        cache_dir=tmp_path / "motion_cache",
+        image_size=[8, 8],
+        progress=False,
+    )
+    second = generate_image_motion_cache(
+        csv_paths=[csv_path],
+        data_root=tmp_path,
+        cache_dir=tmp_path / "motion_cache",
+        image_size=[8, 8],
+        progress=False,
+    )
+
+    cache_dir = Path(first["cache_dir"])
+    metadata = cache_dir / "metadata.json"
+    assert first["count"] == 2
+    assert first["generated"] == 2
+    assert second["skipped"] == 2
+    assert metadata.exists()
+    assert "image_motion_cache" in metadata.read_text(encoding="utf-8")
+
+
+def test_lidar_cache_preprocessor_skips_existing_and_writes_metadata(monkeypatch, tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    test_csv = tmp_path / "test.csv"
+    train_csv.write_text("lidar1,lidar2\nlidar_0.txt,lidar_1.txt\n", encoding="utf-8")
+    test_csv.write_text("lidar1,lidar2\nlidar_1.txt,lidar_0.txt\n", encoding="utf-8")
+    build_calls = {"count": 0}
+
+    def fake_build(*args, **kwargs):  # noqa: ARG001
+        build_calls["count"] += 1
+        return np.ones((3, 4, 4), dtype=np.float32)
+
+    monkeypatch.setattr(lidar_preprocessing, "build_lidar_bev", fake_build)
+    first = lidar_preprocessing.generate_lidar_bev_cache(
+        csv_paths=[train_csv, test_csv],
+        data_root=tmp_path,
+        cache_dir=tmp_path / "lidar_cache",
+        bev_size=[4, 4],
+        roi=[0.0, 2.0, -1.0, 1.0, -1.0, 1.0],
+        progress=False,
+    )
+    second = lidar_preprocessing.generate_lidar_bev_cache(
+        csv_paths=[train_csv, test_csv],
+        data_root=tmp_path,
+        cache_dir=tmp_path / "lidar_cache",
+        bev_size=[4, 4],
+        roi=[0.0, 2.0, -1.0, 1.0, -1.0, 1.0],
+        progress=False,
+    )
+
+    assert first["count"] == 2
+    assert first["generated"] == 2
+    assert second["skipped"] == 2
+    assert build_calls["count"] == 2
+    assert (Path(first["cache_dir"]) / "metadata.json").exists()
+
+
+def test_beam_label_cache_reuses_repeated_paths(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    beam = np.zeros(64, dtype=np.float32)
+    beam[7] = 1.0
+    np.savetxt(tmp_path / "beam.txt", beam)
+    csv_path.write_text(
+        "radar1,radar2,beam1,beam2,future_beam1,seq_index\n"
+        "radar_0_RA.npy,radar_1_RA.npy,beam.txt,beam.txt,beam.txt,1\n",
+        encoding="utf-8",
+    )
+    calls = {"count": 0}
+    real_loadtxt = np.loadtxt
+
+    def counting_loadtxt(*args, **kwargs):
+        calls["count"] += 1
+        return real_loadtxt(*args, **kwargs)
+
+    monkeypatch.setattr(np, "loadtxt", counting_loadtxt)
+    monkeypatch.setattr(
+        scenario9_module,
+        "load_radar_maps",
+        lambda *args, **kwargs: (torch.zeros(2, 4, 4), torch.zeros(2, 6, 4)),  # noqa: ARG005
+    )
+    dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=1,
+        enabled_modalities=["radar"],
+        beam_label_cache="lazy",
+        fft_tuple=[4, 8, 6],
+        clipped_range=4,
+    )
+    sample = dataset[0]
+
+    assert sample["input_beam"].tolist() == [7, 7]
+    assert sample["target_beam"].tolist() == [7]
+    assert calls["count"] == 1
+
+
+def test_non_blocking_transfer_and_amp_cpu_fallback():
+    cfg = {
+        "training": {
+            "transfer": {"non_blocking": True},
+            "amp": {"enabled": True, "dtype": "float16", "grad_scaler": True},
+        }
+    }
+    batch = {"gps": torch.randn(2, 8, 3)}
+
+    enabled, dtype = resolve_amp_settings(cfg, torch.device("cpu"))
+    fusion_inputs = prepare_fusion_inputs(
+        batch,
+        seq_length=8,
+        num_pred=3,
+        device=torch.device("cpu"),
+        modalities=["gps"],
+        non_blocking=transfer_non_blocking(cfg),
+    )
+
+    assert enabled is False
+    assert dtype is torch.float16
+    assert fusion_inputs["gps_batch"].shape == (2, 10, 3)
+
+
 def test_builder_rejects_conflicting_dataset_flags():
     with pytest.raises(ValueError, match="use_lidar=true conflicts"):
         resolve_enabled_modalities(
@@ -408,6 +597,13 @@ def _write_full_sequence_fixture(root: Path, csv_path: Path, *, seq_len: int, nu
         + ["1"]
     )
     csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+
+def _write_camera_files(root: Path, *, count: int) -> None:
+    from PIL import Image
+
+    for idx in range(count):
+        Image.fromarray(np.full((8, 8, 3), idx * 40, dtype=np.uint8)).save(root / f"camera_{idx}.jpg")
 
 
 def _write_minimal_csv(path: Path, *, camera: bool, radar: bool, gps: bool, lidar: bool) -> None:

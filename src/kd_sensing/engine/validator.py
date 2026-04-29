@@ -15,6 +15,7 @@ from kd_sensing.engine.batch import (
     prepare_lidar_inputs,
     prepare_radar_inputs,
 )
+from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, transfer_non_blocking
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 
 
@@ -26,6 +27,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     downsample_ratio = model_cfg.get("downsample_ratio", 1)
     seq_length = model_cfg.get("seq_length_student", 8)
     num_classes = model_cfg.get("num_classes", 64)
+    non_blocking = transfer_non_blocking(cfg)
+    amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     val_loss = 0.0
     all_outputs = []
     all_labels = []
@@ -37,50 +40,58 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                 num_pred=num_pred,
                 downsample_ratio=downsample_ratio,
                 device=device,
+                non_blocking=non_blocking,
             )
-            if task == "fusion":
-                fusion_inputs = prepare_fusion_inputs(
-                    batch,
-                    seq_length=seq_length,
-                    num_pred=num_pred,
-                    device=device,
-                    modalities=cfg["model"]["student"].get("modalities"),
-                )
-                outputs, _, _ = forward_model(model, task, **fusion_inputs)
-            elif task == "radar":
-                radar_batch = prepare_radar_inputs(
-                    batch,
-                    seq_length=seq_length,
-                    num_pred=num_pred,
-                    device=device,
-                )
-                outputs, _, _ = forward_model(model, task, radar_batch=radar_batch)
-            elif task == "gps":
-                gps_batch = prepare_gps_inputs(
-                    batch,
-                    seq_length=seq_length,
-                    num_pred=num_pred,
-                    device=device,
-                )
-                outputs, _, _ = forward_model(model, task, gps_batch=gps_batch)
-            elif task == "lidar":
-                lidar_batch = prepare_lidar_inputs(
-                    batch,
-                    seq_length=seq_length,
-                    num_pred=num_pred,
-                    device=device,
-                )
-                outputs, _, _ = forward_model(model, task, lidar_batch=lidar_batch)
-            else:
-                image_batch = prepare_image_inputs(
-                    batch,
-                    seq_length=seq_length,
-                    num_pred=num_pred,
-                    device=device,
-                )
-                outputs, _, _ = forward_model(model, task, image_batch)
-            outputs = outputs[:, -(num_pred + 1) :, :]
-            val_loss += criterion(outputs.reshape(-1, num_classes), labels.flatten()).item()
+            with autocast_context(amp_enabled, device, amp_dtype):
+                if task == "fusion":
+                    fusion_inputs = prepare_fusion_inputs(
+                        batch,
+                        seq_length=seq_length,
+                        num_pred=num_pred,
+                        device=device,
+                        modalities=cfg["model"]["student"].get("modalities"),
+                        non_blocking=non_blocking,
+                    )
+                    outputs, _, _ = forward_model(model, task, **fusion_inputs)
+                elif task == "radar":
+                    radar_batch = prepare_radar_inputs(
+                        batch,
+                        seq_length=seq_length,
+                        num_pred=num_pred,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    outputs, _, _ = forward_model(model, task, radar_batch=radar_batch)
+                elif task == "gps":
+                    gps_batch = prepare_gps_inputs(
+                        batch,
+                        seq_length=seq_length,
+                        num_pred=num_pred,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    outputs, _, _ = forward_model(model, task, gps_batch=gps_batch)
+                elif task == "lidar":
+                    lidar_batch = prepare_lidar_inputs(
+                        batch,
+                        seq_length=seq_length,
+                        num_pred=num_pred,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    outputs, _, _ = forward_model(model, task, lidar_batch=lidar_batch)
+                else:
+                    image_batch = prepare_image_inputs(
+                        batch,
+                        seq_length=seq_length,
+                        num_pred=num_pred,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    outputs, _, _ = forward_model(model, task, image_batch)
+                outputs = outputs[:, -(num_pred + 1) :, :]
+                loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
+            val_loss += loss.item()
             all_outputs.append(outputs.detach().cpu())
             all_labels.append(labels.detach().cpu())
     val_loss = val_loss / max(len(dataloader), 1)

@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer
+from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blocking
 from kd_sensing.registries import DATASETS, DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
 from kd_sensing.utils.paths import resolve_path
 
@@ -140,6 +141,16 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     lidar_cache_dir = getattr(dataset, "lidar_cache_dir", None)
     if lidar_cache_dir is not None:
         metadata["lidar_cache_dir"] = str(lidar_cache_dir)
+    image_motion_cache_dir = getattr(dataset, "image_motion_cache_dir", None)
+    if image_motion_cache_dir is not None:
+        metadata["image_motion_cache_dir"] = str(image_motion_cache_dir)
+        metadata["image_motion_use_cache"] = bool(getattr(dataset, "image_motion_use_cache", False))
+        metadata["image_motion_write_cache"] = bool(getattr(dataset, "image_motion_write_cache", False))
+    if hasattr(dataset, "beam_label_cache_mode"):
+        metadata["beam_label_cache"] = {
+            "mode": getattr(dataset, "beam_label_cache_mode", None),
+            "items": len(getattr(dataset, "_beam_label_cache", {})),
+        }
     sample_metadata = getattr(getattr(dataset, "samples", None), "metadata", None)
     if sample_metadata is not None:
         metadata["sampling"] = sample_metadata
@@ -148,6 +159,54 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
 
 def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, Any]:
     return {split: dataset_run_metadata(loader.dataset) for split, loader in dataloaders.items()}
+
+
+def throughput_run_metadata(
+    cfg: dict[str, Any],
+    dataloaders: dict[str, DataLoader] | None = None,
+    device: torch.device | None = None,
+) -> dict[str, Any]:
+    loader_cfg = cfg.get("data", {}).get("dataloader", {})
+    train_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="train")
+    test_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="test")
+    metadata: dict[str, Any] = {
+        "dataloader": {
+            "train": _serializable_loader_kwargs(train_loader_kwargs),
+            "test": _serializable_loader_kwargs(test_loader_kwargs),
+        },
+        "transfer": {
+            "non_blocking": transfer_non_blocking(cfg),
+        },
+    }
+    if device is not None:
+        metadata["amp"] = amp_runtime_metadata(cfg, device)
+    else:
+        amp_cfg = cfg.get("training", {}).get("amp", {})
+        metadata["amp"] = {
+            "enabled": bool(amp_cfg.get("enabled", False)),
+            "dtype": amp_cfg.get("dtype", "float16"),
+            "grad_scaler": bool(amp_cfg.get("grad_scaler", True)),
+        }
+    if dataloaders is not None:
+        metadata["splits"] = dataloaders_run_metadata(dataloaders)
+    return metadata
+
+
+def _serializable_loader_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key
+        in {
+            "batch_size",
+            "shuffle",
+            "num_workers",
+            "pin_memory",
+            "drop_last",
+            "persistent_workers",
+            "prefetch_factor",
+        }
+    }
 
 
 def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: str | Path) -> dict[str, str]:

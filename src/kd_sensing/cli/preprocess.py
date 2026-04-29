@@ -11,7 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", required=True, help="Path to a preprocessing YAML config.")
     parser.add_argument(
         "--action",
-        choices=["radar_fft_csv", "sequence_csv", "lidar_bev_cache"],
+        choices=["radar_fft_csv", "sequence_csv", "lidar_bev_cache", "image_motion_cache"],
         help="Preprocessor name. Defaults to preprocessing.type from the config.",
     )
     parser.add_argument(

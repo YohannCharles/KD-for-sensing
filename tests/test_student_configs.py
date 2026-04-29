@@ -287,7 +287,8 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     assert cfg["output"]["run_name"] == expected_name
     assert cfg["data"]["dataloader"]["train_batch_size"] == 32
     assert cfg["data"]["dataloader"]["test_batch_size"] == 32
-    assert cfg["data"]["dataloader"]["num_workers"] == 8
+    assert cfg["data"]["dataloader"]["num_workers"] == 4
+    assert cfg["data"]["dataloader"]["prefetch_factor"] == 1
     assert cfg["model"]["teacher"]["type"] == spec["teacher_type"]
     assert cfg["model"]["teacher"]["gru_params"] == SINGLE_GRU_PARAMS
     assert cfg["model"]["student"]["gru_params"] == SINGLE_GRU_PARAMS

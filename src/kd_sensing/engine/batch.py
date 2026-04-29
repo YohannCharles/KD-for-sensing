@@ -24,13 +24,14 @@ def prepare_labels(
     num_pred: int,
     downsample_ratio: int,
     device: torch.device,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     beam_downsampled = torch.floor(batch["input_beam"].float() / downsample_ratio).to(torch.int64)
     label_downsampled = torch.floor(batch["target_beam"].float() / downsample_ratio).to(torch.int64)
     return torch.cat(
         [beam_downsampled[..., -1:], label_downsampled[:, :num_pred]],
         dim=-1,
-    ).to(device)
+    ).to(device, non_blocking=non_blocking)
 
 
 def prepare_image_inputs(
@@ -39,10 +40,11 @@ def prepare_image_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     if "image" not in batch:
         raise ValueError("Image input is required but batch does not contain an 'image' field.")
-    image = batch["image"].to(device)
+    image = batch["image"].to(device, non_blocking=non_blocking)
     if image.ndim == 4:
         image = image.unsqueeze(2)
     image = image[:, 1 - seq_length :, ...]
@@ -66,6 +68,7 @@ def prepare_fusion_inputs(
     num_pred: int,
     device: torch.device,
     modalities: list[str] | tuple[str, ...] | None = None,
+    non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
     selected = tuple(modalities or ("image", "radar"))
     inputs: dict[str, torch.Tensor] = {}
@@ -75,6 +78,7 @@ def prepare_fusion_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
     if "radar" in selected:
         inputs["radar_batch"] = prepare_radar_inputs(
@@ -82,6 +86,7 @@ def prepare_fusion_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
     if "gps" in selected:
         inputs["gps_batch"] = prepare_gps_inputs(
@@ -89,6 +94,7 @@ def prepare_fusion_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
     if "lidar" in selected:
         inputs["lidar_batch"] = prepare_lidar_inputs(
@@ -96,6 +102,7 @@ def prepare_fusion_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            non_blocking=non_blocking,
         )
     return inputs
 
@@ -106,10 +113,11 @@ def prepare_gps_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     if "gps" not in batch:
         raise ValueError("GPS input is required but batch does not contain a 'gps' field.")
-    gps = batch["gps"].to(device)
+    gps = batch["gps"].to(device, non_blocking=non_blocking)
     if gps.ndim == 2:
         gps = gps.unsqueeze(0)
     gps = gps[:, -seq_length:, :]
@@ -131,11 +139,12 @@ def prepare_radar_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     if "radar_ra" not in batch or "radar_da" not in batch:
         raise ValueError("Radar input is required but batch does not contain 'radar_ra' and 'radar_da' fields.")
-    radar_ra = batch["radar_ra"].to(device)
-    radar_da = batch["radar_da"].to(device)
+    radar_ra = batch["radar_ra"].to(device, non_blocking=non_blocking)
+    radar_da = batch["radar_da"].to(device, non_blocking=non_blocking)
     if radar_ra.ndim == 4:
         radar_ra = radar_ra.unsqueeze(2)
     if radar_da.ndim == 4:
@@ -165,10 +174,11 @@ def prepare_lidar_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     if "lidar" not in batch:
         raise ValueError("LiDAR input is required but batch does not contain a 'lidar' field.")
-    lidar = batch["lidar"].to(device)
+    lidar = batch["lidar"].to(device, non_blocking=non_blocking)
     if lidar.ndim == 4:
         lidar = lidar.unsqueeze(2)
     if lidar.ndim != 5:

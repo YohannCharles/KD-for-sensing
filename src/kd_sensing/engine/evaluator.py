@@ -14,6 +14,7 @@ from kd_sensing.engine.builders import (
     dataset_run_metadata,
     load_normalization_artifacts,
     prepare_lidar_normalizer,
+    throughput_run_metadata,
 )
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
@@ -52,6 +53,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     normalization_artifacts = {}
     if checkpoint_resolution.metadata:
         normalization_artifacts = checkpoint_resolution.metadata.get("normalization_artifacts", {})
+    throughput_metadata = throughput_run_metadata(cfg, device=device)
     dump_config(
         final_config_with_runtime(
             cfg,
@@ -59,6 +61,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             split_metadata=split_metadata,
             normalization_artifacts=normalization_artifacts,
             checkpoint_registry=checkpoint_resolution.to_dict(),
+            throughput_metadata=throughput_metadata,
         ),
         run_dir / "final_config.yaml",
     )
@@ -100,6 +103,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             "splits": split_metadata,
             "checkpoint_resolution": checkpoint_resolution.to_dict(),
             "normalization_artifacts": normalization_artifacts,
+            "throughput": throughput_metadata,
         },
     }
     with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
@@ -110,6 +114,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
         "checkpoint_load": checkpoint_load,
         "checkpoint_resolution": checkpoint_resolution.to_dict(),
         "split_metadata": split_metadata,
+        "throughput": throughput_metadata,
     }
 
 

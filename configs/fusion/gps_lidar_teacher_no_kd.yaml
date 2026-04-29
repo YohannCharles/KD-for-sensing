@@ -22,7 +22,8 @@ data:
   dataloader:
     train_batch_size: 32
     test_batch_size: 32
-    num_workers: 8
+    num_workers: 4
+    prefetch_factor: 1
 model:
   feature_size: 64
   gru_hidden_size: 64

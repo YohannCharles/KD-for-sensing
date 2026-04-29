@@ -47,6 +47,7 @@ checkpoints/
 outputs/
 results/
 归档/
+AI优化建议/
 # Generated model/checkpoint artifacts
 *.ckpt
 *.pt

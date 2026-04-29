@@ -180,6 +180,41 @@ python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.d
 输入为 `128x64`，即默认 `clipped_range: 128` 和 `fft_tuple` 的第一/第三项为 `64/128`。
 这些限制来自 motion mask、image/fusion teacher FC 输入和 radar branch 结构。
 
+### 吞吐 profiling 与运行参数
+
+训练前可以先用轻量 profile 脚本拆分 dataset、DataLoader、CPU 到 GPU 传输和 step 耗时：
+
+```bash
+conda run -n kd_mm_beam python scripts/profile_training_io.py \
+  --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
+  --samples 32 \
+  --output outputs/profile/fusion_io.json \
+  --csv-output outputs/profile/fusion_io.csv
+```
+
+更多 image/radar/GPS/LiDAR/fusion profile 示例和 cache 复用规则见
+`docs/training_throughput.md`。
+
+包含 image 的实验建议先预热 image motion cache；包含 LiDAR 的实验建议先预热 LiDAR BEV cache。
+并行运行多个实验时，默认配置使用较保守的 `num_workers: 4` 和 `prefetch_factor: 1`，避免多个
+训练进程把 CPU worker 和预取队列成倍放大。单个实验可以通过命令行覆盖逐步调高：
+
+```bash
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_rkd.yaml \
+  -o data.dataloader.num_workers=8 \
+  -o data.dataloader.prefetch_factor=2
+```
+
+如果 DataLoader 使用 `pin_memory: true`，默认会启用 `training.transfer.non_blocking: true`，让
+batch tensor 传输使用 non-blocking `.to(device)`。AMP 默认关闭；确认 cache 和 DataLoader 不再卡住后，
+可以在 CUDA 上显式启用：
+
+```bash
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_rkd.yaml \
+  -o training.amp.enabled=true \
+  -o training.amp.dtype=float16
+```
+
 输出会写入 `outputs/<run_name>/`，包括：
 
 - `final_config.yaml`
@@ -234,6 +269,7 @@ python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_lidar.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml
+python scripts/preprocess.py --config configs/preprocess/image_motion_cache.yaml
 python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
@@ -242,10 +278,16 @@ python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 `configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；GPS scaler 只在训练集上 fit，
 并复用于测试集。
 
-`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存；训练配置中将
-`lidar_cache_dir` 指向该目录并启用 `lidar_use_cache` 后可复用缓存。
+`configs/preprocess/image_motion_cache.yaml` 可把相邻 camera 帧 pair 的 motion mask 提前缓存为
+`.npy` `uint8` 文件；训练配置中将 `image_motion_cache_dir` 指向该目录并启用
+`image_motion_use_cache` 后可复用缓存。`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为
+`.npy` BEV 缓存；训练配置中将 `lidar_cache_dir` 指向该目录并启用 `lidar_use_cache` 后可复用缓存。
 BEV cache 会按 BEV 尺寸、ROI、FoV、ground/background 过滤参数自动分区，避免参数变化后误用旧缓存。
-BEV cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时全量载入 cache 目录。
+image motion cache 同样会按 image size、Gaussian sigma、阈值策略、灰度化方式和 cache version 自动分区。
+这类原始模态预处理 cache 可以长期保留；训练 epoch、lr、batch size、num_workers、seed、模型结构和 KD
+类型变化不会使它失效。原始 jpg/LiDAR/radar/GPS/beam 文件内容变化，或对应预处理参数变化时，应使用新的
+参数 hash 目录或清理旧 cache。BEV 和 image cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时
+全量载入 cache 目录。
 
 训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径和样本数，用于确认不同实验确实在
 同一训练/测试集合上比较。

@@ -1,6 +1,8 @@
 preprocessing:
   type: lidar_bev_cache
-  csv_path: dataset/scenario9/train_seqs_RA_GPS_LIDAR.csv
+  csv_paths:
+    - dataset/scenario9/train_seqs_RA_GPS_LIDAR.csv
+    - dataset/scenario9/test_seqs_RA_GPS_LIDAR.csv
   data_root: dataset/scenario9
   cache_dir: dataset/scenario9/lidar_bev_cache
   lidar_prefix: lidar
@@ -8,3 +10,6 @@ preprocessing:
   roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
   remove_ground: false
   ground_z_threshold: 0.1
+  overwrite: false
+  progress: true
+  cache_version: v1
