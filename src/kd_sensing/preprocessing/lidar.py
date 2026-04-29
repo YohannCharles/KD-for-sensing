@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 from kd_sensing.data.transforms import (
     DEFAULT_LIDAR_BEV_SIZE,
     DEFAULT_LIDAR_ROI,
+    atomic_save_npy,
     build_lidar_bev,
     lidar_cache_path,
     load_lidar_background_points,
@@ -86,8 +87,7 @@ def generate_lidar_bev_cache(
             background_points=background_points,
             background_distance_threshold=background_distance_threshold,
         )
-        npy_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(npy_path, bev)
+        atomic_save_npy(npy_path, bev)
         generated += 1
     _write_lidar_cache_metadata(
         cache_dir,

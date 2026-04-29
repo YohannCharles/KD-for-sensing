@@ -55,6 +55,7 @@ class Scenario9Dataset(Dataset):
         image_motion_cache_dir: str | None = None,
         image_motion_use_cache: bool = False,
         image_motion_write_cache: bool = False,
+        image_motion_cache_policy: str | None = None,
         image_motion_cache_version: str = "v1",
         image_motion_gaussian_sigma: float = 1.0,
         image_motion_threshold_ratio: float = 0.1,
@@ -82,6 +83,7 @@ class Scenario9Dataset(Dataset):
         lidar_cache_dir: str | None = None,
         lidar_use_cache: bool = False,
         lidar_write_cache: bool = False,
+        lidar_cache_policy: str | None = None,
         lidar_normalize: bool = False,
         lidar_normalization: dict[str, Any] | None = None,
         lidar_normalizer: LidarBEVNormalizer | None = None,
@@ -106,6 +108,7 @@ class Scenario9Dataset(Dataset):
         self.image_size = tuple(image_size)
         self.image_motion_use_cache = bool(image_motion_use_cache)
         self.image_motion_write_cache = bool(image_motion_write_cache)
+        self.image_motion_cache_policy = image_motion_cache_policy
         self.image_motion_cache_version = str(image_motion_cache_version)
         self.image_motion_gaussian_sigma = float(image_motion_gaussian_sigma)
         self.image_motion_threshold_ratio = float(image_motion_threshold_ratio)
@@ -137,8 +140,9 @@ class Scenario9Dataset(Dataset):
         self.lidar_ground_z_threshold = lidar_ground_z_threshold
         self.lidar_background_distance_threshold = lidar_background_distance_threshold
         self.lidar_background_path = lidar_background_path
-        self.lidar_use_cache = lidar_use_cache
-        self.lidar_write_cache = lidar_write_cache
+        self.lidar_use_cache = bool(lidar_use_cache)
+        self.lidar_write_cache = bool(lidar_write_cache)
+        self.lidar_cache_policy = lidar_cache_policy
         self.lidar_normalization = self._resolve_lidar_normalization(lidar_normalize, lidar_normalization)
         self.lidar_normalize = self.lidar_normalization["enabled"]
         self.lidar_normalization_mode = self.lidar_normalization["mode"]
@@ -151,8 +155,10 @@ class Scenario9Dataset(Dataset):
         self.lidar_augment = lidar_augment
         self.lidar_point_dropout = lidar_point_dropout
         self.lidar_jitter_std = lidar_jitter_std
-        self.lidar_cache_dir = self._resolve_lidar_cache_dir(lidar_cache_dir)
-        self.lidar_background_points = load_lidar_background_points(self.data_root, lidar_background_path)
+        self.lidar_cache_dir = self._resolve_lidar_cache_dir(lidar_cache_dir) if self.use_lidar else None
+        self.lidar_background_points = (
+            load_lidar_background_points(self.data_root, lidar_background_path) if self.use_lidar else None
+        )
         self._lidar_bev_cache: OrderedDict[int, np.ndarray] = OrderedDict()
         self.transform = build_image_transform(image_size) if "image" in self.enabled_modalities else None
         self.samples = create_samples(

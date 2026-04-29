@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import datetime as dt
+import os
 from pathlib import Path
 import hashlib
 import io as text_io
 import json
+import tempfile
 
 import numpy as np
 import torch
@@ -40,6 +42,22 @@ def build_image_transform(image_size: list[int] | tuple[int, int] = (224, 224)):
 
 def joined_resource(data_root: str | Path, rel_path: str) -> Path:
     return Path(data_root) / str(rel_path).lstrip("/")
+
+
+def atomic_save_npy(path: str | Path, array: np.ndarray) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False) as f:
+            tmp_name = f.name
+            np.save(f, array)
+        os.replace(tmp_name, target)
+    finally:
+        if tmp_name is not None:
+            tmp_path = Path(tmp_name)
+            if tmp_path.exists():
+                tmp_path.unlink()
 
 
 def image_motion_cache_config_hash(
@@ -287,8 +305,7 @@ def _load_motion_masks_with_cache(
                 grayscale=grayscale,
             )
             if write_cache:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                np.save(path, mask.astype(np.uint8))
+                atomic_save_npy(path, mask.astype(np.uint8))
         masks.append(mask.astype(np.uint8))
     return np.stack(masks, axis=0).astype(np.uint8)
 
@@ -662,7 +679,7 @@ def load_lidar_bev_sequence(
     selected_lidar = lidar_paths[-seq_len:]
     frames = []
     cache_root = Path(cache_dir) if cache_dir else None
-    if cache_root is not None:
+    if cache_root is not None and write_cache:
         cache_root.mkdir(parents=True, exist_ok=True)
     for rel_path in selected_lidar:
         cache_path = lidar_cache_path(cache_root, rel_path) if cache_root is not None else None
@@ -685,7 +702,7 @@ def load_lidar_bev_sequence(
                 rng=rng,
             )
             if write_cache and cache_path is not None:
-                np.save(cache_path, bev)
+                atomic_save_npy(cache_path, bev)
         frames.append(bev.astype(np.float32))
     return np.stack(frames, axis=0).astype(np.float32)
 

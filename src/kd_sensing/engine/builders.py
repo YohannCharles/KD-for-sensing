@@ -14,6 +14,7 @@ from kd_sensing.utils.paths import resolve_path
 
 
 VALID_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
+CACHE_POLICIES = ("off", "read_only", "auto", "rebuild")
 
 
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
@@ -26,11 +27,96 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg["use_gps"] = "gps" in enabled_modalities
     dataset_cfg["use_lidar"] = "lidar" in enabled_modalities
     dataset_cfg["use_mmwave"] = "mmwave" in enabled_modalities
+    apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
         csv_key = "train_csv_name" if split == "train" else "test_csv_name"
         dataset_cfg["csv_name"] = dataset_cfg.get(csv_key)
     dataset_cfg.update(extra_dataset_kwargs)
     return DATASETS.build(dataset_cfg)
+
+
+def apply_cache_policy(
+    dataset_cfg: dict[str, Any],
+    cfg: dict[str, Any],
+    enabled_modalities: tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    """Resolve high-level cache policy into concrete Scenario9Dataset knobs."""
+
+    selected = set(enabled_modalities)
+    cache_cfg = cfg.get("data", {}).get("cache", {})
+    global_policy = _normalize_cache_policy(cache_cfg.get("policy", "auto"), "data.cache.policy")
+    dataset_cfg["_cache_policy"] = global_policy
+    dataset_cfg["_cache_enabled_modalities"] = list(enabled_modalities)
+
+    if "image" in selected:
+        image_policy = _normalize_cache_policy(
+            cache_cfg.get("image", {}).get("policy", global_policy) or global_policy,
+            "data.cache.image.policy",
+        )
+        _apply_modality_cache_policy(
+            dataset_cfg,
+            policy=image_policy,
+            use_key="image_motion_use_cache",
+            write_key="image_motion_write_cache",
+            policy_key="image_motion_cache_policy",
+        )
+    else:
+        dataset_cfg["image_motion_use_cache"] = False
+        dataset_cfg["image_motion_write_cache"] = False
+        dataset_cfg["image_motion_cache_policy"] = "off"
+
+    if "lidar" in selected:
+        lidar_policy = _normalize_cache_policy(
+            cache_cfg.get("lidar", {}).get("policy", global_policy) or global_policy,
+            "data.cache.lidar.policy",
+        )
+        _apply_modality_cache_policy(
+            dataset_cfg,
+            policy=lidar_policy,
+            use_key="lidar_use_cache",
+            write_key="lidar_write_cache",
+            policy_key="lidar_cache_policy",
+        )
+    else:
+        dataset_cfg["lidar_use_cache"] = False
+        dataset_cfg["lidar_write_cache"] = False
+        dataset_cfg["lidar_cache_policy"] = "off"
+    return dataset_cfg
+
+
+def _apply_modality_cache_policy(
+    dataset_cfg: dict[str, Any],
+    *,
+    policy: str,
+    use_key: str,
+    write_key: str,
+    policy_key: str,
+) -> None:
+    use_cache, write_cache = _cache_policy_flags(policy)
+    if dataset_cfg.get(use_key) is None:
+        dataset_cfg[use_key] = use_cache
+    if dataset_cfg.get(write_key) is None:
+        dataset_cfg[write_key] = write_cache
+    dataset_cfg[policy_key] = policy
+
+
+def _cache_policy_flags(policy: str) -> tuple[bool, bool]:
+    if policy == "off":
+        return False, False
+    if policy == "read_only":
+        return True, False
+    if policy == "auto":
+        return True, True
+    if policy == "rebuild":
+        return False, True
+    raise ValueError(f"Unsupported cache policy '{policy}'.")
+
+
+def _normalize_cache_policy(raw_policy: Any, key: str) -> str:
+    policy = str(raw_policy).lower()
+    if policy not in CACHE_POLICIES:
+        raise ValueError(f"{key} must be one of {', '.join(CACHE_POLICIES)}; got '{raw_policy}'.")
+    return policy
 
 
 def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
@@ -144,6 +230,9 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     lidar_cache_dir = getattr(dataset, "lidar_cache_dir", None)
     if lidar_cache_dir is not None:
         metadata["lidar_cache_dir"] = str(lidar_cache_dir)
+        metadata["lidar_use_cache"] = bool(getattr(dataset, "lidar_use_cache", False))
+        metadata["lidar_write_cache"] = bool(getattr(dataset, "lidar_write_cache", False))
+        metadata["lidar_cache_policy"] = getattr(dataset, "lidar_cache_policy", None)
     if getattr(dataset, "use_mmwave", False):
         metadata["mmwave_normalize"] = bool(getattr(dataset, "mmwave_normalize", False))
     image_motion_cache_dir = getattr(dataset, "image_motion_cache_dir", None)
@@ -151,6 +240,7 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["image_motion_cache_dir"] = str(image_motion_cache_dir)
         metadata["image_motion_use_cache"] = bool(getattr(dataset, "image_motion_use_cache", False))
         metadata["image_motion_write_cache"] = bool(getattr(dataset, "image_motion_write_cache", False))
+        metadata["image_motion_cache_policy"] = getattr(dataset, "image_motion_cache_policy", None)
     if hasattr(dataset, "beam_label_cache_mode"):
         metadata["beam_label_cache"] = {
             "mode": getattr(dataset, "beam_label_cache_mode", None),
@@ -182,6 +272,7 @@ def throughput_run_metadata(
         "transfer": {
             "non_blocking": transfer_non_blocking(cfg),
         },
+        "cache": cache_run_metadata(cfg, dataloaders),
     }
     if device is not None:
         metadata["amp"] = amp_runtime_metadata(cfg, device)
@@ -194,6 +285,47 @@ def throughput_run_metadata(
         }
     if dataloaders is not None:
         metadata["splits"] = dataloaders_run_metadata(dataloaders)
+    return metadata
+
+
+def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] | None = None) -> dict[str, Any]:
+    cache_cfg = cfg.get("data", {}).get("cache", {})
+    global_policy = str(cache_cfg.get("policy", "auto"))
+    try:
+        enabled_modalities = list(resolve_enabled_modalities(cfg))
+    except Exception:
+        enabled_modalities = []
+    metadata: dict[str, Any] = {
+        "policy": global_policy,
+        "enabled_modalities": enabled_modalities,
+        "image": {
+            "policy": str(cache_cfg.get("image", {}).get("policy") or global_policy),
+        },
+        "lidar": {
+            "policy": str(cache_cfg.get("lidar", {}).get("policy") or global_policy),
+        },
+    }
+    if dataloaders is not None:
+        splits = dataloaders_run_metadata(dataloaders)
+        metadata["splits"] = {
+            split: {
+                key: value
+                for key, value in split_metadata.items()
+                if key
+                in {
+                    "enabled_modalities",
+                    "image_motion_cache_dir",
+                    "image_motion_use_cache",
+                    "image_motion_write_cache",
+                    "image_motion_cache_policy",
+                    "lidar_cache_dir",
+                    "lidar_use_cache",
+                    "lidar_write_cache",
+                    "lidar_cache_policy",
+                }
+            }
+            for split, split_metadata in splits.items()
+        }
     return metadata
 
 

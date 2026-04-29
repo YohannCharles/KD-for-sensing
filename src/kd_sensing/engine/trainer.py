@@ -117,6 +117,8 @@ def final_config_with_runtime(
         runtime["checkpoint_registry"] = checkpoint_registry
     if throughput_metadata is not None:
         runtime["throughput"] = throughput_metadata
+        if isinstance(throughput_metadata, dict) and "cache" in throughput_metadata:
+            runtime["cache"] = throughput_metadata["cache"]
     return final_cfg
 
 

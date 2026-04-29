@@ -94,6 +94,13 @@ def safe_load_yaml(text: str) -> dict[str, Any]:
 def validate_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
+    cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
+    _validate_cache_policy(cache_policy, "data.cache.policy")
+    for modality in ("image", "lidar"):
+        modality_policy = cfg.get("data", {}).get("cache", {}).get(modality, {}).get("policy")
+        if modality_policy is not None:
+            _validate_cache_policy(str(modality_policy), f"data.cache.{modality}.policy")
+
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     if _uses_image(cfg):
         image_size = tuple(dataset_cfg.get("image_size", [224, 224]))
@@ -117,6 +124,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 f"Use clipped_range=128 and fft_tuple first/third values 64/128; "
                 f"got clipped_range={clipped_range}, fft_tuple={list(fft_tuple)}."
             )
+
+
+def _validate_cache_policy(policy: str, key: str) -> None:
+    if policy not in {"off", "read_only", "auto", "rebuild"}:
+        raise ValueError(f"{key} must be one of off, read_only, auto, or rebuild; got '{policy}'.")
 
 
 def _uses_image(cfg: dict[str, Any]) -> bool:

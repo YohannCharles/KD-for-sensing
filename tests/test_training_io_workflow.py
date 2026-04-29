@@ -20,7 +20,14 @@ import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
 from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
-from kd_sensing.engine.builders import build_dataloader_kwargs, resolve_enabled_modalities  # noqa: E402
+from kd_sensing.engine.builders import (  # noqa: E402
+    apply_cache_policy,
+    build_dataset,
+    build_dataloader_kwargs,
+    dataset_run_metadata,
+    resolve_enabled_modalities,
+    throughput_run_metadata,
+)
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
 from kd_sensing.preprocessing.image import generate_image_motion_cache  # noqa: E402
 from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir  # noqa: E402
@@ -204,6 +211,147 @@ def test_dataloader_kwargs_filter_worker_only_options():
     assert multi_worker["shuffle"] is False
     assert multi_worker["persistent_workers"] is True
     assert multi_worker["prefetch_factor"] == 3
+
+
+def test_cache_policy_resolves_global_modal_and_low_level_overrides():
+    cfg = {
+        "data": {"cache": {"policy": "read_only", "image": {"policy": "auto"}}, "dataset": {}},
+        "experiment": {"task": "fusion"},
+        "model": {"teacher": {"modalities": ["image", "lidar"]}, "student": {"modalities": ["image", "lidar"]}},
+    }
+    dataset_cfg = {
+        "image_motion_use_cache": None,
+        "image_motion_write_cache": None,
+        "lidar_use_cache": None,
+        "lidar_write_cache": None,
+    }
+
+    resolved = apply_cache_policy(dataset_cfg, cfg, ("image", "lidar"))
+
+    assert resolved["image_motion_use_cache"] is True
+    assert resolved["image_motion_write_cache"] is True
+    assert resolved["image_motion_cache_policy"] == "auto"
+    assert resolved["lidar_use_cache"] is True
+    assert resolved["lidar_write_cache"] is False
+    assert resolved["lidar_cache_policy"] == "read_only"
+
+    low_level = {
+        "image_motion_use_cache": None,
+        "image_motion_write_cache": False,
+        "lidar_use_cache": None,
+        "lidar_write_cache": None,
+    }
+    apply_cache_policy(low_level, {"data": {"cache": {"policy": "auto"}}}, ("image",))
+
+    assert low_level["image_motion_use_cache"] is True
+    assert low_level["image_motion_write_cache"] is False
+    assert low_level["lidar_use_cache"] is False
+    assert low_level["lidar_write_cache"] is False
+
+
+def test_cache_policy_non_relevant_modalities_are_disabled():
+    dataset_cfg = {
+        "image_motion_use_cache": None,
+        "image_motion_write_cache": None,
+        "lidar_use_cache": None,
+        "lidar_write_cache": None,
+    }
+
+    apply_cache_policy(dataset_cfg, {"data": {"cache": {"policy": "auto"}}}, ("radar", "mmwave"))
+
+    assert dataset_cfg["image_motion_use_cache"] is False
+    assert dataset_cfg["image_motion_write_cache"] is False
+    assert dataset_cfg["image_motion_cache_policy"] == "off"
+    assert dataset_cfg["lidar_use_cache"] is False
+    assert dataset_cfg["lidar_write_cache"] is False
+    assert dataset_cfg["lidar_cache_policy"] == "off"
+
+
+def test_build_dataset_auto_policy_writes_image_cache_and_records_metadata(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
+    _write_camera_files(tmp_path, count=2)
+    cfg = {
+        "experiment": {"task": "image"},
+        "data": {
+            "cache": {"policy": "auto"},
+            "dataset": {
+                "type": "scenario9",
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 2,
+                "num_pred": 1,
+                "image_size": [8, 8],
+                "image_motion_cache_dir": "motion_cache",
+                "image_motion_use_cache": None,
+                "image_motion_write_cache": None,
+                "beam_label_cache": "lazy",
+            },
+        },
+        "model": {"teacher": {}, "student": {}},
+    }
+
+    dataset = build_dataset(cfg, "train")
+    sample = dataset[0]
+    metadata = dataset_run_metadata(dataset)
+
+    assert sample["image"].shape == (1, 8, 8)
+    assert dataset.image_motion_use_cache is True
+    assert dataset.image_motion_write_cache is True
+    assert dataset.image_motion_cache_policy == "auto"
+    assert len(list(dataset.image_motion_cache_dir.glob("*.npy"))) == 1
+    assert metadata["image_motion_cache_policy"] == "auto"
+    assert metadata["image_motion_write_cache"] is True
+
+
+def test_dataset_does_not_resolve_unenabled_cache_dirs(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+
+    dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=1,
+        num_pred=1,
+        enabled_modalities=["radar"],
+        image_motion_cache_dir="motion_cache",
+        image_motion_use_cache=True,
+        image_motion_write_cache=True,
+        lidar_cache_dir="lidar_cache",
+        lidar_use_cache=True,
+        lidar_write_cache=True,
+    )
+
+    assert dataset.image_motion_cache_dir is None
+    assert dataset.lidar_cache_dir is None
+
+
+def test_atomic_save_npy_overwrites_without_visible_temp_files(tmp_path: Path):
+    target = tmp_path / "cache.npy"
+
+    transforms.atomic_save_npy(target, np.ones((2, 2), dtype=np.float32))
+    transforms.atomic_save_npy(target, np.zeros((2, 2), dtype=np.float32))
+
+    assert np.load(target).sum() == 0.0
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_throughput_metadata_includes_cache_policy():
+    metadata = throughput_run_metadata(
+        {
+            "experiment": {"task": "fusion"},
+            "data": {"cache": {"policy": "read_only", "lidar": {"policy": "auto"}}, "dataloader": {}},
+            "model": {"teacher": {"modalities": ["image", "lidar"]}, "student": {"modalities": ["image", "lidar"]}},
+            "training": {"transfer": {}, "amp": {}},
+        }
+    )
+
+    assert metadata["cache"]["policy"] == "read_only"
+    assert metadata["cache"]["image"]["policy"] == "read_only"
+    assert metadata["cache"]["lidar"]["policy"] == "auto"
+    assert metadata["cache"]["enabled_modalities"] == ["image", "lidar"]
 
 
 def test_fixed_run_name_defaults_to_unique_directory_and_resume_reuses(tmp_path: Path):

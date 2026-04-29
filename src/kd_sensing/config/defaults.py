@@ -15,6 +15,15 @@ DEFAULT_CONFIG = {
         "output_dir": "outputs",
     },
     "data": {
+        "cache": {
+            "policy": "auto",
+            "image": {
+                "policy": None,
+            },
+            "lidar": {
+                "policy": None,
+            },
+        },
         "dataset": {
             "type": "scenario9",
             "data_root": "dataset/scenario9",
@@ -27,8 +36,8 @@ DEFAULT_CONFIG = {
             "portion_seed": 42,
             "image_size": [224, 224],
             "image_motion_cache_dir": "image_motion_cache",
-            "image_motion_use_cache": False,
-            "image_motion_write_cache": False,
+            "image_motion_use_cache": None,
+            "image_motion_write_cache": None,
             "image_motion_cache_version": "v1",
             "image_motion_gaussian_sigma": 1.0,
             "image_motion_threshold_ratio": 0.1,
@@ -48,8 +57,8 @@ DEFAULT_CONFIG = {
             "lidar_background_path": None,
             "lidar_background_distance_threshold": 0.2,
             "lidar_cache_dir": "lidar_bev_cache",
-            "lidar_use_cache": True,
-            "lidar_write_cache": False,
+            "lidar_use_cache": None,
+            "lidar_write_cache": None,
             "lidar_normalize": False,
             "lidar_normalization": None,
             "lidar_memory_cache": False,

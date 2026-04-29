@@ -52,22 +52,21 @@ conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess
 conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
-训练时按需启用 cache：
+训练和评估入口默认使用 `data.cache.policy: auto`：包含 image 的任务自动读取/写入 image motion cache，
+包含 LiDAR 的任务自动读取/写入 LiDAR BEV cache，不包含这些模态的任务不会访问对应 cache。只想复用已有
+cache 而不补写缺失文件时，使用 `read_only`：
 
 ```bash
 conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
-  -o data.dataset.image_motion_use_cache=true \
-  -o data.dataset.lidar_use_cache=true
+  -o data.cache.policy=read_only
 ```
 
-如果允许首次训练顺手补缺失 cache，可以额外打开写入：
+可用策略为 `off`、`read_only`、`auto`、`rebuild`，也可以按模态覆盖：
 
 ```bash
 conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
-  -o data.dataset.image_motion_use_cache=true \
-  -o data.dataset.image_motion_write_cache=true \
-  -o data.dataset.lidar_use_cache=true \
-  -o data.dataset.lidar_write_cache=true
+  -o data.cache.policy=read_only \
+  -o data.cache.image.policy=auto
 ```
 
 ## Cache 复用与失效

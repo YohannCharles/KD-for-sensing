@@ -212,7 +212,17 @@ conda run -n kd_mm_beam python scripts/profile_training_io.py \
 更多 image/radar/GPS/LiDAR/fusion profile 示例和 cache 复用规则见
 `docs/training_throughput.md`。
 
-包含 image 的实验建议先预热 image motion cache；包含 LiDAR 的实验建议先预热 LiDAR BEV cache。
+默认 `data.cache.policy: auto` 会让包含 image 的实验自动读取/写入 image motion cache，让包含 LiDAR
+的实验自动读取/写入 LiDAR BEV cache；不包含这些模态的任务不会访问对应 cache。可选策略包括：
+`off`、`read_only`、`auto`、`rebuild`，也可以用 `data.cache.image.policy` 或
+`data.cache.lidar.policy` 单独覆盖某个模态。并行运行大量实验且只想复用已有 cache 时，可设置：
+
+```bash
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_lidar_student_no_kd.yaml \
+  -o data.cache.policy=read_only
+```
+
+包含 image 的实验仍建议先预热 image motion cache；包含 LiDAR 的实验仍建议先预热 LiDAR BEV cache。
 并行运行多个实验时，默认配置使用较保守的 `num_workers: 4` 和 `prefetch_factor: 1`，避免多个
 训练进程把 CPU worker 和预取队列成倍放大。单个实验可以通过命令行覆盖逐步调高：
 
@@ -297,15 +307,15 @@ python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 `mmwave1..mmwave8`，默认来源列为 `unit1_pwr_60ghz`。GPS/mmWave scaler 只在训练集上 fit，并复用于测试集。
 
 `configs/preprocess/image_motion_cache.yaml` 可把相邻 camera 帧 pair 的 motion mask 提前缓存为
-`.npy` `uint8` 文件；训练配置中将 `image_motion_cache_dir` 指向该目录并启用
-`image_motion_use_cache` 后可复用缓存。`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为
-`.npy` BEV 缓存；训练配置中将 `lidar_cache_dir` 指向该目录并启用 `lidar_use_cache` 后可复用缓存。
+`.npy` `uint8` 文件；`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存。
+训练和评估入口会根据 `data.cache.policy` 自动决定是否读取、写入或重建这些 cache：`auto` 读取已有
+cache 且 miss 时按需写入，`read_only` 只读已有 cache，`off` 完全在线计算，`rebuild` 强制重算并写回。
 BEV cache 会按 BEV 尺寸、ROI、FoV、ground/background 过滤参数自动分区，避免参数变化后误用旧缓存。
 image motion cache 同样会按 image size、Gaussian sigma、阈值策略、灰度化方式和 cache version 自动分区。
 这类原始模态预处理 cache 可以长期保留；训练 epoch、lr、batch size、num_workers、seed、模型结构和 KD
 类型变化不会使它失效。原始 jpg/LiDAR/radar/GPS/beam 文件内容变化，或对应预处理参数变化时，应使用新的
 参数 hash 目录或清理旧 cache。BEV 和 image cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时
-全量载入 cache 目录。
+全量载入 cache 目录。GPS/mmWave 没有同类大规模原始模态 cache，主要复用训练集 fit 的 scaler artifact。
 
 训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径和样本数，用于确认不同实验确实在
 同一训练/测试集合上比较。

@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 from kd_sensing.data.transforms import (
     build_image_transform,
     build_motion_mask_pair,
+    atomic_save_npy,
     image_motion_cache_path,
     parameterized_image_motion_cache_dir,
     write_image_motion_cache_metadata,
@@ -79,8 +80,7 @@ def generate_image_motion_cache(
             threshold_strategy=threshold_strategy,
             grayscale=grayscale,
         )
-        npy_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(npy_path, mask)
+        atomic_save_npy(npy_path, mask)
         generated += 1
 
     write_image_motion_cache_metadata(
