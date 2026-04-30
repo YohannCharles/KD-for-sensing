@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.config.canonical import CANONICAL_FUSION_MODALITIES, build_virtual_fusion_config  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
@@ -105,17 +107,9 @@ MODALITY_SPECS = {
 }
 
 FUSION_SLUGS = {
-    "image_radar": ["image", "radar"],
-    "image_gps": ["image", "gps"],
-    "image_lidar": ["image", "lidar"],
-    "radar_gps": ["radar", "gps"],
-    "radar_lidar": ["radar", "lidar"],
-    "gps_lidar": ["gps", "lidar"],
-    "image_radar_gps": ["image", "radar", "gps"],
-    "image_radar_lidar": ["image", "radar", "lidar"],
-    "image_gps_lidar": ["image", "gps", "lidar"],
-    "radar_gps_lidar": ["radar", "gps", "lidar"],
-    "image_radar_gps_lidar": ["image", "radar", "gps", "lidar"],
+    "_".join(modalities): list(modalities)
+    for size in (2, 3, 4, 5)
+    for modalities in combinations(CANONICAL_FUSION_MODALITIES, size)
 }
 
 LEGACY_CONFIG_EXPECTATIONS = [
@@ -228,9 +222,7 @@ LEGACY_STUDENT_WEIGHTS = [
 
 
 def _load(config_path: str) -> dict:
-    path = ROOT / config_path
-    assert path.exists(), f"Missing config: {config_path}"
-    return load_config(path)
+    return load_config(ROOT / config_path)
 
 
 def _build_student(config_path: str):
@@ -425,7 +417,7 @@ def test_legacy_configs_keep_compatible_semantics(
 ):
     model, cfg = _build_student(config_path)
 
-    assert (ROOT / canonical_path).exists()
+    load_config(ROOT / canonical_path)
     assert cfg["experiment"]["task"] == task
     assert cfg["distillation"]["type"] == distillation_type
     assert cfg["model"]["student"]["type"] == student_type
@@ -479,6 +471,82 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
         assert student_cfg["lidar_channels"] == 3
     else:
         assert dataset_cfg.get("use_lidar", False) is False
+
+    if "mmwave" in modalities:
+        assert dataset_cfg["use_mmwave"] is True
+        assert dataset_cfg["mmwave_normalize"] is True
+        assert teacher_cfg["mmwave_input_size"] == 64
+        assert student_cfg["mmwave_input_size"] == 64
+    else:
+        assert dataset_cfg.get("use_mmwave", False) is False
+
+
+def test_virtual_fusion_config_generator_uses_canonical_semantics():
+    cfg = build_virtual_fusion_config("gps_mmwave_logits_kd")
+
+    assert cfg["experiment"]["name"] == "gps_mmwave_logits_kd"
+    assert cfg["experiment"]["task"] == "fusion"
+    assert cfg["experiment"]["seed"] == 0
+    assert cfg["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
+    assert cfg["model"]["student"]["modalities"] == ["gps", "mmwave"]
+    assert cfg["model"]["teacher"]["gps_input_size"] == 3
+    assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
+    assert cfg["distillation"]["type"] == "logits_kd"
+    assert cfg["distillation"]["teacher_model_name"] == "best.pth"
+    assert cfg["paths"]["weights_dir"] == "outputs/scene32/gps_mmwave_teacher_no_kd/checkpoints"
+
+
+def test_virtual_image_radar_config_generator_keeps_compatibility_params():
+    cfg = build_virtual_fusion_config("image_radar_logits_kd")
+
+    assert cfg["experiment"]["seed"] == 42
+    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
+    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert cfg["training"]["lr"] == 0.00095
+    assert cfg["training"]["weight_decay"] == 0.0
+    assert cfg["distillation"]["temperature"] == 2.0
+    assert cfg["distillation"]["alpha"] == 0.4
+    assert cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
+    assert cfg["paths"]["weights_dir"] == "All_models"
+
+
+def test_load_config_applies_overrides_after_canonical_config_resolution():
+    cfg = _load("configs/fusion/gps_mmwave_logits_kd.yaml")
+    overridden = load_config(ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml", ["training.epochs=1"])
+
+    assert cfg["experiment"]["name"] == "gps_mmwave_logits_kd"
+    assert overridden["training"]["epochs"] == 1
+    assert overridden["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
+
+
+def test_existing_yaml_config_takes_precedence_over_virtual_config(tmp_path: Path):
+    config_path = tmp_path / "configs" / "fusion" / "gps_mmwave_logits_kd.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("experiment:\n  name: entity_config\n", encoding="utf-8")
+
+    cfg = load_config(config_path)
+
+    assert cfg["experiment"]["name"] == "entity_config"
+
+
+@pytest.mark.parametrize(
+    ("config_path", "match"),
+    [
+        ("configs/fusion/mmwave_gps_logits_kd.yaml", "gps_mmwave_logits_kd.yaml"),
+        ("configs/fusion/image_image_rkd.yaml", "duplicate modalities"),
+        ("configs/fusion/image_wifi_logits_kd.yaml", "wifi"),
+        ("configs/fusion/mmwave_student_no_kd.yaml", "configs/mmwave/student_no_kd.yaml"),
+        ("configs/fusion/not_a_canonical_name.yaml", "must end with one of"),
+    ],
+)
+def test_invalid_virtual_fusion_config_paths_raise_clear_errors(config_path: str, match: str):
+    with pytest.raises(ValueError, match=match):
+        load_config(ROOT / config_path)
+
+
+def test_missing_noncanonical_config_path_is_not_generated():
+    with pytest.raises(FileNotFoundError, match="Config file not found"):
+        load_config(ROOT / "configs/custom/missing.yaml")
 
 
 def test_unsupported_gps_ablation_configs_are_not_shipped():

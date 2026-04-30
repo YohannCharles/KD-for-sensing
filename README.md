@@ -102,7 +102,9 @@ image_mmwave, radar_mmwave, gps_mmwave, lidar_mmwave, image_radar_mmwave,
 image_radar_gps_lidar_mmwave
 ```
 
-每个 slug 都有四个配置：
+每个 slug 都有四个可加载的 canonical 配置路径。为减少重复 YAML，这些路径通常由配置加载器按文件名生成；
+实体 YAML 仍然优先于生成规则，因此自定义配置可以继续放在对应路径。训练产物中的 `final_config.yaml`
+始终保存完整解析后的配置。
 
 ```bash
 python scripts/train.py --config configs/fusion/<slug>_teacher_no_kd.yaml
@@ -111,7 +113,7 @@ python scripts/train.py --config configs/fusion/<slug>_logits_kd.yaml
 python scripts/train.py --config configs/fusion/<slug>_rkd.yaml
 ```
 
-例如 image+radar：
+例如 image+radar；即使这些 canonical 文件不在 `configs/fusion/` 中，命令仍会按固定命名规则解析：
 
 ```bash
 python scripts/train.py --config configs/fusion/image_radar_teacher_no_kd.yaml

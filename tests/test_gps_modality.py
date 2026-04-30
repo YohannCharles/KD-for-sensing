@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -31,16 +32,10 @@ import kd_sensing.models  # noqa: E402,F401
 
 
 GPS_CANONICAL_FUSION_CONFIGS = [
-    f"configs/fusion/{slug}_{mode}.yaml"
-    for slug in [
-        "image_gps",
-        "radar_gps",
-        "gps_lidar",
-        "image_radar_gps",
-        "image_gps_lidar",
-        "radar_gps_lidar",
-        "image_radar_gps_lidar",
-    ]
+    f"configs/fusion/{'_'.join(combo)}_{mode}.yaml"
+    for size in (2, 3, 4, 5)
+    for combo in combinations(["image", "radar", "gps", "lidar", "mmwave"], size)
+    if "gps" in combo
     for mode in ["teacher_no_kd", "student_no_kd", "logits_kd", "rkd"]
 ]
 

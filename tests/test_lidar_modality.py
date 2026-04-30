@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -44,16 +45,10 @@ LIDAR_FUSION_CONFIGS = [
     "configs/fusion/radar_lidar_no_kd.yaml",
     "configs/fusion/all_modalities_lidar_no_kd.yaml",
     *[
-        f"configs/fusion/{slug}_{mode}.yaml"
-        for slug in [
-            "image_lidar",
-            "radar_lidar",
-            "gps_lidar",
-            "image_radar_lidar",
-            "image_gps_lidar",
-            "radar_gps_lidar",
-            "image_radar_gps_lidar",
-        ]
+        f"configs/fusion/{'_'.join(combo)}_{mode}.yaml"
+        for size in (2, 3, 4, 5)
+        for combo in combinations(["image", "radar", "gps", "lidar", "mmwave"], size)
+        if "lidar" in combo
         for mode in ["teacher_no_kd", "student_no_kd", "logits_kd", "rkd"]
     ],
 ]

@@ -12,6 +12,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
     yaml = None
 
+from kd_sensing.config.canonical import build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.data.scenes import normalize_deepsense_config
 from kd_sensing.utils.paths import resolve_path
@@ -21,8 +22,13 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if config_path:
         path = resolve_path(config_path)
-        with path.open("r", encoding="utf-8") as f:
-            file_cfg = safe_load_yaml(f.read()) or {}
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                file_cfg = safe_load_yaml(f.read()) or {}
+        else:
+            file_cfg = build_virtual_config(path)
+            if file_cfg is None:
+                raise FileNotFoundError(f"Config file not found: {path}")
         cfg = deep_merge(cfg, file_cfg)
     if overrides:
         cfg = deep_merge(cfg, parse_overrides(overrides))
