@@ -346,6 +346,8 @@ def read_lidar_point_cloud(data_root: str | Path, rel_path: str) -> np.ndarray:
             array = mat["data"] if "data" in mat else mat[keys[0]]
         elif suffix == ".pcd":
             array = _read_ascii_pcd(path)
+        elif suffix == ".ply":
+            array = _read_ascii_ply(path)
         else:
             array = _read_numeric_text_points(path)
     except Exception as exc:
@@ -366,6 +368,32 @@ def _read_ascii_pcd(path: Path) -> np.ndarray:
     if data_start is None:
         raise ValueError("PCD header is missing DATA ascii")
     body = "\n".join(line for line in lines[data_start:] if line.strip())
+    if not body:
+        return np.empty((0, 4), dtype=np.float32)
+    return np.loadtxt(text_io.StringIO(body), dtype=np.float64)
+
+
+def _read_ascii_ply(path: Path) -> np.ndarray:
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if not lines or lines[0].strip().lower() != "ply":
+        raise ValueError("PLY header is missing")
+    if not any(line.strip().lower() == "format ascii 1.0" for line in lines[:10]):
+        raise ValueError("only ASCII PLY is supported; convert binary PLY to .npy or ASCII first")
+    vertex_count: int | None = None
+    data_start = None
+    for idx, line in enumerate(lines):
+        stripped = line.strip().lower()
+        if stripped.startswith("element vertex"):
+            parts = stripped.split()
+            if len(parts) >= 3:
+                vertex_count = int(parts[2])
+        if stripped == "end_header":
+            data_start = idx + 1
+            break
+    if data_start is None:
+        raise ValueError("PLY header is missing end_header")
+    body_lines = lines[data_start : None if vertex_count is None else data_start + vertex_count]
+    body = "\n".join(line for line in body_lines if line.strip())
     if not body:
         return np.empty((0, 4), dtype=np.float32)
     return np.loadtxt(text_io.StringIO(body), dtype=np.float64)
@@ -394,7 +422,11 @@ def _coerce_lidar_points(array: np.ndarray, source: str) -> np.ndarray:
             raise ValueError(f"LiDAR array from {source} cannot be reshaped into point rows.")
     if points.ndim != 2:
         raise ValueError(f"LiDAR array from {source} must be 2-D after squeeze, got {points.shape}.")
-    if points.shape[0] in {2, 3, 4} and points.shape[1] > points.shape[0]:
+    if (
+        Path(source).suffix.lower() != ".ply"
+        and points.shape[0] in {2, 3, 4}
+        and points.shape[1] > points.shape[0]
+    ):
         points = points.T
     if points.shape[1] >= 4:
         coerced = points[:, :4]

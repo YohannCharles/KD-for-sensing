@@ -13,6 +13,12 @@ from kd_sensing.registries import PREPROCESSORS
 from kd_sensing.utils.paths import resolve_path
 
 
+def _load_radar_data(path: Path) -> np.ndarray:
+    if path.suffix.lower() == ".npy":
+        return np.load(path)
+    return loadmat(path)["data"]
+
+
 def process_radar_and_create_new_csv(
     csv_path: str | Path,
     data_root: str | Path,
@@ -44,7 +50,7 @@ def process_radar_and_create_new_csv(
             if original_filename not in processed_files:
                 full_radar_path = data_root / str(radar_path).lstrip("./").lstrip("/")
                 try:
-                    smp_radar = loadmat(full_radar_path)["data"]
+                    smp_radar = _load_radar_data(full_radar_path)
                     radar_cube = Radar_Cube(smp_radar, fft_tuple, remove_mean=True)
                     if output_suffix == "RA":
                         np.save(new_filepath, Range_Angle(radar_cube, mean=True, log_scale=True))
@@ -72,4 +78,3 @@ class CSVFFTPreprocessor:
 
     def run(self):
         return process_radar_and_create_new_csv(**self.kwargs)
-
