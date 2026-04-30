@@ -10,6 +10,7 @@ import torch
 from tqdm.auto import tqdm
 
 from kd_sensing.config.io import dump_config
+from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
 from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
@@ -43,7 +44,7 @@ from kd_sensing.utils.seed import set_seed
 
 
 def create_run_dir(cfg: dict) -> Path:
-    base = resolve_output_dir(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
+    base = _scene_grouped_output_base(cfg)
     run_name = cfg.get("output", {}).get("run_name")
     if not run_name:
         timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -85,7 +86,7 @@ def create_eval_run_dir(cfg: dict, output_dir: str | None = None) -> Path:
         path = resolve_output_dir(output_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
-    base = resolve_output_dir(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
+    base = _scene_grouped_output_base(cfg)
     run_name = cfg.get("output", {}).get("evaluation_run_name") or cfg.get("output", {}).get("run_name")
     if not run_name:
         run_name = cfg.get("experiment", {}).get("name", "run")
@@ -119,7 +120,21 @@ def final_config_with_runtime(
         runtime["throughput"] = throughput_metadata
         if isinstance(throughput_metadata, dict) and "cache" in throughput_metadata:
             runtime["cache"] = throughput_metadata["cache"]
+    scene_metadata = scene_metadata_from_config(cfg)
+    if scene_metadata:
+        runtime["scene"] = scene_metadata
     return final_cfg
+
+
+def _scene_grouped_output_base(cfg: dict) -> Path:
+    base = resolve_output_dir(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
+    output_cfg = cfg.get("output", {})
+    if output_cfg.get("group_by_scene", True) is False:
+        return base
+    scene_slug = scene_slug_from_config(cfg)
+    if not scene_slug or base.name == scene_slug:
+        return base
+    return base / scene_slug
 
 
 def _teacher_enabled(cfg: dict) -> bool:

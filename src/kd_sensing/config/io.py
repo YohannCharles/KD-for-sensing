@@ -13,6 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
     yaml = None
 
 from kd_sensing.config.defaults import DEFAULT_CONFIG
+from kd_sensing.data.scenes import normalize_deepsense_config
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -25,6 +26,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
         cfg = deep_merge(cfg, file_cfg)
     if overrides:
         cfg = deep_merge(cfg, parse_overrides(overrides))
+    normalize_deepsense_config(cfg)
     validate_config(cfg)
     return cfg
 

@@ -1,10 +1,10 @@
 preprocessing:
   type: image_motion_cache
   csv_paths:
-    - dataset/scenario9/train_seqs_RA_GPS_LIDAR.csv
-    - dataset/scenario9/test_seqs_RA_GPS_LIDAR.csv
-  data_root: dataset/scenario9
-  cache_dir: dataset/scenario9/image_motion_cache
+    - dataset/scenario32/train_seqs_RA_GPS_LIDAR.csv
+    - dataset/scenario32/test_seqs_RA_GPS_LIDAR.csv
+  data_root: dataset/scenario32
+  cache_dir: dataset/scenario32/image_motion_cache
   camera_prefix: camera
   image_size: [224, 224]
   gaussian_sigma: 1.0

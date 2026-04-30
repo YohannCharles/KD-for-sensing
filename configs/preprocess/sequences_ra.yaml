@@ -1,7 +1,7 @@
 preprocessing:
   type: sequence_csv
-  csv_path: dataset/scenario9/scenario9_RA.csv
-  data_root: dataset/scenario9
+  csv_path: dataset/scenario32/scenario32_RA.csv
+  data_root: dataset/scenario32
   output_suffix: _RA
   in_len: 8
   out_len: 3

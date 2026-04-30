@@ -1,7 +1,7 @@
 preprocessing:
   type: radar_fft_csv
-  csv_path: dataset/scenario9/scenario9.csv
-  data_root: dataset/scenario9
+  csv_path: dataset/scenario32/scenario32.csv
+  data_root: dataset/scenario32
   output_suffix: RA
   test_mode: false
   test_portion: 0.1

@@ -49,13 +49,27 @@ src/kd_sensing/
 
 配置文件中的相对路径会从项目根目录解析，因此可以在子目录中启动命令。
 
+## DeepSense6G 场景
+
+默认 DeepSense6G 场景是 Scenario 32。训练配置使用 `data.dataset.scene: 32`，数据根目录会自动解析为
+`dataset/scenario32`，训练输出默认写入 `outputs/scene32/<run_name>/`。要切回 Scenario 9，可以用
+命令行覆盖：
+
+```bash
+python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=9
+```
+
+`data.dataset.scene` 也接受 `scene9`、`scenario9`、`scene32` 和 `scenario32`。旧的
+`data.dataset.type: scenario9` 仍兼容并明确表示 Scenario 9。已有历史训练目录已按来源迁移到
+`outputs/scene9/`，新的默认训练不会覆盖这些结果。
+
 ## 训练
 
 推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。Image 与 image+radar
 兼容 KD 配置默认读取随附 `All_models` 中的一层 image teacher 或二层 image+radar teacher
 权重；radar/GPS/LiDAR 单模态 KD 配置会优先从最佳 checkpoint registry 读取同模态
 teacher no-KD 的最高验证 Top-1 权重，缺失时再回退到
-`outputs/<slug>_teacher_no_kd/checkpoints/best.pth`。也可以通过 `paths.weights_dir` 和
+`outputs/<scene_slug>/<slug>_teacher_no_kd/checkpoints/best.pth`。也可以通过 `paths.weights_dir` 和
 `distillation.teacher_model_name` 覆盖旧式 teacher checkpoint 路径；绝对路径和评估入口
 `--weights` 始终优先于 registry。
 
@@ -113,8 +127,8 @@ teacher 二层 GRU、student 一层 GRU；其它 fusion 组合属于扩展配置
 Checkpoint 加载默认严格校验 missing/unexpected keys，结构不匹配会直接报错；需要兼容性调试时可显式设置
 `checkpoint.strict_load=false`。
 
-训练会将当前配置最高验证 Top-1 checkpoint 复制到默认 registry 目录
-`outputs/best_checkpoints/`，文件名包含配置 slug、角色/KD 模式和精度，例如
+训练会将当前配置最高验证 Top-1 checkpoint 复制到当前场景的默认 registry 目录
+`outputs/<scene_slug>/best_checkpoints/`，文件名包含配置 slug、角色/KD 模式和精度，例如
 `gps_teacher_no_kd_acc_0.8123.pth`。同名 checkpoint 会写入 `.json` sidecar，记录源运行目录、
 epoch、split 样本数、加载来源和 GPS/LiDAR 归一化工件。可通过
 `checkpoint.registry.dir`、`checkpoint.registry.enabled` 和 `checkpoint.registry.prefer` 调整目录、
@@ -242,7 +256,7 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
   -o training.amp.dtype=float16
 ```
 
-输出会写入 `outputs/<run_name>/`，包括：
+输出会写入 `outputs/<scene_slug>/<run_name>/`，默认是 `outputs/scene32/<run_name>/`，包括：
 
 - `final_config.yaml`
 - `checkpoints/last.pth`
@@ -255,7 +269,8 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 - 训练曲线
 - `tensorboard/` TensorBoard event 日志
 
-恢复训练时设置 `training.resume=true` 会从当前 `output.run_name/checkpoints/last.pth` 恢复；也可以将
+恢复训练时设置 `training.resume=true` 会从当前场景分组下的 `output.run_name/checkpoints/last.pth`
+恢复；也可以将
 `training.resume` 设为 checkpoint 文件路径。恢复会加载模型、optimizer、scheduler、epoch 和最佳验证损失。
 
 可以用 TensorBoard 查看和对比训练曲线：
@@ -273,14 +288,14 @@ TensorBoard 标量包含基础训练曲线和验证平均指标：
 ## 评估
 
 ```bash
-python scripts/evaluate.py --config configs/image/teacher_no_kd.yaml --weights outputs/image_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/image/student_no_kd.yaml --weights outputs/image_student_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/radar/teacher_no_kd.yaml --weights outputs/radar_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/radar_student_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/gps/teacher_no_kd.yaml --weights outputs/gps_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/lidar/teacher_no_kd.yaml --weights outputs/lidar_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/mmwave/teacher_no_kd.yaml --weights outputs/mmwave_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/fusion/image_radar_rkd.yaml --weights outputs/image_radar_rkd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/image/teacher_no_kd.yaml --weights outputs/scene32/image_teacher_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/image/student_no_kd.yaml --weights outputs/scene32/image_student_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/radar/teacher_no_kd.yaml --weights outputs/scene32/radar_teacher_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/scene32/radar_student_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/gps/teacher_no_kd.yaml --weights outputs/scene32/gps_teacher_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/lidar/teacher_no_kd.yaml --weights outputs/scene32/lidar_teacher_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/mmwave/teacher_no_kd.yaml --weights outputs/scene32/mmwave_teacher_no_kd/checkpoints/best.pth
+python scripts/evaluate.py --config configs/fusion/image_radar_rkd.yaml --weights outputs/scene32/image_radar_rkd/checkpoints/best.pth
 ```
 
 评估会将指标和 `test_report.json` 写入配置的输出目录。未传 `--weights` 时，评估会尝试从

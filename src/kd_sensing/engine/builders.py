@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer, MmWaveStandardScaler
+from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blocking
 from kd_sensing.registries import DATASETS, DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
 from kd_sensing.utils.paths import resolve_path
@@ -20,6 +21,7 @@ CACHE_POLICIES = ("off", "read_only", "auto", "rebuild")
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     import_default_components()
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
+    normalize_deepsense_dataset_config(dataset_cfg)
     dataset_type = dataset_cfg.get("type")
     dataset_cfg["split"] = split
     enabled_modalities = resolve_enabled_modalities(cfg)
@@ -40,7 +42,7 @@ def apply_cache_policy(
     cfg: dict[str, Any],
     enabled_modalities: tuple[str, ...] | list[str],
 ) -> dict[str, Any]:
-    """Resolve high-level cache policy into concrete Scenario9Dataset knobs."""
+    """Resolve high-level cache policy into concrete DeepSense6G dataset knobs."""
 
     selected = set(enabled_modalities)
     cache_cfg = cfg.get("data", {}).get("cache", {})
@@ -221,6 +223,8 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     csv_name = Path(csv_path).name if csv_path is not None else None
     metadata = {
         "split": getattr(dataset, "split", None),
+        "scene_id": getattr(dataset, "scene_id", None),
+        "scene_slug": getattr(dataset, "scene_slug", None),
         "csv_path": str(csv_path) if csv_path is not None else None,
         "csv_name": csv_name,
         "num_samples": len(dataset),

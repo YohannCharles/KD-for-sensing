@@ -325,7 +325,7 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
             assert kd_cfg["paths"]["weights_dir"] == "All_models"
             assert kd_cfg["distillation"]["teacher_model_name"] == "ImageTeacher_best.pth"
         else:
-            assert kd_cfg["paths"]["weights_dir"] == f"outputs/{modality}_teacher_no_kd/checkpoints"
+            assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{modality}_teacher_no_kd/checkpoints"
             assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, spec["teacher_cls"])
         assert isinstance(student, spec["student_cls"])
@@ -389,7 +389,7 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
             assert kd_cfg["paths"]["weights_dir"] == "All_models"
             assert kd_cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
         else:
-            assert kd_cfg["paths"]["weights_dir"] == f"outputs/{slug}_teacher_no_kd/checkpoints"
+            assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
             assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, FusionModalityNet)
         assert isinstance(kd_student, StudentModalityNet)
@@ -456,6 +456,11 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
     dataset_cfg = cfg["data"]["dataset"]
     teacher_cfg = cfg["model"]["teacher"]
     student_cfg = cfg["model"]["student"]
+
+    assert dataset_cfg["type"] == "deepsense6g"
+    assert dataset_cfg["scene_id"] == 32
+    assert dataset_cfg["scene_slug"] == "scene32"
+    assert dataset_cfg["data_root"] == "dataset/scenario32"
 
     if "gps" in modalities:
         assert dataset_cfg["use_gps"] is True

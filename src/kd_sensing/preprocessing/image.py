@@ -21,8 +21,8 @@ from kd_sensing.utils.paths import resolve_path
 def generate_image_motion_cache(
     csv_path: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
     csv_paths: list[str | Path] | tuple[str | Path, ...] | None = None,
-    data_root: str | Path = "dataset/scenario9",
-    cache_dir: str | Path = "dataset/scenario9/image_motion_cache",
+    data_root: str | Path = "dataset/scenario32",
+    cache_dir: str | Path = "dataset/scenario32/image_motion_cache",
     camera_prefix: str = "camera",
     camera_columns: list[str] | tuple[str, ...] | None = None,
     image_size: list[int] | tuple[int, int] = (224, 224),

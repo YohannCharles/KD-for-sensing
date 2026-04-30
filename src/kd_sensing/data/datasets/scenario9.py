@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 from tqdm.auto import tqdm
 
 from kd_sensing.data.samples import create_samples
+from kd_sensing.data.scenes import resolve_deepsense_scene
 from kd_sensing.data.transforms import (
     GPSStandardScaler,
     DEFAULT_LIDAR_BEV_SIZE,
@@ -37,18 +38,21 @@ from kd_sensing.utils.paths import resolve_path
 VALID_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
 
 
-@DATASETS.register("scenario9")
-class Scenario9Dataset(Dataset):
-    """Scenario 9 sequence dataset with standardized batch field names."""
+@DATASETS.register("deepsense6g")
+class DeepSense6GDataset(Dataset):
+    """DeepSense6G sequence dataset with standardized batch field names."""
 
     def __init__(
         self,
-        data_root: str,
+        data_root: str | None = None,
         csv_name: str | None = None,
         root_csv: str | None = None,
         split: str = "train",
-        train_csv_name: str = "train_seqs_RA_GPS_LIDAR.csv",
-        test_csv_name: str = "test_seqs_RA_GPS_LIDAR.csv",
+        train_csv_name: str | None = "train_seqs_RA_GPS_LIDAR.csv",
+        test_csv_name: str | None = "test_seqs_RA_GPS_LIDAR.csv",
+        scene: str | int | None = None,
+        scene_id: str | int | None = None,
+        scene_slug: str | None = None,
         seq_len: int = 8,
         num_pred: int = 3,
         image_size: list[int] | tuple[int, int] = (224, 224),
@@ -96,10 +100,18 @@ class Scenario9Dataset(Dataset):
         portion_seed: int = 42,
         **_: object,
     ):
+        scene_value = scene if scene is not None else scene_id if scene_id is not None else scene_slug
+        self.scene = resolve_deepsense_scene(scene_value)
+        self.scene_id = self.scene.scene_id
+        self.scene_slug = self.scene.scene_slug
+        if data_root is None:
+            data_root = self.scene.default_data_root
         self.data_root = resolve_path(data_root)
         selected_csv = root_csv or csv_name
         if selected_csv is None:
-            selected_csv = train_csv_name if split == "train" else test_csv_name
+            default_csv = self.scene.default_train_csv_name if split == "train" else self.scene.default_test_csv_name
+            configured_csv = train_csv_name if split == "train" else test_csv_name
+            selected_csv = configured_csv or default_csv
         self.root_csv = Path(selected_csv)
         if not self.root_csv.is_absolute():
             self.root_csv = self.data_root / self.root_csv
@@ -274,12 +286,12 @@ class Scenario9Dataset(Dataset):
         else:
             selected = [str(modality) for modality in enabled_modalities]
         if not selected:
-            raise ValueError("Scenario9Dataset requires at least one enabled modality.")
+            raise ValueError("DeepSense6GDataset requires at least one enabled modality.")
         invalid = [name for name in selected if name not in VALID_MODALITIES]
         if invalid:
-            raise ValueError(f"Unknown Scenario 9 modalities: {invalid}.")
+            raise ValueError(f"Unknown DeepSense6G modalities: {invalid}.")
         if len(set(selected)) != len(selected):
-            raise ValueError(f"Scenario 9 modalities must not contain duplicates: {selected}.")
+            raise ValueError(f"DeepSense6G modalities must not contain duplicates: {selected}.")
         return tuple(name for name in VALID_MODALITIES if name in set(selected))
 
     def _resolve_image_motion_cache_dir(self, image_motion_cache_dir: str | None) -> Path | None:
@@ -562,3 +574,19 @@ class Scenario9Dataset(Dataset):
                 while len(self._lidar_bev_cache) > self.lidar_memory_cache_max_items:
                     self._lidar_bev_cache.popitem(last=False)
         return bev
+
+
+@DATASETS.register("scenario9")
+class Scenario9Dataset(DeepSense6GDataset):
+    """Backward-compatible Scenario 9 dataset alias."""
+
+    def __init__(self, *args, scene: str | int | None = None, **kwargs):
+        super().__init__(*args, scene=9 if scene is None else scene, **kwargs)
+
+
+@DATASETS.register("scenario32")
+class Scenario32Dataset(DeepSense6GDataset):
+    """Scenario 32 dataset alias."""
+
+    def __init__(self, *args, scene: str | int | None = None, **kwargs):
+        super().__init__(*args, scene=32 if scene is None else scene, **kwargs)

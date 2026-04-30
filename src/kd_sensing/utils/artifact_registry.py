@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -58,7 +59,10 @@ def registry_preferred(cfg: dict[str, Any]) -> bool:
 
 
 def registry_dir(cfg: dict[str, Any]) -> Path:
-    return resolve_path(registry_config(cfg).get("dir", DEFAULT_REGISTRY["dir"]))
+    configured_dir = registry_config(cfg).get("dir", DEFAULT_REGISTRY["dir"])
+    if configured_dir == DEFAULT_REGISTRY["dir"]:
+        return _default_scene_registry_dir(cfg)
+    return resolve_path(configured_dir)
 
 
 def config_slug(cfg: dict[str, Any]) -> str:
@@ -168,7 +172,7 @@ def archive_best_checkpoint(
                 "skipped_source_checkpoint": str(source),
                 "skipped_metric_value": float(val_top1),
             }
-    _remove_old_archives(target_dir, slug=slug, role=role, keep=target)
+    _remove_old_archives(target_dir, slug=slug, role=role, keep=target, scene_slug=scene_slug_from_config(cfg))
     shutil.copy2(source, target)
 
     metadata = {
@@ -187,6 +191,7 @@ def archive_best_checkpoint(
         "normalization_artifacts": normalization_artifacts or {},
         "updated": True,
     }
+    metadata.update(scene_metadata_from_config(cfg))
     sidecar = write_sidecar(target, metadata)
     metadata["sidecar_path"] = str(sidecar)
     write_sidecar(target, metadata)
@@ -214,7 +219,7 @@ def find_registry_checkpoint(
 ) -> CheckpointResolution:
     target_dir = registry_dir(cfg)
     slug = sanitize_slug(target_slug or config_slug(cfg))
-    candidates = _registry_candidates(target_dir, slug=slug, role=role)
+    candidates = _registry_candidates(target_dir, slug=slug, role=role, scene_slug=scene_slug_from_config(cfg))
     if candidates:
         best = max(candidates, key=lambda item: (item["metric_value"], item["mtime"]))
         return CheckpointResolution(
@@ -334,7 +339,13 @@ def resolve_evaluation_checkpoint(cfg: dict[str, Any], weights: str | None = Non
     )
 
 
-def _registry_candidates(target_dir: Path, *, slug: str, role: str | None) -> list[dict[str, Any]]:
+def _registry_candidates(
+    target_dir: Path,
+    *,
+    slug: str,
+    role: str | None,
+    scene_slug: str | None = None,
+) -> list[dict[str, Any]]:
     if not target_dir.exists():
         return []
     candidates: list[dict[str, Any]] = []
@@ -345,6 +356,9 @@ def _registry_candidates(target_dir: Path, *, slug: str, role: str | None) -> li
         if candidate_slug != slug:
             continue
         if role is not None and candidate_role not in {None, role}:
+            continue
+        candidate_scene_slug = metadata.get("scene_slug")
+        if scene_slug is not None and candidate_scene_slug is not None and candidate_scene_slug != scene_slug:
             continue
         metric_value = metadata.get("metric_value")
         if metric_value is None:
@@ -362,8 +376,8 @@ def _registry_candidates(target_dir: Path, *, slug: str, role: str | None) -> li
     return candidates
 
 
-def _remove_old_archives(target_dir: Path, *, slug: str, role: str, keep: Path) -> None:
-    for item in _registry_candidates(target_dir, slug=slug, role=role):
+def _remove_old_archives(target_dir: Path, *, slug: str, role: str, keep: Path, scene_slug: str | None) -> None:
+    for item in _registry_candidates(target_dir, slug=slug, role=role, scene_slug=scene_slug):
         checkpoint = item["path"]
         if checkpoint == keep:
             continue
@@ -405,6 +419,15 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
     return value
+
+
+def _default_scene_registry_dir(cfg: dict[str, Any]) -> Path:
+    base = resolve_path(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
+    if cfg.get("output", {}).get("group_by_scene", True) is not False:
+        scene_slug = scene_slug_from_config(cfg)
+        if scene_slug and base.name != scene_slug:
+            base = base / scene_slug
+    return base / "best_checkpoints"
 
 
 def _metadata_from_checkpoint_payload(checkpoint_path: str | Path) -> dict[str, Any] | None:

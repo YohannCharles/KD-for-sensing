@@ -14,10 +14,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from kd_sensing.config import load_config  # noqa: E402
 import kd_sensing.data.transforms as transforms  # noqa: E402
 import kd_sensing.data.datasets.scenario9 as scenario9_module  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
-from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
+from kd_sensing.data.datasets.scenario9 import DeepSense6GDataset, Scenario9Dataset  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.engine.builders import (  # noqa: E402
@@ -37,6 +38,29 @@ from kd_sensing.utils.artifact_registry import (  # noqa: E402
     find_registry_checkpoint,
     resolve_teacher_checkpoint,
 )
+
+
+def test_deepsense_scene_defaults_and_aliases():
+    default_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml")
+    scene9_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene9"])
+    legacy_cfg = load_config(
+        ROOT / "configs/mmwave/teacher_no_kd.yaml",
+        ["data.dataset.type=scenario9", "data.dataset.scene=null"],
+    )
+
+    assert default_cfg["data"]["dataset"]["scene_id"] == 32
+    assert default_cfg["data"]["dataset"]["scene_slug"] == "scene32"
+    assert default_cfg["data"]["dataset"]["data_root"] == "dataset/scenario32"
+    assert scene9_cfg["data"]["dataset"]["scene_id"] == 9
+    assert scene9_cfg["data"]["dataset"]["scene_slug"] == "scene9"
+    assert scene9_cfg["data"]["dataset"]["data_root"] == "dataset/scenario9"
+    assert legacy_cfg["data"]["dataset"]["type"] == "scenario9"
+    assert legacy_cfg["data"]["dataset"]["scene_id"] == 9
+
+
+def test_deepsense_unknown_scene_is_rejected():
+    with pytest.raises(ValueError, match="Supported scenes"):
+        load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=99"])
 
 
 @pytest.mark.parametrize(
@@ -301,8 +325,39 @@ def test_build_dataset_auto_policy_writes_image_cache_and_records_metadata(tmp_p
     assert dataset.image_motion_write_cache is True
     assert dataset.image_motion_cache_policy == "auto"
     assert len(list(dataset.image_motion_cache_dir.glob("*.npy"))) == 1
+    assert metadata["scene_id"] == 9
+    assert metadata["scene_slug"] == "scene9"
     assert metadata["image_motion_cache_policy"] == "auto"
     assert metadata["image_motion_write_cache"] is True
+
+
+def test_build_dataset_deepsense_scene32_records_metadata(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+    cfg = {
+        "experiment": {"task": "radar"},
+        "data": {
+            "cache": {"policy": "off"},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 32,
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 1,
+                "num_pred": 1,
+            },
+        },
+        "model": {"teacher": {}, "student": {}},
+    }
+
+    dataset = build_dataset(cfg, "train")
+    metadata = dataset_run_metadata(dataset)
+
+    assert isinstance(dataset, DeepSense6GDataset)
+    assert metadata["scene_id"] == 32
+    assert metadata["scene_slug"] == "scene32"
+    assert metadata["csv_name"] == csv_path.name
 
 
 def test_dataset_does_not_resolve_unenabled_cache_dirs(tmp_path: Path):
@@ -370,6 +425,26 @@ def test_fixed_run_name_defaults_to_unique_directory_and_resume_reuses(tmp_path:
     assert overwrite == first
 
 
+def test_scene_grouped_run_dir_defaults_and_resume_reuses(tmp_path: Path):
+    cfg = {
+        "experiment": {"name": "exp"},
+        "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
+        "output": {"dir": str(tmp_path), "run_name": "fixed"},
+        "training": {},
+    }
+
+    first = create_run_dir(cfg)
+    (first / "final_config.yaml").write_text("old", encoding="utf-8")
+    second = create_run_dir(cfg)
+    resume = create_run_dir({**cfg, "training": {"resume": True}})
+    overwrite = create_run_dir({**cfg, "output": {"dir": str(tmp_path), "run_name": "fixed", "overwrite": True}})
+
+    assert first == tmp_path / "scene32" / "fixed"
+    assert second != first
+    assert resume == first
+    assert overwrite == first
+
+
 def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
     cfg = {"experiment": {"name": "eval"}, "output": {"dir": str(tmp_path), "run_name": "fixed"}}
 
@@ -381,6 +456,21 @@ def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
     assert second.exists()
     assert first.name.startswith("evaluation_fixed")
     assert second.name.startswith("evaluation_fixed")
+
+
+def test_scene_grouped_eval_dir_and_explicit_eval_output(tmp_path: Path):
+    cfg = {
+        "experiment": {"name": "eval"},
+        "data": {"dataset": {"type": "deepsense6g", "scene": 9}},
+        "output": {"dir": str(tmp_path), "run_name": "fixed"},
+    }
+
+    grouped = create_eval_run_dir(cfg)
+    explicit = create_eval_run_dir(cfg, output_dir=str(tmp_path / "manual_eval"))
+
+    assert grouped.parent == tmp_path / "scene9"
+    assert grouped.name.startswith("evaluation_fixed")
+    assert explicit == tmp_path / "manual_eval"
 
 
 def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path: Path):
@@ -426,6 +516,60 @@ def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path
     assert found.path == resolved.path
     assert resolved.source == "registry"
     assert "acc_0.7500" in resolved.path.name
+
+
+def test_default_registry_is_scene_scoped(tmp_path: Path):
+    scene9_cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True}},
+        "data": {"dataset": {"type": "deepsense6g", "scene": 9}},
+        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
+        "distillation": {"type": "no_kd"},
+        "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+    }
+    scene32_cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True}},
+        "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
+        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
+        "distillation": {"type": "no_kd"},
+        "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+    }
+    kd_scene32_cfg = {
+        **scene32_cfg,
+        "paths": {"weights_dir": str(tmp_path / "missing")},
+        "experiment": {"name": "gps_logits_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
+        "distillation": {"type": "logits_kd", "teacher_model_name": "best.pth"},
+    }
+    checkpoint = tmp_path / "teacher.pth"
+    torch.save({"value": torch.tensor([1])}, checkpoint)
+
+    scene9_archive = archive_best_checkpoint(
+        scene9_cfg,
+        source_checkpoint=checkpoint,
+        val_top1=0.75,
+        epoch=1,
+        run_dir=tmp_path / "scene9_run",
+    )
+    missing_scene32 = resolve_teacher_checkpoint(kd_scene32_cfg, "best.pth")
+    scene32_archive = archive_best_checkpoint(
+        scene32_cfg,
+        source_checkpoint=checkpoint,
+        val_top1=0.80,
+        epoch=1,
+        run_dir=tmp_path / "scene32_run",
+    )
+    resolved_scene32 = resolve_teacher_checkpoint(kd_scene32_cfg, "best.pth")
+
+    assert Path(scene9_archive["path"]).parent == tmp_path / "scene9" / "best_checkpoints"
+    assert scene9_archive["scene_slug"] == "scene9"
+    assert missing_scene32.source == "missing"
+    assert missing_scene32.registry_dir == tmp_path / "scene32" / "best_checkpoints"
+    assert Path(scene32_archive["path"]).parent == tmp_path / "scene32" / "best_checkpoints"
+    assert scene32_archive["scene_slug"] == "scene32"
+    assert resolved_scene32.path == Path(scene32_archive["path"])
+    assert resolved_scene32.metadata["scene_slug"] == "scene32"
 
 
 def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):

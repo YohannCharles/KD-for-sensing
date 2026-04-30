@@ -23,8 +23,8 @@ from kd_sensing.utils.paths import resolve_path
 
 def generate_lidar_bev_cache(
     csv_path: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
-    data_root: str | Path = "dataset/scenario9",
-    cache_dir: str | Path = "dataset/scenario9/lidar_bev_cache",
+    data_root: str | Path = "dataset/scenario32",
+    cache_dir: str | Path = "dataset/scenario32/lidar_bev_cache",
     lidar_prefix: str = "lidar",
     lidar_columns: list[str] | tuple[str, ...] | None = None,
     bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
