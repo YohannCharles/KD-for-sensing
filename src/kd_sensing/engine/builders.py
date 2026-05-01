@@ -7,6 +7,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
+from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer, MmWaveStandardScaler
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blocking
@@ -221,6 +222,7 @@ def build_dataloader_kwargs(loader_cfg: dict[str, Any], *, split: str) -> dict[s
 def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     csv_path = getattr(dataset, "root_csv", None)
     csv_name = Path(csv_path).name if csv_path is not None else None
+    split_family = _split_family(csv_name)
     metadata = {
         "split": getattr(dataset, "split", None),
         "scene_id": getattr(dataset, "scene_id", None),
@@ -229,8 +231,22 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         "csv_name": csv_name,
         "num_samples": len(dataset),
         "enabled_modalities": list(getattr(dataset, "enabled_modalities", [])),
-        "split_family": _split_family(csv_name),
+        "split_family": split_family,
     }
+    if csv_path is not None:
+        split_metadata = split_metadata_summary_for_csv(
+            csv_path,
+            split=getattr(dataset, "split", None),
+            require_balanced=split_family == "unified_gps_lidar",
+            warn=split_family == "unified_gps_lidar",
+        )
+        metadata["split_metadata"] = split_metadata
+        if split_metadata.get("available"):
+            metadata["split_protocol"] = split_metadata.get("split_protocol")
+            metadata["split_seed"] = split_metadata.get("split_seed")
+            metadata["split_metadata_path"] = split_metadata.get("path")
+            metadata["split_sequence_count"] = split_metadata.get("split_sequence_count")
+            metadata["split_num_samples"] = split_metadata.get("split_num_samples")
     lidar_cache_dir = getattr(dataset, "lidar_cache_dir", None)
     if lidar_cache_dir is not None:
         metadata["lidar_cache_dir"] = str(lidar_cache_dir)

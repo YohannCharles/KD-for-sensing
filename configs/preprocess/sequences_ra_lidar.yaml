@@ -6,6 +6,9 @@ preprocessing:
   in_len: 8
   out_len: 3
   training_set_pct: 0.8
+  split_strategy: balanced_seq
+  split_seed: 42
+  min_test_sequences: 5
   include_lidar: true
   lidar_column: unit1_lidar
   lidar_fallback_column: unit1_lidar_SCR

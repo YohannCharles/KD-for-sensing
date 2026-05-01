@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
 import kd_sensing.data.transforms as transforms  # noqa: E402
 import kd_sensing.data.datasets.scenario9 as scenario9_module  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
@@ -61,6 +63,20 @@ def test_deepsense_scene_defaults_and_aliases():
 def test_deepsense_unknown_scene_is_rejected():
     with pytest.raises(ValueError, match="Supported scenes"):
         load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=99"])
+
+
+def test_sequence_preprocess_scene_override_updates_root_and_csv():
+    pre_cfg = {
+        "type": "sequence_csv",
+        "csv_path": "dataset/scenario32/scenario32_RA.csv",
+        "data_root": "dataset/scenario32",
+    }
+    cfg = {"data": {"dataset": {"type": "deepsense6g", "scene": 9}}}
+
+    _apply_scene_override_to_sequence_preprocess(pre_cfg, cfg)
+
+    assert pre_cfg["data_root"] == "dataset/scenario9"
+    assert pre_cfg["csv_path"] == "dataset/scenario9/scenario9_RA.csv"
 
 
 @pytest.mark.parametrize(
@@ -358,6 +374,67 @@ def test_build_dataset_deepsense_scene32_records_metadata(tmp_path: Path):
     assert metadata["scene_id"] == 32
     assert metadata["scene_slug"] == "scene32"
     assert metadata["csv_name"] == csv_path.name
+
+
+def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
+    csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+    sidecar = tmp_path / "split_metadata_RA_GPS_LIDAR.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "split_protocol": "balanced_seq",
+                "split_seed": 42,
+                "training_set_pct": 0.8,
+                "sequence_counts": {"total": 3, "train": 2, "test": 1},
+                "window_counts": {"total": 9, "train": 6, "test": 3},
+                "splits": {
+                    "train": {
+                        "csv_path": str(csv_path),
+                        "num_samples": 1,
+                        "sequence_count": 2,
+                        "seq_index": [1, 2],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=csv_path.name,
+        split="train",
+        seq_len=1,
+        num_pred=1,
+        enabled_modalities=["radar"],
+    )
+
+    metadata = dataset_run_metadata(dataset)
+
+    assert metadata["split_protocol"] == "balanced_seq"
+    assert metadata["split_seed"] == 42
+    assert metadata["split_metadata_path"] == str(sidecar)
+    assert metadata["split_sequence_count"] == 2
+    assert metadata["split_num_samples"] == 1
+
+
+def test_default_unified_split_missing_sidecar_warns(tmp_path: Path):
+    csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+    dataset = Scenario9Dataset(
+        data_root=str(tmp_path),
+        csv_name=csv_path.name,
+        split="train",
+        seq_len=1,
+        num_pred=1,
+        enabled_modalities=["radar"],
+    )
+
+    with pytest.warns(UserWarning, match="balanced_seq split metadata sidecar is missing"):
+        metadata = dataset_run_metadata(dataset)
+
+    assert metadata["split_metadata"]["available"] is False
+    assert "warning" in metadata["split_metadata"]
 
 
 def test_dataset_does_not_resolve_unenabled_cache_dirs(tmp_path: Path):

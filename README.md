@@ -320,8 +320,17 @@ python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 
 所有单模态和 fusion 实验默认使用同一组包含 camera、radar、GPS、LiDAR 和可选 mmWave 列的序列 CSV：
 `train_seqs_RA_GPS_LIDAR.csv` / `test_seqs_RA_GPS_LIDAR.csv`。运行
-`configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；该配置会写出
-`mmwave1..mmwave8`，默认来源列为 `unit1_pwr_60ghz`。GPS/mmWave scaler 只在训练集上 fit，并复用于测试集。
+`configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；该配置使用 `balanced_seq`
+协议按完整 `seq_index` 切分 train/test，并写出 `split_metadata_RA_GPS_LIDAR.json`，其中包含
+split seed、train/test seq 列表、窗口数和 beam label 分布摘要。`balanced_seq` 与旧版按原始
+`seq_index` 顺序 80/20 切分是不同实验协议，指标不能直接混在同一表格中比较。Scene 9 可用
+`python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml data.dataset.scene=9`
+生成同名统一 split。该配置会写出 `mmwave1..mmwave8`，默认来源列为 `unit1_pwr_60ghz`。
+GPS/mmWave scaler 只在训练集上 fit，并复用于测试集。
+
+Scene 32 中 image/radar/LiDAR 相关实验建议先在新 split 上重跑 image、radar、LiDAR、image+radar、
+image+LiDAR、radar+LiDAR、image+radar+LiDAR 这 7 种组合，再同时检查 split metadata 中的
+train/test label 分布和验证曲线。这样可以避免把旧顺序 split 的窄验证域结论误当成新协议结果。
 
 `configs/preprocess/image_motion_cache.yaml` 可把相邻 camera 帧 pair 的 motion mask 提前缓存为
 `.npy` `uint8` 文件；`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存。
@@ -334,8 +343,48 @@ image motion cache 同样会按 image size、Gaussian sigma、阈值策略、灰
 参数 hash 目录或清理旧 cache。BEV 和 image cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时
 全量载入 cache 目录。GPS/mmWave 没有同类大规模原始模态 cache，主要复用训练集 fit 的 scaler artifact。
 
-训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径和样本数，用于确认不同实验确实在
-同一训练/测试集合上比较。
+训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径、样本数、split metadata 路径、
+协议和 seed，用于确认不同实验确实在同一训练/测试集合上比较。默认统一 split CSV 缺少
+`balanced_seq` sidecar 时，运行 metadata 会记录明确 warning，终端也会发出警告。
+
+## 模态可视化诊断
+
+处理后模态输入可用独立诊断入口生成 PNG、`samples.csv` / `samples.jsonl`、`summary.json`
+和最终配置快照。默认配置使用 Scene 32 统一 split，抽取少量 train/test 样本，并展示
+image/radar/LiDAR 这组当前重点排查的模态：
+
+```bash
+conda run -n kd_mm_beam python scripts/visualize_modalities.py \
+  --config configs/diagnostics/modality_visualization.yaml
+```
+
+对比 Scene 9/32 或指定 split、`seq_index`、label 时使用 dotted override：
+
+```bash
+conda run -n kd_mm_beam python scripts/visualize_modalities.py \
+  --config configs/diagnostics/modality_visualization.yaml \
+  data.dataset.scene=9 \
+  diagnostics.visualization.splits='["train","test"]' \
+  diagnostics.visualization.seq_index='[1,9]' \
+  diagnostics.visualization.sample_count=2
+```
+
+也可以直接传入任意训练配置，并只覆盖诊断字段或模态组合，例如检查 mmWave/GPS：
+
+```bash
+conda run -n kd_mm_beam python scripts/visualize_modalities.py \
+  --config configs/fusion/all_modalities_lidar_no_kd.yaml \
+  -o diagnostics.visualization.modalities='["gps","mmwave"]' \
+  -o diagnostics.visualization.output_dir=outputs/diagnostics/gps_mmwave_scene32 \
+  -o diagnostics.visualization.sample_count=4
+```
+
+image 面板展示的是 Dataset 返回给模型的 processed motion mask，不是原始 RGB。只有显式设置
+`diagnostics.visualization.include_raw_image_preview=true` 时，图中才会附加 raw RGB thumbnail，
+且它只作为 reference，不是模型输入。诊断入口默认只把产物写入 `diagnostics.visualization.output_dir`，
+不会修改训练 checkpoint、`train_log.json`、`metrics.json`、`final_config.yaml`、split CSV 或评估报告。
+image motion cache 和 LiDAR BEV cache 的读写仍由 `data.cache.policy` 控制；默认诊断配置使用
+`read_only`，cache miss 时在线计算当前样本但不写新 cache。
 
 ## 破坏性变更
 

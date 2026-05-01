@@ -148,7 +148,7 @@ TBD - created by archiving change add-lidar-modality. Update Purpose after archi
 - **AND** 训练、验证和评估流程 MUST 保持旧配置兼容
 
 ### Requirement: LiDAR BEV cache 训练复用
-LiDAR-only 和包含 LiDAR 的 fusion 训练配置 MUST 支持复用 BEV 磁盘缓存，以避免每个 epoch 重复执行点云到 BEV 的转换。cache 读取和写入 MUST 按样本或帧懒加载发生，不得在 dataset 初始化阶段全量读取 cache 目录或将全训练集 BEV materialize 到内存中。
+LiDAR-only 和包含 LiDAR 的 fusion 训练配置 MUST 支持复用 BEV 磁盘缓存，以避免每个 epoch 重复执行点云到 BEV 的转换。cache 读取和写入 MUST 按样本或帧懒加载发生，不得在 dataset 初始化阶段全量读取 cache 目录或将全训练集 BEV materialize 到内存中。系统 MUST 提供可单独运行的 cache 预热入口，预热入口生成的 cache MUST 可被训练和评估配置直接复用。
 
 #### Scenario: LiDAR 配置启用 cache 读取
 - **WHEN** 用户运行 LiDAR-only 或包含 LiDAR 的 fusion canonical 配置且配置提供 `lidar_cache_dir`
@@ -170,6 +170,18 @@ LiDAR-only 和包含 LiDAR 的 fusion 训练配置 MUST 支持复用 BEV 磁盘�
 - **WHEN** 用户构建启用 LiDAR cache 的训练 dataset
 - **THEN** dataset 初始化 MUST 不遍历 cache 目录读取所有 `.npy` 文件
 - **AND** dataset 初始化 MUST 不创建包含全训练集 BEV 的 list、ndarray 或 tensor
+
+#### Scenario: 预热 train/test LiDAR cache
+- **WHEN** 用户运行 LiDAR BEV cache 预处理入口并提供 train/test CSV 或多个 CSV
+- **THEN** 系统 MUST 为这些 CSV 中唯一 LiDAR 帧路径生成 BEV cache
+- **AND** 已存在且参数匹配的 cache 文件 MUST 被跳过，除非用户显式启用 overwrite
+- **AND** 预处理入口 MUST 显示进度或日志，并返回生成数量、跳过数量和 cache 目录
+
+#### Scenario: LiDAR cache metadata 可追踪
+- **WHEN** LiDAR BEV cache 预处理入口完成
+- **THEN** 系统 MUST 在参数 hash cache 目录写出 metadata
+- **AND** metadata MUST 记录 BEV size、ROI、FoV、ground/background 参数、源 CSV、生成数量、跳过数量和 cache version
+- **AND** 训练运行日志或最终配置 MUST 能记录实际使用的 cache 目录和关键参数
 
 ### Requirement: LiDAR cache 预处理入口兼容训练配置
 LiDAR BEV cache 预处理入口生成的 cache MUST 可被训练和评估配置直接复用。训练配置中的 cache 目录、BEV size、ROI、FoV 和过滤参数 MUST 与预处理配置保持可追踪一致。
@@ -196,3 +208,4 @@ LiDAR BEV cache 写入 MUST 避免其它并行训练或评估进程读取到半�
 - **WHEN** LiDAR BEV cache 文件已经完成写入
 - **THEN** 后续 dataset 取样 MUST 直接读取该 cache
 - **AND** 读取结果 MUST 保持与在线构造路径相同的 shape 和 dtype
+

@@ -122,26 +122,26 @@ Fusion teacher 和 fusion student MUST 支持通过 `modalities` 配置选择参
 - **AND** logits KD 与 RKD MUST 能接收 fusion teacher/student 的 logits、input_features 和 output_features
 
 ### Requirement: Fusion canonical 多模态配置矩阵
-项目 MUST 为 `image`、`radar`、`gps`、`lidar`、`mmwave` 的所有必要多模态组合提供 canonical fusion 配置矩阵。多模态组合 MUST 覆盖全部 10 个双模态组合、10 个三模态组合、5 个四模态组合和 1 个五模态组合。每个组合 MUST 提供 teacher no-KD、student no-KD、logits KD 和 RKD 配置。
+项目 MUST 为 `image`、`radar`、`gps`、`lidar`、`mmwave` 的所有必要多模态组合提供 canonical fusion 配置矩阵。多模态组合 MUST 覆盖全部 10 个双模态组合、10 个三模态组合、5 个四模态组合和 1 个五模态组合。每个组合 MUST 提供可加载的 teacher no-KD、student no-KD、logits KD 和 RKD canonical 配置路径；这些 canonical 配置 MAY 由 loader 生成，不要求每个路径都有实体 YAML 文件。
 
 #### Scenario: 双模态 fusion 组合完整
-- **WHEN** 开发者查看 `configs/fusion/`
-- **THEN** 系统 MUST 提供 `image_radar`、`image_gps`、`image_lidar`、`image_mmwave`、`radar_gps`、`radar_lidar`、`radar_mmwave`、`gps_lidar`、`gps_mmwave` 和 `lidar_mmwave` 十个双模态 slug 的 canonical 配置
-- **AND** 每个 slug MUST 具备 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml`
+- **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
+- **THEN** 系统 MUST 为 `image_radar`、`image_gps`、`image_lidar`、`image_mmwave`、`radar_gps`、`radar_lidar`、`radar_mmwave`、`gps_lidar`、`gps_mmwave` 和 `lidar_mmwave` 十个双模态 slug 提供 canonical 配置
+- **AND** 每个 slug MUST 具备可加载的 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml` 路径
 
 #### Scenario: 三模态 fusion 组合完整
-- **WHEN** 开发者查看 `configs/fusion/`
-- **THEN** 系统 MUST 提供 `image_radar_gps`、`image_radar_lidar`、`image_radar_mmwave`、`image_gps_lidar`、`image_gps_mmwave`、`image_lidar_mmwave`、`radar_gps_lidar`、`radar_gps_mmwave`、`radar_lidar_mmwave` 和 `gps_lidar_mmwave` 十个三模态 slug 的 canonical 配置
-- **AND** 每个 slug MUST 具备 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml`
+- **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
+- **THEN** 系统 MUST 为 `image_radar_gps`、`image_radar_lidar`、`image_radar_mmwave`、`image_gps_lidar`、`image_gps_mmwave`、`image_lidar_mmwave`、`radar_gps_lidar`、`radar_gps_mmwave`、`radar_lidar_mmwave` 和 `gps_lidar_mmwave` 十个三模态 slug 提供 canonical 配置
+- **AND** 每个 slug MUST 具备可加载的 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml` 路径
 
 #### Scenario: 四模态 fusion 组合完整
-- **WHEN** 开发者查看 `configs/fusion/`
-- **THEN** 系统 MUST 提供 `image_radar_gps_lidar`、`image_radar_gps_mmwave`、`image_radar_lidar_mmwave`、`image_gps_lidar_mmwave` 和 `radar_gps_lidar_mmwave` 五个四模态 slug 的 canonical 配置
-- **AND** 每个 slug MUST 具备 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml`
+- **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
+- **THEN** 系统 MUST 为 `image_radar_gps_lidar`、`image_radar_gps_mmwave`、`image_radar_lidar_mmwave`、`image_gps_lidar_mmwave` 和 `radar_gps_lidar_mmwave` 五个四模态 slug 提供 canonical 配置
+- **AND** 每个 slug MUST 具备可加载的 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml` 路径
 
 #### Scenario: 五模态 fusion 组合完整
-- **WHEN** 开发者查看 `configs/fusion/`
-- **THEN** 系统 MUST 提供 `image_radar_gps_lidar_mmwave_teacher_no_kd.yaml`、`image_radar_gps_lidar_mmwave_student_no_kd.yaml`、`image_radar_gps_lidar_mmwave_logits_kd.yaml` 和 `image_radar_gps_lidar_mmwave_rkd.yaml`
+- **WHEN** 开发者加载五模态 fusion canonical 配置
+- **THEN** 系统 MUST 提供可加载的 `image_radar_gps_lidar_mmwave_teacher_no_kd.yaml`、`image_radar_gps_lidar_mmwave_student_no_kd.yaml`、`image_radar_gps_lidar_mmwave_logits_kd.yaml` 和 `image_radar_gps_lidar_mmwave_rkd.yaml` 路径
 
 #### Scenario: 不重复提供 fusion 单模态入口
 - **WHEN** 用户需要运行单模态 image、radar、GPS、LiDAR 或 mmWave 实验
@@ -149,7 +149,7 @@ Fusion teacher 和 fusion student MUST 支持通过 `modalities` 配置选择参
 - **AND** fusion canonical 矩阵 MUST 不要求提供单模态 fusion duplicate 配置
 
 ### Requirement: Fusion canonical 配置语义
-每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug，并 MUST 让 teacher 和 student 使用相同的 `modalities`。同一 slug 的四种配置 MUST 只改变训练角色和 KD 模式，不得改变模态集合。
+每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug，并 MUST 让 teacher 和 student 使用相同的 `modalities`。同一 slug 的四种配置 MUST 只改变训练角色和 KD 模式，不得改变模态集合。canonical 配置语义 MUST 不依赖实体 YAML 文件是否存在。
 
 #### Scenario: fusion teacher no-KD 配置
 - **WHEN** 开发者加载 `configs/fusion/<slug>_teacher_no_kd.yaml`

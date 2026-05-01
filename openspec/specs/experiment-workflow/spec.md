@@ -556,3 +556,76 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **WHEN** 用户运行 `python scripts/train.py --config <config> data.dataset.scene=9`
 - **THEN** 系统 MUST 使用 Scenario 9 的数据默认值和输出目录分组
 - **AND** 最终配置 MUST 记录覆盖后的场景
+
+### Requirement: 吞吐优化配置与日志
+训练配置 MUST 暴露吞吐相关开关，包括 DataLoader worker/prefetch 参数、non-blocking transfer、AMP 和预处理 cache 读取/写入策略。训练日志、最终配置或 profile 输出 MUST 记录这些实际生效的吞吐参数，便于比较不同实验设置。
+
+#### Scenario: 记录吞吐参数
+- **WHEN** 一次训练或 profile 运行启动
+- **THEN** 输出配置或日志 MUST 记录 `num_workers`、`pin_memory`、`persistent_workers`、`prefetch_factor`、non-blocking transfer、AMP enabled/dtype 和启用的 cache 目录
+- **AND** 对启用 image 或 LiDAR 的配置 MUST 记录对应 cache 参数 hash 目录
+
+#### Scenario: 并行实验默认不过度放大 worker
+- **WHEN** 用户使用 canonical 单模态或 fusion YAML 运行实验
+- **THEN** 配置 SHOULD 使用适合并行实验的保守 `num_workers` 和 `prefetch_factor`
+- **AND** 用户 MUST 能通过命令行覆盖这些参数以寻找单实验最高吞吐
+
+### Requirement: AMP 训练配置兼容
+训练工作流 MUST 支持通过配置启用或关闭 AMP。AMP 配置 MUST 不影响 checkpoint 保存、早停、scheduler、TensorBoard、registry 和评估指标输出结构。
+
+#### Scenario: 开启 AMP 完成短训练
+- **WHEN** 用户在 CUDA device 上启用 AMP 并运行 1 epoch smoke test
+- **THEN** 训练 MUST 完成 forward、loss、backward、optimizer step、validation 和 checkpoint 保存
+- **AND** 训练日志 MUST 记录 AMP 已启用和实际 dtype
+
+#### Scenario: 关闭 AMP 保持旧行为
+- **WHEN** 用户关闭 AMP 或在 CPU device 上运行训练
+- **THEN** 训练 MUST 保持现有 FP32 行为
+- **AND** 旧配置未声明 AMP 字段时 MUST 能继续运行
+
+### Requirement: 虚拟 canonical 配置工作流
+训练、评估和测试工作流 MUST 接受由配置加载器生成的虚拟 canonical fusion 配置。虚拟配置 MUST 在进入训练、评估、dry-run、override 合并、验证和 artifact 写出之前被解析为完整配置字典。
+
+#### Scenario: 训练入口使用虚拟 canonical 配置
+- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_logits_kd.yaml`
+- **THEN** 系统 MUST 解析该 canonical path 并启动 fusion logits KD 训练流程
+- **AND** 训练流程 MUST 不要求 `configs/fusion/gps_mmwave_logits_kd.yaml` 在磁盘上存在
+
+#### Scenario: 评估入口使用虚拟 canonical 配置
+- **WHEN** 用户运行 `python scripts/evaluate.py --config configs/fusion/gps_mmwave_logits_kd.yaml --weights <path>`
+- **THEN** 系统 MUST 解析该 canonical path 并构建对应 fusion student 模型
+- **AND** 评估流程 MUST 只准备该配置启用的模态输入
+
+#### Scenario: dry-run 使用虚拟 canonical 配置
+- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_logits_kd.yaml --dry-run`
+- **THEN** 系统 MUST 先生成 canonical 配置，再应用 dry-run 覆盖
+- **AND** dry-run MUST 使用 synthetic dataset、单 epoch 和关闭 worker 的现有行为
+
+#### Scenario: 保存完整 final config
+- **WHEN** 使用虚拟 canonical 配置完成训练
+- **THEN** 系统 MUST 在运行目录保存完整解析后的 `final_config.yaml`
+- **AND** `final_config.yaml` MUST 包含训练复现所需的全部字段，而不是只保存虚拟路径或生成规则
+
+#### Scenario: CLI override 覆盖虚拟配置
+- **WHEN** 用户通过 `--override` 或点式未知参数覆盖虚拟 canonical 配置字段
+- **THEN** 系统 MUST 在生成 canonical 配置之后应用这些覆盖
+- **AND** 覆盖优先级 MUST 与实体 YAML 配置保持一致
+
+### Requirement: 实验输出记录 split 协议
+训练和评估流程 MUST 在运行产物中记录足够的 split 协议信息，用于判断不同实验是否使用同一数据协议并可横向比较。记录 MUST 包含实际 CSV 路径、样本数和 `balanced_seq` split metadata 路径或核心字段。
+
+#### Scenario: 训练输出包含 split metadata 引用
+- **WHEN** 训练入口构建 train/test dataset
+- **THEN** `final_config.yaml`、`train_log.json` 或等价运行产物 MUST 记录 split metadata 路径或核心字段
+- **AND** 记录 MUST 包含 split 策略、seed、train/test `seq_index` 数量和 train/test 样本数
+
+#### Scenario: 评估输出包含 split 协议
+- **WHEN** 评估入口构建 test dataset
+- **THEN** 评估报告 MUST 记录实际使用的 test CSV 和可用的 split 协议信息
+- **AND** 当当前 CSV 缺少 `balanced_seq` split metadata 时，系统 MUST 给出清晰错误或显式警告，避免把未知 split 协议误当成新协议结果
+
+#### Scenario: 跨模态 split 可比较
+- **WHEN** 用户使用同一组 train/test CSV 运行 image、radar、GPS、LiDAR、mmWave 或 fusion 实验
+- **THEN** 各运行产物中的 split 协议信息 MUST 能显示它们使用相同 CSV 和相同 split metadata
+- **AND** 如果 CSV 路径或 split metadata 不同，用户 MUST 能从运行产物中看出这些结果不应直接作为同一 split 协议比较
+
