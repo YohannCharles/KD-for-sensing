@@ -36,12 +36,15 @@ diagnostics:
     output_dir: outputs/diagnostics/modality_visualization
     splits: [train, test]
     sample_count: 2
+    per_seq_sample_count: null
     seed: 0
     seq_index: null
     labels: null
     modalities: [image, radar, lidar]
+    compare_scenes: null
     max_frames_per_sample: 4
-    include_raw_image_preview: false
+    include_raw_image_preview: true
+    preserve_existing_outputs: true
 output:
   dir: outputs
   run_name: modality_visualization

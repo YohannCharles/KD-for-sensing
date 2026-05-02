@@ -31,6 +31,13 @@ from kd_sensing.utils.paths import resolve_path
 
 VALID_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
 VALID_SPLITS = ("train", "test")
+METADATA_FILE_TEMPLATES = {
+    "summary": ("summary", ".json"),
+    "samples_jsonl": ("samples", ".jsonl"),
+    "samples_csv": ("samples", ".csv"),
+    "split_stats": ("split_stats", ".json"),
+    "final_config": ("final_config", ".yaml"),
+}
 
 
 @dataclass(frozen=True)
@@ -38,12 +45,15 @@ class VisualizationConfig:
     output_dir: Path
     splits: tuple[str, ...]
     sample_count: int
+    per_seq_sample_count: int | None
     seed: int
     seq_index: tuple[Any, ...] | None
     labels: tuple[int, ...] | None
     modalities: tuple[str, ...] | None
+    compare_scenes: tuple[int, ...] | None
     max_frames_per_sample: int
     include_raw_image_preview: bool
+    preserve_existing_outputs: bool
 
     def to_json_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -63,6 +73,81 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
     """Generate processed-modality diagnostic figures and metadata files."""
 
     requested_viz = parse_visualization_config(cfg)
+    if requested_viz.compare_scenes is not None:
+        return visualize_modality_scene_comparison(cfg, requested_viz)
+
+    return _visualize_single_scene(cfg, requested_viz)
+
+
+def visualize_modality_scene_comparison(cfg: dict[str, Any], requested_viz: VisualizationConfig) -> dict[str, Any]:
+    """Run the same visualization diagnostics for multiple DeepSense6G scenes."""
+
+    scenes = requested_viz.compare_scenes or ()
+    output_dir = requested_viz.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    scene_results: dict[str, Any] = {}
+    output_files: list[str] = []
+    for scene_id in scenes:
+        scene_cfg = deepcopy(cfg)
+        dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
+        if str(dataset_cfg.get("type", "")).strip().lower() in {"scenario9", "scenario32"}:
+            dataset_cfg["type"] = "deepsense6g"
+        dataset_cfg["scene"] = int(scene_id)
+        scene_slug = f"scene{int(scene_id)}"
+        scene_viz = replace(requested_viz, output_dir=output_dir / scene_slug, compare_scenes=None)
+        result = _visualize_single_scene(scene_cfg, scene_viz)
+        scene_results[scene_slug] = {
+            "scene_id": int(scene_id),
+            "output_dir": result["output_dir"],
+            "summary_path": result["summary_path"],
+            "split_stats_path": result["split_stats_path"],
+            "actual_sample_count": result["actual_sample_count"],
+            "enabled_modalities": result["enabled_modalities"],
+            "output_files": result.get("output_files", []),
+        }
+        output_files.extend(result.get("output_files", [result["summary_path"], result["split_stats_path"]]))
+
+    metadata_paths = resolve_metadata_output_paths(
+        output_dir,
+        preserve_existing=bool(requested_viz.preserve_existing_outputs),
+        keys=("summary", "final_config"),
+    )
+    final_config_path = metadata_paths["final_config"]
+    dump_config(final_config_snapshot(cfg, requested_viz), final_config_path)
+    output_files.append(str(final_config_path))
+
+    summary_path = metadata_paths["summary"]
+    output_files.append(str(summary_path))
+    total_sample_count = sum(int(item["actual_sample_count"]) for item in scene_results.values())
+    summary = {
+        "diagnostics": {
+            "visualization": requested_viz.to_json_dict(),
+        },
+        "compare_scenes": list(scenes),
+        "scenes": scene_results,
+        "output_dir": str(output_dir),
+        "summary_path": str(summary_path),
+        "final_config_path": str(final_config_path),
+        "actual_sample_count": total_sample_count,
+        "output_files": output_files,
+    }
+    write_json(summary_path, summary)
+
+    return {
+        "output_dir": str(output_dir),
+        "summary_path": str(summary_path),
+        "final_config_path": str(final_config_path),
+        "actual_sample_count": total_sample_count,
+        "compare_scenes": list(scenes),
+        "scenes": scene_results,
+        "output_files": output_files,
+    }
+
+
+def _visualize_single_scene(cfg: dict[str, Any], requested_viz: VisualizationConfig) -> dict[str, Any]:
+    """Generate processed-modality diagnostic figures and metadata for one scene."""
+
     effective_cfg = apply_visualization_modalities(cfg, requested_viz.modalities)
     enabled_modalities = resolve_enabled_modalities(effective_cfg)
     viz = requested_viz
@@ -76,6 +161,11 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
     sample_records: list[dict[str, Any]] = []
     split_summaries: dict[str, Any] = {}
     output_files: list[str] = []
+    metadata_paths = resolve_metadata_output_paths(
+        output_dir,
+        preserve_existing=bool(viz.preserve_existing_outputs),
+        keys=("samples_jsonl", "samples_csv", "split_stats", "final_config", "summary"),
+    )
 
     for split in viz.splits:
         dataset = datasets[split]
@@ -84,6 +174,7 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
         selected, sampling_summary = select_sample_candidates(
             candidates,
             sample_count=viz.sample_count,
+            per_seq_sample_count=viz.per_seq_sample_count,
             seed=viz.seed,
             seq_index=viz.seq_index,
             labels=viz.labels,
@@ -107,6 +198,7 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
                 sample=sample,
                 statistics=statistics,
                 modalities=enabled_modalities,
+                raw_image_reference_enabled=viz.include_raw_image_preview and "image" in sample,
             )
             png_path = sample_png_path(output_dir, dataset, split, candidate)
             render_sample_overview(dataset, sample, record, png_path, viz)
@@ -114,19 +206,29 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
             sample_records.append(record)
             output_files.append(str(png_path))
 
-    samples_jsonl = output_dir / "samples.jsonl"
-    samples_csv = output_dir / "samples.csv"
+    samples_jsonl = metadata_paths["samples_jsonl"]
+    samples_csv = metadata_paths["samples_csv"]
     write_samples_jsonl(sample_records, samples_jsonl)
     write_samples_csv(sample_records, samples_csv)
     output_files.extend([str(samples_jsonl), str(samples_csv)])
 
+    scene_metadata = scene_metadata_from_datasets(datasets)
+    split_stats_path = metadata_paths["split_stats"]
+    split_stats = build_split_stats_report(
+        datasets,
+        enabled_modalities=enabled_modalities,
+        viz=viz,
+        scene_metadata=scene_metadata,
+    )
+    write_json(split_stats_path, split_stats)
+    output_files.append(str(split_stats_path))
+
     snapshot_cfg = final_config_snapshot(effective_cfg, viz)
-    final_config_path = output_dir / "final_config.yaml"
+    final_config_path = metadata_paths["final_config"]
     dump_config(snapshot_cfg, final_config_path)
     output_files.append(str(final_config_path))
 
-    scene_metadata = scene_metadata_from_datasets(datasets)
-    summary_path = output_dir / "summary.json"
+    summary_path = metadata_paths["summary"]
     output_files.append(str(summary_path))
     summary = {
         "diagnostics": {
@@ -141,6 +243,7 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
         "output_dir": str(output_dir),
         "samples_jsonl": str(samples_jsonl),
         "samples_csv": str(samples_csv),
+        "split_stats_path": str(split_stats_path),
         "final_config_path": str(final_config_path),
         "output_files": output_files,
     }
@@ -151,9 +254,11 @@ def visualize_modalities(cfg: dict[str, Any]) -> dict[str, Any]:
         "summary_path": str(summary_path),
         "samples_jsonl": str(samples_jsonl),
         "samples_csv": str(samples_csv),
+        "split_stats_path": str(split_stats_path),
         "final_config_path": str(final_config_path),
         "actual_sample_count": len(sample_records),
         "enabled_modalities": list(enabled_modalities),
+        "output_files": output_files,
     }
 
 
@@ -172,6 +277,10 @@ def parse_visualization_config(cfg: dict[str, Any]) -> VisualizationConfig:
     sample_count = int(raw.get("sample_count", 4))
     if sample_count < 0:
         raise ValueError("diagnostics.visualization.sample_count must be non-negative.")
+    per_seq_raw = raw.get("per_seq_sample_count")
+    per_seq_sample_count = None if per_seq_raw is None else int(per_seq_raw)
+    if per_seq_sample_count is not None and per_seq_sample_count < 0:
+        raise ValueError("diagnostics.visualization.per_seq_sample_count must be non-negative.")
     max_frames = int(raw.get("max_frames_per_sample", 4))
     if max_frames < 1:
         raise ValueError("diagnostics.visualization.max_frames_per_sample must be positive.")
@@ -180,12 +289,15 @@ def parse_visualization_config(cfg: dict[str, Any]) -> VisualizationConfig:
         output_dir=resolve_path(output_raw),
         splits=splits,
         sample_count=sample_count,
+        per_seq_sample_count=per_seq_sample_count,
         seed=int(raw.get("seed", cfg.get("experiment", {}).get("seed", 42))),
         seq_index=_optional_tuple(raw.get("seq_index")),
         labels=_optional_int_tuple(raw.get("labels")),
         modalities=_optional_modalities(raw.get("modalities")),
+        compare_scenes=_optional_int_tuple(raw.get("compare_scenes")),
         max_frames_per_sample=max_frames,
         include_raw_image_preview=bool(raw.get("include_raw_image_preview", False)),
+        preserve_existing_outputs=bool(raw.get("preserve_existing_outputs", True)),
     )
 
 
@@ -288,19 +400,33 @@ def select_sample_candidates(
     candidates: Iterable[SampleCandidate],
     *,
     sample_count: int,
+    per_seq_sample_count: int | None = None,
     seed: int,
     seq_index: tuple[Any, ...] | None = None,
     labels: tuple[int, ...] | None = None,
 ) -> tuple[list[SampleCandidate], dict[str, Any]]:
     all_candidates = list(candidates)
-    seq_filter = {_filter_key(value) for value in seq_index} if seq_index is not None else None
-    label_filter = {int(value) for value in labels} if labels is not None else None
-    filtered = [
-        candidate
-        for candidate in all_candidates
-        if (seq_filter is None or _filter_key(candidate.seq_index) in seq_filter)
-        and (label_filter is None or candidate.future_label in label_filter)
-    ]
+    filtered = filter_sample_candidates(all_candidates, seq_index=seq_index, labels=labels)
+    if per_seq_sample_count is not None:
+        selected, by_seq_index = _select_per_seq_candidates(
+            filtered,
+            per_seq_sample_count=int(per_seq_sample_count),
+            seed=int(seed),
+        )
+        requested = int(per_seq_sample_count) * len(by_seq_index)
+        return selected, {
+            "seed": int(seed),
+            "requested_count": requested,
+            "per_seq_sample_count": int(per_seq_sample_count),
+            "candidate_count": len(filtered),
+            "actual_count": len(selected),
+            "seq_index_filter": list(seq_index) if seq_index is not None else None,
+            "label_filter": list(labels) if labels is not None else None,
+            "by_seq_index": by_seq_index,
+            "selected_dataset_indices": [candidate.dataset_index for candidate in selected],
+            "selected_csv_row_indices": [candidate.csv_row_index for candidate in selected],
+        }
+
     requested = int(sample_count)
     if requested >= len(filtered):
         selected = list(filtered)
@@ -314,6 +440,7 @@ def select_sample_candidates(
     return selected, {
         "seed": int(seed),
         "requested_count": requested,
+        "per_seq_sample_count": None,
         "candidate_count": len(filtered),
         "actual_count": len(selected),
         "seq_index_filter": list(seq_index) if seq_index is not None else None,
@@ -321,6 +448,58 @@ def select_sample_candidates(
         "selected_dataset_indices": [candidate.dataset_index for candidate in selected],
         "selected_csv_row_indices": [candidate.csv_row_index for candidate in selected],
     }
+
+
+def filter_sample_candidates(
+    candidates: Iterable[SampleCandidate],
+    *,
+    seq_index: tuple[Any, ...] | None = None,
+    labels: tuple[int, ...] | None = None,
+) -> list[SampleCandidate]:
+    seq_filter = {_filter_key(value) for value in seq_index} if seq_index is not None else None
+    label_filter = {int(value) for value in labels} if labels is not None else None
+    return [
+        candidate
+        for candidate in candidates
+        if (seq_filter is None or _filter_key(candidate.seq_index) in seq_filter)
+        and (label_filter is None or candidate.future_label in label_filter)
+    ]
+
+
+def _select_per_seq_candidates(
+    candidates: list[SampleCandidate],
+    *,
+    per_seq_sample_count: int,
+    seed: int,
+) -> tuple[list[SampleCandidate], dict[str, Any]]:
+    groups: dict[str, list[SampleCandidate]] = {}
+    seq_values: dict[str, Any] = {}
+    for candidate in candidates:
+        key = _filter_key(candidate.seq_index)
+        groups.setdefault(key, []).append(candidate)
+        seq_values.setdefault(key, candidate.seq_index)
+
+    rng = np.random.default_rng(int(seed))
+    selected: list[SampleCandidate] = []
+    summary: dict[str, Any] = {}
+    for key, group in groups.items():
+        if per_seq_sample_count >= len(group):
+            chosen = list(group)
+        elif per_seq_sample_count == 0:
+            chosen = []
+        else:
+            positions = rng.choice(len(group), size=per_seq_sample_count, replace=False)
+            chosen = [group[int(pos)] for pos in positions]
+        selected.extend(chosen)
+        summary[key] = {
+            "seq_index": seq_values[key],
+            "requested_count": int(per_seq_sample_count),
+            "candidate_count": len(group),
+            "actual_count": len(chosen),
+            "selected_dataset_indices": [candidate.dataset_index for candidate in chosen],
+            "selected_csv_row_indices": [candidate.csv_row_index for candidate in chosen],
+        }
+    return selected, summary
 
 
 def tensor_stats(value: Any) -> dict[str, Any]:
@@ -383,6 +562,92 @@ def modality_statistics(sample: dict[str, Any]) -> dict[str, Any]:
     return stats
 
 
+def build_split_stats_report(
+    datasets: dict[str, Any],
+    *,
+    enabled_modalities: tuple[str, ...],
+    viz: VisualizationConfig,
+    scene_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    split_stats: dict[str, Any] = {}
+    for split, dataset in datasets.items():
+        csv_frame = selected_csv_frame_for_dataset(dataset)
+        candidates = collect_candidates(dataset, csv_frame)
+        split_stats[split] = build_split_statistics(
+            dataset,
+            candidates,
+            enabled_modalities=enabled_modalities,
+            seq_index=viz.seq_index,
+            labels=viz.labels,
+        )
+
+    report = {
+        "scene": scene_metadata,
+        "enabled_modalities": list(enabled_modalities),
+        "filters": {
+            "seq_index": list(viz.seq_index) if viz.seq_index is not None else None,
+            "labels": list(viz.labels) if viz.labels is not None else None,
+        },
+        "splits": split_stats,
+    }
+    if "train" in split_stats and "test" in split_stats:
+        report["train_test"] = {
+            "future_label_total_variation_distance": _label_total_variation_distance(
+                split_stats["train"].get("future_label_distribution", {}),
+                split_stats["test"].get("future_label_distribution", {}),
+            )
+        }
+    return report
+
+
+def build_split_statistics(
+    dataset: Any,
+    candidates: Iterable[SampleCandidate],
+    *,
+    enabled_modalities: tuple[str, ...],
+    seq_index: tuple[Any, ...] | None = None,
+    labels: tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    filtered = filter_sample_candidates(candidates, seq_index=seq_index, labels=labels)
+    split_accumulator = _empty_modality_accumulator()
+    seq_accumulators: dict[str, dict[str, Any]] = {}
+    seq_candidates: dict[str, list[SampleCandidate]] = {}
+
+    for candidate in filtered:
+        sample = dataset[candidate.dataset_index]
+        statistics = modality_statistics(sample)
+        _accumulate_modality_statistics(split_accumulator, statistics)
+
+        key = _filter_key(candidate.seq_index)
+        seq_accumulators.setdefault(key, _empty_modality_accumulator())
+        seq_candidates.setdefault(key, []).append(candidate)
+        _accumulate_modality_statistics(seq_accumulators[key], statistics)
+
+    by_seq_index = {}
+    for key, group in seq_candidates.items():
+        distribution = _candidate_label_distribution(group)
+        by_seq_index[key] = {
+            "seq_index": group[0].seq_index,
+            "candidate_count": len(group),
+            "future_label_distribution": distribution,
+            "future_label_top_k": _label_top_k(distribution),
+            "majority_baseline": _majority_baseline(distribution),
+            "modality_statistics": _finalize_modality_accumulator(seq_accumulators[key], enabled_modalities),
+        }
+
+    distribution = _candidate_label_distribution(filtered)
+    return {
+        "dataset": dataset_run_metadata(dataset),
+        "candidate_count": len(filtered),
+        "seq_index_count": len(seq_candidates),
+        "future_label_distribution": distribution,
+        "future_label_top_k": _label_top_k(distribution),
+        "majority_baseline": _majority_baseline(distribution),
+        "modality_statistics": _finalize_modality_accumulator(split_accumulator, enabled_modalities),
+        "by_seq_index": by_seq_index,
+    }
+
+
 def build_sample_record(
     dataset: Any,
     *,
@@ -392,6 +657,7 @@ def build_sample_record(
     sample: dict[str, Any],
     statistics: dict[str, Any],
     modalities: tuple[str, ...],
+    raw_image_reference_enabled: bool = False,
 ) -> dict[str, Any]:
     input_beam = _tensor_list(sample.get("input_beam"))
     target_beam = _tensor_list(sample.get("target_beam"))
@@ -420,6 +686,10 @@ def build_sample_record(
         "paths": paths,
         "enabled_modalities": list(modalities),
         "statistics": statistics,
+        "raw_image_reference": {
+            "enabled": bool(raw_image_reference_enabled and paths["camera"]),
+            "reference_only": bool(raw_image_reference_enabled and paths["camera"]),
+        },
     }
 
 
@@ -440,7 +710,13 @@ def render_sample_overview(
     panels = _panel_names(sample)
     cols = max(2, int(viz.max_frames_per_sample))
     rows = max(1, len(panels))
-    fig, axes = plt.subplots(rows, cols, figsize=(3.2 * cols, 2.6 * rows), squeeze=False)
+    fig, axes = plt.subplots(
+        rows,
+        cols,
+        figsize=(3.8 * cols, 3.0 * rows),
+        squeeze=False,
+        constrained_layout=True,
+    )
     for row_idx, panel in enumerate(panels):
         row_axes = list(axes[row_idx])
         for ax in row_axes:
@@ -448,11 +724,11 @@ def render_sample_overview(
         if panel == "image":
             _draw_image_panel(dataset, sample["image"], record, row_axes, viz)
         elif panel == "radar_ra":
-            _draw_temporal_heatmaps(sample["radar_ra"], row_axes, "radar RA")
+            _draw_temporal_heatmaps(sample["radar_ra"], row_axes, "RA")
         elif panel == "radar_da":
-            _draw_temporal_heatmaps(sample["radar_da"], row_axes, "radar DA")
+            _draw_temporal_heatmaps(sample["radar_da"], row_axes, "DA")
         elif panel == "lidar":
-            _draw_lidar_panel(sample["lidar"], row_axes)
+            _draw_lidar_panel(sample["lidar"], row_axes, record)
         elif panel == "gps":
             _draw_gps_panel(sample["gps"], row_axes)
         elif panel == "mmwave":
@@ -465,7 +741,6 @@ def render_sample_overview(
         f"seq={record.get('seq_index')} label={record.get('future_label')}",
         fontsize=12,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=140)
     plt.close(fig)
@@ -524,6 +799,35 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(_json_ready(payload), f, indent=2, ensure_ascii=False)
 
 
+def resolve_metadata_output_paths(
+    output_dir: Path,
+    *,
+    preserve_existing: bool,
+    keys: tuple[str, ...],
+) -> dict[str, Path]:
+    invalid = [key for key in keys if key not in METADATA_FILE_TEMPLATES]
+    if invalid:
+        raise ValueError(f"Unknown diagnostic metadata output keys: {invalid}.")
+    suffix = _metadata_output_suffix(output_dir, preserve_existing=preserve_existing, keys=keys)
+    return {key: _metadata_path(output_dir, key, suffix) for key in keys}
+
+
+def _metadata_output_suffix(output_dir: Path, *, preserve_existing: bool, keys: tuple[str, ...]) -> str:
+    if not preserve_existing:
+        return ""
+    for attempt in range(10000):
+        suffix = "" if attempt == 0 else f"_{attempt:03d}"
+        paths = [_metadata_path(output_dir, key, suffix) for key in keys]
+        if not any(path.exists() for path in paths):
+            return suffix
+    raise RuntimeError(f"Could not find a free diagnostic metadata suffix in {output_dir}.")
+
+
+def _metadata_path(output_dir: Path, key: str, suffix: str) -> Path:
+    stem, extension = METADATA_FILE_TEMPLATES[key]
+    return output_dir / f"{stem}{suffix}{extension}"
+
+
 def final_config_snapshot(cfg: dict[str, Any], viz: VisualizationConfig) -> dict[str, Any]:
     snapshot = deepcopy(cfg)
     snapshot.setdefault("diagnostics", {})["visualization"] = viz.to_json_dict()
@@ -538,6 +842,136 @@ def scene_metadata_from_datasets(datasets: dict[str, Any]) -> dict[str, Any]:
         "scene_id": getattr(first, "scene_id", None),
         "scene_slug": getattr(first, "scene_slug", None),
     }
+
+
+def _empty_modality_accumulator() -> dict[str, Any]:
+    return {
+        "image_mask_density": [],
+        "radar_ra_std": [],
+        "radar_da_std": [],
+        "lidar_nonzero_fraction": [],
+        "lidar_channel_nonzero_fraction": [],
+    }
+
+
+def _accumulate_modality_statistics(accumulator: dict[str, Any], statistics: dict[str, Any]) -> None:
+    image_stats = statistics.get("image")
+    if image_stats and image_stats.get("mask_density") is not None:
+        accumulator["image_mask_density"].append(float(image_stats["mask_density"]))
+
+    radar_stats = statistics.get("radar", {})
+    radar_ra = radar_stats.get("radar_ra", {})
+    radar_da = radar_stats.get("radar_da", {})
+    if radar_ra.get("std") is not None:
+        accumulator["radar_ra_std"].append(float(radar_ra["std"]))
+    if radar_da.get("std") is not None:
+        accumulator["radar_da_std"].append(float(radar_da["std"]))
+
+    lidar_stats = statistics.get("lidar")
+    if lidar_stats and lidar_stats.get("nonzero_fraction") is not None:
+        accumulator["lidar_nonzero_fraction"].append(float(lidar_stats["nonzero_fraction"]))
+    if lidar_stats and lidar_stats.get("channel_nonzero_fraction"):
+        accumulator["lidar_channel_nonzero_fraction"].append(
+            [float(value) for value in lidar_stats["channel_nonzero_fraction"]]
+        )
+
+
+def _finalize_modality_accumulator(
+    accumulator: dict[str, Any],
+    enabled_modalities: tuple[str, ...],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if "image" in enabled_modalities:
+        result["image"] = {
+            "mask_density": _numeric_summary(accumulator["image_mask_density"]),
+        }
+    if "radar" in enabled_modalities:
+        result["radar"] = {
+            "radar_ra_std": _numeric_summary(accumulator["radar_ra_std"]),
+            "radar_da_std": _numeric_summary(accumulator["radar_da_std"]),
+        }
+    if "lidar" in enabled_modalities:
+        result["lidar"] = {
+            "nonzero_fraction": _numeric_summary(accumulator["lidar_nonzero_fraction"]),
+            "channel_nonzero_fraction_mean": _mean_vector(accumulator["lidar_channel_nonzero_fraction"]),
+        }
+    return result
+
+
+def _numeric_summary(values: list[float]) -> dict[str, Any]:
+    finite = np.asarray([value for value in values if np.isfinite(value)], dtype=np.float64)
+    if finite.size == 0:
+        return {
+            "count": 0,
+            "min": None,
+            "max": None,
+            "mean": None,
+            "std": None,
+        }
+    return {
+        "count": int(finite.size),
+        "min": float(np.min(finite)),
+        "max": float(np.max(finite)),
+        "mean": float(np.mean(finite)),
+        "std": float(np.std(finite)),
+    }
+
+
+def _mean_vector(values: list[list[float]]) -> list[float]:
+    if not values:
+        return []
+    max_len = max(len(item) for item in values)
+    means = []
+    for idx in range(max_len):
+        column = [item[idx] for item in values if idx < len(item) and np.isfinite(item[idx])]
+        means.append(float(np.mean(column)) if column else 0.0)
+    return means
+
+
+def _candidate_label_distribution(candidates: Iterable[SampleCandidate]) -> dict[str, int]:
+    counts: dict[int, int] = {}
+    for candidate in candidates:
+        if candidate.future_label is None:
+            continue
+        label = int(candidate.future_label)
+        counts[label] = counts.get(label, 0) + 1
+    return {str(label): counts[label] for label in sorted(counts)}
+
+
+def _label_top_k(distribution: dict[str, int], *, k: int = 5) -> list[dict[str, Any]]:
+    total = sum(int(count) for count in distribution.values())
+    if total == 0:
+        return []
+    ranked = sorted(distribution.items(), key=lambda item: (-int(item[1]), int(item[0])))
+    return [
+        {
+            "label": int(label),
+            "count": int(count),
+            "fraction": float(int(count) / total),
+        }
+        for label, count in ranked[:k]
+    ]
+
+
+def _majority_baseline(distribution: dict[str, int]) -> float | None:
+    total = sum(int(count) for count in distribution.values())
+    if total == 0:
+        return None
+    return float(max(int(count) for count in distribution.values()) / total)
+
+
+def _label_total_variation_distance(left: dict[str, int], right: dict[str, int]) -> float | None:
+    left_total = sum(int(count) for count in left.values())
+    right_total = sum(int(count) for count in right.values())
+    if left_total == 0 or right_total == 0:
+        return None
+    labels = set(left) | set(right)
+    distance = 0.0
+    for label in labels:
+        left_prob = int(left.get(label, 0)) / left_total
+        right_prob = int(right.get(label, 0)) / right_total
+        distance += abs(left_prob - right_prob)
+    return float(0.5 * distance)
 
 
 def _needs_train_fit_for_requested_splits(cfg: dict[str, Any], splits: tuple[str, ...]) -> bool:
@@ -677,7 +1111,7 @@ def _draw_image_panel(dataset: Any, image: Any, record: dict[str, Any], axes: li
     frames = _last_indices(array.shape[0], len(axes) - 1 if viz.include_raw_image_preview and len(axes) > 1 else len(axes))
     for ax, frame_idx in zip(axes, frames):
         ax.imshow(array[frame_idx], cmap="gray")
-        ax.set_title(f"processed image motion mask t{frame_idx}")
+        ax.set_title(f"mask t{frame_idx}")
         ax.axis("off")
     if viz.include_raw_image_preview and axes:
         raw_paths = record.get("paths", {}).get("camera", [])
@@ -686,35 +1120,54 @@ def _draw_image_panel(dataset: Any, image: Any, record: dict[str, Any], axes: li
             try:
                 raw = Image.open(joined_resource(getattr(dataset, "data_root"), raw_paths[-1])).convert("RGB")
                 ax.imshow(raw)
-                ax.set_title("raw image reference only")
+                ax.set_title("raw ref")
             except Exception as exc:  # pragma: no cover - visual diagnostic fallback
-                ax.text(0.02, 0.95, f"raw reference unavailable:\n{exc}", va="top", fontsize=8)
+                ax.text(0.02, 0.95, f"raw ref unavailable:\n{exc}", va="top", fontsize=8)
             ax.axis("off")
 
 
 def _draw_temporal_heatmaps(value: Any, axes: list[Any], title: str) -> None:
     array = _as_numpy(value)
-    for ax, frame_idx in zip(axes, _last_indices(array.shape[0], len(axes))):
-        ax.imshow(array[frame_idx], cmap="magma", aspect="auto")
+    frame_indices = _last_indices(array.shape[0], len(axes))
+    frames = [array[frame_idx] for frame_idx in frame_indices]
+    finite = np.concatenate([frame[np.isfinite(frame)].reshape(-1) for frame in frames]) if frames else np.asarray([])
+    vmin = float(np.min(finite)) if finite.size else None
+    vmax = float(np.max(finite)) if finite.size else None
+    image = None
+    used_axes = []
+    for ax, frame_idx in zip(axes, frame_indices):
+        image = ax.imshow(array[frame_idx], cmap="magma", aspect="auto", vmin=vmin, vmax=vmax)
         ax.set_title(f"{title} t{frame_idx}")
         ax.axis("off")
+        used_axes.append(ax)
+    if image is not None and used_axes:
+        used_axes[0].figure.colorbar(image, ax=used_axes, shrink=0.72, fraction=0.035, pad=0.02)
 
 
-def _draw_lidar_panel(value: Any, axes: list[Any]) -> None:
+def _draw_lidar_panel(value: Any, axes: list[Any], record: dict[str, Any]) -> None:
     array = _as_numpy(value)
     frame = array[-1] if array.ndim == 4 else array
     if frame.ndim != 3:
         axes[0].text(0.02, 0.95, f"Unexpected LiDAR shape {array.shape}", va="top")
         return
+    lidar_stats = record.get("statistics", {}).get("lidar", {})
+    nonzero = lidar_stats.get("nonzero_fraction")
+    channel_nonzero = lidar_stats.get("channel_nonzero_fraction", [])
     composite = _normalize_channels(frame)
     axes[0].imshow(composite)
-    axes[0].set_title("LiDAR BEV composite")
+    if nonzero is None:
+        axes[0].set_title("LiDAR BEV")
+    else:
+        axes[0].set_title(f"LiDAR BEV nz={float(nonzero):.3f}")
     axes[0].axis("off")
     for channel_idx, ax in enumerate(axes[1:4], start=0):
         if channel_idx >= frame.shape[0]:
             break
         ax.imshow(frame[channel_idx], cmap="viridis")
-        ax.set_title(f"LiDAR BEV channel {channel_idx}")
+        nz_text = ""
+        if channel_idx < len(channel_nonzero):
+            nz_text = f" nz={float(channel_nonzero[channel_idx]):.3f}"
+        ax.set_title(f"L{channel_idx}{nz_text}")
         ax.axis("off")
 
 

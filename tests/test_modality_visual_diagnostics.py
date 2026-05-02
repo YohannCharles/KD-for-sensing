@@ -54,12 +54,21 @@ def test_visual_diagnostic_sampling_is_seeded_and_handles_shortage():
         seq_index=(1,),
         labels=(2,),
     )
+    per_seq, per_seq_summary = select_sample_candidates(
+        candidates,
+        sample_count=1,
+        per_seq_sample_count=1,
+        seed=123,
+    )
 
     assert [item.dataset_index for item in first] == [item.dataset_index for item in repeat]
     assert first_summary["selected_dataset_indices"] == repeat_summary["selected_dataset_indices"]
     assert [item.dataset_index for item in shortage] == [0, 1]
     assert shortage_summary["requested_count"] == 10
     assert shortage_summary["actual_count"] == 2
+    assert len(per_seq) == 2
+    assert set(per_seq_summary["by_seq_index"]) == {"1", "2"}
+    assert per_seq_summary["by_seq_index"]["2"]["candidate_count"] == 1
 
 
 def test_modality_statistics_include_stable_tensor_fields():
@@ -115,15 +124,74 @@ def test_visualize_modalities_smoke_writes_png_summary_and_samples(tmp_path: Pat
 
     summary_path = Path(result["summary_path"])
     samples_path = Path(result["samples_jsonl"])
+    split_stats_path = Path(result["split_stats_path"])
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    split_stats = json.loads(split_stats_path.read_text(encoding="utf-8"))
     records = [json.loads(line) for line in samples_path.read_text(encoding="utf-8").splitlines()]
 
     assert summary_path.exists()
     assert Path(result["samples_csv"]).exists()
+    assert split_stats_path.exists()
     assert Path(result["final_config_path"]).exists()
     assert summary["actual_sample_count"] == 1
+    assert summary["split_stats_path"] == str(split_stats_path)
+    assert str(split_stats_path) in summary["output_files"]
+    assert split_stats["splits"]["train"]["candidate_count"] == 2
+    assert split_stats["splits"]["train"]["seq_index_count"] == 2
+    assert split_stats["splits"]["train"]["majority_baseline"] == 0.5
+    assert "image" in split_stats["splits"]["train"]["modality_statistics"]
     assert records[0]["statistics"]["image"]["shape"] == [2, 8, 8]
+    assert records[0]["raw_image_reference"]["enabled"] is True
+    assert records[0]["raw_image_reference"]["reference_only"] is True
     assert Path(records[0]["png_path"]).exists()
+
+
+def test_visualize_modalities_preserves_existing_metadata_files(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    _write_multimodal_csv(tmp_path, train_csv, rows=1, seq_len=2)
+    output_dir = tmp_path / "diagnostics"
+    output_dir.mkdir()
+    existing_files = [
+        output_dir / "summary.json",
+        output_dir / "samples.jsonl",
+        output_dir / "samples.csv",
+        output_dir / "split_stats.json",
+        output_dir / "final_config.yaml",
+    ]
+    for path in existing_files:
+        path.write_text(f"existing {path.name}", encoding="utf-8")
+
+    cfg = _diagnostic_cfg(
+        tmp_path,
+        train_csv_name="train.csv",
+        modalities=["radar"],
+        extra_dataset={
+            "seq_len": 2,
+            "num_pred": 1,
+            "fft_tuple": [4, 8, 6],
+            "clipped_range": 4,
+        },
+        visualization={
+            "output_dir": str(output_dir),
+            "splits": ["train"],
+            "sample_count": 1,
+            "max_frames_per_sample": 2,
+        },
+    )
+
+    result = visualize_modalities(cfg)
+    summary = json.loads(Path(result["summary_path"]).read_text(encoding="utf-8"))
+
+    assert Path(result["summary_path"]).name == "summary_001.json"
+    assert Path(result["samples_jsonl"]).name == "samples_001.jsonl"
+    assert Path(result["samples_csv"]).name == "samples_001.csv"
+    assert Path(result["split_stats_path"]).name == "split_stats_001.json"
+    assert Path(result["final_config_path"]).name == "final_config_001.yaml"
+    assert summary["samples_jsonl"] == result["samples_jsonl"]
+    assert summary["samples_csv"] == result["samples_csv"]
+    assert summary["split_stats_path"] == result["split_stats_path"]
+    for path in existing_files:
+        assert path.read_text(encoding="utf-8") == f"existing {path.name}"
 
 
 def test_diagnostics_skip_unenabled_image_and_lidar_cache_access(monkeypatch, tmp_path: Path):
@@ -165,6 +233,37 @@ def test_diagnostics_skip_unenabled_image_and_lidar_cache_access(monkeypatch, tm
     result = visualize_modalities(cfg)
 
     assert Path(result["summary_path"]).exists()
+
+
+def test_compare_scenes_writes_isolated_scene_summaries(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    _write_multimodal_csv(tmp_path, train_csv, rows=1, seq_len=2)
+    cfg = _diagnostic_cfg(
+        tmp_path,
+        train_csv_name="train.csv",
+        modalities=["radar"],
+        extra_dataset={
+            "seq_len": 2,
+            "num_pred": 1,
+            "fft_tuple": [4, 8, 6],
+            "clipped_range": 4,
+        },
+        visualization={
+            "splits": ["train"],
+            "sample_count": 1,
+            "compare_scenes": [9, 32],
+            "max_frames_per_sample": 2,
+        },
+    )
+
+    result = visualize_modalities(cfg)
+    summary = json.loads(Path(result["summary_path"]).read_text(encoding="utf-8"))
+
+    assert summary["compare_scenes"] == [9, 32]
+    assert set(summary["scenes"]) == {"scene9", "scene32"}
+    assert Path(summary["scenes"]["scene9"]["summary_path"]).exists()
+    assert Path(summary["scenes"]["scene32"]["split_stats_path"]).exists()
+    assert summary["scenes"]["scene9"]["output_dir"] != summary["scenes"]["scene32"]["output_dir"]
 
 
 def _diagnostic_cfg(
