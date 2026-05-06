@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import torch
 
+from kd_sensing.modalities import batch_input_keys_for_modalities, normalize_modalities
+
 
 def normalize_batch(batch) -> dict[str, torch.Tensor]:
     if isinstance(batch, dict):
@@ -70,42 +72,18 @@ def prepare_fusion_inputs(
     modalities: list[str] | tuple[str, ...] | None = None,
     non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
-    selected = tuple(modalities or ("image", "radar"))
+    selected = normalize_modalities(tuple(modalities or ("image", "radar")), context="fusion batch modalities")
+    input_keys = batch_input_keys_for_modalities(selected)
+    preparers = {
+        "image": prepare_image_inputs,
+        "radar": prepare_radar_inputs,
+        "gps": prepare_gps_inputs,
+        "lidar": prepare_lidar_inputs,
+        "mmwave": prepare_mmwave_inputs,
+    }
     inputs: dict[str, torch.Tensor] = {}
-    if "image" in selected:
-        inputs["image_batch"] = prepare_image_inputs(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
-    if "radar" in selected:
-        inputs["radar_batch"] = prepare_radar_inputs(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
-    if "gps" in selected:
-        inputs["gps_batch"] = prepare_gps_inputs(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
-    if "lidar" in selected:
-        inputs["lidar_batch"] = prepare_lidar_inputs(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
-    if "mmwave" in selected:
-        inputs["mmwave_batch"] = prepare_mmwave_inputs(
+    for modality in selected:
+        inputs[input_keys[modality]] = preparers[modality](
             batch,
             seq_length=seq_length,
             num_pred=num_pred,

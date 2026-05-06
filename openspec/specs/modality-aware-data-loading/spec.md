@@ -1,7 +1,7 @@
 # modality-aware-data-loading Specification
 
 ## Purpose
-TBD - created by archiving change optimize-training-io-workflow. Update Purpose after archive.
+Define how enabled modalities are resolved from configuration, how dataset sample fields are selected, and how modality-specific normalization/cache behavior remains compatible across training and evaluation.
 ## Requirements
 ### Requirement: Scenario 9 按模态选择加载样本
 Scenario 9 dataset MUST 根据训练或评估配置中的启用模态加载样本字段。未启用模态的文件 MUST 不被读取，未启用模态的输入字段 MUST 不出现在样本字典中，且未启用模态的路径列或文件缺失不得阻止当前任务运行。dataset MUST 始终加载 beam 历史标签和 future beam 目标标签。
@@ -234,4 +234,3 @@ DeepSense6G 序列 CSV 生成流程 MUST 使用单一的 `balanced_seq` train/te
 - **WHEN** 用户使用新预处理配置生成默认统一 split CSV
 - **THEN** train/test CSV 旁 MUST 存在 split metadata sidecar
 - **AND** metadata 中的 train/test 窗口数 MUST 与输出 CSV 行数一致
-

@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from kd_sensing.models.m2beamllm_encoders import M2BeamLLMRadarEncoder
 from kd_sensing.registries import MODELS
 
 
@@ -190,76 +189,3 @@ class RadarModalityNet(nn.Module):
         enhanced_seq_out = attn_output + seq_out
         pred = self.classifier(enhanced_seq_out)
         return pred, features, enhanced_seq_out
-
-
-@MODELS.register("m2beamllm_radar_teacher")
-class M2BeamLLMRadarModalityNet(RadarModalityNet):
-    def __init__(
-        self,
-        feature_size: int,
-        num_classes: int,
-        gru_params: list[int] | tuple[int, int, int],
-        radar_channels: int = 2,
-        radar_input_mode: str = "ra_map",
-        num_heads: int = 8,
-    ):
-        super().__init__(
-            feature_size=feature_size,
-            num_classes=num_classes,
-            gru_params=gru_params,
-            radar_channels=radar_channels,
-            num_heads=num_heads,
-        )
-        self.name = "M2BeamLLMRadarModalityNet"
-        self.radar_feature_extractor = M2BeamLLMRadarEncoder(
-            feature_size,
-            radar_channels=radar_channels,
-            radar_input_mode=radar_input_mode,
-        )
-
-
-@MODELS.register("m2beamllm_radar_student")
-class M2BeamLLMRadarStudentModalityNet(nn.Module):
-    def __init__(
-        self,
-        feature_size: int,
-        num_classes: int,
-        gru_params: list[int] | tuple[int, int, int],
-        radar_channels: int = 2,
-        radar_input_mode: str = "ra_map",
-    ):
-        super().__init__()
-        self.name = "M2BeamLLMRadarStudentModalityNet"
-        if len(gru_params) != 3:
-            raise ValueError("gru_params must contain [input_size, hidden_size, num_layers].")
-        gru_input_size, gru_hidden_size, gru_num_layers = gru_params
-        if gru_input_size != feature_size:
-            raise ValueError(
-                f"gru_input_size ({gru_input_size}) must equal feature_size ({feature_size})"
-            )
-        self.feature_extraction = M2BeamLLMRadarEncoder(
-            feature_size,
-            radar_channels=radar_channels,
-            radar_input_mode=radar_input_mode,
-        )
-        self.layer_norm = nn.LayerNorm(gru_input_size)
-        self.GRU = nn.GRU(
-            input_size=gru_input_size,
-            hidden_size=gru_hidden_size,
-            num_layers=gru_num_layers,
-            dropout=0.3 if gru_num_layers > 1 else 0.0,
-            batch_first=True,
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(gru_hidden_size, 64),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(64, num_classes),
-        )
-
-    def forward(self, radar_batch: torch.Tensor):
-        features = self.feature_extraction(radar_batch)
-        features = self.layer_norm(features)
-        seq_out, _ = self.GRU(features)
-        pred = self.classifier(seq_out)
-        return pred, features, seq_out

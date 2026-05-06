@@ -5,9 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from kd_sensing.modalities import (
+    MODALITY_ORDER,
+    dataset_defaults_for_modalities,
+    dataset_flags_for_modalities,
+    model_defaults_for_modalities,
+)
 from kd_sensing.utils.paths import project_root
 
-CANONICAL_FUSION_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
+CANONICAL_FUSION_MODALITIES = MODALITY_ORDER
 CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
 
 _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MODES)
@@ -124,41 +130,13 @@ def _is_fusion_config_path(path: Path) -> bool:
 
 
 def _dataset_overrides(modalities: list[str]) -> dict[str, Any]:
-    dataset: dict[str, Any] = {}
-    if "gps" in modalities:
-        dataset.update(
-            {
-                "use_gps": True,
-                "gps_feature_mode": "relative_polar",
-                "gps_normalize": True,
-            }
-        )
-    if "lidar" in modalities:
-        dataset.update(
-            {
-                "use_lidar": True,
-                "lidar_bev_size": [224, 224],
-                "lidar_roi": [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0],
-                "lidar_normalize": False,
-            }
-        )
-    if "mmwave" in modalities:
-        dataset.update(
-            {
-                "use_mmwave": True,
-                "mmwave_normalize": True,
-            }
-        )
-    return dataset
+    dataset = dataset_flags_for_modalities(modalities)
+    dataset.update(dataset_defaults_for_modalities(modalities))
+    return {key: value for key, value in dataset.items() if value not in (False, None)}
 
 
 def _add_modality_model_fields(model_cfg: dict[str, Any], modalities: list[str]) -> None:
-    if "gps" in modalities:
-        model_cfg["gps_input_size"] = 3
-    if "lidar" in modalities:
-        model_cfg["lidar_channels"] = 3
-    if "mmwave" in modalities:
-        model_cfg["mmwave_input_size"] = 64
+    model_cfg.update(model_defaults_for_modalities(modalities))
 
 
 def _distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str, Any]:

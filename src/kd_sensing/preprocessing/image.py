@@ -6,14 +6,14 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 
-from kd_sensing.data.transforms import (
+from kd_sensing.data.transform_ops.image import (
     build_image_transform,
     build_motion_mask_pair,
-    atomic_save_npy,
     image_motion_cache_path,
     parameterized_image_motion_cache_dir,
     write_image_motion_cache_metadata,
 )
+from kd_sensing.data.transform_ops.io import atomic_save_npy
 from kd_sensing.registries import PREPROCESSORS
 from kd_sensing.utils.paths import resolve_path
 

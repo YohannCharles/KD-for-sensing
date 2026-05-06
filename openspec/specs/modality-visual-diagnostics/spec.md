@@ -1,7 +1,7 @@
 # modality-visual-diagnostics Specification
 
 ## Purpose
-TBD - created by archiving change add-modality-visual-diagnostics. Update Purpose after archive.
+Define the processed-modality visualization diagnostics entry point, including configuration parsing, sample selection, dataset reuse, output files, metadata stability, and scene comparison behavior.
 ## Requirements
 ### Requirement: 诊断入口与配置
 系统 MUST 提供配置驱动的各模态处理后可视化诊断入口。该入口 MUST 能读取现有训练配置，并通过 `diagnostics.visualization` 或命令行覆盖控制 scene、split、启用模态、抽样条件、样本数量、随机 seed 和输出目录。

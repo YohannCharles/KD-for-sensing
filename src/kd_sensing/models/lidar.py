@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from kd_sensing.models.m2beamllm_encoders import M2BeamLLMLidarEncoder
 from kd_sensing.registries import MODELS
 
 
@@ -221,84 +220,6 @@ class LidarStudentModalityNet(nn.Module):
         )
         projected = self.feature_projection(pooled).view(batch_size, seq_len, -1)
         features = self.layer_norm(projected)
-        seq_out, _ = self.GRU(features)
-        pred = self.classifier(seq_out)
-        return pred, features, seq_out
-
-
-@MODELS.register("m2beamllm_lidar_teacher")
-class M2BeamLLMLidarModalityNet(LidarModalityNet):
-    def __init__(
-        self,
-        feature_size: int,
-        num_classes: int,
-        gru_params: list[int] | tuple[int, int, int],
-        lidar_channels: int = 1,
-        num_heads: int = 8,
-        m2beamllm_pretrained: bool = False,
-        freeze_backbone: bool = False,
-        allow_resize: bool = True,
-    ):
-        super().__init__(
-            feature_size=feature_size,
-            num_classes=num_classes,
-            gru_params=gru_params,
-            lidar_channels=lidar_channels,
-            num_heads=num_heads,
-        )
-        self.name = "M2BeamLLMLidarModalityNet"
-        self.feature_extraction = M2BeamLLMLidarEncoder(
-            feature_size,
-            lidar_channels=lidar_channels,
-            pretrained=m2beamllm_pretrained,
-            freeze_backbone=freeze_backbone,
-            allow_resize=allow_resize,
-        )
-
-
-@MODELS.register("m2beamllm_lidar_student")
-class M2BeamLLMLidarStudentModalityNet(nn.Module):
-    def __init__(
-        self,
-        feature_size: int,
-        num_classes: int,
-        gru_params: list[int] | tuple[int, int, int],
-        lidar_channels: int = 1,
-        m2beamllm_pretrained: bool = False,
-        freeze_backbone: bool = False,
-        allow_resize: bool = True,
-    ):
-        super().__init__()
-        self.name = "M2BeamLLMLidarStudentModalityNet"
-        gru_input_size, gru_hidden_size, gru_num_layers = _validate_lidar_gru_params(
-            feature_size,
-            gru_params,
-        )
-        self.feature_extraction = M2BeamLLMLidarEncoder(
-            feature_size,
-            lidar_channels=lidar_channels,
-            pretrained=m2beamllm_pretrained,
-            freeze_backbone=freeze_backbone,
-            allow_resize=allow_resize,
-        )
-        self.layer_norm = nn.LayerNorm(gru_input_size)
-        self.GRU = nn.GRU(
-            input_size=gru_input_size,
-            hidden_size=gru_hidden_size,
-            num_layers=gru_num_layers,
-            dropout=0.3 if gru_num_layers > 1 else 0.0,
-            batch_first=True,
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(gru_hidden_size, 64),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(64, num_classes),
-        )
-
-    def forward(self, lidar_batch: torch.Tensor):
-        features = self.feature_extraction(lidar_batch)
-        features = self.layer_norm(features)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
         return pred, features, seq_out

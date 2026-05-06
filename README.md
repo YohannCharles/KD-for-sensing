@@ -34,9 +34,19 @@ src/kd_sensing/
   cli/
   config/
   data/
+    transform_ops/ # image/radar/GPS/LiDAR/mmWave 转换实现；data.transforms 是兼容 facade
+  diagnostics/
+    visualization/ # 配置、数据集、抽样、统计、渲染、写出
   distillation/
   engine/
+    data_factory.py
+    modality_resolution.py
+    cache_policy.py
+    normalization_artifacts.py
+    run_metadata.py
+    optim.py
   evaluation/
+  modalities.py    # 固定模态顺序、dataset flag、sample/batch key 和默认字段契约
   models/
   preprocessing/
   utils/
@@ -46,8 +56,14 @@ src/kd_sensing/
 
 - `dataset/`
 - `All_models/`
+- `outputs/`、`logs/`、cache 目录和 checkpoint 是本地运行产物，通常不应进入源码变更。
 
 配置文件中的相对路径会从项目根目录解析，因此可以在子目录中启动命令。
+
+`kd_sensing.config`、`kd_sensing.utils.paths`、`kd_sensing.data.scenes` 和
+`kd_sensing.registries` 是轻量导入边界；查看配置或 registry 对象不会导入默认 dataset、model、
+diagnostics 或训练模块。需要构建内置组件时，engine 会显式调用
+`kd_sensing.registries.import_default_components()` 完成注册。
 
 ## DeepSense6G 场景
 
@@ -202,34 +218,12 @@ Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` �
 `gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`，启用 mmWave 的配置使用
 `mmwave_input_size: 64` 和 `mmwave_normalize: true`。
 
-## M2BeamLLM Encoder 对照
-
-`configs/m2beamllm/` 提供一组新增入口，只替换 image、radar、GPS、LiDAR 的 GRU 前 sensing
-encoding；GRU、attention/classifier、KD loss 和训练循环仍是本项目原有结构。这不是完整
-M2BeamLLM LLM backbone、alignment、SFT 或 inverse normalization 复现。
-
-可用注册名包括 `m2beamllm_image_teacher/student`、`m2beamllm_radar_teacher/student`、
-`m2beamllm_gps_teacher/student`、`m2beamllm_lidar_teacher/student`。Fusion 可在现有
-`fusion_teacher/student` 上设置 `encoder_profile: m2beamllm`，此时只替换 image/radar/GPS/LiDAR
-分支；mmWave 分支继续使用现有 `MmWaveFeatureExtractor` 和 `[B, T, 64]` receive-power 输入。
-
-示例：
-
-```bash
-python scripts/train.py --config configs/m2beamllm/image_no_kd.yaml
-python scripts/train.py --config configs/m2beamllm/radar_no_kd.yaml
-python scripts/train.py --config configs/m2beamllm/gps_no_kd.yaml
-python scripts/train.py --config configs/m2beamllm/lidar_no_kd.yaml
-python scripts/train.py --config configs/m2beamllm/fusion_image_radar_gps_lidar_no_kd.yaml
-python scripts/train.py --config configs/m2beamllm/fusion_all_modalities_no_kd.yaml
-```
-
-使用限制：
-
-- ResNet-18 依赖 `torchvision`；默认 `m2beamllm_pretrained: false` 避免离线环境下载权重，已有本地缓存时可显式改为 `true`。
-- Radar 默认使用现有 batch 中的 RA/DA map 拼接输入（`radar_input_mode: ra_map`）。`raw_fft` 是显式路径，缺少 raw radar tensor 会直接报错。
-- LiDAR 论文路径使用 `lidar_encoding: m2beamllm_histogram`，生成 `[T, 1, 256, 256]` histogram，点计数裁剪到 5 后除以 5；如果要用旧 3 通道 BEV，必须显式设置 `lidar_channels` 并接受其不等同论文 histogram。
-- GPS M2BeamLLM 路径使用 `gps_feature_mode: m2beamllm_minmax` 和训练集 fit 的 min-max scaler；旧 GPS-Rel-Polar 配置仍使用 `[B, T, 3]` 和 z-score scaler，不需要迁移。
+新增或调整模态时，先更新 `src/kd_sensing/modalities.py` 的 `ModalitySpec`，再补 dataset 读取、
+batch 准备、模型注册和诊断显示逻辑。新代码优先使用窄模块导入：
+`engine.data_factory`、`engine.modality_resolution`、`engine.cache_policy`、
+`engine.normalization_artifacts`、`engine.run_metadata`、`engine.optim` 和
+`data.transform_ops.*`。`kd_sensing.engine.builders`、`kd_sensing.data.transforms` 和
+`kd_sensing.diagnostics.modality_visualization` 继续作为兼容 facade 保留。
 
 可以使用点号分隔的键覆盖配置值：
 

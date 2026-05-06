@@ -8,10 +8,10 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 
-from kd_sensing.data.transforms import (
+from kd_sensing.data.transform_ops.io import atomic_save_npy
+from kd_sensing.data.transform_ops.lidar import (
     DEFAULT_LIDAR_BEV_SIZE,
     DEFAULT_LIDAR_ROI,
-    atomic_save_npy,
     build_lidar_bev,
     lidar_cache_path,
     load_lidar_background_points,

@@ -144,11 +144,21 @@ def registry_self_check() -> dict[str, str]:
 def import_default_components() -> None:
     """Import modules that register built-in components."""
 
-    import kd_sensing.data  # noqa: F401
-    import kd_sensing.distillation  # noqa: F401
-    import kd_sensing.evaluation  # noqa: F401
-    import kd_sensing.models  # noqa: F401
-    import kd_sensing.preprocessing  # noqa: F401
+    import kd_sensing.data.datasets.scenario9  # noqa: F401
+    import kd_sensing.data.datasets.synthetic  # noqa: F401
+    import kd_sensing.distillation.distillers  # noqa: F401
+    import kd_sensing.distillation.losses  # noqa: F401
+    import kd_sensing.evaluation.metrics  # noqa: F401
+    import kd_sensing.models.fusion  # noqa: F401
+    import kd_sensing.models.gps  # noqa: F401
+    import kd_sensing.models.image  # noqa: F401
+    import kd_sensing.models.lidar  # noqa: F401
+    import kd_sensing.models.mmwave  # noqa: F401
+    import kd_sensing.models.radar  # noqa: F401
+    import kd_sensing.preprocessing.csv  # noqa: F401
+    import kd_sensing.preprocessing.image  # noqa: F401
+    import kd_sensing.preprocessing.lidar  # noqa: F401
+    import kd_sensing.preprocessing.sequences  # noqa: F401
 
 
 __all__ = [
@@ -163,4 +173,3 @@ __all__ = [
     "registry_self_check",
     "import_default_components",
 ]
-

@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kd_sensing.models.m2beamllm_encoders import M2BeamLLMGpsEncoder
 from kd_sensing.registries import MODELS
 
 
@@ -144,67 +143,6 @@ class GpsStudentModalityNet(nn.Module):
             nn.Linear(gru_hidden_size, 64),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(64, num_classes),
-        )
-
-    def forward(self, gps_batch: torch.Tensor):
-        features = self.feature_extraction(gps_batch)
-        features = self.layer_norm(features)
-        seq_out, _ = self.GRU(features)
-        pred = self.classifier(seq_out)
-        return pred, features, seq_out
-
-
-@MODELS.register("m2beamllm_gps_teacher")
-class M2BeamLLMGpsModalityNet(GpsModalityNet):
-    def __init__(
-        self,
-        feature_size: int,
-        num_classes: int,
-        gru_params: list[int] | tuple[int, int, int],
-        gps_input_size: int = 2,
-        dropout: float = 0.1,
-    ):
-        super().__init__(
-            gps_input_size=gps_input_size,
-            feature_size=feature_size,
-            num_classes=num_classes,
-            gru_params=gru_params,
-            dropout=dropout,
-        )
-        self.name = "M2BeamLLMGpsModalityNet"
-        self.feature_extraction = M2BeamLLMGpsEncoder(feature_size, gps_input_size=gps_input_size)
-
-
-@MODELS.register("m2beamllm_gps_student")
-class M2BeamLLMGpsStudentModalityNet(nn.Module):
-    def __init__(
-        self,
-        feature_size: int,
-        num_classes: int,
-        gru_params: list[int] | tuple[int, int, int],
-        gps_input_size: int = 2,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.name = "M2BeamLLMGpsStudentModalityNet"
-        gru_input_size, gru_hidden_size, gru_num_layers = _validate_gps_gru_params(
-            feature_size,
-            gru_params,
-        )
-        self.feature_extraction = M2BeamLLMGpsEncoder(feature_size, gps_input_size=gps_input_size)
-        self.layer_norm = nn.LayerNorm(gru_input_size)
-        self.GRU = nn.GRU(
-            input_size=gru_input_size,
-            hidden_size=gru_hidden_size,
-            num_layers=gru_num_layers,
-            dropout=0.3 if gru_num_layers > 1 else 0.0,
-            batch_first=True,
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(gru_hidden_size, 64),
-            nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(64, num_classes),
         )
 

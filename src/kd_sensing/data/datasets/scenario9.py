@@ -11,36 +11,34 @@ from tqdm.auto import tqdm
 
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.scenes import resolve_deepsense_scene
-from kd_sensing.data.transforms import (
+from kd_sensing.data.transform_ops.gps import (
     GPSStandardScaler,
-    GPSMinMaxScaler,
-    M2BEAMLLM_GPS_FEATURE_MODE,
+    SUPPORTED_GPS_FEATURE_MODE,
+    load_gps_feature_sequence,
+)
+from kd_sensing.data.transform_ops.image import (
+    build_image_transform,
+    load_motion_masks,
+    parameterized_image_motion_cache_dir,
+)
+from kd_sensing.data.transform_ops.io import joined_resource
+from kd_sensing.data.transform_ops.lidar import (
     DEFAULT_LIDAR_BEV_SIZE,
-    DEFAULT_M2BEAMLLM_LIDAR_HISTOGRAM_SIZE,
     DEFAULT_LIDAR_ROI,
     LidarBEVNormalizer,
     LidarBEVStreamingStats,
-    MMWAVE_POWER_DIM,
-    MmWaveStandardScaler,
-    SUPPORTED_GPS_FEATURE_MODE,
-    build_image_transform,
-    joined_resource,
     load_lidar_background_points,
     load_lidar_bev_sequence,
-    load_lidar_m2beamllm_histogram_sequence,
-    load_gps_feature_sequence,
-    load_gps_raw_sequence,
-    load_mmwave_feature_sequence,
-    load_motion_masks,
-    load_radar_maps,
-    parameterized_image_motion_cache_dir,
     parameterized_lidar_cache_dir,
 )
+from kd_sensing.data.transform_ops.mmwave import MMWAVE_POWER_DIM, MmWaveStandardScaler, load_mmwave_feature_sequence
+from kd_sensing.data.transform_ops.radar import load_radar_maps
+from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
 
 
-VALID_MODALITIES = ("image", "radar", "gps", "lidar", "mmwave")
+VALID_MODALITIES = MODALITY_ORDER
 
 
 @DATASETS.register("deepsense6g")
@@ -77,14 +75,13 @@ class DeepSense6GDataset(Dataset):
         use_gps: bool = False,
         gps_feature_mode: str = SUPPORTED_GPS_FEATURE_MODE,
         gps_normalize: bool = True,
-        gps_scaler: GPSStandardScaler | GPSMinMaxScaler | None = None,
+        gps_scaler: GPSStandardScaler | None = None,
         use_mmwave: bool = False,
         mmwave_normalize: bool = True,
         mmwave_scaler: MmWaveStandardScaler | None = None,
         use_lidar: bool = False,
         lidar_encoding: str = "bev",
         lidar_bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
-        lidar_histogram_size: list[int] | tuple[int, int] = DEFAULT_M2BEAMLLM_LIDAR_HISTOGRAM_SIZE,
         lidar_roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
         lidar_fov_degrees: list[float] | tuple[float, float] | None = None,
         lidar_remove_ground: bool = False,
@@ -153,10 +150,9 @@ class DeepSense6GDataset(Dataset):
         self._mmwave_feature_cache: dict[int, np.ndarray] = {}
         self.use_lidar = "lidar" in self.enabled_modalities
         self.lidar_encoding = str(lidar_encoding)
-        if self.lidar_encoding not in {"bev", "m2beamllm_histogram"}:
-            raise ValueError("lidar_encoding must be one of bev or m2beamllm_histogram.")
+        if self.lidar_encoding != "bev":
+            raise ValueError("lidar_encoding must be 'bev'.")
         self.lidar_bev_size = tuple(lidar_bev_size)
-        self.lidar_histogram_size = tuple(lidar_histogram_size)
         self.lidar_roi = tuple(lidar_roi)
         self.lidar_fov_degrees = tuple(lidar_fov_degrees) if lidar_fov_degrees is not None else None
         self.lidar_remove_ground = lidar_remove_ground
@@ -296,14 +292,7 @@ class DeepSense6GDataset(Dataset):
                 selected.append("mmwave")
         else:
             selected = [str(modality) for modality in enabled_modalities]
-        if not selected:
-            raise ValueError("DeepSense6GDataset requires at least one enabled modality.")
-        invalid = [name for name in selected if name not in VALID_MODALITIES]
-        if invalid:
-            raise ValueError(f"Unknown DeepSense6G modalities: {invalid}.")
-        if len(set(selected)) != len(selected):
-            raise ValueError(f"DeepSense6G modalities must not contain duplicates: {selected}.")
-        return tuple(name for name in VALID_MODALITIES if name in set(selected))
+        return normalize_modalities(selected, context="DeepSense6G modalities")
 
     def _resolve_image_motion_cache_dir(self, image_motion_cache_dir: str | None) -> Path | None:
         if not image_motion_cache_dir:
@@ -368,12 +357,12 @@ class DeepSense6GDataset(Dataset):
                 f"GPS is enabled but {self.root_csv} does not contain gps1..gpsN columns. "
                 "Regenerate sequence CSVs with include_gps: true."
             )
-        if self.gps_feature_mode not in {SUPPORTED_GPS_FEATURE_MODE, M2BEAMLLM_GPS_FEATURE_MODE}:
+        if self.gps_feature_mode != SUPPORTED_GPS_FEATURE_MODE:
             raise ValueError(
                 f"Unsupported gps_feature_mode '{self.gps_feature_mode}'. "
-                f"This change only supports '{SUPPORTED_GPS_FEATURE_MODE}' and '{M2BEAMLLM_GPS_FEATURE_MODE}'."
+                f"This change only supports '{SUPPORTED_GPS_FEATURE_MODE}'."
             )
-        if self.gps_feature_mode == SUPPORTED_GPS_FEATURE_MODE and self.samples.bs_gps_paths is None:
+        if self.samples.bs_gps_paths is None:
             raise ValueError(
                 f"gps_feature_mode '{self.gps_feature_mode}' requires bs_gps1..bs_gpsN columns in {self.root_csv}."
             )
@@ -391,30 +380,20 @@ class DeepSense6GDataset(Dataset):
             )
         all_features = [self._gps_features_for_index(idx) for idx in range(len(self))]
         stacked = np.concatenate(all_features, axis=0)
-        if self.gps_feature_mode == M2BEAMLLM_GPS_FEATURE_MODE:
-            self.gps_scaler = GPSMinMaxScaler().fit(stacked)
-        else:
-            self.gps_scaler = GPSStandardScaler().fit(stacked)
+        self.gps_scaler = GPSStandardScaler().fit(stacked)
 
     def _gps_features_for_index(self, idx: int) -> np.ndarray:
         if idx not in self._gps_feature_cache:
             if self.samples.gps_paths is None:
                 raise ValueError("GPS paths are unavailable for this dataset.")
-            if self.gps_feature_mode == M2BEAMLLM_GPS_FEATURE_MODE:
-                self._gps_feature_cache[idx] = load_gps_raw_sequence(
-                    self.data_root,
-                    self.samples.gps_paths[idx],
-                    seq_len=self.seq_len,
-                )
-            else:
-                bs_paths = self.samples.bs_gps_paths[idx] if self.samples.bs_gps_paths is not None else None
-                self._gps_feature_cache[idx] = load_gps_feature_sequence(
-                    self.data_root,
-                    self.samples.gps_paths[idx],
-                    bs_paths,
-                    seq_len=self.seq_len,
-                    mode=self.gps_feature_mode,
-                )
+            bs_paths = self.samples.bs_gps_paths[idx] if self.samples.bs_gps_paths is not None else None
+            self._gps_feature_cache[idx] = load_gps_feature_sequence(
+                self.data_root,
+                self.samples.gps_paths[idx],
+                bs_paths,
+                seq_len=self.seq_len,
+                mode=self.gps_feature_mode,
+            )
         return self._gps_feature_cache[idx]
 
     def _ensure_mmwave_columns(self) -> None:
@@ -565,8 +544,6 @@ class DeepSense6GDataset(Dataset):
         return self.lidar_normalizer
 
     def _lidar_bev_for_index(self, idx: int, *, augment: bool) -> np.ndarray:
-        if self.lidar_encoding == "m2beamllm_histogram":
-            return self._lidar_m2beamllm_histogram_for_index(idx, augment=augment)
         if not augment and self.lidar_memory_cache_enabled and idx in self._lidar_bev_cache:
             self._lidar_bev_cache.move_to_end(idx)
             return self._lidar_bev_cache[idx]
@@ -597,26 +574,6 @@ class DeepSense6GDataset(Dataset):
                 while len(self._lidar_bev_cache) > self.lidar_memory_cache_max_items:
                     self._lidar_bev_cache.popitem(last=False)
         return bev
-
-    def _lidar_m2beamllm_histogram_for_index(self, idx: int, *, augment: bool) -> np.ndarray:
-        if self.samples.lidar_paths is None:
-            raise ValueError("LiDAR paths are unavailable for this dataset.")
-        return load_lidar_m2beamllm_histogram_sequence(
-            self.data_root,
-            self.samples.lidar_paths[idx],
-            seq_len=self.seq_len,
-            histogram_size=self.lidar_histogram_size,
-            roi=self.lidar_roi,
-            fov_degrees=self.lidar_fov_degrees,
-            remove_ground=self.lidar_remove_ground,
-            ground_z_threshold=self.lidar_ground_z_threshold,
-            background_points=self.lidar_background_points,
-            background_distance_threshold=self.lidar_background_distance_threshold,
-            augment=augment,
-            point_dropout=self.lidar_point_dropout,
-            jitter_std=self.lidar_jitter_std,
-        )
-
 
 @DATASETS.register("scenario9")
 class Scenario9Dataset(DeepSense6GDataset):

@@ -7,13 +7,6 @@ from .paths import (
     weights_dir,
 )
 from .seed import set_seed
-from .artifact_registry import (
-    CheckpointResolution,
-    archive_best_checkpoint,
-    find_registry_checkpoint,
-    resolve_evaluation_checkpoint,
-    resolve_teacher_checkpoint,
-)
 
 __all__ = [
     "project_root",
@@ -29,3 +22,17 @@ __all__ = [
     "resolve_evaluation_checkpoint",
     "resolve_teacher_checkpoint",
 ]
+
+
+def __getattr__(name: str):
+    if name in {
+        "CheckpointResolution",
+        "archive_best_checkpoint",
+        "find_registry_checkpoint",
+        "resolve_evaluation_checkpoint",
+        "resolve_teacher_checkpoint",
+    }:
+        from . import artifact_registry
+
+        return getattr(artifact_registry, name)
+    raise AttributeError(f"module 'kd_sensing.utils' has no attribute {name!r}")
