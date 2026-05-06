@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.models.gps import GpsFeatureExtractor
+from kd_sensing.models.image import ImageFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
 from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
@@ -31,55 +32,6 @@ def _require_tensor(tensor: torch.Tensor | None, modality: str) -> torch.Tensor:
     return tensor
 
 
-class FusionImageFeatureExtractor(nn.Module):
-    def __init__(self, n_feature: int, in_channel: int = 1):
-        super().__init__()
-        self.cnn_layers = nn.Sequential(
-            nn.Conv2d(in_channel, 4, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(4),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(4, 8, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(8),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(8, 16, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-        )
-        self.flatten = nn.Flatten()
-        self.fc_layer = nn.Sequential(
-            nn.Linear(64 * 7 * 7, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, n_feature),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_length, channels, height, width = x.size()
-        spatial_features = []
-        for t in range(seq_length):
-            frame_features = self.cnn_layers(x[:, t, :, :, :])
-            frame_features = self.flatten(frame_features)
-            spatial_features.append(self.fc_layer(frame_features))
-        return torch.stack(spatial_features, dim=1)
-
-
 @MODELS.register("fusion_teacher")
 class FusionModalityNet(nn.Module):
     def __init__(
@@ -104,7 +56,7 @@ class FusionModalityNet(nn.Module):
                 f"gru_input_size ({gru_input_size}) must equal feature_size ({feature_size})"
             )
         if "image" in self.modalities:
-            self.image_feature_extractor = FusionImageFeatureExtractor(feature_size, image_channels)
+            self.image_feature_extractor = ImageFeatureExtractor(feature_size, image_channels)
         if "radar" in self.modalities:
             self.radar_feature_extractor = RadarFeatureExtractor(feature_size, radar_channels)
         if "gps" in self.modalities:
@@ -463,4 +415,3 @@ def _check_sequence_tensor(
     if batch_size is not None and (current_batch != batch_size or current_seq != seq_len):
         raise ValueError("Enabled fusion modalities must share batch and sequence dimensions.")
     return tuple(int(dim) for dim in tensor.shape)
-
