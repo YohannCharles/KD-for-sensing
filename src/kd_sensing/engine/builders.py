@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
-from kd_sensing.data.transforms import GPSStandardScaler, LidarBEVNormalizer, MmWaveStandardScaler
+from kd_sensing.data.transforms import LidarBEVNormalizer, MmWaveStandardScaler, load_gps_scaler
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blocking
 from kd_sensing.registries import DATASETS, DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
@@ -403,7 +403,7 @@ def load_normalization_artifacts(metadata: dict[str, Any] | None) -> dict[str, A
         path = Path(gps_path)
         if not path.exists():
             raise FileNotFoundError(f"GPS scaler artifact not found: {path}")
-        dataset_kwargs["gps_scaler"] = GPSStandardScaler.load(path)
+        dataset_kwargs["gps_scaler"] = load_gps_scaler(path)
     lidar_path = artifacts.get("lidar_normalizer")
     if lidar_path:
         path = Path(lidar_path)

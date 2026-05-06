@@ -5,6 +5,12 @@ import torch.nn as nn
 
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
+from kd_sensing.models.m2beamllm_encoders import (
+    M2BeamLLMGpsEncoder,
+    M2BeamLLMImageEncoder,
+    M2BeamLLMLidarEncoder,
+    M2BeamLLMRadarEncoder,
+)
 from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.registries import MODELS
@@ -97,23 +103,60 @@ class FusionModalityNet(nn.Module):
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         num_heads: int = 8,
         modalities: list[str] | tuple[str, ...] | None = None,
+        encoder_profile: str | None = None,
+        image_channel_adapter: str = "repeat",
+        radar_input_mode: str = "ra_map",
+        m2beamllm_pretrained: bool = False,
+        freeze_backbone: bool = False,
     ):
         super().__init__()
         self.name = "FusionModalityNet"
         self.modalities = _normalize_modalities(modalities)
+        self.encoder_profile = _normalize_encoder_profile(encoder_profile)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
                 f"gru_input_size ({gru_input_size}) must equal feature_size ({feature_size})"
             )
         if "image" in self.modalities:
-            self.image_feature_extractor = FusionImageFeatureExtractor(feature_size, image_channels)
+            self.image_feature_extractor = (
+                M2BeamLLMImageEncoder(
+                    feature_size,
+                    image_channels=image_channels,
+                    image_channel_adapter=image_channel_adapter,
+                    pretrained=m2beamllm_pretrained,
+                    freeze_backbone=freeze_backbone,
+                )
+                if self.encoder_profile == "m2beamllm"
+                else FusionImageFeatureExtractor(feature_size, image_channels)
+            )
         if "radar" in self.modalities:
-            self.radar_feature_extractor = RadarFeatureExtractor(feature_size, radar_channels)
+            self.radar_feature_extractor = (
+                M2BeamLLMRadarEncoder(
+                    feature_size,
+                    radar_channels=radar_channels,
+                    radar_input_mode=radar_input_mode,
+                )
+                if self.encoder_profile == "m2beamllm"
+                else RadarFeatureExtractor(feature_size, radar_channels)
+            )
         if "gps" in self.modalities:
-            self.gps_feature_extractor = GpsFeatureExtractor(feature_size, gps_input_size)
+            self.gps_feature_extractor = (
+                M2BeamLLMGpsEncoder(feature_size, gps_input_size=gps_input_size)
+                if self.encoder_profile == "m2beamllm"
+                else GpsFeatureExtractor(feature_size, gps_input_size)
+            )
         if "lidar" in self.modalities:
-            self.lidar_feature_extractor = LidarFeatureExtractor(feature_size, lidar_channels)
+            self.lidar_feature_extractor = (
+                M2BeamLLMLidarEncoder(
+                    feature_size,
+                    lidar_channels=lidar_channels,
+                    pretrained=m2beamllm_pretrained,
+                    freeze_backbone=freeze_backbone,
+                )
+                if self.encoder_profile == "m2beamllm"
+                else LidarFeatureExtractor(feature_size, lidar_channels)
+            )
         if "mmwave" in self.modalities:
             self.mmwave_feature_extractor = MmWaveFeatureExtractor(
                 feature_size=feature_size,
@@ -227,10 +270,16 @@ class StudentModalityNet(nn.Module):
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         modalities: list[str] | tuple[str, ...] | None = None,
+        encoder_profile: str | None = None,
+        image_channel_adapter: str = "repeat",
+        radar_input_mode: str = "ra_map",
+        m2beamllm_pretrained: bool = False,
+        freeze_backbone: bool = False,
     ):
         super().__init__()
         self.name = "StudentModalityNet"
         self.modalities = _normalize_modalities(modalities)
+        self.encoder_profile = _normalize_encoder_profile(encoder_profile)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
@@ -257,63 +306,101 @@ class StudentModalityNet(nn.Module):
 
         branch_dims = []
         if "image" in self.modalities:
-            self.image_cnn_layers = nn.Sequential(
-                nn.Conv2d(image_channels, 12, 3, stride=2, padding=1, bias=False),
-                nn.BatchNorm2d(12),
-                nn.ReLU(inplace=True),
-                ds_conv_block(12, 16, stride=2),
-                ds_conv_block(16, 24, stride=2),
-                ds_conv_block(24, 40, stride=2),
-                ds_conv_block(40, 96, stride=2),
-            )
-            self.image_global_avg_pool = nn.AdaptiveAvgPool2d(1)
-            self.image_global_max_pool = nn.AdaptiveMaxPool2d(1)
-            branch_dims.append(96 * 2)
+            if self.encoder_profile == "m2beamllm":
+                self.image_feature_extractor = M2BeamLLMImageEncoder(
+                    feature_size,
+                    image_channels=image_channels,
+                    image_channel_adapter=image_channel_adapter,
+                    pretrained=m2beamllm_pretrained,
+                    freeze_backbone=freeze_backbone,
+                )
+                branch_dims.append(feature_size)
+            else:
+                self.image_cnn_layers = nn.Sequential(
+                    nn.Conv2d(image_channels, 12, 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm2d(12),
+                    nn.ReLU(inplace=True),
+                    ds_conv_block(12, 16, stride=2),
+                    ds_conv_block(16, 24, stride=2),
+                    ds_conv_block(24, 40, stride=2),
+                    ds_conv_block(40, 96, stride=2),
+                )
+                self.image_global_avg_pool = nn.AdaptiveAvgPool2d(1)
+                self.image_global_max_pool = nn.AdaptiveMaxPool2d(1)
+                branch_dims.append(96 * 2)
         if "radar" in self.modalities:
-            self.radar_cnn_layers = nn.Sequential(
-                nn.Conv2d(radar_channels, 12, 3, stride=2, padding=1, bias=False),
-                nn.BatchNorm2d(12),
-                nn.ReLU(inplace=True),
-                ds_conv_block(12, 16, stride=2),
-                ds_conv_block(16, 24, stride=2),
-                ds_conv_block(24, 96, stride=2),
-            )
-            self.radar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
-            self.radar_global_max_pool = nn.AdaptiveMaxPool2d(1)
-            branch_dims.append(96 * 2)
+            if self.encoder_profile == "m2beamllm":
+                self.radar_feature_extractor = M2BeamLLMRadarEncoder(
+                    feature_size,
+                    radar_channels=radar_channels,
+                    radar_input_mode=radar_input_mode,
+                )
+                branch_dims.append(feature_size)
+            else:
+                self.radar_cnn_layers = nn.Sequential(
+                    nn.Conv2d(radar_channels, 12, 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm2d(12),
+                    nn.ReLU(inplace=True),
+                    ds_conv_block(12, 16, stride=2),
+                    ds_conv_block(16, 24, stride=2),
+                    ds_conv_block(24, 96, stride=2),
+                )
+                self.radar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
+                self.radar_global_max_pool = nn.AdaptiveMaxPool2d(1)
+                branch_dims.append(96 * 2)
         if "gps" in self.modalities:
-            self.gps_projection = nn.Sequential(
-                nn.Linear(gps_input_size, 64),
-                nn.ReLU(inplace=True),
-                nn.Dropout(0.1),
-                nn.Linear(64, 96),
-                nn.ReLU(inplace=True),
-            )
-            branch_dims.append(96)
+            if self.encoder_profile == "m2beamllm":
+                self.gps_feature_extractor = M2BeamLLMGpsEncoder(feature_size, gps_input_size=gps_input_size)
+                branch_dims.append(feature_size)
+            else:
+                self.gps_projection = nn.Sequential(
+                    nn.Linear(gps_input_size, 64),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(0.1),
+                    nn.Linear(64, 96),
+                    nn.ReLU(inplace=True),
+                )
+                branch_dims.append(96)
         if "lidar" in self.modalities:
-            self.lidar_cnn_layers = nn.Sequential(
-                nn.Conv2d(lidar_channels, 12, 3, stride=2, padding=1, bias=False),
-                nn.BatchNorm2d(12),
-                nn.ReLU(inplace=True),
-                ds_conv_block(12, 16, stride=2),
-                ds_conv_block(16, 24, stride=2),
-                ds_conv_block(24, 96, stride=2),
-            )
-            self.lidar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
-            self.lidar_global_max_pool = nn.AdaptiveMaxPool2d(1)
-            branch_dims.append(96 * 2)
+            if self.encoder_profile == "m2beamllm":
+                self.lidar_feature_extractor = M2BeamLLMLidarEncoder(
+                    feature_size,
+                    lidar_channels=lidar_channels,
+                    pretrained=m2beamllm_pretrained,
+                    freeze_backbone=freeze_backbone,
+                )
+                branch_dims.append(feature_size)
+            else:
+                self.lidar_cnn_layers = nn.Sequential(
+                    nn.Conv2d(lidar_channels, 12, 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm2d(12),
+                    nn.ReLU(inplace=True),
+                    ds_conv_block(12, 16, stride=2),
+                    ds_conv_block(16, 24, stride=2),
+                    ds_conv_block(24, 96, stride=2),
+                )
+                self.lidar_global_avg_pool = nn.AdaptiveAvgPool2d(1)
+                self.lidar_global_max_pool = nn.AdaptiveMaxPool2d(1)
+                branch_dims.append(96 * 2)
         if "mmwave" in self.modalities:
             if int(mmwave_input_size) != MMWAVE_INPUT_SIZE:
                 raise ValueError(f"mmwave_input_size ({mmwave_input_size}) must equal {MMWAVE_INPUT_SIZE}.")
             self.mmwave_input_size = int(mmwave_input_size)
-            self.mmwave_projection = nn.Sequential(
-                nn.Linear(self.mmwave_input_size, 64),
-                nn.ReLU(inplace=True),
-                nn.Dropout(0.1),
-                nn.Linear(64, 96),
-                nn.ReLU(inplace=True),
-            )
-            branch_dims.append(96)
+            if self.encoder_profile == "m2beamllm":
+                self.mmwave_feature_extractor = MmWaveFeatureExtractor(
+                    feature_size=feature_size,
+                    mmwave_input_size=self.mmwave_input_size,
+                )
+                branch_dims.append(feature_size)
+            else:
+                self.mmwave_projection = nn.Sequential(
+                    nn.Linear(self.mmwave_input_size, 64),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(0.1),
+                    nn.Linear(64, 96),
+                    nn.ReLU(inplace=True),
+                )
+                branch_dims.append(96)
         self.fusion_layer = nn.Sequential(
             nn.Linear(sum(branch_dims), 128),
             nn.ReLU(inplace=True),
@@ -350,6 +437,15 @@ class StudentModalityNet(nn.Module):
         batch_size = None
         seq_len = None
         pooled_features = []
+
+        if self.encoder_profile == "m2beamllm":
+            return self._forward_m2beamllm_profile(
+                image_batch=image_batch,
+                radar_batch=radar_batch,
+                gps_batch=gps_batch,
+                lidar_batch=lidar_batch,
+                mmwave_batch=mmwave_batch,
+            )
 
         if "image" in self.modalities:
             image_batch = _require_tensor(image_batch, "image")
@@ -437,6 +533,54 @@ class StudentModalityNet(nn.Module):
         pred = self.classifier(seq_out)
         return pred, features, seq_out
 
+    def _forward_m2beamllm_profile(
+        self,
+        image_batch: torch.Tensor | None = None,
+        radar_batch: torch.Tensor | None = None,
+        gps_batch: torch.Tensor | None = None,
+        lidar_batch: torch.Tensor | None = None,
+        mmwave_batch: torch.Tensor | None = None,
+    ):
+        batch_size = None
+        seq_len = None
+        temporal_features = []
+        if "image" in self.modalities:
+            image_features = self.image_feature_extractor(_require_tensor(image_batch, "image"))
+            batch_size, seq_len = _check_temporal_features(image_features, "image", batch_size, seq_len)
+            temporal_features.append(image_features)
+        if "radar" in self.modalities:
+            radar_features = self.radar_feature_extractor(_require_tensor(radar_batch, "radar"))
+            batch_size, seq_len = _check_temporal_features(radar_features, "radar", batch_size, seq_len)
+            temporal_features.append(radar_features)
+        if "gps" in self.modalities:
+            gps_features = self.gps_feature_extractor(_require_tensor(gps_batch, "gps"))
+            batch_size, seq_len = _check_temporal_features(gps_features, "gps", batch_size, seq_len)
+            temporal_features.append(gps_features)
+        if "lidar" in self.modalities:
+            lidar_features = self.lidar_feature_extractor(_require_tensor(lidar_batch, "lidar"))
+            batch_size, seq_len = _check_temporal_features(lidar_features, "lidar", batch_size, seq_len)
+            temporal_features.append(lidar_features)
+        if "mmwave" in self.modalities:
+            mmwave_features = self.mmwave_feature_extractor(_require_tensor(mmwave_batch, "mmwave"))
+            batch_size, seq_len = _check_temporal_features(mmwave_features, "mmwave", batch_size, seq_len)
+            temporal_features.append(mmwave_features)
+        if batch_size is None or seq_len is None:
+            raise ValueError("Fusion model requires at least one enabled modality.")
+        return self._forward_m2beamllm_profile_tail(temporal_features, batch_size, seq_len)
+
+    def _forward_m2beamllm_profile_tail(
+        self,
+        temporal_features: list[torch.Tensor],
+        batch_size: int,
+        seq_len: int,
+    ):
+        fused_features = torch.cat(temporal_features, dim=2)
+        features = self.fusion_layer(fused_features.reshape(batch_size * seq_len, -1)).view(batch_size, seq_len, -1)
+        features = self.layer_norm(features)
+        seq_out, _ = self.GRU(features)
+        pred = self.classifier(seq_out)
+        return pred, features, seq_out
+
 
 def _check_temporal_features(
     features: torch.Tensor,
@@ -466,3 +610,12 @@ def _check_sequence_tensor(
     if batch_size is not None and (current_batch != batch_size or current_seq != seq_len):
         raise ValueError("Enabled fusion modalities must share batch and sequence dimensions.")
     return tuple(int(dim) for dim in tensor.shape)
+
+
+def _normalize_encoder_profile(profile: str | None) -> str | None:
+    if profile is None:
+        return None
+    normalized = str(profile).lower()
+    if normalized not in {"m2beamllm"}:
+        raise ValueError("encoder_profile must be 'm2beamllm' when provided.")
+    return normalized

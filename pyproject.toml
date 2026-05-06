@@ -18,6 +18,7 @@ dependencies = [
     "scikit-image",
     "tensorboard",
     "torch",
+    "torchvision",
     "tqdm",
 ]
 

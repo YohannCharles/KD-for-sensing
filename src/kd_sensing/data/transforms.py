@@ -20,11 +20,14 @@ from skimage.color import rgb2gray
 
 GPS_FEATURE_DIMS = {
     "relative_polar": 3,
+    "m2beamllm_minmax": 2,
 }
 MMWAVE_POWER_DIM = 64
 SUPPORTED_GPS_FEATURE_MODE = "relative_polar"
+M2BEAMLLM_GPS_FEATURE_MODE = "m2beamllm_minmax"
 DEFAULT_LIDAR_ROI = (-30.0, 30.0, -30.0, 30.0, -3.0, 5.0)
 DEFAULT_LIDAR_BEV_SIZE = (224, 224)
+DEFAULT_M2BEAMLLM_LIDAR_HISTOGRAM_SIZE = (256, 256)
 DEFAULT_IMAGE_MOTION_CACHE_VERSION = "v1"
 DEFAULT_IMAGE_MOTION_THRESHOLD_STRATEGY = "relative_max"
 DEFAULT_IMAGE_MOTION_GRAYSCALE = "rgb2gray"
@@ -541,6 +544,34 @@ def lidar_points_to_bev(
     return bev
 
 
+def lidar_points_to_m2beamllm_histogram(
+    points: np.ndarray,
+    *,
+    histogram_size: list[int] | tuple[int, int] = DEFAULT_M2BEAMLLM_LIDAR_HISTOGRAM_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    max_points_per_cell: int = 5,
+) -> np.ndarray:
+    height, width = (int(histogram_size[0]), int(histogram_size[1]))
+    histogram = np.zeros((1, height, width), dtype=np.float32)
+    points = filter_lidar_points(points, roi=roi)
+    if points.size == 0:
+        return histogram
+
+    x_min, x_max, y_min, y_max = (float(value) for value in tuple(roi)[:4])
+    x_span = max(x_max - x_min, 1e-6)
+    y_span = max(y_max - y_min, 1e-6)
+    cols = np.floor((points[:, 0] - x_min) / x_span * width).astype(np.int64)
+    rows = height - 1 - np.floor((points[:, 1] - y_min) / y_span * height).astype(np.int64)
+    cols = np.clip(cols, 0, width - 1)
+    rows = np.clip(rows, 0, height - 1)
+
+    counts = np.zeros((height, width), dtype=np.float32)
+    np.add.at(counts, (rows, cols), 1.0)
+    max_count = float(max(int(max_points_per_cell), 1))
+    histogram[0] = np.clip(counts, 0.0, max_count) / max_count
+    return histogram
+
+
 def _normalize_values(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     finite = np.isfinite(values)
@@ -588,6 +619,43 @@ def build_lidar_bev(
         background_distance_threshold=background_distance_threshold,
     )
     return lidar_points_to_bev(points, bev_size=bev_size, roi=roi)
+
+
+def build_lidar_m2beamllm_histogram(
+    data_root: str | Path,
+    rel_path: str,
+    *,
+    histogram_size: list[int] | tuple[int, int] = DEFAULT_M2BEAMLLM_LIDAR_HISTOGRAM_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_points: np.ndarray | None = None,
+    background_distance_threshold: float = 0.2,
+    augment: bool = False,
+    point_dropout: float = 0.0,
+    jitter_std: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    raw_path = joined_resource(data_root, rel_path)
+    if raw_path.suffix.lower() == ".npy":
+        array = np.load(raw_path)
+        if array.ndim == 3 and array.shape[0] == 1:
+            return _resize_or_validate_lidar_bev(array, histogram_size)
+    points = read_lidar_point_cloud(data_root, rel_path)
+    if augment and points.size:
+        rng = rng or np.random.default_rng()
+        points = augment_lidar_points(points, point_dropout=point_dropout, jitter_std=jitter_std, rng=rng)
+    points = filter_lidar_points(
+        points,
+        roi=roi,
+        fov_degrees=fov_degrees,
+        remove_ground=remove_ground,
+        ground_z_threshold=ground_z_threshold,
+        background_points=background_points,
+        background_distance_threshold=background_distance_threshold,
+    )
+    return lidar_points_to_m2beamllm_histogram(points, histogram_size=histogram_size, roi=roi)
 
 
 def _resize_or_validate_lidar_bev(array: np.ndarray, bev_size: list[int] | tuple[int, int]) -> np.ndarray:
@@ -739,6 +807,44 @@ def load_lidar_bev_sequence(
     return np.stack(frames, axis=0).astype(np.float32)
 
 
+def load_lidar_m2beamllm_histogram_sequence(
+    data_root: str | Path,
+    lidar_paths: list[str],
+    *,
+    seq_len: int,
+    histogram_size: list[int] | tuple[int, int] = DEFAULT_M2BEAMLLM_LIDAR_HISTOGRAM_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_points: np.ndarray | None = None,
+    background_distance_threshold: float = 0.2,
+    augment: bool = False,
+    point_dropout: float = 0.0,
+    jitter_std: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    frames = [
+        build_lidar_m2beamllm_histogram(
+            data_root,
+            rel_path,
+            histogram_size=histogram_size,
+            roi=roi,
+            fov_degrees=fov_degrees,
+            remove_ground=remove_ground,
+            ground_z_threshold=ground_z_threshold,
+            background_points=background_points,
+            background_distance_threshold=background_distance_threshold,
+            augment=augment,
+            point_dropout=point_dropout,
+            jitter_std=jitter_std,
+            rng=rng,
+        )
+        for rel_path in lidar_paths[-seq_len:]
+    ]
+    return np.stack(frames, axis=0).astype(np.float32)
+
+
 def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:
     path = joined_resource(data_root, rel_path)
     if not path.exists():
@@ -850,6 +956,16 @@ def load_gps_feature_sequence(
     return build_gps_features(ue_latlon, bs_latlon, mode=mode)
 
 
+def load_gps_raw_sequence(
+    data_root: str | Path,
+    gps_paths: list[str],
+    *,
+    seq_len: int,
+) -> np.ndarray:
+    selected_gps = gps_paths[-seq_len:]
+    return np.asarray([read_gps_latlon(data_root, path) for path in selected_gps], dtype=np.float32)
+
+
 def read_mmwave_power_vector(
     data_root: str | Path,
     rel_path: str,
@@ -957,6 +1073,60 @@ class GPSStandardScaler:
             scale_key = "scale" if "scale" in payload else "std"
             scale = np.asarray(payload[scale_key], dtype=np.float32)
         return cls(mean_=mean, scale_=scale)
+
+
+@dataclass
+class GPSMinMaxScaler:
+    min_: np.ndarray | None = None
+    max_: np.ndarray | None = None
+
+    def fit(self, features: np.ndarray) -> "GPSMinMaxScaler":
+        features = np.asarray(features, dtype=np.float64)
+        if features.ndim != 2:
+            raise ValueError(f"GPS min-max scaler fit expects [N, D] features, got {features.shape}.")
+        self.min_ = features.min(axis=0)
+        self.max_ = features.max(axis=0)
+        return self
+
+    def transform(self, features: np.ndarray) -> np.ndarray:
+        if self.min_ is None or self.max_ is None:
+            raise ValueError("GPS min-max scaler has not been fit.")
+        span = np.asarray(self.max_, dtype=np.float64) - np.asarray(self.min_, dtype=np.float64)
+        span[span < 1e-8] = 1.0
+        return ((np.asarray(features, dtype=np.float64) - self.min_) / span).astype(np.float32)
+
+    def fit_transform(self, features: np.ndarray) -> np.ndarray:
+        return self.fit(features).transform(features)
+
+    def save(self, path: str | Path) -> None:
+        if self.min_ is None or self.max_ is None:
+            raise ValueError("GPS min-max scaler has not been fit.")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            target,
+            kind=np.asarray("minmax"),
+            min=np.asarray(self.min_, dtype=np.float32),
+            max=np.asarray(self.max_, dtype=np.float32),
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> "GPSMinMaxScaler":
+        with np.load(Path(path)) as payload:
+            return cls(
+                min_=np.asarray(payload["min"], dtype=np.float32),
+                max_=np.asarray(payload["max"], dtype=np.float32),
+            )
+
+
+def load_gps_scaler(path: str | Path) -> GPSStandardScaler | GPSMinMaxScaler:
+    with np.load(Path(path)) as payload:
+        if "min" in payload and "max" in payload:
+            return GPSMinMaxScaler(
+                min_=np.asarray(payload["min"], dtype=np.float32),
+                max_=np.asarray(payload["max"], dtype=np.float32),
+            )
+    return GPSStandardScaler.load(path)
 
 
 @dataclass

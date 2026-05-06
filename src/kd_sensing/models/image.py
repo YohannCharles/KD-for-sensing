@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from kd_sensing.registries import MODELS
+from kd_sensing.models.m2beamllm_encoders import M2BeamLLMImageEncoder
 
 
 class ImageFeatureExtractor(nn.Module):
@@ -219,3 +220,75 @@ class ImageStudentModalityNet(nn.Module):
         enhanced_seq_out = seq_out + context_vector.unsqueeze(1).expand(-1, seq_len, -1)
         pred = self.classifier(enhanced_seq_out)
         return pred, features, enhanced_seq_out
+
+
+@MODELS.register("m2beamllm_image_teacher")
+class M2BeamLLMImageModalityNet(ImageModalityNet):
+    def __init__(
+        self,
+        feature_size: int,
+        num_classes: int,
+        gru_params: list[int] | tuple[int, int, int],
+        image_channels: int = 1,
+        image_channel_adapter: str = "repeat",
+        m2beamllm_pretrained: bool = False,
+        freeze_backbone: bool = False,
+    ):
+        super().__init__(feature_size=feature_size, num_classes=num_classes, gru_params=gru_params)
+        self.name = "M2BeamLLMImageModalityNet"
+        self.feature_extraction = M2BeamLLMImageEncoder(
+            feature_size,
+            image_channels=image_channels,
+            image_channel_adapter=image_channel_adapter,
+            pretrained=m2beamllm_pretrained,
+            freeze_backbone=freeze_backbone,
+        )
+
+
+@MODELS.register("m2beamllm_image_student")
+class M2BeamLLMImageStudentModalityNet(nn.Module):
+    def __init__(
+        self,
+        feature_size: int,
+        num_classes: int,
+        gru_params: list[int] | tuple[int, int, int],
+        image_channels: int = 1,
+        image_channel_adapter: str = "repeat",
+        m2beamllm_pretrained: bool = False,
+        freeze_backbone: bool = False,
+    ):
+        super().__init__()
+        self.name = "M2BeamLLMImageStudentModalityNet"
+        gru_input_size, gru_hidden_size, gru_num_layers = gru_params
+        if gru_input_size != feature_size:
+            raise ValueError(
+                f"gru_input_size ({gru_input_size}) must equal feature_size ({feature_size})"
+            )
+        self.feature_extraction = M2BeamLLMImageEncoder(
+            feature_size,
+            image_channels=image_channels,
+            image_channel_adapter=image_channel_adapter,
+            pretrained=m2beamllm_pretrained,
+            freeze_backbone=freeze_backbone,
+        )
+        self.layer_norm = nn.LayerNorm(gru_input_size)
+        self.GRU = nn.GRU(
+            input_size=gru_input_size,
+            hidden_size=gru_hidden_size,
+            num_layers=gru_num_layers,
+            dropout=0.3 if gru_num_layers > 1 else 0.0,
+            batch_first=True,
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(gru_hidden_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, image_batch: torch.Tensor):
+        features = self.feature_extraction(image_batch)
+        features = self.layer_norm(features)
+        seq_out, _ = self.GRU(features)
+        pred = self.classifier(seq_out)
+        return pred, features, seq_out

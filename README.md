@@ -202,6 +202,35 @@ Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` �
 `gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`，启用 mmWave 的配置使用
 `mmwave_input_size: 64` 和 `mmwave_normalize: true`。
 
+## M2BeamLLM Encoder 对照
+
+`configs/m2beamllm/` 提供一组新增入口，只替换 image、radar、GPS、LiDAR 的 GRU 前 sensing
+encoding；GRU、attention/classifier、KD loss 和训练循环仍是本项目原有结构。这不是完整
+M2BeamLLM LLM backbone、alignment、SFT 或 inverse normalization 复现。
+
+可用注册名包括 `m2beamllm_image_teacher/student`、`m2beamllm_radar_teacher/student`、
+`m2beamllm_gps_teacher/student`、`m2beamllm_lidar_teacher/student`。Fusion 可在现有
+`fusion_teacher/student` 上设置 `encoder_profile: m2beamllm`，此时只替换 image/radar/GPS/LiDAR
+分支；mmWave 分支继续使用现有 `MmWaveFeatureExtractor` 和 `[B, T, 64]` receive-power 输入。
+
+示例：
+
+```bash
+python scripts/train.py --config configs/m2beamllm/image_no_kd.yaml
+python scripts/train.py --config configs/m2beamllm/radar_no_kd.yaml
+python scripts/train.py --config configs/m2beamllm/gps_no_kd.yaml
+python scripts/train.py --config configs/m2beamllm/lidar_no_kd.yaml
+python scripts/train.py --config configs/m2beamllm/fusion_image_radar_gps_lidar_no_kd.yaml
+python scripts/train.py --config configs/m2beamllm/fusion_all_modalities_no_kd.yaml
+```
+
+使用限制：
+
+- ResNet-18 依赖 `torchvision`；默认 `m2beamllm_pretrained: false` 避免离线环境下载权重，已有本地缓存时可显式改为 `true`。
+- Radar 默认使用现有 batch 中的 RA/DA map 拼接输入（`radar_input_mode: ra_map`）。`raw_fft` 是显式路径，缺少 raw radar tensor 会直接报错。
+- LiDAR 论文路径使用 `lidar_encoding: m2beamllm_histogram`，生成 `[T, 1, 256, 256]` histogram，点计数裁剪到 5 后除以 5；如果要用旧 3 通道 BEV，必须显式设置 `lidar_channels` 并接受其不等同论文 histogram。
+- GPS M2BeamLLM 路径使用 `gps_feature_mode: m2beamllm_minmax` 和训练集 fit 的 min-max scaler；旧 GPS-Rel-Polar 配置仍使用 `[B, T, 3]` 和 z-score scaler，不需要迁移。
+
 可以使用点号分隔的键覆盖配置值：
 
 ```bash
