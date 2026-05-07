@@ -45,3 +45,21 @@ CRAF 和 CRAF baseline 配置 MUST 复用现有 fusion 模态标准化和校验�
 - **WHEN** 用户加载 token transformer 或 early concat transformer baseline 配置
 - **THEN** 配置 MUST 通过现有 config loader 构建成功
 - **AND** 配置 MUST 不要求新增训练入口
+
+### Requirement: CRAF 稳定化配置字段
+CRAF 示例配置 MUST 能表达稳定化训练策略，包括 warmup、CE-only counterfactual、ignore band、softmax gate、temperature schedule 和 auxiliary loss schedule。
+
+#### Scenario: all-modalities 稳定化 CRAF 配置
+- **WHEN** 用户加载 all-modalities CRAF 稳定化配置
+- **THEN** 配置 MUST 启用五个标准模态
+- **AND** 配置 MUST 设置 warmup epoch、counterfactual 起始 epoch、`context_marginal` 或等价反事实模式、CE-only delta 和 ignore band
+
+#### Scenario: softmax gate 配置
+- **WHEN** 用户在 CRAF 配置中设置 `model.student.reliability.gate_type: softmax`
+- **THEN** 配置 MUST 能传递 gate temperature、temperature schedule 和 `min_gate`
+- **AND** 模型构建 MUST 不影响配置为 sigmoid gate 的旧实验
+
+#### Scenario: auxiliary 与 beam soft schedule 配置
+- **WHEN** 用户配置 CRAF 附加 loss
+- **THEN** 配置 MUST 能表达 warmup-only 单模态 auxiliary loss 和 beam soft loss 权重
+- **AND** 权重为 0 的附加 loss MUST 保持关闭

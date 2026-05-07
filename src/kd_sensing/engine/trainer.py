@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from copy import deepcopy
 import datetime as dt
 import json
@@ -11,7 +12,11 @@ from tqdm.auto import tqdm
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
-from kd_sensing.distillation.craf_losses import beam_soft_label_loss, sequence_cross_entropy
+from kd_sensing.distillation.craf_losses import (
+    beam_soft_label_loss,
+    counterfactual_sequence_ce,
+    sequence_cross_entropy,
+)
 from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
@@ -24,9 +29,10 @@ from kd_sensing.engine.batch import (
     prepare_radar_inputs,
 )
 from kd_sensing.engine.craf_training import (
+    generate_context_marginal_masks,
     generate_counterfactual_drop_masks,
     generate_modality_dropout_mask,
-    loss_delta_to_gate_target,
+    loss_delta_to_binary_gate_target,
     masked_gate_mse_loss,
 )
 from kd_sensing.engine.data_factory import build_dataloaders
@@ -238,6 +244,11 @@ def _write_tensorboard_craf_scalars(writer, epoch_log: dict, step: int) -> None:
     if isinstance(reliability, dict):
         for modality, value in reliability.items():
             writer.add_scalar(f"craf/reliability/{modality}", float(value), step)
+    for key, value in epoch_log.items():
+        if not isinstance(value, (int, float)):
+            continue
+        if key.startswith(("cf/", "craf/", "loss/")):
+            writer.add_scalar(key, float(value), step)
     writer.flush()
 
 
@@ -386,11 +397,22 @@ def train(cfg: dict) -> dict:
             running_acc = 0.0
             reliability_sums: dict[str, float] = {}
             reliability_batches = 0
+            craf_diag_sums: dict[str, float] = {}
+            craf_diag_counts: dict[str, int] = {}
             batch_count = 0
             current_alpha = cfg["distillation"].get("alpha", 0.4)
             warmup_epochs = cfg["distillation"].get("alpha_warmup_epochs", 0)
             if warmup_epochs and epoch < warmup_epochs:
                 current_alpha = current_alpha * (epoch / warmup_epochs)
+            supports_craf_controls = getattr(student_model, "supports_reliability_controls", False)
+            gate_temperature = (
+                _current_craf_gate_temperature(cfg, model_cfg["student"], epoch) if supports_craf_controls else 1.0
+            )
+            force_reliability_gate = _training_reliability_gate_override(
+                training_cfg,
+                student_model,
+                epoch=epoch,
+            )
             current_lr = optimizer.param_groups[0]["lr"]
             history["learning_rates"].append(current_lr)
 
@@ -430,6 +452,8 @@ def train(cfg: dict) -> dict:
                         device=device,
                         non_blocking=non_blocking,
                         force_modality_mask=force_modality_mask,
+                        force_reliability_gate=force_reliability_gate,
+                        gate_temperature=gate_temperature if supports_craf_controls else None,
                     )
                     student_model_output = adapt_model_output(student_raw)
                     student_outputs = select_prediction_slots(student_model_output.logits, num_pred)
@@ -484,6 +508,7 @@ def train(cfg: dict) -> dict:
                         student_outputs=student_outputs,
                         diagnostics=student_model_output.diagnostics,
                         epoch=epoch,
+                        gate_temperature=gate_temperature,
                         device=device,
                         non_blocking=non_blocking,
                     )
@@ -522,6 +547,11 @@ def train(cfg: dict) -> dict:
                     reliability_batches += 1
                     for modality, value in reliability_summary.items():
                         reliability_sums[modality] = reliability_sums.get(modality, 0.0) + value
+                _accumulate_scalar_diagnostics(
+                    extra_losses.get("_diagnostics", {}),
+                    sums=craf_diag_sums,
+                    counts=craf_diag_counts,
+                )
                 batch_progress.set_postfix(
                     loss=f"{running_loss:.4f}",
                     task=f"{running_task_loss:.4f}",
@@ -579,6 +609,7 @@ def train(cfg: dict) -> dict:
                     modality: float(value / reliability_batches)
                     for modality, value in reliability_sums.items()
                 }
+            epoch_log.update(_mean_scalar_diagnostics(craf_diag_sums, craf_diag_counts))
             epoch_logs.append(epoch_log)
             epoch_progress.set_postfix(
                 train_loss=f"{running_loss:.4f}",
@@ -700,6 +731,8 @@ def _forward_for_task(
     device: torch.device,
     non_blocking: bool = False,
     force_modality_mask: torch.Tensor | None = None,
+    force_reliability_gate: torch.Tensor | float | None = None,
+    gate_temperature: float | torch.Tensor | None = None,
 ):
     if task == "fusion":
         fusion_inputs = prepare_fusion_inputs(
@@ -710,7 +743,14 @@ def _forward_for_task(
             modalities=(model_cfg or {}).get("modalities"),
             non_blocking=non_blocking,
         )
-        return forward_model(model, task, **fusion_inputs, force_modality_mask=force_modality_mask)
+        return forward_model(
+            model,
+            task,
+            **fusion_inputs,
+            force_modality_mask=force_modality_mask,
+            force_reliability_gate=force_reliability_gate,
+            gate_temperature=gate_temperature,
+        )
     if task == "radar":
         radar_batch = prepare_radar_inputs(
             batch,
@@ -781,6 +821,98 @@ def _training_modality_mask(
     )
 
 
+def _training_reliability_gate_override(training_cfg: dict, model, *, epoch: int) -> float | None:
+    if not getattr(model, "supports_reliability_controls", False):
+        return None
+    return 1.0 if epoch < _craf_gate_start_epoch(training_cfg) else None
+
+
+def _craf_gate_start_epoch(training_cfg: dict) -> int:
+    counterfactual_cfg = training_cfg.get("counterfactual", {})
+    warmup_epochs = int(training_cfg.get("warmup_epochs", 0))
+    counterfactual_start = int(counterfactual_cfg.get("start_epoch", 0))
+    return max(warmup_epochs, counterfactual_start)
+
+
+def _current_craf_gate_temperature(cfg: dict, model_cfg: dict, epoch: int) -> float:
+    reliability_cfg = model_cfg.get("reliability", {})
+    base_temperature = float(reliability_cfg.get("gate_temperature", 1.0))
+    start_temperature = float(reliability_cfg.get("gate_temperature_start", base_temperature))
+    end_temperature = float(reliability_cfg.get("gate_temperature_end", base_temperature))
+    start_epoch = int(reliability_cfg.get("gate_temperature_start_epoch", _craf_gate_start_epoch(cfg.get("training", {}))))
+    default_anneal = max(int(cfg.get("training", {}).get("epochs", 0)) - start_epoch, 0)
+    anneal_epochs = int(reliability_cfg.get("gate_temperature_anneal_epochs", default_anneal))
+    if anneal_epochs <= 0:
+        return max(end_temperature, 1e-6)
+    progress = min(max((epoch - start_epoch) / float(anneal_epochs), 0.0), 1.0)
+    return max(start_temperature + (end_temperature - start_temperature) * progress, 1e-6)
+
+
+def _scheduled_unimodal_weight(loss_cfg: dict, model_cfg: dict, epoch: int, warmup_boundary: int) -> float:
+    unimodal_cfg = loss_cfg.get("unimodal_aux", {})
+    base_weight = float(unimodal_cfg.get("weight", model_cfg.get("unimodal_loss_weight", 0.0)))
+    warmup_weight = _optional_float(
+        loss_cfg.get("uni_weight_warmup", unimodal_cfg.get("weight_warmup", None))
+    )
+    after_weight = _optional_float(
+        loss_cfg.get("uni_weight_after_warmup", unimodal_cfg.get("weight_after_warmup", None))
+    )
+    if epoch < warmup_boundary:
+        return base_weight if warmup_weight is None else warmup_weight
+    return base_weight if after_weight is None else after_weight
+
+
+def _counterfactual_target_weight(loss_cfg: dict, counterfactual_cfg: dict) -> float:
+    configured = _optional_float(loss_cfg.get("gate_weight", None))
+    legacy = float(counterfactual_cfg.get("weight", counterfactual_cfg.get("gate_loss_weight", 0.0)))
+    if configured is not None and configured > 0.0:
+        return configured
+    return legacy
+
+
+def _scheduled_gate_loss_weight(
+    target_weight: float,
+    epoch: int,
+    *,
+    start_epoch: int,
+    ramp_epochs: int,
+) -> float:
+    if target_weight <= 0.0 or epoch < start_epoch:
+        return 0.0
+    if ramp_epochs <= 0:
+        return float(target_weight)
+    progress = min(max((epoch - start_epoch + 1) / float(ramp_epochs), 0.0), 1.0)
+    return float(target_weight) * progress
+
+
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _accumulate_scalar_diagnostics(
+    diagnostics,
+    *,
+    sums: dict[str, float],
+    counts: dict[str, int],
+) -> None:
+    if not isinstance(diagnostics, dict):
+        return
+    for key, value in diagnostics.items():
+        if isinstance(value, (int, float)):
+            sums[key] = sums.get(key, 0.0) + float(value)
+            counts[key] = counts.get(key, 0) + 1
+
+
+def _mean_scalar_diagnostics(sums: dict[str, float], counts: dict[str, int]) -> dict[str, float]:
+    return {
+        key: float(value / max(counts.get(key, 0), 1))
+        for key, value in sums.items()
+        if counts.get(key, 0) > 0
+    }
+
+
 def _compute_craf_extra_losses(
     cfg: dict,
     model,
@@ -795,21 +927,30 @@ def _compute_craf_extra_losses(
     student_outputs: torch.Tensor,
     diagnostics: dict,
     epoch: int,
+    gate_temperature: float,
     device: torch.device,
     non_blocking: bool,
-) -> dict[str, torch.Tensor]:
+) -> dict[str, torch.Tensor | dict[str, float]]:
     zero = student_outputs.sum() * 0.0
+    record_craf_diagnostics = getattr(model, "supports_reliability_controls", False)
+    scalar_diagnostics: dict[str, float] = {}
+    if record_craf_diagnostics:
+        scalar_diagnostics["craf/gate_temperature"] = float(gate_temperature)
     losses = {
         "total": zero,
         "beam_soft": zero,
         "unimodal": zero,
         "counterfactual": zero,
+        "_diagnostics": scalar_diagnostics,
     }
 
     loss_cfg = cfg.get("loss", {})
     beam_cfg = loss_cfg.get("beam_soft", {})
     beam_weight = float(beam_cfg.get("weight", 0.0))
-    if bool(beam_cfg.get("enabled", beam_weight > 0.0)) and beam_weight > 0.0:
+    beam_enabled = bool(beam_cfg.get("enabled", beam_weight > 0.0)) and beam_weight > 0.0
+    if record_craf_diagnostics:
+        losses["_diagnostics"]["loss/beam_soft_weight"] = beam_weight if beam_enabled else 0.0
+    if beam_enabled:
         losses["beam_soft"] = beam_soft_label_loss(
             student_outputs,
             labels,
@@ -820,7 +961,10 @@ def _compute_craf_extra_losses(
         losses["total"] = losses["total"] + beam_weight * losses["beam_soft"]
 
     unimodal_cfg = loss_cfg.get("unimodal_aux", {})
-    unimodal_weight = float(unimodal_cfg.get("weight", model_cfg.get("unimodal_loss_weight", 0.0)))
+    warmup_boundary = _craf_gate_start_epoch(cfg.get("training", {}))
+    unimodal_weight = _scheduled_unimodal_weight(loss_cfg, model_cfg, epoch, warmup_boundary)
+    if record_craf_diagnostics:
+        losses["_diagnostics"]["loss/unimodal_aux_weight"] = float(unimodal_weight)
     if unimodal_weight > 0.0:
         unimodal_loss = _unimodal_aux_loss(
             diagnostics.get("unimodal_logits"),
@@ -834,18 +978,24 @@ def _compute_craf_extra_losses(
         losses["total"] = losses["total"] + unimodal_weight * unimodal_loss
 
     counterfactual_cfg = cfg.get("training", {}).get("counterfactual", {})
-    counterfactual_weight = float(
-        counterfactual_cfg.get("weight", counterfactual_cfg.get("gate_loss_weight", 0.0))
+    counterfactual_weight = _counterfactual_target_weight(loss_cfg, counterfactual_cfg)
+    counterfactual_effective_weight = _scheduled_gate_loss_weight(
+        counterfactual_weight,
+        epoch,
+        start_epoch=warmup_boundary,
+        ramp_epochs=int(loss_cfg.get("gate_ramp_epochs", counterfactual_cfg.get("gate_ramp_epochs", 0))),
     )
+    if record_craf_diagnostics:
+        losses["_diagnostics"]["loss/gate_weight_target"] = float(counterfactual_weight)
+        losses["_diagnostics"]["loss/gate_weight_effective"] = float(counterfactual_effective_weight)
     counterfactual_enabled = bool(counterfactual_cfg.get("enabled", False))
-    start_epoch = int(counterfactual_cfg.get("start_epoch", 0))
     if (
         counterfactual_enabled
-        and counterfactual_weight > 0.0
-        and epoch >= start_epoch
+        and counterfactual_effective_weight > 0.0
+        and epoch >= warmup_boundary
         and getattr(model, "supports_force_modality_mask", False)
     ):
-        counterfactual_loss = _counterfactual_gate_loss(
+        counterfactual_loss, counterfactual_diagnostics = _counterfactual_gate_loss(
             model,
             task,
             batch,
@@ -856,14 +1006,25 @@ def _compute_craf_extra_losses(
             full_outputs=student_outputs,
             reliability=diagnostics.get("reliability"),
             effective_modality_mask=diagnostics.get("effective_modality_mask"),
+            modalities=diagnostics.get("modalities"),
             mode=str(counterfactual_cfg.get("mode", "sample_one")),
-            target_temperature=float(counterfactual_cfg.get("target_temperature", 1.0)),
+            ignore_delta_eps=float(counterfactual_cfg.get("ignore_delta_eps", 0.0)),
+            num_drop_per_batch=int(counterfactual_cfg.get("num_drop_per_batch", 1)),
+            min_keep=int(
+                counterfactual_cfg.get(
+                    "min_keep",
+                    cfg.get("training", {}).get("modality_dropout", {}).get("min_keep", 1),
+                )
+            ),
+            no_grad_drop_forward=bool(counterfactual_cfg.get("no_grad_drop_forward", True)),
+            gate_temperature=gate_temperature,
             device=device,
             non_blocking=non_blocking,
             zero=zero,
         )
         losses["counterfactual"] = counterfactual_loss
-        losses["total"] = losses["total"] + counterfactual_weight * counterfactual_loss
+        losses["total"] = losses["total"] + counterfactual_effective_weight * counterfactual_loss
+        losses["_diagnostics"].update(counterfactual_diagnostics)
     return losses
 
 
@@ -915,45 +1076,176 @@ def _counterfactual_gate_loss(
     full_outputs: torch.Tensor,
     reliability,
     effective_modality_mask,
+    modalities,
     mode: str,
-    target_temperature: float,
+    ignore_delta_eps: float,
+    num_drop_per_batch: int,
+    min_keep: int,
+    no_grad_drop_forward: bool,
+    gate_temperature: float,
     device: torch.device,
     non_blocking: bool,
     zero: torch.Tensor,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, dict[str, float]]:
     if not torch.is_tensor(reliability) or not torch.is_tensor(effective_modality_mask):
-        return zero
-    _, full_per_sample = sequence_cross_entropy(full_outputs, labels)
-    drop_specs = generate_counterfactual_drop_masks(effective_modality_mask.detach(), mode=mode)
-    if not drop_specs:
-        return zero
+        return zero, {}
+    modality_names = _diagnostic_modalities(modalities, reliability.shape[1])
+    available = effective_modality_mask.detach()
     gate_losses = []
-    for keep_mask, dropped_mask in drop_specs:
-        with torch.no_grad():
-            drop_raw = _forward_for_task(
-                model,
-                task,
-                batch,
-                model_cfg=model_cfg,
-                seq_length=seq_length,
-                num_pred=num_pred,
-                device=device,
-                non_blocking=non_blocking,
-                force_modality_mask=keep_mask,
-            )
-            drop_output = adapt_model_output(drop_raw)
-            drop_logits = select_prediction_slots(drop_output.logits, num_pred)
-            _, drop_per_sample = sequence_cross_entropy(drop_logits, labels)
-            target = loss_delta_to_gate_target(
-                full_per_sample.detach(),
-                drop_per_sample.detach(),
-                dropped_mask,
-                temperature=target_temperature,
-            )
-        gate_losses.append(masked_gate_mse_loss(reliability, target, dropped_mask))
+    stats = _CounterfactualStats(modality_names)
+    if mode == "context_marginal":
+        mask_specs = generate_context_marginal_masks(
+            available,
+            num_samples=num_drop_per_batch,
+            min_keep=min_keep,
+        )
+        for context_mask, with_target_mask, target_mask in mask_specs:
+            context_manager = torch.no_grad() if no_grad_drop_forward else nullcontext()
+            with context_manager:
+                context_per_sample = _counterfactual_forward_ce(
+                    model,
+                    task,
+                    batch,
+                    model_cfg=model_cfg,
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    labels=labels,
+                    force_modality_mask=context_mask,
+                    gate_temperature=gate_temperature,
+                    device=device,
+                    non_blocking=non_blocking,
+                )
+                with_target_per_sample = _counterfactual_forward_ce(
+                    model,
+                    task,
+                    batch,
+                    model_cfg=model_cfg,
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    labels=labels,
+                    force_modality_mask=with_target_mask,
+                    gate_temperature=gate_temperature,
+                    device=device,
+                    non_blocking=non_blocking,
+                )
+                delta = context_per_sample - with_target_per_sample
+                target, valid_mask = loss_delta_to_binary_gate_target(
+                    delta.detach(),
+                    target_mask,
+                    ignore_delta_eps=ignore_delta_eps,
+                )
+            stats.update(delta.detach(), target.detach(), target_mask, valid_mask)
+            gate_losses.append(masked_gate_mse_loss(reliability, target, valid_mask))
+    else:
+        full_per_sample = counterfactual_sequence_ce(full_outputs, labels)
+        drop_specs = generate_counterfactual_drop_masks(available, mode=mode)
+        for keep_mask, dropped_mask in drop_specs:
+            context_manager = torch.no_grad() if no_grad_drop_forward else nullcontext()
+            with context_manager:
+                drop_per_sample = _counterfactual_forward_ce(
+                    model,
+                    task,
+                    batch,
+                    model_cfg=model_cfg,
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    labels=labels,
+                    force_modality_mask=keep_mask,
+                    gate_temperature=gate_temperature,
+                    device=device,
+                    non_blocking=non_blocking,
+                )
+                delta = drop_per_sample - full_per_sample
+                target, valid_mask = loss_delta_to_binary_gate_target(
+                    delta.detach(),
+                    dropped_mask,
+                    ignore_delta_eps=ignore_delta_eps,
+                )
+            stats.update(delta.detach(), target.detach(), dropped_mask, valid_mask)
+            gate_losses.append(masked_gate_mse_loss(reliability, target, valid_mask))
     if not gate_losses:
-        return zero
-    return torch.stack(gate_losses).mean()
+        return zero, stats.to_diagnostics()
+    return torch.stack(gate_losses).mean(), stats.to_diagnostics()
+
+
+def _counterfactual_forward_ce(
+    model,
+    task: str,
+    batch: dict[str, torch.Tensor],
+    *,
+    model_cfg: dict,
+    seq_length: int,
+    num_pred: int,
+    labels: torch.Tensor,
+    force_modality_mask: torch.Tensor,
+    gate_temperature: float,
+    device: torch.device,
+    non_blocking: bool,
+) -> torch.Tensor:
+    raw = _forward_for_task(
+        model,
+        task,
+        batch,
+        model_cfg=model_cfg,
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+        non_blocking=non_blocking,
+        force_modality_mask=force_modality_mask,
+        gate_temperature=gate_temperature,
+    )
+    output = adapt_model_output(raw)
+    logits = select_prediction_slots(output.logits, num_pred)
+    return counterfactual_sequence_ce(logits, labels)
+
+
+class _CounterfactualStats:
+    def __init__(self, modalities: list[str]):
+        self.modalities = modalities
+        self.delta_sum = torch.zeros(len(modalities), dtype=torch.float64)
+        self.delta_count = torch.zeros(len(modalities), dtype=torch.float64)
+        self.target_sum = torch.zeros(len(modalities), dtype=torch.float64)
+        self.valid_count = torch.zeros(len(modalities), dtype=torch.float64)
+        self.candidate_count = torch.zeros(len(modalities), dtype=torch.float64)
+
+    def update(
+        self,
+        delta: torch.Tensor,
+        target: torch.Tensor,
+        candidate_mask: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> None:
+        candidate = candidate_mask.detach().to(torch.bool).cpu()
+        valid = valid_mask.detach().to(torch.bool).cpu()
+        delta_cpu = delta.detach().double().cpu()
+        target_cpu = target.detach().double().cpu()
+        for idx in range(len(self.modalities)):
+            candidate_idx = candidate[:, idx]
+            if torch.any(candidate_idx):
+                self.delta_sum[idx] += delta_cpu[candidate_idx].sum()
+                self.delta_count[idx] += candidate_idx.sum()
+                self.candidate_count[idx] += candidate_idx.sum()
+            valid_idx = valid[:, idx]
+            if torch.any(valid_idx):
+                self.target_sum[idx] += target_cpu[:, idx][valid_idx].sum()
+                self.valid_count[idx] += valid_idx.sum()
+
+    def to_diagnostics(self) -> dict[str, float]:
+        diagnostics: dict[str, float] = {}
+        for idx, modality in enumerate(self.modalities):
+            if self.delta_count[idx].item() > 0:
+                diagnostics[f"cf/delta_mean_{modality}"] = float(
+                    (self.delta_sum[idx] / self.delta_count[idx]).item()
+                )
+            if self.valid_count[idx].item() > 0:
+                diagnostics[f"cf/target_mean_{modality}"] = float(
+                    (self.target_sum[idx] / self.valid_count[idx]).item()
+                )
+            if self.candidate_count[idx].item() > 0:
+                diagnostics[f"cf/target_valid_rate_{modality}"] = float(
+                    (self.valid_count[idx] / self.candidate_count[idx]).item()
+                )
+        return diagnostics
 
 
 def _batch_reliability_summary(diagnostics: dict) -> dict[str, float]:
@@ -961,7 +1253,12 @@ def _batch_reliability_summary(diagnostics: dict) -> dict[str, float]:
     modalities = diagnostics.get("modalities")
     if not torch.is_tensor(reliability) or reliability.ndim != 2:
         return {}
-    if not isinstance(modalities, (tuple, list)) or len(modalities) != reliability.shape[1]:
-        modalities = [f"modality_{idx}" for idx in range(reliability.shape[1])]
+    modalities = _diagnostic_modalities(modalities, reliability.shape[1])
     means = reliability.detach().float().mean(dim=0).cpu()
     return {str(modality): float(means[idx].item()) for idx, modality in enumerate(modalities)}
+
+
+def _diagnostic_modalities(modalities, modality_count: int) -> list[str]:
+    if not isinstance(modalities, (tuple, list)) or len(modalities) != modality_count:
+        return [f"modality_{idx}" for idx in range(modality_count)]
+    return [str(modality) for modality in modalities]

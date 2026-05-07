@@ -1,5 +1,5 @@
 experiment:
-  name: craf_all_modalities_no_kd
+  name: token_transformer_all_modalities_no_kd
   task: fusion
   seed: 0
   device: auto
@@ -45,7 +45,7 @@ model:
     num_classes: 64
     gru_params: [64, 64, 2]
   student:
-    type: craf_fusion
+    type: token_transformer_fusion
     modalities: [image, radar, gps, lidar, mmwave]
     image_channels: 1
     radar_channels: 2
@@ -59,9 +59,6 @@ model:
     num_heads: 4
     num_layers: 2
     dropout: 0.1
-    reliability:
-      min_gate: 0.05
-      use_dataset_prior: false
 distillation:
   type: no_kd
   teacher_model_name: null
@@ -70,15 +67,14 @@ loss:
   alpha: 1
   gamma: 2
   beam_soft:
-    enabled: true
-    weight: 0.03
-    sigma: 2.0
-    circular: true
+    enabled: false
+    weight: 0.0
   unimodal_aux:
-    weight: 0.1
+    weight: 0.0
+  gate_weight: 0.0
 training:
   epochs: 100
-  warmup_epochs: 5
+  warmup_epochs: 0
   lr: 0.00075
   weight_decay: 0.0001
   grad_clip: 10.0
@@ -86,21 +82,17 @@ training:
   use_early_stopping: true
   min_delta: 0.0001
   modality_dropout:
-    enabled: true
-    drop_prob: 0.1
+    enabled: false
+    drop_prob: 0.0
     min_keep: 1
   counterfactual:
-    enabled: true
+    enabled: false
     mode: sample_one
-    start_epoch: 5
-    weight: 0.1
-    target_temperature: 1.0
-    ignore_delta_eps: 0.0
-    use_ce_only: true
-    no_grad_drop_forward: true
+    start_epoch: 0
+    weight: 0.0
 output:
   dir: outputs
-  run_name: craf_all_modalities_no_kd
+  run_name: token_transformer_all_modalities_no_kd
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

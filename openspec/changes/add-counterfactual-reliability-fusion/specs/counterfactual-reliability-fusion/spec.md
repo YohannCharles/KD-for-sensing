@@ -162,3 +162,109 @@ CRAF 训练和评估 MUST 能记录可靠性相关诊断信息，以便分析模
 - **WHEN** 用户选择单模态 transformer baseline
 - **THEN** 模型 MUST 只消费一个模态输入
 - **AND** 输出 MUST 与同一训练/评估流程的标签语义对齐
+
+### Requirement: 分阶段 reliability gate 训练
+CRAF 训练 MUST 支持 warmup 阶段固定可用模态 gate，并 MUST 在配置指定的 counterfactual 起始 epoch 后才启用反事实 gate supervision。
+
+#### Scenario: warmup 阶段固定 gate
+- **WHEN** 当前 epoch 小于 `training.counterfactual.start_epoch` 或 `training.warmup_epochs`
+- **THEN** CRAF MUST 对所有可用模态使用等价于 `r_m = 1` 的有效 gate
+- **AND** 训练流程 MUST 跳过 counterfactual gate loss
+
+#### Scenario: warmup 后启用 learned gate
+- **WHEN** 当前 epoch 达到 counterfactual 起始 epoch 且 `training.counterfactual.enabled` 为 true
+- **THEN** CRAF MUST 使用 reliability estimator 产生的 gate 门控可用模态 token
+- **AND** 训练流程 MUST 允许 counterfactual gate supervision 参与总 loss
+
+#### Scenario: gate loss 权重 ramp
+- **WHEN** 配置设置 `loss.gate_ramp_epochs` 大于 0
+- **THEN** 训练流程 MUST 从 counterfactual 起始 epoch 开始线性增加 gate loss 有效权重
+- **AND** 有效权重 MUST 不超过配置的目标 `loss.gate_weight`
+
+### Requirement: CE-only 反事实贡献目标
+Counterfactual gate target MUST 基于主任务 sequence CE 的 per-sample loss 差异计算，并 MUST 支持对不明确贡献使用 ignore band。
+
+#### Scenario: 贡献差值只使用 CE
+- **WHEN** 训练流程计算 `delta` 用于监督 reliability gate
+- **THEN** `delta` MUST 只由 full/context forward 与 counterfactual forward 的主任务 CE 差异产生
+- **AND** `delta` MUST 不包含 beam soft loss、单模态 auxiliary loss、KD loss 或 gate loss
+
+#### Scenario: ignore band 跳过模糊贡献
+- **WHEN** `abs(delta)` 小于或等于 `training.counterfactual.ignore_delta_eps`
+- **THEN** 该样本-模态 pair MUST 不参与 gate target loss
+- **AND** 训练日志 MUST 能统计该模态的 target 有效率
+
+#### Scenario: 二值 gate target
+- **WHEN** `delta` 大于 `training.counterfactual.ignore_delta_eps`
+- **THEN** gate target MUST 表示该模态有正贡献
+- **AND** 当 `delta` 小于负的 `training.counterfactual.ignore_delta_eps` 时，gate target MUST 表示该模态有负贡献
+
+### Requirement: context-marginal 反事实模式
+训练流程 MUST 支持 `context_marginal` 反事实模式，用随机上下文子集估计某个模态的条件边际贡献。
+
+#### Scenario: 构造不含目标模态的上下文
+- **WHEN** `training.counterfactual.mode` 为 `context_marginal`
+- **THEN** 训练流程 MUST 为目标模态采样一个不包含该模态的可用模态上下文子集 `A`
+- **AND** `A` MUST 至少保留配置允许的最小模态数量
+
+#### Scenario: 比较加入目标模态前后 CE
+- **WHEN** 上下文子集 `A` 和目标模态 `m` 已确定
+- **THEN** 训练流程 MUST 分别计算 `A` 与 `A ∪ {m}` 的主任务 CE
+- **AND** 训练流程 MUST 使用 `CE(A) - CE(A ∪ {m})` 作为该模态的贡献差值
+
+#### Scenario: 保留旧反事实模式
+- **WHEN** 用户配置 `sample_one` 或 `leave_one_out`
+- **THEN** 训练流程 MUST 继续支持已有 drop-forward 语义
+- **AND** 新的 `context_marginal` 模式 MUST 不改变旧模式配置的行为
+
+### Requirement: competitive modality gate
+CRAF reliability gate MUST 支持在可用模态集合上进行 softmax 归一化，使模态之间形成竞争，并 MUST 保持不可用模态不参与融合。
+
+#### Scenario: softmax gate 归一化
+- **WHEN** `model.student.reliability.gate_type` 为 `softmax`
+- **THEN** CRAF MUST 只在 effective modality mask 标记为可用的模态上计算 softmax gate
+- **AND** 不可用模态的有效 gate MUST 为 0 或等价不参与融合
+
+#### Scenario: gate 温度退火
+- **WHEN** 配置提供 `gate_temperature_start` 和 `gate_temperature_end`
+- **THEN** CRAF 训练 MUST 按 epoch 计算当前 gate temperature
+- **AND** 温度 MUST 在配置边界内从起始值逐步过渡到结束值
+
+#### Scenario: 保持 token 幅值尺度
+- **WHEN** softmax gate 在 `K` 个可用模态上产生归一化权重
+- **THEN** CRAF MUST 支持将 gate 按可用模态数缩放或使用等价方式保持融合 token 的整体幅值尺度
+- **AND** `min_gate` MUST 只作用于可用模态
+
+### Requirement: CRAF 附加 loss 调度
+CRAF 训练 MUST 支持对单模态 auxiliary loss、beam soft loss 和 gate loss 进行配置化调度，避免附加目标在主任务未稳定时主导优化。
+
+#### Scenario: 单模态 auxiliary warmup-only
+- **WHEN** 配置设置 `loss.uni_weight_warmup` 大于 0 且 `loss.uni_weight_after_warmup` 为 0
+- **THEN** 训练流程 MUST 只在 warmup 阶段将单模态 auxiliary loss 加入总 loss
+- **AND** warmup 后总 loss MUST 不包含单模态 auxiliary loss
+
+#### Scenario: 单模态 auxiliary 两段权重
+- **WHEN** 配置同时提供 `loss.uni_weight_warmup` 和 `loss.uni_weight_after_warmup`
+- **THEN** 训练流程 MUST 根据当前 epoch 选择对应阶段权重
+- **AND** 日志 MUST 能记录实际生效的 auxiliary loss 权重
+
+#### Scenario: beam soft loss 可降权
+- **WHEN** 配置设置 `loss.beam_soft.weight`
+- **THEN** 训练流程 MUST 按该权重加入 beam-aware soft label loss
+- **AND** 权重为 0 时训练总 loss MUST 不包含 beam soft loss
+
+### Requirement: CRAF 反事实诊断日志
+CRAF 训练 MUST 记录足以判断 reliability supervision 是否有效的每模态 counterfactual 诊断标量。
+
+#### Scenario: 记录每模态 delta 均值
+- **WHEN** counterfactual supervision 在一个 epoch 内产生有效 `delta`
+- **THEN** 训练日志 MUST 包含每个启用模态的 `cf/delta_mean_<modality>` 或等价字段
+
+#### Scenario: 记录每模态 target 均值
+- **WHEN** counterfactual supervision 在一个 epoch 内产生有效 gate target
+- **THEN** 训练日志 MUST 包含每个启用模态的 `cf/target_mean_<modality>` 或等价字段
+
+#### Scenario: 记录每模态 target 有效率
+- **WHEN** 配置启用 `training.counterfactual.ignore_delta_eps`
+- **THEN** 训练日志 MUST 包含每个启用模态的 `cf/target_valid_rate_<modality>` 或等价字段
+- **AND** 该字段 MUST 反映未被 ignore band 跳过的样本-模态比例

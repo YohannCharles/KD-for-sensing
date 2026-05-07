@@ -115,8 +115,14 @@ DEFAULT_CONFIG = {
         },
         "unimodal_aux": {
             "weight": 0.0,
+            "weight_warmup": None,
+            "weight_after_warmup": None,
             "ignore_index": -100,
         },
+        "gate_weight": 0.0,
+        "gate_ramp_epochs": 0,
+        "uni_weight_warmup": None,
+        "uni_weight_after_warmup": None,
     },
     "distillation": {
         "type": "no_kd",
@@ -130,6 +136,7 @@ DEFAULT_CONFIG = {
     },
     "training": {
         "epochs": 100,
+        "warmup_epochs": 0,
         "lr": 1e-3,
         "weight_decay": 0.0,
         "grad_clip": 10.0,
@@ -157,6 +164,11 @@ DEFAULT_CONFIG = {
             "start_epoch": 0,
             "weight": 0.0,
             "target_temperature": 1.0,
+            "ignore_delta_eps": 0.0,
+            "use_ce_only": True,
+            "num_drop_per_batch": 1,
+            "min_keep": 1,
+            "no_grad_drop_forward": True,
         },
     },
     "scheduler": {

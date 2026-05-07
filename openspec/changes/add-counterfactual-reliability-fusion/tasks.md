@@ -64,3 +64,39 @@
 - [x] 7.2 记录推荐实验顺序：单模态、legacy early-concat fusion、token transformer baseline、CRAF no-KD、CRAF 反事实 gate ablation。
 - [x] 7.3 说明第一阶段限制：真实缺失模态依赖未来 dataset mask 字段，当前主要通过 force mask、modality dropout 和 counterfactual drop 验证。
 - [x] 7.4 说明 CRAF 与 KD 的组合策略：第一阶段优先 no-KD，KD 组合需要单独显式配置和后续验证。
+
+## 8. CRAF 稳定化配置与 gate 调度
+
+- [x] 8.1 扩展 CRAF 配置解析和默认值，支持 `training.warmup_epochs`、`training.counterfactual.ignore_delta_eps`、`training.counterfactual.use_ce_only`、`training.counterfactual.mode: context_marginal`、`loss.gate_ramp_epochs`、`loss.uni_weight_warmup`、`loss.uni_weight_after_warmup` 和 softmax gate 温度字段。
+- [x] 8.2 在 CRAF forward 或训练 helper 中实现 warmup 阶段固定可用模态 gate 为 1，确保 counterfactual 起始 epoch 前 reliability estimator 不改变融合 token 幅值。
+- [x] 8.3 实现 `model.student.reliability.gate_type: softmax`，只在 effective modality mask 的可用模态上归一化，并支持按可用模态数缩放、`min_gate` 和不可用模态 gate 清零。
+- [x] 8.4 实现 gate temperature schedule，从 `gate_temperature_start` 退火到 `gate_temperature_end`，并将当前 temperature 暴露给 diagnostics。
+- [x] 8.5 实现 gate loss ramp，使 counterfactual 起始 epoch 后的有效 gate 权重按 `loss.gate_ramp_epochs` 线性增加。
+
+## 9. CE-only counterfactual target
+
+- [x] 9.1 扩展 sequence CE/per-sample loss helper，提供专用于 counterfactual delta 的 CE-only 路径，并明确不混入 beam soft、unimodal auxiliary、KD 或 gate loss。
+- [x] 9.2 将 gate target helper 改为基于 `ignore_delta_eps` 的二值 target 和 valid mask：正 delta 监督为有益、负 delta 监督为有害、阈值内样本-模态 pair 被忽略。
+- [x] 9.3 新增 `context_marginal` mask 生成 helper，采样不含目标模态的上下文子集 `A`，并构造 `A ∪ {m}` 的对照 mask。
+- [x] 9.4 在 trainer 的 CRAF counterfactual 路径中接入 `context_marginal`，支持 `num_drop_per_batch`、`min_keep` 和 `no_grad_drop_forward`。
+- [x] 9.5 保留并回归 `sample_one` 与 `leave_one_out` 旧模式，确认新 helper 不改变旧配置行为。
+
+## 10. 附加 loss 调度、日志与实验配置
+
+- [x] 10.1 将单模态 auxiliary loss 接入 warmup/after 两段权重，支持 warmup-only 配置，并在日志中记录实际生效权重。
+- [x] 10.2 将 beam soft loss 默认配置降权到稳定化实验建议值，同时保持权重为 0 时完全关闭。
+- [x] 10.3 扩展 CRAF epoch diagnostics，记录每模态 `cf/delta_mean_*`、`cf/target_mean_*`、`cf/target_valid_rate_*`、gate temperature、gate loss 有效权重和附加 loss 有效权重。
+- [x] 10.4 新增 all-modalities CRAF 稳定化配置，包含 warmup 25、CE-only counterfactual、ignore band、softmax gate、gate ramp、aux warmup-only 和 beam soft 低权重。
+- [x] 10.5 新增最小消融配置：token transformer 无 gate、CRAF 无 counterfactual、CRAF 稳定化 gate、固定 GPS/mmWave 强 prior sanity check。
+- [x] 10.6 更新 README 或实验说明，记录方案 2 的推荐实验顺序、关键日志判据和失败排查方式。
+
+## 11. 测试与验证
+
+- [x] 11.1 增加 softmax gate 单元测试，覆盖可用模态归一化、不可用模态 mask、`min_gate` 和温度退火。
+- [x] 11.2 增加 CE-only delta、ignore band target、target valid mask 和 `context_marginal` mask helper 单元测试。
+- [x] 11.3 增加训练流程测试，验证 warmup 阶段固定 gate、counterfactual 起始 epoch 后启用 gate loss、gate ramp 和 auxiliary warmup-only 行为。
+- [x] 11.4 增加日志测试，确认 `train_log.json` 或等价 epoch metrics 包含每模态 delta、target、valid rate 和有效 loss 权重字段。
+- [x] 11.5 使用 `conda run -n kd_mm_beam pytest tests/test_craf*.py tests/test_trainer*.py` 或等价定向测试验证 CRAF 稳定化路径。
+- [x] 11.6 使用 `conda run -n kd_mm_beam pytest` 运行完整测试套件，确认 legacy fusion、单模态和 KD 路径不回退。
+- [x] 11.7 使用 `conda run -n kd_mm_beam python -m kd_sensing.cli.train --config <craf-stabilized-config> --override training.epochs=1 data.dataloader.train_batch_size=2 data.dataloader.test_batch_size=2` 完成 CRAF 稳定化短训练 smoke test。
+- [x] 11.8 使用 `conda run -n kd_mm_beam openspec status --change add-counterfactual-reliability-fusion` 确认 OpenSpec 状态可追踪。

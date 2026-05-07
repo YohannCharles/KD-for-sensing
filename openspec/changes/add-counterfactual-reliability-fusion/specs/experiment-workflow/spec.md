@@ -74,3 +74,39 @@
 #### Scenario: CRAF 配置加载测试
 - **WHEN** 开发者运行配置加载测试
 - **THEN** CRAF 示例配置和 baseline 示例配置 MUST 能通过 config loader 解析
+
+### Requirement: CRAF 稳定化训练工作流
+训练流程 MUST 支持 CRAF 稳定化训练配置，包括 warmup gate 固定、CE-only 反事实目标、ignore band、gate/loss schedule 和 softmax gate 诊断。
+
+#### Scenario: warmup 阶段不扰动主任务训练
+- **WHEN** CRAF 配置处于 warmup epoch
+- **THEN** 训练流程 MUST 执行普通 forward、任务 loss、可配置的 warmup auxiliary loss 和优化步骤
+- **AND** 训练流程 MUST 不执行会产生 gate target loss 的 counterfactual supervision
+
+#### Scenario: 反事实启用后写入有效权重
+- **WHEN** counterfactual supervision 已启用
+- **THEN** `train_log.json` MUST 记录 gate loss 的目标权重和当前有效权重
+- **AND** TensorBoard 启用时 MUST 写入等价标量
+
+#### Scenario: 旧训练配置兼容
+- **WHEN** CRAF 配置未提供新的稳定化字段
+- **THEN** 训练流程 MUST 使用向后兼容默认值
+- **AND** 非 CRAF 模型 MUST 不读取或依赖这些字段
+
+### Requirement: CRAF 稳定化实验矩阵
+项目 MUST 提供用于定位模态失衡问题的最小 CRAF 消融实验入口。
+
+#### Scenario: token transformer 无 gate baseline
+- **WHEN** 用户运行 token transformer 无 gate 配置
+- **THEN** 模型 MUST 使用 CRAF tokenizer 与 Transformer backbone
+- **AND** 训练流程 MUST 不启用 reliability gate 和 counterfactual gate loss
+
+#### Scenario: CRAF 无反事实 baseline
+- **WHEN** 用户运行 CRAF no-counterfactual 配置
+- **THEN** 模型 MAY 构建 reliability estimator
+- **AND** 训练流程 MUST 固定 gate 或跳过 counterfactual gate supervision
+
+#### Scenario: 固定强模态 prior sanity check
+- **WHEN** 用户运行固定 GPS/mmWave 高、image/LiDAR/radar 低的 prior 配置
+- **THEN** 训练流程 MUST 使用该 prior 作为诊断 gate 或 dataset prior 输入
+- **AND** 该配置 MUST 明确标记为 sanity check 而非默认算法

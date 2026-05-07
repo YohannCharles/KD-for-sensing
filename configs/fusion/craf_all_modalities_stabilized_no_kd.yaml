@@ -1,5 +1,5 @@
 experiment:
-  name: craf_all_modalities_no_kd
+  name: craf_all_modalities_stabilized_no_kd
   task: fusion
   seed: 0
   device: auto
@@ -60,7 +60,12 @@ model:
     num_layers: 2
     dropout: 0.1
     reliability:
-      min_gate: 0.05
+      gate_type: softmax
+      gate_temperature_start: 2.0
+      gate_temperature_end: 0.7
+      gate_temperature_anneal_epochs: 60
+      scale_by_available: true
+      min_gate: 0.03
       use_dataset_prior: false
 distillation:
   type: no_kd
@@ -75,10 +80,14 @@ loss:
     sigma: 2.0
     circular: true
   unimodal_aux:
-    weight: 0.1
+    weight: 0.0
+  uni_weight_warmup: 0.1
+  uni_weight_after_warmup: 0.0
+  gate_weight: 0.1
+  gate_ramp_epochs: 10
 training:
   epochs: 100
-  warmup_epochs: 5
+  warmup_epochs: 25
   lr: 0.00075
   weight_decay: 0.0001
   grad_clip: 10.0
@@ -91,16 +100,17 @@ training:
     min_keep: 1
   counterfactual:
     enabled: true
-    mode: sample_one
-    start_epoch: 5
+    mode: context_marginal
+    start_epoch: 25
     weight: 0.1
-    target_temperature: 1.0
-    ignore_delta_eps: 0.0
+    ignore_delta_eps: 0.03
     use_ce_only: true
+    num_drop_per_batch: 1
+    min_keep: 1
     no_grad_drop_forward: true
 output:
   dir: outputs
-  run_name: craf_all_modalities_no_kd
+  run_name: craf_all_modalities_stabilized_no_kd
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

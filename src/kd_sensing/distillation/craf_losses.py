@@ -32,6 +32,18 @@ def sequence_cross_entropy(
     return scalar, per_sample
 
 
+def counterfactual_sequence_ce(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    ignore_index: int = -100,
+) -> torch.Tensor:
+    """Return CE-only per-sample loss for counterfactual delta targets."""
+
+    _, per_sample = sequence_cross_entropy(logits, labels, ignore_index=ignore_index)
+    return per_sample
+
+
 def beam_soft_label_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,

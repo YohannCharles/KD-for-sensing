@@ -56,13 +56,14 @@ loss:
   gamma: 2
   beam_soft:
     enabled: true
-    weight: 0.1
+    weight: 0.03
     sigma: 2.0
     circular: true
   unimodal_aux:
     weight: 0.1
 training:
   epochs: 100
+  warmup_epochs: 5
   lr: 0.0004
   weight_decay: 0.0
   grad_clip: 10.0
@@ -79,6 +80,9 @@ training:
     start_epoch: 5
     weight: 0.1
     target_temperature: 1.0
+    ignore_delta_eps: 0.0
+    use_ce_only: true
+    no_grad_drop_forward: true
 output:
   dir: outputs
   run_name: craf_image_radar_no_kd

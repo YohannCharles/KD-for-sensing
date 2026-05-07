@@ -221,6 +221,8 @@ def forward_model(
     lidar_batch: torch.Tensor | None = None,
     mmwave_batch: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
+    force_reliability_gate: torch.Tensor | float | None = None,
+    gate_temperature: float | torch.Tensor | None = None,
 ):
     if task == "fusion":
         kwargs = {
@@ -234,6 +236,14 @@ def forward_model(
             if not getattr(model, "supports_force_modality_mask", False):
                 raise ValueError("force_modality_mask is only supported by models that opt in to modality masks.")
             kwargs["force_modality_mask"] = force_modality_mask
+        if force_reliability_gate is not None:
+            if not getattr(model, "supports_reliability_controls", False):
+                raise ValueError("force_reliability_gate is only supported by CRAF-style models.")
+            kwargs["force_reliability_gate"] = force_reliability_gate
+        if gate_temperature is not None:
+            if not getattr(model, "supports_reliability_controls", False):
+                raise ValueError("gate_temperature is only supported by CRAF-style models.")
+            kwargs["gate_temperature"] = gate_temperature
         return model(**kwargs)
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch

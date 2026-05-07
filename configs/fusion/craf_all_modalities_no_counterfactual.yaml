@@ -1,5 +1,5 @@
 experiment:
-  name: craf_all_modalities_no_kd
+  name: craf_all_modalities_no_counterfactual
   task: fusion
   seed: 0
   device: auto
@@ -60,6 +60,7 @@ model:
     num_layers: 2
     dropout: 0.1
     reliability:
+      gate_type: sigmoid
       min_gate: 0.05
       use_dataset_prior: false
 distillation:
@@ -76,9 +77,10 @@ loss:
     circular: true
   unimodal_aux:
     weight: 0.1
+  gate_weight: 0.0
 training:
   epochs: 100
-  warmup_epochs: 5
+  warmup_epochs: 0
   lr: 0.00075
   weight_decay: 0.0001
   grad_clip: 10.0
@@ -90,17 +92,13 @@ training:
     drop_prob: 0.1
     min_keep: 1
   counterfactual:
-    enabled: true
+    enabled: false
     mode: sample_one
-    start_epoch: 5
-    weight: 0.1
-    target_temperature: 1.0
-    ignore_delta_eps: 0.0
-    use_ce_only: true
-    no_grad_drop_forward: true
+    start_epoch: 0
+    weight: 0.0
 output:
   dir: outputs
-  run_name: craf_all_modalities_no_kd
+  run_name: craf_all_modalities_no_counterfactual
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

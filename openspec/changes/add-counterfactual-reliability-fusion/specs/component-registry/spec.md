@@ -41,3 +41,13 @@ CRAF 使用的 beam soft loss、sequence CE/per-sample loss 和 gate supervision
 - **WHEN** 测试代码传入 full loss 与 drop loss
 - **THEN** helper MUST 返回范围可控的模态贡献目标
 - **AND** 目标 MUST 能与 reliability gate 计算监督 loss
+
+#### Scenario: 直接测试 ignore band gate target
+- **WHEN** 测试代码传入 `delta` 和 `ignore_delta_eps`
+- **THEN** helper MUST 返回二值 target 和 target valid mask
+- **AND** `abs(delta)` 不大于阈值的位置 MUST 被标记为无效
+
+#### Scenario: 直接测试 context marginal mask
+- **WHEN** 测试代码请求为目标模态构造 `context_marginal` mask
+- **THEN** helper MUST 返回不含目标模态的上下文 mask 和加入目标模态后的 mask
+- **AND** 两个 mask MUST 遵守可用模态约束和最小保留模态数量

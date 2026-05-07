@@ -226,6 +226,7 @@ CRAF 通过 `model.student.type: craf_fusion` 显式启用，不会改变 legacy
 ```bash
 python scripts/train.py --config configs/fusion/craf_image_radar_no_kd.yaml
 python scripts/train.py --config configs/fusion/craf_all_modalities_no_kd.yaml
+python scripts/train.py --config configs/fusion/craf_all_modalities_stabilized_no_kd.yaml
 python scripts/train.py --config configs/fusion/token_transformer_image_radar_no_kd.yaml
 ```
 
@@ -236,15 +237,25 @@ python scripts/train.py --config configs/fusion/token_transformer_image_radar_no
 Transformer fusion，但关闭 reliability gate，适合作为 CRAF 的直接 baseline。
 
 CRAF 相关字段默认关闭，只有配置显式设置权重时才加入训练 loss：
-`model.student.reliability` 控制 `min_gate` 和 dataset prior；
+`model.student.reliability` 控制 `gate_type`、`min_gate`、temperature schedule 和 dataset prior；
 `training.modality_dropout` 控制训练期随机模态保留 mask；
-`training.counterfactual` 控制 `sample_one` 或 `leave_one_out` 反事实 drop-forward gate 监督；
-`loss.beam_soft` 和 `loss.unimodal_aux` 分别控制 beam-aware 软标签 loss 和单模态辅助 loss。
+`training.counterfactual` 控制 `sample_one`、`leave_one_out` 或 `context_marginal` 反事实 gate 监督；
+`loss.beam_soft`、`loss.unimodal_aux`、`loss.uni_weight_warmup`、`loss.uni_weight_after_warmup`
+和 `loss.gate_ramp_epochs` 控制 beam-aware 软标签、单模态辅助 loss 和 gate loss 调度。
 
 推荐实验顺序是：单模态 baseline、legacy early-concat fusion、`token_transformer_fusion` baseline、
 CRAF no-KD、CRAF 反事实 gate ablation。第一阶段的真实缺失模态依赖未来 dataset mask 字段；当前主要通过
 `force_modality_mask`、modality dropout 和 counterfactual drop 验证缺失/屏蔽路径。CRAF 与 KD 的组合需要
 单独显式配置和后续验证，第一阶段优先使用 no-KD 配置。
+
+方案 2 稳定化实验建议先跑：
+`token_transformer_all_modalities_no_kd.yaml`、`craf_all_modalities_no_counterfactual.yaml`、
+`craf_all_modalities_stabilized_no_kd.yaml`、`craf_all_modalities_fixed_prior_sanity.yaml`。其中 fixed-prior
+配置使用 `gate_type: fixed_prior`，只作为 GPS/mmWave 强 prior 的诊断检查。关键日志字段包括
+`cf/delta_mean_*`、`cf/target_mean_*`、`cf/target_valid_rate_*`、`craf/gate_temperature`、
+`loss/gate_weight_effective` 和 `loss/unimodal_aux_weight`。如果 `target_valid_rate` 长期过低，优先调小
+`training.counterfactual.ignore_delta_eps`；如果 weak modality reliability 仍偏高，优先对比 fixed-prior
+sanity check 和 `token_transformer_fusion` 结果，区分 gate 监督问题和 backbone 问题。
 
 新增或调整模态时，先更新 `src/kd_sensing/modalities.py` 的 `ModalitySpec`，再补 dataset 读取、
 batch 准备、模型注册和诊断显示逻辑。新代码优先使用窄模块导入：

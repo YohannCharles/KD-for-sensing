@@ -61,6 +61,13 @@ class ReliabilityEstimator(nn.Module):
         *,
         hidden_size: int | None = None,
         min_gate: float = 0.0,
+        gate_type: str = "sigmoid",
+        gate_temperature: float = 1.0,
+        gate_temperature_start: float | None = None,
+        gate_temperature_end: float | None = None,
+        gate_temperature_anneal_epochs: int | None = None,
+        gate_temperature_start_epoch: int | None = None,
+        scale_by_available: bool = True,
         use_dataset_prior: bool = False,
         dataset_prior: list[float] | tuple[float, ...] | dict[str, float] | None = None,
         modalities: tuple[str, ...] = (),
@@ -68,7 +75,19 @@ class ReliabilityEstimator(nn.Module):
         super().__init__()
         if not 0.0 <= float(min_gate) < 1.0:
             raise ValueError(f"min_gate must be in [0, 1), got {min_gate}.")
+        gate_type = str(gate_type)
+        if gate_type not in {"sigmoid", "softmax", "fixed_prior"}:
+            raise ValueError(f"gate_type must be 'sigmoid', 'softmax', or 'fixed_prior', got '{gate_type}'.")
+        if float(gate_temperature) <= 0.0:
+            raise ValueError(f"gate_temperature must be positive, got {gate_temperature}.")
         self.min_gate = float(min_gate)
+        self.gate_type = gate_type
+        self.gate_temperature = float(gate_temperature)
+        self.gate_temperature_start = None if gate_temperature_start is None else float(gate_temperature_start)
+        self.gate_temperature_end = None if gate_temperature_end is None else float(gate_temperature_end)
+        self.gate_temperature_anneal_epochs = gate_temperature_anneal_epochs
+        self.gate_temperature_start_epoch = gate_temperature_start_epoch
+        self.scale_by_available = bool(scale_by_available)
         self.use_dataset_prior = bool(use_dataset_prior)
         self.modality_count = int(modality_count)
         hidden = int(hidden_size or max(d_model // 2, 16))
@@ -88,6 +107,8 @@ class ReliabilityEstimator(nn.Module):
         modality_repr: torch.Tensor,
         confidence: torch.Tensor,
         available_mask: torch.Tensor,
+        *,
+        gate_temperature: float | torch.Tensor | None = None,
     ) -> torch.Tensor:
         if modality_repr.ndim != 3:
             raise ValueError(f"modality_repr must have shape [B, K, D], got {tuple(modality_repr.shape)}.")
@@ -102,10 +123,47 @@ class ReliabilityEstimator(nn.Module):
             prior = self.dataset_prior.to(dtype=modality_repr.dtype, device=modality_repr.device)
             prior = prior.view(1, self.modality_count, 1).expand(modality_repr.shape[0], -1, -1)
             features.append(prior)
-        raw_gate = torch.sigmoid(self.net(torch.cat(features, dim=-1)).squeeze(-1))
+        scores = self.net(torch.cat(features, dim=-1)).squeeze(-1)
+        if self.gate_type == "softmax":
+            raw_gate = self._softmax_gate(scores, available, gate_temperature=gate_temperature)
+        elif self.gate_type == "fixed_prior":
+            raw_gate = self._fixed_prior_gate(modality_repr, available)
+        else:
+            raw_gate = torch.sigmoid(scores)
+            if self.min_gate > 0:
+                raw_gate = raw_gate * (1.0 - self.min_gate) + self.min_gate
+            raw_gate = raw_gate.masked_fill(~available, 0.0)
+        return raw_gate
+
+    def _softmax_gate(
+        self,
+        scores: torch.Tensor,
+        available: torch.Tensor,
+        *,
+        gate_temperature: float | torch.Tensor | None,
+    ) -> torch.Tensor:
+        if torch.is_tensor(gate_temperature):
+            temperature = float(gate_temperature.detach().item())
+        else:
+            temperature = self.gate_temperature if gate_temperature is None else float(gate_temperature)
+        if temperature <= 0.0:
+            raise ValueError(f"gate_temperature must be positive, got {temperature}.")
+        masked_scores = scores.masked_fill(~available, torch.finfo(scores.dtype).min)
+        gate = F.softmax(masked_scores / temperature, dim=1).masked_fill(~available, 0.0)
+        available_count = available.sum(dim=1, keepdim=True).to(gate.dtype)
+        if self.scale_by_available:
+            gate = gate * available_count.clamp_min(1.0)
         if self.min_gate > 0:
-            raw_gate = raw_gate * (1.0 - self.min_gate) + self.min_gate
-        return raw_gate.masked_fill(~available, 0.0)
+            gate = gate * (1.0 - self.min_gate) + self.min_gate
+            gate = gate.masked_fill(~available, 0.0)
+        return gate.masked_fill(available_count.eq(0), 0.0)
+
+    def _fixed_prior_gate(self, modality_repr: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
+        prior = self.dataset_prior.to(dtype=modality_repr.dtype, device=modality_repr.device)
+        gate = prior.clamp(0.0, 1.0).view(1, self.modality_count).expand(modality_repr.shape[0], -1)
+        if self.min_gate > 0:
+            gate = gate * (1.0 - self.min_gate) + self.min_gate
+        return gate.masked_fill(~available, 0.0)
 
 
 class ModalityTokenizer(nn.Module):
@@ -151,6 +209,7 @@ class HorizonPredictionHead(nn.Module):
 
 class CRAFTTokenFusionBase(nn.Module):
     supports_force_modality_mask = True
+    supports_reliability_controls = True
 
     def __init__(
         self,
@@ -243,6 +302,8 @@ class CRAFTTokenFusionBase(nn.Module):
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
         force_modality_mask: torch.Tensor | None = None,
+        force_reliability_gate: torch.Tensor | float | None = None,
+        gate_temperature: float | torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | tuple[str, ...]]:
         raw_inputs = {
             "image": image_batch,
@@ -277,8 +338,16 @@ class CRAFTTokenFusionBase(nn.Module):
         modality_repr = _masked_modality_mean(tokens, token_padding_mask)
         unimodal_logits = self.unimodal_head(modality_repr)
         confidence = compute_unimodal_confidence(unimodal_logits)
-        if self.use_reliability:
-            reliability = self.reliability_estimator(modality_repr, confidence, effective_mask)
+        if force_reliability_gate is not None:
+            reliability = _forced_reliability_gate(force_reliability_gate, effective_mask, dtype=tokens.dtype)
+            gated_tokens = tokens * reliability.view(batch_size, self.modality_count, 1, 1)
+        elif self.use_reliability:
+            reliability = self.reliability_estimator(
+                modality_repr,
+                confidence,
+                effective_mask,
+                gate_temperature=gate_temperature,
+            )
             gated_tokens = tokens * reliability.view(batch_size, self.modality_count, 1, 1)
         else:
             reliability = effective_mask.to(tokens.dtype)
@@ -303,6 +372,7 @@ class CRAFTTokenFusionBase(nn.Module):
             "fusion_memory": memory,
             "token_features": tokens,
             "token_padding_mask": token_padding_mask,
+            "gate_temperature": _gate_temperature_tensor(gate_temperature, logits),
             "modalities": self.modalities,
         }
 
@@ -377,6 +447,36 @@ def _effective_modality_mask(
     if forced.shape != mask.shape:
         raise ValueError(f"force_modality_mask shape must be {tuple(mask.shape)}, got {tuple(forced.shape)}.")
     return mask & forced
+
+
+def _forced_reliability_gate(
+    force_reliability_gate: torch.Tensor | float,
+    effective_mask: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    if torch.is_tensor(force_reliability_gate):
+        gate = force_reliability_gate.to(device=effective_mask.device, dtype=dtype)
+        if gate.ndim == 0:
+            gate = gate.view(1, 1).expand_as(effective_mask)
+        elif gate.ndim == 1:
+            if gate.shape[0] != effective_mask.shape[1]:
+                raise ValueError(
+                    f"force_reliability_gate shape must be scalar, [K], or [B, K], got {tuple(gate.shape)}."
+                )
+            gate = gate.view(1, -1).expand_as(effective_mask)
+        elif gate.shape != effective_mask.shape:
+            raise ValueError(
+                f"force_reliability_gate shape must be {tuple(effective_mask.shape)}, got {tuple(gate.shape)}."
+            )
+    else:
+        gate = torch.full(effective_mask.shape, float(force_reliability_gate), device=effective_mask.device, dtype=dtype)
+    return gate.masked_fill(~effective_mask, 0.0)
+
+
+def _gate_temperature_tensor(gate_temperature: float | torch.Tensor | None, logits: torch.Tensor) -> torch.Tensor:
+    value = 1.0 if gate_temperature is None else gate_temperature
+    return torch.as_tensor(value, device=logits.device, dtype=logits.dtype)
 
 
 def _check_temporal_features(

@@ -60,6 +60,54 @@ def generate_counterfactual_drop_masks(
     raise ValueError("counterfactual mode must be 'sample_one' or 'leave_one_out'.")
 
 
+def generate_context_marginal_masks(
+    available_mask: torch.Tensor,
+    *,
+    num_samples: int = 1,
+    min_keep: int = 1,
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Sample context masks A and paired masks A union {m} for marginal contribution."""
+
+    available = available_mask.to(torch.bool)
+    if available.ndim != 2:
+        raise ValueError(f"available_mask must have shape [B, K], got {tuple(available.shape)}.")
+    num_samples = max(int(num_samples), 0)
+    if num_samples == 0:
+        return []
+    min_keep = max(int(min_keep), 0)
+    masks: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+    for _ in range(num_samples):
+        context = torch.zeros_like(available)
+        with_target = torch.zeros_like(available)
+        target = torch.zeros_like(available)
+        for row in range(available.shape[0]):
+            candidates = torch.nonzero(available[row], as_tuple=False).flatten()
+            if candidates.numel() == 0:
+                continue
+            target_idx = candidates[torch.randint(candidates.numel(), (1,), device=available.device).item()]
+            target[row, target_idx] = True
+            context_candidates = candidates[candidates != target_idx]
+            required = min(min_keep, int(context_candidates.numel()))
+            if context_candidates.numel() > 0:
+                max_keep = int(context_candidates.numel())
+                keep_count = required
+                if max_keep > required:
+                    keep_count = int(
+                        torch.randint(
+                            required,
+                            max_keep + 1,
+                            (1,),
+                            device=available.device,
+                        ).item()
+                    )
+                order = torch.randperm(context_candidates.numel(), device=available.device)
+                context[row, context_candidates[order[:keep_count]]] = True
+            with_target[row] = context[row] | target[row]
+        if torch.any(target):
+            masks.append((context, with_target, target))
+    return masks
+
+
 def loss_delta_to_gate_target(
     full_loss: torch.Tensor,
     drop_loss: torch.Tensor,
@@ -81,6 +129,27 @@ def loss_delta_to_gate_target(
     contribution = torch.sigmoid((drop_loss - full_loss) / float(temperature))
     contribution = contribution.clamp(float(target_floor), float(target_ceiling))
     return dropped.to(contribution.dtype) * contribution.unsqueeze(1)
+
+
+def loss_delta_to_binary_gate_target(
+    delta: torch.Tensor,
+    supervision_mask: torch.Tensor,
+    *,
+    ignore_delta_eps: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Map CE deltas to binary reliability targets and an ignore-band valid mask."""
+
+    if delta.ndim != 1:
+        raise ValueError(f"delta must have shape [B], got {tuple(delta.shape)}.")
+    mask = supervision_mask.to(torch.bool)
+    if mask.ndim != 2 or mask.shape[0] != delta.shape[0]:
+        raise ValueError("supervision_mask must have shape [B, K] aligned with delta.")
+    eps = float(ignore_delta_eps)
+    if eps < 0.0:
+        raise ValueError(f"ignore_delta_eps must be non-negative, got {ignore_delta_eps}.")
+    valid = delta.abs().gt(eps).unsqueeze(1) & mask
+    target = delta.gt(eps).to(delta.dtype).unsqueeze(1).expand_as(mask)
+    return target * mask.to(delta.dtype), valid
 
 
 def masked_gate_mse_loss(

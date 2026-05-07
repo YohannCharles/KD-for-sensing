@@ -2,73 +2,89 @@
 
 当前仓库已经形成配置驱动实验体系：模型、loss、metric、distiller 通过 `kd_sensing.registries` 构建；训练和评估入口集中在 `src/kd_sensing/engine/trainer.py` 与 `validator.py`；fusion 数据输入通过 `engine.batch.prepare_fusion_inputs` 根据 `modalities` 准备；canonical fusion 配置可以按固定模态顺序生成多模态组合。
 
-`模态失衡改进方案1.md` 的 CRAF 原方案包含从零目录结构、独立 dataset/collate、独立 losses 和训练脚本。直接照搬会绕开现有统一入口，并破坏已经完成的单模态、fusion、KD、cache、normalization artifact 和 scene/split 记录能力。本设计选择把 CRAF 作为一个新的 fusion 模型族和一组训练扩展接入现有体系。
+CRAF 第一阶段已经完成模型构建、输出适配、反事实训练、beam soft loss、单模态辅助 head、示例配置和 smoke tests。最新 all-modal CRAF 实验暴露出新的问题：模型训练准确率高，但验证准确率在 warmup 后下滑；reliability 分数集中在 0.46-0.58，且 LiDAR/image 等弱模态没有被明显压低，GPS/mmWave 也没有稳定排在前面。这说明当前 gate 监督没有学到干净的模态可靠性，更可能在主模型未稳定时从噪声反事实差值中学习。
 
-现有模型输出约定主要是 `(pred, input_features, output_features)`，其中训练流程会截取最后 `num_pred + 1` 个时隙与 `prepare_labels()` 生成的标签对齐。CRAF 的 horizon query 需要适配这个语义：默认输出 `num_pred + 1` 个预测 slot，覆盖当前 beam anchor 与未来 beam，而不是引入另一套标签接口。
+因此本设计不再扩大 CRAF 的功能面，而是收敛训练策略：延长 warmup、净化 counterfactual target、加入 ignore band、改用 competitive gate、降低 auxiliary/beam soft 干扰，并补齐能定位 gate 是否学对的日志。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- 在 `src/kd_sensing.models.fusion` 内新增可注册的 CRAF fusion 模型，支持现有五种模态的任意有效组合。
-- 复用现有模态契约、batch 准备、feature extractor、配置加载、训练输出、验证指标和 OpenSpec 约束。
-- 支持 reliability-aware token fusion、单模态辅助预测、confidence 特征、dataset reliability prior、reliability gate 和 Transformer fusion。
-- 支持配置驱动的 modality dropout 与 counterfactual gate supervision，并在关闭时保持普通 no-KD 训练路径。
-- 提供 baseline 配置和测试，使 CRAF 能与现有 early-concat fusion、token-only transformer 和单模态实验横向比较。
-- 保持已有 `fusion_teacher`、`fusion_student`、单模态模型和 KD 配置默认行为不变。
+- 让 warmup 阶段的 CRAF 先学习稳定的 all-modal token fusion，再启用 reliability gate 监督。
+- 让 counterfactual contribution 只反映 beam classification 主任务 CE 的变化。
+- 对不明确的 `delta` 不产生 0.5 附近的模糊监督，避免 reliability 全部塌在中间值。
+- 支持 softmax-normalized modality gate，使可用模态之间形成竞争，并通过温度退火逐步增强选择性。
+- 将 unimodal auxiliary loss 改为 warmup-only 或两段式 schedule，减少弱单模态分支在后期污染融合模型。
+- 降低 beam soft loss 默认权重，先保证 Top-1 不低于强单模态 teacher，再用 soft loss 优化 DBA。
+- 增加 counterfactual delta、target、valid rate 和有效 loss 权重日志，使训练失败能被快速定位。
+- 提供最小稳定化实验矩阵，区分 backbone、gate、counterfactual 和固定 prior 的贡献。
 
 **Non-Goals:**
 
 - 不重写 DeepSense6G dataset、collate、预处理和 CSV 生成流程。
 - 不引入新训练脚本或绕开 `kd_sensing.cli.train`、`kd_sensing.cli.evaluate`。
-- 不在第一阶段实现 raw image/LiDAR/Radar 大模型 backbone 替换；CRAF 优先复用已有帧级 feature extractor 或轻量 projector。
-- 不在第一阶段实现跨模态 teacher-student 蒸馏；CRAF 可先以 no-KD 和内部辅助 loss 训练。
-- 不要求默认 canonical fusion 模式全部切换到 CRAF；CRAF 必须显式配置启用。
+- 不要求 CRAF 与 KD 在本阶段联合调优；稳定化版本仍优先 no-KD。
+- 不把所有 canonical fusion 默认切换到 CRAF。
+- 不在本阶段强制实现层级 temporal-then-cross-modal Transformer；该结构作为后续风险缓解方案保留。
 
 ## Decisions
 
-1. 将 CRAF 作为新的注册模型接入，而不是改造现有 `FusionModalityNet`。
+1. warmup 阶段固定 gate 为全 1，而不是继续使用 reliability estimator 输出。
 
-   `FusionModalityNet` 和 `StudentModalityNet` 已经承担 legacy early-concat teacher/student 语义，并被多组配置和测试使用。新增 `craf_fusion`、`token_transformer_fusion` 等注册名可以让实验配置显式选择新方法，同时避免旧 checkpoint 和旧实验行为被隐式改变。替代方案是在现有 fusion student 中加开关，但会让一个类同时维护两套完全不同的 forward 和 loss 语义。
+   现有曲线显示 CRAF 早期验证性能较好，warmup 后出现下滑。反事实贡献依赖 full/drop forward 的 loss 差异，主模型未稳定时该差异噪声很大。实现上在 `epoch < warmup_epochs` 或 `epoch < counterfactual.start_epoch` 时，对可用模态使用等价 `r_m = 1` 的 gate，并跳过 gate loss。替代方案是只降低 gate loss 权重，但模型仍会被不稳定 gate 改变 token 幅值。
 
-2. CRAF 复用现有 batch 输入签名，并在模型内部构造 modality mask。
+2. counterfactual contribution 只使用主任务 CE。
 
-   当前 dataset 没有统一返回 `available_modalities` 字段，fusion 配置也默认所选模态都存在。因此第一阶段的 `modality_mask` 默认为启用模态全 True；若 batch 或训练 helper 后续提供 mask，则通过 `force_modality_mask` 与默认 mask 合并。这样能支持训练时 modality dropout/counterfactual，又不阻塞现有数据读取。替代方案是先改 dataset/collate 增加每样本可用性字段，但这会扩大范围并影响所有模态测试。
+   贡献定义用于判断某模态是否提升 beam classification，而 beam soft、unimodal auxiliary、KD 和 gate loss 都不是这个判断本身。helper 应提供 CE-only per-sample loss，并明确不把附加 loss 混入 `delta`。替代方案是复用训练总 loss，但这会让 `delta` 同时反映 auxiliary head、soft label 和 gate 自身误差，目标不干净。
 
-3. CRAF 输出通过小型适配层兼容 dict 与三元组。
+3. 对小幅 `delta` 使用 ignore band，并生成二值 target。
 
-   CRAF 需要暴露 `logits`、`reliability`、`unimodal_logits`、`confidence` 和 `memory` 等诊断字段；现有训练循环只消费三元组。实现时新增窄 helper 统一提取 logits/input_features/output_features/auxiliary，旧模型仍走原三元组路径。替代方案是让 CRAF 只返回三元组，但会丢失可靠性监督和日志所需信息。
+   当 `|delta| <= ignore_delta_eps` 时，删除或加入模态的影响不明确，不应强制映射为 0.5 target。helper 返回 `target` 和 `target_valid_mask`：`delta > eps` 监督为 1，`delta < -eps` 监督为 0，其余忽略。替代方案是继续使用 sigmoid(delta / tau)，但大量接近 0 的 delta 会让 gate 学到集中在 0.5 附近的无区分分数。
 
-4. horizon query 的预测长度使用 `num_pred + 1`。
+4. 增加 `context_marginal` 反事实模式，保留 `sample_one` 和 `leave_one_out`。
 
-   项目现有标签包含当前 beam anchor 和未来 `num_pred` 个 target，训练和验证都按 `num_pred + 1` 计算指标。CRAF 的 `prediction_horizon` 默认从配置中的 `num_pred` 推导为 `num_pred + 1`，从而复用 `prepare_labels()`、Top-K 和 DBA。替代方案是只预测未来 `num_pred`，但需要改标签和指标语义，不利于与历史实验比较。
+   leave-one-out 比较 `S` 与 `S \ {m}`，但 full set 已被弱模态污染时，边际贡献可能不稳定。`context_marginal` 随机采样不含目标模态的上下文 `A`，比较 `CE(A)` 与 `CE(A ∪ {m})`，更贴近“模态在不同组合下的条件贡献”。替代方案是完全替换 leave-one-out，但保留旧模式有利于回归和消融对比。
 
-5. Counterfactual 监督放在训练 helper 中，不塞进 distiller。
+5. 默认新增 softmax-normalized modality gate。
 
-   distiller 当前处理 teacher/student logits/features 的 KD 组合。CRAF 的反事实 forward 需要访问模型输出 dict、force mask、per-sample CE 和 reliability gate，和 KD distiller 的职责不同。新增训练 helper 或 engine 内部函数可以仅在 `training.counterfactual.enabled` 时运行。替代方案是新增 distiller 类型，但 no-KD CRAF 也需要该能力，会让 distillation 概念变得混乱。
+   independent sigmoid gate 容易让所有可用模态停在相近的 0.5 附近，弱模态仍大量进入 Transformer。softmax gate 在可用模态集合上计算 `alpha_m = softmax(score_m / T_g)`，再用 `K_available * alpha_m` 保持总体幅值；不可用模态仍由 mask 排除，`min_gate` 只作用于可用模态。替代方案是对 sigmoid 增加强正则，但它不能直接制造模态间竞争。
 
-6. Beam-aware soft label loss 作为独立 loss helper 注册或窄函数提供。
+6. gate 温度和 gate loss 权重都采用 schedule。
 
-   现有 `loss.type` 仍可保持 focal/cross_entropy。CRAF 训练总 loss 由普通任务 loss、beam soft loss、unimodal auxiliary loss 和 gate loss 组合而成。实现时应先提供可测试的函数，再接入训练配置。替代方案是替换现有 task criterion，但会影响所有非 CRAF 实验。
+   gate 温度从较平滑的 `gate_temperature_start` 退火到更有选择性的 `gate_temperature_end`；gate loss 在 `counterfactual.start_epoch` 后用 `gate_ramp_epochs` 线性增大到目标权重。这样降低 warmup 边界处的突然扰动。替代方案是固定低温和固定 gate 权重，但容易在 gate 刚启用时破坏已经学到的融合表示。
 
-7. 任务分阶段落地，先保证可运行和可比较，再扩展论文级消融。
+7. 单模态 auxiliary loss 改成 warmup-only 或两段式权重。
 
-   第一阶段完成模型构建、forward、基础训练、反事实 gate loss、核心日志和 smoke tests；第二阶段补齐更多 baseline 配置、prior EMA 可视化和实验矩阵。这样更贴合当前项目状态，避免一次性改动训练、数据和配置全链路。
+   image、LiDAR、radar 在当前场景的单模态验证表现明显较弱，后期持续优化这些 auxiliary head 会鼓励弱分支拟合训练集，并污染 confidence/reliability 特征。配置上支持 `uni_weight_warmup` 与 `uni_weight_after_warmup`，推荐后期为 0 或很小值。替代方案是完全删除 auxiliary head，但 reliability estimator 仍需要 confidence 特征和可选诊断。
+
+8. beam soft loss 默认降权。
+
+   Beam-aware soft label 对 DBA 有价值，但当前优先目标是恢复 Top-1，并使 CRAF 不低于 GPS/mmWave teacher。默认把 `beam_soft_weight` 降到保守值，等 Top-1 稳定后再提高。替代方案是保持原权重，但可能让 soft target 优化压过主任务 CE。
+
+9. 诊断日志必须覆盖 delta、target 和 valid rate，而不仅是 reliability。
+
+   只看 reliability 无法判断 gate 学错是因为 contribution 计算错、target 全在 0.5 附近，还是 valid target 太少。训练聚合需要按模态记录 `cf/delta_mean_*`、`cf/target_mean_*`、`cf/target_valid_rate_*`，以及 gate 温度和有效 loss 权重。替代方案是只记录总 gate loss，但它不足以定位模态级失败。
+
+10. 固定强模态 prior 作为 sanity check 配置，不作为默认算法。
+
+   如果固定 `mmwave/gps` 高、`image/lidar/radar` 低的 prior 能提升验证准确率，说明“抑制弱模态”方向成立，问题主要在 learned reliability；如果不能提升，则需要检查融合 backbone 或数据处理。该配置只用于实验诊断，不替代 learned gate。
 
 ## Risks / Trade-offs
 
-- [Risk] CRAF 参数量和 Transformer 计算增加，训练吞吐下降。Mitigation：默认 `d_model`、层数和 head 数保守；优先用 synthetic/small batch smoke test 和现有 throughput metadata 观察影响。
-- [Risk] 可靠性 gate 早期训练塌缩，强模态过早压制弱模态。Mitigation：使用 `min_gate`、warmup、counterfactual start epoch、unimodal auxiliary loss 和可关闭的 gate loss 权重。
-- [Risk] 现有训练循环对 dict 输出适配不完整。Mitigation：集中实现输出解析 helper，并用旧模型和 CRAF 模型分别覆盖训练/验证 forward。
-- [Risk] 数据集没有真实缺失模态标记，难以验证自然缺失场景。Mitigation：第一阶段明确支持配置和训练强制 mask；若未来 dataset 提供 `modality_mask`，再接入真实缺失字段。
-- [Risk] CRAF 与 KD distiller 同时启用时 loss 组合复杂。Mitigation：第一阶段推荐 CRAF no-KD；KD 组合仅在输出适配稳定后再显式支持。
-- [Risk] 新 baseline 配置过多导致维护成本上升。Mitigation：优先提供代表性 all-modalities、image+radar 和弱/强模态组合配置，其它组合依赖可参数化配置生成。
+- [Risk] 延长 warmup 会增加一次实验的有效调参周期。Mitigation：保留短 smoke test 配置，并只在正式 all-modal 实验中使用 20-30 epoch warmup。
+- [Risk] ignore band 过大导致有效 target 太少。Mitigation：记录 `target_valid_rate`，并把 `ignore_delta_eps` 暴露为配置，默认从 0.03 起步。
+- [Risk] softmax gate 可能过早压制弱模态，损失潜在互补信息。Mitigation：使用温度退火、`min_gate` 和 gate loss ramp，必要时回退到 sigmoid gate 做消融。
+- [Risk] `context_marginal` 需要额外 forward，训练吞吐下降。Mitigation：默认 `num_drop_per_batch: 1`，支持 no-grad drop forward，并保留 `sample_one` 作为低成本模式。
+- [Risk] warmup-only auxiliary 可能削弱 reliability estimator 的 confidence 特征。Mitigation：forward 仍保留 auxiliary logits/confidence，可用很小的 after-warmup 权重做消融。
+- [Risk] 诊断字段增加日志体积。Mitigation：只聚合 epoch 标量，不保存 per-sample 细节。
 
 ## Migration Plan
 
-1. 先添加新模块、注册名和单元测试，不触碰既有默认配置。
-2. 再接入训练输出适配和 CRAF no-KD 训练路径，用 synthetic 或小数据 smoke test 验证。
-3. 然后添加 counterfactual loss、beam soft loss、reliability 日志和 CRAF baseline 配置。
-4. 最后补充文档和实验建议，确认旧 fusion 配置测试仍通过。
+1. 先扩展 CRAF 配置解析、gate schedule、loss schedule 和 counterfactual target helper 的单元测试。
+2. 接入训练循环，确保 warmup 阶段固定 gate、CE-only delta、ignore band 和 gate ramp 都只在 CRAF 显式配置时生效。
+3. 增加 softmax gate 与 `context_marginal` 模式，并保留旧 sigmoid/sample-one/leave-one-out 配置用于回归。
+4. 扩展日志聚合和 TensorBoard 标量，补齐每模态 delta/target/valid rate。
+5. 新增稳定化 CRAF 配置和消融配置，完成短训练 smoke test。
+6. 使用 all-modal 场景跑正式对比：token transformer 无 gate、CRAF 无 counterfactual、CRAF 稳定化 gate、固定强模态 prior。
 
-回滚策略是删除或停用 CRAF 配置和注册名；由于默认配置不切换，旧模型训练路径不需要迁移。
+回滚策略是将 CRAF 配置切回 `reliability.gate_type: sigmoid`、关闭 `context_marginal`、设置附加 loss 权重为 0 或使用 token transformer baseline；legacy fusion 和单模态路径不需要迁移。
