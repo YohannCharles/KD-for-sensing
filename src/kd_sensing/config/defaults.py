@@ -123,6 +123,11 @@ DEFAULT_CONFIG = {
         "gate_ramp_epochs": 0,
         "uni_weight_warmup": None,
         "uni_weight_after_warmup": None,
+        "prior_regularization": {
+            "enabled": False,
+            "weight": 0.0,
+            "loss_type": "mse",
+        },
     },
     "distillation": {
         "type": "no_kd",
@@ -170,6 +175,34 @@ DEFAULT_CONFIG = {
             "min_keep": 1,
             "no_grad_drop_forward": True,
         },
+        "reliability_kd": {
+            "enabled": False,
+            "weight": 0.0,
+            "temperature": 3.0,
+            "use_modalities": ["gps", "mmwave"],
+        },
+    },
+    "teacher": {
+        "registry_path": None,
+        "load_encoders": False,
+        "freeze_encoders": False,
+        "strict": True,
+    },
+    "finetune": {
+        "enabled": False,
+        "checkpoint_path": None,
+        "strict": True,
+        "unfreeze_modalities": [],
+        "freeze_modalities": [],
+        "param_groups": {
+            "enabled": False,
+            "fusion_lr": 7.5e-4,
+            "head_lr": 7.5e-4,
+            "gate_lr": 7.5e-4,
+            "strong_encoder_lr": 1.0e-4,
+            "weak_encoder_lr": 2.5e-5,
+            "strong_modalities": ["gps", "mmwave"],
+        },
     },
     "scheduler": {
         "type": "cosine_warm_restarts",
@@ -184,6 +217,10 @@ DEFAULT_CONFIG = {
         "latency_samples_amount": 10,
         "latency_runs": 30,
         "latency_warmup": 5,
+        "modality_subsets": {
+            "enabled": False,
+            "subsets": ["gps", "mmwave", "gps_mmwave", "strong_only", "weak_only", "all"],
+        },
     },
     "output": {
         "dir": "outputs",

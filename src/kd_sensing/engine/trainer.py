@@ -15,6 +15,8 @@ from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_c
 from kd_sensing.distillation.craf_losses import (
     beam_soft_label_loss,
     counterfactual_sequence_ce,
+    prior_regularization_loss,
+    reliability_weighted_kd_loss,
     sequence_cross_entropy,
 )
 from kd_sensing.engine.batch import (
@@ -45,9 +47,17 @@ from kd_sensing.engine.optim import (
     build_optimizer,
     build_scheduler,
     build_task_criterion,
+    optimizer_param_group_summary,
 )
 from kd_sensing.engine.run_metadata import dataloaders_run_metadata, throughput_run_metadata
 from kd_sensing.engine.runtime import autocast_context, make_grad_scaler, resolve_amp_settings, transfer_non_blocking
+from kd_sensing.engine.teacher_loader import (
+    apply_selective_finetune,
+    apply_teacher_priors,
+    load_teacher_encoders,
+    load_teacher_registry,
+    trainable_parameter_count,
+)
 from kd_sensing.engine.validator import validate
 from kd_sensing.modalities import normalize_modalities
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
@@ -55,6 +65,7 @@ from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.plotting import plot_training_curves
 from kd_sensing.utils.seed import set_seed
+from kd_sensing.utils.teacher_registry import teacher_metrics_from_training
 
 
 def create_run_dir(cfg: dict) -> Path:
@@ -119,6 +130,7 @@ def final_config_with_runtime(
     normalization_artifacts: dict | None = None,
     checkpoint_registry: dict | None = None,
     throughput_metadata: dict | None = None,
+    teacher_prior: dict | None = None,
 ) -> dict:
     final_cfg = deepcopy(cfg)
     runtime = final_cfg.setdefault("runtime", {})
@@ -134,6 +146,8 @@ def final_config_with_runtime(
         runtime["throughput"] = throughput_metadata
         if isinstance(throughput_metadata, dict) and "cache" in throughput_metadata:
             runtime["cache"] = throughput_metadata["cache"]
+    if teacher_prior is not None:
+        runtime["teacher_prior"] = teacher_prior
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
@@ -186,6 +200,97 @@ def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> d
     return summary
 
 
+def _load_stage_checkpoint_if_needed(cfg: dict, model, device: torch.device) -> dict | None:
+    finetune_cfg = cfg.get("finetune", {})
+    checkpoint_path = finetune_cfg.get("checkpoint_path") or finetune_cfg.get("stage2_checkpoint")
+    if not checkpoint_path:
+        return None
+    resolved = resolve_path(checkpoint_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Stage checkpoint not found: {resolved}")
+    load_result = load_model_state(
+        resolved,
+        model,
+        role="stage_checkpoint",
+        map_location=device,
+        strict=bool(finetune_cfg.get("strict", cfg.get("checkpoint", {}).get("strict_load", True))),
+    )
+    summary = checkpoint_load_summary(load_result)
+    if summary is not None:
+        summary["source"] = "stage_checkpoint"
+    return summary
+
+
+def _apply_teacher_prior_initialization(cfg: dict, model, device: torch.device) -> dict | None:
+    teacher_cfg = cfg.get("teacher", {})
+    registry_path = teacher_cfg.get("registry_path") or teacher_cfg.get("teacher_registry")
+    if not registry_path:
+        return None
+    registry = load_teacher_registry(registry_path)
+    modalities = (
+        cfg.get("model", {}).get("student", {}).get("modalities")
+        or registry.get("modalities")
+        or []
+    )
+    priors = apply_teacher_priors(model, registry, modalities)
+    load_summaries = {}
+    if bool(teacher_cfg.get("load_encoders", False)):
+        load_summaries = load_teacher_encoders(
+            model,
+            registry,
+            modalities,
+            strict=bool(teacher_cfg.get("strict", cfg.get("checkpoint", {}).get("strict_load", True))),
+            map_location=device,
+            freeze_loaded=bool(teacher_cfg.get("freeze_encoders", False)),
+        )
+    frozen = _encoder_freeze_log(model)
+    return {
+        "registry_path": registry.get("_resolved_path"),
+        "prior_mode": registry.get("prior_mode"),
+        "priors": priors,
+        "encoder_load": load_summaries,
+        "encoder_freeze": frozen,
+        "trainable_params": trainable_parameter_count(model),
+        "teachers": {
+            modality: {
+                "checkpoint": item.get("ckpt") or item.get("checkpoint"),
+                "prior": item.get("prior"),
+            }
+            for modality, item in (registry.get("teachers") or {}).items()
+            if modality in set(priors)
+        },
+    }
+
+
+def _apply_selective_finetune_if_needed(cfg: dict, model) -> dict | None:
+    finetune_cfg = cfg.get("finetune", {})
+    if not finetune_cfg.get("enabled", False):
+        return None
+    return apply_selective_finetune(
+        model,
+        unfreeze_modalities=finetune_cfg.get("unfreeze_modalities", []),
+        freeze_modalities=finetune_cfg.get("freeze_modalities", []),
+    )
+
+
+def _encoder_freeze_log(model) -> dict[str, dict]:
+    if not hasattr(model, "encoders"):
+        return {}
+    summary = {}
+    for modality in getattr(model, "modalities", tuple(model.encoders.keys())):
+        if modality not in model.encoders:
+            continue
+        params = list(model.encoders[modality].parameters())
+        total = sum(param.numel() for param in params)
+        trainable = sum(param.numel() for param in params if param.requires_grad)
+        summary[modality] = {
+            "frozen": trainable == 0 and total > 0,
+            "total_params": int(total),
+            "trainable_params": int(trainable),
+        }
+    return summary
+
+
 def _resolve_resume_checkpoint(cfg: dict, run_dir: Path) -> Path | None:
     resume = cfg.get("training", {}).get("resume", False)
     if not resume:
@@ -234,6 +339,10 @@ def _write_tensorboard_scalars(writer, history: dict, step: int) -> None:
         writer.add_scalar("loss/train_unimodal_aux", history["train_unimodal_loss"][-1], step)
     if history.get("train_counterfactual_loss"):
         writer.add_scalar("loss/train_counterfactual_gate", history["train_counterfactual_loss"][-1], step)
+    if history.get("train_prior_regularization_loss"):
+        writer.add_scalar("loss/train_prior_regularization", history["train_prior_regularization_loss"][-1], step)
+    if history.get("train_reliability_kd_loss"):
+        writer.add_scalar("loss/train_reliability_kd", history["train_reliability_kd_loss"][-1], step)
     writer.flush()
 
 
@@ -247,7 +356,7 @@ def _write_tensorboard_craf_scalars(writer, epoch_log: dict, step: int) -> None:
     for key, value in epoch_log.items():
         if not isinstance(value, (int, float)):
             continue
-        if key.startswith(("cf/", "craf/", "loss/")):
+        if key.startswith(("cf/", "craf/", "loss/", "teacher/", "optimizer/", "val/subset/")):
             writer.add_scalar(key, float(value), step)
     writer.flush()
 
@@ -274,6 +383,25 @@ def _aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
         "val_atop5": _mean_valid_slots(topk.get("5", []), total),
         "val_adba": _mean_valid_slots(val_metrics.get("dba", []), total),
     }
+
+
+def _validation_subset_epoch_scalars(val_metrics: dict) -> dict[str, float]:
+    subset_metrics = val_metrics.get("modality_subsets")
+    if not isinstance(subset_metrics, dict):
+        return {}
+    scalars: dict[str, float] = {}
+    for subset_name, metrics in subset_metrics.items():
+        if not isinstance(metrics, dict):
+            continue
+        prefix = f"val/subset/{subset_name}"
+        scalars[f"{prefix}/loss"] = float(metrics.get("loss", 0.0))
+        topk = metrics.get("topk", {})
+        total = metrics.get("total", [])
+        scalars[f"{prefix}/top1"] = _mean_valid_slots(topk.get("1", []), total)
+        scalars[f"{prefix}/atop3"] = _mean_valid_slots(topk.get("3", []), total)
+        scalars[f"{prefix}/atop5"] = _mean_valid_slots(topk.get("5", []), total)
+        scalars[f"{prefix}/adba"] = _mean_valid_slots(metrics.get("dba", []), total)
+    return scalars
 
 
 def _close_tensorboard_writer(writer) -> None:
@@ -320,6 +448,16 @@ def train(cfg: dict) -> dict:
     student_model = build_model(model_cfg["student"]).to(device)
     teacher_model = None
     checkpoint_loads = []
+    stage_checkpoint_load = _load_stage_checkpoint_if_needed(cfg, student_model, device)
+    if stage_checkpoint_load is not None:
+        checkpoint_loads.append(stage_checkpoint_load)
+    teacher_prior_info = _apply_teacher_prior_initialization(cfg, student_model, device)
+    selective_finetune_info = _apply_selective_finetune_if_needed(cfg, student_model)
+    if teacher_prior_info is not None:
+        teacher_prior_info["encoder_freeze"] = _encoder_freeze_log(student_model)
+        if selective_finetune_info is not None:
+            teacher_prior_info["selective_finetune"] = selective_finetune_info
+        teacher_prior_info["trainable_params"] = trainable_parameter_count(student_model)
     if _teacher_enabled(cfg):
         teacher_model = build_model(model_cfg["teacher"]).to(device)
         teacher_load_info = _load_teacher_if_needed(cfg, teacher_model, device)
@@ -333,6 +471,7 @@ def train(cfg: dict) -> dict:
     distiller = build_distiller(cfg, task_criterion).to(device)
     optimizer = build_optimizer(cfg, student_model)
     scheduler = build_scheduler(cfg, optimizer)
+    optimizer_groups = optimizer_param_group_summary(optimizer)
     grad_scaler = make_grad_scaler(cfg, amp_enabled)
     training_cfg = cfg["training"]
     best_val_loss = float("inf")
@@ -347,6 +486,8 @@ def train(cfg: dict) -> dict:
         "train_beam_soft_loss": [],
         "train_unimodal_loss": [],
         "train_counterfactual_loss": [],
+        "train_prior_regularization_loss": [],
+        "train_reliability_kd_loss": [],
         "train_acc": [],
         "val_loss": [],
         "val_acc": [],
@@ -394,6 +535,8 @@ def train(cfg: dict) -> dict:
             running_beam_soft_loss = 0.0
             running_unimodal_loss = 0.0
             running_counterfactual_loss = 0.0
+            running_prior_regularization_loss = 0.0
+            running_reliability_kd_loss = 0.0
             running_acc = 0.0
             reliability_sums: dict[str, float] = {}
             reliability_batches = 0
@@ -475,12 +618,14 @@ def train(cfg: dict) -> dict:
                             teacher_outputs = select_prediction_slots(teacher_model_output.logits, num_pred)
                             teacher_input_features = teacher_model_output.input_features
                             teacher_out_features = teacher_model_output.output_features
+                            teacher_diagnostics = teacher_model_output.diagnostics
                     else:
                         teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
                             student_outputs,
                             student_input_features,
                             student_out_features,
                         )
+                        teacher_diagnostics = {}
 
                     student_logits = student_outputs.reshape(-1, num_classes)
                     teacher_logits = teacher_outputs.reshape(-1, num_classes)
@@ -507,6 +652,7 @@ def train(cfg: dict) -> dict:
                         labels=labels,
                         student_outputs=student_outputs,
                         diagnostics=student_model_output.diagnostics,
+                        teacher_diagnostics=teacher_diagnostics,
                         epoch=epoch,
                         gate_temperature=gate_temperature,
                         device=device,
@@ -540,6 +686,12 @@ def train(cfg: dict) -> dict:
                 ) / (step + 1)
                 running_counterfactual_loss = (
                     extra_losses["counterfactual"].item() + step * running_counterfactual_loss
+                ) / (step + 1)
+                running_prior_regularization_loss = (
+                    extra_losses["prior_regularization"].item() + step * running_prior_regularization_loss
+                ) / (step + 1)
+                running_reliability_kd_loss = (
+                    extra_losses["reliability_kd"].item() + step * running_reliability_kd_loss
                 ) / (step + 1)
                 running_acc = (acc + step * running_acc) / (step + 1)
                 reliability_summary = _batch_reliability_summary(student_model_output.diagnostics)
@@ -580,6 +732,8 @@ def train(cfg: dict) -> dict:
             history["train_beam_soft_loss"].append(float(running_beam_soft_loss))
             history["train_unimodal_loss"].append(float(running_unimodal_loss))
             history["train_counterfactual_loss"].append(float(running_counterfactual_loss))
+            history["train_prior_regularization_loss"].append(float(running_prior_regularization_loss))
+            history["train_reliability_kd_loss"].append(float(running_reliability_kd_loss))
             history["train_acc"].append(float(running_acc))
             history["val_loss"].append(float(val_loss))
             history["val_acc"].append(val_acc)
@@ -596,6 +750,8 @@ def train(cfg: dict) -> dict:
                 "train_beam_soft_loss": float(running_beam_soft_loss),
                 "train_unimodal_loss": float(running_unimodal_loss),
                 "train_counterfactual_loss": float(running_counterfactual_loss),
+                "train_prior_regularization_loss": float(running_prior_regularization_loss),
+                "train_reliability_kd_loss": float(running_reliability_kd_loss),
                 "train_acc": float(running_acc),
                 "val_loss": float(val_loss),
                 "val_acc": val_acc,
@@ -604,6 +760,18 @@ def train(cfg: dict) -> dict:
                 "val_adba": validation_curve_metrics["val_adba"],
                 "learning_rate": float(current_lr),
             }
+            for group in optimizer_groups:
+                group_name = group["name"]
+                epoch_log[f"optimizer/lr/{group_name}"] = float(group["lr"])
+                epoch_log[f"optimizer/params/{group_name}"] = float(group["param_count"])
+            if teacher_prior_info is not None:
+                epoch_log["teacher/trainable_params"] = float(teacher_prior_info.get("trainable_params", 0))
+                for modality, freeze_info in teacher_prior_info.get("encoder_freeze", {}).items():
+                    epoch_log[f"teacher/trainable_params/{modality}"] = float(
+                        freeze_info.get("trainable_params", 0)
+                    )
+                    epoch_log[f"teacher/frozen/{modality}"] = 1.0 if freeze_info.get("frozen") else 0.0
+            epoch_log.update(_validation_subset_epoch_scalars(val_metrics))
             if reliability_batches:
                 epoch_log["craf_reliability"] = {
                     modality: float(value / reliability_batches)
@@ -668,10 +836,22 @@ def train(cfg: dict) -> dict:
         _close_tensorboard_writer(tensorboard_writer)
 
     np.savez(run_dir / "training_outputs.npz", **{k: np.asarray(v) for k, v in history.items()})
+    teacher_metrics = teacher_metrics_from_training(
+        cfg,
+        history,
+        epoch_logs,
+        best_top1_epoch=best_top1_epoch,
+    )
+    if teacher_metrics is not None:
+        with (run_dir / "teacher_metrics.json").open("w", encoding="utf-8") as f:
+            json.dump(teacher_metrics, f, indent=2)
     train_log = {
         **history,
         "epoch_logs": epoch_logs,
+        "teacher_metrics": teacher_metrics,
         "checkpoint_loads": checkpoint_loads,
+        "teacher_prior": teacher_prior_info,
+        "optimizer_param_groups": optimizer_groups,
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_registry": registry_checkpoint,
         "throughput": throughput_metadata,
@@ -682,6 +862,7 @@ def train(cfg: dict) -> dict:
             "normalization_artifacts": normalization_artifacts,
             "checkpoint_registry": registry_checkpoint,
             "throughput": throughput_metadata,
+            "teacher_prior": teacher_prior_info,
         },
     }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
@@ -695,6 +876,7 @@ def train(cfg: dict) -> dict:
             normalization_artifacts=normalization_artifacts,
             checkpoint_registry=registry_checkpoint,
             throughput_metadata=throughput_metadata,
+            teacher_prior=teacher_prior_info,
         ),
         run_dir / "final_config.yaml",
     )
@@ -707,6 +889,8 @@ def train(cfg: dict) -> dict:
         "checkpoint_registry": registry_checkpoint,
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_loads": checkpoint_loads,
+        "teacher_prior": teacher_prior_info,
+        "optimizer_param_groups": optimizer_groups,
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,
     }
@@ -926,6 +1110,7 @@ def _compute_craf_extra_losses(
     labels: torch.Tensor,
     student_outputs: torch.Tensor,
     diagnostics: dict,
+    teacher_diagnostics: dict | None = None,
     epoch: int,
     gate_temperature: float,
     device: torch.device,
@@ -941,6 +1126,8 @@ def _compute_craf_extra_losses(
         "beam_soft": zero,
         "unimodal": zero,
         "counterfactual": zero,
+        "prior_regularization": zero,
+        "reliability_kd": zero,
         "_diagnostics": scalar_diagnostics,
     }
 
@@ -1025,6 +1212,47 @@ def _compute_craf_extra_losses(
         losses["counterfactual"] = counterfactual_loss
         losses["total"] = losses["total"] + counterfactual_effective_weight * counterfactual_loss
         losses["_diagnostics"].update(counterfactual_diagnostics)
+
+    prior_cfg = loss_cfg.get("prior_regularization", {})
+    prior_weight = float(prior_cfg.get("weight", 0.0))
+    prior_enabled = bool(prior_cfg.get("enabled", prior_weight > 0.0)) and prior_weight > 0.0
+    if record_craf_diagnostics:
+        losses["_diagnostics"]["loss/prior_regularization_weight"] = prior_weight if prior_enabled else 0.0
+        losses["_diagnostics"].update(_craf_gate_scalar_diagnostics(diagnostics))
+    if prior_enabled:
+        gate = diagnostics.get("gate", diagnostics.get("reliability"))
+        prior = diagnostics.get("prior")
+        modality_mask = diagnostics.get("effective_modality_mask")
+        if torch.is_tensor(gate) and torch.is_tensor(prior):
+            losses["prior_regularization"] = prior_regularization_loss(
+                gate,
+                prior,
+                modality_mask,
+                loss_type=str(prior_cfg.get("loss_type", "mse")),
+            )
+            losses["total"] = losses["total"] + prior_weight * losses["prior_regularization"]
+
+    kd_cfg = cfg.get("training", {}).get("reliability_kd", cfg.get("kd", {}))
+    kd_weight = float(kd_cfg.get("weight", 0.0))
+    kd_enabled = bool(kd_cfg.get("enabled", False)) and kd_weight > 0.0
+    if record_craf_diagnostics:
+        losses["_diagnostics"]["loss/reliability_kd_weight"] = kd_weight if kd_enabled else 0.0
+    if kd_enabled:
+        student_unimodal = diagnostics.get("unimodal_logits")
+        teacher_unimodal = (teacher_diagnostics or {}).get("unimodal_logits")
+        reliability = diagnostics.get("gate", diagnostics.get("reliability"))
+        if not (torch.is_tensor(student_unimodal) and torch.is_tensor(teacher_unimodal) and torch.is_tensor(reliability)):
+            raise ValueError("reliability_kd.enabled=true requires student and teacher unimodal CRAF logits.")
+        losses["reliability_kd"] = reliability_weighted_kd_loss(
+            student_unimodal,
+            teacher_unimodal,
+            reliability,
+            modalities=diagnostics.get("modalities") or model_cfg.get("modalities") or [],
+            use_modalities=kd_cfg.get("use_modalities", ["gps", "mmwave"]),
+            temperature=float(kd_cfg.get("temperature", cfg.get("distillation", {}).get("temperature", 3.0))),
+            modality_mask=diagnostics.get("effective_modality_mask"),
+        )
+        losses["total"] = losses["total"] + kd_weight * losses["reliability_kd"]
     return losses
 
 
@@ -1093,7 +1321,38 @@ def _counterfactual_gate_loss(
     available = effective_modality_mask.detach()
     gate_losses = []
     stats = _CounterfactualStats(modality_names)
-    if mode == "context_marginal":
+    if mode == "shuffle":
+        full_per_sample = counterfactual_sequence_ce(full_outputs, labels)
+        for modality_idx, modality in enumerate(modality_names):
+            target_mask = torch.zeros_like(available)
+            target_mask[:, modality_idx] = available[:, modality_idx]
+            if not torch.any(target_mask):
+                continue
+            context_manager = torch.no_grad() if no_grad_drop_forward else nullcontext()
+            with context_manager:
+                shuffled_batch = _shuffled_modality_batch(batch, modality)
+                shuffled_per_sample = _counterfactual_forward_ce(
+                    model,
+                    task,
+                    shuffled_batch,
+                    model_cfg=model_cfg,
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    labels=labels,
+                    force_modality_mask=available,
+                    gate_temperature=gate_temperature,
+                    device=device,
+                    non_blocking=non_blocking,
+                )
+                delta = shuffled_per_sample - full_per_sample
+                target, valid_mask = loss_delta_to_binary_gate_target(
+                    delta.detach(),
+                    target_mask,
+                    ignore_delta_eps=ignore_delta_eps,
+                )
+            stats.update(delta.detach(), target.detach(), target_mask, valid_mask)
+            gate_losses.append(masked_gate_mse_loss(reliability, target, valid_mask))
+    elif mode == "context_marginal":
         mask_specs = generate_context_marginal_masks(
             available,
             num_samples=num_drop_per_batch,
@@ -1199,6 +1458,29 @@ def _counterfactual_forward_ce(
     return counterfactual_sequence_ce(logits, labels)
 
 
+def _shuffled_modality_batch(batch: dict[str, torch.Tensor], modality: str) -> dict[str, torch.Tensor]:
+    keys_by_modality = {
+        "image": ("image",),
+        "radar": ("radar_ra", "radar_da"),
+        "gps": ("gps",),
+        "lidar": ("lidar",),
+        "mmwave": ("mmwave",),
+    }
+    keys = keys_by_modality.get(str(modality), ())
+    if not keys:
+        return batch
+    first = next((batch[key] for key in keys if key in batch and torch.is_tensor(batch[key])), None)
+    if first is None or first.shape[0] <= 1:
+        return batch
+    order = torch.randperm(first.shape[0], device=first.device)
+    shuffled = dict(batch)
+    for key in keys:
+        value = batch.get(key)
+        if torch.is_tensor(value) and value.shape[0] == first.shape[0]:
+            shuffled[key] = value.index_select(0, order)
+    return shuffled
+
+
 class _CounterfactualStats:
     def __init__(self, modalities: list[str]):
         self.modalities = modalities
@@ -1256,6 +1538,36 @@ def _batch_reliability_summary(diagnostics: dict) -> dict[str, float]:
     modalities = _diagnostic_modalities(modalities, reliability.shape[1])
     means = reliability.detach().float().mean(dim=0).cpu()
     return {str(modality): float(means[idx].item()) for idx, modality in enumerate(modalities)}
+
+
+def _craf_gate_scalar_diagnostics(diagnostics: dict) -> dict[str, float]:
+    gate = diagnostics.get("gate", diagnostics.get("reliability"))
+    prior = diagnostics.get("prior")
+    residual = diagnostics.get("residual_logits")
+    mask = diagnostics.get("effective_modality_mask")
+    modalities = diagnostics.get("modalities")
+    if not torch.is_tensor(gate) or gate.ndim != 2:
+        return {}
+    modality_names = _diagnostic_modalities(modalities, gate.shape[1])
+    if torch.is_tensor(mask):
+        available = mask.detach().to(device=gate.device, dtype=torch.bool)
+    else:
+        available = torch.ones_like(gate, dtype=torch.bool)
+    scalars: dict[str, float] = {}
+    for idx, modality in enumerate(modality_names):
+        modality_mask = available[:, idx]
+        if torch.any(modality_mask):
+            scalars[f"craf/gate_mean/{modality}"] = float(gate[:, idx][modality_mask].detach().float().mean().cpu().item())
+        if torch.is_tensor(prior):
+            prior_values = prior[:, idx] if prior.ndim == 2 else prior[idx].view(1).expand(gate.shape[0])
+            scalars[f"craf/prior/{modality}"] = float(prior_values.detach().float().mean().cpu().item())
+        if torch.is_tensor(residual):
+            residual_values = residual[:, idx]
+            if torch.any(modality_mask):
+                scalars[f"craf/residual_logit_mean/{modality}"] = float(
+                    residual_values[modality_mask].detach().float().mean().cpu().item()
+                )
+    return scalars
 
 
 def _diagnostic_modalities(modalities, modality_count: int) -> list[str]:

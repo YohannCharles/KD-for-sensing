@@ -8,6 +8,7 @@ from kd_sensing.engine._builders_impl import (
     build_optimizer,
     build_scheduler,
     build_task_criterion,
+    optimizer_param_group_summary,
     resolve_weight_path,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "build_optimizer",
     "build_scheduler",
     "build_task_criterion",
+    "optimizer_param_group_summary",
     "resolve_weight_path",
 ]

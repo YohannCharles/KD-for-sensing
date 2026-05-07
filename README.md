@@ -152,6 +152,67 @@ epoch、split 样本数、加载来源和 GPS/LiDAR 归一化工件。可通过
 `checkpoint.registry.dir`、`checkpoint.registry.enabled` 和 `checkpoint.registry.prefer` 调整目录、
 开关和加载优先级。
 
+## Teacher-prior CRAF
+
+Scenario 32 的 teacher-prior CRAF 使用三阶段流程。Stage 1 继续复用现有五个单模态
+teacher no-KD 入口，训练完成后每个 run 会写出 `teacher_metrics.json`，其中包含 registry
+所需的 `modality`、`best_epoch`、验证 Top-1/Top-3/Top-5、ADBA 和训练 Top-1。
+
+```bash
+python scripts/train.py --config configs/image/teacher_no_kd.yaml
+python scripts/train.py --config configs/radar/teacher_no_kd.yaml
+python scripts/train.py --config configs/gps/teacher_no_kd.yaml
+python scripts/train.py --config configs/lidar/teacher_no_kd.yaml
+python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml
+```
+
+构建 teacher reliability registry：
+
+```bash
+python scripts/build_teacher_registry.py \
+  --teacher-root outputs/scene32 \
+  --output outputs/scene32/teacher_registry.json \
+  --scene 32 \
+  --prior-mode manual
+```
+
+默认 Scene32 手动 prior 是 `image=0.20`、`radar=0.20`、`gps=0.85`、`lidar=0.15`、
+`mmwave=0.90`。也可以用 metric prior：
+
+```bash
+python scripts/build_teacher_registry.py \
+  --teacher-root outputs/scene32 \
+  --output outputs/scene32/teacher_registry.json \
+  --scene 32 \
+  --prior-mode metric \
+  --prior-min 0.05 \
+  --prior-max 0.95
+```
+
+Stage 2 加载 registry 中的 teacher encoder，冻结 encoder，并训练 fusion transformer、head 和
+`prior_residual_sigmoid` gate：
+
+```bash
+python scripts/train.py --config configs/fusion/scene32_stage2_teacher_init_prior_residual.yaml
+```
+
+Stage 3 从 Stage 2 best checkpoint 继续，只解冻 GPS/mmWave encoder，并使用独立参数组学习率：
+
+```bash
+python scripts/train.py --config configs/fusion/scene32_stage3_selective_ft_gps_mmwave.yaml
+```
+
+主实验默认关闭 counterfactual、unimodal auxiliary 和 KD 的有效权重，仅保留 task loss、
+beam soft 小权重和 prior regularization。训练日志中重点看
+`craf/gate_mean/<modality>`、`craf/prior/<modality>`、
+`craf/residual_logit_mean/<modality>`、`train_prior_regularization_loss`、
+`teacher_prior.encoder_load`、`teacher_prior.encoder_freeze` 以及
+`modality_subsets` 中 `gps`、`mmwave`、`strong_only`、`weak_only`、`all` 的验证指标。
+
+如果 registry 路径不存在，报错会包含解析后的绝对路径；如果 strict teacher encoder 加载失败，
+报错会列出模态、checkpoint、missing/unexpected key 或 shape mismatch。调试形状差异时可临时设置
+`teacher.strict=false` 或使用 `checkpoint.strict_load=false`，但主实验应保持 strict 加载。
+
 legacy 入口继续保留，但新实验优先使用上面的 canonical 名称：
 
 | Legacy 配置 | 当前语义 | 推荐 canonical 入口 |

@@ -53,6 +53,87 @@ class UniModalHead(nn.Module):
         return logits.view(batch_size, modality_count, self.horizon, self.num_classes)
 
 
+class PriorResidualGate(nn.Module):
+    """Gate initialized from teacher priors with a learnable residual logit."""
+
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        *,
+        hidden_size: int | None = None,
+        min_gate: float = 0.0,
+        dataset_prior: list[float] | tuple[float, ...] | dict[str, float] | None = None,
+        modalities: tuple[str, ...] = (),
+        use_confidence_features: bool = True,
+        zero_init: bool = True,
+    ):
+        super().__init__()
+        if not 0.0 <= float(min_gate) < 1.0:
+            raise ValueError(f"min_gate must be in [0, 1), got {min_gate}.")
+        self.modality_count = int(modality_count)
+        self.min_gate = float(min_gate)
+        self.use_confidence_features = bool(use_confidence_features)
+        hidden = int(hidden_size or max(d_model // 2, 16))
+        input_size = int(d_model) + (2 if self.use_confidence_features else 0)
+        self.residual_mlp = nn.Sequential(
+            nn.Linear(input_size, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
+        if zero_init:
+            last = self.residual_mlp[-1]
+            if isinstance(last, nn.Linear):
+                nn.init.zeros_(last.weight)
+                nn.init.zeros_(last.bias)
+        prior = _resolve_prior_values(
+            dataset_prior,
+            modalities,
+            self.modality_count,
+            default=0.5,
+        )
+        self.register_buffer("prior", prior, persistent=True)
+
+    def set_prior(self, dataset_prior: list[float] | tuple[float, ...] | dict[str, float], modalities: tuple[str, ...]) -> None:
+        prior = _resolve_prior_values(dataset_prior, modalities, self.modality_count, default=0.5)
+        self.prior.copy_(prior.to(device=self.prior.device, dtype=self.prior.dtype))
+
+    def forward(
+        self,
+        modality_repr: torch.Tensor,
+        confidence: torch.Tensor,
+        available_mask: torch.Tensor,
+        *,
+        gate_temperature: float | torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        del gate_temperature
+        if modality_repr.ndim != 3:
+            raise ValueError(f"modality_repr must have shape [B, K, D], got {tuple(modality_repr.shape)}.")
+        if self.use_confidence_features and (confidence.shape[:2] != modality_repr.shape[:2] or confidence.shape[-1] != 2):
+            raise ValueError("confidence must have shape [B, K, 2] aligned with modality_repr.")
+        available = available_mask.to(torch.bool)
+        if available.shape != modality_repr.shape[:2]:
+            raise ValueError("available_mask must have shape [B, K] aligned with modality_repr.")
+        features = [modality_repr]
+        if self.use_confidence_features:
+            features.append(confidence)
+        residual_logits = self.residual_mlp(torch.cat(features, dim=-1)).squeeze(-1)
+        prior = self.prior.to(device=modality_repr.device, dtype=modality_repr.dtype).view(1, self.modality_count)
+        prior = prior.expand(modality_repr.shape[0], -1)
+        prior_logits = _prior_to_logit(prior, self.min_gate)
+        gate_logits = prior_logits + residual_logits
+        gate = torch.sigmoid(gate_logits)
+        if self.min_gate > 0:
+            gate = gate * (1.0 - self.min_gate) + self.min_gate
+        gate = gate.masked_fill(~available, 0.0)
+        return {
+            "gate": gate,
+            "gate_logits": gate_logits,
+            "prior": prior,
+            "residual_logits": residual_logits,
+        }
+
+
 class ReliabilityEstimator(nn.Module):
     def __init__(
         self,
@@ -71,13 +152,17 @@ class ReliabilityEstimator(nn.Module):
         use_dataset_prior: bool = False,
         dataset_prior: list[float] | tuple[float, ...] | dict[str, float] | None = None,
         modalities: tuple[str, ...] = (),
+        use_confidence_features: bool = True,
+        residual_zero_init: bool = True,
     ):
         super().__init__()
         if not 0.0 <= float(min_gate) < 1.0:
             raise ValueError(f"min_gate must be in [0, 1), got {min_gate}.")
         gate_type = str(gate_type)
-        if gate_type not in {"sigmoid", "softmax", "fixed_prior"}:
-            raise ValueError(f"gate_type must be 'sigmoid', 'softmax', or 'fixed_prior', got '{gate_type}'.")
+        available_gate_types = {"none", "sigmoid", "softmax", "fixed_prior", "prior_residual_sigmoid"}
+        if gate_type not in available_gate_types:
+            available = ", ".join(sorted(available_gate_types))
+            raise ValueError(f"Unknown gate_type '{gate_type}'. Available gate types: {available}.")
         if float(gate_temperature) <= 0.0:
             raise ValueError(f"gate_temperature must be positive, got {gate_temperature}.")
         self.min_gate = float(min_gate)
@@ -92,15 +177,32 @@ class ReliabilityEstimator(nn.Module):
         self.modality_count = int(modality_count)
         hidden = int(hidden_size or max(d_model // 2, 16))
         prior_feature_count = 1 if self.use_dataset_prior else 0
-        self.net = nn.Sequential(
-            nn.Linear(d_model + 2 + prior_feature_count, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 1),
+        self.net = None
+        if gate_type not in {"none", "fixed_prior", "prior_residual_sigmoid"}:
+            self.net = nn.Sequential(
+                nn.Linear(d_model + 2 + prior_feature_count, hidden),
+                nn.GELU(),
+                nn.Linear(hidden, 1),
+            )
+        prior = _resolve_prior_values(
+            dataset_prior,
+            modalities,
+            self.modality_count,
+            default=0.5 if gate_type == "prior_residual_sigmoid" else 0.0,
         )
-        prior = torch.zeros(self.modality_count, dtype=torch.float32)
-        if dataset_prior is not None:
-            prior = _resolve_dataset_prior(dataset_prior, modalities, self.modality_count)
         self.register_buffer("dataset_prior", prior, persistent=True)
+        self.prior_residual_gate = None
+        if gate_type == "prior_residual_sigmoid":
+            self.prior_residual_gate = PriorResidualGate(
+                d_model,
+                self.modality_count,
+                hidden_size=hidden_size,
+                min_gate=self.min_gate,
+                dataset_prior=dataset_prior,
+                modalities=modalities,
+                use_confidence_features=use_confidence_features,
+                zero_init=residual_zero_init,
+            )
 
     def forward(
         self,
@@ -117,13 +219,26 @@ class ReliabilityEstimator(nn.Module):
         available = available_mask.to(torch.bool)
         if available.shape != modality_repr.shape[:2]:
             raise ValueError("available_mask must have shape [B, K] aligned with modality_repr.")
+        if self.gate_type == "none":
+            return available.to(modality_repr.dtype)
+        if self.gate_type == "prior_residual_sigmoid":
+            assert self.prior_residual_gate is not None
+            return self.prior_residual_gate(
+                modality_repr,
+                confidence,
+                available,
+                gate_temperature=gate_temperature,
+            )
 
         features = [modality_repr, confidence]
         if self.use_dataset_prior:
             prior = self.dataset_prior.to(dtype=modality_repr.dtype, device=modality_repr.device)
             prior = prior.view(1, self.modality_count, 1).expand(modality_repr.shape[0], -1, -1)
             features.append(prior)
-        scores = self.net(torch.cat(features, dim=-1)).squeeze(-1)
+        if self.net is None:
+            scores = torch.zeros(modality_repr.shape[:2], dtype=modality_repr.dtype, device=modality_repr.device)
+        else:
+            scores = self.net(torch.cat(features, dim=-1)).squeeze(-1)
         if self.gate_type == "softmax":
             raw_gate = self._softmax_gate(scores, available, gate_temperature=gate_temperature)
         elif self.gate_type == "fixed_prior":
@@ -134,6 +249,21 @@ class ReliabilityEstimator(nn.Module):
                 raw_gate = raw_gate * (1.0 - self.min_gate) + self.min_gate
             raw_gate = raw_gate.masked_fill(~available, 0.0)
         return raw_gate
+
+    def set_prior(self, dataset_prior: list[float] | tuple[float, ...] | dict[str, float], modalities: tuple[str, ...]) -> None:
+        prior = _resolve_prior_values(dataset_prior, modalities, self.modality_count, default=0.5)
+        self.dataset_prior.copy_(prior.to(device=self.dataset_prior.device, dtype=self.dataset_prior.dtype))
+        if self.prior_residual_gate is not None:
+            self.prior_residual_gate.set_prior(dataset_prior, modalities)
+
+    def current_prior(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.gate_type == "none":
+            return torch.ones(self.modality_count, device=device, dtype=dtype)
+        if self.prior_residual_gate is not None:
+            return self.prior_residual_gate.prior.to(device=device, dtype=dtype)
+        if self.gate_type == "fixed_prior" or self.use_dataset_prior:
+            return self.dataset_prior.to(device=device, dtype=dtype)
+        return torch.full((self.modality_count,), 0.5, device=device, dtype=dtype)
 
     def _softmax_gate(
         self,
@@ -340,17 +470,37 @@ class CRAFTTokenFusionBase(nn.Module):
         confidence = compute_unimodal_confidence(unimodal_logits)
         if force_reliability_gate is not None:
             reliability = _forced_reliability_gate(force_reliability_gate, effective_mask, dtype=tokens.dtype)
+            gate_diagnostics = _default_gate_diagnostics(
+                self.reliability_estimator,
+                reliability,
+                effective_mask,
+            )
             gated_tokens = tokens * reliability.view(batch_size, self.modality_count, 1, 1)
         elif self.use_reliability:
-            reliability = self.reliability_estimator(
+            gate_result = self.reliability_estimator(
                 modality_repr,
                 confidence,
                 effective_mask,
                 gate_temperature=gate_temperature,
             )
+            if isinstance(gate_result, dict):
+                reliability = gate_result["gate"]
+                gate_diagnostics = gate_result
+            else:
+                reliability = gate_result
+                gate_diagnostics = _default_gate_diagnostics(
+                    self.reliability_estimator,
+                    reliability,
+                    effective_mask,
+                )
             gated_tokens = tokens * reliability.view(batch_size, self.modality_count, 1, 1)
         else:
             reliability = effective_mask.to(tokens.dtype)
+            gate_diagnostics = _default_gate_diagnostics(
+                self.reliability_estimator,
+                reliability,
+                effective_mask,
+            )
             gated_tokens = tokens
 
         flat_tokens = gated_tokens.reshape(batch_size, self.modality_count * seq_len, self.d_model)
@@ -366,6 +516,10 @@ class CRAFTTokenFusionBase(nn.Module):
             "input_features": sequence_features,
             "output_features": query_features,
             "reliability": reliability,
+            "gate": gate_diagnostics.get("gate", reliability),
+            "gate_logits": gate_diagnostics.get("gate_logits"),
+            "prior": gate_diagnostics.get("prior"),
+            "residual_logits": gate_diagnostics.get("residual_logits"),
             "effective_modality_mask": effective_mask,
             "unimodal_logits": unimodal_logits if self.return_unimodal else torch.empty(0, device=logits.device),
             "confidence": confidence,
@@ -375,6 +529,11 @@ class CRAFTTokenFusionBase(nn.Module):
             "gate_temperature": _gate_temperature_tensor(gate_temperature, logits),
             "modalities": self.modalities,
         }
+
+    def set_reliability_prior(self, priors: dict[str, float] | list[float] | tuple[float, ...]) -> None:
+        if not hasattr(self.reliability_estimator, "set_prior"):
+            raise ValueError("CRAF reliability estimator does not support external priors.")
+        self.reliability_estimator.set_prior(priors, self.modalities)
 
 
 @MODELS.register("craf_fusion")
@@ -416,6 +575,18 @@ def _build_modality_encoder(
     raise ValueError(f"Unknown CRAF modality '{modality}'. Available modalities: {available}.")
 
 
+def _resolve_prior_values(
+    dataset_prior: list[float] | tuple[float, ...] | dict[str, float] | None,
+    modalities: tuple[str, ...],
+    modality_count: int,
+    *,
+    default: float,
+) -> torch.Tensor:
+    if dataset_prior is None:
+        return torch.full((int(modality_count),), float(default), dtype=torch.float32)
+    return _resolve_dataset_prior(dataset_prior, modalities, modality_count)
+
+
 def _resolve_dataset_prior(
     dataset_prior: list[float] | tuple[float, ...] | dict[str, float],
     modalities: tuple[str, ...],
@@ -427,6 +598,42 @@ def _resolve_dataset_prior(
     if values.numel() != modality_count:
         raise ValueError(f"dataset_prior must contain {modality_count} values, got {values.numel()}.")
     return values
+
+
+def _prior_to_logit(prior: torch.Tensor, min_gate: float) -> torch.Tensor:
+    eps = torch.finfo(prior.dtype).eps
+    if min_gate > 0:
+        scaled = (prior - float(min_gate)) / (1.0 - float(min_gate))
+    else:
+        scaled = prior
+    return torch.logit(scaled.clamp(eps, 1.0 - eps))
+
+
+def _safe_logit(values: torch.Tensor) -> torch.Tensor:
+    eps = torch.finfo(values.dtype).eps
+    return torch.logit(values.clamp(eps, 1.0 - eps))
+
+
+def _default_gate_diagnostics(
+    estimator: ReliabilityEstimator,
+    reliability: torch.Tensor,
+    effective_mask: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    prior = estimator.current_prior(device=reliability.device, dtype=reliability.dtype)
+    prior = prior.view(1, -1).expand_as(reliability)
+    residual = torch.zeros_like(reliability)
+    if estimator.gate_type == "fixed_prior":
+        logits = _prior_to_logit(prior, estimator.min_gate)
+    elif estimator.gate_type == "none":
+        logits = torch.zeros_like(reliability)
+    else:
+        logits = _safe_logit(reliability.masked_fill(~effective_mask, 0.5))
+    return {
+        "gate": reliability,
+        "gate_logits": logits,
+        "prior": prior,
+        "residual_logits": residual,
+    }
 
 
 def _effective_modality_mask(

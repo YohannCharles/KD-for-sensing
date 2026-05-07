@@ -472,11 +472,90 @@ def build_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def build_optimizer(cfg: dict[str, Any], model) -> torch.optim.Optimizer:
     training_cfg = cfg["training"]
+    param_group_cfg = cfg.get("finetune", {}).get("param_groups", {})
+    if param_group_cfg.get("enabled", False):
+        groups = _teacher_prior_param_groups(cfg, model, param_group_cfg)
+        if not groups:
+            raise ValueError("No trainable parameters found for Stage 3 optimizer parameter groups.")
+        return torch.optim.Adam(groups, weight_decay=training_cfg.get("weight_decay", 0.0))
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
+    if not trainable_params:
+        raise ValueError("No trainable parameters found for optimizer.")
     return torch.optim.Adam(
-        model.parameters(),
+        [{"params": trainable_params, "name": "main", "param_count": _param_count(trainable_params)}],
         lr=training_cfg.get("lr", 7.5e-4),
         weight_decay=training_cfg.get("weight_decay", 0.0),
     )
+
+
+def optimizer_param_group_summary(optimizer: torch.optim.Optimizer) -> list[dict[str, Any]]:
+    summary = []
+    for index, group in enumerate(optimizer.param_groups):
+        params = list(group.get("params", []))
+        summary.append(
+            {
+                "index": index,
+                "name": str(group.get("name", f"group_{index}")),
+                "lr": float(group.get("lr", 0.0)),
+                "param_count": int(group.get("param_count", _param_count(params))),
+            }
+        )
+    return summary
+
+
+def _teacher_prior_param_groups(cfg: dict[str, Any], model, param_group_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    training_lr = float(cfg.get("training", {}).get("lr", 7.5e-4))
+    strong_modalities = set(str(name) for name in param_group_cfg.get("strong_modalities", ["gps", "mmwave"]))
+    groups: dict[str, list[torch.nn.Parameter]] = {
+        "fusion": [],
+        "head": [],
+        "gate": [],
+        "strong_encoder": [],
+        "weak_encoder": [],
+    }
+    seen: set[int] = set()
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        role = _parameter_role(name, strong_modalities)
+        groups[role].append(param)
+        seen.add(id(param))
+    param_groups = []
+    lr_by_role = {
+        "fusion": float(param_group_cfg.get("fusion_lr", training_lr)),
+        "head": float(param_group_cfg.get("head_lr", training_lr)),
+        "gate": float(param_group_cfg.get("gate_lr", training_lr)),
+        "strong_encoder": float(param_group_cfg.get("strong_encoder_lr", training_lr * 0.2)),
+        "weak_encoder": float(param_group_cfg.get("weak_encoder_lr", training_lr * 0.05)),
+    }
+    for role, params in groups.items():
+        if not params:
+            continue
+        param_groups.append(
+            {
+                "params": params,
+                "name": role,
+                "lr": lr_by_role[role],
+                "param_count": _param_count(params),
+            }
+        )
+    return param_groups
+
+
+def _parameter_role(name: str, strong_modalities: set[str]) -> str:
+    if name.startswith("encoders."):
+        parts = name.split(".")
+        modality = parts[1] if len(parts) > 1 else ""
+        return "strong_encoder" if modality in strong_modalities else "weak_encoder"
+    if name.startswith("reliability_estimator"):
+        return "gate"
+    if name.startswith(("prediction_head", "unimodal_head")):
+        return "head"
+    return "fusion"
+
+
+def _param_count(params: list[torch.nn.Parameter] | tuple[torch.nn.Parameter, ...]) -> int:
+    return int(sum(param.numel() for param in params))
 
 
 def build_scheduler(cfg: dict[str, Any], optimizer: torch.optim.Optimizer):

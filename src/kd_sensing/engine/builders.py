@@ -29,6 +29,7 @@ from kd_sensing.engine.optim import (
     build_optimizer,
     build_scheduler,
     build_task_criterion,
+    optimizer_param_group_summary,
     resolve_weight_path,
 )
 from kd_sensing.engine.run_metadata import (
@@ -53,6 +54,7 @@ __all__ = [
     "build_optimizer",
     "build_scheduler",
     "build_task_criterion",
+    "optimizer_param_group_summary",
     "cache_run_metadata",
     "dataloaders_run_metadata",
     "dataset_run_metadata",
