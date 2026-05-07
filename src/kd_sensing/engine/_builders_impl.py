@@ -440,7 +440,10 @@ def build_model(model_cfg: dict[str, Any]):
 
 def build_task_criterion(cfg: dict[str, Any]):
     import_default_components()
-    return LOSSES.build(cfg["loss"])
+    loss_cfg = deepcopy(cfg["loss"])
+    for auxiliary_key in ("beam_soft", "unimodal_aux", "gate"):
+        loss_cfg.pop(auxiliary_key, None)
+    return LOSSES.build(loss_cfg)
 
 
 def build_distiller(cfg: dict[str, Any], task_criterion):

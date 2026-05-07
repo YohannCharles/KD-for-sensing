@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
+from kd_sensing.distillation.craf_losses import beam_soft_label_loss, sequence_cross_entropy
 from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
@@ -22,7 +23,14 @@ from kd_sensing.engine.batch import (
     prepare_mmwave_inputs,
     prepare_radar_inputs,
 )
+from kd_sensing.engine.craf_training import (
+    generate_counterfactual_drop_masks,
+    generate_modality_dropout_mask,
+    loss_delta_to_gate_target,
+    masked_gate_mse_loss,
+)
 from kd_sensing.engine.data_factory import build_dataloaders
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
     build_device,
@@ -35,6 +43,7 @@ from kd_sensing.engine.optim import (
 from kd_sensing.engine.run_metadata import dataloaders_run_metadata, throughput_run_metadata
 from kd_sensing.engine.runtime import autocast_context, make_grad_scaler, resolve_amp_settings, transfer_non_blocking
 from kd_sensing.engine.validator import validate
+from kd_sensing.modalities import normalize_modalities
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
@@ -213,6 +222,22 @@ def _write_tensorboard_scalars(writer, history: dict, step: int) -> None:
     writer.add_scalar("accuracy/val_atop5", history["val_atop5"][-1], step)
     writer.add_scalar("dba/val_adba", history["val_adba"][-1], step)
     writer.add_scalar("learning_rate/main", history["learning_rates"][-1], step)
+    if history.get("train_beam_soft_loss"):
+        writer.add_scalar("loss/train_beam_soft", history["train_beam_soft_loss"][-1], step)
+    if history.get("train_unimodal_loss"):
+        writer.add_scalar("loss/train_unimodal_aux", history["train_unimodal_loss"][-1], step)
+    if history.get("train_counterfactual_loss"):
+        writer.add_scalar("loss/train_counterfactual_gate", history["train_counterfactual_loss"][-1], step)
+    writer.flush()
+
+
+def _write_tensorboard_craf_scalars(writer, epoch_log: dict, step: int) -> None:
+    if writer is None:
+        return
+    reliability = epoch_log.get("craf_reliability")
+    if isinstance(reliability, dict):
+        for modality, value in reliability.items():
+            writer.add_scalar(f"craf/reliability/{modality}", float(value), step)
     writer.flush()
 
 
@@ -308,6 +333,9 @@ def train(cfg: dict) -> dict:
         "train_loss": [],
         "train_task_loss": [],
         "train_distill_loss": [],
+        "train_beam_soft_loss": [],
+        "train_unimodal_loss": [],
+        "train_counterfactual_loss": [],
         "train_acc": [],
         "val_loss": [],
         "val_acc": [],
@@ -352,7 +380,12 @@ def train(cfg: dict) -> dict:
             running_loss = 0.0
             running_task_loss = 0.0
             running_distill_loss = 0.0
+            running_beam_soft_loss = 0.0
+            running_unimodal_loss = 0.0
+            running_counterfactual_loss = 0.0
             running_acc = 0.0
+            reliability_sums: dict[str, float] = {}
+            reliability_batches = 0
             batch_count = 0
             current_alpha = cfg["distillation"].get("alpha", 0.4)
             warmup_epochs = cfg["distillation"].get("alpha_warmup_epochs", 0)
@@ -380,7 +413,14 @@ def train(cfg: dict) -> dict:
                 )
                 optimizer.zero_grad()
                 with autocast_context(amp_enabled, device, amp_dtype):
-                    student_outputs, student_input_features, student_out_features = _forward_for_task(
+                    force_modality_mask = _training_modality_mask(
+                        training_cfg,
+                        student_model,
+                        model_cfg["student"],
+                        batch_size=int(labels.shape[0]),
+                        device=device,
+                    )
+                    student_raw = _forward_for_task(
                         student_model,
                         task,
                         batch,
@@ -389,10 +429,15 @@ def train(cfg: dict) -> dict:
                         num_pred=num_pred,
                         device=device,
                         non_blocking=non_blocking,
+                        force_modality_mask=force_modality_mask,
                     )
+                    student_model_output = adapt_model_output(student_raw)
+                    student_outputs = select_prediction_slots(student_model_output.logits, num_pred)
+                    student_input_features = student_model_output.input_features
+                    student_out_features = student_model_output.output_features
                     if teacher_model is not None:
                         with torch.no_grad():
-                            teacher_outputs, teacher_input_features, teacher_out_features = _forward_for_task(
+                            teacher_raw = _forward_for_task(
                                 teacher_model,
                                 task,
                                 batch,
@@ -402,6 +447,10 @@ def train(cfg: dict) -> dict:
                                 device=device,
                                 non_blocking=non_blocking,
                             )
+                            teacher_model_output = adapt_model_output(teacher_raw)
+                            teacher_outputs = select_prediction_slots(teacher_model_output.logits, num_pred)
+                            teacher_input_features = teacher_model_output.input_features
+                            teacher_out_features = teacher_model_output.output_features
                     else:
                         teacher_outputs, teacher_input_features, teacher_out_features = _dummy_teacher(
                             student_outputs,
@@ -409,8 +458,6 @@ def train(cfg: dict) -> dict:
                             student_out_features,
                         )
 
-                    student_outputs = student_outputs[:, -(num_pred + 1) :, :]
-                    teacher_outputs = teacher_outputs[:, -(num_pred + 1) :, :]
                     student_logits = student_outputs.reshape(-1, num_classes)
                     teacher_logits = teacher_outputs.reshape(-1, num_classes)
                     targets = labels.flatten()
@@ -424,6 +471,23 @@ def train(cfg: dict) -> dict:
                         teacher_out_features[:, -(num_pred + 1) :, :],
                         current_alpha,
                     )
+                    extra_losses = _compute_craf_extra_losses(
+                        cfg,
+                        student_model,
+                        task,
+                        batch,
+                        model_cfg=model_cfg["student"],
+                        seq_length=seq_length_student,
+                        num_pred=num_pred,
+                        num_classes=num_classes,
+                        labels=labels,
+                        student_outputs=student_outputs,
+                        diagnostics=student_model_output.diagnostics,
+                        epoch=epoch,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    total_loss = total_loss + extra_losses["total"]
                 grad_clip = training_cfg.get("grad_clip", None)
                 if grad_scaler.is_enabled():
                     grad_scaler.scale(total_loss).backward()
@@ -443,7 +507,21 @@ def train(cfg: dict) -> dict:
                 running_loss = (total_loss.item() + step * running_loss) / (step + 1)
                 running_task_loss = (task_loss.item() + step * running_task_loss) / (step + 1)
                 running_distill_loss = (distill_loss.item() + step * running_distill_loss) / (step + 1)
+                running_beam_soft_loss = (
+                    extra_losses["beam_soft"].item() + step * running_beam_soft_loss
+                ) / (step + 1)
+                running_unimodal_loss = (
+                    extra_losses["unimodal"].item() + step * running_unimodal_loss
+                ) / (step + 1)
+                running_counterfactual_loss = (
+                    extra_losses["counterfactual"].item() + step * running_counterfactual_loss
+                ) / (step + 1)
                 running_acc = (acc + step * running_acc) / (step + 1)
+                reliability_summary = _batch_reliability_summary(student_model_output.diagnostics)
+                if reliability_summary:
+                    reliability_batches += 1
+                    for modality, value in reliability_summary.items():
+                        reliability_sums[modality] = reliability_sums.get(modality, 0.0) + value
                 batch_progress.set_postfix(
                     loss=f"{running_loss:.4f}",
                     task=f"{running_task_loss:.4f}",
@@ -469,29 +547,39 @@ def train(cfg: dict) -> dict:
             history["train_loss"].append(float(running_loss))
             history["train_task_loss"].append(float(running_task_loss))
             history["train_distill_loss"].append(float(running_distill_loss))
+            history["train_beam_soft_loss"].append(float(running_beam_soft_loss))
+            history["train_unimodal_loss"].append(float(running_unimodal_loss))
+            history["train_counterfactual_loss"].append(float(running_counterfactual_loss))
             history["train_acc"].append(float(running_acc))
             history["val_loss"].append(float(val_loss))
             history["val_acc"].append(val_acc)
             history["val_atop3"].append(validation_curve_metrics["val_atop3"])
             history["val_atop5"].append(validation_curve_metrics["val_atop5"])
             history["val_adba"].append(validation_curve_metrics["val_adba"])
-            epoch_logs.append(
-                {
-                    "epoch": epoch + 1,
-                    "total_epochs": total_epochs,
-                    "train_batches": batch_count,
-                    "train_loss": float(running_loss),
-                    "train_task_loss": float(running_task_loss),
-                    "train_distill_loss": float(running_distill_loss),
-                    "train_acc": float(running_acc),
-                    "val_loss": float(val_loss),
-                    "val_acc": val_acc,
-                    "val_atop3": validation_curve_metrics["val_atop3"],
-                    "val_atop5": validation_curve_metrics["val_atop5"],
-                    "val_adba": validation_curve_metrics["val_adba"],
-                    "learning_rate": float(current_lr),
+            epoch_log = {
+                "epoch": epoch + 1,
+                "total_epochs": total_epochs,
+                "train_batches": batch_count,
+                "train_loss": float(running_loss),
+                "train_task_loss": float(running_task_loss),
+                "train_distill_loss": float(running_distill_loss),
+                "train_beam_soft_loss": float(running_beam_soft_loss),
+                "train_unimodal_loss": float(running_unimodal_loss),
+                "train_counterfactual_loss": float(running_counterfactual_loss),
+                "train_acc": float(running_acc),
+                "val_loss": float(val_loss),
+                "val_acc": val_acc,
+                "val_atop3": validation_curve_metrics["val_atop3"],
+                "val_atop5": validation_curve_metrics["val_atop5"],
+                "val_adba": validation_curve_metrics["val_adba"],
+                "learning_rate": float(current_lr),
+            }
+            if reliability_batches:
+                epoch_log["craf_reliability"] = {
+                    modality: float(value / reliability_batches)
+                    for modality, value in reliability_sums.items()
                 }
-            )
+            epoch_logs.append(epoch_log)
             epoch_progress.set_postfix(
                 train_loss=f"{running_loss:.4f}",
                 val_loss=f"{float(val_loss):.4f}",
@@ -499,6 +587,7 @@ def train(cfg: dict) -> dict:
                 lr=f"{current_lr:.2e}",
             )
             _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
+            _write_tensorboard_craf_scalars(tensorboard_writer, epoch_log, epoch + 1)
             improved = val_loss < best_val_loss - training_cfg.get("min_delta", 0.0)
             if improved:
                 best_val_loss = val_loss
@@ -610,6 +699,7 @@ def _forward_for_task(
     num_pred: int,
     device: torch.device,
     non_blocking: bool = False,
+    force_modality_mask: torch.Tensor | None = None,
 ):
     if task == "fusion":
         fusion_inputs = prepare_fusion_inputs(
@@ -620,7 +710,7 @@ def _forward_for_task(
             modalities=(model_cfg or {}).get("modalities"),
             non_blocking=non_blocking,
         )
-        return forward_model(model, task, **fusion_inputs)
+        return forward_model(model, task, **fusion_inputs, force_modality_mask=force_modality_mask)
     if task == "radar":
         radar_batch = prepare_radar_inputs(
             batch,
@@ -665,3 +755,213 @@ def _forward_for_task(
         non_blocking=non_blocking,
     )
     return forward_model(model, task, image_batch)
+
+
+def _training_modality_mask(
+    training_cfg: dict,
+    model,
+    model_cfg: dict,
+    *,
+    batch_size: int,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if not getattr(model, "supports_force_modality_mask", False):
+        return None
+    dropout_cfg = training_cfg.get("modality_dropout", {})
+    enabled = bool(dropout_cfg.get("enabled", False))
+    drop_prob = float(dropout_cfg.get("drop_prob", 0.0))
+    if not enabled or drop_prob <= 0.0:
+        return None
+    modalities = normalize_modalities(model_cfg.get("modalities", ("image", "radar")), context="CRAF dropout modalities")
+    available = torch.ones(batch_size, len(modalities), dtype=torch.bool, device=device)
+    return generate_modality_dropout_mask(
+        available,
+        drop_prob=drop_prob,
+        min_keep=int(dropout_cfg.get("min_keep", 1)),
+    )
+
+
+def _compute_craf_extra_losses(
+    cfg: dict,
+    model,
+    task: str,
+    batch: dict[str, torch.Tensor],
+    *,
+    model_cfg: dict,
+    seq_length: int,
+    num_pred: int,
+    num_classes: int,
+    labels: torch.Tensor,
+    student_outputs: torch.Tensor,
+    diagnostics: dict,
+    epoch: int,
+    device: torch.device,
+    non_blocking: bool,
+) -> dict[str, torch.Tensor]:
+    zero = student_outputs.sum() * 0.0
+    losses = {
+        "total": zero,
+        "beam_soft": zero,
+        "unimodal": zero,
+        "counterfactual": zero,
+    }
+
+    loss_cfg = cfg.get("loss", {})
+    beam_cfg = loss_cfg.get("beam_soft", {})
+    beam_weight = float(beam_cfg.get("weight", 0.0))
+    if bool(beam_cfg.get("enabled", beam_weight > 0.0)) and beam_weight > 0.0:
+        losses["beam_soft"] = beam_soft_label_loss(
+            student_outputs,
+            labels,
+            sigma=float(beam_cfg.get("sigma", 2.0)),
+            circular=bool(beam_cfg.get("circular", True)),
+            ignore_index=int(beam_cfg.get("ignore_index", -100)),
+        )
+        losses["total"] = losses["total"] + beam_weight * losses["beam_soft"]
+
+    unimodal_cfg = loss_cfg.get("unimodal_aux", {})
+    unimodal_weight = float(unimodal_cfg.get("weight", model_cfg.get("unimodal_loss_weight", 0.0)))
+    if unimodal_weight > 0.0:
+        unimodal_loss = _unimodal_aux_loss(
+            diagnostics.get("unimodal_logits"),
+            labels,
+            diagnostics.get("effective_modality_mask"),
+            num_pred=num_pred,
+            ignore_index=int(unimodal_cfg.get("ignore_index", -100)),
+            zero=zero,
+        )
+        losses["unimodal"] = unimodal_loss
+        losses["total"] = losses["total"] + unimodal_weight * unimodal_loss
+
+    counterfactual_cfg = cfg.get("training", {}).get("counterfactual", {})
+    counterfactual_weight = float(
+        counterfactual_cfg.get("weight", counterfactual_cfg.get("gate_loss_weight", 0.0))
+    )
+    counterfactual_enabled = bool(counterfactual_cfg.get("enabled", False))
+    start_epoch = int(counterfactual_cfg.get("start_epoch", 0))
+    if (
+        counterfactual_enabled
+        and counterfactual_weight > 0.0
+        and epoch >= start_epoch
+        and getattr(model, "supports_force_modality_mask", False)
+    ):
+        counterfactual_loss = _counterfactual_gate_loss(
+            model,
+            task,
+            batch,
+            model_cfg=model_cfg,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            labels=labels,
+            full_outputs=student_outputs,
+            reliability=diagnostics.get("reliability"),
+            effective_modality_mask=diagnostics.get("effective_modality_mask"),
+            mode=str(counterfactual_cfg.get("mode", "sample_one")),
+            target_temperature=float(counterfactual_cfg.get("target_temperature", 1.0)),
+            device=device,
+            non_blocking=non_blocking,
+            zero=zero,
+        )
+        losses["counterfactual"] = counterfactual_loss
+        losses["total"] = losses["total"] + counterfactual_weight * counterfactual_loss
+    return losses
+
+
+def _unimodal_aux_loss(
+    unimodal_logits,
+    labels: torch.Tensor,
+    effective_modality_mask,
+    *,
+    num_pred: int,
+    ignore_index: int,
+    zero: torch.Tensor,
+) -> torch.Tensor:
+    if not torch.is_tensor(unimodal_logits) or unimodal_logits.numel() == 0:
+        return zero
+    if unimodal_logits.ndim != 4:
+        raise ValueError(f"unimodal_logits must have shape [B, K, H, C], got {tuple(unimodal_logits.shape)}.")
+    horizon = num_pred + 1
+    if unimodal_logits.shape[2] < horizon:
+        raise ValueError(
+            f"unimodal_logits returned {unimodal_logits.shape[2]} slots but labels require {horizon}."
+        )
+    if unimodal_logits.shape[2] > horizon:
+        unimodal_logits = unimodal_logits[:, :, -horizon:, :]
+    batch_size, modality_count, _, num_classes = unimodal_logits.shape
+    expanded_labels = labels.unsqueeze(1).expand(batch_size, modality_count, -1)
+    _, per_modality_loss = sequence_cross_entropy(
+        unimodal_logits.reshape(batch_size * modality_count, horizon, num_classes),
+        expanded_labels.reshape(batch_size * modality_count, horizon),
+        ignore_index=ignore_index,
+    )
+    if torch.is_tensor(effective_modality_mask):
+        mask = effective_modality_mask.to(device=unimodal_logits.device, dtype=torch.bool).reshape(-1)
+    else:
+        mask = torch.ones(batch_size * modality_count, dtype=torch.bool, device=unimodal_logits.device)
+    if not torch.any(mask):
+        return zero
+    return per_modality_loss[mask].mean()
+
+
+def _counterfactual_gate_loss(
+    model,
+    task: str,
+    batch: dict[str, torch.Tensor],
+    *,
+    model_cfg: dict,
+    seq_length: int,
+    num_pred: int,
+    labels: torch.Tensor,
+    full_outputs: torch.Tensor,
+    reliability,
+    effective_modality_mask,
+    mode: str,
+    target_temperature: float,
+    device: torch.device,
+    non_blocking: bool,
+    zero: torch.Tensor,
+) -> torch.Tensor:
+    if not torch.is_tensor(reliability) or not torch.is_tensor(effective_modality_mask):
+        return zero
+    _, full_per_sample = sequence_cross_entropy(full_outputs, labels)
+    drop_specs = generate_counterfactual_drop_masks(effective_modality_mask.detach(), mode=mode)
+    if not drop_specs:
+        return zero
+    gate_losses = []
+    for keep_mask, dropped_mask in drop_specs:
+        with torch.no_grad():
+            drop_raw = _forward_for_task(
+                model,
+                task,
+                batch,
+                model_cfg=model_cfg,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+                force_modality_mask=keep_mask,
+            )
+            drop_output = adapt_model_output(drop_raw)
+            drop_logits = select_prediction_slots(drop_output.logits, num_pred)
+            _, drop_per_sample = sequence_cross_entropy(drop_logits, labels)
+            target = loss_delta_to_gate_target(
+                full_per_sample.detach(),
+                drop_per_sample.detach(),
+                dropped_mask,
+                temperature=target_temperature,
+            )
+        gate_losses.append(masked_gate_mse_loss(reliability, target, dropped_mask))
+    if not gate_losses:
+        return zero
+    return torch.stack(gate_losses).mean()
+
+
+def _batch_reliability_summary(diagnostics: dict) -> dict[str, float]:
+    reliability = diagnostics.get("reliability")
+    modalities = diagnostics.get("modalities")
+    if not torch.is_tensor(reliability) or reliability.ndim != 2:
+        return {}
+    if not isinstance(modalities, (tuple, list)) or len(modalities) != reliability.shape[1]:
+        modalities = [f"modality_{idx}" for idx in range(reliability.shape[1])]
+    means = reliability.detach().float().mean(dim=0).cpu()
+    return {str(modality): float(means[idx].item()) for idx, modality in enumerate(modalities)}

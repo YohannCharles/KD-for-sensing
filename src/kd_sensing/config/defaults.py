@@ -106,6 +106,17 @@ DEFAULT_CONFIG = {
         "type": "focal_loss",
         "alpha": 1,
         "gamma": 2,
+        "beam_soft": {
+            "enabled": False,
+            "weight": 0.0,
+            "sigma": 2.0,
+            "circular": True,
+            "ignore_index": -100,
+        },
+        "unimodal_aux": {
+            "weight": 0.0,
+            "ignore_index": -100,
+        },
     },
     "distillation": {
         "type": "no_kd",
@@ -134,6 +145,18 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "dtype": "float16",
             "grad_scaler": True,
+        },
+        "modality_dropout": {
+            "enabled": False,
+            "drop_prob": 0.0,
+            "min_keep": 1,
+        },
+        "counterfactual": {
+            "enabled": False,
+            "mode": "sample_one",
+            "start_epoch": 0,
+            "weight": 0.0,
+            "target_temperature": 1.0,
         },
     },
     "scheduler": {

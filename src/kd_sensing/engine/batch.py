@@ -220,15 +220,21 @@ def forward_model(
     gps_batch: torch.Tensor | None = None,
     lidar_batch: torch.Tensor | None = None,
     mmwave_batch: torch.Tensor | None = None,
+    force_modality_mask: torch.Tensor | None = None,
 ):
     if task == "fusion":
-        return model(
-            image_batch=image_batch,
-            radar_batch=radar_batch,
-            gps_batch=gps_batch,
-            lidar_batch=lidar_batch,
-            mmwave_batch=mmwave_batch,
-        )
+        kwargs = {
+            "image_batch": image_batch,
+            "radar_batch": radar_batch,
+            "gps_batch": gps_batch,
+            "lidar_batch": lidar_batch,
+            "mmwave_batch": mmwave_batch,
+        }
+        if force_modality_mask is not None:
+            if not getattr(model, "supports_force_modality_mask", False):
+                raise ValueError("force_modality_mask is only supported by models that opt in to modality masks.")
+            kwargs["force_modality_mask"] = force_modality_mask
+        return model(**kwargs)
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch
         if radar_input is None:

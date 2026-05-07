@@ -16,6 +16,7 @@ from kd_sensing.engine.batch import (
     prepare_mmwave_inputs,
     prepare_radar_inputs,
 )
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
 from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, transfer_non_blocking
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 
@@ -53,7 +54,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         modalities=cfg["model"]["student"].get("modalities"),
                         non_blocking=non_blocking,
                     )
-                    outputs, _, _ = forward_model(model, task, **fusion_inputs)
+                    model_output = adapt_model_output(forward_model(model, task, **fusion_inputs))
+                    outputs = model_output.logits
                 elif task == "radar":
                     radar_batch = prepare_radar_inputs(
                         batch,
@@ -62,7 +64,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         device=device,
                         non_blocking=non_blocking,
                     )
-                    outputs, _, _ = forward_model(model, task, radar_batch=radar_batch)
+                    model_output = adapt_model_output(forward_model(model, task, radar_batch=radar_batch))
+                    outputs = model_output.logits
                 elif task == "gps":
                     gps_batch = prepare_gps_inputs(
                         batch,
@@ -71,7 +74,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         device=device,
                         non_blocking=non_blocking,
                     )
-                    outputs, _, _ = forward_model(model, task, gps_batch=gps_batch)
+                    model_output = adapt_model_output(forward_model(model, task, gps_batch=gps_batch))
+                    outputs = model_output.logits
                 elif task == "lidar":
                     lidar_batch = prepare_lidar_inputs(
                         batch,
@@ -80,7 +84,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         device=device,
                         non_blocking=non_blocking,
                     )
-                    outputs, _, _ = forward_model(model, task, lidar_batch=lidar_batch)
+                    model_output = adapt_model_output(forward_model(model, task, lidar_batch=lidar_batch))
+                    outputs = model_output.logits
                 elif task == "mmwave":
                     mmwave_batch = prepare_mmwave_inputs(
                         batch,
@@ -89,7 +94,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         device=device,
                         non_blocking=non_blocking,
                     )
-                    outputs, _, _ = forward_model(model, task, mmwave_batch=mmwave_batch)
+                    model_output = adapt_model_output(forward_model(model, task, mmwave_batch=mmwave_batch))
+                    outputs = model_output.logits
                 else:
                     image_batch = prepare_image_inputs(
                         batch,
@@ -98,8 +104,9 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                         device=device,
                         non_blocking=non_blocking,
                     )
-                    outputs, _, _ = forward_model(model, task, image_batch)
-                outputs = outputs[:, -(num_pred + 1) :, :]
+                    model_output = adapt_model_output(forward_model(model, task, image_batch))
+                    outputs = model_output.logits
+                outputs = select_prediction_slots(outputs, num_pred)
                 loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
             val_loss += loss.item()
             all_outputs.append(outputs.detach().cpu())

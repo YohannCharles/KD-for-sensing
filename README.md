@@ -218,6 +218,34 @@ Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` �
 `gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`，启用 mmWave 的配置使用
 `mmwave_input_size: 64` 和 `mmwave_normalize: true`。
 
+### CRAF 反事实可靠性融合
+
+CRAF 通过 `model.student.type: craf_fusion` 显式启用，不会改变 legacy `fusion_teacher` /
+`fusion_student` 行为。入口示例包括：
+
+```bash
+python scripts/train.py --config configs/fusion/craf_image_radar_no_kd.yaml
+python scripts/train.py --config configs/fusion/craf_all_modalities_no_kd.yaml
+python scripts/train.py --config configs/fusion/token_transformer_image_radar_no_kd.yaml
+```
+
+`craf_fusion` 复用现有 fusion batch 输入和固定模态顺序，将启用模态编码为 token，再用可靠性 gate
+调节每个样本、每个模态的融合贡献。输出 dict 中包含 `logits`、`reliability`、
+`effective_modality_mask`、`unimodal_logits` 和 `confidence`，训练/评估入口会通过统一输出适配器
+只消费 logits 或按配置记录诊断字段。`token_transformer_fusion` 使用相同 tokenization 和
+Transformer fusion，但关闭 reliability gate，适合作为 CRAF 的直接 baseline。
+
+CRAF 相关字段默认关闭，只有配置显式设置权重时才加入训练 loss：
+`model.student.reliability` 控制 `min_gate` 和 dataset prior；
+`training.modality_dropout` 控制训练期随机模态保留 mask；
+`training.counterfactual` 控制 `sample_one` 或 `leave_one_out` 反事实 drop-forward gate 监督；
+`loss.beam_soft` 和 `loss.unimodal_aux` 分别控制 beam-aware 软标签 loss 和单模态辅助 loss。
+
+推荐实验顺序是：单模态 baseline、legacy early-concat fusion、`token_transformer_fusion` baseline、
+CRAF no-KD、CRAF 反事实 gate ablation。第一阶段的真实缺失模态依赖未来 dataset mask 字段；当前主要通过
+`force_modality_mask`、modality dropout 和 counterfactual drop 验证缺失/屏蔽路径。CRAF 与 KD 的组合需要
+单独显式配置和后续验证，第一阶段优先使用 no-KD 配置。
+
 新增或调整模态时，先更新 `src/kd_sensing/modalities.py` 的 `ModalitySpec`，再补 dataset 读取、
 batch 准备、模型注册和诊断显示逻辑。新代码优先使用窄模块导入：
 `engine.data_factory`、`engine.modality_resolution`、`engine.cache_policy`、
