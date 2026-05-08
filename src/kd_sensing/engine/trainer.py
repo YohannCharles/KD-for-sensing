@@ -38,6 +38,13 @@ from kd_sensing.engine.craf_training import (
     masked_gate_mse_loss,
 )
 from kd_sensing.engine.data_factory import build_dataloaders
+from kd_sensing.engine.marf_training import (
+    ModalitySubsetSampler,
+    all_to_subset_kl_loss,
+    marf_anchor_entropy,
+    marf_anchor_prior_regularization_loss,
+    marf_residual_norm_loss,
+)
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
@@ -356,7 +363,7 @@ def _write_tensorboard_craf_scalars(writer, epoch_log: dict, step: int) -> None:
     for key, value in epoch_log.items():
         if not isinstance(value, (int, float)):
             continue
-        if key.startswith(("cf/", "craf/", "loss/", "teacher/", "optimizer/", "val/subset/")):
+        if key.startswith(("cf/", "craf/", "marf/", "loss/", "teacher/", "optimizer/", "val/subset/")):
             writer.add_scalar(key, float(value), step)
     writer.flush()
 
@@ -397,11 +404,23 @@ def _validation_subset_epoch_scalars(val_metrics: dict) -> dict[str, float]:
         scalars[f"{prefix}/loss"] = float(metrics.get("loss", 0.0))
         topk = metrics.get("topk", {})
         total = metrics.get("total", [])
-        scalars[f"{prefix}/top1"] = _mean_valid_slots(topk.get("1", []), total)
+        scalars[f"{prefix}/top1"] = _first_valid_slot(topk.get("1", []), total)
         scalars[f"{prefix}/atop3"] = _mean_valid_slots(topk.get("3", []), total)
         scalars[f"{prefix}/atop5"] = _mean_valid_slots(topk.get("5", []), total)
         scalars[f"{prefix}/adba"] = _mean_valid_slots(metrics.get("dba", []), total)
     return scalars
+
+
+def _first_valid_slot(values, totals) -> float:
+    values_arr = np.asarray(values, dtype=float)
+    totals_arr = np.asarray(totals, dtype=float)
+    length = min(values_arr.size, totals_arr.size)
+    if length == 0:
+        return 0.0
+    for idx in range(length):
+        if totals_arr[idx] > 0:
+            return float(values_arr[idx])
+    return 0.0
 
 
 def _close_tensorboard_writer(writer) -> None:
@@ -658,7 +677,23 @@ def train(cfg: dict) -> dict:
                         device=device,
                         non_blocking=non_blocking,
                     )
-                    total_loss = total_loss + extra_losses["total"]
+                    marf_losses = _compute_marf_extra_losses(
+                        cfg,
+                        student_model,
+                        task,
+                        batch,
+                        model_cfg=model_cfg["student"],
+                        seq_length=seq_length_student,
+                        num_pred=num_pred,
+                        num_classes=num_classes,
+                        labels=labels,
+                        student_outputs=student_outputs,
+                        diagnostics=student_model_output.diagnostics,
+                        task_criterion=task_criterion,
+                        device=device,
+                        non_blocking=non_blocking,
+                    )
+                    total_loss = total_loss + extra_losses["total"] + marf_losses["total"]
                 grad_clip = training_cfg.get("grad_clip", None)
                 if grad_scaler.is_enabled():
                     grad_scaler.scale(total_loss).backward()
@@ -699,8 +734,10 @@ def train(cfg: dict) -> dict:
                     reliability_batches += 1
                     for modality, value in reliability_summary.items():
                         reliability_sums[modality] = reliability_sums.get(modality, 0.0) + value
+                scalar_diagnostics = dict(extra_losses.get("_diagnostics", {}))
+                scalar_diagnostics.update(marf_losses.get("_diagnostics", {}))
                 _accumulate_scalar_diagnostics(
-                    extra_losses.get("_diagnostics", {}),
+                    scalar_diagnostics,
                     sums=craf_diag_sums,
                     counts=craf_diag_counts,
                 )
@@ -1095,6 +1132,163 @@ def _mean_scalar_diagnostics(sums: dict[str, float], counts: dict[str, int]) -> 
         for key, value in sums.items()
         if counts.get(key, 0) > 0
     }
+
+
+def _compute_marf_extra_losses(
+    cfg: dict,
+    model,
+    task: str,
+    batch: dict[str, torch.Tensor],
+    *,
+    model_cfg: dict,
+    seq_length: int,
+    num_pred: int,
+    num_classes: int,
+    labels: torch.Tensor,
+    student_outputs: torch.Tensor,
+    diagnostics: dict,
+    task_criterion,
+    device: torch.device,
+    non_blocking: bool,
+) -> dict[str, torch.Tensor | dict[str, float]]:
+    zero = student_outputs.sum() * 0.0
+    scalar_diagnostics: dict[str, float] = {}
+    losses = {
+        "total": zero,
+        "residual_norm": zero,
+        "prior_regularization": zero,
+        "anchor_entropy": zero,
+        "subset_ce": zero,
+        "subset_kd": zero,
+        "_diagnostics": scalar_diagnostics,
+    }
+    if not getattr(model, "supports_marf_routing", False):
+        return losses
+
+    scalar_diagnostics.update(_marf_scalar_diagnostics(diagnostics))
+    loss_cfg = cfg.get("loss", {}).get("marf", {})
+    residual_cfg = loss_cfg.get("residual_norm", {})
+    residual_weight = float(residual_cfg.get("weight", 0.0))
+    residual_enabled = bool(residual_cfg.get("enabled", residual_weight > 0.0)) and residual_weight > 0.0
+    scalar_diagnostics["loss/marf_residual_norm_weight"] = residual_weight if residual_enabled else 0.0
+    if residual_enabled and torch.is_tensor(diagnostics.get("residual_delta")):
+        losses["residual_norm"] = marf_residual_norm_loss(
+            diagnostics["residual_delta"],
+            diagnostics.get("residual_weights"),
+            diagnostics.get("effective_modality_mask"),
+        )
+        losses["total"] = losses["total"] + residual_weight * losses["residual_norm"]
+        scalar_diagnostics["loss/marf_residual_norm"] = float(losses["residual_norm"].detach().cpu().item())
+
+    prior_cfg = loss_cfg.get("prior_regularization", cfg.get("loss", {}).get("prior_regularization", {}))
+    prior_weight = float(prior_cfg.get("weight", 0.0))
+    prior_enabled = bool(prior_cfg.get("enabled", prior_weight > 0.0)) and prior_weight > 0.0
+    scalar_diagnostics["loss/marf_prior_regularization_weight"] = prior_weight if prior_enabled else 0.0
+    if prior_enabled and torch.is_tensor(diagnostics.get("anchor_weights")) and torch.is_tensor(diagnostics.get("prior")):
+        losses["prior_regularization"] = marf_anchor_prior_regularization_loss(
+            diagnostics["anchor_weights"],
+            diagnostics["prior"],
+            diagnostics.get("effective_modality_mask"),
+            loss_type=str(prior_cfg.get("loss_type", "mse")),
+        )
+        losses["total"] = losses["total"] + prior_weight * losses["prior_regularization"]
+        scalar_diagnostics["loss/marf_prior_regularization"] = float(
+            losses["prior_regularization"].detach().cpu().item()
+        )
+
+    entropy_cfg = loss_cfg.get("anchor_entropy", {})
+    entropy_weight = float(entropy_cfg.get("weight", 0.0))
+    entropy_enabled = bool(entropy_cfg.get("enabled", entropy_weight > 0.0)) and entropy_weight > 0.0
+    scalar_diagnostics["loss/marf_anchor_entropy_weight"] = entropy_weight if entropy_enabled else 0.0
+    if entropy_enabled and torch.is_tensor(diagnostics.get("anchor_weights")):
+        entropy_value = marf_anchor_entropy(diagnostics["anchor_weights"], diagnostics.get("effective_modality_mask"))
+        losses["anchor_entropy"] = entropy_value
+        sign = -1.0 if bool(entropy_cfg.get("maximize", True)) else 1.0
+        losses["total"] = losses["total"] + sign * entropy_weight * entropy_value
+        scalar_diagnostics["loss/marf_anchor_entropy"] = float(entropy_value.detach().cpu().item())
+
+    subset_cfg = cfg.get("training", {}).get("subset_training", {})
+    subset_enabled = bool(subset_cfg.get("enabled", False))
+    if not subset_enabled:
+        scalar_diagnostics["loss/marf_subset_ce"] = 0.0
+        scalar_diagnostics["loss/marf_subset_kd"] = 0.0
+        return losses
+    if task != "fusion":
+        raise ValueError("training.subset_training.enabled=true requires experiment.task=fusion.")
+    if not getattr(model, "supports_force_modality_mask", False):
+        raise ValueError("training.subset_training.enabled=true requires force_modality_mask support.")
+
+    modes = subset_cfg.get("modes") or subset_cfg.get("subsets") or []
+    if isinstance(modes, str):
+        modes = [modes]
+    if not modes:
+        return losses
+    available = diagnostics.get("effective_modality_mask")
+    if not torch.is_tensor(available):
+        available = torch.ones(
+            labels.shape[0],
+            len(model_cfg.get("modalities", getattr(model, "modalities", ("image", "radar")))),
+            dtype=torch.bool,
+            device=device,
+        )
+    prior = _marf_prior_vector(diagnostics, available.shape[1], device=device)
+    sampler = ModalitySubsetSampler(
+        model_cfg.get("modalities", getattr(model, "modalities", ("image", "radar"))),
+        prior,
+        top_prior_k=int(subset_cfg.get("top_prior_k", 2)),
+        min_keep=int(subset_cfg.get("min_keep", 1)),
+        random_keep_prob=float(subset_cfg.get("random_keep_prob", 0.5)),
+    )
+    ce_weight = float(subset_cfg.get("ce_weight", loss_cfg.get("subset_ce", {}).get("weight", 0.0)))
+    kd_weight = float(subset_cfg.get("kd_weight", loss_cfg.get("subset_kd", {}).get("weight", 0.0)))
+    temperature = float(subset_cfg.get("temperature", loss_cfg.get("subset_kd", {}).get("temperature", 3.0)))
+    ignore_index = int(subset_cfg.get("ignore_index", -100))
+    subset_ce_losses = []
+    subset_kd_losses = []
+    max_subsets = int(subset_cfg.get("max_subsets_per_batch", len(modes)))
+    for mode in list(modes)[: max(max_subsets, 0)]:
+        spec = sampler.sample(str(mode), available_mask=available.detach(), device=device)
+        if not torch.any(spec.mask):
+            continue
+        if str(mode) == "all" and torch.equal(spec.mask, available.detach()):
+            subset_outputs = student_outputs
+        else:
+            subset_raw = _forward_for_task(
+                model,
+                task,
+                batch,
+                model_cfg=model_cfg,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+                force_modality_mask=spec.mask,
+            )
+            subset_output = adapt_model_output(subset_raw)
+            subset_outputs = select_prediction_slots(subset_output.logits, num_pred)
+        if ce_weight > 0.0:
+            subset_ce_losses.append(task_criterion(subset_outputs.reshape(-1, num_classes), labels.flatten()))
+        if kd_weight > 0.0:
+            subset_kd_losses.append(
+                all_to_subset_kl_loss(
+                    subset_outputs,
+                    student_outputs.detach(),
+                    labels,
+                    temperature=temperature,
+                    ignore_index=ignore_index,
+                )
+            )
+    if subset_ce_losses:
+        losses["subset_ce"] = torch.stack(subset_ce_losses).mean()
+        losses["total"] = losses["total"] + ce_weight * losses["subset_ce"]
+    if subset_kd_losses:
+        losses["subset_kd"] = torch.stack(subset_kd_losses).mean()
+        losses["total"] = losses["total"] + kd_weight * losses["subset_kd"]
+    scalar_diagnostics["loss/marf_subset_ce_weight"] = ce_weight if subset_ce_losses else 0.0
+    scalar_diagnostics["loss/marf_subset_kd_weight"] = kd_weight if subset_kd_losses else 0.0
+    scalar_diagnostics["loss/marf_subset_ce"] = float(losses["subset_ce"].detach().cpu().item())
+    scalar_diagnostics["loss/marf_subset_kd"] = float(losses["subset_kd"].detach().cpu().item())
+    return losses
 
 
 def _compute_craf_extra_losses(
@@ -1538,6 +1732,51 @@ def _batch_reliability_summary(diagnostics: dict) -> dict[str, float]:
     modalities = _diagnostic_modalities(modalities, reliability.shape[1])
     means = reliability.detach().float().mean(dim=0).cpu()
     return {str(modality): float(means[idx].item()) for idx, modality in enumerate(modalities)}
+
+
+def _marf_scalar_diagnostics(diagnostics: dict) -> dict[str, float]:
+    anchor = diagnostics.get("anchor_weights")
+    residual = diagnostics.get("residual_weights")
+    prior = diagnostics.get("prior")
+    mask = diagnostics.get("effective_modality_mask")
+    modalities = diagnostics.get("modalities")
+    if not torch.is_tensor(anchor) or anchor.ndim != 3:
+        return {}
+    modality_names = _diagnostic_modalities(modalities, anchor.shape[-1])
+    if torch.is_tensor(mask):
+        available = mask.detach().to(device=anchor.device, dtype=torch.bool)
+    else:
+        available = torch.ones(anchor.shape[0], anchor.shape[-1], dtype=torch.bool, device=anchor.device)
+    scalars: dict[str, float] = {}
+    for idx, modality in enumerate(modality_names):
+        modality_mask = available[:, idx]
+        if torch.any(modality_mask):
+            values = anchor[:, :, idx][modality_mask]
+            scalars[f"marf/anchor_mean/{modality}"] = float(values.detach().float().mean().cpu().item())
+            for horizon_idx in range(anchor.shape[1]):
+                horizon_values = anchor[:, horizon_idx, idx][modality_mask]
+                scalars[f"marf/anchor_h{horizon_idx}/{modality}"] = float(
+                    horizon_values.detach().float().mean().cpu().item()
+                )
+            if torch.is_tensor(residual) and residual.ndim == 3:
+                residual_values = residual[:, :, idx][modality_mask]
+                scalars[f"marf/residual_mean/{modality}"] = float(
+                    residual_values.detach().float().mean().cpu().item()
+                )
+        if torch.is_tensor(prior):
+            prior_values = prior[:, idx] if prior.ndim == 2 else prior[idx].view(1).expand(anchor.shape[0])
+            scalars[f"marf/prior/{modality}"] = float(prior_values.detach().float().mean().cpu().item())
+    return scalars
+
+
+def _marf_prior_vector(diagnostics: dict, modality_count: int, *, device: torch.device) -> torch.Tensor:
+    prior = diagnostics.get("prior")
+    if torch.is_tensor(prior):
+        values = prior.detach()
+        if values.ndim == 2:
+            values = values.mean(dim=0)
+        return values.to(device=device, dtype=torch.float32).flatten()
+    return torch.full((int(modality_count),), 1.0 / max(int(modality_count), 1), dtype=torch.float32, device=device)
 
 
 def _craf_gate_scalar_diagnostics(diagnostics: dict) -> dict[str, float]:

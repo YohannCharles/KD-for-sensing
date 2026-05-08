@@ -155,6 +155,9 @@ def resolve_enabled_modalities(cfg: dict[str, Any]) -> tuple[str, ...]:
 
 def _resolve_fusion_modalities(cfg: dict[str, Any]) -> tuple[str, ...]:
     model_cfg = cfg.get("model", {})
+    top_level_modalities = model_cfg.get("modalities")
+    if top_level_modalities:
+        return normalize_modalities(top_level_modalities, context="model.modalities")
     role_modalities = []
     for role in ("teacher", "student"):
         modalities = model_cfg.get(role, {}).get("modalities")
@@ -441,8 +444,21 @@ def build_model(model_cfg: dict[str, Any]):
 def build_task_criterion(cfg: dict[str, Any]):
     import_default_components()
     loss_cfg = deepcopy(cfg["loss"])
-    for auxiliary_key in ("beam_soft", "unimodal_aux", "gate"):
+    for auxiliary_key in (
+        "beam_soft",
+        "unimodal_aux",
+        "gate",
+        "gate_weight",
+        "gate_ramp_epochs",
+        "uni_weight_warmup",
+        "uni_weight_after_warmup",
+        "prior_regularization",
+        "marf",
+    ):
         loss_cfg.pop(auxiliary_key, None)
+    if loss_cfg.get("type") == "cross_entropy":
+        loss_cfg.pop("alpha", None)
+        loss_cfg.pop("gamma", None)
     return LOSSES.build(loss_cfg)
 
 
@@ -547,7 +563,7 @@ def _parameter_role(name: str, strong_modalities: set[str]) -> str:
         parts = name.split(".")
         modality = parts[1] if len(parts) > 1 else ""
         return "strong_encoder" if modality in strong_modalities else "weak_encoder"
-    if name.startswith("reliability_estimator"):
+    if name.startswith(("reliability_estimator", "router")):
         return "gate"
     if name.startswith(("prediction_head", "unimodal_head")):
         return "head"

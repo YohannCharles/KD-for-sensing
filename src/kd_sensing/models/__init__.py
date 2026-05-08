@@ -1,4 +1,11 @@
-from .fusion import CRAFFusionNet, FusionModalityNet, RadarFeatureExtractor, StudentModalityNet, TokenTransformerFusionNet
+from .fusion import (
+    CRAFFusionNet,
+    FusionModalityNet,
+    MARFFusionNet,
+    RadarFeatureExtractor,
+    StudentModalityNet,
+    TokenTransformerFusionNet,
+)
 from .gps import GpsFeatureExtractor, GpsModalityNet, GpsStudentModalityNet
 from .image import ImageFeatureExtractor, ImageModalityNet, ImageStudentModalityNet
 from .lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet
@@ -23,6 +30,7 @@ __all__ = [
     "RadarStudentModalityNet",
     "CRAFFusionNet",
     "FusionModalityNet",
+    "MARFFusionNet",
     "StudentModalityNet",
     "TokenTransformerFusionNet",
 ]

@@ -107,7 +107,7 @@ def load_single_teacher_encoder(
     freeze_loaded: bool = False,
 ) -> EncoderLoadSummary:
     if modality not in model.encoders:
-        raise KeyError(f"Model does not have CRAF encoder for modality '{modality}'.")
+        raise KeyError(f"Model does not have an encoder for modality '{modality}'.")
     checkpoint_path = resolve_path(checkpoint)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Teacher checkpoint for modality '{modality}' not found: {checkpoint_path}")
@@ -187,6 +187,9 @@ def apply_selective_finetune(
     _set_named_module_trainable(model, "prediction_head", True)
     _set_named_module_trainable(model, "unimodal_head", True)
     _set_named_module_trainable(model, "reliability_estimator", True)
+    _set_named_module_trainable(model, "router", True)
+    _set_named_module_trainable(model, "anchor_fusion", True)
+    _set_named_module_trainable(model, "residual_adapter", True)
 
     for modality in freeze_modalities or []:
         if modality in model.encoders:

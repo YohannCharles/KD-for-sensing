@@ -23,6 +23,9 @@ def resolve_enabled_modalities(cfg: AnyConfig) -> tuple[str, ...]:
 
 def _resolve_fusion_modalities(cfg: AnyConfig) -> tuple[str, ...]:
     model_cfg = cfg.get("model", {})
+    top_level_modalities = model_cfg.get("modalities")
+    if top_level_modalities:
+        return normalize_modalities(top_level_modalities, context="model.modalities")
     role_modalities = []
     for role in ("teacher", "student"):
         modalities = model_cfg.get(role, {}).get("modalities")

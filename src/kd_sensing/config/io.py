@@ -15,6 +15,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
 from kd_sensing.config.canonical import build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.data.scenes import normalize_deepsense_config
+from kd_sensing.modalities import (
+    dataset_defaults_for_modalities,
+    dataset_flags_for_modalities,
+    model_defaults_for_modalities,
+    normalize_modalities,
+)
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -32,6 +38,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
         cfg = deep_merge(cfg, file_cfg)
     if overrides:
         cfg = deep_merge(cfg, parse_overrides(overrides))
+    apply_fusion_modality_selection(cfg)
     normalize_deepsense_config(cfg)
     validate_config(cfg)
     return cfg
@@ -99,6 +106,31 @@ def safe_load_yaml(text: str) -> dict[str, Any]:
     return parse_simple_yaml(text)
 
 
+def apply_fusion_modality_selection(cfg: dict[str, Any]) -> None:
+    """Let fusion configs select modalities once via model.modalities."""
+
+    if cfg.get("experiment", {}).get("task", "image") != "fusion":
+        return
+    model_cfg = cfg.setdefault("model", {})
+    selected_raw = model_cfg.get("modalities")
+    if selected_raw is None:
+        return
+    selected = list(normalize_modalities(selected_raw, context="model.modalities"))
+    model_cfg["modalities"] = selected
+    model_defaults = model_defaults_for_modalities(selected)
+    for role in ("teacher", "student"):
+        role_cfg = model_cfg.get(role)
+        if not isinstance(role_cfg, dict):
+            continue
+        role_cfg["modalities"] = list(selected)
+        for key, value in model_defaults.items():
+            role_cfg.setdefault(key, value)
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    dataset_cfg.update(dataset_flags_for_modalities(selected))
+    for key, value in dataset_defaults_for_modalities(selected).items():
+        dataset_cfg.setdefault(key, value)
+
+
 def validate_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
@@ -154,6 +186,9 @@ def _uses_radar(cfg: dict[str, Any]) -> bool:
 
 
 def _fusion_modalities(cfg: dict[str, Any]) -> set[str]:
+    top_level_modalities = cfg.get("model", {}).get("modalities")
+    if top_level_modalities:
+        return set(normalize_modalities(top_level_modalities, context="model.modalities"))
     modalities: set[str] = set()
     for role in ("teacher", "student"):
         role_modalities = cfg.get("model", {}).get(role, {}).get("modalities")
