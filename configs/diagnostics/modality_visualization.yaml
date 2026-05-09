@@ -1,5 +1,5 @@
 experiment:
-  name: modality_visualization
+  name: gradio_viewer_manifest
   task: fusion
   seed: 0
   device: auto
@@ -14,10 +14,15 @@ data:
     seq_len: 8
     num_pred: 3
     portion: 1.0
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: false
     use_lidar: true
     lidar_bev_size: [224, 224]
     lidar_roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
     lidar_normalize: false
+    use_mmwave: true
+    mmwave_normalize: false
   dataloader:
     train_batch_size: 1
     test_batch_size: 1
@@ -25,28 +30,22 @@ data:
     pin_memory: false
     persistent_workers: false
 model:
-  teacher:
-    type: fusion_teacher
-    modalities: [image, radar, lidar]
-  student:
-    type: fusion_student
-    modalities: [image, radar, lidar]
+  modalities: [image, radar, gps, lidar, mmwave]
 diagnostics:
   visualization:
-    output_dir: outputs/diagnostics/modality_visualization
+    output_dir: outputs/diagnostics/gradio_viewer_manifest
     splits: [train, test]
     sample_count: 2
     per_seq_sample_count: null
     seed: 0
     seq_index: null
     labels: null
-    modalities: [image, radar, lidar]
+    modalities: [image, radar, gps, lidar, mmwave]
     compare_scenes: null
-    max_frames_per_sample: 4
     include_raw_image_preview: true
     preserve_existing_outputs: true
 output:
   dir: outputs
-  run_name: modality_visualization
+  run_name: gradio_viewer_manifest
   progress:
     enabled: false

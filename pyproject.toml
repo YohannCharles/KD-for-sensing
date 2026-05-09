@@ -28,12 +28,17 @@ dev = [
     "pytorch-model-summary",
     "thop",
 ]
+visualization = [
+    "gradio",
+    "plotly",
+]
 
 [project.scripts]
 kd-sensing-train = "kd_sensing.cli.train:main"
 kd-sensing-evaluate = "kd_sensing.cli.evaluate:main"
 kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
 kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"
+kd-sensing-export-viewer-manifest = "kd_sensing.cli.visualize_modalities:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

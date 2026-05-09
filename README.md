@@ -30,13 +30,16 @@ scripts/
   train.py
   evaluate.py
   preprocess.py
+tools/
+  visualization/ # Gradio 交互式多模态样本浏览器、manifest 导出和运行文档
 src/kd_sensing/
   cli/
   config/
   data/
     transform_ops/ # image/radar/GPS/LiDAR/mmWave 转换实现；data.transforms 是兼容 facade
   diagnostics/
-    visualization/ # 配置、数据集、抽样、统计、渲染、写出
+    viewer_manifest.py # Gradio viewer manifest 导出
+    visualization/     # 历史诊断工具的兼容实现
   distillation/
   engine/
     data_factory.py
@@ -472,42 +475,102 @@ image motion cache 同样会按 image size、Gaussian sigma、阈值策略、灰
 
 ## 模态可视化诊断
 
-处理后模态输入可用独立诊断入口生成 PNG、`samples.csv` / `samples.jsonl`、`summary.json`
-和最终配置快照。默认配置使用 Scene 32 统一 split，抽取少量 train/test 样本，并展示
-image/radar/LiDAR 这组当前重点排查的模态：
+当前可视化方案已经切换为 Gradio 交互式样本浏览器。运行流程是：选择一个数据集/训练配置，
+viewer 自动处理该配置中所选 split 的全部样本，写入可复用 cache，然后启动 Gradio 页面交互查看
+raw/processed image、radar、LiDAR、GPS、mmWave，以及 label、prediction、confidence、quality、
+gate 和 extra 信息。Viewer 不依赖旧静态可视化产物，也不要求你提前生成 PNG 或 summary。
+
+第一次使用先安装 viewer 依赖：
 
 ```bash
-conda run -n kd_mm_beam python scripts/visualize_modalities.py \
-  --config configs/diagnostics/modality_visualization.yaml
+conda run -n kd_mm_beam python -m pip install -r tools/visualization/requirements_viewer.txt
 ```
 
-对比 Scene 9/32 或指定 split、`seq_index`、label 时使用 dotted override：
+直接从默认诊断配置启动 viewer：
 
 ```bash
-conda run -n kd_mm_beam python scripts/visualize_modalities.py \
+NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
+HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --host 127.0.0.1 \
+  --port 7860
+```
+
+第一次运行会处理全部样本，生成 `samples.json`、`manifest_meta.json` 和 `viewer_assets/`。再次运行时，
+如果配置、CSV、样本源文件和已生成资产都没有变化，会直接复用 cache。需要强制重处理时加
+`--force-rebuild`：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
+  --config configs/diagnostics/modality_visualization.yaml \
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --force-rebuild \
+  --check-only
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:7860
+```
+
+`NO_PROXY` 这组环境变量用于避免 Gradio 的 localhost 启动自检被代理环境拦截。如果本机没有代理问题，
+可以省略。只想快速检查 viewer 能否完成数据处理和 cache 准备，而不启动 Web 服务时，可以运行：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
+  --config configs/diagnostics/modality_visualization.yaml \
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --check-only
+```
+
+导出时可以继续使用 dotted override 对 scene、split、`seq_index`、label、模态组合和样本数做筛选。
+例如导出 Scene 9 的部分样本：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
+  --config configs/diagnostics/modality_visualization.yaml \
+  --cache-dir outputs/diagnostics/scene9_viewer \
   data.dataset.scene=9 \
   diagnostics.visualization.splits='["train","test"]' \
   diagnostics.visualization.seq_index='[1,9]' \
-  diagnostics.visualization.sample_count=2
+  --check-only
 ```
 
-也可以直接传入任意训练配置，并只覆盖诊断字段或模态组合，例如检查 mmWave/GPS：
+检查 GPS/mmWave 时可以直接传入任意训练配置并覆盖诊断模态：
 
 ```bash
-conda run -n kd_mm_beam python scripts/visualize_modalities.py \
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/fusion/all_modalities_lidar_no_kd.yaml \
+  --cache-dir outputs/diagnostics/gps_mmwave_scene32 \
   -o diagnostics.visualization.modalities='["gps","mmwave"]' \
-  -o diagnostics.visualization.output_dir=outputs/diagnostics/gps_mmwave_scene32 \
-  -o diagnostics.visualization.sample_count=4
+  --check-only
 ```
 
-image 面板展示的是 Dataset 返回给模型的 processed motion mask，不是原始 RGB。只有显式设置
-`diagnostics.visualization.include_raw_image_preview=true` 时，图中才会附加 raw RGB thumbnail，
-且它只作为 reference，不是模型输入。诊断入口默认只把产物写入 `diagnostics.visualization.output_dir`，
-不会修改训练 checkpoint、`train_log.json`、`metrics.json`、`final_config.yaml`、split CSV 或评估报告。
-image motion cache 和 LiDAR BEV cache 的读写仍由 `data.cache.policy` 控制；默认诊断配置使用
-`read_only`，cache miss 时在线计算当前样本但不写新 cache。
+如果只想离线处理并导出 manifest，不启动 Gradio，也可以单独运行导出脚本：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
+  --config configs/diagnostics/modality_visualization.yaml \
+  --cache-dir outputs/diagnostics/gradio_viewer_cache
+```
+
+有预测、质量分数或 gate 权重文件时，也在离线导出阶段合并：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
+  --config configs/diagnostics/modality_visualization.yaml \
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --predictions outputs/eval/predictions.json \
+  --quality outputs/eval/quality.json \
+  --gate outputs/eval/gate.json
+```
+
+旧入口 `scripts/visualize_modalities.py` 和 `kd-sensing-visualize-modalities` 现在只作为兼容入口导出
+Gradio viewer manifest，不再生成旧的静态 PNG 总览图、`summary.json` 报告作为主可视化方案。
+详细 manifest 格式、后台启动和停止服务命令见 `tools/visualization/README.md`。
 
 ## 破坏性变更
 

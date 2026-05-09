@@ -310,14 +310,16 @@ def apply_visualization_modalities(cfg: dict[str, Any], modalities: tuple[str, .
     dataset_cfg.update(dataset_flags_for_modalities(selected))
 
     result.setdefault("experiment", {})
-    result.setdefault("model", {}).setdefault("teacher", {})
-    result.setdefault("model", {}).setdefault("student", {})
+    model_cfg = result.setdefault("model", {})
     if len(selected) == 1:
         result["experiment"]["task"] = selected[0]
     else:
         result["experiment"]["task"] = "fusion"
-        result["model"]["teacher"]["modalities"] = list(selected)
-        result["model"]["student"]["modalities"] = list(selected)
+        model_cfg["modalities"] = list(selected)
+        for role in ("teacher", "student"):
+            role_cfg = model_cfg.get(role)
+            if isinstance(role_cfg, dict):
+                role_cfg.pop("modalities", None)
     return result
 
 

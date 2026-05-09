@@ -1,8 +1,5 @@
-# modality-visual-diagnostics Specification
+## MODIFIED Requirements
 
-## Purpose
-Define the compatibility and manifest-preparation behavior for modality visualization diagnostics after the primary user workflow has moved to the Gradio viewer.
-## Requirements
 ### Requirement: 诊断入口与配置
 系统 MUST 将现有模态可视化诊断入口从静态 PNG 报告主流程迁移为 Gradio viewer 的 manifest 数据准备或迁移提示能力。旧入口 MUST 不再作为主要用户可视化路径生成静态总览图；当保留兼容命令时，它 MUST 要么导出 viewer manifest，要么明确提示用户改用 Gradio viewer。
 
@@ -73,3 +70,37 @@ Gradio viewer 与 manifest 数据准备入口 MUST 默认保持只读行为，�
 - **WHEN** 用户设置 `data.cache.policy: off`
 - **THEN** manifest 导出 MUST 禁用 image motion mask cache 和 LiDAR BEV cache 的读取与写入
 - **AND** 系统 MUST 仍能通过在线处理生成 viewer 所需记录或明确记录对应模态不可用
+
+## REMOVED Requirements
+
+### Requirement: 可复现样本选择
+**Reason**: Gradio viewer 通过 manifest 中的有序样本和页面过滤完成浏览，不再以静态诊断运行时抽样作为主能力。
+**Migration**: 需要固定样本集合时，在 manifest 导出阶段生成确定性样本清单，并由 viewer 按 manifest 顺序浏览。
+
+### Requirement: 诊断产物结构
+**Reason**: 静态 PNG 总览图、样本 CSV/JSONL、运行级 `summary.json` 和配置快照不再是主验收产物。
+**Migration**: 使用 Gradio viewer manifest、README、示例 manifest 和交互页面作为新主产物；必要的导出摘要可作为 manifest 附属元数据。
+
+### Requirement: 跨 split 与跨场景比较
+**Reason**: 旧能力要求一次静态运行生成多个 split/scene 的文件树，已被 viewer 的 scene/split 过滤和 manifest 合并方式替代。
+**Migration**: 在 manifest 中包含多个 scene/split 的样本记录，用户通过 Gradio 控件切换查看。
+
+### Requirement: 按序列分层采样
+**Reason**: 分层采样是旧静态报告的抽样策略，不再属于 Gradio viewer 的核心浏览能力。
+**Migration**: 若仍需每个 `seq_index` 固定样本数，应在 manifest 导出脚本中实现并记录导出策略。
+
+### Requirement: 聚合 split 统计产物
+**Reason**: `split_stats.json` 不再是主可视化页面的必需产物。
+**Migration**: 可将 split 级统计作为 manifest 的附属文件或 `extra` 信息提供给 Gradio Diagnostics 区域。
+
+### Requirement: 跨场景同口径比较
+**Reason**: 多 scene 静态输出目录隔离不再是主交互方案的核心要求。
+**Migration**: 多 scene 样本应合并或分别导出为 manifest，并通过 viewer 的 scene 下拉选择器查看。
+
+### Requirement: 可读性改进的样本总览图
+**Reason**: 单样本 PNG 总览图被 Gradio 页面中的 raw、processed 和 diagnostics 分区替代。
+**Migration**: 将 raw image reference、processed motion mask、radar RA/DA、LiDAR BEV 和统计摘要展示在 Gradio 页面中。
+
+### Requirement: 元数据产物不覆盖历史运行
+**Reason**: 旧静态运行的多文件元数据命名策略不再适用于主 viewer。
+**Migration**: Manifest 导出脚本 MUST 避免无提示覆盖用户指定的 manifest；具体命名策略由导出脚本文档定义。
