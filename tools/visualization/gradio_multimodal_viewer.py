@@ -18,6 +18,7 @@ for path in (ROOT, SRC):
         sys.path.insert(0, str(path))
 
 from kd_sensing.cli.common import load_cli_config  # noqa: E402
+from kd_sensing.diagnostics.visualization.core import parse_visualization_config  # noqa: E402
 from kd_sensing.diagnostics.viewer_manifest import export_viewer_manifest  # noqa: E402
 from kd_sensing.diagnostics.viewer_predictions import (  # noqa: E402
     export_viewer_model_predictions,
@@ -64,6 +65,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", help="Dataset/training config. If provided, the viewer processes and caches it first.")
     parser.add_argument("--manifest", help="Path to samples.json or JSONL manifest. With --config, this is the output manifest path.")
     parser.add_argument("--cache-dir", help="Directory for reusable processed viewer cache when --config is used.")
+    parser.add_argument(
+        "--scenes",
+        "--scene",
+        dest="scenes",
+        help=(
+            "Scene ids/aliases to prepare, comma-separated. "
+            "Use --scenes 9,32 or --scenes all to populate the Scene dropdown."
+        ),
+    )
     parser.add_argument("--force-rebuild", action="store_true", help="Reprocess the dataset even if a valid cache exists.")
     parser.add_argument("--sample-limit", type=int, help="Optional cap for quick debugging. Defaults to all samples.")
     parser.add_argument("--predictions", help="Optional prediction JSON to merge, or output path when --run-models is used.")
@@ -227,9 +237,10 @@ def render_sample(
 
     beam_index_trend = make_beam_index_trend_figure(filtered, sample)
     sample_id = sample.get("sample_id", sample.get("_manifest_index", index))
+    scene_label = sample.get("scene_slug", sample.get("scene_id", ""))
     sample_text = (
         f"Sample {index + 1}/{len(filtered)} | id={sample_id} | "
-        f"scene={sample.get('scene_id', sample.get('scene_slug', ''))} | split={sample.get('split', '')}"
+        f"scene={scene_label} | split={sample.get('split', '')}"
     )
     return (*base_outputs, beam_index_trend, sample_text)
 
@@ -830,6 +841,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     if args.config:
         cfg = load_cli_config(args, unknown)
         predictions = args.predictions
+        multi_scene = parse_visualization_config(cfg).compare_scenes is not None
         if args.run_models:
             print(
                 "[viewer] Exporting single-modality predictions "
@@ -852,7 +864,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
             )
             predictions = prediction_result["prediction_path"]
             print(f"[viewer] Model predictions ready: {predictions}", flush=True)
-        elif not predictions and not args.no_auto_predictions:
+        elif not predictions and not args.no_auto_predictions and not multi_scene:
             predictions = _latest_cached_predictions(args.cache_dir)
             if predictions is not None:
                 prediction_result = _cached_prediction_summary(predictions)

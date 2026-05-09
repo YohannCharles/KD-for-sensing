@@ -30,6 +30,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit samples.json path. Defaults to cache-dir/<fingerprint>/samples.json.",
     )
     parser.add_argument("--cache-dir", help="Directory for reusable processed viewer cache.")
+    parser.add_argument(
+        "--scenes",
+        "--scene",
+        dest="scenes",
+        help=(
+            "Scene ids/aliases to export, comma-separated. "
+            "Use --scenes 9,32 or --scenes all to include multiple scenes in one manifest."
+        ),
+    )
     parser.add_argument("--predictions", help="Optional prediction JSON to merge into manifest records.")
     parser.add_argument("--quality", help="Optional quality-score JSON to merge into manifest records.")
     parser.add_argument("--gate", help="Optional gate-weight JSON to merge into manifest records.")

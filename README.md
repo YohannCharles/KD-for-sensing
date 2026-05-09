@@ -486,7 +486,8 @@ gate 和 extra 信息。Viewer 不依赖旧静态可视化产物，也不要求�
 conda run -n kd_mm_beam python -m pip install -r tools/visualization/requirements_viewer.txt
 ```
 
-直接从默认诊断配置启动 viewer：
+直接从默认诊断配置启动 viewer。默认诊断配置会同时准备 Scene 9 和 Scene 32，Gradio 顶部的
+`Scene` 下拉框可以在两个场景之间切换：
 
 ```bash
 NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
@@ -494,6 +495,7 @@ HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --host 127.0.0.1 \
   --port 7860
 ```
@@ -506,6 +508,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --force-rebuild \
   --check-only
 ```
@@ -523,17 +526,18 @@ http://127.0.0.1:7860
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --check-only
 ```
 
-导出时可以继续使用 dotted override 对 scene、split、`seq_index`、label、模态组合和样本数做筛选。
-例如导出 Scene 9 的部分样本：
+需要只看单个场景时使用同一个参数风格，例如 `--scenes 9` 或 `--scenes 32`。导出时可以继续用
+dotted override 对 split、`seq_index`、label、模态组合和样本数做筛选：
 
 ```bash
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/scene9_viewer \
-  data.dataset.scene=9 \
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9 \
   diagnostics.visualization.splits='["train","test"]' \
   diagnostics.visualization.seq_index='[1,9]' \
   --check-only
@@ -545,6 +549,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/fusion/all_modalities_lidar_no_kd.yaml \
   --cache-dir outputs/diagnostics/gps_mmwave_scene32 \
+  --scenes 32 \
   -o diagnostics.visualization.modalities='["gps","mmwave"]' \
   --check-only
 ```
@@ -554,7 +559,8 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 ```bash
 conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32
 ```
 
 有预测、质量分数或 gate 权重文件时，也在离线导出阶段合并：
@@ -563,6 +569,7 @@ conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
 conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 32 \
   --predictions outputs/eval/predictions.json \
   --quality outputs/eval/quality.json \
   --gate outputs/eval/gate.json

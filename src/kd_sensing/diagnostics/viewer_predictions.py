@@ -100,6 +100,12 @@ def export_viewer_model_predictions(
 ) -> dict[str, Any]:
     """Run single-modality checkpoints and export per-beam confidence curves for the viewer."""
 
+    viz = parse_visualization_config(cfg)
+    if viz.compare_scenes is not None:
+        raise ValueError(
+            "Viewer model prediction export currently expects one scene per run because checkpoints are scene-scoped. "
+            "Use --scenes 9 or --scenes 32 with --run-models."
+        )
     selected = _prediction_modalities(cfg, modalities)
     model_config_paths = model_config_paths or {}
     checkpoint_paths = checkpoint_paths or {}

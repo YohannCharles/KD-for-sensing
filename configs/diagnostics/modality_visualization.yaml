@@ -41,7 +41,7 @@ diagnostics:
     seq_index: null
     labels: null
     modalities: [image, radar, gps, lidar, mmwave]
-    compare_scenes: null
+    compare_scenes: [9, 32]
     include_raw_image_preview: true
     preserve_existing_outputs: true
 output:

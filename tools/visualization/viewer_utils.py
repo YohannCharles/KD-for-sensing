@@ -112,7 +112,7 @@ def load_manifest(manifest_path: str | Path, project_root: str | Path | None = N
 def get_available_scenes(samples: Iterable[dict[str, Any]]) -> list[str]:
     values = []
     for sample in samples:
-        scene = sample.get("scene_id", sample.get("scene_slug"))
+        scene = sample.get("scene_slug", sample.get("scene_id"))
         if scene is not None and str(scene).strip():
             values.append(str(scene))
     unique = sorted(set(values), key=_natural_key)

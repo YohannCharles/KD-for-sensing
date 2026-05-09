@@ -19,6 +19,7 @@ import torch
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.samples import _select_portion
+from kd_sensing.data.scenes import retarget_deepsense_dataset_config
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.engine.data_factory import build_dataset, prepare_lidar_normalizer
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
@@ -89,9 +90,7 @@ def visualize_modality_scene_comparison(cfg: dict[str, Any], requested_viz: Visu
     for scene_id in scenes:
         scene_cfg = deepcopy(cfg)
         dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
-        if str(dataset_cfg.get("type", "")).strip().lower() in {"scenario9", "scenario32"}:
-            dataset_cfg["type"] = "deepsense6g"
-        dataset_cfg["scene"] = int(scene_id)
+        retarget_deepsense_dataset_config(dataset_cfg, scene_id)
         scene_slug = f"scene{int(scene_id)}"
         scene_viz = replace(requested_viz, output_dir=output_dir / scene_slug, compare_scenes=None)
         result = _visualize_single_scene(scene_cfg, scene_viz)

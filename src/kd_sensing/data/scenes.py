@@ -106,6 +106,33 @@ def normalize_deepsense_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def retarget_deepsense_dataset_config(dataset_cfg: dict[str, Any], scene: Any) -> dict[str, Any]:
+    """Retarget an already-normalized DeepSense6G dataset config to another scene.
+
+    Config loading fills default roots/CSV names before diagnostics can expand
+    compare_scenes. When switching scene afterward, replace only known built-in
+    defaults so custom user paths are preserved.
+    """
+
+    dataset_type = str(dataset_cfg.get("type", "deepsense6g")).strip().lower()
+    if dataset_type in {"scenario9", "scenario32"}:
+        dataset_cfg["type"] = "deepsense6g"
+        dataset_type = "deepsense6g"
+
+    target = resolve_deepsense_scene(scene, dataset_type=dataset_type)
+    if _is_default_scene_value(dataset_cfg.get("data_root"), "default_data_root"):
+        dataset_cfg["data_root"] = target.default_data_root
+    if _is_default_scene_value(dataset_cfg.get("train_csv_name"), "default_train_csv_name"):
+        dataset_cfg["train_csv_name"] = target.default_train_csv_name
+    if _is_default_scene_value(dataset_cfg.get("test_csv_name"), "default_test_csv_name"):
+        dataset_cfg["test_csv_name"] = target.default_test_csv_name
+
+    dataset_cfg["scene"] = target.scene_id
+    dataset_cfg["scene_id"] = target.scene_id
+    dataset_cfg["scene_slug"] = target.scene_slug
+    return dataset_cfg
+
+
 def scene_metadata_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     if not isinstance(dataset_cfg, dict):
@@ -127,6 +154,16 @@ def scene_slug_from_config(cfg: dict[str, Any]) -> str | None:
 
 def supported_scene_names() -> str:
     return ", ".join(scene.scene_slug for scene in DEEPSENSE_SCENES.values())
+
+
+def _is_default_scene_value(value: Any, attr: str) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().replace("\\", "/").rstrip("/")
+    if not text:
+        return True
+    defaults = {str(getattr(scene, attr)).replace("\\", "/").rstrip("/") for scene in DEEPSENSE_SCENES.values()}
+    return text in defaults or any(text.endswith(f"/{default}") for default in defaults)
 
 
 def _scene_id_from_value(value: Any) -> int:

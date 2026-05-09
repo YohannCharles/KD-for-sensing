@@ -8,7 +8,7 @@
 
 1. 安装 viewer 依赖。
 2. 选择一个数据集/训练配置。
-3. 用 Gradio viewer 的 `--config` 启动程序。
+3. 用 Gradio viewer 的 `--config` 和 `--scenes` 启动程序。
 4. 程序自动处理该配置下所选 split 的全部样本，写入可复用 cache。
 5. 处理完成后在浏览器里按 scene、split、show mode 和 sample slider 交互查看样本。
 
@@ -22,6 +22,7 @@ HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --host 127.0.0.1 \
   --port 7860
 ```
@@ -58,6 +59,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --check-only
 ```
 
@@ -77,7 +79,7 @@ conda run -n kd_mm_beam python -m pip install -e ".[visualization]"
 
 ## 自动处理和 cache
 
-推荐直接用 `--config` 启动 viewer。第一次运行会处理配置中所选 split 的全部样本，生成：
+推荐直接用 `--config --scenes 9,32` 启动 viewer。第一次运行会处理配置中所选 scene/split 的全部样本，生成：
 
 - `samples.json`：Gradio 使用的样本 manifest
 - `manifest_meta.json`：cache metadata，记录配置摘要、源文件 mtime/size 和样本数
@@ -89,6 +91,7 @@ conda run -n kd_mm_beam python -m pip install -e ".[visualization]"
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --force-rebuild \
   --check-only
 ```
@@ -99,6 +102,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --sample-limit 20 \
   --check-only
 ```
@@ -113,6 +117,7 @@ HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 32 \
   --run-models \
   --model-workers 5 \
   --model-devices cuda \
@@ -123,12 +128,16 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 
 `--model-devices` 默认就是 `cuda`，会使用所有可见 GPU；多张 GPU 时按模态轮转分配。CUDA 不可用时会直接报错，不会静默退回 CPU。单 GPU 机器上默认也可以并行跑多个小模型，如果显存紧张就把 `--model-workers` 调小到 `1` 或 `2`。只有明确想用 CPU 时才传 `--model-devices cpu`。
 
+模型 checkpoint 按 scene 隔离，`--run-models` 一次只支持一个 scene；需要看两个场景的数据时，先用不带
+`--run-models` 的 `--scenes 9,32` 生成统一 manifest。
+
 快速检查可以先限制样本数并不启动服务：
 
 ```bash
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 32 \
   --run-models \
   --sample-limit 5 \
   --check-only
@@ -140,6 +149,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 32 \
   --run-models \
   --model-checkpoint image=/path/to/image.pth \
   --model-checkpoint radar=/path/to/radar.pth
@@ -152,10 +162,11 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 ```bash
 conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache
+  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32
 ```
 
-这个命令会读取配置中的 dataset、scene、split、启用模态、cache policy 和过滤字段，处理全部样本，并输出 Gradio viewer 可读取的 `samples.json`。导出过程默认只写入 viewer cache 目录，不修改训练 checkpoint、训练日志、评估报告或 split CSV。
+这个命令会读取配置中的 dataset、scene、split、启用模态、cache policy 和过滤字段，处理全部样本，并输出 Gradio viewer 可读取的 `samples.json`。多个 scene 会写入同一个 manifest，页面的 `Scene` 下拉框可直接切换。导出过程默认只写入 viewer cache 目录，不修改训练 checkpoint、训练日志、评估报告或 split CSV。
 
 默认诊断配置启用 image、radar、gps、lidar、mmWave 五个模态，并使用 `model.modalities` 标记数据模态集合；导出 manifest 不会加载 `fusion_teacher` 或 `fusion_student` 模型。
 
@@ -167,6 +178,7 @@ conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
 conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 32 \
   --run-models \
   --model-workers 5 \
   --quality outputs/eval/quality.json \
@@ -185,6 +197,7 @@ HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
 conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --scenes 9,32 \
   --host 127.0.0.1 \
   --port 7860
 ```
@@ -200,7 +213,7 @@ http://127.0.0.1:7860
 后台启动：
 
 ```bash
-setsid bash -lc 'source /opt/miniconda3/etc/profile.d/conda.sh && conda activate kd_mm_beam && cd /root/projects/KD-for-sensing && env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= python tools/visualization/gradio_multimodal_viewer.py --config configs/diagnostics/modality_visualization.yaml --cache-dir outputs/diagnostics/gradio_viewer_cache --host 127.0.0.1 --port 7860 >/tmp/kd_gradio_viewer.log 2>&1' >/dev/null 2>&1 < /dev/null &
+setsid bash -lc 'source /opt/miniconda3/etc/profile.d/conda.sh && conda activate kd_mm_beam && cd /root/projects/KD-for-sensing && env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= python tools/visualization/gradio_multimodal_viewer.py --config configs/diagnostics/modality_visualization.yaml --cache-dir outputs/diagnostics/gradio_viewer_cache --scenes 9,32 --host 127.0.0.1 --port 7860 >/tmp/kd_gradio_viewer.log 2>&1' >/dev/null 2>&1 < /dev/null &
 ```
 
 查看端口和停止服务：

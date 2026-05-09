@@ -11,6 +11,7 @@ from PIL import Image
 import pandas as pd
 import torch
 
+from kd_sensing.data.scenes import retarget_deepsense_dataset_config
 from kd_sensing.data.transform_ops.lidar import filter_lidar_points, read_lidar_point_cloud
 from kd_sensing.diagnostics.visualization.core import (
     SampleCandidate,
@@ -72,7 +73,7 @@ def export_viewer_manifest(
         records: list[dict[str, Any]] = []
         for scene_id in requested_viz.compare_scenes:
             scene_cfg = deepcopy(cfg)
-            scene_cfg.setdefault("data", {}).setdefault("dataset", {})["scene"] = int(scene_id)
+            retarget_deepsense_dataset_config(scene_cfg.setdefault("data", {}).setdefault("dataset", {}), scene_id)
             scene_cfg.setdefault("diagnostics", {}).setdefault("visualization", {})["compare_scenes"] = None
             records.extend(
                 _records_for_single_scene(
@@ -410,7 +411,7 @@ def _cache_digest(
         "quality": _external_descriptor(quality),
         "gate": _external_descriptor(gate),
         "sample_limit": sample_limit,
-        "cache_version": 5,
+        "cache_version": 6,
     }
     encoded = json.dumps(_json_ready(payload), sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

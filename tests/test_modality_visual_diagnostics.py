@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -19,6 +20,7 @@ from kd_sensing.diagnostics.modality_visualization import visualize_modalities  
 from kd_sensing.diagnostics.viewer_predictions import export_viewer_model_predictions  # noqa: E402
 from kd_sensing.registries import MODELS, import_default_components  # noqa: E402
 from kd_sensing.config.io import load_config  # noqa: E402
+from kd_sensing.cli.common import collect_overrides  # noqa: E402
 from kd_sensing.diagnostics.viewer_manifest import export_viewer_manifest  # noqa: E402
 from tools.visualization.gradio_multimodal_viewer import (  # noqa: E402
     FilteredSampleIndex,
@@ -118,6 +120,9 @@ def test_filtering_figures_tables_and_info_are_tolerant(tmp_path: Path):
     ]
 
     assert get_available_scenes(samples) == ["all", "scene9", "scene32"]
+    assert get_available_scenes(
+        [{"scene_id": 32, "scene_slug": "scene32"}, {"scene_id": 9, "scene_slug": "scene9"}]
+    ) == ["all", "scene9", "scene32"]
     assert get_available_splits(samples) == ["all", "test", "train"]
     assert [sample["sample_id"] for sample in filter_samples(samples, "scene32", "test", "wrong only")] == ["a"]
     assert [sample["sample_id"] for sample in filter_samples(samples, "all", "all", "low quality only")] == ["a"]
@@ -387,6 +392,55 @@ def test_latest_cached_predictions_uses_newest_predictions_json(tmp_path: Path):
     assert summary["prediction_path"] == str(new_path)
     assert summary["sample_count"] == 7
     assert summary["modalities"] == ["gps"]
+
+
+def test_scene_cli_argument_maps_to_single_or_compare_scene_overrides():
+    single = argparse.Namespace(scenes="scene9", override=[])
+    multiple = argparse.Namespace(scenes="scene9,32", override=[])
+    all_scenes = argparse.Namespace(scenes="all", override=[])
+
+    assert collect_overrides(single, []) == [
+        "data.dataset.scene=9",
+        "diagnostics.visualization.compare_scenes=null",
+    ]
+    assert collect_overrides(multiple, []) == ["diagnostics.visualization.compare_scenes=[9, 32]"]
+    assert collect_overrides(all_scenes, []) == ["diagnostics.visualization.compare_scenes=[9, 32]"]
+
+
+def test_compare_scene_manifest_retargets_default_scene_roots(monkeypatch, tmp_path: Path):
+    scene9_root = tmp_path / "dataset" / "scenario9"
+    scene32_root = tmp_path / "dataset" / "scenario32"
+    scene9_root.mkdir(parents=True)
+    scene32_root.mkdir(parents=True)
+    _write_multimodal_csv(scene9_root, scene9_root / "train_seqs_RA_GPS_LIDAR.csv", rows=1, seq_len=2)
+    _write_multimodal_csv(scene32_root, scene32_root / "train_seqs_RA_GPS_LIDAR.csv", rows=1, seq_len=2)
+    monkeypatch.setenv("KD_SENSING_ROOT", str(tmp_path))
+
+    cfg = _diagnostic_cfg(
+        scene32_root,
+        train_csv_name="train_seqs_RA_GPS_LIDAR.csv",
+        modalities=["gps"],
+        extra_dataset={
+            "seq_len": 2,
+            "num_pred": 1,
+            "use_gps": True,
+            "gps_feature_mode": "relative_polar",
+            "gps_normalize": False,
+        },
+        visualization={"splits": ["train"], "modalities": ["gps"], "compare_scenes": [9, 32]},
+    )
+    cfg["data"]["dataset"]["scene"] = 32
+    cfg["data"]["dataset"]["scene_id"] = 32
+    cfg["data"]["dataset"]["scene_slug"] = "scene32"
+    cfg["data"]["dataset"]["data_root"] = "dataset/scenario32"
+
+    result = export_viewer_manifest(cfg, cache_dir=tmp_path / "viewer_cache", force_rebuild=True)
+    records = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+
+    by_scene = {record["scene_slug"]: record for record in records}
+    assert set(by_scene) == {"scene9", "scene32"}
+    assert "dataset/scenario9/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene9"]["extra"]["csv_path"]
+    assert "dataset/scenario32/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene32"]["extra"]["csv_path"]
 
 
 def test_visualize_modalities_processes_all_samples_and_reuses_cache(tmp_path: Path):
