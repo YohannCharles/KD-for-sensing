@@ -139,12 +139,30 @@ def _metrics_from_outputs(loss: float, outputs: torch.Tensor, labels: torch.Tens
         labels,
         cfg.get("evaluation", {}).get("dba_delta", 5),
     )
-    return {
+    metrics = {
         "loss": float(loss),
         "topk": {str(k): v.tolist() for k, v in topk_acc.items()},
         "dba": dba_score.tolist(),
         "total": total.tolist(),
     }
+    metrics.update(_flat_future_topk_metrics(topk_acc, total))
+    return metrics
+
+
+def _flat_future_topk_metrics(topk_acc: dict[int, object], total) -> dict[str, float]:
+    scalars: dict[str, float] = {}
+    total_arr = torch.as_tensor(total, dtype=torch.float32).cpu().numpy()
+    horizon_names = [f"t{idx + 1}" for idx in range(len(total_arr))]
+    for k in (1, 3, 5):
+        if k not in topk_acc:
+            continue
+        values = torch.as_tensor(topk_acc[k], dtype=torch.float32).cpu().numpy()
+        length = min(len(values), len(total_arr))
+        valid = total_arr[:length] > 0
+        for idx in range(length):
+            scalars[f"val_top{k}_{horizon_names[idx]}"] = float(values[idx])
+        scalars[f"val_top{k}_avg"] = float(values[:length][valid].mean()) if valid.any() else 0.0
+    return scalars
 
 
 def _validate_modality_subsets(

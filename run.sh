@@ -353,18 +353,10 @@ group_6_no_kd_baselines() {
     configs/gps/ablation_relative_polar.yaml
   )
   local fusion_base=(
-    configs/fusion/no_kd.yaml
-    configs/fusion/all_modalities_no_kd.yaml
-    configs/fusion/all_modalities_lidar_no_kd.yaml
-    configs/fusion/image_gps_no_kd.yaml
-    configs/fusion/radar_gps_no_kd.yaml
-    configs/fusion/radar_lidar_no_kd.yaml
-    configs/fusion/craf_image_radar_no_kd.yaml
     configs/fusion/craf_all_modalities_no_kd.yaml
     configs/fusion/craf_all_modalities_no_counterfactual.yaml
     configs/fusion/craf_all_modalities_stabilized_no_kd.yaml
     configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml
-    configs/fusion/token_transformer_image_radar_no_kd.yaml
     configs/fusion/token_transformer_all_modalities_no_kd.yaml
   )
   local fusion_students=()

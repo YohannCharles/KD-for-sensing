@@ -15,6 +15,13 @@ from kd_sensing.registries import MODELS
 VALID_FUSION_MODALITIES = MODALITY_ORDER
 
 
+class _OutputTuple(tuple):
+    def __new__(cls, logits: torch.Tensor, input_features: torch.Tensor, output_features: torch.Tensor, diagnostics: dict):
+        obj = super().__new__(cls, (logits, input_features, output_features))
+        obj.diagnostics = diagnostics
+        return obj
+
+
 def _normalize_modalities(modalities: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
     selected = ("image", "radar") if modalities is None else modalities
     try:
@@ -299,6 +306,7 @@ class StudentModalityNet(nn.Module):
         batch_size = None
         seq_len = None
         pooled_features = []
+        modality_features = {}
 
         if "image" in self.modalities:
             image_batch = _require_tensor(image_batch, "image")
@@ -311,12 +319,15 @@ class StudentModalityNet(nn.Module):
             )
             img = image_batch.reshape(batch_size * seq_len, channels, height, width)
             img_feat = self.image_cnn_layers(img)
-            pooled_features.extend(
+            image_pooled = torch.cat(
                 [
                     self.image_global_avg_pool(img_feat).flatten(1),
                     self.image_global_max_pool(img_feat).flatten(1),
-                ]
+                ],
+                dim=1,
             )
+            pooled_features.append(image_pooled)
+            modality_features["image"] = image_pooled.view(batch_size, seq_len, -1)
         if "radar" in self.modalities:
             radar_batch = _require_tensor(radar_batch, "radar")
             batch_size, seq_len, radar_channels, radar_height, radar_width = _check_sequence_tensor(
@@ -328,12 +339,15 @@ class StudentModalityNet(nn.Module):
             )
             rad = radar_batch.reshape(batch_size * seq_len, radar_channels, radar_height, radar_width)
             rad_feat = self.radar_cnn_layers(rad)
-            pooled_features.extend(
+            radar_pooled = torch.cat(
                 [
                     self.radar_global_avg_pool(rad_feat).flatten(1),
                     self.radar_global_max_pool(rad_feat).flatten(1),
-                ]
+                ],
+                dim=1,
             )
+            pooled_features.append(radar_pooled)
+            modality_features["radar"] = radar_pooled.view(batch_size, seq_len, -1)
         if "gps" in self.modalities:
             gps_batch = _require_tensor(gps_batch, "gps")
             batch_size, seq_len, gps_dim = _check_sequence_tensor(
@@ -344,7 +358,9 @@ class StudentModalityNet(nn.Module):
                 expected_ndim=3,
             )
             gps_flat = gps_batch.reshape(batch_size * seq_len, gps_dim)
-            pooled_features.append(self.gps_projection(gps_flat))
+            gps_pooled = self.gps_projection(gps_flat)
+            pooled_features.append(gps_pooled)
+            modality_features["gps"] = gps_pooled.view(batch_size, seq_len, -1)
         if "lidar" in self.modalities:
             lidar_batch = _require_tensor(lidar_batch, "lidar")
             batch_size, seq_len, lidar_channels, lidar_height, lidar_width = _check_sequence_tensor(
@@ -356,12 +372,15 @@ class StudentModalityNet(nn.Module):
             )
             lidar = lidar_batch.reshape(batch_size * seq_len, lidar_channels, lidar_height, lidar_width)
             lidar_feat = self.lidar_cnn_layers(lidar)
-            pooled_features.extend(
+            lidar_pooled = torch.cat(
                 [
                     self.lidar_global_avg_pool(lidar_feat).flatten(1),
                     self.lidar_global_max_pool(lidar_feat).flatten(1),
-                ]
+                ],
+                dim=1,
             )
+            pooled_features.append(lidar_pooled)
+            modality_features["lidar"] = lidar_pooled.view(batch_size, seq_len, -1)
         if "mmwave" in self.modalities:
             mmwave_batch = _require_tensor(mmwave_batch, "mmwave")
             batch_size, seq_len, mmwave_dim = _check_sequence_tensor(
@@ -377,14 +396,24 @@ class StudentModalityNet(nn.Module):
                     f"({self.mmwave_input_size})."
                 )
             mmwave_flat = mmwave_batch.reshape(batch_size * seq_len, mmwave_dim)
-            pooled_features.append(self.mmwave_projection(mmwave_flat))
+            mmwave_pooled = self.mmwave_projection(mmwave_flat)
+            pooled_features.append(mmwave_pooled)
+            modality_features["mmwave"] = mmwave_pooled.view(batch_size, seq_len, -1)
 
         fused = torch.cat(pooled_features, dim=1)
         fused_features = self.fusion_layer(fused).view(batch_size, seq_len, -1)
         features = self.layer_norm(fused_features)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
-        return pred, features, seq_out
+        return _OutputTuple(
+            pred,
+            features,
+            seq_out,
+            {
+                "modality_features": modality_features,
+                "modalities": self.modalities,
+            },
+        )
 
 
 def _check_temporal_features(

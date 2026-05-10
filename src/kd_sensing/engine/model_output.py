@@ -44,11 +44,14 @@ def adapt_model_output(output: Any) -> ModelOutput:
         logits, input_features, output_features = output[:3]
         if not torch.is_tensor(logits):
             raise TypeError("Legacy model output first item must be a Tensor of logits.")
+        diagnostics = getattr(output, "diagnostics", {})
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
         return ModelOutput(
             logits=logits,
             input_features=input_features if torch.is_tensor(input_features) else None,
             output_features=output_features if torch.is_tensor(output_features) else None,
-            diagnostics={},
+            diagnostics=diagnostics,
         )
 
     if torch.is_tensor(output):

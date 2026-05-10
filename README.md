@@ -141,6 +141,37 @@ python scripts/train.py --config configs/fusion/image_radar_logits_kd.yaml
 python scripts/train.py --config configs/fusion/image_radar_rkd.yaml
 ```
 
+## G2D 多模态失衡 baseline
+
+G2D 作为 CRAF/MARF 的对照 baseline，使用 image、radar、GPS、LiDAR、mmWave 五个单模态 teacher 指导五模态 fusion student。当前实现严格使用 future-only 标签：
+
+```text
+labels: [B, 3] = [t+1, t+2, t+3]
+logits: [B, 3, 64]
+```
+
+入口：
+
+```bash
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml
+```
+
+运行前需要同一 scene 的五个单模态 teacher checkpoint 已写入 `outputs/<scene>/best_checkpoints/`，或在配置中为每个 teacher 显式设置 checkpoint。`g2d_global` 会按 teacher confidence 的弱到强顺序启用 SMP 梯度屏蔽；`g2d_horizon` 主要保存 `t+1/t+2/t+3` 的 horizon-wise 模态排序诊断。
+
+诊断文件写入：
+
+```text
+outputs/<scene>/<run_name>/diagnostics/g2d_epoch_<epoch>.json
+```
+
+汇总多模态失衡结果：
+
+```bash
+conda run -n kd_mm_beam python tools/analysis/collect_multimodal_imbalance_results.py
+```
+
 单模态配置统一使用 `gru_params: [64, 64, 1]`。其中 image 参数来自上游 image 单模态脚本和
 `All_models/params_Image*.txt`，radar/GPS/LiDAR/mmWave 是本项目新增单模态，默认继承 image 同角色
 配置参数。Image+radar fusion 按上游 `train_both.py` 和 `All_models/params_Both*.txt` 保持

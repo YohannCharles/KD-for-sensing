@@ -464,7 +464,20 @@ def build_task_criterion(cfg: dict[str, Any]):
 
 def build_distiller(cfg: dict[str, Any], task_criterion):
     import_default_components()
-    return DISTILLERS.build(cfg["distillation"], task_criterion=task_criterion)
+    model_cfg = cfg.get("model", {})
+    modalities = (
+        model_cfg.get("modalities")
+        or model_cfg.get("student", {}).get("modalities")
+        or model_cfg.get("teacher", {}).get("modalities")
+    )
+    return DISTILLERS.build(
+        cfg["distillation"],
+        task_criterion=task_criterion,
+        num_pred=model_cfg.get("num_pred", 3),
+        num_classes=model_cfg.get("num_classes", 64),
+        feature_size=model_cfg.get("feature_size", 64),
+        modalities=modalities,
+    )
 
 
 def build_metrics(cfg: dict[str, Any]) -> dict[str, Any]:

@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
+from kd_sensing.diagnostics.g2d_diagnostics import G2DDiagnosticsAccumulator
 from kd_sensing.distillation.craf_losses import (
     beam_soft_label_loss,
     counterfactual_sequence_ce,
@@ -45,7 +46,7 @@ from kd_sensing.engine.marf_training import (
     marf_anchor_prior_regularization_loss,
     marf_residual_norm_loss,
 )
-from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
+from kd_sensing.engine.model_output import ModelOutput, adapt_model_output, select_prediction_slots
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
     build_device,
@@ -66,6 +67,8 @@ from kd_sensing.engine.teacher_loader import (
     trainable_parameter_count,
 )
 from kd_sensing.engine.validator import validate
+from kd_sensing.distillation.g2d_smp import apply_smp_gradient_mask
+from kd_sensing.distillation.teacher_ensemble import build_g2d_teacher_ensemble
 from kd_sensing.modalities import normalize_modalities
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
@@ -174,6 +177,10 @@ def _scene_grouped_output_base(cfg: dict) -> Path:
 
 def _teacher_enabled(cfg: dict) -> bool:
     return cfg.get("distillation", {}).get("type", "no_kd") != "no_kd"
+
+
+def _g2d_enabled(cfg: dict) -> bool:
+    return cfg.get("distillation", {}).get("type", "no_kd") == "g2d"
 
 
 def _checkpoint_strict(cfg: dict) -> bool:
@@ -296,6 +303,20 @@ def _encoder_freeze_log(model) -> dict[str, dict]:
             "trainable_params": int(trainable),
         }
     return summary
+
+
+def _add_distiller_params_to_optimizer(optimizer: torch.optim.Optimizer, distiller, cfg: dict) -> None:
+    params = [param for param in distiller.parameters() if param.requires_grad]
+    if not params:
+        return
+    optimizer.add_param_group(
+        {
+            "params": params,
+            "name": "distiller",
+            "lr": cfg.get("training", {}).get("lr", 7.5e-4),
+            "param_count": int(sum(param.numel() for param in params)),
+        }
+    )
 
 
 def _resolve_resume_checkpoint(cfg: dict, run_dir: Path) -> Path | None:
@@ -463,9 +484,11 @@ def train(cfg: dict) -> dict:
     downsample_ratio = model_cfg.get("downsample_ratio", 1)
     seq_length_student = model_cfg.get("seq_length_student", 8)
     seq_length_teacher = model_cfg.get("seq_length_teacher", seq_length_student)
+    g2d_enabled = _g2d_enabled(cfg)
 
     student_model = build_model(model_cfg["student"]).to(device)
     teacher_model = None
+    teacher_ensemble = None
     checkpoint_loads = []
     stage_checkpoint_load = _load_stage_checkpoint_if_needed(cfg, student_model, device)
     if stage_checkpoint_load is not None:
@@ -478,17 +501,22 @@ def train(cfg: dict) -> dict:
             teacher_prior_info["selective_finetune"] = selective_finetune_info
         teacher_prior_info["trainable_params"] = trainable_parameter_count(student_model)
     if _teacher_enabled(cfg):
-        teacher_model = build_model(model_cfg["teacher"]).to(device)
-        teacher_load_info = _load_teacher_if_needed(cfg, teacher_model, device)
-        if teacher_load_info is not None:
-            checkpoint_loads.append(teacher_load_info)
-        teacher_model.eval()
-        for param in teacher_model.parameters():
-            param.requires_grad = False
+        if g2d_enabled:
+            teacher_ensemble = build_g2d_teacher_ensemble(cfg, device)
+            checkpoint_loads.extend(teacher_ensemble.load_summary())
+        else:
+            teacher_model = build_model(model_cfg["teacher"]).to(device)
+            teacher_load_info = _load_teacher_if_needed(cfg, teacher_model, device)
+            if teacher_load_info is not None:
+                checkpoint_loads.append(teacher_load_info)
+            teacher_model.eval()
+            for param in teacher_model.parameters():
+                param.requires_grad = False
 
     task_criterion = build_task_criterion(cfg)
     distiller = build_distiller(cfg, task_criterion).to(device)
     optimizer = build_optimizer(cfg, student_model)
+    _add_distiller_params_to_optimizer(optimizer, distiller, cfg)
     scheduler = build_scheduler(cfg, optimizer)
     optimizer_groups = optimizer_param_group_summary(optimizer)
     grad_scaler = make_grad_scaler(cfg, amp_enabled)
@@ -561,6 +589,14 @@ def train(cfg: dict) -> dict:
             reliability_batches = 0
             craf_diag_sums: dict[str, float] = {}
             craf_diag_counts: dict[str, int] = {}
+            g2d_accumulator = (
+                G2DDiagnosticsAccumulator(
+                    num_pred=num_pred,
+                    horizon_names=getattr(distiller, "horizon_names", [f"t+{idx + 1}" for idx in range(num_pred)]),
+                )
+                if g2d_enabled and cfg.get("distillation", {}).get("g2d", {}).get("diagnostics", {}).get("enabled", True)
+                else None
+            )
             batch_count = 0
             current_alpha = cfg["distillation"].get("alpha", 0.4)
             warmup_epochs = cfg["distillation"].get("alpha_warmup_epochs", 0)
@@ -621,7 +657,34 @@ def train(cfg: dict) -> dict:
                     student_outputs = select_prediction_slots(student_model_output.logits, num_pred)
                     student_input_features = student_model_output.input_features
                     student_out_features = student_model_output.output_features
-                    if teacher_model is not None:
+                    g2d_step_result = None
+                    if g2d_enabled:
+                        if teacher_ensemble is None:
+                            raise ValueError("G2D training requires a teacher ensemble.")
+                        teacher_outputs_by_modality = teacher_ensemble(
+                            batch,
+                            seq_length=seq_length_teacher,
+                            num_pred=num_pred,
+                            device=device,
+                            non_blocking=non_blocking,
+                        )
+                        g2d_student_output = ModelOutput(
+                            logits=student_outputs,
+                            input_features=student_input_features,
+                            output_features=student_out_features,
+                            diagnostics=student_model_output.diagnostics,
+                        )
+                        g2d_step_result = distiller.compute(
+                            g2d_student_output,
+                            teacher_outputs_by_modality,
+                            labels,
+                            epoch=epoch,
+                        )
+                        total_loss = g2d_step_result.total_loss
+                        task_loss = g2d_step_result.supervised_loss
+                        distill_loss = g2d_step_result.distill_loss
+                        teacher_diagnostics = {}
+                    elif teacher_model is not None:
                         with torch.no_grad():
                             teacher_raw = _forward_for_task(
                                 teacher_model,
@@ -646,39 +709,40 @@ def train(cfg: dict) -> dict:
                         )
                         teacher_diagnostics = {}
 
-                    student_logits = student_outputs.reshape(-1, num_classes)
-                    teacher_logits = teacher_outputs.reshape(-1, num_classes)
-                    targets = labels.flatten()
-                    student_input_window = _feature_prefix(
-                        student_input_features,
-                        seq_length_student - 1,
-                        name="student input_features",
-                    )
-                    teacher_input_window = _feature_prefix(
-                        teacher_input_features,
-                        seq_length_teacher - 1,
-                        name="teacher input_features",
-                    )
-                    student_output_window = _feature_tail(
-                        student_out_features,
-                        num_pred,
-                        name="student output_features",
-                    )
-                    teacher_output_window = _feature_tail(
-                        teacher_out_features,
-                        num_pred,
-                        name="teacher output_features",
-                    )
-                    total_loss, task_loss, distill_loss = distiller(
-                        student_logits,
-                        teacher_logits,
-                        targets,
-                        student_input_window,
-                        teacher_input_window,
-                        student_output_window,
-                        teacher_output_window,
-                        current_alpha,
-                    )
+                    if not g2d_enabled:
+                        student_logits = student_outputs.reshape(-1, num_classes)
+                        teacher_logits = teacher_outputs.reshape(-1, num_classes)
+                        targets = labels.flatten()
+                        student_input_window = _feature_prefix(
+                            student_input_features,
+                            seq_length_student - 1,
+                            name="student input_features",
+                        )
+                        teacher_input_window = _feature_prefix(
+                            teacher_input_features,
+                            seq_length_teacher - 1,
+                            name="teacher input_features",
+                        )
+                        student_output_window = _feature_tail(
+                            student_out_features,
+                            num_pred,
+                            name="student output_features",
+                        )
+                        teacher_output_window = _feature_tail(
+                            teacher_out_features,
+                            num_pred,
+                            name="teacher output_features",
+                        )
+                        total_loss, task_loss, distill_loss = distiller(
+                            student_logits,
+                            teacher_logits,
+                            targets,
+                            student_input_window,
+                            teacher_input_window,
+                            student_output_window,
+                            teacher_output_window,
+                            current_alpha,
+                        )
                     extra_losses = _compute_craf_extra_losses(
                         cfg,
                         student_model,
@@ -715,15 +779,25 @@ def train(cfg: dict) -> dict:
                     )
                     total_loss = total_loss + extra_losses["total"] + marf_losses["total"]
                 grad_clip = training_cfg.get("grad_clip", None)
+                active_modalities = (
+                    g2d_step_result.active_modalities
+                    if g2d_step_result is not None and getattr(distiller, "smp_enabled", False)
+                    else None
+                )
                 if grad_scaler.is_enabled():
                     grad_scaler.scale(total_loss).backward()
-                    if grad_clip:
+                    if grad_clip or active_modalities is not None:
                         grad_scaler.unscale_(optimizer)
+                    if active_modalities is not None:
+                        apply_smp_gradient_mask(student_model, active_modalities)
+                    if grad_clip:
                         torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
                     grad_scaler.step(optimizer)
                     grad_scaler.update()
                 else:
                     total_loss.backward()
+                    if active_modalities is not None:
+                        apply_smp_gradient_mask(student_model, active_modalities)
                     if grad_clip:
                         torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
                     optimizer.step()
@@ -756,6 +830,10 @@ def train(cfg: dict) -> dict:
                         reliability_sums[modality] = reliability_sums.get(modality, 0.0) + value
                 scalar_diagnostics = dict(extra_losses.get("_diagnostics", {}))
                 scalar_diagnostics.update(marf_losses.get("_diagnostics", {}))
+                if g2d_step_result is not None:
+                    scalar_diagnostics.update(_g2d_scalar_diagnostics(g2d_step_result.diagnostics))
+                    if g2d_accumulator is not None:
+                        g2d_accumulator.update(g2d_step_result.diagnostics)
                 _accumulate_scalar_diagnostics(
                     scalar_diagnostics,
                     sums=craf_diag_sums,
@@ -835,6 +913,11 @@ def train(cfg: dict) -> dict:
                     for modality, value in reliability_sums.items()
                 }
             epoch_log.update(_mean_scalar_diagnostics(craf_diag_sums, craf_diag_counts))
+            if g2d_accumulator is not None:
+                g2d_path = g2d_accumulator.write_epoch(run_dir, epoch=epoch + 1)
+                g2d_payload = g2d_accumulator.finalize(epoch=epoch + 1)
+                epoch_log["g2d_diagnostics_path"] = str(g2d_path)
+                epoch_log["g2d_active_modalities"] = g2d_payload.get("active_modalities", [])
             epoch_logs.append(epoch_log)
             epoch_progress.set_postfix(
                 train_loss=f"{running_loss:.4f}",
@@ -1176,6 +1259,22 @@ def _mean_scalar_diagnostics(sums: dict[str, float], counts: dict[str, int]) -> 
         for key, value in sums.items()
         if counts.get(key, 0) > 0
     }
+
+
+def _g2d_scalar_diagnostics(diagnostics: dict) -> dict[str, float]:
+    scalars: dict[str, float] = {}
+    for key, value in (diagnostics.get("loss") or {}).items():
+        if isinstance(value, (int, float)):
+            scalars[f"loss/g2d_{key}"] = float(value)
+    for modality, values in (diagnostics.get("teacher_confidence") or {}).items():
+        if isinstance(values, dict):
+            avg = values.get("avg")
+            if isinstance(avg, (int, float)):
+                scalars[f"g2d/teacher_confidence/{modality}"] = float(avg)
+    active = diagnostics.get("active_modalities")
+    if isinstance(active, (list, tuple)):
+        scalars["g2d/active_count"] = float(len(active))
+    return scalars
 
 
 def _compute_marf_extra_losses(

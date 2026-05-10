@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from kd_sensing.registries import DISTILLERS
+from kd_sensing.distillation.g2d import G2DDistiller  # noqa: F401
 
 
 class KnowledgeDistillationLoss(nn.Module):

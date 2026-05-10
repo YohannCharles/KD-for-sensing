@@ -1,0 +1,132 @@
+experiment:
+  name: image_radar_gps_lidar_mmwave_g2d_lite
+  task: fusion
+  seed: 0
+  device: auto
+data:
+  dataset:
+    type: deepsense6g
+    scene: 32
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 8
+    num_pred: 3
+    portion: 1.0
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_lidar: true
+    lidar_bev_size: [224, 224]
+    lidar_roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+    lidar_normalize: false
+    use_mmwave: true
+    mmwave_normalize: true
+  dataloader:
+    train_batch_size: 32
+    test_batch_size: 32
+    num_workers: 4
+    prefetch_factor: 1
+model:
+  modalities: [image, radar, gps, lidar, mmwave]
+  feature_size: 64
+  gru_hidden_size: 64
+  num_classes: 64
+  seq_length_teacher: 8
+  seq_length_student: 8
+  num_pred: 3
+  downsample_ratio: 1
+  teacher:
+    type: fusion_teacher
+    modalities: [image, radar, gps, lidar, mmwave]
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    mmwave_input_size: 64
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+  student:
+    type: fusion_student
+    modalities: [image, radar, gps, lidar, mmwave]
+    image_channels: 1
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    mmwave_input_size: 64
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+loss:
+  type: cross_entropy
+distillation:
+  type: g2d
+  teacher_model_name: null
+  g2d:
+    mode: lite
+    modalities: [image, radar, gps, lidar, mmwave]
+    teachers:
+      image:
+        model:
+          type: image_teacher
+        checkpoint: null
+        strict_load: true
+      radar:
+        model:
+          type: radar_teacher
+        checkpoint: null
+        strict_load: true
+      gps:
+        model:
+          type: gps_teacher
+        checkpoint: null
+        strict_load: true
+      lidar:
+        model:
+          type: lidar_teacher
+        checkpoint: null
+        strict_load: true
+      mmwave:
+        model:
+          type: mmwave_teacher
+        checkpoint: null
+        strict_load: true
+    loss:
+      supervised_weight: 1.0
+      feature_weight: 0.1
+      logit_weight: 0.5
+      temperature: 4.0
+      horizons: all
+      feature_align:
+        enabled: true
+        mode: mse
+        pool: last
+        normalize: true
+        projection: auto
+        projection_dim: 64
+      logit_align:
+        enabled: true
+    smp:
+      enabled: false
+      mode: none
+      tau:
+        per_modality: 5
+        joint: 30
+      prioritize_low_confidence_first: true
+    diagnostics:
+      enabled: true
+training:
+  epochs: 100
+  lr: 0.00075
+  weight_decay: 0.0001
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  min_delta: 0.0001
+output:
+  dir: outputs
+  run_name: image_radar_gps_lidar_mmwave_g2d_lite
+scheduler:
+  type: cosine_warm_restarts
+  T_0: 10
+  T_mult: 2
+  eta_min: 1.0e-06
