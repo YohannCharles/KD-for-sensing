@@ -152,6 +152,7 @@ class MyDataset(Dataset):
 ```
 
 The engine expects the field names above for enabled modalities. GPS and LiDAR are optional for old image/radar configs, but GPS-only, LiDAR-only, and enabled fusion configs require the corresponding fields.
+`target_beam` must contain only future labels `[t+1, ..., t+num_pred]`; the last historical beam stays in `input_beam` and is not part of the training label.
 
 New dataset code should import transform helpers from `kd_sensing.data.transform_ops.image`,
 `radar`, `gps`, `lidar`, `mmwave`, `io`, `cache`, or `normalization`. The old

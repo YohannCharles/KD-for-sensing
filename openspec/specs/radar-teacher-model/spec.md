@@ -38,7 +38,8 @@ TBD - created by archiving change add-radar-teacher-model. Update Purpose after 
 #### Scenario: 雷达预测窗口对齐
 - **WHEN** `seq_length` 为 8 且 `num_pred` 为 3
 - **THEN** radar-only 输入 MUST 包含最近 8 个雷达时隙和 2 个未来 zero padding 时隙
-- **AND** 验证和损失计算 MUST 继续使用最后 `num_pred + 1` 个输出时隙与标签对齐
+- **AND** 验证和损失计算 MUST 使用最后 `num_pred` 个输出时隙与 `[t+1, t+2, t+3]` 标签对齐
+- **AND** 输出时隙对齐 MUST 不包含历史窗口最后一个 beam
 
 ### Requirement: Radar-only 基线配置
 项目 MUST 提供 radar-only 配置，用于训练和评估论文表格中的 Radar 对照基线。该配置 MUST 使用 `experiment.task: radar`，并将训练主模型配置为 `radar_teacher`。
@@ -77,4 +78,3 @@ TBD - created by archiving change add-radar-teacher-model. Update Purpose after 
 - **WHEN** 用户显式配置 `model.teacher.type: radar_teacher`、`model.student.type: radar_teacher` 且启用 radar-only KD
 - **THEN** 系统 MUST 继续支持构建两个 `RadarModalityNet` 实例
 - **AND** frozen teacher 和可训练 student MUST 维持既有输入输出契约
-

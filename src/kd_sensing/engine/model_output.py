@@ -9,8 +9,8 @@ import torch
 @dataclass(frozen=True)
 class ModelOutput:
     logits: torch.Tensor
-    input_features: torch.Tensor
-    output_features: torch.Tensor
+    input_features: torch.Tensor | None
+    output_features: torch.Tensor | None
     diagnostics: dict[str, Any]
 
 
@@ -20,7 +20,7 @@ _OUTPUT_FEATURE_KEYS = ("output_features", "out_features", "fusion_memory", "mem
 
 
 def adapt_model_output(output: Any) -> ModelOutput:
-    """Normalize legacy tuple outputs and CRAF dict outputs."""
+    """Normalize model outputs without inventing missing feature tensors."""
 
     if isinstance(output, dict):
         logits = _first_tensor(output, _LOGIT_KEYS)
@@ -28,8 +28,6 @@ def adapt_model_output(output: Any) -> ModelOutput:
             raise ValueError(f"Model output dict must contain one of {list(_LOGIT_KEYS)}.")
         input_features = _first_tensor(output, _INPUT_FEATURE_KEYS)
         output_features = _first_tensor(output, _OUTPUT_FEATURE_KEYS)
-        input_features = _feature_or_logits(input_features, logits)
-        output_features = _feature_or_logits(output_features, logits)
         diagnostics = {
             key: value
             for key, value in output.items()
@@ -46,22 +44,18 @@ def adapt_model_output(output: Any) -> ModelOutput:
         logits, input_features, output_features = output[:3]
         if not torch.is_tensor(logits):
             raise TypeError("Legacy model output first item must be a Tensor of logits.")
-        if not torch.is_tensor(input_features):
-            input_features = _feature_or_logits(None, logits)
-        if not torch.is_tensor(output_features):
-            output_features = _feature_or_logits(None, logits)
         return ModelOutput(
             logits=logits,
-            input_features=input_features,
-            output_features=output_features,
+            input_features=input_features if torch.is_tensor(input_features) else None,
+            output_features=output_features if torch.is_tensor(output_features) else None,
             diagnostics={},
         )
 
     if torch.is_tensor(output):
         return ModelOutput(
             logits=output,
-            input_features=_feature_or_logits(None, output),
-            output_features=_feature_or_logits(None, output),
+            input_features=None,
+            output_features=None,
             diagnostics={},
         )
 
@@ -69,14 +63,16 @@ def adapt_model_output(output: Any) -> ModelOutput:
 
 
 def select_prediction_slots(logits: torch.Tensor, num_pred: int) -> torch.Tensor:
-    """Return slots aligned with prepare_labels(), preserving already-aligned outputs."""
+    """Return the final future slots from long time-series logits."""
 
-    horizon = int(num_pred) + 1
+    horizon = int(num_pred)
+    if horizon <= 0:
+        raise ValueError(f"num_pred must be positive, got {num_pred}.")
     if logits.ndim != 3:
         raise ValueError(f"Model logits must have shape [B, T, C], got {tuple(logits.shape)}.")
     if logits.shape[1] < horizon:
         raise ValueError(
-            f"Model returned {logits.shape[1]} prediction slots but labels require {horizon} slots."
+            f"Model logits provide {logits.shape[1]} slots but future labels require {horizon} slots."
         )
     if logits.shape[1] == horizon:
         return logits
@@ -89,9 +85,3 @@ def _first_tensor(output: dict[str, Any], keys: tuple[str, ...]) -> torch.Tensor
         if torch.is_tensor(value):
             return value
     return None
-
-
-def _feature_or_logits(features: torch.Tensor | None, logits: torch.Tensor) -> torch.Tensor:
-    if torch.is_tensor(features):
-        return features
-    return logits.detach() if not logits.requires_grad else logits

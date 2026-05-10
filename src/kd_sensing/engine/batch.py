@@ -28,12 +28,8 @@ def prepare_labels(
     device: torch.device,
     non_blocking: bool = False,
 ) -> torch.Tensor:
-    beam_downsampled = torch.floor(batch["input_beam"].float() / downsample_ratio).to(torch.int64)
     label_downsampled = torch.floor(batch["target_beam"].float() / downsample_ratio).to(torch.int64)
-    return torch.cat(
-        [beam_downsampled[..., -1:], label_downsampled[:, :num_pred]],
-        dim=-1,
-    ).to(device, non_blocking=non_blocking)
+    return label_downsampled[:, :num_pred].to(device, non_blocking=non_blocking)
 
 
 def prepare_image_inputs(

@@ -22,7 +22,7 @@ Define the compatibility and manifest-preparation behavior for modality visualiz
 - **AND** 系统 MUST 不修改原始训练配置文件
 
 ### Requirement: 复用真实处理后张量
-Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量或由同一预处理/cache policy 产生的处理后文件路径生成 viewer 记录，确保 Gradio 展示内容与训练、验证或评估输入一致。系统 MUST 不用单独的旁路预处理逻辑替代 Dataset 的 image motion mask、radar RA/DA、LiDAR BEV、GPS 和 mmWave 处理。
+Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量或由同一预处理/cache policy 产生的处理后文件路径生成 viewer 记录，确保 Gradio 展示内容与训练、验证或评估输入一致。系统 MUST 不用单独的旁路预处理逻辑替代 Dataset 的 image motion mask、radar RA/DA、LiDAR BEV、GPS 和 mmWave 处理。模型预测导出能力写出的 future distribution MUST 与 `prepare_labels()` 的 future-only 语义一致。
 
 #### Scenario: image manifest 使用 motion mask 来源
 - **WHEN** manifest 导出启用 image 模态
@@ -37,7 +37,7 @@ Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量�
 #### Scenario: LiDAR manifest 使用 BEV 来源
 - **WHEN** manifest 导出启用 LiDAR 模态
 - **THEN** 输出样本记录 MUST 引用 Dataset 对应的 LiDAR BEV 表示或其可视化文件
-- **AND** 样本记录 SHOULD 包含总体非零率或通道级非零率等诊断摘要
+- **AND** 样本记录 MUST 包含总体非零率或通道级非零率等诊断摘要
 
 #### Scenario: GPS 和 mmWave manifest 使用数值序列
 - **WHEN** manifest 导出启用 GPS 或 mmWave 模态
@@ -46,10 +46,16 @@ Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量�
 
 #### Scenario: 模型预测导出 beam distribution
 - **WHEN** 用户使用 viewer 的模型预测导出能力生成单模态预测诊断
-- **THEN** 输出预测文件 SHOULD 为每个样本和模态写入 `beam_distribution[modality].prob`
-- **AND** 如果 logits 可用，输出预测文件 SHOULD 同时写入 `beam_distribution[modality].logit`
-- **AND** `prob` MUST 来自 softmax 后分布，`logit` MUST 来自 softmax 前输出，shape SHOULD 为 `[H, num_beams]`
+- **THEN** 输出预测文件 MUST 为每个样本和模态写入 `beam_distribution[modality].prob`
+- **AND** 如果 logits 可用，输出预测文件 MUST 同时写入 `beam_distribution[modality].logit`
+- **AND** `prob` MUST 来自 softmax 后分布，`logit` MUST 来自 softmax 前输出，shape MUST 为 `[num_pred, num_beams]`
+- **AND** `beam_distribution[modality].prob[0]`、`confidence_curves[modality][0]` 和 `prediction.modalities[modality].future_labels[0]` MUST 共同表示 `t+1`
 - **AND** Manifest 合并 MUST 将该字段保留到样本顶层，供 Gradio viewer 读取
+
+#### Scenario: 模型预测导出不执行旧 slot 偏移
+- **WHEN** 已经通过统一 helper 得到与 future labels 对齐的模型预测
+- **THEN** viewer prediction export MUST 使用完整的 `num_pred` 个预测 slot 写出 payload
+- **AND** 导出器 MUST 不执行 `probs[1:]`、`logits[1:]` 或 `labels[1:]` 风格的旧 current-slot 偏移
 
 ### Requirement: 只读诊断行为
 Gradio viewer 与 manifest 数据准备入口 MUST 默认保持只读行为，不得修改训练 checkpoint、训练日志、评估报告或已存在的 split CSV。对 image motion cache 和 LiDAR BEV cache 的访问 MUST 遵循现有 cache policy；当 policy 为 `read_only` 或 `off` 时，manifest 导出不得写入新的 cache 文件。

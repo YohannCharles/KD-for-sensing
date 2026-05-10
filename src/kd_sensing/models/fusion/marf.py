@@ -272,7 +272,7 @@ class MARFFusionNet(nn.Module):
         self.d_model = int(d_model or feature_size)
         self.num_classes = int(num_classes)
         self.num_pred = int(num_pred)
-        self.horizon = self.num_pred + 1
+        self.horizon = self.num_pred
         self.return_unimodal = bool(return_unimodal)
         if self.d_model % int(num_heads) != 0:
             raise ValueError(f"d_model ({self.d_model}) must be divisible by num_heads ({num_heads}).")

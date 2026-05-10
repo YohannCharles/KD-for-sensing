@@ -442,9 +442,22 @@ def _sample_prediction_payload(
     checkpoint_path: str,
     device: str,
 ) -> dict[str, Any]:
-    future_probs = probs[1:, :] if probs.shape[0] > 1 else probs
-    future_logits = logits[1:, :] if logits.shape[0] > 1 else logits
-    future_labels = labels[1 : 1 + future_probs.shape[0]].astype(int)
+    del modality
+    future_probs = np.asarray(probs)
+    future_logits = np.asarray(logits)
+    future_labels = np.asarray(labels).astype(int)
+    if future_probs.ndim != 2:
+        raise ValueError(f"prediction probabilities must have shape [num_pred, num_beams], got {future_probs.shape}.")
+    if future_logits.shape != future_probs.shape:
+        raise ValueError(
+            "prediction logits must have the same shape as probabilities, "
+            f"got logits {future_logits.shape} and probabilities {future_probs.shape}."
+        )
+    if future_labels.ndim != 1 or future_labels.shape[0] != future_probs.shape[0]:
+        raise ValueError(
+            "future labels must have one entry per prediction slot, "
+            f"got labels {future_labels.shape} and probabilities {future_probs.shape}."
+        )
     top1 = np.argmax(future_probs, axis=-1).astype(int)
     topk_count = min(5, future_probs.shape[-1])
     topk = np.argsort(-future_probs, axis=-1)[:, :topk_count].astype(int)

@@ -373,7 +373,7 @@ class CRAFTTokenFusionBase(nn.Module):
         self.d_model = int(d_model or feature_size)
         self.num_classes = int(num_classes)
         self.num_pred = int(num_pred)
-        self.horizon = self.num_pred + 1
+        self.horizon = self.num_pred
         self.return_unimodal = bool(return_unimodal)
         self.use_reliability = bool(use_reliability)
 

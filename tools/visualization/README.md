@@ -304,7 +304,7 @@ Viewer 支持 JSON 数组和 JSONL。每条样本推荐包含：
 }
 ```
 
-`prob` 是 softmax 后概率，shape 为 `[H, num_beams]`；`logit` 是 softmax 前输出，可以缺失。Viewer 会从分布长度自动推断 `num_beams`，不会强制 64 类。没有完整分布但存在 `modality_prediction` 或 `prediction.modalities` 时，只生成 summary/detail，不会用 top1 confidence 伪造 heatmap。
+`prob` 是 softmax 后概率，shape 为 `[H, num_beams]`；第 0 行对应 `label.future_beams[0]`，即 `t+1`，不包含当前或历史最后一个 beam。`logit` 是 softmax 前输出，可以缺失。Viewer 会从分布长度自动推断 `num_beams`，不会强制 64 类。没有完整分布但存在 `modality_prediction` 或 `prediction.modalities` 时，只生成 summary/detail，不会用 top1 confidence 伪造 heatmap。
 
 ## GPS 与 mmWave JSON
 

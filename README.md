@@ -272,9 +272,9 @@ mmWave-only 配置使用 `mmwave1..mmwave8` 序列列读取 `unit1_pwr_60ghz` /
 `mmwave_student`，feature extractor 注册名为 `mmwave_feature_extractor`；训练会保存
 `artifacts/mmwave_scaler.npz`，评估 registry checkpoint 时会复用该 scaler。
 
-注意：当前默认 mmWave 输入和 beam label 都来自同一个 power vector，因此当前时隙 beam 对 mmWave
-接近“答案可见”，未来 3 步更像预测。默认仍保持 8 个历史输入 + 3 步预测，便于跨模态比较；论文或实验表
-建议分开报告当前步和未来步，后续可另做只使用 `t-1` 历史的 lagged mmWave 消融。
+注意：当前默认 mmWave 输入和 beam label 都来自同一个 power vector；历史窗口最后一帧仅作为输入，
+不再作为训练 label。默认保持 8 个历史输入 + 3 步未来预测，`num_pred=3` 时目标时隙为
+`[t+1, t+2, t+3]`，便于跨模态比较；后续可另做只使用 `t-1` 历史的 lagged mmWave 消融。
 
 Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` 选择参与融合的模态，
 可用值为 `image`、`radar`、`gps`、`lidar`、`mmwave`。canonical fusion 配置中 teacher/student 的
@@ -409,9 +409,9 @@ tensorboard --logdir outputs
 
 TensorBoard 标量包含基础训练曲线和验证平均指标：
 
-- `accuracy/val_atop3`：所有 `J + 1` 个目标时隙 Top-3 accuracy 的平均值。
-- `accuracy/val_atop5`：所有 `J + 1` 个目标时隙 Top-5 accuracy 的平均值。
-- `dba/val_adba`：所有 `J + 1` 个目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算。
+- `accuracy/val_atop3`：所有 `J` 个未来目标时隙 Top-3 accuracy 的平均值。
+- `accuracy/val_atop5`：所有 `J` 个未来目标时隙 Top-5 accuracy 的平均值。
+- `dba/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算。
 
 ## 评估
 

@@ -59,12 +59,13 @@ CRAF MUST 为每个样本、每个启用模态估计 reliability 分数，并 MU
 - **AND** 不可用模态仍 MUST 被 mask 忽略
 
 ### Requirement: 单模态辅助预测与 confidence
-CRAF MUST 为每个启用模态提供轻量单模态辅助预测头，并 MUST 从辅助预测中计算可用于 reliability 估计的 confidence 特征。
+CRAF MUST 为每个启用模态提供轻量单模态辅助预测头，并 MUST 从辅助预测中计算可用于 reliability 估计的 confidence 特征。单模态辅助预测的 horizon MUST 与主 future-label horizon 一致，配置 `model.num_pred: N` 时输出 `N` 个 future prediction slot。
 
 #### Scenario: 单模态 logits 输出
-- **WHEN** CRAF forward 启用 `return_unimodal`
+- **WHEN** CRAF forward 启用 `return_unimodal` 且配置中的 `model.num_pred` 为 `N`
 - **THEN** 输出 MUST 包含单模态 logits
-- **AND** 单模态 logits MUST 能按 `[B, K, H, C]` 或等价结构表示
+- **AND** 单模态 logits MUST 能按 `[B, K, N, C]` 或等价结构表示
+- **AND** 第 0 个 prediction slot MUST 表示 `t+1`
 
 #### Scenario: confidence 特征计算
 - **WHEN** 单模态 logits 可用
@@ -74,10 +75,15 @@ CRAF MUST 为每个启用模态提供轻量单模态辅助预测头，并 MUST �
 #### Scenario: 单模态辅助 loss 可关闭
 - **WHEN** 配置将单模态辅助 loss 权重设为 0
 - **THEN** 训练总 loss MUST 不包含单模态辅助 loss
-- **AND** forward 输出仍 MAY 保留 diagnostics 字段
+- **AND** forward 输出无论是否包含 diagnostics 字段，训练流程 MUST 保持有效
+
+#### Scenario: 单模态 horizon 不匹配时报错
+- **WHEN** 单模态辅助 logits 的 prediction slot 数不等于 `num_pred`
+- **THEN** 单模态辅助 loss 路径 MUST 报错
+- **AND** 系统 MUST 不静默裁剪 `num_pred + 1` 旧辅助 head
 
 ### Requirement: Transformer fusion 与 horizon prediction
-CRAF MUST 使用 token-level fusion 模块融合启用模态历史 token，并 MUST 输出与当前训练标签语义一致的预测 slot。
+CRAF MUST 使用 token-level fusion 模块融合启用模态历史 token，并 MUST 输出与当前训练标签语义一致的预测 slot。配置 `model.num_pred: N` 时，CRAF 主 prediction head MUST 直接输出 `N` 个 future prediction slot。
 
 #### Scenario: Transformer 忽略 padding token
 - **WHEN** token padding mask 中某些位置为 True
@@ -85,12 +91,18 @@ CRAF MUST 使用 token-level fusion 模块融合启用模态历史 token，并 M
 
 #### Scenario: 预测长度对齐现有标签
 - **WHEN** 配置中的 `model.num_pred` 为 `N`
-- **THEN** CRAF 默认 MUST 输出 `N + 1` 个预测 slot
-- **AND** 这些 slot MUST 能直接与 `prepare_labels()` 的输出对齐
+- **THEN** CRAF 默认 MUST 输出 `N` 个预测 slot
+- **AND** 这些 slot MUST 能直接与 `prepare_labels()` 的 `[t+1, ..., t+N]` 输出对齐
+- **AND** CRAF MUST 不再输出用于当前或历史最后一个 beam 的额外 prediction slot
 
 #### Scenario: 输出类别数对齐
 - **WHEN** 配置中的 `model.num_classes` 为 `C`
 - **THEN** CRAF 输出 logits 的最后一维 MUST 为 `C`
+
+#### Scenario: 旧 horizon 配置不被接受
+- **WHEN** CRAF 主 logits 的 prediction slot 数为 `num_pred + 1`
+- **THEN** CRAF 定向测试或训练 shape 检查 MUST 将其视为 horizon 契约错误
+- **AND** 系统 MUST 不把第一个 slot 当作历史 beam 静默丢弃
 
 ### Requirement: Counterfactual gate supervision
 训练流程 MUST 能在 CRAF 显式启用时执行反事实 forward，以估计某个模态被移除后的性能变化，并用该贡献目标监督 reliability gate。
@@ -271,4 +283,3 @@ CRAF 训练 MUST 记录足以判断 reliability supervision 是否有效的每�
 - **WHEN** 配置启用 `training.counterfactual.ignore_delta_eps`
 - **THEN** 训练日志 MUST 包含每个启用模态的 `cf/target_valid_rate_<modality>` 或等价字段
 - **AND** 该字段 MUST 反映未被 ignore band 跳过的样本-模态比例
-

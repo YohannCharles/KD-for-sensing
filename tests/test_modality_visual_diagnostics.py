@@ -17,7 +17,10 @@ for path in (ROOT, SRC):
         sys.path.insert(0, str(path))
 
 from kd_sensing.diagnostics.modality_visualization import visualize_modalities  # noqa: E402
-from kd_sensing.diagnostics.viewer_predictions import export_viewer_model_predictions  # noqa: E402
+from kd_sensing.diagnostics.viewer_predictions import (  # noqa: E402
+    _sample_prediction_payload,
+    export_viewer_model_predictions,
+)
 from kd_sensing.registries import MODELS, import_default_components  # noqa: E402
 from kd_sensing.config.io import load_config  # noqa: E402
 from kd_sensing.cli.common import collect_overrides  # noqa: E402
@@ -553,14 +556,41 @@ def test_model_prediction_export_adds_per_beam_confidence_curves(tmp_path: Path)
     predictions = json.loads(Path(prediction_result["prediction_path"]).read_text(encoding="utf-8"))
     records = json.loads(Path(manifest_result["manifest_path"]).read_text(encoding="utf-8"))
     first_payload = next(iter(predictions.values()))
+    future_labels = first_payload["prediction"]["modalities"]["gps"]["future_labels"]
     assert "gps" in first_payload["confidence_curves"]
+    assert len(first_payload["confidence_curves"]["gps"]) == len(future_labels)
     assert len(first_payload["confidence_curves"]["gps"][0]) == 64
     assert "gps" in first_payload["beam_distribution"]
+    assert len(first_payload["beam_distribution"]["gps"]["prob"]) == len(future_labels)
+    assert len(first_payload["beam_distribution"]["gps"]["logit"]) == len(future_labels)
     assert len(first_payload["beam_distribution"]["gps"]["prob"][0]) == 64
     assert len(first_payload["beam_distribution"]["gps"]["logit"][0]) == 64
     assert "gps" in first_payload["confidence"]
     assert "gps" in records[0]["confidence_curves"]
     assert "gps" in records[0]["beam_distribution"]
+
+
+def test_model_prediction_payload_keeps_first_slot_as_t_plus_one():
+    probs = np.array(
+        [
+            [0.05, 0.9, 0.05],
+            [0.1, 0.2, 0.7],
+        ],
+        dtype=np.float32,
+    )
+    logits = np.log(probs)
+    labels = np.array([1, 2], dtype=np.int64)
+
+    payload = _sample_prediction_payload("gps", probs, logits, labels, "ckpt.pth", "cpu")
+
+    assert payload["prediction"]["future_labels"] == [1, 2]
+    assert payload["prediction"]["top1"] == [1, 2]
+    assert payload["confidence_curves"][0] == pytest.approx(probs[0].tolist())
+    assert payload["beam_distribution"]["logit"][0] == pytest.approx(logits[0].tolist())
+    np.testing.assert_allclose(payload["confidence_curves"], probs)
+    np.testing.assert_allclose(payload["beam_distribution"]["prob"], probs)
+    with pytest.raises(ValueError, match="one entry per prediction slot"):
+        _sample_prediction_payload("gps", probs, logits, np.array([9, 1, 2]), "ckpt.pth", "cpu")
 
 
 def test_gradio_demo_builds_when_optional_dependency_is_available():

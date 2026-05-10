@@ -105,7 +105,10 @@ class KnowledgeDistillationLoss(nn.Module):
             distillation_loss = kl_loss.sum(dim=1).mean() * (self.temperature ** 2)
         elif self.kd_mode == 2:
             if student_output_features is None or teacher_output_features is None:
-                raise ValueError("Output features required for relational KD mode")
+                raise ValueError(
+                    "Relational KD requires real student and teacher output_features; "
+                    "model outputs did not provide the required feature tensors."
+                )
             distillation_loss = self.relational_knowledge_distillation_loss(
                 student_output_features,
                 teacher_output_features,
@@ -134,4 +137,3 @@ class LogitsKDDistiller(KnowledgeDistillationLoss):
 class RKDDistiller(KnowledgeDistillationLoss):
     def __init__(self, task_criterion: nn.Module, **kwargs: object):
         super().__init__(task_criterion=task_criterion, kd_mode=2, **kwargs)
-

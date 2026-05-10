@@ -83,6 +83,8 @@ def test_validation_subset_all_matches_official_path_and_records_modalities():
         }
     )
     model.eval()
+    assert model.horizon == 1
+    assert model.router.horizon == 1
     cfg = {
         "experiment": {"task": "fusion"},
         "model": {
@@ -105,9 +107,16 @@ def test_validation_subset_all_matches_official_path_and_records_modalities():
     }
     dataloader = [_fixed_batch()]
     metrics = validate(model, dataloader, cfg, torch.nn.CrossEntropyLoss(), torch.device("cpu"))
+    with torch.no_grad():
+        output = model(gps_batch=dataloader[0]["gps"], mmwave_batch=dataloader[0]["mmwave"])
+    assert output["logits"].shape[1] == cfg["model"]["num_pred"]
+    assert output["anchor_weights"].shape[1] == cfg["model"]["num_pred"]
+    assert output["residual_weights"].shape[1] == cfg["model"]["num_pred"]
 
     official_top1 = metrics["topk"]["1"][0]
     subset_top1 = metrics["modality_subsets"]["all"]["topk"]["1"][0]
+    assert len(metrics["topk"]["1"]) == 1
+    assert metrics["total"] == [2]
     assert subset_top1 == pytest.approx(official_top1)
     assert metrics["modality_subsets"]["all"]["modalities"] == ["gps", "mmwave"]
     assert metrics["modality_subsets"]["strong_only"]["modalities"] == ["gps"]

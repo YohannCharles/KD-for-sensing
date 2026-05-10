@@ -74,7 +74,8 @@ mmWave teacher 和 mmWave student MUST 校验 `gru_params` 和输入维度配置
 #### Scenario: mmWave 预测窗口对齐
 - **WHEN** `seq_length` 为 8 且 `num_pred` 为 3
 - **THEN** mmWave-only 输入 MUST 包含最近 8 个 mmWave 历史时隙和 2 个未来 zero padding 时隙
-- **AND** 验证和损失计算 MUST 继续使用最后 `num_pred + 1` 个输出时隙与标签对齐
+- **AND** 验证和损失计算 MUST 使用最后 `num_pred` 个输出时隙与 `[t+1, t+2, t+3]` 标签对齐
+- **AND** 输出时隙对齐 MUST 不包含历史窗口最后一个 beam
 
 ### Requirement: mmWave-only 基线配置
 项目 MUST 提供 mmWave-only 配置，用于训练和评估 mmWave teacher baseline 和 lightweight student baseline。配置 MUST 使用 `experiment.task: mmwave`，并通过 `mmwave_teacher` 或 `mmwave_student` 构建主模型。
@@ -118,4 +119,3 @@ mmWave-only teacher/student MUST 与现有 logits KD 和 RKD distiller 兼容。
 - **WHEN** 用户通过默认 mmWave student no-KD 配置构建模型
 - **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
 - **AND** 模型的 `GRU.num_layers` MUST 为 1
-

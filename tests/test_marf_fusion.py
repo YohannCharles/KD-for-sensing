@@ -29,13 +29,18 @@ def test_marf_forward_shapes_and_output_contract():
     assert "marf_fusion" in MODELS.list()
     assert model.supports_force_modality_mask is True
     assert model.supports_marf_routing is True
+    assert model.horizon == model.num_pred == 2
+    assert model.router.horizon == 2
+    assert model.anchor_fusion.horizon == 2
+    assert model.residual_adapter.horizon == 2
+    assert model.unimodal_head.horizon == 2
     assert set(model.encoders.keys()) == {"gps", "mmwave"}
-    assert output["logits"].shape == (2, 3, 8)
-    assert output["anchor_weights"].shape == (2, 3, 2)
-    assert output["residual_weights"].shape == (2, 3, 2)
-    assert output["h_anchor"].shape == (2, 3, 16)
-    assert output["h_final"].shape == (2, 3, 16)
-    assert output["residual_delta"].shape == (2, 3, 2, 16)
+    assert output["logits"].shape == (2, 2, 8)
+    assert output["anchor_weights"].shape == (2, 2, 2)
+    assert output["residual_weights"].shape == (2, 2, 2)
+    assert output["h_anchor"].shape == (2, 2, 16)
+    assert output["h_final"].shape == (2, 2, 16)
+    assert output["residual_delta"].shape == (2, 2, 2, 16)
     assert output["token_features"].shape[:3] == (2, 2, 4)
     assert output["modalities"] == ("gps", "mmwave")
 
@@ -53,7 +58,7 @@ def test_marf_anchor_softmax_and_mask_zero_unavailable_modalities():
 
     anchor = output["anchor_weights"]
     residual = output["residual_weights"]
-    assert torch.allclose(anchor.sum(dim=-1), torch.ones(2, 3), atol=1e-6)
+    assert torch.allclose(anchor.sum(dim=-1), torch.ones(2, 2), atol=1e-6)
     assert torch.all(anchor[0, :, 1] == 0.0)
     assert torch.all(anchor[1, :, 0] == 0.0)
     assert torch.all(residual[0, :, 1] == 0.0)

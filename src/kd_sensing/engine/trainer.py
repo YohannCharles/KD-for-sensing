@@ -649,14 +649,34 @@ def train(cfg: dict) -> dict:
                     student_logits = student_outputs.reshape(-1, num_classes)
                     teacher_logits = teacher_outputs.reshape(-1, num_classes)
                     targets = labels.flatten()
+                    student_input_window = _feature_prefix(
+                        student_input_features,
+                        seq_length_student - 1,
+                        name="student input_features",
+                    )
+                    teacher_input_window = _feature_prefix(
+                        teacher_input_features,
+                        seq_length_teacher - 1,
+                        name="teacher input_features",
+                    )
+                    student_output_window = _feature_tail(
+                        student_out_features,
+                        num_pred,
+                        name="student output_features",
+                    )
+                    teacher_output_window = _feature_tail(
+                        teacher_out_features,
+                        num_pred,
+                        name="teacher output_features",
+                    )
                     total_loss, task_loss, distill_loss = distiller(
                         student_logits,
                         teacher_logits,
                         targets,
-                        student_input_features[:, : seq_length_student - 1, :],
-                        teacher_input_features[:, : seq_length_teacher - 1, :],
-                        student_out_features[:, -(num_pred + 1) :, :],
-                        teacher_out_features[:, -(num_pred + 1) :, :],
+                        student_input_window,
+                        teacher_input_window,
+                        student_output_window,
+                        teacher_output_window,
                         current_alpha,
                     )
                     extra_losses = _compute_craf_extra_losses(
@@ -933,12 +953,36 @@ def train(cfg: dict) -> dict:
     }
 
 
-def _dummy_teacher(student_outputs: torch.Tensor, student_input_features: torch.Tensor, student_out_features: torch.Tensor):
+def _dummy_teacher(
+    student_outputs: torch.Tensor,
+    student_input_features: torch.Tensor | None,
+    student_out_features: torch.Tensor | None,
+):
     return (
         torch.zeros_like(student_outputs),
-        torch.zeros_like(student_input_features),
-        torch.zeros_like(student_out_features),
+        torch.zeros_like(student_input_features) if torch.is_tensor(student_input_features) else None,
+        torch.zeros_like(student_out_features) if torch.is_tensor(student_out_features) else None,
     )
+
+
+def _feature_prefix(features: torch.Tensor | None, length: int, *, name: str) -> torch.Tensor | None:
+    if features is None:
+        return None
+    if features.ndim < 2:
+        raise ValueError(f"{name} must include a time dimension, got shape {tuple(features.shape)}.")
+    if features.shape[1] < length:
+        raise ValueError(f"{name} has {features.shape[1]} slots but {length} are required.")
+    return features[:, :length, ...]
+
+
+def _feature_tail(features: torch.Tensor | None, length: int, *, name: str) -> torch.Tensor | None:
+    if features is None:
+        return None
+    if features.ndim < 2:
+        raise ValueError(f"{name} must include a time dimension, got shape {tuple(features.shape)}.")
+    if features.shape[1] < length:
+        raise ValueError(f"{name} has {features.shape[1]} slots but {length} are required.")
+    return features[:, -length:, ...]
 
 
 def _forward_for_task(
@@ -1463,13 +1507,12 @@ def _unimodal_aux_loss(
         return zero
     if unimodal_logits.ndim != 4:
         raise ValueError(f"unimodal_logits must have shape [B, K, H, C], got {tuple(unimodal_logits.shape)}.")
-    horizon = num_pred + 1
-    if unimodal_logits.shape[2] < horizon:
+    horizon = num_pred
+    if unimodal_logits.shape[2] != horizon:
         raise ValueError(
-            f"unimodal_logits returned {unimodal_logits.shape[2]} slots but labels require {horizon}."
+            "unimodal_logits horizon must exactly match num_pred future slots; "
+            f"got {unimodal_logits.shape[2]} slots for num_pred={horizon}."
         )
-    if unimodal_logits.shape[2] > horizon:
-        unimodal_logits = unimodal_logits[:, :, -horizon:, :]
     batch_size, modality_count, _, num_classes = unimodal_logits.shape
     expanded_labels = labels.unsqueeze(1).expand(batch_size, modality_count, -1)
     _, per_modality_loss = sequence_cross_entropy(

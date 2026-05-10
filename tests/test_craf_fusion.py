@@ -27,7 +27,7 @@ from kd_sensing.engine.craf_training import (  # noqa: E402
 )
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
-from kd_sensing.engine.trainer import train  # noqa: E402
+from kd_sensing.engine.trainer import _unimodal_aux_loss, train  # noqa: E402
 from kd_sensing.models.fusion.craf import ReliabilityEstimator  # noqa: E402
 from kd_sensing.registries import MODELS, import_default_components  # noqa: E402
 
@@ -43,13 +43,28 @@ def test_model_output_adapter_supports_legacy_tuple_and_craf_dict():
     assert legacy.output_features is enhanced
     assert legacy.diagnostics == {}
 
-    craf = adapt_model_output({"logits": logits[:, -3:], "reliability": torch.ones(2, 2)})
+    craf = adapt_model_output(
+        {
+            "logits": logits[:, -3:],
+            "input_features": features[:, -3:],
+            "output_features": enhanced[:, -3:],
+            "reliability": torch.ones(2, 2),
+        }
+    )
     assert craf.logits.shape == (2, 3, 8)
-    assert craf.input_features.shape == (2, 3, 8)
-    assert craf.output_features.shape == (2, 3, 8)
+    assert craf.input_features.shape == (2, 3, 4)
+    assert craf.output_features.shape == (2, 3, 6)
     assert craf.diagnostics["reliability"].shape == (2, 2)
-    assert select_prediction_slots(logits[:, -3:], num_pred=2).shape == (2, 3, 8)
-    assert select_prediction_slots(logits, num_pred=2).shape == (2, 3, 8)
+    missing_features = adapt_model_output({"logits": logits[:, -3:]})
+    assert missing_features.input_features is None
+    assert missing_features.output_features is None
+    assert adapt_model_output((logits, None, "missing")).output_features is None
+    with pytest.raises(ValueError, match="must contain"):
+        adapt_model_output({"confidence": torch.ones(2, 2)})
+    assert select_prediction_slots(logits[:, -2:], num_pred=2).shape == (2, 2, 8)
+    assert select_prediction_slots(logits, num_pred=2).shape == (2, 2, 8)
+    with pytest.raises(ValueError, match="future labels require 6 slots"):
+        select_prediction_slots(logits, num_pred=6)
 
 
 def test_craf_model_builds_modalities_and_rejects_invalid_configs():
@@ -127,9 +142,12 @@ def test_craf_forward_shapes_and_force_mask_for_gps_mmwave():
             force_modality_mask=torch.tensor([[True, False], [False, True]]),
         )
 
-    assert output["logits"].shape == (2, 3, 8)
+    assert output["logits"].shape == (2, 2, 8)
+    assert model.horizon == model.num_pred == 2
+    assert model.prediction_head.horizon == 2
+    assert model.unimodal_head.horizon == 2
     assert output["reliability"].shape == (2, 2)
-    assert output["unimodal_logits"].shape == (2, 2, 3, 8)
+    assert output["unimodal_logits"].shape == (2, 2, 2, 8)
     assert output["confidence"].shape == (2, 2, 2)
     assert output["effective_modality_mask"].tolist() == [[True, False], [False, True]]
     assert output["token_padding_mask"].shape == (2, 2, 4)
@@ -165,7 +183,7 @@ def test_token_transformer_baseline_forward_does_not_gate_available_tokens():
             force_modality_mask=torch.tensor([[True, False]]),
         )
 
-    assert output["logits"].shape == (1, 2, 8)
+    assert output["logits"].shape == (1, 1, 8)
     assert output["reliability"].tolist() == [[1.0, 0.0]]
 
 
@@ -319,6 +337,31 @@ def test_craf_loss_and_mask_helpers_handle_ignore_index_and_targets():
         assert torch.equal(with_target_mask, context_mask | target_mask)
         assert torch.all(target_mask.sum(dim=1) == 1)
         assert torch.all(context_mask.sum(dim=1) >= 1)
+
+
+def test_unimodal_aux_loss_requires_exact_future_horizon():
+    labels = torch.tensor([[0, 1], [2, 3]])
+    zero = torch.tensor(0.0)
+    valid_logits = torch.zeros(2, 2, 2, 5)
+    extra_slot_logits = torch.zeros(2, 2, 3, 5)
+
+    assert _unimodal_aux_loss(
+        valid_logits,
+        labels,
+        torch.ones(2, 2, dtype=torch.bool),
+        num_pred=2,
+        ignore_index=-100,
+        zero=zero,
+    ).ndim == 0
+    with pytest.raises(ValueError, match="exactly match num_pred"):
+        _unimodal_aux_loss(
+            extra_slot_logits,
+            labels,
+            torch.ones(2, 2, dtype=torch.bool),
+            num_pred=2,
+            ignore_index=-100,
+            zero=zero,
+        )
 
 
 def test_craf_example_configs_load_without_affecting_legacy_config():

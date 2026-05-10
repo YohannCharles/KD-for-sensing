@@ -22,6 +22,7 @@ import kd_sensing.data.datasets.scenario9 as scenario9_module  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
 from kd_sensing.data.datasets.scenario9 import DeepSense6GDataset, Scenario9Dataset  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
+from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.engine.builders import (  # noqa: E402
     apply_cache_policy,
@@ -31,6 +32,7 @@ from kd_sensing.engine.builders import (  # noqa: E402
     resolve_enabled_modalities,
     throughput_run_metadata,
 )
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
 from kd_sensing.preprocessing.image import generate_image_motion_cache  # noqa: E402
 from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir  # noqa: E402
@@ -217,7 +219,59 @@ def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Pat
 
     assert sample["target_beam"].shape == (1,)
     assert batch["target_beam"].shape == (1, 1)
-    assert labels.shape == (1, 2)
+    assert sample["input_beam"].tolist()[-1] == 1
+    assert sample["target_beam"].tolist() == [10]
+    assert labels.shape == (1, 1)
+    assert labels.tolist() == [[10]]
+
+
+def test_future_slot_selection_and_missing_features_kd_contract():
+    labels = prepare_labels(
+        {"target_beam": torch.tensor([[0, 1, 2], [1, 2, 3]])},
+        num_pred=2,
+        downsample_ratio=1,
+        device=torch.device("cpu"),
+    )
+    logits = torch.randn(2, 5, 4)
+    selected = select_prediction_slots(logits, num_pred=2)
+    model_output = adapt_model_output({"logits": selected})
+    targets = labels.flatten()
+    student_logits = selected.reshape(-1, 4)
+    teacher_logits = selected.detach().reshape(-1, 4)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    assert labels.tolist() == [[0, 1], [1, 2]]
+    assert torch.equal(selected, logits[:, -2:, :])
+    assert model_output.input_features is None
+    assert model_output.output_features is None
+    assert KnowledgeDistillationLoss(criterion, kd_mode=0)(
+        student_logits,
+        teacher_logits,
+        targets,
+        None,
+        None,
+        None,
+        None,
+    )[0].ndim == 0
+    assert KnowledgeDistillationLoss(criterion, kd_mode=1)(
+        student_logits,
+        teacher_logits,
+        targets,
+        None,
+        None,
+        None,
+        None,
+    )[0].ndim == 0
+    with pytest.raises(ValueError, match="Relational KD requires real"):
+        KnowledgeDistillationLoss(criterion, kd_mode=2)(
+            student_logits,
+            teacher_logits,
+            targets,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 def test_dataloader_kwargs_filter_worker_only_options():

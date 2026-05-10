@@ -28,6 +28,7 @@ from kd_sensing.engine.batch import (
     prepare_lidar_inputs,
     prepare_radar_inputs,
 )
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
 from kd_sensing.engine.builders import (
     build_dataloaders,
     build_device,
@@ -112,10 +113,12 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
 
         forward_start = _synced_time(device)
         with autocast_context(amp_enabled, device, amp_dtype):
-            outputs, _, _ = forward_model(model, cfg["experiment"].get("task", "image"), **forward_kwargs)
             num_pred = cfg["model"].get("num_pred", 3)
             num_classes = cfg["model"].get("num_classes", 64)
-            outputs = outputs[:, -(num_pred + 1) :, :]
+            model_output = adapt_model_output(
+                forward_model(model, cfg["experiment"].get("task", "image"), **forward_kwargs)
+            )
+            outputs = select_prediction_slots(model_output.logits, num_pred)
             loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
         forward_elapsed = _elapsed_since_synced(forward_start, device)
 
