@@ -1,0 +1,159 @@
+experiment:
+  name: scene32_marf_conditional_utility_audit
+  task: fusion
+  seed: 0
+  device: auto
+data:
+  dataset:
+    type: deepsense6g
+    scene: 32
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 8
+    num_pred: 3
+    portion: 1.0
+    return_metadata: true
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_lidar: true
+    lidar_bev_size: [224, 224]
+    lidar_roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+    lidar_normalize: false
+    use_mmwave: true
+    mmwave_normalize: true
+  dataloader:
+    train_batch_size: 32
+    test_batch_size: 32
+    num_workers: 4
+    prefetch_factor: 1
+model:
+  modalities: [image, radar, gps, lidar, mmwave]
+  feature_size: 64
+  num_classes: 64
+  seq_length_teacher: 8
+  seq_length_student: 8
+  num_pred: 3
+  downsample_ratio: 1
+  teacher:
+    type: fusion_teacher
+    modalities: [image, radar, gps, lidar, mmwave]
+    image_channels: 1
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    mmwave_input_size: 64
+    feature_size: 64
+    num_classes: 64
+    gru_params: [64, 64, 2]
+  student:
+    type: marf_fusion
+    modalities: [image, radar, gps, lidar, mmwave]
+    image_channels: 1
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    mmwave_input_size: 64
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 3
+    num_heads: 4
+    dropout: 0.1
+    router:
+      hidden_size: 64
+      temperature: 1.0
+      use_prior_bias: true
+      prior_anchor_scale: 0.5
+      prior_residual_scale: 0.25
+      use_confidence_features: true
+      zero_init: true
+    residual_adapter:
+      enabled: true
+      residual_scale: 0.2
+teacher:
+  registry_path: outputs/scene32/teacher_registry.json
+  load_encoders: true
+  freeze_encoders: true
+  strict: true
+distillation:
+  type: no_kd
+  teacher_model_name: null
+loss:
+  type: cross_entropy
+  label_smoothing: 0.03
+training:
+  epochs: 1
+  warmup_epochs: 0
+  lr: 0.00075
+  weight_decay: 0.0001
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  min_delta: 0.0001
+evaluation:
+  k_values: [1, 2, 3, 5, 10]
+  dba_delta: 5
+  modality_subsets:
+    enabled: true
+    subsets:
+      - all
+      - strong_only
+      - strong_plus_image
+      - strong_plus_radar
+      - strong_plus_lidar
+      - single_best_mmwave
+      - weak_only
+output:
+  dir: outputs
+  run_name: scene32_marf
+  group_by_scene: true
+checkpoint:
+  strict_load: true
+conditional_utility:
+  checkpoint_path: outputs/scene32/scene32_marf/checkpoints/best_top1.pth
+  teacher_registry_path: outputs/scene32/teacher_registry.json
+  output_dir: outputs/scene32/scene32_marf/conditional_utility
+  run_name: scene32_marf
+  dump_teacher_predictions: true
+  strict_teacher_load: true
+  require_teacher_checkpoints: true
+  subsets:
+    - all
+    - strong_only
+    - strong_plus_image
+    - strong_plus_radar
+    - strong_plus_lidar
+    - single_best_mmwave
+    - weak_only
+  oracle_candidates:
+    - strong_only
+    - strong_plus_image
+    - strong_plus_radar
+    - strong_plus_lidar
+    - all
+  horizons: [t+1, t+2, t+3]
+  bucket_features:
+    features:
+      - mmwave_entropy
+      - mmwave_top1_prob
+      - mmwave_top1_top2_margin
+      - mmwave_peak_sharpness
+      - mmwave_total_power
+      - mmwave_peak_drift
+      - range_to_bs
+      - delta_range
+      - delta_bearing
+      - angular_velocity
+      - gps_jump_magnitude
+      - beam_transition
+    quantiles: [0.3333333333, 0.6666666667]
+    bucket_names: [low, mid, high]
+  diagnosis_thresholds:
+    min_bucket_samples: 20
+    global_delta_dba: 0.0
+    global_delta_ce: 0.0
+    conditional_delta_dba: 0.02
+    conditional_delta_ce: 0.02
+    teacher_rescue_rate: 0.10
+    oracle_gain_dba: 0.02

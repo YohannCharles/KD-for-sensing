@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import hashlib
 from pathlib import Path
+import re
 from typing import Any
 
 import numpy as np
@@ -100,6 +102,7 @@ class DeepSense6GDataset(Dataset):
         lidar_point_dropout: float = 0.0,
         lidar_jitter_std: float = 0.0,
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
+        return_metadata: bool = False,
         portion_strategy: str = "even",
         portion_seed: int = 42,
         **_: object,
@@ -135,6 +138,7 @@ class DeepSense6GDataset(Dataset):
         self.clipped_range = clipped_range
         self.split = split
         self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar, use_mmwave)
+        self.return_metadata = bool(return_metadata)
         if "image" in self.enabled_modalities:
             self.image_motion_cache_dir = self._resolve_image_motion_cache_dir(image_motion_cache_dir)
         self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
@@ -204,7 +208,7 @@ class DeepSense6GDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples.input_beam_paths)
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         beam_paths = self.samples.input_beam_paths[idx][-self.seq_len :]
         future_beam_paths = self.samples.future_beam_paths[idx][: self.num_pred]
 
@@ -273,7 +277,69 @@ class DeepSense6GDataset(Dataset):
                     )
                 lidar_bev = self.lidar_normalizer.transform(lidar_bev)
             sample["lidar"] = torch.tensor(lidar_bev, dtype=torch.float32)
+        if self.return_metadata:
+            sample["metadata"] = self._metadata_for_index(idx, beam_paths, future_beam_paths)
         return sample
+
+    def _metadata_for_index(self, idx: int, beam_paths: list[str], future_beam_paths: list[str]) -> dict[str, Any]:
+        last_beam_path = str(beam_paths[-1]) if beam_paths else ""
+        first_future_beam_path = str(future_beam_paths[0]) if future_beam_paths else ""
+        key = "|".join(
+            [
+                self.scene_slug,
+                self.split,
+                str(idx),
+                last_beam_path,
+                first_future_beam_path,
+            ]
+        )
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+        metadata: dict[str, Any] = {
+            "dataset_index": int(idx),
+            "sample_id": f"{self.scene_slug}:{self.split}:{idx}:{digest}",
+            "scene_id": self.scene_id,
+            "scene_slug": self.scene_slug,
+            "split": self.split,
+            "root_csv": str(self.root_csv),
+            "input_beam_path": last_beam_path,
+            "target_beam_path": first_future_beam_path,
+        }
+        self._add_path_metadata(metadata, "image_path", getattr(self.samples, "rgb_paths", None), idx)
+        self._add_path_metadata(metadata, "radar_path", getattr(self.samples, "radar_paths", None), idx)
+        self._add_path_metadata(metadata, "gps_path", getattr(self.samples, "gps_paths", None), idx)
+        self._add_path_metadata(metadata, "lidar_path", getattr(self.samples, "lidar_paths", None), idx)
+        self._add_path_metadata(metadata, "mmwave_path", getattr(self.samples, "mmwave_paths", None), idx)
+        seq_id, frame_idx = self._parse_sequence_position(
+            first_future_beam_path or last_beam_path or metadata.get("mmwave_path", "")
+        )
+        if seq_id is not None:
+            metadata["seq_id"] = seq_id
+        if frame_idx is not None:
+            metadata["frame_idx"] = int(frame_idx)
+        return metadata
+
+    @staticmethod
+    def _add_path_metadata(metadata: dict[str, Any], key: str, paths: list[list[str]] | None, idx: int) -> None:
+        if not paths or idx >= len(paths) or not paths[idx]:
+            return
+        metadata[key] = str(paths[idx][-1])
+
+    @staticmethod
+    def _parse_sequence_position(path: str) -> tuple[str | None, int | None]:
+        text = str(path)
+        seq_id = None
+        frame_idx = None
+        seq_match = re.search(r"(?:^|[/_-])seq(?:uence)?[_-]?([A-Za-z0-9]+)", text, flags=re.IGNORECASE)
+        if seq_match:
+            seq_id = seq_match.group(1)
+        frame_match = re.search(
+            r"(?:frame|frm|camera|radar|beam|gps|lidar|mmwave|pwr)[_-]?(\d+)",
+            Path(text).stem,
+            flags=re.IGNORECASE,
+        )
+        if frame_match:
+            frame_idx = int(frame_match.group(1))
+        return seq_id, frame_idx
 
     def _resolve_enabled_modalities(
         self,

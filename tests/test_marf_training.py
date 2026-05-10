@@ -119,7 +119,7 @@ def test_validation_subset_all_matches_official_path_and_records_modalities():
     assert metrics["total"] == [2]
     assert subset_top1 == pytest.approx(official_top1)
     assert metrics["modality_subsets"]["all"]["modalities"] == ["gps", "mmwave"]
-    assert metrics["modality_subsets"]["strong_only"]["modalities"] == ["gps"]
+    assert metrics["modality_subsets"]["strong_only"]["modalities"] == ["gps", "mmwave"]
     assert metrics["modality_subsets"]["weak_only"]["modalities"] == ["mmwave"]
 
 

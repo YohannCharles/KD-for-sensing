@@ -21,6 +21,7 @@ from kd_sensing.engine.marf_training import ModalitySubsetSampler
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
 from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, transfer_non_blocking
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
+from kd_sensing.evaluation.subset_specs import resolve_conditional_utility_subset
 
 
 def validate(model, dataloader, cfg: dict, criterion, device: torch.device, output_dir: str | Path | None = None):
@@ -292,9 +293,12 @@ def _resolve_modality_subset(
     eval_cfg: dict,
     device: torch.device,
 ):
+    conditional = resolve_conditional_utility_subset(name, modalities)
+    if conditional is not None:
+        return sampler.explicit(name, conditional.modalities, device=device)
     if name == "all":
         return sampler.sample("all", device=device)
-    if name in {"top_prior", "strong_only"}:
+    if name == "top_prior":
         return sampler.sample("top_prior", device=device)
     if name == "single_best_prior":
         return sampler.sample("single_best_prior", device=device)
