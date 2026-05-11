@@ -1,0 +1,59 @@
+output_dir: outputs/scene32/phase_1_5_utility_validation
+conditional_utility_input: outputs/scene32/scene32_marf/conditional_utility
+
+bootstrap:
+  num_bootstrap: 1000
+  confidence: 0.95
+  random_seed: 0
+  cluster_key_preference: [seq_id, sample_id, dataset_index]
+
+thresholds:
+  min_bucket_samples: 20
+  global_delta_dba: 0.001
+  global_delta_ce: 0.0
+  conditional_delta_dba: 0.02
+  conditional_delta_ce: 0.02
+  teacher_rescue_rate: 0.10
+  oracle_gain_dba: 0.02
+
+checkpoint_matrix:
+  config: configs/analysis/scene32_marf_conditional_utility_audit.yaml
+  run_name: scene32_marf
+  checkpoints_dir: outputs/scene32/scene32_marf/checkpoints
+  roles:
+    best_top1:
+      checkpoint: best_top1.pth
+      audit_dir: outputs/scene32/scene32_marf/conditional_utility
+    best:
+      checkpoint: best.pth
+      audit_dir: outputs/scene32/phase_1_5_utility_validation/checkpoint_audits/scene32_marf_best
+    last:
+      checkpoint: last.pth
+      audit_dir: outputs/scene32/phase_1_5_utility_validation/checkpoint_audits/scene32_marf_last
+
+baseline_matrix:
+  seeds: [0, 1, 2]
+  primary_baseline: strong_only
+  run_name_template: phase_1_5_{slug}_seed{seed}
+  training_overrides: {}
+  subsets:
+    strong_only:
+      slug: gps_mmwave
+      modalities: [gps, mmwave]
+      config: configs/fusion/gps_mmwave_teacher_no_kd.yaml
+    strong_plus_image:
+      slug: image_gps_mmwave
+      modalities: [image, gps, mmwave]
+      config: configs/fusion/image_gps_mmwave_teacher_no_kd.yaml
+    strong_plus_radar:
+      slug: radar_gps_mmwave
+      modalities: [radar, gps, mmwave]
+      config: configs/fusion/radar_gps_mmwave_teacher_no_kd.yaml
+    strong_plus_lidar:
+      slug: gps_lidar_mmwave
+      modalities: [gps, lidar, mmwave]
+      config: configs/fusion/gps_lidar_mmwave_teacher_no_kd.yaml
+    all:
+      slug: image_radar_gps_lidar_mmwave
+      modalities: [image, radar, gps, lidar, mmwave]
+      config: configs/fusion/image_radar_gps_lidar_mmwave_teacher_no_kd.yaml

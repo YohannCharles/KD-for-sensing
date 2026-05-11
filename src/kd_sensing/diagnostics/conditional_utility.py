@@ -475,6 +475,7 @@ def build_conditional_utility_summary(
     bucket_summary: list[dict[str, Any]] | pd.DataFrame,
     metadata: dict[str, Any] | None = None,
     diagnosis_thresholds: dict[str, Any] | None = None,
+    bootstrap_confidence: list[dict[str, Any]] | pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     delta_frame = _to_dataframe(deltas)
     bucket_frame = _to_dataframe(bucket_summary)
@@ -508,6 +509,7 @@ def build_conditional_utility_summary(
             bucket_frame,
             teacher_summary or {},
             thresholds=thresholds,
+            bootstrap_confidence=bootstrap_confidence,
         ),
     }
     return _json_ready(summary)
@@ -519,8 +521,10 @@ def diagnose_modalities(
     teacher_summary: dict[str, Any],
     *,
     thresholds: dict[str, Any],
+    bootstrap_confidence: list[dict[str, Any]] | pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     diagnosis: dict[str, Any] = {}
+    ci_frame = _to_dataframe(bootstrap_confidence) if bootstrap_confidence is not None else pd.DataFrame()
     for weak in WEAK_MODALITIES:
         overall = marginal_summary.get(weak, {})
         mean_delta_dba = float(overall.get("delta_dba", 0.0) or 0.0)
@@ -532,11 +536,12 @@ def diagnose_modalities(
             "overall_delta_ce": mean_delta_ce,
             "teacher_rescue_rate": rescue_rate,
         }
-        if (
-            mean_delta_dba > float(thresholds.get("global_delta_dba", 0.0))
-            or mean_delta_ce > float(thresholds.get("global_delta_ce", 0.0))
-        ):
-            diagnosis[weak] = {"label": "global_useful", "evidence": trigger}
+        global_candidate = _global_useful_candidate(weak, mean_delta_dba, mean_delta_ce, thresholds, ci_frame)
+        if global_candidate["passes"]:
+            diagnosis[weak] = {"label": "globally_useful", "evidence": {**trigger, **global_candidate}}
+            continue
+        if global_candidate["blocked_by_ci"]:
+            diagnosis[weak] = {"label": "not_significant", "evidence": {**trigger, **global_candidate}}
             continue
         if rescue_rate >= float(thresholds.get("teacher_rescue_rate", 0.10)):
             diagnosis[weak] = {
@@ -544,7 +549,7 @@ def diagnose_modalities(
                 "evidence": trigger,
             }
             continue
-        bucket_trigger = _conditional_bucket_trigger(bucket_summary, weak, thresholds)
+        bucket_trigger = _conditional_bucket_trigger(bucket_summary, weak, thresholds, bootstrap_confidence=ci_frame)
         if bucket_trigger is not None:
             diagnosis[weak] = {
                 "label": "conditionally_useful",
@@ -789,10 +794,53 @@ def _bucket_highlights(bucket_frame: pd.DataFrame, thresholds: dict[str, Any]) -
     return [_json_ready(row) for row in valid.to_dict(orient="records")]
 
 
+def _global_useful_candidate(
+    weak: str,
+    mean_delta_dba: float,
+    mean_delta_ce: float,
+    thresholds: dict[str, Any],
+    bootstrap_confidence: pd.DataFrame,
+) -> dict[str, Any]:
+    candidates = [
+        ("delta_dba", mean_delta_dba, float(thresholds.get("global_delta_dba", 0.0))),
+        ("delta_ce", mean_delta_ce, float(thresholds.get("global_delta_ce", 0.0))),
+    ]
+    for metric, value, threshold in candidates:
+        if value < threshold or (threshold == 0.0 and value <= 0.0):
+            continue
+        ci = _bootstrap_ci_for(bootstrap_confidence, weak, metric, "overall")
+        if ci is None:
+            return {
+                "passes": True,
+                "blocked_by_ci": False,
+                "metric": metric,
+                "threshold": threshold,
+                "bootstrap_ci": None,
+            }
+        ci_lower = float(ci.get("ci_lower", 0.0) or 0.0)
+        evidence = {
+            "passes": ci_lower > 0.0,
+            "blocked_by_ci": ci_lower <= 0.0,
+            "metric": metric,
+            "threshold": threshold,
+            "bootstrap_ci": ci,
+        }
+        return evidence
+    return {
+        "passes": False,
+        "blocked_by_ci": False,
+        "metric": None,
+        "threshold": None,
+        "bootstrap_ci": None,
+    }
+
+
 def _conditional_bucket_trigger(
     bucket_frame: pd.DataFrame,
     weak: str,
     thresholds: dict[str, Any],
+    *,
+    bootstrap_confidence: pd.DataFrame | None = None,
 ) -> dict[str, Any] | None:
     if bucket_frame.empty:
         return None
@@ -806,11 +854,52 @@ def _conditional_bucket_trigger(
             (bucket_frame["delta_dba"] >= delta_dba_threshold)
             | (bucket_frame["mean_delta_ce"] >= delta_ce_threshold)
         )
-    ]
+    ].copy()
     if candidates.empty:
         return None
+    if bootstrap_confidence is not None and not bootstrap_confidence.empty:
+        keep_rows = []
+        ci_rows = []
+        for _, row in candidates.iterrows():
+            metric = "delta_dba" if float(row.get("delta_dba", 0.0) or 0.0) >= delta_dba_threshold else "delta_ce"
+            ci = _bootstrap_ci_for(bootstrap_confidence, weak, metric, str(row.get("horizon_name", "overall")))
+            if ci is not None and float(ci.get("ci_lower", 0.0) or 0.0) <= 0.0:
+                continue
+            keep_rows.append(row)
+            ci_rows.append(ci)
+        if not keep_rows:
+            return None
+        candidates = pd.DataFrame(keep_rows)
+        candidates["_bootstrap_ci"] = ci_rows
     row = candidates.sort_values(["delta_dba", "mean_delta_ce"], ascending=False).iloc[0].to_dict()
     return _json_ready(row)
+
+
+def _bootstrap_ci_for(
+    frame: pd.DataFrame,
+    weak: str,
+    metric: str,
+    horizon_name: str,
+) -> dict[str, Any] | None:
+    if frame.empty:
+        return None
+    required = {"weak_modality", "metric", "horizon_name", "ci_lower", "ci_upper", "mean_delta"}
+    if not required.issubset(frame.columns):
+        return None
+    rows = frame[
+        (frame["weak_modality"].astype(str) == str(weak))
+        & (frame["metric"].astype(str) == str(metric))
+        & (frame["horizon_name"].astype(str) == str(horizon_name))
+    ]
+    if rows.empty and str(horizon_name) != "overall":
+        rows = frame[
+            (frame["weak_modality"].astype(str) == str(weak))
+            & (frame["metric"].astype(str) == str(metric))
+            & (frame["horizon_name"].astype(str) == "overall")
+        ]
+    if rows.empty:
+        return None
+    return _json_ready(rows.iloc[0].to_dict())
 
 
 def _json_ready(value: Any) -> Any:

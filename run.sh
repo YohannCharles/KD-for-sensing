@@ -31,7 +31,7 @@ SKIP_PREPROCESS=0
 CLEAN_DERIVED=0
 CLEAN_OUTPUTS=0
 
-read -r -a SCENES <<< "${SCENES:-32 9}"
+read -r -a SCENES <<< "${SCENES:-9}"
 read -r -a GPUS <<< "${GPUS:-0 1 2 3 4}"
 TRAIN_JOBS="${TRAIN_JOBS:-${#GPUS[@]}}"
 
@@ -385,8 +385,7 @@ group_7_teacher_registry() {
       --teacher-root "outputs/scene${scene}" \
       --output "outputs/scene${scene}/teacher_registry.json" \
       --scene "$scene" \
-      --prior-mode manual \
-      --manual-prior image=0.20,radar=0.20,gps=0.85,lidar=0.15,mmwave=0.90
+      --prior-mode metric
   done
 }
 
