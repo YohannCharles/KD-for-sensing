@@ -219,10 +219,10 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 
 ## 可选：只导出 manifest
 
-如果想先离线处理数据、不启动 Gradio，可以单独运行导出脚本：
+如果想先离线处理数据、不启动 Gradio，推荐使用安装后的包内 CLI：
 
 ```bash
-conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
+conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
   --scenes 9,32
@@ -233,11 +233,15 @@ conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
 默认诊断配置启用 image、radar、gps、lidar、mmWave 五个模态，并使用 `model.modalities` 标记数据模态集合；导出 manifest 不会加载 `fusion_teacher` 或 `fusion_student` 模型。
 
 旧入口 `scripts/visualize_modalities.py` 和 `kd-sensing-visualize-modalities` 现在也会导出 manifest，并提示改用 Gradio viewer，不再生成旧的静态 PNG 总览图作为主产物。
+如果 editable install 元数据尚未刷新，可使用等价 fallback：
+`conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
+`conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help` 和
+`conda run -n kd_mm_beam kd-sensing-visualize-modalities --help`。
 
 可选合并预测、质量分数和 gate 权重：
 
 ```bash
-conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
+conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
   --scenes 32 \

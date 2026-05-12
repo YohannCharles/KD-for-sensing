@@ -498,10 +498,19 @@ def build_phase_1_5_summary(
     thresholds = {**DEFAULT_THRESHOLDS, **(manifest.get("thresholds") or {})}
     baseline_decision = _baseline_decision(baseline_summary, thresholds, manifest)
     bootstrap_decision = _bootstrap_decision(bootstrap_ci, thresholds)
+    checkpoint_status = (
+        "complete"
+        if not checkpoint_frame.empty and (checkpoint_frame["status"] == "complete").all()
+        else "pending"
+    )
     final_status = "pending"
     label = "pending"
     recommendation = "等待 dedicated fixed-subset baseline 和 checkpoint matrix 补齐后再给最终路线结论。"
-    if baseline_decision["status"] == "complete" and bootstrap_decision["status"] == "complete":
+    if (
+        bootstrap_decision["status"] == "complete"
+        and checkpoint_status == "complete"
+        and baseline_decision["status"] == "complete"
+    ):
         final_status = "complete"
         if not baseline_decision["has_stable_gain"] and not bootstrap_decision["has_significant_global_gain"]:
             label = "low_weak_utility"
@@ -530,7 +539,7 @@ def build_phase_1_5_summary(
             "key_ci": _key_ci_records(bootstrap_ci),
         },
         "checkpoint_matrix": {
-            "status": "complete" if not checkpoint_frame.empty and (checkpoint_frame["status"] == "complete").all() else "pending",
+            "status": checkpoint_status,
             "num_roles": int(len(checkpoint_frame)),
             "complete_roles": int((checkpoint_frame.get("status") == "complete").sum()) if not checkpoint_frame.empty else 0,
             "weak_utility_consistency": consistency,

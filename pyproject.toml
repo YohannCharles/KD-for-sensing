@@ -38,7 +38,7 @@ kd-sensing-train = "kd_sensing.cli.train:main"
 kd-sensing-evaluate = "kd_sensing.cli.evaluate:main"
 kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
 kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"
-kd-sensing-export-viewer-manifest = "kd_sensing.cli.visualize_modalities:main"
+kd-sensing-export-viewer-manifest = "kd_sensing.cli.export_viewer_manifest:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

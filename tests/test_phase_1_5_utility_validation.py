@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -90,6 +91,7 @@ def test_phase_1_5_runner_writes_manifest_outputs_and_pending_status(tmp_path: P
         "baseline_matrix": {
             "seeds": [0, 1, 2],
             "primary_baseline": "strong_only",
+            "run_name_template": f"pytest_{tmp_path.name}_{{slug}}_seed{{seed}}",
             "subsets": {
                 "strong_only": {
                     "slug": "gps_mmwave",
@@ -138,13 +140,58 @@ def test_ci_aware_diagnosis_rejects_tiny_positive_gain():
 
 
 def test_complete_summary_marks_low_weak_utility_when_no_evidence():
-    baseline = pd.DataFrame(
-        [
-            {"subset": "strong_only", "status": "complete", "dba_avg_mean": 0.90, "complete_seeds": 3, "num_seeds": 3},
-            {"subset": "strong_plus_image", "status": "complete", "dba_avg_mean": 0.9002, "complete_seeds": 3, "num_seeds": 3},
-        ]
+    summary = build_phase_1_5_summary(
+        manifest={"baseline_matrix": {"primary_baseline": "strong_only"}, "thresholds": {"global_delta_dba": 0.001}},
+        bootstrap_ci=_bootstrap_ci_without_gain(),
+        checkpoint_frame=_checkpoint_frame("complete"),
+        baseline_frame=pd.DataFrame(),
+        baseline_summary=_baseline_summary("complete"),
+        bucket_summary=pd.DataFrame(),
+        teacher_summary={},
+        outputs={},
     )
-    ci = pd.DataFrame(
+
+    assert summary["decision"]["status"] == "complete"
+    assert summary["decision"]["label"] == "low_weak_utility"
+    assert summary["decision"]["evidence_level"] == "final"
+    assert summary["baseline_matrix"]["primary_baseline"] == "strong_only"
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_status", "baseline_status"),
+    [
+        ("missing", "complete"),
+        ("pending", "complete"),
+        ("complete", "pending"),
+    ],
+)
+def test_phase_1_5_summary_keeps_final_decision_pending_when_matrices_are_incomplete(
+    checkpoint_status: str,
+    baseline_status: str,
+):
+    summary = build_phase_1_5_summary(
+        manifest={"baseline_matrix": {"primary_baseline": "strong_only"}, "thresholds": {"global_delta_dba": 0.001}},
+        bootstrap_ci=_bootstrap_ci_without_gain(),
+        checkpoint_frame=_checkpoint_frame(checkpoint_status),
+        baseline_frame=pd.DataFrame(),
+        baseline_summary=_baseline_summary(baseline_status),
+        bucket_summary=pd.DataFrame(),
+        teacher_summary={},
+        outputs={},
+    )
+
+    assert summary["decision"]["status"] == "pending"
+    assert summary["decision"]["label"] == "pending"
+    assert summary["decision"]["evidence_level"] == "exploratory"
+    assert summary["bootstrap"]["status"] == "complete"
+    assert summary["baseline_matrix"]["status"] == baseline_status
+    expected_checkpoint_status = "complete" if checkpoint_status == "complete" else "pending"
+    assert summary["checkpoint_matrix"]["status"] == expected_checkpoint_status
+    assert summary["baseline_matrix"]["primary_baseline"] == "strong_only"
+
+
+def _bootstrap_ci_without_gain() -> pd.DataFrame:
+    return pd.DataFrame(
         [
             {
                 "comparison": "strong_plus_image_vs_strong_only",
@@ -160,20 +207,32 @@ def test_complete_summary_marks_low_weak_utility_when_no_evidence():
         ]
     )
 
-    summary = build_phase_1_5_summary(
-        manifest={"baseline_matrix": {"primary_baseline": "strong_only"}, "thresholds": {"global_delta_dba": 0.001}},
-        bootstrap_ci=ci,
-        checkpoint_frame=pd.DataFrame(),
-        baseline_frame=pd.DataFrame(),
-        baseline_summary=baseline,
-        bucket_summary=pd.DataFrame(),
-        teacher_summary={},
-        outputs={},
+
+def _baseline_summary(status: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"subset": "strong_only", "status": status, "dba_avg_mean": 0.90, "complete_seeds": 3, "num_seeds": 3},
+            {
+                "subset": "strong_plus_image",
+                "status": status,
+                "dba_avg_mean": 0.9002,
+                "complete_seeds": 3 if status == "complete" else 2,
+                "num_seeds": 3,
+            },
+        ]
     )
 
-    assert summary["decision"]["status"] == "complete"
-    assert summary["decision"]["label"] == "low_weak_utility"
-    assert summary["baseline_matrix"]["primary_baseline"] == "strong_only"
+
+def _checkpoint_frame(status: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "role": "best_top1",
+                "status": status,
+                "diagnosis_labels": "image:not_significant",
+            }
+        ]
+    )
 
 
 def _prediction(

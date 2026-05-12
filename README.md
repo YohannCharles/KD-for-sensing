@@ -57,9 +57,13 @@ src/kd_sensing/
 
 大型数据和预训练权重继续保留在原有位置：
 
-- `dataset/`
-- `All_models/`
-- `outputs/`、`logs/`、cache 目录和 checkpoint 是本地运行产物，通常不应进入源码变更。
+- `dataset/` 是本地 DeepSense6G 数据输入，默认由 `.gitignore` 排除。
+- `All_models/` 中已跟踪的 `*.pth` 是内置复现权重，保留用于上游 image-only 与 image+radar
+  兼容配置的 teacher/student/KD 基线加载；对应参数文件为同目录下的 `params_Image*.txt` 和
+  `params_Both*.txt`。这些随仓库保留的权重大小约 398 KB 到 12 MB，默认通过
+  `paths.weights_dir: All_models` 和 `distillation.teacher_model_name` 解析。
+- 新训练、评估或诊断生成的 checkpoint、cache、`outputs/`、`logs/` 和 TensorBoard 产物是本地运行产物，
+  已由 `.gitignore` 中的目录或 `*.pth` / `*.pt` / `*.ckpt` 规则覆盖，不应进入源码变更。
 
 配置文件中的相对路径会从项目根目录解析，因此可以在子目录中启动命令。
 
@@ -67,6 +71,24 @@ src/kd_sensing/
 `kd_sensing.registries` 是轻量导入边界；查看配置或 registry 对象不会导入默认 dataset、model、
 diagnostics 或训练模块。需要构建内置组件时，engine 会显式调用
 `kd_sensing.registries.import_default_components()` 完成注册。
+
+## 快速健康检查
+
+在完整回归前，可先运行以下分层检查快速暴露项目结构问题。所有命令都使用 `kd_mm_beam` 环境：
+
+```bash
+conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
+conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
+conda run -n kd_mm_beam pytest tests/test_phase_1_5_utility_validation.py -q
+conda run -n kd_mm_beam pytest tests/test_complementarity_analysis.py tests/test_gradio_complementarity_explorer.py -q
+```
+
+最终验收仍以全量回归为准：
+
+```bash
+conda run -n kd_mm_beam pytest -q
+```
 
 ## DeepSense6G 场景
 
@@ -585,10 +607,10 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --check-only
 ```
 
-如果只想离线处理并导出 manifest，不启动 Gradio，也可以单独运行导出脚本：
+如果只想离线处理并导出 manifest，不启动 Gradio，推荐使用安装后的包内 CLI：
 
 ```bash
-conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
+conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
   --scenes 9,32
@@ -597,7 +619,7 @@ conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
 有预测、质量分数或 gate 权重文件时，也在离线导出阶段合并：
 
 ```bash
-conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
+conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
   --cache-dir outputs/diagnostics/gradio_viewer_cache \
   --scenes 32 \
@@ -605,6 +627,11 @@ conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py \
   --quality outputs/eval/quality.json \
   --gate outputs/eval/gate.json
 ```
+
+如果 editable install 元数据尚未刷新，可以使用等价 fallback：
+`conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
+`conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help` 和
+`conda run -n kd_mm_beam kd-sensing-visualize-modalities --help`。
 
 旧入口 `scripts/visualize_modalities.py` 和 `kd-sensing-visualize-modalities` 现在只作为兼容入口导出
 Gradio viewer manifest，不再生成旧的静态 PNG 总览图、`summary.json` 报告作为主可视化方案。

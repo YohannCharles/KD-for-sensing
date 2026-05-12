@@ -197,6 +197,8 @@ Unknown names, duplicate names, and missing constructor parameters raise `Regist
 
 ## Local Artifacts
 
-`dataset/` and `All_models/` are local inputs. `outputs/`, `logs/`, cache folders, checkpoint files,
-TensorBoard logs, and Python bytecode are generated artifacts covered by ignore rules and should not be
-included in source changes unless a task explicitly asks for fixture data or documentation updates.
+`dataset/` is a local data input. Tracked `All_models/*.pth` files are built-in reproduction weights for
+the upstream image-only and image+radar compatibility configs; new checkpoints from training, evaluation,
+diagnostics, or cache generation should stay under ignored paths such as `outputs/`, `logs/`, cache folders,
+or files matched by `*.pth` / `*.pt` / `*.ckpt`. Do not include generated artifacts in source changes unless
+a task explicitly asks for fixture data or documentation updates.
