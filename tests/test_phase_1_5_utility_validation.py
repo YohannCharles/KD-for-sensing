@@ -81,7 +81,7 @@ def test_phase_1_5_runner_writes_manifest_outputs_and_pending_status(tmp_path: P
         "bootstrap": {"num_bootstrap": 10, "random_seed": 1},
         "thresholds": {"global_delta_dba": 0.001, "min_bucket_samples": 1},
         "checkpoint_matrix": {
-            "config": "configs/analysis/scene32_marf_conditional_utility_audit.yaml",
+            "config": "configs/analysis/marf_conditional_utility_audit.yaml",
             "checkpoints_dir": str(ckpt_dir),
             "roles": {
                 "best_top1": {"checkpoint": "best_top1.pth", "audit_dir": str(audit_dir)},

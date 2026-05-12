@@ -21,7 +21,7 @@ TBD - created by archiving change add-conditional-utility-audit. Update Purpose 
 系统 MUST 提供独立命令入口，使用一个已训练 MARF checkpoint 和测试集 dataloader 运行 Conditional Utility Audit。该入口 MUST 复用现有配置加载、checkpoint 加载、normalization artifact 加载、模型构建和 batch preparation 语义。
 
 #### Scenario: 运行 Scene32 MARF audit
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python tools/analysis/run_conditional_utility_audit.py --config configs/analysis/scene32_marf_conditional_utility_audit.yaml`
+- **WHEN** 用户运行 `conda run -n kd_mm_beam python tools/analysis/run_conditional_utility_audit.py --config configs/analysis/marf_conditional_utility_audit.yaml`
 - **THEN** 系统 MUST 加载配置指定的 MARF checkpoint
 - **AND** 系统 MUST 在测试集上评估 configured subsets
 - **AND** 系统 MUST 将产物写入 `outputs/scene32/<run_name>/conditional_utility/`

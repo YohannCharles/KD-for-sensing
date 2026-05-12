@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_marf_no_residual_ablation
+  name: marf_subset_training
   task: fusion
   seed: 0
   device: auto
@@ -68,7 +68,7 @@ model:
       use_confidence_features: true
       zero_init: true
     residual_adapter:
-      enabled: false
+      enabled: true
       residual_scale: 0.2
 teacher:
   registry_path: outputs/scene32/teacher_registry.json
@@ -141,7 +141,7 @@ evaluation:
     top_prior_k: 2
 output:
   dir: outputs
-  run_name: scene32_marf_no_residual_ablation
+  run_name: marf_subset_training
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

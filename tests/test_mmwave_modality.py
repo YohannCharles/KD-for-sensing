@@ -25,7 +25,7 @@ from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepar
 from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.mmwave import (  # noqa: E402
     MmWaveFeatureExtractor,
     MmWaveModalityNet,
@@ -181,8 +181,8 @@ def test_mmwave_models_batch_and_fusion_forward_contracts():
     mmwave_input = prepare_mmwave_inputs(batch, seq_length=8, num_pred=3, device=torch.device("cpu"))
     fusion_inputs = prepare_fusion_inputs(batch, seq_length=8, num_pred=3, device=torch.device("cpu"), modalities=["mmwave"])
     student = MmWaveStudentModalityNet(mmwave_input_size=64, feature_size=64, num_classes=64, gru_params=[64, 64, 1])
-    fusion_student = StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
-    fusion_teacher = FusionModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
+    fusion_student = FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
+    fusion_teacher = FusionTeacherModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
     with torch.no_grad():
         pred, _, _ = forward_model(student, "mmwave", mmwave_batch=mmwave_input)
         fusion_pred, _, _ = fusion_student(**fusion_inputs)
@@ -307,8 +307,8 @@ def test_mmwave_fusion_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["mmwave_normalize"] is True
     assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
     assert cfg["model"]["student"]["mmwave_input_size"] == 64
-    assert isinstance(teacher, FusionModalityNet)
-    assert isinstance(student, (FusionModalityNet, StudentModalityNet))
+    assert isinstance(teacher, FusionTeacherModalityNet)
+    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_mmwave_sequence_fixture(root: Path, csv_path: Path, *, prefix: str, seq_index: int) -> None:

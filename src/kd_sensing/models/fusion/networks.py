@@ -40,7 +40,7 @@ def _require_tensor(tensor: torch.Tensor | None, modality: str) -> torch.Tensor:
 
 
 @MODELS.register("fusion_teacher")
-class FusionModalityNet(nn.Module):
+class FusionTeacherModalityNet(nn.Module):
     def __init__(
         self,
         feature_size: int,
@@ -55,7 +55,7 @@ class FusionModalityNet(nn.Module):
         modalities: list[str] | tuple[str, ...] | None = None,
     ):
         super().__init__()
-        self.name = "FusionModalityNet"
+        self.name = "FusionTeacherModalityNet"
         self.modalities = _normalize_modalities(modalities)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
@@ -171,7 +171,7 @@ class FusionModalityNet(nn.Module):
 
 
 @MODELS.register("fusion_student")
-class StudentModalityNet(nn.Module):
+class FusionStudentModalityNet(nn.Module):
     def __init__(
         self,
         feature_size: int,
@@ -185,7 +185,7 @@ class StudentModalityNet(nn.Module):
         modalities: list[str] | tuple[str, ...] | None = None,
     ):
         super().__init__()
-        self.name = "StudentModalityNet"
+        self.name = "FusionStudentModalityNet"
         self.modalities = _normalize_modalities(modalities)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
@@ -444,3 +444,7 @@ def _check_sequence_tensor(
     if batch_size is not None and (current_batch != batch_size or current_seq != seq_len):
         raise ValueError("Enabled fusion modalities must share batch and sequence dimensions.")
     return tuple(int(dim) for dim in tensor.shape)
+
+
+FusionModalityNet = FusionTeacherModalityNet
+StudentModalityNet = FusionStudentModalityNet

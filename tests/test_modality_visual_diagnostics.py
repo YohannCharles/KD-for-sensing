@@ -412,15 +412,15 @@ def test_scene_cli_argument_maps_to_single_or_compare_scene_overrides():
 
 def test_compare_scene_manifest_retargets_default_scene_roots(monkeypatch, tmp_path: Path):
     scene9_root = tmp_path / "dataset" / "scenario9"
-    scene32_root = tmp_path / "dataset" / "scenario32"
+    scene_32_root = tmp_path / "dataset" / "scenario32"
     scene9_root.mkdir(parents=True)
-    scene32_root.mkdir(parents=True)
+    scene_32_root.mkdir(parents=True)
     _write_multimodal_csv(scene9_root, scene9_root / "train_seqs_RA_GPS_LIDAR.csv", rows=1, seq_len=2)
-    _write_multimodal_csv(scene32_root, scene32_root / "train_seqs_RA_GPS_LIDAR.csv", rows=1, seq_len=2)
+    _write_multimodal_csv(scene_32_root, scene_32_root / "train_seqs_RA_GPS_LIDAR.csv", rows=1, seq_len=2)
     monkeypatch.setenv("KD_SENSING_ROOT", str(tmp_path))
 
     cfg = _diagnostic_cfg(
-        scene32_root,
+        scene_32_root,
         train_csv_name="train_seqs_RA_GPS_LIDAR.csv",
         modalities=["gps"],
         extra_dataset={

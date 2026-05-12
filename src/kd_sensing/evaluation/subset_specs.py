@@ -33,7 +33,7 @@ class ModalitySubsetSpec:
         return metadata
 
 
-SCENE32_CONDITIONAL_UTILITY_SUBSETS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
+CONDITIONAL_UTILITY_SUBSETS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
     (
         ("all", normalize_modalities(MODALITY_ORDER, context="conditional audit subset all")),
         ("strong_only", normalize_modalities(("gps", "mmwave"), context="conditional audit subset strong_only")),
@@ -57,13 +57,13 @@ SCENE32_CONDITIONAL_UTILITY_SUBSETS: "OrderedDict[str, tuple[str, ...]]" = Order
     )
 )
 
-CONDITIONAL_UTILITY_SUBSET_NAMES = tuple(SCENE32_CONDITIONAL_UTILITY_SUBSETS.keys())
+CONDITIONAL_UTILITY_SUBSET_NAMES = tuple(CONDITIONAL_UTILITY_SUBSETS.keys())
 
 
-def scene32_conditional_utility_subset_specs() -> "OrderedDict[str, ModalitySubsetSpec]":
+def conditional_utility_subset_specs() -> "OrderedDict[str, ModalitySubsetSpec]":
     return OrderedDict(
         (name, ModalitySubsetSpec(name=name, modalities=modalities))
-        for name, modalities in SCENE32_CONDITIONAL_UTILITY_SUBSETS.items()
+        for name, modalities in CONDITIONAL_UTILITY_SUBSETS.items()
     )
 
 
@@ -71,7 +71,7 @@ def resolve_conditional_utility_subset(
     name: str,
     model_modalities: Iterable[str],
 ) -> ModalitySubsetSpec | None:
-    raw = SCENE32_CONDITIONAL_UTILITY_SUBSETS.get(str(name))
+    raw = CONDITIONAL_UTILITY_SUBSETS.get(str(name))
     if raw is None:
         return None
     normalized_model_modalities = normalize_modalities(tuple(model_modalities), context="conditional audit model modalities")
@@ -90,7 +90,7 @@ def subset_mask(name: str, model_modalities: Iterable[str]) -> tuple[bool, ...]:
 
 
 def subset_metadata(model_modalities: Iterable[str]) -> list[dict]:
-    specs = scene32_conditional_utility_subset_specs()
+    specs = conditional_utility_subset_specs()
     metadata = []
     for name in specs:
         spec = resolve_conditional_utility_subset(name, model_modalities)
@@ -101,10 +101,10 @@ def subset_metadata(model_modalities: Iterable[str]) -> list[dict]:
 
 __all__ = [
     "CONDITIONAL_UTILITY_SUBSET_NAMES",
+    "CONDITIONAL_UTILITY_SUBSETS",
     "ModalitySubsetSpec",
-    "SCENE32_CONDITIONAL_UTILITY_SUBSETS",
+    "conditional_utility_subset_specs",
     "resolve_conditional_utility_subset",
-    "scene32_conditional_utility_subset_specs",
     "subset_mask",
     "subset_metadata",
 ]

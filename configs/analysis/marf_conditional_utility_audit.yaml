@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_marf_conditional_utility_audit
+  name: marf_conditional_utility_audit
   task: fusion
   seed: 0
   device: auto
@@ -106,15 +106,15 @@ evaluation:
       - weak_only
 output:
   dir: outputs
-  run_name: scene32_marf
+  run_name: marf
   group_by_scene: true
 checkpoint:
   strict_load: true
 conditional_utility:
-  checkpoint_path: outputs/scene32/scene32_marf/checkpoints/best_top1.pth
+  checkpoint_path: outputs/scene32/marf/checkpoints/best_top1.pth
   teacher_registry_path: outputs/scene32/teacher_registry.json
-  output_dir: outputs/scene32/scene32_marf/conditional_utility
-  run_name: scene32_marf
+  output_dir: outputs/scene32/marf/conditional_utility
+  run_name: marf
   dump_teacher_predictions: true
   strict_teacher_load: true
   require_teacher_checkpoints: true

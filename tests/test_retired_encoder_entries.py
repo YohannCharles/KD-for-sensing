@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
-from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -107,7 +107,7 @@ def test_retired_single_modality_registrations_are_unknown(suffix: str):
         MODELS.build({"type": f"{_retired_prefix()}_{suffix}"})
 
 
-@pytest.mark.parametrize("model_cls", [FusionModalityNet, StudentModalityNet])
+@pytest.mark.parametrize("model_cls", [FusionTeacherModalityNet, FusionStudentModalityNet])
 def test_retired_fusion_profile_is_not_accepted(model_cls: type):
     kwargs = {
         "feature_size": 64,

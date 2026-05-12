@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_marf_subset_training
+  name: stage3_selective_ft_gps_mmwave
   task: fusion
   seed: 0
   device: auto
@@ -27,7 +27,6 @@ data:
     num_workers: 4
     prefetch_factor: 1
 model:
-  modalities: [image, radar, gps, lidar, mmwave]
   feature_size: 64
   num_classes: 64
   seq_length_teacher: 8
@@ -46,7 +45,7 @@ model:
     num_classes: 64
     gru_params: [64, 64, 2]
   student:
-    type: marf_fusion
+    type: craf_fusion
     modalities: [image, radar, gps, lidar, mmwave]
     image_channels: 1
     radar_channels: 2
@@ -58,63 +57,65 @@ model:
     num_classes: 64
     num_pred: 3
     num_heads: 4
+    num_layers: 2
     dropout: 0.1
-    router:
-      hidden_size: 64
-      temperature: 1.0
-      use_prior_bias: true
-      prior_anchor_scale: 0.5
-      prior_residual_scale: 0.25
+    reliability:
+      gate_type: prior_residual_sigmoid
+      min_gate: 0.0
+      hidden_size: 32
       use_confidence_features: true
-      zero_init: true
-    residual_adapter:
-      enabled: true
-      residual_scale: 0.2
+      residual_zero_init: true
+      dataset_prior:
+        image: 0.20
+        radar: 0.20
+        gps: 0.85
+        lidar: 0.15
+        mmwave: 0.90
 teacher:
   registry_path: outputs/scene32/teacher_registry.json
-  load_encoders: true
-  freeze_encoders: true
+  load_encoders: false
+  freeze_encoders: false
   strict: true
+finetune:
+  enabled: true
+  checkpoint_path: outputs/scene32/stage2_teacher_init_prior_residual/checkpoints/best.pth
+  strict: true
+  unfreeze_modalities: [gps, mmwave]
+  freeze_modalities: [image, radar, lidar]
+  param_groups:
+    enabled: true
+    fusion_lr: 0.0005
+    head_lr: 0.0005
+    gate_lr: 0.0005
+    strong_encoder_lr: 0.0001
+    weak_encoder_lr: 0.000025
+    strong_modalities: [gps, mmwave]
 distillation:
   type: no_kd
   teacher_model_name: null
 loss:
-  type: cross_entropy
-  label_smoothing: 0.03
+  type: focal_loss
+  alpha: 1
+  gamma: 2
   beam_soft:
     enabled: true
-    weight: 0.01
+    weight: 0.03
     sigma: 2.0
     circular: true
   unimodal_aux:
     weight: 0.0
+  gate_weight: 0.0
   prior_regularization:
-    enabled: false
-    weight: 0.0
-  marf:
-    residual_norm:
-      enabled: true
-      weight: 0.01
-    prior_regularization:
-      enabled: true
-      weight: 0.01
-      loss_type: mse
-    anchor_entropy:
-      enabled: false
-      weight: 0.0
-      maximize: true
-    subset_ce:
-      weight: 0.3
-    subset_kd:
-      weight: 0.2
-      temperature: 3.0
+    enabled: true
+    weight: 0.01
+    loss_type: mse
 training:
-  epochs: 100
+  epochs: 60
   warmup_epochs: 0
-  lr: 0.00075
+  lr: 0.0005
   weight_decay: 0.0001
   grad_clip: 10.0
-  patience: 20
+  patience: 15
   use_early_stopping: true
   min_delta: 0.0001
   modality_dropout:
@@ -123,25 +124,19 @@ training:
     min_keep: 1
   counterfactual:
     enabled: false
+    mode: sample_one
+    start_epoch: 0
     weight: 0.0
-  subset_training:
-    enabled: true
-    modes: [top_prior, random_with_top_prior]
-    max_subsets_per_batch: 2
-    top_prior_k: 2
-    min_keep: 1
-    random_keep_prob: 0.5
-    ce_weight: 0.3
-    kd_weight: 0.2
-    temperature: 3.0
+  reliability_kd:
+    enabled: false
+    weight: 0.0
 evaluation:
   modality_subsets:
     enabled: true
-    subsets: [all, top_prior, single_best_prior, random_with_top_prior, strong_only, weak_only]
-    top_prior_k: 2
+    subsets: [gps, mmwave, gps_mmwave, strong_only, weak_only, all]
 output:
   dir: outputs
-  run_name: scene32_marf_subset_training
+  run_name: stage3_selective_ft_gps_mmwave
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

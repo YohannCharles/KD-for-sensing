@@ -401,7 +401,7 @@ def test_build_dataset_auto_policy_writes_image_cache_and_records_metadata(tmp_p
     assert metadata["image_motion_write_cache"] is True
 
 
-def test_build_dataset_deepsense_scene32_records_metadata(tmp_path: Path):
+def test_build_dataset_deepsense_scene_32_records_metadata(tmp_path: Path):
     csv_path = tmp_path / "seq.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
     cfg = {
@@ -658,7 +658,7 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         "distillation": {"type": "no_kd"},
         "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
     }
-    scene32_cfg = {
+    scene_32_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
         "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
@@ -666,8 +666,8 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         "distillation": {"type": "no_kd"},
         "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
     }
-    kd_scene32_cfg = {
-        **scene32_cfg,
+    kd_scene_32_cfg = {
+        **scene_32_cfg,
         "paths": {"weights_dir": str(tmp_path / "missing")},
         "experiment": {"name": "gps_logits_kd", "task": "gps"},
         "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
@@ -683,24 +683,24 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         epoch=1,
         run_dir=tmp_path / "scene9_run",
     )
-    missing_scene32 = resolve_teacher_checkpoint(kd_scene32_cfg, "best.pth")
-    scene32_archive = archive_best_checkpoint(
-        scene32_cfg,
+    missing_scene_32 = resolve_teacher_checkpoint(kd_scene_32_cfg, "best.pth")
+    scene_32_archive = archive_best_checkpoint(
+        scene_32_cfg,
         source_checkpoint=checkpoint,
         val_top1=0.80,
         epoch=1,
         run_dir=tmp_path / "scene32_run",
     )
-    resolved_scene32 = resolve_teacher_checkpoint(kd_scene32_cfg, "best.pth")
+    resolved_scene_32 = resolve_teacher_checkpoint(kd_scene_32_cfg, "best.pth")
 
     assert Path(scene9_archive["path"]).parent == tmp_path / "scene9" / "best_checkpoints"
     assert scene9_archive["scene_slug"] == "scene9"
-    assert missing_scene32.source == "missing"
-    assert missing_scene32.registry_dir == tmp_path / "scene32" / "best_checkpoints"
-    assert Path(scene32_archive["path"]).parent == tmp_path / "scene32" / "best_checkpoints"
-    assert scene32_archive["scene_slug"] == "scene32"
-    assert resolved_scene32.path == Path(scene32_archive["path"])
-    assert resolved_scene32.metadata["scene_slug"] == "scene32"
+    assert missing_scene_32.source == "missing"
+    assert missing_scene_32.registry_dir == tmp_path / "scene32" / "best_checkpoints"
+    assert Path(scene_32_archive["path"]).parent == tmp_path / "scene32" / "best_checkpoints"
+    assert scene_32_archive["scene_slug"] == "scene32"
+    assert resolved_scene_32.path == Path(scene_32_archive["path"])
+    assert resolved_scene_32.metadata["scene_slug"] == "scene32"
 
 
 def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):

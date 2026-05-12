@@ -16,7 +16,12 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.canonical import CANONICAL_FUSION_MODALITIES, build_virtual_fusion_config  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import (  # noqa: E402
+    FusionModalityNet,
+    FusionTeacherModalityNet,
+    FusionStudentModalityNet,
+    StudentModalityNet,
+)
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageModalityNet, ImageStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarModalityNet, LidarStudentModalityNet  # noqa: E402
@@ -74,6 +79,36 @@ FUSION_IMAGE_RADAR_EXPECTED_PARAMS = {
     "logits_kd": {"lr": 0.00095, "weight_decay": 0.0, "temperature": 2.0, "alpha": 0.4},
     "rkd": {"lr": 0.00095, "weight_decay": 0.0, "temperature": 2.0, "alpha": 0.3},
 }
+
+
+def test_fusion_registry_returns_new_public_class_names_and_legacy_aliases_remain_available():
+    from kd_sensing.models import FusionModalityNet as PackageFusionModalityNet
+    from kd_sensing.models import StudentModalityNet as PackageStudentModalityNet
+
+    teacher = MODELS.build(
+        {
+            "type": "fusion_teacher",
+            "feature_size": 64,
+            "num_classes": 64,
+            "gru_params": [64, 64, 2],
+        }
+    )
+    student = MODELS.build(
+        {
+            "type": "fusion_student",
+            "feature_size": 64,
+            "num_classes": 64,
+            "gru_params": [64, 64, 1],
+        }
+    )
+
+    assert type(teacher) is FusionTeacherModalityNet
+    assert type(student) is FusionStudentModalityNet
+    assert FusionModalityNet is FusionTeacherModalityNet
+    assert StudentModalityNet is FusionStudentModalityNet
+    assert PackageFusionModalityNet is FusionTeacherModalityNet
+    assert PackageStudentModalityNet is FusionStudentModalityNet
+
 
 MODALITY_SPECS = {
     "image": {
@@ -355,7 +390,7 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     assert cfg["model"]["student"]["gru_params"] == expected_student_gru
 
     expected_student_type = "fusion_teacher" if mode == "teacher_no_kd" else "fusion_student"
-    expected_student_cls = FusionModalityNet if mode == "teacher_no_kd" else StudentModalityNet
+    expected_student_cls = FusionTeacherModalityNet if mode == "teacher_no_kd" else FusionStudentModalityNet
     assert cfg["model"]["student"]["type"] == expected_student_type
     assert isinstance(student, expected_student_cls)
     assert student.modalities == tuple(modalities)
@@ -383,8 +418,8 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
         else:
             assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
             assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
-        assert isinstance(teacher, FusionModalityNet)
-        assert isinstance(kd_student, StudentModalityNet)
+        assert isinstance(teacher, FusionTeacherModalityNet)
+        assert isinstance(kd_student, FusionStudentModalityNet)
         assert teacher.modalities == kd_student.modalities == tuple(modalities)
         assert teacher.GRU.num_layers == 2
         assert kd_student.GRU.num_layers == expected_student_gru[-1]
@@ -438,7 +473,7 @@ def test_legacy_configs_keep_compatible_semantics(
     if modalities is not None:
         assert cfg["model"]["teacher"]["modalities"] == modalities
         assert cfg["model"]["student"]["modalities"] == modalities
-        assert isinstance(model, (FusionModalityNet, StudentModalityNet))
+        assert isinstance(model, (FusionTeacherModalityNet, FusionStudentModalityNet))
         assert model.modalities == tuple(modalities)
 
     _assert_modality_data_fields(cfg, modalities or [task])

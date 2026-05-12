@@ -23,7 +23,7 @@ from kd_sensing.data.transforms import (  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
 from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
-from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
@@ -214,10 +214,10 @@ def test_gps_model_rejects_invalid_params():
 
 
 def test_fusion_modalities_default_and_gps_forward():
-    default_model = StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
+    default_model = FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
     assert default_model.modalities == ("image", "radar")
 
-    gps_model = StudentModalityNet(
+    gps_model = FusionStudentModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -257,13 +257,13 @@ def test_gps_fusion_batch_path_does_not_require_disabled_modalities():
 
 def test_fusion_modalities_validate_invalid_and_missing_inputs():
     with pytest.raises(ValueError, match="at least one"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
+        FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
     with pytest.raises(ValueError, match="Unknown fusion modalities"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["thermal"])
+        FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["thermal"])
     with pytest.raises(ValueError, match="duplicates"):
-        StudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
+        FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
 
-    model = FusionModalityNet(
+    model = FusionTeacherModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -287,8 +287,8 @@ def test_gps_canonical_fusion_configs_build_and_use_relative_polar(config_path: 
     assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
     assert cfg["model"]["teacher"]["gps_input_size"] == 3
     assert cfg["model"]["student"]["gps_input_size"] == 3
-    assert isinstance(teacher, FusionModalityNet)
-    assert isinstance(student, (FusionModalityNet, StudentModalityNet))
+    assert isinstance(teacher, FusionTeacherModalityNet)
+    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_gps_files(root: Path, prefix: str, lat: float, lon: float) -> tuple[list[str], list[str]]:

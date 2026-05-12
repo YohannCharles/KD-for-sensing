@@ -48,7 +48,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 ```bash
 conda run -n kd_mm_beam python scripts/analysis/build_complementarity_cases.py \
   --scene scene32 \
-  --input-path outputs/scene32/scene32_marf/conditional_utility \
+  --input-path outputs/scene32/marf/conditional_utility \
   --output-dir outputs/scene32/complementarity_analysis
 ```
 
@@ -95,7 +95,7 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
 ```bash
 conda run -n kd_mm_beam python scripts/analysis/build_complementarity_cases.py \
   --scene scene32 \
-  --input-path outputs/scene32/scene32_marf/conditional_utility \
+  --input-path outputs/scene32/marf/conditional_utility \
   --output-dir outputs/scene32/complementarity_analysis_strong_pairs \
   --strong-modalities mmwave \
   --weak-modalities image,radar,lidar

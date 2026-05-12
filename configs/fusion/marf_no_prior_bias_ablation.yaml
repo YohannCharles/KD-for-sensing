@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_marf_no_subset_training_ablation
+  name: marf_no_prior_bias_ablation
   task: fusion
   seed: 0
   device: auto
@@ -62,7 +62,7 @@ model:
     router:
       hidden_size: 64
       temperature: 1.0
-      use_prior_bias: true
+      use_prior_bias: false
       prior_anchor_scale: 0.5
       prior_residual_scale: 0.25
       use_confidence_features: true
@@ -125,7 +125,7 @@ training:
     enabled: false
     weight: 0.0
   subset_training:
-    enabled: false
+    enabled: true
     modes: [top_prior, random_with_top_prior]
     max_subsets_per_batch: 2
     top_prior_k: 2
@@ -141,7 +141,7 @@ evaluation:
     top_prior_k: 2
 output:
   dir: outputs
-  run_name: scene32_marf_no_subset_training_ablation
+  run_name: marf_no_prior_bias_ablation
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

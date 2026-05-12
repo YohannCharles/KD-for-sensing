@@ -11,13 +11,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from kd_sensing.models.fusion import FusionModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionTeacherModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 
 def test_fusion_teacher_image_branch_uses_shared_image_feature_extractor():
-    model = FusionModalityNet(
+    model = FusionTeacherModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -30,7 +30,7 @@ def test_fusion_teacher_image_branch_uses_shared_image_feature_extractor():
 
 
 def test_fusion_teacher_with_image_forward_returns_expected_shapes():
-    model = FusionModalityNet(
+    model = FusionTeacherModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -48,7 +48,7 @@ def test_fusion_teacher_with_image_forward_returns_expected_shapes():
 
 
 def test_fusion_teacher_without_image_does_not_create_or_require_image_branch():
-    model = FusionModalityNet(
+    model = FusionTeacherModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -68,7 +68,7 @@ def test_fusion_teacher_without_image_does_not_create_or_require_image_branch():
 
 
 def test_strict_old_fusion_image_checkpoint_reports_missing_keys(tmp_path: Path):
-    model = FusionModalityNet(
+    model = FusionTeacherModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],

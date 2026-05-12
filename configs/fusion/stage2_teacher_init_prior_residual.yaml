@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_stage2_teacher_init_prior_residual
+  name: stage2_teacher_init_prior_residual
   task: fusion
   seed: 0
   device: auto
@@ -122,7 +122,7 @@ evaluation:
     subsets: [gps, mmwave, gps_mmwave, strong_only, weak_only, all]
 output:
   dir: outputs
-  run_name: scene32_stage2_teacher_init_prior_residual
+  run_name: stage2_teacher_init_prior_residual
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

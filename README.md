@@ -249,13 +249,13 @@ Stage 2 加载 registry 中的 teacher encoder，冻结 encoder，并训练 fusi
 `prior_residual_sigmoid` gate：
 
 ```bash
-python scripts/train.py --config configs/fusion/scene32_stage2_teacher_init_prior_residual.yaml
+python scripts/train.py --config configs/fusion/stage2_teacher_init_prior_residual.yaml
 ```
 
 Stage 3 从 Stage 2 best checkpoint 继续，只解冻 GPS/mmWave encoder，并使用独立参数组学习率：
 
 ```bash
-python scripts/train.py --config configs/fusion/scene32_stage3_selective_ft_gps_mmwave.yaml
+python scripts/train.py --config configs/fusion/stage3_selective_ft_gps_mmwave.yaml
 ```
 
 主实验默认关闭 counterfactual、unimodal auxiliary 和 KD 的有效权重，仅保留 task loss、

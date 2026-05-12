@@ -233,12 +233,12 @@ def test_teacher_loader_strict_shape_mismatch_and_selective_finetune(tmp_path: P
 
 
 def test_teacher_prior_configs_load_and_legacy_configs_remain_stable():
-    stage2 = load_config(ROOT / "configs/fusion/scene32_stage2_teacher_init_prior_residual.yaml")
-    stage3 = load_config(ROOT / "configs/fusion/scene32_stage3_selective_ft_gps_mmwave.yaml")
-    no_prior = load_config(ROOT / "configs/fusion/scene32_teacher_init_no_prior_ablation.yaml")
-    random_encoder = load_config(ROOT / "configs/fusion/scene32_prior_gate_random_encoder_ablation.yaml")
-    fixed_prior = load_config(ROOT / "configs/fusion/scene32_teacher_init_fixed_prior_ablation.yaml")
-    prior_residual = load_config(ROOT / "configs/fusion/scene32_teacher_init_prior_residual_ablation.yaml")
+    stage2 = load_config(ROOT / "configs/fusion/stage2_teacher_init_prior_residual.yaml")
+    stage3 = load_config(ROOT / "configs/fusion/stage3_selective_ft_gps_mmwave.yaml")
+    no_prior = load_config(ROOT / "configs/fusion/teacher_init_no_prior_ablation.yaml")
+    random_encoder = load_config(ROOT / "configs/fusion/prior_gate_random_encoder_ablation.yaml")
+    fixed_prior = load_config(ROOT / "configs/fusion/teacher_init_fixed_prior_ablation.yaml")
+    prior_residual = load_config(ROOT / "configs/fusion/teacher_init_prior_residual_ablation.yaml")
     legacy = load_config(ROOT / "configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml")
 
     assert stage2["experiment"]["task"] == "fusion"

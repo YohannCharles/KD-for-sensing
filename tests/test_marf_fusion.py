@@ -118,11 +118,11 @@ def test_marf_no_residual_ablation_keeps_anchor_path():
 
 
 def test_marf_configs_load_and_change_only_target_ablation_fields():
-    main = load_config(ROOT / "configs/fusion/scene32_marf.yaml")
-    subset = load_config(ROOT / "configs/fusion/scene32_marf_subset_training.yaml")
-    no_residual = load_config(ROOT / "configs/fusion/scene32_marf_no_residual_ablation.yaml")
-    no_prior = load_config(ROOT / "configs/fusion/scene32_marf_no_prior_bias_ablation.yaml")
-    no_subset = load_config(ROOT / "configs/fusion/scene32_marf_no_subset_training_ablation.yaml")
+    main = load_config(ROOT / "configs/fusion/marf.yaml")
+    subset = load_config(ROOT / "configs/fusion/marf_subset_training.yaml")
+    no_residual = load_config(ROOT / "configs/fusion/marf_no_residual_ablation.yaml")
+    no_prior = load_config(ROOT / "configs/fusion/marf_no_prior_bias_ablation.yaml")
+    no_subset = load_config(ROOT / "configs/fusion/marf_no_subset_training_ablation.yaml")
 
     assert main["experiment"]["task"] == "fusion"
     assert main["model"]["student"]["type"] == "marf_fusion"
@@ -143,7 +143,7 @@ def test_marf_configs_load_and_change_only_target_ablation_fields():
 
 def test_marf_top_level_modalities_override_syncs_roles_and_dataset_flags():
     cfg = load_config(
-        ROOT / "configs/fusion/scene32_marf_subset_training.yaml",
+        ROOT / "configs/fusion/marf_subset_training.yaml",
         ["model.modalities=[\"image\",\"radar\",\"gps\",\"lidar\"]"],
     )
 

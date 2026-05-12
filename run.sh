@@ -427,16 +427,16 @@ group_8_kd() {
 
 group_9_registry_fusion() {
   local registry_fusion=(
-    configs/fusion/scene32_stage2_teacher_init_prior_residual.yaml
-    configs/fusion/scene32_teacher_init_no_prior_ablation.yaml
-    configs/fusion/scene32_teacher_init_prior_residual_ablation.yaml
-    configs/fusion/scene32_teacher_init_fixed_prior_ablation.yaml
-    configs/fusion/scene32_prior_gate_random_encoder_ablation.yaml
-    configs/fusion/scene32_marf.yaml
-    configs/fusion/scene32_marf_subset_training.yaml
-    configs/fusion/scene32_marf_no_subset_training_ablation.yaml
-    configs/fusion/scene32_marf_no_prior_bias_ablation.yaml
-    configs/fusion/scene32_marf_no_residual_ablation.yaml
+    configs/fusion/stage2_teacher_init_prior_residual.yaml
+    configs/fusion/teacher_init_no_prior_ablation.yaml
+    configs/fusion/teacher_init_prior_residual_ablation.yaml
+    configs/fusion/teacher_init_fixed_prior_ablation.yaml
+    configs/fusion/prior_gate_random_encoder_ablation.yaml
+    configs/fusion/marf.yaml
+    configs/fusion/marf_subset_training.yaml
+    configs/fusion/marf_no_subset_training_ablation.yaml
+    configs/fusion/marf_no_prior_bias_ablation.yaml
+    configs/fusion/marf_no_residual_ablation.yaml
   )
 
   local scene cfg i pids
@@ -457,9 +457,9 @@ group_9_registry_fusion() {
 group_10_stage3() {
   local scene
   for scene in "${SCENES[@]}"; do
-    train_scene "$(gpu 0)" "$scene" configs/fusion/scene32_stage3_selective_ft_gps_mmwave.yaml \
+    train_scene "$(gpu 0)" "$scene" configs/fusion/stage3_selective_ft_gps_mmwave.yaml \
       -o teacher.registry_path="outputs/scene${scene}/teacher_registry.json" \
-      -o finetune.checkpoint_path="outputs/scene${scene}/scene32_stage2_teacher_init_prior_residual/checkpoints/best.pth"
+      -o finetune.checkpoint_path="outputs/scene${scene}/stage2_teacher_init_prior_residual/checkpoints/best.pth"
   done
 }
 
@@ -467,9 +467,9 @@ group_11_eval_and_viewer() {
   local scene
   if [[ "$RUN_EVAL" == "1" ]]; then
     for scene in "${SCENES[@]}"; do
-      eval_scene "$scene" configs/fusion/scene32_stage2_teacher_init_prior_residual.yaml
-      eval_scene "$scene" configs/fusion/scene32_stage3_selective_ft_gps_mmwave.yaml
-      eval_scene "$scene" configs/fusion/scene32_marf.yaml
+      eval_scene "$scene" configs/fusion/stage2_teacher_init_prior_residual.yaml
+      eval_scene "$scene" configs/fusion/stage3_selective_ft_gps_mmwave.yaml
+      eval_scene "$scene" configs/fusion/marf.yaml
     done
   else
     log "Skip eval in group 11"

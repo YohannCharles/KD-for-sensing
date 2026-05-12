@@ -194,3 +194,27 @@ def test_transform_ops_legacy_facade_remains_available():
     assert _legacy.GPSStandardScaler is DirectGPSStandardScaler
     assert _legacy.build_image_transform is direct_build_image_transform
     assert _legacy.read_lidar_point_cloud is direct_read_lidar_point_cloud
+
+
+def test_internal_python_code_avoids_secondary_compatibility_layers():
+    roots = [ROOT / "src" / "kd_sensing", ROOT / "scripts", ROOT / "tools"]
+    forbidden_snippets = (
+        "from kd_sensing.engine.builders import",
+        "import kd_sensing.engine.builders",
+        "from kd_sensing.engine import builders",
+        "kd_sensing.engine._builders_impl",
+        "from kd_sensing.engine import _builders_impl",
+        "kd_sensing.data.transform_ops._legacy",
+        "from kd_sensing.data.transform_ops import _legacy",
+    )
+    violations = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for snippet in forbidden_snippets:
+                if snippet in text:
+                    violations.append(f"{path.relative_to(ROOT)} contains {snippet}")
+
+    assert violations == []

@@ -47,7 +47,7 @@ TBD - created by archiving change phase-1-5-utility-validation. Update Purpose a
 系统 MUST 支持对同一 MARF run 的多个 checkpoint role 运行或汇总 Conditional Utility Audit。默认 checkpoint role MUST 至少包含 `best_top1`、`best` 和 `last`；如果存在显式 `best_dba` checkpoint，系统 MUST 能记录并纳入比较。
 
 #### Scenario: 生成 checkpoint audit 矩阵
-- **WHEN** 运行清单指定 `scene32_marf` 的 checkpoint roles
+- **WHEN** 运行清单指定 `marf` 的 checkpoint roles
 - **THEN** 系统 MUST 为每个 role 解析 checkpoint 路径和输出 audit 目录
 - **AND** 系统 MUST 复用现有 audit runner 生成缺失的单 checkpoint audit 产物
 

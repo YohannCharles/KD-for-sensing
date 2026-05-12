@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_teacher_init_fixed_prior_ablation
+  name: teacher_init_prior_residual_ablation
   task: fusion
   seed: 0
 data:
@@ -31,8 +31,7 @@ model:
     num_heads: 4
     num_layers: 2
     reliability:
-      gate_type: fixed_prior
-      use_dataset_prior: true
+      gate_type: prior_residual_sigmoid
       dataset_prior:
         image: 0.20
         radar: 0.20
@@ -53,8 +52,8 @@ loss:
   unimodal_aux:
     weight: 0.0
   prior_regularization:
-    enabled: false
-    weight: 0.0
+    enabled: true
+    weight: 0.05
 training:
   lr: 0.00075
   weight_decay: 0.0001
@@ -62,4 +61,4 @@ training:
     enabled: false
     weight: 0.0
 output:
-  run_name: scene32_teacher_init_fixed_prior_ablation
+  run_name: teacher_init_prior_residual_ablation

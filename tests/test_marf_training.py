@@ -125,7 +125,7 @@ def test_validation_subset_all_matches_official_path_and_records_modalities():
 
 def test_marf_synthetic_subset_training_logs_losses(tmp_path: Path):
     cfg = load_config(
-        ROOT / "configs/fusion/scene32_marf_subset_training.yaml",
+        ROOT / "configs/fusion/marf_subset_training.yaml",
         [
             "experiment.device=cpu",
             "data.dataset.type=synthetic",

@@ -7,7 +7,7 @@
 系统 MUST 提供独立命令入口，用于从已有 Conditional Utility Audit 产物生成弱模态互补样本分析结果。该入口 MUST 不加载训练 checkpoint、不构建训练器、不执行模型 forward。
 
 #### Scenario: 运行 Scene32 互补分析
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/analysis/build_complementarity_cases.py --scene scene32 --input-path outputs/scene32/scene32_marf/conditional_utility --output-dir outputs/scene32/complementarity_analysis`
+- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/analysis/build_complementarity_cases.py --scene scene32 --input-path outputs/scene32/marf/conditional_utility --output-dir outputs/scene32/complementarity_analysis`
 - **THEN** 系统 MUST 读取 `subset_predictions` 产物
 - **AND** 系统 MUST 在输出目录生成 `complementarity_cases.csv.gz`、`complementarity_summary.json` 和 `complementarity_report.md`
 - **AND** 系统 MUST 在可获得 bucket 信息时生成 `complementarity_by_bucket.csv`

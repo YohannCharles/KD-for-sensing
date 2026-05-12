@@ -1,5 +1,5 @@
 experiment:
-  name: scene32_marf
+  name: marf_no_subset_training_ablation
   task: fusion
   seed: 0
   device: auto
@@ -126,20 +126,22 @@ training:
     weight: 0.0
   subset_training:
     enabled: false
-    modes: []
+    modes: [top_prior, random_with_top_prior]
+    max_subsets_per_batch: 2
     top_prior_k: 2
     min_keep: 1
+    random_keep_prob: 0.5
     ce_weight: 0.3
     kd_weight: 0.2
     temperature: 3.0
 evaluation:
   modality_subsets:
     enabled: true
-    subsets: [all, top_prior, single_best_prior, strong_only, weak_only]
+    subsets: [all, top_prior, single_best_prior, random_with_top_prior, strong_only, weak_only]
     top_prior_k: 2
 output:
   dir: outputs
-  run_name: scene32_marf
+  run_name: marf_no_subset_training_ablation
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

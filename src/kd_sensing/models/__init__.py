@@ -1,8 +1,10 @@
 from .fusion import (
     CRAFFusionNet,
     FusionModalityNet,
+    FusionTeacherModalityNet,
     MARFFusionNet,
     RadarFeatureExtractor,
+    FusionStudentModalityNet,
     StudentModalityNet,
     TokenTransformerFusionNet,
 )
@@ -30,7 +32,9 @@ __all__ = [
     "RadarStudentModalityNet",
     "CRAFFusionNet",
     "FusionModalityNet",
+    "FusionTeacherModalityNet",
     "MARFFusionNet",
+    "FusionStudentModalityNet",
     "StudentModalityNet",
     "TokenTransformerFusionNet",
 ]

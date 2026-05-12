@@ -66,25 +66,25 @@ DEFAULT_BASELINE_SUBSETS = {
 
 DEFAULT_MANIFEST = {
     "output_dir": "outputs/scene32/phase_1_5_utility_validation",
-    "conditional_utility_input": "outputs/scene32/scene32_marf/conditional_utility",
+    "conditional_utility_input": "outputs/scene32/marf/conditional_utility",
     "bootstrap": DEFAULT_BOOTSTRAP,
     "thresholds": DEFAULT_THRESHOLDS,
     "checkpoint_matrix": {
-        "config": "configs/analysis/scene32_marf_conditional_utility_audit.yaml",
-        "run_name": "scene32_marf",
-        "checkpoints_dir": "outputs/scene32/scene32_marf/checkpoints",
+        "config": "configs/analysis/marf_conditional_utility_audit.yaml",
+        "run_name": "marf",
+        "checkpoints_dir": "outputs/scene32/marf/checkpoints",
         "roles": {
             "best_top1": {
                 "checkpoint": "best_top1.pth",
-                "audit_dir": "outputs/scene32/scene32_marf/conditional_utility",
+                "audit_dir": "outputs/scene32/marf/conditional_utility",
             },
             "best": {
                 "checkpoint": "best.pth",
-                "audit_dir": "outputs/scene32/phase_1_5_utility_validation/checkpoint_audits/scene32_marf_best",
+                "audit_dir": "outputs/scene32/phase_1_5_utility_validation/checkpoint_audits/marf_best",
             },
             "last": {
                 "checkpoint": "last.pth",
-                "audit_dir": "outputs/scene32/phase_1_5_utility_validation/checkpoint_audits/scene32_marf_last",
+                "audit_dir": "outputs/scene32/phase_1_5_utility_validation/checkpoint_audits/marf_last",
             },
         },
     },
@@ -381,7 +381,7 @@ def cluster_bootstrap_mean(
 def build_checkpoint_matrix(manifest: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     cfg = manifest.get("checkpoint_matrix", {})
     checkpoints_dir = Path(cfg.get("checkpoints_dir", ""))
-    config_path = str(cfg.get("config", "configs/analysis/scene32_marf_conditional_utility_audit.yaml"))
+    config_path = str(cfg.get("config", "configs/analysis/marf_conditional_utility_audit.yaml"))
     rows = []
     commands = []
     for role, role_cfg in (cfg.get("roles") or {}).items():

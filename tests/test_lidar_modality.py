@@ -26,7 +26,7 @@ from kd_sensing.data.transforms import (  # noqa: E402
 )
 from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_lidar_inputs  # noqa: E402
 from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
-from kd_sensing.models.fusion import FusionModalityNet, StudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
@@ -328,13 +328,13 @@ def test_lidar_batch_and_fusion_paths():
         modalities=["lidar"],
     )
     model = LidarStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
-    fusion_model = StudentModalityNet(
+    fusion_model = FusionStudentModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
         modalities=["lidar"],
     )
-    teacher = FusionModalityNet(
+    teacher = FusionTeacherModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -381,8 +381,8 @@ def test_lidar_fusion_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
     assert cfg["model"]["teacher"]["lidar_channels"] == 3
     assert cfg["model"]["student"]["lidar_channels"] == 3
-    assert isinstance(teacher, FusionModalityNet)
-    assert isinstance(student, (FusionModalityNet, StudentModalityNet))
+    assert isinstance(teacher, FusionTeacherModalityNet)
+    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_dataset_fixture(root: Path, csv_path: Path) -> None:
