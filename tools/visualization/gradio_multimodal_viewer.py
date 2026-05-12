@@ -519,6 +519,7 @@ def build_demo(
         complementarity_cases,
         scene=complementarity_defaults["scene"],
         horizon=complementarity_defaults["horizon"],
+        strong_modality=complementarity_defaults["strong_modality"],
         weak_modality=complementarity_defaults["weak_modality"],
         case_types=complementarity_defaults["case_types"],
         bucket=complementarity_defaults["bucket"],
@@ -647,6 +648,11 @@ def build_demo(
                         choices=complementarity_choices["horizons"],
                         value=complementarity_defaults["horizon"],
                         label="Horizon",
+                    )
+                    comp_strong_dropdown = gr.Dropdown(
+                        choices=complementarity_choices["strong_modalities"],
+                        value=complementarity_defaults["strong_modality"],
+                        label="Strong Modality",
                     )
                     comp_weak_dropdown = gr.Dropdown(
                         choices=complementarity_choices["weak_modalities"],
@@ -948,6 +954,7 @@ def build_demo(
         def apply_complementarity_filters(
             comp_scene,
             comp_horizon,
+            comp_strong,
             comp_weak,
             comp_cases,
             comp_bucket,
@@ -959,6 +966,7 @@ def build_demo(
                 complementarity_cases,
                 scene=comp_scene,
                 horizon=comp_horizon,
+                strong_modality=comp_strong,
                 weak_modality=comp_weak,
                 case_types=comp_cases,
                 bucket=comp_bucket,
@@ -1029,6 +1037,7 @@ def build_demo(
         comp_filter_inputs = [
             comp_scene_dropdown,
             comp_horizon_dropdown,
+            comp_strong_dropdown,
             comp_weak_dropdown,
             comp_case_dropdown,
             comp_bucket_dropdown,

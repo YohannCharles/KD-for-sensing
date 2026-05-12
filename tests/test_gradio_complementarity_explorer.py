@@ -40,6 +40,7 @@ def test_explorer_loads_choices_and_filters_cases(tmp_path: Path):
         scene="scene32",
         horizon="t+1",
         weak_modality="image",
+        strong_modality="mmwave",
         case_types=["strong_wrong_weak_correct"],
         bucket="mmwave_entropy=high",
         min_gain=0.1,
@@ -50,6 +51,7 @@ def test_explorer_loads_choices_and_filters_cases(tmp_path: Path):
     assert data["available"] is True
     assert data["choices"]["defaults"]["scene"] == "scene32"
     assert data["choices"]["defaults"]["horizon"] == "t+1"
+    assert data["choices"]["defaults"]["strong_modality"] == "mmwave"
     assert data["choices"]["defaults"]["weak_modality"] == "image"
     assert result["stats"]["filtered_rows"] == 2
     assert result["stats"]["displayed_rows"] == 1
@@ -63,6 +65,7 @@ def test_explorer_filter_fallback_selection_detail_and_export(tmp_path: Path):
         cases,
         scene="scene32",
         horizon="t+1",
+        strong_modality="mmwave",
         weak_modality="image",
         case_types=["strong_correct_fusion_wrong"],
         sort_by="missing_metric desc",
@@ -86,6 +89,39 @@ def test_explorer_filter_fallback_selection_detail_and_export(tmp_path: Path):
     assert Path(export_path).exists()
 
 
+def test_explorer_filters_strong_modality_all_weaks_and_exports_fields(tmp_path: Path):
+    cases = _explorer_cases()
+    all_result = filter_complementarity_cases(
+        cases,
+        scene="all",
+        horizon="all",
+        strong_modality="all",
+        weak_modality="all",
+        case_types=None,
+        sort_by="sample_id asc",
+        max_rows=10,
+    )
+    gps_result = filter_complementarity_cases(
+        cases,
+        scene="scene9",
+        horizon="t+2",
+        strong_modality="gps",
+        weak_modality="all",
+        case_types=None,
+        sort_by="sample_id asc",
+        max_rows=10,
+    )
+    detail = case_detail_payload(gps_result["records"][0], None)
+    export_path = export_filtered_cases(gps_result["records"], output_dir=tmp_path)
+    exported = pd.read_csv(export_path)
+
+    assert all_result["stats"]["filtered_rows"] == 4
+    assert gps_result["table"]["sample_id"].tolist() == ["d"]
+    assert detail["case"]["strong_modality"] == "gps"
+    assert detail["case"]["strong_weak_pair"] == "gps+radar"
+    assert {"strong_modality", "strong_prediction_source", "strong_weak_pair"}.issubset(exported.columns)
+
+
 def test_explorer_empty_state_is_safe():
     data = load_complementarity_explorer(None)
     result = filter_complementarity_cases(data["cases"])
@@ -104,7 +140,11 @@ def _explorer_cases() -> pd.DataFrame:
                 "dataset_index": 0,
                 "scene": "scene32",
                 "horizon_name": "t+1",
+                "strong_modality": "mmwave",
                 "weak_modality": "image",
+                "strong_weak_pair": "mmwave+image",
+                "strong_prediction_source": "teacher_predictions",
+                "fusion_prediction_available": True,
                 "strong_correct": False,
                 "case_type": "strong_wrong_weak_correct_fusion_wrong",
                 "research_tags": "strong_wrong_weak_correct|unused_complementary",
@@ -117,7 +157,11 @@ def _explorer_cases() -> pd.DataFrame:
                 "dataset_index": 1,
                 "scene": "scene32",
                 "horizon_name": "t+1",
+                "strong_modality": "mmwave",
                 "weak_modality": "image",
+                "strong_weak_pair": "mmwave+image",
+                "strong_prediction_source": "teacher_predictions",
+                "fusion_prediction_available": True,
                 "strong_correct": False,
                 "case_type": "strong_wrong_weak_correct_fusion_correct",
                 "research_tags": "strong_wrong_weak_correct|rescue|strong_wrong_fusion_correct",
@@ -130,7 +174,11 @@ def _explorer_cases() -> pd.DataFrame:
                 "dataset_index": 2,
                 "scene": "scene32",
                 "horizon_name": "t+1",
+                "strong_modality": "mmwave",
                 "weak_modality": "image",
+                "strong_weak_pair": "mmwave+image",
+                "strong_prediction_source": "teacher_predictions",
+                "fusion_prediction_available": True,
                 "strong_correct": True,
                 "case_type": "strong_correct_fusion_wrong",
                 "research_tags": "negative_transfer",
@@ -143,7 +191,11 @@ def _explorer_cases() -> pd.DataFrame:
                 "dataset_index": 3,
                 "scene": "scene9",
                 "horizon_name": "t+2",
+                "strong_modality": "gps",
                 "weak_modality": "radar",
+                "strong_weak_pair": "gps+radar",
+                "strong_prediction_source": "teacher_predictions",
+                "fusion_prediction_available": False,
                 "strong_correct": False,
                 "case_type": "all_wrong",
                 "research_tags": "none",

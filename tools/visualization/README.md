@@ -90,6 +90,19 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --check-only
 ```
 
+如果想分析某个强势模态与一个或全部弱模态的互补关系，启用 strong-modality pair mode。例如只看 `mmwave` 与 `image/radar/lidar`：
+
+```bash
+conda run -n kd_mm_beam python scripts/analysis/build_complementarity_cases.py \
+  --scene scene32 \
+  --input-path outputs/scene32/scene32_marf/conditional_utility \
+  --output-dir outputs/scene32/complementarity_analysis_strong_pairs \
+  --strong-modalities mmwave \
+  --weak-modalities image,radar,lidar
+```
+
+也可以传入 `--strong-modalities` 但不带值，此时默认使用 `gps,mmwave`。Explorer 会出现 `Strong Modality` 控件；选择 `Strong Modality=mmwave` 且 `Weak Modality=all` 可以查看该强势模态与全部弱模态的 case。当前 audit 产物通常没有 `mmwave+image` 或 `gps+image` 这类 pair fusion subset，因此这类输出仍会保留 strong-vs-weak 互补关系，并在 summary、详情 JSON 和表格中把 fusion / rescue 指标标记为不可用。若后续已有 pair fusion subset，可用 `--pair-fusion-subsets mmwave+image=mmwave_plus_image,gps+radar=gps_plus_radar` 显式映射。
+
 需要定位切帧耗时时，可以加 `--profile-render`。该参数默认关闭；开启后不会新增页面组件，也不会调整顶部控件、Overview、Raw Modalities、Processed Modalities 或 Diagnostics 的布局，只在控制台输出每次回调的过滤耗时、静态渲染耗时、future distribution 渲染耗时、cache hit/miss 和实际更新组件数量：
 
 ```bash

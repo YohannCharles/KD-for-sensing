@@ -137,6 +137,37 @@ def test_bucket_summary_uses_sample_buckets_and_reports_unavailable_path():
     assert empty_metadata["bucket_statistics_available"] is False
 
 
+def test_strong_modality_pair_mode_uses_teacher_predictions_and_optional_fusion():
+    subset, teacher = _strong_pair_frames()
+
+    cases, metadata = build_case_table(
+        subset,
+        teacher_predictions=teacher,
+        strong_modalities=("mmwave",),
+        weak_modalities=("image", "radar"),
+        pair_fusion_subsets={"mmwave+image": "mmwave+image"},
+        scene="scene32",
+    )
+    summary = compute_summary(cases, metadata=metadata, scene="scene32")
+
+    by_pair = cases.set_index(["strong_weak_pair", "sample_id"])
+    assert canonical_subset_name("single_best_mmwave") == "mmwave"
+    assert metadata["analysis_mode"] == "strong_modality_pair"
+    assert metadata["strong_prediction_sources"]["mmwave"]["source"] == "teacher_predictions"
+    assert metadata["fusion_subset_availability"]["mmwave+image"]["fusion_prediction_available"] is True
+    assert metadata["fusion_subset_availability"]["mmwave+radar"]["fusion_prediction_available"] is False
+    assert set(cases["strong_weak_pair"]) == {"mmwave+image", "mmwave+radar"}
+    assert by_pair.loc[("mmwave+image", "pair-rescue"), "case_type"] == CASE_RESCUE
+    assert by_pair.loc[("mmwave+image", "pair-negative"), "case_type"] == CASE_NEGATIVE_TRANSFER
+    assert by_pair.loc[("mmwave+radar", "pair-rescue"), "case_type"] == "strong_wrong_weak_correct"
+    assert bool(by_pair.loc[("mmwave+radar", "pair-rescue"), "fusion_prediction_available"]) is False
+    assert "strong_wrong_weak_correct" in by_pair.loc[("mmwave+radar", "pair-rescue"), "research_tags"]
+    assert summary["by_strong_modality"]["mmwave"]["count"] == 4
+    assert summary["by_strong_weak_pair"]["mmwave+image"]["fusion_metrics_available"] is True
+    assert summary["by_strong_weak_pair"]["mmwave+radar"]["fusion_metrics_available"] is False
+    assert summary["by_strong_weak_pair"]["mmwave+radar"]["rescue_rate_given_complementary"]["value"] is None
+
+
 def _analysis_frames(include_probability: bool = True):
     cases = [
         ("rescue", 1, 0, 1, 1, 0.2, 0.7, 0.6),
@@ -191,6 +222,49 @@ def _analysis_frames(include_probability: bool = True):
             }
         )
     return pd.DataFrame(subset_rows), pd.DataFrame(teacher_rows), pd.DataFrame(delta_rows), pd.DataFrame(feature_rows)
+
+
+def _strong_pair_frames():
+    rows = [
+        ("pair-rescue", 1, 0, 1, 1, 1, 0.2, 0.7, 0.8, 0.6),
+        ("pair-negative", 1, 1, 2, 2, 2, 0.8, 0.2, 0.1, 0.1),
+    ]
+    subset_rows = []
+    teacher_rows = []
+    for idx, (
+        sample_id,
+        y_true,
+        strong_pred,
+        image_pred,
+        radar_pred,
+        fusion_pred,
+        p_strong,
+        p_image,
+        p_radar,
+        p_fusion,
+    ) in enumerate(rows):
+        base = {
+            "sample_id": sample_id,
+            "dataset_index": idx,
+            "scene_slug": "scene32",
+            "split": "test",
+            "horizon_idx": 0,
+            "horizon_name": "t+1",
+            "gt_beam": y_true,
+            "valid": True,
+        }
+        subset_rows.append(_prediction_row(base, "mmwave+image", fusion_pred, p_fusion, True))
+        for modality, pred, p_true in [
+            ("mmwave", strong_pred, p_strong),
+            ("gps", strong_pred, p_strong),
+            ("image", image_pred, p_image),
+            ("radar", radar_pred, p_radar),
+            ("lidar", image_pred, p_image),
+        ]:
+            row = _prediction_row(base, modality, pred, p_true, True)
+            row["teacher_modality"] = modality
+            teacher_rows.append(row)
+    return pd.DataFrame(subset_rows), pd.DataFrame(teacher_rows)
 
 
 def _prediction_row(base: dict, subset_name: str, pred: int, p_true: float, include_probability: bool) -> dict:

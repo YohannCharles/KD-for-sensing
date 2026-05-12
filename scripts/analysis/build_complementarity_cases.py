@@ -14,6 +14,7 @@ for path in (ROOT, SRC):
         sys.path.insert(0, str(path))
 
 from kd_sensing.diagnostics.complementarity import (  # noqa: E402
+    STRONG_MODALITIES,
     WEAK_MODALITIES,
     build_case_table,
     compute_bucket_summary,
@@ -32,6 +33,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, help="Directory for complementarity outputs.")
     parser.add_argument("--strong-subset", default="strong_only", help="Strong-only subset name or alias.")
     parser.add_argument(
+        "--strong-modalities",
+        nargs="?",
+        const=",".join(STRONG_MODALITIES),
+        default=None,
+        help=(
+            "Enable strong-modality pair mode with comma-separated strong modalities. "
+            "If passed without a value, defaults to gps,mmwave. Omit to keep legacy strong-only analysis."
+        ),
+    )
+    parser.add_argument(
         "--weak-modalities",
         default=",".join(WEAK_MODALITIES),
         help="Comma-separated weak modalities. Defaults to image,radar,lidar.",
@@ -43,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
             "image=strong_plus_image,radar=gps+mmwave+radar. A plain comma list maps by weak order."
         ),
     )
+    parser.add_argument(
+        "--pair-fusion-subsets",
+        help=(
+            "Pair fusion subset override for strong-modality mode. Use strong+weak=subset pairs, e.g. "
+            "mmwave+image=mmwave_plus_image,gps+radar=gps_plus_radar."
+        ),
+    )
     parser.add_argument("--horizons", help="Comma-separated horizon names or indices, e.g. t+1,t+2 or 0,1.")
     return parser
 
@@ -50,7 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> dict[str, Any]:
     args = build_parser().parse_args(argv)
     weak_modalities = _split_csv(args.weak_modalities) or list(WEAK_MODALITIES)
+    strong_modalities = _split_csv(args.strong_modalities) if args.strong_modalities is not None else None
     fusion_subsets = _parse_fusion_subsets(args.fusion_subsets, weak_modalities)
+    pair_fusion_subsets = _parse_pair_fusion_subsets(args.pair_fusion_subsets)
     horizons = _split_csv(args.horizons)
 
     tables = load_subset_predictions(args.input_path)
@@ -74,8 +94,10 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         per_sample_delta=tables.per_sample_delta,
         communication_state_features=tables.communication_state_features,
         strong_subset=args.strong_subset,
+        strong_modalities=strong_modalities,
         weak_modalities=weak_modalities,
         fusion_subsets=fusion_subsets,
+        pair_fusion_subsets=pair_fusion_subsets,
         horizons=horizons,
         scene=args.scene,
     )
@@ -99,6 +121,22 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         + json.dumps(metadata.get("weak_prediction_sources", {}), sort_keys=True),
         flush=True,
     )
+    if metadata.get("analysis_mode") == "strong_modality_pair":
+        print(
+            "[complementarity] strong_prediction_sources="
+            + json.dumps(metadata.get("strong_prediction_sources", {}), sort_keys=True),
+            flush=True,
+        )
+        print(
+            "[complementarity] fusion_subset_availability="
+            + json.dumps(metadata.get("fusion_subset_availability", {}), sort_keys=True),
+            flush=True,
+        )
+        print(
+            "[complementarity] unmatched_pairs="
+            + json.dumps(metadata.get("unmatched", {}), sort_keys=True),
+            flush=True,
+        )
     print(
         "[complementarity] probability_metrics_available="
         + str(bool(metadata.get("probability_metrics_available"))),
@@ -144,6 +182,17 @@ def _parse_fusion_subsets(value: str | None, weak_modalities: list[str]) -> dict
                 result[weak.strip()] = subset.strip()
         return result
     return {weak: subset for weak, subset in zip(weak_modalities, items)}
+
+
+def _parse_pair_fusion_subsets(value: str | None) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in _split_csv(value):
+        if "=" not in item:
+            continue
+        pair, subset = item.split("=", 1)
+        if pair.strip() and subset.strip():
+            result[pair.strip()] = subset.strip()
+    return result
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ def build_complementarity_choices(cases: pd.DataFrame) -> dict[str, Any]:
         return {
             "scenes": ["all"],
             "horizons": ["all"],
+            "strong_modalities": ["all"],
             "weak_modalities": ["all"],
             "case_types": list(DEFAULT_CASE_FILTERS),
             "buckets": ["all"],
@@ -62,6 +63,7 @@ def build_complementarity_choices(cases: pd.DataFrame) -> dict[str, Any]:
             "defaults": {
                 "scene": "all",
                 "horizon": "all",
+                "strong_modality": "all",
                 "weak_modality": "all",
                 "case_types": list(DEFAULT_CASE_FILTERS),
                 "bucket": "all",
@@ -70,6 +72,7 @@ def build_complementarity_choices(cases: pd.DataFrame) -> dict[str, Any]:
         }
     scenes = _choice_values(cases, "scene")
     horizons = _choice_values(cases, "horizon_name", natural=True)
+    strong_modalities = _choice_values(cases, "strong_modality")
     weak_modalities = _choice_values(cases, "weak_modality")
     case_values = set(_choice_values(cases, "case_type", include_all=False))
     if "research_tags" in cases.columns:
@@ -80,6 +83,7 @@ def build_complementarity_choices(cases: pd.DataFrame) -> dict[str, Any]:
     return {
         "scenes": scenes,
         "horizons": horizons,
+        "strong_modalities": strong_modalities,
         "weak_modalities": weak_modalities,
         "case_types": case_types,
         "buckets": buckets,
@@ -87,6 +91,7 @@ def build_complementarity_choices(cases: pd.DataFrame) -> dict[str, Any]:
         "defaults": {
             "scene": "scene32" if "scene32" in scenes else scenes[0],
             "horizon": "t+1" if "t+1" in horizons else horizons[0],
+            "strong_modality": "mmwave" if "mmwave" in strong_modalities else strong_modalities[0],
             "weak_modality": "image" if "image" in weak_modalities else weak_modalities[0],
             "case_types": [case for case in DEFAULT_CASE_FILTERS if case in case_types],
             "bucket": "all",
@@ -100,6 +105,7 @@ def filter_complementarity_cases(
     *,
     scene: str | None = "all",
     horizon: str | None = "all",
+    strong_modality: str | None = "all",
     weak_modality: str | None = "all",
     case_types: Iterable[str] | str | None = None,
     bucket: str | None = "all",
@@ -114,6 +120,7 @@ def filter_complementarity_cases(
 
     frame = _filter_equals(frame, "scene", scene)
     frame = _filter_equals(frame, "horizon_name", horizon)
+    frame = _filter_equals(frame, "strong_modality", strong_modality)
     frame = _filter_equals(frame, "weak_modality", weak_modality)
     frame = _filter_case_types(frame, case_types)
     frame = _filter_bucket(frame, bucket, warnings)
@@ -192,10 +199,14 @@ def case_detail_payload(case_row: dict[str, Any] | None, sample: dict[str, Any] 
             "dataset_index": _json_scalar(case_row.get("dataset_index")),
             "scene": case_row.get("scene"),
             "horizon": case_row.get("horizon_name"),
+            "strong_modality": case_row.get("strong_modality"),
             "weak_modality": case_row.get("weak_modality"),
+            "strong_weak_pair": case_row.get("strong_weak_pair"),
             "case_type": case_row.get("case_type"),
             "research_tags": case_row.get("research_tags"),
+            "strong_prediction_source": case_row.get("strong_prediction_source"),
             "weak_prediction_source": case_row.get("weak_prediction_source"),
+            "fusion_prediction_available": _json_scalar(case_row.get("fusion_prediction_available")),
         },
         "prediction": {
             "y_true": _json_scalar(case_row.get("y_true")),
