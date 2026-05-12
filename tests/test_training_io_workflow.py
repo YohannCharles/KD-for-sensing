@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.config.io import safe_load_yaml  # noqa: E402
 from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
 import kd_sensing.data.transforms as transforms  # noqa: E402
 import kd_sensing.data.datasets.scenario9 as scenario9_module  # noqa: E402
@@ -35,7 +36,7 @@ from kd_sensing.engine.builders import (  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
 from kd_sensing.preprocessing.image import generate_image_motion_cache  # noqa: E402
-from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir  # noqa: E402
+from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir, train  # noqa: E402
 from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E402
 from kd_sensing.utils.artifact_registry import (  # noqa: E402
     archive_best_checkpoint,
@@ -602,6 +603,94 @@ def test_scene_grouped_eval_dir_and_explicit_eval_output(tmp_path: Path):
     assert grouped.parent == tmp_path / "scene9"
     assert grouped.name.startswith("evaluation_fixed")
     assert explicit == tmp_path / "manual_eval"
+
+
+def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
+    cfg = load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataset.seed=13",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=1",
+            "scheduler.type=none",
+            "output.run_name=trainer_characterization",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+
+    result = train(cfg)
+    run_dir = Path(result["run_dir"])
+    history = result["history"]
+    epoch_log = result["epoch_logs"][0]
+    checkpoint = torch.load(run_dir / "checkpoints" / "last.pth", map_location="cpu")
+    final_cfg = safe_load_yaml((run_dir / "final_config.yaml").read_text(encoding="utf-8"))
+
+    assert set(history) == {
+        "train_loss",
+        "train_task_loss",
+        "train_distill_loss",
+        "train_beam_soft_loss",
+        "train_unimodal_loss",
+        "train_counterfactual_loss",
+        "train_prior_regularization_loss",
+        "train_reliability_kd_loss",
+        "train_acc",
+        "val_loss",
+        "val_acc",
+        "val_atop3",
+        "val_atop5",
+        "val_adba",
+        "learning_rates",
+    }
+    assert {
+        "epoch",
+        "total_epochs",
+        "train_batches",
+        "train_loss",
+        "train_task_loss",
+        "train_distill_loss",
+        "train_beam_soft_loss",
+        "train_unimodal_loss",
+        "train_counterfactual_loss",
+        "train_prior_regularization_loss",
+        "train_reliability_kd_loss",
+        "train_acc",
+        "val_loss",
+        "val_acc",
+        "val_atop3",
+        "val_atop5",
+        "val_adba",
+        "learning_rate",
+        "optimizer/lr/main",
+        "optimizer/params/main",
+    } <= set(epoch_log)
+    assert {
+        "epoch",
+        "state_dict",
+        "optimizer",
+        "scheduler",
+        "test_loss",
+        "best_val_loss",
+        "best_val_top1",
+        "best_top1_epoch",
+        "epochs_without_improvement",
+        "normalization_artifacts",
+        "checkpoint_registry",
+    } <= set(checkpoint)
+    assert final_cfg["runtime"]["run_dir"] == str(run_dir)
+    assert final_cfg["runtime"]["output_overwrite"] is True
+    assert "splits" in final_cfg["runtime"]
+    assert "normalization_artifacts" in final_cfg["runtime"]
+    assert "throughput" in final_cfg["runtime"]
 
 
 def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path: Path):

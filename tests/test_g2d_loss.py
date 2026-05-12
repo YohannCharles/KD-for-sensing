@@ -64,6 +64,32 @@ def test_g2d_loss_returns_scalar_and_uses_three_horizons():
     assert result.diagnostics["horizon_names"] == ["t+1", "t+2", "t+3"]
 
 
+def test_g2d_compute_characterization_loss_and_diagnostic_fields():
+    student, teachers, labels, _, _ = _outputs()
+    distiller = G2DDistiller(nn.CrossEntropyLoss(), g2d={"modalities": MODALITIES}, modalities=MODALITIES)
+
+    result = distiller.compute(student, teachers, labels, epoch=0)
+
+    assert set(result.diagnostics) >= {
+        "num_pred",
+        "horizon_names",
+        "teacher_confidence",
+        "modality_ranking_weak_to_strong",
+        "active_modalities",
+        "loss",
+    }
+    assert set(result.diagnostics["loss"]) == {
+        "supervised",
+        "feature_kd",
+        "logit_kd",
+        "distill",
+        "total",
+    }
+    assert set(result.diagnostics["teacher_confidence"]) == set(MODALITIES)
+    assert set(result.modality_ranking) == {"avg", "t+1", "t+2", "t+3"}
+    assert result.active_modalities == MODALITIES
+
+
 def test_g2d_loss_component_weights_can_disable_feature_or_logit_terms():
     student, teachers, labels, _, _ = _outputs()
     distiller = G2DDistiller(

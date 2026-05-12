@@ -6,20 +6,15 @@ from pathlib import Path
 
 import torch
 
-from kd_sensing.engine.batch import (
-    forward_model,
-    normalize_batch,
-    prepare_fusion_inputs,
-    prepare_gps_inputs,
-    prepare_image_inputs,
-    prepare_labels,
-    prepare_lidar_inputs,
-    prepare_mmwave_inputs,
-    prepare_radar_inputs,
-)
 from kd_sensing.engine.marf_training import ModalitySubsetSampler
-from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
-from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, transfer_non_blocking
+from kd_sensing.engine.runtime import (
+    autocast_context,
+    prepare_task_batch,
+    prepare_task_labels,
+    resolve_amp_settings,
+    run_model_step,
+    transfer_non_blocking,
+)
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 from kd_sensing.evaluation.subset_specs import resolve_conditional_utility_subset
 
@@ -39,8 +34,8 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     all_labels = []
     with torch.no_grad():
         for batch in dataloader:
-            batch = normalize_batch(batch)
-            labels = prepare_labels(
+            batch = prepare_task_batch(batch)
+            labels = prepare_task_labels(
                 batch,
                 num_pred=num_pred,
                 downsample_ratio=downsample_ratio,
@@ -48,68 +43,17 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                 non_blocking=non_blocking,
             )
             with autocast_context(amp_enabled, device, amp_dtype):
-                if task == "fusion":
-                    fusion_inputs = prepare_fusion_inputs(
-                        batch,
-                        seq_length=seq_length,
-                        num_pred=num_pred,
-                        device=device,
-                        modalities=cfg["model"]["student"].get("modalities"),
-                        non_blocking=non_blocking,
-                    )
-                    model_output = adapt_model_output(forward_model(model, task, **fusion_inputs))
-                    outputs = model_output.logits
-                elif task == "radar":
-                    radar_batch = prepare_radar_inputs(
-                        batch,
-                        seq_length=seq_length,
-                        num_pred=num_pred,
-                        device=device,
-                        non_blocking=non_blocking,
-                    )
-                    model_output = adapt_model_output(forward_model(model, task, radar_batch=radar_batch))
-                    outputs = model_output.logits
-                elif task == "gps":
-                    gps_batch = prepare_gps_inputs(
-                        batch,
-                        seq_length=seq_length,
-                        num_pred=num_pred,
-                        device=device,
-                        non_blocking=non_blocking,
-                    )
-                    model_output = adapt_model_output(forward_model(model, task, gps_batch=gps_batch))
-                    outputs = model_output.logits
-                elif task == "lidar":
-                    lidar_batch = prepare_lidar_inputs(
-                        batch,
-                        seq_length=seq_length,
-                        num_pred=num_pred,
-                        device=device,
-                        non_blocking=non_blocking,
-                    )
-                    model_output = adapt_model_output(forward_model(model, task, lidar_batch=lidar_batch))
-                    outputs = model_output.logits
-                elif task == "mmwave":
-                    mmwave_batch = prepare_mmwave_inputs(
-                        batch,
-                        seq_length=seq_length,
-                        num_pred=num_pred,
-                        device=device,
-                        non_blocking=non_blocking,
-                    )
-                    model_output = adapt_model_output(forward_model(model, task, mmwave_batch=mmwave_batch))
-                    outputs = model_output.logits
-                else:
-                    image_batch = prepare_image_inputs(
-                        batch,
-                        seq_length=seq_length,
-                        num_pred=num_pred,
-                        device=device,
-                        non_blocking=non_blocking,
-                    )
-                    model_output = adapt_model_output(forward_model(model, task, image_batch))
-                    outputs = model_output.logits
-                outputs = select_prediction_slots(outputs, num_pred)
+                step = run_model_step(
+                    model,
+                    task,
+                    batch,
+                    model_cfg=cfg["model"]["student"],
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    device=device,
+                    non_blocking=non_blocking,
+                )
+                outputs = step.logits
                 loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
             val_loss += loss.item()
             all_outputs.append(outputs.detach().cpu())
@@ -219,8 +163,8 @@ def _validate_with_force_mask(model, dataloader, cfg: dict, criterion, device: t
     all_labels = []
     with torch.no_grad():
         for batch in dataloader:
-            batch = normalize_batch(batch)
-            labels = prepare_labels(
+            batch = prepare_task_batch(batch)
+            labels = prepare_task_labels(
                 batch,
                 num_pred=num_pred,
                 downsample_ratio=downsample_ratio,
@@ -228,18 +172,18 @@ def _validate_with_force_mask(model, dataloader, cfg: dict, criterion, device: t
                 non_blocking=non_blocking,
             )
             with autocast_context(amp_enabled, device, amp_dtype):
-                fusion_inputs = prepare_fusion_inputs(
+                step = run_model_step(
+                    model,
+                    task,
                     batch,
+                    model_cfg=cfg["model"]["student"],
                     seq_length=seq_length,
                     num_pred=num_pred,
                     device=device,
-                    modalities=cfg["model"]["student"].get("modalities"),
                     non_blocking=non_blocking,
+                    force_modality_mask=mask,
                 )
-                model_output = adapt_model_output(
-                    forward_model(model, task, **fusion_inputs, force_modality_mask=mask)
-                )
-                outputs = select_prediction_slots(model_output.logits, num_pred)
+                outputs = step.logits
                 loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
             val_loss += loss.item()
             all_outputs.append(outputs.detach().cpu())

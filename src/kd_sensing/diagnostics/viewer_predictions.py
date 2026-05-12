@@ -14,28 +14,19 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from kd_sensing.config.io import load_config
-from kd_sensing.diagnostics.visualization.core import (
+from kd_sensing.diagnostics.visualization.config import parse_visualization_config
+from kd_sensing.diagnostics.visualization.datasets import (
     build_diagnostic_datasets,
-    collect_candidates,
-    parse_visualization_config,
-    select_sample_candidates,
     selected_csv_frame_for_dataset,
 )
-from kd_sensing.diagnostics.viewer_manifest import _json_ready, _path_stat_dict, _sample_id
-from kd_sensing.engine.batch import (
-    forward_model,
-    normalize_batch,
-    prepare_gps_inputs,
-    prepare_image_inputs,
-    prepare_labels,
-    prepare_lidar_inputs,
-    prepare_mmwave_inputs,
-    prepare_radar_inputs,
+from kd_sensing.diagnostics.visualization.sampling import (
+    collect_candidates,
+    select_sample_candidates,
 )
-from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
+from kd_sensing.diagnostics.viewer_manifest import _json_ready, _path_stat_dict, _sample_id
 from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts
 from kd_sensing.engine.optim import build_model
-from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, transfer_non_blocking
+from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, run_model_step, transfer_non_blocking
 from kd_sensing.modalities import MODALITY_ORDER, dataset_flags_for_modalities, normalize_modalities
 from kd_sensing.utils.artifact_registry import resolve_evaluation_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
@@ -375,26 +366,22 @@ def _predict_loader(
     with torch.inference_mode():
         for batch in loader:
             sample_ids = list(batch.pop("_sample_id"))
-            batch = normalize_batch(batch)
-            labels = prepare_labels(
-                batch,
-                num_pred=num_pred,
-                downsample_ratio=downsample_ratio,
-                device=device,
-                non_blocking=non_blocking,
-            )
             with autocast_context(amp_enabled, device, amp_dtype):
-                model_output = adapt_model_output(
-                    forward_model(
-                        model,
-                        modality,
-                        **_prepared_inputs(batch, modality, seq_length, num_pred, device, non_blocking),
-                    )
+                step = run_model_step(
+                    model,
+                    modality,
+                    batch,
+                    model_cfg=model_cfg.get("student", {}) if isinstance(model_cfg, dict) else {},
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    downsample_ratio=downsample_ratio,
+                    device=device,
+                    non_blocking=non_blocking,
                 )
-                logits = select_prediction_slots(model_output.logits, num_pred)
+                logits = step.logits
             logits_array = logits.float().detach().cpu().numpy()
             probs = torch.softmax(logits.float(), dim=-1).detach().cpu().numpy()
-            label_array = labels.detach().cpu().numpy()
+            label_array = step.labels.detach().cpu().numpy()
             for row_index, sample_id in enumerate(sample_ids):
                 results[str(sample_id)] = _sample_prediction_payload(
                     modality,
@@ -405,33 +392,6 @@ def _predict_loader(
                     str(device),
                 )
     return results
-
-
-def _prepared_inputs(
-    batch: dict[str, torch.Tensor],
-    modality: str,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    non_blocking: bool,
-) -> dict[str, torch.Tensor]:
-    kwargs = {
-        "seq_length": seq_length,
-        "num_pred": num_pred,
-        "device": device,
-        "non_blocking": non_blocking,
-    }
-    if modality == "image":
-        return {"image_batch": prepare_image_inputs(batch, **kwargs)}
-    if modality == "radar":
-        return {"radar_batch": prepare_radar_inputs(batch, **kwargs)}
-    if modality == "gps":
-        return {"gps_batch": prepare_gps_inputs(batch, **kwargs)}
-    if modality == "lidar":
-        return {"lidar_batch": prepare_lidar_inputs(batch, **kwargs)}
-    if modality == "mmwave":
-        return {"mmwave_batch": prepare_mmwave_inputs(batch, **kwargs)}
-    raise ValueError(f"Unsupported prediction modality: {modality}")
 
 
 def _sample_prediction_payload(

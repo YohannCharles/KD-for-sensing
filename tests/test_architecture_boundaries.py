@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -218,3 +219,76 @@ def test_internal_python_code_avoids_secondary_compatibility_layers():
                     violations.append(f"{path.relative_to(ROOT)} contains {snippet}")
 
     assert violations == []
+
+
+def test_training_methods_are_connected_through_engine_extensions():
+    trainer_text = (SRC / "kd_sensing" / "engine" / "trainer.py").read_text(encoding="utf-8")
+    forbidden = (
+        "def _compute_craf_extra_losses",
+        "def _compute_marf_extra_losses",
+        "def _counterfactual_gate_loss",
+        "G2DDiagnosticsAccumulator",
+        "build_g2d_teacher_ensemble",
+        "apply_smp_gradient_mask",
+        "beam_soft_label_loss",
+        "marf_residual_norm_loss",
+    )
+
+    assert [snippet for snippet in forbidden if snippet in trainer_text] == []
+    assert "G2DTrainingExtension" in trainer_text
+    assert "CrafTrainingExtension" in trainer_text
+    assert "MarfTrainingExtension" in trainer_text
+    assert "extension.after_forward" in trainer_text
+    assert "extension.after_epoch" in trainer_text
+
+    assert "class G2DTrainingExtension" in (SRC / "kd_sensing" / "engine" / "g2d_training.py").read_text(encoding="utf-8")
+    assert "class CrafTrainingExtension" in (SRC / "kd_sensing" / "engine" / "craf_training.py").read_text(encoding="utf-8")
+    assert "class MarfTrainingExtension" in (SRC / "kd_sensing" / "engine" / "marf_training.py").read_text(encoding="utf-8")
+
+
+def test_g2d_algorithm_module_does_not_import_runtime_builders_or_teacher_runtime():
+    path = SRC / "kd_sensing" / "distillation" / "g2d.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.add(node.module)
+
+    forbidden = {
+        "kd_sensing.engine.optim",
+        "kd_sensing.engine.batch",
+        "kd_sensing.engine.g2d_training",
+        "kd_sensing.distillation.teacher_ensemble",
+        "kd_sensing.utils.artifact_registry",
+        "kd_sensing.utils.checkpoint",
+    }
+    assert sorted(imported_modules & forbidden) == []
+
+
+def test_visualization_core_is_thin_and_submodules_own_implementations():
+    core_text = (SRC / "kd_sensing" / "diagnostics" / "visualization" / "core.py").read_text(encoding="utf-8")
+    core_lines = core_text.splitlines()
+    forbidden_in_core = (
+        "class VisualizationConfig",
+        "class SampleCandidate",
+        "def build_diagnostic_datasets",
+        "def collect_candidates",
+        "def tensor_stats",
+        "def render_sample_overview",
+        "def write_samples_jsonl",
+    )
+
+    assert len(core_lines) < 300
+    assert [snippet for snippet in forbidden_in_core if snippet in core_text] == []
+    for module, snippet in {
+        "config.py": "class VisualizationConfig",
+        "datasets.py": "def build_diagnostic_datasets",
+        "sampling.py": "def collect_candidates",
+        "stats.py": "def tensor_stats",
+        "render.py": "def render_sample_overview",
+        "writers.py": "def write_samples_jsonl",
+    }.items():
+        text = (SRC / "kd_sensing" / "diagnostics" / "visualization" / module).read_text(encoding="utf-8")
+        assert snippet in text

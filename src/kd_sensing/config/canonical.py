@@ -30,6 +30,10 @@ def build_virtual_config(config_path: Path) -> dict[str, Any] | None:
 
 
 def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
+    advanced = build_advanced_fusion_overlay_config(stem)
+    if advanced is not None:
+        return advanced
+
     slug, modalities, mode = parse_fusion_config_stem(stem)
     name = f"{slug}_{mode}"
     image_radar = modalities == ["image", "radar"]
@@ -72,6 +76,306 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
             "weights_dir": "All_models" if image_radar else f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
         }
     return cfg
+
+
+def build_advanced_fusion_overlay_config(stem: str) -> dict[str, Any] | None:
+    if not stem.startswith("overlay_"):
+        return None
+    recipe = stem[len("overlay_") :]
+    builders = {
+        "g2d_lite": lambda: _g2d_overlay("lite", stem),
+        "g2d_global": lambda: _g2d_overlay("global", stem),
+        "g2d_horizon": lambda: _g2d_overlay("horizon_diagnostic", stem),
+        "craf_baseline": lambda: _craf_overlay(stem),
+        "craf_no_counterfactual": lambda: _craf_overlay(
+            stem,
+            {
+                "loss": {"gate_weight": 0.0},
+                "training": {"warmup_epochs": 0, "counterfactual": {"enabled": False, "weight": 0.0, "start_epoch": 0}},
+            },
+        ),
+        "craf_fixed_prior": lambda: _craf_overlay(
+            stem,
+            {
+                "model": {"student": {"reliability": {"gate_type": "fixed_prior", "use_dataset_prior": True}}},
+                "training": {"counterfactual": {"enabled": False, "weight": 0.0}},
+            },
+        ),
+        "marf_baseline": lambda: _marf_overlay(stem),
+        "marf_subset_training": lambda: _marf_overlay(
+            stem,
+            {
+                "training": {
+                    "subset_training": {
+                        "enabled": True,
+                        "modes": ["top_prior", "random_with_top_prior"],
+                        "max_subsets_per_batch": 2,
+                    }
+                },
+                "evaluation": {
+                    "modality_subsets": {
+                        "enabled": True,
+                        "subsets": ["all", "top_prior", "single_best_prior", "random_with_top_prior", "strong_only", "weak_only"],
+                    }
+                },
+            },
+        ),
+        "marf_no_residual": lambda: _marf_overlay(
+            stem,
+            {"model": {"student": {"residual_adapter": {"enabled": False}}}},
+        ),
+        "marf_no_prior_bias": lambda: _marf_overlay(
+            stem,
+            {"model": {"student": {"router": {"use_prior_bias": False}}}},
+        ),
+        "marf_no_subset_training": lambda: _marf_overlay(
+            stem,
+            {
+                "training": {"subset_training": {"enabled": False, "modes": []}},
+                "evaluation": {"modality_subsets": {"subsets": ["all", "top_prior", "single_best_prior", "strong_only", "weak_only"]}},
+            },
+        ),
+    }
+    builder = builders.get(recipe)
+    if builder is None:
+        raise ValueError(
+            f"Unknown advanced fusion overlay '{stem}.yaml'. "
+            f"Available overlays: {sorted('overlay_' + key for key in builders)}."
+        )
+    return builder()
+
+
+def _advanced_fusion_base(name: str) -> dict[str, Any]:
+    modalities = list(CANONICAL_FUSION_MODALITIES)
+    teacher_cfg: dict[str, Any] = {
+        "type": "fusion_teacher",
+        "modalities": modalities,
+        "image_channels": 1,
+        "radar_channels": 2,
+        "gps_input_size": 3,
+        "lidar_channels": 3,
+        "mmwave_input_size": 64,
+        "feature_size": 64,
+        "num_classes": 64,
+        "gru_params": [64, 64, 2],
+    }
+    dataset = {
+        "type": "deepsense6g",
+        "scene": 32,
+        "train_csv_name": "train_seqs_RA_GPS_LIDAR.csv",
+        "test_csv_name": "test_seqs_RA_GPS_LIDAR.csv",
+        "seq_len": 8,
+        "num_pred": 3,
+        "portion": 1.0,
+    }
+    dataset.update(dataset_flags_for_modalities(modalities))
+    dataset.update(dataset_defaults_for_modalities(modalities))
+    return {
+        "experiment": {"name": name, "task": "fusion", "seed": 0, "device": "auto"},
+        "data": {
+            "dataset": dataset,
+            "dataloader": {
+                "train_batch_size": 32,
+                "test_batch_size": 32,
+                "num_workers": 4,
+                "prefetch_factor": 1,
+            },
+        },
+        "model": {
+            "modalities": modalities,
+            "feature_size": 64,
+            "num_classes": 64,
+            "seq_length_teacher": 8,
+            "seq_length_student": 8,
+            "num_pred": 3,
+            "downsample_ratio": 1,
+            "teacher": teacher_cfg,
+            "student": {
+                "type": "fusion_student",
+                "modalities": modalities,
+                "image_channels": 1,
+                "radar_channels": 2,
+                "gps_input_size": 3,
+                "lidar_channels": 3,
+                "mmwave_input_size": 64,
+                "feature_size": 64,
+                "num_classes": 64,
+                "gru_params": [64, 64, 2],
+            },
+        },
+        "distillation": {"type": "no_kd", "teacher_model_name": None},
+        "training": {
+            "epochs": 100,
+            "lr": 0.00075,
+            "weight_decay": 0.0001,
+            "grad_clip": 10.0,
+            "patience": 20,
+            "use_early_stopping": True,
+            "min_delta": 0.0001,
+        },
+        "output": {"dir": "outputs", "run_name": name},
+        "scheduler": {"type": "cosine_warm_restarts", "T_0": 10, "T_mult": 2, "eta_min": 1.0e-06},
+    }
+
+
+def _g2d_overlay(mode: str, name: str) -> dict[str, Any]:
+    modalities = list(CANONICAL_FUSION_MODALITIES)
+    cfg = _advanced_fusion_base(name)
+    cfg["loss"] = {"type": "cross_entropy"}
+    cfg["distillation"] = {
+        "type": "g2d",
+        "teacher_model_name": None,
+        "g2d": {
+            "mode": mode,
+            "modalities": modalities,
+            "teachers": {
+                modality: {
+                    "model": {"type": f"{modality}_teacher"},
+                    "checkpoint": None,
+                    "strict_load": True,
+                }
+                for modality in modalities
+            },
+            "loss": {
+                "supervised_weight": 1.0,
+                "feature_weight": 0.1,
+                "logit_weight": 0.5,
+                "temperature": 4.0,
+                "horizons": "all",
+                "feature_align": {
+                    "enabled": True,
+                    "mode": "mse",
+                    "pool": "last",
+                    "normalize": True,
+                    "projection": "auto",
+                    "projection_dim": 64,
+                },
+                "logit_align": {"enabled": True},
+            },
+            "smp": {
+                "enabled": mode == "global",
+                "mode": "confidence" if mode == "global" else "none",
+                "tau": {"per_modality": 5, "joint": 30},
+                "prioritize_low_confidence_first": True,
+            },
+            "diagnostics": {"enabled": True},
+        },
+    }
+    return cfg
+
+
+def _craf_overlay(name: str, ablation: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _advanced_fusion_base(name)
+    cfg["model"]["student"] = {
+        **cfg["model"]["student"],
+        "type": "craf_fusion",
+        "d_model": 64,
+        "num_heads": 4,
+        "num_layers": 2,
+        "dropout": 0.1,
+        "reliability": {"gate_type": "sigmoid", "min_gate": 0.05, "use_dataset_prior": False},
+    }
+    cfg["loss"] = {
+        "type": "focal_loss",
+        "alpha": 1,
+        "gamma": 2,
+        "beam_soft": {"enabled": True, "weight": 0.03, "sigma": 2.0, "circular": True},
+        "unimodal_aux": {"weight": 0.1},
+    }
+    cfg["training"] = _deep_merge(
+        cfg["training"],
+        {
+            "warmup_epochs": 5,
+            "modality_dropout": {"enabled": True, "drop_prob": 0.1, "min_keep": 1},
+            "counterfactual": {
+                "enabled": True,
+                "mode": "sample_one",
+                "start_epoch": 5,
+                "weight": 0.1,
+                "target_temperature": 1.0,
+                "ignore_delta_eps": 0.0,
+                "use_ce_only": True,
+                "no_grad_drop_forward": True,
+            },
+        },
+    )
+    return _deep_merge(cfg, ablation or {})
+
+
+def _marf_overlay(name: str, ablation: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _advanced_fusion_base(name)
+    cfg["model"]["student"] = {
+        **cfg["model"]["student"],
+        "type": "marf_fusion",
+        "d_model": 64,
+        "num_heads": 4,
+        "dropout": 0.1,
+        "router": {
+            "hidden_size": 64,
+            "temperature": 1.0,
+            "use_prior_bias": True,
+            "prior_anchor_scale": 0.5,
+            "prior_residual_scale": 0.25,
+            "use_confidence_features": True,
+            "zero_init": True,
+        },
+        "residual_adapter": {"enabled": True, "residual_scale": 0.2},
+    }
+    cfg["teacher"] = {
+        "registry_path": "outputs/scene32/teacher_registry.json",
+        "load_encoders": True,
+        "freeze_encoders": True,
+        "strict": True,
+    }
+    cfg["loss"] = {
+        "type": "cross_entropy",
+        "label_smoothing": 0.03,
+        "beam_soft": {"enabled": True, "weight": 0.01, "sigma": 2.0, "circular": True},
+        "unimodal_aux": {"weight": 0.0},
+        "prior_regularization": {"enabled": False, "weight": 0.0},
+        "marf": {
+            "residual_norm": {"enabled": True, "weight": 0.01},
+            "prior_regularization": {"enabled": True, "weight": 0.01, "loss_type": "mse"},
+            "anchor_entropy": {"enabled": False, "weight": 0.0, "maximize": True},
+            "subset_ce": {"weight": 0.3},
+            "subset_kd": {"weight": 0.2, "temperature": 3.0},
+        },
+    }
+    cfg["training"] = _deep_merge(
+        cfg["training"],
+        {
+            "warmup_epochs": 0,
+            "modality_dropout": {"enabled": False, "drop_prob": 0.0, "min_keep": 1},
+            "counterfactual": {"enabled": False, "weight": 0.0},
+            "subset_training": {
+                "enabled": False,
+                "modes": [],
+                "top_prior_k": 2,
+                "min_keep": 1,
+                "ce_weight": 0.3,
+                "kd_weight": 0.2,
+                "temperature": 3.0,
+            },
+        },
+    )
+    cfg["evaluation"] = {
+        "modality_subsets": {
+            "enabled": True,
+            "subsets": ["all", "top_prior", "single_best_prior", "strong_only", "weak_only"],
+            "top_prior_k": 2,
+        }
+    }
+    return _deep_merge(cfg, ablation or {})
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = {key: value for key, value in base.items()}
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def parse_fusion_config_stem(stem: str) -> tuple[str, list[str], str]:

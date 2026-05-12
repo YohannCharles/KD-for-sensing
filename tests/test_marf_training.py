@@ -15,6 +15,7 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.engine.marf_training import (  # noqa: E402
     ModalitySubsetSampler,
     all_to_subset_kl_loss,
+    compute_marf_extra_losses,
     marf_anchor_entropy,
     marf_anchor_prior_regularization_loss,
     marf_residual_norm_loss,
@@ -60,6 +61,87 @@ def test_marf_losses_handle_ignore_index_and_masks():
     assert marf_anchor_entropy(anchor, mask).ndim == 0
     assert all_to_subset_kl_loss(subset_logits, all_logits, labels, ignore_index=-100).ndim == 0
     assert all_to_subset_kl_loss(subset_logits, all_logits, torch.full_like(labels, -100)).item() == pytest.approx(0.0)
+
+
+def test_marf_extra_loss_characterization_keys_subset_and_scalar_diagnostics():
+    class DummyMarf:
+        supports_marf_routing = True
+        supports_force_modality_mask = True
+        modalities = ("gps", "mmwave")
+
+    labels = torch.tensor([[0, 1], [2, 3]])
+    outputs = torch.randn(2, 2, 5, requires_grad=True)
+    diagnostics = {
+        "anchor_weights": torch.softmax(torch.randn(2, 2, 2), dim=-1),
+        "residual_weights": torch.ones(2, 2, 2),
+        "residual_delta": torch.randn(2, 2, 2, 4),
+        "prior": torch.tensor([0.8, 0.2]),
+        "effective_modality_mask": torch.tensor([[True, True], [True, False]]),
+        "modalities": ("gps", "mmwave"),
+    }
+    cfg = {
+        "loss": {
+            "marf": {
+                "residual_norm": {"enabled": True, "weight": 0.1},
+                "prior_regularization": {"enabled": True, "weight": 0.2},
+                "anchor_entropy": {"enabled": True, "weight": 0.3},
+                "subset_ce": {"weight": 0.4},
+                "subset_kd": {"weight": 0.5, "temperature": 2.0},
+            }
+        },
+        "training": {
+            "subset_training": {
+                "enabled": True,
+                "modes": ["all"],
+                "ce_weight": 0.4,
+                "kd_weight": 0.5,
+                "temperature": 2.0,
+            }
+        },
+    }
+
+    losses = compute_marf_extra_losses(
+        cfg,
+        DummyMarf(),
+        "fusion",
+        {},
+        model_cfg={"modalities": ["gps", "mmwave"]},
+        seq_length=2,
+        num_pred=2,
+        num_classes=5,
+        labels=labels,
+        student_outputs=outputs,
+        diagnostics=diagnostics,
+        task_criterion=torch.nn.CrossEntropyLoss(),
+        device=torch.device("cpu"),
+        non_blocking=False,
+    )
+
+    assert set(losses) == {
+        "total",
+        "residual_norm",
+        "prior_regularization",
+        "anchor_entropy",
+        "subset_ce",
+        "subset_kd",
+        "_diagnostics",
+    }
+    assert {
+        "loss/marf_residual_norm_weight",
+        "loss/marf_prior_regularization_weight",
+        "loss/marf_anchor_entropy_weight",
+        "loss/marf_subset_ce_weight",
+        "loss/marf_subset_kd_weight",
+        "loss/marf_subset_ce",
+        "loss/marf_subset_kd",
+        "marf/anchor_mean/gps",
+        "marf/prior/gps",
+    } <= set(losses["_diagnostics"])
+    assert losses["residual_norm"].ndim == 0
+    assert losses["prior_regularization"].ndim == 0
+    assert losses["anchor_entropy"].ndim == 0
+    assert losses["subset_ce"].ndim == 0
+    assert losses["subset_kd"].ndim == 0
 
 
 def test_validation_subset_all_matches_official_path_and_records_modalities():

@@ -13,7 +13,12 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.config.canonical import CANONICAL_FUSION_MODALITIES, build_virtual_fusion_config  # noqa: E402
+from kd_sensing.config.canonical import (  # noqa: E402
+    CANONICAL_FUSION_MODALITIES,
+    build_advanced_fusion_overlay_config,
+    build_virtual_fusion_config,
+)
+from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import (  # noqa: E402
@@ -562,6 +567,63 @@ def test_existing_yaml_config_takes_precedence_over_virtual_config(tmp_path: Pat
     cfg = load_config(config_path)
 
     assert cfg["experiment"]["name"] == "entity_config"
+
+
+def test_existing_advanced_overlay_yaml_takes_precedence_over_virtual_config(tmp_path: Path):
+    config_path = tmp_path / "configs" / "fusion" / "overlay_g2d_lite.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("experiment:\n  name: physical_overlay\n", encoding="utf-8")
+
+    cfg = load_config(config_path)
+
+    assert cfg["experiment"]["name"] == "physical_overlay"
+
+
+def test_advanced_fusion_overlay_generates_g2d_modes_and_full_dump(tmp_path: Path):
+    cfg = load_config(ROOT / "configs/fusion/overlay_g2d_global.yaml")
+    entity = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml")
+    output = tmp_path / "final_config.yaml"
+    dump_config(cfg, output)
+    dumped = safe_load_yaml(output.read_text(encoding="utf-8"))
+
+    assert cfg["experiment"]["task"] == "fusion"
+    assert cfg["model"]["student"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
+    assert cfg["distillation"]["type"] == "g2d"
+    assert cfg["distillation"]["g2d"]["mode"] == "global"
+    assert cfg["distillation"]["g2d"]["smp"]["enabled"] is True
+    assert cfg["training"]["lr"] == entity["training"]["lr"]
+    assert cfg["model"]["student"]["type"] == entity["model"]["student"]["type"]
+    assert set(dumped) >= {"data", "model", "loss", "distillation", "training", "output"}
+
+
+def test_advanced_fusion_overlays_cover_craf_and_marf_ablation_semantics():
+    craf = load_config(ROOT / "configs/fusion/overlay_craf_baseline.yaml")
+    craf_no_cf = load_config(ROOT / "configs/fusion/overlay_craf_no_counterfactual.yaml")
+    marf = load_config(ROOT / "configs/fusion/overlay_marf_baseline.yaml")
+    marf_subset = load_config(ROOT / "configs/fusion/overlay_marf_subset_training.yaml")
+    marf_no_residual = load_config(ROOT / "configs/fusion/overlay_marf_no_residual.yaml")
+    marf_no_prior = load_config(ROOT / "configs/fusion/overlay_marf_no_prior_bias.yaml")
+
+    assert craf["model"]["student"]["type"] == "craf_fusion"
+    assert craf["training"]["counterfactual"]["enabled"] is True
+    assert craf_no_cf["model"]["student"]["modalities"] == craf["model"]["student"]["modalities"]
+    assert craf_no_cf["training"]["counterfactual"]["enabled"] is False
+    assert craf_no_cf["loss"]["gate_weight"] == 0.0
+    assert marf["model"]["student"]["type"] == "marf_fusion"
+    assert marf["training"]["subset_training"]["enabled"] is False
+    assert marf_subset["training"]["subset_training"]["enabled"] is True
+    assert marf_subset["training"]["subset_training"]["modes"] == ["top_prior", "random_with_top_prior"]
+    assert marf_no_residual["model"]["student"]["residual_adapter"]["enabled"] is False
+    assert marf_no_prior["model"]["student"]["router"]["use_prior_bias"] is False
+    for cfg in (marf_subset, marf_no_residual, marf_no_prior):
+        assert cfg["data"]["dataset"]["train_csv_name"] == marf["data"]["dataset"]["train_csv_name"]
+        assert cfg["model"]["student"]["modalities"] == marf["model"]["student"]["modalities"]
+        assert cfg["training"]["lr"] == marf["training"]["lr"]
+
+
+def test_advanced_fusion_overlay_builder_rejects_unknown_recipe():
+    with pytest.raises(ValueError, match="Unknown advanced fusion overlay"):
+        build_advanced_fusion_overlay_config("overlay_unknown_method")
 
 
 @pytest.mark.parametrize(

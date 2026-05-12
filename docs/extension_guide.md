@@ -166,9 +166,89 @@ Engine construction helpers are split by responsibility:
 - `kd_sensing.engine.data_factory`: dataset and DataLoader construction.
 - `kd_sensing.engine.normalization_artifacts`: GPS/LiDAR/mmWave scaler save and load.
 - `kd_sensing.engine.run_metadata`: split, cache, and throughput metadata.
+- `kd_sensing.engine.runtime`: shared batch normalization, label preparation, task input preparation,
+  model forward, model-output adaptation, AMP helpers, and future-slot selection.
+- `kd_sensing.engine.training_extensions`: lifecycle hooks for training methods that need teacher
+  runtime, extra losses, gradient post-processing, or epoch diagnostics.
 - `kd_sensing.engine.optim`: model/loss/distiller/metric, optimizer, scheduler, device, and weight path construction.
 
 `kd_sensing.engine.builders` remains a compatibility facade for older imports.
+
+## Add a Training Method
+
+Training methods that need extra losses or diagnostics should be implemented as engine training
+extensions instead of adding method-specific branches to `engine.trainer`. The public `train(cfg)` entry
+point remains the lifecycle owner: it builds dataloaders, models, loss/distiller objects, optimizer,
+scheduler, checkpoint payloads, TensorBoard scalars, history, and final config snapshots. Method modules
+plug into that lifecycle through `TrainingExtension` hooks:
+
+- `setup(context)`: construct method runtime objects such as teacher ensembles and return load summaries.
+- `before_epoch(context, state, epoch=...)`: reset method epoch state or diagnostics accumulators.
+- `before_forward(context, state, batch, labels, epoch=...)`: provide force masks, reliability gates, or
+  gate temperatures for the shared forward runtime.
+- `compute_base_loss(context, state, batch_state)`: optionally replace the standard KD base loss, as G2D does.
+- `after_forward(context, state, batch_state)`: add extra losses and scalar diagnostics, as CRAF and MARF do.
+- `after_backward(context, state, batch_state)`: apply gradient post-processing before clipping/optimizer step.
+- `after_epoch(context, state, epoch=...)`: emit epoch diagnostics such as G2D JSON paths or reliability summaries.
+
+Use `BatchState`, `ForwardControls`, `BaseLossResult`, `LossBundle`, and `EpochDiagnosticsAccumulator`
+from `kd_sensing.engine.training_extensions` rather than inventing per-method logging structures. Current
+method examples live in `engine.g2d_training`, `engine.craf_training`, and `engine.marf_training`.
+
+Do not put teacher ensemble construction, checkpoint registry parsing, counterfactual forward loops,
+subset-training forwards, or method-specific scalar aggregation back into `engine.trainer`. Add a method
+extension module and a focused architecture-boundary test instead.
+
+## Shared Forward Runtime
+
+Training, validation, viewer predictions, counterfactual forwards, subset forwards, and G2D teacher
+runtime should call `engine.runtime.prepare_task_inputs`, `forward_task_model`, or `run_model_step`.
+Those helpers centralize:
+
+- legacy tuple/dict batch normalization
+- future-label preparation
+- task-specific modality input tensors
+- `force_modality_mask`, `force_reliability_gate`, and `gate_temperature` forwarding
+- `ModelOutput` adaptation
+- future-slot selection
+
+When adding or changing a modality input contract, update `engine.batch`/`engine.runtime` and the runtime
+tests first. Avoid copying task branches into validator, viewer, teacher, or method extension code.
+
+## Diagnostics Visualization Internals
+
+`kd_sensing.diagnostics.visualization.core` is a public orchestration entry point only. Keep concrete
+implementation in the focused submodules:
+
+- `config.py`: `VisualizationConfig`, parsing, final config snapshot, metadata paths.
+- `datasets.py`: diagnostic dataset construction, train-fitted normalization reuse, scene metadata.
+- `sampling.py`: candidate collection, filtering, and sample selection summaries.
+- `stats.py`: tensor, modality, and split statistics.
+- `render.py`: sample records, PNG paths, and overview rendering.
+- `writers.py`: JSON, JSONL, CSV, and summary writes.
+
+Compatibility imports through `diagnostics.modality_visualization.visualize_modalities` and
+`diagnostics.visualization.core.visualize_modalities` remain available, but new implementation work should
+target the submodule that owns the behavior.
+
+## Advanced Fusion Overlays
+
+Advanced fusion recipes can be loaded through virtual overlay paths under `configs/fusion/overlay_*.yaml`.
+The loader composes a shared five-modality fusion base with a method overlay and an optional ablation
+overlay. Existing physical YAML files still take precedence over generated overlays.
+
+Current overlay recipes include:
+
+```text
+overlay_g2d_lite, overlay_g2d_global, overlay_g2d_horizon
+overlay_craf_baseline, overlay_craf_no_counterfactual, overlay_craf_fixed_prior
+overlay_marf_baseline, overlay_marf_subset_training, overlay_marf_no_residual,
+overlay_marf_no_prior_bias, overlay_marf_no_subset_training
+```
+
+Use command-line overrides for scene selection, for example `data.dataset.scene=9`, rather than copying
+method configs per scene. Training still writes the fully resolved `final_config.yaml`, so generated
+overlay experiments remain reproducible.
 
 Scenario 9 GPS preprocessing supports one public `gps_feature_mode` value:
 

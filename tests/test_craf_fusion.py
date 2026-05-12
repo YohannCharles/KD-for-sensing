@@ -19,15 +19,17 @@ from kd_sensing.distillation.craf_losses import (  # noqa: E402
     sequence_cross_entropy,
 )
 from kd_sensing.engine.craf_training import (  # noqa: E402
+    compute_craf_extra_losses,
     generate_context_marginal_masks,
     generate_counterfactual_drop_masks,
     generate_modality_dropout_mask,
     loss_delta_to_binary_gate_target,
     loss_delta_to_gate_target,
+    unimodal_aux_loss,
 )
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
-from kd_sensing.engine.trainer import _unimodal_aux_loss, train  # noqa: E402
+from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion.craf import ReliabilityEstimator  # noqa: E402
 from kd_sensing.registries import MODELS, import_default_components  # noqa: E402
 
@@ -345,7 +347,7 @@ def test_unimodal_aux_loss_requires_exact_future_horizon():
     valid_logits = torch.zeros(2, 2, 2, 5)
     extra_slot_logits = torch.zeros(2, 2, 3, 5)
 
-    assert _unimodal_aux_loss(
+    assert unimodal_aux_loss(
         valid_logits,
         labels,
         torch.ones(2, 2, dtype=torch.bool),
@@ -354,7 +356,7 @@ def test_unimodal_aux_loss_requires_exact_future_horizon():
         zero=zero,
     ).ndim == 0
     with pytest.raises(ValueError, match="exactly match num_pred"):
-        _unimodal_aux_loss(
+        unimodal_aux_loss(
             extra_slot_logits,
             labels,
             torch.ones(2, 2, dtype=torch.bool),
@@ -362,6 +364,79 @@ def test_unimodal_aux_loss_requires_exact_future_horizon():
             ignore_index=-100,
             zero=zero,
         )
+
+
+def test_craf_extra_loss_characterization_keys_and_scalar_diagnostics():
+    class DummyCraf:
+        supports_reliability_controls = True
+        supports_force_modality_mask = True
+
+    labels = torch.tensor([[0, 1], [2, 3]])
+    outputs = torch.randn(2, 2, 5, requires_grad=True)
+    diagnostics = {
+        "unimodal_logits": torch.randn(2, 2, 2, 5, requires_grad=True),
+        "reliability": torch.full((2, 2), 0.5),
+        "gate": torch.full((2, 2), 0.5),
+        "prior": torch.tensor([0.7, 0.3]),
+        "effective_modality_mask": torch.tensor([[True, True], [True, False]]),
+        "modalities": ("gps", "mmwave"),
+    }
+    cfg = {
+        "loss": {
+            "beam_soft": {"enabled": True, "weight": 0.1},
+            "unimodal_aux": {"weight": 0.2},
+            "prior_regularization": {"enabled": True, "weight": 0.3},
+        },
+        "training": {
+            "warmup_epochs": 0,
+            "counterfactual": {"enabled": False, "weight": 0.0},
+            "reliability_kd": {"enabled": True, "weight": 0.4, "use_modalities": ["gps", "mmwave"]},
+        },
+    }
+
+    losses = compute_craf_extra_losses(
+        cfg,
+        DummyCraf(),
+        "fusion",
+        {},
+        model_cfg={"modalities": ["gps", "mmwave"]},
+        seq_length=2,
+        num_pred=2,
+        num_classes=5,
+        labels=labels,
+        student_outputs=outputs,
+        diagnostics=diagnostics,
+        teacher_diagnostics={"unimodal_logits": diagnostics["unimodal_logits"].detach()},
+        epoch=0,
+        gate_temperature=1.0,
+        device=torch.device("cpu"),
+        non_blocking=False,
+    )
+
+    assert set(losses) == {
+        "total",
+        "beam_soft",
+        "unimodal",
+        "counterfactual",
+        "prior_regularization",
+        "reliability_kd",
+        "_diagnostics",
+    }
+    assert {
+        "craf/gate_temperature",
+        "loss/beam_soft_weight",
+        "loss/unimodal_aux_weight",
+        "loss/gate_weight_target",
+        "loss/gate_weight_effective",
+        "loss/prior_regularization_weight",
+        "loss/reliability_kd_weight",
+        "craf/gate_mean/gps",
+        "craf/prior/gps",
+    } <= set(losses["_diagnostics"])
+    assert losses["beam_soft"].ndim == 0
+    assert losses["unimodal"].ndim == 0
+    assert losses["prior_regularization"].ndim == 0
+    assert losses["reliability_kd"].ndim == 0
 
 
 def test_craf_example_configs_load_without_affecting_legacy_config():

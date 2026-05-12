@@ -18,7 +18,7 @@ for path in (ROOT, SRC):
         sys.path.insert(0, str(path))
 
 from kd_sensing.cli.common import load_cli_config  # noqa: E402
-from kd_sensing.diagnostics.visualization.core import parse_visualization_config  # noqa: E402
+from kd_sensing.diagnostics.visualization.config import parse_visualization_config  # noqa: E402
 from kd_sensing.diagnostics.viewer_manifest import export_viewer_manifest  # noqa: E402
 from kd_sensing.diagnostics.viewer_predictions import (  # noqa: E402
     export_viewer_model_predictions,

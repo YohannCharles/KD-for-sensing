@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import random
-from typing import Iterable
+from typing import Any, Iterable
 
 import torch
 import torch.nn.functional as F
+
+from kd_sensing.engine.runtime import run_model_step
+from kd_sensing.engine.training_extensions import BatchState, ExtensionContext, LossBundle, TrainingExtension
 
 
 @dataclass(frozen=True)
@@ -319,11 +322,264 @@ def _prior_batch(prior: torch.Tensor, anchor_weights: torch.Tensor) -> torch.Ten
     raise ValueError(f"prior must have shape [K] or [B, K], got {tuple(prior.shape)}.")
 
 
+class MarfTrainingExtension(TrainingExtension):
+    name = "marf"
+
+    def after_forward(
+        self,
+        context: ExtensionContext,
+        state: Any,
+        batch_state: BatchState,
+    ) -> LossBundle | None:
+        del state
+        losses = compute_marf_extra_losses(
+            context.cfg,
+            context.student_model,
+            context.task,
+            batch_state.batch,
+            model_cfg=context.model_cfg["student"],
+            seq_length=context.seq_length_student,
+            num_pred=context.num_pred,
+            num_classes=context.num_classes,
+            labels=batch_state.labels,
+            student_outputs=batch_state.student_logits,
+            diagnostics=batch_state.student_output.diagnostics,
+            task_criterion=context.task_criterion,
+            device=context.device,
+            non_blocking=context.non_blocking,
+        )
+        return LossBundle(
+            total=losses["total"],
+            components={
+                "marf_residual_norm": losses["residual_norm"],
+                "marf_prior_regularization": losses["prior_regularization"],
+                "marf_anchor_entropy": losses["anchor_entropy"],
+                "marf_subset_ce": losses["subset_ce"],
+                "marf_subset_kd": losses["subset_kd"],
+            },
+            diagnostics=dict(losses.get("_diagnostics", {})),
+        )
+
+
+def compute_marf_extra_losses(
+    cfg: dict,
+    model,
+    task: str,
+    batch: dict[str, torch.Tensor],
+    *,
+    model_cfg: dict,
+    seq_length: int,
+    num_pred: int,
+    num_classes: int,
+    labels: torch.Tensor,
+    student_outputs: torch.Tensor,
+    diagnostics: dict,
+    task_criterion,
+    device: torch.device,
+    non_blocking: bool,
+) -> dict[str, torch.Tensor | dict[str, float]]:
+    zero = student_outputs.sum() * 0.0
+    scalar_diagnostics: dict[str, float] = {}
+    losses = {
+        "total": zero,
+        "residual_norm": zero,
+        "prior_regularization": zero,
+        "anchor_entropy": zero,
+        "subset_ce": zero,
+        "subset_kd": zero,
+        "_diagnostics": scalar_diagnostics,
+    }
+    if not getattr(model, "supports_marf_routing", False):
+        return losses
+
+    scalar_diagnostics.update(marf_scalar_diagnostics(diagnostics))
+    loss_cfg = cfg.get("loss", {}).get("marf", {})
+    residual_cfg = loss_cfg.get("residual_norm", {})
+    residual_weight = float(residual_cfg.get("weight", 0.0))
+    residual_enabled = bool(residual_cfg.get("enabled", residual_weight > 0.0)) and residual_weight > 0.0
+    scalar_diagnostics["loss/marf_residual_norm_weight"] = residual_weight if residual_enabled else 0.0
+    if residual_enabled and torch.is_tensor(diagnostics.get("residual_delta")):
+        losses["residual_norm"] = marf_residual_norm_loss(
+            diagnostics["residual_delta"],
+            diagnostics.get("residual_weights"),
+            diagnostics.get("effective_modality_mask"),
+        )
+        losses["total"] = losses["total"] + residual_weight * losses["residual_norm"]
+        scalar_diagnostics["loss/marf_residual_norm"] = float(losses["residual_norm"].detach().cpu().item())
+
+    prior_cfg = loss_cfg.get("prior_regularization", cfg.get("loss", {}).get("prior_regularization", {}))
+    prior_weight = float(prior_cfg.get("weight", 0.0))
+    prior_enabled = bool(prior_cfg.get("enabled", prior_weight > 0.0)) and prior_weight > 0.0
+    scalar_diagnostics["loss/marf_prior_regularization_weight"] = prior_weight if prior_enabled else 0.0
+    if prior_enabled and torch.is_tensor(diagnostics.get("anchor_weights")) and torch.is_tensor(diagnostics.get("prior")):
+        losses["prior_regularization"] = marf_anchor_prior_regularization_loss(
+            diagnostics["anchor_weights"],
+            diagnostics["prior"],
+            diagnostics.get("effective_modality_mask"),
+            loss_type=str(prior_cfg.get("loss_type", "mse")),
+        )
+        losses["total"] = losses["total"] + prior_weight * losses["prior_regularization"]
+        scalar_diagnostics["loss/marf_prior_regularization"] = float(
+            losses["prior_regularization"].detach().cpu().item()
+        )
+
+    entropy_cfg = loss_cfg.get("anchor_entropy", {})
+    entropy_weight = float(entropy_cfg.get("weight", 0.0))
+    entropy_enabled = bool(entropy_cfg.get("enabled", entropy_weight > 0.0)) and entropy_weight > 0.0
+    scalar_diagnostics["loss/marf_anchor_entropy_weight"] = entropy_weight if entropy_enabled else 0.0
+    if entropy_enabled and torch.is_tensor(diagnostics.get("anchor_weights")):
+        entropy_value = marf_anchor_entropy(diagnostics["anchor_weights"], diagnostics.get("effective_modality_mask"))
+        losses["anchor_entropy"] = entropy_value
+        sign = -1.0 if bool(entropy_cfg.get("maximize", True)) else 1.0
+        losses["total"] = losses["total"] + sign * entropy_weight * entropy_value
+        scalar_diagnostics["loss/marf_anchor_entropy"] = float(entropy_value.detach().cpu().item())
+
+    subset_cfg = cfg.get("training", {}).get("subset_training", {})
+    subset_enabled = bool(subset_cfg.get("enabled", False))
+    if not subset_enabled:
+        scalar_diagnostics["loss/marf_subset_ce"] = 0.0
+        scalar_diagnostics["loss/marf_subset_kd"] = 0.0
+        return losses
+    if task != "fusion":
+        raise ValueError("training.subset_training.enabled=true requires experiment.task=fusion.")
+    if not getattr(model, "supports_force_modality_mask", False):
+        raise ValueError("training.subset_training.enabled=true requires force_modality_mask support.")
+
+    modes = subset_cfg.get("modes") or subset_cfg.get("subsets") or []
+    if isinstance(modes, str):
+        modes = [modes]
+    if not modes:
+        return losses
+    available = diagnostics.get("effective_modality_mask")
+    if not torch.is_tensor(available):
+        available = torch.ones(
+            labels.shape[0],
+            len(model_cfg.get("modalities", getattr(model, "modalities", ("image", "radar")))),
+            dtype=torch.bool,
+            device=device,
+        )
+    prior = marf_prior_vector(diagnostics, available.shape[1], device=device)
+    sampler = ModalitySubsetSampler(
+        model_cfg.get("modalities", getattr(model, "modalities", ("image", "radar"))),
+        prior,
+        top_prior_k=int(subset_cfg.get("top_prior_k", 2)),
+        min_keep=int(subset_cfg.get("min_keep", 1)),
+        random_keep_prob=float(subset_cfg.get("random_keep_prob", 0.5)),
+    )
+    ce_weight = float(subset_cfg.get("ce_weight", loss_cfg.get("subset_ce", {}).get("weight", 0.0)))
+    kd_weight = float(subset_cfg.get("kd_weight", loss_cfg.get("subset_kd", {}).get("weight", 0.0)))
+    temperature = float(subset_cfg.get("temperature", loss_cfg.get("subset_kd", {}).get("temperature", 3.0)))
+    ignore_index = int(subset_cfg.get("ignore_index", -100))
+    subset_ce_losses = []
+    subset_kd_losses = []
+    max_subsets = int(subset_cfg.get("max_subsets_per_batch", len(modes)))
+    for mode in list(modes)[: max(max_subsets, 0)]:
+        spec = sampler.sample(str(mode), available_mask=available.detach(), device=device)
+        if not torch.any(spec.mask):
+            continue
+        if str(mode) == "all" and torch.equal(spec.mask, available.detach()):
+            subset_outputs = student_outputs
+        else:
+            subset_step = run_model_step(
+                model,
+                task,
+                batch,
+                model_cfg=model_cfg,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+                force_modality_mask=spec.mask,
+            )
+            subset_outputs = subset_step.logits
+        if ce_weight > 0.0:
+            subset_ce_losses.append(task_criterion(subset_outputs.reshape(-1, num_classes), labels.flatten()))
+        if kd_weight > 0.0:
+            subset_kd_losses.append(
+                all_to_subset_kl_loss(
+                    subset_outputs,
+                    student_outputs.detach(),
+                    labels,
+                    temperature=temperature,
+                    ignore_index=ignore_index,
+                )
+            )
+    if subset_ce_losses:
+        losses["subset_ce"] = torch.stack(subset_ce_losses).mean()
+        losses["total"] = losses["total"] + ce_weight * losses["subset_ce"]
+    if subset_kd_losses:
+        losses["subset_kd"] = torch.stack(subset_kd_losses).mean()
+        losses["total"] = losses["total"] + kd_weight * losses["subset_kd"]
+    scalar_diagnostics["loss/marf_subset_ce_weight"] = ce_weight if subset_ce_losses else 0.0
+    scalar_diagnostics["loss/marf_subset_kd_weight"] = kd_weight if subset_kd_losses else 0.0
+    scalar_diagnostics["loss/marf_subset_ce"] = float(losses["subset_ce"].detach().cpu().item())
+    scalar_diagnostics["loss/marf_subset_kd"] = float(losses["subset_kd"].detach().cpu().item())
+    return losses
+
+
+def marf_scalar_diagnostics(diagnostics: dict) -> dict[str, float]:
+    anchor = diagnostics.get("anchor_weights")
+    residual = diagnostics.get("residual_weights")
+    prior = diagnostics.get("prior")
+    mask = diagnostics.get("effective_modality_mask")
+    modalities = diagnostics.get("modalities")
+    if not torch.is_tensor(anchor) or anchor.ndim != 3:
+        return {}
+    modality_names = _diagnostic_modalities(modalities, anchor.shape[-1])
+    if torch.is_tensor(mask):
+        available = mask.detach().to(device=anchor.device, dtype=torch.bool)
+    else:
+        available = torch.ones(anchor.shape[0], anchor.shape[-1], dtype=torch.bool, device=anchor.device)
+    scalars: dict[str, float] = {}
+    for idx, modality in enumerate(modality_names):
+        modality_mask = available[:, idx]
+        if torch.any(modality_mask):
+            values = anchor[:, :, idx][modality_mask]
+            scalars[f"marf/anchor_mean/{modality}"] = float(values.detach().float().mean().cpu().item())
+            for horizon_idx in range(anchor.shape[1]):
+                horizon_values = anchor[:, horizon_idx, idx][modality_mask]
+                scalars[f"marf/anchor_h{horizon_idx}/{modality}"] = float(
+                    horizon_values.detach().float().mean().cpu().item()
+                )
+            if torch.is_tensor(residual) and residual.ndim == 3:
+                residual_values = residual[:, :, idx][modality_mask]
+                scalars[f"marf/residual_mean/{modality}"] = float(
+                    residual_values.detach().float().mean().cpu().item()
+                )
+        if torch.is_tensor(prior):
+            prior_values = prior[:, idx] if prior.ndim == 2 else prior[idx].view(1).expand(anchor.shape[0])
+            scalars[f"marf/prior/{modality}"] = float(prior_values.detach().float().mean().cpu().item())
+    return scalars
+
+
+def marf_prior_vector(diagnostics: dict, modality_count: int, *, device: torch.device) -> torch.Tensor:
+    prior = diagnostics.get("prior")
+    if torch.is_tensor(prior):
+        values = prior.detach()
+        if values.ndim == 2:
+            values = values.mean(dim=0)
+        return values.to(device=device, dtype=torch.float32).flatten()
+    return torch.full((int(modality_count),), 1.0 / max(int(modality_count), 1), dtype=torch.float32, device=device)
+
+
+def _diagnostic_modalities(modalities, modality_count: int) -> list[str]:
+    if not isinstance(modalities, (tuple, list)) or len(modalities) != modality_count:
+        return [f"modality_{idx}" for idx in range(modality_count)]
+    return [str(modality) for modality in modalities]
+
+
+_compute_marf_extra_losses = compute_marf_extra_losses
+
+
 __all__ = [
+    "MarfTrainingExtension",
     "ModalitySubsetSampler",
     "ModalitySubsetSpec",
     "all_to_subset_kl_loss",
+    "compute_marf_extra_losses",
     "marf_anchor_entropy",
     "marf_anchor_prior_regularization_loss",
+    "marf_prior_vector",
     "marf_residual_norm_loss",
+    "marf_scalar_diagnostics",
 ]

@@ -13,15 +13,21 @@ import torch
 
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config
 from kd_sensing.data.transform_ops.lidar import filter_lidar_points, read_lidar_point_cloud
-from kd_sensing.diagnostics.visualization.core import (
-    SampleCandidate,
+from kd_sensing.diagnostics.visualization.config import (
     apply_visualization_modalities,
-    build_diagnostic_datasets,
-    collect_candidates,
-    modality_statistics,
     parse_visualization_config,
-    select_sample_candidates,
+)
+from kd_sensing.diagnostics.visualization.datasets import (
+    build_diagnostic_datasets,
     selected_csv_frame_for_dataset,
+)
+from kd_sensing.diagnostics.visualization.sampling import (
+    SampleCandidate,
+    collect_candidates,
+    select_sample_candidates,
+)
+from kd_sensing.diagnostics.visualization.stats import (
+    modality_statistics,
 )
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 
