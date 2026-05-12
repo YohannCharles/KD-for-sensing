@@ -41,6 +41,55 @@ conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
   --check-only
 ```
 
+## 弱模态互补样本分析
+
+先从已有 Conditional Utility Audit 产物生成互补分析表：
+
+```bash
+conda run -n kd_mm_beam python scripts/analysis/build_complementarity_cases.py \
+  --scene scene32 \
+  --input-path outputs/scene32/scene32_marf/conditional_utility \
+  --output-dir outputs/scene32/complementarity_analysis
+```
+
+脚本会写出：
+
+- `outputs/scene32/complementarity_analysis/complementarity_cases.csv.gz`
+- `outputs/scene32/complementarity_analysis/complementarity_summary.json`
+- `outputs/scene32/complementarity_analysis/complementarity_by_bucket.csv`
+- `outputs/scene32/complementarity_analysis/complementarity_report.md`
+
+当前 Scene32 输入 schema 来自 `subset_predictions.csv.gz`，字段包括 `gt_beam`、`pred_top1`、`gt_prob`、`top1_prob`、`top2_prob`、`horizon_idx`、`horizon_name` 和 `subset_name`。分析器会把 `gt_beam` 映射为 `y_true`，把 `gt_prob` 映射为真值概率，并用 `top1_prob - top2_prob` 计算 margin。当前 weak-only 的 `image`、`radar`、`lidar` 预测来自 `teacher_predictions.csv.gz`，summary metadata 会记录 `weak_prediction_source=teacher_predictions`。如果未来输入缺少概率字段，case mining 仍会基于 top1 继续运行，并在 summary 中记录 `probability_metrics_available=false`。
+
+启动 viewer 时传入互补分析目录：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
+  --manifest outputs/diagnostics/gradio_viewer_cache/samples.json \
+  --complementarity-dir outputs/scene32/complementarity_analysis \
+  --host 127.0.0.1 \
+  --port 7860
+```
+
+Explorer 默认会筛选 `scene32`、`t+1`、`image`，并包含 `strong_wrong_weak_correct`、rescue、unused complementary 和 negative transfer。等价的最小研究筛选可以通过表格控件选择：
+
+```text
+Scene=scene32
+Horizon=t+1
+Weak Modality=image
+Case / Tag=strong_wrong_weak_correct,strong_wrong_weak_correct_fusion_correct,strong_wrong_weak_correct_fusion_wrong,strong_correct_fusion_wrong
+Sort=weak_gt_gain desc
+```
+
+如果只想快速确认页面能加载互补分析目录，而不启动 Web 服务：
+
+```bash
+conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
+  --manifest tools/visualization/sample_manifest_example.json \
+  --complementarity-dir outputs/scene32/complementarity_analysis \
+  --check-only
+```
+
 需要定位切帧耗时时，可以加 `--profile-render`。该参数默认关闭；开启后不会新增页面组件，也不会调整顶部控件、Overview、Raw Modalities、Processed Modalities 或 Diagnostics 的布局，只在控制台输出每次回调的过滤耗时、静态渲染耗时、future distribution 渲染耗时、cache hit/miss 和实际更新组件数量：
 
 ```bash
