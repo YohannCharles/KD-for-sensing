@@ -123,6 +123,7 @@ def final_config_with_runtime(
     checkpoint_registry: dict | None = None,
     throughput_metadata: dict | None = None,
     teacher_prior: dict | None = None,
+    early_stopping: dict | None = None,
 ) -> dict:
     final_cfg = deepcopy(cfg)
     runtime = final_cfg.setdefault("runtime", {})
@@ -140,6 +141,8 @@ def final_config_with_runtime(
             runtime["cache"] = throughput_metadata["cache"]
     if teacher_prior is not None:
         runtime["teacher_prior"] = teacher_prior
+    if early_stopping is not None:
+        runtime["early_stopping"] = early_stopping
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
@@ -403,6 +406,129 @@ def _aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
     }
 
 
+_EARLY_STOPPING_METRIC_ALIASES = {
+    "adba": "val_adba",
+    "dba": "val_adba",
+    "val_adba": "val_adba",
+    "val_dba": "val_adba",
+    "dba/val_adba": "val_adba",
+    "top1": "val_acc",
+    "val_top1": "val_acc",
+    "val_acc": "val_acc",
+    "val_acc_top1": "val_acc",
+    "top1_val_acc": "val_acc",
+    "accuracy/val": "val_acc",
+    "accuracy/val_top1": "val_acc",
+    "val/acc_top1": "val_acc",
+    "val/top1": "val_acc",
+    "loss": "val_loss",
+    "val_loss": "val_loss",
+    "loss/val": "val_loss",
+}
+_MAX_EARLY_STOPPING_METRICS = {"val_adba", "val_acc"}
+_MIN_EARLY_STOPPING_METRICS = {"val_loss"}
+
+
+def _normalize_early_stopping_metric(metric: object) -> str:
+    raw = "val_adba" if metric is None else str(metric).strip()
+    key = raw.lower().replace("-", "_")
+    normalized = _EARLY_STOPPING_METRIC_ALIASES.get(key, key)
+    if normalized not in _MAX_EARLY_STOPPING_METRICS | _MIN_EARLY_STOPPING_METRICS:
+        supported = ", ".join(sorted(_EARLY_STOPPING_METRIC_ALIASES))
+        raise ValueError(f"Unsupported early stopping metric '{raw}'. Supported aliases: {supported}.")
+    return normalized
+
+
+def _resolve_early_stopping_mode(metric: str, mode: object | None) -> str:
+    if mode is None:
+        return "min" if metric in _MIN_EARLY_STOPPING_METRICS else "max"
+    normalized = str(mode).strip().lower()
+    if normalized not in {"min", "max"}:
+        raise ValueError(f"training.early_stopping_mode must be 'min' or 'max', got '{mode}'.")
+    return normalized
+
+
+def _configure_early_stopping(training_cfg: dict) -> tuple[str, str]:
+    metric = _normalize_early_stopping_metric(training_cfg.get("early_stopping_metric", "val_adba"))
+    mode = _resolve_early_stopping_mode(metric, training_cfg.get("early_stopping_mode"))
+    training_cfg["early_stopping_metric"] = metric
+    training_cfg["early_stopping_mode"] = mode
+    return metric, mode
+
+
+def _initial_early_stopping_value(mode: str) -> float:
+    return float("inf") if mode == "min" else float("-inf")
+
+
+def _early_stopping_improved(current: float, best: float, *, mode: str, min_delta: float) -> bool:
+    if mode == "min":
+        return current < best - min_delta
+    if mode == "max":
+        return current > best + min_delta
+    raise ValueError(f"Unsupported early stopping mode '{mode}'.")
+
+
+def _early_stopping_metric_value(epoch_log: dict, metric: str) -> float:
+    if metric not in epoch_log:
+        raise ValueError(
+            f"Early stopping metric '{metric}' is not available in validation metrics. "
+            "Ensure validation produces DBA/ADBA metrics or configure "
+            "training.early_stopping_metric to another supported metric such as val_loss."
+        )
+    value = epoch_log[metric]
+    if value is None:
+        raise ValueError(
+            f"Early stopping metric '{metric}' is None. Configure a supported metric with a numeric value."
+        )
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Early stopping metric '{metric}' must be numeric, got {value!r}.") from exc
+    if not np.isfinite(numeric):
+        raise ValueError(f"Early stopping metric '{metric}' must be finite, got {numeric}.")
+    return numeric
+
+
+def _validate_early_stopping_source_available(val_metrics: dict, metric: str) -> None:
+    if metric == "val_adba" and "dba" not in val_metrics:
+        raise ValueError(
+            "Early stopping metric 'val_adba' is not available in validation metrics because DBA/ADBA was not "
+            "produced. Ensure validation computes DBA or configure training.early_stopping_metric to another "
+            "supported metric such as val_loss."
+        )
+
+
+def _legacy_early_stopping_value(checkpoint: dict, metric: str, default: float) -> float:
+    if metric == "val_loss":
+        return float(checkpoint.get("best_val_loss", checkpoint.get("test_loss", default)))
+    if metric == "val_acc":
+        return float(checkpoint.get("best_val_top1", default))
+    return default
+
+
+def _legacy_early_stopping_epoch(checkpoint: dict, metric: str, default: int) -> int:
+    if metric == "val_acc":
+        return int(checkpoint.get("best_top1_epoch", default))
+    return default
+
+
+def _early_stopping_state(
+    *,
+    metric: str,
+    mode: str,
+    best_value: float,
+    best_epoch: int,
+    epochs_without_improvement: int,
+) -> dict:
+    return {
+        "metric": metric,
+        "mode": mode,
+        "best_value": float(best_value),
+        "best_epoch": int(best_epoch),
+        "epochs_without_improvement": int(epochs_without_improvement),
+    }
+
+
 def _validation_subset_epoch_scalars(val_metrics: dict) -> dict[str, float]:
     subset_metrics = val_metrics.get("modality_subsets")
     if not isinstance(subset_metrics, dict):
@@ -447,6 +573,8 @@ def _progress_enabled(cfg: dict) -> bool:
 
 def train(cfg: dict) -> dict:
     set_seed(cfg.get("experiment", {}).get("seed", 0))
+    training_cfg = cfg.setdefault("training", {})
+    early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg)
     if cfg.get("training", {}).get("resume") is True and not cfg.get("output", {}).get("run_name"):
         raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
     run_dir = create_run_dir(cfg)
@@ -505,7 +633,6 @@ def train(cfg: dict) -> dict:
     scheduler = build_scheduler(cfg, optimizer)
     optimizer_groups = optimizer_param_group_summary(optimizer)
     grad_scaler = make_grad_scaler(cfg, amp_enabled)
-    training_cfg = cfg["training"]
     extension_context = ExtensionContext(
         cfg=cfg,
         task=task,
@@ -530,6 +657,8 @@ def train(cfg: dict) -> dict:
     best_val_loss = float("inf")
     best_val_top1 = float("-inf")
     best_top1_epoch = 0
+    best_early_stopping_value = _initial_early_stopping_value(early_stopping_mode)
+    best_early_stopping_epoch = 0
     registry_checkpoint = None
     epochs_without_improvement = 0
     history = {
@@ -571,6 +700,24 @@ def train(cfg: dict) -> dict:
         best_val_loss = float(checkpoint.get("best_val_loss", checkpoint.get("test_loss", best_val_loss)))
         best_val_top1 = float(checkpoint.get("best_val_top1", best_val_top1))
         best_top1_epoch = int(checkpoint.get("best_top1_epoch", best_top1_epoch))
+        if "early_stopping_metric" in checkpoint:
+            early_stopping_metric = _normalize_early_stopping_metric(checkpoint["early_stopping_metric"])
+        if "early_stopping_mode" in checkpoint:
+            early_stopping_mode = _resolve_early_stopping_mode(early_stopping_metric, checkpoint["early_stopping_mode"])
+        training_cfg["early_stopping_metric"] = early_stopping_metric
+        training_cfg["early_stopping_mode"] = early_stopping_mode
+        best_early_stopping_value = float(
+            checkpoint.get(
+                "best_early_stopping_value",
+                _legacy_early_stopping_value(checkpoint, early_stopping_metric, best_early_stopping_value),
+            )
+        )
+        best_early_stopping_epoch = int(
+            checkpoint.get(
+                "best_early_stopping_epoch",
+                _legacy_early_stopping_epoch(checkpoint, early_stopping_metric, best_early_stopping_epoch),
+            )
+        )
         registry_checkpoint = checkpoint.get("checkpoint_registry", registry_checkpoint)
         epochs_without_improvement = int(checkpoint.get("epochs_without_improvement", 0))
     try:
@@ -822,6 +969,7 @@ def train(cfg: dict) -> dict:
                 device,
                 output_dir=run_dir,
             )
+            _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
             val_loss = val_metrics["loss"]
             top1 = val_metrics["topk"].get("1", [0.0])
             val_acc = float(top1[0]) if top1 else 0.0
@@ -875,18 +1023,18 @@ def train(cfg: dict) -> dict:
             epoch_log.update(epoch_diagnostics.mean())
             for extension, state in zip(extensions, extension_states):
                 epoch_log.update(extension.after_epoch(extension_context, state, epoch=epoch))
-            epoch_logs.append(epoch_log)
-            epoch_progress.set_postfix(
-                train_loss=f"{running_loss:.4f}",
-                val_loss=f"{float(val_loss):.4f}",
-                val_acc=f"{val_acc:.4f}",
-                lr=f"{current_lr:.2e}",
+            early_stopping_value = _early_stopping_metric_value(epoch_log, early_stopping_metric)
+            if float(val_loss) < best_val_loss:
+                best_val_loss = float(val_loss)
+            improved = _early_stopping_improved(
+                early_stopping_value,
+                best_early_stopping_value,
+                mode=early_stopping_mode,
+                min_delta=float(training_cfg.get("min_delta", 0.0)),
             )
-            _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
-            _write_tensorboard_craf_scalars(tensorboard_writer, epoch_log, epoch + 1)
-            improved = val_loss < best_val_loss - training_cfg.get("min_delta", 0.0)
             if improved:
-                best_val_loss = val_loss
+                best_early_stopping_value = early_stopping_value
+                best_early_stopping_epoch = epoch + 1
                 epochs_without_improvement = 0
                 torch.save(student_model.state_dict(), run_dir / "checkpoints" / "best.pth")
             else:
@@ -906,6 +1054,27 @@ def train(cfg: dict) -> dict:
                     split_metadata=split_metadata,
                     normalization_artifacts=normalization_artifacts,
                 )
+            epoch_log.update(
+                {
+                    "early_stopping_metric": early_stopping_metric,
+                    "early_stopping_mode": early_stopping_mode,
+                    "early_stopping_value": early_stopping_value,
+                    "early_stopping_improved": bool(improved),
+                    "best_early_stopping_value": best_early_stopping_value,
+                    "best_early_stopping_epoch": best_early_stopping_epoch,
+                    "epochs_without_improvement": epochs_without_improvement,
+                }
+            )
+            epoch_logs.append(epoch_log)
+            epoch_progress.set_postfix(
+                train_loss=f"{running_loss:.4f}",
+                val_loss=f"{float(val_loss):.4f}",
+                val_acc=f"{val_acc:.4f}",
+                early_stop=f"{early_stopping_metric}:{early_stopping_value:.4f}",
+                lr=f"{current_lr:.2e}",
+            )
+            _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
+            _write_tensorboard_craf_scalars(tensorboard_writer, epoch_log, epoch + 1)
             save_checkpoint(
                 {
                     "epoch": epoch + 1,
@@ -916,6 +1085,10 @@ def train(cfg: dict) -> dict:
                     "best_val_loss": best_val_loss,
                     "best_val_top1": best_val_top1,
                     "best_top1_epoch": best_top1_epoch,
+                    "early_stopping_metric": early_stopping_metric,
+                    "early_stopping_mode": early_stopping_mode,
+                    "best_early_stopping_value": best_early_stopping_value,
+                    "best_early_stopping_epoch": best_early_stopping_epoch,
                     "epochs_without_improvement": epochs_without_improvement,
                     "normalization_artifacts": normalization_artifacts,
                     "checkpoint_registry": registry_checkpoint,
@@ -942,9 +1115,17 @@ def train(cfg: dict) -> dict:
     if teacher_metrics is not None:
         with (run_dir / "teacher_metrics.json").open("w", encoding="utf-8") as f:
             json.dump(teacher_metrics, f, indent=2)
+    early_stopping_metadata = _early_stopping_state(
+        metric=early_stopping_metric,
+        mode=early_stopping_mode,
+        best_value=best_early_stopping_value,
+        best_epoch=best_early_stopping_epoch,
+        epochs_without_improvement=epochs_without_improvement,
+    )
     train_log = {
         **history,
         "epoch_logs": epoch_logs,
+        "early_stopping": early_stopping_metadata,
         "teacher_metrics": teacher_metrics,
         "checkpoint_loads": checkpoint_loads,
         "teacher_prior": teacher_prior_info,
@@ -960,6 +1141,7 @@ def train(cfg: dict) -> dict:
             "checkpoint_registry": registry_checkpoint,
             "throughput": throughput_metadata,
             "teacher_prior": teacher_prior_info,
+            "early_stopping": early_stopping_metadata,
         },
     }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
@@ -974,6 +1156,7 @@ def train(cfg: dict) -> dict:
             checkpoint_registry=registry_checkpoint,
             throughput_metadata=throughput_metadata,
             teacher_prior=teacher_prior_info,
+            early_stopping=early_stopping_metadata,
         ),
         run_dir / "final_config.yaml",
     )
@@ -983,6 +1166,9 @@ def train(cfg: dict) -> dict:
         "epoch_logs": epoch_logs,
         "best_val_loss": best_val_loss,
         "best_val_top1": best_val_top1,
+        "early_stopping": early_stopping_metadata,
+        "best_early_stopping_value": best_early_stopping_value,
+        "best_early_stopping_epoch": best_early_stopping_epoch,
         "checkpoint_registry": registry_checkpoint,
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_loads": checkpoint_loads,

@@ -147,6 +147,8 @@ DEFAULT_CONFIG = {
         "grad_clip": 10.0,
         "patience": 20,
         "use_early_stopping": True,
+        "early_stopping_metric": "val_adba",
+        "early_stopping_mode": "max",
         "min_delta": 1e-4,
         "resume": False,
         "start_epoch": 0,

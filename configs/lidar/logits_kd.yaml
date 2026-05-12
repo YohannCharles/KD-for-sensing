@@ -74,6 +74,8 @@ training:
   grad_clip: 10.0
   patience: 20
   use_early_stopping: true
+  early_stopping_metric: val_adba
+  early_stopping_mode: max
   min_delta: 0.0001
 output:
   dir: outputs

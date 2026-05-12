@@ -211,6 +211,8 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
             "grad_clip": 10.0,
             "patience": 20,
             "use_early_stopping": True,
+            "early_stopping_metric": "val_adba",
+            "early_stopping_mode": "max",
             "min_delta": 0.0001,
         },
         "output": {"dir": "outputs", "run_name": name},
@@ -512,12 +514,13 @@ def _distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str
 
 
 def _training_overrides(mode: str, image_radar: bool) -> dict[str, Any]:
+    early_stopping = {"early_stopping_metric": "val_adba", "early_stopping_mode": "max"}
     if not image_radar:
-        return {"lr": 0.00075, "weight_decay": 0.0001}
+        return {**early_stopping, "lr": 0.00075, "weight_decay": 0.0001}
     params = {
         "teacher_no_kd": {"lr": 0.00075, "weight_decay": 0.0001},
         "student_no_kd": {"lr": 0.0004, "weight_decay": 0.0},
         "logits_kd": {"lr": 0.00095, "weight_decay": 0.0},
         "rkd": {"lr": 0.00095, "weight_decay": 0.0},
     }
-    return params[mode]
+    return {**early_stopping, **params[mode]}

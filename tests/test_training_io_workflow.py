@@ -36,7 +36,15 @@ from kd_sensing.engine.builders import (  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
 from kd_sensing.preprocessing.image import generate_image_motion_cache  # noqa: E402
-from kd_sensing.engine.trainer import create_eval_run_dir, create_run_dir, train  # noqa: E402
+from kd_sensing.engine.trainer import (  # noqa: E402
+    _configure_early_stopping,
+    _early_stopping_improved,
+    _early_stopping_metric_value,
+    _validate_early_stopping_source_available,
+    create_eval_run_dir,
+    create_run_dir,
+    train,
+)
 from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E402
 from kd_sensing.utils.artifact_registry import (  # noqa: E402
     archive_best_checkpoint,
@@ -605,6 +613,40 @@ def test_scene_grouped_eval_dir_and_explicit_eval_output(tmp_path: Path):
     assert explicit == tmp_path / "manual_eval"
 
 
+@pytest.mark.parametrize(
+    ("raw_metric", "expected_metric", "expected_mode"),
+    [
+        ("val_adba", "val_adba", "max"),
+        ("dba", "val_adba", "max"),
+        ("top1_val_acc", "val_acc", "max"),
+        ("val/acc_top1", "val_acc", "max"),
+        ("val_loss", "val_loss", "min"),
+    ],
+)
+def test_early_stopping_metric_aliases_and_default_direction(raw_metric: str, expected_metric: str, expected_mode: str):
+    training_cfg = {"early_stopping_metric": raw_metric}
+
+    metric, mode = _configure_early_stopping(training_cfg)
+
+    assert metric == expected_metric
+    assert mode == expected_mode
+    assert training_cfg["early_stopping_metric"] == expected_metric
+    assert training_cfg["early_stopping_mode"] == expected_mode
+
+
+def test_early_stopping_improvement_direction_and_missing_dba_error():
+    assert _early_stopping_improved(0.91, 0.90, mode="max", min_delta=0.001) is True
+    assert _early_stopping_improved(0.9005, 0.90, mode="max", min_delta=0.001) is False
+    assert _early_stopping_improved(0.49, 0.50, mode="min", min_delta=0.001) is True
+    assert _early_stopping_improved(0.4995, 0.50, mode="min", min_delta=0.001) is False
+    assert _early_stopping_metric_value({"val_acc": 0.25}, "val_acc") == 0.25
+
+    with pytest.raises(ValueError, match="val_adba.*not available"):
+        _early_stopping_metric_value({"val_acc": 0.25}, "val_adba")
+    with pytest.raises(ValueError, match="DBA/ADBA"):
+        _validate_early_stopping_source_available({"loss": 1.0, "topk": {}}, "val_adba")
+
+
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
     cfg = load_config(
         ROOT / "configs/gps/student_no_kd.yaml",
@@ -669,6 +711,13 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "val_atop3",
         "val_atop5",
         "val_adba",
+        "early_stopping_metric",
+        "early_stopping_mode",
+        "early_stopping_value",
+        "early_stopping_improved",
+        "best_early_stopping_value",
+        "best_early_stopping_epoch",
+        "epochs_without_improvement",
         "learning_rate",
         "optimizer/lr/main",
         "optimizer/params/main",
@@ -682,12 +731,24 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "best_val_loss",
         "best_val_top1",
         "best_top1_epoch",
+        "early_stopping_metric",
+        "early_stopping_mode",
+        "best_early_stopping_value",
+        "best_early_stopping_epoch",
         "epochs_without_improvement",
         "normalization_artifacts",
         "checkpoint_registry",
     } <= set(checkpoint)
+    assert checkpoint["early_stopping_metric"] == "val_adba"
+    assert checkpoint["early_stopping_mode"] == "max"
+    assert checkpoint["best_early_stopping_epoch"] == 1
+    assert result["early_stopping"]["metric"] == "val_adba"
+    assert result["early_stopping"]["mode"] == "max"
     assert final_cfg["runtime"]["run_dir"] == str(run_dir)
     assert final_cfg["runtime"]["output_overwrite"] is True
+    assert final_cfg["training"]["early_stopping_metric"] == "val_adba"
+    assert final_cfg["training"]["early_stopping_mode"] == "max"
+    assert final_cfg["runtime"]["early_stopping"]["metric"] == "val_adba"
     assert "splits" in final_cfg["runtime"]
     assert "normalization_artifacts" in final_cfg["runtime"]
     assert "throughput" in final_cfg["runtime"]

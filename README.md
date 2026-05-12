@@ -114,6 +114,20 @@ teacher no-KD 的最高验证 Top-1 权重，缺失时再回退到
 `distillation.teacher_model_name` 覆盖旧式 teacher checkpoint 路径；绝对路径和评估入口
 `--weights` 始终优先于 registry。
 
+默认 early stopping 监控验证 `val_adba`，即所有未来目标时隙 DBA 的平均值，比较方向为 `max`。
+`training.min_delta` 表示 DBA 至少需要提升的幅度；`checkpoints/best.pth` 默认对应该指标的最佳 epoch。
+如需恢复 Top-1 或 loss 早停，可以显式覆盖：
+
+```bash
+python scripts/train.py --config configs/image/no_kd.yaml \
+  -o training.early_stopping_metric=top1_val_acc \
+  -o training.early_stopping_mode=max
+
+python scripts/train.py --config configs/image/no_kd.yaml \
+  -o training.early_stopping_metric=val_loss \
+  -o training.early_stopping_mode=min
+```
+
 单模态 canonical 配置矩阵：
 
 | 模态 | Teacher baseline | Student baseline | KD |
@@ -441,8 +455,8 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 
 - `final_config.yaml`
 - `checkpoints/last.pth`
-- `checkpoints/best.pth`
-- `checkpoints/best_top1.pth`
+- `checkpoints/best.pth`：默认按 `training.early_stopping_metric: val_adba` 保存
+- `checkpoints/best_top1.pth`：显式 Top-1 最佳 checkpoint，供 registry 和分析流程使用
 - `metrics.json`
 - `train_log.json`
 - `training_outputs.npz`
@@ -452,7 +466,8 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 
 恢复训练时设置 `training.resume=true` 会从当前场景分组下的 `output.run_name/checkpoints/last.pth`
 恢复；也可以将
-`training.resume` 设为 checkpoint 文件路径。恢复会加载模型、optimizer、scheduler、epoch 和最佳验证损失。
+`training.resume` 设为 checkpoint 文件路径。恢复会加载模型、optimizer、scheduler、epoch、最佳验证损失
+以及 early stopping 指标、方向、最佳值和 patience 计数。
 
 可以用 TensorBoard 查看和对比训练曲线：
 
@@ -464,7 +479,7 @@ TensorBoard 标量包含基础训练曲线和验证平均指标：
 
 - `accuracy/val_atop3`：所有 `J` 个未来目标时隙 Top-3 accuracy 的平均值。
 - `accuracy/val_atop5`：所有 `J` 个未来目标时隙 Top-5 accuracy 的平均值。
-- `dba/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算。
+- `dba/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算；这也是默认 early stopping 指标。
 
 ## 评估
 

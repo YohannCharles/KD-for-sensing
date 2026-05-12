@@ -275,6 +275,12 @@ def _build_teacher_and_student(config_path: str):
     return MODELS.build(cfg["model"]["teacher"]), MODELS.build(cfg["model"]["student"]), cfg
 
 
+def _assert_default_early_stopping(cfg: dict) -> None:
+    assert cfg["training"]["use_early_stopping"] is True
+    assert cfg["training"]["early_stopping_metric"] == "val_adba"
+    assert cfg["training"]["early_stopping_mode"] == "max"
+
+
 def _load_state_dict(weight_path: str) -> dict[str, torch.Tensor]:
     path = ROOT / weight_path
     try:
@@ -329,7 +335,7 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     assert cfg["training"]["weight_decay"] == expected_params["weight_decay"]
     assert cfg["training"]["grad_clip"] == 10.0
     assert cfg["training"]["patience"] == 20
-    assert cfg["training"]["use_early_stopping"] is True
+    _assert_default_early_stopping(cfg)
     assert cfg["training"]["min_delta"] == 0.0001
     assert cfg["scheduler"]["T_0"] == 10
     assert cfg["scheduler"]["T_mult"] == 2
@@ -381,6 +387,7 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     assert cfg["experiment"]["name"] == stem
     assert cfg["experiment"]["task"] == "fusion"
     assert cfg["output"]["run_name"] == stem
+    _assert_default_early_stopping(cfg)
     assert cfg["model"]["teacher"]["type"] == "fusion_teacher"
     assert cfg["model"]["teacher"]["modalities"] == modalities
     assert cfg["model"]["student"]["modalities"] == modalities
@@ -461,6 +468,7 @@ def test_legacy_configs_keep_compatible_semantics(
     assert cfg["experiment"]["task"] == task
     assert cfg["distillation"]["type"] == distillation_type
     assert cfg["model"]["student"]["type"] == student_type
+    _assert_default_early_stopping(cfg)
     if task == "fusion" and modalities == ["image", "radar"]:
         assert cfg["model"]["teacher"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
         assert cfg["model"]["student"]["gru_params"] == FUSION_STUDENT_GRU_PARAMS
@@ -534,6 +542,8 @@ def test_virtual_fusion_config_generator_uses_canonical_semantics():
     assert cfg["distillation"]["type"] == "logits_kd"
     assert cfg["distillation"]["teacher_model_name"] == "best.pth"
     assert cfg["paths"]["weights_dir"] == "outputs/scene32/gps_mmwave_teacher_no_kd/checkpoints"
+    assert cfg["training"]["early_stopping_metric"] == "val_adba"
+    assert cfg["training"]["early_stopping_mode"] == "max"
 
 
 def test_virtual_image_radar_config_generator_keeps_compatibility_params():
@@ -548,14 +558,22 @@ def test_virtual_image_radar_config_generator_keeps_compatibility_params():
     assert cfg["distillation"]["alpha"] == 0.4
     assert cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
     assert cfg["paths"]["weights_dir"] == "All_models"
+    assert cfg["training"]["early_stopping_metric"] == "val_adba"
+    assert cfg["training"]["early_stopping_mode"] == "max"
 
 
 def test_load_config_applies_overrides_after_canonical_config_resolution():
     cfg = _load("configs/fusion/gps_mmwave_logits_kd.yaml")
-    overridden = load_config(ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml", ["training.epochs=1"])
+    overridden = load_config(
+        ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml",
+        ["training.epochs=1", "training.early_stopping_metric=top1_val_acc", "training.early_stopping_mode=max"],
+    )
 
     assert cfg["experiment"]["name"] == "gps_mmwave_logits_kd"
+    _assert_default_early_stopping(cfg)
     assert overridden["training"]["epochs"] == 1
+    assert overridden["training"]["early_stopping_metric"] == "top1_val_acc"
+    assert overridden["training"]["early_stopping_mode"] == "max"
     assert overridden["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
 
 
@@ -812,6 +830,9 @@ def test_training_resume_restores_epoch_optimizer_and_scheduler(tmp_path: Path):
     assert resumed_checkpoint["optimizer"]
     assert resumed_checkpoint["scheduler"]
     assert resumed_checkpoint["best_val_loss"] == second["best_val_loss"]
+    assert resumed_checkpoint["early_stopping_metric"] == "val_adba"
+    assert resumed_checkpoint["early_stopping_mode"] == "max"
+    assert resumed_checkpoint["best_early_stopping_value"] == second["best_early_stopping_value"]
     assert second["checkpoint_loads"][0]["role"] == "resume"
 
 
