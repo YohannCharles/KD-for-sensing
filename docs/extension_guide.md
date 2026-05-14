@@ -43,12 +43,17 @@ model:
     gru_params: [64, 64, 1]
 ```
 
-Image models receive `[B, T, 1, 224, 224]`. Radar models receive `[B, T, 2, 128, 64]`. These image
-and radar sizes are structural constraints for the built-in compatibility models; changing them requires
-updating the motion-mask path, fixed FC inputs, or radar branch. GPS models receive GPS-Rel-Polar tensors
-shaped `[B, T, 3]`. LiDAR models receive BEV tensors shaped `[B, T, 3, H, W]`. Fusion models receive only
-the tensors listed in `modalities`, using keyword inputs `image_batch`, `radar_batch`, `gps_batch`, and
-`lidar_batch`. Models must return `(logits, input_features, output_features)`.
+Image models receive RGB/ImageNet tensors shaped `[B, T, 3, 224, 224]`. Radar models receive
+`[B, T, 2, 128, 64]`. These image and radar sizes are structural constraints for the built-in
+models; changing them requires updating fixed FC inputs or the radar branch. GPS models receive
+GPS-Rel-Polar tensors shaped `[B, T, 3]`. LiDAR models receive BEV tensors
+shaped `[B, T, 3, H, W]`. Fusion models receive only the tensors listed in `modalities`, using keyword
+inputs `image_batch`, `radar_batch`, `gps_batch`, and `lidar_batch`. Models must return
+`(logits, input_features, output_features)` or a dict with `logits`.
+
+Image preprocessing is selected with `data.dataset.image_profile`. The default is `rgb_imagenet`,
+paired with the `resnet18_imagenet_rgb` encoder for RGB street-view experiments such as Scenario 31-34.
+The RGB profile produces `[B, T, 3, 224, 224]` ImageNet-normalized tensors and does not read or write an image cache.
 
 Built-in single-modality configs use `gru_params: [64, 64, 1]`; radar/GPS/LiDAR single-modality
 configs inherit the image single-modality training and KD parameters for shared fields. Image+radar

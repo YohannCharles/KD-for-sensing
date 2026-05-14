@@ -29,8 +29,8 @@ def _profile_key() -> str:
 @pytest.mark.parametrize(
     ("model_type", "input_tensor", "extra"),
     [
-        ("image_teacher", torch.rand(1, 2, 1, 224, 224), {}),
-        ("image_student", torch.rand(1, 2, 1, 224, 224), {}),
+        ("image_teacher", torch.rand(1, 2, 3, 224, 224), {}),
+        ("image_student", torch.rand(1, 2, 3, 224, 224), {}),
         ("radar_teacher", torch.rand(1, 2, 2, 128, 64), {"radar_channels": 2}),
         ("radar_student", torch.rand(1, 2, 2, 128, 64), {"radar_channels": 2}),
         ("gps_teacher", torch.rand(1, 2, 3), {"gps_input_size": 3}),

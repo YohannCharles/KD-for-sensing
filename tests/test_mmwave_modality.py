@@ -135,6 +135,7 @@ def test_mmwave_dataset_keeps_old_csv_compatible_when_disabled(tmp_path: Path):
         seq_len=1,
         num_pred=1,
         enabled_modalities=["image"],
+        image_profile="rgb_imagenet",
         image_size=[8, 8],
     )
 

@@ -9,19 +9,19 @@ Scenario 9 dataset MUST 根据训练或评估配置中的启用模态加载样�
 #### Scenario: GPS-only 不读取 image 或 radar 文件
 - **WHEN** 用户运行 `experiment.task: gps` 的训练或评估配置
 - **THEN** dataset MUST 只读取 GPS、`input_beam` 和 `target_beam` 所需文件
-- **AND** dataset MUST 不调用 image motion mask 或 radar map 加载逻辑
+- **AND** dataset MUST 不调用 image 或 radar map 加载逻辑
 - **AND** 返回样本 MUST 不包含 `image`、`radar_ra` 或 `radar_da`
 
 #### Scenario: LiDAR-only 不读取 image 或 radar 文件
 - **WHEN** 用户运行 `experiment.task: lidar` 的训练或评估配置
 - **THEN** dataset MUST 只读取 LiDAR、`input_beam` 和 `target_beam` 所需文件
-- **AND** dataset MUST 不调用 image motion mask、radar map 或 GPS 加载逻辑
+- **AND** dataset MUST 不调用 image、radar map 或 GPS 加载逻辑
 - **AND** 返回样本 MUST 不包含 `image`、`radar_ra`、`radar_da` 或 `gps`
 
 #### Scenario: mmWave-only 不读取其它输入模态文件
 - **WHEN** 用户运行 `experiment.task: mmwave` 的训练或评估配置
 - **THEN** dataset MUST 只读取 mmWave、`input_beam` 和 `target_beam` 所需文件
-- **AND** dataset MUST 不调用 image motion mask、radar map、GPS 或 LiDAR 加载逻辑
+- **AND** dataset MUST 不调用 image、radar map、GPS 或 LiDAR 加载逻辑
 - **AND** 返回样本 MUST 包含 `mmwave`
 - **AND** 返回样本 MUST 不包含 `image`、`radar_ra`、`radar_da`、`gps` 或 `lidar`
 
@@ -33,8 +33,8 @@ Scenario 9 dataset MUST 根据训练或评估配置中的启用模态加载样�
 
 #### Scenario: image-only 只读取 image 输入
 - **WHEN** 用户运行 `experiment.task: image` 的训练或评估配置
-- **THEN** dataset MUST 只读取 image、`input_beam` 和 `target_beam` 所需文件
-- **AND** dataset MUST 不调用 radar、GPS、LiDAR 或 mmWave 加载逻辑
+- **THEN** dataset MUST 只读取 RGB image、`input_beam` 和 `target_beam` 所需文件
+- **AND** dataset MUST 不调用 radar、GPS、LiDAR、mmWave 或 image motion cache 逻辑
 - **AND** 返回样本 MUST 包含 `image`
 
 #### Scenario: fusion 按 modalities 读取输入
@@ -133,13 +133,13 @@ Dataset 样本构建流程 MUST 明确 `portion` 小比例采样语义。默认 
 - **AND** 样本顺序 MUST 与 CSV 原始顺序保持兼容
 
 ### Requirement: 自动 cache policy 下的模态感知 cache 访问
-Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。启用 image 时 MAY 使用 image motion mask cache；启用 LiDAR 时 MAY 使用 LiDAR BEV cache；未启用对应模态时 MUST 完全跳过对应 cache 访问。
+Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。启用 LiDAR 时允许使用 LiDAR BEV cache；未启用 LiDAR 时 MUST 完全跳过 LiDAR cache 访问。启用 image 时 MUST 不访问 image motion cache。
 
-#### Scenario: image-only 自动使用 image cache
+#### Scenario: image-only 不使用 image motion cache
 - **WHEN** 用户运行 image-only 配置且 `data.cache.policy: auto`
-- **THEN** dataset MUST 对 image motion mask 启用 cache 读取
-- **AND** cache miss 时 dataset MUST 生成并写入缺失的 image motion mask cache
-- **AND** 返回样本字段、shape 和 dtype MUST 与未启用 cache 时一致
+- **THEN** dataset MUST 使用 RGB/ImageNet image 输入
+- **AND** dataset MUST 不读取、不创建、不写入 image motion cache
+- **AND** 返回样本字段、shape 和 dtype MUST 与 RGB/ImageNet image 契约一致
 
 #### Scenario: LiDAR fusion 自动使用 LiDAR cache
 - **WHEN** 用户运行包含 LiDAR 的 fusion 配置且 `data.cache.policy: auto`
@@ -148,9 +148,10 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 - **AND** 返回样本字段、shape 和 dtype MUST 与未启用 cache 时一致
 
 #### Scenario: 非相关模态不触发 cache 初始化
-- **WHEN** 用户运行不包含 image 或 LiDAR 的单模态或 fusion 配置
-- **THEN** dataset 初始化 MUST 不创建 image 或 LiDAR cache 目录
-- **AND** dataset 取样 MUST 不调用 image 或 LiDAR cache path 解析逻辑
+- **WHEN** 用户运行不包含 LiDAR 的单模态或 fusion 配置
+- **THEN** dataset 初始化 MUST 不创建 LiDAR cache 目录
+- **AND** dataset 取样 MUST 不调用 LiDAR cache path 解析逻辑
+- **AND** dataset MUST 不调用任何 image motion cache path 解析逻辑
 
 ### Requirement: DeepSense6G 场景感知数据构建
 数据构建流程 MUST 根据 DeepSense6G 场景选择解析 dataset 类型、数据根目录和 split CSV。现有 `scenario9` 配置 MUST 继续可构建，并 MUST 等价于选择 Scenario 9。
@@ -174,19 +175,6 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 - **WHEN** 用户在 Scenario 32 上运行 mmWave-only 或 GPS+mmWave fusion 配置
 - **THEN** dataset MUST 只读取启用模态所需文件和 beam label 文件
 - **AND** 未启用模态的缺失文件不得阻止该任务运行
-
-### Requirement: Image cache 感知加载
-Scenario 9 dataset 在启用 image modality 时 MUST 支持从 image motion mask cache 懒加载预处理结果。cache 不存在且未启用写入时，系统 MUST 保持旧的在线计算路径或按配置抛出清晰错误。未启用 image modality 时，dataset MUST 不检查、不读取、不写入 image cache。
-
-#### Scenario: image-only 使用 motion cache
-- **WHEN** 用户运行 image-only 配置且启用 `image_motion_use_cache`
-- **THEN** dataset MUST 对当前样本所需相邻帧 pair 尝试读取 motion mask cache
-- **AND** 返回样本 MUST 继续只包含 image 和 label 字段
-
-#### Scenario: fusion 只为启用 image 的配置使用 cache
-- **WHEN** 用户运行 fusion 配置且 `modalities` 不包含 image
-- **THEN** dataset MUST 不访问 image motion cache 配置
-- **AND** 缺失 image cache 或 jpg 文件不得阻止该非 image fusion 任务运行
 
 ### Requirement: Beam label 轻量缓存
 Scenario 9 dataset MUST 支持在当前 split 内缓存 beam 文本解析结果。该缓存 MUST 是轻量整数映射，不得把 image、radar、GPS 或 LiDAR 大数组放入同一初始化缓存中。
@@ -237,3 +225,19 @@ DeepSense6G 序列 CSV 生成流程 MUST 使用单一的 `balanced_seq` train/te
 - **WHEN** 用户使用新预处理配置生成默认统一 split CSV
 - **THEN** train/test CSV 旁 MUST 存在 split metadata sidecar
 - **AND** metadata 中的 train/test 窗口数 MUST 与输出 CSV 行数一致
+
+### Requirement: RGB image 感知加载
+Scenario 9 dataset 在启用 image modality 时 MUST 直接加载 RGB/ImageNet image 输入。系统 MUST 不再支持 motion mask 在线生成、motion mask cache 懒加载或 `motion_mask` profile。
+
+#### Scenario: image-only 使用 RGB 输入
+- **WHEN** 用户运行 image-only 配置
+- **THEN** dataset MUST 读取当前样本所需的 RGB image 帧
+- **AND** 返回样本 MUST 包含 `image` 和 label 字段
+- **AND** 返回的 `image` MUST 可被 RGB/ImageNet image encoder 消费
+- **AND** dataset MUST 不调用 motion mask 生成或 image motion cache 路径解析逻辑
+
+#### Scenario: motion profile 被拒绝
+- **WHEN** 用户配置 `image_profile: motion_mask`
+- **THEN** dataset 或配置解析 MUST 拒绝该配置
+- **AND** 错误信息 MUST 说明 image motion 路径已删除且需要使用 RGB/ImageNet image 输入
+

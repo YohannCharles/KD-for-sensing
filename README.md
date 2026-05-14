@@ -508,7 +508,6 @@ python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_lidar.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml
-python scripts/preprocess.py --config configs/preprocess/image_motion_cache.yaml
 python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
@@ -526,16 +525,19 @@ Scene 32 中 image/radar/LiDAR 相关实验建议先在新 split 上重跑 image
 image+LiDAR、radar+LiDAR、image+radar+LiDAR 这 7 种组合，再同时检查 split metadata 中的
 train/test label 分布和验证曲线。这样可以避免把旧顺序 split 的窄验证域结论误当成新协议结果。
 
-`configs/preprocess/image_motion_cache.yaml` 可把相邻 camera 帧 pair 的 motion mask 提前缓存为
-`.npy` `uint8` 文件；`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存。
+`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存。
 训练和评估入口会根据 `data.cache.policy` 自动决定是否读取、写入或重建这些 cache：`auto` 读取已有
 cache 且 miss 时按需写入，`read_only` 只读已有 cache，`off` 完全在线计算，`rebuild` 强制重算并写回。
 BEV cache 会按 BEV 尺寸、ROI、FoV、ground/background 过滤参数自动分区，避免参数变化后误用旧缓存。
-image motion cache 同样会按 image size、Gaussian sigma、阈值策略、灰度化方式和 cache version 自动分区。
+RGB image 路径直接读取并标准化当前样本帧，不再提供单独的 image 预处理 cache。
 这类原始模态预处理 cache 可以长期保留；训练 epoch、lr、batch size、num_workers、seed、模型结构和 KD
 类型变化不会使它失效。原始 jpg/LiDAR/radar/GPS/beam 文件内容变化，或对应预处理参数变化时，应使用新的
-参数 hash 目录或清理旧 cache。BEV 和 image cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时
+参数 hash 目录或清理旧 cache。BEV cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时
 全量载入 cache 目录。GPS/mmWave 没有同类大规模原始模态 cache，主要复用训练集 fit 的 scaler artifact。
+
+源码、配置和文档不包含本地训练产物。`dataset/` 是本地数据和可再生成预处理产物，`All_models/` 是外部或历史权重，
+`outputs/`、`logs/`、cache 目录和 checkpoint 是本地运行产物，通常不应随源码变更提交。本次删除旧 image cache
+支持不会清理历史 `outputs/`。
 
 训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径、样本数、split metadata 路径、
 协议和 seed，用于确认不同实验确实在同一训练/测试集合上比较。默认统一 split CSV 缺少

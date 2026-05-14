@@ -12,6 +12,7 @@ import pandas as pd
 import torch
 
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config
+from kd_sensing.data.transform_ops.image import IMAGENET_RGB_MEAN, IMAGENET_RGB_STD
 from kd_sensing.data.transform_ops.lidar import filter_lidar_points, read_lidar_point_cloud
 from kd_sensing.diagnostics.visualization.config import (
     apply_visualization_modalities,
@@ -30,6 +31,7 @@ from kd_sensing.diagnostics.visualization.stats import (
     modality_statistics,
 )
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.modalities import DEFAULT_IMAGE_PROFILE
 
 
 def export_viewer_manifest(
@@ -196,6 +198,7 @@ def _manifest_record(
         "csv_row_index": int(candidate.csv_row_index),
         "csv_path": str(getattr(dataset, "root_csv", "")),
         "enabled_modalities": list(enabled_modalities),
+        "image_profile": getattr(dataset, "image_profile", None),
         "statistics": modality_statistics(sample),
         "source_paths": _all_source_paths(row, data_root),
         "data_spaces": data_spaces,
@@ -323,9 +326,10 @@ def _write_processed_assets(
     asset_dir.mkdir(parents=True, exist_ok=True)
     if "image" in sample:
         path = asset_dir / "processed_image.png"
-        _save_scalar_image(_last_time_frame(sample["image"]), path)
+        profile = str(getattr(dataset, "image_profile", DEFAULT_IMAGE_PROFILE) or DEFAULT_IMAGE_PROFILE)
+        _save_processed_image(_last_time_frame(sample["image"]), path, profile=profile)
         processed["image"] = str(path)
-        data_spaces["processed"]["image"] = "motion_mask"
+        data_spaces["processed"]["image"] = profile
     if "lidar" in sample:
         path = asset_dir / "processed_lidar.png"
         _save_lidar_image(sample["lidar"], path)
@@ -819,6 +823,17 @@ def _save_scalar_image(value: Any, path: Path) -> None:
     if array.ndim == 3:
         array = array[0]
     Image.fromarray(_normalize_to_uint8(array)).save(path)
+
+
+def _save_processed_image(value: Any, path: Path, *, profile: str) -> None:
+    array = _as_numpy(value)
+    if profile == "rgb_imagenet" and array.ndim == 3 and array.shape[0] == 3:
+        mean = np.asarray(IMAGENET_RGB_MEAN, dtype=np.float32).reshape(3, 1, 1)
+        std = np.asarray(IMAGENET_RGB_STD, dtype=np.float32).reshape(3, 1, 1)
+        rgb = np.clip(array.astype(np.float32) * std + mean, 0.0, 1.0)
+        Image.fromarray((np.transpose(rgb, (1, 2, 0)) * 255).astype(np.uint8)).save(path)
+        return
+    _save_scalar_image(array, path)
 
 
 def _save_lidar_image(value: Any, path: Path) -> None:

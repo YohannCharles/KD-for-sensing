@@ -7,6 +7,8 @@ from typing import Iterable
 from kd_sensing.config import load_config
 from kd_sensing.data.scenes import DEEPSENSE_SCENES, resolve_deepsense_scene
 
+DEFAULT_COMPARE_SCENES = (9, 32)
+
 
 def collect_overrides(namespace: argparse.Namespace, unknown: Iterable[str]) -> list[str]:
     overrides = []
@@ -44,7 +46,7 @@ def _parse_scene_selection(raw: str) -> list[int]:
         if not token:
             continue
         if token.lower() == "all":
-            values.extend(sorted(DEEPSENSE_SCENES))
+            values.extend(scene for scene in DEFAULT_COMPARE_SCENES if scene in DEEPSENSE_SCENES)
             continue
         values.append(resolve_deepsense_scene(token).scene_id)
     if not values:

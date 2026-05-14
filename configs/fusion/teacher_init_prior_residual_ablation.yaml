@@ -19,7 +19,7 @@ model:
   student:
     type: craf_fusion
     modalities: [image, radar, gps, lidar, mmwave]
-    image_channels: 1
+    image_channels: 3
     radar_channels: 2
     gps_input_size: 3
     lidar_channels: 3

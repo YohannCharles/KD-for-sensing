@@ -7,7 +7,7 @@ from typing import Any
 DEFAULT_DEEPSENSE_SCENE_ID = 32
 DEFAULT_TRAIN_CSV_NAME = "train_seqs_RA_GPS_LIDAR.csv"
 DEFAULT_TEST_CSV_NAME = "test_seqs_RA_GPS_LIDAR.csv"
-DEEPSENSE_DATASET_TYPES = {"deepsense6g", "scenario9", "scenario32"}
+DEEPSENSE_DATASET_TYPES = {"deepsense6g", "scenario9", "scenario31", "scenario32"}
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,12 @@ DEEPSENSE_SCENES: dict[int, DeepSenseScene] = {
         scene_slug="scene9",
         aliases=("9", "scene9", "scenario9"),
         default_data_root="dataset/scenario9",
+    ),
+    31: DeepSenseScene(
+        scene_id=31,
+        scene_slug="scene31",
+        aliases=("31", "scene31", "scenario31"),
+        default_data_root="dataset/scenario31",
     ),
     32: DeepSenseScene(
         scene_id=32,
@@ -62,6 +68,8 @@ def resolve_deepsense_scene(scene: Any = None, *, dataset_type: Any = None) -> D
         dataset_type_key = str(dataset_type or "deepsense6g").strip().lower()
         if dataset_type_key == "scenario9":
             scene_id = 9
+        elif dataset_type_key == "scenario31":
+            scene_id = 31
         elif dataset_type_key == "scenario32":
             scene_id = 32
         else:
@@ -115,7 +123,7 @@ def retarget_deepsense_dataset_config(dataset_cfg: dict[str, Any], scene: Any) -
     """
 
     dataset_type = str(dataset_cfg.get("type", "deepsense6g")).strip().lower()
-    if dataset_type in {"scenario9", "scenario32"}:
+    if dataset_type in {"scenario9", "scenario31", "scenario32"}:
         dataset_cfg["type"] = "deepsense6g"
         dataset_type = "deepsense6g"
 
@@ -186,6 +194,10 @@ def _validate_dataset_type_scene(dataset_type: Any, scene_id: int) -> None:
     dataset_type_key = str(dataset_type or "").strip().lower()
     if dataset_type_key == "scenario9" and scene_id != 9:
         raise ValueError("data.dataset.type=scenario9 conflicts with data.dataset.scene; use scene 9 or type deepsense6g.")
+    if dataset_type_key == "scenario31" and scene_id != 31:
+        raise ValueError(
+            "data.dataset.type=scenario31 conflicts with data.dataset.scene; use scene 31 or type deepsense6g."
+        )
     if dataset_type_key == "scenario32" and scene_id != 32:
         raise ValueError(
             "data.dataset.type=scenario32 conflicts with data.dataset.scene; use scene 32 or type deepsense6g."

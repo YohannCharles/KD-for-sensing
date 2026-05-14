@@ -88,17 +88,18 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 函数语义 MUST 与拆分前保持兼容
 
 ### Requirement: 模态数据转换职责拆分
-数据转换模块 MUST 按 image、radar、lidar、gps、mmwave 和通用 IO/cache/normalization 职责组织。新增或修改某个模态的数据读取、特征构造或 cache key 时，变更 MUST 不要求编辑其它模态的转换实现。
+数据转换模块 MUST 按 image、radar、lidar、gps、mmwave 和通用 IO/cache/normalization 职责组织。新增或修改某个仍受支持模态的数据读取、特征构造或 cache key 时，变更 MUST 不要求编辑其它模态的转换实现。image 转换职责 MUST 只覆盖 RGB/ImageNet image 加载与标准化，不再包含 image motion mask 或 image motion cache。
 
 #### Scenario: 修改 GPS 特征不触碰 LiDAR 转换
 - **WHEN** 开发者修改 GPS feature sequence 构造
 - **THEN** 变更 MUST 限定在 GPS 转换相关模块和测试
-- **AND** 不需要修改 LiDAR BEV、image motion mask 或 mmWave feature 转换实现
+- **AND** 不需要修改 LiDAR BEV、RGB image 或 mmWave feature 转换实现
 
 #### Scenario: 兼容旧 transforms 导入
-- **WHEN** 现有代码从 `kd_sensing.data.transforms` 导入已公开的转换函数或 scaler
+- **WHEN** 现有代码从 `kd_sensing.data.transforms` 导入仍受支持的转换函数或 scaler
 - **THEN** 导入 MUST 继续成功
-- **AND** 函数行为 MUST 与拆分前保持兼容
+- **AND** 函数行为 MUST 与拆分后受支持实现保持一致
+- **AND** 已删除的 image motion 公开符号 MUST 不再通过兼容 facade 暴露
 
 ### Requirement: 诊断可视化内部模块化
 诊断可视化实现 MUST 将配置解析、数据集准备、样本选择、统计汇总、渲染和文件写出拆成职责明确的内部模块。公开入口和 CLI 行为 MUST 保持兼容。
@@ -119,7 +120,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 不需要修改诊断 dataset 构建逻辑
 
 ### Requirement: 源码与实验产物边界
-项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。
+项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。删除 image motion 源码与 cache 支持时，系统 MUST 不删除历史 `outputs/` 实验产物。
 
 #### Scenario: 本地产物不进入版本控制
 - **WHEN** 用户运行训练、评估、预处理或诊断命令
@@ -130,6 +131,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **WHEN** 开发者阅读 README 或扩展指南
 - **THEN** 文档 MUST 说明 `dataset/`、`All_models/`、`outputs/`、`logs/` 和 cache 目录的角色
 - **AND** 文档 MUST 指明哪些目录通常不应纳入源码变更
+- **AND** 文档 MUST 明确本次删除 image motion 不会清理历史 `outputs/`
 
 ### Requirement: 包级导入不得牵出重依赖
 项目 MUST 保持包级公共 API 兼容，同时避免 `__init__.py` eager import 触发重依赖运行模块。导入某个具体子模块时，系统 MUST 不因为父包初始化而额外导入训练器、dataset、诊断渲染或大型第三方依赖。
@@ -176,22 +178,22 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 函数行为 MUST 与拆分前保持兼容
 
 ### Requirement: 模态转换实现不得集中在 legacy 聚合模块
-数据转换模块 MUST 将仍在使用的 image、GPS、LiDAR、mmWave、radar、IO、cache 和 normalization 实现放入对应模块。`kd_sensing.data.transform_ops._legacy` MAY 作为兼容过渡层存在，但新增实现和主要维护点 MUST 不再集中于 `_legacy.py`。
+数据转换模块 MUST 将仍在使用的 image RGB、GPS、LiDAR、mmWave、radar、IO、cache 和 normalization 实现放入对应模块。`kd_sensing.data.transform_ops._legacy` MUST 不再导出或保留已删除的 image motion mask、image motion cache key 或 image motion metadata 符号。
 
-#### Scenario: 修改 image motion cache 不触碰 LiDAR 实现
-- **WHEN** 开发者修改 image motion mask 或 image motion cache key
-- **THEN** 主要变更 MUST 限定在 image 或通用 cache/IO 模块
+#### Scenario: 删除 image motion 实现不触碰 LiDAR 实现
+- **WHEN** 开发者删除 image motion mask 或 image motion cache key
+- **THEN** 主要变更 MUST 限定在 image、preprocessing、config、diagnostics 和 tests 中的相关引用
 - **AND** 不需要编辑 LiDAR、GPS、mmWave 或 radar 转换实现
 
 #### Scenario: 修改 GPS scaler 不触碰 image 实现
 - **WHEN** 开发者修改 GPS feature 或 scaler 加载保存逻辑
 - **THEN** 主要变更 MUST 限定在 GPS 或通用 normalization 模块
-- **AND** 不需要编辑 image motion、LiDAR BEV 或 radar map 转换实现
+- **AND** 不需要编辑 RGB image、LiDAR BEV 或 radar map 转换实现
 
-#### Scenario: 旧 transforms facade 兼容
-- **WHEN** 现有代码从 `kd_sensing.data.transforms` 导入已公开的转换函数或 scaler
-- **THEN** 导入 MUST 继续成功
-- **AND** 函数行为 MUST 与拆分前保持兼容
+#### Scenario: 旧 transforms facade 不暴露已删除符号
+- **WHEN** 现有代码从 `kd_sensing.data.transforms` 导入 `load_motion_masks`、`build_motion_mask_pair` 或 `image_motion_cache_path`
+- **THEN** 导入 MUST 失败
+- **AND** 错误信息或 ImportError MUST 让开发者能识别这些 image motion 符号已删除
 
 ### Requirement: 安装入口与 pyproject 声明一致
 项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。

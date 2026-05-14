@@ -8,7 +8,7 @@ from kd_sensing.models.image import ImageFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
 from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
-from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, validate_image_encoder_profile
 from kd_sensing.registries import MODELS
 
 
@@ -46,17 +46,19 @@ class FusionTeacherModalityNet(nn.Module):
         feature_size: int,
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
-        image_channels: int = 1,
+        image_channels: int = 3,
         radar_channels: int = 2,
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         num_heads: int = 8,
         modalities: list[str] | tuple[str, ...] | None = None,
+        image_profile: str | None = None,
     ):
         super().__init__()
         self.name = "FusionTeacherModalityNet"
         self.modalities = _normalize_modalities(modalities)
+        _validate_image_profile_channels(self.name, self.modalities, image_profile, image_channels)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
@@ -177,16 +179,18 @@ class FusionStudentModalityNet(nn.Module):
         feature_size: int,
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
-        image_channels: int = 1,
+        image_channels: int = 3,
         radar_channels: int = 2,
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         modalities: list[str] | tuple[str, ...] | None = None,
+        image_profile: str | None = None,
     ):
         super().__init__()
         self.name = "FusionStudentModalityNet"
         self.modalities = _normalize_modalities(modalities)
+        _validate_image_profile_channels(self.name, self.modalities, image_profile, image_channels)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
@@ -448,3 +452,20 @@ def _check_sequence_tensor(
 
 FusionModalityNet = FusionTeacherModalityNet
 StudentModalityNet = FusionStudentModalityNet
+
+
+def _validate_image_profile_channels(
+    encoder_name: str,
+    modalities: tuple[str, ...],
+    image_profile: str | None,
+    image_channels: int,
+) -> None:
+    if image_profile is None or "image" not in modalities:
+        return
+    spec = image_profile_spec(image_profile)
+    validate_image_encoder_profile(
+        encoder_name=encoder_name,
+        image_profile=image_profile,
+        expected_channels=spec.channels,
+        actual_channels=image_channels,
+    )

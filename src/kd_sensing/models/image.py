@@ -4,11 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kd_sensing.modalities import image_profile_spec, validate_image_encoder_profile
 from kd_sensing.registries import MODELS
 
 
 class ImageFeatureExtractor(nn.Module):
-    def __init__(self, n_feature: int, in_channel: int = 1):
+    def __init__(self, n_feature: int, in_channel: int = 3):
         super().__init__()
         self.cnn_layers = nn.Sequential(
             nn.Conv2d(in_channel, 4, kernel_size=3, stride=1, padding=1),
@@ -70,15 +71,24 @@ class ImageFeatureExtractor(nn.Module):
 
 @MODELS.register("image_teacher")
 class ImageModalityNet(nn.Module):
-    def __init__(self, feature_size: int, num_classes: int, gru_params: list[int] | tuple[int, int, int]):
+    def __init__(
+        self,
+        feature_size: int,
+        num_classes: int,
+        gru_params: list[int] | tuple[int, int, int],
+        image_channels: int = 3,
+        image_profile: str | None = None,
+        **_: object,
+    ):
         super().__init__()
         self.name = "ImageModalityNet"
+        _validate_image_profile_channels(self.name, image_profile, image_channels)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
                 f"gru_input_size ({gru_input_size}) must equal feature_size ({feature_size})"
             )
-        self.feature_extraction = ImageFeatureExtractor(feature_size)
+        self.feature_extraction = ImageFeatureExtractor(feature_size, in_channel=int(image_channels))
         self.GRU = nn.GRU(
             input_size=gru_input_size,
             hidden_size=gru_hidden_size,
@@ -122,10 +132,12 @@ class ImageStudentModalityNet(nn.Module):
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
         width_multiplier: float = 1.5,
-        image_channels: int = 1,
+        image_channels: int = 3,
+        image_profile: str | None = None,
     ):
         super().__init__()
         self.name = "ImageStudentModalityNet"
+        _validate_image_profile_channels(self.name, image_profile, image_channels)
         gru_input_size, gru_hidden_size, gru_num_layers = gru_params
         if gru_input_size != feature_size:
             raise ValueError(
@@ -219,3 +231,15 @@ class ImageStudentModalityNet(nn.Module):
         enhanced_seq_out = seq_out + context_vector.unsqueeze(1).expand(-1, seq_len, -1)
         pred = self.classifier(enhanced_seq_out)
         return pred, features, enhanced_seq_out
+
+
+def _validate_image_profile_channels(encoder_name: str, image_profile: str | None, image_channels: int) -> None:
+    if image_profile is None:
+        return
+    spec = image_profile_spec(image_profile)
+    validate_image_encoder_profile(
+        encoder_name=encoder_name,
+        image_profile=image_profile,
+        expected_channels=spec.channels,
+        actual_channels=image_channels,
+    )

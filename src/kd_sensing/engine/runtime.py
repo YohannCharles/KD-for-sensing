@@ -70,6 +70,7 @@ def prepare_task_inputs(
             num_pred=num_pred,
             device=device,
             modalities=(model_cfg or {}).get("modalities"),
+            image_profile=(model_cfg or {}).get("image_profile"),
             non_blocking=non_blocking,
         )
     if task == "radar":
@@ -118,6 +119,7 @@ def prepare_task_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            image_profile=(model_cfg or {}).get("image_profile"),
             non_blocking=non_blocking,
         )
     }

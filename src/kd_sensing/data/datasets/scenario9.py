@@ -19,9 +19,8 @@ from kd_sensing.data.transform_ops.gps import (
     load_gps_feature_sequence,
 )
 from kd_sensing.data.transform_ops.image import (
-    build_image_transform,
-    load_motion_masks,
-    parameterized_image_motion_cache_dir,
+    build_rgb_imagenet_transform,
+    load_rgb_imagenet_frames,
 )
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.data.transform_ops.lidar import (
@@ -35,12 +34,13 @@ from kd_sensing.data.transform_ops.lidar import (
 )
 from kd_sensing.data.transform_ops.mmwave import MMWAVE_POWER_DIM, MmWaveStandardScaler, load_mmwave_feature_sequence
 from kd_sensing.data.transform_ops.radar import load_radar_maps
-from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, resolve_image_profile
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
 
 
 VALID_MODALITIES = MODALITY_ORDER
+REMOVED_IMAGE_OPTION_PREFIX = "image_" + "motion_"
 
 
 @DATASETS.register("deepsense6g")
@@ -60,16 +60,8 @@ class DeepSense6GDataset(Dataset):
         scene_slug: str | None = None,
         seq_len: int = 8,
         num_pred: int = 3,
+        image_profile: str | None = None,
         image_size: list[int] | tuple[int, int] = (224, 224),
-        image_motion_cache_dir: str | None = None,
-        image_motion_use_cache: bool = False,
-        image_motion_write_cache: bool = False,
-        image_motion_cache_policy: str | None = None,
-        image_motion_cache_version: str = "v1",
-        image_motion_gaussian_sigma: float = 1.0,
-        image_motion_threshold_ratio: float = 0.1,
-        image_motion_threshold_strategy: str = "relative_max",
-        image_motion_grayscale: str = "rgb2gray",
         fft_tuple: list[int] | tuple[int, int, int] = (64, 256, 128),
         clipped_range: int = 128,
         portion: float = 1.0,
@@ -105,8 +97,15 @@ class DeepSense6GDataset(Dataset):
         return_metadata: bool = False,
         portion_strategy: str = "even",
         portion_seed: int = 42,
-        **_: object,
+        **extra: object,
     ):
+        removed_keys = sorted(key for key in extra if str(key).startswith(REMOVED_IMAGE_OPTION_PREFIX))
+        if removed_keys:
+            keys = ", ".join(str(key) for key in removed_keys)
+            raise ValueError(
+                f"Removed image motion dataset option(s): {keys}. "
+                "Use RGB/ImageNet image input; image motion cache is no longer supported."
+            )
         scene_value = scene if scene is not None else scene_id if scene_id is not None else scene_slug
         self.scene = resolve_deepsense_scene(scene_value)
         self.scene_id = self.scene.scene_id
@@ -124,23 +123,14 @@ class DeepSense6GDataset(Dataset):
             self.root_csv = self.data_root / self.root_csv
         self.seq_len = seq_len
         self.num_pred = num_pred
+        self.image_profile = resolve_image_profile(image_profile)
+        self.image_profile_spec = image_profile_spec(self.image_profile)
         self.image_size = tuple(image_size)
-        self.image_motion_use_cache = bool(image_motion_use_cache)
-        self.image_motion_write_cache = bool(image_motion_write_cache)
-        self.image_motion_cache_policy = image_motion_cache_policy
-        self.image_motion_cache_version = str(image_motion_cache_version)
-        self.image_motion_gaussian_sigma = float(image_motion_gaussian_sigma)
-        self.image_motion_threshold_ratio = float(image_motion_threshold_ratio)
-        self.image_motion_threshold_strategy = str(image_motion_threshold_strategy)
-        self.image_motion_grayscale = str(image_motion_grayscale)
-        self.image_motion_cache_dir: Path | None = None
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
         self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar, use_mmwave)
         self.return_metadata = bool(return_metadata)
-        if "image" in self.enabled_modalities:
-            self.image_motion_cache_dir = self._resolve_image_motion_cache_dir(image_motion_cache_dir)
         self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
         self._beam_label_cache: dict[str, int] = {}
         self.use_gps = "gps" in self.enabled_modalities
@@ -183,7 +173,7 @@ class DeepSense6GDataset(Dataset):
             load_lidar_background_points(self.data_root, lidar_background_path) if self.use_lidar else None
         )
         self._lidar_bev_cache: OrderedDict[int, np.ndarray] = OrderedDict()
-        self.transform = build_image_transform(image_size) if "image" in self.enabled_modalities else None
+        self.transform = self._build_image_transform(image_size) if "image" in self.enabled_modalities else None
         self.samples = create_samples(
             self.root_csv,
             portion=portion,
@@ -228,19 +218,12 @@ class DeepSense6GDataset(Dataset):
             if self.transform is None:
                 raise ValueError("Image modality is enabled but image transform is unavailable.")
             samples_rgb = self.samples.rgb_paths[idx][-self.seq_len :]
-            sample["image"] = load_motion_masks(
+            sample["image"] = load_rgb_imagenet_frames(
                 self.data_root,
                 samples_rgb,
                 self.seq_len,
                 self.transform,
                 image_size=self.image_size,
-                gaussian_sigma=self.image_motion_gaussian_sigma,
-                threshold_ratio=self.image_motion_threshold_ratio,
-                threshold_strategy=self.image_motion_threshold_strategy,
-                grayscale=self.image_motion_grayscale,
-                cache_dir=self.image_motion_cache_dir,
-                use_cache=self.image_motion_use_cache,
-                write_cache=self.image_motion_write_cache,
             )
         if "radar" in self.enabled_modalities:
             samples_radar = self.samples.radar_paths[idx][-self.seq_len :]
@@ -304,6 +287,9 @@ class DeepSense6GDataset(Dataset):
             "input_beam_path": last_beam_path,
             "target_beam_path": first_future_beam_path,
         }
+        if "image" in self.enabled_modalities:
+            metadata["image_profile"] = self.image_profile
+            metadata["processed_image_source"] = "rgb_imagenet"
         self._add_path_metadata(metadata, "image_path", getattr(self.samples, "rgb_paths", None), idx)
         self._add_path_metadata(metadata, "radar_path", getattr(self.samples, "radar_paths", None), idx)
         self._add_path_metadata(metadata, "gps_path", getattr(self.samples, "gps_paths", None), idx)
@@ -360,20 +346,8 @@ class DeepSense6GDataset(Dataset):
             selected = [str(modality) for modality in enabled_modalities]
         return normalize_modalities(selected, context="DeepSense6G modalities")
 
-    def _resolve_image_motion_cache_dir(self, image_motion_cache_dir: str | None) -> Path | None:
-        if not image_motion_cache_dir:
-            return None
-        path = Path(image_motion_cache_dir).expanduser()
-        base = path if path.is_absolute() else self.data_root / path
-        return parameterized_image_motion_cache_dir(
-            base,
-            image_size=self.image_size,
-            gaussian_sigma=self.image_motion_gaussian_sigma,
-            threshold_ratio=self.image_motion_threshold_ratio,
-            threshold_strategy=self.image_motion_threshold_strategy,
-            grayscale=self.image_motion_grayscale,
-            cache_version=self.image_motion_cache_version,
-        )
+    def _build_image_transform(self, image_size: list[int] | tuple[int, int]):
+        return build_rgb_imagenet_transform(image_size)
 
     def _resolve_beam_label_cache(self, config: bool | str) -> str:
         if isinstance(config, bool):
@@ -647,6 +621,14 @@ class Scenario9Dataset(DeepSense6GDataset):
 
     def __init__(self, *args, scene: str | int | None = None, **kwargs):
         super().__init__(*args, scene=9 if scene is None else scene, **kwargs)
+
+
+@DATASETS.register("scenario31")
+class Scenario31Dataset(DeepSense6GDataset):
+    """Scenario 31 dataset alias."""
+
+    def __init__(self, *args, scene: str | int | None = None, **kwargs):
+        super().__init__(*args, scene=31 if scene is None else scene, **kwargs)
 
 
 @DATASETS.register("scenario32")

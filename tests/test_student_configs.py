@@ -251,16 +251,6 @@ LEGACY_CONFIG_EXPECTATIONS = [
     ),
 ]
 
-LEGACY_STUDENT_WEIGHTS = [
-    ("configs/image/no_kd.yaml", "All_models/ImageStd_noKD.pth"),
-    ("configs/image/logits_kd.yaml", "All_models/ImageStd_KD.pth"),
-    ("configs/image/rkd.yaml", "All_models/ImageStd_RKD.pth"),
-    ("configs/fusion/no_kd.yaml", "All_models/BothStd_noKD.pth"),
-    ("configs/fusion/logits_kd.yaml", "All_models/BothStd_KD.pth"),
-    ("configs/fusion/rkd.yaml", "All_models/BothStd_RKD.pth"),
-]
-
-
 def _load(config_path: str) -> dict:
     return load_config(ROOT / config_path)
 
@@ -279,21 +269,6 @@ def _assert_default_early_stopping(cfg: dict) -> None:
     assert cfg["training"]["use_early_stopping"] is True
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
-
-
-def _load_state_dict(weight_path: str) -> dict[str, torch.Tensor]:
-    path = ROOT / weight_path
-    try:
-        state = torch.load(path, map_location="cpu", weights_only=True)
-    except TypeError:
-        state = torch.load(path, map_location="cpu")
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-    return state
-
-
-def _is_stats_key(key: str) -> bool:
-    return key.endswith("total_ops") or key.endswith("total_params")
 
 
 def _single_config_cases():
@@ -359,12 +334,8 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     else:
         teacher, student, kd_cfg = _build_teacher_and_student(config_path)
         assert kd_cfg["distillation"]["type"] == mode
-        if modality == "image":
-            assert kd_cfg["paths"]["weights_dir"] == "All_models"
-            assert kd_cfg["distillation"]["teacher_model_name"] == "ImageTeacher_best.pth"
-        else:
-            assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{modality}_teacher_no_kd/checkpoints"
-            assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
+        assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{modality}_teacher_no_kd/checkpoints"
+        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, spec["teacher_cls"])
         assert isinstance(student, spec["student_cls"])
         assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
@@ -424,12 +395,8 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     else:
         teacher, kd_student, kd_cfg = _build_teacher_and_student(config_path)
         assert kd_cfg["distillation"]["type"] == mode
-        if slug == "image_radar":
-            assert kd_cfg["paths"]["weights_dir"] == "All_models"
-            assert kd_cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
-        else:
-            assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
-            assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
+        assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
+        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, FusionTeacherModalityNet)
         assert isinstance(kd_student, FusionStudentModalityNet)
         assert teacher.modalities == kd_student.modalities == tuple(modalities)
@@ -480,8 +447,10 @@ def test_legacy_configs_keep_compatible_semantics(
     if distillation_type == "no_kd":
         assert cfg["distillation"]["teacher_model_name"] is None
     elif config_path.startswith("configs/fusion/"):
-        assert cfg["paths"]["weights_dir"] == "All_models"
-        assert cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
+        assert modalities is not None
+        slug = "_".join(modalities)
+        assert cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
+        assert cfg["distillation"]["teacher_model_name"] == "best.pth"
 
     if modalities is not None:
         assert cfg["model"]["teacher"]["modalities"] == modalities
@@ -556,8 +525,8 @@ def test_virtual_image_radar_config_generator_keeps_compatibility_params():
     assert cfg["training"]["weight_decay"] == 0.0
     assert cfg["distillation"]["temperature"] == 2.0
     assert cfg["distillation"]["alpha"] == 0.4
-    assert cfg["distillation"]["teacher_model_name"] == "BothTeacher_best.pth"
-    assert cfg["paths"]["weights_dir"] == "All_models"
+    assert cfg["distillation"]["teacher_model_name"] == "best.pth"
+    assert cfg["paths"]["weights_dir"] == "outputs/scene32/image_radar_teacher_no_kd/checkpoints"
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
 
@@ -755,27 +724,6 @@ def test_radar_student_rejects_input_size_mismatch():
                 "radar_channels": 2,
             }
         )
-
-
-@pytest.mark.parametrize(("config_path", "weight_path"), LEGACY_STUDENT_WEIGHTS)
-def test_packaged_student_weights_match_one_layer_configs(config_path: str, weight_path: str):
-    model, _ = _build_student(config_path)
-    state = _load_state_dict(weight_path)
-    model_state = model.state_dict()
-    state_without_stats = {key: value for key, value in state.items() if not _is_stats_key(key)}
-
-    missing = sorted(set(model_state) - set(state_without_stats))
-    shape_mismatches = sorted(
-        key
-        for key, tensor in model_state.items()
-        if key in state_without_stats and tuple(state_without_stats[key].shape) != tuple(tensor.shape)
-    )
-    unexpected_non_stats = sorted(key for key in state if key not in model_state and not _is_stats_key(key))
-
-    assert missing == []
-    assert shape_mismatches == []
-    assert unexpected_non_stats == []
-    model.load_state_dict(state_without_stats, strict=True)
 
 
 def test_strict_checkpoint_loading_reports_missing_gru_layer(tmp_path: Path):

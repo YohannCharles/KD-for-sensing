@@ -3,6 +3,7 @@ __all__ = [
     "SequenceSamples",
     "DeepSense6GDataset",
     "Scenario9Dataset",
+    "Scenario31Dataset",
     "Scenario32Dataset",
     "SyntheticSequenceDataset",
 ]
@@ -13,7 +14,13 @@ def __getattr__(name: str):
         from . import samples
 
         return getattr(samples, name)
-    if name in {"DeepSense6GDataset", "Scenario9Dataset", "Scenario32Dataset", "SyntheticSequenceDataset"}:
+    if name in {
+        "DeepSense6GDataset",
+        "Scenario9Dataset",
+        "Scenario31Dataset",
+        "Scenario32Dataset",
+        "SyntheticSequenceDataset",
+    }:
         from . import datasets
 
         return getattr(datasets, name)

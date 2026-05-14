@@ -1,5 +1,5 @@
 paths:
-  weights_dir: All_models
+  weights_dir: outputs/scene32/image_teacher_no_kd/checkpoints
 experiment:
   name: image_rkd
   task: image
@@ -48,7 +48,7 @@ distillation:
   temperature: 3.0
   alpha: 0.1
   alpha_warmup_epochs: 0
-  teacher_model_name: ImageTeacher_best.pth
+  teacher_model_name: best.pth
   rkd_pairs_per_anchor: 4
   rkd_distance_weight: 100.0
   rkd_angle_weight: 100.0

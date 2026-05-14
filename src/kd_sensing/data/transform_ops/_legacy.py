@@ -18,17 +18,9 @@ from kd_sensing.data.transform_ops.gps import (
     read_gps_latlon,
 )
 from kd_sensing.data.transform_ops.image import (
-    DEFAULT_IMAGE_MOTION_CACHE_VERSION,
-    DEFAULT_IMAGE_MOTION_GRAYSCALE,
-    DEFAULT_IMAGE_MOTION_THRESHOLD_STRATEGY,
     build_image_transform,
-    build_motion_mask_pair,
-    image_motion_cache_config_hash,
-    image_motion_cache_config_payload,
-    image_motion_cache_path,
-    load_motion_masks,
-    parameterized_image_motion_cache_dir,
-    write_image_motion_cache_metadata,
+    build_rgb_imagenet_transform,
+    load_rgb_imagenet_frames,
 )
 from kd_sensing.data.transform_ops.io import atomic_save_npy, joined_resource
 from kd_sensing.data.transform_ops.lidar import (
@@ -58,9 +50,6 @@ from kd_sensing.data.transform_ops.radar import load_radar_maps
 
 
 __all__ = [
-    "DEFAULT_IMAGE_MOTION_CACHE_VERSION",
-    "DEFAULT_IMAGE_MOTION_GRAYSCALE",
-    "DEFAULT_IMAGE_MOTION_THRESHOLD_STRATEGY",
     "DEFAULT_LIDAR_BEV_SIZE",
     "DEFAULT_LIDAR_ROI",
     "GPS_FEATURE_DIMS",
@@ -77,11 +66,8 @@ __all__ = [
     "build_image_transform",
     "build_lidar_bev",
     "build_mmwave_db_features",
-    "build_motion_mask_pair",
+    "build_rgb_imagenet_transform",
     "filter_lidar_points",
-    "image_motion_cache_config_hash",
-    "image_motion_cache_config_payload",
-    "image_motion_cache_path",
     "joined_resource",
     "latlon_to_utm_xy",
     "lidar_cache_config_hash",
@@ -93,12 +79,10 @@ __all__ = [
     "load_lidar_background_points",
     "load_lidar_bev_sequence",
     "load_mmwave_feature_sequence",
-    "load_motion_masks",
+    "load_rgb_imagenet_frames",
     "load_radar_maps",
-    "parameterized_image_motion_cache_dir",
     "parameterized_lidar_cache_dir",
     "read_gps_latlon",
     "read_lidar_point_cloud",
     "read_mmwave_power_vector",
-    "write_image_motion_cache_metadata",
 ]

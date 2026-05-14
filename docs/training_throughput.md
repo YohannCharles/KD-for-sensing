@@ -38,22 +38,21 @@ conda run -n kd_mm_beam python scripts/profile_training_io.py \
 
 ## Baseline 参考
 
-这次只读探索看到的训练 split 约有 3610 个样本；image/radar/GPS/LiDAR 每类约 28880 次帧引用，但唯一帧约 4366 个，重复因子约 `6.6x`。小样本计时中，image motion mask 在线路径约 `0.11s/sample`，LiDAR `.mat` 到 BEV 约 `0.03s/sample`，radar/GPS 相对更轻。包含 image 的三模态训练慢于 `radar+gps+lidar`，与这个瓶颈一致。
+这次只读探索看到的训练 split 约有 3610 个样本；image/radar/GPS/LiDAR 每类约 28880 次帧引用，但唯一帧约 4366 个，重复因子约 `6.6x`。小样本计时中，LiDAR `.mat` 到 BEV 约 `0.03s/sample`，radar/GPS 相对更轻。包含 image 的实验应直接 profile RGB/ImageNet 帧读取、CPU 到 GPU transfer 和模型 step。
 
-优化前建议先保存一轮 profile JSON；预热 image/LiDAR cache 后，再用同一命令复测，重点看 `dataset_getitem_seconds`、`dataloader_wait_seconds` 和 `samples_per_second`。
+优化前建议先保存一轮 profile JSON；预热 LiDAR cache 后，再用同一命令复测，重点看 `dataset_getitem_seconds`、`dataloader_wait_seconds` 和 `samples_per_second`。
 
 ## Cache 预热顺序
 
-先生成统一 split，再预热 image 和 LiDAR cache：
+先生成统一 split，再预热 LiDAR cache：
 
 ```bash
 conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml
-conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/image_motion_cache.yaml
 conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
-训练和评估入口默认使用 `data.cache.policy: auto`：包含 image 的任务自动读取/写入 image motion cache，
-包含 LiDAR 的任务自动读取/写入 LiDAR BEV cache，不包含这些模态的任务不会访问对应 cache。只想复用已有
+训练和评估入口默认使用 `data.cache.policy: auto`：包含 LiDAR 的任务自动读取/写入 LiDAR BEV cache，
+不包含 LiDAR 的任务不会访问对应 cache。包含 image 的任务使用 RGB/ImageNet 输入，不会访问 image cache。只想复用已有
 cache 而不补写缺失文件时，使用 `read_only`：
 
 ```bash
@@ -66,18 +65,17 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 ```bash
 conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
   -o data.cache.policy=read_only \
-  -o data.cache.image.policy=auto
+  -o data.cache.lidar.policy=auto
 ```
 
 ## Cache 复用与失效
 
-可以长期复用：LiDAR BEV、image motion mask、radar RA/DA 预生成结果、beam label cache。训练参数一般不影响这些缓存，包括 `lr`、`epochs`、`batch_size`、`num_workers`、`seed`、模型结构、KD 类型、loss、scheduler 和输出目录。
+可以长期复用：LiDAR BEV、radar RA/DA 预生成结果、beam label cache。训练参数一般不影响这些缓存，包括 `lr`、`epochs`、`batch_size`、`num_workers`、`seed`、模型结构、KD 类型、loss、scheduler 和输出目录。
 
 需要新 cache 或清理旧 cache 的情况：
 
 - 原始 jpg、LiDAR `.mat`/`.npy`、radar `.npy`、GPS txt 或 beam txt 内容变化。
 - LiDAR BEV size、ROI、FoV、ground/background 过滤参数变化。
-- image size、Gaussian sigma、阈值策略、灰度化方式或 cache version 变化。
 - radar FFT/RA/DA 生成参数变化。
 - GPS feature mode 或坐标转换逻辑变化。
 

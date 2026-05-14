@@ -10,7 +10,16 @@ from .fusion import (
 )
 from .gps import GpsFeatureExtractor, GpsModalityNet, GpsStudentModalityNet
 from .image import ImageFeatureExtractor, ImageModalityNet, ImageStudentModalityNet
+from .image_encoders import ResNet18ImageEncoder
 from .lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet
+from .modular import (
+    BeamClassificationHead,
+    EarlyConcatGRUCore,
+    LinearProjector,
+    ModularSequenceModel,
+    SingleGRUCore,
+    TokenTransformerCore,
+)
 from .mmwave import MmWaveFeatureExtractor, MmWaveModalityNet, MmWaveStudentModalityNet
 from .radar import RadarModalityNet, RadarStudentModalityNet
 
@@ -21,6 +30,7 @@ __all__ = [
     "ImageFeatureExtractor",
     "ImageModalityNet",
     "ImageStudentModalityNet",
+    "ResNet18ImageEncoder",
     "LidarFeatureExtractor",
     "LidarModalityNet",
     "LidarStudentModalityNet",
@@ -37,4 +47,10 @@ __all__ = [
     "FusionStudentModalityNet",
     "StudentModalityNet",
     "TokenTransformerFusionNet",
+    "BeamClassificationHead",
+    "EarlyConcatGRUCore",
+    "LinearProjector",
+    "ModularSequenceModel",
+    "SingleGRUCore",
+    "TokenTransformerCore",
 ]

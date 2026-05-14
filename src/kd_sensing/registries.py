@@ -99,6 +99,10 @@ def _missing_required_params(component: Callable[..., Any], provided: dict[str, 
 
 
 MODELS = Registry("models")
+ENCODERS = Registry("encoders")
+PROJECTORS = Registry("projectors")
+REPRESENTATION_CORES = Registry("representation_cores")
+HEADS = Registry("heads")
 DATASETS = Registry("datasets")
 LOSSES = Registry("losses")
 METRICS = Registry("metrics")
@@ -152,11 +156,12 @@ def import_default_components() -> None:
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
+    import kd_sensing.models.image_encoders  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
+    import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
-    import kd_sensing.preprocessing.image  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401
     import kd_sensing.preprocessing.sequences  # noqa: F401
 
@@ -165,6 +170,10 @@ __all__ = [
     "Registry",
     "RegistryError",
     "MODELS",
+    "ENCODERS",
+    "PROJECTORS",
+    "REPRESENTATION_CORES",
+    "HEADS",
     "DATASETS",
     "LOSSES",
     "METRICS",

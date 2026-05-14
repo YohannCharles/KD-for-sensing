@@ -35,7 +35,6 @@ from kd_sensing.engine.builders import (  # noqa: E402
 )
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
-from kd_sensing.preprocessing.image import generate_image_motion_cache  # noqa: E402
 from kd_sensing.engine.trainer import (  # noqa: E402
     _configure_early_stopping,
     _early_stopping_improved,
@@ -53,12 +52,29 @@ from kd_sensing.utils.artifact_registry import (  # noqa: E402
 )
 
 
+def _removed_image_option(suffix: str) -> str:
+    return "image_" + "motion_" + suffix
+
+
+def _removed_image_profile() -> str:
+    return "motion" + "_mask"
+
+
+def _removed_encoder_name(prefix: str = "") -> str:
+    return prefix + "motion" + "_cnn"
+
+
 def test_deepsense_scene_defaults_and_aliases():
     default_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml")
     scene9_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene9"])
+    scene31_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scenario31"])
     legacy_cfg = load_config(
         ROOT / "configs/mmwave/teacher_no_kd.yaml",
         ["data.dataset.type=scenario9", "data.dataset.scene=null"],
+    )
+    legacy31_cfg = load_config(
+        ROOT / "configs/mmwave/teacher_no_kd.yaml",
+        ["data.dataset.type=scenario31", "data.dataset.scene=null"],
     )
 
     assert default_cfg["data"]["dataset"]["scene_id"] == 32
@@ -67,8 +83,13 @@ def test_deepsense_scene_defaults_and_aliases():
     assert scene9_cfg["data"]["dataset"]["scene_id"] == 9
     assert scene9_cfg["data"]["dataset"]["scene_slug"] == "scene9"
     assert scene9_cfg["data"]["dataset"]["data_root"] == "dataset/scenario9"
+    assert scene31_cfg["data"]["dataset"]["scene_id"] == 31
+    assert scene31_cfg["data"]["dataset"]["scene_slug"] == "scene31"
+    assert scene31_cfg["data"]["dataset"]["data_root"] == "dataset/scenario31"
     assert legacy_cfg["data"]["dataset"]["type"] == "scenario9"
     assert legacy_cfg["data"]["dataset"]["scene_id"] == 9
+    assert legacy31_cfg["data"]["dataset"]["type"] == "scenario31"
+    assert legacy31_cfg["data"]["dataset"]["scene_id"] == 31
 
 
 def test_deepsense_unknown_scene_is_rejected():
@@ -89,6 +110,12 @@ def test_sequence_preprocess_scene_override_updates_root_and_csv():
     assert pre_cfg["data_root"] == "dataset/scenario9"
     assert pre_cfg["csv_path"] == "dataset/scenario9/scenario9_RA.csv"
 
+    cfg["data"]["dataset"]["scene"] = 31
+    _apply_scene_override_to_sequence_preprocess(pre_cfg, cfg)
+
+    assert pre_cfg["data_root"] == "dataset/scenario31"
+    assert pre_cfg["csv_path"] == "dataset/scenario31/scenario31_RA.csv"
+
 
 @pytest.mark.parametrize(
     ("enabled", "expected_calls", "expected_fields"),
@@ -107,7 +134,7 @@ def test_scenario9_loads_only_enabled_modalities(monkeypatch, tmp_path: Path, en
 
     def fake_image(*args, **kwargs):  # noqa: ARG001
         calls.add("image")
-        return torch.zeros(2, 8, 8)
+        return torch.zeros(3, 3, 8, 8)
 
     def fake_radar(*args, **kwargs):  # noqa: ARG001
         calls.add("radar")
@@ -121,7 +148,7 @@ def test_scenario9_loads_only_enabled_modalities(monkeypatch, tmp_path: Path, en
         calls.add("lidar")
         return np.zeros((3, 3, 4, 4), dtype=np.float32)
 
-    monkeypatch.setattr(scenario9_module, "load_motion_masks", fake_image)
+    monkeypatch.setattr(scenario9_module, "load_rgb_imagenet_frames", fake_image)
     monkeypatch.setattr(scenario9_module, "load_radar_maps", fake_radar)
     monkeypatch.setattr(scenario9_module, "load_gps_feature_sequence", fake_gps)
     monkeypatch.setattr(Scenario9Dataset, "_lidar_bev_for_index", fake_lidar)
@@ -133,6 +160,7 @@ def test_scenario9_loads_only_enabled_modalities(monkeypatch, tmp_path: Path, en
         seq_len=3,
         num_pred=1,
         enabled_modalities=enabled,
+        image_profile="rgb_imagenet",
         gps_normalize=False,
         lidar_normalize=False,
     )
@@ -210,8 +238,8 @@ def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr(
         scenario9_module,
-        "load_motion_masks",
-        lambda *args, **kwargs: torch.zeros(1, 8, 8),  # noqa: ARG005
+        "load_rgb_imagenet_frames",
+        lambda *args, **kwargs: torch.zeros(2, 3, 8, 8),  # noqa: ARG005
     )
     dataset = Scenario9Dataset(
         data_root=str(tmp_path),
@@ -220,6 +248,7 @@ def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Pat
         seq_len=2,
         num_pred=1,
         enabled_modalities=["image"],
+        image_profile="rgb_imagenet",
     )
 
     sample = dataset[0]
@@ -316,61 +345,40 @@ def test_dataloader_kwargs_filter_worker_only_options():
     assert multi_worker["prefetch_factor"] == 3
 
 
-def test_cache_policy_resolves_global_modal_and_low_level_overrides():
+def test_cache_policy_resolves_lidar_policy_and_rejects_removed_image_override():
     cfg = {
-        "data": {"cache": {"policy": "read_only", "image": {"policy": "auto"}}, "dataset": {}},
+        "data": {"cache": {"policy": "read_only", "lidar": {"policy": "auto"}}, "dataset": {}},
         "experiment": {"task": "fusion"},
         "model": {"teacher": {"modalities": ["image", "lidar"]}, "student": {"modalities": ["image", "lidar"]}},
     }
     dataset_cfg = {
-        "image_motion_use_cache": None,
-        "image_motion_write_cache": None,
         "lidar_use_cache": None,
         "lidar_write_cache": None,
     }
 
     resolved = apply_cache_policy(dataset_cfg, cfg, ("image", "lidar"))
 
-    assert resolved["image_motion_use_cache"] is True
-    assert resolved["image_motion_write_cache"] is True
-    assert resolved["image_motion_cache_policy"] == "auto"
     assert resolved["lidar_use_cache"] is True
-    assert resolved["lidar_write_cache"] is False
-    assert resolved["lidar_cache_policy"] == "read_only"
-
-    low_level = {
-        "image_motion_use_cache": None,
-        "image_motion_write_cache": False,
-        "lidar_use_cache": None,
-        "lidar_write_cache": None,
-    }
-    apply_cache_policy(low_level, {"data": {"cache": {"policy": "auto"}}}, ("image",))
-
-    assert low_level["image_motion_use_cache"] is True
-    assert low_level["image_motion_write_cache"] is False
-    assert low_level["lidar_use_cache"] is False
-    assert low_level["lidar_write_cache"] is False
+    assert resolved["lidar_write_cache"] is True
+    assert resolved["lidar_cache_policy"] == "auto"
+    with pytest.raises(ValueError, match="Image cache policy has been removed"):
+        apply_cache_policy({}, {"data": {"cache": {"policy": "auto", "image": {"policy": "auto"}}}}, ("image",))
 
 
 def test_cache_policy_non_relevant_modalities_are_disabled():
     dataset_cfg = {
-        "image_motion_use_cache": None,
-        "image_motion_write_cache": None,
         "lidar_use_cache": None,
         "lidar_write_cache": None,
     }
 
     apply_cache_policy(dataset_cfg, {"data": {"cache": {"policy": "auto"}}}, ("radar", "mmwave"))
 
-    assert dataset_cfg["image_motion_use_cache"] is False
-    assert dataset_cfg["image_motion_write_cache"] is False
-    assert dataset_cfg["image_motion_cache_policy"] == "off"
     assert dataset_cfg["lidar_use_cache"] is False
     assert dataset_cfg["lidar_write_cache"] is False
     assert dataset_cfg["lidar_cache_policy"] == "off"
 
 
-def test_build_dataset_auto_policy_writes_image_cache_and_records_metadata(tmp_path: Path):
+def test_build_dataset_auto_policy_uses_rgb_image_without_cache_metadata(tmp_path: Path):
     csv_path = tmp_path / "seq.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
     _write_camera_files(tmp_path, count=2)
@@ -385,10 +393,8 @@ def test_build_dataset_auto_policy_writes_image_cache_and_records_metadata(tmp_p
                 "test_csv_name": csv_path.name,
                 "seq_len": 2,
                 "num_pred": 1,
+                "image_profile": "rgb_imagenet",
                 "image_size": [8, 8],
-                "image_motion_cache_dir": "motion_cache",
-                "image_motion_use_cache": None,
-                "image_motion_write_cache": None,
                 "beam_label_cache": "lazy",
             },
         },
@@ -399,15 +405,11 @@ def test_build_dataset_auto_policy_writes_image_cache_and_records_metadata(tmp_p
     sample = dataset[0]
     metadata = dataset_run_metadata(dataset)
 
-    assert sample["image"].shape == (1, 8, 8)
-    assert dataset.image_motion_use_cache is True
-    assert dataset.image_motion_write_cache is True
-    assert dataset.image_motion_cache_policy == "auto"
-    assert len(list(dataset.image_motion_cache_dir.glob("*.npy"))) == 1
+    assert sample["image"].shape == (2, 3, 8, 8)
+    assert not hasattr(dataset, _removed_image_option("cache_dir"))
     assert metadata["scene_id"] == 9
     assert metadata["scene_slug"] == "scene9"
-    assert metadata["image_motion_cache_policy"] == "auto"
-    assert metadata["image_motion_write_cache"] is True
+    assert _removed_image_option("cache_policy") not in metadata
 
 
 def test_build_dataset_deepsense_scene_32_records_metadata(tmp_path: Path):
@@ -511,15 +513,11 @@ def test_dataset_does_not_resolve_unenabled_cache_dirs(tmp_path: Path):
         seq_len=1,
         num_pred=1,
         enabled_modalities=["radar"],
-        image_motion_cache_dir="motion_cache",
-        image_motion_use_cache=True,
-        image_motion_write_cache=True,
         lidar_cache_dir="lidar_cache",
         lidar_use_cache=True,
         lidar_write_cache=True,
     )
 
-    assert dataset.image_motion_cache_dir is None
     assert dataset.lidar_cache_dir is None
 
 
@@ -544,7 +542,7 @@ def test_throughput_metadata_includes_cache_policy():
     )
 
     assert metadata["cache"]["policy"] == "read_only"
-    assert metadata["cache"]["image"]["policy"] == "read_only"
+    assert metadata["cache"]["image"]["input"] == "rgb_imagenet"
     assert metadata["cache"]["lidar"]["policy"] == "auto"
     assert metadata["cache"]["enabled_modalities"] == ["image", "lidar"]
 
@@ -935,7 +933,7 @@ def test_lidar_cache_initialization_does_not_load_cache(monkeypatch, tmp_path: P
     assert dataset.lidar_cache_dir is not None
 
 
-def test_image_motion_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):
+def test_rgb_image_path_reads_frames_without_cache(tmp_path: Path):
     csv_path = tmp_path / "seq.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
     _write_camera_files(tmp_path, count=2)
@@ -947,77 +945,35 @@ def test_image_motion_cache_hit_miss_write_and_parameter_isolation(monkeypatch, 
         seq_len=2,
         num_pred=1,
         enabled_modalities=["image"],
+        image_profile="rgb_imagenet",
         image_size=[8, 8],
-        image_motion_cache_dir="motion_cache",
-        image_motion_use_cache=True,
-        image_motion_write_cache=True,
     )
     sample = dataset[0]
-    cache_files = list(dataset.image_motion_cache_dir.glob("*.npy"))
 
-    assert sample["image"].shape == (1, 8, 8)
-    assert len(cache_files) == 1
-
-    monkeypatch.setattr(transforms, "build_motion_mask_pair", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
-    cached_dataset = Scenario9Dataset(
-        data_root=str(tmp_path),
-        csv_name=str(csv_path),
-        split="train",
-        seq_len=2,
-        num_pred=1,
-        enabled_modalities=["image"],
-        image_size=[8, 8],
-        image_motion_cache_dir="motion_cache",
-        image_motion_use_cache=True,
-    )
-    changed_param_dataset = Scenario9Dataset(
-        data_root=str(tmp_path),
-        csv_name=str(csv_path),
-        split="train",
-        seq_len=2,
-        num_pred=1,
-        enabled_modalities=["image"],
-        image_size=[8, 8],
-        image_motion_cache_dir="motion_cache",
-        image_motion_use_cache=True,
-        image_motion_gaussian_sigma=2.0,
-    )
-
-    assert cached_dataset[0]["image"].shape == (1, 8, 8)
-    assert cached_dataset.image_motion_cache_dir == dataset.image_motion_cache_dir
-    assert changed_param_dataset.image_motion_cache_dir != dataset.image_motion_cache_dir
+    assert sample["image"].shape == (2, 3, 8, 8)
+    assert not hasattr(dataset, _removed_image_option("cache_dir"))
 
 
-def test_image_motion_cache_preprocessor_writes_metadata(tmp_path: Path):
-    csv_path = tmp_path / "image_seq.csv"
-    _write_camera_files(tmp_path, count=3)
-    csv_path.write_text(
-        "camera1,camera2,camera3\ncamera_0.jpg,camera_1.jpg,camera_2.jpg\n",
-        encoding="utf-8",
-    )
+def test_removed_image_path_config_is_rejected():
+    removed_use_key = _removed_image_option("use_cache")
+    removed_profile = _removed_image_profile()
+    removed_encoder = _removed_encoder_name()
+    removed_legacy_encoder = _removed_encoder_name(prefix="legacy_")
 
-    first = generate_image_motion_cache(
-        csv_paths=[csv_path],
-        data_root=tmp_path,
-        cache_dir=tmp_path / "motion_cache",
-        image_size=[8, 8],
-        progress=False,
-    )
-    second = generate_image_motion_cache(
-        csv_paths=[csv_path],
-        data_root=tmp_path,
-        cache_dir=tmp_path / "motion_cache",
-        image_size=[8, 8],
-        progress=False,
-    )
-
-    cache_dir = Path(first["cache_dir"])
-    metadata = cache_dir / "metadata.json"
-    assert first["count"] == 2
-    assert first["generated"] == 2
-    assert second["skipped"] == 2
-    assert metadata.exists()
-    assert "image_motion_cache" in metadata.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="Removed image motion"):
+        load_config(ROOT / "configs/image/teacher_no_kd.yaml", [f"data.dataset.{removed_use_key}=true"])
+    with pytest.raises(ValueError, match="has been removed"):
+        load_config(ROOT / "configs/image/teacher_no_kd.yaml", [f"data.dataset.image_profile={removed_profile}"])
+    with pytest.raises(ValueError, match="Removed image encoder"):
+        load_config(
+            ROOT / "configs/image/resnet18_teacher_no_kd.yaml",
+            [f"model.student.encoders.image.type={removed_encoder}"],
+        )
+    with pytest.raises(ValueError, match="Removed image encoder"):
+        load_config(
+            ROOT / "configs/image/resnet18_teacher_no_kd.yaml",
+            [f"model.student.encoders.image.type={removed_legacy_encoder}"],
+        )
 
 
 def test_lidar_cache_preprocessor_skips_existing_and_writes_metadata(monkeypatch, tmp_path: Path):

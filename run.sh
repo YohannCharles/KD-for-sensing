@@ -53,9 +53,9 @@ Common usage:
     ./run.sh --from-group 8
 
 Options:
-  --clean-derived       Delete outputs plus derived preprocessing artifacts before running.
+  --clean-derived       Delete derived preprocessing artifacts before running; leaves outputs/ intact.
   --clean-outputs       Delete outputs only before running.
-  --skip-preprocess     Skip groups 2-4 and reuse existing RA/DA, sequence CSV, image/LiDAR cache.
+  --skip-preprocess     Skip groups 2-4 and reuse existing RA/DA, sequence CSV, and LiDAR cache.
   --no-tests            Skip group 1.
   --no-eval             Skip independent test_report evaluation in group 11.
   --no-viewer           Skip viewer manifest/prediction export in group 11.
@@ -238,12 +238,11 @@ clean_outputs() {
 }
 
 clean_derived() {
-  clean_outputs
   for scene in "${SCENES[@]}"; do
     local root="dataset/scenario${scene}"
     log "Deleting derived preprocessing artifacts under ${root}"
     rm -rf "${root}/unit1/radar_data_RA" "${root}/unit1/radar_data_DA"
-    rm -rf "${root}/image_motion_cache" "${root}/lidar_bev_cache"
+    rm -rf "${root}/lidar_bev_cache"
     rm -f "${root}/scenario${scene}_RA.csv" "${root}/scenario${scene}_DA.csv"
     rm -f "${root}"/train_seqs*.csv "${root}"/test_seqs*.csv "${root}"/split_metadata*.json
   done
@@ -289,18 +288,12 @@ group_3_sequence_csv() {
   wait_group "${pids[@]}"
 }
 
-group_4_image_lidar_cache() {
+group_4_lidar_cache() {
   local pids=()
   local scene root csvs
   for scene in "${SCENES[@]}"; do
     root="dataset/scenario${scene}"
     csvs="[\"${root}/train_seqs_RA_GPS_LIDAR.csv\",\"${root}/test_seqs_RA_GPS_LIDAR.csv\"]"
-
-    pre --config configs/preprocess/image_motion_cache.yaml \
-      -o "preprocessing.csv_paths=${csvs}" \
-      -o preprocessing.data_root="$root" \
-      -o preprocessing.cache_dir="${root}/image_motion_cache" &
-    pids+=("$!")
 
     pre --config configs/preprocess/lidar_bev_cache.yaml \
       -o "preprocessing.csv_paths=${csvs}" \
@@ -517,7 +510,7 @@ main() {
   run_group 1 "code regression tests" group_1_tests
   run_group 2 "radar RA/DA preprocessing" group_2_radar_preprocess
   run_group 3 "sequence CSV generation" group_3_sequence_csv
-  run_group 4 "image/LiDAR cache generation" group_4_image_lidar_cache
+  run_group 4 "LiDAR cache generation" group_4_lidar_cache
   run_group 5 "teacher baselines" group_5_teacher_baselines
   run_group 6 "no-KD, CRAF, token baselines" group_6_no_kd_baselines
   run_group 7 "teacher registry rebuild" group_7_teacher_registry

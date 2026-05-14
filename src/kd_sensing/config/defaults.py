@@ -17,9 +17,6 @@ DEFAULT_CONFIG = {
     "data": {
         "cache": {
             "policy": "auto",
-            "image": {
-                "policy": None,
-            },
             "lidar": {
                 "policy": None,
             },
@@ -38,14 +35,6 @@ DEFAULT_CONFIG = {
             "portion_strategy": "even",
             "portion_seed": 42,
             "image_size": [224, 224],
-            "image_motion_cache_dir": "image_motion_cache",
-            "image_motion_use_cache": None,
-            "image_motion_write_cache": None,
-            "image_motion_cache_version": "v1",
-            "image_motion_gaussian_sigma": 1.0,
-            "image_motion_threshold_ratio": 0.1,
-            "image_motion_threshold_strategy": "relative_max",
-            "image_motion_grayscale": "rgb2gray",
             "fft_tuple": [64, 256, 128],
             "clipped_range": 128,
             "beam_label_cache": "lazy",
@@ -82,6 +71,7 @@ DEFAULT_CONFIG = {
     },
     "model": {
         "feature_size": 64,
+        "d_model": 64,
         "gru_hidden_size": 64,
         "mmwave_input_size": 64,
         "num_classes": 64,
@@ -90,16 +80,68 @@ DEFAULT_CONFIG = {
         "num_pred": 3,
         "downsample_ratio": 1,
         "teacher": {
-            "type": "image_teacher",
+            "type": "modular_sequence",
+            "modalities": ["image"],
+            "image_profile": "rgb_imagenet",
             "feature_size": 64,
+            "d_model": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 1],
+            "num_pred": 3,
+            "encoders": {
+                "image": {
+                    "type": "resnet18_imagenet_rgb",
+                    "output_dim": 64,
+                    "pretrained": True,
+                    "weights": "DEFAULT",
+                    "freeze_backbone": True,
+                    "unfreeze_stages": ["layer4"],
+                    "dropout": 0.1,
+                },
+            },
+            "representation_core": {
+                "type": "single_gru",
+                "d_model": 64,
+                "hidden_size": 64,
+                "num_layers": 1,
+            },
+            "heads": {
+                "beam": {
+                    "type": "beam_head",
+                    "dropout": 0.1,
+                },
+            },
         },
         "student": {
-            "type": "image_student",
+            "type": "modular_sequence",
+            "modalities": ["image"],
+            "image_profile": "rgb_imagenet",
             "feature_size": 64,
+            "d_model": 64,
             "num_classes": 64,
-            "gru_params": [64, 64, 1],
+            "num_pred": 3,
+            "encoders": {
+                "image": {
+                    "type": "resnet18_imagenet_rgb",
+                    "output_dim": 64,
+                    "pretrained": True,
+                    "weights": "DEFAULT",
+                    "freeze_backbone": True,
+                    "unfreeze_stages": ["layer4"],
+                    "dropout": 0.1,
+                },
+            },
+            "representation_core": {
+                "type": "single_gru",
+                "d_model": 64,
+                "hidden_size": 64,
+                "num_layers": 1,
+            },
+            "heads": {
+                "beam": {
+                    "type": "beam_head",
+                    "dropout": 0.1,
+                },
+            },
         },
     },
     "loss": {
@@ -134,7 +176,7 @@ DEFAULT_CONFIG = {
         "temperature": 3.0,
         "alpha": 0.4,
         "alpha_warmup_epochs": 0,
-        "teacher_model_name": "ImageTeacher_best.pth",
+        "teacher_model_name": None,
         "rkd_pairs_per_anchor": 4,
         "rkd_distance_weight": 50.0,
         "rkd_angle_weight": 50.0,

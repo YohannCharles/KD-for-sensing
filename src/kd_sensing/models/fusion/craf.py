@@ -353,7 +353,7 @@ class CRAFTTokenFusionBase(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
         max_seq_len: int = 64,
-        image_channels: int = 1,
+        image_channels: int = 3,
         radar_channels: int = 2,
         gps_input_size: int = 3,
         lidar_channels: int = 3,

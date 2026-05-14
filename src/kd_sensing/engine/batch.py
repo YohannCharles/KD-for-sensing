@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from kd_sensing.modalities import batch_input_keys_for_modalities, normalize_modalities
+from kd_sensing.modalities import batch_input_keys_for_modalities, image_profile_spec, normalize_modalities
 
 
 def normalize_batch(batch) -> dict[str, torch.Tensor]:
@@ -38,18 +38,26 @@ def prepare_image_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    image_profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "image" not in batch:
         raise ValueError("Image input is required but batch does not contain an 'image' field.")
+    profile = image_profile_spec(image_profile)
     image = batch["image"].to(device, non_blocking=non_blocking)
-    if image.ndim == 4:
-        image = image.unsqueeze(2)
-    image = image[:, 1 - seq_length :, ...]
+    if image.ndim != 5:
+        raise ValueError(f"Image input must have shape [B, T, C, H, W], got {tuple(image.shape)}.")
+    if int(image.shape[2]) != int(profile.channels):
+        raise ValueError(
+            f"Image input for profile '{profile.name}' must have {profile.channels} channels, "
+            f"got {int(image.shape[2])}."
+        )
+    image = image[:, -seq_length:, ...]
+    pad_steps = max(int(num_pred) - 1, 0)
     batch_size, _, channels, height, width = image.shape
     zeros = torch.zeros(
         batch_size,
-        num_pred,
+        pad_steps,
         channels,
         height,
         width,
@@ -66,6 +74,7 @@ def prepare_fusion_inputs(
     num_pred: int,
     device: torch.device,
     modalities: list[str] | tuple[str, ...] | None = None,
+    image_profile: str | None = None,
     non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
     selected = normalize_modalities(tuple(modalities or ("image", "radar")), context="fusion batch modalities")
@@ -79,6 +88,16 @@ def prepare_fusion_inputs(
     }
     inputs: dict[str, torch.Tensor] = {}
     for modality in selected:
+        if modality == "image":
+            inputs[input_keys[modality]] = prepare_image_inputs(
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                image_profile=image_profile,
+                non_blocking=non_blocking,
+            )
+            continue
         inputs[input_keys[modality]] = preparers[modality](
             batch,
             seq_length=seq_length,

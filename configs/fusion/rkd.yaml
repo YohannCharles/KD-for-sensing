@@ -52,7 +52,7 @@ distillation:
   temperature: 2.0
   alpha: 0.3
   alpha_warmup_epochs: 0
-  teacher_model_name: BothTeacher_best.pth
+  teacher_model_name: best.pth
   rkd_pairs_per_anchor: 4
   rkd_distance_weight: 10.0
   rkd_angle_weight: 10.0
@@ -75,4 +75,4 @@ scheduler:
   T_mult: 2
   eta_min: 1.0e-06
 paths:
-  weights_dir: All_models
+  weights_dir: outputs/scene32/image_radar_teacher_no_kd/checkpoints

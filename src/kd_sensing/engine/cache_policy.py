@@ -19,22 +19,11 @@ def apply_cache_policy(
     dataset_cfg["_cache_policy"] = global_policy
     dataset_cfg["_cache_enabled_modalities"] = list(enabled_modalities)
 
-    if "image" in selected:
-        image_policy = _normalize_cache_policy(
-            cache_cfg.get("image", {}).get("policy", global_policy) or global_policy,
-            "data.cache.image.policy",
+    if "image" in cache_cfg:
+        raise ValueError(
+            "Image cache policy has been removed with the image motion path. "
+            "Configure supported cache modalities such as data.cache.lidar instead."
         )
-        _apply_modality_cache_policy(
-            dataset_cfg,
-            policy=image_policy,
-            use_key="image_motion_use_cache",
-            write_key="image_motion_write_cache",
-            policy_key="image_motion_cache_policy",
-        )
-    else:
-        dataset_cfg["image_motion_use_cache"] = False
-        dataset_cfg["image_motion_write_cache"] = False
-        dataset_cfg["image_motion_cache_policy"] = "off"
 
     if "lidar" in selected:
         lidar_policy = _normalize_cache_policy(

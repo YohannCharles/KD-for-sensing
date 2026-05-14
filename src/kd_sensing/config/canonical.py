@@ -73,7 +73,7 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     }
     if mode in {"logits_kd", "rkd"}:
         cfg["paths"] = {
-            "weights_dir": "All_models" if image_radar else f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
+            "weights_dir": f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
         }
     return cfg
 
@@ -150,7 +150,7 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
     teacher_cfg: dict[str, Any] = {
         "type": "fusion_teacher",
         "modalities": modalities,
-        "image_channels": 1,
+        "image_channels": 3,
         "radar_channels": 2,
         "gps_input_size": 3,
         "lidar_channels": 3,
@@ -193,7 +193,7 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
             "student": {
                 "type": "fusion_student",
                 "modalities": modalities,
-                "image_channels": 1,
+                "image_channels": 3,
                 "radar_channels": 2,
                 "gps_input_size": 3,
                 "lidar_channels": 3,
@@ -470,7 +470,7 @@ def _distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str
             },
             "logits_kd": {
                 "type": "logits_kd",
-                "teacher_model_name": "BothTeacher_best.pth",
+                "teacher_model_name": "best.pth",
                 "temperature": 2.0,
                 "alpha": 0.4,
                 "alpha_warmup_epochs": 0,
@@ -480,7 +480,7 @@ def _distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str
             },
             "rkd": {
                 "type": "rkd",
-                "teacher_model_name": "BothTeacher_best.pth",
+                "teacher_model_name": "best.pth",
                 "temperature": 2.0,
                 "alpha": 0.3,
                 "alpha_warmup_epochs": 0,
