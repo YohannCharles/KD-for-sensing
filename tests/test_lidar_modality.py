@@ -15,8 +15,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
-from kd_sensing.data.transforms import (  # noqa: E402
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
+from kd_sensing.data.transform_ops.lidar import (  # noqa: E402
     LidarBEVNormalizer,
     LidarBEVStreamingStats,
     build_lidar_bev,
@@ -25,7 +25,7 @@ from kd_sensing.data.transforms import (  # noqa: E402
     read_lidar_point_cloud,
 )
 from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_lidar_inputs  # noqa: E402
-from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
+from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -92,7 +92,7 @@ def test_lidar_dataset_returns_lidar_tensor_and_keeps_old_behavior(tmp_path: Pat
     csv_path = tmp_path / "seq.csv"
     _write_dataset_fixture(tmp_path, csv_path)
 
-    lidar_dataset = Scenario9Dataset(
+    lidar_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -105,7 +105,7 @@ def test_lidar_dataset_returns_lidar_tensor_and_keeps_old_behavior(tmp_path: Pat
         lidar_roi=[0.0, 2.0, -1.0, 1.0, -1.0, 1.0],
         lidar_normalize=False,
     )
-    old_dataset = Scenario9Dataset(
+    old_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -132,9 +132,9 @@ def test_lidar_dataset_initialization_does_not_materialize_lidar(monkeypatch, tm
     def fail_if_called(self, idx: int, *, augment: bool):  # noqa: ARG001
         raise AssertionError("LiDAR BEV should not be read during dataset initialization")
 
-    monkeypatch.setattr(Scenario9Dataset, "_lidar_bev_for_index", fail_if_called)
+    monkeypatch.setattr(DeepSense6GDataset, "_lidar_bev_for_index", fail_if_called)
 
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -150,7 +150,7 @@ def test_lidar_dataset_initialization_does_not_materialize_lidar(monkeypatch, tm
     assert dataset.lidar_normalizer is None
     assert dataset.needs_lidar_streaming_stats is True
 
-    legacy_dataset = Scenario9Dataset(
+    legacy_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -194,7 +194,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
     stats_path = tmp_path / "lidar_stats.npz"
     _write_dataset_fixture(tmp_path, csv_path)
 
-    train_dataset = Scenario9Dataset(
+    train_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -211,7 +211,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
         },
     )
     train_normalizer = train_dataset.fit_lidar_normalizer_streaming()
-    test_dataset = Scenario9Dataset(
+    test_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="test",
@@ -235,7 +235,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
     np.testing.assert_allclose(test_dataset.lidar_normalizer.mean_, train_normalizer.mean_)
     np.testing.assert_allclose(test_dataset.lidar_normalizer.scale_, train_normalizer.scale_)
     with pytest.raises(ValueError, match="requires a train-fitted lidar_normalizer"):
-        Scenario9Dataset(
+        DeepSense6GDataset(
             data_root=str(tmp_path),
             csv_name=str(csv_path),
             split="test",

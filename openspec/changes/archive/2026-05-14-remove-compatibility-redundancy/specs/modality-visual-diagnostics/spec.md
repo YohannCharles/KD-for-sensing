@@ -4,7 +4,7 @@
 系统 MUST 将模态可视化诊断入口统一到 Gradio viewer manifest 数据准备和 viewer 工作流。旧静态 PNG 报告入口和旧兼容命令 MUST 不再作为可运行工作流或安装入口保留。
 
 #### Scenario: 旧命令被拒绝
-- **WHEN** 用户运行旧的 `kd-sensing-visualize-modalities` 或 `scripts/visualize_modalities.py`
+- **WHEN** 用户运行旧的 `the retired modality visualization command` 或 `the retired script entry`
 - **THEN** 系统 MUST 拒绝该入口或不再提供该入口
 - **AND** 错误信息或文档 MUST 指向 manifest 导出命令和 Gradio viewer 启动命令
 

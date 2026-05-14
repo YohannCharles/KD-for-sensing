@@ -4,17 +4,17 @@
 Define the compatibility and manifest-preparation behavior for modality visualization diagnostics after the primary user workflow has moved to the Gradio viewer.
 ## Requirements
 ### Requirement: 诊断入口与配置
-系统 MUST 将现有模态可视化诊断入口从静态 PNG 报告主流程迁移为 Gradio viewer 的 manifest 数据准备或迁移提示能力。旧入口 MUST 不再作为主要用户可视化路径生成静态总览图；当保留兼容命令时，它 MUST 要么导出 viewer manifest，要么明确提示用户改用 Gradio viewer。
+系统 MUST 将模态可视化诊断入口统一到 Gradio viewer manifest 数据准备和 viewer 工作流。旧静态 PNG 报告入口和旧兼容命令 MUST 不再作为可运行工作流或安装入口保留。
 
-#### Scenario: 旧命令提示迁移路径
-- **WHEN** 用户运行旧的 `kd-sensing-visualize-modalities` 或 `scripts/visualize_modalities.py`
-- **THEN** 系统 MUST 提示静态可视化入口已被 Gradio viewer 替代
-- **AND** 提示信息 MUST 包含 manifest 导出命令或 Gradio viewer 启动命令
+#### Scenario: 旧命令被拒绝
+- **WHEN** 用户运行旧的 `the retired modality visualization command` 或 `the retired script entry`
+- **THEN** 系统 MUST 拒绝该入口或不再提供该入口
+- **AND** 错误信息或文档 MUST 指向 manifest 导出命令和 Gradio viewer 启动命令
 
-#### Scenario: 兼容命令导出 manifest
-- **WHEN** 项目选择短期保留旧命令作为兼容入口
-- **THEN** 该命令 MUST 生成 Gradio viewer 可读取的 manifest
-- **AND** 该命令 MUST 不再要求生成 PNG 总览图作为成功条件
+#### Scenario: manifest 导出使用 canonical 入口
+- **WHEN** 用户准备 viewer manifest
+- **THEN** 用户 MUST 使用 `kd-sensing-export-viewer-manifest` 或对应包内 CLI
+- **AND** 该入口 MUST 不要求生成 PNG 总览图作为成功条件
 
 #### Scenario: 不修改训练配置
 - **WHEN** 用户使用训练配置准备 viewer manifest
@@ -28,7 +28,6 @@ Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量�
 - **WHEN** manifest 导出启用 image 模态
 - **THEN** 输出样本记录 MUST 引用 Dataset 对应的 raw image reference 和 processed RGB/ImageNet image 表示
 - **AND** 样本记录 MUST 标明 processed image 与训练输入一致或记录其导出来源
-- **AND** manifest 导出 MUST 不引用 processed image motion mask 或 image motion cache 文件
 
 #### Scenario: radar manifest 使用 RA/DA 来源
 - **WHEN** manifest 导出启用 radar 模态
@@ -64,7 +63,7 @@ Gradio viewer 与 manifest 数据准备入口 MUST 默认保持只读行为，�
 #### Scenario: Viewer 不修改训练产物
 - **WHEN** 用户启动 Gradio viewer 浏览已有 manifest
 - **THEN** 系统 MUST 不修改 checkpoint、`train_log.json`、`metrics.json`、`final_config.yaml` 或 split CSV
-- **AND** Viewer 允许读取 manifest 引用的图片或 JSON 文件
+- **AND** Viewer MUST 只读取 manifest 引用的图片或 JSON 文件
 
 #### Scenario: Manifest 导出不修改训练产物
 - **WHEN** 用户对已有训练配置运行 manifest 导出

@@ -11,7 +11,6 @@ DEFAULT_CONFIG = {
     },
     "paths": {
         "data_root": "dataset/scenario32",
-        "weights_dir": "All_models",
         "output_dir": "outputs",
     },
     "data": {

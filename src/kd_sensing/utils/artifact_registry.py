@@ -29,7 +29,6 @@ class CheckpointResolution:
     metadata: dict[str, Any] | None = None
     registry_dir: Path | None = None
     candidates: list[str] | None = None
-    legacy_path: Path | None = None
     requested: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -39,7 +38,6 @@ class CheckpointResolution:
             "metadata": self.metadata,
             "registry_dir": str(self.registry_dir) if self.registry_dir is not None else None,
             "candidates": list(self.candidates or []),
-            "legacy_path": str(self.legacy_path) if self.legacy_path is not None else None,
             "requested": self.requested,
         }
 
@@ -237,16 +235,6 @@ def find_registry_checkpoint(
     )
 
 
-def resolve_legacy_weight_path(cfg: dict[str, Any], weight_name: str | None) -> Path | None:
-    if not weight_name:
-        return None
-    candidate = Path(weight_name).expanduser()
-    if candidate.is_absolute():
-        return candidate
-    weights_dir = cfg.get("paths", {}).get("weights_dir", "All_models")
-    return resolve_path(Path(weights_dir) / candidate)
-
-
 def resolve_teacher_checkpoint(cfg: dict[str, Any], weight_name: str | None) -> CheckpointResolution:
     if not weight_name:
         return CheckpointResolution(path=None, source="none", requested=weight_name)
@@ -266,24 +254,12 @@ def resolve_teacher_checkpoint(cfg: dict[str, Any], weight_name: str | None) -> 
             registry_resolution.requested = weight_name
             return registry_resolution
 
-    legacy_path = resolve_legacy_weight_path(cfg, weight_name)
-    if legacy_path is not None and legacy_path.exists():
-        return CheckpointResolution(
-            path=legacy_path,
-            source="legacy",
-            metadata=load_checkpoint_metadata(legacy_path),
-            registry_dir=registry_resolution.registry_dir,
-            candidates=registry_resolution.candidates,
-            legacy_path=legacy_path,
-            requested=weight_name,
-        )
     return CheckpointResolution(
-        path=legacy_path,
+        path=None,
         source="missing",
         metadata=None,
         registry_dir=registry_resolution.registry_dir,
         candidates=registry_resolution.candidates,
-        legacy_path=legacy_path,
         requested=weight_name,
     )
 
@@ -319,23 +295,12 @@ def resolve_evaluation_checkpoint(cfg: dict[str, Any], weights: str | None = Non
             registry_resolution.requested = str(configured) if configured else None
             return registry_resolution
 
-    legacy_path = resolve_path(configured) if configured else None
-    if legacy_path is not None:
-        return CheckpointResolution(
-            path=legacy_path,
-            source="legacy",
-            metadata=load_checkpoint_metadata(legacy_path),
-            registry_dir=registry_resolution.registry_dir,
-            candidates=registry_resolution.candidates,
-            legacy_path=legacy_path,
-            requested=str(configured),
-        )
     return CheckpointResolution(
         path=None,
-        source="none",
+        source="missing" if configured else "none",
         registry_dir=registry_resolution.registry_dir,
         candidates=registry_resolution.candidates,
-        requested=None,
+        requested=str(configured) if configured else None,
     )
 
 

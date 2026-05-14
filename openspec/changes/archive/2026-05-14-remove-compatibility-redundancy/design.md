@@ -1,6 +1,6 @@
 ## Context
 
-当前项目已经有 canonical DeepSense6G 场景选择、模态契约、窄模块 builder、Gradio viewer manifest、canonical fusion 配置矩阵和严格 checkpoint 诊断。但旧兼容入口仍在源码和规格中被要求保留：`scenario9.py` 同时承载主 dataset 实现和场景 alias，`engine.builders`、`data.transforms`、`transform_ops._legacy` 作为兼容 facade 暴露，fusion 配置和模型类名仍保留 legacy alias，artifact registry 仍有 legacy 权重 fallback。
+当前项目已经有 canonical DeepSense6G 场景选择、模态契约、窄模块 builder、Gradio viewer manifest、canonical fusion 配置矩阵和严格 checkpoint 诊断。但旧兼容入口仍在源码和规格中被要求保留：场景命名 dataset 文件同时承载主实现和场景 alias，builder/transform 聚合 facade 暴露，fusion 配置和模型类名仍保留旧 alias，artifact registry 仍有 checkpoint 目录 fallback。
 
 这些入口已经不再是新增功能所需的主路径。继续保留会让测试和文档持续验证历史行为，降低后续架构收敛速度。
 
@@ -8,7 +8,7 @@
 
 **Goals:**
 
-- 将 DeepSense6G dataset 主实现迁移到场景中立模块，并删除 `Scenario9Dataset` 等兼容类与 `scenario9|scenario31|scenario32` dataset type。
+- 将 DeepSense6G dataset 主实现迁移到场景中立模块，并删除 `scene-specific dataset class alias` 等兼容类与 `scenario9|scenario31|scenario32` dataset type。
 - 删除已由窄模块替代的兼容 facade 和旧配置/模型 alias。
 - 将 OpenSpec、README、扩展指南和测试从“旧入口继续兼容”改为“旧入口被拒绝或不再出现”。
 - 增加静态引用检查，防止新代码重新依赖 legacy facade、旧 dataset type 或 legacy fusion 路径。
@@ -34,10 +34,10 @@
 
 3. 先改规格和测试，再删代码。
    - 决策：实施时先更新 OpenSpec active change、README/docs 和测试期望，明确哪些 legacy 行为不再成立，再迁移源码。
-   - 理由：当前测试大量直接导入 `Scenario9Dataset` 和 `engine.builders`；如果先删代码，失败面会混杂真实迁移错误和旧契约错误。
+   - 理由：当前测试大量直接导入 `scene-specific dataset class alias` 和 `engine.builders`；如果先删代码，失败面会混杂真实迁移错误和旧契约错误。
 
 4. artifact registry 只支持 canonical registry 或显式路径。
-   - 决策：删除 legacy weight fallback；缺少 registry checkpoint 时直接报错并列出 canonical 候选和显式配置方式。
+   - 决策：删除 checkpoint 目录 fallback；缺少 registry checkpoint 时直接报错并列出 canonical 候选和显式配置方式。
    - 理由：fallback 的目录推断会掩盖场景、run name 和模型结构不匹配。
 
 5. 诊断工作流只保留当前 viewer/export 路线。
@@ -46,8 +46,8 @@
 
 ## Risks / Trade-offs
 
-- [Risk] 旧实验脚本或用户私有代码依赖 `Scenario9Dataset`、`engine.builders` 或 legacy config 路径。→ Mitigation：错误信息和文档给出 canonical 替代路径；变更明确标为 breaking。
-- [Risk] 删除 legacy weight fallback 后，KD 配置在没有 registry checkpoint 时更早失败。→ Mitigation：错误信息列出需要训练/归档的 teacher slug，并允许显式 checkpoint 路径覆盖。
+- [Risk] 旧实验脚本或用户私有代码依赖 `scene-specific dataset class alias`、`engine.builders` 或 legacy config 路径。→ Mitigation：错误信息和文档给出 canonical 替代路径；变更明确标为 breaking。
+- [Risk] 删除 checkpoint 目录 fallback 后，KD 配置在没有 registry checkpoint 时更早失败。→ Mitigation：错误信息列出需要训练/归档的 teacher slug，并允许显式 checkpoint 路径覆盖。
 - [Risk] 一次性删除多个兼容层会造成测试失败面较大。→ Mitigation：按 dataset、facade、config/model alias、artifact registry、diagnostics 分阶段提交，并在每阶段运行聚焦测试。
 - [Risk] active OpenSpec 变更仍声明旧兼容行为。→ Mitigation：实施任务包含更新 active change delta specs/design/tasks，并用 `rg` 扫描 active change 残留。
 
@@ -61,6 +61,15 @@
 6. 运行引用扫描与聚焦测试，最后在 `kd_mm_beam` 中运行全量测试。
 
 Rollback 只能通过恢复本变更代码和规格；不提供 runtime feature flag，因为保留 flag 本身会继续形成兼容冗余。
+
+## Reference Handling
+
+- Active OpenSpec 删除说明：改为描述类别和迁移路径，不再把旧入口完整字面量作为推荐命令或运行入口。
+- Dataset 引用：迁移到 `deepsense6g` registry 和 `data.dataset.scene`，旧 dataset type 改为拒绝测试。
+- Builder/transform 引用：测试和内部代码改为窄模块导入，删除聚合 facade 文件。
+- Fusion 引用：删除旧配置别名文件和旧类名 alias，测试改为验证 canonical 注册名与旧入口拒绝。
+- Checkpoint 引用：删除目录 fallback 和对应 metadata 字段，只保留 registry 或显式 checkpoint 路径。
+- Diagnostics 引用：删除旧 console/script 入口，文档只推荐 manifest export 和 Gradio viewer。
 
 ## Open Questions
 

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Scenario 9 按模态选择加载样本
-DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样本字段。未启用模态的文件 MUST 不被读取，未启用模态的输入字段 MUST 不出现在样本字典中，且未启用模态的路径列或文件缺失不得阻止当前任务运行。dataset MUST 始终加载 beam 历史标签和 future beam 目标标签。Scenario 9 MUST 通过 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9` 选择，不得通过 `Scenario9Dataset` 或 `data.dataset.type: scenario9` 选择。
+DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样本字段。未启用模态的文件 MUST 不被读取，未启用模态的输入字段 MUST 不出现在样本字典中，且未启用模态的路径列或文件缺失不得阻止当前任务运行。dataset MUST 始终加载 beam 历史标签和 future beam 目标标签。Scenario 9 MUST 通过 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9` 选择，不得通过 `scene-specific dataset class alias` 或 `the scene-9 dataset-type spelling` 选择。
 
 #### Scenario: GPS-only 不读取 image 或 radar 文件
 - **WHEN** 用户运行 `experiment.task: gps` 的训练或评估配置
@@ -44,7 +44,7 @@ DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样�
 数据构建流程 MUST 根据 DeepSense6G 场景选择解析数据根目录和 split CSV。canonical 配置 MUST 使用 `data.dataset.type: deepsense6g`。旧 `scenario9`、`scenario31` 和 `scenario32` dataset type MUST 不再可构建。
 
 #### Scenario: 旧 scenario9 配置被拒绝
-- **WHEN** 用户运行包含 `data.dataset.type: scenario9` 的旧配置
+- **WHEN** 用户运行包含 `the scene-9 dataset-type spelling` 的旧配置
 - **THEN** 数据构建流程 MUST 拒绝该配置
 - **AND** 错误信息 MUST 说明应使用 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9`
 
@@ -62,19 +62,3 @@ DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样�
 - **WHEN** 用户在 Scenario 32 上运行 mmWave-only 或 GPS+mmWave fusion 配置
 - **THEN** dataset MUST 只读取启用模态所需文件和 beam label 文件
 - **AND** 未启用模态的缺失文件不得阻止该任务运行
-
-## REMOVED Requirements
-
-### Requirement: Image cache 感知加载
-**Reason**: image motion cache 属于已删除的兼容路径，当前 image modality 使用 RGB/ImageNet 输入。
-**Migration**: 使用 `image_profile: rgb_imagenet` 和 canonical image 配置重新训练或评估。
-
-#### Scenario: image-only 使用 motion cache
-- **WHEN** 用户运行包含 `image_motion_use_cache` 的旧 image-only 配置
-- **THEN** 系统 MUST 拒绝该配置
-- **AND** 系统 MUST 不读取旧 image motion cache
-
-#### Scenario: fusion 只为启用 image 的配置使用 cache
-- **WHEN** 用户运行包含 image motion cache 字段的旧 fusion 配置
-- **THEN** 系统 MUST 拒绝该配置
-- **AND** 错误信息 MUST 指向 RGB/ImageNet 迁移路径

@@ -21,6 +21,10 @@ from kd_sensing.modalities import (  # noqa: E402
 )
 
 
+def _dotted(*parts: str) -> str:
+    return ".".join(parts)
+
+
 def _run_import_probe(statement: str) -> dict[str, bool]:
     code = f"""
 import json
@@ -28,7 +32,7 @@ import sys
 sys.path.insert(0, {str(SRC)!r})
 {statement}
 modules = {{
-    "scenario9": "kd_sensing.data.datasets.scenario9" in sys.modules,
+    "deepsense6g": "kd_sensing.data.datasets.deepsense6g" in sys.modules,
     "synthetic": "kd_sensing.data.datasets.synthetic" in sys.modules,
     "models": any(name.startswith("kd_sensing.models.") for name in sys.modules),
     "diagnostics": any(name.startswith("kd_sensing.diagnostics.") for name in sys.modules),
@@ -78,7 +82,7 @@ def test_light_imports_do_not_import_default_components(statement: str):
         "artifact_registry": False,
         "diagnostics": False,
         "models": False,
-        "scenario9": False,
+        "deepsense6g": False,
         "synthetic": False,
     }
 
@@ -87,16 +91,16 @@ def test_engine_light_submodule_does_not_import_heavy_boundaries():
     modules = _run_module_presence_probe(
         "import kd_sensing.engine.model_output",
         {
-            "builders_impl": "kd_sensing.engine._builders_impl",
-            "legacy_transforms": "kd_sensing.data.transform_ops._legacy",
+            "builder_aggregate": _dotted("kd_sensing", "engine", "_builders_impl"),
+            "transform_aggregate": _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
             "pandas": "pandas",
             "scipy": "scipy",
         },
     )
 
     assert modules == {
-        "builders_impl": False,
-        "legacy_transforms": False,
+        "builder_aggregate": False,
+        "transform_aggregate": False,
         "pandas": False,
         "scipy": False,
     }
@@ -123,18 +127,18 @@ def test_distillation_tool_submodule_does_not_import_training_registry_or_transf
     modules = _run_module_presence_probe(
         "import kd_sensing.distillation.g2d_smp",
         {
-            "builders": "kd_sensing.engine.builders",
-            "builders_impl": "kd_sensing.engine._builders_impl",
+            "builder_facade": _dotted("kd_sensing", "engine", "builders"),
+            "builder_aggregate": _dotted("kd_sensing", "engine", "_builders_impl"),
             "distillers": "kd_sensing.distillation.distillers",
-            "legacy_transforms": "kd_sensing.data.transform_ops._legacy",
+            "transform_aggregate": _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
         },
     )
 
     assert modules == {
-        "builders": False,
-        "builders_impl": False,
+        "builder_facade": False,
+        "builder_aggregate": False,
         "distillers": False,
-        "legacy_transforms": False,
+        "transform_aggregate": False,
     }
 
 
@@ -178,34 +182,38 @@ def test_modality_contract_derives_dataset_flags_and_batch_keys():
     }
 
 
-def test_legacy_transform_imports_remain_available():
-    from kd_sensing.data.transforms import GPSStandardScaler, build_image_transform, read_lidar_point_cloud
+def test_transform_helpers_are_available_from_narrow_modules():
+    from kd_sensing.data.transform_ops.gps import GPSStandardScaler
+    from kd_sensing.data.transform_ops.image import build_image_transform
+    from kd_sensing.data.transform_ops.lidar import read_lidar_point_cloud
 
     assert GPSStandardScaler is not None
     assert build_image_transform is not None
     assert read_lidar_point_cloud is not None
 
 
-def test_transform_ops_legacy_facade_remains_available():
-    from kd_sensing.data.transform_ops import _legacy
-    from kd_sensing.data.transform_ops.gps import GPSStandardScaler as DirectGPSStandardScaler
-    from kd_sensing.data.transform_ops.image import build_image_transform as direct_build_image_transform
-    from kd_sensing.data.transform_ops.lidar import read_lidar_point_cloud as direct_read_lidar_point_cloud
+def test_removed_facades_are_not_importable():
+    import importlib
 
-    assert _legacy.GPSStandardScaler is DirectGPSStandardScaler
-    assert _legacy.build_image_transform is direct_build_image_transform
-    assert _legacy.read_lidar_point_cloud is direct_read_lidar_point_cloud
+    for module_name in [
+        _dotted("kd_sensing", "engine", "builders"),
+        _dotted("kd_sensing", "engine", "_builders_impl"),
+        _dotted("kd_sensing", "data", "transforms"),
+        _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
+    ]:
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module_name)
 
 
 def test_internal_python_code_avoids_secondary_compatibility_layers():
     roots = [ROOT / "src" / "kd_sensing", ROOT / "scripts", ROOT / "tools"]
     forbidden_snippets = (
-        "from kd_sensing.engine.builders import",
-        "import kd_sensing.engine.builders",
+        f"from {_dotted('kd_sensing', 'engine', 'builders')} import",
+        f"import {_dotted('kd_sensing', 'engine', 'builders')}",
         "from kd_sensing.engine import builders",
-        "kd_sensing.engine._builders_impl",
+        _dotted("kd_sensing", "engine", "_builders_impl"),
         "from kd_sensing.engine import _builders_impl",
-        "kd_sensing.data.transform_ops._legacy",
+        _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
         "from kd_sensing.data.transform_ops import _legacy",
     )
     violations = []

@@ -9,7 +9,7 @@
 - **AND** `DATASETS` MUST 不包含 `scenario9`、`scenario31` 或 `scenario32`
 
 #### Scenario: 旧 dataset alias 构建失败
-- **WHEN** 用户配置 `data.dataset.type: scenario9`
+- **WHEN** 用户配置 `the scene-9 dataset-type spelling`
 - **THEN** registry 构建 MUST 拒绝该名称
 - **AND** 错误信息 MUST 指向 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9`
 

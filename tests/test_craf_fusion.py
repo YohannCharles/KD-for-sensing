@@ -439,7 +439,7 @@ def test_craf_extra_loss_characterization_keys_and_scalar_diagnostics():
     assert losses["reliability_kd"].ndim == 0
 
 
-def test_craf_example_configs_load_without_affecting_legacy_config():
+def test_craf_example_configs_load_without_affecting_canonical_early_concat_config():
     craf = load_config(ROOT / "configs/fusion/craf_all_modalities_no_kd.yaml")
     stabilized = load_config(ROOT / "configs/fusion/craf_all_modalities_stabilized_no_kd.yaml")
     token_all = load_config(ROOT / "configs/fusion/token_transformer_all_modalities_no_kd.yaml")
@@ -447,7 +447,7 @@ def test_craf_example_configs_load_without_affecting_legacy_config():
     prior_sanity = load_config(ROOT / "configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml")
     image_radar = load_config(ROOT / "configs/fusion/craf_image_radar_no_kd.yaml")
     baseline = load_config(ROOT / "configs/fusion/token_transformer_image_radar_no_kd.yaml")
-    legacy = load_config(ROOT / "configs/fusion/no_kd.yaml")
+    early_concat = load_config(ROOT / "configs/fusion/image_radar_student_no_kd.yaml")
 
     assert craf["model"]["student"]["type"] == "craf_fusion"
     assert craf["model"]["student"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
@@ -460,9 +460,9 @@ def test_craf_example_configs_load_without_affecting_legacy_config():
     assert image_radar["model"]["student"]["modalities"] == ["image", "radar"]
     assert baseline["model"]["student"]["type"] == "token_transformer_fusion"
     assert baseline["training"]["counterfactual"]["enabled"] is False
-    assert legacy["model"]["student"]["type"] == "fusion_student"
-    assert legacy["training"]["counterfactual"]["enabled"] is False
-    assert legacy["loss"]["beam_soft"]["weight"] == 0.0
+    assert early_concat["model"]["student"]["type"] == "fusion_student"
+    assert early_concat["training"]["counterfactual"]["enabled"] is False
+    assert early_concat["loss"]["beam_soft"]["weight"] == 0.0
 
 
 def test_craf_synthetic_train_and_evaluate_workflow(tmp_path: Path):

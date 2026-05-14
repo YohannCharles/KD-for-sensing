@@ -18,7 +18,7 @@ TBD - created by archiving change stabilize-experiment-artifacts. Update Purpose
 - **AND** 系统 MUST 避免默认解析到同一 slug 的旧低精度 checkpoint
 
 ### Requirement: checkpoint 解析优先级
-KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加载匹配 checkpoint。显式传入的绝对路径或评估入口 `--weights` MUST 保持最高优先级；未显式指定时，系统 MUST 优先查找归档目录中的匹配 checkpoint，再回退到 `paths.weights_dir / distillation.teacher_model_name` 或旧评估配置路径。
+KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加载匹配 checkpoint。显式传入的绝对路径或评估入口 `--weights` MUST 保持最高优先级；未显式指定时，系统 MUST 查找归档目录中的匹配 checkpoint。归档目录缺失或无匹配时，系统 MUST 抛出清晰错误，且 MUST 不再回退到 legacy `paths.weights_dir / distillation.teacher_model_name` 或旧评估配置路径。
 
 #### Scenario: KD teacher 从归档目录加载
 - **WHEN** 用户运行 KD 配置且未显式覆盖 teacher checkpoint 为绝对路径
@@ -31,10 +31,10 @@ KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加
 - **THEN** 系统 MUST 加载该显式路径
 - **AND** 系统 MUST 不用归档目录中的候选替换该显式路径
 
-#### Scenario: registry 缺失时回退旧路径
+#### Scenario: registry 缺失时报错
 - **WHEN** 归档目录没有匹配当前配置的 checkpoint
-- **THEN** 系统 MUST 尝试使用既有 `paths.weights_dir` 和 `teacher_model_name` 解析逻辑
-- **AND** 如果回退路径也不存在，系统 MUST 抛出包含 registry 候选和旧路径候选的清晰错误
+- **THEN** 系统 MUST 抛出包含 registry 候选和显式 checkpoint 配置方式的清晰错误
+- **AND** 系统 MUST 不尝试 legacy 权重目录 fallback
 
 ### Requirement: 归档 metadata 与归一化工件关联
 归档 checkpoint MUST 具备可机器读取的 metadata，用于记录源运行目录、配置 slug、模态、KD 模式、epoch、验证 Top-1 accuracy、源 checkpoint 路径、split 信息和训练归一化工件路径。启用 GPS、LiDAR 或 mmWave 归一化时，metadata MUST 能让评估入口复用训练时的 scaler 或 normalizer/stats。
@@ -71,19 +71,6 @@ KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加
 - **WHEN** 用户通过绝对路径显式指定 teacher checkpoint 或评估权重
 - **THEN** 系统 MUST 使用该显式路径
 - **AND** 场景 registry 不得替换该路径
-
-### Requirement: 场景化 legacy 权重路径解析
-KD teacher fallback 解析 MUST 支持场景化 legacy 权重目录。canonical KD 配置的 `paths.weights_dir` MUST 指向当前场景下的 teacher 运行目录，Scenario 9 当前训练结果 MUST 使用 `outputs/scene9/<teacher_run_name>/checkpoints`。
-
-#### Scenario: Scenario 9 KD fallback
-- **WHEN** Scenario 9 KD 配置没有可用 registry checkpoint
-- **THEN** 系统 MUST 尝试从 `outputs/scene9/<teacher_run_name>/checkpoints` 解析 teacher 权重
-- **AND** 错误信息 MUST 同时包含尝试过的 registry 和 fallback 候选
-
-#### Scenario: 不同场景同名 teacher 不冲突
-- **WHEN** Scenario 9 和 Scenario 32 都存在同名 teacher run
-- **THEN** Scenario 32 KD 配置 MUST 只把 Scenario 32 的 teacher 运行目录作为默认 fallback
-- **AND** Scenario 9 的同名 teacher 运行目录不得被默认使用
 
 ### Requirement: Teacher reliability registry artifact
 实验产物体系 MUST 支持 teacher reliability registry。该 registry MUST 按场景隔离，引用 teacher checkpoint 和指标来源，并能被 Stage 2/3 配置稳定解析。

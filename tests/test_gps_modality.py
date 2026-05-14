@@ -14,15 +14,15 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
-from kd_sensing.data.transforms import (  # noqa: E402
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
+from kd_sensing.data.transform_ops.gps import (  # noqa: E402
     GPSStandardScaler,
     build_gps_features,
     read_gps_latlon,
 )
 from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
-from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
+from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -92,14 +92,14 @@ def test_gps_scaler_fits_train_and_reuses_for_test_split(tmp_path: Path):
     _write_sequence_csv(train_csv, train_gps, train_bs, seq_index=1)
     _write_sequence_csv(test_csv, test_gps, test_bs, seq_index=2)
 
-    train_dataset = Scenario9Dataset(
+    train_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(train_csv),
         split="train",
         use_gps=True,
         gps_feature_mode="relative_polar",
     )
-    test_dataset = Scenario9Dataset(
+    test_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(test_csv),
         split="test",
@@ -119,7 +119,7 @@ def test_gps_scaler_fits_train_and_reuses_for_test_split(tmp_path: Path):
     artifacts = save_normalization_artifacts({"train": _Loader(train_dataset)}, tmp_path / "run")
     assert Path(artifacts["gps_scaler"]).exists()
     with pytest.raises(ValueError, match="requires a train-fitted gps_scaler"):
-        Scenario9Dataset(
+        DeepSense6GDataset(
             data_root=str(tmp_path),
             csv_name=str(test_csv),
             split="test",

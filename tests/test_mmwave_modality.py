@@ -14,16 +14,16 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
-from kd_sensing.data.transforms import (  # noqa: E402
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
+from kd_sensing.data.transform_ops.mmwave import (  # noqa: E402
     MmWaveStandardScaler,
     build_mmwave_db_features,
     load_mmwave_feature_sequence,
     read_mmwave_power_vector,
 )
 from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_mmwave_inputs  # noqa: E402
-from kd_sensing.engine.builders import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
+from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.mmwave import (  # noqa: E402
@@ -79,7 +79,7 @@ def test_mmwave_scaler_and_dataset_reuse_train_split_only(tmp_path: Path):
     _write_mmwave_sequence_fixture(tmp_path, train_csv, prefix="train", seq_index=1)
     _write_mmwave_sequence_fixture(tmp_path, test_csv, prefix="test", seq_index=2)
 
-    train_dataset = Scenario9Dataset(
+    train_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(train_csv),
         split="train",
@@ -89,7 +89,7 @@ def test_mmwave_scaler_and_dataset_reuse_train_split_only(tmp_path: Path):
         use_mmwave=True,
         mmwave_normalize=True,
     )
-    test_dataset = Scenario9Dataset(
+    test_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(test_csv),
         split="test",
@@ -112,7 +112,7 @@ def test_mmwave_scaler_and_dataset_reuse_train_split_only(tmp_path: Path):
     loaded = MmWaveStandardScaler.load(artifacts["mmwave_scaler"])
     np.testing.assert_allclose(loaded.mean_, train_dataset.mmwave_scaler.mean_)
     with pytest.raises(ValueError, match="requires a train-fitted mmwave_scaler"):
-        Scenario9Dataset(
+        DeepSense6GDataset(
             data_root=str(tmp_path),
             csv_name=str(test_csv),
             split="test",
@@ -128,7 +128,7 @@ def test_mmwave_dataset_keeps_old_csv_compatible_when_disabled(tmp_path: Path):
     csv_path = tmp_path / "image_only.csv"
     _write_minimal_non_mmwave_csv(tmp_path, csv_path)
 
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -142,7 +142,7 @@ def test_mmwave_dataset_keeps_old_csv_compatible_when_disabled(tmp_path: Path):
     sample = dataset[0]
     assert "mmwave" not in sample
     with pytest.raises(ValueError, match="mmwave is enabled"):
-        Scenario9Dataset(
+        DeepSense6GDataset(
             data_root=str(tmp_path),
             csv_name=str(csv_path),
             split="train",

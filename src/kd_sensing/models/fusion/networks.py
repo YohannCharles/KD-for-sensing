@@ -450,10 +450,6 @@ def _check_sequence_tensor(
     return tuple(int(dim) for dim in tensor.shape)
 
 
-FusionModalityNet = FusionTeacherModalityNet
-StudentModalityNet = FusionStudentModalityNet
-
-
 def _validate_image_profile_channels(
     encoder_name: str,
     modalities: tuple[str, ...],

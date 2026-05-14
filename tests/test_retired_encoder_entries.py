@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from kd_sensing.data.datasets.scenario9 import Scenario9Dataset  # noqa: E402
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
 from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
 
@@ -126,7 +126,7 @@ def test_retired_dataset_preprocessing_modes_are_rejected(tmp_path: Path):
     _write_sequence_csv(csv_path)
 
     with pytest.raises(ValueError, match="gps_feature_mode"):
-        Scenario9Dataset(
+        DeepSense6GDataset(
             data_root=str(tmp_path),
             csv_name=str(csv_path),
             enabled_modalities=["gps"],
@@ -134,7 +134,7 @@ def test_retired_dataset_preprocessing_modes_are_rejected(tmp_path: Path):
         )
 
     with pytest.raises(ValueError, match="lidar_encoding"):
-        Scenario9Dataset(
+        DeepSense6GDataset(
             data_root=str(tmp_path),
             csv_name=str(tmp_path / "missing.csv"),
             enabled_modalities=["lidar"],

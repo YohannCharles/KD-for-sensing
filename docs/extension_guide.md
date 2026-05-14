@@ -57,7 +57,7 @@ The RGB profile produces `[B, T, 3, 224, 224]` ImageNet-normalized tensors and d
 
 Built-in single-modality configs use `gru_params: [64, 64, 1]`; radar/GPS/LiDAR single-modality
 configs inherit the image single-modality training and KD parameters for shared fields. Image+radar
-fusion compatibility configs use a two-layer teacher and one-layer student. Other fusion configs remain
+early-concat fusion configs use a two-layer teacher and one-layer student. Other fusion configs remain
 extension configs and may use their own GRU depth. Canonical experiment configs use
 `teacher_no_kd`, `student_no_kd`, `logits_kd`, and `rkd`; `experiment.name` and `output.run_name`
 match the config stem. In no-KD configs the trainable main model is `model.student`, so a
@@ -161,8 +161,7 @@ The engine expects the field names above for enabled modalities. GPS and LiDAR a
 
 New dataset code should import transform helpers from `kd_sensing.data.transform_ops.image`,
 `radar`, `gps`, `lidar`, `mmwave`, `io`, `cache`, or `normalization`. The old
-`kd_sensing.data.transforms` path remains available for compatibility but should not be used by new
-internal code.
+top-level transform aggregation path has been removed; internal code should import the narrow modules directly.
 
 Engine construction helpers are split by responsibility:
 
@@ -175,9 +174,9 @@ Engine construction helpers are split by responsibility:
   model forward, model-output adaptation, AMP helpers, and future-slot selection.
 - `kd_sensing.engine.training_extensions`: lifecycle hooks for training methods that need teacher
   runtime, extra losses, gradient post-processing, or epoch diagnostics.
-- `kd_sensing.engine.optim`: model/loss/distiller/metric, optimizer, scheduler, device, and weight path construction.
+- `kd_sensing.engine.optim`: model/loss/distiller/metric, optimizer, scheduler, and device construction.
 
-`kd_sensing.engine.builders` remains a compatibility facade for older imports.
+The old builder aggregation module has been removed. Import the responsibility-specific module instead.
 
 ## Add a Training Method
 
@@ -232,9 +231,8 @@ implementation in the focused submodules:
 - `render.py`: sample records, PNG paths, and overview rendering.
 - `writers.py`: JSON, JSONL, CSV, and summary writes.
 
-Compatibility imports through `diagnostics.modality_visualization.visualize_modalities` and
-`diagnostics.visualization.core.visualize_modalities` remain available, but new implementation work should
-target the submodule that owns the behavior.
+Visualization implementation work should target the submodule that owns the behavior; the installed CLI
+exports viewer manifests through `kd-sensing-export-viewer-manifest`.
 
 ## Advanced Fusion Overlays
 
@@ -282,8 +280,8 @@ Unknown names, duplicate names, and missing constructor parameters raise `Regist
 
 ## Local Artifacts
 
-`dataset/` is a local data input. Tracked `All_models/*.pth` files are built-in reproduction weights for
-the upstream image-only and image+radar compatibility configs; new checkpoints from training, evaluation,
+`dataset/` is a local data input. Tracked `All_models/*.pth` files are historical reproduction artifacts
+and are not consulted by default checkpoint resolution. New checkpoints from training, evaluation,
 diagnostics, or cache generation should stay under ignored paths such as `outputs/`, `logs/`, cache folders,
 or files matched by `*.pth` / `*.pt` / `*.ckpt`. Do not include generated artifacts in source changes unless
 a task explicitly asks for fixture data or documentation updates.

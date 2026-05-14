@@ -21,6 +21,12 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     device = build_device(cfg)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)
     checkpoint_resolution = resolve_evaluation_checkpoint(cfg, weights)
+    if checkpoint_resolution.path is None:
+        raise FileNotFoundError(
+            "Evaluation checkpoint not found in the checkpoint registry. "
+            "Run evaluation with --weights or set evaluation.weights to an absolute checkpoint path. "
+            f"Resolution: {checkpoint_resolution.to_dict()}"
+        )
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}
     if checkpoint_resolution.metadata and checkpoint_resolution.metadata.get("split_metadata"):
@@ -85,9 +91,6 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
                     "source": checkpoint_resolution.source,
                     "registry_dir": str(checkpoint_resolution.registry_dir)
                     if checkpoint_resolution.registry_dir is not None
-                    else None,
-                    "legacy_path": str(checkpoint_resolution.legacy_path)
-                    if checkpoint_resolution.legacy_path is not None
                     else None,
                     "metadata": checkpoint_resolution.metadata,
                 }

@@ -2,9 +2,6 @@ __all__ = [
     "create_samples",
     "SequenceSamples",
     "DeepSense6GDataset",
-    "Scenario9Dataset",
-    "Scenario31Dataset",
-    "Scenario32Dataset",
     "SyntheticSequenceDataset",
 ]
 
@@ -16,9 +13,6 @@ def __getattr__(name: str):
         return getattr(samples, name)
     if name in {
         "DeepSense6GDataset",
-        "Scenario9Dataset",
-        "Scenario31Dataset",
-        "Scenario32Dataset",
         "SyntheticSequenceDataset",
     }:
         from . import datasets

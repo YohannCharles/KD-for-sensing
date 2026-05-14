@@ -22,16 +22,14 @@ from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import (  # noqa: E402
-    FusionModalityNet,
     FusionTeacherModalityNet,
     FusionStudentModalityNet,
-    StudentModalityNet,
 )
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageModalityNet, ImageStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.models.radar import RadarModalityNet, RadarStudentModalityNet  # noqa: E402
-from kd_sensing.registries import MODELS  # noqa: E402
+from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -86,10 +84,7 @@ FUSION_IMAGE_RADAR_EXPECTED_PARAMS = {
 }
 
 
-def test_fusion_registry_returns_new_public_class_names_and_legacy_aliases_remain_available():
-    from kd_sensing.models import FusionModalityNet as PackageFusionModalityNet
-    from kd_sensing.models import StudentModalityNet as PackageStudentModalityNet
-
+def test_fusion_registry_returns_public_class_names_and_removed_aliases_fail():
     teacher = MODELS.build(
         {
             "type": "fusion_teacher",
@@ -109,10 +104,11 @@ def test_fusion_registry_returns_new_public_class_names_and_legacy_aliases_remai
 
     assert type(teacher) is FusionTeacherModalityNet
     assert type(student) is FusionStudentModalityNet
-    assert FusionModalityNet is FusionTeacherModalityNet
-    assert StudentModalityNet is FusionStudentModalityNet
-    assert PackageFusionModalityNet is FusionTeacherModalityNet
-    assert PackageStudentModalityNet is FusionStudentModalityNet
+    for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet"]:
+        with pytest.raises(AttributeError, match=alias):
+            getattr(kd_sensing.models, alias)
+        with pytest.raises(RegistryError, match="Removed component"):
+            MODELS.build({"type": alias})
 
 
 MODALITY_SPECS = {
@@ -184,30 +180,6 @@ LEGACY_CONFIG_EXPECTATIONS = [
         "lidar_teacher",
         None,
         "configs/lidar/teacher_no_kd.yaml",
-    ),
-    (
-        "configs/fusion/no_kd.yaml",
-        "fusion",
-        "no_kd",
-        "fusion_student",
-        ["image", "radar"],
-        "configs/fusion/image_radar_student_no_kd.yaml",
-    ),
-    (
-        "configs/fusion/logits_kd.yaml",
-        "fusion",
-        "logits_kd",
-        "fusion_student",
-        ["image", "radar"],
-        "configs/fusion/image_radar_logits_kd.yaml",
-    ),
-    (
-        "configs/fusion/rkd.yaml",
-        "fusion",
-        "rkd",
-        "fusion_student",
-        ["image", "radar"],
-        "configs/fusion/image_radar_rkd.yaml",
     ),
     (
         "configs/fusion/image_gps_no_kd.yaml",
@@ -421,7 +393,7 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     ),
     LEGACY_CONFIG_EXPECTATIONS,
 )
-def test_legacy_configs_keep_compatible_semantics(
+def test_named_example_configs_keep_current_semantics(
     config_path: str,
     task: str,
     distillation_type: str,
@@ -459,6 +431,19 @@ def test_legacy_configs_keep_compatible_semantics(
         assert model.modalities == tuple(modalities)
 
     _assert_modality_data_fields(cfg, modalities or [task])
+
+
+@pytest.mark.parametrize(
+    ("stem", "replacement"),
+    [
+        ("no_kd", "image_radar_student_no_kd.yaml"),
+        ("logits_kd", "image_radar_logits_kd.yaml"),
+        ("rkd", "image_radar_rkd.yaml"),
+    ],
+)
+def test_removed_fusion_alias_config_paths_raise_migration_error(stem: str, replacement: str):
+    with pytest.raises(ValueError, match=replacement):
+        load_config(ROOT / f"configs/fusion/{stem}.yaml")
 
 
 def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:

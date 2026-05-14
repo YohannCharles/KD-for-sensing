@@ -7,7 +7,12 @@ from typing import Any
 DEFAULT_DEEPSENSE_SCENE_ID = 32
 DEFAULT_TRAIN_CSV_NAME = "train_seqs_RA_GPS_LIDAR.csv"
 DEFAULT_TEST_CSV_NAME = "test_seqs_RA_GPS_LIDAR.csv"
-DEEPSENSE_DATASET_TYPES = {"deepsense6g", "scenario9", "scenario31", "scenario32"}
+DEEPSENSE_DATASET_TYPES = {"deepsense6g"}
+REMOVED_DEEPSENSE_DATASET_TYPES = {
+    "scenario9": 9,
+    "scenario31": 31,
+    "scenario32": 32,
+}
 
 
 @dataclass(frozen=True)
@@ -64,19 +69,11 @@ def is_deepsense_dataset_type(dataset_type: Any) -> bool:
 
 
 def resolve_deepsense_scene(scene: Any = None, *, dataset_type: Any = None) -> DeepSenseScene:
+    _reject_removed_dataset_type(dataset_type)
     if scene is None:
-        dataset_type_key = str(dataset_type or "deepsense6g").strip().lower()
-        if dataset_type_key == "scenario9":
-            scene_id = 9
-        elif dataset_type_key == "scenario31":
-            scene_id = 31
-        elif dataset_type_key == "scenario32":
-            scene_id = 32
-        else:
-            scene_id = DEFAULT_DEEPSENSE_SCENE_ID
+        scene_id = DEFAULT_DEEPSENSE_SCENE_ID
     else:
         scene_id = _scene_id_from_value(scene)
-        _validate_dataset_type_scene(dataset_type, scene_id)
     try:
         return DEEPSENSE_SCENES[scene_id]
     except KeyError as exc:
@@ -87,6 +84,7 @@ def resolve_deepsense_scene(scene: Any = None, *, dataset_type: Any = None) -> D
 
 def normalize_deepsense_dataset_config(dataset_cfg: dict[str, Any]) -> dict[str, Any]:
     dataset_type = dataset_cfg.get("type", "deepsense6g")
+    _reject_removed_dataset_type(dataset_type)
     has_scene = any(key in dataset_cfg for key in ("scene", "scene_id", "scene_slug"))
     if not is_deepsense_dataset_type(dataset_type) and not has_scene:
         return dataset_cfg
@@ -123,9 +121,7 @@ def retarget_deepsense_dataset_config(dataset_cfg: dict[str, Any], scene: Any) -
     """
 
     dataset_type = str(dataset_cfg.get("type", "deepsense6g")).strip().lower()
-    if dataset_type in {"scenario9", "scenario31", "scenario32"}:
-        dataset_cfg["type"] = "deepsense6g"
-        dataset_type = "deepsense6g"
+    _reject_removed_dataset_type(dataset_type)
 
     target = resolve_deepsense_scene(scene, dataset_type=dataset_type)
     if _is_default_scene_value(dataset_cfg.get("data_root"), "default_data_root"):
@@ -190,15 +186,11 @@ def _scene_id_from_value(value: Any) -> int:
         ) from exc
 
 
-def _validate_dataset_type_scene(dataset_type: Any, scene_id: int) -> None:
+def _reject_removed_dataset_type(dataset_type: Any) -> None:
     dataset_type_key = str(dataset_type or "").strip().lower()
-    if dataset_type_key == "scenario9" and scene_id != 9:
-        raise ValueError("data.dataset.type=scenario9 conflicts with data.dataset.scene; use scene 9 or type deepsense6g.")
-    if dataset_type_key == "scenario31" and scene_id != 31:
+    if dataset_type_key in REMOVED_DEEPSENSE_DATASET_TYPES:
+        scene_id = REMOVED_DEEPSENSE_DATASET_TYPES[dataset_type_key]
         raise ValueError(
-            "data.dataset.type=scenario31 conflicts with data.dataset.scene; use scene 31 or type deepsense6g."
-        )
-    if dataset_type_key == "scenario32" and scene_id != 32:
-        raise ValueError(
-            "data.dataset.type=scenario32 conflicts with data.dataset.scene; use scene 32 or type deepsense6g."
+            f"Removed DeepSense6G dataset type '{dataset_type_key}'. "
+            f"Use data.dataset.type: deepsense6g with data.dataset.scene: {scene_id}."
         )

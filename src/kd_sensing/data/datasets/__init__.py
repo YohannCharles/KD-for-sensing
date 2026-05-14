@@ -1,17 +1,14 @@
 __all__ = [
     "DeepSense6GDataset",
-    "Scenario9Dataset",
-    "Scenario31Dataset",
-    "Scenario32Dataset",
     "SyntheticSequenceDataset",
 ]
 
 
 def __getattr__(name: str):
-    if name in {"DeepSense6GDataset", "Scenario9Dataset", "Scenario31Dataset", "Scenario32Dataset"}:
-        from . import scenario9
+    if name == "DeepSense6GDataset":
+        from . import deepsense6g
 
-        return getattr(scenario9, name)
+        return deepsense6g.DeepSense6GDataset
     if name == "SyntheticSequenceDataset":
         from . import synthetic
 

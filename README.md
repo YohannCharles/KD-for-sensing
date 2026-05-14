@@ -36,10 +36,10 @@ src/kd_sensing/
   cli/
   config/
   data/
-    transform_ops/ # image/radar/GPS/LiDAR/mmWave 转换实现；data.transforms 是兼容 facade
+    transform_ops/ # image/radar/GPS/LiDAR/mmWave 转换实现
   diagnostics/
     viewer_manifest.py # Gradio viewer manifest 导出
-    visualization/     # 历史诊断工具的兼容实现
+    visualization/     # manifest/viewer 相关诊断实现
   distillation/
   engine/
     data_factory.py
@@ -58,10 +58,9 @@ src/kd_sensing/
 大型数据和预训练权重继续保留在原有位置：
 
 - `dataset/` 是本地 DeepSense6G 数据输入，默认由 `.gitignore` 排除。
-- `All_models/` 中已跟踪的 `*.pth` 是内置复现权重，保留用于上游 image-only 与 image+radar
-  兼容配置的 teacher/student/KD 基线加载；对应参数文件为同目录下的 `params_Image*.txt` 和
-  `params_Both*.txt`。这些随仓库保留的权重大小约 398 KB 到 12 MB，默认通过
-  `paths.weights_dir: All_models` 和 `distillation.teacher_model_name` 解析。
+- `All_models/` 中已跟踪的 `*.pth` 和 `params_*.txt` 是历史复现实验资料，不再作为默认
+  teacher/evaluation checkpoint 解析来源。当前运行时使用 checkpoint registry，或通过
+  `distillation.teacher_model_name` / `--weights` 显式传入 checkpoint 路径。
 - 新训练、评估或诊断生成的 checkpoint、cache、`outputs/`、`logs/` 和 TensorBoard 产物是本地运行产物，
   已由 `.gitignore` 中的目录或 `*.pth` / `*.pt` / `*.ckpt` 规则覆盖，不应进入源码变更。
 
@@ -79,7 +78,6 @@ diagnostics 或训练模块。需要构建内置组件时，engine 会显式调�
 ```bash
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
-conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
 conda run -n kd_mm_beam pytest tests/test_phase_1_5_utility_validation.py -q
 conda run -n kd_mm_beam pytest tests/test_complementarity_analysis.py tests/test_gradio_complementarity_explorer.py -q
 ```
@@ -100,19 +98,16 @@ conda run -n kd_mm_beam pytest -q
 python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=9
 ```
 
-`data.dataset.scene` 也接受 `scene9`、`scenario9`、`scene32` 和 `scenario32`。旧的
-`data.dataset.type: scenario9` 仍兼容并明确表示 Scenario 9。已有历史训练目录已按来源迁移到
-`outputs/scene9/`，新的默认训练不会覆盖这些结果。
+`data.dataset.scene` 也接受 `scene9`、`scenario9`、`scene32` 和 `scenario32`。场景专用
+dataset type 已删除；旧配置需要改为 `data.dataset.type: deepsense6g` 并设置对应
+`data.dataset.scene`。已有历史训练目录已按来源迁移到 `outputs/scene9/`，新的默认训练不会覆盖这些结果。
 
 ## 训练
 
-推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。Image 与 image+radar
-兼容 KD 配置默认读取随附 `All_models` 中的一层 image teacher 或二层 image+radar teacher
-权重；radar/GPS/LiDAR 单模态 KD 配置会优先从最佳 checkpoint registry 读取同模态
-teacher no-KD 的最高验证 Top-1 权重，缺失时再回退到
-`outputs/<scene_slug>/<slug>_teacher_no_kd/checkpoints/best.pth`。也可以通过 `paths.weights_dir` 和
-`distillation.teacher_model_name` 覆盖旧式 teacher checkpoint 路径；绝对路径和评估入口
-`--weights` 始终优先于 registry。
+推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。KD 配置会从当前场景的
+checkpoint registry 读取同模态 teacher no-KD 的最高验证 Top-1 权重；registry 缺失时会报错并列出
+候选信息。需要指定 teacher 或评估权重时，使用 `distillation.teacher_model_name` 的绝对路径或评估入口
+`--weights`。
 
 默认 early stopping 监控验证 `val_adba`，即所有未来目标时隙 DBA 的平均值，比较方向为 `max`。
 `training.min_delta` 表示 DBA 至少需要提升的幅度；`checkpoints/best.pth` 默认对应该指标的最佳 epoch。
@@ -283,21 +278,13 @@ beam soft 小权重和 prior regularization。训练日志中重点看
 报错会列出模态、checkpoint、missing/unexpected key 或 shape mismatch。调试形状差异时可临时设置
 `teacher.strict=false` 或使用 `checkpoint.strict_load=false`，但主实验应保持 strict 加载。
 
-legacy 入口继续保留，但新实验优先使用上面的 canonical 名称：
+旧 fusion 三个顶层别名已删除；使用对应 image+radar canonical 名称：
 
-| Legacy 配置 | 当前语义 | 推荐 canonical 入口 |
-| --- | --- | --- |
-| `configs/image/no_kd.yaml` | image lightweight student no-KD | `configs/image/student_no_kd.yaml` |
-| `configs/radar/no_kd.yaml` | radar teacher no-KD | `configs/radar/teacher_no_kd.yaml` |
-| `configs/gps/no_kd.yaml` | GPS teacher no-KD | `configs/gps/teacher_no_kd.yaml` |
-| `configs/lidar/no_kd.yaml` | LiDAR teacher no-KD | `configs/lidar/teacher_no_kd.yaml` |
-| `configs/fusion/no_kd.yaml` | image+radar student no-KD | `configs/fusion/image_radar_student_no_kd.yaml` |
-| `configs/fusion/logits_kd.yaml`, `configs/fusion/rkd.yaml` | image+radar legacy KD/pretrained 入口 | `configs/fusion/image_radar_logits_kd.yaml`, `configs/fusion/image_radar_rkd.yaml` |
-| `configs/fusion/image_gps_no_kd.yaml` | image+GPS student no-KD | `configs/fusion/image_gps_student_no_kd.yaml` |
-| `configs/fusion/radar_gps_no_kd.yaml` | radar+GPS student no-KD | `configs/fusion/radar_gps_student_no_kd.yaml` |
-| `configs/fusion/radar_lidar_no_kd.yaml` | radar+LiDAR student no-KD | `configs/fusion/radar_lidar_student_no_kd.yaml` |
-| `configs/fusion/all_modalities_no_kd.yaml` | image+radar+GPS student no-KD | `configs/fusion/image_radar_gps_student_no_kd.yaml` |
-| `configs/fusion/all_modalities_lidar_no_kd.yaml` | image+radar+GPS+LiDAR student no-KD | `configs/fusion/image_radar_gps_lidar_student_no_kd.yaml` |
+| 旧文件名 | 当前入口 |
+| --- | --- |
+| `fusion/no_kd.yaml` | `configs/fusion/image_radar_student_no_kd.yaml` |
+| `fusion/logits_kd.yaml` | `configs/fusion/image_radar_logits_kd.yaml` |
+| `fusion/rkd.yaml` | `configs/fusion/image_radar_rkd.yaml` |
 
 Radar-only 配置注册名保持 `radar_teacher` 和 `radar_student`；对应 Python 类名分别为
 `RadarModalityNet` 和 `RadarStudentModalityNet`，与 image/GPS 的 `*ModalityNet`
@@ -305,8 +292,7 @@ Radar-only 配置注册名保持 `radar_teacher` 和 `radar_student`；对应 Py
 
 ```bash
 python scripts/train.py --config configs/radar/logits_kd.yaml \
-  --override paths.weights_dir=/path/to/checkpoints \
-  --override distillation.teacher_model_name=best.pth
+  --override distillation.teacher_model_name=/path/to/checkpoints/best.pth
 ```
 
 GPS-only 配置统一使用 `gps_feature_mode: relative_polar`，即基于 UE-BS 相对 UTM 坐标构造
@@ -351,7 +337,7 @@ Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` �
 
 ### CRAF 反事实可靠性融合
 
-CRAF 通过 `model.student.type: craf_fusion` 显式启用，不会改变 legacy `fusion_teacher` /
+CRAF 通过 `model.student.type: craf_fusion` 显式启用，不会改变 early-concat `fusion_teacher` /
 `fusion_student` 行为。入口示例包括：
 
 ```bash
@@ -374,7 +360,7 @@ CRAF 相关字段默认关闭，只有配置显式设置权重时才加入训练
 `loss.beam_soft`、`loss.unimodal_aux`、`loss.uni_weight_warmup`、`loss.uni_weight_after_warmup`
 和 `loss.gate_ramp_epochs` 控制 beam-aware 软标签、单模态辅助 loss 和 gate loss 调度。
 
-推荐实验顺序是：单模态 baseline、legacy early-concat fusion、`token_transformer_fusion` baseline、
+推荐实验顺序是：单模态 baseline、early-concat fusion、`token_transformer_fusion` baseline、
 CRAF no-KD、CRAF 反事实 gate ablation。第一阶段的真实缺失模态依赖未来 dataset mask 字段；当前主要通过
 `force_modality_mask`、modality dropout 和 counterfactual drop 验证缺失/屏蔽路径。CRAF 与 KD 的组合需要
 单独显式配置和后续验证，第一阶段优先使用 no-KD 配置。
@@ -392,8 +378,7 @@ sanity check 和 `token_transformer_fusion` 结果，区分 gate 监督问题和
 batch 准备、模型注册和诊断显示逻辑。新代码优先使用窄模块导入：
 `engine.data_factory`、`engine.modality_resolution`、`engine.cache_policy`、
 `engine.normalization_artifacts`、`engine.run_metadata`、`engine.optim` 和
-`data.transform_ops.*`。`kd_sensing.engine.builders`、`kd_sensing.data.transforms` 和
-`kd_sensing.diagnostics.modality_visualization` 继续作为兼容 facade 保留。
+`data.transform_ops.*`。已删除的聚合导入不会作为公开运行入口保留。
 
 可以使用点号分隔的键覆盖配置值：
 
@@ -647,11 +632,9 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 
 如果 editable install 元数据尚未刷新，可以使用等价 fallback：
 `conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
-`conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help` 和
-`conda run -n kd_mm_beam kd-sensing-visualize-modalities --help`。
+`conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help`。
 
-旧入口 `scripts/visualize_modalities.py` 和 `kd-sensing-visualize-modalities` 现在只作为兼容入口导出
-Gradio viewer manifest，不再生成旧的静态 PNG 总览图、`summary.json` 报告作为主可视化方案。
+静态 PNG 总览入口已删除；当前诊断工作流通过 manifest 导出和 Gradio viewer 浏览样本。
 详细 manifest 格式、后台启动和停止服务命令见 `tools/visualization/README.md`。
 
 ## 破坏性变更

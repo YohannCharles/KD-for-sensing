@@ -5,10 +5,6 @@ from typing import Any
 
 
 _LAZY_EXPORTS = {
-    "VisualizationConfig": (".modality_visualization", "VisualizationConfig"),
-    "select_sample_candidates": (".modality_visualization", "select_sample_candidates"),
-    "tensor_stats": (".modality_visualization", "tensor_stats"),
-    "visualize_modalities": (".modality_visualization", "visualize_modalities"),
     "export_viewer_manifest": (".viewer_manifest", "export_viewer_manifest"),
     "export_viewer_model_predictions": (".viewer_predictions", "export_viewer_model_predictions"),
     "build_case_table": (".complementarity", "build_case_table"),

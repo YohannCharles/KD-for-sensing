@@ -18,7 +18,7 @@ Fusion 配置 MUST 能显式选择 CRAF 或 CRAF baseline 模型，同时继续�
 - **AND** 系统 MUST 不隐式启用 CRAF 训练 loss 或 diagnostics
 
 ### Requirement: Fusion 模型公开类名表达 teacher/student 职责
-Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 类名。`fusion_teacher` 注册名 MUST 构建 `FusionTeacherModalityNet`，`fusion_student` 注册名 MUST 构建 `FusionStudentModalityNet`。旧类名 `FusionModalityNet` 和 `StudentModalityNet` MUST 不再作为兼容 alias 导出。
+Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 类名。`fusion_teacher` 注册名 MUST 构建 `FusionTeacherModalityNet`，`fusion_student` 注册名 MUST 构建 `FusionStudentModalityNet`。旧类名 `old fusion teacher class alias` 和 `old fusion student class alias` MUST 不再作为兼容 alias 导出。
 
 #### Scenario: 构建 fusion teacher 返回新类名
 - **WHEN** 开发者通过 `MODELS.build()` 构建 `type: fusion_teacher`
@@ -31,7 +31,7 @@ Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 
 - **AND** 该实例 MUST 保持既有 `fusion_student` forward 输出契约
 
 #### Scenario: 旧类名 alias 被拒绝
-- **WHEN** 开发者导入 `FusionModalityNet` 或 `StudentModalityNet`
+- **WHEN** 开发者导入 `old fusion teacher class alias` 或 `old fusion student class alias`
 - **THEN** 导入 MUST 失败或触发清晰迁移错误
 - **AND** 错误信息 MUST 指向 `FusionTeacherModalityNet` 或 `FusionStudentModalityNet`
 
@@ -42,7 +42,7 @@ Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 
 **Migration**: 使用 `configs/fusion/image_radar_*` 或 overlay/canonical 配置生成路径。
 
 #### Scenario: image+radar legacy fusion 入口
-- **WHEN** 用户运行 `configs/fusion/no_kd.yaml`、`configs/fusion/logits_kd.yaml` 或 `configs/fusion/rkd.yaml`
+- **WHEN** 用户运行 `fusion/no_kd.yaml`、`fusion/logits_kd.yaml` 或 `fusion/rkd.yaml`
 - **THEN** 系统 MUST 拒绝旧路径或不再提供这些文件
 - **AND** 错误信息或文档 MUST 指向对应 canonical image+radar 配置
 

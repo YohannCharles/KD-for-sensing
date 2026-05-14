@@ -16,7 +16,6 @@ for path in (ROOT, SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from kd_sensing.diagnostics.modality_visualization import visualize_modalities  # noqa: E402
 from kd_sensing.diagnostics.viewer_predictions import (  # noqa: E402
     _sample_prediction_payload,
     export_viewer_model_predictions,
@@ -446,7 +445,7 @@ def test_compare_scene_manifest_retargets_default_scene_roots(monkeypatch, tmp_p
     assert "dataset/scenario32/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene32"]["extra"]["csv_path"]
 
 
-def test_visualize_modalities_processes_all_samples_and_reuses_cache(tmp_path: Path):
+def test_export_viewer_manifest_processes_all_samples_and_reuses_cache(tmp_path: Path):
     train_csv = tmp_path / "train.csv"
     _write_multimodal_csv(tmp_path, train_csv, rows=2, seq_len=2)
     cfg = _diagnostic_cfg(
@@ -475,11 +474,11 @@ def test_visualize_modalities_processes_all_samples_and_reuses_cache(tmp_path: P
         },
     )
 
-    result = visualize_modalities(cfg)
+    result = export_viewer_manifest(cfg)
     records = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
-    reused = visualize_modalities(cfg)
+    reused = export_viewer_manifest(cfg)
     _write_beam(tmp_path / "row0_future.txt", 6)
-    invalidated = visualize_modalities(cfg)
+    invalidated = export_viewer_manifest(cfg)
 
     assert result["mode"] == "viewer_dataset_cache"
     assert result["cache_hit"] is False

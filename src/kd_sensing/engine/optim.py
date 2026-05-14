@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 
 import torch
 
 from kd_sensing.registries import DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
-from kd_sensing.utils.paths import resolve_path
 
 
 def build_model(model_cfg: dict[str, Any]):
@@ -178,16 +176,6 @@ def build_device(cfg: dict[str, Any]) -> torch.device:
     return torch.device(requested)
 
 
-def resolve_weight_path(cfg: dict[str, Any], weight_name: str | None) -> Path | None:
-    if not weight_name:
-        return None
-    candidate = Path(weight_name).expanduser()
-    if candidate.is_absolute():
-        return candidate
-    weights_dir = cfg.get("paths", {}).get("weights_dir", "All_models")
-    return resolve_path(Path(weights_dir) / candidate)
-
-
 __all__ = [
     "build_device",
     "build_distiller",
@@ -197,5 +185,4 @@ __all__ = [
     "build_scheduler",
     "build_task_criterion",
     "optimizer_param_group_summary",
-    "resolve_weight_path",
 ]

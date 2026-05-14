@@ -16,6 +16,10 @@ class Registry:
     def __init__(self, name: str):
         self.name = name
         self._items: Dict[str, Callable[..., Any]] = {}
+        self._removed: Dict[str, str] = {}
+
+    def register_removed(self, name: str, message: str) -> None:
+        self._removed[name] = message
 
     def register(self, name: Optional[str] = None, *, force: bool = False):
         """Register a component under ``name``.
@@ -37,6 +41,12 @@ class Registry:
         return decorator
 
     def get(self, name: str) -> Callable[..., Any]:
+        if name in self._removed:
+            available = ", ".join(self.list()) or "<empty>"
+            raise RegistryError(
+                f"Removed component '{name}' in registry '{self.name}'. "
+                f"{self._removed[name]} Available names: {available}"
+            )
         try:
             return self._items[name]
         except KeyError as exc:
@@ -109,6 +119,27 @@ METRICS = Registry("metrics")
 DISTILLERS = Registry("distillers")
 PREPROCESSORS = Registry("preprocessors")
 
+DATASETS.register_removed(
+    "scenario9",
+    "Use {'type': 'deepsense6g', 'scene': 9}.",
+)
+DATASETS.register_removed(
+    "scenario31",
+    "Use {'type': 'deepsense6g', 'scene': 31}.",
+)
+DATASETS.register_removed(
+    "scenario32",
+    "Use {'type': 'deepsense6g', 'scene': 32}.",
+)
+MODELS.register_removed(
+    "Fusion" + "ModalityNet",
+    "Use the 'fusion_teacher' registry name or FusionTeacherModalityNet.",
+)
+MODELS.register_removed(
+    "Student" + "ModalityNet",
+    "Use the 'fusion_student' registry name or FusionStudentModalityNet.",
+)
+
 
 def registry_self_check() -> dict[str, str]:
     """Small self-check used by smoke scripts and docs."""
@@ -148,7 +179,7 @@ def registry_self_check() -> dict[str, str]:
 def import_default_components() -> None:
     """Import modules that register built-in components."""
 
-    import kd_sensing.data.datasets.scenario9  # noqa: F401
+    import kd_sensing.data.datasets.deepsense6g  # noqa: F401
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.distillation.distillers  # noqa: F401
     import kd_sensing.distillation.losses  # noqa: F401

@@ -15,6 +15,11 @@ from kd_sensing.utils.paths import project_root
 
 CANONICAL_FUSION_MODALITIES = MODALITY_ORDER
 CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
+REMOVED_FUSION_CONFIG_STEMS = {
+    "no_kd": "image_radar_student_no_kd.yaml",
+    "logits_kd": "image_radar_logits_kd.yaml",
+    "rkd": "image_radar_rkd.yaml",
+}
 
 _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MODES)
 _MODALITY_INDEX = {name: index for index, name in enumerate(CANONICAL_FUSION_MODALITIES)}
@@ -25,6 +30,12 @@ def build_virtual_config(config_path: Path) -> dict[str, Any] | None:
     """Build a virtual config override for missing canonical config paths."""
 
     if _is_fusion_config_path(config_path):
+        if config_path.stem in REMOVED_FUSION_CONFIG_STEMS:
+            replacement = REMOVED_FUSION_CONFIG_STEMS[config_path.stem]
+            raise ValueError(
+                f"Removed fusion config alias '{config_path.name}'. "
+                f"Use 'configs/fusion/{replacement}' instead."
+            )
         return build_virtual_fusion_config(config_path.stem)
     return None
 

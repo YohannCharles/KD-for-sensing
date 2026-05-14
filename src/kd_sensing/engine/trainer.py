@@ -186,7 +186,11 @@ def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> d
     if resolution.path is None and resolution.source == "none":
         return None
     if resolution.path is None or not resolution.path.exists():
-        raise FileNotFoundError(f"Teacher weight not found. Resolution: {resolution.to_dict()}")
+        raise FileNotFoundError(
+            "Teacher checkpoint not found in the checkpoint registry. "
+            "Train and archive the teacher, or set distillation.teacher_model_name "
+            f"to an absolute checkpoint path. Resolution: {resolution.to_dict()}"
+        )
     load_result = load_model_state(
         resolution.path,
         teacher_model,
@@ -200,7 +204,6 @@ def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> d
             {
                 "source": resolution.source,
                 "registry_dir": str(resolution.registry_dir) if resolution.registry_dir is not None else None,
-                "legacy_path": str(resolution.legacy_path) if resolution.legacy_path is not None else None,
                 "metadata": resolution.metadata,
             }
         )

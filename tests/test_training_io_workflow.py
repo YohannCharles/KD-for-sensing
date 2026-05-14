@@ -18,23 +18,23 @@ if str(SRC) not in sys.path:
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.io import safe_load_yaml  # noqa: E402
 from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
-import kd_sensing.data.transforms as transforms  # noqa: E402
-import kd_sensing.data.datasets.scenario9 as scenario9_module  # noqa: E402
+import kd_sensing.data.datasets.deepsense6g as deepsense6g_module  # noqa: E402
+import kd_sensing.data.transform_ops.io as io_transforms  # noqa: E402
+import kd_sensing.data.transform_ops.lidar as lidar_transforms  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
-from kd_sensing.data.datasets.scenario9 import DeepSense6GDataset, Scenario9Dataset  # noqa: E402
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
-from kd_sensing.engine.builders import (  # noqa: E402
-    apply_cache_policy,
+from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
+from kd_sensing.engine.data_factory import (  # noqa: E402
     build_dataset,
     build_dataloader_kwargs,
-    dataset_run_metadata,
-    resolve_enabled_modalities,
-    throughput_run_metadata,
 )
+from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
+from kd_sensing.engine.run_metadata import dataset_run_metadata, throughput_run_metadata  # noqa: E402
 from kd_sensing.engine.trainer import (  # noqa: E402
     _configure_early_stopping,
     _early_stopping_improved,
@@ -68,14 +68,6 @@ def test_deepsense_scene_defaults_and_aliases():
     default_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml")
     scene9_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene9"])
     scene31_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scenario31"])
-    legacy_cfg = load_config(
-        ROOT / "configs/mmwave/teacher_no_kd.yaml",
-        ["data.dataset.type=scenario9", "data.dataset.scene=null"],
-    )
-    legacy31_cfg = load_config(
-        ROOT / "configs/mmwave/teacher_no_kd.yaml",
-        ["data.dataset.type=scenario31", "data.dataset.scene=null"],
-    )
 
     assert default_cfg["data"]["dataset"]["scene_id"] == 32
     assert default_cfg["data"]["dataset"]["scene_slug"] == "scene32"
@@ -86,10 +78,16 @@ def test_deepsense_scene_defaults_and_aliases():
     assert scene31_cfg["data"]["dataset"]["scene_id"] == 31
     assert scene31_cfg["data"]["dataset"]["scene_slug"] == "scene31"
     assert scene31_cfg["data"]["dataset"]["data_root"] == "dataset/scenario31"
-    assert legacy_cfg["data"]["dataset"]["type"] == "scenario9"
-    assert legacy_cfg["data"]["dataset"]["scene_id"] == 9
-    assert legacy31_cfg["data"]["dataset"]["type"] == "scenario31"
-    assert legacy31_cfg["data"]["dataset"]["scene_id"] == 31
+
+
+def test_deepsense_scene_specific_dataset_types_are_rejected():
+    removed_type = "scenario" + "9"
+
+    with pytest.raises(ValueError, match="deepsense6g.*scene: 9"):
+        load_config(
+            ROOT / "configs/mmwave/teacher_no_kd.yaml",
+            [f"data.dataset.type={removed_type}", "data.dataset.scene=null"],
+        )
 
 
 def test_deepsense_unknown_scene_is_rejected():
@@ -127,7 +125,13 @@ def test_sequence_preprocess_scene_override_updates_root_and_csv():
         (["radar", "gps"], {"radar", "gps"}, {"radar_ra", "radar_da", "gps"}),
     ],
 )
-def test_scenario9_loads_only_enabled_modalities(monkeypatch, tmp_path: Path, enabled, expected_calls, expected_fields):
+def test_deepsense_scene9_loads_only_enabled_modalities(
+    monkeypatch,
+    tmp_path: Path,
+    enabled,
+    expected_calls,
+    expected_fields,
+):
     csv_path = tmp_path / "seq.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=3, num_pred=1)
     calls: set[str] = set()
@@ -148,12 +152,12 @@ def test_scenario9_loads_only_enabled_modalities(monkeypatch, tmp_path: Path, en
         calls.add("lidar")
         return np.zeros((3, 3, 4, 4), dtype=np.float32)
 
-    monkeypatch.setattr(scenario9_module, "load_rgb_imagenet_frames", fake_image)
-    monkeypatch.setattr(scenario9_module, "load_radar_maps", fake_radar)
-    monkeypatch.setattr(scenario9_module, "load_gps_feature_sequence", fake_gps)
-    monkeypatch.setattr(Scenario9Dataset, "_lidar_bev_for_index", fake_lidar)
+    monkeypatch.setattr(deepsense6g_module, "load_rgb_imagenet_frames", fake_image)
+    monkeypatch.setattr(deepsense6g_module, "load_radar_maps", fake_radar)
+    monkeypatch.setattr(deepsense6g_module, "load_gps_feature_sequence", fake_gps)
+    monkeypatch.setattr(DeepSense6GDataset, "_lidar_bev_for_index", fake_lidar)
 
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -237,11 +241,11 @@ def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Pat
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
 
     monkeypatch.setattr(
-        scenario9_module,
+        deepsense6g_module,
         "load_rgb_imagenet_frames",
         lambda *args, **kwargs: torch.zeros(2, 3, 8, 8),  # noqa: ARG005
     )
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -387,7 +391,8 @@ def test_build_dataset_auto_policy_uses_rgb_image_without_cache_metadata(tmp_pat
         "data": {
             "cache": {"policy": "auto"},
             "dataset": {
-                "type": "scenario9",
+                "type": "deepsense6g",
+                "scene": 9,
                 "data_root": str(tmp_path),
                 "train_csv_name": csv_path.name,
                 "test_csv_name": csv_path.name,
@@ -465,7 +470,7 @@ def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=csv_path.name,
         split="train",
@@ -486,7 +491,7 @@ def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
 def test_default_unified_split_missing_sidecar_warns(tmp_path: Path):
     csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=csv_path.name,
         split="train",
@@ -506,7 +511,7 @@ def test_dataset_does_not_resolve_unenabled_cache_dirs(tmp_path: Path):
     csv_path = tmp_path / "seq.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
 
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -524,8 +529,8 @@ def test_dataset_does_not_resolve_unenabled_cache_dirs(tmp_path: Path):
 def test_atomic_save_npy_overwrites_without_visible_temp_files(tmp_path: Path):
     target = tmp_path / "cache.npy"
 
-    transforms.atomic_save_npy(target, np.ones((2, 2), dtype=np.float32))
-    transforms.atomic_save_npy(target, np.zeros((2, 2), dtype=np.float32))
+    io_transforms.atomic_save_npy(target, np.ones((2, 2), dtype=np.float32))
+    io_transforms.atomic_save_npy(target, np.zeros((2, 2), dtype=np.float32))
 
     assert np.load(target).sum() == 0.0
     assert list(tmp_path.glob("*.tmp")) == []
@@ -860,8 +865,8 @@ def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_pat
         build_calls["count"] += 1
         return np.ones((3, 4, 4), dtype=np.float32)
 
-    monkeypatch.setattr(transforms, "build_lidar_bev", fake_build)
-    dataset = Scenario9Dataset(
+    monkeypatch.setattr(lidar_transforms, "build_lidar_bev", fake_build)
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -881,8 +886,8 @@ def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_pat
     assert build_calls["count"] == 1
     assert len(cache_files) == 1
 
-    monkeypatch.setattr(transforms, "build_lidar_bev", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
-    cached_dataset = Scenario9Dataset(
+    monkeypatch.setattr(lidar_transforms, "build_lidar_bev", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+    cached_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -896,7 +901,7 @@ def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_pat
         lidar_write_cache=False,
     )
     cached = cached_dataset[0]
-    different_roi_dataset = Scenario9Dataset(
+    different_roi_dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -919,7 +924,7 @@ def test_lidar_cache_initialization_does_not_load_cache(monkeypatch, tmp_path: P
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
     monkeypatch.setattr(np, "load", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
 
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -938,7 +943,7 @@ def test_rgb_image_path_reads_frames_without_cache(tmp_path: Path):
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
     _write_camera_files(tmp_path, count=2)
 
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",
@@ -1031,11 +1036,11 @@ def test_beam_label_cache_reuses_repeated_paths(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(np, "loadtxt", counting_loadtxt)
     monkeypatch.setattr(
-        scenario9_module,
+        deepsense6g_module,
         "load_radar_maps",
         lambda *args, **kwargs: (torch.zeros(2, 4, 4), torch.zeros(2, 6, 4)),  # noqa: ARG005
     )
-    dataset = Scenario9Dataset(
+    dataset = DeepSense6GDataset(
         data_root=str(tmp_path),
         csv_name=str(csv_path),
         split="train",

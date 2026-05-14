@@ -218,19 +218,6 @@ canonical fusion 配置 MUST 根据 `modalities` 启用对应 dataset 字段，�
 - **THEN** 训练、验证和评估的 batch 准备 MUST 不要求该模态对应输入存在
 - **AND** 模型 forward MUST 只接收启用模态对应的张量
 
-### Requirement: Fusion legacy 入口兼容
-项目 MUST 保留现有 fusion 示例和 legacy 入口作为兼容配置，并 MUST 在文档中说明它们对应的 canonical 配置。legacy 入口不得阻止 canonical 矩阵使用统一命名。
-
-#### Scenario: image+radar legacy fusion 入口
-- **WHEN** 用户运行 `configs/fusion/no_kd.yaml`、`configs/fusion/logits_kd.yaml` 或 `configs/fusion/rkd.yaml`
-- **THEN** 系统 MUST 继续按 image+radar fusion 语义运行
-- **AND** 文档 MUST 引导新实验优先使用 `image_radar_*` canonical 配置
-
-#### Scenario: 既有 fusion 示例入口
-- **WHEN** 用户运行现有 `image_gps_no_kd.yaml`、`radar_gps_no_kd.yaml`、`radar_lidar_no_kd.yaml` 或 all-modalities 示例配置
-- **THEN** 系统 MUST 继续按其显式 `modalities` 语义运行
-- **AND** 文档 MUST 说明对应的 canonical student no-KD 配置名称
-
 ### Requirement: Fusion teacher 支持 mmWave
 `fusion_teacher` MUST 能在启用 mmWave 时融合 mmWave 64 维 receive-power 特征，并保持输出契约 `(pred, input_features, output_features)`。mmWave 分支 MUST 使用与 mmWave-only teacher 兼容的 feature extraction 风格。
 
@@ -277,7 +264,7 @@ canonical fusion 配置 MUST 根据 `modalities` 启用对应 dataset 字段，�
 - **AND** 错误信息 MUST 包含 missing keys 或 unexpected keys 诊断
 
 ### Requirement: Fusion 配置选择 CRAF 模型
-Fusion 配置 MUST 能显式选择 CRAF 或 CRAF baseline 模型，同时继续使用现有 `modalities` 字段描述参与融合的模态集合。
+Fusion 配置 MUST 能显式选择 CRAF 或 CRAF baseline 模型，同时继续使用现有 `modalities` 字段描述参与融合的模态集合。CRAF、token transformer 和 early-concat fusion MUST 通过 canonical 配置路径区分，系统 MUST 不再保留 legacy 配置 alias 作为兼容入口。
 
 #### Scenario: 配置 CRAF fusion
 - **WHEN** 用户在 fusion 配置中设置 `model.student.type: craf_fusion`
@@ -288,8 +275,8 @@ Fusion 配置 MUST 能显式选择 CRAF 或 CRAF baseline 模型，同时继续�
 - **WHEN** 用户在 fusion 配置中设置 token-only transformer baseline 的注册名
 - **THEN** 系统 MUST 使用同一模态集合构建不带 reliability gate 的 token fusion baseline
 
-#### Scenario: legacy fusion 配置不变
-- **WHEN** 用户继续运行既有 `fusion_teacher` 或 `fusion_student` 配置
+#### Scenario: early-concat fusion 显式运行
+- **WHEN** 用户继续运行 canonical early-concat fusion 配置
 - **THEN** 系统 MUST 保持 early-concat fusion 行为
 - **AND** 系统 MUST 不隐式启用 CRAF 训练 loss 或 diagnostics
 
@@ -379,19 +366,6 @@ Fusion 配置 MUST 支持 teacher-prior CRAF Stage 2、Stage 3 和消融实验�
 - **THEN** CRAF MUST 构建 PriorResidualGate
 - **AND** 配置 MUST 能控制 `min_gate`、hidden dim、confidence feature 和 residual 零初始化
 
-### Requirement: Legacy fusion 配置不变
-新增 teacher-prior CRAF 配置 MUST 不改变既有 fusion、token transformer、CRAF stabilized 和 fixed prior sanity 配置的解析结果。
-
-#### Scenario: legacy fusion 仍按 image+radar 运行
-- **WHEN** 用户加载既有 `configs/fusion/no_kd.yaml` 或 canonical image+radar fusion 配置
-- **THEN** 配置 MUST 继续构建 legacy fusion teacher/student
-- **AND** 配置 MUST 不自动启用 teacher registry、prior residual gate 或 selective finetune
-
-#### Scenario: 已有 fixed prior sanity 保持语义
-- **WHEN** 用户加载 `craf_all_modalities_fixed_prior_sanity` 配置
-- **THEN** 配置 MUST 继续使用 fixed prior gate
-- **AND** 配置 MUST 不自动加载 teacher encoder
-
 ### Requirement: Fusion G2D 五模态配置入口
 项目 MUST 提供五模态 G2D fusion 配置入口。配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave`，MUST 设置 `experiment.task: fusion`，MUST 设置 `distillation.type: g2d`，并 MUST 保持 `model.num_pred: 3`。
 
@@ -429,7 +403,7 @@ fusion student MUST 在不改变主 logits 契约的前提下，为 G2D feature 
 - **AND** 拆分后的 feature MUST 能参与 feature KD
 
 ### Requirement: Fusion 模型公开类名表达 teacher/student 职责
-Legacy early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 类名。`fusion_teacher` 注册名 MUST 构建 `FusionTeacherModalityNet`，`fusion_student` 注册名 MUST 构建 `FusionStudentModalityNet`。旧类名 `FusionModalityNet` 和 `StudentModalityNet` MAY 作为兼容 alias 保留，但新代码、文档和测试 MUST 优先使用新类名。
+Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 类名。`fusion_teacher` 注册名 MUST 构建 `FusionTeacherModalityNet`，`fusion_student` 注册名 MUST 构建 `FusionStudentModalityNet`。旧类名 `old fusion teacher class alias` 和 `old fusion student class alias` MUST 不再作为兼容 alias 导出。
 
 #### Scenario: 构建 fusion teacher 返回新类名
 - **WHEN** 开发者通过 `MODELS.build()` 构建 `type: fusion_teacher`
@@ -441,10 +415,10 @@ Legacy early-concat fusion teacher 和 student MUST 暴露职责明确的公开 
 - **THEN** 系统 MUST 返回 `FusionStudentModalityNet` 实例
 - **AND** 该实例 MUST 保持既有 `fusion_student` forward 输出契约
 
-#### Scenario: 旧类名作为兼容 alias
-- **WHEN** 现有代码从 `kd_sensing.models.fusion` 导入 `FusionModalityNet` 或 `StudentModalityNet`
-- **THEN** 导入 MUST 继续成功
-- **AND** 旧类名 MUST 指向对应的新 fusion teacher/student 实现
+#### Scenario: 旧类名 alias 被拒绝
+- **WHEN** 开发者导入 `old fusion teacher class alias` 或 `old fusion student class alias`
+- **THEN** 导入 MUST 失败或触发清晰迁移错误
+- **AND** 错误信息 MUST 指向 `FusionTeacherModalityNet` 或 `FusionStudentModalityNet`
 
 ### Requirement: 高级 fusion 方法配置 overlay
 CRAF、MARF、G2D 和后续高级 fusion 方法配置 MUST 支持通过 base 配置、method overlay 和 ablation overlay 组合生成或解析。推荐配置路径 MUST 避免为每个方法、场景和 ablation 复制完整 data/model/training/output 配置；实体 YAML MAY 继续存在，但新增推荐路径 MUST 优先复用共享配置语义。

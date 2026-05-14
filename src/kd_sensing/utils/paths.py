@@ -43,10 +43,6 @@ def data_dir(path: Optional[PathLike] = None) -> Path:
     return resolve_path(path or "dataset")
 
 
-def weights_dir(path: Optional[PathLike] = None) -> Path:
-    return resolve_path(path or "All_models")
-
-
 def config_dir(path: Optional[PathLike] = None) -> Path:
     return resolve_path(path or "configs")
 
@@ -55,4 +51,3 @@ def output_dir(path: Optional[PathLike] = None) -> Path:
     target = resolve_path(path or "outputs")
     target.mkdir(parents=True, exist_ok=True)
     return target
-

@@ -4,7 +4,7 @@
 Define how enabled modalities are resolved from configuration, how dataset sample fields are selected, and how modality-specific normalization/cache behavior remains compatible across training and evaluation.
 ## Requirements
 ### Requirement: Scenario 9 按模态选择加载样本
-Scenario 9 dataset MUST 根据训练或评估配置中的启用模态加载样本字段。未启用模态的文件 MUST 不被读取，未启用模态的输入字段 MUST 不出现在样本字典中，且未启用模态的路径列或文件缺失不得阻止当前任务运行。dataset MUST 始终加载 beam 历史标签和 future beam 目标标签。
+DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样本字段。未启用模态的文件 MUST 不被读取，未启用模态的输入字段 MUST 不出现在样本字典中，且未启用模态的路径列或文件缺失不得阻止当前任务运行。dataset MUST 始终加载 beam 历史标签和 future beam 目标标签。Scenario 9 MUST 通过 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9` 选择，不得通过 `scene-specific dataset class alias` 或 `the scene-9 dataset-type spelling` 选择。
 
 #### Scenario: GPS-only 不读取 image 或 radar 文件
 - **WHEN** 用户运行 `experiment.task: gps` 的训练或评估配置
@@ -33,8 +33,8 @@ Scenario 9 dataset MUST 根据训练或评估配置中的启用模态加载样�
 
 #### Scenario: image-only 只读取 image 输入
 - **WHEN** 用户运行 `experiment.task: image` 的训练或评估配置
-- **THEN** dataset MUST 只读取 RGB image、`input_beam` 和 `target_beam` 所需文件
-- **AND** dataset MUST 不调用 radar、GPS、LiDAR、mmWave 或 image motion cache 逻辑
+- **THEN** dataset MUST 只读取 image、`input_beam` 和 `target_beam` 所需文件
+- **AND** dataset MUST 不调用 radar、GPS、LiDAR 或 mmWave 加载逻辑
 - **AND** 返回样本 MUST 包含 `image`
 
 #### Scenario: fusion 按 modalities 读取输入
@@ -154,12 +154,12 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 - **AND** dataset MUST 不调用任何 image motion cache path 解析逻辑
 
 ### Requirement: DeepSense6G 场景感知数据构建
-数据构建流程 MUST 根据 DeepSense6G 场景选择解析 dataset 类型、数据根目录和 split CSV。现有 `scenario9` 配置 MUST 继续可构建，并 MUST 等价于选择 Scenario 9。
+数据构建流程 MUST 根据 DeepSense6G 场景选择解析数据根目录和 split CSV。canonical 配置 MUST 使用 `data.dataset.type: deepsense6g`。旧 `scenario9`、`scenario31` 和 `scenario32` dataset type MUST 不再可构建。
 
-#### Scenario: scenario9 兼容旧配置
-- **WHEN** 用户运行包含 `data.dataset.type: scenario9` 的旧配置
-- **THEN** 数据构建流程 MUST 将该配置视为 DeepSense6G Scenario 9
-- **AND** dataset 返回字段、启用模态推导和标签张量 shape MUST 保持兼容
+#### Scenario: 旧 scenario9 配置被拒绝
+- **WHEN** 用户运行包含 `the scene-9 dataset-type spelling` 的旧配置
+- **THEN** 数据构建流程 MUST 拒绝该配置
+- **AND** 错误信息 MUST 说明应使用 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9`
 
 #### Scenario: 通用 deepsense6g 类型选择 Scenario 32
 - **WHEN** 用户运行 `data.dataset.type: deepsense6g` 且 `data.dataset.scene: 32`

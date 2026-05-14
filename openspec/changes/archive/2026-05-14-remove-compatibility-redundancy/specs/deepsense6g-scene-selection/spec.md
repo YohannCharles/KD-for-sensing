@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: DeepSense6G 场景选择配置
-项目 MUST 支持通过配置选择 DeepSense6G 场景。`data.dataset.type` MUST 使用 `deepsense6g`，`data.dataset.scene` MUST 接受整数和字符串别名，首批 MUST 支持 Scenario 9 与 Scenario 32。未显式设置场景时，通用 DeepSense6G 配置 MUST 默认使用 Scenario 32。旧 `data.dataset.type: scenario9`、`scenario31` 和 `scenario32` 配置 MUST 被拒绝并给出迁移提示。
+项目 MUST 支持通过配置选择 DeepSense6G 场景。`data.dataset.type` MUST 使用 `deepsense6g`，`data.dataset.scene` MUST 接受整数和字符串别名，首批 MUST 支持 Scenario 9 与 Scenario 32。未显式设置场景时，通用 DeepSense6G 配置 MUST 默认使用 Scenario 32。旧 `the scene-9 dataset-type spelling`、`scenario31` 和 `scenario32` 配置 MUST 被拒绝并给出迁移提示。
 
 #### Scenario: 默认使用 Scenario 32
 - **WHEN** 用户运行未显式设置 `data.dataset.scene` 的默认 DeepSense6G 训练配置
@@ -21,7 +21,7 @@
 - **AND** 配置中的大小写差异 MUST 不影响解析结果
 
 #### Scenario: 旧 dataset type 被拒绝
-- **WHEN** 用户设置 `data.dataset.type: scenario9`、`scenario31` 或 `scenario32`
+- **WHEN** 用户设置 `the scene-9 dataset-type spelling`、`scenario31` 或 `scenario32`
 - **THEN** 系统 MUST 拒绝构建配置或 dataset
 - **AND** 错误信息 MUST 指向 `data.dataset.type: deepsense6g` 和对应 `data.dataset.scene`
 

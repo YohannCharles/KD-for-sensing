@@ -273,13 +273,12 @@ def load_lidar_bev_sequence(
     cache_root = Path(cache_dir) if cache_dir else None
     if cache_root is not None and write_cache:
         cache_root.mkdir(parents=True, exist_ok=True)
-    build_bev = _current_public_symbol("build_lidar_bev", build_lidar_bev)
     for rel_path in selected_lidar:
         cache_path = lidar_cache_path(cache_root, rel_path) if cache_root is not None else None
         if use_cache and cache_path is not None and cache_path.exists():
             bev = _resize_or_validate_lidar_bev(np.load(cache_path), bev_size)
         else:
-            bev = build_bev(
+            bev = build_lidar_bev(
                 data_root,
                 rel_path,
                 bev_size=bev_size,
@@ -544,13 +543,6 @@ def _resize_or_validate_lidar_bev(array: np.ndarray, bev_size: list[int] | tuple
         image = Image.fromarray(bev[channel])
         resized[channel] = np.asarray(image.resize((target_width, target_height), resample=Image.BILINEAR))
     return resized
-
-
-def _current_public_symbol(name: str, fallback):
-    import sys
-
-    facade = sys.modules.get("kd_sensing.data.transforms")
-    return getattr(facade, name, fallback) if facade is not None else fallback
 
 
 __all__ = [

@@ -497,11 +497,11 @@ class DeepSense6GDataset(Dataset):
 
     def _resolve_lidar_normalization(
         self,
-        legacy_enabled: bool,
+        enabled_flag: bool,
         config: dict[str, Any] | None,
     ) -> dict[str, Any]:
         if config is None:
-            enabled = bool(legacy_enabled)
+            enabled = bool(enabled_flag)
             mode = "streaming_stats" if enabled else "none"
             stats_path = None
             recompute = False
@@ -614,26 +614,3 @@ class DeepSense6GDataset(Dataset):
                 while len(self._lidar_bev_cache) > self.lidar_memory_cache_max_items:
                     self._lidar_bev_cache.popitem(last=False)
         return bev
-
-@DATASETS.register("scenario9")
-class Scenario9Dataset(DeepSense6GDataset):
-    """Backward-compatible Scenario 9 dataset alias."""
-
-    def __init__(self, *args, scene: str | int | None = None, **kwargs):
-        super().__init__(*args, scene=9 if scene is None else scene, **kwargs)
-
-
-@DATASETS.register("scenario31")
-class Scenario31Dataset(DeepSense6GDataset):
-    """Scenario 31 dataset alias."""
-
-    def __init__(self, *args, scene: str | int | None = None, **kwargs):
-        super().__init__(*args, scene=31 if scene is None else scene, **kwargs)
-
-
-@DATASETS.register("scenario32")
-class Scenario32Dataset(DeepSense6GDataset):
-    """Scenario 32 dataset alias."""
-
-    def __init__(self, *args, scene: str | int | None = None, **kwargs):
-        super().__init__(*args, scene=32 if scene is None else scene, **kwargs)
