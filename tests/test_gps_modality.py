@@ -25,6 +25,7 @@ from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
+from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
 
@@ -287,8 +288,22 @@ def test_gps_canonical_fusion_configs_build_and_use_relative_polar(config_path: 
     assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
     assert cfg["model"]["teacher"]["gps_input_size"] == 3
     assert cfg["model"]["student"]["gps_input_size"] == 3
-    assert isinstance(teacher, FusionTeacherModalityNet)
-    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+    if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:
+        assert isinstance(teacher, ModularSequenceModel)
+        if "image" in cfg["model"]["teacher"]["modalities"]:
+            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+        if "lidar" in cfg["model"]["teacher"]["modalities"]:
+            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+        if isinstance(student, ModularSequenceModel):
+            if "image" in cfg["model"]["student"]["modalities"]:
+                assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+            if "lidar" in cfg["model"]["student"]["modalities"]:
+                assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+        else:
+            assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+    else:
+        assert isinstance(teacher, FusionTeacherModalityNet)
+        assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_gps_files(root: Path, prefix: str, lat: float, lon: float) -> tuple[list[str], list[str]]:

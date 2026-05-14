@@ -6,7 +6,7 @@ experiment:
 data:
   dataset:
     type: deepsense6g
-    scene: 32
+    scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     seq_len: 8
@@ -36,26 +36,71 @@ model:
   num_pred: 3
   downsample_ratio: 1
   teacher:
-    type: fusion_teacher
+    type: modular_sequence
     modalities: [image, radar, gps, lidar, mmwave]
-    radar_channels: 2
+    image_profile: rgb_imagenet
     gps_input_size: 3
     lidar_channels: 3
     mmwave_input_size: 64
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    num_pred: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
   student:
-    type: fusion_student
+    type: modular_sequence
     modalities: [image, radar, gps, lidar, mmwave]
-    image_channels: 3
-    radar_channels: 2
+    image_profile: rgb_imagenet
     gps_input_size: 3
     lidar_channels: 3
     mmwave_input_size: 64
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    num_pred: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
 loss:
   type: cross_entropy
 distillation:
@@ -67,7 +112,31 @@ distillation:
     teachers:
       image:
         model:
-          type: image_teacher
+          type: modular_sequence
+          modalities: [image]
+          image_profile: rgb_imagenet
+          feature_size: 64
+          d_model: 64
+          num_classes: 64
+          num_pred: 3
+          encoders:
+            image:
+              type: resnet18_imagenet_rgb
+              output_dim: 64
+              pretrained: true
+              weights: DEFAULT
+              freeze_backbone: true
+              unfreeze_stages: [layer4]
+              dropout: 0.1
+          representation_core:
+            type: single_gru
+            d_model: 64
+            hidden_size: 64
+            num_layers: 1
+          heads:
+            beam:
+              type: beam_head
+              dropout: 0.1
         checkpoint: null
         strict_load: true
       radar:
@@ -82,7 +151,27 @@ distillation:
         strict_load: true
       lidar:
         model:
-          type: lidar_teacher
+          type: modular_sequence
+          modalities: [lidar]
+          feature_size: 64
+          d_model: 64
+          num_classes: 64
+          num_pred: 3
+          lidar_channels: 3
+          encoders:
+            lidar:
+              type: lidar_cnn
+              output_dim: 64
+              lidar_channels: 3
+          representation_core:
+            type: single_gru
+            d_model: 64
+            hidden_size: 64
+            num_layers: 1
+          heads:
+            beam:
+              type: beam_head
+              dropout: 0.1
         checkpoint: null
         strict_load: true
       mmwave:

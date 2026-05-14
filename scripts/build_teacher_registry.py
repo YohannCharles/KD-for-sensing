@@ -22,10 +22,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher-root", required=True, help="Root containing per-modality teacher run directories.")
     parser.add_argument(
         "--output",
-        default="outputs/scene32/teacher_registry.json",
+        default="outputs/scene31/teacher_registry.json",
         help="Output teacher registry JSON path.",
     )
-    parser.add_argument("--scene", default="32", help="Scene id or slug. Defaults to 32.")
+    parser.add_argument("--scene", default="31", help="Scene id or slug. Defaults to 31.")
     parser.add_argument(
         "--modalities",
         nargs="+",
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prior-mode",
         choices=("manual", "metric"),
-        default="manual",
+        default="metric",
         help="Prior source: manual values or validation metric-derived values.",
     )
     parser.add_argument(

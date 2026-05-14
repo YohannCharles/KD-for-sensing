@@ -1,4 +1,5 @@
 from .fusion import (
+    CLSTokenTransformerFusionNet,
     CRAFFusionNet,
     FusionTeacherModalityNet,
     MARFFusionNet,
@@ -38,6 +39,7 @@ __all__ = [
     "RadarFeatureExtractor",
     "RadarModalityNet",
     "RadarStudentModalityNet",
+    "CLSTokenTransformerFusionNet",
     "CRAFFusionNet",
     "FusionTeacherModalityNet",
     "MARFFusionNet",

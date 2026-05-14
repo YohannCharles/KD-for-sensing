@@ -48,9 +48,9 @@ def build_teacher_registry(
     *,
     teacher_root: str | Path,
     output_path: str | Path,
-    scene: int | str = 32,
+    scene: int | str = 31,
     modalities: list[str] | tuple[str, ...] = MODALITY_ORDER,
-    prior_mode: str = "manual",
+    prior_mode: str = "metric",
     manual_prior: dict[str, float] | None = None,
     metric_prior_weights: dict[str, float] | None = None,
     prior_min: float = 0.05,
@@ -227,7 +227,7 @@ def teacher_metrics_from_training(
         else:
             best_idx = max(range(len(epoch_logs)), key=lambda idx: float(epoch_logs[idx].get("val_acc", 0.0)))
         best = epoch_logs[best_idx]
-        return {
+        metrics = {
             "modality": task,
             "best_epoch": int(best.get("epoch", best_idx + 1)),
             "val_acc_top1": float(best.get("val_acc", 0.0)),
@@ -236,6 +236,8 @@ def teacher_metrics_from_training(
             "val_adba": float(best.get("val_adba", 0.0)),
             "train_acc_top1": float(best.get("train_acc", 0.0)),
         }
+        metrics.update(_extended_validation_metrics(best))
+        return metrics
     val_acc = history.get("val_acc") or []
     if not val_acc:
         return None
@@ -269,6 +271,40 @@ def parse_key_value_floats(items: list[str] | tuple[str, ...] | None) -> dict[st
             key, value = part.split("=", 1)
             values[key.strip()] = float(value)
     return values
+
+
+def _extended_validation_metrics(epoch_log: dict[str, Any]) -> dict[str, Any]:
+    validation = epoch_log.get("validation_metrics")
+    if not isinstance(validation, dict):
+        return {}
+    topk = validation.get("topk") if isinstance(validation.get("topk"), dict) else {}
+    per_horizon = {
+        "top1": _list_of_floats(topk.get("1", [])),
+        "top3": _list_of_floats(topk.get("3", [])),
+        "top5": _list_of_floats(topk.get("5", [])),
+        "dba": _list_of_floats(validation.get("dba", [])),
+        "total": [int(value) for value in validation.get("total", [])],
+    }
+    averages = {
+        "top1": float(validation.get("val_top1_avg", 0.0)),
+        "top3": float(validation.get("val_top3_avg", 0.0)),
+        "top5": float(validation.get("val_top5_avg", 0.0)),
+        "adba": float(epoch_log.get("val_adba", 0.0)),
+    }
+    extended: dict[str, Any] = {
+        "per_horizon": per_horizon,
+        "averages": averages,
+    }
+    for key in ("degradation_baselines", "degradation_risk", "lidar_input_quality"):
+        if key in validation:
+            extended[key] = validation[key]
+    if "lidar_input_quality_train" in epoch_log:
+        extended["lidar_input_quality_train"] = epoch_log["lidar_input_quality_train"]
+    return extended
+
+
+def _list_of_floats(values: Any) -> list[float]:
+    return [float(value) for value in (values or [])]
 
 
 def _teacher_run_candidates(root: Path, modality: str) -> list[Path]:

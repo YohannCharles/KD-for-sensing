@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -22,17 +23,44 @@ from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import (  # noqa: E402
+    CLSTokenTransformerFusionNet,
     FusionTeacherModalityNet,
     FusionStudentModalityNet,
 )
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageModalityNet, ImageStudentModalityNet  # noqa: E402
+from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.models.lidar import LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.models.radar import RadarModalityNet, RadarStudentModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
+
+
+class _TinyBackbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 2, kernel_size=1)
+        self.bn1 = nn.BatchNorm2d(2)
+        self.layer1 = nn.Conv2d(2, 2, kernel_size=1)
+        self.layer2 = nn.Conv2d(2, 2, kernel_size=1)
+        self.layer3 = nn.Conv2d(2, 2, kernel_size=1)
+        self.layer4 = nn.Conv2d(2, 2, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.mean(dim=(1, 2, 3), keepdim=False).unsqueeze(1).repeat(1, 512)
+
+
+@pytest.fixture(autouse=True)
+def tiny_resnet(monkeypatch):
+    import kd_sensing.models.image_encoders as image_encoders
+
+    monkeypatch.setattr(
+        image_encoders,
+        "_build_resnet18_backbone",
+        lambda *, pretrained, weights: (_TinyBackbone(), 512),
+    )
 
 
 SINGLE_GRU_PARAMS = [64, 64, 1]
@@ -114,10 +142,12 @@ def test_fusion_registry_returns_public_class_names_and_removed_aliases_fail():
 MODALITY_SPECS = {
     "image": {
         "task": "image",
-        "teacher_type": "image_teacher",
-        "student_type": "image_student",
-        "teacher_cls": ImageModalityNet,
-        "student_cls": ImageStudentModalityNet,
+        "teacher_type": "modular_sequence",
+        "student_type": "modular_sequence",
+        "teacher_cls": ModularSequenceModel,
+        "student_cls": ModularSequenceModel,
+        "default_teacher_type": "modular_sequence",
+        "default_teacher_cls": ModularSequenceModel,
     },
     "radar": {
         "task": "radar",
@@ -125,6 +155,8 @@ MODALITY_SPECS = {
         "student_type": "radar_student",
         "teacher_cls": RadarModalityNet,
         "student_cls": RadarStudentModalityNet,
+        "default_teacher_type": "radar_teacher",
+        "default_teacher_cls": RadarModalityNet,
     },
     "gps": {
         "task": "gps",
@@ -132,13 +164,17 @@ MODALITY_SPECS = {
         "student_type": "gps_student",
         "teacher_cls": GpsModalityNet,
         "student_cls": GpsStudentModalityNet,
+        "default_teacher_type": "gps_teacher",
+        "default_teacher_cls": GpsModalityNet,
     },
     "lidar": {
         "task": "lidar",
-        "teacher_type": "lidar_teacher",
-        "student_type": "lidar_student",
-        "teacher_cls": LidarModalityNet,
-        "student_cls": LidarStudentModalityNet,
+        "teacher_type": "modular_sequence",
+        "student_type": "modular_sequence",
+        "teacher_cls": ModularSequenceModel,
+        "student_cls": ModularSequenceModel,
+        "default_teacher_type": "modular_sequence",
+        "default_teacher_cls": ModularSequenceModel,
     },
 }
 
@@ -153,9 +189,9 @@ LEGACY_CONFIG_EXPECTATIONS = [
         "configs/image/no_kd.yaml",
         "image",
         "no_kd",
-        "image_student",
+        "modular_sequence",
         None,
-        "configs/image/student_no_kd.yaml",
+        "configs/image/teacher_no_kd.yaml",
     ),
     (
         "configs/radar/no_kd.yaml",
@@ -177,7 +213,7 @@ LEGACY_CONFIG_EXPECTATIONS = [
         "configs/lidar/no_kd.yaml",
         "lidar",
         "no_kd",
-        "lidar_teacher",
+        "modular_sequence",
         None,
         "configs/lidar/teacher_no_kd.yaml",
     ),
@@ -185,9 +221,9 @@ LEGACY_CONFIG_EXPECTATIONS = [
         "configs/fusion/image_gps_no_kd.yaml",
         "fusion",
         "no_kd",
-        "fusion_student",
+        "modular_sequence",
         ["image", "gps"],
-        "configs/fusion/image_gps_student_no_kd.yaml",
+        "configs/fusion/image_gps_teacher_no_kd.yaml",
     ),
     (
         "configs/fusion/radar_gps_no_kd.yaml",
@@ -201,7 +237,7 @@ LEGACY_CONFIG_EXPECTATIONS = [
         "configs/fusion/radar_lidar_no_kd.yaml",
         "fusion",
         "no_kd",
-        "fusion_student",
+        "modular_sequence",
         ["radar", "lidar"],
         "configs/fusion/radar_lidar_student_no_kd.yaml",
     ),
@@ -209,17 +245,17 @@ LEGACY_CONFIG_EXPECTATIONS = [
         "configs/fusion/all_modalities_no_kd.yaml",
         "fusion",
         "no_kd",
-        "fusion_student",
-        ["image", "radar", "gps"],
-        "configs/fusion/image_radar_gps_student_no_kd.yaml",
+        "cls_token_transformer_fusion",
+        ["image", "radar", "gps", "lidar", "mmwave"],
+        "configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml",
     ),
     (
         "configs/fusion/all_modalities_lidar_no_kd.yaml",
         "fusion",
         "no_kd",
-        "fusion_student",
+        "modular_sequence",
         ["image", "radar", "gps", "lidar"],
-        "configs/fusion/image_radar_gps_lidar_student_no_kd.yaml",
+        "configs/fusion/image_radar_gps_lidar_teacher_no_kd.yaml",
     ),
 ]
 
@@ -241,6 +277,24 @@ def _assert_default_early_stopping(cfg: dict) -> None:
     assert cfg["training"]["use_early_stopping"] is True
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
+
+
+def _assert_modular_single_encoder(role_cfg: dict, modality: str) -> None:
+    assert role_cfg["type"] == "modular_sequence"
+    assert role_cfg["modalities"] == [modality]
+    if modality == "image":
+        encoder = role_cfg["encoders"]["image"]
+        assert encoder["type"] == "resnet18_imagenet_rgb"
+        assert encoder["pretrained"] is True
+        assert encoder["weights"] == "DEFAULT"
+    elif modality == "lidar":
+        encoder = role_cfg["encoders"]["lidar"]
+        assert encoder["type"] == "lidar_cnn"
+        assert encoder["lidar_channels"] == 3
+
+
+def _gru_module(model):
+    return model.representation_core.gru if isinstance(model, ModularSequenceModel) else model.GRU
 
 
 def _single_config_cases():
@@ -265,18 +319,28 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     model, cfg = _build_student(config_path)
     expected_name = f"{modality}_{mode}"
     expected_params = SINGLE_EXPECTED_PARAMS[mode]
+    if modality == "image" and mode in {"teacher_no_kd", "student_no_kd"}:
+        expected_params = {**expected_params, "lr": 0.0004, "weight_decay": 0.0001}
+    expected_batch_size = 16 if modality == "image" and mode in {"teacher_no_kd", "student_no_kd"} else 32
 
     assert cfg["experiment"]["name"] == expected_name
     assert cfg["experiment"]["task"] == spec["task"]
     assert cfg["experiment"]["seed"] == 42
     assert cfg["output"]["run_name"] == expected_name
-    assert cfg["data"]["dataloader"]["train_batch_size"] == 32
-    assert cfg["data"]["dataloader"]["test_batch_size"] == 32
+    assert cfg["data"]["dataloader"]["train_batch_size"] == expected_batch_size
+    assert cfg["data"]["dataloader"]["test_batch_size"] == expected_batch_size
     assert cfg["data"]["dataloader"]["num_workers"] == 4
     assert cfg["data"]["dataloader"]["prefetch_factor"] == 1
-    assert cfg["model"]["teacher"]["type"] == spec["teacher_type"]
-    assert cfg["model"]["teacher"]["gru_params"] == SINGLE_GRU_PARAMS
-    assert cfg["model"]["student"]["gru_params"] == SINGLE_GRU_PARAMS
+    expected_teacher_type = spec["teacher_type"]
+    assert cfg["model"]["teacher"]["type"] == expected_teacher_type
+    if expected_teacher_type == "modular_sequence":
+        _assert_modular_single_encoder(cfg["model"]["teacher"], modality)
+    else:
+        assert cfg["model"]["teacher"]["gru_params"] == SINGLE_GRU_PARAMS
+    if cfg["model"]["student"]["type"] in {"modular_sequence", "modular_sequence_model"}:
+        _assert_modular_single_encoder(cfg["model"]["student"], modality)
+    else:
+        assert cfg["model"]["student"]["gru_params"] == SINGLE_GRU_PARAMS
     assert cfg["training"]["epochs"] == 100
     assert cfg["training"]["lr"] == expected_params["lr"]
     assert cfg["training"]["weight_decay"] == expected_params["weight_decay"]
@@ -298,7 +362,10 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     expected_student_cls = spec["teacher_cls"] if mode == "teacher_no_kd" else spec["student_cls"]
     assert cfg["model"]["student"]["type"] == expected_student_type
     assert isinstance(model, expected_student_cls)
-    assert model.GRU.num_layers == 1
+    if hasattr(model, "GRU"):
+        assert model.GRU.num_layers == 1
+    else:
+        assert model.representation_core.gru.num_layers == 1
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
         assert cfg["distillation"]["type"] == "no_kd"
@@ -306,17 +373,17 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     else:
         teacher, student, kd_cfg = _build_teacher_and_student(config_path)
         assert kd_cfg["distillation"]["type"] == mode
-        assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{modality}_teacher_no_kd/checkpoints"
+        assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene31/{modality}_teacher_no_kd/checkpoints"
         assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, spec["teacher_cls"])
         assert isinstance(student, spec["student_cls"])
-        assert teacher.GRU.hidden_size == student.GRU.hidden_size == 64
+        assert _gru_module(teacher).hidden_size == _gru_module(student).hidden_size == 64
         if mode == "rkd":
             assert kd_cfg["distillation"]["rkd_pairs_per_anchor"] == 4
             assert kd_cfg["distillation"]["rkd_distance_weight"] == 100.0
             assert kd_cfg["distillation"]["rkd_angle_weight"] == 100.0
 
-    if mode == "student_no_kd":
+    if mode == "student_no_kd" and spec["student_type"] != spec["teacher_type"]:
         assert cfg["model"]["student"]["type"] != spec["teacher_type"]
 
     _assert_modality_data_fields(cfg, [modality])
@@ -331,25 +398,53 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     assert cfg["experiment"]["task"] == "fusion"
     assert cfg["output"]["run_name"] == stem
     _assert_default_early_stopping(cfg)
-    assert cfg["model"]["teacher"]["type"] == "fusion_teacher"
+    image_fusion = "image" in modalities
+    modular_fusion = image_fusion or "lidar" in modalities
+    expected_teacher_type = "modular_sequence" if modular_fusion else "fusion_teacher"
+    assert cfg["model"]["teacher"]["type"] == expected_teacher_type
     assert cfg["model"]["teacher"]["modalities"] == modalities
     assert cfg["model"]["student"]["modalities"] == modalities
-    assert cfg["model"]["teacher"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
-    expected_student_gru = (
-        FUSION_TEACHER_GRU_PARAMS
-        if mode == "teacher_no_kd"
-        else FUSION_STUDENT_GRU_PARAMS
-        if slug == "image_radar"
-        else FUSION_TEACHER_GRU_PARAMS
-    )
-    assert cfg["model"]["student"]["gru_params"] == expected_student_gru
+    if modular_fusion:
+        if image_fusion:
+            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+            assert cfg["model"]["teacher"]["encoders"]["image"]["pretrained"] is True
+            assert cfg["model"]["teacher"]["encoders"]["image"]["weights"] == "DEFAULT"
+        if "lidar" in modalities:
+            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+        assert cfg["model"]["teacher"]["representation_core"]["num_layers"] == 2
+    else:
+        assert cfg["model"]["teacher"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
 
-    expected_student_type = "fusion_teacher" if mode == "teacher_no_kd" else "fusion_student"
-    expected_student_cls = FusionTeacherModalityNet if mode == "teacher_no_kd" else FusionStudentModalityNet
+    if mode == "teacher_no_kd":
+        expected_student_type = expected_teacher_type
+        expected_student_cls = ModularSequenceModel if modular_fusion else FusionTeacherModalityNet
+        if modular_fusion:
+            assert cfg["model"]["student"]["type"] == "modular_sequence"
+            if image_fusion:
+                assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+            if "lidar" in modalities:
+                assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+            assert cfg["model"]["student"]["representation_core"]["num_layers"] == 2
+        else:
+            assert cfg["model"]["student"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
+    else:
+        expected_student_type = "cls_token_transformer_fusion"
+        expected_student_cls = CLSTokenTransformerFusionNet
+        assert cfg["model"]["student"]["type"] == "cls_token_transformer_fusion"
+        assert cfg["model"]["student"]["d_model"] == 64
+        assert cfg["model"]["student"]["num_heads"] == 4
+        assert cfg["model"]["student"]["num_layers"] == 2
+        assert cfg["model"]["student"]["num_pred"] == 3
+
     assert cfg["model"]["student"]["type"] == expected_student_type
     assert isinstance(student, expected_student_cls)
     assert student.modalities == tuple(modalities)
-    assert student.GRU.num_layers == expected_student_gru[-1]
+    if isinstance(student, ModularSequenceModel):
+        assert student.representation_core.gru.num_layers == 2
+    elif isinstance(student, FusionTeacherModalityNet):
+        assert student.GRU.num_layers == 2
+    else:
+        assert student.horizon == student.num_pred == 3
 
     if slug == "image_radar":
         expected_params = FUSION_IMAGE_RADAR_EXPECTED_PARAMS[mode]
@@ -367,13 +462,16 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
     else:
         teacher, kd_student, kd_cfg = _build_teacher_and_student(config_path)
         assert kd_cfg["distillation"]["type"] == mode
-        assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
+        assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
         assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
-        assert isinstance(teacher, FusionTeacherModalityNet)
-        assert isinstance(kd_student, FusionStudentModalityNet)
+        assert isinstance(teacher, (ModularSequenceModel if modular_fusion else FusionTeacherModalityNet))
+        assert isinstance(kd_student, CLSTokenTransformerFusionNet)
         assert teacher.modalities == kd_student.modalities == tuple(modalities)
-        assert teacher.GRU.num_layers == 2
-        assert kd_student.GRU.num_layers == expected_student_gru[-1]
+        if isinstance(teacher, ModularSequenceModel):
+            assert teacher.representation_core.gru.num_layers == 2
+        else:
+            assert teacher.GRU.num_layers == 2
+        assert kd_student.horizon == kd_student.num_pred == 3
         if mode == "rkd":
             assert kd_cfg["distillation"]["rkd_pairs_per_anchor"] == 4
             assert kd_cfg["distillation"]["rkd_distance_weight"] == 10.0
@@ -408,26 +506,45 @@ def test_named_example_configs_keep_current_semantics(
     assert cfg["distillation"]["type"] == distillation_type
     assert cfg["model"]["student"]["type"] == student_type
     _assert_default_early_stopping(cfg)
-    if task == "fusion" and modalities == ["image", "radar"]:
+    if cfg["model"]["student"]["type"] == "cls_token_transformer_fusion":
+        assert cfg["model"]["student"]["d_model"] == 64
+        assert cfg["model"]["student"]["num_heads"] == 4
+        assert cfg["model"]["student"]["num_layers"] == 2
+        assert cfg["model"]["student"]["num_pred"] == 3
+    elif task == "fusion" and modalities == ["image", "radar"] and cfg["model"]["student"]["type"] != "modular_sequence":
         assert cfg["model"]["teacher"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
         assert cfg["model"]["student"]["gru_params"] == FUSION_STUDENT_GRU_PARAMS
-    elif task == "fusion":
+    elif task == "fusion" and cfg["model"]["student"]["type"] != "modular_sequence":
         assert cfg["model"]["student"]["gru_params"] == FUSION_TEACHER_GRU_PARAMS
-    else:
+    elif task != "fusion" and cfg["model"]["student"]["type"] != "modular_sequence":
         assert cfg["model"]["student"]["gru_params"] == SINGLE_GRU_PARAMS
+    elif cfg["model"]["student"]["type"] == "modular_sequence":
+        if task == "image" or (modalities is not None and "image" in modalities):
+            assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+            assert cfg["model"]["student"]["encoders"]["image"]["pretrained"] is True
+        if task == "lidar" or (modalities is not None and "lidar" in modalities):
+            assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
 
     if distillation_type == "no_kd":
         assert cfg["distillation"]["teacher_model_name"] is None
     elif config_path.startswith("configs/fusion/"):
         assert modalities is not None
         slug = "_".join(modalities)
-        assert cfg["paths"]["weights_dir"] == f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
+        assert cfg["paths"]["weights_dir"] == f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
         assert cfg["distillation"]["teacher_model_name"] == "best.pth"
 
     if modalities is not None:
         assert cfg["model"]["teacher"]["modalities"] == modalities
         assert cfg["model"]["student"]["modalities"] == modalities
-        assert isinstance(model, (FusionTeacherModalityNet, FusionStudentModalityNet))
+        assert isinstance(
+            model,
+            (
+                CLSTokenTransformerFusionNet,
+                FusionTeacherModalityNet,
+                FusionStudentModalityNet,
+                ModularSequenceModel,
+            ),
+        )
         assert model.modalities == tuple(modalities)
 
     _assert_modality_data_fields(cfg, modalities or [task])
@@ -452,9 +569,9 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
     student_cfg = cfg["model"]["student"]
 
     assert dataset_cfg["type"] == "deepsense6g"
-    assert dataset_cfg["scene_id"] == 32
-    assert dataset_cfg["scene_slug"] == "scene32"
-    assert dataset_cfg["data_root"] == "dataset/scenario32"
+    assert dataset_cfg["scene_id"] == 31
+    assert dataset_cfg["scene_slug"] == "scene31"
+    assert dataset_cfg["data_root"] == "dataset/scenario31"
 
     if "gps" in modalities:
         assert dataset_cfg["use_gps"] is True
@@ -469,6 +586,9 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
         assert dataset_cfg["lidar_bev_size"] == [224, 224]
         assert dataset_cfg["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
         assert dataset_cfg["lidar_normalize"] is False
+        assert dataset_cfg["lidar_normalization"]["enabled"] is True
+        assert dataset_cfg["lidar_normalization"]["mode"] == "streaming_stats"
+        assert dataset_cfg["lidar_cache_dir"] == "lidar_bev_cache"
         assert teacher_cfg["lidar_channels"] == 3
         assert student_cfg["lidar_channels"] == 3
     else:
@@ -491,11 +611,15 @@ def test_virtual_fusion_config_generator_uses_canonical_semantics():
     assert cfg["experiment"]["seed"] == 0
     assert cfg["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
     assert cfg["model"]["student"]["modalities"] == ["gps", "mmwave"]
+    assert cfg["model"]["teacher"]["type"] == "fusion_teacher"
+    assert cfg["model"]["student"]["type"] == "cls_token_transformer_fusion"
+    assert cfg["model"]["student"]["d_model"] == 64
+    assert cfg["model"]["student"]["num_heads"] == 4
     assert cfg["model"]["teacher"]["gps_input_size"] == 3
     assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
     assert cfg["distillation"]["type"] == "logits_kd"
     assert cfg["distillation"]["teacher_model_name"] == "best.pth"
-    assert cfg["paths"]["weights_dir"] == "outputs/scene32/gps_mmwave_teacher_no_kd/checkpoints"
+    assert cfg["paths"]["weights_dir"] == "outputs/scene31/gps_mmwave_teacher_no_kd/checkpoints"
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
 
@@ -504,14 +628,19 @@ def test_virtual_image_radar_config_generator_keeps_compatibility_params():
     cfg = build_virtual_fusion_config("image_radar_logits_kd")
 
     assert cfg["experiment"]["seed"] == 42
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 2]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
+    assert cfg["model"]["teacher"]["type"] == "modular_sequence"
+    assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert cfg["model"]["teacher"]["representation_core"]["num_layers"] == 2
+    assert cfg["model"]["student"]["type"] == "cls_token_transformer_fusion"
+    assert cfg["model"]["student"]["image_channels"] == 3
+    assert cfg["model"]["student"]["radar_channels"] == 2
+    assert cfg["model"]["student"]["num_layers"] == 2
     assert cfg["training"]["lr"] == 0.00095
     assert cfg["training"]["weight_decay"] == 0.0
     assert cfg["distillation"]["temperature"] == 2.0
     assert cfg["distillation"]["alpha"] == 0.4
     assert cfg["distillation"]["teacher_model_name"] == "best.pth"
-    assert cfg["paths"]["weights_dir"] == "outputs/scene32/image_radar_teacher_no_kd/checkpoints"
+    assert cfg["paths"]["weights_dir"] == "outputs/scene31/image_radar_teacher_no_kd/checkpoints"
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
 
@@ -529,6 +658,14 @@ def test_load_config_applies_overrides_after_canonical_config_resolution():
     assert overridden["training"]["early_stopping_metric"] == "top1_val_acc"
     assert overridden["training"]["early_stopping_mode"] == "max"
     assert overridden["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
+
+
+def test_load_config_keeps_explicit_scene32_override():
+    cfg = load_config(ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml", ["data.dataset.scene=32"])
+
+    assert cfg["data"]["dataset"]["scene_id"] == 32
+    assert cfg["data"]["dataset"]["scene_slug"] == "scene32"
+    assert cfg["data"]["dataset"]["data_root"] == "dataset/scenario32"
 
 
 def test_existing_yaml_config_takes_precedence_over_virtual_config(tmp_path: Path):

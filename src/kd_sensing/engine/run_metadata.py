@@ -9,6 +9,10 @@ from torch.utils.data import DataLoader
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.engine.data_factory import build_dataloader_kwargs
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.evaluation.lidar_diagnostics import (
+    lidar_preprocessing_metadata_from_config,
+    lidar_preprocessing_metadata_from_dataset,
+)
 from kd_sensing.modalities import image_profile_metadata, resolve_image_profile
 from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blocking
 
@@ -47,6 +51,8 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["lidar_use_cache"] = bool(getattr(dataset, "lidar_use_cache", False))
         metadata["lidar_write_cache"] = bool(getattr(dataset, "lidar_write_cache", False))
         metadata["lidar_cache_policy"] = getattr(dataset, "lidar_cache_policy", None)
+    if getattr(dataset, "use_lidar", False):
+        metadata["lidar_preprocessing"] = lidar_preprocessing_metadata_from_dataset(dataset)
     if getattr(dataset, "use_mmwave", False):
         metadata["mmwave_normalize"] = bool(getattr(dataset, "mmwave_normalize", False))
     if "image" in metadata["enabled_modalities"] or hasattr(dataset, "image_profile"):
@@ -126,6 +132,8 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
             "profile": profile,
             "input": "rgb_imagenet",
         }
+    if "lidar" in enabled_modalities:
+        metadata["lidar"]["preprocessing"] = lidar_preprocessing_metadata_from_config(cfg)
     if dataloaders is not None:
         splits = dataloaders_run_metadata(dataloaders)
         metadata["splits"] = {
@@ -160,6 +168,11 @@ def image_run_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
     metadata["input_channels"] = int(metadata["channels"])
     strategy = _resnet18_strategy_from_config(cfg)
     if strategy is not None:
+        metadata["encoder_type"] = "resnet18_imagenet_rgb"
+        metadata["pretrained"] = bool(strategy["pretrained"])
+        metadata["weights"] = strategy["weights"]
+        metadata["freeze_backbone"] = bool(strategy["freeze_backbone"])
+        metadata["trainable_stages"] = list(strategy["unfreeze_stages"])
         metadata["resnet18_training_strategy"] = strategy
     return metadata
 

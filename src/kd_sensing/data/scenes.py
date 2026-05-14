@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-DEFAULT_DEEPSENSE_SCENE_ID = 32
+DEFAULT_DEEPSENSE_SCENE_ID = 31
 DEFAULT_TRAIN_CSV_NAME = "train_seqs_RA_GPS_LIDAR.csv"
 DEFAULT_TEST_CSV_NAME = "test_seqs_RA_GPS_LIDAR.csv"
 DEEPSENSE_DATASET_TYPES = {"deepsense6g"}

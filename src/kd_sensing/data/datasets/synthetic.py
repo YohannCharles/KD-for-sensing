@@ -18,6 +18,7 @@ class SyntheticSequenceDataset(Dataset):
         num_pred: int = 3,
         num_classes: int = 64,
         image_size: list[int] | tuple[int, int] = (224, 224),
+        image_channels: int = 3,
         radar_size: list[int] | tuple[int, int] = (128, 64),
         lidar_size: list[int] | tuple[int, int] = (224, 224),
         use_gps: bool = False,
@@ -34,6 +35,7 @@ class SyntheticSequenceDataset(Dataset):
         self.num_pred = num_pred
         self.num_classes = num_classes
         self.image_size = tuple(image_size)
+        self.image_channels = image_channels
         self.radar_size = tuple(radar_size)
         self.lidar_size = tuple(lidar_size)
         self.use_gps = use_gps
@@ -48,7 +50,7 @@ class SyntheticSequenceDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        image = torch.rand((self.seq_len - 1, *self.image_size), generator=self.generator)
+        image = torch.rand((self.seq_len, self.image_channels, *self.image_size), generator=self.generator)
         radar_ra = torch.rand((self.seq_len, *self.radar_size), generator=self.generator)
         radar_da = torch.rand((self.seq_len, *self.radar_size), generator=self.generator)
         input_beam = torch.randint(0, self.num_classes, (self.seq_len,), generator=self.generator)

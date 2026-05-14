@@ -34,6 +34,7 @@ IMAGE_MODEL_TYPES = {
     "fusion_teacher",
     "fusion_student",
     "craf_fusion",
+    "cls_token_transformer_fusion",
     "marf_fusion",
     "token_transformer_fusion",
 }
@@ -49,10 +50,17 @@ FUSION_MODEL_TYPES = {
     "fusion_teacher",
     "fusion_student",
     "craf_fusion",
+    "cls_token_transformer_fusion",
     "marf_fusion",
     "token_transformer_fusion",
 }
-D_MODEL_ROLE_TYPES = {"craf_fusion", "marf_fusion", "token_transformer_fusion", *MODULAR_MODEL_TYPES}
+D_MODEL_ROLE_TYPES = {
+    "craf_fusion",
+    "cls_token_transformer_fusion",
+    "marf_fusion",
+    "token_transformer_fusion",
+    *MODULAR_MODEL_TYPES,
+}
 REMOVED_IMAGE_OPTION_PREFIX = "image_" + "motion_"
 
 

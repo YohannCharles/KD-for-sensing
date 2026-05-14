@@ -6,22 +6,29 @@ experiment:
 data:
   dataset:
     type: deepsense6g
-    scene: 32
+    scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     seq_len: 8
     num_pred: 3
     portion: 1.0
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
     use_gps: true
     gps_feature_mode: relative_polar
     gps_normalize: true
     use_lidar: true
     lidar_bev_size: [224, 224]
     lidar_roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+    lidar_fov_degrees: null
+    lidar_cache_dir: lidar_bev_cache
     lidar_normalize: false
+    lidar_normalization:
+      enabled: true
+      mode: streaming_stats
   dataloader:
-    train_batch_size: 32
-    test_batch_size: 32
+    train_batch_size: 16
+    test_batch_size: 16
     num_workers: 4
     prefetch_factor: 1
 model:
@@ -33,21 +40,69 @@ model:
   num_pred: 3
   downsample_ratio: 1
   teacher:
-    type: fusion_teacher
+    type: modular_sequence
     modalities: [image, radar, gps, lidar]
+    image_profile: rgb_imagenet
     gps_input_size: 3
     lidar_channels: 3
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    num_pred: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
   student:
-    type: fusion_student
+    type: modular_sequence
     modalities: [image, radar, gps, lidar]
+    image_profile: rgb_imagenet
     gps_input_size: 3
     lidar_channels: 3
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params: [64, 64, 2]
+    num_pred: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
 distillation:
   type: no_kd
   teacher_model_name: null

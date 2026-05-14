@@ -1,5 +1,5 @@
 paths:
-  weights_dir: outputs/scene32/image_teacher_no_kd/checkpoints
+  weights_dir: outputs/scene31/image_teacher_no_kd/checkpoints
 experiment:
   name: image_rkd
   task: image
@@ -8,12 +8,14 @@ experiment:
 data:
   dataset:
     type: deepsense6g
-    scene: 32
+    scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     seq_len: 8
     num_pred: 3
     portion: 1.0
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
   dataloader:
     train_batch_size: 32
     test_batch_size: 32
@@ -28,21 +30,57 @@ model:
   num_pred: 3
   downsample_ratio: 1
   teacher:
-    type: image_teacher
+    type: modular_sequence
+    modalities: [image]
+    image_profile: rgb_imagenet
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
+    num_pred: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
   student:
-    type: image_student
+    type: modular_sequence
+    modalities: [image]
+    image_profile: rgb_imagenet
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
+    num_pred: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
 distillation:
   type: rkd
   temperature: 3.0

@@ -15,6 +15,12 @@ from kd_sensing.engine.runtime import (
     run_model_step,
     transfer_non_blocking,
 )
+from kd_sensing.evaluation.lidar_diagnostics import (
+    LidarQualityAccumulator,
+    degradation_baselines_from_labels,
+    lidar_degradation_report,
+    lidar_preprocessing_metadata_from_dataset,
+)
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 from kd_sensing.evaluation.subset_specs import resolve_conditional_utility_subset
 
@@ -32,9 +38,17 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     val_loss = 0.0
     all_outputs = []
     all_labels = []
+    all_input_beams = []
+    lidar_quality = LidarQualityAccumulator()
+    saw_lidar = False
     with torch.no_grad():
         for batch in dataloader:
             batch = prepare_task_batch(batch)
+            if "input_beam" in batch:
+                all_input_beams.append(batch["input_beam"].detach().cpu())
+            if "lidar" in batch:
+                saw_lidar = True
+                lidar_quality.update(batch["lidar"])
             labels = prepare_task_labels(
                 batch,
                 num_pred=num_pred,
@@ -62,6 +76,24 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     all_outputs_t = torch.cat(all_outputs, dim=0)
     all_labels_t = torch.cat(all_labels, dim=0)
     metrics = _metrics_from_outputs(val_loss, all_outputs_t, all_labels_t, cfg)
+    input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
+    baselines = degradation_baselines_from_labels(
+        all_labels_t,
+        input_beams=input_beams_t,
+        num_classes=num_classes,
+        downsample_ratio=downsample_ratio,
+    )
+    metrics["degradation_baselines"] = baselines
+    if saw_lidar:
+        dataset = getattr(dataloader, "dataset", None)
+        quality_summary = lidar_quality.finalize(
+            split=getattr(dataset, "split", None),
+            preprocessing=lidar_preprocessing_metadata_from_dataset(dataset),
+        )
+        metrics["lidar_input_quality"] = quality_summary
+        metrics["degradation_risk"] = lidar_degradation_report(metrics, baselines, quality_summary)
+    elif _cfg_uses_lidar(cfg):
+        metrics["degradation_risk"] = lidar_degradation_report(metrics, baselines, None)
     subset_metrics = _validate_modality_subsets(model, dataloader, cfg, criterion, device, official_metrics=metrics)
     if subset_metrics:
         metrics["modality_subsets"] = subset_metrics
@@ -108,6 +140,23 @@ def _flat_future_topk_metrics(topk_acc: dict[int, object], total) -> dict[str, f
             scalars[f"val_top{k}_{horizon_names[idx]}"] = float(values[idx])
         scalars[f"val_top{k}_avg"] = float(values[:length][valid].mean()) if valid.any() else 0.0
     return scalars
+
+
+def _cfg_uses_lidar(cfg: dict) -> bool:
+    task = cfg.get("experiment", {}).get("task", "image")
+    if task == "lidar":
+        return True
+    if task != "fusion":
+        return False
+    model_cfg = cfg.get("model", {})
+    modalities = model_cfg.get("modalities")
+    if modalities and "lidar" in modalities:
+        return True
+    for role in ("teacher", "student"):
+        role_modalities = model_cfg.get(role, {}).get("modalities")
+        if role_modalities and "lidar" in role_modalities:
+            return True
+    return bool(cfg.get("data", {}).get("dataset", {}).get("use_lidar", False))
 
 
 def _validate_modality_subsets(

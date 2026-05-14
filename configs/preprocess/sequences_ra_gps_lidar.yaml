@@ -1,7 +1,7 @@
 preprocessing:
   type: sequence_csv
-  csv_path: dataset/scenario32/scenario32_RA.csv
-  data_root: dataset/scenario32
+  csv_path: dataset/scenario31/scenario31_RA.csv
+  data_root: dataset/scenario31
   output_suffix: _RA_GPS_LIDAR
   in_len: 8
   out_len: 3

@@ -217,8 +217,16 @@ def test_image_configs_use_rgb_profile_and_removed_encoders_are_rejected():
     resnet = load_config(ROOT / "configs/image/resnet18_teacher_no_kd.yaml")
 
     assert image_cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert image_cfg["model"]["student"]["type"] == "modular_sequence"
+    assert image_cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert image_cfg["model"]["student"]["encoders"]["image"]["pretrained"] is True
+    assert image_cfg["model"]["student"]["encoders"]["image"]["weights"] == "DEFAULT"
     assert fusion_cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert fusion_cfg["model"]["student"]["type"] == "modular_sequence"
+    assert fusion_cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
     assert virtual_image_radar["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert virtual_image_radar["model"]["student"]["type"] == "modular_sequence"
+    assert virtual_image_radar["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
     assert resnet["data"]["dataset"]["image_profile"] == "rgb_imagenet"
     assert resnet["distillation"]["teacher_model_name"] is None
     with pytest.raises(ValueError, match="Removed image encoder"):

@@ -1,5 +1,5 @@
 paths:
-  weights_dir: outputs/scene32/lidar_teacher_no_kd/checkpoints
+  weights_dir: outputs/scene31/lidar_teacher_no_kd/checkpoints
 experiment:
   name: lidar_rkd
   task: lidar
@@ -8,7 +8,7 @@ experiment:
 data:
   dataset:
     type: deepsense6g
-    scene: 32
+    scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     seq_len: 8
@@ -25,7 +25,12 @@ data:
     - 30.0
     - -3.0
     - 5.0
+    lidar_fov_degrees: null
+    lidar_cache_dir: lidar_bev_cache
     lidar_normalize: false
+    lidar_normalization:
+      enabled: true
+      mode: streaming_stats
   dataloader:
     train_batch_size: 32
     test_batch_size: 32
@@ -33,6 +38,7 @@ data:
     prefetch_factor: 1
 model:
   feature_size: 64
+  d_model: 64
   gru_hidden_size: 64
   num_classes: 64
   seq_length_teacher: 8
@@ -40,24 +46,49 @@ model:
   num_pred: 3
   downsample_ratio: 1
   teacher:
-    type: lidar_teacher
+    type: modular_sequence
+    modalities: [lidar]
     lidar_channels: 3
-    num_heads: 8
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
+    num_pred: 3
+    encoders:
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
   student:
-    type: lidar_student
+    type: modular_sequence
+    modalities: [lidar]
     lidar_channels: 3
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
+    num_pred: 3
+    encoders:
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
 distillation:
   type: rkd
   temperature: 3.0

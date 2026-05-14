@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import torch.nn as nn
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,11 +27,42 @@ from kd_sensing.data.transform_ops.lidar import (  # noqa: E402
 )
 from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_lidar_inputs  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
+from kd_sensing.evaluation.lidar_diagnostics import (  # noqa: E402
+    LidarQualityAccumulator,
+    degradation_baselines_from_labels,
+    lidar_degradation_report,
+)
 from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet  # noqa: E402
+from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
+
+
+class _TinyBackbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 2, kernel_size=1)
+        self.bn1 = nn.BatchNorm2d(2)
+        self.layer1 = nn.Conv2d(2, 2, kernel_size=1)
+        self.layer2 = nn.Conv2d(2, 2, kernel_size=1)
+        self.layer3 = nn.Conv2d(2, 2, kernel_size=1)
+        self.layer4 = nn.Conv2d(2, 2, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.mean(dim=(1, 2, 3), keepdim=False).unsqueeze(1).repeat(1, 512)
+
+
+@pytest.fixture(autouse=True)
+def tiny_resnet(monkeypatch):
+    import kd_sensing.models.image_encoders as image_encoders
+
+    monkeypatch.setattr(
+        image_encoders,
+        "_build_resnet18_backbone",
+        lambda *, pretrained, weights: (_TinyBackbone(), 512),
+    )
 
 
 LIDAR_CONFIGS = [
@@ -352,6 +384,36 @@ def test_lidar_batch_and_fusion_paths():
         teacher()
 
 
+def test_lidar_quality_and_degradation_baselines_report_expected_fields():
+    accumulator = LidarQualityAccumulator()
+    accumulator.update(torch.zeros(1, 2, 3, 4, 4))
+    accumulator.update(torch.ones(1, 1, 3, 4, 4))
+    quality = accumulator.finalize(
+        split="test",
+        preprocessing={"roi": [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0], "cache_dir": "lidar_bev_cache"},
+    )
+    labels = torch.tensor([[1, 2, 2], [1, 3, 4], [5, 2, 4]])
+    input_beams = torch.tensor([[0, 1], [2, 3], [4, 5]])
+    baselines = degradation_baselines_from_labels(labels, input_beams=input_beams, num_classes=8)
+    report = lidar_degradation_report(
+        {"topk": {"1": [0.2, 0.1, 0.1]}},
+        baselines,
+        quality,
+    )
+
+    assert quality["split"] == "test"
+    assert quality["num_frames"] == 3
+    assert quality["nonempty_frame_ratio"] == pytest.approx(1 / 3)
+    assert len(quality["channel_mean"]) == 3
+    assert len(quality["channel_std"]) == 3
+    assert len(quality["zero_ratio"]) == 3
+    assert baselines["majority_class"]["top1"] == pytest.approx([2 / 3, 2 / 3, 2 / 3])
+    assert baselines["last_beam"]["available"] is True
+    assert baselines["last_beam"]["top3_policy"] == "last_beam_plus_adjacent_circular"
+    assert report["risk"] is True
+    assert "model_not_above_majority_class" in report["reasons"]
+
+
 @pytest.mark.parametrize("config_path", LIDAR_CONFIGS)
 def test_lidar_configs_build(config_path: str):
     cfg = load_config(ROOT / config_path)
@@ -360,9 +422,17 @@ def test_lidar_configs_build(config_path: str):
     assert cfg["experiment"]["task"] == "lidar"
     assert cfg["data"]["dataset"]["use_lidar"] is True
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 1]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
-    assert isinstance(model, (LidarModalityNet, LidarStudentModalityNet))
+    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is True
+    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "streaming_stats"
+    assert cfg["data"]["dataset"]["lidar_cache_dir"] == "lidar_bev_cache"
+    assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+    assert cfg["model"]["teacher"]["type"] == "modular_sequence"
+    assert cfg["model"]["student"]["type"] == "modular_sequence"
+    assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+    assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+    assert cfg["model"]["teacher"]["representation_core"]["num_layers"] == 1
+    assert cfg["model"]["student"]["representation_core"]["num_layers"] == 1
+    assert isinstance(model, ModularSequenceModel)
 
 
 @pytest.mark.parametrize("config_path", LIDAR_FUSION_CONFIGS)
@@ -379,10 +449,19 @@ def test_lidar_fusion_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["lidar_bev_size"] == [224, 224]
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
+    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is True
+    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "streaming_stats"
     assert cfg["model"]["teacher"]["lidar_channels"] == 3
     assert cfg["model"]["student"]["lidar_channels"] == 3
-    assert isinstance(teacher, FusionTeacherModalityNet)
-    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+    if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:
+        assert isinstance(teacher, ModularSequenceModel)
+        if "image" in cfg["model"]["teacher"]["modalities"]:
+            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+        if "lidar" in cfg["model"]["teacher"]["modalities"]:
+            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+    else:
+        assert isinstance(teacher, FusionTeacherModalityNet)
+    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet, ModularSequenceModel))
 
 
 def _write_dataset_fixture(root: Path, csv_path: Path) -> None:

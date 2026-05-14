@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -48,20 +49,8 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     slug, modalities, mode = parse_fusion_config_stem(stem)
     name = f"{slug}_{mode}"
     image_radar = modalities == ["image", "radar"]
-
-    teacher_cfg: dict[str, Any] = {
-        "type": "fusion_teacher",
-        "modalities": modalities,
-        "gru_params": [64, 64, 2],
-    }
-    student_gru = [64, 64, 1] if image_radar and mode != "teacher_no_kd" else [64, 64, 2]
-    student_cfg: dict[str, Any] = {
-        "type": "fusion_teacher" if mode == "teacher_no_kd" else "fusion_student",
-        "modalities": modalities,
-        "gru_params": [64, 64, 2] if mode == "teacher_no_kd" else student_gru,
-    }
-    _add_modality_model_fields(teacher_cfg, modalities)
-    _add_modality_model_fields(student_cfg, modalities)
+    teacher_cfg = _fusion_teacher_baseline_model(modalities)
+    student_cfg = deepcopy(teacher_cfg) if mode == "teacher_no_kd" else _cls_token_transformer_fusion_model(modalities)
 
     cfg: dict[str, Any] = {
         "experiment": {
@@ -84,7 +73,7 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     }
     if mode in {"logits_kd", "rkd"}:
         cfg["paths"] = {
-            "weights_dir": f"outputs/scene32/{slug}_teacher_no_kd/checkpoints"
+            "weights_dir": f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
         }
     return cfg
 
@@ -172,7 +161,7 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
     }
     dataset = {
         "type": "deepsense6g",
-        "scene": 32,
+        "scene": 31,
         "train_csv_name": "train_seqs_RA_GPS_LIDAR.csv",
         "test_csv_name": "test_seqs_RA_GPS_LIDAR.csv",
         "seq_len": 8,
@@ -234,6 +223,9 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
 def _g2d_overlay(mode: str, name: str) -> dict[str, Any]:
     modalities = list(CANONICAL_FUSION_MODALITIES)
     cfg = _advanced_fusion_base(name)
+    modular_model = _modular_resnet_fusion_model(modalities, num_layers=2)
+    cfg["model"]["teacher"] = modular_model
+    cfg["model"]["student"] = _modular_resnet_fusion_model(modalities, num_layers=2)
     cfg["loss"] = {"type": "cross_entropy"}
     cfg["distillation"] = {
         "type": "g2d",
@@ -243,7 +235,7 @@ def _g2d_overlay(mode: str, name: str) -> dict[str, Any]:
             "modalities": modalities,
             "teachers": {
                 modality: {
-                    "model": {"type": f"{modality}_teacher"},
+                    "model": _g2d_teacher_model_cfg(modality),
                     "checkpoint": None,
                     "strict_load": True,
                 }
@@ -275,6 +267,14 @@ def _g2d_overlay(mode: str, name: str) -> dict[str, Any]:
         },
     }
     return cfg
+
+
+def _g2d_teacher_model_cfg(modality: str) -> dict[str, Any]:
+    if modality == "image":
+        return _modular_resnet_fusion_model(["image"], num_layers=1)
+    if modality == "lidar":
+        return _modular_lidar_model(num_layers=1)
+    return {"type": f"{modality}_teacher"}
 
 
 def _craf_overlay(name: str, ablation: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -335,7 +335,7 @@ def _marf_overlay(name: str, ablation: dict[str, Any] | None = None) -> dict[str
         "residual_adapter": {"enabled": True, "residual_scale": 0.2},
     }
     cfg["teacher"] = {
-        "registry_path": "outputs/scene32/teacher_registry.json",
+        "registry_path": "outputs/scene31/teacher_registry.json",
         "load_encoders": True,
         "freeze_encoders": True,
         "strict": True,
@@ -454,6 +454,111 @@ def _dataset_overrides(modalities: list[str]) -> dict[str, Any]:
 
 def _add_modality_model_fields(model_cfg: dict[str, Any], modalities: list[str]) -> None:
     model_cfg.update(model_defaults_for_modalities(modalities))
+
+
+def _fusion_teacher_baseline_model(modalities: list[str]) -> dict[str, Any]:
+    if "image" in modalities or "lidar" in modalities:
+        return _modular_resnet_fusion_model(modalities, num_layers=2)
+    cfg: dict[str, Any] = {
+        "type": "fusion_teacher",
+        "modalities": modalities,
+        "feature_size": 64,
+        "num_classes": 64,
+        "gru_params": [64, 64, 2],
+    }
+    _add_modality_model_fields(cfg, modalities)
+    return cfg
+
+
+def _cls_token_transformer_fusion_model(modalities: list[str]) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "type": "cls_token_transformer_fusion",
+        "modalities": modalities,
+        "feature_size": 64,
+        "d_model": 64,
+        "num_classes": 64,
+        "num_pred": 3,
+        "num_heads": 4,
+        "num_layers": 2,
+        "dropout": 0.1,
+        "max_seq_len": 16,
+    }
+    _add_modality_model_fields(cfg, modalities)
+    return cfg
+
+
+def _modular_resnet_fusion_model(modalities: list[str], *, num_layers: int) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "type": "modular_sequence",
+        "modalities": list(modalities),
+        "image_profile": "rgb_imagenet",
+        "feature_size": 64,
+        "d_model": 64,
+        "num_classes": 64,
+        "num_pred": 3,
+        "encoders": {},
+        "representation_core": {
+            "type": "early_concat_gru" if len(modalities) > 1 else "single_gru",
+            "d_model": 64,
+            "hidden_size": 64,
+            "num_layers": int(num_layers),
+        },
+        "heads": {
+            "beam": {
+                "type": "beam_head",
+                "dropout": 0.1,
+            },
+        },
+    }
+    if "image" in modalities:
+        cfg["encoders"]["image"] = {
+            "type": "resnet18_imagenet_rgb",
+            "output_dim": 64,
+            "pretrained": True,
+            "weights": "DEFAULT",
+            "freeze_backbone": True,
+            "unfreeze_stages": ["layer4"],
+            "dropout": 0.1,
+        }
+    if "lidar" in modalities:
+        cfg["encoders"]["lidar"] = {
+            "type": "lidar_cnn",
+            "output_dim": 64,
+            "lidar_channels": 3,
+        }
+    _add_modality_model_fields(cfg, modalities)
+    return cfg
+
+
+def _modular_lidar_model(*, num_layers: int) -> dict[str, Any]:
+    return {
+        "type": "modular_sequence",
+        "modalities": ["lidar"],
+        "feature_size": 64,
+        "d_model": 64,
+        "num_classes": 64,
+        "num_pred": 3,
+        "lidar_channels": 3,
+        "encoders": {
+            "lidar": {
+                "type": "lidar_cnn",
+                "output_dim": 64,
+                "lidar_channels": 3,
+            }
+        },
+        "representation_core": {
+            "type": "single_gru",
+            "d_model": 64,
+            "hidden_size": 64,
+            "num_layers": int(num_layers),
+        },
+        "heads": {
+            "beam": {
+                "type": "beam_head",
+                "dropout": 0.1,
+            },
+        },
+    }
 
 
 def _distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str, Any]:

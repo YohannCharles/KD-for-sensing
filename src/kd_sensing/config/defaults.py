@@ -10,7 +10,7 @@ DEFAULT_CONFIG = {
         "device": "auto",
     },
     "paths": {
-        "data_root": "dataset/scenario32",
+        "data_root": "dataset/scenario31",
         "output_dir": "outputs",
     },
     "data": {
@@ -22,9 +22,9 @@ DEFAULT_CONFIG = {
         },
         "dataset": {
             "type": "deepsense6g",
-            "scene": 32,
-            "scene_id": 32,
-            "scene_slug": "scene32",
+            "scene": 31,
+            "scene_id": 31,
+            "scene_slug": "scene31",
             "data_root": None,
             "train_csv_name": None,
             "test_csv_name": None,

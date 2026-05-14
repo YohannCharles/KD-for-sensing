@@ -68,22 +68,25 @@ def test_deepsense_scene_defaults_and_aliases():
     default_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml")
     scene9_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene9"])
     scene31_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scenario31"])
+    scene32_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene32"])
 
-    assert default_cfg["data"]["dataset"]["scene_id"] == 32
-    assert default_cfg["data"]["dataset"]["scene_slug"] == "scene32"
-    assert default_cfg["data"]["dataset"]["data_root"] == "dataset/scenario32"
+    assert default_cfg["data"]["dataset"]["scene_id"] == 31
+    assert default_cfg["data"]["dataset"]["scene_slug"] == "scene31"
+    assert default_cfg["data"]["dataset"]["data_root"] == "dataset/scenario31"
     assert scene9_cfg["data"]["dataset"]["scene_id"] == 9
     assert scene9_cfg["data"]["dataset"]["scene_slug"] == "scene9"
     assert scene9_cfg["data"]["dataset"]["data_root"] == "dataset/scenario9"
     assert scene31_cfg["data"]["dataset"]["scene_id"] == 31
     assert scene31_cfg["data"]["dataset"]["scene_slug"] == "scene31"
     assert scene31_cfg["data"]["dataset"]["data_root"] == "dataset/scenario31"
+    assert scene32_cfg["data"]["dataset"]["scene_id"] == 32
+    assert scene32_cfg["data"]["dataset"]["scene_slug"] == "scene32"
+    assert scene32_cfg["data"]["dataset"]["data_root"] == "dataset/scenario32"
 
 
-def test_deepsense_scene_specific_dataset_types_are_rejected():
-    removed_type = "scenario" + "9"
-
-    with pytest.raises(ValueError, match="deepsense6g.*scene: 9"):
+@pytest.mark.parametrize(("removed_type", "scene"), [("scenario9", 9), ("scenario31", 31), ("scenario32", 32)])
+def test_deepsense_scene_specific_dataset_types_are_rejected(removed_type: str, scene: int):
+    with pytest.raises(ValueError, match=f"deepsense6g.*scene: {scene}"):
         load_config(
             ROOT / "configs/mmwave/teacher_no_kd.yaml",
             [f"data.dataset.type={removed_type}", "data.dataset.scene=null"],
@@ -571,9 +574,14 @@ def test_fixed_run_name_defaults_to_unique_directory_and_resume_reuses(tmp_path:
 def test_scene_grouped_run_dir_defaults_and_resume_reuses(tmp_path: Path):
     cfg = {
         "experiment": {"name": "exp"},
-        "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
+        "data": {"dataset": {"type": "deepsense6g"}},
         "output": {"dir": str(tmp_path), "run_name": "fixed"},
         "training": {},
+    }
+    scene32_cfg = {
+        **cfg,
+        "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
+        "output": {"dir": str(tmp_path), "run_name": "scene32_fixed"},
     }
 
     first = create_run_dir(cfg)
@@ -581,11 +589,13 @@ def test_scene_grouped_run_dir_defaults_and_resume_reuses(tmp_path: Path):
     second = create_run_dir(cfg)
     resume = create_run_dir({**cfg, "training": {"resume": True}})
     overwrite = create_run_dir({**cfg, "output": {"dir": str(tmp_path), "run_name": "fixed", "overwrite": True}})
+    scene32 = create_run_dir(scene32_cfg)
 
-    assert first == tmp_path / "scene32" / "fixed"
+    assert first == tmp_path / "scene31" / "fixed"
     assert second != first
     assert resume == first
     assert overwrite == first
+    assert scene32 == tmp_path / "scene32" / "scene32_fixed"
 
 
 def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
@@ -811,6 +821,14 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         "distillation": {"type": "no_kd"},
         "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
     }
+    scene31_cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True}},
+        "data": {"dataset": {"type": "deepsense6g"}},
+        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
+        "distillation": {"type": "no_kd"},
+        "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+    }
     scene_32_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
@@ -818,6 +836,13 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
         "distillation": {"type": "no_kd"},
         "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+    }
+    kd_scene31_cfg = {
+        **scene31_cfg,
+        "paths": {"weights_dir": str(tmp_path / "missing")},
+        "experiment": {"name": "gps_logits_kd", "task": "gps"},
+        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
+        "distillation": {"type": "logits_kd", "teacher_model_name": "best.pth"},
     }
     kd_scene_32_cfg = {
         **scene_32_cfg,
@@ -836,6 +861,15 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         epoch=1,
         run_dir=tmp_path / "scene9_run",
     )
+    missing_scene31 = resolve_teacher_checkpoint(kd_scene31_cfg, "best.pth")
+    scene31_archive = archive_best_checkpoint(
+        scene31_cfg,
+        source_checkpoint=checkpoint,
+        val_top1=0.78,
+        epoch=1,
+        run_dir=tmp_path / "scene31_run",
+    )
+    resolved_scene31 = resolve_teacher_checkpoint(kd_scene31_cfg, "best.pth")
     missing_scene_32 = resolve_teacher_checkpoint(kd_scene_32_cfg, "best.pth")
     scene_32_archive = archive_best_checkpoint(
         scene_32_cfg,
@@ -848,6 +882,12 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
 
     assert Path(scene9_archive["path"]).parent == tmp_path / "scene9" / "best_checkpoints"
     assert scene9_archive["scene_slug"] == "scene9"
+    assert missing_scene31.source == "missing"
+    assert missing_scene31.registry_dir == tmp_path / "scene31" / "best_checkpoints"
+    assert Path(scene31_archive["path"]).parent == tmp_path / "scene31" / "best_checkpoints"
+    assert scene31_archive["scene_slug"] == "scene31"
+    assert resolved_scene31.path == Path(scene31_archive["path"])
+    assert resolved_scene31.metadata["scene_slug"] == "scene31"
     assert missing_scene_32.source == "missing"
     assert missing_scene_32.registry_dir == tmp_path / "scene32" / "best_checkpoints"
     assert Path(scene_32_archive["path"]).parent == tmp_path / "scene32" / "best_checkpoints"

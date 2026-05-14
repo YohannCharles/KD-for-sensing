@@ -52,6 +52,10 @@ from kd_sensing.engine.teacher_loader import (
     trainable_parameter_count,
 )
 from kd_sensing.engine.validator import validate
+from kd_sensing.evaluation.lidar_diagnostics import (
+    LidarQualityAccumulator,
+    lidar_preprocessing_metadata_from_dataset,
+)
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
@@ -742,6 +746,8 @@ def train(cfg: dict) -> dict:
             running_reliability_kd_loss = 0.0
             running_acc = 0.0
             epoch_diagnostics = EpochDiagnosticsAccumulator()
+            train_lidar_quality = LidarQualityAccumulator()
+            saw_train_lidar = False
             batch_count = 0
             current_alpha = cfg["distillation"].get("alpha", 0.4)
             warmup_epochs = cfg["distillation"].get("alpha_warmup_epochs", 0)
@@ -762,6 +768,9 @@ def train(cfg: dict) -> dict:
             for step, raw_batch in enumerate(batch_progress):
                 batch_count = step + 1
                 batch = prepare_task_batch(raw_batch)
+                if "lidar" in batch:
+                    saw_train_lidar = True
+                    train_lidar_quality.update(batch["lidar"])
                 labels = prepare_task_labels(
                     batch,
                     num_pred=num_pred,
@@ -1010,7 +1019,14 @@ def train(cfg: dict) -> dict:
                 "val_atop5": validation_curve_metrics["val_atop5"],
                 "val_adba": validation_curve_metrics["val_adba"],
                 "learning_rate": float(current_lr),
+                "validation_metrics": deepcopy(val_metrics),
             }
+            if saw_train_lidar:
+                train_dataset = getattr(dataloaders["train"], "dataset", None)
+                epoch_log["lidar_input_quality_train"] = train_lidar_quality.finalize(
+                    split=getattr(train_dataset, "split", "train"),
+                    preprocessing=lidar_preprocessing_metadata_from_dataset(train_dataset),
+                )
             for group in optimizer_groups:
                 group_name = group["name"]
                 epoch_log[f"optimizer/lr/{group_name}"] = float(group["lr"])

@@ -21,10 +21,10 @@ from kd_sensing.utils.paths import resolve_path
 
 
 TEACHER_MODEL_TYPES = {
-    "image": "image_teacher",
+    "image": "modular_sequence",
     "radar": "radar_teacher",
     "gps": "gps_teacher",
-    "lidar": "lidar_teacher",
+    "lidar": "modular_sequence",
     "mmwave": "mmwave_teacher",
 }
 
@@ -310,12 +310,20 @@ def g2d_scalar_diagnostics(diagnostics: dict) -> dict[str, float]:
 
 
 def _teacher_model_cfg(cfg: dict[str, Any], modality: str, teacher_cfg: dict[str, Any]) -> dict[str, Any]:
-    model_cfg = {
-        "type": TEACHER_MODEL_TYPES[modality],
-        "feature_size": int(cfg.get("model", {}).get("feature_size", 64)),
-        "num_classes": int(cfg.get("model", {}).get("num_classes", 64)),
-        "gru_params": [64, 64, 1],
-    }
+    feature_size = int(cfg.get("model", {}).get("feature_size", 64))
+    num_classes = int(cfg.get("model", {}).get("num_classes", 64))
+    num_pred = int(cfg.get("model", {}).get("num_pred", 3))
+    if modality == "image":
+        model_cfg = _modular_image_teacher_cfg(feature_size=feature_size, num_classes=num_classes, num_pred=num_pred)
+    elif modality == "lidar":
+        model_cfg = _modular_lidar_teacher_cfg(feature_size=feature_size, num_classes=num_classes, num_pred=num_pred)
+    else:
+        model_cfg = {
+            "type": TEACHER_MODEL_TYPES[modality],
+            "feature_size": feature_size,
+            "num_classes": num_classes,
+            "gru_params": [64, 64, 1],
+        }
     default_fields = {
         "radar": {"radar_channels": 2},
         "gps": {"gps_input_size": 3},
@@ -331,6 +339,62 @@ def _teacher_model_cfg(cfg: dict[str, Any], modality: str, teacher_cfg: dict[str
     configured_model = teacher_cfg.get("model") or {}
     model_cfg.update(deepcopy(configured_model))
     return model_cfg
+
+
+def _modular_image_teacher_cfg(*, feature_size: int, num_classes: int, num_pred: int) -> dict[str, Any]:
+    return {
+        "type": "modular_sequence",
+        "modalities": ["image"],
+        "image_profile": "rgb_imagenet",
+        "feature_size": feature_size,
+        "d_model": feature_size,
+        "num_classes": num_classes,
+        "num_pred": num_pred,
+        "encoders": {
+            "image": {
+                "type": "resnet18_imagenet_rgb",
+                "output_dim": feature_size,
+                "pretrained": True,
+                "weights": "DEFAULT",
+                "freeze_backbone": True,
+                "unfreeze_stages": ["layer4"],
+                "dropout": 0.1,
+            }
+        },
+        "representation_core": {
+            "type": "single_gru",
+            "d_model": feature_size,
+            "hidden_size": feature_size,
+            "num_layers": 1,
+        },
+        "heads": {"beam": {"type": "beam_head", "dropout": 0.1}},
+    }
+
+
+def _modular_lidar_teacher_cfg(*, feature_size: int, num_classes: int, num_pred: int) -> dict[str, Any]:
+    return {
+        "type": "modular_sequence",
+        "modalities": ["lidar"],
+        "feature_size": feature_size,
+        "d_model": feature_size,
+        "num_classes": num_classes,
+        "num_pred": num_pred,
+        "lidar_channels": 3,
+        "encoders": {
+            "lidar": {
+                "type": "lidar_cnn",
+                "output_dim": feature_size,
+                "lidar_channels": 3,
+            }
+        },
+        "representation_core": {
+            "type": "single_gru",
+            "d_model": feature_size,
+            "hidden_size": feature_size,
+            "num_layers": 1,
+        },
+        "heads": {"beam": {"type": "beam_head", "dropout": 0.1}},
+    }
 
 
 def _resolve_teacher_weight(cfg: dict[str, Any], modality: str, teacher_cfg: dict[str, Any]) -> CheckpointResolution:

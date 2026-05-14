@@ -6,7 +6,7 @@ experiment:
 data:
   dataset:
     type: deepsense6g
-    scene: 32
+    scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
     seq_len: 8
@@ -72,13 +72,13 @@ model:
         lidar: 0.15
         mmwave: 0.90
 teacher:
-  registry_path: outputs/scene32/teacher_registry.json
+  registry_path: outputs/scene31/teacher_registry.json
   load_encoders: false
   freeze_encoders: false
   strict: true
 finetune:
   enabled: true
-  checkpoint_path: outputs/scene32/stage2_teacher_init_prior_residual/checkpoints/best.pth
+  checkpoint_path: outputs/scene31/stage2_teacher_init_prior_residual/checkpoints/best.pth
   strict: true
   unfreeze_modalities: [gps, mmwave]
   freeze_modalities: [image, radar, lidar]

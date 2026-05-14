@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from kd_sensing.models.fusion import FusionTeacherModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
+from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 
@@ -27,6 +28,18 @@ def test_fusion_teacher_image_branch_uses_shared_image_feature_extractor():
     )
 
     assert isinstance(model.image_feature_extractor, ImageFeatureExtractor)
+
+
+def test_canonical_image_fusion_teacher_uses_resnet18_profile():
+    cfg = load_config(ROOT / "configs/fusion/image_radar_teacher_no_kd.yaml")
+
+    assert cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert cfg["model"]["teacher"]["type"] == "modular_sequence"
+    assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert cfg["model"]["teacher"]["encoders"]["image"]["pretrained"] is True
+    assert cfg["model"]["teacher"]["encoders"]["image"]["weights"] == "DEFAULT"
+    assert cfg["model"]["student"]["type"] == "modular_sequence"
+    assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
 
 
 def test_fusion_teacher_with_image_forward_returns_expected_shapes():

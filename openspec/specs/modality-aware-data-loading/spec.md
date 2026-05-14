@@ -161,7 +161,12 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 - **THEN** 数据构建流程 MUST 拒绝该配置
 - **AND** 错误信息 MUST 说明应使用 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9`
 
-#### Scenario: 通用 deepsense6g 类型选择 Scenario 32
+#### Scenario: 通用 deepsense6g 类型默认选择 Scenario 31
+- **WHEN** 用户运行 `data.dataset.type: deepsense6g` 且未显式设置 `data.dataset.scene`
+- **THEN** 数据构建流程 MUST 构建 Scenario 31 对应的 DeepSense6G dataset
+- **AND** 启用模态推导 MUST 继续按 `experiment.task` 或 fusion `modalities` 生效
+
+#### Scenario: 显式选择 Scenario 32
 - **WHEN** 用户运行 `data.dataset.type: deepsense6g` 且 `data.dataset.scene: 32`
 - **THEN** 数据构建流程 MUST 构建 Scenario 32 对应的 DeepSense6G dataset
 - **AND** 启用模态推导 MUST 继续按 `experiment.task` 或 fusion `modalities` 生效
@@ -172,7 +177,7 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 - **AND** 这些字段 MUST 出现在最终配置、运行日志或测试报告中
 
 #### Scenario: 场景不影响模态按需读取
-- **WHEN** 用户在 Scenario 32 上运行 mmWave-only 或 GPS+mmWave fusion 配置
+- **WHEN** 用户在任一受支持 DeepSense6G 场景上运行 mmWave-only 或 GPS+mmWave fusion 配置
 - **THEN** dataset MUST 只读取启用模态所需文件和 beam label 文件
 - **AND** 未启用模态的缺失文件不得阻止该任务运行
 

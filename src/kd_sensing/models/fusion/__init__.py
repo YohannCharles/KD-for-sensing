@@ -2,6 +2,7 @@ from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
 from kd_sensing.models.mmwave import MmWaveFeatureExtractor
 
+from .cls_token_transformer import CLSTokenTransformerFusionNet
 from .craf import CRAFFusionNet, PriorResidualGate, ReliabilityEstimator, TokenTransformerFusionNet, UniModalHead
 from .marf import AnchorFusion, MARFFusionNet, ModalityRouter, ResidualAdapter
 from .networks import (
@@ -11,6 +12,7 @@ from .networks import (
 
 __all__ = [
     "AnchorFusion",
+    "CLSTokenTransformerFusionNet",
     "CRAFFusionNet",
     "FusionTeacherModalityNet",
     "LidarFeatureExtractor",

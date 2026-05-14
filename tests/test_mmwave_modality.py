@@ -31,6 +31,7 @@ from kd_sensing.models.mmwave import (  # noqa: E402
     MmWaveModalityNet,
     MmWaveStudentModalityNet,
 )
+from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
 
@@ -308,8 +309,22 @@ def test_mmwave_fusion_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["mmwave_normalize"] is True
     assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
     assert cfg["model"]["student"]["mmwave_input_size"] == 64
-    assert isinstance(teacher, FusionTeacherModalityNet)
-    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+    if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:
+        assert isinstance(teacher, ModularSequenceModel)
+        if "image" in cfg["model"]["teacher"]["modalities"]:
+            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+        if "lidar" in cfg["model"]["teacher"]["modalities"]:
+            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+        if isinstance(student, ModularSequenceModel):
+            if "image" in cfg["model"]["student"]["modalities"]:
+                assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+            if "lidar" in cfg["model"]["student"]["modalities"]:
+                assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+        else:
+            assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+    else:
+        assert isinstance(teacher, FusionTeacherModalityNet)
+        assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_mmwave_sequence_fixture(root: Path, csv_path: Path, *, prefix: str, seq_index: int) -> None:
