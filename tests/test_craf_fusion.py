@@ -485,6 +485,12 @@ def test_craf_synthetic_train_and_evaluate_workflow(tmp_path: Path):
     )
     assert eval_result["metrics"]["loss"] >= 0.0
     assert (Path(eval_result["run_dir"]) / "metrics.json").exists()
+    report = json.loads((Path(eval_result["run_dir"]) / "test_report.json").read_text(encoding="utf-8"))
+    assert report["objective"]["name"] == cfg["experiment"]["objective"]
+    assert "available_metrics" in report
+    assert report["enabled_modalities"] == ["gps", "mmwave"]
+    assert report["runtime"]["prediction_objective"]["primary_metric"] == "val_adba"
+    assert report["runtime"]["enabled_modalities"] == ["gps", "mmwave"]
 
 
 def test_craf_stabilized_training_logs_warmup_ramp_and_counterfactual_stats(tmp_path: Path):

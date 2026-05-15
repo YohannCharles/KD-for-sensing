@@ -158,6 +158,42 @@ def test_lazy_package_exports_remain_available():
     )
 
 
+def test_models_package_import_is_lazy_and_public_symbols_remain_available():
+    modules = _run_module_presence_probe(
+        "import kd_sensing.models",
+        {
+            "fusion": "kd_sensing.models.fusion",
+            "gps": "kd_sensing.models.gps",
+            "image": "kd_sensing.models.image",
+            "lidar": "kd_sensing.models.lidar",
+            "mmwave": "kd_sensing.models.mmwave",
+            "radar": "kd_sensing.models.radar",
+            "modular": "kd_sensing.models.modular",
+        },
+    )
+
+    assert modules == {key: False for key in modules}
+
+    _run_module_presence_probe(
+        "\n".join(
+            [
+                "from kd_sensing.models import FusionTeacherModalityNet, GpsModalityNet",
+                "assert FusionTeacherModalityNet is not None",
+                "assert GpsModalityNet is not None",
+                "import kd_sensing.models as models",
+                "assert 'FusionTeacherModalityNet' in models.__all__",
+                "try:",
+                "    getattr(models, 'Fusion' + 'ModalityNet')",
+                "except AttributeError as exc:",
+                "    assert 'FusionTeacherModalityNet' in str(exc)",
+                "else:",
+                "    raise AssertionError('removed alias did not raise')",
+            ]
+        ),
+        {},
+    )
+
+
 def test_modality_contract_normalizes_and_validates_modalities():
     assert MODALITY_ORDER == ("image", "radar", "gps", "lidar", "mmwave")
     assert normalize_modalities(["lidar", "image", "gps"]) == ("image", "gps", "lidar")
@@ -252,6 +288,24 @@ def test_training_methods_are_connected_through_engine_extensions():
     assert "class G2DTrainingExtension" in (SRC / "kd_sensing" / "engine" / "g2d_training.py").read_text(encoding="utf-8")
     assert "class CrafTrainingExtension" in (SRC / "kd_sensing" / "engine" / "craf_training.py").read_text(encoding="utf-8")
     assert "class MarfTrainingExtension" in (SRC / "kd_sensing" / "engine" / "marf_training.py").read_text(encoding="utf-8")
+
+
+def test_prediction_task_boundaries_do_not_reintroduce_duplicate_tables_or_validation_paths():
+    trainer_text = (SRC / "kd_sensing" / "engine" / "trainer.py").read_text(encoding="utf-8")
+    validator_text = (SRC / "kd_sensing" / "engine" / "validator.py").read_text(encoding="utf-8")
+    evaluator_text = (SRC / "kd_sensing" / "engine" / "evaluator.py").read_text(encoding="utf-8")
+
+    assert "_EARLY_STOPPING_METRIC_ALIASES" not in trainer_text
+    assert "_MAX_EARLY_STOPPING_METRICS" not in trainer_text
+    assert "default_primary_metric" not in trainer_text
+    assert "prepare_task_labels" not in validator_text
+    assert "run_model_step" not in validator_text
+    assert "compute_prediction_loss" not in validator_text
+    assert "_cfg_uses_lidar" not in validator_text
+    assert "_evaluation_uses_gps" not in evaluator_text
+    assert "_evaluation_uses_lidar" not in evaluator_text
+    assert "_evaluation_uses_mmwave" not in evaluator_text
+    assert "run_evaluation_pass" in validator_text
 
 
 def test_g2d_algorithm_module_does_not_import_runtime_builders_or_teacher_runtime():

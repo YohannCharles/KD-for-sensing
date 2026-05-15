@@ -18,10 +18,7 @@ from kd_sensing.data.transform_ops.gps import (
     GPSStandardScaler,
     PositionTargetStandardScaler,
     SUPPORTED_GPS_FEATURE_MODE,
-    load_relative_xy_target_sequence,
     load_gps_feature_sequence,
-    read_gps_latlon,
-    build_relative_xy_targets,
 )
 from kd_sensing.data.transform_ops.image import (
     build_rgb_imagenet_transform,
@@ -41,11 +38,16 @@ from kd_sensing.data.transform_ops.mmwave import (
     MMWAVE_POWER_DIM,
     MmWaveStandardScaler,
     OcclusionTargetStats,
-    finite_max_mmwave_power,
-    fit_occlusion_threshold_from_paths,
     load_mmwave_feature_sequence,
 )
 from kd_sensing.data.transform_ops.radar import load_radar_maps
+from kd_sensing.data.datasets.deepsense6g_loaders import DeepSense6GModalityLoader
+from kd_sensing.data.datasets.deepsense6g_targets import (
+    DeepSense6GTargetProvider,
+    coerce_occlusion_stats,
+    resolve_occlusion_target_config,
+    resolve_position_target_config,
+)
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, resolve_image_profile
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
@@ -158,16 +160,12 @@ class DeepSense6GDataset(Dataset):
         self.mmwave_normalize = bool(mmwave_normalize)
         self.mmwave_scaler = mmwave_scaler
         self._mmwave_feature_cache: dict[int, np.ndarray] = {}
-        self.occlusion_target_config = self._resolve_occlusion_target_config(occlusion_target)
+        self.occlusion_target_config = resolve_occlusion_target_config(occlusion_target)
         self.occlusion_target_enabled = bool(self.occlusion_target_config["enabled"])
-        self.occlusion_target_stats = self._coerce_occlusion_stats(occlusion_target_stats)
-        self._occlusion_power_cache: dict[str, float | None] = {}
-        self.position_target_config = self._resolve_position_target_config(position_target)
+        self.position_target_config = resolve_position_target_config(position_target)
         self.position_target_enabled = bool(self.position_target_config["enabled"])
         self.position_target_source = str(self.position_target_config["source"])
         self.position_target_normalize = bool(self.position_target_config["normalize"])
-        self.position_target_scaler = position_target_scaler
-        self._position_target_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self.use_lidar = "lidar" in self.enabled_modalities
         self.lidar_encoding = str(lidar_encoding)
         if self.lidar_encoding != "bev":
@@ -215,6 +213,12 @@ class DeepSense6GDataset(Dataset):
                 self.position_target_enabled and self.position_target_source == "last_input_gps_local_xy"
             ),
         )
+        self.target_provider = DeepSense6GTargetProvider(
+            self,
+            occlusion_stats=occlusion_target_stats,
+            position_scaler=position_target_scaler,
+        )
+        self.modality_loader = DeepSense6GModalityLoader(self)
         if self.beam_label_cache_mode == "eager":
             self._prepare_beam_label_cache()
         if self.occlusion_target_enabled:
@@ -234,6 +238,22 @@ class DeepSense6GDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.samples.input_beam_paths)
+
+    @property
+    def occlusion_target_stats(self) -> OcclusionTargetStats | None:
+        return self.target_provider.occlusion_target_stats
+
+    @occlusion_target_stats.setter
+    def occlusion_target_stats(self, value: OcclusionTargetStats | dict[str, Any] | None) -> None:
+        self.target_provider.occlusion_target_stats = coerce_occlusion_stats(value)
+
+    @property
+    def position_target_scaler(self) -> PositionTargetStandardScaler | None:
+        return self.target_provider.position_target_scaler
+
+    @position_target_scaler.setter
+    def position_target_scaler(self, value: PositionTargetStandardScaler | None) -> None:
+        self.target_provider.position_target_scaler = value
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         sample, _ = self._getitem_with_timing(idx, collect_timing=False)
@@ -272,11 +292,11 @@ class DeepSense6GDataset(Dataset):
         def build_auxiliary_targets() -> dict[str, torch.Tensor]:
             values: dict[str, torch.Tensor] = {}
             if self.occlusion_target_enabled:
-                occlusion_label, occlusion_valid = self._occlusion_targets_for_paths(future_beam_paths)
+                occlusion_label, occlusion_valid = self.target_provider.occlusion_targets_for_paths(future_beam_paths)
                 values["occlusion_label"] = torch.tensor(occlusion_label, dtype=torch.float32)
                 values["occlusion_valid"] = torch.tensor(occlusion_valid, dtype=torch.bool)
             if self.position_target_enabled:
-                position_target, position_valid = self._position_targets_for_index(idx)
+                position_target, position_valid = self.target_provider.position_targets_for_index(idx)
                 if self.position_target_scaler is not None and self.position_target_normalize:
                     scaled = position_target.copy()
                     valid = position_valid.astype(bool)
@@ -290,64 +310,17 @@ class DeepSense6GDataset(Dataset):
         if self.occlusion_target_enabled or self.position_target_enabled:
             sample.update(record("auxiliary_targets", build_auxiliary_targets))
         if "image" in self.enabled_modalities:
-            if self.transform is None:
-                raise ValueError("Image modality is enabled but image transform is unavailable.")
-            sample["image"] = record(
-                "image",
-                lambda: load_rgb_imagenet_frames(
-                    self.data_root,
-                    self.samples.rgb_paths[idx][-self.seq_len :],
-                    self.seq_len,
-                    self.transform,
-                    image_size=self.image_size,
-                ),
-            )
+            sample["image"] = record("image", lambda: self.modality_loader.load_image(idx))
         if "radar" in self.enabled_modalities:
-            radar_ra, radar_da = record(
-                "radar",
-                lambda: load_radar_maps(
-                    self.data_root,
-                    self.samples.radar_paths[idx][-self.seq_len :],
-                    self.seq_len,
-                    self.fft_tuple,
-                    self.clipped_range,
-                ),
-            )
+            radar_ra, radar_da = record("radar", lambda: self.modality_loader.load_radar(idx))
             sample["radar_ra"] = radar_ra
             sample["radar_da"] = radar_da
         if self.use_gps:
-            def build_gps() -> torch.Tensor:
-                gps_features = self._gps_features_for_index(idx)
-                if self.gps_scaler is not None:
-                    gps_features = self.gps_scaler.transform(gps_features)
-                return torch.tensor(gps_features, dtype=torch.float32)
-
-            sample["gps"] = record("gps", build_gps)
+            sample["gps"] = record("gps", lambda: self.modality_loader.load_gps(idx))
         if self.use_mmwave:
-            def build_mmwave() -> torch.Tensor:
-                mmwave_features = self._mmwave_features_for_index(idx)
-                if self.mmwave_scaler is not None:
-                    mmwave_features = self.mmwave_scaler.transform(mmwave_features)
-                return torch.tensor(mmwave_features, dtype=torch.float32)
-
-            sample["mmwave"] = record("mmwave", build_mmwave)
+            sample["mmwave"] = record("mmwave", lambda: self.modality_loader.load_mmwave(idx))
         if self.use_lidar:
-            def build_lidar() -> torch.Tensor:
-                lidar_bev = self._lidar_bev_for_index(
-                    idx,
-                    augment=self.split == "train" and self.lidar_augment,
-                )
-                if self.lidar_normalize:
-                    if self.lidar_normalizer is None:
-                        raise ValueError(
-                            "LiDAR normalization is enabled but no normalizer is available. "
-                            "Use build_dataloaders/evaluate, provide lidar_normalization.stats_path, "
-                            "or disable LiDAR normalization."
-                        )
-                    lidar_bev = self.lidar_normalizer.transform(lidar_bev)
-                return torch.tensor(lidar_bev, dtype=torch.float32)
-
-            sample["lidar"] = record("lidar", build_lidar)
+            sample["lidar"] = record("lidar", lambda: self.modality_loader.load_lidar(idx))
         if self.return_metadata:
             sample["metadata"] = self._metadata_for_index(idx, beam_paths, future_beam_paths)
         return sample, timings
@@ -437,6 +410,24 @@ class DeepSense6GDataset(Dataset):
     def _build_image_transform(self, image_size: list[int] | tuple[int, int]):
         return build_rgb_imagenet_transform(image_size)
 
+    def _load_rgb_imagenet_frames(self, paths: list[str]) -> torch.Tensor:
+        return load_rgb_imagenet_frames(
+            self.data_root,
+            paths,
+            self.seq_len,
+            self.transform,
+            image_size=self.image_size,
+        )
+
+    def _load_radar_maps(self, paths: list[str]):
+        return load_radar_maps(
+            self.data_root,
+            paths,
+            self.seq_len,
+            self.fft_tuple,
+            self.clipped_range,
+        )
+
     def _resolve_beam_label_cache(self, config: bool | str) -> str:
         if isinstance(config, bool):
             return "eager" if config else "off"
@@ -449,201 +440,23 @@ class DeepSense6GDataset(Dataset):
             raise ValueError("beam_label_cache must be one of eager, lazy, off, true, or false.")
         return mode
 
-    def _resolve_occlusion_target_config(self, config: bool | dict[str, Any] | None) -> dict[str, Any]:
-        if isinstance(config, bool):
-            raw: dict[str, Any] = {"enabled": config}
-        elif config is None:
-            raw = {}
-        elif isinstance(config, dict):
-            raw = dict(config)
-        else:
-            raise TypeError("occlusion_target must be a bool, mapping, or None.")
-        enabled = bool(raw.get("enabled", False))
-        percentile = float(raw.get("threshold_percentile", raw.get("percentile", 20.0)))
-        threshold = raw.get("threshold", raw.get("tau"))
-        if threshold is not None:
-            threshold = float(threshold)
-        return {
-            "enabled": enabled,
-            "threshold_percentile": percentile,
-            "threshold": threshold,
-        }
-
-    def _resolve_position_target_config(self, config: bool | dict[str, Any] | None) -> dict[str, Any]:
-        if isinstance(config, bool):
-            raw: dict[str, Any] = {"enabled": config}
-        elif config is None:
-            raw = {}
-        elif isinstance(config, dict):
-            raw = dict(config)
-        else:
-            raise TypeError("position_target must be a bool, mapping, or None.")
-        enabled = bool(raw.get("enabled", False))
-        source = str(raw.get("source", raw.get("position_target_source", "future_gps_local_xy")))
-        if source not in {"future_gps_local_xy", "last_input_gps_local_xy"}:
-            raise ValueError(
-                "position_target.source must be one of future_gps_local_xy or last_input_gps_local_xy."
-            )
-        normalize = bool(raw.get("normalize", raw.get("standardize", enabled)))
-        return {
-            "enabled": enabled,
-            "source": source,
-            "normalize": normalize,
-        }
-
-    @staticmethod
-    def _coerce_occlusion_stats(
-        stats: OcclusionTargetStats | dict[str, Any] | None,
-    ) -> OcclusionTargetStats | None:
-        if stats is None:
-            return None
-        if isinstance(stats, OcclusionTargetStats):
-            return stats
-        if isinstance(stats, dict):
-            return OcclusionTargetStats.from_dict(stats)
-        raise TypeError("occlusion_target_stats must be OcclusionTargetStats, mapping, or None.")
-
     def _prepare_occlusion_target_stats(self) -> None:
-        if self.occlusion_target_stats is not None:
-            return
-        explicit_threshold = self.occlusion_target_config.get("threshold")
-        percentile = float(self.occlusion_target_config["threshold_percentile"])
-        if explicit_threshold is not None:
-            self.occlusion_target_stats = OcclusionTargetStats(
-                threshold=float(explicit_threshold),
-                threshold_percentile=percentile,
-                sample_count=0,
-                positive_count=0,
-                positive_ratio=0.0,
-            )
-            return
-        if self.split != "train":
-            raise ValueError(
-                "Occlusion target generation for non-train split requires train-fitted "
-                "occlusion_target_stats or an explicit occlusion_target.threshold."
-            )
-        future_paths = [
-            str(path)
-            for paths in self.samples.future_beam_paths
-            for path in paths[: self.num_pred]
-            if self._valid_resource_path(path)
-        ]
-        self.occlusion_target_stats = fit_occlusion_threshold_from_paths(
-            self.data_root,
-            future_paths,
-            threshold_percentile=percentile,
-            expected_dim=MMWAVE_POWER_DIM,
-            use_finite_max=True,
-        )
+        self.target_provider.prepare_occlusion_target_stats()
 
     def _occlusion_targets_for_paths(self, future_beam_paths: list[str]) -> tuple[np.ndarray, np.ndarray]:
-        if self.occlusion_target_stats is None:
-            raise ValueError("Occlusion target is enabled but occlusion_target_stats are unavailable.")
-        labels = np.zeros((self.num_pred,), dtype=np.float32)
-        valid = np.zeros((self.num_pred,), dtype=bool)
-        for horizon, path in enumerate(future_beam_paths[: self.num_pred]):
-            if not self._valid_resource_path(path):
-                continue
-            power = self._max_power_for_path(str(path))
-            if power is None:
-                continue
-            labels[horizon] = 1.0 if power < self.occlusion_target_stats.threshold else 0.0
-            valid[horizon] = True
-        return labels, valid
+        return self.target_provider.occlusion_targets_for_paths(future_beam_paths)
 
     def _max_power_for_path(self, rel_path: str) -> float | None:
-        key = str(rel_path)
-        if key not in self._occlusion_power_cache:
-            self._occlusion_power_cache[key] = finite_max_mmwave_power(
-                self.data_root,
-                key,
-                expected_dim=MMWAVE_POWER_DIM,
-            )
-        return self._occlusion_power_cache[key]
+        return self.target_provider.max_power_for_path(rel_path)
 
     def _ensure_position_target_columns(self) -> None:
-        if self.position_target_source == "future_gps_local_xy":
-            if self.samples.future_gps_paths is None or self.samples.future_bs_gps_paths is None:
-                raise ValueError(
-                    f"Position target source 'future_gps_local_xy' requires future_gps1..future_gpsN "
-                    f"and future_bs_gps1..future_bs_gpsN columns in {self.root_csv}. "
-                    "Regenerate sequence CSVs with include_position_targets: true."
-                )
-            return
-        if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
-            raise ValueError(
-                f"Position target source 'last_input_gps_local_xy' requires gps1..gpsN and bs_gps1..bs_gpsN "
-                f"columns in {self.root_csv}."
-            )
+        self.target_provider.ensure_position_target_columns()
 
     def _prepare_position_target_scaler(self) -> None:
-        if not self.position_target_normalize:
-            self.position_target_scaler = None
-            return
-        if self.position_target_scaler is not None:
-            return
-        if self.split != "train":
-            raise ValueError(
-                "Position target normalization for non-train split requires a train-fitted "
-                "position_target_scaler. Use build_dataloaders/evaluate so train statistics can be reused."
-            )
-        targets = []
-        for idx in range(len(self)):
-            position_target, position_valid = self._position_targets_for_index(idx)
-            if np.any(position_valid):
-                targets.append(position_target[position_valid])
-        if not targets:
-            raise ValueError("Cannot fit position_target_scaler because no valid position targets were found.")
-        self.position_target_scaler = PositionTargetStandardScaler().fit(np.concatenate(targets, axis=0))
+        self.target_provider.prepare_position_target_scaler()
 
     def _position_targets_for_index(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        if idx not in self._position_target_cache:
-            if self.position_target_source == "future_gps_local_xy":
-                self._position_target_cache[idx] = self._future_position_targets_for_index(idx)
-            elif self.position_target_source == "last_input_gps_local_xy":
-                self._position_target_cache[idx] = self._last_input_position_targets_for_index(idx)
-            else:
-                raise ValueError(f"Unsupported position_target source '{self.position_target_source}'.")
-        return self._position_target_cache[idx]
-
-    def _future_position_targets_for_index(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        if self.samples.future_gps_paths is None or self.samples.future_bs_gps_paths is None:
-            raise ValueError("Future GPS position target paths are unavailable for this dataset.")
-        gps_paths = self.samples.future_gps_paths[idx][: self.num_pred]
-        bs_paths = self.samples.future_bs_gps_paths[idx][: self.num_pred]
-        targets = np.zeros((self.num_pred, 2), dtype=np.float32)
-        valid = np.zeros((self.num_pred,), dtype=bool)
-        for horizon, (gps_path, bs_path) in enumerate(zip(gps_paths, bs_paths)):
-            if not self._valid_resource_path(gps_path) or not self._valid_resource_path(bs_path):
-                continue
-            target = load_relative_xy_target_sequence(
-                self.data_root,
-                [str(gps_path)],
-                [str(bs_path)],
-                num_pred=1,
-            )
-            targets[horizon] = target[0]
-            valid[horizon] = True
-        return targets, valid
-
-    def _last_input_position_targets_for_index(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
-            raise ValueError("Input GPS paths are unavailable for fallback position targets.")
-        gps_paths = self.samples.gps_paths[idx][-self.seq_len :]
-        bs_paths = self.samples.bs_gps_paths[idx][-self.seq_len :] if self.samples.bs_gps_paths is not None else []
-        if not gps_paths or not bs_paths:
-            return np.zeros((self.num_pred, 2), dtype=np.float32), np.zeros((self.num_pred,), dtype=bool)
-        gps_path = gps_paths[-1]
-        bs_path = bs_paths[-1]
-        if not self._valid_resource_path(gps_path) or not self._valid_resource_path(bs_path):
-            return np.zeros((self.num_pred, 2), dtype=np.float32), np.zeros((self.num_pred,), dtype=bool)
-        ue = np.asarray([read_gps_latlon(self.data_root, str(gps_path))], dtype=np.float64)
-        bs = np.asarray([read_gps_latlon(self.data_root, str(bs_path))], dtype=np.float64)
-        xy = build_relative_xy_targets(ue, bs)[0]
-        return (
-            np.repeat(xy.reshape(1, 2), self.num_pred, axis=0).astype(np.float32),
-            np.ones((self.num_pred,), dtype=bool),
-        )
+        return self.target_provider.position_targets_for_index(idx)
 
     @staticmethod
     def _valid_resource_path(path: object) -> bool:
@@ -651,25 +464,7 @@ class DeepSense6GDataset(Dataset):
         return bool(text) and text != "-99"
 
     def auxiliary_target_metadata(self) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        if self.occlusion_target_enabled:
-            metadata["occlusion_target"] = {
-                "enabled": True,
-                "threshold_percentile": float(self.occlusion_target_config["threshold_percentile"]),
-                "stats": self.occlusion_target_stats.to_dict() if self.occlusion_target_stats is not None else None,
-            }
-        if self.position_target_enabled:
-            metadata["position_target"] = {
-                "enabled": True,
-                "source": self.position_target_source,
-                "normalize": bool(self.position_target_normalize),
-                "scaler": (
-                    self.position_target_scaler.to_dict()
-                    if self.position_target_scaler is not None and self.position_target_normalize
-                    else None
-                ),
-            }
-        return metadata
+        return self.target_provider.auxiliary_target_metadata()
 
     def _prepare_beam_label_cache(self) -> None:
         unique_paths = {

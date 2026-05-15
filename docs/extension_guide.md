@@ -233,6 +233,33 @@ Those helpers centralize:
 When adding or changing a modality input contract, update `engine.batch`/`engine.runtime` and the runtime
 tests first. Avoid copying task branches into validator, viewer, teacher, or method extension code.
 
+## Prediction Objectives and Evaluation
+
+Prediction task metadata lives in `kd_sensing.engine.prediction_objectives`. Add or modify an objective
+there first: target requirements, output requirements, primary loss, default metric, metric direction,
+early-stopping aliases, available validation metrics, history fields, TensorBoard scalar mappings, and
+runtime metadata are all part of the objective spec. Training, validation, evaluation reports, checkpoints,
+and final configs consume that metadata instead of keeping local metric tables.
+
+Validation-like flows should call `kd_sensing.engine.evaluation_pass.run_evaluation_pass`. The shared pass
+owns batch preparation, model forward, objective loss calculation, auxiliary metric collection, Top-K/DBA
+aggregation, degradation diagnostics, available metrics, objective metadata, and enabled modality metadata.
+`engine.validator.validate`, force-mask subset validation, and standalone checkpoint evaluation are wrappers
+around that pass. Do not add a second validation loop to `validator.py`.
+
+DeepSense6G target construction is split from the dataset coordinator. `deepsense6g_targets.py` provides
+beam-compatible auxiliary targets for occlusion, position, and multitask objectives while preserving sample
+field names and tensor shapes. `deepsense6g_loaders.py` is the modality loader boundary for image, radar,
+GPS, LiDAR, and mmWave inputs. Disabled targets and modalities should not initialize or read their resources.
+
+Canonical virtual config generation is recipe driven under `kd_sensing.config.canonical_recipes`. Base
+fusion mode defaults, objective overlays, and advanced G2D/CRAF/MARF overlays are table entries; keep
+`config/canonical.py` as path parsing and recipe application glue.
+
+`kd_sensing.models` is a lazy export package. Keep public names in its export mapping, but import concrete
+implementation modules directly when editing model internals. A plain `import kd_sensing.models` should not
+pull in fusion, GPS, LiDAR, mmWave, image encoder, or radar implementation modules.
+
 ## Diagnostics Visualization Internals
 
 `kd_sensing.diagnostics.visualization.core` is a public orchestration entry point only. Keep concrete

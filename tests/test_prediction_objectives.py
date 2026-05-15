@@ -18,6 +18,13 @@ from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     PredictionTargets,
     compute_prediction_loss,
     multitask_loss_weights,
+    normalize_objective_metric,
+    objective_available_metrics,
+    objective_history_fields,
+    objective_metric_mode,
+    objective_runtime_metadata,
+    objective_spec,
+    objective_tensorboard_scalars,
     resolve_prediction_objective,
 )
 from kd_sensing.engine.trainer import train  # noqa: E402
@@ -47,6 +54,51 @@ def test_objective_config_defaults_validation_and_legacy_compatibility():
     assert auto_position["data"]["dataset"]["position_target"]["enabled"] is True
     assert auto_position["model"]["student"]["auxiliary_heads"]["position"] is True
     assert auto_position["data"]["dataset"]["train_csv_name"] == "train_seqs_RA_GPS_LIDAR_POS.csv"
+
+
+@pytest.mark.parametrize(
+    ("objective", "default_metric", "mode", "aliases", "available"),
+    [
+        ("beam", "val_adba", "max", ["adba", "beam/val_adba"], ["val_adba", "val_acc"]),
+        (
+            "occlusion",
+            "val_occlusion_blocked_f1",
+            "max",
+            ["occlusion", "blocked_f1"],
+            ["val_occlusion_blocked_f1"],
+        ),
+        ("position", "val_position_rmse", "min", ["position", "position_rmse"], ["val_position_rmse"]),
+        ("multitask", "val_multitask_loss", "min", ["multitask", "multitask_loss"], ["val_multitask_loss"]),
+    ],
+)
+def test_objective_metadata_contract_covers_metrics_aliases_history_and_logging(
+    objective: str,
+    default_metric: str,
+    mode: str,
+    aliases: list[str],
+    available: list[str],
+):
+    cfg = {"experiment": {"objective": objective}, "loss": {}}
+    spec = objective_spec(objective)
+    runtime = objective_runtime_metadata(cfg)
+
+    assert spec.default_metric == default_metric
+    assert spec.default_metric_mode == mode
+    assert runtime["primary_metric"] == default_metric
+    assert runtime["primary_metric_mode"] == mode
+    assert runtime["available_metrics"] == list(spec.available_metrics)
+    for alias in aliases:
+        assert normalize_objective_metric(alias, objective=objective) == default_metric
+    assert objective_metric_mode(default_metric) == mode
+    for metric in available:
+        assert metric in objective_available_metrics(objective)
+    assert "train_objective_loss" in objective_history_fields(objective)
+    assert "val_primary_metric" in objective_history_fields(objective)
+    assert ("objective/val_primary_metric", "val_primary_metric") in objective_tensorboard_scalars(objective)
+    if objective in {"beam", "multitask"}:
+        assert ("beam/val_adba", "val_adba") in objective_tensorboard_scalars(objective)
+    else:
+        assert ("beam/val_adba", "val_adba") not in objective_tensorboard_scalars(objective)
 
 
 @pytest.mark.parametrize("modality", ["image", "radar", "gps", "lidar", "mmwave"])

@@ -19,6 +19,12 @@ from kd_sensing.config.canonical import (  # noqa: E402
     build_advanced_fusion_overlay_config,
     build_virtual_fusion_config,
 )
+from kd_sensing.config.canonical_recipes import (  # noqa: E402
+    advanced_overlay_recipe,
+    distillation_overrides,
+    objective_overlay_recipe,
+    training_overrides,
+)
 from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
@@ -622,6 +628,28 @@ def test_virtual_fusion_config_generator_uses_canonical_semantics():
     assert cfg["paths"]["weights_dir"] == "outputs/scene31/gps_mmwave_teacher_no_kd/checkpoints"
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
+
+
+def test_base_fusion_recipe_registry_keeps_virtual_config_core_fields():
+    cfg = build_virtual_fusion_config("gps_mmwave_logits_kd")
+
+    assert cfg["distillation"] == distillation_overrides("gps_mmwave", "logits_kd", False)
+    assert cfg["training"] == training_overrides("logits_kd", False)
+    assert distillation_overrides("image_radar", "logits_kd", True)["temperature"] == 2.0
+    assert training_overrides("student_no_kd", True)["lr"] == 0.0004
+
+
+def test_objective_and_advanced_overlay_recipes_are_table_driven():
+    objective = objective_overlay_recipe("multitask")
+    advanced = advanced_overlay_recipe("marf_subset_training")
+
+    assert objective.dataset["occlusion_target"]["enabled"] is True
+    assert objective.dataset["position_target"]["normalize"] is True
+    assert objective.auxiliary_heads == {"occlusion": True, "position": True}
+    assert objective.early_stopping_metric == "val_multitask_loss"
+    assert advanced is not None
+    assert advanced.builder == "marf"
+    assert advanced.options["ablation"]["training"]["subset_training"]["enabled"] is True
 
 
 def test_virtual_image_radar_config_generator_keeps_compatibility_params():

@@ -6,9 +6,14 @@ import torch
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
+from kd_sensing.engine.modality_resolution import config_uses_gps, config_uses_lidar, config_uses_mmwave, resolve_enabled_modalities
 from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts
 from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
-from kd_sensing.engine.prediction_objectives import objective_requires_occlusion, objective_requires_position
+from kd_sensing.engine.prediction_objectives import (
+    objective_requires_occlusion,
+    objective_requires_position,
+    objective_runtime_metadata,
+)
 from kd_sensing.engine.run_metadata import dataset_run_metadata, throughput_run_metadata
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
@@ -34,8 +39,9 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
         recorded_splits = checkpoint_resolution.metadata["split_metadata"]
         if "train" in recorded_splits:
             split_metadata["train"] = recorded_splits["train"]
-    needs_train_gps = _evaluation_uses_gps(cfg) and "gps_scaler" not in dataset_kwargs
-    needs_train_lidar = _evaluation_uses_lidar(cfg) and "lidar_normalizer" not in dataset_kwargs
+    enabled_modalities = resolve_enabled_modalities(cfg)
+    needs_train_gps = config_uses_gps(cfg) and "gps_scaler" not in dataset_kwargs
+    needs_train_lidar = config_uses_lidar(cfg) and "lidar_normalizer" not in dataset_kwargs
     if _evaluation_uses_occlusion_target(cfg) and "occlusion_target_stats" not in dataset_kwargs:
         occlusion_target = cfg.get("data", {}).get("dataset", {}).get("occlusion_target", {})
         threshold = occlusion_target.get("threshold") if isinstance(occlusion_target, dict) else None
@@ -49,7 +55,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             "Position target evaluation with normalization requires a train-fitted position_target_scaler. "
             "Use a registry checkpoint with auxiliary target artifacts or disable data.dataset.position_target.normalize."
         )
-    if _evaluation_uses_mmwave(cfg) and _mmwave_normalization_enabled(cfg) and "mmwave_scaler" not in dataset_kwargs:
+    if config_uses_mmwave(cfg) and _mmwave_normalization_enabled(cfg) and "mmwave_scaler" not in dataset_kwargs:
         raise ValueError(
             "mmWave evaluation requires a train-fitted mmwave_scaler. "
             "Use a registry checkpoint with normalization metadata, provide a mmWave scaler artifact, "
@@ -120,6 +126,8 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             "checkpoint_resolution": checkpoint_resolution.to_dict(),
             "normalization_artifacts": normalization_artifacts,
             "throughput": throughput_metadata,
+            "prediction_objective": objective_runtime_metadata(cfg),
+            "enabled_modalities": list(enabled_modalities),
         },
     }
     with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
@@ -132,54 +140,6 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,
     }
-
-
-def _evaluation_uses_gps(cfg: dict) -> bool:
-    dataset_cfg = cfg.get("data", {}).get("dataset", {})
-    if dataset_cfg.get("use_gps", False):
-        return True
-    task = cfg.get("experiment", {}).get("task", "image")
-    if task == "gps":
-        return True
-    if task != "fusion":
-        return False
-    for role in ("student", "teacher"):
-        modalities = cfg.get("model", {}).get(role, {}).get("modalities")
-        if modalities and "gps" in modalities:
-            return True
-    return False
-
-
-def _evaluation_uses_lidar(cfg: dict) -> bool:
-    dataset_cfg = cfg.get("data", {}).get("dataset", {})
-    if dataset_cfg.get("use_lidar", False):
-        return True
-    task = cfg.get("experiment", {}).get("task", "image")
-    if task == "lidar":
-        return True
-    if task != "fusion":
-        return False
-    for role in ("student", "teacher"):
-        modalities = cfg.get("model", {}).get(role, {}).get("modalities")
-        if modalities and "lidar" in modalities:
-            return True
-    return False
-
-
-def _evaluation_uses_mmwave(cfg: dict) -> bool:
-    dataset_cfg = cfg.get("data", {}).get("dataset", {})
-    if dataset_cfg.get("use_mmwave", False):
-        return True
-    task = cfg.get("experiment", {}).get("task", "image")
-    if task == "mmwave":
-        return True
-    if task != "fusion":
-        return False
-    for role in ("student", "teacher"):
-        modalities = cfg.get("model", {}).get(role, {}).get("modalities")
-        if modalities and "mmwave" in modalities:
-            return True
-    return False
 
 
 def _mmwave_normalization_enabled(cfg: dict) -> bool:

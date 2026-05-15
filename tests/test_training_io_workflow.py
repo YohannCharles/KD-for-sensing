@@ -19,6 +19,7 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.io import safe_load_yaml  # noqa: E402
 from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
 import kd_sensing.data.datasets.deepsense6g as deepsense6g_module  # noqa: E402
+import kd_sensing.data.datasets.deepsense6g_targets as deepsense6g_targets  # noqa: E402
 import kd_sensing.data.transform_ops.io as io_transforms  # noqa: E402
 import kd_sensing.data.transform_ops.lidar as lidar_transforms  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
@@ -186,6 +187,66 @@ def test_deepsense_scene9_loads_only_enabled_modalities(
     for key in ("image", "radar", "gps", "lidar", "mmwave", "auxiliary_targets"):
         assert key in timings
         assert timings[key] >= 0.0
+
+
+def test_deepsense_target_provider_skips_disabled_target_resources(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "train_aux.csv"
+    _write_aux_training_csv(tmp_path, csv_path, prefix="train", future_max=[1.0, 5.0])
+
+    def fail_occlusion(*args, **kwargs):  # noqa: ANN001, ARG001
+        raise AssertionError("disabled occlusion target should not read mmWave power")
+
+    def fail_position(*args, **kwargs):  # noqa: ANN001, ARG001
+        raise AssertionError("disabled position target should not read future GPS resources")
+
+    monkeypatch.setattr(deepsense6g_targets, "finite_max_mmwave_power", fail_occlusion)
+    monkeypatch.setattr(deepsense6g_targets, "load_relative_xy_target_sequence", fail_position)
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=2,
+        enabled_modalities=["gps"],
+        gps_normalize=False,
+        occlusion_target=False,
+        position_target=False,
+    )
+    sample = dataset[0]
+
+    assert dataset.target_provider.occlusion_target_stats is None
+    assert "occlusion_label" not in sample
+    assert "position_target" not in sample
+    assert set(sample) == {"input_beam", "target_beam", "gps"}
+
+
+def test_deepsense_target_provider_outputs_target_shapes_and_dtypes(tmp_path: Path):
+    csv_path = tmp_path / "train_aux.csv"
+    _write_aux_training_csv(tmp_path, csv_path, prefix="train", future_max=[1.0, 5.0])
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=2,
+        enabled_modalities=["gps"],
+        gps_normalize=False,
+        occlusion_target={"enabled": True, "threshold_percentile": 50.0},
+        position_target={"enabled": True, "source": "future_gps_local_xy", "normalize": False},
+    )
+    sample = dataset[0]
+
+    assert dataset.target_provider.occlusion_target_stats is not None
+    assert sample["occlusion_label"].shape == (2,)
+    assert sample["occlusion_label"].dtype == torch.float32
+    assert sample["occlusion_valid"].shape == (2,)
+    assert sample["occlusion_valid"].dtype == torch.bool
+    assert sample["position_target"].shape == (2, 2)
+    assert sample["position_target"].dtype == torch.float32
+    assert sample["position_valid"].shape == (2,)
+    assert sample["position_valid"].dtype == torch.bool
 
 
 def test_create_samples_validates_only_enabled_modality_columns(tmp_path: Path):

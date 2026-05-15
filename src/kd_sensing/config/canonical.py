@@ -6,6 +6,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from kd_sensing.config.canonical_recipes import (
+    advanced_overlay_recipe,
+    available_advanced_overlay_names,
+    deep_merge as _deep_merge,
+    distillation_overrides,
+    objective_overlay_recipe,
+    training_overrides,
+)
 from kd_sensing.modalities import (
     MODALITY_ORDER,
     dataset_defaults_for_modalities,
@@ -78,8 +86,8 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
             "teacher": teacher_cfg,
             "student": student_cfg,
         },
-        "distillation": _distillation_overrides(slug, mode, image_radar),
-        "training": _training_overrides(mode, image_radar),
+        "distillation": distillation_overrides(slug, mode, image_radar),
+        "training": training_overrides(mode, image_radar),
         "output": {
             "run_name": name,
         },
@@ -92,34 +100,18 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
 
 
 def build_objective_fusion_config(slug: str, modalities: list[str], objective: str) -> dict[str, Any]:
+    recipe = objective_overlay_recipe(objective)
     name = f"{slug}_{objective}_{CANONICAL_OBJECTIVE_FUSION_MODE}"
     teacher_cfg = _fusion_teacher_baseline_model(modalities)
     student_cfg = _cls_token_transformer_fusion_model(modalities)
-    if objective in {"occlusion", "multitask"}:
-        student_cfg.setdefault("auxiliary_heads", {})["occlusion"] = True
-    if objective in {"position", "multitask"}:
-        student_cfg.setdefault("auxiliary_heads", {})["position"] = True
+    for head_name, enabled in recipe.auxiliary_heads.items():
+        student_cfg.setdefault("auxiliary_heads", {})[head_name] = bool(enabled)
     if "auxiliary_heads" in student_cfg:
         student_cfg["auxiliary_heads"]["enabled"] = True
 
     dataset = _dataset_overrides(modalities)
-    if objective in {"position", "multitask"}:
-        dataset.update(
-            {
-                "train_csv_name": "train_seqs_RA_GPS_LIDAR_POS.csv",
-                "test_csv_name": "test_seqs_RA_GPS_LIDAR_POS.csv",
-            }
-        )
-    if objective in {"occlusion", "multitask"}:
-        dataset["occlusion_target"] = {"enabled": True, "threshold_percentile": 20.0}
-    if objective in {"position", "multitask"}:
-        dataset["position_target"] = {
-            "enabled": True,
-            "source": "future_gps_local_xy",
-            "normalize": True,
-        }
+    dataset.update(deepcopy(recipe.dataset))
 
-    metric, mode = _objective_early_stopping(objective)
     cfg: dict[str, Any] = {
         "experiment": {
             "name": name,
@@ -133,10 +125,10 @@ def build_objective_fusion_config(slug: str, modalities: list[str], objective: s
             "student": student_cfg,
         },
         "distillation": {"type": "no_kd", "teacher_model_name": None},
-        "loss": _objective_loss_config(objective),
+        "loss": deepcopy(recipe.loss),
         "training": {
-            "early_stopping_metric": metric,
-            "early_stopping_mode": mode,
+            "early_stopping_metric": recipe.early_stopping_metric,
+            "early_stopping_mode": recipe.early_stopping_mode,
             "lr": 0.00075,
             "weight_decay": 0.0001,
         },
@@ -149,68 +141,21 @@ def build_advanced_fusion_overlay_config(stem: str) -> dict[str, Any] | None:
     if not stem.startswith("overlay_"):
         return None
     recipe = stem[len("overlay_") :]
-    builders = {
-        "g2d_lite": lambda: _g2d_overlay("lite", stem),
-        "g2d_global": lambda: _g2d_overlay("global", stem),
-        "g2d_horizon": lambda: _g2d_overlay("horizon_diagnostic", stem),
-        "craf_baseline": lambda: _craf_overlay(stem),
-        "craf_no_counterfactual": lambda: _craf_overlay(
-            stem,
-            {
-                "loss": {"gate_weight": 0.0},
-                "training": {"warmup_epochs": 0, "counterfactual": {"enabled": False, "weight": 0.0, "start_epoch": 0}},
-            },
-        ),
-        "craf_fixed_prior": lambda: _craf_overlay(
-            stem,
-            {
-                "model": {"student": {"reliability": {"gate_type": "fixed_prior", "use_dataset_prior": True}}},
-                "training": {"counterfactual": {"enabled": False, "weight": 0.0}},
-            },
-        ),
-        "marf_baseline": lambda: _marf_overlay(stem),
-        "marf_subset_training": lambda: _marf_overlay(
-            stem,
-            {
-                "training": {
-                    "subset_training": {
-                        "enabled": True,
-                        "modes": ["top_prior", "random_with_top_prior"],
-                        "max_subsets_per_batch": 2,
-                    }
-                },
-                "evaluation": {
-                    "modality_subsets": {
-                        "enabled": True,
-                        "subsets": ["all", "top_prior", "single_best_prior", "random_with_top_prior", "strong_only", "weak_only"],
-                    }
-                },
-            },
-        ),
-        "marf_no_residual": lambda: _marf_overlay(
-            stem,
-            {"model": {"student": {"residual_adapter": {"enabled": False}}}},
-        ),
-        "marf_no_prior_bias": lambda: _marf_overlay(
-            stem,
-            {"model": {"student": {"router": {"use_prior_bias": False}}}},
-        ),
-        "marf_no_subset_training": lambda: _marf_overlay(
-            stem,
-            {
-                "training": {"subset_training": {"enabled": False, "modes": []}},
-                "evaluation": {"modality_subsets": {"subsets": ["all", "top_prior", "single_best_prior", "strong_only", "weak_only"]}},
-            },
-        ),
-        "multitask_occlusion_position": lambda: _multitask_occlusion_position_overlay(stem),
-    }
-    builder = builders.get(recipe)
-    if builder is None:
+    overlay_recipe = advanced_overlay_recipe(recipe)
+    if overlay_recipe is None:
         raise ValueError(
             f"Unknown advanced fusion overlay '{stem}.yaml'. "
-            f"Available overlays: {sorted('overlay_' + key for key in builders)}."
+            f"Available overlays: {available_advanced_overlay_names()}."
         )
-    return builder()
+    if overlay_recipe.builder == "g2d":
+        return _g2d_overlay(str(overlay_recipe.options["mode"]), stem)
+    if overlay_recipe.builder == "craf":
+        return _craf_overlay(stem, deepcopy(overlay_recipe.options.get("ablation") or {}))
+    if overlay_recipe.builder == "marf":
+        return _marf_overlay(stem, deepcopy(overlay_recipe.options.get("ablation") or {}))
+    if overlay_recipe.builder == "multitask_occlusion_position":
+        return _multitask_occlusion_position_overlay(stem)
+    raise ValueError(f"Advanced overlay recipe '{recipe}' references unknown builder '{overlay_recipe.builder}'.")
 
 
 def _advanced_fusion_base(name: str) -> dict[str, Any]:
@@ -491,16 +436,6 @@ def _multitask_occlusion_position_overlay(name: str) -> dict[str, Any]:
     return cfg
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    result = {key: value for key, value in base.items()}
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
 def parse_fusion_config_stem(stem: str) -> tuple[str, list[str], str]:
     for suffix, mode in _FUSION_MODE_SUFFIXES:
         if stem.endswith(suffix):
@@ -587,34 +522,6 @@ def parse_objective_fusion_config_stem(stem: str) -> tuple[str, list[str], str] 
     else:
         modalities = list(modalities)
     return slug, list(modalities), objective
-
-
-def _objective_early_stopping(objective: str) -> tuple[str, str]:
-    mapping = {
-        "beam": ("val_adba", "max"),
-        "occlusion": ("val_occlusion_blocked_f1", "max"),
-        "position": ("val_position_rmse", "min"),
-        "multitask": ("val_multitask_loss", "min"),
-    }
-    return mapping[objective]
-
-
-def _objective_loss_config(objective: str) -> dict[str, Any]:
-    cfg: dict[str, Any] = {
-        "type": "focal_loss",
-        "alpha": 1,
-        "gamma": 2,
-        "beam_soft": {"enabled": False, "weight": 0.0},
-        "unimodal_aux": {"weight": 0.0},
-        "objective": {
-            "weights": {"beam": 1.0, "occlusion": 1.0, "position": 0.01},
-            "occlusion": {"pos_weight": "auto"},
-            "position": {"type": "mse"},
-        },
-    }
-    if objective in {"position", "multitask"}:
-        cfg["objective"]["weights"]["position"] = 1.0
-    return cfg
 
 
 def _is_fusion_config_path(path: Path) -> bool:
@@ -741,84 +648,3 @@ def _modular_lidar_model(*, num_layers: int) -> dict[str, Any]:
             },
         },
     }
-
-
-def _distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str, Any]:
-    if image_radar:
-        params = {
-            "teacher_no_kd": {
-                "type": "no_kd",
-                "teacher_model_name": None,
-                "temperature": 3.0,
-                "alpha": 0.4,
-                "alpha_warmup_epochs": 10,
-                "rkd_pairs_per_anchor": 4,
-                "rkd_distance_weight": 2.0,
-                "rkd_angle_weight": 2.0,
-            },
-            "student_no_kd": {
-                "type": "no_kd",
-                "teacher_model_name": None,
-                "temperature": 3.0,
-                "alpha": 0.4,
-                "alpha_warmup_epochs": 0,
-                "rkd_pairs_per_anchor": 4,
-                "rkd_distance_weight": 2.0,
-                "rkd_angle_weight": 2.0,
-            },
-            "logits_kd": {
-                "type": "logits_kd",
-                "teacher_model_name": "best.pth",
-                "temperature": 2.0,
-                "alpha": 0.4,
-                "alpha_warmup_epochs": 0,
-                "rkd_pairs_per_anchor": 4,
-                "rkd_distance_weight": 5.0,
-                "rkd_angle_weight": 5.0,
-            },
-            "rkd": {
-                "type": "rkd",
-                "teacher_model_name": "best.pth",
-                "temperature": 2.0,
-                "alpha": 0.3,
-                "alpha_warmup_epochs": 0,
-                "rkd_pairs_per_anchor": 4,
-                "rkd_distance_weight": 10.0,
-                "rkd_angle_weight": 10.0,
-            },
-        }
-        return params[mode]
-
-    cfg: dict[str, Any] = {"type": "no_kd", "teacher_model_name": None}
-    if mode in {"logits_kd", "rkd"}:
-        cfg.update(
-            {
-                "type": mode,
-                "temperature": 3.0,
-                "alpha": 0.4,
-                "alpha_warmup_epochs": 0,
-                "teacher_model_name": "best.pth",
-            }
-        )
-    if mode == "rkd":
-        cfg.update(
-            {
-                "rkd_pairs_per_anchor": 4,
-                "rkd_distance_weight": 10.0,
-                "rkd_angle_weight": 10.0,
-            }
-        )
-    return cfg
-
-
-def _training_overrides(mode: str, image_radar: bool) -> dict[str, Any]:
-    early_stopping = {"early_stopping_metric": "val_adba", "early_stopping_mode": "max"}
-    if not image_radar:
-        return {**early_stopping, "lr": 0.00075, "weight_decay": 0.0001}
-    params = {
-        "teacher_no_kd": {"lr": 0.00075, "weight_decay": 0.0001},
-        "student_no_kd": {"lr": 0.0004, "weight_decay": 0.0},
-        "logits_kd": {"lr": 0.00095, "weight_decay": 0.0},
-        "rkd": {"lr": 0.00095, "weight_decay": 0.0},
-    }
-    return {**early_stopping, **params[mode]}

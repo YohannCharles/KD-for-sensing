@@ -27,10 +27,15 @@ from kd_sensing.engine.optim import (
 )
 from kd_sensing.engine.prediction_objectives import (
     compute_prediction_loss,
-    default_primary_metric,
+    normalize_objective_metric,
+    objective_history_fields,
+    objective_metric_mode,
+    objective_optional_history_fields,
     objective_runtime_metadata,
+    objective_tensorboard_scalars,
     prepare_prediction_targets,
     resolve_prediction_objective,
+    validate_objective_metric_available,
 )
 from kd_sensing.engine.run_metadata import dataloaders_run_metadata, throughput_run_metadata
 from kd_sensing.engine.runtime import (
@@ -369,38 +374,14 @@ def _write_tensorboard_scalars(
 
     writer.add_scalar("loss/train", history["train_loss"][-1], step)
     writer.add_scalar("loss/train_task", history["train_task_loss"][-1], step)
-    _add_latest_scalar(writer, "loss/train_objective", history, "train_objective_loss", step)
     writer.add_scalar("loss/train_distill", history["train_distill_loss"][-1], step)
     writer.add_scalar("loss/val", history["val_loss"][-1], step)
-    _add_latest_scalar(writer, "objective/val_primary_metric", history, "val_primary_metric", step)
-    _write_tensorboard_beam_scalars(writer, history, step, objective=objective)
+    for tag, history_key in objective_tensorboard_scalars(objective):
+        _add_latest_scalar(writer, tag, history, history_key, step)
     if _legacy_accuracy_tags_enabled(tensorboard_cfg):
         _write_tensorboard_legacy_accuracy_scalars(writer, history, step)
     writer.add_scalar("learning_rate/main", history["learning_rates"][-1], step)
-    _add_latest_scalar(writer, "loss/train_beam_soft", history, "train_beam_soft_loss", step)
-    _add_latest_scalar(writer, "loss/train_unimodal_aux", history, "train_unimodal_loss", step)
-    _add_latest_scalar(writer, "loss/train_counterfactual_gate", history, "train_counterfactual_loss", step)
-    _add_latest_scalar(writer, "loss/train_prior_regularization", history, "train_prior_regularization_loss", step)
-    _add_latest_scalar(writer, "loss/train_reliability_kd", history, "train_reliability_kd_loss", step)
-    _add_latest_scalar(writer, "loss/multitask_total", history, "train_multitask_loss", step)
-    _add_latest_scalar(writer, "loss/val_multitask_total", history, "val_multitask_loss", step)
-    _add_latest_scalar(writer, "loss/occlusion", history, "train_occlusion_loss", step)
-    _add_latest_scalar(writer, "loss/position", history, "train_position_loss", step)
-    _add_latest_scalar(writer, "occlusion/accuracy", history, "val_occlusion_accuracy", step)
-    _add_latest_scalar(writer, "occlusion/blocked_f1", history, "val_occlusion_blocked_f1", step)
-    _add_latest_scalar(writer, "position/rmse", history, "val_position_rmse", step)
-    _add_latest_scalar(writer, "position/mae", history, "val_position_mae", step)
     writer.flush()
-
-
-def _write_tensorboard_beam_scalars(writer, history: dict, step: int, *, objective: str) -> None:
-    if objective not in {"beam", "multitask"}:
-        return
-    _add_latest_scalar(writer, "beam/accuracy_train", history, "train_acc", step)
-    _add_latest_scalar(writer, "beam/accuracy_val", history, "val_acc", step)
-    _add_latest_scalar(writer, "beam/val_atop3", history, "val_atop3", step)
-    _add_latest_scalar(writer, "beam/val_atop5", history, "val_atop5", step)
-    _add_latest_scalar(writer, "beam/val_adba", history, "val_adba", step)
 
 
 def _write_tensorboard_legacy_accuracy_scalars(writer, history: dict, step: int) -> None:
@@ -478,67 +459,12 @@ def _aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
     }
 
 
-_EARLY_STOPPING_METRIC_ALIASES = {
-    "adba": "val_adba",
-    "dba": "val_adba",
-    "val_adba": "val_adba",
-    "val_dba": "val_adba",
-    "dba/val_adba": "val_adba",
-    "beam/adba": "val_adba",
-    "beam/dba": "val_adba",
-    "beam/val_adba": "val_adba",
-    "beam/val_dba": "val_adba",
-    "top1": "val_acc",
-    "val_top1": "val_acc",
-    "val_acc": "val_acc",
-    "val_acc_top1": "val_acc",
-    "top1_val_acc": "val_acc",
-    "accuracy/val": "val_acc",
-    "accuracy/val_top1": "val_acc",
-    "beam/accuracy_val": "val_acc",
-    "beam/val_top1": "val_acc",
-    "beam/val_acc": "val_acc",
-    "val/acc_top1": "val_acc",
-    "val/top1": "val_acc",
-    "loss": "val_loss",
-    "val_loss": "val_loss",
-    "loss/val": "val_loss",
-    "occlusion": "val_occlusion_blocked_f1",
-    "occlusion_f1": "val_occlusion_blocked_f1",
-    "blocked_f1": "val_occlusion_blocked_f1",
-    "val_occlusion_blocked_f1": "val_occlusion_blocked_f1",
-    "occlusion/blocked_f1": "val_occlusion_blocked_f1",
-    "position": "val_position_rmse",
-    "position_rmse": "val_position_rmse",
-    "val_position_rmse": "val_position_rmse",
-    "position/rmse": "val_position_rmse",
-    "multitask": "val_multitask_loss",
-    "multitask_loss": "val_multitask_loss",
-    "val_multitask_loss": "val_multitask_loss",
-    "loss/multitask_total": "val_multitask_loss",
-}
-_MAX_EARLY_STOPPING_METRICS = {"val_adba", "val_acc", "val_occlusion_blocked_f1"}
-_MIN_EARLY_STOPPING_METRICS = {"val_loss", "val_position_rmse", "val_multitask_loss"}
-
-
 def _normalize_early_stopping_metric(metric: object, *, objective: str = "beam") -> str:
-    default_metric, _ = default_primary_metric(objective)
-    raw = default_metric if metric is None else str(metric).strip()
-    key = raw.lower().replace("-", "_")
-    normalized = _EARLY_STOPPING_METRIC_ALIASES.get(key, key)
-    if normalized not in _MAX_EARLY_STOPPING_METRICS | _MIN_EARLY_STOPPING_METRICS:
-        supported = ", ".join(sorted(_EARLY_STOPPING_METRIC_ALIASES))
-        raise ValueError(f"Unsupported early stopping metric '{raw}'. Supported aliases: {supported}.")
-    return normalized
+    return normalize_objective_metric(metric, objective=objective)
 
 
 def _resolve_early_stopping_mode(metric: str, mode: object | None) -> str:
-    if mode is None:
-        return "min" if metric in _MIN_EARLY_STOPPING_METRICS else "max"
-    normalized = str(mode).strip().lower()
-    if normalized not in {"min", "max"}:
-        raise ValueError(f"training.early_stopping_mode must be 'min' or 'max', got '{mode}'.")
-    return normalized
+    return objective_metric_mode(metric, mode)
 
 
 def _configure_early_stopping(training_cfg: dict, objective: str = "beam") -> tuple[str, str]:
@@ -583,35 +509,12 @@ def _early_stopping_metric_value(epoch_log: dict, metric: str) -> float:
 
 
 def _validate_early_stopping_source_available(val_metrics: dict, metric: str) -> None:
-    available = _available_early_stopping_metrics(val_metrics)
-    if metric in available:
-        return
-    objective = val_metrics.get("objective", {}).get("name") if isinstance(val_metrics.get("objective"), dict) else None
-    objective_text = f" for experiment.objective='{objective}'" if objective else ""
-    available_text = ", ".join(sorted(available)) if available else "none"
-    if metric == "val_adba":
-        reason = " because DBA/ADBA was not produced"
-    else:
-        reason = ""
-    raise ValueError(
-        f"Early stopping metric '{metric}' is not available in validation metrics{objective_text}{reason}. "
-        f"Available metrics: {available_text}. Configure training.early_stopping_metric to a metric produced "
-        "by the current objective."
-    )
+    validate_objective_metric_available(val_metrics, metric)
 
 
 def _available_early_stopping_metrics(val_metrics: dict) -> set[str]:
-    available = set(val_metrics.get("available_metrics", [])) if isinstance(val_metrics.get("available_metrics"), list) else set()
-    if "loss" in val_metrics:
-        available.add("val_loss")
-    if "topk" in val_metrics and "1" in val_metrics.get("topk", {}):
-        available.add("val_acc")
-    if "dba" in val_metrics:
-        available.add("val_adba")
-    for metric in ("val_occlusion_blocked_f1", "val_position_rmse", "val_multitask_loss"):
-        if _finite_float_or_none(val_metrics.get(metric)) is not None:
-            available.add(metric)
-    return available
+    available = val_metrics.get("available_metrics", [])
+    return set(available) if isinstance(available, list) else set()
 
 
 def _legacy_early_stopping_value(checkpoint: dict, metric: str, default: float) -> float:
@@ -780,33 +683,7 @@ def train(cfg: dict) -> dict:
     best_early_stopping_epoch = 0
     registry_checkpoint = None
     epochs_without_improvement = 0
-    history = {
-        "train_loss": [],
-        "train_task_loss": [],
-        "train_objective_loss": [],
-        "train_distill_loss": [],
-        "train_beam_soft_loss": [],
-        "train_unimodal_loss": [],
-        "train_counterfactual_loss": [],
-        "train_prior_regularization_loss": [],
-        "train_reliability_kd_loss": [],
-        "train_occlusion_loss": [],
-        "train_position_loss": [],
-        "train_multitask_loss": [],
-        "train_acc": [],
-        "val_loss": [],
-        "val_acc": [],
-        "val_atop3": [],
-        "val_atop5": [],
-        "val_adba": [],
-        "val_occlusion_accuracy": [],
-        "val_occlusion_blocked_f1": [],
-        "val_position_rmse": [],
-        "val_position_mae": [],
-        "val_multitask_loss": [],
-        "val_primary_metric": [],
-        "learning_rates": [],
-    }
+    history = {field: [] for field in objective_history_fields(objective, include_compat=True)}
     epoch_logs = []
 
     tensorboard_writer = _create_tensorboard_writer(cfg, run_dir)
@@ -1465,16 +1342,7 @@ def _training_outputs_payload(
     return payload
 
 
-_OPTIONAL_HISTORY_KEYS = {
-    "train_occlusion_loss",
-    "train_position_loss",
-    "train_multitask_loss",
-    "val_occlusion_accuracy",
-    "val_occlusion_blocked_f1",
-    "val_position_rmse",
-    "val_position_mae",
-    "val_multitask_loss",
-}
+_OPTIONAL_HISTORY_KEYS = objective_optional_history_fields()
 
 
 def _history_array(key: str, values: list) -> np.ndarray:
