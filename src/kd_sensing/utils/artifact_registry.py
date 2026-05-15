@@ -147,6 +147,8 @@ def archive_best_checkpoint(
     run_dir: str | Path,
     split_metadata: dict[str, Any] | None = None,
     normalization_artifacts: dict[str, Any] | None = None,
+    objective_metric: dict[str, Any] | None = None,
+    task_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not registry_enabled(cfg):
         return None
@@ -182,6 +184,9 @@ def archive_best_checkpoint(
         "artifact_role": role,
         "metric_name": registry_config(cfg).get("metric", "val_top1"),
         "metric_value": float(val_top1),
+        "objective": cfg.get("experiment", {}).get("objective", "beam"),
+        "objective_metric": objective_metric or {},
+        "task_metrics": task_metrics or {},
         "epoch": int(epoch),
         "task": cfg.get("experiment", {}).get("task"),
         "enabled_modalities": _enabled_modalities_from_cfg(cfg),

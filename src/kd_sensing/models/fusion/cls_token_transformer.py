@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.models.auxiliary_heads import resolve_auxiliary_heads
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image import ImageFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
@@ -35,6 +36,7 @@ class CLSTokenTransformerFusionNet(nn.Module):
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        auxiliary_heads: bool | dict[str, Any] | None = None,
         **_: Any,
     ):
         super().__init__()
@@ -96,6 +98,13 @@ class CLSTokenTransformerFusionNet(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=int(num_layers))
         self.output_norm = nn.LayerNorm(self.d_model)
         self.prediction_head = nn.Linear(self.d_model, self.num_pred * self.num_classes)
+        self.auxiliary_heads = resolve_auxiliary_heads(auxiliary_heads)
+        self.occlusion_head = (
+            nn.Linear(self.d_model, self.num_pred) if self.auxiliary_heads["occlusion"] else None
+        )
+        self.position_head = (
+            nn.Linear(self.d_model, self.num_pred * 2) if self.auxiliary_heads["position"] else None
+        )
 
     def forward(
         self,
@@ -162,7 +171,7 @@ class CLSTokenTransformerFusionNet(nn.Module):
         input_features = _available_timewise_mean(diagnostic_tokens, effective_mask)
         output_features = cls_hidden.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous()
 
-        return {
+        output: dict[str, torch.Tensor | tuple[str, ...]] = {
             "logits": logits,
             "input_features": input_features,
             "output_features": output_features,
@@ -174,6 +183,11 @@ class CLSTokenTransformerFusionNet(nn.Module):
             "serialized_token_padding_mask": flat_padding_mask,
             "cls_features": cls_hidden,
         }
+        if self.occlusion_head is not None:
+            output["occlusion_logits"] = self.occlusion_head(cls_hidden).view(batch_size, self.num_pred)
+        if self.position_head is not None:
+            output["position"] = self.position_head(cls_hidden).view(batch_size, self.num_pred, 2)
+        return output
 
     def _embed_modality_tokens(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, modality_count, seq_len, _ = features.shape

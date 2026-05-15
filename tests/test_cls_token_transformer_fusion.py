@@ -48,6 +48,41 @@ def test_cls_token_transformer_five_modality_forward_shapes_and_diagnostics():
     assert gps_feature.shape == (2, 16)
 
 
+def test_cls_token_transformer_auxiliary_heads_are_optional_and_mask_compatible():
+    default_model = _build_model(["gps", "mmwave"])
+    aux_model = MODELS.build(
+        {
+            "type": "cls_token_transformer_fusion",
+            "modalities": ["gps", "mmwave"],
+            "feature_size": 16,
+            "d_model": 16,
+            "num_classes": 8,
+            "num_pred": 2,
+            "num_heads": 4,
+            "num_layers": 1,
+            "max_seq_len": 4,
+            "gps_input_size": 3,
+            "mmwave_input_size": 64,
+            "auxiliary_heads": {"enabled": True, "occlusion": True, "position": True},
+        }
+    )
+    inputs = _inputs_for(["gps", "mmwave"], batch_size=2, seq_len=3)
+
+    with torch.no_grad():
+        default_output = default_model(**inputs)
+        aux_output = aux_model(**inputs, force_modality_mask=torch.tensor([[True, False], [False, True]]))
+
+    assert "occlusion_logits" not in default_output
+    assert "position" not in default_output
+    assert aux_output["logits"].shape == (2, 2, 8)
+    assert aux_output["occlusion_logits"].shape == (2, 2)
+    assert aux_output["position"].shape == (2, 2, 2)
+    adapted = adapt_model_output(aux_output)
+    assert adapted.diagnostics["occlusion_logits"].shape == (2, 2)
+    assert adapted.diagnostics["position"].shape == (2, 2, 2)
+    assert adapted.diagnostics["effective_modality_mask"].tolist() == [[True, False], [False, True]]
+
+
 @pytest.mark.parametrize(
     "modalities",
     [

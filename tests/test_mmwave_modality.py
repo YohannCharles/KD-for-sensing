@@ -18,14 +18,20 @@ from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E40
 from kd_sensing.data.transform_ops.mmwave import (  # noqa: E402
     MmWaveStandardScaler,
     build_mmwave_db_features,
+    fit_occlusion_threshold_from_paths,
     load_mmwave_feature_sequence,
+    max_mmwave_power,
     read_mmwave_power_vector,
 )
 from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_mmwave_inputs  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import (  # noqa: E402
+    CLSTokenTransformerFusionNet,
+    FusionTeacherModalityNet,
+    FusionStudentModalityNet,
+)
 from kd_sensing.models.mmwave import (  # noqa: E402
     MmWaveFeatureExtractor,
     MmWaveModalityNet,
@@ -72,6 +78,25 @@ def test_mmwave_reader_db_features_and_dimension_errors(tmp_path: Path):
     assert sequence.shape == (1, 64)
     with pytest.raises(ValueError, match="contains 63 values; expected 64"):
         read_mmwave_power_vector(tmp_path, "bad.txt")
+
+
+def test_mmwave_occlusion_threshold_helpers_validate_power_vectors(tmp_path: Path):
+    low = np.ones(64, dtype=np.float32)
+    high = np.full(64, 10.0, dtype=np.float32)
+    bad = np.ones(64, dtype=np.float32)
+    bad[0] = np.nan
+    np.savetxt(tmp_path / "low.txt", low)
+    np.savetxt(tmp_path / "high.txt", high)
+    np.savetxt(tmp_path / "bad.txt", bad)
+
+    assert max_mmwave_power(tmp_path, "high.txt") == pytest.approx(10.0)
+    stats = fit_occlusion_threshold_from_paths(tmp_path, ["low.txt", "high.txt"], threshold_percentile=50.0)
+
+    assert stats.threshold == pytest.approx(5.5)
+    assert stats.sample_count == 2
+    assert stats.positive_count == 1
+    with pytest.raises(ValueError, match="NaN or Inf.*64-beam power vector"):
+        max_mmwave_power(tmp_path, "bad.txt")
 
 
 def test_mmwave_scaler_and_dataset_reuse_train_split_only(tmp_path: Path):
@@ -123,6 +148,55 @@ def test_mmwave_scaler_and_dataset_reuse_train_split_only(tmp_path: Path):
             use_mmwave=True,
             mmwave_normalize=True,
         )
+
+
+def test_deepsense_dataset_returns_auxiliary_targets_and_reuses_artifacts(tmp_path: Path):
+    train_csv = tmp_path / "train_aux.csv"
+    test_csv = tmp_path / "test_aux.csv"
+    _write_multitask_sequence_fixture(tmp_path, train_csv, prefix="train", seq_index=1, future_max=[1.0, 2.0, 10.0])
+    _write_multitask_sequence_fixture(tmp_path, test_csv, prefix="test", seq_index=2, future_max=[0.5, 4.0, 12.0])
+
+    train_dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(train_csv),
+        split="train",
+        seq_len=8,
+        num_pred=3,
+        enabled_modalities=["gps"],
+        use_gps=True,
+        gps_normalize=False,
+        occlusion_target={"enabled": True, "threshold_percentile": 50.0},
+        position_target={"enabled": True, "source": "future_gps_local_xy", "normalize": True},
+    )
+    test_dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(test_csv),
+        split="test",
+        seq_len=8,
+        num_pred=3,
+        enabled_modalities=["gps"],
+        use_gps=True,
+        gps_normalize=False,
+        occlusion_target={"enabled": True, "threshold_percentile": 50.0},
+        occlusion_target_stats=train_dataset.occlusion_target_stats,
+        position_target={"enabled": True, "source": "future_gps_local_xy", "normalize": True},
+        position_target_scaler=train_dataset.position_target_scaler,
+    )
+
+    sample = train_dataset[0]
+    test_sample = test_dataset[0]
+    artifacts = save_normalization_artifacts({"train": _Loader(train_dataset)}, tmp_path / "run")
+
+    assert sample["occlusion_label"].shape == (3,)
+    assert sample["occlusion_valid"].tolist() == [True, True, True]
+    assert sample["occlusion_label"].tolist() == [1.0, 0.0, 0.0]
+    assert sample["position_target"].shape == (3, 2)
+    assert sample["position_valid"].tolist() == [True, True, True]
+    assert test_dataset.occlusion_target_stats is train_dataset.occlusion_target_stats
+    assert test_dataset.position_target_scaler is train_dataset.position_target_scaler
+    assert test_sample["position_target"].shape == (3, 2)
+    assert Path(artifacts["occlusion_target_stats"]).exists()
+    assert Path(artifacts["position_target_scaler"]).exists()
 
 
 def test_mmwave_dataset_keeps_old_csv_compatible_when_disabled(tmp_path: Path):
@@ -321,10 +395,10 @@ def test_mmwave_fusion_configs_build(config_path: str):
             if "lidar" in cfg["model"]["student"]["modalities"]:
                 assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
         else:
-            assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+            assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
     else:
         assert isinstance(teacher, FusionTeacherModalityNet)
-        assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+        assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_mmwave_sequence_fixture(root: Path, csv_path: Path, *, prefix: str, seq_index: int) -> None:
@@ -354,6 +428,56 @@ def _write_mmwave_sequence_fixture(root: Path, csv_path: Path, *, prefix: str, s
         + ["seq_index"]
     )
     values = mmwave_paths + beam_paths + future_paths + [str(seq_index)]
+    csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+
+def _write_multitask_sequence_fixture(
+    root: Path,
+    csv_path: Path,
+    *,
+    prefix: str,
+    seq_index: int,
+    future_max: list[float],
+) -> None:
+    gps_paths = []
+    bs_gps_paths = []
+    beam_paths = []
+    future_paths = []
+    future_gps_paths = []
+    future_bs_gps_paths = []
+    for idx in range(8):
+        gps_name = f"{prefix}_gps_{idx}.txt"
+        bs_name = f"{prefix}_bs_{idx}.txt"
+        beam_name = f"{prefix}_beam_{idx}.txt"
+        np.savetxt(root / gps_name, np.asarray([42.0 + idx * 1e-5, -71.0], dtype=np.float32))
+        np.savetxt(root / bs_name, np.asarray([42.0, -71.0], dtype=np.float32))
+        beam = np.zeros(64, dtype=np.float32)
+        beam[idx] = 1.0
+        np.savetxt(root / beam_name, beam)
+        gps_paths.append(gps_name)
+        bs_gps_paths.append(bs_name)
+        beam_paths.append(beam_name)
+    for idx, max_power in enumerate(future_max):
+        future_name = f"{prefix}_future_{idx}.txt"
+        gps_name = f"{prefix}_future_gps_{idx}.txt"
+        bs_name = f"{prefix}_future_bs_{idx}.txt"
+        future = np.linspace(0.1, float(max_power), 64, dtype=np.float32)
+        np.savetxt(root / future_name, future)
+        np.savetxt(root / gps_name, np.asarray([42.0001 + idx * 1e-5, -71.0], dtype=np.float32))
+        np.savetxt(root / bs_name, np.asarray([42.0, -71.0], dtype=np.float32))
+        future_paths.append(future_name)
+        future_gps_paths.append(gps_name)
+        future_bs_gps_paths.append(bs_name)
+    columns = (
+        [f"gps{i}" for i in range(1, 9)]
+        + [f"bs_gps{i}" for i in range(1, 9)]
+        + [f"beam{i}" for i in range(1, 9)]
+        + [f"future_beam{i}" for i in range(1, 4)]
+        + [f"future_gps{i}" for i in range(1, 4)]
+        + [f"future_bs_gps{i}" for i in range(1, 4)]
+        + ["seq_index"]
+    )
+    values = gps_paths + bs_gps_paths + beam_paths + future_paths + future_gps_paths + future_bs_gps_paths + [str(seq_index)]
     csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
 
 

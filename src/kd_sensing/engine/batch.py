@@ -32,6 +32,45 @@ def prepare_labels(
     return label_downsampled[:, :num_pred].to(device, non_blocking=non_blocking)
 
 
+def prepare_auxiliary_targets(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> dict[str, torch.Tensor]:
+    targets: dict[str, torch.Tensor] = {}
+    if "occlusion_label" in batch:
+        occlusion = batch["occlusion_label"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        if occlusion.ndim != 2:
+            raise ValueError(f"occlusion_label must have shape [B, H], got {tuple(occlusion.shape)}.")
+        targets["occlusion_label"] = occlusion[:, :num_pred]
+        valid = batch.get("occlusion_valid")
+        if valid is None:
+            valid_t = torch.ones_like(targets["occlusion_label"], dtype=torch.bool, device=device)
+        else:
+            valid_t = valid.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+            if valid_t.ndim != 2:
+                raise ValueError(f"occlusion_valid must have shape [B, H], got {tuple(valid_t.shape)}.")
+            valid_t = valid_t[:, :num_pred]
+        targets["occlusion_valid"] = valid_t
+    if "position_target" in batch:
+        position = batch["position_target"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        if position.ndim != 3 or position.shape[-1] != 2:
+            raise ValueError(f"position_target must have shape [B, H, 2], got {tuple(position.shape)}.")
+        targets["position_target"] = position[:, :num_pred, :]
+        valid = batch.get("position_valid")
+        if valid is None:
+            valid_t = torch.ones(position.shape[:2], dtype=torch.bool, device=device)
+        else:
+            valid_t = valid.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+            if valid_t.ndim != 2:
+                raise ValueError(f"position_valid must have shape [B, H], got {tuple(valid_t.shape)}.")
+            valid_t = valid_t[:, :num_pred]
+        targets["position_valid"] = valid_t
+    return targets
+
+
 def prepare_image_inputs(
     batch: dict[str, torch.Tensor],
     *,

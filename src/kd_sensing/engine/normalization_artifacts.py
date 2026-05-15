@@ -5,7 +5,13 @@ from typing import Any
 
 from torch.utils.data import DataLoader
 
-from kd_sensing.data.transform_ops.normalization import LidarBEVNormalizer, MmWaveStandardScaler, load_gps_scaler
+from kd_sensing.data.transform_ops.normalization import (
+    LidarBEVNormalizer,
+    MmWaveStandardScaler,
+    OcclusionTargetStats,
+    PositionTargetStandardScaler,
+    load_gps_scaler,
+)
 
 
 def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: str | Path) -> dict[str, str]:
@@ -32,6 +38,22 @@ def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: st
         mmwave_path = artifact_dir / "mmwave_scaler.npz"
         mmwave_scaler.save(mmwave_path)
         artifacts["mmwave_scaler"] = str(mmwave_path)
+
+    occlusion_stats = getattr(train_dataset, "occlusion_target_stats", None)
+    if occlusion_stats is not None and getattr(train_dataset, "occlusion_target_enabled", False):
+        occlusion_path = artifact_dir / "occlusion_target_stats.json"
+        occlusion_stats.save(occlusion_path)
+        artifacts["occlusion_target_stats"] = str(occlusion_path)
+
+    position_scaler = getattr(train_dataset, "position_target_scaler", None)
+    if (
+        position_scaler is not None
+        and getattr(train_dataset, "position_target_enabled", False)
+        and getattr(train_dataset, "position_target_normalize", False)
+    ):
+        position_path = artifact_dir / "position_target_scaler.npz"
+        position_scaler.save(position_path)
+        artifacts["position_target_scaler"] = str(position_path)
     return artifacts
 
 
@@ -58,6 +80,18 @@ def load_normalization_artifacts(metadata: dict[str, Any] | None) -> dict[str, A
         if not path.exists():
             raise FileNotFoundError(f"mmWave scaler artifact not found: {path}")
         dataset_kwargs["mmwave_scaler"] = MmWaveStandardScaler.load(path)
+    occlusion_path = artifacts.get("occlusion_target_stats")
+    if occlusion_path:
+        path = Path(occlusion_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Occlusion target stats artifact not found: {path}")
+        dataset_kwargs["occlusion_target_stats"] = OcclusionTargetStats.load(path)
+    position_path = artifacts.get("position_target_scaler")
+    if position_path:
+        path = Path(position_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Position target scaler artifact not found: {path}")
+        dataset_kwargs["position_target_scaler"] = PositionTargetStandardScaler.load(path)
     return dataset_kwargs
 
 

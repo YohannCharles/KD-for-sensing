@@ -30,16 +30,23 @@ from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
 from kd_sensing.engine.data_factory import (  # noqa: E402
     build_dataset,
     build_dataloader_kwargs,
+    shutdown_dataloader_workers,
 )
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
 from kd_sensing.engine.run_metadata import dataset_run_metadata, throughput_run_metadata  # noqa: E402
+from kd_sensing.engine.throughput_recommendations import (  # noqa: E402
+    lidar_cache_coverage,
+    recommend_parallel_training,
+)
 from kd_sensing.engine.trainer import (  # noqa: E402
     _configure_early_stopping,
     _early_stopping_improved,
     _early_stopping_metric_value,
+    _training_outputs_payload,
     _validate_early_stopping_source_available,
+    _write_tensorboard_scalars,
     create_eval_run_dir,
     create_run_dir,
     train,
@@ -172,9 +179,13 @@ def test_deepsense_scene9_loads_only_enabled_modalities(
         lidar_normalize=False,
     )
     sample = dataset[0]
+    timings = dataset.profile_getitem_components(0)
 
     assert calls == expected_calls
     assert set(sample) == expected_fields | {"input_beam", "target_beam"}
+    for key in ("image", "radar", "gps", "lidar", "mmwave", "auxiliary_targets"):
+        assert key in timings
+        assert timings[key] >= 0.0
 
 
 def test_create_samples_validates_only_enabled_modality_columns(tmp_path: Path):
@@ -352,6 +363,53 @@ def test_dataloader_kwargs_filter_worker_only_options():
     assert multi_worker["prefetch_factor"] == 3
 
 
+def test_dataloader_kwargs_support_split_specific_worker_options():
+    loader_cfg = {
+        "train_batch_size": 8,
+        "test_batch_size": 2,
+        "num_workers": 4,
+        "persistent_workers": True,
+        "prefetch_factor": 2,
+        "test_num_workers": 1,
+        "test_persistent_workers": False,
+        "test_prefetch_factor": 1,
+        "train": {"num_workers": 3, "persistent_workers": True, "prefetch_factor": 4},
+    }
+
+    train_kwargs = build_dataloader_kwargs(loader_cfg, split="train")
+    test_kwargs = build_dataloader_kwargs(loader_cfg, split="test")
+
+    assert train_kwargs["batch_size"] == 8
+    assert train_kwargs["num_workers"] == 3
+    assert train_kwargs["persistent_workers"] is True
+    assert train_kwargs["prefetch_factor"] == 4
+    assert test_kwargs["batch_size"] == 2
+    assert test_kwargs["num_workers"] == 1
+    assert test_kwargs["persistent_workers"] is False
+    assert test_kwargs["prefetch_factor"] == 1
+
+
+def test_shutdown_dataloader_workers_clears_persistent_iterator():
+    class FakeIterator:
+        def __init__(self):
+            self.closed = False
+
+        def _shutdown_workers(self):
+            self.closed = True
+
+    class FakeLoader:
+        def __init__(self):
+            self._iterator = FakeIterator()
+
+    loader = FakeLoader()
+    iterator = loader._iterator
+
+    shutdown_dataloader_workers(loader)
+
+    assert iterator.closed is True
+    assert loader._iterator is None
+
+
 def test_cache_policy_resolves_lidar_policy_and_rejects_removed_image_override():
     cfg = {
         "data": {"cache": {"policy": "read_only", "lidar": {"policy": "auto"}}, "dataset": {}},
@@ -370,6 +428,53 @@ def test_cache_policy_resolves_lidar_policy_and_rejects_removed_image_override()
     assert resolved["lidar_cache_policy"] == "auto"
     with pytest.raises(ValueError, match="Image cache policy has been removed"):
         apply_cache_policy({}, {"data": {"cache": {"policy": "auto", "image": {"policy": "auto"}}}}, ("image",))
+
+
+def test_parallel_training_recommendation_outputs_background_overrides():
+    cfg = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml")
+
+    result = recommend_parallel_training(
+        cfg,
+        config_path="configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml",
+        parallel_runs=4,
+        cpu_count=32,
+        check_cache=False,
+    )
+
+    assert result["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
+    assert "output.progress.enabled=false" in result["overrides"]
+    assert "data.dataloader.test_persistent_workers=false" in result["overrides"]
+    assert "data.cache.policy=auto" in result["overrides"]
+    assert result["recommendations"]["prefetch_factor"] == 1
+    assert "training.amp.enabled=true" in result["optional_overrides"]
+    assert result["commands"]["train"].startswith("conda run -n kd_mm_beam python scripts/train.py")
+
+
+def test_parallel_training_recommendation_warns_when_lidar_cache_is_cold(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    test_csv = tmp_path / "test.csv"
+    _write_minimal_csv(train_csv, camera=False, radar=False, gps=False, lidar=True)
+    _write_minimal_csv(test_csv, camera=False, radar=False, gps=False, lidar=True)
+    cfg = load_config(
+        ROOT / "configs/lidar/student_no_kd.yaml",
+        [
+            f"data.dataset.data_root={tmp_path}",
+            f"data.dataset.train_csv_name={train_csv.name}",
+            f"data.dataset.test_csv_name={test_csv.name}",
+            "data.dataset.seq_len=1",
+            "data.dataset.num_pred=1",
+            "data.dataset.lidar_cache_dir=lidar_cache",
+        ],
+    )
+
+    coverage = lidar_cache_coverage(cfg)
+    result = recommend_parallel_training(cfg, parallel_runs=4, cpu_count=32)
+
+    assert coverage["coverage"] == 0.0
+    assert coverage["missing"] == 1
+    assert "data.cache.policy=auto" in result["overrides"]
+    assert result["cache"]["lidar"]["status"] == "cold"
+    assert result["cache"]["prewarm_command"] is not None
 
 
 def test_cache_policy_non_relevant_modalities_are_disabled():
@@ -553,6 +658,9 @@ def test_throughput_metadata_includes_cache_policy():
     assert metadata["cache"]["image"]["input"] == "rgb_imagenet"
     assert metadata["cache"]["lidar"]["policy"] == "auto"
     assert metadata["cache"]["enabled_modalities"] == ["image", "lidar"]
+    assert metadata["dataloader_splits"]["train"]["batch_size"] == 3
+    assert metadata["dataloader_splits"]["test"]["persistent_workers"] is False
+    assert metadata["progress"]["enabled"] is True
 
 
 def test_fixed_run_name_defaults_to_unique_directory_and_resume_reuses(tmp_path: Path):
@@ -631,7 +739,12 @@ def test_scene_grouped_eval_dir_and_explicit_eval_output(tmp_path: Path):
     [
         ("val_adba", "val_adba", "max"),
         ("dba", "val_adba", "max"),
+        ("dba/val_adba", "val_adba", "max"),
+        ("beam/val_adba", "val_adba", "max"),
         ("top1_val_acc", "val_acc", "max"),
+        ("accuracy/val", "val_acc", "max"),
+        ("beam/accuracy_val", "val_acc", "max"),
+        ("beam/val_top1", "val_acc", "max"),
         ("val/acc_top1", "val_acc", "max"),
         ("val_loss", "val_loss", "min"),
     ],
@@ -658,6 +771,11 @@ def test_early_stopping_improvement_direction_and_missing_dba_error():
         _early_stopping_metric_value({"val_acc": 0.25}, "val_adba")
     with pytest.raises(ValueError, match="DBA/ADBA"):
         _validate_early_stopping_source_available({"loss": 1.0, "topk": {}}, "val_adba")
+    with pytest.raises(ValueError, match="val_position_rmse.*not available.*Available metrics"):
+        _validate_early_stopping_source_available(
+            {"loss": 1.0, "topk": {"1": [0.25]}, "dba": [0.7], "objective": {"name": "beam"}},
+            "val_position_rmse",
+        )
 
 
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
@@ -688,22 +806,33 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     epoch_log = result["epoch_logs"][0]
     checkpoint = torch.load(run_dir / "checkpoints" / "last.pth", map_location="cpu")
     final_cfg = safe_load_yaml((run_dir / "final_config.yaml").read_text(encoding="utf-8"))
+    outputs = np.load(run_dir / "training_outputs.npz")
 
     assert set(history) == {
         "train_loss",
         "train_task_loss",
+        "train_objective_loss",
         "train_distill_loss",
         "train_beam_soft_loss",
         "train_unimodal_loss",
         "train_counterfactual_loss",
         "train_prior_regularization_loss",
         "train_reliability_kd_loss",
+        "train_occlusion_loss",
+        "train_position_loss",
+        "train_multitask_loss",
         "train_acc",
         "val_loss",
         "val_acc",
         "val_atop3",
         "val_atop5",
         "val_adba",
+        "val_occlusion_accuracy",
+        "val_occlusion_blocked_f1",
+        "val_position_rmse",
+        "val_position_mae",
+        "val_multitask_loss",
+        "val_primary_metric",
         "learning_rates",
     }
     assert {
@@ -712,18 +841,31 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "train_batches",
         "train_loss",
         "train_task_loss",
+        "train_objective_loss",
         "train_distill_loss",
         "train_beam_soft_loss",
         "train_unimodal_loss",
         "train_counterfactual_loss",
         "train_prior_regularization_loss",
         "train_reliability_kd_loss",
+        "train_occlusion_loss",
+        "train_position_loss",
+        "train_multitask_loss",
+        "loss/occlusion",
+        "loss/position",
+        "loss/multitask_total",
         "train_acc",
         "val_loss",
         "val_acc",
         "val_atop3",
         "val_atop5",
         "val_adba",
+        "val_occlusion_accuracy",
+        "val_occlusion_blocked_f1",
+        "val_position_rmse",
+        "val_position_mae",
+        "val_multitask_loss",
+        "val_primary_metric",
         "early_stopping_metric",
         "early_stopping_mode",
         "early_stopping_value",
@@ -762,9 +904,266 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     assert final_cfg["training"]["early_stopping_metric"] == "val_adba"
     assert final_cfg["training"]["early_stopping_mode"] == "max"
     assert final_cfg["runtime"]["early_stopping"]["metric"] == "val_adba"
+    assert final_cfg["runtime"]["prediction_objective"]["loss_weights"] == {
+        "beam": 1.0,
+        "occlusion": 1.0,
+        "position": 0.01,
+    }
+    assert epoch_log["val_occlusion_accuracy"] is None
+    assert epoch_log["val_occlusion_blocked_f1"] is None
+    assert epoch_log["val_position_rmse"] is None
+    assert epoch_log["val_position_mae"] is None
+    assert epoch_log["val_multitask_loss"] is None
+    assert "val_occlusion_blocked_f1" not in epoch_log["validation_metrics"]
+    assert "val_position_rmse" not in epoch_log["validation_metrics"]
+    assert np.isnan(outputs["val_occlusion_blocked_f1"][0])
+    assert np.isnan(outputs["val_position_rmse"][0])
+    assert np.isnan(outputs["val_multitask_loss"][0])
     assert "splits" in final_cfg["runtime"]
     assert "normalization_artifacts" in final_cfg["runtime"]
     assert "throughput" in final_cfg["runtime"]
+    assert final_cfg["runtime"]["throughput"]["progress"]["enabled"] is False
+    assert (run_dir / "train_log.json").exists()
+    assert (run_dir / "training_outputs.npz").exists()
+    assert (run_dir / "checkpoints" / "last.pth").exists()
+
+
+class _FakeTensorboardWriter:
+    def __init__(self):
+        self.scalars = []
+
+    def add_scalar(self, tag, value, step):
+        self.scalars.append((tag, value, step))
+
+    def flush(self):
+        pass
+
+
+def _tensorboard_history() -> dict:
+    return {
+        "train_loss": [1.0],
+        "train_task_loss": [0.9],
+        "train_objective_loss": [0.9],
+        "train_distill_loss": [0.0],
+        "val_loss": [0.8],
+        "val_primary_metric": [0.8],
+        "train_acc": [0.25],
+        "val_acc": [0.2],
+        "val_atop3": [0.3],
+        "val_atop5": [0.4],
+        "val_adba": [0.5],
+        "learning_rates": [0.001],
+        "train_beam_soft_loss": [],
+        "train_unimodal_loss": [],
+        "train_counterfactual_loss": [],
+        "train_prior_regularization_loss": [],
+        "train_reliability_kd_loss": [],
+        "train_multitask_loss": [None],
+        "val_multitask_loss": [None],
+        "train_occlusion_loss": [0.7],
+        "train_position_loss": [None],
+        "val_occlusion_accuracy": [0.6],
+        "val_occlusion_blocked_f1": [float("nan")],
+        "val_position_rmse": [None],
+        "val_position_mae": [None],
+    }
+
+
+def test_optional_objective_tensorboard_scalars_skip_inactive_values():
+    writer = _FakeTensorboardWriter()
+    history = _tensorboard_history()
+
+    _write_tensorboard_scalars(writer, history, 1)
+
+    tags = {tag for tag, _, _ in writer.scalars}
+    assert "beam/accuracy_train" in tags
+    assert "beam/accuracy_val" in tags
+    assert "beam/val_atop3" in tags
+    assert "beam/val_atop5" in tags
+    assert "beam/val_adba" in tags
+    assert "accuracy/train" not in tags
+    assert "accuracy/val" not in tags
+    assert "accuracy/val_atop3" not in tags
+    assert "accuracy/val_atop5" not in tags
+    assert "dba/val_adba" not in tags
+    assert "occlusion/accuracy" in tags
+    assert "occlusion/blocked_f1" not in tags
+    assert "position/rmse" not in tags
+    assert "position/mae" not in tags
+    assert "loss/val_multitask_total" not in tags
+
+
+@pytest.mark.parametrize("objective", ["occlusion", "position"])
+def test_non_beam_objectives_do_not_write_beam_tensorboard_scalars(objective: str):
+    writer = _FakeTensorboardWriter()
+    history = _tensorboard_history()
+
+    _write_tensorboard_scalars(writer, history, 1, objective=objective)
+
+    tags = {tag for tag, _, _ in writer.scalars}
+    assert "beam/accuracy_train" not in tags
+    assert "beam/accuracy_val" not in tags
+    assert "beam/val_atop3" not in tags
+    assert "beam/val_atop5" not in tags
+    assert "beam/val_adba" not in tags
+    assert "accuracy/val" not in tags
+    assert "dba/val_adba" not in tags
+
+
+def test_tensorboard_legacy_accuracy_tags_restore_historical_scalars():
+    writer = _FakeTensorboardWriter()
+    history = _tensorboard_history()
+
+    _write_tensorboard_scalars(
+        writer,
+        history,
+        1,
+        objective="occlusion",
+        tensorboard_cfg={"legacy_accuracy_tags": True},
+    )
+
+    tags = {tag for tag, _, _ in writer.scalars}
+    assert "beam/accuracy_val" not in tags
+    assert "accuracy/train" in tags
+    assert "accuracy/val" in tags
+    assert "accuracy/val_atop3" in tags
+    assert "accuracy/val_atop5" in tags
+    assert "dba/val_adba" in tags
+
+
+def test_training_outputs_payload_converts_inactive_optional_metrics_to_nan():
+    payload = _training_outputs_payload(
+        {
+            "train_loss": [1.0],
+            "train_occlusion_loss": [None],
+            "val_position_rmse": [None],
+            "val_occlusion_blocked_f1": [0.5],
+        },
+        {
+            "name": "beam",
+            "primary_loss": "beam",
+            "enabled_targets": ["beam"],
+            "enabled_heads": ["beam"],
+            "loss_weights": {"beam": 1.0, "occlusion": 1.0, "position": 0.01},
+        },
+        "val_adba",
+        "max",
+    )
+
+    assert np.isnan(payload["train_occlusion_loss"][0])
+    assert np.isnan(payload["val_position_rmse"][0])
+    assert payload["val_occlusion_blocked_f1"][0] == pytest.approx(0.5)
+    assert payload["loss_weights"].tolist() == [1.0, 1.0, 0.01]
+
+
+def test_multitask_no_kd_training_logs_auxiliary_losses_and_metrics(tmp_path: Path):
+    train_csv = tmp_path / "train_aux.csv"
+    test_csv = tmp_path / "test_aux.csv"
+    _write_aux_training_csv(tmp_path, train_csv, prefix="train", future_max=[1.0, 5.0])
+    _write_aux_training_csv(tmp_path, test_csv, prefix="test", future_max=[0.5, 8.0])
+    cfg = {
+        "experiment": {"name": "aux_smoke", "task": "fusion", "seed": 3, "device": "cpu"},
+        "data": {
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "data_root": str(tmp_path),
+                "train_csv_name": train_csv.name,
+                "test_csv_name": test_csv.name,
+                "seq_len": 2,
+                "num_pred": 2,
+                "portion": 1.0,
+                "use_gps": True,
+                "gps_normalize": False,
+                "occlusion_target": {"enabled": True, "threshold_percentile": 50.0},
+                "position_target": {"enabled": True, "source": "future_gps_local_xy", "normalize": True},
+            },
+            "dataloader": {
+                "train_batch_size": 1,
+                "test_batch_size": 1,
+                "num_workers": 0,
+                "pin_memory": False,
+            },
+        },
+        "model": {
+            "modalities": ["gps"],
+            "feature_size": 8,
+            "num_classes": 64,
+            "seq_length_teacher": 2,
+            "seq_length_student": 2,
+            "num_pred": 2,
+            "downsample_ratio": 1,
+            "teacher": {
+                "type": "cls_token_transformer_fusion",
+                "modalities": ["gps"],
+                "feature_size": 8,
+                "d_model": 8,
+                "num_classes": 64,
+                "num_pred": 2,
+                "num_heads": 2,
+                "num_layers": 1,
+                "max_seq_len": 4,
+                "gps_input_size": 3,
+            },
+            "student": {
+                "type": "cls_token_transformer_fusion",
+                "modalities": ["gps"],
+                "feature_size": 8,
+                "d_model": 8,
+                "num_classes": 64,
+                "num_pred": 2,
+                "num_heads": 2,
+                "num_layers": 1,
+                "max_seq_len": 4,
+                "gps_input_size": 3,
+                "auxiliary_heads": {"enabled": True, "occlusion": True, "position": True},
+            },
+        },
+        "loss": {
+            "type": "cross_entropy",
+            "auxiliary": {
+                "enabled": True,
+                "occlusion": {"enabled": True, "weight": 1.0, "pos_weight": "auto"},
+                "position": {"enabled": True, "weight": 0.01},
+            },
+        },
+        "distillation": {"type": "no_kd", "teacher_model_name": None},
+        "training": {
+            "epochs": 1,
+            "lr": 0.001,
+            "weight_decay": 0.0,
+            "grad_clip": None,
+            "patience": 2,
+            "use_early_stopping": False,
+            "early_stopping_metric": "val_adba",
+            "early_stopping_mode": "max",
+            "min_delta": 0.0,
+            "transfer": {"non_blocking": False},
+            "amp": {"enabled": False, "dtype": "float16", "grad_scaler": True},
+        },
+        "scheduler": {"type": "none"},
+        "evaluation": {"k_values": [1, 3, 5], "dba_delta": 5},
+        "output": {
+            "dir": str(tmp_path),
+            "run_name": "aux_smoke",
+            "overwrite": True,
+            "progress": {"enabled": False},
+            "tensorboard": {"enabled": False},
+        },
+        "checkpoint": {"registry": {"enabled": False}, "strict_load": True},
+    }
+
+    result = train(cfg)
+    run_dir = Path(result["run_dir"])
+    train_log = json.loads((run_dir / "train_log.json").read_text(encoding="utf-8"))
+    final_cfg = safe_load_yaml((run_dir / "final_config.yaml").read_text(encoding="utf-8"))
+    outputs = np.load(run_dir / "training_outputs.npz")
+
+    assert train_log["train_multitask_loss"][0] >= 0.0
+    assert "auxiliary" in train_log["epoch_logs"][0]["validation_metrics"]
+    assert "train_occlusion_loss" in outputs
+    assert "occlusion_target_stats" in final_cfg["runtime"]["normalization_artifacts"]
+    assert "position_target_scaler" in final_cfg["runtime"]["normalization_artifacts"]
 
 
 def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path: Path):
@@ -1170,6 +1569,51 @@ def _write_full_sequence_fixture(root: Path, csv_path: Path, *, seq_len: int, nu
         + [f"future_{idx}.txt" for idx in range(num_pred)]
         + ["1"]
     )
+    csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+
+def _write_aux_training_csv(root: Path, csv_path: Path, *, prefix: str, future_max: list[float]) -> None:
+    seq_len = 2
+    num_pred = len(future_max)
+    gps_paths = []
+    bs_paths = []
+    beam_paths = []
+    future_paths = []
+    future_gps_paths = []
+    future_bs_paths = []
+    for idx in range(seq_len):
+        gps_name = f"{prefix}_gps_{idx}.txt"
+        bs_name = f"{prefix}_bs_{idx}.txt"
+        beam_name = f"{prefix}_beam_{idx}.txt"
+        np.savetxt(root / gps_name, np.asarray([42.0 + idx * 1e-5, -71.0], dtype=np.float32))
+        np.savetxt(root / bs_name, np.asarray([42.0, -71.0], dtype=np.float32))
+        beam = np.zeros(64, dtype=np.float32)
+        beam[idx] = 1.0
+        np.savetxt(root / beam_name, beam)
+        gps_paths.append(gps_name)
+        bs_paths.append(bs_name)
+        beam_paths.append(beam_name)
+    for idx, max_power in enumerate(future_max):
+        future_name = f"{prefix}_future_{idx}.txt"
+        gps_name = f"{prefix}_future_gps_{idx}.txt"
+        bs_name = f"{prefix}_future_bs_{idx}.txt"
+        future = np.linspace(0.1, float(max_power), 64, dtype=np.float32)
+        np.savetxt(root / future_name, future)
+        np.savetxt(root / gps_name, np.asarray([42.0001 + idx * 1e-5, -71.0], dtype=np.float32))
+        np.savetxt(root / bs_name, np.asarray([42.0, -71.0], dtype=np.float32))
+        future_paths.append(future_name)
+        future_gps_paths.append(gps_name)
+        future_bs_paths.append(bs_name)
+    columns = (
+        [f"gps{i}" for i in range(1, seq_len + 1)]
+        + [f"bs_gps{i}" for i in range(1, seq_len + 1)]
+        + [f"beam{i}" for i in range(1, seq_len + 1)]
+        + [f"future_beam{i}" for i in range(1, num_pred + 1)]
+        + [f"future_gps{i}" for i in range(1, num_pred + 1)]
+        + [f"future_bs_gps{i}" for i in range(1, num_pred + 1)]
+        + ["seq_index"]
+    )
+    values = gps_paths + bs_paths + beam_paths + future_paths + future_gps_paths + future_bs_paths + ["1"]
     csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
 
 

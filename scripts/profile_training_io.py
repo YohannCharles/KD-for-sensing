@@ -39,6 +39,8 @@ from kd_sensing.engine.runtime import (
     transfer_non_blocking,
 )
 
+GETITEM_COMPONENT_KEYS = ("image", "radar", "gps", "lidar", "mmwave", "auxiliary_targets")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Profile Scenario 9 training input and step throughput.")
@@ -79,7 +81,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
-    dataset_times = _profile_dataset_getitem(dataset, args.samples)
+    dataset_times, getitem_component_times = _profile_dataset_getitem(dataset, args.samples)
     loader_times: list[float] = []
     transfer_times: list[float] = []
     forward_times: list[float] = []
@@ -140,6 +142,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
 
     total_samples = sum(batch_sizes[args.warmup :]) if len(batch_sizes) > args.warmup else 0
     total_step_time = sum(step_times)
+    runtime_metadata = throughput_run_metadata(cfg, dataloaders, device)
     result = {
         "config": str(Path(args.config)),
         "split": args.split,
@@ -148,14 +151,33 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "measured_samples": measured,
         "timed_samples": total_samples,
         "dataset_getitem_seconds": _summary(dataset_times),
+        "getitem_component_seconds": {
+            key: _summary(getitem_component_times.get(key, []))
+            for key in GETITEM_COMPONENT_KEYS
+        },
+        "modality_getitem_seconds": {
+            key: _summary(getitem_component_times.get(key, []))
+            for key in ("image", "radar", "gps", "lidar", "mmwave")
+        },
+        "auxiliary_getitem_seconds": _summary(getitem_component_times.get("auxiliary_targets", [])),
         "dataloader_wait_seconds": _summary(loader_times),
         "transfer_seconds": _summary(transfer_times),
         "forward_seconds": _summary(forward_times),
         "backward_optimizer_seconds": _summary(backward_times),
         "step_seconds": _summary(step_times),
+        "wait_vs_gpu_step": _wait_vs_gpu_step_breakdown(
+            wait_times=loader_times,
+            transfer_times=transfer_times,
+            forward_times=forward_times,
+            backward_times=backward_times,
+            step_times=step_times,
+        ),
         "samples_per_second": (total_samples / total_step_time) if total_step_time > 0 else 0.0,
         "cuda_peak_memory_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None,
-        "runtime": throughput_run_metadata(cfg, dataloaders, device),
+        "dataloader_splits": runtime_metadata.get("dataloader_splits", runtime_metadata.get("dataloader", {})),
+        "progress": runtime_metadata.get("progress", {}),
+        "cache_policy": _cache_policy_summary(runtime_metadata.get("cache", {})),
+        "runtime": runtime_metadata,
     }
     payload = json.dumps(result, indent=2)
     if args.output:
@@ -168,14 +190,30 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     return result
 
 
-def _profile_dataset_getitem(dataset, samples: int) -> list[float]:
+def _profile_dataset_getitem(dataset, samples: int) -> tuple[list[float], dict[str, list[float]]]:
     count = min(samples, len(dataset))
     times = []
+    component_times: dict[str, list[float]] = {key: [] for key in GETITEM_COMPONENT_KEYS}
+    enabled_modalities = set(getattr(dataset, "enabled_modalities", []))
+    auxiliary_enabled = bool(
+        getattr(dataset, "occlusion_target_enabled", False)
+        or getattr(dataset, "position_target_enabled", False)
+    )
+    profile_components = getattr(dataset, "profile_getitem_components", None)
     for idx in range(count):
         start = time.perf_counter()
-        _ = dataset[idx]
+        if callable(profile_components):
+            components = profile_components(idx)
+        else:
+            _ = dataset[idx]
+            components = {}
         times.append(time.perf_counter() - start)
-    return times
+        for key in ("image", "radar", "gps", "lidar", "mmwave"):
+            if key in enabled_modalities:
+                component_times[key].append(float(components.get(key, 0.0)))
+        if auxiliary_enabled:
+            component_times["auxiliary_targets"].append(float(components.get("auxiliary_targets", 0.0)))
+    return times, component_times
 
 
 def _prepare_task_inputs(
@@ -262,12 +300,86 @@ def _summary(values: list[float]) -> dict[str, float]:
     }
 
 
+def _wait_vs_gpu_step_breakdown(
+    *,
+    wait_times: list[float],
+    transfer_times: list[float],
+    forward_times: list[float],
+    backward_times: list[float],
+    step_times: list[float],
+) -> dict[str, Any]:
+    summaries = {
+        "wait": _summary(wait_times),
+        "transfer": _summary(transfer_times),
+        "forward": _summary(forward_times),
+        "backward_optimizer": _summary(backward_times),
+        "gpu_step": _summary(step_times),
+    }
+    phase_totals = {
+        "wait": float(sum(wait_times)),
+        "transfer": float(sum(transfer_times)),
+        "forward": float(sum(forward_times)),
+        "backward_optimizer": float(sum(backward_times)),
+    }
+    observed_total = sum(phase_totals.values())
+    forward_backward_mean = _mean(forward_times) + _mean(backward_times)
+    gpu_step_mean = _mean(step_times)
+    wait_p95 = summaries["wait"]["p95"]
+    gpu_step_p95 = summaries["gpu_step"]["p95"]
+    forward_backward_p95 = summaries["forward"]["p95"] + summaries["backward_optimizer"]["p95"]
+    return {
+        "phase_totals_seconds": phase_totals,
+        "phase_ratios": {
+            key: (value / observed_total if observed_total > 0 else 0.0)
+            for key, value in phase_totals.items()
+        },
+        "mean_ratios": {
+            "wait_to_gpu_step": _safe_ratio(_mean(wait_times), gpu_step_mean),
+            "wait_to_forward_backward": _safe_ratio(_mean(wait_times), forward_backward_mean),
+            "transfer_to_gpu_step": _safe_ratio(_mean(transfer_times), gpu_step_mean),
+            "forward_to_gpu_step": _safe_ratio(_mean(forward_times), gpu_step_mean),
+            "backward_to_gpu_step": _safe_ratio(_mean(backward_times), gpu_step_mean),
+        },
+        "p95_spikes": {
+            "wait_gt_gpu_step": bool(wait_p95 > gpu_step_p95 and wait_p95 > 0),
+            "wait_gt_forward_backward": bool(wait_p95 > forward_backward_p95 and wait_p95 > 0),
+            "wait_to_gpu_step": _safe_ratio(wait_p95, gpu_step_p95),
+            "wait_to_forward_backward": _safe_ratio(wait_p95, forward_backward_p95),
+        },
+        "summaries": summaries,
+    }
+
+
+def _mean(values: list[float]) -> float:
+    return float(statistics.fmean(values)) if values else 0.0
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    return float(numerator / denominator) if denominator > 0 else 0.0
+
+
+def _cache_policy_summary(cache_metadata: dict[str, Any]) -> dict[str, Any]:
+    lidar = cache_metadata.get("lidar", {}) if isinstance(cache_metadata, dict) else {}
+    return {
+        "policy": cache_metadata.get("policy") if isinstance(cache_metadata, dict) else None,
+        "enabled_modalities": cache_metadata.get("enabled_modalities", []) if isinstance(cache_metadata, dict) else [],
+        "lidar_policy": lidar.get("policy") if isinstance(lidar, dict) else None,
+        "splits": cache_metadata.get("splits", {}) if isinstance(cache_metadata, dict) else {},
+    }
+
+
 def _write_csv_summary(path: str, result: dict[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for key in [
         "dataset_getitem_seconds",
+        "getitem_component_seconds.image",
+        "getitem_component_seconds.radar",
+        "getitem_component_seconds.gps",
+        "getitem_component_seconds.lidar",
+        "getitem_component_seconds.mmwave",
+        "getitem_component_seconds.auxiliary_targets",
         "dataloader_wait_seconds",
         "transfer_seconds",
         "forward_seconds",
@@ -275,7 +387,11 @@ def _write_csv_summary(path: str, result: dict[str, Any]) -> None:
         "step_seconds",
     ]:
         row = {"metric": key}
-        row.update(result[key])
+        if key.startswith("getitem_component_seconds."):
+            _, component = key.split(".", 1)
+            row.update(result["getitem_component_seconds"][component])
+        else:
+            row.update(result[key])
         rows.append(row)
     with target.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["metric", "count", "mean", "p50", "p95", "min", "max"])

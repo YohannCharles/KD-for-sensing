@@ -15,6 +15,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
 from kd_sensing.config.canonical import build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.data.scenes import normalize_deepsense_config
+from kd_sensing.engine.prediction_objectives import (
+    configure_objective_defaults,
+    objective_requires_occlusion,
+    objective_requires_position,
+    resolve_prediction_objective,
+)
 from kd_sensing.modalities import (
     REMOVED_IMAGE_ENCODERS,
     dataset_defaults_for_modalities,
@@ -54,6 +60,17 @@ FUSION_MODEL_TYPES = {
     "marf_fusion",
     "token_transformer_fusion",
 }
+AUXILIARY_HEAD_MODEL_TYPES = {
+    "cls_token_transformer_fusion",
+    "modular_sequence",
+    "modular_sequence_model",
+    "gps_teacher",
+    "gps_student",
+    "radar_teacher",
+    "radar_student",
+    "mmwave_teacher",
+    "mmwave_student",
+}
 D_MODEL_ROLE_TYPES = {
     "craf_fusion",
     "cls_token_transformer_fusion",
@@ -79,6 +96,20 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     override_cfg = parse_overrides(overrides) if overrides else {}
     if override_cfg:
         cfg = deep_merge(cfg, override_cfg)
+    file_cfg_for_keys = file_cfg if config_path else {}
+    override_changes_objective = _has_dotted_key(override_cfg, "experiment.objective")
+    explicit_early_metric = _has_dotted_key(override_cfg, "training.early_stopping_metric") or (
+        _has_dotted_key(file_cfg_for_keys, "training.early_stopping_metric") and not override_changes_objective
+    )
+    explicit_early_mode = _has_dotted_key(override_cfg, "training.early_stopping_mode") or (
+        _has_dotted_key(file_cfg_for_keys, "training.early_stopping_mode") and not override_changes_objective
+    )
+    configure_objective_defaults(
+        cfg,
+        explicit_early_stopping_metric=explicit_early_metric,
+        explicit_early_stopping_mode=explicit_early_mode,
+    )
+    apply_objective_runtime_requirements(cfg)
     reject_removed_image_path_config(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
     normalize_model_role_defaults(cfg)
@@ -132,12 +163,26 @@ def set_by_dotted_key(target: dict[str, Any], key: str, value: Any) -> None:
     cursor[parts[-1]] = value
 
 
+def _has_dotted_key(target: dict[str, Any], key: str) -> bool:
+    cursor: Any = target
+    for part in key.split("."):
+        if not isinstance(cursor, dict) or part not in cursor:
+            return False
+        cursor = cursor[part]
+    return True
+
+
 def parse_scalar(raw: str) -> Any:
     lowered = raw.lower()
     if lowered in {"true", "false"}:
         return lowered == "true"
     if lowered in {"none", "null"}:
         return None
+    if raw.startswith("[") and raw.endswith("]"):
+        body = raw[1:-1].strip()
+        if not body:
+            return []
+        return [parse_scalar(item.strip()) for item in body.split(",")]
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -175,6 +220,87 @@ def apply_fusion_modality_selection(cfg: dict[str, Any], *, override_cfg: dict[s
         dataset_cfg.setdefault(key, value)
 
 
+def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
+    objective = resolve_prediction_objective(cfg)
+    if objective == "beam":
+        return
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    if objective_requires_occlusion(cfg):
+        _ensure_occlusion_target(dataset_cfg)
+    if objective_requires_position(cfg):
+        _ensure_position_target(dataset_cfg)
+    _ensure_student_auxiliary_heads(cfg, objective)
+    _ensure_objective_loss_defaults(cfg, objective)
+
+
+def _ensure_occlusion_target(dataset_cfg: dict[str, Any]) -> None:
+    target = dataset_cfg.get("occlusion_target")
+    if target is None:
+        dataset_cfg["occlusion_target"] = {"enabled": True, "threshold_percentile": 20.0}
+    elif isinstance(target, dict):
+        target.setdefault("enabled", True)
+
+
+def _ensure_position_target(dataset_cfg: dict[str, Any]) -> None:
+    target = dataset_cfg.get("position_target")
+    if target is None:
+        dataset_cfg["position_target"] = {
+            "enabled": True,
+            "source": "future_gps_local_xy",
+            "normalize": True,
+        }
+    elif isinstance(target, dict):
+        target.setdefault("enabled", True)
+        target.setdefault("source", "future_gps_local_xy")
+        target.setdefault("normalize", True)
+    _switch_default_position_csv(dataset_cfg)
+
+
+def _switch_default_position_csv(dataset_cfg: dict[str, Any]) -> None:
+    replacements = {
+        "train_csv_name": ("train_seqs_RA_GPS_LIDAR.csv", "train_seqs_RA_GPS_LIDAR_POS.csv"),
+        "test_csv_name": ("test_seqs_RA_GPS_LIDAR.csv", "test_seqs_RA_GPS_LIDAR_POS.csv"),
+    }
+    for key, (default_name, position_name) in replacements.items():
+        if dataset_cfg.get(key) in (None, default_name):
+            dataset_cfg[key] = position_name
+
+
+def _ensure_student_auxiliary_heads(cfg: dict[str, Any], objective: str) -> None:
+    model_cfg = cfg.setdefault("model", {})
+    student_cfg = model_cfg.setdefault("student", {})
+    raw = student_cfg.get("auxiliary_heads")
+    if isinstance(raw, dict):
+        heads = raw
+    elif raw is None:
+        heads = {}
+    else:
+        heads = {"enabled": bool(raw)}
+    if objective in {"occlusion", "multitask"}:
+        heads["occlusion"] = True
+    if objective in {"position", "multitask"}:
+        heads["position"] = True
+    heads["enabled"] = bool(heads.get("occlusion", False) or heads.get("position", False) or heads.get("enabled", False))
+    student_cfg["auxiliary_heads"] = heads
+    student_cfg.setdefault(
+        "num_pred",
+        int(model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 3))),
+    )
+
+
+def _ensure_objective_loss_defaults(cfg: dict[str, Any], objective: str) -> None:
+    loss_cfg = cfg.setdefault("loss", {})
+    objective_cfg = loss_cfg.setdefault("objective", {})
+    weights_cfg = objective_cfg.setdefault("weights", {})
+    weights_cfg.setdefault("beam", 1.0)
+    weights_cfg.setdefault("occlusion", 1.0)
+    weights_cfg.setdefault("position", 1.0 if objective in {"position", "multitask"} else 0.01)
+    if objective in {"occlusion", "multitask"}:
+        objective_cfg.setdefault("occlusion", {}).setdefault("pos_weight", "auto")
+    if objective in {"position", "multitask"}:
+        objective_cfg.setdefault("position", {}).setdefault("type", "mse")
+
+
 def _modalities_from_role_overrides(override_cfg: dict[str, Any] | None) -> list[str] | None:
     if not isinstance(override_cfg, dict):
         return None
@@ -208,7 +334,8 @@ def normalize_model_role_defaults(cfg: dict[str, Any]) -> None:
             role_cfg.pop("modalities", None)
         if model_type not in D_MODEL_ROLE_TYPES:
             role_cfg.pop("d_model", None)
-            role_cfg.pop("num_pred", None)
+            if not _keeps_auxiliary_num_pred(model_type, role_cfg):
+                role_cfg.pop("num_pred", None)
 
 
 def normalize_image_profile_config(cfg: dict[str, Any]) -> None:
@@ -258,6 +385,7 @@ def reject_removed_image_path_config(cfg: dict[str, Any]) -> None:
 def validate_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
+    _validate_prediction_objective_config(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     _validate_cache_policy(cache_policy, "data.cache.policy")
     if cfg.get("data", {}).get("cache", {}).get("image") is not None:
@@ -291,6 +419,45 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 "Current radar branch requires RA/DA input size 128x64. "
                 f"Use clipped_range=128 and fft_tuple first/third values 64/128; "
                 f"got clipped_range={clipped_range}, fft_tuple={list(fft_tuple)}."
+            )
+    _validate_multitask_config(cfg)
+
+
+def _validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
+    objective = resolve_prediction_objective(cfg)
+    cfg.setdefault("experiment", {})["objective"] = objective
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    model_cfg = cfg.get("model", {}).get("student", {})
+    model_type = str(model_cfg.get("type", ""))
+    head_occlusion = _auxiliary_head_enabled(model_cfg, "occlusion")
+    head_position = _auxiliary_head_enabled(model_cfg, "position")
+
+    if objective_requires_occlusion(cfg):
+        if not _mapping_or_bool_enabled(dataset_cfg.get("occlusion_target")):
+            raise ValueError(
+                "experiment.objective='occlusion' or 'multitask' requires "
+                "data.dataset.occlusion_target.enabled=true. "
+                "Enable that target or set experiment.objective='beam'."
+            )
+        if not _model_supports_auxiliary_heads(model_type) or not head_occlusion:
+            raise ValueError(
+                "experiment.objective='occlusion' or 'multitask' requires "
+                "a student model type with auxiliary head support and "
+                "model.student.auxiliary_heads.occlusion=true."
+            )
+
+    if objective_requires_position(cfg):
+        if not _mapping_or_bool_enabled(dataset_cfg.get("position_target")):
+            raise ValueError(
+                "experiment.objective='position' or 'multitask' requires "
+                "data.dataset.position_target.enabled=true. "
+                "Enable that target or set experiment.objective='beam'."
+            )
+        if not _model_supports_auxiliary_heads(model_type) or not head_position:
+            raise ValueError(
+                "experiment.objective='position' or 'multitask' requires "
+                "a student model type with auxiliary head support and "
+                "model.student.auxiliary_heads.position=true."
             )
 
 
@@ -327,6 +494,79 @@ def _validate_image_model_profiles(cfg: dict[str, Any], image_profile: str) -> N
                 image_profile=image_profile,
                 expected_channels=expected_channels,
             )
+
+
+def _validate_multitask_config(cfg: dict[str, Any]) -> None:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    model_cfg = cfg.get("model", {}).get("student", {})
+    loss_cfg = cfg.get("loss", {})
+    occlusion_target = _mapping_or_bool_enabled(dataset_cfg.get("occlusion_target"))
+    position_target = _mapping_or_bool_enabled(dataset_cfg.get("position_target"))
+    position_cfg = dataset_cfg.get("position_target") if isinstance(dataset_cfg.get("position_target"), dict) else {}
+    if position_target:
+        source = position_cfg.get("source", position_cfg.get("position_target_source"))
+        if source not in {"future_gps_local_xy", "last_input_gps_local_xy"}:
+            raise ValueError(
+                "data.dataset.position_target.source must be one of: "
+                "future_gps_local_xy, last_input_gps_local_xy."
+            )
+
+    auxiliary_loss_raw = loss_cfg.get("auxiliary") or loss_cfg.get("multitask") or loss_cfg.get("multi_task") or {}
+    auxiliary_loss = auxiliary_loss_raw if isinstance(auxiliary_loss_raw, dict) else {}
+    aux_occlusion = _mapping_or_bool_enabled(auxiliary_loss.get("occlusion")) or (
+        float(auxiliary_loss.get("occlusion_weight", auxiliary_loss.get("lambda_occlusion", 0.0))) > 0.0
+    )
+    aux_position = _mapping_or_bool_enabled(auxiliary_loss.get("position")) or (
+        float(auxiliary_loss.get("position_weight", auxiliary_loss.get("lambda_position", 0.0))) > 0.0
+    )
+    if not (occlusion_target or position_target or aux_occlusion or aux_position):
+        return
+
+    model_type = str(model_cfg.get("type", ""))
+    model_occlusion = _auxiliary_head_enabled(model_cfg, "occlusion")
+    model_position = _auxiliary_head_enabled(model_cfg, "position")
+    if aux_occlusion or occlusion_target:
+        if not _model_supports_auxiliary_heads(model_type) or not model_occlusion:
+            raise ValueError(
+                "Occlusion auxiliary supervision requires a student model type with auxiliary head support "
+                "and model.student.auxiliary_heads.occlusion=true."
+            )
+    if aux_position or position_target:
+        if not _model_supports_auxiliary_heads(model_type) or not model_position:
+            raise ValueError(
+                "Position auxiliary supervision requires a student model type with auxiliary head support "
+                "and model.student.auxiliary_heads.position=true."
+            )
+
+
+def _mapping_or_bool_enabled(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return bool(value.get("enabled", value.get("enable", False)))
+    return False
+
+
+def _auxiliary_head_enabled(model_cfg: dict[str, Any], name: str) -> bool:
+    heads_raw = model_cfg.get("auxiliary_heads")
+    if isinstance(heads_raw, bool):
+        return heads_raw
+    heads = heads_raw if isinstance(heads_raw, dict) else {}
+    aliases = {
+        "occlusion": ("occlusion", "occlusion_head"),
+        "position": ("position", "position_head"),
+    }[name]
+    return bool(heads.get(aliases[0], heads.get(aliases[1], heads.get("enabled", False))))
+
+
+def _keeps_auxiliary_num_pred(model_type: str, model_cfg: dict[str, Any]) -> bool:
+    return _model_supports_auxiliary_heads(model_type) and (
+        _auxiliary_head_enabled(model_cfg, "occlusion") or _auxiliary_head_enabled(model_cfg, "position")
+    )
+
+
+def _model_supports_auxiliary_heads(model_type: str) -> bool:
+    return str(model_type) in AUXILIARY_HEAD_MODEL_TYPES
 
 
 def _image_encoder_type(model_cfg: dict[str, Any]) -> str | None:
@@ -378,25 +618,85 @@ def _fusion_modalities(cfg: dict[str, Any]) -> set[str]:
 def parse_simple_yaml(text: str) -> dict[str, Any]:
     """Parse the simple nested mapping subset used by this repo's configs."""
 
-    root: dict[str, Any] = {}
-    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    lines: list[tuple[int, str, str]] = []
     for raw_line in text.splitlines():
         if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
         indent = len(raw_line) - len(raw_line.lstrip(" "))
-        stripped = raw_line.strip()
-        if ":" not in stripped:
-            raise ValueError(f"Unsupported YAML line without ':': {raw_line}")
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        while indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1]
-        if value == "":
-            child: dict[str, Any] = {}
-            parent[key] = child
-            stack.append((indent, child))
-        else:
-            parent[key] = parse_scalar(value)
-    return root
+        lines.append((indent, raw_line.strip(), raw_line))
+
+    def parse_node(index: int, indent: int) -> tuple[Any, int]:
+        if index >= len(lines):
+            return {}, index
+        current_indent, stripped, _ = lines[index]
+        if current_indent < indent:
+            return {}, index
+        if stripped.startswith("- "):
+            return parse_list(index, current_indent)
+        return parse_mapping(index, current_indent)
+
+    def parse_mapping(index: int, indent: int) -> tuple[dict[str, Any], int]:
+        result: dict[str, Any] = {}
+        while index < len(lines):
+            current_indent, stripped, raw_line = lines[index]
+            if current_indent < indent:
+                break
+            if current_indent > indent:
+                raise ValueError(f"Unexpected nested YAML line: {raw_line}")
+            if stripped.startswith("- "):
+                break
+            if ":" not in stripped:
+                raise ValueError(f"Unsupported YAML line without ':': {raw_line}")
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            index += 1
+            if value == "":
+                if (
+                    index < len(lines)
+                    and lines[index][0] == current_indent
+                    and lines[index][1].startswith("- ")
+                ):
+                    result[key], index = parse_node(index, lines[index][0])
+                elif index >= len(lines) or lines[index][0] <= current_indent:
+                    result[key] = {}
+                else:
+                    result[key], index = parse_node(index, lines[index][0])
+            else:
+                result[key] = parse_scalar(value)
+        return result, index
+
+    def parse_list(index: int, indent: int) -> tuple[list[Any], int]:
+        result: list[Any] = []
+        while index < len(lines):
+            current_indent, stripped, raw_line = lines[index]
+            if current_indent < indent:
+                break
+            if current_indent > indent:
+                raise ValueError(f"Unexpected nested YAML list line: {raw_line}")
+            if not stripped.startswith("- "):
+                break
+            value = stripped[2:].strip()
+            index += 1
+            if value == "":
+                if index >= len(lines) or lines[index][0] <= current_indent:
+                    result.append(None)
+                else:
+                    child, index = parse_node(index, lines[index][0])
+                    result.append(child)
+            elif ":" in value and not value.startswith(("http://", "https://")):
+                key, item_value = value.split(":", 1)
+                item: dict[str, Any] = {}
+                item[key.strip()] = parse_scalar(item_value.strip()) if item_value.strip() else {}
+                result.append(item)
+            else:
+                result.append(parse_scalar(value))
+        return result, index
+
+    parsed, final_index = parse_node(0, lines[0][0] if lines else 0)
+    if final_index != len(lines):
+        _, _, raw_line = lines[final_index]
+        raise ValueError(f"Unsupported YAML structure near: {raw_line}")
+    if not isinstance(parsed, dict):
+        raise ValueError("Top-level YAML document must be a mapping.")
+    return parsed

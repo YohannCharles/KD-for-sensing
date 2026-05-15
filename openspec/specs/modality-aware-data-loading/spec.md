@@ -246,3 +246,95 @@ Scenario 9 dataset 在启用 image modality 时 MUST 直接加载 RGB/ImageNet i
 - **THEN** dataset 或配置解析 MUST 拒绝该配置
 - **AND** 错误信息 MUST 说明 image motion 路径已删除且需要使用 RGB/ImageNet image 输入
 
+### Requirement: 多任务目标按需加载
+DeepSense6G dataset MUST 在配置启用多任务辅助监督时按需生成并返回遮挡和位置目标。未启用多任务辅助监督时，dataset MUST 不读取 future GPS target，不拟合遮挡阈值，且不得改变现有按模态懒加载行为。
+
+#### Scenario: beam-only 不读取辅助目标
+- **WHEN** 用户运行未启用多任务辅助监督的 image、radar、GPS、LiDAR、mmWave 或 fusion 配置
+- **THEN** dataset MUST 不返回 `occlusion_label`、`position_target`、`occlusion_valid` 或 `position_valid`
+- **AND** dataset MUST 不读取 future GPS target 列
+- **AND** dataset MUST 不扫描 beam power 文件拟合遮挡阈值
+
+#### Scenario: 启用遮挡目标
+- **WHEN** dataset 配置启用 `occlusion_target.enabled: true`
+- **THEN** dataset MUST 使用 `future_beam` 路径对应的 64-beam power vector 生成每个预测时隙的 `occlusion_label`
+- **AND** 返回样本 MUST 包含形状 `[num_pred]` 的 `occlusion_label` 和 `occlusion_valid`
+
+#### Scenario: 启用位置目标
+- **WHEN** dataset 配置启用 `position_target.enabled: true`
+- **THEN** dataset MUST 返回形状 `[num_pred, 2]` 的 `position_target`
+- **AND** 返回样本 MUST 包含形状 `[num_pred]` 的 `position_valid`
+
+### Requirement: 辅助目标 artifact 复用
+数据构建流程 MUST 将训练 split 拟合出的遮挡阈值和位置目标归一化统计作为运行 artifact 记录，并在测试 split 和独立评估中复用。测试 split MUST 不重新拟合这些统计量。
+
+#### Scenario: 训练保存辅助目标统计
+- **WHEN** 训练 dataset 启用遮挡目标或位置目标归一化
+- **THEN** 训练流程 MUST 保存对应统计 artifact 到运行目录
+- **AND** final config 或 run metadata MUST 记录 artifact 路径和关键统计值
+
+#### Scenario: 测试复用训练统计
+- **WHEN** 构建 test dataset 且辅助目标需要训练统计
+- **THEN** 数据构建流程 MUST 将训练 dataset 的统计对象传给 test dataset
+- **AND** test dataset MUST 不扫描测试集拟合阈值或 scaler
+
+#### Scenario: 独立评估加载 artifact
+- **WHEN** 用户运行评估入口并加载启用了多任务辅助监督的 checkpoint
+- **THEN** 评估流程 MUST 从 checkpoint registry、normalization artifact 或显式配置加载遮挡阈值和位置统计
+- **AND** 如果缺失必要 artifact，系统 MUST 抛出清晰错误
+
+### Requirement: 序列预处理输出 future 位置列
+序列 CSV 预处理 MUST 支持显式输出 future GPS/BS GPS 位置目标列。该开关启用时，每个合法窗口 MUST 在保留现有 `beam` 和 `future_beam` 列的同时，输出与预测 horizon 对齐的 `future_gps` 和 `future_bs_gps` 列。
+
+#### Scenario: 生成 future GPS target 列
+- **WHEN** 用户运行序列预处理并设置 `include_position_targets: true`
+- **THEN** 输出 CSV MUST 包含 `future_gps1..future_gpsN`
+- **AND** 输出 CSV MUST 包含 `future_bs_gps1..future_bs_gpsN`
+- **AND** `N` MUST 等于配置的预测长度 `out_len`
+
+#### Scenario: 不启用时保持旧 CSV 结构
+- **WHEN** 用户运行序列预处理但未启用 `include_position_targets`
+- **THEN** 输出 CSV MUST 保持现有列结构兼容
+- **AND** 旧的 beam-only dataset MUST 能继续读取该 CSV
+
+### Requirement: Objective-aware 数据目标加载
+数据加载流程 MUST 根据 `experiment.objective` 和模型需求启用对应 targets。未被当前 objective 或显式辅助配置使用的 targets MUST 不被强制读取或拟合 artifact。
+
+#### Scenario: beam objective 不读取辅助目标
+- **WHEN** `experiment.objective` 为 `beam` 且未显式启用辅助监督
+- **THEN** dataset MUST 不要求 `occlusion_target` 或 `position_target`
+- **AND** dataset MUST 不拟合遮挡阈值或位置 target scaler
+
+#### Scenario: occlusion objective 启用遮挡目标
+- **WHEN** `experiment.objective` 为 `occlusion`
+- **THEN** dataset MUST 返回 `occlusion_label` 和 `occlusion_valid`
+- **AND** dataset MUST 拟合或复用训练 split 的遮挡阈值 artifact
+
+#### Scenario: position objective 启用位置目标
+- **WHEN** `experiment.objective` 为 `position`
+- **THEN** dataset MUST 返回 `position_target` 和 `position_valid`
+- **AND** dataset MUST 拟合或复用训练 split 的位置 target scaler artifact，除非配置禁用 target normalization
+
+#### Scenario: multitask objective 启用全部目标
+- **WHEN** `experiment.objective` 为 `multitask`
+- **THEN** dataset MUST 返回 beam、occlusion 和 position 目标所需的所有字段
+- **AND** dataset MUST 保存和复用遮挡阈值与位置 target scaler artifacts
+
+### Requirement: Objective-aware batch 准备
+batch/runtime helper MUST 能把当前 objective 所需 targets 搬到目标 device，并保持无效位置 mask 与预测 horizon 对齐。
+
+#### Scenario: occlusion batch targets
+- **WHEN** batch 包含遮挡标签且 objective 需要遮挡目标
+- **THEN** runtime MUST 返回 device 上的 `occlusion_label` 和 `occlusion_valid`
+- **AND** 返回张量 MUST 裁剪或校验到 `num_pred` horizon
+
+#### Scenario: position batch targets
+- **WHEN** batch 包含位置目标且 objective 需要位置目标
+- **THEN** runtime MUST 返回 device 上的 `position_target` 和 `position_valid`
+- **AND** 返回张量 MUST 裁剪或校验到 `num_pred` horizon
+
+#### Scenario: 缺失目标字段
+- **WHEN** 当前 objective 需要某个 target 但 batch 缺少对应字段
+- **THEN** 系统 MUST 抛出清晰错误
+- **AND** 错误信息 MUST 指明缺失字段和当前 `experiment.objective`
+

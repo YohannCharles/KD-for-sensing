@@ -23,7 +23,7 @@ from kd_sensing.data.transform_ops.gps import (  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
-from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -300,10 +300,10 @@ def test_gps_canonical_fusion_configs_build_and_use_relative_polar(config_path: 
             if "lidar" in cfg["model"]["student"]["modalities"]:
                 assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
         else:
-            assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+            assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
     else:
         assert isinstance(teacher, FusionTeacherModalityNet)
-        assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet))
+        assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
 
 
 def _write_gps_files(root: Path, prefix: str, lat: float, lon: float) -> tuple[list[str], list[str]]:

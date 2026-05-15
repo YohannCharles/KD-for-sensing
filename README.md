@@ -112,8 +112,11 @@ checkpoint registry 读取同模态 teacher no-KD 的最高验证 Top-1 权重�
 候选信息。需要指定 teacher 或评估权重时，使用 `distillation.teacher_model_name` 的绝对路径或评估入口
 `--weights`。
 
-默认 early stopping 监控验证 `val_adba`，即所有未来目标时隙 DBA 的平均值，比较方向为 `max`。
-`training.min_delta` 表示 DBA 至少需要提升的幅度；`checkpoints/best.pth` 默认对应该指标的最佳 epoch。
+默认 beam 预测任务的 early stopping 监控验证 `val_adba`，即所有未来目标时隙 DBA 的平均值，
+比较方向为 `max`。objective-aware 训练会按目标切换默认主指标：`beam -> val_adba/max`，
+`occlusion -> val_occlusion_blocked_f1/max`，`position -> val_position_rmse/min`，
+`multitask -> val_multitask_loss/min`。`training.min_delta` 表示对应监控指标至少需要提升的幅度；
+`checkpoints/best.pth` 默认对应该指标的最佳 epoch。
 如需恢复 Top-1 或 loss 早停，可以显式覆盖：
 
 ```bash
@@ -354,6 +357,59 @@ Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` �
 `gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`，启用 mmWave 的配置使用
 `mmwave_input_size: 64` 和 `mmwave_normalize: true`。
 
+CLS-token fusion 可选启用遮挡检测和二维位置估算辅助监督。先在序列预处理中打开
+`include_position_targets: true`，生成 `future_gps1..future_gpsH` 和
+`future_bs_gps1..future_bs_gpsH`；遮挡标签由 `future_beam*` 对应 64-beam power vector 的
+`max_power` 训练集分位数阈值生成，默认 `threshold_percentile: 20`。
+
+预测目标现在由 `experiment.objective` 明确选择，`experiment.task` 仍只表示输入路由。合法 objective 为
+`beam`、`occlusion`、`position` 和 `multitask`；旧配置未设置时默认 `beam`。推荐 objective-aware
+fusion 入口使用 `<slug>_<objective>_no_kd.yaml` 命名，例如：
+
+```bash
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_occlusion_no_kd.yaml
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_position_no_kd.yaml
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml
+```
+
+`strong_only_<objective>_no_kd.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_no_kd.yaml`
+解析为 `[image, radar, lidar]`，可用于多任务模态失衡对照。`multitask` canonical 默认使用
+`loss.objective.weights.beam=1.0`、`occlusion=1.0`、`position=1.0`，因此
+`val_multitask_loss` 是三任务等权总 loss；实际权重会写入 `final_config.yaml` 的
+`runtime.prediction_objective.loss_weights`、`train_log.json` 和 `training_outputs.npz`。如需做非等权
+消融，显式覆盖对应权重即可，未覆盖的任务仍保持默认值：
+
+```bash
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml \
+  -o loss.objective.weights.beam=1.0 \
+  -o loss.objective.weights.occlusion=1.0 \
+  -o loss.objective.weights.position=0.25
+```
+
+`configs/fusion/all_modalities_no_kd.yaml` 继续作为五模态 beam 兼容入口。
+
+旧 auxiliary 多任务配置仍可运行：
+
+```bash
+conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
+  --config configs/fusion/token_transformer_all_modalities_multitask_no_kd.yaml
+```
+
+相关开关位于 `data.dataset.occlusion_target`、`data.dataset.position_target`、
+`model.student.auxiliary_heads` 和 `loss.auxiliary`。训练日志会记录
+`loss/occlusion`、`loss/position`、`loss/multitask_total`，验证报告会输出实际计算出的遮挡
+accuracy、blocked-class F1 和 position RMSE；未启用或未计算的 auxiliary metric 不再写成
+`0.0`，而是在 `train_log.json` 中记为 `null`、在 `training_outputs.npz` 中记为 `NaN`，TensorBoard
+也不会写 inactive scalar。历史 runs 里未启用任务的 auxiliary 曲线如果显示为 `0.0`，应按对应
+`final_config.yaml` 的 objective/head/target 配置解释为 inactive 占位，不应当作真实零误差或零 F1。
+训练产物会保存 `occlusion_target_stats.json` 和 `position_target_scaler.npz` 以供 test/eval split 复用。
+
 ### CRAF 反事实可靠性融合
 
 CRAF 通过 `model.student.type: craf_fusion` 显式启用，不会改变 early-concat `fusion_teacher` /
@@ -459,12 +515,12 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 
 - `final_config.yaml`
 - `checkpoints/last.pth`
-- `checkpoints/best.pth`：默认按 `training.early_stopping_metric: val_adba` 保存
+- `checkpoints/best.pth`：默认按 objective-specific `training.early_stopping_metric` 保存；beam 为 `val_adba`
 - `checkpoints/best_top1.pth`：显式 Top-1 最佳 checkpoint，供 registry 和分析流程使用
 - `metrics.json`
 - `train_log.json`
 - `training_outputs.npz`
-- `artifacts/gps_scaler.npz`、`artifacts/lidar_normalizer.npz` 或 `artifacts/mmwave_scaler.npz`，仅在对应归一化启用时写入
+- `artifacts/gps_scaler.npz`、`artifacts/lidar_normalizer.npz`、`artifacts/mmwave_scaler.npz`、`artifacts/occlusion_target_stats.json` 或 `artifacts/position_target_scaler.npz`，仅在对应归一化/辅助目标启用时写入
 - 训练曲线
 - `tensorboard/` TensorBoard event 日志
 
@@ -479,16 +535,48 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 tensorboard --logdir outputs
 ```
 
-TensorBoard 标量包含基础训练曲线和验证平均指标：
+TensorBoard 标量包含基础训练曲线和 objective-specific 验证指标。beam 预测推荐使用
+`beam/*` 命名空间：
 
-- `accuracy/val`：第一个未来目标时隙 `t+1` 的 Top-1 accuracy，不能直接当作论文表格里的跨 horizon 平均指标。
-- `accuracy/val_atop3`：所有 `J` 个未来目标时隙 Top-3 accuracy 的平均值。
-- `accuracy/val_atop5`：所有 `J` 个未来目标时隙 Top-5 accuracy 的平均值。
-- `dba/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算；这也是默认 early stopping 指标。
+- `beam/accuracy_val`：第一个未来目标时隙 `t+1` 的 Top-1 accuracy，不能直接当作论文表格里的跨 horizon 平均指标。
+- `beam/val_atop3`：所有 `J` 个未来目标时隙 Top-3 accuracy 的平均值。
+- `beam/val_atop5`：所有 `J` 个未来目标时隙 Top-5 accuracy 的平均值。
+- `beam/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算；这也是 beam objective 的默认 early stopping 指标。
+
+`beam/*` 只在 `experiment.objective: beam` 或 `multitask` 的 active beam 分任务中写入；
+`occlusion` 和 `position` 单任务即使能计算诊断性的 beam accuracy，也不会写进 `beam/*`。
+历史 `accuracy/*` 和 `dba/val_adba` TensorBoard tag 属于 legacy 兼容入口，默认不再写入；
+需要兼容旧 dashboard 时可设置 `output.tensorboard.legacy_accuracy_tags=true`。
 
 `metrics.json`、`teacher_metrics.json` 和 `test_report.json` 会记录 per-horizon Top-1/Top-3、跨 horizon
 平均值。LiDAR 运行还会包含 `lidar_input_quality`、`degradation_baselines.majority_class`、
 `degradation_baselines.last_beam` 和 `degradation_risk`，用于判断 BEV 是否大量为空、通道是否近常量，以及模型是否只达到 majority-class baseline。
+
+### 并行五模态训练建议
+
+四个五模态 objective 后台并行运行前，先生成覆盖参数而不是直接改默认配置：
+
+```bash
+conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+  --parallel-runs 4 \
+  --cpu-count 32
+```
+
+推荐结果会输出 `data.dataloader.train_num_workers`、`data.dataloader.test_num_workers`、
+`train/test_persistent_workers`、`train/test_prefetch_factor`、`output.progress.enabled=false` 和 cache policy。
+`test_persistent_workers=false` 与训练循环的验证后 worker shutdown 配合，避免 test DataLoader worker 在下一轮训练阶段长期驻留。
+
+如果 LiDAR cache 覆盖率不足，先预热，再把四个后台任务切到 `data.cache.policy=read_only`：
+
+```bash
+conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
+```
+
+同一 train split 下可复用的归一化/辅助目标 artifacts 会随训练写入 `artifacts/`：
+`lidar_normalizer.npz`、`gps_scaler.npz`、`mmwave_scaler.npz`、`occlusion_target_stats.json` 和
+`position_target_scaler.npz`。四任务并行时优先复用这些 train-fitted artifacts；只有确认 LiDAR BEV cache
+覆盖率足够时才使用 `read_only`，否则保留 `auto` 并先补齐 cache。
 
 ## 评估
 

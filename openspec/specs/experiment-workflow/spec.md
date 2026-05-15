@@ -935,23 +935,41 @@ G2D 实现 MUST 提供定向测试和 smoke training 验证命令，并且所有
 - **AND** checkpoint registry MUST 能继续按场景目录或 metadata 区分产物
 
 ### Requirement: 默认 early stopping 指标使用 DBA
-训练工作流 MUST 默认使用验证 DBA/ADBA 作为 early stopping 监控指标。所有默认训练配置、canonical 配置生成结果和配置模板 MUST 将默认 early stopping 指标设置为 `val_adba` 或等价 DBA 别名，并 MUST 使用越大越好的比较方向。默认配置 MUST NOT 使用 `top1_val_acc`、`val_acc` 或其它 Top-1 验证准确率别名作为 early stopping 指标。
+训练工作流 MUST 在 `experiment.objective: beam` 或未显式设置 objective 的历史 beam 训练中默认使用验证 DBA/ADBA 作为 early stopping 监控指标。objective-aware 非 beam 训练 MUST 使用对应预测目标的默认主指标：`occlusion` 使用 `val_occlusion_blocked_f1/max`，`position` 使用 `val_position_rmse/min`，`multitask` 使用 `val_multitask_loss/min` 或用户显式配置的可用 multitask 主指标。默认配置 MUST NOT 使用 `top1_val_acc`、`val_acc` 或其它 Top-1 验证准确率别名作为默认 early stopping 指标。
 
 #### Scenario: 默认配置记录 DBA early stopping
-- **WHEN** 用户使用默认 image、radar、GPS、LiDAR、mmWave 或 fusion 训练配置启动训练
-- **THEN** 系统 MUST 在解析后的最终配置中记录 early stopping 监控指标为 `val_adba` 或等价 DBA 别名
+- **WHEN** 用户使用未设置 `experiment.objective` 的默认 image、radar、GPS、LiDAR、mmWave 或 fusion 训练配置启动训练
+- **THEN** 系统 MUST 将 objective 解析为 `beam`
+- **AND** 系统 MUST 在解析后的最终配置中记录 early stopping 监控指标为 `val_adba` 或等价 DBA 别名
 - **AND** 系统 MUST 将 early stopping 比较方向记录为越大越好
 - **AND** 系统 MUST 不把 `top1_val_acc` 或等价 Top-1 验证准确率别名作为默认 early stopping 指标
 
-#### Scenario: canonical 配置默认使用 DBA
-- **WHEN** 开发者生成或读取 canonical 训练配置
+#### Scenario: canonical beam 配置默认使用 DBA
+- **WHEN** 开发者生成或读取 beam objective canonical 训练配置
 - **THEN** canonical 配置 MUST 默认包含 DBA/ADBA early stopping 指标
 - **AND** canonical 配置 MUST 不把 Top-1 验证准确率作为默认 early stopping 指标
+
+#### Scenario: objective-aware occlusion 默认 early stopping
+- **WHEN** 开发者生成或读取 `experiment.objective: occlusion` 的训练配置
+- **THEN** 解析后的配置 MUST 默认包含 `training.early_stopping_metric: val_occlusion_blocked_f1`
+- **AND** 解析后的配置 MUST 默认包含 `training.early_stopping_mode: max`
+
+#### Scenario: objective-aware position 默认 early stopping
+- **WHEN** 开发者生成或读取 `experiment.objective: position` 的训练配置
+- **THEN** 解析后的配置 MUST 默认包含 `training.early_stopping_metric: val_position_rmse`
+- **AND** 解析后的配置 MUST 默认包含 `training.early_stopping_mode: min`
+
+#### Scenario: objective-aware multitask 默认 early stopping
+- **WHEN** 开发者生成或读取 `experiment.objective: multitask` 的训练配置
+- **THEN** 解析后的配置 MUST 默认包含 `training.early_stopping_metric: val_multitask_loss`
+- **AND** 解析后的配置 MUST 默认包含 `training.early_stopping_mode: min`
+- **AND** runtime metadata MUST 记录该 multitask loss 使用的分任务权重
 
 #### Scenario: 显式覆盖 early stopping 指标
 - **WHEN** 用户在训练配置或命令行覆盖中显式设置 early stopping 指标为 Top-1、loss 或其它受支持指标
 - **THEN** 系统 MUST 使用用户显式指定的指标和比较方向
-- **AND** 该覆盖 MUST 不改变项目默认配置继续使用 DBA/ADBA 的要求
+- **AND** 系统 MUST 校验该指标在当前 objective 的验证结果中真实可用
+- **AND** 该覆盖 MUST 不改变项目默认配置继续使用 objective-specific 默认指标的要求
 
 ### Requirement: 训练循环按配置指标执行 early stopping
 训练循环 MUST 从每个 epoch 的验证标量中解析配置的 early stopping 指标，并基于该指标更新最佳值、patience 计数和默认最佳 checkpoint。DBA/ADBA 和准确率类指标 MUST 按越大越好判断 improvement；loss 类指标 MUST 按越小越好判断 improvement。
@@ -1019,4 +1037,204 @@ G2D 实现 MUST 提供定向测试和 smoke training 验证命令，并且所有
 - **THEN** 输出报告 MUST 包含 majority-class baseline
 - **AND** 输出报告 MUST 包含 LiDAR input quality summary
 - **AND** 报告 MUST 能标记模型未超过 majority-class baseline 的退化风险
+
+### Requirement: 训练流程支持多任务辅助 loss
+训练流程 MUST 在保持现有 beam/KD 基础 loss 的前提下支持可选多任务辅助 loss。辅助 loss MUST 只在配置启用且 batch/model 均提供对应字段时计算；否则训练流程 MUST 保持现有 beam-only 行为。
+
+#### Scenario: no-KD 多任务训练
+- **WHEN** 用户运行启用遮挡和位置辅助任务的 no-KD fusion 训练
+- **THEN** 训练流程 MUST 计算 beam CE、遮挡 BCE 和位置 MSE
+- **AND** optimizer step MUST 使用三者加权后的总 loss
+- **AND** train log MUST 记录每个 loss 分量
+
+#### Scenario: KD 多任务训练
+- **WHEN** 用户运行启用辅助任务的 logits KD 或 RKD fusion 训练
+- **THEN** 训练流程 MUST 保留既有 KD 基础 loss 计算
+- **AND** 训练流程 MUST 将辅助 loss 加到 student 总 loss
+- **AND** teacher 模型 MUST 不被要求输出辅助头，除非配置显式启用 teacher auxiliary supervision
+
+#### Scenario: 辅助字段缺失
+- **WHEN** 配置启用辅助 loss 但 batch 或模型输出缺少必要字段
+- **THEN** 训练流程 MUST 抛出清晰错误
+- **AND** 错误信息 MUST 指出缺失的是 dataset target 还是 model auxiliary output
+
+### Requirement: 验证和评估输出辅助指标
+验证和评估流程 MUST 在启用多任务辅助监督时输出遮挡和位置指标，同时保留现有 Top-K、DBA、loss、degradation baseline 和 modality subset 评估语义。
+
+#### Scenario: 验证输出遮挡指标
+- **WHEN** 验证流程收到 `occlusion_logits` 和 `occlusion_label`
+- **THEN** validation metrics MUST 包含遮挡 accuracy 和 blocked-class F1
+- **AND** epoch log 和 TensorBoard MUST 记录对应标量
+
+#### Scenario: 验证输出位置指标
+- **WHEN** 验证流程收到 `position` 和 `position_target`
+- **THEN** validation metrics MUST 包含 position RMSE
+- **AND** epoch log 和 TensorBoard MUST 记录对应标量
+
+#### Scenario: beam 指标保留
+- **WHEN** 多任务辅助监督启用
+- **THEN** 验证和评估流程 MUST 继续输出 beam Top-K、DBA、ATop-3、ATop-5 和 ADBA
+- **AND** early stopping 默认 MUST 继续支持现有 `val_adba` 配置
+
+### Requirement: 多任务运行产物可复现
+训练和评估流程 MUST 在运行产物中记录多任务配置、遮挡阈值、辅助目标统计、loss 权重和辅助指标，确保后续评估和复现实验能加载相同的标签生成状态。
+
+#### Scenario: final config 记录多任务状态
+- **WHEN** 训练启用多任务辅助监督
+- **THEN** `final_config.yaml` 或运行 metadata MUST 记录遮挡阈值、阈值分位数、位置目标来源和 loss 权重
+- **AND** checkpoint 或 normalization artifacts MUST 记录独立评估所需的辅助目标统计
+
+#### Scenario: train log 记录辅助指标历史
+- **WHEN** 训练至少完成一个 epoch 且启用多任务辅助监督
+- **THEN** `train_log.json` MUST 包含遮挡和位置指标历史
+- **AND** `training_outputs.npz` MUST 保存可画曲线的辅助 loss 或指标数组
+
+### Requirement: Objective-aware 训练流程
+训练流程 MUST 根据 `experiment.objective` 选择主 target、主模型输出、主 loss 和训练日志字段。`experiment.task` MUST 继续决定输入路由和模型 forward 路径。
+
+#### Scenario: fusion occlusion 训练
+- **WHEN** 用户运行 `experiment.task: fusion` 且 `experiment.objective: occlusion` 的训练配置
+- **THEN** trainer MUST 使用 fusion 输入准备逻辑运行 student model
+- **AND** trainer MUST 使用遮挡 logits 和遮挡标签计算主 loss
+- **AND** trainer MUST 不要求 beam loss 参与总 loss
+
+#### Scenario: fusion position 训练
+- **WHEN** 用户运行 `experiment.task: fusion` 且 `experiment.objective: position` 的训练配置
+- **THEN** trainer MUST 使用 fusion 输入准备逻辑运行 student model
+- **AND** trainer MUST 使用位置输出和位置目标计算主 loss
+- **AND** trainer MUST 不要求 beam loss 参与总 loss
+
+#### Scenario: fusion multitask 训练
+- **WHEN** 用户运行 `experiment.task: fusion` 且 `experiment.objective: multitask` 的训练配置
+- **THEN** trainer MUST 计算 beam、occlusion 和 position 三个 loss 分量
+- **AND** trainer MUST 按配置权重合成总 loss
+
+### Requirement: Objective-aware 验证和评估
+验证和评估流程 MUST 根据 `experiment.objective` 输出当前目标的主 metrics，并保留可计算的诊断 metrics。主 metrics MUST 支持 checkpoint 选择和 standalone evaluate。
+
+#### Scenario: occlusion 验证指标
+- **WHEN** 验证 `experiment.objective: occlusion` 的模型
+- **THEN** validator MUST 输出遮挡 loss、accuracy 和 blocked-class F1
+- **AND** epoch log MUST 暴露可用于 early stopping 的 `val_occlusion_blocked_f1`
+
+#### Scenario: position 验证指标
+- **WHEN** 验证 `experiment.objective: position` 的模型
+- **THEN** validator MUST 输出位置 loss、RMSE 和 MAE
+- **AND** epoch log MUST 暴露可用于 early stopping 的 `val_position_rmse`
+
+#### Scenario: multitask 验证指标
+- **WHEN** 验证 `experiment.objective: multitask` 的模型
+- **THEN** validator MUST 输出 beam、occlusion 和 position 的分任务 metrics
+- **AND** validator MUST 输出 multitask 总 loss 或配置指定的主指标
+
+### Requirement: Objective-aware checkpoint registry
+checkpoint registry 和 final config MUST 记录 objective-aware 指标，确保后续 evaluation 能按训练目标解释 checkpoint。
+
+#### Scenario: 归档 occlusion checkpoint
+- **WHEN** 训练完成并归档 `experiment.objective: occlusion` 的最佳 checkpoint
+- **THEN** registry metadata MUST 记录 objective、best metric、metric mode 和遮挡指标
+- **AND** evaluate MUST 能读取 registry artifact 并复用遮挡阈值
+
+#### Scenario: 归档 position checkpoint
+- **WHEN** 训练完成并归档 `experiment.objective: position` 的最佳 checkpoint
+- **THEN** registry metadata MUST 记录 objective、best metric、metric mode 和位置指标
+- **AND** evaluate MUST 能读取 registry artifact 并复用位置 target scaler
+
+### Requirement: Objective metrics 可用性语义
+训练、验证和评估流程 MUST 区分 active objective metrics 与 inactive metrics。未启用、缺少 head、缺少 target 或未实际计算的任务指标 MUST 不被写成 `0.0` 真实性能；系统 MUST 用缺失、`null`、`NaN` 或显式 availability metadata 表示不可用状态。
+
+#### Scenario: beam-only 训练不写 position 零曲线
+- **WHEN** 用户运行 `experiment.objective: beam` 且未启用 position target/head 的训练
+- **THEN** TensorBoard MUST 不写入 `position/rmse` 或 `position/mae` 标量曲线
+- **AND** epoch log MUST 不把 `val_position_rmse` 或 `val_position_mae` 记录为真实 `0.0`
+
+#### Scenario: occlusion-only 训练不写 position 零曲线
+- **WHEN** 用户运行 `experiment.objective: occlusion` 且未启用 position target/head 的训练
+- **THEN** TensorBoard MUST 不写入 `position/rmse` 或 `position/mae` 标量曲线
+- **AND** `training_outputs.npz` 若保留 position metric 数组 key，inactive slot MUST 使用 `NaN` 或等价不可用表示
+
+#### Scenario: position-only 训练不写 occlusion 零曲线
+- **WHEN** 用户运行 `experiment.objective: position` 且未启用 occlusion target/head 的训练
+- **THEN** TensorBoard MUST 不写入 `occlusion/accuracy` 或 `occlusion/blocked_f1` 标量曲线
+- **AND** epoch log MUST 不把 `val_occlusion_accuracy` 或 `val_occlusion_blocked_f1` 记录为真实 `0.0`
+
+#### Scenario: multitask 训练写入全部 active metrics
+- **WHEN** 用户运行 `experiment.objective: multitask` 且 beam、occlusion 和 position metrics 均可计算
+- **THEN** TensorBoard MUST 写入 beam、occlusion 和 position 对应的 active scalar 曲线
+- **AND** `train_log.json` MUST 记录三个任务的验证指标和 multitask 加权总 loss
+
+#### Scenario: early stopping 不接受 inactive metric
+- **WHEN** 用户配置的 early stopping metric 对当前 objective 不可用
+- **THEN** 训练流程 MUST 在保存 misleading checkpoint 前抛出清晰错误
+- **AND** 错误信息 MUST 指出缺失的 metric，并提示用户选择当前 objective 可用的 metric
+
+### Requirement: Objective-aware validation 输出
+验证和评估输出 MUST 只把真实计算的 auxiliary metrics 提升为 top-level metric，并 MUST 提供足够 metadata 说明哪些 objective targets 和 heads 已启用。inactive metric 不得通过默认零值绕过下游 early stopping 和图表解释。
+
+#### Scenario: metrics JSON 省略 inactive auxiliary metric
+- **WHEN** 验证 `experiment.objective: beam` 且未计算 position metric
+- **THEN** `metrics.json` MUST 不把 top-level `val_position_rmse` 写成 `0.0`
+- **AND** 输出 MUST 能通过 objective metadata 表明 position 不是本次 enabled head/target
+
+#### Scenario: metrics JSON 包含 active position metric
+- **WHEN** 验证 `experiment.objective: position` 且 position output、target 和 valid mask 均可用
+- **THEN** `metrics.json` MUST 包含真实计算的 `val_position_rmse`
+- **AND** 该值 MUST 用 position target scaler 反归一化后的尺度计算
+
+#### Scenario: metrics JSON 包含 active occlusion metric
+- **WHEN** 验证 `experiment.objective: occlusion` 且 occlusion logits、label 和 valid mask 均可用
+- **THEN** `metrics.json` MUST 包含真实计算的 `val_occlusion_blocked_f1`
+- **AND** 该值 MUST 可作为 `val_occlusion_blocked_f1/max` early stopping 来源
+
+### Requirement: Beam TensorBoard 指标命名空间
+训练流程 MUST 为 beam 预测写入 objective-specific TensorBoard 标量命名空间。`beam/*` 标量 MUST 只表示 active beam objective 或 multitask 中的 active beam 分任务，不得包含 occlusion-only 或 position-only 训练中的诊断性 beam accuracy。默认 TensorBoard 输出 MUST 不再依赖通用 `accuracy/*` 分组作为 beam 指标入口；历史通用 tag 只能作为显式兼容路径写入。
+
+#### Scenario: beam objective 写入 beam 指标
+- **WHEN** 用户运行 `experiment.objective: beam` 或未显式设置 objective 的历史 beam 训练，并启用 TensorBoard
+- **THEN** 训练流程 MUST 写入 `beam/accuracy_train`、`beam/accuracy_val`、`beam/val_atop3`、`beam/val_atop5` 和 `beam/val_adba`
+- **AND** 这些 tag MUST 分别对应当前 epoch 的 `train_acc`、`val_acc`、`val_atop3`、`val_atop5` 和 `val_adba`
+- **AND** 写入前 MUST 跳过缺失、`null`、`NaN` 或非 finite 的值
+
+#### Scenario: occlusion 单任务不污染 beam 指标
+- **WHEN** 用户运行 `experiment.objective: occlusion` 的单任务训练，并启用 TensorBoard
+- **THEN** 训练流程 MUST NOT 写入 `beam/accuracy_train`、`beam/accuracy_val`、`beam/val_atop3`、`beam/val_atop5` 或 `beam/val_adba`
+- **AND** 即使 validator 能计算诊断性 beam `val_acc`，该值也 MUST NOT 出现在 `beam/*` TensorBoard 命名空间中
+
+#### Scenario: position 单任务不污染 beam 指标
+- **WHEN** 用户运行 `experiment.objective: position` 的单任务训练，并启用 TensorBoard
+- **THEN** 训练流程 MUST NOT 写入 `beam/accuracy_train`、`beam/accuracy_val`、`beam/val_atop3`、`beam/val_atop5` 或 `beam/val_adba`
+- **AND** position TensorBoard 指标 MUST 继续通过 `position/rmse` 和 `position/mae` 表示
+
+#### Scenario: multitask 写入 active beam 分任务指标
+- **WHEN** 用户运行 `experiment.objective: multitask` 且 beam 分任务参与 loss 或主验证指标计算，并启用 TensorBoard
+- **THEN** 训练流程 MUST 写入 `beam/accuracy_train`、`beam/accuracy_val`、`beam/val_atop3`、`beam/val_atop5` 和 `beam/val_adba`
+- **AND** 训练流程 MUST 继续写入 active 的 `occlusion/*` 和 `position/*` 指标
+
+#### Scenario: 默认不写历史通用 accuracy tag
+- **WHEN** 用户启用 TensorBoard 且未显式设置 `output.tensorboard.legacy_accuracy_tags: true`
+- **THEN** 训练流程 MUST NOT 写入 `accuracy/train`、`accuracy/val`、`accuracy/val_atop3`、`accuracy/val_atop5` 或 `dba/val_adba` 作为默认 beam 指标
+- **AND** `train_log.json`、`training_outputs.npz` 和 checkpoint metadata MUST 继续保留既有内部 metric key，便于旧分析脚本读取
+
+#### Scenario: 显式启用历史通用 tag
+- **WHEN** 用户设置 `output.tensorboard.legacy_accuracy_tags: true` 并启用 TensorBoard
+- **THEN** 训练流程 MAY 额外写入历史 `accuracy/*` 和 `dba/val_adba` tag
+- **AND** 这些 legacy tag MUST 被文档标记为兼容入口，不得作为 objective-aware 实验比较的推荐入口
+
+### Requirement: Beam metric alias 兼容
+训练流程 MUST 支持 objective-specific beam metric 名称作为 early stopping 和用户配置别名。新增 `beam/*` 别名 MUST 解析到既有内部 metric key，同时历史 `accuracy/*` 和 `dba/*` 别名 MUST 保持可用。
+
+#### Scenario: 使用 beam ADBA tag 配置 early stopping
+- **WHEN** 用户将 early stopping metric 配置为 `beam/val_adba`
+- **THEN** 系统 MUST 将该配置解析为内部 `val_adba`
+- **AND** 比较方向 MUST 支持按 DBA/ADBA 语义使用越大越好
+
+#### Scenario: 使用 beam Top-1 tag 配置 early stopping
+- **WHEN** 用户将 early stopping metric 配置为 `beam/accuracy_val` 或 `beam/val_top1`
+- **THEN** 系统 MUST 将该配置解析为内部 `val_acc`
+- **AND** 比较方向 MUST 支持按 accuracy 语义使用越大越好
+
+#### Scenario: 历史 early stopping 别名继续可用
+- **WHEN** 用户将 early stopping metric 配置为 `accuracy/val`、`accuracy/val_top1` 或 `dba/val_adba`
+- **THEN** 系统 MUST 继续解析到对应内部 beam metric
+- **AND** 解析行为 MUST 不要求 TensorBoard 继续写入同名 legacy tag
 

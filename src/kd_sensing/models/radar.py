@@ -3,6 +3,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from kd_sensing.models.auxiliary_heads import (
+    TemporalAuxiliaryHeads,
+    temporal_output_with_optional_auxiliary,
+)
 from kd_sensing.registries import MODELS
 
 
@@ -55,6 +59,8 @@ class RadarStudentModalityNet(nn.Module):
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
         radar_channels: int = 2,
+        num_pred: int = 3,
+        auxiliary_heads: bool | dict | None = None,
     ):
         super().__init__()
         self.name = "RadarStudentModalityNet"
@@ -114,6 +120,12 @@ class RadarStudentModalityNet(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(64, num_classes),
         )
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            gru_hidden_size,
+            num_pred=num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=0.3,
+        )
 
     def forward(self, radar_batch: torch.Tensor):
         batch_size, seq_len, channels, height, width = radar_batch.shape
@@ -126,7 +138,12 @@ class RadarStudentModalityNet(nn.Module):
         features = self.layer_norm(projected)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
-        return pred, features, seq_out
+        return temporal_output_with_optional_auxiliary(
+            logits=pred,
+            input_features=features,
+            output_features=seq_out,
+            auxiliary_heads=self.auxiliary_heads,
+        )
 
 
 @MODELS.register("radar_teacher")
@@ -138,6 +155,8 @@ class RadarModalityNet(nn.Module):
         gru_params: list[int] | tuple[int, int, int],
         radar_channels: int = 2,
         num_heads: int = 8,
+        num_pred: int = 3,
+        auxiliary_heads: bool | dict | None = None,
     ):
         super().__init__()
         self.name = "RadarModalityNet"
@@ -180,6 +199,12 @@ class RadarModalityNet(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(64, num_classes),
         )
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            gru_hidden_size,
+            num_pred=num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=0.3,
+        )
 
     def forward(self, radar_batch: torch.Tensor):
         features = self.radar_feature_extractor(radar_batch)
@@ -188,4 +213,9 @@ class RadarModalityNet(nn.Module):
         attn_output, _ = self.multihead_attention(seq_out, seq_out, seq_out)
         enhanced_seq_out = attn_output + seq_out
         pred = self.classifier(enhanced_seq_out)
-        return pred, features, enhanced_seq_out
+        return temporal_output_with_optional_auxiliary(
+            logits=pred,
+            input_features=features,
+            output_features=enhanced_seq_out,
+            auxiliary_heads=self.auxiliary_heads,
+        )

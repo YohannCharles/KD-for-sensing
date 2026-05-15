@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import Dataset
 
+from kd_sensing.data.transform_ops.mmwave import OcclusionTargetStats
 from kd_sensing.registries import DATASETS
 
 
@@ -27,6 +28,8 @@ class SyntheticSequenceDataset(Dataset):
         lidar_channels: int = 3,
         use_mmwave: bool = False,
         mmwave_input_size: int = 64,
+        occlusion_target: bool | dict[str, object] | None = None,
+        position_target: bool | dict[str, object] | None = None,
         seed: int = 0,
         **_: object,
     ):
@@ -44,6 +47,21 @@ class SyntheticSequenceDataset(Dataset):
         self.lidar_channels = lidar_channels
         self.use_mmwave = use_mmwave
         self.mmwave_input_size = mmwave_input_size
+        self.occlusion_target_enabled = _enabled(occlusion_target)
+        self.position_target_enabled = _enabled(position_target)
+        self.position_target_normalize = False
+        self.occlusion_target_stats = (
+            OcclusionTargetStats(
+                threshold=0.5,
+                threshold_percentile=50.0,
+                sample_count=length,
+                positive_count=length // 2,
+                positive_ratio=(length // 2) / max(length, 1),
+            )
+            if self.occlusion_target_enabled
+            else None
+        )
+        self.position_target_scaler = None
         self.generator = torch.Generator().manual_seed(seed)
 
     def __len__(self) -> int:
@@ -71,4 +89,23 @@ class SyntheticSequenceDataset(Dataset):
             )
         if self.use_mmwave:
             sample["mmwave"] = torch.rand((self.seq_len, self.mmwave_input_size), generator=self.generator)
+        if self.occlusion_target_enabled:
+            sample["occlusion_label"] = torch.randint(
+                0,
+                2,
+                (self.num_pred,),
+                generator=self.generator,
+            ).float()
+            sample["occlusion_valid"] = torch.ones((self.num_pred,), dtype=torch.bool)
+        if self.position_target_enabled:
+            sample["position_target"] = torch.rand((self.num_pred, 2), generator=self.generator).float()
+            sample["position_valid"] = torch.ones((self.num_pred,), dtype=torch.bool)
         return sample
+
+
+def _enabled(value: bool | dict[str, object] | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return bool(value.get("enabled", value.get("enable", False)))
+    return False

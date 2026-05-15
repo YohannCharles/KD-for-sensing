@@ -169,6 +169,27 @@ def test_sequence_split_metadata_matches_output_csvs(tmp_path: Path):
     assert "future_beam1" in metadata["label_distribution"]["train"]["columns"]
 
 
+def test_sequence_preprocessing_can_emit_future_position_targets(tmp_path: Path):
+    source = _write_sequence_source_with_gps(tmp_path, seq_count=2, rows_per_seq=4)
+
+    train_path, _ = generate_sequence_data(
+        source,
+        tmp_path,
+        "_POS",
+        in_len=2,
+        out_len=2,
+        training_set_pct=0.5,
+        split_seed=5,
+        min_test_sequences=1,
+        include_gps=True,
+        include_position_targets=True,
+    )
+
+    train_frame = pd.read_csv(train_path)
+
+    assert {"future_gps1", "future_gps2", "future_bs_gps1", "future_bs_gps2"} <= set(train_frame.columns)
+
+
 def _write_sequence_source(root: Path, *, seq_count: int, rows_per_seq: int) -> Path:
     rows = []
     for seq_idx in range(seq_count):
@@ -188,6 +209,34 @@ def _write_sequence_source(root: Path, *, seq_count: int, rows_per_seq: int) -> 
     source = root / "scenario_RA.csv"
     source.write_text(
         "unit1_rgb,unit1_radar,unit1_pwr_60ghz,seq_index\n"
+        + "\n".join(",".join(row) for row in rows)
+        + "\n",
+        encoding="utf-8",
+    )
+    return source
+
+
+def _write_sequence_source_with_gps(root: Path, *, seq_count: int, rows_per_seq: int) -> Path:
+    rows = []
+    for seq_idx in range(seq_count):
+        for row_idx in range(rows_per_seq):
+            label = np.zeros(64, dtype=np.float32)
+            label[(seq_idx + row_idx) % 4] = 1.0
+            beam_path = root / f"beam_gps_s{seq_idx}_r{row_idx}.txt"
+            np.savetxt(beam_path, label)
+            rows.append(
+                [
+                    f"camera_s{seq_idx}_r{row_idx}.jpg",
+                    f"radar_s{seq_idx}_r{row_idx}.npy",
+                    beam_path.name,
+                    f"gps_s{seq_idx}_r{row_idx}.txt",
+                    f"bs_gps_s{seq_idx}_r{row_idx}.txt",
+                    str(seq_idx),
+                ]
+            )
+    source = root / "scenario_RA_GPS.csv"
+    source.write_text(
+        "unit1_rgb,unit1_radar,unit1_pwr_60ghz,unit2_loc_cal,unit1_loc,seq_index\n"
         + "\n".join(",".join(row) for row in rows)
         + "\n",
         encoding="utf-8",

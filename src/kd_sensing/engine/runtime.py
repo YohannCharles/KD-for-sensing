@@ -9,6 +9,7 @@ import torch
 from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
+    prepare_auxiliary_targets,
     prepare_fusion_inputs,
     prepare_gps_inputs,
     prepare_image_inputs,
@@ -48,6 +49,21 @@ def prepare_task_labels(
         batch,
         num_pred=num_pred,
         downsample_ratio=downsample_ratio,
+        device=device,
+        non_blocking=non_blocking,
+    )
+
+
+def prepare_task_auxiliary_targets(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> dict[str, torch.Tensor]:
+    return prepare_auxiliary_targets(
+        batch,
+        num_pred=num_pred,
         device=device,
         non_blocking=non_blocking,
     )

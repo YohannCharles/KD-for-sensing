@@ -13,6 +13,7 @@ from kd_sensing.modalities import (
     resolve_image_profile,
     validate_image_encoder_profile,
 )
+from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image_encoders import ResNet18ImageEncoder
 from kd_sensing.models.lidar import LidarFeatureExtractor
@@ -281,6 +282,7 @@ class ModularSequenceModel(nn.Module):
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        auxiliary_heads: bool | dict[str, Any] | None = None,
         **_: Any,
     ):
         super().__init__()
@@ -323,6 +325,12 @@ class ModularSequenceModel(nn.Module):
         beam_cfg.setdefault("input_dim", core_output_dim)
         beam_cfg.setdefault("num_classes", self.num_classes)
         self.heads = nn.ModuleDict({"beam": HEADS.build(beam_cfg)})
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            core_output_dim,
+            num_pred=self.num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=float(beam_cfg.get("dropout", 0.0)),
+        )
 
     def forward(
         self,
@@ -363,7 +371,7 @@ class ModularSequenceModel(nn.Module):
             input_features = torch.cat(ordered, dim=-1)
         output_features = self.representation_core(core_input)
         logits = self.heads["beam"](output_features)
-        return {
+        output = {
             "logits": logits,
             "input_features": input_features,
             "output_features": output_features,
@@ -372,6 +380,8 @@ class ModularSequenceModel(nn.Module):
             "encoder_features": encoded,
             "image_profile": self.image_profile,
         }
+        output.update(self.auxiliary_heads(output_features))
+        return output
 
     def _encoder_config(
         self,

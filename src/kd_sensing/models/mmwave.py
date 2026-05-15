@@ -4,6 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kd_sensing.models.auxiliary_heads import (
+    TemporalAuxiliaryHeads,
+    temporal_output_with_optional_auxiliary,
+)
 from kd_sensing.registries import MODELS
 
 
@@ -81,6 +85,8 @@ class MmWaveModalityNet(nn.Module):
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        num_pred: int = 3,
+        auxiliary_heads: bool | dict | None = None,
         hidden_size: int = 128,
         dropout: float = 0.1,
     ):
@@ -116,6 +122,12 @@ class MmWaveModalityNet(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(64, num_classes),
         )
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            gru_hidden_size,
+            num_pred=num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=dropout,
+        )
 
     def forward(self, mmwave_batch: torch.Tensor):
         features = self.feature_extraction(mmwave_batch)
@@ -126,7 +138,12 @@ class MmWaveModalityNet(nn.Module):
         context_vector = torch.sum(seq_out * attn_weights, dim=1)
         enhanced_seq_out = seq_out + context_vector.unsqueeze(1).expand(-1, seq_len, -1)
         pred = self.classifier(enhanced_seq_out)
-        return pred, features, enhanced_seq_out
+        return temporal_output_with_optional_auxiliary(
+            logits=pred,
+            input_features=features,
+            output_features=enhanced_seq_out,
+            auxiliary_heads=self.auxiliary_heads,
+        )
 
 
 @MODELS.register("mmwave_student")
@@ -137,6 +154,8 @@ class MmWaveStudentModalityNet(nn.Module):
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        num_pred: int = 3,
+        auxiliary_heads: bool | dict | None = None,
         width_multiplier: float = 1.0,
         dropout: float = 0.1,
     ):
@@ -168,10 +187,21 @@ class MmWaveStudentModalityNet(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(64, num_classes),
         )
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            gru_hidden_size,
+            num_pred=num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=dropout,
+        )
 
     def forward(self, mmwave_batch: torch.Tensor):
         features = self.feature_extraction(mmwave_batch)
         features = self.layer_norm(features)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
-        return pred, features, seq_out
+        return temporal_output_with_optional_auxiliary(
+            logits=pred,
+            input_features=features,
+            output_features=seq_out,
+            auxiliary_heads=self.auxiliary_heads,
+        )

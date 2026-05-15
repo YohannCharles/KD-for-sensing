@@ -35,6 +35,12 @@ conda run -n kd_mm_beam python scripts/profile_training_io.py \
 ```
 
 输出会记录 dataset `__getitem__`、DataLoader batch wait、CPU 到 GPU transfer、forward、backward/optimizer、step 总耗时、samples/s、CUDA peak memory，以及实际 DataLoader、non-blocking transfer、AMP 和 cache 参数。
+新增字段包括：
+
+- `dataloader_splits.train/test`：实际 batch size、num_workers、persistent_workers、prefetch_factor、pin_memory 和 drop_last。
+- `getitem_component_seconds`：image、radar、gps、lidar、mmwave 和 auxiliary targets 的 `__getitem__` 均值、P50、P95。
+- `wait_vs_gpu_step`：DataLoader wait、transfer、forward、backward/optimizer 的总耗时比例、均值比例和 P95 尖峰对比。
+- `progress` 与 `cache_policy`：当前 batch progress 状态和 cache policy，便于复现实验运行条件。
 
 ## Baseline 参考
 
@@ -68,6 +74,18 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
   -o data.cache.lidar.policy=auto
 ```
 
+四任务并行时不要让每个训练进程同时写同一批 LiDAR BEV cache。先用推荐器检查覆盖率：
+
+```bash
+conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+  --parallel-runs 4 \
+  --cpu-count 32
+```
+
+如果输出的 `cache.lidar.coverage` 低于阈值，先运行 LiDAR cache 预热命令，并保留
+`data.cache.policy=auto`；覆盖率足够后再使用推荐器输出的 `data.cache.policy=read_only`。
+
 ## Cache 复用与失效
 
 可以长期复用：LiDAR BEV、radar RA/DA 预生成结果、beam label cache。训练参数一般不影响这些缓存，包括 `lr`、`epochs`、`batch_size`、`num_workers`、`seed`、模型结构、KD 类型、loss、scheduler 和输出目录。
@@ -79,7 +97,12 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 - radar FFT/RA/DA 生成参数变化。
 - GPS feature mode 或坐标转换逻辑变化。
 
-归一化统计更敏感：GPS scaler 和 LiDAR normalizer/stats 应与 train split、portion、feature mode 和预处理版本绑定。
+归一化统计更敏感：GPS scaler、LiDAR normalizer/stats、mmWave scaler、occlusion stats 和 position scaler
+应与 train split、portion、feature mode、目标定义和预处理版本绑定。训练会把可复用 artifacts 写入
+`artifacts/gps_scaler.npz`、`artifacts/lidar_normalizer.npz`、`artifacts/mmwave_scaler.npz`、
+`artifacts/occlusion_target_stats.json` 和 `artifacts/position_target_scaler.npz`；四个 objective 使用同一
+split 和预处理配置时，应优先复用这些 train-fitted artifacts。只有当 LiDAR BEV cache 覆盖率足够且不需要补写
+缺失 cache 时，才把 cache policy 切到 `read_only`。
 
 ## DataLoader 与 AMP
 
@@ -98,3 +121,27 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
   -o training.amp.enabled=true \
   -o training.amp.dtype=float16
 ```
+
+新配置也支持按 split 覆盖 worker 生命周期：
+
+```bash
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+  -o data.dataloader.train_num_workers=3 \
+  -o data.dataloader.test_num_workers=1 \
+  -o data.dataloader.train_persistent_workers=true \
+  -o data.dataloader.test_persistent_workers=false \
+  -o data.dataloader.train_prefetch_factor=1 \
+  -o data.dataloader.test_prefetch_factor=1 \
+  -o output.progress.enabled=false
+```
+
+后台 tmux/tee 训练建议关闭 batch 级 tqdm：`output.progress.enabled=false`。这只影响 batch/epoch progress
+输出，不影响 epoch metrics、`train_log.json`、checkpoint、TensorBoard scalar 或 `training_outputs.npz`。
+
+## GPU 低利用率排查顺序
+
+1. 先跑 `scripts/profile_training_io.py`，看 `wait_vs_gpu_step.p95_spikes` 和 `phase_ratios.wait`。
+2. 如果 wait 明显高于 forward/backward，检查 `getitem_component_seconds` 中最重的模态。
+3. LiDAR 重时先看推荐器的 cache 覆盖率，必要时预热 cache，再复测。
+4. 四实验并行时先限制 train/test worker 和 prefetch，并关闭 batch progress。
+5. wait 降下来后再考虑 AMP 或 batch size；不要把模型结构当成第一怀疑对象。

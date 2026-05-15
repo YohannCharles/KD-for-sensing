@@ -6,6 +6,7 @@ DEFAULT_CONFIG = {
     "experiment": {
         "name": "kd_sensing",
         "task": "image",
+        "objective": "beam",
         "seed": 42,
         "device": "auto",
     },
@@ -275,6 +276,7 @@ DEFAULT_CONFIG = {
         "tensorboard": {
             "enabled": True,
             "log_dir": "tensorboard",
+            "legacy_accuracy_tags": False,
         },
         "progress": {
             "enabled": True,

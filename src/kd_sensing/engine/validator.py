@@ -7,9 +7,16 @@ from pathlib import Path
 import torch
 
 from kd_sensing.engine.marf_training import ModalitySubsetSampler
+from kd_sensing.engine.prediction_objectives import (
+    compute_prediction_loss,
+    objective_runtime_metadata,
+    prepare_prediction_targets,
+    resolve_prediction_objective,
+)
 from kd_sensing.engine.runtime import (
     autocast_context,
     prepare_task_batch,
+    prepare_task_auxiliary_targets,
     prepare_task_labels,
     resolve_amp_settings,
     run_model_step,
@@ -21,12 +28,19 @@ from kd_sensing.evaluation.lidar_diagnostics import (
     lidar_degradation_report,
     lidar_preprocessing_metadata_from_dataset,
 )
-from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
+from kd_sensing.evaluation.metrics import (
+    calculate_dba_score,
+    calculate_occlusion_metrics,
+    calculate_position_rmse,
+    calculate_topk_accuracy,
+)
 from kd_sensing.evaluation.subset_specs import resolve_conditional_utility_subset
 
 
 def validate(model, dataloader, cfg: dict, criterion, device: torch.device, output_dir: str | Path | None = None):
     model.eval()
+    objective = resolve_prediction_objective(cfg)
+    objective_metadata = objective_runtime_metadata(cfg)
     task = cfg["experiment"].get("task", "image")
     model_cfg = cfg["model"]
     num_pred = model_cfg.get("num_pred", 3)
@@ -36,9 +50,18 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     val_loss = 0.0
+    val_occlusion_loss = 0.0
+    val_position_loss = 0.0
+    val_multitask_loss = 0.0
     all_outputs = []
     all_labels = []
     all_input_beams = []
+    all_occlusion_logits = []
+    all_occlusion_labels = []
+    all_occlusion_valid = []
+    all_position_outputs = []
+    all_position_targets = []
+    all_position_valid = []
     lidar_quality = LidarQualityAccumulator()
     saw_lidar = False
     with torch.no_grad():
@@ -56,6 +79,17 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                 device=device,
                 non_blocking=non_blocking,
             )
+            auxiliary_targets = prepare_task_auxiliary_targets(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            prediction_targets = prepare_prediction_targets(
+                labels=labels,
+                auxiliary_targets=auxiliary_targets,
+                cfg=cfg,
+            )
             with autocast_context(amp_enabled, device, amp_dtype):
                 step = run_model_step(
                     model,
@@ -68,14 +102,54 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                     non_blocking=non_blocking,
                 )
                 outputs = step.logits
-                loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
+                beam_loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
+                prediction_loss = compute_prediction_loss(
+                    step.model_output,
+                    prediction_targets,
+                    cfg,
+                    reference=outputs,
+                    beam_total_loss=beam_loss,
+                    beam_task_loss=beam_loss,
+                )
+                loss = prediction_loss.total
             val_loss += loss.item()
+            val_occlusion_loss += prediction_loss.occlusion.item()
+            val_position_loss += prediction_loss.position.item()
+            val_multitask_loss += prediction_loss.multitask_total.item()
             all_outputs.append(outputs.detach().cpu())
             all_labels.append(labels.detach().cpu())
+            if "occlusion_logits" in step.model_output.diagnostics and "occlusion_label" in auxiliary_targets:
+                all_occlusion_logits.append(step.model_output.diagnostics["occlusion_logits"].detach().cpu())
+                all_occlusion_labels.append(auxiliary_targets["occlusion_label"].detach().cpu())
+                all_occlusion_valid.append(auxiliary_targets["occlusion_valid"].detach().cpu())
+            if "position" in step.model_output.diagnostics and "position_target" in auxiliary_targets:
+                all_position_outputs.append(step.model_output.diagnostics["position"].detach().cpu())
+                all_position_targets.append(auxiliary_targets["position_target"].detach().cpu())
+                all_position_valid.append(auxiliary_targets["position_valid"].detach().cpu())
     val_loss = val_loss / max(len(dataloader), 1)
     all_outputs_t = torch.cat(all_outputs, dim=0)
     all_labels_t = torch.cat(all_labels, dim=0)
+    auxiliary_metrics = _auxiliary_metrics_from_outputs(
+        dataloader,
+        occlusion_logits=torch.cat(all_occlusion_logits, dim=0) if all_occlusion_logits else None,
+        occlusion_labels=torch.cat(all_occlusion_labels, dim=0) if all_occlusion_labels else None,
+        occlusion_valid=torch.cat(all_occlusion_valid, dim=0) if all_occlusion_valid else None,
+        position_outputs=torch.cat(all_position_outputs, dim=0) if all_position_outputs else None,
+        position_targets=torch.cat(all_position_targets, dim=0) if all_position_targets else None,
+        position_valid=torch.cat(all_position_valid, dim=0) if all_position_valid else None,
+    )
     metrics = _metrics_from_outputs(val_loss, all_outputs_t, all_labels_t, cfg)
+    _attach_objective_metrics(
+        metrics,
+        auxiliary_metrics,
+        objective=objective,
+        dataloader_len=len(dataloader),
+        val_occlusion_loss=val_occlusion_loss,
+        val_position_loss=val_position_loss,
+        val_multitask_loss=val_multitask_loss,
+    )
+    metrics["objective"] = objective_metadata
+    metrics["available_metrics"] = _available_scalar_metrics(metrics)
     input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
     baselines = degradation_baselines_from_labels(
         all_labels_t,
@@ -123,6 +197,35 @@ def _metrics_from_outputs(loss: float, outputs: torch.Tensor, labels: torch.Tens
         "total": total.tolist(),
     }
     metrics.update(_flat_future_topk_metrics(topk_acc, total))
+    return metrics
+
+
+def _auxiliary_metrics_from_outputs(
+    dataloader,
+    *,
+    occlusion_logits: torch.Tensor | None,
+    occlusion_labels: torch.Tensor | None,
+    occlusion_valid: torch.Tensor | None,
+    position_outputs: torch.Tensor | None,
+    position_targets: torch.Tensor | None,
+    position_valid: torch.Tensor | None,
+) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    if occlusion_logits is not None and occlusion_labels is not None:
+        metrics.update(calculate_occlusion_metrics(occlusion_logits, occlusion_labels, occlusion_valid))
+    if position_outputs is not None and position_targets is not None:
+        scaler = getattr(getattr(dataloader, "dataset", None), "position_target_scaler", None)
+        mean = getattr(scaler, "mean_", None)
+        scale = getattr(scaler, "scale_", None)
+        metrics.update(
+            calculate_position_rmse(
+                position_outputs,
+                position_targets,
+                position_valid,
+                mean=mean,
+                scale=scale,
+            )
+        )
     return metrics
 
 
@@ -208,8 +311,17 @@ def _validate_with_force_mask(model, dataloader, cfg: dict, criterion, device: t
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     val_loss = 0.0
+    val_occlusion_loss = 0.0
+    val_position_loss = 0.0
+    val_multitask_loss = 0.0
     all_outputs = []
     all_labels = []
+    all_occlusion_logits = []
+    all_occlusion_labels = []
+    all_occlusion_valid = []
+    all_position_outputs = []
+    all_position_targets = []
+    all_position_valid = []
     with torch.no_grad():
         for batch in dataloader:
             batch = prepare_task_batch(batch)
@@ -219,6 +331,17 @@ def _validate_with_force_mask(model, dataloader, cfg: dict, criterion, device: t
                 downsample_ratio=downsample_ratio,
                 device=device,
                 non_blocking=non_blocking,
+            )
+            auxiliary_targets = prepare_task_auxiliary_targets(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            prediction_targets = prepare_prediction_targets(
+                labels=labels,
+                auxiliary_targets=auxiliary_targets,
+                cfg=cfg,
             )
             with autocast_context(amp_enabled, device, amp_dtype):
                 step = run_model_step(
@@ -233,16 +356,110 @@ def _validate_with_force_mask(model, dataloader, cfg: dict, criterion, device: t
                     force_modality_mask=mask,
                 )
                 outputs = step.logits
-                loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
+                beam_loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
+                prediction_loss = compute_prediction_loss(
+                    step.model_output,
+                    prediction_targets,
+                    cfg,
+                    reference=outputs,
+                    beam_total_loss=beam_loss,
+                    beam_task_loss=beam_loss,
+                )
+                loss = prediction_loss.total
             val_loss += loss.item()
+            val_occlusion_loss += prediction_loss.occlusion.item()
+            val_position_loss += prediction_loss.position.item()
+            val_multitask_loss += prediction_loss.multitask_total.item()
             all_outputs.append(outputs.detach().cpu())
             all_labels.append(labels.detach().cpu())
-    return _metrics_from_outputs(
+            if "occlusion_logits" in step.model_output.diagnostics and "occlusion_label" in auxiliary_targets:
+                all_occlusion_logits.append(step.model_output.diagnostics["occlusion_logits"].detach().cpu())
+                all_occlusion_labels.append(auxiliary_targets["occlusion_label"].detach().cpu())
+                all_occlusion_valid.append(auxiliary_targets["occlusion_valid"].detach().cpu())
+            if "position" in step.model_output.diagnostics and "position_target" in auxiliary_targets:
+                all_position_outputs.append(step.model_output.diagnostics["position"].detach().cpu())
+                all_position_targets.append(auxiliary_targets["position_target"].detach().cpu())
+                all_position_valid.append(auxiliary_targets["position_valid"].detach().cpu())
+    metrics = _metrics_from_outputs(
         val_loss / max(len(dataloader), 1),
         torch.cat(all_outputs, dim=0),
         torch.cat(all_labels, dim=0),
         cfg,
     )
+    auxiliary_metrics = _auxiliary_metrics_from_outputs(
+        dataloader,
+        occlusion_logits=torch.cat(all_occlusion_logits, dim=0) if all_occlusion_logits else None,
+        occlusion_labels=torch.cat(all_occlusion_labels, dim=0) if all_occlusion_labels else None,
+        occlusion_valid=torch.cat(all_occlusion_valid, dim=0) if all_occlusion_valid else None,
+        position_outputs=torch.cat(all_position_outputs, dim=0) if all_position_outputs else None,
+        position_targets=torch.cat(all_position_targets, dim=0) if all_position_targets else None,
+        position_valid=torch.cat(all_position_valid, dim=0) if all_position_valid else None,
+    )
+    objective = resolve_prediction_objective(cfg)
+    _attach_objective_metrics(
+        metrics,
+        auxiliary_metrics,
+        objective=objective,
+        dataloader_len=len(dataloader),
+        val_occlusion_loss=val_occlusion_loss,
+        val_position_loss=val_position_loss,
+        val_multitask_loss=val_multitask_loss,
+    )
+    metrics["objective"] = objective_runtime_metadata(cfg)
+    metrics["available_metrics"] = _available_scalar_metrics(metrics)
+    return metrics
+
+
+def _attach_objective_metrics(
+    metrics: dict,
+    auxiliary_metrics: dict[str, float],
+    *,
+    objective: str,
+    dataloader_len: int,
+    val_occlusion_loss: float,
+    val_position_loss: float,
+    val_multitask_loss: float,
+) -> None:
+    auxiliary: dict[str, float] = dict(auxiliary_metrics)
+    batches = max(dataloader_len, 1)
+    has_occlusion = int(auxiliary_metrics.get("occlusion_total", 0)) > 0
+    has_position = int(auxiliary_metrics.get("position_total", 0)) > 0
+
+    if has_occlusion:
+        auxiliary["loss_occlusion"] = float(val_occlusion_loss / batches)
+        metrics["loss/occlusion"] = auxiliary["loss_occlusion"]
+        if "occlusion_accuracy" in auxiliary_metrics:
+            metrics["val_occlusion_accuracy"] = float(auxiliary_metrics["occlusion_accuracy"])
+        if "occlusion_blocked_f1" in auxiliary_metrics:
+            metrics["val_occlusion_blocked_f1"] = float(auxiliary_metrics["occlusion_blocked_f1"])
+
+    if has_position:
+        auxiliary["loss_position"] = float(val_position_loss / batches)
+        metrics["loss/position"] = auxiliary["loss_position"]
+        if "position_rmse" in auxiliary_metrics:
+            metrics["val_position_rmse"] = float(auxiliary_metrics["position_rmse"])
+        if "position_mae" in auxiliary_metrics:
+            metrics["val_position_mae"] = float(auxiliary_metrics["position_mae"])
+
+    if objective == "multitask":
+        auxiliary["loss_multitask_total"] = float(val_multitask_loss / batches)
+        metrics["loss/multitask_total"] = auxiliary["loss_multitask_total"]
+        metrics["val_multitask_loss"] = auxiliary["loss_multitask_total"]
+
+    if auxiliary:
+        metrics["auxiliary"] = auxiliary
+
+
+def _available_scalar_metrics(metrics: dict) -> list[str]:
+    available = {"val_loss"}
+    if "topk" in metrics and "1" in metrics.get("topk", {}):
+        available.add("val_acc")
+    if "dba" in metrics:
+        available.add("val_adba")
+    for key, value in metrics.items():
+        if key.startswith("val_") and isinstance(value, (int, float)):
+            available.add(key)
+    return sorted(available)
 
 
 def _modality_subset_definitions(modalities: list[str]) -> dict[str, list[str]]:

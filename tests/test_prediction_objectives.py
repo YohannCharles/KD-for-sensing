@@ -1,0 +1,378 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+import torch
+import torch.nn.functional as F
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.engine.model_output import ModelOutput  # noqa: E402
+from kd_sensing.engine.prediction_objectives import (  # noqa: E402
+    PredictionTargets,
+    compute_prediction_loss,
+    multitask_loss_weights,
+    resolve_prediction_objective,
+)
+from kd_sensing.engine.trainer import train  # noqa: E402
+
+
+def test_objective_config_defaults_validation_and_legacy_compatibility():
+    beam_cfg = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml")
+    occlusion_cfg = load_config(ROOT / "configs/fusion/strong_only_occlusion_no_kd.yaml")
+    position_cfg = load_config(ROOT / "configs/fusion/weak_only_position_no_kd.yaml")
+
+    assert beam_cfg["experiment"]["objective"] == "beam"
+    assert beam_cfg["training"]["early_stopping_metric"] == "val_adba"
+    assert occlusion_cfg["experiment"]["objective"] == "occlusion"
+    assert occlusion_cfg["training"]["early_stopping_metric"] == "val_occlusion_blocked_f1"
+    assert occlusion_cfg["data"]["dataset"]["occlusion_target"]["enabled"] is True
+    assert occlusion_cfg["model"]["student"]["auxiliary_heads"]["occlusion"] is True
+    assert position_cfg["experiment"]["objective"] == "position"
+    assert position_cfg["training"]["early_stopping_metric"] == "val_position_rmse"
+    assert position_cfg["training"]["early_stopping_mode"] == "min"
+
+    with pytest.raises(ValueError, match="experiment.objective.*beam, occlusion, position, multitask"):
+        load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=bad"])
+    auto_occlusion = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=occlusion"])
+    auto_position = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=position"])
+    assert auto_occlusion["data"]["dataset"]["occlusion_target"]["enabled"] is True
+    assert auto_occlusion["model"]["student"]["auxiliary_heads"]["occlusion"] is True
+    assert auto_position["data"]["dataset"]["position_target"]["enabled"] is True
+    assert auto_position["model"]["student"]["auxiliary_heads"]["position"] is True
+    assert auto_position["data"]["dataset"]["train_csv_name"] == "train_seqs_RA_GPS_LIDAR_POS.csv"
+
+
+@pytest.mark.parametrize("modality", ["image", "radar", "gps", "lidar", "mmwave"])
+@pytest.mark.parametrize(
+    ("objective", "expected_metric", "expected_mode"),
+    [
+        ("occlusion", "val_occlusion_blocked_f1", "max"),
+        ("position", "val_position_rmse", "min"),
+        ("multitask", "val_multitask_loss", "min"),
+    ],
+)
+def test_single_modality_objective_overrides_autoconfigure_targets_and_heads(
+    modality: str,
+    objective: str,
+    expected_metric: str,
+    expected_mode: str,
+):
+    cfg = load_config(ROOT / f"configs/{modality}/teacher_no_kd.yaml", [f"experiment.objective={objective}"])
+    needs_occlusion = objective in {"occlusion", "multitask"}
+    needs_position = objective in {"position", "multitask"}
+
+    assert cfg["experiment"]["task"] == modality
+    assert cfg["experiment"]["objective"] == objective
+    assert cfg["training"]["early_stopping_metric"] == expected_metric
+    assert cfg["training"]["early_stopping_mode"] == expected_mode
+    assert cfg["model"]["student"]["auxiliary_heads"]["enabled"] is True
+    assert cfg["model"]["student"]["auxiliary_heads"].get("occlusion", False) is needs_occlusion
+    assert cfg["model"]["student"]["auxiliary_heads"].get("position", False) is needs_position
+    assert cfg["model"]["student"]["num_pred"] == cfg["model"]["num_pred"]
+    if needs_occlusion:
+        assert cfg["data"]["dataset"]["occlusion_target"]["enabled"] is True
+    if needs_position:
+        assert cfg["data"]["dataset"]["position_target"]["enabled"] is True
+        assert cfg["data"]["dataset"]["train_csv_name"] == "train_seqs_RA_GPS_LIDAR_POS.csv"
+        assert cfg["data"]["dataset"]["test_csv_name"] == "test_seqs_RA_GPS_LIDAR_POS.csv"
+    if objective == "multitask":
+        assert multitask_loss_weights(cfg) == {"beam": 1.0, "occlusion": 1.0, "position": 1.0}
+
+
+@pytest.mark.parametrize(
+    ("config_path", "modalities"),
+    [
+        (
+            "configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml",
+            ["image", "radar", "gps", "lidar", "mmwave"],
+        ),
+        ("configs/fusion/strong_only_multitask_no_kd.yaml", ["gps", "mmwave"]),
+        ("configs/fusion/weak_only_multitask_no_kd.yaml", ["image", "radar", "lidar"]),
+    ],
+)
+def test_objective_multitask_virtual_configs_default_to_equal_weights(config_path: str, modalities: list[str]):
+    cfg = load_config(ROOT / config_path)
+
+    assert cfg["experiment"]["objective"] == "multitask"
+    assert cfg["model"]["student"]["modalities"] == modalities
+    assert cfg["data"]["dataset"]["occlusion_target"]["enabled"] is True
+    assert cfg["data"]["dataset"]["position_target"]["enabled"] is True
+    assert cfg["model"]["student"]["auxiliary_heads"]["occlusion"] is True
+    assert cfg["model"]["student"]["auxiliary_heads"]["position"] is True
+    assert multitask_loss_weights(cfg) == {"beam": 1.0, "occlusion": 1.0, "position": 1.0}
+    assert cfg["training"]["early_stopping_metric"] == "val_multitask_loss"
+    assert cfg["training"]["early_stopping_mode"] == "min"
+
+
+def test_multitask_weight_and_early_stopping_overrides_are_scoped():
+    cfg = load_config(
+        ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml",
+        [
+            "loss.objective.weights.position=0.25",
+            "training.early_stopping_metric=val_loss",
+            "training.early_stopping_mode=min",
+        ],
+    )
+
+    assert multitask_loss_weights(cfg) == {"beam": 1.0, "occlusion": 1.0, "position": 0.25}
+    assert cfg["training"]["early_stopping_metric"] == "val_loss"
+    assert cfg["training"]["early_stopping_mode"] == "min"
+
+
+@pytest.mark.parametrize(
+    ("objective", "expected_metric", "expected_mode"),
+    [
+        ("beam", "val_adba", "max"),
+        ("occlusion", "val_occlusion_blocked_f1", "max"),
+        ("position", "val_position_rmse", "min"),
+        ("multitask", "val_multitask_loss", "min"),
+    ],
+)
+def test_objective_virtual_configs_select_default_early_stopping(
+    objective: str,
+    expected_metric: str,
+    expected_mode: str,
+):
+    cfg = load_config(ROOT / f"configs/fusion/strong_only_{objective}_no_kd.yaml")
+
+    assert cfg["experiment"]["objective"] == objective
+    assert cfg["training"]["early_stopping_metric"] == expected_metric
+    assert cfg["training"]["early_stopping_mode"] == expected_mode
+
+
+def test_objective_loss_masks_and_multitask_weights():
+    logits = torch.tensor([[[1.0, 0.0], [0.2, 0.8]]])
+    occlusion_logits = torch.tensor([[0.0, 2.0]])
+    position = torch.tensor([[[1.0, 1.0], [3.0, 5.0]]])
+    output = ModelOutput(
+        logits=logits,
+        input_features=None,
+        output_features=None,
+        diagnostics={"occlusion_logits": occlusion_logits, "position": position},
+    )
+    targets = PredictionTargets(
+        labels=torch.tensor([[0, 1]]),
+        occlusion_label=torch.tensor([[1.0, 0.0]]),
+        occlusion_valid=torch.tensor([[True, False]]),
+        position_target=torch.tensor([[[0.0, 1.0], [1.0, 1.0]]]),
+        position_valid=torch.tensor([[True, False]]),
+    )
+    beam = logits.sum() * 0.0 + 3.0
+
+    occlusion = compute_prediction_loss(
+        output,
+        targets,
+        {"experiment": {"objective": "occlusion"}, "loss": {"objective": {"occlusion": {"pos_weight": None}}}},
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+    expected_bce = F.binary_cross_entropy_with_logits(
+        occlusion_logits[:, :1],
+        targets.occlusion_label[:, :1],
+    )
+    assert torch.allclose(occlusion.total, expected_bce)
+    assert torch.allclose(occlusion.primary, expected_bce)
+
+    position_loss = compute_prediction_loss(
+        output,
+        targets,
+        {"experiment": {"objective": "position"}, "loss": {"objective": {"position": {"type": "mse"}}}},
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+    assert torch.allclose(position_loss.total, torch.tensor(0.5))
+
+    multitask = compute_prediction_loss(
+        output,
+        targets,
+        {
+            "experiment": {"objective": "multitask"},
+            "loss": {"objective": {"weights": {"beam": 0.5, "occlusion": 2.0, "position": 0.25}}},
+        },
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+    expected_total = 0.5 * beam + 2.0 * expected_bce + 0.25 * torch.tensor(0.5)
+    assert torch.allclose(multitask.total, expected_total)
+
+
+def test_beam_objective_keeps_old_auxiliary_loss_compatibility():
+    logits = torch.zeros(1, 2, 2)
+    output = ModelOutput(
+        logits=logits,
+        input_features=None,
+        output_features=None,
+        diagnostics={
+            "occlusion_logits": torch.zeros(1, 2),
+            "position": torch.zeros(1, 2, 2),
+        },
+    )
+    targets = PredictionTargets(
+        labels=torch.tensor([[0, 1]]),
+        occlusion_label=torch.ones(1, 2),
+        occlusion_valid=torch.tensor([[True, True]]),
+        position_target=torch.ones(1, 2, 2),
+        position_valid=torch.tensor([[True, True]]),
+    )
+    beam = logits.sum() * 0.0 + 1.0
+    cfg = {
+        "experiment": {"objective": "beam"},
+        "data": {
+            "dataset": {
+                "occlusion_target": {"enabled": True},
+                "position_target": {"enabled": True},
+            }
+        },
+        "model": {"student": {"auxiliary_heads": {"enabled": True, "occlusion": True, "position": True}}},
+        "loss": {
+            "auxiliary": {
+                "enabled": True,
+                "occlusion": {"enabled": True, "weight": 1.0},
+                "position": {"enabled": True, "weight": 0.5},
+            }
+        },
+    }
+
+    result = compute_prediction_loss(output, targets, cfg, reference=logits, beam_total_loss=beam, beam_task_loss=beam)
+
+    assert result.total.item() > beam.item()
+    assert result.multitask_total.item() == pytest.approx(result.occlusion.item() + 0.5 * result.position.item())
+
+
+@pytest.mark.parametrize("objective", ["beam", "occlusion", "position", "multitask"])
+def test_tiny_training_smoke_for_first_class_objectives(tmp_path: Path, objective: str):
+    cfg = _tiny_objective_cfg(objective, tmp_path)
+
+    result = train(cfg)
+
+    history = result["history"]
+    assert resolve_prediction_objective(cfg) == objective
+    assert len(history["train_task_loss"]) == 1
+    if objective == "occlusion":
+        assert history["train_task_loss"][0] == pytest.approx(history["train_occlusion_loss"][0])
+        assert history["val_occlusion_blocked_f1"][0] is not None
+        assert history["val_position_rmse"][0] is None
+        assert "val_position_rmse" not in result["epoch_logs"][0]["validation_metrics"]
+    if objective == "position":
+        assert history["train_task_loss"][0] == pytest.approx(history["train_position_loss"][0])
+        assert history["val_occlusion_blocked_f1"][0] is None
+        assert history["val_position_rmse"][0] is not None
+        assert "val_occlusion_blocked_f1" not in result["epoch_logs"][0]["validation_metrics"]
+    if objective == "beam":
+        assert history["val_occlusion_blocked_f1"][0] is None
+        assert history["val_position_rmse"][0] is None
+        assert history["val_multitask_loss"][0] is None
+        assert "val_position_rmse" not in result["epoch_logs"][0]["validation_metrics"]
+    if objective == "multitask":
+        assert history["val_occlusion_blocked_f1"][0] is not None
+        assert history["val_position_rmse"][0] is not None
+        assert history["val_multitask_loss"][0] is not None
+        assert result["prediction_objective"]["loss_weights"] == {"beam": 1.0, "occlusion": 1.0, "position": 1.0}
+        assert result["epoch_logs"][0]["loss_weights"] == {"beam": 1.0, "occlusion": 1.0, "position": 1.0}
+
+
+def _tiny_objective_cfg(objective: str, tmp_path: Path) -> dict:
+    needs_occlusion = objective in {"occlusion", "multitask"}
+    needs_position = objective in {"position", "multitask"}
+    return {
+        "experiment": {"name": f"tiny_{objective}", "task": "fusion", "objective": objective, "seed": 3, "device": "cpu"},
+        "data": {
+            "dataset": {
+                "type": "synthetic",
+                "scene": 31,
+                "length": 2,
+                "seq_len": 2,
+                "num_pred": 2,
+                "num_classes": 8,
+                "use_gps": True,
+                "gps_input_size": 3,
+                "occlusion_target": {"enabled": needs_occlusion},
+                "position_target": {"enabled": needs_position, "normalize": False},
+            },
+            "dataloader": {"train_batch_size": 1, "test_batch_size": 1, "num_workers": 0, "pin_memory": False},
+        },
+        "model": {
+            "modalities": ["gps"],
+            "feature_size": 8,
+            "num_classes": 8,
+            "seq_length_teacher": 2,
+            "seq_length_student": 2,
+            "num_pred": 2,
+            "downsample_ratio": 1,
+            "teacher": {
+                "type": "cls_token_transformer_fusion",
+                "modalities": ["gps"],
+                "feature_size": 8,
+                "d_model": 8,
+                "num_classes": 8,
+                "num_pred": 2,
+                "num_heads": 2,
+                "num_layers": 1,
+                "max_seq_len": 4,
+                "gps_input_size": 3,
+            },
+            "student": {
+                "type": "cls_token_transformer_fusion",
+                "modalities": ["gps"],
+                "feature_size": 8,
+                "d_model": 8,
+                "num_classes": 8,
+                "num_pred": 2,
+                "num_heads": 2,
+                "num_layers": 1,
+                "max_seq_len": 4,
+                "gps_input_size": 3,
+                "auxiliary_heads": {
+                    "enabled": needs_occlusion or needs_position,
+                    "occlusion": needs_occlusion,
+                    "position": needs_position,
+                },
+            },
+        },
+        "loss": {
+            "type": "cross_entropy",
+            "objective": {
+                "weights": {"beam": 1.0, "occlusion": 1.0, "position": 1.0},
+                "position": {"type": "mse"},
+            },
+        },
+        "distillation": {"type": "no_kd", "teacher_model_name": None},
+        "training": {
+            "epochs": 1,
+            "lr": 0.001,
+            "weight_decay": 0.0,
+            "grad_clip": None,
+            "patience": 2,
+            "use_early_stopping": False,
+            "early_stopping_metric": {
+                "beam": "val_adba",
+                "occlusion": "val_occlusion_blocked_f1",
+                "position": "val_position_rmse",
+                "multitask": "val_multitask_loss",
+            }[objective],
+            "early_stopping_mode": "min" if objective in {"position", "multitask"} else "max",
+            "min_delta": 0.0,
+            "transfer": {"non_blocking": False},
+            "amp": {"enabled": False, "dtype": "float16", "grad_scaler": True},
+        },
+        "scheduler": {"type": "none"},
+        "evaluation": {"k_values": [1, 3], "dba_delta": 5},
+        "output": {
+            "dir": str(tmp_path),
+            "run_name": f"tiny_{objective}",
+            "overwrite": True,
+            "progress": {"enabled": False},
+            "tensorboard": {"enabled": False},
+        },
+        "checkpoint": {"registry": {"enabled": False}, "strict_load": True},
+    }

@@ -8,6 +8,7 @@ from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
 from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts
 from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
+from kd_sensing.engine.prediction_objectives import objective_requires_occlusion, objective_requires_position
 from kd_sensing.engine.run_metadata import dataset_run_metadata, throughput_run_metadata
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
@@ -35,6 +36,19 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             split_metadata["train"] = recorded_splits["train"]
     needs_train_gps = _evaluation_uses_gps(cfg) and "gps_scaler" not in dataset_kwargs
     needs_train_lidar = _evaluation_uses_lidar(cfg) and "lidar_normalizer" not in dataset_kwargs
+    if _evaluation_uses_occlusion_target(cfg) and "occlusion_target_stats" not in dataset_kwargs:
+        occlusion_target = cfg.get("data", {}).get("dataset", {}).get("occlusion_target", {})
+        threshold = occlusion_target.get("threshold") if isinstance(occlusion_target, dict) else None
+        if threshold is None:
+            raise ValueError(
+                "Occlusion evaluation requires train-fitted occlusion_target_stats. "
+                "Use a registry checkpoint with auxiliary target artifacts or set data.dataset.occlusion_target.threshold."
+            )
+    if _evaluation_uses_position_target_scaler(cfg) and "position_target_scaler" not in dataset_kwargs:
+        raise ValueError(
+            "Position target evaluation with normalization requires a train-fitted position_target_scaler. "
+            "Use a registry checkpoint with auxiliary target artifacts or disable data.dataset.position_target.normalize."
+        )
     if _evaluation_uses_mmwave(cfg) and _mmwave_normalization_enabled(cfg) and "mmwave_scaler" not in dataset_kwargs:
         raise ValueError(
             "mmWave evaluation requires a train-fitted mmwave_scaler. "
@@ -170,3 +184,22 @@ def _evaluation_uses_mmwave(cfg: dict) -> bool:
 
 def _mmwave_normalization_enabled(cfg: dict) -> bool:
     return bool(cfg.get("data", {}).get("dataset", {}).get("mmwave_normalize", True))
+
+
+def _evaluation_uses_occlusion_target(cfg: dict) -> bool:
+    if objective_requires_occlusion(cfg):
+        return True
+    target = cfg.get("data", {}).get("dataset", {}).get("occlusion_target")
+    return bool(target.get("enabled", False)) if isinstance(target, dict) else bool(target)
+
+
+def _evaluation_uses_position_target_scaler(cfg: dict) -> bool:
+    if objective_requires_position(cfg):
+        target = cfg.get("data", {}).get("dataset", {}).get("position_target")
+        if isinstance(target, dict):
+            return bool(target.get("normalize", target.get("standardize", True)))
+        return True
+    target = cfg.get("data", {}).get("dataset", {}).get("position_target")
+    if isinstance(target, dict):
+        return bool(target.get("enabled", False)) and bool(target.get("normalize", target.get("standardize", True)))
+    return bool(target)

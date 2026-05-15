@@ -660,6 +660,16 @@ def test_load_config_applies_overrides_after_canonical_config_resolution():
     assert overridden["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
 
 
+@pytest.mark.parametrize("modality", ["image", "radar", "gps", "lidar", "mmwave"])
+@pytest.mark.parametrize("objective", ["occlusion", "position", "multitask"])
+def test_single_modality_objective_overrides_build_auxiliary_capable_models(modality: str, objective: str):
+    cfg = load_config(ROOT / f"configs/{modality}/teacher_no_kd.yaml", [f"experiment.objective={objective}"])
+    model = MODELS.build(cfg["model"]["student"])
+
+    assert cfg["model"]["student"]["auxiliary_heads"]["enabled"] is True
+    assert hasattr(model, "auxiliary_heads")
+
+
 def test_load_config_keeps_explicit_scene32_override():
     cfg = load_config(ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml", ["data.dataset.scene=32"])
 

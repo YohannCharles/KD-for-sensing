@@ -1,0 +1,455 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+
+from kd_sensing.engine.auxiliary import (
+    compute_auxiliary_multitask_loss,
+    resolve_auxiliary_task_config,
+)
+from kd_sensing.engine.model_output import ModelOutput
+
+
+PREDICTION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")
+
+_DEFAULT_METRICS: dict[str, tuple[str, str]] = {
+    "beam": ("val_adba", "max"),
+    "occlusion": ("val_occlusion_blocked_f1", "max"),
+    "position": ("val_position_rmse", "min"),
+    "multitask": ("val_multitask_loss", "min"),
+}
+
+
+@dataclass(frozen=True)
+class PredictionObjectiveSpec:
+    name: str
+    required_targets: tuple[str, ...]
+    required_outputs: tuple[str, ...]
+    primary_loss_name: str
+    default_metric: str
+    default_metric_mode: str
+
+
+@dataclass(frozen=True)
+class PredictionTargets:
+    labels: torch.Tensor
+    occlusion_label: torch.Tensor | None = None
+    occlusion_valid: torch.Tensor | None = None
+    position_target: torch.Tensor | None = None
+    position_valid: torch.Tensor | None = None
+
+    def as_auxiliary_dict(self) -> dict[str, torch.Tensor]:
+        result: dict[str, torch.Tensor] = {}
+        if self.occlusion_label is not None:
+            result["occlusion_label"] = self.occlusion_label
+        if self.occlusion_valid is not None:
+            result["occlusion_valid"] = self.occlusion_valid
+        if self.position_target is not None:
+            result["position_target"] = self.position_target
+        if self.position_valid is not None:
+            result["position_valid"] = self.position_valid
+        return result
+
+
+@dataclass(frozen=True)
+class PredictionLossBundle:
+    total: torch.Tensor
+    primary: torch.Tensor
+    beam: torch.Tensor
+    occlusion: torch.Tensor
+    position: torch.Tensor
+    multitask_total: torch.Tensor
+    diagnostics: dict[str, float]
+
+
+def resolve_prediction_objective(cfg: dict[str, Any]) -> str:
+    raw = cfg.get("experiment", {}).get("objective", "beam")
+    objective = str(raw).strip().lower()
+    if objective not in PREDICTION_OBJECTIVES:
+        supported = ", ".join(PREDICTION_OBJECTIVES)
+        raise ValueError(f"experiment.objective must be one of: {supported}; got '{raw}'.")
+    return objective
+
+
+def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiveSpec:
+    objective = (
+        resolve_prediction_objective(cfg_or_objective)
+        if isinstance(cfg_or_objective, dict)
+        else str(cfg_or_objective).strip().lower()
+    )
+    if objective not in PREDICTION_OBJECTIVES:
+        supported = ", ".join(PREDICTION_OBJECTIVES)
+        raise ValueError(f"Unknown prediction objective '{objective}'. Supported objectives: {supported}.")
+    metric, mode = _DEFAULT_METRICS[objective]
+    required_targets: tuple[str, ...]
+    required_outputs: tuple[str, ...]
+    primary_loss: str
+    if objective == "beam":
+        required_targets = ("beam",)
+        required_outputs = ("logits",)
+        primary_loss = "beam"
+    elif objective == "occlusion":
+        required_targets = ("occlusion",)
+        required_outputs = ("occlusion_logits",)
+        primary_loss = "occlusion"
+    elif objective == "position":
+        required_targets = ("position",)
+        required_outputs = ("position",)
+        primary_loss = "position"
+    else:
+        required_targets = ("beam", "occlusion", "position")
+        required_outputs = ("logits", "occlusion_logits", "position")
+        primary_loss = "multitask_total"
+    return PredictionObjectiveSpec(
+        name=objective,
+        required_targets=required_targets,
+        required_outputs=required_outputs,
+        primary_loss_name=primary_loss,
+        default_metric=metric,
+        default_metric_mode=mode,
+    )
+
+
+def default_primary_metric(objective: str) -> tuple[str, str]:
+    return _DEFAULT_METRICS[objective]
+
+
+def configure_objective_defaults(
+    cfg: dict[str, Any],
+    *,
+    explicit_early_stopping_metric: bool = False,
+    explicit_early_stopping_mode: bool = False,
+) -> None:
+    experiment = cfg.setdefault("experiment", {})
+    experiment["objective"] = resolve_prediction_objective(cfg)
+    metric, mode = default_primary_metric(experiment["objective"])
+    training = cfg.setdefault("training", {})
+    if not explicit_early_stopping_metric:
+        training["early_stopping_metric"] = metric
+    if not explicit_early_stopping_mode:
+        training["early_stopping_mode"] = mode
+
+
+def objective_requires_occlusion(cfg: dict[str, Any]) -> bool:
+    return resolve_prediction_objective(cfg) in {"occlusion", "multitask"}
+
+
+def objective_requires_position(cfg: dict[str, Any]) -> bool:
+    return resolve_prediction_objective(cfg) in {"position", "multitask"}
+
+
+def objective_enabled_targets(cfg: dict[str, Any]) -> list[str]:
+    return list(objective_spec(cfg).required_targets)
+
+
+def objective_enabled_heads(cfg: dict[str, Any]) -> list[str]:
+    heads = []
+    for output in objective_spec(cfg).required_outputs:
+        if output == "logits":
+            heads.append("beam")
+        elif output == "occlusion_logits":
+            heads.append("occlusion")
+        elif output == "position":
+            heads.append("position")
+    return heads
+
+
+def objective_runtime_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
+    spec = objective_spec(cfg)
+    return {
+        "name": spec.name,
+        "primary_loss": spec.primary_loss_name,
+        "primary_metric": spec.default_metric,
+        "primary_metric_mode": spec.default_metric_mode,
+        "enabled_targets": list(spec.required_targets),
+        "enabled_heads": objective_enabled_heads(cfg),
+        "loss_weights": multitask_loss_weights(cfg),
+    }
+
+
+def prepare_prediction_targets(
+    *,
+    labels: torch.Tensor,
+    auxiliary_targets: dict[str, torch.Tensor],
+    cfg: dict[str, Any],
+) -> PredictionTargets:
+    objective = resolve_prediction_objective(cfg)
+    targets = PredictionTargets(
+        labels=labels,
+        occlusion_label=auxiliary_targets.get("occlusion_label"),
+        occlusion_valid=auxiliary_targets.get("occlusion_valid"),
+        position_target=auxiliary_targets.get("position_target"),
+        position_valid=auxiliary_targets.get("position_valid"),
+    )
+    if objective in {"occlusion", "multitask"}:
+        _require_tensor(targets.occlusion_label, "occlusion_label", objective)
+        _require_tensor(targets.occlusion_valid, "occlusion_valid", objective)
+    if objective in {"position", "multitask"}:
+        _require_tensor(targets.position_target, "position_target", objective)
+        _require_tensor(targets.position_valid, "position_valid", objective)
+    return targets
+
+
+def compute_prediction_loss(
+    model_output: ModelOutput,
+    targets: PredictionTargets,
+    cfg: dict[str, Any],
+    *,
+    reference: torch.Tensor,
+    beam_total_loss: torch.Tensor,
+    beam_task_loss: torch.Tensor | None = None,
+) -> PredictionLossBundle:
+    objective = resolve_prediction_objective(cfg)
+    zero = reference.sum() * 0.0
+    beam_component = beam_total_loss
+    beam_primary = beam_task_loss if beam_task_loss is not None else beam_total_loss
+    occlusion_loss = zero
+    position_loss = zero
+    multitask_total = zero
+    diagnostics = {"loss/beam": float(beam_primary.detach().cpu().item())}
+
+    if objective == "beam":
+        auxiliary_loss = compute_auxiliary_multitask_loss(
+            model_output,
+            targets.as_auxiliary_dict(),
+            cfg,
+            reference=reference,
+        )
+        total = beam_component + auxiliary_loss.total
+        auxiliary_diagnostics = dict(auxiliary_loss.diagnostics)
+        if "loss/occlusion" not in auxiliary_diagnostics and "loss/position" not in auxiliary_diagnostics:
+            auxiliary_diagnostics.pop("loss/multitask_total", None)
+        diagnostics.update(auxiliary_diagnostics)
+        diagnostics["loss/beam"] = float(beam_primary.detach().cpu().item())
+        diagnostics["loss/primary"] = float(beam_primary.detach().cpu().item())
+        return PredictionLossBundle(
+            total=total,
+            primary=beam_primary,
+            beam=beam_primary,
+            occlusion=auxiliary_loss.occlusion,
+            position=auxiliary_loss.position,
+            multitask_total=auxiliary_loss.total,
+            diagnostics=diagnostics,
+        )
+
+    if objective in {"occlusion", "multitask"}:
+        occlusion_loss = _occlusion_loss(model_output, targets, cfg, zero)
+        diagnostics["loss/occlusion"] = float(occlusion_loss.detach().cpu().item())
+
+    if objective in {"position", "multitask"}:
+        position_loss = _position_loss(model_output, targets, cfg, zero)
+        diagnostics["loss/position"] = float(position_loss.detach().cpu().item())
+
+    if objective == "occlusion":
+        primary = occlusion_loss
+        total = primary
+    elif objective == "position":
+        primary = position_loss
+        total = primary
+    else:
+        weights = multitask_loss_weights(cfg)
+        multitask_total = (
+            weights["beam"] * beam_component
+            + weights["occlusion"] * occlusion_loss
+            + weights["position"] * position_loss
+        )
+        primary = multitask_total
+        total = multitask_total
+        diagnostics["loss/multitask_total"] = float(multitask_total.detach().cpu().item())
+        diagnostics["objective/weight_beam"] = float(weights["beam"])
+        diagnostics["objective/weight_occlusion"] = float(weights["occlusion"])
+        diagnostics["objective/weight_position"] = float(weights["position"])
+
+    diagnostics["loss/primary"] = float(primary.detach().cpu().item())
+    return PredictionLossBundle(
+        total=total,
+        primary=primary,
+        beam=beam_primary,
+        occlusion=occlusion_loss,
+        position=position_loss,
+        multitask_total=multitask_total,
+        diagnostics=diagnostics,
+    )
+
+
+def multitask_loss_weights(cfg: dict[str, Any]) -> dict[str, float]:
+    loss_cfg = cfg.get("loss", {})
+    objective_cfg = _mapping(loss_cfg.get("objective"))
+    weights_cfg = _mapping(objective_cfg.get("weights"))
+    multitask_cfg = _mapping(loss_cfg.get("multitask") or loss_cfg.get("multi_task"))
+    auxiliary_cfg = _mapping(loss_cfg.get("auxiliary"))
+    return {
+        "beam": _weight_from_configs(
+            ("beam", "beam_weight", "lambda_beam"),
+            weights_cfg,
+            objective_cfg,
+            multitask_cfg,
+            default=1.0,
+        ),
+        "occlusion": _weight_from_configs(
+            ("occlusion", "occlusion_weight", "lambda_occlusion"),
+            weights_cfg,
+            objective_cfg,
+            multitask_cfg,
+            auxiliary_cfg,
+            default=resolve_auxiliary_task_config(cfg).occlusion_weight,
+        ),
+        "position": _weight_from_configs(
+            ("position", "position_weight", "lambda_position"),
+            weights_cfg,
+            objective_cfg,
+            multitask_cfg,
+            auxiliary_cfg,
+            default=resolve_auxiliary_task_config(cfg).position_weight,
+        ),
+    }
+
+
+def _occlusion_loss(
+    model_output: ModelOutput,
+    targets: PredictionTargets,
+    cfg: dict[str, Any],
+    zero: torch.Tensor,
+) -> torch.Tensor:
+    logits = _diagnostic_tensor(model_output, "occlusion_logits", "model output")
+    labels = _require_tensor(targets.occlusion_label, "occlusion_label", resolve_prediction_objective(cfg))
+    valid = _require_tensor(targets.occlusion_valid, "occlusion_valid", resolve_prediction_objective(cfg))
+    if logits.ndim != 2:
+        raise ValueError(f"occlusion_logits must have shape [B, H], got {tuple(logits.shape)}.")
+    if labels.shape != logits.shape:
+        raise ValueError(
+            f"occlusion_label shape {tuple(labels.shape)} does not match occlusion_logits {tuple(logits.shape)}."
+        )
+    if valid.shape != logits.shape:
+        raise ValueError(
+            f"occlusion_valid shape {tuple(valid.shape)} does not match occlusion_logits {tuple(logits.shape)}."
+        )
+    labels = labels.to(device=logits.device, dtype=logits.dtype)
+    valid = valid.to(device=logits.device, dtype=torch.bool)
+    loss_cfg = _objective_loss_cfg(cfg, "occlusion")
+    element_loss = F.binary_cross_entropy_with_logits(
+        logits,
+        labels,
+        reduction="none",
+        pos_weight=_resolve_pos_weight(loss_cfg.get("pos_weight"), labels, valid),
+    )
+    return _masked_mean(element_loss, valid, zero)
+
+
+def _position_loss(
+    model_output: ModelOutput,
+    targets: PredictionTargets,
+    cfg: dict[str, Any],
+    zero: torch.Tensor,
+) -> torch.Tensor:
+    prediction = _diagnostic_tensor(model_output, "position", "model output")
+    target = _require_tensor(targets.position_target, "position_target", resolve_prediction_objective(cfg))
+    valid = _require_tensor(targets.position_valid, "position_valid", resolve_prediction_objective(cfg))
+    if prediction.ndim != 3 or prediction.shape[-1] != 2:
+        raise ValueError(f"position output must have shape [B, H, 2], got {tuple(prediction.shape)}.")
+    if target.shape != prediction.shape:
+        raise ValueError(f"position_target shape {tuple(target.shape)} does not match output {tuple(prediction.shape)}.")
+    if valid.shape != prediction.shape[:2]:
+        raise ValueError(f"position_valid shape {tuple(valid.shape)} does not match output {tuple(prediction.shape)}.")
+    target = target.to(device=prediction.device, dtype=prediction.dtype)
+    valid = valid.to(device=prediction.device, dtype=torch.bool)
+    loss_cfg = _objective_loss_cfg(cfg, "position")
+    loss_type = str(loss_cfg.get("type", "mse")).lower()
+    if loss_type in {"smooth_l1", "huber"}:
+        beta = float(loss_cfg.get("beta", loss_cfg.get("smooth_l1_beta", 1.0)))
+        per_coord = F.smooth_l1_loss(prediction, target, reduction="none", beta=beta)
+        per_slot = per_coord.mean(dim=-1)
+    elif loss_type in {"mse", "l2"}:
+        per_slot = (prediction - target).pow(2).mean(dim=-1)
+    else:
+        raise ValueError("loss.position.type must be one of mse or smooth_l1.")
+    return _masked_mean(per_slot, valid, zero)
+
+
+def _objective_loss_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
+    loss_cfg = cfg.get("loss", {})
+    objective_cfg = _mapping(loss_cfg.get("objective"))
+    auxiliary_cfg = _mapping(loss_cfg.get("auxiliary"))
+    return {
+        **_mapping(auxiliary_cfg.get(name)),
+        **_mapping(loss_cfg.get(name)),
+        **_mapping(objective_cfg.get(name)),
+    }
+
+
+def _diagnostic_tensor(model_output: ModelOutput, key: str, source: str) -> torch.Tensor:
+    value = model_output.diagnostics.get(key)
+    if not torch.is_tensor(value):
+        raise ValueError(f"Prediction objective requires {source} '{key}', but it is missing.")
+    return value
+
+
+def _require_tensor(value: torch.Tensor | None, key: str, objective: str) -> torch.Tensor:
+    if not torch.is_tensor(value):
+        raise ValueError(f"experiment.objective '{objective}' requires batch target '{key}', but it is missing.")
+    return value
+
+
+def _masked_mean(values: torch.Tensor, valid: torch.Tensor, zero: torch.Tensor) -> torch.Tensor:
+    valid_f = valid.to(device=values.device, dtype=values.dtype)
+    denom = valid_f.sum()
+    if denom.item() <= 0:
+        return zero
+    return (values * valid_f).sum() / denom.clamp_min(1.0)
+
+
+def _resolve_pos_weight(spec: Any, labels: torch.Tensor, valid: torch.Tensor) -> torch.Tensor | None:
+    if spec is None or str(spec).lower() in {"none", "false", "0"}:
+        return None
+    if isinstance(spec, str) and spec.lower() == "auto":
+        valid_labels = labels[valid]
+        positives = valid_labels.sum()
+        negatives = valid_labels.numel() - positives
+        if positives.item() <= 0:
+            return torch.ones((), dtype=labels.dtype, device=labels.device)
+        return (negatives / positives.clamp_min(1.0)).to(dtype=labels.dtype, device=labels.device)
+    return torch.tensor(float(spec), dtype=labels.dtype, device=labels.device)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _weight_from_configs(
+    keys: tuple[str, ...],
+    *configs: dict[str, Any],
+    default: float,
+) -> float:
+    for cfg in configs:
+        for key in keys:
+            if key in cfg:
+                value = cfg[key]
+                if isinstance(value, dict):
+                    if "weight" in value:
+                        return float(value["weight"])
+                    continue
+                return float(value)
+    return float(default)
+
+
+__all__ = [
+    "PREDICTION_OBJECTIVES",
+    "PredictionLossBundle",
+    "PredictionObjectiveSpec",
+    "PredictionTargets",
+    "compute_prediction_loss",
+    "configure_objective_defaults",
+    "default_primary_metric",
+    "multitask_loss_weights",
+    "objective_enabled_heads",
+    "objective_enabled_targets",
+    "objective_requires_occlusion",
+    "objective_requires_position",
+    "objective_runtime_metadata",
+    "objective_spec",
+    "prepare_prediction_targets",
+    "resolve_prediction_objective",
+]

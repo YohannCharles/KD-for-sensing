@@ -46,6 +46,7 @@ def generate_sequence_data(
     include_mmwave: bool = False,
     mmwave_column: str = "unit1_pwr_60ghz",
     mmwave_fallback_column: str | None = None,
+    include_position_targets: bool = False,
     split_strategy: str = SPLIT_METADATA_PROTOCOL,
     split_seed: int = 42,
     min_test_sequences: int | None = None,
@@ -73,6 +74,7 @@ def generate_sequence_data(
         include_mmwave=include_mmwave,
         mmwave_column=mmwave_column,
         mmwave_fallback_column=mmwave_fallback_column,
+        include_position_targets=include_position_targets,
     )
     all_seqs = build_sequence_windows(
         all_data,
@@ -82,6 +84,7 @@ def generate_sequence_data(
         include_gps=include_gps,
         include_lidar=include_lidar,
         include_mmwave=include_mmwave,
+        include_position_targets=include_position_targets,
     )
     split = select_balanced_sequence_split(
         all_seqs,
@@ -133,13 +136,14 @@ def resolve_sequence_column_plan(
     include_mmwave: bool,
     mmwave_column: str,
     mmwave_fallback_column: str | None,
+    include_position_targets: bool,
 ) -> SequenceColumnPlan:
     base_columns = ["unit1_rgb", "unit1_radar", "unit1_pwr_60ghz", "seq_index"]
     _require_columns(all_data, csv_path, base_columns)
     gps_source_column = gps_column
     lidar_source_column = lidar_column
     mmwave_source_column = mmwave_column
-    if include_gps:
+    if include_gps or include_position_targets:
         gps_source_column = _resolve_source_column(
             all_data,
             csv_path=csv_path,
@@ -149,7 +153,12 @@ def resolve_sequence_column_plan(
         )
         if bs_gps_column not in all_data.columns:
             raise ValueError(f"BS GPS column '{bs_gps_column}' not found in {csv_path}.")
+    if include_gps:
         base_columns.extend([gps_source_column, bs_gps_column])
+    elif include_position_targets:
+        for column in (gps_source_column, bs_gps_column):
+            if column not in base_columns:
+                base_columns.append(column)
     if include_lidar:
         lidar_source_column = _resolve_source_column(
             all_data,
@@ -187,6 +196,7 @@ def build_sequence_windows(
     include_gps: bool,
     include_lidar: bool,
     include_mmwave: bool,
+    include_position_targets: bool,
 ) -> pd.DataFrame:
     all_seq_idx = all_data["seq_index"].unique()
     rows = []
@@ -202,7 +212,29 @@ def build_sequence_windows(
             mmwave = seq[plan.mmwave_source_column].iloc[start : start + in_len].tolist() if include_mmwave else []
             in_beam = seq["unit1_pwr_60ghz"].iloc[start : start + in_len].tolist()
             out_beam = seq["unit1_pwr_60ghz"].iloc[start + in_len : start + in_len + out_len].tolist()
-            rows.append(image + radar + gps + bs_gps + lidar + mmwave + in_beam + out_beam + [seq_idx])
+            future_gps = (
+                seq[plan.gps_source_column].iloc[start + in_len : start + in_len + out_len].tolist()
+                if include_position_targets
+                else []
+            )
+            future_bs_gps = (
+                seq[plan.bs_gps_column].iloc[start + in_len : start + in_len + out_len].tolist()
+                if include_position_targets
+                else []
+            )
+            rows.append(
+                image
+                + radar
+                + gps
+                + bs_gps
+                + lidar
+                + mmwave
+                + in_beam
+                + out_beam
+                + future_gps
+                + future_bs_gps
+                + [seq_idx]
+            )
             start += 1
     return pd.DataFrame(
         rows,
@@ -212,6 +244,7 @@ def build_sequence_windows(
             include_gps=include_gps,
             include_lidar=include_lidar,
             include_mmwave=include_mmwave,
+            include_position_targets=include_position_targets,
         ),
     )
 
@@ -223,6 +256,7 @@ def sequence_window_columns(
     include_gps: bool,
     include_lidar: bool,
     include_mmwave: bool,
+    include_position_targets: bool = False,
 ) -> list[str]:
     return (
         [f"camera{i}" for i in range(1, in_len + 1)]
@@ -233,6 +267,8 @@ def sequence_window_columns(
         + ([f"mmwave{i}" for i in range(1, in_len + 1)] if include_mmwave else [])
         + [f"beam{i}" for i in range(1, in_len + 1)]
         + [f"future_beam{i}" for i in range(1, out_len + 1)]
+        + ([f"future_gps{i}" for i in range(1, out_len + 1)] if include_position_targets else [])
+        + ([f"future_bs_gps{i}" for i in range(1, out_len + 1)] if include_position_targets else [])
         + ["seq_index"]
     )
 

@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
-from kd_sensing.engine.data_factory import build_dataloader_kwargs
+from kd_sensing.engine.data_factory import build_dataloader_kwargs, resolve_dataloader_split_config
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.evaluation.lidar_diagnostics import (
     lidar_preprocessing_metadata_from_config,
@@ -55,6 +55,11 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["lidar_preprocessing"] = lidar_preprocessing_metadata_from_dataset(dataset)
     if getattr(dataset, "use_mmwave", False):
         metadata["mmwave_normalize"] = bool(getattr(dataset, "mmwave_normalize", False))
+    auxiliary_metadata = {}
+    if hasattr(dataset, "auxiliary_target_metadata"):
+        auxiliary_metadata = dataset.auxiliary_target_metadata()
+    if auxiliary_metadata:
+        metadata["auxiliary_targets"] = auxiliary_metadata
     if "image" in metadata["enabled_modalities"] or hasattr(dataset, "image_profile"):
         profile = resolve_image_profile(getattr(dataset, "image_profile", None))
         profile_metadata = image_profile_metadata(profile)
@@ -84,13 +89,22 @@ def throughput_run_metadata(
     loader_cfg = cfg.get("data", {}).get("dataloader", {})
     train_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="train")
     test_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="test")
+    train_loader_settings = resolve_dataloader_split_config(loader_cfg, split="train")
+    test_loader_settings = resolve_dataloader_split_config(loader_cfg, split="test")
     metadata: dict[str, Any] = {
         "dataloader": {
             "train": _serializable_loader_kwargs(train_loader_kwargs),
             "test": _serializable_loader_kwargs(test_loader_kwargs),
         },
+        "dataloader_splits": {
+            "train": _serializable_loader_settings(train_loader_settings),
+            "test": _serializable_loader_settings(test_loader_settings),
+        },
         "transfer": {
             "non_blocking": transfer_non_blocking(cfg),
+        },
+        "progress": {
+            "enabled": bool(cfg.get("output", {}).get("progress", {}).get("enabled", True)),
         },
         "cache": cache_run_metadata(cfg, dataloaders),
     }
@@ -212,6 +226,18 @@ def _serializable_loader_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             "persistent_workers",
             "prefetch_factor",
         }
+    }
+
+
+def _serializable_loader_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "batch_size": int(settings.get("batch_size", 0)),
+        "shuffle": bool(settings.get("shuffle", False)),
+        "num_workers": int(settings.get("num_workers", 0)),
+        "pin_memory": bool(settings.get("pin_memory", False)),
+        "drop_last": bool(settings.get("drop_last", False)),
+        "persistent_workers": bool(settings.get("persistent_workers", False)),
+        "prefetch_factor": settings.get("prefetch_factor"),
     }
 
 

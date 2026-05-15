@@ -26,6 +26,12 @@ def build_task_criterion(cfg: dict[str, Any]):
         "uni_weight_after_warmup",
         "prior_regularization",
         "marf",
+        "auxiliary",
+        "multitask",
+        "multi_task",
+        "objective",
+        "occlusion",
+        "position",
     ):
         loss_cfg.pop(auxiliary_key, None)
     if loss_cfg.get("type") == "cross_entropy":

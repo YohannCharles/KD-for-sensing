@@ -40,6 +40,10 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     if getattr(train_dataset, "use_mmwave", False):
         dataset_kwargs["mmwave_scaler"] = getattr(train_dataset, "mmwave_scaler", None)
+    if getattr(train_dataset, "occlusion_target_enabled", False):
+        dataset_kwargs["occlusion_target_stats"] = getattr(train_dataset, "occlusion_target_stats", None)
+    if getattr(train_dataset, "position_target_enabled", False):
+        dataset_kwargs["position_target_scaler"] = getattr(train_dataset, "position_target_scaler", None)
     test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
         "train": build_dataloader(train_dataset, loader_cfg, split="train"),
@@ -52,24 +56,58 @@ def build_dataloader(dataset: Any, loader_cfg: dict[str, Any], *, split: str) ->
 
 
 def build_dataloader_kwargs(loader_cfg: dict[str, Any], *, split: str) -> dict[str, Any]:
+    settings = resolve_dataloader_split_config(loader_cfg, split=split)
+    kwargs: dict[str, Any] = {
+        "batch_size": settings["batch_size"],
+        "shuffle": settings["shuffle"],
+        "num_workers": settings["num_workers"],
+        "pin_memory": settings["pin_memory"],
+        "drop_last": settings["drop_last"],
+    }
+    if settings["num_workers"] > 0:
+        kwargs["persistent_workers"] = settings["persistent_workers"]
+        if settings["prefetch_factor"] is not None:
+            kwargs["prefetch_factor"] = settings["prefetch_factor"]
+    return kwargs
+
+
+def resolve_dataloader_split_config(loader_cfg: dict[str, Any], *, split: str) -> dict[str, Any]:
     if split not in {"train", "test"}:
         raise ValueError(f"Unsupported DataLoader split '{split}'.")
-    num_workers = int(loader_cfg.get("num_workers", 0))
-    batch_size_key = "train_batch_size" if split == "train" else "test_batch_size"
-    drop_last_key = "train_drop_last" if split == "train" else "test_drop_last"
-    kwargs: dict[str, Any] = {
-        "batch_size": loader_cfg.get(batch_size_key, 3),
+    num_workers = int(_split_loader_value(loader_cfg, split, "num_workers", 0) or 0)
+    prefetch_factor = _split_loader_value(loader_cfg, split, "prefetch_factor", None)
+    return {
+        "batch_size": int(_split_loader_value(loader_cfg, split, "batch_size", 3) or 3),
         "shuffle": split == "train",
         "num_workers": num_workers,
-        "pin_memory": bool(loader_cfg.get("pin_memory", False)),
-        "drop_last": bool(loader_cfg.get(drop_last_key, loader_cfg.get("drop_last", False if split == "train" else False))),
+        "pin_memory": bool(_split_loader_value(loader_cfg, split, "pin_memory", False)),
+        "drop_last": bool(_split_loader_value(loader_cfg, split, "drop_last", False)),
+        "persistent_workers": bool(_split_loader_value(loader_cfg, split, "persistent_workers", False)),
+        "prefetch_factor": int(prefetch_factor) if prefetch_factor is not None else None,
     }
-    if num_workers > 0:
-        kwargs["persistent_workers"] = bool(loader_cfg.get("persistent_workers", False))
-        prefetch_factor = loader_cfg.get("prefetch_factor")
-        if prefetch_factor is not None:
-            kwargs["prefetch_factor"] = int(prefetch_factor)
-    return kwargs
+
+
+def _split_loader_value(loader_cfg: dict[str, Any], split: str, key: str, default: Any) -> Any:
+    split_cfg = loader_cfg.get(split)
+    if isinstance(split_cfg, dict) and key in split_cfg:
+        return split_cfg[key]
+    prefixed_key = f"{split}_{key}"
+    if prefixed_key in loader_cfg:
+        return loader_cfg[prefixed_key]
+    return loader_cfg.get(key, default)
+
+
+def shutdown_dataloader_workers(dataloader: DataLoader) -> None:
+    iterator = getattr(dataloader, "_iterator", None)
+    if iterator is None:
+        return
+    shutdown = getattr(iterator, "_shutdown_workers", None)
+    if callable(shutdown):
+        shutdown()
+    try:
+        dataloader._iterator = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def prepare_lidar_normalizer(cfg: dict[str, Any], dataset: Any) -> None:
@@ -85,4 +123,6 @@ __all__ = [
     "build_dataloaders",
     "build_dataset",
     "prepare_lidar_normalizer",
+    "resolve_dataloader_split_config",
+    "shutdown_dataloader_workers",
 ]

@@ -32,7 +32,7 @@ from kd_sensing.evaluation.lidar_diagnostics import (  # noqa: E402
     degradation_baselines_from_labels,
     lidar_degradation_report,
 )
-from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -461,7 +461,7 @@ def test_lidar_fusion_configs_build(config_path: str):
             assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
         assert isinstance(teacher, FusionTeacherModalityNet)
-    assert isinstance(student, (FusionTeacherModalityNet, FusionStudentModalityNet, ModularSequenceModel))
+    assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet, ModularSequenceModel))
 
 
 def _write_dataset_fixture(root: Path, csv_path: Path) -> None:

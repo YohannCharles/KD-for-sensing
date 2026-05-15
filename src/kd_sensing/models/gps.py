@@ -4,6 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kd_sensing.models.auxiliary_heads import (
+    TemporalAuxiliaryHeads,
+    temporal_output_with_optional_auxiliary,
+)
 from kd_sensing.registries import MODELS
 
 
@@ -61,6 +65,8 @@ class GpsModalityNet(nn.Module):
         feature_size: int,
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
+        num_pred: int = 3,
+        auxiliary_heads: bool | dict | None = None,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -94,6 +100,12 @@ class GpsModalityNet(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(64, num_classes),
         )
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            gru_hidden_size,
+            num_pred=num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=dropout,
+        )
 
     def forward(self, gps_batch: torch.Tensor):
         _, seq_len, _ = gps_batch.shape
@@ -104,7 +116,12 @@ class GpsModalityNet(nn.Module):
         context_vector = torch.sum(seq_out * attn_weights, dim=1)
         enhanced_seq_out = seq_out + context_vector.unsqueeze(1).expand(-1, seq_len, -1)
         pred = self.classifier(enhanced_seq_out)
-        return pred, features, enhanced_seq_out
+        return temporal_output_with_optional_auxiliary(
+            logits=pred,
+            input_features=features,
+            output_features=enhanced_seq_out,
+            auxiliary_heads=self.auxiliary_heads,
+        )
 
 
 @MODELS.register("gps_student")
@@ -115,6 +132,8 @@ class GpsStudentModalityNet(nn.Module):
         feature_size: int,
         num_classes: int,
         gru_params: list[int] | tuple[int, int, int],
+        num_pred: int = 3,
+        auxiliary_heads: bool | dict | None = None,
         width_multiplier: float = 1.0,
         dropout: float = 0.1,
     ):
@@ -145,10 +164,21 @@ class GpsStudentModalityNet(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(64, num_classes),
         )
+        self.auxiliary_heads = TemporalAuxiliaryHeads(
+            gru_hidden_size,
+            num_pred=num_pred,
+            auxiliary_heads=auxiliary_heads,
+            dropout=dropout,
+        )
 
     def forward(self, gps_batch: torch.Tensor):
         features = self.feature_extraction(gps_batch)
         features = self.layer_norm(features)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
-        return pred, features, seq_out
+        return temporal_output_with_optional_auxiliary(
+            logits=pred,
+            input_features=features,
+            output_features=seq_out,
+            auxiliary_heads=self.auxiliary_heads,
+        )

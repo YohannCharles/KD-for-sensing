@@ -532,3 +532,106 @@ CLS-token Transformer fusion 配置 MUST 复用现有 fusion 数据字段和模�
 - **AND** 配置 MUST 设置 `mmwave_normalize: true`
 - **AND** `mmwave_input_size` MUST 为 64
 
+### Requirement: Fusion 多任务配置入口
+Fusion 配置 MUST 能声明多任务辅助监督相关选项，包括启用状态、遮挡阈值分位数、位置目标来源、辅助 head 开关和 loss 权重。默认 fusion 配置 MUST 保持 beam-only，recommended 多任务配置 MUST 显式启用五模态和 auxiliary heads。
+
+#### Scenario: 默认 fusion 配置保持 beam-only
+- **WHEN** 用户加载现有 canonical fusion 配置
+- **THEN** 配置 MUST 不默认启用遮挡或位置辅助任务
+- **AND** 模型和 dataset MUST 保持现有 beam-only 行为
+
+#### Scenario: 五模态多任务推荐配置
+- **WHEN** 用户加载 recommended 五模态多任务 fusion 配置或 overlay
+- **THEN** 配置 MUST 设置 `modalities: ["image", "radar", "gps", "lidar", "mmwave"]`
+- **AND** 配置 MUST 启用 `cls_token_transformer_fusion` 的遮挡和位置辅助头
+- **AND** 配置 MUST 启用 dataset 的遮挡和位置目标生成
+
+#### Scenario: loss 权重可配置
+- **WHEN** 用户在 fusion 配置中设置 beam、遮挡或位置 loss 权重
+- **THEN** 训练流程 MUST 使用配置值计算多任务总 loss
+- **AND** final config MUST 记录实际使用的权重
+
+### Requirement: Fusion 配置校验多任务依赖
+系统 MUST 对多任务 fusion 配置进行显式校验。启用遮挡目标时必须能访问 beam sweep power 文件；启用位置目标时必须声明位置目标来源；启用 auxiliary loss 时模型必须支持对应辅助输出。
+
+#### Scenario: 位置目标缺少来源
+- **WHEN** 配置启用位置辅助任务但未声明合法 `position_target_source`
+- **THEN** 系统 MUST 拒绝配置
+- **AND** 错误信息 MUST 列出支持的 position target source
+
+#### Scenario: 模型不支持辅助输出
+- **WHEN** 配置启用遮挡或位置 loss，但 `model.student` 不支持对应 auxiliary head
+- **THEN** 训练流程 MUST 抛出清晰错误
+- **AND** 错误信息 MUST 指出模型输出缺少的辅助字段
+
+#### Scenario: 遮挡目标与数据文件不匹配
+- **WHEN** 配置启用遮挡目标但监督 beam 文件不是 64 维 power vector
+- **THEN** dataset 构建或首次取样 MUST 抛出清晰错误
+- **AND** 错误信息 MUST 指出遮挡标签生成依赖 64-beam sweep
+
+### Requirement: Fusion objective 配置矩阵
+系统 MUST 为 fusion 实验提供 objective-aware 配置入口，使同一模态集合能够分别运行 `beam`、`occlusion`、`position` 和 `multitask` 预测目标。配置命名 MUST 同时表达模态集合和预测目标。
+
+#### Scenario: 五模态 objective 配置
+- **WHEN** 用户查看 recommended 五模态 fusion 配置
+- **THEN** 系统 MUST 提供或虚拟解析 beam、occlusion、position 和 multitask 四类 objective 入口
+- **AND** 每个入口 MUST 使用相同的五模态集合 `[image, radar, gps, lidar, mmwave]`
+
+#### Scenario: 配置名表达 objective
+- **WHEN** 用户使用 objective-aware fusion 配置
+- **THEN** 配置名或 virtual config stem MUST 包含 canonical 模态 slug 和 objective 名称
+- **AND** 配置中的 `experiment.objective` MUST 与名称中的 objective 一致
+
+#### Scenario: 旧配置兼容
+- **WHEN** 用户继续使用既有 `configs/fusion/all_modalities_no_kd.yaml`
+- **THEN** 系统 MUST 将该配置视为 `experiment.objective: beam`
+- **AND** 系统 MUST 不要求用户修改旧运行命令
+
+### Requirement: 模态失衡 objective 子集
+fusion 配置系统 MUST 支持为模态失衡研究生成强模态、弱模态、单模态和全模态 objective 对照实验。每个 objective 配置 MUST 使用同一套 target 生成语义和同一套 metric 名称。
+
+#### Scenario: strong-only occlusion 配置
+- **WHEN** 用户请求 strong-only 模态集合的 occlusion fusion 配置
+- **THEN** 系统 MUST 能生成只包含 strong modalities 的 fusion 配置
+- **AND** 配置 MUST 设置 `experiment.objective: occlusion`
+
+#### Scenario: weak-only position 配置
+- **WHEN** 用户请求 weak-only 模态集合的 position fusion 配置
+- **THEN** 系统 MUST 能生成只包含 weak modalities 的 fusion 配置
+- **AND** 配置 MUST 设置 `experiment.objective: position`
+
+#### Scenario: objective 间可比性
+- **WHEN** 用户比较同一模态集合下的 beam、occlusion、position 和 multitask 结果
+- **THEN** 系统 MUST 保持数据 split、target horizon、模态顺序和模型 backbone 默认配置一致
+
+### Requirement: Objective-aware multitask canonical 默认等权
+objective-aware fusion canonical 配置 MUST 在 `experiment.objective: multitask` 时默认使用 beam、occlusion 和 position 三个任务等权 loss。该默认值 MUST 应用于所有由 virtual canonical generator 生成的 multitask fusion 配置，包括 all-modalities、strong-only、weak-only 和显式模态 slug。
+
+#### Scenario: 五模态 multitask 默认等权
+- **WHEN** 开发者加载 `configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml`
+- **THEN** 解析后的配置 MUST 设置 `experiment.objective: multitask`
+- **AND** 解析后的配置 MUST 启用 beam、occlusion 和 position 三类 targets 与 heads
+- **AND** 解析后的配置 MUST 设置 `loss.objective.weights.beam: 1.0`
+- **AND** 解析后的配置 MUST 设置 `loss.objective.weights.occlusion: 1.0`
+- **AND** 解析后的配置 MUST 设置 `loss.objective.weights.position: 1.0`
+
+#### Scenario: strong-only multitask 默认等权
+- **WHEN** 开发者加载 `configs/fusion/strong_only_multitask_no_kd.yaml`
+- **THEN** 解析后的配置 MUST 只包含 strong modalities `[gps, mmwave]`
+- **AND** 解析后的配置 MUST 设置 beam、occlusion 和 position 三个 objective 权重均为 `1.0`
+
+#### Scenario: weak-only multitask 默认等权
+- **WHEN** 开发者加载 `configs/fusion/weak_only_multitask_no_kd.yaml`
+- **THEN** 解析后的配置 MUST 只包含 weak modalities `[image, radar, lidar]`
+- **AND** 解析后的配置 MUST 设置 beam、occlusion 和 position 三个 objective 权重均为 `1.0`
+
+#### Scenario: 显式 multitask 权重覆盖
+- **WHEN** 用户通过实体 YAML 或命令行覆盖显式设置 `loss.objective.weights.position`
+- **THEN** 系统 MUST 使用用户显式配置的 position 权重
+- **AND** 该覆盖 MUST 不改变未被覆盖的 beam 和 occlusion 权重
+
+#### Scenario: multitask 权重记录到产物
+- **WHEN** 完成 objective-aware multitask 训练
+- **THEN** `final_config.yaml` 或等价 runtime metadata MUST 能追溯 beam、occlusion 和 position 的实际 loss 权重
+- **AND** epoch log MUST 记录或能派生本次 multitask 总 loss 的权重组成
+

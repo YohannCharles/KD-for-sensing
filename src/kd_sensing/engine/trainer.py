@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
 from kd_sensing.engine.craf_training import CrafTrainingExtension
-from kd_sensing.engine.data_factory import build_dataloaders
+from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
 from kd_sensing.engine.g2d_training import G2DTrainingExtension
 from kd_sensing.engine.marf_training import MarfTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
@@ -25,11 +25,19 @@ from kd_sensing.engine.optim import (
     build_task_criterion,
     optimizer_param_group_summary,
 )
+from kd_sensing.engine.prediction_objectives import (
+    compute_prediction_loss,
+    default_primary_metric,
+    objective_runtime_metadata,
+    prepare_prediction_targets,
+    resolve_prediction_objective,
+)
 from kd_sensing.engine.run_metadata import dataloaders_run_metadata, throughput_run_metadata
 from kd_sensing.engine.runtime import (
     autocast_context,
     make_grad_scaler,
     prepare_task_batch,
+    prepare_task_auxiliary_targets,
     prepare_task_labels,
     resolve_amp_settings,
     run_model_step,
@@ -133,6 +141,7 @@ def final_config_with_runtime(
     runtime = final_cfg.setdefault("runtime", {})
     runtime["run_dir"] = str(run_dir)
     runtime["output_overwrite"] = bool(cfg.get("output", {}).get("overwrite", False))
+    runtime["prediction_objective"] = objective_runtime_metadata(cfg)
     if split_metadata is not None:
         runtime["splits"] = split_metadata
     if normalization_artifacts is not None:
@@ -347,31 +356,87 @@ def _create_tensorboard_writer(cfg: dict, run_dir: Path):
     return SummaryWriter(log_dir=str(run_dir / str(log_dir)))
 
 
-def _write_tensorboard_scalars(writer, history: dict, step: int) -> None:
+def _write_tensorboard_scalars(
+    writer,
+    history: dict,
+    step: int,
+    *,
+    objective: str = "beam",
+    tensorboard_cfg: dict | None = None,
+) -> None:
     if writer is None:
         return
 
     writer.add_scalar("loss/train", history["train_loss"][-1], step)
     writer.add_scalar("loss/train_task", history["train_task_loss"][-1], step)
+    _add_latest_scalar(writer, "loss/train_objective", history, "train_objective_loss", step)
     writer.add_scalar("loss/train_distill", history["train_distill_loss"][-1], step)
     writer.add_scalar("loss/val", history["val_loss"][-1], step)
-    writer.add_scalar("accuracy/train", history["train_acc"][-1], step)
-    writer.add_scalar("accuracy/val", history["val_acc"][-1], step)
-    writer.add_scalar("accuracy/val_atop3", history["val_atop3"][-1], step)
-    writer.add_scalar("accuracy/val_atop5", history["val_atop5"][-1], step)
-    writer.add_scalar("dba/val_adba", history["val_adba"][-1], step)
+    _add_latest_scalar(writer, "objective/val_primary_metric", history, "val_primary_metric", step)
+    _write_tensorboard_beam_scalars(writer, history, step, objective=objective)
+    if _legacy_accuracy_tags_enabled(tensorboard_cfg):
+        _write_tensorboard_legacy_accuracy_scalars(writer, history, step)
     writer.add_scalar("learning_rate/main", history["learning_rates"][-1], step)
-    if history.get("train_beam_soft_loss"):
-        writer.add_scalar("loss/train_beam_soft", history["train_beam_soft_loss"][-1], step)
-    if history.get("train_unimodal_loss"):
-        writer.add_scalar("loss/train_unimodal_aux", history["train_unimodal_loss"][-1], step)
-    if history.get("train_counterfactual_loss"):
-        writer.add_scalar("loss/train_counterfactual_gate", history["train_counterfactual_loss"][-1], step)
-    if history.get("train_prior_regularization_loss"):
-        writer.add_scalar("loss/train_prior_regularization", history["train_prior_regularization_loss"][-1], step)
-    if history.get("train_reliability_kd_loss"):
-        writer.add_scalar("loss/train_reliability_kd", history["train_reliability_kd_loss"][-1], step)
+    _add_latest_scalar(writer, "loss/train_beam_soft", history, "train_beam_soft_loss", step)
+    _add_latest_scalar(writer, "loss/train_unimodal_aux", history, "train_unimodal_loss", step)
+    _add_latest_scalar(writer, "loss/train_counterfactual_gate", history, "train_counterfactual_loss", step)
+    _add_latest_scalar(writer, "loss/train_prior_regularization", history, "train_prior_regularization_loss", step)
+    _add_latest_scalar(writer, "loss/train_reliability_kd", history, "train_reliability_kd_loss", step)
+    _add_latest_scalar(writer, "loss/multitask_total", history, "train_multitask_loss", step)
+    _add_latest_scalar(writer, "loss/val_multitask_total", history, "val_multitask_loss", step)
+    _add_latest_scalar(writer, "loss/occlusion", history, "train_occlusion_loss", step)
+    _add_latest_scalar(writer, "loss/position", history, "train_position_loss", step)
+    _add_latest_scalar(writer, "occlusion/accuracy", history, "val_occlusion_accuracy", step)
+    _add_latest_scalar(writer, "occlusion/blocked_f1", history, "val_occlusion_blocked_f1", step)
+    _add_latest_scalar(writer, "position/rmse", history, "val_position_rmse", step)
+    _add_latest_scalar(writer, "position/mae", history, "val_position_mae", step)
     writer.flush()
+
+
+def _write_tensorboard_beam_scalars(writer, history: dict, step: int, *, objective: str) -> None:
+    if objective not in {"beam", "multitask"}:
+        return
+    _add_latest_scalar(writer, "beam/accuracy_train", history, "train_acc", step)
+    _add_latest_scalar(writer, "beam/accuracy_val", history, "val_acc", step)
+    _add_latest_scalar(writer, "beam/val_atop3", history, "val_atop3", step)
+    _add_latest_scalar(writer, "beam/val_atop5", history, "val_atop5", step)
+    _add_latest_scalar(writer, "beam/val_adba", history, "val_adba", step)
+
+
+def _write_tensorboard_legacy_accuracy_scalars(writer, history: dict, step: int) -> None:
+    _add_latest_scalar(writer, "accuracy/train", history, "train_acc", step)
+    _add_latest_scalar(writer, "accuracy/val", history, "val_acc", step)
+    _add_latest_scalar(writer, "accuracy/val_atop3", history, "val_atop3", step)
+    _add_latest_scalar(writer, "accuracy/val_atop5", history, "val_atop5", step)
+    _add_latest_scalar(writer, "dba/val_adba", history, "val_adba", step)
+
+
+def _legacy_accuracy_tags_enabled(tensorboard_cfg: dict | None) -> bool:
+    if not isinstance(tensorboard_cfg, dict):
+        return False
+    return bool(tensorboard_cfg.get("legacy_accuracy_tags", False))
+
+
+def _add_latest_scalar(writer, tag: str, history: dict, key: str, step: int) -> None:
+    values = history.get(key)
+    if not values:
+        return
+    value = _finite_float_or_none(values[-1])
+    if value is None:
+        return
+    writer.add_scalar(tag, value, step)
+
+
+def _finite_float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    return numeric
 
 
 def _write_tensorboard_craf_scalars(writer, epoch_log: dict, step: int) -> None:
@@ -419,6 +484,10 @@ _EARLY_STOPPING_METRIC_ALIASES = {
     "val_adba": "val_adba",
     "val_dba": "val_adba",
     "dba/val_adba": "val_adba",
+    "beam/adba": "val_adba",
+    "beam/dba": "val_adba",
+    "beam/val_adba": "val_adba",
+    "beam/val_dba": "val_adba",
     "top1": "val_acc",
     "val_top1": "val_acc",
     "val_acc": "val_acc",
@@ -426,18 +495,35 @@ _EARLY_STOPPING_METRIC_ALIASES = {
     "top1_val_acc": "val_acc",
     "accuracy/val": "val_acc",
     "accuracy/val_top1": "val_acc",
+    "beam/accuracy_val": "val_acc",
+    "beam/val_top1": "val_acc",
+    "beam/val_acc": "val_acc",
     "val/acc_top1": "val_acc",
     "val/top1": "val_acc",
     "loss": "val_loss",
     "val_loss": "val_loss",
     "loss/val": "val_loss",
+    "occlusion": "val_occlusion_blocked_f1",
+    "occlusion_f1": "val_occlusion_blocked_f1",
+    "blocked_f1": "val_occlusion_blocked_f1",
+    "val_occlusion_blocked_f1": "val_occlusion_blocked_f1",
+    "occlusion/blocked_f1": "val_occlusion_blocked_f1",
+    "position": "val_position_rmse",
+    "position_rmse": "val_position_rmse",
+    "val_position_rmse": "val_position_rmse",
+    "position/rmse": "val_position_rmse",
+    "multitask": "val_multitask_loss",
+    "multitask_loss": "val_multitask_loss",
+    "val_multitask_loss": "val_multitask_loss",
+    "loss/multitask_total": "val_multitask_loss",
 }
-_MAX_EARLY_STOPPING_METRICS = {"val_adba", "val_acc"}
-_MIN_EARLY_STOPPING_METRICS = {"val_loss"}
+_MAX_EARLY_STOPPING_METRICS = {"val_adba", "val_acc", "val_occlusion_blocked_f1"}
+_MIN_EARLY_STOPPING_METRICS = {"val_loss", "val_position_rmse", "val_multitask_loss"}
 
 
-def _normalize_early_stopping_metric(metric: object) -> str:
-    raw = "val_adba" if metric is None else str(metric).strip()
+def _normalize_early_stopping_metric(metric: object, *, objective: str = "beam") -> str:
+    default_metric, _ = default_primary_metric(objective)
+    raw = default_metric if metric is None else str(metric).strip()
     key = raw.lower().replace("-", "_")
     normalized = _EARLY_STOPPING_METRIC_ALIASES.get(key, key)
     if normalized not in _MAX_EARLY_STOPPING_METRICS | _MIN_EARLY_STOPPING_METRICS:
@@ -455,8 +541,8 @@ def _resolve_early_stopping_mode(metric: str, mode: object | None) -> str:
     return normalized
 
 
-def _configure_early_stopping(training_cfg: dict) -> tuple[str, str]:
-    metric = _normalize_early_stopping_metric(training_cfg.get("early_stopping_metric", "val_adba"))
+def _configure_early_stopping(training_cfg: dict, objective: str = "beam") -> tuple[str, str]:
+    metric = _normalize_early_stopping_metric(training_cfg.get("early_stopping_metric"), objective=objective)
     mode = _resolve_early_stopping_mode(metric, training_cfg.get("early_stopping_mode"))
     training_cfg["early_stopping_metric"] = metric
     training_cfg["early_stopping_mode"] = mode
@@ -497,12 +583,35 @@ def _early_stopping_metric_value(epoch_log: dict, metric: str) -> float:
 
 
 def _validate_early_stopping_source_available(val_metrics: dict, metric: str) -> None:
-    if metric == "val_adba" and "dba" not in val_metrics:
-        raise ValueError(
-            "Early stopping metric 'val_adba' is not available in validation metrics because DBA/ADBA was not "
-            "produced. Ensure validation computes DBA or configure training.early_stopping_metric to another "
-            "supported metric such as val_loss."
-        )
+    available = _available_early_stopping_metrics(val_metrics)
+    if metric in available:
+        return
+    objective = val_metrics.get("objective", {}).get("name") if isinstance(val_metrics.get("objective"), dict) else None
+    objective_text = f" for experiment.objective='{objective}'" if objective else ""
+    available_text = ", ".join(sorted(available)) if available else "none"
+    if metric == "val_adba":
+        reason = " because DBA/ADBA was not produced"
+    else:
+        reason = ""
+    raise ValueError(
+        f"Early stopping metric '{metric}' is not available in validation metrics{objective_text}{reason}. "
+        f"Available metrics: {available_text}. Configure training.early_stopping_metric to a metric produced "
+        "by the current objective."
+    )
+
+
+def _available_early_stopping_metrics(val_metrics: dict) -> set[str]:
+    available = set(val_metrics.get("available_metrics", [])) if isinstance(val_metrics.get("available_metrics"), list) else set()
+    if "loss" in val_metrics:
+        available.add("val_loss")
+    if "topk" in val_metrics and "1" in val_metrics.get("topk", {}):
+        available.add("val_acc")
+    if "dba" in val_metrics:
+        available.add("val_adba")
+    for metric in ("val_occlusion_blocked_f1", "val_position_rmse", "val_multitask_loss"):
+        if _finite_float_or_none(val_metrics.get(metric)) is not None:
+            available.add(metric)
+    return available
 
 
 def _legacy_early_stopping_value(checkpoint: dict, metric: str, default: float) -> float:
@@ -580,8 +689,11 @@ def _progress_enabled(cfg: dict) -> bool:
 
 def train(cfg: dict) -> dict:
     set_seed(cfg.get("experiment", {}).get("seed", 0))
+    objective = resolve_prediction_objective(cfg)
+    cfg.setdefault("experiment", {})["objective"] = objective
+    objective_metadata = objective_runtime_metadata(cfg)
     training_cfg = cfg.setdefault("training", {})
-    early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg)
+    early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg, objective=objective)
     if cfg.get("training", {}).get("resume") is True and not cfg.get("output", {}).get("run_name"):
         raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
     run_dir = create_run_dir(cfg)
@@ -671,18 +783,28 @@ def train(cfg: dict) -> dict:
     history = {
         "train_loss": [],
         "train_task_loss": [],
+        "train_objective_loss": [],
         "train_distill_loss": [],
         "train_beam_soft_loss": [],
         "train_unimodal_loss": [],
         "train_counterfactual_loss": [],
         "train_prior_regularization_loss": [],
         "train_reliability_kd_loss": [],
+        "train_occlusion_loss": [],
+        "train_position_loss": [],
+        "train_multitask_loss": [],
         "train_acc": [],
         "val_loss": [],
         "val_acc": [],
         "val_atop3": [],
         "val_atop5": [],
         "val_adba": [],
+        "val_occlusion_accuracy": [],
+        "val_occlusion_blocked_f1": [],
+        "val_position_rmse": [],
+        "val_position_mae": [],
+        "val_multitask_loss": [],
+        "val_primary_metric": [],
         "learning_rates": [],
     }
     epoch_logs = []
@@ -708,7 +830,7 @@ def train(cfg: dict) -> dict:
         best_val_top1 = float(checkpoint.get("best_val_top1", best_val_top1))
         best_top1_epoch = int(checkpoint.get("best_top1_epoch", best_top1_epoch))
         if "early_stopping_metric" in checkpoint:
-            early_stopping_metric = _normalize_early_stopping_metric(checkpoint["early_stopping_metric"])
+            early_stopping_metric = _normalize_early_stopping_metric(checkpoint["early_stopping_metric"], objective=objective)
         if "early_stopping_mode" in checkpoint:
             early_stopping_mode = _resolve_early_stopping_mode(early_stopping_metric, checkpoint["early_stopping_mode"])
         training_cfg["early_stopping_metric"] = early_stopping_metric
@@ -744,6 +866,9 @@ def train(cfg: dict) -> dict:
             running_counterfactual_loss = 0.0
             running_prior_regularization_loss = 0.0
             running_reliability_kd_loss = 0.0
+            running_occlusion_loss = 0.0
+            running_position_loss = 0.0
+            running_multitask_loss = 0.0
             running_acc = 0.0
             epoch_diagnostics = EpochDiagnosticsAccumulator()
             train_lidar_quality = LidarQualityAccumulator()
@@ -758,13 +883,15 @@ def train(cfg: dict) -> dict:
             current_lr = optimizer.param_groups[0]["lr"]
             history["learning_rates"].append(current_lr)
 
-            batch_progress = tqdm(
-                dataloaders["train"],
-                desc=f"Epoch {epoch + 1}/{total_epochs}",
-                unit="batch",
-                leave=False,
-                disable=not progress_enabled,
-            )
+            if progress_enabled:
+                batch_progress = tqdm(
+                    dataloaders["train"],
+                    desc=f"Epoch {epoch + 1}/{total_epochs}",
+                    unit="batch",
+                    leave=False,
+                )
+            else:
+                batch_progress = dataloaders["train"]
             for step, raw_batch in enumerate(batch_progress):
                 batch_count = step + 1
                 batch = prepare_task_batch(raw_batch)
@@ -777,6 +904,17 @@ def train(cfg: dict) -> dict:
                     downsample_ratio=downsample_ratio,
                     device=device,
                     non_blocking=non_blocking,
+                )
+                auxiliary_targets = prepare_task_auxiliary_targets(
+                    batch,
+                    num_pred=num_pred,
+                    device=device,
+                    non_blocking=non_blocking,
+                )
+                prediction_targets = prepare_prediction_targets(
+                    labels=labels,
+                    auxiliary_targets=auxiliary_targets,
+                    cfg=cfg,
                 )
                 optimizer.zero_grad()
                 with autocast_context(amp_enabled, device, amp_dtype):
@@ -921,7 +1059,22 @@ def train(cfg: dict) -> dict:
                             if key in bundle.components:
                                 extra_loss_values[key] = bundle.components[key]
                         scalar_diagnostics.update(bundle.diagnostics)
+                    prediction_loss = compute_prediction_loss(
+                        student_model_output,
+                        prediction_targets,
+                        cfg,
+                        reference=student_outputs,
+                        beam_total_loss=total_loss,
+                        beam_task_loss=task_loss,
+                    )
+                    total_loss = prediction_loss.total
+                    task_loss = prediction_loss.primary
+                    if objective not in {"beam", "multitask"}:
+                        distill_loss = student_outputs.sum() * 0.0
+                    scalar_diagnostics.update(prediction_loss.diagnostics)
                     batch_state.total_loss = total_loss
+                    batch_state.task_loss = task_loss
+                    batch_state.distill_loss = distill_loss
                 grad_clip = training_cfg.get("grad_clip", None)
                 if grad_scaler.is_enabled():
                     grad_scaler.scale(total_loss).backward()
@@ -961,63 +1114,138 @@ def train(cfg: dict) -> dict:
                 running_reliability_kd_loss = (
                     extra_loss_values["reliability_kd"].item() + step * running_reliability_kd_loss
                 ) / (step + 1)
+                running_occlusion_loss = (prediction_loss.occlusion.item() + step * running_occlusion_loss) / (step + 1)
+                running_position_loss = (prediction_loss.position.item() + step * running_position_loss) / (step + 1)
+                running_multitask_loss = (
+                    prediction_loss.multitask_total.item() + step * running_multitask_loss
+                ) / (step + 1)
                 running_acc = (acc + step * running_acc) / (step + 1)
                 epoch_diagnostics.update(scalar_diagnostics)
-                batch_progress.set_postfix(
-                    loss=f"{running_loss:.4f}",
-                    task=f"{running_task_loss:.4f}",
-                    distill=f"{running_distill_loss:.4f}",
-                    acc=f"{running_acc:.4f}",
-                    lr=f"{current_lr:.2e}",
-                )
+                if progress_enabled:
+                    batch_progress.set_postfix(
+                        loss=f"{running_loss:.4f}",
+                        task=f"{running_task_loss:.4f}",
+                        distill=f"{running_distill_loss:.4f}",
+                        acc=f"{running_acc:.4f}",
+                        lr=f"{current_lr:.2e}",
+                    )
 
             if scheduler is not None:
                 scheduler.step()
-            val_metrics = validate(
-                student_model,
-                dataloaders["test"],
-                cfg,
-                task_criterion,
-                device,
-                output_dir=run_dir,
-            )
+            try:
+                val_metrics = validate(
+                    student_model,
+                    dataloaders["test"],
+                    cfg,
+                    task_criterion,
+                    device,
+                    output_dir=run_dir,
+                )
+            finally:
+                shutdown_dataloader_workers(dataloaders["test"])
             _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
             val_loss = val_metrics["loss"]
             top1 = val_metrics["topk"].get("1", [0.0])
             val_acc = float(top1[0]) if top1 else 0.0
             validation_curve_metrics = _aggregate_validation_metrics(val_metrics)
+            val_occlusion_accuracy = _finite_float_or_none(val_metrics.get("val_occlusion_accuracy"))
+            val_occlusion_blocked_f1 = _finite_float_or_none(val_metrics.get("val_occlusion_blocked_f1"))
+            val_position_rmse = _finite_float_or_none(val_metrics.get("val_position_rmse"))
+            val_position_mae = _finite_float_or_none(val_metrics.get("val_position_mae"))
+            val_multitask_loss = _finite_float_or_none(val_metrics.get("val_multitask_loss"))
+            active_occlusion = val_occlusion_accuracy is not None or val_occlusion_blocked_f1 is not None
+            active_position = val_position_rmse is not None or val_position_mae is not None
+            train_occlusion_loss = (
+                float(running_occlusion_loss) if objective in {"occlusion", "multitask"} or active_occlusion else None
+            )
+            train_position_loss = (
+                float(running_position_loss) if objective in {"position", "multitask"} or active_position else None
+            )
+            train_multitask_loss = (
+                float(running_multitask_loss)
+                if objective == "multitask" or (objective == "beam" and (active_occlusion or active_position))
+                else None
+            )
             history["train_loss"].append(float(running_loss))
             history["train_task_loss"].append(float(running_task_loss))
+            history["train_objective_loss"].append(float(running_task_loss))
             history["train_distill_loss"].append(float(running_distill_loss))
             history["train_beam_soft_loss"].append(float(running_beam_soft_loss))
             history["train_unimodal_loss"].append(float(running_unimodal_loss))
             history["train_counterfactual_loss"].append(float(running_counterfactual_loss))
             history["train_prior_regularization_loss"].append(float(running_prior_regularization_loss))
             history["train_reliability_kd_loss"].append(float(running_reliability_kd_loss))
+            history["train_occlusion_loss"].append(train_occlusion_loss)
+            history["train_position_loss"].append(train_position_loss)
+            history["train_multitask_loss"].append(train_multitask_loss)
             history["train_acc"].append(float(running_acc))
             history["val_loss"].append(float(val_loss))
             history["val_acc"].append(val_acc)
             history["val_atop3"].append(validation_curve_metrics["val_atop3"])
             history["val_atop5"].append(validation_curve_metrics["val_atop5"])
             history["val_adba"].append(validation_curve_metrics["val_adba"])
+            history["val_occlusion_accuracy"].append(val_occlusion_accuracy)
+            history["val_occlusion_blocked_f1"].append(val_occlusion_blocked_f1)
+            history["val_position_rmse"].append(val_position_rmse)
+            history["val_position_mae"].append(val_position_mae)
+            history["val_multitask_loss"].append(val_multitask_loss)
+            early_stopping_candidates = {
+                **validation_curve_metrics,
+                "val_loss": float(val_loss),
+                "val_acc": val_acc,
+            }
+            for key, value in {
+                "val_occlusion_accuracy": val_occlusion_accuracy,
+                "val_occlusion_blocked_f1": val_occlusion_blocked_f1,
+                "val_position_rmse": val_position_rmse,
+                "val_position_mae": val_position_mae,
+                "val_multitask_loss": val_multitask_loss,
+            }.items():
+                if value is not None:
+                    early_stopping_candidates[key] = value
+            primary_metric_value = _early_stopping_metric_value(
+                early_stopping_candidates,
+                early_stopping_metric,
+            )
+            history["val_primary_metric"].append(float(primary_metric_value))
             epoch_log = {
                 "epoch": epoch + 1,
                 "total_epochs": total_epochs,
                 "train_batches": batch_count,
+                "objective": objective,
+                "primary_loss": objective_metadata["primary_loss"],
+                "primary_metric": early_stopping_metric,
+                "primary_metric_mode": early_stopping_mode,
+                "enabled_targets": objective_metadata["enabled_targets"],
+                "enabled_heads": objective_metadata["enabled_heads"],
+                "loss_weights": objective_metadata.get("loss_weights", {}),
                 "train_loss": float(running_loss),
                 "train_task_loss": float(running_task_loss),
+                "train_objective_loss": float(running_task_loss),
                 "train_distill_loss": float(running_distill_loss),
                 "train_beam_soft_loss": float(running_beam_soft_loss),
                 "train_unimodal_loss": float(running_unimodal_loss),
                 "train_counterfactual_loss": float(running_counterfactual_loss),
                 "train_prior_regularization_loss": float(running_prior_regularization_loss),
                 "train_reliability_kd_loss": float(running_reliability_kd_loss),
+                "train_occlusion_loss": train_occlusion_loss,
+                "train_position_loss": train_position_loss,
+                "train_multitask_loss": train_multitask_loss,
+                "loss/occlusion": train_occlusion_loss,
+                "loss/position": train_position_loss,
+                "loss/multitask_total": train_multitask_loss,
                 "train_acc": float(running_acc),
                 "val_loss": float(val_loss),
                 "val_acc": val_acc,
                 "val_atop3": validation_curve_metrics["val_atop3"],
                 "val_atop5": validation_curve_metrics["val_atop5"],
                 "val_adba": validation_curve_metrics["val_adba"],
+                "val_occlusion_accuracy": val_occlusion_accuracy,
+                "val_occlusion_blocked_f1": val_occlusion_blocked_f1,
+                "val_position_rmse": val_position_rmse,
+                "val_position_mae": val_position_mae,
+                "val_multitask_loss": val_multitask_loss,
+                "val_primary_metric": float(primary_metric_value),
                 "learning_rate": float(current_lr),
                 "validation_metrics": deepcopy(val_metrics),
             }
@@ -1072,6 +1300,12 @@ def train(cfg: dict) -> dict:
                     run_dir=run_dir,
                     split_metadata=split_metadata,
                     normalization_artifacts=normalization_artifacts,
+                    objective_metric={
+                        "name": early_stopping_metric,
+                        "mode": early_stopping_mode,
+                        "value": early_stopping_value,
+                    },
+                    task_metrics=_checkpoint_task_metrics(epoch_log),
                 )
             epoch_log.update(
                 {
@@ -1085,14 +1319,21 @@ def train(cfg: dict) -> dict:
                 }
             )
             epoch_logs.append(epoch_log)
-            epoch_progress.set_postfix(
-                train_loss=f"{running_loss:.4f}",
-                val_loss=f"{float(val_loss):.4f}",
-                val_acc=f"{val_acc:.4f}",
-                early_stop=f"{early_stopping_metric}:{early_stopping_value:.4f}",
-                lr=f"{current_lr:.2e}",
+            if progress_enabled:
+                epoch_progress.set_postfix(
+                    train_loss=f"{running_loss:.4f}",
+                    val_loss=f"{float(val_loss):.4f}",
+                    val_acc=f"{val_acc:.4f}",
+                    early_stop=f"{early_stopping_metric}:{early_stopping_value:.4f}",
+                    lr=f"{current_lr:.2e}",
+                )
+            _write_tensorboard_scalars(
+                tensorboard_writer,
+                history,
+                epoch + 1,
+                objective=objective,
+                tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
             )
-            _write_tensorboard_scalars(tensorboard_writer, history, epoch + 1)
             _write_tensorboard_craf_scalars(tensorboard_writer, epoch_log, epoch + 1)
             save_checkpoint(
                 {
@@ -1111,6 +1352,7 @@ def train(cfg: dict) -> dict:
                     "epochs_without_improvement": epochs_without_improvement,
                     "normalization_artifacts": normalization_artifacts,
                     "checkpoint_registry": registry_checkpoint,
+                    "prediction_objective": objective_metadata,
                 },
                 run_dir / "checkpoints",
                 "last.pth",
@@ -1122,9 +1364,11 @@ def train(cfg: dict) -> dict:
             ):
                 break
     finally:
+        for dataloader in dataloaders.values():
+            shutdown_dataloader_workers(dataloader)
         _close_tensorboard_writer(tensorboard_writer)
 
-    np.savez(run_dir / "training_outputs.npz", **{k: np.asarray(v) for k, v in history.items()})
+    np.savez(run_dir / "training_outputs.npz", **_training_outputs_payload(history, objective_metadata, early_stopping_metric, early_stopping_mode))
     teacher_metrics = teacher_metrics_from_training(
         cfg,
         history,
@@ -1152,6 +1396,7 @@ def train(cfg: dict) -> dict:
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_registry": registry_checkpoint,
         "throughput": throughput_metadata,
+        "prediction_objective": objective_metadata,
         "runtime": {
             "run_dir": str(run_dir),
             "output_overwrite": bool(cfg.get("output", {}).get("overwrite", False)),
@@ -1161,6 +1406,7 @@ def train(cfg: dict) -> dict:
             "throughput": throughput_metadata,
             "teacher_prior": teacher_prior_info,
             "early_stopping": early_stopping_metadata,
+            "prediction_objective": objective_metadata,
         },
     }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:
@@ -1195,6 +1441,63 @@ def train(cfg: dict) -> dict:
         "optimizer_param_groups": optimizer_groups,
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,
+        "prediction_objective": objective_metadata,
+    }
+
+
+def _training_outputs_payload(
+    history: dict[str, list],
+    objective_metadata: dict,
+    early_stopping_metric: str,
+    early_stopping_mode: str,
+) -> dict[str, np.ndarray]:
+    payload = {key: _history_array(key, value) for key, value in history.items()}
+    payload["objective"] = np.asarray(objective_metadata["name"])
+    payload["primary_loss"] = np.asarray(objective_metadata["primary_loss"])
+    payload["primary_metric"] = np.asarray(early_stopping_metric)
+    payload["primary_metric_mode"] = np.asarray(early_stopping_mode)
+    payload["enabled_targets"] = np.asarray(objective_metadata["enabled_targets"], dtype=object)
+    payload["enabled_heads"] = np.asarray(objective_metadata["enabled_heads"], dtype=object)
+    weight_names = ("beam", "occlusion", "position")
+    weights = objective_metadata.get("loss_weights", {})
+    payload["loss_weight_names"] = np.asarray(weight_names, dtype=object)
+    payload["loss_weights"] = np.asarray([float(weights.get(name, np.nan)) for name in weight_names], dtype=float)
+    return payload
+
+
+_OPTIONAL_HISTORY_KEYS = {
+    "train_occlusion_loss",
+    "train_position_loss",
+    "train_multitask_loss",
+    "val_occlusion_accuracy",
+    "val_occlusion_blocked_f1",
+    "val_position_rmse",
+    "val_position_mae",
+    "val_multitask_loss",
+}
+
+
+def _history_array(key: str, values: list) -> np.ndarray:
+    if key not in _OPTIONAL_HISTORY_KEYS:
+        return np.asarray(values)
+    return np.asarray([np.nan if _finite_float_or_none(value) is None else float(value) for value in values], dtype=float)
+
+
+def _checkpoint_task_metrics(epoch_log: dict) -> dict[str, float]:
+    keys = (
+        "val_acc",
+        "val_adba",
+        "val_loss",
+        "val_occlusion_accuracy",
+        "val_occlusion_blocked_f1",
+        "val_position_rmse",
+        "val_position_mae",
+        "val_multitask_loss",
+    )
+    return {
+        key: float(epoch_log[key])
+        for key in keys
+        if key in epoch_log and isinstance(epoch_log[key], (int, float))
     }
 
 

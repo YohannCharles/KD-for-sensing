@@ -16,6 +16,13 @@ from kd_sensing.utils.paths import project_root
 
 CANONICAL_FUSION_MODALITIES = MODALITY_ORDER
 CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
+CANONICAL_FUSION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")
+CANONICAL_OBJECTIVE_FUSION_MODE = "no_kd"
+CANONICAL_OBJECTIVE_SUBSET_ALIASES = {
+    "all_modalities": list(CANONICAL_FUSION_MODALITIES),
+    "strong_only": ["gps", "mmwave"],
+    "weak_only": ["image", "radar", "lidar"],
+}
 REMOVED_FUSION_CONFIG_STEMS = {
     "no_kd": "image_radar_student_no_kd.yaml",
     "logits_kd": "image_radar_logits_kd.yaml",
@@ -46,6 +53,11 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     if advanced is not None:
         return advanced
 
+    objective_config = parse_objective_fusion_config_stem(stem)
+    if objective_config is not None:
+        slug, modalities, objective = objective_config
+        return build_objective_fusion_config(slug, modalities, objective)
+
     slug, modalities, mode = parse_fusion_config_stem(stem)
     name = f"{slug}_{mode}"
     image_radar = modalities == ["image", "radar"]
@@ -62,6 +74,7 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
             "dataset": _dataset_overrides(modalities),
         },
         "model": {
+            "modalities": list(modalities),
             "teacher": teacher_cfg,
             "student": student_cfg,
         },
@@ -75,6 +88,60 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
         cfg["paths"] = {
             "weights_dir": f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
         }
+    return cfg
+
+
+def build_objective_fusion_config(slug: str, modalities: list[str], objective: str) -> dict[str, Any]:
+    name = f"{slug}_{objective}_{CANONICAL_OBJECTIVE_FUSION_MODE}"
+    teacher_cfg = _fusion_teacher_baseline_model(modalities)
+    student_cfg = _cls_token_transformer_fusion_model(modalities)
+    if objective in {"occlusion", "multitask"}:
+        student_cfg.setdefault("auxiliary_heads", {})["occlusion"] = True
+    if objective in {"position", "multitask"}:
+        student_cfg.setdefault("auxiliary_heads", {})["position"] = True
+    if "auxiliary_heads" in student_cfg:
+        student_cfg["auxiliary_heads"]["enabled"] = True
+
+    dataset = _dataset_overrides(modalities)
+    if objective in {"position", "multitask"}:
+        dataset.update(
+            {
+                "train_csv_name": "train_seqs_RA_GPS_LIDAR_POS.csv",
+                "test_csv_name": "test_seqs_RA_GPS_LIDAR_POS.csv",
+            }
+        )
+    if objective in {"occlusion", "multitask"}:
+        dataset["occlusion_target"] = {"enabled": True, "threshold_percentile": 20.0}
+    if objective in {"position", "multitask"}:
+        dataset["position_target"] = {
+            "enabled": True,
+            "source": "future_gps_local_xy",
+            "normalize": True,
+        }
+
+    metric, mode = _objective_early_stopping(objective)
+    cfg: dict[str, Any] = {
+        "experiment": {
+            "name": name,
+            "task": "fusion",
+            "objective": objective,
+            "seed": 42 if modalities == ["image", "radar"] else 0,
+        },
+        "data": {"dataset": dataset},
+        "model": {
+            "teacher": teacher_cfg,
+            "student": student_cfg,
+        },
+        "distillation": {"type": "no_kd", "teacher_model_name": None},
+        "loss": _objective_loss_config(objective),
+        "training": {
+            "early_stopping_metric": metric,
+            "early_stopping_mode": mode,
+            "lr": 0.00075,
+            "weight_decay": 0.0001,
+        },
+        "output": {"run_name": name},
+    }
     return cfg
 
 
@@ -135,6 +202,7 @@ def build_advanced_fusion_overlay_config(stem: str) -> dict[str, Any] | None:
                 "evaluation": {"modality_subsets": {"subsets": ["all", "top_prior", "single_best_prior", "strong_only", "weak_only"]}},
             },
         ),
+        "multitask_occlusion_position": lambda: _multitask_occlusion_position_overlay(stem),
     }
     builder = builders.get(recipe)
     if builder is None:
@@ -381,6 +449,48 @@ def _marf_overlay(name: str, ablation: dict[str, Any] | None = None) -> dict[str
     return _deep_merge(cfg, ablation or {})
 
 
+def _multitask_occlusion_position_overlay(name: str) -> dict[str, Any]:
+    modalities = list(CANONICAL_FUSION_MODALITIES)
+    cfg = _advanced_fusion_base(name)
+    cfg["experiment"]["name"] = name
+    cfg["data"]["dataset"].update(
+        {
+            "train_csv_name": "train_seqs_RA_GPS_LIDAR_POS.csv",
+            "test_csv_name": "test_seqs_RA_GPS_LIDAR_POS.csv",
+            "occlusion_target": {
+                "enabled": True,
+                "threshold_percentile": 20.0,
+            },
+            "position_target": {
+                "enabled": True,
+                "source": "future_gps_local_xy",
+                "normalize": True,
+            },
+        }
+    )
+    cfg["model"]["teacher"] = _fusion_teacher_baseline_model(modalities)
+    cfg["model"]["student"] = _cls_token_transformer_fusion_model(modalities)
+    cfg["model"]["student"]["auxiliary_heads"] = {
+        "enabled": True,
+        "occlusion": True,
+        "position": True,
+    }
+    cfg["loss"] = {
+        "type": "focal_loss",
+        "alpha": 1,
+        "gamma": 2,
+        "beam_soft": {"enabled": False, "weight": 0.0},
+        "unimodal_aux": {"weight": 0.0},
+        "auxiliary": {
+            "enabled": True,
+            "occlusion": {"enabled": True, "weight": 1.0, "pos_weight": "auto"},
+            "position": {"enabled": True, "weight": 0.01},
+        },
+    }
+    cfg["output"]["run_name"] = name
+    return cfg
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = {key: value for key, value in base.items()}
     for key, value in override.items():
@@ -433,6 +543,78 @@ def parse_fusion_config_stem(stem: str) -> tuple[str, list[str], str]:
         )
 
     return slug, modalities, mode
+
+
+def parse_objective_fusion_config_stem(stem: str) -> tuple[str, list[str], str] | None:
+    suffix = f"_{CANONICAL_OBJECTIVE_FUSION_MODE}"
+    if not stem.endswith(suffix):
+        return None
+    prefix = stem[: -len(suffix)]
+    if "_" not in prefix:
+        return None
+    slug, objective = prefix.rsplit("_", 1)
+    if objective not in CANONICAL_FUSION_OBJECTIVES:
+        return None
+    if not slug:
+        raise ValueError("Objective fusion config slug cannot be empty.")
+    modalities = CANONICAL_OBJECTIVE_SUBSET_ALIASES.get(slug)
+    if modalities is None:
+        modalities = slug.split("_")
+        invalid = [name for name in modalities if name not in _MODALITY_INDEX]
+        if invalid:
+            raise ValueError(
+                f"Unknown fusion modalities {invalid} in objective fusion config '{stem}.yaml'. "
+                f"Available modalities: {list(CANONICAL_FUSION_MODALITIES)}."
+            )
+        duplicates = sorted({name for name in modalities if modalities.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Objective fusion config slug '{slug}' cannot contain duplicate modalities: {duplicates}."
+            )
+        if len(modalities) < 2:
+            modality = modalities[0]
+            raise ValueError(
+                f"Objective fusion configs require at least two modalities; use "
+                f"configs/{modality}/... for single-modality {modality} experiments."
+            )
+        canonical_modalities = sorted(modalities, key=_MODALITY_INDEX.__getitem__)
+        if canonical_modalities != modalities:
+            canonical_slug = "_".join(canonical_modalities)
+            raise ValueError(
+                f"Objective fusion config slug '{slug}' must follow modality order "
+                f"{_CANONICAL_ORDER_TEXT}; use '{canonical_slug}_{objective}_{CANONICAL_OBJECTIVE_FUSION_MODE}.yaml'."
+            )
+    else:
+        modalities = list(modalities)
+    return slug, list(modalities), objective
+
+
+def _objective_early_stopping(objective: str) -> tuple[str, str]:
+    mapping = {
+        "beam": ("val_adba", "max"),
+        "occlusion": ("val_occlusion_blocked_f1", "max"),
+        "position": ("val_position_rmse", "min"),
+        "multitask": ("val_multitask_loss", "min"),
+    }
+    return mapping[objective]
+
+
+def _objective_loss_config(objective: str) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "type": "focal_loss",
+        "alpha": 1,
+        "gamma": 2,
+        "beam_soft": {"enabled": False, "weight": 0.0},
+        "unimodal_aux": {"weight": 0.0},
+        "objective": {
+            "weights": {"beam": 1.0, "occlusion": 1.0, "position": 0.01},
+            "occlusion": {"pos_weight": "auto"},
+            "position": {"type": "mse"},
+        },
+    }
+    if objective in {"position", "multitask"}:
+        cfg["objective"]["weights"]["position"] = 1.0
+    return cfg
 
 
 def _is_fusion_config_path(path: Path) -> bool:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,44 @@ from kd_sensing.data.transform_ops.io import joined_resource
 
 
 MMWAVE_POWER_DIM = 64
+
+
+@dataclass(frozen=True)
+class OcclusionTargetStats:
+    threshold: float
+    threshold_percentile: float
+    sample_count: int
+    positive_count: int
+    positive_ratio: float
+
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "threshold": float(self.threshold),
+            "threshold_percentile": float(self.threshold_percentile),
+            "sample_count": int(self.sample_count),
+            "positive_count": int(self.positive_count),
+            "positive_ratio": float(self.positive_ratio),
+        }
+
+    def save(self, path: str | Path) -> None:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "OcclusionTargetStats":
+        return cls(
+            threshold=float(payload["threshold"]),
+            threshold_percentile=float(payload.get("threshold_percentile", 20.0)),
+            sample_count=int(payload.get("sample_count", 0)),
+            positive_count=int(payload.get("positive_count", 0)),
+            positive_ratio=float(payload.get("positive_ratio", 0.0)),
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> "OcclusionTargetStats":
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_dict(payload)
 
 
 def read_mmwave_power_vector(
@@ -27,9 +66,114 @@ def read_mmwave_power_vector(
     vector = np.asarray(values, dtype=np.float64).reshape(-1)
     if vector.size != int(expected_dim):
         raise ValueError(
-            f"mmWave power file {path} contains {vector.size} values; expected {int(expected_dim)}."
+            f"mmWave power file {path} contains {vector.size} values; expected {int(expected_dim)} "
+            f"({int(expected_dim)}-beam power vector)."
         )
     return vector.astype(np.float32)
+
+
+def max_mmwave_power(
+    data_root: str | Path,
+    rel_path: str,
+    *,
+    expected_dim: int = MMWAVE_POWER_DIM,
+) -> float:
+    vector = read_mmwave_power_vector(data_root, rel_path, expected_dim=expected_dim)
+    if not np.isfinite(vector).all():
+        path = joined_resource(data_root, rel_path)
+        raise ValueError(
+            f"mmWave power file {path} contains NaN or Inf values; expected a finite "
+            f"{int(expected_dim)}-beam power vector."
+        )
+    return float(np.max(vector))
+
+
+def finite_max_mmwave_power(
+    data_root: str | Path,
+    rel_path: str,
+    *,
+    expected_dim: int = MMWAVE_POWER_DIM,
+) -> float | None:
+    vector = read_mmwave_power_vector(data_root, rel_path, expected_dim=expected_dim)
+    finite = vector[np.isfinite(vector)]
+    if finite.size == 0:
+        return None
+    return float(np.max(finite))
+
+
+def collect_mmwave_max_powers(
+    data_root: str | Path,
+    rel_paths: list[str] | tuple[str, ...],
+    *,
+    expected_dim: int = MMWAVE_POWER_DIM,
+) -> np.ndarray:
+    values = [
+        max_mmwave_power(data_root, path, expected_dim=expected_dim)
+        for path in rel_paths
+        if _valid_power_path(path)
+    ]
+    if not values:
+        raise ValueError("No valid mmWave power files were provided for occlusion threshold fitting.")
+    return np.asarray(values, dtype=np.float64)
+
+
+def collect_mmwave_finite_max_powers(
+    data_root: str | Path,
+    rel_paths: list[str] | tuple[str, ...],
+    *,
+    expected_dim: int = MMWAVE_POWER_DIM,
+) -> np.ndarray:
+    values: list[float] = []
+    for path in rel_paths:
+        if not _valid_power_path(path):
+            continue
+        value = finite_max_mmwave_power(data_root, path, expected_dim=expected_dim)
+        if value is not None:
+            values.append(value)
+    if not values:
+        raise ValueError("No valid finite mmWave power files were provided for occlusion threshold fitting.")
+    return np.asarray(values, dtype=np.float64)
+
+
+def fit_occlusion_threshold(
+    max_powers: np.ndarray,
+    *,
+    threshold_percentile: float = 20.0,
+) -> OcclusionTargetStats:
+    powers = np.asarray(max_powers, dtype=np.float64).reshape(-1)
+    if powers.size == 0:
+        raise ValueError("Cannot fit occlusion threshold from an empty max_power array.")
+    if not np.isfinite(powers).all():
+        raise ValueError("Cannot fit occlusion threshold from max_power values containing NaN or Inf.")
+    percentile = float(threshold_percentile)
+    if not 0.0 <= percentile <= 100.0:
+        raise ValueError(f"threshold_percentile must be in [0, 100], got {threshold_percentile}.")
+    threshold = float(np.percentile(powers, percentile))
+    labels = powers < threshold
+    positive_count = int(labels.sum())
+    sample_count = int(powers.size)
+    return OcclusionTargetStats(
+        threshold=threshold,
+        threshold_percentile=percentile,
+        sample_count=sample_count,
+        positive_count=positive_count,
+        positive_ratio=float(positive_count / max(sample_count, 1)),
+    )
+
+
+def fit_occlusion_threshold_from_paths(
+    data_root: str | Path,
+    rel_paths: list[str] | tuple[str, ...],
+    *,
+    threshold_percentile: float = 20.0,
+    expected_dim: int = MMWAVE_POWER_DIM,
+    use_finite_max: bool = False,
+) -> OcclusionTargetStats:
+    collector = collect_mmwave_finite_max_powers if use_finite_max else collect_mmwave_max_powers
+    return fit_occlusion_threshold(
+        collector(data_root, rel_paths, expected_dim=expected_dim),
+        threshold_percentile=threshold_percentile,
+    )
 
 
 def build_mmwave_db_features(
@@ -133,10 +277,22 @@ class MmWaveStandardScaler:
             raise ValueError(f"mmWave scaler {name} must have shape ({MMWAVE_POWER_DIM},), got {array.shape}.")
 
 
+def _valid_power_path(path: object) -> bool:
+    text = str(path).strip()
+    return bool(text) and text != "-99"
+
+
 __all__ = [
     "MMWAVE_POWER_DIM",
     "MmWaveStandardScaler",
+    "OcclusionTargetStats",
     "build_mmwave_db_features",
+    "collect_mmwave_finite_max_powers",
+    "collect_mmwave_max_powers",
+    "finite_max_mmwave_power",
+    "fit_occlusion_threshold",
+    "fit_occlusion_threshold_from_paths",
     "load_mmwave_feature_sequence",
+    "max_mmwave_power",
     "read_mmwave_power_vector",
 ]
