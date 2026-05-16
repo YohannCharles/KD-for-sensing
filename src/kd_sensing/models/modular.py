@@ -205,6 +205,106 @@ class EarlyConcatGRUCore(nn.Module):
         return output
 
 
+@REPRESENTATION_CORES.register("snapshot_frame")
+class SnapshotFrameCore(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int | None = None,
+        hidden_size: int | None = None,
+        output_dim: int | None = None,
+        dropout: float = 0.0,
+        activation: str = "gelu",
+        **_: Any,
+    ):
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = None if modality_count is None else int(modality_count)
+        self.output_dim = int(output_dim or hidden_size or d_model)
+        if self.d_model <= 0 or self.output_dim <= 0:
+            raise ValueError("snapshot_frame dimensions must be positive.")
+        self.dropout = nn.Dropout(float(dropout))
+        self.activation = str(activation)
+        self.single_norm = nn.LayerNorm(self.d_model)
+        self.single_projection = _snapshot_projection(
+            self.d_model,
+            self.output_dim,
+            dropout=float(dropout),
+            activation=activation,
+        )
+        self._multi_fusion: nn.Module | None = (
+            self._build_multi_fusion(self.modality_count, dropout=float(dropout), activation=activation)
+            if self.modality_count is not None and self.modality_count > 1
+            else None
+        )
+        if self._multi_fusion is not None:
+            self.add_module("multi_fusion", self._multi_fusion)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim == 3:
+            batch_size, seq_len, d_model = features.shape
+            self._validate_time_dim(seq_len, features.shape)
+            if int(d_model) != self.d_model:
+                raise ValueError(
+                    f"snapshot_frame core expected D={self.d_model}, got {tuple(features.shape)}."
+                )
+            current = self.single_norm(features)
+            return self.single_projection(current)
+        if features.ndim == 4:
+            batch_size, modality_count, seq_len, d_model = features.shape
+            self._validate_time_dim(seq_len, features.shape)
+            if int(d_model) != self.d_model:
+                raise ValueError(
+                    f"snapshot_frame core expected D={self.d_model}, got {tuple(features.shape)}."
+                )
+            if self.modality_count is not None and int(modality_count) != self.modality_count:
+                raise ValueError(
+                    "snapshot_frame core received incompatible modality count: "
+                    f"expected K={self.modality_count}, got {tuple(features.shape)}."
+                )
+            fusion = self._multi_fusion_module(int(modality_count), features.device)
+            current_tokens = features[:, :, 0, :].reshape(batch_size, modality_count * self.d_model)
+            fused = fusion(current_tokens)
+            return fused.unsqueeze(1)
+        raise ValueError(f"snapshot_frame core expects [B, 1, D] or [B, K, 1, D], got {tuple(features.shape)}.")
+
+    @staticmethod
+    def _validate_time_dim(seq_len: int, shape: torch.Size) -> None:
+        if int(seq_len) != 1:
+            raise ValueError(
+                "snapshot_frame baseline requires seq_len=1 and num_pred=1; "
+                f"received time dimension T={int(seq_len)} from input shape {tuple(shape)}."
+            )
+
+    def _multi_fusion_module(self, modality_count: int, device: torch.device) -> nn.Module:
+        input_dim = int(modality_count) * self.d_model
+        if self._multi_fusion is None:
+            self._multi_fusion = self._build_multi_fusion(
+                modality_count,
+                dropout=float(self.dropout.p),
+                activation=self.activation,
+            )
+            self.add_module("multi_fusion", self._multi_fusion)
+        first_linear = next(module for module in self._multi_fusion.modules() if isinstance(module, nn.Linear))
+        if int(first_linear.in_features) != input_dim:
+            raise ValueError(
+                "snapshot_frame core was initialized for a different modality count; "
+                f"expected fused input {first_linear.in_features}, got {input_dim}."
+            )
+        return self._multi_fusion.to(device)
+
+    def _build_multi_fusion(self, modality_count: int, *, dropout: float, activation: str) -> nn.Module:
+        input_dim = int(modality_count) * self.d_model
+        hidden_dim = max(input_dim, self.output_dim)
+        return nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            _snapshot_activation(activation),
+            nn.Dropout(float(dropout)),
+            nn.Linear(hidden_dim, self.output_dim),
+        )
+
+
 @REPRESENTATION_CORES.register("token_transformer")
 class TokenTransformerCore(nn.Module):
     def __init__(
@@ -286,6 +386,7 @@ class ModularSequenceModel(nn.Module):
         **_: Any,
     ):
         super().__init__()
+        self.supports_modality_kwargs = True
         self.modalities = normalize_modalities(tuple(modalities or ("image",)), context="modular sequence modalities")
         self.feature_size = int(feature_size)
         self.d_model = int(d_model or feature_size)
@@ -463,6 +564,27 @@ def _default_encoder_type(modality: str, image_profile: str) -> str:
     }[modality]
 
 
+def _snapshot_projection(input_dim: int, output_dim: int, *, dropout: float, activation: str) -> nn.Module:
+    hidden_dim = max(int(input_dim), int(output_dim))
+    return nn.Sequential(
+        nn.Linear(int(input_dim), hidden_dim),
+        _snapshot_activation(activation),
+        nn.Dropout(float(dropout)),
+        nn.Linear(hidden_dim, int(output_dim)),
+    )
+
+
+def _snapshot_activation(name: str) -> nn.Module:
+    normalized = str(name).lower()
+    if normalized == "relu":
+        return nn.ReLU()
+    if normalized == "silu":
+        return nn.SiLU()
+    if normalized == "tanh":
+        return nn.Tanh()
+    return nn.GELU()
+
+
 def _check_temporal_features(
     features: torch.Tensor,
     modality: str,
@@ -500,5 +622,6 @@ __all__ = [
     "RadarCNNEncoder",
     "ResNet18ImageEncoder",
     "SingleGRUCore",
+    "SnapshotFrameCore",
     "TokenTransformerCore",
 ]

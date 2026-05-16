@@ -7,14 +7,17 @@ import torch
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
 from kd_sensing.engine.modality_resolution import config_uses_gps, config_uses_lidar, config_uses_mmwave, resolve_enabled_modalities
-from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts
+from kd_sensing.engine.normalization_artifacts import (
+    load_normalization_artifacts,
+    validate_normalization_artifact_fingerprint,
+)
 from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
 from kd_sensing.engine.prediction_objectives import (
     objective_requires_occlusion,
     objective_requires_position,
     objective_runtime_metadata,
 )
-from kd_sensing.engine.run_metadata import dataset_run_metadata, throughput_run_metadata
+from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.artifact_registry import resolve_evaluation_checkpoint
@@ -33,6 +36,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             "Run evaluation with --weights or set evaluation.weights to an absolute checkpoint path. "
             f"Resolution: {checkpoint_resolution.to_dict()}"
         )
+    validate_normalization_artifact_fingerprint(cfg, checkpoint_resolution.metadata)
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}
     if checkpoint_resolution.metadata and checkpoint_resolution.metadata.get("split_metadata"):
@@ -79,6 +83,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     if checkpoint_resolution.metadata:
         normalization_artifacts = checkpoint_resolution.metadata.get("normalization_artifacts", {})
     throughput_metadata = throughput_run_metadata(cfg, device=device)
+    prediction_setup = prediction_setup_metadata(cfg, split_metadata=split_metadata)
     dump_config(
         final_config_with_runtime(
             cfg,
@@ -127,6 +132,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             "normalization_artifacts": normalization_artifacts,
             "throughput": throughput_metadata,
             "prediction_objective": objective_runtime_metadata(cfg),
+            "prediction_setup": prediction_setup,
             "enabled_modalities": list(enabled_modalities),
         },
     }

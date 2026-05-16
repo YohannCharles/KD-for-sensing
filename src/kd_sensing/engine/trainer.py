@@ -37,7 +37,11 @@ from kd_sensing.engine.prediction_objectives import (
     resolve_prediction_objective,
     validate_objective_metric_available,
 )
-from kd_sensing.engine.run_metadata import dataloaders_run_metadata, throughput_run_metadata
+from kd_sensing.engine.run_metadata import (
+    dataloaders_run_metadata,
+    prediction_setup_metadata,
+    throughput_run_metadata,
+)
 from kd_sensing.engine.runtime import (
     autocast_context,
     make_grad_scaler,
@@ -164,6 +168,7 @@ def final_config_with_runtime(
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
+    runtime["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
     return final_cfg
 
 
@@ -1274,6 +1279,7 @@ def train(cfg: dict) -> dict:
         "checkpoint_registry": registry_checkpoint,
         "throughput": throughput_metadata,
         "prediction_objective": objective_metadata,
+        "prediction_setup": prediction_setup_metadata(cfg, split_metadata=split_metadata),
         "runtime": {
             "run_dir": str(run_dir),
             "output_overwrite": bool(cfg.get("output", {}).get("overwrite", False)),
@@ -1284,6 +1290,7 @@ def train(cfg: dict) -> dict:
             "teacher_prior": teacher_prior_info,
             "early_stopping": early_stopping_metadata,
             "prediction_objective": objective_metadata,
+            "prediction_setup": prediction_setup_metadata(cfg, split_metadata=split_metadata),
         },
     }
     with (run_dir / "train_log.json").open("w", encoding="utf-8") as f:

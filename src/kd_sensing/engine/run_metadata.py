@@ -6,6 +6,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
+from kd_sensing.config.canonical import SNAPSHOT_VARIANT
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.engine.data_factory import build_dataloader_kwargs, resolve_dataloader_split_config
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
@@ -35,9 +36,11 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         split_metadata = split_metadata_summary_for_csv(
             csv_path,
             split=getattr(dataset, "split", None),
-            require_balanced=split_family == "unified_gps_lidar",
+            require_balanced=split_family in {"unified_gps_lidar", "snapshot_next_frame"},
             warn=split_family == "unified_gps_lidar",
         )
+        if split_family == "snapshot_next_frame":
+            _validate_snapshot_split_metadata(split_metadata, csv_path)
         metadata["split_metadata"] = split_metadata
         if split_metadata.get("available"):
             metadata["split_protocol"] = split_metadata.get("split_protocol")
@@ -81,6 +84,53 @@ def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, An
     return {split: dataset_run_metadata(loader.dataset) for split, loader in dataloaders.items()}
 
 
+def prediction_setup_metadata(
+    cfg: dict[str, Any],
+    *,
+    split_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    model_cfg = cfg.get("model", {})
+    seq_len = int(dataset_cfg.get("seq_len", model_cfg.get("seq_length_student", 0)) or 0)
+    num_pred = int(dataset_cfg.get("num_pred", model_cfg.get("num_pred", 0)) or 0)
+    variant = cfg.get("experiment", {}).get("variant") or ("history_window" if seq_len > 1 else "single_frame")
+    uses_temporal_core = _uses_temporal_core(cfg)
+    metadata: dict[str, Any] = {
+        "variant": variant,
+        "uses_history_window": bool(seq_len > 1),
+        "uses_temporal_core": uses_temporal_core,
+        "seq_len": seq_len,
+        "num_pred": num_pred,
+        "enabled_modalities": list(resolve_enabled_modalities(cfg)),
+        "objective": cfg.get("experiment", {}).get("objective", "beam"),
+        "task": cfg.get("experiment", {}).get("task"),
+        "train_csv_name": dataset_cfg.get("train_csv_name"),
+        "validation_csv_name": dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name"),
+        "test_csv_name": dataset_cfg.get("test_csv_name"),
+    }
+    scene = cfg.get("data", {}).get("dataset", {})
+    for key in ("scene", "scene_id", "scene_slug"):
+        if key in scene:
+            metadata[key] = scene[key]
+    if split_metadata:
+        metadata["splits"] = _prediction_setup_splits(split_metadata)
+        train_split = split_metadata.get("train", {})
+        eval_split = split_metadata.get("validation") or split_metadata.get("test") or split_metadata.get("val") or {}
+        metadata["train_num_samples"] = train_split.get("num_samples")
+        metadata["validation_num_samples"] = eval_split.get("num_samples")
+        split_protocol = train_split.get("split_protocol") or eval_split.get("split_protocol")
+        if split_protocol:
+            metadata["split_protocol"] = split_protocol
+        split_path = train_split.get("split_metadata_path") or eval_split.get("split_metadata_path")
+        if split_path:
+            metadata["split_metadata_path"] = split_path
+    if variant == SNAPSHOT_VARIANT:
+        metadata["uses_history_window"] = False
+        metadata["uses_temporal_core"] = False
+        metadata["split_ratio"] = "80/20"
+    return metadata
+
+
 def throughput_run_metadata(
     cfg: dict[str, Any],
     dataloaders: dict[str, DataLoader] | None = None,
@@ -121,7 +171,9 @@ def throughput_run_metadata(
             "grad_scaler": bool(amp_cfg.get("grad_scaler", True)),
         }
     if dataloaders is not None:
-        metadata["splits"] = dataloaders_run_metadata(dataloaders)
+        splits = dataloaders_run_metadata(dataloaders)
+        metadata["splits"] = splits
+        metadata["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=splits)
     return metadata
 
 
@@ -244,9 +296,58 @@ def _serializable_loader_settings(settings: dict[str, Any]) -> dict[str, Any]:
 def _split_family(csv_name: str | None) -> str | None:
     if csv_name in {"train_seqs_RA_GPS_LIDAR.csv", "test_seqs_RA_GPS_LIDAR.csv"}:
         return "unified_gps_lidar"
+    if csv_name in {"train_seqs_SNAPSHOT_NEXT_FRAME.csv", "val_seqs_SNAPSHOT_NEXT_FRAME.csv"}:
+        return "snapshot_next_frame"
     if csv_name is None:
         return None
     return "configured"
+
+
+def _validate_snapshot_split_metadata(split_metadata: dict[str, Any], csv_path: Any) -> None:
+    if not split_metadata.get("available"):
+        raise ValueError(
+            f"Snapshot split metadata is missing for {Path(csv_path)}; "
+            "run configs/preprocess/sequences_snapshot_next_frame.yaml first."
+        )
+    if split_metadata.get("split_protocol") != "snapshot_next_frame_balanced_seq":
+        raise ValueError(
+            "Snapshot dataset requires split_protocol='snapshot_next_frame_balanced_seq'; "
+            f"got {split_metadata.get('split_protocol')!r}."
+        )
+    if int(split_metadata.get("in_len") or 0) != 1 or int(split_metadata.get("out_len") or 0) != 1:
+        raise ValueError(
+            "Snapshot split metadata must record in_len=1 and out_len=1; "
+            f"got in_len={split_metadata.get('in_len')!r}, out_len={split_metadata.get('out_len')!r}."
+        )
+
+
+def _uses_temporal_core(cfg: dict[str, Any]) -> bool:
+    model_cfg = cfg.get("model", {})
+    role_cfg = model_cfg.get("student", {}) if isinstance(model_cfg.get("student"), dict) else {}
+    model_type = str(role_cfg.get("type", ""))
+    if model_type in {"fusion_teacher", "fusion_student", "cls_token_transformer_fusion", "token_transformer_fusion"}:
+        return True
+    if model_type in {"craf_fusion", "marf_fusion"}:
+        return True
+    core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
+    if core_type == "snapshot_frame":
+        return False
+    return core_type in {"single_gru", "early_concat_gru", "token_transformer"} or "gru" in core_type
+
+
+def _prediction_setup_splits(split_metadata: dict[str, Any]) -> dict[str, Any]:
+    result = {}
+    for split, metadata in split_metadata.items():
+        if not isinstance(metadata, dict):
+            continue
+        result[str(split)] = {
+            "csv_path": metadata.get("csv_path"),
+            "csv_name": metadata.get("csv_name"),
+            "num_samples": metadata.get("num_samples"),
+            "split_protocol": metadata.get("split_protocol"),
+            "split_metadata_path": metadata.get("split_metadata_path"),
+        }
+    return result
 
 
 __all__ = [
@@ -254,5 +355,6 @@ __all__ = [
     "dataloaders_run_metadata",
     "dataset_run_metadata",
     "image_run_metadata",
+    "prediction_setup_metadata",
     "throughput_run_metadata",
 ]

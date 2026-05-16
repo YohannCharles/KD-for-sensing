@@ -12,7 +12,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
     yaml = None
 
-from kd_sensing.config.canonical import build_virtual_config
+from kd_sensing.config.canonical import SNAPSHOT_TRAIN_CSV, SNAPSHOT_VAL_CSV, SNAPSHOT_VARIANT, build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.data.scenes import normalize_deepsense_config
 from kd_sensing.engine.prediction_objectives import (
@@ -115,6 +115,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     normalize_model_role_defaults(cfg)
     normalize_deepsense_config(cfg)
     normalize_image_profile_config(cfg)
+    apply_snapshot_runtime_requirements(cfg)
     validate_config(cfg)
     return cfg
 
@@ -351,6 +352,77 @@ def normalize_image_profile_config(cfg: dict[str, Any]) -> None:
         for _, role_cfg in _iter_model_configs(cfg):
             role_cfg.setdefault("image_profile", profile)
             role_cfg.setdefault("image_channels", spec.channels)
+
+
+def apply_snapshot_runtime_requirements(cfg: dict[str, Any]) -> None:
+    experiment = cfg.setdefault("experiment", {})
+    explicit_variant = experiment.get("variant")
+    if explicit_variant is None and _uses_snapshot_frame_core(cfg):
+        experiment["variant"] = SNAPSHOT_VARIANT
+    if experiment.get("variant") != SNAPSHOT_VARIANT:
+        return
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    model_cfg = cfg.setdefault("model", {})
+    _require_snapshot_int(dataset_cfg, "seq_len", 1, "data.dataset.seq_len")
+    _require_snapshot_int(dataset_cfg, "num_pred", 1, "data.dataset.num_pred")
+    _require_snapshot_int(model_cfg, "seq_length_teacher", 1, "model.seq_length_teacher")
+    _require_snapshot_int(model_cfg, "seq_length_student", 1, "model.seq_length_student")
+    _require_snapshot_int(model_cfg, "num_pred", 1, "model.num_pred")
+    if dataset_cfg.get("train_csv_name") in (None, ""):
+        dataset_cfg["train_csv_name"] = SNAPSHOT_TRAIN_CSV
+    if dataset_cfg.get("val_csv_name") in (None, ""):
+        dataset_cfg["val_csv_name"] = SNAPSHOT_VAL_CSV
+    if dataset_cfg.get("test_csv_name") in (None, ""):
+        dataset_cfg["test_csv_name"] = SNAPSHOT_VAL_CSV
+    if dataset_cfg.get("train_csv_name") != SNAPSHOT_TRAIN_CSV:
+        raise ValueError(
+            f"snapshot_next_frame requires data.dataset.train_csv_name={SNAPSHOT_TRAIN_CSV!r}; "
+            "run the snapshot preprocessing or explicitly change experiment.variant to leave snapshot mode."
+        )
+    val_csv = dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name")
+    if val_csv != SNAPSHOT_VAL_CSV:
+        raise ValueError(
+            f"snapshot_next_frame requires data.dataset.val_csv_name={SNAPSHOT_VAL_CSV!r}; "
+            "run the snapshot preprocessing or explicitly change experiment.variant to leave snapshot mode."
+        )
+    for role in ("teacher", "student"):
+        role_cfg = model_cfg.get(role)
+        if not isinstance(role_cfg, dict):
+            continue
+        if str(role_cfg.get("type")) not in MODULAR_MODEL_TYPES:
+            raise ValueError(
+                f"snapshot_next_frame requires model.{role}.type='modular_sequence' with snapshot_frame core."
+            )
+        core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
+        if core_type != "snapshot_frame":
+            raise ValueError(
+                f"snapshot_next_frame requires model.{role}.representation_core.type='snapshot_frame', got {core_type!r}."
+            )
+        role_cfg["num_pred"] = 1
+        role_cfg["uses_temporal_core"] = False
+    distill = cfg.setdefault("distillation", {})
+    if distill.get("type", "no_kd") != "no_kd":
+        raise ValueError("snapshot_next_frame baselines require distillation.type='no_kd'.")
+    distill["teacher_model_name"] = None
+    experiment["uses_history_window"] = False
+    experiment["uses_temporal_core"] = False
+
+
+def _uses_snapshot_frame_core(cfg: dict[str, Any]) -> bool:
+    for _, role_cfg in _iter_model_configs(cfg):
+        core = role_cfg.get("representation_core")
+        if isinstance(core, dict) and core.get("type") == "snapshot_frame":
+            return True
+    return False
+
+
+def _require_snapshot_int(mapping: dict[str, Any], key: str, expected: int, dotted_key: str) -> None:
+    actual = mapping.get(key)
+    if int(actual) != int(expected):
+        raise ValueError(
+            f"snapshot_next_frame requires {dotted_key}={expected}; got {actual!r}. "
+            "Use seq_len=1 and num_pred=1, or change experiment.variant to leave snapshot mode."
+        )
 
 
 def reject_removed_image_path_config(cfg: dict[str, Any]) -> None:

@@ -23,9 +23,14 @@ from kd_sensing.modalities import (
 from kd_sensing.utils.paths import project_root
 
 CANONICAL_FUSION_MODALITIES = MODALITY_ORDER
+CANONICAL_SINGLE_MODALITIES = MODALITY_ORDER
 CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
 CANONICAL_FUSION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")
 CANONICAL_OBJECTIVE_FUSION_MODE = "no_kd"
+SNAPSHOT_VARIANT = "snapshot_next_frame"
+SNAPSHOT_MODE = "snapshot_next_frame_no_kd"
+SNAPSHOT_TRAIN_CSV = "train_seqs_SNAPSHOT_NEXT_FRAME.csv"
+SNAPSHOT_VAL_CSV = "val_seqs_SNAPSHOT_NEXT_FRAME.csv"
 CANONICAL_OBJECTIVE_SUBSET_ALIASES = {
     "all_modalities": list(CANONICAL_FUSION_MODALITIES),
     "strong_only": ["gps", "mmwave"],
@@ -53,6 +58,9 @@ def build_virtual_config(config_path: Path) -> dict[str, Any] | None:
                 f"Use 'configs/fusion/{replacement}' instead."
             )
         return build_virtual_fusion_config(config_path.stem)
+    single = parse_single_snapshot_config_path(config_path)
+    if single is not None:
+        return build_snapshot_single_config(single)
     return None
 
 
@@ -60,6 +68,11 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     advanced = build_advanced_fusion_overlay_config(stem)
     if advanced is not None:
         return advanced
+
+    snapshot_config = parse_snapshot_fusion_config_stem(stem)
+    if snapshot_config is not None:
+        name_slug, modalities = snapshot_config
+        return build_snapshot_fusion_config(name_slug, modalities)
 
     objective_config = parse_objective_fusion_config_stem(stem)
     if objective_config is not None:
@@ -97,6 +110,85 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
             "weights_dir": f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
         }
     return cfg
+
+
+def build_snapshot_single_config(modality: str) -> dict[str, Any]:
+    name = f"{modality}_{SNAPSHOT_MODE}"
+    model_cfg = _snapshot_modular_model([modality])
+    dataset = _snapshot_dataset_overrides([modality])
+    return {
+        "experiment": {
+            "name": name,
+            "task": modality,
+            "variant": SNAPSHOT_VARIANT,
+            "uses_history_window": False,
+            "uses_temporal_core": False,
+            "seed": 42,
+        },
+        "data": {"dataset": dataset},
+        "model": {
+            "feature_size": 64,
+            "d_model": 64,
+            "num_classes": 64,
+            "seq_length_teacher": 1,
+            "seq_length_student": 1,
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "teacher": deepcopy(model_cfg),
+            "student": model_cfg,
+        },
+        "distillation": {
+            "type": "no_kd",
+            "teacher_model_name": None,
+        },
+        "training": {
+            "early_stopping_metric": "val_adba",
+            "early_stopping_mode": "max",
+            "lr": 0.00075,
+            "weight_decay": 0.0001,
+        },
+        "output": {"run_name": name},
+    }
+
+
+def build_snapshot_fusion_config(name_slug: str, modalities: list[str]) -> dict[str, Any]:
+    name = f"{name_slug}_{SNAPSHOT_MODE}"
+    model_cfg = _snapshot_modular_model(modalities)
+    dataset = _snapshot_dataset_overrides(modalities)
+    return {
+        "experiment": {
+            "name": name,
+            "task": "fusion",
+            "variant": SNAPSHOT_VARIANT,
+            "uses_history_window": False,
+            "uses_temporal_core": False,
+            "seed": 0,
+        },
+        "data": {"dataset": dataset},
+        "model": {
+            "modalities": list(modalities),
+            "feature_size": 64,
+            "d_model": 64,
+            "num_classes": 64,
+            "seq_length_teacher": 1,
+            "seq_length_student": 1,
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "teacher": deepcopy(model_cfg),
+            "student": model_cfg,
+        },
+        "distillation": {
+            "type": "no_kd",
+            "teacher_model_name": None,
+        },
+        "training": {
+            "early_stopping_metric": "val_adba",
+            "early_stopping_mode": "max",
+            "lr": 0.00075,
+            "weight_decay": 0.0001,
+        },
+        "output": {"run_name": name},
+    }
 
 
 def build_objective_fusion_config(slug: str, modalities: list[str], objective: str) -> dict[str, Any]:
@@ -480,6 +572,41 @@ def parse_fusion_config_stem(stem: str) -> tuple[str, list[str], str]:
     return slug, modalities, mode
 
 
+def parse_snapshot_fusion_config_stem(stem: str) -> tuple[str, list[str]] | None:
+    suffix = f"_{SNAPSHOT_MODE}"
+    if not stem.endswith(suffix):
+        return None
+    slug = stem[: -len(suffix)]
+    if slug == "all_modalities":
+        return slug, list(CANONICAL_FUSION_MODALITIES)
+    if not slug:
+        raise ValueError("Snapshot fusion config slug cannot be empty.")
+    modalities = slug.split("_")
+    invalid = [name for name in modalities if name not in _MODALITY_INDEX]
+    if invalid:
+        raise ValueError(
+            f"Unknown fusion modalities {invalid} in snapshot fusion config '{stem}.yaml'. "
+            f"Available modalities: {list(CANONICAL_FUSION_MODALITIES)}."
+        )
+    duplicates = sorted({name for name in modalities if modalities.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"Snapshot fusion config slug '{slug}' cannot contain duplicate modalities: {duplicates}.")
+    if len(modalities) < 2:
+        modality = modalities[0]
+        raise ValueError(
+            f"Snapshot fusion configs require at least two modalities; use "
+            f"configs/{modality}/{SNAPSHOT_MODE}.yaml for single-modality {modality} experiments."
+        )
+    canonical_modalities = sorted(modalities, key=_MODALITY_INDEX.__getitem__)
+    if canonical_modalities != modalities:
+        canonical_slug = "_".join(canonical_modalities)
+        raise ValueError(
+            f"Snapshot fusion config slug '{slug}' must follow modality order "
+            f"{_CANONICAL_ORDER_TEXT}; use '{canonical_slug}_{SNAPSHOT_MODE}.yaml'."
+        )
+    return slug, modalities
+
+
 def parse_objective_fusion_config_stem(stem: str) -> tuple[str, list[str], str] | None:
     suffix = f"_{CANONICAL_OBJECTIVE_FUSION_MODE}"
     if not stem.endswith(suffix):
@@ -524,21 +651,60 @@ def parse_objective_fusion_config_stem(stem: str) -> tuple[str, list[str], str] 
     return slug, list(modalities), objective
 
 
+def parse_single_snapshot_config_path(path: Path) -> str | None:
+    if path.suffix not in {".yaml", ".yml"} or path.stem != SNAPSHOT_MODE:
+        return None
+    parts = _config_path_parts(path)
+    if len(parts) != 3 or parts[0] != "configs":
+        return None
+    modality = parts[1]
+    if modality == "fusion":
+        return None
+    if modality not in CANONICAL_SINGLE_MODALITIES:
+        return None
+    return modality
+
+
 def _is_fusion_config_path(path: Path) -> bool:
     if path.suffix not in {".yaml", ".yml"}:
         return False
+    parts = _config_path_parts(path)
+    return len(parts) == 3 and parts[:2] == ("configs", "fusion")
+
+
+def _config_path_parts(path: Path) -> tuple[str, ...]:
     try:
         relative = path.resolve().relative_to(project_root())
+        return tuple(relative.parts)
     except ValueError:
         parts = path.parts
-        return len(parts) >= 3 and parts[-3:-1] == ("configs", "fusion")
-    return len(relative.parts) == 3 and relative.parts[:2] == ("configs", "fusion")
+        if len(parts) >= 3 and parts[-3] == "configs":
+            return tuple(parts[-3:])
+        return tuple(parts)
 
 
 def _dataset_overrides(modalities: list[str]) -> dict[str, Any]:
     dataset = dataset_flags_for_modalities(modalities)
     dataset.update(dataset_defaults_for_modalities(modalities))
     return {key: value for key, value in dataset.items() if value not in (False, None)}
+
+
+def _snapshot_dataset_overrides(modalities: list[str]) -> dict[str, Any]:
+    dataset = _dataset_overrides(modalities)
+    dataset.update(
+        {
+            "type": "deepsense6g",
+            "scene": 31,
+            "train_csv_name": SNAPSHOT_TRAIN_CSV,
+            "val_csv_name": SNAPSHOT_VAL_CSV,
+            "test_csv_name": SNAPSHOT_VAL_CSV,
+            "seq_len": 1,
+            "num_pred": 1,
+            "portion": 1.0,
+            "split_metadata_path": "split_metadata_SNAPSHOT_NEXT_FRAME.json",
+        }
+    )
+    return dataset
 
 
 def _add_modality_model_fields(model_cfg: dict[str, Any], modalities: list[str]) -> None:
@@ -598,6 +764,50 @@ def _modular_resnet_fusion_model(modalities: list[str], *, num_layers: int) -> d
                 "dropout": 0.1,
             },
         },
+    }
+    if "image" in modalities:
+        cfg["encoders"]["image"] = {
+            "type": "resnet18_imagenet_rgb",
+            "output_dim": 64,
+            "pretrained": True,
+            "weights": "DEFAULT",
+            "freeze_backbone": True,
+            "unfreeze_stages": ["layer4"],
+            "dropout": 0.1,
+        }
+    if "lidar" in modalities:
+        cfg["encoders"]["lidar"] = {
+            "type": "lidar_cnn",
+            "output_dim": 64,
+            "lidar_channels": 3,
+        }
+    _add_modality_model_fields(cfg, modalities)
+    return cfg
+
+
+def _snapshot_modular_model(modalities: list[str]) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "type": "modular_sequence",
+        "modalities": list(modalities),
+        "image_profile": "rgb_imagenet",
+        "feature_size": 64,
+        "d_model": 64,
+        "num_classes": 64,
+        "num_pred": 1,
+        "encoders": {},
+        "representation_core": {
+            "type": "snapshot_frame",
+            "d_model": 64,
+            "hidden_size": 64,
+            "dropout": 0.1,
+        },
+        "heads": {
+            "beam": {
+                "type": "beam_head",
+                "dropout": 0.1,
+            },
+        },
+        "uses_temporal_core": False,
     }
     if "image" in modalities:
         cfg["encoders"]["image"] = {

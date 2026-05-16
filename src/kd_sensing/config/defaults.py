@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
             "scene_slug": "scene31",
             "data_root": None,
             "train_csv_name": None,
+            "val_csv_name": None,
             "test_csv_name": None,
             "seq_len": 8,
             "num_pred": 3,

@@ -9,7 +9,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from kd_sensing.data.split_metadata import SPLIT_METADATA_PROTOCOL, default_split_metadata_path
+from kd_sensing.data.split_metadata import (
+    SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL,
+    SPLIT_METADATA_PROTOCOL,
+    SUPPORTED_SPLIT_METADATA_PROTOCOLS,
+    default_split_metadata_path,
+)
 from kd_sensing.registries import PREPROCESSORS
 from kd_sensing.utils.paths import resolve_path
 
@@ -27,6 +32,13 @@ class SequenceColumnPlan:
 class SequenceSplit:
     train_seq_index: list[Any]
     test_seq_index: list[Any]
+
+
+@dataclass(frozen=True)
+class SplitProtocolPlan:
+    protocol: str
+    eval_name: str
+    eval_file_prefix: str
 
 
 def generate_sequence_data(
@@ -56,10 +68,11 @@ def generate_sequence_data(
     csv_path = resolve_path(csv_path)
     data_root = resolve_path(data_root)
     all_data = pd.read_csv(csv_path)
-    if split_strategy != SPLIT_METADATA_PROTOCOL:
+    protocol_plan = _resolve_split_protocol(split_strategy, in_len=in_len, out_len=out_len)
+    if protocol_plan.protocol not in SUPPORTED_SPLIT_METADATA_PROTOCOLS:
         raise ValueError(
             f"Unsupported sequence split_strategy '{split_strategy}'. "
-            f"This workflow supports only '{SPLIT_METADATA_PROTOCOL}'."
+            f"This workflow supports: {sorted(SUPPORTED_SPLIT_METADATA_PROTOCOLS)}."
         )
     plan = resolve_sequence_column_plan(
         all_data,
@@ -95,7 +108,7 @@ def generate_sequence_data(
         data_root=data_root,
     )
     train_path = data_root / f"train_seqs{output_suffix}.csv"
-    test_path = data_root / f"test_seqs{output_suffix}.csv"
+    test_path = data_root / f"{protocol_plan.eval_file_prefix}_seqs{output_suffix}.csv"
     data_root.mkdir(parents=True, exist_ok=True)
     train_frame = all_seqs[all_seqs["seq_index"].isin(split.train_seq_index)]
     test_frame = all_seqs[all_seqs["seq_index"].isin(split.test_seq_index)]
@@ -114,6 +127,19 @@ def generate_sequence_data(
         train_frame=train_frame,
         test_frame=test_frame,
         split=split,
+        protocol=protocol_plan.protocol,
+        eval_name=protocol_plan.eval_name,
+        in_len=in_len,
+        out_len=out_len,
+        enabled_columns=sequence_window_columns(
+            in_len,
+            out_len,
+            include_gps=include_gps,
+            include_lidar=include_lidar,
+            include_mmwave=include_mmwave,
+            include_position_targets=include_position_targets,
+        ),
+        include_position_targets=include_position_targets,
         training_set_pct=training_set_pct,
         split_seed=split_seed,
         min_test_sequences=min_test_sequences,
@@ -349,16 +375,24 @@ def write_split_metadata(
     split_seed: int,
     min_test_sequences: int | None,
     requested_test_sequence_count: int | None,
+    protocol: str = SPLIT_METADATA_PROTOCOL,
+    eval_name: str = "test",
+    in_len: int | None = None,
+    out_len: int | None = None,
+    enabled_columns: list[str] | None = None,
+    include_position_targets: bool = False,
 ) -> Path:
     metadata_path = Path(metadata_path)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     label_distribution = {
         "all": label_distribution_summary(all_windows, data_root=data_root),
         "train": label_distribution_summary(train_frame, data_root=data_root),
-        "test": label_distribution_summary(test_frame, data_root=data_root),
+        eval_name: label_distribution_summary(test_frame, data_root=data_root),
     }
     payload = {
-        "split_protocol": SPLIT_METADATA_PROTOCOL,
+        "split_protocol": protocol,
+        "in_len": None if in_len is None else int(in_len),
+        "out_len": None if out_len is None else int(out_len),
         "split_seed": int(split_seed),
         "training_set_pct": float(training_set_pct),
         "min_test_sequences": None if min_test_sequences is None else int(min_test_sequences),
@@ -369,21 +403,23 @@ def write_split_metadata(
         "data_root": str(data_root),
         "output_csv_paths": {
             "train": str(train_path),
-            "test": str(test_path),
+            eval_name: str(test_path),
         },
+        "enabled_columns": list(enabled_columns or all_windows.columns),
+        "include_position_targets": bool(include_position_targets),
         "sequence_counts": {
             "total": int(len(split.train_seq_index) + len(split.test_seq_index)),
             "train": int(len(split.train_seq_index)),
-            "test": int(len(split.test_seq_index)),
+            eval_name: int(len(split.test_seq_index)),
         },
         "window_counts": {
             "total": int(len(all_windows)),
             "train": int(len(train_frame)),
-            "test": int(len(test_frame)),
+            eval_name: int(len(test_frame)),
         },
         "seq_index": {
             "train": _json_ready(split.train_seq_index),
-            "test": _json_ready(split.test_seq_index),
+            eval_name: _json_ready(split.test_seq_index),
         },
         "label_distribution": label_distribution,
         "splits": {
@@ -394,15 +430,27 @@ def write_split_metadata(
                 "seq_index": _json_ready(split.train_seq_index),
                 "label_distribution": label_distribution["train"],
             },
-            "test": {
+            eval_name: {
                 "csv_path": str(test_path),
                 "num_samples": int(len(test_frame)),
                 "sequence_count": int(len(split.test_seq_index)),
                 "seq_index": _json_ready(split.test_seq_index),
-                "label_distribution": label_distribution["test"],
+                "label_distribution": label_distribution[eval_name],
             },
         },
     }
+    if eval_name == "validation":
+        payload["output_csv_paths"]["val"] = str(test_path)
+        payload["sequence_counts"]["val"] = int(len(split.test_seq_index))
+        payload["window_counts"]["val"] = int(len(test_frame))
+        payload["seq_index"]["val"] = _json_ready(split.test_seq_index)
+        payload["label_distribution"]["val"] = label_distribution[eval_name]
+        payload["splits"]["val"] = dict(payload["splits"][eval_name])
+    else:
+        payload["output_csv_paths"]["test"] = str(test_path)
+        payload["sequence_counts"]["test"] = int(len(split.test_seq_index))
+        payload["window_counts"]["test"] = int(len(test_frame))
+        payload["seq_index"]["test"] = _json_ready(split.test_seq_index)
     metadata_path.write_text(json.dumps(_json_ready(payload), indent=2), encoding="utf-8")
     return metadata_path
 
@@ -578,6 +626,20 @@ def _label_key(value: Any, *, data_root: str | Path | None, cache: dict[str, Any
         label = f"path:{key}"
     cache[key] = label
     return label
+
+
+def _resolve_split_protocol(split_strategy: str, *, in_len: int, out_len: int) -> SplitProtocolPlan:
+    protocol = str(split_strategy)
+    if protocol == SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL:
+        if int(in_len) != 1 or int(out_len) != 1:
+            raise ValueError(
+                f"{SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL} requires in_len=1 and out_len=1; "
+                f"got in_len={in_len}, out_len={out_len}."
+            )
+        return SplitProtocolPlan(protocol=protocol, eval_name="validation", eval_file_prefix="val")
+    if protocol == SPLIT_METADATA_PROTOCOL:
+        return SplitProtocolPlan(protocol=protocol, eval_name="test", eval_file_prefix="test")
+    return SplitProtocolPlan(protocol=protocol, eval_name="test", eval_file_prefix="test")
 
 
 def _sorted_values(values: list[Any]) -> list[Any]:

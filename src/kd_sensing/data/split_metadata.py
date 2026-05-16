@@ -7,12 +7,17 @@ from typing import Any
 
 
 SPLIT_METADATA_PROTOCOL = "balanced_seq"
+SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL = "snapshot_next_frame_balanced_seq"
+SUPPORTED_SPLIT_METADATA_PROTOCOLS = {
+    SPLIT_METADATA_PROTOCOL,
+    SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL,
+}
 
 
 def default_split_metadata_path(csv_path: str | Path) -> Path:
     path = Path(csv_path)
     stem = path.stem
-    for prefix in ("train_seqs", "test_seqs"):
+    for prefix in ("train_seqs", "test_seqs", "val_seqs"):
         if stem.startswith(prefix):
             suffix = stem[len(prefix) :]
             return path.with_name(f"split_metadata{suffix}.json")
@@ -70,15 +75,17 @@ def split_metadata_summary_for_csv(
         "available": True,
         "path": str(metadata_path),
         "split_protocol": protocol,
+        "in_len": metadata.get("in_len"),
+        "out_len": metadata.get("out_len"),
         "split_seed": metadata.get("split_seed"),
         "training_set_pct": metadata.get("training_set_pct"),
         "sequence_counts": metadata.get("sequence_counts"),
         "window_counts": metadata.get("window_counts"),
     }
-    if protocol != SPLIT_METADATA_PROTOCOL and require_balanced:
+    if protocol not in SUPPORTED_SPLIT_METADATA_PROTOCOLS and require_balanced:
         message = (
             f"split metadata sidecar {metadata_path} uses protocol {protocol!r}; "
-            f"expected {SPLIT_METADATA_PROTOCOL!r}."
+            f"expected one of {sorted(SUPPORTED_SPLIT_METADATA_PROTOCOLS)!r}."
         )
         summary["warning"] = message
         if warn:

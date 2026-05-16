@@ -8,6 +8,7 @@ import torch
 
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
 from kd_sensing.engine.marf_training import ModalitySubsetSampler
+from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata
 from kd_sensing.evaluation.subset_specs import resolve_conditional_utility_subset
 
 
@@ -17,6 +18,14 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     subset_metrics = _validate_modality_subsets(model, dataloader, cfg, criterion, device, official_metrics=metrics)
     if subset_metrics:
         metrics["modality_subsets"] = subset_metrics
+    setup = prediction_setup_metadata(
+        cfg,
+        split_metadata={getattr(dataloader.dataset, "split", "test"): dataset_run_metadata(dataloader.dataset)},
+    )
+    metrics["prediction_setup"] = setup
+    for key in ("variant", "seq_len", "num_pred", "uses_temporal_core", "split_protocol"):
+        if key in setup:
+            metrics[key] = setup[key]
     if output_dir is not None:
         target = Path(output_dir)
         target.mkdir(parents=True, exist_ok=True)

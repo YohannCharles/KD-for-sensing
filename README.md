@@ -185,6 +185,28 @@ CLS-token Transformer no-KD 入口；canonical `<slug>_student_no_kd.yaml`、`<s
 和 `<slug>_rkd.yaml` 也默认构建该 student。需要复现实验中的 early-concat、旧 token transformer、
 CRAF、MARF 或 G2D baseline 时，继续使用显式配置路径或 overlay。
 
+Snapshot next-frame baseline 用于隔离历史窗口收益：输入只取当前帧 `seq_len=1`，监督只取下一帧
+`num_pred=1`，模型 core 为 `snapshot_frame`，不构建 GRU/RNN/LSTM。先生成 Scenario 31 的 80/20
+完整 `seq_index` train/validation split：
+
+```bash
+conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml
+```
+
+然后运行单模态或五模态 no-KD baseline：
+
+```bash
+conda run -n kd_mm_beam python scripts/train.py --config configs/gps/snapshot_next_frame_no_kd.yaml
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/all_modalities_snapshot_next_frame_no_kd.yaml
+```
+
+单模态入口为 `configs/<image|radar|gps|lidar|mmwave>/snapshot_next_frame_no_kd.yaml`；fusion 入口为
+`configs/fusion/<canonical_slug>_snapshot_next_frame_no_kd.yaml`。这些配置默认读取
+`train_seqs_SNAPSHOT_NEXT_FRAME.csv` 和 `val_seqs_SNAPSHOT_NEXT_FRAME.csv`，并在 metadata 中记录
+`variant=snapshot_next_frame`、`uses_history_window=false`、`uses_temporal_core=false` 和
+`split_protocol=snapshot_next_frame_balanced_seq`。mmWave snapshot 的语义是“当前帧 mmWave power 预测下一帧”，
+不是完全无 radio context 的 ablation。
+
 ## G2D 多模态失衡 baseline
 
 G2D 作为 CRAF/MARF 的对照 baseline，使用 image、radar、GPS、LiDAR、mmWave 五个单模态 teacher 指导五模态 fusion student。当前实现严格使用 future-only 标签：
@@ -605,6 +627,7 @@ python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_lidar.yaml
 python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml
+python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml
 python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
@@ -617,6 +640,13 @@ split seed、train/test seq 列表、窗口数和 beam label 分布摘要。`bal
 `python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml data.dataset.scene=9`
 生成同名统一 split。该配置会写出 `mmwave1..mmwave8`，默认来源列为 `unit1_pwr_60ghz`。
 GPS/mmWave scaler 只在训练集上 fit，并复用于测试集。
+
+`configs/preprocess/sequences_snapshot_next_frame.yaml` 生成 snapshot 专用
+`train_seqs_SNAPSHOT_NEXT_FRAME.csv` / `val_seqs_SNAPSHOT_NEXT_FRAME.csv` 和
+`split_metadata_SNAPSHOT_NEXT_FRAME.json`。该协议使用 `in_len=1/out_len=1`，按完整 `seq_index`
+做 80/20 train/validation split，保留 GPS、BS GPS、LiDAR、mmWave、当前 beam 和 `future_beam1`
+列；启用 `include_position_targets: true` 时还会写出 `future_gps1` 与 `future_bs_gps1`。
+这些 CSV 不应与默认历史窗口 `seq_len=8/out_len=3` 结果静默合并比较。
 
 Scene 32 中 image/radar/LiDAR 相关实验建议先在新 split 上重跑 image、radar、LiDAR、image+radar、
 image+LiDAR、radar+LiDAR、image+radar+LiDAR 这 7 种组合，再同时检查 split metadata 中的

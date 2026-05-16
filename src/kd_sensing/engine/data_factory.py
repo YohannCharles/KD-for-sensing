@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from torch.utils.data import DataLoader
@@ -10,6 +11,10 @@ from kd_sensing.engine.cache_policy import apply_cache_policy
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.modalities import dataset_flags_for_modalities
 from kd_sensing.registries import DATASETS, import_default_components
+
+
+SNAPSHOT_TRAIN_CSV = "train_seqs_SNAPSHOT_NEXT_FRAME.csv"
+SNAPSHOT_VAL_CSV = "val_seqs_SNAPSHOT_NEXT_FRAME.csv"
 
 
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
@@ -23,8 +28,10 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
-        csv_key = "train_csv_name" if split == "train" else "test_csv_name"
-        dataset_cfg["csv_name"] = dataset_cfg.get(csv_key)
+        csv_name, dataset_split = _dataset_csv_for_split(dataset_cfg, split)
+        dataset_cfg["csv_name"] = csv_name
+        dataset_cfg["split"] = dataset_split
+        _validate_snapshot_csv_exists(cfg, dataset_cfg, csv_name)
     dataset_cfg.update(extra_dataset_kwargs)
     return DATASETS.build(dataset_cfg)
 
@@ -115,6 +122,36 @@ def prepare_lidar_normalizer(cfg: dict[str, Any], dataset: Any) -> None:
         return
     progress_enabled = cfg.get("output", {}).get("progress", {}).get("enabled", True)
     dataset.fit_lidar_normalizer_streaming(progress_enabled=progress_enabled)
+
+
+def _dataset_csv_for_split(dataset_cfg: dict[str, Any], split: str) -> tuple[str | None, str]:
+    if split == "train":
+        return dataset_cfg.get("train_csv_name"), "train"
+    val_csv = dataset_cfg.get("val_csv_name")
+    if val_csv:
+        return val_csv, "validation"
+    return dataset_cfg.get("test_csv_name"), split
+
+
+def _validate_snapshot_csv_exists(cfg: dict[str, Any], dataset_cfg: dict[str, Any], csv_name: str | None) -> None:
+    if cfg.get("experiment", {}).get("variant") != "snapshot_next_frame":
+        return
+    if not csv_name:
+        raise FileNotFoundError(
+            "Snapshot next-frame baseline requires snapshot CSVs. "
+            "Run: python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml"
+        )
+    data_root = dataset_cfg.get("data_root")
+    csv_path = Path(str(csv_name))
+    if not csv_path.is_absolute():
+        csv_path = Path(str(data_root or ".")) / csv_path
+    if not csv_path.exists():
+        expected = {SNAPSHOT_TRAIN_CSV, SNAPSHOT_VAL_CSV}
+        raise FileNotFoundError(
+            f"Snapshot next-frame baseline expected {csv_path}. "
+            f"Generate {sorted(expected)} first with: "
+            "python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml"
+        )
 
 
 __all__ = [

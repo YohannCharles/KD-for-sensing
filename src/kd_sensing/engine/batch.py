@@ -303,19 +303,29 @@ def forward_model(
         radar_input = radar_batch if radar_batch is not None else image_batch
         if radar_input is None:
             raise ValueError("Radar task requires radar_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(radar_batch=radar_input)
         return model(radar_input)
     if task == "gps":
         if gps_batch is None:
             raise ValueError("GPS task requires gps_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(gps_batch=gps_batch)
         return model(gps_batch)
     if task == "lidar":
         if lidar_batch is None:
             raise ValueError("LiDAR task requires lidar_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(lidar_batch=lidar_batch)
         return model(lidar_batch)
     if task == "mmwave":
         if mmwave_batch is None:
             raise ValueError("mmWave task requires mmwave_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(mmwave_batch=mmwave_batch)
         return model(mmwave_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
+    if getattr(model, "supports_modality_kwargs", False):
+        return model(image_batch=image_batch)
     return model(image_batch)

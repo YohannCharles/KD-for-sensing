@@ -68,6 +68,7 @@ class DeepSense6GDataset(Dataset):
         root_csv: str | None = None,
         split: str = "train",
         train_csv_name: str | None = "train_seqs_RA_GPS_LIDAR.csv",
+        val_csv_name: str | None = None,
         test_csv_name: str | None = "test_seqs_RA_GPS_LIDAR.csv",
         scene: str | int | None = None,
         scene_id: str | int | None = None,
@@ -133,8 +134,15 @@ class DeepSense6GDataset(Dataset):
         self.data_root = resolve_path(data_root)
         selected_csv = root_csv or csv_name
         if selected_csv is None:
-            default_csv = self.scene.default_train_csv_name if split == "train" else self.scene.default_test_csv_name
-            configured_csv = train_csv_name if split == "train" else test_csv_name
+            if split == "train":
+                default_csv = self.scene.default_train_csv_name
+                configured_csv = train_csv_name
+            elif split in {"val", "validation"}:
+                default_csv = val_csv_name or test_csv_name or self.scene.default_test_csv_name
+                configured_csv = val_csv_name or test_csv_name
+            else:
+                default_csv = self.scene.default_test_csv_name
+                configured_csv = test_csv_name
             selected_csv = configured_csv or default_csv
         self.root_csv = Path(selected_csv)
         if not self.root_csv.is_absolute():

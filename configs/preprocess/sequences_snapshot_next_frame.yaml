@@ -1,0 +1,21 @@
+preprocessing:
+  type: sequence_csv
+  csv_path: dataset/scenario31/scenario31_RA.csv
+  data_root: dataset/scenario31
+  output_suffix: _SNAPSHOT_NEXT_FRAME
+  in_len: 1
+  out_len: 1
+  training_set_pct: 0.8
+  split_strategy: snapshot_next_frame_balanced_seq
+  split_seed: 42
+  include_gps: true
+  gps_column: unit2_loc_cal
+  gps_fallback_column: unit2_loc
+  bs_gps_column: unit1_loc
+  include_lidar: true
+  lidar_column: unit1_lidar
+  lidar_fallback_column: unit1_lidar_SCR
+  include_mmwave: true
+  mmwave_column: unit1_pwr_60ghz
+  mmwave_fallback_column: null
+  include_position_targets: false
