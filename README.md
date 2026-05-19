@@ -91,8 +91,18 @@ conda run -n kd_mm_beam pytest -q
 ## DeepSense6G 场景
 
 默认 DeepSense6G 场景是 Scenario 31。训练配置使用 `data.dataset.scene: 31`，数据根目录会自动解析为
-`dataset/scenario31`，训练输出默认写入 `outputs/scene31/<run_name>/`。要切回 Scenario 9 或显式运行
-Scenario 32，可以用命令行覆盖：
+`dataset/DeepSense6G/scenario31`，训练输出默认写入 `outputs/scene31/<run_name>/`。推荐把本地
+DeepSense6G 数据按家族目录组织：
+
+```text
+dataset/
+  DeepSense6G/
+    scenario9/
+    scenario31/
+    scenario32/
+```
+
+要切回 Scenario 9 或显式运行 Scenario 32，可以用命令行覆盖：
 
 ```bash
 python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=9
@@ -104,6 +114,65 @@ python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml data.dataset.
 dataset type 已删除；旧配置需要改为 `data.dataset.type: deepsense6g` 并设置对应
 `data.dataset.scene`。已有历史训练目录保留在各自的 `outputs/<scene_slug>/` 分组下，新的默认训练不会覆盖
 Scenario 9 或 Scenario 32 结果。
+
+如果本地数据仍在旧目录 `dataset/scenario9`、`dataset/scenario31` 或 `dataset/scenario32`，可以任选一种
+迁移方式：
+
+```bash
+mkdir -p dataset/DeepSense6G
+mv dataset/scenario31 dataset/DeepSense6G/scenario31
+# 或者保留旧目录并创建软链接
+ln -s ../scenario31 dataset/DeepSense6G/scenario31
+# 或者在配置/命令行中显式继续使用旧目录
+python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml \
+  data.dataset.data_root=dataset/scenario31
+```
+
+未来 MMW 数据预留为同级数据集家族目录，天气条件下分别放传感器数据和信道数据：
+
+```text
+dataset/
+  MMW/
+    sunny/
+      Sensor_Data/
+      Channel_Data/
+    rainy/
+      Sensor_Data/
+      Channel_Data/
+    foggy/
+      Sensor_Data/
+      Channel_Data/
+```
+
+MMW Town10 skybridge 准备流程不下载数据，默认只消费用户本地已有的
+`Town10_skybridge_seed24.zip` 和信道 `Town10.zip`。把 zip 路径写入
+`configs/preprocess/mmw_town10_skybridge.yaml`，或在命令行覆盖：
+
+```bash
+conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
+  --config configs/preprocess/mmw_town10_skybridge.yaml \
+  -o mmw.sensor_zip=/abs/path/Town10_skybridge_seed24.zip \
+  -o mmw.channel_zip=/abs/path/Town10.zip
+```
+
+输出会保留原始层级并写入轻量派生产物：
+
+```text
+dataset/MMW/sunny/
+  Sensor_Data/Town10/Town10_skybridge_seed24/...
+  Channel_Data/Town10/Town10_skybridge_seed24/...
+  Prepared/Town10_skybridge_seed24/
+    beam_power/<agent>/<frame>.txt
+    manifests/frame_manifest.csv
+    splits/train.csv
+    splits/test.csv
+    splits/split_metadata.json
+    metadata.json
+    sanity_report.json
+```
+
+生成后的 CSV 可用 `data.dataset.type: mmw`、`data.dataset.scene: Town10_skybridge_seed24`
+和 `data.dataset.condition: sunny` 接入现有 mmWave 或 image+mmWave 训练流程。
 
 ## 训练
 

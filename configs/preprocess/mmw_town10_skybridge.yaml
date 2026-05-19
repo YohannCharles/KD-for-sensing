@@ -1,0 +1,19 @@
+mmw:
+  sensor_zip: dataset/MMW/source_zips/Town10_skybridge_seed24.zip
+  channel_zip: dataset/MMW/source_zips/Town10.zip
+  output_root: dataset
+  condition: sunny
+  town: Town10
+  scenario: Town10_skybridge_seed24
+  seq_len: 8
+  pred_len: 3
+  num_beams: 64
+  tx_antennas: 64
+  rx_antennas: 1
+  split_seed: 42
+  train_ratio: 0.8
+  enabled_modalities:
+    - camera0
+    - lidar
+    - gps
+    - channel

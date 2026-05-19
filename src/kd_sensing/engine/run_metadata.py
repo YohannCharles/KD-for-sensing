@@ -58,6 +58,13 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["lidar_preprocessing"] = lidar_preprocessing_metadata_from_dataset(dataset)
     if getattr(dataset, "use_mmwave", False):
         metadata["mmwave_normalize"] = bool(getattr(dataset, "mmwave_normalize", False))
+    if getattr(dataset, "use_csi", False):
+        metadata["csi_train_rms"] = bool(getattr(dataset, "csi_train_rms", False))
+        normalizer = getattr(dataset, "csi_rms_normalizer", None)
+        if normalizer is not None:
+            metadata["csi_rms_normalizer"] = normalizer.to_dict() if hasattr(normalizer, "to_dict") else {
+                "rms": float(getattr(normalizer, "rms", normalizer))
+            }
     auxiliary_metadata = {}
     if hasattr(dataset, "auxiliary_target_metadata"):
         auxiliary_metadata = dataset.auxiliary_target_metadata()

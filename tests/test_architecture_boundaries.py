@@ -195,8 +195,8 @@ def test_models_package_import_is_lazy_and_public_symbols_remain_available():
 
 
 def test_modality_contract_normalizes_and_validates_modalities():
-    assert MODALITY_ORDER == ("image", "radar", "gps", "lidar", "mmwave")
-    assert normalize_modalities(["lidar", "image", "gps"]) == ("image", "gps", "lidar")
+    assert MODALITY_ORDER == ("image", "radar", "gps", "lidar", "mmwave", "csi")
+    assert normalize_modalities(["csi", "lidar", "image", "gps"]) == ("image", "gps", "lidar", "csi")
 
     with pytest.raises(ValueError, match="thermal"):
         normalize_modalities(["image", "thermal"])
@@ -207,14 +207,16 @@ def test_modality_contract_normalizes_and_validates_modalities():
 
 
 def test_modality_contract_derives_dataset_flags_and_batch_keys():
-    assert dataset_flags_for_modalities(["mmwave", "gps"]) == {
+    assert dataset_flags_for_modalities(["mmwave", "gps", "csi"]) == {
         "use_gps": True,
         "use_lidar": False,
         "use_mmwave": True,
+        "use_csi": True,
     }
-    assert batch_input_keys_for_modalities(["radar", "mmwave"]) == {
+    assert batch_input_keys_for_modalities(["radar", "mmwave", "csi"]) == {
         "radar": "radar_batch",
         "mmwave": "mmwave_batch",
+        "csi": "csi_batch",
     }
 
 

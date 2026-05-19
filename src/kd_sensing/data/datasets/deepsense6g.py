@@ -20,6 +20,7 @@ from kd_sensing.data.transform_ops.gps import (
     SUPPORTED_GPS_FEATURE_MODE,
     load_gps_feature_sequence,
 )
+from kd_sensing.data.transform_ops.csi import CSIRMSNormalizer, load_csi_sequence
 from kd_sensing.data.transform_ops.image import (
     build_rgb_imagenet_transform,
     load_rgb_imagenet_frames,
@@ -88,6 +89,9 @@ class DeepSense6GDataset(Dataset):
         use_mmwave: bool = False,
         mmwave_normalize: bool = True,
         mmwave_scaler: MmWaveStandardScaler | None = None,
+        use_csi: bool = False,
+        csi_train_rms: bool = True,
+        csi_rms_normalizer: CSIRMSNormalizer | float | dict[str, Any] | None = None,
         occlusion_target: bool | dict[str, Any] | None = None,
         occlusion_target_stats: OcclusionTargetStats | dict[str, Any] | None = None,
         position_target: bool | dict[str, Any] | None = None,
@@ -155,7 +159,13 @@ class DeepSense6GDataset(Dataset):
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
-        self.enabled_modalities = self._resolve_enabled_modalities(enabled_modalities, use_gps, use_lidar, use_mmwave)
+        self.enabled_modalities = self._resolve_enabled_modalities(
+            enabled_modalities,
+            use_gps,
+            use_lidar,
+            use_mmwave,
+            use_csi,
+        )
         self.return_metadata = bool(return_metadata)
         self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
         self._beam_label_cache: dict[str, int] = {}
@@ -168,6 +178,10 @@ class DeepSense6GDataset(Dataset):
         self.mmwave_normalize = bool(mmwave_normalize)
         self.mmwave_scaler = mmwave_scaler
         self._mmwave_feature_cache: dict[int, np.ndarray] = {}
+        self.use_csi = "csi" in self.enabled_modalities
+        self.csi_train_rms = bool(csi_train_rms)
+        self.csi_rms_normalizer = self._coerce_csi_rms_normalizer(csi_rms_normalizer)
+        self._csi_cache: dict[int, np.ndarray] = {}
         self.occlusion_target_config = resolve_occlusion_target_config(occlusion_target)
         self.occlusion_target_enabled = bool(self.occlusion_target_config["enabled"])
         self.position_target_config = resolve_position_target_config(position_target)
@@ -240,6 +254,9 @@ class DeepSense6GDataset(Dataset):
         if self.use_mmwave:
             self._ensure_mmwave_columns()
             self._prepare_mmwave_scaler()
+        if self.use_csi:
+            self._ensure_csi_columns()
+            self._prepare_csi_rms_normalizer()
         if self.use_lidar:
             self._ensure_lidar_columns()
             self._prepare_lidar_normalizer_from_config()
@@ -272,7 +289,10 @@ class DeepSense6GDataset(Dataset):
         return timings
 
     def _getitem_with_timing(self, idx: int, *, collect_timing: bool) -> tuple[dict[str, Any], dict[str, float]]:
-        timings = {name: 0.0 for name in ("targets", "auxiliary_targets", "image", "radar", "gps", "mmwave", "lidar")}
+        timings = {
+            name: 0.0
+            for name in ("targets", "auxiliary_targets", "image", "radar", "gps", "mmwave", "csi", "lidar")
+        }
 
         def record(name: str, fn):
             if not collect_timing:
@@ -327,6 +347,8 @@ class DeepSense6GDataset(Dataset):
             sample["gps"] = record("gps", lambda: self.modality_loader.load_gps(idx))
         if self.use_mmwave:
             sample["mmwave"] = record("mmwave", lambda: self.modality_loader.load_mmwave(idx))
+        if self.use_csi:
+            sample["csi"] = record("csi", lambda: self.modality_loader.load_csi(idx))
         if self.use_lidar:
             lidar_raw, lidar_model_input = record("lidar", lambda: self.modality_loader.load_lidar_pair(idx))
             sample["lidar_raw"] = lidar_raw
@@ -366,6 +388,7 @@ class DeepSense6GDataset(Dataset):
         self._add_path_metadata(metadata, "gps_path", getattr(self.samples, "gps_paths", None), idx)
         self._add_path_metadata(metadata, "lidar_path", getattr(self.samples, "lidar_paths", None), idx)
         self._add_path_metadata(metadata, "mmwave_path", getattr(self.samples, "mmwave_paths", None), idx)
+        self._add_path_metadata(metadata, "csi_path", getattr(self.samples, "csi_paths", None), idx)
         seq_id, frame_idx = self._parse_sequence_position(
             first_future_beam_path or last_beam_path or metadata.get("mmwave_path", "")
         )
@@ -404,6 +427,7 @@ class DeepSense6GDataset(Dataset):
         use_gps: bool,
         use_lidar: bool,
         use_mmwave: bool,
+        use_csi: bool,
     ) -> tuple[str, ...]:
         if enabled_modalities is None:
             selected = ["image", "radar"]
@@ -413,6 +437,8 @@ class DeepSense6GDataset(Dataset):
                 selected.append("lidar")
             if use_mmwave:
                 selected.append("mmwave")
+            if use_csi:
+                selected.append("csi")
         else:
             selected = [str(modality) for modality in enabled_modalities]
         return normalize_modalities(selected, context="DeepSense6G modalities")
@@ -585,6 +611,53 @@ class DeepSense6GDataset(Dataset):
                 expected_dim=MMWAVE_POWER_DIM,
             )
         return self._mmwave_feature_cache[idx]
+
+    def _ensure_csi_columns(self) -> None:
+        if self.samples.csi_paths is None:
+            raise ValueError(
+                f"CSI is enabled but {self.root_csv} does not contain csi1..csiN columns. "
+                "Regenerate sequence CSVs with CSI export enabled."
+            )
+
+    def _prepare_csi_rms_normalizer(self) -> None:
+        if not self.csi_train_rms:
+            self.csi_rms_normalizer = None
+            return
+        if self.csi_rms_normalizer is not None:
+            return
+        if self.split != "train":
+            raise ValueError(
+                "CSI RMS normalization for non-train split requires a train-fitted csi_rms_normalizer. "
+                "Use build_dataloaders/evaluate so the train normalizer can be reused."
+            )
+        stats = None
+        from kd_sensing.data.transform_ops.csi import CSIRMSStreamingStats
+
+        stats = CSIRMSStreamingStats()
+        for idx in range(len(self)):
+            stats.update(self._csi_for_index(idx))
+        self.csi_rms_normalizer = stats.finalize()
+
+    def _csi_for_index(self, idx: int) -> np.ndarray:
+        if idx not in self._csi_cache:
+            if self.samples.csi_paths is None:
+                raise ValueError("CSI paths are unavailable for this dataset.")
+            self._csi_cache[idx] = load_csi_sequence(
+                self.data_root,
+                self.samples.csi_paths[idx],
+                seq_len=self.seq_len,
+            )
+        return self._csi_cache[idx]
+
+    @staticmethod
+    def _coerce_csi_rms_normalizer(value: CSIRMSNormalizer | float | dict[str, Any] | None) -> CSIRMSNormalizer | None:
+        if value is None:
+            return None
+        if isinstance(value, CSIRMSNormalizer):
+            return value
+        if isinstance(value, dict):
+            return CSIRMSNormalizer(rms=float(value["rms"]), sample_count=int(value.get("sample_count", 0)))
+        return CSIRMSNormalizer(rms=float(value), sample_count=0)
 
     def _resolve_lidar_cache_dir(self, lidar_cache_dir: str | None) -> Path | None:
         if not lidar_cache_dir:

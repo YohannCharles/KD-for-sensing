@@ -180,11 +180,13 @@ def import_default_components() -> None:
     """Import modules that register built-in components."""
 
     import kd_sensing.data.datasets.deepsense6g  # noqa: F401
+    import kd_sensing.data.datasets.mmw  # noqa: F401
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.distillation.distillers  # noqa: F401
     import kd_sensing.distillation.losses  # noqa: F401
     import kd_sensing.evaluation.metrics  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
+    import kd_sensing.models.csi  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
     import kd_sensing.models.image_encoders  # noqa: F401

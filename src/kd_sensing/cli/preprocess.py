@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from kd_sensing.cli.common import load_cli_config, print_result
+from kd_sensing.data.layouts import deepsense6g_scene_layout
 from kd_sensing.data.scenes import resolve_deepsense_scene
 from kd_sensing.registries import PREPROCESSORS, import_default_components
 
@@ -54,18 +55,15 @@ def _apply_scene_override_to_sequence_preprocess(pre_cfg: dict, cfg: dict) -> No
     if scene_value is None:
         return
     scene = resolve_deepsense_scene(scene_value, dataset_type=dataset_cfg.get("type"))
+    layout = deepsense6g_scene_layout(scene.scene_id)
     current_root = Path(str(pre_cfg.get("data_root", "")))
     current_csv = Path(str(pre_cfg.get("csv_path", "")))
-    expected_slug = f"scenario{scene.scene_id}"
-    resolved_root = current_root
-    if current_root.name.startswith("scenario"):
-        resolved_root = current_root.with_name(expected_slug)
+    resolved_root = current_root if current_root.is_absolute() else Path(layout.canonical_root)
+    if not current_root.is_absolute():
         pre_cfg["data_root"] = str(resolved_root)
     if current_csv.name.startswith("scenario") and current_csv.name.endswith("_RA.csv"):
-        if current_csv.parent.name.startswith("scenario"):
-            pre_cfg["csv_path"] = str(resolved_root / f"{expected_slug}_RA.csv")
-        else:
-            pre_cfg["csv_path"] = str(current_csv.with_name(f"{expected_slug}_RA.csv"))
+        if not current_csv.is_absolute():
+            pre_cfg["csv_path"] = str(resolved_root / layout.radar_csv_name)
 
 
 if __name__ == "__main__":

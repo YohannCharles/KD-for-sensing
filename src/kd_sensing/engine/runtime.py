@@ -10,6 +10,7 @@ from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
     prepare_auxiliary_targets,
+    prepare_csi_inputs,
     prepare_fusion_inputs,
     prepare_gps_inputs,
     prepare_image_inputs,
@@ -122,6 +123,16 @@ def prepare_task_inputs(
     if task == "mmwave":
         return {
             "mmwave_batch": prepare_mmwave_inputs(
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+        }
+    if task == "csi":
+        return {
+            "csi_batch": prepare_csi_inputs(
                 batch,
                 seq_length=seq_length,
                 num_pred=num_pred,

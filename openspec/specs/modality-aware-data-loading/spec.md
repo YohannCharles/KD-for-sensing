@@ -47,9 +47,9 @@ DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样�
 数据构建流程 MUST 从 `experiment.task`、fusion teacher/student `modalities` 和显式 dataset 开关推导有序启用模态，并将该选择传递给 dataset、训练 batch 准备和评估 batch 准备。默认 fusion 模态 MUST 保持既有 `["image", "radar"]` 行为。
 
 #### Scenario: 单模态任务推导
-- **WHEN** 配置的 `experiment.task` 是 `image`、`radar`、`gps`、`lidar` 或 `mmwave`
+- **WHEN** 配置的 `experiment.task` 是 `image`、`radar`、`gps`、`lidar`、`mmwave` 或 `csi`
 - **THEN** 数据构建流程 MUST 将启用模态推导为对应单模态
-- **AND** 显式启用的 GPS、LiDAR 或 mmWave dataset 开关 MUST 与任务模态保持一致或被清晰拒绝
+- **AND** 显式启用的 GPS、LiDAR、mmWave 或 CSI dataset 开关 MUST 与任务模态保持一致或被清晰拒绝
 
 #### Scenario: fusion teacher/student 模态一致
 - **WHEN** fusion KD 配置同时定义 teacher 和 student `modalities`
@@ -61,10 +61,10 @@ DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样�
 - **THEN** 数据构建流程 MUST 使用 `["image", "radar"]`
 - **AND** dataset MUST 保持旧 image+radar fusion 的样本字段兼容
 
-#### Scenario: mmWave dataset 开关冲突
-- **WHEN** 配置设置 `data.dataset.use_mmwave: true` 但 `experiment.task` 或 fusion `modalities` 未启用 `mmwave`
+#### Scenario: CSI dataset 开关冲突
+- **WHEN** 配置设置 `data.dataset.use_csi: true` 但 `experiment.task` 或 fusion `modalities` 未启用 `csi`
 - **THEN** 系统 MUST 拒绝构建 dataset
-- **AND** 错误信息 MUST 指出 `use_mmwave` 与启用模态冲突
+- **AND** 错误信息 MUST 指出 `use_csi` 与启用模态冲突
 
 ### Requirement: 标签张量维度稳定
 Scenario 9 dataset MUST 返回稳定维度的 `input_beam` 和 `target_beam`。单样本 `target_beam` MUST 保持形状 `[num_pred]`，batch 后 MUST 保持形状 `[batch_size, num_pred]`，包括 `num_pred=1` 的情况。`prepare_labels()` MUST 仅使用 `target_beam[:, :num_pred]` 生成训练标签，不得将 `input_beam` 的最后一个历史 beam 拼入 label。
@@ -154,7 +154,7 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 - **AND** dataset MUST 不调用任何 image motion cache path 解析逻辑
 
 ### Requirement: DeepSense6G 场景感知数据构建
-数据构建流程 MUST 根据 DeepSense6G 场景选择解析数据根目录和 split CSV。canonical 配置 MUST 使用 `data.dataset.type: deepsense6g`。旧 `scenario9`、`scenario31` 和 `scenario32` dataset type MUST 不再可构建。
+数据构建流程 MUST 根据 DeepSense6G 场景选择和 dataset layout descriptor 解析数据根目录和 split CSV。canonical 配置 MUST 使用 `data.dataset.type: deepsense6g`。旧 `scenario9`、`scenario31` 和 `scenario32` dataset type MUST 不再可构建。
 
 #### Scenario: 旧 scenario9 配置被拒绝
 - **WHEN** 用户运行包含 `the scene-9 dataset-type spelling` 的旧配置
@@ -164,11 +164,13 @@ Scenario 9 dataset MUST 在自动 cache policy 下保持按模态访问数据。
 #### Scenario: 通用 deepsense6g 类型默认选择 Scenario 31
 - **WHEN** 用户运行 `data.dataset.type: deepsense6g` 且未显式设置 `data.dataset.scene`
 - **THEN** 数据构建流程 MUST 构建 Scenario 31 对应的 DeepSense6G dataset
+- **AND** 数据根目录 MUST 默认为 `dataset/DeepSense6G/scenario31`
 - **AND** 启用模态推导 MUST 继续按 `experiment.task` 或 fusion `modalities` 生效
 
 #### Scenario: 显式选择 Scenario 32
 - **WHEN** 用户运行 `data.dataset.type: deepsense6g` 且 `data.dataset.scene: 32`
 - **THEN** 数据构建流程 MUST 构建 Scenario 32 对应的 DeepSense6G dataset
+- **AND** 数据根目录 MUST 默认为 `dataset/DeepSense6G/scenario32`
 - **AND** 启用模态推导 MUST 继续按 `experiment.task` 或 fusion `modalities` 生效
 
 #### Scenario: split metadata 记录场景
@@ -426,4 +428,82 @@ Snapshot next-frame 预处理 MUST 以完整 `seq_index` 为单位生成 80% tra
 - **WHEN** LiDAR BEV cache 或等价帧级 cache 只依赖原始文件路径和预处理参数
 - **THEN** snapshot 配置 MAY 复用既有帧级 cache
 - **AND** split-dependent normalizer/stat artifact MUST 仍与 snapshot split fingerprint 绑定
+
+### Requirement: DeepSense6G CSV 相对路径基准
+DeepSense6G dataset MUST 继续以解析后的 scene root 作为 CSV 内相对文件路径的基准目录。将场景目录移动到 `dataset/DeepSense6G/scenario*` 后，CSV 内现有相对路径格式 MUST 不需要增加 `DeepSense6G` 前缀。
+
+#### Scenario: 读取新规范目录下的相对路径
+- **WHEN** dataset 的 `data_root` 为 `dataset/DeepSense6G/scenario31` 且 CSV 内某个 radar 路径为 `/unit1/radar_data_RA/sample.npy`
+- **THEN** 文件读取 MUST 解析到 `dataset/DeepSense6G/scenario31/unit1/radar_data_RA/sample.npy`
+- **AND** 系统 MUST 不把该路径解析到 `dataset/unit1/radar_data_RA/sample.npy`
+
+#### Scenario: 读取显式旧目录下的相对路径
+- **WHEN** dataset 的 `data_root` 被显式设置为 `dataset/scenario31` 且 CSV 内某个 mmWave 路径为 `/unit1/pwr/sample.txt`
+- **THEN** 文件读取 MUST 解析到 `dataset/scenario31/unit1/pwr/sample.txt`
+- **AND** 系统 MUST 不要求用户修改 CSV 内相对路径
+
+### Requirement: DeepSense6G 预处理路径重定向
+DeepSense6G 序列 CSV 预处理 MUST 使用 dataset layout descriptor 解析 scene root。命令行或配置中的场景覆盖 MUST 同时更新 `preprocessing.data_root` 和默认 `preprocessing.csv_path` 到目标场景的规范目录，除非用户显式提供自定义绝对路径。
+
+#### Scenario: 预处理默认 Scenario 31 路径
+- **WHEN** 用户运行默认 DeepSense6G sequence CSV 预处理配置
+- **THEN** `preprocessing.data_root` MUST 指向 `dataset/DeepSense6G/scenario31`
+- **AND** `preprocessing.csv_path` MUST 指向 `dataset/DeepSense6G/scenario31/scenario31_RA.csv`
+
+#### Scenario: 预处理场景覆盖到 Scenario 9
+- **WHEN** 用户在 sequence CSV 预处理中覆盖 `data.dataset.scene: 9`
+- **THEN** `preprocessing.data_root` MUST 更新为 `dataset/DeepSense6G/scenario9`
+- **AND** 默认 `preprocessing.csv_path` MUST 更新为 `dataset/DeepSense6G/scenario9/scenario9_RA.csv`
+
+### Requirement: MMW prepared manifests are loadable by modality-aware datasets
+数据构建流程 MUST 能识别 MMW 准备流程生成的 manifest/CSV，并在配置选择 `data.dataset.type: mmw` 与 `data.dataset.scene: town10_skybridge_seed24` 时构建对应 dataset。启用模态推导、按需读取、beam 历史标签和 future beam 目标标签的语义 MUST 与现有 beam 预测流程保持一致。
+
+#### Scenario: MMW mmWave-only 按需读取
+- **WHEN** 用户使用 MMW manifest 运行 `experiment.task: mmwave`
+- **THEN** dataset MUST 只读取历史 `mmwave*` power vector、`beam*` 和 `future_beam*` 标签文件
+- **AND** dataset MUST 不读取 image、LiDAR、GPS 或 RSU radar 文件
+- **AND** 返回样本 MUST 包含 `mmwave`、`input_beam` 和 `target_beam`
+
+#### Scenario: MMW image+mmWave fusion 按需读取
+- **WHEN** 用户使用 MMW manifest 运行 fusion 配置且启用 `["image", "mmwave"]`
+- **THEN** dataset MUST 读取历史前向 RGB image、历史 mmWave power vector、历史 beam 和 future beam 标签
+- **AND** dataset MUST 不要求未启用的 LiDAR、GPS 或 RSU radar 文件存在
+- **AND** 返回样本 MUST 只包含启用模态对应输入字段和标签字段
+
+### Requirement: MMW dataset returns stable beam and modality tensors
+MMW dataset MUST 返回与现有训练流程兼容的 `input_beam` 和 `target_beam` 张量。启用 MMW 派生 mmWave 输入时，`mmwave` MUST 为 `[seq_len, 64]` 的 `torch.float32` 张量；启用 image、LiDAR 或 GPS 时，对应字段 MUST 使用现有 batch 准备流程可消费的稳定 shape 和 dtype。
+
+#### Scenario: MMW beam 标签 shape 稳定
+- **WHEN** MMW dataset 配置 `seq_len=8` 且 `num_pred=3`
+- **THEN** 单样本 `input_beam` MUST 为长度 8 的整数张量
+- **AND** 单样本 `target_beam` MUST 为长度 3 的整数张量
+- **AND** batch 后 `target_beam` MUST 保持 `[batch_size, 3]`
+
+#### Scenario: MMW mmWave 张量 shape 稳定
+- **WHEN** MMW dataset 启用 mmWave modality
+- **THEN** 单样本 `mmwave` MUST 为 `torch.float32`
+- **AND** `mmwave` shape MUST 为 `[seq_len, 64]`
+- **AND** 每个时隙 MUST 与同一行 CSV 的 `beam*` 历史标签时隙对齐
+
+### Requirement: CSI 按模态选择加载样本
+DeepSense6G/MMW dataset MUST 根据启用模态决定是否加载 CSI。未启用 CSI 时，CSI 路径列或文件缺失不得阻止当前任务运行；启用 CSI 时，dataset MUST 返回 `csi` 字段并保持其它未启用模态不读取。
+
+#### Scenario: CSI-only 不读取其它输入模态文件
+- **WHEN** 用户运行 `experiment.task: csi` 的训练或评估配置
+- **THEN** dataset MUST 只读取 CSI、`input_beam` 和 `target_beam` 所需文件
+- **AND** dataset MUST 不调用 image、radar map、GPS、LiDAR 或 mmWave 加载逻辑
+- **AND** 返回样本 MUST 包含 `csi`
+
+#### Scenario: fusion 按 modalities 读取 CSI
+- **WHEN** 用户运行 `experiment.task: fusion` 且配置 `modalities: ["gps", "csi"]`
+- **THEN** dataset MUST 只读取 GPS、CSI、`input_beam` 和 `target_beam` 所需文件
+- **AND** 返回样本 MUST 只包含启用模态对应输入字段和标签字段
+
+### Requirement: CSI normalizer artifact 复用
+数据构建流程 MUST 将训练集 CSI RMS normalizer 从 train dataset 传递给 test dataset，并允许训练/评估 metadata 记录该统计。
+
+#### Scenario: dataloader 复用 CSI RMS
+- **WHEN** `build_dataloaders` 构建启用 CSI 的 train 和 test dataset
+- **THEN** train dataset MUST 先准备 CSI RMS normalizer
+- **AND** test dataset MUST 接收同一个 CSI RMS normalizer 或等价数值
 

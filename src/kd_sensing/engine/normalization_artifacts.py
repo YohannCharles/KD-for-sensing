@@ -16,6 +16,7 @@ from kd_sensing.data.transform_ops.normalization import (
     PositionTargetStandardScaler,
     load_gps_scaler,
 )
+from kd_sensing.data.transform_ops.csi import CSIRMSNormalizer
 
 
 def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: str | Path) -> dict[str, Any]:
@@ -42,6 +43,12 @@ def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: st
         mmwave_path = artifact_dir / "mmwave_scaler.npz"
         mmwave_scaler.save(mmwave_path)
         artifacts["mmwave_scaler"] = str(mmwave_path)
+
+    csi_normalizer = getattr(train_dataset, "csi_rms_normalizer", None)
+    if csi_normalizer is not None and getattr(train_dataset, "csi_train_rms", False):
+        csi_path = artifact_dir / "csi_rms_normalizer.npz"
+        csi_normalizer.save(csi_path)
+        artifacts["csi_rms_normalizer"] = str(csi_path)
 
     occlusion_stats = getattr(train_dataset, "occlusion_target_stats", None)
     if occlusion_stats is not None and getattr(train_dataset, "occlusion_target_enabled", False):
@@ -86,6 +93,12 @@ def load_normalization_artifacts(metadata: dict[str, Any] | None) -> dict[str, A
         if not path.exists():
             raise FileNotFoundError(f"mmWave scaler artifact not found: {path}")
         dataset_kwargs["mmwave_scaler"] = MmWaveStandardScaler.load(path)
+    csi_path = artifacts.get("csi_rms_normalizer")
+    if csi_path:
+        path = Path(csi_path)
+        if not path.exists():
+            raise FileNotFoundError(f"CSI RMS normalizer artifact not found: {path}")
+        dataset_kwargs["csi_rms_normalizer"] = CSIRMSNormalizer.load(path)
     occlusion_path = artifacts.get("occlusion_target_stats")
     if occlusion_path:
         path = Path(occlusion_path)
@@ -162,6 +175,7 @@ def _has_split_dependent_artifact(artifacts: dict[str, Any]) -> bool:
             "gps_scaler",
             "lidar_normalizer",
             "mmwave_scaler",
+            "csi_rms_normalizer",
             "occlusion_target_stats",
             "position_target_scaler",
         )

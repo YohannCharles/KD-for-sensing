@@ -19,6 +19,7 @@ class SequenceSamples:
     future_bs_gps_paths: list[list[str]] | None = None
     lidar_paths: list[list[str]] | None = None
     mmwave_paths: list[list[str]] | None = None
+    csi_paths: list[list[str]] | None = None
     metadata: dict | None = None
 
 
@@ -50,6 +51,7 @@ def create_samples(
     data_samples_future_bs_gps = []
     data_samples_lidar = []
     data_samples_mmwave = []
+    data_samples_csi = []
     pred_beam = []
     inp_beam = []
     camera_cols = _sorted_numbered_columns(frame.columns, "camera")
@@ -62,6 +64,7 @@ def create_samples(
     future_bs_gps_cols = _sorted_numbered_columns(frame.columns, "future_bs_gps")
     lidar_cols = _sorted_numbered_columns(frame.columns, "lidar")
     mmwave_cols = _sorted_numbered_columns(frame.columns, "mmwave")
+    csi_cols = _sorted_numbered_columns(frame.columns, "csi")
     _validate_required_columns(
         csv_path,
         selected_modalities,
@@ -73,6 +76,7 @@ def create_samples(
         future_bs_gps_cols=future_bs_gps_cols,
         lidar_cols=lidar_cols,
         mmwave_cols=mmwave_cols,
+        csi_cols=csi_cols,
         beam_cols=beam_cols,
         future_beam_cols=future_beam_cols,
         seq_len=seq_len,
@@ -96,6 +100,8 @@ def create_samples(
             data_samples_lidar.append(row[lidar_cols].tolist())
         if "mmwave" in selected_modalities:
             data_samples_mmwave.append(row[mmwave_cols].tolist())
+        if "csi" in selected_modalities:
+            data_samples_csi.append(row[csi_cols].tolist())
         pred_beam.append(row[future_beam_cols].tolist())
         inp_beam.append(row[beam_cols].tolist())
     return SequenceSamples(
@@ -109,6 +115,7 @@ def create_samples(
         future_bs_gps_paths=data_samples_future_bs_gps or None,
         lidar_paths=data_samples_lidar or None,
         mmwave_paths=data_samples_mmwave or None,
+        csi_paths=data_samples_csi or None,
         metadata=metadata,
     )
 
@@ -194,6 +201,7 @@ def _validate_required_columns(
     future_bs_gps_cols: list[str],
     lidar_cols: list[str],
     mmwave_cols: list[str],
+    csi_cols: list[str],
     beam_cols: list[str],
     future_beam_cols: list[str],
     seq_len: int | None,
@@ -226,6 +234,8 @@ def _validate_required_columns(
         requirements["lidar"] = (lidar_cols, minimum_seq, "lidar1..lidarN")
     if "mmwave" in enabled_modalities:
         requirements["mmwave"] = (mmwave_cols, minimum_seq, "mmwave1..mmwaveN")
+    if "csi" in enabled_modalities:
+        requirements["csi"] = (csi_cols, minimum_seq, "csi1..csiN")
     for name, (columns, minimum, expected) in requirements.items():
         if len(columns) < minimum:
             hint = ""

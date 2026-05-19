@@ -6,7 +6,13 @@ import torch
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
-from kd_sensing.engine.modality_resolution import config_uses_gps, config_uses_lidar, config_uses_mmwave, resolve_enabled_modalities
+from kd_sensing.engine.modality_resolution import (
+    config_uses_csi,
+    config_uses_gps,
+    config_uses_lidar,
+    config_uses_mmwave,
+    resolve_enabled_modalities,
+)
 from kd_sensing.engine.normalization_artifacts import (
     load_normalization_artifacts,
     validate_normalization_artifact_fingerprint,
@@ -65,6 +71,11 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
             "Use a registry checkpoint with normalization metadata, provide a mmWave scaler artifact, "
             "or disable data.dataset.mmwave_normalize."
         )
+    if config_uses_csi(cfg) and _csi_train_rms_enabled(cfg) and "csi_rms_normalizer" not in dataset_kwargs:
+        raise ValueError(
+            "CSI evaluation requires a train-fitted csi_rms_normalizer. "
+            "Use a registry checkpoint with normalization metadata or disable data.dataset.csi_train_rms."
+        )
     if needs_train_gps:
         train_dataset = build_dataset(cfg, "train")
         prepare_lidar_normalizer(cfg, train_dataset)
@@ -78,6 +89,7 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
         split_metadata["train"] = dataset_run_metadata(train_dataset)
         dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     dataset = build_dataset(cfg, "test", **dataset_kwargs)
+    _apply_csi_rms_to_model_config(cfg, dataset)
     split_metadata["test"] = dataset_run_metadata(dataset)
     normalization_artifacts = {}
     if checkpoint_resolution.metadata:
@@ -150,6 +162,27 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
 
 def _mmwave_normalization_enabled(cfg: dict) -> bool:
     return bool(cfg.get("data", {}).get("dataset", {}).get("mmwave_normalize", True))
+
+
+def _csi_train_rms_enabled(cfg: dict) -> bool:
+    return bool(cfg.get("data", {}).get("dataset", {}).get("csi_train_rms", True))
+
+
+def _apply_csi_rms_to_model_config(cfg: dict, dataset) -> None:
+    normalizer = getattr(dataset, "csi_rms_normalizer", None)
+    if normalizer is None:
+        return
+    rms = float(getattr(normalizer, "rms", normalizer))
+    model_cfg = cfg.setdefault("model", {})
+    model_cfg["csi_train_rms"] = rms
+    for role in ("teacher", "student"):
+        role_cfg = model_cfg.get(role)
+        if not isinstance(role_cfg, dict) or "csi" not in role_cfg.get("modalities", []):
+            continue
+        role_cfg["csi_train_rms"] = rms
+        encoders = role_cfg.get("encoders")
+        if isinstance(encoders, dict) and isinstance(encoders.get("csi"), dict):
+            encoders["csi"].setdefault("train_rms", rms)
 
 
 def _evaluation_uses_occlusion_target(cfg: dict) -> bool:

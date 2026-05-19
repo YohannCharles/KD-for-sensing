@@ -124,6 +124,7 @@ def prepare_fusion_inputs(
         "gps": prepare_gps_inputs,
         "lidar": prepare_lidar_inputs,
         "mmwave": prepare_mmwave_inputs,
+        "csi": prepare_csi_inputs,
     }
     inputs: dict[str, torch.Tensor] = {}
     for modality in selected:
@@ -266,6 +267,31 @@ def prepare_mmwave_inputs(
     return torch.cat([mmwave, zeros], dim=1)
 
 
+def prepare_csi_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    if "csi" not in batch:
+        raise ValueError("CSI input is required but batch does not contain a 'csi' field.")
+    csi = batch["csi"].to(device, non_blocking=non_blocking)
+    if csi.ndim == 4:
+        csi = csi.unsqueeze(0)
+    if csi.ndim not in {5, 6}:
+        raise ValueError(
+            "CSI input must have shape [B, T, Nsc, Nant, 2] or complex [B, T, Nsc, Nant], "
+            f"got {tuple(csi.shape)}."
+        )
+    csi = csi[:, -seq_length:, ...]
+    pad_steps = max(num_pred - 1, 0)
+    pad_shape = (int(csi.shape[0]), pad_steps, *tuple(csi.shape[2:]))
+    zeros = torch.zeros(pad_shape, dtype=csi.dtype, device=device)
+    return torch.cat([csi, zeros], dim=1)
+
+
 def forward_model(
     model,
     task: str,
@@ -274,6 +300,7 @@ def forward_model(
     gps_batch: torch.Tensor | None = None,
     lidar_batch: torch.Tensor | None = None,
     mmwave_batch: torch.Tensor | None = None,
+    csi_batch: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
     force_reliability_gate: torch.Tensor | float | None = None,
     gate_temperature: float | torch.Tensor | None = None,
@@ -285,7 +312,9 @@ def forward_model(
             "gps_batch": gps_batch,
             "lidar_batch": lidar_batch,
             "mmwave_batch": mmwave_batch,
+            "csi_batch": csi_batch,
         }
+        kwargs = {key: value for key, value in kwargs.items() if value is not None}
         if force_modality_mask is not None:
             if not getattr(model, "supports_force_modality_mask", False):
                 raise ValueError("force_modality_mask is only supported by models that opt in to modality masks.")
@@ -324,6 +353,12 @@ def forward_model(
         if getattr(model, "supports_modality_kwargs", False):
             return model(mmwave_batch=mmwave_batch)
         return model(mmwave_batch)
+    if task == "csi":
+        if csi_batch is None:
+            raise ValueError("CSI task requires csi_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(csi_batch=csi_batch)
+        return model(csi_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
     if getattr(model, "supports_modality_kwargs", False):

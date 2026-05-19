@@ -1,10 +1,10 @@
 preprocessing:
   type: lidar_bev_cache
   csv_paths:
-    - dataset/scenario31/train_seqs_RA_GPS_LIDAR.csv
-    - dataset/scenario31/test_seqs_RA_GPS_LIDAR.csv
-  data_root: dataset/scenario31
-  cache_dir: dataset/scenario31/lidar_bev_cache
+    - dataset/DeepSense6G/scenario31/train_seqs_RA_GPS_LIDAR.csv
+    - dataset/DeepSense6G/scenario31/test_seqs_RA_GPS_LIDAR.csv
+  data_root: dataset/DeepSense6G/scenario31
+  cache_dir: dataset/DeepSense6G/scenario31/lidar_bev_cache
   lidar_prefix: lidar
   bev_size: [224, 224]
   roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]

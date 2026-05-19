@@ -613,6 +613,7 @@ def train(cfg: dict) -> dict:
         raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
     run_dir = create_run_dir(cfg)
     dataloaders = build_dataloaders(cfg)
+    _apply_csi_rms_to_model_config(cfg, dataloaders)
     split_metadata = dataloaders_run_metadata(dataloaders)
     normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
     device = build_device(cfg)
@@ -1392,6 +1393,29 @@ def train(cfg: dict) -> dict:
         "throughput": throughput_metadata,
         "prediction_objective": objective_metadata,
     }
+
+
+def _apply_csi_rms_to_model_config(cfg: dict, dataloaders: dict) -> None:
+    train_loader = dataloaders.get("train")
+    dataset = getattr(train_loader, "dataset", None) if train_loader is not None else None
+    normalizer = getattr(dataset, "csi_rms_normalizer", None)
+    if normalizer is None:
+        return
+    rms = float(getattr(normalizer, "rms", normalizer))
+    model_cfg = cfg.setdefault("model", {})
+    model_cfg["csi_train_rms"] = rms
+    for role in ("teacher", "student"):
+        role_cfg = model_cfg.get(role)
+        if not isinstance(role_cfg, dict):
+            continue
+        if "csi" not in role_cfg.get("modalities", []):
+            continue
+        role_cfg["csi_train_rms"] = rms
+        encoders = role_cfg.get("encoders")
+        if isinstance(encoders, dict):
+            csi_cfg = encoders.get("csi")
+            if isinstance(csi_cfg, dict):
+                csi_cfg.setdefault("train_rms", rms)
 
 
 def _training_outputs_payload(

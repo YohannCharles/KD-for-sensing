@@ -31,6 +31,11 @@ class DeepSense6GModalityLoader:
             mmwave_features = ds.mmwave_scaler.transform(mmwave_features)
         return torch.tensor(mmwave_features, dtype=torch.float32)
 
+    def load_csi(self, idx: int) -> torch.Tensor:
+        ds = self.dataset
+        csi = ds._csi_for_index(idx)
+        return torch.tensor(csi, dtype=torch.float32)
+
     def load_lidar_pair(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         ds = self.dataset
         lidar_bev = ds._lidar_bev_for_index(

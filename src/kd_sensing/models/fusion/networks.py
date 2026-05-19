@@ -6,6 +6,7 @@ import torch.nn as nn
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image import ImageFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
+from kd_sensing.models.csi import PilotDualViewCSIEncoder
 from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, validate_image_encoder_profile
@@ -51,6 +52,10 @@ class FusionTeacherModalityNet(nn.Module):
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        csi_train_rms: float = 1.0,
+        csi_estimation: dict | None = None,
+        delay_taps: int | None = 32,
+        view_fusion: str = "symmetric_gate",
         num_heads: int = 8,
         modalities: list[str] | tuple[str, ...] | None = None,
         image_profile: str | None = None,
@@ -76,6 +81,14 @@ class FusionTeacherModalityNet(nn.Module):
             self.mmwave_feature_extractor = MmWaveFeatureExtractor(
                 feature_size=feature_size,
                 mmwave_input_size=mmwave_input_size,
+            )
+        if "csi" in self.modalities:
+            self.csi_feature_extractor = PilotDualViewCSIEncoder(
+                output_dim=feature_size,
+                train_rms=csi_train_rms,
+                csi_estimation=csi_estimation,
+                delay_taps=delay_taps,
+                view_fusion=view_fusion,
             )
         self.fusion_layer = nn.Sequential(
             nn.Linear(feature_size * len(self.modalities), feature_size),
@@ -113,6 +126,7 @@ class FusionTeacherModalityNet(nn.Module):
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
+        csi_batch: torch.Tensor | None = None,
     ):
         modality_features = []
         batch_size = None
@@ -162,6 +176,15 @@ class FusionTeacherModalityNet(nn.Module):
                 seq_len,
             )
             modality_features.append(mmwave_features)
+        if "csi" in self.modalities:
+            csi_features = self.csi_feature_extractor(_require_tensor(csi_batch, "csi"))
+            batch_size, seq_len = _check_temporal_features(
+                csi_features,
+                "csi",
+                batch_size,
+                seq_len,
+            )
+            modality_features.append(csi_features)
         fused_features = torch.cat(modality_features, dim=2)
         features = self.fusion_layer(fused_features)
         features = self.layer_norm(features)
@@ -184,6 +207,10 @@ class FusionStudentModalityNet(nn.Module):
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        csi_train_rms: float = 1.0,
+        csi_estimation: dict | None = None,
+        delay_taps: int | None = 32,
+        view_fusion: str = "symmetric_gate",
         modalities: list[str] | tuple[str, ...] | None = None,
         image_profile: str | None = None,
     ):
@@ -274,6 +301,15 @@ class FusionStudentModalityNet(nn.Module):
                 nn.ReLU(inplace=True),
             )
             branch_dims.append(96)
+        if "csi" in self.modalities:
+            self.csi_feature_extractor = PilotDualViewCSIEncoder(
+                output_dim=96,
+                train_rms=csi_train_rms,
+                csi_estimation=csi_estimation,
+                delay_taps=delay_taps,
+                view_fusion=view_fusion,
+            )
+            branch_dims.append(96)
         self.fusion_layer = nn.Sequential(
             nn.Linear(sum(branch_dims), 128),
             nn.ReLU(inplace=True),
@@ -305,6 +341,7 @@ class FusionStudentModalityNet(nn.Module):
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
+        csi_batch: torch.Tensor | None = None,
         beam=None,
     ):
         batch_size = None
@@ -403,6 +440,11 @@ class FusionStudentModalityNet(nn.Module):
             mmwave_pooled = self.mmwave_projection(mmwave_flat)
             pooled_features.append(mmwave_pooled)
             modality_features["mmwave"] = mmwave_pooled.view(batch_size, seq_len, -1)
+        if "csi" in self.modalities:
+            csi_features = self.csi_feature_extractor(_require_tensor(csi_batch, "csi"))
+            batch_size, seq_len = _check_temporal_features(csi_features, "csi", batch_size, seq_len)
+            pooled_features.append(csi_features.reshape(batch_size * seq_len, -1))
+            modality_features["csi"] = csi_features
 
         fused = torch.cat(pooled_features, dim=1)
         fused_features = self.fusion_layer(fused).view(batch_size, seq_len, -1)

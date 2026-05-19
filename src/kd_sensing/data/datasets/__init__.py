@@ -1,5 +1,6 @@
 __all__ = [
     "DeepSense6GDataset",
+    "MMWDataset",
     "SyntheticSequenceDataset",
 ]
 
@@ -9,6 +10,10 @@ def __getattr__(name: str):
         from . import deepsense6g
 
         return deepsense6g.DeepSense6GDataset
+    if name == "MMWDataset":
+        from . import mmw
+
+        return mmw.MMWDataset
     if name == "SyntheticSequenceDataset":
         from . import synthetic
 

@@ -15,7 +15,7 @@ env/
 ENV/
 .conda/
 pip-wheel-metadata/
-
+.codex/
 # Notebooks
 .ipynb_checkpoints/
 

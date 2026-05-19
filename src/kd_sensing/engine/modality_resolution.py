@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from kd_sensing._typing import AnyConfig
-from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.modalities import MODALITY_ORDER, MODALITY_SPECS, normalize_modalities
 
 
 VALID_MODALITIES = MODALITY_ORDER
@@ -44,7 +44,10 @@ def _resolve_fusion_modalities(cfg: AnyConfig) -> tuple[str, ...]:
 
 
 def validate_dataset_modality_flags(dataset_cfg: dict, selected: tuple[str, ...]) -> None:
-    for modality, key in (("gps", "use_gps"), ("lidar", "use_lidar"), ("mmwave", "use_mmwave")):
+    for modality, spec in MODALITY_SPECS.items():
+        key = spec.dataset_flag
+        if key is None:
+            continue
         if dataset_cfg.get(key, False) and modality not in selected:
             raise ValueError(
                 f"data.dataset.{key}=true conflicts with enabled modalities {list(selected)}. "
@@ -62,3 +65,7 @@ def config_uses_lidar(cfg: AnyConfig) -> bool:
 
 def config_uses_mmwave(cfg: AnyConfig) -> bool:
     return "mmwave" in resolve_enabled_modalities(cfg)
+
+
+def config_uses_csi(cfg: AnyConfig) -> bool:
+    return "csi" in resolve_enabled_modalities(cfg)

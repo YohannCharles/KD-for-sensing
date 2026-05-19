@@ -14,6 +14,7 @@ from kd_sensing.modalities import (
     validate_image_encoder_profile,
 )
 from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
+from kd_sensing.models.csi import PilotDualViewCSIEncoder
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image_encoders import ResNet18ImageEncoder
 from kd_sensing.models.lidar import LidarFeatureExtractor
@@ -90,6 +91,7 @@ class MmWaveMLPEncoder(MmWaveFeatureExtractor):
         feature_size: int | None = None,
         d_model: int | None = None,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        csi_train_rms: float = 1.0,
         hidden_size: int = 128,
         dropout: float = 0.1,
         **_: Any,
@@ -382,6 +384,7 @@ class ModularSequenceModel(nn.Module):
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
         **_: Any,
     ):
@@ -409,6 +412,7 @@ class ModularSequenceModel(nn.Module):
                 gps_input_size=gps_input_size,
                 lidar_channels=lidar_channels,
                 mmwave_input_size=mmwave_input_size,
+                csi_train_rms=csi_train_rms,
             )
             self._validate_modality_encoder_profile(modality, encoder_cfg)
             encoder = ENCODERS.build(encoder_cfg)
@@ -440,6 +444,7 @@ class ModularSequenceModel(nn.Module):
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
+        csi_batch: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         raw_inputs = {
             "image": image_batch,
@@ -447,6 +452,7 @@ class ModularSequenceModel(nn.Module):
             "gps": gps_batch,
             "lidar": lidar_batch,
             "mmwave": mmwave_batch,
+            "csi": csi_batch,
         }
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
@@ -493,6 +499,7 @@ class ModularSequenceModel(nn.Module):
         gps_input_size: int,
         lidar_channels: int,
         mmwave_input_size: int,
+        csi_train_rms: float,
     ) -> dict[str, Any]:
         if raw_cfg is None:
             raw_cfg = {"type": _default_encoder_type(modality, self.image_profile)}
@@ -513,6 +520,8 @@ class ModularSequenceModel(nn.Module):
             cfg.setdefault("lidar_channels", lidar_channels)
         elif modality == "mmwave":
             cfg.setdefault("mmwave_input_size", mmwave_input_size)
+        elif modality == "csi":
+            cfg.setdefault("train_rms", csi_train_rms)
         return cfg
 
     def _projector_config(self, raw_cfg: Any, *, input_dim: int) -> dict[str, Any]:
@@ -561,6 +570,7 @@ def _default_encoder_type(modality: str, image_profile: str) -> str:
         "gps": "gps_mlp",
         "lidar": "lidar_cnn",
         "mmwave": "mmwave_mlp",
+        "csi": "pilot_dual_view_csi",
     }[modality]
 
 
@@ -619,6 +629,7 @@ __all__ = [
     "LinearProjector",
     "MmWaveMLPEncoder",
     "ModularSequenceModel",
+    "PilotDualViewCSIEncoder",
     "RadarCNNEncoder",
     "ResNet18ImageEncoder",
     "SingleGRUCore",

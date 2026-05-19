@@ -20,6 +20,8 @@ _EXPORTS: dict[str, str] = {
     "RadarFeatureExtractor": "kd_sensing.models.radar",
     "RadarModalityNet": "kd_sensing.models.radar",
     "RadarStudentModalityNet": "kd_sensing.models.radar",
+    "PilotCSIChannelEstimator": "kd_sensing.models.csi",
+    "PilotDualViewCSIEncoder": "kd_sensing.models.csi",
     "CLSTokenTransformerFusionNet": "kd_sensing.models.fusion",
     "CRAFFusionNet": "kd_sensing.models.fusion",
     "FusionTeacherModalityNet": "kd_sensing.models.fusion",

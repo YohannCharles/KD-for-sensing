@@ -410,8 +410,8 @@ def test_scene_cli_argument_maps_to_single_or_compare_scene_overrides():
 
 
 def test_compare_scene_manifest_retargets_default_scene_roots(monkeypatch, tmp_path: Path):
-    scene9_root = tmp_path / "dataset" / "scenario9"
-    scene_32_root = tmp_path / "dataset" / "scenario32"
+    scene9_root = tmp_path / "dataset" / "DeepSense6G" / "scenario9"
+    scene_32_root = tmp_path / "dataset" / "DeepSense6G" / "scenario32"
     scene9_root.mkdir(parents=True)
     scene_32_root.mkdir(parents=True)
     _write_multimodal_csv(scene9_root, scene9_root / "train_seqs_RA_GPS_LIDAR.csv", rows=1, seq_len=2)
@@ -434,15 +434,15 @@ def test_compare_scene_manifest_retargets_default_scene_roots(monkeypatch, tmp_p
     cfg["data"]["dataset"]["scene"] = 32
     cfg["data"]["dataset"]["scene_id"] = 32
     cfg["data"]["dataset"]["scene_slug"] = "scene32"
-    cfg["data"]["dataset"]["data_root"] = "dataset/scenario32"
+    cfg["data"]["dataset"]["data_root"] = "dataset/DeepSense6G/scenario32"
 
     result = export_viewer_manifest(cfg, cache_dir=tmp_path / "viewer_cache", force_rebuild=True)
     records = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
 
     by_scene = {record["scene_slug"]: record for record in records}
     assert set(by_scene) == {"scene9", "scene32"}
-    assert "dataset/scenario9/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene9"]["extra"]["csv_path"]
-    assert "dataset/scenario32/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene32"]["extra"]["csv_path"]
+    assert "dataset/DeepSense6G/scenario9/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene9"]["extra"]["csv_path"]
+    assert "dataset/DeepSense6G/scenario32/train_seqs_RA_GPS_LIDAR.csv" in by_scene["scene32"]["extra"]["csv_path"]
 
 
 def test_export_viewer_manifest_processes_all_samples_and_reuses_cache(tmp_path: Path):

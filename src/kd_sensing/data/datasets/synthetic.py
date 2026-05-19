@@ -28,6 +28,10 @@ class SyntheticSequenceDataset(Dataset):
         lidar_channels: int = 3,
         use_mmwave: bool = False,
         mmwave_input_size: int = 64,
+        use_csi: bool = False,
+        csi_shape: list[int] | tuple[int, int] = (16, 4),
+        csi_train_rms: bool = True,
+        csi_rms_normalizer: object | None = None,
         occlusion_target: bool | dict[str, object] | None = None,
         position_target: bool | dict[str, object] | None = None,
         seed: int = 0,
@@ -47,6 +51,10 @@ class SyntheticSequenceDataset(Dataset):
         self.lidar_channels = lidar_channels
         self.use_mmwave = use_mmwave
         self.mmwave_input_size = mmwave_input_size
+        self.use_csi = use_csi
+        self.csi_shape = tuple(int(value) for value in csi_shape)
+        self.csi_train_rms = bool(csi_train_rms)
+        self.csi_rms_normalizer = csi_rms_normalizer
         self.occlusion_target_enabled = _enabled(occlusion_target)
         self.position_target_enabled = _enabled(position_target)
         self.position_target_normalize = False
@@ -89,6 +97,8 @@ class SyntheticSequenceDataset(Dataset):
             )
         if self.use_mmwave:
             sample["mmwave"] = torch.rand((self.seq_len, self.mmwave_input_size), generator=self.generator)
+        if self.use_csi:
+            sample["csi"] = torch.randn((self.seq_len, *self.csi_shape, 2), generator=self.generator).float()
         if self.occlusion_target_enabled:
             sample["occlusion_label"] = torch.randint(
                 0,

@@ -11,7 +11,7 @@ DEFAULT_CONFIG = {
         "device": "auto",
     },
     "paths": {
-        "data_root": "dataset/scenario31",
+        "data_root": "dataset/DeepSense6G/scenario31",
         "output_dir": "outputs",
     },
     "data": {
@@ -39,6 +39,8 @@ DEFAULT_CONFIG = {
             "fft_tuple": [64, 256, 128],
             "clipped_range": 128,
             "beam_label_cache": "lazy",
+            "use_csi": False,
+            "csi_train_rms": True,
             "use_mmwave": False,
             "mmwave_normalize": True,
             "use_lidar": False,

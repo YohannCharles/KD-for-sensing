@@ -49,6 +49,8 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
     if getattr(train_dataset, "use_mmwave", False):
         dataset_kwargs["mmwave_scaler"] = getattr(train_dataset, "mmwave_scaler", None)
+    if getattr(train_dataset, "use_csi", False):
+        dataset_kwargs["csi_rms_normalizer"] = getattr(train_dataset, "csi_rms_normalizer", None)
     if getattr(train_dataset, "occlusion_target_enabled", False):
         dataset_kwargs["occlusion_target_stats"] = getattr(train_dataset, "occlusion_target_stats", None)
     if getattr(train_dataset, "position_target_enabled", False):

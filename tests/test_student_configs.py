@@ -577,7 +577,7 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
     assert dataset_cfg["type"] == "deepsense6g"
     assert dataset_cfg["scene_id"] == 31
     assert dataset_cfg["scene_slug"] == "scene31"
-    assert dataset_cfg["data_root"] == "dataset/scenario31"
+    assert dataset_cfg["data_root"] == "dataset/DeepSense6G/scenario31"
 
     if "gps" in modalities:
         assert dataset_cfg["use_gps"] is True
@@ -703,7 +703,7 @@ def test_load_config_keeps_explicit_scene32_override():
 
     assert cfg["data"]["dataset"]["scene_id"] == 32
     assert cfg["data"]["dataset"]["scene_slug"] == "scene32"
-    assert cfg["data"]["dataset"]["data_root"] == "dataset/scenario32"
+    assert cfg["data"]["dataset"]["data_root"] == "dataset/DeepSense6G/scenario32"
 
 
 def test_existing_yaml_config_takes_precedence_over_virtual_config(tmp_path: Path):

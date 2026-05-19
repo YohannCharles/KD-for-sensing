@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from kd_sensing.data.layouts import deepsense6g_legacy_scene_root, deepsense6g_scene_root
+
 
 DEFAULT_DEEPSENSE_SCENE_ID = 31
 DEFAULT_TRAIN_CSV_NAME = "train_seqs_RA_GPS_LIDAR.csv"
@@ -21,6 +23,7 @@ class DeepSenseScene:
     scene_slug: str
     aliases: tuple[str, ...]
     default_data_root: str
+    legacy_data_root: str
     default_train_csv_name: str = DEFAULT_TRAIN_CSV_NAME
     default_test_csv_name: str = DEFAULT_TEST_CSV_NAME
 
@@ -36,19 +39,22 @@ DEEPSENSE_SCENES: dict[int, DeepSenseScene] = {
         scene_id=9,
         scene_slug="scene9",
         aliases=("9", "scene9", "scenario9"),
-        default_data_root="dataset/scenario9",
+        default_data_root=deepsense6g_scene_root(9),
+        legacy_data_root=deepsense6g_legacy_scene_root(9),
     ),
     31: DeepSenseScene(
         scene_id=31,
         scene_slug="scene31",
         aliases=("31", "scene31", "scenario31"),
-        default_data_root="dataset/scenario31",
+        default_data_root=deepsense6g_scene_root(31),
+        legacy_data_root=deepsense6g_legacy_scene_root(31),
     ),
     32: DeepSenseScene(
         scene_id=32,
         scene_slug="scene32",
         aliases=("32", "scene32", "scenario32"),
-        default_data_root="dataset/scenario32",
+        default_data_root=deepsense6g_scene_root(32),
+        legacy_data_root=deepsense6g_legacy_scene_root(32),
     ),
 }
 
@@ -85,9 +91,9 @@ def resolve_deepsense_scene(scene: Any = None, *, dataset_type: Any = None) -> D
 def normalize_deepsense_dataset_config(dataset_cfg: dict[str, Any]) -> dict[str, Any]:
     dataset_type = dataset_cfg.get("type", "deepsense6g")
     _reject_removed_dataset_type(dataset_type)
-    has_scene = any(key in dataset_cfg for key in ("scene", "scene_id", "scene_slug"))
-    if not is_deepsense_dataset_type(dataset_type) and not has_scene:
+    if not is_deepsense_dataset_type(dataset_type):
         return dataset_cfg
+    has_scene = any(key in dataset_cfg for key in ("scene", "scene_id", "scene_slug"))
 
     scene_value = dataset_cfg.get("scene", dataset_cfg.get("scene_id", dataset_cfg.get("scene_slug")))
     scene = resolve_deepsense_scene(scene_value, dataset_type=dataset_type)
@@ -141,12 +147,12 @@ def scene_metadata_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     if not isinstance(dataset_cfg, dict):
         return {}
-    if not any(key in dataset_cfg for key in ("scene", "scene_id", "scene_slug")) and not is_deepsense_dataset_type(
-        dataset_cfg.get("type")
-    ):
-        return {}
+    dataset_type = dataset_cfg.get("type")
+    if not is_deepsense_dataset_type(dataset_type):
+        slug = dataset_cfg.get("scene") or dataset_cfg.get("scene_slug") or dataset_cfg.get("scene_id")
+        return {"scene_id": slug, "scene_slug": str(slug)} if slug not in (None, "") else {}
     scene_value = dataset_cfg.get("scene", dataset_cfg.get("scene_id", dataset_cfg.get("scene_slug")))
-    scene = resolve_deepsense_scene(scene_value, dataset_type=dataset_cfg.get("type"))
+    scene = resolve_deepsense_scene(scene_value, dataset_type=dataset_type)
     return scene.metadata()
 
 

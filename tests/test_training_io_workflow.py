@@ -24,7 +24,9 @@ import kd_sensing.data.transform_ops.io as io_transforms  # noqa: E402
 import kd_sensing.data.transform_ops.lidar as lidar_transforms  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
+from kd_sensing.data.layouts import deepsense6g_scene_layout, mmw_condition_layout  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
+from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E402
 from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
@@ -81,16 +83,53 @@ def test_deepsense_scene_defaults_and_aliases():
 
     assert default_cfg["data"]["dataset"]["scene_id"] == 31
     assert default_cfg["data"]["dataset"]["scene_slug"] == "scene31"
-    assert default_cfg["data"]["dataset"]["data_root"] == "dataset/scenario31"
+    assert default_cfg["data"]["dataset"]["data_root"] == "dataset/DeepSense6G/scenario31"
     assert scene9_cfg["data"]["dataset"]["scene_id"] == 9
     assert scene9_cfg["data"]["dataset"]["scene_slug"] == "scene9"
-    assert scene9_cfg["data"]["dataset"]["data_root"] == "dataset/scenario9"
+    assert scene9_cfg["data"]["dataset"]["data_root"] == "dataset/DeepSense6G/scenario9"
     assert scene31_cfg["data"]["dataset"]["scene_id"] == 31
     assert scene31_cfg["data"]["dataset"]["scene_slug"] == "scene31"
-    assert scene31_cfg["data"]["dataset"]["data_root"] == "dataset/scenario31"
+    assert scene31_cfg["data"]["dataset"]["data_root"] == "dataset/DeepSense6G/scenario31"
     assert scene32_cfg["data"]["dataset"]["scene_id"] == 32
     assert scene32_cfg["data"]["dataset"]["scene_slug"] == "scene32"
-    assert scene32_cfg["data"]["dataset"]["data_root"] == "dataset/scenario32"
+    assert scene32_cfg["data"]["dataset"]["data_root"] == "dataset/DeepSense6G/scenario32"
+
+
+def test_dataset_layout_helpers_define_supported_roots():
+    scene31 = deepsense6g_scene_layout(31)
+    scene9 = deepsense6g_scene_layout("scenario9")
+    sunny = mmw_condition_layout("sunny")
+    rainy = mmw_condition_layout("rainy")
+    foggy = mmw_condition_layout("foggy")
+
+    assert scene31.canonical_root == "dataset/DeepSense6G/scenario31"
+    assert scene31.legacy_root == "dataset/scenario31"
+    assert scene31.radar_csv_path == "dataset/DeepSense6G/scenario31/scenario31_RA.csv"
+    assert scene9.canonical_root == "dataset/DeepSense6G/scenario9"
+    assert sunny.sensor_data_root == "dataset/MMW/sunny/Sensor_Data"
+    assert sunny.channel_data_root == "dataset/MMW/sunny/Channel_Data"
+    assert sunny.prepared_scenario_root("Town10_skybridge_seed24") == (
+        "dataset/MMW/sunny/Prepared/Town10_skybridge_seed24"
+    )
+    assert rainy.required_subdirs == ("Sensor_Data", "Channel_Data")
+    assert foggy.root == "dataset/MMW/foggy"
+
+
+def test_deepsense_explicit_legacy_root_is_preserved_by_normalize_and_retarget():
+    cfg = load_config(
+        ROOT / "configs/mmwave/teacher_no_kd.yaml",
+        ["data.dataset.scene=31", "data.dataset.data_root=dataset/scenario31"],
+    )
+    dataset_cfg = cfg["data"]["dataset"]
+
+    assert dataset_cfg["scene_id"] == 31
+    assert dataset_cfg["data_root"] == "dataset/scenario31"
+
+    retarget_deepsense_dataset_config(dataset_cfg, 32)
+
+    assert dataset_cfg["scene_id"] == 32
+    assert dataset_cfg["scene_slug"] == "scene32"
+    assert dataset_cfg["data_root"] == "dataset/scenario31"
 
 
 @pytest.mark.parametrize(("removed_type", "scene"), [("scenario9", 9), ("scenario31", 31), ("scenario32", 32)])
@@ -117,14 +156,39 @@ def test_sequence_preprocess_scene_override_updates_root_and_csv():
 
     _apply_scene_override_to_sequence_preprocess(pre_cfg, cfg)
 
-    assert pre_cfg["data_root"] == "dataset/scenario9"
-    assert pre_cfg["csv_path"] == "dataset/scenario9/scenario9_RA.csv"
+    assert pre_cfg["data_root"] == "dataset/DeepSense6G/scenario9"
+    assert pre_cfg["csv_path"] == "dataset/DeepSense6G/scenario9/scenario9_RA.csv"
 
     cfg["data"]["dataset"]["scene"] = 31
     _apply_scene_override_to_sequence_preprocess(pre_cfg, cfg)
 
-    assert pre_cfg["data_root"] == "dataset/scenario31"
-    assert pre_cfg["csv_path"] == "dataset/scenario31/scenario31_RA.csv"
+    assert pre_cfg["data_root"] == "dataset/DeepSense6G/scenario31"
+    assert pre_cfg["csv_path"] == "dataset/DeepSense6G/scenario31/scenario31_RA.csv"
+
+
+def test_sequence_preprocess_scene_override_keeps_absolute_custom_paths(tmp_path: Path):
+    pre_cfg = {
+        "type": "sequence_csv",
+        "csv_path": str(tmp_path / "custom_RA.csv"),
+        "data_root": str(tmp_path),
+    }
+    cfg = {"data": {"dataset": {"type": "deepsense6g", "scene": 9}}}
+
+    _apply_scene_override_to_sequence_preprocess(pre_cfg, cfg)
+
+    assert pre_cfg["data_root"] == str(tmp_path)
+    assert pre_cfg["csv_path"] == str(tmp_path / "custom_RA.csv")
+
+
+def test_deepsense_csv_relative_paths_resolve_from_scene_root():
+    assert io_transforms.joined_resource(
+        "dataset/DeepSense6G/scenario31",
+        "/unit1/radar_data_RA/sample.npy",
+    ) == Path("dataset/DeepSense6G/scenario31/unit1/radar_data_RA/sample.npy")
+    assert io_transforms.joined_resource(
+        "dataset/scenario31",
+        "/unit1/pwr/sample.txt",
+    ) == Path("dataset/scenario31/unit1/pwr/sample.txt")
 
 
 @pytest.mark.parametrize(
