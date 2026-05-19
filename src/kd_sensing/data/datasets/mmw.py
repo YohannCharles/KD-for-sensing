@@ -31,6 +31,17 @@ class MMWDataset(DeepSense6GDataset):
         root = data_root or layout.root
         prepared_prefix = Path("Prepared") / scenario / "splits"
         csi_enabled = bool(kwargs.get("use_csi", False)) or "csi" in set(kwargs.get("enabled_modalities") or ())
+        gps_enabled = bool(kwargs.get("use_gps", False)) or "gps" in set(kwargs.get("enabled_modalities") or ())
+        radar_enabled = "radar" in set(kwargs.get("enabled_modalities") or ())
+        if radar_enabled:
+            if kwargs.get("csv_name"):
+                kwargs["csv_name"] = _ensure_radar_columns(root, str(kwargs["csv_name"]), scenario)
+            if kwargs.get("root_csv"):
+                kwargs["root_csv"] = _ensure_radar_columns(root, str(kwargs["root_csv"]), scenario)
+            train_csv_name = _ensure_radar_columns(root, train_csv_name or str(prepared_prefix / "train.csv"), scenario)
+            test_csv_name = _ensure_radar_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
+            if val_csv_name:
+                val_csv_name = _ensure_radar_columns(root, val_csv_name, scenario)
         if csi_enabled:
             if kwargs.get("csv_name"):
                 kwargs["csv_name"] = _ensure_csi_columns(root, str(kwargs["csv_name"]), scenario)
@@ -40,6 +51,15 @@ class MMWDataset(DeepSense6GDataset):
             test_csv_name = _ensure_csi_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
             if val_csv_name:
                 val_csv_name = _ensure_csi_columns(root, val_csv_name, scenario)
+        if gps_enabled:
+            if kwargs.get("csv_name"):
+                kwargs["csv_name"] = _ensure_bs_gps_columns(root, str(kwargs["csv_name"]), scenario)
+            if kwargs.get("root_csv"):
+                kwargs["root_csv"] = _ensure_bs_gps_columns(root, str(kwargs["root_csv"]), scenario)
+            train_csv_name = _ensure_bs_gps_columns(root, train_csv_name or str(prepared_prefix / "train.csv"), scenario)
+            test_csv_name = _ensure_bs_gps_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
+            if val_csv_name:
+                val_csv_name = _ensure_bs_gps_columns(root, val_csv_name, scenario)
         super().__init__(
             data_root=root,
             train_csv_name=train_csv_name or str(prepared_prefix / "train.csv"),
@@ -106,6 +126,63 @@ def _ensure_csi_columns(data_root: str | Path, csv_name: str, scenario: str) -> 
     return str(output_path.resolve())
 
 
+def _ensure_bs_gps_columns(data_root: str | Path, csv_name: str, scenario: str) -> str:
+    root = Path(data_root)
+    csv_path = Path(csv_name)
+    if not csv_path.is_absolute():
+        csv_path = root / csv_path
+    if not csv_path.exists():
+        return str(csv_name)
+    frame = pd.read_csv(csv_path)
+    if any(str(col).startswith("bs_gps") for col in frame.columns):
+        return str(csv_path.resolve())
+    gps_cols = _numbered_columns(frame.columns, "gps")
+    if not gps_cols:
+        return str(csv_path.resolve())
+    for gps_col in gps_cols:
+        suffix = gps_col[len("gps") :]
+        frame[f"bs_gps{suffix}"] = [
+            _rsu_gps_path_for_value(value, scenario)
+            for value in frame[gps_col].tolist()
+        ]
+    output_path = csv_path.with_name(f"{csv_path.stem}_with_bs_gps{csv_path.suffix}")
+    frame.to_csv(output_path, index=False)
+    return str(output_path.resolve())
+
+
+def _ensure_radar_columns(data_root: str | Path, csv_name: str, scenario: str) -> str:
+    root = Path(data_root)
+    csv_path = Path(csv_name)
+    if not csv_path.is_absolute():
+        csv_path = root / csv_path
+    if not csv_path.exists():
+        return str(csv_name)
+    frame = pd.read_csv(csv_path)
+    if any(str(col).startswith("radar") for col in frame.columns):
+        return str(csv_path.resolve())
+    beam_cols = _numbered_columns(frame.columns, "beam")
+    if not beam_cols:
+        return str(csv_path.resolve())
+    missing: list[str] = []
+    for beam_col in beam_cols:
+        suffix = beam_col[len("beam") :]
+        values = []
+        for value in frame[beam_col].tolist():
+            rel_path = _radar_path_for_value(value, scenario)
+            if not (root / rel_path).exists():
+                missing.append(rel_path)
+            values.append(rel_path)
+        frame[f"radar{suffix}"] = values
+    if missing:
+        examples = ", ".join(missing[:3])
+        raise ValueError(
+            f"Could not derive radar paths for {len(missing)} entries in {csv_path}; examples: {examples}."
+        )
+    output_path = csv_path.with_name(f"{csv_path.stem}_with_radar{csv_path.suffix}")
+    frame.to_csv(output_path, index=False)
+    return str(output_path.resolve())
+
+
 def _numbered_columns(columns, prefix: str) -> list[str]:
     selected = []
     for col in columns:
@@ -120,3 +197,19 @@ def _numbered_columns(columns, prefix: str) -> list[str]:
 
 def _norm_path(value: object) -> str:
     return str(value).replace("\\", "/").lstrip("/")
+
+
+def _rsu_gps_path_for_value(value: object, scenario: str) -> str:
+    path = Path(_norm_path(value))
+    frame_id = path.stem
+    if not frame_id:
+        return "-99"
+    return (Path("Sensor_Data") / scenario / "rsu_1" / f"{frame_id}.yaml").as_posix()
+
+
+def _radar_path_for_value(value: object, scenario: str) -> str:
+    path = Path(_norm_path(value))
+    frame_id = path.stem
+    if not frame_id:
+        return "-99"
+    return (Path("Prepared") / scenario / "derived" / "radar_maps" / "rsu_1" / f"{frame_id}_RA.npy").as_posix()

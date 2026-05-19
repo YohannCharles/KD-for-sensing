@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+try:
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover - minimal environments
+    yaml = None
 
 from kd_sensing.data.transform_ops.io import joined_resource
 
@@ -18,6 +22,8 @@ def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:
     path = joined_resource(data_root, rel_path)
     if not path.exists():
         raise FileNotFoundError(f"GPS file not found: {path}")
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return _read_gps_yaml_xy(path)
     try:
         values = np.loadtxt(path, dtype=np.float64)
     except Exception as exc:
@@ -26,6 +32,38 @@ def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:
     if values.size < 2:
         raise ValueError(f"GPS file {path} must contain at least lat and lon values.")
     return values[:2]
+
+
+def _read_gps_yaml_xy(path: Path) -> np.ndarray:
+    if yaml is None:
+        raise ModuleNotFoundError("PyYAML is required to read MMW GPS YAML files.")
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        raise ValueError(f"Failed to read GPS YAML file {path}: {exc}") from exc
+    location = (
+        payload.get("sensors", {})
+        .get("GPS", {})
+        .get("location")
+    )
+    if not isinstance(location, dict):
+        location = (
+            payload.get("sensors", {})
+            .get("vehicle_pose", {})
+            .get("location")
+        )
+    if not isinstance(location, dict):
+        location = (
+            payload.get("sensors", {})
+            .get("rsu_pose", {})
+            .get("location")
+        )
+    if not isinstance(location, dict):
+        raise ValueError(f"GPS YAML file {path} does not contain sensors.GPS.location.")
+    try:
+        return np.asarray([float(location["x"]), float(location["y"])], dtype=np.float64)
+    except KeyError as exc:
+        raise ValueError(f"GPS YAML file {path} must contain location.x and location.y.") from exc
 
 
 def latlon_to_utm_xy(lat: float, lon: float) -> tuple[float, float]:
@@ -122,7 +160,13 @@ def load_gps_feature_sequence(
         raise ValueError(f"gps_feature_mode '{mode}' requires bs_gps columns in the sequence CSV.")
     selected_bs = bs_gps_paths[-seq_len:]
     bs_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_bs], dtype=np.float64)
+    if _all_yaml_paths(selected_gps) and _all_yaml_paths(selected_bs):
+        return _relative_polar_features(ue_latlon[:, :2] - bs_latlon[:, :2]).astype(np.float32)
     return build_gps_features(ue_latlon, bs_latlon, mode=mode)
+
+
+def _all_yaml_paths(paths: list[str]) -> bool:
+    return all(Path(str(path)).suffix.lower() in {".yaml", ".yml"} for path in paths)
 
 
 def load_gps_raw_sequence(
