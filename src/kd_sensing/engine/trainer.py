@@ -486,6 +486,11 @@ def _initial_early_stopping_value(mode: str) -> float:
     return float("inf") if mode == "min" else float("-inf")
 
 
+def _early_stopping_min_epoch(total_epochs: int) -> int:
+    total_epochs = max(int(total_epochs), 0)
+    return (total_epochs + 1) // 2
+
+
 def _early_stopping_improved(current: float, best: float, *, mode: str, min_delta: float) -> bool:
     if mode == "min":
         return current < best - min_delta
@@ -697,6 +702,7 @@ def train(cfg: dict) -> dict:
     progress_enabled = _progress_enabled(cfg)
     start_epoch = training_cfg.get("start_epoch", 0)
     total_epochs = training_cfg.get("epochs", 100)
+    early_stopping_min_epoch = _early_stopping_min_epoch(total_epochs)
     resume_path = _resolve_resume_checkpoint(cfg, run_dir)
     if resume_path is not None:
         checkpoint = load_checkpoint(
@@ -1296,6 +1302,7 @@ def train(cfg: dict) -> dict:
             if (
                 not improved
                 and training_cfg.get("use_early_stopping", True)
+                and epoch + 1 >= early_stopping_min_epoch
                 and epochs_without_improvement >= training_cfg.get("patience", 20)
             ):
                 break

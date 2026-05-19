@@ -44,6 +44,7 @@ from kd_sensing.engine.throughput_recommendations import (  # noqa: E402
 from kd_sensing.engine.trainer import (  # noqa: E402
     _configure_early_stopping,
     _early_stopping_improved,
+    _early_stopping_min_epoch,
     _early_stopping_metric_value,
     _training_outputs_payload,
     _validate_early_stopping_source_available,
@@ -837,6 +838,55 @@ def test_early_stopping_improvement_direction_and_missing_dba_error():
             {"loss": 1.0, "topk": {"1": [0.25]}, "dba": [0.7], "objective": {"name": "beam"}},
             "val_position_rmse",
         )
+
+
+@pytest.mark.parametrize(("total_epochs", "expected_min_epoch"), [(0, 0), (1, 1), (2, 1), (5, 3), (100, 50)])
+def test_early_stopping_min_epoch_uses_half_target_epochs(total_epochs: int, expected_min_epoch: int):
+    assert _early_stopping_min_epoch(total_epochs) == expected_min_epoch
+
+
+def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cfg = load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataset.seed=19",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=5",
+            "training.patience=1",
+            "training.use_early_stopping=true",
+            "training.early_stopping_metric=val_loss",
+            "training.early_stopping_mode=min",
+            "scheduler.type=none",
+            "output.run_name=early_stop_min_epoch",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+
+    def constant_validation_metrics(*_args, **_kwargs) -> dict:
+        return {
+            "loss": 1.0,
+            "topk": {"1": [0.0], "3": [0.0], "5": [0.0]},
+            "total": [1],
+            "dba": [0.0],
+            "available_metrics": ["val_loss", "val_acc", "val_adba"],
+            "objective": {"name": "beam"},
+        }
+
+    monkeypatch.setattr("kd_sensing.engine.trainer.validate", constant_validation_metrics)
+
+    result = train(cfg)
+
+    assert [epoch_log["epoch"] for epoch_log in result["epoch_logs"]] == [1, 2, 3]
+    assert result["epoch_logs"][-1]["epochs_without_improvement"] >= cfg["training"]["patience"]
 
 
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
