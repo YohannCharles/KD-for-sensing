@@ -24,7 +24,17 @@ from kd_sensing.diagnostics.conditional_utility import (  # noqa: E402
     write_json,
     write_table,
 )
-from kd_sensing.evaluation.metrics import calculate_dba_score  # noqa: E402
+from kd_sensing.evaluation.metrics import DBA_TOP_K, calculate_dba_score  # noqa: E402
+
+
+def test_dba_uses_deepsense_average_y1_to_y3_formula():
+    logits = torch.tensor([[[6.0, 0.0, 0.0, 7.0, 8.0, 0.0]]])
+    labels = torch.tensor([[0]])
+
+    score = calculate_dba_score(logits, labels)
+
+    assert DBA_TOP_K == 3
+    assert score.tolist() == pytest.approx([(0.2 + 0.4 + 1.0) / 3])
 
 
 def test_records_from_logits_match_aggregate_dba():

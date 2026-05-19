@@ -86,11 +86,37 @@ def build_teacher_registry(
     }
     for run in runs:
         metric_values = {key: run.metrics[key] for key in REQUIRED_TEACHER_METRICS if key != "modality"}
+        for key in (
+            "selection_metric",
+            "selection_mode",
+            "selected_epoch",
+            "checkpoint",
+            "checkpoint_path",
+            "checkpoint_source",
+            "top1_epoch",
+            "top1_checkpoint",
+            "top1_val_acc",
+            "per_horizon",
+            "averages",
+            "degradation_baselines",
+            "degradation_risk",
+            "lidar_input_quality",
+            "lidar_input_quality_train",
+        ):
+            if key in run.metrics:
+                metric_values[key] = run.metrics[key]
+        checkpoint_source = str(
+            run.metrics.get("checkpoint_source")
+            or (run.checkpoint_metadata or {}).get("checkpoint_source")
+            or (run.checkpoint_metadata or {}).get("source")
+            or "checkpoint"
+        )
         registry["teachers"][run.modality] = {
             "modality": run.modality,
             "run_dir": str(run.run_dir),
             "ckpt": str(run.checkpoint),
             "checkpoint": str(run.checkpoint),
+            "checkpoint_source": checkpoint_source,
             "checkpoint_metadata": run.checkpoint_metadata or {},
             "metrics": metric_values,
             "val_acc_top1": float(run.metrics["val_acc_top1"]),
@@ -99,6 +125,9 @@ def build_teacher_registry(
             "val_adba": float(run.metrics["val_adba"]),
             "train_acc_top1": float(run.metrics["train_acc_top1"]),
             "best_epoch": int(run.metrics["best_epoch"]),
+            "selected_epoch": int(run.metrics.get("selected_epoch", run.metrics["best_epoch"])),
+            "selection_metric": str(run.metrics.get("selection_metric", "val_acc_top1")),
+            "selection_mode": str(run.metrics.get("selection_mode", "legacy_top1")),
             "prior": float(priors[run.modality]),
             "prior_mode": str(prior_mode),
         }
@@ -115,7 +144,7 @@ def discover_teacher_run(teacher_root: str | Path, modality: str) -> TeacherRun:
         if not run_dir.exists() or not run_dir.is_dir():
             continue
         metrics = read_teacher_metrics(run_dir, modality)
-        checkpoint = find_teacher_checkpoint(run_dir, metrics)
+        checkpoint = find_teacher_checkpoint(run_dir, metrics, modality=modality)
         metadata = load_checkpoint_metadata(checkpoint)
         return TeacherRun(
             modality=modality,
@@ -155,29 +184,61 @@ def read_teacher_metrics(run_dir: str | Path, expected_modality: str) -> dict[st
 
 
 def metrics_from_train_log(train_log: dict[str, Any], expected_modality: str) -> dict[str, Any]:
+    teacher_metrics = train_log.get("teacher_metrics")
+    if isinstance(teacher_metrics, dict):
+        metrics = _normalize_metrics_payload(teacher_metrics, expected_modality)
+        if metrics is not None:
+            return metrics
     epoch_logs = train_log.get("epoch_logs")
     if isinstance(epoch_logs, list) and epoch_logs:
-        best_idx = max(range(len(epoch_logs)), key=lambda idx: float(epoch_logs[idx].get("val_acc", 0.0)))
+        early_stopping = train_log.get("early_stopping") if isinstance(train_log.get("early_stopping"), dict) else {}
+        selected_epoch = int(early_stopping.get("best_epoch", 0) or 0)
+        if selected_epoch and 1 <= selected_epoch <= len(epoch_logs):
+            best_idx = selected_epoch - 1
+            selection_metric = str(early_stopping.get("metric", "early_stopping"))
+        else:
+            best_idx = max(
+                range(len(epoch_logs)),
+                key=lambda idx: float(
+                    epoch_logs[idx].get("val_primary_metric", epoch_logs[idx].get("val_acc", 0.0))
+                ),
+            )
+            selection_metric = str(epoch_logs[best_idx].get("primary_metric", "val_primary_metric"))
         best = epoch_logs[best_idx]
         metrics = {
             "modality": _resolve_metric_modality(train_log, expected_modality),
             "best_epoch": int(best.get("epoch", best_idx + 1)),
+            "selected_epoch": int(best.get("epoch", best_idx + 1)),
+            "selection_metric": selection_metric,
+            "selection_mode": "early_stopping",
+            "checkpoint": "checkpoints/best.pth",
+            "checkpoint_path": "checkpoints/best.pth",
+            "checkpoint_source": "objective-checkpoint",
             "val_acc_top1": float(best.get("val_acc", best.get("val_acc_top1", 0.0))),
             "val_acc_top3": float(best.get("val_atop3", best.get("val_acc_top3", 0.0))),
             "val_acc_top5": float(best.get("val_atop5", best.get("val_acc_top5", 0.0))),
             "val_adba": float(best.get("val_adba", 0.0)),
             "train_acc_top1": float(best.get("train_acc", best.get("train_acc_top1", 0.0))),
         }
+        metrics.update(_extended_validation_metrics(best))
         _validate_teacher_metrics(metrics, expected_modality)
         return metrics
 
     val_acc = train_log.get("val_acc") or []
     if not val_acc:
         raise ValueError(f"train_log for modality '{expected_modality}' does not contain val_acc history.")
-    best_idx = max(range(len(val_acc)), key=lambda idx: float(val_acc[idx]))
+    primary = train_log.get("val_primary_metric") or []
+    values = primary if primary else val_acc
+    best_idx = max(range(len(values)), key=lambda idx: float(values[idx]))
     metrics = {
         "modality": _resolve_metric_modality(train_log, expected_modality),
         "best_epoch": int(best_idx + 1),
+        "selected_epoch": int(best_idx + 1),
+        "selection_metric": "val_primary_metric" if primary else "val_acc_top1",
+        "selection_mode": "early_stopping" if primary else "legacy_top1",
+        "checkpoint": "checkpoints/best.pth" if primary else "checkpoints/best_top1.pth",
+        "checkpoint_path": "checkpoints/best.pth" if primary else "checkpoints/best_top1.pth",
+        "checkpoint_source": "objective-checkpoint" if primary else "top1-checkpoint",
         "val_acc_top1": float(val_acc[best_idx]),
         "val_acc_top3": _history_value(train_log, "val_atop3", best_idx),
         "val_acc_top5": _history_value(train_log, "val_atop5", best_idx),
@@ -188,7 +249,12 @@ def metrics_from_train_log(train_log: dict[str, Any], expected_modality: str) ->
     return metrics
 
 
-def find_teacher_checkpoint(run_dir: str | Path, metrics: dict[str, Any] | None = None) -> Path:
+def find_teacher_checkpoint(
+    run_dir: str | Path,
+    metrics: dict[str, Any] | None = None,
+    *,
+    modality: str | None = None,
+) -> Path:
     run_path = Path(run_dir)
     for key in ("ckpt", "checkpoint", "best_checkpoint", "checkpoint_path"):
         value = (metrics or {}).get(key)
@@ -198,8 +264,24 @@ def find_teacher_checkpoint(run_dir: str | Path, metrics: dict[str, Any] | None 
                 candidate = run_path / candidate
             if candidate.exists():
                 return candidate
+    explicit_top1 = _metrics_request_top1(metrics)
     checkpoint_dir = run_path / "checkpoints"
-    for name in ("best_top1.pth", "best.pth", "last.pth"):
+    if explicit_top1:
+        for name in ("best_top1.pth", "best.pth", "last.pth"):
+            candidate = checkpoint_dir / name
+            if candidate.exists():
+                return candidate
+    else:
+        objective = checkpoint_dir / "best.pth"
+        if objective.exists():
+            return objective
+        if str(modality or "") == "lidar" and (checkpoint_dir / "best_top1.pth").exists():
+            raise FileNotFoundError(
+                f"LiDAR teacher run {run_path} has best_top1.pth but no objective checkpoint. "
+                "Provide metrics checkpoint_path/checkpoint for the objective checkpoint, rebuild "
+                "teacher_metrics.json, restore checkpoints/best.pth, or explicitly select Top-1."
+            )
+    for name in ("last.pth", "best_top1.pth"):
         candidate = checkpoint_dir / name
         if candidate.exists():
             return candidate
@@ -214,6 +296,10 @@ def teacher_metrics_from_training(
     history: dict[str, Any],
     epoch_logs: list[dict[str, Any]],
     *,
+    best_selected_epoch: int | None = None,
+    selection_metric: str = "early_stopping",
+    selection_mode: str = "early_stopping",
+    checkpoint: str = "checkpoints/best.pth",
     best_top1_epoch: int | None = None,
 ) -> dict[str, Any] | None:
     task = str(cfg.get("experiment", {}).get("task", "image"))
@@ -222,29 +308,56 @@ def teacher_metrics_from_training(
     if task not in MODALITY_ORDER:
         return None
     if epoch_logs:
-        if best_top1_epoch and 1 <= best_top1_epoch <= len(epoch_logs):
-            best_idx = int(best_top1_epoch) - 1
+        if best_selected_epoch and 1 <= best_selected_epoch <= len(epoch_logs):
+            best_idx = int(best_selected_epoch) - 1
         else:
-            best_idx = max(range(len(epoch_logs)), key=lambda idx: float(epoch_logs[idx].get("val_acc", 0.0)))
+            best_idx = max(
+                range(len(epoch_logs)),
+                key=lambda idx: float(
+                    epoch_logs[idx].get("val_primary_metric", epoch_logs[idx].get("val_acc", 0.0))
+                ),
+            )
         best = epoch_logs[best_idx]
+        selected_epoch = int(best.get("epoch", best_idx + 1))
         metrics = {
             "modality": task,
-            "best_epoch": int(best.get("epoch", best_idx + 1)),
+            "best_epoch": selected_epoch,
+            "selected_epoch": selected_epoch,
+            "selection_metric": str(selection_metric),
+            "selection_mode": str(selection_mode),
+            "checkpoint": checkpoint,
+            "checkpoint_path": checkpoint,
+            "checkpoint_source": "objective-checkpoint"
+            if Path(str(checkpoint)).name != "best_top1.pth"
+            else "top1-checkpoint",
             "val_acc_top1": float(best.get("val_acc", 0.0)),
             "val_acc_top3": float(best.get("val_atop3", 0.0)),
             "val_acc_top5": float(best.get("val_atop5", 0.0)),
             "val_adba": float(best.get("val_adba", 0.0)),
             "train_acc_top1": float(best.get("train_acc", 0.0)),
         }
+        if best_top1_epoch and 1 <= best_top1_epoch <= len(epoch_logs):
+            top1 = epoch_logs[int(best_top1_epoch) - 1]
+            metrics["top1_epoch"] = int(top1.get("epoch", int(best_top1_epoch)))
+            metrics["top1_checkpoint"] = "checkpoints/best_top1.pth"
+            metrics["top1_val_acc"] = float(top1.get("val_acc", 0.0))
         metrics.update(_extended_validation_metrics(best))
         return metrics
     val_acc = history.get("val_acc") or []
     if not val_acc:
         return None
-    best_idx = max(range(len(val_acc)), key=lambda idx: float(val_acc[idx]))
+    primary = history.get("val_primary_metric") or []
+    values = primary if primary else val_acc
+    best_idx = max(range(len(values)), key=lambda idx: float(values[idx]))
     return {
         "modality": task,
         "best_epoch": best_idx + 1,
+        "selected_epoch": best_idx + 1,
+        "selection_metric": str(selection_metric if primary else "val_acc_top1"),
+        "selection_mode": str(selection_mode if primary else "legacy_top1"),
+        "checkpoint": checkpoint if primary else "checkpoints/best_top1.pth",
+        "checkpoint_path": checkpoint if primary else "checkpoints/best_top1.pth",
+        "checkpoint_source": "objective-checkpoint" if primary else "top1-checkpoint",
         "val_acc_top1": float(val_acc[best_idx]),
         "val_acc_top3": _history_value(history, "val_atop3", best_idx),
         "val_acc_top5": _history_value(history, "val_atop5", best_idx),
@@ -341,19 +454,58 @@ def _normalize_metrics_payload(raw: dict[str, Any], expected_modality: str) -> d
             metrics[target] = metrics[source]
     if "modality" not in metrics:
         metrics["modality"] = expected_modality
+    selection_metric_provided = "selection_metric" in metrics
+    if "selected_epoch" not in metrics and "best_epoch" in metrics:
+        metrics["selected_epoch"] = metrics["best_epoch"]
+    if "selection_metric" not in metrics:
+        metrics["selection_metric"] = "val_acc_top1"
+    if "selection_mode" not in metrics:
+        metric_name = str(metrics.get("selection_metric", "")).lower()
+        metrics["selection_mode"] = (
+            "top1-selection"
+            if selection_metric_provided and metric_name in {"top1", "val_top1", "val_acc_top1"}
+            else "legacy_top1"
+        )
+    if "checkpoint_source" not in metrics:
+        metrics["checkpoint_source"] = (
+            "top1-checkpoint" if _metrics_request_top1(metrics) else "objective-checkpoint"
+        )
     required_without_modality = [key for key in REQUIRED_TEACHER_METRICS if key != "modality"]
     if not all(key in metrics for key in required_without_modality):
         return None
     _validate_teacher_metrics(metrics, expected_modality)
+    passthrough_keys = {
+        "ckpt",
+        "checkpoint",
+        "best_checkpoint",
+        "checkpoint_path",
+        "selection_metric",
+        "selection_mode",
+        "selected_epoch",
+        "checkpoint_source",
+        "top1_epoch",
+        "top1_checkpoint",
+        "top1_val_acc",
+        "per_horizon",
+        "averages",
+        "degradation_baselines",
+        "degradation_risk",
+        "lidar_input_quality",
+        "lidar_input_quality_train",
+    }
     return {
         "modality": str(metrics["modality"]),
         "best_epoch": int(metrics["best_epoch"]),
+        "selected_epoch": int(metrics["selected_epoch"]),
+        "selection_metric": str(metrics["selection_metric"]),
+        "selection_mode": str(metrics["selection_mode"]),
+        "checkpoint_source": str(metrics["checkpoint_source"]),
         "val_acc_top1": float(metrics["val_acc_top1"]),
         "val_acc_top3": float(metrics["val_acc_top3"]),
         "val_acc_top5": float(metrics["val_acc_top5"]),
         "val_adba": float(metrics["val_adba"]),
         "train_acc_top1": float(metrics["train_acc_top1"]),
-        **{key: value for key, value in metrics.items() if key in {"ckpt", "checkpoint", "best_checkpoint", "checkpoint_path"}},
+        **{key: value for key, value in metrics.items() if key in passthrough_keys},
     }
 
 
@@ -374,6 +526,28 @@ def _missing_metric_fields(raw: dict[str, Any]) -> list[str]:
             continue
         missing.append(key)
     return missing
+
+
+def _metrics_request_top1(metrics: dict[str, Any] | None) -> bool:
+    if not isinstance(metrics, dict):
+        return False
+    checkpoint_values = [
+        metrics.get(key)
+        for key in ("ckpt", "checkpoint", "best_checkpoint", "checkpoint_path")
+        if metrics.get(key)
+    ]
+    if any(Path(str(value)).name == "best_top1.pth" for value in checkpoint_values):
+        return True
+    selection_mode = str(metrics.get("selection_mode", "")).lower().replace("_", "-")
+    selection_metric = str(metrics.get("selection_metric", "")).lower()
+    if selection_mode == "legacy-top1":
+        return False
+    return selection_mode in {"top1", "top1-selection", "val-top1"} or selection_metric in {
+        "top1",
+        "val_top1",
+        "val_acc_top1",
+        "validation_top1",
+    }
 
 
 def _validate_teacher_metrics(metrics: dict[str, Any], expected_modality: str) -> None:

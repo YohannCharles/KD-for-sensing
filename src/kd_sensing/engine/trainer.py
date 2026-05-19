@@ -10,6 +10,7 @@ import torch
 from tqdm.auto import tqdm
 
 from kd_sensing.config.io import dump_config
+from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
 from kd_sensing.engine.craf_training import CrafTrainingExtension
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
@@ -73,7 +74,7 @@ from kd_sensing.evaluation.lidar_diagnostics import (
     LidarQualityAccumulator,
     lidar_preprocessing_metadata_from_dataset,
 )
-from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint
+from kd_sensing.utils.artifact_registry import archive_best_checkpoint, resolve_teacher_checkpoint, write_sidecar
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_checkpoint, load_model_state, save_checkpoint
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.plotting import plot_training_curves
@@ -147,6 +148,7 @@ def final_config_with_runtime(
     early_stopping: dict | None = None,
 ) -> dict:
     final_cfg = deepcopy(cfg)
+    canonicalize_lidar_normalization_config(final_cfg)
     runtime = final_cfg.setdefault("runtime", {})
     runtime["run_dir"] = str(run_dir)
     runtime["output_overwrite"] = bool(cfg.get("output", {}).get("overwrite", False))
@@ -779,7 +781,7 @@ def train(cfg: dict) -> dict:
                 batch = prepare_task_batch(raw_batch)
                 if "lidar" in batch:
                     saw_train_lidar = True
-                    train_lidar_quality.update(batch["lidar"])
+                    train_lidar_quality.update(batch["lidar"], raw_lidar=batch.get("lidar_raw"))
                 labels = prepare_task_labels(
                     batch,
                     num_pred=num_pred,
@@ -1165,7 +1167,32 @@ def train(cfg: dict) -> dict:
                 best_early_stopping_value = early_stopping_value
                 best_early_stopping_epoch = epoch + 1
                 epochs_without_improvement = 0
-                torch.save(student_model.state_dict(), run_dir / "checkpoints" / "best.pth")
+                best_objective_path = run_dir / "checkpoints" / "best.pth"
+                torch.save(student_model.state_dict(), best_objective_path)
+                write_sidecar(
+                    best_objective_path,
+                    {
+                        "path": str(best_objective_path),
+                        "source": "local",
+                        "checkpoint_source": "objective-checkpoint",
+                        "run_dir": str(run_dir),
+                        "selection_metric": early_stopping_metric,
+                        "selection_mode": "early_stopping",
+                        "selected_epoch": best_early_stopping_epoch,
+                        "objective_metric": {
+                            "name": early_stopping_metric,
+                            "mode": early_stopping_mode,
+                            "value": early_stopping_value,
+                        },
+                        "task_metrics": _checkpoint_task_metrics(epoch_log),
+                        "normalization_artifacts": normalization_artifacts,
+                        "split_metadata": split_metadata,
+                        "task": cfg.get("experiment", {}).get("task"),
+                        "enabled_modalities": list(
+                            getattr(dataloaders["train"].dataset, "enabled_modalities", [])
+                        ),
+                    },
+                )
             else:
                 epochs_without_improvement += 1
             top1_improved = val_acc > best_val_top1
@@ -1188,6 +1215,33 @@ def train(cfg: dict) -> dict:
                         "value": early_stopping_value,
                     },
                     task_metrics=_checkpoint_task_metrics(epoch_log),
+                    selection_metric="val_acc_top1",
+                    selection_mode="top1-selection",
+                    checkpoint_source="top1-checkpoint",
+                )
+                write_sidecar(
+                    best_top1_path,
+                    {
+                        "path": str(best_top1_path),
+                        "source": "local",
+                        "checkpoint_source": "top1-checkpoint",
+                        "run_dir": str(run_dir),
+                        "selection_metric": "val_acc_top1",
+                        "selection_mode": "top1-selection",
+                        "selected_epoch": best_top1_epoch,
+                        "objective_metric": {
+                            "name": early_stopping_metric,
+                            "mode": early_stopping_mode,
+                            "value": early_stopping_value,
+                        },
+                        "task_metrics": _checkpoint_task_metrics(epoch_log),
+                        "normalization_artifacts": normalization_artifacts,
+                        "split_metadata": split_metadata,
+                        "task": cfg.get("experiment", {}).get("task"),
+                        "enabled_modalities": list(
+                            getattr(dataloaders["train"].dataset, "enabled_modalities", [])
+                        ),
+                    },
                 )
             epoch_log.update(
                 {
@@ -1255,6 +1309,10 @@ def train(cfg: dict) -> dict:
         cfg,
         history,
         epoch_logs,
+        best_selected_epoch=best_early_stopping_epoch,
+        selection_metric=early_stopping_metric,
+        selection_mode="early_stopping",
+        checkpoint="checkpoints/best.pth",
         best_top1_epoch=best_top1_epoch,
     )
     if teacher_metrics is not None:

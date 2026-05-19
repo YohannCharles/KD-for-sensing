@@ -29,6 +29,7 @@ def test_teacher_registry_manual_and_metric_prior(tmp_path: Path):
     for idx, modality in enumerate(["image", "radar", "gps", "lidar", "mmwave"], start=1):
         run_dir = root / f"{modality}_teacher_no_kd"
         (run_dir / "checkpoints").mkdir(parents=True)
+        torch.save({"value": torch.tensor([idx])}, run_dir / "checkpoints" / "best.pth")
         torch.save({"value": torch.tensor([idx])}, run_dir / "checkpoints" / "best_top1.pth")
         (run_dir / "teacher_metrics.json").write_text(
             json.dumps(
@@ -52,7 +53,8 @@ def test_teacher_registry_manual_and_metric_prior(tmp_path: Path):
         prior_mode="manual",
     )
     assert manual["teachers"]["gps"]["prior"] == pytest.approx(0.85)
-    assert manual["teachers"]["mmwave"]["ckpt"].endswith("best_top1.pth")
+    assert manual["teachers"]["mmwave"]["ckpt"].endswith("best.pth")
+    assert manual["teachers"]["lidar"]["selection_mode"] == "legacy_top1"
 
     metric = build_teacher_registry(
         teacher_root=root,
@@ -64,6 +66,86 @@ def test_teacher_registry_manual_and_metric_prior(tmp_path: Path):
     )
     assert metric["teachers"]["mmwave"]["prior"] == pytest.approx(0.9)
     assert metric["teachers"]["image"]["prior"] == pytest.approx(0.2)
+
+
+def test_teacher_registry_lidar_checkpoint_selection_objective_and_explicit_top1(tmp_path: Path):
+    root = tmp_path / "teachers"
+    run_dir = root / "lidar_teacher_no_kd"
+    (run_dir / "checkpoints").mkdir(parents=True)
+    torch.save({"value": torch.tensor([1])}, run_dir / "checkpoints" / "best.pth")
+    torch.save({"value": torch.tensor([2])}, run_dir / "checkpoints" / "best_top1.pth")
+    base_metrics = {
+        "modality": "lidar",
+        "best_epoch": 3,
+        "selected_epoch": 3,
+        "val_acc_top1": 0.2,
+        "val_acc_top3": 0.3,
+        "val_acc_top5": 0.4,
+        "val_adba": 0.1,
+        "train_acc_top1": 0.5,
+        "selection_metric": "val_adba",
+        "selection_mode": "early_stopping",
+        "checkpoint": "checkpoints/best.pth",
+    }
+    (run_dir / "teacher_metrics.json").write_text(json.dumps(base_metrics), encoding="utf-8")
+
+    objective = build_teacher_registry(
+        teacher_root=root,
+        output_path=tmp_path / "objective.json",
+        modalities=["lidar"],
+    )
+
+    assert objective["teachers"]["lidar"]["ckpt"].endswith("best.pth")
+    assert objective["teachers"]["lidar"]["selection_metric"] == "val_adba"
+    assert objective["teachers"]["lidar"]["selected_epoch"] == 3
+
+    top1_metrics = {
+        **base_metrics,
+        "best_epoch": 5,
+        "selected_epoch": 5,
+        "selection_metric": "val_acc_top1",
+        "selection_mode": "top1-selection",
+        "checkpoint": "checkpoints/best_top1.pth",
+    }
+    (run_dir / "teacher_metrics.json").write_text(json.dumps(top1_metrics), encoding="utf-8")
+    top1 = build_teacher_registry(
+        teacher_root=root,
+        output_path=tmp_path / "top1.json",
+        modalities=["lidar"],
+    )
+
+    assert top1["teachers"]["lidar"]["ckpt"].endswith("best_top1.pth")
+    assert top1["teachers"]["lidar"]["selection_mode"] == "top1-selection"
+
+
+def test_teacher_registry_lidar_missing_objective_checkpoint_errors(tmp_path: Path):
+    root = tmp_path / "teachers"
+    run_dir = root / "lidar_teacher_no_kd"
+    (run_dir / "checkpoints").mkdir(parents=True)
+    torch.save({"value": torch.tensor([2])}, run_dir / "checkpoints" / "best_top1.pth")
+    (run_dir / "teacher_metrics.json").write_text(
+        json.dumps(
+            {
+                "modality": "lidar",
+                "best_epoch": 3,
+                "val_acc_top1": 0.2,
+                "val_acc_top3": 0.3,
+                "val_acc_top5": 0.4,
+                "val_adba": 0.1,
+                "train_acc_top1": 0.5,
+                "selection_metric": "val_adba",
+                "selection_mode": "early_stopping",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="LiDAR teacher run.*objective checkpoint"):
+        build_teacher_registry(
+            teacher_root=root,
+            output_path=tmp_path / "registry.json",
+            modalities=["lidar"],
+        )
 
 
 def test_teacher_registry_rejects_missing_metrics_and_modality_mismatch(tmp_path: Path):

@@ -9,19 +9,22 @@ import torch
 
 LIDAR_NONEMPTY_RATIO_THRESHOLD = 0.05
 LIDAR_CHANNEL_STD_THRESHOLD = 1e-6
+LIDAR_RAW_ZERO_RATIO_THRESHOLD = 0.95
+LIDAR_MODEL_INPUT_ABS_MAX_THRESHOLD = 20.0
 
 
 @dataclass
-class LidarQualityAccumulator:
+class _LidarTensorStats:
     zero_epsilon: float = 1e-8
     sum_: np.ndarray | None = None
     sumsq_: np.ndarray | None = None
     zero_count_: np.ndarray | None = None
+    abs_max_: np.ndarray | None = None
     value_count_: int = 0
     frame_count_: int = 0
     nonempty_frame_count_: int = 0
 
-    def update(self, lidar: torch.Tensor | np.ndarray) -> "LidarQualityAccumulator":
+    def update(self, lidar: torch.Tensor | np.ndarray) -> "_LidarTensorStats":
         tensor = torch.as_tensor(lidar).detach().to(dtype=torch.float32, device="cpu")
         if tensor.ndim == 4:
             tensor = tensor.unsqueeze(0)
@@ -32,15 +35,18 @@ class LidarQualityAccumulator:
         channel_sum = values.sum(dim=1).numpy()
         channel_sumsq = values.square().sum(dim=1).numpy()
         channel_zero = values.abs().le(float(self.zero_epsilon)).sum(dim=1).numpy()
+        channel_abs_max = values.abs().amax(dim=1).numpy()
         if self.sum_ is None:
             self.sum_ = np.zeros(channels, dtype=np.float64)
             self.sumsq_ = np.zeros(channels, dtype=np.float64)
             self.zero_count_ = np.zeros(channels, dtype=np.float64)
+            self.abs_max_ = np.zeros(channels, dtype=np.float64)
         if self.sum_.shape[0] != channels:
             raise ValueError(f"LiDAR channel count changed from {self.sum_.shape[0]} to {channels}.")
         self.sum_ += channel_sum
         self.sumsq_ += channel_sumsq
         self.zero_count_ += channel_zero
+        self.abs_max_ = np.maximum(self.abs_max_, channel_abs_max)
         self.value_count_ += int(values.shape[1])
         frames = tensor.reshape(-1, channels, tensor.shape[-2], tensor.shape[-1])
         self.frame_count_ += int(frames.shape[0])
@@ -52,16 +58,25 @@ class LidarQualityAccumulator:
         *,
         split: str | None = None,
         preprocessing: dict[str, Any] | None = None,
+        perspective: str,
     ) -> dict[str, Any]:
-        if self.sum_ is None or self.sumsq_ is None or self.zero_count_ is None or self.value_count_ <= 0:
+        if (
+            self.sum_ is None
+            or self.sumsq_ is None
+            or self.zero_count_ is None
+            or self.abs_max_ is None
+            or self.value_count_ <= 0
+        ):
             return {
                 "split": split,
+                "perspective": perspective,
                 "num_frames": 0,
                 "nonempty_frames": 0,
                 "nonempty_frame_ratio": 0.0,
                 "channel_mean": [],
                 "channel_std": [],
                 "zero_ratio": [],
+                "channel_abs_max": [],
                 "degradation_risk": True,
                 "degradation_reasons": ["no_lidar_frames"],
                 "preprocessing": preprocessing or {},
@@ -76,18 +91,70 @@ class LidarQualityAccumulator:
             reasons.append("low_nonempty_frame_ratio")
         if any(float(value) < LIDAR_CHANNEL_STD_THRESHOLD for value in std):
             reasons.append("near_constant_channel")
+        if perspective == "raw" and float(np.mean(zero_ratio)) >= LIDAR_RAW_ZERO_RATIO_THRESHOLD:
+            reasons.append("raw_extreme_sparsity")
+        if perspective == "model_input" and any(
+            float(value) > LIDAR_MODEL_INPUT_ABS_MAX_THRESHOLD for value in self.abs_max_
+        ):
+            reasons.append("model_input_abnormal_amplitude")
         return {
             "split": split,
+            "perspective": perspective,
             "num_frames": int(self.frame_count_),
             "nonempty_frames": int(self.nonempty_frame_count_),
             "nonempty_frame_ratio": float(nonempty_ratio),
             "channel_mean": [float(value) for value in mean],
             "channel_std": [float(value) for value in std],
             "zero_ratio": [float(value) for value in zero_ratio],
+            "channel_abs_max": [float(value) for value in self.abs_max_],
             "degradation_risk": bool(reasons),
             "degradation_reasons": reasons,
             "preprocessing": preprocessing or {},
         }
+
+
+@dataclass
+class LidarQualityAccumulator:
+    zero_epsilon: float = 1e-8
+
+    def __post_init__(self) -> None:
+        self.raw_ = _LidarTensorStats(zero_epsilon=self.zero_epsilon)
+        self.model_input_ = _LidarTensorStats(zero_epsilon=self.zero_epsilon)
+
+    def update(
+        self,
+        lidar: torch.Tensor | np.ndarray,
+        *,
+        raw_lidar: torch.Tensor | np.ndarray | None = None,
+    ) -> "LidarQualityAccumulator":
+        self.model_input_.update(lidar)
+        self.raw_.update(lidar if raw_lidar is None else raw_lidar)
+        return self
+
+    def finalize(
+        self,
+        *,
+        split: str | None = None,
+        preprocessing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        raw = self.raw_.finalize(split=split, preprocessing=preprocessing, perspective="raw")
+        model_input = self.model_input_.finalize(
+            split=split,
+            preprocessing=preprocessing,
+            perspective="model_input",
+        )
+        reasons = sorted(
+            set(str(reason) for reason in raw.get("degradation_reasons", []))
+            | set(str(reason) for reason in model_input.get("degradation_reasons", []))
+        )
+        summary = {
+            **model_input,
+            "raw": raw,
+            "model_input": model_input,
+            "degradation_risk": bool(reasons),
+            "degradation_reasons": reasons,
+        }
+        return summary
 
 
 def lidar_preprocessing_metadata_from_dataset(dataset: Any) -> dict[str, Any]:
@@ -192,7 +259,7 @@ def lidar_degradation_report(
         reasons.append("model_not_above_majority_class")
     if quality_summary and bool(quality_summary.get("degradation_risk", False)):
         reasons.extend(str(reason) for reason in quality_summary.get("degradation_reasons", []))
-    return {
+    report = {
         "risk": bool(reasons),
         "reasons": sorted(set(reasons)),
         "model_top1": model_top1,
@@ -202,6 +269,13 @@ def lidar_degradation_report(
         "model_exceeds_majority_by_horizon": exceeds,
         "model_exceeds_majority_avg": bool(not length or model_avg > majority_avg),
     }
+    if quality_summary:
+        report["lidar_preprocessing"] = quality_summary.get("preprocessing", {})
+        if "raw" in quality_summary:
+            report["lidar_quality_raw"] = quality_summary["raw"]
+        if "model_input" in quality_summary:
+            report["lidar_quality_model_input"] = quality_summary["model_input"]
+    return report
 
 
 def _majority_baseline(labels: torch.Tensor) -> dict[str, Any]:

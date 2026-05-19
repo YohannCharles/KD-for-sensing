@@ -6,6 +6,7 @@ from typing import Any
 
 from torch.utils.data import DataLoader
 
+from kd_sensing.config.lidar_normalization import canonicalize_lidar_dataset_config
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.engine.cache_policy import apply_cache_policy
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
@@ -27,6 +28,7 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg["enabled_modalities"] = list(enabled_modalities)
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
+    canonicalize_lidar_dataset_config(dataset_cfg)
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
         csv_name, dataset_split = _dataset_csv_for_split(dataset_cfg, split)
         dataset_cfg["csv_name"] = csv_name

@@ -31,12 +31,13 @@ class DeepSense6GModalityLoader:
             mmwave_features = ds.mmwave_scaler.transform(mmwave_features)
         return torch.tensor(mmwave_features, dtype=torch.float32)
 
-    def load_lidar(self, idx: int) -> torch.Tensor:
+    def load_lidar_pair(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         ds = self.dataset
         lidar_bev = ds._lidar_bev_for_index(
             idx,
             augment=ds.split == "train" and ds.lidar_augment,
         )
+        raw_lidar_bev = lidar_bev
         if ds.lidar_normalize:
             if ds.lidar_normalizer is None:
                 raise ValueError(
@@ -45,7 +46,13 @@ class DeepSense6GModalityLoader:
                     "or disable LiDAR normalization."
                 )
             lidar_bev = ds.lidar_normalizer.transform(lidar_bev)
-        return torch.tensor(lidar_bev, dtype=torch.float32)
+        return (
+            torch.tensor(raw_lidar_bev, dtype=torch.float32),
+            torch.tensor(lidar_bev, dtype=torch.float32),
+        )
+
+    def load_lidar(self, idx: int) -> torch.Tensor:
+        return self.load_lidar_pair(idx)[1]
 
 
 __all__ = ["DeepSense6GModalityLoader"]

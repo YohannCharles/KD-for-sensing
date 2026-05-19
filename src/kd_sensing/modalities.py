@@ -89,7 +89,7 @@ MODALITY_SPECS: dict[str, ModalitySpec] = {
             "lidar_background_distance_threshold": 0.2,
             "lidar_cache_dir": "lidar_bev_cache",
             "lidar_normalize": False,
-            "lidar_normalization": {"enabled": True, "mode": "streaming_stats"},
+            "lidar_normalization": {"enabled": False, "mode": "none"},
             "lidar_augment": False,
             "lidar_point_dropout": 0.0,
             "lidar_jitter_std": 0.0,

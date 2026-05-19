@@ -328,7 +328,9 @@ class DeepSense6GDataset(Dataset):
         if self.use_mmwave:
             sample["mmwave"] = record("mmwave", lambda: self.modality_loader.load_mmwave(idx))
         if self.use_lidar:
-            sample["lidar"] = record("lidar", lambda: self.modality_loader.load_lidar(idx))
+            lidar_raw, lidar_model_input = record("lidar", lambda: self.modality_loader.load_lidar_pair(idx))
+            sample["lidar_raw"] = lidar_raw
+            sample["lidar"] = lidar_model_input
         if self.return_metadata:
             sample["metadata"] = self._metadata_for_index(idx, beam_paths, future_beam_paths)
         return sample, timings
@@ -620,6 +622,14 @@ class DeepSense6GDataset(Dataset):
             recompute = False
         else:
             enabled = bool(config.get("enabled", False))
+            if bool(enabled_flag) != enabled:
+                raise ValueError(
+                    "Conflicting LiDAR normalization config: "
+                    f"lidar_normalize={bool(enabled_flag)!r} but "
+                    f"lidar_normalization.enabled={enabled!r}. "
+                    "Choose raw BEV with both fields disabled, or choose an explicit "
+                    "streaming stats profile with both fields enabled."
+                )
             mode = str(config.get("mode", "streaming_stats" if enabled else "none"))
             stats_path = config.get("stats_path")
             recompute = bool(config.get("recompute", False))

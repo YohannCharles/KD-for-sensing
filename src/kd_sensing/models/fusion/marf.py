@@ -6,19 +6,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, resolve_image_profile
 from kd_sensing.models.fusion.craf import (
     ModalityTokenizer,
     UniModalHead,
-    _build_modality_encoder,
     _check_temporal_features,
     _effective_modality_mask,
     _masked_modality_mean,
     _safe_transformer_padding_mask,
     compute_unimodal_confidence,
 )
+import kd_sensing.models.modular  # noqa: F401  # Register current single-modality encoder configs.
 from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE
-from kd_sensing.registries import MODELS
+from kd_sensing.registries import ENCODERS, MODELS
+
+
+MARF_DEFAULT_ENCODERS = {
+    "image": "resnet18_imagenet_rgb",
+    "radar": "radar_cnn",
+    "gps": "gps_mlp",
+    "lidar": "lidar_cnn",
+    "mmwave": "mmwave_mlp",
+}
 
 
 class ModalityRouter(nn.Module):
@@ -255,6 +264,8 @@ class MARFFusionNet(nn.Module):
         gps_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        image_profile: str | None = None,
+        encoders: dict[str, Any] | None = None,
         router: dict[str, Any] | None = None,
         anchor_fusion: dict[str, Any] | None = None,
         residual_adapter: dict[str, Any] | None = None,
@@ -274,23 +285,33 @@ class MARFFusionNet(nn.Module):
         self.num_pred = int(num_pred)
         self.horizon = self.num_pred
         self.return_unimodal = bool(return_unimodal)
+        self.image_profile = resolve_image_profile(image_profile)
+        self.image_channels = int(image_channels or image_profile_spec(self.image_profile).channels)
         if self.d_model % int(num_heads) != 0:
             raise ValueError(f"d_model ({self.d_model}) must be divisible by num_heads ({num_heads}).")
 
         self.encoders = nn.ModuleDict()
         self.feature_projections = nn.ModuleDict()
+        self.encoder_output_dims: dict[str, int] = {}
+        encoder_cfgs = dict(encoders or {})
         for modality in self.modalities:
-            self.encoders[modality] = _build_modality_encoder(
+            encoder_cfg = _marf_encoder_config(
                 modality,
                 self.feature_size,
-                image_channels=image_channels,
+                encoder_cfgs.get(modality),
+                image_profile=self.image_profile,
+                image_channels=self.image_channels,
                 radar_channels=radar_channels,
                 gps_input_size=gps_input_size,
                 lidar_channels=lidar_channels,
                 mmwave_input_size=mmwave_input_size,
             )
+            encoder = ENCODERS.build(encoder_cfg)
+            self.encoders[modality] = encoder
+            raw_dim = int(getattr(encoder, "output_dim", encoder_cfg.get("output_dim", self.feature_size)))
+            self.encoder_output_dims[modality] = raw_dim
             self.feature_projections[modality] = (
-                nn.Identity() if self.feature_size == self.d_model else nn.Linear(self.feature_size, self.d_model)
+                nn.Identity() if raw_dim == self.d_model else nn.Linear(raw_dim, self.d_model)
             )
 
         self.tokenizer = ModalityTokenizer(
@@ -462,8 +483,47 @@ def _available_timewise_mean(tokens: torch.Tensor, effective_mask: torch.Tensor)
     return (tokens * valid).sum(dim=1) / counts
 
 
+def _marf_encoder_config(
+    modality: str,
+    feature_size: int,
+    raw_cfg: Any,
+    *,
+    image_profile: str,
+    image_channels: int,
+    radar_channels: int,
+    gps_input_size: int,
+    lidar_channels: int,
+    mmwave_input_size: int,
+) -> dict[str, Any]:
+    if raw_cfg is None:
+        raw_cfg = {"type": MARF_DEFAULT_ENCODERS[modality]}
+    if isinstance(raw_cfg, str):
+        raw_cfg = {"type": raw_cfg}
+    if not isinstance(raw_cfg, dict):
+        raise ValueError(f"MARF encoder config for modality '{modality}' must be a dict or string.")
+    cfg = dict(raw_cfg)
+    cfg.setdefault("type", MARF_DEFAULT_ENCODERS[modality])
+    cfg.setdefault("output_dim", int(feature_size))
+    if modality == "image":
+        cfg.setdefault("image_profile", image_profile)
+        cfg.setdefault("image_channels", int(image_channels))
+    elif modality == "radar":
+        cfg.setdefault("radar_channels", int(radar_channels))
+    elif modality == "gps":
+        cfg.setdefault("gps_input_size", int(gps_input_size))
+    elif modality == "lidar":
+        cfg.setdefault("lidar_channels", int(lidar_channels))
+    elif modality == "mmwave":
+        cfg.setdefault("mmwave_input_size", int(mmwave_input_size))
+    else:
+        available = ", ".join(MODALITY_ORDER)
+        raise ValueError(f"Unknown MARF fusion modality '{modality}'. Available modalities: {available}.")
+    return cfg
+
+
 __all__ = [
     "AnchorFusion",
+    "MARF_DEFAULT_ENCODERS",
     "MARFFusionNet",
     "ModalityRouter",
     "ResidualAdapter",

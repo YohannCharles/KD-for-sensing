@@ -592,8 +592,8 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
         assert dataset_cfg["lidar_bev_size"] == [224, 224]
         assert dataset_cfg["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
         assert dataset_cfg["lidar_normalize"] is False
-        assert dataset_cfg["lidar_normalization"]["enabled"] is True
-        assert dataset_cfg["lidar_normalization"]["mode"] == "streaming_stats"
+        assert dataset_cfg["lidar_normalization"]["enabled"] is False
+        assert dataset_cfg["lidar_normalization"]["mode"] == "none"
         assert dataset_cfg["lidar_cache_dir"] == "lidar_bev_cache"
         assert teacher_cfg["lidar_channels"] == 3
         assert student_cfg["lidar_channels"] == 3

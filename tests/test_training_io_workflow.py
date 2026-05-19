@@ -132,7 +132,7 @@ def test_sequence_preprocess_scene_override_updates_root_and_csv():
         (["image"], {"image"}, {"image"}),
         (["radar"], {"radar"}, {"radar_ra", "radar_da"}),
         (["gps"], {"gps"}, {"gps"}),
-        (["lidar"], {"lidar"}, {"lidar"}),
+        (["lidar"], {"lidar"}, {"lidar", "lidar_raw"}),
         (["radar", "gps"], {"radar", "gps"}, {"radar_ra", "radar_da", "gps"}),
     ],
 )

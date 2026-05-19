@@ -43,7 +43,7 @@ TBD - created by archiving change add-conditional-utility-audit. Update Purpose 
 #### Scenario: DBA 逐样本语义一致
 - **WHEN** 系统从逐样本 `dba_score` 聚合到 horizon 平均值
 - **THEN** 聚合结果 MUST 与 `calculate_dba_score()` 对同一 logits 和 labels 的结果一致
-- **AND** DBA MUST 使用 Top-3 prediction 和配置中的 `evaluation.dba_delta`
+- **AND** DBA MUST 使用 `K=3` prediction 和配置中的 `evaluation.dba_delta`，并按 `Y_1` 到 `Y_3` 的平均计算
 
 ### Requirement: Marginal utility deltas
 系统 MUST 以 `strong_only` 为基线，计算每个弱模态的逐样本边际增益。边际增益 MUST 覆盖 CE、Top1、Top3 和 DBA，并 MUST 按 horizon 汇总。
@@ -170,4 +170,3 @@ Conditional Utility Audit consumers MUST be able to compute confidence intervals
 - **WHEN** 用户只提供已有 `outputs/scene32/<run_name>/conditional_utility/` 目录
 - **THEN** 系统 MUST 能在不加载模型 checkpoint、不构建 dataloader、不执行 forward 的情况下计算 bootstrap CI
 - **AND** 系统 MUST 保留输入表路径和行数 metadata
-

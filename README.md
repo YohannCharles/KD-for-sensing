@@ -241,7 +241,8 @@ conda run -n kd_mm_beam python tools/analysis/collect_multimodal_imbalance_resul
 默认 camera teacher/student/no-KD/KD baseline 使用 `rgb_imagenet` profile 和 ImageNet 预训练
 `resnet18_imagenet_rgb` encoder，配置入口包括 `configs/image/teacher_no_kd.yaml` 和
 `configs/image/student_no_kd.yaml`。默认 LiDAR 单模态配置使用 `modular_sequence` + `lidar_cnn`
-encoder，并启用 train-split streaming stats normalization。包含 image 或 LiDAR 的 canonical fusion
+encoder，并默认使用 raw BEV；需要 train-split streaming stats normalization 时必须显式开启
+`data.dataset.lidar_normalization.enabled=true`。包含 image 或 LiDAR 的 canonical fusion
 配置也默认复用同一 modular encoder profile，避免单模态与 fusion 分支不一致。
 Checkpoint 加载默认严格校验 missing/unexpected keys，结构不匹配会直接报错；需要兼容性调试时可显式设置
 `checkpoint.strict_load=false`。
@@ -257,7 +258,9 @@ epoch、split 样本数、加载来源和 GPS/LiDAR 归一化工件。可通过
 
 Scenario 32 的 teacher-prior CRAF 使用三阶段流程。Stage 1 继续复用现有五个单模态
 teacher no-KD 入口，训练完成后每个 run 会写出 `teacher_metrics.json`，其中包含 registry
-所需的 `modality`、`best_epoch`、验证 Top-1/Top-3/Top-5、ADBA 和训练 Top-1。
+所需的 `modality`、`best_epoch`、checkpoint 路径、selection metric/mode、验证
+Top-1/Top-3/Top-5、ADBA 和训练 Top-1。默认 teacher registry 使用 early-stopping objective
+对应的 `checkpoints/best.pth`；`best_top1.pth` 只作为显式 Top-1 选择或诊断使用。
 
 ```bash
 python scripts/train.py --config configs/image/teacher_no_kd.yaml
@@ -343,9 +346,11 @@ LiDAR-only 配置使用 `lidar1..lidar8` 序列列读取点云，并在线转换
 默认通道为 height、intensity、density，默认尺寸为 `224x224`，默认 ROI 为
 `[-30, 30, -30, 30, -3, 5]`。内置读取器支持 `.mat`、`.npy` 点云数组、ASCII PCD 和
 文本/CSV 数值点云；二进制 PCD 需要先离线转换为 ASCII PCD 或 `.npy`。
-默认 LiDAR teacher/no-KD baseline 显式启用 `lidar_normalization.enabled: true` 和
-`mode: streaming_stats`。训练只在 train split 上 fit normalizer，并把 `artifacts/lidar_normalizer.npz`
-写入运行目录；test/eval split 会复用训练阶段 normalizer，不会在 test split 上重新 fit。默认
+默认 LiDAR teacher/no-KD baseline 将 `lidar_normalization.enabled` 解析为 `false`，不做全局
+streaming stats normalizer。显式设置 `lidar_normalize=true` 或
+`lidar_normalization.enabled=true, mode=streaming_stats` 时，训练只在 train split 上 fit normalizer，
+并把 `artifacts/lidar_normalizer.npz` 写入运行目录；test/eval split 会复用训练阶段 normalizer，
+不会在 test split 上重新 fit。默认
 `lidar_cache_dir: lidar_bev_cache` 会按 BEV size、ROI、FoV、ground/background 参数生成隔离后的 cache
 子目录，运行 metadata 会记录实际 ROI、FoV、cache 和 normalizer 参数。可显式指定 stats 路径复用：
 
@@ -356,6 +361,9 @@ LiDAR-only 配置使用 `lidar1..lidar8` 序列列读取点云，并在线转换
 ```bash
 conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
   --config configs/lidar/teacher_no_kd.yaml \
+  -o data.dataset.lidar_normalize=true \
+  -o data.dataset.lidar_normalization.enabled=true \
+  -o data.dataset.lidar_normalization.mode=streaming_stats \
   -o data.dataset.lidar_normalization.stats_path=outputs/cache/lidar_stats_train.npz
 ```
 
@@ -538,7 +546,7 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 - `final_config.yaml`
 - `checkpoints/last.pth`
 - `checkpoints/best.pth`：默认按 objective-specific `training.early_stopping_metric` 保存；beam 为 `val_adba`
-- `checkpoints/best_top1.pth`：显式 Top-1 最佳 checkpoint，供 registry 和分析流程使用
+- `checkpoints/best_top1.pth`：显式 Top-1 最佳 checkpoint，供诊断和显式 Top-1 registry 使用
 - `metrics.json`
 - `train_log.json`
 - `training_outputs.npz`
@@ -563,7 +571,7 @@ TensorBoard 标量包含基础训练曲线和 objective-specific 验证指标。
 - `beam/accuracy_val`：第一个未来目标时隙 `t+1` 的 Top-1 accuracy，不能直接当作论文表格里的跨 horizon 平均指标。
 - `beam/val_atop3`：所有 `J` 个未来目标时隙 Top-3 accuracy 的平均值。
 - `beam/val_atop5`：所有 `J` 个未来目标时隙 Top-5 accuracy 的平均值。
-- `beam/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 Top-3 预测 beam 计算；这也是 beam objective 的默认 early stopping 指标。
+- `beam/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 `K=3`、默认 `Δ=5`，按 `Y_1` 到 `Y_3` 的平均计算；这也是 beam objective 的默认 early stopping 指标。
 
 `beam/*` 只在 `experiment.objective: beam` 或 `multitask` 的 active beam 分任务中写入；
 `occlusion` 和 `position` 单任务即使能计算诊断性的 beam accuracy，也不会写进 `beam/*`。

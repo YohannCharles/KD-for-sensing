@@ -176,6 +176,7 @@ def test_lidar_dataset_initialization_does_not_materialize_lidar(monkeypatch, tm
         clipped_range=4,
         use_lidar=True,
         lidar_bev_size=[16, 16],
+        lidar_normalize=True,
         lidar_normalization={"enabled": True, "mode": "streaming_stats"},
     )
 
@@ -236,6 +237,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
         clipped_range=4,
         use_lidar=True,
         lidar_bev_size=[16, 16],
+        lidar_normalize=True,
         lidar_normalization={
             "enabled": True,
             "mode": "streaming_stats",
@@ -253,6 +255,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
         clipped_range=4,
         use_lidar=True,
         lidar_bev_size=[16, 16],
+        lidar_normalize=True,
         lidar_normalization={
             "enabled": True,
             "mode": "streaming_stats",
@@ -277,6 +280,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
             clipped_range=4,
             use_lidar=True,
             lidar_bev_size=[16, 16],
+            lidar_normalize=True,
             lidar_normalization={"enabled": True, "mode": "streaming_stats"},
         )
 
@@ -291,10 +295,53 @@ def test_lidar_structured_normalization_config_override():
         ],
     )
 
-    assert cfg["data"]["dataset"]["lidar_normalize"] is False
+    assert cfg["data"]["dataset"]["lidar_normalize"] is True
     assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is True
     assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "streaming_stats"
     assert cfg["data"]["dataset"]["lidar_normalization"]["stats_path"] == "outputs/cache/lidar_stats.npz"
+
+
+def test_lidar_normalization_conflicts_are_rejected(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_dataset_fixture(tmp_path, csv_path)
+
+    with pytest.raises(ValueError, match="lidar_normalize=False.*lidar_normalization.enabled=True"):
+        DeepSense6GDataset(
+            data_root=str(tmp_path),
+            csv_name=str(csv_path),
+            split="train",
+            seq_len=3,
+            num_pred=1,
+            fft_tuple=[4, 8, 6],
+            clipped_range=4,
+            use_lidar=True,
+            lidar_bev_size=[16, 16],
+            lidar_normalize=False,
+            lidar_normalization={"enabled": True, "mode": "streaming_stats"},
+        )
+
+    with pytest.raises(ValueError, match="lidar_normalize=False.*lidar_normalization.enabled=True"):
+        load_config(
+            ROOT / "configs/lidar/teacher_no_kd.yaml",
+            [
+                "data.dataset.lidar_normalize=false",
+                "data.dataset.lidar_normalization.enabled=true",
+            ],
+        )
+
+
+def test_lidar_quality_keeps_raw_zero_ratio_after_model_input_zscore():
+    raw = torch.zeros(1, 2, 3, 4, 4)
+    raw[:, :, 0, 0, 0] = 1.0
+    model_input = raw.clone()
+    model_input[raw == 0.0] = -0.5
+    model_input[raw != 0.0] = 2.0
+
+    quality = LidarQualityAccumulator().update(model_input, raw_lidar=raw).finalize(split="train")
+
+    assert max(quality["raw"]["zero_ratio"]) > 0.9
+    assert max(quality["model_input"]["zero_ratio"]) == 0.0
+    assert "raw_extreme_sparsity" in quality["degradation_reasons"]
 
 
 def test_lidar_models_forward_contracts_and_param_validation():
@@ -403,6 +450,8 @@ def test_lidar_quality_and_degradation_baselines_report_expected_fields():
 
     assert quality["split"] == "test"
     assert quality["num_frames"] == 3
+    assert "raw" in quality
+    assert "model_input" in quality
     assert quality["nonempty_frame_ratio"] == pytest.approx(1 / 3)
     assert len(quality["channel_mean"]) == 3
     assert len(quality["channel_std"]) == 3
@@ -422,8 +471,8 @@ def test_lidar_configs_build(config_path: str):
     assert cfg["experiment"]["task"] == "lidar"
     assert cfg["data"]["dataset"]["use_lidar"] is True
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
-    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is True
-    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "streaming_stats"
+    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is False
+    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "none"
     assert cfg["data"]["dataset"]["lidar_cache_dir"] == "lidar_bev_cache"
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
     assert cfg["model"]["teacher"]["type"] == "modular_sequence"
@@ -449,8 +498,8 @@ def test_lidar_fusion_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["lidar_bev_size"] == [224, 224]
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
-    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is True
-    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "streaming_stats"
+    assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is False
+    assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "none"
     assert cfg["model"]["teacher"]["lidar_channels"] == 3
     assert cfg["model"]["student"]["lidar_channels"] == 3
     if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:

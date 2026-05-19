@@ -91,7 +91,7 @@ def run_evaluation_pass(
                 all_input_beams.append(batch["input_beam"].detach().cpu())
             if "lidar" in batch:
                 saw_lidar = True
-                lidar_quality.update(batch["lidar"])
+                lidar_quality.update(batch["lidar"], raw_lidar=batch.get("lidar_raw"))
             labels = prepare_task_labels(
                 batch,
                 num_pred=num_pred,

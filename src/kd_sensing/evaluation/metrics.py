@@ -5,6 +5,8 @@ import torch
 
 from kd_sensing.registries import METRICS
 
+DBA_TOP_K = 3
+
 
 def calculate_topk_accuracy(
     outputs: torch.Tensor,
@@ -28,9 +30,9 @@ def calculate_topk_accuracy(
 
 def calculate_dba_score(outputs: torch.Tensor, labels: torch.Tensor, delta: float = 5):
     num_pred = labels.shape[1]
-    dba_score = np.zeros((num_pred,))
+    dba_sum = np.zeros((num_pred,))
     valid_count = np.zeros((num_pred,))
-    k = min(3, outputs.shape[-1])
+    k = min(DBA_TOP_K, outputs.shape[-1])
     _, idx = torch.topk(outputs, k, dim=-1)
     idx_np = idx.cpu().numpy()
     labels_np = labels.cpu().numpy()
@@ -41,10 +43,11 @@ def calculate_dba_score(outputs: torch.Tensor, labels: torch.Tensor, delta: floa
                 continue
             preds = idx_np[b, t, :k]
             norm_dists = np.minimum(np.abs(preds - gt) / delta, 1.0)
-            dba_score[t] += np.min(norm_dists)
+            y_by_k = 1.0 - np.minimum.accumulate(norm_dists)
+            dba_sum[t] += np.mean(y_by_k)
             valid_count[t] += 1
     valid_count[valid_count == 0] = 1
-    return 1 - (dba_score / valid_count)
+    return dba_sum / valid_count
 
 
 def calculate_occlusion_metrics(

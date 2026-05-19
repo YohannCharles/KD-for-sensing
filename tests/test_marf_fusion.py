@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
 
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.engine.teacher_loader import apply_teacher_priors, load_teacher_encoders  # noqa: E402
-from kd_sensing.models.fusion.marf import ModalityRouter  # noqa: E402
+from kd_sensing.models.fusion.marf import MARF_DEFAULT_ENCODERS, ModalityRouter  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
 
@@ -139,6 +139,40 @@ def test_marf_configs_load_and_change_only_target_ablation_fields():
         assert cfg["model"]["student"]["modalities"] == subset["model"]["student"]["modalities"]
         assert cfg["data"]["dataset"]["train_csv_name"] == subset["data"]["dataset"]["train_csv_name"]
         assert cfg["training"]["lr"] == subset["training"]["lr"]
+
+
+def test_marf_defaults_to_current_single_modality_encoder_registry():
+    model = MODELS.build(
+        {
+            "type": "marf_fusion",
+            "modalities": ["image", "radar", "gps", "lidar", "mmwave"],
+            "feature_size": 8,
+            "d_model": 8,
+            "num_classes": 4,
+            "num_pred": 1,
+            "num_heads": 2,
+            "image_channels": 3,
+            "radar_channels": 2,
+            "gps_input_size": 3,
+            "lidar_channels": 3,
+            "mmwave_input_size": 64,
+            "encoders": {
+                "image": {
+                    "pretrained": False,
+                    "weights": None,
+                    "freeze_backbone": False,
+                }
+            },
+        }
+    )
+
+    assert MARF_DEFAULT_ENCODERS["image"] == "resnet18_imagenet_rgb"
+    assert type(model.encoders["image"]).__name__ == "ResNet18ImageEncoder"
+    assert type(model.encoders["radar"]).__name__ == "RadarCNNEncoder"
+    assert type(model.encoders["gps"]).__name__ == "GpsMLPEncoder"
+    assert type(model.encoders["lidar"]).__name__ == "LidarCNNEncoder"
+    assert type(model.encoders["mmwave"]).__name__ == "MmWaveMLPEncoder"
+    assert model.image_profile == "rgb_imagenet"
 
 
 def test_marf_top_level_modalities_override_syncs_roles_and_dataset_flags():

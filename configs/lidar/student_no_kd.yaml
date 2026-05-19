@@ -27,8 +27,8 @@ data:
     lidar_cache_dir: lidar_bev_cache
     lidar_normalize: false
     lidar_normalization:
-      enabled: true
-      mode: streaming_stats
+      enabled: false
+      mode: none
   dataloader:
     train_batch_size: 32
     test_batch_size: 32

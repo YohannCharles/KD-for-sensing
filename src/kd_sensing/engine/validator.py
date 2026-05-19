@@ -18,10 +18,11 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
     subset_metrics = _validate_modality_subsets(model, dataloader, cfg, criterion, device, official_metrics=metrics)
     if subset_metrics:
         metrics["modality_subsets"] = subset_metrics
-    setup = prediction_setup_metadata(
-        cfg,
-        split_metadata={getattr(dataloader.dataset, "split", "test"): dataset_run_metadata(dataloader.dataset)},
-    )
+    dataset = getattr(dataloader, "dataset", None)
+    split_metadata = None
+    if dataset is not None:
+        split_metadata = {getattr(dataset, "split", "test"): dataset_run_metadata(dataset)}
+    setup = prediction_setup_metadata(cfg, split_metadata=split_metadata)
     metrics["prediction_setup"] = setup
     for key in ("variant", "seq_len", "num_pred", "uses_temporal_core", "split_protocol"):
         if key in setup:

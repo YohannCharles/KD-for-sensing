@@ -149,6 +149,9 @@ def archive_best_checkpoint(
     normalization_artifacts: dict[str, Any] | None = None,
     objective_metric: dict[str, Any] | None = None,
     task_metrics: dict[str, Any] | None = None,
+    selection_metric: str | None = None,
+    selection_mode: str | None = None,
+    checkpoint_source: str | None = None,
 ) -> dict[str, Any] | None:
     if not registry_enabled(cfg):
         return None
@@ -179,11 +182,18 @@ def archive_best_checkpoint(
         "path": str(target),
         "source": "registry",
         "source_checkpoint": str(source),
+        "checkpoint_source": checkpoint_source
+        or ("top1-checkpoint" if source.name == "best_top1.pth" else "objective-checkpoint"),
         "run_dir": str(run_dir),
         "config_slug": slug,
         "artifact_role": role,
         "metric_name": registry_config(cfg).get("metric", "val_top1"),
         "metric_value": float(val_top1),
+        "selection_metric": selection_metric
+        or ("val_acc_top1" if source.name == "best_top1.pth" else (objective_metric or {}).get("name")),
+        "selection_mode": selection_mode
+        or ("top1-selection" if source.name == "best_top1.pth" else "objective"),
+        "selected_epoch": int(epoch),
         "objective": cfg.get("experiment", {}).get("objective", "beam"),
         "variant": cfg.get("experiment", {}).get("variant"),
         "seq_len": cfg.get("data", {}).get("dataset", {}).get("seq_len"),

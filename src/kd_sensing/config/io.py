@@ -14,6 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
 
 from kd_sensing.config.canonical import SNAPSHOT_TRAIN_CSV, SNAPSHOT_VAL_CSV, SNAPSHOT_VARIANT, build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
+from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
 from kd_sensing.data.scenes import normalize_deepsense_config
 from kd_sensing.engine.prediction_objectives import (
     configure_objective_defaults,
@@ -112,6 +113,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     apply_objective_runtime_requirements(cfg)
     reject_removed_image_path_config(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
+    canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg_for_keys, override_cfg=override_cfg)
     normalize_model_role_defaults(cfg)
     normalize_deepsense_config(cfg)
     normalize_image_profile_config(cfg)

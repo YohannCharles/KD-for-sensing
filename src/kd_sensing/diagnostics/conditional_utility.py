@@ -9,6 +9,8 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
+from kd_sensing.evaluation.metrics import DBA_TOP_K
+
 
 WEAK_MODALITIES = ("image", "radar", "lidar")
 DEFAULT_ORACLE_CANDIDATES = (
@@ -66,7 +68,7 @@ def records_from_logits(
             top3_hit = bool(valid and gt in pred_values[: min(3, k)])
             top5_hit = bool(valid and gt in pred_values[: min(5, k)])
             beam_distance = int(abs(int(pred_values[0]) - gt)) if valid and pred_values else None
-            dba_score = _dba_contribution(pred_values[: min(3, k)], gt, dba_delta) if valid else float("nan")
+            dba_score = _dba_contribution(pred_values[: min(DBA_TOP_K, k)], gt, dba_delta) if valid else float("nan")
             row = {
                 **base,
                 "sample_id": sample_id,
@@ -572,7 +574,8 @@ def _dba_contribution(preds: list[int], gt: int, delta: float) -> float:
     if not preds:
         return 0.0
     norm_dists = [min(abs(int(pred) - int(gt)) / float(delta), 1.0) for pred in preds]
-    return float(1.0 - min(norm_dists))
+    best_by_k = np.minimum.accumulate(np.asarray(norm_dists, dtype=np.float64))
+    return float(np.mean(1.0 - best_by_k))
 
 
 def _metadata_rows(metadata: Any | None, batch_size: int, *, dataset_index_offset: int) -> list[dict[str, Any]]:
