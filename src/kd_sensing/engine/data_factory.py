@@ -29,6 +29,7 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
     canonicalize_lidar_dataset_config(dataset_cfg)
+    _apply_csi_degradation_seed(dataset_cfg, cfg)
     if dataset_type not in {"synthetic", "synthetic_sequence"}:
         csv_name, dataset_split = _dataset_csv_for_split(dataset_cfg, split)
         dataset_cfg["csv_name"] = csv_name
@@ -156,6 +157,15 @@ def _validate_snapshot_csv_exists(cfg: dict[str, Any], dataset_cfg: dict[str, An
             f"Generate {sorted(expected)} first with: "
             "python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml"
         )
+
+
+def _apply_csi_degradation_seed(dataset_cfg: dict[str, Any], cfg: dict[str, Any]) -> None:
+    degradation = dataset_cfg.get("csi_degradation")
+    if not isinstance(degradation, dict) or "seed" in degradation:
+        return
+    experiment_seed = cfg.get("experiment", {}).get("seed")
+    if experiment_seed is not None:
+        degradation["seed"] = int(experiment_seed)
 
 
 __all__ = [

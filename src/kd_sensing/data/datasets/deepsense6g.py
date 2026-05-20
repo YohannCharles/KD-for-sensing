@@ -20,7 +20,12 @@ from kd_sensing.data.transform_ops.gps import (
     SUPPORTED_GPS_FEATURE_MODE,
     load_gps_feature_sequence,
 )
-from kd_sensing.data.transform_ops.csi import CSIRMSNormalizer, load_csi_sequence
+from kd_sensing.data.transform_ops.csi import (
+    CSIDegradationConfig,
+    CSIRMSNormalizer,
+    load_csi_sequence,
+    resolve_csi_degradation_config,
+)
 from kd_sensing.data.transform_ops.image import (
     build_rgb_imagenet_transform,
     load_rgb_imagenet_frames,
@@ -92,6 +97,7 @@ class DeepSense6GDataset(Dataset):
         use_csi: bool = False,
         csi_train_rms: bool = True,
         csi_rms_normalizer: CSIRMSNormalizer | float | dict[str, Any] | None = None,
+        csi_degradation: CSIDegradationConfig | dict[str, Any] | bool | None = None,
         occlusion_target: bool | dict[str, Any] | None = None,
         occlusion_target_stats: OcclusionTargetStats | dict[str, Any] | None = None,
         position_target: bool | dict[str, Any] | None = None,
@@ -181,7 +187,11 @@ class DeepSense6GDataset(Dataset):
         self.use_csi = "csi" in self.enabled_modalities
         self.csi_train_rms = bool(csi_train_rms)
         self.csi_rms_normalizer = self._coerce_csi_rms_normalizer(csi_rms_normalizer)
-        self._csi_cache: dict[int, np.ndarray] = {}
+        self.csi_degradation = resolve_csi_degradation_config(csi_degradation)
+        self._csi_clean_cache: dict[int, np.ndarray] = {}
+        self._csi_degraded_cache: dict[int, np.ndarray] = {}
+        self._csi_degradation_diagnostics: dict[int, dict[str, Any]] = {}
+        self._csi_cache = self._csi_clean_cache
         self.occlusion_target_config = resolve_occlusion_target_config(occlusion_target)
         self.occlusion_target_enabled = bool(self.occlusion_target_config["enabled"])
         self.position_target_config = resolve_position_target_config(position_target)
@@ -389,6 +399,8 @@ class DeepSense6GDataset(Dataset):
         self._add_path_metadata(metadata, "lidar_path", getattr(self.samples, "lidar_paths", None), idx)
         self._add_path_metadata(metadata, "mmwave_path", getattr(self.samples, "mmwave_paths", None), idx)
         self._add_path_metadata(metadata, "csi_path", getattr(self.samples, "csi_paths", None), idx)
+        if self.use_csi and self.csi_degradation.enabled:
+            metadata["csi_degradation"] = self._csi_degradation_metadata_for_index(idx)
         seq_id, frame_idx = self._parse_sequence_position(
             first_future_beam_path or last_beam_path or metadata.get("mmwave_path", "")
         )
@@ -635,19 +647,75 @@ class DeepSense6GDataset(Dataset):
 
         stats = CSIRMSStreamingStats()
         for idx in range(len(self)):
-            stats.update(self._csi_for_index(idx))
+            stats.update(self._clean_csi_for_index(idx))
         self.csi_rms_normalizer = stats.finalize()
 
     def _csi_for_index(self, idx: int) -> np.ndarray:
-        if idx not in self._csi_cache:
+        if self.csi_degradation.enabled:
+            return self._degraded_csi_for_index(idx)
+        return self._clean_csi_for_index(idx)
+
+    def _clean_csi_for_index(self, idx: int) -> np.ndarray:
+        if idx not in self._csi_clean_cache:
             if self.samples.csi_paths is None:
                 raise ValueError("CSI paths are unavailable for this dataset.")
-            self._csi_cache[idx] = load_csi_sequence(
+            self._csi_clean_cache[idx] = load_csi_sequence(
                 self.data_root,
                 self.samples.csi_paths[idx],
                 seq_len=self.seq_len,
             )
-        return self._csi_cache[idx]
+        return self._csi_clean_cache[idx]
+
+    def _degraded_csi_for_index(self, idx: int) -> np.ndarray:
+        if idx not in self._csi_degraded_cache:
+            if self.samples.csi_paths is None:
+                raise ValueError("CSI paths are unavailable for this dataset.")
+            diagnostics: dict[str, Any] = {}
+            self._csi_degraded_cache[idx] = load_csi_sequence(
+                self.data_root,
+                self.samples.csi_paths[idx],
+                seq_len=self.seq_len,
+                degradation=self.csi_degradation,
+                split=self.split,
+                sample_index=idx,
+                sample_key=self._csi_sample_key(idx),
+                diagnostics=diagnostics,
+            )
+            self._csi_degradation_diagnostics[idx] = diagnostics
+        return self._csi_degraded_cache[idx]
+
+    def _csi_sample_key(self, idx: int) -> str:
+        if self.samples.csi_paths is None:
+            return f"{self.scene_slug}:{self.split}:{idx}"
+        return "|".join([self.scene_slug, self.split, str(idx), *map(str, self.samples.csi_paths[idx])])
+
+    def _csi_degradation_metadata_for_index(self, idx: int) -> dict[str, Any]:
+        diagnostics = self._csi_degradation_diagnostics.get(idx)
+        if diagnostics is None:
+            return {
+                "enabled": bool(self.csi_degradation.enabled),
+                "profile": self.csi_degradation.profile,
+                "resolved_parameters": self.csi_degradation.to_dict(),
+                "seed": self.csi_degradation.seed,
+            }
+        return {
+            "enabled": bool(diagnostics.get("enabled", self.csi_degradation.enabled)),
+            "profile": diagnostics.get("profile", self.csi_degradation.profile),
+            "resolved_parameters": diagnostics.get("resolved_parameters", self.csi_degradation.to_dict()),
+            "seed": diagnostics.get("seed", self.csi_degradation.seed),
+            "sample_seed": diagnostics.get("sample_seed"),
+            "temporal_shift": diagnostics.get("temporal_shift", 0),
+            "temporal_fill_mode": diagnostics.get("temporal_fill_mode", self.csi_degradation.temporal_fill_mode),
+            "skipped_operators": list(diagnostics.get("skipped_operators", [])),
+        }
+
+    def csi_degradation_metadata(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.csi_degradation.enabled),
+            "profile": self.csi_degradation.profile,
+            "resolved_parameters": self.csi_degradation.to_dict(),
+            "seed": self.csi_degradation.seed,
+        }
 
     @staticmethod
     def _coerce_csi_rms_normalizer(value: CSIRMSNormalizer | float | dict[str, Any] | None) -> CSIRMSNormalizer | None:

@@ -65,6 +65,12 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
             metadata["csi_rms_normalizer"] = normalizer.to_dict() if hasattr(normalizer, "to_dict") else {
                 "rms": float(getattr(normalizer, "rms", normalizer))
             }
+        csi_degradation = getattr(dataset, "csi_degradation", None)
+        if csi_degradation is not None and bool(getattr(csi_degradation, "enabled", False)):
+            if hasattr(dataset, "csi_degradation_metadata"):
+                metadata["csi_degradation"] = dataset.csi_degradation_metadata()
+            elif hasattr(csi_degradation, "to_dict"):
+                metadata["csi_degradation"] = csi_degradation.to_dict()
     auxiliary_metadata = {}
     if hasattr(dataset, "auxiliary_target_metadata"):
         auxiliary_metadata = dataset.auxiliary_target_metadata()

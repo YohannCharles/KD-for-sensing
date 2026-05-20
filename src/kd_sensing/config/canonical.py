@@ -22,7 +22,7 @@ from kd_sensing.modalities import (
 )
 from kd_sensing.utils.paths import project_root
 
-CANONICAL_FUSION_MODALITIES = MODALITY_ORDER
+CANONICAL_FUSION_MODALITIES = tuple(modality for modality in MODALITY_ORDER if modality != "csi")
 CANONICAL_SINGLE_MODALITIES = MODALITY_ORDER
 CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
 CANONICAL_FUSION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")

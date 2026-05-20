@@ -16,9 +16,12 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
 from kd_sensing.data.mmw.preparation import build_sequence_rows  # noqa: E402
 from kd_sensing.data.transform_ops.csi import (  # noqa: E402
+    CSIDegradationConfig,
     CSIRMSNormalizer,
+    degrade_csi_payload,
     load_csi_sequence,
     read_csi_tensor,
+    resolve_csi_degradation_config,
 )
 from kd_sensing.engine.batch import forward_model, prepare_csi_inputs, prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.models.csi import PilotCSIChannelEstimator, PilotDualViewCSIEncoder  # noqa: E402
@@ -48,6 +51,150 @@ def test_csi_loader_accepts_complex_and_real_imag_and_rejects_bad_values(tmp_pat
     assert sequence.shape == (2, 4, 2, 2)
     with pytest.raises(ValueError, match="NaN or Inf"):
         read_csi_tensor(tmp_path, "bad.npy")
+
+
+def test_csi_degradation_profile_resolver_defaults_and_overrides():
+    disabled = resolve_csi_degradation_config(None)
+    medium = resolve_csi_degradation_config(
+        {
+            "enabled": True,
+            "profile": "medium",
+            "snr_db": 12.0,
+            "temporal_shift_choices": [0, 2],
+            "seed": 123,
+        }
+    )
+    hard = resolve_csi_degradation_config({"enabled": True, "profile": "hard"})
+
+    assert disabled.enabled is False
+    assert disabled.profile == "clean"
+    assert medium.enabled is True
+    assert medium.profile == "medium"
+    assert medium.snr_db == pytest.approx(12.0)
+    assert medium.path_dropout_rate == pytest.approx(0.2)
+    assert medium.delay_noise_std_ns == pytest.approx(0.5)
+    assert medium.angle_noise_std_deg == pytest.approx(3.0)
+    assert medium.antenna_phase_error_std_deg == pytest.approx(10.0)
+    assert medium.temporal_shift_choices == (0, 2)
+    assert medium.seed == 123
+    assert hard.snr_db == pytest.approx(5.0)
+    assert hard.path_dropout_rate == pytest.approx(0.3)
+    assert hard.dominant_path_attenuation == pytest.approx(0.5)
+    assert hard.temporal_shift_choices == (-2, -1, 0, 1, 2)
+
+
+def test_csi_degradation_awgn_variance_on_tensor_payload():
+    clean = np.ones((8192, 1), dtype=np.complex64)
+    diagnostics: dict[str, object] = {}
+
+    degraded, _ = degrade_csi_payload(
+        {"channel": clean},
+        config=CSIDegradationConfig(enabled=True, profile="clean", snr_db=10.0),
+        rng=np.random.default_rng(123),
+        diagnostics=diagnostics,
+    )
+    noise = _complex_from_real_imag(degraded) - clean
+
+    assert diagnostics["source_mode"] == "tensor"
+    assert diagnostics["awgn"]["complex_noise_variance"] == pytest.approx(0.1)
+    assert float(noise.real.var()) == pytest.approx(0.05, rel=0.2)
+    assert float(noise.imag.var()) == pytest.approx(0.05, rel=0.2)
+
+
+def test_csi_degradation_path_dropout_preserves_dominant_path():
+    payload = {
+        "path_gain": np.asarray([4.0, 2.0, 1.0, 0.5], dtype=np.complex64),
+        "aod": np.zeros(4, dtype=np.float32),
+    }
+    diagnostics: dict[str, object] = {}
+
+    degraded, _ = degrade_csi_payload(
+        payload,
+        config=CSIDegradationConfig(enabled=True, profile="clean", path_dropout_rate=0.5, tx_antennas=4),
+        rng=np.random.default_rng(5),
+        diagnostics=diagnostics,
+    )
+
+    assert degraded.shape == (1, 4, 2)
+    assert diagnostics["source_mode"] == "path"
+    assert diagnostics["path_dropout"]["dropped_indices"] == [3, 2]
+    assert diagnostics["path_dropout"]["dominant_index"] == 0
+    assert 0 not in diagnostics["path_dropout"]["dropped_indices"]
+
+
+def test_csi_degradation_dominant_delay_angle_and_phase_operators():
+    attenuation_payload = {
+        "path_gain": np.asarray([4.0, 2.0], dtype=np.complex64),
+        "aod": np.zeros(2, dtype=np.float32),
+    }
+    attenuated, _ = degrade_csi_payload(
+        attenuation_payload,
+        config=CSIDegradationConfig(enabled=True, profile="clean", dominant_path_attenuation=0.5, tx_antennas=4),
+        rng=np.random.default_rng(1),
+        diagnostics={},
+    )
+    np.testing.assert_allclose(attenuated[..., 0], 4.0, atol=1e-5)
+
+    payload = {
+        "path_gain": np.asarray([1.0, 0.5], dtype=np.complex64),
+        "aod": np.asarray([0.0, 15.0], dtype=np.float32),
+        "delay": np.asarray([0.0, 1.0], dtype=np.float32),
+    }
+    clean, _ = degrade_csi_payload(
+        payload,
+        config=CSIDegradationConfig(enabled=True, profile="clean", tx_antennas=4),
+        rng=np.random.default_rng(7),
+        diagnostics={},
+    )
+    diagnostics: dict[str, object] = {}
+    degraded, _ = degrade_csi_payload(
+        payload,
+        config=CSIDegradationConfig(
+            enabled=True,
+            profile="clean",
+            delay_noise_std_ns=0.5,
+            delay_quantization_ns=0.25,
+            angle_noise_std_deg=3.0,
+            antenna_phase_error_std_deg=10.0,
+            tx_antennas=4,
+        ),
+        rng=np.random.default_rng(7),
+        diagnostics=diagnostics,
+    )
+
+    assert not np.allclose(degraded, clean)
+    assert "delay_noise" in diagnostics
+    assert "delay_quantization" in diagnostics
+    assert "angle_noise" in diagnostics
+    assert "antenna_phase_error" in diagnostics
+    assert diagnostics["skipped_operators"] == []
+
+
+def test_csi_degradation_tensor_only_records_skipped_path_operators():
+    diagnostics: dict[str, object] = {}
+
+    degraded, _ = degrade_csi_payload(
+        {"channel": np.ones((4, 2), dtype=np.complex64)},
+        config=CSIDegradationConfig(
+            enabled=True,
+            profile="clean",
+            path_dropout_rate=0.5,
+            dominant_path_attenuation=0.5,
+            delay_noise_std_ns=0.5,
+            angle_noise_std_deg=3.0,
+        ),
+        rng=np.random.default_rng(11),
+        diagnostics=diagnostics,
+    )
+
+    assert degraded.shape == (4, 2, 2)
+    assert diagnostics["source_mode"] == "tensor"
+    assert set(diagnostics["skipped_operators"]) == {
+        "path_dropout",
+        "dominant_path_attenuation",
+        "delay_noise",
+        "angle_noise",
+    }
 
 
 def test_csi_dataset_fits_rms_on_train_and_reuses_for_test(tmp_path: Path):
@@ -95,6 +242,95 @@ def test_csi_dataset_fits_rms_on_train_and_reuses_for_test(tmp_path: Path):
             use_csi=True,
             csi_train_rms=True,
         )
+
+
+def test_degraded_csi_dataset_is_deterministic_and_rms_uses_clean(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    test_csv = tmp_path / "test.csv"
+    _write_csi_sequence_fixture(tmp_path, train_csv, prefix="train", seq_len=3, num_pred=2, amplitude=2.0)
+    _write_csi_sequence_fixture(tmp_path, test_csv, prefix="test", seq_len=3, num_pred=2, amplitude=4.0)
+    degradation = {"enabled": True, "profile": "clean", "snr_db": 0.0, "seed": 99}
+
+    train_dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(train_csv),
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        enabled_modalities=["csi"],
+        use_csi=True,
+        csi_train_rms=True,
+        csi_degradation=degradation,
+    )
+    repeat_dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(train_csv),
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        enabled_modalities=["csi"],
+        use_csi=True,
+        csi_train_rms=True,
+        csi_degradation=degradation,
+    )
+    test_dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(test_csv),
+        split="test",
+        seq_len=3,
+        num_pred=2,
+        enabled_modalities=["csi"],
+        use_csi=True,
+        csi_train_rms=True,
+        csi_rms_normalizer=train_dataset.csi_rms_normalizer,
+        csi_degradation=degradation,
+    )
+
+    first = train_dataset[0]["csi"].numpy()
+    train_dataset._csi_degraded_cache.clear()
+    train_dataset._csi_degradation_diagnostics.clear()
+    second = train_dataset[0]["csi"].numpy()
+    repeated = repeat_dataset[0]["csi"].numpy()
+
+    assert train_dataset.csi_rms_normalizer.rms == pytest.approx(2.0)
+    assert test_dataset.csi_rms_normalizer is train_dataset.csi_rms_normalizer
+    assert not np.allclose(first[..., 0], 2.0)
+    np.testing.assert_allclose(first, second)
+    np.testing.assert_allclose(first, repeated)
+
+
+def test_csi_temporal_shift_clamps_history_window_and_records_metadata(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    _write_csi_sequence_fixture(
+        tmp_path,
+        train_csv,
+        prefix="shift",
+        seq_len=3,
+        num_pred=1,
+        amplitude=1.0,
+        amplitudes=[1.0, 2.0, 3.0],
+    )
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(train_csv),
+        split="train",
+        seq_len=3,
+        num_pred=1,
+        enabled_modalities=["csi"],
+        use_csi=True,
+        csi_train_rms=False,
+        csi_degradation={"enabled": True, "profile": "clean", "temporal_shift_choices": [1], "seed": 3},
+        return_metadata=True,
+    )
+    sample = dataset[0]
+
+    np.testing.assert_allclose(sample["csi"][:, 0, 0, 0].numpy(), [2.0, 3.0, 3.0])
+    metadata = sample["metadata"]["csi_degradation"]
+    assert metadata["temporal_shift"] == 1
+    assert metadata["temporal_fill_mode"] == "clamp"
+    assert metadata["skipped_operators"] == []
+    assert metadata["resolved_parameters"]["profile"] == "clean"
 
 
 def test_csi_batch_padding_labels_and_modular_forward_contract():
@@ -164,11 +400,21 @@ def test_pilot_estimator_noise_variance_and_encoder_registry_shape():
 def test_csi_configs_load_and_mmw_sequences_include_csi_columns():
     csi_cfg = load_config(ROOT / "configs/csi/no_kd.yaml")
     fusion_cfg = load_config(ROOT / "configs/fusion/mmwave_csi_no_kd.yaml")
+    degraded_csi_cfg = load_config(ROOT / "configs/csi/medium_degraded_no_kd.yaml")
+    degraded_fusion_cfg = load_config(ROOT / "configs/fusion/mmwave_csi_medium_degraded_no_kd.yaml")
 
     assert csi_cfg["experiment"]["task"] == "csi"
     assert csi_cfg["model"]["student"]["encoders"]["csi"]["type"] == "pilot_dual_view_csi"
+    assert "csi_degradation" not in csi_cfg["data"]["dataset"]
     assert fusion_cfg["model"]["student"]["modalities"] == ["mmwave", "csi"]
     assert fusion_cfg["data"]["dataset"]["use_csi"] is True
+    assert "csi_degradation" not in fusion_cfg["data"]["dataset"]
+    assert degraded_csi_cfg["experiment"]["task"] == "csi"
+    assert degraded_csi_cfg["data"]["dataset"]["use_csi"] is True
+    assert degraded_csi_cfg["data"]["dataset"]["csi_degradation"]["enabled"] is True
+    assert degraded_csi_cfg["data"]["dataset"]["csi_degradation"]["profile"] == "medium"
+    assert degraded_fusion_cfg["model"]["student"]["modalities"] == ["mmwave", "csi"]
+    assert degraded_fusion_cfg["data"]["dataset"]["csi_degradation"]["profile"] == "medium"
 
     rows, _ = build_sequence_rows(_prepared_frames(12), seq_len=8, pred_len=3)
     assert rows[0]["csi1"].endswith("000000_paths.npy")
@@ -183,6 +429,7 @@ def _write_csi_sequence_fixture(
     seq_len: int,
     num_pred: int,
     amplitude: float,
+    amplitudes: list[float] | None = None,
 ) -> None:
     csi_paths = []
     beam_paths = []
@@ -190,7 +437,8 @@ def _write_csi_sequence_fixture(
     for idx in range(seq_len):
         csi_name = f"{prefix}_csi_{idx}.npy"
         beam_name = f"{prefix}_beam_{idx}.txt"
-        csi = np.full((4, 2), complex(amplitude, 0.0), dtype=np.complex64)
+        csi_amplitude = float(amplitudes[idx]) if amplitudes is not None else float(amplitude)
+        csi = np.full((4, 2), complex(csi_amplitude, 0.0), dtype=np.complex64)
         beam = np.zeros(64, dtype=np.float32)
         beam[idx] = 1.0
         np.save(root / csi_name, csi)
@@ -211,6 +459,11 @@ def _write_csi_sequence_fixture(
     )
     values = csi_paths + beam_paths + future_paths + ["1"]
     csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+
+def _complex_from_real_imag(array: np.ndarray) -> np.ndarray:
+    values = np.asarray(array)
+    return values[..., 0] + 1j * values[..., 1]
 
 
 def _prepared_frames(count: int):
