@@ -113,6 +113,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     apply_objective_runtime_requirements(cfg)
     reject_removed_image_path_config(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
+    normalize_csi_hardening_alias(cfg)
     canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg_for_keys, override_cfg=override_cfg)
     normalize_model_role_defaults(cfg)
     normalize_deepsense_config(cfg)
@@ -221,6 +222,25 @@ def apply_fusion_modality_selection(cfg: dict[str, Any], *, override_cfg: dict[s
     dataset_cfg.update(dataset_flags_for_modalities(selected))
     for key, value in dataset_defaults_for_modalities(selected).items():
         dataset_cfg.setdefault(key, value)
+
+
+def normalize_csi_hardening_alias(cfg: dict[str, Any]) -> None:
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    alias = dataset_cfg.get("csi_hardening")
+    if alias is None:
+        return
+    model_cfg = cfg.setdefault("model", {})
+    for role in ("teacher", "student"):
+        role_cfg = model_cfg.get(role)
+        if not isinstance(role_cfg, dict) or "csi" not in role_cfg.get("modalities", []):
+            continue
+        encoders = role_cfg.setdefault("encoders", {})
+        if isinstance(encoders, dict):
+            csi_cfg = encoders.setdefault("csi", {"type": "pilot_dual_view_csi"})
+            if isinstance(csi_cfg, dict) and "csi_hardening" not in csi_cfg:
+                csi_cfg["csi_hardening"] = copy.deepcopy(alias)
+                continue
+        role_cfg.setdefault("csi_hardening", copy.deepcopy(alias))
 
 
 def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
@@ -693,6 +713,7 @@ def parse_simple_yaml(text: str) -> dict[str, Any]:
     """Parse the simple nested mapping subset used by this repo's configs."""
 
     lines: list[tuple[int, str, str]] = []
+    anchors: dict[str, Any] = {}
     for raw_line in text.splitlines():
         if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
@@ -736,6 +757,26 @@ def parse_simple_yaml(text: str) -> dict[str, Any]:
                     result[key] = {}
                 else:
                     result[key], index = parse_node(index, lines[index][0])
+            elif value.startswith("&"):
+                anchor_name, anchor_value = _split_anchor(value)
+                if anchor_value:
+                    result[key] = parse_scalar(anchor_value)
+                elif (
+                    index < len(lines)
+                    and lines[index][0] == current_indent
+                    and lines[index][1].startswith("- ")
+                ):
+                    result[key], index = parse_node(index, lines[index][0])
+                elif index >= len(lines) or lines[index][0] <= current_indent:
+                    result[key] = {}
+                else:
+                    result[key], index = parse_node(index, lines[index][0])
+                anchors[anchor_name] = copy.deepcopy(result[key])
+            elif value.startswith("*"):
+                anchor_name = value[1:].strip()
+                if anchor_name not in anchors:
+                    raise ValueError(f"Unknown YAML anchor reference: {value}")
+                result[key] = copy.deepcopy(anchors[anchor_name])
             else:
                 result[key] = parse_scalar(value)
         return result, index
@@ -774,3 +815,12 @@ def parse_simple_yaml(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("Top-level YAML document must be a mapping.")
     return parsed
+
+
+def _split_anchor(value: str) -> tuple[str, str]:
+    parts = value.split(None, 1)
+    anchor_name = parts[0][1:].strip()
+    if not anchor_name:
+        raise ValueError(f"Invalid YAML anchor: {value}")
+    anchor_value = parts[1].strip() if len(parts) > 1 else ""
+    return anchor_name, anchor_value

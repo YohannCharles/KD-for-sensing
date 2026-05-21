@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +17,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.config.io import safe_load_yaml  # noqa: E402
+from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
 import kd_sensing.data.datasets.deepsense6g as deepsense6g_module  # noqa: E402
 import kd_sensing.data.datasets.deepsense6g_targets as deepsense6g_targets  # noqa: E402
@@ -1101,6 +1102,63 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     assert (run_dir / "train_log.json").exists()
     assert (run_dir / "training_outputs.npz").exists()
     assert (run_dir / "checkpoints" / "last.pth").exists()
+
+
+def test_csi_debug_training_writes_resolved_diff_startup_and_health_artifacts(tmp_path: Path):
+    cfg = load_config(
+        ROOT / "configs/csi/hardening_matrix/debug/A0_clone_generated.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataset.seed=31",
+            "data.dataset.csi_shape=[8,4]",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=1",
+            "training.use_early_stopping=false",
+            "scheduler.type=none",
+            "output.run_name=csi_debug_smoke",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+    reference_path = tmp_path / "a0_reference.yaml"
+    reference_cfg = deepcopy(cfg)
+    reference_cfg["output"]["run_name"] = "different_identity"
+    reference_cfg["experiment"]["seed"] = 999
+    dump_config(reference_cfg, reference_path)
+    cfg["debug"]["config_diff"]["reference"] = str(reference_path)
+
+    result = train(cfg)
+    run_dir = Path(result["run_dir"])
+    train_log = json.loads((run_dir / "train_log.json").read_text(encoding="utf-8"))
+    config_diff = json.loads((run_dir / "config_diff.json").read_text(encoding="utf-8"))
+    startup = json.loads((run_dir / "startup_summary.json").read_text(encoding="utf-8"))
+    csi_records = json.loads((run_dir / "csi_first_batch_diagnostics.json").read_text(encoding="utf-8"))
+    epoch_log = train_log["epoch_logs"][0]
+
+    assert (run_dir / "resolved_config.yaml").exists()
+    assert config_diff["parity_passed"] is True
+    assert any(item["path"] == "experiment.seed" for item in config_diff["allowed_identity_differences"])
+    assert startup["model"]["csi_encoder_type"] == "pilot_dual_view_csi"
+    assert startup["model"]["use_internal_gru"] is True
+    assert startup["parameters"]["modules"]["csi_encoder"]["trainable_params"] > 0
+    assert train_log["startup_summary"]["parameters"]["total_params"] == startup["parameters"]["total_params"]
+    assert train_log["pilot_noise_validity"]["valid"] is True
+    assert train_log["pilot_noise_validity"]["reason"] == "pilot_noise_disabled"
+    assert {record["source"] for record in csi_records} == {"train", "val"}
+    assert csi_records[0]["complex"]["before_hardening"]["shape"] == [1, 10, 8, 4]
+    assert epoch_log["grad_norm_csi_encoder"] > 0.0
+    assert epoch_log["grad_norm_representation_core"] > 0.0
+    assert epoch_log["grad_norm_beam_head"] > 0.0
+    assert epoch_log["param_delta_csi_encoder"] > 0.0
+    assert epoch_log["param_delta_representation_core"] > 0.0
+    assert epoch_log["param_delta_beam_head"] > 0.0
 
 
 class _FakeTensorboardWriter:

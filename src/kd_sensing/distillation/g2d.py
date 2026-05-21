@@ -21,6 +21,7 @@ DEFAULT_STUDENT_FEATURE_DIMS = {
     "gps": 96,
     "lidar": 192,
     "mmwave": 96,
+    "csi": 64,
 }
 
 

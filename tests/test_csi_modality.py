@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -24,7 +26,8 @@ from kd_sensing.data.transform_ops.csi import (  # noqa: E402
     resolve_csi_degradation_config,
 )
 from kd_sensing.engine.batch import forward_model, prepare_csi_inputs, prepare_fusion_inputs, prepare_labels  # noqa: E402
-from kd_sensing.models.csi import PilotCSIChannelEstimator, PilotDualViewCSIEncoder  # noqa: E402
+from kd_sensing.engine.debug_diagnostics import evaluate_pilot_noise_validity  # noqa: E402
+from kd_sensing.models.csi import CSIHardening, PilotCSIChannelEstimator, PilotDualViewCSIEncoder  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import ENCODERS, import_default_components  # noqa: E402
 
@@ -395,6 +398,228 @@ def test_pilot_estimator_noise_variance_and_encoder_registry_shape():
     assert encoded.shape == (2, 5, 32)
     assert complex_encoded.shape == (2, 5, 32)
     assert aux["view_gate"].shape == (2, 5, 2)
+
+
+def test_pilot_disabled_identity_and_mild_snr_diagnostics():
+    clean = torch.ones(512, 2, 4, 2, dtype=torch.complex64)
+    disabled = PilotCSIChannelEstimator(enabled=False, mode="est_snr", snr_db=25.0)
+
+    h_hat, disabled_aux = disabled(clean, return_aux=True)
+
+    assert torch.equal(h_hat, clean)
+    assert bool(disabled_aux["pilot_estimator_enabled"]) is False
+    assert float(disabled_aux["pilot_identity_max_abs"]) == pytest.approx(0.0)
+
+    mild = PilotCSIChannelEstimator(mode="est_snr", train_snr_min_db=25.0, train_snr_max_db=35.0)
+    mild.train()
+    _, mild_aux = mild(clean, return_aux=True)
+    ratio = float(mild_aux["noise_power_signal_ratio"])
+
+    assert mild_aux["snr_db"].shape == (512,)
+    assert float(mild_aux["sigma_e2"].mean()) > 0.0
+    assert 1e-4 <= ratio <= 5e-3
+
+    cfg = {
+        "experiment": {"name": "csi_A1_mild_pilot_estimation"},
+        "debug": {"matrix_role": "A1_mild_pilot_estimation"},
+        "model": {
+            "student": {
+                "encoders": {
+                    "csi": {
+                        "type": "pilot_dual_view_csi",
+                        "csi_estimation": {
+                            "mode": "est_snr",
+                            "snr_db": 30.0,
+                            "train_snr_min_db": 25.0,
+                            "train_snr_max_db": 35.0,
+                        },
+                    }
+                }
+            }
+        },
+        "output": {"run_name": "csi_A1_mild_pilot_estimation"},
+    }
+    valid = evaluate_pilot_noise_validity(
+        cfg,
+        [{"source": "train", "pilot": {"noise_power_signal_ratio": ratio, "snr_db": mild_aux["snr_db"].tolist()}}],
+    )
+    invalid = evaluate_pilot_noise_validity(
+        cfg,
+        [{"source": "train", "pilot": {"noise_power_signal_ratio": 10.0, "snr_db": [30.0]}}],
+    )
+
+    assert valid["valid"] is True
+    assert valid["reason"] == "ok"
+    assert invalid["valid"] is False
+    assert invalid["reason"] == "invalid_due_to_pilot_noise_scale"
+
+
+def test_csi_hardening_operators_are_shape_finite_deterministic_and_default_off():
+    clean = torch.ones(2, 3, 8, 4, dtype=torch.complex64)
+    disabled = CSIHardening(None)
+
+    assert torch.equal(disabled(clean), clean)
+
+    hardening = CSIHardening(
+        {
+            "enabled": True,
+            "seed": 123,
+            "mode": "train_random_eval_fixed",
+            "common_phase": {"enabled": True, "max_degrees": 45.0},
+            "subcarrier_phase_slope": {"enabled": True, "max_degrees": 30.0},
+            "antenna_calibration": {
+                "enabled": True,
+                "amplitude_range": [0.9, 1.1],
+                "phase_std_degrees": 5.0,
+            },
+            "antenna_permutation": {"enabled": True},
+        }
+    )
+    hardening.eval()
+
+    hardened, aux = hardening(clean, return_aux=True)
+    repeated, _ = hardening(clean, return_aux=True)
+
+    assert hardened.shape == clean.shape
+    assert torch.isfinite(hardened.real).all()
+    assert torch.isfinite(hardened.imag).all()
+    assert torch.allclose(hardened, repeated)
+    assert bool(aux["csi_hardening_enabled"]) is True
+    assert aux["csi_hardening_input_power"].item() == pytest.approx(1.0)
+
+
+def test_csi_hardening_runs_after_rms_and_before_estimator():
+    captured: dict[str, torch.Tensor] = {}
+
+    class CaptureEstimator(nn.Module):
+        def forward(self, clean_csi: torch.Tensor, *, return_aux: bool = False):
+            captured["input"] = clean_csi.detach().clone()
+            if return_aux:
+                return clean_csi, {"sigma_e2": torch.zeros((), dtype=clean_csi.real.dtype)}
+            return clean_csi
+
+    encoder = PilotDualViewCSIEncoder(
+        output_dim=8,
+        train_rms=2.0,
+        csi_estimation={"mode": "none"},
+        csi_hardening={
+            "enabled": True,
+            "seed": 5,
+            "antenna_calibration": {
+                "enabled": True,
+                "amplitude_range": [2.0, 2.0],
+                "phase_std_degrees": 0.0,
+            },
+        },
+        delay_taps=2,
+        return_aux=True,
+    )
+    encoder.estimator = CaptureEstimator()
+    encoder.eval()
+
+    encoded, aux = encoder(torch.full((1, 2, 4, 2, 2), 4.0))
+
+    assert encoded.shape == (1, 2, 8)
+    assert captured["input"].real.mean().item() == pytest.approx(4.0)
+    assert captured["input"].imag.mean().item() == pytest.approx(4.0)
+    assert "csi_hardening_output_power" in aux
+
+
+def test_csi_encoder_architecture_controls_and_tokenizer_config():
+    real_imag = torch.randn(2, 5, 8, 4, 2)
+    no_gru = PilotDualViewCSIEncoder(
+        output_dim=12,
+        csi_estimation={"mode": "none"},
+        delay_taps=4,
+        use_internal_gru=False,
+        tokenizer={"hidden_channels": 8, "dropout": 0.0, "use_second_conv": False},
+    )
+
+    with torch.no_grad():
+        output = no_gru(real_imag)
+
+    assert output.shape == (2, 5, 12)
+    assert no_gru.temporal is None
+    convs = [module for module in no_gru.frequency_tokenizer.net if isinstance(module, nn.Conv2d)]
+    assert len(convs) == 1
+    assert convs[0].out_channels == 8
+
+    warmup = PilotDualViewCSIEncoder(
+        output_dim=12,
+        csi_estimation={"mode": "none"},
+        delay_taps=4,
+        view_fusion="symmetric_gate",
+        view_gate_warmup_epochs=2,
+        return_aux=True,
+    )
+    warmup.set_epoch(0)
+    _, aux0 = warmup(real_imag)
+    warmup.set_epoch(2)
+    _, aux2 = warmup(real_imag)
+
+    assert torch.allclose(aux0["view_gate"], torch.full_like(aux0["view_gate"], 0.5))
+    assert int(aux0["view_fusion_active"]) == 0
+    assert "view_fusion_active" not in aux2
+
+    delay_warmup = PilotDualViewCSIEncoder(
+        output_dim=12,
+        csi_estimation={"mode": "none"},
+        delay_taps=4,
+        delay_view_warmup_epochs=2,
+        return_aux=True,
+    )
+    delay_warmup.set_epoch(0)
+    _, delay_aux = delay_warmup(real_imag)
+    assert torch.allclose(delay_aux["view_gate"][..., 0], torch.ones_like(delay_aux["view_gate"][..., 0]))
+    assert torch.allclose(delay_aux["view_gate"][..., 1], torch.zeros_like(delay_aux["view_gate"][..., 1]))
+    assert int(delay_aux["view_fusion_active"]) == 3
+
+    freq_only = PilotDualViewCSIEncoder(
+        output_dim=12,
+        csi_estimation={"mode": "none"},
+        delay_taps=4,
+        view_fusion="freq_only",
+        return_aux=True,
+    )
+    _, freq_aux = freq_only(real_imag)
+    assert torch.allclose(freq_aux["view_gate"][..., 0], torch.ones_like(freq_aux["view_gate"][..., 0]))
+
+
+def test_csi_encoder_first_batch_debug_records_dataflow_and_feature_norms():
+    real_imag = torch.randn(2, 5, 8, 4, 2)
+    encoder = PilotDualViewCSIEncoder(
+        output_dim=12,
+        csi_estimation={"enabled": False, "mode": "est_snr", "snr_db": 30.0},
+        csi_hardening={"enabled": True, "seed": 7, "antenna_permutation": {"enabled": True}},
+        delay_taps=4,
+        view_fusion="symmetric_gate",
+        view_gate_warmup_epochs=2,
+        debug=True,
+        return_aux=True,
+    )
+
+    encoder.set_epoch(0)
+    encoder.set_debug_batch_source("train")
+    with torch.no_grad():
+        encoded, aux = encoder(real_imag)
+    records = encoder.consume_debug_records()
+
+    assert encoded.shape == (2, 5, 12)
+    assert records[0]["source"] == "train"
+    assert records[0]["complex"]["before_hardening"]["shape"] == [2, 5, 8, 4]
+    assert records[0]["complex"]["after_hardening"]["shape"] == [2, 5, 8, 4]
+    assert records[0]["complex"]["after_pilot"]["nan_count"] == 0
+    assert records[0]["pilot"]["pilot_identity_max_abs"] == pytest.approx(0.0)
+    assert records[0]["hardening"]["shape_preserved"] is True
+    assert records[0]["hardening"]["nan_count"] == 0
+    assert "antenna_permutation" in json.dumps(records[0]["hardening"]["transform_identity"])
+    assert records[0]["views"]["freq_view"]["shape"] == [2, 5, 2, 4, 8]
+    assert records[0]["views"]["delay_view"]["shape"] == [2, 5, 2, 4, 4]
+    assert records[0]["feature_norms"]["freq_feat"] > 0.0
+    assert records[0]["feature_norms"]["delay_feat"] > 0.0
+    assert records[0]["feature_norms"]["fused_feat"] > 0.0
+    assert records[0]["feature_norms"]["final_csi_feature"] > 0.0
+    assert torch.allclose(aux["view_gate"], torch.full_like(aux["view_gate"], 0.5))
 
 
 def test_csi_configs_load_and_mmw_sequences_include_csi_columns():

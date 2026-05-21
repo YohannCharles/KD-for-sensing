@@ -1,0 +1,75 @@
+experiment:
+  name: fusion_E2_gps_slow_csi_joint
+  task: fusion
+  seed: 62
+data:
+  dataset:
+    type: mmw
+    condition: sunny
+    scene: Town10_skybridge_seed24
+    train_csv_name: Prepared/Town10_skybridge_seed24/splits/train.csv
+    test_csv_name: Prepared/Town10_skybridge_seed24/splits/test.csv
+    seq_len: 8
+    num_pred: 3
+    use_gps: true
+    use_csi: true
+    csi_train_rms: true
+    csi_hardening: &slow_csi_hardening
+      enabled: true
+      seed: 62
+      mode: train_random_eval_fixed
+      common_phase:
+        enabled: true
+        max_degrees: 45.0
+      subcarrier_phase_slope:
+        enabled: true
+        max_degrees: 30.0
+      antenna_calibration:
+        enabled: true
+        amplitude_range: [0.95, 1.05]
+        phase_std_degrees: 5.0
+model:
+  modalities: [gps, csi]
+  teacher: &gps_csi_model
+    type: modular_sequence
+    modalities: [gps, csi]
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 3
+    encoders:
+      gps:
+        type: gps_mlp
+        output_dim: 64
+      csi:
+        type: pilot_dual_view_csi
+        output_dim: 64
+        train_rms: 1.0
+        csi_estimation:
+          mode: physical
+          pilot_len: 16
+          pilot_power: 1.0
+          noise_var: 0.01
+        delay_taps: 32
+        view_fusion: symmetric_gate
+        view_gate_warmup_epochs: 30
+        view_gate_warmup_mode: mean
+        use_internal_gru: false
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+  student: *gps_csi_model
+distillation:
+  type: no_kd
+  teacher_model_name: null
+training:
+  epochs: 100
+  lr: 0.0005
+  weight_decay: 0.0001
+output:
+  run_name: fusion_E2_gps_slow_csi_joint

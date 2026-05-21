@@ -85,6 +85,7 @@ def _parameter_modality(name: str) -> str | None:
             f"feature_projections.{modality}.",
             f"{modality}_encoder.",
             f"{modality}_feature_extractor.",
+            f"{modality}_feature_extractor",
             f"{modality}_cnn_layers.",
             f"{modality}_projection.",
             f"{modality}_global_avg_pool.",

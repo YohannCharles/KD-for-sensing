@@ -26,6 +26,7 @@ TEACHER_MODEL_TYPES = {
     "gps": "gps_teacher",
     "lidar": "modular_sequence",
     "mmwave": "mmwave_teacher",
+    "csi": "modular_sequence",
 }
 
 
@@ -212,8 +213,15 @@ class G2DTrainingExtension(TrainingExtension):
 
 def build_g2d_teacher_ensemble(cfg: dict[str, Any], device: torch.device) -> TeacherEnsemble:
     g2d_cfg = cfg.get("distillation", {}).get("g2d", {})
-    teachers_cfg = g2d_cfg.get("teachers") or {name: {} for name in MODALITY_ORDER}
-    modalities = normalize_modalities(tuple(teachers_cfg.keys()), context="G2D teacher modalities")
+    raw_teachers = g2d_cfg.get("teachers")
+    teachers_cfg = raw_teachers if isinstance(raw_teachers, dict) else {}
+    raw_modalities = (
+        g2d_cfg.get("modalities")
+        or cfg.get("model", {}).get("student", {}).get("modalities")
+        or cfg.get("model", {}).get("modalities")
+        or (tuple(teachers_cfg.keys()) if teachers_cfg else MODALITY_ORDER)
+    )
+    modalities = normalize_modalities(tuple(raw_modalities), context="G2D teacher modalities")
     teachers: dict[str, nn.Module] = {}
     records: list[TeacherLoadRecord] = []
     for modality in modalities:
@@ -317,6 +325,8 @@ def _teacher_model_cfg(cfg: dict[str, Any], modality: str, teacher_cfg: dict[str
         model_cfg = _modular_image_teacher_cfg(feature_size=feature_size, num_classes=num_classes, num_pred=num_pred)
     elif modality == "lidar":
         model_cfg = _modular_lidar_teacher_cfg(feature_size=feature_size, num_classes=num_classes, num_pred=num_pred)
+    elif modality == "csi":
+        model_cfg = _modular_csi_teacher_cfg(feature_size=feature_size, num_classes=num_classes, num_pred=num_pred)
     else:
         model_cfg = {
             "type": TEACHER_MODEL_TYPES[modality],
@@ -329,6 +339,7 @@ def _teacher_model_cfg(cfg: dict[str, Any], modality: str, teacher_cfg: dict[str
         "gps": {"gps_input_size": 3},
         "lidar": {"lidar_channels": 3},
         "mmwave": {"mmwave_input_size": 64},
+        "csi": {"csi_train_rms": 1.0},
     }
     model_cfg.update(default_fields.get(modality, {}))
     role_cfg = cfg.get("model", {}).get("teacher", {})
@@ -385,6 +396,35 @@ def _modular_lidar_teacher_cfg(*, feature_size: int, num_classes: int, num_pred:
                 "type": "lidar_cnn",
                 "output_dim": feature_size,
                 "lidar_channels": 3,
+            }
+        },
+        "representation_core": {
+            "type": "single_gru",
+            "d_model": feature_size,
+            "hidden_size": feature_size,
+            "num_layers": 1,
+        },
+        "heads": {"beam": {"type": "beam_head", "dropout": 0.1}},
+    }
+
+
+def _modular_csi_teacher_cfg(*, feature_size: int, num_classes: int, num_pred: int) -> dict[str, Any]:
+    return {
+        "type": "modular_sequence",
+        "modalities": ["csi"],
+        "feature_size": feature_size,
+        "d_model": feature_size,
+        "num_classes": num_classes,
+        "num_pred": num_pred,
+        "csi_train_rms": 1.0,
+        "encoders": {
+            "csi": {
+                "type": "pilot_dual_view_csi",
+                "output_dim": feature_size,
+                "train_rms": 1.0,
+                "csi_estimation": {"mode": "none"},
+                "delay_taps": 32,
+                "view_fusion": "symmetric_gate",
             }
         },
         "representation_core": {

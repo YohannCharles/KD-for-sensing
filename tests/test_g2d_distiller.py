@@ -19,6 +19,7 @@ from kd_sensing.distillation.g2d import (  # noqa: E402
     teacher_confidence_from_logits,
 )
 from kd_sensing.distillation.teacher_ensemble import normalize_teacher_logits  # noqa: E402
+from kd_sensing.engine.g2d_training import build_g2d_teacher_ensemble  # noqa: E402
 from kd_sensing.engine.model_output import ModelOutput  # noqa: E402
 
 
@@ -124,3 +125,77 @@ def test_g2d_configs_load_as_five_modality_g2d():
         assert cfg["model"]["student"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
         assert cfg["distillation"]["type"] == "g2d"
         assert cfg["distillation"]["g2d"]["mode"] == mode
+
+
+def test_g2d_teacher_confidence_and_ranking_include_csi():
+    labels = torch.tensor([[0, 1, 2], [1, 2, 3]])
+    student = ModelOutput(
+        logits=torch.randn(2, 3, 64, requires_grad=True),
+        input_features=None,
+        output_features=torch.randn(2, 8, 64, requires_grad=True),
+        diagnostics={
+            "modality_features": {
+                "gps": torch.randn(2, 8, 64, requires_grad=True),
+                "csi": torch.randn(2, 8, 64, requires_grad=True),
+            },
+            "modalities": ("gps", "csi"),
+        },
+    )
+    teacher = {
+        "gps": ModelOutput(
+            logits=torch.randn(2, 3, 64),
+            input_features=torch.randn(2, 8, 64),
+            output_features=torch.randn(2, 8, 64),
+            diagnostics={},
+        ),
+        "csi": ModelOutput(
+            logits=torch.randn(2, 3, 64),
+            input_features=torch.randn(2, 8, 64),
+            output_features=torch.randn(2, 8, 64),
+            diagnostics={},
+        ),
+    }
+    distiller = G2DDistiller(
+        nn.CrossEntropyLoss(),
+        g2d={
+            "modalities": ["gps", "csi"],
+            "loss": {
+                "feature_weight": 0.0,
+                "logit_weight": 0.1,
+                "feature_align": {"enabled": False},
+            },
+            "smp": {"enabled": True, "tau": {"per_modality": 1}},
+        },
+        modalities=["gps", "csi"],
+    )
+
+    result = distiller.compute(student, teacher, labels, epoch=0)
+
+    assert set(result.teacher_confidence) == {"gps", "csi"}
+    assert set(result.diagnostics["teacher_confidence"]) == {"gps", "csi"}
+    assert "csi" in result.diagnostics["modality_ranking_weak_to_strong"]["avg"]
+    assert result.active_modalities[0] in {"gps", "csi"}
+
+
+def test_g2d_csi_teacher_checkpoint_error_names_modality(tmp_path: Path):
+    pytest.importorskip("pandas")
+    cfg = {
+        "model": {
+            "feature_size": 8,
+            "num_classes": 64,
+            "num_pred": 3,
+            "student": {"modalities": ["csi"]},
+            "teacher": {"csi_train_rms": 1.0},
+        },
+        "distillation": {
+            "type": "g2d",
+            "g2d": {
+                "modalities": ["csi"],
+                "teachers": {"csi": {"checkpoint": str(tmp_path / "missing.pth")}},
+            },
+        },
+        "checkpoint": {"strict_load": True},
+    }
+
+    with pytest.raises(FileNotFoundError, match="modality 'csi'"):
+        build_g2d_teacher_ensemble(cfg, torch.device("cpu"))

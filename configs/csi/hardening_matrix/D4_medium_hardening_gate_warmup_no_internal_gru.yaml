@@ -1,0 +1,79 @@
+experiment:
+  name: csi_D4_medium_hardening_gate_warmup_no_internal_gru
+  task: csi
+  seed: 52
+data:
+  dataset:
+    type: mmw
+    condition: sunny
+    scene: Town10_skybridge_seed24
+    train_csv_name: Prepared/Town10_skybridge_seed24/splits/train.csv
+    test_csv_name: Prepared/Town10_skybridge_seed24/splits/test.csv
+    seq_len: 8
+    num_pred: 3
+    use_csi: true
+    csi_train_rms: true
+    csi_hardening:
+      enabled: true
+      seed: 52
+      mode: train_random_eval_fixed
+      common_phase:
+        enabled: true
+        max_degrees: 90.0
+      subcarrier_phase_slope:
+        enabled: true
+        max_degrees: 75.0
+      antenna_calibration:
+        enabled: true
+        amplitude_range: [0.9, 1.1]
+        phase_std_degrees: 10.0
+      antenna_permutation:
+        enabled: true
+  dataloader:
+    train_batch_size: 16
+    test_batch_size: 16
+model:
+  modalities: [csi]
+  teacher: &csi_model
+    type: modular_sequence
+    modalities: [csi]
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 3
+    encoders:
+      csi:
+        type: pilot_dual_view_csi
+        output_dim: 64
+        train_rms: 1.0
+        csi_estimation:
+          mode: none
+        delay_taps: 32
+        view_fusion: symmetric_gate
+        view_gate_warmup_epochs: 30
+        view_gate_warmup_mode: mean
+        use_internal_gru: false
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+  student: *csi_model
+distillation:
+  type: no_kd
+  teacher_model_name: null
+training:
+  epochs: 100
+  lr: 0.0005
+  weight_decay: 0.0001
+debug:
+  enabled: true
+  matrix_role: D4_medium_hardening_gate_warmup_no_internal_gru
+  pilot_scaling_config_version: fixed_estimation_snr_v1
+  csi_first_batch:
+    enabled: true
+output:
+  run_name: csi_D4_medium_hardening_gate_warmup_no_internal_gru

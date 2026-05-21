@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
 from kd_sensing.engine.prediction_objectives import (
     compute_prediction_loss,
@@ -111,6 +112,7 @@ def run_evaluation_pass(
                 cfg=cfg,
             )
             with autocast_context(amp_enabled, device, amp_dtype):
+                set_csi_debug_batch_source(model, "val")
                 step = run_model_step(
                     model,
                     task,

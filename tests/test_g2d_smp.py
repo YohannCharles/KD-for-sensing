@@ -73,3 +73,28 @@ def test_smp_gradient_mask_keeps_active_and_fusion_gradients():
     assert model.mmwave_encoder.weight.grad.abs().sum().item() == 0
     assert model.fusion.weight.grad.abs().sum().item() > 0
     assert model.head.weight.grad.abs().sum().item() > 0
+
+
+class DummyFusionWithCSI(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gps_encoder = nn.Linear(2, 2)
+        self.csi_feature_extractor = nn.Linear(2, 2)
+        self.fusion = nn.Linear(4, 2)
+        self.head = nn.Linear(2, 1)
+
+    def forward(self, x):
+        return self.head(self.fusion(torch.cat([self.gps_encoder(x), self.csi_feature_extractor(x)], dim=-1)))
+
+
+def test_smp_gradient_mask_can_activate_csi():
+    model = DummyFusionWithCSI()
+    output = model(torch.ones(1, 2)).sum()
+    output.backward()
+
+    apply_smp_gradient_mask(model, ["csi"])
+
+    assert model.csi_feature_extractor.weight.grad.abs().sum().item() > 0
+    assert model.gps_encoder.weight.grad.abs().sum().item() == 0
+    assert model.fusion.weight.grad.abs().sum().item() > 0
+    assert model.head.weight.grad.abs().sum().item() > 0

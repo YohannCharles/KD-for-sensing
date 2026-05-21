@@ -14,6 +14,20 @@ from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalizati
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
 from kd_sensing.engine.craf_training import CrafTrainingExtension
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
+from kd_sensing.engine.debug_diagnostics import (
+    ModuleHealthTracker,
+    build_startup_summary,
+    configure_csi_debug,
+    consume_csi_debug_records,
+    evaluate_pilot_noise_validity,
+    print_startup_summary,
+    set_csi_debug_batch_source,
+    training_health_debug_enabled,
+    write_config_diff_artifact,
+    write_csi_debug_records,
+    write_pilot_noise_validity_artifact,
+    write_startup_summary,
+)
 from kd_sensing.engine.g2d_training import G2DTrainingExtension
 from kd_sensing.engine.marf_training import MarfTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
@@ -146,6 +160,7 @@ def final_config_with_runtime(
     throughput_metadata: dict | None = None,
     teacher_prior: dict | None = None,
     early_stopping: dict | None = None,
+    pilot_noise_validity: dict | None = None,
 ) -> dict:
     final_cfg = deepcopy(cfg)
     canonicalize_lidar_normalization_config(final_cfg)
@@ -167,6 +182,8 @@ def final_config_with_runtime(
         runtime["teacher_prior"] = teacher_prior
     if early_stopping is not None:
         runtime["early_stopping"] = early_stopping
+    if pilot_noise_validity is not None:
+        runtime["pilot_noise_validity"] = pilot_noise_validity
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
@@ -618,16 +635,16 @@ def train(cfg: dict) -> dict:
     normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
     device = build_device(cfg)
     throughput_metadata = throughput_run_metadata(cfg, dataloaders, device)
-    dump_config(
-        final_config_with_runtime(
-            cfg,
-            run_dir=run_dir,
-            split_metadata=split_metadata,
-            normalization_artifacts=normalization_artifacts,
-            throughput_metadata=throughput_metadata,
-        ),
-        run_dir / "final_config.yaml",
+    resolved_cfg = final_config_with_runtime(
+        cfg,
+        run_dir=run_dir,
+        split_metadata=split_metadata,
+        normalization_artifacts=normalization_artifacts,
+        throughput_metadata=throughput_metadata,
     )
+    dump_config(resolved_cfg, run_dir / "resolved_config.yaml")
+    dump_config(resolved_cfg, run_dir / "final_config.yaml")
+    config_diff = write_config_diff_artifact(cfg, resolved_cfg, run_dir)
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     task = cfg["experiment"].get("task", "image")
@@ -667,6 +684,14 @@ def train(cfg: dict) -> dict:
     _add_distiller_params_to_optimizer(optimizer, distiller, cfg)
     scheduler = build_scheduler(cfg, optimizer)
     optimizer_groups = optimizer_param_group_summary(optimizer)
+    configure_csi_debug(student_model, cfg)
+    if teacher_model is not None:
+        configure_csi_debug(teacher_model, cfg)
+    startup_summary = build_startup_summary(cfg, student_model, optimizer, scheduler, device=device)
+    write_startup_summary(run_dir, startup_summary)
+    print_startup_summary(startup_summary)
+    health_tracker = ModuleHealthTracker(student_model) if training_health_debug_enabled(cfg) else None
+    csi_debug_records: list[dict] = []
     grad_scaler = make_grad_scaler(cfg, amp_enabled)
     extension_context = ExtensionContext(
         cfg=cfg,
@@ -748,6 +773,9 @@ def train(cfg: dict) -> dict:
             disable=not progress_enabled,
         )
         for epoch in epoch_progress:
+            _set_epoch_recursive(student_model, epoch)
+            if teacher_model is not None:
+                _set_epoch_recursive(teacher_model, epoch)
             student_model.train()
             running_loss = 0.0
             running_task_loss = 0.0
@@ -771,6 +799,8 @@ def train(cfg: dict) -> dict:
                 current_alpha = current_alpha * (epoch / warmup_epochs)
             for extension, state in zip(extensions, extension_states):
                 extension.before_epoch(extension_context, state, epoch=epoch)
+            if health_tracker is not None:
+                health_tracker.start_epoch()
             current_lr = optimizer.param_groups[0]["lr"]
             history["learning_rates"].append(current_lr)
 
@@ -820,6 +850,7 @@ def train(cfg: dict) -> dict:
                                 epoch=epoch,
                             )
                         )
+                    set_csi_debug_batch_source(student_model, "train")
                     student_step = run_model_step(
                         student_model,
                         task,
@@ -858,6 +889,7 @@ def train(cfg: dict) -> dict:
                     if base_loss is None:
                         if teacher_model is not None:
                             with torch.no_grad():
+                                set_csi_debug_batch_source(teacher_model, "train")
                                 teacher_step = run_model_step(
                                     teacher_model,
                                     task,
@@ -969,12 +1001,14 @@ def train(cfg: dict) -> dict:
                 grad_clip = training_cfg.get("grad_clip", None)
                 if grad_scaler.is_enabled():
                     grad_scaler.scale(total_loss).backward()
-                    if grad_clip or batch_state.active_modalities is not None:
+                    if grad_clip or batch_state.active_modalities is not None or health_tracker is not None:
                         grad_scaler.unscale_(optimizer)
                     for extension, state in zip(extensions, extension_states):
                         extension.after_backward(extension_context, state, batch_state)
                     if grad_clip:
                         torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
+                    if health_tracker is not None:
+                        health_tracker.observe_gradients()
                     grad_scaler.step(optimizer)
                     grad_scaler.update()
                 else:
@@ -983,7 +1017,10 @@ def train(cfg: dict) -> dict:
                         extension.after_backward(extension_context, state, batch_state)
                     if grad_clip:
                         torch.nn.utils.clip_grad_norm_(student_model.parameters(), grad_clip)
+                    if health_tracker is not None:
+                        health_tracker.observe_gradients()
                     optimizer.step()
+                csi_debug_records.extend(consume_csi_debug_records(student_model))
                 prediction = torch.argmax(student_outputs, dim=-1)
                 valid = torch.sum(labels != -100).item()
                 acc = (prediction == labels).sum().item() / max(valid, 1)
@@ -1034,6 +1071,7 @@ def train(cfg: dict) -> dict:
                 )
             finally:
                 shutdown_dataloader_workers(dataloaders["test"])
+            csi_debug_records.extend(consume_csi_debug_records(student_model))
             _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
             val_loss = val_metrics["loss"]
             top1 = val_metrics["topk"].get("1", [0.0])
@@ -1157,6 +1195,8 @@ def train(cfg: dict) -> dict:
                         freeze_info.get("trainable_params", 0)
                     )
                     epoch_log[f"teacher/frozen/{modality}"] = 1.0 if freeze_info.get("frozen") else 0.0
+            if health_tracker is not None:
+                epoch_log.update(health_tracker.finish_epoch())
             epoch_log.update(_validation_subset_epoch_scalars(val_metrics))
             epoch_log.update(epoch_diagnostics.mean())
             for extension, state in zip(extensions, extension_states):
@@ -1333,10 +1373,17 @@ def train(cfg: dict) -> dict:
         best_epoch=best_early_stopping_epoch,
         epochs_without_improvement=epochs_without_improvement,
     )
+    write_csi_debug_records(run_dir, csi_debug_records)
+    pilot_noise_validity = evaluate_pilot_noise_validity(cfg, csi_debug_records)
+    write_pilot_noise_validity_artifact(run_dir, pilot_noise_validity)
     train_log = {
         **history,
         "epoch_logs": epoch_logs,
         "early_stopping": early_stopping_metadata,
+        "startup_summary": startup_summary,
+        "config_diff": config_diff,
+        "csi_first_batch_diagnostics": csi_debug_records,
+        "pilot_noise_validity": pilot_noise_validity,
         "teacher_metrics": teacher_metrics,
         "checkpoint_loads": checkpoint_loads,
         "teacher_prior": teacher_prior_info,
@@ -1355,6 +1402,9 @@ def train(cfg: dict) -> dict:
             "throughput": throughput_metadata,
             "teacher_prior": teacher_prior_info,
             "early_stopping": early_stopping_metadata,
+            "startup_summary": startup_summary,
+            "config_diff": config_diff,
+            "pilot_noise_validity": pilot_noise_validity,
             "prediction_objective": objective_metadata,
             "prediction_setup": prediction_setup_metadata(cfg, split_metadata=split_metadata),
         },
@@ -1372,6 +1422,7 @@ def train(cfg: dict) -> dict:
             throughput_metadata=throughput_metadata,
             teacher_prior=teacher_prior_info,
             early_stopping=early_stopping_metadata,
+            pilot_noise_validity=pilot_noise_validity,
         ),
         run_dir / "final_config.yaml",
     )
@@ -1392,6 +1443,9 @@ def train(cfg: dict) -> dict:
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,
         "prediction_objective": objective_metadata,
+        "startup_summary": startup_summary,
+        "config_diff": config_diff,
+        "csi_first_batch_diagnostics": csi_debug_records,
     }
 
 
@@ -1416,6 +1470,17 @@ def _apply_csi_rms_to_model_config(cfg: dict, dataloaders: dict) -> None:
             csi_cfg = encoders.get("csi")
             if isinstance(csi_cfg, dict):
                 csi_cfg.setdefault("train_rms", rms)
+
+
+def _set_epoch_recursive(module, epoch: int) -> None:
+    setter = getattr(module, "set_epoch", None)
+    if callable(setter):
+        setter(int(epoch))
+    children = getattr(module, "children", None)
+    if not callable(children):
+        return
+    for child in children():
+        _set_epoch_recursive(child, epoch)
 
 
 def _training_outputs_payload(

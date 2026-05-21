@@ -1311,3 +1311,102 @@ checkpoint registry 和 final config MUST 记录 objective-aware 指标，确保
 - **WHEN** 工具汇总 snapshot 与历史窗口结果
 - **THEN** 表格或 JSON 输出 MUST 包含 `variant`、`seq_len`、`num_pred`、`uses_temporal_core` 和 `split_protocol`
 - **AND** 模态强弱排序 MUST 能按这些字段分组计算
+
+### Requirement: Resolved config artifact and startup summary
+Every debug run MUST save the fully resolved configuration and print a startup summary of the fields needed to compare experiment variants. The summary MUST be generated after defaults, aliases and command-line overrides are applied.
+
+#### Scenario: 保存 resolved config
+- **WHEN** a debug run starts
+- **THEN** the run output directory MUST contain `resolved_config.yaml` or an equivalent fully resolved config artifact
+- **AND** the artifact MUST reflect defaults, generated config values, aliases and command-line overrides
+
+#### Scenario: 打印关键配置摘要
+- **WHEN** a debug run starts
+- **THEN** startup logs MUST include modalities, dataset path, train/val split paths, `seq_len`, `num_pred`, `num_classes`, batch size, optimizer, learning rate, scheduler and max epochs
+- **AND** startup logs MUST include model type, CSI encoder type, `d_model`, `delay_taps`, `view_fusion`, `use_internal_gru`, pilot estimator enabled/mode/SNR, `csi_hardening.enabled` and `csi_degradation.enabled`
+
+### Requirement: Baseline clone config diff artifact
+The experiment workflow MUST support comparing a generated baseline clone against a reference baseline resolved config. The diff MUST separate allowed run identity differences from key behavior differences.
+
+#### Scenario: 生成 A0 clone diff
+- **WHEN** both `A0_original` and `A0_clone_generated` resolved configs are available
+- **THEN** the workflow MUST produce a diff artifact comparing them
+- **AND** the diff MUST ignore only allowlisted run identity fields such as run name, output directory, timestamp and seed when configured
+
+#### Scenario: 关键字段差异失败
+- **WHEN** the diff finds a difference in optimizer, scheduler, loss, dataset split, normalization, train RMS path, `seq_len`, `num_pred`, `num_classes`, model type, CSI encoder, representation core or beam head
+- **THEN** the workflow MUST mark the parity check as failed
+- **AND** the failure message MUST list the differing config paths
+
+### Requirement: Module trainability startup report
+The training workflow MUST report trainable parameter counts by major module for debug runs. The report MUST distinguish CSI encoder, representation core, beam head and fusion modules when those modules exist.
+
+#### Scenario: 打印模块参数统计
+- **WHEN** a debug run builds the model
+- **THEN** startup logs MUST include total parameter count and total trainable parameter count
+- **AND** startup logs MUST include trainable parameter counts by CSI encoder, representation core, beam head and fusion module where present
+
+#### Scenario: 发现模块无可训练参数
+- **WHEN** a required trainable module has zero trainable parameters
+- **THEN** startup logs MUST mark the module as suspicious
+- **AND** the warning MUST include the module name and resolved model path
+
+### Requirement: Debug metrics logging
+The training workflow MUST persist debug diagnostics in machine-readable run logs when debug mode is enabled. The diagnostics MUST be scoped so normal runs are unaffected when debug mode is disabled.
+
+#### Scenario: 持久化首 batch 诊断
+- **WHEN** CSI first-batch debug diagnostics are produced
+- **THEN** the workflow MUST write them to the run log, metadata artifact or TensorBoard text/scalar stream
+- **AND** the stored record MUST distinguish train and validation batch sources
+
+#### Scenario: 持久化 epoch 训练健康指标
+- **WHEN** epoch-level grad norm and param delta diagnostics are produced
+- **THEN** the workflow MUST append them to the epoch metrics log
+- **AND** normal training metrics arrays MUST remain backward compatible for existing analysis scripts
+
+### Requirement: CSI hardening sweep validity gate
+CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行有效性 gate。有效性 gate MUST 至少检查 A0 clone parity、pilot 噪声量级、C1/C2 单变量健康状态和必需 diagnostics 是否存在。未通过 gate 的 sweep MUST 标记为 invalid 或 pending-debug，不得被解释为 hardening 设计失败。
+
+#### Scenario: A0 parity 未通过
+- **WHEN** `A0_clone_generated` 未通过与 `A0_original` 的关键配置 diff 或短跑曲线 parity
+- **THEN** 分析输出 MUST 将 full sweep 状态标记为 pending-debug 或 invalid
+- **AND** 系统 MUST 不输出 slow-high-ceiling 候选结论
+
+#### Scenario: pilot 噪声量级失真
+- **WHEN** 一个标记为 mild pilot estimation 的 run 的 `noise_power_signal_ratio` 明显高于其配置 SNR 对应范围
+- **THEN** 分析输出 MUST 将该 run 标记为 `invalid_due_to_pilot_noise_scale` 或等价原因
+- **AND** 该 run MUST 不参与 slow-high-ceiling 候选排序
+
+#### Scenario: C1 或 C2 单变量异常
+- **WHEN** A0 clone 正常学习但 C1 view gate warmup only 或 C2 no internal GRU only 掉到接近随机水平
+- **THEN** 分析输出 MUST 将问题归因到对应 encoder 单变量路径
+- **AND** 系统 MUST 阻止把 B/D hardening 组合结果解释为 hardening 强度问题
+
+#### Scenario: 旧 sweep 缺少必需 diagnostics
+- **WHEN** 分析脚本处理旧 full sweep 目录且该目录缺少 A0 parity、pilot noise ratio 或 debug decision artifacts
+- **THEN** 分析输出 MUST 明确标记该 sweep 需要重跑或人工确认
+- **AND** 默认候选排序 MUST 排除这些 invalid/pending run
+
+### Requirement: CSI hardening sweep rerun workflow
+项目 MUST 提供修复后的 CSI-only A/B/C/D sweep 运行入口或命令说明。该 workflow MUST 先运行短 debug gate，再运行完整 CSI-only sweep，并在输出中记录所使用的配置版本、pilot estimation 模式、noise ratio diagnostics 和旧结果隔离状态。
+
+#### Scenario: 生成修复后的 A1 配置
+- **WHEN** 开发者生成或加载修复后的 A1 mild pilot estimation 配置
+- **THEN** 配置 MUST 使用 estimation-SNR 模式
+- **AND** resolved config MUST 记录固定 SNR 或训练 SNR 采样区间
+
+#### Scenario: 生成修复后的 B/C/D 配置
+- **WHEN** 开发者生成或加载修复后的 B、C 或 D 组配置
+- **THEN** 每个配置 MUST 显式关闭 pilot estimation noise
+- **AND** 每个配置 MUST 保留自身声明的 hardening 或 encoder 变量
+
+#### Scenario: 重跑前执行 debug gate
+- **WHEN** 开发者请求完整 CSI hardening sweep
+- **THEN** workflow MUST 先确认 A0 original、A0 clone、pilot disabled、C1 only 和 C2 only 的 debug gate 通过
+- **AND** 如果 gate 未通过，workflow MUST 停止或将完整 sweep 输出标记为 pending-debug
+
+#### Scenario: 输出新旧结果隔离状态
+- **WHEN** 修复后的 sweep analysis 完成
+- **THEN** summary artifact MUST 记录当前 sweep 是否基于修复后的 pilot scaling 配置
+- **AND** 如果同一项目中存在旧 invalid sweep，summary artifact MUST 不把旧 sweep 的候选结果混入当前 ranking
+

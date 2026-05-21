@@ -743,6 +743,143 @@ def test_advanced_fusion_overlay_generates_g2d_modes_and_full_dump(tmp_path: Pat
     assert set(dumped) >= {"data", "model", "loss", "distillation", "training", "output"}
 
 
+def test_csi_hardening_matrix_configs_load_and_preserve_contracts():
+    first_batch = {
+        "A0_clean_full_teacher.yaml",
+        "A1_mild_pilot_estimation.yaml",
+        "A2_destructive_degradation.yaml",
+        "B3_antenna_calibration.yaml",
+        "B4_fixed_antenna_permutation.yaml",
+        "B5_mild_hardening_combo.yaml",
+        "B6_medium_hardening_combo.yaml",
+        "C1_view_gate_warmup.yaml",
+        "C2_no_internal_gru.yaml",
+    }
+    second_batch = {
+        "D1_mild_hardening_gate_warmup.yaml",
+        "D2_mild_hardening_no_internal_gru.yaml",
+        "D3_mild_hardening_gate_warmup_no_internal_gru.yaml",
+        "D4_medium_hardening_gate_warmup_no_internal_gru.yaml",
+    }
+    root = ROOT / "configs/csi/hardening_matrix"
+
+    for filename in sorted(first_batch | second_batch):
+        cfg = load_config(root / filename)
+        student = cfg["model"]["student"]
+        csi_encoder = student["encoders"]["csi"]
+        assert cfg["experiment"]["task"] == "csi"
+        assert cfg["training"]["epochs"] == 100
+        assert student["type"] == "modular_sequence"
+        assert student["modalities"] == ["csi"]
+        assert csi_encoder["type"] == "pilot_dual_view_csi"
+        assert student["heads"]["beam"]["type"] == "beam_head"
+        if filename.startswith("D"):
+            assert "csi_degradation" not in cfg["data"]["dataset"]
+
+    a2 = load_config(root / "A2_destructive_degradation.yaml")
+    assert a2["data"]["dataset"]["csi_degradation"]["enabled"] is True
+    assert "csi_hardening" not in a2["model"]["student"]["encoders"]["csi"]
+    assert a2["debug"]["analysis_role"] == "destructive_negative_control"
+    assert a2["debug"]["matrix_role"] == "A2_destructive_degradation"
+
+    a1 = load_config(root / "A1_mild_pilot_estimation.yaml")
+    a1_estimation = a1["model"]["student"]["encoders"]["csi"]["csi_estimation"]
+    assert a1_estimation["mode"] in {"est_snr", "estimation_snr"}
+    assert a1_estimation["snr_db"] == 30.0
+    assert a1_estimation["train_snr_min_db"] == 25.0
+    assert a1_estimation["train_snr_max_db"] == 35.0
+    assert "noise_var" not in a1_estimation
+
+    for filename in sorted(first_batch | second_batch):
+        if filename.startswith(("A0", "A1", "A2")):
+            continue
+        cfg = load_config(root / filename)
+        csi_estimation = cfg["model"]["student"]["encoders"]["csi"]["csi_estimation"]
+        assert csi_estimation["mode"] == "none"
+        assert "noise_var" not in csi_estimation
+        assert cfg["debug"]["pilot_scaling_config_version"] == "fixed_estimation_snr_v1"
+
+    b5 = load_config(root / "B5_mild_hardening_combo.yaml")
+    assert b5["model"]["student"]["encoders"]["csi"]["csi_hardening"]["enabled"] is True
+    explicit = load_config(
+        root / "B5_mild_hardening_combo.yaml",
+        ["model.student.encoders.csi.csi_hardening.enabled=false"],
+    )
+    assert explicit["model"]["teacher"]["encoders"]["csi"]["csi_hardening"]["enabled"] is True
+    assert explicit["model"]["student"]["encoders"]["csi"]["csi_hardening"]["enabled"] is False
+
+
+def test_csi_hardening_debug_matrix_configs_load_and_isolate_single_changes():
+    root = ROOT / "configs/csi/hardening_matrix/debug"
+    configs = {
+        path.name: load_config(path)
+        for path in sorted(root.glob("*.yaml"))
+    }
+
+    assert set(configs) == {
+        "A0_original.yaml",
+        "A0_clone_generated.yaml",
+        "A0_clone_pilot_disabled.yaml",
+        "C1_view_gate_warmup_only.yaml",
+        "C2_no_internal_gru_only.yaml",
+    }
+    clone = configs["A0_clone_generated.yaml"]
+    clone_csi = clone["model"]["student"]["encoders"]["csi"]
+    assert clone["training"]["epochs"] == 20
+    assert clone["data"]["dataset"]["csi_degradation"]["enabled"] is False
+    assert clone_csi["csi_hardening"]["enabled"] is False
+    assert clone_csi["csi_estimation"]["mode"] == "none"
+    assert clone_csi["use_internal_gru"] is True
+    assert clone_csi["view_fusion"] == "symmetric_gate"
+    assert clone_csi["view_gate_warmup_epochs"] == 0
+    assert clone_csi["delay_view_warmup_epochs"] == 0
+    assert clone["debug"]["config_diff"]["enabled"] is True
+
+    pilot_disabled = configs["A0_clone_pilot_disabled.yaml"]["model"]["student"]["encoders"]["csi"]
+    assert pilot_disabled["csi_estimation"]["enabled"] is False
+
+    c1 = configs["C1_view_gate_warmup_only.yaml"]
+    c1_csi = c1["model"]["student"]["encoders"]["csi"]
+    assert c1_csi["view_gate_warmup_epochs"] == 20
+    assert c1_csi["csi_estimation"]["mode"] == clone_csi["csi_estimation"]["mode"]
+    assert c1["model"]["student"]["representation_core"] == clone["model"]["student"]["representation_core"]
+    assert c1["model"]["student"]["heads"] == clone["model"]["student"]["heads"]
+
+    c2_csi = configs["C2_no_internal_gru_only.yaml"]["model"]["student"]["encoders"]["csi"]
+    assert c2_csi["use_internal_gru"] is False
+    assert c2_csi["view_gate_warmup_epochs"] == 0
+
+
+def test_gps_csi_validation_matrix_configs_load():
+    root = ROOT / "configs/fusion/csi_hardening_matrix"
+    e0 = load_config(root / "E0_gps_only.yaml")
+    assert e0["experiment"]["task"] == "gps"
+    assert e0["model"]["student"]["modalities"] == ["gps"]
+
+    for filename in [
+        "E1_gps_clean_csi_joint.yaml",
+        "E2_gps_slow_csi_joint.yaml",
+        "E3_gps_slow_csi_prioritized_warmup.yaml",
+        "E4_gps_slow_csi_g2d_style.yaml",
+    ]:
+        cfg = load_config(root / filename)
+        assert cfg["experiment"]["task"] == "fusion"
+        assert cfg["model"]["student"]["modalities"] == ["gps", "csi"]
+        assert cfg["data"]["dataset"]["use_gps"] is True
+        assert cfg["data"]["dataset"]["use_csi"] is True
+
+    e3 = load_config(root / "E3_gps_slow_csi_prioritized_warmup.yaml")
+    assert e3["training"]["csi_prioritized_warmup"]["enabled"] is True
+    assert e3["training"]["csi_prioritized_warmup"]["phase_1"]["active_modalities"] == ["csi"]
+    assert e3["training"]["csi_prioritized_warmup"]["phase_2"]["active_modalities"] == ["gps", "csi"]
+
+    e4 = load_config(root / "E4_gps_slow_csi_g2d_style.yaml")
+    assert e4["distillation"]["type"] == "g2d"
+    assert e4["distillation"]["g2d"]["modalities"] == ["gps", "csi"]
+    assert set(e4["distillation"]["g2d"]["teachers"]) == {"gps", "csi"}
+    assert e4["distillation"]["g2d"]["smp"]["enabled"] is True
+
+
 def test_advanced_fusion_overlays_cover_craf_and_marf_ablation_semantics():
     craf = load_config(ROOT / "configs/fusion/overlay_craf_baseline.yaml")
     craf_no_cf = load_config(ROOT / "configs/fusion/overlay_craf_no_counterfactual.yaml")
