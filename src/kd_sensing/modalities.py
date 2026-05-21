@@ -29,7 +29,7 @@ class ImageProfileSpec:
     recommended_encoder: str
 
 
-MODALITY_ORDER = ("image", "radar", "gps", "lidar", "mmwave", "csi")
+MODALITY_ORDER = ("image", "radar", "gps", "lidar", "mmwave", "csi", "coord", "ray")
 DEFAULT_IMAGE_PROFILE = "rgb_imagenet"
 REMOVED_IMAGE_PROFILE = "motion" + "_mask"
 REMOVED_IMAGE_ENCODERS = ("motion" + "_cnn", "legacy_" + "motion" + "_cnn")
@@ -117,6 +117,24 @@ MODALITY_SPECS: dict[str, ModalitySpec] = {
         },
         dataset_field_defaults={"csi_train_rms": True},
         normalizer_artifact_key="csi_rms_normalizer",
+    ),
+    "coord": ModalitySpec(
+        name="coord",
+        dataset_flag="use_coord",
+        sample_keys=("coord",),
+        fusion_input_key="coord_batch",
+        model_field_defaults={"coord_input_size": 3},
+        dataset_field_defaults={"coord_normalize": True},
+        normalizer_artifact_key="coord_normalizer",
+    ),
+    "ray": ModalitySpec(
+        name="ray",
+        dataset_flag="use_ray",
+        sample_keys=("ray",),
+        fusion_input_key="ray_batch",
+        model_field_defaults={"ray_input_size": 14},
+        dataset_field_defaults={"ray_normalize": True},
+        normalizer_artifact_key="ray_normalizer",
     ),
 }
 

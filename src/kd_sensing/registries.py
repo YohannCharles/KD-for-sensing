@@ -181,6 +181,7 @@ def import_default_components() -> None:
 
     import kd_sensing.data.datasets.deepsense6g  # noqa: F401
     import kd_sensing.data.datasets.mmw  # noqa: F401
+    import kd_sensing.data.datasets.raymobtime_s008  # noqa: F401
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.distillation.distillers  # noqa: F401
     import kd_sensing.distillation.losses  # noqa: F401
@@ -194,8 +195,10 @@ def import_default_components() -> None:
     import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
+    import kd_sensing.models.raymobtime_s008  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401
+    import kd_sensing.preprocessing.raymobtime_s008  # noqa: F401
     import kd_sensing.preprocessing.sequences  # noqa: F401
 
 

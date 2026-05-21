@@ -1,0 +1,84 @@
+experiment:
+  name: raymobtime_s008_smoke_selection
+  task: fusion
+  objective: selection_multitask
+  variant: raymobtime_s008_current_snapshot
+  task_semantics: current_snapshot_beam_selection
+  seed: 7
+
+data:
+  dataset:
+    type: raymobtime_s008
+    scene_slug: raymobtime_s008
+    data_root: dataset/Raymobtime/s008
+    cache_dir: outputs/raymobtime_s008/cache
+    seq_len: 1
+    num_pred: 1
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+    normalize: true
+  dataloader:
+    train_batch_size: 2
+    test_batch_size: 2
+    num_workers: 0
+    pin_memory: false
+    persistent_workers: false
+    prefetch_factor: null
+
+model:
+  modalities: [coord, ray]
+  feature_size: 16
+  num_classes: 256
+  num_pred: 1
+  seq_length_teacher: 1
+  seq_length_student: 1
+  downsample_ratio: 1
+  student:
+    type: simple_concat_multitask_selection
+    modalities: [coord, ray]
+    feature_size: 16
+    hidden_size: 32
+    num_classes: 256
+    coord_input_size: 3
+    ray_input_size: 14
+    dropout: 0.0
+    encoders:
+      coord:
+        type: coord_mlp
+        output_dim: 16
+      ray:
+        type: ray_mlp
+        output_dim: 16
+
+loss:
+  type: cross_entropy
+  objective:
+    weights:
+      beam_selection: 1.0
+      los: 0.5
+      link_quality: 0.2
+
+distillation:
+  type: no_kd
+  teacher_model_name: null
+
+training:
+  epochs: 1
+  lr: 0.001
+  patience: 1
+  use_early_stopping: false
+  early_stopping_metric: val_selection_multitask_loss
+  early_stopping_mode: min
+  transfer:
+    non_blocking: false
+
+evaluation:
+  k_values: [1, 3, 5]
+
+output:
+  dir: outputs/raymobtime_s008/smoke
+  run_name: s008_smoke_selection
+  group_by_scene: false
+  overwrite: true
+  progress:
+    enabled: false

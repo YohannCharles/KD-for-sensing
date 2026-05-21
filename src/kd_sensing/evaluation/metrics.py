@@ -90,6 +90,80 @@ def calculate_occlusion_metrics(
     }
 
 
+def calculate_los_metrics(logits: torch.Tensor, labels: torch.Tensor) -> dict[str, object]:
+    logits = logits.detach().cpu()
+    labels = labels.detach().cpu().to(torch.float32)
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(1)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    if logits.shape != labels.shape:
+        raise ValueError("LOS logits and labels must share shape [B, H].")
+    probs = torch.sigmoid(logits).numpy().reshape(-1)
+    target = (labels.numpy().reshape(-1) >= 0.5).astype(np.int64)
+    pred = (probs >= 0.5).astype(np.int64)
+    total = int(target.size)
+    if total == 0:
+        return {
+            "los_accuracy": 0.0,
+            "los_f1": 0.0,
+            "los_auc": None,
+            "los_auc_available": False,
+            "los_auc_unavailable_reason": "empty_split",
+            "los_total": 0,
+            "los_positive": 0,
+        }
+    tp = int(((pred == 1) & (target == 1)).sum())
+    fp = int(((pred == 1) & (target == 0)).sum())
+    fn = int(((pred == 0) & (target == 1)).sum())
+    correct = int((pred == target).sum())
+    denom = 2 * tp + fp + fn
+    auc, auc_available, reason = _binary_auc(probs, target)
+    return {
+        "los_accuracy": float(correct / max(total, 1)),
+        "los_f1": float(0.0 if denom == 0 else (2 * tp) / denom),
+        "los_auc": auc,
+        "los_auc_available": auc_available,
+        "los_auc_unavailable_reason": reason,
+        "los_total": total,
+        "los_positive": int((target == 1).sum()),
+    }
+
+
+def calculate_link_metrics(prediction: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
+    pred = prediction.detach().cpu().to(torch.float32)
+    truth = target.detach().cpu().to(torch.float32)
+    if pred.ndim == 1:
+        pred = pred.unsqueeze(1)
+    if truth.ndim == 1:
+        truth = truth.unsqueeze(1)
+    if pred.shape != truth.shape:
+        raise ValueError("link prediction and target must share shape [B, H].")
+    pred_np = pred.numpy().reshape(-1).astype(np.float64)
+    target_np = truth.numpy().reshape(-1).astype(np.float64)
+    if pred_np.size == 0:
+        return {"link_mae": 0.0, "link_rmse": 0.0, "link_r2": 0.0, "link_total": 0}
+    error = pred_np - target_np
+    mae = float(np.mean(np.abs(error)))
+    rmse = float(np.sqrt(np.mean(error ** 2)))
+    denom = float(np.sum((target_np - target_np.mean()) ** 2))
+    r2 = 0.0 if denom <= 1e-12 else float(1.0 - np.sum(error ** 2) / denom)
+    return {"link_mae": mae, "link_rmse": rmse, "link_r2": r2, "link_total": int(pred_np.size)}
+
+
+def _binary_auc(probabilities: np.ndarray, target: np.ndarray) -> tuple[float | None, bool, str | None]:
+    positives = int((target == 1).sum())
+    negatives = int((target == 0).sum())
+    if positives == 0 or negatives == 0:
+        return None, False, "single_class_split"
+    order = np.argsort(probabilities)
+    ranks = np.empty_like(order, dtype=np.float64)
+    ranks[order] = np.arange(1, len(probabilities) + 1, dtype=np.float64)
+    pos_ranks = ranks[target == 1].sum()
+    auc = (pos_ranks - positives * (positives + 1) / 2.0) / max(positives * negatives, 1)
+    return float(auc), True, None
+
+
 def calculate_position_rmse(
     prediction: torch.Tensor,
     target: torch.Tensor,

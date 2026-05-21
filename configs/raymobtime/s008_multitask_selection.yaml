@@ -1,0 +1,119 @@
+experiment:
+  name: raymobtime_s008_multitask_selection
+  task: fusion
+  objective: selection_multitask
+  variant: raymobtime_s008_current_snapshot
+  task_semantics: current_snapshot_beam_selection
+  seed: 42
+
+data:
+  dataset:
+    type: raymobtime_s008
+    scene_slug: raymobtime_s008
+    data_root: dataset/Raymobtime/s008
+    cache_dir: outputs/raymobtime_s008/cache
+    seq_len: 1
+    num_pred: 1
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+    image_resize_in_dataset: false
+    normalize: true
+    coord_normalize: true
+    image_normalize: true
+    ray_normalize: true
+    link_normalize: false
+  dataloader:
+    train_batch_size: 16
+    test_batch_size: 16
+    num_workers: 0
+    pin_memory: false
+    persistent_workers: false
+    prefetch_factor: null
+
+model:
+  modalities: [coord, image, lidar, ray]
+  image_profile: rgb_imagenet
+  feature_size: 64
+  num_classes: 256
+  num_pred: 1
+  seq_length_teacher: 1
+  seq_length_student: 1
+  downsample_ratio: 1
+  student:
+    type: task_aware_gated_multitask_selection
+    modalities: [coord, image, lidar, ray]
+    feature_size: 64
+    hidden_size: 128
+    num_classes: 256
+    coord_input_size: 3
+    ray_input_size: 14
+    image_channels: 3
+    image_profile: rgb_imagenet
+    lidar_channels: 1
+    dropout: 0.1
+    encoders:
+      coord:
+        type: coord_mlp
+        output_dim: 64
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+      lidar:
+        type: raymobtime_lidar_3d_cnn
+        output_dim: 64
+        lidar_channels: 1
+        stem_channels: 16
+        block_channels: [16, 32]
+        hidden_size: 128
+        dropout: 0.1
+      ray:
+        type: ray_mlp
+        output_dim: 64
+
+loss:
+  type: cross_entropy
+  objective:
+    weights:
+      beam_selection: 1.0
+      los: 0.5
+      link_quality: 0.2
+    los:
+      pos_weight: null
+    link_quality:
+      type: smooth_l1
+      beta: 1.0
+
+distillation:
+  type: no_kd
+  teacher_model_name: null
+
+training:
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  patience: 5
+  use_early_stopping: true
+  early_stopping_metric: val_selection_multitask_loss
+  early_stopping_mode: min
+  cpu_threads:
+    intra_op: 2
+    inter_op: 1
+  transfer:
+    non_blocking: false
+
+evaluation:
+  k_values: [1, 3, 5]
+  modality_subsets:
+    enabled: false
+
+output:
+  dir: outputs/raymobtime_s008/experiments
+  run_name: s008_multitask_selection
+  group_by_scene: false
+  progress:
+    enabled: true

@@ -8,6 +8,7 @@ from typing import Any
 DATASET_ROOT = PurePosixPath("dataset")
 DEEPSENSE6G_FAMILY = "DeepSense6G"
 MMW_FAMILY = "MMW"
+RAYMOBTIME_FAMILY = "Raymobtime"
 DEEPSENSE6G_SCENE_IDS = (9, 31, 32)
 MMW_CONDITIONS = ("sunny", "rainy", "foggy")
 
@@ -68,6 +69,46 @@ class MMWConditionLayout:
         return ("Sensor_Data", "Channel_Data")
 
 
+@dataclass(frozen=True)
+class RaymobtimeS008Layout:
+    scenario: str = "s008"
+
+    @property
+    def root(self) -> str:
+        return str(DATASET_ROOT / RAYMOBTIME_FAMILY / self.scenario)
+
+    @property
+    def baseline_root(self) -> str:
+        return str(PurePosixPath(self.root) / "baseline_data")
+
+    @property
+    def raw_root(self) -> str:
+        return str(PurePosixPath(self.root) / "raw_data")
+
+    @property
+    def cache_root(self) -> str:
+        return str(PurePosixPath(self.root) / "cache")
+
+    @property
+    def coord_csv_name(self) -> str:
+        return "CoordVehiclesRxPerScene_s008.csv"
+
+    @property
+    def ray_zip_name(self) -> str:
+        return "ray_tracing_data_s008_carrier60GHz.zip"
+
+    @property
+    def required_paths(self) -> tuple[str, ...]:
+        return (
+            "baseline_data/beam_output",
+            "baseline_data/coord_input",
+            "baseline_data/lidar_input",
+            "baseline_data/image_v2_input",
+            f"raw_data/{self.coord_csv_name}",
+            f"raw_data/{self.ray_zip_name}",
+        )
+
+
 def deepsense6g_scene_layout(scene_id: Any) -> DeepSense6GSceneLayout:
     scene_id = _normalize_int_token(scene_id, context="DeepSense6G scene")
     if scene_id not in DEEPSENSE6G_SCENE_IDS:
@@ -97,6 +138,14 @@ def mmw_condition_layout(condition: Any) -> MMWConditionLayout:
             f"Unsupported MMW condition '{condition}'. Supported conditions: {', '.join(MMW_CONDITIONS)}."
         )
     return MMWConditionLayout(condition=condition_key)
+
+
+def raymobtime_s008_layout() -> RaymobtimeS008Layout:
+    return RaymobtimeS008Layout()
+
+
+def raymobtime_s008_root() -> str:
+    return raymobtime_s008_layout().root
 
 
 def _normalize_int_token(value: Any, *, context: str) -> int:

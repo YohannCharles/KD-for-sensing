@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
+import warnings
 
 import torch
 
@@ -10,6 +11,7 @@ from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
     prepare_auxiliary_targets,
+    prepare_coord_inputs,
     prepare_csi_inputs,
     prepare_fusion_inputs,
     prepare_gps_inputs,
@@ -17,6 +19,7 @@ from kd_sensing.engine.batch import (
     prepare_labels,
     prepare_lidar_inputs,
     prepare_mmwave_inputs,
+    prepare_ray_inputs,
     prepare_radar_inputs,
 )
 from kd_sensing.engine.model_output import ModelOutput, adapt_model_output, select_prediction_slots
@@ -32,6 +35,53 @@ class TaskForwardResult:
 
 def transfer_non_blocking(cfg: dict[str, Any]) -> bool:
     return bool(cfg.get("training", {}).get("transfer", {}).get("non_blocking", False))
+
+
+def configure_torch_runtime_threads(cfg: dict[str, Any]) -> dict[str, Any]:
+    settings = _torch_thread_settings(cfg)
+    applied: dict[str, Any] = {}
+    intra_op = settings.get("intra_op")
+    if intra_op is not None and torch.get_num_threads() != intra_op:
+        torch.set_num_threads(intra_op)
+    if intra_op is not None:
+        applied["intra_op"] = torch.get_num_threads()
+
+    inter_op = settings.get("inter_op")
+    if inter_op is not None:
+        current = torch.get_num_interop_threads()
+        if current != inter_op:
+            try:
+                torch.set_num_interop_threads(inter_op)
+            except RuntimeError as exc:
+                warnings.warn(f"Unable to change torch inter-op threads to {inter_op}: {exc}", RuntimeWarning)
+        applied["inter_op"] = torch.get_num_interop_threads()
+    return applied
+
+
+def _torch_thread_settings(cfg: dict[str, Any]) -> dict[str, int]:
+    thread_cfg = cfg.get("training", {}).get("cpu_threads", {})
+    if not isinstance(thread_cfg, dict) or thread_cfg.get("enabled", True) is False:
+        return {}
+    settings: dict[str, int] = {}
+    intra_op = _thread_value(thread_cfg, ("intra_op", "intraop", "num_threads", "torch_num_threads"))
+    inter_op = _thread_value(thread_cfg, ("inter_op", "interop", "num_interop_threads", "torch_num_interop_threads"))
+    if intra_op is not None:
+        settings["intra_op"] = intra_op
+    if inter_op is not None:
+        settings["inter_op"] = inter_op
+    return settings
+
+
+def _thread_value(thread_cfg: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = thread_cfg.get(key)
+        if value is None:
+            continue
+        resolved = int(value)
+        if resolved <= 0:
+            raise ValueError(f"training.cpu_threads.{key} must be positive when set, got {resolved}.")
+        return resolved
+    return None
 
 
 def prepare_task_batch(batch) -> dict[str, torch.Tensor]:
@@ -133,6 +183,26 @@ def prepare_task_inputs(
     if task == "csi":
         return {
             "csi_batch": prepare_csi_inputs(
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+        }
+    if task == "coord":
+        return {
+            "coord_batch": prepare_coord_inputs(
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+        }
+    if task == "ray":
+        return {
+            "ray_batch": prepare_ray_inputs(
                 batch,
                 seq_length=seq_length,
                 num_pred=num_pred,

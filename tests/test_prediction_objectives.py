@@ -45,7 +45,7 @@ def test_objective_config_defaults_validation_and_legacy_compatibility():
     assert position_cfg["training"]["early_stopping_metric"] == "val_position_rmse"
     assert position_cfg["training"]["early_stopping_mode"] == "min"
 
-    with pytest.raises(ValueError, match="experiment.objective.*beam, occlusion, position, multitask"):
+    with pytest.raises(ValueError, match="experiment.objective.*current_beam_selection.*selection_multitask"):
         load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=bad"])
     auto_occlusion = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=occlusion"])
     auto_position = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=position"])
@@ -69,6 +69,34 @@ def test_objective_config_defaults_validation_and_legacy_compatibility():
         ),
         ("position", "val_position_rmse", "min", ["position", "position_rmse"], ["val_position_rmse"]),
         ("multitask", "val_multitask_loss", "min", ["multitask", "multitask_loss"], ["val_multitask_loss"]),
+        (
+            "current_beam_selection",
+            "val_beam_top1",
+            "max",
+            ["current_beam_selection", "beam_top1"],
+            ["val_beam_top1"],
+        ),
+        (
+            "current_los_classification",
+            "val_los_f1",
+            "max",
+            ["current_los_classification", "los"],
+            ["val_los_f1", "val_los_accuracy"],
+        ),
+        (
+            "current_link_quality",
+            "val_link_mae",
+            "min",
+            ["current_link_quality", "link_quality"],
+            ["val_link_mae", "val_link_rmse"],
+        ),
+        (
+            "selection_multitask",
+            "val_selection_multitask_loss",
+            "min",
+            ["selection_multitask", "selection_multitask_loss"],
+            ["val_selection_multitask_loss", "val_los_f1", "val_link_mae"],
+        ),
     ],
 )
 def test_objective_metadata_contract_covers_metrics_aliases_history_and_logging(
@@ -97,6 +125,13 @@ def test_objective_metadata_contract_covers_metrics_aliases_history_and_logging(
     assert ("objective/val_primary_metric", "val_primary_metric") in objective_tensorboard_scalars(objective)
     if objective in {"beam", "multitask"}:
         assert ("beam/val_adba", "val_adba") in objective_tensorboard_scalars(objective)
+    elif objective in {
+        "current_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+        "selection_multitask",
+    }:
+        assert ("beam/val_top1", "val_beam_top1") in objective_tensorboard_scalars(objective)
     else:
         assert ("beam/val_adba", "val_adba") not in objective_tensorboard_scalars(objective)
 

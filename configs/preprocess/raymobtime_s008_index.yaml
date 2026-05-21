@@ -1,0 +1,6 @@
+preprocessing:
+  type: raymobtime_s008_index
+  data_root: dataset/Raymobtime/s008
+  cache_dir: outputs/raymobtime_s008/cache
+  split_seed: 42
+  split_ratios: [0.7, 0.15, 0.15]

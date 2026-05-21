@@ -13,13 +13,26 @@ from kd_sensing.engine.auxiliary import (
 from kd_sensing.engine.model_output import ModelOutput
 
 
-PREDICTION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")
+PREDICTION_OBJECTIVES = (
+    "beam",
+    "occlusion",
+    "position",
+    "multitask",
+    "current_beam_selection",
+    "current_los_classification",
+    "current_link_quality",
+    "selection_multitask",
+)
 
 _DEFAULT_METRICS: dict[str, tuple[str, str]] = {
     "beam": ("val_adba", "max"),
     "occlusion": ("val_occlusion_blocked_f1", "max"),
     "position": ("val_position_rmse", "min"),
     "multitask": ("val_multitask_loss", "min"),
+    "current_beam_selection": ("val_beam_top1", "max"),
+    "current_los_classification": ("val_los_f1", "max"),
+    "current_link_quality": ("val_link_mae", "min"),
+    "selection_multitask": ("val_selection_multitask_loss", "min"),
 }
 
 _BASE_AVAILABLE_METRICS = ("val_loss",)
@@ -45,6 +58,31 @@ _MULTITASK_AVAILABLE_METRICS = (
     *_OCCLUSION_AVAILABLE_METRICS,
     *_POSITION_AVAILABLE_METRICS,
     "val_multitask_loss",
+)
+_CURRENT_BEAM_AVAILABLE_METRICS = (
+    "val_beam_top1",
+    "val_beam_top3",
+    "val_beam_top5",
+)
+_CURRENT_LOS_AVAILABLE_METRICS = (
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+)
+_CURRENT_LINK_AVAILABLE_METRICS = (
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+)
+_SELECTION_MULTITASK_AVAILABLE_METRICS = (
+    *_CURRENT_BEAM_AVAILABLE_METRICS,
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+    "val_selection_multitask_loss",
 )
 
 _METRIC_ALIASES: dict[str, str] = {
@@ -85,6 +123,36 @@ _METRIC_ALIASES: dict[str, str] = {
     "multitask_loss": "val_multitask_loss",
     "val_multitask_loss": "val_multitask_loss",
     "loss/multitask_total": "val_multitask_loss",
+    "current_beam_selection": "val_beam_top1",
+    "beam_selection": "val_beam_top1",
+    "beam_top1": "val_beam_top1",
+    "val_beam_top1": "val_beam_top1",
+    "beam_top3": "val_beam_top3",
+    "val_beam_top3": "val_beam_top3",
+    "beam_top5": "val_beam_top5",
+    "val_beam_top5": "val_beam_top5",
+    "current_los_classification": "val_los_f1",
+    "los": "val_los_f1",
+    "los_classification": "val_los_f1",
+    "selection_multitask": "val_selection_multitask_loss",
+    "selection_multitask_loss": "val_selection_multitask_loss",
+    "val_selection_multitask_loss": "val_selection_multitask_loss",
+    "loss/selection_multitask_total": "val_selection_multitask_loss",
+    "los_accuracy": "val_los_accuracy",
+    "val_los_accuracy": "val_los_accuracy",
+    "los_f1": "val_los_f1",
+    "val_los_f1": "val_los_f1",
+    "los_auc": "val_los_auc",
+    "val_los_auc": "val_los_auc",
+    "link_mae": "val_link_mae",
+    "val_link_mae": "val_link_mae",
+    "current_link_quality": "val_link_mae",
+    "link_quality": "val_link_mae",
+    "link_quality_regression": "val_link_mae",
+    "link_rmse": "val_link_rmse",
+    "val_link_rmse": "val_link_rmse",
+    "link_r2": "val_link_r2",
+    "val_link_r2": "val_link_r2",
 }
 
 _METRIC_MODES: dict[str, str] = {
@@ -101,6 +169,16 @@ _METRIC_MODES: dict[str, str] = {
     "val_position_rmse": "min",
     "val_position_mae": "min",
     "val_multitask_loss": "min",
+    "val_beam_top1": "max",
+    "val_beam_top3": "max",
+    "val_beam_top5": "max",
+    "val_los_accuracy": "max",
+    "val_los_f1": "max",
+    "val_los_auc": "max",
+    "val_link_mae": "min",
+    "val_link_rmse": "min",
+    "val_link_r2": "max",
+    "val_selection_multitask_loss": "min",
 }
 
 _HISTORY_FIELDS: tuple[str, ...] = (
@@ -131,6 +209,25 @@ _HISTORY_FIELDS: tuple[str, ...] = (
     "learning_rates",
 )
 
+_SELECTION_HISTORY_FIELDS: tuple[str, ...] = (
+    *_HISTORY_FIELDS[:-2],
+    "train_los_loss",
+    "train_link_quality_loss",
+    "train_selection_multitask_loss",
+    "val_beam_top1",
+    "val_beam_top3",
+    "val_beam_top5",
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+    "val_selection_multitask_loss",
+    "val_primary_metric",
+    "learning_rates",
+)
+
 _OPTIONAL_HISTORY_FIELDS = {
     "train_occlusion_loss",
     "train_position_loss",
@@ -140,6 +237,19 @@ _OPTIONAL_HISTORY_FIELDS = {
     "val_position_rmse",
     "val_position_mae",
     "val_multitask_loss",
+    "train_los_loss",
+    "train_link_quality_loss",
+    "train_selection_multitask_loss",
+    "val_beam_top1",
+    "val_beam_top3",
+    "val_beam_top5",
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+    "val_selection_multitask_loss",
 }
 
 _COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
@@ -171,11 +281,31 @@ _AUXILIARY_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("position/mae", "val_position_mae"),
 )
 
+_SELECTION_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/selection_multitask_total", "train_selection_multitask_loss"),
+    ("loss/val_selection_multitask_total", "val_selection_multitask_loss"),
+    ("loss/los", "train_los_loss"),
+    ("loss/link_quality", "train_link_quality_loss"),
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+    ("los/accuracy", "val_los_accuracy"),
+    ("los/f1", "val_los_f1"),
+    ("los/auc", "val_los_auc"),
+    ("link/mae", "val_link_mae"),
+    ("link/rmse", "val_link_rmse"),
+    ("link/r2", "val_link_r2"),
+)
+
 _OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
     "beam": (*_BASE_AVAILABLE_METRICS, *_BEAM_AVAILABLE_METRICS),
     "occlusion": (*_BASE_AVAILABLE_METRICS, *_OCCLUSION_AVAILABLE_METRICS),
     "position": (*_BASE_AVAILABLE_METRICS, *_POSITION_AVAILABLE_METRICS),
     "multitask": (*_BASE_AVAILABLE_METRICS, *_MULTITASK_AVAILABLE_METRICS),
+    "current_beam_selection": (*_BASE_AVAILABLE_METRICS, *_CURRENT_BEAM_AVAILABLE_METRICS),
+    "current_los_classification": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LOS_AVAILABLE_METRICS),
+    "current_link_quality": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LINK_AVAILABLE_METRICS),
+    "selection_multitask": (*_BASE_AVAILABLE_METRICS, *_SELECTION_MULTITASK_AVAILABLE_METRICS),
 }
 
 
@@ -202,6 +332,8 @@ class PredictionTargets:
     occlusion_valid: torch.Tensor | None = None
     position_target: torch.Tensor | None = None
     position_valid: torch.Tensor | None = None
+    los_label: torch.Tensor | None = None
+    link_quality: torch.Tensor | None = None
 
     def as_auxiliary_dict(self) -> dict[str, torch.Tensor]:
         result: dict[str, torch.Tensor] = {}
@@ -225,6 +357,9 @@ class PredictionLossBundle:
     position: torch.Tensor
     multitask_total: torch.Tensor
     diagnostics: dict[str, float]
+    los: torch.Tensor | None = None
+    link_quality: torch.Tensor | None = None
+    selection_multitask_total: torch.Tensor | None = None
 
 
 def resolve_prediction_objective(cfg: dict[str, Any]) -> str:
@@ -253,6 +388,18 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("beam",)
         required_outputs = ("logits",)
         primary_loss = "beam"
+    elif objective == "current_beam_selection":
+        required_targets = ("target_beam",)
+        required_outputs = ("logits",)
+        primary_loss = "beam_selection"
+    elif objective == "current_los_classification":
+        required_targets = ("los_label",)
+        required_outputs = ("los_logits",)
+        primary_loss = "los"
+    elif objective == "current_link_quality":
+        required_targets = ("link_quality",)
+        required_outputs = ("link_quality",)
+        primary_loss = "link_quality"
     elif objective == "occlusion":
         required_targets = ("occlusion",)
         required_outputs = ("occlusion_logits",)
@@ -261,10 +408,14 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("position",)
         required_outputs = ("position",)
         primary_loss = "position"
-    else:
+    elif objective == "multitask":
         required_targets = ("beam", "occlusion", "position")
         required_outputs = ("logits", "occlusion_logits", "position")
         primary_loss = "multitask_total"
+    else:
+        required_targets = ("target_beam", "los_label", "link_quality")
+        required_outputs = ("logits", "los_logits", "link_quality")
+        primary_loss = "selection_multitask_total"
     return PredictionObjectiveSpec(
         name=objective,
         required_targets=required_targets,
@@ -275,7 +426,14 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         available_metrics=_OBJECTIVE_AVAILABLE_METRICS[objective],
         metric_aliases=dict(_METRIC_ALIASES),
         metric_modes=dict(_METRIC_MODES),
-        history_fields=_HISTORY_FIELDS,
+        history_fields=_SELECTION_HISTORY_FIELDS
+        if objective in {
+            "current_beam_selection",
+            "current_los_classification",
+            "current_link_quality",
+            "selection_multitask",
+        }
+        else _HISTORY_FIELDS,
         tensorboard_scalars=_tensorboard_scalars_for_objective(objective),
         runtime_metadata={
             "default_metric": metric,
@@ -338,6 +496,21 @@ def produced_metric_names(metrics: dict[str, Any]) -> set[str]:
         available.add("val_acc")
     if "dba" in metrics:
         available.add("val_adba")
+    for key in (
+        "beam_top1",
+        "beam_top3",
+        "beam_top5",
+        "los_accuracy",
+        "los_f1",
+        "los_auc",
+        "link_mae",
+        "link_rmse",
+        "link_r2",
+    ):
+        if key in metrics and _finite_number(metrics[key]):
+            available.add(f"val_{key}")
+    if "selection_multitask_loss" in metrics and _finite_number(metrics["selection_multitask_loss"]):
+        available.add("val_selection_multitask_loss")
     for key, value in metrics.items():
         if key.startswith("val_") and _finite_number(value):
             available.add(key)
@@ -414,11 +587,16 @@ def objective_enabled_heads(cfg: dict[str, Any]) -> list[str]:
     heads = []
     for output in objective_spec(cfg).required_outputs:
         if output == "logits":
-            heads.append("beam")
+            objective = resolve_prediction_objective(cfg)
+            heads.append("beam_selection" if objective in {"current_beam_selection", "selection_multitask"} else "beam")
         elif output == "occlusion_logits":
             heads.append("occlusion")
         elif output == "position":
             heads.append("position")
+        elif output == "los_logits":
+            heads.append("los")
+        elif output == "link_quality":
+            heads.append("link_quality")
     return heads
 
 
@@ -439,16 +617,32 @@ def objective_runtime_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
         ],
         "enabled_targets": list(spec.required_targets),
         "enabled_heads": objective_enabled_heads(cfg),
-        "loss_weights": multitask_loss_weights(cfg),
+        "loss_weights": _runtime_loss_weights(cfg, spec.name),
         **spec.runtime_metadata,
     }
+
+
+def _runtime_loss_weights(cfg: dict[str, Any], objective: str) -> dict[str, float]:
+    if objective == "selection_multitask":
+        return selection_multitask_loss_weights(cfg)
+    if objective in {"current_beam_selection", "current_los_classification", "current_link_quality"}:
+        return {}
+    return multitask_loss_weights(cfg)
 
 
 def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str], ...]:
     scalars = list(_COMMON_TENSORBOARD_SCALARS)
     if objective in {"beam", "multitask"}:
         scalars.extend(_BEAM_TENSORBOARD_SCALARS)
-    scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
+    if objective in {
+        "current_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+        "selection_multitask",
+    }:
+        scalars.extend(_SELECTION_TENSORBOARD_SCALARS)
+    else:
+        scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
     return tuple(scalars)
 
 
@@ -461,6 +655,8 @@ def _finite_number(value: object) -> bool:
 
 
 def _is_allowed_pattern_metric(name: str, *, objective: str) -> bool:
+    if objective in {"current_beam_selection", "selection_multitask"}:
+        return name.startswith(("val_beam_top",))
     if objective not in {"beam", "multitask"}:
         return False
     return name.startswith(("val_top1_", "val_top3_", "val_top5_"))
@@ -479,6 +675,8 @@ def prepare_prediction_targets(
         occlusion_valid=auxiliary_targets.get("occlusion_valid"),
         position_target=auxiliary_targets.get("position_target"),
         position_valid=auxiliary_targets.get("position_valid"),
+        los_label=auxiliary_targets.get("los_label"),
+        link_quality=auxiliary_targets.get("link_quality"),
     )
     if objective in {"occlusion", "multitask"}:
         _require_tensor(targets.occlusion_label, "occlusion_label", objective)
@@ -486,6 +684,13 @@ def prepare_prediction_targets(
     if objective in {"position", "multitask"}:
         _require_tensor(targets.position_target, "position_target", objective)
         _require_tensor(targets.position_valid, "position_valid", objective)
+    if objective == "selection_multitask":
+        _require_tensor(targets.los_label, "los_label", objective)
+        _require_tensor(targets.link_quality, "link_quality", objective)
+    if objective == "current_los_classification":
+        _require_tensor(targets.los_label, "los_label", objective)
+    if objective == "current_link_quality":
+        _require_tensor(targets.link_quality, "link_quality", objective)
     return targets
 
 
@@ -505,7 +710,66 @@ def compute_prediction_loss(
     occlusion_loss = zero
     position_loss = zero
     multitask_total = zero
+    los_loss = zero
+    link_quality_loss = zero
+    selection_multitask_total = zero
     diagnostics = {"loss/beam": float(beam_primary.detach().cpu().item())}
+
+    if objective == "current_beam_selection":
+        diagnostics = {
+            "loss/beam_selection": float(beam_primary.detach().cpu().item()),
+            "loss/primary": float(beam_primary.detach().cpu().item()),
+        }
+        return PredictionLossBundle(
+            total=beam_component,
+            primary=beam_primary,
+            beam=beam_primary,
+            occlusion=zero,
+            position=zero,
+            multitask_total=zero,
+            diagnostics=diagnostics,
+            los=zero,
+            link_quality=zero,
+            selection_multitask_total=zero,
+        )
+
+    if objective == "current_los_classification":
+        los_loss = _los_loss(model_output, targets, cfg)
+        diagnostics = {
+            "loss/los": float(los_loss.detach().cpu().item()),
+            "loss/primary": float(los_loss.detach().cpu().item()),
+        }
+        return PredictionLossBundle(
+            total=los_loss,
+            primary=los_loss,
+            beam=beam_primary,
+            occlusion=zero,
+            position=zero,
+            multitask_total=zero,
+            diagnostics=diagnostics,
+            los=los_loss,
+            link_quality=None,
+            selection_multitask_total=None,
+        )
+
+    if objective == "current_link_quality":
+        link_quality_loss = _link_quality_loss(model_output, targets, cfg)
+        diagnostics = {
+            "loss/link_quality": float(link_quality_loss.detach().cpu().item()),
+            "loss/primary": float(link_quality_loss.detach().cpu().item()),
+        }
+        return PredictionLossBundle(
+            total=link_quality_loss,
+            primary=link_quality_loss,
+            beam=beam_primary,
+            occlusion=zero,
+            position=zero,
+            multitask_total=zero,
+            diagnostics=diagnostics,
+            los=None,
+            link_quality=link_quality_loss,
+            selection_multitask_total=None,
+        )
 
     if objective == "beam":
         auxiliary_loss = compute_auxiliary_multitask_loss(
@@ -529,6 +793,9 @@ def compute_prediction_loss(
             position=auxiliary_loss.position,
             multitask_total=auxiliary_loss.total,
             diagnostics=diagnostics,
+            los=zero,
+            link_quality=zero,
+            selection_multitask_total=zero,
         )
 
     if objective in {"occlusion", "multitask"}:
@@ -538,6 +805,38 @@ def compute_prediction_loss(
     if objective in {"position", "multitask"}:
         position_loss = _position_loss(model_output, targets, cfg, zero)
         diagnostics["loss/position"] = float(position_loss.detach().cpu().item())
+
+    if objective == "selection_multitask":
+        los_loss = _los_loss(model_output, targets, cfg)
+        link_quality_loss = _link_quality_loss(model_output, targets, cfg)
+        weights = selection_multitask_loss_weights(cfg)
+        selection_multitask_total = (
+            weights["beam_selection"] * beam_primary
+            + weights["los"] * los_loss
+            + weights["link_quality"] * link_quality_loss
+        )
+        diagnostics = {
+            "loss/beam_selection": float(beam_primary.detach().cpu().item()),
+            "loss/los": float(los_loss.detach().cpu().item()),
+            "loss/link_quality": float(link_quality_loss.detach().cpu().item()),
+            "loss/selection_multitask_total": float(selection_multitask_total.detach().cpu().item()),
+            "loss/primary": float(selection_multitask_total.detach().cpu().item()),
+            "objective/weight_beam_selection": float(weights["beam_selection"]),
+            "objective/weight_los": float(weights["los"]),
+            "objective/weight_link_quality": float(weights["link_quality"]),
+        }
+        return PredictionLossBundle(
+            total=selection_multitask_total,
+            primary=selection_multitask_total,
+            beam=beam_primary,
+            occlusion=zero,
+            position=zero,
+            multitask_total=zero,
+            diagnostics=diagnostics,
+            los=los_loss,
+            link_quality=link_quality_loss,
+            selection_multitask_total=selection_multitask_total,
+        )
 
     if objective == "occlusion":
         primary = occlusion_loss
@@ -568,6 +867,9 @@ def compute_prediction_loss(
         position=position_loss,
         multitask_total=multitask_total,
         diagnostics=diagnostics,
+        los=zero,
+        link_quality=zero,
+        selection_multitask_total=zero,
     )
 
 
@@ -600,6 +902,36 @@ def multitask_loss_weights(cfg: dict[str, Any]) -> dict[str, float]:
             multitask_cfg,
             auxiliary_cfg,
             default=resolve_auxiliary_task_config(cfg).position_weight,
+        ),
+    }
+
+
+def selection_multitask_loss_weights(cfg: dict[str, Any]) -> dict[str, float]:
+    loss_cfg = cfg.get("loss", {})
+    objective_cfg = _mapping(loss_cfg.get("objective"))
+    weights_cfg = _mapping(objective_cfg.get("weights") or objective_cfg.get("loss_weights"))
+    selection_cfg = _mapping(loss_cfg.get("selection_multitask") or loss_cfg.get("selection"))
+    return {
+        "beam_selection": _weight_from_configs(
+            ("beam_selection", "beam", "beam_weight", "lambda_beam"),
+            weights_cfg,
+            objective_cfg,
+            selection_cfg,
+            default=1.0,
+        ),
+        "los": _weight_from_configs(
+            ("los", "los_weight", "lambda_los"),
+            weights_cfg,
+            objective_cfg,
+            selection_cfg,
+            default=0.5,
+        ),
+        "link_quality": _weight_from_configs(
+            ("link_quality", "link", "link_weight", "lambda_link"),
+            weights_cfg,
+            objective_cfg,
+            selection_cfg,
+            default=0.2,
         ),
     }
 
@@ -663,6 +995,41 @@ def _position_loss(
     else:
         raise ValueError("loss.position.type must be one of mse or smooth_l1.")
     return _masked_mean(per_slot, valid, zero)
+
+
+def _los_loss(model_output: ModelOutput, targets: PredictionTargets, cfg: dict[str, Any]) -> torch.Tensor:
+    logits = _diagnostic_tensor(model_output, "los_logits", "model output")
+    labels = _require_tensor(targets.los_label, "los_label", resolve_prediction_objective(cfg))
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(1)
+    if logits.ndim != 2:
+        raise ValueError(f"los_logits must have shape [B, H], got {tuple(logits.shape)}.")
+    if labels.shape != logits.shape:
+        raise ValueError(f"los_label shape {tuple(labels.shape)} does not match los_logits {tuple(logits.shape)}.")
+    labels = labels.to(device=logits.device, dtype=logits.dtype)
+    loss_cfg = _objective_loss_cfg(cfg, "los")
+    return F.binary_cross_entropy_with_logits(
+        logits,
+        labels,
+        pos_weight=_resolve_pos_weight(loss_cfg.get("pos_weight"), labels, torch.ones_like(labels, dtype=torch.bool)),
+    )
+
+
+def _link_quality_loss(model_output: ModelOutput, targets: PredictionTargets, cfg: dict[str, Any]) -> torch.Tensor:
+    prediction = _diagnostic_tensor(model_output, "link_quality", "model output")
+    target = _require_tensor(targets.link_quality, "link_quality", resolve_prediction_objective(cfg))
+    if prediction.ndim == 1:
+        prediction = prediction.unsqueeze(1)
+    if prediction.ndim != 2:
+        raise ValueError(f"link_quality output must have shape [B, H], got {tuple(prediction.shape)}.")
+    if target.shape != prediction.shape:
+        raise ValueError(
+            f"link_quality target shape {tuple(target.shape)} does not match output {tuple(prediction.shape)}."
+        )
+    target = target.to(device=prediction.device, dtype=prediction.dtype)
+    loss_cfg = _objective_loss_cfg(cfg, "link_quality")
+    beta = float(loss_cfg.get("beta", loss_cfg.get("smooth_l1_beta", 1.0)))
+    return F.smooth_l1_loss(prediction, target, beta=beta)
 
 
 def _objective_loss_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
@@ -755,5 +1122,6 @@ __all__ = [
     "prepare_prediction_targets",
     "produced_metric_names",
     "resolve_prediction_objective",
+    "selection_multitask_loss_weights",
     "validate_objective_metric_available",
 ]

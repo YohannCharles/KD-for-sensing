@@ -14,7 +14,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", required=True, help="Path to a preprocessing YAML config.")
     parser.add_argument(
         "--action",
-        choices=["radar_fft_csv", "sequence_csv", "lidar_bev_cache"],
+        choices=[
+            "radar_fft_csv",
+            "sequence_csv",
+            "lidar_bev_cache",
+            "raymobtime_s008_audit",
+            "raymobtime_s008_index",
+            "raymobtime_s008_ray_features",
+            "raymobtime_s008_cache",
+        ],
         help="Preprocessor name. Defaults to preprocessing.type from the config.",
     )
     parser.add_argument(

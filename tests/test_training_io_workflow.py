@@ -52,6 +52,7 @@ from kd_sensing.engine.trainer import (  # noqa: E402
     _training_outputs_payload,
     _validate_early_stopping_source_available,
     _write_tensorboard_scalars,
+    _write_tensorboard_startup_scalars,
     create_eval_run_dir,
     create_run_dir,
     train,
@@ -1224,6 +1225,28 @@ def test_optional_objective_tensorboard_scalars_skip_inactive_values():
     assert "position/rmse" not in tags
     assert "position/mae" not in tags
     assert "loss/val_multitask_total" not in tags
+
+
+def test_tensorboard_startup_scalars_make_new_event_non_empty():
+    writer = _FakeTensorboardWriter()
+
+    _write_tensorboard_startup_scalars(
+        writer,
+        {
+            "data": {"batch_size": {"train": 16, "test": 16}},
+            "optimization": {"max_epochs": 20},
+            "parameters": {
+                "total_params": 123,
+                "trainable_params": 120,
+                "modules": {"image_encoder": {"total_params": 10, "trainable_params": 10}},
+            },
+        },
+    )
+
+    tags = {tag for tag, _, _ in writer.scalars}
+    assert "run/start" in tags
+    assert "model/total_params" in tags
+    assert "model/modules/image_encoder/total_params" in tags
 
 
 @pytest.mark.parametrize("objective", ["occlusion", "position"])

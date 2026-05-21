@@ -90,6 +90,15 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     sample_metadata = getattr(getattr(dataset, "samples", None), "metadata", None)
     if sample_metadata is not None:
         metadata["sampling"] = sample_metadata
+    if hasattr(dataset, "raymobtime_metadata"):
+        raymobtime = dataset.raymobtime_metadata()
+        metadata["raymobtime"] = raymobtime
+        metadata["task_semantics"] = raymobtime.get("task_semantics")
+        metadata["split_metadata_path"] = raymobtime.get("split_metadata_path")
+        metadata["cache_metadata_path"] = raymobtime.get("cache_metadata_path")
+        metadata["num_beam_classes"] = raymobtime.get("num_beam_classes")
+        metadata["num_tx_beams"] = raymobtime.get("num_tx_beams")
+        metadata["num_rx_beams"] = raymobtime.get("num_rx_beams")
     return metadata
 
 
@@ -121,6 +130,13 @@ def prediction_setup_metadata(
         "validation_csv_name": dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name"),
         "test_csv_name": dataset_cfg.get("test_csv_name"),
     }
+    if dataset_cfg.get("type") == "raymobtime_s008":
+        metadata["variant"] = "raymobtime_s008_current_snapshot"
+        metadata["task_semantics"] = "current_snapshot_beam_selection"
+        metadata["uses_history_window"] = False
+        metadata["uses_temporal_core"] = False
+        metadata["cache_dir"] = dataset_cfg.get("cache_dir")
+        metadata["link_target_name"] = dataset_cfg.get("link_target_name", "link_power_max_dbm")
     scene = cfg.get("data", {}).get("dataset", {})
     for key in ("scene", "scene_id", "scene_slug"):
         if key in scene:

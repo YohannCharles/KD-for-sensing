@@ -7,6 +7,11 @@ from typing import Iterable
 from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
 
 
+CONDITIONAL_AUDIT_MODALITIES = tuple(
+    modality for modality in MODALITY_ORDER if modality in {"image", "radar", "gps", "lidar", "mmwave"}
+)
+
+
 @dataclass(frozen=True)
 class ModalitySubsetSpec:
     name: str
@@ -14,7 +19,7 @@ class ModalitySubsetSpec:
 
     def mask_for(self, model_modalities: Iterable[str]) -> tuple[bool, ...]:
         selected = set(self.modalities)
-        normalized = normalize_modalities(tuple(model_modalities), context=f"{self.name} model modalities")
+        normalized = _normalize_conditional_modalities(model_modalities, context=f"{self.name} model modalities")
         missing = sorted(selected.difference(normalized))
         if missing:
             raise ValueError(
@@ -35,7 +40,7 @@ class ModalitySubsetSpec:
 
 CONDITIONAL_UTILITY_SUBSETS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
     (
-        ("all", normalize_modalities(MODALITY_ORDER, context="conditional audit subset all")),
+        ("all", normalize_modalities(CONDITIONAL_AUDIT_MODALITIES, context="conditional audit subset all")),
         ("strong_only", normalize_modalities(("gps", "mmwave"), context="conditional audit subset strong_only")),
         (
             "strong_plus_image",
@@ -74,7 +79,10 @@ def resolve_conditional_utility_subset(
     raw = CONDITIONAL_UTILITY_SUBSETS.get(str(name))
     if raw is None:
         return None
-    normalized_model_modalities = normalize_modalities(tuple(model_modalities), context="conditional audit model modalities")
+    normalized_model_modalities = _normalize_conditional_modalities(
+        model_modalities,
+        context="conditional audit model modalities",
+    )
     if str(name) == "all":
         return ModalitySubsetSpec(name="all", modalities=normalized_model_modalities)
     if not set(raw).issubset(set(normalized_model_modalities)):
@@ -97,6 +105,11 @@ def subset_metadata(model_modalities: Iterable[str]) -> list[dict]:
         if spec is not None:
             metadata.append(spec.to_metadata(model_modalities))
     return metadata
+
+
+def _normalize_conditional_modalities(model_modalities: Iterable[str], *, context: str) -> tuple[str, ...]:
+    normalized = normalize_modalities(tuple(model_modalities), context=context)
+    return tuple(name for name in normalized if name in set(CONDITIONAL_AUDIT_MODALITIES))
 
 
 __all__ = [

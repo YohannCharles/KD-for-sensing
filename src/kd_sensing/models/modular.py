@@ -382,8 +382,10 @@ class ModularSequenceModel(nn.Module):
         image_channels: int | None = None,
         radar_channels: int = 2,
         gps_input_size: int = 3,
+        coord_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
+        ray_input_size: int = 14,
         csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
         **_: Any,
@@ -410,8 +412,10 @@ class ModularSequenceModel(nn.Module):
                 encoder_cfgs.get(modality),
                 radar_channels=radar_channels,
                 gps_input_size=gps_input_size,
+                coord_input_size=coord_input_size,
                 lidar_channels=lidar_channels,
                 mmwave_input_size=mmwave_input_size,
+                ray_input_size=ray_input_size,
                 csi_train_rms=csi_train_rms,
             )
             self._validate_modality_encoder_profile(modality, encoder_cfg)
@@ -445,6 +449,8 @@ class ModularSequenceModel(nn.Module):
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
         csi_batch: torch.Tensor | None = None,
+        coord_batch: torch.Tensor | None = None,
+        ray_batch: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         raw_inputs = {
             "image": image_batch,
@@ -453,6 +459,8 @@ class ModularSequenceModel(nn.Module):
             "lidar": lidar_batch,
             "mmwave": mmwave_batch,
             "csi": csi_batch,
+            "coord": coord_batch,
+            "ray": ray_batch,
         }
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
@@ -497,8 +505,10 @@ class ModularSequenceModel(nn.Module):
         *,
         radar_channels: int,
         gps_input_size: int,
+        coord_input_size: int,
         lidar_channels: int,
         mmwave_input_size: int,
+        ray_input_size: int,
         csi_train_rms: float,
     ) -> dict[str, Any]:
         if raw_cfg is None:
@@ -516,10 +526,14 @@ class ModularSequenceModel(nn.Module):
             cfg.setdefault("radar_channels", radar_channels)
         elif modality == "gps":
             cfg.setdefault("gps_input_size", gps_input_size)
+        elif modality == "coord":
+            cfg.setdefault("coord_input_size", coord_input_size)
         elif modality == "lidar":
             cfg.setdefault("lidar_channels", lidar_channels)
         elif modality == "mmwave":
             cfg.setdefault("mmwave_input_size", mmwave_input_size)
+        elif modality == "ray":
+            cfg.setdefault("ray_input_size", ray_input_size)
         elif modality == "csi":
             cfg.setdefault("train_rms", csi_train_rms)
         return cfg
@@ -568,9 +582,11 @@ def _default_encoder_type(modality: str, image_profile: str) -> str:
     return {
         "radar": "radar_cnn",
         "gps": "gps_mlp",
+        "coord": "coord_mlp",
         "lidar": "lidar_cnn",
         "mmwave": "mmwave_mlp",
         "csi": "pilot_dual_view_csi",
+        "ray": "ray_mlp",
     }[modality]
 
 

@@ -59,6 +59,7 @@ from kd_sensing.engine.run_metadata import (
 )
 from kd_sensing.engine.runtime import (
     autocast_context,
+    configure_torch_runtime_threads,
     make_grad_scaler,
     prepare_task_batch,
     prepare_task_auxiliary_targets,
@@ -408,6 +409,40 @@ def _write_tensorboard_scalars(
     writer.flush()
 
 
+def _write_tensorboard_startup_scalars(writer, startup_summary: dict, step: int = 0) -> None:
+    if writer is None:
+        return
+    parameters = startup_summary.get("parameters", {})
+    optimization = startup_summary.get("optimization", {})
+    data = startup_summary.get("data", {})
+    batch_size = data.get("batch_size", {}) if isinstance(data.get("batch_size"), dict) else {}
+
+    _add_startup_scalar(writer, "run/start", 1.0, step)
+    _add_startup_scalar(writer, "model/total_params", parameters.get("total_params"), step)
+    _add_startup_scalar(writer, "model/trainable_params", parameters.get("trainable_params"), step)
+    _add_startup_scalar(writer, "training/max_epochs", optimization.get("max_epochs"), step)
+    _add_startup_scalar(writer, "data/train_batch_size", batch_size.get("train"), step)
+    _add_startup_scalar(writer, "data/test_batch_size", batch_size.get("test"), step)
+    for module_name, module in (parameters.get("modules") or {}).items():
+        if not isinstance(module, dict):
+            continue
+        _add_startup_scalar(writer, f"model/modules/{module_name}/total_params", module.get("total_params"), step)
+        _add_startup_scalar(
+            writer,
+            f"model/modules/{module_name}/trainable_params",
+            module.get("trainable_params"),
+            step,
+        )
+    writer.flush()
+
+
+def _add_startup_scalar(writer, tag: str, value: object, step: int) -> None:
+    numeric = _finite_float_or_none(value)
+    if numeric is None:
+        return
+    writer.add_scalar(tag, numeric, step)
+
+
 def _write_tensorboard_legacy_accuracy_scalars(writer, history: dict, step: int) -> None:
     _add_latest_scalar(writer, "accuracy/train", history, "train_acc", step)
     _add_latest_scalar(writer, "accuracy/val", history, "val_acc", step)
@@ -620,6 +655,7 @@ def _progress_enabled(cfg: dict) -> bool:
 
 
 def train(cfg: dict) -> dict:
+    configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     objective = resolve_prediction_objective(cfg)
     cfg.setdefault("experiment", {})["objective"] = objective
@@ -725,6 +761,7 @@ def train(cfg: dict) -> dict:
     epoch_logs = []
 
     tensorboard_writer = _create_tensorboard_writer(cfg, run_dir)
+    _write_tensorboard_startup_scalars(tensorboard_writer, startup_summary)
     progress_enabled = _progress_enabled(cfg)
     start_epoch = training_cfg.get("start_epoch", 0)
     total_epochs = training_cfg.get("epochs", 100)
@@ -788,6 +825,9 @@ def train(cfg: dict) -> dict:
             running_occlusion_loss = 0.0
             running_position_loss = 0.0
             running_multitask_loss = 0.0
+            running_los_loss = 0.0
+            running_link_quality_loss = 0.0
+            running_selection_multitask_loss = 0.0
             running_acc = 0.0
             epoch_diagnostics = EpochDiagnosticsAccumulator()
             train_lidar_quality = LidarQualityAccumulator()
@@ -1047,6 +1087,16 @@ def train(cfg: dict) -> dict:
                 running_multitask_loss = (
                     prediction_loss.multitask_total.item() + step * running_multitask_loss
                 ) / (step + 1)
+                if prediction_loss.los is not None:
+                    running_los_loss = (prediction_loss.los.item() + step * running_los_loss) / (step + 1)
+                if prediction_loss.link_quality is not None:
+                    running_link_quality_loss = (
+                        prediction_loss.link_quality.item() + step * running_link_quality_loss
+                    ) / (step + 1)
+                if prediction_loss.selection_multitask_total is not None:
+                    running_selection_multitask_loss = (
+                        prediction_loss.selection_multitask_total.item() + step * running_selection_multitask_loss
+                    ) / (step + 1)
                 running_acc = (acc + step * running_acc) / (step + 1)
                 epoch_diagnostics.update(scalar_diagnostics)
                 if progress_enabled:
@@ -1082,8 +1132,24 @@ def train(cfg: dict) -> dict:
             val_position_rmse = _finite_float_or_none(val_metrics.get("val_position_rmse"))
             val_position_mae = _finite_float_or_none(val_metrics.get("val_position_mae"))
             val_multitask_loss = _finite_float_or_none(val_metrics.get("val_multitask_loss"))
+            val_beam_top1 = _finite_float_or_none(val_metrics.get("val_beam_top1"))
+            val_beam_top3 = _finite_float_or_none(val_metrics.get("val_beam_top3"))
+            val_beam_top5 = _finite_float_or_none(val_metrics.get("val_beam_top5"))
+            val_los_accuracy = _finite_float_or_none(val_metrics.get("val_los_accuracy"))
+            val_los_f1 = _finite_float_or_none(val_metrics.get("val_los_f1"))
+            val_los_auc = _finite_float_or_none(val_metrics.get("val_los_auc"))
+            val_link_mae = _finite_float_or_none(val_metrics.get("val_link_mae"))
+            val_link_rmse = _finite_float_or_none(val_metrics.get("val_link_rmse"))
+            val_link_r2 = _finite_float_or_none(val_metrics.get("val_link_r2"))
+            val_selection_multitask_loss = _finite_float_or_none(val_metrics.get("val_selection_multitask_loss"))
             active_occlusion = val_occlusion_accuracy is not None or val_occlusion_blocked_f1 is not None
             active_position = val_position_rmse is not None or val_position_mae is not None
+            active_selection = (
+                val_los_accuracy is not None
+                or val_los_f1 is not None
+                or val_link_mae is not None
+                or val_selection_multitask_loss is not None
+            )
             train_occlusion_loss = (
                 float(running_occlusion_loss) if objective in {"occlusion", "multitask"} or active_occlusion else None
             )
@@ -1094,6 +1160,13 @@ def train(cfg: dict) -> dict:
                 float(running_multitask_loss)
                 if objective == "multitask" or (objective == "beam" and (active_occlusion or active_position))
                 else None
+            )
+            train_los_loss = float(running_los_loss) if objective == "selection_multitask" or active_selection else None
+            train_link_quality_loss = (
+                float(running_link_quality_loss) if objective == "selection_multitask" or active_selection else None
+            )
+            train_selection_multitask_loss = (
+                float(running_selection_multitask_loss) if objective == "selection_multitask" else None
             )
             history["train_loss"].append(float(running_loss))
             history["train_task_loss"].append(float(running_task_loss))
@@ -1107,6 +1180,9 @@ def train(cfg: dict) -> dict:
             history["train_occlusion_loss"].append(train_occlusion_loss)
             history["train_position_loss"].append(train_position_loss)
             history["train_multitask_loss"].append(train_multitask_loss)
+            _append_history(history, "train_los_loss", train_los_loss)
+            _append_history(history, "train_link_quality_loss", train_link_quality_loss)
+            _append_history(history, "train_selection_multitask_loss", train_selection_multitask_loss)
             history["train_acc"].append(float(running_acc))
             history["val_loss"].append(float(val_loss))
             history["val_acc"].append(val_acc)
@@ -1118,6 +1194,16 @@ def train(cfg: dict) -> dict:
             history["val_position_rmse"].append(val_position_rmse)
             history["val_position_mae"].append(val_position_mae)
             history["val_multitask_loss"].append(val_multitask_loss)
+            _append_history(history, "val_beam_top1", val_beam_top1)
+            _append_history(history, "val_beam_top3", val_beam_top3)
+            _append_history(history, "val_beam_top5", val_beam_top5)
+            _append_history(history, "val_los_accuracy", val_los_accuracy)
+            _append_history(history, "val_los_f1", val_los_f1)
+            _append_history(history, "val_los_auc", val_los_auc)
+            _append_history(history, "val_link_mae", val_link_mae)
+            _append_history(history, "val_link_rmse", val_link_rmse)
+            _append_history(history, "val_link_r2", val_link_r2)
+            _append_history(history, "val_selection_multitask_loss", val_selection_multitask_loss)
             early_stopping_candidates = {
                 **validation_curve_metrics,
                 "val_loss": float(val_loss),
@@ -1129,6 +1215,16 @@ def train(cfg: dict) -> dict:
                 "val_position_rmse": val_position_rmse,
                 "val_position_mae": val_position_mae,
                 "val_multitask_loss": val_multitask_loss,
+                "val_beam_top1": val_beam_top1,
+                "val_beam_top3": val_beam_top3,
+                "val_beam_top5": val_beam_top5,
+                "val_los_accuracy": val_los_accuracy,
+                "val_los_f1": val_los_f1,
+                "val_los_auc": val_los_auc,
+                "val_link_mae": val_link_mae,
+                "val_link_rmse": val_link_rmse,
+                "val_link_r2": val_link_r2,
+                "val_selection_multitask_loss": val_selection_multitask_loss,
             }.items():
                 if value is not None:
                     early_stopping_candidates[key] = value
@@ -1160,9 +1256,15 @@ def train(cfg: dict) -> dict:
                 "train_occlusion_loss": train_occlusion_loss,
                 "train_position_loss": train_position_loss,
                 "train_multitask_loss": train_multitask_loss,
+                "train_los_loss": train_los_loss,
+                "train_link_quality_loss": train_link_quality_loss,
+                "train_selection_multitask_loss": train_selection_multitask_loss,
                 "loss/occlusion": train_occlusion_loss,
                 "loss/position": train_position_loss,
                 "loss/multitask_total": train_multitask_loss,
+                "loss/los": train_los_loss,
+                "loss/link_quality": train_link_quality_loss,
+                "loss/selection_multitask_total": train_selection_multitask_loss,
                 "train_acc": float(running_acc),
                 "val_loss": float(val_loss),
                 "val_acc": val_acc,
@@ -1174,6 +1276,16 @@ def train(cfg: dict) -> dict:
                 "val_position_rmse": val_position_rmse,
                 "val_position_mae": val_position_mae,
                 "val_multitask_loss": val_multitask_loss,
+                "val_beam_top1": val_beam_top1,
+                "val_beam_top3": val_beam_top3,
+                "val_beam_top5": val_beam_top5,
+                "val_los_accuracy": val_los_accuracy,
+                "val_los_f1": val_los_f1,
+                "val_los_auc": val_los_auc,
+                "val_link_mae": val_link_mae,
+                "val_link_rmse": val_link_rmse,
+                "val_link_r2": val_link_r2,
+                "val_selection_multitask_loss": val_selection_multitask_loss,
                 "val_primary_metric": float(primary_metric_value),
                 "learning_rate": float(current_lr),
                 "validation_metrics": deepcopy(val_metrics),
@@ -1496,7 +1608,10 @@ def _training_outputs_payload(
     payload["primary_metric_mode"] = np.asarray(early_stopping_mode)
     payload["enabled_targets"] = np.asarray(objective_metadata["enabled_targets"], dtype=object)
     payload["enabled_heads"] = np.asarray(objective_metadata["enabled_heads"], dtype=object)
-    weight_names = ("beam", "occlusion", "position")
+    if objective_metadata["name"] == "selection_multitask":
+        weight_names = ("beam_selection", "los", "link_quality")
+    else:
+        weight_names = ("beam", "occlusion", "position")
     weights = objective_metadata.get("loss_weights", {})
     payload["loss_weight_names"] = np.asarray(weight_names, dtype=object)
     payload["loss_weights"] = np.asarray([float(weights.get(name, np.nan)) for name in weight_names], dtype=float)
@@ -1504,6 +1619,11 @@ def _training_outputs_payload(
 
 
 _OPTIONAL_HISTORY_KEYS = objective_optional_history_fields()
+
+
+def _append_history(history: dict[str, list], key: str, value) -> None:
+    if key in history:
+        history[key].append(value)
 
 
 def _history_array(key: str, values: list) -> np.ndarray:
@@ -1522,6 +1642,16 @@ def _checkpoint_task_metrics(epoch_log: dict) -> dict[str, float]:
         "val_position_rmse",
         "val_position_mae",
         "val_multitask_loss",
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_los_accuracy",
+        "val_los_f1",
+        "val_los_auc",
+        "val_link_mae",
+        "val_link_rmse",
+        "val_link_r2",
+        "val_selection_multitask_loss",
     )
     return {
         key: float(epoch_log[key])

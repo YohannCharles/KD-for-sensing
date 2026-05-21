@@ -30,8 +30,12 @@ def build_task_criterion(cfg: dict[str, Any]):
         "multitask",
         "multi_task",
         "objective",
+        "selection",
+        "selection_multitask",
         "occlusion",
         "position",
+        "los",
+        "link_quality",
     ):
         loss_cfg.pop(auxiliary_key, None)
     if loss_cfg.get("type") == "cross_entropy":

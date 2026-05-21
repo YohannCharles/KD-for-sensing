@@ -46,6 +46,10 @@ IMAGE_MODEL_TYPES = {
     "token_transformer_fusion",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
+ENCODER_CONFIG_MODEL_TYPES = MODULAR_MODEL_TYPES | {
+    "simple_concat_multitask_selection",
+    "task_aware_gated_multitask_selection",
+}
 MODULAR_ROLE_ONLY_KEYS = {
     "encoders",
     "projectors",
@@ -60,6 +64,8 @@ FUSION_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "marf_fusion",
     "token_transformer_fusion",
+    "simple_concat_multitask_selection",
+    "task_aware_gated_multitask_selection",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
@@ -71,6 +77,10 @@ AUXILIARY_HEAD_MODEL_TYPES = {
     "radar_student",
     "mmwave_teacher",
     "mmwave_student",
+}
+RAYMOBTIME_SELECTION_MODEL_TYPES = {
+    "simple_concat_multitask_selection",
+    "task_aware_gated_multitask_selection",
 }
 D_MODEL_ROLE_TYPES = {
     "craf_fusion",
@@ -247,6 +257,14 @@ def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
     objective = resolve_prediction_objective(cfg)
     if objective == "beam":
         return
+    if objective in {
+        "current_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+        "selection_multitask",
+    }:
+        _ensure_objective_loss_defaults(cfg, objective)
+        return
     dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
     if objective_requires_occlusion(cfg):
         _ensure_occlusion_target(dataset_cfg)
@@ -315,6 +333,22 @@ def _ensure_objective_loss_defaults(cfg: dict[str, Any], objective: str) -> None
     loss_cfg = cfg.setdefault("loss", {})
     objective_cfg = loss_cfg.setdefault("objective", {})
     weights_cfg = objective_cfg.setdefault("weights", {})
+    if objective == "selection_multitask":
+        weights_cfg.setdefault("beam_selection", 1.0)
+        weights_cfg.setdefault("los", 0.5)
+        weights_cfg.setdefault("link_quality", 0.2)
+        objective_cfg.setdefault("los", {}).setdefault("pos_weight", None)
+        objective_cfg.setdefault("link_quality", {}).setdefault("type", "smooth_l1")
+        return
+    if objective == "current_beam_selection":
+        weights_cfg.setdefault("beam_selection", 1.0)
+        return
+    if objective == "current_los_classification":
+        objective_cfg.setdefault("los", {}).setdefault("pos_weight", None)
+        return
+    if objective == "current_link_quality":
+        objective_cfg.setdefault("link_quality", {}).setdefault("type", "smooth_l1")
+        return
     weights_cfg.setdefault("beam", 1.0)
     weights_cfg.setdefault("occlusion", 1.0)
     weights_cfg.setdefault("position", 1.0 if objective in {"position", "multitask"} else 0.01)
@@ -352,6 +386,8 @@ def normalize_model_role_defaults(cfg: dict[str, Any]) -> None:
         if model_type in MODULAR_MODEL_TYPES:
             continue
         for key in MODULAR_ROLE_ONLY_KEYS:
+            if key == "encoders" and model_type in ENCODER_CONFIG_MODEL_TYPES:
+                continue
             role_cfg.pop(key, None)
         if model_type not in FUSION_MODEL_TYPES:
             role_cfg.pop("modalities", None)
@@ -480,6 +516,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
     _validate_prediction_objective_config(cfg)
+    _validate_raymobtime_config(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     _validate_cache_policy(cache_policy, "data.cache.policy")
     if cfg.get("data", {}).get("cache", {}).get("image") is not None:
@@ -526,6 +563,19 @@ def _validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
     head_occlusion = _auxiliary_head_enabled(model_cfg, "occlusion")
     head_position = _auxiliary_head_enabled(model_cfg, "position")
 
+    if objective in {
+        "current_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+        "selection_multitask",
+    }:
+        if model_type not in RAYMOBTIME_SELECTION_MODEL_TYPES and dataset_cfg.get("type") == "raymobtime_s008":
+            raise ValueError(
+                f"experiment.objective='{objective}' for Raymobtime s008 requires a snapshot selection model "
+                "such as simple_concat_multitask_selection or task_aware_gated_multitask_selection."
+            )
+        return
+
     if objective_requires_occlusion(cfg):
         if not _mapping_or_bool_enabled(dataset_cfg.get("occlusion_target")):
             raise ValueError(
@@ -553,6 +603,68 @@ def _validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
                 "a student model type with auxiliary head support and "
                 "model.student.auxiliary_heads.position=true."
             )
+
+
+def _validate_raymobtime_config(cfg: dict[str, Any]) -> None:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("type") != "raymobtime_s008":
+        return
+    objective = resolve_prediction_objective(cfg)
+    if objective not in {
+        "current_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+        "selection_multitask",
+    }:
+        raise ValueError(
+            "data.dataset.type='raymobtime_s008' requires experiment.objective to be "
+            "'current_beam_selection', 'current_los_classification', "
+            "'current_link_quality', or 'selection_multitask'."
+        )
+    forbidden = _find_forbidden_raymobtime_keys(cfg)
+    if forbidden:
+        keys = ", ".join(forbidden)
+        raise ValueError(
+            "Raymobtime s008 only supports current snapshot beam selection. "
+            f"Remove future/transition configuration keys: {keys}."
+        )
+    model_cfg = cfg.get("model", {}).get("student", {})
+    model_type = str(model_cfg.get("type", ""))
+    if model_type not in RAYMOBTIME_SELECTION_MODEL_TYPES:
+        raise ValueError(
+            "Raymobtime s008 requires model.student.type to be simple_concat_multitask_selection "
+            "or task_aware_gated_multitask_selection."
+        )
+    if cfg.get("distillation", {}).get("type", "no_kd") != "no_kd":
+        raise ValueError("Raymobtime s008 selection configs must use distillation.type='no_kd'.")
+    cfg.setdefault("experiment", {})["task_semantics"] = "current_snapshot_beam_selection"
+    cfg["experiment"]["uses_history_window"] = False
+    cfg["experiment"]["uses_temporal_core"] = False
+
+
+def _find_forbidden_raymobtime_keys(cfg: dict[str, Any]) -> list[str]:
+    forbidden_tokens = (
+        "future_beam",
+        "beam_prediction_horizon",
+        "beam_tracking",
+        "los_transition",
+        "beam_switch",
+    )
+    found: list[str] = []
+
+    def visit(value: Any, prefix: str) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                dotted = f"{prefix}.{key}" if prefix else str(key)
+                if any(token in str(key) for token in forbidden_tokens):
+                    found.append(dotted)
+                visit(item, dotted)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{prefix}[{index}]")
+
+    visit(cfg, "")
+    return sorted(found)
 
 
 def _validate_cache_policy(policy: str, key: str) -> None:

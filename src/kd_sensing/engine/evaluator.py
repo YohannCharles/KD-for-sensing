@@ -24,6 +24,7 @@ from kd_sensing.engine.prediction_objectives import (
     objective_runtime_metadata,
 )
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
+from kd_sensing.engine.runtime import configure_torch_runtime_threads
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.artifact_registry import resolve_evaluation_checkpoint
@@ -32,6 +33,7 @@ from kd_sensing.utils.seed import set_seed
 
 
 def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = None) -> dict:
+    configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     device = build_device(cfg)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)

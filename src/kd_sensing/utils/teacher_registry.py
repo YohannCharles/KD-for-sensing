@@ -33,6 +33,9 @@ DEFAULT_METRIC_PRIOR_WEIGHTS = {
     "val_acc_top3": 0.2,
     "val_adba": 0.2,
 }
+DEFAULT_TEACHER_MODALITIES = tuple(
+    modality for modality in MODALITY_ORDER if modality in {"image", "radar", "gps", "lidar", "mmwave"}
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +52,7 @@ def build_teacher_registry(
     teacher_root: str | Path,
     output_path: str | Path,
     scene: int | str = 31,
-    modalities: list[str] | tuple[str, ...] = MODALITY_ORDER,
+    modalities: list[str] | tuple[str, ...] = DEFAULT_TEACHER_MODALITIES,
     prior_mode: str = "metric",
     manual_prior: dict[str, float] | None = None,
     metric_prior_weights: dict[str, float] | None = None,

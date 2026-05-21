@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 from kd_sensing.modalities import batch_input_keys_for_modalities, image_profile_spec, normalize_modalities
 
@@ -68,6 +69,20 @@ def prepare_auxiliary_targets(
                 raise ValueError(f"position_valid must have shape [B, H], got {tuple(valid_t.shape)}.")
             valid_t = valid_t[:, :num_pred]
         targets["position_valid"] = valid_t
+    if "los_label" in batch:
+        los = batch["los_label"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        if los.ndim == 1:
+            los = los.unsqueeze(1)
+        if los.ndim != 2:
+            raise ValueError(f"los_label must have shape [B, H], got {tuple(los.shape)}.")
+        targets["los_label"] = los[:, :num_pred]
+    if "link_quality" in batch:
+        link = batch["link_quality"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        if link.ndim == 1:
+            link = link.unsqueeze(1)
+        if link.ndim != 2:
+            raise ValueError(f"link_quality must have shape [B, H], got {tuple(link.shape)}.")
+        targets["link_quality"] = link[:, :num_pred]
     return targets
 
 
@@ -92,6 +107,9 @@ def prepare_image_inputs(
             f"got {int(image.shape[2])}."
         )
     image = image[:, -seq_length:, ...]
+    target_size = tuple(int(value) for value in profile.default_size)
+    if tuple(int(value) for value in image.shape[-2:]) != target_size:
+        image = _resize_image_sequence(image, target_size)
     pad_steps = max(int(num_pred) - 1, 0)
     batch_size, _, channels, height, width = image.shape
     zeros = torch.zeros(
@@ -104,6 +122,13 @@ def prepare_image_inputs(
         device=device,
     )
     return torch.cat([image, zeros], dim=1)
+
+
+def _resize_image_sequence(image: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
+    batch_size, seq_len, channels, height, width = image.shape
+    frames = image.reshape(batch_size * seq_len, channels, height, width)
+    resized = F.interpolate(frames, size=size, mode="bilinear", align_corners=False)
+    return resized.reshape(batch_size, seq_len, channels, size[0], size[1])
 
 
 def prepare_fusion_inputs(
@@ -125,6 +150,8 @@ def prepare_fusion_inputs(
         "lidar": prepare_lidar_inputs,
         "mmwave": prepare_mmwave_inputs,
         "csi": prepare_csi_inputs,
+        "coord": prepare_coord_inputs,
+        "ray": prepare_ray_inputs,
     }
     inputs: dict[str, torch.Tensor] = {}
     for modality in selected:
@@ -222,8 +249,25 @@ def prepare_lidar_inputs(
     lidar = batch["lidar"].to(device, non_blocking=non_blocking)
     if lidar.ndim == 4:
         lidar = lidar.unsqueeze(2)
+    if lidar.ndim == 6:
+        lidar = lidar[:, -seq_length:, ...]
+        batch_size, _, channels, depth, height, width = lidar.shape
+        pad_steps = max(num_pred - 1, 0)
+        zeros = torch.zeros(
+            batch_size,
+            pad_steps,
+            channels,
+            depth,
+            height,
+            width,
+            dtype=lidar.dtype,
+            device=device,
+        )
+        return torch.cat([lidar, zeros], dim=1)
     if lidar.ndim != 5:
-        raise ValueError(f"LiDAR input must have shape [B, T, C, H, W], got {tuple(lidar.shape)}.")
+        raise ValueError(
+            f"LiDAR input must have shape [B, T, C, H, W] or [B, T, C, D, H, W], got {tuple(lidar.shape)}."
+        )
     lidar = lidar[:, -seq_length:, ...]
     batch_size, _, channels, height, width = lidar.shape
     pad_steps = max(num_pred - 1, 0)
@@ -292,6 +336,68 @@ def prepare_csi_inputs(
     return torch.cat([csi, zeros], dim=1)
 
 
+def prepare_coord_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    return _prepare_snapshot_vector_input(
+        batch,
+        sample_key="coord",
+        display_name="coord",
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+        non_blocking=non_blocking,
+    )
+
+
+def prepare_ray_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    return _prepare_snapshot_vector_input(
+        batch,
+        sample_key="ray",
+        display_name="ray",
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+        non_blocking=non_blocking,
+    )
+
+
+def _prepare_snapshot_vector_input(
+    batch: dict[str, torch.Tensor],
+    *,
+    sample_key: str,
+    display_name: str,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool,
+) -> torch.Tensor:
+    if sample_key not in batch:
+        raise ValueError(f"{display_name} input is required but batch does not contain a '{sample_key}' field.")
+    value = batch[sample_key].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    if value.ndim == 2:
+        value = value.unsqueeze(1)
+    if value.ndim != 3:
+        raise ValueError(f"{display_name} input must have shape [B, T, F], got {tuple(value.shape)}.")
+    value = value[:, -seq_length:, :]
+    batch_size, _, feature_dim = value.shape
+    pad_steps = max(num_pred - 1, 0)
+    zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=value.dtype, device=device)
+    return torch.cat([value, zeros], dim=1)
+
+
 def forward_model(
     model,
     task: str,
@@ -301,6 +407,8 @@ def forward_model(
     lidar_batch: torch.Tensor | None = None,
     mmwave_batch: torch.Tensor | None = None,
     csi_batch: torch.Tensor | None = None,
+    coord_batch: torch.Tensor | None = None,
+    ray_batch: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
     force_reliability_gate: torch.Tensor | float | None = None,
     gate_temperature: float | torch.Tensor | None = None,
@@ -313,6 +421,8 @@ def forward_model(
             "lidar_batch": lidar_batch,
             "mmwave_batch": mmwave_batch,
             "csi_batch": csi_batch,
+            "coord_batch": coord_batch,
+            "ray_batch": ray_batch,
         }
         kwargs = {key: value for key, value in kwargs.items() if value is not None}
         if force_modality_mask is not None:
@@ -359,6 +469,18 @@ def forward_model(
         if getattr(model, "supports_modality_kwargs", False):
             return model(csi_batch=csi_batch)
         return model(csi_batch)
+    if task == "coord":
+        if coord_batch is None:
+            raise ValueError("coord task requires coord_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(coord_batch=coord_batch)
+        return model(coord_batch)
+    if task == "ray":
+        if ray_batch is None:
+            raise ValueError("ray task requires ray_batch")
+        if getattr(model, "supports_modality_kwargs", False):
+            return model(ray_batch=ray_batch)
+        return model(ray_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
     if getattr(model, "supports_modality_kwargs", False):

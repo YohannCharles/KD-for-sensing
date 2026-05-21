@@ -1,0 +1,9 @@
+preprocessing:
+  type: raymobtime_s008_cache
+  data_root: dataset/Raymobtime/s008
+  cache_dir: outputs/raymobtime_s008/cache
+  split_seed: 42
+  split_ratios: [0.7, 0.15, 0.15]
+  num_tx_beams: 32
+  num_rx_beams: 8
+  link_target_name: link_power_max_dbm

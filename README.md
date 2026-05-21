@@ -26,6 +26,7 @@ configs/
   mmwave/         # 仅 mmWave power vector 模型：无 KD、logits KD、RKD 配置
   fusion/         # 可选 image/radar/gps/lidar/mmwave 融合模型配置
   preprocess/     # CSV、雷达、序列预处理配置
+  raymobtime/      # Raymobtime s008 current snapshot beam selection 配置
 scripts/
   train.py
   evaluate.py
@@ -173,6 +174,13 @@ dataset/MMW/sunny/
 
 生成后的 CSV 可用 `data.dataset.type: mmw`、`data.dataset.scene: Town10_skybridge_seed24`
 和 `data.dataset.condition: sunny` 接入现有 mmWave 或 image+mmWave 训练流程。
+
+## Raymobtime s008
+
+Raymobtime s008 作为独立数据集家族，默认根目录为 `dataset/Raymobtime/s008`，任务语义为
+current snapshot beam selection。预处理入口、训练配置、评估命令和 sensing-only / sensing+ray
+实验边界见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。Raymobtime image
+复用现有 `resnet18_imagenet_rgb` encoder；LiDAR 使用 s008 3D occupancy grid 专用的轻量 3D CNN。
 
 ## 训练
 

@@ -246,7 +246,7 @@ def build_startup_summary(
             "d_model": student_cfg.get("d_model") or model_cfg.get("d_model"),
             "delay_taps": csi_cfg.get("delay_taps"),
             "view_fusion": csi_cfg.get("view_fusion"),
-            "use_internal_gru": csi_cfg.get("use_internal_gru", True),
+            "use_internal_gru": csi_cfg.get("use_internal_gru", True) if csi_cfg else None,
             "pilot_estimator": _pilot_summary(csi_cfg),
             "csi_hardening_enabled": _mapping_enabled(csi_cfg.get("csi_hardening")),
             "csi_degradation_enabled": _mapping_enabled(dataset_cfg.get("csi_degradation")),
@@ -332,7 +332,7 @@ def evaluate_pilot_noise_validity(
 
 
 def print_startup_summary(summary: dict[str, Any]) -> None:
-    print("[startup_summary] " + json.dumps(summary, sort_keys=True))
+    print("[startup_summary] " + json.dumps(summary, sort_keys=True), flush=True)
 
 
 def write_startup_summary(run_dir: Path, summary: dict[str, Any]) -> None:
@@ -419,12 +419,23 @@ def _major_modules(model: nn.Module) -> dict[str, tuple[str, nn.Module, bool]]:
         fusion_module = getattr(csi_encoder, "symmetric_fusion", None) or getattr(csi_encoder, "concat_projection", None)
         if isinstance(fusion_module, nn.Module):
             modules["fusion"] = ("encoders.csi.symmetric_fusion", fusion_module, False)
+    if isinstance(encoders, nn.ModuleDict):
+        for name, encoder in encoders.items():
+            modules.setdefault(f"{name}_encoder", (f"encoders.{name}", encoder, True))
     representation_core = getattr(model, "representation_core", None)
     if isinstance(representation_core, nn.Module):
         modules["representation_core"] = ("representation_core", representation_core, True)
     heads = getattr(model, "heads", None)
     if isinstance(heads, nn.ModuleDict) and "beam" in heads:
         modules["beam_head"] = ("heads.beam", heads["beam"], True)
+    for name in ("beam_head", "los_head", "link_head"):
+        module = getattr(model, name, None)
+        if isinstance(module, nn.Module):
+            modules.setdefault(name, (name, module, True))
+    for name in ("gates", "task_projections"):
+        module = getattr(model, name, None)
+        if isinstance(module, nn.Module):
+            modules.setdefault(name, (name, module, False))
     for attr in ("fusion", "fusion_layer", "anchor_fusion"):
         module = getattr(model, attr, None)
         if isinstance(module, nn.Module) and "fusion" not in modules:
