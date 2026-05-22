@@ -232,7 +232,9 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 
 默认诊断配置启用 image、radar、gps、lidar、mmWave 五个模态，并使用 `model.modalities` 标记数据模态集合；导出 manifest 不会加载 `fusion_teacher` 或 `fusion_student` 模型。
 
-旧入口 `scripts/visualize_modalities.py` 和 `kd-sensing-visualize-modalities` 现在也会导出 manifest，并提示改用 Gradio viewer，不再生成旧的静态 PNG 总览图作为主产物。
+兼容入口 `kd-sensing-visualize-modalities` 现在是包内薄 alias，只委托
+`kd-sensing-export-viewer-manifest` 导出 manifest，不复制独立 parser，也不恢复旧的静态 PNG 总览图主流程。
+推荐入口仍是 `kd-sensing-export-viewer-manifest`。
 如果 editable install 元数据尚未刷新，可使用等价 fallback：
 `conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
 `conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help` 和

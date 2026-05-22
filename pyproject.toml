@@ -39,6 +39,7 @@ kd-sensing-evaluate = "kd_sensing.cli.evaluate:main"
 kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
 kd-sensing-raymobtime-analysis = "kd_sensing.cli.raymobtime_analysis:main"
 kd-sensing-export-viewer-manifest = "kd_sensing.cli.export_viewer_manifest:main"
+kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

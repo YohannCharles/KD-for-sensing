@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -290,12 +291,59 @@ def test_training_methods_are_connected_through_engine_extensions():
     assert "G2DTrainingExtension" in trainer_text
     assert "CrafTrainingExtension" in trainer_text
     assert "MarfTrainingExtension" in trainer_text
-    assert "extension.after_forward" in trainer_text
+    assert "BatchStepRunner" in trainer_text
     assert "extension.after_epoch" in trainer_text
 
     assert "class G2DTrainingExtension" in (SRC / "kd_sensing" / "engine" / "g2d_training.py").read_text(encoding="utf-8")
     assert "class CrafTrainingExtension" in (SRC / "kd_sensing" / "engine" / "craf_training.py").read_text(encoding="utf-8")
     assert "class MarfTrainingExtension" in (SRC / "kd_sensing" / "engine" / "marf_training.py").read_text(encoding="utf-8")
+    assert "extension.after_forward" in (SRC / "kd_sensing" / "engine" / "batch_step.py").read_text(encoding="utf-8")
+
+
+def test_training_orchestration_helpers_own_runtime_details():
+    trainer_text = (SRC / "kd_sensing" / "engine" / "trainer.py").read_text(encoding="utf-8")
+    helper_expectations = {
+        "batch_step.py": "class BatchStepRunner",
+        "training_metrics.py": "class EpochMetricsRecorder",
+        "checkpointing.py": "class CheckpointManager",
+        "artifacts.py": "class ArtifactWriter",
+        "tensorboard_logging.py": "def write_tensorboard_scalars",
+        "training_state.py": "class TrainingState",
+    }
+
+    assert "BatchStepRunner" in trainer_text
+    assert "EpochMetricsRecorder" in trainer_text
+    assert "CheckpointManager" in trainer_text
+    assert "ArtifactWriter" in trainer_text
+    assert "compute_prediction_loss" not in trainer_text
+    assert "torch.save(" not in trainer_text
+    assert "np.savez" not in trainer_text
+    assert "SummaryWriter" not in trainer_text
+    for module, snippet in helper_expectations.items():
+        assert snippet in (SRC / "kd_sensing" / "engine" / module).read_text(encoding="utf-8")
+
+
+def test_config_io_pipeline_delegates_business_rules():
+    io_text = (SRC / "kd_sensing" / "config" / "io.py").read_text(encoding="utf-8")
+    helper_expectations = {
+        "source.py": "def load_config_source",
+        "normalization.py": "def normalize_loaded_config",
+        "validation.py": "def validate_loaded_config",
+        "migration_guards.py": "def reject_removed_image_path_config",
+        "dataset_rules/raymobtime.py": "def validate_raymobtime_config",
+    }
+
+    assert "load_config_source" in io_text
+    assert "normalize_loaded_config" in io_text
+    assert "validate_loaded_config" in io_text
+    assert "reject_removed_image_path_config" in io_text
+    assert "build_virtual_config" not in io_text
+    assert "future_beam" not in io_text
+    assert "REMOVED_IMAGE_ENCODERS" not in io_text
+    assert "snapshot_next_frame requires" not in io_text
+    assert "configure_objective_defaults" not in io_text
+    for module, snippet in helper_expectations.items():
+        assert snippet in (SRC / "kd_sensing" / "config" / module).read_text(encoding="utf-8")
 
 
 def test_prediction_task_boundaries_do_not_reintroduce_duplicate_tables_or_validation_paths():
@@ -362,3 +410,22 @@ def test_visualization_core_is_thin_and_submodules_own_implementations():
     }.items():
         text = (SRC / "kd_sensing" / "diagnostics" / "visualization" / module).read_text(encoding="utf-8")
         assert snippet in text
+
+
+def test_visualize_modalities_console_script_is_thin_manifest_alias():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    alias_path = SRC / "kd_sensing" / "cli" / "visualize_modalities.py"
+    alias_text = alias_path.read_text(encoding="utf-8")
+    tree = ast.parse(alias_text)
+    function_names = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+
+    assert 'kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"' in pyproject
+    assert function_names == ["main"]
+    assert "argparse.ArgumentParser" not in alias_text
+    assert "export_viewer_manifest_main" in alias_text
+
+    command = shutil.which("kd-sensing-visualize-modalities")
+    if command is not None:
+        result = subprocess.run([command, "--help"], text=True, capture_output=True, check=False)
+        assert result.returncode == 0
+        assert "--cache-dir" in result.stdout

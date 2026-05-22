@@ -194,6 +194,13 @@ checkpoint registry 读取同模态 teacher no-KD 的最高验证 Top-1 权重�
 `occlusion -> val_occlusion_blocked_f1/max`，`position -> val_position_rmse/min`，
 `multitask -> val_multitask_loss/min`。`training.min_delta` 表示对应监控指标至少需要提升的幅度；
 `checkpoints/best.pth` 默认对应该指标的最佳 epoch。
+
+训练入口 `kd_sensing.engine.trainer.train` 保留为生命周期编排器。单 batch 的 prepare/forward/loss/backward
+在 `engine.batch_step`，history、epoch log 和 `training_outputs.npz` payload 在 `engine.training_metrics`，
+checkpoint/sidecar/registry 在 `engine.checkpointing`，TensorBoard 标量在 `engine.tensorboard_logging`，
+最终 `resolved_config.yaml`、`final_config.yaml`、`train_log.json` 和诊断 artifact 在 `engine.artifacts`。
+配置加载按 source -> CLI overlay -> normalization -> migration guard -> validation 执行；`config/io.py` 只协调
+`config.source`、`config.normalization`、`config.migration_guards`、`config.validation` 和 dataset rule helper。
 如需恢复 Top-1 或 loss 早停，可以显式覆盖：
 
 ```bash
@@ -860,6 +867,9 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 如果 editable install 元数据尚未刷新，可以使用等价 fallback：
 `conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
 `conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help`。
+
+兼容入口 `kd-sensing-visualize-modalities` 保留为薄 alias，只委托 manifest 导出 CLI，不恢复旧静态 PNG
+总览图流程。新脚本和文档仍推荐直接使用 `kd-sensing-export-viewer-manifest`。
 
 静态 PNG 总览入口已删除；当前诊断工作流通过 manifest 导出和 Gradio viewer 浏览样本。
 详细 manifest 格式、后台启动和停止服务命令见 `tools/visualization/README.md`。
