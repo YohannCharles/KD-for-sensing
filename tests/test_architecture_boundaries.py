@@ -100,6 +100,31 @@ print(json.dumps({{key: module in sys.modules for key, module in modules.items()
     return json.loads(result.stdout)
 
 
+def _run_architecture_boundary_probe(statement: str) -> dict[str, bool]:
+    code = f"""
+import json
+import sys
+sys.path.insert(0, {str(SRC)!r})
+{statement}
+modules = {{
+    "torch": "torch" in sys.modules,
+    "data_factory": "kd_sensing.engine.data_factory" in sys.modules,
+    "deepsense6g": "kd_sensing.data.datasets.deepsense6g" in sys.modules,
+    "models": any(name.startswith("kd_sensing.models") for name in sys.modules),
+    "visualization_core": "kd_sensing.diagnostics.visualization.core" in sys.modules,
+    "trainer": "kd_sensing.engine.trainer" in sys.modules,
+}}
+print(json.dumps(modules, sort_keys=True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return json.loads(result.stdout)
+
+
 def _tracked_paths() -> list[str]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -166,13 +191,29 @@ def test_duplicate_manifest_fallback_wrapper_is_not_reintroduced():
 
 
 def test_openspec_specs_have_real_purpose_text():
-    violations = [
-        path.relative_to(ROOT).as_posix()
-        for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md"))
-        if "TBD - created by archiving" in path.read_text(encoding="utf-8")
-    ]
+    violations = []
+    for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md")):
+        purpose = _openspec_purpose_text(path)
+        if not purpose or len(purpose) < 50 or purpose == "TBD - created by archiving":
+            violations.append(path.relative_to(ROOT).as_posix())
 
     assert violations == []
+
+
+def _openspec_purpose_text(path: Path) -> str:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "## Purpose":
+            continue
+        body: list[str] = []
+        for item in lines[index + 1 :]:
+            if item.startswith("## "):
+                break
+            stripped = item.strip()
+            if stripped:
+                body.append(stripped)
+        return " ".join(body)
+    return ""
 
 
 @pytest.mark.parametrize(
@@ -192,6 +233,19 @@ def test_light_imports_do_not_import_default_components(statement: str):
         "models": False,
         "deepsense6g": False,
         "synthetic": False,
+    }
+
+
+def test_config_import_does_not_import_runtime_boundaries():
+    modules = _run_architecture_boundary_probe("import kd_sensing.config")
+
+    assert modules == {
+        "torch": False,
+        "data_factory": False,
+        "deepsense6g": False,
+        "models": False,
+        "visualization_core": False,
+        "trainer": False,
     }
 
 
@@ -229,6 +283,33 @@ def test_diagnostics_light_submodule_does_not_import_visualization_stack():
         "viewer_manifest": False,
         "visualization_core": False,
     }
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import kd_sensing.diagnostics.visualization.config",
+        "import kd_sensing.diagnostics.visualization.sampling",
+        "import kd_sensing.diagnostics.visualization.writers",
+    ],
+)
+def test_visualization_light_helpers_do_not_import_render_or_dataset_stack(statement: str):
+    modules = _run_module_presence_probe(
+        statement,
+        {
+            "torch": "torch",
+            "pandas": "pandas",
+            "matplotlib": "matplotlib",
+            "pil_image": "PIL.Image",
+            "data_factory": "kd_sensing.engine.data_factory",
+            "model_builder": "kd_sensing.engine.optim",
+            "visualization_core": "kd_sensing.diagnostics.visualization.core",
+            "visualization_datasets": "kd_sensing.diagnostics.visualization.datasets",
+            "visualization_render": "kd_sensing.diagnostics.visualization.render",
+        },
+    )
+
+    assert modules == {key: False for key in modules}
 
 
 def test_distillation_tool_submodule_does_not_import_training_registry_or_transforms():

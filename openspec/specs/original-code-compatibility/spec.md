@@ -1,7 +1,7 @@
 # original-code-compatibility Specification
 
 ## Purpose
-定义与原始工程复现实验的 checkpoint、配置和行为兼容边界。
+定义与原始工程复现实验的 checkpoint、配置和行为兼容边界，确保迁移到包结构后仍能复核历史实验结果。
 ## Requirements
 ### Requirement: Checkpoint 加载可诊断
 项目 MUST 默认严格加载 teacher、评估和 resume checkpoint。权重结构不匹配时，系统 MUST 抛出包含 checkpoint 路径、模型角色、missing keys 和 unexpected keys 的明确错误；只有用户显式选择非严格加载时，系统 MAY 继续运行。

@@ -1,7 +1,7 @@
 # modality-contracts Specification
 
 ## Purpose
-定义中心化模态顺序、dataset flag、batch key 和默认字段推导契约。
+定义中心化模态顺序、dataset flag、batch key 和默认字段推导契约，确保配置、数据集、模型和诊断共享同一模态语义。
 ## Requirements
 ### Requirement: 中心化模态契约
 项目 MUST 提供单一来源的模态契约，用于描述所有受支持模态的规范名称、固定顺序、dataset flag、样本字段、fusion 输入字段、默认 dataset/model 字段，以及是否支持 cache 或归一化 artifact。image modality MUST 不暴露 image motion cache、motion profile 或 motion encoder 推荐。

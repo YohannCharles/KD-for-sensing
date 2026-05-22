@@ -1,7 +1,7 @@
 # dataset-directory-layout Specification
 
 ## Purpose
-定义本地数据集家族目录布局、可生成数据边界和路径解析约束。
+定义本地数据集家族目录布局、可生成数据边界和路径解析约束，避免源码、原始数据和运行产物之间的责任混淆。
 ## Requirements
 ### Requirement: 数据集家族目录规范
 项目 MUST 在 `dataset/` 下按数据集家族组织本地数据。每个数据集家族 MUST 拥有独立的一级目录，场景、天气或条件等细分 MUST 放在对应家族目录内部。

@@ -7,12 +7,14 @@ import torch
 
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
-from kd_sensing.engine.prediction_objectives import (
-    compute_prediction_loss,
+from kd_sensing.engine.objective_metadata import (
     objective_available_metrics,
     objective_runtime_metadata,
-    prepare_prediction_targets,
     resolve_prediction_objective,
+)
+from kd_sensing.engine.prediction_objectives import (
+    compute_prediction_loss,
+    prepare_prediction_targets,
 )
 from kd_sensing.engine.runtime import (
     autocast_context,

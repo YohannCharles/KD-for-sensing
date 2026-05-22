@@ -1,7 +1,7 @@
 # modular-sequence-model Specification
 
 ## Purpose
-定义模块化序列模型、encoder/core/head 组合和单模态/fusion 复用边界。
+定义模块化序列模型、encoder/core/head 组合和单模态/fusion 复用边界，约束新增模态组件在统一结构中扩展。
 ## Requirements
 ### Requirement: 模块化序列模型结构
 系统 MUST 提供新的模块化序列模型注册入口，用于组合 `encoders`、`projectors`、`representation_core` 和 `heads`。该入口 MUST 支持 image-only 和多模态 fusion 实验，并且 MUST 不要求修改训练、验证和评估循环主体。

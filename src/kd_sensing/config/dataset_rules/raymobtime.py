@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from kd_sensing.config.normalization import RAYMOBTIME_SELECTION_MODEL_TYPES
-from kd_sensing.engine.prediction_objectives import resolve_prediction_objective
+from kd_sensing.engine.objective_metadata import resolve_prediction_objective
 
 
 def validate_raymobtime_config(cfg: dict[str, Any]) -> None:

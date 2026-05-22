@@ -14,7 +14,7 @@ from kd_sensing.config.normalization import (
     uses_image,
     uses_radar,
 )
-from kd_sensing.engine.prediction_objectives import (
+from kd_sensing.engine.objective_metadata import (
     objective_requires_occlusion,
     objective_requires_position,
     resolve_prediction_objective,

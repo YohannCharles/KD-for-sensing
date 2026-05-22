@@ -1,7 +1,7 @@
 # conditional-utility-audit Specification
 
 ## Purpose
-定义弱/强模态条件效用审计的数据输入、统计输出和可复核分析流程。
+定义弱/强模态条件效用审计的数据输入、统计输出和可复核分析流程，确保跨模态增益结论可追溯、可复算并能支撑后续实验决策。
 ## Requirements
 ### Requirement: Conditional audit subset registry
 系统 MUST 提供 Conditional Utility Audit 使用的统一 subset registry。Registry MUST 使用中心模态契约标准化模态顺序，并 MUST 定义 `all`、`strong_only`、`strong_plus_image`、`strong_plus_radar`、`strong_plus_lidar`、`single_best_mmwave` 和 `weak_only`。

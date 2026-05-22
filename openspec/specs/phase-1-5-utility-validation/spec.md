@@ -1,7 +1,7 @@
 # phase-1-5-utility-validation Specification
 
 ## Purpose
-定义 Phase 1.5 条件效用验证清单、输入输出和通过标准。
+定义 Phase 1.5 条件效用验证清单、输入输出和通过标准，确保弱/强模态互补性验证具备明确的质量门槛。
 ## Requirements
 ### Requirement: Phase 1.5 运行清单
 系统 MUST 提供 Phase 1.5 Utility Validation 运行清单，用于声明输入 audit 目录、MARF checkpoint matrix、dedicated fixed-subset baseline matrix、随机种子、输出目录和判定阈值。运行清单 MUST 可复现地记录每个产物来自哪个配置、checkpoint、seed 和 subset。系统 MUST 将缺失或未完成的关键产物标记为 `missing` 或 `pending`，并且这些缺失项 MUST 阻止 Phase 1.5 总决策进入 final `complete` 状态。

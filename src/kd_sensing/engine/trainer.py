@@ -43,7 +43,7 @@ from kd_sensing.engine.optim import (
     build_task_criterion,
     optimizer_param_group_summary,
 )
-from kd_sensing.engine.prediction_objectives import (
+from kd_sensing.engine.objective_metadata import (
     objective_runtime_metadata,
     resolve_prediction_objective,
 )
@@ -681,4 +681,3 @@ def _set_epoch_recursive(module, epoch: int) -> None:
         return
     for child in children():
         _set_epoch_recursive(child, epoch)
-

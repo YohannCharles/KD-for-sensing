@@ -1,7 +1,7 @@
 # deepsense6g-scene-selection Specification
 
 ## Purpose
-定义 DeepSense6G 场景选择、数据根目录解析和跨场景输出隔离规则。
+定义 DeepSense6G 场景选择、数据根目录解析和跨场景输出隔离规则，确保训练、评估和诊断在多场景间保持可复现。
 ## Requirements
 ### Requirement: DeepSense6G 场景选择配置
 项目 MUST 支持通过配置选择 DeepSense6G 场景。`data.dataset.type` MUST 使用 `deepsense6g`，`data.dataset.scene` MUST 接受整数和字符串别名，首批 MUST 支持 Scenario 9、Scenario 31 与 Scenario 32。未显式设置场景时，通用 DeepSense6G 配置 MUST 默认使用 Scenario 31。旧 `the scene-9 dataset-type spelling`、`scenario31` 和 `scenario32` dataset type 配置 MUST 被拒绝并给出迁移提示。

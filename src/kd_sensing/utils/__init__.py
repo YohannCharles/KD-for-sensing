@@ -5,7 +5,6 @@ from .paths import (
     project_root,
     resolve_path,
 )
-from .seed import set_seed
 
 __all__ = [
     "project_root",
@@ -23,6 +22,11 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name == "set_seed":
+        from .seed import set_seed
+
+        globals()[name] = set_seed
+        return set_seed
     if name in {
         "CheckpointResolution",
         "archive_best_checkpoint",

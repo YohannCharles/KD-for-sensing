@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from kd_sensing.engine.prediction_objectives import (
+from kd_sensing.engine.objective_metadata import (
     objective_history_fields,
     objective_optional_history_fields,
 )

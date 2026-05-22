@@ -1,7 +1,7 @@
 # deepverse-dt31-data-generation Specification
 
 ## Purpose
-定义 DeepVerse DT31 数据生成、cache、split 和 label 构建流程。
+定义 DeepVerse DT31 数据生成、cache、split 和 label 构建流程，确保可生成数据集的产物结构、输入来源和标签语义清晰。
 ## Requirements
 ### Requirement: DeepVerse DT31 generator loads scenario parameters
 系统 MUST 提供 DeepVerse6G-DT31 数据生成入口，使用 `deepverse.ParameterManager` 和 `deepverse.Dataset` 加载场景参数，并在外部依赖缺失时给出明确错误。

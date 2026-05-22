@@ -1,7 +1,7 @@
 # csi-channel-data Specification
 
 ## Purpose
-定义 CSI 序列数据列、样本字段和与多模态数据加载的契约。
+定义 CSI 序列数据列、样本字段和与多模态数据加载的契约，确保 CSI 数据能按统一模态接口参与训练、诊断和缓存流程。
 ## Requirements
 ### Requirement: CSI 序列列与样本字段
 启用 CSI 模态时，dataset MUST 从序列 CSV 中读取历史 `csi1..csiN` 路径列，并返回样本字段 `csi`。默认情况下，`csi` MUST 表示 clean CSI 历史输入；当显式启用 `csi_degradation` 时，`csi` MUST 表示由 clean 历史 CSI 派生的 degraded 模型输入。无论是否退化，`csi` MUST 不包含未来 CSI。

@@ -1,7 +1,7 @@
 # csi-channel-degradation Specification
 
 ## Purpose
-定义 CSI degradation profile、配置开关和质量诊断要求。
+定义 CSI degradation profile、配置开关和质量诊断要求，使 CSI 扰动实验的输入变换、记录字段和验证结果保持可复核。
 ## Requirements
 ### Requirement: CSI degradation 配置与质量 profile
 系统 MUST 提供可配置的 CSI degradation 能力。该能力 MUST 默认关闭；启用时 MUST 支持 `clean`、`medium` 和 `hard` profile，并 MUST 允许 YAML 配置覆盖 profile 中的单项参数。系统 MUST 在最终配置或运行 metadata 中记录解析后的有效 degradation 参数。

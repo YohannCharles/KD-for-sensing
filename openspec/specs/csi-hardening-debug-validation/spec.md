@@ -1,7 +1,7 @@
 # csi-hardening-debug-validation Specification
 
 ## Purpose
-定义 CSI hardening debug 矩阵、有效性 gate 和单变量验证要求。
+定义 CSI hardening debug 矩阵、有效性 gate 和单变量验证要求，确保 hardening 影响能被隔离、记录并用于排查配置问题。
 ## Requirements
 ### Requirement: CSI hardening debug run matrix
 系统 MUST 提供一个最小 CSI hardening debug run 矩阵，用于先验证配置、数据流和训练路径，再解释完整 sweep 结果。该矩阵 MUST 包含 `A0_original`、`A0_clone_generated`、`A0_clone_generated + pilot disabled through new path`、`C1_view_gate_warmup_only` 和 `C2_no_internal_gru_only`。

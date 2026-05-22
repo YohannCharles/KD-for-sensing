@@ -15,7 +15,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_csi_debug_records,
     write_pilot_noise_validity_artifact,
 )
-from kd_sensing.engine.prediction_objectives import objective_runtime_metadata
+from kd_sensing.engine.objective_metadata import objective_runtime_metadata
 from kd_sensing.engine.run_metadata import prediction_setup_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state

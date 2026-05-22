@@ -1,7 +1,7 @@
 # counterfactual-reliability-fusion Specification
 
 ## Purpose
-定义 CRAF 模型、可靠性 gate、反事实监督和诊断输出契约。
+定义 CRAF 模型、可靠性 gate、反事实监督和诊断输出契约，约束训练配置、指标记录和可解释产物保持一致。
 ## Requirements
 ### Requirement: CRAF fusion 模型构建
 系统 MUST 提供可通过配置构建的 CRAF fusion 模型。该模型 MUST 支持 `image`、`radar`、`gps`、`lidar`、`mmwave` 的任意非空有效组合，并 MUST 复用项目固定模态顺序和模态标准化规则。

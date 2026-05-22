@@ -1,7 +1,7 @@
 # radar-student-model Specification
 
 ## Purpose
-定义 radar student 模型结构、注册名和 KD 兼容行为。
+定义 radar student 模型结构、注册名和 KD 兼容行为，确保雷达学生分支可用于无蒸馏训练和多种蒸馏配置。
 ## Requirements
 ### Requirement: RadarStudent 模型结构
 系统 MUST 提供已注册的 `radar_student` 模型，用于 radar-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarStudentModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。

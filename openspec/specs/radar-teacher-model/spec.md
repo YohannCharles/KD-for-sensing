@@ -1,7 +1,7 @@
 # radar-teacher-model Specification
 
 ## Purpose
-定义 radar teacher 模型结构、注册名和 checkpoint 兼容行为。
+定义 radar teacher 模型结构、注册名和 checkpoint 兼容行为，确保雷达教师分支的训练产物可被评估与蒸馏流程复用。
 ## Requirements
 ### Requirement: RadarTeacher 模型结构
 系统 MUST 提供已注册的 `radar_teacher` 模型，用于 radar-only beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用任务特定 CNN embedding 提取每个时隙的低维特征，经过 LayerNorm、GRU temporal modeling、MHA residual prediction module 和 MLP classifier 后输出 beam logits。

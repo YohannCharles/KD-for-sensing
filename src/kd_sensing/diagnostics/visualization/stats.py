@@ -1,33 +1,11 @@
 from __future__ import annotations
 
-from copy import deepcopy
-import csv
-from dataclasses import asdict, dataclass, replace
-import json
-import math
-from pathlib import Path
 from typing import Any, Iterable
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np
-import pandas as pd
-from PIL import Image
 import torch
 
-from kd_sensing.config.io import dump_config
-from kd_sensing.data.samples import _select_portion
-from kd_sensing.data.scenes import retarget_deepsense_dataset_config
-from kd_sensing.data.transform_ops.io import joined_resource
-from kd_sensing.engine.data_factory import build_dataset, prepare_lidar_normalizer
-from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.engine.run_metadata import dataset_run_metadata
-from kd_sensing.modalities import MODALITY_ORDER, dataset_flags_for_modalities, normalize_modalities
-from kd_sensing.utils.paths import resolve_path
-
-
 from kd_sensing.diagnostics.visualization.config import VisualizationConfig, _json_scalar
 from kd_sensing.diagnostics.visualization.datasets import selected_csv_frame_for_dataset
 from kd_sensing.diagnostics.visualization.sampling import SampleCandidate, collect_candidates, filter_sample_candidates

@@ -18,7 +18,7 @@ from kd_sensing.engine.normalization_artifacts import (
     validate_normalization_artifact_fingerprint,
 )
 from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
-from kd_sensing.engine.prediction_objectives import (
+from kd_sensing.engine.objective_metadata import (
     objective_requires_occlusion,
     objective_requires_position,
     objective_runtime_metadata,
