@@ -344,6 +344,17 @@ def test_lidar_quality_keeps_raw_zero_ratio_after_model_input_zscore():
     assert "raw_extreme_sparsity" in quality["degradation_reasons"]
 
 
+def test_lidar_quality_accepts_3d_spatial_lidar_tensors():
+    raw = torch.zeros(2, 1, 1, 3, 4, 5)
+    raw[:, :, :, 0, 0, 0] = 1.0
+
+    quality = LidarQualityAccumulator().update(raw).finalize(split="train")
+
+    assert quality["num_frames"] == 2
+    assert quality["channel_mean"] == [pytest.approx(1.0 / 60.0)]
+    assert quality["raw"]["zero_ratio"] == [pytest.approx(59.0 / 60.0)]
+
+
 def test_lidar_models_forward_contracts_and_param_validation():
     extractor = MODELS.build({"type": "lidar_feature_extractor", "n_feature": 64, "in_channels": 3})
     assert isinstance(extractor, LidarFeatureExtractor)

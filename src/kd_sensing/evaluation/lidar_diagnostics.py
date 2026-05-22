@@ -28,10 +28,14 @@ class _LidarTensorStats:
         tensor = torch.as_tensor(lidar).detach().to(dtype=torch.float32, device="cpu")
         if tensor.ndim == 4:
             tensor = tensor.unsqueeze(0)
-        if tensor.ndim != 5:
-            raise ValueError(f"LiDAR quality expects [B, T, C, H, W] or [T, C, H, W], got {tuple(tensor.shape)}.")
-        _, _, channels, _, _ = tensor.shape
-        values = tensor.permute(2, 0, 1, 3, 4).reshape(channels, -1)
+        if tensor.ndim < 5:
+            raise ValueError(
+                "LiDAR quality expects [B, T, C, ...] or [T, C, ...] with at least 2 spatial dims, "
+                f"got {tuple(tensor.shape)}."
+            )
+        channels = tensor.shape[2]
+        channel_first_order = [2, 0, 1, *range(3, tensor.ndim)]
+        values = tensor.permute(*channel_first_order).reshape(channels, -1)
         channel_sum = values.sum(dim=1).numpy()
         channel_sumsq = values.square().sum(dim=1).numpy()
         channel_zero = values.abs().le(float(self.zero_epsilon)).sum(dim=1).numpy()
@@ -48,7 +52,7 @@ class _LidarTensorStats:
         self.zero_count_ += channel_zero
         self.abs_max_ = np.maximum(self.abs_max_, channel_abs_max)
         self.value_count_ += int(values.shape[1])
-        frames = tensor.reshape(-1, channels, tensor.shape[-2], tensor.shape[-1])
+        frames = tensor.reshape(-1, channels, *tensor.shape[3:])
         self.frame_count_ += int(frames.shape[0])
         self.nonempty_frame_count_ += int(frames.abs().reshape(frames.shape[0], -1).sum(dim=1).gt(self.zero_epsilon).sum().item())
         return self
