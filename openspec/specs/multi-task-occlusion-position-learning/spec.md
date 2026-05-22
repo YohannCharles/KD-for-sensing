@@ -1,7 +1,7 @@
 # multi-task-occlusion-position-learning Specification
 
 ## Purpose
-TBD - created by archiving change add-occlusion-position-heads. Update Purpose after archive.
+定义 occlusion/position 辅助监督、多任务 loss、metrics 和 artifact 记录契约。
 ## Requirements
 ### Requirement: 多任务辅助监督配置
 系统 MUST 提供可配置的多任务辅助监督开关，用于同时启用或关闭遮挡检测目标、位置估算目标、辅助 head、损失权重和评估指标。默认配置 MUST 保持 beam-only 行为，不读取辅助标签、不创建辅助 head、不改变主 loss。
@@ -86,4 +86,3 @@ TBD - created by archiving change add-occlusion-position-heads. Update Purpose a
 - **WHEN** 验证或评估输出 `position` 且 batch 包含 `position_target`
 - **THEN** metrics MUST 包含米制 position RMSE
 - **AND** 计算 MUST 只使用 `position_valid` 为真的位置
-

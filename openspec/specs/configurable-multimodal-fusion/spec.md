@@ -1,7 +1,8 @@
 # configurable-multimodal-fusion Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-modality-fusion. Update Purpose after archive.
+定义多模态 fusion 配置的模态选择、模型类型、KD/辅助目标、高级方法兼容以及 virtual overlay 接管实体 YAML 后的运行语义。
+
 ## Requirements
 ### Requirement: Fusion 模态选择配置
 Fusion teacher 和 fusion student MUST 支持通过 `modalities` 配置选择参与融合的模态。`modalities` MUST 是 `image`、`radar`、`gps`、`lidar`、`mmwave`、`csi` 的非空列表；默认值 MUST 保持既有 image+radar 行为。
@@ -439,22 +440,27 @@ CRAF、MARF、G2D 和后续高级 fusion 方法配置 MUST 支持通过 base 配
 - **AND** scene 信息 MUST 只通过 dataset scene、输出 scene 目录或运行 metadata 表达
 
 ### Requirement: 高级 fusion 实体 YAML 兼容
-现有 `configs/fusion/*.yaml` 高级方法实体配置 MUST 继续可加载，并 MUST 与 overlay 解析语义兼容。若同一路径同时存在实体 YAML 和虚拟 overlay 规则，实体 YAML MUST 优先；训练产物仍 MUST 保存完整 `final_config.yaml` 以保证复现。
+高级 fusion 配置 MUST 支持实体 YAML 与 virtual overlay 两种入口，但实体 YAML 不再作为长期保留要求。仍保留的 `configs/fusion/*.yaml` 高级方法实体配置 MUST 继续可加载，并 MUST 与 overlay 解析语义兼容。若同一路径同时存在实体 YAML 和 virtual overlay 规则，实体 YAML MUST 优先；若实体 YAML 已被删除，等价 virtual overlay MUST 生成完整配置，训练产物仍 MUST 保存完整 `final_config.yaml` 以保证复现。
 
-#### Scenario: 现有实体 YAML 优先
-- **WHEN** 用户加载一个已经存在的 `configs/fusion/*.yaml` 文件
+#### Scenario: 保留实体 YAML 优先
+- **WHEN** 用户加载一个仍存在的 `configs/fusion/*.yaml` 文件
 - **THEN** 系统 MUST 使用该实体 YAML 的内容
-- **AND** 不得用虚拟 overlay 规则覆盖实体 YAML 中显式配置的字段
+- **AND** 不得用 virtual overlay 规则覆盖实体 YAML 中显式配置的字段
 
 #### Scenario: overlay 与实体配置语义一致
 - **WHEN** 一个高级 fusion 方法同时有实体 YAML 和等价 overlay 入口
 - **THEN** 两种入口解析后的关键语义 MUST 一致，包括 task、modalities、model type、loss/distillation type、training schedule 和 run_name
 - **AND** 差异字段 MUST 是显式记录的兼容或实验差异
 
+#### Scenario: 删除冗余实体 YAML 后 overlay 接管
+- **WHEN** 一个高级 fusion 实体 YAML 已确认可由 overlay 无损生成并从源码删除
+- **THEN** 用户加载对应声明支持的配置路径时 MUST 仍得到完整配置
+- **AND** 运行 artifact MUST 不依赖被删除 YAML 文件
+
 #### Scenario: 配置矩阵测试覆盖 overlay
 - **WHEN** 开发者运行 fusion 配置矩阵测试
 - **THEN** 测试 MUST 覆盖高级方法 overlay 入口的可加载性和关键字段
-- **AND** 测试 MUST 验证现有实体 YAML 仍按兼容语义加载
+- **AND** 测试 MUST 验证仍保留的实体 YAML 按兼容语义加载
 
 ### Requirement: Fusion 支持 RGB image profile
 包含 image modality 的 fusion 配置 MUST 显式或隐式携带 image profile。默认 image profile MUST 为 `rgb_imagenet`；模块化 fusion 或 ResNet-18 fusion 配置 MUST 默认使用 `rgb_imagenet`，并让 dataset、batch 准备和 image encoder 使用同一个 profile。
@@ -685,4 +691,3 @@ Snapshot fusion baseline MUST 不使用 `fusion_teacher`、`fusion_student` 的 
 - **WHEN** 配置 `modalities: ["mmwave", "csi"]`
 - **THEN** 模型 MUST 分别调用 mmWave encoder 和 CSI encoder
 - **AND** 两个 projected feature MUST 在 batch、time 和 `d_model` 维度上兼容
-

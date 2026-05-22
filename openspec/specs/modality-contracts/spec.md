@@ -1,7 +1,7 @@
 # modality-contracts Specification
 
 ## Purpose
-TBD - created by archiving change clarify-architecture-boundaries. Update Purpose after archive.
+定义中心化模态顺序、dataset flag、batch key 和默认字段推导契约。
 ## Requirements
 ### Requirement: 中心化模态契约
 项目 MUST 提供单一来源的模态契约，用于描述所有受支持模态的规范名称、固定顺序、dataset flag、样本字段、fusion 输入字段、默认 dataset/model 字段，以及是否支持 cache 或归一化 artifact。image modality MUST 不暴露 image motion cache、motion profile 或 motion encoder 推荐。
@@ -187,4 +187,3 @@ TBD - created by archiving change clarify-architecture-boundaries. Update Purpos
 - **WHEN** 用户加载现有 DeepSense6G、MMW 或 CSI 配置
 - **THEN** 数据构建流程 MUST 不设置 `use_coord` 或 `use_ray`
 - **AND** batch 准备 MUST 不要求 `coord` 或 `ray` 字段
-

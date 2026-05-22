@@ -1,7 +1,7 @@
 # experiment-artifact-registry Specification
 
 ## Purpose
-TBD - created by archiving change stabilize-experiment-artifacts. Update Purpose after archive.
+定义训练/评估 artifact、checkpoint registry、sidecar metadata 和复现所需记录。
 ## Requirements
 ### Requirement: 最佳 checkpoint 归档
 训练流程 MUST 提供统一的最佳 checkpoint 归档能力。默认归档目录 MUST 为 `outputs/best_checkpoints/`，并且可通过配置覆盖。每次训练结束时，归档目录 MUST 至少保存当前配置在验证 Top-1 accuracy 上最高的 checkpoint；当训练过程中出现新的最高验证 Top-1 accuracy 时，系统 MAY 立即更新归档。
@@ -168,4 +168,3 @@ Teacher reliability registry MUST 按 metrics 或 checkpoint metadata 中声明�
 - **THEN** teacher reliability registry MUST 保留 objective checkpoint 的指标
 - **AND** registry MAY 记录最高 Top-1 epoch 和 Top-1 value 作为诊断字段
 - **AND** Stage 2/3 默认 teacher 加载 MUST 使用 objective checkpoint 路径
-

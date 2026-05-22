@@ -1,7 +1,7 @@
 # cls-token-transformer-fusion Specification
 
 ## Purpose
-TBD - created by archiving change add-cls-token-transformer-fusion-default. Update Purpose after archive.
+定义 CLS-token Transformer fusion student 的配置、构建和兼容行为。
 ## Requirements
 ### Requirement: CLS-token Transformer fusion 模型构建
 系统 MUST 提供可通过 registry 构建的 CLS-token Transformer fusion 模型。该模型 MUST 使用现有 `experiment.task: fusion` 输入契约，支持 `image`、`radar`、`gps`、`lidar`、`mmwave` 的任意合法非空组合，并默认适配五模态融合。
@@ -156,4 +156,3 @@ CLS-token Transformer fusion MUST 支持将 `occlusion_head` 和 `position_head`
 - **WHEN** 配置设置 `experiment.objective: position` 但 `model.student.auxiliary_heads.position` 未启用
 - **THEN** 系统 MUST 拒绝加载配置
 - **AND** 错误信息 MUST 提示启用 `model.student.auxiliary_heads.position=true`
-

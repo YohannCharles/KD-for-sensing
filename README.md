@@ -1,80 +1,51 @@
 # KD for Sensing
 
-本仓库现已整理为可安装的 `src/kd_sensing` 包，并提供基于配置文件的训练、评估和预处理入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态感知知识蒸馏实验工作流，主要覆盖 DeepSense6G、MMW 和 Raymobtime 数据集家族中的训练、评估、预处理、诊断和可视化入口。
 
 ## 安装
 
-```bash
-conda activate kd_mm_beam
-pip install -e .
-```
-
-包导入过程不会产生副作用：
+所有项目相关 Python 命令都使用 `kd_mm_beam` 环境：
 
 ```bash
-python -c "import kd_sensing"
+conda run -n kd_mm_beam python -m pip install -e .
+conda run -n kd_mm_beam python -c "import kd_sensing"
 ```
 
-## 目录结构
+安装后可用 console scripts：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --help
+conda run -n kd_mm_beam kd-sensing-evaluate --help
+conda run -n kd_mm_beam kd-sensing-preprocess --help
+conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
+conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
+```
+
+等价包内 CLI 入口形如：
+
+```bash
+conda run -n kd_mm_beam python -m kd_sensing.cli.train --help
+conda run -n kd_mm_beam python -m kd_sensing.cli.export_viewer_manifest --help
+```
+
+## 目录概览
 
 ```text
-configs/
-  image/          # 仅图像模型：无 KD、logits KD、RKD 配置
-  radar/          # 仅雷达模型：无 KD、logits KD、RKD 配置
-  gps/            # 仅 GPS/position 模型：无 KD、KD 和 GPS-Rel-Polar 配置
-  lidar/          # 仅 LiDAR BEV 模型：无 KD、logits KD、RKD 配置
-  mmwave/         # 仅 mmWave power vector 模型：无 KD、logits KD、RKD 配置
-  fusion/         # 可选 image/radar/gps/lidar/mmwave 融合模型配置
-  preprocess/     # CSV、雷达、序列预处理配置
-  raymobtime/      # Raymobtime s008 current snapshot beam selection 配置
-scripts/
-  train.py
-  evaluate.py
-  preprocess.py
-tools/
-  visualization/ # Gradio 交互式多模态样本浏览器、manifest 导出和运行文档
-src/kd_sensing/
-  cli/
-  config/
-  data/
-    transform_ops/ # image/radar/GPS/LiDAR/mmWave 转换实现
-  diagnostics/
-    viewer_manifest.py # Gradio viewer manifest 导出
-    visualization/     # manifest/viewer 相关诊断实现
-  distillation/
-  engine/
-    data_factory.py
-    modality_resolution.py
-    cache_policy.py
-    normalization_artifacts.py
-    run_metadata.py
-    optim.py
-  evaluation/
-  modalities.py    # 固定模态顺序、dataset flag、sample/batch key 和默认字段契约
-  models/
-  preprocessing/
-  utils/
+configs/          # 训练、评估和预处理配置；高级 fusion 优先由 canonical/overlay recipe 生成
+docs/             # 实验矩阵、数据集说明、扩展指南和性能调优说明
+openspec/specs/   # 当前需求和架构契约
+scripts/          # 保留的薄 alias、研究诊断和数据准备脚本
+src/kd_sensing/   # 包内 CLI、config、data、engine、models、diagnostics 等实现
+tests/            # 架构边界、配置加载、训练/诊断单元测试
+tools/analysis/   # 研究分析脚本
+tools/visualization/ # Gradio viewer 和 viewer 支持工具
 ```
 
-大型数据和预训练权重继续保留在原有位置：
-
-- `dataset/` 是本地 DeepSense6G 数据输入，默认由 `.gitignore` 排除。
-- `All_models/` 中已跟踪的 `*.pth` 和 `params_*.txt` 是历史复现实验资料，不再作为默认
-  teacher/evaluation checkpoint 解析来源。当前运行时使用 checkpoint registry，或通过
-  `distillation.teacher_model_name` / `--weights` 显式传入 checkpoint 路径。
-- 新训练、评估或诊断生成的 checkpoint、cache、`outputs/`、`logs/` 和 TensorBoard 产物是本地运行产物，
-  已由 `.gitignore` 中的目录或 `*.pth` / `*.pt` / `*.ckpt` 规则覆盖，不应进入源码变更。
-
-配置文件中的相对路径会从项目根目录解析，因此可以在子目录中启动命令。
-
-`kd_sensing.config`、`kd_sensing.utils.paths`、`kd_sensing.data.scenes` 和
-`kd_sensing.registries` 是轻量导入边界；查看配置或 registry 对象不会导入默认 dataset、model、
-diagnostics 或训练模块。需要构建内置组件时，engine 会显式调用
-`kd_sensing.registries.import_default_components()` 完成注册。
+配置相对路径从项目根目录解析，因此可以在子目录中启动命令。
 
 ## 快速健康检查
 
-在完整回归前，可先运行以下分层检查快速暴露项目结构问题。所有命令都使用 `kd_mm_beam` 环境：
+窄改动优先运行相关测试。涉及架构、导入边界、CLI 或公共 workflow 时，先跑：
 
 ```bash
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
@@ -83,767 +54,39 @@ conda run -n kd_mm_beam pytest tests/test_phase_1_5_utility_validation.py -q
 conda run -n kd_mm_beam pytest tests/test_complementarity_analysis.py tests/test_gradio_complementarity_explorer.py -q
 ```
 
-最终验收仍以全量回归为准：
+最终回归：
 
 ```bash
 conda run -n kd_mm_beam pytest -q
 ```
 
-## DeepSense6G 场景
+## 主要入口
 
-默认 DeepSense6G 场景是 Scenario 31。训练配置使用 `data.dataset.scene: 31`，数据根目录会自动解析为
-`dataset/DeepSense6G/scenario31`，训练输出默认写入 `outputs/scene31/<run_name>/`。推荐把本地
-DeepSense6G 数据按家族目录组织：
-
-```text
-dataset/
-  DeepSense6G/
-    scenario9/
-    scenario31/
-    scenario32/
-```
-
-要切回 Scenario 9 或显式运行 Scenario 32，可以用命令行覆盖：
+训练：
 
 ```bash
-python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=9
-python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=32
+conda run -n kd_mm_beam kd-sensing-train --config configs/image/teacher_no_kd.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
 ```
 
-`data.dataset.scene` 也接受 `scene9`、`scenario9`、`scene31`、`scenario31`、`scene32` 和
-`scenario32`。场景专用
-dataset type 已删除；旧配置需要改为 `data.dataset.type: deepsense6g` 并设置对应
-`data.dataset.scene`。已有历史训练目录保留在各自的 `outputs/<scene_slug>/` 分组下，新的默认训练不会覆盖
-Scenario 9 或 Scenario 32 结果。
-
-如果本地数据仍在旧目录 `dataset/scenario9`、`dataset/scenario31` 或 `dataset/scenario32`，可以任选一种
-迁移方式：
+评估：
 
 ```bash
-mkdir -p dataset/DeepSense6G
-mv dataset/scenario31 dataset/DeepSense6G/scenario31
-# 或者保留旧目录并创建软链接
-ln -s ../scenario31 dataset/DeepSense6G/scenario31
-# 或者在配置/命令行中显式继续使用旧目录
-python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml \
-  data.dataset.data_root=dataset/scenario31
+conda run -n kd_mm_beam kd-sensing-evaluate \
+  --config configs/image/teacher_no_kd.yaml \
+  --weights outputs/scene31/image_teacher_no_kd/checkpoints/best.pth
 ```
 
-未来 MMW 数据预留为同级数据集家族目录，天气条件下分别放传感器数据和信道数据：
-
-```text
-dataset/
-  MMW/
-    sunny/
-      Sensor_Data/
-      Channel_Data/
-    rainy/
-      Sensor_Data/
-      Channel_Data/
-    foggy/
-      Sensor_Data/
-      Channel_Data/
-```
-
-MMW Town10 skybridge 准备流程不下载数据，默认只消费用户本地已有的
-`Town10_skybridge_seed24.zip` 和信道 `Town10.zip`。把 zip 路径写入
-`configs/preprocess/mmw_town10_skybridge.yaml`，或在命令行覆盖：
+预处理：
 
 ```bash
-conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
-  --config configs/preprocess/mmw_town10_skybridge.yaml \
-  -o mmw.sensor_zip=/abs/path/Town10_skybridge_seed24.zip \
-  -o mmw.channel_zip=/abs/path/Town10.zip
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/sequences_ra_gps_lidar.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/sequences_snapshot_next_frame.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
-输出会保留原始层级并写入轻量派生产物：
-
-```text
-dataset/MMW/sunny/
-  Sensor_Data/Town10/Town10_skybridge_seed24/...
-  Channel_Data/Town10/Town10_skybridge_seed24/...
-  Prepared/Town10_skybridge_seed24/
-    beam_power/<agent>/<frame>.txt
-    manifests/frame_manifest.csv
-    splits/train.csv
-    splits/test.csv
-    splits/split_metadata.json
-    metadata.json
-    sanity_report.json
-```
-
-生成后的 CSV 可用 `data.dataset.type: mmw`、`data.dataset.scene: Town10_skybridge_seed24`
-和 `data.dataset.condition: sunny` 接入现有 mmWave 或 image+mmWave 训练流程。
-
-## Raymobtime s008
-
-Raymobtime s008 作为独立数据集家族，默认根目录为 `dataset/Raymobtime/s008`，任务语义为
-current snapshot beam selection。预处理入口、训练配置、评估命令和 sensing-only / sensing+ray
-实验边界见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。Raymobtime image
-复用现有 `resnet18_imagenet_rgb` encoder；LiDAR 使用 s008 3D occupancy grid 专用的轻量 3D CNN。
-
-## 训练
-
-推荐按 `teacher_no_kd -> student_no_kd -> logits_kd/rkd` 的顺序运行。KD 配置会从当前场景的
-checkpoint registry 读取同模态 teacher no-KD 的最高验证 Top-1 权重；registry 缺失时会报错并列出
-候选信息。需要指定 teacher 或评估权重时，使用 `distillation.teacher_model_name` 的绝对路径或评估入口
-`--weights`。
-
-默认 beam 预测任务的 early stopping 监控验证 `val_adba`，即所有未来目标时隙 DBA 的平均值，
-比较方向为 `max`。objective-aware 训练会按目标切换默认主指标：`beam -> val_adba/max`，
-`occlusion -> val_occlusion_blocked_f1/max`，`position -> val_position_rmse/min`，
-`multitask -> val_multitask_loss/min`。`training.min_delta` 表示对应监控指标至少需要提升的幅度；
-`checkpoints/best.pth` 默认对应该指标的最佳 epoch。
-
-训练入口 `kd_sensing.engine.trainer.train` 保留为生命周期编排器。单 batch 的 prepare/forward/loss/backward
-在 `engine.batch_step`，history、epoch log 和 `training_outputs.npz` payload 在 `engine.training_metrics`，
-checkpoint/sidecar/registry 在 `engine.checkpointing`，TensorBoard 标量在 `engine.tensorboard_logging`，
-最终 `resolved_config.yaml`、`final_config.yaml`、`train_log.json` 和诊断 artifact 在 `engine.artifacts`。
-配置加载按 source -> CLI overlay -> normalization -> migration guard -> validation 执行；`config/io.py` 只协调
-`config.source`、`config.normalization`、`config.migration_guards`、`config.validation` 和 dataset rule helper。
-如需恢复 Top-1 或 loss 早停，可以显式覆盖：
-
-```bash
-python scripts/train.py --config configs/image/no_kd.yaml \
-  -o training.early_stopping_metric=top1_val_acc \
-  -o training.early_stopping_mode=max
-
-python scripts/train.py --config configs/image/no_kd.yaml \
-  -o training.early_stopping_metric=val_loss \
-  -o training.early_stopping_mode=min
-```
-
-单模态 canonical 配置矩阵：
-
-| 模态 | Teacher baseline | Student baseline | KD |
-| --- | --- | --- | --- |
-| image | `configs/image/teacher_no_kd.yaml` | `configs/image/student_no_kd.yaml` | `configs/image/logits_kd.yaml`, `configs/image/rkd.yaml` |
-| radar | `configs/radar/teacher_no_kd.yaml` | `configs/radar/student_no_kd.yaml` | `configs/radar/logits_kd.yaml`, `configs/radar/rkd.yaml` |
-| gps | `configs/gps/teacher_no_kd.yaml` | `configs/gps/student_no_kd.yaml` | `configs/gps/logits_kd.yaml`, `configs/gps/rkd.yaml` |
-| lidar | `configs/lidar/teacher_no_kd.yaml` | `configs/lidar/student_no_kd.yaml` | `configs/lidar/logits_kd.yaml`, `configs/lidar/rkd.yaml` |
-| mmwave | `configs/mmwave/teacher_no_kd.yaml` | `configs/mmwave/student_no_kd.yaml` | `configs/mmwave/logits_kd.yaml`, `configs/mmwave/rkd.yaml` |
-
-```bash
-python scripts/train.py --config configs/image/teacher_no_kd.yaml
-python scripts/train.py --config configs/image/student_no_kd.yaml
-python scripts/train.py --config configs/image/logits_kd.yaml
-python scripts/train.py --config configs/image/rkd.yaml
-```
-
-Fusion canonical 配置覆盖固定顺序 `image -> radar -> gps -> lidar -> mmwave` 下的 26 个多模态 slug：
-
-```text
-image_radar, image_gps, image_lidar, radar_gps, radar_lidar, gps_lidar
-image_radar_gps, image_radar_lidar, image_gps_lidar, radar_gps_lidar
-image_radar_gps_lidar
-
-以及包含 mmwave 的所有双模态、三模态、四模态和五模态组合，例如
-image_mmwave, radar_mmwave, gps_mmwave, lidar_mmwave, image_radar_mmwave,
-image_radar_gps_lidar_mmwave
-```
-
-每个 slug 都有四个可加载的 canonical 配置路径。为减少重复 YAML，这些路径通常由配置加载器按文件名生成；
-实体 YAML 仍然优先于生成规则，因此自定义配置可以继续放在对应路径。训练产物中的 `final_config.yaml`
-始终保存完整解析后的配置。
-
-```bash
-python scripts/train.py --config configs/fusion/<slug>_teacher_no_kd.yaml
-python scripts/train.py --config configs/fusion/<slug>_student_no_kd.yaml
-python scripts/train.py --config configs/fusion/<slug>_logits_kd.yaml
-python scripts/train.py --config configs/fusion/<slug>_rkd.yaml
-```
-
-例如 image+radar；即使这些 canonical 文件不在 `configs/fusion/` 中，命令仍会按固定命名规则解析：
-
-```bash
-python scripts/train.py --config configs/fusion/image_radar_teacher_no_kd.yaml
-python scripts/train.py --config configs/fusion/image_radar_student_no_kd.yaml
-python scripts/train.py --config configs/fusion/image_radar_logits_kd.yaml
-python scripts/train.py --config configs/fusion/image_radar_rkd.yaml
-```
-
-默认/recommended fusion student 路线现在使用 `model.student.type: cls_token_transformer_fusion`。
-该模型把启用模态的帧级特征按时间优先序列化为独立 token，前置可学习 CLS token，再通过
-Transformer Encoder 输出 future beam logits。`configs/fusion/all_modalities_no_kd.yaml` 是五模态
-CLS-token Transformer no-KD 入口；canonical `<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml`
-和 `<slug>_rkd.yaml` 也默认构建该 student。需要复现实验中的 early-concat、旧 token transformer、
-CRAF、MARF 或 G2D baseline 时，继续使用显式配置路径或 overlay。
-
-Snapshot next-frame baseline 用于隔离历史窗口收益：输入只取当前帧 `seq_len=1`，监督只取下一帧
-`num_pred=1`，模型 core 为 `snapshot_frame`，不构建 GRU/RNN/LSTM。先生成 Scenario 31 的 80/20
-完整 `seq_index` train/validation split：
-
-```bash
-conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml
-```
-
-然后运行单模态或五模态 no-KD baseline：
-
-```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/gps/snapshot_next_frame_no_kd.yaml
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/all_modalities_snapshot_next_frame_no_kd.yaml
-```
-
-单模态入口为 `configs/<image|radar|gps|lidar|mmwave>/snapshot_next_frame_no_kd.yaml`；fusion 入口为
-`configs/fusion/<canonical_slug>_snapshot_next_frame_no_kd.yaml`。这些配置默认读取
-`train_seqs_SNAPSHOT_NEXT_FRAME.csv` 和 `val_seqs_SNAPSHOT_NEXT_FRAME.csv`，并在 metadata 中记录
-`variant=snapshot_next_frame`、`uses_history_window=false`、`uses_temporal_core=false` 和
-`split_protocol=snapshot_next_frame_balanced_seq`。mmWave snapshot 的语义是“当前帧 mmWave power 预测下一帧”，
-不是完全无 radio context 的 ablation。
-
-## G2D 多模态失衡 baseline
-
-G2D 作为 CRAF/MARF 的对照 baseline，使用 image、radar、GPS、LiDAR、mmWave 五个单模态 teacher 指导五模态 fusion student。当前实现严格使用 future-only 标签：
-
-```text
-labels: [B, 3] = [t+1, t+2, t+3]
-logits: [B, 3, 64]
-```
-
-入口：
-
-```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml
-```
-
-运行前需要同一 scene 的五个单模态 teacher checkpoint 已写入 `outputs/<scene>/best_checkpoints/`，或在配置中为每个 teacher 显式设置 checkpoint。`g2d_global` 会按 teacher confidence 的弱到强顺序启用 SMP 梯度屏蔽；`g2d_horizon` 主要保存 `t+1/t+2/t+3` 的 horizon-wise 模态排序诊断。
-
-诊断文件写入：
-
-```text
-outputs/<scene>/<run_name>/diagnostics/g2d_epoch_<epoch>.json
-```
-
-汇总多模态失衡结果：
-
-```bash
-conda run -n kd_mm_beam python tools/analysis/collect_multimodal_imbalance_results.py
-```
-
-默认 camera teacher/student/no-KD/KD baseline 使用 `rgb_imagenet` profile 和 ImageNet 预训练
-`resnet18_imagenet_rgb` encoder，配置入口包括 `configs/image/teacher_no_kd.yaml` 和
-`configs/image/student_no_kd.yaml`。默认 LiDAR 单模态配置使用 `modular_sequence` + `lidar_cnn`
-encoder，并默认使用 raw BEV；需要 train-split streaming stats normalization 时必须显式开启
-`data.dataset.lidar_normalization.enabled=true`。包含 image 或 LiDAR 的 canonical fusion
-配置也默认复用同一 modular encoder profile，避免单模态与 fusion 分支不一致。
-Checkpoint 加载默认严格校验 missing/unexpected keys，结构不匹配会直接报错；需要兼容性调试时可显式设置
-`checkpoint.strict_load=false`。
-
-训练会将当前配置最高验证 Top-1 checkpoint 复制到当前场景的默认 registry 目录
-`outputs/<scene_slug>/best_checkpoints/`，文件名包含配置 slug、角色/KD 模式和精度，例如
-`gps_teacher_no_kd_acc_0.8123.pth`。同名 checkpoint 会写入 `.json` sidecar，记录源运行目录、
-epoch、split 样本数、加载来源和 GPS/LiDAR 归一化工件。可通过
-`checkpoint.registry.dir`、`checkpoint.registry.enabled` 和 `checkpoint.registry.prefer` 调整目录、
-开关和加载优先级。
-
-## Teacher-prior CRAF
-
-Scenario 32 的 teacher-prior CRAF 使用三阶段流程。Stage 1 继续复用现有五个单模态
-teacher no-KD 入口，训练完成后每个 run 会写出 `teacher_metrics.json`，其中包含 registry
-所需的 `modality`、`best_epoch`、checkpoint 路径、selection metric/mode、验证
-Top-1/Top-3/Top-5、ADBA 和训练 Top-1。默认 teacher registry 使用 early-stopping objective
-对应的 `checkpoints/best.pth`；`best_top1.pth` 只作为显式 Top-1 选择或诊断使用。
-
-```bash
-python scripts/train.py --config configs/image/teacher_no_kd.yaml
-python scripts/train.py --config configs/radar/teacher_no_kd.yaml
-python scripts/train.py --config configs/gps/teacher_no_kd.yaml
-python scripts/train.py --config configs/lidar/teacher_no_kd.yaml
-python scripts/train.py --config configs/mmwave/teacher_no_kd.yaml
-```
-
-构建 teacher reliability registry：
-
-```bash
-python scripts/build_teacher_registry.py \
-  --teacher-root outputs/scene31 \
-  --output outputs/scene31/teacher_registry.json \
-  --scene 31 \
-  --prior-mode metric
-```
-
-Scenario 31 默认使用 teacher metrics 生成 prior，不复用 Scenario 32 的手动 prior。显式运行
-Scene32 时仍可使用手动 prior：`image=0.20`、`radar=0.20`、`gps=0.85`、`lidar=0.15`、
-`mmwave=0.90`。
-
-```bash
-python scripts/build_teacher_registry.py \
-  --teacher-root outputs/scene31 \
-  --output outputs/scene31/teacher_registry.json \
-  --scene 31 \
-  --prior-mode metric \
-  --prior-min 0.05 \
-  --prior-max 0.95
-```
-
-Stage 2 加载 registry 中的 teacher encoder，冻结 encoder，并训练 fusion transformer、head 和
-`prior_residual_sigmoid` gate：
-
-```bash
-python scripts/train.py --config configs/fusion/stage2_teacher_init_prior_residual.yaml
-```
-
-Stage 3 从 Stage 2 best checkpoint 继续，只解冻 GPS/mmWave encoder，并使用独立参数组学习率：
-
-```bash
-python scripts/train.py --config configs/fusion/stage3_selective_ft_gps_mmwave.yaml
-```
-
-主实验默认关闭 counterfactual、unimodal auxiliary 和 KD 的有效权重，仅保留 task loss、
-beam soft 小权重和 prior regularization。训练日志中重点看
-`craf/gate_mean/<modality>`、`craf/prior/<modality>`、
-`craf/residual_logit_mean/<modality>`、`train_prior_regularization_loss`、
-`teacher_prior.encoder_load`、`teacher_prior.encoder_freeze` 以及
-`modality_subsets` 中 `gps`、`mmwave`、`strong_only`、`weak_only`、`all` 的验证指标。
-
-如果 registry 路径不存在，报错会包含解析后的绝对路径；如果 strict teacher encoder 加载失败，
-报错会列出模态、checkpoint、missing/unexpected key 或 shape mismatch。调试形状差异时可临时设置
-`teacher.strict=false` 或使用 `checkpoint.strict_load=false`，但主实验应保持 strict 加载。
-
-旧 fusion 三个顶层别名已删除；使用对应 image+radar canonical 名称：
-
-| 旧文件名 | 当前入口 |
-| --- | --- |
-| `fusion/no_kd.yaml` | `configs/fusion/image_radar_student_no_kd.yaml` |
-| `fusion/logits_kd.yaml` | `configs/fusion/image_radar_logits_kd.yaml` |
-| `fusion/rkd.yaml` | `configs/fusion/image_radar_rkd.yaml` |
-
-Radar-only 配置注册名保持 `radar_teacher` 和 `radar_student`；对应 Python 类名分别为
-`RadarModalityNet` 和 `RadarStudentModalityNet`，与 image/GPS 的 `*ModalityNet`
-命名风格一致。如果使用自定义 RadarTeacher 权重，可以覆盖路径：
-
-```bash
-python scripts/train.py --config configs/radar/logits_kd.yaml \
-  --override distillation.teacher_model_name=/path/to/checkpoints/best.pth
-```
-
-GPS-only 配置统一使用 `gps_feature_mode: relative_polar`，即基于 UE-BS 相对 UTM 坐标构造
-`[dist, sin_theta, cos_theta]`。六组 GPS 预处理对比后，主路径只保留 GPS-Rel-Polar：
-
-```bash
-python scripts/train.py --config configs/gps/ablation_relative_polar.yaml
-```
-
-LiDAR-only 配置使用 `lidar1..lidar8` 序列列读取点云，并在线转换成 BEV 伪图像：
-默认通道为 height、intensity、density，默认尺寸为 `224x224`，默认 ROI 为
-`[-30, 30, -30, 30, -3, 5]`。内置读取器支持 `.mat`、`.npy` 点云数组、ASCII PCD 和
-文本/CSV 数值点云；二进制 PCD 需要先离线转换为 ASCII PCD 或 `.npy`。
-默认 LiDAR teacher/no-KD baseline 将 `lidar_normalization.enabled` 解析为 `false`，不做全局
-streaming stats normalizer。显式设置 `lidar_normalize=true` 或
-`lidar_normalization.enabled=true, mode=streaming_stats` 时，训练只在 train split 上 fit normalizer，
-并把 `artifacts/lidar_normalizer.npz` 写入运行目录；test/eval split 会复用训练阶段 normalizer，
-不会在 test split 上重新 fit。默认
-`lidar_cache_dir: lidar_bev_cache` 会按 BEV size、ROI、FoV、ground/background 参数生成隔离后的 cache
-子目录，运行 metadata 会记录实际 ROI、FoV、cache 和 normalizer 参数。可显式指定 stats 路径复用：
-
-如果 `teacher_metrics.json` 中的 `degradation_risk.reasons` 包含
-`model_not_above_majority_class`，优先记录并尝试以下 LiDAR ablation：收窄 FoV、调整 ROI、
-重建 BEV cache，或在后续变更中新增 PointNet-style raw point encoder。
-
-```bash
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/lidar/teacher_no_kd.yaml \
-  -o data.dataset.lidar_normalize=true \
-  -o data.dataset.lidar_normalization.enabled=true \
-  -o data.dataset.lidar_normalization.mode=streaming_stats \
-  -o data.dataset.lidar_normalization.stats_path=outputs/cache/lidar_stats_train.npz
-```
-
-使用 `conda run` 训练时建议加 `--no-capture-output` 和 `python -u`，否则 tqdm/stderr 可能不会实时显示。
-
-mmWave-only 配置使用 `mmwave1..mmwave8` 序列列读取 `unit1_pwr_60ghz` /
-`unit1/mmWave_data/mmWave_power_*.txt` 的 64 维 receive-power vector，先做 finite 清洗和 dB 压缩，
-再用训练集 fit 的 `MmWaveStandardScaler` 做 z-score。模型注册名为 `mmwave_teacher` 和
-`mmwave_student`，feature extractor 注册名为 `mmwave_feature_extractor`；训练会保存
-`artifacts/mmwave_scaler.npz`，评估 registry checkpoint 时会复用该 scaler。
-
-注意：当前默认 mmWave 输入和 beam label 都来自同一个 power vector；历史窗口最后一帧仅作为输入，
-不再作为训练 label。默认保持 8 个历史输入 + 3 步未来预测，`num_pred=3` 时目标时隙为
-`[t+1, t+2, t+3]`，便于跨模态比较；后续可另做只使用 `t-1` 历史的 lagged mmWave 消融。
-
-Fusion 模型通过 `model.teacher.modalities` 和 `model.student.modalities` 选择参与融合的模态，
-可用值为 `image`、`radar`、`gps`、`lidar`、`mmwave`。canonical fusion 配置中 teacher/student 的
-`modalities` 始终一致；teacher/no-KD 配置保留明确 teacher baseline，默认 student/KD student
-使用 `cls_token_transformer_fusion`。包含 image 的 canonical teacher/no-KD 配置使用
-`modular_sequence` + `resnet18_imagenet_rgb`，启用 GPS 的配置使用 `gps_feature_mode: relative_polar` 和
-`gps_input_size: 3`，启用 LiDAR 的配置使用 BEV 默认字段和 `lidar_channels: 3`，启用 mmWave 的配置使用
-`mmwave_input_size: 64` 和 `mmwave_normalize: true`。
-
-CLS-token fusion 可选启用遮挡检测和二维位置估算辅助监督。先在序列预处理中打开
-`include_position_targets: true`，生成 `future_gps1..future_gpsH` 和
-`future_bs_gps1..future_bs_gpsH`；遮挡标签由 `future_beam*` 对应 64-beam power vector 的
-`max_power` 训练集分位数阈值生成，默认 `threshold_percentile: 20`。
-
-预测目标现在由 `experiment.objective` 明确选择，`experiment.task` 仍只表示输入路由。合法 objective 为
-`beam`、`occlusion`、`position` 和 `multitask`；旧配置未设置时默认 `beam`。推荐 objective-aware
-fusion 入口使用 `<slug>_<objective>_no_kd.yaml` 命名，例如：
-
-```bash
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_occlusion_no_kd.yaml
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_position_no_kd.yaml
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml
-```
-
-`strong_only_<objective>_no_kd.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_no_kd.yaml`
-解析为 `[image, radar, lidar]`，可用于多任务模态失衡对照。`multitask` canonical 默认使用
-`loss.objective.weights.beam=1.0`、`occlusion=1.0`、`position=1.0`，因此
-`val_multitask_loss` 是三任务等权总 loss；实际权重会写入 `final_config.yaml` 的
-`runtime.prediction_objective.loss_weights`、`train_log.json` 和 `training_outputs.npz`。如需做非等权
-消融，显式覆盖对应权重即可，未覆盖的任务仍保持默认值：
-
-```bash
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml \
-  -o loss.objective.weights.beam=1.0 \
-  -o loss.objective.weights.occlusion=1.0 \
-  -o loss.objective.weights.position=0.25
-```
-
-`configs/fusion/all_modalities_no_kd.yaml` 继续作为五模态 beam 兼容入口。
-
-旧 auxiliary 多任务配置仍可运行：
-
-```bash
-conda run --no-capture-output -n kd_mm_beam python -u scripts/train.py \
-  --config configs/fusion/token_transformer_all_modalities_multitask_no_kd.yaml
-```
-
-相关开关位于 `data.dataset.occlusion_target`、`data.dataset.position_target`、
-`model.student.auxiliary_heads` 和 `loss.auxiliary`。训练日志会记录
-`loss/occlusion`、`loss/position`、`loss/multitask_total`，验证报告会输出实际计算出的遮挡
-accuracy、blocked-class F1 和 position RMSE；未启用或未计算的 auxiliary metric 不再写成
-`0.0`，而是在 `train_log.json` 中记为 `null`、在 `training_outputs.npz` 中记为 `NaN`，TensorBoard
-也不会写 inactive scalar。历史 runs 里未启用任务的 auxiliary 曲线如果显示为 `0.0`，应按对应
-`final_config.yaml` 的 objective/head/target 配置解释为 inactive 占位，不应当作真实零误差或零 F1。
-训练产物会保存 `occlusion_target_stats.json` 和 `position_target_scaler.npz` 以供 test/eval split 复用。
-
-### CRAF 反事实可靠性融合
-
-CRAF 通过 `model.student.type: craf_fusion` 显式启用，不会改变 early-concat `fusion_teacher` /
-`fusion_student` 行为。入口示例包括：
-
-```bash
-python scripts/train.py --config configs/fusion/craf_image_radar_no_kd.yaml
-python scripts/train.py --config configs/fusion/craf_all_modalities_no_kd.yaml
-python scripts/train.py --config configs/fusion/craf_all_modalities_stabilized_no_kd.yaml
-python scripts/train.py --config configs/fusion/token_transformer_image_radar_no_kd.yaml
-```
-
-`craf_fusion` 复用现有 fusion batch 输入和固定模态顺序，将启用模态编码为 token，再用可靠性 gate
-调节每个样本、每个模态的融合贡献。输出 dict 中包含 `logits`、`reliability`、
-`effective_modality_mask`、`unimodal_logits` 和 `confidence`，训练/评估入口会通过统一输出适配器
-只消费 logits 或按配置记录诊断字段。`token_transformer_fusion` 使用相同 tokenization 和
-Transformer fusion，但关闭 reliability gate，适合作为 CRAF 的直接 baseline。
-
-CRAF 相关字段默认关闭，只有配置显式设置权重时才加入训练 loss：
-`model.student.reliability` 控制 `gate_type`、`min_gate`、temperature schedule 和 dataset prior；
-`training.modality_dropout` 控制训练期随机模态保留 mask；
-`training.counterfactual` 控制 `sample_one`、`leave_one_out` 或 `context_marginal` 反事实 gate 监督；
-`loss.beam_soft`、`loss.unimodal_aux`、`loss.uni_weight_warmup`、`loss.uni_weight_after_warmup`
-和 `loss.gate_ramp_epochs` 控制 beam-aware 软标签、单模态辅助 loss 和 gate loss 调度。
-
-推荐实验顺序是：单模态 baseline、默认 `cls_token_transformer_fusion`、显式 early-concat fusion、
-`token_transformer_fusion` baseline、
-CRAF no-KD、CRAF 反事实 gate ablation。第一阶段的真实缺失模态依赖未来 dataset mask 字段；当前主要通过
-`force_modality_mask`、modality dropout 和 counterfactual drop 验证缺失/屏蔽路径。CRAF 与 KD 的组合需要
-单独显式配置和后续验证，第一阶段优先使用 no-KD 配置。
-
-方案 2 稳定化实验建议先跑：
-`token_transformer_all_modalities_no_kd.yaml`、`craf_all_modalities_no_counterfactual.yaml`、
-`craf_all_modalities_stabilized_no_kd.yaml`、`craf_all_modalities_fixed_prior_sanity.yaml`。其中 fixed-prior
-配置使用 `gate_type: fixed_prior`，只作为 GPS/mmWave 强 prior 的诊断检查。关键日志字段包括
-`cf/delta_mean_*`、`cf/target_mean_*`、`cf/target_valid_rate_*`、`craf/gate_temperature`、
-`loss/gate_weight_effective` 和 `loss/unimodal_aux_weight`。如果 `target_valid_rate` 长期过低，优先调小
-`training.counterfactual.ignore_delta_eps`；如果 weak modality reliability 仍偏高，优先对比 fixed-prior
-sanity check 和 `token_transformer_fusion` 结果，区分 gate 监督问题和 backbone 问题。
-
-新增或调整模态时，先更新 `src/kd_sensing/modalities.py` 的 `ModalitySpec`，再补 dataset 读取、
-batch 准备、模型注册和诊断显示逻辑。新代码优先使用窄模块导入：
-`engine.data_factory`、`engine.modality_resolution`、`engine.cache_policy`、
-`engine.normalization_artifacts`、`engine.run_metadata`、`engine.optim` 和
-`data.transform_ops.*`。已删除的聚合导入不会作为公开运行入口保留。
-
-可以使用点号分隔的键覆盖配置值：
-
-```bash
-python scripts/train.py --config configs/image/rkd.yaml training.epochs=1 data.dataset.portion=0.05
-```
-
-当前兼容模型对输入尺寸有结构性限制：image-only 和包含 image 的 fusion 配置要求
-`data.dataset.image_size: [224, 224]`；radar-only 和包含 radar 的 fusion 配置要求 RA/DA
-输入为 `128x64`，即默认 `clipped_range: 128` 和 `fft_tuple` 的第一/第三项为 `64/128`。
-这些限制来自 ResNet-18 RGB/ImageNet 输入契约、LiDAR/Radar BEV/CNN 分支结构和 radar branch 输入约束。
-
-### 吞吐 profiling 与运行参数
-
-训练前可以先用轻量 profile 脚本拆分 dataset、DataLoader、CPU 到 GPU 传输和 step 耗时：
-
-```bash
-conda run -n kd_mm_beam python scripts/profile_training_io.py \
-  --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
-  --samples 32 \
-  --output outputs/profile/fusion_io.json \
-  --csv-output outputs/profile/fusion_io.csv
-```
-
-更多 image/radar/GPS/LiDAR/fusion profile 示例和 cache 复用规则见
-`docs/training_throughput.md`。
-
-默认 `data.cache.policy: auto` 会让包含 LiDAR 的实验自动读取/写入参数隔离的 LiDAR BEV cache；
-RGB/ImageNet image 输入直接读取原始帧，不再使用 image cache。可选策略包括：
-`off`、`read_only`、`auto`、`rebuild`，也可以用 `data.cache.lidar.policy` 单独覆盖 LiDAR。并行运行大量实验且只想复用已有 cache 时，可设置：
-
-```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_lidar_student_no_kd.yaml \
-  -o data.cache.policy=read_only
-```
-
-包含 LiDAR 的实验仍建议先预热 LiDAR BEV cache。
-并行运行多个实验时，默认配置使用较保守的 `num_workers: 4` 和 `prefetch_factor: 1`，避免多个
-训练进程把 CPU worker 和预取队列成倍放大。单个实验可以通过命令行覆盖逐步调高：
-
-```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_rkd.yaml \
-  -o data.dataloader.num_workers=8 \
-  -o data.dataloader.prefetch_factor=2
-```
-
-如果 DataLoader 使用 `pin_memory: true`，默认会启用 `training.transfer.non_blocking: true`，让
-batch tensor 传输使用 non-blocking `.to(device)`。AMP 默认关闭；确认 cache 和 DataLoader 不再卡住后，
-可以在 CUDA 上显式启用：
-
-```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_rkd.yaml \
-  -o training.amp.enabled=true \
-  -o training.amp.dtype=float16
-```
-
-输出会写入 `outputs/<scene_slug>/<run_name>/`，默认是 `outputs/scene31/<run_name>/`，包括：
-
-- `final_config.yaml`
-- `checkpoints/last.pth`
-- `checkpoints/best.pth`：默认按 objective-specific `training.early_stopping_metric` 保存；beam 为 `val_adba`
-- `checkpoints/best_top1.pth`：显式 Top-1 最佳 checkpoint，供诊断和显式 Top-1 registry 使用
-- `metrics.json`
-- `train_log.json`
-- `training_outputs.npz`
-- `artifacts/gps_scaler.npz`、`artifacts/lidar_normalizer.npz`、`artifacts/mmwave_scaler.npz`、`artifacts/occlusion_target_stats.json` 或 `artifacts/position_target_scaler.npz`，仅在对应归一化/辅助目标启用时写入
-- 训练曲线
-- `tensorboard/` TensorBoard event 日志
-
-恢复训练时设置 `training.resume=true` 会从当前场景分组下的 `output.run_name/checkpoints/last.pth`
-恢复；也可以将
-`training.resume` 设为 checkpoint 文件路径。恢复会加载模型、optimizer、scheduler、epoch、最佳验证损失
-以及 early stopping 指标、方向、最佳值和 patience 计数。
-
-可以用 TensorBoard 查看和对比训练曲线：
-
-```bash
-tensorboard --logdir outputs
-```
-
-TensorBoard 标量包含基础训练曲线和 objective-specific 验证指标。beam 预测推荐使用
-`beam/*` 命名空间：
-
-- `beam/accuracy_val`：第一个未来目标时隙 `t+1` 的 Top-1 accuracy，不能直接当作论文表格里的跨 horizon 平均指标。
-- `beam/val_atop3`：所有 `J` 个未来目标时隙 Top-3 accuracy 的平均值。
-- `beam/val_atop5`：所有 `J` 个未来目标时隙 Top-5 accuracy 的平均值。
-- `beam/val_adba`：所有 `J` 个未来目标时隙 DBA 的平均值，DBA 使用 `K=3`、默认 `Δ=5`，按 `Y_1` 到 `Y_3` 的平均计算；这也是 beam objective 的默认 early stopping 指标。
-
-`beam/*` 只在 `experiment.objective: beam` 或 `multitask` 的 active beam 分任务中写入；
-`occlusion` 和 `position` 单任务即使能计算诊断性的 beam accuracy，也不会写进 `beam/*`。
-历史 `accuracy/*` 和 `dba/val_adba` TensorBoard tag 属于 legacy 兼容入口，默认不再写入；
-需要兼容旧 dashboard 时可设置 `output.tensorboard.legacy_accuracy_tags=true`。
-
-`metrics.json`、`teacher_metrics.json` 和 `test_report.json` 会记录 per-horizon Top-1/Top-3、跨 horizon
-平均值。LiDAR 运行还会包含 `lidar_input_quality`、`degradation_baselines.majority_class`、
-`degradation_baselines.last_beam` 和 `degradation_risk`，用于判断 BEV 是否大量为空、通道是否近常量，以及模型是否只达到 majority-class baseline。
-
-### 并行五模态训练建议
-
-四个五模态 objective 后台并行运行前，先生成覆盖参数而不是直接改默认配置：
-
-```bash
-conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
-  --parallel-runs 4 \
-  --cpu-count 32
-```
-
-推荐结果会输出 `data.dataloader.train_num_workers`、`data.dataloader.test_num_workers`、
-`train/test_persistent_workers`、`train/test_prefetch_factor`、`output.progress.enabled=false` 和 cache policy。
-`test_persistent_workers=false` 与训练循环的验证后 worker shutdown 配合，避免 test DataLoader worker 在下一轮训练阶段长期驻留。
-
-如果 LiDAR cache 覆盖率不足，先预热，再把四个后台任务切到 `data.cache.policy=read_only`：
-
-```bash
-conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
-```
-
-同一 train split 下可复用的归一化/辅助目标 artifacts 会随训练写入 `artifacts/`：
-`lidar_normalizer.npz`、`gps_scaler.npz`、`mmwave_scaler.npz`、`occlusion_target_stats.json` 和
-`position_target_scaler.npz`。四任务并行时优先复用这些 train-fitted artifacts；只有确认 LiDAR BEV cache
-覆盖率足够时才使用 `read_only`，否则保留 `auto` 并先补齐 cache。
-
-## 评估
-
-```bash
-python scripts/evaluate.py --config configs/image/teacher_no_kd.yaml --weights outputs/scene31/image_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/image/student_no_kd.yaml --weights outputs/scene31/image_student_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/radar/teacher_no_kd.yaml --weights outputs/scene31/radar_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/radar/student_no_kd.yaml --weights outputs/scene31/radar_student_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/gps/teacher_no_kd.yaml --weights outputs/scene31/gps_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/lidar/teacher_no_kd.yaml --weights outputs/scene31/lidar_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/mmwave/teacher_no_kd.yaml --weights outputs/scene31/mmwave_teacher_no_kd/checkpoints/best.pth
-python scripts/evaluate.py --config configs/fusion/image_radar_rkd.yaml --weights outputs/scene31/image_radar_rkd/checkpoints/best.pth
-```
-
-评估会将指标和 `test_report.json` 写入配置的输出目录。未传 `--weights` 时，评估会尝试从
-registry 中加载与当前配置匹配的最高验证 Top-1 checkpoint；如果 sidecar 记录了 GPS scaler、
-LiDAR normalizer 或 mmWave scaler，评估会直接复用训练时工件，不再为了重新 fit 归一化状态扫描 train split。
-如果 registry 缺失匹配项，则继续使用配置中的旧式权重路径回退。
-
-## 预处理
-
-```bash
-python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml
-python scripts/preprocess.py --config configs/preprocess/radar_da.yaml
-python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml
-python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps.yaml
-python scripts/preprocess.py --config configs/preprocess/sequences_ra_lidar.yaml
-python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml
-python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml
-python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
-```
-
-所有单模态和 fusion 实验默认使用同一组包含 camera、radar、GPS、LiDAR 和可选 mmWave 列的序列 CSV：
-`train_seqs_RA_GPS_LIDAR.csv` / `test_seqs_RA_GPS_LIDAR.csv`。运行
-`configs/preprocess/sequences_ra_gps_lidar.yaml` 可生成这组统一 split；该配置使用 `balanced_seq`
-协议按完整 `seq_index` 切分 train/test，并写出 `split_metadata_RA_GPS_LIDAR.json`，其中包含
-split seed、train/test seq 列表、窗口数和 beam label 分布摘要。`balanced_seq` 与旧版按原始
-`seq_index` 顺序 80/20 切分是不同实验协议，指标不能直接混在同一表格中比较。Scene 9 可用
-`python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml data.dataset.scene=9`
-生成同名统一 split。该配置会写出 `mmwave1..mmwave8`，默认来源列为 `unit1_pwr_60ghz`。
-GPS/mmWave scaler 只在训练集上 fit，并复用于测试集。
-
-`configs/preprocess/sequences_snapshot_next_frame.yaml` 生成 snapshot 专用
-`train_seqs_SNAPSHOT_NEXT_FRAME.csv` / `val_seqs_SNAPSHOT_NEXT_FRAME.csv` 和
-`split_metadata_SNAPSHOT_NEXT_FRAME.json`。该协议使用 `in_len=1/out_len=1`，按完整 `seq_index`
-做 80/20 train/validation split，保留 GPS、BS GPS、LiDAR、mmWave、当前 beam 和 `future_beam1`
-列；启用 `include_position_targets: true` 时还会写出 `future_gps1` 与 `future_bs_gps1`。
-这些 CSV 不应与默认历史窗口 `seq_len=8/out_len=3` 结果静默合并比较。
-
-Scene 32 中 image/radar/LiDAR 相关实验建议先在新 split 上重跑 image、radar、LiDAR、image+radar、
-image+LiDAR、radar+LiDAR、image+radar+LiDAR 这 7 种组合，再同时检查 split metadata 中的
-train/test label 分布和验证曲线。这样可以避免把旧顺序 split 的窄验证域结论误当成新协议结果。
-
-`configs/preprocess/lidar_bev_cache.yaml` 可把点云提前转换为 `.npy` BEV 缓存。
-训练和评估入口会根据 `data.cache.policy` 自动决定是否读取、写入或重建这些 cache：`auto` 读取已有
-cache 且 miss 时按需写入，`read_only` 只读已有 cache，`off` 完全在线计算，`rebuild` 强制重算并写回。
-BEV cache 会按 BEV 尺寸、ROI、FoV、ground/background 过滤参数自动分区，避免参数变化后误用旧缓存。
-RGB image 路径直接读取并标准化当前样本帧，不再提供单独的 image 预处理 cache。
-这类原始模态预处理 cache 可以长期保留；训练 epoch、lr、batch size、num_workers、seed、模型结构和 KD
-类型变化不会使它失效。原始 jpg/LiDAR/radar/GPS/beam 文件内容变化，或对应预处理参数变化时，应使用新的
-参数 hash 目录或清理旧 cache。BEV cache 只会在读取当前样本时按需命中，不会在 dataset 初始化时
-全量载入 cache 目录。GPS/mmWave 没有同类大规模原始模态 cache，主要复用训练集 fit 的 scaler artifact。
-
-源码、配置和文档不包含本地训练产物。`dataset/` 是本地数据和可再生成预处理产物，`All_models/` 是外部或历史权重，
-`outputs/`、`logs/`、cache 目录和 checkpoint 是本地运行产物，通常不应随源码变更提交。本次删除旧 image cache
-支持不会清理历史 `outputs/`。
-
-训练日志、评估报告和 `final_config.yaml` 会记录实际 split 路径、样本数、split metadata 路径、
-协议和 seed，用于确认不同实验确实在同一训练/测试集合上比较。默认统一 split CSV 缺少
-`balanced_seq` sidecar 时，运行 metadata 会记录明确 warning，终端也会发出警告。
-
-## 模态可视化诊断
-
-当前可视化方案已经切换为 Gradio 交互式样本浏览器。运行流程是：选择一个数据集/训练配置，
-viewer 自动处理该配置中所选 split 的全部样本，写入可复用 cache，然后启动 Gradio 页面交互查看
-raw/processed image、radar、LiDAR、GPS、mmWave，以及 label、prediction、confidence、quality、
-gate 和 extra 信息。Viewer 不依赖旧静态可视化产物，也不要求你提前生成 PNG 或 summary。
-
-第一次使用先安装 viewer 依赖：
-
-```bash
-conda run -n kd_mm_beam python -m pip install -r tools/visualization/requirements_viewer.txt
-```
-
-直接从默认诊断配置启动 viewer。默认诊断配置会同时准备 Scene 9 和 Scene 32，Gradio 顶部的
-`Scene` 下拉框可以在两个场景之间切换：
-
-```bash
-NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
-HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
-conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
-  --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache \
-  --scenes 9,32 \
-  --host 127.0.0.1 \
-  --port 7860
-```
-
-第一次运行会处理全部样本，生成 `samples.json`、`manifest_meta.json` 和 `viewer_assets/`。再次运行时，
-如果配置、CSV、样本源文件和已生成资产都没有变化，会直接复用 cache。需要强制重处理时加
-`--force-rebuild`：
-
-```bash
-conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
-  --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache \
-  --scenes 9,32 \
-  --force-rebuild \
-  --check-only
-```
-
-浏览器打开：
-
-```text
-http://127.0.0.1:7860
-```
-
-`NO_PROXY` 这组环境变量用于避免 Gradio 的 localhost 启动自检被代理环境拦截。如果本机没有代理问题，
-可以省略。只想快速检查 viewer 能否完成数据处理和 cache 准备，而不启动 Web 服务时，可以运行：
-
-```bash
-conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
-  --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache \
-  --scenes 9,32 \
-  --check-only
-```
-
-需要只看单个场景时使用同一个参数风格，例如 `--scenes 9` 或 `--scenes 32`。导出时可以继续用
-dotted override 对 split、`seq_index`、label、模态组合和样本数做筛选：
-
-```bash
-conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
-  --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache \
-  --scenes 9 \
-  diagnostics.visualization.splits='["train","test"]' \
-  diagnostics.visualization.seq_index='[1,9]' \
-  --check-only
-```
-
-检查 GPS/mmWave 时可以直接传入任意训练配置并覆盖诊断模态：
-
-```bash
-conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py \
-  --config configs/fusion/all_modalities_lidar_no_kd.yaml \
-  --cache-dir outputs/diagnostics/gps_mmwave_scene32 \
-  --scenes 32 \
-  -o diagnostics.visualization.modalities='["gps","mmwave"]' \
-  --check-only
-```
-
-如果只想离线处理并导出 manifest，不启动 Gradio，推荐使用安装后的包内 CLI：
+Viewer manifest 导出：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
@@ -852,7 +95,53 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --scenes 9,32
 ```
 
-有预测、质量分数或 gate 权重文件时，也在离线导出阶段合并：
+`kd-sensing-visualize-modalities` 保留为包内薄 alias，只委托 manifest 导出 CLI，不恢复旧静态 PNG 总览图流程。推荐命令仍是 `kd-sensing-export-viewer-manifest` 或 `python -m kd_sensing.cli.export_viewer_manifest`。
+
+## 配置和实验矩阵
+
+单模态 canonical 配置使用：
+
+- `configs/<image|radar|gps|lidar|mmwave>/teacher_no_kd.yaml`
+- `configs/<image|radar|gps|lidar|mmwave>/student_no_kd.yaml`
+- `configs/<image|radar|gps|lidar|mmwave>/logits_kd.yaml`
+- `configs/<image|radar|gps|lidar|mmwave>/rkd.yaml`
+
+Fusion canonical 配置按固定模态顺序 `image -> radar -> gps -> lidar -> mmwave` 解析，命名为：
+
+```text
+configs/fusion/<canonical_slug>_<teacher_no_kd|student_no_kd|logits_kd|rkd>.yaml
+```
+
+很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical/overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。
+
+G2D、CRAF、MARF、CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
+
+## 数据和产物边界
+
+- `dataset/` 是本地数据输入，默认不提交；源码中只保留 `dataset/.gitkeep`。
+- `outputs/`、`logs/`、cache、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交。
+- `All_models/` 中已跟踪权重是历史复现实验资料；新生成的 `.pth`、`.pt`、`.ckpt` 不应进入源码变更。
+- 当前运行时优先使用 checkpoint registry，或通过 `distillation.teacher_model_name` / `--weights` 显式传入 checkpoint。
+
+DeepSense6G 默认场景是 Scenario 31，数据根目录解析为 `dataset/DeepSense6G/scenario31`，输出默认写入 `outputs/scene31/<run_name>/`。可通过配置或 CLI override 切换场景：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=9
+conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=32
+```
+
+Raymobtime s008 current snapshot beam selection 见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。MMW Town10 skybridge 本地数据准备使用：
+
+```bash
+conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
+  --config configs/preprocess/mmw_town10_skybridge.yaml
+```
+
+## Viewer
+
+Gradio 交互式 viewer 入口保留在 `tools/visualization/gradio_multimodal_viewer.py`。安装可选依赖、启动 viewer、后台运行、manifest 格式、prediction/quality/gate 合并和故障排查见 [tools/visualization/README.md](tools/visualization/README.md)。
+
+离线 manifest 导出推荐：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
@@ -864,38 +153,25 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --gate outputs/eval/gate.json
 ```
 
-如果 editable install 元数据尚未刷新，可以使用等价 fallback：
-`conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
-`conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help`。
+## 文档索引
 
-兼容入口 `kd-sensing-visualize-modalities` 保留为薄 alias，只委托 manifest 导出 CLI，不恢复旧静态 PNG
-总览图流程。新脚本和文档仍推荐直接使用 `kd-sensing-export-viewer-manifest`。
-
-静态 PNG 总览入口已删除；当前诊断工作流通过 manifest 导出和 Gradio viewer 浏览样本。
-详细 manifest 格式、后台启动和停止服务命令见 `tools/visualization/README.md`。
+- 实验矩阵和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
+- Raymobtime s008：[docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)
+- 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)
+- 新组件扩展指南：[docs/extension_guide.md](docs/extension_guide.md)
+- Viewer 详细说明：[tools/visualization/README.md](tools/visualization/README.md)
+- 项目表面积 inventory：[docs/project_surface_inventory.md](docs/project_surface_inventory.md)
+- 架构与需求契约：`openspec/specs/`
 
 ## 破坏性变更
 
-旧的顶层入口脚本已移除。请改用以下新命令：
+旧的顶层脚本入口已移除；请使用 console script、包内 CLI 或保留的 `scripts/` 薄 alias。
 
-| 旧命令 | 新命令 |
+| 旧命令 | 当前入口 |
 | --- | --- |
-| `python train_image.py ...` | `python scripts/train.py --config configs/image/<mode>.yaml ...` |
-| `python train_both.py ...` | `python scripts/train.py --config configs/fusion/<mode>.yaml ...` |
-| `python test_model_image.py ...` | `python scripts/evaluate.py --config configs/image/<mode>.yaml --weights <path>` |
-| `python test_model_both.py ...` | `python scripts/evaluate.py --config configs/fusion/<mode>.yaml --weights <path>` |
-| `python CSV_process.py ...` | `python scripts/preprocess.py --config configs/preprocess/radar_ra.yaml` |
-| `python gen_data_seq.py ...` | `python scripts/preprocess.py --config configs/preprocess/sequences_ra.yaml` |
-
-## 组件
-
-内置注册表位于 `kd_sensing.registries`：
-
-- `MODELS`
-- `DATASETS`
-- `LOSSES`
-- `METRICS`
-- `DISTILLERS`
-- `PREPROCESSORS`
-
-关于如何添加新组件，请参见 [docs/extension_guide.md](docs/extension_guide.md)。
+| `python train_image.py ...` | `conda run -n kd_mm_beam kd-sensing-train --config configs/image/<mode>.yaml ...` |
+| `python train_both.py ...` | `conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/<mode>.yaml ...` |
+| `python test_model_image.py ...` | `conda run -n kd_mm_beam kd-sensing-evaluate --config configs/image/<mode>.yaml --weights <path>` |
+| `python test_model_both.py ...` | `conda run -n kd_mm_beam kd-sensing-evaluate --config configs/fusion/<mode>.yaml --weights <path>` |
+| `python CSV_process.py ...` | `conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/radar_ra.yaml` |
+| `python gen_data_seq.py ...` | `conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/sequences_ra.yaml` |

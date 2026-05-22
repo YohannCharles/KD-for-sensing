@@ -1,7 +1,7 @@
 # mmw-town10-dataset-preparation Specification
 
 ## Purpose
-TBD - created by archiving change prepare-mmw-town10-skybridge-dataset. Update Purpose after archive.
+定义 MMW Town10 skybridge 本地 zip 输入、准备输出和 sanity metadata 契约。
 ## Requirements
 ### Requirement: MMW Town10 zip inputs are prepared under the canonical layout
 系统 MUST 提供 MMW Town10 skybridge 数据准备入口，接受本地传感器 zip `Town10_skybridge_seed24.zip` 和信道 zip `Town10.zip`，并将解包结果组织到 `dataset/MMW/<condition>/Sensor_Data` 与 `dataset/MMW/<condition>/Channel_Data` 下。系统 MUST 不下载数据，不把 zip 内容提交到源码目录，并 MUST 支持通过配置或 CLI 覆盖输入 zip、输出根目录、condition 和 scenario 名称。
@@ -73,4 +73,3 @@ TBD - created by archiving change prepare-mmw-town10-skybridge-dataset. Update P
 - **WHEN** 输入 zip 可读取但没有任何 frame 能生成完整历史和未来窗口
 - **THEN** 系统 MUST 失败并输出清晰错误
 - **AND** sanity report MUST 保留导致无有效样本的主要原因统计
-

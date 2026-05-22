@@ -1,7 +1,7 @@
 # csi-hardening-debug-validation Specification
 
 ## Purpose
-TBD - created by archiving change debug-csi-hardening-experiment-matrix. Update Purpose after archive.
+定义 CSI hardening debug 矩阵、有效性 gate 和单变量验证要求。
 ## Requirements
 ### Requirement: CSI hardening debug run matrix
 系统 MUST 提供一个最小 CSI hardening debug run 矩阵，用于先验证配置、数据流和训练路径，再解释完整 sweep 结果。该矩阵 MUST 包含 `A0_original`、`A0_clone_generated`、`A0_clone_generated + pilot disabled through new path`、`C1_view_gate_warmup_only` 和 `C2_no_internal_gru_only`。
@@ -72,4 +72,3 @@ TBD - created by archiving change debug-csi-hardening-experiment-matrix. Update 
 #### Scenario: 发现模块未训练
 - **WHEN** 任一关键模块的 grad norm 或 param delta 持续为 0
 - **THEN** debug 输出 MUST 标记该模块可能被冻结、未加入 optimizer、被梯度屏蔽或未连接到 loss
-

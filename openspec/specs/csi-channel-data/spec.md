@@ -1,7 +1,7 @@
 # csi-channel-data Specification
 
 ## Purpose
-TBD - created by archiving change add-pilot-dual-view-csi-modality. Update Purpose after archive.
+定义 CSI 序列数据列、样本字段和与多模态数据加载的契约。
 ## Requirements
 ### Requirement: CSI 序列列与样本字段
 启用 CSI 模态时，dataset MUST 从序列 CSV 中读取历史 `csi1..csiN` 路径列，并返回样本字段 `csi`。默认情况下，`csi` MUST 表示 clean CSI 历史输入；当显式启用 `csi_degradation` 时，`csi` MUST 表示由 clean 历史 CSI 派生的 degraded 模型输入。无论是否退化，`csi` MUST 不包含未来 CSI。
@@ -84,4 +84,3 @@ MMW Town10 数据准备或后处理路径在启用 CSI 导出时 MUST 能从已�
 - **WHEN** channel 文件无法转换为 `[Nsc, Nant]` 或 `[Nsc, Nant, 2]` CSI
 - **THEN** 准备流程 MUST 跳过对应样本或失败
 - **AND** sanity report MUST 记录失败路径和失败原因
-

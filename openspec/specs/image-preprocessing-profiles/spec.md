@@ -1,7 +1,7 @@
 # image-preprocessing-profiles Specification
 
 ## Purpose
-TBD - created by archiving change add-resnet18-image-architecture. Update Purpose after archive.
+定义 image 输入 profile、RGB/ImageNet 预处理和已移除 image cache 边界。
 ## Requirements
 ### Requirement: Image 预处理 profile 选择
 系统 MUST 为 image modality 提供显式 `image_profile` 配置。`image_profile` MUST 支持 `rgb_imagenet`，默认值 MUST 为 `rgb_imagenet`；已删除的旧 image profile MUST 被拒绝。
@@ -43,4 +43,3 @@ TBD - created by archiving change add-resnet18-image-architecture. Update Purpos
 - **WHEN** 用户配置已删除的旧 image encoder 名称
 - **THEN** 系统 MUST 拒绝该配置
 - **AND** 错误信息 MUST 指向 `resnet18_imagenet_rgb` 和 `rgb_imagenet` 迁移路径
-

@@ -1,7 +1,7 @@
 # lidar-preprocessing Specification
 
 ## Purpose
-TBD - created by archiving change add-lidar-modality. Update Purpose after archive.
+定义 LiDAR 点云读取、BEV cache、normalization artifact 和序列列生成要求。
 ## Requirements
 ### Requirement: LiDAR 序列列生成
 系统 MUST 在 Scenario 9 序列生成流程中支持保留 LiDAR 路径列，使启用 LiDAR 的 dataset 能按历史时隙读取点云或 BEV 缓存。序列 CSV MUST 至少包含每个历史时隙对应的 `lidar1..lidarN` 列，并保持既有 camera、radar、GPS、beam、future_beam 和 `seq_index` 列兼容。
@@ -269,4 +269,3 @@ LiDAR baseline profile MUST 使用参数隔离的 BEV cache，并 MUST 在训练
 #### Scenario: final_config 记录 LiDAR profile
 - **WHEN** 一次启用 LiDAR 的训练启动
 - **THEN** final_config 或运行 metadata MUST 记录 LiDAR BEV size、ROI、FoV、normalization、cache policy 和 cache 目录
-

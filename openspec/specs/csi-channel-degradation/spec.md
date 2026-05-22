@@ -1,7 +1,7 @@
 # csi-channel-degradation Specification
 
 ## Purpose
-TBD - created by archiving change add-csi-channel-degradation. Update Purpose after archive.
+定义 CSI degradation profile、配置开关和质量诊断要求。
 ## Requirements
 ### Requirement: CSI degradation 配置与质量 profile
 系统 MUST 提供可配置的 CSI degradation 能力。该能力 MUST 默认关闭；启用时 MUST 支持 `clean`、`medium` 和 `hard` profile，并 MUST 允许 YAML 配置覆盖 profile 中的单项参数。系统 MUST 在最终配置或运行 metadata 中记录解析后的有效 degradation 参数。
@@ -82,4 +82,3 @@ CSI temporal shift MUST 只作用于当前样本的历史 CSI 路径序列，不
 - **WHEN** 用户加载包含 CSI 与其它模态的 degraded fusion 配置
 - **THEN** 配置 MUST 将 `csi` 包含在 fusion `modalities`
 - **AND** dataset MUST 只对 CSI 输入应用 CSI degradation，不得改变其它模态张量或 future beam 标签
-

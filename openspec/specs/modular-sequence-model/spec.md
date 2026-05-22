@@ -1,7 +1,7 @@
 # modular-sequence-model Specification
 
 ## Purpose
-TBD - created by archiving change add-resnet18-image-architecture. Update Purpose after archive.
+定义模块化序列模型、encoder/core/head 组合和单模态/fusion 复用边界。
 ## Requirements
 ### Requirement: 模块化序列模型结构
 系统 MUST 提供新的模块化序列模型注册入口，用于组合 `encoders`、`projectors`、`representation_core` 和 `heads`。该入口 MUST 支持 image-only 和多模态 fusion 实验，并且 MUST 不要求修改训练、验证和评估循环主体。
@@ -107,4 +107,3 @@ TBD - created by archiving change add-resnet18-image-architecture. Update Purpos
 - **WHEN** snapshot `modular_sequence` 配置启用 `auxiliary_heads.position`
 - **THEN** forward 输出 MUST 包含形状 `[B, 1, 2]` 的 `position`
 - **AND** 输出 MUST 能被现有 objective-aware loss 和 metrics 消费
-

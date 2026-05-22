@@ -1,7 +1,7 @@
 # teacher-prior-gated-craf Specification
 
 ## Purpose
-TBD - created by archiving change add-teacher-prior-gated-craf. Update Purpose after archive.
+定义 teacher-prior CRAF/MARF 的 registry、prior gate、encoder loading、freezing 和 diagnostics。
 ## Requirements
 ### Requirement: Teacher reliability registry
 系统 MUST 为 teacher-prior CRAF 提供可机器读取的 teacher reliability registry。registry MUST 记录场景、每个模态的 best checkpoint、验证指标、prior 和 prior 来源，并支持 `manual` 与 `metric` 两种 prior 模式。
@@ -173,4 +173,3 @@ MARF teacher-init 主训练 MUST 默认冻结 encoder，并默认只优化 routi
 - **WHEN** 用户运行 MARF 主训练配置且未显式启用 finetune
 - **THEN** 系统 MUST 不默认解冻 GPS 或 mmWave encoder
 - **AND** 系统 MUST 不把任何模态硬编码为强 encoder 参数组
-

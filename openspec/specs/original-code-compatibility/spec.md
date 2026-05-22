@@ -1,7 +1,7 @@
 # original-code-compatibility Specification
 
 ## Purpose
-TBD - created by archiving change align-original-code-compatibility. Update Purpose after archive.
+定义与原始工程复现实验的 checkpoint、配置和行为兼容边界。
 ## Requirements
 ### Requirement: Checkpoint 加载可诊断
 项目 MUST 默认严格加载 teacher、评估和 resume checkpoint。权重结构不匹配时，系统 MUST 抛出包含 checkpoint 路径、模型角色、missing keys 和 unexpected keys 的明确错误；只有用户显式选择非严格加载时，系统 MAY 继续运行。
@@ -78,4 +78,3 @@ TBD - created by archiving change align-original-code-compatibility. Update Purp
 - **WHEN** 开发者阅读 README 或扩展指南中的历史差异说明
 - **THEN** 文档 MUST 不推荐旧脚本、旧 config alias 或旧权重 fallback 作为可运行入口
 - **AND** 文档 MUST 给出当前 canonical 训练和评估路线
-

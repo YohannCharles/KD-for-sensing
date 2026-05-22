@@ -1,7 +1,7 @@
 # training-throughput-optimization Specification
 
 ## Purpose
-TBD - created by archiving change optimize-training-throughput-and-memory. Update Purpose after archive.
+定义训练吞吐 profiling、DataLoader/cache/transfer 参数建议和并行运行边界。
 ## Requirements
 ### Requirement: 训练吞吐 profiling
 项目 MUST 提供可独立运行的训练 I/O 和 step profiling 入口，用于定位 Scenario 9 dataset、DataLoader、CPU 到 GPU transfer 和模型训练 step 的耗时。profile 入口 MUST 可通过配置文件和命令行覆盖控制样本数、split、device、warmup 和输出路径。
@@ -120,4 +120,3 @@ Scenario 9 dataset MUST 避免对重复 beam label 文本执行重复 `np.loadtx
 - **WHEN** 并行训练推荐器生成后台 tmux 命令覆盖参数
 - **THEN** 推荐参数 MUST 包含关闭或降低 batch progress 输出的设置
 - **AND** 推荐说明 MUST 提供查看日志和 TensorBoard 的替代方式
-

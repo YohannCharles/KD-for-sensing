@@ -1,7 +1,7 @@
 # dataset-directory-layout Specification
 
 ## Purpose
-TBD - created by archiving change organize-dataset-directory-layout. Update Purpose after archive.
+定义本地数据集家族目录布局、可生成数据边界和路径解析约束。
 ## Requirements
 ### Requirement: 数据集家族目录规范
 项目 MUST 在 `dataset/` 下按数据集家族组织本地数据。每个数据集家族 MUST 拥有独立的一级目录，场景、天气或条件等细分 MUST 放在对应家族目录内部。
@@ -86,4 +86,3 @@ Raymobtime s008 的原始数据、cache、审计报告、训练输出、日志�
 - **WHEN** 用户本地已有 `Raymobtime_s008/` 或其它外部数据目录
 - **THEN** 系统 MUST 不自动把该目录移动到 `dataset/Raymobtime/s008`
 - **AND** 用户 MUST 能通过显式 `data_root` 继续使用该目录
-

@@ -1,7 +1,7 @@
 # deepverse-dt31-data-generation Specification
 
 ## Purpose
-TBD - created by archiving change add-deepverse-dt31-data-generation. Update Purpose after archive.
+定义 DeepVerse DT31 数据生成、cache、split 和 label 构建流程。
 ## Requirements
 ### Requirement: DeepVerse DT31 generator loads scenario parameters
 系统 MUST 提供 DeepVerse6G-DT31 数据生成入口，使用 `deepverse.ParameterManager` 和 `deepverse.Dataset` 加载场景参数，并在外部依赖缺失时给出明确错误。
@@ -97,4 +97,3 @@ TBD - created by archiving change add-deepverse-dt31-data-generation. Update Pur
 - **THEN** 系统 MUST 写出 `sanity_report.json`，至少包含样本数、split 计数、标签分布、artifact 路径、NaN/Inf 检查和缺失模态统计
 - **AND** sanity report MUST include radar feature NaN/Inf checks
 - **AND** sanity report MUST include raw LoS/status distribution, blockage usability, and raw frame overlap checks across splits
-

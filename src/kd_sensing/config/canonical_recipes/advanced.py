@@ -97,18 +97,35 @@ ADVANCED_OVERLAY_RECIPES: dict[str, AdvancedOverlayRecipe] = {
     ),
 }
 
+ADVANCED_OVERLAY_ALIASES: dict[str, str] = {
+    "image_radar_gps_lidar_mmwave_g2d_lite": "g2d_lite",
+    "image_radar_gps_lidar_mmwave_g2d_global": "g2d_global",
+    "image_radar_gps_lidar_mmwave_g2d_horizon": "g2d_horizon",
+}
+
+
+def resolve_advanced_overlay_recipe_name(stem: str) -> str | None:
+    if stem.startswith("overlay_"):
+        return stem[len("overlay_") :]
+    return ADVANCED_OVERLAY_ALIASES.get(stem)
+
 
 def advanced_overlay_recipe(name: str) -> AdvancedOverlayRecipe | None:
     return ADVANCED_OVERLAY_RECIPES.get(name)
 
 
 def available_advanced_overlay_names() -> list[str]:
-    return sorted(f"overlay_{name}" for name in ADVANCED_OVERLAY_RECIPES)
+    return sorted(
+        [f"overlay_{name}" for name in ADVANCED_OVERLAY_RECIPES]
+        + list(ADVANCED_OVERLAY_ALIASES)
+    )
 
 
 __all__ = [
+    "ADVANCED_OVERLAY_ALIASES",
     "ADVANCED_OVERLAY_RECIPES",
     "AdvancedOverlayRecipe",
     "advanced_overlay_recipe",
     "available_advanced_overlay_names",
+    "resolve_advanced_overlay_recipe_name",
 ]

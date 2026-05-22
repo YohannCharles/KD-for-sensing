@@ -21,6 +21,38 @@ from kd_sensing.modalities import (  # noqa: E402
     normalize_modalities,
 )
 
+PYTHON_ENTRYPOINT_ALLOWLIST = {
+    "scripts/analysis/build_complementarity_cases.py": "research_diagnostic",
+    "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
+    "scripts/build_teacher_registry.py": "research_diagnostic",
+    "scripts/debug_eval_consistency.py": "research_diagnostic",
+    "scripts/deepverse/download_dt31_assets.py": "dataset_preparation",
+    "scripts/deepverse/generate_dt31_cache.py": "dataset_preparation",
+    "scripts/eval_modality_perturbation.py": "research_diagnostic",
+    "scripts/eval_modality_subsets.py": "research_diagnostic",
+    "scripts/evaluate.py": "thin_cli_alias",
+    "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
+    "scripts/preprocess.py": "thin_cli_alias",
+    "scripts/profile_training_io.py": "research_diagnostic",
+    "scripts/recommend_parallel_training.py": "research_diagnostic",
+    "scripts/train.py": "thin_cli_alias",
+    "tools/analysis/analyze_conditional_utility.py": "research_diagnostic",
+    "tools/analysis/collect_multimodal_imbalance_results.py": "research_diagnostic",
+    "tools/analysis/run_conditional_utility_audit.py": "research_diagnostic",
+    "tools/analysis/run_phase_1_5_utility_validation.py": "research_diagnostic",
+    "tools/visualization/complementarity_explorer.py": "viewer_support",
+    "tools/visualization/gradio_multimodal_viewer.py": "viewer_entrypoint",
+    "tools/visualization/viewer_utils.py": "viewer_support",
+}
+SHELL_ORCHESTRATION_ALLOWLIST = {
+    "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
+}
+RETIRED_GENERATED_FUSION_CONFIGS = {
+    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml",
+    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml",
+    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml",
+}
+
 
 def _dotted(*parts: str) -> str:
     return ".".join(parts)
@@ -66,6 +98,81 @@ print(json.dumps({{key: module in sys.modules for key, module in modules.items()
         capture_output=True,
     )
     return json.loads(result.stdout)
+
+
+def _tracked_paths() -> list[str]:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return sorted(path for path in result.stdout.decode("utf-8").split("\0") if path)
+
+
+def test_source_surface_does_not_track_local_artifacts():
+    violations: list[str] = []
+    for raw_path in _tracked_paths():
+        path = Path(raw_path)
+        parts = set(path.parts)
+        suffix = path.suffix.lower()
+        if "__pycache__" in parts or ".pytest_cache" in parts:
+            violations.append(raw_path)
+        elif suffix in {".pyc", ".pyo"}:
+            violations.append(raw_path)
+        elif raw_path.startswith(("outputs/", "logs/")):
+            violations.append(raw_path)
+        elif raw_path.startswith("dataset/") and raw_path != "dataset/.gitkeep":
+            violations.append(raw_path)
+        elif suffix in {".pth", ".pt", ".ckpt"} and not raw_path.startswith("All_models/"):
+            violations.append(raw_path)
+
+    assert violations == []
+
+
+def test_project_surface_inventory_guardrails_are_current():
+    fusion_yaml = sorted((ROOT / "configs" / "fusion").glob("*.yaml"))
+    script_entries = {
+        path.relative_to(ROOT).as_posix()
+        for root in [ROOT / "scripts", ROOT / "tools" / "analysis", ROOT / "tools" / "visualization"]
+        for path in root.rglob("*.py")
+    }
+    shell_entries = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "scripts").rglob("*.sh")
+    }
+
+    assert len(fusion_yaml) <= 27
+    assert RETIRED_GENERATED_FUSION_CONFIGS.isdisjoint(
+        {path.relative_to(ROOT).as_posix() for path in fusion_yaml}
+    )
+    assert script_entries == set(PYTHON_ENTRYPOINT_ALLOWLIST)
+    assert shell_entries == set(SHELL_ORCHESTRATION_ALLOWLIST)
+
+
+def test_duplicate_manifest_fallback_wrapper_is_not_reintroduced():
+    wrapper = ROOT / "tools" / "visualization" / "export_viewer_manifest.py"
+    assert not wrapper.exists()
+
+    violations = []
+    for root in [ROOT / "scripts", ROOT / "tools"]:
+        for path in root.rglob("*.py"):
+            rel = path.relative_to(ROOT).as_posix()
+            text = path.read_text(encoding="utf-8")
+            if "from kd_sensing.cli.export_viewer_manifest import main" in text:
+                violations.append(rel)
+
+    assert violations == []
+
+
+def test_openspec_specs_have_real_purpose_text():
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md"))
+        if "TBD - created by archiving" in path.read_text(encoding="utf-8")
+    ]
+
+    assert violations == []
 
 
 @pytest.mark.parametrize(

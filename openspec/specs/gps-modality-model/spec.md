@@ -1,7 +1,7 @@
 # gps-modality-model Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-modality-fusion. Update Purpose after archive.
+定义 GPS teacher/student 模型、特征模式和配置兼容行为。
 ## Requirements
 ### Requirement: GPS teacher 模型
 系统 MUST 提供已注册的 `gps_teacher` 模型，用于 GPS-only beam prediction。该模型 MUST 接收 `[B, T, 3]` GPS-Rel-Polar 特征序列，使用 `GpsFeatureExtractor` 提取每个时隙 embedding，经过 LayerNorm、GRU temporal modeling、时序增强模块和 MLP classifier 后输出 beam logits。
@@ -90,4 +90,3 @@ GPS-only teacher/student MUST 与现有 logits KD 和 RKD distiller 兼容。默
 - **WHEN** 用户通过默认 GPS teacher no-KD 配置构建模型
 - **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
 - **AND** 模型的 `GRU.num_layers` MUST 为 1
-

@@ -1,7 +1,7 @@
 # csi-hardening-experiment-matrix Specification
 
 ## Purpose
-TBD - created by archiving change add-csi-hardening-experiment-matrix. Update Purpose after archive.
+定义 CSI hardening 实验矩阵的控制变量、配置命名和解释边界。
 ## Requirements
 ### Requirement: CSI hardening 控制变量配置矩阵
 系统 MUST 提供可加载的 CSI hard-to-learn 控制变量配置矩阵，用于比较 clean CSI、destructive degradation、information-preserving hardening、CSI encoder 架构消融以及 hardening+架构组合。配置 MUST 固定 beam prediction 任务、MMW Town10 skybridge 场景、100 epoch 默认训练长度和可覆盖的 seed。
@@ -62,4 +62,3 @@ TBD - created by archiving change add-csi-hardening-experiment-matrix. Update Pu
 - **WHEN** 输入 run 至少包含两个有效验证曲线
 - **THEN** 脚本 MUST 输出 `learning_curves.png`
 - **AND** 脚本 MUST 输出 `ceiling_gap_vs_E90_ratio.png`
-

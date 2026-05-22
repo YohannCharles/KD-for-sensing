@@ -1,7 +1,7 @@
 # lidar-modality-model Specification
 
 ## Purpose
-TBD - created by archiving change add-lidar-modality. Update Purpose after archive.
+定义 LiDAR 模态模型、BEV encoder、normalization 和输入质量诊断契约。
 ## Requirements
 ### Requirement: LiDARFeatureExtractor 结构
 系统 MUST 提供 `LidarFeatureExtractor`，用于从 LiDAR BEV 序列中提取每个时隙的固定长度特征。该 feature extractor MUST 接收形状为 `(batch, sequence, channels, height, width)` 的 LiDAR BEV 张量，并输出 `(batch, sequence, feature_size)`。
@@ -139,4 +139,3 @@ LiDAR teacher/student/no-KD/KD canonical 配置 MUST 使用修复后的 LiDAR BE
 - **WHEN** LiDAR 模型输出序列长度大于 `num_pred`
 - **THEN** 系统 MUST 继续只使用最后 `num_pred` 个输出时隙对齐 `[t+1, t+2, t+3]` 标签
 - **AND** 系统 MUST 不把历史窗口最后一个 beam 重新纳入训练 label
-

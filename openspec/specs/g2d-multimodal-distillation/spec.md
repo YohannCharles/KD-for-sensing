@@ -1,7 +1,7 @@
 # g2d-multimodal-distillation Specification
 
 ## Purpose
-TBD - created by archiving change add-g2d-baseline. Update Purpose after archive.
+定义 G2D 多模态蒸馏 distiller、teacher ensemble、SMP 和诊断输出契约。
 ## Requirements
 ### Requirement: G2D distiller construction
 系统 MUST 提供可通过 `distillation.type: g2d` 构建的 G2D distiller。G2D distiller MUST 支持 `lite`、`global` 和 `horizon_diagnostic` 三种 mode，并 MUST 使用 `model.num_pred` 作为唯一 prediction horizon 数。
@@ -155,4 +155,3 @@ G2D teacher ensemble、teacher confidence、ranking、SMP gradient masking 和 d
 - **WHEN** G2D epoch diagnostics 写出 JSON
 - **THEN** diagnostics MUST 在 teacher confidence、ranking 和 active modalities 中使用真实配置模态名
 - **AND** 当配置包含 `csi` 时 diagnostics MUST 能记录 `csi` 项
-

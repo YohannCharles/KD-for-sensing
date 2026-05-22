@@ -1,7 +1,7 @@
 # modality-adaptive-routing-fusion Specification
 
 ## Purpose
-TBD - created by archiving change add-modality-adaptive-routing-fusion. Update Purpose after archive.
+定义 MARF 模型、teacher prior、router、subset training/evaluation 和 diagnostics 契约。
 ## Requirements
 ### Requirement: MARF fusion model construction
 系统 MUST 提供可通过 registry 构建的 MARF fusion student。该模型 MUST 使用项目固定模态顺序，支持 `image`、`radar`、`gps`、`lidar`、`mmwave` 的任意非空有效组合，并 MUST 保持现有 `experiment.task: fusion` 输入契约。配置 `model.num_pred: N` 时，MARF MUST 直接输出 `N` 个 future prediction slot。

@@ -1,7 +1,7 @@
 # gps-preprocessing Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-modality-fusion. Update Purpose after archive.
+定义 GPS 序列列、relative-polar 特征和 scaler artifact 生成要求。
 ## Requirements
 ### Requirement: GPS 序列列生成
 系统 MUST 在 Scenario 9 序列生成流程中支持保留 GPS 路径列，使启用 GPS 的 dataset 能按历史时隙读取 UE 和 BS 经纬度数据。序列 CSV MUST 至少包含每个历史时隙对应的 UE GPS 路径和 BS GPS 路径；默认 UE GPS MUST 优先使用校准后的 `unit2_loc_cal`，BS GPS MUST 使用 `unit1_loc`。
@@ -101,4 +101,3 @@ TBD - created by archiving change add-gps-modality-fusion. Update Purpose after 
 - **WHEN** 历史外部配置仍包含 `gps_smooth_window`
 - **THEN** 系统 MUST 忽略该遗留字段或抛出包含迁移说明的清晰错误
 - **AND** 系统 MUST 不因为该字段改变 GPS `relative_polar` 特征值
-

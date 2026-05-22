@@ -1,7 +1,7 @@
 # csi-modality-model Specification
 
 ## Purpose
-TBD - created by archiving change add-pilot-dual-view-csi-modality. Update Purpose after archive.
+定义 CSI 模态模型、pilot dual-view encoder、估计/硬化配置和训练诊断契约。
 ## Requirements
 ### Requirement: Pilot-based CSI channel estimator
 系统 MUST 提供 pilot-based CSI 估计模块，将 clean CSI `h` 转换为 noisy channel estimate `h_hat = h + e`。在物理参数模式下，估计噪声方差 MUST 满足 `sigma_e2 = noise_var / (pilot_power * pilot_len)`，且该 `noise_var` MUST 与 estimator 接收的 CSI 张量尺度一致。在 estimation SNR 模式下，噪声方差 MUST 由 estimator 输入 CSI 的信号功率和 `snr_db` 决定。用于 mild pilot estimation 的实验配置 MUST 使用 estimation SNR 或经过噪声/信号比诊断证明为 mild 的物理方差。
@@ -260,4 +260,3 @@ CSI hardening matrix 中非 pilot-only 的 A/B/C/D 单变量配置 MUST 显式�
 - **WHEN** 系统加载 D 组 hardening+encoder combined 配置
 - **THEN** 配置 MUST 只组合对应 hardening 和 encoder 变量
 - **AND** 配置 MUST 不隐式继承 A1 的 pilot estimation noise
-

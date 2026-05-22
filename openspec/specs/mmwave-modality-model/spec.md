@@ -1,7 +1,7 @@
 # mmwave-modality-model Specification
 
 ## Purpose
-TBD - created by archiving change add-mmwave-modality. Update Purpose after archive.
+定义 mmWave power vector 模型、feature extractor、scaler 和输入语义。
 ## Requirements
 ### Requirement: MmWaveFeatureExtractor 结构
 系统 MUST 提供 `MmWaveFeatureExtractor`，用于从 mmWave 64 维 receive-power 特征序列中提取每个时隙的固定长度 embedding。该 feature extractor MUST 接收形状为 `(batch, sequence, 64)` 的 mmWave 张量，并输出 `(batch, sequence, feature_size)`。

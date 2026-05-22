@@ -1,7 +1,7 @@
 # radar-student-model Specification
 
 ## Purpose
-TBD - created by archiving change add-radar-student. Update Purpose after archive.
+定义 radar student 模型结构、注册名和 KD 兼容行为。
 ## Requirements
 ### Requirement: RadarStudent 模型结构
 系统 MUST 提供已注册的 `radar_student` 模型，用于 radar-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarStudentModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。
@@ -61,4 +61,3 @@ RadarStudent MUST 使用轻量雷达特征提取路径，避免复用 RadarTeach
 - **WHEN** 用户通过默认 radar student no-KD 配置构建模型
 - **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
 - **AND** 模型的 `GRU.num_layers` MUST 为 1
-

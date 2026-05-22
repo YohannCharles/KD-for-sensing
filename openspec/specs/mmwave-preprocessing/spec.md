@@ -1,7 +1,7 @@
 # mmwave-preprocessing Specification
 
 ## Purpose
-TBD - created by archiving change add-mmwave-modality. Update Purpose after archive.
+定义 mmWave 序列列、power vector 解析和 train-fitted scaler 生成要求。
 ## Requirements
 ### Requirement: mmWave 序列列生成
 系统 MUST 在 Scenario 9 序列生成流程中支持保留 mmWave receive-power 路径列，使启用 mmWave 的 dataset 能按历史时隙读取 64 维 power vector。序列 CSV MUST 至少包含每个历史时隙对应的 `mmwave1..mmwaveN` 列，并保持既有 camera、radar、GPS、LiDAR、beam、future_beam 和 `seq_index` 列兼容。
@@ -102,4 +102,3 @@ mmWave 预处理 MUST 支持从 MMW channel `_paths.npy` 或 `_paths.npz` 文件
 - **THEN** metadata MUST 记录该 power vector 使用的 `num_beams`
 - **AND** metadata MUST 记录 codebook 类型和算法版本
 - **AND** metadata MUST 记录输入 channel 文件与输出 power 文件的相对路径映射
-

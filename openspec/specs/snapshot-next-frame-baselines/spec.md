@@ -1,7 +1,7 @@
 # snapshot-next-frame-baselines Specification
 
 ## Purpose
-TBD - created by archiving change add-snapshot-next-frame-baselines. Update Purpose after archive.
+定义 snapshot next-frame baseline 的 split、配置、模型和运行产物契约。
 ## Requirements
 ### Requirement: Snapshot next-frame baseline 契约
 系统 MUST 提供 snapshot next-frame baseline 实验族。该实验族 MUST 只使用当前帧输入预测下一帧目标，配置层必须设置输入历史长度为 1、预测 horizon 为 1，并且不得消费更早历史帧。
@@ -92,4 +92,3 @@ Snapshot baseline 训练和评估产物 MUST 记录足够 metadata，用于区�
 - **WHEN** 结果汇总工具读取 snapshot baseline 与历史窗口 baseline 的 metrics
 - **THEN** 工具 MUST 能从 metadata 区分 `snapshot_next_frame` 和历史窗口配置
 - **AND** 工具 MUST 不把两类结果静默合并为同一实验条件
-

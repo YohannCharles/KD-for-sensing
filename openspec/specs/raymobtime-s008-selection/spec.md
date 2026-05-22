@@ -1,7 +1,7 @@
 # raymobtime-s008-selection Specification
 
 ## Purpose
-TBD - created by archiving change add-raymobtime-s008-selection. Update Purpose after archive.
+定义 Raymobtime s008 数据审计、cache 构建、任务语义和训练评估入口。
 ## Requirements
 ### Requirement: Raymobtime s008 数据审计与 cache 构建
 系统 MUST 提供 Raymobtime s008 专用的配置驱动预处理能力，用于审计本地数据、构建 snapshot 样本索引、标准化 beam/LOS/link 标签，并从 ray-tracing zip 提取 path-level 特征。预处理能力 MUST 通过包内 PREPROCESSORS 和 `kd-sensing-preprocess` 或等价包内 CLI 暴露，不得要求用户运行绕过 `src/kd_sensing` 包结构的顶层旧脚本。
@@ -129,4 +129,3 @@ TBD - created by archiving change add-raymobtime-s008-selection. Update Purpose 
 #### Scenario: test-time modality drop
 - **WHEN** 分析工具对 full model 执行 test-time modality drop
 - **THEN** 系统 MUST 分别报告 drop `coord`、drop `image`、drop `lidar` 和 drop `ray` 后的 `beam_top1`、`los_f1` 和 `link_mae` 变化
-

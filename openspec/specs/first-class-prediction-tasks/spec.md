@@ -1,7 +1,7 @@
 # first-class-prediction-tasks Specification
 
 ## Purpose
-TBD - created by archiving change add-first-class-prediction-tasks. Update Purpose after archive.
+定义 beam、occlusion、position 和 multitask 预测目标的一等配置与指标契约。
 ## Requirements
 ### Requirement: 预测目标配置
 系统 MUST 支持 `experiment.objective` 配置，用于选择当前实验的主预测目标。合法值 MUST 包含 `beam`、`occlusion`、`position` 和 `multitask`。当配置未提供 `experiment.objective` 时，系统 MUST 默认使用 `beam`，并保持既有训练、验证和评估行为。
@@ -221,4 +221,3 @@ TBD - created by archiving change add-first-class-prediction-tasks. Update Purpo
 - **WHEN** Raymobtime s008 配置包含 `future_beam`、`beam_prediction_horizon`、`beam_tracking` 或 LOS transition 目标
 - **THEN** 配置校验 MUST 拒绝该配置
 - **AND** 错误信息 MUST 指向 `current_beam_selection` 或 `selection_multitask` objective
-

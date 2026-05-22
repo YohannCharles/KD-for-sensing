@@ -235,8 +235,8 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 兼容入口 `kd-sensing-visualize-modalities` 现在是包内薄 alias，只委托
 `kd-sensing-export-viewer-manifest` 导出 manifest，不复制独立 parser，也不恢复旧的静态 PNG 总览图主流程。
 推荐入口仍是 `kd-sensing-export-viewer-manifest`。
-如果 editable install 元数据尚未刷新，可使用等价 fallback：
-`conda run -n kd_mm_beam python tools/visualization/export_viewer_manifest.py --help`。入口验证命令为
+如果 editable install 元数据尚未刷新，可使用等价包内 CLI：
+`conda run -n kd_mm_beam python -m kd_sensing.cli.export_viewer_manifest --help`。入口验证命令为
 `conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help` 和
 `conda run -n kd_mm_beam kd-sensing-visualize-modalities --help`。
 

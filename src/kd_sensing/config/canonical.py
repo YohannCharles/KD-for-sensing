@@ -12,6 +12,7 @@ from kd_sensing.config.canonical_recipes import (
     deep_merge as _deep_merge,
     distillation_overrides,
     objective_overlay_recipe,
+    resolve_advanced_overlay_recipe_name,
     training_overrides,
 )
 from kd_sensing.modalities import (
@@ -233,9 +234,9 @@ def build_objective_fusion_config(slug: str, modalities: list[str], objective: s
 
 
 def build_advanced_fusion_overlay_config(stem: str) -> dict[str, Any] | None:
-    if not stem.startswith("overlay_"):
+    recipe = resolve_advanced_overlay_recipe_name(stem)
+    if recipe is None:
         return None
-    recipe = stem[len("overlay_") :]
     overlay_recipe = advanced_overlay_recipe(recipe)
     if overlay_recipe is None:
         raise ValueError(
@@ -367,7 +368,7 @@ def _g2d_overlay(mode: str, name: str) -> dict[str, Any]:
             },
             "smp": {
                 "enabled": mode == "global",
-                "mode": "confidence" if mode == "global" else "none",
+                "mode": mode if mode != "lite" else "none",
                 "tau": {"per_modality": 5, "joint": 30},
                 "prioritize_low_confidence_first": True,
             },
@@ -379,7 +380,9 @@ def _g2d_overlay(mode: str, name: str) -> dict[str, Any]:
 
 def _g2d_teacher_model_cfg(modality: str) -> dict[str, Any]:
     if modality == "image":
-        return _modular_resnet_fusion_model(["image"], num_layers=1)
+        cfg = _modular_resnet_fusion_model(["image"], num_layers=1)
+        cfg.pop("image_channels", None)
+        return cfg
     if modality == "lidar":
         return _modular_lidar_model(num_layers=1)
     return {"type": f"{modality}_teacher"}

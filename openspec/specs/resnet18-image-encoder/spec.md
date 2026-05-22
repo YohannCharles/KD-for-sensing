@@ -1,7 +1,7 @@
 # resnet18-image-encoder Specification
 
 ## Purpose
-TBD - created by archiving change add-resnet18-image-architecture. Update Purpose after archive.
+定义 ResNet-18 ImageNet RGB encoder、profile 和 image/fusion 复用契约。
 ## Requirements
 ### Requirement: ResNet-18 ImageNet image encoder
 系统 MUST 提供可注册、可配置的 ResNet-18 image encoder，用于处理 `rgb_imagenet` profile 的 RGB 帧。该 encoder MUST 基于 ResNet-18 backbone，支持 ImageNet 预训练权重，移除分类层，并将每帧编码为固定维度 embedding。
@@ -83,4 +83,3 @@ ResNet-18 encoder MUST 遵守项目统一 encoder 输出契约。输入 batch �
 - **WHEN** 用户加载默认 image teacher/no-KD 或论文式 camera baseline 配置
 - **THEN** 系统 MUST NOT 构建从头训练的小 CNN image encoder
 - **AND** 如果 ResNet-18 依赖不可用，系统 MUST 抛出清晰错误，而不是静默回退到 legacy CNN
-

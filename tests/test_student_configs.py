@@ -743,6 +743,106 @@ def test_advanced_fusion_overlay_generates_g2d_modes_and_full_dump(tmp_path: Pat
     assert set(dumped) >= {"data", "model", "loss", "distillation", "training", "output"}
 
 
+RETIRED_G2D_ENTITY_EXPECTATIONS = {
+    "image_radar_gps_lidar_mmwave_g2d_lite": {
+        "mode": "lite",
+        "smp_enabled": False,
+        "smp_mode": "none",
+    },
+    "image_radar_gps_lidar_mmwave_g2d_global": {
+        "mode": "global",
+        "smp_enabled": True,
+        "smp_mode": "global",
+    },
+    "image_radar_gps_lidar_mmwave_g2d_horizon": {
+        "mode": "horizon_diagnostic",
+        "smp_enabled": False,
+        "smp_mode": "horizon_diagnostic",
+    },
+}
+
+
+def _critical_g2d_fields(cfg: dict) -> dict:
+    g2d = cfg["distillation"]["g2d"]
+    return {
+        "experiment_name": cfg["experiment"]["name"],
+        "task": cfg["experiment"]["task"],
+        "dataset": {
+            key: cfg["data"]["dataset"][key]
+            for key in ["type", "scene_id", "train_csv_name", "test_csv_name", "seq_len", "num_pred"]
+        },
+        "modalities": cfg["model"]["student"]["modalities"],
+        "student_type": cfg["model"]["student"]["type"],
+        "teacher_type": cfg["model"]["teacher"]["type"],
+        "loss_type": cfg["loss"]["type"],
+        "distillation_type": cfg["distillation"]["type"],
+        "g2d_mode": g2d["mode"],
+        "smp_enabled": g2d["smp"]["enabled"],
+        "smp_mode": g2d["smp"]["mode"],
+        "training": {
+            key: cfg["training"][key]
+            for key in [
+                "epochs",
+                "lr",
+                "weight_decay",
+                "grad_clip",
+                "patience",
+                "early_stopping_metric",
+                "early_stopping_mode",
+            ]
+        },
+        "run_name": cfg["output"]["run_name"],
+        "teacher_checkpoints": {
+            modality: teacher["checkpoint"]
+            for modality, teacher in g2d["teachers"].items()
+        },
+    }
+
+
+@pytest.mark.parametrize("stem", sorted(RETIRED_G2D_ENTITY_EXPECTATIONS))
+def test_retired_g2d_entity_paths_are_recipe_equivalent(stem: str):
+    cfg = load_config(ROOT / "configs/fusion" / f"{stem}.yaml")
+    expected = RETIRED_G2D_ENTITY_EXPECTATIONS[stem]
+
+    assert _critical_g2d_fields(cfg) == {
+        "experiment_name": stem,
+        "task": "fusion",
+        "dataset": {
+            "type": "deepsense6g",
+            "scene_id": 31,
+            "train_csv_name": "train_seqs_RA_GPS_LIDAR.csv",
+            "test_csv_name": "test_seqs_RA_GPS_LIDAR.csv",
+            "seq_len": 8,
+            "num_pred": 3,
+        },
+        "modalities": ["image", "radar", "gps", "lidar", "mmwave"],
+        "student_type": "modular_sequence",
+        "teacher_type": "modular_sequence",
+        "loss_type": "cross_entropy",
+        "distillation_type": "g2d",
+        "g2d_mode": expected["mode"],
+        "smp_enabled": expected["smp_enabled"],
+        "smp_mode": expected["smp_mode"],
+        "training": {
+            "epochs": 100,
+            "lr": 0.00075,
+            "weight_decay": 0.0001,
+            "grad_clip": 10.0,
+            "patience": 20,
+            "early_stopping_metric": "val_adba",
+            "early_stopping_mode": "max",
+        },
+        "run_name": stem,
+        "teacher_checkpoints": {
+            "image": None,
+            "radar": None,
+            "gps": None,
+            "lidar": None,
+            "mmwave": None,
+        },
+    }
+
+
 def test_csi_hardening_matrix_configs_load_and_preserve_contracts():
     first_batch = {
         "A0_clean_full_teacher.yaml",
