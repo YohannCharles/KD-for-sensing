@@ -39,6 +39,8 @@ conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/raymob
 
 默认 cache 输出到 `outputs/raymobtime_s008/cache`。cache 包含 split index、beam/LOS/link labels、no-LOS ray 输入特征、with-LOS 审计特征、normalization metadata 和 split fingerprint。
 
+ray-tracing zip 中的官方 `.hdf5` 条目会解析为 path-level ray rows，并生成不含 LOS flag 的模型输入 `ray_features_no_los`、仅用于审计的 `ray_features_with_los` 和独立的 `link_quality` target。预处理会在 ray path 全部缺失、link target 全 fallback，或训练 split 的 link target 标准差为 0 时拒绝生成可训练 cache；旧的全 `-120 dBm` cache 需要重新运行预处理生成，历史 TensorBoard event 文件不会自动重写。
+
 Raymobtime image 模态复用现有 `resnet18_imagenet_rgb` encoder，dataset 会按 `rgb_imagenet` 契约提供 `[1, 3, 224, 224]` 输入。LiDAR 模态按 s008 的 3D occupancy grid 处理，输入为 `[1, C, D, H, W]`，模型使用 `raymobtime_lidar_3d_cnn`：3D Conv Stem -> 3D Residual Blocks -> Channel Attention -> Global AvgPool + Global MaxPool -> MLP Projection Head。
 
 ## 训练与评估
@@ -63,7 +65,7 @@ conda run -n kd_mm_beam kd-sensing-evaluate \
   --weights outputs/raymobtime_s008/experiments/s008_multitask_selection/checkpoints/best.pth
 ```
 
-指标包括 `beam_top1/top3/top5`、`los_accuracy/f1/auc`、`link_mae/rmse/r2` 和 `selection_multitask_loss`。当某个 split 的 LOS 只有单类时，AUC 会记录为不可用状态。
+指标包括 `beam_top1/top3/top5`、当前 beam 距离敏感指标 `beam_dba_current` / `val_beam_dba`、`los_accuracy/f1/auc`、`link_mae/rmse/r2` 和 `selection_multitask_loss`。Raymobtime current snapshot objective 不写 legacy future-only `val_adba`。当某个 split 的 LOS 只有单类时，AUC 会记录为不可用状态。
 
 单任务 objective：
 

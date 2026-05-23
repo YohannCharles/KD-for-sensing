@@ -175,6 +175,7 @@ class BatchStepRunner:
             if self.cfg.get("experiment", {}).get("objective", "beam") not in {"beam", "multitask"}:
                 distill_loss = student_outputs.sum() * 0.0
             scalar_diagnostics.update(prediction_loss.diagnostics)
+            scalar_diagnostics.update(raymobtime_gate_scalar_diagnostics(student_model_output.diagnostics))
             batch_state.total_loss = total_loss
             batch_state.task_loss = task_loss
             batch_state.distill_loss = distill_loss
@@ -312,6 +313,21 @@ class BatchStepRunner:
         if self.health_tracker is not None:
             self.health_tracker.observe_gradients()
         self.optimizer.step()
+
+
+def raymobtime_gate_scalar_diagnostics(diagnostics: dict[str, Any]) -> dict[str, float]:
+    gates = diagnostics.get("task_gates") or diagnostics.get("gates")
+    modalities = diagnostics.get("gate_modalities") or diagnostics.get("modalities")
+    if not isinstance(gates, dict) or not isinstance(modalities, (list, tuple)):
+        return {}
+    result: dict[str, float] = {}
+    for task, gate in gates.items():
+        if not torch.is_tensor(gate) or gate.ndim != 2:
+            continue
+        means = gate.detach().float().mean(dim=0).cpu().tolist()
+        for modality, value in zip(modalities, means):
+            result[f"raymobtime/gate/{task}/{modality}"] = float(value)
+    return result
 
 
 def dummy_teacher(

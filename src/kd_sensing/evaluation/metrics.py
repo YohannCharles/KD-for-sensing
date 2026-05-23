@@ -50,6 +50,18 @@ def calculate_dba_score(outputs: torch.Tensor, labels: torch.Tensor, delta: floa
     return dba_sum / valid_count
 
 
+def calculate_current_beam_dba(outputs: torch.Tensor, labels: torch.Tensor, delta: float = 5) -> float:
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    if outputs.ndim == 2:
+        outputs = outputs.unsqueeze(1)
+    if labels.ndim != 2 or labels.shape[1] != 1:
+        raise ValueError("current beam DBA labels must have shape [B, 1] or [B].")
+    if outputs.ndim != 3 or outputs.shape[1] != 1:
+        raise ValueError("current beam DBA outputs must have shape [B, 1, C] or [B, C].")
+    return float(calculate_dba_score(outputs, labels, delta=delta)[0])
+
+
 def calculate_occlusion_metrics(
     logits: torch.Tensor,
     labels: torch.Tensor,

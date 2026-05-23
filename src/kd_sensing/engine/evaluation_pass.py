@@ -32,6 +32,7 @@ from kd_sensing.evaluation.lidar_diagnostics import (
     lidar_preprocessing_metadata_from_dataset,
 )
 from kd_sensing.evaluation.metrics import (
+    calculate_current_beam_dba,
     calculate_dba_score,
     calculate_link_metrics,
     calculate_los_metrics,
@@ -261,14 +262,19 @@ def _metrics_from_outputs(
         "topk": {str(k): v.tolist() for k, v in topk_acc.items()},
         "total": total.tolist(),
     }
-    metrics.update(_flat_future_topk_metrics(topk_acc, total))
-    metrics.update(_flat_current_beam_metrics(topk_acc, total))
-    if objective not in {
-        "current_beam_selection",
-        "current_los_classification",
-        "current_link_quality",
-        "selection_multitask",
-    }:
+    if objective in {"current_beam_selection", "selection_multitask"}:
+        metrics.update(_flat_current_beam_metrics(topk_acc, total))
+        beam_dba = calculate_current_beam_dba(
+            outputs,
+            labels,
+            cfg.get("evaluation", {}).get("dba_delta", 5),
+        )
+        metrics["beam_dba_current"] = beam_dba
+        metrics["val_beam_dba"] = beam_dba
+    elif objective in {"current_los_classification", "current_link_quality"}:
+        pass
+    else:
+        metrics.update(_flat_future_topk_metrics(topk_acc, total))
         dba_score = calculate_dba_score(
             outputs,
             labels,
@@ -394,19 +400,19 @@ def _attach_objective_metrics(
         if objective in {"current_los_classification", "selection_multitask"}:
             auxiliary["loss_los"] = float(val_los_loss / batches)
             metrics["loss/los"] = auxiliary["loss_los"]
-        for key in ("los_accuracy", "los_f1", "los_auc"):
-            metrics[key] = auxiliary_metrics.get(key)
-            metrics[f"val_{key}"] = auxiliary_metrics.get(key)
-        metrics["los_auc_available"] = bool(auxiliary_metrics.get("los_auc_available", False))
-        if auxiliary_metrics.get("los_auc_unavailable_reason"):
-            metrics["los_auc_unavailable_reason"] = auxiliary_metrics["los_auc_unavailable_reason"]
+            for key in ("los_accuracy", "los_f1", "los_auc"):
+                metrics[key] = auxiliary_metrics.get(key)
+                metrics[f"val_{key}"] = auxiliary_metrics.get(key)
+            metrics["los_auc_available"] = bool(auxiliary_metrics.get("los_auc_available", False))
+            if auxiliary_metrics.get("los_auc_unavailable_reason"):
+                metrics["los_auc_unavailable_reason"] = auxiliary_metrics["los_auc_unavailable_reason"]
     if has_link:
         if objective in {"current_link_quality", "selection_multitask"}:
             auxiliary["loss_link_quality"] = float(val_link_quality_loss / batches)
             metrics["loss/link_quality"] = auxiliary["loss_link_quality"]
-        for key in ("link_mae", "link_rmse", "link_r2"):
-            metrics[key] = float(auxiliary_metrics[key])
-            metrics[f"val_{key}"] = float(auxiliary_metrics[key])
+            for key in ("link_mae", "link_rmse", "link_r2"):
+                metrics[key] = float(auxiliary_metrics[key])
+                metrics[f"val_{key}"] = float(auxiliary_metrics[key])
     if objective == "selection_multitask":
         auxiliary["loss_selection_multitask_total"] = float(val_selection_multitask_loss / batches)
         metrics["loss/selection_multitask_total"] = auxiliary["loss_selection_multitask_total"]

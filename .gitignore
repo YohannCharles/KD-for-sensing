@@ -15,7 +15,14 @@ env/
 ENV/
 .conda/
 pip-wheel-metadata/
-.codex/
+.codex/*
+!.codex/config.toml
+!.codex/hooks.json
+!.codex/scripts/
+.codex/scripts/*
+!.codex/scripts/update-codegraph-index.sh
+!.codex/skills/
+!.codex/skills/**
 # Notebooks
 .ipynb_checkpoints/
 

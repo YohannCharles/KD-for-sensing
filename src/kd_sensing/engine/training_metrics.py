@@ -124,6 +124,7 @@ class EpochMetricsRecorder:
         val_beam_top1 = finite_float_or_none(val_metrics.get("val_beam_top1"))
         val_beam_top3 = finite_float_or_none(val_metrics.get("val_beam_top3"))
         val_beam_top5 = finite_float_or_none(val_metrics.get("val_beam_top5"))
+        val_beam_dba = finite_float_or_none(val_metrics.get("val_beam_dba"))
         val_los_accuracy = finite_float_or_none(val_metrics.get("val_los_accuracy"))
         val_los_f1 = finite_float_or_none(val_metrics.get("val_los_f1"))
         val_los_auc = finite_float_or_none(val_metrics.get("val_los_auc"))
@@ -167,26 +168,27 @@ class EpochMetricsRecorder:
         self.history["train_counterfactual_loss"].append(float(self.running["counterfactual_loss"]))
         self.history["train_prior_regularization_loss"].append(float(self.running["prior_regularization_loss"]))
         self.history["train_reliability_kd_loss"].append(float(self.running["reliability_kd_loss"]))
-        self.history["train_occlusion_loss"].append(train_occlusion_loss)
-        self.history["train_position_loss"].append(train_position_loss)
-        self.history["train_multitask_loss"].append(train_multitask_loss)
+        append_history(self.history, "train_occlusion_loss", train_occlusion_loss)
+        append_history(self.history, "train_position_loss", train_position_loss)
+        append_history(self.history, "train_multitask_loss", train_multitask_loss)
         append_history(self.history, "train_los_loss", train_los_loss)
         append_history(self.history, "train_link_quality_loss", train_link_quality_loss)
         append_history(self.history, "train_selection_multitask_loss", train_selection_multitask_loss)
-        self.history["train_acc"].append(float(self.running["acc"]))
+        append_history(self.history, "train_acc", float(self.running["acc"]))
         self.history["val_loss"].append(float(val_loss))
-        self.history["val_acc"].append(val_acc)
-        self.history["val_atop3"].append(validation_curve_metrics["val_atop3"])
-        self.history["val_atop5"].append(validation_curve_metrics["val_atop5"])
-        self.history["val_adba"].append(validation_curve_metrics["val_adba"])
-        self.history["val_occlusion_accuracy"].append(val_occlusion_accuracy)
-        self.history["val_occlusion_blocked_f1"].append(val_occlusion_blocked_f1)
-        self.history["val_position_rmse"].append(val_position_rmse)
-        self.history["val_position_mae"].append(val_position_mae)
-        self.history["val_multitask_loss"].append(val_multitask_loss)
+        append_history(self.history, "val_acc", val_acc)
+        append_history(self.history, "val_atop3", validation_curve_metrics["val_atop3"])
+        append_history(self.history, "val_atop5", validation_curve_metrics["val_atop5"])
+        append_history(self.history, "val_adba", validation_curve_metrics["val_adba"])
+        append_history(self.history, "val_occlusion_accuracy", val_occlusion_accuracy)
+        append_history(self.history, "val_occlusion_blocked_f1", val_occlusion_blocked_f1)
+        append_history(self.history, "val_position_rmse", val_position_rmse)
+        append_history(self.history, "val_position_mae", val_position_mae)
+        append_history(self.history, "val_multitask_loss", val_multitask_loss)
         append_history(self.history, "val_beam_top1", val_beam_top1)
         append_history(self.history, "val_beam_top3", val_beam_top3)
         append_history(self.history, "val_beam_top5", val_beam_top5)
+        append_history(self.history, "val_beam_dba", val_beam_dba)
         append_history(self.history, "val_los_accuracy", val_los_accuracy)
         append_history(self.history, "val_los_f1", val_los_f1)
         append_history(self.history, "val_los_auc", val_los_auc)
@@ -209,6 +211,7 @@ class EpochMetricsRecorder:
             "val_beam_top1": val_beam_top1,
             "val_beam_top3": val_beam_top3,
             "val_beam_top5": val_beam_top5,
+            "val_beam_dba": val_beam_dba,
             "val_los_accuracy": val_los_accuracy,
             "val_los_f1": val_los_f1,
             "val_los_auc": val_los_auc,
@@ -303,6 +306,7 @@ class EpochMetricsRecorder:
         epoch_log.update(self.epoch_diagnostics.mean())
         if extension_metrics:
             epoch_log.update(extension_metrics)
+        epoch_log = prune_epoch_log_for_objective(epoch_log, self.history, self.objective)
         self.epoch_logs.append(epoch_log)
         return epoch_log, val_loss, val_acc, float(primary_metric_value)
 
@@ -328,6 +332,7 @@ def aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
         "val_atop3": mean_valid_slots(topk.get("3", []), total),
         "val_atop5": mean_valid_slots(topk.get("5", []), total),
         "val_adba": mean_valid_slots(val_metrics.get("dba", []), total),
+        "val_beam_dba": float(val_metrics.get("val_beam_dba", 0.0) or 0.0),
     }
 
 
@@ -388,6 +393,61 @@ def training_outputs_payload(
 OPTIONAL_HISTORY_KEYS = objective_optional_history_fields()
 
 
+def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, list], objective: str) -> dict[str, Any]:
+    if objective not in {
+        "current_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+        "selection_multitask",
+    }:
+        return epoch_log
+    allowed_history = set(history)
+    pruned = dict(epoch_log)
+    metric_keys = {
+        "val_acc",
+        "val_atop3",
+        "val_atop5",
+        "val_adba",
+        "val_occlusion_accuracy",
+        "val_occlusion_blocked_f1",
+        "val_position_rmse",
+        "val_position_mae",
+        "val_multitask_loss",
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_beam_dba",
+        "val_los_accuracy",
+        "val_los_f1",
+        "val_los_auc",
+        "val_link_mae",
+        "val_link_rmse",
+        "val_link_r2",
+        "val_selection_multitask_loss",
+    }
+    loss_keys = {
+        "train_occlusion_loss": "train_occlusion_loss",
+        "train_position_loss": "train_position_loss",
+        "train_multitask_loss": "train_multitask_loss",
+        "train_los_loss": "train_los_loss",
+        "train_link_quality_loss": "train_link_quality_loss",
+        "train_selection_multitask_loss": "train_selection_multitask_loss",
+        "loss/occlusion": "train_occlusion_loss",
+        "loss/position": "train_position_loss",
+        "loss/multitask_total": "train_multitask_loss",
+        "loss/los": "train_los_loss",
+        "loss/link_quality": "train_link_quality_loss",
+        "loss/selection_multitask_total": "train_selection_multitask_loss",
+    }
+    for key in metric_keys:
+        if key not in allowed_history and key in pruned:
+            pruned.pop(key, None)
+    for key, history_key in loss_keys.items():
+        if history_key not in allowed_history:
+            pruned.pop(key, None)
+    return pruned
+
+
 def append_history(history: dict[str, list], key: str, value) -> None:
     if key in history:
         history[key].append(value)
@@ -412,6 +472,7 @@ def checkpoint_task_metrics(epoch_log: dict) -> dict[str, float]:
         "val_beam_top1",
         "val_beam_top3",
         "val_beam_top5",
+        "val_beam_dba",
         "val_los_accuracy",
         "val_los_f1",
         "val_los_auc",

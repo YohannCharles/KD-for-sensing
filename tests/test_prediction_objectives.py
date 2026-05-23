@@ -74,7 +74,7 @@ def test_objective_config_defaults_validation_and_legacy_compatibility():
             "val_beam_top1",
             "max",
             ["current_beam_selection", "beam_top1"],
-            ["val_beam_top1"],
+            ["val_beam_top1", "val_beam_dba"],
         ),
         (
             "current_los_classification",
@@ -125,15 +125,27 @@ def test_objective_metadata_contract_covers_metrics_aliases_history_and_logging(
     assert ("objective/val_primary_metric", "val_primary_metric") in objective_tensorboard_scalars(objective)
     if objective in {"beam", "multitask"}:
         assert ("beam/val_adba", "val_adba") in objective_tensorboard_scalars(objective)
-    elif objective in {
-        "current_beam_selection",
-        "current_los_classification",
-        "current_link_quality",
-        "selection_multitask",
-    }:
+    elif objective in {"current_beam_selection", "selection_multitask"}:
         assert ("beam/val_top1", "val_beam_top1") in objective_tensorboard_scalars(objective)
+        assert ("beam/val_dba_current", "val_beam_dba") in objective_tensorboard_scalars(objective)
     else:
         assert ("beam/val_adba", "val_adba") not in objective_tensorboard_scalars(objective)
+        assert ("beam/val_top1", "val_beam_top1") not in objective_tensorboard_scalars(objective)
+
+
+def test_raymobtime_single_task_tensorboard_scalars_are_isolated():
+    beam_tags = {tag for tag, _ in objective_tensorboard_scalars("current_beam_selection")}
+    los_tags = {tag for tag, _ in objective_tensorboard_scalars("current_los_classification")}
+    link_tags = {tag for tag, _ in objective_tensorboard_scalars("current_link_quality")}
+    multitask_tags = {tag for tag, _ in objective_tensorboard_scalars("selection_multitask")}
+
+    assert {"beam/val_top1", "beam/val_top3", "beam/val_top5", "beam/val_dba_current"} <= beam_tags
+    assert not {"los/accuracy", "link/mae"} & beam_tags
+    assert {"los/accuracy", "los/f1", "los/auc"} <= los_tags
+    assert not {"beam/val_top1", "beam/val_dba_current", "link/mae"} & los_tags
+    assert {"link/mae", "link/rmse", "link/r2"} <= link_tags
+    assert not {"beam/val_top1", "beam/val_dba_current", "los/accuracy"} & link_tags
+    assert {"beam/val_dba_current", "los/accuracy", "link/mae", "loss/val_selection_multitask_total"} <= multitask_tags
 
 
 @pytest.mark.parametrize("modality", ["image", "radar", "gps", "lidar", "mmwave"])

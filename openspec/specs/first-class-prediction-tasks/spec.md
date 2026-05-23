@@ -120,6 +120,21 @@
 - **THEN** objective 相关字段 MUST 来自当前 objective metadata 的日志字段声明
 - **AND** beam、occlusion、position 和 multitask 的既有公开字段名 MUST 继续兼容
 
+#### Scenario: Raymobtime selection 单任务 TensorBoard 隔离
+- **WHEN** 当前 objective 为 `current_beam_selection`
+- **THEN** objective metadata 的 TensorBoard scalar MUST 包含 `beam/val_top1`、`beam/val_top3`、`beam/val_top5` 和 `beam/val_dba_current`
+- **AND** 该 objective 的 TensorBoard scalar MUST NOT 包含 `los/accuracy`、`los/f1`、`los/auc`、`link/mae`、`link/rmse` 或 `link/r2`
+
+#### Scenario: Raymobtime LOS 单任务 TensorBoard 隔离
+- **WHEN** 当前 objective 为 `current_los_classification`
+- **THEN** objective metadata 的 TensorBoard scalar MUST 包含 `los/accuracy`、`los/f1` 和 `los/auc`
+- **AND** 该 objective 的 TensorBoard scalar MUST NOT 包含 `beam/val_top1`、`beam/val_top3`、`beam/val_top5`、`beam/val_dba_current`、`link/mae`、`link/rmse` 或 `link/r2`
+
+#### Scenario: Raymobtime link 单任务 TensorBoard 隔离
+- **WHEN** 当前 objective 为 `current_link_quality`
+- **THEN** objective metadata 的 TensorBoard scalar MUST 包含 `link/mae`、`link/rmse` 和 `link/r2`
+- **AND** 该 objective 的 TensorBoard scalar MUST NOT 包含 `beam/val_top1`、`beam/val_top3`、`beam/val_top5`、`beam/val_dba_current`、`los/accuracy`、`los/f1` 或 `los/auc`
+
 ### Requirement: Objective 可用指标校验
 系统 MUST 根据当前 objective 和 validation metrics 中实际产生的标量校验 early stopping metric。用户显式配置的 metric 不在当前 objective 可用指标集合中时，系统 MUST 拒绝继续训练并报告当前可用指标。
 
@@ -134,7 +149,7 @@
 - **AND** checkpoint metadata MUST 记录该 primary metric 及其方向
 
 ### Requirement: Current beam selection 预测目标
-系统 MUST 支持 `experiment.objective: current_beam_selection`，用于当前 snapshot 的最优 beam class 分类。该目标 MUST 与既有 future beam prediction 区分，并 MUST 不计算 future-only DBA 指标。
+系统 MUST 支持 `experiment.objective: current_beam_selection`，用于当前 snapshot 的最优 beam class 分类。该目标 MUST 与既有 future beam prediction 区分，并 MUST 不计算 future-only DBA 指标。系统 MUST 为该目标提供当前 beam 距离敏感指标，命名为 `val_beam_dba`，不得复用 legacy `val_adba`。
 
 #### Scenario: 解析 current beam selection objective
 - **WHEN** 用户加载 `experiment.objective: current_beam_selection` 的配置
@@ -150,8 +165,14 @@
 
 #### Scenario: current beam 指标
 - **WHEN** 验证或评估 current beam selection objective
-- **THEN** validation metrics MUST 包含 `val_beam_top1`、`val_beam_top3` 和 `val_beam_top5`
-- **AND** validation metrics MUST 不要求 `val_adba`
+- **THEN** validation metrics MUST 包含 `val_beam_top1`、`val_beam_top3`、`val_beam_top5` 和 `val_beam_dba`
+- **AND** `available_metrics` MUST 包含 `val_beam_top1`、`val_beam_top3`、`val_beam_top5`、`val_beam_dba` 和 `val_loss`
+- **AND** validation metrics MUST 不要求且 MUST NOT 产生 `val_adba`
+
+#### Scenario: current beam DBA alias
+- **WHEN** 用户为 current beam selection 配置 `training.early_stopping_metric: beam_dba`、`current_beam_dba`、`val_beam_dba` 或 `beam/val_dba_current`
+- **THEN** objective metadata MUST 将该 alias 解析为 `val_beam_dba`
+- **AND** metric mode MUST 为 `max`
 
 ### Requirement: Selection multitask 预测目标
 系统 MUST 支持 `experiment.objective: selection_multitask`，用于同时训练当前 beam selection、LOS/NLOS 分类和 link quality 回归。该目标 MUST 使用独立的 target、loss、metric 和日志字段，不得复用既有 occlusion/position 多任务语义。
@@ -176,11 +197,12 @@
 
 #### Scenario: selection multitask 指标
 - **WHEN** 验证或评估 selection multitask objective
-- **THEN** metrics MUST 包含 beam Top-K、LOS accuracy/F1/AUC、link MAE/RMSE/R2 和 `val_selection_multitask_loss`
+- **THEN** metrics MUST 包含 beam Top-K、`val_beam_dba`、LOS accuracy/F1/AUC、link MAE/RMSE/R2 和 `val_selection_multitask_loss`
 - **AND** `available_metrics` MUST 包含这些字段，以支持 early stopping 校验和结果汇总
+- **AND** TensorBoard scalar MUST 同时包含 beam、LOS、link 和 selection multitask total loss 的正式 tag
 
 ### Requirement: Raymobtime 单任务 LOS 与 link quality 预测目标
-系统 MUST 支持 Raymobtime s008 的 LOS/NLOS 分类和 link quality 回归作为独立单任务 objective。单任务 objective MUST 复用当前 snapshot batch 契约，并 MUST 不要求 future-only DBA 指标。
+系统 MUST 支持 Raymobtime s008 的 LOS/NLOS 分类和 link quality 回归作为独立单任务 objective。单任务 objective MUST 复用当前 snapshot batch 契约，并 MUST 不要求 future-only DBA 指标。单任务 objective 的正式 metrics、history 和 TensorBoard 输出 MUST 只暴露当前 objective 的指标。
 
 #### Scenario: 解析 current LOS classification objective
 - **WHEN** 用户加载 `experiment.objective: current_los_classification` 的 Raymobtime s008 配置
@@ -196,11 +218,17 @@
 - **AND** 默认 early stopping metric MUST 为 `val_link_mae`
 - **AND** 默认 early stopping mode MUST 为 `min`
 
-#### Scenario: 单任务指标
-- **WHEN** 验证或评估 `current_los_classification` 或 `current_link_quality`
-- **THEN** LOS 单任务 MUST 输出 LOS accuracy/F1/AUC
-- **AND** link 单任务 MUST 输出 link MAE/RMSE/R2
-- **AND** `available_metrics` MUST 只暴露当前 objective 可用于 early stopping 的 Raymobtime 单任务指标
+#### Scenario: LOS 单任务指标
+- **WHEN** 验证或评估 `current_los_classification`
+- **THEN** validation metrics MUST 输出 `val_los_accuracy`、`val_los_f1` 和 `val_los_auc`
+- **AND** `available_metrics` MUST 只暴露 `val_loss` 和 LOS 单任务指标
+- **AND** validation metrics MUST NOT 暴露 `val_beam_top1`、`val_beam_top3`、`val_beam_top5`、`val_beam_dba`、`val_link_mae`、`val_link_rmse` 或 `val_link_r2`
+
+#### Scenario: link 单任务指标
+- **WHEN** 验证或评估 `current_link_quality`
+- **THEN** validation metrics MUST 输出 `val_link_mae`、`val_link_rmse` 和 `val_link_r2`
+- **AND** `available_metrics` MUST 只暴露 `val_loss` 和 link 单任务指标
+- **AND** validation metrics MUST NOT 暴露 `val_beam_top1`、`val_beam_top3`、`val_beam_top5`、`val_beam_dba`、`val_los_accuracy`、`val_los_f1` 或 `val_los_auc`
 
 ### Requirement: Selection objective 运行产物
 系统 MUST 在 Raymobtime current beam selection 和 selection multitask 的训练产物、评估报告和 final config runtime metadata 中记录 objective、启用 tasks、主 metric、metric mode、target 口径和 model heads。
@@ -252,4 +280,3 @@
 - **WHEN** 开发者新增 prediction objective 或调整 objective 默认 metric
 - **THEN** 主要变更 MUST 位于轻量 objective 元数据契约及必要的 runtime loss/metric 实现
 - **AND** 配置 normalization 和训练日志字段 MUST 通过该契约自动消费更新
-

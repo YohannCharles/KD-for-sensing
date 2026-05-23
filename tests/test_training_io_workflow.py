@@ -1266,6 +1266,56 @@ def test_non_beam_objectives_do_not_write_beam_tensorboard_scalars(objective: st
     assert "dba/val_adba" not in tags
 
 
+def test_raymobtime_single_task_tensorboard_writes_only_formal_tags():
+    base = {
+        "train_loss": [1.0],
+        "train_task_loss": [0.9],
+        "train_objective_loss": [0.9],
+        "train_distill_loss": [0.0],
+        "val_loss": [0.8],
+        "val_primary_metric": [0.7],
+        "learning_rates": [0.001],
+        "train_beam_soft_loss": [],
+        "train_unimodal_loss": [],
+        "train_counterfactual_loss": [],
+        "train_prior_regularization_loss": [],
+        "train_reliability_kd_loss": [],
+        "train_acc": [0.25],
+        "val_beam_top1": [0.4],
+        "val_beam_top3": [0.6],
+        "val_beam_top5": [0.8],
+        "val_beam_dba": [0.5],
+        "train_los_loss": [0.3],
+        "val_los_accuracy": [0.9],
+        "val_los_f1": [0.85],
+        "val_los_auc": [0.95],
+        "train_link_quality_loss": [0.2],
+        "val_link_mae": [1.0],
+        "val_link_rmse": [1.2],
+        "val_link_r2": [0.1],
+    }
+
+    cases = {
+        "current_beam_selection": {"beam/val_top1", "beam/val_top3", "beam/val_top5", "beam/val_dba_current"},
+        "current_los_classification": {"loss/los", "los/accuracy", "los/f1", "los/auc"},
+        "current_link_quality": {"loss/link_quality", "link/mae", "link/rmse", "link/r2"},
+    }
+    forbidden = {
+        "beam/val_top1",
+        "beam/val_dba_current",
+        "los/accuracy",
+        "link/mae",
+        "beam/val_adba",
+        "dba/val_adba",
+    }
+    for objective, expected in cases.items():
+        writer = _FakeTensorboardWriter()
+        _write_tensorboard_scalars(writer, base, 1, objective=objective)
+        tags = {tag for tag, _, _ in writer.scalars}
+        assert expected <= tags
+        assert not ((forbidden - expected) & tags)
+
+
 def test_tensorboard_legacy_accuracy_tags_restore_historical_scalars():
     writer = _FakeTensorboardWriter()
     history = _tensorboard_history()

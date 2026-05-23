@@ -4,6 +4,7 @@ import csv
 import json
 import sys
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ from kd_sensing.data.datasets.raymobtime_s008 import RaymobtimeS008SnapshotDatas
 from kd_sensing.data.layouts import raymobtime_s008_root  # noqa: E402
 from kd_sensing.diagnostics.raymobtime_analysis import analyze_raymobtime_modality_imbalance  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
+from kd_sensing.engine.batch_step import raymobtime_gate_scalar_diagnostics  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
 from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     PredictionTargets,
@@ -33,7 +35,7 @@ from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     selection_multitask_loss_weights,
 )
 from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.evaluation.metrics import calculate_link_metrics, calculate_los_metrics  # noqa: E402
+from kd_sensing.evaluation.metrics import calculate_current_beam_dba, calculate_link_metrics, calculate_los_metrics  # noqa: E402
 from kd_sensing.modalities import (  # noqa: E402
     MODALITY_ORDER,
     batch_input_keys_for_modalities,
@@ -170,6 +172,60 @@ def test_preprocess_cache_and_dataset_contract(tmp_path: Path):
     assert deferred_resize[0]["image"].shape == (1, 3, 4, 4)
 
 
+def test_preprocess_reads_hdf5_ray_paths_and_quality_summary(tmp_path: Path):
+    root = _write_raymobtime_fixture(tmp_path, beam=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.int64))
+    _write_all_episode_hdf5_ray_zip(root)
+
+    result = build_s008_cache(
+        data_root=root,
+        cache_dir=tmp_path / "cache",
+        split_seed=1,
+        split_ratios=(0.5, 0.25, 0.25),
+        num_tx_beams=4,
+        num_rx_beams=2,
+    )
+
+    train_cache = np.load(tmp_path / "cache" / "cache_train.npz", allow_pickle=True)
+    report = json.loads(Path(result["unmatched_report"]).read_text(encoding="utf-8"))
+    metadata = json.loads(Path(result["cache_metadata"]).read_text(encoding="utf-8"))
+    assert not np.allclose(train_cache["link_quality"], -120.0)
+    assert train_cache["ray"].shape[1] == 14
+    assert report["summary"]["matched_ray_paths"] > 0
+    assert report["summary"]["fallback_link_targets"] < report["summary"]["num_samples"]
+    assert metadata["ray_quality"]["status"] == "ok"
+    assert metadata["hdf5_schema"]["dataset"] == "allEpisodeData"
+    assert "raymobtime_path_flag" not in train_cache.files
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        ("missing", "all samples are missing ray paths"),
+        ("fallback", "all link_quality targets equal fallback"),
+        ("constant", "train split link_quality standard deviation is 0"),
+    ],
+)
+def test_preprocess_cache_quality_gate_rejects_bad_link_targets(tmp_path: Path, mode: str, message: str):
+    root = _write_raymobtime_fixture(tmp_path, beam=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.int64))
+    if mode == "missing":
+        with zipfile.ZipFile(root / "raw_data" / "ray_tracing_data_s008_carrier60GHz.zip", "w"):
+            pass
+    elif mode == "fallback":
+        _write_csv_ray_zip(root, power_by_episode=lambda _episode: -120.0)
+    else:
+        _write_csv_ray_zip(root, power_by_episode=lambda _episode: -55.0)
+
+    with pytest.raises(ValueError, match=message):
+        build_s008_cache(
+            data_root=root,
+            cache_dir=tmp_path / "cache",
+            split_seed=1,
+            split_ratios=(0.5, 0.25, 0.25),
+            num_tx_beams=4,
+            num_rx_beams=2,
+        )
+
+
 def test_preprocess_cache_aligns_official_split_npz_files(tmp_path: Path):
     root = _write_raymobtime_fixture(tmp_path, beam=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.int64))
     _rewrite_fixture_los_as_strings(root)
@@ -276,6 +332,9 @@ def test_selection_objective_loss_and_metrics_contract():
     assert selection_multitask_loss_weights(cfg) == {"beam_selection": 1.0, "los": 0.5, "link_quality": 0.25}
     assert objective_spec("current_beam_selection").default_metric == "val_beam_top1"
     assert normalize_objective_metric("beam_top1", objective="current_beam_selection") == "val_beam_top1"
+    assert normalize_objective_metric("beam_dba", objective="current_beam_selection") == "val_beam_dba"
+    assert normalize_objective_metric("beam/val_dba_current", objective="current_beam_selection") == "val_beam_dba"
+    assert calculate_current_beam_dba(logits, labels, delta=5) == pytest.approx(1.0)
     runtime = objective_runtime_metadata(cfg)
     assert runtime["enabled_heads"] == ["beam_selection", "los", "link_quality"]
 
@@ -368,6 +427,27 @@ def test_raymobtime_snapshot_models_forward_gates_and_reject_temporal_core(tiny_
     assert gated_output["logits"].shape == (2, 1, 6)
     assert gated_output["gates"]["beam_selection"].shape == (2, 4)
     assert torch.allclose(gated_output["gates"]["los"].sum(dim=1), torch.ones(2), atol=1e-6)
+    masked_output = gated(
+        coord_batch=torch.randn(2, 1, 3),
+        image_batch=torch.randn(2, 1, 3, 224, 224),
+        lidar_batch=torch.randn(2, 1, 1, 4, 4, 4),
+        ray_batch=torch.randn(2, 1, 14),
+        force_modality_mask=torch.tensor([False, True, True, False]),
+    )
+    assert gated.supports_force_modality_mask is True
+    assert masked_output["effective_modality_mask"].tolist() == [[False, True, True, False]] * 2
+    assert torch.allclose(masked_output["gates"]["beam_selection"][:, [0, 3]], torch.zeros(2, 2), atol=1e-6)
+    gate_scalars = raymobtime_gate_scalar_diagnostics(adapt_model_output(masked_output).diagnostics)
+    assert "raymobtime/gate/beam_selection/coord" in gate_scalars
+    assert gate_scalars["raymobtime/gate/beam_selection/image"] == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="no available Raymobtime modality"):
+        gated(
+            coord_batch=torch.randn(2, 1, 3),
+            image_batch=torch.randn(2, 1, 3, 224, 224),
+            lidar_batch=torch.randn(2, 1, 1, 4, 4, 4),
+            ray_batch=torch.randn(2, 1, 14),
+            force_modality_mask=torch.tensor([False, False, False, False]),
+        )
     assert not any(isinstance(module, (nn.GRU, nn.RNN, nn.LSTM)) for module in gated.modules())
     with pytest.raises(ValueError, match="current snapshot"):
         simple(coord_batch=torch.randn(2, 2, 3), ray_batch=torch.randn(2, 1, 14))
@@ -432,6 +512,12 @@ def test_raymobtime_minimal_train_smoke(tmp_path: Path):
     assert (run_dir / "checkpoints" / "last.pth").exists()
     assert result["prediction_objective"]["name"] == "selection_multitask"
     assert result["history"]["val_selection_multitask_loss"][-1] is not None
+    assert result["history"]["val_beam_dba"][-1] is not None
+    assert "val_adba" not in result["history"]
+    assert "val_adba" not in result["epoch_logs"][0]
+    outputs = np.load(run_dir / "training_outputs.npz")
+    assert "val_beam_dba" in outputs.files
+    assert "val_adba" not in outputs.files
 
 
 def test_raymobtime_analysis_accepts_single_task_objectives(tmp_path: Path):
@@ -546,6 +632,58 @@ def _write_raymobtime_fixture(root: Path, *, beam: np.ndarray) -> Path:
     with zipfile.ZipFile(data_root / "raw_data" / "ray_tracing_data_s008_carrier60GHz.zip", "w") as archive:
         archive.write(ray_csv, "ray_paths.csv")
     return data_root
+
+
+def _write_all_episode_hdf5_ray_zip(data_root: Path) -> None:
+    h5py = pytest.importorskip("h5py")
+    csv_path = data_root / "raw_data" / "CoordVehiclesRxPerScene_s008.csv"
+    frame = pd.read_csv(csv_path)
+    valid_episodes = sorted(frame.loc[frame["Val"].astype(str).str.upper() == "V", "EpisodeID"].unique())
+    zip_path = data_root / "raw_data" / "ray_tracing_data_s008_carrier60GHz.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for episode in valid_episodes:
+            episode_rows = frame.loc[frame["EpisodeID"] == episode]
+            vehicle_count = int(frame["VehicleArrayID"].max()) + 1
+            all_episode = np.full((1, vehicle_count, 3, 9), np.nan, dtype=np.float32)
+            for row in episode_rows.itertuples(index=False):
+                vehicle = int(row.VehicleArrayID)
+                for path_idx in range(3):
+                    all_episode[0, vehicle, path_idx, 0] = -60.0 + float(episode) - float(path_idx)
+                    all_episode[0, vehicle, path_idx, 1] = 1e-7 * float(path_idx + 1)
+                    all_episode[0, vehicle, path_idx, 2] = 10.0 + path_idx
+                    all_episode[0, vehicle, path_idx, 3] = 20.0 + path_idx
+                    all_episode[0, vehicle, path_idx, 4] = 30.0 + path_idx
+                    all_episode[0, vehicle, path_idx, 5] = 40.0 + path_idx
+                    all_episode[0, vehicle, path_idx, 8] = 180.0 + path_idx
+            buffer = BytesIO()
+            with h5py.File(buffer, "w") as h5:
+                h5.create_dataset("allEpisodeData", data=all_episode)
+            archive.writestr(f"ray_tracing_data_s008_carrier60GHz/fixture_e{int(episode)}.hdf5", buffer.getvalue())
+
+
+def _write_csv_ray_zip(data_root: Path, *, power_by_episode) -> None:
+    csv_path = data_root / "raw_data" / "CoordVehiclesRxPerScene_s008.csv"
+    frame = pd.read_csv(csv_path)
+    ray_rows = []
+    for row in frame.itertuples(index=False):
+        if str(row.Val).upper() != "V":
+            continue
+        sample_id = f"e{int(row.EpisodeID)}_s{int(row.SceneID)}_v{int(row.VehicleArrayID)}"
+        ray_rows.append(
+            {
+                "sample_id": sample_id,
+                "power_dbm": float(power_by_episode(int(row.EpisodeID))),
+                "toa": 1.0,
+                "phase": 0.0,
+            }
+        )
+    ray_csv = data_root.parent / "bad_ray_paths.csv"
+    with ray_csv.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(ray_rows[0]))
+        writer.writeheader()
+        writer.writerows(ray_rows)
+    with zipfile.ZipFile(data_root / "raw_data" / "ray_tracing_data_s008_carrier60GHz.zip", "w") as archive:
+        archive.write(ray_csv, "ray_paths.csv")
 
 
 def _rewrite_fixture_los_as_strings(data_root: Path) -> None:

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \".codex/scripts/update-codegraph-index.sh\" \".\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

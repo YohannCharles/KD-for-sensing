@@ -181,6 +181,7 @@ class _ChannelAttention3D(nn.Module):
 
 class RaymobtimeSelectionBase(nn.Module):
     supports_modality_kwargs = True
+    supports_force_modality_mask = True
 
     def __init__(
         self,
@@ -246,6 +247,20 @@ class RaymobtimeSelectionBase(nn.Module):
             encoded[modality] = self.encoders[modality](tensor)
         _validate_shared_shape(encoded)
         return encoded
+
+    def _force_mask(
+        self,
+        force_modality_mask: torch.Tensor | None,
+        *,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        return _resolve_force_modality_mask(
+            force_modality_mask,
+            modality_count=len(self.modalities),
+            batch_size=batch_size,
+            device=device,
+        )
 
     def _encoder_config(
         self,
@@ -342,6 +357,7 @@ class SimpleConcatMultiTaskSelection(RaymobtimeSelectionBase):
         image_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
         ray_batch: torch.Tensor | None = None,
+        force_modality_mask: torch.Tensor | None = None,
         **_: Any,
     ) -> dict[str, Any]:
         encoded = self._encode_modalities(
@@ -350,7 +366,15 @@ class SimpleConcatMultiTaskSelection(RaymobtimeSelectionBase):
             lidar_batch=lidar_batch,
             ray_batch=ray_batch,
         )
-        ordered = [encoded[modality] for modality in self.modalities]
+        availability = self._force_mask(
+            force_modality_mask,
+            batch_size=next(iter(encoded.values())).shape[0],
+            device=next(iter(encoded.values())).device,
+        )
+        ordered = [
+            encoded[modality] * availability[:, idx].view(-1, 1, 1).to(dtype=encoded[modality].dtype)
+            for idx, modality in enumerate(self.modalities)
+        ]
         concat = torch.cat(ordered, dim=-1)
         fused = self.projection(concat)
         return _selection_output(
@@ -361,6 +385,7 @@ class SimpleConcatMultiTaskSelection(RaymobtimeSelectionBase):
             modalities=self.modalities,
             los_logits=self.los_head(fused).squeeze(-1),
             link_quality=self.link_head(fused).squeeze(-1),
+            effective_modality_mask=availability,
         )
 
 
@@ -417,6 +442,7 @@ class TaskAwareGatedMultiTaskSelection(RaymobtimeSelectionBase):
         image_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
         ray_batch: torch.Tensor | None = None,
+        force_modality_mask: torch.Tensor | None = None,
         **_: Any,
     ) -> dict[str, Any]:
         encoded = self._encode_modalities(
@@ -426,11 +452,18 @@ class TaskAwareGatedMultiTaskSelection(RaymobtimeSelectionBase):
             ray_batch=ray_batch,
         )
         stacked = torch.stack([encoded[modality][:, 0, :] for modality in self.modalities], dim=1)
+        availability = self._force_mask(
+            force_modality_mask,
+            batch_size=stacked.shape[0],
+            device=stacked.device,
+        )
         fused_by_task = {}
         gates = {}
         for task, gate_net in self.gates.items():
             gate_logits = gate_net(stacked).squeeze(-1)
+            gate_logits = gate_logits.masked_fill(~availability, torch.finfo(gate_logits.dtype).min)
             gate = torch.softmax(gate_logits, dim=1)
+            gate = gate.masked_fill(~availability, 0.0)
             gates[task] = gate
             fused = torch.sum(stacked * gate.unsqueeze(-1), dim=1)
             fused_by_task[task] = self.task_projections[task](fused).unsqueeze(1)
@@ -440,11 +473,16 @@ class TaskAwareGatedMultiTaskSelection(RaymobtimeSelectionBase):
         output = _selection_output(
             logits=self.beam_head(beam_features),
             fused=beam_features,
-            input_features=stacked.reshape(stacked.shape[0], 1, -1),
+            input_features=(stacked * availability.unsqueeze(-1).to(dtype=stacked.dtype)).reshape(
+                stacked.shape[0],
+                1,
+                -1,
+            ),
             encoded=encoded,
             modalities=self.modalities,
             los_logits=self.los_head(los_features).squeeze(-1),
             link_quality=self.link_head(link_features).squeeze(-1),
+            effective_modality_mask=availability,
         )
         output["gates"] = gates
         output["gate_modalities"] = list(self.modalities)
@@ -462,12 +500,14 @@ def _selection_output(
     modalities: tuple[str, ...],
     los_logits: torch.Tensor,
     link_quality: torch.Tensor,
+    effective_modality_mask: torch.Tensor,
 ) -> dict[str, Any]:
     return {
         "logits": logits,
         "input_features": input_features,
         "output_features": fused,
         "modalities": modalities,
+        "effective_modality_mask": effective_modality_mask,
         "modality_features": encoded,
         "los_logits": los_logits,
         "link_quality": link_quality,
@@ -500,6 +540,33 @@ def _validate_shared_shape(encoded: dict[str, torch.Tensor]) -> None:
             batch_size = int(features.shape[0])
         elif int(features.shape[0]) != batch_size:
             raise ValueError("Raymobtime s008 enabled modalities must share batch size.")
+
+
+def _resolve_force_modality_mask(
+    force_modality_mask: torch.Tensor | None,
+    *,
+    modality_count: int,
+    batch_size: int,
+    device: torch.device,
+) -> torch.Tensor:
+    if force_modality_mask is None:
+        return torch.ones(batch_size, modality_count, dtype=torch.bool, device=device)
+    mask = force_modality_mask.to(device=device, dtype=torch.bool)
+    if mask.ndim == 1:
+        if int(mask.shape[0]) != int(modality_count):
+            raise ValueError(f"force_modality_mask shape must be [K] or [B, K], got {tuple(mask.shape)}.")
+        mask = mask.view(1, -1).expand(batch_size, -1)
+    elif mask.ndim == 2:
+        if tuple(mask.shape) != (int(batch_size), int(modality_count)):
+            raise ValueError(
+                f"force_modality_mask shape must be {(int(batch_size), int(modality_count))}, "
+                f"got {tuple(mask.shape)}."
+            )
+    else:
+        raise ValueError(f"force_modality_mask shape must be [K] or [B, K], got {tuple(mask.shape)}.")
+    if not torch.all(mask.any(dim=1)):
+        raise ValueError("force_modality_mask leaves no available Raymobtime modality for at least one sample.")
+    return mask
 
 
 def _default_raymobtime_encoder_type(modality: str) -> str:

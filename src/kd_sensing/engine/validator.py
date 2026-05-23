@@ -126,6 +126,12 @@ def _resolve_modality_subset(
     eval_cfg: dict,
     device: torch.device,
 ):
+    if name.startswith("drop_"):
+        drop = [part for part in name.removeprefix("drop_").split("_") if part]
+        if drop and all(part in modalities for part in drop):
+            keep = [modality for modality in modalities if modality not in set(drop)]
+            if keep:
+                return sampler.explicit(name, keep, device=device)
     conditional = resolve_conditional_utility_subset(name, modalities)
     if conditional is not None:
         return sampler.explicit(name, conditional.modalities, device=device)
