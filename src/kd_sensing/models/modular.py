@@ -82,6 +82,49 @@ class LidarCNNEncoder(LidarFeatureExtractor):
         super().__init__(self.output_dim, in_channels=int(in_channels or lidar_channels))
 
 
+@ENCODERS.register("point_cloud_mlp")
+class PointCloudMLPEncoder(nn.Module):
+    def __init__(
+        self,
+        output_dim: int | None = None,
+        *,
+        feature_size: int | None = None,
+        d_model: int | None = None,
+        input_profile: str | None = None,
+        hidden_size: int = 64,
+        dropout: float = 0.1,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.output_dim = _resolve_dim(output_dim, feature_size, d_model)
+        self.input_profile = input_profile
+        hidden = int(hidden_size)
+        self.point_mlp = nn.Sequential(
+            nn.LayerNorm(3),
+            nn.Linear(3, hidden),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(hidden, self.output_dim),
+            nn.GELU(),
+        )
+        self.projection = nn.Sequential(
+            nn.LayerNorm(self.output_dim * 2),
+            nn.Linear(self.output_dim * 2, self.output_dim),
+        )
+
+    def forward(self, lidar_batch: torch.Tensor) -> torch.Tensor:
+        if lidar_batch.ndim != 4 or int(lidar_batch.shape[-1]) != 3:
+            raise ValueError(
+                "point_cloud_mlp expects LiDAR point cloud input [B, T, P, 3], "
+                f"got {tuple(lidar_batch.shape)}."
+            )
+        points = lidar_batch.to(dtype=torch.float32)
+        encoded = self.point_mlp(points)
+        mean = encoded.mean(dim=2)
+        max_values = encoded.max(dim=2).values
+        return self.projection(torch.cat([mean, max_values], dim=-1))
+
+
 @ENCODERS.register("mmwave_mlp")
 class MmWaveMLPEncoder(MmWaveFeatureExtractor):
     def __init__(
@@ -646,6 +689,7 @@ __all__ = [
     "MmWaveMLPEncoder",
     "ModularSequenceModel",
     "PilotDualViewCSIEncoder",
+    "PointCloudMLPEncoder",
     "RadarCNNEncoder",
     "ResNet18ImageEncoder",
     "SingleGRUCore",

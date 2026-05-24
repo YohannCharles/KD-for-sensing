@@ -7,6 +7,7 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_dataset_config
+from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.engine.cache_policy import apply_cache_policy
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
@@ -23,14 +24,19 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
     normalize_deepsense_dataset_config(dataset_cfg)
     dataset_type = dataset_cfg.get("type")
+    descriptor = _optional_dataset_descriptor(dataset_type)
+    if descriptor is not None and not dataset_cfg.get("data_root"):
+        dataset_cfg["data_root"] = descriptor.default_root
     dataset_cfg["split"] = split
     enabled_modalities = resolve_enabled_modalities(cfg)
     dataset_cfg["enabled_modalities"] = list(enabled_modalities)
+    if descriptor is not None:
+        dataset_cfg["input_profiles"] = resolve_dataset_profiles(dataset_type, enabled_modalities, dataset_cfg)
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
     canonicalize_lidar_dataset_config(dataset_cfg)
     _apply_csi_degradation_seed(dataset_cfg, cfg)
-    if dataset_type not in {"synthetic", "synthetic_sequence"}:
+    if _uses_csv_split(dataset_type, descriptor):
         csv_name, dataset_split = _dataset_csv_for_split(dataset_cfg, split)
         dataset_cfg["csv_name"] = csv_name
         dataset_cfg["split"] = dataset_split
@@ -42,6 +48,11 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
 def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     loader_cfg = cfg["data"]["dataloader"]
     train_dataset = build_dataset(cfg, "train")
+    if hasattr(train_dataset, "codebook_metadata"):
+        cfg.setdefault("data", {}).setdefault("dataset", {})["codebook_metadata"] = getattr(
+            train_dataset,
+            "codebook_metadata",
+        )
     prepare_lidar_normalizer(cfg, train_dataset)
     dataset_kwargs = {}
     if getattr(train_dataset, "use_gps", False):
@@ -56,6 +67,8 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         dataset_kwargs["occlusion_target_stats"] = getattr(train_dataset, "occlusion_target_stats", None)
     if getattr(train_dataset, "position_target_enabled", False):
         dataset_kwargs["position_target_scaler"] = getattr(train_dataset, "position_target_scaler", None)
+    if hasattr(train_dataset, "codebook_metadata"):
+        dataset_kwargs["codebook_metadata"] = getattr(train_dataset, "codebook_metadata")
     test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
         "train": build_dataloader(train_dataset, loader_cfg, split="train"),
@@ -136,6 +149,20 @@ def _dataset_csv_for_split(dataset_cfg: dict[str, Any], split: str) -> tuple[str
     if val_csv:
         return val_csv, "validation"
     return dataset_cfg.get("test_csv_name"), split
+
+
+def _optional_dataset_descriptor(dataset_type: Any):
+    dataset_key = str(dataset_type or "deepsense6g").strip().lower()
+    if dataset_key in {"synthetic", "synthetic_sequence"}:
+        return None
+    return dataset_descriptor(dataset_key)
+
+
+def _uses_csv_split(dataset_type: Any, descriptor: Any) -> bool:
+    dataset_key = str(dataset_type or "deepsense6g").strip().lower()
+    if dataset_key in {"synthetic", "synthetic_sequence"}:
+        return False
+    return descriptor is None or descriptor.storage_kind == "csv_sequence"
 
 
 def _validate_snapshot_csv_exists(cfg: dict[str, Any], dataset_cfg: dict[str, Any], csv_name: str | None) -> None:

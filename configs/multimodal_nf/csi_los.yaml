@@ -1,0 +1,75 @@
+experiment:
+  name: multimodal_nf_csi_los
+  task: csi
+  objective: current_los_classification
+  variant: multimodal_nf_future_beam
+  seed: 7
+
+data:
+  dataset:
+    type: multimodal_nf
+    data_root: dataset/MultimodalNF
+    codebook_profile: small
+    csi_subcarrier_policy: single
+    split_mode: city
+    seq_len: 8
+    num_pred: 3
+    eval_portion: 0.25
+  dataloader:
+    batch_size: 16
+    num_workers: 2
+    prefetch_factor: 1
+    test_num_workers: 0
+    pin_memory: true
+
+model:
+  modalities: [csi]
+  feature_size: 64
+  num_classes: 4000
+  num_pred: 3
+  seq_length_teacher: 8
+  seq_length_student: 8
+  downsample_ratio: 1
+  student:
+    type: modular_sequence
+    modalities: [csi]
+    feature_size: 64
+    num_classes: 4000
+    num_pred: 3
+    auxiliary_heads:
+      enabled: true
+      los: true
+    input_profiles:
+      csi: xl_mimo_nf
+    representation_core:
+      type: single_gru
+    encoders:
+      csi:
+        type: pilot_dual_view_csi
+        input_profile: xl_mimo_nf
+        output_dim: 64
+        use_internal_gru: false
+
+distillation:
+  type: no_kd
+
+training:
+  epochs: 20
+  lr: 0.001
+  cpu_threads:
+    intra_op: 2
+    inter_op: 1
+  use_early_stopping: true
+  patience: 5
+  early_stopping_metric: val_los_f1
+  early_stopping_mode: max
+
+evaluation:
+  k_values: [1, 3, 5]
+
+output:
+  dir: outputs/multimodal_nf/experiments
+  run_name: csi_los
+  group_by_scene: false
+  progress:
+    enabled: true

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import torch
@@ -100,6 +101,33 @@ def compute_prediction_loss(
     link_quality_loss = zero
     selection_multitask_total = zero
     diagnostics = {"loss/beam": float(beam_primary.detach().cpu().item())}
+
+    if objective == "near_field_beam_selection":
+        metadata = _near_field_codebook_metadata(cfg)
+        expected_classes = int(metadata["num_beam_classes"])
+        actual_classes = int(reference.shape[-1])
+        if actual_classes != expected_classes:
+            raise ValueError(
+                "near_field_beam_selection model output class count does not match codebook metadata: "
+                f"model_output_classes={actual_classes}, codebook_shape={metadata['shape']}, "
+                f"expected_num_classes={expected_classes}."
+            )
+        diagnostics = {
+            "loss/near_field_beam_selection": float(beam_primary.detach().cpu().item()),
+            "loss/primary": float(beam_primary.detach().cpu().item()),
+        }
+        return PredictionLossBundle(
+            total=beam_component,
+            primary=beam_primary,
+            beam=beam_primary,
+            occlusion=zero,
+            position=zero,
+            multitask_total=zero,
+            diagnostics=diagnostics,
+            los=zero,
+            link_quality=zero,
+            selection_multitask_total=zero,
+        )
 
     if objective == "current_beam_selection":
         diagnostics = {
@@ -387,6 +415,33 @@ def _objective_loss_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
         **_mapping(loss_cfg.get(name)),
         **_mapping(objective_cfg.get(name)),
     }
+
+
+def _near_field_codebook_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    metadata = dataset_cfg.get("codebook_metadata")
+    if isinstance(metadata, dict) and "shape" in metadata:
+        shape = [int(value) for value in metadata["shape"]]
+        return {
+            "shape": shape,
+            "num_beam_classes": int(metadata.get("num_beam_classes", math.prod(shape))),
+        }
+    shape = dataset_cfg.get("codebook_shape")
+    if shape is not None:
+        values = [int(value) for value in shape]
+        return {"shape": values, "num_beam_classes": int(math.prod(values))}
+    profile = str(dataset_cfg.get("codebook_profile", "")).lower()
+    if profile == "dense":
+        values = [90, 45, 16]
+        return {"shape": values, "num_beam_classes": int(math.prod(values))}
+    if profile == "small":
+        values = [20, 20, 10]
+        return {"shape": values, "num_beam_classes": int(math.prod(values))}
+    raise ValueError(
+        "experiment.objective='near_field_beam_selection' requires Multimodal-NF codebook metadata. "
+        "Configure data.dataset.codebook_shape, codebook_profile, codebook_path, or build the dataset first "
+        "so codebook_metadata can be reused."
+    )
 
 
 def _diagnostic_tensor(model_output: ModelOutput, key: str, source: str) -> torch.Tensor:

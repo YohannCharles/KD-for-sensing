@@ -138,6 +138,7 @@ def prepare_task_inputs(
             device=device,
             modalities=(model_cfg or {}).get("modalities"),
             image_profile=(model_cfg or {}).get("image_profile"),
+            input_profiles=(model_cfg or {}).get("input_profiles"),
             non_blocking=non_blocking,
         )
     if task == "radar":
@@ -147,6 +148,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
+                profile=(model_cfg or {}).get("input_profiles", {}).get("gps"),
                 non_blocking=non_blocking,
             )
         }
@@ -157,6 +159,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
+                profile=(model_cfg or {}).get("input_profiles", {}).get("lidar"),
                 non_blocking=non_blocking,
             )
         }
@@ -167,6 +170,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
+                profile=(model_cfg or {}).get("input_profiles", {}).get("lidar"),
                 non_blocking=non_blocking,
             )
         }

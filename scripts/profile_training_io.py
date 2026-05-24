@@ -21,6 +21,7 @@ from kd_sensing.config import load_config
 from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
+    prepare_csi_inputs,
     prepare_fusion_inputs,
     prepare_gps_inputs,
     prepare_image_inputs,
@@ -34,6 +35,7 @@ from kd_sensing.engine.optim import build_device, build_model, build_optimizer, 
 from kd_sensing.engine.run_metadata import throughput_run_metadata
 from kd_sensing.engine.runtime import (
     autocast_context,
+    configure_torch_runtime_threads,
     make_grad_scaler,
     resolve_amp_settings,
     transfer_non_blocking,
@@ -67,6 +69,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     cfg = load_config(args.config, overrides)
     if args.device:
         cfg["experiment"]["device"] = args.device
+    configure_torch_runtime_threads(cfg)
     device = build_device(cfg)
     dataloaders = build_dataloaders(cfg)
     dataloader = dataloaders[args.split]
@@ -240,6 +243,8 @@ def _prepare_task_inputs(
             num_pred=num_pred,
             device=device,
             modalities=model_cfg["student"].get("modalities"),
+            image_profile=model_cfg["student"].get("image_profile"),
+            input_profiles=model_cfg["student"].get("input_profiles"),
             non_blocking=non_blocking,
         )
     if task == "radar":
@@ -251,18 +256,44 @@ def _prepare_task_inputs(
     if task == "gps":
         return labels, {
             "gps_batch": prepare_gps_inputs(
-                batch, seq_length=seq_length, num_pred=num_pred, device=device, non_blocking=non_blocking
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                profile=model_cfg["student"].get("input_profiles", {}).get("gps"),
+                non_blocking=non_blocking,
             )
         }
     if task == "lidar":
         return labels, {
             "lidar_batch": prepare_lidar_inputs(
-                batch, seq_length=seq_length, num_pred=num_pred, device=device, non_blocking=non_blocking
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                profile=model_cfg["student"].get("input_profiles", {}).get("lidar"),
+                non_blocking=non_blocking,
+            )
+        }
+    if task == "csi":
+        return labels, {
+            "csi_batch": prepare_csi_inputs(
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                profile=model_cfg["student"].get("input_profiles", {}).get("csi"),
+                non_blocking=non_blocking,
             )
         }
     return labels, {
         "image_batch": prepare_image_inputs(
-            batch, seq_length=seq_length, num_pred=num_pred, device=device, non_blocking=non_blocking
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+            image_profile=model_cfg["student"].get("image_profile"),
+            non_blocking=non_blocking,
         )
     }
 

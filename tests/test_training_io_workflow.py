@@ -491,6 +491,41 @@ def test_dataloader_kwargs_filter_worker_only_options():
     assert multi_worker["prefetch_factor"] == 3
 
 
+def test_loaded_dataloader_batch_size_alias_overrides_default_split_sizes(tmp_path: Path):
+    config_path = tmp_path / "batch_alias.yaml"
+    dump_config({"data": {"dataloader": {"batch_size": 8, "num_workers": 0}}}, config_path)
+
+    cfg = load_config(config_path)
+    loader_cfg = cfg["data"]["dataloader"]
+
+    assert loader_cfg["train_batch_size"] == 8
+    assert loader_cfg["test_batch_size"] == 8
+    assert build_dataloader_kwargs(loader_cfg, split="train")["batch_size"] == 8
+    assert build_dataloader_kwargs(loader_cfg, split="test")["batch_size"] == 8
+
+
+def test_loaded_dataloader_batch_size_alias_keeps_explicit_split_size(tmp_path: Path):
+    config_path = tmp_path / "batch_alias_split.yaml"
+    dump_config(
+        {
+            "data": {
+                "dataloader": {
+                    "batch_size": 8,
+                    "train_batch_size": 4,
+                    "num_workers": 0,
+                }
+            }
+        },
+        config_path,
+    )
+
+    cfg = load_config(config_path)
+    loader_cfg = cfg["data"]["dataloader"]
+
+    assert loader_cfg["train_batch_size"] == 4
+    assert loader_cfg["test_batch_size"] == 8
+
+
 def test_dataloader_kwargs_support_split_specific_worker_options():
     loader_cfg = {
         "train_batch_size": 8,

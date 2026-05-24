@@ -137,6 +137,24 @@ conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
   --config configs/preprocess/mmw_town10_skybridge.yaml
 ```
 
+Multimodal-NF 作为独立数据集家族默认放在 `dataset/MultimodalNF/`，通常目录为：
+
+```text
+dataset/MultimodalNF/
+  raw/        # 用户放置官方 HDF5、image/lidar zip 或解压后的本地数据
+  codebooks/  # 用户放置 upa64x64_NF_codebook*.pkl 或等价 codebook metadata
+  cache/      # 审计/index/cache 生成产物，默认不提交
+```
+
+审计和 index 构建使用包内预处理入口，不会自动移动、复制、删除或解压真实数据：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/multimodal_nf_audit.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/multimodal_nf_index.yaml
+```
+
+近场 beam selection 配置样例位于 `configs/multimodal_nf/`，包括 GPS-only、CSI-only、image+LiDAR 和 fusion。真实训练前请确认 `data.dataset.codebook_path`、`codebook_shape` 或 `codebook_profile` 与本地 codebook 一致；HDF5、zip、codebook、cache、审计报告、训练日志和 checkpoint 都属于本地输入或运行产物，通常不进入源码变更。
+
 ## Viewer
 
 Gradio 交互式 viewer 入口保留在 `tools/visualization/gradio_multimodal_viewer.py`。安装可选依赖、启动 viewer、后台运行、manifest 格式、prediction/quality/gate 合并和故障排查见 [tools/visualization/README.md](tools/visualization/README.md)。

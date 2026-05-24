@@ -1,0 +1,67 @@
+experiment:
+  name: multimodal_nf_future_beam_smoke
+  task: gps
+  objective: near_field_beam_selection
+  variant: multimodal_nf_future_beam
+  seed: 7
+
+data:
+  dataset:
+    type: multimodal_nf
+    data_root: dataset/MultimodalNF
+    codebook_profile: small
+    split_mode: city
+    seq_len: 8
+    num_pred: 3
+    return_metadata: true
+  dataloader:
+    batch_size: 2
+    num_workers: 0
+    pin_memory: false
+
+model:
+  modalities: [gps]
+  feature_size: 32
+  num_classes: 4000
+  num_pred: 3
+  seq_length_teacher: 8
+  seq_length_student: 8
+  downsample_ratio: 1
+  student:
+    type: modular_sequence
+    modalities: [gps]
+    feature_size: 32
+    num_classes: 4000
+    num_pred: 3
+    input_profiles:
+      gps: uav_xyz_snapshot
+    representation_core:
+      type: single_gru
+    encoders:
+      gps:
+        type: gps_mlp
+        gps_input_size: 3
+        output_dim: 32
+
+distillation:
+  type: no_kd
+
+training:
+  epochs: 1
+  lr: 0.001
+  use_early_stopping: false
+  early_stopping_metric: val_beam_top1
+  early_stopping_mode: max
+  transfer:
+    non_blocking: false
+
+evaluation:
+  k_values: [1, 3, 5]
+
+output:
+  dir: outputs/multimodal_nf/smoke
+  run_name: future_beam_smoke
+  group_by_scene: false
+  overwrite: true
+  progress:
+    enabled: false

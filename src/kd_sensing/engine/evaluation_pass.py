@@ -262,7 +262,9 @@ def _metrics_from_outputs(
         "topk": {str(k): v.tolist() for k, v in topk_acc.items()},
         "total": total.tolist(),
     }
-    if objective in {"current_beam_selection", "selection_multitask"}:
+    if objective == "near_field_beam_selection":
+        metrics.update(_flat_current_beam_metrics(topk_acc, total))
+    elif objective in {"current_beam_selection", "selection_multitask"}:
         metrics.update(_flat_current_beam_metrics(topk_acc, total))
         beam_dba = calculate_current_beam_dba(
             outputs,

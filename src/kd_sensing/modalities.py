@@ -29,6 +29,17 @@ class ImageProfileSpec:
     recommended_encoder: str
 
 
+@dataclass(frozen=True)
+class InputProfileSpec:
+    modality: str
+    name: str
+    sample_key: str
+    fusion_input_key: str
+    semantics: str
+    shape: str
+    metadata: dict[str, Any]
+
+
 MODALITY_ORDER = ("image", "radar", "gps", "lidar", "mmwave", "csi", "coord", "ray")
 DEFAULT_IMAGE_PROFILE = "rgb_imagenet"
 REMOVED_IMAGE_PROFILE = "motion" + "_mask"
@@ -44,6 +55,89 @@ IMAGE_PROFILE_SPECS: dict[str, ImageProfileSpec] = {
         supports_cache=False,
         recommended_encoder="resnet18_imagenet_rgb",
     ),
+}
+
+INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
+    "image": {
+        "rgb_imagenet": InputProfileSpec(
+            modality="image",
+            name="rgb_imagenet",
+            sample_key="image",
+            fusion_input_key="image_batch",
+            semantics="RGB image sequence normalized for ImageNet-style encoders",
+            shape="[T, 3, H, W]",
+            metadata={"channels": 3, "default_size": [224, 224]},
+        ),
+    },
+    "gps": {
+        "relative_polar_history": InputProfileSpec(
+            modality="gps",
+            name="relative_polar_history",
+            sample_key="gps",
+            fusion_input_key="gps_batch",
+            semantics="DeepSense6G historical relative polar GPS features",
+            shape="[T, 3]",
+            metadata={"default_dataset": "deepsense6g"},
+        ),
+        "uav_xyz_snapshot": InputProfileSpec(
+            modality="gps",
+            name="uav_xyz_snapshot",
+            sample_key="gps",
+            fusion_input_key="gps_batch",
+            semantics="current UAV 3D position snapshot",
+            shape="[T, 3]",
+            metadata={"default_time_steps": 1, "coordinate_dim": 3},
+        ),
+    },
+    "lidar": {
+        "bev_projection": InputProfileSpec(
+            modality="lidar",
+            name="bev_projection",
+            sample_key="lidar",
+            fusion_input_key="lidar_batch",
+            semantics="LiDAR bird's-eye-view raster sequence",
+            shape="[T, C, H, W]",
+            metadata={"default_dataset": "deepsense6g"},
+        ),
+        "occupancy_grid_3d": InputProfileSpec(
+            modality="lidar",
+            name="occupancy_grid_3d",
+            sample_key="lidar",
+            fusion_input_key="lidar_batch",
+            semantics="Raymobtime 3D occupancy grid snapshot",
+            shape="[T, C, D, H, W]",
+            metadata={"default_dataset": "raymobtime_s008"},
+        ),
+        "point_cloud_xyz_10000": InputProfileSpec(
+            modality="lidar",
+            name="point_cloud_xyz_10000",
+            sample_key="lidar",
+            fusion_input_key="lidar_batch",
+            semantics="LiDAR point cloud with XYZ coordinates",
+            shape="[T, P, 3]",
+            metadata={"default_points": 10000, "coordinate_dim": 3},
+        ),
+    },
+    "csi": {
+        "pilot_dual_view": InputProfileSpec(
+            modality="csi",
+            name="pilot_dual_view",
+            sample_key="csi",
+            fusion_input_key="csi_batch",
+            semantics="existing CSI tensor for pilot dual-view encoder",
+            shape="[T, Nsc, Nant, 2]",
+            metadata={"complex_layout": "real_imag_last"},
+        ),
+        "xl_mimo_nf": InputProfileSpec(
+            modality="csi",
+            name="xl_mimo_nf",
+            sample_key="csi",
+            fusion_input_key="csi_batch",
+            semantics="near-field XL-MIMO channel tensor",
+            shape="[T, M, K, 2]",
+            metadata={"antenna_axis": "M", "subcarrier_axis": "K", "complex_layout": "real_imag_last"},
+        ),
+    },
 }
 
 MODALITY_SPECS: dict[str, ModalitySpec] = {
@@ -153,6 +247,45 @@ def modality_spec(name: str) -> ModalitySpec:
 
 def supported_image_profiles() -> tuple[str, ...]:
     return tuple(IMAGE_PROFILE_SPECS.keys())
+
+
+def supported_input_profiles(modality: str) -> tuple[str, ...]:
+    return tuple(INPUT_PROFILE_SPECS.get(str(modality), {}))
+
+
+def resolve_modality_profile(modality: str, profile: str | None = None) -> str:
+    name = str(modality)
+    profiles = INPUT_PROFILE_SPECS.get(name)
+    if not profiles:
+        if profile not in (None, ""):
+            raise ValueError(f"Modality '{name}' does not define input profiles; got '{profile}'.")
+        return ""
+    default = next(iter(profiles))
+    resolved = default if profile in (None, "") else str(profile)
+    if resolved not in profiles:
+        available = ", ".join(profiles)
+        raise ValueError(f"Unknown {name}_profile '{resolved}'. Available {name} profiles: {available}.")
+    return resolved
+
+
+def modality_profile_spec(modality: str, profile: str | None = None) -> InputProfileSpec:
+    resolved = resolve_modality_profile(modality, profile)
+    if not resolved:
+        raise ValueError(f"Modality '{modality}' does not define input profiles.")
+    return INPUT_PROFILE_SPECS[str(modality)][resolved]
+
+
+def modality_profile_metadata(modality: str, profile: str | None = None) -> dict[str, Any]:
+    spec = modality_profile_spec(modality, profile)
+    return {
+        "modality": spec.modality,
+        "name": spec.name,
+        "sample_key": spec.sample_key,
+        "fusion_input_key": spec.fusion_input_key,
+        "semantics": spec.semantics,
+        "shape": spec.shape,
+        **dict(spec.metadata),
+    }
 
 
 def resolve_image_profile(profile: str | None = None) -> str:

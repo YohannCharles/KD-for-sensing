@@ -396,6 +396,7 @@ OPTIONAL_HISTORY_KEYS = objective_optional_history_fields()
 def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, list], objective: str) -> dict[str, Any]:
     if objective not in {
         "current_beam_selection",
+        "near_field_beam_selection",
         "current_los_classification",
         "current_link_quality",
         "selection_multitask",

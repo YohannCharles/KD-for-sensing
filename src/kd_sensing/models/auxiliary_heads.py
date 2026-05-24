@@ -9,19 +9,44 @@ import torch.nn as nn
 def resolve_auxiliary_heads(config: bool | dict[str, Any] | None) -> dict[str, bool]:
     if isinstance(config, bool):
         enabled = bool(config)
-        return {"enabled": enabled, "occlusion": enabled, "position": enabled}
+        return {"enabled": enabled, "occlusion": enabled, "position": enabled, "los": False, "link_quality": False}
     if config is None:
-        return {"enabled": False, "occlusion": False, "position": False}
+        return {"enabled": False, "occlusion": False, "position": False, "los": False, "link_quality": False}
     if not isinstance(config, dict):
         raise TypeError("auxiliary_heads must be a bool, mapping, or None.")
     enabled = bool(config.get("enabled", config.get("enable", False)))
-    occlusion = bool(config.get("occlusion", config.get("occlusion_head", enabled)))
-    position = bool(config.get("position", config.get("position_head", enabled)))
+    has_specific_heads = any(
+        key in config
+        for key in (
+            "occlusion",
+            "occlusion_head",
+            "position",
+            "position_head",
+            "los",
+            "los_head",
+            "link_quality",
+            "link_quality_head",
+            "link_head",
+        )
+    )
+    default_aux = enabled and not has_specific_heads
+    occlusion = bool(config.get("occlusion", config.get("occlusion_head", default_aux)))
+    position = bool(config.get("position", config.get("position_head", default_aux)))
+    los = bool(config.get("los", config.get("los_head", False)))
+    link_quality = bool(config.get("link_quality", config.get("link_quality_head", config.get("link_head", False))))
     if not enabled:
         occlusion = bool(config.get("occlusion", False))
         position = bool(config.get("position", False))
-        enabled = occlusion or position
-    return {"enabled": enabled, "occlusion": occlusion, "position": position}
+        los = bool(config.get("los", config.get("los_head", False)))
+        link_quality = bool(config.get("link_quality", config.get("link_quality_head", config.get("link_head", False))))
+        enabled = occlusion or position or los or link_quality
+    return {
+        "enabled": enabled,
+        "occlusion": occlusion,
+        "position": position,
+        "los": los,
+        "link_quality": link_quality,
+    }
 
 
 class TemporalAuxiliaryHeads(nn.Module):
@@ -57,6 +82,24 @@ class TemporalAuxiliaryHeads(nn.Module):
             if self.config["position"]
             else None
         )
+        self.los_head = (
+            nn.Sequential(
+                nn.LayerNorm(self.input_dim),
+                nn.Dropout(float(dropout)),
+                nn.Linear(self.input_dim, 1),
+            )
+            if self.config["los"]
+            else None
+        )
+        self.link_quality_head = (
+            nn.Sequential(
+                nn.LayerNorm(self.input_dim),
+                nn.Dropout(float(dropout)),
+                nn.Linear(self.input_dim, 1),
+            )
+            if self.config["link_quality"]
+            else None
+        )
 
     @property
     def enabled(self) -> bool:
@@ -77,6 +120,10 @@ class TemporalAuxiliaryHeads(nn.Module):
             output["occlusion_logits"] = self.occlusion_head(future_features).squeeze(-1)
         if self.position_head is not None:
             output["position"] = self.position_head(future_features)
+        if self.los_head is not None:
+            output["los_logits"] = self.los_head(future_features).squeeze(-1)
+        if self.link_quality_head is not None:
+            output["link_quality"] = self.link_quality_head(future_features).squeeze(-1)
         return output
 
 

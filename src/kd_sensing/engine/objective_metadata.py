@@ -10,6 +10,7 @@ PREDICTION_OBJECTIVES = (
     "position",
     "multitask",
     "current_beam_selection",
+    "near_field_beam_selection",
     "current_los_classification",
     "current_link_quality",
     "selection_multitask",
@@ -21,6 +22,7 @@ _DEFAULT_METRICS: dict[str, tuple[str, str]] = {
     "position": ("val_position_rmse", "min"),
     "multitask": ("val_multitask_loss", "min"),
     "current_beam_selection": ("val_beam_top1", "max"),
+    "near_field_beam_selection": ("val_beam_top1", "max"),
     "current_los_classification": ("val_los_f1", "max"),
     "current_link_quality": ("val_link_mae", "min"),
     "selection_multitask": ("val_selection_multitask_loss", "min"),
@@ -55,6 +57,11 @@ _CURRENT_BEAM_AVAILABLE_METRICS = (
     "val_beam_top3",
     "val_beam_top5",
     "val_beam_dba",
+)
+_NEAR_FIELD_BEAM_AVAILABLE_METRICS = (
+    "val_beam_top1",
+    "val_beam_top3",
+    "val_beam_top5",
 )
 _CURRENT_LOS_AVAILABLE_METRICS = (
     "val_los_accuracy",
@@ -116,6 +123,9 @@ _METRIC_ALIASES: dict[str, str] = {
     "val_multitask_loss": "val_multitask_loss",
     "loss/multitask_total": "val_multitask_loss",
     "current_beam_selection": "val_beam_top1",
+    "near_field_beam_selection": "val_beam_top1",
+    "near_field": "val_beam_top1",
+    "nf_beam": "val_beam_top1",
     "beam_selection": "val_beam_top1",
     "beam_top1": "val_beam_top1",
     "val_beam_top1": "val_beam_top1",
@@ -233,6 +243,14 @@ _SELECTION_HISTORY_FIELDS_BY_OBJECTIVE: dict[str, tuple[str, ...]] = {
         "val_primary_metric",
         "learning_rates",
     ),
+    "near_field_beam_selection": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_primary_metric",
+        "learning_rates",
+    ),
     "current_los_classification": (
         *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
         "train_los_loss",
@@ -346,6 +364,12 @@ _CURRENT_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("beam/val_dba_current", "val_beam_dba"),
 )
 
+_NEAR_FIELD_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+)
+
 _CURRENT_LOS_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("loss/los", "train_los_loss"),
     ("los/accuracy", "val_los_accuracy"),
@@ -374,6 +398,7 @@ _OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
     "position": (*_BASE_AVAILABLE_METRICS, *_POSITION_AVAILABLE_METRICS),
     "multitask": (*_BASE_AVAILABLE_METRICS, *_MULTITASK_AVAILABLE_METRICS),
     "current_beam_selection": (*_BASE_AVAILABLE_METRICS, *_CURRENT_BEAM_AVAILABLE_METRICS),
+    "near_field_beam_selection": (*_BASE_AVAILABLE_METRICS, *_NEAR_FIELD_BEAM_AVAILABLE_METRICS),
     "current_los_classification": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LOS_AVAILABLE_METRICS),
     "current_link_quality": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LINK_AVAILABLE_METRICS),
     "selection_multitask": (*_BASE_AVAILABLE_METRICS, *_SELECTION_MULTITASK_AVAILABLE_METRICS),
@@ -431,10 +456,10 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("beam",)
         required_outputs = ("logits",)
         primary_loss = "beam"
-    elif objective == "current_beam_selection":
+    elif objective in {"current_beam_selection", "near_field_beam_selection"}:
         required_targets = ("target_beam",)
         required_outputs = ("logits",)
-        primary_loss = "beam_selection"
+        primary_loss = "near_field_beam_selection" if objective == "near_field_beam_selection" else "beam_selection"
     elif objective == "current_los_classification":
         required_targets = ("los_label",)
         required_outputs = ("los_logits",)
@@ -459,6 +484,18 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("target_beam", "los_label", "link_quality")
         required_outputs = ("logits", "los_logits", "link_quality")
         primary_loss = "selection_multitask_total"
+    runtime_metadata = {
+        "default_metric": metric,
+        "default_metric_mode": mode,
+    }
+    if objective == "near_field_beam_selection":
+        runtime_metadata.update(
+            {
+                "target_schema": "near_field_3d_codebook",
+                "task_semantics": "future_near_field_beam_prediction",
+                "future_horizon_metrics": True,
+            }
+        )
     return PredictionObjectiveSpec(
         name=objective,
         required_targets=required_targets,
@@ -471,10 +508,7 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         metric_modes=dict(_METRIC_MODES),
         history_fields=_SELECTION_HISTORY_FIELDS_BY_OBJECTIVE.get(objective, _HISTORY_FIELDS),
         tensorboard_scalars=_tensorboard_scalars_for_objective(objective),
-        runtime_metadata={
-            "default_metric": metric,
-            "default_metric_mode": mode,
-        },
+        runtime_metadata=runtime_metadata,
     )
 
 
@@ -626,7 +660,11 @@ def objective_enabled_heads(cfg: dict[str, Any]) -> list[str]:
     for output in objective_spec(cfg).required_outputs:
         if output == "logits":
             objective = resolve_prediction_objective(cfg)
-            heads.append("beam_selection" if objective in {"current_beam_selection", "selection_multitask"} else "beam")
+            heads.append(
+                "beam_selection"
+                if objective in {"current_beam_selection", "near_field_beam_selection", "selection_multitask"}
+                else "beam"
+            )
         elif output == "occlusion_logits":
             heads.append("occlusion")
         elif output == "position":
@@ -785,7 +823,12 @@ def resolve_auxiliary_task_config(cfg: dict[str, Any]) -> AuxiliaryTaskConfig:
 def _runtime_loss_weights(cfg: dict[str, Any], objective: str) -> dict[str, float]:
     if objective == "selection_multitask":
         return selection_multitask_loss_weights(cfg)
-    if objective in {"current_beam_selection", "current_los_classification", "current_link_quality"}:
+    if objective in {
+        "current_beam_selection",
+        "near_field_beam_selection",
+        "current_los_classification",
+        "current_link_quality",
+    }:
         return {}
     return multitask_loss_weights(cfg)
 
@@ -797,6 +840,8 @@ def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str],
         scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
     elif objective == "current_beam_selection":
         scalars.extend(_CURRENT_BEAM_TENSORBOARD_SCALARS)
+    elif objective == "near_field_beam_selection":
+        scalars.extend(_NEAR_FIELD_BEAM_TENSORBOARD_SCALARS)
     elif objective == "current_los_classification":
         scalars.extend(_CURRENT_LOS_TENSORBOARD_SCALARS)
     elif objective == "current_link_quality":
@@ -817,7 +862,7 @@ def _finite_number(value: object) -> bool:
 
 
 def _is_allowed_pattern_metric(name: str, *, objective: str) -> bool:
-    if objective in {"current_beam_selection", "selection_multitask"}:
+    if objective in {"current_beam_selection", "near_field_beam_selection", "selection_multitask"}:
         return name.startswith(("val_beam_top",))
     if objective not in {"beam", "multitask"}:
         return False

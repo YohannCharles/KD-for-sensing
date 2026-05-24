@@ -1,6 +1,7 @@
 __all__ = [
     "DeepSense6GDataset",
     "MMWDataset",
+    "MultimodalNFDataset",
     "RaymobtimeS008SnapshotDataset",
     "SyntheticSequenceDataset",
 ]
@@ -19,6 +20,10 @@ def __getattr__(name: str):
         from . import synthetic
 
         return synthetic.SyntheticSequenceDataset
+    if name == "MultimodalNFDataset":
+        from . import multimodal_nf
+
+        return multimodal_nf.MultimodalNFDataset
     if name == "RaymobtimeS008SnapshotDataset":
         from . import raymobtime_s008
 

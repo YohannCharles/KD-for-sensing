@@ -139,6 +139,7 @@ def prepare_fusion_inputs(
     device: torch.device,
     modalities: list[str] | tuple[str, ...] | None = None,
     image_profile: str | None = None,
+    input_profiles: dict[str, str] | None = None,
     non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
     selected = normalize_modalities(tuple(modalities or ("image", "radar")), context="fusion batch modalities")
@@ -170,6 +171,7 @@ def prepare_fusion_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
+            profile=(input_profiles or {}).get(modality),
             non_blocking=non_blocking,
         )
     return inputs
@@ -181,6 +183,7 @@ def prepare_gps_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "gps" not in batch:
@@ -188,6 +191,11 @@ def prepare_gps_inputs(
     gps = batch["gps"].to(device, non_blocking=non_blocking)
     if gps.ndim == 2:
         gps = gps.unsqueeze(0)
+    if gps.ndim != 3:
+        profile_text = f" for profile '{profile}'" if profile else ""
+        raise ValueError(f"GPS input{profile_text} must have shape [B, T, F], got {tuple(gps.shape)}.")
+    if profile == "uav_xyz_snapshot" and int(gps.shape[-1]) != 3:
+        raise ValueError(f"GPS input profile 'uav_xyz_snapshot' requires [B, T, 3], got {tuple(gps.shape)}.")
     gps = gps[:, -seq_length:, :]
     batch_size, _, feature_dim = gps.shape
     pad_steps = max(num_pred - 1, 0)
@@ -207,6 +215,7 @@ def prepare_radar_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "radar_ra" not in batch or "radar_da" not in batch:
@@ -242,11 +251,32 @@ def prepare_lidar_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "lidar" not in batch:
         raise ValueError("LiDAR input is required but batch does not contain a 'lidar' field.")
     lidar = batch["lidar"].to(device, non_blocking=non_blocking)
+    if profile == "point_cloud_xyz_10000":
+        if lidar.ndim == 3:
+            lidar = lidar.unsqueeze(0)
+        if lidar.ndim != 4 or int(lidar.shape[-1]) != 3:
+            raise ValueError(
+                "LiDAR input profile 'point_cloud_xyz_10000' requires shape [B, T, P, 3], "
+                f"got {tuple(lidar.shape)}."
+            )
+        lidar = lidar[:, -seq_length:, ...]
+        batch_size, _, point_count, coord_dim = lidar.shape
+        pad_steps = max(num_pred - 1, 0)
+        zeros = torch.zeros(
+            batch_size,
+            pad_steps,
+            point_count,
+            coord_dim,
+            dtype=lidar.dtype,
+            device=device,
+        )
+        return torch.cat([lidar, zeros], dim=1)
     if lidar.ndim == 4:
         lidar = lidar.unsqueeze(2)
     if lidar.ndim == 6:
@@ -289,6 +319,7 @@ def prepare_mmwave_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "mmwave" not in batch:
@@ -317,6 +348,7 @@ def prepare_csi_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "csi" not in batch:
@@ -325,10 +357,12 @@ def prepare_csi_inputs(
     if csi.ndim == 4:
         csi = csi.unsqueeze(0)
     if csi.ndim not in {5, 6}:
+        expected = "[B, T, M, K, 2]" if profile == "xl_mimo_nf" else "[B, T, Nsc, Nant, 2]"
         raise ValueError(
-            "CSI input must have shape [B, T, Nsc, Nant, 2] or complex [B, T, Nsc, Nant], "
-            f"got {tuple(csi.shape)}."
+            f"CSI input profile '{profile or 'pilot_dual_view'}' must have shape {expected}, got {tuple(csi.shape)}."
         )
+    if profile == "xl_mimo_nf" and (csi.ndim != 5 or int(csi.shape[-1]) != 2):
+        raise ValueError(f"CSI input profile 'xl_mimo_nf' requires [B, T, M, K, 2], got {tuple(csi.shape)}.")
     csi = csi[:, -seq_length:, ...]
     pad_steps = max(num_pred - 1, 0)
     pad_shape = (int(csi.shape[0]), pad_steps, *tuple(csi.shape[2:]))
@@ -342,6 +376,7 @@ def prepare_coord_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     return _prepare_snapshot_vector_input(
@@ -361,6 +396,7 @@ def prepare_ray_inputs(
     seq_length: int,
     num_pred: int,
     device: torch.device,
+    profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
     return _prepare_snapshot_vector_input(

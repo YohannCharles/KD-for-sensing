@@ -1,0 +1,9 @@
+preprocessing:
+  type: multimodal_nf_index
+  data_root: dataset/MultimodalNF
+  raw_root: dataset/MultimodalNF/raw
+  cache_dir: dataset/MultimodalNF/cache
+  split_mode: city
+  split_seed: 42
+  seq_len: 8
+  num_pred: 3

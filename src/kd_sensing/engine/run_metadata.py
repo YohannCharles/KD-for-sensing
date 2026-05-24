@@ -90,6 +90,13 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     sample_metadata = getattr(getattr(dataset, "samples", None), "metadata", None)
     if sample_metadata is not None:
         metadata["sampling"] = sample_metadata
+    if hasattr(dataset, "runtime_metadata"):
+        runtime_metadata = dataset.runtime_metadata()
+        metadata["descriptor"] = runtime_metadata.get("descriptor")
+        metadata["storage_kind"] = runtime_metadata.get("storage_kind", metadata.get("storage_kind"))
+        metadata["input_profiles"] = runtime_metadata.get("input_profiles")
+        metadata["target"] = runtime_metadata.get("target")
+        metadata["runtime_contract"] = runtime_metadata
     if hasattr(dataset, "raymobtime_metadata"):
         raymobtime = dataset.raymobtime_metadata()
         metadata["raymobtime"] = raymobtime
@@ -99,6 +106,13 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["num_beam_classes"] = raymobtime.get("num_beam_classes")
         metadata["num_tx_beams"] = raymobtime.get("num_tx_beams")
         metadata["num_rx_beams"] = raymobtime.get("num_rx_beams")
+    if hasattr(dataset, "multimodal_nf_metadata"):
+        nf_metadata = dataset.multimodal_nf_metadata()
+        metadata["multimodal_nf"] = nf_metadata
+        metadata["task_semantics"] = nf_metadata.get("task_semantics")
+        metadata["num_beam_classes"] = nf_metadata.get("num_beam_classes")
+        metadata["codebook"] = nf_metadata.get("codebook")
+        metadata["input_profiles"] = nf_metadata.get("input_profiles")
     return metadata
 
 
@@ -137,6 +151,18 @@ def prediction_setup_metadata(
         metadata["uses_temporal_core"] = False
         metadata["cache_dir"] = dataset_cfg.get("cache_dir")
         metadata["link_target_name"] = dataset_cfg.get("link_target_name", "link_power_max_dbm")
+    if dataset_cfg.get("type") == "multimodal_nf":
+        metadata["variant"] = "multimodal_nf_future_beam"
+        metadata["task_semantics"] = "future_near_field_beam_prediction"
+        metadata["uses_history_window"] = bool(seq_len > 1)
+        metadata["uses_temporal_core"] = bool(seq_len > 1)
+        metadata["target_schema"] = "near_field_beam_selection"
+        metadata["codebook_shape"] = dataset_cfg.get("codebook_shape") or (
+            dataset_cfg.get("codebook_metadata", {}).get("shape")
+            if isinstance(dataset_cfg.get("codebook_metadata"), dict)
+            else None
+        )
+        metadata["input_profiles"] = dataset_cfg.get("input_profiles")
     scene = cfg.get("data", {}).get("dataset", {})
     for key in ("scene", "scene_id", "scene_slug"):
         if key in scene:

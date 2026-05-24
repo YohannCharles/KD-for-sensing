@@ -92,12 +92,67 @@ def normalize_loaded_config(
     )
     apply_objective_runtime_requirements(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
+    normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_csi_hardening_alias(cfg)
     canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_model_role_defaults(cfg)
     normalize_deepsense_config(cfg)
     normalize_image_profile_config(cfg)
     apply_snapshot_runtime_requirements(cfg)
+
+
+def normalize_dataloader_batch_size_alias(
+    cfg: dict[str, Any],
+    *,
+    file_cfg: dict[str, Any],
+    override_cfg: dict[str, Any],
+) -> None:
+    """Map explicit dataloader.batch_size aliases onto split-aware sizes.
+
+    The default config carries train/test batch-size defaults. Without this
+    normalization, a task config that only sets data.dataloader.batch_size keeps
+    the default train_batch_size/test_batch_size values and silently trains with
+    the wrong batch size.
+    """
+
+    loader_cfg = cfg.setdefault("data", {}).setdefault("dataloader", {})
+    if not isinstance(loader_cfg, dict):
+        return
+    file_loader = _dataloader_cfg(file_cfg)
+    override_loader = _dataloader_cfg(override_cfg)
+
+    batch_size = None
+    batch_source = None
+    if isinstance(file_loader, dict) and "batch_size" in file_loader:
+        batch_size = copy.deepcopy(file_loader["batch_size"])
+        batch_source = "file"
+    if isinstance(override_loader, dict) and "batch_size" in override_loader:
+        batch_size = copy.deepcopy(override_loader["batch_size"])
+        batch_source = "override"
+    if batch_source is None:
+        return
+
+    for split in ("train", "test"):
+        if _has_explicit_split_batch_size(override_loader, split):
+            continue
+        if batch_source == "file" and _has_explicit_split_batch_size(file_loader, split):
+            continue
+        loader_cfg[f"{split}_batch_size"] = copy.deepcopy(batch_size)
+
+
+def _dataloader_cfg(source: dict[str, Any] | None) -> dict[str, Any] | None:
+    data_cfg = source.get("data") if isinstance(source, dict) else None
+    loader_cfg = data_cfg.get("dataloader") if isinstance(data_cfg, dict) else None
+    return loader_cfg if isinstance(loader_cfg, dict) else None
+
+
+def _has_explicit_split_batch_size(loader_cfg: dict[str, Any] | None, split: str) -> bool:
+    if not isinstance(loader_cfg, dict):
+        return False
+    if f"{split}_batch_size" in loader_cfg:
+        return True
+    split_cfg = loader_cfg.get(split)
+    return isinstance(split_cfg, dict) and "batch_size" in split_cfg
 
 
 def apply_fusion_modality_selection(cfg: dict[str, Any], *, override_cfg: dict[str, Any] | None = None) -> None:
