@@ -197,10 +197,11 @@ DATASET_DESCRIPTORS: dict[str, DatasetDescriptor] = {
             "gps": _profile("gps", "uav_xyz_snapshot"),
             "csi": _profile("csi", "xl_mimo_nf"),
         },
-        default_target_schema="near_field_beam_selection",
+        default_target_schema="near_field_3d_codebook_flattened_beam_class",
         artifact_boundary="HDF5/codebook local input; audit/index/cache/output/checkpoint ignored",
         metadata={
             "task_semantics": "current_frame_near_field_beam_selection",
+            "target_schema_aliases": ["near_field_beam_selection"],
             "codebook_shapes": {"dense": [90, 45, 16], "small": [20, 20, 10]},
         },
     ),

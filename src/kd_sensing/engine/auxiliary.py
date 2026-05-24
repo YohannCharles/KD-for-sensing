@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from kd_sensing.engine.model_output import ModelOutput
-from kd_sensing.engine.objective_metadata import AuxiliaryTaskConfig, resolve_auxiliary_task_config
+from kd_sensing.engine.objectives.metadata import AuxiliaryTaskConfig, resolve_auxiliary_task_config
 
 
 @dataclass(frozen=True)

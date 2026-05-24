@@ -476,6 +476,7 @@ def test_export_viewer_manifest_processes_all_samples_and_reuses_cache(tmp_path:
 
     result = export_viewer_manifest(cfg)
     records = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    meta = json.loads(Path(result["meta_path"]).read_text(encoding="utf-8"))
     reused = export_viewer_manifest(cfg)
     _write_beam(tmp_path / "row0_future.txt", 6)
     invalidated = export_viewer_manifest(cfg)
@@ -486,6 +487,22 @@ def test_export_viewer_manifest_processes_all_samples_and_reuses_cache(tmp_path:
     assert invalidated["cache_hit"] is False
     assert result["sample_count"] == 2
     assert "summary_path" not in result
+    assert {"cache_digest", "manifest_path", "sample_count", "config", "sources"} <= set(meta)
+    assert meta["manifest_path"] == result["manifest_path"]
+    assert meta["sample_count"] == result["sample_count"]
+    assert {
+        "sample_id",
+        "scene_id",
+        "scene_slug",
+        "split",
+        "sequence_id",
+        "time_index",
+        "timestamp",
+        "raw",
+        "processed",
+        "label",
+        "extra",
+    } <= set(records[0])
     assert records[0]["raw"]["image"].endswith("row0_camera_1.jpg")
     assert Path(records[0]["raw"]["lidar"]).exists()
     assert Path(records[0]["raw"]["radar"]).exists()

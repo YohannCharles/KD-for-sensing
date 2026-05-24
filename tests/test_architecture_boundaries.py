@@ -209,6 +209,26 @@ def test_entrypoint_lifecycle_categories_are_explicit_and_documented():
         assert lifecycle in inventory
 
 
+def test_hotspot_inventory_documents_facades_and_narrow_modules():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    required_paths = [
+        "src/kd_sensing/engine/objective_metadata.py",
+        "src/kd_sensing/engine/objectives/registry.py",
+        "src/kd_sensing/engine/objectives/history.py",
+        "src/kd_sensing/preprocessing/multimodal_nf_common.py",
+        "src/kd_sensing/preprocessing/multimodal_nf_index.py",
+        "src/kd_sensing/diagnostics/viewer_manifest.py",
+        "src/kd_sensing/diagnostics/viewer_manifest_merge.py",
+        "src/kd_sensing/data/deepverse/label_builder.py",
+        "src/kd_sensing/data/deepverse/label_writers.py",
+    ]
+
+    for rel_path in required_paths:
+        assert rel_path in inventory
+    assert "不得从 `kd_sensing.engine.objective_metadata`" in inventory
+    assert "`kd_sensing.preprocessing.multimodal_nf_common` 回流导入" in inventory
+
+
 def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
     recipe_file = SRC / "kd_sensing" / "config" / "canonical_recipes" / "advanced.py"
     recipe_text = recipe_file.read_text(encoding="utf-8")
@@ -280,6 +300,66 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/models/csi_encoder.py": "class PilotDualViewCSIEncoder",
             },
         },
+        "src/kd_sensing/engine/objective_metadata.py": {
+            "max_lines": 20,
+            "forbidden": [
+                "PREDICTION_OBJECTIVES =",
+                "def objective_spec",
+                "_METRIC_ALIASES",
+                "_HISTORY_FIELDS",
+            ],
+            "helpers": {
+                "src/kd_sensing/engine/objectives/registry.py": "_METRIC_ALIASES",
+                "src/kd_sensing/engine/objectives/history.py": "_HISTORY_FIELDS",
+                "src/kd_sensing/engine/objectives/metadata.py": "def objective_runtime_metadata",
+            },
+        },
+        "src/kd_sensing/preprocessing/multimodal_nf_common.py": {
+            "max_lines": 80,
+            "forbidden": [
+                "def audit_multimodal_nf_files",
+                "def build_multimodal_nf_rows",
+                "def parse_codebook_metadata",
+                "def _assign_multimodal_nf_splits",
+            ],
+            "helpers": {
+                "src/kd_sensing/preprocessing/multimodal_nf_paths.py": "class MultimodalNFPaths",
+                "src/kd_sensing/preprocessing/multimodal_nf_audit.py": "def audit_multimodal_nf_files",
+                "src/kd_sensing/preprocessing/multimodal_nf_codebook.py": "def parse_codebook_metadata",
+                "src/kd_sensing/preprocessing/multimodal_nf_index.py": "def build_multimodal_nf_rows",
+                "src/kd_sensing/preprocessing/multimodal_nf_splits.py": "def _assign_multimodal_nf_splits",
+            },
+        },
+        "src/kd_sensing/diagnostics/viewer_manifest.py": {
+            "max_lines": 220,
+            "forbidden": [
+                "def _manifest_record",
+                "def _cache_digest",
+                "def _load_external_mapping",
+                "def _save_raw_lidar_preview",
+            ],
+            "helpers": {
+                "src/kd_sensing/diagnostics/viewer_manifest_schema.py": "def _json_ready",
+                "src/kd_sensing/diagnostics/viewer_manifest_cache.py": "def _cache_digest",
+                "src/kd_sensing/diagnostics/viewer_manifest_paths.py": "def _all_source_paths",
+                "src/kd_sensing/diagnostics/viewer_manifest_merge.py": "def _attach_prediction_bundle",
+                "src/kd_sensing/diagnostics/viewer_manifest_writer.py": "def _manifest_record",
+            },
+        },
+        "src/kd_sensing/data/deepverse/label_builder.py": {
+            "max_lines": 650,
+            "forbidden": [
+                "def write_label_cache",
+                "def _blockage_metadata",
+                "def _get_sample",
+                "def _write_json",
+            ],
+            "helpers": {
+                "src/kd_sensing/data/deepverse/label_scene.py": "class MobilityTrace",
+                "src/kd_sensing/data/deepverse/label_targets.py": "def _blockage_metadata",
+                "src/kd_sensing/data/deepverse/label_writers.py": "def write_label_cache",
+            },
+        },
     }
 
     for facade, expectation in expectations.items():
@@ -309,7 +389,7 @@ def test_openspec_specs_have_real_purpose_text():
     violations = []
     for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md")):
         purpose = _openspec_purpose_text(path)
-        if not purpose or len(purpose) < 50 or purpose == "TBD - created by archiving":
+        if not purpose or len(purpose) < 50 or "TBD - created by archiving" in purpose:
             violations.append(path.relative_to(ROOT).as_posix())
 
     assert violations == []
@@ -563,6 +643,11 @@ def test_internal_python_code_avoids_secondary_compatibility_layers():
         "from kd_sensing.engine import _builders_impl",
         _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
         "from kd_sensing.data.transform_ops import _legacy",
+        "from kd_sensing.engine.objective_metadata import",
+        "import kd_sensing.engine.objective_metadata",
+        "from kd_sensing.preprocessing.multimodal_nf_common import",
+        "import kd_sensing.preprocessing.multimodal_nf_common",
+        "from kd_sensing.diagnostics.viewer_manifest import _",
     )
     violations = []
     for root in roots:

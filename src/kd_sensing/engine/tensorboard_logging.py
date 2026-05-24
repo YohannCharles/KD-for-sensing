@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from kd_sensing.engine.objective_metadata import objective_tensorboard_scalars
+from kd_sensing.engine.objectives.metadata import objective_tensorboard_scalars
 
 
 def create_tensorboard_writer(cfg: dict, run_dir: Path):

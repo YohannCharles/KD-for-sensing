@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -8,25 +7,39 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
-from .codebook import beam_entropy, compute_beam_gain, make_ula_dft_codebook
-from .sanity_check import build_sanity_report
-from .split import assign_splits, make_split_result
-
-
-BLOCKAGE_IGNORE_INDEX = -100
-LINK_STATE_UNKNOWN = -1
-LINK_STATE_LOS = 0
-LINK_STATE_NLOS = 1
-
-
-@dataclass(frozen=True)
-class MobilityTrace:
-    times: np.ndarray
-    locations: np.ndarray
-    info: Any
-
+from kd_sensing.data.deepverse.codebook import beam_entropy, compute_beam_gain, make_ula_dft_codebook
+from kd_sensing.data.deepverse.label_constants import (
+    BLOCKAGE_IGNORE_INDEX,
+    LINK_STATE_LOS,
+    LINK_STATE_NLOS,
+    LINK_STATE_UNKNOWN,
+)
+from kd_sensing.data.deepverse.label_scene import (
+    MobilityTrace,
+    _dataset_value,
+    _device_id_candidates,
+    _extract_paths,
+    _field,
+    _get_sample,
+    _json_dumps,
+    _json_scalar,
+    _make_group_key,
+    _make_sample_id,
+    _metadata_value,
+)
+from kd_sensing.data.deepverse.label_targets import (
+    RADAR_FEATURE_SIZE,
+    extract_radar_feature,
+    los_to_blockage,
+    los_to_link_state,
+    _infer_num_ant,
+    _link_los_from_path_statuses,
+    _parse_ue_file_range,
+    _stack_label_arrays,
+    _stack_or_empty,
+)
+from kd_sensing.data.deepverse.label_writers import write_label_cache
 
 @dataclass
 class DeepVerseLabelBuilder:
@@ -284,6 +297,7 @@ class DeepVerseLabelBuilder:
             "los_status_source_counts": dict(self.los_status_source_counts),
         }
 
+
     def write_cache(
         self,
         output_root: str | Path,
@@ -292,102 +306,13 @@ class DeepVerseLabelBuilder:
         train_ratio: float = 0.8,
         val_ratio: float = 0.2,
     ) -> dict[str, Any]:
-        output_path = Path(output_root)
-        output_path.mkdir(parents=True, exist_ok=True)
-        built = self.build()
-        rows = list(built["rows"])
-        split_result = make_split_result(
-            rows,
+        return write_label_cache(
+            self,
+            output_root,
             split_by=split_by,
             train_ratio=train_ratio,
             val_ratio=val_ratio,
-            seed=self.seed,
         )
-        split = split_result.split
-        if split_result.discarded_sample_ids:
-            keep_ids = {sample_id for sample_ids in split.values() for sample_id in sample_ids}
-            rows = [row for row in rows if str(row["sample_id"]) in keep_ids]
-            built = _filter_built_by_sample_ids(built, keep_ids)
-        assign_splits(rows, split)
-
-        paths = {
-            "metadata": output_path / "metadata.json",
-            "samples": output_path / "samples.csv",
-            "labels": output_path / "labels.npz",
-            "weak_wireless": output_path / "weak_wireless.npz",
-            "radar_features": output_path / "radar_features.npz",
-            "noisy_position": output_path / "noisy_position.npz",
-            "camera_index": output_path / "camera_index.json",
-            "lidar_index": output_path / "lidar_index.json",
-            "split": output_path / "split.json",
-            "sanity_report": output_path / "sanity_report.json",
-        }
-
-        pd.DataFrame(rows).to_csv(paths["samples"], index=False)
-        np.savez_compressed(paths["labels"], **built["labels"])
-        np.savez_compressed(paths["weak_wireless"], **built["weak_wireless"])
-        np.savez_compressed(paths["radar_features"], **built["radar_features"])
-        np.savez_compressed(paths["noisy_position"], **built["noisy_position"])
-
-        _write_json(paths["camera_index"], _path_index(rows, "camera_paths"))
-        _write_json(paths["lidar_index"], _path_index(rows, "lidar_paths"))
-        _write_json(paths["split"], split)
-
-        blockage = _blockage_metadata(
-            built["labels"],
-            min_class_count=self.blockage_min_class_count,
-            min_class_ratio=self.blockage_min_class_ratio,
-        )
-        report = build_sanity_report(
-            rows=rows,
-            labels=built["labels"],
-            split=split,
-            skip_counts=built["skip_counts"],
-            artifact_paths={key: str(path) for key, path in paths.items()},
-            radar_features=built["radar_features"].get("radar_feature_history"),
-            split_metadata=split_result.metadata,
-            blockage=blockage,
-        )
-        default_inputs = ["camera", "lidar", "weak_wireless", "noisy_position"]
-        if self.enable_radar:
-            default_inputs.insert(2, "radar")
-        default_objectives = ["beam", "trajectory"]
-        if blockage["usable"]:
-            default_objectives.append("blockage")
-        metadata = {
-            "scenario": self.scenario,
-            "seq_len": self.seq_len,
-            "pred_horizon": self.pred_horizon,
-            "num_beams": self.num_beams,
-            "beam_topk": self.beam_topk,
-            "position_noise_std": self.position_noise_std,
-            "seed": self.seed,
-            "split_by": split_result.metadata["effective_split_by"],
-            "requested_split_by": split_result.metadata["requested_split_by"],
-            "split_protocol": split_result.metadata,
-            "train_ratio": train_ratio,
-            "val_ratio": val_ratio,
-            "sample_count": len(rows),
-            "skip_counts": built["skip_counts"],
-            "los_status_source_counts": _los_status_source_counts(rows),
-            "split_counts": {name: len(sample_ids) for name, sample_ids in split.items()},
-            "label_distribution": report["label_distribution"],
-            "blockage": blockage,
-            "default_inputs": default_inputs,
-            "default_objectives": default_objectives,
-            "radar_feature_size": RADAR_FEATURE_SIZE if self.enable_radar else 0,
-            "radar_feature_names": RADAR_FEATURE_NAMES if self.enable_radar else [],
-            "oracle_only_fields": ["clean_position_history", "beam_gain_future", "los_status_future"],
-            "artifacts": {key: str(path) for key, path in paths.items()},
-        }
-        _write_json(paths["metadata"], metadata)
-        _write_json(paths["sanity_report"], report)
-
-        return {
-            "paths": {key: str(path) for key, path in paths.items()},
-            "metadata": metadata,
-            "sanity_report": report,
-        }
 
     def _resolve_ue_ids(self) -> list[int]:
         if self.ue_ids is not None:
@@ -624,408 +549,15 @@ class DeepVerseLabelBuilder:
         return extract_radar_feature(sample)
 
 
-def los_to_link_state(los_status: int) -> int:
-    status = int(los_status)
-    if status == 1:
-        return LINK_STATE_LOS
-    if status == 0:
-        return LINK_STATE_NLOS
-    return LINK_STATE_UNKNOWN
 
-
-def los_to_blockage(los_status: int) -> int:
-    link_state = los_to_link_state(los_status)
-    if link_state == LINK_STATE_LOS:
-        return 0
-    if link_state == LINK_STATE_NLOS:
-        return 1
-    return BLOCKAGE_IGNORE_INDEX
-
-
-def _link_los_from_path_statuses(path_statuses: Any) -> int:
-    statuses = np.asarray(path_statuses).reshape(-1)
-    finite_statuses = statuses[np.isfinite(statuses.astype(np.float64, copy=False))]
-    if finite_statuses.size == 0:
-        return LINK_STATE_UNKNOWN
-    if np.any(np.isclose(finite_statuses, 1.0)):
-        return 1
-    if np.any(np.isclose(finite_statuses, 0.0)):
-        return 0
-    return LINK_STATE_UNKNOWN
-
-
-def _parse_ue_file_range(filename: str) -> tuple[int, int] | None:
-    stem = Path(filename).stem
-    if "_UE_" not in stem:
-        return None
-    _, range_part = stem.rsplit("_UE_", 1)
-    if "-" not in range_part:
-        return None
-    start_text, end_text = range_part.split("-", 1)
-    try:
-        return int(start_text), int(end_text)
-    except ValueError:
-        return None
-
-
-RADAR_FEATURE_NAMES = [
-    "abs_mean",
-    "abs_std",
-    "abs_max",
-    "phase_diff_mean",
-    "phase_diff_std",
-    "path_count",
+__all__ = [
+    "BLOCKAGE_IGNORE_INDEX",
+    "DeepVerseLabelBuilder",
+    "LINK_STATE_LOS",
+    "LINK_STATE_NLOS",
+    "LINK_STATE_UNKNOWN",
+    "MobilityTrace",
+    "extract_radar_feature",
+    "los_to_blockage",
+    "los_to_link_state",
 ]
-RADAR_FEATURE_SIZE = len(RADAR_FEATURE_NAMES)
-
-
-def extract_radar_feature(radar_sample: Any) -> np.ndarray:
-    coeffs = _field(radar_sample, "coeffs", "channel", "channels", "H", "h", "tensor", "data")
-    if coeffs is None:
-        raise KeyError("radar sample does not contain coefficients or tensor data.")
-    array = np.asarray(coeffs)
-    if array.size == 0:
-        raise ValueError("radar coefficients are empty.")
-    magnitude = np.abs(array.astype(np.complex64, copy=False)).astype(np.float32)
-    phase = np.unwrap(np.angle(array.reshape(-1).astype(np.complex64, copy=False)))
-    phase_diff = np.diff(phase).astype(np.float32)
-    if phase_diff.size == 0:
-        phase_diff = np.zeros(1, dtype=np.float32)
-    features = np.asarray(
-        [
-            float(np.mean(magnitude)),
-            float(np.std(magnitude)),
-            float(np.max(magnitude)),
-            float(np.mean(phase_diff)),
-            float(np.std(phase_diff)),
-            float(_path_count(_field(radar_sample, "paths", "ray_paths", "rays"))),
-        ],
-        dtype=np.float32,
-    )
-    if not np.all(np.isfinite(features)):
-        raise ValueError("radar feature contains NaN or Inf.")
-    return features
-
-
-def _get_sample(dataset: Any, names: Sequence[str], kwarg_sets: Sequence[dict[str, Any]], default: Any = ...):
-    get_sample = getattr(dataset, "get_sample")
-    last_exc: Exception | None = None
-    for name in names:
-        for kwargs in kwarg_sets:
-            try:
-                return get_sample(name, **kwargs)
-            except Exception as exc:
-                last_exc = exc
-    if default is not ...:
-        return default
-    if last_exc is not None:
-        raise last_exc
-    raise RuntimeError("No get_sample candidates were attempted.")
-
-
-def _field(obj: Any, *names: str) -> Any:
-    if isinstance(obj, Mapping):
-        for name in names:
-            if name in obj:
-                return obj[name]
-    for name in names:
-        if hasattr(obj, name):
-            return getattr(obj, name)
-    return None
-
-
-def _extract_paths(sample: Any) -> list[str]:
-    if sample is None:
-        return []
-    if isinstance(sample, (str, Path)):
-        return [str(sample)]
-    if isinstance(sample, Mapping):
-        for key in ("path", "paths", "filepath", "file_path", "image_path", "lidar_path", "filename"):
-            if key in sample:
-                return _extract_paths(sample[key])
-    if isinstance(sample, Sequence) and not isinstance(sample, (bytes, bytearray)):
-        paths: list[str] = []
-        for item in sample:
-            paths.extend(_extract_paths(item))
-        return paths
-    for key in ("path", "paths", "filepath", "file_path", "image_path", "lidar_path", "filename"):
-        if hasattr(sample, key):
-            return _extract_paths(getattr(sample, key))
-    return []
-
-
-def _path_count(paths: Any) -> int:
-    if paths is None:
-        return 0
-    if isinstance(paths, Mapping):
-        if "paths" in paths:
-            return _path_count(paths["paths"])
-        for value in paths.values():
-            try:
-                return len(value)
-            except TypeError:
-                continue
-        return len(paths)
-    for attr in ("num_paths", "n_paths"):
-        if hasattr(paths, attr):
-            value = getattr(paths, attr)
-            return int(value() if callable(value) else value)
-    for attr in ("paths", "ToA", "DoD_theta", "DoA_theta", "phase"):
-        if hasattr(paths, attr):
-            try:
-                return len(getattr(paths, attr))
-            except TypeError:
-                continue
-    try:
-        return len(paths)
-    except TypeError:
-        return 0
-
-
-def _infer_num_ant(channel: np.ndarray) -> int:
-    if channel.ndim == 0:
-        raise ValueError("channel coefficients are scalar.")
-    if channel.ndim == 1:
-        return int(channel.shape[0])
-    if channel.ndim == 2:
-        return int(channel.shape[0])
-    first = int(channel.shape[0])
-    second = int(channel.shape[1])
-    if first == 1 and second > 1:
-        return second
-    return first
-
-
-def _device_id_candidates(device_id: Any) -> list[Any]:
-    candidates = [device_id]
-    if isinstance(device_id, (int, np.integer)) and int(device_id) > 0:
-        candidates.append(int(device_id) - 1)
-    return candidates
-
-
-def _metadata_value(info: Any, local_idx: int, names: Sequence[str], *, default: Any) -> Any:
-    for name in names:
-        value = _field(info, name)
-        if value is None:
-            continue
-        if isinstance(value, (str, bytes)):
-            return value.decode() if isinstance(value, bytes) else value
-        try:
-            array = np.asarray(value)
-        except Exception:
-            return value
-        if array.ndim == 0:
-            return array.item()
-        if len(array) > local_idx:
-            return array[local_idx].item() if np.asarray(array[local_idx]).ndim == 0 else array[local_idx]
-        return value
-    return default
-
-
-def _dataset_value(dataset: Any, names: Sequence[str], default: Any) -> Any:
-    for name in names:
-        if hasattr(dataset, name):
-            value = getattr(dataset, name)
-            return value() if callable(value) else value
-    return default
-
-
-def _make_group_key(scene_id: Any, sequence_id: Any, segment_id: Any, object_id: Any) -> str:
-    return "|".join(
-        [
-            f"scene={_id_part(scene_id)}",
-            f"sequence={_id_part(sequence_id)}",
-            f"segment={_id_part(segment_id)}",
-            f"object={_id_part(object_id)}",
-        ]
-    )
-
-
-def _make_sample_id(
-    scenario: str,
-    *,
-    scene_id: Any,
-    sequence_id: Any,
-    segment_id: Any,
-    object_id: Any,
-    ue_id: Any,
-    bs_id: Any,
-    t_anchor: Any,
-) -> str:
-    return "_".join(
-        [
-            _id_part(scenario),
-            f"scene{_id_part(scene_id)}",
-            f"seq{_id_part(sequence_id) or 'single'}",
-            f"seg{_id_part(segment_id) or 'full'}",
-            f"obj{_id_part(object_id)}",
-            f"ue{_id_part(ue_id)}",
-            f"bs{_id_part(bs_id)}",
-            f"t{_time_to_id(t_anchor)}",
-        ]
-    )
-
-
-def _id_part(value: Any) -> str:
-    scalar = _json_scalar(value)
-    text = str(scalar)
-    return (
-        text.replace(" ", "")
-        .replace("/", "-")
-        .replace("\\", "-")
-        .replace("|", "-")
-        .replace(":", "-")
-        .replace(".", "p")
-        .replace("-", "m")
-    )
-
-
-def _filter_built_by_sample_ids(built: dict[str, Any], keep_ids: set[str]) -> dict[str, Any]:
-    labels = built["labels"]
-    mask = np.asarray([str(sample_id) in keep_ids for sample_id in labels["sample_id"]], dtype=bool)
-    filtered = dict(built)
-    filtered["labels"] = _filter_array_dict(labels, mask)
-    for key in ("weak_wireless", "radar_features", "noisy_position"):
-        filtered[key] = _filter_array_dict(built[key], mask)
-    return filtered
-
-
-def _filter_array_dict(payload: dict[str, np.ndarray], mask: np.ndarray) -> dict[str, np.ndarray]:
-    filtered: dict[str, np.ndarray] = {}
-    for key, value in payload.items():
-        array = np.asarray(value)
-        if array.shape[:1] == mask.shape:
-            filtered[key] = array[mask]
-        else:
-            filtered[key] = array
-    return filtered
-
-
-def _blockage_metadata(labels: dict[str, np.ndarray], *, min_class_count: int, min_class_ratio: float) -> dict[str, Any]:
-    raw_los = labels.get("los_status_future", np.asarray([], dtype=np.int16))
-    blockage = labels.get("blockage_labels_future", np.asarray([], dtype=np.int64))
-    valid_mask = labels.get("blockage_valid_mask", np.asarray([], dtype=bool)).astype(bool)
-    valid_labels = blockage[valid_mask] if blockage.shape == valid_mask.shape else np.asarray([], dtype=np.int64)
-    distribution = _counter_dict(valid_labels)
-    raw_distribution = _counter_dict(raw_los)
-    total = int(valid_labels.size)
-    class_counts = {label: int(np.sum(valid_labels == label)) for label in (0, 1)}
-    present_classes = {label for label, count in class_counts.items() if count > 0}
-    minority_count = min(class_counts.values()) if total else 0
-    minority_ratio = (minority_count / total) if total else 0.0
-
-    reason = ""
-    usable = True
-    if total == 0:
-        usable = False
-        reason = "no_valid_blockage_labels"
-    elif present_classes != {0, 1}:
-        usable = False
-        missing = sorted({0, 1} - present_classes)
-        reason = f"missing_classes:{','.join(str(value) for value in missing)}"
-    elif minority_count < min_class_count:
-        usable = False
-        reason = "minority_class_count_below_min"
-    elif minority_ratio < min_class_ratio:
-        usable = False
-        reason = "minority_class_ratio_below_min"
-
-    return {
-        "usable": usable,
-        "reason": reason,
-        "ignore_index": BLOCKAGE_IGNORE_INDEX,
-        "min_class_count": int(min_class_count),
-        "min_class_ratio": float(min_class_ratio),
-        "raw_los_status_distribution": raw_distribution,
-        "valid_label_distribution": distribution,
-        "valid_label_count": total,
-        "minority_class_count": int(minority_count),
-        "minority_class_ratio": float(minority_ratio),
-    }
-
-
-def _counter_dict(values: np.ndarray) -> dict[str, int]:
-    flat = np.asarray(values).reshape(-1)
-    return {str(k): int(v) for k, v in Counter(flat.tolist()).items()}
-
-
-def _stack_label_arrays(labels: dict[str, list[Any]], pred_horizon: int, num_beams: int) -> dict[str, np.ndarray]:
-    sample_ids = np.asarray(labels["sample_id"], dtype=str)
-    count = len(sample_ids)
-    return {
-        "sample_id": sample_ids,
-        "beam_label": np.asarray(labels["beam_label"], dtype=np.int64),
-        "beam_labels_future": _stack_or_empty(labels["beam_labels_future"], (count, pred_horizon), np.int64),
-        "blockage_label": np.asarray(labels["blockage_label"], dtype=np.int64),
-        "blockage_labels_future": _stack_or_empty(labels["blockage_labels_future"], (count, pred_horizon), np.int64),
-        "blockage_valid_mask": _stack_or_empty(labels["blockage_valid_mask"], (count, pred_horizon), bool),
-        "trajectory_future": _stack_or_empty(labels["trajectory_future"], (count, pred_horizon, 2), np.float32),
-        "los_status_future": _stack_or_empty(labels["los_status_future"], (count, pred_horizon), np.int16),
-        "link_state_future": _stack_or_empty(labels["link_state_future"], (count, pred_horizon), np.int16),
-        "beam_gain_future": _stack_or_empty(labels["beam_gain_future"], (count, pred_horizon, num_beams), np.float32),
-        "valid_mask": _stack_or_empty(labels["valid_mask"], (count, pred_horizon), bool),
-    }
-
-
-def _stack_or_empty(values: Sequence[Any], shape: tuple[int, ...], dtype: Any) -> np.ndarray:
-    if values:
-        return np.stack(values).astype(dtype)
-    return np.empty(shape, dtype=dtype)
-
-
-def _path_index(rows: list[dict[str, Any]], column: str) -> dict[str, Any]:
-    return {str(row["sample_id"]): json.loads(row[column]) for row in rows}
-
-
-def _los_status_source_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts: Counter[str] = Counter()
-    for row in rows:
-        payload = row.get("los_status_source_future", "[]")
-        try:
-            values = json.loads(payload) if isinstance(payload, str) else payload
-        except json.JSONDecodeError:
-            values = []
-        if isinstance(values, list):
-            counts.update(str(value) for value in values)
-    return dict(counts)
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _json_dumps(payload: Any) -> str:
-    return json.dumps(_jsonable(payload), separators=(",", ":"))
-
-
-def _json_scalar(value: Any) -> int | float | str:
-    array = np.asarray(value)
-    if array.ndim == 0:
-        item = array.item()
-        if isinstance(item, (np.integer, int)):
-            return int(item)
-        if isinstance(item, (np.floating, float)):
-            return float(item)
-        return str(item)
-    return str(value)
-
-
-def _time_to_id(value: Any) -> str:
-    scalar = _json_scalar(value)
-    if isinstance(scalar, float) and scalar.is_integer():
-        scalar = int(scalar)
-    return str(scalar).replace(".", "p").replace("-", "m")
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, Path):
-        return str(value)
-    return value

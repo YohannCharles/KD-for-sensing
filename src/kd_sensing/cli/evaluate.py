@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
+    cfg.setdefault("runtime", {})["cli_config_path"] = args.config
     result = evaluate(cfg, weights=args.weights, output_dir=args.output_dir)
     print_result(result)
     return result
@@ -32,4 +33,3 @@ def main(argv: list[str] | None = None) -> dict:
 
 if __name__ == "__main__":
     main()
-

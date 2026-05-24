@@ -1614,3 +1614,57 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **THEN** 任务验收 MUST 不包含删除、压缩或迁移既有 `dataset/`、`outputs/`、`logs/` 文件
 - **AND** 测试和 OpenSpec 校验 MUST 能在不修改这些本地产物的情况下完成
 
+### Requirement: 运行状态产物
+训练和评估入口 MUST 尽量写出机器可读运行状态产物，使 run index 能判断启动、正常完成和 Python 异常失败。状态产物 MUST 保持轻量，并且 MUST 不改变现有 `final_config.yaml`、`resolved_config.yaml`、`metrics.json`、`train_log.json`、checkpoint 或 TensorBoard 语义。
+
+#### Scenario: 训练启动写出状态
+- **WHEN** 训练入口创建 run_dir 并完成初始配置解析
+- **THEN** 系统 MUST 写出 `run_status.json` 或等价 runtime status 字段
+- **AND** 状态 MUST 至少包含 `state: running`、run_dir、config path、start time、pid、experiment name、task、objective 和 enabled modalities
+
+#### Scenario: 训练正常完成更新状态
+- **WHEN** 训练完成并写出最终 metrics、train log 和 checkpoint metadata
+- **THEN** 系统 MUST 将运行状态更新为 `complete`
+- **AND** 状态 MUST 记录 end time、duration、primary metric、best checkpoint 和 metrics path
+
+#### Scenario: Python 异常失败更新状态
+- **WHEN** 训练或评估入口捕获到未处理 Python exception 并准备退出
+- **THEN** 系统 SHOULD 将运行状态更新为 `failed`
+- **AND** 状态 SHOULD 记录异常类型、异常消息和可查看的日志路径
+
+#### Scenario: SIGKILL 无法捕获
+- **WHEN** 训练进程被系统或用户以不可捕获方式终止
+- **THEN** 系统 MAY 无法更新运行状态产物
+- **AND** run index MUST 仍能通过日志和 partial artifacts 推断 killed、stale 或 partial 状态
+
+### Requirement: Artifact schema 拆分兼容
+训练和评估相关模块拆分后，用户可见 artifact schema MUST 保持兼容。`final_config.yaml`、`resolved_config.yaml`、`train_log.json`、`training_outputs.npz`、`metrics.json`、checkpoint sidecar、teacher metrics 和 TensorBoard tag 的关键字段、路径和含义 MUST 不因内部模块移动而改变。
+
+#### Scenario: 训练 artifact 字段保持
+- **WHEN** 训练流程内部 writer、objective metadata 或 runtime metadata helper 被拆分
+- **THEN** `final_config.yaml`、`train_log.json` 和 `metrics.json` 中既有公开字段 MUST 保持可用
+- **AND** focused tests MUST 覆盖关键字段 presence
+
+#### Scenario: objective metadata 拆分后兼容
+- **WHEN** objective metadata 表、alias、history fields 或 TensorBoard schema 被迁移到窄模块
+- **THEN** 训练、验证和评估 MUST 继续解析同一组 objective、metric alias、metric mode 和 history fields
+- **AND** 现有 objective tests MUST 保持通过
+
+### Requirement: Multimodal-NF 运行产物一致性
+Multimodal-NF 训练和评估运行产物 MUST 在 `final_config.yaml`、`resolved_config.yaml`、`startup_summary.json`、`metrics.json` 和 runtime metadata 中保持 dataset type、objective、modalities、num classes、codebook metadata 和 enabled heads 的一致性。
+
+#### Scenario: final config 与 startup summary 一致
+- **WHEN** Multimodal-NF 训练启动并写出 `final_config.yaml` 与 `startup_summary.json`
+- **THEN** 两个产物 MUST 记录相同的 dataset type、objective、enabled modalities 和 num beam classes
+- **AND** 若 startup summary 包含模型 heads，head 输出类别数 MUST 与 codebook metadata 一致
+
+#### Scenario: metrics objective 可追溯
+- **WHEN** Multimodal-NF 训练或评估写出 `metrics.json`
+- **THEN** metrics MUST 包含当前 objective 的名称、primary metric、metric mode 和 available metrics
+- **AND** metrics 中的 objective metadata MUST 与 `final_config.yaml` runtime metadata 保持一致
+
+#### Scenario: 配置矛盾时拒绝启动
+- **WHEN** Multimodal-NF 配置中的 objective、target schema、model heads 或 codebook metadata 互相矛盾
+- **THEN** 系统 MUST 在训练前或启动早期拒绝运行
+- **AND** 错误信息 MUST 指向矛盾字段和可修正的配置路径
+

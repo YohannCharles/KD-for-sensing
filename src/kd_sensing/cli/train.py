@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
+    cfg.setdefault("runtime", {})["cli_config_path"] = args.config
     if args.dry_run:
         cfg["data"]["dataset"]["type"] = "synthetic"
         cfg["data"]["dataset"]["length"] = 2

@@ -23,7 +23,8 @@ from kd_sensing.diagnostics.visualization.sampling import (
     collect_candidates,
     select_sample_candidates,
 )
-from kd_sensing.diagnostics.viewer_manifest import _json_ready, _path_stat_dict, _sample_id
+from kd_sensing.diagnostics.viewer_manifest_cache import _path_stat_dict
+from kd_sensing.diagnostics.viewer_manifest_schema import _json_ready, _sample_id
 from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts
 from kd_sensing.engine.optim import build_model
 from kd_sensing.engine.runtime import autocast_context, resolve_amp_settings, run_model_step, transfer_non_blocking

@@ -138,6 +138,35 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 后台 tmux/tee 训练建议关闭 batch 级 tqdm：`output.progress.enabled=false`。这只影响 batch/epoch progress
 输出，不影响 epoch metrics、`train_log.json`、checkpoint、TensorBoard scalar 或 `training_outputs.npz`。
 
+## Train Epoch 子采样
+
+快速调参或排障时，可以只缩短每个 train epoch 的 step 数，同时保留原 train CSV、dataset 初始化、normalizer/cache
+语义和完整 validation/test split：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+  -o training.epoch_subsampling.enabled=true \
+  -o training.epoch_subsampling.fraction=0.1 \
+  -o output.progress.enabled=false
+```
+
+也可以固定每个 epoch 的 train 样本数：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/gps/student_no_kd.yaml \
+  -o training.epoch_subsampling.enabled=true \
+  -o training.epoch_subsampling.num_samples=256
+```
+
+`training.epoch_subsampling.fraction` 和 `num_samples` 二选一；`seed` 为空时使用 `experiment.seed`。
+`rotate_each_epoch=true` 会按绝对 epoch 轮换无放回样本选择，因此 checkpoint resume 后同一 epoch 可复现。
+`rotate_each_epoch=false` 用于固定小子集调试。运行 metadata 会记录完整 train 样本数、每 epoch 有效样本数、
+seed、轮换设置以及是否退化为完整 epoch。
+
+这项配置只减少 train epoch 的实际训练 step，不会缩小 validation/test split，也不会替代
+`data.dataset.portion`。如果希望缩小 dataset 构建、split metadata、normalizer 拟合或 cache 预热输入，继续使用
+`data.dataset.portion` 或准备更小的 split CSV。
+
 ## GPU 低利用率排查顺序
 
 1. 先跑 `scripts/profile_training_io.py`，看 `wait_vs_gpu_step.p95_spikes` 和 `phase_ratios.wait`。

@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     objective_history_fields,
     objective_optional_history_fields,
 )
@@ -107,6 +107,7 @@ class EpochMetricsRecorder:
         optimizer_groups: list[dict[str, Any]],
         train_lidar_quality=None,
         train_dataset=None,
+        epoch_subsampling: dict[str, Any] | None = None,
         teacher_prior_info: dict[str, Any] | None = None,
         health_metrics: dict[str, Any] | None = None,
         extension_metrics: dict[str, Any] | None = None,
@@ -284,6 +285,8 @@ class EpochMetricsRecorder:
             "learning_rate": float(current_lr),
             "validation_metrics": deepcopy(val_metrics),
         }
+        if epoch_subsampling:
+            epoch_log.update(epoch_subsampling)
         if train_lidar_quality is not None:
             epoch_log["lidar_input_quality_train"] = train_lidar_quality.finalize(
                 split=getattr(train_dataset, "split", "train"),

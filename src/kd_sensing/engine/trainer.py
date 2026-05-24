@@ -31,6 +31,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_config_diff_artifact,
     write_startup_summary,
 )
+from kd_sensing.engine.epoch_subsampling import epoch_subsampling_epoch_log, set_train_sampler_epoch
 from kd_sensing.engine.g2d_training import G2DTrainingExtension
 from kd_sensing.engine.marf_training import MarfTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
@@ -43,13 +44,18 @@ from kd_sensing.engine.optim import (
     build_task_criterion,
     optimizer_param_group_summary,
 )
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     objective_runtime_metadata,
     resolve_prediction_objective,
 )
 from kd_sensing.engine.run_metadata import (
     dataloaders_run_metadata,
     throughput_run_metadata,
+)
+from kd_sensing.engine.run_status import (
+    write_complete_status,
+    write_failed_status_for_active_run,
+    write_running_status,
 )
 from kd_sensing.engine.runtime import (
     configure_torch_runtime_threads,
@@ -330,6 +336,17 @@ def _progress_enabled(cfg: dict) -> bool:
 
 
 def train(cfg: dict) -> dict:
+    try:
+        return _train_inner(cfg)
+    except Exception as exc:
+        try:
+            write_failed_status_for_active_run(cfg, exc, kind="training")
+        except Exception:
+            pass
+        raise
+
+
+def _train_inner(cfg: dict) -> dict:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     objective = resolve_prediction_objective(cfg)
@@ -341,6 +358,7 @@ def train(cfg: dict) -> dict:
         raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
 
     run_dir = create_run_dir(cfg)
+    write_running_status(run_dir, cfg, kind="training")
     artifact_writer = ArtifactWriter(cfg=cfg, run_dir=run_dir)
     dataloaders = build_dataloaders(cfg)
     _apply_csi_rms_to_model_config(cfg, dataloaders)
@@ -485,6 +503,7 @@ def train(cfg: dict) -> dict:
             _set_epoch_recursive(student_model, epoch)
             if teacher_model is not None:
                 _set_epoch_recursive(teacher_model, epoch)
+            set_train_sampler_epoch(dataloaders["train"], epoch)
             student_model.train()
             train_lidar_quality = LidarQualityAccumulator()
             saw_train_lidar = False
@@ -544,6 +563,7 @@ def train(cfg: dict) -> dict:
                 extension_metrics.update(extension.after_epoch(extension_context, extension_state, epoch=epoch))
             health_metrics = health_tracker.finish_epoch() if health_tracker is not None else None
             train_dataset = getattr(dataloaders["train"], "dataset", None)
+            epoch_subsampling_log = epoch_subsampling_epoch_log(dataloaders["train"])
             epoch_log, val_loss, val_acc, _ = recorder.finish_epoch(
                 epoch=epoch,
                 total_epochs=total_epochs,
@@ -552,6 +572,7 @@ def train(cfg: dict) -> dict:
                 optimizer_groups=optimizer_groups,
                 train_lidar_quality=train_lidar_quality if saw_train_lidar else None,
                 train_dataset=train_dataset,
+                epoch_subsampling=epoch_subsampling_log,
                 teacher_prior_info=teacher_prior_info,
                 health_metrics=health_metrics,
                 extension_metrics=extension_metrics,
@@ -626,6 +647,19 @@ def train(cfg: dict) -> dict:
         csi_debug_records=csi_debug_records,
         best_top1_epoch=state.best_top1_epoch,
     )
+    write_complete_status(
+        run_dir,
+        cfg,
+        kind="training",
+        primary_metric={
+            "name": early_stopping_metric,
+            "mode": early_stopping_mode,
+            "value": float(state.best_early_stopping_value),
+            "epoch": int(state.best_early_stopping_epoch),
+        },
+        metrics_path=run_dir / "metrics.json",
+        best_checkpoint=_best_checkpoint_for_status(run_dir, state.registry_checkpoint),
+    )
     return {
         "run_dir": str(run_dir),
         "history": state.history,
@@ -647,6 +681,16 @@ def train(cfg: dict) -> dict:
         "config_diff": config_diff,
         "csi_first_batch_diagnostics": csi_debug_records,
     }
+
+
+def _best_checkpoint_for_status(run_dir: Path, registry_checkpoint: dict | None) -> Path | str | None:
+    if isinstance(registry_checkpoint, dict) and registry_checkpoint.get("path"):
+        return str(registry_checkpoint["path"])
+    for name in ("best.pth", "best_top1.pth", "last.pth"):
+        path = run_dir / "checkpoints" / name
+        if path.exists():
+            return path
+    return None
 
 
 def _apply_csi_rms_to_model_config(cfg: dict, dataloaders: dict) -> None:

@@ -17,6 +17,7 @@ conda run -n kd_mm_beam python -c "import kd_sensing"
 conda run -n kd_mm_beam kd-sensing-train --help
 conda run -n kd_mm_beam kd-sensing-evaluate --help
 conda run -n kd_mm_beam kd-sensing-preprocess --help
+conda run -n kd_mm_beam kd-sensing-runs --help
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
 ```
@@ -32,7 +33,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.export_viewer_manifest --help
 
 ```text
 configs/          # 训练、评估和预处理配置；高级 fusion 优先由 canonical/overlay recipe 生成
-docs/             # 实验矩阵、数据集说明、扩展指南和性能调优说明
+docs/             # 实验矩阵、数据集说明、研究笔记、扩展指南和性能调优说明
 openspec/specs/   # 当前需求和架构契约
 scripts/          # 保留的薄 alias、研究诊断和数据准备脚本
 src/kd_sensing/   # 包内 CLI、config、data、engine、models、diagnostics 等实现
@@ -70,6 +71,25 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
 ```
 
+快速调试训练时，可以启用 train epoch 子采样，只减少每个 epoch 的训练 step，不改 train CSV、不缩小 validation/test split，也不替代 `data.dataset.portion`：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml \
+  -o training.epoch_subsampling.enabled=true \
+  -o training.epoch_subsampling.fraction=0.1 \
+  -o output.progress.enabled=false
+```
+
+也可以用固定样本数限制每个 epoch：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/gps/student_no_kd.yaml \
+  -o training.epoch_subsampling.enabled=true \
+  -o training.epoch_subsampling.num_samples=256
+```
+
+`fraction` 和 `num_samples` 二选一；`seed` 为空时默认使用 `experiment.seed`。默认 `rotate_each_epoch=true`，会按绝对 epoch 轮换无放回抽样，resume 后同一 epoch 的样本选择仍可复现；设置 `rotate_each_epoch=false` 可固定同一小子集用于排障。运行产物会在 `train_log.json`、`final_config.yaml` 的 runtime metadata 中记录完整 train 样本数、每 epoch 有效样本数、seed、轮换设置和是否退化为完整 epoch。更完整的吞吐和 cache 说明见 [docs/training_throughput.md](docs/training_throughput.md)。
+
 评估：
 
 ```bash
@@ -77,6 +97,16 @@ conda run -n kd_mm_beam kd-sensing-evaluate \
   --config configs/image/teacher_no_kd.yaml \
   --weights outputs/scene31/image_teacher_no_kd/checkpoints/best.pth
 ```
+
+实验运行索引：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-runs --outputs outputs --logs logs
+conda run -n kd_mm_beam kd-sensing-runs --outputs outputs --logs logs --format json \
+  --state running --state killed --output outputs/analysis/run_index.json
+```
+
+`kd-sensing-runs` 只读扫描本地 `outputs/`、`logs/`、当前 Python 进程和可用资源快照，不删除、不移动、不重写训练产物、日志、checkpoint、cache 或 TensorBoard 文件。状态分类包括 `running`、`complete`、`started_no_metrics`、`partial`、`failed`、`killed`、`waiting`、`stale` 和 `unknown`；JSON 输出稳定包含 `generated_at`、`roots`、`runs`、`resources` 和 `warnings`。
 
 预处理：
 
@@ -153,7 +183,14 @@ conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/multim
 conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/multimodal_nf_index.yaml
 ```
 
-近场 beam selection 配置样例位于 `configs/multimodal_nf/`，包括 GPS-only、CSI-only、image+LiDAR 和 fusion。真实训练前请确认 `data.dataset.codebook_path`、`codebook_shape` 或 `codebook_profile` 与本地 codebook 一致；HDF5、zip、codebook、cache、审计报告、训练日志和 checkpoint 都属于本地输入或运行产物，通常不进入源码变更。
+Multimodal-NF 配置入口按用途区分：
+
+- dataset smoke：`configs/multimodal_nf/dataset_smoke.yaml`，用于小步验证 HDF5/index/profile/target 契约。
+- 单任务 near-field beam：`*_beam.yaml`、`gps_only.yaml`、`csi_only.yaml`、`image_lidar.yaml`，objective 为 `near_field_beam_selection`，target 是三维 codebook flattened beam class。
+- 单任务 LOS：`*_los.yaml`，objective 为 `current_los_classification`，主 target 是 `los_label`，不是 beam-only run。
+- multitask/fusion：`fusion_all_tasks.yaml` 同时启用 beam、LOS 和 link quality；`fusion_beam.yaml`、`fusion_los.yaml`、`fusion_near_field.yaml` 是 fusion 入口。
+
+真实训练前请确认 `data.dataset.codebook_path`、`codebook_shape` 或 `codebook_profile` 与本地 codebook 一致，且模型 beam head `num_classes` 与 codebook `num_beam_classes` 一致；HDF5、zip、codebook、cache、审计报告、训练日志和 checkpoint 都属于本地输入或运行产物，通常不进入源码变更。
 
 ## Viewer
 
@@ -175,6 +212,7 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 
 - 实验矩阵和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
 - Raymobtime s008：[docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)
+- 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)
 - 新组件扩展指南：[docs/extension_guide.md](docs/extension_guide.md)
 - Viewer 详细说明：[tools/visualization/README.md](tools/visualization/README.md)

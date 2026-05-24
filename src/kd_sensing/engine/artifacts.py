@@ -15,7 +15,8 @@ from kd_sensing.engine.debug_diagnostics import (
     write_csi_debug_records,
     write_pilot_noise_validity_artifact,
 )
-from kd_sensing.engine.objective_metadata import objective_runtime_metadata
+from kd_sensing.engine.multimodal_nf_runtime import validate_multimodal_nf_runtime_contract
+from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.engine.run_metadata import prediction_setup_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state
@@ -35,6 +36,7 @@ def final_config_with_runtime(
     early_stopping: dict | None = None,
     pilot_noise_validity: dict | None = None,
 ) -> dict:
+    validate_multimodal_nf_runtime_contract(cfg, split_metadata=split_metadata)
     final_cfg = deepcopy(cfg)
     canonicalize_lidar_normalization_config(final_cfg)
     runtime = final_cfg.setdefault("runtime", {})

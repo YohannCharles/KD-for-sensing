@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-import kd_sensing.engine.objective_metadata as _objective_metadata
+import kd_sensing.engine.objectives.metadata as _objective_metadata
 from kd_sensing.engine.auxiliary import compute_auxiliary_multitask_loss
 from kd_sensing.engine.model_output import ModelOutput
 

@@ -9,7 +9,13 @@ from torch.utils.data import DataLoader
 from kd_sensing.config.canonical import SNAPSHOT_VARIANT
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.engine.data_factory import build_dataloader_kwargs, resolve_dataloader_split_config
+from kd_sensing.engine.epoch_subsampling import epoch_subsampling_metadata_from_loader
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.engine.multimodal_nf_runtime import (
+    LEGACY_MULTIMODAL_NF_TASK_SEMANTICS,
+    multimodal_nf_codebook_metadata_from_config,
+    multimodal_nf_objective_contract,
+)
 from kd_sensing.evaluation.lidar_diagnostics import (
     lidar_preprocessing_metadata_from_config,
     lidar_preprocessing_metadata_from_dataset,
@@ -110,6 +116,11 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         nf_metadata = dataset.multimodal_nf_metadata()
         metadata["multimodal_nf"] = nf_metadata
         metadata["task_semantics"] = nf_metadata.get("task_semantics")
+        metadata["legacy_task_semantics"] = nf_metadata.get(
+            "legacy_task_semantics",
+            LEGACY_MULTIMODAL_NF_TASK_SEMANTICS,
+        )
+        metadata["target_schema"] = nf_metadata.get("target_schema")
         metadata["num_beam_classes"] = nf_metadata.get("num_beam_classes")
         metadata["codebook"] = nf_metadata.get("codebook")
         metadata["input_profiles"] = nf_metadata.get("input_profiles")
@@ -117,7 +128,15 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
 
 
 def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, Any]:
-    return {split: dataset_run_metadata(loader.dataset) for split, loader in dataloaders.items()}
+    metadata = {}
+    for split, loader in dataloaders.items():
+        split_metadata = dataset_run_metadata(loader.dataset)
+        if split == "train":
+            subsampling = epoch_subsampling_metadata_from_loader(loader)
+            if subsampling:
+                split_metadata["epoch_subsampling"] = subsampling
+        metadata[split] = split_metadata
+    return metadata
 
 
 def prediction_setup_metadata(
@@ -152,17 +171,45 @@ def prediction_setup_metadata(
         metadata["cache_dir"] = dataset_cfg.get("cache_dir")
         metadata["link_target_name"] = dataset_cfg.get("link_target_name", "link_power_max_dbm")
     if dataset_cfg.get("type") == "multimodal_nf":
-        metadata["variant"] = "multimodal_nf_future_beam"
-        metadata["task_semantics"] = "future_near_field_beam_prediction"
+        objective = str(metadata["objective"])
+        codebook = multimodal_nf_codebook_metadata_from_config(cfg, split_metadata=split_metadata)
+        contract = multimodal_nf_objective_contract(objective, codebook_metadata=codebook)
+        metadata["variant"] = "multimodal_nf_current_frame"
+        if cfg.get("experiment", {}).get("variant") and cfg.get("experiment", {}).get("variant") != metadata["variant"]:
+            metadata["legacy_variant"] = cfg.get("experiment", {}).get("variant")
+        metadata["task_semantics"] = contract["task_semantics"]
+        metadata["legacy_task_semantics"] = contract["legacy_task_semantics"]
         metadata["uses_history_window"] = bool(seq_len > 1)
         metadata["uses_temporal_core"] = bool(seq_len > 1)
-        metadata["target_schema"] = "near_field_beam_selection"
-        metadata["codebook_shape"] = dataset_cfg.get("codebook_shape") or (
-            dataset_cfg.get("codebook_metadata", {}).get("shape")
-            if isinstance(dataset_cfg.get("codebook_metadata"), dict)
-            else None
-        )
-        metadata["input_profiles"] = dataset_cfg.get("input_profiles")
+        metadata["target_schema"] = contract["target_schema"]
+        metadata["target_schema_aliases"] = list(contract.get("target_schema_aliases", []))
+        metadata["target_schema_detail"] = {
+            "schema": contract["target_schema"],
+            "primary_target": contract.get("primary_target"),
+            "targets": contract.get("targets", {}),
+        }
+        metadata["targets"] = contract.get("targets", {})
+        metadata["enabled_targets"] = list(contract.get("enabled_targets", []))
+        metadata["enabled_heads"] = list(contract.get("enabled_heads", []))
+        metadata["target_fields"] = dict(contract.get("target_fields", {}))
+        metadata["output_fields"] = dict(contract.get("output_fields", {}))
+        metadata["loss_fields"] = list(contract.get("loss_fields", []))
+        metadata["metric_fields"] = list(contract.get("metric_fields", []))
+        if codebook is not None:
+            metadata["codebook"] = codebook
+            metadata["codebook_shape"] = codebook.get("shape")
+            metadata["flatten_order"] = codebook.get("flatten_order")
+            metadata["num_beam_classes"] = codebook.get("num_beam_classes")
+        input_profiles = dataset_cfg.get("input_profiles") or _metadata_mapping_value(split_metadata, "input_profiles")
+        metadata["dataset_family"] = {
+            "dataset_type": "multimodal_nf",
+            "storage_kind": "hdf5_frame",
+            "split_strategy": dataset_cfg.get("split_mode"),
+            "enabled_modalities": list(metadata["enabled_modalities"]),
+            "input_profiles": input_profiles,
+            "codebook": codebook,
+        }
+        metadata["input_profiles"] = input_profiles
     scene = cfg.get("data", {}).get("dataset", {})
     for key in ("scene", "scene_id", "scene_slug"):
         if key in scene:
@@ -196,6 +243,12 @@ def throughput_run_metadata(
     test_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="test")
     train_loader_settings = resolve_dataloader_split_config(loader_cfg, split="train")
     test_loader_settings = resolve_dataloader_split_config(loader_cfg, split="test")
+    train_subsampling = {}
+    if dataloaders is not None and "train" in dataloaders:
+        train_subsampling = epoch_subsampling_metadata_from_loader(dataloaders["train"])
+        if train_subsampling:
+            train_loader_kwargs["shuffle"] = False
+            train_loader_settings["shuffle"] = False
     metadata: dict[str, Any] = {
         "dataloader": {
             "train": _serializable_loader_kwargs(train_loader_kwargs),
@@ -213,6 +266,8 @@ def throughput_run_metadata(
         },
         "cache": cache_run_metadata(cfg, dataloaders),
     }
+    if train_subsampling:
+        metadata["epoch_subsampling"] = {"train": train_subsampling}
     image_metadata = image_run_metadata(cfg)
     if image_metadata:
         metadata["image"] = image_metadata
@@ -403,6 +458,26 @@ def _prediction_setup_splits(split_metadata: dict[str, Any]) -> dict[str, Any]:
             "split_metadata_path": metadata.get("split_metadata_path"),
         }
     return result
+
+
+def _metadata_mapping_value(metadata: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    for value in _iter_mappings(metadata):
+        candidate = value.get(key)
+        if isinstance(candidate, dict):
+            return dict(candidate)
+    return None
+
+
+def _iter_mappings(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _iter_mappings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_mappings(child)
 
 
 __all__ = [

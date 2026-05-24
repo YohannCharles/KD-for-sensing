@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     normalize_objective_metric,
     objective_metric_mode,
     validate_objective_metric_available,

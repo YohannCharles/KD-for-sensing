@@ -7,7 +7,7 @@ import torch
 
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     objective_available_metrics,
     objective_runtime_metadata,
     resolve_prediction_objective,

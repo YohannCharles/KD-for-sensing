@@ -6,7 +6,7 @@ from typing import Any
 from kd_sensing.config.canonical import SNAPSHOT_TRAIN_CSV, SNAPSHOT_VAL_CSV, SNAPSHOT_VARIANT
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
 from kd_sensing.data.scenes import normalize_deepsense_config
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     configure_objective_defaults,
     objective_requires_occlusion,
     objective_requires_position,

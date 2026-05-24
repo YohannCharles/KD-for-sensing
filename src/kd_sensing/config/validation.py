@@ -5,6 +5,8 @@ from typing import Any
 from kd_sensing.config.dataset_rules.raymobtime import validate_raymobtime_config
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.engine.multimodal_nf_runtime import validate_multimodal_nf_runtime_contract
+from kd_sensing.engine.epoch_subsampling import validate_epoch_subsampling_config
 from kd_sensing.config.normalization import (
     IMAGE_MODEL_TYPES,
     RAYMOBTIME_SELECTION_MODEL_TYPES,
@@ -16,7 +18,7 @@ from kd_sensing.config.normalization import (
     uses_image,
     uses_radar,
 )
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     objective_requires_occlusion,
     objective_requires_position,
     resolve_prediction_objective,
@@ -34,7 +36,9 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
     validate_prediction_objective_config(cfg)
+    validate_epoch_subsampling_config(cfg)
     validate_dataset_input_profiles(cfg)
+    validate_multimodal_nf_runtime_contract(cfg)
     validate_raymobtime_config(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     validate_cache_policy(cache_policy, "data.cache.policy")

@@ -18,12 +18,17 @@ from kd_sensing.engine.normalization_artifacts import (
     validate_normalization_artifact_fingerprint,
 )
 from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
-from kd_sensing.engine.objective_metadata import (
+from kd_sensing.engine.objectives.metadata import (
     objective_requires_occlusion,
     objective_requires_position,
     objective_runtime_metadata,
 )
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
+from kd_sensing.engine.run_status import (
+    write_complete_status,
+    write_failed_status_for_active_run,
+    write_running_status,
+)
 from kd_sensing.engine.runtime import configure_torch_runtime_threads
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
@@ -33,10 +38,22 @@ from kd_sensing.utils.seed import set_seed
 
 
 def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = None) -> dict:
+    try:
+        return _evaluate_inner(cfg, weights=weights, output_dir=output_dir)
+    except Exception as exc:
+        try:
+            write_failed_status_for_active_run(cfg, exc, kind="evaluation")
+        except Exception:
+            pass
+        raise
+
+
+def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | None = None) -> dict:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     device = build_device(cfg)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)
+    write_running_status(run_dir, cfg, kind="evaluation")
     checkpoint_resolution = resolve_evaluation_checkpoint(cfg, weights)
     if checkpoint_resolution.path is None:
         raise FileNotFoundError(
@@ -152,6 +169,14 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
     }
     with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
+    write_complete_status(
+        run_dir,
+        cfg,
+        kind="evaluation",
+        primary_metric=_evaluation_primary_metric(metrics),
+        metrics_path=run_dir / "metrics.json",
+        best_checkpoint=checkpoint_resolution.path,
+    )
     return {
         "run_dir": str(run_dir),
         "metrics": metrics,
@@ -160,6 +185,15 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,
     }
+
+
+def _evaluation_primary_metric(metrics: dict) -> dict:
+    objective = metrics.get("objective") if isinstance(metrics.get("objective"), dict) else {}
+    name = objective.get("primary_metric") or "loss"
+    value = metrics.get(name)
+    if value is None and name == "top1" and isinstance(metrics.get("topk"), dict):
+        value = metrics["topk"].get("1") or metrics["topk"].get(1)
+    return {"name": name, "value": value}
 
 
 def _mmwave_normalization_enabled(cfg: dict) -> bool:

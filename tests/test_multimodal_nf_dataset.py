@@ -21,6 +21,7 @@ from kd_sensing.data.datasets.multimodal_nf import MultimodalNFDataset  # noqa: 
 from kd_sensing.data.dataset_runtime import RuntimeDataset, SampleIndex, SampleRow  # noqa: E402
 from kd_sensing.engine.batch import prepare_csi_inputs, prepare_lidar_inputs  # noqa: E402
 from kd_sensing.engine.data_factory import build_dataset  # noqa: E402
+from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata  # noqa: E402
 from kd_sensing.preprocessing.multimodal_nf_common import (  # noqa: E402
     audit_multimodal_nf_files,
     build_multimodal_nf_index,
@@ -273,6 +274,81 @@ def test_multimodal_nf_index_and_data_factory_skip_csv_requirements(tmp_path: Pa
     assert isinstance(dataset, MultimodalNFDataset)
     assert dataset.input_profiles == {"csi": "xl_mimo_nf"}
     assert len(dataset) > 0
+
+
+def test_multimodal_nf_near_field_runtime_metadata_uses_codebook_schema(tmp_path: Path):
+    channel_path, _ = _write_fixture(tmp_path, sequence=True)
+    cfg = _cfg(tmp_path, channel_path, task="csi", modalities=["csi"])
+    dataset = build_dataset(cfg, "train")
+    setup = prediction_setup_metadata(cfg, split_metadata={"train": dataset_run_metadata(dataset)})
+
+    assert setup["objective"] == "near_field_beam_selection"
+    assert setup["variant"] == "multimodal_nf_current_frame"
+    assert setup["task_semantics"] == "current_frame_near_field_codebook_beam_selection"
+    assert setup["legacy_task_semantics"] == "future_near_field_beam_prediction"
+    assert setup["target_schema"] == "near_field_3d_codebook_flattened_beam_class"
+    assert "near_field_beam_selection" in setup["target_schema_aliases"]
+    assert setup["codebook_shape"] == list(CODEBOOK_SHAPE)
+    assert setup["flatten_order"] == "azimuth_elevation_range"
+    assert setup["num_beam_classes"] == 24
+    assert setup["target_fields"] == {"beam_selection": "target_beam"}
+    assert setup["output_fields"] == {"beam_selection": "logits"}
+    assert setup["dataset_family"]["dataset_type"] == "multimodal_nf"
+    assert setup["dataset_family"]["input_profiles"] == {"csi": "xl_mimo_nf"}
+
+
+@pytest.mark.parametrize(
+    ("objective", "aux_heads", "expected_schema", "expected_targets", "expected_outputs"),
+    [
+        (
+            "current_los_classification",
+            {"enabled": True, "los": True},
+            "los_binary_classification",
+            {"los": "los_label"},
+            {"los": "los_logits"},
+        ),
+        (
+            "current_link_quality",
+            {"enabled": True, "link_quality": True},
+            "link_quality_regression",
+            {"link_quality": "link_quality"},
+            {"link_quality": "link_quality"},
+        ),
+        (
+            "selection_multitask",
+            {"enabled": True, "los": True, "link_quality": True},
+            "selection_multitask_current_frame",
+            {"beam_selection": "target_beam", "los": "los_label", "link_quality": "link_quality"},
+            {"beam_selection": "logits", "los": "los_logits", "link_quality": "link_quality"},
+        ),
+    ],
+)
+def test_multimodal_nf_auxiliary_objective_runtime_metadata(
+    tmp_path: Path,
+    objective: str,
+    aux_heads: dict[str, bool],
+    expected_schema: str,
+    expected_targets: dict[str, str],
+    expected_outputs: dict[str, str],
+):
+    channel_path, _ = _write_fixture(tmp_path, sequence=True)
+    cfg = _cfg(tmp_path, channel_path, task="csi", modalities=["csi"])
+    cfg["experiment"]["objective"] = objective
+    cfg["model"]["student"]["auxiliary_heads"] = aux_heads
+
+    setup = prediction_setup_metadata(cfg)
+
+    assert setup["objective"] == objective
+    assert setup["target_schema"] == expected_schema
+    assert setup["task_semantics"] != "future_near_field_beam_prediction"
+    assert setup["target_fields"] == expected_targets
+    assert setup["output_fields"] == expected_outputs
+    assert set(setup["loss_fields"])
+    assert set(setup["metric_fields"])
+    if objective == "selection_multitask":
+        assert setup["targets"]["beam_selection"]["schema"] == "near_field_3d_codebook_flattened_beam_class"
+        assert setup["targets"]["los"]["schema"] == "los_binary_classification"
+        assert setup["targets"]["link_quality"]["schema"] == "link_quality_regression"
 
 
 def test_multimodal_nf_index_uses_all_city_files_and_pairs_modalities(tmp_path: Path):

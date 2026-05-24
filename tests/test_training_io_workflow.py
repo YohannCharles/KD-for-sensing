@@ -32,10 +32,12 @@ from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
 from kd_sensing.engine.data_factory import (  # noqa: E402
+    build_dataloader,
     build_dataset,
     build_dataloader_kwargs,
     shutdown_dataloader_workers,
 )
+from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler  # noqa: E402
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
@@ -552,6 +554,136 @@ def test_dataloader_kwargs_support_split_specific_worker_options():
     assert test_kwargs["prefetch_factor"] == 1
 
 
+def test_epoch_subsampling_config_validation_defaults_and_limits():
+    default_cfg = load_config(ROOT / "configs/gps/student_no_kd.yaml")
+    fraction_cfg = load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "training.epoch_subsampling.enabled=true",
+            "training.epoch_subsampling.fraction=0.25",
+        ],
+    )
+    count_cfg = load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "training.epoch_subsampling.enabled=true",
+            "training.epoch_subsampling.num_samples=8",
+        ],
+    )
+
+    assert default_cfg["training"]["epoch_subsampling"] == {
+        "enabled": False,
+        "fraction": None,
+        "num_samples": None,
+        "seed": None,
+        "rotate_each_epoch": True,
+        "shuffle": True,
+    }
+    assert fraction_cfg["training"]["epoch_subsampling"]["fraction"] == pytest.approx(0.25)
+    assert count_cfg["training"]["epoch_subsampling"]["num_samples"] == 8
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["training.epoch_subsampling.enabled=true", "training.epoch_subsampling.fraction=0"],
+        ["training.epoch_subsampling.enabled=true", "training.epoch_subsampling.fraction=1.5"],
+        ["training.epoch_subsampling.enabled=true", "training.epoch_subsampling.num_samples=0"],
+        ["training.epoch_subsampling.enabled=true", "training.epoch_subsampling.num_samples=2.5"],
+        [
+            "training.epoch_subsampling.enabled=true",
+            "training.epoch_subsampling.fraction=0.5",
+            "training.epoch_subsampling.num_samples=4",
+        ],
+        ["training.epoch_subsampling.enabled=true"],
+    ],
+)
+def test_epoch_subsampling_config_validation_rejects_invalid_limits(overrides):
+    with pytest.raises(ValueError, match="training\\.epoch_subsampling"):
+        load_config(ROOT / "configs/gps/student_no_kd.yaml", overrides)
+
+
+def test_epoch_subsample_sampler_reproducible_rotation_and_fixed_subset():
+    sampler = EpochSubsampleSampler(
+        dataset_length=10,
+        effective_num_samples=4,
+        seed=123,
+        rotate_each_epoch=True,
+    )
+    epoch0 = list(sampler)
+    sampler.set_epoch(1)
+    epoch1 = list(sampler)
+    resumed = EpochSubsampleSampler(
+        dataset_length=10,
+        effective_num_samples=4,
+        seed=123,
+        rotate_each_epoch=True,
+    )
+    resumed.set_epoch(1)
+
+    assert len(epoch0) == 4
+    assert len(set(epoch0)) == 4
+    assert epoch0 != epoch1
+    assert epoch1 == list(resumed)
+
+    fixed = EpochSubsampleSampler(
+        dataset_length=10,
+        effective_num_samples=4,
+        seed=123,
+        rotate_each_epoch=False,
+    )
+    fixed_epoch0 = list(fixed)
+    fixed.set_epoch(9)
+
+    assert fixed_epoch0 == list(fixed)
+
+
+def test_epoch_subsampling_dataloader_only_affects_train_split():
+    dataset = torch.utils.data.TensorDataset(torch.arange(10))
+    loader_cfg = {
+        "train_batch_size": 2,
+        "test_batch_size": 2,
+        "num_workers": 0,
+        "train_drop_last": False,
+    }
+    subsampling_cfg = {
+        "enabled": True,
+        "num_samples": 5,
+        "seed": None,
+        "rotate_each_epoch": True,
+        "shuffle": True,
+    }
+
+    train_loader = build_dataloader(
+        dataset,
+        loader_cfg,
+        split="train",
+        epoch_subsampling_cfg=subsampling_cfg,
+        experiment_seed=7,
+    )
+    test_loader = build_dataloader(
+        dataset,
+        loader_cfg,
+        split="test",
+        epoch_subsampling_cfg=subsampling_cfg,
+        experiment_seed=7,
+    )
+    drop_last_loader = build_dataloader(
+        dataset,
+        {**loader_cfg, "train_drop_last": True},
+        split="train",
+        epoch_subsampling_cfg=subsampling_cfg,
+        experiment_seed=7,
+    )
+
+    assert isinstance(train_loader.sampler, EpochSubsampleSampler)
+    assert train_loader.sampler.seed == 7
+    assert len(train_loader) == 3
+    assert len(drop_last_loader) == 2
+    assert not isinstance(test_loader.sampler, EpochSubsampleSampler)
+    assert len(test_loader) == 5
+
+
 def test_shutdown_dataloader_workers_clears_persistent_iterator():
     class FakeIterator:
         def __init__(self):
@@ -1018,6 +1150,7 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     epoch_log = result["epoch_logs"][0]
     checkpoint = torch.load(run_dir / "checkpoints" / "last.pth", map_location="cpu")
     final_cfg = safe_load_yaml((run_dir / "final_config.yaml").read_text(encoding="utf-8"))
+    train_log = json.loads((run_dir / "train_log.json").read_text(encoding="utf-8"))
     outputs = np.load(run_dir / "training_outputs.npz")
 
     assert set(history) == {
@@ -1121,6 +1254,28 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "occlusion": 1.0,
         "position": 0.01,
     }
+    objective_meta = final_cfg["runtime"]["prediction_objective"]
+    assert {
+        "name",
+        "primary_loss",
+        "primary_metric",
+        "primary_metric_mode",
+        "available_metrics",
+        "metric_aliases",
+        "metric_modes",
+        "history_fields",
+        "tensorboard_scalars",
+        "enabled_targets",
+        "enabled_heads",
+    } <= set(objective_meta)
+    assert objective_meta["name"] == "beam"
+    assert objective_meta["primary_metric"] == "val_adba"
+    assert "adba" in objective_meta["metric_aliases"]
+    assert "val_primary_metric" in objective_meta["history_fields"]
+    assert {"tag": "objective/val_primary_metric", "history_key": "val_primary_metric"} in objective_meta[
+        "tensorboard_scalars"
+    ]
+    assert train_log["prediction_objective"] == objective_meta
     assert epoch_log["val_occlusion_accuracy"] is None
     assert epoch_log["val_occlusion_blocked_f1"] is None
     assert epoch_log["val_position_rmse"] is None
@@ -1135,7 +1290,53 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     assert "normalization_artifacts" in final_cfg["runtime"]
     assert "throughput" in final_cfg["runtime"]
     assert final_cfg["runtime"]["throughput"]["progress"]["enabled"] is False
-    assert (run_dir / "train_log.json").exists()
+    assert (run_dir / "training_outputs.npz").exists()
+    assert (run_dir / "checkpoints" / "last.pth").exists()
+
+
+def test_train_epoch_subsampling_smoke_logs_metadata(tmp_path: Path):
+    cfg = load_config(
+        ROOT / "configs/gps/student_no_kd.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=4",
+            "data.dataset.seed=23",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=1",
+            "training.epoch_subsampling.enabled=true",
+            "training.epoch_subsampling.num_samples=2",
+            "training.epoch_subsampling.rotate_each_epoch=true",
+            "scheduler.type=none",
+            "output.run_name=trainer_epoch_subsampling",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+
+    result = train(cfg)
+    run_dir = Path(result["run_dir"])
+    epoch_log = result["epoch_logs"][0]
+    final_cfg = safe_load_yaml((run_dir / "final_config.yaml").read_text(encoding="utf-8"))
+    train_log = json.loads((run_dir / "train_log.json").read_text(encoding="utf-8"))
+
+    assert epoch_log["train_batches"] == 2
+    assert epoch_log["train_epoch_subsampling_enabled"] is True
+    assert epoch_log["train_full_samples"] == 4
+    assert epoch_log["train_effective_samples"] == 2
+    assert epoch_log["train_sampler_epoch"] == 0
+    assert epoch_log["train_epoch_subsampling"]["seed"] == cfg["experiment"]["seed"]
+    assert result["split_metadata"]["train"]["num_samples"] == 4
+    assert result["split_metadata"]["test"]["num_samples"] == 4
+    assert result["split_metadata"]["train"]["epoch_subsampling"]["effective_train_samples"] == 2
+    assert final_cfg["runtime"]["splits"]["train"]["epoch_subsampling"]["num_samples"] == 2
+    assert final_cfg["runtime"]["throughput"]["epoch_subsampling"]["train"]["effective_train_samples"] == 2
+    assert train_log["epoch_logs"][0]["train_effective_samples"] == 2
     assert (run_dir / "training_outputs.npz").exists()
     assert (run_dir / "checkpoints" / "last.pth").exists()
 

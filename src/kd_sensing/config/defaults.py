@@ -205,6 +205,14 @@ DEFAULT_CONFIG = {
             "dtype": "float16",
             "grad_scaler": True,
         },
+        "epoch_subsampling": {
+            "enabled": False,
+            "fraction": None,
+            "num_samples": None,
+            "seed": None,
+            "rotate_each_epoch": True,
+            "shuffle": True,
+        },
         "modality_dropout": {
             "enabled": False,
             "drop_prob": 0.0,

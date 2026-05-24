@@ -10,6 +10,7 @@ from kd_sensing.config.lidar_normalization import canonicalize_lidar_dataset_con
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.engine.cache_policy import apply_cache_policy
+from kd_sensing.engine.epoch_subsampling import build_epoch_subsample_sampler
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.modalities import dataset_flags_for_modalities
 from kd_sensing.registries import DATASETS, import_default_components
@@ -47,6 +48,7 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
 
 def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     loader_cfg = cfg["data"]["dataloader"]
+    training_cfg = cfg.get("training", {})
     train_dataset = build_dataset(cfg, "train")
     if hasattr(train_dataset, "codebook_metadata"):
         cfg.setdefault("data", {}).setdefault("dataset", {})["codebook_metadata"] = getattr(
@@ -71,13 +73,36 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         dataset_kwargs["codebook_metadata"] = getattr(train_dataset, "codebook_metadata")
     test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
-        "train": build_dataloader(train_dataset, loader_cfg, split="train"),
+        "train": build_dataloader(
+            train_dataset,
+            loader_cfg,
+            split="train",
+            epoch_subsampling_cfg=training_cfg.get("epoch_subsampling"),
+            experiment_seed=cfg.get("experiment", {}).get("seed", 0),
+        ),
         "test": build_dataloader(test_dataset, loader_cfg, split="test"),
     }
 
 
-def build_dataloader(dataset: Any, loader_cfg: dict[str, Any], *, split: str) -> DataLoader:
-    return DataLoader(dataset, **build_dataloader_kwargs(loader_cfg, split=split))
+def build_dataloader(
+    dataset: Any,
+    loader_cfg: dict[str, Any],
+    *,
+    split: str,
+    epoch_subsampling_cfg: dict[str, Any] | None = None,
+    experiment_seed: int | None = None,
+) -> DataLoader:
+    kwargs = build_dataloader_kwargs(loader_cfg, split=split)
+    if split == "train":
+        sampler = build_epoch_subsample_sampler(
+            dataset,
+            epoch_subsampling_cfg,
+            experiment_seed=experiment_seed,
+        )
+        if sampler is not None:
+            kwargs["shuffle"] = False
+            kwargs["sampler"] = sampler
+    return DataLoader(dataset, **kwargs)
 
 
 def build_dataloader_kwargs(loader_cfg: dict[str, Any], *, split: str) -> dict[str, Any]:

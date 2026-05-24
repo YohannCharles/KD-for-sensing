@@ -10,16 +10,20 @@ from kd_sensing.data.dataset_descriptors import dataset_descriptor, descriptor_m
 from kd_sensing.data.dataset_runtime import RuntimeDataset, SampleIndex, SampleRow
 from kd_sensing.data.layouts import multimodal_nf_layout
 from kd_sensing.modalities import normalize_modalities
-from kd_sensing.preprocessing.multimodal_nf_common import (
+from kd_sensing.preprocessing.multimodal_nf_codebook import (
+    flatten_beam_triplet,
+    parse_codebook_metadata,
+)
+from kd_sensing.preprocessing.multimodal_nf_constants import (
     DEFAULT_FLATTEN_ORDER,
     MULTIMODAL_NF_DATASET_TYPE,
     MULTIMODAL_NF_HDF5_KEYS,
-    build_multimodal_nf_rows,
-    flatten_beam_triplet,
-    load_multimodal_nf_index,
-    parse_codebook_metadata,
-    resolve_multimodal_nf_paths,
 )
+from kd_sensing.preprocessing.multimodal_nf_index import (
+    build_multimodal_nf_rows,
+    load_multimodal_nf_index,
+)
+from kd_sensing.preprocessing.multimodal_nf_paths import resolve_multimodal_nf_paths
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
 
@@ -166,8 +170,10 @@ class MultimodalNFDataset(RuntimeDataset):
         ]
         target_provider = MultimodalNFTargetProvider(self.codebook_metadata)
         self.num_beam_classes = int(self.codebook_metadata["num_beam_classes"])
-        self.task_semantics = "future_near_field_beam_prediction"
-        self.target_schema = "near_field_beam_selection"
+        self.task_semantics = "current_frame_near_field_codebook_beam_selection"
+        self.legacy_task_semantics = "future_near_field_beam_prediction"
+        self.target_schema = "near_field_3d_codebook_flattened_beam_class"
+        self.legacy_target_schema = "near_field_beam_selection"
         self.use_gps = "gps" in selected_modalities
         self.use_lidar = "lidar" in selected_modalities
         self.use_csi = "csi" in selected_modalities
@@ -190,7 +196,9 @@ class MultimodalNFDataset(RuntimeDataset):
         metadata = super()._metadata(row)
         metadata["codebook"] = dict(self.codebook_metadata)
         metadata["target_schema"] = self.target_schema
+        metadata["target_schema_aliases"] = [self.legacy_target_schema]
         metadata["task_semantics"] = self.task_semantics
+        metadata["legacy_task_semantics"] = self.legacy_task_semantics
         metadata["seq_len"] = self.seq_len
         metadata["num_pred"] = self.num_pred
         metadata["auxiliary_labels"] = {
@@ -223,6 +231,7 @@ class MultimodalNFDataset(RuntimeDataset):
         return {
             "beam": {
                 "target_schema": self.target_schema,
+                "target_schema_aliases": [self.legacy_target_schema],
                 "codebook_shape": list(self.codebook_metadata["shape"]),
                 "flatten_order": self.codebook_metadata["flatten_order"],
                 "num_beam_classes": int(self.codebook_metadata["num_beam_classes"]),
@@ -237,6 +246,9 @@ class MultimodalNFDataset(RuntimeDataset):
         return {
             "dataset": MULTIMODAL_NF_DATASET_TYPE,
             "task_semantics": self.task_semantics,
+            "legacy_task_semantics": self.legacy_task_semantics,
+            "target_schema": self.target_schema,
+            "target_schema_aliases": [self.legacy_target_schema],
             "data_root": str(self.data_root),
             "cache_dir": str(self.cache_dir),
             "num_beam_classes": self.num_beam_classes,
@@ -384,7 +396,8 @@ class _MultimodalNFAdapter(_WorkerLocalHDF5):
 
 
 class MultimodalNFTargetProvider(_WorkerLocalHDF5):
-    target_schema = "near_field_beam_selection"
+    target_schema = "near_field_3d_codebook_flattened_beam_class"
+    target_schema_aliases = ("near_field_beam_selection",)
 
     def __init__(self, codebook_metadata: dict[str, Any]) -> None:
         super().__init__()
@@ -424,6 +437,7 @@ class MultimodalNFTargetProvider(_WorkerLocalHDF5):
     def metadata(self) -> dict[str, Any]:
         return {
             "target_schema": self.target_schema,
+            "target_schema_aliases": list(self.target_schema_aliases),
             "codebook_shape": list(self.codebook_shape),
             "flatten_order": self.flatten_order,
             "num_beam_classes": int(self.codebook_metadata["num_beam_classes"]),

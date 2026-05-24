@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+_HISTORY_FIELDS: tuple[str, ...] = (
+    "train_loss",
+    "train_task_loss",
+    "train_objective_loss",
+    "train_distill_loss",
+    "train_beam_soft_loss",
+    "train_unimodal_loss",
+    "train_counterfactual_loss",
+    "train_prior_regularization_loss",
+    "train_reliability_kd_loss",
+    "train_occlusion_loss",
+    "train_position_loss",
+    "train_multitask_loss",
+    "train_acc",
+    "val_loss",
+    "val_acc",
+    "val_atop3",
+    "val_atop5",
+    "val_adba",
+    "val_occlusion_accuracy",
+    "val_occlusion_blocked_f1",
+    "val_position_rmse",
+    "val_position_mae",
+    "val_multitask_loss",
+    "val_primary_metric",
+    "learning_rates",
+)
+
+_SELECTION_COMMON_HISTORY_FIELDS: tuple[str, ...] = (
+    "train_loss",
+    "train_task_loss",
+    "train_objective_loss",
+    "train_distill_loss",
+    "train_beam_soft_loss",
+    "train_unimodal_loss",
+    "train_counterfactual_loss",
+    "train_prior_regularization_loss",
+    "train_reliability_kd_loss",
+    "train_acc",
+    "val_loss",
+    "val_primary_metric",
+    "learning_rates",
+)
+
+_SELECTION_HISTORY_FIELDS_BY_OBJECTIVE: dict[str, tuple[str, ...]] = {
+    "current_beam_selection": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_beam_dba",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "near_field_beam_selection": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "current_los_classification": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "train_los_loss",
+        "val_los_accuracy",
+        "val_los_f1",
+        "val_los_auc",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "current_link_quality": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "train_link_quality_loss",
+        "val_link_mae",
+        "val_link_rmse",
+        "val_link_r2",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "selection_multitask": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "train_los_loss",
+        "train_link_quality_loss",
+        "train_selection_multitask_loss",
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_beam_dba",
+        "val_los_accuracy",
+        "val_los_f1",
+        "val_los_auc",
+        "val_link_mae",
+        "val_link_rmse",
+        "val_link_r2",
+        "val_selection_multitask_loss",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+}
+
+_OPTIONAL_HISTORY_FIELDS = {
+    "train_occlusion_loss",
+    "train_position_loss",
+    "train_multitask_loss",
+    "val_occlusion_accuracy",
+    "val_occlusion_blocked_f1",
+    "val_position_rmse",
+    "val_position_mae",
+    "val_multitask_loss",
+    "train_los_loss",
+    "train_link_quality_loss",
+    "train_selection_multitask_loss",
+    "val_beam_top1",
+    "val_beam_top3",
+    "val_beam_top5",
+    "val_beam_dba",
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+    "val_selection_multitask_loss",
+}
+
+_COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/train_objective", "train_objective_loss"),
+    ("objective/val_primary_metric", "val_primary_metric"),
+    ("loss/train_beam_soft", "train_beam_soft_loss"),
+    ("loss/train_unimodal_aux", "train_unimodal_loss"),
+    ("loss/train_counterfactual_gate", "train_counterfactual_loss"),
+    ("loss/train_prior_regularization", "train_prior_regularization_loss"),
+    ("loss/train_reliability_kd", "train_reliability_kd_loss"),
+)
+
+_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/accuracy_train", "train_acc"),
+    ("beam/accuracy_val", "val_acc"),
+    ("beam/val_atop3", "val_atop3"),
+    ("beam/val_atop5", "val_atop5"),
+    ("beam/val_adba", "val_adba"),
+)
+
+_AUXILIARY_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/multitask_total", "train_multitask_loss"),
+    ("loss/val_multitask_total", "val_multitask_loss"),
+    ("loss/occlusion", "train_occlusion_loss"),
+    ("loss/position", "train_position_loss"),
+    ("occlusion/accuracy", "val_occlusion_accuracy"),
+    ("occlusion/blocked_f1", "val_occlusion_blocked_f1"),
+    ("position/rmse", "val_position_rmse"),
+    ("position/mae", "val_position_mae"),
+)
+
+_SELECTION_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+    ("beam/val_dba_current", "val_beam_dba"),
+    ("los/accuracy", "val_los_accuracy"),
+    ("los/f1", "val_los_f1"),
+    ("los/auc", "val_los_auc"),
+    ("link/mae", "val_link_mae"),
+    ("link/rmse", "val_link_rmse"),
+    ("link/r2", "val_link_r2"),
+)
+
+_CURRENT_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+    ("beam/val_dba_current", "val_beam_dba"),
+)
+
+_NEAR_FIELD_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+)
+
+_CURRENT_LOS_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/los", "train_los_loss"),
+    ("los/accuracy", "val_los_accuracy"),
+    ("los/f1", "val_los_f1"),
+    ("los/auc", "val_los_auc"),
+)
+
+_CURRENT_LINK_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/link_quality", "train_link_quality_loss"),
+    ("link/mae", "val_link_mae"),
+    ("link/rmse", "val_link_rmse"),
+    ("link/r2", "val_link_r2"),
+)
+
+_SELECTION_MULTITASK_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/selection_multitask_total", "train_selection_multitask_loss"),
+    ("loss/val_selection_multitask_total", "val_selection_multitask_loss"),
+    ("loss/los", "train_los_loss"),
+    ("loss/link_quality", "train_link_quality_loss"),
+    *_SELECTION_TENSORBOARD_SCALARS,
+)
+
+def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str], ...]:
+    scalars = list(_COMMON_TENSORBOARD_SCALARS)
+    if objective in {"beam", "multitask"}:
+        scalars.extend(_BEAM_TENSORBOARD_SCALARS)
+        scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
+    elif objective == "current_beam_selection":
+        scalars.extend(_CURRENT_BEAM_TENSORBOARD_SCALARS)
+    elif objective == "near_field_beam_selection":
+        scalars.extend(_NEAR_FIELD_BEAM_TENSORBOARD_SCALARS)
+    elif objective == "current_los_classification":
+        scalars.extend(_CURRENT_LOS_TENSORBOARD_SCALARS)
+    elif objective == "current_link_quality":
+        scalars.extend(_CURRENT_LINK_TENSORBOARD_SCALARS)
+    elif objective == "selection_multitask":
+        scalars.extend(_SELECTION_MULTITASK_TENSORBOARD_SCALARS)
+    else:
+        scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
+    return tuple(scalars)
+
+
+__all__ = [
+    "_HISTORY_FIELDS",
+    "_OPTIONAL_HISTORY_FIELDS",
+    "_SELECTION_HISTORY_FIELDS_BY_OBJECTIVE",
+    "_tensorboard_scalars_for_objective",
+]

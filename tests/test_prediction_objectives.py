@@ -13,6 +13,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
+from kd_sensing.engine.debug_diagnostics import build_startup_summary  # noqa: E402
 from kd_sensing.engine.model_output import ModelOutput  # noqa: E402
 from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     PredictionTargets,
@@ -146,6 +148,46 @@ def test_raymobtime_single_task_tensorboard_scalars_are_isolated():
     assert {"link/mae", "link/rmse", "link/r2"} <= link_tags
     assert not {"beam/val_top1", "beam/val_dba_current", "los/accuracy"} & link_tags
     assert {"beam/val_dba_current", "los/accuracy", "link/mae", "loss/val_selection_multitask_total"} <= multitask_tags
+
+
+def test_multimodal_nf_config_rejects_codebook_num_class_mismatch():
+    with pytest.raises(ValueError, match="num_beam_classes=4000.*model.num_classes=8"):
+        load_config(
+            ROOT / "configs/multimodal_nf/gps_beam.yaml",
+            ["model.num_classes=8", "model.student.num_classes=8"],
+        )
+
+
+def test_multimodal_nf_los_override_requires_los_head():
+    with pytest.raises(ValueError, match="model.student.auxiliary_heads.los=true"):
+        load_config(
+            ROOT / "configs/multimodal_nf/gps_beam.yaml",
+            ["experiment.objective=current_los_classification"],
+        )
+
+
+def test_multimodal_nf_runtime_artifact_metadata_is_consistent(tmp_path: Path):
+    cfg = {
+        "experiment": {"name": "metadata_consistency", "task": "gps", "objective": "near_field_beam_selection"},
+        "data": {"dataset": {"type": "multimodal_nf", "codebook_shape": [2, 3, 4], "seq_len": 1, "num_pred": 1}},
+        "model": {
+            "modalities": ["gps"],
+            "num_classes": 24,
+            "student": {"type": "modular_sequence", "modalities": ["gps"], "num_classes": 24},
+        },
+    }
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+    final_cfg = final_config_with_runtime(cfg, run_dir=tmp_path)
+    startup = build_startup_summary(cfg, model, optimizer, None, device=torch.device("cpu"))
+
+    final_objective = final_cfg["runtime"]["prediction_objective"]
+    assert startup["experiment"]["objective"] == final_objective["name"] == "near_field_beam_selection"
+    assert startup["objective"]["name"] == final_objective["name"]
+    assert startup["objective"]["target_schema"] == final_objective["target_schema"]
+    assert startup["data"]["num_beam_classes"] == final_cfg["runtime"]["prediction_setup"]["num_beam_classes"] == 24
+    assert final_cfg["runtime"]["prediction_setup"]["target_schema"] == "near_field_3d_codebook_flattened_beam_class"
 
 
 @pytest.mark.parametrize("modality", ["image", "radar", "gps", "lidar", "mmwave"])
