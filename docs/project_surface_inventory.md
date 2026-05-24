@@ -1,54 +1,49 @@
 # 项目表面积 Inventory
 
-本 inventory 对 `reduce-redundant-project-surface` 变更中的删除、保留和检查项给出可审计基线。统计口径只覆盖源码树，不把本地 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 或 `__pycache__` 作为可提交表面积。
+本 inventory 记录 `refine-source-architecture-and-entry-surface` 的可审计基线。统计口径只覆盖源码、配置、文档和 OpenSpec artifact；`dataset/`、`outputs/`、`logs/`、cache、checkpoint、下载压缩包和其它本地运行产物不属于本 change 的处理范围。
+
+## 源码热点模块
+
+本批次拆分的热点 facade 与职责模块如下：
+
+- `tools/visualization/viewer_utils.py` 保留兼容导出；manifest 读取、路径解析和 scene/split/show mode 过滤迁移到 `tools/visualization/viewer_manifest_io.py`，图表构造迁移到 `tools/visualization/viewer_figures.py`，prediction summary 和 legacy prediction adapter 迁移到 `tools/visualization/viewer_prediction_tables.py`，常量迁移到 `tools/visualization/viewer_constants.py`。
+- `src/kd_sensing/preprocessing/raymobtime_s008.py` 保留 preprocessor registry；paths/audit、index、beam labels、ray features 和 cache writer 分别迁移到 `raymobtime_s008_paths.py`、`raymobtime_s008_index.py`、`raymobtime_s008_beam_labels.py`、`raymobtime_s008_ray_features.py`、`raymobtime_s008_cache.py`，共享常量和窄 helper 在 `raymobtime_s008_common.py`。
+- `src/kd_sensing/diagnostics/complementarity.py` 保留公开函数兼容；schema adapter、case mining、summary 和 writers 分别迁移到 `complementarity_schema.py`、`complementarity_cases.py`、`complementarity_summaries.py`、`complementarity_writers.py`，常量在 `complementarity_constants.py`。
+- `src/kd_sensing/models/csi.py` 保留公开 import 路径；pilot estimation、CSI hardening、view tokenizer/fusion、debug helpers 和 encoder registry glue 分别迁移到 `csi_estimation.py`、`csi_hardening.py`、`csi_views.py`、`csi_debug.py`、`csi_encoder.py`。
 
 ## 配置 YAML
 
-实施前 `configs/fusion/` 有 30 个实体 YAML。第一批删除候选选择 3 个 G2D 五模态实体配置：
+当前 `configs/fusion/` 根目录有 19 个实体 YAML。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 的 GPS+CSI 验证矩阵暂不删除。
 
-- `configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml`
-- `configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml`
-- `configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml`
+已 recipe 化并防止回流的 virtual alias：
 
-这些路径由 canonical advanced overlay recipe 生成，删除实体文件后仍可直接加载同名 virtual config，并保持 experiment、task、dataset、modalities、model、loss/distillation、training、run_name 和 teacher checkpoint 来源一致。
+- G2D：`configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml`、`configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml`、`configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml`。
+- CRAF：`configs/fusion/craf_all_modalities_no_kd.yaml`、`configs/fusion/craf_all_modalities_no_counterfactual.yaml`、`configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml`。
+- MARF：`configs/fusion/marf.yaml`、`configs/fusion/marf_subset_training.yaml`、`configs/fusion/marf_no_residual_ablation.yaml`、`configs/fusion/marf_no_prior_bias_ablation.yaml`、`configs/fusion/marf_no_subset_training_ablation.yaml`。
 
-本批次保留的高级 fusion 实体配置：
+这些路径由 `src/kd_sensing/config/canonical_recipes/advanced.py` 的 advanced overlay alias 生成；删除实体文件后仍可直接加载同名 virtual config，并保持 experiment、task、dataset、modalities、model、loss/distillation、training、run_name 和 checkpoint 来源等关键语义一致。
 
-- CRAF：`craf_all_modalities_no_kd.yaml`、`craf_all_modalities_no_counterfactual.yaml`、`craf_all_modalities_fixed_prior_sanity.yaml`、`craf_all_modalities_stabilized_no_kd.yaml`、`craf_image_radar_no_kd.yaml`。保留原因是现有 overlay 与实体配置在模型 reliability、loss、training schedule 或 dataset 字段上还存在显式差异。
-- MARF：`marf.yaml`、`marf_subset_training.yaml`、`marf_no_residual_ablation.yaml`、`marf_no_prior_bias_ablation.yaml`、`marf_no_subset_training_ablation.yaml`。保留原因是实体配置仍记录 ablation 专用字段，例如 `random_keep_prob` 和 subset evaluation 差异。
-- Teacher-prior CRAF / stage 配置、token transformer、CSI/GPS/mmWave 组合和 legacy named examples 继续作为人工维护入口保留。
+继续保留的高级实体 YAML 分类：
 
-`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；本变更只 inventory，不删除。`configs/fusion/csi_hardening_matrix/` 的 GPS+CSI 验证矩阵同样暂不删除。
+- 可由 recipe 生成但存在显式差异：`craf_all_modalities_stabilized_no_kd.yaml`、`craf_image_radar_no_kd.yaml`。差异涉及稳定化训练、模态集合或 reliability/training 字段。
+- 需要作为人工样例继续保留：teacher-prior CRAF/stage 配置、token transformer 样例、CSI/GPS/mmWave 组合和 legacy named examples。后续删除前必须先补等价检查或记录允许差异。
 
-## 脚本入口
+## 脚本入口 Allowlist
 
-实施前 Python 脚本入口统计：
+保留入口按 lifecycle 分类如下；新增 `scripts/`、`tools/analysis/` 或 `tools/visualization/` 下的 Python/shell 文件必须同步更新本 inventory 和 `tests/test_architecture_boundaries.py`。
 
-- `scripts/`：14 个 Python 文件。
-- `tools/analysis/`：4 个 Python 文件。
-- `tools/visualization/`：4 个 Python 文件。
+- thin_cli_alias: `scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py`。这些只委托包内 CLI；README 推荐 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。
+- research_diagnostic: `scripts/analysis/build_complementarity_cases.py`、`scripts/analyze_csi_hardening_sweep.py`、`scripts/build_teacher_registry.py`、`scripts/debug_eval_consistency.py`、`scripts/eval_modality_perturbation.py`、`scripts/eval_modality_subsets.py`、`scripts/profile_training_io.py`、`scripts/recommend_parallel_training.py`、`tools/analysis/analyze_conditional_utility.py`、`tools/analysis/collect_multimodal_imbalance_results.py`、`tools/analysis/run_conditional_utility_audit.py`、`tools/analysis/run_phase_1_5_utility_validation.py`。
+- dataset_preparation: `scripts/deepverse/download_dt31_assets.py`、`scripts/deepverse/generate_dt31_cache.py`、`scripts/mmw/prepare_town10_skybridge.py`。
+- viewer_entrypoint: `tools/visualization/gradio_multimodal_viewer.py`。
+- viewer_support: `tools/visualization/complementarity_explorer.py`、`tools/visualization/viewer_utils.py`、`tools/visualization/viewer_constants.py`、`tools/visualization/viewer_manifest_io.py`、`tools/visualization/viewer_figures.py`、`tools/visualization/viewer_prediction_tables.py`。
+- shell_orchestration: `scripts/run_csi_hardening_matrix.sh`。
 
-本变更删除 `tools/visualization/export_viewer_manifest.py`，因为 `kd-sensing-export-viewer-manifest` 和 `python -m kd_sensing.cli.export_viewer_manifest` 已覆盖同一 manifest 导出工作流。
-
-保留入口按生命周期分类：
-
-- 薄 CLI alias：`scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py`。这些只委托包内 CLI，保留为现有本地命令兼容入口；README 推荐 console script。
-- 研究/诊断脚本：CSI hardening sweep、teacher registry、eval perturbation/subsets、training I/O profile、parallel training recommendation、conditional utility 和 complementarity 分析脚本。
-- 数据准备脚本：DeepVerse DT31、MMW Town10 skybridge 相关准备脚本。
-- Viewer 支持：`tools/visualization/gradio_multimodal_viewer.py`、`complementarity_explorer.py`、`viewer_utils.py`。
-- Shell orchestration：`scripts/run_csi_hardening_matrix.sh`。
-
-新增或保留入口必须同步更新 `tests/test_architecture_boundaries.py` 中的 allowlist，并通过 OpenSpec change 说明原因。
-
-## README / OpenSpec
-
-实施前 README 为 901 行，承载了 G2D、CRAF/MARF、CSI hardening、viewer 和 Raymobtime 的详细实验说明。本变更将 README 收缩为入口地图，并把实验矩阵集中到 `docs/experiment_matrix.md`，viewer 细节继续放在 `tools/visualization/README.md`。
-
-实施前 `openspec/specs/*/spec.md` 中存在多个 `TBD - created by archiving` purpose。本变更补齐当前 specs 的真实 purpose，并增加架构检查拒绝 TBD purpose 回流。
+`tools/visualization/export_viewer_manifest.py` 不得回流；`kd-sensing-export-viewer-manifest` 和 `python -m kd_sensing.cli.export_viewer_manifest` 已覆盖同一 manifest 导出 workflow。
 
 ## 本地产物
 
-本地工作区可能存在未跟踪的 `__pycache__`、`.pytest_cache`、`outputs/`、`logs/` 和数据 cache。这些不是源码表面积，不应提交。架构边界测试只检查已跟踪路径，拒绝：
+本 change 不移动、删除、压缩或重写真实数据与本地实验产物。架构边界测试只检查已跟踪路径，继续拒绝：
 
 - `__pycache__`、`.pyc`、`.pytest_cache`
 - `outputs/`、`logs/`

@@ -42,15 +42,36 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
     "tools/analysis/run_phase_1_5_utility_validation.py": "research_diagnostic",
     "tools/visualization/complementarity_explorer.py": "viewer_support",
     "tools/visualization/gradio_multimodal_viewer.py": "viewer_entrypoint",
+    "tools/visualization/viewer_constants.py": "viewer_support",
+    "tools/visualization/viewer_figures.py": "viewer_support",
+    "tools/visualization/viewer_manifest_io.py": "viewer_support",
+    "tools/visualization/viewer_prediction_tables.py": "viewer_support",
     "tools/visualization/viewer_utils.py": "viewer_support",
 }
 SHELL_ORCHESTRATION_ALLOWLIST = {
     "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
 }
+ENTRYPOINT_LIFECYCLES = {
+    "package_cli",
+    "thin_cli_alias",
+    "research_diagnostic",
+    "dataset_preparation",
+    "viewer_entrypoint",
+    "viewer_support",
+    "shell_orchestration",
+}
 RETIRED_GENERATED_FUSION_CONFIGS = {
     "configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml",
     "configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml",
     "configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml",
+    "configs/fusion/craf_all_modalities_no_kd.yaml",
+    "configs/fusion/craf_all_modalities_no_counterfactual.yaml",
+    "configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml",
+    "configs/fusion/marf.yaml",
+    "configs/fusion/marf_subset_training.yaml",
+    "configs/fusion/marf_no_residual_ablation.yaml",
+    "configs/fusion/marf_no_prior_bias_ablation.yaml",
+    "configs/fusion/marf_no_subset_training_ablation.yaml",
 }
 
 
@@ -167,12 +188,106 @@ def test_project_surface_inventory_guardrails_are_current():
         for path in (ROOT / "scripts").rglob("*.sh")
     }
 
-    assert len(fusion_yaml) <= 27
+    assert len(fusion_yaml) <= 19
     assert RETIRED_GENERATED_FUSION_CONFIGS.isdisjoint(
         {path.relative_to(ROOT).as_posix() for path in fusion_yaml}
     )
     assert script_entries == set(PYTHON_ENTRYPOINT_ALLOWLIST)
     assert shell_entries == set(SHELL_ORCHESTRATION_ALLOWLIST)
+
+
+def test_entrypoint_lifecycle_categories_are_explicit_and_documented():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    classifications = {
+        **PYTHON_ENTRYPOINT_ALLOWLIST,
+        **SHELL_ORCHESTRATION_ALLOWLIST,
+    }
+
+    assert set(classifications.values()) <= ENTRYPOINT_LIFECYCLES
+    for rel_path, lifecycle in classifications.items():
+        assert rel_path in inventory
+        assert lifecycle in inventory
+
+
+def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
+    recipe_file = SRC / "kd_sensing" / "config" / "canonical_recipes" / "advanced.py"
+    recipe_text = recipe_file.read_text(encoding="utf-8")
+
+    for retired_path in sorted(RETIRED_GENERATED_FUSION_CONFIGS):
+        stem = Path(retired_path).stem
+        assert not (ROOT / retired_path).exists()
+        assert f'"{stem}"' in recipe_text
+
+
+def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
+    expectations = {
+        "tools/visualization/viewer_utils.py": {
+            "max_lines": 140,
+            "forbidden": [
+                "def load_manifest",
+                "def filter_samples",
+                "def make_beam_confidence_figure",
+                "def _legacy_prediction_summary_row",
+            ],
+            "helpers": {
+                "tools/visualization/viewer_manifest_io.py": "def load_manifest",
+                "tools/visualization/viewer_figures.py": "def make_future_distribution_plot",
+                "tools/visualization/viewer_prediction_tables.py": "def _legacy_prediction_summary_row",
+            },
+        },
+        "src/kd_sensing/preprocessing/raymobtime_s008.py": {
+            "max_lines": 100,
+            "forbidden": [
+                "def _assign_splits",
+                "def _load_ray_table",
+                "def normalize_beam_labels",
+                "def _cache_metadata",
+            ],
+            "helpers": {
+                "src/kd_sensing/preprocessing/raymobtime_s008_index.py": "def _assign_splits",
+                "src/kd_sensing/preprocessing/raymobtime_s008_beam_labels.py": "def normalize_beam_labels",
+                "src/kd_sensing/preprocessing/raymobtime_s008_ray_features.py": "def _load_ray_table",
+                "src/kd_sensing/preprocessing/raymobtime_s008_cache.py": "def _cache_metadata",
+            },
+        },
+        "src/kd_sensing/diagnostics/complementarity.py": {
+            "max_lines": 80,
+            "forbidden": [
+                "def normalize_schema",
+                "def _build_pair_mode_cases",
+                "def _summary_metrics",
+                "def write_outputs",
+            ],
+            "helpers": {
+                "src/kd_sensing/diagnostics/complementarity_schema.py": "def normalize_schema",
+                "src/kd_sensing/diagnostics/complementarity_cases.py": "def _build_pair_mode_cases",
+                "src/kd_sensing/diagnostics/complementarity_summaries.py": "def _summary_metrics",
+                "src/kd_sensing/diagnostics/complementarity_writers.py": "def write_outputs",
+            },
+        },
+        "src/kd_sensing/models/csi.py": {
+            "max_lines": 40,
+            "forbidden": [
+                "class PilotCSIChannelEstimator",
+                "class CSIHardening",
+                "class CSIViewTokenizer",
+                "class PilotDualViewCSIEncoder",
+            ],
+            "helpers": {
+                "src/kd_sensing/models/csi_estimation.py": "class PilotCSIChannelEstimator",
+                "src/kd_sensing/models/csi_hardening.py": "class CSIHardening",
+                "src/kd_sensing/models/csi_views.py": "class CSIViewTokenizer",
+                "src/kd_sensing/models/csi_encoder.py": "class PilotDualViewCSIEncoder",
+            },
+        },
+    }
+
+    for facade, expectation in expectations.items():
+        text = (ROOT / facade).read_text(encoding="utf-8")
+        assert len(text.splitlines()) <= expectation["max_lines"]
+        assert [snippet for snippet in expectation["forbidden"] if snippet in text] == []
+        for helper, snippet in expectation["helpers"].items():
+            assert snippet in (ROOT / helper).read_text(encoding="utf-8")
 
 
 def test_duplicate_manifest_fallback_wrapper_is_not_reintroduced():

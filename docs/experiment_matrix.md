@@ -72,16 +72,16 @@ conda run -n kd_mm_beam python tools/analysis/collect_multimodal_imbalance_resul
 
 ## CRAF 和 Teacher-Prior CRAF
 
-CRAF 通过 `model.student.type: craf_fusion` 显式启用，推荐先跑单模态 baseline、默认 `cls_token_transformer_fusion`、显式 early-concat fusion、`token_transformer_fusion` baseline，再跑 CRAF no-KD 和 ablation。
+CRAF 通过 `model.student.type: craf_fusion` 显式启用，推荐先跑单模态 baseline、默认 `cls_token_transformer_fusion`、显式 early-concat fusion、`token_transformer_fusion` baseline，再跑 CRAF no-KD 和 ablation。全模态 baseline/no-counterfactual/fixed-prior 已 recipe 化；旧实体路径仍可作为 virtual alias 加载，推荐文档使用 `overlay_*` 入口。
 
 常用入口：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_image_radar_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_all_modalities_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_all_modalities_no_counterfactual.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_craf_baseline.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_craf_no_counterfactual.yaml
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_all_modalities_stabilized_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_craf_fixed_prior.yaml
 ```
 
 关键配置域：
@@ -117,17 +117,17 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/stage3_selectiv
 
 ## MARF
 
-MARF 通过 `model.student.type: marf_fusion` 启用，使用 teacher prior、router、residual adapter 和 subset training/evaluation 做模态自适应路由。当前实体配置仍保留，因为与 overlay 在 ablation 字段上还存在显式差异。
+MARF 通过 `model.student.type: marf_fusion` 启用，使用 teacher prior、router、residual adapter 和 subset training/evaluation 做模态自适应路由。主线和 ablation 已迁移到 advanced overlay recipe；旧实体路径仍可作为 virtual alias 加载。
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/marf.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/marf_subset_training.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/marf_no_residual_ablation.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/marf_no_prior_bias_ablation.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/marf_no_subset_training_ablation.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_baseline.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_subset_training.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_no_residual.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_no_prior_bias.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_no_subset_training.yaml
 ```
 
-等价性尚未确认的 MARF/CRAF 实体 YAML 不应删除；新增删除候选需要先补 recipe 和关键字段等价测试。
+等价性尚未确认的 CRAF/teacher-prior/CSI 组合实体 YAML 不应删除；新增删除候选需要先补 recipe 和关键字段等价测试。
 
 ## Objective-Aware Fusion
 

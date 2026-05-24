@@ -762,6 +762,18 @@ RETIRED_G2D_ENTITY_EXPECTATIONS = {
 }
 
 
+RETIRED_ADVANCED_ENTITY_ALIASES = {
+    "craf_all_modalities_no_kd": "overlay_craf_baseline",
+    "craf_all_modalities_no_counterfactual": "overlay_craf_no_counterfactual",
+    "craf_all_modalities_fixed_prior_sanity": "overlay_craf_fixed_prior",
+    "marf": "overlay_marf_baseline",
+    "marf_subset_training": "overlay_marf_subset_training",
+    "marf_no_residual_ablation": "overlay_marf_no_residual",
+    "marf_no_prior_bias_ablation": "overlay_marf_no_prior_bias",
+    "marf_no_subset_training_ablation": "overlay_marf_no_subset_training",
+}
+
+
 def _critical_g2d_fields(cfg: dict) -> dict:
     g2d = cfg["distillation"]["g2d"]
     return {
@@ -795,6 +807,25 @@ def _critical_g2d_fields(cfg: dict) -> dict:
         "teacher_checkpoints": {
             modality: teacher["checkpoint"]
             for modality, teacher in g2d["teachers"].items()
+        },
+    }
+
+
+def _critical_advanced_overlay_fields(cfg: dict) -> dict:
+    return {
+        "experiment_name": cfg["experiment"]["name"],
+        "task": cfg["experiment"]["task"],
+        "dataset": cfg["data"]["dataset"],
+        "modalities": cfg["model"]["student"]["modalities"],
+        "teacher_type": cfg["model"]["teacher"]["type"],
+        "student": cfg["model"]["student"],
+        "loss": cfg.get("loss", {}),
+        "distillation": cfg.get("distillation", {}),
+        "training": cfg.get("training", {}),
+        "run_name": cfg["output"]["run_name"],
+        "checkpoint_source": {
+            "paths": cfg.get("paths", {}),
+            "teacher": cfg.get("teacher", {}),
         },
     }
 
@@ -841,6 +872,20 @@ def test_retired_g2d_entity_paths_are_recipe_equivalent(stem: str):
             "mmwave": None,
         },
     }
+
+
+@pytest.mark.parametrize("stem", sorted(RETIRED_ADVANCED_ENTITY_ALIASES))
+def test_retired_craf_marf_entity_paths_are_recipe_equivalent(stem: str):
+    retired_path = ROOT / "configs/fusion" / f"{stem}.yaml"
+    overlay_path = ROOT / "configs/fusion" / f"{RETIRED_ADVANCED_ENTITY_ALIASES[stem]}.yaml"
+
+    assert not retired_path.exists()
+    cfg = load_config(retired_path)
+    overlay = load_config(overlay_path)
+    overlay["experiment"]["name"] = stem
+    overlay["output"]["run_name"] = stem
+
+    assert _critical_advanced_overlay_fields(cfg) == _critical_advanced_overlay_fields(overlay)
 
 
 def test_csi_hardening_matrix_configs_load_and_preserve_contracts():

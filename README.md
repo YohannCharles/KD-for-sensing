@@ -112,7 +112,7 @@ Fusion canonical 配置按固定模态顺序 `image -> radar -> gps -> lidar -> 
 configs/fusion/<canonical_slug>_<teacher_no_kd|student_no_kd|logits_kd|rkd>.yaml
 ```
 
-很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical/overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。
+很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical/overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。高级 G2D、CRAF 和 MARF 推荐使用 `configs/fusion/overlay_*.yaml` recipe 入口；已删除的同名 legacy 实体路径会作为 virtual alias 解析。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。
 
 G2D、CRAF、MARF、CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
 

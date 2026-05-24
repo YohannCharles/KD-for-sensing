@@ -101,6 +101,14 @@ ADVANCED_OVERLAY_ALIASES: dict[str, str] = {
     "image_radar_gps_lidar_mmwave_g2d_lite": "g2d_lite",
     "image_radar_gps_lidar_mmwave_g2d_global": "g2d_global",
     "image_radar_gps_lidar_mmwave_g2d_horizon": "g2d_horizon",
+    "craf_all_modalities_no_kd": "craf_baseline",
+    "craf_all_modalities_no_counterfactual": "craf_no_counterfactual",
+    "craf_all_modalities_fixed_prior_sanity": "craf_fixed_prior",
+    "marf": "marf_baseline",
+    "marf_subset_training": "marf_subset_training",
+    "marf_no_residual_ablation": "marf_no_residual",
+    "marf_no_prior_bias_ablation": "marf_no_prior_bias",
+    "marf_no_subset_training_ablation": "marf_no_subset_training",
 }
 
 
