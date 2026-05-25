@@ -92,6 +92,7 @@ def run_evaluation_pass(
     all_position_valid = []
     all_los_logits = []
     all_los_labels = []
+    all_los_bucket_labels = []
     all_link_outputs = []
     all_link_targets = []
     lidar_quality = LidarQualityAccumulator()
@@ -118,6 +119,8 @@ def run_evaluation_pass(
                 device=device,
                 non_blocking=non_blocking,
             )
+            if "los_label" in auxiliary_targets:
+                all_los_bucket_labels.append(auxiliary_targets["los_label"].detach().cpu())
             prediction_targets = prepare_prediction_targets(
                 labels=labels,
                 auxiliary_targets=auxiliary_targets,
@@ -190,6 +193,13 @@ def run_evaluation_pass(
         link_targets=torch.cat(all_link_targets, dim=0) if all_link_targets else None,
     )
     metrics = _metrics_from_outputs(val_loss / max(len(dataloader), 1), outputs_t, labels_t, cfg, objective=objective)
+    if objective in {"current_beam_selection", "selection_multitask"} and all_los_bucket_labels:
+        metrics["los_buckets"] = _beam_metrics_by_los_bucket(
+            outputs_t,
+            labels_t,
+            torch.cat(all_los_bucket_labels, dim=0),
+            cfg,
+        )
     _attach_objective_metrics(
         metrics,
         auxiliary_metrics,
@@ -284,6 +294,42 @@ def _metrics_from_outputs(
         )
         metrics["dba"] = dba_score.tolist()
     return metrics
+
+
+def _beam_metrics_by_los_bucket(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    los_labels: torch.Tensor,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    if outputs.ndim == 2:
+        outputs = outputs.unsqueeze(1)
+    if los_labels.ndim > 1:
+        los_labels = los_labels[:, 0]
+    los_labels = los_labels.detach().cpu().to(torch.float32).reshape(-1)
+    if outputs.shape[0] != labels.shape[0] or labels.shape[0] != los_labels.shape[0]:
+        return {}
+
+    buckets: dict[str, Any] = {}
+    for label_value, label_name in ((0, "NLOS"), (1, "LOS")):
+        mask = los_labels >= 0.5 if label_value == 1 else los_labels < 0.5
+        sample_count = int(mask.sum().item())
+        if sample_count == 0:
+            continue
+        bucket_metrics = _metrics_from_outputs(
+            0.0,
+            outputs[mask],
+            labels[mask],
+            cfg,
+            objective="current_beam_selection",
+        )
+        bucket_metrics["sample_count"] = sample_count
+        bucket_metrics["los_label"] = label_value
+        bucket_metrics["los_bucket"] = label_name
+        buckets[f"LOS={label_value}"] = bucket_metrics
+    return buckets
 
 
 def _auxiliary_metrics_from_outputs(

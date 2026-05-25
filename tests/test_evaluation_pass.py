@@ -184,5 +184,13 @@ def test_raymobtime_selection_evaluation_promotes_only_current_objective_metrics
     assert expected <= set(metrics["available_metrics"])
     assert forbidden.isdisjoint(metrics)
     assert forbidden.isdisjoint(set(metrics["available_metrics"]))
+    if objective in {"current_beam_selection", "selection_multitask"}:
+        assert set(metrics["los_buckets"]) == {"LOS=0", "LOS=1"}
+        assert metrics["los_buckets"]["LOS=0"]["sample_count"] == 1
+        assert metrics["los_buckets"]["LOS=0"]["val_beam_top1"] == pytest.approx(1.0)
+        assert metrics["los_buckets"]["LOS=1"]["sample_count"] == 1
+        assert metrics["los_buckets"]["LOS=1"]["val_beam_top1"] == pytest.approx(1.0)
+    else:
+        assert "los_buckets" not in metrics
     if objective != "selection_multitask":
         assert "auxiliary" in metrics
