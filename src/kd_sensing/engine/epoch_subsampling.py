@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 import torch
 from torch.utils.data import DataLoader, Sampler
@@ -9,6 +9,22 @@ from torch.utils.data import DataLoader, Sampler
 
 CONFIG_KEY = "training.epoch_subsampling"
 SAMPLER_VERSION = "epoch_subsample_v1"
+ORDER_RANDOM = "random"
+ORDER_SORTED = "sorted"
+ORDER_LOCALITY = "locality"
+ORDER_BLOCK_SHUFFLE = "block_shuffle"
+ORDER_ALIASES = {
+    "random": ORDER_RANDOM,
+    "shuffle": ORDER_RANDOM,
+    "shuffled": ORDER_RANDOM,
+    "sorted": ORDER_SORTED,
+    "index": ORDER_SORTED,
+    "locality": ORDER_LOCALITY,
+    "source": ORDER_LOCALITY,
+    "source_block": ORDER_LOCALITY,
+    "cache_locality": ORDER_LOCALITY,
+    "block_shuffle": ORDER_BLOCK_SHUFFLE,
+}
 
 
 @dataclass(frozen=True)
@@ -20,6 +36,8 @@ class EpochSubsamplingPlan:
     seed: int | None
     rotate_each_epoch: bool
     shuffle: bool
+    order: str
+    block_size: int | None = None
     fraction: float | None = None
     num_samples: int | None = None
 
@@ -40,6 +58,9 @@ class EpochSubsamplingPlan:
             "seed": self.seed,
             "rotate_each_epoch": bool(self.rotate_each_epoch),
             "shuffle": bool(self.shuffle),
+            "order": self.order,
+            "locality_strategy": self.order,
+            "block_size": self.block_size,
             "full_epoch": bool(self.full_epoch),
             "full_epoch_degenerate": bool(self.enabled and self.full_epoch),
         }
@@ -56,6 +77,9 @@ class EpochSubsampleSampler(Sampler[int]):
         seed: int,
         rotate_each_epoch: bool = True,
         shuffle: bool = True,
+        order: str | None = None,
+        locality_keys: Sequence[Any] | None = None,
+        block_size: int | None = None,
         strategy: str = "num_samples",
         fraction: float | None = None,
         num_samples: int | None = None,
@@ -74,21 +98,28 @@ class EpochSubsampleSampler(Sampler[int]):
         self.seed = int(seed)
         self.rotate_each_epoch = bool(rotate_each_epoch)
         self.shuffle = bool(shuffle)
+        self.order = _normalize_order(order, shuffle=self.shuffle)
+        self.locality_keys = tuple(locality_keys) if locality_keys is not None else None
+        if self.locality_keys is not None and len(self.locality_keys) != dataset_length:
+            raise ValueError(
+                f"{CONFIG_KEY}.order={self.order} received {len(self.locality_keys)} locality keys "
+                f"for dataset length {dataset_length}."
+            )
+        self.block_size = _parse_block_size(block_size)
         self.strategy = str(strategy)
         self.fraction = fraction
         self.num_samples = num_samples
         self.epoch = 0
 
     def __iter__(self) -> Iterator[int]:
-        if not self.shuffle and self.effective_num_samples >= self.dataset_length:
+        if self.order == ORDER_SORTED and self.effective_num_samples >= self.dataset_length:
             return iter(range(self.dataset_length))
 
         effective_epoch = self.epoch if self.rotate_each_epoch else 0
         generator = torch.Generator()
         generator.manual_seed(_epoch_seed(self.seed, effective_epoch))
         selected = torch.randperm(self.dataset_length, generator=generator)[: self.effective_num_samples].tolist()
-        if not self.shuffle:
-            selected = sorted(int(index) for index in selected)
+        selected = self._order_selected([int(index) for index in selected], generator=generator)
         return iter(int(index) for index in selected)
 
     def __len__(self) -> int:
@@ -114,9 +145,34 @@ class EpochSubsampleSampler(Sampler[int]):
             "seed": int(self.seed),
             "rotate_each_epoch": bool(self.rotate_each_epoch),
             "shuffle": bool(self.shuffle),
+            "order": self.order,
+            "locality_strategy": self.order,
+            "block_size": self.block_size,
             "full_epoch": bool(self.full_epoch),
             "full_epoch_degenerate": bool(self.full_epoch),
         }
+
+    def _order_selected(self, selected: list[int], *, generator: torch.Generator) -> list[int]:
+        if self.order == ORDER_RANDOM:
+            return selected
+        if self.order == ORDER_SORTED:
+            return sorted(selected)
+        if self.order == ORDER_LOCALITY:
+            return sorted(selected, key=self._locality_key)
+        if self.order == ORDER_BLOCK_SHUFFLE:
+            ordered = sorted(selected, key=self._locality_key)
+            block_size = self.block_size or max(1, min(len(ordered), 64))
+            blocks = [ordered[index : index + block_size] for index in range(0, len(ordered), block_size)]
+            if len(blocks) <= 1:
+                return ordered
+            block_order = torch.randperm(len(blocks), generator=generator).tolist()
+            return [item for block_index in block_order for item in blocks[int(block_index)]]
+        return selected
+
+    def _locality_key(self, index: int) -> Any:
+        if self.locality_keys is None:
+            return int(index)
+        return self.locality_keys[int(index)]
 
 
 def validate_epoch_subsampling_config(cfg: dict[str, Any]) -> None:
@@ -145,6 +201,9 @@ def build_epoch_subsample_sampler(
         seed=int(plan.seed if plan.seed is not None else 0),
         rotate_each_epoch=plan.rotate_each_epoch,
         shuffle=plan.shuffle,
+        order=plan.order,
+        locality_keys=_dataset_locality_keys(dataset, plan.order),
+        block_size=plan.block_size,
         strategy=plan.strategy,
         fraction=plan.fraction,
         num_samples=plan.num_samples,
@@ -168,6 +227,8 @@ def resolve_epoch_subsampling_plan(
             seed=None,
             rotate_each_epoch=bool(parsed["rotate_each_epoch"]),
             shuffle=bool(parsed["shuffle"]),
+            order=parsed["order"],
+            block_size=parsed["block_size"],
         )
     if dataset_length <= 0:
         raise ValueError(f"{CONFIG_KEY} requires a non-empty train dataset.")
@@ -194,6 +255,8 @@ def resolve_epoch_subsampling_plan(
         seed=seed,
         rotate_each_epoch=bool(parsed["rotate_each_epoch"]),
         shuffle=bool(parsed["shuffle"]),
+        order=parsed["order"],
+        block_size=parsed["block_size"],
         fraction=fraction,
         num_samples=num_samples,
     )
@@ -225,6 +288,8 @@ def epoch_subsampling_metadata_from_loader(
         seed=None,
         rotate_each_epoch=False,
         shuffle=True,
+        order=ORDER_RANDOM,
+        block_size=None,
     ).metadata()
 
 
@@ -256,13 +321,18 @@ def _parse_epoch_subsampling_section(raw: Any) -> dict[str, Any]:
     if enabled and fraction is None and num_samples is None:
         raise ValueError(f"{CONFIG_KEY} requires fraction or num_samples when enabled=true.")
     seed = _parse_seed(raw.get("seed"))
+    shuffle = bool(raw.get("shuffle", True))
+    order = _normalize_order(raw.get("order", raw.get("locality")), shuffle=shuffle)
+    block_size = _parse_block_size(raw.get("block_size", raw.get("locality_block_size")))
     return {
         "enabled": enabled,
         "fraction": fraction,
         "num_samples": num_samples,
         "seed": seed,
         "rotate_each_epoch": bool(raw.get("rotate_each_epoch", True)),
-        "shuffle": bool(raw.get("shuffle", True)),
+        "shuffle": shuffle,
+        "order": order,
+        "block_size": block_size,
     }
 
 
@@ -306,6 +376,41 @@ def _parse_seed(value: Any) -> int | None:
     if not numeric.is_integer():
         raise ValueError(f"{CONFIG_KEY}.seed must be an integer or null, got {value!r}.")
     return int(numeric)
+
+
+def _normalize_order(value: Any, *, shuffle: bool) -> str:
+    if value is None:
+        return ORDER_RANDOM if shuffle else ORDER_SORTED
+    normalized = str(value).strip().lower().replace("-", "_")
+    order = ORDER_ALIASES.get(normalized)
+    if order is None:
+        raise ValueError(
+            f"{CONFIG_KEY}.order must be one of random, sorted, locality, or block_shuffle; got {value!r}."
+        )
+    return order
+
+
+def _parse_block_size(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{CONFIG_KEY}.block_size must be a positive integer or null.")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{CONFIG_KEY}.block_size must be a positive integer or null.") from exc
+    if not numeric.is_integer() or numeric <= 0:
+        raise ValueError(f"{CONFIG_KEY}.block_size must be a positive integer, got {value!r}.")
+    return int(numeric)
+
+
+def _dataset_locality_keys(dataset: Any, order: str) -> Sequence[Any] | None:
+    if order not in {ORDER_LOCALITY, ORDER_BLOCK_SHUFFLE}:
+        return None
+    provider = getattr(dataset, "epoch_subsampling_locality_keys", None)
+    if callable(provider):
+        return provider()
+    return None
 
 
 def _epoch_seed(seed: int, epoch: int) -> int:

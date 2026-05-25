@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 import numpy as np
@@ -18,6 +19,14 @@ from kd_sensing.preprocessing.multimodal_nf_constants import (
     DEFAULT_FLATTEN_ORDER,
     MULTIMODAL_NF_DATASET_TYPE,
     MULTIMODAL_NF_HDF5_KEYS,
+)
+from kd_sensing.preprocessing.multimodal_nf_derived_cache import (
+    build_expected_metadata,
+    cache_status,
+    derived_cache_path,
+    ensure_derived_cache,
+    normalize_cache_validation_mode,
+    normalize_derived_cache_policy,
 )
 from kd_sensing.preprocessing.multimodal_nf_index import (
     build_multimodal_nf_rows,
@@ -63,7 +72,7 @@ class MultimodalNFDataset(RuntimeDataset):
         codebook_profile: str | None = None,
         codebook_metadata: dict[str, Any] | None = None,
         flatten_order: str = DEFAULT_FLATTEN_ORDER,
-        return_metadata: bool = True,
+        return_metadata: bool = False,
         portion: float = 1.0,
         train_portion: float | None = None,
         eval_portion: float | None = None,
@@ -73,6 +82,12 @@ class MultimodalNFDataset(RuntimeDataset):
         seq_len: int = 8,
         num_pred: int = 3,
         pred_horizon: int | None = None,
+        derived_cache: dict[str, Any] | None = None,
+        multimodal_nf_cache: dict[str, Any] | None = None,
+        image_cache_policy: str | None = None,
+        lidar_cache_policy: str | None = None,
+        image_cache_path: str | None = None,
+        lidar_cache_path: str | None = None,
         **_: Any,
     ) -> None:
         self.seq_len = int(seq_len)
@@ -141,6 +156,21 @@ class MultimodalNFDataset(RuntimeDataset):
             test_portion=test_portion,
         )
         rows = _apply_portion(rows, selected_portion)
+        derived_cache_plan = _resolve_derived_cache_plan(
+            selected_modalities=selected_modalities,
+            cache_dir=paths.cache_dir,
+            rows=rows,
+            split=_normalize_split(split),
+            seq_len=self.seq_len,
+            num_pred=self.num_pred,
+            profiles=resolved_profiles,
+            derived_cache=derived_cache,
+            multimodal_nf_cache=multimodal_nf_cache,
+            image_cache_policy=image_cache_policy,
+            lidar_cache_policy=lidar_cache_policy,
+            image_cache_path=image_cache_path,
+            lidar_cache_path=lidar_cache_path,
+        )
         descriptor = dataset_descriptor(MULTIMODAL_NF_DATASET_TYPE)
         sample_index = SampleIndex.from_rows(
             rows,
@@ -156,6 +186,7 @@ class MultimodalNFDataset(RuntimeDataset):
                 "seq_len": self.seq_len,
                 "num_pred": self.num_pred,
                 "selected_portion": float(selected_portion),
+                "derived_cache": _plan_metadata_by_modality(derived_cache_plan),
             },
         )
         adapters = [
@@ -165,6 +196,7 @@ class MultimodalNFDataset(RuntimeDataset):
                 sample_key=modality,
                 csi_subcarrier_policy=self.csi_subcarrier_policy,
                 csi_subcarrier_index=self.csi_subcarrier_index,
+                derived_cache=derived_cache_plan.get(modality),
             )
             for modality in selected_modalities
         ]
@@ -191,9 +223,11 @@ class MultimodalNFDataset(RuntimeDataset):
         self.split = _normalize_split(split)
         self.scene_id = "multimodal_nf"
         self.scene_slug = "multimodal_nf"
+        self.derived_cache_metadata = _plan_metadata_by_modality(derived_cache_plan)
 
     def _metadata(self, row: SampleRow) -> dict[str, Any]:
         metadata = super()._metadata(row)
+        metadata["resource_refs"] = _collate_safe_resource_refs(row.resource_refs)
         metadata["codebook"] = dict(self.codebook_metadata)
         metadata["target_schema"] = self.target_schema
         metadata["target_schema_aliases"] = [self.legacy_target_schema]
@@ -201,13 +235,14 @@ class MultimodalNFDataset(RuntimeDataset):
         metadata["legacy_task_semantics"] = self.legacy_task_semantics
         metadata["seq_len"] = self.seq_len
         metadata["num_pred"] = self.num_pred
+        metadata["derived_cache"] = dict(self.derived_cache_metadata)
         metadata["auxiliary_labels"] = {
             "los_label": True,
             "nf_label": True,
             "traj_nlos_label": "traj_nlos" in row.resource_refs.get("hdf5_keys", {}),
             "mode_idx": "mode" in row.resource_refs.get("hdf5_keys", {}),
         }
-        return metadata
+        return _collate_safe_metadata_value(metadata)
 
     def profile_getitem_components(self, idx: int) -> dict[str, float]:
         import time
@@ -258,7 +293,36 @@ class MultimodalNFDataset(RuntimeDataset):
             "split_metadata": dict(self.sample_index.metadata),
             "seq_len": self.seq_len,
             "num_pred": self.num_pred,
+            "derived_cache": self.derived_cache_runtime_metadata(),
         }
+
+    def derived_cache_runtime_metadata(self) -> dict[str, Any]:
+        metadata = {modality: dict(item) for modality, item in self.derived_cache_metadata.items()}
+        for adapter in self.modality_adapters:
+            modality = getattr(adapter, "modality", None)
+            if modality not in metadata:
+                continue
+            cache_io_stats = getattr(adapter, "cache_io_stats", None)
+            if callable(cache_io_stats):
+                metadata[str(modality)]["io"] = cache_io_stats()
+        return metadata
+
+    def epoch_subsampling_locality_keys(self) -> list[tuple[Any, ...]]:
+        preferred_modality = "image" if "image" in self.enabled_modalities else "lidar" if "lidar" in self.enabled_modalities else "gps"
+        keys = []
+        for row in self.sample_index:
+            resource_refs = row.resource_refs
+            source_path = resource_refs.get(f"{preferred_modality}_path") or resource_refs.get("channel_path") or ""
+            keys.append(
+                (
+                    str(source_path),
+                    str(row.scene_or_city or ""),
+                    str(row.trajectory_id or ""),
+                    int(resource_refs.get("global_index", resource_refs.get("channel_index", 0)) or 0),
+                    int(row.frame_id or 0),
+                )
+            )
+        return keys
 
 
 class _WorkerLocalHDF5:
@@ -272,6 +336,10 @@ class _WorkerLocalHDF5:
         state["_handles"] = {}
         state["_dataset_paths_cache"] = {}
         state["_dataset_key_cache"] = {}
+        if "_derived_arrays" in state:
+            state["_derived_arrays"] = {}
+        if "_derived_io_stats" in state:
+            state["_derived_io_stats"] = _empty_cache_io_stats()
         return state
 
     def close(self) -> None:
@@ -332,6 +400,7 @@ class _MultimodalNFAdapter(_WorkerLocalHDF5):
         sample_key: str,
         csi_subcarrier_policy: str,
         csi_subcarrier_index: int | None,
+        derived_cache: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self.modality = modality
@@ -339,8 +408,20 @@ class _MultimodalNFAdapter(_WorkerLocalHDF5):
         self.sample_key = sample_key
         self.csi_subcarrier_policy = csi_subcarrier_policy
         self.csi_subcarrier_index = csi_subcarrier_index
+        self.derived_cache = dict(derived_cache or {})
+        self._derived_arrays: dict[str, Any] = {}
+        self._derived_io_stats = _empty_cache_io_stats()
 
     def load(self, row: SampleRow) -> dict[str, Any]:
+        if self._uses_derived_cache(row):
+            path = self._cache_path_for_row(row)
+            indices = [int(value) for value in row.resource_refs.get("history_indices", [row.resource_refs["channel_index"]])]
+            array = self._derived_array(path)
+            read_start = time.perf_counter()
+            value = _read_numpy_rows(array, indices)
+            self._record_cache_read(path, time.perf_counter() - read_start)
+            tensor = self._to_tensor(value, row=row)
+            return {self.sample_key: tensor}
         path = _resource_path_for_modality(row, self.modality)
         handle = self._handle(path)
         key = self._dataset_key_for_modality(path, handle, row, self.modality)
@@ -356,6 +437,46 @@ class _MultimodalNFAdapter(_WorkerLocalHDF5):
             "sample_key": self.sample_key,
             "lazy_hdf5": True,
             "csi_subcarrier_policy": self.csi_subcarrier_policy if self.modality == "csi" else None,
+            "derived_cache": {**_adapter_cache_metadata(self.derived_cache), "io": self.cache_io_stats()},
+        }
+
+    def _uses_derived_cache(self, row: SampleRow) -> bool:
+        return bool(self.derived_cache.get("enabled") and self._cache_path_for_row(row))
+
+    def _cache_path_for_row(self, row: SampleRow) -> str | None:
+        paths = self.derived_cache.get("paths", {})
+        source_path = _resource_path_for_modality(row, self.modality)
+        return paths.get(source_path)
+
+    def _derived_array(self, path: str):
+        if path not in self._derived_arrays:
+            start = time.perf_counter()
+            self._derived_arrays[path] = np.load(path, mmap_mode="r", allow_pickle=False)
+            self._record_cache_open(path, self._derived_arrays[path], time.perf_counter() - start)
+        return self._derived_arrays[path]
+
+    def _record_cache_open(self, path: str, array: Any, elapsed: float) -> None:
+        stats = self._derived_io_stats
+        stats["open_seconds"].append(float(elapsed))
+        stats["opened_paths"].add(str(path))
+        try:
+            stats["mapped_bytes"][str(path)] = int(Path(path).stat().st_size)
+        except OSError:
+            stats["mapped_bytes"][str(path)] = int(getattr(array, "nbytes", 0) or 0)
+
+    def _record_cache_read(self, path: str, elapsed: float) -> None:
+        stats = self._derived_io_stats
+        stats["read_seconds"].append(float(elapsed))
+        stats["read_paths"].add(str(path))
+
+    def cache_io_stats(self) -> dict[str, Any]:
+        stats = self._derived_io_stats
+        return {
+            "opened_files": int(len(stats["opened_paths"])),
+            "read_path_count": int(len(stats["read_paths"])),
+            "mapped_bytes": int(sum(int(value) for value in stats["mapped_bytes"].values())),
+            "open_seconds": _timing_summary(stats["open_seconds"]),
+            "read_seconds": _timing_summary(stats["read_seconds"]),
         }
 
     def _to_tensor(self, value: np.ndarray, *, row: SampleRow) -> torch.Tensor:
@@ -444,6 +565,290 @@ class MultimodalNFTargetProvider(_WorkerLocalHDF5):
             "codebook_path": self.codebook_metadata.get("path"),
             "codebook_fingerprint": self.codebook_metadata.get("fingerprint"),
         }
+
+
+def _resolve_derived_cache_plan(
+    *,
+    selected_modalities: tuple[str, ...],
+    cache_dir: Path,
+    rows: tuple[SampleRow, ...],
+    split: str,
+    seq_len: int,
+    num_pred: int,
+    profiles: dict[str, str],
+    derived_cache: dict[str, Any] | None,
+    multimodal_nf_cache: dict[str, Any] | None,
+    image_cache_policy: str | None,
+    lidar_cache_policy: str | None,
+    image_cache_path: str | None,
+    lidar_cache_path: str | None,
+) -> dict[str, dict[str, Any]]:
+    cfg = _merged_derived_cache_cfg(derived_cache, multimodal_nf_cache)
+    explicit_paths = {"image": image_cache_path, "lidar": lidar_cache_path}
+    # ``lidar_cache_policy`` is populated by the generic DeepSense6G cache-policy
+    # resolver. Multimodal-NF derived caches use ``derived_cache`` or
+    # ``data.cache.multimodal_nf`` so GPS/CSI and HDF5-only LiDAR runs are not
+    # accidentally switched to generated caches.
+    explicit_policies = {"image": image_cache_policy if derived_cache else None, "lidar": None}
+    plan: dict[str, dict[str, Any]] = {}
+    for modality in ("image", "lidar"):
+        if modality not in selected_modalities:
+            continue
+        modality_cfg = cfg.get(modality, {}) if isinstance(cfg.get(modality), dict) else {}
+        policy = normalize_derived_cache_policy(
+            explicit_policies[modality] or modality_cfg.get("policy") or cfg.get("policy") or "off",
+            key=f"multimodal_nf_cache.{modality}.policy",
+        )
+        validation_mode = normalize_cache_validation_mode(
+            modality_cfg.get("validation_mode")
+            or modality_cfg.get("validation")
+            or cfg.get("validation_mode")
+            or cfg.get("validation")
+            or "lightweight",
+            key=f"multimodal_nf_cache.{modality}.validation_mode",
+        )
+        if policy == "off":
+            plan[modality] = {
+                "enabled": False,
+                "policy": "off",
+                "validation_mode": validation_mode,
+                "source_kind": "hdf5",
+                "paths": {},
+                "sources": {},
+            }
+            continue
+        source_paths = _unique_modality_sources(rows, modality)
+        paths: dict[str, str] = {}
+        sources: dict[str, dict[str, Any]] = {}
+        generated_any = False
+        fallback_any = False
+        for source_path in source_paths:
+            configured_path = explicit_paths[modality] or modality_cfg.get("path") or modality_cfg.get("cache_path")
+            cache_path = (
+                resolve_path(configured_path)
+                if configured_path and len(source_paths) == 1
+                else derived_cache_path(
+                    cache_dir=modality_cfg.get("cache_dir") or cfg.get("cache_dir") or cache_dir,
+                    source_path=source_path,
+                    modality=modality,
+                    profile=profiles.get(modality),
+                    split=split,
+                    seq_len=seq_len,
+                    num_pred=num_pred,
+                )
+            )
+            expected = build_expected_metadata(
+                source_path=source_path,
+                modality=modality,
+                profile=profiles.get(modality),
+                split=split,
+                seq_len=seq_len,
+                num_pred=num_pred,
+            )
+            status = cache_status(cache_path=cache_path, expected=expected, validation_mode=validation_mode)
+            generated = False
+            fallback = False
+            if policy == "read_only" and not status["valid"]:
+                reason = status.get("reason", "invalid")
+                raise FileNotFoundError(
+                    f"Multimodal-NF {modality} derived cache policy=read_only expected {cache_path}, "
+                    f"for source {source_path}, but cache is unavailable or invalid under "
+                    f"validation_mode={validation_mode}: {reason}; mismatch={status.get('mismatches', {})}. "
+                    "Run multimodal_nf_derived_cache with rebuild=true, request strong validation, or use policy=auto."
+                )
+            if policy in {"auto", "rebuild"} and (policy == "rebuild" or not status["valid"]):
+                try:
+                    generated_result = ensure_derived_cache(
+                        source_path=source_path,
+                        cache_path=cache_path,
+                        modality=modality,
+                        profile=profiles.get(modality),
+                        split=split,
+                        seq_len=seq_len,
+                        num_pred=num_pred,
+                        rebuild=policy == "rebuild",
+                        validation_mode="strong",
+                    )
+                    status = generated_result["status"]
+                    generated = bool(generated_result.get("generated"))
+                except Exception as exc:
+                    if policy == "auto":
+                        fallback = True
+                        status = {**status, "fallback_reason": str(exc)}
+                    else:
+                        raise
+            if status.get("valid"):
+                paths[str(source_path)] = str(cache_path)
+            elif policy == "auto":
+                fallback = True
+            generated_any = generated_any or generated
+            fallback_any = fallback_any or fallback
+            sources[str(source_path)] = {
+                "source_kind": "derived_cache" if status.get("valid") else "hdf5",
+                "source_path": str(source_path),
+                "cache_path": str(cache_path),
+                "cache_hit": bool(status.get("valid") and not generated),
+                "cache_generated": bool(generated),
+                "cache_fallback": bool(fallback),
+                "validation": dict(status.get("validation", {})),
+                "validation_mode": status.get("validation", {}).get("mode", validation_mode),
+                "validation_duration_seconds": float(status.get("validation", {}).get("duration_seconds", 0.0)),
+                "source_fingerprint_scanned": bool(
+                    status.get("validation", {}).get("source_fingerprint_scanned", False)
+                ),
+                "metadata": _sidecar_cache_metadata(status.get("metadata", {})),
+                "status": {key: value for key, value in status.items() if key != "metadata"},
+            }
+        plan[modality] = {
+            "enabled": bool(paths),
+            "policy": policy,
+            "validation_mode": validation_mode,
+            "source_kind": "derived_cache" if paths and not fallback_any else "mixed" if paths else "hdf5",
+            "paths": paths,
+            "sources": sources,
+            "cache_generated": generated_any,
+            "cache_fallback": fallback_any,
+        }
+    return plan
+
+
+def _merged_derived_cache_cfg(
+    derived_cache: dict[str, Any] | None,
+    multimodal_nf_cache: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cfg: dict[str, Any] = {}
+    for candidate in (multimodal_nf_cache, derived_cache):
+        if isinstance(candidate, dict):
+            cfg.update(candidate)
+    return cfg
+
+
+def _unique_modality_sources(rows: tuple[SampleRow, ...], modality: str) -> tuple[str, ...]:
+    paths = []
+    for row in rows:
+        path = _resource_path_for_modality(row, modality)
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _plan_metadata_by_modality(plan: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {modality: _adapter_cache_metadata(item) for modality, item in plan.items()}
+
+
+def _adapter_cache_metadata(cache: dict[str, Any]) -> dict[str, Any]:
+    if not cache:
+        return {
+            "enabled": False,
+            "policy": "off",
+            "source_kind": "hdf5",
+            "cache_path_count": 0,
+            "cache_total_bytes": 0,
+            "opened_files_per_worker": 0,
+        }
+    sources = dict(cache.get("sources", {}))
+    cache_path_count = len({str(item.get("cache_path")) for item in sources.values() if item.get("cache_path")})
+    cache_total_bytes = sum(int((item.get("metadata") or {}).get("bytes", 0) or 0) for item in sources.values())
+    storage_kinds = sorted(
+        {
+            str((item.get("metadata") or {}).get("storage_kind"))
+            for item in sources.values()
+            if (item.get("metadata") or {}).get("storage_kind")
+        }
+    )
+    layouts = sorted(
+        {
+            str((item.get("metadata") or {}).get("layout"))
+            for item in sources.values()
+            if (item.get("metadata") or {}).get("layout")
+        }
+    )
+    access_patterns = sorted(
+        {
+            str((item.get("metadata") or {}).get("recommended_access_pattern"))
+            for item in sources.values()
+            if (item.get("metadata") or {}).get("recommended_access_pattern")
+        }
+    )
+    validation_durations = [float(item.get("validation_duration_seconds", 0.0) or 0.0) for item in sources.values()]
+    validation_modes = sorted({str(item.get("validation_mode")) for item in sources.values() if item.get("validation_mode")})
+    return {
+        "enabled": bool(cache.get("enabled", False)),
+        "policy": cache.get("policy", "off"),
+        "validation_mode": cache.get("validation_mode") or (validation_modes[0] if len(validation_modes) == 1 else None),
+        "validation_duration_seconds": float(sum(validation_durations)),
+        "source_fingerprint_scanned": any(bool(item.get("source_fingerprint_scanned", False)) for item in sources.values()),
+        "source_kind": cache.get("source_kind", "hdf5"),
+        "paths": dict(cache.get("paths", {})),
+        "sources": sources,
+        "cache_generated": bool(cache.get("cache_generated", False)),
+        "cache_fallback": bool(cache.get("cache_fallback", False)),
+        "cache_path_count": int(cache_path_count),
+        "cache_total_bytes": int(cache_total_bytes),
+        "storage_kind": storage_kinds[0] if len(storage_kinds) == 1 else storage_kinds or None,
+        "layout": layouts[0] if len(layouts) == 1 else layouts or None,
+        "recommended_access_pattern": access_patterns[0] if len(access_patterns) == 1 else access_patterns or None,
+        "random_read_risk": bool(cache.get("enabled", False) and cache_path_count > 0),
+        "opened_files_per_worker": 0,
+        "io": _empty_cache_io_public_metadata(),
+    }
+
+
+def _sidecar_cache_metadata(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    keys = (
+        "version",
+        "cache_schema_version",
+        "source_key",
+        "source_path",
+        "source_size_bytes",
+        "source_mtime_ns",
+        "storage_kind",
+        "layout",
+        "sample_count",
+        "bytes",
+        "shape",
+        "dtype",
+        "recommended_access_pattern",
+        "validation",
+    )
+    return {key: metadata.get(key) for key in keys if key in metadata}
+
+
+def _empty_cache_io_stats() -> dict[str, Any]:
+    return {
+        "opened_paths": set(),
+        "read_paths": set(),
+        "mapped_bytes": {},
+        "open_seconds": [],
+        "read_seconds": [],
+    }
+
+
+def _empty_cache_io_public_metadata() -> dict[str, Any]:
+    return {
+        "opened_files": 0,
+        "read_path_count": 0,
+        "mapped_bytes": 0,
+        "open_seconds": _timing_summary([]),
+        "read_seconds": _timing_summary([]),
+    }
+
+
+def _timing_summary(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"count": 0, "total": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0, "min": 0.0, "max": 0.0}
+    ordered = sorted(float(value) for value in values)
+    return {
+        "count": len(ordered),
+        "total": float(sum(ordered)),
+        "mean": float(sum(ordered) / len(ordered)),
+        "p50": float(ordered[int(0.50 * (len(ordered) - 1))]),
+        "p95": float(ordered[int(0.95 * (len(ordered) - 1))]),
+        "min": float(ordered[0]),
+        "max": float(ordered[-1]),
+    }
 
 
 def _load_or_build_index(
@@ -577,6 +982,15 @@ def _read_hdf5_rows(dataset, indices: list[int]) -> np.ndarray:
     return np.asarray(dataset[indices])
 
 
+def _read_numpy_rows(array, indices: list[int]) -> np.ndarray:
+    if not indices:
+        return np.asarray(array[[]]).copy()
+    if _is_contiguous_increasing(indices):
+        start = int(indices[0])
+        return np.asarray(array[start : start + len(indices)]).copy()
+    return np.asarray(array[indices]).copy()
+
+
 def _is_contiguous_increasing(indices: list[int]) -> bool:
     return all(int(indices[idx]) == int(indices[0]) + idx for idx in range(len(indices)))
 
@@ -599,6 +1013,37 @@ def _resource_path_for_modality(row: SampleRow, modality: str) -> str:
             f"for sample {row.sample_id}, but it is missing."
         )
     return str(resolved)
+
+
+def _collate_safe_resource_refs(resource_refs: dict[str, Any]) -> dict[str, Any]:
+    hdf5_keys = resource_refs.get("hdf5_keys", {})
+    hdf5_keys = hdf5_keys if isinstance(hdf5_keys, dict) else {}
+    return {
+        "channel_path": str(resource_refs.get("channel_path", "")),
+        "image_path": str(resource_refs.get("image_path", "")),
+        "lidar_path": str(resource_refs.get("lidar_path", "")),
+        "channel_index": int(resource_refs.get("channel_index", -1)),
+        "global_index": int(resource_refs.get("global_index", -1)),
+        "history_indices": [int(value) for value in resource_refs.get("history_indices", [])],
+        "target_indices": [int(value) for value in resource_refs.get("target_indices", [])],
+        "hdf5_keys": {key: str(hdf5_keys.get(key, "")) for key in MULTIMODAL_NF_HDF5_KEYS},
+    }
+
+
+def _collate_safe_metadata_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return {str(key): _collate_safe_metadata_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_collate_safe_metadata_value(item) for item in value]
+    if isinstance(value, list):
+        return [_collate_safe_metadata_value(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def _dataset_paths(handle) -> list[str]:

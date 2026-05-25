@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -65,6 +66,11 @@ from kd_sensing.utils.artifact_registry import (  # noqa: E402
     find_registry_checkpoint,
     resolve_teacher_checkpoint,
 )
+
+_PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", ROOT / "scripts/profile_training_io.py")
+profile_training_io = importlib.util.module_from_spec(_PROFILE_SPEC)
+assert _PROFILE_SPEC.loader is not None
+_PROFILE_SPEC.loader.exec_module(profile_training_io)
 
 
 def _removed_image_option(suffix: str) -> str:
@@ -578,6 +584,8 @@ def test_epoch_subsampling_config_validation_defaults_and_limits():
         "seed": None,
         "rotate_each_epoch": True,
         "shuffle": True,
+        "order": None,
+        "block_size": None,
     }
     assert fraction_cfg["training"]["epoch_subsampling"]["fraction"] == pytest.approx(0.25)
     assert count_cfg["training"]["epoch_subsampling"]["num_samples"] == 8
@@ -636,6 +644,33 @@ def test_epoch_subsample_sampler_reproducible_rotation_and_fixed_subset():
     fixed.set_epoch(9)
 
     assert fixed_epoch0 == list(fixed)
+
+
+def test_epoch_subsample_sampler_locality_order_preserves_selected_set():
+    random_sampler = EpochSubsampleSampler(
+        dataset_length=10,
+        effective_num_samples=5,
+        seed=321,
+        rotate_each_epoch=False,
+        shuffle=True,
+    )
+    locality_keys = [("b", idx) if idx % 2 else ("a", idx) for idx in range(10)]
+    locality_sampler = EpochSubsampleSampler(
+        dataset_length=10,
+        effective_num_samples=5,
+        seed=321,
+        rotate_each_epoch=False,
+        shuffle=True,
+        order="locality",
+        locality_keys=locality_keys,
+    )
+
+    random_epoch = list(random_sampler)
+    locality_epoch = list(locality_sampler)
+
+    assert set(locality_epoch) == set(random_epoch)
+    assert locality_epoch == sorted(random_epoch, key=lambda index: locality_keys[index])
+    assert locality_sampler.metadata()["order"] == "locality"
 
 
 def test_epoch_subsampling_dataloader_only_affects_train_split():
@@ -770,6 +805,34 @@ def test_parallel_training_recommendation_warns_when_lidar_cache_is_cold(tmp_pat
     assert "data.cache.policy=auto" in result["overrides"]
     assert result["cache"]["lidar"]["status"] == "cold"
     assert result["cache"]["prewarm_command"] is not None
+
+
+def test_multimodal_nf_recommendation_uses_overrides_without_modifying_config():
+    cfg = load_config(ROOT / "configs/multimodal_nf/image_lidar.yaml")
+    original = deepcopy(cfg)
+
+    result = recommend_parallel_training(
+        cfg,
+        config_path="configs/multimodal_nf/image_lidar.yaml",
+        parallel_runs=2,
+        cpu_count=16,
+        check_cache=False,
+    )
+
+    assert cfg == original
+    assert "data.cache.policy=auto" not in result["overrides"]
+    assert "data.cache.multimodal_nf.image.policy=auto" in result["overrides"]
+    assert "data.cache.multimodal_nf.lidar.policy=auto" in result["overrides"]
+    assert "data.cache.multimodal_nf.image.validation_mode=lightweight" in result["overrides"]
+    assert "data.cache.multimodal_nf.lidar.validation_mode=lightweight" in result["overrides"]
+    assert "training.epoch_subsampling.shuffle=false" in result["overrides"]
+    assert "training.epoch_subsampling.order=locality" in result["overrides"]
+    assert "training.amp.enabled=true" in result["optional_overrides"]
+    assert result["recommendations"]["multimodal_nf_io"]["cache_validation_mode"] == "lightweight"
+    assert result["recommendations"]["multimodal_nf_io"]["epoch_subsampling_order"] == "locality"
+    assert result["cache"]["multimodal_nf"]["image"]["recommended_validation_mode"] == "lightweight"
+    assert result["cache"]["multimodal_nf"]["image"]["prewarm_command"].endswith("multimodal_nf_derived_cache.yaml")
+    assert result["cache"]["prewarm_command"].endswith("multimodal_nf_derived_cache.yaml")
 
 
 def test_cache_policy_non_relevant_modalities_are_disabled():
@@ -956,6 +1019,77 @@ def test_throughput_metadata_includes_cache_policy():
     assert metadata["dataloader_splits"]["train"]["batch_size"] == 3
     assert metadata["dataloader_splits"]["test"]["persistent_workers"] is False
     assert metadata["progress"]["enabled"] is True
+
+
+def test_throughput_metadata_includes_multimodal_nf_cache_policy():
+    metadata = throughput_run_metadata(
+        {
+            "experiment": {"task": "fusion"},
+            "data": {
+                "dataset": {"type": "multimodal_nf"},
+                "cache": {"multimodal_nf": {"image": {"policy": "auto"}, "lidar": {"policy": "read_only"}}},
+                "dataloader": {"num_workers": 2, "test_num_workers": 1, "pin_memory": True},
+            },
+            "model": {"student": {"modalities": ["image", "lidar"]}},
+            "training": {"transfer": {}, "amp": {"enabled": True}},
+        }
+    )
+
+    assert metadata["cache"]["multimodal_nf"]["configured"]["image"]["policy"] == "auto"
+    assert metadata["cache"]["multimodal_nf"]["configured"]["lidar"]["policy"] == "read_only"
+    assert metadata["dataloader_splits"]["train"]["num_workers"] == 2
+    assert metadata["dataloader_splits"]["test"]["num_workers"] == 1
+
+
+def test_profile_summary_exposes_multimodal_nf_sources_and_csi_component():
+    runtime_metadata = {
+        "splits": {
+            "train": {
+                "enabled_modalities": ["image", "lidar", "csi"],
+                "derived_cache": {
+                    "image": {
+                        "policy": "auto",
+                        "source_kind": "derived_cache",
+                        "validation_duration_seconds": 0.25,
+                        "source_fingerprint_scanned": False,
+                        "cache_path_count": 1,
+                        "cache_total_bytes": 128,
+                        "storage_kind": "npy_mmap",
+                        "layout": "source_contiguous_rows",
+                        "recommended_access_pattern": "sequential_or_locality_ordered_windows",
+                        "random_read_risk": True,
+                        "io": {
+                            "opened_files": 1,
+                            "mapped_bytes": 128,
+                            "open_seconds": {"count": 1, "mean": 0.01, "p50": 0.01, "p95": 0.01, "min": 0.01, "max": 0.01},
+                            "read_seconds": {"count": 2, "mean": 0.02, "p50": 0.01, "p95": 0.05, "min": 0.01, "max": 0.05},
+                        },
+                    },
+                    "lidar": {"policy": "off", "source_kind": "hdf5"},
+                },
+            }
+        }
+    }
+
+    summary = profile_training_io._multimodal_nf_profile_summary(runtime_metadata)
+    cache_io = profile_training_io._multimodal_nf_cache_io_summary(summary)
+    risk = profile_training_io._io_risk_summary(
+        wait_breakdown={"p95_spikes": {"wait_gt_gpu_step": True}},
+        cache_io=cache_io,
+        multimodal_nf=summary,
+    )
+    cache = profile_training_io._cache_policy_summary(
+        {"multimodal_nf": {"splits": summary["splits"]}, "enabled_modalities": ["image", "lidar", "csi"]}
+    )
+
+    assert "csi" in profile_training_io.GETITEM_COMPONENT_KEYS
+    assert summary["splits"]["train"]["derived_cache"]["image"]["policy"] == "auto"
+    assert summary["cache_validation_seconds"]["image"] == pytest.approx(0.25)
+    assert cache_io["modalities"]["image"]["opened_files"] == 1
+    assert cache_io["modalities"]["image"]["read_seconds"]["p95"] == pytest.approx(0.05)
+    assert risk["cache_random_read_risk"] is True
+    assert risk["loader_wait_dominates_step"] is True
+    assert cache["multimodal_nf"]["splits"]["train"]["derived_cache"]["lidar"]["source_kind"] == "hdf5"
 
 
 def test_fixed_run_name_defaults_to_unique_directory_and_resume_reuses(tmp_path: Path):

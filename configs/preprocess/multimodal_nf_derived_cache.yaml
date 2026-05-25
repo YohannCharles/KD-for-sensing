@@ -1,0 +1,12 @@
+preprocessing:
+  type: multimodal_nf_derived_cache
+  data_root: dataset/MultimodalNF
+  cache_dir: dataset/MultimodalNF/cache
+  modalities: [image, lidar]
+  split: train
+  seq_len: 8
+  num_pred: 3
+  image_profile: rgb_imagenet
+  lidar_profile: point_cloud_xyz_10000
+  rebuild: false
+  validation_mode: strong

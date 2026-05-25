@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cpu-count", type=int, help="CPU cores available to the concurrent runs.")
     parser.add_argument("--cache-min-coverage", type=float, default=0.95, help="Coverage required before read_only cache.")
     parser.add_argument("--no-cache-check", action="store_true", help="Skip LiDAR cache coverage checks.")
+    parser.add_argument("--profile-json", help="Optional profile_training_io.py JSON output used to tune IO advice.")
     parser.add_argument("--output", help="Write JSON recommendation to this path.")
     parser.add_argument(
         "--override",
@@ -44,6 +45,7 @@ def main(argv: list[str] | None = None) -> dict:
         cpu_count=args.cpu_count,
         cache_min_coverage=args.cache_min_coverage,
         check_cache=not args.no_cache_check,
+        profile=_load_profile(args.profile_json),
     )
     payload = json.dumps(result, indent=2)
     if args.output:
@@ -52,6 +54,12 @@ def main(argv: list[str] | None = None) -> dict:
         target.write_text(payload + "\n", encoding="utf-8")
     print(payload)
     return result
+
+
+def _load_profile(path: str | None) -> dict | None:
+    if not path:
+        return None
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

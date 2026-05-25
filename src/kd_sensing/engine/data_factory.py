@@ -35,6 +35,10 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
         dataset_cfg["input_profiles"] = resolve_dataset_profiles(dataset_type, enabled_modalities, dataset_cfg)
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
+    if dataset_type == "multimodal_nf":
+        cache_cfg = cfg.get("data", {}).get("cache", {})
+        if isinstance(cache_cfg, dict) and isinstance(cache_cfg.get("multimodal_nf"), dict):
+            dataset_cfg["multimodal_nf_cache"] = dict(cache_cfg["multimodal_nf"])
     canonicalize_lidar_dataset_config(dataset_cfg)
     _apply_csi_degradation_seed(dataset_cfg, cfg)
     if _uses_csv_split(dataset_type, descriptor):

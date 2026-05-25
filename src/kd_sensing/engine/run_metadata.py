@@ -124,6 +124,7 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["num_beam_classes"] = nf_metadata.get("num_beam_classes")
         metadata["codebook"] = nf_metadata.get("codebook")
         metadata["input_profiles"] = nf_metadata.get("input_profiles")
+        metadata["derived_cache"] = nf_metadata.get("derived_cache", {})
     return metadata
 
 
@@ -283,12 +284,14 @@ def throughput_run_metadata(
     if dataloaders is not None:
         splits = dataloaders_run_metadata(dataloaders)
         metadata["splits"] = splits
+        metadata["multimodal_nf"] = _multimodal_nf_throughput_metadata(splits)
         metadata["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=splits)
     return metadata
 
 
 def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] | None = None) -> dict[str, Any]:
     cache_cfg = cfg.get("data", {}).get("cache", {})
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
     global_policy = str(cache_cfg.get("policy", "auto"))
     try:
         enabled_modalities = list(resolve_enabled_modalities(cfg))
@@ -301,7 +304,11 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
             "policy": str(cache_cfg.get("lidar", {}).get("policy") or global_policy),
         },
     }
-    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if dataset_cfg.get("type") == "multimodal_nf":
+        nf_cache_cfg = cache_cfg.get("multimodal_nf", {}) if isinstance(cache_cfg, dict) else {}
+        metadata["multimodal_nf"] = {
+            "configured": dict(nf_cache_cfg) if isinstance(nf_cache_cfg, dict) else {},
+        }
     if "image" in enabled_modalities:
         profile = resolve_image_profile(dataset_cfg.get("image_profile"))
         metadata["image"] = {
@@ -323,10 +330,18 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
                     "lidar_use_cache",
                     "lidar_write_cache",
                     "lidar_cache_policy",
+                    "derived_cache",
+                    "multimodal_nf",
                 }
             }
             for split, split_metadata in splits.items()
         }
+        if dataset_cfg.get("type") == "multimodal_nf":
+            metadata["multimodal_nf"]["splits"] = {
+                split: split_metadata.get("derived_cache")
+                or split_metadata.get("multimodal_nf", {}).get("derived_cache", {})
+                for split, split_metadata in splits.items()
+            }
     return metadata
 
 
@@ -401,6 +416,18 @@ def _serializable_loader_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "persistent_workers": bool(settings.get("persistent_workers", False)),
         "prefetch_factor": settings.get("prefetch_factor"),
     }
+
+
+def _multimodal_nf_throughput_metadata(splits: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {"splits": {}}
+    for split, split_metadata in splits.items():
+        if not isinstance(split_metadata, dict):
+            continue
+        nf_metadata = split_metadata.get("multimodal_nf", {})
+        derived_cache = split_metadata.get("derived_cache") or nf_metadata.get("derived_cache", {})
+        if derived_cache:
+            result["splits"][split] = {"derived_cache": derived_cache}
+    return result
 
 
 def _split_family(csv_name: str | None) -> str | None:

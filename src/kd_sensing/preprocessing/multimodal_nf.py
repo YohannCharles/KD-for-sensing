@@ -13,6 +13,7 @@ from kd_sensing.preprocessing.multimodal_nf_constants import (
     DEFAULT_SMALL_CODEBOOK_SHAPE,
 )
 from kd_sensing.preprocessing.multimodal_nf_index import build_multimodal_nf_index
+from kd_sensing.preprocessing.multimodal_nf_derived_cache import prewarm_multimodal_nf_derived_cache
 from kd_sensing.preprocessing.multimodal_nf_paths import resolve_multimodal_nf_paths
 from kd_sensing.registries import PREPROCESSORS
 
@@ -35,13 +36,24 @@ class MultimodalNFIndexPreprocessor:
         return build_multimodal_nf_index(**self.kwargs)
 
 
+@PREPROCESSORS.register("multimodal_nf_derived_cache")
+class MultimodalNFDerivedCachePreprocessor:
+    def __init__(self, **kwargs: Any):
+        self.kwargs = kwargs
+
+    def run(self):
+        return prewarm_multimodal_nf_derived_cache(**self.kwargs)
+
+
 __all__ = [
     "DEFAULT_DENSE_CODEBOOK_SHAPE",
     "DEFAULT_SMALL_CODEBOOK_SHAPE",
     "MultimodalNFAuditPreprocessor",
+    "MultimodalNFDerivedCachePreprocessor",
     "MultimodalNFIndexPreprocessor",
     "audit_multimodal_nf_files",
     "build_multimodal_nf_index",
+    "prewarm_multimodal_nf_derived_cache",
     "flatten_beam_triplet",
     "parse_codebook_metadata",
     "resolve_multimodal_nf_paths",

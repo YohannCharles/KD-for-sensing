@@ -13,10 +13,22 @@ data:
     split_mode: city
     seq_len: 8
     num_pred: 3
+  cache:
+    multimodal_nf:
+      image:
+        policy: auto
+        validation_mode: lightweight
+      lidar:
+        policy: auto
+        validation_mode: lightweight
   dataloader:
     batch_size: 2
-    num_workers: 0
-    pin_memory: false
+    num_workers: 2
+    prefetch_factor: 1
+    persistent_workers: true
+    test_num_workers: 1
+    test_prefetch_factor: 1
+    pin_memory: true
 
 model:
   modalities: [image, lidar]
@@ -54,6 +66,18 @@ distillation:
 training:
   epochs: 1
   lr: 0.001
+  epoch_subsampling:
+    enabled: false
+    fraction: null
+    num_samples: null
+    seed: null
+    rotate_each_epoch: true
+    shuffle: false
+    order: locality
+    block_size: null
+  amp:
+    enabled: true
+    dtype: float16
   use_early_stopping: false
   early_stopping_metric: val_beam_top1
   early_stopping_mode: max

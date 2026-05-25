@@ -21,6 +21,7 @@ def recommend_parallel_training(
     cpu_count: int | None = None,
     cache_min_coverage: float = 0.95,
     check_cache: bool = True,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parallel_runs = max(1, int(parallel_runs))
     cpu_count = int(cpu_count or os.cpu_count() or 1)
@@ -31,6 +32,7 @@ def recommend_parallel_training(
         modality_count=len(modalities),
     )
     prefetch_factor = 1 if parallel_runs >= 3 or len(modalities) >= 4 else 2
+    is_multimodal_nf = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).lower() == "multimodal_nf"
     lidar_cache = lidar_cache_coverage(cfg) if check_cache and "lidar" in modalities else _skipped_cache_status(modalities)
     cache_policy = _recommended_cache_policy(lidar_cache, cache_min_coverage)
     overrides = [
@@ -42,13 +44,45 @@ def recommend_parallel_training(
         f"data.dataloader.test_prefetch_factor={prefetch_factor}",
         "output.progress.enabled=false",
     ]
-    if cache_policy is not None:
+    if cache_policy is not None and not is_multimodal_nf:
         overrides.append(f"data.cache.policy={cache_policy}")
+    multimodal_nf_cache = (
+        multimodal_nf_derived_cache_recommendation(cfg, modalities=modalities, min_coverage=cache_min_coverage)
+        if is_multimodal_nf
+        else {}
+    )
+    if is_multimodal_nf:
+        for modality in ("image", "lidar"):
+            if modality in modalities:
+                overrides.append(f"data.cache.multimodal_nf.{modality}.policy={multimodal_nf_cache[modality]['recommended_policy']}")
+                overrides.append(f"data.cache.multimodal_nf.{modality}.validation_mode=lightweight")
+        if {"image", "lidar"} & set(modalities):
+            overrides.extend(
+                [
+                    "training.epoch_subsampling.shuffle=false",
+                    "training.epoch_subsampling.order=locality",
+                ]
+            )
 
-    optional_overrides = [
-        "training.amp.enabled=true",
-        "training.amp.dtype=float16",
-    ]
+    optional_overrides = []
+    if not is_multimodal_nf or {"image", "lidar"} & set(modalities):
+        optional_overrides.extend(
+            [
+                "training.amp.enabled=true",
+                "training.amp.dtype=float16",
+            ]
+        )
+    multimodal_nf_io = (
+        _multimodal_nf_io_recommendations(
+            modalities=modalities,
+            parallel_runs=parallel_runs,
+            cpu_count=cpu_count,
+            worker_budget=worker_budget,
+            profile=profile,
+        )
+        if is_multimodal_nf
+        else {}
+    )
     train_command = _train_command(config_path, overrides)
     return {
         "parallel_runs": parallel_runs,
@@ -63,11 +97,16 @@ def recommend_parallel_training(
             "progress_enabled": False,
             "cache_policy": cache_policy,
             "amp": "optional_after_cache_and_loader_wait_are_under_control",
+            "multimodal_nf_io": multimodal_nf_io,
         },
         "cache": {
             "lidar": lidar_cache,
+            "multimodal_nf": multimodal_nf_cache,
             "min_coverage_for_read_only": float(cache_min_coverage),
-            "prewarm_command": _lidar_prewarm_command() if _needs_lidar_prewarm(lidar_cache, cache_min_coverage) else None,
+            "prewarm_command": (
+                _multimodal_nf_prewarm_command() if is_multimodal_nf and multimodal_nf_cache else
+                _lidar_prewarm_command() if _needs_lidar_prewarm(lidar_cache, cache_min_coverage) else None
+            ),
         },
         "commands": {
             "train": train_command,
@@ -77,8 +116,40 @@ def recommend_parallel_training(
             "These overrides are for background parallel runs, not a replacement for single-experiment defaults.",
             "Keep AMP optional until profile output shows DataLoader wait is no longer dominating GPU step time.",
             "With output.progress.enabled=false, use epoch logs, train_log.json, and TensorBoard instead of batch tqdm.",
+            *(_profile_driven_notes(profile) if is_multimodal_nf else []),
+            *(_multimodal_nf_notes(modalities) if is_multimodal_nf else []),
         ],
     }
+
+
+def multimodal_nf_derived_cache_recommendation(
+    cfg: dict[str, Any],
+    *,
+    modalities: list[str] | None = None,
+    min_coverage: float = 0.95,
+) -> dict[str, Any]:
+    selected = modalities or list(resolve_enabled_modalities(cfg))
+    cache_cfg = cfg.get("data", {}).get("cache", {}).get("multimodal_nf", {})
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    cache_dir = dataset_cfg.get("cache_dir") or "dataset/MultimodalNF/cache"
+    result = {}
+    for modality in ("image", "lidar"):
+        if modality not in selected:
+            continue
+        configured = cache_cfg.get(modality, {}) if isinstance(cache_cfg, dict) else {}
+        configured_path = configured.get("path") or configured.get("cache_path") if isinstance(configured, dict) else None
+        exists = bool(configured_path and Path(str(configured_path)).exists())
+        coverage = 1.0 if exists else 0.0
+        result[modality] = {
+            "status": "warm" if coverage >= min_coverage else "unknown_or_cold",
+            "coverage": coverage,
+            "cache_dir": str(cache_dir),
+            "configured_path": str(configured_path) if configured_path else None,
+            "recommended_policy": "read_only" if coverage >= min_coverage else "auto",
+            "recommended_validation_mode": "lightweight",
+            "prewarm_command": _multimodal_nf_prewarm_command(),
+        }
+    return result
 
 
 def lidar_cache_coverage(cfg: dict[str, Any], *, splits: tuple[str, ...] = ("train", "test")) -> dict[str, Any]:
@@ -218,6 +289,73 @@ def _lidar_prewarm_command() -> str:
     return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml"
 
 
+def _multimodal_nf_prewarm_command() -> str:
+    return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/multimodal_nf_derived_cache.yaml"
+
+
+def _multimodal_nf_notes(modalities: list[str]) -> list[str]:
+    if not ({"image", "lidar"} & set(modalities)):
+        return ["Multimodal-NF GPS-only runs do not need image/LiDAR derived cache; tune ordinary DataLoader and model step settings first."]
+    return [
+        "For Multimodal-NF image/LiDAR/fusion runs, prewarm derived caches before long training runs or use auto policy for the first run.",
+        "Warm cache training should use lightweight runtime validation; reserve strong source fingerprint scans for audit, rebuild, or suspected data drift.",
+        "Use training.epoch_subsampling.shuffle=false or training.epoch_subsampling.order=locality when random cache reads dominate loader wait.",
+        "Do not treat read_only derived cache as guaranteed fast if the epoch order still performs random windows over large mmap files.",
+        "Spread image/LiDAR/fusion jobs across available GPUs before stacking multiple heavy IO runs on one GPU.",
+    ]
+
+
+def _multimodal_nf_io_recommendations(
+    *,
+    modalities: list[str],
+    parallel_runs: int,
+    cpu_count: int,
+    worker_budget: dict[str, Any],
+    profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    heavy_modalities = sorted({"image", "lidar"} & set(modalities))
+    if not heavy_modalities:
+        return {
+            "heavy_io_modalities": [],
+            "cache_validation_mode": None,
+            "epoch_subsampling_order": None,
+            "gpu_assignment": "not_applicable_for_gps_csi_only",
+            "profile_command": "Run scripts/profile_training_io.py only if DataLoader wait appears in logs.",
+        }
+    io_risk = profile.get("io_risk", {}) if isinstance(profile, dict) else {}
+    loader_wait_risk = bool(io_risk.get("loader_wait_dominates_step", False))
+    cache_tail_risk = bool(io_risk.get("cache_read_tail_risk", False))
+    max_workers = int(worker_budget.get("train_num_workers", 1))
+    if loader_wait_risk or cache_tail_risk or parallel_runs >= 4:
+        max_workers = max(1, min(max_workers, 2))
+    return {
+        "heavy_io_modalities": heavy_modalities,
+        "cache_validation_mode": "lightweight",
+        "avoid_repeated_strong_validation": True,
+        "epoch_subsampling_shuffle": False,
+        "epoch_subsampling_order": "locality",
+        "progress_enabled": False,
+        "amp": "recommended_for_cuda_image_or_fusion_when_model_step_is_not_loader_bound",
+        "train_num_workers_upper_bound": int(max_workers),
+        "prefetch_factor": 1,
+        "gpu_assignment": "spread_heavy_image_lidar_fusion_runs_evenly_across_gpus",
+        "parallelism_advice": (
+            "reduce_parallel_runs_or_profile_first"
+            if parallel_runs > max(1, cpu_count // max(max_workers, 1)) or loader_wait_risk or cache_tail_risk
+            else "start_with_even_gpu_distribution"
+        ),
+        "profile_command": "conda run -n kd_mm_beam python scripts/profile_training_io.py --config <config> --samples 32",
+        "profile_used": isinstance(profile, dict),
+        "profile_io_risk": dict(io_risk) if isinstance(io_risk, dict) else {},
+    }
+
+
+def _profile_driven_notes(profile: dict[str, Any] | None) -> list[str]:
+    if isinstance(profile, dict):
+        return ["Profile IO-risk fields were supplied; worker and locality advice reflects observed loader/cache timing."]
+    return ["No Multimodal-NF profile was supplied; run scripts/profile_training_io.py for cache read P95 and loader-wait driven tuning."]
+
+
 def _skipped_cache_status(modalities: list[str]) -> dict[str, Any]:
     if "lidar" not in modalities:
         return {"status": "not_applicable", "enabled": False, "coverage": 1.0}
@@ -226,5 +364,6 @@ def _skipped_cache_status(modalities: list[str]) -> dict[str, Any]:
 
 __all__ = [
     "lidar_cache_coverage",
+    "multimodal_nf_derived_cache_recommendation",
     "recommend_parallel_training",
 ]

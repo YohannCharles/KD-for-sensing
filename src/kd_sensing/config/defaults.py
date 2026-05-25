@@ -212,6 +212,8 @@ DEFAULT_CONFIG = {
             "seed": None,
             "rotate_each_epoch": True,
             "shuffle": True,
+            "order": None,
+            "block_size": None,
         },
         "modality_dropout": {
             "enabled": False,

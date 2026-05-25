@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -17,6 +18,7 @@ if str(SRC) not in sys.path:
 
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles  # noqa: E402
 import kd_sensing.data.datasets.multimodal_nf as multimodal_nf_module  # noqa: E402
+import kd_sensing.preprocessing.multimodal_nf_derived_cache as derived_cache_module  # noqa: E402
 from kd_sensing.data.datasets.multimodal_nf import MultimodalNFDataset  # noqa: E402
 from kd_sensing.data.dataset_runtime import RuntimeDataset, SampleIndex, SampleRow  # noqa: E402
 from kd_sensing.engine.batch import prepare_csi_inputs, prepare_lidar_inputs  # noqa: E402
@@ -28,6 +30,10 @@ from kd_sensing.preprocessing.multimodal_nf_common import (  # noqa: E402
     flatten_beam_triplet,
     parse_codebook_metadata,
     unflatten_beam_class,
+)
+from kd_sensing.preprocessing.multimodal_nf_derived_cache import (  # noqa: E402
+    prewarm_multimodal_nf_derived_cache,
+    sidecar_path,
 )
 
 
@@ -154,6 +160,55 @@ def test_multimodal_nf_disabled_modalities_do_not_require_missing_files(tmp_path
     assert "lidar" not in sample
 
 
+def test_multimodal_nf_default_metadata_off_and_explicit_metadata_collates_mixed_aux_fields(tmp_path: Path):
+    raw = tmp_path / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    codebooks = tmp_path / "codebooks"
+    codebooks.mkdir(parents=True, exist_ok=True)
+    codebook_path = codebooks / "small_codebook.pkl"
+    with codebook_path.open("wb") as handle:
+        pickle.dump({"shape": CODEBOOK_SHAPE, "name": "fixture_small"}, handle)
+    _write_fixture_h5(
+        raw / "City_A_dataset.h5",
+        n=6,
+        city_values=[b"City_A"] * 6,
+        trajectory_values=[0] * 6,
+        frame_values=list(range(6)),
+        include_traj_nlos=True,
+        include_mode=True,
+    )
+    _write_fixture_h5(
+        raw / "City_B_dataset.h5",
+        n=6,
+        city_values=[b"City_B"] * 6,
+        trajectory_values=[0] * 6,
+        frame_values=list(range(6)),
+        include_traj_nlos=False,
+        include_mode=False,
+    )
+    common = {
+        "data_root": str(tmp_path),
+        "codebook_path": str(codebook_path),
+        "split_mode": "city",
+        "train_cities": ["City_A", "City_B"],
+        "val_cities": [],
+        "test_cities": [],
+        "split": "train",
+        "enabled_modalities": ["gps"],
+        "seq_len": 3,
+        "num_pred": 2,
+    }
+
+    training_dataset = MultimodalNFDataset(**common)
+    assert "metadata" not in training_dataset[0]
+
+    metadata_dataset = MultimodalNFDataset(**common, return_metadata=True)
+    batch = next(iter(DataLoader(metadata_dataset, batch_size=len(metadata_dataset), num_workers=0)))
+    assert "traj_nlos" in batch["metadata"]["resource_refs"]["hdf5_keys"]
+    assert "" in batch["metadata"]["resource_refs"]["hdf5_keys"]["traj_nlos"]
+    assert "mode" in batch["metadata"]["resource_refs"]["hdf5_keys"]
+
+
 def test_multimodal_nf_shape_errors_include_context(tmp_path: Path):
     channel_path, _ = _write_fixture(tmp_path, bad_lidar=True, sequence=True)
     dataset = MultimodalNFDataset(
@@ -253,6 +308,268 @@ def test_multimodal_nf_hdf5_reader_uses_slice_for_contiguous_windows(tmp_path: P
         fancy = np.asarray(handle["Pos"][[1, 2, 3]])
 
     assert np.array_equal(sliced, fancy)
+
+
+def test_multimodal_nf_derived_cache_matches_hdf5_samples_and_metadata(tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+    raw_dataset = MultimodalNFDataset(
+        data_root=str(tmp_path),
+        channel_path=str(channel_path),
+        codebook_path=str(codebook_path),
+        split_mode="frame_debug",
+        split="train",
+        split_ratios=(1.0, 0.0, 0.0),
+        enabled_modalities=["image", "lidar"],
+        seq_len=3,
+        num_pred=2,
+        return_metadata=True,
+    )
+    prewarm = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image", "lidar"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+    runtime_before_read = None
+    cached_dataset = MultimodalNFDataset(
+        data_root=str(tmp_path),
+        channel_path=str(channel_path),
+        codebook_path=str(codebook_path),
+        split_mode="frame_debug",
+        split="train",
+        split_ratios=(1.0, 0.0, 0.0),
+        enabled_modalities=["image", "lidar"],
+        seq_len=3,
+        num_pred=2,
+        return_metadata=True,
+        derived_cache={"image": {"policy": "read_only"}, "lidar": {"policy": "read_only"}},
+    )
+    runtime_before_read = cached_dataset.derived_cache_runtime_metadata()
+
+    raw = raw_dataset[0]
+    cached = cached_dataset[0]
+    assert torch.equal(raw["image"], cached["image"])
+    assert torch.equal(raw["lidar"], cached["lidar"])
+    assert torch.equal(raw["target_beam"], cached["target_beam"])
+    assert raw["metadata"]["history_frame_ids"] == cached["metadata"]["history_frame_ids"]
+    assert set(prewarm["modalities"]) == {"image", "lidar"}
+    for modality in ("image", "lidar"):
+        cache_info = cached_dataset.derived_cache_metadata[modality]
+        assert cache_info["enabled"] is True
+        assert cache_info["source_kind"] == "derived_cache"
+        source = next(iter(cache_info["sources"].values()))
+        assert source["cache_hit"] is True
+        assert cache_info["cache_path_count"] == 1
+        assert cache_info["cache_total_bytes"] > 0
+        assert cache_info["storage_kind"] == "npy_mmap"
+        assert cache_info["layout"] == "source_contiguous_rows"
+        assert cache_info["validation_mode"] == "lightweight"
+        assert cache_info["source_fingerprint_scanned"] is False
+        assert runtime_before_read[modality]["io"]["opened_files"] == 0
+        assert cached_dataset.derived_cache_runtime_metadata()[modality]["io"]["opened_files"] == 1
+        metadata = json.loads(sidecar_path(source["cache_path"]).read_text(encoding="utf-8"))
+        assert metadata["modality"] == modality
+        assert metadata["cache_schema_version"] == 2
+        assert metadata["source_key"] == channel_path.stem
+        assert metadata["storage_kind"] == "npy_mmap"
+        assert metadata["layout"] == "source_contiguous_rows"
+        assert metadata["bytes"] > 0
+        assert metadata["seq_len"] == 3
+        assert metadata["num_pred"] == 2
+        assert metadata["sample_count"] == 8
+        assert "shape" in metadata
+        assert "dtype" in metadata
+
+
+def test_multimodal_nf_read_only_lightweight_validation_skips_source_fingerprint(monkeypatch, tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+    prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+
+    def fail_fingerprint(_path):
+        raise AssertionError("read_only lightweight validation must not fingerprint source HDF5")
+
+    monkeypatch.setattr(derived_cache_module, "fingerprint_path", fail_fingerprint)
+
+    dataset = MultimodalNFDataset(
+        data_root=str(tmp_path),
+        channel_path=str(channel_path),
+        codebook_path=str(codebook_path),
+        split_mode="frame_debug",
+        split="train",
+        split_ratios=(1.0, 0.0, 0.0),
+        enabled_modalities=["image"],
+        seq_len=3,
+        num_pred=2,
+        derived_cache={"image": {"policy": "read_only", "validation_mode": "lightweight"}},
+    )
+
+    source = next(iter(dataset.derived_cache_metadata["image"]["sources"].values()))
+    assert source["source_fingerprint_scanned"] is False
+    assert source["validation_mode"] == "lightweight"
+
+
+def test_multimodal_nf_strong_validation_detects_fingerprint_mismatch(tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+    prewarm = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+    source = prewarm["modalities"]["image"]["sources"][0]
+    metadata_path = sidecar_path(source["cache_path"])
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["source_fingerprint"] = "not-the-current-source"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="source_fingerprint"):
+        MultimodalNFDataset(
+            data_root=str(tmp_path),
+            channel_path=str(channel_path),
+            codebook_path=str(codebook_path),
+            split_mode="frame_debug",
+            split="train",
+            split_ratios=(1.0, 0.0, 0.0),
+            enabled_modalities=["image"],
+            seq_len=3,
+            num_pred=2,
+            derived_cache={"image": {"policy": "read_only", "validation_mode": "strong"}},
+        )
+
+
+def test_multimodal_nf_old_sidecar_read_only_errors_and_auto_rebuilds(tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+    prewarm = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+    source = prewarm["modalities"]["image"]["sources"][0]
+    metadata_path = sidecar_path(source["cache_path"])
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for key in ("cache_schema_version", "source_key", "source_size_bytes", "source_mtime_ns", "storage_kind", "layout", "bytes"):
+        metadata.pop(key, None)
+    metadata["version"] = "multimodal_nf_derived_v1"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    common = {
+        "data_root": str(tmp_path),
+        "channel_path": str(channel_path),
+        "codebook_path": str(codebook_path),
+        "split_mode": "frame_debug",
+        "split": "train",
+        "split_ratios": (1.0, 0.0, 0.0),
+        "enabled_modalities": ["image"],
+        "seq_len": 3,
+        "num_pred": 2,
+    }
+    with pytest.raises(FileNotFoundError, match="lightweight_metadata|multimodal_nf_derived_v1"):
+        MultimodalNFDataset(**common, derived_cache={"image": {"policy": "read_only"}})
+
+    rebuilt = MultimodalNFDataset(**common, derived_cache={"image": {"policy": "auto"}})
+    rebuilt_source = next(iter(rebuilt.derived_cache_metadata["image"]["sources"].values()))
+    assert rebuilt_source["cache_generated"] is True
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["cache_schema_version"] == 2
+
+
+def test_multimodal_nf_derived_cache_policies_missing_mismatch_auto_and_rebuild(tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+    common = {
+        "data_root": str(tmp_path),
+        "channel_path": str(channel_path),
+        "codebook_path": str(codebook_path),
+        "split_mode": "frame_debug",
+        "split": "train",
+        "split_ratios": (1.0, 0.0, 0.0),
+        "enabled_modalities": ["image"],
+        "seq_len": 3,
+        "num_pred": 2,
+    }
+
+    with pytest.raises(FileNotFoundError, match="image.*read_only"):
+        MultimodalNFDataset(**common, derived_cache={"image": {"policy": "read_only"}})
+
+    auto_dataset = MultimodalNFDataset(**common, derived_cache={"image": {"policy": "auto"}})
+    auto_source = next(iter(auto_dataset.derived_cache_metadata["image"]["sources"].values()))
+    assert auto_source["cache_generated"] is True
+    cache_path = Path(auto_source["cache_path"])
+
+    metadata_path = sidecar_path(cache_path)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["seq_len"] = 99
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="metadata_mismatch"):
+        MultimodalNFDataset(**common, derived_cache={"image": {"policy": "read_only"}})
+
+    rebuild_dataset = MultimodalNFDataset(**common, derived_cache={"image": {"policy": "rebuild"}})
+    rebuild_source = next(iter(rebuild_dataset.derived_cache_metadata["image"]["sources"].values()))
+    assert rebuild_source["cache_generated"] is True
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["seq_len"] == 3
+
+
+def test_multimodal_nf_disabled_modalities_ignore_derived_cache_config_and_missing_large_files(tmp_path: Path):
+    channel_path, _ = _write_fixture(tmp_path, sequence=True)
+    dataset = MultimodalNFDataset(
+        data_root=str(tmp_path),
+        channel_path=str(channel_path),
+        image_path=str(tmp_path / "missing_image.h5"),
+        lidar_path=str(tmp_path / "missing_lidar.h5"),
+        codebook_shape=list(CODEBOOK_SHAPE),
+        split_mode="city",
+        split="train",
+        enabled_modalities=["gps", "csi"],
+        seq_len=3,
+        num_pred=2,
+        derived_cache={
+            "image": {"policy": "read_only", "path": str(tmp_path / "missing_image.npy")},
+            "lidar": {"policy": "read_only", "path": str(tmp_path / "missing_lidar.npy")},
+        },
+    )
+
+    sample = dataset[0]
+    assert set(sample) >= {"gps", "csi", "target_beam"}
+    assert dataset.derived_cache_metadata == {}
+
+
+def test_multimodal_nf_inactive_modalities_do_not_resolve_derived_cache(monkeypatch, tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+
+    def fail_cache_status(**_kwargs):
+        raise AssertionError("inactive image/lidar modalities must not resolve derived cache")
+
+    monkeypatch.setattr(multimodal_nf_module, "cache_status", fail_cache_status)
+    dataset = MultimodalNFDataset(
+        data_root=str(tmp_path),
+        channel_path=str(channel_path),
+        codebook_path=str(codebook_path),
+        split_mode="frame_debug",
+        split="train",
+        split_ratios=(1.0, 0.0, 0.0),
+        enabled_modalities=["gps"],
+        seq_len=3,
+        num_pred=2,
+        derived_cache={"image": {"policy": "read_only"}, "lidar": {"policy": "read_only"}},
+    )
+
+    assert dataset.derived_cache_metadata == {}
 
 
 def test_multimodal_nf_index_and_data_factory_skip_csv_requirements(tmp_path: Path):
@@ -502,6 +819,8 @@ def _write_fixture_h5(
     trajectory_values=None,
     frame_values=None,
     n: int = 6,
+    include_traj_nlos: bool = True,
+    include_mode: bool = True,
 ) -> None:
     h5py = pytest.importorskip("h5py")
     with h5py.File(path, "w") as handle:
@@ -522,8 +841,13 @@ def _write_fixture_h5(
         )
         handle.create_dataset("Trajectory", data=np.asarray(trajectory_values or [0, 0, 1, 1, 2, 2][:n], dtype=np.int64))
         handle.create_dataset("Frame", data=np.asarray(frame_values or [0, 1, 0, 1, 0, 1][:n], dtype=np.int64))
-        handle.create_dataset("Traj_Is_NLoS", data=np.asarray(([0, 1, 0, 0, 1, 0, 1, 0] * ((n + 7) // 8))[:n], dtype=np.int64))
-        handle.create_dataset("Mode_Idx", data=np.asarray(([0, 1, 0, 1, 0, 1, 0, 1] * ((n + 7) // 8))[:n], dtype=np.int64))
+        if include_traj_nlos:
+            handle.create_dataset(
+                "Traj_Is_NLoS",
+                data=np.asarray(([0, 1, 0, 0, 1, 0, 1, 0] * ((n + 7) // 8))[:n], dtype=np.int64),
+            )
+        if include_mode:
+            handle.create_dataset("Mode_Idx", data=np.asarray(([0, 1, 0, 1, 0, 1, 0, 1] * ((n + 7) // 8))[:n], dtype=np.int64))
         handle.create_dataset("image", data=np.arange(n * 5 * 6 * 3, dtype=np.uint8).reshape(n, 5, 6, 3))
         lidar_shape = (n, 10, 2) if bad_lidar else (n, 10, 3)
         handle.create_dataset("lidar", data=np.arange(np.prod(lidar_shape), dtype=np.float32).reshape(lidar_shape))
