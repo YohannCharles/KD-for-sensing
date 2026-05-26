@@ -6,7 +6,6 @@ from kd_sensing.config.dataset_rules.raymobtime import validate_raymobtime_confi
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.engine.multimodal_nf_runtime import validate_multimodal_nf_runtime_contract
-from kd_sensing.engine.epoch_subsampling import validate_epoch_subsampling_config
 from kd_sensing.config.normalization import (
     IMAGE_MODEL_TYPES,
     RAYMOBTIME_SELECTION_MODEL_TYPES,
@@ -36,6 +35,8 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
     validate_prediction_objective_config(cfg)
+    from kd_sensing.engine.epoch_subsampling import validate_epoch_subsampling_config
+
     validate_epoch_subsampling_config(cfg)
     validate_dataset_input_profiles(cfg)
     validate_multimodal_nf_runtime_contract(cfg)

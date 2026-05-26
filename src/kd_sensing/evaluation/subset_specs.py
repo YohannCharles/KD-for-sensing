@@ -4,12 +4,11 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Iterable
 
-from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.modalities import normalize_modalities
 
 
-CONDITIONAL_AUDIT_MODALITIES = tuple(
-    modality for modality in MODALITY_ORDER if modality in {"image", "radar", "gps", "lidar", "mmwave"}
-)
+GENERIC_STRONG_MODALITIES = ("gps", "mmwave")
+GENERIC_WEAK_MODALITIES = ("image", "radar", "lidar")
 
 
 @dataclass(frozen=True)
@@ -19,7 +18,7 @@ class ModalitySubsetSpec:
 
     def mask_for(self, model_modalities: Iterable[str]) -> tuple[bool, ...]:
         selected = set(self.modalities)
-        normalized = _normalize_conditional_modalities(model_modalities, context=f"{self.name} model modalities")
+        normalized = normalize_modalities(tuple(model_modalities), context=f"{self.name} model modalities")
         missing = sorted(selected.difference(normalized))
         if missing:
             raise ValueError(
@@ -38,86 +37,59 @@ class ModalitySubsetSpec:
         return metadata
 
 
-CONDITIONAL_UTILITY_SUBSETS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
-    (
-        ("all", normalize_modalities(CONDITIONAL_AUDIT_MODALITIES, context="conditional audit subset all")),
-        ("strong_only", normalize_modalities(("gps", "mmwave"), context="conditional audit subset strong_only")),
-        (
-            "strong_plus_image",
-            normalize_modalities(("gps", "mmwave", "image"), context="conditional audit subset strong_plus_image"),
-        ),
-        (
-            "strong_plus_radar",
-            normalize_modalities(("gps", "mmwave", "radar"), context="conditional audit subset strong_plus_radar"),
-        ),
-        (
-            "strong_plus_lidar",
-            normalize_modalities(("gps", "mmwave", "lidar"), context="conditional audit subset strong_plus_lidar"),
-        ),
-        (
-            "single_best_mmwave",
-            normalize_modalities(("mmwave",), context="conditional audit subset single_best_mmwave"),
-        ),
-        ("weak_only", normalize_modalities(("image", "radar", "lidar"), context="conditional audit subset weak_only")),
-    )
-)
-
-CONDITIONAL_UTILITY_SUBSET_NAMES = tuple(CONDITIONAL_UTILITY_SUBSETS.keys())
+def generic_modality_subset_specs(model_modalities: Iterable[str]) -> "OrderedDict[str, ModalitySubsetSpec]":
+    normalized = normalize_modalities(tuple(model_modalities), context="generic modality subset model modalities")
+    specs: "OrderedDict[str, ModalitySubsetSpec]" = OrderedDict()
+    specs["all"] = ModalitySubsetSpec(name="all", modalities=normalized)
+    strong = _available_modalities(GENERIC_STRONG_MODALITIES, normalized)
+    if strong:
+        specs["strong_only"] = ModalitySubsetSpec(name="strong_only", modalities=strong)
+        specs["gps_mmwave"] = ModalitySubsetSpec(name="gps_mmwave", modalities=strong)
+    weak = _available_modalities(GENERIC_WEAK_MODALITIES, normalized)
+    if weak:
+        specs["weak_only"] = ModalitySubsetSpec(name="weak_only", modalities=weak)
+    for modality in normalized:
+        specs[modality] = ModalitySubsetSpec(name=modality, modalities=(modality,))
+    return specs
 
 
-def conditional_utility_subset_specs() -> "OrderedDict[str, ModalitySubsetSpec]":
-    return OrderedDict(
-        (name, ModalitySubsetSpec(name=name, modalities=modalities))
-        for name, modalities in CONDITIONAL_UTILITY_SUBSETS.items()
-    )
-
-
-def resolve_conditional_utility_subset(
-    name: str,
-    model_modalities: Iterable[str],
-) -> ModalitySubsetSpec | None:
-    raw = CONDITIONAL_UTILITY_SUBSETS.get(str(name))
-    if raw is None:
-        return None
-    normalized_model_modalities = _normalize_conditional_modalities(
-        model_modalities,
-        context="conditional audit model modalities",
-    )
-    if str(name) == "all":
-        return ModalitySubsetSpec(name="all", modalities=normalized_model_modalities)
-    if not set(raw).issubset(set(normalized_model_modalities)):
-        return None
-    return ModalitySubsetSpec(name=str(name), modalities=raw)
+def resolve_named_modality_subset(name: str, model_modalities: Iterable[str]) -> ModalitySubsetSpec | None:
+    requested = str(name)
+    normalized = normalize_modalities(tuple(model_modalities), context="generic modality subset model modalities")
+    specs = generic_modality_subset_specs(normalized)
+    if requested in specs:
+        return specs[requested]
+    parts = tuple(part for part in requested.split("_") if part)
+    if parts and all(part in normalized for part in parts):
+        return ModalitySubsetSpec(
+            name=requested,
+            modalities=normalize_modalities(parts, context=f"generic modality subset {requested}"),
+        )
+    return None
 
 
 def subset_mask(name: str, model_modalities: Iterable[str]) -> tuple[bool, ...]:
-    spec = resolve_conditional_utility_subset(name, model_modalities)
+    spec = resolve_named_modality_subset(name, model_modalities)
     if spec is None:
-        raise KeyError(f"Unknown or unavailable conditional utility subset '{name}'.")
+        raise KeyError(f"Unknown or unavailable modality subset '{name}'.")
     return spec.mask_for(model_modalities)
 
 
 def subset_metadata(model_modalities: Iterable[str]) -> list[dict]:
-    specs = conditional_utility_subset_specs()
-    metadata = []
-    for name in specs:
-        spec = resolve_conditional_utility_subset(name, model_modalities)
-        if spec is not None:
-            metadata.append(spec.to_metadata(model_modalities))
-    return metadata
+    return [spec.to_metadata(model_modalities) for spec in generic_modality_subset_specs(model_modalities).values()]
 
 
-def _normalize_conditional_modalities(model_modalities: Iterable[str], *, context: str) -> tuple[str, ...]:
-    normalized = normalize_modalities(tuple(model_modalities), context=context)
-    return tuple(name for name in normalized if name in set(CONDITIONAL_AUDIT_MODALITIES))
+def _available_modalities(candidates: Iterable[str], model_modalities: Iterable[str]) -> tuple[str, ...]:
+    available = set(model_modalities)
+    return tuple(name for name in normalize_modalities(tuple(candidates), context="generic modality subset candidates") if name in available)
 
 
 __all__ = [
-    "CONDITIONAL_UTILITY_SUBSET_NAMES",
-    "CONDITIONAL_UTILITY_SUBSETS",
+    "GENERIC_STRONG_MODALITIES",
+    "GENERIC_WEAK_MODALITIES",
     "ModalitySubsetSpec",
-    "conditional_utility_subset_specs",
-    "resolve_conditional_utility_subset",
+    "generic_modality_subset_specs",
+    "resolve_named_modality_subset",
     "subset_mask",
     "subset_metadata",
 ]

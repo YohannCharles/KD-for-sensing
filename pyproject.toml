@@ -38,7 +38,6 @@ visualization = [
 kd-sensing-train = "kd_sensing.cli.train:main"
 kd-sensing-evaluate = "kd_sensing.cli.evaluate:main"
 kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
-kd-sensing-raymobtime-analysis = "kd_sensing.cli.raymobtime_analysis:console_main"
 kd-sensing-runs = "kd_sensing.cli.runs:console_main"
 kd-sensing-export-viewer-manifest = "kd_sensing.cli.export_viewer_manifest:main"
 kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"

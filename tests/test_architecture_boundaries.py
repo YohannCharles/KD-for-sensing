@@ -22,7 +22,6 @@ from kd_sensing.modalities import (  # noqa: E402
 )
 
 PYTHON_ENTRYPOINT_ALLOWLIST = {
-    "scripts/analysis/build_complementarity_cases.py": "research_diagnostic",
     "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
     "scripts/build_teacher_registry.py": "research_diagnostic",
     "scripts/debug_eval_consistency.py": "research_diagnostic",
@@ -36,11 +35,6 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/profile_training_io.py": "research_diagnostic",
     "scripts/recommend_parallel_training.py": "research_diagnostic",
     "scripts/train.py": "thin_cli_alias",
-    "tools/analysis/analyze_conditional_utility.py": "research_diagnostic",
-    "tools/analysis/collect_multimodal_imbalance_results.py": "research_diagnostic",
-    "tools/analysis/run_conditional_utility_audit.py": "research_diagnostic",
-    "tools/analysis/run_phase_1_5_utility_validation.py": "research_diagnostic",
-    "tools/visualization/complementarity_explorer.py": "viewer_support",
     "tools/visualization/gradio_multimodal_viewer.py": "viewer_entrypoint",
     "tools/visualization/viewer_constants.py": "viewer_support",
     "tools/visualization/viewer_figures.py": "viewer_support",
@@ -268,21 +262,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/preprocessing/raymobtime_s008_beam_labels.py": "def normalize_beam_labels",
                 "src/kd_sensing/preprocessing/raymobtime_s008_ray_features.py": "def _load_ray_table",
                 "src/kd_sensing/preprocessing/raymobtime_s008_cache.py": "def _cache_metadata",
-            },
-        },
-        "src/kd_sensing/diagnostics/complementarity.py": {
-            "max_lines": 80,
-            "forbidden": [
-                "def normalize_schema",
-                "def _build_pair_mode_cases",
-                "def _summary_metrics",
-                "def write_outputs",
-            ],
-            "helpers": {
-                "src/kd_sensing/diagnostics/complementarity_schema.py": "def normalize_schema",
-                "src/kd_sensing/diagnostics/complementarity_cases.py": "def _build_pair_mode_cases",
-                "src/kd_sensing/diagnostics/complementarity_summaries.py": "def _summary_metrics",
-                "src/kd_sensing/diagnostics/complementarity_writers.py": "def write_outputs",
             },
         },
         "src/kd_sensing/models/csi.py": {

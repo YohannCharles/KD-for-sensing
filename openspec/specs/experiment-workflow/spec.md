@@ -1467,7 +1467,7 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 评估报告 MUST 能被模态失衡分析读取
 
 ### Requirement: Raymobtime s008 实验矩阵与分析 workflow
-项目 MUST 提供 Raymobtime s008 实验矩阵和分析 workflow，用于比较单模态、多模态、sensing-only、sensing+ray 和 task-aware gate 结果。分析 workflow MUST 通过包内 CLI 或统一分析入口执行。
+项目 MUST 提供 Raymobtime s008 推荐实验矩阵，用于运行和比较单模态、多模态、sensing-only、sensing+ray 和 task-aware gated 配置。项目 MUST 不再要求提供 Raymobtime s008 模态失衡分析 CLI、失衡诊断报告或失衡判定 workflow。
 
 #### Scenario: 单模态与多模态矩阵
 - **WHEN** 用户查看 Raymobtime s008 推荐配置或分析说明
@@ -1480,15 +1480,10 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 每组 MUST 分别运行 `current_beam_selection`、`current_los_classification` 和 `current_link_quality`
 - **AND** 该矩阵共 12 个训练 run，包含 `ray` 的 sensing+ray run MUST 单独标注为补充实验
 
-#### Scenario: 分析命令输出
-- **WHEN** 用户运行 Raymobtime s008 模态失衡分析入口
-- **THEN** 系统 MUST 读取一个或多个 Raymobtime 实验目录
-- **AND** 系统 MUST 输出 CSV 或 JSON 摘要，包含单模态性能、gate 均值、modality drop delta 和按 LOS bucket 的任务指标
-
-#### Scenario: 分析元数据校验
-- **WHEN** 分析入口读取实验目录
-- **THEN** 系统 MUST 校验 run metadata 中的 dataset type、objective、enabled modalities 和 task semantics
-- **AND** 非 Raymobtime 或 future beam prediction 实验 MUST 不被静默纳入 Raymobtime s008 汇总
+#### Scenario: 普通评估产物可比较
+- **WHEN** Raymobtime s008 训练或评估完成
+- **THEN** 系统 MUST 继续输出 objective 对应的 `metrics.json` 或 `test_report.json`
+- **AND** 系统 MUST 不要求额外生成模态失衡 analysis CSV、drop modality delta 或 diagnosis report
 
 ### Requirement: 训练编排重构保持输出兼容
 训练编排内部重构后，训练入口 MUST 保持现有用户可见输出和恢复语义兼容。`final_config.yaml`、`resolved_config.yaml`、`train_log.json`、`training_outputs.npz`、checkpoint、checkpoint sidecar、teacher metrics、TensorBoard events 和 debug artifacts 的关键字段、路径和含义 MUST 与变更前兼容，除非对应 change 明确声明 breaking change。
@@ -1667,4 +1662,3 @@ Multimodal-NF 训练和评估运行产物 MUST 在 `final_config.yaml`、`resolv
 - **WHEN** Multimodal-NF 配置中的 objective、target schema、model heads 或 codebook metadata 互相矛盾
 - **THEN** 系统 MUST 在训练前或启动早期拒绝运行
 - **AND** 错误信息 MUST 指向矛盾字段和可修正的配置路径
-

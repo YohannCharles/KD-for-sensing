@@ -123,15 +123,6 @@ G2D MUST 在每个 epoch 保存 JSON 诊断文件。诊断文件 MUST 包含 `nu
 - **WHEN** student 输出包含 per-modality branch logits 或 unimodal logits
 - **THEN** G2D diagnostics MUST 保存 student branch confidence
 - **AND** G2D diagnostics MUST 保存 student branch confidence 与 teacher confidence 的 ratio
-
-### Requirement: G2D result collection
-系统 MUST 提供多模态失衡结果汇总脚本，读取 G2D metrics、train log 和 diagnostics，并输出 CSV 汇总文件。
-
-#### Scenario: 汇总 G2D 结果
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python tools/analysis/collect_multimodal_imbalance_results.py`
-- **THEN** 脚本 MUST 读取指定 outputs 根目录下的 G2D 运行结果
-- **AND** 脚本 MUST 输出包含 top-k、teacher confidence、ranking 和 final active modalities 的 CSV
-
 ### Requirement: G2D 支持包含 CSI 的模态集合
 G2D teacher ensemble、teacher confidence、ranking、SMP gradient masking 和 diagnostics MUST support any configured modality subset that is valid in the project modality registry, including subsets that contain `csi`. Existing five-modality G2D configs MUST remain valid.
 

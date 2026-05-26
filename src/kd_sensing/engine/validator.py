@@ -9,7 +9,7 @@ import torch
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
 from kd_sensing.engine.marf_training import ModalitySubsetSampler
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata
-from kd_sensing.evaluation.subset_specs import resolve_conditional_utility_subset
+from kd_sensing.evaluation.subset_specs import resolve_named_modality_subset
 
 
 def validate(model, dataloader, cfg: dict, criterion, device: torch.device, output_dir: str | Path | None = None):
@@ -85,19 +85,6 @@ def _validate_with_force_mask(model, dataloader, cfg: dict, criterion, device: t
     ).metrics
 
 
-def _modality_subset_definitions(modalities: list[str]) -> dict[str, list[str]]:
-    strong = [name for name in ("gps", "mmwave") if name in modalities]
-    weak = [name for name in ("image", "radar", "lidar") if name in modalities]
-    return {
-        "gps": ["gps"],
-        "mmwave": ["mmwave"],
-        "gps_mmwave": strong,
-        "strong_only": strong,
-        "weak_only": weak,
-        "all": list(modalities),
-    }
-
-
 def _resolve_validation_prior(model, cfg: dict, modalities: list[str], device: torch.device) -> torch.Tensor:
     if hasattr(model, "router") and torch.is_tensor(getattr(model.router, "prior", None)):
         return model.router.prior.detach().to(device=device, dtype=torch.float32)
@@ -132,26 +119,22 @@ def _resolve_modality_subset(
             keep = [modality for modality in modalities if modality not in set(drop)]
             if keep:
                 return sampler.explicit(name, keep, device=device)
-    conditional = resolve_conditional_utility_subset(name, modalities)
-    if conditional is not None:
-        return sampler.explicit(name, conditional.modalities, device=device)
-    if name == "all":
-        return sampler.sample("all", device=device)
     if name == "top_prior":
         return sampler.sample("top_prior", device=device)
     if name == "single_best_prior":
         return sampler.sample("single_best_prior", device=device)
-    if name in {"low_prior_only", "low_prior", "weak_only"}:
+    if name == "weak_only":
+        generic = resolve_named_modality_subset(name, modalities)
+        if generic is not None:
+            return sampler.explicit(name, generic.modalities, device=device)
+        low_k = eval_cfg.get("low_prior_k")
+        return sampler.low_prior(name=name, k=None if low_k is None else int(low_k), device=device)
+    if name in {"low_prior_only", "low_prior"}:
         low_k = eval_cfg.get("low_prior_k")
         return sampler.low_prior(name=name, k=None if low_k is None else int(low_k), device=device)
     if name in {"random", "random_with_top_prior", "drop_one"}:
         return sampler.sample(name, device=device)
-    legacy = _modality_subset_definitions(modalities).get(name)
-    if legacy:
-        return sampler.explicit(name, legacy, device=device)
-    if name in modalities:
-        return sampler.explicit(name, [name], device=device)
-    parts = [part for part in name.split("_") if part]
-    if parts and all(part in modalities for part in parts):
-        return sampler.explicit(name, parts, device=device)
+    generic = resolve_named_modality_subset(name, modalities)
+    if generic is not None:
+        return sampler.explicit(name, generic.modalities, device=device)
     return None

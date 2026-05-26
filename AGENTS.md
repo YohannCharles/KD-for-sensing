@@ -41,8 +41,8 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 ```bash
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
-conda run -n kd_mm_beam pytest tests/test_phase_1_5_utility_validation.py -q
-conda run -n kd_mm_beam pytest tests/test_complementarity_analysis.py tests/test_gradio_complementarity_explorer.py -q
+conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
+conda run -n kd_mm_beam pytest tests/test_raymobtime_s008_selection.py tests/test_modality_visual_diagnostics.py -q
 ```
 
 最终回归命令：

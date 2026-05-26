@@ -9,37 +9,43 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.evaluation.subset_specs import (  # noqa: E402
-    CONDITIONAL_UTILITY_SUBSETS,
-    CONDITIONAL_UTILITY_SUBSET_NAMES,
-    resolve_conditional_utility_subset,
+    generic_modality_subset_specs,
+    resolve_named_modality_subset,
+    subset_mask,
     subset_metadata,
 )
-from kd_sensing.modalities import MODALITY_ORDER  # noqa: E402
 
 
-def test_conditional_utility_subsets_are_named_and_ordered():
-    assert CONDITIONAL_UTILITY_SUBSET_NAMES == (
+MODEL_MODALITIES = ("image", "gps", "lidar", "mmwave")
+
+
+def test_generic_modality_subsets_are_named_and_ordered():
+    specs = generic_modality_subset_specs(MODEL_MODALITIES)
+
+    assert list(specs) == [
         "all",
         "strong_only",
-        "strong_plus_image",
-        "strong_plus_radar",
-        "strong_plus_lidar",
-        "single_best_mmwave",
+        "gps_mmwave",
         "weak_only",
-    )
-    assert list(CONDITIONAL_UTILITY_SUBSETS) == list(CONDITIONAL_UTILITY_SUBSET_NAMES)
-    for modalities in CONDITIONAL_UTILITY_SUBSETS.values():
-        indices = [MODALITY_ORDER.index(name) for name in modalities]
-        assert indices == sorted(indices)
+        "image",
+        "gps",
+        "lidar",
+        "mmwave",
+    ]
+    assert specs["all"].modalities == MODEL_MODALITIES
+    assert specs["strong_only"].modalities == ("gps", "mmwave")
+    assert specs["weak_only"].modalities == ("image", "lidar")
 
 
-def test_conditional_subset_metadata_includes_masks():
-    spec = resolve_conditional_utility_subset("strong_plus_lidar", MODALITY_ORDER)
+def test_generic_subset_metadata_includes_masks_and_combinations():
+    spec = resolve_named_modality_subset("image_lidar", MODEL_MODALITIES)
     assert spec is not None
-    assert spec.modalities == ("gps", "lidar", "mmwave")
-    assert spec.mask_for(MODALITY_ORDER) == (False, False, True, True, True)
+    assert spec.modalities == ("image", "lidar")
+    assert spec.mask_for(MODEL_MODALITIES) == (True, False, True, False)
+    assert subset_mask("weak_only", MODEL_MODALITIES) == (True, False, True, False)
 
-    metadata = subset_metadata(MODALITY_ORDER)
-    assert len(metadata) == 7
+    metadata = subset_metadata(MODEL_MODALITIES)
+    assert len(metadata) == 8
     assert metadata[0]["name"] == "all"
-    assert metadata[0]["mask"] == [True, True, True, True, True]
+    assert metadata[0]["mask"] == [True, True, True, True]
+    assert resolve_named_modality_subset("strong_plus_lidar", MODEL_MODALITIES) is None

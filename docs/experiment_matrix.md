@@ -39,7 +39,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/all_modalities_
 
 单模态入口为 `configs/<image|radar|gps|lidar|mmwave>/snapshot_next_frame_no_kd.yaml`；fusion 入口为 `configs/fusion/<canonical_slug>_snapshot_next_frame_no_kd.yaml`。
 
-## G2D 多模态失衡 Baseline
+## G2D 多模态蒸馏
 
 G2D 使用 image、radar、GPS、LiDAR、mmWave 五个单模态 teacher 指导五模态 fusion student，严格使用 future-only 标签：
 
@@ -62,12 +62,6 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps
 
 ```text
 outputs/<scene>/<run_name>/diagnostics/g2d_epoch_<epoch>.json
-```
-
-汇总多模态失衡结果：
-
-```bash
-conda run -n kd_mm_beam python tools/analysis/collect_multimodal_imbalance_results.py
 ```
 
 ## CRAF 和 Teacher-Prior CRAF
@@ -140,7 +134,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml
 ```
 
-`strong_only_<objective>_no_kd.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_no_kd.yaml` 解析为 `[image, radar, lidar]`，用于多任务模态失衡对照。
+`strong_only_<objective>_no_kd.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_no_kd.yaml` 解析为 `[image, radar, lidar]`，可用于普通模态子集调试。
 
 ## CSI Hardening
 

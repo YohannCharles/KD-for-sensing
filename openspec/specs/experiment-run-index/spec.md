@@ -1,7 +1,7 @@
 # experiment-run-index Specification
 
 ## Purpose
-TBD - created by archiving change add-experiment-run-index. Update Purpose after archive.
+定义只读实验运行索引能力，用于汇总本地 outputs/logs 中的训练与评估 run、状态、关键 artifact、资源快照和机器可读报告，同时保证索引过程不移动、删除或重写任何本地产物。
 ## Requirements
 ### Requirement: 本地实验运行索引
 系统 MUST 提供只读实验运行索引能力，用于扫描本地 `outputs/`、`logs/` 和可选当前进程资源状态，并生成结构化 run summary。索引过程 MUST 不修改、删除、移动或压缩任何训练、评估、日志、checkpoint 或 cache 产物。
@@ -78,4 +78,3 @@ TBD - created by archiving change add-experiment-run-index. Update Purpose after
 - **WHEN** 用户指定 `--output outputs/analysis/run_index.json`
 - **THEN** 系统 MUST 将 JSON 或 CSV 汇总写入该路径
 - **AND** 命令行 MUST 输出写出路径或简短摘要
-

@@ -7,25 +7,14 @@
 - 根目录只保留 `README.md` 和 `AGENTS.md`；历史方案草稿不再作为入口文档维护。
 - 需求、架构边界和行为契约进入 `openspec/specs/`。
 - 实验运行顺序、配置矩阵和常用命令进入 `docs/experiment_matrix.md`。
-- Viewer、manifest、互补样本 explorer 和性能排查进入 `tools/visualization/README.md`。
+- Viewer、manifest 和性能排查进入 `tools/visualization/README.md`。
 - 本文件只保留研究路线判断、负结果解释和跨文档的阅读导航。
 
-## Scene32 弱模态结论
+## 已退役研究线
 
-Phase 1 Conditional Utility Audit 的核心结论是：在当前 clean Scene32 设定下，`gps+mmwave` 是强主导路径，`image/radar/lidar` 的全局边际效用非常小，`all` 甚至略低于 `strong_only`。已有结果更像“弱模态负迁移或本身低效用”，而不是“弱模态明明很有价值但被强模态埋没”。
+模态失衡研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断或 G2D 失衡结果汇总入口；当前主线回到普通训练、统一评估、通用模态子集调试、Raymobtime s008 current snapshot workflow、G2D 训练和 CSI hardening。
 
-后续决策先做 Phase 1.5，而不是直接堆新 router：
-
-- 基于逐样本 audit 表做 paired/cluster bootstrap 置信区间，重点看 `strong_plus_<weak> - strong_only` 和 `all - strong_only` 的 Top1、Top3、DBA、CE。
-- 专门训练固定子集 baseline：`strong_only`、`strong_plus_image`、`strong_plus_radar`、`strong_plus_lidar`、`all`，至少保持同预算、同 checkpoint 选择规则和多 seed。
-- 如果 dedicated subset 仍无稳定收益，把 Scene32 定位为 RF/GPS-dominant clean setting 与 safe fusion/no-harm 任务；如果某些 bucket 或 horizon 有稳定正收益，再进入 conditional utility router。
-
-可执行契约与入口见：
-
-- `openspec/specs/conditional-utility-audit/spec.md`
-- `openspec/specs/phase-1-5-utility-validation/spec.md`
-- `openspec/specs/weak-modality-complementarity-analysis/spec.md`
-- `tools/visualization/README.md`
+历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 
 ## CRAF、MARF 和 G2D 主线
 
@@ -33,7 +22,7 @@ CRAF 早期实验显示：warmup 太短、基于训练 loss 的反事实 target 
 
 MARF 的定位不是写死强弱模态，而是用 teacher prior、horizon-wise router、anchor fusion、residual adapter 和 subset-aware training 支持不同模态组合、缺失和扰动。评估时不要只看 clean all-modal Top1，还要看 strong-path preservation、subset eval、模态缺失和负迁移。
 
-G2D 是通用多模态失衡 baseline。当前统一标签约定为：
+G2D 是通用多模态蒸馏方法。当前统一标签约定为：
 
 ```text
 labels: [B, 3] = [t+1, t+2, t+3]
@@ -83,9 +72,9 @@ CSI hardening 的目标不是降上限，而是制造 high-ceiling but slow-to-l
 
 Raymobtime s008 在本仓库中定义为 current snapshot beam selection：当前 `coord/image/lidar/ray` 预测当前 beam class，同时预测 LOS/NLOS 与 link quality。运行说明见 `docs/Raymobtime_s008_selection.md`。
 
-DeepVerse DT31 的价值在于把监督来源和模型输入解耦：用 ray-tracing channel 生成 beam label，用 LoS/status 生成 blockage label，用 mobility ground truth 生成 trajectory label，但模型默认只输入 camera、LiDAR、radar、weak wireless history 和 noisy position。先完成 cache/manifest/label，再做训练、task-aware gate 和模态失衡实验。契约见 `openspec/specs/deepverse-dt31-data-generation/spec.md`。
+DeepVerse DT31 的价值在于把监督来源和模型输入解耦：用 ray-tracing channel 生成 beam label，用 LoS/status 生成 blockage label，用 mobility ground truth 生成 trajectory label，但模型默认只输入 camera、LiDAR、radar、weak wireless history 和 noisy position。先完成 cache/manifest/label，再做训练和 task-aware gate 实验。契约见 `openspec/specs/deepverse-dt31-data-generation/spec.md`。
 
-Viewer 已从静态 PNG 方向收束为 Gradio manifest workflow。重点能力包括 raw/processed modalities、prediction/quality/gate 合并、future beam distribution、Complementarity Explorer 和 strong-vs-weak pair mode。入口和字段约定见 `tools/visualization/README.md`。
+Viewer 已从静态 PNG 方向收束为 Gradio manifest workflow。重点能力包括 raw/processed modalities、prediction/quality/gate 合并和 future beam distribution。入口和字段约定见 `tools/visualization/README.md`。
 
 ## 原论文复现边界
 
@@ -100,8 +89,7 @@ Viewer 已从静态 PNG 方向收束为 Gradio manifest workflow。重点能力�
 
 以下根目录草稿已合并到本文、`docs/` 或 OpenSpec，不再单独保留：
 
-- `Phase1.5.md`、`Conditional Utility Audit.md`、`弱模态互补样本分析.md`
-- `模态失衡改进方案1.md` 到 `模态失衡改进方案4.md`、`G2D对比实验.md`
+- 已退役的模态失衡研究草稿和 `G2D对比实验.md`
 - `CSI编码器.md`、`CSI模态加噪方案.md`、`CSI模态处理对比实验.md`
 - `gps模态处理方案.md`、`LiDAR模态处理方案.md`、`LiDAR模态读取方案.md`、`mmWave模态处理方案.md`
 - `Raymobtime数据集.md`、`deepverse6g.md`

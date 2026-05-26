@@ -7,10 +7,6 @@ from typing import Any
 _LAZY_EXPORTS = {
     "export_viewer_manifest": (".viewer_manifest", "export_viewer_manifest"),
     "export_viewer_model_predictions": (".viewer_predictions", "export_viewer_model_predictions"),
-    "build_case_table": (".complementarity", "build_case_table"),
-    "compute_complementarity_bucket_summary": (".complementarity", "compute_bucket_summary"),
-    "compute_complementarity_summary": (".complementarity", "compute_summary"),
-    "load_subset_predictions": (".complementarity", "load_subset_predictions"),
 }
 
 __all__ = list(_LAZY_EXPORTS)

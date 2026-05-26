@@ -82,11 +82,4 @@ conda run -n kd_mm_beam kd-sensing-evaluate \
 
 sensing-only 单任务主矩阵为 12 个 run：`coord`、`image`、`lidar`、`coord+image+lidar` × `current_beam_selection`、`current_los_classification`、`current_link_quality`。包含 `ray` 的 run 作为 sensing+ray 补充实验单独标注。
 
-模态失衡分析入口：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-raymobtime-analysis \
-  --exp-dir outputs/raymobtime_s008/experiments/s008_multitask_selection
-```
-
-输出 CSV/JSON 摘要包含单模态任务性能、task-aware gate 均值、test-time modality drop delta、LOS bucket 指标和贡献诊断字段。
+本仓库不再提供专用模态失衡分析入口。查看 Raymobtime s008 结果时使用常规 `metrics.json`、`test_report.json`、训练日志和统一评估入口；如需额外分析，应在新的 OpenSpec change 中定义输入、输出和验收标准。

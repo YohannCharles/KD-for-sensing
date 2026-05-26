@@ -195,7 +195,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 扫描 MUST 指向对应的窄 transform 模块作为迁移路径
 
 ### Requirement: 安装入口与 pyproject 声明一致
-项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的兼容 console script MUST 是薄 alias，不得复制长期维护的 parser 或主实现。
+项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的兼容 console script MUST 是薄 alias，不得复制长期维护的 parser 或主实现。项目 MUST 不再要求安装 `kd-sensing-raymobtime-analysis`。
 
 #### Scenario: 可视化 manifest 导出入口可用
 - **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help`
@@ -210,7 +210,8 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 
 #### Scenario: 安装元数据刷新后入口齐全
 - **WHEN** 开发者在 `kd_mm_beam` 中执行 `python -m pip install -e .`
-- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-raymobtime-analysis`、`kd-sensing-visualize-modalities` 和 `kd-sensing-export-viewer-manifest`
+- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-visualize-modalities` 和 `kd-sensing-export-viewer-manifest`
+- **AND** 安装生成的 entry points MUST 不要求包含 `kd-sensing-raymobtime-analysis`
 
 ### Requirement: 内置权重与本地产物边界明确
 项目 MUST 明确区分内置复现权重和本地生成 checkpoint。已跟踪的 `All_models` 权重如果继续保留，MUST 被文档标记为内置复现输入；新训练、评估或诊断产生的 checkpoint 和缓存 MUST 继续被忽略。
@@ -226,7 +227,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 项目文档 MUST 不要求提交这些本地产物
 
 ### Requirement: 项目健康检查可分层运行
-项目 MUST 提供或记录一组快速健康检查，用于在不启动真实训练的情况下验证导入边界、CLI 入口、Phase 1.5 决策语义和核心诊断逻辑。所有项目相关 Python 检查 MUST 使用 `kd_mm_beam` 环境。
+项目 MUST 提供或记录一组快速健康检查，用于在不启动真实训练的情况下验证导入边界、CLI 入口和当前保留的核心诊断逻辑。所有项目相关 Python 检查 MUST 使用 `kd_mm_beam` 环境。健康检查 MUST 不再要求 Phase 1.5 或互补分析测试存在。
 
 #### Scenario: 轻量导入 smoke
 - **WHEN** 开发者运行项目健康检查中的轻量导入 smoke
@@ -235,7 +236,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 
 #### Scenario: 快速回归命令覆盖当前红点
 - **WHEN** 开发者运行项目健康检查中的快速回归命令
-- **THEN** 检查 MUST 覆盖 Phase 1.5 pending gate、架构导入边界、console script help 和互补分析核心测试
+- **THEN** 检查 MUST 覆盖架构导入边界、console script help 和当前仍保留的核心诊断逻辑
 - **AND** 命令 MUST 能在全量 pytest 之前快速暴露项目结构回归
 
 #### Scenario: 全量测试仍作为最终验收
@@ -525,17 +526,12 @@ README、docs 和 OpenSpec MUST 按职责维护当前行为，不得长期保留
 - **AND** 报告 MUST 指向需要补齐的 capability purpose，而不是要求改写无关正文
 
 ### Requirement: 源码热点模块必须按职责收敛
-项目 MUST 将继续增长的大文件拆分到职责明确的窄模块中。拆分后，公开入口 MAY 保留薄 facade 或兼容导出，但主要实现 MUST 位于按职责命名的模块中，不得重新形成新的私有聚合层。
+项目 MUST 将继续增长的大文件拆分到职责明确的窄模块中。拆分后，公开入口 MAY 保留薄 facade 或兼容导出，但主要实现 MUST 位于按职责命名的模块中，不得重新形成新的私有聚合层。已退役的互补性分析模块 MUST 不再作为源码热点分层要求。
 
 #### Scenario: 修改 viewer 过滤逻辑不触碰图表渲染
 - **WHEN** 开发者调整 Gradio viewer 的 scene、split、show mode 或低质量样本过滤逻辑
 - **THEN** 主要变更 MUST 位于 viewer 过滤或 manifest IO 相关模块
 - **AND** 不需要修改 Plotly 图表构造、prediction summary 表格或 Gradio 布局编排实现
-
-#### Scenario: 修改互补性 schema adapter 不触碰 case summary
-- **WHEN** 开发者新增 Conditional Utility Audit 输入字段别名或 subset 名称映射
-- **THEN** 主要变更 MUST 位于互补性 schema adapter 相关模块
-- **AND** 不需要修改 case mining、bucket summary 或输出写出实现
 
 #### Scenario: 修改 CSI hardening 不触碰 tokenizer
 - **WHEN** 开发者调整 CSI hardening、pilot estimation 或噪声诊断逻辑
@@ -619,4 +615,3 @@ Raymobtime s008 预处理实现 MUST 将路径解析、文件审计、index 构�
 - **WHEN** 开发者查询 dataset descriptor 或 runtime schema helper
 - **THEN** 查询 MUST 不打开 HDF5、CSV、image、LiDAR 或 checkpoint 文件
 - **AND** 查询 MUST 不导入训练循环
-

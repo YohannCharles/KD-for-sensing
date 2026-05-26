@@ -51,14 +51,6 @@ from tools.visualization.viewer_utils import (  # noqa: E402
     safe_get,
     single_modality_confidence_dataframe,
 )
-from tools.visualization.complementarity_explorer import (  # noqa: E402
-    case_detail_payload,
-    export_filtered_cases,
-    filter_complementarity_cases,
-    find_sample_index_for_case,
-    load_complementarity_explorer,
-    selected_event_row,
-)
 
 
 DEFAULT_MANIFEST = Path("data/visualization/samples.json")
@@ -134,10 +126,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile-render",
         action="store_true",
         help="Log Gradio viewer callback timing and cache statistics for frame-navigation profiling.",
-    )
-    parser.add_argument(
-        "--complementarity-dir",
-        help="Optional directory containing complementarity_cases.csv.gz and complementarity_summary.json.",
     )
     parser.add_argument("--project-root", default=str(ROOT), help="Project root used to resolve relative manifest paths.")
     parser.add_argument("--check-only", action="store_true", help=argparse.SUPPRESS)
@@ -491,7 +479,6 @@ def build_demo(
     status: str | None = None,
     *,
     profile_render: bool = False,
-    complementarity_dir: str | Path | None = None,
 ):
     try:
         import gradio as gr
@@ -511,21 +498,6 @@ def build_demo(
     slider_max = _slider_max(len(initial_filtered))
     horizon_choices = _horizon_choices_for_samples(samples)
     render_cache = _SampleRenderCache()
-    complementarity = load_complementarity_explorer(complementarity_dir)
-    complementarity_cases = complementarity["cases"]
-    complementarity_choices = complementarity["choices"]
-    complementarity_defaults = complementarity_choices["defaults"]
-    initial_complementarity = filter_complementarity_cases(
-        complementarity_cases,
-        scene=complementarity_defaults["scene"],
-        horizon=complementarity_defaults["horizon"],
-        strong_modality=complementarity_defaults["strong_modality"],
-        weak_modality=complementarity_defaults["weak_modality"],
-        case_types=complementarity_defaults["case_types"],
-        bucket=complementarity_defaults["bucket"],
-        sort_by=complementarity_defaults["sort"],
-        max_rows=200,
-    )
 
     with gr.Blocks(title="Multimodal Fusion Temporal Sample Viewer") as demo:
         gr.Markdown("# Multimodal Fusion Temporal Sample Viewer")
@@ -628,136 +600,6 @@ def build_demo(
             sample_text,
         ]
         all_outputs = canonical_outputs
-
-        with gr.Tabs():
-            with gr.Tab("Complementarity Explorer"):
-                gr.Markdown("## Complementarity Explorer / 弱模态互补样本分析")
-                gr.Markdown(
-                    "Potential complementarity: strong-only wrong and weak modality correct. "
-                    "Rescue: fusion correct on that subset. Unused complementary: fusion still wrong. "
-                    "Negative transfer: strong-only correct but fusion wrong."
-                )
-                gr.Markdown(complementarity["status"])
-                with gr.Row():
-                    comp_scene_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["scenes"],
-                        value=complementarity_defaults["scene"],
-                        label="Scene",
-                    )
-                    comp_horizon_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["horizons"],
-                        value=complementarity_defaults["horizon"],
-                        label="Horizon",
-                    )
-                    comp_strong_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["strong_modalities"],
-                        value=complementarity_defaults["strong_modality"],
-                        label="Strong Modality",
-                    )
-                    comp_weak_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["weak_modalities"],
-                        value=complementarity_defaults["weak_modality"],
-                        label="Weak Modality",
-                    )
-                with gr.Row():
-                    comp_case_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["case_types"],
-                        value=complementarity_defaults["case_types"],
-                        multiselect=True,
-                        label="Case / Tag",
-                    )
-                    comp_bucket_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["buckets"],
-                        value=complementarity_defaults["bucket"],
-                        label="Bucket",
-                    )
-                    comp_min_gain = gr.Number(value=None, label="Min Gain")
-                    comp_sort_dropdown = gr.Dropdown(
-                        choices=complementarity_choices["sort"],
-                        value=complementarity_defaults["sort"],
-                        label="Sort",
-                    )
-                    comp_max_rows = gr.Slider(
-                        minimum=10,
-                        maximum=1000,
-                        step=10,
-                        value=200,
-                        label="Max Rows",
-                    )
-                    comp_apply_btn = gr.Button("Apply filters")
-                with gr.Row():
-                    comp_stats_json = gr.JSON(value=initial_complementarity["stats"], label="Filtered Statistics")
-                    comp_case_plot = gr.Plot(value=initial_complementarity["case_type_figure"], label="Case Type Counts")
-                    comp_bucket_plot = gr.Plot(value=initial_complementarity["bucket_figure"], label="Bucket Counts")
-                comp_table = gr.Dataframe(
-                    value=initial_complementarity["table"],
-                    label="Complementarity Cases",
-                    interactive=False,
-                )
-                comp_filtered_state = gr.State(initial_complementarity["records"])
-                with gr.Row():
-                    comp_export_btn = gr.Button("Export filtered CSV")
-                    comp_export_file = gr.File(label="Filtered CSV")
-                comp_detail_json = gr.JSON(label="Selected Case Detail")
-                with gr.Row():
-                    with gr.Column(scale=2):
-                        gr.Markdown("### Raw Modalities")
-                        comp_raw_image = gr.Image(label="Raw Image", type="pil")
-                        comp_raw_lidar = gr.Image(label="Raw LiDAR Points", type="pil")
-                        comp_raw_radar = gr.Image(label="Raw / Precomputed Radar", type="pil")
-                        comp_raw_gps = gr.Plot(label="Raw GPS")
-                        comp_raw_mmwave = gr.Plot(label="Raw mmWave")
-                    with gr.Column(scale=2):
-                        gr.Markdown("### Processed Modalities")
-                        comp_proc_image = gr.Image(label="Processed Image", type="pil")
-                        comp_proc_lidar = gr.Image(label="Processed LiDAR", type="pil")
-                        comp_proc_radar = gr.Image(label="Processed Radar", type="pil")
-                        comp_proc_gps = gr.Plot(label="Processed GPS")
-                        comp_proc_mmwave = gr.Plot(label="Processed mmWave")
-                    with gr.Column(scale=2):
-                        gr.Markdown("### Diagnostics")
-                        comp_info_json = gr.JSON(label="Sample / Label / Prediction")
-                        comp_beam_confidence_plot = gr.Plot(label="Future Beam Labels / Confidence Curves")
-                        comp_confidence_plot = gr.Plot(label="Confidence (t+1)")
-                        comp_quality_plot = gr.Plot(label="Quality")
-                        comp_gate_plot = gr.Plot(label="Gate")
-                        comp_future_distribution_plot = gr.Plot(label="Future Beam Distribution")
-                        comp_future_distribution_summary_df = gr.Dataframe(
-                            label="Future Beam Distribution Summary",
-                            interactive=False,
-                        )
-                        comp_future_distribution_detail_json = gr.JSON(label="Selected Horizon Detail")
-                        comp_confidence_df = gr.Dataframe(label="Confidence Table (t+1)", interactive=False)
-                        comp_quality_df = gr.Dataframe(label="Quality Table", interactive=False)
-                        comp_gate_df = gr.Dataframe(label="Gate Table", interactive=False)
-                        comp_beam_index_trend_plot = gr.Plot(label="Future Beam Index Trend (+/-30)")
-                        comp_sample_text = gr.Markdown("Select a complementarity case")
-
-                complementarity_sample_outputs = [
-                    comp_raw_image,
-                    comp_raw_lidar,
-                    comp_raw_radar,
-                    comp_raw_gps,
-                    comp_raw_mmwave,
-                    comp_proc_image,
-                    comp_proc_lidar,
-                    comp_proc_radar,
-                    comp_proc_gps,
-                    comp_proc_mmwave,
-                    comp_info_json,
-                    comp_beam_confidence_plot,
-                    comp_confidence_plot,
-                    comp_quality_plot,
-                    comp_gate_plot,
-                    comp_future_distribution_plot,
-                    comp_future_distribution_summary_df,
-                    comp_future_distribution_detail_json,
-                    comp_confidence_df,
-                    comp_quality_df,
-                    comp_gate_df,
-                    comp_beam_index_trend_plot,
-                    comp_sample_text,
-                ]
 
         def render_all(index, scene, split, show_mode, horizon, view_type, chart_type, show_fusion):
             stats = RenderStats()
@@ -951,68 +793,6 @@ def build_demo(
             )
             return result
 
-        def apply_complementarity_filters(
-            comp_scene,
-            comp_horizon,
-            comp_strong,
-            comp_weak,
-            comp_cases,
-            comp_bucket,
-            comp_gain,
-            comp_sort,
-            comp_limit,
-        ):
-            result = filter_complementarity_cases(
-                complementarity_cases,
-                scene=comp_scene,
-                horizon=comp_horizon,
-                strong_modality=comp_strong,
-                weak_modality=comp_weak,
-                case_types=comp_cases,
-                bucket=comp_bucket,
-                min_gain=comp_gain,
-                sort_by=comp_sort,
-                max_rows=comp_limit,
-            )
-            return (
-                result["stats"],
-                result["case_type_figure"],
-                result["bucket_figure"],
-                result["table"],
-                result["records"],
-            )
-
-        def export_complementarity_filters(records):
-            root = complementarity.get("root")
-            output_dir = Path(root) / "exports" if root else None
-            return export_filtered_cases(records, output_dir=output_dir)
-
-        def select_complementarity_case(current_table, evt=None):
-            row = selected_event_row(evt, current_table)
-            if row is None:
-                return (case_detail_payload(None), *_empty_outputs("No complementarity case selected"))
-            sample_position = find_sample_index_for_case(samples, row)
-            if sample_position is None:
-                return (case_detail_payload(row, None), *_empty_outputs("Manifest sample not found"))
-            sample = samples[sample_position]
-            outputs = render_sample(
-                samples,
-                sample_position,
-                "all",
-                "all",
-                "all",
-                row.get("horizon_name", "t+1"),
-                "probability",
-                "heatmap",
-                True,
-                render_cache=render_cache,
-                sample_index=None,
-            )
-            return (case_detail_payload(row, sample), *outputs)
-        select_data_cls = getattr(gr, "SelectData", None)
-        if select_data_cls is not None:
-            select_complementarity_case.__annotations__["evt"] = select_data_cls
-
         future_inputs = [
             future_horizon_dropdown,
             distribution_view_dropdown,
@@ -1033,40 +813,6 @@ def build_demo(
         prev_btn.click(go_prev, inputs=nav_inputs, outputs=[sample_slider, *all_outputs])
         next_btn.click(go_next, inputs=nav_inputs, outputs=[sample_slider, *all_outputs])
         demo.load(render_all, inputs=render_inputs, outputs=all_outputs)
-
-        comp_filter_inputs = [
-            comp_scene_dropdown,
-            comp_horizon_dropdown,
-            comp_strong_dropdown,
-            comp_weak_dropdown,
-            comp_case_dropdown,
-            comp_bucket_dropdown,
-            comp_min_gain,
-            comp_sort_dropdown,
-            comp_max_rows,
-        ]
-        comp_apply_btn.click(
-            apply_complementarity_filters,
-            inputs=comp_filter_inputs,
-            outputs=[
-                comp_stats_json,
-                comp_case_plot,
-                comp_bucket_plot,
-                comp_table,
-                comp_filtered_state,
-            ],
-        )
-        comp_export_btn.click(
-            export_complementarity_filters,
-            inputs=comp_filtered_state,
-            outputs=comp_export_file,
-        )
-        if hasattr(comp_table, "select"):
-            comp_table.select(
-                select_complementarity_case,
-                inputs=comp_table,
-                outputs=[comp_detail_json, *complementarity_sample_outputs],
-            )
 
         timer = _make_timer(gr)
         if timer is not None:
@@ -1150,13 +896,11 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         samples,
         status=status,
         profile_render=bool(args.profile_render),
-        complementarity_dir=args.complementarity_dir,
     )
     result = {
         "status": "complete",
         "manifest": str(manifest_path),
         "sample_count": len(samples),
-        "complementarity_dir": args.complementarity_dir,
         "host": args.host,
         "port": int(args.port),
         "share": bool(args.share),
