@@ -32,6 +32,8 @@ from kd_sensing.preprocessing.multimodal_nf_common import (  # noqa: E402
     unflatten_beam_class,
 )
 from kd_sensing.preprocessing.multimodal_nf_derived_cache import (  # noqa: E402
+    build_expected_metadata,
+    cache_status,
     prewarm_multimodal_nf_derived_cache,
     sidecar_path,
 )
@@ -451,7 +453,130 @@ def test_multimodal_nf_strong_validation_detects_fingerprint_mismatch(tmp_path: 
         )
 
 
-def test_multimodal_nf_old_sidecar_read_only_errors_and_auto_rebuilds(tmp_path: Path):
+def test_multimodal_nf_old_sidecar_read_only_errors_and_auto_upgrades_metadata_only(tmp_path: Path):
+    channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
+    prewarm = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+    source = prewarm["modalities"]["image"]["sources"][0]
+    cache_path = Path(source["cache_path"])
+    metadata_path = sidecar_path(source["cache_path"])
+    original_bytes = cache_path.read_bytes()
+    original_mtime = cache_path.stat().st_mtime_ns
+    _downgrade_sidecar_to_v1(metadata_path)
+
+    common = {
+        "data_root": str(tmp_path),
+        "channel_path": str(channel_path),
+        "codebook_path": str(codebook_path),
+        "split_mode": "frame_debug",
+        "split": "train",
+        "split_ratios": (1.0, 0.0, 0.0),
+        "enabled_modalities": ["image"],
+        "seq_len": 3,
+        "num_pred": 2,
+    }
+    with pytest.raises(FileNotFoundError, match="sidecar migration is pending|preprocess.py"):
+        MultimodalNFDataset(**common, derived_cache={"image": {"policy": "read_only"}})
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["version"] == "multimodal_nf_derived_v1"
+
+    upgraded = MultimodalNFDataset(**common, derived_cache={"image": {"policy": "auto"}})
+    upgraded_source = next(iter(upgraded.derived_cache_metadata["image"]["sources"].values()))
+    assert upgraded_source["metadata_upgraded"] is True
+    assert upgraded_source["cache_generated"] is False
+    assert upgraded_source["cache_rebuilt"] is False
+    assert upgraded_source["migration_pending"] is True
+    assert cache_path.read_bytes() == original_bytes
+    assert cache_path.stat().st_mtime_ns == original_mtime
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["cache_schema_version"] == 2
+
+
+def test_multimodal_nf_old_sidecar_status_and_prewarm_upgrade_summary(tmp_path: Path):
+    channel_path, _ = _write_fixture(tmp_path, sequence=True)
+    prewarm = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+    source = prewarm["modalities"]["image"]["sources"][0]
+    cache_path = Path(source["cache_path"])
+    metadata_path = sidecar_path(cache_path)
+    _downgrade_sidecar_to_v1(metadata_path)
+    expected = build_expected_metadata(
+        source_path=channel_path,
+        modality="image",
+        profile="rgb_imagenet",
+        split="train",
+        seq_len=3,
+        num_pred=2,
+    )
+
+    status = cache_status(cache_path=cache_path, expected=expected, validation_mode="lightweight")
+    assert status["status"] == "migration_pending"
+    assert status["migration_pending"] is True
+    assert status["sidecar_schema_version"] == 1
+    assert "cache_schema_version" in status["pending_fields"]
+
+    upgraded = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=False,
+        validation_mode="lightweight",
+    )
+    image_summary = upgraded["modalities"]["image"]
+    assert image_summary["metadata_upgraded"] == 1
+    assert image_summary["generated"] == 0
+    assert image_summary["rebuilt"] == 0
+    assert image_summary["failed"] == 0
+    assert image_summary["valid"] == 1
+
+
+def test_multimodal_nf_old_sidecar_strong_validation_rejects_fingerprint_mismatch(tmp_path: Path):
+    channel_path, _ = _write_fixture(tmp_path, sequence=True)
+    prewarm = prewarm_multimodal_nf_derived_cache(
+        data_root=tmp_path,
+        channel_path=channel_path,
+        modalities=["image"],
+        split="train",
+        seq_len=3,
+        num_pred=2,
+        rebuild=True,
+    )
+    source = prewarm["modalities"]["image"]["sources"][0]
+    metadata_path = sidecar_path(source["cache_path"])
+    metadata = _downgrade_sidecar_to_v1(metadata_path)
+    metadata["source_fingerprint"] = "not-the-current-source"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    expected = build_expected_metadata(
+        source_path=channel_path,
+        modality="image",
+        profile="rgb_imagenet",
+        split="train",
+        seq_len=3,
+        num_pred=2,
+    )
+
+    status = cache_status(cache_path=source["cache_path"], expected=expected, validation_mode="strong")
+    assert status["status"] == "invalid"
+    assert status["validation"]["source_fingerprint_scanned"] is True
+    assert "source_fingerprint" in status["migration_mismatches"]
+
+
+def test_multimodal_nf_old_sidecar_shape_mismatch_rejects_metadata_upgrade(tmp_path: Path):
     channel_path, codebook_path = _write_fixture(tmp_path, sequence=True)
     prewarm = prewarm_multimodal_nf_derived_cache(
         data_root=tmp_path,
@@ -464,10 +589,8 @@ def test_multimodal_nf_old_sidecar_read_only_errors_and_auto_rebuilds(tmp_path: 
     )
     source = prewarm["modalities"]["image"]["sources"][0]
     metadata_path = sidecar_path(source["cache_path"])
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    for key in ("cache_schema_version", "source_key", "source_size_bytes", "source_mtime_ns", "storage_kind", "layout", "bytes"):
-        metadata.pop(key, None)
-    metadata["version"] = "multimodal_nf_derived_v1"
+    metadata = _downgrade_sidecar_to_v1(metadata_path)
+    metadata["shape"] = [999, 5, 6, 3]
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     common = {
@@ -481,13 +604,15 @@ def test_multimodal_nf_old_sidecar_read_only_errors_and_auto_rebuilds(tmp_path: 
         "seq_len": 3,
         "num_pred": 2,
     }
-    with pytest.raises(FileNotFoundError, match="lightweight_metadata|multimodal_nf_derived_v1"):
+    with pytest.raises(FileNotFoundError, match="metadata_mismatch|shape"):
         MultimodalNFDataset(**common, derived_cache={"image": {"policy": "read_only"}})
 
-    rebuilt = MultimodalNFDataset(**common, derived_cache={"image": {"policy": "auto"}})
-    rebuilt_source = next(iter(rebuilt.derived_cache_metadata["image"]["sources"].values()))
-    assert rebuilt_source["cache_generated"] is True
-    assert json.loads(metadata_path.read_text(encoding="utf-8"))["cache_schema_version"] == 2
+    auto_dataset = MultimodalNFDataset(**common, derived_cache={"image": {"policy": "auto"}})
+    auto_source = next(iter(auto_dataset.derived_cache_metadata["image"]["sources"].values()))
+    assert auto_source["metadata_upgraded"] is False
+    assert auto_source["cache_generated"] is True
+    assert auto_source["cache_rebuilt"] is True
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["shape"] == [8, 5, 6, 3]
 
 
 def test_multimodal_nf_derived_cache_policies_missing_mismatch_auto_and_rebuild(tmp_path: Path):
@@ -785,6 +910,26 @@ def _cfg(tmp_path: Path, channel_path: Path, *, task: str, modalities: list[str]
             },
         },
     }
+
+
+def _downgrade_sidecar_to_v1(metadata_path: Path) -> dict:
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for key in (
+        "cache_schema_version",
+        "source_key",
+        "source_size_bytes",
+        "source_mtime_ns",
+        "storage_kind",
+        "layout",
+        "bytes",
+        "recommended_access_pattern",
+        "metadata_upgraded_at",
+        "previous_cache_schema_version",
+    ):
+        metadata.pop(key, None)
+    metadata["version"] = "multimodal_nf_derived_v1"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    return metadata
 
 
 def _write_fixture(tmp_path: Path, *, bad_lidar: bool = False, sequence: bool = False) -> tuple[Path, Path]:

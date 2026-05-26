@@ -40,6 +40,7 @@ from kd_sensing.engine.runtime import (
     resolve_amp_settings,
     transfer_non_blocking,
 )
+from kd_sensing.preprocessing.multimodal_nf_derived_cache import summarize_cache_statuses
 
 GETITEM_COMPONENT_KEYS = ("image", "radar", "gps", "lidar", "csi", "mmwave", "auxiliary_targets")
 
@@ -180,6 +181,13 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "forward_seconds": _summary(forward_times),
         "backward_optimizer_seconds": _summary(backward_times),
         "step_seconds": _summary(step_times),
+        "stage_progress": {
+            "dataset_initialized": True,
+            "entered_loader_iteration": bool(batch_index > 0),
+            "entered_gpu_step": bool(batch_index > 0),
+            "dataset_init_seconds": dataset_init_elapsed,
+            "loader_iterations": int(batch_index),
+        },
         "wait_vs_gpu_step": wait_breakdown,
         "samples_per_second": (total_samples / total_step_time) if total_step_time > 0 else 0.0,
         "cuda_peak_memory_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None,
@@ -424,11 +432,16 @@ def _multimodal_nf_profile_summary(runtime_metadata: dict[str, Any]) -> dict[str
         nf_metadata = metadata.get("multimodal_nf", {})
         derived_cache = metadata.get("derived_cache") or nf_metadata.get("derived_cache", {})
         if derived_cache:
+            status_summary = summarize_cache_statuses(derived_cache)
             result["splits"][split] = {
                 "enabled_modalities": metadata.get("enabled_modalities", []),
                 "derived_cache": derived_cache,
+                "cache_status_summary": status_summary,
             }
     result["cache_validation_seconds"] = _multimodal_nf_validation_seconds(result)
+    result["cache_status_summary"] = summarize_cache_statuses(result.get("splits", {}))
+    result["cache_migration_seconds"] = _multimodal_nf_migration_seconds(result)
+    result["pre_gpu_step_cache_actions"] = _multimodal_nf_pre_gpu_step_cache_actions(result)
     return result
 
 
@@ -442,6 +455,32 @@ def _multimodal_nf_validation_seconds(summary: dict[str, Any]) -> dict[str, floa
                 cache_metadata.get("validation_duration_seconds", 0.0) or 0.0
             )
     return result
+
+
+def _multimodal_nf_migration_seconds(summary: dict[str, Any]) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for split_metadata in summary.get("splits", {}).values():
+        for modality, cache_metadata in split_metadata.get("derived_cache", {}).items():
+            if not isinstance(cache_metadata, dict):
+                continue
+            if not cache_metadata.get("metadata_upgraded") and not cache_metadata.get("migration_pending"):
+                continue
+            result[str(modality)] = result.get(str(modality), 0.0) + float(
+                cache_metadata.get("validation_duration_seconds", 0.0) or 0.0
+            )
+    return result
+
+
+def _multimodal_nf_pre_gpu_step_cache_actions(summary: dict[str, Any]) -> dict[str, Any]:
+    status_summary = summary.get("cache_status_summary", {}) if isinstance(summary, dict) else {}
+    return {
+        "metadata_upgrade_pending": int(status_summary.get("migration_pending", 0) or 0),
+        "metadata_upgraded": int(status_summary.get("metadata_upgraded", 0) or 0),
+        "cache_rebuild_detected": int(status_summary.get("rebuilt", 0) or 0),
+        "cache_generation_detected": int(status_summary.get("generated", 0) or 0),
+        "cache_invalid": int(status_summary.get("invalid", 0) or 0),
+        "cache_missing": int(status_summary.get("missing", 0) or 0),
+    }
 
 
 def _multimodal_nf_cache_io_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -529,6 +568,7 @@ def _io_risk_summary(
         for cache_metadata in split_metadata.get("derived_cache", {}).values()
         if isinstance(cache_metadata, dict)
     )
+    cache_status_summary = multimodal_nf.get("cache_status_summary", {}) if isinstance(multimodal_nf, dict) else {}
     cache_read_tail_risk = any(
         float((metadata.get("read_seconds") or {}).get("p95", 0.0) or 0.0)
         > 3.0 * max(float((metadata.get("read_seconds") or {}).get("mean", 0.0) or 0.0), 1e-9)
@@ -539,6 +579,9 @@ def _io_risk_summary(
         "cache_random_read_risk": bool(cache_random_read_risk),
         "loader_wait_dominates_step": bool(wait_spikes.get("wait_gt_gpu_step", False)),
         "cache_validation_scan_detected": bool(cache_validation_scan_detected),
+        "cache_migration_pending_detected": int(cache_status_summary.get("migration_pending", 0) or 0) > 0,
+        "cache_metadata_upgrade_detected": int(cache_status_summary.get("metadata_upgraded", 0) or 0) > 0,
+        "cache_rebuild_detected": int(cache_status_summary.get("rebuilt", 0) or 0) > 0,
         "cache_read_tail_risk": bool(cache_read_tail_risk),
         "mmap_page_fault_risk": bool(cache_random_read_risk and (cache_read_tail_risk or wait_spikes.get("wait_gt_gpu_step", False))),
     }

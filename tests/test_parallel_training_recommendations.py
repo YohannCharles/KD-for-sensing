@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -52,6 +53,54 @@ def test_multimodal_nf_image_lidar_recommendation_is_io_aware():
         "spread_heavy_image_lidar_fusion_runs_evenly_across_gpus"
     )
     assert result["recommendations"]["multimodal_nf_io"]["avoid_repeated_strong_validation"] is True
+
+
+def test_multimodal_nf_recommendation_distinguishes_migration_pending(tmp_path: Path):
+    cache_dir = tmp_path / "cache"
+    cache_path = cache_dir / "derived" / "image" / "rgb_imagenet" / "train" / "city_seq8_pred3.npy"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"placeholder")
+    cache_path.with_suffix(".npy.json").write_text(
+        json.dumps(
+            {
+                "version": "multimodal_nf_derived_v1",
+                "modality": "image",
+                "profile": "rgb_imagenet",
+                "split": "train",
+                "seq_len": 8,
+                "num_pred": 3,
+                "source_path": "fixture.h5",
+                "source_fingerprint": "abc",
+                "shape": [8, 5, 6, 3],
+                "dtype": "uint8",
+                "sample_count": 8,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(
+        ROOT / "configs/multimodal_nf/image_lidar.yaml",
+        [f"data.dataset.cache_dir={cache_dir}"],
+    )
+
+    result = recommend_parallel_training(
+        cfg,
+        config_path="configs/multimodal_nf/image_lidar.yaml",
+        parallel_runs=2,
+        cpu_count=16,
+        check_cache=True,
+    )
+
+    image_cache = result["cache"]["multimodal_nf"]["image"]
+    assert image_cache["status"] == "migration_pending"
+    assert image_cache["recommended_policy"] == "auto"
+    assert image_cache["migration_pending"] == 1
+    assert image_cache["maintenance_recommendation"] == "run_metadata_only_derived_cache_upgrade_before_training"
+    assert result["recommendations"]["multimodal_nf_io"]["migration_pending"] == 1
+    assert result["recommendations"]["multimodal_nf_io"]["metadata_upgrade_recommendation"] == (
+        "run_metadata_only_derived_cache_upgrade_before_training"
+    )
+    assert result["cache"]["prewarm_command"].endswith("multimodal_nf_derived_cache.yaml")
 
 
 def test_multimodal_nf_gps_only_recommendation_skips_heavy_cache_advice():

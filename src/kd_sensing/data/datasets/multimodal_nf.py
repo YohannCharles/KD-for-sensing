@@ -647,14 +647,21 @@ def _resolve_derived_cache_plan(
             )
             status = cache_status(cache_path=cache_path, expected=expected, validation_mode=validation_mode)
             generated = False
+            rebuilt = False
+            metadata_upgraded = False
             fallback = False
+            migration_pending = bool(status.get("migration_pending", False))
             if policy == "read_only" and not status["valid"]:
                 reason = status.get("reason", "invalid")
                 raise FileNotFoundError(
-                    f"Multimodal-NF {modality} derived cache policy=read_only expected {cache_path}, "
-                    f"for source {source_path}, but cache is unavailable or invalid under "
-                    f"validation_mode={validation_mode}: {reason}; mismatch={status.get('mismatches', {})}. "
-                    "Run multimodal_nf_derived_cache with rebuild=true, request strong validation, or use policy=auto."
+                    _derived_cache_read_only_error(
+                        modality=modality,
+                        cache_path=cache_path,
+                        source_path=source_path,
+                        validation_mode=validation_mode,
+                        reason=reason,
+                        status=status,
+                    )
                 )
             if policy in {"auto", "rebuild"} and (policy == "rebuild" or not status["valid"]):
                 try:
@@ -667,10 +674,14 @@ def _resolve_derived_cache_plan(
                         seq_len=seq_len,
                         num_pred=num_pred,
                         rebuild=policy == "rebuild",
-                        validation_mode="strong",
+                        validation_mode="strong" if policy == "rebuild" else validation_mode,
                     )
+                    previous_status = generated_result.get("previous_status", status)
                     status = generated_result["status"]
                     generated = bool(generated_result.get("generated"))
+                    rebuilt = bool(generated_result.get("cache_rebuilt") or generated_result.get("rebuilt"))
+                    metadata_upgraded = bool(generated_result.get("metadata_upgraded"))
+                    migration_pending = bool(migration_pending or previous_status.get("migration_pending"))
                 except Exception as exc:
                     if policy == "auto":
                         fallback = True
@@ -689,6 +700,9 @@ def _resolve_derived_cache_plan(
                 "cache_path": str(cache_path),
                 "cache_hit": bool(status.get("valid") and not generated),
                 "cache_generated": bool(generated),
+                "cache_rebuilt": bool(rebuilt),
+                "metadata_upgraded": bool(metadata_upgraded),
+                "migration_pending": bool(migration_pending),
                 "cache_fallback": bool(fallback),
                 "validation": dict(status.get("validation", {})),
                 "validation_mode": status.get("validation", {}).get("mode", validation_mode),
@@ -696,6 +710,9 @@ def _resolve_derived_cache_plan(
                 "source_fingerprint_scanned": bool(
                     status.get("validation", {}).get("source_fingerprint_scanned", False)
                 ),
+                "sidecar_schema_version": status.get("sidecar_schema_version"),
+                "pending_fields": list(status.get("pending_fields", [])),
+                "missing_lightweight_metadata": list(status.get("missing_lightweight_metadata", [])),
                 "metadata": _sidecar_cache_metadata(status.get("metadata", {})),
                 "status": {key: value for key, value in status.items() if key != "metadata"},
             }
@@ -707,9 +724,45 @@ def _resolve_derived_cache_plan(
             "paths": paths,
             "sources": sources,
             "cache_generated": generated_any,
+            "cache_rebuilt": any(bool(item.get("cache_rebuilt", False)) for item in sources.values()),
+            "metadata_upgraded": any(bool(item.get("metadata_upgraded", False)) for item in sources.values()),
+            "migration_pending": any(bool(item.get("migration_pending", False)) for item in sources.values()),
             "cache_fallback": fallback_any,
         }
     return plan
+
+
+def _derived_cache_read_only_error(
+    *,
+    modality: str,
+    cache_path: Path,
+    source_path: str,
+    validation_mode: str,
+    reason: str,
+    status: dict[str, Any],
+) -> str:
+    command = _multimodal_nf_derived_cache_command()
+    if status.get("migration_pending"):
+        return (
+            f"Multimodal-NF {modality} derived cache policy=read_only found cache data at {cache_path} "
+            f"for source {source_path}, but sidecar migration is pending under validation_mode={validation_mode}. "
+            f"reason={reason}; pending_fields={status.get('pending_fields', [])}; "
+            f"sidecar_schema_version={status.get('sidecar_schema_version')}. "
+            f"Run metadata-only cache sidecar upgrade first: {command}"
+        )
+    return (
+        f"Multimodal-NF {modality} derived cache policy=read_only expected {cache_path}, "
+        f"for source {source_path}, but cache is unavailable or invalid under validation_mode={validation_mode}: "
+        f"{reason}; mismatch={status.get('mismatches', {})}. "
+        f"Run derived cache preprocessing to generate/rebuild or audit cache: {command}"
+    )
+
+
+def _multimodal_nf_derived_cache_command() -> str:
+    return (
+        "conda run -n kd_mm_beam python scripts/preprocess.py "
+        "--config configs/preprocess/multimodal_nf_derived_cache.yaml"
+    )
 
 
 def _merged_derived_cache_cfg(
@@ -772,6 +825,19 @@ def _adapter_cache_metadata(cache: dict[str, Any]) -> dict[str, Any]:
     )
     validation_durations = [float(item.get("validation_duration_seconds", 0.0) or 0.0) for item in sources.values()]
     validation_modes = sorted({str(item.get("validation_mode")) for item in sources.values() if item.get("validation_mode")})
+    metadata_upgraded = any(bool(item.get("metadata_upgraded", False)) for item in sources.values())
+    cache_rebuilt = any(bool(item.get("cache_rebuilt", False)) for item in sources.values())
+    migration_pending = any(bool(item.get("migration_pending", False)) for item in sources.values())
+    status_counts: dict[str, int] = {}
+    sidecar_schema_versions: dict[str, int] = {}
+    for item in sources.values():
+        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        status_name = str(status.get("status") or ("valid" if status.get("valid") else "invalid"))
+        status_counts[status_name] = status_counts.get(status_name, 0) + 1
+        schema_version = item.get("sidecar_schema_version") or status.get("sidecar_schema_version")
+        if schema_version is not None:
+            key = str(schema_version)
+            sidecar_schema_versions[key] = sidecar_schema_versions.get(key, 0) + 1
     return {
         "enabled": bool(cache.get("enabled", False)),
         "policy": cache.get("policy", "off"),
@@ -782,7 +848,12 @@ def _adapter_cache_metadata(cache: dict[str, Any]) -> dict[str, Any]:
         "paths": dict(cache.get("paths", {})),
         "sources": sources,
         "cache_generated": bool(cache.get("cache_generated", False)),
+        "cache_rebuilt": bool(cache.get("cache_rebuilt", False) or cache_rebuilt),
+        "metadata_upgraded": bool(cache.get("metadata_upgraded", False) or metadata_upgraded),
+        "migration_pending": bool(cache.get("migration_pending", False) or migration_pending),
         "cache_fallback": bool(cache.get("cache_fallback", False)),
+        "status_counts": status_counts,
+        "sidecar_schema_versions": sidecar_schema_versions,
         "cache_path_count": int(cache_path_count),
         "cache_total_bytes": int(cache_total_bytes),
         "storage_kind": storage_kinds[0] if len(storage_kinds) == 1 else storage_kinds or None,
@@ -804,6 +875,7 @@ def _sidecar_cache_metadata(metadata: Any) -> dict[str, Any]:
         "source_path",
         "source_size_bytes",
         "source_mtime_ns",
+        "source_fingerprint",
         "storage_kind",
         "layout",
         "sample_count",
@@ -811,6 +883,8 @@ def _sidecar_cache_metadata(metadata: Any) -> dict[str, Any]:
         "shape",
         "dtype",
         "recommended_access_pattern",
+        "metadata_upgraded_at",
+        "previous_cache_schema_version",
         "validation",
     )
     return {key: metadata.get(key) for key in keys if key in metadata}

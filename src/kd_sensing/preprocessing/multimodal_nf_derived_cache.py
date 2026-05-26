@@ -19,8 +19,13 @@ from kd_sensing.utils.paths import resolve_path
 CACHE_POLICIES = ("off", "auto", "read_only", "rebuild")
 CACHE_VERSION = "multimodal_nf_derived_v2"
 CACHE_SCHEMA_VERSION = 2
+LEGACY_CACHE_VERSION = "multimodal_nf_derived_v1"
 VALIDATION_MODES = ("lightweight", "strong")
 DERIVED_MODALITIES = ("image", "lidar")
+STATUS_VALID = "valid"
+STATUS_MIGRATION_PENDING = "migration_pending"
+STATUS_INVALID = "invalid"
+STATUS_MISSING = "missing"
 LIGHTWEIGHT_REQUIRED_METADATA = (
     "version",
     "cache_schema_version",
@@ -41,6 +46,29 @@ LIGHTWEIGHT_REQUIRED_METADATA = (
     "shape",
     "dtype",
     "recommended_access_pattern",
+)
+MIGRATION_BACKFILL_METADATA = {
+    "version",
+    "cache_schema_version",
+    "source_key",
+    "source_size_bytes",
+    "source_mtime_ns",
+    "storage_kind",
+    "layout",
+    "bytes",
+    "recommended_access_pattern",
+}
+MIGRATION_REQUIRED_METADATA = (
+    "modality",
+    "profile",
+    "split",
+    "seq_len",
+    "num_pred",
+    "source_path",
+    "source_fingerprint",
+    "sample_count",
+    "shape",
+    "dtype",
 )
 
 
@@ -145,6 +173,7 @@ def cache_status(
             path=str(data_path),
             validation_mode=validation_mode,
             validation_start=validation_start,
+            status=STATUS_MISSING,
         )
     if not meta_path.exists():
         return _status_result(
@@ -154,6 +183,7 @@ def cache_status(
             path=str(data_path),
             validation_mode=validation_mode,
             validation_start=validation_start,
+            status=STATUS_MISSING,
         )
     try:
         metadata = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -165,15 +195,34 @@ def cache_status(
             path=str(data_path),
             validation_mode=validation_mode,
             validation_start=validation_start,
+            status=STATUS_INVALID,
+        )
+    try:
+        cache_header = _read_npy_header(data_path)
+    except Exception as exc:
+        return _status_result(
+            exists=True,
+            valid=False,
+            reason=f"invalid_npy_header: {exc}",
+            path=str(data_path),
+            validation_mode=validation_mode,
+            validation_start=validation_start,
+            status=STATUS_INVALID,
+            metadata_path=str(meta_path),
+            metadata=metadata,
         )
     mismatches = _metadata_mismatches(metadata, expected)
     missing = _missing_lightweight_metadata(metadata)
     if missing:
         mismatches["lightweight_metadata"] = {"missing": missing}
     cache_bytes = _safe_file_size(data_path)
-    if cache_bytes is not None and "bytes" in metadata and int(metadata["bytes"]) != int(cache_bytes):
-        mismatches["bytes"] = {"expected": int(cache_bytes), "actual": int(metadata["bytes"])}
+    metadata_bytes = _safe_int(metadata.get("bytes")) if "bytes" in metadata else None
+    if cache_bytes is not None and "bytes" in metadata and metadata_bytes != int(cache_bytes):
+        mismatches["bytes"] = {"expected": int(cache_bytes), "actual": metadata.get("bytes")}
+    header_mismatches = _cache_header_mismatches(metadata, cache_header)
+    mismatches.update(header_mismatches)
     source_fingerprint_scanned = False
+    actual_fingerprint = None
     if validation_mode == "strong":
         source_fingerprint_scanned = True
         actual_fingerprint = fingerprint_path(expected.get("source_path"))
@@ -182,21 +231,128 @@ def cache_status(
             mismatches["source_fingerprint"] = {"expected": actual_fingerprint, "actual": None}
         elif actual_fingerprint != expected_fingerprint:
             mismatches["source_fingerprint"] = {"expected": expected_fingerprint, "actual": actual_fingerprint}
+    pending_fields = _pending_migration_fields(metadata, missing)
+    migration_mismatches = _migration_safety_mismatches(
+        metadata=metadata,
+        expected=expected,
+        cache_header=cache_header,
+        cache_bytes=cache_bytes,
+        actual_source_fingerprint=actual_fingerprint,
+        validation_mode=validation_mode,
+    )
+    migration_pending = bool(pending_fields) and not migration_mismatches
+    status_name = STATUS_VALID if not mismatches else STATUS_MIGRATION_PENDING if migration_pending else STATUS_INVALID
+    validation_mismatches = {} if migration_pending else mismatches
     validation = _validation_record(
         mode=validation_mode,
         start=validation_start,
         source_fingerprint_scanned=source_fingerprint_scanned,
-        mismatches=mismatches,
+        mismatches=validation_mismatches,
+        result=STATUS_MIGRATION_PENDING if migration_pending else None,
     )
     return {
         "exists": True,
-        "valid": not mismatches,
-        "reason": "ok" if not mismatches else "metadata_mismatch",
+        "valid": status_name == STATUS_VALID,
+        "status": status_name,
+        "missing": False,
+        "migration_pending": migration_pending,
+        "metadata_upgrade_supported": migration_pending,
+        "reason": "ok" if status_name == STATUS_VALID else status_name if migration_pending else "metadata_mismatch",
         "path": str(data_path),
         "metadata_path": str(meta_path),
         "mismatches": mismatches,
+        "migration_mismatches": migration_mismatches,
+        "pending_fields": pending_fields,
+        "missing_lightweight_metadata": missing,
+        "sidecar_schema_version": sidecar_schema_version(metadata),
+        "validation_mode": validation_mode,
+        "cache_header": cache_header,
         "metadata": metadata,
         "validation": validation,
+    }
+
+
+def upgrade_derived_cache_sidecar(
+    *,
+    source_path: str | Path,
+    cache_path: str | Path,
+    modality: str,
+    profile: str | None,
+    split: str,
+    seq_len: int,
+    num_pred: int,
+    validation_mode: str = "lightweight",
+) -> dict[str, Any]:
+    validation_mode = normalize_cache_validation_mode(validation_mode, key="validation_mode")
+    expected = build_expected_metadata(
+        source_path=source_path,
+        modality=modality,
+        profile=profile,
+        split=split,
+        seq_len=seq_len,
+        num_pred=num_pred,
+    )
+    status = cache_status(cache_path=cache_path, expected=expected, validation_mode=validation_mode)
+    if status.get("valid"):
+        return {
+            "metadata_upgraded": False,
+            "generated": False,
+            "rebuilt": False,
+            "cache_generated": False,
+            "cache_rebuilt": False,
+            "cache_path": str(cache_path),
+            "metadata": status.get("metadata"),
+            "status": status,
+        }
+    if not status.get("migration_pending"):
+        return {
+            "metadata_upgraded": False,
+            "generated": False,
+            "rebuilt": False,
+            "cache_generated": False,
+            "cache_rebuilt": False,
+            "cache_path": str(cache_path),
+            "previous_status": status,
+            "status": status,
+            "reason": status.get("reason", "not_migratable"),
+        }
+
+    metadata = dict(status.get("metadata") or {})
+    cache_header = status.get("cache_header") or _read_npy_header(Path(cache_path))
+    cache_bytes = int(Path(cache_path).stat().st_size)
+    upgraded = {
+        **metadata,
+        **expected,
+        "version": CACHE_VERSION,
+        "cache_schema_version": CACHE_SCHEMA_VERSION,
+        "storage_kind": "npy_mmap",
+        "layout": "source_contiguous_rows",
+        "shape": [int(value) for value in cache_header["shape"]],
+        "dtype": str(cache_header["dtype"]),
+        "sample_count": int(cache_header["sample_count"]),
+        "bytes": cache_bytes,
+        "recommended_access_pattern": "sequential_or_locality_ordered_windows",
+        "metadata_upgraded_at": datetime.now(timezone.utc).isoformat(),
+        "previous_cache_schema_version": status.get("sidecar_schema_version"),
+        "validation": {
+            **dict(status.get("validation", {})),
+            "result": "metadata_upgraded",
+            "pending_fields": list(status.get("pending_fields", [])),
+            "mismatches": {},
+        },
+    }
+    _atomic_write_json(sidecar_path(cache_path), upgraded)
+    upgraded_status = cache_status(cache_path=cache_path, expected=expected, validation_mode=validation_mode)
+    return {
+        "metadata_upgraded": True,
+        "generated": False,
+        "rebuilt": False,
+        "cache_generated": False,
+        "cache_rebuilt": False,
+        "cache_path": str(cache_path),
+        "metadata": upgraded,
+        "previous_status": status,
+        "status": upgraded_status,
     }
 
 
@@ -223,8 +379,31 @@ def ensure_derived_cache(
     )
     status = cache_status(cache_path=cache_path, expected=expected, validation_mode=validation_mode)
     if status["valid"] and not rebuild:
-        return {"generated": False, "cache_path": str(cache_path), "metadata": status.get("metadata"), "status": status}
+        return {
+            "generated": False,
+            "rebuilt": False,
+            "metadata_upgraded": False,
+            "cache_generated": False,
+            "cache_rebuilt": False,
+            "cache_path": str(cache_path),
+            "metadata": status.get("metadata"),
+            "status": status,
+        }
+    if not rebuild and status.get("migration_pending"):
+        upgraded = upgrade_derived_cache_sidecar(
+            source_path=source_path,
+            cache_path=cache_path,
+            modality=modality,
+            profile=profile,
+            split=split,
+            seq_len=seq_len,
+            num_pred=num_pred,
+            validation_mode=validation_mode,
+        )
+        if upgraded.get("status", {}).get("valid"):
+            return upgraded
 
+    had_data = Path(cache_path).exists()
     fingerprint_start = time.perf_counter()
     source_fingerprint = fingerprint_path(expected["source_path"])
     validation = {
@@ -250,8 +429,13 @@ def ensure_derived_cache(
     _atomic_save_npy(Path(cache_path), data)
     metadata["bytes"] = int(Path(cache_path).stat().st_size)
     _atomic_write_json(sidecar_path(cache_path), metadata)
+    rebuilt = bool(had_data)
     return {
         "generated": True,
+        "rebuilt": rebuilt,
+        "metadata_upgraded": False,
+        "cache_generated": not rebuilt,
+        "cache_rebuilt": rebuilt,
         "cache_path": str(cache_path),
         "metadata": metadata,
         "previous_status": status,
@@ -299,8 +483,8 @@ def prewarm_multimodal_nf_derived_cache(
                 seq_len=seq_len,
                 num_pred=num_pred,
             )
-            modality_results.append(
-                ensure_derived_cache(
+            try:
+                result = ensure_derived_cache(
                     source_path=source,
                     cache_path=cache_path,
                     modality=modality,
@@ -311,10 +495,41 @@ def prewarm_multimodal_nf_derived_cache(
                     rebuild=rebuild,
                     validation_mode=validation_mode,
                 )
-            )
+            except Exception as exc:
+                result = {
+                    "generated": False,
+                    "rebuilt": False,
+                    "metadata_upgraded": False,
+                    "cache_generated": False,
+                    "cache_rebuilt": False,
+                    "failed": True,
+                    "cache_path": str(cache_path),
+                    "source_path": str(source),
+                    "error": str(exc),
+                }
+            modality_results.append(result)
         results[modality] = {
             "sources": modality_results,
-            "generated": sum(1 for item in modality_results if item.get("generated")),
+            "generated": sum(
+                1
+                for item in modality_results
+                if item.get("cache_generated") or (item.get("generated") and not item.get("rebuilt"))
+            ),
+            "rebuilt": sum(1 for item in modality_results if item.get("cache_rebuilt") or item.get("rebuilt")),
+            "metadata_upgraded": sum(1 for item in modality_results if item.get("metadata_upgraded")),
+            "valid": sum(1 for item in modality_results if item.get("status", {}).get("valid")),
+            "skipped": sum(
+                1
+                for item in modality_results
+                if item.get("status", {}).get("valid") and not item.get("generated") and not item.get("metadata_upgraded")
+            ),
+            "failed": sum(1 for item in modality_results if item.get("failed")),
+            "missing": sum(
+                1
+                for item in modality_results
+                if item.get("status", {}).get("status") == STATUS_MISSING
+                or item.get("previous_status", {}).get("status") == STATUS_MISSING
+            ),
             "total": len(modality_results),
         }
     return {"cache_dir": str(paths.cache_dir), "split": str(split), "modalities": results}
@@ -346,7 +561,10 @@ def _dataset_key_for_modality(handle, modality: str) -> str:
 def _metadata_mismatches(actual: dict[str, Any], expected: dict[str, Any]) -> dict[str, dict[str, Any]]:
     mismatches = {}
     for key, expected_value in expected.items():
-        if actual.get(key) != expected_value:
+        actual_value = actual.get(key)
+        if key == "source_path" and _same_path_value(actual_value, expected_value):
+            continue
+        if actual_value != expected_value:
             mismatches[key] = {"expected": expected_value, "actual": actual.get(key)}
     return mismatches
 
@@ -361,12 +579,13 @@ def _validation_record(
     start: float,
     source_fingerprint_scanned: bool,
     mismatches: dict[str, Any],
+    result: str | None = None,
 ) -> dict[str, Any]:
     return {
         "mode": mode,
         "duration_seconds": float(time.perf_counter() - start),
         "source_fingerprint_scanned": bool(source_fingerprint_scanned),
-        "result": "ok" if not mismatches else "mismatch",
+        "result": result or ("ok" if not mismatches else "mismatch"),
         "mismatches": mismatches,
     }
 
@@ -379,12 +598,28 @@ def _status_result(
     path: str,
     validation_mode: str,
     validation_start: float,
+    status: str,
+    metadata_path: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    missing = status == STATUS_MISSING
     return {
         "exists": exists,
         "valid": valid,
+        "status": status,
+        "missing": missing,
+        "migration_pending": False,
+        "metadata_upgrade_supported": False,
         "reason": reason,
         "path": path,
+        "metadata_path": metadata_path,
+        "mismatches": {"status": {"reason": reason}},
+        "migration_mismatches": {"status": {"reason": reason}},
+        "pending_fields": [],
+        "missing_lightweight_metadata": [],
+        "sidecar_schema_version": sidecar_schema_version(metadata),
+        "validation_mode": validation_mode,
+        "metadata": metadata or {},
         "validation": _validation_record(
             mode=validation_mode,
             start=validation_start,
@@ -392,6 +627,274 @@ def _status_result(
             mismatches={"status": {"reason": reason}},
         ),
     }
+
+
+def sidecar_schema_version(metadata: Any) -> int | None:
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("cache_schema_version")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    version = str(metadata.get("version") or "").strip().lower()
+    if version == LEGACY_CACHE_VERSION:
+        return 1
+    if version == CACHE_VERSION:
+        return CACHE_SCHEMA_VERSION
+    return None
+
+
+def summarize_cache_statuses(items: Any) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "total": 0,
+        "valid": 0,
+        "migration_pending": 0,
+        "invalid": 0,
+        "missing": 0,
+        "metadata_upgrade_supported": 0,
+        "metadata_upgraded": 0,
+        "generated": 0,
+        "rebuilt": 0,
+        "failed": 0,
+        "sidecar_schema_versions": {},
+        "pending_fields": {},
+        "validation_duration_seconds": 0.0,
+        "source_fingerprint_scanned": False,
+    }
+    for item in _iter_status_items(items):
+        summary["total"] += 1
+        status = _item_status(item)
+        status_name = _status_name(status)
+        if status_name in {"valid", "migration_pending", "invalid", "missing"}:
+            summary[status_name] += 1
+        if bool(status.get("metadata_upgrade_supported") or status.get("migration_pending")):
+            summary["metadata_upgrade_supported"] += 1
+        if bool(item.get("metadata_upgraded") if isinstance(item, dict) else False):
+            summary["metadata_upgraded"] += 1
+        if bool(item.get("cache_generated") if isinstance(item, dict) else False):
+            summary["generated"] += 1
+        elif bool(item.get("generated") if isinstance(item, dict) else False) and not bool(
+            item.get("rebuilt") if isinstance(item, dict) else False
+        ):
+            summary["generated"] += 1
+        if bool(item.get("cache_rebuilt") or item.get("rebuilt") if isinstance(item, dict) else False):
+            summary["rebuilt"] += 1
+        if bool(item.get("failed") if isinstance(item, dict) else False):
+            summary["failed"] += 1
+        schema_version = status.get("sidecar_schema_version")
+        if schema_version is None and isinstance(item, dict):
+            schema_version = (item.get("metadata") or {}).get("cache_schema_version")
+        key = str(schema_version) if schema_version is not None else "unknown"
+        summary["sidecar_schema_versions"][key] = summary["sidecar_schema_versions"].get(key, 0) + 1
+        for field in status.get("pending_fields", []) or status.get("missing_lightweight_metadata", []) or []:
+            field_key = str(field)
+            summary["pending_fields"][field_key] = summary["pending_fields"].get(field_key, 0) + 1
+        validation = status.get("validation") if isinstance(status.get("validation"), dict) else {}
+        summary["validation_duration_seconds"] += float(validation.get("duration_seconds", 0.0) or 0.0)
+        summary["source_fingerprint_scanned"] = bool(
+            summary["source_fingerprint_scanned"] or validation.get("source_fingerprint_scanned")
+        )
+    return summary
+
+
+def probe_cache_sidecar(cache_path: str | Path) -> dict[str, Any]:
+    data_path = Path(cache_path)
+    meta_path = sidecar_path(data_path)
+    if not data_path.exists():
+        return {"status": STATUS_MISSING, "exists": False, "valid": False, "reason": "missing_data", "path": str(data_path)}
+    if not meta_path.exists():
+        return {"status": STATUS_MISSING, "exists": True, "valid": False, "reason": "missing_metadata", "path": str(data_path)}
+    try:
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {
+            "status": STATUS_INVALID,
+            "exists": True,
+            "valid": False,
+            "reason": f"invalid_metadata_json: {exc}",
+            "path": str(data_path),
+            "metadata_path": str(meta_path),
+        }
+    missing = _missing_lightweight_metadata(metadata)
+    schema_version = sidecar_schema_version(metadata)
+    status = STATUS_VALID if schema_version == CACHE_SCHEMA_VERSION and not missing else STATUS_MIGRATION_PENDING
+    return {
+        "status": status,
+        "exists": True,
+        "valid": status == STATUS_VALID,
+        "migration_pending": status == STATUS_MIGRATION_PENDING,
+        "metadata_upgrade_supported": status == STATUS_MIGRATION_PENDING,
+        "reason": "ok" if status == STATUS_VALID else "sidecar_migration_pending",
+        "path": str(data_path),
+        "metadata_path": str(meta_path),
+        "sidecar_schema_version": schema_version,
+        "pending_fields": _pending_migration_fields(metadata, missing),
+        "missing_lightweight_metadata": missing,
+        "metadata": metadata,
+    }
+
+
+def _read_npy_header(path: Path) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        version = np.lib.format.read_magic(handle)
+        if version == (1, 0):
+            shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(handle)
+        elif version == (2, 0):
+            shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(handle)
+        else:
+            shape, fortran_order, dtype = np.lib.format._read_array_header(handle, version)  # type: ignore[attr-defined]
+    return {
+        "shape": [int(value) for value in shape],
+        "dtype": str(np.dtype(dtype)),
+        "sample_count": int(shape[0]) if shape else 0,
+        "fortran_order": bool(fortran_order),
+    }
+
+
+def _cache_header_mismatches(metadata: dict[str, Any], cache_header: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    mismatches: dict[str, dict[str, Any]] = {}
+    if "shape" in metadata:
+        actual_shape = _safe_int_list(metadata.get("shape"))
+        if actual_shape != cache_header["shape"]:
+            mismatches["shape"] = {"expected": cache_header["shape"], "actual": metadata.get("shape")}
+    if "dtype" in metadata:
+        try:
+            actual_dtype = str(np.dtype(metadata.get("dtype")))
+        except (TypeError, ValueError):
+            actual_dtype = None
+        if actual_dtype != cache_header["dtype"]:
+            mismatches["dtype"] = {"expected": cache_header["dtype"], "actual": metadata.get("dtype")}
+    if "sample_count" in metadata and _safe_int(metadata.get("sample_count")) != int(cache_header["sample_count"]):
+        mismatches["sample_count"] = {
+            "expected": int(cache_header["sample_count"]),
+            "actual": metadata.get("sample_count"),
+        }
+    return mismatches
+
+
+def _pending_migration_fields(metadata: dict[str, Any], missing: list[str]) -> list[str]:
+    pending: list[str] = []
+    schema_version = sidecar_schema_version(metadata)
+    if schema_version != CACHE_SCHEMA_VERSION:
+        pending.extend(["version", "cache_schema_version"])
+    for field in missing:
+        if field in MIGRATION_BACKFILL_METADATA and field not in pending:
+            pending.append(field)
+    return pending
+
+
+def _migration_safety_mismatches(
+    *,
+    metadata: dict[str, Any],
+    expected: dict[str, Any],
+    cache_header: dict[str, Any],
+    cache_bytes: int | None,
+    actual_source_fingerprint: str | None,
+    validation_mode: str,
+) -> dict[str, dict[str, Any]]:
+    mismatches: dict[str, dict[str, Any]] = {}
+    schema_version = sidecar_schema_version(metadata)
+    if schema_version not in {1, CACHE_SCHEMA_VERSION}:
+        mismatches["cache_schema_version"] = {"expected": f"1 or {CACHE_SCHEMA_VERSION}", "actual": schema_version}
+    for key in MIGRATION_REQUIRED_METADATA:
+        if key not in metadata or metadata.get(key) is None:
+            mismatches[key] = {"expected": "present", "actual": metadata.get(key)}
+    for key in ("modality", "profile", "split", "seq_len", "num_pred"):
+        if metadata.get(key) != expected.get(key):
+            mismatches[key] = {"expected": expected.get(key), "actual": metadata.get(key)}
+    if not _same_path_value(metadata.get("source_path"), expected.get("source_path")):
+        mismatches["source_path"] = {"expected": expected.get("source_path"), "actual": metadata.get("source_path")}
+    source_fingerprint = metadata.get("source_fingerprint")
+    if source_fingerprint in {None, ""}:
+        mismatches["source_fingerprint"] = {"expected": "present", "actual": source_fingerprint}
+    elif validation_mode == "strong" and actual_source_fingerprint != source_fingerprint:
+        mismatches["source_fingerprint"] = {"expected": source_fingerprint, "actual": actual_source_fingerprint}
+    header_mismatches = _cache_header_mismatches(metadata, cache_header)
+    mismatches.update(header_mismatches)
+    if "bytes" in metadata and cache_bytes is not None and _safe_int(metadata.get("bytes")) != int(cache_bytes):
+        mismatches["bytes"] = {"expected": int(cache_bytes), "actual": metadata.get("bytes")}
+    for key in ("source_key", "source_size_bytes", "source_mtime_ns", "storage_kind", "layout"):
+        expected_value = expected.get(key)
+        if key == "storage_kind":
+            expected_value = "npy_mmap"
+        elif key == "layout":
+            expected_value = "source_contiguous_rows"
+        if key in metadata and metadata.get(key) != expected_value:
+            mismatches[key] = {"expected": expected_value, "actual": metadata.get(key)}
+    return mismatches
+
+
+def _same_path_value(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left == right
+    try:
+        return resolve_path(left) == resolve_path(right)
+    except Exception:
+        return str(left) == str(right)
+
+
+def _iter_status_items(items: Any):
+    if isinstance(items, dict):
+        if _looks_like_status_summary(items):
+            return
+        if "sources" in items and isinstance(items["sources"], dict):
+            yield from _iter_status_items(items["sources"])
+        elif "status" in items or "valid" in items or "migration_pending" in items:
+            yield items
+        else:
+            for key, value in items.items():
+                if key in {"cache_status_summary", "status_counts", "sidecar_schema_versions", "pending_fields"}:
+                    continue
+                yield from _iter_status_items(value)
+    elif isinstance(items, (list, tuple)):
+        for value in items:
+            yield from _iter_status_items(value)
+
+
+def _item_status(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        status = item.get("status")
+        if isinstance(status, dict):
+            return status
+        return item
+    return {}
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int_list(value: Any) -> list[int] | None:
+    try:
+        return [int(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _looks_like_status_summary(items: dict[str, Any]) -> bool:
+    return (
+        "sidecar_schema_versions" in items
+        and "total" in items
+        and any(key in items for key in ("valid", "migration_pending", "invalid", "missing"))
+    )
+
+
+def _status_name(status: dict[str, Any]) -> str:
+    raw = status.get("status")
+    if raw in {STATUS_VALID, STATUS_MIGRATION_PENDING, STATUS_INVALID, STATUS_MISSING}:
+        return str(raw)
+    if bool(status.get("valid")):
+        return STATUS_VALID
+    if bool(status.get("migration_pending")):
+        return STATUS_MIGRATION_PENDING
+    if bool(status.get("missing")) or str(status.get("reason", "")).startswith("missing"):
+        return STATUS_MISSING
+    return STATUS_INVALID
 
 
 def _safe_file_size(path: Path) -> int | None:
@@ -469,6 +972,10 @@ __all__ = [
     "lightweight_source_identity",
     "normalize_cache_validation_mode",
     "normalize_derived_cache_policy",
+    "probe_cache_sidecar",
     "prewarm_multimodal_nf_derived_cache",
     "sidecar_path",
+    "sidecar_schema_version",
+    "summarize_cache_statuses",
+    "upgrade_derived_cache_sidecar",
 ]

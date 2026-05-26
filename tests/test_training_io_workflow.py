@@ -1058,6 +1058,21 @@ def test_profile_summary_exposes_multimodal_nf_sources_and_csi_component():
                         "layout": "source_contiguous_rows",
                         "recommended_access_pattern": "sequential_or_locality_ordered_windows",
                         "random_read_risk": True,
+                        "metadata_upgraded": True,
+                        "sources": {
+                            "fixture.h5": {
+                                "metadata_upgraded": True,
+                                "status": {
+                                    "status": "valid",
+                                    "valid": True,
+                                    "sidecar_schema_version": 2,
+                                    "validation": {
+                                        "duration_seconds": 0.25,
+                                        "source_fingerprint_scanned": False,
+                                    },
+                                },
+                            }
+                        },
                         "io": {
                             "opened_files": 1,
                             "mapped_bytes": 128,
@@ -1085,6 +1100,9 @@ def test_profile_summary_exposes_multimodal_nf_sources_and_csi_component():
     assert "csi" in profile_training_io.GETITEM_COMPONENT_KEYS
     assert summary["splits"]["train"]["derived_cache"]["image"]["policy"] == "auto"
     assert summary["cache_validation_seconds"]["image"] == pytest.approx(0.25)
+    assert summary["cache_status_summary"]["valid"] == 1
+    assert summary["cache_status_summary"]["metadata_upgraded"] == 1
+    assert summary["pre_gpu_step_cache_actions"]["metadata_upgraded"] == 1
     assert cache_io["modalities"]["image"]["opened_files"] == 1
     assert cache_io["modalities"]["image"]["read_seconds"]["p95"] == pytest.approx(0.05)
     assert risk["cache_random_read_risk"] is True

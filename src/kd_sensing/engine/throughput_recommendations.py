@@ -10,6 +10,7 @@ from kd_sensing.data.scenes import normalize_deepsense_dataset_config
 from kd_sensing.data.transform_ops.lidar import lidar_cache_path, parameterized_lidar_cache_dir
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.modalities import dataset_flags_for_modalities
+from kd_sensing.preprocessing.multimodal_nf_derived_cache import probe_cache_sidecar, summarize_cache_statuses
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -47,7 +48,12 @@ def recommend_parallel_training(
     if cache_policy is not None and not is_multimodal_nf:
         overrides.append(f"data.cache.policy={cache_policy}")
     multimodal_nf_cache = (
-        multimodal_nf_derived_cache_recommendation(cfg, modalities=modalities, min_coverage=cache_min_coverage)
+        multimodal_nf_derived_cache_recommendation(
+            cfg,
+            modalities=modalities,
+            min_coverage=cache_min_coverage,
+            check_cache=check_cache,
+        )
         if is_multimodal_nf
         else {}
     )
@@ -78,6 +84,7 @@ def recommend_parallel_training(
             parallel_runs=parallel_runs,
             cpu_count=cpu_count,
             worker_budget=worker_budget,
+            cache=multimodal_nf_cache,
             profile=profile,
         )
         if is_multimodal_nf
@@ -118,6 +125,7 @@ def recommend_parallel_training(
             "With output.progress.enabled=false, use epoch logs, train_log.json, and TensorBoard instead of batch tqdm.",
             *(_profile_driven_notes(profile) if is_multimodal_nf else []),
             *(_multimodal_nf_notes(modalities) if is_multimodal_nf else []),
+            *(_multimodal_nf_cache_notes(multimodal_nf_cache) if is_multimodal_nf else []),
         ],
     }
 
@@ -127,6 +135,7 @@ def multimodal_nf_derived_cache_recommendation(
     *,
     modalities: list[str] | None = None,
     min_coverage: float = 0.95,
+    check_cache: bool = True,
 ) -> dict[str, Any]:
     selected = modalities or list(resolve_enabled_modalities(cfg))
     cache_cfg = cfg.get("data", {}).get("cache", {}).get("multimodal_nf", {})
@@ -138,16 +147,46 @@ def multimodal_nf_derived_cache_recommendation(
             continue
         configured = cache_cfg.get(modality, {}) if isinstance(cache_cfg, dict) else {}
         configured_path = configured.get("path") or configured.get("cache_path") if isinstance(configured, dict) else None
+        probe_items = (
+            _multimodal_nf_cache_probe_items(
+                configured_path=configured_path,
+                cache_dir=cache_dir,
+                modality=modality,
+            )
+            if check_cache
+            else []
+        )
+        status_summary = summarize_cache_statuses(probe_items)
+        total = int(status_summary.get("total", 0) or 0)
+        valid = int(status_summary.get("valid", 0) or 0)
+        migration_pending = int(status_summary.get("migration_pending", 0) or 0)
+        invalid = int(status_summary.get("invalid", 0) or 0)
+        missing = int(status_summary.get("missing", 0) or 0)
         exists = bool(configured_path and Path(str(configured_path)).exists())
-        coverage = 1.0 if exists else 0.0
+        coverage = float(valid / total) if total else 1.0 if exists else 0.0
+        if migration_pending:
+            status = "migration_pending"
+        elif invalid:
+            status = "invalid"
+        elif missing:
+            status = "missing"
+        else:
+            status = "warm" if coverage >= min_coverage else "unknown_or_cold"
         result[modality] = {
-            "status": "warm" if coverage >= min_coverage else "unknown_or_cold",
+            "status": status,
             "coverage": coverage,
             "cache_dir": str(cache_dir),
             "configured_path": str(configured_path) if configured_path else None,
-            "recommended_policy": "read_only" if coverage >= min_coverage else "auto",
+            "recommended_policy": "read_only" if coverage >= min_coverage and not migration_pending and not invalid else "auto",
             "recommended_validation_mode": "lightweight",
             "prewarm_command": _multimodal_nf_prewarm_command(),
+            "status_summary": status_summary,
+            "sidecar_schema_versions": status_summary.get("sidecar_schema_versions", {}),
+            "migration_pending": migration_pending,
+            "cache_data_missing": missing,
+            "cache_invalid": invalid,
+            "metadata_upgrade_supported": int(status_summary.get("metadata_upgrade_supported", 0) or 0),
+            "maintenance_recommendation": _multimodal_nf_cache_maintenance_recommendation(status_summary),
         }
     return result
 
@@ -293,6 +332,44 @@ def _multimodal_nf_prewarm_command() -> str:
     return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/multimodal_nf_derived_cache.yaml"
 
 
+def _multimodal_nf_cache_probe_items(
+    *,
+    configured_path: Any,
+    cache_dir: str | Path,
+    modality: str,
+) -> list[dict[str, Any]]:
+    if configured_path:
+        return [probe_cache_sidecar(configured_path)]
+    root = Path(str(cache_dir)).expanduser() / "derived" / modality
+    if not root.exists():
+        return []
+    return [probe_cache_sidecar(path) for path in sorted(root.rglob("*.npy"))]
+
+
+def _multimodal_nf_cache_maintenance_recommendation(status_summary: dict[str, Any]) -> str:
+    if int(status_summary.get("migration_pending", 0) or 0) > 0:
+        return "run_metadata_only_derived_cache_upgrade_before_training"
+    if int(status_summary.get("missing", 0) or 0) > 0:
+        return "generate_missing_derived_cache_or_use_auto_policy"
+    if int(status_summary.get("invalid", 0) or 0) > 0:
+        return "rebuild_invalid_derived_cache_or_fallback_to_hdf5"
+    return "cache_ready_for_lightweight_read_only"
+
+
+def _multimodal_nf_cache_notes(cache: dict[str, Any]) -> list[str]:
+    summary = summarize_cache_statuses(cache)
+    if int(summary.get("migration_pending", 0) or 0) > 0:
+        return [
+            "Multimodal-NF derived cache data exists but sidecar migration is pending; run the derived cache preprocess command before treating read_only as ready.",
+            "Until migration pending is zero, first training startup can spend visible CPU/disk IO before GPU steps begin.",
+        ]
+    if int(summary.get("missing", 0) or 0) > 0:
+        return ["Some Multimodal-NF cache data is missing; use auto policy or preprocess to generate derived cache before long runs."]
+    if int(summary.get("invalid", 0) or 0) > 0:
+        return ["Some Multimodal-NF cache sidecars are invalid; rebuild or fall back to HDF5 before relying on read_only."]
+    return []
+
+
 def _multimodal_nf_notes(modalities: list[str]) -> list[str]:
     if not ({"image", "lidar"} & set(modalities)):
         return ["Multimodal-NF GPS-only runs do not need image/LiDAR derived cache; tune ordinary DataLoader and model step settings first."]
@@ -311,6 +388,7 @@ def _multimodal_nf_io_recommendations(
     parallel_runs: int,
     cpu_count: int,
     worker_budget: dict[str, Any],
+    cache: dict[str, Any],
     profile: dict[str, Any] | None,
 ) -> dict[str, Any]:
     heavy_modalities = sorted({"image", "lidar"} & set(modalities))
@@ -325,6 +403,10 @@ def _multimodal_nf_io_recommendations(
     io_risk = profile.get("io_risk", {}) if isinstance(profile, dict) else {}
     loader_wait_risk = bool(io_risk.get("loader_wait_dominates_step", False))
     cache_tail_risk = bool(io_risk.get("cache_read_tail_risk", False))
+    cache_status_summary = summarize_cache_statuses(cache)
+    migration_pending = int(cache_status_summary.get("migration_pending", 0) or 0)
+    cache_missing = int(cache_status_summary.get("missing", 0) or 0)
+    cache_invalid = int(cache_status_summary.get("invalid", 0) or 0)
     max_workers = int(worker_budget.get("train_num_workers", 1))
     if loader_wait_risk or cache_tail_risk or parallel_runs >= 4:
         max_workers = max(1, min(max_workers, 2))
@@ -345,6 +427,22 @@ def _multimodal_nf_io_recommendations(
             else "start_with_even_gpu_distribution"
         ),
         "profile_command": "conda run -n kd_mm_beam python scripts/profile_training_io.py --config <config> --samples 32",
+        "prewarm_command": _multimodal_nf_prewarm_command(),
+        "cache_status_summary": cache_status_summary,
+        "sidecar_schema_versions": cache_status_summary.get("sidecar_schema_versions", {}),
+        "migration_pending": migration_pending,
+        "cache_data_missing": cache_missing,
+        "cache_invalid": cache_invalid,
+        "metadata_upgrade_recommendation": (
+            "run_metadata_only_derived_cache_upgrade_before_training"
+            if migration_pending > 0
+            else "not_needed"
+        ),
+        "startup_phase_risk": (
+            "cache_migration_or_generation_before_gpu_step"
+            if migration_pending > 0 or cache_missing > 0 or cache_invalid > 0
+            else "normal_loader_or_gpu_step"
+        ),
         "profile_used": isinstance(profile, dict),
         "profile_io_risk": dict(io_risk) if isinstance(io_risk, dict) else {},
     }
