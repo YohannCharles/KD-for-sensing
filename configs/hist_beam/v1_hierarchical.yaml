@@ -1,0 +1,26 @@
+experiment:
+  name: hist_beam_v1_hierarchical
+  task: fusion
+  objective: beam
+data:
+  dataset:
+    type: deepsense6g
+    scene: 31
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+model:
+  modalities: [image, radar, gps]
+  student:
+    type: hist_beam_fusion
+    modalities: [image, radar, gps]
+    variant: v1_hierarchical
+hist_beam:
+  enabled: true
+  variant: v1_hierarchical
+  loss_weights:
+    hierarchical: 1.0
+    flat: 0.2
+    orthogonality: 0.0
+    scene_confusion: 0.0
+    scene_private: 0.0

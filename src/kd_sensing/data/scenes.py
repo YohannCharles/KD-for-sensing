@@ -14,6 +14,8 @@ REMOVED_DEEPSENSE_DATASET_TYPES = {
     "scenario9": 9,
     "scenario31": 31,
     "scenario32": 32,
+    "scenario33": 33,
+    "scenario34": 34,
 }
 
 
@@ -55,6 +57,20 @@ DEEPSENSE_SCENES: dict[int, DeepSenseScene] = {
         aliases=("32", "scene32", "scenario32"),
         default_data_root=deepsense6g_scene_root(32),
         legacy_data_root=deepsense6g_legacy_scene_root(32),
+    ),
+    33: DeepSenseScene(
+        scene_id=33,
+        scene_slug="scene33",
+        aliases=("33", "scene33", "scenario33"),
+        default_data_root=deepsense6g_scene_root(33),
+        legacy_data_root=deepsense6g_legacy_scene_root(33),
+    ),
+    34: DeepSenseScene(
+        scene_id=34,
+        scene_slug="scene34",
+        aliases=("34", "scene34", "scenario34"),
+        default_data_root=deepsense6g_scene_root(34),
+        legacy_data_root=deepsense6g_legacy_scene_root(34),
     ),
 }
 

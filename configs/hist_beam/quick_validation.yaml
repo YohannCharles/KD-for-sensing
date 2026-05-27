@@ -1,0 +1,96 @@
+experiment:
+  name: hist_beam_quick_validation
+  task: fusion
+  objective: beam
+  seed: 0
+data:
+  dataset:
+    type: deepsense6g
+    scene: 31
+    seq_len: 2
+    num_pred: 1
+    portion: 1.0
+    image_profile: rgb_imagenet
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: false
+    use_lidar: false
+    use_mmwave: false
+  dataloader:
+    train_batch_size: 2
+    test_batch_size: 2
+    num_workers: 0
+model:
+  modalities: [image, radar, gps]
+  feature_size: 16
+  d_model: 32
+  num_classes: 64
+  seq_length_teacher: 2
+  seq_length_student: 2
+  num_pred: 1
+  downsample_ratio: 1
+  teacher:
+    type: hist_beam_fusion
+    modalities: [image, radar, gps]
+    feature_size: 16
+    d_model: 32
+    num_classes: 64
+    num_pred: 1
+    group_size: 8
+    variant: v3_decoupled
+    num_heads: 4
+    num_layers: 1
+    image_encoder:
+      type: legacy_cnn
+  student:
+    type: hist_beam_fusion
+    modalities: [image, radar, gps]
+    feature_size: 16
+    d_model: 32
+    num_classes: 64
+    num_pred: 1
+    group_size: 8
+    variant: v3_decoupled
+    num_heads: 4
+    num_layers: 1
+    image_encoder:
+      type: legacy_cnn
+hist_beam:
+  enabled: true
+  group_size: 8
+  loss_weights:
+    hierarchical: 1.0
+    flat: 0.2
+    orthogonality: 0.01
+    scene_confusion: 0.05
+    scene_private: 0.05
+  adaptation:
+    epochs: 30
+    entropy_weight: 0.01
+    prototype_weight: 0.1
+  prototype:
+    confidence_threshold: 0.7
+distillation:
+  type: no_kd
+  teacher_model_name: null
+loss:
+  type: cross_entropy
+training:
+  epochs: 40
+  lr: 0.0005
+  use_early_stopping: false
+evaluation:
+  k_values: [1, 3, 5]
+output:
+  dir: outputs
+  run_name: hist_beam_quick_validation
+  progress:
+    enabled: false
+loso:
+  profile: method_quick_validation
+  target_scenes: [34]
+  variants: [v0_flat, v3_decoupled, v4_adapter, v5_adapter_proto, v6_full_finetune]
+  budgets: [0, 10]
+  seeds: [0]
+  skip_scenes: []
+  reuse_source_checkpoint: true

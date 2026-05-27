@@ -33,6 +33,7 @@ from kd_sensing.engine.debug_diagnostics import (
 )
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_epoch_log, set_train_sampler_epoch
 from kd_sensing.engine.g2d_training import G2DTrainingExtension
+from kd_sensing.engine.hist_beam_training import HistBeamTrainingExtension
 from kd_sensing.engine.marf_training import MarfTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
@@ -190,6 +191,7 @@ def _g2d_enabled(cfg: dict) -> bool:
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
     extensions: list[TrainingExtension] = [NoOpTrainingExtension()]
+    extensions.append(HistBeamTrainingExtension())
     if _g2d_enabled(cfg):
         extensions.append(G2DTrainingExtension())
     extensions.extend([CrafTrainingExtension(), MarfTrainingExtension()])

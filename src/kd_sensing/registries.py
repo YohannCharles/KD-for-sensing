@@ -131,6 +131,14 @@ DATASETS.register_removed(
     "scenario32",
     "Use {'type': 'deepsense6g', 'scene': 32}.",
 )
+DATASETS.register_removed(
+    "scenario33",
+    "Use {'type': 'deepsense6g', 'scene': 33}.",
+)
+DATASETS.register_removed(
+    "scenario34",
+    "Use {'type': 'deepsense6g', 'scene': 34}.",
+)
 MODELS.register_removed(
     "Fusion" + "ModalityNet",
     "Use the 'fusion_teacher' registry name or FusionTeacherModalityNet.",

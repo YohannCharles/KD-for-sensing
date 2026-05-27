@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def test_import_default_components_registers_cls_token_transformer_fusion():
+def test_import_default_components_registers_cls_token_transformer_and_hist_beam_fusion():
     code = f"""
 import json
 import sys
@@ -18,6 +18,7 @@ from kd_sensing.registries import MODELS, import_default_components
 before = "cls_token_transformer_fusion" in MODELS.list()
 import_default_components()
 after = "cls_token_transformer_fusion" in MODELS.list()
+hist_after = "hist_beam_fusion" in MODELS.list()
 model = MODELS.build({{
     "type": "cls_token_transformer_fusion",
     "modalities": ["gps", "mmwave"],
@@ -33,6 +34,7 @@ model = MODELS.build({{
 print(json.dumps({{
     "before": before,
     "after": after,
+    "hist_after": hist_after,
     "class_name": type(model).__name__,
     "modalities": list(model.modalities),
 }}, sort_keys=True))
@@ -43,6 +45,7 @@ print(json.dumps({{
     assert payload == {
         "before": False,
         "after": True,
+        "hist_after": True,
         "class_name": "CLSTokenTransformerFusionNet",
         "modalities": ["gps", "mmwave"],
     }

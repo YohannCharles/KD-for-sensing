@@ -9,6 +9,7 @@ import torch
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
 from kd_sensing.engine.marf_training import ModalitySubsetSampler
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata
+from kd_sensing.evaluation.hist_beam_outputs import write_hist_beam_predictions
 from kd_sensing.evaluation.subset_specs import resolve_named_modality_subset
 
 
@@ -32,7 +33,29 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
         target.mkdir(parents=True, exist_ok=True)
         with (target / "metrics.json").open("w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2)
+        if _hist_beam_output_enabled(cfg):
+            write_hist_beam_predictions(
+                target / "predictions.csv",
+                result.outputs,
+                result.labels,
+                metadata=result.metadata,
+                group_size=int(
+                    cfg.get("hist_beam", {}).get(
+                        "group_size",
+                        cfg.get("model", {}).get("student", {}).get("group_size", 8),
+                    )
+                ),
+                top_k=max(int(value) for value in cfg.get("evaluation", {}).get("k_values", [1, 3, 5])),
+                variant_metadata=setup,
+            )
     return metrics
+
+
+def _hist_beam_output_enabled(cfg: dict) -> bool:
+    hist_cfg = cfg.get("hist_beam")
+    if isinstance(hist_cfg, dict) and hist_cfg.get("enabled") is not False:
+        return True
+    return cfg.get("model", {}).get("student", {}).get("type") == "hist_beam_fusion"
 
 
 def _validate_modality_subsets(

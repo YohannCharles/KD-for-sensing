@@ -13,6 +13,7 @@ import pytest
         ("kd-sensing-evaluate", "--weights"),
         ("kd-sensing-preprocess", "--action"),
         ("kd-sensing-runs", "--outputs"),
+        ("kd-sensing-hist-beam-loso", "--execute"),
         ("kd-sensing-export-viewer-manifest", "--cache-dir"),
         ("kd-sensing-visualize-modalities", "--cache-dir"),
     ],

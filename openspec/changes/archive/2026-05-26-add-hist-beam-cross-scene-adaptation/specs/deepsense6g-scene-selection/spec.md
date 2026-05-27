@@ -1,8 +1,5 @@
-# deepsense6g-scene-selection Specification
+## MODIFIED Requirements
 
-## Purpose
-定义 DeepSense6G 场景选择、数据根目录解析和跨场景输出隔离规则，确保训练、评估和诊断在多场景间保持可复现。
-## Requirements
 ### Requirement: DeepSense6G 场景选择配置
 项目 MUST 支持通过配置选择 DeepSense6G 场景。`data.dataset.type` MUST 使用 `deepsense6g`，`data.dataset.scene` MUST 接受整数和字符串别名，当前 MUST 支持 Scenario 9、Scenario 31、Scenario 32、Scenario 33 与 Scenario 34。未显式设置场景时，通用 DeepSense6G 配置 MUST 默认使用 Scenario 31。旧 `the scene-9 dataset-type spelling`、`scenario31`、`scenario32`、`scenario33` 和 `scenario34` dataset type 配置 MUST 被拒绝并给出迁移提示。
 
@@ -84,14 +81,6 @@ DeepSense6G 场景解析 MUST 为每个支持场景提供默认数据根目录�
 - **THEN** 系统 MUST 使用显式 CSV 名构建对应 split
 - **AND** 场景默认 CSV 名不得覆盖用户显式设置
 
-### Requirement: 场景扩展约定
-项目 MUST 提供可维护的场景注册或描述符机制，使未来新增 DeepSense6G 场景不需要复制数据集类或重写训练入口。
-
-#### Scenario: 新增场景描述符
-- **WHEN** 开发者新增一个包含场景编号、slug、别名和默认路径的场景描述符
-- **THEN** 配置解析、dataset 构建、输出目录分组和 metadata 记录 MUST 能复用同一描述符
-- **AND** 新增场景不得要求复制 Scenario 9 数据集读取逻辑
-
 ### Requirement: DeepSense6G 规范目录清单
 DeepSense6G MUST 将当前支持场景的规范数据根目录定义为 `dataset/DeepSense6G/scenario9`、`dataset/DeepSense6G/scenario31`、`dataset/DeepSense6G/scenario32`、`dataset/DeepSense6G/scenario33` 和 `dataset/DeepSense6G/scenario34`。这些默认路径 MUST 由同一场景描述符或 dataset layout descriptor 提供。
 
@@ -114,4 +103,3 @@ DeepSense6G MUST 将当前支持场景的规范数据根目录定义为 `dataset
 #### Scenario: Scenario 34 规范路径
 - **WHEN** 用户设置 `data.dataset.type: deepsense6g` 且 `data.dataset.scene: 34`，并且未显式设置 `data.dataset.data_root`
 - **THEN** 系统 MUST 将默认数据根目录解析为 `dataset/DeepSense6G/scenario34`
-

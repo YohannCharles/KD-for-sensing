@@ -28,6 +28,7 @@ IMAGE_MODEL_TYPES = {
     "fusion_student",
     "craf_fusion",
     "cls_token_transformer_fusion",
+    "hist_beam_fusion",
     "marf_fusion",
     "token_transformer_fusion",
 }
@@ -48,6 +49,7 @@ FUSION_MODEL_TYPES = {
     "fusion_student",
     "craf_fusion",
     "cls_token_transformer_fusion",
+    "hist_beam_fusion",
     "marf_fusion",
     "token_transformer_fusion",
     "simple_concat_multitask_selection",
@@ -71,6 +73,7 @@ RAYMOBTIME_SELECTION_MODEL_TYPES = {
 D_MODEL_ROLE_TYPES = {
     "craf_fusion",
     "cls_token_transformer_fusion",
+    "hist_beam_fusion",
     "marf_fusion",
     "token_transformer_fusion",
     *MODULAR_MODEL_TYPES,

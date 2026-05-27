@@ -18,6 +18,7 @@ conda run -n kd_mm_beam kd-sensing-train --help
 conda run -n kd_mm_beam kd-sensing-evaluate --help
 conda run -n kd_mm_beam kd-sensing-preprocess --help
 conda run -n kd_mm_beam kd-sensing-runs --help
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso --help
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
 ```
@@ -97,6 +98,26 @@ conda run -n kd_mm_beam kd-sensing-evaluate \
   --config configs/image/teacher_no_kd.yaml \
   --weights outputs/scene31/image_teacher_no_kd/checkpoints/best.pth
 ```
+
+HiST-Beam 跨场景 LOSO 资源探针：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
+  --config configs/hist_beam/quick_smoke.yaml
+```
+
+完整 quick validation 方法矩阵需显式使用 `quick_validation` 配置；可先用 `--max-runs` 分段执行：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
+  --config configs/hist_beam/quick_validation.yaml \
+  --variants v3_decoupled \
+  --budgets 0,10 \
+  --seeds 0 \
+  --max-runs 2
+```
+
+默认 `quick_smoke` 只运行轻量 resource probe；`quick_validation` 使用 DeepSense6G scenarios 31-34、`image`/`radar`/`gps` 三模态和包内 `hist_beam_fusion` 模型。详细变体矩阵、target adapt/test 防泄漏和 prototype/adaptation 设计以 OpenSpec change `add-hist-beam-cross-scene-adaptation` 为准。
 
 实验运行索引：
 

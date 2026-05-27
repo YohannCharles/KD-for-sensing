@@ -40,6 +40,7 @@ from kd_sensing.evaluation.metrics import (
     calculate_position_rmse,
     calculate_topk_accuracy,
 )
+from kd_sensing.evaluation.hist_beam_outputs import calculate_hist_beam_metrics
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class EvaluationPassResult:
     outputs: torch.Tensor
     labels: torch.Tensor
     input_beams: torch.Tensor | None
+    metadata: list[dict[str, Any]]
     objective_metadata: dict[str, Any]
     enabled_modalities: tuple[str, ...]
     saw_lidar: bool
@@ -84,6 +86,7 @@ def run_evaluation_pass(
     all_outputs = []
     all_labels = []
     all_input_beams = []
+    all_metadata: list[dict[str, Any]] = []
     all_occlusion_logits = []
     all_occlusion_labels = []
     all_occlusion_valid = []
@@ -101,6 +104,7 @@ def run_evaluation_pass(
     with torch.no_grad():
         for batch in dataloader:
             batch = prepare_task_batch(batch)
+            all_metadata.extend(_metadata_rows_from_batch(batch.get("metadata")))
             if "input_beam" in batch:
                 all_input_beams.append(batch["input_beam"].detach().cpu())
             if "lidar" in batch:
@@ -248,6 +252,7 @@ def run_evaluation_pass(
         outputs=outputs_t,
         labels=labels_t,
         input_beams=input_beams_t,
+        metadata=all_metadata,
         objective_metadata=objective_metadata,
         enabled_modalities=enabled_modalities,
         saw_lidar=saw_lidar,
@@ -293,7 +298,60 @@ def _metrics_from_outputs(
             cfg.get("evaluation", {}).get("dba_delta", 5),
         )
         metrics["dba"] = dba_score.tolist()
+    if _hist_beam_metrics_enabled(cfg):
+        hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+        model_cfg = cfg.get("model", {}).get("student", {})
+        metrics.update(
+            calculate_hist_beam_metrics(
+                outputs,
+                labels,
+                group_size=int(hist_cfg.get("group_size", model_cfg.get("group_size", 8))),
+                num_classes=int(model_cfg.get("num_classes", cfg.get("model", {}).get("num_classes", outputs.shape[-1]))),
+            )
+        )
+        metrics.setdefault("power_metrics_available", False)
+        metrics.setdefault("power_metrics_unavailable_reason", "beam_power_vector_missing")
     return metrics
+
+
+def _hist_beam_metrics_enabled(cfg: dict[str, Any]) -> bool:
+    hist_cfg = cfg.get("hist_beam")
+    if isinstance(hist_cfg, dict) and hist_cfg.get("enabled") is not False:
+        return True
+    return cfg.get("model", {}).get("student", {}).get("type") == "hist_beam_fusion"
+
+
+def _metadata_rows_from_batch(metadata: Any) -> list[dict[str, Any]]:
+    if metadata is None:
+        return []
+    if isinstance(metadata, list):
+        return [dict(item) for item in metadata if isinstance(item, dict)]
+    if not isinstance(metadata, dict):
+        return []
+    length = 0
+    for value in metadata.values():
+        if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
+            length = max(length, int(value.shape[0]))
+        elif isinstance(value, (list, tuple)):
+            length = max(length, len(value))
+        else:
+            length = max(length, 1)
+    rows: list[dict[str, Any]] = []
+    for index in range(length):
+        row = {}
+        for key, value in metadata.items():
+            row[key] = _metadata_value_at(value, index)
+        rows.append(row)
+    return rows
+
+
+def _metadata_value_at(value: Any, index: int) -> Any:
+    if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
+        item = value[index]
+        return item.item() if hasattr(item, "item") else item
+    if isinstance(value, (list, tuple)):
+        return value[index] if index < len(value) else None
+    return value
 
 
 def _beam_metrics_by_los_bucket(
