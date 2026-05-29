@@ -1,10 +1,10 @@
 # hist-beam-cross-scene-adaptation Specification
 
 ## Purpose
-TBD - created by archiving change add-hist-beam-cross-scene-adaptation. Update Purpose after archive.
+定义 HiST-Beam 跨场景自适应方法的模型变体、层次化 beam label、shared/private 表征、adapter/prototype 适配、训练诊断和评估输出契约，确保快速验证中的 source-only、adapter、adapter+prototype 与 full fine-tuning baseline 可配置、可复现并能被 LOSO workflow 汇总比较。
 ## Requirements
 ### Requirement: HiST-Beam 模型变体配置
-系统 MUST 提供可通过配置和模型注册表构建的 HiST-Beam fusion 模型能力，用于 DeepSense6G 跨场景快速验证。配置 MUST 能选择 flat source-only、hierarchical source-only、shared-private、decoupled shared-private、adapter-only、adapter+prototype 和 full fine-tuning baseline 变体，并 MUST 默认使用 `image`、`radar`、`gps` 三模态。
+系统 MUST 提供可通过配置和模型注册表构建的 HiST-Beam fusion 模型能力，用于 DeepSense6G 和 MMW 跨场景快速验证。配置 MUST 能选择 flat source-only、hierarchical source-only、shared-private、decoupled shared-private、adapter-only、adapter+coarse prototype、adapter+radio-semantic prototype、adapter+path-level physical prototype 和 full fine-tuning baseline 变体，并 MUST 默认保持既有 DeepSense6G `image`、`radar`、`gps` 三模态快速验证兼容。
 
 #### Scenario: 构建 flat source-only 变体
 - **WHEN** 用户配置 HiST-Beam 变体为 `v0_flat` 或等价 flat 模式
@@ -22,9 +22,21 @@ TBD - created by archiving change add-hist-beam-cross-scene-adaptation. Update P
 - **AND** 训练 MUST 能启用 orthogonality、shared scene confusion 和 private scene preservation loss
 
 #### Scenario: 构建 adapter 和 full fine-tuning 变体
-- **WHEN** 用户配置 HiST-Beam 变体为 `v4_adapter`、`v5_adapter_proto` 或 `v6_full_finetune`
+- **WHEN** 用户配置 HiST-Beam 变体为 `v4_adapter`、`v5_adapter_proto`、`v6_radio_proto`、`v8_path_proto` 或 `v6_full_finetune`
 - **THEN** 系统 MUST 从 source checkpoint 初始化 target adaptation run
-- **AND** 系统 MUST 按变体选择 adapter 训练、prototype alignment 或全量 fine-tuning 策略
+- **AND** 系统 MUST 按变体选择 adapter 训练、coarse/radio/path prototype adaptation 或全量 fine-tuning 策略
+- **AND** 若工程继续保留 `v6_full_finetune` 配置名，summary MUST 将其标记为 V7 full fine-tuning baseline 或等价 full fine-tuning baseline metadata
+
+#### Scenario: 构建 V6 radio-semantic prototype 变体
+- **WHEN** 用户配置 HiST-Beam 变体为 `v6_radio_proto`
+- **THEN** 系统 MUST 使用 beam_power 派生的 radio-semantic label/prototype 作为 V6 baseline
+- **AND** 系统 MUST 不把 V6 radio prototype 静默标记为 V8 path-level physical prototype
+
+#### Scenario: 构建 V8 path-level physical prototype 变体
+- **WHEN** 用户配置 HiST-Beam 变体为 `v8_path_proto` 或等价 P3-HiST-Beam 模式
+- **THEN** 模型 MUST 产生 beam_logits、path_logits、shared representation `c` 和 private representation `s`
+- **AND** target adaptation MUST 支持 `proto_type=path`
+- **AND** path prototype MUST 作为 semantic anchor 或 condition，而不是直接预测 beam
 
 ### Requirement: 层次化 beam label 与输出契约
 HiST-Beam MUST 支持将 64 类 beam label 拆分为 coarse group 和 fine offset。`group_size` MUST 可配置，快速验证默认值 MUST 为 8；当 `num_classes=64` 且 `group_size=8` 时，coarse group 数 MUST 为 8。
@@ -136,7 +148,7 @@ HiST-Beam shared branch MUST 主要服务 coarse semantics，private branch MUST
 - **AND** adaptation metrics MUST 记录 prototype coverage 或等价可诊断统计
 
 ### Requirement: HiST-Beam 指标与预测产物
-HiST-Beam evaluation 和 adaptation MUST 输出 Top-1、Top-3、Top-5、coarse group accuracy、fine offset accuracy、trainable parameter ratio 和 adaptation time。若样本提供 beam power vector，系统 MUST 输出 normalized received power 和 beam power loss dB；若没有 power vector，系统 MUST 明确跳过 power 指标。
+HiST-Beam evaluation 和 adaptation MUST 输出 Top-1、Top-3、Top-5、coarse group accuracy、fine offset accuracy、trainable parameter ratio 和 adaptation time。若样本提供 beam power vector，系统 MUST 输出 normalized received power 和 beam power loss dB；若没有 power vector，系统 MUST 明确跳过 power 指标。启用 path-level prototype 或 path head 时，系统 MUST 额外输出 path semantic accuracy、path descriptor regression MSE、prototype assignment confidence、prototype coverage per class 和 source-target path class histogram，或记录不可用原因。
 
 #### Scenario: 输出 coarse 和 fine 指标
 - **WHEN** 评估 HiST-Beam hierarchical 变体
@@ -152,11 +164,17 @@ HiST-Beam evaluation 和 adaptation MUST 输出 Top-1、Top-3、Top-5、coarse g
 - **WHEN** source-only evaluation 或 target adaptation evaluation 完成
 - **THEN** 系统 MUST 保存 target_test predictions 文件
 - **AND** predictions MUST 至少包含 sample id、scene、true beam、predicted beam、top-k predictions、coarse true/pred 和当前变体 metadata
+- **AND** 若 path diagnostics 可用，predictions MUST 包含 path true/pred、assignment confidence 或 path unavailable reason
 
 #### Scenario: 缺失 beam power 时不伪造指标
 - **WHEN** target_test 样本不包含 beam power vector
 - **THEN** 系统 MUST 不输出虚假的 power gain 或 power loss 指标
 - **AND** metrics MUST 记录 power metrics unavailable 的原因
+
+#### Scenario: 输出 path prototype 诊断
+- **WHEN** 评估 V8 path-level physical prototype 变体
+- **THEN** metrics MUST 包含 path semantic accuracy、prototype assignment confidence 和 prototype coverage per class，或记录这些字段不可用的原因
+- **AND** summary MUST 能与 V5 coarse prototype、V6 radio-semantic prototype 和 full fine-tuning baseline 横向比较
 
 ### Requirement: HiST-Beam execute run 产物
 HiST-Beam quick validation 的每个 source-only evaluation 和 adapted evaluation run MUST 输出可追踪产物。产物 MUST 至少包含 `metrics.json`、target_test predictions、配置快照、fold/split/sampling metadata 和当前 variant metadata。
@@ -239,3 +257,165 @@ HiST-Beam adaptation run MUST 记录 trainable parameter count、total parameter
 - **WHEN** 用户运行轻量 `quick_smoke` 配置
 - **THEN** 结论文件 MAY 标记关键 adapter/full-finetune 对比为 `inconclusive`
 - **AND** 系统 MUST 通过 missing/inconclusive 原因说明该配置只覆盖了资源探针矩阵
+
+### Requirement: Geometry-aware transferable knowledge
+HiST-Beam MUST 显式建模可迁移知识，包括 coarse angular/beam semantics、angular neighborhood continuity、RSU-CAV relative geometry 和 cross-modal geometric consistency。每项知识 MUST 在配置、模型输出或 loss diagnostics 中有可追踪字段。
+
+#### Scenario: 输出 transferable diagnostics
+- **WHEN** geometry-aware HiST-Beam forward 完成
+- **THEN** 模型输出 MUST 包含 coarse logits、beam-level logits、shared geometry representation 和 geometry diagnostics
+- **AND** diagnostics MUST 至少记录启用的 geometry fields、可用性 mask 和 direct/proxy 标记
+
+#### Scenario: coarse head 绑定 shared geometry
+- **WHEN** geometry-aware shared/private 模式启用
+- **THEN** coarse head MUST 只读取 shared geometry representation 或其投影
+- **AND** private scene representation MUST 不直接作为 coarse head 输入
+
+### Requirement: Scene-private knowledge as explicit refinement
+HiST-Beam MUST 将 town/scene layout、RSU pose/local coordinate frame、local scatterer/occluder proxy 和 coarse sector 内 fine beam mapping 作为 scene-private refinement 处理。scene-private 分支 MUST 服务 fine mapping adapter，而不是替代 coarse shared semantics。
+
+#### Scenario: fine head 读取 private refinement
+- **WHEN** 模型启用 scene-private branch
+- **THEN** fine head MUST 读取 shared geometry representation 与 adapted private representation 的组合
+- **AND** adapted private representation MUST 可由 coarse sector embedding 或 coarse context 条件化
+
+#### Scenario: proxy 不伪装成真实标签
+- **WHEN** private branch 使用 occluder 或 scatterer 相关输入
+- **THEN** 模型 diagnostics MUST 将这些输入标记为 proxy
+- **AND** summary MUST 不将 proxy 字段报告为真实 scene semantics 标签
+
+### Requirement: Angular smoothing loss
+HiST-Beam MUST 支持 angular smoothing loss，用 beam/codebook 邻接关系构造 soft target，以约束相邻角度 beam 的连续性。该 loss MUST 支持按配置选择 linear ULA 邻接或 circular 邻接。
+
+#### Scenario: 线性 codebook smoothing
+- **WHEN** 配置 `angular_smoothing.enabled: true` 且 codebook topology 为 `linear`
+- **THEN** 系统 MUST 按 beam index 或 steering angle 的非循环距离构造 soft target
+- **AND** beam 0 与最后一个 beam 不得被视为相邻，除非配置显式启用 circular topology
+
+#### Scenario: angular loss diagnostics
+- **WHEN** angular smoothing loss 参与训练
+- **THEN** loss diagnostics MUST 包含 angular loss 数值、sigma 或温度参数、topology 和有效样本数
+
+### Requirement: Multimodal geometry consistency loss
+HiST-Beam MUST 支持 multimodal geometry consistency loss，用于约束 GPS/IMU、CAV/RSU pose、LiDAR、depth、bbox、radar point cloud 和 channel-derived geometry 之间的一致性。该 loss MUST 对缺失模态使用 mask，并 MUST 记录 coverage。
+
+#### Scenario: 可用模态计算 geometry consistency
+- **WHEN** batch 同时包含 relative pose 与至少一个可几何对齐的视觉、LiDAR、depth、bbox、radar 或 channel 字段
+- **THEN** 系统 MUST 计算配置启用的 geometry consistency 子 loss
+- **AND** diagnostics MUST 记录每个子 loss 的 coverage
+
+#### Scenario: 缺失模态跳过子 loss
+- **WHEN** 某个 geometry consistency 子 loss 所需模态缺失
+- **THEN** 系统 MUST 跳过该子 loss
+- **AND** diagnostics MUST 将对应 coverage 记录为 0 或 unavailable reason
+
+### Requirement: Private prototype alignment must be effective
+Adapter+prototype 变体 MUST 对齐 coarse sector 条件下的 private/adapter representation，而不是只对 shared representation 做无差别对齐。prototype loss MUST 具有可诊断的 confidence、coverage、used sample count 和非零权重路径；否则该 run MUST 被标记为 prototype no-op。
+
+#### Scenario: private prototype loss 使用 adapter representation
+- **WHEN** `v5_adapter_proto` 或等价 prototype 变体执行 target adaptation
+- **THEN** prototype consistency MUST 使用 adapted private representation 或配置指定的 private projection
+- **AND** prototype target MUST 按 coarse sector 和 confidence threshold 选择
+- **AND** shared-only prototype alignment MUST NOT 作为默认实现
+
+#### Scenario: prototype no-op 可诊断
+- **WHEN** prototype loss 权重为 0、prototype artifact 缺失、coverage 为 0 或没有样本超过 confidence threshold
+- **THEN** adaptation metrics MUST 标记 prototype status 为 `no_op` 或 `unavailable`
+- **AND** quick validation conclusion MUST 不把该 run 描述为有效 prototype variant
+
+#### Scenario: v4 与 v5 对比记录 prototype 差异
+- **WHEN** 同一 fold、budget、seed 下存在 adapter-only 和 adapter+prototype run
+- **THEN** summary MUST 比较两者 accuracy 与 prototype diagnostics
+- **AND** 若两者 prediction 完全一致，summary MUST 记录 `prototype_prediction_delta: 0` 或等价诊断
+
+### Requirement: Geometry-aware HiST-Beam 指标
+Geometry-aware HiST-Beam evaluation MUST 输出传统 beam 指标以及角度、几何和 prototype 指标。若某项指标缺少必要数据，系统 MUST 标记 unavailable reason，不得伪造数值。
+
+#### Scenario: 输出角度和几何指标
+- **WHEN** geometry-aware HiST-Beam evaluation 完成
+- **THEN** metrics MUST 包含 Top-1、Top-3、Top-5、coarse accuracy、fine accuracy 和 mean angular error
+- **AND** 若启用 geometry loss，metrics MUST 包含 geometry loss coverage 或 unavailable reason
+
+#### Scenario: 输出 prototype 指标
+- **WHEN** prototype alignment 启用
+- **THEN** metrics MUST 包含 prototype coverage、confidence mean、used sample count 和 prototype loss mean
+- **AND** 这些字段 MUST 被 LOSO summary 汇总
+
+### Requirement: HiST-Beam radio-semantic prototype variant
+HiST-Beam MUST 在现有 flat、hierarchical、shared-private、adapter-only、adapter+coarse-prototype 和 full fine-tuning baseline 之外，支持 radio-semantic prototype variant。该 variant MUST 显式使用 radio-semantic label、shared radio prototype 和可选 radio-conditioned beam inference，并 MUST 与现有 `v5_adapter_proto` coarse/private prototype baseline 可区分。
+
+#### Scenario: 构建 radio prototype variant
+- **WHEN** 用户配置 HiST-Beam variant 为 `v6_radio_proto`、`adapter_radio_proto` 或等价 radio-semantic prototype 模式
+- **THEN** 系统 MUST 构建 shared/private/adapted private 表征、radio head、beam head 和 radio prototype diagnostics
+- **AND** variant metadata MUST 记录 `proto_type=radio_semantic`
+
+#### Scenario: existing full fine-tuning baseline 不被重解释
+- **WHEN** 用户配置现有 `v6_full_finetune` 或 `full_finetune`
+- **THEN** 系统 MUST 继续按 full fine-tuning baseline 更新参数
+- **AND** summary MUST 不把该 run 标记为 radio-semantic prototype method
+
+### Requirement: HiST-Beam radio branch diagnostics
+启用 radio-semantic HiST-Beam 时，模型输出、loss diagnostics 和 evaluation artifact MUST 包含足以证明 radio branch 生效的字段。普通非 radio 配置 MUST 不要求这些字段。
+
+#### Scenario: radio branch 输出被记录
+- **WHEN** radio-semantic 配置启用且 forward 完成
+- **THEN** 模型 diagnostics MUST 包含 `radio_logits` 或等价 radio prediction 输出
+- **AND** diagnostics MUST 包含 `num_radio_classes`、radio label mode 和 radio condition 是否启用
+
+#### Scenario: radio loss no-op 可诊断
+- **WHEN** 配置启用 `lambda_radio` 但 batch 没有合法 radio labels
+- **THEN** loss diagnostics MUST 将 radio loss 标记为 unavailable 或 coverage 0
+- **AND** 系统 MUST 不用 0 coverage 的 radio loss 证明 radio branch 已生效
+
+### Requirement: HiST-Beam radio-conditioned beam head
+HiST-Beam MUST 支持 radio-conditioned beam head 作为 opt-in 行为。启用时，beam head 输入 MUST 包含 shared representation、adapted private representation 和 radio assignment embedding；关闭时，系统 MUST 保持现有 shared/private beam head 行为。
+
+#### Scenario: source 阶段使用 predicted radio assignment
+- **WHEN** source training 启用 `use_radio_condition_in_beam_head`
+- **THEN** 系统 MUST 从 `radio_logits` 的 soft assignment 计算 radio embedding
+- **AND** beam logits MUST 来自包含该 embedding 的 beam head 输入
+
+#### Scenario: target 阶段优先使用 source radio prototype assignment
+- **WHEN** target adaptation 或 target_test evaluation 启用 radio condition 且 source radio prototypes 可用
+- **THEN** 系统 MUST 使用 shared representation 到 `mu_radio_c` 的 assignment 计算 radio embedding
+- **AND** 若 prototype artifact 不可用，系统 MUST 记录 fallback 或 unavailable reason
+
+### Requirement: HiST-Beam source prototype 按需生成
+HiST-Beam LOSO executor MUST 根据 variant 和配置决定是否生成 source prototype。只有后续 stage 需要 prototype 的 variant 或用户显式要求保存 prototype 时，source training 才应生成 prototype artifact。
+
+#### Scenario: source-only baseline 跳过 prototype
+- **WHEN** LOSO run 的 source variant 为 `v0_flat`、`v1_hierarchical`、`v2_shared_private` 或其它不需要 target prototype alignment 的 source-only baseline
+- **THEN** source training 默认 MUST 跳过 source prototype 生成
+- **AND** run metadata MUST 记录 prototype status 为 `skipped` 及跳过原因
+
+#### Scenario: prototype variant 按需生成或复用
+- **WHEN** 后续 `v5_adapter_proto`、`v6_radio_proto` 或 `adapter_radio_proto` stage 需要 source prototype
+- **THEN** executor MUST 生成或复用与 fold、source scenes、variant、seed 和 prototype type 匹配的 source prototype artifact
+- **AND** 若 artifact 不可用，target adaptation MUST 给出清晰失败或 no-op 诊断
+
+### Requirement: Source prototype 进度与耗时诊断
+Source prototype 生成 MUST 提供 stage progress 和耗时诊断，避免 image-heavy source split 二次扫描时表现为无进度卡死。
+
+#### Scenario: prototype pass 写出 progress
+- **WHEN** executor 正在生成 source prototype
+- **THEN** stage progress MUST 周期性记录 processed batches、total batches 或可用近似进度
+- **AND** progress MUST 标明当前 phase 为 `source_prototype`
+
+#### Scenario: prototype metrics 记录额外扫数成本
+- **WHEN** source prototype 生成完成
+- **THEN** metrics MUST 记录 prototype generation duration、processed sample count、processed batch count 和 prototype coverage
+- **AND** LOSO summary MUST 能区分 source training time 和 prototype generation time
+
+### Requirement: MMW HiST-Beam LOSO stage 内存边界
+HiST-Beam MMW LOSO 执行器 MUST 在每个 stage 结束后关闭不再需要的 DataLoader worker，并释放 stage-local dataset/loader 引用，使后续 stage 或 run 不继承 image-heavy worker 内存。
+
+#### Scenario: source stage 结束释放 loader
+- **WHEN** `source_train` stage 完成、失败或被中断
+- **THEN** executor MUST 关闭 source DataLoader worker
+- **AND** stage metadata MUST 不保留不可序列化的大 dataset 或 loader 对象
+
+#### Scenario: run summary 记录吞吐配置
+- **WHEN** MMW HiST-Beam run 完成或 partial failure
+- **THEN** run metadata 或 summary MUST 记录 batch size、num_workers、persistent_workers、prefetch_factor、enabled modalities、seq_len、image cache policy 和 prototype strategy
+- **AND** 这些字段 MUST 足以解释 GPU 低利用率和 CPU 内存压力
+

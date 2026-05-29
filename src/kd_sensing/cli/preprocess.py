@@ -18,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
             "radar_fft_csv",
             "sequence_csv",
             "lidar_bev_cache",
+            "image_derived_cache",
+            "mmw_radar_maps",
             "raymobtime_s008_audit",
             "raymobtime_s008_index",
             "raymobtime_s008_ray_features",
@@ -38,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> dict:
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
@@ -53,7 +55,6 @@ def main(argv: list[str] | None = None) -> dict:
     result = runner.run()
     payload = {"result": str(result)}
     print_result(payload)
-    return payload
 
 
 def _apply_scene_override_to_sequence_preprocess(pre_cfg: dict, cfg: dict) -> None:

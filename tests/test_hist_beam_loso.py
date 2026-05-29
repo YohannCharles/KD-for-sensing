@@ -24,12 +24,16 @@ from kd_sensing.data.loso import (  # noqa: E402
     split_target_records,
 )
 from kd_sensing.engine.hist_beam_adaptation import (  # noqa: E402
+    TargetPrivatePrototypeBank,
+    adapt_hist_beam_target,
     apply_hist_beam_adaptation_strategy,
+    radio_prototype_assignment,
     trainable_parameter_summary,
 )
 from kd_sensing.engine.hist_beam_labels import hist_beam_labels  # noqa: E402
 from kd_sensing.engine.hist_beam_losses import compute_hist_beam_loss, prototype_consistency_loss  # noqa: E402
 from kd_sensing.engine.hist_beam_prototypes import (  # noqa: E402
+    generate_source_prototypes,
     load_source_prototypes,
     prototype_coverage_from_counts,
     validate_prototype_artifact,
@@ -37,12 +41,19 @@ from kd_sensing.engine.hist_beam_prototypes import (  # noqa: E402
 from kd_sensing.engine.hist_beam_loso_execution import (  # noqa: E402
     SOURCE_ONLY_VARIANTS,
     _few_shot_adaptation_loaders,
+    _prototype_decision,
     run_loso_execute_preflight,
 )
-from kd_sensing.engine.loso_data import build_target_adapt_test_datasets  # noqa: E402
+import kd_sensing.engine.loso_data as loso_data_module  # noqa: E402
+from kd_sensing.engine.loso_data import (  # noqa: E402
+    build_loso_source_train_loader,
+    build_loso_target_stage_loader,
+    build_target_adapt_test_datasets,
+)
 from kd_sensing.evaluation.hist_beam_outputs import (  # noqa: E402
     beam_power_metrics,
     calculate_hist_beam_metrics,
+    radio_semantic_metrics,
     summarize_loso_runs,
     write_hist_beam_predictions,
 )
@@ -145,6 +156,20 @@ def test_few_shot_sampler_handles_zero_budget_stratification_and_degrade():
     assert degrade.manifest["degrade_reason"] == "requested_budget_exceeds_available_target_adapt"
 
 
+def test_few_shot_sampler_prefers_radio_semantic_stratification():
+    records = [
+        {"sample_id": f"s{i}", "beam": i, "radio_semantic_label": i % 3, "relative_azimuth_bin": i % 2}
+        for i in range(9)
+    ]
+
+    sampled = sample_few_shot_records(records, budget=5, seed=2, group_size=4)
+
+    assert sampled.manifest["stratification"] == "radio_semantic"
+    assert sampled.manifest["protocol"] == "radio_semantic_stratified_few_shot"
+    assert sampled.manifest["radio_stratification_unavailable_reason"] is None
+    assert len({item["radio_semantic_label"] for item in sampled.manifest["labeled_samples"]}) == 3
+
+
 def test_few_shot_sampler_resolves_explicit_and_power_path_labels(tmp_path: Path):
     root = tmp_path / "scenario34"
     root.mkdir()
@@ -236,6 +261,41 @@ def test_hist_beam_registry_forward_shapes_loss_and_adapter_equivalence():
     assert loss.diagnostics["hist/loss_coarse"] > 0.0
 
 
+def test_hist_beam_radio_forward_condition_and_loss():
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=2,
+        group_size=4,
+        variant="v6_radio_proto",
+        radio_semantic={"enabled": True, "num_spread_bins": 3, "use_radio_head": True, "use_radio_condition_in_beam_head": True},
+        num_radio_classes=12,
+        use_radio_head=True,
+        use_radio_condition_in_beam_head=True,
+        radio_embed_dim=6,
+        num_heads=4,
+        num_layers=1,
+    )
+    output = model(gps_batch=torch.randn(3, 2, 3))
+    labels = torch.tensor([[0, 7], [12, 15], [4, 8]])
+    radio = torch.tensor([[0, 5], [11, -100], [2, 7]])
+    loss = compute_hist_beam_loss(
+        output,
+        labels,
+        cfg={"hist_beam": {"group_size": 4, "loss_weights": {"radio_semantic": 0.5}}},
+        radio_semantic_labels=radio,
+    )
+
+    assert output["logits"].shape == (3, 2, 16)
+    assert output["radio_logits"].shape == (3, 2, 12)
+    assert output["radio_assignment"].shape == (3, 12)
+    assert output["hist_beam"]["proto_type"] == "radio_semantic"
+    assert loss.radio_semantic.isfinite()
+    assert loss.diagnostics["hist/radio_coverage"] > 0.0
+
+
 def test_hist_beam_label_helper_rejects_invalid_group_size():
     labels = torch.tensor([[0, 7], [8, 15]])
 
@@ -293,6 +353,133 @@ def test_prototype_artifact_loading_coverage_and_confidence_filter(tmp_path: Pat
     assert 0.0 <= metrics["prototype_coverage"] <= 1.0
 
 
+def test_radio_prototype_assignment_bank_and_artifact_generation(tmp_path: Path):
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=1,
+        group_size=4,
+        variant="v6_radio_proto",
+        radio_semantic={"enabled": True, "use_radio_head": True},
+        num_radio_classes=12,
+        use_radio_head=True,
+        num_heads=4,
+        num_layers=1,
+    )
+    batch = {
+        "gps": torch.randn(4, 1, 3),
+        "input_beam": torch.tensor([[0], [1], [2], [3]]),
+        "target_beam": torch.tensor([[0], [1], [2], [3]]),
+        "radio_semantic_label": torch.tensor([[0], [1], [1], [5]]),
+        "radio_semantic_available": torch.ones(4, 1, dtype=torch.bool),
+    }
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "data": {"dataset": {"seq_len": 1, "num_pred": 1}},
+        "model": {
+            "seq_length_student": 1,
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "student": {
+                "type": "hist_beam_fusion",
+                "modalities": ["gps"],
+                "num_classes": 16,
+                "group_size": 4,
+                "num_radio_classes": 12,
+                "d_model": 16,
+                "variant": "v6_radio_proto",
+            },
+        },
+        "hist_beam": {
+            "group_size": 4,
+            "proto_type": "radio_semantic",
+            "radio_semantic": {"enabled": True, "num_radio_classes": 12},
+        },
+    }
+    artifact = generate_source_prototypes(
+        model,
+        torch.utils.data.DataLoader([batch], batch_size=None),
+        cfg,
+        torch.device("cpu"),
+        output_path=tmp_path / "radio_proto.pt",
+    )
+    alpha, metrics = radio_prototype_assignment(
+        torch.randn(4, 16),
+        artifact["mu_radio_c"],
+        counts=artifact["count_radio"],
+        tau=1.0,
+    )
+    bank = TargetPrivatePrototypeBank(num_classes=12, dim=16, device=torch.device("cpu"), dtype=torch.float32)
+    update = bank.update(torch.randn(4, 16), alpha.argmax(dim=-1), alpha.max(dim=-1).values, threshold=0.0)
+    bank_loss, bank_metrics = bank.loss(torch.randn(4, 16), alpha.argmax(dim=-1))
+
+    validate_prototype_artifact(artifact)
+    assert artifact["metadata"]["prototype_space"] == "shared_radio_semantic"
+    assert artifact["count_radio"][1].item() == 2
+    assert metrics["radio_prototype_available_classes"] >= 3
+    assert update["target_private_update_used"] == 4
+    assert bank_loss.isfinite()
+    assert bank_metrics["target_private_prototype_used"] > 0
+
+
+def test_zero_label_radio_adaptation_records_no_target_leakage():
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=1,
+        group_size=4,
+        variant="v6_radio_proto",
+        radio_semantic={"enabled": True, "use_radio_head": True},
+        num_radio_classes=12,
+        use_radio_head=True,
+        num_heads=4,
+        num_layers=1,
+    )
+    apply_hist_beam_adaptation_strategy(model, "v6_radio_proto")
+    optimizer = torch.optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.01)
+    batch = {
+        "gps": torch.randn(2, 1, 3),
+        "input_beam": torch.tensor([[0], [1]]),
+        "target_beam": torch.tensor([[0], [1]]),
+        "radio_semantic_label": torch.tensor([[0], [1]]),
+        "radio_semantic_available": torch.ones(2, 1, dtype=torch.bool),
+    }
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "data": {"dataset": {"seq_len": 1, "num_pred": 1}},
+        "model": {
+            "seq_length_student": 1,
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "student": {
+                "type": "hist_beam_fusion",
+                "modalities": ["gps"],
+                "num_classes": 16,
+                "group_size": 4,
+            },
+        },
+        "hist_beam": {"group_size": 4, "adaptation": {"entropy_weight": 0.01, "prototype_weight": 0.0}},
+    }
+    result = adapt_hist_beam_target(
+        model,
+        None,
+        torch.utils.data.DataLoader([batch], batch_size=None),
+        cfg,
+        torch.device("cpu"),
+        optimizer,
+        epochs=1,
+        label_budget=0,
+    )
+
+    assert result["used_target_labels"] is False
+    assert result["used_target_beam_power_for_training"] is False
+    assert result["used_target_radio_label_for_training"] is False
+
+
 def test_hist_beam_metrics_prediction_writer_power_and_summary(tmp_path: Path):
     outputs = torch.tensor([[[3.0, 1.0, 0.0, -1.0]], [[0.0, 1.0, 4.0, -1.0]]])
     labels = torch.tensor([[0], [2]])
@@ -305,12 +492,18 @@ def test_hist_beam_metrics_prediction_writer_power_and_summary(tmp_path: Path):
         group_size=2,
         top_k=3,
         variant_metadata={"variant": "v3_decoupled"},
+        radio_logits=torch.tensor([[[2.0, 0.0]], [[0.0, 2.0]]]),
+        radio_labels=torch.tensor([[0], [1]]),
     )
     power_missing = beam_power_metrics(torch.tensor([0, 2]), torch.tensor([0, 2]), None)
     power = beam_power_metrics(
         torch.tensor([0, 1]),
         torch.tensor([0, 2]),
         torch.tensor([[1.0, 0.5, 0.1], [0.2, 0.5, 1.0]]),
+    )
+    radio_metrics = radio_semantic_metrics(
+        torch.tensor([[[2.0, 0.0]], [[0.0, 2.0]]]),
+        torch.tensor([[0], [1]]),
     )
     summary = summarize_loso_runs(
         [
@@ -326,9 +519,12 @@ def test_hist_beam_metrics_prediction_writer_power_and_summary(tmp_path: Path):
     assert rows[0]["sample_id"] == "a"
     assert json.loads(rows[0]["topk_predictions"]) == [0, 1, 2]
     assert rows[0]["predicted_beam"] == rows[0]["pred_beam"]
+    assert rows[0]["radio_true"] == "0"
+    assert rows[0]["radio_pred"] == "0"
     assert rows[0]["split"] == "test"
     assert power_missing["power_metrics_available"] is False
     assert power["power_metrics_available"] is True
+    assert radio_metrics["radio_semantic_accuracy"] == pytest.approx(1.0)
     assert summary["rows"][0]["top1_mean"] == pytest.approx(0.75)
 
 
@@ -402,6 +598,220 @@ def test_hist_beam_quick_smoke_is_resource_probe_and_quick_validation_can_expand
     assert skipped["runs"] == []
     assert single["runs"][0]["source_scenes"] == [31, 32, 34]
     assert all(run["target_test_for_training"] is False for run in validation_plan["runs"])
+
+
+def test_mmw_loso_plan_uses_availability_claim_guard(tmp_path: Path):
+    scenario_a = "Town10_skybridge_seed24"
+    scenario_b = "Town10_crossroad_seed24"
+    availability_path = tmp_path / "data_availability.json"
+    prepared_a = tmp_path / "MMW" / "sunny" / "Prepared" / scenario_a
+    prepared_b = tmp_path / "MMW" / "sunny" / "Prepared" / scenario_b
+
+    _write_json(
+        availability_path,
+        {
+            "dataset_family": "MMW",
+            "ready_scenario_count": 1,
+            "claim_scope": "single_scene_smoke",
+            "cross_scene_claim_allowed": False,
+            "entries": [
+                {
+                    "status": "single_scene_ready",
+                    "condition": "sunny",
+                    "town": "Town10",
+                    "scenario": scenario_a,
+                    "prepared_root": str(prepared_a),
+                    "window_count": 8,
+                }
+            ],
+        },
+    )
+    smoke_cfg = {
+        "data": {"dataset": {"type": "mmw"}},
+        "model": {"modalities": ["mmwave"]},
+        "loso": {
+            "dataset_family": "MMW",
+            "data_availability_path": str(availability_path),
+            "protocol": "scenario_loso",
+        },
+    }
+
+    smoke_plan = build_loso_run_plan(
+        smoke_cfg,
+        variants=["v5_adapter_proto"],
+        budgets=[0, 5],
+        seeds=[0],
+        max_runs=1,
+    )
+
+    assert smoke_plan["dataset_family"] == "MMW"
+    assert smoke_plan["claim_scope"] == "single_scene_smoke"
+    assert smoke_plan["cross_scene_claim_allowed"] is False
+    assert smoke_plan["planned_run_count"] == 2
+    assert len(smoke_plan["runs"]) == 1
+    assert smoke_plan["runs"][0]["fold"] == f"smoke_{scenario_a}"
+    assert smoke_plan["runs"][0]["source_scenes"] == [scenario_a]
+    assert smoke_plan["runs"][0]["cross_scene_claim_allowed"] is False
+    assert smoke_cfg["loso"]["scene_data_roots"][scenario_a] == str(tmp_path / "MMW" / "sunny")
+    assert smoke_cfg["loso"]["scene_csv_names"][scenario_a]["test_csv_name"].endswith("splits/test.csv")
+
+    _write_json(
+        availability_path,
+        {
+            "dataset_family": "MMW",
+            "ready_scenario_count": 2,
+            "claim_scope": "scenario_loso",
+            "cross_scene_claim_allowed": True,
+            "entries": [
+                {
+                    "status": "ready_for_loso",
+                    "condition": "sunny",
+                    "town": "Town10",
+                    "scenario": scenario_a,
+                    "prepared_root": str(prepared_a),
+                    "window_count": 8,
+                },
+                {
+                    "status": "ready_for_loso",
+                    "condition": "sunny",
+                    "town": "Town10",
+                    "scenario": scenario_b,
+                    "prepared_root": str(prepared_b),
+                    "window_count": 8,
+                },
+            ],
+        },
+    )
+    loso_cfg = {
+        "data": {"dataset": {"type": "mmw"}},
+        "model": {"modalities": ["mmwave"]},
+        "loso": {"dataset_family": "MMW", "data_availability_path": str(availability_path)},
+    }
+
+    loso_plan = build_loso_run_plan(loso_cfg, variants=["v3_decoupled"], budgets=[0], seeds=[0])
+
+    assert loso_plan["claim_scope"] == "scenario_loso"
+    assert loso_plan["cross_scene_claim_allowed"] is True
+    assert loso_plan["planned_run_count"] == 2
+    assert {run["target_scene"] for run in loso_plan["runs"]} == {scenario_a, scenario_b}
+    assert all(run["cross_scene_claim_allowed"] is True for run in loso_plan["runs"])
+    assert all(run["target_scene"] not in run["source_scenes"] for run in loso_plan["runs"])
+
+    filtered_plan = build_loso_run_plan(
+        loso_cfg,
+        target_scene=scenario_a,
+        variants=["v4_adapter"],
+        budgets=[5],
+        seeds=[0],
+    )
+
+    assert filtered_plan["planned_run_count"] == 1
+    assert [run["target_scene"] for run in filtered_plan["runs"]] == [scenario_a]
+    assert filtered_plan["runs"][0]["source_scenes"] == [scenario_b]
+
+    explicit_source_plan = build_loso_run_plan(
+        loso_cfg,
+        target_scene=scenario_a,
+        source_scenes=[scenario_b],
+        variants=["v4_adapter"],
+        budgets=[5],
+        seeds=[0],
+    )
+
+    assert explicit_source_plan["runs"][0]["source_scenes"] == [scenario_b]
+
+    _write_mmw_preflight_scene(tmp_path / "MMW" / "sunny", scenario_a)
+    _write_mmw_preflight_scene(tmp_path / "MMW" / "sunny", scenario_b)
+    preflight = run_loso_execute_preflight(loso_plan, loso_cfg, tmp_path / "out")
+
+    assert preflight["status"] == "passed"
+    assert set(preflight["checked_scenes"]) == {scenario_a, scenario_b}
+
+    loso_cfg["loso"]["max_runs"] = 1
+    result = run_hist_beam_loso(
+        loso_cfg,
+        args=_loso_args(tmp_path, execute=True, variants="v5_adapter_proto", budgets="0"),
+        stage_executor=FakeStageExecutor(),
+    )
+    with Path(result["execution"]["summary_paths"]["json"]).open("r", encoding="utf-8") as f:
+        summary = json.load(f)
+
+    assert summary["claim_scope"] == "scenario_loso"
+    assert summary["cross_scene_claim_allowed"] is True
+    assert summary["runs"][0]["dataset_family"] == "MMW"
+    assert summary["runs"][0]["condition"] == "sunny"
+    assert summary["runs"][0]["town"] == "Town10"
+    assert summary["runs"][0]["prototype_status"] is None or summary["runs"][0]["prototype_status"] == "effective"
+
+
+def test_loso_stage_local_helpers_delay_target_dataset_construction(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class TinyDataset(torch.utils.data.Dataset):
+        def __init__(self, split: str, scene: str):
+            self.split = split
+            self.scene_id = scene
+            self.scene_slug = scene
+            self.enabled_modalities = ("image", "gps", "mmwave")
+            self.root_csv = None
+            self.gps_scaler = object()
+            self.mmwave_scaler = object()
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, index):  # noqa: ARG002
+            return {"input_beam": torch.tensor([0]), "target_beam": torch.tensor([0])}
+
+    def fake_build_dataset(cfg, split, **kwargs):  # noqa: ANN001, ARG001
+        scene = str(cfg["data"]["dataset"].get("scene"))
+        calls.append((scene, split))
+        return TinyDataset(split, scene)
+
+    monkeypatch.setattr(loso_data_module, "build_dataset", fake_build_dataset)
+    monkeypatch.setattr(
+        loso_data_module,
+        "_split_target_dataset_records",
+        lambda dataset, dataset_cfg, adapt_fraction, seed: (  # noqa: ARG005
+            loso_data_module.TargetSplit(adapt_indices=(0,), test_indices=(1,), metadata={}),
+            (0, 1),
+        ),
+    )
+    cfg = {
+        "data": {"dataset": {"type": "mmw"}, "dataloader": {"batch_size": 1, "num_workers": 0}},
+        "model": {"student": {"modalities": ["image", "gps", "mmwave"]}},
+        "experiment": {"task": "fusion"},
+    }
+    fold = {"dataset_family": "MMW", "target_scene": "target", "source_scenes": ["source_a", "source_b"]}
+
+    source = build_loso_source_train_loader(cfg, fold)
+
+    assert set(source) >= {"source_train", "normalization_kwargs"}
+    assert calls == [("source_a", "train"), ("source_b", "train")]
+
+    calls.clear()
+    target = build_loso_target_stage_loader(
+        cfg,
+        fold,
+        stage="target_adapt",
+        dataset_kwargs=source["normalization_kwargs"],
+    )
+
+    assert "target_adapt" in target
+    assert calls == [("target", "test")]
+
+
+def test_prototype_decision_skips_source_only_and_generates_for_proto_variants():
+    cfg = {"hist_beam": {"prototype": {"strategy": "auto"}}}
+
+    skipped = _prototype_decision({"variant": "v0_flat"}, cfg, source_variant="v0_flat")
+    generated = _prototype_decision({"variant": "v5_adapter_proto"}, cfg, source_variant="v3_decoupled")
+
+    assert skipped["generate"] is False
+    assert skipped["status"] == "skipped"
+    assert "source_only_variant" in skipped["reason"]
+    assert generated["generate"] is True
+    assert "variant_requires_prototype" in generated["reason"]
 
 
 def test_hist_beam_loso_execute_uses_runner_and_records_stage_metadata(tmp_path: Path):
@@ -684,6 +1094,27 @@ def _write_scene_fixture(root: Path) -> None:
         (root / radar_name).write_text("0\n", encoding="utf-8")
     for csv_name in ("train.csv", "test.csv"):
         with (root / csv_name).open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerow(row)
+
+
+def _write_mmw_preflight_scene(condition_root: Path, scenario: str) -> None:
+    root = condition_root / "Prepared" / scenario
+    power_path = root / "beam_power" / "cav_1" / "000000.txt"
+    _write_power_vector(power_path, label=3)
+    rel_power_path = power_path.relative_to(condition_root)
+    split_root = root / "splits"
+    split_root.mkdir(parents=True, exist_ok=True)
+    headers = ["seq_index", "beam1", "future_beam1", "mmwave1"]
+    row = {
+        "seq_index": "0",
+        "beam1": str(rel_power_path),
+        "future_beam1": str(rel_power_path),
+        "mmwave1": str(rel_power_path),
+    }
+    for csv_name in ("train.csv", "test.csv"):
+        with (split_root / csv_name).open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
             writer.writerow(row)

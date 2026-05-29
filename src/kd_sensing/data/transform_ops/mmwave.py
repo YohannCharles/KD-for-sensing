@@ -200,16 +200,23 @@ def load_mmwave_feature_sequence(
     seq_len: int,
     expected_dim: int = MMWAVE_POWER_DIM,
     epsilon: float = 1e-12,
+    frame_feature_cache: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     selected = mmwave_paths[-seq_len:]
-    features = [
-        build_mmwave_db_features(
+    features = []
+    for path in selected:
+        cache_key = str(path)
+        if frame_feature_cache is not None and cache_key in frame_feature_cache:
+            features.append(frame_feature_cache[cache_key])
+            continue
+        feature = build_mmwave_db_features(
             read_mmwave_power_vector(data_root, path, expected_dim=expected_dim),
             expected_dim=expected_dim,
             epsilon=epsilon,
         )
-        for path in selected
-    ]
+        if frame_feature_cache is not None:
+            frame_feature_cache[cache_key] = feature
+        features.append(feature)
     return np.stack(features, axis=0).astype(np.float32)
 
 

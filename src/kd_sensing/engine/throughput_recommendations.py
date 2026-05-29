@@ -34,6 +34,16 @@ def recommend_parallel_training(
     )
     prefetch_factor = 1 if parallel_runs >= 3 or len(modalities) >= 4 else 2
     is_multimodal_nf = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).lower() == "multimodal_nf"
+    mmw_image_heavy = _is_mmw_image_heavy(cfg, modalities)
+    if mmw_image_heavy:
+        worker_budget = _mmw_worker_budget(
+            cfg,
+            parallel_runs=parallel_runs,
+            cpu_count=cpu_count,
+            worker_budget=worker_budget,
+            profile=profile,
+        )
+        prefetch_factor = 1
     lidar_cache = lidar_cache_coverage(cfg) if check_cache and "lidar" in modalities else _skipped_cache_status(modalities)
     cache_policy = _recommended_cache_policy(lidar_cache, cache_min_coverage)
     overrides = [
@@ -47,6 +57,17 @@ def recommend_parallel_training(
     ]
     if cache_policy is not None and not is_multimodal_nf:
         overrides.append(f"data.cache.policy={cache_policy}")
+    if mmw_image_heavy:
+        recommended_batch = _mmw_recommended_batch_size(cfg, parallel_runs=parallel_runs, profile=profile)
+        current_batch = int(cfg.get("data", {}).get("dataloader", {}).get("batch_size", recommended_batch) or recommended_batch)
+        if recommended_batch < current_batch:
+            overrides.append(f"data.dataloader.batch_size={recommended_batch}")
+        overrides.extend(
+            [
+                "data.cache.image.policy=auto",
+                "data.dataloader.train_persistent_workers=false",
+            ]
+        )
     multimodal_nf_cache = (
         multimodal_nf_derived_cache_recommendation(
             cfg,
@@ -104,14 +125,31 @@ def recommend_parallel_training(
             "progress_enabled": False,
             "cache_policy": cache_policy,
             "amp": "optional_after_cache_and_loader_wait_are_under_control",
+            "mmw_image_heavy": _mmw_image_heavy_recommendations(
+                cfg,
+                modalities=modalities,
+                parallel_runs=parallel_runs,
+                worker_budget=worker_budget,
+                profile=profile,
+            ),
             "multimodal_nf_io": multimodal_nf_io,
         },
         "cache": {
             "lidar": lidar_cache,
+            "image": (
+                {
+                    "status": "image_heavy_policy_recommended",
+                    "recommended_policy": "auto",
+                    "prewarm_command": _image_derived_cache_prewarm_command(),
+                }
+                if mmw_image_heavy
+                else {"status": "not_applicable", "enabled": "image" in modalities}
+            ),
             "multimodal_nf": multimodal_nf_cache,
             "min_coverage_for_read_only": float(cache_min_coverage),
             "prewarm_command": (
                 _multimodal_nf_prewarm_command() if is_multimodal_nf and multimodal_nf_cache else
+                _image_derived_cache_prewarm_command() if mmw_image_heavy else
                 _lidar_prewarm_command() if _needs_lidar_prewarm(lidar_cache, cache_min_coverage) else None
             ),
         },
@@ -124,6 +162,7 @@ def recommend_parallel_training(
             "Keep AMP optional until profile output shows DataLoader wait is no longer dominating GPU step time.",
             "With output.progress.enabled=false, use epoch logs, train_log.json, and TensorBoard instead of batch tqdm.",
             *(_profile_driven_notes(profile) if is_multimodal_nf else []),
+            *(_mmw_image_heavy_notes(profile) if mmw_image_heavy else []),
             *(_multimodal_nf_notes(modalities) if is_multimodal_nf else []),
             *(_multimodal_nf_cache_notes(multimodal_nf_cache) if is_multimodal_nf else []),
         ],
@@ -251,6 +290,122 @@ def _recommended_worker_budget(*, parallel_runs: int, cpu_count: int, modality_c
     }
 
 
+def _is_mmw_image_heavy(cfg: dict[str, Any], modalities: list[str]) -> bool:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
+    dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
+    seq_len = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length_student", 0)) or 0)
+    return dataset_type == "mmw" and "image" in modalities and seq_len >= 8
+
+
+def _mmw_worker_budget(
+    cfg: dict[str, Any],
+    *,
+    parallel_runs: int,
+    cpu_count: int,
+    worker_budget: dict[str, Any],
+    profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    risk = _profile_memory_or_loader_risk(profile)
+    cap = 1 if parallel_runs >= 4 or risk else 2
+    train_workers = max(0, min(int(worker_budget.get("train_num_workers", 1)), cap))
+    if cpu_count <= parallel_runs * 2:
+        train_workers = min(train_workers, 1)
+    return {
+        **worker_budget,
+        "train_num_workers": int(train_workers),
+        "test_num_workers": 0,
+        "train_persistent_workers": False,
+        "test_persistent_workers": False,
+    }
+
+
+def _mmw_recommended_batch_size(
+    cfg: dict[str, Any],
+    *,
+    parallel_runs: int,
+    profile: dict[str, Any] | None,
+) -> int:
+    loader_cfg = cfg.get("data", {}).get("dataloader", {}) if isinstance(cfg.get("data"), dict) else {}
+    current = int(loader_cfg.get("batch_size", loader_cfg.get("train_batch_size", 4)) or 4)
+    if parallel_runs >= 4 or _profile_memory_or_loader_risk(profile):
+        return max(1, min(current, 2))
+    return max(1, min(current, 4))
+
+
+def _mmw_image_heavy_recommendations(
+    cfg: dict[str, Any],
+    *,
+    modalities: list[str],
+    parallel_runs: int,
+    worker_budget: dict[str, Any],
+    profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not _is_mmw_image_heavy(cfg, modalities):
+        return {"enabled": False}
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    loader_cfg = cfg.get("data", {}).get("dataloader", {})
+    current_batch = int(loader_cfg.get("batch_size", loader_cfg.get("train_batch_size", 4)) or 4)
+    recommended_batch = _mmw_recommended_batch_size(cfg, parallel_runs=parallel_runs, profile=profile)
+    recommended_parallel_runs = max(1, min(int(parallel_runs), 2 if _profile_memory_or_loader_risk(profile) else 3))
+    return {
+        "enabled": True,
+        "risk": "mmw_image_heavy_worker_rss",
+        "seq_len": int(dataset_cfg.get("seq_len", 0) or 0),
+        "batch_size": current_batch,
+        "recommended_batch_size": recommended_batch,
+        "parallel_runs": int(parallel_runs),
+        "recommended_parallel_runs": recommended_parallel_runs,
+        "train_num_workers_upper_bound": int(worker_budget.get("train_num_workers", 0)),
+        "prefetch_factor": 1,
+        "persistent_workers": False,
+        "image_cache_policy": "auto",
+        "amp_limit": "AMP does not reduce PNG decode, resize, or DataLoader worker RSS.",
+        "actions": [
+            "limit_parallel_runs",
+            "reduce_batch_size",
+            "cap_train_num_workers",
+            "disable_persistent_workers",
+            "enable_image_derived_cache",
+        ],
+        "profile_used": isinstance(profile, dict),
+        "profile_io_risk": profile.get("io_risk", {}) if isinstance(profile, dict) else {},
+    }
+
+
+def _profile_memory_or_loader_risk(profile: dict[str, Any] | None) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    io_risk = profile.get("io_risk", {}) if isinstance(profile.get("io_risk"), dict) else {}
+    text = json_dumps_lower(profile)
+    return bool(
+        io_risk.get("loader_wait_dominates_step")
+        or io_risk.get("worker_memory_risk")
+        or "exit code 137" in text
+        or "killed" in text
+        or "oom" in text
+    )
+
+
+def json_dumps_lower(payload: dict[str, Any]) -> str:
+    import json
+
+    try:
+        return json.dumps(payload, sort_keys=True).lower()
+    except Exception:
+        return str(payload).lower()
+
+
+def _mmw_image_heavy_notes(profile: dict[str, Any] | None) -> list[str]:
+    notes = [
+        "MMW image-heavy runs are usually limited by PNG decode/resize and DataLoader worker RSS before AMP helps.",
+        "Prefer reducing parallel runs, batch size, train workers, and persistent workers before increasing workers.",
+        "Use data.cache.image.policy=auto or prewarm image-derived cache before long LOSO runs.",
+    ]
+    if _profile_memory_or_loader_risk(profile):
+        notes.append("Supplied profile/log risk indicates loader wait, OOM, or killed process; keep recommendations conservative.")
+    return notes
+
+
 def _recommended_cache_policy(lidar_cache: dict[str, Any], min_coverage: float) -> str | None:
     if lidar_cache.get("status") == "not_applicable":
         return None
@@ -330,6 +485,10 @@ def _lidar_prewarm_command() -> str:
 
 def _multimodal_nf_prewarm_command() -> str:
     return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/multimodal_nf_derived_cache.yaml"
+
+
+def _image_derived_cache_prewarm_command() -> str:
+    return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/mmw_image_derived_cache.yaml"
 
 
 def _multimodal_nf_cache_probe_items(

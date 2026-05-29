@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from kd_sensing.data.scenes import resolve_deepsense_scene
+from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder
 from kd_sensing.data.transform_ops.io import joined_resource
 
 
@@ -202,6 +203,8 @@ def sample_few_shot_records(
     sample_id_key: str = "sample_id",
     data_root: str | Path | None = None,
     num_classes: int = 64,
+    radio_label_key: str = "radio_semantic_label",
+    radio_builder_config: Mapping[str, Any] | None = None,
 ) -> FewShotSampling:
     requested = int(budget)
     if requested not in SUPPORTED_LABEL_BUDGETS:
@@ -222,6 +225,8 @@ def sample_few_shot_records(
             label_key=label_key,
             data_root=data_root,
             num_classes=num_classes,
+            radio_label_key=radio_label_key,
+            radio_builder_config=radio_builder_config,
         )
     if requested >= total:
         reason = "requested_budget_exceeds_available_target_adapt"
@@ -237,10 +242,58 @@ def sample_few_shot_records(
             label_key=label_key,
             data_root=data_root,
             num_classes=num_classes,
+            radio_label_key=radio_label_key,
+            radio_builder_config=radio_builder_config,
         )
 
     rng = np.random.default_rng(int(seed))
-    group_to_indices: dict[int, list[int]] = {}
+    radio_to_indices: dict[int, list[int]] = {}
+    for index, record in enumerate(records):
+        radio_label, radio_source = _resolve_radio_label_with_source(
+            record,
+            radio_label_key=radio_label_key,
+            label_key=label_key,
+            data_root=data_root,
+            num_classes=num_classes,
+            group_size=group_size,
+            radio_builder_config=radio_builder_config,
+        )
+        if radio_label is None:
+            continue
+        radio_to_indices.setdefault(int(radio_label), []).append(index)
+    if radio_to_indices:
+        selected: list[int] = []
+        for radio_label in sorted(radio_to_indices):
+            if len(selected) >= requested:
+                break
+            choices = list(radio_to_indices[radio_label])
+            rng.shuffle(choices)
+            selected.append(int(choices[0]))
+        if len(selected) < requested:
+            remaining = [index for index in range(total) if index not in set(selected)]
+            rng.shuffle(remaining)
+            selected.extend(int(index) for index in remaining[: requested - len(selected)])
+        selected = sorted(selected[:requested])
+        unlabeled = tuple(index for index in range(total) if index not in set(selected))
+        return _few_shot_result(
+            tuple(selected),
+            unlabeled,
+            records,
+            requested,
+            seed,
+            group_size,
+            None,
+            sample_id_key,
+            label_key=label_key,
+            data_root=data_root,
+            num_classes=num_classes,
+            stratification="radio_semantic",
+            radio_label_key=radio_label_key,
+            radio_builder_config=radio_builder_config,
+        )
+
+    group_to_indices: dict[tuple[int, Any], list[int]] = {}
+    used_azimuth = False
     for index, record in enumerate(records):
         label = _resolve_beam_label(
             record,
@@ -249,9 +302,11 @@ def sample_few_shot_records(
             num_classes=num_classes,
         )
         group = _coarse_group(label, group_size)
-        group_to_indices.setdefault(group, []).append(index)
+        azimuth_bin = _clean_group_value(record.get("relative_azimuth_bin"))
+        used_azimuth = used_azimuth or azimuth_bin is not None
+        group_to_indices.setdefault((group, azimuth_bin), []).append(index)
     selected: list[int] = []
-    for group in sorted(group_to_indices):
+    for group in sorted(group_to_indices, key=lambda item: (item[0], str(item[1]))):
         if len(selected) >= requested:
             break
         choices = list(group_to_indices[group])
@@ -275,6 +330,9 @@ def sample_few_shot_records(
         label_key=label_key,
         data_root=data_root,
         num_classes=num_classes,
+        stratification="coarse_sector_relative_azimuth" if used_azimuth else "coarse_group_only",
+        radio_label_key=radio_label_key,
+        radio_builder_config=radio_builder_config,
     )
 
 
@@ -290,6 +348,9 @@ def _few_shot_result(
     label_key: str = "beam",
     data_root: str | Path | None = None,
     num_classes: int = 64,
+    stratification: str = "coarse_group_only",
+    radio_label_key: str = "radio_semantic_label",
+    radio_builder_config: Mapping[str, Any] | None = None,
 ) -> FewShotSampling:
     labeled_samples = []
     for index in labeled:
@@ -300,28 +361,52 @@ def _few_shot_result(
             data_root=data_root,
             num_classes=num_classes,
         )
+        radio_label, radio_source = _resolve_radio_label_with_source(
+            record,
+            radio_label_key=radio_label_key,
+            label_key=label_key,
+            data_root=data_root,
+            num_classes=num_classes,
+            group_size=group_size,
+            radio_builder_config=radio_builder_config,
+        )
         labeled_samples.append(
             {
                 "index": int(index),
                 "sample_id": _sample_id(record, index, sample_id_key=sample_id_key),
                 "beam": beam,
                 "coarse_group": None if beam is None else int(beam // group_size),
+                "radio_semantic_label": radio_label,
+                "relative_azimuth_bin": _clean_group_value(record.get("relative_azimuth_bin")),
                 "label_key": label_key,
                 "label_source": source,
+                "radio_label_source": radio_source,
+                "seed": int(seed),
                 "labeled": True,
             }
         )
+    radio_unavailable_reason = None if stratification == "radio_semantic" else "radio_semantic_label_unavailable"
     manifest = {
-        "protocol": "coarse_group_stratified_few_shot",
+        "protocol": _few_shot_protocol(stratification),
         "requested_budget": int(requested_budget),
         "actual_labeled_count": len(labeled),
         "unlabeled_count": len(unlabeled),
         "seed": int(seed),
         "group_size": int(group_size),
+        "stratification": stratification,
         "degrade_reason": degrade_reason,
+        "radio_stratification_unavailable_reason": radio_unavailable_reason,
         "labeled_samples": labeled_samples,
     }
     return FewShotSampling(labeled_indices=labeled, unlabeled_indices=unlabeled, manifest=manifest)
+
+
+def _few_shot_protocol(stratification: str) -> str:
+    if stratification == "radio_semantic":
+        return "radio_semantic_stratified_few_shot"
+    if stratification == "coarse_sector_relative_azimuth":
+        return "coarse_sector_relative_azimuth_stratified_few_shot"
+    return "coarse_group_stratified_few_shot"
 
 
 def _target_split_metadata(
@@ -446,6 +531,66 @@ def _resolve_beam_label_with_source(
         if parsed is not None:
             return parsed, key
     return None, None
+
+
+def _resolve_radio_label_with_source(
+    record: Mapping[str, Any],
+    *,
+    radio_label_key: str,
+    label_key: str,
+    data_root: str | Path | None,
+    num_classes: int,
+    group_size: int,
+    radio_builder_config: Mapping[str, Any] | None,
+) -> tuple[int | None, str | None]:
+    for key in _radio_label_candidate_keys(radio_label_key, label_key):
+        if key not in record:
+            continue
+        parsed = _parse_int_label(record.get(key))
+        if parsed is not None and parsed >= 0:
+            return parsed, key
+    if not radio_builder_config:
+        return None, None
+    builder = RadioSemanticLabelBuilder.from_config(
+        radio_builder_config,
+        num_beams=num_classes,
+        group_size=group_size,
+    )
+    beam, beam_source = _resolve_beam_label_with_source(
+        record,
+        label_key=label_key,
+        data_root=data_root,
+        num_classes=num_classes,
+    )
+    power = None
+    path_source = None
+    if data_root is not None:
+        value = record.get(label_key)
+        if _valid_path_value(value):
+            try:
+                power = np.loadtxt(joined_resource(data_root, str(value)), dtype=np.float64)
+                path_source = f"{label_key}:radio_peak_spread"
+            except Exception:
+                power = None
+    result = builder.derive(beam_power=power, beam_label=beam, input_source=path_source or beam_source)
+    if result.label is None:
+        return None, result.diagnostics.get("unavailable_reason")
+    return int(result.label), path_source or beam_source or "radio_semantic_builder"
+
+
+def _radio_label_candidate_keys(radio_label_key: str, label_key: str) -> list[str]:
+    candidates = [radio_label_key, "radio_semantic_label"]
+    if label_key.startswith("future_beam"):
+        suffix = label_key[len("future_beam") :]
+        candidates.extend(
+            [
+                f"future_radio_semantic_label{suffix}",
+                f"future_radio_label{suffix}",
+                f"radio_semantic_label{suffix}",
+            ]
+        )
+    candidates.extend(["radio_label", "target_radio_semantic_label"])
+    return [key for index, key in enumerate(candidates) if key and key not in candidates[:index]]
 
 
 def _label_candidate_keys(label_key: str) -> list[str]:

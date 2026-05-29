@@ -64,6 +64,12 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["lidar_preprocessing"] = lidar_preprocessing_metadata_from_dataset(dataset)
     if getattr(dataset, "use_mmwave", False):
         metadata["mmwave_normalize"] = bool(getattr(dataset, "mmwave_normalize", False))
+        if getattr(dataset, "mmwave_scaler_metadata", None):
+            metadata["mmwave_scaler"] = dict(getattr(dataset, "mmwave_scaler_metadata"))
+    if getattr(dataset, "use_gps", False):
+        metadata["gps_normalize"] = bool(getattr(dataset, "gps_normalize", False))
+        if getattr(dataset, "gps_scaler_metadata", None):
+            metadata["gps_scaler"] = dict(getattr(dataset, "gps_scaler_metadata"))
     if getattr(dataset, "use_csi", False):
         metadata["csi_train_rms"] = bool(getattr(dataset, "csi_train_rms", False))
         normalizer = getattr(dataset, "csi_rms_normalizer", None)
@@ -88,6 +94,8 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["image_profile"] = profile
         metadata["image_channels"] = int(profile_metadata["channels"])
         metadata["processed_image_source"] = "rgb_imagenet"
+        if hasattr(dataset, "image_cache_metadata"):
+            metadata["image_cache"] = dataset.image_cache_metadata()
     if hasattr(dataset, "beam_label_cache_mode"):
         metadata["beam_label_cache"] = {
             "mode": getattr(dataset, "beam_label_cache_mode", None),
@@ -311,9 +319,13 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
         }
     if "image" in enabled_modalities:
         profile = resolve_image_profile(dataset_cfg.get("image_profile"))
+        image_cfg = cache_cfg.get("image", {}) if isinstance(cache_cfg.get("image", {}), dict) else {}
         metadata["image"] = {
             "profile": profile,
             "input": "rgb_imagenet",
+            "policy": str(image_cfg.get("policy") or global_policy),
+            "cache_dir": image_cfg.get("cache_dir") or image_cfg.get("dir") or dataset_cfg.get("image_cache_dir"),
+            "transform_version": image_cfg.get("transform_version") or dataset_cfg.get("image_cache_transform_version"),
         }
     if "lidar" in enabled_modalities:
         metadata["lidar"]["preprocessing"] = lidar_preprocessing_metadata_from_config(cfg)
@@ -331,6 +343,7 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
                     "lidar_write_cache",
                     "lidar_cache_policy",
                     "derived_cache",
+                    "image_cache",
                     "multimodal_nf",
                 }
             }

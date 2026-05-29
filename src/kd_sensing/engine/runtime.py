@@ -239,6 +239,7 @@ def forward_task_model(
     force_modality_mask: torch.Tensor | None = None,
     force_reliability_gate: torch.Tensor | float | None = None,
     gate_temperature: float | torch.Tensor | None = None,
+    extra_model_kwargs: dict[str, Any] | None = None,
 ):
     task_inputs = prepare_task_inputs(
         batch,
@@ -256,6 +257,7 @@ def forward_task_model(
         force_modality_mask=force_modality_mask,
         force_reliability_gate=force_reliability_gate,
         gate_temperature=gate_temperature,
+        **(extra_model_kwargs or {}),
     )
 
 
@@ -273,6 +275,7 @@ def run_model_step(
     force_modality_mask: torch.Tensor | None = None,
     force_reliability_gate: torch.Tensor | float | None = None,
     gate_temperature: float | torch.Tensor | None = None,
+    extra_model_kwargs: dict[str, Any] | None = None,
 ) -> TaskForwardResult:
     prepared_batch = prepare_task_batch(batch)
     labels = None
@@ -296,6 +299,7 @@ def run_model_step(
         force_modality_mask=force_modality_mask,
         force_reliability_gate=force_reliability_gate,
         gate_temperature=gate_temperature,
+        extra_model_kwargs=extra_model_kwargs,
     )
     model_output = adapt_model_output(raw_output)
     logits = select_prediction_slots(model_output.logits, num_pred)

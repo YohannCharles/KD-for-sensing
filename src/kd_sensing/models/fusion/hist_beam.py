@@ -30,6 +30,10 @@ HIST_BEAM_VARIANTS = {
     "adapter",
     "v5_adapter_proto",
     "adapter_proto",
+    "v6_radio_proto",
+    "adapter_radio_proto",
+    "v8_path_proto",
+    "adapter_path_proto",
     "v6_full_finetune",
     "full_finetune",
 }
@@ -49,6 +53,26 @@ class HistBeamConfig:
     lambda_scene_s: float = 0.05
     adapter_enabled: bool = False
     prototype_enabled: bool = False
+    geometry_aware: bool = False
+    geometry_fields: tuple[str, ...] = ()
+    coarse_conditioned_adapter: bool = False
+    radio_semantic_enabled: bool = False
+    num_radio_classes: int = 24
+    use_radio_head: bool = False
+    use_radio_condition_in_beam_head: bool = False
+    radio_embed_dim: int = 32
+    radio_tau: float = 1.0
+    proto_type: str = "none"
+    radio_label_mode: str = "peak_spread"
+    path_semantic_enabled: bool = False
+    num_path_classes: int = 24
+    use_path_head: bool = False
+    use_path_condition_in_beam_head: bool = False
+    path_embed_dim: int = 32
+    path_tau: float = 1.0
+    use_path_regression: bool = False
+    path_descriptor_dim: int | None = None
+    path_label_mode: str = "kmeans_path_descriptor"
 
     @property
     def num_groups(self) -> int:
@@ -69,6 +93,10 @@ class HistBeamConfig:
             "adapter",
             "v5_adapter_proto",
             "adapter_proto",
+            "v6_radio_proto",
+            "adapter_radio_proto",
+            "v8_path_proto",
+            "adapter_path_proto",
             "v6_full_finetune",
             "full_finetune",
         }
@@ -82,6 +110,10 @@ class HistBeamConfig:
             "adapter",
             "v5_adapter_proto",
             "adapter_proto",
+            "v6_radio_proto",
+            "adapter_radio_proto",
+            "v8_path_proto",
+            "adapter_path_proto",
             "v6_full_finetune",
             "full_finetune",
         }
@@ -96,6 +128,23 @@ def resolve_hist_beam_config(
     loss_weights: dict[str, Any] | None = None,
     adapter: bool | dict[str, Any] | None = None,
     prototype: bool | dict[str, Any] | None = None,
+    radio_semantic: bool | dict[str, Any] | None = None,
+    num_radio_classes: int | None = None,
+    use_radio_head: bool | None = None,
+    use_radio_condition_in_beam_head: bool | None = None,
+    radio_embed_dim: int | None = None,
+    radio_tau: float | None = None,
+    path_semantic: bool | dict[str, Any] | None = None,
+    num_path_classes: int | None = None,
+    use_path_head: bool | None = None,
+    use_path_condition_in_beam_head: bool | None = None,
+    path_embed_dim: int | None = None,
+    path_tau: float | None = None,
+    use_path_regression: bool | None = None,
+    path_descriptor_dim: int | None = None,
+    proto_type: str | None = None,
+    geometry_aware: bool | dict[str, Any] | None = None,
+    geometry_fields: list[str] | tuple[str, ...] | None = None,
     **_: Any,
 ) -> HistBeamConfig:
     classes = int(num_classes)
@@ -119,6 +168,26 @@ def resolve_hist_beam_config(
         context="HiST-Beam modalities",
     )
     weights = loss_weights or {}
+    geometry_enabled = _mapping_enabled(geometry_aware)
+    adapter_cfg = adapter if isinstance(adapter, dict) else {}
+    radio_cfg = radio_semantic if isinstance(radio_semantic, dict) else {}
+    path_cfg = path_semantic if isinstance(path_semantic, dict) else {}
+    radio_enabled = _mapping_enabled(radio_semantic) or normalized_variant in {"v6_radio_proto", "adapter_radio_proto"}
+    path_enabled = _mapping_enabled(path_semantic) or normalized_variant in {"v8_path_proto", "adapter_path_proto"}
+    resolved_num_radio = int(
+        num_radio_classes
+        or radio_cfg.get("num_radio_classes")
+        or radio_cfg.get("num_classes")
+        or (classes // group) * int(radio_cfg.get("num_spread_bins", 3))
+    )
+    resolved_proto_type = str(
+        proto_type
+        or path_cfg.get("proto_type")
+        or radio_cfg.get("proto_type")
+        or ("path" if normalized_variant in {"v8_path_proto", "adapter_path_proto"} else None)
+        or ("radio_semantic" if normalized_variant in {"v6_radio_proto", "adapter_radio_proto"} else "coarse" if normalized_variant in {"v5_adapter_proto", "adapter_proto"} else "none")
+    ).strip().lower()
+    resolved_num_path = int(num_path_classes or path_cfg.get("num_path_classes") or path_cfg.get("num_classes") or 24)
     return HistBeamConfig(
         num_classes=classes,
         group_size=group,
@@ -130,8 +199,43 @@ def resolve_hist_beam_config(
         lambda_scene_c=float(weights.get("scene_confusion", weights.get("lambda_scene_c", 0.05))),
         lambda_scene_s=float(weights.get("scene_private", weights.get("lambda_scene_s", 0.05))),
         adapter_enabled=_mapping_enabled(adapter)
-        or normalized_variant in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto"},
-        prototype_enabled=_mapping_enabled(prototype) or normalized_variant in {"v5_adapter_proto", "adapter_proto"},
+        or normalized_variant in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"},
+        prototype_enabled=_mapping_enabled(prototype)
+        or normalized_variant in {"v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"},
+        geometry_aware=geometry_enabled,
+        geometry_fields=tuple(str(item) for item in (geometry_fields or ())),
+        coarse_conditioned_adapter=bool(adapter_cfg.get("coarse_conditioned", adapter_cfg.get("coarse_conditioned_adapter", False))),
+        radio_semantic_enabled=radio_enabled,
+        num_radio_classes=resolved_num_radio,
+        use_radio_head=bool(use_radio_head if use_radio_head is not None else radio_cfg.get("use_radio_head", radio_enabled)),
+        use_radio_condition_in_beam_head=bool(
+            use_radio_condition_in_beam_head
+            if use_radio_condition_in_beam_head is not None
+            else radio_cfg.get("use_radio_condition_in_beam_head", radio_cfg.get("condition_beam_head", False))
+        ),
+        radio_embed_dim=int(radio_embed_dim or radio_cfg.get("radio_embed_dim", min(32, max(classes, group)))),
+        radio_tau=float(radio_tau or radio_cfg.get("radio_tau", radio_cfg.get("tau", 1.0))),
+        proto_type=resolved_proto_type,
+        radio_label_mode=str(radio_cfg.get("mode", radio_cfg.get("label_mode", "peak_spread"))),
+        path_semantic_enabled=path_enabled,
+        num_path_classes=resolved_num_path,
+        use_path_head=bool(use_path_head if use_path_head is not None else path_cfg.get("use_path_head", path_enabled)),
+        use_path_condition_in_beam_head=bool(
+            use_path_condition_in_beam_head
+            if use_path_condition_in_beam_head is not None
+            else path_cfg.get("use_path_condition_in_beam_head", path_cfg.get("condition_beam_head", False))
+        ),
+        path_embed_dim=int(path_embed_dim or path_cfg.get("path_embed_dim", min(32, max(classes, group)))),
+        path_tau=float(path_tau or path_cfg.get("path_tau", path_cfg.get("tau", 1.0))),
+        use_path_regression=bool(
+            use_path_regression if use_path_regression is not None else path_cfg.get("use_path_regression", False)
+        ),
+        path_descriptor_dim=(
+            int(path_descriptor_dim or path_cfg.get("descriptor_dim"))
+            if str(path_descriptor_dim or path_cfg.get("descriptor_dim", "")).lower() not in {"", "none", "auto"}
+            else None
+        ),
+        path_label_mode=str(path_cfg.get("mode", path_cfg.get("label_mode", "kmeans_path_descriptor"))),
     )
 
 
@@ -152,6 +256,24 @@ class HistBeamFusionNet(nn.Module):
         loss_weights: dict[str, Any] | None = None,
         adapter: bool | dict[str, Any] | None = None,
         prototype: bool | dict[str, Any] | None = None,
+        radio_semantic: bool | dict[str, Any] | None = None,
+        num_radio_classes: int | None = None,
+        use_radio_head: bool | None = None,
+        use_radio_condition_in_beam_head: bool | None = None,
+        radio_embed_dim: int | None = None,
+        radio_tau: float | None = None,
+        path_semantic: bool | dict[str, Any] | None = None,
+        num_path_classes: int | None = None,
+        use_path_head: bool | None = None,
+        use_path_condition_in_beam_head: bool | None = None,
+        path_embed_dim: int | None = None,
+        path_tau: float | None = None,
+        use_path_regression: bool | None = None,
+        path_descriptor_dim: int | None = None,
+        proto_type: str | None = None,
+        geometry_aware: bool | dict[str, Any] | None = None,
+        geometry_fields: list[str] | tuple[str, ...] | None = None,
+        geometry_input_size: int = 8,
         num_heads: int = 4,
         num_layers: int = 2,
         dropout: float = 0.1,
@@ -177,6 +299,23 @@ class HistBeamFusionNet(nn.Module):
             loss_weights=loss_weights,
             adapter=adapter,
             prototype=prototype,
+            radio_semantic=radio_semantic,
+            num_radio_classes=num_radio_classes,
+            use_radio_head=use_radio_head,
+            use_radio_condition_in_beam_head=use_radio_condition_in_beam_head,
+            radio_embed_dim=radio_embed_dim,
+            radio_tau=radio_tau,
+            path_semantic=path_semantic,
+            num_path_classes=num_path_classes,
+            use_path_head=use_path_head,
+            use_path_condition_in_beam_head=use_path_condition_in_beam_head,
+            path_embed_dim=path_embed_dim,
+            path_tau=path_tau,
+            use_path_regression=use_path_regression,
+            path_descriptor_dim=path_descriptor_dim,
+            proto_type=proto_type,
+            geometry_aware=geometry_aware,
+            geometry_fields=geometry_fields,
         )
         self.modalities = self.hist_config.modalities
         self.feature_size = int(feature_size)
@@ -184,10 +323,15 @@ class HistBeamFusionNet(nn.Module):
         self.num_classes = self.hist_config.num_classes
         self.group_size = self.hist_config.group_size
         self.num_groups = self.hist_config.num_groups
+        self.num_radio_classes = self.hist_config.num_radio_classes
+        self.num_path_classes = self.hist_config.num_path_classes
+        self.radio_tau = self.hist_config.radio_tau
+        self.path_tau = self.hist_config.path_tau
         self.num_pred = int(num_pred)
         self.horizon = self.num_pred
         self.max_seq_len = int(max_seq_len)
         self.cls_type_id = len(MODALITY_ORDER)
+        self.geometry_type_id = len(MODALITY_ORDER) + 1
         self.num_scenes = int(num_scenes)
         self.grl_lambda = float(grl_lambda)
         if self.num_pred <= 0:
@@ -214,7 +358,7 @@ class HistBeamFusionNet(nn.Module):
             )
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02)
-        self.token_type_embedding = nn.Embedding(len(MODALITY_ORDER) + 1, self.d_model)
+        self.token_type_embedding = nn.Embedding(len(MODALITY_ORDER) + 2, self.d_model)
         self.time_embedding = nn.Embedding(self.max_seq_len, self.d_model)
         self.input_norm = nn.LayerNorm(self.d_model)
         self.input_dropout = nn.Dropout(float(dropout))
@@ -233,12 +377,60 @@ class HistBeamFusionNet(nn.Module):
         self.flat_head = nn.Linear(self.d_model, self.num_pred * self.num_classes)
         self.shared_branch = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.d_model), nn.GELU())
         self.private_branch = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.d_model), nn.GELU())
-        self.private_adapter = BottleneckPrivateAdapter(
-            self.d_model,
-            bottleneck_dim=_adapter_bottleneck_dim(adapter, self.d_model),
+        adapter_hidden = _adapter_bottleneck_dim(adapter, self.d_model)
+        if self.hist_config.coarse_conditioned_adapter:
+            self.private_adapter = CoarseConditionedPrivateAdapter(
+                self.d_model,
+                self.num_groups,
+                bottleneck_dim=adapter_hidden,
+            )
+        else:
+            self.private_adapter = BottleneckPrivateAdapter(
+                self.d_model,
+                bottleneck_dim=adapter_hidden,
+            )
+        self.geometry_projection = (
+            nn.Sequential(
+                nn.LayerNorm(int(geometry_input_size)),
+                nn.Linear(int(geometry_input_size), self.d_model),
+                nn.GELU(),
+            )
+            if self.hist_config.geometry_aware
+            else None
         )
+        self.geometry_input_size = int(geometry_input_size)
         self.coarse_head = nn.Linear(self.d_model, self.num_pred * self.num_groups)
-        self.fine_head = nn.Linear(self.d_model * 2, self.num_pred * self.num_groups * self.group_size)
+        self.radio_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_radio_classes)
+            if self.hist_config.use_radio_head
+            else None
+        )
+        self.path_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_path_classes)
+            if self.hist_config.use_path_head
+            else None
+        )
+        self.path_attr_head = (
+            nn.Linear(self.d_model, self.num_pred * int(self.hist_config.path_descriptor_dim))
+            if self.hist_config.use_path_regression and self.hist_config.path_descriptor_dim
+            else None
+        )
+        self.radio_embedding = (
+            nn.Embedding(self.num_radio_classes, self.hist_config.radio_embed_dim)
+            if self.hist_config.use_radio_condition_in_beam_head
+            else None
+        )
+        self.path_embedding = (
+            nn.Embedding(self.num_path_classes, self.hist_config.path_embed_dim)
+            if self.hist_config.use_path_condition_in_beam_head
+            else None
+        )
+        fine_input_dim = self.d_model * 2 + (
+            self.hist_config.radio_embed_dim if self.hist_config.use_radio_condition_in_beam_head else 0
+        ) + (
+            self.hist_config.path_embed_dim if self.hist_config.use_path_condition_in_beam_head else 0
+        )
+        self.fine_head = nn.Linear(fine_input_dim, self.num_pred * self.num_groups * self.group_size)
         self.shared_scene_classifier = nn.Linear(self.d_model, self.num_scenes) if self.num_scenes > 0 else None
         self.private_scene_classifier = nn.Linear(self.d_model, self.num_scenes) if self.num_scenes > 0 else None
 
@@ -249,7 +441,16 @@ class HistBeamFusionNet(nn.Module):
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
+        geometry_batch: torch.Tensor | None = None,
+        geometry_mask: torch.Tensor | None = None,
         force_modality_mask: torch.Tensor | None = None,
+        radio_assignment: torch.Tensor | None = None,
+        radio_prototypes: torch.Tensor | None = None,
+        radio_prototype_counts: torch.Tensor | None = None,
+        path_assignment: torch.Tensor | None = None,
+        path_prototypes: torch.Tensor | None = None,
+        path_prototype_counts: torch.Tensor | None = None,
+        mu_path_c: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | tuple[str, ...] | dict[str, Any]]:
         raw_inputs = {
             "image": image_batch,
@@ -284,8 +485,20 @@ class HistBeamFusionNet(nn.Module):
         tokens = self._embed_modality_tokens(stacked)
         token_padding_mask = ~effective_mask.unsqueeze(-1).expand(batch_size, len(self.modalities), seq_len)
         diagnostic_tokens = tokens.masked_fill(token_padding_mask.unsqueeze(-1), 0.0)
-        flat_tokens = _serialize_time_first(tokens)
-        flat_padding_mask = _serialize_mask_time_first(token_padding_mask)
+        geometry_tokens, geometry_token_mask, geometry_summary, geometry_diag = self._geometry_tokens(
+            geometry_batch,
+            geometry_mask,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=stacked.device,
+            dtype=stacked.dtype,
+        )
+        if geometry_tokens is not None and geometry_token_mask is not None:
+            flat_tokens = torch.cat([_serialize_time_first(tokens), geometry_tokens], dim=1)
+            flat_padding_mask = torch.cat([_serialize_mask_time_first(token_padding_mask), geometry_token_mask], dim=1)
+        else:
+            flat_tokens = _serialize_time_first(tokens)
+            flat_padding_mask = _serialize_mask_time_first(token_padding_mask)
         cls_ids = torch.full((batch_size, 1), self.cls_type_id, dtype=torch.long, device=stacked.device)
         cls = self.input_dropout(
             self.input_norm(self.cls_token.expand(batch_size, -1, -1) + self.token_type_embedding(cls_ids))
@@ -302,9 +515,49 @@ class HistBeamFusionNet(nn.Module):
 
         shared = self.shared_branch(fused)
         private = self.private_branch(fused)
-        adapter_rep = self.private_adapter(private) if self.hist_config.adapter_enabled else private
         coarse_logits = self.coarse_head(shared).view(batch_size, self.num_pred, self.num_groups)
-        fine_input = torch.cat([shared, adapter_rep], dim=-1)
+        adapter_rep = self._adapt_private(private, coarse_logits) if self.hist_config.adapter_enabled else private
+        radio_logits = (
+            self.radio_head(shared).view(batch_size, self.num_pred, self.num_radio_classes)
+            if self.radio_head is not None
+            else None
+        )
+        path_logits = (
+            self.path_head(shared).view(batch_size, self.num_pred, self.num_path_classes)
+            if self.path_head is not None
+            else None
+        )
+        path_attr_pred = (
+            self.path_attr_head(shared).view(batch_size, self.num_pred, int(self.hist_config.path_descriptor_dim))
+            if self.path_attr_head is not None and self.hist_config.path_descriptor_dim
+            else None
+        )
+        radio_alpha, radio_condition_source, radio_condition_available = self._radio_assignment_for_beam_head(
+            shared,
+            radio_logits=radio_logits,
+            radio_assignment=radio_assignment,
+            radio_prototypes=radio_prototypes,
+            radio_prototype_counts=radio_prototype_counts,
+        )
+        path_alpha, path_condition_source, path_condition_available = self._path_assignment_for_beam_head(
+            shared,
+            path_logits=path_logits,
+            path_assignment=path_assignment,
+            path_prototypes=path_prototypes if path_prototypes is not None else mu_path_c,
+            path_prototype_counts=path_prototype_counts,
+        )
+        fine_parts = [shared, adapter_rep]
+        if self.radio_embedding is not None:
+            radio_context = radio_alpha @ self.radio_embedding.weight.to(device=radio_alpha.device, dtype=radio_alpha.dtype)
+            fine_parts.append(radio_context)
+        else:
+            radio_context = None
+        if self.path_embedding is not None:
+            path_context = path_alpha @ self.path_embedding.weight.to(device=path_alpha.device, dtype=path_alpha.dtype)
+            fine_parts.append(path_context)
+        else:
+            path_context = None
+        fine_input = torch.cat(fine_parts, dim=-1)
         fine_logits = self.fine_head(fine_input).view(batch_size, self.num_pred, self.num_groups, self.group_size)
         beam_log_probs = hierarchical_beam_log_probs(coarse_logits, fine_logits)
         logits = flat_logits if not self.hist_config.hierarchical_enabled else beam_log_probs
@@ -317,9 +570,23 @@ class HistBeamFusionNet(nn.Module):
             "flat_logits": flat_logits,
             "coarse_logits": coarse_logits,
             "fine_logits": fine_logits,
+            "radio_logits": radio_logits,
+            "radio_assignment": radio_alpha,
+            "radio_condition_embedding": radio_context,
+            "path_logits": path_logits,
+            "path_assignment": path_alpha,
+            "path_condition_embedding": path_context,
+            "path_attr_pred": path_attr_pred,
             "shared_representation": shared.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous(),
             "private_representation": private.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous(),
             "adapter_representation": adapter_rep.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous(),
+            "shared_geometry_representation": shared.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous(),
+            "geometry_representation": (
+                geometry_summary.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous()
+                if geometry_summary is not None
+                else None
+            ),
+            "geometry_diagnostics": geometry_diag,
             "input_features": _available_timewise_mean(diagnostic_tokens, effective_mask),
             "output_features": output_features,
             "token_features": diagnostic_tokens,
@@ -334,6 +601,28 @@ class HistBeamFusionNet(nn.Module):
                 "num_groups": self.num_groups,
                 "adapter_enabled": self.hist_config.adapter_enabled,
                 "prototype_enabled": self.hist_config.prototype_enabled,
+                "proto_type": self.hist_config.proto_type,
+                "radio_semantic_enabled": self.hist_config.radio_semantic_enabled,
+                "num_radio_classes": self.num_radio_classes,
+                "radio_label_mode": self.hist_config.radio_label_mode,
+                "use_radio_head": self.hist_config.use_radio_head,
+                "use_radio_condition_in_beam_head": self.hist_config.use_radio_condition_in_beam_head,
+                "radio_condition_source": radio_condition_source,
+                "radio_condition_available": radio_condition_available,
+                "radio_tau": self.radio_tau,
+                "path_semantic_enabled": self.hist_config.path_semantic_enabled,
+                "num_path_classes": self.num_path_classes,
+                "path_label_mode": self.hist_config.path_label_mode,
+                "use_path_head": self.hist_config.use_path_head,
+                "use_path_condition_in_beam_head": self.hist_config.use_path_condition_in_beam_head,
+                "path_condition_source": path_condition_source,
+                "path_condition_available": path_condition_available,
+                "path_tau": self.path_tau,
+                "use_path_regression": self.hist_config.use_path_regression,
+                "path_descriptor_dim": self.hist_config.path_descriptor_dim,
+                "geometry_aware": self.hist_config.geometry_aware,
+                "geometry_fields": self.hist_config.geometry_fields,
+                "coarse_conditioned_adapter": self.hist_config.coarse_conditioned_adapter,
             },
         }
         if self.shared_scene_classifier is not None:
@@ -343,6 +632,83 @@ class HistBeamFusionNet(nn.Module):
         if self.private_scene_classifier is not None:
             result["private_scene_logits"] = self.private_scene_classifier(private)
         return result
+
+    def _radio_assignment_for_beam_head(
+        self,
+        shared: torch.Tensor,
+        *,
+        radio_logits: torch.Tensor | None,
+        radio_assignment: torch.Tensor | None,
+        radio_prototypes: torch.Tensor | None,
+        radio_prototype_counts: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, str, bool]:
+        if self.radio_embedding is None:
+            empty = torch.zeros(shared.shape[0], self.num_radio_classes, device=shared.device, dtype=shared.dtype)
+            return empty, "disabled", False
+        if radio_assignment is not None:
+            alpha = radio_assignment.to(device=shared.device, dtype=shared.dtype)
+            if alpha.ndim == 3:
+                alpha = alpha.mean(dim=1)
+            alpha = alpha / alpha.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            return alpha, "provided_assignment", True
+        if radio_prototypes is not None:
+            proto = radio_prototypes.to(device=shared.device, dtype=shared.dtype)
+            if proto.ndim == 2 and proto.shape[0] == self.num_radio_classes and proto.shape[1] == shared.shape[-1]:
+                scores = F.normalize(shared, dim=-1) @ F.normalize(proto, dim=-1).t()
+                if radio_prototype_counts is not None:
+                    available = radio_prototype_counts.to(device=shared.device).reshape(-1).gt(0)
+                    scores = scores.masked_fill(~available.view(1, -1), -1e9)
+                alpha = torch.softmax(scores / max(float(self.radio_tau), 1e-6), dim=-1)
+                return alpha, "source_radio_prototype", True
+        if radio_logits is not None:
+            alpha = torch.softmax(radio_logits.mean(dim=1) / max(float(self.radio_tau), 1e-6), dim=-1)
+            return alpha, "radio_logits", True
+        alpha = torch.full(
+            (shared.shape[0], self.num_radio_classes),
+            1.0 / max(int(self.num_radio_classes), 1),
+            device=shared.device,
+            dtype=shared.dtype,
+        )
+        return alpha, "uniform_fallback", False
+
+    def _path_assignment_for_beam_head(
+        self,
+        shared: torch.Tensor,
+        *,
+        path_logits: torch.Tensor | None,
+        path_assignment: torch.Tensor | None,
+        path_prototypes: torch.Tensor | None,
+        path_prototype_counts: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, str, bool]:
+        if self.path_embedding is None:
+            empty = torch.zeros(shared.shape[0], self.num_path_classes, device=shared.device, dtype=shared.dtype)
+            return empty, "disabled", False
+        if path_assignment is not None:
+            alpha = path_assignment.to(device=shared.device, dtype=shared.dtype)
+            if alpha.ndim == 3:
+                alpha = alpha.mean(dim=1)
+            alpha = alpha / alpha.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            return alpha, "provided_assignment", True
+        if path_prototypes is not None:
+            proto = path_prototypes.to(device=shared.device, dtype=shared.dtype)
+            if proto.ndim == 2 and proto.shape[0] == self.num_path_classes and proto.shape[1] == shared.shape[-1]:
+                scores = F.normalize(shared, dim=-1) @ F.normalize(proto, dim=-1).t()
+                if path_prototype_counts is not None:
+                    available = path_prototype_counts.to(device=shared.device).reshape(-1).gt(0)
+                    if available.numel() == proto.shape[0]:
+                        scores = scores.masked_fill(~available.view(1, -1), -1e9)
+                alpha = torch.softmax(scores / max(float(self.path_tau), 1e-6), dim=-1)
+                return alpha, "source_path_prototype", True
+        if path_logits is not None:
+            alpha = torch.softmax(path_logits.mean(dim=1) / max(float(self.path_tau), 1e-6), dim=-1)
+            return alpha, "path_logits", True
+        alpha = torch.full(
+            (shared.shape[0], self.num_path_classes),
+            1.0 / max(int(self.num_path_classes), 1),
+            device=shared.device,
+            dtype=shared.dtype,
+        )
+        return alpha, "uniform_fallback", False
 
     def scene_diagnostics(self, shared: torch.Tensor, private: torch.Tensor) -> dict[str, Any]:
         return {
@@ -365,6 +731,66 @@ class HistBeamFusionNet(nn.Module):
         token_type = self.token_type_embedding(type_ids).view(1, modality_count, 1, self.d_model)
         return self.input_dropout(self.input_norm(features + time + token_type))
 
+    def _adapt_private(self, private: torch.Tensor, coarse_logits: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.private_adapter, CoarseConditionedPrivateAdapter):
+            return self.private_adapter(private, coarse_logits=coarse_logits)
+        return self.private_adapter(private)
+
+    def _geometry_tokens(
+        self,
+        geometry_batch: torch.Tensor | None,
+        geometry_mask: torch.Tensor | None,
+        *,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, dict[str, Any]]:
+        if not self.hist_config.geometry_aware:
+            return None, None, None, {"enabled": False, "coverage": 0.0}
+        fields = self.hist_config.geometry_fields or tuple(f"geometry_{idx}" for idx in range(self.geometry_input_size))
+        if geometry_batch is None or self.geometry_projection is None:
+            return None, None, None, {
+                "enabled": True,
+                "available": False,
+                "coverage": 0.0,
+                "unavailable_reason": "geometry_batch_missing",
+                "fields": list(fields),
+                "direct_fields": list(fields),
+                "proxy_fields": [],
+            }
+        geometry = geometry_batch.to(device=device, dtype=dtype)
+        if geometry.ndim != 3:
+            raise ValueError(f"geometry_batch must have shape [B, T, F], got {tuple(geometry.shape)}.")
+        geometry = geometry[:, -seq_len:, :]
+        if geometry.shape[-1] != self.geometry_input_size:
+            raise ValueError(
+                f"geometry_batch feature dimension {geometry.shape[-1]} does not match geometry_input_size "
+                f"{self.geometry_input_size}."
+            )
+        if geometry_mask is None:
+            mask = torch.isfinite(geometry)
+        else:
+            mask = geometry_mask.to(device=device, dtype=torch.bool)[:, -seq_len:, :]
+        valid_steps = mask.any(dim=-1)
+        projected = self.geometry_projection(torch.nan_to_num(geometry, nan=0.0))
+        time_ids = torch.arange(projected.shape[1], device=device)
+        time = self.time_embedding(time_ids).view(1, projected.shape[1], self.d_model)
+        type_ids = torch.full((batch_size, projected.shape[1]), self.geometry_type_id, dtype=torch.long, device=device)
+        tokens = self.input_dropout(self.input_norm(projected + time + self.token_type_embedding(type_ids)))
+        padding_mask = ~valid_steps
+        denom = valid_steps.to(dtype=dtype).sum(dim=1).clamp_min(1.0).unsqueeze(-1)
+        summary = (projected * valid_steps.unsqueeze(-1).to(dtype=dtype)).sum(dim=1) / denom
+        coverage = float(mask.float().mean().detach().cpu().item())
+        return tokens, padding_mask, summary, {
+            "enabled": True,
+            "available": bool(valid_steps.any().detach().cpu().item()),
+            "coverage": coverage,
+            "fields": list(fields),
+            "direct_fields": list(fields),
+            "proxy_fields": [],
+        }
+
 
 class BottleneckPrivateAdapter(nn.Module):
     def __init__(self, dim: int, bottleneck_dim: int | None = None):
@@ -378,6 +804,26 @@ class BottleneckPrivateAdapter(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.up(self.activation(self.down(x)))
+
+
+class CoarseConditionedPrivateAdapter(nn.Module):
+    def __init__(self, dim: int, num_groups: int, bottleneck_dim: int | None = None):
+        super().__init__()
+        hidden = int(bottleneck_dim or max(dim // 4, 1))
+        self.group_embedding = nn.Embedding(int(num_groups), dim)
+        self.down = nn.Linear(dim * 2, hidden)
+        self.activation = nn.GELU()
+        self.up = nn.Linear(hidden, dim)
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, x: torch.Tensor, *, coarse_logits: torch.Tensor | None = None) -> torch.Tensor:
+        if coarse_logits is None:
+            context = torch.zeros_like(x)
+        else:
+            probs = torch.softmax(coarse_logits.detach().mean(dim=1), dim=-1)
+            context = probs @ self.group_embedding.weight
+        return x + self.up(self.activation(self.down(torch.cat([x, context], dim=-1))))
 
 
 class _GradientReverse(torch.autograd.Function):

@@ -73,3 +73,78 @@
 - **WHEN** 输入 zip 可读取但没有任何 frame 能生成完整历史和未来窗口
 - **THEN** 系统 MUST 失败并输出清晰错误
 - **AND** sanity report MUST 保留导致无有效样本的主要原因统计
+
+### Requirement: MMW local download processing
+MMW Town10 preparation MUST 通过显式配置或 CLI overrides 支持位于 `dataset/_downloads/MMW/<condition>/Sensor_Data` 和 `dataset/_downloads/MMW/<condition>/Channel_Data` 的 zip inputs。Processing MUST 将 prepared artifacts 写入 `dataset/MMW/<condition>/Prepared/<scenario>`，并 MUST 不移动或删除已下载 zip 文件。
+
+#### Scenario: 处理 sunny 已下载 zip
+- **WHEN** 用户提供 sensor zip `dataset/_downloads/MMW/sunny/Sensor_Data/Town10_skybridge_seed24.zip` 和 channel zip `dataset/_downloads/MMW/sunny/Channel_Data/Town10.zip`
+- **THEN** preparation MUST extract or index them into `dataset/MMW/sunny/Sensor_Data` and `dataset/MMW/sunny/Channel_Data`
+- **AND** prepared artifacts MUST be written under `dataset/MMW/sunny/Prepared/Town10_skybridge_seed24`
+- **AND** metadata MUST record source zip absolute paths and fingerprints
+
+### Requirement: Sensor/channel scenario alias matching
+MMW preparation MUST explicitly handle cases where sensor scenario names and channel scenario directories differ, such as sensor `Town10_skybridge_seed24` and channel `Town10/Town10_skybridge`. Matching MUST be based on declared alias, frame id and CAV agent, and MUST be recorded in metadata.
+
+#### Scenario: channel agent 匹配正确
+- **WHEN** a sensor frame belongs to agent `cav_1` and frame `008362`
+- **THEN** preparation MUST prefer channel paths under channel agent `cav_1` for frame `008362`
+- **AND** it MUST NOT silently match the frame to `cav_2` or `cav_3`
+- **AND** frame manifest MUST make the matched channel agent auditable
+
+#### Scenario: alias 匹配写入 metadata
+- **WHEN** sensor scenario and channel scenario names differ but are matched by alias
+- **THEN** metadata MUST record sensor scenario, channel scenario, alias rule and matched frame count
+- **AND** unmatched frames MUST be counted by reason
+
+### Requirement: Prepared artifact validity checks
+MMW preparation MUST run validity checks before declaring prepared status. Checks MUST include finite beam power vectors, non-empty sequence windows, CAV/channel agent consistency, frame continuity and required modality coverage.
+
+#### Scenario: agent 错配导致失败
+- **WHEN** frame manifest contains a CAV agent whose channel path points to a different CAV agent without explicit override
+- **THEN** preparation MUST fail or mark the artifact invalid
+- **AND** sanity report MUST include examples of mismatched rows
+
+#### Scenario: 有效 prepared summary
+- **WHEN** preparation succeeds
+- **THEN** sanity report MUST include valid frame count, window count, agent frame counts, modality coverage, channel failure counts, beam histogram, train/test window counts and artifact paths
+
+### Requirement: Incremental MMW preparation
+MMW preparation MUST support incremental processing as additional condition/town/scenario zips arrive. Incremental processing MUST preserve existing prepared artifacts unless `force` is explicitly requested for the same condition/scenario.
+
+#### Scenario: 新 condition 到达
+- **WHEN** rainy or foggy zip files become available after sunny has already been prepared
+- **THEN** preparation MUST process the new condition into its own `dataset/MMW/<condition>` directory
+- **AND** existing sunny prepared artifacts MUST remain unchanged unless explicitly forced
+
+#### Scenario: force 重建单个 scenario
+- **WHEN** user requests force rebuild for `sunny/Town10_skybridge_seed24`
+- **THEN** preparation MAY overwrite that prepared scenario artifacts
+- **AND** it MUST not remove other condition or scenario prepared artifacts
+
+### Requirement: MMW radio-semantic derivation metadata
+MMW preparation and dataset runtime MUST expose enough metadata to derive radio-semantic labels from channel-derived beam power vectors. The system MUST record whether each frame or sequence can derive a radio label, the builder mode/config version, and the unavailable reason when derivation fails.
+
+#### Scenario: frame manifest supports radio label derivation
+- **WHEN** frame manifest contains a finite 64-beam power vector path and beam label for a CAV frame
+- **THEN** manifest or derived metadata MUST identify that the frame is eligible for radio-semantic label construction
+- **AND** metadata MUST include `num_beams`, codebook/profile information, beam_power path and label source
+
+#### Scenario: derivation unavailable is explicit
+- **WHEN** channel file cannot produce finite beam power or the beam power file is missing
+- **THEN** preparation or dataset metadata MUST mark radio-semantic derivation as unavailable
+- **AND** metadata MUST record a machine-readable reason such as missing beam power, invalid power vector or unsupported channel fields
+
+### Requirement: MMW radio-semantic labels are not sensing inputs
+MMW dataset configuration MUST keep radio-semantic labels, CSI/channel paths and beam_power separate from sensing input modalities. Enabling radio-semantic training MUST NOT implicitly enable CSI/channel/beam_power as model input.
+
+#### Scenario: radio label enabled without channel input
+- **WHEN** user enables `radio_semantic.enabled: true` for an MMW HiST-Beam run
+- **THEN** dataset MAY return `radio_semantic_label` and `beam_power` for labels or metrics
+- **AND** model input modalities MUST remain limited to the configured sensing modalities
+
+#### Scenario: channel-derived metrics are evaluation-only on target_test
+- **WHEN** target_test samples contain beam_power
+- **THEN** evaluation MAY compute normalized received power and beam power loss dB
+- **AND** target adaptation MUST NOT use target_test beam_power for training, threshold selection or prototype update
+

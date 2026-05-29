@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 
+from kd_sensing.engine.batch import prepare_path_descriptors, prepare_path_semantic_labels, prepare_radio_semantic_labels
 from kd_sensing.engine.hist_beam_losses import compute_hist_beam_loss, hist_beam_enabled
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, TrainingExtension
 
@@ -30,11 +31,31 @@ class HistBeamTrainingExtension(TrainingExtension):
         }
         if not hist_beam_enabled(context.cfg, output):
             return None
+        path_targets = prepare_path_descriptors(
+            batch_state.batch,
+            num_pred=context.num_pred,
+            device=context.device,
+            non_blocking=context.non_blocking,
+        )
         result = compute_hist_beam_loss(
             output,
             batch_state.labels,
             cfg=context.cfg,
             scene_labels=_scene_labels_from_batch(batch_state.batch, device=context.device),
+            radio_semantic_labels=prepare_radio_semantic_labels(
+                batch_state.batch,
+                num_pred=context.num_pred,
+                device=context.device,
+                non_blocking=context.non_blocking,
+            ),
+            path_semantic_labels=prepare_path_semantic_labels(
+                batch_state.batch,
+                num_pred=context.num_pred,
+                device=context.device,
+                non_blocking=context.non_blocking,
+            ),
+            path_descriptors=path_targets[0] if path_targets is not None else None,
+            path_descriptor_mask=path_targets[1] if path_targets is not None else None,
             num_classes=context.num_classes,
         )
         zero = batch_state.student_logits.sum() * 0.0
@@ -62,13 +83,21 @@ def _scene_labels_from_batch(batch: dict[str, Any], *, device: torch.device) -> 
     if torch.is_tensor(raw):
         labels = raw.to(device=device, dtype=torch.long)
     elif isinstance(raw, (list, tuple)):
-        values = [int(item) for item in raw]
+        values = [_stable_scene_label(item) for item in raw]
         labels = torch.tensor(values, device=device, dtype=torch.long)
     else:
-        labels = torch.tensor([int(raw)], device=device, dtype=torch.long)
+        labels = torch.tensor([_stable_scene_label(raw)], device=device, dtype=torch.long)
     unique = sorted(int(value) for value in labels.detach().cpu().unique().tolist())
     remap = {scene_id: index for index, scene_id in enumerate(unique)}
     return torch.tensor([remap[int(value)] for value in labels.detach().cpu().tolist()], device=device, dtype=torch.long)
+
+
+def _stable_scene_label(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        text = str(value)
+        return sum((index + 1) * ord(char) for index, char in enumerate(text)) % 100000
 
 
 __all__ = ["HistBeamTrainingExtension"]

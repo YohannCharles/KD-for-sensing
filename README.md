@@ -181,12 +181,58 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/teacher_no_kd.y
 conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/teacher_no_kd.yaml data.dataset.scene=32
 ```
 
-Raymobtime s008 current snapshot beam selection 见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。MMW Town10 skybridge 本地数据准备使用：
+Raymobtime s008 current snapshot beam selection 见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。
+
+MMW Town10 本地 zip 默认放在 `dataset/_downloads/MMW/<condition>/Sensor_Data` 和 `dataset/_downloads/MMW/<condition>/Channel_Data`，prepared 产物写入 `dataset/MMW/<condition>/Prepared/<scenario>`。准备流程只解压必要的 sensor zip 和共用的 `Town10.zip` channel 包，不移动或删除下载文件；已下载但暂不处理的场景会在 availability 中保持 `pending` 或 `downloaded_unprepared`。
 
 ```bash
 conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
   --config configs/preprocess/mmw_town10_skybridge.yaml
 ```
+
+可用 override 增量处理其它 sunny 场景：
+
+```bash
+conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
+  --config configs/preprocess/mmw_town10_skybridge.yaml \
+  -o mmw.sensor_zip=dataset/_downloads/MMW/sunny/Sensor_Data/Town10_crossroad_seed24.zip \
+  -o mmw.channel_zip=dataset/_downloads/MMW/sunny/Channel_Data/Town10.zip \
+  -o mmw.scenario=Town10_crossroad_seed24
+```
+
+每次准备完成后会写 `dataset/MMW/<condition>/data_availability.json` 和 `dataset/MMW/data_availability.json`。只有一个 ready scenario 时，MMW HiST-Beam 计划会标记 `claim_scope: single_scene_smoke`、`cross_scene_claim_allowed: false`；至少两个 ready scenario 后才生成 scenario-LOSO folds。推荐验证顺序：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
+  --config configs/hist_beam/mmw_geometry_smoke.yaml
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
+  --config configs/hist_beam/mmw_geometry_smoke.yaml \
+  --execute --variants v5_adapter_proto,v6_radio_proto --budgets 0 --max-runs 2
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
+  --config configs/hist_beam/mmw_scenario_loso.yaml --max-runs 3
+```
+
+MMW radio-semantic HiST-Beam 默认使用 `peak_spread` 标签口径：从 64-beam power profile 取 best beam、`beam//8` peak group 和归一化 entropy spread bin，形成 `peak_group * 3 + spread_bin` 的 24 类 radio label。`beam_power`、channel/CSI 路径和 `radio_semantic_label` 只作为 label、metric、prototype 或 few-shot 标注来源，不会因为启用 radio-semantic 训练而自动成为 sensing 输入模态。`label_budget=0` 的 target adaptation 会在 metadata 中记录 `used_target_labels=false`、`used_target_beam_power_for_training=false` 和 `used_target_radio_label_for_training=false`。
+
+当前消融命名中，`v5_adapter_proto` 表示 coarse/private prototype baseline，`v6_radio_proto` 表示 radio-semantic prototype 方法，`adapter_radio_proto` 表示 radio condition 关闭的对照，历史 `v6_full_finetune` 继续表示 full fine-tuning baseline；论文说明可将 full fine-tuning 作为 V7 对照，但工程配置不会静默改写旧名称。
+
+MMW HiST-Beam 的 `image+gps+mmwave` LOSO 训练通常先受 CPU image 解码、DataLoader wait 和 worker RSS 限制。长跑前建议先运行 profile 和并行推荐：
+
+```bash
+conda run -n kd_mm_beam python scripts/profile_training_io.py \
+  --config configs/hist_beam/mmw_scenario_loso.yaml --samples 32
+conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
+  --config configs/hist_beam/mmw_scenario_loso.yaml --parallel-runs 4
+```
+
+推荐器会优先给出 `num_workers`、`batch_size`、并行度、`persistent_workers` 和 `output.progress.enabled=false` 的保守覆盖；AMP 只作为可选项，因为它不能降低 PNG decode 或 worker 内存。启用 RGB/ImageNet 派生缓存时使用 `data.cache.image.policy=auto|read_only|rebuild|off`，可预热：
+
+```bash
+conda run -n kd_mm_beam python scripts/preprocess.py \
+  --config configs/preprocess/mmw_image_derived_cache.yaml
+```
+
+若 profile 或日志出现 loader wait 支配 step、退出码 137、`Killed` 或 worker RSS 过高，优先降低并行 runs、batch size 和 train workers，关闭 persistent workers，或预热 image-derived cache；不要默认继续增加 worker。
 
 Multimodal-NF 作为独立数据集家族默认放在 `dataset/MultimodalNF/`，通常目录为：
 

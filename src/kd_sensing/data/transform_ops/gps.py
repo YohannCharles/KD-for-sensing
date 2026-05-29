@@ -153,16 +153,36 @@ def load_gps_feature_sequence(
     *,
     seq_len: int,
     mode: str = SUPPORTED_GPS_FEATURE_MODE,
+    frame_feature_cache: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     selected_gps = gps_paths[-seq_len:]
-    ue_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_gps], dtype=np.float64)
+    ue_latlon = np.asarray(
+        [_read_cached_gps_latlon(data_root, path, frame_feature_cache) for path in selected_gps],
+        dtype=np.float64,
+    )
     if not bs_gps_paths:
         raise ValueError(f"gps_feature_mode '{mode}' requires bs_gps columns in the sequence CSV.")
     selected_bs = bs_gps_paths[-seq_len:]
-    bs_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_bs], dtype=np.float64)
+    bs_latlon = np.asarray(
+        [_read_cached_gps_latlon(data_root, path, frame_feature_cache) for path in selected_bs],
+        dtype=np.float64,
+    )
     if _all_yaml_paths(selected_gps) and _all_yaml_paths(selected_bs):
         return _relative_polar_features(ue_latlon[:, :2] - bs_latlon[:, :2]).astype(np.float32)
     return build_gps_features(ue_latlon, bs_latlon, mode=mode)
+
+
+def _read_cached_gps_latlon(
+    data_root: str | Path,
+    rel_path: str,
+    frame_feature_cache: dict[str, np.ndarray] | None,
+) -> np.ndarray:
+    if frame_feature_cache is None:
+        return read_gps_latlon(data_root, rel_path)
+    cache_key = str(rel_path)
+    if cache_key not in frame_feature_cache:
+        frame_feature_cache[cache_key] = read_gps_latlon(data_root, rel_path)
+    return frame_feature_cache[cache_key]
 
 
 def _all_yaml_paths(paths: list[str]) -> bool:

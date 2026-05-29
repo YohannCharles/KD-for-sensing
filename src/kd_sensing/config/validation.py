@@ -43,13 +43,14 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     validate_raymobtime_config(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     validate_cache_policy(cache_policy, "data.cache.policy")
-    if cfg.get("data", {}).get("cache", {}).get("image") is not None:
-        raise ValueError(
-            "data.cache.image has been removed with the image motion path. "
-            "Configure supported cache modalities such as data.cache.lidar instead."
-        )
-    for modality in ("lidar",):
-        modality_policy = cfg.get("data", {}).get("cache", {}).get(modality, {}).get("policy")
+    cache_cfg = cfg.get("data", {}).get("cache", {})
+    for modality in ("image", "lidar"):
+        modality_cfg = cache_cfg.get(modality, {})
+        if modality_cfg is None:
+            continue
+        if not isinstance(modality_cfg, dict):
+            raise ValueError(f"data.cache.{modality} must be a mapping when configured.")
+        modality_policy = modality_cfg.get("policy")
         if modality_policy is not None:
             validate_cache_policy(str(modality_policy), f"data.cache.{modality}.policy")
 

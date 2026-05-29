@@ -30,6 +30,7 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/eval_modality_perturbation.py": "research_diagnostic",
     "scripts/eval_modality_subsets.py": "research_diagnostic",
     "scripts/evaluate.py": "thin_cli_alias",
+    "scripts/inspect_dataset.py": "dataset_preparation",
     "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
     "scripts/preprocess.py": "thin_cli_alias",
     "scripts/profile_training_io.py": "research_diagnostic",

@@ -30,6 +30,11 @@ from kd_sensing.data.transform_ops.image import (
     build_rgb_imagenet_transform,
     load_rgb_imagenet_frames,
 )
+from kd_sensing.data.transform_ops.image_cache import (
+    IMAGE_DERIVED_CACHE_VERSION,
+    ImageDerivedCache,
+    ImageDerivedCacheConfig,
+)
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.data.transform_ops.lidar import (
     DEFAULT_LIDAR_BEV_SIZE,
@@ -83,6 +88,11 @@ class DeepSense6GDataset(Dataset):
         num_pred: int = 3,
         image_profile: str | None = None,
         image_size: list[int] | tuple[int, int] = (224, 224),
+        image_cache_dir: str | None = None,
+        image_use_cache: bool = False,
+        image_write_cache: bool = False,
+        image_cache_policy: str | None = None,
+        image_cache_transform_version: str = IMAGE_DERIVED_CACHE_VERSION,
         fft_tuple: list[int] | tuple[int, int, int] = (64, 256, 128),
         clipped_range: int = 128,
         portion: float = 1.0,
@@ -162,6 +172,10 @@ class DeepSense6GDataset(Dataset):
         self.image_profile = resolve_image_profile(image_profile)
         self.image_profile_spec = image_profile_spec(self.image_profile)
         self.image_size = tuple(image_size)
+        self.image_cache_policy = str(image_cache_policy or self._policy_from_cache_flags(image_use_cache, image_write_cache))
+        self.image_cache_dir = self._resolve_image_cache_dir(image_cache_dir) if "image" in (enabled_modalities or ("image", "radar")) else None
+        self.image_cache_transform_version = str(image_cache_transform_version)
+        self.image_cache = self._build_image_cache() if "image" in (enabled_modalities or ("image", "radar")) else None
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
@@ -179,11 +193,15 @@ class DeepSense6GDataset(Dataset):
         self.gps_feature_mode = gps_feature_mode
         self.gps_normalize = gps_normalize
         self.gps_scaler = gps_scaler
+        self.gps_scaler_metadata: dict[str, Any] = {}
         self._gps_feature_cache: dict[int, np.ndarray] = {}
+        self._gps_frame_feature_cache: dict[str, np.ndarray] = {}
         self.use_mmwave = "mmwave" in self.enabled_modalities
         self.mmwave_normalize = bool(mmwave_normalize)
         self.mmwave_scaler = mmwave_scaler
+        self.mmwave_scaler_metadata: dict[str, Any] = {}
         self._mmwave_feature_cache: dict[int, np.ndarray] = {}
+        self._mmwave_frame_feature_cache: dict[str, np.ndarray] = {}
         self.use_csi = "csi" in self.enabled_modalities
         self.csi_train_rms = bool(csi_train_rms)
         self.csi_rms_normalizer = self._coerce_csi_rms_normalizer(csi_rms_normalizer)
@@ -229,6 +247,10 @@ class DeepSense6GDataset(Dataset):
             load_lidar_background_points(self.data_root, lidar_background_path) if self.use_lidar else None
         )
         self._lidar_bev_cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        if "image" not in self.enabled_modalities:
+            self.image_cache_dir = None
+            self.image_cache = None
+            self.image_cache_policy = "off"
         self.transform = self._build_image_transform(image_size) if "image" in self.enabled_modalities else None
         self.samples = create_samples(
             self.root_csv,
@@ -465,7 +487,49 @@ class DeepSense6GDataset(Dataset):
             self.seq_len,
             self.transform,
             image_size=self.image_size,
+            image_cache=self.image_cache,
         )
+
+    def image_cache_metadata(self) -> dict[str, Any]:
+        if self.image_cache is None:
+            return {
+                "policy": "off",
+                "enabled": False,
+                "accessed": False,
+            }
+        summary = self.image_cache.summary()
+        summary["enabled"] = self.image_cache_policy != "off"
+        summary["accessed"] = bool(summary["hits"] or summary["misses"] or summary["generated"])
+        return summary
+
+    def _resolve_image_cache_dir(self, image_cache_dir: str | None) -> Path:
+        base = Path(image_cache_dir or "image_derived_cache").expanduser()
+        if not base.is_absolute():
+            base = self.data_root / base
+        return base
+
+    def _build_image_cache(self) -> ImageDerivedCache | None:
+        if self.image_cache_policy == "off" or self.image_cache_dir is None:
+            return None
+        return ImageDerivedCache(
+            ImageDerivedCacheConfig(
+                cache_dir=self.image_cache_dir,
+                policy=self.image_cache_policy,
+                image_profile=self.image_profile,
+                image_size=(int(self.image_size[0]), int(self.image_size[1])),
+                transform_version=self.image_cache_transform_version,
+            )
+        )
+
+    @staticmethod
+    def _policy_from_cache_flags(use_cache: bool, write_cache: bool) -> str:
+        if use_cache and write_cache:
+            return "auto"
+        if use_cache:
+            return "read_only"
+        if write_cache:
+            return "rebuild"
+        return "off"
 
     def _load_radar_maps(self, paths: list[str]):
         return load_radar_maps(
@@ -565,15 +629,43 @@ class DeepSense6GDataset(Dataset):
             self.gps_scaler = None
             return
         if self.gps_scaler is not None:
+            self.gps_scaler_metadata = {
+                "source": "provided",
+                "sample_count": len(self),
+                "streaming": False,
+                "retains_per_sample_sequence_cache": False,
+            }
             return
         if self.split != "train":
             raise ValueError(
                 "GPS normalization for non-train split requires a train-fitted gps_scaler. "
                 "Use build_dataloaders/evaluate so the train scaler can be reused."
             )
-        all_features = [self._gps_features_for_index(idx) for idx in range(len(self))]
-        stacked = np.concatenate(all_features, axis=0)
-        self.gps_scaler = GPSStandardScaler().fit(stacked)
+        stats = _StreamingFeatureStats()
+        for idx in range(len(self)):
+            if self.samples.gps_paths is None:
+                raise ValueError("GPS paths are unavailable for this dataset.")
+            bs_paths = self.samples.bs_gps_paths[idx] if self.samples.bs_gps_paths is not None else None
+            stats.update(
+                load_gps_feature_sequence(
+                    self.data_root,
+                    self.samples.gps_paths[idx],
+                    bs_paths,
+                    seq_len=self.seq_len,
+                    mode=self.gps_feature_mode,
+                    frame_feature_cache=self._gps_frame_feature_cache,
+                )
+            )
+        mean, scale = stats.finalize()
+        self.gps_scaler = GPSStandardScaler(mean_=mean, scale_=scale)
+        self._gps_feature_cache.clear()
+        self.gps_scaler_metadata = {
+            "source": "train_split_streaming_fit",
+            "sample_count": len(self),
+            "frame_count": int(stats.count),
+            "streaming": True,
+            "retains_per_sample_sequence_cache": False,
+        }
 
     def _gps_features_for_index(self, idx: int) -> np.ndarray:
         if idx not in self._gps_feature_cache:
@@ -586,6 +678,7 @@ class DeepSense6GDataset(Dataset):
                 bs_paths,
                 seq_len=self.seq_len,
                 mode=self.gps_feature_mode,
+                frame_feature_cache=self._gps_frame_feature_cache,
             )
         return self._gps_feature_cache[idx]
 
@@ -601,6 +694,12 @@ class DeepSense6GDataset(Dataset):
             self.mmwave_scaler = None
             return
         if self.mmwave_scaler is not None:
+            self.mmwave_scaler_metadata = {
+                "source": "provided",
+                "sample_count": len(self),
+                "streaming": False,
+                "retains_per_sample_sequence_cache": False,
+            }
             return
         if self.split != "train":
             raise ValueError(
@@ -608,9 +707,29 @@ class DeepSense6GDataset(Dataset):
                 "Use build_dataloaders/evaluate with a checkpoint that records mmwave_scaler, "
                 "provide mmwave_scaler explicitly, or disable mmWave normalization."
             )
-        all_features = [self._mmwave_features_for_index(idx) for idx in range(len(self))]
-        stacked = np.concatenate(all_features, axis=0)
-        self.mmwave_scaler = MmWaveStandardScaler().fit(stacked)
+        stats = _StreamingFeatureStats()
+        for idx in range(len(self)):
+            if self.samples.mmwave_paths is None:
+                raise ValueError("mmWave paths are unavailable for this dataset.")
+            stats.update(
+                load_mmwave_feature_sequence(
+                    self.data_root,
+                    self.samples.mmwave_paths[idx],
+                    seq_len=self.seq_len,
+                    expected_dim=MMWAVE_POWER_DIM,
+                    frame_feature_cache=self._mmwave_frame_feature_cache,
+                )
+            )
+        mean, scale = stats.finalize()
+        self.mmwave_scaler = MmWaveStandardScaler(mean_=mean, scale_=scale)
+        self._mmwave_feature_cache.clear()
+        self.mmwave_scaler_metadata = {
+            "source": "train_split_streaming_fit",
+            "sample_count": len(self),
+            "frame_count": int(stats.count),
+            "streaming": True,
+            "retains_per_sample_sequence_cache": False,
+        }
 
     def _mmwave_features_for_index(self, idx: int) -> np.ndarray:
         if idx not in self._mmwave_feature_cache:
@@ -621,6 +740,7 @@ class DeepSense6GDataset(Dataset):
                 self.samples.mmwave_paths[idx],
                 seq_len=self.seq_len,
                 expected_dim=MMWAVE_POWER_DIM,
+                frame_feature_cache=self._mmwave_frame_feature_cache,
             )
         return self._mmwave_feature_cache[idx]
 
@@ -878,3 +998,36 @@ class DeepSense6GDataset(Dataset):
                 while len(self._lidar_bev_cache) > self.lidar_memory_cache_max_items:
                     self._lidar_bev_cache.popitem(last=False)
         return bev
+
+
+class _StreamingFeatureStats:
+    def __init__(self) -> None:
+        self.count = 0
+        self.sum: np.ndarray | None = None
+        self.sum_sq: np.ndarray | None = None
+
+    def update(self, features: np.ndarray) -> None:
+        array = np.asarray(features, dtype=np.float64)
+        if array.ndim != 2:
+            raise ValueError(f"Streaming feature stats expect [N, D] features, got {array.shape}.")
+        if array.shape[0] == 0:
+            return
+        batch_sum = array.sum(axis=0)
+        batch_sum_sq = np.square(array).sum(axis=0)
+        if self.sum is None:
+            self.sum = batch_sum
+            self.sum_sq = batch_sum_sq
+        else:
+            self.sum += batch_sum
+            assert self.sum_sq is not None
+            self.sum_sq += batch_sum_sq
+        self.count += int(array.shape[0])
+
+    def finalize(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.count <= 0 or self.sum is None or self.sum_sq is None:
+            raise ValueError("Cannot fit scaler from an empty feature stream.")
+        mean = self.sum / float(self.count)
+        variance = np.maximum(self.sum_sq / float(self.count) - np.square(mean), 0.0)
+        scale = np.sqrt(variance)
+        scale[scale < 1e-8] = 1.0
+        return mean.astype(np.float32), scale.astype(np.float32)

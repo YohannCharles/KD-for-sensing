@@ -19,9 +19,17 @@ from kd_sensing.utils.seed import set_seed
 
 EXECUTION_STATUSES = ("completed", "failed", "partial_failed")
 SOURCE_ONLY_VARIANTS = {"v0_flat", "v1_hierarchical", "v2_shared_private", "v3_decoupled"}
-ADAPTATION_VARIANTS = {"v4_adapter", "v5_adapter_proto", "v6_full_finetune"}
+ADAPTATION_VARIANTS = {
+    "v4_adapter",
+    "v5_adapter_proto",
+    "v6_radio_proto",
+    "adapter_radio_proto",
+    "v8_path_proto",
+    "adapter_path_proto",
+    "v6_full_finetune",
+}
 SUPPORTED_VARIANTS = SOURCE_ONLY_VARIANTS | ADAPTATION_VARIANTS
-DEFAULT_QUICK_VARIANTS = ["v0_flat", "v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_full_finetune"]
+DEFAULT_QUICK_VARIANTS = ["v0_flat", "v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"]
 DEFAULT_QUICK_BUDGETS = [0, 10]
 DEFAULT_QUICK_SEEDS = [0]
 DEFAULT_QUICK_TARGET_SCENES = [34]
@@ -80,6 +88,7 @@ def execute_loso_run_plan(
     state: dict[str, Any] = {
         "source_checkpoints": {},
         "source_prototypes": {},
+        "source_normalization": {},
         "source_eval": {},
         "adaptation_checkpoints": {},
     }
@@ -224,11 +233,12 @@ def run_loso_execute_preflight(plan: dict[str, Any], cfg: dict[str, Any], output
     enabled_modalities = _enabled_modalities(plan, cfg)
     scene_ids = sorted(
         {
-            int(scene)
+            scene
             for run in runs
             for scene in [run.get("target_scene"), *list(run.get("source_scenes", []))]
             if scene is not None
-        }
+        },
+        key=str,
     )
     for scene in scene_ids:
         scene_cfg = _cfg_for_scene(cfg, scene)
@@ -308,6 +318,15 @@ class DefaultHistBeamLosoStageExecutor:
         cache_key = _source_cache_key(run, variant)
         if cache_key in context.state["source_checkpoints"] and _reuse_source_checkpoint(context.cfg):
             cached = context.state["source_checkpoints"][cache_key]
+            prototype_status = _prototype_decision(run, context.cfg, source_variant=variant)
+            if prototype_status["generate"] and cache_key not in context.state["source_prototypes"]:
+                generated = self._generate_missing_source_prototype(run, context, variant=variant, checkpoint=Path(cached["artifacts"]["source_checkpoint_path"]))
+                cached_artifacts = dict(cached.get("artifacts", {}))
+                cached_artifacts["source_prototype_path"] = generated.get("artifacts", {}).get("source_prototype_path")
+                cached_metrics = dict(cached.get("metrics", {}))
+                cached_metrics.update(generated.get("metrics", {}))
+                cached = {**cached, "artifacts": cached_artifacts, "metrics": cached_metrics}
+                context.state["source_checkpoints"][cache_key] = cached
             return {
                 "status": "completed",
                 "message": "Reused source checkpoint from an earlier run in this execution.",
@@ -319,15 +338,17 @@ class DefaultHistBeamLosoStageExecutor:
         import torch
 
         from kd_sensing.engine.data_factory import shutdown_dataloader_workers
+        from kd_sensing.engine.batch import prepare_radio_semantic_labels
+        from kd_sensing.engine.hist_beam_losses import compute_hist_beam_loss, hist_beam_enabled
         from kd_sensing.engine.hist_beam_prototypes import generate_source_prototypes, prototype_coverage_from_counts
-        from kd_sensing.engine.loso_data import build_loso_dataloaders
+        from kd_sensing.engine.loso_data import build_loso_source_train_loader
         from kd_sensing.engine.optim import build_device, build_model, build_optimizer, build_task_criterion
         from kd_sensing.engine.runtime import run_model_step, transfer_non_blocking
 
         cfg = _stage_cfg(context.cfg, run, variant=variant, stage_name="source_train", stage_dir=context.stage_dir)
         set_seed(cfg.get("experiment", {}).get("seed", 0))
         device = build_device(cfg)
-        loaders = build_loso_dataloaders(cfg, dict(run), split_seed=int(run.get("seed", 0)))
+        loaders = build_loso_source_train_loader(cfg, dict(run))
         model = build_model(cfg["model"]["student"]).to(device)
         optimizer = build_optimizer(cfg, model)
         criterion = build_task_criterion(cfg)
@@ -359,7 +380,23 @@ class DefaultHistBeamLosoStageExecutor:
                     )
                     if step.labels is None:
                         raise RuntimeError("Source training labels were not prepared.")
-                    loss = criterion(step.logits.reshape(-1, num_classes), step.labels.flatten())
+                    output = {"logits": step.logits, **step.model_output.diagnostics}
+                    if hist_beam_enabled(cfg, output):
+                        hist_loss = compute_hist_beam_loss(
+                            output,
+                            step.labels,
+                            cfg=cfg,
+                            radio_semantic_labels=prepare_radio_semantic_labels(
+                                step.batch,
+                                num_pred=step.labels.shape[1],
+                                device=device,
+                                non_blocking=non_blocking,
+                            ),
+                            num_classes=num_classes,
+                        )
+                        loss = hist_loss.total
+                    else:
+                        loss = criterion(step.logits.reshape(-1, num_classes), step.labels.flatten())
                     loss.backward()
                     optimizer.step()
                     loss_value = float(loss.detach().cpu().item())
@@ -385,22 +422,41 @@ class DefaultHistBeamLosoStageExecutor:
                 },
                 checkpoint_path,
             )
+            prototype_status = _prototype_decision(run, context.cfg, source_variant=variant)
             prototype_path = context.stage_dir / "source_prototypes.pt"
-            prototype_artifact = generate_source_prototypes(
-                model,
-                loaders["source_train"],
-                cfg,
-                device,
-                output_path=prototype_path,
-                metadata=_run_identity(run) | {"source_variant": variant},
-            )
-            prototype_coverage = prototype_coverage_from_counts(prototype_artifact["counts"])
+            prototype_coverage: dict[str, Any] | None = None
+            prototype_duration = 0.0
+            if prototype_status["generate"]:
+                prototype_start = time.perf_counter()
+                prototype_artifact = generate_source_prototypes(
+                    model,
+                    loaders["source_train"],
+                    cfg,
+                    device,
+                    output_path=prototype_path,
+                    metadata=_run_identity(run) | {"source_variant": variant},
+                    progress_callback=lambda progress: _append_stage_progress(context.stage_dir, "source_prototype", progress),
+                )
+                prototype_duration = time.perf_counter() - prototype_start
+                prototype_coverage = prototype_coverage_from_counts(prototype_artifact["counts"])
+                prototype_status.update({"status": "generated", "path": str(prototype_path)})
+                context.state["source_prototypes"][cache_key] = str(prototype_path)
+            else:
+                prototype_status.setdefault("status", "skipped")
             metrics = {
                 "train_loss_last": losses[-1] if losses else None,
                 "train_loss_mean": sum(losses) / len(losses) if losses else None,
                 "epochs": epochs,
                 "source_variant": variant,
+                "source_training_duration_seconds": sum(
+                    float(item.get("duration_seconds", 0.0) or 0.0)
+                    for item in _read_stage_progress(context.stage_dir, phase="source_train")
+                ),
+                "prototype_generation_duration_seconds": prototype_duration,
+                "prototype_status": prototype_status["status"],
+                "prototype_skipped_reason": prototype_status.get("reason"),
                 "prototype_coverage": prototype_coverage,
+                "throughput_config": _throughput_config_summary(cfg, prototype_strategy=prototype_status.get("strategy")),
             }
             metrics_path = context.stage_dir / "metrics.json"
             _write_json(metrics_path, metrics)
@@ -408,7 +464,7 @@ class DefaultHistBeamLosoStageExecutor:
                 "run_dir": str(context.stage_dir),
                 "metrics_path": str(metrics_path),
                 "source_checkpoint_path": str(checkpoint_path),
-                "source_prototype_path": str(prototype_path),
+                "source_prototype_path": str(prototype_path) if prototype_status.get("path") else None,
                 "progress_path": str(progress_path),
             }
             result = {
@@ -418,10 +474,10 @@ class DefaultHistBeamLosoStageExecutor:
                 "checkpoint_reuse": {"enabled": _reuse_source_checkpoint(context.cfg), "reused": False, "cache_key": cache_key},
             }
             context.state["source_checkpoints"][cache_key] = result
-            context.state["source_prototypes"][cache_key] = str(prototype_path)
+            context.state.setdefault("source_normalization", {})[cache_key] = dict(loaders.get("normalization_kwargs", {}))
             return result
         finally:
-            for key in ("source_train", "target_adapt", "target_test"):
+            for key in ("source_train",):
                 loader = loaders.get(key)
                 if loader is not None:
                     shutdown_dataloader_workers(loader)
@@ -460,7 +516,7 @@ class DefaultHistBeamLosoStageExecutor:
             trainable_parameter_summary,
         )
         from kd_sensing.engine.hist_beam_prototypes import load_source_prototypes, prototype_coverage_from_counts
-        from kd_sensing.engine.loso_data import build_loso_dataloaders
+        from kd_sensing.engine.loso_data import build_loso_target_stage_loader
         from kd_sensing.engine.optim import build_device, build_model, build_optimizer
 
         source_variant = _source_variant_for(run)
@@ -468,7 +524,13 @@ class DefaultHistBeamLosoStageExecutor:
         cfg = _stage_cfg(context.cfg, run, variant=variant, stage_name="target_adaptation", stage_dir=context.stage_dir)
         set_seed(cfg.get("experiment", {}).get("seed", 0))
         device = build_device(cfg)
-        loaders = build_loso_dataloaders(cfg, dict(run), split_seed=int(run.get("seed", 0)))
+        loaders = build_loso_target_stage_loader(
+            cfg,
+            dict(run),
+            stage="target_adapt",
+            split_seed=int(run.get("seed", 0)),
+            dataset_kwargs=self._source_normalization_for(run, context, variant=source_variant),
+        )
         try:
             model = build_model(cfg["model"]["student"]).to(device)
             _load_checkpoint_state(model, source_checkpoint, device=device, strict=False)
@@ -484,13 +546,20 @@ class DefaultHistBeamLosoStageExecutor:
             )
             prototypes = None
             prototype_metadata: dict[str, Any]
-            if variant == "v5_adapter_proto":
+            if variant in {"v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
                 proto_path = self._source_prototype_for(run, context, variant=source_variant)
                 if proto_path is not None and Path(proto_path).exists():
                     prototypes = load_source_prototypes(proto_path, map_location=device)
+                    counts_key = (
+                        "count_path"
+                        if variant in {"v8_path_proto", "adapter_path_proto"} and "count_path" in prototypes
+                        else "count_radio"
+                        if variant in {"v6_radio_proto", "adapter_radio_proto"} and "count_radio" in prototypes
+                        else "counts"
+                    )
                     prototype_metadata = {
                         "source_prototype_path": str(proto_path),
-                        **prototype_coverage_from_counts(prototypes["counts"]),
+                        **prototype_coverage_from_counts(prototypes[counts_key]),
                     }
                 else:
                     prototype_metadata = {
@@ -512,13 +581,17 @@ class DefaultHistBeamLosoStageExecutor:
                 prototypes=prototypes,
                 epochs=int(cfg.get("hist_beam", {}).get("adaptation", {}).get("epochs", cfg.get("training", {}).get("adaptation_epochs", 1))),
                 confidence_threshold=float(cfg.get("hist_beam", {}).get("prototype", {}).get("confidence_threshold", 0.0)),
+                label_budget=int(run.get("budget", 0)),
                 progress_callback=lambda progress: _append_stage_progress(context.stage_dir, "target_adaptation", progress),
             )
+            adaptation_diagnostics = adaptation.pop("diagnostics", {})
+            flattened_diagnostics = _flatten_adaptation_diagnostics(adaptation_diagnostics)
             params = trainable_parameter_summary(model).to_dict()
             metrics = {
                 **strategy_metadata,
                 **params,
                 **adaptation,
+                **flattened_diagnostics,
                 "adaptation_strategy": strategy,
                 "source_checkpoint_path": str(source_checkpoint),
                 "sampling": sampling,
@@ -533,10 +606,26 @@ class DefaultHistBeamLosoStageExecutor:
                 checkpoint_path,
             )
             metrics_path = context.stage_dir / "metrics.json"
+            adapt_log_path = context.stage_dir / "adapt_log.json"
             _write_json(metrics_path, metrics)
+            _write_json(
+                adapt_log_path,
+                {
+                    "proto_type": metrics.get("proto_type"),
+                    "label_budget": int(run.get("budget", 0)),
+                    "used_target_beam_for_training": bool(metrics.get("used_target_beam_for_training", metrics.get("used_target_labels", False))),
+                    "used_target_beam_power_for_training": bool(metrics.get("used_target_beam_power_for_training", False)),
+                    "used_target_csi_for_training": bool(metrics.get("used_target_csi_for_training", False)),
+                    "used_target_path_params_for_training": bool(metrics.get("used_target_path_params_for_training", False)),
+                    "used_target_path_descriptor_for_training": bool(metrics.get("used_target_path_descriptor_for_training", False)),
+                    "used_target_path_label_for_training": bool(metrics.get("used_target_path_label_for_training", False)),
+                    "used_target_radio_label_for_training": bool(metrics.get("used_target_radio_label_for_training", False)),
+                },
+            )
             artifacts = {
                 "run_dir": str(context.stage_dir),
                 "metrics_path": str(metrics_path),
+                "adapt_log_path": str(adapt_log_path),
                 "source_checkpoint_path": str(source_checkpoint),
                 "adaptation_checkpoint_path": str(checkpoint_path),
                 "source_prototype_path": prototype_metadata.get("source_prototype_path"),
@@ -580,6 +669,10 @@ class DefaultHistBeamLosoStageExecutor:
                 "metrics": {},
             }
         cfg = _stage_cfg(context.cfg, run, variant=variant, stage_name="adapted_target_test_eval", stage_dir=context.stage_dir)
+        source_variant = _source_variant_for(run)
+        proto_path = self._source_prototype_for(run, context, variant=source_variant)
+        if proto_path:
+            cfg.setdefault("hist_beam", {}).setdefault("prototype", {})["source_prototype_path"] = str(proto_path)
         return _evaluate_target_test(
             cfg,
             run,
@@ -602,6 +695,62 @@ class DefaultHistBeamLosoStageExecutor:
     def _source_prototype_for(run: Mapping[str, Any], context: StageExecutionContext, *, variant: str) -> str | None:
         return context.state["source_prototypes"].get(_source_cache_key(run, variant))
 
+    @staticmethod
+    def _source_normalization_for(run: Mapping[str, Any], context: StageExecutionContext, *, variant: str) -> dict[str, Any]:
+        return dict(context.state.get("source_normalization", {}).get(_source_cache_key(run, variant), {}))
+
+    def _generate_missing_source_prototype(
+        self,
+        run: Mapping[str, Any],
+        context: StageExecutionContext,
+        *,
+        variant: str,
+        checkpoint: Path,
+    ) -> dict[str, Any]:
+        import torch
+
+        from kd_sensing.engine.data_factory import shutdown_dataloader_workers
+        from kd_sensing.engine.hist_beam_prototypes import generate_source_prototypes, prototype_coverage_from_counts
+        from kd_sensing.engine.loso_data import build_loso_source_train_loader
+        from kd_sensing.engine.optim import build_device, build_model
+
+        cfg = _stage_cfg(context.cfg, run, variant=variant, stage_name="source_prototype", stage_dir=context.stage_dir)
+        device = build_device(cfg)
+        loaders = build_loso_source_train_loader(cfg, dict(run))
+        try:
+            model = build_model(cfg["model"]["student"]).to(device)
+            _load_checkpoint_state(model, checkpoint, device=device, strict=False)
+            prototype_path = context.stage_dir / "source_prototypes.pt"
+            start = time.perf_counter()
+            artifact = generate_source_prototypes(
+                model,
+                loaders["source_train"],
+                cfg,
+                device,
+                output_path=prototype_path,
+                metadata=_run_identity(run) | {"source_variant": variant, "generated_after_checkpoint_reuse": True},
+                progress_callback=lambda progress: _append_stage_progress(context.stage_dir, "source_prototype", progress),
+            )
+            duration = time.perf_counter() - start
+            context.state["source_prototypes"][_source_cache_key(run, variant)] = str(prototype_path)
+            context.state.setdefault("source_normalization", {})[_source_cache_key(run, variant)] = dict(
+                loaders.get("normalization_kwargs", {})
+            )
+            metrics = {
+                "prototype_status": "generated",
+                "prototype_generation_duration_seconds": duration,
+                "prototype_coverage": prototype_coverage_from_counts(artifact["counts"]),
+            }
+            return {
+                "status": "completed",
+                "artifacts": {"source_prototype_path": str(prototype_path)},
+                "metrics": metrics,
+            }
+        finally:
+            loader = loaders.get("source_train")
+            if loader is not None:
+                shutdown_dataloader_workers(loader)
+
 
 def write_loso_execute_summary(output_dir: str | Path, run_records: list[dict[str, Any]], *, status: str) -> dict[str, str]:
     out_dir = Path(output_dir)
@@ -610,6 +759,8 @@ def write_loso_execute_summary(output_dir: str | Path, run_records: list[dict[st
         "status": status,
         "generated_at": _utc_now(),
         "run_count": len(run_records),
+        "claim_scope": _claim_scope_from_rows(rows),
+        "cross_scene_claim_allowed": all(bool(row.get("cross_scene_claim_allowed", True)) for row in rows) if rows else False,
         "runs": rows,
     }
     json_path = out_dir / "loso_summary.json"
@@ -617,6 +768,15 @@ def write_loso_execute_summary(output_dir: str | Path, run_records: list[dict[st
     _write_json(json_path, payload)
     _write_summary_csv(csv_path, rows)
     return {"json": str(json_path), "csv": str(csv_path)}
+
+
+def _claim_scope_from_rows(rows: list[dict[str, Any]]) -> str:
+    scopes = sorted({str(row.get("claim_scope", "cross_scene")) for row in rows})
+    if not scopes:
+        return "unavailable"
+    if len(scopes) == 1:
+        return scopes[0]
+    return "mixed"
 
 
 def write_quick_validation_conclusion(
@@ -634,7 +794,7 @@ def write_quick_validation_conclusion(
     groups = sorted({(row["target_scene"], row["budget"], row["seed"]) for row in rows})
     for target_scene, budget, seed in groups:
         baseline = by_key.get((target_scene, budget, seed, "v3_decoupled"))
-        for variant in ("v4_adapter", "v5_adapter_proto"):
+        for variant in ("v4_adapter", "v5_adapter_proto", "v8_path_proto"):
             candidate = by_key.get((target_scene, budget, seed, variant))
             comparisons.append(
                 _compare_adapter_to_source(
@@ -653,6 +813,42 @@ def write_quick_validation_conclusion(
                 seed=seed,
                 proto=by_key.get((target_scene, budget, seed, "v5_adapter_proto")),
                 full=by_key.get((target_scene, budget, seed, "v6_full_finetune")),
+            )
+        )
+        comparisons.append(
+            _compare_coarse_to_radio(
+                target_scene=target_scene,
+                budget=budget,
+                seed=seed,
+                coarse=by_key.get((target_scene, budget, seed, "v5_adapter_proto")),
+                radio=by_key.get((target_scene, budget, seed, "v6_radio_proto")),
+            )
+        )
+        comparisons.append(
+            _compare_radio_condition(
+                target_scene=target_scene,
+                budget=budget,
+                seed=seed,
+                off=by_key.get((target_scene, budget, seed, "adapter_radio_proto")),
+                on=by_key.get((target_scene, budget, seed, "v6_radio_proto")),
+            )
+        )
+        comparisons.append(
+            _compare_radio_to_path(
+                target_scene=target_scene,
+                budget=budget,
+                seed=seed,
+                radio=by_key.get((target_scene, budget, seed, "v6_radio_proto")),
+                path=by_key.get((target_scene, budget, seed, "v8_path_proto")),
+            )
+        )
+        comparisons.append(
+            _compare_path_condition(
+                target_scene=target_scene,
+                budget=budget,
+                seed=seed,
+                off=by_key.get((target_scene, budget, seed, "adapter_path_proto")),
+                on=by_key.get((target_scene, budget, seed, "v8_path_proto")),
             )
         )
     payload = {
@@ -678,12 +874,19 @@ def _evaluate_target_test(
 ) -> dict[str, Any]:
     from kd_sensing.engine.data_factory import shutdown_dataloader_workers
     from kd_sensing.engine.evaluation_pass import run_evaluation_pass
-    from kd_sensing.engine.loso_data import build_loso_dataloaders
+    from kd_sensing.engine.loso_data import build_loso_target_stage_loader
     from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
     from kd_sensing.evaluation.hist_beam_outputs import write_hist_beam_predictions
 
     device = build_device(cfg)
-    loaders = build_loso_dataloaders(cfg, dict(run), split_seed=int(run.get("seed", 0)))
+    executor = DefaultHistBeamLosoStageExecutor()
+    loaders = build_loso_target_stage_loader(
+        cfg,
+        dict(run),
+        stage="target_test",
+        split_seed=int(run.get("seed", 0)),
+        dataset_kwargs=executor._source_normalization_for(run, context, variant=_source_variant_for(run)),
+    )
     try:
         model = build_model(cfg["model"]["student"]).to(device)
         _load_checkpoint_state(model, checkpoint_path, device=device, strict=False)
@@ -713,6 +916,10 @@ def _evaluate_target_test(
             group_size=int(cfg.get("hist_beam", {}).get("group_size", cfg.get("model", {}).get("student", {}).get("group_size", 8))),
             top_k=max(int(value) for value in cfg.get("evaluation", {}).get("k_values", [1, 3, 5])),
             variant_metadata=setup,
+            radio_logits=result.radio_logits,
+            radio_labels=result.radio_labels,
+            path_logits=result.path_logits,
+            path_labels=result.path_labels,
         )
         return {
             "status": "completed",
@@ -755,12 +962,24 @@ def _few_shot_adaptation_loaders(target_adapt_dataset: Any, cfg: dict[str, Any],
         label_key=future_beam_key,
         data_root=getattr(base_dataset, "data_root", None),
         num_classes=int(cfg.get("hist_beam", {}).get("num_classes", cfg.get("model", {}).get("student", {}).get("num_classes", 64))),
+        radio_builder_config=_radio_semantic_config_for_sampling(cfg),
     )
     labeled_local = list(sampling.labeled_indices)
     unlabeled_local = list(sampling.unlabeled_indices)
     labeled_loader = DataLoader(Subset(target_adapt_dataset, labeled_local), **loader_kwargs) if labeled_local else None
     unlabeled_loader = DataLoader(Subset(target_adapt_dataset, unlabeled_local), **loader_kwargs) if unlabeled_local else None
     return labeled_loader, unlabeled_loader, sampling.manifest
+
+
+def _radio_semantic_config_for_sampling(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    radio_cfg = hist_cfg.get("radio_semantic") if isinstance(hist_cfg.get("radio_semantic"), dict) else None
+    dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
+    dataset_radio = dataset_cfg.get("radio_semantic") if isinstance(dataset_cfg.get("radio_semantic"), dict) else None
+    selected = radio_cfg or dataset_radio
+    if not isinstance(selected, dict) or selected.get("enabled") is False:
+        return None
+    return selected
 
 
 def _load_checkpoint_state(model: Any, checkpoint_path: str | Path, *, device: Any, strict: bool) -> None:
@@ -773,7 +992,7 @@ def _load_checkpoint_state(model: Any, checkpoint_path: str | Path, *, device: A
 
 def _preflight_csv_resources(
     *,
-    scene: int,
+    scene: Any,
     csv_path: Path,
     data_root: Path,
     enabled_modalities: tuple[str, ...],
@@ -784,6 +1003,9 @@ def _preflight_csv_resources(
     rows = _csv_records(csv_path)
     header = list(rows[0].keys()) if rows else _csv_header(csv_path)
     required = _required_column_prefixes(enabled_modalities)
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if str(dataset_cfg.get("type", "deepsense6g")).strip().lower() == "mmw":
+        required = [prefix for prefix in required if prefix != "bs_gps"]
     seq_len = int(cfg.get("data", {}).get("dataset", {}).get("seq_len", 1))
     num_pred = int(cfg.get("data", {}).get("dataset", {}).get("num_pred", 1))
     minimum_by_prefix = {prefix: seq_len for prefix in required}
@@ -856,9 +1078,23 @@ def _required_column_prefixes(enabled_modalities: tuple[str, ...]) -> list[str]:
     return prefixes
 
 
-def _cfg_for_scene(cfg: dict[str, Any], scene: int) -> dict[str, Any]:
+def _cfg_for_scene(cfg: dict[str, Any], scene: Any) -> dict[str, Any]:
     scene_cfg = deepcopy(cfg)
     dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
+    if str(dataset_cfg.get("type", "deepsense6g")).strip().lower() == "mmw":
+        dataset_cfg["scene"] = str(scene)
+        loso_cfg = scene_cfg.get("loso", {}) if isinstance(scene_cfg.get("loso"), dict) else {}
+        roots = loso_cfg.get("scene_data_roots") if isinstance(loso_cfg.get("scene_data_roots"), dict) else {}
+        root = roots.get(str(scene), roots.get(scene)) if isinstance(roots, dict) else None
+        if root:
+            dataset_cfg["data_root"] = str(root)
+        csv_names = loso_cfg.get("scene_csv_names") if isinstance(loso_cfg.get("scene_csv_names"), dict) else {}
+        scene_csv = csv_names.get(str(scene), csv_names.get(scene)) if isinstance(csv_names, dict) else None
+        if isinstance(scene_csv, dict):
+            for key in ("train_csv_name", "test_csv_name", "val_csv_name"):
+                if scene_csv.get(key):
+                    dataset_cfg[key] = scene_csv[key]
+        return scene_cfg
     normalize_deepsense_dataset_config(dataset_cfg)
     retarget_deepsense_dataset_config(dataset_cfg, scene)
     loso_cfg = scene_cfg.get("loso", {}) if isinstance(scene_cfg.get("loso"), dict) else {}
@@ -894,6 +1130,65 @@ def _stage_cfg(
             role["variant"] = variant
             role["modalities"] = list(model_cfg["modalities"])
     stage_cfg.setdefault("hist_beam", {})["variant"] = variant
+    hist_cfg = stage_cfg.setdefault("hist_beam", {})
+    student_cfg = model_cfg.get("student") if isinstance(model_cfg.get("student"), dict) else {}
+    if variant in {"v6_radio_proto", "adapter_radio_proto"}:
+        radio_cfg = hist_cfg.setdefault("radio_semantic", {})
+        radio_cfg.setdefault("enabled", True)
+        radio_cfg.setdefault("mode", "peak_spread")
+        radio_cfg.setdefault("num_spread_bins", 3)
+        radio_cfg.setdefault("entropy_thresholds", [0.35, 0.65])
+        hist_cfg["proto_type"] = "radio_semantic"
+        hist_cfg.setdefault("prototype", {})["proto_type"] = "radio_semantic"
+        weights = hist_cfg.setdefault("loss_weights", {})
+        weights.setdefault("radio_semantic", 1.0)
+        dataset_cfg = stage_cfg.setdefault("data", {}).setdefault("dataset", {})
+        dataset_cfg.setdefault("radio_semantic", dict(radio_cfg))
+        if isinstance(student_cfg, dict):
+            student_cfg.setdefault("radio_semantic", dict(radio_cfg))
+            student_cfg.setdefault("use_radio_head", True)
+            student_cfg.setdefault("num_radio_classes", int(radio_cfg.get("num_radio_classes", 24)))
+            student_cfg.setdefault("proto_type", "radio_semantic")
+            student_cfg.setdefault("radio_tau", float(hist_cfg.get("radio_tau", 1.0)))
+            if variant == "adapter_radio_proto":
+                student_cfg.setdefault("use_radio_condition_in_beam_head", False)
+            else:
+                student_cfg.setdefault(
+                    "use_radio_condition_in_beam_head",
+                    bool(radio_cfg.get("use_radio_condition_in_beam_head", True)),
+                )
+    elif variant in {"v8_path_proto", "adapter_path_proto"}:
+        path_cfg = hist_cfg.setdefault("path_semantic", {})
+        path_cfg.setdefault("enabled", True)
+        path_cfg.setdefault("mode", "kmeans_path_descriptor")
+        path_cfg.setdefault("num_path_classes", 24)
+        path_cfg.setdefault("fit_on_source_only", True)
+        path_cfg.setdefault("fallback_if_missing", "radio_power")
+        path_cfg.setdefault("use_path_regression", True)
+        hist_cfg["proto_type"] = "path"
+        hist_cfg.setdefault("prototype", {})["proto_type"] = "path"
+        adapt_cfg = hist_cfg.setdefault("adaptation", {})
+        adapt_cfg.setdefault("proto_type", "path")
+        adapt_cfg.setdefault("proto_tau", 0.1)
+        adapt_cfg.setdefault("confidence_threshold", 0.75)
+        adapt_cfg.setdefault("proto_warmup_epochs", 5)
+        adapt_cfg.setdefault("target_proto_momentum", 0.9)
+        adapt_cfg.setdefault("allow_labeled_target_path_supervision", False)
+        weights = hist_cfg.setdefault("loss_weights", {})
+        weights.setdefault("lambda_path", 0.3)
+        weights.setdefault("lambda_path_reg", 0.05)
+        dataset_cfg = stage_cfg.setdefault("data", {}).setdefault("dataset", {})
+        dataset_cfg.setdefault("path_semantic", dict(path_cfg))
+        if isinstance(student_cfg, dict):
+            student_cfg.setdefault("path_semantic", dict(path_cfg))
+            student_cfg.setdefault("use_path_head", True)
+            student_cfg.setdefault("use_path_condition_in_beam_head", variant != "adapter_path_proto")
+            student_cfg.setdefault("path_embed_dim", 32)
+            student_cfg.setdefault("num_path_classes", int(path_cfg.get("num_path_classes", 24)))
+            student_cfg.setdefault("proto_type", "path")
+    elif variant in {"v5_adapter_proto", "adapter_proto"}:
+        hist_cfg["proto_type"] = "coarse"
+        hist_cfg.setdefault("prototype", {})["proto_type"] = "coarse"
     stage_cfg.setdefault("output", {})["dir"] = str(stage_dir)
     stage_cfg["output"]["run_name"] = stage_name
     stage_cfg["output"]["group_by_scene"] = False
@@ -915,8 +1210,48 @@ def _reuse_source_checkpoint(cfg: dict[str, Any]) -> bool:
     return bool(loso_cfg.get("reuse_source_checkpoint", True))
 
 
+def _prototype_decision(run: Mapping[str, Any], cfg: dict[str, Any], *, source_variant: str) -> dict[str, Any]:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    proto_cfg = hist_cfg.get("prototype", {}) if isinstance(hist_cfg.get("prototype"), dict) else {}
+    strategy = str(proto_cfg.get("strategy", proto_cfg.get("generation", "auto"))).strip().lower()
+    run_variant = str(run.get("variant"))
+    requires = run_variant in {"v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}
+    explicit_save = bool(proto_cfg.get("save_source_prototypes", False))
+    if strategy in {"off", "skip", "none"}:
+        return {"generate": False, "status": "skipped", "reason": "prototype_strategy_off", "strategy": strategy}
+    if strategy in {"always", "force"} or explicit_save:
+        return {"generate": True, "status": "pending", "reason": "prototype_strategy_forced", "strategy": strategy}
+    if requires:
+        return {"generate": True, "status": "pending", "reason": f"variant_requires_prototype:{run_variant}", "strategy": strategy}
+    return {
+        "generate": False,
+        "status": "skipped",
+        "reason": f"source_only_variant:{source_variant}",
+        "strategy": strategy,
+    }
+
+
+def _throughput_config_summary(cfg: dict[str, Any], *, prototype_strategy: str | None) -> dict[str, Any]:
+    loader_cfg = cfg.get("data", {}).get("dataloader", {}) if isinstance(cfg.get("data"), dict) else {}
+    dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
+    cache_cfg = cfg.get("data", {}).get("cache", {}) if isinstance(cfg.get("data"), dict) else {}
+    image_cache_cfg = cache_cfg.get("image", {}) if isinstance(cache_cfg.get("image", {}), dict) else {}
+    return {
+        "batch_size": loader_cfg.get("batch_size", loader_cfg.get("train_batch_size")),
+        "num_workers": loader_cfg.get("train_num_workers", loader_cfg.get("num_workers")),
+        "persistent_workers": loader_cfg.get("train_persistent_workers", loader_cfg.get("persistent_workers")),
+        "prefetch_factor": loader_cfg.get("train_prefetch_factor", loader_cfg.get("prefetch_factor")),
+        "enabled_modalities": list(resolve_enabled_modalities(cfg)),
+        "seq_len": dataset_cfg.get("seq_len"),
+        "image_cache_policy": image_cache_cfg.get("policy", cache_cfg.get("policy", "auto")),
+        "prototype_strategy": prototype_strategy,
+    }
+
+
 def _source_variant_for(run: Mapping[str, Any]) -> str:
     variant = str(run.get("variant"))
+    if variant in {"v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
+        return variant
     if variant in ADAPTATION_VARIANTS:
         return "v3_decoupled"
     return variant
@@ -934,12 +1269,22 @@ def _adaptation_cache_key(run: Mapping[str, Any]) -> str:
 def _matrix_summary(plan: dict[str, Any]) -> dict[str, Any]:
     runs = list(plan.get("runs", []))
     return {
-        "target_scenes": sorted({int(run["target_scene"]) for run in runs if run.get("target_scene") is not None}),
+        "target_scenes": sorted(
+            {_matrix_scene_value(run["target_scene"]) for run in runs if run.get("target_scene") is not None},
+            key=str,
+        ),
         "variants": sorted({str(run["variant"]) for run in runs if run.get("variant") is not None}),
         "budgets": sorted({int(run["budget"]) for run in runs if run.get("budget") is not None}),
         "seeds": sorted({int(run["seed"]) for run in runs if run.get("seed") is not None}),
         "run_count": len(runs),
     }
+
+
+def _matrix_scene_value(scene: Any) -> Any:
+    try:
+        return int(scene)
+    except (TypeError, ValueError):
+        return str(scene)
 
 
 def _base_run_record(run: Mapping[str, Any], *, index: int) -> dict[str, Any]:
@@ -969,7 +1314,7 @@ def _missing_run_record(run: Mapping[str, Any], *, index: int, reason: str) -> d
 
 
 def _run_identity(run: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    identity = {
         "fold": run.get("fold"),
         "target_scene": run.get("target_scene"),
         "source_scenes": list(run.get("source_scenes", [])),
@@ -977,6 +1322,10 @@ def _run_identity(run: Mapping[str, Any]) -> dict[str, Any]:
         "budget": run.get("budget"),
         "seed": run.get("seed"),
     }
+    for key in ("dataset_family", "scene_family", "condition", "town", "protocol", "claim_scope", "cross_scene_claim_allowed"):
+        if run.get(key) is not None:
+            identity[key] = run.get(key)
+    return identity
 
 
 def _run_id(run: Mapping[str, Any]) -> str:
@@ -1057,6 +1406,7 @@ def _execution_status(records: list[dict[str, Any]], *, interrupted: bool = Fals
 
 
 def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
+    source_train_metrics = record.get("metrics", {}).get("source_train", {})
     source_metrics = record.get("metrics", {}).get("source_only_target_test_eval", {})
     adapted_metrics = record.get("metrics", {}).get("adapted_target_test_eval", {})
     adaptation_metrics = record.get("metrics", {}).get("target_adaptation", {})
@@ -1067,6 +1417,11 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "fold": record.get("fold"),
         "target_scene": record.get("target_scene"),
         "source_scenes": record.get("source_scenes"),
+        "dataset_family": record.get("dataset_family") or record.get("scene_family") or "DeepSense6G",
+        "condition": record.get("condition"),
+        "town": record.get("town"),
+        "claim_scope": record.get("claim_scope") or "cross_scene",
+        "cross_scene_claim_allowed": True if record.get("cross_scene_claim_allowed") is None else record.get("cross_scene_claim_allowed"),
         "variant": record.get("variant"),
         "budget": record.get("budget"),
         "seed": record.get("seed"),
@@ -1082,17 +1437,93 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "top5": _metric(primary_metrics, "top5"),
         "coarse_accuracy": primary_metrics.get("coarse_accuracy"),
         "fine_accuracy": primary_metrics.get("fine_offset_accuracy"),
+        "radio_semantic_accuracy": primary_metrics.get("radio_semantic_accuracy"),
+        "radio_semantic_coverage": primary_metrics.get("radio_semantic_coverage"),
+        "radio_metrics_unavailable_reason": primary_metrics.get("radio_metrics_unavailable_reason"),
+        "path_semantic_accuracy": primary_metrics.get("path_semantic_accuracy"),
+        "path_semantic_coverage": primary_metrics.get("path_semantic_coverage"),
+        "path_metrics_unavailable_reason": primary_metrics.get("path_metrics_unavailable_reason"),
+        "path_descriptor_regression_mse": primary_metrics.get("path_descriptor_regression_mse"),
+        "prototype_assignment_confidence": primary_metrics.get("prototype_assignment_confidence"),
+        "prototype_coverage_per_class": primary_metrics.get("prototype_coverage_per_class"),
+        "source_target_path_class_histogram": primary_metrics.get("source_target_path_class_histogram"),
+        "normalized_received_power": primary_metrics.get("normalized_received_power"),
+        "beam_power_loss_db": primary_metrics.get("beam_power_loss_db"),
+        "power_metrics_unavailable_reason": primary_metrics.get("power_metrics_unavailable_reason"),
         "trainable_params": adaptation_metrics.get("trainable_params"),
         "total_params": adaptation_metrics.get("total_params"),
         "trainable_ratio": adaptation_metrics.get("trainable_ratio"),
         "adaptation_time_seconds": adaptation_metrics.get("adaptation_time_seconds"),
         "adaptation_time_per_epoch": adaptation_metrics.get("adaptation_time_per_epoch"),
+        "source_training_duration_seconds": source_train_metrics.get("source_training_duration_seconds"),
+        "prototype_generation_duration_seconds": source_train_metrics.get("prototype_generation_duration_seconds"),
         "prototype_coverage": adaptation_metrics.get("prototype_coverage"),
         "prototype_coverage_unavailable_reason": adaptation_metrics.get("prototype_coverage_unavailable_reason"),
+        "prototype_status": adaptation_metrics.get("prototype_status") or source_train_metrics.get("prototype_status"),
+        "prototype_skipped_reason": source_train_metrics.get("prototype_skipped_reason"),
+        "prototype_confidence_mean": adaptation_metrics.get("prototype_confidence_mean"),
+        "prototype_used_sample_count": adaptation_metrics.get("prototype_used_sample_count"),
+        "prototype_loss_mean": _first_present(adaptation_metrics, "prototype_loss_mean", "prototype_loss"),
+        "proto_type": adaptation_metrics.get("proto_type"),
+        "used_target_labels": adaptation_metrics.get("used_target_labels"),
+        "used_target_beam_for_training": adaptation_metrics.get("used_target_beam_for_training"),
+        "used_target_beam_power_for_training": adaptation_metrics.get("used_target_beam_power_for_training"),
+        "used_target_csi_for_training": adaptation_metrics.get("used_target_csi_for_training"),
+        "used_target_path_params_for_training": adaptation_metrics.get("used_target_path_params_for_training"),
+        "used_target_path_descriptor_for_training": adaptation_metrics.get("used_target_path_descriptor_for_training"),
+        "used_target_path_label_for_training": adaptation_metrics.get("used_target_path_label_for_training"),
+        "used_target_radio_label_for_training": adaptation_metrics.get("used_target_radio_label_for_training"),
+        "radio_assignment_confidence_mean": adaptation_metrics.get("radio_assignment_confidence_mean"),
+        "radio_assignment_used_sample_count": adaptation_metrics.get("radio_assignment_used_sample_count"),
+        "path_assignment_confidence_mean": adaptation_metrics.get("path_assignment_confidence_mean"),
+        "path_assignment_used_sample_count": adaptation_metrics.get("path_assignment_used_sample_count"),
+        "target_private_initialized_count": adaptation_metrics.get("target_private_initialized_count"),
+        "geometry_loss_coverage": primary_metrics.get("hist/geometry_consistency_coverage")
+        or adaptation_metrics.get("geometry_consistency_coverage"),
     }
+    row["method_family"] = _method_family(row)
     if record.get("status") == "failed":
         row["missing_reason"] = record.get("failure_reason")
     return row
+
+
+def _method_family(row: Mapping[str, Any]) -> str:
+    variant = str(row.get("variant"))
+    if variant in {"v6_full_finetune", "full_finetune"}:
+        return "full_finetuning_baseline"
+    if variant in {"v6_radio_proto", "adapter_radio_proto"} or row.get("proto_type") == "radio_semantic":
+        return "radio_semantic_prototype"
+    if variant in {"v8_path_proto", "adapter_path_proto"} or row.get("proto_type") == "path":
+        return "path_physical_prototype"
+    if variant in {"v5_adapter_proto", "adapter_proto"}:
+        return "coarse_prototype_baseline"
+    return "source_or_adapter_baseline"
+
+
+def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+    return None
+
+
+def _flatten_adaptation_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    flat: dict[str, Any] = {}
+    for key, value in diagnostics.items():
+        short = str(key)
+        if short.startswith("adaptation/"):
+            short = short.split("/", 1)[1]
+        if short == "prototype_loss":
+            flat["prototype_loss_mean"] = value
+        elif short == "prototype_used":
+            flat["prototype_used_sample_count"] = value
+        elif short == "prototype_status":
+            flat["prototype_status"] = "effective" if float(value or 0.0) > 0 else "no_op"
+        else:
+            flat[short] = value
+    if "prototype_status" not in flat and any(str(key).startswith("adaptation/prototype") for key in diagnostics):
+        flat["prototype_status"] = "no_op"
+    return flat
 
 
 def _artifact(record: dict[str, Any], key: str) -> Any:
@@ -1182,6 +1613,186 @@ def _compare_proto_to_full(
     }
 
 
+def _compare_coarse_to_radio(
+    *,
+    target_scene: Any,
+    budget: Any,
+    seed: Any,
+    coarse: dict[str, Any] | None,
+    radio: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = {
+        "comparison": "v5_coarse_vs_v6_radio",
+        "target_scene": target_scene,
+        "budget": budget,
+        "seed": seed,
+        "baseline_variant": "v5_adapter_proto",
+        "candidate_variant": "v6_radio_proto",
+    }
+    missing = _missing_comparison_inputs({"v5_adapter_proto": coarse, "v6_radio_proto": radio})
+    radio_missing = _missing_radio_metrics(radio)
+    if missing or radio_missing:
+        return {**base, "status": "inconclusive", "missing": missing + radio_missing}
+    deltas = _accuracy_deltas(radio, coarse)
+    return {
+        **base,
+        "status": "complete",
+        "accuracy_deltas": deltas,
+        "radio_accuracy": radio.get("radio_semantic_accuracy"),
+        "power": {
+            "normalized_received_power": radio.get("normalized_received_power"),
+            "beam_power_loss_db": radio.get("beam_power_loss_db"),
+        },
+        "prototype": {
+            "coverage": radio.get("prototype_coverage"),
+            "confidence_mean": radio.get("prototype_confidence_mean") or radio.get("radio_assignment_confidence_mean"),
+        },
+        "efficiency": _efficiency_summary(radio),
+        "radio_prototype_better_than_coarse": _is_better(deltas),
+    }
+
+
+def _compare_radio_condition(
+    *,
+    target_scene: Any,
+    budget: Any,
+    seed: Any,
+    off: dict[str, Any] | None,
+    on: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = {
+        "comparison": "radio_condition_off_vs_on",
+        "target_scene": target_scene,
+        "budget": budget,
+        "seed": seed,
+        "baseline_variant": "adapter_radio_proto",
+        "candidate_variant": "v6_radio_proto",
+    }
+    missing = _missing_comparison_inputs({"adapter_radio_proto": off, "v6_radio_proto": on})
+    if missing:
+        return {**base, "status": "inconclusive", "missing": missing}
+    deltas = _accuracy_deltas(on, off)
+    prediction_delta = 0 if all(value == 0 for value in deltas.values() if value is not None) else None
+    return {
+        **base,
+        "status": "complete",
+        "accuracy_deltas": deltas,
+        "radio_condition_prediction_delta": prediction_delta,
+        "radio_assignment": {
+            "off_confidence_mean": off.get("radio_assignment_confidence_mean"),
+            "on_confidence_mean": on.get("radio_assignment_confidence_mean"),
+        },
+    }
+
+
+def _compare_radio_to_path(
+    *,
+    target_scene: Any,
+    budget: Any,
+    seed: Any,
+    radio: dict[str, Any] | None,
+    path: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = {
+        "comparison": "v6_radio_vs_v8_path",
+        "target_scene": target_scene,
+        "budget": budget,
+        "seed": seed,
+        "baseline_variant": "v6_radio_proto",
+        "candidate_variant": "v8_path_proto",
+    }
+    missing = _missing_comparison_inputs({"v6_radio_proto": radio, "v8_path_proto": path})
+    path_missing = _missing_path_metrics(path)
+    if missing or path_missing:
+        return {**base, "status": "inconclusive", "missing": missing + path_missing}
+    deltas = _accuracy_deltas(path, radio)
+    return {
+        **base,
+        "status": "complete",
+        "accuracy_deltas": deltas,
+        "path_accuracy": path.get("path_semantic_accuracy"),
+        "path_descriptor_mse": path.get("path_descriptor_regression_mse"),
+        "prototype": {
+            "coverage": path.get("prototype_coverage"),
+            "confidence_mean": path.get("prototype_confidence_mean") or path.get("path_assignment_confidence_mean"),
+        },
+        "efficiency": _efficiency_summary(path),
+        "path_prototype_better_than_radio": _is_better(deltas),
+    }
+
+
+def _compare_path_condition(
+    *,
+    target_scene: Any,
+    budget: Any,
+    seed: Any,
+    off: dict[str, Any] | None,
+    on: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = {
+        "comparison": "path_condition_off_vs_on",
+        "target_scene": target_scene,
+        "budget": budget,
+        "seed": seed,
+        "baseline_variant": "adapter_path_proto",
+        "candidate_variant": "v8_path_proto",
+    }
+    missing = _missing_comparison_inputs({"adapter_path_proto": off, "v8_path_proto": on})
+    if missing:
+        return {**base, "status": "inconclusive", "missing": missing}
+    deltas = _accuracy_deltas(on, off)
+    improves = _is_better(deltas)
+    return {
+        **base,
+        "status": "complete",
+        "accuracy_deltas": deltas,
+        "path_condition_improved": improves,
+        "diagnosis": None if improves else "path_prototype_may_be_more_effective_as_adaptation_anchor_than_beam_head_condition",
+        "path_assignment": {
+            "off_confidence_mean": off.get("path_assignment_confidence_mean"),
+            "on_confidence_mean": on.get("path_assignment_confidence_mean"),
+        },
+    }
+
+
+def _missing_radio_metrics(row: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if row is None:
+        return []
+    missing = []
+    if row.get("radio_semantic_accuracy") is None:
+        missing.append(
+            {
+                "variant": row.get("variant"),
+                "reason": row.get("radio_metrics_unavailable_reason") or "radio_metrics_missing",
+                "run_path": row.get("metrics_path"),
+            }
+        )
+    if row.get("normalized_received_power") is None and row.get("beam_power_loss_db") is None:
+        missing.append(
+            {
+                "variant": row.get("variant"),
+                "reason": row.get("power_metrics_unavailable_reason") or "power_metrics_missing",
+                "run_path": row.get("metrics_path"),
+            }
+        )
+    return missing
+
+
+def _missing_path_metrics(row: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if row is None:
+        return []
+    missing = []
+    if row.get("path_semantic_accuracy") is None:
+        missing.append(
+            {
+                "variant": row.get("variant"),
+                "reason": row.get("path_metrics_unavailable_reason") or "path_metrics_missing",
+                "run_path": row.get("metrics_path"),
+            }
+        )
+    return missing
+
+
 def _missing_comparison_inputs(items: Mapping[str, dict[str, Any] | None]) -> list[dict[str, Any]]:
     missing = []
     for variant, row in items.items():
@@ -1199,7 +1810,7 @@ def _missing_comparison_inputs(items: Mapping[str, dict[str, Any] | None]) -> li
 def _accuracy_deltas(candidate: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, float | None]:
     return {
         metric: _numeric_delta(candidate, baseline, metric)
-        for metric in ("top1", "top3", "top5", "coarse_accuracy", "fine_accuracy")
+        for metric in ("top1", "top3", "top5", "coarse_accuracy", "fine_accuracy", "radio_semantic_accuracy", "path_semantic_accuracy")
     }
 
 
@@ -1273,6 +1884,21 @@ def _append_stage_progress(stage_dir: str | Path, stage: str, payload: Mapping[s
     return path
 
 
+def _read_stage_progress(stage_dir: str | Path, *, phase: str | None = None) -> list[dict[str, Any]]:
+    path = Path(stage_dir) / "progress.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if phase is None or payload.get("stage") == phase or payload.get("phase") == phase:
+            rows.append(payload)
+    return rows
+
+
 def _preflight_error(scene: Any, resource_type: str, path: str | None, message: str, runs: list[dict[str, Any]] | None) -> dict[str, Any]:
     return {
         "scene": scene,
@@ -1283,12 +1909,12 @@ def _preflight_error(scene: Any, resource_type: str, path: str | None, message: 
     }
 
 
-def _runs_for_scene(runs: list[dict[str, Any]], scene: int) -> list[dict[str, Any]]:
+def _runs_for_scene(runs: list[dict[str, Any]], scene: Any) -> list[dict[str, Any]]:
     return [
         run
         for run in runs
-        if int(run.get("target_scene", -1)) == int(scene)
-        or int(scene) in {int(item) for item in run.get("source_scenes", [])}
+        if str(run.get("target_scene", "")) == str(scene)
+        or str(scene) in {str(item) for item in run.get("source_scenes", [])}
     ]
 
 

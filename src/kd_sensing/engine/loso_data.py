@@ -6,6 +6,7 @@ from typing import Any
 from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 from kd_sensing.data.loso import LOSOFold, TargetSplit, resolve_loso_fold, split_target_records
+from kd_sensing.data.mmw.protocol import MMWFold
 from kd_sensing.data.samples import _select_portion
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
@@ -50,7 +51,7 @@ class NamedSplitSubset(Dataset):
 
 def build_source_multi_scene_dataset(
     cfg: dict[str, Any],
-    fold: LOSOFold | dict[str, Any] | None = None,
+    fold: LOSOFold | MMWFold | dict[str, Any] | None = None,
     *,
     target_scene: Any | None = None,
     source_scenes: list[Any] | tuple[Any, ...] | None = None,
@@ -63,7 +64,7 @@ def build_source_multi_scene_dataset(
     for index, scene in enumerate(resolved.source_scenes):
         scene_cfg = deepcopy(cfg)
         dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
-        retarget_deepsense_dataset_config(dataset_cfg, scene)
+        _retarget_dataset_config_for_fold(dataset_cfg, scene)
         _apply_loso_scene_overrides(scene_cfg, scene)
         dataset = build_dataset(scene_cfg, split, return_metadata=return_metadata, **dataset_kwargs)
         if index == 0:
@@ -75,7 +76,7 @@ def build_source_multi_scene_dataset(
 
 def build_target_adapt_test_datasets(
     cfg: dict[str, Any],
-    fold: LOSOFold | dict[str, Any] | None = None,
+    fold: LOSOFold | MMWFold | dict[str, Any] | None = None,
     *,
     target_scene: Any | None = None,
     source_scenes: list[Any] | tuple[Any, ...] | None = None,
@@ -88,7 +89,7 @@ def build_target_adapt_test_datasets(
     resolved = _resolve_fold(fold, target_scene=target_scene, source_scenes=source_scenes)
     target_cfg = deepcopy(cfg)
     dataset_cfg = target_cfg.setdefault("data", {}).setdefault("dataset", {})
-    retarget_deepsense_dataset_config(dataset_cfg, resolved.target_scene)
+    _retarget_dataset_config_for_fold(dataset_cfg, resolved.target_scene)
     _apply_loso_scene_overrides(target_cfg, resolved.target_scene)
     target_dataset = build_dataset(target_cfg, target_split, return_metadata=return_metadata, **dataset_kwargs)
     split_result, selected_csv_indices = _split_target_dataset_records(
@@ -123,7 +124,7 @@ def build_target_adapt_test_datasets(
 
 def build_loso_dataloaders(
     cfg: dict[str, Any],
-    fold: LOSOFold | dict[str, Any] | None = None,
+    fold: LOSOFold | MMWFold | dict[str, Any] | None = None,
     *,
     target_scene: Any | None = None,
     source_scenes: list[Any] | tuple[Any, ...] | None = None,
@@ -151,15 +152,77 @@ def build_loso_dataloaders(
     }
 
 
+def build_loso_source_train_loader(
+    cfg: dict[str, Any],
+    fold: LOSOFold | MMWFold | dict[str, Any] | None = None,
+    *,
+    target_scene: Any | None = None,
+    source_scenes: list[Any] | tuple[Any, ...] | None = None,
+) -> dict[str, DataLoader | LOSOFold | dict[str, Any]]:
+    resolved = _resolve_fold(fold, target_scene=target_scene, source_scenes=source_scenes)
+    loader_cfg = cfg["data"]["dataloader"]
+    source_dataset = build_source_multi_scene_dataset(cfg, resolved)
+    first_source = source_dataset.datasets[0] if getattr(source_dataset, "datasets", None) else None
+    return {
+        "fold": resolved,
+        "source_train": build_dataloader(source_dataset, loader_cfg, split="train"),
+        "normalization_kwargs": _normalization_kwargs(first_source),
+    }
+
+
+def build_loso_target_stage_loader(
+    cfg: dict[str, Any],
+    fold: LOSOFold | MMWFold | dict[str, Any] | None = None,
+    *,
+    stage: str,
+    target_scene: Any | None = None,
+    source_scenes: list[Any] | tuple[Any, ...] | None = None,
+    adapt_fraction: float = 0.2,
+    split_seed: int = 0,
+    dataset_kwargs: dict[str, Any] | None = None,
+) -> dict[str, DataLoader | TargetSplit | LOSOFold]:
+    if stage not in {"target_adapt", "target_test"}:
+        raise ValueError("stage must be 'target_adapt' or 'target_test'.")
+    resolved = _resolve_fold(fold, target_scene=target_scene, source_scenes=source_scenes)
+    loader_cfg = cfg["data"]["dataloader"]
+    target_adapt, target_test, split_result = build_target_adapt_test_datasets(
+        cfg,
+        resolved,
+        adapt_fraction=adapt_fraction,
+        split_seed=split_seed,
+        **(dataset_kwargs or {}),
+    )
+    dataset = target_adapt if stage == "target_adapt" else target_test
+    loader_split = "train" if stage == "target_adapt" else "test"
+    return {
+        "fold": resolved,
+        "target_split": split_result,
+        stage: build_dataloader(dataset, loader_cfg, split=loader_split),
+    }
+
+
 def _resolve_fold(
-    fold: LOSOFold | dict[str, Any] | None,
+    fold: LOSOFold | MMWFold | dict[str, Any] | None,
     *,
     target_scene: Any | None,
     source_scenes: list[Any] | tuple[Any, ...] | None,
-) -> LOSOFold:
-    if isinstance(fold, LOSOFold):
+) -> LOSOFold | MMWFold:
+    if isinstance(fold, (LOSOFold, MMWFold)):
         return fold
     if isinstance(fold, dict):
+        if str(fold.get("dataset_family", fold.get("scene_family", ""))).upper() == "MMW":
+            target = str(fold.get("target_scene", target_scene))
+            sources = tuple(str(item) for item in fold.get("source_scenes", source_scenes or ()))
+            return MMWFold(
+                fold_id=str(fold.get("fold", fold.get("fold_id", f"target_{target}"))),
+                target_scene=target,
+                source_scenes=sources,
+                condition=str(fold.get("condition", "sunny")),
+                town=str(fold.get("town", "Town10")),
+                protocol=str(fold.get("protocol", "mmw_scenario_loso")),
+                claim_scope=str(fold.get("claim_scope", "scenario_loso" if sources else "single_scene_smoke")),
+                cross_scene_claim_allowed=bool(fold.get("cross_scene_claim_allowed", bool(sources))),
+            )
         target_scene = fold.get("target_scene", target_scene)
         source_scenes = fold.get("source_scenes", source_scenes)
     if target_scene is None:
@@ -254,9 +317,18 @@ def _apply_loso_scene_overrides(cfg: dict[str, Any], scene: Any) -> None:
                     dataset_cfg[key] = scene_csv[key]
 
 
+def _retarget_dataset_config_for_fold(dataset_cfg: dict[str, Any], scene: Any) -> None:
+    if str(dataset_cfg.get("type", "deepsense6g")).strip().lower() == "mmw":
+        dataset_cfg["scene"] = str(scene)
+        return
+    retarget_deepsense_dataset_config(dataset_cfg, scene)
+
+
 __all__ = [
     "NamedSplitSubset",
     "build_loso_dataloaders",
+    "build_loso_source_train_loader",
+    "build_loso_target_stage_loader",
     "build_source_multi_scene_dataset",
     "build_target_adapt_test_datasets",
 ]

@@ -16,7 +16,7 @@ model:
     modalities: [image, radar, gps]
     variant: v3_decoupled
 loso:
-  variants: [v0_flat, v1_hierarchical, v2_shared_private, v3_decoupled, v4_adapter, v5_adapter_proto, v6_full_finetune]
+  variants: [v0_flat, v1_hierarchical, v2_shared_private, v3_decoupled, v4_adapter, v5_adapter_proto, v6_radio_proto, v8_path_proto, v6_full_finetune]
   budgets: [0, 5, 10, 20, 50]
   seeds: [0, 1, 2]
   skip_scenes: []

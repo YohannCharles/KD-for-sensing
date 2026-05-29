@@ -149,6 +149,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     total_samples = sum(batch_sizes[args.warmup :]) if len(batch_sizes) > args.warmup else 0
     total_step_time = sum(step_times)
     runtime_metadata = throughput_run_metadata(cfg, dataloaders, device)
+    mmw_summary = _mmw_hist_beam_profile_summary(cfg, runtime_metadata)
     multimodal_nf_summary = _multimodal_nf_profile_summary(runtime_metadata)
     cache_io_summary = _multimodal_nf_cache_io_summary(multimodal_nf_summary)
     wait_breakdown = _wait_vs_gpu_step_breakdown(
@@ -191,6 +192,15 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "wait_vs_gpu_step": wait_breakdown,
         "samples_per_second": (total_samples / total_step_time) if total_step_time > 0 else 0.0,
         "cuda_peak_memory_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None,
+        "enabled_modalities": mmw_summary.get("enabled_modalities") or runtime_metadata.get("prediction_setup", {}).get("enabled_modalities", []),
+        "seq_len": mmw_summary.get("seq_len"),
+        "batch_size": mmw_summary.get("batch_size"),
+        "loader_config": {
+            "num_workers": mmw_summary.get("num_workers"),
+            "prefetch_factor": mmw_summary.get("prefetch_factor"),
+            "pin_memory": mmw_summary.get("pin_memory"),
+            "persistent_workers": mmw_summary.get("persistent_workers"),
+        },
         "dataloader_splits": runtime_metadata.get("dataloader_splits", runtime_metadata.get("dataloader", {})),
         "progress": runtime_metadata.get("progress", {}),
         "cache_policy": _cache_policy_summary(runtime_metadata.get("cache", {})),
@@ -199,7 +209,9 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
             wait_breakdown=wait_breakdown,
             cache_io=cache_io_summary,
             multimodal_nf=multimodal_nf_summary,
+            mmw_hist_beam=mmw_summary,
         ),
+        "mmw_hist_beam": mmw_summary,
         "multimodal_nf": multimodal_nf_summary,
         "runtime": runtime_metadata,
     }
@@ -412,9 +424,12 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
 
 def _cache_policy_summary(cache_metadata: dict[str, Any]) -> dict[str, Any]:
     lidar = cache_metadata.get("lidar", {}) if isinstance(cache_metadata, dict) else {}
+    image = cache_metadata.get("image", {}) if isinstance(cache_metadata, dict) else {}
     return {
         "policy": cache_metadata.get("policy") if isinstance(cache_metadata, dict) else None,
         "enabled_modalities": cache_metadata.get("enabled_modalities", []) if isinstance(cache_metadata, dict) else [],
+        "image_policy": image.get("policy") if isinstance(image, dict) else None,
+        "image": image if isinstance(image, dict) else {},
         "lidar_policy": lidar.get("policy") if isinstance(lidar, dict) else None,
         "multimodal_nf": cache_metadata.get("multimodal_nf", {}) if isinstance(cache_metadata, dict) else {},
         "splits": cache_metadata.get("splits", {}) if isinstance(cache_metadata, dict) else {},
@@ -554,6 +569,7 @@ def _io_risk_summary(
     wait_breakdown: dict[str, Any],
     cache_io: dict[str, Any],
     multimodal_nf: dict[str, Any],
+    mmw_hist_beam: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     wait_spikes = wait_breakdown.get("p95_spikes", {}) if isinstance(wait_breakdown, dict) else {}
     cache_random_read_risk = any(
@@ -575,16 +591,71 @@ def _io_risk_summary(
         for metadata in cache_io.get("modalities", {}).values()
         if int((metadata.get("read_seconds") or {}).get("count", 0) or 0) > 1
     )
+    mmw_hist_beam = mmw_hist_beam or {}
+    loader_wait_dominates = bool(wait_spikes.get("wait_gt_gpu_step", False))
+    mmw_image_heavy = bool(mmw_hist_beam.get("image_heavy", False))
     return {
         "cache_random_read_risk": bool(cache_random_read_risk),
-        "loader_wait_dominates_step": bool(wait_spikes.get("wait_gt_gpu_step", False)),
+        "loader_wait_dominates_step": loader_wait_dominates,
+        "mmw_image_heavy_risk": bool(mmw_image_heavy),
+        "worker_memory_risk": bool(mmw_hist_beam.get("worker_memory_risk", False)),
         "cache_validation_scan_detected": bool(cache_validation_scan_detected),
         "cache_migration_pending_detected": int(cache_status_summary.get("migration_pending", 0) or 0) > 0,
         "cache_metadata_upgrade_detected": int(cache_status_summary.get("metadata_upgraded", 0) or 0) > 0,
         "cache_rebuild_detected": int(cache_status_summary.get("rebuilt", 0) or 0) > 0,
         "cache_read_tail_risk": bool(cache_read_tail_risk),
         "mmap_page_fault_risk": bool(cache_random_read_risk and (cache_read_tail_risk or wait_spikes.get("wait_gt_gpu_step", False))),
+        "primary_actions": _primary_io_actions(
+            loader_wait_dominates=loader_wait_dominates,
+            mmw_image_heavy=mmw_image_heavy,
+            worker_memory_risk=bool(mmw_hist_beam.get("worker_memory_risk", False)),
+        ),
     }
+
+
+def _mmw_hist_beam_profile_summary(cfg: dict[str, Any], runtime_metadata: dict[str, Any]) -> dict[str, Any]:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
+    dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
+    try:
+        enabled_modalities = list(runtime_metadata.get("prediction_setup", {}).get("enabled_modalities") or [])
+    except Exception:
+        enabled_modalities = []
+    if not enabled_modalities:
+        enabled_modalities = list(runtime_metadata.get("cache", {}).get("enabled_modalities", []))
+    loader_splits = runtime_metadata.get("dataloader_splits", {}) if isinstance(runtime_metadata, dict) else {}
+    train_loader = loader_splits.get("train", {}) if isinstance(loader_splits, dict) else {}
+    seq_len = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length_student", 0)) or 0)
+    batch_size = int(train_loader.get("batch_size", cfg.get("data", {}).get("dataloader", {}).get("batch_size", 0)) or 0)
+    num_workers = int(train_loader.get("num_workers", 0) or 0)
+    prefetch_factor = train_loader.get("prefetch_factor")
+    image_heavy = dataset_type == "mmw" and "image" in enabled_modalities and seq_len >= 8
+    worker_slots = num_workers * max(int(prefetch_factor or 1), 1) * max(batch_size, 1)
+    return {
+        "dataset_type": dataset_type,
+        "enabled": dataset_type == "mmw",
+        "enabled_modalities": enabled_modalities,
+        "seq_len": seq_len,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+        "pin_memory": bool(train_loader.get("pin_memory", False)),
+        "persistent_workers": bool(train_loader.get("persistent_workers", False)),
+        "image_cache": runtime_metadata.get("cache", {}).get("image", {}),
+        "image_heavy": bool(image_heavy),
+        "worker_slots": int(worker_slots),
+        "worker_memory_risk": bool(image_heavy and num_workers > 0 and worker_slots >= max(batch_size * 2, 8)),
+    }
+
+
+def _primary_io_actions(*, loader_wait_dominates: bool, mmw_image_heavy: bool, worker_memory_risk: bool) -> list[str]:
+    actions: list[str] = []
+    if mmw_image_heavy:
+        actions.append("enable_or_prewarm_image_derived_cache")
+    if worker_memory_risk:
+        actions.extend(["reduce_num_workers", "disable_persistent_workers", "reduce_prefetch_factor"])
+    if loader_wait_dominates:
+        actions.extend(["reduce_batch_size_or_parallel_runs", "profile_image_decode_cache_path"])
+    return list(dict.fromkeys(actions))
 
 
 def _write_csv_summary(path: str, result: dict[str, Any]) -> None:

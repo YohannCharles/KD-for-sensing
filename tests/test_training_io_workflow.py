@@ -740,7 +740,7 @@ def test_shutdown_dataloader_workers_clears_persistent_iterator():
     assert loader._iterator is None
 
 
-def test_cache_policy_resolves_lidar_policy_and_rejects_removed_image_override():
+def test_cache_policy_resolves_lidar_and_supported_image_policy():
     cfg = {
         "data": {"cache": {"policy": "read_only", "lidar": {"policy": "auto"}}, "dataset": {}},
         "experiment": {"task": "fusion"},
@@ -756,8 +756,35 @@ def test_cache_policy_resolves_lidar_policy_and_rejects_removed_image_override()
     assert resolved["lidar_use_cache"] is True
     assert resolved["lidar_write_cache"] is True
     assert resolved["lidar_cache_policy"] == "auto"
-    with pytest.raises(ValueError, match="Image cache policy has been removed"):
-        apply_cache_policy({}, {"data": {"cache": {"policy": "auto", "image": {"policy": "auto"}}}}, ("image",))
+    assert resolved["image_cache_policy"] == "read_only"
+
+    image_cfg = {}
+    apply_cache_policy(
+        image_cfg,
+        {"data": {"cache": {"policy": "off", "image": {"policy": "auto", "cache_dir": "image_cache"}}}},
+        ("image",),
+    )
+    assert image_cfg["image_cache_policy"] == "auto"
+    assert image_cfg["image_use_cache"] is True
+    assert image_cfg["image_write_cache"] is True
+    assert image_cfg["image_cache_dir"] == "image_cache"
+    with pytest.raises(ValueError, match="Removed image motion cache"):
+        apply_cache_policy({}, {"data": {"cache": {"policy": "auto", "image_motion_policy": "auto"}}}, ("image",))
+
+
+def test_load_config_accepts_rgb_image_cache_policy_and_rejects_motion_cache():
+    cfg = load_config(
+        ROOT / "configs/hist_beam/mmw_scenario_loso.yaml",
+        ["data.cache.image.policy=read_only"],
+    )
+
+    assert cfg["data"]["cache"]["image"]["policy"] == "read_only"
+
+    with pytest.raises(ValueError, match="Removed image motion cache option"):
+        load_config(
+            ROOT / "configs/hist_beam/mmw_scenario_loso.yaml",
+            ["data.cache.image_motion_policy=auto"],
+        )
 
 
 def test_parallel_training_recommendation_outputs_background_overrides():
@@ -881,6 +908,117 @@ def test_build_dataset_auto_policy_uses_rgb_image_without_cache_metadata(tmp_pat
     assert metadata["scene_id"] == 9
     assert metadata["scene_slug"] == "scene9"
     assert _removed_image_option("cache_policy") not in metadata
+
+
+def test_image_derived_cache_hit_miss_and_read_only_policy(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
+    _write_camera_files(tmp_path, count=2)
+    cfg = {
+        "experiment": {"task": "image"},
+        "data": {
+            "cache": {"policy": "off", "image": {"policy": "auto", "cache_dir": "image_cache"}},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 9,
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 2,
+                "num_pred": 1,
+                "image_profile": "rgb_imagenet",
+                "image_size": [8, 8],
+            },
+        },
+        "model": {"student": {"modalities": ["image"]}},
+    }
+
+    dataset = build_dataset(cfg, "train")
+    uncached = dataset[0]["image"]
+    generated = sorted((tmp_path / "image_cache").rglob("*.npy"))
+    assert len(generated) == 2
+    assert dataset.image_cache_metadata()["generated"] == 2
+
+    read_only_cfg = deepcopy(cfg)
+    read_only_cfg["data"]["cache"]["image"]["policy"] = "read_only"
+    read_only = build_dataset(read_only_cfg, "train")
+    cached = read_only[0]["image"]
+
+    torch.testing.assert_close(cached, uncached)
+    assert read_only.image_cache_metadata()["hits"] == 2
+
+
+def test_disabled_image_modality_does_not_initialize_image_cache(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "data": {
+            "cache": {"policy": "off", "image": {"policy": "auto", "cache_dir": "image_cache"}},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 9,
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 1,
+                "num_pred": 1,
+                "gps_normalize": False,
+                "mmwave_normalize": False,
+            },
+        },
+        "model": {"student": {"modalities": ["gps"]}},
+    }
+
+    dataset = build_dataset(cfg, "train")
+
+    assert "image" not in dataset.enabled_modalities
+    assert dataset.image_cache is None
+    assert not (tmp_path / "image_cache").exists()
+
+
+def test_gps_mmwave_scaler_fit_does_not_retain_per_sample_sequence_cache(tmp_path: Path):
+    csv_path = tmp_path / "train.csv"
+    rows = []
+    for row_idx in range(2):
+        gps_name = f"gps_{row_idx}.txt"
+        bs_name = f"bs_{row_idx}.txt"
+        mmwave_name = f"mmwave_{row_idx}.txt"
+        beam_name = f"beam_{row_idx}.txt"
+        future_name = f"future_{row_idx}.txt"
+        np.savetxt(tmp_path / gps_name, np.asarray([42.0 + row_idx * 1e-5, -71.0], dtype=np.float32))
+        np.savetxt(tmp_path / bs_name, np.asarray([42.0, -71.0], dtype=np.float32))
+        np.savetxt(tmp_path / mmwave_name, np.linspace(1.0 + row_idx, 64.0 + row_idx, 64, dtype=np.float32))
+        beam = np.zeros(64, dtype=np.float32)
+        beam[row_idx] = 1.0
+        np.savetxt(tmp_path / beam_name, beam)
+        np.savetxt(tmp_path / future_name, beam)
+        rows.append([gps_name, bs_name, mmwave_name, beam_name, future_name, str(row_idx)])
+    csv_path.write_text(
+        "gps1,bs_gps1,mmwave1,beam1,future_beam1,seq_index\n"
+        + "\n".join(",".join(row) for row in rows)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=csv_path.name,
+        split="train",
+        seq_len=1,
+        num_pred=1,
+        enabled_modalities=["gps", "mmwave"],
+        gps_normalize=True,
+        mmwave_normalize=True,
+    )
+    metadata = dataset_run_metadata(dataset)
+
+    assert dataset._gps_feature_cache == {}
+    assert dataset._mmwave_feature_cache == {}
+    assert metadata["gps_scaler"]["streaming"] is True
+    assert metadata["mmwave_scaler"]["streaming"] is True
+    assert metadata["gps_scaler"]["retains_per_sample_sequence_cache"] is False
+    assert metadata["mmwave_scaler"]["retains_per_sample_sequence_cache"] is False
 
 
 def test_build_dataset_deepsense_scene_32_records_metadata(tmp_path: Path):
@@ -1014,6 +1152,7 @@ def test_throughput_metadata_includes_cache_policy():
 
     assert metadata["cache"]["policy"] == "read_only"
     assert metadata["cache"]["image"]["input"] == "rgb_imagenet"
+    assert metadata["cache"]["image"]["policy"] == "read_only"
     assert metadata["cache"]["lidar"]["policy"] == "auto"
     assert metadata["cache"]["enabled_modalities"] == ["image", "lidar"]
     assert metadata["dataloader_splits"]["train"]["batch_size"] == 3
@@ -1108,6 +1247,32 @@ def test_profile_summary_exposes_multimodal_nf_sources_and_csi_component():
     assert risk["cache_random_read_risk"] is True
     assert risk["loader_wait_dominates_step"] is True
     assert cache["multimodal_nf"]["splits"]["train"]["derived_cache"]["lidar"]["source_kind"] == "hdf5"
+
+
+def test_mmw_profile_helpers_mark_image_heavy_loader_wait():
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "data": {
+            "dataset": {"type": "mmw", "seq_len": 8, "image_profile": "rgb_imagenet"},
+            "dataloader": {"batch_size": 4, "num_workers": 2, "prefetch_factor": 2, "persistent_workers": True},
+            "cache": {"policy": "off", "image": {"policy": "auto"}},
+        },
+        "model": {"student": {"modalities": ["image", "gps", "mmwave"]}},
+        "training": {"transfer": {}, "amp": {}},
+    }
+    runtime = throughput_run_metadata(cfg)
+    mmw = profile_training_io._mmw_hist_beam_profile_summary(cfg, runtime)
+    risk = profile_training_io._io_risk_summary(
+        wait_breakdown={"p95_spikes": {"wait_gt_gpu_step": True}},
+        cache_io={"modalities": {}},
+        multimodal_nf={},
+        mmw_hist_beam=mmw,
+    )
+
+    assert mmw["image_heavy"] is True
+    assert mmw["worker_memory_risk"] is True
+    assert risk["loader_wait_dominates_step"] is True
+    assert "enable_or_prewarm_image_derived_cache" in risk["primary_actions"]
 
 
 def test_fixed_run_name_defaults_to_unique_directory_and_resume_reuses(tmp_path: Path):

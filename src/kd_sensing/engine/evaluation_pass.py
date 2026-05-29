@@ -5,6 +5,12 @@ from typing import Any
 
 import torch
 
+from kd_sensing.engine.batch import (
+    prepare_beam_power_targets,
+    prepare_path_descriptors,
+    prepare_path_semantic_labels,
+    prepare_radio_semantic_labels,
+)
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
 from kd_sensing.engine.objectives.metadata import (
@@ -12,6 +18,7 @@ from kd_sensing.engine.objectives.metadata import (
     objective_runtime_metadata,
     resolve_prediction_objective,
 )
+from kd_sensing.engine.hist_beam_prototypes import load_source_prototypes
 from kd_sensing.engine.prediction_objectives import (
     compute_prediction_loss,
     prepare_prediction_targets,
@@ -40,7 +47,13 @@ from kd_sensing.evaluation.metrics import (
     calculate_position_rmse,
     calculate_topk_accuracy,
 )
-from kd_sensing.evaluation.hist_beam_outputs import calculate_hist_beam_metrics
+from kd_sensing.evaluation.hist_beam_outputs import (
+    beam_power_metrics,
+    calculate_hist_beam_metrics,
+    path_descriptor_regression_metrics,
+    path_semantic_metrics,
+    radio_semantic_metrics,
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,14 @@ class EvaluationPassResult:
     outputs: torch.Tensor
     labels: torch.Tensor
     input_beams: torch.Tensor | None
+    radio_logits: torch.Tensor | None
+    radio_labels: torch.Tensor | None
+    path_logits: torch.Tensor | None
+    path_labels: torch.Tensor | None
+    path_attr_pred: torch.Tensor | None
+    path_descriptors: torch.Tensor | None
+    path_valid: torch.Tensor | None
+    beam_power: torch.Tensor | None
     metadata: list[dict[str, Any]]
     objective_metadata: dict[str, Any]
     enabled_modalities: tuple[str, ...]
@@ -76,6 +97,7 @@ def run_evaluation_pass(
     num_classes = model_cfg.get("num_classes", 64)
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
+    hist_forward_kwargs = _hist_forward_kwargs(cfg, device)
     val_loss = 0.0
     val_occlusion_loss = 0.0
     val_position_loss = 0.0
@@ -98,6 +120,14 @@ def run_evaluation_pass(
     all_los_bucket_labels = []
     all_link_outputs = []
     all_link_targets = []
+    all_radio_logits = []
+    all_radio_labels = []
+    all_path_logits = []
+    all_path_labels = []
+    all_path_attr_pred = []
+    all_path_descriptors = []
+    all_path_valid = []
+    all_beam_power = []
     lidar_quality = LidarQualityAccumulator()
     saw_lidar = False
 
@@ -123,6 +153,39 @@ def run_evaluation_pass(
                 device=device,
                 non_blocking=non_blocking,
             )
+            radio_labels = prepare_radio_semantic_labels(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            path_labels = prepare_path_semantic_labels(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            path_targets = prepare_path_descriptors(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            beam_power = prepare_beam_power_targets(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            if radio_labels is not None:
+                all_radio_labels.append(radio_labels.detach().cpu())
+            if path_labels is not None:
+                all_path_labels.append(path_labels.detach().cpu())
+            if path_targets is not None:
+                all_path_descriptors.append(path_targets[0].detach().cpu())
+                all_path_valid.append(path_targets[1].detach().cpu())
+            if beam_power is not None:
+                all_beam_power.append(beam_power.detach().cpu())
             if "los_label" in auxiliary_targets:
                 all_los_bucket_labels.append(auxiliary_targets["los_label"].detach().cpu())
             prediction_targets = prepare_prediction_targets(
@@ -142,6 +205,7 @@ def run_evaluation_pass(
                     device=device,
                     non_blocking=non_blocking,
                     force_modality_mask=force_modality_mask,
+                    extra_model_kwargs=hist_forward_kwargs,
                 )
                 outputs = step.logits
                 beam_loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
@@ -180,6 +244,15 @@ def run_evaluation_pass(
             if "link_quality" in step.model_output.diagnostics and "link_quality" in auxiliary_targets:
                 all_link_outputs.append(step.model_output.diagnostics["link_quality"].detach().cpu())
                 all_link_targets.append(auxiliary_targets["link_quality"].detach().cpu())
+            radio_logits = step.model_output.diagnostics.get("radio_logits")
+            if torch.is_tensor(radio_logits):
+                all_radio_logits.append(radio_logits.detach().cpu())
+            path_logits = step.model_output.diagnostics.get("path_logits")
+            if torch.is_tensor(path_logits):
+                all_path_logits.append(path_logits.detach().cpu())
+            path_attr_pred = step.model_output.diagnostics.get("path_attr_pred")
+            if torch.is_tensor(path_attr_pred):
+                all_path_attr_pred.append(path_attr_pred.detach().cpu())
 
     outputs_t = torch.cat(all_outputs, dim=0)
     labels_t = torch.cat(all_labels, dim=0)
@@ -197,6 +270,26 @@ def run_evaluation_pass(
         link_targets=torch.cat(all_link_targets, dim=0) if all_link_targets else None,
     )
     metrics = _metrics_from_outputs(val_loss / max(len(dataloader), 1), outputs_t, labels_t, cfg, objective=objective)
+    radio_logits_t = torch.cat(all_radio_logits, dim=0) if all_radio_logits else None
+    radio_labels_t = torch.cat(all_radio_labels, dim=0) if all_radio_labels else None
+    path_logits_t = torch.cat(all_path_logits, dim=0) if all_path_logits else None
+    path_labels_t = torch.cat(all_path_labels, dim=0) if all_path_labels else None
+    path_attr_pred_t = torch.cat(all_path_attr_pred, dim=0) if all_path_attr_pred else None
+    path_descriptors_t = torch.cat(all_path_descriptors, dim=0) if all_path_descriptors else None
+    path_valid_t = torch.cat(all_path_valid, dim=0) if all_path_valid else None
+    beam_power_t = torch.cat(all_beam_power, dim=0) if all_beam_power else None
+    if _hist_beam_metrics_enabled(cfg):
+        metrics.update(radio_semantic_metrics(radio_logits_t, radio_labels_t))
+        metrics.update(path_semantic_metrics(path_logits_t, path_labels_t))
+        metrics.update(path_descriptor_regression_metrics(path_attr_pred_t, path_descriptors_t, path_valid_t))
+        pred_beams = outputs_t.argmax(dim=-1)
+        metrics.update(
+            beam_power_metrics(
+                pred_beams.reshape(-1),
+                labels_t.reshape(-1),
+                beam_power_t.reshape(-1, beam_power_t.shape[-1]) if beam_power_t is not None else None,
+            )
+        )
     if objective in {"current_beam_selection", "selection_multitask"} and all_los_bucket_labels:
         metrics["los_buckets"] = _beam_metrics_by_los_bucket(
             outputs_t,
@@ -252,11 +345,53 @@ def run_evaluation_pass(
         outputs=outputs_t,
         labels=labels_t,
         input_beams=input_beams_t,
+        radio_logits=radio_logits_t,
+        radio_labels=radio_labels_t,
+        path_logits=path_logits_t,
+        path_labels=path_labels_t,
+        path_attr_pred=path_attr_pred_t,
+        path_descriptors=path_descriptors_t,
+        path_valid=path_valid_t,
+        beam_power=beam_power_t,
         metadata=all_metadata,
         objective_metadata=objective_metadata,
         enabled_modalities=enabled_modalities,
         saw_lidar=saw_lidar,
     )
+
+
+def _hist_forward_kwargs(cfg: dict[str, Any], device: torch.device) -> dict[str, torch.Tensor]:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    proto_cfg = hist_cfg.get("prototype", {}) if isinstance(hist_cfg.get("prototype"), dict) else {}
+    proto_path = (
+        hist_cfg.get("source_prototype_path")
+        or proto_cfg.get("source_prototype_path")
+        or proto_cfg.get("path")
+        or proto_cfg.get("artifact_path")
+    )
+    if not proto_path:
+        return {}
+    try:
+        artifact = load_source_prototypes(proto_path, map_location=device)
+    except Exception:
+        return {}
+    proto_type = str(hist_cfg.get("proto_type", proto_cfg.get("proto_type", (artifact.get("metadata") or {}).get("proto_type", "")))).strip().lower()
+    kwargs: dict[str, torch.Tensor] = {}
+    if proto_type == "path":
+        path = artifact.get("mu_path_c", artifact.get("shared_prototypes"))
+        counts = artifact.get("count_path", artifact.get("counts"))
+        if torch.is_tensor(path):
+            kwargs["path_prototypes"] = path.to(device=device)
+        if torch.is_tensor(counts):
+            kwargs["path_prototype_counts"] = counts.to(device=device)
+    elif proto_type == "radio_semantic":
+        radio = artifact.get("mu_radio_c", artifact.get("shared_prototypes"))
+        counts = artifact.get("count_radio", artifact.get("counts"))
+        if torch.is_tensor(radio):
+            kwargs["radio_prototypes"] = radio.to(device=device)
+        if torch.is_tensor(counts):
+            kwargs["radio_prototype_counts"] = counts.to(device=device)
+    return kwargs
 
 
 def _metrics_from_outputs(

@@ -1,0 +1,12 @@
+preprocessing:
+  type: image_derived_cache
+  csv_paths:
+    - dataset/MMW/sunny/Prepared/Town10_skybridge_seed24/splits/train.csv
+  data_root: dataset/MMW/sunny
+  cache_dir: image_derived_cache
+  image_prefix: camera
+  image_size: [224, 224]
+  image_profile: rgb_imagenet
+  policy: auto
+  overwrite: false
+  progress: true

@@ -1,0 +1,16 @@
+preprocessing:
+  type: mmw_radar_maps
+  data_root: dataset/MMW/sunny
+  scenes:
+    - Town10_Hroad_seed42
+    - Town10_crossroad_seed24
+    - Town10_skybridge_seed24
+  range_bins: 128
+  angle_bins: 64
+  doppler_bins: 128
+  depth_range: [0.0, 160.0]
+  azimuth_range: [-0.96, 0.96]
+  velocity_range: [-10.0, 10.0]
+  overwrite: false
+  progress: true
+  materialize_split_columns: true

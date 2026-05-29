@@ -47,6 +47,10 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
                 ),
                 top_k=max(int(value) for value in cfg.get("evaluation", {}).get("k_values", [1, 3, 5])),
                 variant_metadata=setup,
+                radio_logits=result.radio_logits,
+                radio_labels=result.radio_labels,
+                path_logits=result.path_logits,
+                path_labels=result.path_labels,
             )
     return metrics
 

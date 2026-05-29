@@ -206,6 +206,7 @@ def import_default_components() -> None:
     import kd_sensing.models.radar  # noqa: F401
     import kd_sensing.models.raymobtime_s008  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
+    import kd_sensing.preprocessing.image_cache  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401
     import kd_sensing.preprocessing.multimodal_nf  # noqa: F401
     import kd_sensing.preprocessing.raymobtime_s008  # noqa: F401

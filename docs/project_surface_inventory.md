@@ -39,7 +39,7 @@
 
 - thin_cli_alias: `scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py`。这些只委托包内 CLI；README 推荐 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。
 - research_diagnostic: `scripts/analyze_csi_hardening_sweep.py`、`scripts/build_teacher_registry.py`、`scripts/debug_eval_consistency.py`、`scripts/eval_modality_perturbation.py`、`scripts/eval_modality_subsets.py`、`scripts/profile_training_io.py`、`scripts/recommend_parallel_training.py`。
-- dataset_preparation: `scripts/deepverse/download_dt31_assets.py`、`scripts/deepverse/generate_dt31_cache.py`、`scripts/mmw/prepare_town10_skybridge.py`。
+- dataset_preparation: `scripts/deepverse/download_dt31_assets.py`、`scripts/deepverse/generate_dt31_cache.py`、`scripts/inspect_dataset.py`、`scripts/mmw/prepare_town10_skybridge.py`。
 - viewer_entrypoint: `tools/visualization/gradio_multimodal_viewer.py`。
 - viewer_support: `tools/visualization/viewer_utils.py`、`tools/visualization/viewer_constants.py`、`tools/visualization/viewer_manifest_io.py`、`tools/visualization/viewer_figures.py`、`tools/visualization/viewer_prediction_tables.py`。
 - shell_orchestration: `scripts/run_csi_hardening_matrix.sh`。

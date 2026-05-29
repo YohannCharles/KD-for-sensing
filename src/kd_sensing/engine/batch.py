@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import torch.nn.functional as F
 
@@ -84,6 +86,137 @@ def prepare_auxiliary_targets(
             raise ValueError(f"link_quality must have shape [B, H], got {tuple(link.shape)}.")
         targets["link_quality"] = link[:, :num_pred]
     return targets
+
+
+def prepare_radio_semantic_labels(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    ignore_index: int = -100,
+    non_blocking: bool = False,
+) -> torch.Tensor | None:
+    if "radio_semantic_label" not in batch:
+        return None
+    labels = batch["radio_semantic_label"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    if labels.ndim != 2:
+        raise ValueError(f"radio_semantic_label must have shape [B, H], got {tuple(labels.shape)}.")
+    labels = labels[:, :num_pred]
+    available = batch.get("radio_semantic_available")
+    if available is not None:
+        mask = available.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+        if mask.ndim == 1:
+            mask = mask.unsqueeze(1)
+        labels = torch.where(mask[:, : labels.shape[1]], labels, torch.full_like(labels, int(ignore_index)))
+    return labels
+
+
+SENSITIVE_TARGET_FIELDS = (
+    "target_beam",
+    "beam",
+    "beam_power",
+    "csi",
+    "channel",
+    "channel_path",
+    "path_params",
+    "path_descriptor",
+    "path_semantic_label",
+    "radio_semantic_label",
+)
+
+
+def assert_sensitive_fields_allowed(
+    batch: dict[str, Any],
+    *,
+    split: str,
+    label_budget: int | None,
+    fields: tuple[str, ...] | list[str],
+    allow_labeled_target_path_supervision: bool = False,
+    hint: str = "Use source supervision, evaluation-only diagnostics, or enable the labeled target supervision option.",
+) -> None:
+    budget = int(label_budget or 0)
+    split_text = str(split or batch.get("split") or "target").lower()
+    unlabeled = budget <= 0 or "unlabeled" in split_text
+    for field in fields:
+        if field not in batch:
+            continue
+        is_path_field = field in {"path_params", "path_descriptor", "path_semantic_label"}
+        if not unlabeled and (not is_path_field or allow_labeled_target_path_supervision):
+            continue
+        raise RuntimeError(
+            "Target sensitive field access blocked: "
+            f"split={split_text}, field={field}, label_budget={budget}. {hint}"
+        )
+
+
+def prepare_path_semantic_labels(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    ignore_index: int = -100,
+    non_blocking: bool = False,
+) -> torch.Tensor | None:
+    if "path_semantic_label" not in batch:
+        return None
+    labels = batch["path_semantic_label"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    if labels.ndim != 2:
+        raise ValueError(f"path_semantic_label must have shape [B, H], got {tuple(labels.shape)}.")
+    labels = labels[:, :num_pred]
+    valid = batch.get("path_valid")
+    if valid is not None:
+        mask = valid.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+        if mask.ndim == 1:
+            mask = mask.unsqueeze(1)
+        labels = torch.where(mask[:, : labels.shape[1]], labels, torch.full_like(labels, int(ignore_index)))
+    return labels
+
+
+def prepare_path_descriptors(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if "path_descriptor" not in batch:
+        return None
+    descriptor = batch["path_descriptor"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    if descriptor.ndim == 2:
+        descriptor = descriptor.unsqueeze(1)
+    if descriptor.ndim != 3:
+        raise ValueError(f"path_descriptor must have shape [B, H, D], got {tuple(descriptor.shape)}.")
+    descriptor = descriptor[:, :num_pred, :]
+    valid = batch.get("path_valid")
+    if valid is None:
+        mask = torch.isfinite(descriptor).all(dim=-1)
+    else:
+        mask = valid.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+        if mask.ndim == 1:
+            mask = mask.unsqueeze(1)
+        mask = mask[:, : descriptor.shape[1]]
+    return descriptor, mask
+
+
+def prepare_beam_power_targets(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor | None:
+    if "beam_power" not in batch:
+        return None
+    power = batch["beam_power"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    if power.ndim == 2:
+        power = power.unsqueeze(1)
+    if power.ndim != 3:
+        raise ValueError(f"beam_power must have shape [B, H, C], got {tuple(power.shape)}.")
+    return power[:, :num_pred, :]
 
 
 def prepare_image_inputs(
@@ -172,6 +305,22 @@ def prepare_fusion_inputs(
             num_pred=num_pred,
             device=device,
             profile=(input_profiles or {}).get(modality),
+            non_blocking=non_blocking,
+        )
+    if "geometry" in batch:
+        inputs["geometry_batch"] = prepare_geometry_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+            non_blocking=non_blocking,
+        )
+    if "geometry_mask" in batch:
+        inputs["geometry_mask"] = prepare_geometry_mask(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
             non_blocking=non_blocking,
         )
     return inputs
@@ -410,6 +559,47 @@ def prepare_ray_inputs(
     )
 
 
+def prepare_geometry_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    return _prepare_snapshot_vector_input(
+        batch,
+        sample_key="geometry",
+        display_name="geometry",
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+        non_blocking=non_blocking,
+    )
+
+
+def prepare_geometry_mask(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    if "geometry_mask" not in batch:
+        raise ValueError("geometry_mask input is required but batch does not contain a 'geometry_mask' field.")
+    mask = batch["geometry_mask"].to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+    if mask.ndim == 2:
+        mask = mask.unsqueeze(0)
+    if mask.ndim != 3:
+        raise ValueError(f"geometry_mask must have shape [B, T, F], got {tuple(mask.shape)}.")
+    mask = mask[:, -seq_length:, :]
+    batch_size, _, feature_dim = mask.shape
+    pad_steps = max(num_pred - 1, 0)
+    zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=torch.bool, device=device)
+    return torch.cat([mask, zeros], dim=1)
+
+
 def _prepare_snapshot_vector_input(
     batch: dict[str, torch.Tensor],
     *,
@@ -445,9 +635,12 @@ def forward_model(
     csi_batch: torch.Tensor | None = None,
     coord_batch: torch.Tensor | None = None,
     ray_batch: torch.Tensor | None = None,
+    geometry_batch: torch.Tensor | None = None,
+    geometry_mask: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
     force_reliability_gate: torch.Tensor | float | None = None,
     gate_temperature: float | torch.Tensor | None = None,
+    **extra_model_kwargs,
 ):
     if task == "fusion":
         kwargs = {
@@ -459,6 +652,8 @@ def forward_model(
             "csi_batch": csi_batch,
             "coord_batch": coord_batch,
             "ray_batch": ray_batch,
+            "geometry_batch": geometry_batch,
+            "geometry_mask": geometry_mask,
         }
         kwargs = {key: value for key, value in kwargs.items() if value is not None}
         if force_modality_mask is not None:
@@ -473,6 +668,7 @@ def forward_model(
             if not getattr(model, "supports_reliability_controls", False):
                 raise ValueError("gate_temperature is only supported by CRAF-style models.")
             kwargs["gate_temperature"] = gate_temperature
+        kwargs.update({key: value for key, value in extra_model_kwargs.items() if value is not None})
         return model(**kwargs)
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch

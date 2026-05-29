@@ -111,3 +111,36 @@ def test_multimodal_nf_gps_only_recommendation_skips_heavy_cache_advice():
     assert result["recommendations"]["multimodal_nf_io"]["heavy_io_modalities"] == []
     assert not any("data.cache.multimodal_nf.image" in item for item in result["overrides"])
     assert not any("training.epoch_subsampling.order=locality" == item for item in result["overrides"])
+
+
+def test_mmw_image_heavy_recommendation_is_memory_aware():
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "data": {
+            "dataset": {"type": "mmw", "seq_len": 8},
+            "dataloader": {"batch_size": 8, "num_workers": 4, "prefetch_factor": 2, "persistent_workers": True},
+            "cache": {"policy": "off"},
+        },
+        "model": {"student": {"modalities": ["image", "gps", "mmwave"]}},
+        "training": {"amp": {}, "transfer": {}},
+    }
+
+    result = recommend_parallel_training(
+        cfg,
+        config_path="configs/hist_beam/mmw_scenario_loso.yaml",
+        parallel_runs=4,
+        cpu_count=16,
+        check_cache=False,
+        profile={"io_risk": {"loader_wait_dominates_step": True}, "message": "exit code 137 killed"},
+    )
+
+    mmw = result["recommendations"]["mmw_image_heavy"]
+    assert mmw["enabled"] is True
+    assert mmw["train_num_workers_upper_bound"] <= 1
+    assert mmw["recommended_batch_size"] <= 2
+    assert mmw["recommended_parallel_runs"] <= 2
+    assert "data.cache.image.policy=auto" in result["overrides"]
+    assert "data.dataloader.train_persistent_workers=false" in result["overrides"]
+    assert "training.amp.enabled=true" in result["optional_overrides"]
+    assert "AMP does not reduce PNG decode" in mmw["amp_limit"]
+    assert "cap_train_num_workers" in mmw["actions"]
