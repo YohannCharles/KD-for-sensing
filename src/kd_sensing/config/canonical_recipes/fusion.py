@@ -111,10 +111,25 @@ def fusion_mode_recipe(mode: str) -> FusionModeRecipe:
 def distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str, Any]:
     recipe = fusion_mode_recipe(mode)
     if image_radar:
-        return dict(recipe.image_radar_distillation)
+        return _with_lineage_defaults(dict(recipe.image_radar_distillation))
     cfg = dict(recipe.general_distillation)
     if mode in {"logits_kd", "rkd"}:
         cfg["teacher_model_name"] = "best.pth"
+    return _with_lineage_defaults(cfg)
+
+
+def _with_lineage_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
+    distillation_type = str(cfg.get("type", "no_kd"))
+    if distillation_type == "no_kd":
+        cfg.setdefault("lifecycle", "active_mainline_no_kd")
+        cfg.setdefault("method_family", "mainline_no_kd")
+        cfg.setdefault("main_conclusion_eligible", True)
+        return cfg
+    cfg.setdefault("lifecycle", "legacy_kd")
+    cfg.setdefault("method_family", "legacy_kd")
+    cfg.setdefault("baseline_role", "optional_baseline")
+    cfg.setdefault("reproduction_scope", "historical_reproduction")
+    cfg.setdefault("main_conclusion_eligible", False)
     return cfg
 
 

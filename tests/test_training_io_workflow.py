@@ -33,6 +33,7 @@ from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E4
 from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa: E402
 from kd_sensing.distillation.losses import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets  # noqa: E402
+from kd_sensing.engine.batch_step import BatchStepRunner  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
 from kd_sensing.engine.data_factory import (  # noqa: E402
     build_dataloader,
@@ -42,6 +43,7 @@ from kd_sensing.engine.data_factory import (  # noqa: E402
 )
 from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler  # noqa: E402
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
+from kd_sensing.engine.training_extensions import ExtensionContext, NoOpTrainingExtension  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
 from kd_sensing.engine.evaluator import _evaluation_split_protocol_report  # noqa: E402
@@ -74,6 +76,60 @@ _PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", RO
 profile_training_io = importlib.util.module_from_spec(_PROFILE_SPEC)
 assert _PROFILE_SPEC.loader is not None
 _PROFILE_SPEC.loader.exec_module(profile_training_io)
+
+
+class _TinyImageBatchModel(torch.nn.Module):
+    def __init__(self, num_classes: int = 4):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor([0.2, -0.1, 0.3, 0.0], dtype=torch.float32))
+        self.num_classes = num_classes
+        self.calls = 0
+
+    def forward(self, image_batch=None, **kwargs):  # noqa: ANN001, ARG002
+        self.calls += 1
+        batch_size = image_batch.shape[0]
+        horizon = 1
+        logits = self.weight.view(1, 1, self.num_classes).expand(batch_size, horizon, self.num_classes)
+        features = logits.detach().clone()
+        return {"logits": logits, "input_features": features, "output_features": features}
+
+
+class _ForbiddenTeacher(torch.nn.Module):
+    def forward(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("no-KD mainline batch step must not call a teacher")
+
+
+class _ForbiddenDistiller(torch.nn.Module):
+    def forward(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("no-KD mainline batch step must not call a distiller")
+
+
+class _RecordingDistiller(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.soft_targets: torch.Tensor | None = None
+
+    def forward(  # noqa: PLR0913
+        self,
+        student_logits,
+        teacher_logits,
+        targets,
+        student_input_features=None,
+        teacher_input_features=None,
+        student_output_features=None,
+        teacher_output_features=None,
+        current_alpha=None,
+        soft_targets=None,
+    ):
+        self.soft_targets = soft_targets.detach().cpu().clone() if soft_targets is not None else None
+        task_loss = torch.nn.functional.cross_entropy(student_logits, soft_targets if soft_targets is not None else targets)
+        distill_loss = torch.nn.functional.mse_loss(student_logits, teacher_logits.detach())
+        return task_loss + 0.5 * distill_loss, task_loss, distill_loss
+
+
+class _DisabledGradScaler:
+    def is_enabled(self) -> bool:
+        return False
 
 
 def _removed_image_option(suffix: str) -> str:
@@ -588,6 +644,27 @@ def test_prepare_soft_beam_targets_falls_back_to_hard_labels_for_invalid_soft_ro
     assert targets[0, 2].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
 
 
+def test_prepare_soft_beam_targets_reads_legacy_kd_soft_label_alias():
+    batch = {
+        "target_beam": torch.tensor([[1, 3]]),
+        "kd_soft_label": torch.tensor([[[0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0]]]),
+        "kd_soft_label_mask": torch.tensor([[True, True]]),
+    }
+
+    with pytest.warns(DeprecationWarning, match="legacy beam soft-target alias"):
+        targets = prepare_soft_beam_targets(
+            batch,
+            num_pred=2,
+            num_classes=4,
+            downsample_ratio=1,
+            device=torch.device("cpu"),
+        )
+
+    assert targets is not None
+    assert targets[0, 0].tolist() == pytest.approx([0.0, 1.0, 0.0, 0.0])
+    assert targets[0, 1].tolist() == pytest.approx([0.0, 0.0, 0.5, 0.5])
+
+
 def test_soft_focal_and_distiller_supervised_loss_consume_soft_targets():
     logits = torch.tensor([[2.0, 0.0, -1.0], [0.0, 1.0, 3.0]])
     hard_targets = torch.tensor([0, 1])
@@ -609,6 +686,163 @@ def test_soft_focal_and_distiller_supervised_loss_consume_soft_targets():
     assert total_loss == pytest.approx(expected_soft_ce.item())
     assert distill_loss.item() == pytest.approx(0.0)
     assert not torch.isclose(task_loss, torch.nn.functional.cross_entropy(logits, hard_targets))
+
+
+def test_no_kd_batch_step_uses_beam_soft_target_without_teacher_or_distiller(tmp_path: Path):
+    cfg = {
+        "experiment": {"task": "image", "objective": "beam"},
+        "model": {
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "seq_length_student": 1,
+            "seq_length_teacher": 1,
+            "num_classes": 4,
+            "student": {"image_profile": "rgb_imagenet"},
+            "teacher": {"image_profile": "rgb_imagenet"},
+        },
+        "loss": {"soft_targets": {"enabled": True}},
+        "distillation": {"type": "no_kd", "teacher_model_name": None},
+        "training": {},
+    }
+    student = _TinyImageBatchModel(num_classes=4)
+    task_criterion = SoftTargetCrossEntropyLoss()
+    optimizer = torch.optim.SGD(student.parameters(), lr=0.1)
+    extension_context = ExtensionContext(
+        cfg=cfg,
+        task="image",
+        model_cfg=cfg["model"],
+        training_cfg=cfg["training"],
+        student_model=student,
+        teacher_model=_ForbiddenTeacher(),
+        distiller=_ForbiddenDistiller(),
+        task_criterion=task_criterion,
+        run_dir=tmp_path,
+        device=torch.device("cpu"),
+        num_pred=1,
+        num_classes=4,
+        seq_length_student=1,
+        seq_length_teacher=1,
+        non_blocking=False,
+    )
+    extensions = [NoOpTrainingExtension()]
+    runner = BatchStepRunner(
+        cfg=cfg,
+        task="image",
+        model_cfg=cfg["model"],
+        training_cfg=cfg["training"],
+        optimizer=optimizer,
+        grad_scaler=_DisabledGradScaler(),
+        amp_enabled=False,
+        amp_dtype=torch.float32,
+        extension_context=extension_context,
+        extensions=extensions,
+        extension_states=[extension.setup(extension_context) for extension in extensions],
+    )
+    raw_batch = {
+        "image": torch.zeros(2, 1, 3, 8, 8),
+        "target_beam": torch.tensor([[0], [2]]),
+        "target_beam_distribution": torch.tensor(
+            [
+                [[0.0, 0.0, 0.0, 1.0]],
+                [[0.0, 1.0, 0.0, 0.0]],
+            ],
+            dtype=torch.float32,
+        ),
+        "target_beam_distribution_mask": torch.tensor([[True], [True]]),
+    }
+
+    result = runner.run(raw_batch, epoch=0, step=0, current_alpha=0.0)
+
+    hard_loss = torch.nn.functional.cross_entropy(
+        result.student_logits.reshape(-1, 4),
+        result.labels.flatten(),
+    )
+    assert student.calls == 1
+    assert result.scalar_diagnostics["loss/beam_soft_target"] == pytest.approx(result.task_loss.item())
+    assert "loss/distillation" not in result.scalar_diagnostics
+    assert result.extra_loss_values["beam_soft"].item() == pytest.approx(result.task_loss.item())
+    assert result.distill_loss.item() == pytest.approx(0.0)
+    assert not torch.isclose(result.task_loss.detach(), hard_loss.detach())
+
+
+def test_legacy_kd_batch_step_separates_beam_soft_target_and_distillation_loss(tmp_path: Path):
+    cfg = {
+        "experiment": {"task": "image", "objective": "beam"},
+        "model": {
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "seq_length_student": 1,
+            "seq_length_teacher": 1,
+            "num_classes": 4,
+            "student": {"image_profile": "rgb_imagenet"},
+            "teacher": {"image_profile": "rgb_imagenet"},
+        },
+        "loss": {"soft_targets": {"enabled": True}},
+        "distillation": {
+            "type": "logits_kd",
+            "teacher_model_name": "best.pth",
+            "method_family": "legacy_kd",
+        },
+        "training": {},
+    }
+    student = _TinyImageBatchModel(num_classes=4)
+    teacher = _TinyImageBatchModel(num_classes=4)
+    teacher.weight.data = torch.tensor([-0.5, 0.1, 0.4, 0.7])
+    distiller = _RecordingDistiller()
+    optimizer = torch.optim.SGD(student.parameters(), lr=0.1)
+    extension_context = ExtensionContext(
+        cfg=cfg,
+        task="image",
+        model_cfg=cfg["model"],
+        training_cfg=cfg["training"],
+        student_model=student,
+        teacher_model=teacher,
+        distiller=distiller,
+        task_criterion=SoftTargetCrossEntropyLoss(),
+        run_dir=tmp_path,
+        device=torch.device("cpu"),
+        num_pred=1,
+        num_classes=4,
+        seq_length_student=1,
+        seq_length_teacher=1,
+        non_blocking=False,
+    )
+    extensions = [NoOpTrainingExtension()]
+    runner = BatchStepRunner(
+        cfg=cfg,
+        task="image",
+        model_cfg=cfg["model"],
+        training_cfg=cfg["training"],
+        optimizer=optimizer,
+        grad_scaler=_DisabledGradScaler(),
+        amp_enabled=False,
+        amp_dtype=torch.float32,
+        extension_context=extension_context,
+        extensions=extensions,
+        extension_states=[extension.setup(extension_context) for extension in extensions],
+    )
+    raw_batch = {
+        "image": torch.zeros(2, 1, 3, 8, 8),
+        "target_beam": torch.tensor([[0], [2]]),
+        "target_beam_distribution": torch.tensor(
+            [
+                [[0.0, 0.0, 0.0, 1.0]],
+                [[0.0, 1.0, 0.0, 0.0]],
+            ],
+            dtype=torch.float32,
+        ),
+        "target_beam_distribution_mask": torch.tensor([[True], [True]]),
+    }
+
+    result = runner.run(raw_batch, epoch=0, step=0, current_alpha=0.5)
+
+    assert student.calls == 1
+    assert teacher.calls == 1
+    assert distiller.soft_targets is not None
+    assert result.scalar_diagnostics["loss/beam_soft_target"] == pytest.approx(result.task_loss.item())
+    assert result.scalar_diagnostics["loss/distillation"] == pytest.approx(result.distill_loss.item())
+    assert result.extra_loss_values["beam_soft"].item() == pytest.approx(result.task_loss.item())
+    assert result.distill_loss.item() > 0.0
 
 
 def test_future_slot_selection_and_missing_features_kd_contract():

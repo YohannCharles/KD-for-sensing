@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+import warnings
 
 import torch
 import torch.nn.functional as F
 
+from kd_sensing.engine.hist_beam_residuals import circular_residual_labels, last_beam_from_history
 from kd_sensing.modalities import batch_input_keys_for_modalities, image_profile_spec, normalize_modalities
 
 
@@ -45,9 +47,19 @@ def prepare_soft_beam_targets(
     enabled: bool = True,
     non_blocking: bool = False,
 ) -> torch.Tensor | None:
-    if not enabled or "target_beam_distribution" not in batch:
+    if not enabled:
         return None
-    targets = batch["target_beam_distribution"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    target_key = _soft_beam_target_key(batch)
+    if target_key is None:
+        return None
+    if target_key != "target_beam_distribution":
+        warnings.warn(
+            f"Batch field '{target_key}' is a legacy beam soft-target alias; "
+            "write new artifacts as 'target_beam_distribution'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    targets = batch[target_key].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
     if targets.ndim == 2:
         targets = targets.unsqueeze(1)
     if targets.ndim != 3:
@@ -69,7 +81,7 @@ def prepare_soft_beam_targets(
             f"target_beam_distribution class dimension must match num_classes={num_classes}, "
             f"got {int(targets.shape[-1])}."
         )
-    mask = batch.get("target_beam_distribution_mask")
+    mask = _soft_beam_target_mask(batch, target_key)
     content_valid = torch.isfinite(targets).all(dim=-1) & targets.sum(dim=-1).gt(0)
     if mask is None:
         valid = content_valid
@@ -99,6 +111,76 @@ def prepare_soft_beam_targets(
         return normalized
     fallback = F.one_hot(hard_labels.clamp_min(0), num_classes=int(num_classes)).to(normalized.dtype)
     return torch.where(fallback_rows.unsqueeze(-1), fallback, normalized)
+
+
+def _soft_beam_target_key(batch: dict[str, torch.Tensor]) -> str | None:
+    for key in (
+        "target_beam_distribution",
+        "kd_soft_label",
+        "kd_soft_labels",
+        "kd_soft_target",
+        "kd_soft_targets",
+    ):
+        if key in batch:
+            return key
+    return None
+
+
+def _soft_beam_target_mask(batch: dict[str, torch.Tensor], target_key: str):
+    preferred = f"{target_key}_mask"
+    for key in ("target_beam_distribution_mask", preferred, "kd_soft_label_mask", "kd_soft_target_mask"):
+        if key in batch:
+            return batch[key]
+    return None
+
+
+def prepare_history_anchor_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    num_classes: int,
+    device: torch.device,
+    downsample_ratio: int = 1,
+    enabled: bool = False,
+    include_residual_labels: bool = True,
+    non_blocking: bool = False,
+    sample_ids: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, torch.Tensor]:
+    if not enabled:
+        return {}
+    if "input_beam" not in batch:
+        raise ValueError("input_beam is required when hist_beam.history_anchor.enabled=true.")
+    input_beam = batch["input_beam"].to(device=device, non_blocking=non_blocking)
+    if input_beam.ndim not in {1, 2}:
+        raise ValueError(f"input_beam must have shape [B] or [B, T], got {tuple(input_beam.shape)}.")
+    ratio = int(downsample_ratio or 1)
+    if ratio <= 0:
+        raise ValueError(f"downsample_ratio must be positive, got {ratio}.")
+    input_beam_batch = torch.floor(input_beam.float() / ratio).to(torch.long)
+    last_beam = last_beam_from_history(
+        input_beam,
+        num_classes=int(num_classes),
+        downsample_ratio=ratio,
+        sample_ids=sample_ids,
+    ).to(device=device, non_blocking=non_blocking)
+    result = {
+        "input_beam_batch": input_beam_batch,
+        "last_beam_batch": last_beam,
+    }
+    if include_residual_labels and "target_beam" in batch:
+        future = torch.floor(batch["target_beam"].float() / ratio).to(torch.long)
+        future = future.to(device=device, non_blocking=non_blocking)
+        if future.ndim == 1:
+            future = future.unsqueeze(1)
+        result["residual_labels"] = circular_residual_labels(
+            future[:, :num_pred],
+            last_beam,
+            num_classes=int(num_classes),
+            sample_ids=sample_ids,
+            future_field="target_beam",
+            last_field="last_beam",
+        )
+    return result
 
 
 def prepare_auxiliary_targets(

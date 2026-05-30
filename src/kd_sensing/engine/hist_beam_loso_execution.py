@@ -12,9 +12,11 @@ from typing import Any, Mapping, Protocol
 from kd_sensing.data.loso import SUPPORTED_LABEL_BUDGETS, sample_few_shot_records
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config, retarget_deepsense_dataset_config
 from kd_sensing.data.transform_ops.io import joined_resource
+from kd_sensing.engine.hist_beam_loso_comparisons import compare_adapter_to_source, compare_proto_to_full
 from kd_sensing.engine.hist_beam_loso_matrix import matrix_summary
 from kd_sensing.engine.hist_beam_loso_preflight import ensure_mmw_radar_csv_for_preflight, preflight_error
 from kd_sensing.engine.hist_beam_loso_stages import StageRunCallbacks, execute_loso_stage_runs
+from kd_sensing.engine.hist_beam_history_anchor import apply_history_anchor_model_config, history_anchor_run_metadata
 from kd_sensing.engine.hist_beam_loso_summary import (
     conclusion_source_artifacts,
     excluded_run_summary,
@@ -30,6 +32,7 @@ from kd_sensing.engine.modality_resolution import (
     sensor_assisted_profile_enabled,
     resolve_enabled_modalities,
 )
+from kd_sensing.engine.run_lineage import ensure_distillation_defaults, run_lineage_metadata
 from kd_sensing.modalities import normalize_modalities
 from kd_sensing.utils.paths import resolve_path
 from kd_sensing.utils.seed import set_seed
@@ -348,8 +351,10 @@ class DefaultHistBeamLosoStageExecutor:
         import torch
 
         from kd_sensing.engine.data_factory import shutdown_dataloader_workers
-        from kd_sensing.engine.batch import prepare_radio_semantic_labels
+        from kd_sensing.engine.batch import prepare_history_anchor_inputs, prepare_radio_semantic_labels
+        from kd_sensing.engine.hist_beam_baselines import collect_source_beam_reference
         from kd_sensing.engine.hist_beam_losses import compute_hist_beam_loss, hist_beam_enabled
+        from kd_sensing.engine.hist_beam_residuals import history_anchor_enabled, num_delta_classes_from_config
         from kd_sensing.engine.hist_beam_prototypes import generate_source_prototypes, prototype_coverage_from_counts
         from kd_sensing.engine.loso_data import build_loso_source_train_loader
         from kd_sensing.engine.optim import build_device, build_model, build_optimizer, build_task_criterion
@@ -387,6 +392,15 @@ class DefaultHistBeamLosoStageExecutor:
                 for batch in loaders["source_train"]:
                     optimizer.zero_grad(set_to_none=True)
                     with autocast_context(amp_enabled, device, amp_dtype):
+                        history_kwargs = prepare_history_anchor_inputs(
+                            batch,
+                            num_pred=model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1)),
+                            num_classes=num_delta_classes_from_config(cfg, default=num_classes),
+                            downsample_ratio=model_cfg.get("downsample_ratio", 1),
+                            device=device,
+                            enabled=history_anchor_enabled(cfg),
+                            non_blocking=non_blocking,
+                        )
                         step = run_model_step(
                             model,
                             task,
@@ -397,6 +411,7 @@ class DefaultHistBeamLosoStageExecutor:
                             device=device,
                             downsample_ratio=model_cfg.get("downsample_ratio", 1),
                             non_blocking=non_blocking,
+                            extra_model_kwargs={key: value for key, value in history_kwargs.items() if key != "residual_labels"},
                         )
                         if step.labels is None:
                             raise RuntimeError("Source training labels were not prepared.")
@@ -464,6 +479,7 @@ class DefaultHistBeamLosoStageExecutor:
                 context.state["source_prototypes"][cache_key] = str(prototype_path)
             else:
                 prototype_status.setdefault("status", "skipped")
+            source_reference = collect_source_beam_reference(loaders["source_train"], cfg, device, output_path=context.stage_dir / "source_beam_reference.pt")
             metrics = {
                 "train_loss_last": losses[-1] if losses else None,
                 "train_loss_mean": sum(losses) / len(losses) if losses else None,
@@ -479,6 +495,9 @@ class DefaultHistBeamLosoStageExecutor:
                 "prototype_coverage": prototype_coverage,
                 "amp": amp_runtime_metadata(cfg, device),
                 "throughput_config": _throughput_config_summary(cfg, prototype_strategy=prototype_status.get("strategy")),
+                **dict(source_reference.get("metadata", {})),
+                **run_lineage_metadata(cfg, default_method_family="hist_beam_mainline"),
+                **history_anchor_run_metadata(cfg),
             }
             metrics_path = context.stage_dir / "metrics.json"
             _write_json(metrics_path, metrics)
@@ -487,6 +506,7 @@ class DefaultHistBeamLosoStageExecutor:
                 "metrics_path": str(metrics_path),
                 "source_checkpoint_path": str(checkpoint_path),
                 "source_prototype_path": str(prototype_path) if prototype_status.get("path") else None,
+                "source_beam_reference_path": source_reference.get("path"),
                 "progress_path": str(progress_path),
             }
             result = {
@@ -610,6 +630,7 @@ class DefaultHistBeamLosoStageExecutor:
             flattened_diagnostics = _flatten_adaptation_diagnostics(adaptation_diagnostics)
             params = trainable_parameter_summary(model).to_dict()
             metrics = {
+                **run_lineage_metadata(cfg, default_method_family="hist_beam_mainline"),
                 **strategy_metadata,
                 **params,
                 **adaptation,
@@ -835,7 +856,7 @@ def write_quick_validation_conclusion(
         for variant in ("v4_adapter", "v5_adapter_proto", "v8_path_proto"):
             candidate = by_key.get((target_scene, budget, seed, variant))
             comparisons.append(
-                _compare_adapter_to_source(
+                compare_adapter_to_source(
                     target_scene=target_scene,
                     budget=budget,
                     seed=seed,
@@ -845,7 +866,7 @@ def write_quick_validation_conclusion(
                 )
             )
         comparisons.append(
-            _compare_proto_to_full(
+            compare_proto_to_full(
                 target_scene=target_scene,
                 budget=budget,
                 seed=seed,
@@ -932,12 +953,15 @@ def _evaluate_target_test(
 ) -> dict[str, Any]:
     from kd_sensing.engine.data_factory import shutdown_dataloader_workers
     from kd_sensing.engine.evaluation_pass import run_evaluation_pass
+    from kd_sensing.engine.hist_beam_baselines import attach_source_beam_reference, source_prior_collapse_metrics
     from kd_sensing.engine.loso_data import build_loso_target_stage_loader
     from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
     from kd_sensing.evaluation.hist_beam_outputs import write_hist_beam_predictions
 
     device = build_device(cfg)
     executor = DefaultHistBeamLosoStageExecutor()
+    source_reference_path = ((context.state["source_checkpoints"].get(_source_cache_key(run, _source_variant_for(run))) or {}).get("artifacts") or {}).get("source_beam_reference_path")
+    source_reference = attach_source_beam_reference(cfg, source_reference_path, map_location=device)
     loaders = build_loso_target_stage_loader(
         cfg,
         dict(run),
@@ -958,8 +982,10 @@ def _evaluate_target_test(
                 "variant": str(variant),
                 "split": "target_test",
                 "source_checkpoint_path": str(checkpoint_path),
+                **run_lineage_metadata(cfg, default_method_family="hist_beam_mainline"),
             }
         )
+        metrics.update(source_prior_collapse_metrics(source_reference, metrics))
         metrics_path = context.stage_dir / "metrics.json"
         predictions_path = context.stage_dir / "predictions.csv"
         _write_json(metrics_path, metrics)
@@ -978,6 +1004,9 @@ def _evaluate_target_test(
             radio_labels=result.radio_labels,
             path_logits=result.path_logits,
             path_labels=result.path_labels,
+            last_beams=result.last_beams,
+            residual_logits=result.residual_logits,
+            residual_labels=result.residual_labels,
         )
         return {
             "status": "completed",
@@ -986,6 +1015,7 @@ def _evaluate_target_test(
                 "metrics_path": str(metrics_path),
                 "predictions_path": str(predictions_path),
                 "source_checkpoint_path": str(checkpoint_path),
+                "source_beam_reference_path": source_reference_path,
             },
             "metrics": metrics,
         }
@@ -1218,6 +1248,8 @@ def _stage_cfg(
     stage_dir: Path,
 ) -> dict[str, Any]:
     stage_cfg = deepcopy(cfg)
+    apply_history_anchor_model_config(stage_cfg)
+    ensure_distillation_defaults(stage_cfg)
     stage_cfg.setdefault("experiment", {})["seed"] = int(run.get("seed", 0))
     stage_cfg["experiment"]["name"] = f"{cfg.get('experiment', {}).get('name', 'hist_beam_loso')}_{stage_name}"
     model_cfg = stage_cfg.setdefault("model", {})
@@ -1553,6 +1585,7 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
     last_beam = _last_beam_summary(primary_metrics)
     cache_summary = _cache_summary(record, source_train_metrics)
     split_summary = _split_summary(record, source_metrics, adapted_metrics, primary_metrics)
+    lineage = _lineage_summary(record, source_train_metrics, adaptation_metrics, primary_metrics)
     row = {
         "run_id": record.get("run_id"),
         "run_status": record.get("status"),
@@ -1591,6 +1624,14 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "variant": record.get("variant"),
         "budget": record.get("budget"),
         "seed": record.get("seed"),
+        "distillation_enabled": lineage["distillation_enabled"],
+        "distillation_type": lineage["distillation_type"],
+        "teacher_checkpoint": lineage["teacher_checkpoint"],
+        "teacher_source": lineage["teacher_source"],
+        "student_model": lineage["student_model"],
+        "distillation_lifecycle": lineage["distillation_lifecycle"],
+        "baseline_role": lineage.get("baseline_role"),
+        "reproduction_scope": lineage.get("reproduction_scope"),
         "stage_status": {stage["name"]: stage["status"] for stage in record.get("stages", [])},
         "failure_reason": record.get("failure_reason"),
         "metrics_path": _artifact(record, "adapted_target_test_eval.metrics_path") or _artifact(record, "source_only_target_test_eval.metrics_path"),
@@ -1598,6 +1639,7 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "source_checkpoint_path": _artifact(record, "source_train.source_checkpoint_path") or _artifact(record, "source_checkpoint_path"),
         "adaptation_checkpoint_path": _artifact(record, "target_adaptation.adaptation_checkpoint_path"),
         "source_prototype_path": _artifact(record, "target_adaptation.source_prototype_path") or _artifact(record, "source_train.source_prototype_path"),
+        "source_beam_reference_path": _artifact(record, "source_train.source_beam_reference_path") or primary_metrics.get("source_beam_reference_path"),
         "top1": _metric(primary_metrics, "top1"),
         "top3": _metric(primary_metrics, "top3"),
         "top5": _metric(primary_metrics, "top5"),
@@ -1610,6 +1652,20 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "adapted_source_top1_delta": _numeric_delta_from_values(adapted_top1, source_top1),
         "adapted_source_top3_delta": _numeric_delta_from_values(adapted_top3, source_top3),
         "adapted_source_top5_delta": _numeric_delta_from_values(adapted_top5, source_top5),
+        "history_anchor_enabled": _bool_or_false(primary_metrics.get("history_anchor_enabled") or source_train_metrics.get("history_anchor_enabled")),
+        "history_anchor_mode": primary_metrics.get("history_anchor_mode") or source_train_metrics.get("history_anchor_mode"),
+        "residual_target_enabled": _bool_or_false(primary_metrics.get("residual_target_enabled") or source_train_metrics.get("residual_target_enabled")),
+        "num_delta_classes": primary_metrics.get("num_delta_classes") or source_train_metrics.get("num_delta_classes"),
+        "uses_input_beam_as_model_input": _bool_or_false(primary_metrics.get("uses_input_beam_as_model_input") or source_train_metrics.get("uses_input_beam_as_model_input")),
+        "main_conclusion_profile": primary_metrics.get("main_conclusion_profile") or source_train_metrics.get("main_conclusion_profile"),
+        "residual_accuracy": primary_metrics.get("residual_accuracy"),
+        "reconstructed_absolute_top1": primary_metrics.get("reconstructed_absolute_top1_avg"),
+        "reconstructed_absolute_top3": primary_metrics.get("reconstructed_absolute_top3_avg"),
+        "reconstructed_absolute_top5": primary_metrics.get("reconstructed_absolute_top5_avg"),
+        "markov_delta_top1": primary_metrics.get("markov_delta_top1"),
+        "markov_delta_top3": primary_metrics.get("markov_delta_top3"),
+        "markov_delta_top5": primary_metrics.get("markov_delta_top5"),
+        "source_prior_collapse": primary_metrics.get("source_prior_collapse"),
         "coarse_accuracy": primary_metrics.get("coarse_accuracy"),
         "fine_accuracy": primary_metrics.get("fine_offset_accuracy"),
         "radio_semantic_accuracy": primary_metrics.get("radio_semantic_accuracy"),
@@ -1681,7 +1737,7 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "geometry_loss_coverage": primary_metrics.get("hist/geometry_consistency_coverage")
         or adaptation_metrics.get("geometry_consistency_coverage"),
     }
-    row["method_family"] = _method_family(row)
+    row["method_family"] = "legacy_kd" if lineage["method_family"] == "legacy_kd" else _method_family(row)
     row["sensitive_field_usage"] = {
         key: row[key]
         for key in (
@@ -1718,6 +1774,42 @@ def _method_family(row: Mapping[str, Any]) -> str:
     if variant in {"v5_adapter_proto", "adapter_proto"}:
         return "coarse_prototype_baseline"
     return "source_or_adapter_baseline"
+
+
+def _lineage_summary(
+    record: Mapping[str, Any],
+    source_train_metrics: Mapping[str, Any],
+    adaptation_metrics: Mapping[str, Any],
+    primary_metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = run_lineage_metadata(None, default_method_family="hist_beam_mainline")
+    for source in (record, source_train_metrics, adaptation_metrics, primary_metrics):
+        if not isinstance(source, Mapping):
+            continue
+        lineage = source.get("lineage") if isinstance(source.get("lineage"), Mapping) else source
+        if bool(lineage.get("distillation_enabled", False)) or str(lineage.get("method_family", "")) == "legacy_kd":
+            merged["distillation_enabled"] = True
+            merged["method_family"] = "legacy_kd"
+        for key in (
+            "distillation_type",
+            "teacher_checkpoint",
+            "teacher_source",
+            "student_model",
+            "distillation_lifecycle",
+            "baseline_role",
+            "reproduction_scope",
+            "main_conclusion_eligible",
+        ):
+            value = lineage.get(key)
+            if value not in (None, ""):
+                merged[key] = value
+    if not merged["distillation_enabled"]:
+        merged["method_family"] = "hist_beam_mainline"
+        merged["main_conclusion_eligible"] = True
+    else:
+        merged["main_conclusion_eligible"] = False
+        merged.setdefault("distillation_lifecycle", "legacy_kd")
+    return merged
 
 
 def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
@@ -1957,70 +2049,6 @@ def _metric(metrics: Mapping[str, Any], name: str) -> float | None:
             numeric = [float(value) for value in values if isinstance(value, (int, float))]
             return sum(numeric) / len(numeric) if numeric else None
     return None
-
-
-def _compare_adapter_to_source(
-    *,
-    target_scene: Any,
-    budget: Any,
-    seed: Any,
-    variant: str,
-    baseline: dict[str, Any] | None,
-    candidate: dict[str, Any] | None,
-) -> dict[str, Any]:
-    base = {
-        "comparison": "adapter_vs_source_only",
-        "target_scene": target_scene,
-        "budget": budget,
-        "seed": seed,
-        "baseline_variant": "v3_decoupled",
-        "candidate_variant": variant,
-    }
-    missing = _missing_comparison_inputs({"v3_decoupled": baseline, variant: candidate})
-    if missing:
-        return {**base, "status": "inconclusive", "missing": missing}
-    deltas = _accuracy_deltas(candidate, baseline)
-    return {
-        **base,
-        "status": "complete",
-        "accuracy_deltas": deltas,
-        "efficiency": _efficiency_summary(candidate),
-        "candidate_better_than_source_only": _is_better(deltas),
-    }
-
-
-def _compare_proto_to_full(
-    *,
-    target_scene: Any,
-    budget: Any,
-    seed: Any,
-    proto: dict[str, Any] | None,
-    full: dict[str, Any] | None,
-) -> dict[str, Any]:
-    base = {
-        "comparison": "adapter_proto_vs_full_finetune",
-        "target_scene": target_scene,
-        "budget": budget,
-        "seed": seed,
-        "candidate_variant": "v5_adapter_proto",
-        "baseline_variant": "v6_full_finetune",
-    }
-    missing = _missing_comparison_inputs({"v5_adapter_proto": proto, "v6_full_finetune": full})
-    if missing:
-        return {**base, "status": "inconclusive", "missing": missing}
-    deltas = _accuracy_deltas(proto, full)
-    trainable_delta = _numeric_delta(proto, full, "trainable_ratio")
-    time_delta = _numeric_delta(proto, full, "adaptation_time_seconds")
-    return {
-        **base,
-        "status": "complete",
-        "accuracy_deltas": deltas,
-        "trainable_ratio_delta": trainable_delta,
-        "adaptation_time_seconds_delta": time_delta,
-        "adapter_proto_better_than_full_finetune": _is_better(deltas)
-        and (trainable_delta is None or trainable_delta <= 0)
-        and (time_delta is None or time_delta <= 0),
-    }
 
 
 def _compare_coarse_to_radio(

@@ -7,7 +7,7 @@ from kd_sensing.engine.evaluator import evaluate
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate a KD sensing model from a YAML config.")
+    parser = argparse.ArgumentParser(description="Evaluate a sensing or beam prediction model from a YAML config.")
     parser.add_argument("--config", "-c", required=True, help="Path to a YAML config file.")
     parser.add_argument("--weights", help="Model weights or checkpoint path to evaluate.")
     parser.add_argument("--output-dir", help="Directory for metrics and report outputs.")

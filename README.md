@@ -1,6 +1,8 @@
 # KD for Sensing
 
-本仓库提供基于 `src/kd_sensing` 包的多模态感知知识蒸馏实验工作流，主要覆盖 DeepSense6G、MMW 和 Raymobtime 数据集家族中的训练、评估、预处理、诊断和可视化入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线围绕 DeepSense6G、MMW 和 Raymobtime 数据集家族中的 HiST-Beam、history-anchored adaptation、训练、评估、预处理、诊断和可视化入口。
+
+历史 knowledge distillation 代码和 `logits_kd` / `rkd` 配置仍保留用于复现实验和显式 optional baseline，但已经从 active mainline 隔离：默认 quickstart、HiST-Beam LOSO、history-anchored residual、adapter/prototype/calibration 和 quick validation 不构建 frozen teacher、不读取 teacher checkpoint，也不把 KD baseline 纳入主结论 summary。
 
 ## 安装
 
@@ -67,7 +69,6 @@ conda run -n kd_mm_beam pytest -q
 训练：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/image/teacher_no_kd.yaml
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml
 ```
 
@@ -116,7 +117,7 @@ conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
   --max-runs 2
 ```
 
-默认 `quick_smoke` 只运行轻量 resource probe；`quick_validation` 使用 DeepSense6G scenarios 31-34、`image`/`radar`/`gps` 三模态和包内 `hist_beam_fusion` 模型。详细变体矩阵、target adapt/test 防泄漏和 prototype/adaptation 设计以 OpenSpec change `add-hist-beam-cross-scene-adaptation` 为准。
+默认 `quick_smoke` 只运行轻量 resource probe；`quick_validation` 使用 DeepSense6G scenarios 31-34、`image`/`radar`/`gps` 三模态和包内 `hist_beam_fusion` 模型。MMW sensor-assisted 与 history-anchored quick validation 的主 sensing 模态为 `image`/`gps`/`lidar`，radar 不进入主结论 profile。详细变体矩阵、target adapt/test 防泄漏和 prototype/adaptation 设计以 OpenSpec 为准。
 
 实验运行索引：
 
@@ -149,18 +150,18 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 
 ## 配置和实验矩阵
 
-单模态 canonical 配置使用：
+单模态 canonical no-KD 配置使用：
 
 - `configs/<image|radar|gps|lidar|mmwave>/teacher_no_kd.yaml`
 - `configs/<image|radar|gps|lidar|mmwave>/student_no_kd.yaml`
-- `configs/<image|radar|gps|lidar|mmwave>/logits_kd.yaml`
-- `configs/<image|radar|gps|lidar|mmwave>/rkd.yaml`
 
 Fusion canonical 配置按固定模态顺序 `image -> radar -> gps -> lidar -> mmwave` 解析，命名为：
 
 ```text
-configs/fusion/<canonical_slug>_<teacher_no_kd|student_no_kd|logits_kd|rkd>.yaml
+configs/fusion/<canonical_slug>_<teacher_no_kd|student_no_kd>.yaml
 ```
+
+`configs/**/logits_kd.yaml`、`configs/**/rkd.yaml` 和对应 fusion virtual config 只作为 legacy KD / optional baseline 保留。显式运行这些配置时，run metadata 会写出 `method_family=legacy_kd`、`distillation_enabled=true`、`baseline_role=optional_baseline` 和 `reproduction_scope=historical_reproduction`，summary 默认把它们作为 supplemental comparison，而不是 active mainline 证据。
 
 很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线的旧配置路径不会被 virtual alias 接管。
 
@@ -171,7 +172,7 @@ CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime、MMW 
 - `dataset/` 是本地数据输入，默认不提交；源码中只保留 `dataset/.gitkeep`。
 - `outputs/`、`logs/`、cache、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交。
 - `All_models/` 中已跟踪权重是历史复现实验资料；新生成的 `.pth`、`.pt`、`.ckpt` 不应进入源码变更。
-- 当前运行时优先使用 checkpoint registry，或通过 `distillation.teacher_model_name` / `--weights` 显式传入 checkpoint。
+- 当前 no-KD 主线不需要 teacher checkpoint；legacy KD baseline 可通过 checkpoint registry 或 `distillation.teacher_model_name` 显式传入 teacher checkpoint，评估入口仍可通过 `--weights` 指定待评估模型权重。
 
 DeepSense6G 默认场景是 Scenario 31，数据根目录解析为 `dataset/DeepSense6G/scenario31`，输出默认写入 `outputs/scene31/<run_name>/`。可通过配置或 CLI override 切换场景：
 
@@ -225,11 +226,27 @@ conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
   --config configs/hist_beam/mmw_scenario_loso.yaml --max-runs 3
 ```
 
+history-anchored residual 首轮只建议先生成最小矩阵计划，确认 source/target、seed、budget 和三主模态口径正确后再显式加 `--execute`：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
+  --config configs/hist_beam/mmw_history_anchored_quick_validation.yaml \
+  --variants v4_adapter \
+  --budgets 10 \
+  --seeds 0 \
+  --max-runs 2
+```
+
+`configs/hist_beam/mmw_history_anchored_quick_validation.yaml` 的 source training 默认按
+`outputs/p3_v8_fixed_source_skybridge_budget10_seed01_20ep` 的快跑配置对齐：source 训练 20 epoch，
+batch size 32，train/test workers 4，persistent workers，prefetch factor 2，read-only image/LiDAR cache，
+non-blocking transfer，以及 bfloat16 AMP；target adaptation 仍保持 1 epoch。
+
 MMW radio-semantic HiST-Beam 默认使用 `peak_spread` 标签口径：从 64-beam power profile 取 best beam、`beam//8` peak group 和归一化 entropy spread bin，形成 `peak_group * 3 + spread_bin` 的 24 类 radio label。`beam_power`、channel/CSI 路径和 `radio_semantic_label` 只作为 label、metric、prototype 或 few-shot 标注来源，不会因为启用 radio-semantic 训练而自动成为 sensing 输入模态。`label_budget=0` 的 target adaptation 会在 metadata 中记录 `used_target_labels=false`、`used_target_beam_power_for_training=false` 和 `used_target_radio_label_for_training=false`。
 
 当前消融命名中，`v5_adapter_proto` 表示 coarse/private prototype baseline，`v6_radio_proto` 表示 radio-semantic prototype 方法，`adapter_radio_proto` 表示 radio condition 关闭的对照，历史 `v6_full_finetune` 继续表示 full fine-tuning baseline；论文说明可将 full fine-tuning 作为 V7 对照，但工程配置不会静默改写旧名称。
 
-MMW HiST-Beam 的 `image+gps+mmwave` LOSO 训练通常先受 CPU image 解码、DataLoader wait 和 worker RSS 限制。长跑前建议先运行 profile 和并行推荐：
+MMW HiST-Beam 的 `image+gps+lidar` LOSO 训练通常先受 CPU image 解码、DataLoader wait 和 worker RSS 限制。长跑前建议先运行 profile 和并行推荐：
 
 ```bash
 conda run -n kd_mm_beam python scripts/profile_training_io.py \

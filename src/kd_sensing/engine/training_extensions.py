@@ -31,6 +31,7 @@ class ExtensionContext:
 @dataclass(frozen=True)
 class ForwardControls:
     force_modality_mask: torch.Tensor | None = None
+    model_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def merge(self, other: "ForwardControls | None") -> "ForwardControls":
         if other is None:
@@ -39,6 +40,7 @@ class ForwardControls:
             force_modality_mask=other.force_modality_mask
             if other.force_modality_mask is not None
             else self.force_modality_mask,
+            model_kwargs={**self.model_kwargs, **other.model_kwargs},
         )
 
 

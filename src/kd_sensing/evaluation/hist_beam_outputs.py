@@ -10,6 +10,7 @@ from typing import Any, Iterable
 import torch
 
 from kd_sensing.engine.hist_beam_labels import hist_beam_labels
+from kd_sensing.evaluation.hist_beam_residuals import residual_topk_to_absolute
 
 
 def calculate_hist_beam_metrics(
@@ -225,6 +226,9 @@ def write_hist_beam_predictions(
     path_logits: torch.Tensor | None = None,
     path_labels: torch.Tensor | None = None,
     path_assignment: torch.Tensor | None = None,
+    last_beams: torch.Tensor | None = None,
+    residual_logits: torch.Tensor | None = None,
+    residual_labels: torch.Tensor | None = None,
 ) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +239,23 @@ def write_hist_beam_predictions(
     top_values = torch.topk(outputs, k=min(int(top_k), outputs.shape[-1]), dim=-1).indices.detach().cpu()
     pred = torch.argmax(outputs, dim=-1).detach().cpu()
     labels_cpu = labels.detach().cpu()
+    last_beams_cpu = _ensure_prediction_horizon(last_beams.detach().cpu(), labels_cpu.shape[1]) if last_beams is not None else None
+    residual_labels_cpu = (
+        _ensure_prediction_horizon(residual_labels.detach().cpu(), labels_cpu.shape[1])
+        if residual_labels is not None
+        else None
+    )
+    residual_pred = None
+    residual_topk = None
+    residual_absolute_topk = None
+    if residual_logits is not None and last_beams is not None:
+        residual_logits_t = residual_logits.detach().cpu()
+        if residual_logits_t.ndim == 2:
+            residual_logits_t = residual_logits_t.unsqueeze(1)
+        residual_pred = residual_logits_t.argmax(dim=-1)
+        residual_top = residual_topk_to_absolute(residual_logits_t, last_beams_cpu, k=top_k)
+        residual_topk = residual_top["residual_topk"]
+        residual_absolute_topk = residual_top["absolute_topk"]
     coarse_true, fine_true = hist_beam_labels(labels_cpu, num_classes=outputs.shape[-1], group_size=group_size)
     coarse_pred, fine_pred = hist_beam_labels(pred, num_classes=outputs.shape[-1], group_size=group_size)
     radio_pred = None
@@ -270,6 +291,11 @@ def write_hist_beam_predictions(
                 "pred_beam",
                 "predicted_beam",
                 "topk_predictions",
+                "last_beam",
+                "true_residual",
+                "pred_residual",
+                "topk_residual",
+                "topk_reconstructed_beam",
                 "coarse_true",
                 "coarse_pred",
                 "radio_true",
@@ -299,6 +325,11 @@ def write_hist_beam_predictions(
                         "topk_predictions": json.dumps(
                             [int(item) for item in top_values[row_idx, horizon].tolist()]
                         ),
+                        "last_beam": _optional_tensor_value(last_beams_cpu, row_idx, horizon),
+                        "true_residual": _optional_tensor_value(residual_labels_cpu, row_idx, horizon),
+                        "pred_residual": _optional_tensor_value(residual_pred, row_idx, horizon),
+                        "topk_residual": _optional_tensor_list(residual_topk, row_idx, horizon),
+                        "topk_reconstructed_beam": _optional_tensor_list(residual_absolute_topk, row_idx, horizon),
                         "coarse_true": int(coarse_true[row_idx, horizon].item()),
                         "coarse_pred": int(coarse_pred[row_idx, horizon].item()),
                         "radio_true": _radio_value(radio_labels_cpu, row_idx, horizon),
@@ -314,6 +345,111 @@ def write_hist_beam_predictions(
                     }
                 )
     return target
+
+
+def markov_delta_baseline_metrics(
+    train_last_beams: torch.Tensor | None,
+    train_labels: torch.Tensor | None,
+    eval_last_beams: torch.Tensor | None,
+    eval_labels: torch.Tensor,
+    *,
+    num_classes: int,
+    k_values: Iterable[int] = (1, 3, 5),
+    smoothing: float = 1.0,
+    train_split: str = "source_train",
+) -> dict[str, Any]:
+    if train_last_beams is None or train_labels is None or eval_last_beams is None:
+        return {
+            "markov_delta_baseline_available": False,
+            "markov_delta_unavailable_reason": "history_or_training_labels_missing",
+        }
+    classes = int(num_classes)
+    train_last = _ensure_prediction_horizon(train_last_beams.detach().cpu(), _horizon(train_labels))
+    train_future = _ensure_prediction_horizon(train_labels.detach().cpu(), train_last.shape[1])
+    eval_last = _ensure_prediction_horizon(eval_last_beams.detach().cpu(), _horizon(eval_labels))
+    eval_future = _ensure_prediction_horizon(eval_labels.detach().cpu(), eval_last.shape[1])
+    train_valid = train_future.ge(0) & train_future.lt(classes) & train_last.ge(0) & train_last.lt(classes)
+    eval_valid = eval_future.ge(0) & eval_future.lt(classes) & eval_last.ge(0) & eval_last.lt(classes)
+    if not torch.any(train_valid) or not torch.any(eval_valid):
+        return {
+            "markov_delta_baseline_available": False,
+            "markov_delta_unavailable_reason": "no_valid_markov_samples",
+            "markov_delta_train_split": train_split,
+            "markov_delta_smoothing": float(smoothing),
+        }
+    delta = (train_future[train_valid] - train_last[train_valid]).remainder(classes)
+    counts = torch.bincount(delta.reshape(-1).to(torch.long), minlength=classes).to(torch.float32)
+    probs = counts + float(smoothing)
+    order = torch.argsort(probs, descending=True)
+    predictions = (eval_last.unsqueeze(-1) + order.view(1, 1, classes)).remainder(classes)
+    result: dict[str, Any] = {
+        "markov_delta_baseline_available": True,
+        "markov_delta_unavailable_reason": None,
+        "markov_delta_train_split": train_split,
+        "markov_delta_train_samples": int(train_valid.sum().item()),
+        "markov_delta_eval_samples": int(eval_valid.sum().item()),
+        "markov_delta_smoothing": float(smoothing),
+        "markov_delta_histogram": [int(item) for item in counts.to(torch.long).tolist()],
+        "markov_delta_top_residuals": [int(item) for item in order[: min(5, classes)].tolist()],
+    }
+    for k in k_values:
+        kk = min(int(k), classes)
+        hit = predictions[:, :, :kk].eq(eval_future.unsqueeze(-1)).any(dim=-1) & eval_valid
+        result[f"markov_delta_top{k}"] = float(hit[eval_valid].float().mean().item())
+    return result
+
+
+def beam_histogram_metrics(
+    labels: torch.Tensor,
+    outputs: torch.Tensor | None = None,
+    *,
+    num_classes: int,
+    prefix: str = "target_test",
+) -> dict[str, Any]:
+    label_hist = _beam_histogram(labels, num_classes=num_classes)
+    result: dict[str, Any] = {f"{prefix}_true_beam_histogram": label_hist}
+    if outputs is not None:
+        pred = outputs.argmax(dim=-1) if outputs.ndim >= 2 else outputs
+        result[f"{prefix}_predicted_beam_histogram"] = _beam_histogram(pred, num_classes=num_classes)
+    return result
+
+
+def source_prior_collapse_diagnostics(
+    *,
+    source_histogram: Iterable[int] | None,
+    target_true_histogram: Iterable[int] | None,
+    predicted_histogram: Iterable[int] | None,
+    top_fraction_threshold: float = 0.5,
+) -> dict[str, Any]:
+    if source_histogram is None or target_true_histogram is None or predicted_histogram is None:
+        return {
+            "source_prior_collapse_available": False,
+            "source_prior_collapse": False,
+            "source_prior_collapse_unavailable_reason": "histogram_missing",
+        }
+    source = torch.tensor(list(source_histogram), dtype=torch.float32)
+    target = torch.tensor(list(target_true_histogram), dtype=torch.float32)
+    pred = torch.tensor(list(predicted_histogram), dtype=torch.float32)
+    if source.numel() == 0 or target.numel() == 0 or pred.numel() == 0 or float(pred.sum().item()) <= 0:
+        return {
+            "source_prior_collapse_available": False,
+            "source_prior_collapse": False,
+            "source_prior_collapse_unavailable_reason": "empty_histogram",
+        }
+    source_top = int(source.argmax().item())
+    target_top = int(target.argmax().item()) if float(target.sum().item()) > 0 else None
+    pred_top = int(pred.argmax().item())
+    pred_top_fraction = float((pred.max() / pred.sum().clamp_min(1.0)).item())
+    collapse = pred_top == source_top and target_top is not None and source_top != target_top and pred_top_fraction >= float(top_fraction_threshold)
+    return {
+        "source_prior_collapse_available": True,
+        "source_prior_collapse": bool(collapse),
+        "source_prior_collapse_source_top_beam": source_top,
+        "source_prior_collapse_target_top_beam": target_top,
+        "source_prior_collapse_predicted_top_beam": pred_top,
+        "source_prior_collapse_predicted_top_fraction": pred_top_fraction,
+        "source_prior_collapse_threshold": float(top_fraction_threshold),
+    }
 
 
 def _radio_value(values: torch.Tensor | None, row_idx: int, horizon: int) -> int | str:
@@ -339,6 +475,42 @@ def _path_unavailable_reason(meta: dict[str, Any], labels: torch.Tensor | None, 
     if isinstance(reason, (list, tuple)):
         return str(reason[horizon]) if horizon < len(reason) else ""
     return str(reason or "path_semantic_label_missing")
+
+
+def _ensure_prediction_horizon(values: torch.Tensor, horizon: int) -> torch.Tensor:
+    if values.ndim == 1:
+        return values.unsqueeze(1).expand(-1, int(horizon))
+    if values.ndim == 2:
+        if values.shape[1] == int(horizon):
+            return values
+        if values.shape[1] == 1:
+            return values.expand(-1, int(horizon))
+    raise ValueError(f"prediction tensor must have shape [B], [B, 1], or [B, H], got {tuple(values.shape)}.")
+
+
+def _optional_tensor_value(values: torch.Tensor | None, row_idx: int, horizon: int) -> int | str:
+    if values is None or row_idx >= values.shape[0] or horizon >= values.shape[1]:
+        return ""
+    value = int(values[row_idx, horizon].item())
+    return "" if value < 0 else value
+
+
+def _optional_tensor_list(values: torch.Tensor | None, row_idx: int, horizon: int) -> str:
+    if values is None or row_idx >= values.shape[0] or horizon >= values.shape[1]:
+        return ""
+    return json.dumps([int(item) for item in values[row_idx, horizon].tolist()])
+
+
+def _horizon(values: torch.Tensor) -> int:
+    return int(values.shape[1]) if values.ndim > 1 else 1
+
+
+def _beam_histogram(values: torch.Tensor, *, num_classes: int) -> list[int]:
+    tensor = values.detach().cpu().to(torch.long)
+    valid = tensor.ge(0) & tensor.lt(int(num_classes))
+    if not torch.any(valid):
+        return [0 for _ in range(int(num_classes))]
+    return [int(item) for item in torch.bincount(tensor[valid].reshape(-1), minlength=int(num_classes)).tolist()]
 
 
 def summarize_loso_runs(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -391,10 +563,13 @@ def write_loso_summary(path: str | Path, records: list[dict[str, Any]]) -> Path:
 
 __all__ = [
     "beam_power_metrics",
+    "beam_histogram_metrics",
     "calculate_hist_beam_metrics",
+    "markov_delta_baseline_metrics",
     "path_descriptor_regression_metrics",
     "path_semantic_metrics",
     "radio_semantic_metrics",
+    "source_prior_collapse_diagnostics",
     "summarize_loso_runs",
     "write_hist_beam_predictions",
     "write_loso_summary",

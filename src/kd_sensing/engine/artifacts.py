@@ -17,6 +17,7 @@ from kd_sensing.engine.debug_diagnostics import (
 )
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.engine.run_metadata import prediction_setup_metadata
+from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state
 from kd_sensing.utils.plotting import plot_training_curves
@@ -57,6 +58,7 @@ def final_config_with_runtime(
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
+    runtime["lineage"] = run_lineage_metadata(cfg)
     runtime["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
     return final_cfg
 
@@ -130,6 +132,11 @@ class ArtifactWriter:
             best_epoch=best_early_stopping_epoch,
             epochs_without_improvement=epochs_without_improvement,
         )
+        lineage = run_lineage_metadata(
+            self.cfg,
+            teacher_checkpoint=_teacher_checkpoint_from_loads(checkpoint_loads),
+            teacher_source=_teacher_source_from_loads(checkpoint_loads),
+        )
         write_csi_debug_records(self.run_dir, csi_debug_records)
         pilot_noise_validity = evaluate_pilot_noise_validity(self.cfg, csi_debug_records)
         write_pilot_noise_validity_artifact(self.run_dir, pilot_noise_validity)
@@ -142,6 +149,7 @@ class ArtifactWriter:
             "csi_first_batch_diagnostics": csi_debug_records,
             "pilot_noise_validity": pilot_noise_validity,
             "teacher_metrics": teacher_metrics,
+            "lineage": lineage,
             "checkpoint_loads": checkpoint_loads,
             "optimizer_param_groups": optimizer_groups,
             "normalization_artifacts": normalization_artifacts,
@@ -160,6 +168,7 @@ class ArtifactWriter:
                 "startup_summary": startup_summary,
                 "config_diff": config_diff,
                 "pilot_noise_validity": pilot_noise_validity,
+                "lineage": lineage,
                 "prediction_objective": objective_metadata,
                 "prediction_setup": prediction_setup_metadata(self.cfg, split_metadata=split_metadata),
             },
@@ -185,3 +194,17 @@ class ArtifactWriter:
             "early_stopping": early_stopping_metadata,
             "pilot_noise_validity": pilot_noise_validity,
         }
+
+
+def _teacher_checkpoint_from_loads(checkpoint_loads: list[dict[str, Any] | None]) -> str | None:
+    for item in checkpoint_loads:
+        if isinstance(item, dict) and item.get("role") == "teacher":
+            return item.get("path")
+    return None
+
+
+def _teacher_source_from_loads(checkpoint_loads: list[dict[str, Any] | None]) -> str | None:
+    for item in checkpoint_loads:
+        if isinstance(item, dict) and item.get("role") == "teacher":
+            return item.get("source")
+    return None

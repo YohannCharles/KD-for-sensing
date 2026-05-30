@@ -115,7 +115,7 @@ _OPTIONAL_HISTORY_FIELDS = {
 _COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("loss/train_objective", "train_objective_loss"),
     ("objective/val_primary_metric", "val_primary_metric"),
-    ("loss/train_beam_soft", "train_beam_soft_loss"),
+    ("loss/beam_soft_target", "train_beam_soft_loss"),
     ("loss/train_unimodal_aux", "train_unimodal_loss"),
 )
 

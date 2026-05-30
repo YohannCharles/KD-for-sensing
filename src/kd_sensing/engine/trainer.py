@@ -31,6 +31,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_startup_summary,
 )
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_epoch_log, set_train_sampler_epoch
+from kd_sensing.engine.hist_beam_history_anchor import apply_history_anchor_model_config
 from kd_sensing.engine.hist_beam_training import HistBeamTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
@@ -49,6 +50,12 @@ from kd_sensing.engine.objectives.metadata import (
 from kd_sensing.engine.run_metadata import (
     dataloaders_run_metadata,
     throughput_run_metadata,
+)
+from kd_sensing.engine.run_lineage import (
+    distillation_config,
+    distillation_enabled,
+    ensure_distillation_defaults,
+    run_lineage_metadata,
 )
 from kd_sensing.engine.run_status import (
     write_complete_status,
@@ -162,7 +169,7 @@ def _scene_grouped_output_base(cfg: dict) -> Path:
 
 
 def _teacher_enabled(cfg: dict) -> bool:
-    return cfg.get("distillation", {}).get("type", "no_kd") != "no_kd"
+    return distillation_enabled(cfg)
 
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
@@ -170,7 +177,7 @@ def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
 
 
 def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> dict | None:
-    weight_name = cfg.get("distillation", {}).get("teacher_model_name")
+    weight_name = distillation_config(cfg).get("teacher_model_name")
     resolution = resolve_teacher_checkpoint(cfg, weight_name)
     if resolution.path is None and resolution.source == "none":
         return None
@@ -233,6 +240,8 @@ def _train_inner(cfg: dict) -> dict:
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     objective = resolve_prediction_objective(cfg)
     cfg.setdefault("experiment", {})["objective"] = objective
+    ensure_distillation_defaults(cfg)
+    apply_history_anchor_model_config(cfg)
     objective_metadata = objective_runtime_metadata(cfg)
     training_cfg = cfg.setdefault("training", {})
     early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg, objective=objective)
@@ -279,9 +288,10 @@ def _train_inner(cfg: dict) -> dict:
             param.requires_grad = False
 
     task_criterion = build_task_criterion(cfg)
-    distiller = build_distiller(cfg, task_criterion).to(device)
+    distiller = build_distiller(cfg, task_criterion).to(device) if _teacher_enabled(cfg) else None
     optimizer = build_optimizer(cfg, student_model)
-    _add_distiller_params_to_optimizer(optimizer, distiller, cfg)
+    if distiller is not None:
+        _add_distiller_params_to_optimizer(optimizer, distiller, cfg)
     scheduler = build_scheduler(cfg, optimizer)
     optimizer_groups = optimizer_param_group_summary(optimizer)
     configure_csi_debug(student_model, cfg)
@@ -378,8 +388,9 @@ def _train_inner(cfg: dict) -> dict:
             student_model.train()
             train_lidar_quality = LidarQualityAccumulator()
             saw_train_lidar = False
-            current_alpha = cfg["distillation"].get("alpha", 0.4)
-            warmup_epochs = cfg["distillation"].get("alpha_warmup_epochs", 0)
+            distill_cfg = distillation_config(cfg)
+            current_alpha = distill_cfg.get("alpha", 0.4)
+            warmup_epochs = distill_cfg.get("alpha_warmup_epochs", 0)
             if warmup_epochs and epoch < warmup_epochs:
                 current_alpha = current_alpha * (epoch / warmup_epochs)
             for extension, extension_state in zip(extensions, extension_states):

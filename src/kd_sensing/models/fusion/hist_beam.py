@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kd_sensing.evaluation.hist_beam_residuals import residual_logits_to_absolute_logits
 from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image import ImageFeatureExtractor
@@ -73,6 +74,11 @@ class HistBeamConfig:
     use_path_regression: bool = False
     path_descriptor_dim: int | None = None
     path_label_mode: str = "kmeans_path_descriptor"
+    history_anchor_enabled: bool = False
+    history_anchor_mode: str = "residual_delta"
+    num_delta_classes: int = 64
+    history_anchor_embedding_dim: int = 32
+    lambda_absolute_aux: float = 0.0
 
     @property
     def num_groups(self) -> int:
@@ -142,6 +148,7 @@ def resolve_hist_beam_config(
     path_tau: float | None = None,
     use_path_regression: bool | None = None,
     path_descriptor_dim: int | None = None,
+    history_anchor: bool | dict[str, Any] | None = None,
     proto_type: str | None = None,
     geometry_aware: bool | dict[str, Any] | None = None,
     geometry_fields: list[str] | tuple[str, ...] | None = None,
@@ -172,6 +179,14 @@ def resolve_hist_beam_config(
     adapter_cfg = adapter if isinstance(adapter, dict) else {}
     radio_cfg = radio_semantic if isinstance(radio_semantic, dict) else {}
     path_cfg = path_semantic if isinstance(path_semantic, dict) else {}
+    history_cfg = history_anchor if isinstance(history_anchor, dict) else {}
+    history_enabled = _mapping_enabled(history_anchor)
+    history_mode = str(history_cfg.get("mode", "residual_delta")).strip().lower()
+    if history_mode not in {"residual_delta", "absolute_with_history"}:
+        raise ValueError(
+            f"Unsupported HiST-Beam history_anchor.mode '{history_mode}'. "
+            "Supported modes: ['absolute_with_history', 'residual_delta']."
+        )
     radio_enabled = _mapping_enabled(radio_semantic) or normalized_variant in {"v6_radio_proto", "adapter_radio_proto"}
     path_enabled = _mapping_enabled(path_semantic) or normalized_variant in {"v8_path_proto", "adapter_path_proto"}
     resolved_num_radio = int(
@@ -236,6 +251,11 @@ def resolve_hist_beam_config(
             else None
         ),
         path_label_mode=str(path_cfg.get("mode", path_cfg.get("label_mode", "kmeans_path_descriptor"))),
+        history_anchor_enabled=history_enabled,
+        history_anchor_mode=history_mode,
+        num_delta_classes=int(history_cfg.get("num_delta_classes", classes)),
+        history_anchor_embedding_dim=int(history_cfg.get("embedding_dim", history_cfg.get("history_anchor_embedding_dim", 32))),
+        lambda_absolute_aux=float(history_cfg.get("lambda_absolute_aux", 0.0)),
     )
 
 
@@ -270,6 +290,7 @@ class HistBeamFusionNet(nn.Module):
         path_tau: float | None = None,
         use_path_regression: bool | None = None,
         path_descriptor_dim: int | None = None,
+        history_anchor: bool | dict[str, Any] | None = None,
         proto_type: str | None = None,
         geometry_aware: bool | dict[str, Any] | None = None,
         geometry_fields: list[str] | tuple[str, ...] | None = None,
@@ -313,6 +334,7 @@ class HistBeamFusionNet(nn.Module):
             path_tau=path_tau,
             use_path_regression=use_path_regression,
             path_descriptor_dim=path_descriptor_dim,
+            history_anchor=history_anchor,
             proto_type=proto_type,
             geometry_aware=geometry_aware,
             geometry_fields=geometry_fields,
@@ -325,6 +347,7 @@ class HistBeamFusionNet(nn.Module):
         self.num_groups = self.hist_config.num_groups
         self.num_radio_classes = self.hist_config.num_radio_classes
         self.num_path_classes = self.hist_config.num_path_classes
+        self.num_delta_classes = self.hist_config.num_delta_classes
         self.radio_tau = self.hist_config.radio_tau
         self.path_tau = self.hist_config.path_tau
         self.num_pred = int(num_pred)
@@ -373,6 +396,20 @@ class HistBeamFusionNet(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(layer, num_layers=int(num_layers))
         self.output_norm = nn.LayerNorm(self.d_model)
+        self.history_anchor_embedding = (
+            nn.Embedding(self.num_classes, self.hist_config.history_anchor_embedding_dim)
+            if self.hist_config.history_anchor_enabled
+            else None
+        )
+        self.history_anchor_projection = (
+            nn.Sequential(
+                nn.LayerNorm(self.hist_config.history_anchor_embedding_dim),
+                nn.Linear(self.hist_config.history_anchor_embedding_dim, self.d_model),
+                nn.GELU(),
+            )
+            if self.hist_config.history_anchor_enabled
+            else None
+        )
 
         self.flat_head = nn.Linear(self.d_model, self.num_pred * self.num_classes)
         self.shared_branch = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.d_model), nn.GELU())
@@ -431,6 +468,21 @@ class HistBeamFusionNet(nn.Module):
             self.hist_config.path_embed_dim if self.hist_config.use_path_condition_in_beam_head else 0
         )
         self.fine_head = nn.Linear(fine_input_dim, self.num_pred * self.num_groups * self.group_size)
+        self.residual_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_delta_classes)
+            if self.hist_config.history_anchor_enabled
+            else None
+        )
+        self.absolute_calibration_bias = (
+            nn.Parameter(torch.zeros(self.num_classes))
+            if self.hist_config.history_anchor_enabled
+            else None
+        )
+        self.absolute_temperature_log = (
+            nn.Parameter(torch.zeros(()))
+            if self.hist_config.history_anchor_enabled
+            else None
+        )
         self.shared_scene_classifier = nn.Linear(self.d_model, self.num_scenes) if self.num_scenes > 0 else None
         self.private_scene_classifier = nn.Linear(self.d_model, self.num_scenes) if self.num_scenes > 0 else None
 
@@ -451,6 +503,8 @@ class HistBeamFusionNet(nn.Module):
         path_prototypes: torch.Tensor | None = None,
         path_prototype_counts: torch.Tensor | None = None,
         mu_path_c: torch.Tensor | None = None,
+        input_beam_batch: torch.Tensor | None = None,
+        last_beam_batch: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | tuple[str, ...] | dict[str, Any]]:
         raw_inputs = {
             "image": image_batch,
@@ -511,6 +565,18 @@ class HistBeamFusionNet(nn.Module):
             ),
         )
         fused = self.output_norm(memory[:, 0, :])
+        history_anchor = None
+        history_context = None
+        if self.hist_config.history_anchor_enabled:
+            history_anchor = self._history_anchor(
+                input_beam_batch=input_beam_batch,
+                last_beam_batch=last_beam_batch,
+                batch_size=batch_size,
+                device=fused.device,
+            )
+            assert self.history_anchor_embedding is not None and self.history_anchor_projection is not None
+            history_context = self.history_anchor_projection(self.history_anchor_embedding(history_anchor))
+            fused = fused + history_context
         flat_logits = self.flat_head(fused).view(batch_size, self.num_pred, self.num_classes)
 
         shared = self.shared_branch(fused)
@@ -561,11 +627,37 @@ class HistBeamFusionNet(nn.Module):
         fine_logits = self.fine_head(fine_input).view(batch_size, self.num_pred, self.num_groups, self.group_size)
         beam_log_probs = hierarchical_beam_log_probs(coarse_logits, fine_logits)
         logits = flat_logits if not self.hist_config.hierarchical_enabled else beam_log_probs
+        residual_logits = None
+        reconstructed_beam_logits = None
+        if self.hist_config.history_anchor_enabled:
+            if self.hist_config.history_anchor_mode == "residual_delta":
+                if self.residual_head is None:
+                    raise RuntimeError("history_anchor residual head is missing.")
+                residual_logits = self.residual_head(shared).view(batch_size, self.num_pred, self.num_delta_classes)
+                if history_anchor is None:
+                    raise RuntimeError("history_anchor residual mode requires last_beam_batch.")
+                reconstructed_beam_logits = residual_logits_to_absolute_logits(
+                    residual_logits,
+                    history_anchor,
+                    num_classes=self.num_classes,
+                )
+                if self.absolute_calibration_bias is not None:
+                    reconstructed_beam_logits = reconstructed_beam_logits + self.absolute_calibration_bias.view(1, 1, -1)
+                if self.absolute_temperature_log is not None:
+                    reconstructed_beam_logits = reconstructed_beam_logits / self.absolute_temperature_log.exp().clamp_min(1e-6)
+                logits = reconstructed_beam_logits
+            else:
+                reconstructed_beam_logits = flat_logits
+                logits = flat_logits
 
         output_features = fused.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous()
         result: dict[str, torch.Tensor | tuple[str, ...] | dict[str, Any]] = {
             "logits": logits,
             "beam_logits": logits,
+            "absolute_beam_logits": reconstructed_beam_logits,
+            "residual_logits": residual_logits,
+            "last_beam": history_anchor,
+            "history_anchor_embedding": history_context,
             "beam_log_probs": beam_log_probs,
             "flat_logits": flat_logits,
             "coarse_logits": coarse_logits,
@@ -623,6 +715,15 @@ class HistBeamFusionNet(nn.Module):
                 "geometry_aware": self.hist_config.geometry_aware,
                 "geometry_fields": self.hist_config.geometry_fields,
                 "coarse_conditioned_adapter": self.hist_config.coarse_conditioned_adapter,
+                "history_anchor_enabled": self.hist_config.history_anchor_enabled,
+                "history_anchor_mode": self.hist_config.history_anchor_mode,
+                "num_delta_classes": self.num_delta_classes,
+                "uses_input_beam_as_model_input": self.hist_config.history_anchor_enabled,
+                "residual_target_enabled": self.hist_config.history_anchor_enabled
+                and self.hist_config.history_anchor_mode == "residual_delta",
+                "private_calibration_type": "absolute_bias_temperature"
+                if self.hist_config.history_anchor_enabled
+                else "none",
             },
         }
         if self.shared_scene_classifier is not None:
@@ -632,6 +733,40 @@ class HistBeamFusionNet(nn.Module):
         if self.private_scene_classifier is not None:
             result["private_scene_logits"] = self.private_scene_classifier(private)
         return result
+
+    def _history_anchor(
+        self,
+        *,
+        input_beam_batch: torch.Tensor | None,
+        last_beam_batch: torch.Tensor | None,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if last_beam_batch is not None:
+            anchor = last_beam_batch.to(device=device, dtype=torch.long)
+            if anchor.ndim == 2:
+                if anchor.shape[1] == 1:
+                    anchor = anchor[:, 0]
+                else:
+                    anchor = anchor[:, -1]
+        elif input_beam_batch is not None:
+            history = input_beam_batch.to(device=device, dtype=torch.long)
+            if history.ndim == 1:
+                anchor = history
+            elif history.ndim == 2:
+                anchor = history[:, -1]
+            else:
+                raise ValueError(f"input_beam_batch must have shape [B] or [B, T], got {tuple(history.shape)}.")
+        else:
+            raise ValueError(
+                "HiST-Beam history_anchor is enabled, but neither input_beam_batch nor last_beam_batch was provided."
+            )
+        if anchor.shape[0] != batch_size:
+            raise ValueError(f"last_beam_batch batch size {anchor.shape[0]} does not match input batch size {batch_size}.")
+        if torch.any(anchor.lt(0) | anchor.ge(self.num_classes)):
+            bad = int(anchor[(anchor.lt(0) | anchor.ge(self.num_classes))][0].detach().cpu().item())
+            raise ValueError(f"last_beam_batch contains invalid beam label {bad}; expected [0, {self.num_classes}).")
+        return anchor
 
     def _radio_assignment_for_beam_head(
         self,

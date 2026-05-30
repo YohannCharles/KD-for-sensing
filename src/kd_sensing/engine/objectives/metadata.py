@@ -451,7 +451,15 @@ def _is_allowed_pattern_metric(name: str, *, objective: str) -> bool:
         return name.startswith(("val_beam_top",))
     if objective not in {"beam", "multitask"}:
         return False
-    return name.startswith(("val_top1_", "val_top3_", "val_top5_"))
+    return name.startswith(
+        (
+            "val_top1_",
+            "val_top3_",
+            "val_top5_",
+            "val_residual_",
+            "val_reconstructed_absolute_top",
+        )
+    )
 
 
 def _mapping(value: Any) -> dict[str, Any]:

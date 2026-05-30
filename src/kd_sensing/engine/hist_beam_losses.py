@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from kd_sensing.engine.hist_beam_labels import ensure_horizon_shape, hist_beam_labels
+from kd_sensing.engine.hist_beam_residuals import circular_residual_labels, residual_target_enabled
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,122 @@ def compute_hist_beam_loss(
     flat_logits = _first_tensor(output, ("flat_logits", "beam_logits", "logits"))
     coarse_logits = _tensor(output, "coarse_logits")
     fine_logits = _tensor(output, "fine_logits")
+    if residual_target_enabled(cfg):
+        residual_logits = _tensor(output, "residual_logits")
+        last_beam = _tensor(output, "last_beam")
+        if residual_logits is None:
+            raise RuntimeError("history-anchored residual training requires residual_logits in model output.")
+        if last_beam is None:
+            raise RuntimeError("history-anchored residual training requires input_beam or last_beam in model output.")
+        ensure_horizon_shape("residual_logits", residual_logits, labels)
+        residual_labels = circular_residual_labels(
+            labels,
+            last_beam,
+            num_classes=int(residual_logits.shape[-1]),
+            ignore_index=ignore_index,
+            future_field="target_beam",
+            last_field="last_beam",
+        )
+        residual = F.cross_entropy(
+            residual_logits.reshape(-1, residual_logits.shape[-1]),
+            residual_labels.reshape(-1),
+            ignore_index=ignore_index,
+        )
+        lambda_absolute_aux = float(
+            hist_cfg.get(
+                "lambda_absolute_aux",
+                (hist_cfg.get("history_anchor", {}) if isinstance(hist_cfg.get("history_anchor"), dict) else {}).get(
+                    "lambda_absolute_aux",
+                    0.0,
+                ),
+            )
+            or 0.0
+        )
+        absolute_aux = (
+            _flat_ce(_first_tensor(output, ("beam_logits", "absolute_beam_logits", "logits")), labels, num_classes=num_classes, ignore_index=ignore_index)
+            if lambda_absolute_aux > 0
+            else zero
+        )
+        orth = _orthogonality_loss(
+            _tensor(output, "shared_representation"),
+            _tensor(output, "private_representation"),
+            zero,
+        )
+        shared_scene = _scene_ce(_tensor(output, "shared_scene_logits"), scene_labels, zero)
+        private_scene = _scene_ce(_tensor(output, "private_scene_logits"), scene_labels, zero)
+        geometry, geometry_diag = multimodal_geometry_consistency_loss(output, zero=zero)
+        radio, radio_diag = radio_semantic_ce_loss(
+            _tensor(output, "radio_logits"),
+            radio_semantic_labels,
+            zero=zero,
+            ignore_index=ignore_index,
+        )
+        path, path_diag = path_semantic_ce_loss(
+            _tensor(output, "path_logits"),
+            path_semantic_labels,
+            zero=zero,
+            ignore_index=ignore_index,
+        )
+        path_reg, path_reg_diag = path_descriptor_regression_loss(
+            _tensor(output, "path_attr_pred"),
+            path_descriptors,
+            path_descriptor_mask,
+            zero=zero,
+        )
+        total = (
+            residual
+            + lambda_absolute_aux * absolute_aux
+            + weights["orthogonality"] * orth
+            + weights["scene_confusion"] * shared_scene
+            + weights["scene_private"] * private_scene
+            + weights["geometry_consistency"] * geometry
+            + weights["radio_semantic"] * radio
+            + weights["path_semantic"] * path
+            + weights["path_regression"] * path_reg
+        )
+        pred = residual_logits.argmax(dim=-1)
+        valid = residual_labels.ne(ignore_index)
+        residual_acc = (
+            float((pred[valid] == residual_labels[valid]).float().mean().detach().cpu().item())
+            if torch.any(valid)
+            else 0.0
+        )
+        diagnostics = {
+            "hist/loss_total": _scalar(total),
+            "hist/loss_residual": _scalar(residual),
+            "hist/loss_absolute_aux": _scalar(absolute_aux),
+            "hist/lambda_absolute_aux": float(lambda_absolute_aux),
+            "hist/residual_accuracy": residual_acc,
+            "hist/residual_target_enabled": 1.0,
+            "hist/loss_orthogonality": _scalar(orth),
+            "hist/loss_shared_scene": _scalar(shared_scene),
+            "hist/loss_private_scene": _scalar(private_scene),
+            "hist/loss_geometry_consistency": _scalar(geometry),
+            "hist/loss_radio_semantic": _scalar(radio),
+            "hist/loss_path_semantic": _scalar(path),
+            "hist/loss_path_regression": _scalar(path_reg),
+        }
+        diagnostics.update(geometry_diag)
+        diagnostics.update(radio_diag)
+        diagnostics.update(path_diag)
+        diagnostics.update(path_reg_diag)
+        return HistBeamLossResult(
+            total=total,
+            hierarchical=residual,
+            coarse=zero,
+            fine=zero,
+            flat=absolute_aux,
+            orthogonality=orth,
+            shared_scene=shared_scene,
+            private_scene=private_scene,
+            angular_smoothing=zero,
+            geometry_consistency=geometry,
+            radio_semantic=radio,
+            path_semantic=path,
+            path_regression=path_reg,
+            diagnostics=diagnostics,
+        )
+
     if coarse_logits is None or fine_logits is None:
         flat = _flat_ce(flat_logits, labels, num_classes=num_classes, ignore_index=ignore_index) if flat_logits is not None else zero
         radio, radio_diag = radio_semantic_ce_loss(

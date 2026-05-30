@@ -9,16 +9,19 @@ import torch.nn.functional as F
 
 from kd_sensing.engine.batch import (
     assert_sensitive_fields_allowed,
+    prepare_history_anchor_inputs,
     prepare_path_descriptors,
     prepare_path_semantic_labels,
     prepare_radio_semantic_labels,
 )
+from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
 from kd_sensing.engine.hist_beam_losses import (
     compute_hist_beam_loss,
     entropy_minimization_loss,
     prototype_consistency_loss,
 )
-from kd_sensing.engine.runtime import run_model_step, transfer_non_blocking
+from kd_sensing.engine.hist_beam_residuals import history_anchor_enabled, num_delta_classes_from_config
+from kd_sensing.engine.runtime import prepare_task_batch, run_model_step, transfer_non_blocking
 
 
 @dataclass(frozen=True)
@@ -57,18 +60,36 @@ def apply_hist_beam_adaptation_strategy(
         raise ValueError(f"Unsupported HiST-Beam adaptation strategy '{strategy}'.")
     for _, param in model.named_parameters():
         param.requires_grad = False
-    trainable_prefixes = ("private_adapter", "fine_head")
+    hist_config = getattr(model, "hist_config", None)
+    residual_mode = bool(
+        getattr(hist_config, "history_anchor_enabled", False)
+        and getattr(hist_config, "history_anchor_mode", "") == "residual_delta"
+    )
+    if residual_mode:
+        trainable_prefixes = (
+            "private_adapter",
+            "residual_head",
+            "absolute_calibration_bias",
+            "absolute_temperature_log",
+            "history_anchor_projection",
+        )
+    else:
+        trainable_prefixes = ("private_adapter", "fine_head")
     if normalized in {"v6_radio_proto", "adapter_radio_proto"}:
-        trainable_prefixes = ("private_adapter", "fine_head", "radio_embedding")
+        trainable_prefixes = (*trainable_prefixes, "radio_embedding")
     if normalized in {"v8_path_proto", "adapter_path_proto"}:
-        trainable_prefixes = ("private_adapter", "fine_head", "path_embedding")
+        trainable_prefixes = (*trainable_prefixes, "path_embedding")
     for name, param in model.named_parameters():
         if name.startswith(trainable_prefixes):
             param.requires_grad = True
         if train_layernorm_affine and ("norm" in name.lower() or "layernorm" in name.lower()):
             param.requires_grad = True
     summary = trainable_parameter_summary(model)
-    return {"strategy": normalized, **summary.to_dict()}
+    return {
+        "strategy": normalized,
+        "history_anchor_residual_freeze_strategy": residual_mode,
+        **summary.to_dict(),
+    }
 
 
 def adapt_hist_beam_target(
@@ -138,6 +159,8 @@ def adapt_hist_beam_target(
     leakage_flags = {
         "used_target_labels": False,
         "used_target_beam_for_training": False,
+        "used_target_beam_for_supervised_loss": False,
+        "used_input_beam_as_input": history_anchor_enabled(cfg),
         "used_target_beam_power_for_training": False,
         "used_target_csi_for_training": False,
         "used_target_path_params_for_training": False,
@@ -223,6 +246,7 @@ def adapt_hist_beam_target(
                     diagnostics.update(supervised.diagnostics)
                     leakage_flags["used_target_labels"] = True
                     leakage_flags["used_target_beam_for_training"] = True
+                    leakage_flags["used_target_beam_for_supervised_loss"] = True
                     if (
                         radio_labels is not None
                         and torch.is_tensor(step.model_output.diagnostics.get("radio_logits"))
@@ -392,6 +416,7 @@ def adapt_hist_beam_target(
         "sensitive_field_policy": sensitive_field_policy,
         **eligibility,
         **leakage_flags,
+        **history_anchor_run_metadata(cfg),
         "diagnostics": diagnostics,
     }
 
@@ -627,16 +652,33 @@ def _path_counts_from_artifact(prototypes: dict[str, Any]) -> torch.Tensor | Non
 
 def _target_step(model, batch, cfg: dict[str, Any], device: torch.device, *, require_labels: bool = True):
     model_cfg = cfg["model"]
+    prepared = prepare_task_batch(batch)
+    num_pred = model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1))
+    downsample_ratio = model_cfg.get("downsample_ratio", 1)
+    history_kwargs = prepare_history_anchor_inputs(
+        prepared,
+        num_pred=num_pred,
+        num_classes=num_delta_classes_from_config(
+            cfg,
+            default=int(model_cfg.get("student", model_cfg).get("num_classes", model_cfg.get("num_classes", 64))),
+        ),
+        downsample_ratio=downsample_ratio,
+        device=device,
+        enabled=history_anchor_enabled(cfg),
+        include_residual_labels=require_labels,
+        non_blocking=transfer_non_blocking(cfg),
+    )
     return run_model_step(
         model,
         cfg["experiment"].get("task", "fusion"),
-        batch,
+        prepared,
         model_cfg=model_cfg.get("student", model_cfg),
         seq_length=model_cfg.get("seq_length_student", cfg.get("data", {}).get("dataset", {}).get("seq_len", 8)),
-        num_pred=model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1)),
+        num_pred=num_pred,
         device=device,
-        downsample_ratio=model_cfg.get("downsample_ratio", 1) if require_labels else None,
+        downsample_ratio=downsample_ratio if require_labels else None,
         non_blocking=transfer_non_blocking(cfg),
+        extra_model_kwargs={key: value for key, value in history_kwargs.items() if key != "residual_labels"},
     )
 
 

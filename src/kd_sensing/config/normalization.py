@@ -12,6 +12,7 @@ from kd_sensing.engine.objectives.metadata import (
     objective_requires_position,
     resolve_prediction_objective,
 )
+from kd_sensing.engine.run_lineage import ensure_distillation_defaults
 from kd_sensing.modalities import (
     dataset_defaults_for_modalities,
     dataset_flags_for_modalities,
@@ -89,6 +90,7 @@ def normalize_loaded_config(
     )
     apply_objective_runtime_requirements(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
+    ensure_distillation_defaults(cfg)
     normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_csi_hardening_alias(cfg)
     canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg, override_cfg=override_cfg)

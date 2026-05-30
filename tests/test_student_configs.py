@@ -25,6 +25,7 @@ from kd_sensing.config.canonical_recipes import (  # noqa: E402
     objective_overlay_recipe,
     training_overrides,
 )
+from kd_sensing.engine.run_lineage import run_lineage_metadata  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import (  # noqa: E402
@@ -142,6 +143,43 @@ def test_fusion_registry_returns_public_class_names_and_removed_aliases_fail():
             getattr(kd_sensing.models, alias)
         with pytest.raises(RegistryError, match="Removed component"):
             MODELS.build({"type": alias})
+
+
+def test_run_lineage_metadata_separates_no_kd_mainline_and_legacy_kd():
+    no_kd_cfg = {
+        "experiment": {"name": "hist_beam_mainline", "task": "fusion"},
+        "model": {"student": {"type": "hist_beam_fusion"}},
+    }
+    kd_cfg = {
+        "experiment": {"name": "gps_logits_kd", "task": "gps"},
+        "model": {"student": {"type": "gps_student"}},
+        "distillation": {
+            "type": "logits_kd",
+            "teacher_model_name": "best.pth",
+            "teacher_source": "registry",
+            "method_family": "mainline_no_kd",
+            "lifecycle": "active_mainline_no_kd",
+            "main_conclusion_eligible": True,
+        },
+    }
+
+    no_kd = run_lineage_metadata(no_kd_cfg, default_method_family="hist_beam_mainline")
+    kd = run_lineage_metadata(kd_cfg)
+
+    assert no_kd["distillation_enabled"] is False
+    assert no_kd["method_family"] == "hist_beam_mainline"
+    assert no_kd["distillation_type"] == "no_kd"
+    assert no_kd["teacher_checkpoint"] is None
+    assert no_kd["main_conclusion_eligible"] is True
+    assert kd["distillation_enabled"] is True
+    assert kd["method_family"] == "legacy_kd"
+    assert kd["distillation_type"] == "logits_kd"
+    assert kd["teacher_checkpoint"] == "best.pth"
+    assert kd["teacher_source"] == "registry"
+    assert kd["distillation_lifecycle"] == "legacy_kd"
+    assert kd["baseline_role"] == "optional_baseline"
+    assert kd["reproduction_scope"] == "historical_reproduction"
+    assert kd["main_conclusion_eligible"] is False
 
 
 MODALITY_SPECS = {
@@ -284,6 +322,24 @@ def _assert_default_early_stopping(cfg: dict) -> None:
     assert cfg["training"]["early_stopping_mode"] == "max"
 
 
+def _assert_no_kd_lineage(distillation_cfg: dict) -> None:
+    assert distillation_cfg["type"] == "no_kd"
+    assert distillation_cfg["teacher_model_name"] is None
+    assert distillation_cfg["lifecycle"] == "active_mainline_no_kd"
+    assert distillation_cfg["method_family"] == "mainline_no_kd"
+    assert distillation_cfg["main_conclusion_eligible"] is True
+
+
+def _assert_legacy_kd_lineage(distillation_cfg: dict, expected_type: str) -> None:
+    assert distillation_cfg["type"] == expected_type
+    assert distillation_cfg["teacher_model_name"] == "best.pth"
+    assert distillation_cfg["lifecycle"] == "legacy_kd"
+    assert distillation_cfg["method_family"] == "legacy_kd"
+    assert distillation_cfg["baseline_role"] == "optional_baseline"
+    assert distillation_cfg["reproduction_scope"] == "historical_reproduction"
+    assert distillation_cfg["main_conclusion_eligible"] is False
+
+
 def _assert_modular_single_encoder(role_cfg: dict, modality: str) -> None:
     assert role_cfg["type"] == "modular_sequence"
     assert role_cfg["modalities"] == [modality]
@@ -373,13 +429,11 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
         assert model.representation_core.gru.num_layers == 1
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
-        assert cfg["distillation"]["type"] == "no_kd"
-        assert cfg["distillation"]["teacher_model_name"] is None
+        _assert_no_kd_lineage(cfg["distillation"])
     else:
         teacher, student, kd_cfg = _build_teacher_and_student(config_path)
-        assert kd_cfg["distillation"]["type"] == mode
+        _assert_legacy_kd_lineage(kd_cfg["distillation"], mode)
         assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene31/{modality}_teacher_no_kd/checkpoints"
-        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, spec["teacher_cls"])
         assert isinstance(student, spec["student_cls"])
         assert _gru_module(teacher).hidden_size == _gru_module(student).hidden_size == 64
@@ -462,13 +516,11 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
         assert cfg["distillation"]["alpha"] == expected_params["alpha"]
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
-        assert cfg["distillation"]["type"] == "no_kd"
-        assert cfg["distillation"]["teacher_model_name"] is None
+        _assert_no_kd_lineage(cfg["distillation"])
     else:
         teacher, kd_student, kd_cfg = _build_teacher_and_student(config_path)
-        assert kd_cfg["distillation"]["type"] == mode
+        _assert_legacy_kd_lineage(kd_cfg["distillation"], mode)
         assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
-        assert kd_cfg["distillation"]["teacher_model_name"] == "best.pth"
         assert isinstance(teacher, (ModularSequenceModel if modular_fusion else FusionTeacherModalityNet))
         assert isinstance(kd_student, CLSTokenTransformerFusionNet)
         assert teacher.modalities == kd_student.modalities == tuple(modalities)
@@ -622,8 +674,7 @@ def test_virtual_fusion_config_generator_uses_canonical_semantics():
     assert cfg["model"]["student"]["num_heads"] == 4
     assert cfg["model"]["teacher"]["gps_input_size"] == 3
     assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
-    assert cfg["distillation"]["type"] == "logits_kd"
-    assert cfg["distillation"]["teacher_model_name"] == "best.pth"
+    _assert_legacy_kd_lineage(cfg["distillation"], "logits_kd")
     assert cfg["paths"]["weights_dir"] == "outputs/scene31/gps_mmwave_teacher_no_kd/checkpoints"
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
@@ -666,7 +717,7 @@ def test_virtual_image_radar_config_generator_keeps_compatibility_params():
     assert cfg["training"]["weight_decay"] == 0.0
     assert cfg["distillation"]["temperature"] == 2.0
     assert cfg["distillation"]["alpha"] == 0.4
-    assert cfg["distillation"]["teacher_model_name"] == "best.pth"
+    _assert_legacy_kd_lineage(cfg["distillation"], "logits_kd")
     assert cfg["paths"]["weights_dir"] == "outputs/scene31/image_radar_teacher_no_kd/checkpoints"
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"

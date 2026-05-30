@@ -8,11 +8,13 @@ import torch
 
 from kd_sensing.engine.batch import (
     prepare_beam_power_targets,
+    prepare_history_anchor_inputs,
     prepare_path_descriptors,
     prepare_path_semantic_labels,
     prepare_radio_semantic_labels,
 )
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
+from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
 from kd_sensing.engine.objectives.metadata import (
     objective_available_metrics,
@@ -20,6 +22,11 @@ from kd_sensing.engine.objectives.metadata import (
     resolve_prediction_objective,
 )
 from kd_sensing.engine.hist_beam_prototypes import load_source_prototypes
+from kd_sensing.engine.hist_beam_residuals import (
+    history_anchor_enabled,
+    num_delta_classes_from_config,
+    residual_target_enabled,
+)
 from kd_sensing.engine.prediction_objectives import (
     compute_prediction_loss,
     prepare_prediction_targets,
@@ -50,7 +57,9 @@ from kd_sensing.evaluation.metrics import (
 )
 from kd_sensing.evaluation.hist_beam_outputs import (
     beam_power_metrics,
+    beam_histogram_metrics,
     calculate_hist_beam_metrics,
+    markov_delta_baseline_metrics,
     path_descriptor_regression_metrics,
     path_semantic_metrics,
     radio_semantic_metrics,
@@ -68,6 +77,9 @@ class EvaluationPassResult:
     outputs: torch.Tensor
     labels: torch.Tensor
     input_beams: torch.Tensor | None
+    last_beams: torch.Tensor | None
+    residual_logits: torch.Tensor | None
+    residual_labels: torch.Tensor | None
     radio_logits: torch.Tensor | None
     radio_labels: torch.Tensor | None
     path_logits: torch.Tensor | None
@@ -114,6 +126,9 @@ def run_evaluation_pass(
     all_outputs = []
     all_labels = []
     all_input_beams = []
+    all_last_beams = []
+    all_residual_logits = []
+    all_residual_labels = []
     all_metadata: list[dict[str, Any]] = []
     all_occlusion_logits = []
     all_occlusion_labels = []
@@ -199,6 +214,20 @@ def run_evaluation_pass(
                 auxiliary_targets=auxiliary_targets,
                 cfg=cfg,
             )
+            batch_history_kwargs = prepare_history_anchor_inputs(
+                batch,
+                num_pred=num_pred,
+                num_classes=num_delta_classes_from_config(cfg, default=num_classes),
+                downsample_ratio=downsample_ratio,
+                device=device,
+                enabled=history_anchor_enabled(cfg),
+                non_blocking=non_blocking,
+                sample_ids=_sample_ids_from_metadata(batch.get("metadata")),
+            )
+            if "last_beam_batch" in batch_history_kwargs:
+                all_last_beams.append(batch_history_kwargs["last_beam_batch"].detach().cpu())
+            if "residual_labels" in batch_history_kwargs:
+                all_residual_labels.append(batch_history_kwargs["residual_labels"].detach().cpu())
             with autocast_context(amp_enabled, device, amp_dtype):
                 set_csi_debug_batch_source(model, "val")
                 step = run_model_step(
@@ -211,7 +240,10 @@ def run_evaluation_pass(
                     device=device,
                     non_blocking=non_blocking,
                     force_modality_mask=force_modality_mask,
-                    extra_model_kwargs=hist_forward_kwargs,
+                    extra_model_kwargs={
+                        **hist_forward_kwargs,
+                        **{key: value for key, value in batch_history_kwargs.items() if key != "residual_labels"},
+                    },
                 )
                 outputs = step.logits
                 beam_loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
@@ -259,6 +291,9 @@ def run_evaluation_pass(
             path_attr_pred = step.model_output.diagnostics.get("path_attr_pred")
             if torch.is_tensor(path_attr_pred):
                 all_path_attr_pred.append(path_attr_pred.detach().cpu())
+            residual_logits = step.model_output.diagnostics.get("residual_logits")
+            if torch.is_tensor(residual_logits):
+                all_residual_logits.append(residual_logits.detach().cpu())
 
     outputs_t = torch.cat(all_outputs, dim=0)
     labels_t = torch.cat(all_labels, dim=0)
@@ -284,6 +319,10 @@ def run_evaluation_pass(
     path_descriptors_t = torch.cat(all_path_descriptors, dim=0) if all_path_descriptors else None
     path_valid_t = torch.cat(all_path_valid, dim=0) if all_path_valid else None
     beam_power_t = torch.cat(all_beam_power, dim=0) if all_beam_power else None
+    input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
+    last_beams_t = torch.cat(all_last_beams, dim=0) if all_last_beams else None
+    residual_logits_t = torch.cat(all_residual_logits, dim=0) if all_residual_logits else None
+    residual_labels_t = torch.cat(all_residual_labels, dim=0) if all_residual_labels else None
     if _hist_beam_metrics_enabled(cfg):
         metrics.update(radio_semantic_metrics(radio_logits_t, radio_labels_t))
         metrics.update(path_semantic_metrics(path_logits_t, path_labels_t))
@@ -296,6 +335,7 @@ def run_evaluation_pass(
                 beam_power_t.reshape(-1, beam_power_t.shape[-1]) if beam_power_t is not None else None,
             )
         )
+        metrics.update(beam_histogram_metrics(labels_t, outputs_t, num_classes=num_classes, prefix="target_test"))
     if objective in {"current_beam_selection", "selection_multitask"} and all_los_bucket_labels:
         metrics["los_buckets"] = _beam_metrics_by_los_bucket(
             outputs_t,
@@ -315,6 +355,23 @@ def run_evaluation_pass(
         val_link_quality_loss=val_link_quality_loss,
         val_selection_multitask_loss=val_selection_multitask_loss,
     )
+    if residual_target_enabled(cfg):
+        metrics.update(_residual_evaluation_metrics(residual_logits_t, residual_labels_t, outputs_t, labels_t, cfg))
+    markov_reference = cfg.get("hist_beam", {}).get("markov_baseline", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    if isinstance(markov_reference, dict) and markov_reference.get("enabled", True) is not False:
+        metrics.update(
+            markov_delta_baseline_metrics(
+                markov_reference.get("last_beams"),
+                markov_reference.get("labels"),
+                last_beams_t,
+                labels_t,
+                num_classes=num_classes,
+                k_values=cfg.get("evaluation", {}).get("k_values", [1, 3, 5]),
+                smoothing=float(markov_reference.get("smoothing", 1.0)),
+                train_split=str(markov_reference.get("split", "source_train")),
+            )
+        )
+    metrics.update(history_anchor_run_metadata(cfg))
     metrics["objective"] = objective_metadata
     metrics["available_metrics"] = objective_available_metrics(objective, metrics)
     metrics["enabled_modalities"] = list(enabled_modalities)
@@ -327,8 +384,6 @@ def run_evaluation_pass(
             "unit": raymobtime_metadata.get("link_target_unit"),
             "aggregation": getattr(dataset, "cache_metadata", {}).get("link_target_aggregation"),
         }
-
-    input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
     baselines = degradation_baselines_from_labels(
         labels_t,
         input_beams=input_beams_t,
@@ -351,6 +406,9 @@ def run_evaluation_pass(
         outputs=outputs_t,
         labels=labels_t,
         input_beams=input_beams_t,
+        last_beams=last_beams_t,
+        residual_logits=residual_logits_t,
+        residual_labels=residual_labels_t,
         radio_logits=radio_logits_t,
         radio_labels=radio_labels_t,
         path_logits=path_logits_t,
@@ -499,6 +557,67 @@ def _metadata_value_at(value: Any, index: int) -> Any:
     if isinstance(value, (list, tuple)):
         return value[index] if index < len(value) else None
     return value
+
+
+def _sample_ids_from_metadata(metadata: Any) -> list[str] | None:
+    rows = _metadata_rows_from_batch(metadata)
+    if not rows:
+        return None
+    return [str(row.get("sample_id", index)) for index, row in enumerate(rows)]
+
+
+def _residual_evaluation_metrics(
+    residual_logits: torch.Tensor | None,
+    residual_labels: torch.Tensor | None,
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    if residual_logits is None or residual_labels is None:
+        return {
+            "residual_metrics_available": False,
+            "residual_metrics_unavailable_reason": "residual_logits_or_labels_missing",
+            "history_anchor_enabled": True,
+            "residual_target_enabled": True,
+        }
+    if residual_logits.ndim == 2:
+        residual_logits = residual_logits.unsqueeze(1)
+    if residual_labels.ndim == 1:
+        residual_labels = residual_labels.unsqueeze(1)
+    valid = residual_labels.ge(0) & residual_labels.lt(residual_logits.shape[-1])
+    if not torch.any(valid):
+        return {
+            "residual_metrics_available": False,
+            "residual_metrics_unavailable_reason": "no_valid_residual_labels",
+            "history_anchor_enabled": True,
+            "residual_target_enabled": True,
+        }
+    residual_pred = residual_logits.argmax(dim=-1)
+    residual_accuracy = (residual_pred[valid] == residual_labels[valid]).float().mean()
+    topk_acc, total = calculate_topk_accuracy(
+        outputs,
+        labels,
+        cfg.get("evaluation", {}).get("k_values", [1, 3, 5]),
+    )
+    result = {
+        "residual_metrics_available": True,
+        "residual_metrics_unavailable_reason": None,
+        "history_anchor_enabled": True,
+        "residual_target_enabled": True,
+        "residual_accuracy": float(residual_accuracy.detach().cpu().item()),
+        "residual_total": int(valid.sum().detach().cpu().item()),
+        "reconstructed_absolute_topk": {str(k): v.tolist() for k, v in topk_acc.items()},
+        "reconstructed_absolute_total": total.tolist(),
+    }
+    for key in (1, 3, 5):
+        if key in topk_acc:
+            values = torch.as_tensor(topk_acc[key], dtype=torch.float32)
+            count = torch.as_tensor(total, dtype=torch.float32)
+            mask = count.gt(0)
+            result[f"reconstructed_absolute_top{key}_avg"] = float(values[mask].mean().item()) if torch.any(mask) else 0.0
+            result[f"val_reconstructed_absolute_top{key}_avg"] = result[f"reconstructed_absolute_top{key}_avg"]
+    result["val_residual_accuracy"] = result["residual_accuracy"]
+    return result
 
 
 def _beam_metrics_by_los_bucket(

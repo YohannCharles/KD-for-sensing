@@ -237,6 +237,7 @@ class EpochMetricsRecorder:
             "train_objective_loss": float(self.running["task_loss"]),
             "train_distill_loss": float(self.running["distill_loss"]),
             "train_beam_soft_loss": float(self.running["beam_soft_loss"]),
+            "loss/beam_soft_target": float(self.running["beam_soft_loss"]),
             "train_unimodal_loss": float(self.running["unimodal_loss"]),
             "train_occlusion_loss": train_occlusion_loss,
             "train_position_loss": train_position_loss,
@@ -441,6 +442,7 @@ def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, 
         "loss/los": "train_los_loss",
         "loss/link_quality": "train_link_quality_loss",
         "loss/selection_multitask_total": "train_selection_multitask_loss",
+        "loss/beam_soft_target": "train_beam_soft_loss",
     }
     for key in metric_keys:
         if key not in allowed_history and key in pruned:

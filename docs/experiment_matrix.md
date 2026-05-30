@@ -4,9 +4,9 @@
 
 ## 单模态和基础 Fusion
 
-单模态 canonical 矩阵：
+单模态 canonical 矩阵保留强模型和轻量模型 no-KD baseline。KD 配置仍可运行，但只作为 legacy/optional supplemental baseline：
 
-| 模态 | Teacher baseline | Student baseline | KD |
+| 模态 | 强模型 no-KD baseline | 轻量 no-KD baseline | legacy KD supplemental |
 | --- | --- | --- | --- |
 | image | `configs/image/teacher_no_kd.yaml` | `configs/image/student_no_kd.yaml` | `configs/image/logits_kd.yaml`, `configs/image/rkd.yaml` |
 | radar | `configs/radar/teacher_no_kd.yaml` | `configs/radar/student_no_kd.yaml` | `configs/radar/logits_kd.yaml`, `configs/radar/rkd.yaml` |
@@ -14,18 +14,19 @@
 | lidar | `configs/lidar/teacher_no_kd.yaml` | `configs/lidar/student_no_kd.yaml` | `configs/lidar/logits_kd.yaml`, `configs/lidar/rkd.yaml` |
 | mmwave | `configs/mmwave/teacher_no_kd.yaml` | `configs/mmwave/student_no_kd.yaml` | `configs/mmwave/logits_kd.yaml`, `configs/mmwave/rkd.yaml` |
 
-推荐顺序是 `teacher_no_kd -> student_no_kd -> logits_kd/rkd`。KD 配置优先从当前 scene 的 checkpoint registry 读取同模态 teacher no-KD 最佳权重；也可以通过 `distillation.teacher_model_name` 或评估入口 `--weights` 显式指定。
+推荐主线顺序是先运行 no-KD supervised / adaptation baseline，再进入 HiST-Beam、history-anchored residual、adapter/prototype/calibration 或 objective-aware no-KD 配置。`logits_kd` 和 `rkd` 不再是 quickstart 或主结论必需步骤；显式运行时会写出 `method_family=legacy_kd`、`distillation_enabled=true`、`baseline_role=optional_baseline` 和 `reproduction_scope=historical_reproduction`，summary 默认把它们作为 supplemental comparison。
 
 Fusion canonical slug 使用固定顺序 `image -> radar -> gps -> lidar -> mmwave`，覆盖所有 2 到 5 模态组合。例如：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_teacher_no_kd.yaml
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_student_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_logits_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_rkd.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml
+conda run -n kd_mm_beam kd-sensing-hist-beam-loso --config configs/hist_beam/quick_smoke.yaml
 ```
 
-包含 image 或 LiDAR 的 canonical fusion teacher/no-KD 配置使用 `modular_sequence`；默认 student/KD student 使用 `cls_token_transformer_fusion`。需要复现实验中的 early-concat 或旧 token transformer baseline 时，使用对应显式配置路径；退役研究线的配置路径不会被 virtual alias 接管。
+包含 image 或 LiDAR 的 canonical fusion teacher/no-KD 配置使用 `modular_sequence`；默认 student 使用 `cls_token_transformer_fusion`。需要历史 KD 对照时，显式选择 `<slug>_logits_kd.yaml` 或 `<slug>_rkd.yaml`，这些配置优先从当前 scene 的 checkpoint registry 读取同模态 teacher no-KD 最佳权重，也可以通过 `distillation.teacher_model_name` 指定。需要复现实验中的 early-concat 或旧 token transformer baseline 时，使用对应显式配置路径；退役研究线的配置路径不会被 virtual alias 接管。
+
+HiST-Beam、MMW sensor-assisted quick validation、history-anchored residual quick validation 和默认 LOSO plan 不自动生成 KD variant。KD baseline 若后续用于 HiST-Beam 对照，应以单独 profile 或显式配置进入，并保持 supplemental/legacy 分组。
 
 ## Snapshot Next-Frame
 

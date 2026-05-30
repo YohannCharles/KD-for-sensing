@@ -40,6 +40,7 @@ def build_task_criterion(cfg: dict[str, Any]):
 
 def build_distiller(cfg: dict[str, Any], task_criterion):
     import_default_components()
+    distillation_cfg = cfg.get("distillation") or {"type": "no_kd", "teacher_model_name": None}
     model_cfg = cfg.get("model", {})
     modalities = (
         model_cfg.get("modalities")
@@ -47,7 +48,7 @@ def build_distiller(cfg: dict[str, Any], task_criterion):
         or model_cfg.get("teacher", {}).get("modalities")
     )
     return DISTILLERS.build(
-        cfg["distillation"],
+        distillation_cfg,
         task_criterion=task_criterion,
         num_pred=model_cfg.get("num_pred", 3),
         num_classes=model_cfg.get("num_classes", 64),

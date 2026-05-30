@@ -6,7 +6,9 @@ from kd_sensing.modalities import MODALITY_ORDER, MODALITY_SPECS, normalize_moda
 
 VALID_MODALITIES = MODALITY_ORDER
 SENSOR_ASSISTED_PROFILE = "sensor_assisted_quick_validation"
-SENSOR_ASSISTED_REQUIRED_MODALITIES = ("image", "radar", "gps", "lidar")
+HISTORY_ANCHORED_QUICK_PROFILE = "history_anchored_quick_validation"
+SENSOR_ASSISTED_REQUIRED_MODALITIES = ("image", "gps", "lidar")
+SENSOR_ASSISTED_EXCLUDED_MODALITIES = ("radar",)
 SENSOR_ASSISTED_DISALLOWED_MODALITIES = ("mmwave", "csi", "channel", "path", "beam_power")
 
 
@@ -61,6 +63,19 @@ def validate_dataset_modality_flags(dataset_cfg: dict, selected: tuple[str, ...]
 
 
 def sensor_assisted_profile_enabled(cfg: AnyConfig) -> bool:
+    return _profile_enabled(cfg, {SENSOR_ASSISTED_PROFILE}, sensor_config_key="sensor_assisted")
+
+
+def history_anchored_quick_profile_enabled(cfg: AnyConfig) -> bool:
+    return _profile_enabled(cfg, {HISTORY_ANCHORED_QUICK_PROFILE})
+
+
+def _profile_enabled(
+    cfg: AnyConfig,
+    profiles: set[str],
+    *,
+    sensor_config_key: str | None = None,
+) -> bool:
     loso_cfg = cfg.get("loso", {}) if isinstance(cfg.get("loso"), dict) else {}
     hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
     dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
@@ -70,17 +85,21 @@ def sensor_assisted_profile_enabled(cfg: AnyConfig) -> bool:
         hist_cfg.get("profile"),
         dataset_cfg.get("modality_profile"),
     )
-    if any(str(value or "").strip().lower() == SENSOR_ASSISTED_PROFILE for value in candidates):
+    if any(str(value or "").strip().lower() in profiles for value in candidates):
         return True
-    sensor_cfg = hist_cfg.get("sensor_assisted") if isinstance(hist_cfg.get("sensor_assisted"), dict) else {}
+    if sensor_config_key is None:
+        return False
+    sensor_cfg = hist_cfg.get(sensor_config_key) if isinstance(hist_cfg.get(sensor_config_key), dict) else {}
     return bool(sensor_cfg.get("enabled", False))
 
 
 def validate_sensor_assisted_modalities(cfg: AnyConfig, selected: tuple[str, ...]) -> None:
-    if not sensor_assisted_profile_enabled(cfg):
+    if not (sensor_assisted_profile_enabled(cfg) or history_anchored_quick_profile_enabled(cfg)):
         return
     selected_set = set(str(item) for item in selected)
-    disallowed = sorted(selected_set & set(SENSOR_ASSISTED_DISALLOWED_MODALITIES))
+    disallowed = sorted(
+        selected_set & (set(SENSOR_ASSISTED_DISALLOWED_MODALITIES) | set(SENSOR_ASSISTED_EXCLUDED_MODALITIES))
+    )
     if disallowed:
         raise ValueError(
             "MMW sensor-assisted profile only permits sensing modalities "
@@ -89,18 +108,21 @@ def validate_sensor_assisted_modalities(cfg: AnyConfig, selected: tuple[str, ...
     missing = [name for name in SENSOR_ASSISTED_REQUIRED_MODALITIES if name not in selected_set]
     if missing:
         raise ValueError(
-            "MMW sensor-assisted profile requires image, gps, lidar, and radar sensing inputs; "
+            "MMW sensor-assisted profile requires image, gps, and lidar sensing inputs; "
             f"missing modalities: {missing}."
         )
     dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
     raw_dataset_modalities = dataset_cfg.get("enabled_modalities")
     if raw_dataset_modalities:
         dataset_selected = {str(item) for item in raw_dataset_modalities}
-        dataset_disallowed = sorted(dataset_selected & set(SENSOR_ASSISTED_DISALLOWED_MODALITIES))
+        dataset_disallowed = sorted(
+            dataset_selected
+            & (set(SENSOR_ASSISTED_DISALLOWED_MODALITIES) | set(SENSOR_ASSISTED_EXCLUDED_MODALITIES))
+        )
         if dataset_disallowed:
             raise ValueError(
                 "data.dataset.enabled_modalities for MMW sensor-assisted profile must not contain "
-                f"{dataset_disallowed}; use only image, gps, lidar, and radar."
+                f"{dataset_disallowed}; use only image, gps, and lidar."
             )
 
 
@@ -122,6 +144,8 @@ def config_uses_csi(cfg: AnyConfig) -> bool:
 
 __all__ = [
     "SENSOR_ASSISTED_DISALLOWED_MODALITIES",
+    "SENSOR_ASSISTED_EXCLUDED_MODALITIES",
+    "HISTORY_ANCHORED_QUICK_PROFILE",
     "SENSOR_ASSISTED_PROFILE",
     "SENSOR_ASSISTED_REQUIRED_MODALITIES",
     "VALID_MODALITIES",
@@ -130,6 +154,7 @@ __all__ = [
     "config_uses_lidar",
     "config_uses_mmwave",
     "resolve_enabled_modalities",
+    "history_anchored_quick_profile_enabled",
     "sensor_assisted_profile_enabled",
     "validate_dataset_modality_flags",
     "validate_sensor_assisted_modalities",

@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
+from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -208,6 +209,7 @@ def archive_best_checkpoint(
         "split_metadata": split_metadata or {},
         "normalization_artifacts": normalization_artifacts or {},
         "updated": True,
+        "lineage": run_lineage_metadata(cfg),
     }
     metadata.update(scene_metadata_from_config(cfg))
     sidecar = write_sidecar(target, metadata)

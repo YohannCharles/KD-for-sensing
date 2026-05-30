@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kd-sensing"
 version = "0.1.0"
-description = "Knowledge distillation workflows for image and radar beam prediction."
+description = "Multi-modal few-shot cross-scene beam prediction workflows with legacy KD baselines."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [

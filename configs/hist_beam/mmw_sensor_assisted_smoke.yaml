@@ -12,7 +12,7 @@ data:
     seq_len: 5
     num_pred: 3
     portion: 0.02
-    enabled_modalities: [image, gps, lidar, radar]
+    enabled_modalities: [image, gps, lidar]
     modality_profile: sensor_assisted_quick_validation
     image_profile: rgb_imagenet
     image_size: [224, 224]
@@ -21,9 +21,6 @@ data:
     lidar_bev_size: [224, 224]
     lidar_normalize: false
     lidar_cache_dir: lidar_bev_cache
-    radar_size: [128, 64]
-    fft_tuple: [64, 256, 128]
-    clipped_range: 128
     use_mmwave: false
     mmwave_normalize: false
     use_csi: false
@@ -53,7 +50,7 @@ data:
     test_batch_size: 1
     num_workers: 0
 model:
-  modalities: [image, gps, lidar, radar]
+  modalities: [image, gps, lidar]
   feature_size: 16
   d_model: 32
   num_classes: 64
@@ -63,7 +60,7 @@ model:
   downsample_ratio: 1
   student:
     type: hist_beam_fusion
-    modalities: [image, gps, lidar, radar]
+    modalities: [image, gps, lidar]
     feature_size: 16
     d_model: 32
     num_classes: 64

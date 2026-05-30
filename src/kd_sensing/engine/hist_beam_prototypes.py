@@ -6,8 +6,14 @@ from typing import Any
 
 import torch
 
-from kd_sensing.engine.batch import prepare_path_descriptors, prepare_path_semantic_labels, prepare_radio_semantic_labels
+from kd_sensing.engine.batch import (
+    prepare_history_anchor_inputs,
+    prepare_path_descriptors,
+    prepare_path_semantic_labels,
+    prepare_radio_semantic_labels,
+)
 from kd_sensing.engine.hist_beam_labels import hist_beam_labels
+from kd_sensing.engine.hist_beam_residuals import history_anchor_enabled, num_delta_classes_from_config
 from kd_sensing.engine.runtime import run_model_step, transfer_non_blocking
 
 
@@ -65,6 +71,16 @@ def generate_source_prototypes(
     with torch.no_grad():
         for batch in dataloader:
             processed_batches += 1
+            history_kwargs = prepare_history_anchor_inputs(
+                batch,
+                num_pred=model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1)),
+                num_classes=num_delta_classes_from_config(cfg, default=num_classes),
+                downsample_ratio=model_cfg.get("downsample_ratio", 1),
+                device=device,
+                enabled=history_anchor_enabled(cfg),
+                include_residual_labels=False,
+                non_blocking=transfer_non_blocking(cfg),
+            )
             step = run_model_step(
                 model,
                 cfg["experiment"].get("task", "fusion"),
@@ -75,6 +91,7 @@ def generate_source_prototypes(
                 device=device,
                 downsample_ratio=model_cfg.get("downsample_ratio", 1),
                 non_blocking=transfer_non_blocking(cfg),
+                extra_model_kwargs=history_kwargs,
             )
             labels = step.labels
             if labels is None:

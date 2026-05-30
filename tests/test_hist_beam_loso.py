@@ -42,6 +42,7 @@ from kd_sensing.engine.hist_beam_loso_execution import (  # noqa: E402
     SOURCE_ONLY_VARIANTS,
     _few_shot_adaptation_loaders,
     _prototype_decision,
+    _stage_cfg,
     run_loso_execute_preflight,
     write_loso_execute_summary,
     write_quick_validation_conclusion,
@@ -935,8 +936,6 @@ def test_mmw_sensor_assisted_config_plan_and_forward_kwargs(tmp_path: Path):
             "image": torch.randn(2, seq_length, 3, 224, 224),
             "gps": torch.randn(2, seq_length, 3),
             "lidar": torch.randn(2, seq_length, 3, 224, 224),
-            "radar_ra": torch.randn(2, seq_length, 128, 64),
-            "radar_da": torch.randn(2, seq_length, 128, 64),
             "mmwave": torch.randn(2, seq_length, 64),
         },
         "fusion",
@@ -952,14 +951,15 @@ def test_mmw_sensor_assisted_config_plan_and_forward_kwargs(tmp_path: Path):
     assert cfg["data"]["dataset"]["num_pred"] == 3
     assert cfg["model"]["num_pred"] == 3
     assert num_pred == 3
-    assert enabled == ("image", "radar", "gps", "lidar")
+    assert enabled == ("image", "gps", "lidar")
+    assert "radar" not in enabled
     assert "mmwave" not in enabled
+    assert "radar_batch" not in inputs
     assert "mmwave_batch" not in inputs
-    assert set(inputs) >= {"image_batch", "gps_batch", "lidar_batch", "radar_batch"}
+    assert set(inputs) >= {"image_batch", "gps_batch", "lidar_batch"}
     assert inputs["image_batch"].shape[1] == seq_length + num_pred - 1
     assert inputs["gps_batch"].shape[1] == seq_length + num_pred - 1
     assert inputs["lidar_batch"].shape[1] == seq_length + num_pred - 1
-    assert inputs["radar_batch"].shape[1] == seq_length + num_pred - 1
     assert plan["profile"] == "sensor_assisted_quick_validation"
     assert plan["matrix"]["budgets"] == [10]
     assert plan["matrix"]["seeds"] == [0, 1]
@@ -972,13 +972,14 @@ def test_mmw_sensor_assisted_config_plan_and_forward_kwargs(tmp_path: Path):
     assert {"v3_decoupled", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v6_full_finetune"} <= {
         run["variant"] for run in plan["runs"]
     }
+    assert all("radar" not in run["enabled_modalities"] for run in plan["runs"])
     assert all("mmwave" not in run["enabled_modalities"] for run in plan["runs"])
 
 
 @pytest.mark.parametrize("variant", ["v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"])
 def test_hist_beam_sensor_assisted_variants_build(variant: str):
     model = HistBeamFusionNet(
-        modalities=["image", "gps", "lidar", "radar"],
+        modalities=["image", "gps", "lidar"],
         feature_size=8,
         d_model=16,
         num_classes=16,
@@ -994,7 +995,7 @@ def test_hist_beam_sensor_assisted_variants_build(variant: str):
         num_path_classes=12,
     )
 
-    assert model.modalities == ("image", "radar", "gps", "lidar")
+    assert model.modalities == ("image", "gps", "lidar")
     assert model.num_pred == 3
 
 
@@ -1007,7 +1008,7 @@ def test_sensor_assisted_summary_records_deltas_last_beam_and_v8_comparisons(tmp
         "seed": 0,
         "dataset_family": "MMW",
         "profile": "sensor_assisted_quick_validation",
-        "enabled_modalities": ["image", "radar", "gps", "lidar"],
+        "enabled_modalities": ["image", "gps", "lidar"],
         "excluded_sensitive_fields": ["mmwave", "csi", "channel", "path", "beam_power"],
         "matrix_scope": "quick_validation",
         "quick_validation": True,
@@ -1087,7 +1088,7 @@ def test_sensor_assisted_summary_records_deltas_last_beam_and_v8_comparisons(tmp
     assert v8["last_beam_avg_top1"] == pytest.approx(0.9)
     assert v8["last_beam_baseline_type"] == "diagnostic"
     assert v8["last_beam_comparable_baseline"] is False
-    assert v8["enabled_modalities"] == ["image", "radar", "gps", "lidar"]
+    assert v8["enabled_modalities"] == ["image", "gps", "lidar"]
     assert v8["lidar_cache_policy"] == "auto"
     assert v8["sensitive_field_usage"]["used_target_beam_power_for_training"] is False
     assert any(item["comparison"] == "v6_radio_vs_v8_path" and item["status"] == "complete" for item in conclusion["comparisons"])
@@ -1128,6 +1129,64 @@ def test_quick_validation_excludes_ineligible_candidate_from_win_loss(tmp_path: 
     assert conclusion["excluded_run_count"] == 1
     assert conclusion["exclusion_reason_histogram"]["target_radio_label_supervision"] == 1
     assert conclusion["excluded_runs"][0]["variant"] == "v4_adapter"
+
+
+def test_loso_summary_keeps_legacy_kd_baseline_supplemental(tmp_path: Path):
+    records = [
+        _quick_conclusion_record("v3_decoupled", source_top1=0.4),
+        _quick_conclusion_record(
+            "v4_adapter",
+            source_top1=0.4,
+            adapted_top1=0.9,
+            adaptation_metrics={
+                "distillation_enabled": True,
+                "method_family": "legacy_kd",
+                "distillation_type": "logits_kd",
+                "teacher_checkpoint": "outputs/scene31/fusion_teacher_no_kd/checkpoints/best.pth",
+                "teacher_source": "registry",
+                "distillation_lifecycle": "legacy_kd",
+                "baseline_role": "optional_baseline",
+                "reproduction_scope": "historical_reproduction",
+                "main_conclusion_eligible": False,
+            },
+        ),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    conclusion_path = write_quick_validation_conclusion(tmp_path, records, summary_paths["json"])
+    summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
+    conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
+
+    mainline = next(row for row in summary["runs"] if row["variant"] == "v3_decoupled")
+    legacy = next(row for row in summary["runs"] if row["variant"] == "v4_adapter")
+    comparison = next(
+        item
+        for item in conclusion["comparisons"]
+        if item["comparison"] == "adapter_vs_source_only" and item["candidate_variant"] == "v4_adapter"
+    )
+
+    assert mainline["method_family"] != "legacy_kd"
+    assert mainline["distillation_enabled"] is False
+    assert mainline["main_conclusion_eligible"] is True
+    assert legacy["method_family"] == "legacy_kd"
+    assert legacy["distillation_enabled"] is True
+    assert legacy["distillation_type"] == "logits_kd"
+    assert legacy["teacher_checkpoint"].endswith("best.pth")
+    assert legacy["teacher_source"] == "registry"
+    assert legacy["distillation_lifecycle"] == "legacy_kd"
+    assert legacy["baseline_role"] == "optional_baseline"
+    assert legacy["reproduction_scope"] == "historical_reproduction"
+    assert legacy["main_conclusion_eligible"] is False
+    assert "legacy_kd_supplemental" in legacy["eligibility_reasons"]
+    assert summary["eligible_run_count"] == 1
+    assert summary["excluded_run_count"] == 1
+    assert summary["exclusion_reason_histogram"]["legacy_kd_supplemental"] == 1
+    assert conclusion["excluded_run_count"] == 1
+    assert conclusion["exclusion_reason_histogram"]["legacy_kd_supplemental"] == 1
+    assert conclusion["excluded_runs"][0]["variant"] == "v4_adapter"
+    assert comparison["status"] == "inconclusive"
+    assert comparison["missing"][0]["reason"] == "run_excluded_from_main_conclusion"
+    assert "legacy_kd_supplemental" in comparison["missing"][0]["eligibility_reasons"]
 
 
 def test_quick_validation_excludes_ineligible_mmw_split_from_main_conclusion(tmp_path: Path):
@@ -1301,6 +1360,34 @@ def test_prototype_decision_skips_source_only_and_generates_for_proto_variants()
     assert "source_only_variant" in skipped["reason"]
     assert generated["generate"] is True
     assert "variant_requires_prototype" in generated["reason"]
+
+
+def test_hist_beam_stage_cfg_defaults_to_no_kd_lineage(tmp_path: Path):
+    cfg = load_config(ROOT / "configs/hist_beam/quick_smoke.yaml")
+    run = {
+        "fold": "target_scene34",
+        "target_scene": 34,
+        "source_scenes": [31, 32, 33],
+        "variant": "v5_adapter_proto",
+        "budget": 10,
+        "seed": 0,
+    }
+
+    for stage_name in ("source_train", "source_only_target_test_eval", "target_adaptation", "adapted_target_test_eval"):
+        stage_cfg = _stage_cfg(
+            cfg,
+            run,
+            variant="v5_adapter_proto",
+            stage_name=stage_name,
+            stage_dir=tmp_path / stage_name,
+        )
+        distillation = stage_cfg["distillation"]
+
+        assert distillation["type"] == "no_kd"
+        assert distillation["teacher_model_name"] is None
+        assert distillation["method_family"] == "mainline_no_kd"
+        assert distillation["lifecycle"] == "active_mainline_no_kd"
+        assert distillation["main_conclusion_eligible"] is True
 
 
 def test_hist_beam_loso_execute_uses_runner_and_records_stage_metadata(tmp_path: Path):
@@ -1563,7 +1650,7 @@ def _quick_conclusion_record(
         "seed": 0,
         "dataset_family": "MMW",
         "profile": "sensor_assisted_quick_validation",
-        "enabled_modalities": ["image", "radar", "gps", "lidar"],
+        "enabled_modalities": ["image", "gps", "lidar"],
         "excluded_sensitive_fields": ["mmwave", "csi", "channel", "path", "beam_power"],
         "matrix_scope": "quick_validation",
         "quick_validation": True,

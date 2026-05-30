@@ -10,7 +10,9 @@ from kd_sensing.config.canonical import SNAPSHOT_VARIANT
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.engine.data_factory import build_dataloader_kwargs, resolve_dataloader_split_config
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_metadata_from_loader
+from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.evaluation.lidar_diagnostics import (
     lidar_preprocessing_metadata_from_config,
     lidar_preprocessing_metadata_from_dataset,
@@ -160,7 +162,14 @@ def prediction_setup_metadata(
         "train_csv_name": dataset_cfg.get("train_csv_name"),
         "validation_csv_name": dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name"),
         "test_csv_name": dataset_cfg.get("test_csv_name"),
+        **history_anchor_run_metadata(cfg),
     }
+    lineage = run_lineage_metadata(cfg)
+    metadata["lineage"] = lineage
+    metadata["distillation_enabled"] = lineage["distillation_enabled"]
+    metadata["method_family"] = lineage["method_family"]
+    metadata["distillation_type"] = lineage["distillation_type"]
+    metadata["main_conclusion_eligible"] = lineage["main_conclusion_eligible"]
     if dataset_cfg.get("type") == "raymobtime_s008":
         metadata["variant"] = "raymobtime_s008_current_snapshot"
         metadata["task_semantics"] = "current_snapshot_beam_selection"
@@ -238,6 +247,7 @@ def throughput_run_metadata(
             "enabled": bool(cfg.get("output", {}).get("progress", {}).get("enabled", True)),
         },
         "cache": cache_run_metadata(cfg, dataloaders),
+        **history_anchor_run_metadata(cfg),
     }
     if train_subsampling:
         metadata["epoch_subsampling"] = {"train": train_subsampling}

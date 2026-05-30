@@ -7,6 +7,7 @@ import torch
 
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
+from kd_sensing.engine.run_lineage import distillation_enabled
 from kd_sensing.engine.runtime import (
     autocast_context,
     prepare_task_auxiliary_targets,
@@ -121,6 +122,7 @@ class BatchStepRunner:
                 device=context.device,
                 non_blocking=context.non_blocking,
                 force_modality_mask=controls.force_modality_mask,
+                extra_model_kwargs=controls.model_kwargs,
             )
             student_model_output = student_step.model_output
             student_outputs = student_step.logits
@@ -159,6 +161,8 @@ class BatchStepRunner:
                 "beam_soft": student_outputs.sum() * 0.0,
                 "unimodal": student_outputs.sum() * 0.0,
             }
+            if "loss/beam_soft_target" in scalar_diagnostics:
+                extra_loss_values["beam_soft"] = task_loss
             for extension, state in zip(self.extensions, self.extension_states):
                 bundle = extension.after_forward(context, state, batch_state)
                 if bundle is None:
@@ -227,6 +231,30 @@ class BatchStepRunner:
         if base_loss is not None:
             return base_loss
 
+        if not distillation_enabled(self.cfg):
+            student_logits = student_outputs.reshape(-1, context.num_classes)
+            targets = labels.flatten()
+            soft_targets = (
+                batch_state.soft_beam_targets.reshape(-1, context.num_classes)
+                if batch_state.soft_beam_targets is not None
+                else None
+            )
+            task_loss = context.task_criterion(student_logits, soft_targets if soft_targets is not None else targets)
+            distill_loss = student_outputs.sum() * 0.0
+            diagnostics = {}
+            if soft_targets is not None:
+                diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
+            return BaseLossResult(
+                total_loss=task_loss,
+                task_loss=task_loss,
+                distill_loss=distill_loss,
+                teacher_diagnostics={},
+                diagnostics=diagnostics,
+            )
+
+        if context.distiller is None:
+            raise RuntimeError("Explicit KD training requires a distiller instance.")
+
         if context.teacher_model is not None:
             with torch.no_grad():
                 set_csi_debug_batch_source(context.teacher_model, "train")
@@ -239,6 +267,7 @@ class BatchStepRunner:
                     num_pred=context.num_pred,
                     device=context.device,
                     non_blocking=context.non_blocking,
+                    extra_model_kwargs=batch_state.controls.model_kwargs,
                 )
                 teacher_model_output = teacher_step.model_output
                 teacher_outputs = teacher_step.logits
@@ -246,12 +275,7 @@ class BatchStepRunner:
                 teacher_out_features = teacher_model_output.output_features
                 teacher_diagnostics = teacher_model_output.diagnostics
         else:
-            teacher_outputs, teacher_input_features, teacher_out_features = dummy_teacher(
-                student_outputs,
-                student_input_features,
-                student_out_features,
-            )
-            teacher_diagnostics = {}
+            raise RuntimeError("Explicit KD training requires a frozen teacher model.")
         batch_state.teacher_logits = teacher_outputs
         batch_state.teacher_input_features = teacher_input_features
         batch_state.teacher_output_features = teacher_out_features
@@ -295,11 +319,15 @@ class BatchStepRunner:
             current_alpha,
             soft_targets=soft_targets,
         )
+        diagnostics = {"loss/distillation": float(distill_loss.detach().cpu().item())}
+        if soft_targets is not None:
+            diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
         return BaseLossResult(
             total_loss=total_loss,
             task_loss=task_loss,
             distill_loss=distill_loss,
             teacher_diagnostics=teacher_diagnostics,
+            diagnostics=diagnostics,
         )
 
     def _backward_and_step(self, total_loss: torch.Tensor, batch_state: BatchState) -> None:

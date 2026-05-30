@@ -713,6 +713,43 @@ def test_training_orchestration_helpers_own_runtime_details():
         assert snippet in (SRC / "kd_sensing" / "engine" / module).read_text(encoding="utf-8")
 
 
+def test_active_mainline_modules_do_not_import_legacy_kd_runtime_aggregate():
+    active_modules = [
+        "src/kd_sensing/engine/batch_step.py",
+        "src/kd_sensing/engine/evaluation_pass.py",
+        "src/kd_sensing/engine/evaluator.py",
+        "src/kd_sensing/engine/validator.py",
+        "src/kd_sensing/engine/hist_beam_adaptation.py",
+        "src/kd_sensing/engine/hist_beam_history_anchor.py",
+        "src/kd_sensing/engine/hist_beam_loso_execution.py",
+        "src/kd_sensing/engine/hist_beam_loso_summary.py",
+        "src/kd_sensing/engine/hist_beam_losses.py",
+        "src/kd_sensing/engine/hist_beam_prototypes.py",
+        "src/kd_sensing/engine/hist_beam_training.py",
+        "src/kd_sensing/engine/objectives/history.py",
+        "src/kd_sensing/engine/run_metadata.py",
+        "src/kd_sensing/engine/training_extensions.py",
+    ]
+    forbidden_snippets = (
+        "from kd_sensing.distillation.distillers import",
+        "import kd_sensing.distillation.distillers",
+        "from kd_sensing.distillation import KnowledgeDistillationLoss",
+        "DISTILLERS.build(",
+    )
+    violations = []
+
+    for rel_path in active_modules:
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        for snippet in forbidden_snippets:
+            if snippet in text:
+                violations.append(
+                    f"{rel_path} imports legacy KD runtime '{snippet}'; "
+                    "use the no-KD objective/method extension path or the explicit legacy builder in engine.optim."
+                )
+
+    assert violations == []
+
+
 def test_config_io_pipeline_delegates_business_rules():
     io_text = (SRC / "kd_sensing" / "config" / "io.py").read_text(encoding="utf-8")
     helper_expectations = {

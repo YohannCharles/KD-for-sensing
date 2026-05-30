@@ -12,6 +12,8 @@ def row_eligibility(
     reasons = list(adaptation_metrics.get("eligibility_reasons", []) or [])
     if bool(adaptation_metrics.get("main_conclusion_eligible", True)) is False:
         reasons.append("run_marked_ineligible")
+    if bool(row.get("distillation_enabled", False)) or str(row.get("method_family", "")) == "legacy_kd":
+        reasons.append("legacy_kd_supplemental")
     if row.get("run_status") != "completed":
         reasons.append("run_not_completed")
 

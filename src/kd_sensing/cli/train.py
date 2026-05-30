@@ -7,7 +7,7 @@ from kd_sensing.engine.trainer import train
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train a KD sensing model from a YAML config.")
+    parser = argparse.ArgumentParser(description="Train a sensing or beam prediction model from a YAML config.")
     parser.add_argument("--config", "-c", required=True, help="Path to a YAML config file.")
     parser.add_argument(
         "--override",

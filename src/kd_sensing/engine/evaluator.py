@@ -6,6 +6,7 @@ import torch
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
+from kd_sensing.engine.hist_beam_history_anchor import apply_history_anchor_model_config
 from kd_sensing.engine.modality_resolution import (
     config_uses_csi,
     config_uses_gps,
@@ -24,6 +25,7 @@ from kd_sensing.engine.objectives.metadata import (
     objective_runtime_metadata,
 )
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
+from kd_sensing.engine.run_lineage import ensure_distillation_defaults, run_lineage_metadata
 from kd_sensing.engine.run_status import (
     write_complete_status,
     write_failed_status_for_active_run,
@@ -51,6 +53,8 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
 def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | None = None) -> dict:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
+    ensure_distillation_defaults(cfg)
+    apply_history_anchor_model_config(cfg)
     device = build_device(cfg)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)
     write_running_status(run_dir, cfg, kind="evaluation")
@@ -115,6 +119,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
         normalization_artifacts = checkpoint_resolution.metadata.get("normalization_artifacts", {})
     throughput_metadata = throughput_run_metadata(cfg, device=device)
     prediction_setup = prediction_setup_metadata(cfg, split_metadata=split_metadata)
+    lineage = run_lineage_metadata(cfg)
     dump_config(
         final_config_with_runtime(
             cfg,
@@ -166,6 +171,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             "prediction_objective": objective_runtime_metadata(cfg),
             "prediction_setup": prediction_setup,
             "enabled_modalities": list(enabled_modalities),
+            "lineage": lineage,
         },
     }
     with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
