@@ -1271,23 +1271,28 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 检查 MUST 不读取真实数据集、不加载 checkpoint、不启动训练
 
 ### Requirement: 推荐实验文档保持精简入口
-实验工作流文档 MUST 将 README 作为入口地图，而不是完整实验手册。README MUST 指向 canonical config、docs 和 OpenSpec；详细实验矩阵、分析流程和调参说明 MUST 放在 `docs/` 或对应 specs 中。
+实验工作流文档 MUST 将 README 作为入口地图，而不是完整实验手册。README MUST 指向 canonical config、docs 和 OpenSpec；详细实验矩阵、分析流程和调参说明 MUST 放在 `docs/` 或对应 specs 中。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 内容 MUST 从 README 推荐入口和实验矩阵中删除。
 
 #### Scenario: README 提供最短可运行路径
 - **WHEN** 新用户阅读 README
 - **THEN** 用户 MUST 能找到安装命令、快速健康检查、训练/评估/预处理/manifest 导出入口和数据产物边界
-- **AND** 用户 MUST 能通过链接进入详细实验矩阵或 viewer 文档
+- **AND** 用户 MUST 能通过链接进入当前保留能力的详细实验矩阵或 viewer 文档
 
 #### Scenario: 长实验说明迁移到 docs
-- **WHEN** README 中的某段内容主要描述 CSI hardening、viewer 或 Raymobtime 的详细实验流程
+- **WHEN** README 中的某段内容主要描述当前保留的 CSI hardening、viewer、Raymobtime 或 MMW 详细实验流程
 - **THEN** 该内容 MUST 迁移到对应 `docs/` 文件或 OpenSpec spec
 - **AND** README MUST 保留简短摘要和链接
 
+#### Scenario: 退役研究线文档删除
+- **WHEN** README、docs 或实验矩阵提到 G2D、CRAF、MARF 或 Multimodal-NF 推荐运行命令
+- **THEN** 这些段落 MUST 被删除或改为明确说明该入口已退役
+- **AND** 文档 MUST 不再推荐运行对应配置、测试或日志分析流程
+
 ### Requirement: 表面积收敛保持实验 artifact 兼容
-删除冗余配置、入口或文档后，训练和评估 workflow MUST 继续保存完整运行 artifact。使用 virtual/overlay 配置时，运行目录 MUST 记录足够信息用于复现，不得要求用户恢复已删除的实体 YAML。
+删除冗余配置、入口或文档后，当前保留的训练和评估 workflow MUST 继续保存完整运行 artifact。使用保留的 virtual/overlay 配置时，运行目录 MUST 记录足够信息用于复现，不得要求用户恢复已删除的实体 YAML。已退役的 CRAF、MARF、G2D 和 Multimodal-NF 配置不得由 virtual alias 接管。
 
 #### Scenario: virtual 配置训练 artifact 完整
-- **WHEN** 用户使用 virtual/overlay 配置启动训练并完成 artifact 写出
+- **WHEN** 用户使用当前保留的 virtual/overlay 配置启动训练并完成 artifact 写出
 - **THEN** 运行目录 MUST 包含完整 `final_config.yaml`、`resolved_config.yaml`、`train_log.json`、checkpoint metadata 和 split/runtime metadata
 - **AND** 这些 artifact MUST 足以说明实际模型、数据、loss、训练参数和 checkpoint 来源
 
@@ -1300,6 +1305,11 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **WHEN** 保留的研究脚本未声明为包内 CLI
 - **THEN** 核心训练、评估、预处理和 manifest 导出 workflow MUST 不依赖该脚本
 - **AND** 该脚本的输出产物 MUST 继续位于 `.gitignore` 覆盖路径或显式本地输出目录
+
+#### Scenario: 退役配置不被兼容接管
+- **WHEN** 用户引用已删除的 CRAF、MARF、G2D 或 Multimodal-NF 配置路径
+- **THEN** 配置加载器 MUST 给出清晰缺失或退役错误
+- **AND** 系统 MUST 不生成同名 virtual 配置
 
 ### Requirement: 源码表面积优化必须保持核心 workflow 兼容
 删除冗余配置、拆分源码模块或收敛入口后，训练、评估、预处理、viewer manifest 导出和研究诊断的公开工作流 MUST 保持现有用户可见语义。实现 MAY 调整内部模块位置，但 MUST 不要求用户改用未记录的新命令。
@@ -1315,17 +1325,22 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 内部模块重命名 MUST 不要求用户修改配置文件中的公共字段
 
 ### Requirement: 删除实体配置后 workflow 必须可复现
-当实体 YAML 被 recipe/overlay 替代后，训练和评估 workflow MUST 继续保存足够的 resolved/final 配置、运行元数据和 checkpoint 来源信息，保证不恢复被删除 YAML 也能理解实际运行参数。
+当当前保留的实体 YAML 被 recipe/overlay 替代后，训练和评估 workflow MUST 继续保存足够的 resolved/final 配置、运行元数据和 checkpoint 来源信息，保证不恢复被删除 YAML 也能理解实际运行参数。已退役的 CRAF、MARF、G2D 和 Multimodal-NF 实体 YAML 删除后 MUST 不提供同名 recipe/overlay 兼容。
 
 #### Scenario: virtual 配置训练记录完整
-- **WHEN** 用户使用 virtual/overlay 配置完成训练或 dry-run artifact 写出
+- **WHEN** 用户使用当前保留的 virtual/overlay 配置完成训练或 dry-run artifact 写出
 - **THEN** 运行目录 MUST 包含完整 `final_config.yaml`、`resolved_config.yaml`、训练元数据和 checkpoint 来源信息
 - **AND** 这些 artifact MUST 能说明实际模型、数据、loss、训练参数和输出 run name
 
 #### Scenario: 删除 YAML 不影响评估入口
-- **WHEN** 某个实体 YAML 被删除但对应 virtual/overlay 配置仍被声明支持
+- **WHEN** 某个当前保留的实体 YAML 被删除但对应 virtual/overlay 配置仍被声明支持
 - **THEN** `kd-sensing-evaluate --config <deleted-yaml-path>` MUST 通过配置加载器解析等价最终配置
 - **AND** 如果该路径未被声明支持，系统 MUST 抛出清晰缺失配置错误
+
+#### Scenario: 退役 YAML 不支持 virtual fallback
+- **WHEN** 被删除 YAML 属于 CRAF、MARF、G2D 或 Multimodal-NF
+- **THEN** 系统 MUST 将其视为不支持路径
+- **AND** 系统 MUST 不为其提供 virtual fallback
 
 ### Requirement: 入口收敛不得让研究脚本成为核心依赖
 保留的 `scripts/`、`tools/analysis/` 和 `tools/visualization/` 研究或支持脚本 MUST 不成为核心训练、评估、预处理或 manifest 导出 workflow 的必需依赖。核心 workflow MUST 通过包内模块、console script 或明确保留的薄 alias 完成。

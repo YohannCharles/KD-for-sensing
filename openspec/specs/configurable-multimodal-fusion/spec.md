@@ -327,6 +327,11 @@ Fusion 模型构建 MUST 校验启用 image modality 时的 image encoder 和 im
 - **THEN** 系统 MUST 构建或运行该配置
 - **AND** image batch MUST 具有 3 通道 RGB/ImageNet 输入
 
+#### Scenario: 已退役 fusion 方法不参与 profile 校验
+- **WHEN** 配置请求 CRAF 或 MARF 风格 fusion
+- **THEN** 系统 MUST 在 profile 校验前拒绝该模型类型
+- **AND** 系统 MUST 不进入 CRAF/MARF 专属 image branch 构建逻辑
+
 ### Requirement: Modular fusion 复用现有模态选择语义
 新的模块化 fusion 入口 MUST 复用现有 `modalities` 校验、固定模态顺序和 batch 输入字段语义。未启用的模态 MUST 不被 dataset、batch 准备、encoder 或 core 要求存在。
 
@@ -359,6 +364,10 @@ Fusion 模型构建 MUST 校验启用 image modality 时的 image encoder 和 im
 - **WHEN** 用户加载显式 early-concat、legacy fusion 或模块化 `early_concat_gru` 配置
 - **THEN** 系统 MUST 保持该配置声明的模型类型和 representation core
 - **AND** 系统 MUST 不将其静默改写为 `cls_token_transformer_fusion`
+
+#### Scenario: 已退役方法不被默认配置保留
+- **WHEN** 用户查找默认或高级 fusion no-KD 推荐入口
+- **THEN** 项目 MUST 不再提供 CRAF、MARF、G2D 或其 ablation 配置作为推荐入口
 
 ### Requirement: CLS-token Transformer 配置复用 fusion 数据字段
 CLS-token Transformer fusion 配置 MUST 复用现有 fusion 数据字段和模态启用语义。启用 GPS、LiDAR 或 mmWave 时，配置 MUST 使用与其它 fusion 配置一致的数据字段、归一化和输入准备逻辑。

@@ -189,55 +189,40 @@
 - **AND** batch 准备 MUST 不要求 `coord` 或 `ray` 字段
 
 ### Requirement: 模态 profile 契约
-中心化模态契约 MUST 支持 dataset-specific input profile，用于在不新增模态名称的情况下表达同一模态在不同数据集中的输入语义、shape、默认字段和 batch 准备规则。profile 标准化 MUST 拒绝未知 profile，并 MUST 保持未配置旧 profile 时的既有行为。
+中心化模态契约 MUST 支持当前保留 dataset-specific input profile，用于在不新增模态名称的情况下表达同一模态在不同数据集中的输入语义、shape、默认字段和 batch 准备规则。profile 标准化 MUST 拒绝未知 profile，并 MUST 保持未配置旧 profile 时的既有行为。Multimodal-NF 专属 `uav_xyz_snapshot`、`xl_mimo_nf` 和 `point_cloud_xyz_10000` profiles MUST 不再作为支持 profile 保留。
 
-#### Scenario: 查询 GPS relative-polar profile
-- **WHEN** 开发者查询 `gps` 模态的 `relative_polar_history` profile
-- **THEN** 系统 MUST 返回 sample key `gps`
-- **AND** 系统 MUST 返回 fusion input key `gps_batch`
-- **AND** 系统 MUST 返回输入语义为 DeepSense6G 历史 relative-polar GPS features `[T, 3]`
+#### Scenario: DeepSense/MMW/Raymobtime profile 保留
+- **WHEN** 开发者查询当前保留数据集的 image、GPS、LiDAR、mmWave、CSI、coord 或 ray profile
+- **THEN** 系统 MUST 返回对应 sample key、fusion input key 和输入语义
+- **AND** 查询 MUST 不要求 Multimodal-NF profile 存在
 
-#### Scenario: 查询 CSI pilot dual-view profile
-- **WHEN** 开发者查询 `csi` 模态的 `pilot_dual_view` profile
-- **THEN** 系统 MUST 返回 sample key `csi`
-- **AND** 系统 MUST 返回 fusion input key `csi_batch`
-- **AND** 系统 MUST 返回输入语义为项目保留 CSI encoder 使用的 `[T, Nsc, Nant, 2]` 复数实虚部 layout
-
-#### Scenario: 查询 LiDAR profile
-- **WHEN** 开发者查询 `lidar` 模态的 `bev_projection` 或 `occupancy_grid_3d` profile
-- **THEN** 系统 MUST 返回 sample key `lidar`
-- **AND** 系统 MUST 返回对应 fusion input key `lidar_batch`
-- **AND** DeepSense6G BEV 和 Raymobtime 3D occupancy grid 行为 MUST 继续通过各自 profile 或既有配置保留
+#### Scenario: Multimodal-NF profile 被拒绝
+- **WHEN** 用户配置 `uav_xyz_snapshot`、`xl_mimo_nf` 或 `point_cloud_xyz_10000`
+- **THEN** 系统 MUST 拒绝该 profile 或因 dataset type 已退役而失败
+- **AND** 错误信息 MUST 包含 profile 名称和当前可用 profile 列表
 
 ### Requirement: profile 列表标准化
-系统 MUST 能基于 dataset descriptor 和用户配置标准化启用模态对应的 input profiles。标准化 MUST 在 metadata 中记录每个模态的 resolved profile。
+系统 MUST 能基于当前保留 dataset descriptor 和用户配置标准化启用模态对应的 input profiles。标准化 MUST 在 metadata 中记录每个模态的 resolved profile。系统 MUST 不再为 `data.dataset.type: multimodal_nf` 解析默认 profile。
 
-#### Scenario: 当前数据集默认 profile
-- **WHEN** 用户配置当前支持的 DeepSense6G、MMW 或 Raymobtime dataset 并启用其支持模态
-- **THEN** 系统 MUST 将 image profile 解析为 `rgb_imagenet`
-- **AND** 系统 MUST 将 GPS、LiDAR、CSI、coord 或 ray profile 解析为对应 dataset descriptor 声明的默认 profile
+#### Scenario: 保留 dataset 默认 profile
+- **WHEN** 用户配置当前保留 dataset 并启用多个模态
+- **THEN** 系统 MUST 解析这些模态在该 dataset 下的默认或显式 profile
+- **AND** metadata MUST 记录 resolved profile
 
-#### Scenario: 拒绝未知 profile
-- **WHEN** 用户为当前支持 dataset 配置未知 input profile
-- **THEN** 系统 MUST 拒绝该配置
-- **AND** 错误信息 MUST 包含未知 profile、模态名和可用 profile 列表
+#### Scenario: Multimodal-NF 默认 profile 删除
+- **WHEN** 用户配置 `data.dataset.type: multimodal_nf`
+- **THEN** 系统 MUST 不解析 image/lidar/gps/csi 的 Multimodal-NF 默认 profile
+- **AND** 系统 MUST 报告该 dataset type 已退役
 
 ### Requirement: profile 驱动 batch 输入准备
-训练、验证、评估和诊断路径 MUST 使用标准化后的 input profile 决定 batch shape 校验和必要转换。新增 profile 时，系统 MUST 不要求在每个训练循环复制 dataset-specific 分支。
+训练、验证、评估和诊断路径 MUST 使用标准化后的当前保留 input profile 决定 batch shape 校验和必要转换。新增 profile 时，系统 MUST 不要求在每个训练循环复制 dataset-specific 分支。Multimodal-NF CSI 和 LiDAR 点云 batch 准备不再作为支持路径。
 
-#### Scenario: 准备 CSI batch
-- **WHEN** batch 包含 `csi` profile `pilot_dual_view`
-- **THEN** runtime MUST 构造 `csi_batch`
-- **AND** `csi_batch` MUST 保留 `[B, T, Nsc, Nant, 2]` 或模型配置声明的等价 channel tensor 语义
-- **AND** 缺失 `csi` 字段时 MUST 报出包含 profile 和模态名的清晰错误
+#### Scenario: 保留 profile batch 输入
+- **WHEN** batch 包含当前保留 profile 的模态字段
+- **THEN** runtime MUST 构造对应 input batch
+- **AND** shape 校验和缺失字段错误 MUST 使用该 profile 的语义
 
-#### Scenario: 准备 LiDAR batch
-- **WHEN** batch 包含当前支持的 LiDAR profile
-- **THEN** runtime MUST 构造 `lidar_batch`
-- **AND** `lidar_batch` MUST 保留 `[B, T, C, H, W]` BEV 或 `[B, T, C, D, H, W]` occupancy grid 语义
-- **AND** 模型 MUST 只接受其 encoder 支持的 LiDAR profile
-
-#### Scenario: 旧配置不启用新 profile
-- **WHEN** 用户加载现有 DeepSense6G、MMW、Raymobtime 或 CSI 配置
-- **THEN** 系统 MUST 不自动设置未由对应 dataset descriptor 声明的 profile
-- **AND** 旧配置的样本字段和 batch 输入准备 MUST 保持兼容
+#### Scenario: Multimodal-NF batch 输入删除
+- **WHEN** batch 或配置请求 Multimodal-NF `xl_mimo_nf` CSI batch 或 `point_cloud_xyz_10000` LiDAR batch
+- **THEN** runtime MUST 不构造这些 batch 输入
+- **AND** 系统 MUST 报告 profile 或 dataset type 不受支持

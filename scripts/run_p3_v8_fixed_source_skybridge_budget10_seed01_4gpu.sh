@@ -31,7 +31,15 @@ TORCH_INTER_THREADS="${TORCH_INTER_THREADS:-1}"
 OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 AMP_ENABLED="${AMP_ENABLED:-true}"
-AMP_DTYPE="${AMP_DTYPE:-float16}"
+AMP_DTYPE="${AMP_DTYPE:-bfloat16}"
+AMP_GRAD_SCALER="${AMP_GRAD_SCALER:-}"
+if [[ -z "$AMP_GRAD_SCALER" ]]; then
+  if [[ "$AMP_DTYPE" == "float16" ]]; then
+    AMP_GRAD_SCALER="true"
+  else
+    AMP_GRAD_SCALER="false"
+  fi
+fi
 CACHE_POLICY="${CACHE_POLICY:-read_only}"
 OVERWRITE="${OVERWRITE:-1}"
 
@@ -54,6 +62,8 @@ Usage:
   TRAIN_BATCH_SIZE=32
   TEST_BATCH_SIZE=64
   NUM_WORKERS=4
+  AMP_DTYPE=bfloat16
+  AMP_GRAD_SCALER=false
   CACHE_POLICY=read_only
   OUTPUT_ROOT=outputs/p3_v8_fixed_source_skybridge_budget10_seed01_20ep
 EOF
@@ -120,7 +130,7 @@ run_shard() {
     -o "training.transfer.non_blocking=true"
     -o "training.amp.enabled=$AMP_ENABLED"
     -o "training.amp.dtype=$AMP_DTYPE"
-    -o "training.amp.grad_scaler=true"
+    -o "training.amp.grad_scaler=$AMP_GRAD_SCALER"
     -o "training.cpu_threads.enabled=true"
     -o "training.cpu_threads.intra_op=$TORCH_INTRA_THREADS"
     -o "training.cpu_threads.inter_op=$TORCH_INTER_THREADS"
@@ -173,7 +183,7 @@ log "P3 fixed-source 4-GPU scheduler started"
 log "LOG_DIR=$LOG_DIR"
 log "OUTPUT_ROOT=$OUTPUT_ROOT"
 log "SOURCE_SCENE=$SOURCE_SCENE TARGETS=${TARGET_SCENES[*]} SEEDS=${SEEDS[*]} BUDGET=$BUDGET"
-log "GPU_IDS=${GPU_LIST[*]} SOURCE_EPOCHS=$SOURCE_EPOCHS TRAIN_BATCH_SIZE=$TRAIN_BATCH_SIZE TEST_BATCH_SIZE=$TEST_BATCH_SIZE NUM_WORKERS=$NUM_WORKERS AMP=$AMP_ENABLED/$AMP_DTYPE CACHE_POLICY=$CACHE_POLICY"
+log "GPU_IDS=${GPU_LIST[*]} SOURCE_EPOCHS=$SOURCE_EPOCHS TRAIN_BATCH_SIZE=$TRAIN_BATCH_SIZE TEST_BATCH_SIZE=$TEST_BATCH_SIZE NUM_WORKERS=$NUM_WORKERS AMP=$AMP_ENABLED/$AMP_DTYPE grad_scaler=$AMP_GRAD_SCALER CACHE_POLICY=$CACHE_POLICY"
 
 declare -a PIDS=()
 failed=0

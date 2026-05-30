@@ -325,23 +325,27 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 具体配置、数据集、采样、统计、渲染和写出逻辑 MUST 能在对应子模块中找到主要实现
 
 ### Requirement: 架构增长回归检查
-项目 MUST 提供快速架构回归检查，用于发现训练方法逻辑重新堆入 `trainer.py`、诊断可视化重新堆入 `core.py`、或内部代码重新依赖二级兼容聚合层的问题。该检查 MUST 可在不启动真实训练的情况下运行，并 MUST 使用 `kd_mm_beam` 环境。
+项目 MUST 提供快速架构回归检查，用于发现训练方法逻辑重新堆入 `trainer.py`、诊断可视化重新堆入 `core.py`、或内部代码重新依赖二级兼容聚合层的问题。该检查 MUST 可在不启动真实训练的情况下运行，并 MUST 使用 `kd_mm_beam` 环境。检查 MUST 同时防止已退役的 G2D、CRAF、MARF 和 Multimodal-NF 模块重新进入 active code path。
 
 #### Scenario: 检查训练主循环扩张
 - **WHEN** 开发者运行架构边界测试
 - **THEN** 测试 MUST 验证新增训练方法主要通过扩展模块接入
-- **AND** 测试 MUST 防止 `trainer.py` 新增 G2D、CRAF、MARF 等方法特有的大段私有 helper
+- **AND** 测试 MUST 防止 `trainer.py` 新增退役 G2D、CRAF、MARF 等方法特有的大段私有 helper
 
 #### Scenario: 检查诊断 core 聚合回退
 - **WHEN** 开发者运行架构边界测试
 - **THEN** 测试 MUST 验证诊断可视化主要实现位于 config、datasets、sampling、stats、render 和 writers 子模块
 - **AND** 测试 MUST 防止 `diagnostics.visualization.core` 再次成为主要实现聚合文件
 
+#### Scenario: 检查退役模块残留
+- **WHEN** 开发者运行架构边界测试
+- **THEN** 测试 MUST 验证 active import、registry 和配置推荐面不再引用 G2D、CRAF、MARF 或 Multimodal-NF
+- **AND** 测试 MUST 不要求这些退役模块可导入
+
 #### Scenario: 快速检查命令可运行
 - **WHEN** 开发者执行项目记录的快速架构检查命令
 - **THEN** 命令 MUST 在不读取真实数据集、不加载 checkpoint、不启动训练的情况下完成
 - **AND** 命令 MUST 能在全量 pytest 前暴露架构边界回归
-
 ### Requirement: 兼容冗余入口已删除
 项目 MUST 删除已经迁移到 canonical 模块的兼容入口。源码、测试、文档和推荐命令 MUST 不再依赖 `the builder facade module`、`the transform facade module`、`the transform aggregate module`、场景专用 dataset 兼容模块或复制旧实现的可视化脚本入口。明确保留的 console-script 兼容入口 MUST 作为薄 alias 存在，并 MUST 指向当前包内主实现。
 

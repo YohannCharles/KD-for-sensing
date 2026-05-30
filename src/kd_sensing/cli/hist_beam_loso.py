@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     result = run_main(argv)
     print(json.dumps(result, indent=2))
-    return 0
+    return _exit_code_for_result(result)
 
 
 def run_main(argv: list[str] | None = None) -> dict[str, Any]:
@@ -152,6 +152,13 @@ def run_hist_beam_loso(
             plan_path=plan_path,
         )
     return payload
+
+
+def _exit_code_for_result(result: dict[str, Any]) -> int:
+    execution = result.get("execution") if isinstance(result, dict) else None
+    if isinstance(execution, dict) and execution.get("status") in {"failed", "partial_failed"}:
+        return 1
+    return 0
 
 
 def build_loso_run_plan(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,9 @@ def materialize_mmw_radar_split_csv(
             f"MMW split CSV is missing: {source}. Prepare sequence splits with "
             "conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.py."
         )
+    target = Path(output_path) if output_path is not None else source.with_name(f"{source.stem}_with_radar{source.suffix}")
+    if not target.is_absolute():
+        target = root / target
     frame = pd.read_csv(source, na_values="").fillna("")
     radar_cols = _numbered_columns(frame.columns, "radar")
     beam_cols = _numbered_columns(frame.columns, "beam")
@@ -101,38 +105,41 @@ def materialize_mmw_radar_split_csv(
         output = frame
         created = False
     else:
-        if not beam_cols:
-            raise ValueError(f"Cannot materialize radar columns for {source}; no beamN columns were found.")
-        target = Path(output_path) if output_path is not None else source.with_name(f"{source.stem}_with_radar{source.suffix}")
-        if not target.is_absolute():
-            target = root / target
-        output = frame.copy()
-        missing = []
-        for beam_col in beam_cols:
-            suffix = beam_col[len("beam") :]
-            values = []
-            for value in output[beam_col].tolist():
-                rel_path = _radar_rel_path_for_beam(value, str(scene))
-                values.append(rel_path)
-                ra_path = root / rel_path
-                da_path = root / rel_path.replace("_RA", "_DA")
-                if not ra_path.exists():
-                    missing.append(str(ra_path))
-                if not da_path.exists():
-                    missing.append(str(da_path))
-            output[f"radar{suffix}"] = values
-        if missing and require_maps:
-            examples = ", ".join(missing[:4])
-            raise FileNotFoundError(
-                "MMW radar split CSV cannot be materialized because prepared radar map artifacts are missing. "
-                f"scene={scene}; source_csv={source}; target_output={target}; missing_count={len(missing)}; "
-                f"examples={examples}. Run: {MMW_RADAR_PREPARATION_COMMAND} "
-                f"(ensure preprocessing.scenes contains {scene} and data_root={root})."
-            )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        output.to_csv(target, index=False)
-        created = True
-        radar_cols = _numbered_columns(output.columns, "radar")
+        existing = _valid_materialized_radar_csv(target)
+        if existing is not None:
+            output = existing
+            radar_cols = _numbered_columns(output.columns, "radar")
+            created = False
+        else:
+            if not beam_cols:
+                raise ValueError(f"Cannot materialize radar columns for {source}; no beamN columns were found.")
+            output = frame.copy()
+            missing = []
+            for beam_col in beam_cols:
+                suffix = beam_col[len("beam") :]
+                values = []
+                for value in output[beam_col].tolist():
+                    rel_path = _radar_rel_path_for_beam(value, str(scene))
+                    values.append(rel_path)
+                    ra_path = root / rel_path
+                    da_path = root / rel_path.replace("_RA", "_DA")
+                    if not ra_path.exists():
+                        missing.append(str(ra_path))
+                    if not da_path.exists():
+                        missing.append(str(da_path))
+                output[f"radar{suffix}"] = values
+            if missing and require_maps:
+                examples = ", ".join(missing[:4])
+                raise FileNotFoundError(
+                    "MMW radar split CSV cannot be materialized because prepared radar map artifacts are missing. "
+                    f"scene={scene}; source_csv={source}; target_output={target}; missing_count={len(missing)}; "
+                    f"examples={examples}. Run: {MMW_RADAR_PREPARATION_COMMAND} "
+                    f"(ensure preprocessing.scenes contains {scene} and data_root={root})."
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_csv(output, target)
+            created = True
+            radar_cols = _numbered_columns(output.columns, "radar")
     metadata_path = target.with_name(f"{target.stem}_metadata.json")
     split_metadata_path = source.parent / "split_metadata.json"
     metadata = {
@@ -156,13 +163,43 @@ def materialize_mmw_radar_split_csv(
         "created_output": created,
         "repair_command": f"{MMW_RADAR_PREPARATION_COMMAND} # ensure preprocessing.scenes contains {scene}",
     }
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _atomic_write_text(metadata_path, json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     return {
         "path": str(target),
         "metadata_path": str(metadata_path),
         "created": created,
         "metadata": metadata,
     }
+
+
+def _valid_materialized_radar_csv(path: Path) -> pd.DataFrame | None:
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        frame = pd.read_csv(path, na_values="").fillna("")
+    except (pd.errors.EmptyDataError, OSError):
+        return None
+    if _numbered_columns(frame.columns, "beam") and _numbered_columns(frame.columns, "radar"):
+        return frame
+    return None
+
+
+def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
+    tmp = _atomic_temp_path(path)
+    frame.to_csv(tmp, index=False)
+    tmp.replace(path)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _atomic_temp_path(path)
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _atomic_temp_path(path: Path) -> Path:
+    stamp = dt.datetime.now(dt.timezone.utc).timestamp()
+    return path.with_name(f".{path.name}.{os.getpid()}.{stamp:.6f}.tmp")
 
 
 def _generate_scene_radar_maps(
