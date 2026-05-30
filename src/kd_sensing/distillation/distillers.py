@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from kd_sensing.registries import DISTILLERS
-from kd_sensing.distillation.g2d import G2DDistiller  # noqa: F401
 
 
 class KnowledgeDistillationLoss(nn.Module):
@@ -92,8 +91,9 @@ class KnowledgeDistillationLoss(nn.Module):
         student_output_features: torch.Tensor | None = None,
         teacher_output_features: torch.Tensor | None = None,
         current_alpha: float | None = None,
+        soft_targets: torch.Tensor | None = None,
     ):
-        task_loss = self.task_criterion(student_logits, targets)
+        task_loss = self.task_criterion(student_logits, soft_targets if soft_targets is not None else targets)
         distillation_loss = torch.tensor(0.0, device=student_logits.device)
 
         if self.kd_mode == 0:

@@ -419,3 +419,51 @@ HiST-Beam MMW LOSO 执行器 MUST 在每个 stage 结束后关闭不再需要的
 - **THEN** run metadata 或 summary MUST 记录 batch size、num_workers、persistent_workers、prefetch_factor、enabled modalities、seq_len、image cache policy 和 prototype strategy
 - **AND** 这些字段 MUST 足以解释 GPU 低利用率和 CPU 内存压力
 
+### Requirement: MMW sensor-assisted HiST-Beam profile
+HiST-Beam LOSO workflow MUST support an MMW sensor-assisted profile that uses `image`、`gps`、`lidar` 和 `radar` as model inputs. This profile MUST remain separate from existing MMW `image+gps+mmwave` experiments and MUST expose modality profile metadata in plan、run 和 summary artifacts.
+
+#### Scenario: 构建 sensor-assisted 模型配置
+- **WHEN** 用户加载 MMW sensor-assisted HiST-Beam 配置
+- **THEN** model modalities MUST resolve to `image`、`gps`、`lidar` 和 `radar`
+- **AND** student model field defaults MUST include compatible image、gps、lidar 和 radar encoder settings
+- **AND** model construction MUST fail with an actionable error if any enabled modality has no compatible sample key
+
+#### Scenario: 变体矩阵沿用 HiST-Beam baseline
+- **WHEN** sensor-assisted LOSO plan 生成
+- **THEN** plan MUST support source-only、adapter-only、coarse prototype、radio prototype、path prototype、path condition off 和 full fine-tuning baseline variants where available
+- **AND** run metadata MUST distinguish sensor-assisted modality profile from `image+gps+mmwave` profile
+
+#### Scenario: summary 输出负迁移诊断
+- **WHEN** sensor-assisted quick validation 写出 `loso_summary`
+- **THEN** summary MUST include adapted-source Top-K deltas for adaptation variants
+- **AND** summary MUST include negative-transfer flags when adapted Top-1 is lower than corresponding source-only Top-1
+- **AND** summary MUST preserve trainable ratio and adaptation time fields for parameter-efficiency comparison
+
+#### Scenario: last-beam baseline 不改变输入语义
+- **WHEN** evaluation computes last-beam diagnostic baseline
+- **THEN** HiST-Beam summary MAY report last-beam Top-K
+- **AND** model input construction MUST NOT add previous beam labels or beam power to sensor-assisted sensing modalities because of that diagnostic
+
+### Requirement: Quick validation conclusion 排除不可用于主结论的 run
+HiST-Beam quick validation conclusion MUST 消费 run-level eligibility metadata。`main_conclusion_eligible=false`、target leakage、未授权 target sensitive supervision、prototype no-op 或关键对比 run 缺失的结果 MUST 不被描述为主结论改进。
+
+#### Scenario: ineligible run 不参与胜负判断
+- **WHEN** 同一 fold、budget 和 seed 下某个 adapter 或 prototype run 记录 `main_conclusion_eligible=false`
+- **THEN** quick validation conclusion MUST 不把该 run 用于证明方法优于 source-only 或 full fine-tuning
+- **AND** conclusion MUST 记录该 run 被排除的 variant、target scene、budget、seed 和 eligibility reasons
+
+#### Scenario: excluded baseline 导致比较不可判定
+- **WHEN** 生成 adapter/prototype 与 source-only 或 full fine-tuning 对比所需的 baseline run 缺失或被标记为不可用于主结论
+- **THEN** 对应比较 MUST 标记为 `inconclusive`
+- **AND** conclusion MUST 记录缺失或被排除的 run key 和原因
+
+#### Scenario: prototype no-op 不作为有效 prototype 证据
+- **WHEN** prototype run 的 metrics 标记 prototype status 为 `no_op`、`unavailable`、coverage 为 0 或 prototype loss 未实际生效
+- **THEN** conclusion MUST 不把该 run 描述为有效 prototype variant
+- **AND** 若 accuracy 仍有变化，conclusion MUST 将变化归为补充诊断而不是 prototype 主结论
+
+#### Scenario: conclusion 汇总 eligibility
+- **WHEN** quick validation conclusion 文件写出
+- **THEN** 文件 MUST 包含 eligible run 数、excluded run 数、inconclusive comparison 数和 exclusion reason histogram
+- **AND** 文件 MUST 引用产生 eligibility metadata 的 summary 或 run artifact 路径
+

@@ -26,10 +26,8 @@ IMAGE_MODEL_TYPES = {
     "image_student",
     "fusion_teacher",
     "fusion_student",
-    "craf_fusion",
     "cls_token_transformer_fusion",
     "hist_beam_fusion",
-    "marf_fusion",
     "token_transformer_fusion",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
@@ -47,10 +45,8 @@ MODULAR_ROLE_ONLY_KEYS = {
 FUSION_MODEL_TYPES = {
     "fusion_teacher",
     "fusion_student",
-    "craf_fusion",
     "cls_token_transformer_fusion",
     "hist_beam_fusion",
-    "marf_fusion",
     "token_transformer_fusion",
     "simple_concat_multitask_selection",
     "task_aware_gated_multitask_selection",
@@ -71,10 +67,8 @@ RAYMOBTIME_SELECTION_MODEL_TYPES = {
     "task_aware_gated_multitask_selection",
 }
 D_MODEL_ROLE_TYPES = {
-    "craf_fusion",
     "cls_token_transformer_fusion",
     "hist_beam_fusion",
-    "marf_fusion",
     "token_transformer_fusion",
     *MODULAR_MODEL_TYPES,
 }

@@ -12,24 +12,24 @@
 
 ## 已退役研究线
 
-模态失衡研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断或 G2D 失衡结果汇总入口；当前主线回到普通训练、统一评估、通用模态子集调试、Raymobtime s008 current snapshot workflow、G2D 训练和 CSI hardening。
+模态失衡研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断或 G2D 失衡结果汇总入口；当前主线回到普通训练、统一评估、通用模态子集调试、Raymobtime s008 current snapshot workflow 和 CSI hardening。
 
 历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 
-## CRAF、MARF 和 G2D 主线
+## CRAF、MARF 和 G2D 历史结论
 
-CRAF 早期实验显示：warmup 太短、基于训练 loss 的反事实 target 噪声大、弱模态 auxiliary loss 持续干扰，容易得到“训练集更强、验证集更差”的 all-modal 过拟合。更稳的路线是 teacher-prior CRAF：先用单模态 teacher 的验证表现建立 prior，再学 residual gate，并优先冻结弱模态 encoder、选择性微调强路径。
+CRAF 早期实验显示：warmup 太短、基于训练 loss 的反事实 target 噪声大、弱模态 auxiliary loss 持续干扰，容易得到“训练集更强、验证集更差”的 all-modal 过拟合。teacher-prior CRAF 曾尝试先用单模态 teacher 的验证表现建立 prior，再学 residual gate，并冻结或选择性微调部分 encoder；这些入口现在已退役。
 
-MARF 的定位不是写死强弱模态，而是用 teacher prior、horizon-wise router、anchor fusion、residual adapter 和 subset-aware training 支持不同模态组合、缺失和扰动。评估时不要只看 clean all-modal Top1，还要看 strong-path preservation、subset eval、模态缺失和负迁移。
+MARF 曾定位为不写死强弱模态，而是用 teacher prior、horizon-wise router、anchor fusion、residual adapter 和 subset-aware training 支持不同模态组合、缺失和扰动。相关模型、训练 helper、配置和测试已经从当前支持面删除。
 
-G2D 是通用多模态蒸馏方法。当前统一标签约定为：
+G2D 曾作为通用多模态蒸馏方法，采用 future-only 标签约定：
 
 ```text
 labels: [B, 3] = [t+1, t+2, t+3]
 logits: [B, 3, 64]
 ```
 
-不要再把历史最后一帧 beam 当作训练 label，也不要输出旧的 current/h0 指标。G2D-lite、G2D-global 和 G2D-horizon 的配置和诊断入口见 `docs/experiment_matrix.md` 与 `openspec/specs/g2d-multimodal-distillation/spec.md`。
+不要再把历史最后一帧 beam 当作训练 label，也不要输出旧的 current/h0 指标。G2D-lite、G2D-global 和 G2D-horizon 的配置、distiller、SMP 和诊断入口已经退役；当前 KD 入口保留 `no_kd`、`logits_kd` 和 `rkd`。
 
 ## CSI 和 MMW 研究判断
 

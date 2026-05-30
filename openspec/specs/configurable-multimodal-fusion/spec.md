@@ -150,7 +150,7 @@ Fusion teacher 和 fusion student MUST 支持通过 `modalities` 配置选择参
 - **AND** fusion canonical 矩阵 MUST 不要求提供单模态 fusion duplicate 配置
 
 ### Requirement: Fusion canonical 配置语义
-每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug，并 MUST 让 teacher 和 student 使用相同的 `modalities`。默认/recommended fusion student 路线 MUST 使用 `cls_token_transformer_fusion` 作为混合方式；legacy early-concat、CRAF、MARF 和其它高级方法 MUST 通过显式配置路径或 overlay 选择。同一 slug 的四种配置 MUST 只改变训练角色和 KD 模式，不得改变模态集合。canonical 配置语义 MUST 不依赖实体 YAML 文件是否存在。
+每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug，并 MUST 让 teacher 和 student 使用相同的 `modalities`。推荐/default fusion student 路线 MUST 使用 `cls_token_transformer_fusion` 作为混合方式；已退役的 CRAF、MARF、G2D 配置、overlay 和 alias MUST 不再作为可解析 canonical 或高级方法入口。同一 slug 的四种配置 MUST 只改变训练角色和 KD 模式，不得改变模态集合。canonical 配置语义 MUST 不依赖实体 YAML 文件是否存在。
 
 #### Scenario: fusion teacher no-KD 配置
 - **WHEN** 开发者加载 `configs/fusion/<slug>_teacher_no_kd.yaml`
@@ -181,6 +181,11 @@ Fusion teacher 和 fusion student MUST 支持通过 `modalities` 配置选择参
 - **AND** 配置 MUST 构建可训练 `cls_token_transformer_fusion`
 - **AND** teacher 和 student 的 `modalities` MUST 相同
 - **AND** 配置 MUST 提供 RKD 参数并默认解析同 slug 的 canonical teacher no-KD 输出中的 `best.pth`
+
+#### Scenario: 退役高级方法配置不可解析
+- **WHEN** 用户加载 CRAF、MARF 或 G2D 的实体 YAML、virtual alias 或 overlay recipe
+- **THEN** 系统 MUST 拒绝该配置路径或方法名
+- **AND** 系统 MUST 不生成等价配置或兼容重定向
 
 ### Requirement: Fusion canonical 数据字段
 canonical fusion 配置 MUST 根据 `modalities` 启用对应 dataset 字段，并不得要求未启用模态的数据列。启用 GPS 的配置 MUST 使用 GPS-Rel-Polar；启用 LiDAR 的配置 MUST 使用 LiDAR BEV 默认字段，并 MUST 沿用 LiDAR 懒加载和内存有界归一化语义；启用 mmWave 的配置 MUST 使用 64 维 dB receive-power 特征，并 MUST 复用训练集 mmWave scaler。
@@ -264,145 +269,6 @@ canonical fusion 配置 MUST 根据 `modalities` 启用对应 dataset 字段，�
 - **THEN** 系统 MUST 报告 checkpoint 结构不匹配
 - **AND** 错误信息 MUST 包含 missing keys 或 unexpected keys 诊断
 
-### Requirement: Fusion 配置选择 CRAF 模型
-Fusion 配置 MUST 能显式选择 CRAF 或 CRAF baseline 模型，同时继续使用现有 `modalities` 字段描述参与融合的模态集合。CRAF、token transformer 和 early-concat fusion MUST 通过 canonical 配置路径区分，系统 MUST 不再保留 legacy 配置 alias 作为兼容入口。
-
-#### Scenario: 配置 CRAF fusion
-- **WHEN** 用户在 fusion 配置中设置 `model.student.type: craf_fusion`
-- **THEN** 系统 MUST 使用 `model.student.modalities` 构建 CRAF 模型
-- **AND** 系统 MUST 继续使用 `experiment.task: fusion` 的 batch 输入准备流程
-
-#### Scenario: 配置 token transformer fusion
-- **WHEN** 用户在 fusion 配置中设置 token-only transformer baseline 的注册名
-- **THEN** 系统 MUST 使用同一模态集合构建不带 reliability gate 的 token fusion baseline
-
-#### Scenario: early-concat fusion 显式运行
-- **WHEN** 用户继续运行 canonical early-concat fusion 配置
-- **THEN** 系统 MUST 保持 early-concat fusion 行为
-- **AND** 系统 MUST 不隐式启用 CRAF 训练 loss 或 diagnostics
-
-### Requirement: CRAF 配置复用 fusion 模态校验
-CRAF 和 CRAF baseline 配置 MUST 复用现有 fusion 模态标准化和校验语义。模态顺序、未知模态错误、重复模态错误和未启用模态输入行为 MUST 与当前 fusion 配置一致。
-
-#### Scenario: 乱序模态标准化
-- **WHEN** 用户在 CRAF 配置中设置 `modalities: ["lidar", "image", "gps"]`
-- **THEN** 系统 MUST 将模态顺序标准化为项目固定顺序
-- **AND** reliability 输出、token 输出和日志 MUST 使用标准化后的顺序
-
-#### Scenario: 未启用模态不读取输入
-- **WHEN** CRAF 配置不包含 `mmwave`
-- **THEN** batch 准备和模型 forward MUST 不要求 `mmwave` 输入
-
-### Requirement: CRAF canonical 与示例配置
-项目 MUST 提供可运行的 CRAF 示例配置和 baseline 示例配置，用于当前项目数据和训练入口的 smoke test 与实验对比。
-
-#### Scenario: all-modalities CRAF 配置
-- **WHEN** 用户加载 all-modalities CRAF 示例配置
-- **THEN** 配置 MUST 启用 image、radar、GPS、LiDAR 和 mmWave
-- **AND** 配置 MUST 设置 CRAF 所需的模型、loss、counterfactual 和输出字段
-
-#### Scenario: image-radar CRAF 配置
-- **WHEN** 用户加载 image+radar CRAF 示例配置
-- **THEN** 配置 MUST 使用与现有 image+radar fusion 可比较的 dataset split、num classes、seq length 和 num pred
-
-#### Scenario: baseline 配置可加载
-- **WHEN** 用户加载 token transformer 或 early concat transformer baseline 配置
-- **THEN** 配置 MUST 通过现有 config loader 构建成功
-- **AND** 配置 MUST 不要求新增训练入口
-
-### Requirement: CRAF 稳定化配置字段
-CRAF 示例配置 MUST 能表达稳定化训练策略，包括 warmup、CE-only counterfactual、ignore band、softmax gate、temperature schedule 和 auxiliary loss schedule。
-
-#### Scenario: all-modalities 稳定化 CRAF 配置
-- **WHEN** 用户加载 all-modalities CRAF 稳定化配置
-- **THEN** 配置 MUST 启用五个标准模态
-- **AND** 配置 MUST 设置 warmup epoch、counterfactual 起始 epoch、`context_marginal` 或等价反事实模式、CE-only delta 和 ignore band
-
-#### Scenario: softmax gate 配置
-- **WHEN** 用户在 CRAF 配置中设置 `model.student.reliability.gate_type: softmax`
-- **THEN** 配置 MUST 能传递 gate temperature、temperature schedule 和 `min_gate`
-- **AND** 模型构建 MUST 不影响配置为 sigmoid gate 的旧实验
-
-#### Scenario: auxiliary 与 beam soft schedule 配置
-- **WHEN** 用户配置 CRAF 附加 loss
-- **THEN** 配置 MUST 能表达 warmup-only 单模态 auxiliary loss 和 beam soft loss 权重
-- **AND** 权重为 0 的附加 loss MUST 保持关闭
-
-### Requirement: Teacher-prior CRAF 配置入口
-Fusion 配置 MUST 支持 teacher-prior CRAF Stage 2、Stage 3 和消融实验入口。新增配置 MUST 使用现有 fusion 数据字段、固定模态顺序和 CRAF 显式模型类型，不得改变 legacy fusion 默认行为。
-
-#### Scenario: Stage 2 主实验配置可加载
-- **WHEN** 用户加载 Stage 2 teacher-init prior CRAF 配置
-- **THEN** 配置 MUST 设置 `experiment.task: fusion`
-- **AND** 配置 MUST 使用 `model.student.type: craf_fusion`
-- **AND** 配置 MUST 启用 `["image", "radar", "gps", "lidar", "mmwave"]`
-- **AND** 配置 MUST 提供 teacher registry 路径、`gate_type: prior_residual_sigmoid`、prior regularization 权重和 frozen encoder 策略
-
-#### Scenario: Stage 3 主实验配置可加载
-- **WHEN** 用户加载 Stage 3 selective fine-tuning CRAF 配置
-- **THEN** 配置 MUST 设置 Stage 2 checkpoint 加载路径
-- **AND** 配置 MUST 提供 `finetune.unfreeze_modalities` 和 `finetune.freeze_modalities`
-- **AND** 配置 MUST 提供 Stage 3 参数组学习率
-
-#### Scenario: Teacher-prior 消融配置可加载
-- **WHEN** 用户加载 teacher-init no-prior、prior random-encoder、teacher-init fixed-prior 或 teacher-init prior-residual 消融配置
-- **THEN** 每个配置 MUST 明确 `teacher.load_encoders` 和 gate 类型
-- **AND** 每个配置 MUST 使用同一场景、同一 split、同一模态集合和同一基础训练超参数，除消融目标字段外不得隐式改变实验条件
-
-### Requirement: CRAF gate 类型配置
-`craf_fusion` 配置 MUST 支持 `none`、`fixed_prior`、`prior_residual_sigmoid` 和旧 gate 类型。每种 gate 类型 MUST 有清晰的 mask 语义和 diagnostics 行为。
-
-#### Scenario: gate none
-- **WHEN** 配置设置 `gate_type: none`
-- **THEN** CRAF MUST 对所有可用模态使用 gate 1
-- **AND** 不可用模态 MUST 仍被 mask 排除
-
-#### Scenario: gate fixed prior
-- **WHEN** 配置设置 `gate_type: fixed_prior`
-- **THEN** CRAF MUST 使用配置或 teacher registry 中的 prior 作为 gate
-- **AND** gate MUST 不引入可学习 residual
-
-#### Scenario: gate prior residual sigmoid
-- **WHEN** 配置设置 `gate_type: prior_residual_sigmoid`
-- **THEN** CRAF MUST 构建 PriorResidualGate
-- **AND** 配置 MUST 能控制 `min_gate`、hidden dim、confidence feature 和 residual 零初始化
-
-### Requirement: Fusion G2D 五模态配置入口
-项目 MUST 提供五模态 G2D fusion 配置入口。配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave`，MUST 设置 `experiment.task: fusion`，MUST 设置 `distillation.type: g2d`，并 MUST 保持 `model.num_pred: 3`。
-
-#### Scenario: 加载 G2D-lite 配置
-- **WHEN** 用户加载 `configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml`
-- **THEN** 配置 MUST 启用五个 fusion student 输入模态
-- **AND** 配置 MUST 设置 `distillation.type: g2d`
-- **AND** 配置 MUST 设置 G2D mode 为 `lite`
-
-#### Scenario: 加载 G2D-global 配置
-- **WHEN** 用户加载 `configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml`
-- **THEN** 配置 MUST 启用五个 fusion student 输入模态
-- **AND** 配置 MUST 设置 `distillation.type: g2d`
-- **AND** 配置 MUST 设置 G2D mode 为 `global`
-- **AND** 配置 MUST 启用 SMP
-
-#### Scenario: 加载 G2D-horizon 配置
-- **WHEN** 用户加载 `configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml`
-- **THEN** 配置 MUST 启用五个 fusion student 输入模态
-- **AND** 配置 MUST 设置 `distillation.type: g2d`
-- **AND** 配置 MUST 设置 G2D mode 为 `horizon_diagnostic`
-
-### Requirement: Fusion student exposes modality features for G2D
-fusion student MUST 在不改变主 logits 契约的前提下，为 G2D feature KD 暴露 per-modality branch features。该输出 MUST 能通过 `adapt_model_output()` 的 diagnostics 传递给 G2D distiller。
-
-#### Scenario: legacy fusion_student 输出 modality features
-- **WHEN** `fusion_student` 前向完成且启用了多个模态
-- **THEN** 输出 diagnostics MUST 包含按模态命名的 branch feature
-- **AND** 每个 branch feature MUST 保持 batch 和 sequence 维度与 logits 对齐
-- **AND** 主 logits MUST 继续能被解析为 `[B,T,C]`
-
-#### Scenario: CRAF 或 MARF 输出 token features
-- **WHEN** G2D student 使用 CRAF、MARF 或 token transformer 风格 fusion 模型
-- **THEN** G2D feature extractor MUST 能从 `token_features` 和 `modalities` diagnostics 中按模态拆分 feature
-- **AND** 拆分后的 feature MUST 能参与 feature KD
-
 ### Requirement: Fusion 模型公开类名表达 teacher/student 职责
 Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 类名。`fusion_teacher` 注册名 MUST 构建 `FusionTeacherModalityNet`，`fusion_student` 注册名 MUST 构建 `FusionStudentModalityNet`。旧类名 `old fusion teacher class alias` 和 `old fusion student class alias` MUST 不再作为兼容 alias 导出。
 
@@ -421,45 +287,22 @@ Early-concat fusion teacher 和 student MUST 暴露职责明确的公开 Python 
 - **THEN** 导入 MUST 失败或触发清晰迁移错误
 - **AND** 错误信息 MUST 指向 `FusionTeacherModalityNet` 或 `FusionStudentModalityNet`
 
-### Requirement: 高级 fusion 方法配置 overlay
-CRAF、MARF、G2D 和后续高级 fusion 方法配置 MUST 支持通过 base 配置、method overlay 和 ablation overlay 组合生成或解析。推荐配置路径 MUST 避免为每个方法、场景和 ablation 复制完整 data/model/training/output 配置；实体 YAML MAY 继续存在，但新增推荐路径 MUST 优先复用共享配置语义。
-
-#### Scenario: 生成 G2D 方法配置
-- **WHEN** 开发者加载推荐的 G2D fusion 配置路径或 recipe
-- **THEN** 系统 MUST 从共享 fusion base 和 G2D method overlay 解析出完整配置
-- **AND** `final_config.yaml` MUST 写出完整解析后的 data、model、loss、distillation、training 和 output 字段
-
-#### Scenario: 生成 CRAF 或 MARF ablation 配置
-- **WHEN** 开发者加载 CRAF 或 MARF 的 ablation 配置路径或 recipe
-- **THEN** 系统 MUST 复用共享 method overlay
-- **AND** ablation overlay MUST 只表达与 baseline 方法不同的字段，例如 prior、residual、subset training、counterfactual 或 gate 设置
-
-#### Scenario: 场景选择不复制方法配置
-- **WHEN** 用户通过命令行或配置字段切换 DeepSense6G scene
-- **THEN** 系统 MUST 保持方法 overlay 不变
-- **AND** scene 信息 MUST 只通过 dataset scene、输出 scene 目录或运行 metadata 表达
-
-### Requirement: 高级 fusion 实体 YAML 兼容
-高级 fusion 配置 MUST 支持实体 YAML 与 virtual overlay 两种入口，但实体 YAML 不再作为长期保留要求。仍保留的 `configs/fusion/*.yaml` 高级方法实体配置 MUST 继续可加载，并 MUST 与 overlay 解析语义兼容。若同一路径同时存在实体 YAML 和 virtual overlay 规则，实体 YAML MUST 优先；若实体 YAML 已被删除，等价 virtual overlay MUST 生成完整配置，训练产物仍 MUST 保存完整 `final_config.yaml` 以保证复现。
+### Requirement: 当前高级 fusion overlay 边界
+当前保留的高级 fusion overlay MUST 只覆盖已批准的 objective-aware 或调试入口。已退役的 CRAF、MARF、G2D 和相关 ablation 配置 MUST 不再由 overlay recipe 或 virtual alias 生成。
 
 #### Scenario: 保留实体 YAML 优先
 - **WHEN** 用户加载一个仍存在的 `configs/fusion/*.yaml` 文件
 - **THEN** 系统 MUST 使用该实体 YAML 的内容
 - **AND** 不得用 virtual overlay 规则覆盖实体 YAML 中显式配置的字段
 
-#### Scenario: overlay 与实体配置语义一致
-- **WHEN** 一个高级 fusion 方法同时有实体 YAML 和等价 overlay 入口
-- **THEN** 两种入口解析后的关键语义 MUST 一致，包括 task、modalities、model type、loss/distillation type、training schedule 和 run_name
-- **AND** 差异字段 MUST 是显式记录的兼容或实验差异
-
-#### Scenario: 删除冗余实体 YAML 后 overlay 接管
-- **WHEN** 一个高级 fusion 实体 YAML 已确认可由 overlay 无损生成并从源码删除
-- **THEN** 用户加载对应声明支持的配置路径时 MUST 仍得到完整配置
-- **AND** 运行 artifact MUST 不依赖被删除 YAML 文件
+#### Scenario: 退役实体 YAML 不被 virtual 接管
+- **WHEN** 被删除 YAML 属于 CRAF、MARF 或 G2D
+- **THEN** 系统 MUST 将其视为不支持路径
+- **AND** 系统 MUST 不为其提供 virtual fallback
 
 #### Scenario: 配置矩阵测试覆盖 overlay
 - **WHEN** 开发者运行 fusion 配置矩阵测试
-- **THEN** 测试 MUST 覆盖高级方法 overlay 入口的可加载性和关键字段
+- **THEN** 测试 MUST 覆盖当前保留 overlay 入口的可加载性和关键字段
 - **AND** 测试 MUST 验证仍保留的实体 YAML 按兼容语义加载
 
 ### Requirement: Fusion 支持 RGB image profile
@@ -472,10 +315,10 @@ CRAF、MARF、G2D 和后续高级 fusion 方法配置 MUST 支持通过 base 配
 - **AND** 其它启用模态的输入准备语义 MUST 保持不变
 
 ### Requirement: Fusion image encoder 与 profile 校验
-Fusion 模型构建 MUST 校验启用 image modality 时的 image encoder 和 image profile 是否匹配。该校验 MUST 覆盖 fusion、CRAF/MARF 风格 fusion 和新的模块化 fusion 入口，或在不支持某配置的入口处给出明确错误。
+Fusion 模型构建 MUST 校验启用 image modality 时的 image encoder 和 image profile 是否匹配。该校验 MUST 覆盖当前保留的 fusion、token transformer fusion 和模块化 fusion 入口，或在不支持某配置的入口处给出明确错误。
 
 #### Scenario: fusion 使用 RGB profile
-- **WHEN** 用户为 `fusion_teacher`、`fusion_student`、CRAF、MARF 或 token transformer fusion 配置 `image_profile: rgb_imagenet`
+- **WHEN** 用户为 `fusion_teacher`、`fusion_student` 或 token transformer fusion 配置 `image_profile: rgb_imagenet`
 - **THEN** 系统 MUST 构建或要求 3 通道 image branch
 - **AND** 错误信息 MUST 在通道数不匹配时说明期望和实际通道数
 
@@ -498,7 +341,7 @@ Fusion 模型构建 MUST 校验启用 image modality 时的 image encoder 和 im
 - **AND** representation core 接收的模态顺序 MUST 遵循模态契约固定顺序
 
 ### Requirement: 默认 fusion no-KD 使用 CLS-token Transformer
-推荐/default fusion no-KD 配置 MUST 使用 CLS-token Transformer fusion 作为混合方式。显式命名为 legacy、early-concat、CRAF、MARF、G2D 或 ablation 的配置 MUST 保持其方法语义，不得被默认行为覆盖。
+推荐/default fusion no-KD 配置 MUST 使用 CLS-token Transformer fusion 作为混合方式。显式命名为 legacy 或 early-concat 的保留配置 MUST 保持其方法语义，不得被默认行为覆盖；已退役的 CRAF、MARF、G2D 或相关 ablation 配置 MUST 不再作为支持入口存在。
 
 #### Scenario: 加载五模态默认 fusion no-KD
 - **WHEN** 用户加载推荐的五模态 fusion no-KD 配置

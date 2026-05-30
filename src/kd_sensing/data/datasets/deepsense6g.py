@@ -14,6 +14,12 @@ from tqdm.auto import tqdm
 
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.scenes import resolve_deepsense_scene
+from kd_sensing.data.beam_soft_targets import (
+    SoftBeamLabelConfig,
+    read_beam_power_vector,
+    resolve_soft_beam_label_config,
+    soft_distribution_from_power_or_label,
+)
 from kd_sensing.data.transform_ops.gps import (
     GPSStandardScaler,
     PositionTargetStandardScaler,
@@ -112,6 +118,7 @@ class DeepSense6GDataset(Dataset):
         occlusion_target_stats: OcclusionTargetStats | dict[str, Any] | None = None,
         position_target: bool | dict[str, Any] | None = None,
         position_target_scaler: PositionTargetStandardScaler | None = None,
+        soft_beam_labels: bool | dict[str, Any] | None = None,
         use_lidar: bool = False,
         lidar_encoding: str = "bev",
         lidar_bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
@@ -213,6 +220,8 @@ class DeepSense6GDataset(Dataset):
         self.occlusion_target_config = resolve_occlusion_target_config(occlusion_target)
         self.occlusion_target_enabled = bool(self.occlusion_target_config["enabled"])
         self.position_target_config = resolve_position_target_config(position_target)
+        self.soft_beam_label_config = resolve_soft_beam_label_config(soft_beam_labels)
+        self._soft_beam_distribution_cache: dict[str, tuple[np.ndarray, bool]] = {}
         self.position_target_enabled = bool(self.position_target_config["enabled"])
         self.position_target_source = str(self.position_target_config["source"])
         self.position_target_normalize = bool(self.position_target_config["normalize"])
@@ -348,6 +357,13 @@ class DeepSense6GDataset(Dataset):
             "input_beam": torch.tensor(input_beam, dtype=torch.int64),
             "target_beam": torch.tensor(target_beam, dtype=torch.int64),
         }
+        if self.soft_beam_label_config.enabled:
+            distributions, mask = record(
+                "targets",
+                lambda: self._soft_beam_targets_for_paths(future_beam_paths, target_beam),
+            )
+            sample["target_beam_distribution"] = torch.tensor(distributions, dtype=torch.float32)
+            sample["target_beam_distribution_mask"] = torch.tensor(mask, dtype=torch.bool)
 
         def build_auxiliary_targets() -> dict[str, torch.Tensor]:
             values: dict[str, torch.Tensor] = {}
@@ -607,6 +623,93 @@ class DeepSense6GDataset(Dataset):
         if values.size == 0:
             raise ValueError(f"Beam label file {path} is empty.")
         return int(np.argmax(values))
+
+    def _soft_beam_targets_for_paths(
+        self,
+        future_beam_paths: list[str],
+        hard_labels: list[int],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cfg = self.soft_beam_label_config
+        num_classes = self._soft_beam_num_classes(hard_labels)
+        distributions: list[np.ndarray] = []
+        masks: list[bool] = []
+        for horizon, rel_path in enumerate(future_beam_paths[: self.num_pred]):
+            label = hard_labels[horizon] if horizon < len(hard_labels) else -100
+            if label < 0:
+                distributions.append(np.zeros(num_classes, dtype=np.float32))
+                masks.append(False)
+                continue
+            distribution, power_available = self._soft_beam_distribution_for_path(
+                rel_path,
+                label,
+                cfg=cfg,
+                num_classes=num_classes,
+            )
+            distributions.append(distribution)
+            masks.append(True)
+        while len(distributions) < int(self.num_pred):
+            distributions.append(np.zeros(num_classes, dtype=np.float32))
+            masks.append(False)
+        return np.stack(distributions, axis=0), np.asarray(masks, dtype=bool)
+
+    def _soft_beam_distribution_for_path(
+        self,
+        rel_path: object,
+        label: int,
+        *,
+        cfg: SoftBeamLabelConfig,
+        num_classes: int,
+    ) -> tuple[np.ndarray, bool]:
+        key = str(rel_path or "").strip()
+        domain = self._soft_beam_label_domain(cfg)
+        source = cfg.source if domain == "source" else cfg.target_source
+        circular = True if domain == "target" else cfg.circular
+        if domain == "target" and source != "gaussian":
+            raise ValueError("target-domain soft beam labels must use circular Gaussian targets.")
+        cache_key = (
+            f"{domain}|{key}|{label}|{num_classes}|{source}|{cfg.sigma}|{circular}|{cfg.temperature}"
+        )
+        if cfg.cache and cache_key in self._soft_beam_distribution_cache:
+            return self._soft_beam_distribution_cache[cache_key]
+        power = None
+        # Target adaptation must not use target-side power/RSS oracle profiles; use only hard labels plus
+        # codebook adjacency through circular Gaussian smoothing.
+        if (
+            domain == "source"
+            and source in {"power", "rss", "power_or_gaussian", "rss_or_gaussian"}
+            and key
+            and key != "-99"
+        ):
+            power = read_beam_power_vector(joined_resource(self.data_root, key), num_classes=num_classes)
+        result = soft_distribution_from_power_or_label(
+            power,
+            int(label),
+            num_classes=num_classes,
+            source=source,
+            sigma=cfg.sigma,
+            circular=circular,
+            temperature=cfg.temperature,
+            epsilon=cfg.epsilon,
+        )
+        if cfg.cache:
+            self._soft_beam_distribution_cache[cache_key] = result
+        return result
+
+    def _soft_beam_label_domain(self, cfg: SoftBeamLabelConfig) -> str:
+        if cfg.domain in {"source", "target"}:
+            return cfg.domain
+        split_text = str(self.split or "").strip().lower()
+        if split_text.startswith("target") or split_text in {"test", "val", "validation"}:
+            return "target"
+        return "source"
+
+    def _soft_beam_num_classes(self, hard_labels: list[int]) -> int:
+        configured = self.soft_beam_label_config.num_classes
+        if configured is not None:
+            return int(configured)
+        if hard_labels:
+            return max(64, max(int(value) for value in hard_labels) + 1)
+        return 64
 
     def _ensure_gps_columns(self) -> None:
         if self.samples.gps_paths is None:

@@ -25,7 +25,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_log
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_rkd.yaml
 ```
 
-包含 image 或 LiDAR 的 canonical fusion teacher/no-KD 配置使用 `modular_sequence`；默认 student/KD student 使用 `cls_token_transformer_fusion`。需要复现实验中的 early-concat、旧 token transformer、CRAF、MARF 或 G2D baseline 时，使用对应显式配置路径或 overlay。
+包含 image 或 LiDAR 的 canonical fusion teacher/no-KD 配置使用 `modular_sequence`；默认 student/KD student 使用 `cls_token_transformer_fusion`。需要复现实验中的 early-concat 或旧 token transformer baseline 时，使用对应显式配置路径；退役研究线的配置路径不会被 virtual alias 接管。
 
 ## Snapshot Next-Frame
 
@@ -38,90 +38,6 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/all_modalities_
 ```
 
 单模态入口为 `configs/<image|radar|gps|lidar|mmwave>/snapshot_next_frame_no_kd.yaml`；fusion 入口为 `configs/fusion/<canonical_slug>_snapshot_next_frame_no_kd.yaml`。
-
-## G2D 多模态蒸馏
-
-G2D 使用 image、radar、GPS、LiDAR、mmWave 五个单模态 teacher 指导五模态 fusion student，严格使用 future-only 标签：
-
-```text
-labels: [B, 3] = [t+1, t+2, t+3]
-logits: [B, 3, 64]
-```
-
-G2D 三个实体 YAML 已收敛为 virtual config；以下路径仍可直接加载：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml
-```
-
-等价 overlay 入口为 `configs/fusion/overlay_g2d_lite.yaml`、`overlay_g2d_global.yaml` 和 `overlay_g2d_horizon.yaml`。`g2d_global` 启用 SMP；`g2d_horizon` 主要保存 `t+1/t+2/t+3` 的 horizon-wise 模态排序诊断。
-
-诊断输出：
-
-```text
-outputs/<scene>/<run_name>/diagnostics/g2d_epoch_<epoch>.json
-```
-
-## CRAF 和 Teacher-Prior CRAF
-
-CRAF 通过 `model.student.type: craf_fusion` 显式启用，推荐先跑单模态 baseline、默认 `cls_token_transformer_fusion`、显式 early-concat fusion、`token_transformer_fusion` baseline，再跑 CRAF no-KD 和 ablation。全模态 baseline/no-counterfactual/fixed-prior 已 recipe 化；旧实体路径仍可作为 virtual alias 加载，推荐文档使用 `overlay_*` 入口。
-
-常用入口：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_image_radar_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_craf_baseline.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_craf_no_counterfactual.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/craf_all_modalities_stabilized_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_craf_fixed_prior.yaml
-```
-
-关键配置域：
-
-- `model.student.reliability`：gate type、min gate、temperature schedule 和 dataset prior。
-- `training.modality_dropout`：训练期随机模态保留 mask。
-- `training.counterfactual`：`sample_one`、`leave_one_out` 或 `context_marginal` 反事实 gate 监督。
-- `loss.beam_soft`、`loss.unimodal_aux` 和 gate loss schedule：beam-aware 软标签、单模态辅助 loss 和 gate loss。
-
-Teacher-prior CRAF 使用三阶段流程。Stage 1 训练五个单模态 teacher，构建 reliability registry：
-
-```bash
-conda run -n kd_mm_beam python scripts/build_teacher_registry.py \
-  --teacher-root outputs/scene31 \
-  --output outputs/scene31/teacher_registry.json \
-  --scene 31 \
-  --prior-mode metric
-```
-
-Stage 2 加载 registry 中的 teacher encoder，冻结 encoder，并训练 fusion transformer、head 和 `prior_residual_sigmoid` gate：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/stage2_teacher_init_prior_residual.yaml
-```
-
-Stage 3 从 Stage 2 best checkpoint 继续，只解冻 GPS/mmWave encoder：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/stage3_selective_ft_gps_mmwave.yaml
-```
-
-重点日志字段包括 `craf/gate_mean/<modality>`、`craf/prior/<modality>`、`craf/residual_logit_mean/<modality>`、`train_prior_regularization_loss`、`teacher_prior.encoder_load`、`teacher_prior.encoder_freeze` 和 `modality_subsets`。
-
-## MARF
-
-MARF 通过 `model.student.type: marf_fusion` 启用，使用 teacher prior、router、residual adapter 和 subset training/evaluation 做模态自适应路由。主线和 ablation 已迁移到 advanced overlay recipe；旧实体路径仍可作为 virtual alias 加载。
-
-```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_baseline.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_subset_training.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_no_residual.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_no_prior_bias.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/overlay_marf_no_subset_training.yaml
-```
-
-等价性尚未确认的 CRAF/teacher-prior/CSI 组合实体 YAML 不应删除；新增删除候选需要先补 recipe 和关键字段等价测试。
 
 ## Objective-Aware Fusion
 
@@ -147,7 +63,7 @@ conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_csi_hardening
 conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_csi_hardening_debug_matrix_configs_load_and_isolate_single_changes -q
 ```
 
-GPS+CSI 验证矩阵位于 `configs/fusion/csi_hardening_matrix/`，包括 GPS-only、GPS+clean CSI、GPS+slow CSI、prioritized warmup 和 G2D-style 配置。对应合同由 `tests/test_student_configs.py::test_gps_csi_validation_matrix_configs_load` 覆盖。
+GPS+CSI 验证矩阵位于 `configs/fusion/csi_hardening_matrix/`，包括 GPS-only、GPS+clean CSI、GPS+slow CSI 和 prioritized warmup 配置。对应合同由 `tests/test_student_configs.py::test_gps_csi_validation_matrix_configs_load` 覆盖。
 
 ## Raymobtime
 

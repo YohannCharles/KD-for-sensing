@@ -32,7 +32,7 @@
 - **AND** 不一致时 MUST 抛出包含模态名和实际 shape 的清晰错误
 
 ### Requirement: Representation core 可插拔
-模块化序列模型 MUST 支持可插拔 representation core，用于统一表达单模态时序建模、early concat GRU、token transformer、CRAF/MARF 风格 token core 或等价实现。core MUST 接收统一 embedding，不得直接读取 dataset 字段或执行模态特定预处理。
+模块化序列模型 MUST 支持可插拔 representation core，用于统一表达单模态时序建模、early concat GRU、token transformer 或等价实现。core MUST 接收统一 embedding，不得直接读取 dataset 字段或执行模态特定预处理。
 
 #### Scenario: single_gru core
 - **WHEN** 用户配置 `representation_core.type: single_gru`
@@ -57,11 +57,11 @@
 - **THEN** 模型输出 MUST 同时保留 beam logits
 - **AND** 未配置辅助 loss 时训练流程 MUST 能忽略辅助输出并继续 beam-only 训练
 
-### Requirement: 新入口不破坏 legacy 模型
-模块化序列模型 MUST 作为新注册入口存在，不得替换或重命名现有单模态、legacy fusion、CRAF 或 MARF 注册名。实现 MAY 复用现有 encoder/core 代码，但 MUST 保持旧模型构造参数和 forward 语义兼容。
+### Requirement: 新入口不破坏保留模型
+模块化序列模型 MUST 作为新注册入口存在，不得替换或重命名现有单模态或保留的 legacy fusion 注册名。实现 MAY 复用现有 encoder/core 代码，但 MUST 保持保留模型构造参数和 forward 语义兼容。
 
-#### Scenario: 旧注册名仍可构建
-- **WHEN** 构建流程导入默认模型组件后请求 `image_teacher`、`image_student`、`fusion_teacher`、`fusion_student`、`craf_fusion` 或 `marf_fusion`
+#### Scenario: 保留注册名仍可构建
+- **WHEN** 构建流程导入默认模型组件后请求 `image_teacher`、`image_student`、`fusion_teacher`、`fusion_student` 或当前保留 fusion 注册名
 - **THEN** 系统 MUST 继续返回对应现有模型
 - **AND** 这些模型 MUST 不要求新增模块化配置字段
 

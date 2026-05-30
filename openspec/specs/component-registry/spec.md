@@ -168,100 +168,6 @@ mmWave 相关注册错误 MUST 使用现有注册表错误风格，并在未知�
 - **THEN** 文档 MUST 说明该模块需要在构建前被导入
 - **AND** 系统 MUST 不通过扫描整个仓库隐式导入未知模块
 
-### Requirement: CRAF 组件注册
-CRAF 相关模型和 loss 组件 MUST 通过现有组件注册或明确的窄模块入口接入系统。新增组件 MUST 能通过配置名称构建，并 MUST 不要求训练脚本手写实例化逻辑。
-
-#### Scenario: 按名称构建 CRAF 模型
-- **WHEN** 配置指定 `type: craf_fusion`
-- **THEN** 系统 MUST 通过 `MODELS` 注册表构建 CRAF 模型
-- **AND** 构建参数 MUST 来自配置字段
-
-#### Scenario: 按名称构建 token transformer baseline
-- **WHEN** 配置指定 token transformer fusion baseline 的注册名
-- **THEN** 系统 MUST 通过 `MODELS` 注册表构建该 baseline
-
-#### Scenario: 注册错误可诊断
-- **WHEN** 用户引用不存在的 CRAF 组件注册名
-- **THEN** 系统 MUST 使用现有 registry 错误风格抛出异常
-- **AND** 错误信息 MUST 包含请求名称和可用组件列表
-
-### Requirement: 默认组件导入包含 CRAF
-默认组件导入流程 MUST 注册 CRAF 内置组件，同时保持 registry 轻量导入边界。
-
-#### Scenario: 构建流程导入默认组件
-- **WHEN** 构建流程调用默认组件导入函数后再构建 `craf_fusion`
-- **THEN** `MODELS` 注册表 MUST 包含 CRAF 注册名
-
-#### Scenario: 轻量导入 registry
-- **WHEN** 开发者仅导入 `kd_sensing.registries`
-- **THEN** 系统 MUST 不 eager import CRAF 模型依赖
-- **AND** 轻量导入边界 MUST 与现有 registry 语义一致
-
-### Requirement: CRAF loss helper 可测试
-CRAF 使用的 beam soft loss、sequence CE/per-sample loss 和 gate supervision helper MUST 有明确模块边界，并 MUST 能被单元测试直接调用。
-
-#### Scenario: 直接测试 beam soft loss
-- **WHEN** 测试代码传入 logits、labels、beam 数量和 sigma
-- **THEN** helper MUST 返回标量 loss
-- **AND** ignore index 位置 MUST 不影响 loss
-
-#### Scenario: 直接测试 gate target
-- **WHEN** 测试代码传入 full loss 与 drop loss
-- **THEN** helper MUST 返回范围可控的模态贡献目标
-- **AND** 目标 MUST 能与 reliability gate 计算监督 loss
-
-#### Scenario: 直接测试 ignore band gate target
-- **WHEN** 测试代码传入 `delta` 和 `ignore_delta_eps`
-- **THEN** helper MUST 返回二值 target 和 target valid mask
-- **AND** `abs(delta)` 不大于阈值的位置 MUST 被标记为无效
-
-#### Scenario: 直接测试 context marginal mask
-- **WHEN** 测试代码请求为目标模态构造 `context_marginal` mask
-- **THEN** helper MUST 返回不含目标模态的上下文 mask 和加入目标模态后的 mask
-- **AND** 两个 mask MUST 遵守可用模态约束和最小保留模态数量
-
-### Requirement: Teacher-prior CRAF 组件注册
-项目 MUST 通过现有组件注册和默认组件导入边界暴露 teacher-prior CRAF 所需组件。新增模型、gate、loss、KD loss 和 helper MUST 可由配置或窄模块导入复用，并且不得要求复制训练脚本。
-
-#### Scenario: 注册 PriorResidualGate 或 gate factory
-- **WHEN** 配置选择 `gate_type: prior_residual_sigmoid`
-- **THEN** 系统 MUST 能构建 prior residual gate
-- **AND** 构建失败时错误信息 MUST 包含 gate 类型和可用 gate 类型
-
-#### Scenario: 注册 teacher-prior CRAF 模型入口
-- **WHEN** 配置选择 teacher-prior CRAF 所需模型类型
-- **THEN** `MODELS` 注册表 MUST 能构建对应模型
-- **AND** `import_default_components()` 后可用模型列表 MUST 包含该模型或继续包含可承载该 gate 的 `craf_fusion`
-
-#### Scenario: 注册 prior 和 KD loss
-- **WHEN** 配置显式启用 prior regularization 或 reliability-weighted KD
-- **THEN** 系统 MUST 能通过现有 loss/distillation 构建边界调用对应 loss
-- **AND** 关闭这些 loss 时训练流程 MUST 不构建无用组件
-
-### Requirement: Teacher loader 组件边界
-teacher encoder loader MUST 以窄模块函数或可测试组件提供。loader MUST 不依赖训练循环内部局部变量，并 MUST 能在单元测试中用合成 checkpoint 验证 key mapping、strict 模式和冻结策略。
-
-#### Scenario: 单元测试直接调用 teacher loader
-- **WHEN** 测试用合成 teacher checkpoint 调用 teacher loader
-- **THEN** loader MUST 返回每模态 load summary
-- **AND** loader MUST 能在没有 dataloader 或 trainer 的情况下运行
-
-#### Scenario: strict 模式抛出清晰错误
-- **WHEN** strict loader 遇到 shape mismatch
-- **THEN** loader MUST 抛出包含模态、checkpoint 路径和 mismatch key 的错误
-
-### Requirement: 默认导入保持轻量
-新增 teacher-prior CRAF 组件 MUST 遵守现有轻量导入约束。导入 `kd_sensing.registries` MUST 不急切导入训练器、dataset 或 checkpoint 文件；默认组件导入 MUST 仍由构建流程显式触发。
-
-#### Scenario: 轻量导入 registry 不触发训练模块
-- **WHEN** 开发者执行 `import kd_sensing.registries`
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不导入 teacher registry 构建脚本或 trainer 模块
-
-#### Scenario: 构建 CRAF 前导入默认组件
-- **WHEN** 构建流程调用 `import_default_components()` 后再查询 `MODELS`
-- **THEN** teacher-prior CRAF 相关内置模型或 gate 所在模块 MUST 已完成注册
-
 ### Requirement: 模块化模型组件注册
 项目 MUST 通过现有组件注册边界暴露新的模块化序列模型及其可复用子组件。新增 image encoder、projector、representation core 和 head MUST 能通过配置名称构建，且不得要求训练脚本手写实例化逻辑。
 
@@ -303,7 +209,7 @@ teacher encoder loader MUST 以窄模块函数或可测试组件提供。loader 
 - **AND** 错误信息 MUST 包含 image profile、encoder 名称、期望通道数和实际通道数
 
 ### Requirement: Registry 只暴露 canonical 入口
-组件注册表 MUST 只注册当前 canonical dataset、model、loss、metric、distiller 和 preprocessor 名称。已经由 canonical 名称替代的场景专用 dataset alias、旧模型类名 alias 和 legacy encoder alias MUST 不再注册。
+组件注册表 MUST 只注册当前 canonical dataset、model、loss、metric、distiller 和 preprocessor 名称。已经由 canonical 名称替代的场景专用 dataset alias、旧模型类名 alias、legacy encoder alias，以及已退役的 CRAF、MARF、G2D 和 Multimodal-NF 入口 MUST 不再注册。
 
 #### Scenario: dataset registry 不含场景专用 alias
 - **WHEN** 构建流程导入默认 dataset 组件
@@ -314,6 +220,11 @@ teacher encoder loader MUST 以窄模块函数或可测试组件提供。loader 
 - **WHEN** 用户配置 `the scene-9 dataset-type spelling`
 - **THEN** registry 构建 MUST 拒绝该名称
 - **AND** 错误信息 MUST 指向 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9`
+
+#### Scenario: 旧研究线入口构建失败
+- **WHEN** 用户请求构建 `craf_fusion`、`marf_fusion`、`distillation.type: g2d` 或 `data.dataset.type: multimodal_nf`
+- **THEN** registry 或配置构建 MUST 拒绝该名称
+- **AND** 系统 MUST 不通过 deprecated alias、overlay 或兼容 facade 重定向到其它实现
 
 #### Scenario: 旧模型类名 alias 不再导出
 - **WHEN** 开发者从模型模块导入旧 fusion 类名 alias
@@ -334,7 +245,7 @@ teacher encoder loader MUST 以窄模块函数或可测试组件提供。loader 
 - **AND** 系统 MUST 不导入 dataset、model、training、checkpoint 或兼容 facade 模块
 
 ### Requirement: 已删除组件错误可诊断
-当用户引用已删除的兼容组件名称时，注册表错误 MUST 区分“未知名称”和“已删除名称”。已删除名称的错误信息 MUST 包含迁移路径。
+当用户引用已删除的兼容组件名称或退役研究线组件名称时，注册表错误 MUST 区分“未知名称”和“已删除名称”。已删除名称的错误信息 MUST 包含当前支持范围或迁移方向。
 
 #### Scenario: 已删除 dataset type
 - **WHEN** 用户请求构建 `scenario9` dataset
@@ -345,6 +256,11 @@ teacher encoder loader MUST 以窄模块函数或可测试组件提供。loader 
 - **WHEN** 用户请求构建旧 fusion 类名 alias 或已删除 image encoder alias
 - **THEN** 系统 MUST 抛出包含请求名称的错误
 - **AND** 错误信息 MUST 列出当前支持的 canonical 注册名
+
+#### Scenario: 已退役研究线组件
+- **WHEN** 用户请求 `craf_fusion`、`marf_fusion`、`g2d` distiller 或 `multimodal_nf` dataset
+- **THEN** 系统 MUST 抛出包含请求名称的错误
+- **AND** 错误信息 MUST 说明该入口已退役且不提供兼容迁移
 
 ### Requirement: CLS-token Transformer fusion 组件注册
 项目 MUST 通过现有组件注册表暴露 CLS-token Transformer fusion 模型。新增模型 MUST 能通过 `MODELS` 注册表构建，并 MUST 复用现有 fusion 训练、验证和评估入口。
@@ -403,4 +319,3 @@ CSI 相关注册错误 MUST 使用现有注册表错误风格，并在未知名�
 - **WHEN** 配置中引用 `pilot_dual_view_csi` 但提供非法 `view_fusion` 或非正数 `pilot_len`
 - **THEN** 系统 MUST 抛出明确异常
 - **AND** 错误信息 MUST 包含非法字段或原始构建错误
-

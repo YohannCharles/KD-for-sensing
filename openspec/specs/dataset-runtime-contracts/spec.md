@@ -6,10 +6,10 @@
 ### Requirement: Dataset descriptor 注册契约
 系统 MUST 提供 dataset descriptor 或等价机制，用于描述每个数据集家族的 dataset type、默认目录、存储类型、split 语义、支持模态、支持 target schema 和本地产物边界。descriptor 查询 MUST 保持轻量，不得导入 pandas、h5py、torch dataset、模型或训练模块。
 
-#### Scenario: 查询 Multimodal-NF descriptor
-- **WHEN** 代码查询 `multimodal_nf` dataset descriptor
-- **THEN** 系统 MUST 返回 family 名称、默认根目录 `dataset/MultimodalNF`、存储类型 `hdf5_frame`、默认 split 策略和支持的模态/profile
-- **AND** 查询过程 MUST 不读取真实 HDF5 数据、不打开 codebook 文件、不导入训练循环
+#### Scenario: 查询当前支持 dataset descriptor
+- **WHEN** 代码查询 DeepSense6G、MMW 或 Raymobtime s008 的 descriptor
+- **THEN** 系统 MUST 返回对应 family 名称、默认根目录、存储类型、默认 split 策略和支持的模态/profile
+- **AND** 查询过程 MUST 不读取真实数据、不导入 torch dataset、模型或训练循环
 
 #### Scenario: 查询旧数据集 descriptor
 - **WHEN** 代码查询 DeepSense6G、MMW 或 Raymobtime s008 的 descriptor
@@ -19,11 +19,11 @@
 ### Requirement: Sample index 统一契约
 系统 MUST 提供 sample index 契约，把 CSV、HDF5、NPZ cache 或 manifest 转换为轻量样本 rows。sample row MUST 至少能表达 `sample_id`、split、数据集家族、scene/city、trajectory、frame、资源引用、target 引用和 metadata。sample index 初始化 MUST 不物化 image、LiDAR、CSI/channel 等大数组。
 
-#### Scenario: HDF5 frame index
-- **WHEN** Multimodal-NF index builder 读取 city-level HDF5 metadata
-- **THEN** 每个合法 frame MUST 生成一个可追踪 sample row
-- **AND** row MUST 包含 city id、trajectory id、frame id 和对应 channel/image/lidar/resource 引用
-- **AND** index metadata MUST 记录样本数、city 分布、split 策略和输入文件 fingerprint
+#### Scenario: sequence 或 snapshot index
+- **WHEN** 当前支持 dataset 从 CSV、NPZ cache 或 manifest 构建 sample index
+- **THEN** 每个合法样本 MUST 生成一个可追踪 sample row
+- **AND** row MUST 包含 sample id、split、domain/scene/trajectory/frame 或等价字段和资源引用
+- **AND** index metadata MUST 记录样本数、split 策略和输入文件 fingerprint 或等价来源信息
 
 #### Scenario: CSV sequence index 兼容
 - **WHEN** DeepSense6G 仍使用现有 CSV sequence 样本构建
@@ -34,21 +34,21 @@
 系统 MUST 支持按模态和 profile 注册 modality adapter。adapter MUST 声明输入字段、所需资源引用、输出 sample key、shape/dtype 语义、cache/normalization 能力和错误信息。dataset 取样 MUST 只调用启用模态对应的 adapter。
 
 #### Scenario: 只加载启用模态
-- **WHEN** 用户构建只启用 `gps` 和 `csi` 的 Multimodal-NF dataset
-- **THEN** dataset MUST 不读取 image 或 LiDAR HDF5/zip 数据
+- **WHEN** 用户构建只启用部分输入模态的当前支持 dataset
+- **THEN** dataset MUST 不读取未启用模态的文件或 cache 数据
 - **AND** 返回样本 MUST 只包含启用模态字段、目标字段和 metadata
 
 #### Scenario: profile shape 校验
-- **WHEN** adapter 读取到的 Multimodal-NF LiDAR 点云不是 `[P, 3]` 或 image 不是 RGB 三通道
+- **WHEN** adapter 读取到的输入数据不符合对应 profile 声明的 shape 或 dtype
 - **THEN** 系统 MUST 抛出包含 dataset family、modality、profile、sample_id 和实际 shape 的清晰错误
 
 ### Requirement: Target provider 契约
 系统 MUST 支持按 objective 或 target schema 注册 target provider。target provider MUST 负责生成主 label、辅助 target、valid mask 和 target metadata，并 MUST 允许 train split 产出的统计或 codebook metadata 复用于 val/test split。
 
-#### Scenario: 近场 beam target
-- **WHEN** Multimodal-NF target provider 读取 Top-5 三维 beam codebook 标签
-- **THEN** provider MUST 返回 flattened `target_beam`
-- **AND** provider MUST 保留 Top-5 triplet、beam power、codebook shape 和 flatten 规则 metadata
+#### Scenario: beam target
+- **WHEN** 当前支持 beam prediction 或 beam selection objective 读取目标字段
+- **THEN** provider MUST 返回训练主 loss 使用的 `target_beam` 或等价 label
+- **AND** provider MUST 保留当前数据集可用的 target metadata 用于诊断和 artifact 追踪
 
 #### Scenario: Artifact 复用
 - **WHEN** train dataset 已解析 codebook metadata 或 normalizer artifact
@@ -79,17 +79,17 @@
 ### Requirement: Runtime metadata 区分 dataset family 与 target schema
 Dataset runtime metadata MUST 同时记录 dataset family 信息和当前 objective target schema。dataset family MUST 表达数据来源、storage kind、split 和 profiles；target schema MUST 表达当前 run 实际训练或评估的主 target 和辅助 target。
 
-#### Scenario: Multimodal-NF metadata 双层记录
-- **WHEN** 训练或评估构建 Multimodal-NF dataloaders
-- **THEN** runtime metadata MUST 记录 `dataset_type: multimodal_nf`、storage kind、split strategy、enabled modalities 和 input profiles
+#### Scenario: metadata 双层记录
+- **WHEN** 训练或评估构建当前支持 dataset 的 dataloaders
+- **THEN** runtime metadata MUST 记录 dataset type、storage kind、split strategy、enabled modalities 和 input profiles
 - **AND** runtime metadata MUST 记录当前 objective 对应的 target schema
 - **AND** 二者 MUST 不互相覆盖
 
-#### Scenario: Raymobtime 与 Multimodal-NF 语义隔离
-- **WHEN** 系统写出 Raymobtime s008 和 Multimodal-NF run metadata
+#### Scenario: 不同 dataset objective 语义隔离
+- **WHEN** 系统写出 Raymobtime s008 和 DeepSense6G/MMW run metadata
 - **THEN** Raymobtime current snapshot beam selection MUST 使用 Raymobtime task semantics
-- **AND** Multimodal-NF near-field beam selection MUST 使用近场 codebook task semantics
-- **AND** 两者 MUST 不共享会导致误读的 target schema 名称
+- **AND** DeepSense6G/MMW future beam prediction MUST 使用 future sequence task semantics
+- **AND** 不同数据集 MUST 不共享会导致误读的 target schema 名称
 
 ### Requirement: Path auxiliary target flat sample 契约
 RuntimeDataset 或等价 dataset MUST 支持在 flat sample 中表达 path-level auxiliary targets。该契约 MUST 将 `path_params`、`path_descriptor`、`path_semantic_label` 和 `path_valid` 标记为 target/diagnostic 字段，而不是 input modality 字段。
@@ -123,3 +123,23 @@ RuntimeDataset 或等价 dataset MUST 支持在 flat sample 中表达 path-level
 - **AND** 只有 `allow_labeled_target_path_supervision=true` 时，runtime MAY 允许 path_semantic_label 或 path_descriptor supervision
 - **AND** unlabeled target subset MUST 继续触发 sensitive field guard
 
+### Requirement: Target sensitive auxiliary supervision policy
+训练 runtime MUST 对 target split 中的 sensitive supervision 字段实施显式 policy。`beam`、`beam_power`、CSI/channel、`path_params`、`path_descriptor`、`path_semantic_label` 和 `radio_semantic_label` MUST 按 split、label budget、labeled subset 状态和显式 opt-in 配置决定是否可被训练 loss 使用。
+
+#### Scenario: unlabeled target 禁止 sensitive supervision
+- **WHEN** target adaptation batch 来自 unlabeled target subset 或 `label_budget=0`
+- **THEN** 训练 loss 访问真实 target `beam`、`beam_power`、CSI/channel、path 或 radio semantic 字段作为监督 MUST 失败
+- **AND** error message MUST 包含 split、field name、label budget、labeled subset 状态和可执行修复提示
+
+#### Scenario: labeled target auxiliary supervision 需要 opt-in
+- **WHEN** `label_budget>0` 且 batch 来自 labeled target subset
+- **THEN** 系统 MUST 允许 supervised beam loss 使用 labeled beam target
+- **AND** path auxiliary supervision MUST 只有在显式启用 `allow_labeled_target_path_supervision` 或等价配置时才能使用
+- **AND** radio auxiliary supervision MUST 只有在显式启用 `allow_labeled_target_radio_supervision` 或等价配置时才能使用
+- **AND** 未启用 opt-in 时访问对应字段作为训练监督 MUST 失败
+
+#### Scenario: sensitive usage metadata 可追踪
+- **WHEN** target adaptation run 完成或失败
+- **THEN** run metadata MUST 记录 sensitive field policy、label budget、labeled subset 状态和每类 target sensitive 字段是否被训练使用
+- **AND** metadata MUST 至少覆盖 `used_target_beam_for_training`、`used_target_beam_power_for_training`、`used_target_csi_for_training`、`used_target_path_params_for_training`、`used_target_path_label_for_training` 和 `used_target_radio_label_for_training`
+- **AND** 这些字段 MUST 可被下游 summary 和 quick conclusion 消费

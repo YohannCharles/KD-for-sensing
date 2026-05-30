@@ -40,7 +40,6 @@ from kd_sensing.engine.runtime import (
     resolve_amp_settings,
     transfer_non_blocking,
 )
-from kd_sensing.preprocessing.multimodal_nf_derived_cache import summarize_cache_statuses
 
 GETITEM_COMPONENT_KEYS = ("image", "radar", "gps", "lidar", "csi", "mmwave", "auxiliary_targets")
 
@@ -150,8 +149,6 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     total_step_time = sum(step_times)
     runtime_metadata = throughput_run_metadata(cfg, dataloaders, device)
     mmw_summary = _mmw_hist_beam_profile_summary(cfg, runtime_metadata)
-    multimodal_nf_summary = _multimodal_nf_profile_summary(runtime_metadata)
-    cache_io_summary = _multimodal_nf_cache_io_summary(multimodal_nf_summary)
     wait_breakdown = _wait_vs_gpu_step_breakdown(
         wait_times=loader_times,
         transfer_times=transfer_times,
@@ -204,15 +201,11 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "dataloader_splits": runtime_metadata.get("dataloader_splits", runtime_metadata.get("dataloader", {})),
         "progress": runtime_metadata.get("progress", {}),
         "cache_policy": _cache_policy_summary(runtime_metadata.get("cache", {})),
-        "cache_io": cache_io_summary,
         "io_risk": _io_risk_summary(
             wait_breakdown=wait_breakdown,
-            cache_io=cache_io_summary,
-            multimodal_nf=multimodal_nf_summary,
             mmw_hist_beam=mmw_summary,
         ),
         "mmw_hist_beam": mmw_summary,
-        "multimodal_nf": multimodal_nf_summary,
         "runtime": runtime_metadata,
     }
     payload = json.dumps(result, indent=2)
@@ -431,180 +424,23 @@ def _cache_policy_summary(cache_metadata: dict[str, Any]) -> dict[str, Any]:
         "image_policy": image.get("policy") if isinstance(image, dict) else None,
         "image": image if isinstance(image, dict) else {},
         "lidar_policy": lidar.get("policy") if isinstance(lidar, dict) else None,
-        "multimodal_nf": cache_metadata.get("multimodal_nf", {}) if isinstance(cache_metadata, dict) else {},
         "splits": cache_metadata.get("splits", {}) if isinstance(cache_metadata, dict) else {},
-    }
-
-
-def _multimodal_nf_profile_summary(runtime_metadata: dict[str, Any]) -> dict[str, Any]:
-    splits = runtime_metadata.get("splits", {})
-    result: dict[str, Any] = {"splits": {}}
-    if not isinstance(splits, dict):
-        return result
-    for split, metadata in splits.items():
-        if not isinstance(metadata, dict):
-            continue
-        nf_metadata = metadata.get("multimodal_nf", {})
-        derived_cache = metadata.get("derived_cache") or nf_metadata.get("derived_cache", {})
-        if derived_cache:
-            status_summary = summarize_cache_statuses(derived_cache)
-            result["splits"][split] = {
-                "enabled_modalities": metadata.get("enabled_modalities", []),
-                "derived_cache": derived_cache,
-                "cache_status_summary": status_summary,
-            }
-    result["cache_validation_seconds"] = _multimodal_nf_validation_seconds(result)
-    result["cache_status_summary"] = summarize_cache_statuses(result.get("splits", {}))
-    result["cache_migration_seconds"] = _multimodal_nf_migration_seconds(result)
-    result["pre_gpu_step_cache_actions"] = _multimodal_nf_pre_gpu_step_cache_actions(result)
-    return result
-
-
-def _multimodal_nf_validation_seconds(summary: dict[str, Any]) -> dict[str, float]:
-    result: dict[str, float] = {}
-    for split_metadata in summary.get("splits", {}).values():
-        for modality, cache_metadata in split_metadata.get("derived_cache", {}).items():
-            if not isinstance(cache_metadata, dict):
-                continue
-            result[str(modality)] = result.get(str(modality), 0.0) + float(
-                cache_metadata.get("validation_duration_seconds", 0.0) or 0.0
-            )
-    return result
-
-
-def _multimodal_nf_migration_seconds(summary: dict[str, Any]) -> dict[str, float]:
-    result: dict[str, float] = {}
-    for split_metadata in summary.get("splits", {}).values():
-        for modality, cache_metadata in split_metadata.get("derived_cache", {}).items():
-            if not isinstance(cache_metadata, dict):
-                continue
-            if not cache_metadata.get("metadata_upgraded") and not cache_metadata.get("migration_pending"):
-                continue
-            result[str(modality)] = result.get(str(modality), 0.0) + float(
-                cache_metadata.get("validation_duration_seconds", 0.0) or 0.0
-            )
-    return result
-
-
-def _multimodal_nf_pre_gpu_step_cache_actions(summary: dict[str, Any]) -> dict[str, Any]:
-    status_summary = summary.get("cache_status_summary", {}) if isinstance(summary, dict) else {}
-    return {
-        "metadata_upgrade_pending": int(status_summary.get("migration_pending", 0) or 0),
-        "metadata_upgraded": int(status_summary.get("metadata_upgraded", 0) or 0),
-        "cache_rebuild_detected": int(status_summary.get("rebuilt", 0) or 0),
-        "cache_generation_detected": int(status_summary.get("generated", 0) or 0),
-        "cache_invalid": int(status_summary.get("invalid", 0) or 0),
-        "cache_missing": int(status_summary.get("missing", 0) or 0),
-    }
-
-
-def _multimodal_nf_cache_io_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {"modalities": {}, "totals": {"opened_files": 0, "mapped_bytes": 0, "read_count": 0}}
-    for split_metadata in summary.get("splits", {}).values():
-        for modality, cache_metadata in split_metadata.get("derived_cache", {}).items():
-            if not isinstance(cache_metadata, dict):
-                continue
-            io_metadata = cache_metadata.get("io") if isinstance(cache_metadata.get("io"), dict) else {}
-            modality_summary = result["modalities"].setdefault(
-                str(modality),
-                {
-                    "cache_path_count": 0,
-                    "cache_total_bytes": 0,
-                    "opened_files": 0,
-                    "mapped_bytes": 0,
-                    "open_seconds": _summary([]),
-                    "read_seconds": _summary([]),
-                    "storage_kind": cache_metadata.get("storage_kind"),
-                    "layout": cache_metadata.get("layout"),
-                    "recommended_access_pattern": cache_metadata.get("recommended_access_pattern"),
-                },
-            )
-            modality_summary["cache_path_count"] += int(cache_metadata.get("cache_path_count", 0) or 0)
-            modality_summary["cache_total_bytes"] += int(cache_metadata.get("cache_total_bytes", 0) or 0)
-            modality_summary["opened_files"] += int(io_metadata.get("opened_files", 0) or 0)
-            modality_summary["mapped_bytes"] += int(io_metadata.get("mapped_bytes", 0) or 0)
-            modality_summary["open_seconds"] = _merge_timing_summary(
-                modality_summary["open_seconds"],
-                io_metadata.get("open_seconds", {}),
-            )
-            modality_summary["read_seconds"] = _merge_timing_summary(
-                modality_summary["read_seconds"],
-                io_metadata.get("read_seconds", {}),
-            )
-            result["totals"]["opened_files"] += int(io_metadata.get("opened_files", 0) or 0)
-            result["totals"]["mapped_bytes"] += int(io_metadata.get("mapped_bytes", 0) or 0)
-            result["totals"]["read_count"] += int((io_metadata.get("read_seconds") or {}).get("count", 0) or 0)
-    return result
-
-
-def _merge_timing_summary(left: dict[str, Any], right: dict[str, Any]) -> dict[str, float]:
-    if not isinstance(right, dict) or int(right.get("count", 0) or 0) == 0:
-        return left
-    if int(left.get("count", 0) or 0) == 0:
-        return {
-            "count": int(right.get("count", 0) or 0),
-            "mean": float(right.get("mean", 0.0) or 0.0),
-            "p50": float(right.get("p50", right.get("mean", 0.0)) or 0.0),
-            "p95": float(right.get("p95", 0.0) or 0.0),
-            "min": float(right.get("min", 0.0) or 0.0),
-            "max": float(right.get("max", 0.0) or 0.0),
-        }
-    total_count = int(left.get("count", 0) or 0) + int(right.get("count", 0) or 0)
-    total_mean = (
-        float(left.get("mean", 0.0) or 0.0) * int(left.get("count", 0) or 0)
-        + float(right.get("mean", 0.0) or 0.0) * int(right.get("count", 0) or 0)
-    ) / total_count
-    return {
-        "count": total_count,
-        "mean": float(total_mean),
-        "p50": max(float(left.get("p50", 0.0) or 0.0), float(right.get("p50", right.get("mean", 0.0)) or 0.0)),
-        "p95": max(float(left.get("p95", 0.0) or 0.0), float(right.get("p95", 0.0) or 0.0)),
-        "min": min(float(left.get("min", 0.0) or 0.0), float(right.get("min", 0.0) or 0.0)),
-        "max": max(float(left.get("max", 0.0) or 0.0), float(right.get("max", 0.0) or 0.0)),
     }
 
 
 def _io_risk_summary(
     *,
     wait_breakdown: dict[str, Any],
-    cache_io: dict[str, Any],
-    multimodal_nf: dict[str, Any],
     mmw_hist_beam: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     wait_spikes = wait_breakdown.get("p95_spikes", {}) if isinstance(wait_breakdown, dict) else {}
-    cache_random_read_risk = any(
-        bool(cache_metadata.get("random_read_risk"))
-        for split_metadata in multimodal_nf.get("splits", {}).values()
-        for cache_metadata in split_metadata.get("derived_cache", {}).values()
-        if isinstance(cache_metadata, dict)
-    )
-    cache_validation_scan_detected = any(
-        bool(cache_metadata.get("source_fingerprint_scanned"))
-        for split_metadata in multimodal_nf.get("splits", {}).values()
-        for cache_metadata in split_metadata.get("derived_cache", {}).values()
-        if isinstance(cache_metadata, dict)
-    )
-    cache_status_summary = multimodal_nf.get("cache_status_summary", {}) if isinstance(multimodal_nf, dict) else {}
-    cache_read_tail_risk = any(
-        float((metadata.get("read_seconds") or {}).get("p95", 0.0) or 0.0)
-        > 3.0 * max(float((metadata.get("read_seconds") or {}).get("mean", 0.0) or 0.0), 1e-9)
-        for metadata in cache_io.get("modalities", {}).values()
-        if int((metadata.get("read_seconds") or {}).get("count", 0) or 0) > 1
-    )
     mmw_hist_beam = mmw_hist_beam or {}
     loader_wait_dominates = bool(wait_spikes.get("wait_gt_gpu_step", False))
     mmw_image_heavy = bool(mmw_hist_beam.get("image_heavy", False))
     return {
-        "cache_random_read_risk": bool(cache_random_read_risk),
         "loader_wait_dominates_step": loader_wait_dominates,
         "mmw_image_heavy_risk": bool(mmw_image_heavy),
         "worker_memory_risk": bool(mmw_hist_beam.get("worker_memory_risk", False)),
-        "cache_validation_scan_detected": bool(cache_validation_scan_detected),
-        "cache_migration_pending_detected": int(cache_status_summary.get("migration_pending", 0) or 0) > 0,
-        "cache_metadata_upgrade_detected": int(cache_status_summary.get("metadata_upgraded", 0) or 0) > 0,
-        "cache_rebuild_detected": int(cache_status_summary.get("rebuilt", 0) or 0) > 0,
-        "cache_read_tail_risk": bool(cache_read_tail_risk),
-        "mmap_page_fault_risk": bool(cache_random_read_risk and (cache_read_tail_risk or wait_spikes.get("wait_gt_gpu_step", False))),
         "primary_actions": _primary_io_actions(
             loader_wait_dominates=loader_wait_dominates,
             mmw_image_heavy=mmw_image_heavy,

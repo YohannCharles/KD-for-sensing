@@ -18,6 +18,7 @@ _BASE_LOSS = {
     "type": "focal_loss",
     "alpha": 1,
     "gamma": 2,
+    "soft_targets": {"enabled": False, "ignore_index": -100},
     "beam_soft": {"enabled": False, "weight": 0.0},
     "unimodal_aux": {"weight": 0.0},
     "objective": {

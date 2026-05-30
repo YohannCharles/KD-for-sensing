@@ -156,6 +156,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     report = {
         **metrics,
         "checkpoint_load": checkpoint_load,
+        "split_protocol": _evaluation_split_protocol_report(split_metadata),
         "runtime": {
             "run_dir": str(run_dir),
             "splits": split_metadata,
@@ -183,7 +184,54 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
         "checkpoint_load": checkpoint_load,
         "checkpoint_resolution": checkpoint_resolution.to_dict(),
         "split_metadata": split_metadata,
+        "split_protocol": report["split_protocol"],
         "throughput": throughput_metadata,
+    }
+
+
+def _evaluation_split_protocol_report(split_metadata: dict) -> dict:
+    test = split_metadata.get("test", {}) if isinstance(split_metadata, dict) else {}
+    sidecar = test.get("split_metadata", {}) if isinstance(test.get("split_metadata"), dict) else {}
+    split_metadata_available = sidecar.get("available")
+    if split_metadata_available is None:
+        split_metadata_available = bool(test.get("split_metadata_path") or test.get("split_protocol"))
+    split_metadata_path = test.get("split_metadata_path") or sidecar.get("path")
+    strict_validation_eligible = test.get("strict_validation_eligible")
+    reasons = list(test.get("eligibility_reasons") or [])
+    warnings = []
+    if split_metadata_available is False:
+        warnings.append(
+            {
+                "code": "split_metadata_missing",
+                "message": "Evaluation test CSV has no split metadata sidecar; treat split eligibility as unknown.",
+                "expected_path": sidecar.get("expected_path"),
+                "fix_hint": "Regenerate or reference the prepared split metadata before using this run for strict conclusions.",
+            }
+        )
+    elif strict_validation_eligible is False:
+        warnings.append(
+            {
+                "code": "split_not_strict_validation_eligible",
+                "message": "Split metadata marks this evaluation split as not eligible for strict validation.",
+                "eligibility_reasons": reasons,
+                "fix_hint": sidecar.get("fix_hint")
+                or "Regenerate MMW splits with split_strategy=group_safe_time_block and a fresh strict split tag.",
+            }
+        )
+    return {
+        "test_csv": test.get("csv_path"),
+        "test_csv_name": test.get("csv_name"),
+        "test_num_samples": test.get("num_samples"),
+        "split_metadata_available": bool(split_metadata_available),
+        "split_metadata_path": split_metadata_path,
+        "split_metadata_expected_path": sidecar.get("expected_path"),
+        "split_protocol": test.get("split_protocol"),
+        "split_strategy": test.get("split_strategy"),
+        "split_protocol_version": test.get("split_protocol_version"),
+        "strict_validation_eligible": strict_validation_eligible,
+        "eligibility_reasons": reasons,
+        "leakage_diagnostics": test.get("leakage_diagnostics"),
+        "warnings": warnings,
     }
 
 

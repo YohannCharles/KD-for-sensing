@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
@@ -66,3 +68,35 @@ print(json.dumps({{
     payload = json.loads(result.stdout)
 
     assert payload == {"fusion_module": False, "models_package": False}
+
+
+@pytest.mark.parametrize(
+    ("registry_name", "cfg"),
+    [
+        ("MODELS", {"type": "craf_fusion"}),
+        ("MODELS", {"type": "marf_fusion"}),
+        ("DISTILLERS", {"type": "g2d"}),
+        ("DATASETS", {"type": "multimodal_nf"}),
+        ("PREPROCESSORS", {"type": "multimodal_nf_audit"}),
+        ("PREPROCESSORS", {"type": "multimodal_nf_index"}),
+        ("PREPROCESSORS", {"type": "multimodal_nf_derived_cache"}),
+    ],
+)
+def test_retired_components_raise_removed_registry_errors(registry_name: str, cfg: dict):
+    code = f"""
+import json
+import sys
+sys.path.insert(0, {str(SRC)!r})
+from kd_sensing import registries
+try:
+    getattr(registries, {registry_name!r}).build({cfg!r})
+except registries.RegistryError as exc:
+    print(json.dumps({{"message": str(exc)}}))
+else:
+    raise AssertionError("retired component unexpectedly built")
+"""
+    result = subprocess.run([sys.executable, "-c", code], check=True, text=True, capture_output=True)
+    message = json.loads(result.stdout)["message"]
+
+    assert cfg["type"] in message
+    assert "retired" in message or "Removed component" in message

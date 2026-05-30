@@ -11,6 +11,7 @@ SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL = "snapshot_next_frame_balanced_seq"
 SUPPORTED_SPLIT_METADATA_PROTOCOLS = {
     SPLIT_METADATA_PROTOCOL,
     SNAPSHOT_NEXT_FRAME_SPLIT_PROTOCOL,
+    "mmw_sequence_split_v2",
 }
 
 
@@ -28,6 +29,7 @@ def discover_split_metadata_path(csv_path: str | Path) -> Path | None:
     path = Path(csv_path)
     candidates = [
         default_split_metadata_path(path),
+        path.with_name("split_metadata.json"),
         path.with_name(f"{path.stem}_split_metadata.json"),
         path.with_name(f"{path.stem}.split_metadata.json"),
     ]
@@ -75,12 +77,24 @@ def split_metadata_summary_for_csv(
         "available": True,
         "path": str(metadata_path),
         "split_protocol": protocol,
+        "split_strategy": metadata.get("split_strategy"),
+        "split_protocol_version": metadata.get("split_protocol_version"),
+        "strict_validation_eligible": metadata.get("strict_validation_eligible"),
+        "eligibility_reasons": metadata.get("eligibility_reasons"),
+        "leakage_diagnostics": metadata.get("leakage_diagnostics"),
+        "guard_band_frames": metadata.get("guard_band_frames"),
+        "block_size_frames": metadata.get("block_size_frames"),
+        "group_key_fields": metadata.get("group_key_fields"),
         "in_len": metadata.get("in_len"),
         "out_len": metadata.get("out_len"),
-        "split_seed": metadata.get("split_seed"),
+        "split_seed": metadata.get("split_seed", metadata.get("seed")),
         "training_set_pct": metadata.get("training_set_pct"),
         "sequence_counts": metadata.get("sequence_counts"),
         "window_counts": metadata.get("window_counts"),
+        "train_window_count": metadata.get("train_window_count"),
+        "test_window_count": metadata.get("test_window_count"),
+        "label_distribution": metadata.get("label_distribution"),
+        "fix_hint": metadata.get("fix_hint"),
     }
     if protocol not in SUPPORTED_SPLIT_METADATA_PROTOCOLS and require_balanced:
         message = (
@@ -99,4 +113,10 @@ def split_metadata_summary_for_csv(
             summary["split_num_samples"] = split_payload.get("num_samples")
             summary["split_seq_index"] = split_payload.get("seq_index")
             summary["split_csv_path"] = split_payload.get("csv_path")
+        elif protocol == "mmw_sequence_split_v2":
+            summary["split"] = split
+            summary["split_sequence_count"] = len(metadata.get(f"{split}_seq_indices", []) or [])
+            summary["split_num_samples"] = metadata.get(f"{split}_window_count")
+            summary["split_seq_index"] = metadata.get(f"{split}_seq_indices")
+            summary["split_csv_path"] = str(Path(csv_path))
     return summary

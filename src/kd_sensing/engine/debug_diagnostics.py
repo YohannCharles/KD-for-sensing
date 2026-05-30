@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.config.io import safe_load_yaml
-from kd_sensing.engine.multimodal_nf_runtime import multimodal_nf_codebook_metadata_from_config
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.utils.paths import resolve_path
 
@@ -208,7 +207,6 @@ def build_startup_summary(
     csi_cfg = ((student_cfg.get("encoders") or {}).get("csi") or {}) if isinstance(student_cfg, dict) else {}
     parameter_report = module_trainability_report(model)
     objective_metadata = objective_runtime_metadata(cfg)
-    codebook_metadata = multimodal_nf_codebook_metadata_from_config(cfg)
     summary = {
         "experiment": {
             "name": cfg.get("experiment", {}).get("name"),
@@ -229,8 +227,6 @@ def build_startup_summary(
             "seq_len": dataset_cfg.get("seq_len"),
             "num_pred": dataset_cfg.get("num_pred"),
             "num_classes": model_cfg.get("num_classes") or student_cfg.get("num_classes"),
-            "num_beam_classes": codebook_metadata.get("num_beam_classes") if codebook_metadata else None,
-            "codebook": codebook_metadata,
             "batch_size": {
                 "train": loader_cfg.get("train_batch_size", loader_cfg.get("batch_size")),
                 "test": loader_cfg.get("test_batch_size", loader_cfg.get("batch_size")),

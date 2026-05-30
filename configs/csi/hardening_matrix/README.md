@@ -14,7 +14,6 @@ Recommended order:
 1. First batch: A0, A1, A2, B3, B4, B5, B6, C1, C2.
 2. Second batch: D1, D2, D3, D4.
 3. Third batch: E0-E3 under `configs/fusion/csi_hardening_matrix`.
-4. Fourth batch: E4 G2D-style validation.
 
 A1 is the only mild pilot-estimation run and uses `csi_estimation.mode: est_snr` with train-time 25-35 dB sampling and 30 dB eval diagnostics. B/C/D runs explicitly set `csi_estimation.mode: none`; they isolate hardening or encoder variables and must not inherit A1 pilot noise.
 

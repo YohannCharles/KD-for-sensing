@@ -12,6 +12,7 @@ from kd_sensing.engine.runtime import (
     prepare_task_auxiliary_targets,
     prepare_task_batch,
     prepare_task_labels,
+    prepare_task_soft_beam_targets,
     run_model_step,
 )
 from kd_sensing.engine.training_extensions import (
@@ -82,6 +83,15 @@ class BatchStepRunner:
             device=context.device,
             non_blocking=context.non_blocking,
         )
+        soft_beam_targets = prepare_task_soft_beam_targets(
+            batch,
+            cfg=self.cfg,
+            num_pred=context.num_pred,
+            num_classes=context.num_classes,
+            downsample_ratio=self.model_cfg.get("downsample_ratio", 1),
+            device=context.device,
+            non_blocking=context.non_blocking,
+        )
         prediction_targets = prepare_prediction_targets(
             labels=labels,
             auxiliary_targets=auxiliary_targets,
@@ -111,8 +121,6 @@ class BatchStepRunner:
                 device=context.device,
                 non_blocking=context.non_blocking,
                 force_modality_mask=controls.force_modality_mask,
-                force_reliability_gate=controls.force_reliability_gate,
-                gate_temperature=controls.gate_temperature,
             )
             student_model_output = student_step.model_output
             student_outputs = student_step.logits
@@ -123,6 +131,7 @@ class BatchStepRunner:
                 step=step,
                 batch=batch,
                 labels=labels,
+                soft_beam_targets=soft_beam_targets,
                 student_output=student_model_output,
                 student_logits=student_outputs,
                 controls=controls,
@@ -149,9 +158,6 @@ class BatchStepRunner:
             extra_loss_values = {
                 "beam_soft": student_outputs.sum() * 0.0,
                 "unimodal": student_outputs.sum() * 0.0,
-                "counterfactual": student_outputs.sum() * 0.0,
-                "prior_regularization": student_outputs.sum() * 0.0,
-                "reliability_kd": student_outputs.sum() * 0.0,
             }
             for extension, state in zip(self.extensions, self.extension_states):
                 bundle = extension.after_forward(context, state, batch_state)
@@ -253,6 +259,11 @@ class BatchStepRunner:
         student_logits = student_outputs.reshape(-1, context.num_classes)
         teacher_logits = teacher_outputs.reshape(-1, context.num_classes)
         targets = labels.flatten()
+        soft_targets = (
+            batch_state.soft_beam_targets.reshape(-1, context.num_classes)
+            if batch_state.soft_beam_targets is not None
+            else None
+        )
         student_input_window = feature_prefix(
             student_input_features,
             context.seq_length_student - 1,
@@ -282,6 +293,7 @@ class BatchStepRunner:
             student_output_window,
             teacher_output_window,
             current_alpha,
+            soft_targets=soft_targets,
         )
         return BaseLossResult(
             total_loss=total_loss,

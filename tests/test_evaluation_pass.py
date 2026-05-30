@@ -40,6 +40,18 @@ class _SelectionHeadsModel(torch.nn.Module):
         }
 
 
+class _HardLabelOnlyCriterion(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.targets: list[torch.Tensor] = []
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if targets.dtype != torch.long or targets.ndim != 1:
+            raise AssertionError(f"evaluation loss must receive flattened hard labels, got {targets.dtype} {targets.shape}")
+        self.targets.append(targets.detach().cpu().clone())
+        return torch.nn.functional.cross_entropy(inputs, targets)
+
+
 def _cfg() -> dict:
     return {
         "experiment": {"task": "fusion", "objective": "beam"},
@@ -63,6 +75,25 @@ def _dataloader():
             "mmwave": torch.zeros(2, 2, 64),
             "input_beam": torch.tensor([[0, 0], [1, 1]]),
             "target_beam": torch.tensor([[0], [2]]),
+        }
+    ]
+
+
+def _dataloader_with_soft_targets():
+    return [
+        {
+            "gps": torch.zeros(2, 2, 3),
+            "mmwave": torch.zeros(2, 2, 64),
+            "input_beam": torch.tensor([[0, 0], [1, 1]]),
+            "target_beam": torch.tensor([[0], [2]]),
+            "target_beam_distribution": torch.tensor(
+                [
+                    [[0.0, 0.0, 0.0, 1.0]],
+                    [[0.0, 1.0, 0.0, 0.0]],
+                ],
+                dtype=torch.float32,
+            ),
+            "target_beam_distribution_mask": torch.tensor([[True], [True]]),
         }
     ]
 
@@ -109,6 +140,20 @@ def test_evaluation_pass_matches_validator_and_records_runtime_metadata():
     assert wrapped["objective"]["name"] == "beam"
     assert wrapped["objective"]["primary_metric"] == "val_adba"
     assert wrapped["enabled_modalities"] == ["gps", "mmwave"]
+
+
+def test_evaluation_pass_uses_hard_labels_when_soft_targets_are_present():
+    cfg = _cfg()
+    model = _MaskAwareFusionModel()
+    criterion = _HardLabelOnlyCriterion()
+
+    result = run_evaluation_pass(model, _dataloader_with_soft_targets(), cfg, criterion, torch.device("cpu"))
+
+    assert criterion.targets
+    assert torch.equal(criterion.targets[0], torch.tensor([0, 2]))
+    assert result.labels.dtype == torch.long
+    assert result.labels.tolist() == [[0], [2]]
+    assert result.metrics["topk"]["1"] == pytest.approx([1.0])
 
 
 def test_evaluation_pass_force_mask_all_enabled_matches_normal_pass():

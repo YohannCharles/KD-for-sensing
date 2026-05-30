@@ -24,9 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
             "raymobtime_s008_index",
             "raymobtime_s008_ray_features",
             "raymobtime_s008_cache",
-            "multimodal_nf_audit",
-            "multimodal_nf_index",
-            "multimodal_nf_derived_cache",
         ],
         help="Preprocessor name. Defaults to preprocessing.type from the config.",
     )

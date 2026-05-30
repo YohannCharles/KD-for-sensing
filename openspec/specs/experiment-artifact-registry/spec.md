@@ -127,31 +127,26 @@ KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加
 - **THEN** registry 构建流程 MUST 拒绝该输入
 - **AND** 错误信息 MUST 包含期望模态和实际模态
 
-### Requirement: Teacher-prior CRAF artifact compatibility
-新增 teacher reliability registry MUST 不破坏现有 best checkpoint registry、normalization artifacts 和 train log 输出格式。
+### Requirement: Teacher checkpoint artifact compatibility
+teacher metrics 和 checkpoint registry MUST 不破坏现有 best checkpoint registry、normalization artifacts 和 train log 输出格式。已退役的 teacher-prior CRAF reliability registry MUST 不再作为支持产物。
 
 #### Scenario: 旧 checkpoint registry 继续可用
 - **WHEN** 用户运行既有单模态 KD 或评估配置
 - **THEN** 系统 MUST 继续按现有 best checkpoint registry 解析 teacher checkpoint
 - **AND** 系统 MUST 不要求 teacher reliability registry 存在
 
-#### Scenario: teacher-prior CRAF 记录 registry 引用
-- **WHEN** Stage 2 或 Stage 3 使用 teacher reliability registry
-- **THEN** `final_config.yaml` 或 `train_log.json` MUST 记录最终解析的 teacher registry 路径
-- **AND** 训练日志 MUST 记录 registry 中每个启用模态的 checkpoint 和 prior
+### Requirement: Teacher metrics checkpoint objective selection
+Teacher metrics helper MUST 按 metrics 或 checkpoint metadata 中声明的 selection objective 选择 checkpoint。未显式要求 Top-1 teacher 时，helper MUST 优先使用 objective-selected checkpoint；对 LiDAR teacher，helper MUST NOT 在存在 `best.pth` 或 objective checkpoint metadata 时默认选择 `best_top1.pth`。
 
-### Requirement: Teacher reliability registry checkpoint objective selection
-Teacher reliability registry MUST 按 metrics 或 checkpoint metadata 中声明的 selection objective 选择 checkpoint。未显式要求 Top-1 teacher 时，registry MUST 优先使用 objective-selected checkpoint；对 LiDAR teacher，registry MUST NOT 在存在 `best.pth` 或 objective checkpoint metadata 时默认选择 `best_top1.pth`。
-
-#### Scenario: registry 使用 metrics 中声明的 checkpoint
+#### Scenario: helper 使用 metrics 中声明的 checkpoint
 - **WHEN** teacher metrics 或 checkpoint sidecar metadata 提供可访问的 checkpoint 路径和 selection metadata
-- **THEN** teacher reliability registry MUST 使用该 checkpoint 路径
-- **AND** registry MUST 记录 `selection_metric`、`selection_mode`、`selected_epoch` 和 checkpoint 来源
+- **THEN** teacher metrics helper MUST 使用该 checkpoint 路径
+- **AND** helper MUST 记录 `selection_metric`、`selection_mode`、`selected_epoch` 和 checkpoint 来源
 
 #### Scenario: LiDAR teacher 默认使用 objective checkpoint
 - **WHEN** LiDAR teacher run 同时包含 `checkpoints/best.pth` 和 `checkpoints/best_top1.pth`，且用户未显式要求 Top-1 teacher
-- **THEN** teacher reliability registry MUST 选择 `checkpoints/best.pth`
-- **AND** registry MUST NOT 因为 `best_top1.pth` 存在而覆盖 `best.pth`
+- **THEN** teacher metrics helper MUST 选择 `checkpoints/best.pth`
+- **AND** helper MUST NOT 因为 `best_top1.pth` 存在而覆盖 `best.pth`
 
 #### Scenario: 显式 Top-1 teacher 使用 best_top1 checkpoint
 - **WHEN** 用户显式指定 checkpoint 路径为 `best_top1.pth` 或 registry selection metric 为验证 Top-1

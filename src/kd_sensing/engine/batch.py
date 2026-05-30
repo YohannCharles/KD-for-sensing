@@ -35,6 +35,72 @@ def prepare_labels(
     return label_downsampled[:, :num_pred].to(device, non_blocking=non_blocking)
 
 
+def prepare_soft_beam_targets(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    num_classes: int,
+    device: torch.device,
+    downsample_ratio: int = 1,
+    enabled: bool = True,
+    non_blocking: bool = False,
+) -> torch.Tensor | None:
+    if not enabled or "target_beam_distribution" not in batch:
+        return None
+    targets = batch["target_beam_distribution"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    if targets.ndim == 2:
+        targets = targets.unsqueeze(1)
+    if targets.ndim != 3:
+        raise ValueError(f"target_beam_distribution must have shape [B, H, C], got {tuple(targets.shape)}.")
+    targets = targets[:, :num_pred, :]
+    downsample_ratio = int(downsample_ratio or 1)
+    if int(targets.shape[-1]) != int(num_classes) and downsample_ratio > 1:
+        source_classes = int(targets.shape[-1])
+        class_ids = torch.arange(source_classes, device=device, dtype=torch.long)
+        group_ids = torch.div(class_ids, downsample_ratio, rounding_mode="floor").clamp_max(int(num_classes) - 1)
+        downsampled = torch.zeros(*targets.shape[:2], int(num_classes), dtype=targets.dtype, device=device)
+        targets = downsampled.scatter_add(
+            -1,
+            group_ids.view(1, 1, -1).expand(targets.shape[0], targets.shape[1], -1),
+            targets,
+        )
+    if int(targets.shape[-1]) != int(num_classes):
+        raise ValueError(
+            f"target_beam_distribution class dimension must match num_classes={num_classes}, "
+            f"got {int(targets.shape[-1])}."
+        )
+    mask = batch.get("target_beam_distribution_mask")
+    content_valid = torch.isfinite(targets).all(dim=-1) & targets.sum(dim=-1).gt(0)
+    if mask is None:
+        valid = content_valid
+    else:
+        valid = mask.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+        if valid.ndim == 1:
+            valid = valid.unsqueeze(1)
+        if valid.ndim != 2:
+            raise ValueError(f"target_beam_distribution_mask must have shape [B, H], got {tuple(valid.shape)}.")
+        valid = valid[:, : targets.shape[1]]
+        valid = valid & content_valid
+    row_sum = targets.sum(dim=-1, keepdim=True)
+    normalized = torch.where(row_sum.gt(0), targets / row_sum.clamp_min(1e-12), torch.zeros_like(targets))
+    normalized = torch.where(valid.unsqueeze(-1), normalized, torch.zeros_like(normalized))
+    if "target_beam" not in batch:
+        return normalized
+    hard_labels = torch.floor(batch["target_beam"].float() / downsample_ratio).to(torch.long)
+    hard_labels = hard_labels.to(device=device, non_blocking=non_blocking)
+    if hard_labels.ndim == 1:
+        hard_labels = hard_labels.unsqueeze(1)
+    if hard_labels.ndim != 2:
+        raise ValueError(f"target_beam must have shape [B, H], got {tuple(hard_labels.shape)}.")
+    hard_labels = hard_labels[:, : targets.shape[1]]
+    hard_valid = hard_labels.ge(0) & hard_labels.lt(int(num_classes))
+    fallback_rows = (~valid) & hard_valid
+    if not torch.any(fallback_rows):
+        return normalized
+    fallback = F.one_hot(hard_labels.clamp_min(0), num_classes=int(num_classes)).to(normalized.dtype)
+    return torch.where(fallback_rows.unsqueeze(-1), fallback, normalized)
+
+
 def prepare_auxiliary_targets(
     batch: dict[str, torch.Tensor],
     *,
@@ -115,6 +181,7 @@ def prepare_radio_semantic_labels(
 
 SENSITIVE_TARGET_FIELDS = (
     "target_beam",
+    "target_beam_distribution",
     "beam",
     "beam_power",
     "csi",
@@ -134,20 +201,35 @@ def assert_sensitive_fields_allowed(
     label_budget: int | None,
     fields: tuple[str, ...] | list[str],
     allow_labeled_target_path_supervision: bool = False,
+    allow_labeled_target_radio_supervision: bool = False,
     hint: str = "Use source supervision, evaluation-only diagnostics, or enable the labeled target supervision option.",
 ) -> None:
     budget = int(label_budget or 0)
     split_text = str(split or batch.get("split") or "target").lower()
-    unlabeled = budget <= 0 or "unlabeled" in split_text
+    is_source = split_text.startswith("source")
+    is_target_test = "target_test" in split_text or split_text.endswith("test")
+    labeled_subset = (budget > 0) and ("unlabeled" not in split_text) and not is_target_test
+    if is_source:
+        return
     for field in fields:
         if field not in batch:
             continue
         is_path_field = field in {"path_params", "path_descriptor", "path_semantic_label"}
-        if not unlabeled and (not is_path_field or allow_labeled_target_path_supervision):
+        is_radio_field = field == "radio_semantic_label"
+        is_beam_field = field in {"target_beam", "target_beam_distribution", "beam"}
+        allowed = False
+        if labeled_subset and is_beam_field:
+            allowed = True
+        elif labeled_subset and is_path_field and allow_labeled_target_path_supervision:
+            allowed = True
+        elif labeled_subset and is_radio_field and allow_labeled_target_radio_supervision:
+            allowed = True
+        if allowed:
             continue
         raise RuntimeError(
             "Target sensitive field access blocked: "
-            f"split={split_text}, field={field}, label_budget={budget}. {hint}"
+            f"split={split_text}, field={field}, label_budget={budget}, "
+            f"labeled_subset={labeled_subset}. {hint}"
         )
 
 
@@ -343,8 +425,6 @@ def prepare_gps_inputs(
     if gps.ndim != 3:
         profile_text = f" for profile '{profile}'" if profile else ""
         raise ValueError(f"GPS input{profile_text} must have shape [B, T, F], got {tuple(gps.shape)}.")
-    if profile == "uav_xyz_snapshot" and int(gps.shape[-1]) != 3:
-        raise ValueError(f"GPS input profile 'uav_xyz_snapshot' requires [B, T, 3], got {tuple(gps.shape)}.")
     gps = gps[:, -seq_length:, :]
     batch_size, _, feature_dim = gps.shape
     pad_steps = max(num_pred - 1, 0)
@@ -375,6 +455,31 @@ def prepare_radar_inputs(
         radar_ra = radar_ra.unsqueeze(2)
     if radar_da.ndim == 4:
         radar_da = radar_da.unsqueeze(2)
+    if radar_ra.ndim != 5:
+        raise ValueError(
+            f"Radar RA input must have shape [B, T, H, W] or [B, T, C, H, W], got {tuple(radar_ra.shape)}."
+        )
+    if radar_da.ndim != 5:
+        raise ValueError(
+            f"Radar DA input must have shape [B, T, H, W] or [B, T, C, H, W], got {tuple(radar_da.shape)}."
+        )
+    if radar_ra.shape[:2] != radar_da.shape[:2] or radar_ra.shape[-2:] != radar_da.shape[-2:]:
+        raise ValueError(
+            "Radar RA/DA inputs must share batch, time, height, and width dimensions; "
+            f"got RA {tuple(radar_ra.shape)} and DA {tuple(radar_da.shape)}."
+        )
+    if int(radar_ra.shape[-2]) != 128 or int(radar_ra.shape[-1]) != 64:
+        profile_text = f" for profile '{profile}'" if profile else ""
+        raise ValueError(
+            f"Radar input{profile_text} must use RA/DA maps with shape [B, T, C, 128, 64], "
+            f"got RA {tuple(radar_ra.shape)}."
+        )
+    if int(radar_da.shape[-2]) != 128 or int(radar_da.shape[-1]) != 64:
+        profile_text = f" for profile '{profile}'" if profile else ""
+        raise ValueError(
+            f"Radar input{profile_text} must use RA/DA maps with shape [B, T, C, 128, 64], "
+            f"got DA {tuple(radar_da.shape)}."
+        )
     radar_ra = radar_ra[:, -seq_length:, ...]
     radar_da = radar_da[:, -seq_length:, ...]
     batch_size, _, channels, height, width = radar_ra.shape
@@ -406,26 +511,6 @@ def prepare_lidar_inputs(
     if "lidar" not in batch:
         raise ValueError("LiDAR input is required but batch does not contain a 'lidar' field.")
     lidar = batch["lidar"].to(device, non_blocking=non_blocking)
-    if profile == "point_cloud_xyz_10000":
-        if lidar.ndim == 3:
-            lidar = lidar.unsqueeze(0)
-        if lidar.ndim != 4 or int(lidar.shape[-1]) != 3:
-            raise ValueError(
-                "LiDAR input profile 'point_cloud_xyz_10000' requires shape [B, T, P, 3], "
-                f"got {tuple(lidar.shape)}."
-            )
-        lidar = lidar[:, -seq_length:, ...]
-        batch_size, _, point_count, coord_dim = lidar.shape
-        pad_steps = max(num_pred - 1, 0)
-        zeros = torch.zeros(
-            batch_size,
-            pad_steps,
-            point_count,
-            coord_dim,
-            dtype=lidar.dtype,
-            device=device,
-        )
-        return torch.cat([lidar, zeros], dim=1)
     if lidar.ndim == 4:
         lidar = lidar.unsqueeze(2)
     if lidar.ndim == 6:
@@ -506,12 +591,10 @@ def prepare_csi_inputs(
     if csi.ndim == 4:
         csi = csi.unsqueeze(0)
     if csi.ndim not in {5, 6}:
-        expected = "[B, T, M, K, 2]" if profile == "xl_mimo_nf" else "[B, T, Nsc, Nant, 2]"
         raise ValueError(
-            f"CSI input profile '{profile or 'pilot_dual_view'}' must have shape {expected}, got {tuple(csi.shape)}."
+            f"CSI input profile '{profile or 'pilot_dual_view'}' must have shape [B, T, Nsc, Nant, 2], "
+            f"got {tuple(csi.shape)}."
         )
-    if profile == "xl_mimo_nf" and (csi.ndim != 5 or int(csi.shape[-1]) != 2):
-        raise ValueError(f"CSI input profile 'xl_mimo_nf' requires [B, T, M, K, 2], got {tuple(csi.shape)}.")
     csi = csi[:, -seq_length:, ...]
     pad_steps = max(num_pred - 1, 0)
     pad_shape = (int(csi.shape[0]), pad_steps, *tuple(csi.shape[2:]))
@@ -638,8 +721,6 @@ def forward_model(
     geometry_batch: torch.Tensor | None = None,
     geometry_mask: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
-    force_reliability_gate: torch.Tensor | float | None = None,
-    gate_temperature: float | torch.Tensor | None = None,
     **extra_model_kwargs,
 ):
     if task == "fusion":
@@ -660,14 +741,6 @@ def forward_model(
             if not getattr(model, "supports_force_modality_mask", False):
                 raise ValueError("force_modality_mask is only supported by models that opt in to modality masks.")
             kwargs["force_modality_mask"] = force_modality_mask
-        if force_reliability_gate is not None:
-            if not getattr(model, "supports_reliability_controls", False):
-                raise ValueError("force_reliability_gate is only supported by CRAF-style models.")
-            kwargs["force_reliability_gate"] = force_reliability_gate
-        if gate_temperature is not None:
-            if not getattr(model, "supports_reliability_controls", False):
-                raise ValueError("gate_temperature is only supported by CRAF-style models.")
-            kwargs["gate_temperature"] = gate_temperature
         kwargs.update({key: value for key, value in extra_model_kwargs.items() if value is not None})
         return model(**kwargs)
     if task == "radar":

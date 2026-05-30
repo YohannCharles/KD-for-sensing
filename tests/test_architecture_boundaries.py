@@ -23,14 +23,12 @@ from kd_sensing.modalities import (  # noqa: E402
 
 PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
-    "scripts/build_teacher_registry.py": "research_diagnostic",
     "scripts/debug_eval_consistency.py": "research_diagnostic",
-    "scripts/deepverse/download_dt31_assets.py": "dataset_preparation",
-    "scripts/deepverse/generate_dt31_cache.py": "dataset_preparation",
     "scripts/eval_modality_perturbation.py": "research_diagnostic",
     "scripts/eval_modality_subsets.py": "research_diagnostic",
     "scripts/evaluate.py": "thin_cli_alias",
     "scripts/inspect_dataset.py": "dataset_preparation",
+    "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
     "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
     "scripts/preprocess.py": "thin_cli_alias",
     "scripts/profile_training_io.py": "research_diagnostic",
@@ -45,6 +43,10 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
 }
 SHELL_ORCHESTRATION_ALLOWLIST = {
     "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
+    "scripts/run_mmw_sunny_modal15_l5p3_h123.sh": "shell_orchestration",
+    "scripts/run_mmw_sunny_modal15_l5p6_h246.sh": "shell_orchestration",
+    "scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh": "shell_orchestration",
+    "scripts/watch_modal15_then_run_p3.sh": "shell_orchestration",
 }
 ENTRYPOINT_LIFECYCLES = {
     "package_cli",
@@ -210,18 +212,19 @@ def test_hotspot_inventory_documents_facades_and_narrow_modules():
         "src/kd_sensing/engine/objective_metadata.py",
         "src/kd_sensing/engine/objectives/registry.py",
         "src/kd_sensing/engine/objectives/history.py",
-        "src/kd_sensing/preprocessing/multimodal_nf_common.py",
-        "src/kd_sensing/preprocessing/multimodal_nf_index.py",
         "src/kd_sensing/diagnostics/viewer_manifest.py",
         "src/kd_sensing/diagnostics/viewer_manifest_merge.py",
         "src/kd_sensing/data/deepverse/label_builder.py",
         "src/kd_sensing/data/deepverse/label_writers.py",
+        "src/kd_sensing/engine/hist_beam_loso_preflight.py",
+        "src/kd_sensing/engine/hist_beam_loso_stages.py",
+        "src/kd_sensing/engine/hist_beam_loso_summary.py",
+        "src/kd_sensing/engine/hist_beam_loso_matrix.py",
     ]
 
     for rel_path in required_paths:
         assert rel_path in inventory
     assert "不得从 `kd_sensing.engine.objective_metadata`" in inventory
-    assert "`kd_sensing.preprocessing.multimodal_nf_common` 回流导入" in inventory
 
 
 def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
@@ -231,7 +234,7 @@ def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
     for retired_path in sorted(RETIRED_GENERATED_FUSION_CONFIGS):
         stem = Path(retired_path).stem
         assert not (ROOT / retired_path).exists()
-        assert f'"{stem}"' in recipe_text
+        assert f'"{stem}"' not in recipe_text
 
 
 def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
@@ -294,22 +297,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/engine/objectives/metadata.py": "def objective_runtime_metadata",
             },
         },
-        "src/kd_sensing/preprocessing/multimodal_nf_common.py": {
-            "max_lines": 80,
-            "forbidden": [
-                "def audit_multimodal_nf_files",
-                "def build_multimodal_nf_rows",
-                "def parse_codebook_metadata",
-                "def _assign_multimodal_nf_splits",
-            ],
-            "helpers": {
-                "src/kd_sensing/preprocessing/multimodal_nf_paths.py": "class MultimodalNFPaths",
-                "src/kd_sensing/preprocessing/multimodal_nf_audit.py": "def audit_multimodal_nf_files",
-                "src/kd_sensing/preprocessing/multimodal_nf_codebook.py": "def parse_codebook_metadata",
-                "src/kd_sensing/preprocessing/multimodal_nf_index.py": "def build_multimodal_nf_rows",
-                "src/kd_sensing/preprocessing/multimodal_nf_splits.py": "def _assign_multimodal_nf_splits",
-            },
-        },
         "src/kd_sensing/diagnostics/viewer_manifest.py": {
             "max_lines": 220,
             "forbidden": [
@@ -338,6 +325,21 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/data/deepverse/label_scene.py": "class MobilityTrace",
                 "src/kd_sensing/data/deepverse/label_targets.py": "def _blockage_metadata",
                 "src/kd_sensing/data/deepverse/label_writers.py": "def write_label_cache",
+            },
+        },
+        "src/kd_sensing/engine/hist_beam_loso_execution.py": {
+            "max_lines": 2500,
+            "forbidden": [
+                "def execute_loso_stage_runs",
+                "def ensure_mmw_radar_csv_for_preflight",
+                "def row_eligibility",
+                "def matrix_summary",
+            ],
+            "helpers": {
+                "src/kd_sensing/engine/hist_beam_loso_stages.py": "def execute_loso_stage_runs",
+                "src/kd_sensing/engine/hist_beam_loso_preflight.py": "def ensure_mmw_radar_csv_for_preflight",
+                "src/kd_sensing/engine/hist_beam_loso_summary.py": "def row_eligibility",
+                "src/kd_sensing/engine/hist_beam_loso_matrix.py": "def matrix_summary",
             },
         },
     }
@@ -443,9 +445,9 @@ def test_engine_light_submodule_does_not_import_heavy_boundaries():
     }
 
 
-def test_diagnostics_light_submodule_does_not_import_visualization_stack():
+def test_current_diagnostics_light_submodule_does_not_import_visualization_stack():
     modules = _run_module_presence_probe(
-        "import kd_sensing.diagnostics.g2d_diagnostics",
+        "import kd_sensing.diagnostics.run_index",
         {
             "matplotlib": "matplotlib",
             "viewer_manifest": "kd_sensing.diagnostics.viewer_manifest",
@@ -489,7 +491,7 @@ def test_visualization_light_helpers_do_not_import_render_or_dataset_stack(state
 
 def test_distillation_tool_submodule_does_not_import_training_registry_or_transforms():
     modules = _run_module_presence_probe(
-        "import kd_sensing.distillation.g2d_smp",
+        "import kd_sensing.distillation.losses",
         {
             "builder_facade": _dotted("kd_sensing", "engine", "builders"),
             "builder_aggregate": _dotted("kd_sensing", "engine", "_builders_impl"),
@@ -608,6 +610,19 @@ def test_removed_facades_are_not_importable():
         _dotted("kd_sensing", "engine", "_builders_impl"),
         _dotted("kd_sensing", "data", "transforms"),
         _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
+        _dotted("kd_sensing", "data", "datasets", "multimodal_nf"),
+        _dotted("kd_sensing", "diagnostics", "g2d_diagnostics"),
+        _dotted("kd_sensing", "distillation", "g2d"),
+        _dotted("kd_sensing", "distillation", "g2d_smp"),
+        _dotted("kd_sensing", "distillation", "teacher_ensemble"),
+        _dotted("kd_sensing", "engine", "craf_training"),
+        _dotted("kd_sensing", "engine", "g2d_training"),
+        _dotted("kd_sensing", "engine", "marf_training"),
+        _dotted("kd_sensing", "engine", "multimodal_nf_runtime"),
+        _dotted("kd_sensing", "models", "fusion", "craf"),
+        _dotted("kd_sensing", "models", "fusion", "marf"),
+        _dotted("kd_sensing", "preprocessing", "multimodal_nf"),
+        _dotted("kd_sensing", "preprocessing", "multimodal_nf_common"),
     ]:
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(module_name)
@@ -644,6 +659,7 @@ def test_internal_python_code_avoids_secondary_compatibility_layers():
 
 def test_training_methods_are_connected_through_engine_extensions():
     trainer_text = (SRC / "kd_sensing" / "engine" / "trainer.py").read_text(encoding="utf-8")
+    batch_step_text = (SRC / "kd_sensing" / "engine" / "batch_step.py").read_text(encoding="utf-8")
     forbidden = (
         "def _compute_craf_extra_losses",
         "def _compute_marf_extra_losses",
@@ -656,16 +672,22 @@ def test_training_methods_are_connected_through_engine_extensions():
     )
 
     assert [snippet for snippet in forbidden if snippet in trainer_text] == []
-    assert "G2DTrainingExtension" in trainer_text
-    assert "CrafTrainingExtension" in trainer_text
-    assert "MarfTrainingExtension" in trainer_text
+    assert "G2DTrainingExtension" not in trainer_text
+    assert "CrafTrainingExtension" not in trainer_text
+    assert "MarfTrainingExtension" not in trainer_text
     assert "BatchStepRunner" in trainer_text
     assert "extension.after_epoch" in trainer_text
-
-    assert "class G2DTrainingExtension" in (SRC / "kd_sensing" / "engine" / "g2d_training.py").read_text(encoding="utf-8")
-    assert "class CrafTrainingExtension" in (SRC / "kd_sensing" / "engine" / "craf_training.py").read_text(encoding="utf-8")
-    assert "class MarfTrainingExtension" in (SRC / "kd_sensing" / "engine" / "marf_training.py").read_text(encoding="utf-8")
-    assert "extension.after_forward" in (SRC / "kd_sensing" / "engine" / "batch_step.py").read_text(encoding="utf-8")
+    assert "extension.after_forward" in batch_step_text
+    for rel_path in [
+        "engine/g2d_training.py",
+        "engine/craf_training.py",
+        "engine/marf_training.py",
+        "diagnostics/g2d_diagnostics.py",
+        "distillation/g2d.py",
+        "distillation/g2d_smp.py",
+        "distillation/teacher_ensemble.py",
+    ]:
+        assert not (SRC / "kd_sensing" / rel_path).exists()
 
 
 def test_training_orchestration_helpers_own_runtime_details():
@@ -730,27 +752,6 @@ def test_prediction_task_boundaries_do_not_reintroduce_duplicate_tables_or_valid
     assert "_evaluation_uses_lidar" not in evaluator_text
     assert "_evaluation_uses_mmwave" not in evaluator_text
     assert "run_evaluation_pass" in validator_text
-
-
-def test_g2d_algorithm_module_does_not_import_runtime_builders_or_teacher_runtime():
-    path = SRC / "kd_sensing" / "distillation" / "g2d.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    imported_modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported_modules.add(node.module)
-
-    forbidden = {
-        "kd_sensing.engine.optim",
-        "kd_sensing.engine.batch",
-        "kd_sensing.engine.g2d_training",
-        "kd_sensing.distillation.teacher_ensemble",
-        "kd_sensing.utils.artifact_registry",
-        "kd_sensing.utils.checkpoint",
-    }
-    assert sorted(imported_modules & forbidden) == []
 
 
 def test_visualization_core_is_thin_and_submodules_own_implementations():

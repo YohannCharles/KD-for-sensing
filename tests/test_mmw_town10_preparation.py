@@ -19,11 +19,17 @@ if str(SRC) not in sys.path:
 from kd_sensing.data.datasets.mmw import MMWDataset  # noqa: E402
 from kd_sensing.data.mmw.preparation import (  # noqa: E402
     ChannelFile,
+    GROUP_SAFE_TIME_BLOCK,
     MMWPreparationConfig,
+    PreparedFrame,
     build_prepared_artifacts,
+    build_sequence_rows,
+    build_sequence_splits_from_manifest,
+    compute_split_leakage_diagnostics,
     derive_beam_power_from_file,
     load_preparation_config,
     prepare_town10_skybridge,
+    split_sequence_rows,
     validate_zip_inputs,
 )
 from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder  # noqa: E402
@@ -126,6 +132,176 @@ def test_mmw_zip_validation_reports_absolute_missing_paths(tmp_path: Path):
         validate_zip_inputs(config)
 
 
+def test_mmw_prepare_split_tag_writes_isolated_sequence_splits(tmp_path: Path):
+    sensor_zip, channel_zip = _write_mmw_zip_pair(tmp_path, frames=12)
+    config = MMWPreparationConfig(
+        sensor_zip=sensor_zip,
+        channel_zip=channel_zip,
+        output_root=tmp_path / "dataset",
+        seq_len=5,
+        pred_len=6,
+        split_tag="l5p6",
+    )
+
+    result = prepare_town10_skybridge(config)
+
+    split_dir = config.prepared_root / "splits" / "l5p6"
+    train = pd.read_csv(split_dir / "train.csv")
+    metadata = json.loads((config.prepared_root / "metadata_l5p6.json").read_text(encoding="utf-8"))
+    report = json.loads((config.prepared_root / "sanity_report_l5p6.json").read_text(encoding="utf-8"))
+    assert result["artifacts"]["train_csv"].endswith("splits/l5p6/train.csv")
+    assert "future_beam6" in train.columns
+    assert metadata["seq_len"] == 5
+    assert metadata["pred_len"] == 6
+    assert metadata["split_tag"] == "l5p6"
+    assert report["split_tag"] == "l5p6"
+
+
+def test_mmw_public_sequence_split_utility_writes_metadata(tmp_path: Path):
+    sensor_zip, channel_zip = _write_mmw_zip_pair(tmp_path, frames=12)
+    config = MMWPreparationConfig(
+        sensor_zip=sensor_zip,
+        channel_zip=channel_zip,
+        output_root=tmp_path / "dataset",
+        seq_len=8,
+        pred_len=3,
+    )
+    prepare_town10_skybridge(config)
+
+    result = build_sequence_splits_from_manifest(
+        data_root=config.condition_root,
+        scene=config.scenario,
+        seq_len=5,
+        pred_len=6,
+        split_tag="l5p6",
+        split_seed=17,
+        train_ratio=0.5,
+    )
+
+    metadata = json.loads(Path(result["metadata_path"]).read_text(encoding="utf-8"))
+    assert result["outputs"]["train_csv"].endswith("splits/l5p6/train.csv")
+    assert Path(result["outputs"]["train_csv"]).exists()
+    assert metadata["public_utility"] == "kd_sensing.data.mmw.preparation.build_sequence_splits_from_manifest"
+    assert metadata["manifest_path"].endswith("manifests/frame_manifest.csv")
+    assert metadata["split_seed"] == 17
+    assert metadata["train_ratio"] == pytest.approx(0.5)
+    assert metadata["seq_len"] == 5
+    assert metadata["num_pred"] == 6
+    assert metadata["condition"] == "sunny"
+    assert metadata["scenario"] == config.scenario
+    assert metadata["manifest_rows"] == 12
+    assert metadata["window_count"] == result["windows"]
+    assert metadata["outputs"]["metadata"] == result["metadata_path"]
+
+
+def test_mmw_group_safe_split_metadata_has_no_frame_overlap_or_guard_violations(tmp_path: Path):
+    sensor_zip, channel_zip = _write_mmw_zip_pair(tmp_path, frames=64)
+    config = MMWPreparationConfig(
+        sensor_zip=sensor_zip,
+        channel_zip=channel_zip,
+        output_root=tmp_path / "dataset",
+        seq_len=5,
+        pred_len=3,
+        split_seed=7,
+        split_tag="l5p3_group_safe",
+    )
+
+    result = prepare_town10_skybridge(config)
+
+    split_dir = config.prepared_root / "splits" / "l5p3_group_safe"
+    train = pd.read_csv(split_dir / "train.csv")
+    test = pd.read_csv(split_dir / "test.csv")
+    split_metadata = json.loads((split_dir / "split_metadata.json").read_text(encoding="utf-8"))
+    diagnostics = split_metadata["leakage_diagnostics"]
+
+    assert result["windows"] == 57
+    assert split_metadata["split_strategy"] == GROUP_SAFE_TIME_BLOCK
+    assert split_metadata["split_protocol"] == "mmw_sequence_split_v2"
+    assert split_metadata["strict_validation_eligible"] is True
+    assert split_metadata["eligibility_reasons"] == []
+    assert split_metadata["guard_band_frames"] >= config.seq_len + config.pred_len - 1
+    assert len(split_metadata["train_groups"]) > 0
+    assert len(split_metadata["test_groups"]) > 0
+    assert set(train["seq_index"]).isdisjoint(set(test["seq_index"]))
+    assert diagnostics["train_test_frame_overlap_count"] == 0
+    assert diagnostics["guard_band_violations"] == 0
+    assert diagnostics["test_window_max_frame_overlap"]["max"] < diagnostics["window_length_frames"]
+    assert split_metadata["label_distribution"]["train"]
+    assert split_metadata["group_key_fields"] == [
+        "condition",
+        "town",
+        "sensor_scenario",
+        "agent",
+        "contiguous_segment_id",
+        "time_block_id",
+    ]
+
+
+def test_mmw_sequence_split_rejects_unsupported_strategy():
+    rows = _overlapping_window_rows(12, seq_len=3, pred_len=2)
+
+    with pytest.raises(ValueError, match="Unsupported MMW split_strategy"):
+        split_sequence_rows(
+            rows,
+            seed=0,
+            train_ratio=0.5,
+            strategy="random_window",
+            seq_len=3,
+            pred_len=2,
+        )
+
+
+def test_mmw_sequence_rows_record_stable_group_and_window_metadata():
+    frames = [
+        PreparedFrame(
+            condition="sunny",
+            town="Town10",
+            sensor_scenario="Town10_fixture",
+            agent="cav_0",
+            frame_id=f"{idx:06d}",
+            camera0=f"camera/{idx:06d}.png",
+            lidar=f"lidar/{idx:06d}.pcd",
+            gps=f"gps/{idx:06d}.yaml",
+            beam_power_path=f"beam/{idx:06d}.txt",
+            beam_label=idx % 4,
+        )
+        for idx in [0, 1, 2, 3, 4, 7, 8, 9, 10, 11]
+    ]
+
+    rows, non_contiguous = build_sequence_rows(frames, seq_len=3, pred_len=2)
+
+    assert non_contiguous == 1
+    assert {row["contiguous_segment_id"] for row in rows} == {
+        "sunny:Town10:Town10_fixture:cav_0:segment_0000",
+        "sunny:Town10:Town10_fixture:cav_0:segment_0001",
+    }
+    first = rows[0]
+    assert json.loads(first["history_frame_ids_json"]) == ["000000", "000001", "000002"]
+    assert json.loads(first["future_frame_ids_json"]) == ["000003", "000004"]
+    assert json.loads(first["window_frame_ids_json"]) == ["000000", "000001", "000002", "000003", "000004"]
+    assert json.loads(first["future_label_sequence_json"]) == [3, 0]
+    assert first["future_label_sequence_key"] == "3,0"
+    assert first["window_start_frame"] == "000000"
+    assert first["window_end_frame"] == "000004"
+
+
+def test_mmw_leakage_diagnostics_cover_overlap_adjacency_and_future_reuse():
+    rows = _overlapping_window_rows(12, seq_len=3, pred_len=2)
+    train_rows = [rows[index] for index in (0, 1, 4, 5)]
+    test_rows = [rows[index] for index in (2, 3, 6, 7)]
+    diagnostics = compute_split_leakage_diagnostics(
+        train_rows,
+        test_rows,
+        seq_len=3,
+        pred_len=2,
+    )
+
+    assert diagnostics["train_test_frame_overlap_count"] > 0
+    assert diagnostics["test_window_max_frame_overlap"]["max"] > 0
+    assert diagnostics["adjacent_window_cross_split_ratio"] > 0.0
+    assert diagnostics["future_label_sequence_reuse_ratio"] > 0.0
+
+
 def test_mmw_channel_to_beam_rejects_invalid_dimensions_and_nan(tmp_path: Path):
     valid = tmp_path / "valid_paths.npy"
     invalid = tmp_path / "invalid_paths.npy"
@@ -222,7 +398,7 @@ def test_mmw_dataset_loads_mmwave_only_and_image_fusion_lazily(tmp_path: Path):
     )
     sample = mmwave_only[0]
 
-    assert set(sample) == {"input_beam", "target_beam", "mmwave"}
+    assert {"input_beam", "target_beam", "mmwave", "sample_id", "domain_metadata"} <= set(sample)
     assert sample["input_beam"].shape == (8,)
     assert sample["target_beam"].shape == (3,)
     assert sample["mmwave"].shape == (8, 64)
@@ -298,6 +474,78 @@ def test_mmw_dataset_loads_mmwave_only_and_image_fusion_lazily(tmp_path: Path):
     assert radio_sample["radio_semantic_available"].all()
     assert radio_sample["sample_id"]
     assert radio_sample["domain_metadata"]["dataset_family"] == "MMW"
+
+
+def test_mmw_sensor_assisted_sample_shapes_and_metadata(tmp_path: Path):
+    sensor_zip, channel_zip = _write_mmw_zip_pair(tmp_path, frames=12, rsu_agent="rsu_1")
+    config = MMWPreparationConfig(
+        sensor_zip=sensor_zip,
+        channel_zip=channel_zip,
+        output_root=tmp_path / "dataset",
+        seq_len=5,
+        pred_len=3,
+    )
+    prepare_town10_skybridge(config)
+    _materialize_sensor_assisted_fixture(config, frames=12)
+    train_csv = config.prepared_root / "splits" / "train.csv"
+
+    dataset = MMWDataset(
+        data_root=str(config.condition_root),
+        scene=config.scenario,
+        csv_name=str(train_csv),
+        split="train",
+        seq_len=5,
+        num_pred=3,
+        enabled_modalities=["image", "gps", "lidar", "radar"],
+        image_size=[8, 8],
+        gps_normalize=False,
+        lidar_bev_size=[8, 8],
+        lidar_normalize=False,
+        return_metadata=True,
+        return_modality_availability=True,
+    )
+    sample = dataset[0]
+
+    assert sample["image"].shape == (5, 3, 8, 8)
+    assert sample["gps"].shape == (5, 3)
+    assert sample["lidar"].shape == (5, 3, 8, 8)
+    assert sample["radar_ra"].shape == (5, 128, 64)
+    assert sample["radar_da"].shape == (5, 128, 64)
+    assert sample["target_beam"].shape == (3,)
+    assert "mmwave" not in sample
+    assert sample["metadata"]["condition"] == "sunny"
+    assert sample["metadata"]["town"] == "Town10"
+    assert sample["metadata"]["scenario"] == config.scenario
+    assert sample["metadata"]["sample_id"]
+    assert sample["metadata"]["modality_availability"]["1"]["cav"]["gps"] is True
+    assert sample["domain_metadata"]["scenario"] == config.scenario
+
+
+def test_mmw_sensor_assisted_missing_radar_maps_error_is_actionable(tmp_path: Path):
+    sensor_zip, channel_zip = _write_mmw_zip_pair(tmp_path, frames=12, rsu_agent="rsu_1")
+    config = MMWPreparationConfig(
+        sensor_zip=sensor_zip,
+        channel_zip=channel_zip,
+        output_root=tmp_path / "dataset",
+        seq_len=5,
+        pred_len=3,
+    )
+    prepare_town10_skybridge(config)
+
+    with pytest.raises(ValueError) as excinfo:
+        MMWDataset(
+            data_root=str(config.condition_root),
+            scene=config.scenario,
+            csv_name=str(config.prepared_root / "splits" / "train.csv"),
+            split="train",
+            seq_len=5,
+            num_pred=3,
+            enabled_modalities=["radar"],
+        )
+
+    message = str(excinfo.value)
+    assert "kd-sensing-preprocess" in message
+    assert "configs/preprocess/mmw_radar_maps.yaml" in message
 
 
 def test_mmw_dataset_rebuilds_incomplete_derived_bs_gps_csv(tmp_path: Path):
@@ -482,6 +730,66 @@ def _write_mmw_zip_pair(
     _zip_dir(source / "sensor", sensor_zip)
     _zip_dir(source / "channel", channel_zip)
     return sensor_zip, channel_zip
+
+
+def _materialize_sensor_assisted_fixture(config: MMWPreparationConfig, *, frames: int) -> None:
+    rsu_root = config.condition_root / "Sensor_Data" / config.scenario / "rsu_1"
+    rsu_root.mkdir(parents=True, exist_ok=True)
+    for idx in range(frames):
+        (rsu_root / f"{idx:06d}.yaml").write_text(_rsu_yaml(), encoding="utf-8")
+    for pcd_path in config.condition_root.rglob("*.pcd"):
+        _write_valid_ascii_pcd(pcd_path)
+    radar_root = config.prepared_root / "derived" / "radar_maps" / "rsu_1"
+    radar_root.mkdir(parents=True, exist_ok=True)
+    for idx in range(frames):
+        ra = np.zeros((128, 64), dtype=np.float32)
+        da = np.zeros((128, 64), dtype=np.float32)
+        ra[idx % 128, idx % 64] = float(idx + 1)
+        da[idx % 128, idx % 64] = float(idx + 1) / 2.0
+        np.save(radar_root / f"{idx:06d}_RA.npy", ra)
+        np.save(radar_root / f"{idx:06d}_DA.npy", da)
+
+
+def _overlapping_window_rows(count: int, *, seq_len: int, pred_len: int) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    window_len = int(seq_len) + int(pred_len)
+    for idx in range(count):
+        future = [idx % 2, (idx + 1) % 2]
+        rows.append(
+            {
+                "seq_index": idx,
+                "condition": "sunny",
+                "town": "Town10",
+                "sensor_scenario": "Town10_fixture",
+                "agent": "cav_0",
+                "contiguous_segment_id": "seg0",
+                "window_start_frame": f"{idx:06d}",
+                "window_end_frame": f"{idx + window_len - 1:06d}",
+                "future_end_frame": f"{idx + window_len - 1:06d}",
+                "window_frame_ids_json": json.dumps([f"{frame:06d}" for frame in range(idx, idx + window_len)]),
+                "future_label_sequence_json": json.dumps(future),
+                "future_label_sequence_key": ",".join(str(label) for label in future),
+            }
+        )
+    return rows
+
+
+def _write_valid_ascii_pcd(path: Path) -> None:
+    path.write_text(
+        "VERSION .7\n"
+        "FIELDS x y z intensity\n"
+        "SIZE 4 4 4 4\n"
+        "TYPE F F F F\n"
+        "COUNT 1 1 1 1\n"
+        "WIDTH 2\n"
+        "HEIGHT 1\n"
+        "VIEWPOINT 0 0 0 1 0 0 0\n"
+        "POINTS 2\n"
+        "DATA ascii\n"
+        "0.0 0.0 0.0 1.0\n"
+        "1.0 1.0 0.5 0.8\n",
+        encoding="utf-8",
+    )
 
 
 def _cav_yaml(idx: int) -> str:

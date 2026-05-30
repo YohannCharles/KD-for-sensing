@@ -15,7 +15,6 @@ from kd_sensing.engine.debug_diagnostics import (
     write_csi_debug_records,
     write_pilot_noise_validity_artifact,
 )
-from kd_sensing.engine.multimodal_nf_runtime import validate_multimodal_nf_runtime_contract
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.engine.run_metadata import prediction_setup_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
@@ -32,11 +31,9 @@ def final_config_with_runtime(
     normalization_artifacts: dict | None = None,
     checkpoint_registry: dict | None = None,
     throughput_metadata: dict | None = None,
-    teacher_prior: dict | None = None,
     early_stopping: dict | None = None,
     pilot_noise_validity: dict | None = None,
 ) -> dict:
-    validate_multimodal_nf_runtime_contract(cfg, split_metadata=split_metadata)
     final_cfg = deepcopy(cfg)
     canonicalize_lidar_normalization_config(final_cfg)
     runtime = final_cfg.setdefault("runtime", {})
@@ -53,8 +50,6 @@ def final_config_with_runtime(
         runtime["throughput"] = throughput_metadata
         if isinstance(throughput_metadata, dict) and "cache" in throughput_metadata:
             runtime["cache"] = throughput_metadata["cache"]
-    if teacher_prior is not None:
-        runtime["teacher_prior"] = teacher_prior
     if early_stopping is not None:
         runtime["early_stopping"] = early_stopping
     if pilot_noise_validity is not None:
@@ -101,7 +96,6 @@ class ArtifactWriter:
         best_early_stopping_epoch: int,
         epochs_without_improvement: int,
         checkpoint_loads: list[dict[str, Any] | None],
-        teacher_prior_info: dict[str, Any] | None,
         optimizer_groups: list[dict[str, Any]],
         normalization_artifacts: dict | None,
         checkpoint_registry: dict | None,
@@ -149,7 +143,6 @@ class ArtifactWriter:
             "pilot_noise_validity": pilot_noise_validity,
             "teacher_metrics": teacher_metrics,
             "checkpoint_loads": checkpoint_loads,
-            "teacher_prior": teacher_prior_info,
             "optimizer_param_groups": optimizer_groups,
             "normalization_artifacts": normalization_artifacts,
             "checkpoint_registry": checkpoint_registry,
@@ -163,7 +156,6 @@ class ArtifactWriter:
                 "normalization_artifacts": normalization_artifacts,
                 "checkpoint_registry": checkpoint_registry,
                 "throughput": throughput_metadata,
-                "teacher_prior": teacher_prior_info,
                 "early_stopping": early_stopping_metadata,
                 "startup_summary": startup_summary,
                 "config_diff": config_diff,
@@ -183,7 +175,6 @@ class ArtifactWriter:
                 normalization_artifacts=normalization_artifacts,
                 checkpoint_registry=checkpoint_registry,
                 throughput_metadata=throughput_metadata,
-                teacher_prior=teacher_prior_info,
                 early_stopping=early_stopping_metadata,
                 pilot_noise_validity=pilot_noise_validity,
             ),

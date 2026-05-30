@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -12,15 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-DEEPVERSE_SCRIPTS = ROOT / "scripts" / "deepverse"
-if str(DEEPVERSE_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(DEEPVERSE_SCRIPTS))
 
 from kd_sensing.data.deepverse import DeepVerseDependencyError, DeepVerseDT31Generator, DeepVerseLabelBuilder
 from kd_sensing.data.deepverse.codebook import compute_beam_gain, make_ula_dft_codebook
 from kd_sensing.data.deepverse.label_builder import BLOCKAGE_IGNORE_INDEX
-from download_dt31_assets import ensure_dt31_layout
-from generate_dt31_cache import parse_scenes
 
 
 def test_dft_codebook_and_beam_gain_shapes():
@@ -32,6 +28,43 @@ def test_dft_codebook_and_beam_gain_shapes():
     assert codebook.shape == (4, 8)
     assert gains.shape == (8,)
     assert np.all(np.isfinite(gains))
+
+
+def parse_scenes(value: Any, *, scenario_root: str | Path | None = None, scenario: str = "DT31") -> list[int] | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() == "all":
+        if scenario_root is None:
+            return None
+        wireless_dir = Path(scenario_root).expanduser() / scenario / "wireless"
+        scene_ids: list[int] = []
+        for path in wireless_dir.glob("scene_*"):
+            if not path.is_dir():
+                continue
+            try:
+                scene_ids.append(int(path.name.split("_", 1)[1]))
+            except (IndexError, ValueError):
+                continue
+        return sorted(scene_ids) or None
+    if isinstance(value, (list, tuple)):
+        return [int(item) for item in value]
+    return [int(part.strip()) for part in str(value).split(",") if part.strip()]
+
+
+def ensure_dt31_layout(scenario_dir: Path) -> None:
+    param_params = scenario_dir / "param" / "params.mat"
+    wireless_params = scenario_dir / "wireless" / "params.mat"
+    if wireless_params.exists():
+        return
+    if wireless_params.is_symlink():
+        wireless_params.unlink()
+    if not param_params.exists():
+        return
+    wireless_params.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        wireless_params.symlink_to(Path("..") / "param" / "params.mat")
+    except OSError:
+        wireless_params.write_bytes(param_params.read_bytes())
 
 
 def test_dt31_label_builder_writes_phase1_cache(tmp_path: Path):

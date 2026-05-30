@@ -1,7 +1,7 @@
 # path-prototype-hist-beam-adaptation Specification
 
 ## Purpose
-TBD - created by archiving change add-p3-hist-beam-path-prototypes. Update Purpose after archive.
+定义 P3/HiST-Beam path prototype adaptation 的数据、输入边界、source-only prototype 构建、target 防泄漏和 LOSO 评估契约，用于审计 path-level propagation auxiliary 信号如何参与跨场景 few-shot 适配而不成为 sensing input。
 ## Requirements
 ### Requirement: Path-level 数据巡检与字段映射
 系统 MUST 提供 Multimodal-Wireless path 数据巡检能力，用于扫描数据根目录下的 CARLA sensor 文件、Sionna channel/path 文件和 metadata 文件，并输出 town、scenario、weather、模态可用性、beam label、beam_power、CSI/channel 和 path-level propagation parameter 的可用性。巡检 MUST 不写死 path 字段名，MUST 支持通过 `data.field_map` 将实际字段映射到内部 path key。
@@ -209,4 +209,3 @@ P3-HiST-Beam inference MUST 使用 sensing inputs 产生 fusion feature、shared
 - **WHEN** 完成 P5-P8 实现
 - **THEN** smoke tests MUST 覆盖 source training one epoch、保存 `mu_path_c`、`label_budget=0` target adaptation、no target leakage assertion 和 Top-K/NRP/path diagnostics evaluation
 - **AND** 所有项目相关 Python 命令 MUST 使用 `conda run -n kd_mm_beam`
-

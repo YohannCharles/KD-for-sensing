@@ -1,7 +1,0 @@
-preprocessing:
-  type: multimodal_nf_audit
-  data_root: dataset/MultimodalNF
-  raw_root: dataset/MultimodalNF/raw
-  codebook_root: dataset/MultimodalNF/codebooks
-  output_dir: outputs/multimodal_nf/audit
-  require_complete: false

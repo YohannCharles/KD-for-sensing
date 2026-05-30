@@ -71,7 +71,6 @@ loss:
     weight: 0.0
   unimodal_aux:
     weight: 0.0
-  gate_weight: 0.0
 training:
   epochs: 100
   warmup_epochs: 0
@@ -87,11 +86,6 @@ training:
     enabled: false
     drop_prob: 0.0
     min_keep: 1
-  counterfactual:
-    enabled: false
-    mode: sample_one
-    start_epoch: 0
-    weight: 0.0
 output:
   dir: outputs
   run_name: token_transformer_all_modalities_no_kd

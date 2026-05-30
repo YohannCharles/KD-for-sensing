@@ -43,7 +43,11 @@ from kd_sensing.engine.hist_beam_loso_execution import (  # noqa: E402
     _few_shot_adaptation_loaders,
     _prototype_decision,
     run_loso_execute_preflight,
+    write_loso_execute_summary,
+    write_quick_validation_conclusion,
 )
+from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
+from kd_sensing.engine.runtime import prepare_task_inputs  # noqa: E402
 import kd_sensing.engine.loso_data as loso_data_module  # noqa: E402
 from kd_sensing.engine.loso_data import (  # noqa: E402
     build_loso_source_train_loader,
@@ -478,6 +482,155 @@ def test_zero_label_radio_adaptation_records_no_target_leakage():
     assert result["used_target_labels"] is False
     assert result["used_target_beam_power_for_training"] is False
     assert result["used_target_radio_label_for_training"] is False
+    assert result["sensitive_field_policy"]["target_unlabeled"]["radio"] == "blocked"
+    assert result["main_conclusion_eligible"] is True
+
+
+def test_labeled_target_radio_supervision_requires_opt_in_and_marks_ineligible():
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=1,
+        group_size=4,
+        variant="v6_radio_proto",
+        radio_semantic={"enabled": True, "use_radio_head": True},
+        num_radio_classes=12,
+        use_radio_head=True,
+        num_heads=4,
+        num_layers=1,
+    )
+    apply_hist_beam_adaptation_strategy(model, "v6_radio_proto")
+    batch = {
+        "gps": torch.randn(2, 1, 3),
+        "input_beam": torch.tensor([[0], [1]]),
+        "target_beam": torch.tensor([[0], [1]]),
+        "radio_semantic_label": torch.tensor([[0], [1]]),
+        "radio_semantic_available": torch.ones(2, 1, dtype=torch.bool),
+    }
+    cfg = _radio_adaptation_cfg(allow_radio=False)
+    optimizer = torch.optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.01)
+
+    with pytest.raises(RuntimeError, match="radio_semantic_label.*label_budget=2.*labeled_subset=True"):
+        adapt_hist_beam_target(
+            model,
+            torch.utils.data.DataLoader([batch], batch_size=None),
+            None,
+            cfg,
+            torch.device("cpu"),
+            optimizer,
+            epochs=1,
+            label_budget=2,
+        )
+
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=1,
+        group_size=4,
+        variant="v6_radio_proto",
+        radio_semantic={"enabled": True, "use_radio_head": True},
+        num_radio_classes=12,
+        use_radio_head=True,
+        num_heads=4,
+        num_layers=1,
+    )
+    apply_hist_beam_adaptation_strategy(model, "v6_radio_proto")
+    optimizer = torch.optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.01)
+    result = adapt_hist_beam_target(
+        model,
+        torch.utils.data.DataLoader([batch], batch_size=None),
+        None,
+        _radio_adaptation_cfg(allow_radio=True),
+        torch.device("cpu"),
+        optimizer,
+        epochs=1,
+        label_budget=2,
+    )
+
+    assert result["used_target_beam_for_training"] is True
+    assert result["used_target_radio_label_for_training"] is True
+    assert result["main_conclusion_eligible"] is False
+    assert "target_radio_label_supervision" in result["eligibility_reasons"]
+    assert result["sensitive_field_policy"]["allow_labeled_target_radio_supervision"] is True
+
+
+def test_labeled_target_path_supervision_requires_opt_in():
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=1,
+        group_size=4,
+        variant="v8_path_proto",
+        path_semantic={"enabled": True, "use_path_head": True, "num_path_classes": 4, "use_path_regression": True},
+        num_path_classes=4,
+        use_path_head=True,
+        path_embed_dim=8,
+        num_heads=4,
+        num_layers=1,
+    )
+    apply_hist_beam_adaptation_strategy(model, "v8_path_proto")
+    optimizer = torch.optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.01)
+    batch = {
+        "gps": torch.randn(2, 1, 3),
+        "input_beam": torch.tensor([[0], [1]]),
+        "target_beam": torch.tensor([[0], [1]]),
+        "path_semantic_label": torch.tensor([[0], [1]]),
+        "path_descriptor": torch.randn(2, 1, 8),
+        "path_valid": torch.ones(2, 1, dtype=torch.bool),
+    }
+    cfg = _path_adaptation_cfg(allow_path=False)
+
+    with pytest.raises(RuntimeError, match="path_semantic_label.*label_budget=2.*labeled_subset=True"):
+        adapt_hist_beam_target(
+            model,
+            torch.utils.data.DataLoader([batch], batch_size=None),
+            None,
+            cfg,
+            torch.device("cpu"),
+            optimizer,
+            epochs=1,
+            label_budget=2,
+        )
+
+    model = HistBeamFusionNet(
+        modalities=["gps"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=1,
+        group_size=4,
+        variant="v8_path_proto",
+        path_semantic={"enabled": True, "use_path_head": True, "num_path_classes": 4, "use_path_regression": True},
+        num_path_classes=4,
+        use_path_head=True,
+        path_embed_dim=8,
+        num_heads=4,
+        num_layers=1,
+    )
+    apply_hist_beam_adaptation_strategy(model, "v8_path_proto")
+    optimizer = torch.optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.01)
+    result = adapt_hist_beam_target(
+        model,
+        torch.utils.data.DataLoader([batch], batch_size=None),
+        None,
+        _path_adaptation_cfg(allow_path=True),
+        torch.device("cpu"),
+        optimizer,
+        epochs=1,
+        label_budget=2,
+    )
+
+    assert result["used_target_path_label_for_training"] is True
+    assert result["used_target_path_descriptor_for_training"] is True
+    assert result["main_conclusion_eligible"] is False
+    assert "target_path_label_supervision" in result["eligibility_reasons"]
+    assert "target_path_descriptor_supervision" in result["eligibility_reasons"]
 
 
 def test_hist_beam_metrics_prediction_writer_power_and_summary(tmp_path: Path):
@@ -744,6 +897,342 @@ def test_mmw_loso_plan_uses_availability_claim_guard(tmp_path: Path):
     assert summary["runs"][0]["prototype_status"] is None or summary["runs"][0]["prototype_status"] == "effective"
 
 
+def test_mmw_sensor_assisted_config_plan_and_forward_kwargs(tmp_path: Path):
+    scenarios = ("Town10_skybridge_seed24", "Town10_crossroad_seed24", "Town10_Hroad_seed42")
+    availability_path = tmp_path / "data_availability.json"
+    entries = []
+    for scenario in scenarios:
+        prepared = tmp_path / "MMW" / "sunny" / "Prepared" / scenario
+        entries.append(
+            {
+                "status": "ready_for_loso",
+                "condition": "sunny",
+                "town": "Town10",
+                "scenario": scenario,
+                "prepared_root": str(prepared),
+                "window_count": 8,
+            }
+        )
+    _write_json(
+        availability_path,
+        {
+            "dataset_family": "MMW",
+            "ready_scenario_count": len(entries),
+            "claim_scope": "scenario_loso",
+            "cross_scene_claim_allowed": True,
+            "entries": entries,
+        },
+    )
+    cfg = load_config(ROOT / "configs/hist_beam/mmw_sensor_assisted_quick_validation.yaml")
+    cfg["loso"]["data_availability_path"] = str(availability_path)
+
+    enabled = resolve_enabled_modalities(cfg)
+    plan = build_loso_run_plan(cfg)
+    seq_length = cfg["model"]["seq_length_student"]
+    num_pred = cfg["model"]["student"]["num_pred"]
+    inputs = prepare_task_inputs(
+        {
+            "image": torch.randn(2, seq_length, 3, 224, 224),
+            "gps": torch.randn(2, seq_length, 3),
+            "lidar": torch.randn(2, seq_length, 3, 224, 224),
+            "radar_ra": torch.randn(2, seq_length, 128, 64),
+            "radar_da": torch.randn(2, seq_length, 128, 64),
+            "mmwave": torch.randn(2, seq_length, 64),
+        },
+        "fusion",
+        model_cfg=cfg["model"]["student"],
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=torch.device("cpu"),
+    )
+
+    assert cfg["data"]["dataset"]["seq_len"] == 5
+    assert cfg["model"]["seq_length_teacher"] == 5
+    assert seq_length == 5
+    assert cfg["data"]["dataset"]["num_pred"] == 3
+    assert cfg["model"]["num_pred"] == 3
+    assert num_pred == 3
+    assert enabled == ("image", "radar", "gps", "lidar")
+    assert "mmwave" not in enabled
+    assert "mmwave_batch" not in inputs
+    assert set(inputs) >= {"image_batch", "gps_batch", "lidar_batch", "radar_batch"}
+    assert inputs["image_batch"].shape[1] == seq_length + num_pred - 1
+    assert inputs["gps_batch"].shape[1] == seq_length + num_pred - 1
+    assert inputs["lidar_batch"].shape[1] == seq_length + num_pred - 1
+    assert inputs["radar_batch"].shape[1] == seq_length + num_pred - 1
+    assert plan["profile"] == "sensor_assisted_quick_validation"
+    assert plan["matrix"]["budgets"] == [10]
+    assert plan["matrix"]["seeds"] == [0, 1]
+    assert plan["matrix"]["is_full_budget_seed_sweep"] is False
+    assert cfg["data"]["dataloader"]["num_workers"] == 0
+    assert cfg["training"]["cpu_threads"]["intra_op"] == 2
+    assert cfg["training"]["cpu_threads"]["inter_op"] == 1
+    assert {run["budget"] for run in plan["runs"]} == {10}
+    assert {run["seed"] for run in plan["runs"]} == {0, 1}
+    assert {"v3_decoupled", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v6_full_finetune"} <= {
+        run["variant"] for run in plan["runs"]
+    }
+    assert all("mmwave" not in run["enabled_modalities"] for run in plan["runs"])
+
+
+@pytest.mark.parametrize("variant", ["v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"])
+def test_hist_beam_sensor_assisted_variants_build(variant: str):
+    model = HistBeamFusionNet(
+        modalities=["image", "gps", "lidar", "radar"],
+        feature_size=8,
+        d_model=16,
+        num_classes=16,
+        num_pred=3,
+        group_size=4,
+        variant=variant,
+        num_heads=4,
+        num_layers=1,
+        image_encoder={"type": "legacy_cnn"},
+        radio_semantic={"enabled": variant == "v6_radio_proto", "use_radio_head": variant == "v6_radio_proto"},
+        path_semantic={"enabled": variant == "v8_path_proto", "use_path_head": variant == "v8_path_proto"},
+        num_radio_classes=12,
+        num_path_classes=12,
+    )
+
+    assert model.modalities == ("image", "radar", "gps", "lidar")
+    assert model.num_pred == 3
+
+
+def test_sensor_assisted_summary_records_deltas_last_beam_and_v8_comparisons(tmp_path: Path):
+    base = {
+        "fold": "target_scene",
+        "target_scene": "Town10_skybridge_seed24",
+        "source_scenes": ["Town10_crossroad_seed24"],
+        "budget": 10,
+        "seed": 0,
+        "dataset_family": "MMW",
+        "profile": "sensor_assisted_quick_validation",
+        "enabled_modalities": ["image", "radar", "gps", "lidar"],
+        "excluded_sensitive_fields": ["mmwave", "csi", "channel", "path", "beam_power"],
+        "matrix_scope": "quick_validation",
+        "quick_validation": True,
+        "status": "completed",
+        "stages": [],
+        "artifacts": {},
+        "checkpoint_reuse": {},
+        "failure_reason": None,
+    }
+
+    def record(variant: str, adapted_top1: float | None, trainable_ratio: float | None = 0.1):
+        prediction_setup = _strict_mmw_prediction_setup()
+        metrics = {
+            "source_train": {
+                "throughput_config": {
+                    "num_workers": 0,
+                    "image_cache_policy": "off",
+                    "lidar_cache_policy": "auto",
+                    "lidar_cache_dir": "lidar_bev_cache",
+                    "cpu_threads": {"enabled": True, "intra_op": 2},
+                }
+            },
+            "source_only_target_test_eval": {
+                "top1": 0.4,
+                "top3": 0.5,
+                "top5": 0.6,
+                "normalized_received_power": 0.7,
+                "beam_power_loss_db": 1.5,
+                "prediction_setup": prediction_setup,
+                "degradation_baselines": {
+                    "last_beam": {"available": True, "top1": [0.9], "top3": [1.0], "avg_top1": 0.9, "avg_top3": 1.0}
+                },
+            },
+        }
+        if adapted_top1 is not None:
+            metrics["target_adaptation"] = {
+                "trainable_ratio": trainable_ratio,
+                "adaptation_time_seconds": 2.0,
+                "used_target_beam_power_for_training": False,
+                "used_target_path_label_for_training": False,
+                "used_target_radio_label_for_training": False,
+            }
+            metrics["adapted_target_test_eval"] = {
+                "top1": adapted_top1,
+                "top3": adapted_top1 + 0.1,
+                "top5": adapted_top1 + 0.2,
+                "normalized_received_power": 0.8,
+                "beam_power_loss_db": 1.0,
+                "path_semantic_accuracy": 0.5 if variant == "v8_path_proto" else None,
+                "radio_semantic_accuracy": 0.6 if variant == "v6_radio_proto" else None,
+                "prediction_setup": prediction_setup,
+                "degradation_baselines": {
+                    "last_beam": {"available": True, "top1": [0.9], "top3": [1.0], "avg_top1": 0.9, "avg_top3": 1.0}
+                },
+            }
+        return {"run_id": variant, "variant": variant, "metrics": metrics, **base}
+
+    records = [
+        record("v3_decoupled", None, None),
+        record("v6_radio_proto", 0.55),
+        record("v8_path_proto", 0.62),
+        record("adapter_path_proto", 0.50),
+        record("v6_full_finetune", 0.58, 1.0),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    conclusion_path = write_quick_validation_conclusion(tmp_path, records, summary_paths["json"])
+
+    summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
+    conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
+    v8 = next(row for row in summary["runs"] if row["variant"] == "v8_path_proto")
+
+    assert v8["adapted_source_top1_delta"] == pytest.approx(0.22)
+    assert v8["adapted_source_normalized_received_power_delta"] == pytest.approx(0.1)
+    assert v8["adapted_source_beam_power_loss_db_delta"] == pytest.approx(-0.5)
+    assert v8["negative_transfer"] is False
+    assert v8["last_beam_avg_top1"] == pytest.approx(0.9)
+    assert v8["last_beam_baseline_type"] == "diagnostic"
+    assert v8["last_beam_comparable_baseline"] is False
+    assert v8["enabled_modalities"] == ["image", "radar", "gps", "lidar"]
+    assert v8["lidar_cache_policy"] == "auto"
+    assert v8["sensitive_field_usage"]["used_target_beam_power_for_training"] is False
+    assert any(item["comparison"] == "v6_radio_vs_v8_path" and item["status"] == "complete" for item in conclusion["comparisons"])
+    assert any(item["comparison"] == "path_condition_off_vs_on" and item["status"] == "complete" for item in conclusion["comparisons"])
+    assert any(item["comparison"] == "v8_path_vs_full_finetune" and item["status"] == "complete" for item in conclusion["comparisons"])
+
+
+def test_quick_validation_excludes_ineligible_candidate_from_win_loss(tmp_path: Path):
+    records = [
+        _quick_conclusion_record("v3_decoupled", source_top1=0.4),
+        _quick_conclusion_record(
+            "v4_adapter",
+            source_top1=0.4,
+            adapted_top1=0.8,
+            adaptation_metrics={
+                "main_conclusion_eligible": False,
+                "eligibility_reasons": ["target_radio_label_supervision"],
+                "used_target_radio_label_for_training": True,
+            },
+        ),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    conclusion_path = write_quick_validation_conclusion(tmp_path, records, summary_paths["json"])
+    conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
+
+    comparison = next(
+        item
+        for item in conclusion["comparisons"]
+        if item["comparison"] == "adapter_vs_source_only" and item["candidate_variant"] == "v4_adapter"
+    )
+    assert comparison["status"] == "inconclusive"
+    assert "candidate_better_than_source_only" not in comparison
+    assert comparison["missing"][0]["variant"] == "v4_adapter"
+    assert comparison["missing"][0]["reason"] == "run_excluded_from_main_conclusion"
+    assert "target_radio_label_supervision" in comparison["missing"][0]["eligibility_reasons"]
+    assert conclusion["eligible_run_count"] == 1
+    assert conclusion["excluded_run_count"] == 1
+    assert conclusion["exclusion_reason_histogram"]["target_radio_label_supervision"] == 1
+    assert conclusion["excluded_runs"][0]["variant"] == "v4_adapter"
+
+
+def test_quick_validation_excludes_ineligible_mmw_split_from_main_conclusion(tmp_path: Path):
+    ineligible_setup = _strict_mmw_prediction_setup(
+        split_strategy="group_safe_time_block",
+        strict=False,
+        eligibility_reasons=["guard_band_violation"],
+    )
+    records = [
+        _quick_conclusion_record("v3_decoupled", source_top1=0.4, prediction_setup=ineligible_setup),
+        _quick_conclusion_record("v4_adapter", source_top1=0.4, adapted_top1=0.8),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    conclusion_path = write_quick_validation_conclusion(tmp_path, records, summary_paths["json"])
+    summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
+    conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
+
+    baseline = next(row for row in summary["runs"] if row["variant"] == "v3_decoupled")
+    assert baseline["main_conclusion_eligible"] is False
+    assert baseline["split_strategy"] == "group_safe_time_block"
+    assert "guard_band_violation" in baseline["eligibility_reasons"]
+    assert conclusion["excluded_run_count"] == 1
+    assert conclusion["exclusion_reason_histogram"]["guard_band_violation"] == 1
+
+
+def test_quick_validation_excludes_unknown_mmw_split_from_main_conclusion(tmp_path: Path):
+    records = [
+        _quick_conclusion_record("v3_decoupled", source_top1=0.4, include_prediction_setup=False),
+        _quick_conclusion_record("v4_adapter", source_top1=0.4, adapted_top1=0.8),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
+
+    baseline = next(row for row in summary["runs"] if row["variant"] == "v3_decoupled")
+    assert baseline["main_conclusion_eligible"] is False
+    assert baseline["split_eligibility"] == "unknown"
+    assert "split_eligibility_unknown" in baseline["eligibility_reasons"]
+    assert summary["excluded_run_count"] == 1
+    assert summary["exclusion_reason_histogram"]["split_eligibility_unknown"] == 1
+
+
+def test_quick_validation_marks_excluded_baseline_comparison_inconclusive(tmp_path: Path):
+    records = [
+        _quick_conclusion_record(
+            "v3_decoupled",
+            source_top1=0.4,
+            adaptation_metrics={
+                "main_conclusion_eligible": False,
+                "eligibility_reasons": ["target_leakage"],
+                "target_leakage": True,
+            },
+        ),
+        _quick_conclusion_record("v4_adapter", source_top1=0.4, adapted_top1=0.8),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    conclusion_path = write_quick_validation_conclusion(tmp_path, records, summary_paths["json"])
+    conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
+
+    comparison = next(
+        item
+        for item in conclusion["comparisons"]
+        if item["comparison"] == "adapter_vs_source_only" and item["candidate_variant"] == "v4_adapter"
+    )
+    assert comparison["status"] == "inconclusive"
+    assert comparison["missing"][0]["variant"] == "v3_decoupled"
+    assert comparison["missing"][0]["reason"] == "run_excluded_from_main_conclusion"
+    assert "target_leakage" in comparison["missing"][0]["eligibility_reasons"]
+    assert conclusion["inconclusive_comparison_count"] >= 1
+
+
+def test_quick_validation_treats_prototype_no_op_as_ineligible_evidence(tmp_path: Path):
+    records = [
+        _quick_conclusion_record("v3_decoupled", source_top1=0.4),
+        _quick_conclusion_record(
+            "v5_adapter_proto",
+            source_top1=0.4,
+            adapted_top1=0.9,
+            adaptation_metrics={
+                "prototype_status": "no_op",
+                "prototype_coverage": 0.0,
+                "prototype_loss_mean": None,
+                "proto_type": "radio_semantic",
+            },
+        ),
+        _quick_conclusion_record("v6_full_finetune", source_top1=0.4, adapted_top1=0.6),
+    ]
+
+    summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
+    conclusion_path = write_quick_validation_conclusion(tmp_path, records, summary_paths["json"])
+    summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
+    conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
+
+    proto_row = next(row for row in summary["runs"] if row["variant"] == "v5_adapter_proto")
+    assert proto_row["main_conclusion_eligible"] is False
+    assert "prototype_no_op" in proto_row["eligibility_reasons"]
+    comparison = next(item for item in conclusion["comparisons"] if item["comparison"] == "adapter_proto_vs_full_finetune")
+    assert comparison["status"] == "inconclusive"
+    assert "adapter_proto_better_than_full_finetune" not in comparison
+    assert comparison["missing"][0]["variant"] == "v5_adapter_proto"
+    assert "prototype_no_op" in comparison["missing"][0]["eligibility_reasons"]
+
+
 def test_loso_stage_local_helpers_delay_target_dataset_construction(monkeypatch):
     calls: list[tuple[str, str]] = []
 
@@ -856,6 +1345,72 @@ def test_hist_beam_loso_execute_preflight_fails_before_stages_for_missing_data(t
     assert any("missing" in str(error["path"]) for error in preflight["errors"])
 
 
+def test_mmw_loso_preflight_reports_public_radar_preparation_command(tmp_path: Path):
+    scene = "Town10_skybridge_seed24"
+    condition_root = tmp_path / "MMW" / "sunny"
+    _write_mmw_preflight_scene_without_radar_columns(condition_root, scene)
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "data": {
+            "dataset": {
+                "type": "mmw",
+                "condition": "sunny",
+                "scene": scene,
+                "data_root": str(condition_root),
+                "train_csv_name": f"Prepared/{scene}/splits/train.csv",
+                "test_csv_name": f"Prepared/{scene}/splits/test.csv",
+                "seq_len": 1,
+                "num_pred": 1,
+                "enabled_modalities": ["radar"],
+            }
+        },
+        "model": {"modalities": ["radar"], "student": {"modalities": ["radar"]}},
+        "loso": {
+            "scene_data_roots": {scene: str(condition_root)},
+            "scene_csv_names": {
+                scene: {
+                    "train_csv_name": f"Prepared/{scene}/splits/train.csv",
+                    "test_csv_name": f"Prepared/{scene}/splits/test.csv",
+                }
+            },
+        },
+    }
+    plan = {
+        "runs": [
+            {
+                "fold": "target_scene",
+                "target_scene": scene,
+                "source_scenes": [],
+                "variant": "v3_decoupled",
+                "budget": 0,
+                "seed": 0,
+                "enabled_modalities": ["radar"],
+            }
+        ]
+    }
+
+    preflight = run_loso_execute_preflight(plan, cfg, tmp_path / "out")
+
+    assert preflight["status"] == "failed"
+    radar_errors = [error for error in preflight["errors"] if error["resource_type"] == "radar_derived_csv"]
+    assert radar_errors
+    message = radar_errors[0]["message"]
+    assert "kd-sensing-preprocess" in message
+    assert "configs/preprocess/mmw_radar_maps.yaml" in message
+    assert scene in message
+    assert str(condition_root) in message
+    assert "train_with_radar.csv" in message or "test_with_radar.csv" in message
+
+
+def test_mmw_loso_preflight_does_not_import_dataset_private_materializers():
+    source = (SRC / "kd_sensing" / "engine" / "hist_beam_loso_execution.py").read_text(encoding="utf-8")
+    preflight = (SRC / "kd_sensing" / "engine" / "hist_beam_loso_preflight.py").read_text(encoding="utf-8")
+
+    assert "from kd_sensing.data.datasets.mmw import _ensure" not in source
+    assert "from kd_sensing.data.datasets.mmw import _ensure" not in preflight
+    assert "kd_sensing.preprocessing.mmw_radar" in preflight
+
+
 def test_hist_beam_loso_execute_smoke_writes_summary_and_conclusion(tmp_path: Path):
     cfg = _loso_fixture_config(tmp_path)
     result = run_hist_beam_loso(
@@ -878,8 +1433,27 @@ def test_hist_beam_loso_execute_smoke_writes_summary_and_conclusion(tmp_path: Pa
     with conclusion.open("r", encoding="utf-8") as f:
         conclusion_payload = json.load(f)
     assert summary["run_count"] == 3
+    assert summary["completed_count"] == 3
+    assert summary["failed_count"] == 0
+    assert summary["missing_count"] == 0
+    assert "eligible_run_count" in summary
+    assert "excluded_run_count" in summary
+    assert "exclusion_reason_histogram" in summary
     assert any(row["variant"] == "v5_adapter_proto" for row in summary["runs"])
+    proto_run = next(run for run in execution["runs"] if run["variant"] == "v5_adapter_proto")
+    assert proto_run["checkpoint_reuse"]["source_train"]["enabled"] is True
+    assert Path(proto_run["artifacts"]["run_metadata_path"]).exists()
+    run_metadata = json.loads(Path(proto_run["artifacts"]["run_metadata_path"]).read_text(encoding="utf-8"))
+    assert run_metadata["checkpoint_reuse"]["source_train"]["enabled"] is True
+    assert run_metadata["stages"][-1]["name"] == "summary"
+    proto_row = next(row for row in summary["runs"] if row["variant"] == "v5_adapter_proto")
+    assert "sensitive_field_usage" in proto_row
+    assert "main_conclusion_eligible" in proto_row
+    assert "eligibility_reasons" in proto_row
     assert conclusion_payload["summary_path"] == str(summary_json)
+    assert conclusion_payload["source_paths"]["summary_path"] == str(summary_json)
+    assert "eligible_run_count" in conclusion_payload
+    assert "inconclusive_comparison_count" in conclusion_payload
 
 
 def test_hist_beam_loso_execute_keyboard_interrupt_writes_partial_summary(tmp_path: Path):
@@ -928,6 +1502,117 @@ def test_hist_beam_loso_console_main_returns_zero_for_successful_plan(tmp_path: 
 
     assert exit_code == 0
     assert (tmp_path / "plan" / "loso_plan.json").exists()
+
+
+def _quick_conclusion_record(
+    variant: str,
+    *,
+    source_top1: float,
+    adapted_top1: float | None = None,
+    adaptation_metrics: dict | None = None,
+    prediction_setup: dict | None = None,
+    include_prediction_setup: bool = True,
+):
+    setup = prediction_setup or _strict_mmw_prediction_setup()
+    metrics = {
+        "source_only_target_test_eval": {
+            "top1": source_top1,
+            "top3": source_top1 + 0.1,
+            "top5": source_top1 + 0.2,
+            "coarse_accuracy": source_top1 + 0.05,
+            "fine_offset_accuracy": source_top1 - 0.05,
+        }
+    }
+    if include_prediction_setup:
+        metrics["source_only_target_test_eval"]["prediction_setup"] = setup
+    if adapted_top1 is not None:
+        metrics["adapted_target_test_eval"] = {
+            "top1": adapted_top1,
+            "top3": adapted_top1 + 0.1,
+            "top5": adapted_top1 + 0.2,
+            "coarse_accuracy": adapted_top1 + 0.05,
+            "fine_offset_accuracy": adapted_top1 - 0.05,
+            "radio_semantic_accuracy": 0.6 if variant == "v6_radio_proto" else None,
+            "path_semantic_accuracy": 0.5 if variant == "v8_path_proto" else None,
+        }
+        if include_prediction_setup:
+            metrics["adapted_target_test_eval"]["prediction_setup"] = setup
+    if adaptation_metrics is not None or variant not in SOURCE_ONLY_VARIANTS:
+        base_adaptation = {
+            "trainable_ratio": 0.1 if variant != "v6_full_finetune" else 1.0,
+            "adaptation_time_seconds": 1.0,
+            "used_target_beam_for_training": False,
+            "used_target_beam_power_for_training": False,
+            "used_target_csi_for_training": False,
+            "used_target_path_params_for_training": False,
+            "used_target_path_descriptor_for_training": False,
+            "used_target_path_label_for_training": False,
+            "used_target_radio_label_for_training": False,
+            "sensitive_field_policy": {"allow_target_sensitive_supervision_in_main_conclusion": False},
+        }
+        if adaptation_metrics:
+            base_adaptation.update(adaptation_metrics)
+        metrics["target_adaptation"] = base_adaptation
+    return {
+        "run_id": variant,
+        "fold": "target_scene",
+        "target_scene": "Town10_skybridge_seed24",
+        "source_scenes": ["Town10_crossroad_seed24"],
+        "variant": variant,
+        "budget": 10,
+        "seed": 0,
+        "dataset_family": "MMW",
+        "profile": "sensor_assisted_quick_validation",
+        "enabled_modalities": ["image", "radar", "gps", "lidar"],
+        "excluded_sensitive_fields": ["mmwave", "csi", "channel", "path", "beam_power"],
+        "matrix_scope": "quick_validation",
+        "quick_validation": True,
+        "status": "completed",
+        "stages": [],
+        "artifacts": {},
+        "failure_reason": None,
+        "metrics": metrics,
+    }
+
+
+def _strict_mmw_prediction_setup(
+    *,
+    split_strategy: str = "group_safe_time_block",
+    strict: bool = True,
+    eligibility_reasons: list[str] | None = None,
+) -> dict:
+    reasons = list(eligibility_reasons or [])
+    split_payload = {
+        "csv_path": "dataset/MMW/sunny/Prepared/Town10_skybridge_seed24/splits/l5p6_group_safe/test.csv",
+        "csv_name": "test.csv",
+        "num_samples": 8,
+        "split_protocol": "mmw_sequence_split_v2",
+        "split_strategy": split_strategy,
+        "split_protocol_version": "mmw_sequence_split_v2",
+        "strict_validation_eligible": strict,
+        "eligibility_reasons": reasons,
+        "leakage_diagnostics": {
+            "train_test_frame_overlap_count": 0,
+            "guard_band_violations": 0,
+        },
+        "split_seed": 42,
+        "split_sequence_count": 8,
+        "split_num_samples": 8,
+        "split_metadata_path": "dataset/MMW/sunny/Prepared/Town10_skybridge_seed24/splits/l5p6_group_safe/split_metadata.json",
+    }
+    return {
+        "split_protocol": split_payload["split_protocol"],
+        "split_strategy": split_payload["split_strategy"],
+        "split_protocol_version": split_payload["split_protocol_version"],
+        "strict_validation_eligible": strict,
+        "eligibility_reasons": reasons,
+        "leakage_diagnostics": split_payload["leakage_diagnostics"],
+        "split_metadata_path": split_payload["split_metadata_path"],
+        "split_seed": split_payload["split_seed"],
+        "split_sequence_count": split_payload["split_sequence_count"],
+        "split_num_samples": split_payload["split_num_samples"],
+        "splits": {"test": split_payload},
+    }
 
 
 class FakeStageExecutor:
@@ -1053,6 +1738,60 @@ def _loso_fixture_config(tmp_path: Path) -> dict:
     return cfg
 
 
+def _radio_adaptation_cfg(*, allow_radio: bool) -> dict:
+    return {
+        "experiment": {"task": "fusion"},
+        "data": {"dataset": {"seq_len": 1, "num_pred": 1}},
+        "model": {
+            "seq_length_student": 1,
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "student": {
+                "type": "hist_beam_fusion",
+                "modalities": ["gps"],
+                "num_classes": 16,
+                "group_size": 4,
+            },
+        },
+        "hist_beam": {
+            "group_size": 4,
+            "loss_weights": {"radio_semantic": 1.0},
+            "adaptation": {
+                "entropy_weight": 0.01,
+                "prototype_weight": 0.0,
+                "allow_labeled_target_radio_supervision": allow_radio,
+            },
+        },
+    }
+
+
+def _path_adaptation_cfg(*, allow_path: bool) -> dict:
+    return {
+        "experiment": {"task": "fusion"},
+        "data": {"dataset": {"seq_len": 1, "num_pred": 1}},
+        "model": {
+            "seq_length_student": 1,
+            "num_pred": 1,
+            "downsample_ratio": 1,
+            "student": {
+                "type": "hist_beam_fusion",
+                "modalities": ["gps"],
+                "num_classes": 16,
+                "group_size": 4,
+            },
+        },
+        "hist_beam": {
+            "group_size": 4,
+            "loss_weights": {"lambda_path": 0.3, "lambda_path_reg": 0.0},
+            "adaptation": {
+                "entropy_weight": 0.01,
+                "prototype_weight": 0.0,
+                "allow_labeled_target_path_supervision": allow_path,
+            },
+        },
+    }
+
+
 def _write_scene_fixture(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     headers = [
@@ -1100,6 +1839,27 @@ def _write_scene_fixture(root: Path) -> None:
 
 
 def _write_mmw_preflight_scene(condition_root: Path, scenario: str) -> None:
+    root = condition_root / "Prepared" / scenario
+    power_path = root / "beam_power" / "cav_1" / "000000.txt"
+    _write_power_vector(power_path, label=3)
+    rel_power_path = power_path.relative_to(condition_root)
+    split_root = root / "splits"
+    split_root.mkdir(parents=True, exist_ok=True)
+    headers = ["seq_index", "beam1", "future_beam1", "mmwave1"]
+    row = {
+        "seq_index": "0",
+        "beam1": str(rel_power_path),
+        "future_beam1": str(rel_power_path),
+        "mmwave1": str(rel_power_path),
+    }
+    for csv_name in ("train.csv", "test.csv"):
+        with (split_root / csv_name).open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerow(row)
+
+
+def _write_mmw_preflight_scene_without_radar_columns(condition_root: Path, scenario: str) -> None:
     root = condition_root / "Prepared" / scenario
     power_path = root / "beam_power" / "cav_1" / "000000.txt"
     _write_power_vector(power_path, label=3)

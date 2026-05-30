@@ -64,6 +64,7 @@ def build_source_multi_scene_dataset(
     for index, scene in enumerate(resolved.source_scenes):
         scene_cfg = deepcopy(cfg)
         dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
+        _set_soft_beam_label_domain(dataset_cfg, "source")
         _retarget_dataset_config_for_fold(dataset_cfg, scene)
         _apply_loso_scene_overrides(scene_cfg, scene)
         dataset = build_dataset(scene_cfg, split, return_metadata=return_metadata, **dataset_kwargs)
@@ -89,6 +90,7 @@ def build_target_adapt_test_datasets(
     resolved = _resolve_fold(fold, target_scene=target_scene, source_scenes=source_scenes)
     target_cfg = deepcopy(cfg)
     dataset_cfg = target_cfg.setdefault("data", {}).setdefault("dataset", {})
+    _set_soft_beam_label_domain(dataset_cfg, "target")
     _retarget_dataset_config_for_fold(dataset_cfg, resolved.target_scene)
     _apply_loso_scene_overrides(target_cfg, resolved.target_scene)
     target_dataset = build_dataset(target_cfg, target_split, return_metadata=return_metadata, **dataset_kwargs)
@@ -228,6 +230,19 @@ def _resolve_fold(
     if target_scene is None:
         raise ValueError("target_scene is required to build LOSO data.")
     return resolve_loso_fold(target_scene=target_scene, source_scenes=source_scenes)
+
+
+def _set_soft_beam_label_domain(dataset_cfg: dict[str, Any], domain: str) -> None:
+    soft_cfg = dataset_cfg.get("soft_beam_labels")
+    if soft_cfg is None:
+        return
+    if isinstance(soft_cfg, bool):
+        dataset_cfg["soft_beam_labels"] = {"enabled": soft_cfg, "domain": domain}
+        return
+    if isinstance(soft_cfg, dict):
+        resolved = dict(soft_cfg)
+        resolved["domain"] = domain
+        dataset_cfg["soft_beam_labels"] = resolved
 
 
 def _normalization_kwargs(dataset: Any) -> dict[str, Any]:

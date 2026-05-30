@@ -14,6 +14,7 @@ from kd_sensing.registries import MODELS
 class RadarFeatureExtractor(nn.Module):
     def __init__(self, n_feature: int, in_channels: int = 1):
         super().__init__()
+        self.in_channels = int(in_channels)
         self.net = nn.Sequential(
             nn.Conv2d(in_channels, 4, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(4),
@@ -43,7 +44,15 @@ class RadarFeatureExtractor(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 5:
+            raise ValueError(f"Radar input must have shape [B, T, C, H, W], got {tuple(x.shape)}.")
         batch_size, seq_length, channels, height, width = x.size()
+        if int(channels) != self.in_channels:
+            raise ValueError(
+                f"Radar input channel count must be {self.in_channels} for this encoder, got {int(channels)}."
+            )
+        if (int(height), int(width)) != (128, 64):
+            raise ValueError(f"Radar input spatial size must be 128x64, got {int(height)}x{int(width)}.")
         frames = x.reshape(batch_size * seq_length, channels, height, width)
         frame_features = self.net(frames)
         frame_features = self.flatten(frame_features)

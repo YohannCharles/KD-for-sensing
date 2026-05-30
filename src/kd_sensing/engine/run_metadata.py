@@ -11,11 +11,6 @@ from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.engine.data_factory import build_dataloader_kwargs, resolve_dataloader_split_config
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_metadata_from_loader
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
-from kd_sensing.engine.multimodal_nf_runtime import (
-    LEGACY_MULTIMODAL_NF_TASK_SEMANTICS,
-    multimodal_nf_codebook_metadata_from_config,
-    multimodal_nf_objective_contract,
-)
 from kd_sensing.evaluation.lidar_diagnostics import (
     lidar_preprocessing_metadata_from_config,
     lidar_preprocessing_metadata_from_dataset,
@@ -50,6 +45,13 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["split_metadata"] = split_metadata
         if split_metadata.get("available"):
             metadata["split_protocol"] = split_metadata.get("split_protocol")
+            metadata["split_strategy"] = split_metadata.get("split_strategy")
+            metadata["split_protocol_version"] = split_metadata.get("split_protocol_version")
+            metadata["strict_validation_eligible"] = split_metadata.get("strict_validation_eligible")
+            metadata["eligibility_reasons"] = split_metadata.get("eligibility_reasons")
+            metadata["leakage_diagnostics"] = split_metadata.get("leakage_diagnostics")
+            metadata["guard_band_frames"] = split_metadata.get("guard_band_frames")
+            metadata["block_size_frames"] = split_metadata.get("block_size_frames")
             metadata["split_seed"] = split_metadata.get("split_seed")
             metadata["split_metadata_path"] = split_metadata.get("path")
             metadata["split_sequence_count"] = split_metadata.get("split_sequence_count")
@@ -120,19 +122,6 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["num_beam_classes"] = raymobtime.get("num_beam_classes")
         metadata["num_tx_beams"] = raymobtime.get("num_tx_beams")
         metadata["num_rx_beams"] = raymobtime.get("num_rx_beams")
-    if hasattr(dataset, "multimodal_nf_metadata"):
-        nf_metadata = dataset.multimodal_nf_metadata()
-        metadata["multimodal_nf"] = nf_metadata
-        metadata["task_semantics"] = nf_metadata.get("task_semantics")
-        metadata["legacy_task_semantics"] = nf_metadata.get(
-            "legacy_task_semantics",
-            LEGACY_MULTIMODAL_NF_TASK_SEMANTICS,
-        )
-        metadata["target_schema"] = nf_metadata.get("target_schema")
-        metadata["num_beam_classes"] = nf_metadata.get("num_beam_classes")
-        metadata["codebook"] = nf_metadata.get("codebook")
-        metadata["input_profiles"] = nf_metadata.get("input_profiles")
-        metadata["derived_cache"] = nf_metadata.get("derived_cache", {})
     return metadata
 
 
@@ -179,46 +168,6 @@ def prediction_setup_metadata(
         metadata["uses_temporal_core"] = False
         metadata["cache_dir"] = dataset_cfg.get("cache_dir")
         metadata["link_target_name"] = dataset_cfg.get("link_target_name", "link_power_max_dbm")
-    if dataset_cfg.get("type") == "multimodal_nf":
-        objective = str(metadata["objective"])
-        codebook = multimodal_nf_codebook_metadata_from_config(cfg, split_metadata=split_metadata)
-        contract = multimodal_nf_objective_contract(objective, codebook_metadata=codebook)
-        metadata["variant"] = "multimodal_nf_current_frame"
-        if cfg.get("experiment", {}).get("variant") and cfg.get("experiment", {}).get("variant") != metadata["variant"]:
-            metadata["legacy_variant"] = cfg.get("experiment", {}).get("variant")
-        metadata["task_semantics"] = contract["task_semantics"]
-        metadata["legacy_task_semantics"] = contract["legacy_task_semantics"]
-        metadata["uses_history_window"] = bool(seq_len > 1)
-        metadata["uses_temporal_core"] = bool(seq_len > 1)
-        metadata["target_schema"] = contract["target_schema"]
-        metadata["target_schema_aliases"] = list(contract.get("target_schema_aliases", []))
-        metadata["target_schema_detail"] = {
-            "schema": contract["target_schema"],
-            "primary_target": contract.get("primary_target"),
-            "targets": contract.get("targets", {}),
-        }
-        metadata["targets"] = contract.get("targets", {})
-        metadata["enabled_targets"] = list(contract.get("enabled_targets", []))
-        metadata["enabled_heads"] = list(contract.get("enabled_heads", []))
-        metadata["target_fields"] = dict(contract.get("target_fields", {}))
-        metadata["output_fields"] = dict(contract.get("output_fields", {}))
-        metadata["loss_fields"] = list(contract.get("loss_fields", []))
-        metadata["metric_fields"] = list(contract.get("metric_fields", []))
-        if codebook is not None:
-            metadata["codebook"] = codebook
-            metadata["codebook_shape"] = codebook.get("shape")
-            metadata["flatten_order"] = codebook.get("flatten_order")
-            metadata["num_beam_classes"] = codebook.get("num_beam_classes")
-        input_profiles = dataset_cfg.get("input_profiles") or _metadata_mapping_value(split_metadata, "input_profiles")
-        metadata["dataset_family"] = {
-            "dataset_type": "multimodal_nf",
-            "storage_kind": "hdf5_frame",
-            "split_strategy": dataset_cfg.get("split_mode"),
-            "enabled_modalities": list(metadata["enabled_modalities"]),
-            "input_profiles": input_profiles,
-            "codebook": codebook,
-        }
-        metadata["input_profiles"] = input_profiles
     scene = cfg.get("data", {}).get("dataset", {})
     for key in ("scene", "scene_id", "scene_slug"):
         if key in scene:
@@ -232,6 +181,21 @@ def prediction_setup_metadata(
         split_protocol = train_split.get("split_protocol") or eval_split.get("split_protocol")
         if split_protocol:
             metadata["split_protocol"] = split_protocol
+        split_strategy = train_split.get("split_strategy") or eval_split.get("split_strategy")
+        if split_strategy:
+            metadata["split_strategy"] = split_strategy
+        strict_validation_eligible = _first_non_none(
+            train_split.get("strict_validation_eligible"),
+            eval_split.get("strict_validation_eligible"),
+        )
+        if strict_validation_eligible is not None:
+            metadata["strict_validation_eligible"] = bool(strict_validation_eligible)
+        eligibility_reasons = train_split.get("eligibility_reasons") or eval_split.get("eligibility_reasons")
+        if eligibility_reasons is not None:
+            metadata["eligibility_reasons"] = list(eligibility_reasons or [])
+        leakage_diagnostics = train_split.get("leakage_diagnostics") or eval_split.get("leakage_diagnostics")
+        if leakage_diagnostics:
+            metadata["leakage_diagnostics"] = leakage_diagnostics
         split_path = train_split.get("split_metadata_path") or eval_split.get("split_metadata_path")
         if split_path:
             metadata["split_metadata_path"] = split_path
@@ -292,7 +256,6 @@ def throughput_run_metadata(
     if dataloaders is not None:
         splits = dataloaders_run_metadata(dataloaders)
         metadata["splits"] = splits
-        metadata["multimodal_nf"] = _multimodal_nf_throughput_metadata(splits)
         metadata["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=splits)
     return metadata
 
@@ -312,11 +275,6 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
             "policy": str(cache_cfg.get("lidar", {}).get("policy") or global_policy),
         },
     }
-    if dataset_cfg.get("type") == "multimodal_nf":
-        nf_cache_cfg = cache_cfg.get("multimodal_nf", {}) if isinstance(cache_cfg, dict) else {}
-        metadata["multimodal_nf"] = {
-            "configured": dict(nf_cache_cfg) if isinstance(nf_cache_cfg, dict) else {},
-        }
     if "image" in enabled_modalities:
         profile = resolve_image_profile(dataset_cfg.get("image_profile"))
         image_cfg = cache_cfg.get("image", {}) if isinstance(cache_cfg.get("image", {}), dict) else {}
@@ -342,19 +300,11 @@ def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] |
                     "lidar_use_cache",
                     "lidar_write_cache",
                     "lidar_cache_policy",
-                    "derived_cache",
                     "image_cache",
-                    "multimodal_nf",
                 }
             }
             for split, split_metadata in splits.items()
         }
-        if dataset_cfg.get("type") == "multimodal_nf":
-            metadata["multimodal_nf"]["splits"] = {
-                split: split_metadata.get("derived_cache")
-                or split_metadata.get("multimodal_nf", {}).get("derived_cache", {})
-                for split, split_metadata in splits.items()
-            }
     return metadata
 
 
@@ -431,18 +381,6 @@ def _serializable_loader_settings(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _multimodal_nf_throughput_metadata(splits: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {"splits": {}}
-    for split, split_metadata in splits.items():
-        if not isinstance(split_metadata, dict):
-            continue
-        nf_metadata = split_metadata.get("multimodal_nf", {})
-        derived_cache = split_metadata.get("derived_cache") or nf_metadata.get("derived_cache", {})
-        if derived_cache:
-            result["splits"][split] = {"derived_cache": derived_cache}
-    return result
-
-
 def _split_family(csv_name: str | None) -> str | None:
     if csv_name in {"train_seqs_RA_GPS_LIDAR.csv", "test_seqs_RA_GPS_LIDAR.csv"}:
         return "unified_gps_lidar"
@@ -477,8 +415,6 @@ def _uses_temporal_core(cfg: dict[str, Any]) -> bool:
     model_type = str(role_cfg.get("type", ""))
     if model_type in {"fusion_teacher", "fusion_student", "cls_token_transformer_fusion", "token_transformer_fusion"}:
         return True
-    if model_type in {"craf_fusion", "marf_fusion"}:
-        return True
     core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
     if core_type == "snapshot_frame":
         return False
@@ -495,29 +431,24 @@ def _prediction_setup_splits(split_metadata: dict[str, Any]) -> dict[str, Any]:
             "csv_name": metadata.get("csv_name"),
             "num_samples": metadata.get("num_samples"),
             "split_protocol": metadata.get("split_protocol"),
+            "split_strategy": metadata.get("split_strategy"),
+            "split_protocol_version": metadata.get("split_protocol_version"),
+            "strict_validation_eligible": metadata.get("strict_validation_eligible"),
+            "eligibility_reasons": metadata.get("eligibility_reasons"),
+            "leakage_diagnostics": metadata.get("leakage_diagnostics"),
+            "split_seed": metadata.get("split_seed"),
+            "split_sequence_count": metadata.get("split_sequence_count"),
+            "split_num_samples": metadata.get("split_num_samples"),
             "split_metadata_path": metadata.get("split_metadata_path"),
         }
     return result
 
 
-def _metadata_mapping_value(metadata: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
-    if not isinstance(metadata, dict):
-        return None
-    for value in _iter_mappings(metadata):
-        candidate = value.get(key)
-        if isinstance(candidate, dict):
-            return dict(candidate)
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
     return None
-
-
-def _iter_mappings(value: Any):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from _iter_mappings(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _iter_mappings(child)
 
 
 __all__ = [

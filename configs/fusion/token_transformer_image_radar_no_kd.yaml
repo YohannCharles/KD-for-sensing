@@ -70,11 +70,6 @@ training:
     enabled: false
     drop_prob: 0.0
     min_keep: 1
-  counterfactual:
-    enabled: false
-    mode: sample_one
-    start_epoch: 0
-    weight: 0.0
 output:
   dir: outputs
   run_name: token_transformer_image_radar_no_kd

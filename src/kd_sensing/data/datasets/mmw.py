@@ -175,22 +175,24 @@ class MMWDataset(DeepSense6GDataset):
                 metadata.setdefault("path_semantic_mode", self.path_label_builder.mode)
                 metadata.setdefault("path_semantic_available", bool(sample.get("path_valid", torch.tensor(False)).any().item()))
                 metadata.setdefault("path_descriptor_dim", int(sample.get("path_descriptor", torch.empty(0)).shape[-1]))
+            if "modality_availability" in sample:
+                metadata.setdefault("modality_availability", sample["modality_availability"])
+            metadata.setdefault("scenario", self.scene_slug)
             sample["metadata"] = _collate_safe_value(metadata)
-        if self.radio_semantic_enabled or self.path_semantic_enabled:
-            metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
-            sample.setdefault("sample_id", str(metadata.get("sample_id", f"{self.scene_slug}:{idx}")))
-            sample.setdefault(
-                "domain_metadata",
-                _collate_safe_value(
-                    {
-                        "dataset_family": "MMW",
-                        "condition": self.condition,
-                        "town": metadata.get("town", ""),
-                        "scenario": self.scene_slug,
-                        "scene_slug": self.scene_slug,
-                    }
-                ),
+        metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
+        sample.setdefault("sample_id", str(metadata.get("sample_id", f"{self.scene_slug}:{idx}")))
+        sample.setdefault(
+            "domain_metadata",
+            _collate_safe_value(
+                {
+                    "dataset_family": "MMW",
+                    "condition": self.condition,
+                    "town": metadata.get("town", ""),
+                    "scenario": self.scene_slug,
+                    "scene_slug": self.scene_slug,
+                }
             )
+        )
         return sample
 
     def _geometry_for_index(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -559,7 +561,9 @@ def _ensure_radar_columns(data_root: str | Path, csv_name: str, scenario: str) -
     if missing:
         examples = ", ".join(missing[:3])
         raise ValueError(
-            f"Could not derive radar paths for {len(missing)} entries in {csv_path}; examples: {examples}."
+            f"Could not derive radar paths for {len(missing)} entries in {csv_path}; examples: {examples}. "
+            "Generate MMW radar maps first with: conda run -n kd_mm_beam kd-sensing-preprocess "
+            "--config configs/preprocess/mmw_radar_maps.yaml"
         )
     _write_csv_atomic(frame, output_path)
     return str(output_path.resolve())

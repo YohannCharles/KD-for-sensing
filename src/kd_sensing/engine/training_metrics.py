@@ -12,6 +12,7 @@ from kd_sensing.engine.objectives.metadata import (
 from kd_sensing.engine.tensorboard_logging import finite_float_or_none
 from kd_sensing.engine.training_extensions import EpochDiagnosticsAccumulator
 from kd_sensing.engine.training_state import early_stopping_metric_value
+from kd_sensing.evaluation.horizon_selection import aggregate_topk_and_dba, metric_horizons_from_metrics, selected_horizon_mean
 from kd_sensing.evaluation.lidar_diagnostics import lidar_preprocessing_metadata_from_dataset
 
 
@@ -45,9 +46,6 @@ class EpochMetricsRecorder:
             "distill_loss": 0.0,
             "beam_soft_loss": 0.0,
             "unimodal_loss": 0.0,
-            "counterfactual_loss": 0.0,
-            "prior_regularization_loss": 0.0,
-            "reliability_kd_loss": 0.0,
             "occlusion_loss": 0.0,
             "position_loss": 0.0,
             "multitask_loss": 0.0,
@@ -68,11 +66,8 @@ class EpochMetricsRecorder:
             "loss": result.total_loss.item(),
             "task_loss": result.task_loss.item(),
             "distill_loss": result.distill_loss.item(),
-            "beam_soft_loss": extra_loss_values["beam_soft"].item(),
-            "unimodal_loss": extra_loss_values["unimodal"].item(),
-            "counterfactual_loss": extra_loss_values["counterfactual"].item(),
-            "prior_regularization_loss": extra_loss_values["prior_regularization"].item(),
-            "reliability_kd_loss": extra_loss_values["reliability_kd"].item(),
+            "beam_soft_loss": _loss_item(extra_loss_values, "beam_soft"),
+            "unimodal_loss": _loss_item(extra_loss_values, "unimodal"),
             "occlusion_loss": prediction_loss.occlusion.item(),
             "position_loss": prediction_loss.position.item(),
             "multitask_loss": prediction_loss.multitask_total.item(),
@@ -108,13 +103,14 @@ class EpochMetricsRecorder:
         train_lidar_quality=None,
         train_dataset=None,
         epoch_subsampling: dict[str, Any] | None = None,
-        teacher_prior_info: dict[str, Any] | None = None,
         health_metrics: dict[str, Any] | None = None,
         extension_metrics: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], float, float, float]:
         val_loss = float(val_metrics["loss"])
+        total = val_metrics.get("total", [])
+        horizons = metric_horizons_from_metrics(val_metrics, num_pred=len(total))
         top1 = val_metrics["topk"].get("1", [0.0])
-        val_acc = float(top1[0]) if top1 else 0.0
+        val_acc = mean_valid_slots(top1, total, horizons=horizons) if top1 else 0.0
         validation_curve_metrics = aggregate_validation_metrics(val_metrics)
 
         val_occlusion_accuracy = finite_float_or_none(val_metrics.get("val_occlusion_accuracy"))
@@ -166,9 +162,6 @@ class EpochMetricsRecorder:
         self.history["train_distill_loss"].append(float(self.running["distill_loss"]))
         self.history["train_beam_soft_loss"].append(float(self.running["beam_soft_loss"]))
         self.history["train_unimodal_loss"].append(float(self.running["unimodal_loss"]))
-        self.history["train_counterfactual_loss"].append(float(self.running["counterfactual_loss"]))
-        self.history["train_prior_regularization_loss"].append(float(self.running["prior_regularization_loss"]))
-        self.history["train_reliability_kd_loss"].append(float(self.running["reliability_kd_loss"]))
         append_history(self.history, "train_occlusion_loss", train_occlusion_loss)
         append_history(self.history, "train_position_loss", train_position_loss)
         append_history(self.history, "train_multitask_loss", train_multitask_loss)
@@ -245,9 +238,6 @@ class EpochMetricsRecorder:
             "train_distill_loss": float(self.running["distill_loss"]),
             "train_beam_soft_loss": float(self.running["beam_soft_loss"]),
             "train_unimodal_loss": float(self.running["unimodal_loss"]),
-            "train_counterfactual_loss": float(self.running["counterfactual_loss"]),
-            "train_prior_regularization_loss": float(self.running["prior_regularization_loss"]),
-            "train_reliability_kd_loss": float(self.running["reliability_kd_loss"]),
             "train_occlusion_loss": train_occlusion_loss,
             "train_position_loss": train_position_loss,
             "train_multitask_loss": train_multitask_loss,
@@ -296,13 +286,6 @@ class EpochMetricsRecorder:
             group_name = group["name"]
             epoch_log[f"optimizer/lr/{group_name}"] = float(group["lr"])
             epoch_log[f"optimizer/params/{group_name}"] = float(group["param_count"])
-        if teacher_prior_info is not None:
-            epoch_log["teacher/trainable_params"] = float(teacher_prior_info.get("trainable_params", 0))
-            for modality, freeze_info in teacher_prior_info.get("encoder_freeze", {}).items():
-                epoch_log[f"teacher/trainable_params/{modality}"] = float(
-                    freeze_info.get("trainable_params", 0)
-                )
-                epoch_log[f"teacher/frozen/{modality}"] = 1.0 if freeze_info.get("frozen") else 0.0
         if health_metrics:
             epoch_log.update(health_metrics)
         epoch_log.update(validation_subset_epoch_scalars(val_metrics))
@@ -314,7 +297,7 @@ class EpochMetricsRecorder:
         return epoch_log, val_loss, val_acc, float(primary_metric_value)
 
 
-def mean_valid_slots(values, totals) -> float:
+def mean_valid_slots(values, totals, horizons=None) -> float:
     values_arr = np.asarray(values, dtype=float)
     totals_arr = np.asarray(totals, dtype=float)
     length = min(values_arr.size, totals_arr.size)
@@ -323,18 +306,24 @@ def mean_valid_slots(values, totals) -> float:
 
     values_arr = values_arr[:length]
     valid_slots = totals_arr[:length] > 0
+    if horizons is not None:
+        selected = np.zeros((length,), dtype=bool)
+        for horizon in horizons:
+            index = int(horizon) - 1
+            if 0 <= index < length:
+                selected[index] = True
+        valid_slots &= selected
     if not np.any(valid_slots):
         return 0.0
     return float(np.mean(values_arr[valid_slots]))
 
 
 def aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
-    topk = val_metrics.get("topk", {})
-    total = val_metrics.get("total", [])
+    aggregated = aggregate_topk_and_dba(val_metrics)
     return {
-        "val_atop3": mean_valid_slots(topk.get("3", []), total),
-        "val_atop5": mean_valid_slots(topk.get("5", []), total),
-        "val_adba": mean_valid_slots(val_metrics.get("dba", []), total),
+        "val_atop3": aggregated["top3"],
+        "val_atop5": aggregated["top5"],
+        "val_adba": aggregated["adba"],
         "val_beam_dba": float(val_metrics.get("val_beam_dba", 0.0) or 0.0),
     }
 
@@ -344,17 +333,28 @@ def validation_subset_epoch_scalars(val_metrics: dict) -> dict[str, float]:
     if not isinstance(subset_metrics, dict):
         return {}
     scalars: dict[str, float] = {}
+    parent_horizons = val_metrics.get("metric_horizons")
+    parent_horizon_source = val_metrics.get("metric_horizon_source")
     for subset_name, metrics in subset_metrics.items():
         if not isinstance(metrics, dict):
             continue
+        if parent_horizons is not None and "metric_horizons" not in metrics:
+            metrics = dict(metrics)
+            metrics["metric_horizons"] = parent_horizons
+            if parent_horizon_source is not None and "metric_horizon_source" not in metrics:
+                metrics["metric_horizon_source"] = parent_horizon_source
         prefix = f"val/subset/{subset_name}"
+        total = metrics.get("total", [])
+        horizons = metric_horizons_from_metrics(metrics, num_pred=len(total))
         scalars[f"{prefix}/loss"] = float(metrics.get("loss", 0.0))
         topk = metrics.get("topk", {})
-        total = metrics.get("total", [])
-        scalars[f"{prefix}/top1"] = first_valid_slot(topk.get("1", []), total)
-        scalars[f"{prefix}/atop3"] = mean_valid_slots(topk.get("3", []), total)
-        scalars[f"{prefix}/atop5"] = mean_valid_slots(topk.get("5", []), total)
-        scalars[f"{prefix}/adba"] = mean_valid_slots(metrics.get("dba", []), total)
+        aggregated = aggregate_topk_and_dba(metrics)
+        scalars[f"{prefix}/top1"] = aggregated["top1"]
+        scalars[f"{prefix}/atop3"] = aggregated["top3"]
+        scalars[f"{prefix}/atop5"] = aggregated["top5"]
+        scalars[f"{prefix}/adba"] = aggregated["adba"]
+        scalars[f"{prefix}/top3"] = selected_horizon_mean(topk.get("3", []), total, horizons=horizons)
+        scalars[f"{prefix}/top5"] = selected_horizon_mean(topk.get("5", []), total, horizons=horizons)
     return scalars
 
 
@@ -399,7 +399,6 @@ OPTIONAL_HISTORY_KEYS = objective_optional_history_fields()
 def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, list], objective: str) -> dict[str, Any]:
     if objective not in {
         "current_beam_selection",
-        "near_field_beam_selection",
         "current_los_classification",
         "current_link_quality",
         "selection_multitask",
@@ -455,6 +454,15 @@ def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, 
 def append_history(history: dict[str, list], key: str, value) -> None:
     if key in history:
         history[key].append(value)
+
+
+def _loss_item(values: dict[str, Any], key: str) -> float:
+    value = values.get(key)
+    if value is None:
+        return 0.0
+    if hasattr(value, "item"):
+        return float(value.item())
+    return float(value)
 
 
 def history_array(key: str, values: list) -> np.ndarray:

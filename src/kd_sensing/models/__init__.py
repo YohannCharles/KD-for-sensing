@@ -23,9 +23,7 @@ _EXPORTS: dict[str, str] = {
     "PilotCSIChannelEstimator": "kd_sensing.models.csi",
     "PilotDualViewCSIEncoder": "kd_sensing.models.csi",
     "CLSTokenTransformerFusionNet": "kd_sensing.models.fusion",
-    "CRAFFusionNet": "kd_sensing.models.fusion",
     "FusionTeacherModalityNet": "kd_sensing.models.fusion",
-    "MARFFusionNet": "kd_sensing.models.fusion",
     "FusionStudentModalityNet": "kd_sensing.models.fusion",
     "TokenTransformerFusionNet": "kd_sensing.models.fusion",
     "BeamClassificationHead": "kd_sensing.models.modular",
@@ -41,13 +39,17 @@ __all__ = list(_EXPORTS)
 _REMOVED_ALIASES = {
     "Fusion" + "ModalityNet": "FusionTeacherModalityNet",
     "Student" + "ModalityNet": "FusionStudentModalityNet",
+    "CRAFFusionNet": "CRAF has been retired; use cls_token_transformer_fusion or a current fusion model.",
+    "MARFFusionNet": "MARF has been retired; use cls_token_transformer_fusion or a current fusion model.",
 }
 
 
 def __getattr__(name: str) -> Any:
     replacement = _REMOVED_ALIASES.get(name)
     if replacement is not None:
-        raise AttributeError(f"{name} has been removed; use {replacement}.")
+        if replacement.startswith(name):
+            raise AttributeError(f"{name} has been removed; use {replacement}.")
+        raise AttributeError(f"{name} has been removed. {replacement}")
     module_name = _EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

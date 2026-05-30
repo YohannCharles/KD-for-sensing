@@ -121,8 +121,9 @@ takes precedence. Teacher and student `modalities` must stay identical within a 
 derive `use_gps`, `use_lidar`, `use_mmwave`, GPS defaults, LiDAR defaults, mmWave defaults, and model
 input fields from the modality contract. Generated fusion student, logits KD, and RKD configs use
 `cls_token_transformer_fusion` by default; teacher-no-KD configs keep an explicit teacher baseline.
-Use explicit early-concat, CRAF, MARF, G2D, or token-transformer YAML/overlay paths when a baseline should
-not follow the default. When adding a modality, update `kd_sensing.modalities` first, then add dataset
+Use explicit early-concat or token-transformer YAML/overlay paths when a baseline should
+not follow the default. Retired research-line paths are rejected instead of being generated as virtual configs.
+When adding a modality, update `kd_sensing.modalities` first, then add dataset
 columns/readers, batch preparation, model registration, diagnostic rendering, and focused tests.
 
 Default LiDAR configs use the modular sequence encoder path:
@@ -202,31 +203,30 @@ plug into that lifecycle through `TrainingExtension` hooks:
 
 - `setup(context)`: construct method runtime objects such as teacher ensembles and return load summaries.
 - `before_epoch(context, state, epoch=...)`: reset method epoch state or diagnostics accumulators.
-- `before_forward(context, state, batch, labels, epoch=...)`: provide force masks, reliability gates, or
-  gate temperatures for the shared forward runtime.
-- `compute_base_loss(context, state, batch_state)`: optionally replace the standard KD base loss, as G2D does.
-- `after_forward(context, state, batch_state)`: add extra losses and scalar diagnostics, as CRAF and MARF do.
+- `before_forward(context, state, batch, labels, epoch=...)`: provide force masks or other method controls
+  for the shared forward runtime.
+- `compute_base_loss(context, state, batch_state)`: optionally replace the standard KD base loss.
+- `after_forward(context, state, batch_state)`: add extra losses and scalar diagnostics.
 - `after_backward(context, state, batch_state)`: apply gradient post-processing before clipping/optimizer step.
-- `after_epoch(context, state, epoch=...)`: emit epoch diagnostics such as G2D JSON paths or reliability summaries.
+- `after_epoch(context, state, epoch=...)`: emit epoch diagnostics.
 
 Use `BatchState`, `ForwardControls`, `BaseLossResult`, `LossBundle`, and `EpochDiagnosticsAccumulator`
-from `kd_sensing.engine.training_extensions` rather than inventing per-method logging structures. Current
-method examples live in `engine.g2d_training`, `engine.craf_training`, and `engine.marf_training`.
+from `kd_sensing.engine.training_extensions` rather than inventing per-method logging structures.
 
-Do not put teacher ensemble construction, checkpoint registry parsing, counterfactual forward loops,
-subset-training forwards, or method-specific scalar aggregation back into `engine.trainer`. Add a method
-extension module and a focused architecture-boundary test instead.
+Do not put teacher runtime construction, checkpoint registry parsing, method-specific auxiliary forwards,
+or method-specific scalar aggregation back into `engine.trainer`. Add a method extension module and a
+focused architecture-boundary test instead.
 
 ## Shared Forward Runtime
 
-Training, validation, viewer predictions, counterfactual forwards, subset forwards, and G2D teacher
-runtime should call `engine.runtime.prepare_task_inputs`, `forward_task_model`, or `run_model_step`.
+Training, validation, viewer predictions, subset diagnostics, and supported teacher runtimes should call
+`engine.runtime.prepare_task_inputs`, `forward_task_model`, or `run_model_step`.
 Those helpers centralize:
 
 - legacy tuple/dict batch normalization
 - future-label preparation
 - task-specific modality input tensors
-- `force_modality_mask`, `force_reliability_gate`, and `gate_temperature` forwarding
+- `force_modality_mask` forwarding
 - `ModelOutput` adaptation
 - future-slot selection
 
@@ -253,7 +253,7 @@ field names and tensor shapes. `deepsense6g_loaders.py` is the modality loader b
 GPS, LiDAR, and mmWave inputs. Disabled targets and modalities should not initialize or read their resources.
 
 Canonical virtual config generation is recipe driven under `kd_sensing.config.canonical_recipes`. Base
-fusion mode defaults, objective overlays, and advanced G2D/CRAF/MARF overlays are table entries; keep
+fusion mode defaults, objective overlays, and supported advanced overlays are table entries; keep
 `config/canonical.py` as path parsing and recipe application glue.
 
 `kd_sensing.models` is a lazy export package. Keep public names in its export mapping, but import concrete
@@ -284,10 +284,7 @@ overlay. Existing physical YAML files still take precedence over generated overl
 Current overlay recipes include:
 
 ```text
-overlay_g2d_lite, overlay_g2d_global, overlay_g2d_horizon
-overlay_craf_baseline, overlay_craf_no_counterfactual, overlay_craf_fixed_prior
-overlay_marf_baseline, overlay_marf_subset_training, overlay_marf_no_residual,
-overlay_marf_no_prior_bias, overlay_marf_no_subset_training
+overlay_multitask_occlusion_position
 ```
 
 Use command-line overrides for scene selection, for example `data.dataset.scene=9`, rather than copying

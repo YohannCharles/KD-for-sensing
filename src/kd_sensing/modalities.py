@@ -79,15 +79,6 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             shape="[T, 3]",
             metadata={"default_dataset": "deepsense6g"},
         ),
-        "uav_xyz_snapshot": InputProfileSpec(
-            modality="gps",
-            name="uav_xyz_snapshot",
-            sample_key="gps",
-            fusion_input_key="gps_batch",
-            semantics="current UAV 3D position snapshot",
-            shape="[T, 3]",
-            metadata={"default_time_steps": 1, "coordinate_dim": 3},
-        ),
     },
     "lidar": {
         "bev_projection": InputProfileSpec(
@@ -108,15 +99,6 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             shape="[T, C, D, H, W]",
             metadata={"default_dataset": "raymobtime_s008"},
         ),
-        "point_cloud_xyz_10000": InputProfileSpec(
-            modality="lidar",
-            name="point_cloud_xyz_10000",
-            sample_key="lidar",
-            fusion_input_key="lidar_batch",
-            semantics="LiDAR point cloud with XYZ coordinates",
-            shape="[T, P, 3]",
-            metadata={"default_points": 10000, "coordinate_dim": 3},
-        ),
     },
     "csi": {
         "pilot_dual_view": InputProfileSpec(
@@ -127,15 +109,6 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             semantics="existing CSI tensor for pilot dual-view encoder",
             shape="[T, Nsc, Nant, 2]",
             metadata={"complex_layout": "real_imag_last"},
-        ),
-        "xl_mimo_nf": InputProfileSpec(
-            modality="csi",
-            name="xl_mimo_nf",
-            sample_key="csi",
-            fusion_input_key="csi_batch",
-            semantics="near-field XL-MIMO channel tensor",
-            shape="[T, M, K, 2]",
-            metadata={"antenna_axis": "M", "subcarrier_axis": "K", "complex_layout": "real_imag_last"},
         ),
     },
 }

@@ -43,6 +43,7 @@ def _ds_conv_block(in_channels: int, out_channels: int, stride: int = 1) -> nn.S
 class LidarFeatureExtractor(nn.Module):
     def __init__(self, n_feature: int, in_channels: int = 3):
         super().__init__()
+        self.in_channels = int(in_channels)
         self.cnn_layers = nn.Sequential(
             nn.Conv2d(in_channels, 16, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(16),
@@ -81,6 +82,12 @@ class LidarFeatureExtractor(nn.Module):
         if lidar_batch.ndim != 5:
             raise ValueError(f"LiDAR input must have shape [B, T, C, H, W], got {tuple(lidar_batch.shape)}.")
         batch_size, seq_len, channels, height, width = lidar_batch.shape
+        if int(channels) != self.in_channels:
+            raise ValueError(
+                f"LiDAR input channel count must be {self.in_channels} for this encoder, got {int(channels)}."
+            )
+        if int(height) <= 0 or int(width) <= 0:
+            raise ValueError(f"LiDAR input spatial size must be positive, got {int(height)}x{int(width)}.")
         lidar = lidar_batch.reshape(batch_size * seq_len, channels, height, width)
         lidar_feat = self.cnn_layers(lidar)
         lidar_feat = lidar_feat * self.channel_attention(lidar_feat)

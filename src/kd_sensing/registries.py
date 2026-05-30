@@ -139,6 +139,10 @@ DATASETS.register_removed(
     "scenario34",
     "Use {'type': 'deepsense6g', 'scene': 34}.",
 )
+DATASETS.register_removed(
+    "multimodal_nf",
+    "Multimodal-NF has been retired and no compatibility migration is provided.",
+)
 MODELS.register_removed(
     "Fusion" + "ModalityNet",
     "Use the 'fusion_teacher' registry name or FusionTeacherModalityNet.",
@@ -146,6 +150,30 @@ MODELS.register_removed(
 MODELS.register_removed(
     "Student" + "ModalityNet",
     "Use the 'fusion_student' registry name or FusionStudentModalityNet.",
+)
+MODELS.register_removed(
+    "craf_fusion",
+    "CRAF has been retired. Use current canonical fusion models such as 'cls_token_transformer_fusion'.",
+)
+MODELS.register_removed(
+    "marf_fusion",
+    "MARF has been retired. Use current canonical fusion models such as 'cls_token_transformer_fusion'.",
+)
+DISTILLERS.register_removed(
+    "g2d",
+    "G2D multimodal distillation has been retired. Use 'no_kd', 'logits_kd', or 'rkd'.",
+)
+PREPROCESSORS.register_removed(
+    "multimodal_nf_audit",
+    "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
+)
+PREPROCESSORS.register_removed(
+    "multimodal_nf_index",
+    "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
+)
+PREPROCESSORS.register_removed(
+    "multimodal_nf_derived_cache",
+    "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
 )
 
 
@@ -189,7 +217,6 @@ def import_default_components() -> None:
 
     import kd_sensing.data.datasets.deepsense6g  # noqa: F401
     import kd_sensing.data.datasets.mmw  # noqa: F401
-    import kd_sensing.data.datasets.multimodal_nf  # noqa: F401
     import kd_sensing.data.datasets.raymobtime_s008  # noqa: F401
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.distillation.distillers  # noqa: F401
@@ -208,7 +235,6 @@ def import_default_components() -> None:
     import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.image_cache  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401
-    import kd_sensing.preprocessing.multimodal_nf  # noqa: F401
     import kd_sensing.preprocessing.raymobtime_s008  # noqa: F401
     import kd_sensing.preprocessing.sequences  # noqa: F401
 

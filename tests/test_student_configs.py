@@ -25,7 +25,6 @@ from kd_sensing.config.canonical_recipes import (  # noqa: E402
     objective_overlay_recipe,
     training_overrides,
 )
-from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import (  # noqa: E402
@@ -641,15 +640,15 @@ def test_base_fusion_recipe_registry_keeps_virtual_config_core_fields():
 
 def test_objective_and_advanced_overlay_recipes_are_table_driven():
     objective = objective_overlay_recipe("multitask")
-    advanced = advanced_overlay_recipe("marf_subset_training")
+    advanced = advanced_overlay_recipe("multitask_occlusion_position")
 
     assert objective.dataset["occlusion_target"]["enabled"] is True
     assert objective.dataset["position_target"]["normalize"] is True
     assert objective.auxiliary_heads == {"occlusion": True, "position": True}
     assert objective.early_stopping_metric == "val_multitask_loss"
     assert advanced is not None
-    assert advanced.builder == "marf"
-    assert advanced.options["ablation"]["training"]["subset_training"]["enabled"] is True
+    assert advanced.builder == "multitask_occlusion_position"
+    assert advanced.options == {}
 
 
 def test_virtual_image_radar_config_generator_keeps_compatibility_params():
@@ -717,7 +716,7 @@ def test_existing_yaml_config_takes_precedence_over_virtual_config(tmp_path: Pat
 
 
 def test_existing_advanced_overlay_yaml_takes_precedence_over_virtual_config(tmp_path: Path):
-    config_path = tmp_path / "configs" / "fusion" / "overlay_g2d_lite.yaml"
+    config_path = tmp_path / "configs" / "fusion" / "overlay_multitask_occlusion_position.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text("experiment:\n  name: physical_overlay\n", encoding="utf-8")
 
@@ -726,166 +725,36 @@ def test_existing_advanced_overlay_yaml_takes_precedence_over_virtual_config(tmp
     assert cfg["experiment"]["name"] == "physical_overlay"
 
 
-def test_advanced_fusion_overlay_generates_g2d_modes_and_full_dump(tmp_path: Path):
-    cfg = load_config(ROOT / "configs/fusion/overlay_g2d_global.yaml")
-    entity = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml")
-    output = tmp_path / "final_config.yaml"
-    dump_config(cfg, output)
-    dumped = safe_load_yaml(output.read_text(encoding="utf-8"))
-
-    assert cfg["experiment"]["task"] == "fusion"
-    assert cfg["model"]["student"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
-    assert cfg["distillation"]["type"] == "g2d"
-    assert cfg["distillation"]["g2d"]["mode"] == "global"
-    assert cfg["distillation"]["g2d"]["smp"]["enabled"] is True
-    assert cfg["training"]["lr"] == entity["training"]["lr"]
-    assert cfg["model"]["student"]["type"] == entity["model"]["student"]["type"]
-    assert set(dumped) >= {"data", "model", "loss", "distillation", "training", "output"}
-
-
-RETIRED_G2D_ENTITY_EXPECTATIONS = {
-    "image_radar_gps_lidar_mmwave_g2d_lite": {
-        "mode": "lite",
-        "smp_enabled": False,
-        "smp_mode": "none",
-    },
-    "image_radar_gps_lidar_mmwave_g2d_global": {
-        "mode": "global",
-        "smp_enabled": True,
-        "smp_mode": "global",
-    },
-    "image_radar_gps_lidar_mmwave_g2d_horizon": {
-        "mode": "horizon_diagnostic",
-        "smp_enabled": False,
-        "smp_mode": "horizon_diagnostic",
-    },
-}
-
-
-RETIRED_ADVANCED_ENTITY_ALIASES = {
-    "craf_all_modalities_no_kd": "overlay_craf_baseline",
-    "craf_all_modalities_no_counterfactual": "overlay_craf_no_counterfactual",
-    "craf_all_modalities_fixed_prior_sanity": "overlay_craf_fixed_prior",
-    "marf": "overlay_marf_baseline",
-    "marf_subset_training": "overlay_marf_subset_training",
-    "marf_no_residual_ablation": "overlay_marf_no_residual",
-    "marf_no_prior_bias_ablation": "overlay_marf_no_prior_bias",
-    "marf_no_subset_training_ablation": "overlay_marf_no_subset_training",
-}
-
-
-def _critical_g2d_fields(cfg: dict) -> dict:
-    g2d = cfg["distillation"]["g2d"]
-    return {
-        "experiment_name": cfg["experiment"]["name"],
-        "task": cfg["experiment"]["task"],
-        "dataset": {
-            key: cfg["data"]["dataset"][key]
-            for key in ["type", "scene_id", "train_csv_name", "test_csv_name", "seq_len", "num_pred"]
-        },
-        "modalities": cfg["model"]["student"]["modalities"],
-        "student_type": cfg["model"]["student"]["type"],
-        "teacher_type": cfg["model"]["teacher"]["type"],
-        "loss_type": cfg["loss"]["type"],
-        "distillation_type": cfg["distillation"]["type"],
-        "g2d_mode": g2d["mode"],
-        "smp_enabled": g2d["smp"]["enabled"],
-        "smp_mode": g2d["smp"]["mode"],
-        "training": {
-            key: cfg["training"][key]
-            for key in [
-                "epochs",
-                "lr",
-                "weight_decay",
-                "grad_clip",
-                "patience",
-                "early_stopping_metric",
-                "early_stopping_mode",
-            ]
-        },
-        "run_name": cfg["output"]["run_name"],
-        "teacher_checkpoints": {
-            modality: teacher["checkpoint"]
-            for modality, teacher in g2d["teachers"].items()
-        },
-    }
-
-
-def _critical_advanced_overlay_fields(cfg: dict) -> dict:
-    return {
-        "experiment_name": cfg["experiment"]["name"],
-        "task": cfg["experiment"]["task"],
-        "dataset": cfg["data"]["dataset"],
-        "modalities": cfg["model"]["student"]["modalities"],
-        "teacher_type": cfg["model"]["teacher"]["type"],
-        "student": cfg["model"]["student"],
-        "loss": cfg.get("loss", {}),
-        "distillation": cfg.get("distillation", {}),
-        "training": cfg.get("training", {}),
-        "run_name": cfg["output"]["run_name"],
-        "checkpoint_source": {
-            "paths": cfg.get("paths", {}),
-            "teacher": cfg.get("teacher", {}),
-        },
-    }
-
-
-@pytest.mark.parametrize("stem", sorted(RETIRED_G2D_ENTITY_EXPECTATIONS))
-def test_retired_g2d_entity_paths_are_recipe_equivalent(stem: str):
-    cfg = load_config(ROOT / "configs/fusion" / f"{stem}.yaml")
-    expected = RETIRED_G2D_ENTITY_EXPECTATIONS[stem]
-
-    assert _critical_g2d_fields(cfg) == {
-        "experiment_name": stem,
-        "task": "fusion",
-        "dataset": {
-            "type": "deepsense6g",
-            "scene_id": 31,
-            "train_csv_name": "train_seqs_RA_GPS_LIDAR.csv",
-            "test_csv_name": "test_seqs_RA_GPS_LIDAR.csv",
-            "seq_len": 8,
-            "num_pred": 3,
-        },
-        "modalities": ["image", "radar", "gps", "lidar", "mmwave"],
-        "student_type": "modular_sequence",
-        "teacher_type": "modular_sequence",
-        "loss_type": "cross_entropy",
-        "distillation_type": "g2d",
-        "g2d_mode": expected["mode"],
-        "smp_enabled": expected["smp_enabled"],
-        "smp_mode": expected["smp_mode"],
-        "training": {
-            "epochs": 100,
-            "lr": 0.00075,
-            "weight_decay": 0.0001,
-            "grad_clip": 10.0,
-            "patience": 20,
-            "early_stopping_metric": "val_adba",
-            "early_stopping_mode": "max",
-        },
-        "run_name": stem,
-        "teacher_checkpoints": {
-            "image": None,
-            "radar": None,
-            "gps": None,
-            "lidar": None,
-            "mmwave": None,
-        },
-    }
-
-
-@pytest.mark.parametrize("stem", sorted(RETIRED_ADVANCED_ENTITY_ALIASES))
-def test_retired_craf_marf_entity_paths_are_recipe_equivalent(stem: str):
-    retired_path = ROOT / "configs/fusion" / f"{stem}.yaml"
-    overlay_path = ROOT / "configs/fusion" / f"{RETIRED_ADVANCED_ENTITY_ALIASES[stem]}.yaml"
-
-    assert not retired_path.exists()
-    cfg = load_config(retired_path)
-    overlay = load_config(overlay_path)
-    overlay["experiment"]["name"] = stem
-    overlay["output"]["run_name"] = stem
-
-    assert _critical_advanced_overlay_fields(cfg) == _critical_advanced_overlay_fields(overlay)
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "overlay_g2d_lite",
+        "overlay_g2d_global",
+        "overlay_g2d_horizon",
+        "image_radar_gps_lidar_mmwave_g2d_lite",
+        "image_radar_gps_lidar_mmwave_g2d_global",
+        "image_radar_gps_lidar_mmwave_g2d_horizon",
+        "overlay_craf_baseline",
+        "overlay_craf_no_counterfactual",
+        "overlay_craf_fixed_prior",
+        "overlay_marf_baseline",
+        "overlay_marf_subset_training",
+        "overlay_marf_no_residual",
+        "overlay_marf_no_prior_bias",
+        "overlay_marf_no_subset_training",
+        "craf_all_modalities_no_kd",
+        "craf_all_modalities_no_counterfactual",
+        "craf_all_modalities_fixed_prior_sanity",
+        "marf",
+        "marf_subset_training",
+        "marf_no_residual_ablation",
+        "marf_no_prior_bias_ablation",
+        "marf_no_subset_training_ablation",
+    ],
+)
+def test_retired_advanced_fusion_config_paths_are_not_generated(stem: str):
+    with pytest.raises((FileNotFoundError, ValueError), match="Config file not found|must end with one of|Unknown advanced"):
+        load_config(ROOT / "configs/fusion" / f"{stem}.yaml")
 
 
 def test_csi_hardening_matrix_configs_load_and_preserve_contracts():
@@ -1005,7 +874,6 @@ def test_gps_csi_validation_matrix_configs_load():
         "E1_gps_clean_csi_joint.yaml",
         "E2_gps_slow_csi_joint.yaml",
         "E3_gps_slow_csi_prioritized_warmup.yaml",
-        "E4_gps_slow_csi_g2d_style.yaml",
     ]:
         cfg = load_config(root / filename)
         assert cfg["experiment"]["task"] == "fusion"
@@ -1017,37 +885,7 @@ def test_gps_csi_validation_matrix_configs_load():
     assert e3["training"]["csi_prioritized_warmup"]["enabled"] is True
     assert e3["training"]["csi_prioritized_warmup"]["phase_1"]["active_modalities"] == ["csi"]
     assert e3["training"]["csi_prioritized_warmup"]["phase_2"]["active_modalities"] == ["gps", "csi"]
-
-    e4 = load_config(root / "E4_gps_slow_csi_g2d_style.yaml")
-    assert e4["distillation"]["type"] == "g2d"
-    assert e4["distillation"]["g2d"]["modalities"] == ["gps", "csi"]
-    assert set(e4["distillation"]["g2d"]["teachers"]) == {"gps", "csi"}
-    assert e4["distillation"]["g2d"]["smp"]["enabled"] is True
-
-
-def test_advanced_fusion_overlays_cover_craf_and_marf_ablation_semantics():
-    craf = load_config(ROOT / "configs/fusion/overlay_craf_baseline.yaml")
-    craf_no_cf = load_config(ROOT / "configs/fusion/overlay_craf_no_counterfactual.yaml")
-    marf = load_config(ROOT / "configs/fusion/overlay_marf_baseline.yaml")
-    marf_subset = load_config(ROOT / "configs/fusion/overlay_marf_subset_training.yaml")
-    marf_no_residual = load_config(ROOT / "configs/fusion/overlay_marf_no_residual.yaml")
-    marf_no_prior = load_config(ROOT / "configs/fusion/overlay_marf_no_prior_bias.yaml")
-
-    assert craf["model"]["student"]["type"] == "craf_fusion"
-    assert craf["training"]["counterfactual"]["enabled"] is True
-    assert craf_no_cf["model"]["student"]["modalities"] == craf["model"]["student"]["modalities"]
-    assert craf_no_cf["training"]["counterfactual"]["enabled"] is False
-    assert craf_no_cf["loss"]["gate_weight"] == 0.0
-    assert marf["model"]["student"]["type"] == "marf_fusion"
-    assert marf["training"]["subset_training"]["enabled"] is False
-    assert marf_subset["training"]["subset_training"]["enabled"] is True
-    assert marf_subset["training"]["subset_training"]["modes"] == ["top_prior", "random_with_top_prior"]
-    assert marf_no_residual["model"]["student"]["residual_adapter"]["enabled"] is False
-    assert marf_no_prior["model"]["student"]["router"]["use_prior_bias"] is False
-    for cfg in (marf_subset, marf_no_residual, marf_no_prior):
-        assert cfg["data"]["dataset"]["train_csv_name"] == marf["data"]["dataset"]["train_csv_name"]
-        assert cfg["model"]["student"]["modalities"] == marf["model"]["student"]["modalities"]
-        assert cfg["training"]["lr"] == marf["training"]["lr"]
+    assert not (root / "E4_gps_slow_csi_g2d_style.yaml").exists()
 
 
 def test_advanced_fusion_overlay_builder_rejects_unknown_recipe():

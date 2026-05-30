@@ -16,11 +16,6 @@ from kd_sensing.engine.objectives.registry import (
     _METRIC_MODES,
     _OBJECTIVE_AVAILABLE_METRICS,
 )
-from kd_sensing.engine.multimodal_nf_runtime import (
-    MULTIMODAL_NF_OBJECTIVES,
-    multimodal_nf_codebook_metadata_from_config,
-    multimodal_nf_objective_contract,
-)
 
 
 @dataclass(frozen=True)
@@ -74,10 +69,10 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("beam",)
         required_outputs = ("logits",)
         primary_loss = "beam"
-    elif objective in {"current_beam_selection", "near_field_beam_selection"}:
+    elif objective == "current_beam_selection":
         required_targets = ("target_beam",)
         required_outputs = ("logits",)
-        primary_loss = "near_field_beam_selection" if objective == "near_field_beam_selection" else "beam_selection"
+        primary_loss = "beam_selection"
     elif objective == "current_los_classification":
         required_targets = ("los_label",)
         required_outputs = ("los_logits",)
@@ -106,16 +101,6 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         "default_metric": metric,
         "default_metric_mode": mode,
     }
-    dataset_type = (
-        str(cfg_or_objective.get("data", {}).get("dataset", {}).get("type", "")).strip().lower()
-        if isinstance(cfg_or_objective, dict)
-        else ""
-    )
-    if isinstance(cfg_or_objective, dict) and dataset_type == "multimodal_nf" and objective in MULTIMODAL_NF_OBJECTIVES:
-        codebook = multimodal_nf_codebook_metadata_from_config(cfg_or_objective)
-        runtime_metadata.update(multimodal_nf_objective_contract(objective, codebook_metadata=codebook))
-    elif objective == "near_field_beam_selection":
-        runtime_metadata.update(multimodal_nf_objective_contract(objective))
     return PredictionObjectiveSpec(
         name=objective,
         required_targets=required_targets,
@@ -282,7 +267,7 @@ def objective_enabled_heads(cfg: dict[str, Any]) -> list[str]:
             objective = resolve_prediction_objective(cfg)
             heads.append(
                 "beam_selection"
-                if objective in {"current_beam_selection", "near_field_beam_selection", "selection_multitask"}
+                if objective in {"current_beam_selection", "selection_multitask"}
                 else "beam"
             )
         elif output == "occlusion_logits":
@@ -445,7 +430,6 @@ def _runtime_loss_weights(cfg: dict[str, Any], objective: str) -> dict[str, floa
         return selection_multitask_loss_weights(cfg)
     if objective in {
         "current_beam_selection",
-        "near_field_beam_selection",
         "current_los_classification",
         "current_link_quality",
     }:
@@ -463,7 +447,7 @@ def _finite_number(value: object) -> bool:
 
 
 def _is_allowed_pattern_metric(name: str, *, objective: str) -> bool:
-    if objective in {"current_beam_selection", "near_field_beam_selection", "selection_multitask"}:
+    if objective in {"current_beam_selection", "selection_multitask"}:
         return name.startswith(("val_beam_top",))
     if objective not in {"beam", "multitask"}:
         return False

@@ -35,10 +35,6 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
         dataset_cfg["input_profiles"] = resolve_dataset_profiles(dataset_type, enabled_modalities, dataset_cfg)
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
-    if dataset_type == "multimodal_nf":
-        cache_cfg = cfg.get("data", {}).get("cache", {})
-        if isinstance(cache_cfg, dict) and isinstance(cache_cfg.get("multimodal_nf"), dict):
-            dataset_cfg["multimodal_nf_cache"] = dict(cache_cfg["multimodal_nf"])
     canonicalize_lidar_dataset_config(dataset_cfg)
     _apply_csi_degradation_seed(dataset_cfg, cfg)
     if _uses_csv_split(dataset_type, descriptor):
@@ -54,11 +50,6 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     loader_cfg = cfg["data"]["dataloader"]
     training_cfg = cfg.get("training", {})
     train_dataset = build_dataset(cfg, "train")
-    if hasattr(train_dataset, "codebook_metadata"):
-        cfg.setdefault("data", {}).setdefault("dataset", {})["codebook_metadata"] = getattr(
-            train_dataset,
-            "codebook_metadata",
-        )
     prepare_lidar_normalizer(cfg, train_dataset)
     dataset_kwargs = {}
     if getattr(train_dataset, "use_gps", False):
@@ -73,8 +64,6 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         dataset_kwargs["occlusion_target_stats"] = getattr(train_dataset, "occlusion_target_stats", None)
     if getattr(train_dataset, "position_target_enabled", False):
         dataset_kwargs["position_target_scaler"] = getattr(train_dataset, "position_target_scaler", None)
-    if hasattr(train_dataset, "codebook_metadata"):
-        dataset_kwargs["codebook_metadata"] = getattr(train_dataset, "codebook_metadata")
     test_dataset = build_dataset(cfg, "test", **dataset_kwargs)
     return {
         "train": build_dataloader(

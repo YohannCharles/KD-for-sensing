@@ -620,22 +620,24 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **AND** 覆盖优先级 MUST 与实体 YAML 配置保持一致
 
 ### Requirement: 实验输出记录 split 协议
-训练和评估流程 MUST 在运行产物中记录足够的 split 协议信息，用于判断不同实验是否使用同一数据协议并可横向比较。记录 MUST 包含实际 CSV 路径、样本数和 `balanced_seq` split metadata 路径或核心字段。
+训练和评估流程 MUST 在运行产物中记录足够的 split 协议信息，用于判断不同实验是否使用同一数据协议并可横向比较。记录 MUST 包含实际 CSV 路径、样本数和 split metadata 路径或核心字段。对于 MMW Town10 或其它滑窗 sequence 数据，记录还 MUST 包含 `split_strategy`、`split_protocol_version`、`strict_validation_eligible`、`eligibility_reasons` 和可用的 leakage diagnostics 摘要，避免把 unknown 或高重叠 split 误当成 strict validation 结果。
 
 #### Scenario: 训练输出包含 split metadata 引用
 - **WHEN** 训练入口构建 train/test dataset
 - **THEN** `final_config.yaml`、`train_log.json` 或等价运行产物 MUST 记录 split metadata 路径或核心字段
 - **AND** 记录 MUST 包含 split 策略、seed、train/test `seq_index` 数量和 train/test 样本数
+- **AND** 当 split metadata 包含 strict eligibility 或 leakage diagnostics 时，运行产物 MUST 记录这些字段
 
 #### Scenario: 评估输出包含 split 协议
 - **WHEN** 评估入口构建 test dataset
 - **THEN** 评估报告 MUST 记录实际使用的 test CSV 和可用的 split 协议信息
-- **AND** 当当前 CSV 缺少 `balanced_seq` split metadata 时，系统 MUST 给出清晰错误或显式警告，避免把未知 split 协议误当成新协议结果
+- **AND** 当当前 CSV 缺少 split metadata 时，系统 MUST 给出清晰错误或显式警告，避免把未知 split 协议误当成新协议结果
+- **AND** 当 split metadata 标记 `strict_validation_eligible=false` 时，评估报告 MUST 保留指标但标记其不适合作为 strict 主结论
 
 #### Scenario: 跨模态 split 可比较
 - **WHEN** 用户使用同一组 train/test CSV 运行 image、radar、GPS、LiDAR、mmWave 或 fusion 实验
 - **THEN** 各运行产物中的 split 协议信息 MUST 能显示它们使用相同 CSV 和相同 split metadata
-- **AND** 如果 CSV 路径或 split metadata 不同，用户 MUST 能从运行产物中看出这些结果不应直接作为同一 split 协议比较
+- **AND** 如果 CSV 路径、split metadata、split strategy 或 strict eligibility 不同，用户 MUST 能从运行产物中看出这些结果不应直接作为同一 split 协议比较
 
 ### Requirement: 未来标签时隙对齐
 训练、验证、评估、诊断预测导出和 KD 相关 loss MUST 使用 `num_pred` 个未来标签时隙。`num_pred=3` 时，系统 MUST 将 label 和预测 slot 解释为 `[t+1, t+2, t+3]`，不得包含当前或历史最后一个 beam。
@@ -649,7 +651,7 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **WHEN** 模型输出 logits 的时间维长度大于或等于 `num_pred`
 - **THEN** 统一 slot 选择 helper MUST 返回最后 `num_pred` 个 slot
 - **AND** 返回结果 MUST 与 `prepare_labels()` 输出的 future labels 同长
-- **AND** 该 helper 的语义 MUST 表示长时序输出对齐，不得作为新 CRAF/MARF `num_pred + 1` fusion head 的兼容承诺
+- **AND** 该 helper 的语义 MUST 表示长时序输出对齐，不得作为方法专属额外 prediction slot 的兼容承诺
 
 #### Scenario: 输出 slot 不足时报错
 - **WHEN** 模型输出 logits 的时间维长度小于 `num_pred`
@@ -661,233 +663,6 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **THEN** 导出的第一个 horizon MUST 表示 `t+1`
 - **AND** 导出逻辑 MUST 不把第一个预测 slot 当作 current beam 丢弃
 
-### Requirement: 训练流程支持 CRAF 输出适配
-训练流程 MUST 能消费 CRAF/MARF dict 输出，同时保持现有三元组模型输出兼容。输出适配 MUST 提取 logits、训练 feature、蒸馏 feature 和可选 diagnostics；当 feature-based KD 或 diagnostics 需要真实 feature 时，系统 MUST 使用模型输出的真实 feature 字段，不得用 logits 伪装为 feature 静默继续。
-
-#### Scenario: CRAF dict 输出训练
-- **WHEN** 模型 forward 返回包含 `logits`、`input_features` 和 `output_features` 的 dict
-- **THEN** 训练流程 MUST 从 dict 中提取 logits 计算任务 loss
-- **AND** 训练流程 MUST 使用 dict 中的真实 feature 字段执行需要 feature 的 KD 或 diagnostics
-- **AND** 训练流程 MUST 将非核心字段作为 diagnostics 传递给 CRAF/MARF 附加 loss 和日志路径
-
-#### Scenario: dict 输出缺少 logits
-- **WHEN** 模型 forward 返回 dict 但不包含受支持的 logits 字段
-- **THEN** 输出适配 MUST 报错
-- **AND** 训练、验证和诊断导出流程 MUST 不猜测其它 tensor 作为 logits
-
-#### Scenario: 需要 feature 的路径缺少 feature
-- **WHEN** 配置启用需要 `input_features` 或 `output_features` 的 KD、auxiliary diagnostics 或 feature 对齐路径
-- **AND** 模型输出没有提供对应真实 feature
-- **THEN** 训练流程 MUST 报错
-- **AND** 系统 MUST 不使用 logits fallback 产生 feature-based loss
-
-#### Scenario: 旧模型三元组输出训练
-- **WHEN** 模型 forward 返回 `(pred, input_features, output_features)`
-- **THEN** 训练流程 MUST 保持当前 loss、KD 和指标计算语义
-- **AND** 三元组中的 feature MUST 被视为真实 feature 输入
-
-#### Scenario: 输出 slot 截取精确对齐
-- **WHEN** 模型输出 slot 数已经等于 `num_pred`
-- **THEN** 训练流程 MUST 直接使用这些 slot 与未来标签对齐
-- **AND** 不得因再次截取而改变语义
-
-### Requirement: 训练流程支持 CRAF 附加 loss
-训练流程 MUST 在 CRAF 显式配置时组合普通任务 loss、beam-aware soft label loss、单模态辅助 loss 和 counterfactual gate loss。未启用的 loss 权重 MUST 不影响总 loss。
-
-#### Scenario: 只启用普通任务 loss
-- **WHEN** CRAF 附加 loss 权重均为 0
-- **THEN** 训练总 loss MUST 等于普通任务 loss 或现有 distiller 组合结果
-
-#### Scenario: 启用 gate loss
-- **WHEN** counterfactual gate supervision 产生 gate target
-- **THEN** 训练流程 MUST 将 gate loss 按配置权重加入总 loss
-- **AND** 日志 MUST 记录 gate loss 摘要
-
-#### Scenario: ignore index 处理一致
-- **WHEN** 标签中包含 `-100`
-- **THEN** CRAF 附加 loss MUST 跳过这些位置
-- **AND** 普通指标计算 MUST 保持现有 ignore index 语义
-
-### Requirement: 评估流程支持 CRAF 输出
-评估流程 MUST 能从 CRAF 输出中提取 beam logits 并计算现有 Top-K、DBA 和 loss 指标。评估流程 MUST 不执行训练专用 counterfactual forward。
-
-#### Scenario: CRAF 模型评估
-- **WHEN** 用户评估 CRAF checkpoint
-- **THEN** 评估流程 MUST 提取 CRAF logits
-- **AND** 评估流程 MUST 保存与现有模型一致的 metrics 文件
-
-#### Scenario: 评估跳过 counterfactual
-- **WHEN** 配置中 counterfactual training 曾启用
-- **THEN** 评估流程 MUST 不执行 drop-forward gate supervision
-- **AND** 评估结果 MUST 只反映正常 effective modality mask 下的预测表现
-
-### Requirement: CRAF 日志与运行产物
-训练输出 MUST 在 CRAF diagnostics 可用时保存 reliability、counterfactual 和 auxiliary loss 摘要，并 MUST 保持现有 `train_log.json`、`metrics.json` 和 TensorBoard 输出兼容。
-
-#### Scenario: train_log 记录 CRAF 字段
-- **WHEN** CRAF 训练完成至少一个 epoch
-- **THEN** `train_log.json` MUST 包含 CRAF 附加 loss 和每模态 reliability 的 epoch 摘要
-
-#### Scenario: final_config 保存 CRAF 配置
-- **WHEN** CRAF 训练启动
-- **THEN** `final_config.yaml` MUST 保存实际生效的 CRAF 模型、loss、counterfactual 和 modality dropout 配置
-
-#### Scenario: 旧模型日志结构兼容
-- **WHEN** 用户训练非 CRAF 模型
-- **THEN** 输出日志 MUST 保持现有字段兼容
-- **AND** CRAF 专属字段 MAY 缺省
-
-### Requirement: CRAF smoke test 工作流
-项目 MUST 提供可在 conda 环境中运行的 CRAF smoke test，覆盖模型构建、forward、loss、backward、验证和日志写入的核心路径。
-
-#### Scenario: synthetic CRAF 短训练
-- **WHEN** 开发者运行 CRAF synthetic 或小数据短训练测试
-- **THEN** 训练流程 MUST 完成至少一个 optimizer step
-- **AND** 验证流程 MUST 产出 metrics
-
-#### Scenario: CRAF 配置加载测试
-- **WHEN** 开发者运行配置加载测试
-- **THEN** CRAF 示例配置和 baseline 示例配置 MUST 能通过 config loader 解析
-
-### Requirement: CRAF 稳定化训练工作流
-训练流程 MUST 支持 CRAF 稳定化训练配置，包括 warmup gate 固定、CE-only 反事实目标、ignore band、gate/loss schedule 和 softmax gate 诊断。
-
-#### Scenario: warmup 阶段不扰动主任务训练
-- **WHEN** CRAF 配置处于 warmup epoch
-- **THEN** 训练流程 MUST 执行普通 forward、任务 loss、可配置的 warmup auxiliary loss 和优化步骤
-- **AND** 训练流程 MUST 不执行会产生 gate target loss 的 counterfactual supervision
-
-#### Scenario: 反事实启用后写入有效权重
-- **WHEN** counterfactual supervision 已启用
-- **THEN** `train_log.json` MUST 记录 gate loss 的目标权重和当前有效权重
-- **AND** TensorBoard 启用时 MUST 写入等价标量
-
-#### Scenario: 旧训练配置兼容
-- **WHEN** CRAF 配置未提供新的稳定化字段
-- **THEN** 训练流程 MUST 使用向后兼容默认值
-- **AND** 非 CRAF 模型 MUST 不读取或依赖这些字段
-
-### Requirement: CRAF 稳定化实验矩阵
-项目 MUST 提供用于定位模态失衡问题的最小 CRAF 消融实验入口。
-
-#### Scenario: token transformer 无 gate baseline
-- **WHEN** 用户运行 token transformer 无 gate 配置
-- **THEN** 模型 MUST 使用 CRAF tokenizer 与 Transformer backbone
-- **AND** 训练流程 MUST 不启用 reliability gate 和 counterfactual gate loss
-
-#### Scenario: CRAF 无反事实 baseline
-- **WHEN** 用户运行 CRAF no-counterfactual 配置
-- **THEN** 模型 MAY 构建 reliability estimator
-- **AND** 训练流程 MUST 固定 gate 或跳过 counterfactual gate supervision
-
-#### Scenario: 固定强模态 prior sanity check
-- **WHEN** 用户运行固定 GPS/mmWave 高、image/LiDAR/radar 低的 prior 配置
-- **THEN** 训练流程 MUST 使用该 prior 作为诊断 gate 或 dataset prior 输入
-- **AND** 该配置 MUST 明确标记为 sanity check 而非默认算法
-
-### Requirement: Teacher-prior CRAF stage workflow
-训练流程 MUST 支持 teacher-prior CRAF 的 Stage 1、Stage 2 和 Stage 3 工作流，并 MUST 继续复用统一训练入口、输出目录、checkpoint、TensorBoard 和 `train_log.json` 语义。
-
-#### Scenario: Stage 1 训练单模态 teacher
-- **WHEN** 用户运行任一单模态 teacher-prior Stage 1 配置
-- **THEN** 系统 MUST 使用对应单模态数据和 teacher 模型训练
-- **AND** 输出目录 MUST 保存 best checkpoint、last checkpoint、最终配置和可供 teacher registry 读取的验证指标
-
-#### Scenario: Stage 2 初始化发生在 optimizer 前
-- **WHEN** 用户运行 Stage 2 teacher-init prior 配置
-- **THEN** 系统 MUST 在构建 optimizer 前加载 teacher encoder 并应用冻结策略
-- **AND** optimizer MUST 只包含 `requires_grad=True` 的参数
-
-#### Scenario: Stage 3 checkpoint 加载后应用 finetune 策略
-- **WHEN** 用户运行 Stage 3 selective fine-tuning 配置
-- **THEN** 系统 MUST 先加载 Stage 2 checkpoint
-- **AND** 系统 MUST 再应用选择性冻结/解冻策略并构建参数组 optimizer
-
-### Requirement: Teacher registry build command
-项目 MUST 提供可命令行运行的 teacher registry 构建流程。该流程 MUST 使用 conda 环境中的 Python 运行，并 MUST 能从配置或命令行参数指定 teacher root、输出路径、prior 模式和场景。
-
-#### Scenario: 从 teacher 根目录生成 registry
-- **WHEN** 用户运行 teacher registry 构建命令并指定 teacher root
-- **THEN** 系统 MUST 扫描或读取五个单模态 teacher 输出目录
-- **AND** 系统 MUST 写出 teacher registry JSON 到指定路径
-
-#### Scenario: registry 写出路径父目录不存在
-- **WHEN** 用户指定的 teacher registry 输出路径父目录不存在
-- **THEN** 系统 MUST 创建父目录
-- **AND** 系统 MUST 不覆盖 unrelated 输出文件
-
-### Requirement: Teacher-prior CRAF optimizer 参数组
-训练流程 MUST 支持 Stage 3 参数组 optimizer。参数组 MUST 按 fusion/head/gate/strong encoder/weak encoder 或等价角色划分，并 MUST 在训练日志中记录每组学习率和参数量。
-
-#### Scenario: Stage 3 参数组非空
-- **WHEN** Stage 3 配置解冻 GPS 和 mmWave encoder
-- **THEN** strong encoder 参数组 MUST 包含 GPS 和 mmWave encoder 参数
-- **AND** weak encoder 参数组 MUST 不包含 frozen image、radar 或 LiDAR 参数
-- **AND** fusion、head 和 gate 参数组 MUST 非空
-
-#### Scenario: 冻结参数不进入 optimizer
-- **WHEN** 某个 encoder 参数 `requires_grad=False`
-- **THEN** optimizer 参数组 MUST 不包含该参数
-- **AND** 训练日志 MUST 记录该 encoder 为 frozen
-
-### Requirement: Teacher-prior CRAF validation subsets
-验证流程 MUST 支持对支持 force modality mask 的 fusion 模型运行显式模态组合评估。该能力 MUST 只在模型支持 force modality mask 且配置启用时运行，并 MUST 支持从 teacher prior 或等价配置中解析 top-prior、single-best-prior 和 low-prior 模态集合。既有 CRAF 配置 MUST 继续可用，MARF 配置 MUST 使用同一验证入口。
-
-#### Scenario: 运行 prior-driven strong-only 和 weak-only 验证
-- **WHEN** 配置启用 `evaluation.modality_subsets` 且 teacher prior 可用
-- **THEN** 验证流程 MUST 使用 force modality mask 分别评估 strong-only 和 weak-only 组合
-- **AND** strong-only MUST 对应当前 prior 最高的 top-k 可用模态
-- **AND** weak-only MUST 对应当前 prior 最低的一组可用模态
-- **AND** strong-only 和 weak-only 的实际模态列表 MUST 记录到验证输出或运行日志
-
-#### Scenario: all subset 与官方验证一致
-- **WHEN** 配置请求 `all` subset
-- **THEN** `all` subset MUST 使用全部启用模态执行与官方 validation 等价的 forward
-- **AND** `val/subset/all/top1` MUST 与官方 `accuracy/val` 在同一 checkpoint 和 dataloader 上一致
-
-#### Scenario: 支持 MARF subset 名称
-- **WHEN** 配置请求 `top_prior`、`single_best_prior`、`random_with_top_prior` 或 low-prior subset
-- **THEN** 验证流程 MUST 按 prior 和配置参数解析对应 force mask
-- **AND** 验证结果 MUST 包含每个成功评估 subset 的 Top-1、ATop-3、ATop-5、ADBA 和 loss
-
-#### Scenario: 非 opt-in 模型跳过模态组合验证
-- **WHEN** 模型不支持 `supports_force_modality_mask`
-- **THEN** 验证流程 MUST 跳过模态组合评估
-- **AND** 默认验证指标 MUST 仍正常产出
-
-### Requirement: Teacher-prior CRAF smoke tests
-项目 MUST 提供面向 teacher-prior CRAF 的短训练和定向测试路径。测试命令 MUST 使用 `conda run -n kd_mm_beam` 环境约束。
-
-#### Scenario: PriorResidualGate 初始化测试
-- **WHEN** 开发者运行 CRAF 定向测试
-- **THEN** 测试 MUST 覆盖 prior residual gate 初始化后 gate 接近 prior
-- **AND** 测试 MUST 覆盖 unavailable modality mask
-
-#### Scenario: Stage 2/3 workflow smoke test
-- **WHEN** 开发者运行 Stage 2 或 Stage 3 synthetic smoke test
-- **THEN** 训练流程 MUST 完成 forward、loss、backward、optimizer step、validation 和 checkpoint 保存
-- **AND** 测试 MUST 验证冻结或选择性解冻策略生效
-
-### Requirement: G2D training workflow
-训练入口 MUST 支持通过配置启动 G2D 训练。G2D 训练 MUST 使用 fusion student 作为可训练主模型，MUST 使用多个 frozen 单模态 teacher，MUST 保存常规训练产物和 G2D diagnostics。
-
-#### Scenario: 启动 G2D-lite 训练
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml`
-- **THEN** 系统 MUST 构建 fusion student
-- **AND** 系统 MUST 构建并冻结配置中的单模态 teacher ensemble
-- **AND** 系统 MUST 使用 supervised CE、feature KD 和 logit KD 完成训练 step
-
-#### Scenario: 启动 G2D-global 训练
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml`
-- **THEN** 系统 MUST 执行 G2D 训练 step
-- **AND** 系统 MUST 在 optimizer step 前应用 SMP 梯度屏蔽
-- **AND** 训练日志或 diagnostics MUST 记录当前 active modalities
-
-#### Scenario: 启动 G2D-horizon 诊断训练
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml`
-- **THEN** 系统 MUST 运行 G2D 训练
-- **AND** 每个 epoch diagnostics MUST 记录 `t+1`、`t+2` 和 `t+3` 的 modality ranking
-
 ### Requirement: Future horizon flat metrics
 验证和评估输出 MUST 在现有 nested top-k 数组之外，增加 future horizon 扁平指标字段。字段 MUST 使用 `t1/t2/t3/avg` 命名，并 MUST 不输出历史 current beam 或 h0 指标。
 
@@ -898,41 +673,10 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **AND** 这些 avg 字段 MUST 对有效 future horizon 求平均
 
 #### Scenario: 不输出旧 h0 指标
-- **WHEN** G2D 或普通 future-only 评估写出 metrics
+- **WHEN** 普通 future-only 评估写出 metrics
 - **THEN** metrics MUST 不包含 `top1_h0`
 - **AND** metrics MUST 不包含 `top1_future_avg`
 - **AND** metrics MUST 不包含 `beam8_acc`
-
-### Requirement: G2D validation commands
-G2D 实现 MUST 提供定向测试和 smoke training 验证命令，并且所有 Python 命令 MUST 使用 `conda run -n kd_mm_beam`。
-
-#### Scenario: 运行 G2D 定向测试
-- **WHEN** 开发者验证 G2D 实现
-- **THEN** 推荐测试命令 MUST 为 `conda run -n kd_mm_beam pytest -q tests/test_g2d_loss.py tests/test_g2d_distiller.py tests/test_g2d_smp.py tests/test_g2d_diagnostics.py`
-- **AND** 测试 MUST 覆盖 loss shape、teacher confidence、SMP scheduler、gradient mask 和 diagnostics schema
-
-#### Scenario: 运行 G2D smoke training
-- **WHEN** 开发者完成 G2D 实现
-- **THEN** 开发者 MUST 能使用 `conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml -o training.epochs=1`
-- **AND** 该 smoke run MUST 完成 forward、loss、backward、optimizer step、validation 和 diagnostics 保存
-
-### Requirement: Fusion 实验配置命名保持场景中立
-推荐的 fusion 实验配置文件名、`experiment.name` 和 `output.run_name` MUST 不硬编码 `scene32_` 前缀。场景选择 MUST 通过 dataset 场景字段、命令行覆盖、输出根目录或 checkpoint metadata 表达，而不是混入方法 slug。
-
-#### Scenario: MARF 主配置不包含 scene32 前缀
-- **WHEN** 开发者加载推荐 MARF 主实验配置
-- **THEN** 配置路径、`experiment.name` 和 `output.run_name` MUST 不包含 `scene32_`
-- **AND** 配置 MAY 继续默认选择 Scene 32 数据集字段
-
-#### Scenario: CRAF/MARF ablation 配置不包含 scene32 前缀
-- **WHEN** 开发者加载推荐 CRAF 或 MARF ablation 配置
-- **THEN** 配置文件名、`experiment.name` 和 `output.run_name` MUST 使用场景中立方法名
-- **AND** 用户 MUST 能通过 dataset 场景覆盖在其它场景复用该方法配置
-
-#### Scenario: 场景信息保留在数据和产物 metadata
-- **WHEN** 训练或评估使用场景中立配置运行
-- **THEN** dataset 配置和运行 metadata MUST 仍记录实际 scene / scene_id / scene_slug
-- **AND** checkpoint registry MUST 能继续按场景目录或 metadata 区分产物
 
 ### Requirement: 默认 early stopping 指标使用 DBA
 训练工作流 MUST 在 `experiment.objective: beam` 或未显式设置 objective 的历史 beam 训练中默认使用验证 DBA/ADBA 作为 early stopping 监控指标。objective-aware 非 beam 训练 MUST 使用对应预测目标的默认主指标：`occlusion` 使用 `val_occlusion_blocked_f1/max`，`position` 使用 `val_position_rmse/min`，`multitask` 使用 `val_multitask_loss/min` 或用户显式配置的可用 multitask 主指标。默认配置 MUST NOT 使用 `top1_val_acc`、`val_acc` 或其它 Top-1 验证准确率别名作为默认 early stopping 指标。
@@ -1535,7 +1279,7 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 用户 MUST 能通过链接进入详细实验矩阵或 viewer 文档
 
 #### Scenario: 长实验说明迁移到 docs
-- **WHEN** README 中的某段内容主要描述 G2D、CRAF、MARF、CSI hardening、viewer 或 Raymobtime 的详细实验流程
+- **WHEN** README 中的某段内容主要描述 CSI hardening、viewer 或 Raymobtime 的详细实验流程
 - **THEN** 该内容 MUST 迁移到对应 `docs/` 文件或 OpenSpec spec
 - **AND** README MUST 保留简短摘要和链接
 
@@ -1645,20 +1389,42 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **THEN** 训练、验证和评估 MUST 继续解析同一组 objective、metric alias、metric mode 和 history fields
 - **AND** 现有 objective tests MUST 保持通过
 
-### Requirement: Multimodal-NF 运行产物一致性
-Multimodal-NF 训练和评估运行产物 MUST 在 `final_config.yaml`、`resolved_config.yaml`、`startup_summary.json`、`metrics.json` 和 runtime metadata 中保持 dataset type、objective、modalities、num classes、codebook metadata 和 enabled heads 的一致性。
+### Requirement: Metric horizon aggregation consistency
+训练验证、force-mask subset 验证和 standalone evaluate MUST 对 beam Top-K、ADBA/DBA 和公开 top-level scalar 使用同一套 selected metric horizons。配置或 runtime 解析出的 `metric_horizons` MUST 被记录在 metrics metadata 中，subset top-level scalar MUST NOT 回退到 first valid slot 口径。
 
-#### Scenario: final config 与 startup summary 一致
-- **WHEN** Multimodal-NF 训练启动并写出 `final_config.yaml` 与 `startup_summary.json`
-- **THEN** 两个产物 MUST 记录相同的 dataset type、objective、enabled modalities 和 num beam classes
-- **AND** 若 startup summary 包含模型 heads，head 输出类别数 MUST 与 codebook metadata 一致
+#### Scenario: subset top1 使用 selected horizons
+- **WHEN** 配置选择 `metric_horizons=[2,4,6]` 或等价 horizon 集合
+- **THEN** 普通 validation 的 top-level Top-1 MUST 基于这些 selected horizons 聚合
+- **AND** force-mask subset validation 的 top-level `top1` 或等价 scalar MUST 使用同一 selected horizon 聚合
+- **AND** subset validation MUST NOT 使用 first valid slot 作为 top-level `top1`
 
-#### Scenario: metrics objective 可追溯
-- **WHEN** Multimodal-NF 训练或评估写出 `metrics.json`
-- **THEN** metrics MUST 包含当前 objective 的名称、primary metric、metric mode 和 available metrics
-- **AND** metrics 中的 objective metadata MUST 与 `final_config.yaml` runtime metadata 保持一致
+#### Scenario: standalone evaluate 记录同一口径
+- **WHEN** 用户通过 standalone evaluate 运行同一配置
+- **THEN** evaluate metrics/report MUST 记录实际使用的 `metric_horizons`
+- **AND** Top-K 与 DBA/ADBA top-level scalar MUST 与训练验证使用同一 horizon 选择规则
+- **AND** 若输出逐 horizon 诊断，诊断字段 MUST 与 top-level 聚合字段可区分
 
-#### Scenario: 配置矛盾时拒绝启动
-- **WHEN** Multimodal-NF 配置中的 objective、target schema、model heads 或 codebook metadata 互相矛盾
-- **THEN** 系统 MUST 在训练前或启动早期拒绝运行
-- **AND** 错误信息 MUST 指向矛盾字段和可修正的配置路径
+#### Scenario: 未配置 horizons 使用统一默认
+- **WHEN** 配置没有显式设置 `metric_horizons`
+- **THEN** validation、subset validation 和 evaluate MUST 使用同一个默认 horizon 集合
+- **AND** metrics metadata MUST 记录默认来源或等价说明
+
+### Requirement: 主结论过滤 split eligibility
+实验 summary、quick conclusion 和横向比较工具 MUST 消费 split eligibility metadata。任何使用 unknown 或 leakage diagnostics 失败的 split 的 run MUST 不被用于 strict validation 主结论，除非用户显式请求 debug/sanity 汇总。
+
+#### Scenario: strict split run 可进入主结论
+- **WHEN** run metadata 记录 `strict_validation_eligible=true`
+- **THEN** summary MAY 将该 run 纳入 strict validation 横向比较
+- **AND** summary MUST 保留 split strategy、split metadata 路径和样本数，便于复核可比性
+
+#### Scenario: strict-ineligible split run 被排除
+- **WHEN** run metadata 记录 `strict_validation_eligible=false`
+- **THEN** summary MUST 将该 run 排除出 strict 主结论
+- **AND** summary MUST 记录 exclusion reason 和 split metadata 路径
+- **AND** 用户仍 MAY 在 debug/sanity 视图中查看该 run 的原始指标
+
+#### Scenario: split metadata 缺失时保守处理
+- **WHEN** summary 读取到没有 split metadata 的 MMW Town10 run
+- **THEN** summary MUST 标记该 run 的 split eligibility 为 unknown
+- **AND** strict 主结论 MUST 默认排除该 run
+- **AND** 输出 MUST 给出生成或引用 strict split metadata 的修复提示

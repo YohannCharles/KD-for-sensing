@@ -133,7 +133,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 文档 MUST 明确本次删除 image motion 不会清理历史 `outputs/`
 
 ### Requirement: 包级导入不得牵出重依赖
-项目 MUST 保持包级公共 API 兼容，同时避免 `__init__.py` eager import 触发重依赖运行模块。导入某个具体子模块时，系统 MUST 不因为父包初始化而额外导入训练器、dataset、诊断渲染或大型第三方依赖。
+项目 MUST 保持包级公共 API 兼容，同时避免 `__init__.py` eager import 触发重依赖运行模块。导入某个具体子模块时，系统 MUST 不因为父包初始化而额外导入训练器、dataset、诊断渲染或大型第三方依赖。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 子模块 MUST 不再作为轻量导入 smoke 的保留对象。
 
 #### Scenario: 导入 engine 轻量子模块
 - **WHEN** 开发者执行 `import kd_sensing.engine.model_output`
@@ -143,15 +143,17 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 系统 MUST 不导入 `pandas` 或 `scipy`
 
 #### Scenario: 导入 diagnostics 轻量子模块
-- **WHEN** 开发者执行 `import kd_sensing.diagnostics.g2d_diagnostics`
+- **WHEN** 开发者导入当前保留的 diagnostics 轻量 helper
 - **THEN** 导入 MUST 成功
 - **AND** 系统 MUST 不导入 `kd_sensing.diagnostics.visualization.core`
 - **AND** 系统 MUST 不导入 `matplotlib`
+- **AND** 系统 MUST 不要求 `kd_sensing.diagnostics.g2d_diagnostics` 存在
 
 #### Scenario: 导入 distillation 工具子模块
-- **WHEN** 开发者执行 `import kd_sensing.distillation.g2d_smp`
+- **WHEN** 开发者导入当前保留的 distillation 工具子模块
 - **THEN** 导入 MUST 成功
 - **AND** 系统 MUST 不因为 `kd_sensing.distillation.__init__` 导入 distiller registry、engine builder 或 dataset 转换模块
+- **AND** 系统 MUST 不要求 `kd_sensing.distillation.g2d_smp` 存在
 
 #### Scenario: 旧包级公共符号仍可访问
 - **WHEN** 现有代码执行 `from kd_sensing.engine import train` 或 `from kd_sensing.diagnostics import export_viewer_manifest`
@@ -266,25 +268,25 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 项目 MUST 不再保留 `tools/visualization/export_viewer_manifest.py` fallback wrapper
 
 ### Requirement: 训练方法扩展点边界
-训练引擎 MUST 提供明确的训练方法扩展点，用于接入 G2D、CRAF、MARF 或后续类似方法的 teacher runtime、额外 loss、梯度后处理和 epoch diagnostics。`kd_sensing.engine.trainer` MUST 保持训练生命周期编排职责，不得继续作为方法特有 loss、teacher ensemble、counterfactual 或 subset-training 逻辑的主要实现位置。
+训练引擎 MUST 将后续仍被 OpenSpec 批准的方法所需的 teacher runtime、额外 loss、梯度后处理和 epoch diagnostics 接入点保持在明确模块边界内。`kd_sensing.engine.trainer` MUST 保持训练生命周期编排职责，不得作为方法特有 loss、teacher ensemble、counterfactual 或 subset-training 逻辑的主要实现位置。已退役的 G2D、CRAF 和 MARF 扩展模块 MUST 从 active code path 中删除。
 
 #### Scenario: 新增训练方法不扩写主循环
 - **WHEN** 开发者新增一个需要额外 loss 或 diagnostics 的训练方法
 - **THEN** 主要实现 MUST 位于方法扩展模块及其测试中
 - **AND** `kd_sensing.engine.trainer` 中的 epoch/batch 主循环 MUST 仅通过通用扩展点调用该方法
 
-#### Scenario: 现有方法迁移到扩展模块
-- **WHEN** 开发者查看 G2D、CRAF 或 MARF 的训练期接入逻辑
-- **THEN** teacher runtime、extra loss、subset/counterfactual forward 和 scalar diagnostics 的主要实现 MUST 位于对应 engine 方法模块
-- **AND** `trainer.py` MUST 不再包含这些方法的大段私有 helper 实现
+#### Scenario: 退役方法扩展模块删除
+- **WHEN** 开发者查看训练期接入逻辑
+- **THEN** 系统 MUST 不再保留 G2D、CRAF 或 MARF 的 teacher runtime、extra loss、subset/counterfactual forward 和 scalar diagnostics 作为 active 方法模块
+- **AND** `trainer.py` MUST 不包含这些退役方法的大段私有 helper 实现
 
 ### Requirement: 共享任务 forward runtime
-训练、验证、诊断预测和 teacher runtime MUST 复用同一组任务 forward helper 来完成 batch 标准化、输入准备、model forward、输出适配和 future slot 选择。新增或修改模态输入准备、task forward 参数或强制模态 mask 行为时，变更 MUST 不要求在 trainer、validator、viewer prediction 和 teacher ensemble 中重复修改分支逻辑。
+训练、验证、诊断预测和当前保留的 teacher runtime MUST 复用同一组任务 forward helper 来完成 batch 标准化、输入准备、model forward、输出适配和 future slot 选择。新增或修改模态输入准备、task forward 参数或强制模态 mask 行为时，变更 MUST 不要求在 trainer、validator 和 viewer prediction 中重复修改分支逻辑。已退役 G2D teacher runtime 不再属于复用对象。
 
 #### Scenario: 修改 fusion 输入准备只改 runtime helper
 - **WHEN** 开发者调整 fusion task 的 `modalities` 输入准备或 force mask 透传逻辑
 - **THEN** 主要变更 MUST 限定在共享 forward runtime 模块和测试
-- **AND** 不需要分别修改 trainer、validator、viewer prediction 和 G2D teacher runtime 的 task 分支
+- **AND** 不需要分别修改 trainer、validator 和 viewer prediction 的 task 分支
 
 #### Scenario: 验证路径复用训练输入契约
 - **WHEN** 训练和验证使用同一个 fusion 配置运行
@@ -292,16 +294,17 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** validation metrics MUST 不依赖独立复制的 task forward 分支
 
 ### Requirement: Distillation 算法层不得构建运行对象
-`kd_sensing.distillation` 中的算法模块 MUST 专注于张量级 loss、feature/logit 对齐、confidence、ranking 和 schedule 计算。算法模块 MUST 不负责构建模型、解析 checkpoint registry、读取 dataset、准备 batch 输入或选择 device；这些运行时职责 MUST 位于 `kd_sensing.engine` 或更低层 runtime 模块。
+`kd_sensing.distillation` 中的算法模块 MUST 专注于张量级 loss、feature/logit 对齐和 schedule 计算。算法模块 MUST 不负责构建模型、解析 checkpoint registry、读取 dataset、准备 batch 输入或选择 device；这些运行时职责 MUST 位于 `kd_sensing.engine` 或更低层 runtime 模块。已退役的 G2D distillation 算法模块和 SMP 工具 MUST 从支持面删除。
 
-#### Scenario: G2D 算法模块保持纯算法职责
-- **WHEN** 开发者查看 `kd_sensing.distillation.g2d`
-- **THEN** 该模块 MUST 不导入 model builder、checkpoint loader、artifact registry、dataset builder 或 batch preparation 模块
-- **AND** G2D teacher ensemble 构建和 checkpoint 解析 MUST 位于 engine runtime 或训练扩展模块
+#### Scenario: 保留 distillation 算法保持纯算法职责
+- **WHEN** 开发者查看当前保留的 `kd_sensing.distillation` 算法模块
+- **THEN** 这些模块 MUST 不导入 model builder、checkpoint loader、artifact registry、dataset builder 或 batch preparation 模块
+- **AND** teacher checkpoint 解析 MUST 位于 engine runtime 或训练配置构建模块
 
 #### Scenario: Distillation 工具轻量导入
-- **WHEN** 开发者导入 G2D 或 SMP 的张量级工具函数
+- **WHEN** 开发者导入当前保留的张量级 distillation 工具函数
 - **THEN** 导入 MUST 不触发默认组件注册、模型构建、checkpoint 解析或数据集读取
+- **AND** 系统 MUST 不要求 G2D 或 SMP 工具函数可导入
 
 ### Requirement: 诊断可视化不得集中在 core 聚合实现
 诊断可视化实现 MUST 将配置解析、数据集准备、样本选择、统计汇总、渲染和文件写出放在对应子模块中。`diagnostics.visualization.core` MAY 保留为公开入口编排或兼容 facade，但 MUST 不再作为这些职责的主要实现聚合文件。
@@ -615,3 +618,42 @@ Raymobtime s008 预处理实现 MUST 将路径解析、文件审计、index 构�
 - **WHEN** 开发者查询 dataset descriptor 或 runtime schema helper
 - **THEN** 查询 MUST 不打开 HDF5、CSV、image、LiDAR 或 checkpoint 文件
 - **AND** 查询 MUST 不导入训练循环
+
+### Requirement: MMW 入口生命周期 inventory 必须同步
+新增或保留的 MMW Python 脚本、shell orchestration 和研究支持入口 MUST 具有可审计生命周期。项目表面积 inventory 与架构边界测试 allowlist MUST 同步记录入口类别、保留原因、推荐入口关系、输出产物边界和删除或收敛条件。
+
+#### Scenario: 新增 MMW 脚本入口需要 inventory
+- **WHEN** 开发者新增 `scripts/`、`scripts/mmw/`、`tools/analysis/` 或 `tools/visualization/` 下的 MMW Python 或 shell 入口
+- **THEN** 架构边界检查 MUST 要求该入口出现在项目表面积 inventory 或等价生命周期文档中
+- **AND** inventory MUST 说明该入口属于包内 CLI、薄 alias、研究诊断脚本、数据准备脚本或 shell orchestration 中的哪一类
+- **AND** 对应测试 allowlist MUST 与 inventory 保持一致
+
+#### Scenario: 未登记入口导致表面积检查失败
+- **WHEN** 工作区中存在未登记的 MMW Python 或 shell 入口
+- **THEN** 表面积回归检查 MUST 失败
+- **AND** 失败信息 MUST 列出缺失登记的相对路径
+- **AND** 失败信息 MUST 指向更新 inventory、删除重复入口或改为包内 CLI 的修复路径
+
+#### Scenario: 重复 MMW orchestration 不成为推荐入口
+- **WHEN** 多个 shell orchestration 覆盖同一 MMW quick validation 工作流
+- **THEN** inventory MUST 标记推荐入口和补充 profile 的关系
+- **AND** README 或 docs MUST 不把重复 shell wrapper 描述为唯一 canonical 入口
+- **AND** 若已有包内 CLI 覆盖同一工作流，重复 shell wrapper MUST 标记为短期薄 alias 或研究脚本
+
+### Requirement: HiST-Beam LOSO executor 热点拆分边界
+HiST-Beam LOSO executor 继续增长时 MUST 按职责拆分到窄模块。公开 facade 可以保留现有 CLI 和 import 行为，但新增 preflight、stage orchestration、summary/conclusion 和 matrix metadata 逻辑 MUST 优先进入职责明确的内部模块。
+
+#### Scenario: 新 preflight 逻辑进入窄模块
+- **WHEN** 开发者新增或修改 MMW 数据可用性检查、prepared artifact 校验或 split materialization 检查
+- **THEN** 主要实现 MUST 位于 preflight 或数据准备 adapter 模块
+- **AND** executor facade MUST 只负责调用该模块并保持公开入口兼容
+
+#### Scenario: 新 summary 逻辑不写入 stage 执行主体
+- **WHEN** 开发者新增 quick validation conclusion、eligibility 汇总或 matrix metadata 写出逻辑
+- **THEN** 主要实现 MUST 位于 summary/conclusion 或 matrix metadata 模块
+- **AND** stage execution 模块 MUST 不承担最终结论排序和主结论 eligibility 解释职责
+
+#### Scenario: 拆分后产物兼容
+- **WHEN** executor 内部模块被拆分
+- **THEN** 现有 run metadata、summary JSON、quick validation conclusion、checkpoint reuse metadata 和公开 CLI 参数 MUST 保持兼容
+- **AND** focused characterization tests MUST 覆盖关键公开字段

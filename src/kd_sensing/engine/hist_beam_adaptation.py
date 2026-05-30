@@ -98,6 +98,42 @@ def adapt_hist_beam_target(
     budget = int(label_budget if label_budget is not None else 0)
     allow_supervised_target = budget > 0
     allow_labeled_target_path_supervision = bool(objective_cfg.get("allow_labeled_target_path_supervision", False))
+    allow_labeled_target_radio_supervision = bool(objective_cfg.get("allow_labeled_target_radio_supervision", False))
+    allow_target_sensitive_supervision_in_main = bool(objective_cfg.get("allow_target_sensitive_supervision_in_main_conclusion", False))
+    radio_supervision_requested = _target_radio_supervision_requested(cfg)
+    path_supervision_requested = _target_path_supervision_requested(cfg)
+    sensitive_field_policy = {
+        "source": {
+            "beam": "allowed_for_source_supervision",
+            "radio": "allowed_for_source_auxiliary",
+            "path": "allowed_for_source_auxiliary",
+        },
+        "target_labeled": {
+            "beam": "allowed_when_label_budget_positive",
+            "radio": "requires_allow_labeled_target_radio_supervision",
+            "path": "requires_allow_labeled_target_path_supervision",
+        },
+        "target_unlabeled": {
+            "beam": "blocked",
+            "beam_power": "blocked",
+            "csi": "blocked",
+            "radio": "blocked",
+            "path": "blocked",
+        },
+        "target_test": {
+            "beam": "evaluation_only",
+            "beam_power": "evaluation_only",
+            "csi": "evaluation_only",
+            "radio": "evaluation_only",
+            "path": "evaluation_only",
+        },
+        "label_budget": budget,
+        "allow_labeled_target_path_supervision": allow_labeled_target_path_supervision,
+        "allow_labeled_target_radio_supervision": allow_labeled_target_radio_supervision,
+        "allow_target_sensitive_supervision_in_main_conclusion": allow_target_sensitive_supervision_in_main,
+        "requested_labeled_target_path_supervision": path_supervision_requested,
+        "requested_labeled_target_radio_supervision": radio_supervision_requested,
+    }
     diagnostics: dict[str, float] = {}
     leakage_flags = {
         "used_target_labels": False,
@@ -128,34 +164,52 @@ def adapt_hist_beam_target(
                         label_budget=budget,
                         fields=("target_beam",),
                     )
-                    radio_labels = prepare_radio_semantic_labels(
-                        step.batch,
-                        num_pred=step.labels.shape[1],
-                        device=device,
-                        non_blocking=transfer_non_blocking(cfg),
-                    )
+                    radio_labels = None
+                    if radio_supervision_requested:
+                        assert_sensitive_fields_allowed(
+                            step.batch,
+                            split="target_labeled",
+                            label_budget=budget,
+                            fields=("radio_semantic_label",),
+                            allow_labeled_target_radio_supervision=allow_labeled_target_radio_supervision,
+                            hint=(
+                                "Set hist_beam.adaptation.allow_labeled_target_radio_supervision=true "
+                                "to run this diagnostic path, or disable target radio auxiliary loss."
+                            ),
+                        )
+                        radio_labels = prepare_radio_semantic_labels(
+                            step.batch,
+                            num_pred=step.labels.shape[1],
+                            device=device,
+                            non_blocking=transfer_non_blocking(cfg),
+                        )
                     path_labels = None
                     path_targets = None
-                    if allow_labeled_target_path_supervision:
+                    if path_supervision_requested:
                         assert_sensitive_fields_allowed(
                             step.batch,
                             split="target_labeled",
                             label_budget=budget,
                             fields=("path_semantic_label", "path_descriptor", "path_params"),
-                            allow_labeled_target_path_supervision=True,
+                            allow_labeled_target_path_supervision=allow_labeled_target_path_supervision,
+                            hint=(
+                                "Set hist_beam.adaptation.allow_labeled_target_path_supervision=true "
+                                "to run this diagnostic path, or disable target path auxiliary loss."
+                            ),
                         )
-                        path_labels = prepare_path_semantic_labels(
-                            step.batch,
-                            num_pred=step.labels.shape[1],
-                            device=device,
-                            non_blocking=transfer_non_blocking(cfg),
-                        )
-                        path_targets = prepare_path_descriptors(
-                            step.batch,
-                            num_pred=step.labels.shape[1],
-                            device=device,
-                            non_blocking=transfer_non_blocking(cfg),
-                        )
+                        if allow_labeled_target_path_supervision:
+                            path_labels = prepare_path_semantic_labels(
+                                step.batch,
+                                num_pred=step.labels.shape[1],
+                                device=device,
+                                non_blocking=transfer_non_blocking(cfg),
+                            )
+                            path_targets = prepare_path_descriptors(
+                                step.batch,
+                                num_pred=step.labels.shape[1],
+                                device=device,
+                                non_blocking=transfer_non_blocking(cfg),
+                            )
                     supervised = compute_hist_beam_loss(
                         {"logits": step.logits, **step.model_output.diagnostics},
                         step.labels,
@@ -322,12 +376,21 @@ def adapt_hist_beam_target(
             )
     elapsed = time.perf_counter() - start
     params = trainable_parameter_summary(model)
+    eligibility = _target_sensitive_eligibility(
+        leakage_flags,
+        sensitive_field_policy=sensitive_field_policy,
+    )
     return {
         "epochs": int(epochs),
         "adaptation_time_seconds": float(elapsed),
         "adaptation_time_per_epoch": float(elapsed / max(int(epochs), 1)),
         **params.to_dict(),
         "proto_type": proto_type,
+        "label_budget": budget,
+        "target_labeled_subset_available": bool(allow_supervised_target and labeled_dataloader is not None),
+        "target_unlabeled_subset_available": bool(unlabeled_dataloader is not None),
+        "sensitive_field_policy": sensitive_field_policy,
+        **eligibility,
         **leakage_flags,
         "diagnostics": diagnostics,
     }
@@ -493,6 +556,45 @@ def _resolve_proto_type(cfg: dict[str, Any], prototypes: dict[str, Any] | None) 
     if str(metadata.get("prototype_space", "")).strip().lower() == "shared_radio_semantic":
         return "radio_semantic"
     return "coarse"
+
+
+def _target_radio_supervision_requested(cfg: dict[str, Any]) -> bool:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    weights = hist_cfg.get("loss_weights", {}) if isinstance(hist_cfg.get("loss_weights"), dict) else {}
+    explicit_keys = ("radio_semantic", "lambda_radio")
+    return any(float(weights.get(key, 0.0) or 0.0) > 0.0 for key in explicit_keys)
+
+
+def _target_path_supervision_requested(cfg: dict[str, Any]) -> bool:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    weights = hist_cfg.get("loss_weights", {}) if isinstance(hist_cfg.get("loss_weights"), dict) else {}
+    explicit_keys = ("path_semantic", "lambda_path", "path_regression", "lambda_path_reg")
+    return any(float(weights.get(key, 0.0) or 0.0) > 0.0 for key in explicit_keys)
+
+
+def _target_sensitive_eligibility(
+    leakage_flags: dict[str, bool],
+    *,
+    sensitive_field_policy: dict[str, Any],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    target_sensitive_keys = {
+        "used_target_beam_power_for_training": "target_beam_power_supervision",
+        "used_target_csi_for_training": "target_csi_supervision",
+        "used_target_path_params_for_training": "target_path_params_supervision",
+        "used_target_path_descriptor_for_training": "target_path_descriptor_supervision",
+        "used_target_path_label_for_training": "target_path_label_supervision",
+        "used_target_radio_label_for_training": "target_radio_label_supervision",
+    }
+    for key, reason in target_sensitive_keys.items():
+        if bool(leakage_flags.get(key, False)):
+            reasons.append(reason)
+
+    allow_sensitive_main = bool(sensitive_field_policy.get("allow_target_sensitive_supervision_in_main_conclusion", False))
+    return {
+        "main_conclusion_eligible": bool(not reasons or allow_sensitive_main),
+        "eligibility_reasons": [] if allow_sensitive_main else reasons,
+    }
 
 
 def _radio_prototypes_from_artifact(prototypes: dict[str, Any]) -> torch.Tensor | None:

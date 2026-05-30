@@ -19,7 +19,6 @@ from kd_sensing.engine.checkpointing import (
     checkpoint_strict as _checkpoint_strict,
     resolve_resume_checkpoint as _resolve_resume_checkpoint,
 )
-from kd_sensing.engine.craf_training import CrafTrainingExtension
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
 from kd_sensing.engine.debug_diagnostics import (
     ModuleHealthTracker,
@@ -32,9 +31,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_startup_summary,
 )
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_epoch_log, set_train_sampler_epoch
-from kd_sensing.engine.g2d_training import G2DTrainingExtension
 from kd_sensing.engine.hist_beam_training import HistBeamTrainingExtension
-from kd_sensing.engine.marf_training import MarfTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
     build_device,
@@ -67,8 +64,6 @@ from kd_sensing.engine.runtime import (
 from kd_sensing.engine.tensorboard_logging import (
     close_tensorboard_writer as _close_tensorboard_writer,
     create_tensorboard_writer as _create_tensorboard_writer,
-    finite_float_or_none as _finite_float_or_none,
-    write_tensorboard_method_scalars as _write_tensorboard_craf_scalars,
     write_tensorboard_scalars as _write_tensorboard_scalars,
     write_tensorboard_startup_scalars as _write_tensorboard_startup_scalars,
 )
@@ -77,22 +72,7 @@ from kd_sensing.engine.training_extensions import (
     NoOpTrainingExtension,
     TrainingExtension,
 )
-from kd_sensing.engine.teacher_loader import (
-    apply_selective_finetune,
-    apply_teacher_priors,
-    load_teacher_encoders,
-    load_teacher_registry,
-    trainable_parameter_count,
-)
-from kd_sensing.engine.training_metrics import (
-    EpochMetricsRecorder,
-    aggregate_validation_metrics as _aggregate_validation_metrics,
-    append_history as _append_history,
-    checkpoint_task_metrics as _checkpoint_task_metrics,
-    history_array as _history_array,
-    training_outputs_payload as _training_outputs_payload,
-    validation_subset_epoch_scalars as _validation_subset_epoch_scalars,
-)
+from kd_sensing.engine.training_metrics import EpochMetricsRecorder
 from kd_sensing.engine.validator import validate
 from kd_sensing.engine.training_state import (
     TrainingState,
@@ -185,17 +165,8 @@ def _teacher_enabled(cfg: dict) -> bool:
     return cfg.get("distillation", {}).get("type", "no_kd") != "no_kd"
 
 
-def _g2d_enabled(cfg: dict) -> bool:
-    return cfg.get("distillation", {}).get("type", "no_kd") == "g2d"
-
-
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
-    extensions: list[TrainingExtension] = [NoOpTrainingExtension()]
-    extensions.append(HistBeamTrainingExtension())
-    if _g2d_enabled(cfg):
-        extensions.append(G2DTrainingExtension())
-    extensions.extend([CrafTrainingExtension(), MarfTrainingExtension()])
-    return extensions
+    return [NoOpTrainingExtension(), HistBeamTrainingExtension()]
 
 
 def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> dict | None:
@@ -225,97 +196,6 @@ def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> d
                 "metadata": resolution.metadata,
             }
         )
-    return summary
-
-
-def _load_stage_checkpoint_if_needed(cfg: dict, model, device: torch.device) -> dict | None:
-    finetune_cfg = cfg.get("finetune", {})
-    checkpoint_path = finetune_cfg.get("checkpoint_path") or finetune_cfg.get("stage2_checkpoint")
-    if not checkpoint_path:
-        return None
-    resolved = resolve_path(checkpoint_path)
-    if not resolved.exists():
-        raise FileNotFoundError(f"Stage checkpoint not found: {resolved}")
-    load_result = load_model_state(
-        resolved,
-        model,
-        role="stage_checkpoint",
-        map_location=device,
-        strict=bool(finetune_cfg.get("strict", cfg.get("checkpoint", {}).get("strict_load", True))),
-    )
-    summary = checkpoint_load_summary(load_result)
-    if summary is not None:
-        summary["source"] = "stage_checkpoint"
-    return summary
-
-
-def _apply_teacher_prior_initialization(cfg: dict, model, device: torch.device) -> dict | None:
-    teacher_cfg = cfg.get("teacher", {})
-    registry_path = teacher_cfg.get("registry_path") or teacher_cfg.get("teacher_registry")
-    if not registry_path:
-        return None
-    registry = load_teacher_registry(registry_path)
-    modalities = (
-        cfg.get("model", {}).get("student", {}).get("modalities")
-        or registry.get("modalities")
-        or []
-    )
-    priors = apply_teacher_priors(model, registry, modalities)
-    load_summaries = {}
-    if bool(teacher_cfg.get("load_encoders", False)):
-        load_summaries = load_teacher_encoders(
-            model,
-            registry,
-            modalities,
-            strict=bool(teacher_cfg.get("strict", cfg.get("checkpoint", {}).get("strict_load", True))),
-            map_location=device,
-            freeze_loaded=bool(teacher_cfg.get("freeze_encoders", False)),
-        )
-    frozen = _encoder_freeze_log(model)
-    return {
-        "registry_path": registry.get("_resolved_path"),
-        "prior_mode": registry.get("prior_mode"),
-        "priors": priors,
-        "encoder_load": load_summaries,
-        "encoder_freeze": frozen,
-        "trainable_params": trainable_parameter_count(model),
-        "teachers": {
-            modality: {
-                "checkpoint": item.get("ckpt") or item.get("checkpoint"),
-                "prior": item.get("prior"),
-            }
-            for modality, item in (registry.get("teachers") or {}).items()
-            if modality in set(priors)
-        },
-    }
-
-
-def _apply_selective_finetune_if_needed(cfg: dict, model) -> dict | None:
-    finetune_cfg = cfg.get("finetune", {})
-    if not finetune_cfg.get("enabled", False):
-        return None
-    return apply_selective_finetune(
-        model,
-        unfreeze_modalities=finetune_cfg.get("unfreeze_modalities", []),
-        freeze_modalities=finetune_cfg.get("freeze_modalities", []),
-    )
-
-
-def _encoder_freeze_log(model) -> dict[str, dict]:
-    if not hasattr(model, "encoders"):
-        return {}
-    summary = {}
-    for modality in getattr(model, "modalities", tuple(model.encoders.keys())):
-        if modality not in model.encoders:
-            continue
-        params = list(model.encoders[modality].parameters())
-        total = sum(param.numel() for param in params)
-        trainable = sum(param.numel() for param in params if param.requires_grad)
-        summary[modality] = {
-            "frozen": trainable == 0 and total > 0,
-            "total_params": int(total),
-            "trainable_params": int(trainable),
-        }
     return summary
 
 
@@ -382,7 +262,6 @@ def _train_inner(cfg: dict) -> dict:
     num_classes = model_cfg.get("num_classes", 64)
     seq_length_student = model_cfg.get("seq_length_student", 8)
     seq_length_teacher = model_cfg.get("seq_length_teacher", seq_length_student)
-    g2d_enabled = _g2d_enabled(cfg)
 
     student_model = build_model(model_cfg["student"]).to(device)
     state = TrainingState(
@@ -390,17 +269,7 @@ def _train_inner(cfg: dict) -> dict:
         best_early_stopping_value=_initial_early_stopping_value(early_stopping_mode),
     )
     teacher_model = None
-    stage_checkpoint_load = _load_stage_checkpoint_if_needed(cfg, student_model, device)
-    if stage_checkpoint_load is not None:
-        state.checkpoint_loads.append(stage_checkpoint_load)
-    teacher_prior_info = _apply_teacher_prior_initialization(cfg, student_model, device)
-    selective_finetune_info = _apply_selective_finetune_if_needed(cfg, student_model)
-    if teacher_prior_info is not None:
-        teacher_prior_info["encoder_freeze"] = _encoder_freeze_log(student_model)
-        if selective_finetune_info is not None:
-            teacher_prior_info["selective_finetune"] = selective_finetune_info
-        teacher_prior_info["trainable_params"] = trainable_parameter_count(student_model)
-    if _teacher_enabled(cfg) and not g2d_enabled:
+    if _teacher_enabled(cfg):
         teacher_model = build_model(model_cfg["teacher"]).to(device)
         teacher_load_info = _load_teacher_if_needed(cfg, teacher_model, device)
         if teacher_load_info is not None:
@@ -575,7 +444,6 @@ def _train_inner(cfg: dict) -> dict:
                 train_lidar_quality=train_lidar_quality if saw_train_lidar else None,
                 train_dataset=train_dataset,
                 epoch_subsampling=epoch_subsampling_log,
-                teacher_prior_info=teacher_prior_info,
                 health_metrics=health_metrics,
                 extension_metrics=extension_metrics,
             )
@@ -614,7 +482,6 @@ def _train_inner(cfg: dict) -> dict:
                 objective=objective,
                 tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
             )
-            _write_tensorboard_craf_scalars(tensorboard_writer, epoch_log, epoch + 1)
             checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
             if (
                 not checkpoint_update.improved
@@ -638,7 +505,6 @@ def _train_inner(cfg: dict) -> dict:
         best_early_stopping_epoch=state.best_early_stopping_epoch,
         epochs_without_improvement=state.epochs_without_improvement,
         checkpoint_loads=state.checkpoint_loads,
-        teacher_prior_info=teacher_prior_info,
         optimizer_groups=optimizer_groups,
         normalization_artifacts=normalization_artifacts,
         checkpoint_registry=state.registry_checkpoint,
@@ -674,7 +540,6 @@ def _train_inner(cfg: dict) -> dict:
         "checkpoint_registry": state.registry_checkpoint,
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_loads": state.checkpoint_loads,
-        "teacher_prior": teacher_prior_info,
         "optimizer_param_groups": optimizer_groups,
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,

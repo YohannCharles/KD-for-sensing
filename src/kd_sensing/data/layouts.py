@@ -9,7 +9,6 @@ DATASET_ROOT = PurePosixPath("dataset")
 DEEPSENSE6G_FAMILY = "DeepSense6G"
 MMW_FAMILY = "MMW"
 RAYMOBTIME_FAMILY = "Raymobtime"
-MULTIMODAL_NF_FAMILY = "MultimodalNF"
 DEEPSENSE6G_SCENE_IDS = (9, 31, 32, 33, 34)
 MMW_CONDITIONS = ("sunny", "rainy", "foggy")
 
@@ -110,31 +109,6 @@ class RaymobtimeS008Layout:
         )
 
 
-@dataclass(frozen=True)
-class MultimodalNFLayout:
-    family: str = MULTIMODAL_NF_FAMILY
-
-    @property
-    def root(self) -> str:
-        return str(DATASET_ROOT / self.family)
-
-    @property
-    def raw_root(self) -> str:
-        return str(PurePosixPath(self.root) / "raw")
-
-    @property
-    def codebook_root(self) -> str:
-        return str(PurePosixPath(self.root) / "codebooks")
-
-    @property
-    def cache_root(self) -> str:
-        return str(PurePosixPath(self.root) / "cache")
-
-    @property
-    def audit_output_root(self) -> str:
-        return str(PurePosixPath("outputs") / "multimodal_nf" / "audit")
-
-
 def deepsense6g_scene_layout(scene_id: Any) -> DeepSense6GSceneLayout:
     scene_id = _normalize_int_token(scene_id, context="DeepSense6G scene")
     if scene_id not in DEEPSENSE6G_SCENE_IDS:
@@ -172,14 +146,6 @@ def raymobtime_s008_layout() -> RaymobtimeS008Layout:
 
 def raymobtime_s008_root() -> str:
     return raymobtime_s008_layout().root
-
-
-def multimodal_nf_layout() -> MultimodalNFLayout:
-    return MultimodalNFLayout()
-
-
-def multimodal_nf_root() -> str:
-    return multimodal_nf_layout().root
 
 
 def _normalize_int_token(value: Any, *, context: str) -> int:

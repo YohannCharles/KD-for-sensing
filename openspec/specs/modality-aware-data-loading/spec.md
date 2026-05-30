@@ -510,11 +510,11 @@ DeepSense6G/MMW dataset MUST 根据启用模态决定是否加载 CSI。未启�
 ### Requirement: descriptor 驱动 dataset 构建
 数据构建流程 MUST 根据 dataset descriptor 决定 split 解析、默认路径、storage kind、enabled modalities、input profiles 和 target schema。非 CSV 数据集 MUST 不被强制套用 DeepSense6G 的 train/test CSV 规则。
 
-#### Scenario: 构建 Multimodal-NF HDF5 dataset
-- **WHEN** 用户配置 `data.dataset.type: multimodal_nf`
-- **THEN** data factory MUST 使用 Multimodal-NF descriptor 解析默认根目录、HDF5 index 或 cache index
+#### Scenario: 构建 Raymobtime cache-backed dataset
+- **WHEN** 用户配置 `data.dataset.type: raymobtime_s008`
+- **THEN** data factory MUST 使用 Raymobtime descriptor 解析默认根目录、cache index 和 snapshot split
 - **AND** data factory MUST 不要求 `train_csv_name`、`test_csv_name` 或 `csv_name`
-- **AND** dataset split MUST 来自 Multimodal-NF index metadata、city split 配置或显式 split 文件
+- **AND** dataset split MUST 来自 Raymobtime cache metadata 或显式 split 配置
 
 #### Scenario: 构建 DeepSense6G CSV dataset
 - **WHEN** 用户配置 `data.dataset.type: deepsense6g`
@@ -524,14 +524,14 @@ DeepSense6G/MMW dataset MUST 根据启用模态决定是否加载 CSI。未启�
 ### Requirement: enabled modalities 与 profile 一起传递
 数据构建流程 MUST 从实验任务、fusion 模态和 dataset descriptor 推导启用模态，并将标准化后的 input profiles 传递给 dataset、batch 准备和 run metadata。
 
-#### Scenario: Multimodal-NF fusion profile 传递
-- **WHEN** 用户运行 Multimodal-NF fusion 配置，启用 `["image", "lidar", "gps", "csi"]`
+#### Scenario: fusion profile 传递
+- **WHEN** 用户运行当前支持 dataset 的 fusion 配置并启用多个模态
 - **THEN** data factory MUST 设置 `enabled_modalities`
 - **AND** data factory MUST 传递每个模态的 resolved profile
-- **AND** run metadata MUST 记录 `image: rgb_imagenet`、`lidar: point_cloud_xyz_10000`、`gps: uav_xyz_snapshot` 和 `csi: xl_mimo_nf`
+- **AND** run metadata MUST 记录每个启用模态的 resolved profile，例如 `image: rgb_imagenet`、`gps: relative_polar_history` 或 `csi: pilot_dual_view`
 
 #### Scenario: profile 与任务冲突
-- **WHEN** 用户启用 `experiment.task: csi` 但为非 Multimodal-NF 数据集配置 `csi_profile: xl_mimo_nf`
+- **WHEN** 用户为当前 dataset 配置 descriptor 不支持的 modality profile
 - **THEN** 系统 MUST 根据 descriptor 拒绝不受支持的 profile
 - **AND** 错误信息 MUST 指出 dataset type、modality 和 profile 冲突
 
@@ -539,26 +539,26 @@ DeepSense6G/MMW dataset MUST 根据启用模态决定是否加载 CSI。未启�
 HDF5 或 cache-backed dataset MUST 在初始化时只读取 index、shape 和 metadata，不得物化全量 image、LiDAR、CSI/channel 大数组。未启用模态 MUST 完全跳过对应 HDF5 dataset 或 zip 数据读取。
 
 #### Scenario: 初始化不物化大数组
-- **WHEN** 用户构建 Multimodal-NF train dataset
-- **THEN** dataset 初始化 MUST 不把全量 `H`、`image` 或 `points` 数据读入内存
-- **AND** dataset MUST 只保留轻量 index、文件路径、HDF5 key 和必要 metadata
+- **WHEN** 用户构建 cache-backed train dataset
+- **THEN** dataset 初始化 MUST 不把全量 image、LiDAR、ray 或其它大数组读入内存
+- **AND** dataset MUST 只保留轻量 index、文件路径、cache key 和必要 metadata
 
 #### Scenario: 未启用 image 不打开 image 数据
-- **WHEN** 用户运行 Multimodal-NF CSI-only 配置
-- **THEN** dataset 取样 MUST 不读取 image HDF5 或 image zip
-- **AND** image 文件缺失 MUST 不阻止 CSI-only 任务运行，除非审计或配置显式要求完整多模态数据
+- **WHEN** 用户运行当前支持 dataset 的非 image-only 配置且未启用 image
+- **THEN** dataset 取样 MUST 不读取 image 文件或 image cache
+- **AND** image 文件缺失 MUST 不阻止不需要 image 的任务运行，除非配置显式要求完整多模态数据
 
 ### Requirement: split metadata 和 artifact 复用
-数据构建流程 MUST 记录并复用 Multimodal-NF split metadata、codebook metadata 和必要 normalizer artifact。train split 拟合出的 artifact MUST 能传递给 val/test split，而不要求重新扫描全量数据。
+数据构建流程 MUST 记录并复用当前支持 dataset 的 split metadata 和必要 normalizer artifact。train split 拟合出的 artifact MUST 能传递给 val/test split，而不要求重新扫描全量数据。
 
-#### Scenario: codebook metadata 复用
-- **WHEN** train dataset 已解析 codebook shape 和 flatten 规则
-- **THEN** val/test dataset MUST 使用同一 metadata
+#### Scenario: normalizer artifact 复用
+- **WHEN** train dataset 已拟合 GPS、CSI、mmWave、coord 或其它保留模态的 normalizer artifact
+- **THEN** val/test dataset MUST 使用同一 artifact 或等价数值
 - **AND** 如果 val/test metadata 与 train 不一致，系统 MUST 抛出清晰错误
 
 #### Scenario: split metadata 写入 run metadata
-- **WHEN** 训练或评估构建 Multimodal-NF dataloaders
-- **THEN** run metadata MUST 包含 split protocol、city 列表、样本数、enabled modalities、input profiles、target schema 和 codebook metadata
+- **WHEN** 训练或评估构建当前支持 dataset 的 dataloaders
+- **THEN** run metadata MUST 包含 split protocol、domain/scene/condition 列表、样本数、enabled modalities、input profiles 和 target schema
 
 ### Requirement: MMW dataset 初始化内存有界
 MMW dataset 初始化 MUST 避免为了 normalizer、CSV 派生列或 metadata 准备而无界持有所有样本的大数组。GPS、mmWave 和 CSI 等模态的 normalizer 拟合 MUST 使用 streaming 或可释放的临时统计，并 MUST 在拟合完成后避免把 per-sample sequence cache 常驻到 DataLoader worker。
@@ -600,4 +600,3 @@ LOSO 数据构建流程 MUST 支持按 stage 构建当前阶段所需的数据�
 - **WHEN** LOSO executor 进入 target adaptation 或 target test evaluation stage
 - **THEN** 系统 MUST 在该 stage 内构建所需 target dataset 和 loader
 - **AND** source stage 的 DataLoader worker MUST 已关闭或不再持有
-

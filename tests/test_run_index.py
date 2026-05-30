@@ -26,7 +26,7 @@ NOW = dt.datetime(2026, 5, 24, 12, 0, tzinfo=dt.timezone.utc)
 def _base_cfg(name: str) -> dict:
     return {
         "experiment": {"name": name, "task": "fusion", "objective": "beam", "seed": 7},
-        "data": {"dataset": {"type": "multimodal_nf"}},
+        "data": {"dataset": {"type": "deepsense6g"}},
         "model": {"student": {"modalities": ["image", "lidar"]}},
         "output": {"run_name": name},
         "runtime": {"prediction_objective": {"name": "beam", "primary_metric": "val_adba"}},
@@ -71,7 +71,7 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     assert len(index["runs"]) == 1
     run = index["runs"][0]
     assert run["state"] == "complete"
-    assert run["config"]["dataset_family"] == "multimodal_nf"
+    assert run["config"]["dataset_family"] == "deepsense6g"
     assert run["config"]["modalities"] == ["image", "lidar"]
     assert run["metrics"]["primary"] == {"name": "val_adba", "value": 0.42}
     assert run["checkpoints"]["best_checkpoint"].endswith("checkpoints/best.pth")

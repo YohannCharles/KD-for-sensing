@@ -69,7 +69,6 @@ conda run -n kd_mm_beam pytest -q
 ```bash
 conda run -n kd_mm_beam kd-sensing-train --config configs/image/teacher_no_kd.yaml
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
 ```
 
 快速调试训练时，可以启用 train epoch 子采样，只减少每个 epoch 的训练 step，不改 train CSV、不缩小 validation/test split，也不替代 `data.dataset.portion`：
@@ -163,9 +162,9 @@ Fusion canonical 配置按固定模态顺序 `image -> radar -> gps -> lidar -> 
 configs/fusion/<canonical_slug>_<teacher_no_kd|student_no_kd|logits_kd|rkd>.yaml
 ```
 
-很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical/overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。高级 G2D、CRAF 和 MARF 推荐使用 `configs/fusion/overlay_*.yaml` recipe 入口；已删除的同名 legacy 实体路径会作为 virtual alias 解析。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。
+很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线的旧配置路径不会被 virtual alias 接管。
 
-G2D、CRAF、MARF、CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
+CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime、MMW 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
 
 ## 数据和产物边界
 
@@ -190,6 +189,8 @@ conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
   --config configs/preprocess/mmw_town10_skybridge.yaml
 ```
 
+MMW sequence split 默认使用 `group_safe_time_block` 协议，按连续片段、agent 和 time block 切分，并写出 `split_metadata.json`。metadata 会记录 `split_protocol=mmw_sequence_split_v2`、`split_strategy`、guard band、train/test group、样本数、标签分布、泄漏诊断和 `strict_validation_eligible`；训练、评估和 quick summary 会消费这些字段。旧随机滑窗切分不再作为公开准备或 split builder 协议支持；已有旧 CSV 应使用新的 split tag 重新生成 group-safe split，缺失 metadata 或 `strict_validation_eligible=false` 的产物会被保守标记为不进入 strict 主结论。
+
 可用 override 增量处理其它 sunny 场景：
 
 ```bash
@@ -198,6 +199,18 @@ conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
   -o mmw.sensor_zip=dataset/_downloads/MMW/sunny/Sensor_Data/Town10_crossroad_seed24.zip \
   -o mmw.channel_zip=dataset/_downloads/MMW/sunny/Channel_Data/Town10.zip \
   -o mmw.scenario=Town10_crossroad_seed24
+```
+
+已有 frame manifest 时，可用公开 split builder 生成独立 strict split tag，避免复用旧 `l5p6` random-window CSV：
+
+```bash
+conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.py \
+  --data-root dataset/MMW/sunny \
+  --scene Town10_crossroad_seed24 \
+  --seq-len 5 \
+  --pred-len 6 \
+  --split-tag l5p6_group_safe \
+  --split-strategy group_safe_time_block
 ```
 
 每次准备完成后会写 `dataset/MMW/<condition>/data_availability.json` 和 `dataset/MMW/data_availability.json`。只有一个 ready scenario 时，MMW HiST-Beam 计划会标记 `claim_scope: single_scene_smoke`、`cross_scene_claim_allowed: false`；至少两个 ready scenario 后才生成 scenario-LOSO folds。推荐验证顺序：
@@ -233,31 +246,6 @@ conda run -n kd_mm_beam python scripts/preprocess.py \
 ```
 
 若 profile 或日志出现 loader wait 支配 step、退出码 137、`Killed` 或 worker RSS 过高，优先降低并行 runs、batch size 和 train workers，关闭 persistent workers，或预热 image-derived cache；不要默认继续增加 worker。
-
-Multimodal-NF 作为独立数据集家族默认放在 `dataset/MultimodalNF/`，通常目录为：
-
-```text
-dataset/MultimodalNF/
-  raw/        # 用户放置官方 HDF5、image/lidar zip 或解压后的本地数据
-  codebooks/  # 用户放置 upa64x64_NF_codebook*.pkl 或等价 codebook metadata
-  cache/      # 审计/index/cache 生成产物，默认不提交
-```
-
-审计和 index 构建使用包内预处理入口，不会自动移动、复制、删除或解压真实数据：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/multimodal_nf_audit.yaml
-conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/multimodal_nf_index.yaml
-```
-
-Multimodal-NF 配置入口按用途区分：
-
-- dataset smoke：`configs/multimodal_nf/dataset_smoke.yaml`，用于小步验证 HDF5/index/profile/target 契约。
-- 单任务 near-field beam：`*_beam.yaml`、`gps_only.yaml`、`csi_only.yaml`、`image_lidar.yaml`，objective 为 `near_field_beam_selection`，target 是三维 codebook flattened beam class。
-- 单任务 LOS：`*_los.yaml`，objective 为 `current_los_classification`，主 target 是 `los_label`，不是 beam-only run。
-- multitask/fusion：`fusion_all_tasks.yaml` 同时启用 beam、LOS 和 link quality；`fusion_beam.yaml`、`fusion_los.yaml`、`fusion_near_field.yaml` 是 fusion 入口。
-
-真实训练前请确认 `data.dataset.codebook_path`、`codebook_shape` 或 `codebook_profile` 与本地 codebook 一致，且模型 beam head `num_classes` 与 codebook `num_beam_classes` 一致；HDF5、zip、codebook、cache、审计报告、训练日志和 checkpoint 都属于本地输入或运行产物，通常不进入源码变更。
 
 ## Viewer
 

@@ -743,7 +743,7 @@ def _dataset_family(dataset_cfg: dict[str, Any], run_dir: Path) -> str | None:
     if raw:
         return str(raw)
     lowered = run_dir.as_posix().lower()
-    for candidate in ("multimodal_nf", "raymobtime", "deepsense", "mmw"):
+    for candidate in ("raymobtime", "deepsense", "mmw"):
         if candidate in lowered:
             return candidate
     return None

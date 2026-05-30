@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 
 from kd_sensing.engine.batch import (
@@ -53,6 +54,11 @@ from kd_sensing.evaluation.hist_beam_outputs import (
     path_descriptor_regression_metrics,
     path_semantic_metrics,
     radio_semantic_metrics,
+)
+from kd_sensing.evaluation.horizon_selection import (
+    horizon_indices,
+    metric_horizon_source_from_config,
+    metric_horizons_from_config,
 )
 
 
@@ -402,6 +408,11 @@ def _metrics_from_outputs(
     *,
     objective: str,
 ) -> dict[str, Any]:
+    num_label_horizons = int(labels.shape[1]) if labels.ndim > 1 else 1
+    if objective in {"current_beam_selection", "selection_multitask"}:
+        metric_horizons = (1,)
+    else:
+        metric_horizons = metric_horizons_from_config(cfg, num_pred=num_label_horizons)
     topk_acc, total = calculate_topk_accuracy(
         outputs,
         labels,
@@ -411,10 +422,11 @@ def _metrics_from_outputs(
         "loss": float(loss),
         "topk": {str(k): v.tolist() for k, v in topk_acc.items()},
         "total": total.tolist(),
+        "metric_horizons": list(metric_horizons),
+        "metric_horizon_indices": list(horizon_indices(metric_horizons)),
+        "metric_horizon_source": metric_horizon_source_from_config(cfg),
     }
-    if objective == "near_field_beam_selection":
-        metrics.update(_flat_current_beam_metrics(topk_acc, total))
-    elif objective in {"current_beam_selection", "selection_multitask"}:
+    if objective in {"current_beam_selection", "selection_multitask"}:
         metrics.update(_flat_current_beam_metrics(topk_acc, total))
         beam_dba = calculate_current_beam_dba(
             outputs,
@@ -426,7 +438,7 @@ def _metrics_from_outputs(
     elif objective in {"current_los_classification", "current_link_quality"}:
         pass
     else:
-        metrics.update(_flat_future_topk_metrics(topk_acc, total))
+        metrics.update(_flat_future_topk_metrics(topk_acc, total, metric_horizons=metric_horizons))
         dba_score = calculate_dba_score(
             outputs,
             labels,
@@ -562,16 +574,20 @@ def _auxiliary_metrics_from_outputs(
     return metrics
 
 
-def _flat_future_topk_metrics(topk_acc: dict[int, object], total) -> dict[str, float]:
+def _flat_future_topk_metrics(topk_acc: dict[int, object], total, *, metric_horizons: tuple[int, ...]) -> dict[str, float]:
     scalars: dict[str, float] = {}
     total_arr = torch.as_tensor(total, dtype=torch.float32).cpu().numpy()
     horizon_names = [f"t{idx + 1}" for idx in range(len(total_arr))]
+    selected = np.zeros((len(total_arr),), dtype=bool)
+    for index in horizon_indices(metric_horizons):
+        if 0 <= index < len(selected):
+            selected[index] = True
     for k in (1, 3, 5):
         if k not in topk_acc:
             continue
         values = torch.as_tensor(topk_acc[k], dtype=torch.float32).cpu().numpy()
         length = min(len(values), len(total_arr))
-        valid = total_arr[:length] > 0
+        valid = (total_arr[:length] > 0) & selected[:length]
         for idx in range(length):
             scalars[f"val_top{k}_{horizon_names[idx]}"] = float(values[idx])
         scalars[f"val_top{k}_avg"] = float(values[:length][valid].mean()) if valid.any() else 0.0

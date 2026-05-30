@@ -14,6 +14,11 @@ from kd_sensing.registries import PREPROCESSORS
 from kd_sensing.utils.paths import resolve_path
 
 
+MMW_RADAR_PREPARATION_COMMAND = (
+    "conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/mmw_radar_maps.yaml"
+)
+
+
 def generate_mmw_radar_maps(
     data_root: str | Path = "dataset/MMW/sunny",
     scenes: list[str] | tuple[str, ...] | None = None,
@@ -69,6 +74,95 @@ def generate_mmw_radar_maps(
     report_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     payload["report_path"] = str(report_path)
     return payload
+
+
+def materialize_mmw_radar_split_csv(
+    data_root: str | Path,
+    csv_path: str | Path,
+    scene: str,
+    *,
+    output_path: str | Path | None = None,
+    require_maps: bool = True,
+) -> dict[str, Any]:
+    root = resolve_path(data_root)
+    source = Path(csv_path)
+    if not source.is_absolute():
+        source = root / source
+    if not source.exists():
+        raise FileNotFoundError(
+            f"MMW split CSV is missing: {source}. Prepare sequence splits with "
+            "conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.py."
+        )
+    frame = pd.read_csv(source, na_values="").fillna("")
+    radar_cols = _numbered_columns(frame.columns, "radar")
+    beam_cols = _numbered_columns(frame.columns, "beam")
+    if radar_cols and output_path is None:
+        target = source
+        output = frame
+        created = False
+    else:
+        if not beam_cols:
+            raise ValueError(f"Cannot materialize radar columns for {source}; no beamN columns were found.")
+        target = Path(output_path) if output_path is not None else source.with_name(f"{source.stem}_with_radar{source.suffix}")
+        if not target.is_absolute():
+            target = root / target
+        output = frame.copy()
+        missing = []
+        for beam_col in beam_cols:
+            suffix = beam_col[len("beam") :]
+            values = []
+            for value in output[beam_col].tolist():
+                rel_path = _radar_rel_path_for_beam(value, str(scene))
+                values.append(rel_path)
+                ra_path = root / rel_path
+                da_path = root / rel_path.replace("_RA", "_DA")
+                if not ra_path.exists():
+                    missing.append(str(ra_path))
+                if not da_path.exists():
+                    missing.append(str(da_path))
+            output[f"radar{suffix}"] = values
+        if missing and require_maps:
+            examples = ", ".join(missing[:4])
+            raise FileNotFoundError(
+                "MMW radar split CSV cannot be materialized because prepared radar map artifacts are missing. "
+                f"scene={scene}; source_csv={source}; target_output={target}; missing_count={len(missing)}; "
+                f"examples={examples}. Run: {MMW_RADAR_PREPARATION_COMMAND} "
+                f"(ensure preprocessing.scenes contains {scene} and data_root={root})."
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        output.to_csv(target, index=False)
+        created = True
+        radar_cols = _numbered_columns(output.columns, "radar")
+    metadata_path = target.with_name(f"{target.stem}_metadata.json")
+    split_metadata_path = source.parent / "split_metadata.json"
+    metadata = {
+        "type": "mmw_radar_split_csv_materialization",
+        "public_utility": "kd_sensing.preprocessing.mmw_radar.materialize_mmw_radar_split_csv",
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "data_root": str(root),
+        "condition": root.name,
+        "scene": str(scene),
+        "scenario": str(scene),
+        "input_manifest": str(root / "Prepared" / str(scene) / "manifests" / "frame_manifest.csv"),
+        "source_csv": str(source),
+        "output_csv": str(target),
+        "metadata_path": str(metadata_path),
+        "split_metadata_path": str(split_metadata_path) if split_metadata_path.exists() else None,
+        "split_config": _load_split_metadata_summary(split_metadata_path),
+        "seq_len": len(beam_cols),
+        "num_pred": len(_numbered_columns(output.columns, "future_beam")),
+        "sample_count": int(len(output)),
+        "radar_columns": len(radar_cols),
+        "created_output": created,
+        "repair_command": f"{MMW_RADAR_PREPARATION_COMMAND} # ensure preprocessing.scenes contains {scene}",
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "path": str(target),
+        "metadata_path": str(metadata_path),
+        "created": created,
+        "metadata": metadata,
+    }
 
 
 def _generate_scene_radar_maps(
@@ -278,7 +372,14 @@ def _materialize_split_columns(prepared_root: Path, scene: str) -> list[dict[str
         if not source.exists():
             continue
         frame = pd.read_csv(source, na_values="").fillna("")
-        reports.append(_write_split_with_columns(frame, source, scene, include_radar=True, include_bs_gps=False))
+        reports.append(
+            materialize_mmw_radar_split_csv(
+                prepared_root.parents[1],
+                source,
+                scene,
+                require_maps=False,
+            )
+        )
         reports.append(_write_split_with_columns(frame, source, scene, include_radar=False, include_bs_gps=True))
         reports.append(_write_split_with_columns(frame, source, scene, include_radar=True, include_bs_gps=True))
     return reports
@@ -352,6 +453,30 @@ def _rsu_gps_rel_path_for_gps(value: object, scene: str) -> str:
     return (Path("Sensor_Data") / scene / "rsu_1" / f"{frame_id}.yaml").as_posix()
 
 
+def _load_split_metadata_summary(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"path": str(path), "status": "invalid_json"}
+    return {
+        key: payload.get(key)
+        for key in (
+            "seed",
+            "split_seed",
+            "train_ratio",
+            "split_tag",
+            "seq_len",
+            "num_pred",
+            "pred_len",
+            "train_window_count",
+            "test_window_count",
+        )
+        if key in payload
+    } | {"path": str(path)}
+
+
 @PREPROCESSORS.register("mmw_radar_maps")
 class MMWRadarMapsPreprocessor:
     def __init__(self, **kwargs: Any):
@@ -361,4 +486,8 @@ class MMWRadarMapsPreprocessor:
         return generate_mmw_radar_maps(**self.kwargs)
 
 
-__all__ = ["MMWRadarMapsPreprocessor", "generate_mmw_radar_maps"]
+__all__ = [
+    "MMWRadarMapsPreprocessor",
+    "generate_mmw_radar_maps",
+    "materialize_mmw_radar_split_csv",
+]

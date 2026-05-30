@@ -22,22 +22,17 @@
 - **AND** 配置 MUST 不启用 `csi_hardening`
 
 ### Requirement: Easy modality + CSI 多模态验证配置
-系统 MUST 提供 easy modality + CSI 验证配置，用于比较普通 joint training、CSI-prioritized warmup 和 G2D-style training 对 slow CSI 贡献恢复的影响。默认 easy modality MUST 为 GPS，配置 MUST 允许后续替换为其它 easy modality。
+系统 MUST 提供 easy modality + CSI 验证配置，用于比较普通 joint training 和 CSI-prioritized warmup 对 slow CSI 贡献恢复的影响。默认 easy modality MUST 为 GPS，配置 MUST 允许后续替换为其它 easy modality。
 
 #### Scenario: GPS+CSI 验证配置可加载
 - **WHEN** 用户加载多模态验证配置
-- **THEN** 系统 MUST 至少提供 E0 GPS-only、E1 GPS+clean CSI joint、E2 GPS+slow CSI joint、E3 GPS+slow CSI + CSI-prioritized warmup 和 E4 GPS+slow CSI + G2D-style 配置
-- **AND** E1 到 E4 MUST 使用 `modalities: [gps, csi]` 或等价归一化后的模态集合
+- **THEN** 系统 MUST 至少提供 E0 GPS-only、E1 GPS+clean CSI joint、E2 GPS+slow CSI joint 和 E3 GPS+slow CSI + CSI-prioritized warmup 配置
+- **AND** E1 到 E3 MUST 使用 `modalities: [gps, csi]` 或等价归一化后的模态集合
 
 #### Scenario: CSI-prioritized warmup 配置表达训练阶段
 - **WHEN** 用户加载 E3 CSI-prioritized warmup 配置
 - **THEN** 配置 MUST 表达前期只训练或优先训练 CSI encoder 与 fusion/head 的阶段
 - **AND** 配置 MUST 表达 warmup 结束后 GPS 与 CSI 联合训练的阶段
-
-#### Scenario: G2D-style 配置引用单模态 teacher
-- **WHEN** 用户加载 E4 GPS+slow CSI + G2D-style 配置
-- **THEN** 配置 MUST 为 `gps` 和 `csi` teacher 提供 checkpoint 或 checkpoint registry 解析入口
-- **AND** 配置 MUST 启用 G2D feature KD、logit KD、teacher confidence 和 SMP 或等价的 G2D-style 模态优先训练
 
 ### Requirement: CSI hardening sweep 分析脚本
 系统 MUST 提供 `scripts/analyze_csi_hardening_sweep.py`，读取多个训练 run 的日志并输出候选排序。分析脚本 MUST 计算 final last10、best、E50、E80、E90、ceiling gap、E90 ratio、destructive 判定和 slow-high-ceiling 判定。

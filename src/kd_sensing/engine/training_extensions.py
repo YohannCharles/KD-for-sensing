@@ -31,8 +31,6 @@ class ExtensionContext:
 @dataclass(frozen=True)
 class ForwardControls:
     force_modality_mask: torch.Tensor | None = None
-    force_reliability_gate: torch.Tensor | float | None = None
-    gate_temperature: float | torch.Tensor | None = None
 
     def merge(self, other: "ForwardControls | None") -> "ForwardControls":
         if other is None:
@@ -41,10 +39,6 @@ class ForwardControls:
             force_modality_mask=other.force_modality_mask
             if other.force_modality_mask is not None
             else self.force_modality_mask,
-            force_reliability_gate=other.force_reliability_gate
-            if other.force_reliability_gate is not None
-            else self.force_reliability_gate,
-            gate_temperature=other.gate_temperature if other.gate_temperature is not None else self.gate_temperature,
         )
 
 
@@ -54,6 +48,7 @@ class BatchState:
     step: int
     batch: dict[str, torch.Tensor]
     labels: torch.Tensor
+    soft_beam_targets: torch.Tensor | None
     student_output: ModelOutput
     student_logits: torch.Tensor
     controls: ForwardControls

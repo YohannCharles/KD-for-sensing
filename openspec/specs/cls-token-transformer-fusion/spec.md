@@ -64,7 +64,7 @@ CLS-token Transformer fusion MUST 使用包含多头自注意力和前馈网络�
 - **AND** `output_features` MUST 表示可用于 KD 或诊断的 fused CLS/horizon representation
 
 ### Requirement: 模态 mask 与 diagnostics
-CLS-token Transformer fusion MUST 支持 `force_modality_mask`，并 MUST 输出足够的 diagnostics 以支持 G2D、模态子集评估和调试。
+CLS-token Transformer fusion MUST 支持 `force_modality_mask`，并 MUST 输出足够的 diagnostics 以支持模态子集评估和调试。
 
 #### Scenario: force_modality_mask 排除模态 token
 - **WHEN** forward 传入 `force_modality_mask` 屏蔽某个启用模态
@@ -80,11 +80,6 @@ CLS-token Transformer fusion MUST 支持 `force_modality_mask`，并 MUST 输出
 - **WHEN** 模型 forward 完成
 - **THEN** diagnostics MUST 包含 `token_features`、`modalities`、`effective_modality_mask` 和 `fusion_memory` 或等价 Transformer memory
 - **AND** `token_features` MUST 能按 `[B, K, T, d_model]` 或等价可逆结构拆分到每个模态
-
-#### Scenario: G2D feature diagnostics 兼容
-- **WHEN** G2D distiller 或诊断工具读取 CLS-token Transformer fusion 输出
-- **THEN** 系统 MUST 能从 diagnostics 中按模态拆分 feature
-- **AND** 主 logits 契约 MUST 不因 diagnostics 输出而改变
 
 ### Requirement: CLS-token Transformer fusion 辅助头
 CLS-token Transformer fusion MUST 支持可选遮挡检测头和位置估算头。辅助头启用时 MUST 从融合后的 CLS 表示或等价 horizon representation 生成输出；辅助头关闭时 MUST 不改变现有模型构建、forward 输入和 beam logits 输出。

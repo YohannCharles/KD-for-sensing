@@ -17,6 +17,7 @@ from kd_sensing.engine.batch import (
     prepare_gps_inputs,
     prepare_image_inputs,
     prepare_labels,
+    prepare_soft_beam_targets,
     prepare_lidar_inputs,
     prepare_mmwave_inputs,
     prepare_ray_inputs,
@@ -116,6 +117,31 @@ def prepare_task_auxiliary_targets(
         batch,
         num_pred=num_pred,
         device=device,
+        non_blocking=non_blocking,
+    )
+
+
+def prepare_task_soft_beam_targets(
+    batch: dict[str, torch.Tensor],
+    *,
+    cfg: dict[str, Any],
+    num_pred: int,
+    num_classes: int,
+    device: torch.device,
+    downsample_ratio: int = 1,
+    non_blocking: bool = False,
+) -> torch.Tensor | None:
+    loss_cfg = cfg.get("loss", {}).get("soft_targets", {})
+    enabled = bool(loss_cfg.get("enabled", False))
+    if not enabled:
+        return None
+    return prepare_soft_beam_targets(
+        batch,
+        num_pred=num_pred,
+        num_classes=num_classes,
+        downsample_ratio=downsample_ratio,
+        device=device,
+        enabled=enabled,
         non_blocking=non_blocking,
     )
 
@@ -237,8 +263,6 @@ def forward_task_model(
     device: torch.device,
     non_blocking: bool = False,
     force_modality_mask: torch.Tensor | None = None,
-    force_reliability_gate: torch.Tensor | float | None = None,
-    gate_temperature: float | torch.Tensor | None = None,
     extra_model_kwargs: dict[str, Any] | None = None,
 ):
     task_inputs = prepare_task_inputs(
@@ -255,8 +279,6 @@ def forward_task_model(
         task,
         **task_inputs,
         force_modality_mask=force_modality_mask,
-        force_reliability_gate=force_reliability_gate,
-        gate_temperature=gate_temperature,
         **(extra_model_kwargs or {}),
     )
 
@@ -273,8 +295,6 @@ def run_model_step(
     downsample_ratio: int | None = None,
     non_blocking: bool = False,
     force_modality_mask: torch.Tensor | None = None,
-    force_reliability_gate: torch.Tensor | float | None = None,
-    gate_temperature: float | torch.Tensor | None = None,
     extra_model_kwargs: dict[str, Any] | None = None,
 ) -> TaskForwardResult:
     prepared_batch = prepare_task_batch(batch)
@@ -297,8 +317,6 @@ def run_model_step(
         device=device,
         non_blocking=non_blocking,
         force_modality_mask=force_modality_mask,
-        force_reliability_gate=force_reliability_gate,
-        gate_temperature=gate_temperature,
         extra_model_kwargs=extra_model_kwargs,
     )
     model_output = adapt_model_output(raw_output)

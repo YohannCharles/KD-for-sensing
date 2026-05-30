@@ -29,8 +29,6 @@ Stages:
   csi-only          Train debug gate, CSI-only A/B/C, then CSI-only D in one fresh workflow.
   csi-analysis      Re-run CSI ABCD analysis only.
   fusion-e0-e3      Train fusion E0-E3 configs.
-  gps-teacher       Train the GPS teacher required by E4.
-  e4                Train E4 G2D-style using GPS_TEACHER and CSI_TEACHER.
   fusion-analysis   Re-run fusion E analysis only.
 
 Common environment variables:
@@ -41,16 +39,12 @@ Common environment variables:
   GPU_IDS=0,1,2,3             Pin parallel training jobs round-robin to these GPUs.
   SKIP_EXISTING=1             Skip a run when checkpoints/best.pth exists.
   OVERWRITE_RUNS=1            Reuse an existing exact run directory.
-  GPS_TEACHER=path            E4 GPS teacher checkpoint override.
-  CSI_TEACHER=path            E4 CSI teacher checkpoint override.
   A0_ORIGINAL_CONFIG=path     Resolved A0 reference for debug clone config diff.
 
 Typical flow:
   conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh quick
   NEW_RUN=1 conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh csi-only
   conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh fusion-e0-e3
-  conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh gps-teacher
-  CSI_TEACHER=outputs/.../checkpoints/best.pth conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh e4
   conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh fusion-analysis
 EOF
 }
@@ -308,8 +302,8 @@ run_quick_checks() {
 
   start_quick test_csi_modality \
     conda run -n "$CONDA_ENV" pytest tests/test_csi_modality.py -q
-  start_quick test_g2d_configs \
-    conda run -n "$CONDA_ENV" pytest tests/test_student_configs.py tests/test_g2d_loss.py tests/test_g2d_distiller.py tests/test_g2d_smp.py -q
+  start_quick test_config_matrix \
+    conda run -n "$CONDA_ENV" pytest tests/test_student_configs.py -q
   start_quick test_training_io_analysis \
     conda run -n "$CONDA_ENV" pytest tests/test_training_io_workflow.py tests/test_csi_hardening_sweep_analysis.py -q
   start_quick analyze_help \
@@ -394,63 +388,6 @@ run_fusion_e0_e3() {
     configs/fusion/csi_hardening_matrix/E3_gps_slow_csi_prioritized_warmup.yaml
 }
 
-run_gps_teacher() {
-  local run_name="gps_teacher_no_kd"
-  if ! should_train_run "$run_name"; then
-    return 0
-  fi
-  local -a cmd=(
-    conda run -n "$CONDA_ENV" python scripts/train.py
-    --config configs/gps/teacher_no_kd.yaml
-    -o "output.dir=$RUN_ROOT"
-    -o experiment.name=gps_teacher_no_kd
-    -o output.run_name=gps_teacher_no_kd
-    -o data.dataset.type=mmw
-    -o data.dataset.condition=sunny
-    -o data.dataset.scene=Town10_skybridge_seed24
-    -o data.dataset.train_csv_name=Prepared/Town10_skybridge_seed24/splits/train.csv
-    -o data.dataset.test_csv_name=Prepared/Town10_skybridge_seed24/splits/test.csv
-    -o data.dataset.use_gps=true
-    -o data.dataset.gps_feature_mode=relative_polar
-    -o data.dataset.gps_normalize=true
-    -o data.dataloader.train_batch_size=16
-    -o data.dataloader.test_batch_size=16
-    -o output.progress.enabled=false
-  )
-  if [[ "$OVERWRITE_RUNS" == "1" ]]; then
-    cmd+=(-o output.overwrite=true)
-  fi
-  run_logged "$run_name" "${cmd[@]}"
-}
-
-run_e4() {
-  local run_name="fusion_E4_gps_slow_csi_g2d_style"
-  GPS_TEACHER="${GPS_TEACHER:-$SCENE_ROOT/gps_teacher_no_kd/checkpoints/best.pth}"
-  CSI_TEACHER="${CSI_TEACHER:-$SCENE_ROOT/csi_D3_mild_hardening_gate_warmup_no_internal_gru/checkpoints/best.pth}"
-  export GPS_TEACHER CSI_TEACHER
-
-  if ! should_train_run "$run_name"; then
-    return 0
-  fi
-  require_file "$GPS_TEACHER"
-  require_file "$CSI_TEACHER"
-
-  local -a cmd=(
-    conda run -n "$CONDA_ENV" python scripts/train.py
-    --config configs/fusion/csi_hardening_matrix/E4_gps_slow_csi_g2d_style.yaml
-    -o "output.dir=$RUN_ROOT"
-    -o "distillation.g2d.teachers.gps.checkpoint=$GPS_TEACHER"
-    -o "distillation.g2d.teachers.csi.checkpoint=$CSI_TEACHER"
-    -o output.progress.enabled=false
-  )
-  if [[ "$OVERWRITE_RUNS" == "1" ]]; then
-    cmd+=(-o output.overwrite=true)
-  fi
-  log "GPS_TEACHER=$GPS_TEACHER"
-  log "CSI_TEACHER=$CSI_TEACHER"
-  run_logged "$run_name" "${cmd[@]}"
-}
-
 case "$STAGE" in
   help|-h|--help)
     usage
@@ -487,14 +424,6 @@ case "$STAGE" in
   fusion-e0-e3|fusion)
     init_run_context
     run_fusion_e0_e3
-    ;;
-  gps-teacher)
-    init_run_context
-    run_gps_teacher
-    ;;
-  e4)
-    init_run_context
-    run_e4
     ;;
   fusion-analysis)
     init_run_context

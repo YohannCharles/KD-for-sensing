@@ -92,7 +92,7 @@
 - **AND** 其它由 canonical 规则生成的字段 MUST 保持有效
 
 ### Requirement: canonical overlay recipe 化
-canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/table 驱动。objective、G2D、CRAF、MARF 和通用 fusion overlay MUST 按职责拆分定义，`build_virtual_config()` 入口 MUST 只负责路径识别、recipe 查找和应用。
+canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/table 驱动。objective、当前保留的 advanced overlay 和通用 fusion overlay MUST 按职责拆分定义，`build_virtual_config()` 入口 MUST 只负责路径识别、recipe 查找和应用。已退役的 G2D、CRAF 和 MARF overlay MUST 不再作为可生成入口存在。
 
 #### Scenario: 既有 canonical 路径生成语义不变
 - **WHEN** 用户加载既有 virtual canonical fusion 路径
@@ -183,7 +183,7 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **AND** snapshot 必需字段 MUST 继续满足 `seq_len=1`、`num_pred=1` 和无时序 core 契约，除非用户显式退出 snapshot 变体并通过校验
 
 ### Requirement: 高级配置矩阵优先使用 recipe
-高级 fusion、objective、G2D、CRAF、MARF 和 ablation 配置矩阵 MUST 优先由 canonical recipe 或 overlay recipe 生成。实体 YAML MUST 只保留无法由 recipe 无损表达、需要人工编辑作为 base/example、或仍处于明确迁移窗口的配置。
+高级 fusion、objective 和当前保留的 ablation 配置矩阵 MUST 优先由 canonical recipe 或 overlay recipe 生成。实体 YAML MUST 只保留无法由 recipe 无损表达、需要人工编辑作为 base/example、或仍处于明确迁移窗口的配置。已退役的 G2D、CRAF 和 MARF 配置路径 MUST 不由 recipe 或 virtual alias 接管。
 
 #### Scenario: 缺失高级 overlay 配置可生成
 - **WHEN** 用户加载已声明支持的高级 fusion overlay 配置路径且磁盘上不存在实体 YAML
@@ -235,9 +235,14 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 删除高级实体 YAML 前，项目 MUST 提供 focused test 或脚本比较实体配置和替代 virtual/overlay 配置的关键语义。关键语义 MUST 至少覆盖 experiment name、task、dataset type、enabled modalities、model type、loss/distillation type、training schedule、output run name 和 checkpoint 来源。
 
 #### Scenario: 可生成高级配置关键字段等价
-- **WHEN** 开发者删除一个由 recipe 覆盖的 CRAF、MARF、G2D、token transformer、CSI/GPS/mmWave 组合或 ablation 实体 YAML
+- **WHEN** 开发者删除一个由 recipe 覆盖的当前支持 token transformer、CSI/GPS/mmWave 组合或 ablation 实体 YAML
 - **THEN** 等价检查 MUST 证明替代 virtual/overlay 配置的关键字段与原实体 YAML 一致
 - **AND** 允许差异 MUST 在测试断言或设计文档中显式列出
+
+#### Scenario: 退役配置不被 recipe 接管
+- **WHEN** 被删除实体 YAML 属于 G2D、CRAF 或 MARF
+- **THEN** 配置加载器 MUST 报告缺失或退役错误
+- **AND** 系统 MUST 不生成同名 virtual 配置
 
 #### Scenario: 删除后运行产物保存完整配置
 - **WHEN** 用户使用已删除实体 YAML 对应的 virtual/overlay 路径启动 dry-run、训练或评估
@@ -245,10 +250,10 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **AND** 运行目录中的 `final_config.yaml` 和 `resolved_config.yaml` MUST 不依赖原实体 YAML 继续存在
 
 ### Requirement: 高级 overlay recipe 必须按领域拆分
-高级配置生成 MUST 将 G2D、CRAF、MARF、objective、CSI hardening 和组合实验 overlay 的主要字段定义放入可审查的 recipe/table 或领域 helper 中。`build_virtual_config()` 和路径识别入口 MUST 只负责识别路径、查找 recipe 和应用 overlay。
+高级配置生成 MUST 将 objective、CSI hardening 和当前保留组合实验 overlay 的主要字段定义放入可审查的 recipe/table 或领域 helper 中。`build_virtual_config()` 和路径识别入口 MUST 只负责识别路径、查找 recipe 和应用 overlay。
 
-#### Scenario: 新增 CRAF 或 MARF ablation 不扩写路径入口
-- **WHEN** 开发者新增一个 CRAF 或 MARF ablation 配置 overlay
+#### Scenario: 新增当前支持 ablation 不扩写路径入口
+- **WHEN** 开发者新增一个当前支持方法的 ablation 配置 overlay
 - **THEN** 主要变更 MUST 位于对应 recipe/table 或领域 helper
 - **AND** 不得在 `build_virtual_config()` 中新增大段方法专属字段表
 
@@ -269,4 +274,3 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **WHEN** 项目保留一个不能删除的高级实体 YAML
 - **THEN** inventory MUST 记录它作为 base、example、迁移窗口或不可 recipe 化实验的用途
 - **AND** 后续删除或 recipe 化该文件 MUST 更新对应记录
-

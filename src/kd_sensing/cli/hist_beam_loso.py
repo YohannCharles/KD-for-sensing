@@ -17,8 +17,18 @@ from kd_sensing.engine.hist_beam_loso_execution import (
     DEFAULT_QUICK_BUDGETS,
     DEFAULT_QUICK_SEEDS,
     DEFAULT_QUICK_VARIANTS,
+    SENSOR_ASSISTED_QUICK_BUDGETS,
+    SENSOR_ASSISTED_QUICK_SEEDS,
+    SENSOR_ASSISTED_QUICK_VARIANTS,
     execute_loso_run_plan,
 )
+from kd_sensing.engine.modality_resolution import (
+    SENSOR_ASSISTED_DISALLOWED_MODALITIES,
+    SENSOR_ASSISTED_PROFILE,
+    sensor_assisted_profile_enabled,
+    resolve_enabled_modalities,
+)
+from kd_sensing.modalities import normalize_modalities
 from kd_sensing.utils.paths import output_dir as resolve_output_dir
 
 
@@ -73,6 +83,7 @@ def run_hist_beam_loso(
     stage_executor: Any | None = None,
 ) -> dict[str, Any]:
     loso_cfg = cfg.get("loso", {}) if isinstance(cfg.get("loso"), dict) else {}
+    sensor_assisted = sensor_assisted_profile_enabled(cfg)
     args = args or argparse.Namespace()
     target_scene = _parse_scene_value(getattr(args, "target_scene", None))
     target_scenes = None if target_scene is not None else _parse_scene_list(None, default=loso_cfg.get("target_scenes"))
@@ -82,10 +93,20 @@ def run_hist_beam_loso(
         target_scenes=target_scenes,
         source_scenes=_parse_optional_scene_list(getattr(args, "source_scenes", None)),
         skip_scenes=_parse_scene_list(getattr(args, "skip_scenes", None), default=loso_cfg.get("skip_scenes", [])),
-        variants=_parse_str_list(getattr(args, "variants", None), default=loso_cfg.get("variants", DEFAULT_QUICK_VARIANTS)),
-        budgets=_parse_int_list(getattr(args, "budgets", None), default=loso_cfg.get("budgets", DEFAULT_QUICK_BUDGETS)),
-        seeds=_parse_int_list(getattr(args, "seeds", None), default=loso_cfg.get("seeds", DEFAULT_QUICK_SEEDS)),
+        variants=_parse_str_list(
+            getattr(args, "variants", None),
+            default=loso_cfg.get("variants", SENSOR_ASSISTED_QUICK_VARIANTS if sensor_assisted else DEFAULT_QUICK_VARIANTS),
+        ),
+        budgets=_parse_int_list(
+            getattr(args, "budgets", None),
+            default=loso_cfg.get("budgets", SENSOR_ASSISTED_QUICK_BUDGETS if sensor_assisted else DEFAULT_QUICK_BUDGETS),
+        ),
+        seeds=_parse_int_list(
+            getattr(args, "seeds", None),
+            default=loso_cfg.get("seeds", SENSOR_ASSISTED_QUICK_SEEDS if sensor_assisted else DEFAULT_QUICK_SEEDS),
+        ),
         max_runs=_max_runs_value(getattr(args, "max_runs", None), loso_cfg.get("max_runs")),
+        matrix_overrides=_matrix_override_metadata(args),
     )
     out_dir = Path(getattr(args, "output_dir", None) or loso_cfg.get("output_dir") or resolve_output_dir("outputs/hist_beam_loso"))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +120,14 @@ def run_hist_beam_loso(
         "run_count": len(plan["runs"]),
         "planned_run_count": plan.get("planned_run_count", len(plan["runs"])),
         "max_runs": plan.get("max_runs"),
+        "profile": plan.get("profile"),
+        "matrix_scope": plan.get("matrix_scope"),
+        "quick_validation": plan.get("quick_validation"),
+        "modality_profile": plan.get("modality_profile"),
+        "matrix": plan.get("matrix"),
+        "matrix_overrides": plan.get("matrix_overrides", {}),
+        "enabled_modalities": plan.get("enabled_modalities", []),
+        "excluded_sensitive_fields": plan.get("excluded_sensitive_fields", []),
         "runs": plan["runs"],
         "dataset_family": plan.get("dataset_family", "DeepSense6G"),
         "claim_scope": plan.get("claim_scope", "cross_scene"),
@@ -136,6 +165,7 @@ def build_loso_run_plan(
     budgets: list[int] | None = None,
     seeds: list[int] | None = None,
     max_runs: int | None = None,
+    matrix_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if _is_mmw_loso(cfg):
         return _build_mmw_run_plan(
@@ -148,7 +178,16 @@ def build_loso_run_plan(
             budgets=budgets,
             seeds=seeds,
             max_runs=max_runs,
+            matrix_overrides=matrix_overrides,
         )
+    try:
+        enabled_modalities = list(resolve_enabled_modalities(cfg))
+    except Exception:
+        enabled_modalities = list(cfg.get("model", {}).get("modalities", ["image", "radar", "gps"]))
+    profile = _matrix_profile(cfg)
+    resolved_variants = list(variants or ["v3_decoupled"])
+    resolved_budgets = list(budgets or [0])
+    resolved_seeds = list(seeds or [0])
     skipped = set(skip_scenes or [])
     if target_scene is not None:
         folds = [resolve_loso_fold(target_scene=target_scene, source_scenes=source_scenes)]
@@ -159,9 +198,9 @@ def build_loso_run_plan(
     folds = [fold for fold in folds if fold.target_scene not in skipped and not set(fold.source_scenes) & skipped]
     runs = []
     for fold in folds:
-        for variant in variants or ["v3_decoupled"]:
-            for budget in budgets or [0]:
-                for seed in seeds or [0]:
+        for variant in resolved_variants:
+            for budget in resolved_budgets:
+                for seed in resolved_seeds:
                     runs.append(
                         {
                             "fold": fold.fold_id,
@@ -178,6 +217,12 @@ def build_loso_run_plan(
                                 "summary",
                             ],
                             "target_test_for_training": False,
+                            "profile": profile,
+                            "modality_profile": profile,
+                            "enabled_modalities": enabled_modalities,
+                            "excluded_sensitive_fields": _excluded_sensitive_fields(cfg),
+                            "matrix_scope": "quick_validation" if profile else "standard",
+                            "quick_validation": bool(profile),
                         }
                     )
     planned_run_count = len(runs)
@@ -190,7 +235,19 @@ def build_loso_run_plan(
         "runs": runs,
         "planned_run_count": planned_run_count,
         "max_runs": int(max_runs) if max_runs is not None else None,
-        "enabled_modalities": list(cfg.get("model", {}).get("modalities", ["image", "radar", "gps"])),
+        "enabled_modalities": enabled_modalities,
+        "profile": profile,
+        "modality_profile": {"profile": profile, "enabled_modalities": enabled_modalities},
+        "matrix_scope": "quick_validation" if profile else "standard",
+        "quick_validation": bool(profile),
+        "matrix": _matrix_metadata(
+            resolved_variants,
+            resolved_budgets,
+            resolved_seeds,
+            matrix_scope="quick_validation" if profile else "standard",
+        ),
+        "matrix_overrides": dict(matrix_overrides or {}),
+        "excluded_sensitive_fields": _excluded_sensitive_fields(cfg),
     }
 
 
@@ -211,6 +268,7 @@ def _build_mmw_run_plan(
     budgets: list[int] | None,
     seeds: list[int] | None,
     max_runs: int | None,
+    matrix_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     loso_cfg = cfg.get("loso", {}) if isinstance(cfg.get("loso"), dict) else {}
     availability = load_mmw_data_availability(loso_cfg.get("data_availability_path"))
@@ -225,12 +283,20 @@ def _build_mmw_run_plan(
     cfg.setdefault("loso", {})
     cfg["loso"].setdefault("scene_data_roots", mmw_scene_data_roots(availability))
     cfg["loso"].setdefault("scene_csv_names", mmw_scene_csv_names(availability))
+    profile = _matrix_profile(cfg)
+    sensor_assisted = sensor_assisted_profile_enabled(cfg)
+    enabled_modalities = _resolve_loso_enabled_modalities(cfg)
+    excluded_sensitive_fields = _excluded_sensitive_fields(cfg)
+    matrix_scope = "quick_validation" if sensor_assisted else "full_or_configured"
+    resolved_variants = list(variants or (SENSOR_ASSISTED_QUICK_VARIANTS if sensor_assisted else ["v3_decoupled"]))
+    resolved_budgets = list(budgets or (SENSOR_ASSISTED_QUICK_BUDGETS if sensor_assisted else [0]))
+    resolved_seeds = list(seeds or (SENSOR_ASSISTED_QUICK_SEEDS if sensor_assisted else [0]))
     runs = []
     for fold in folds:
         metadata = fold.metadata()
-        for variant in variants or ["v3_decoupled"]:
-            for budget in budgets or [0]:
-                for seed in seeds or [0]:
+        for variant in resolved_variants:
+            for budget in resolved_budgets:
+                for seed in resolved_seeds:
                     runs.append(
                         {
                             "fold": fold.fold_id,
@@ -254,6 +320,12 @@ def _build_mmw_run_plan(
                             ],
                             "target_test_for_training": False,
                             "fold_metadata": metadata,
+                            "profile": profile,
+                            "modality_profile": profile,
+                            "enabled_modalities": enabled_modalities,
+                            "excluded_sensitive_fields": excluded_sensitive_fields,
+                            "matrix_scope": matrix_scope,
+                            "quick_validation": bool(sensor_assisted),
                         }
                     )
     planned_run_count = len(runs)
@@ -266,7 +338,19 @@ def _build_mmw_run_plan(
         "runs": runs,
         "planned_run_count": planned_run_count,
         "max_runs": int(max_runs) if max_runs is not None else None,
-        "enabled_modalities": list(cfg.get("model", {}).get("modalities", ["image", "gps", "mmwave"])),
+        "enabled_modalities": enabled_modalities,
+        "profile": profile,
+        "modality_profile": {
+            "profile": profile,
+            "enabled_modalities": enabled_modalities,
+            "excluded_sensitive_fields": excluded_sensitive_fields,
+            "sensor_assisted": bool(sensor_assisted),
+        },
+        "matrix_scope": matrix_scope,
+        "quick_validation": bool(sensor_assisted),
+        "matrix": _matrix_metadata(resolved_variants, resolved_budgets, resolved_seeds, matrix_scope=matrix_scope),
+        "matrix_overrides": dict(matrix_overrides or {}),
+        "excluded_sensitive_fields": excluded_sensitive_fields,
         "dataset_family": "MMW",
         "claim_scope": availability.get("claim_scope", "unavailable"),
         "cross_scene_claim_allowed": bool(availability.get("cross_scene_claim_allowed", False)),
@@ -381,6 +465,70 @@ def _max_runs_value(cli_value: int | None, config_value: Any) -> int | None:
     if value is None or value == "":
         return None
     return int(value)
+
+
+def _matrix_override_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    result = {}
+    for key in ("variants", "budgets", "seeds", "max_runs", "target_scene", "source_scenes", "skip_scenes"):
+        value = getattr(args, key, None)
+        if value is not None:
+            result[key] = value
+    return result
+
+
+def _resolve_loso_enabled_modalities(cfg: dict[str, Any]) -> list[str]:
+    if sensor_assisted_profile_enabled(cfg):
+        return list(resolve_enabled_modalities(cfg))
+    model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    for context, raw in (
+        ("model.modalities", model_cfg.get("modalities")),
+        ("model.student.modalities", model_cfg.get("student", {}).get("modalities") if isinstance(model_cfg.get("student"), dict) else None),
+        ("model.teacher.modalities", model_cfg.get("teacher", {}).get("modalities") if isinstance(model_cfg.get("teacher"), dict) else None),
+    ):
+        if raw:
+            return list(normalize_modalities(raw, context=context))
+    return list(resolve_enabled_modalities(cfg))
+
+
+def _matrix_profile(cfg: dict[str, Any]) -> str | None:
+    loso_cfg = cfg.get("loso", {}) if isinstance(cfg.get("loso"), dict) else {}
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
+    for value in (
+        loso_cfg.get("profile"),
+        loso_cfg.get("matrix_profile"),
+        hist_cfg.get("profile"),
+        dataset_cfg.get("modality_profile"),
+    ):
+        if value not in (None, ""):
+            return str(value)
+    if sensor_assisted_profile_enabled(cfg):
+        return SENSOR_ASSISTED_PROFILE
+    return None
+
+
+def _excluded_sensitive_fields(cfg: dict[str, Any]) -> list[str]:
+    if sensor_assisted_profile_enabled(cfg):
+        return list(SENSOR_ASSISTED_DISALLOWED_MODALITIES)
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    configured = hist_cfg.get("excluded_sensitive_fields", [])
+    return [str(item) for item in configured] if isinstance(configured, list) else []
+
+
+def _matrix_metadata(
+    variants: list[str],
+    budgets: list[int],
+    seeds: list[int],
+    *,
+    matrix_scope: str,
+) -> dict[str, Any]:
+    return {
+        "variants": [str(item) for item in variants],
+        "budgets": [int(item) for item in budgets],
+        "seeds": [int(item) for item in seeds],
+        "scope": matrix_scope,
+        "is_full_budget_seed_sweep": matrix_scope != "quick_validation",
+    }
 
 
 def _unique_path(path: Path) -> Path:

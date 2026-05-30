@@ -7,9 +7,6 @@ _HISTORY_FIELDS: tuple[str, ...] = (
     "train_distill_loss",
     "train_beam_soft_loss",
     "train_unimodal_loss",
-    "train_counterfactual_loss",
-    "train_prior_regularization_loss",
-    "train_reliability_kd_loss",
     "train_occlusion_loss",
     "train_position_loss",
     "train_multitask_loss",
@@ -35,9 +32,6 @@ _SELECTION_COMMON_HISTORY_FIELDS: tuple[str, ...] = (
     "train_distill_loss",
     "train_beam_soft_loss",
     "train_unimodal_loss",
-    "train_counterfactual_loss",
-    "train_prior_regularization_loss",
-    "train_reliability_kd_loss",
     "train_acc",
     "val_loss",
     "val_primary_metric",
@@ -51,14 +45,6 @@ _SELECTION_HISTORY_FIELDS_BY_OBJECTIVE: dict[str, tuple[str, ...]] = {
         "val_beam_top3",
         "val_beam_top5",
         "val_beam_dba",
-        "val_primary_metric",
-        "learning_rates",
-    ),
-    "near_field_beam_selection": (
-        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
-        "val_beam_top1",
-        "val_beam_top3",
-        "val_beam_top5",
         "val_primary_metric",
         "learning_rates",
     ),
@@ -131,9 +117,6 @@ _COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("objective/val_primary_metric", "val_primary_metric"),
     ("loss/train_beam_soft", "train_beam_soft_loss"),
     ("loss/train_unimodal_aux", "train_unimodal_loss"),
-    ("loss/train_counterfactual_gate", "train_counterfactual_loss"),
-    ("loss/train_prior_regularization", "train_prior_regularization_loss"),
-    ("loss/train_reliability_kd", "train_reliability_kd_loss"),
 )
 
 _BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
@@ -175,12 +158,6 @@ _CURRENT_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("beam/val_dba_current", "val_beam_dba"),
 )
 
-_NEAR_FIELD_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
-    ("beam/val_top1", "val_beam_top1"),
-    ("beam/val_top3", "val_beam_top3"),
-    ("beam/val_top5", "val_beam_top5"),
-)
-
 _CURRENT_LOS_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     ("loss/los", "train_los_loss"),
     ("los/accuracy", "val_los_accuracy"),
@@ -210,8 +187,6 @@ def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str],
         scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
     elif objective == "current_beam_selection":
         scalars.extend(_CURRENT_BEAM_TENSORBOARD_SCALARS)
-    elif objective == "near_field_beam_selection":
-        scalars.extend(_NEAR_FIELD_BEAM_TENSORBOARD_SCALARS)
     elif objective == "current_los_classification":
         scalars.extend(_CURRENT_LOS_TENSORBOARD_SCALARS)
     elif objective == "current_link_quality":

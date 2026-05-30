@@ -36,7 +36,7 @@ ResNet-18 encoder MUST 遵守项目统一 encoder 输出契约。输入 batch �
 #### Scenario: encoder 不改变时间长度
 - **WHEN** 输入 image tensor 的时间维长度为 `T`
 - **THEN** ResNet-18 encoder 输出的时间维长度 MUST 仍为 `T`
-- **AND** 后续 GRU、Transformer、CRAF 或 MARF core MUST 接收相同时间维的 embedding
+- **AND** 后续 GRU、Transformer 或其它保留 core MUST 接收相同时间维的 embedding
 
 #### Scenario: encoder 不返回 logits
 - **WHEN** 直接调用 ResNet-18 image encoder

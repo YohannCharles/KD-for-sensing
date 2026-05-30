@@ -114,14 +114,10 @@ def finite_float_or_none(value: object) -> float | None:
 def write_tensorboard_method_scalars(writer, epoch_log: dict, step: int) -> None:
     if writer is None:
         return
-    reliability = epoch_log.get("craf_reliability")
-    if isinstance(reliability, dict):
-        for modality, value in reliability.items():
-            writer.add_scalar(f"craf/reliability/{modality}", float(value), step)
     for key, value in epoch_log.items():
         if not isinstance(value, (int, float)):
             continue
-        if key.startswith(("cf/", "craf/", "marf/", "loss/", "teacher/", "optimizer/", "val/subset/")):
+        if key.startswith(("loss/", "optimizer/", "val/subset/")):
             writer.add_scalar(key, float(value), step)
     writer.flush()
 

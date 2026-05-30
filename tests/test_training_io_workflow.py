@@ -20,6 +20,7 @@ if str(SRC) not in sys.path:
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
+from kd_sensing.data.beam_soft_targets import beam_power_to_distribution, gaussian_beam_distribution  # noqa: E402
 import kd_sensing.data.datasets.deepsense6g as deepsense6g_module  # noqa: E402
 import kd_sensing.data.datasets.deepsense6g_targets as deepsense6g_targets  # noqa: E402
 import kd_sensing.data.transform_ops.io as io_transforms  # noqa: E402
@@ -30,7 +31,8 @@ from kd_sensing.data.layouts import deepsense6g_scene_layout, mmw_condition_layo
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E402
 from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa: E402
-from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels  # noqa: E402
+from kd_sensing.distillation.losses import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
+from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
 from kd_sensing.engine.data_factory import (  # noqa: E402
     build_dataloader,
@@ -42,7 +44,9 @@ from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler  # noqa: E
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
-from kd_sensing.engine.run_metadata import dataset_run_metadata, throughput_run_metadata  # noqa: E402
+from kd_sensing.engine.evaluator import _evaluation_split_protocol_report  # noqa: E402
+from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata  # noqa: E402
+from kd_sensing.engine.training_metrics import training_outputs_payload  # noqa: E402
 from kd_sensing.engine.throughput_recommendations import (  # noqa: E402
     lidar_cache_coverage,
     recommend_parallel_training,
@@ -52,7 +56,6 @@ from kd_sensing.engine.trainer import (  # noqa: E402
     _early_stopping_improved,
     _early_stopping_min_epoch,
     _early_stopping_metric_value,
-    _training_outputs_payload,
     _validate_early_stopping_source_available,
     _write_tensorboard_scalars,
     _write_tensorboard_startup_scalars,
@@ -415,6 +418,197 @@ def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Pat
     assert sample["target_beam"].tolist() == [10]
     assert labels.shape == (1, 1)
     assert labels.tolist() == [[10]]
+
+
+def test_soft_beam_distribution_generation_handles_power_and_circular_fallback():
+    distribution = beam_power_to_distribution([-1.0, 0.0, 3.0, 1.0], num_classes=4)
+    circular = gaussian_beam_distribution(0, num_classes=4, sigma=1.0, circular=True)
+    linear = gaussian_beam_distribution(0, num_classes=4, sigma=1.0, circular=False)
+
+    assert distribution is not None
+    assert distribution.tolist() == pytest.approx([0.0, 0.0, 0.75, 0.25])
+    assert beam_power_to_distribution([0.0, 0.0, 0.0, 0.0], num_classes=4) is None
+    assert circular.sum() == pytest.approx(1.0)
+    assert circular[1] == pytest.approx(circular[-1])
+    assert circular[-1] > linear[-1]
+
+
+def test_deepsense_dataset_outputs_soft_beam_distribution(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=2)
+    power = np.zeros(64, dtype=np.float32)
+    power[7] = 2.0
+    power[8] = 1.0
+    np.savetxt(tmp_path / "future_0.txt", power)
+    np.savetxt(tmp_path / "future_1.txt", np.zeros(64, dtype=np.float32))
+
+    monkeypatch.setattr(
+        deepsense6g_module,
+        "load_rgb_imagenet_frames",
+        lambda *args, **kwargs: torch.zeros(2, 3, 8, 8),  # noqa: ARG005
+    )
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=2,
+        enabled_modalities=["image"],
+        image_profile="rgb_imagenet",
+        soft_beam_labels={
+            "enabled": True,
+            "source": "power_or_gaussian",
+            "num_classes": 64,
+            "sigma": 1.0,
+            "circular": True,
+        },
+    )
+
+    sample = dataset[0]
+
+    assert sample["target_beam"].tolist() == [7, 0]
+    assert sample["target_beam_distribution"].shape == (2, 64)
+    assert sample["target_beam_distribution_mask"].tolist() == [True, True]
+    assert sample["target_beam_distribution"].sum(dim=-1).tolist() == pytest.approx([1.0, 1.0])
+    assert sample["target_beam_distribution"][0, 7].item() == pytest.approx(2.0 / 3.0)
+    assert sample["target_beam_distribution"][0, 8].item() == pytest.approx(1.0 / 3.0)
+    assert sample["target_beam_distribution"][1].argmax().item() == 0
+    assert sample["target_beam_distribution"][1, -1].item() == pytest.approx(
+        sample["target_beam_distribution"][1, 1].item()
+    )
+
+
+def test_target_domain_soft_beam_labels_ignore_power_and_use_circular_gaussian(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
+    power = np.zeros(64, dtype=np.float32)
+    power[7] = 2.0
+    power[8] = 1.0
+    np.savetxt(tmp_path / "future_0.txt", power)
+
+    monkeypatch.setattr(
+        deepsense6g_module,
+        "load_rgb_imagenet_frames",
+        lambda *args, **kwargs: torch.zeros(2, 3, 8, 8),  # noqa: ARG005
+    )
+    common_kwargs = {
+        "data_root": str(tmp_path),
+        "csv_name": str(csv_path),
+        "seq_len": 2,
+        "num_pred": 1,
+        "enabled_modalities": ["image"],
+        "image_profile": "rgb_imagenet",
+    }
+    source_dataset = DeepSense6GDataset(
+        **common_kwargs,
+        split="train",
+        soft_beam_labels={
+            "enabled": True,
+            "domain": "source",
+            "source": "power_or_gaussian",
+            "num_classes": 64,
+            "sigma": 1.0,
+        },
+    )
+    target_dataset = DeepSense6GDataset(
+        **common_kwargs,
+        split="target_adapt",
+        soft_beam_labels={
+            "enabled": True,
+            "domain": "target",
+            "source": "power_or_gaussian",
+            "target_source": "gaussian",
+            "num_classes": 64,
+            "sigma": 1.0,
+        },
+    )
+
+    source_dist = source_dataset[0]["target_beam_distribution"][0]
+    target_dist = target_dataset[0]["target_beam_distribution"][0]
+    gaussian = torch.tensor(gaussian_beam_distribution(7, num_classes=64, sigma=1.0, circular=True))
+
+    assert source_dataset[0]["target_beam"].tolist() == [7]
+    assert source_dist[7].item() == pytest.approx(2.0 / 3.0)
+    assert source_dist[8].item() == pytest.approx(1.0 / 3.0)
+    assert target_dist.tolist() == pytest.approx(gaussian.tolist())
+    assert target_dist[6].item() == pytest.approx(target_dist[8].item())
+    assert target_dist[0].item() < target_dist[6].item()
+
+
+def test_prepare_soft_beam_targets_crops_downsamples_and_masks_rows():
+    batch = {
+        "target_beam_distribution": torch.tensor(
+            [[[1.0, 1.0, 2.0, 0.0], [0.0, 5.0, 0.0, 5.0], [9.0, 0.0, 0.0, 0.0]]]
+        ),
+        "target_beam_distribution_mask": torch.tensor([[True, False, True]]),
+    }
+
+    targets = prepare_soft_beam_targets(
+        batch,
+        num_pred=2,
+        num_classes=2,
+        downsample_ratio=2,
+        device=torch.device("cpu"),
+    )
+
+    assert targets is not None
+    assert targets.shape == (1, 2, 2)
+    assert targets[0, 0].tolist() == pytest.approx([0.5, 0.5])
+    assert targets[0, 1].tolist() == pytest.approx([0.0, 0.0])
+    assert prepare_soft_beam_targets(
+        batch,
+        num_pred=2,
+        num_classes=2,
+        downsample_ratio=2,
+        device=torch.device("cpu"),
+        enabled=False,
+    ) is None
+
+
+def test_prepare_soft_beam_targets_falls_back_to_hard_labels_for_invalid_soft_rows():
+    batch = {
+        "target_beam": torch.tensor([[1, 3, -100]]),
+        "target_beam_distribution": torch.tensor(
+            [[[0.0, 0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]]
+        ),
+        "target_beam_distribution_mask": torch.tensor([[False, True, False]]),
+    }
+
+    targets = prepare_soft_beam_targets(
+        batch,
+        num_pred=3,
+        num_classes=4,
+        downsample_ratio=1,
+        device=torch.device("cpu"),
+    )
+
+    assert targets is not None
+    assert targets[0, 0].tolist() == pytest.approx([0.0, 1.0, 0.0, 0.0])
+    assert targets[0, 1].tolist() == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert targets[0, 2].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+
+
+def test_soft_focal_and_distiller_supervised_loss_consume_soft_targets():
+    logits = torch.tensor([[2.0, 0.0, -1.0], [0.0, 1.0, 3.0]])
+    hard_targets = torch.tensor([0, 1])
+    soft_targets = torch.tensor([[0.0, 1.0, 0.0], [0.25, 0.25, 0.5]])
+    expected_soft_ce = -(soft_targets * torch.nn.functional.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+
+    assert FocalLoss(alpha=1.0, gamma=0.0)(logits, soft_targets) == pytest.approx(expected_soft_ce.item())
+    assert SoftTargetCrossEntropyLoss()(logits, soft_targets) == pytest.approx(expected_soft_ce.item())
+
+    distiller = KnowledgeDistillationLoss(SoftTargetCrossEntropyLoss(), kd_mode=0)
+    total_loss, task_loss, distill_loss = distiller(
+        logits,
+        torch.zeros_like(logits),
+        hard_targets,
+        soft_targets=soft_targets,
+    )
+
+    assert task_loss == pytest.approx(expected_soft_ce.item())
+    assert total_loss == pytest.approx(expected_soft_ce.item())
+    assert distill_loss.item() == pytest.approx(0.0)
+    assert not torch.isclose(task_loss, torch.nn.functional.cross_entropy(logits, hard_targets))
 
 
 def test_future_slot_selection_and_missing_features_kd_contract():
@@ -834,34 +1028,6 @@ def test_parallel_training_recommendation_warns_when_lidar_cache_is_cold(tmp_pat
     assert result["cache"]["prewarm_command"] is not None
 
 
-def test_multimodal_nf_recommendation_uses_overrides_without_modifying_config():
-    cfg = load_config(ROOT / "configs/multimodal_nf/image_lidar.yaml")
-    original = deepcopy(cfg)
-
-    result = recommend_parallel_training(
-        cfg,
-        config_path="configs/multimodal_nf/image_lidar.yaml",
-        parallel_runs=2,
-        cpu_count=16,
-        check_cache=False,
-    )
-
-    assert cfg == original
-    assert "data.cache.policy=auto" not in result["overrides"]
-    assert "data.cache.multimodal_nf.image.policy=auto" in result["overrides"]
-    assert "data.cache.multimodal_nf.lidar.policy=auto" in result["overrides"]
-    assert "data.cache.multimodal_nf.image.validation_mode=lightweight" in result["overrides"]
-    assert "data.cache.multimodal_nf.lidar.validation_mode=lightweight" in result["overrides"]
-    assert "training.epoch_subsampling.shuffle=false" in result["overrides"]
-    assert "training.epoch_subsampling.order=locality" in result["overrides"]
-    assert "training.amp.enabled=true" in result["optional_overrides"]
-    assert result["recommendations"]["multimodal_nf_io"]["cache_validation_mode"] == "lightweight"
-    assert result["recommendations"]["multimodal_nf_io"]["epoch_subsampling_order"] == "locality"
-    assert result["cache"]["multimodal_nf"]["image"]["recommended_validation_mode"] == "lightweight"
-    assert result["cache"]["multimodal_nf"]["image"]["prewarm_command"].endswith("multimodal_nf_derived_cache.yaml")
-    assert result["cache"]["prewarm_command"].endswith("multimodal_nf_derived_cache.yaml")
-
-
 def test_cache_policy_non_relevant_modalities_are_disabled():
     dataset_cfg = {
         "lidar_use_cache": None,
@@ -1092,6 +1258,121 @@ def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
     assert metadata["split_num_samples"] == 1
 
 
+def test_dataset_run_metadata_records_mmw_split_eligibility_sidecar(tmp_path: Path):
+    split_dir = tmp_path / "Prepared" / "Town10_skybridge_seed24" / "splits" / "l5p6_group_safe"
+    split_dir.mkdir(parents=True)
+    csv_path = split_dir / "train.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+    sidecar = split_dir / "split_metadata.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "split_protocol": "mmw_sequence_split_v2",
+                "split_protocol_version": "mmw_sequence_split_v2",
+                "split_strategy": "group_safe_time_block",
+                "split_seed": 42,
+                "strict_validation_eligible": True,
+                "eligibility_reasons": [],
+                "guard_band_frames": 10,
+                "block_size_frames": 12,
+                "group_key_fields": [
+                    "condition",
+                    "town",
+                    "sensor_scenario",
+                    "agent",
+                    "contiguous_segment_id",
+                    "time_block_id",
+                ],
+                "train_window_count": 1,
+                "test_window_count": 1,
+                "train_seq_indices": [1],
+                "test_seq_indices": [2],
+                "leakage_diagnostics": {
+                    "train_test_frame_overlap_count": 0,
+                    "guard_band_violations": 0,
+                },
+                "label_distribution": {"train": {"10": 1}, "test": {"11": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=1,
+        num_pred=1,
+        enabled_modalities=["radar"],
+    )
+
+    metadata = dataset_run_metadata(dataset)
+    setup = prediction_setup_metadata(
+        {
+            "experiment": {"task": "radar"},
+            "data": {
+                "dataset": {
+                    "type": "mmw",
+                    "seq_len": 1,
+                    "num_pred": 1,
+                    "train_csv_name": str(csv_path),
+                    "enabled_modalities": ["radar"],
+                }
+            },
+            "model": {"student": {"modalities": ["radar"]}},
+        },
+        split_metadata={"train": metadata},
+    )
+    report = _evaluation_split_protocol_report({"test": metadata})
+
+    assert metadata["split_protocol"] == "mmw_sequence_split_v2"
+    assert metadata["split_strategy"] == "group_safe_time_block"
+    assert metadata["split_protocol_version"] == "mmw_sequence_split_v2"
+    assert metadata["strict_validation_eligible"] is True
+    assert metadata["leakage_diagnostics"]["train_test_frame_overlap_count"] == 0
+    assert metadata["split_metadata_path"] == str(sidecar)
+    assert metadata["split_sequence_count"] == 1
+    assert metadata["split_num_samples"] == 1
+    assert setup["split_strategy"] == "group_safe_time_block"
+    assert setup["strict_validation_eligible"] is True
+    assert setup["splits"]["train"]["split_metadata_path"] == str(sidecar)
+    assert report["test_csv"] == str(csv_path)
+    assert report["split_metadata_path"] == str(sidecar)
+    assert report["strict_validation_eligible"] is True
+    assert report["warnings"] == []
+
+
+def test_evaluation_split_protocol_report_warns_for_ineligible_and_missing_metadata(tmp_path: Path):
+    missing_csv = tmp_path / "missing_split.csv"
+    missing_report = _evaluation_split_protocol_report(
+        {
+            "test": {
+                "csv_path": str(missing_csv),
+                "csv_name": missing_csv.name,
+                "split_metadata": {"available": False, "expected_path": str(tmp_path / "split_metadata.json")},
+            }
+        }
+    )
+    ineligible_report = _evaluation_split_protocol_report(
+        {
+            "test": {
+                "csv_path": str(tmp_path / "ineligible.csv"),
+                "csv_name": "ineligible.csv",
+                "split_protocol": "mmw_sequence_split_v2",
+                "split_strategy": "group_safe_time_block",
+                "strict_validation_eligible": False,
+                "eligibility_reasons": ["guard_band_violation"],
+                "split_metadata_path": str(tmp_path / "split_metadata.json"),
+                "split_metadata": {"available": True},
+            }
+        }
+    )
+
+    assert missing_report["split_metadata_available"] is False
+    assert missing_report["warnings"][0]["code"] == "split_metadata_missing"
+    warning_codes = {item["code"] for item in ineligible_report["warnings"]}
+    assert "split_not_strict_validation_eligible" in warning_codes
+
+
 def test_default_unified_split_missing_sidecar_warns(tmp_path: Path):
     csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
@@ -1160,95 +1441,6 @@ def test_throughput_metadata_includes_cache_policy():
     assert metadata["progress"]["enabled"] is True
 
 
-def test_throughput_metadata_includes_multimodal_nf_cache_policy():
-    metadata = throughput_run_metadata(
-        {
-            "experiment": {"task": "fusion"},
-            "data": {
-                "dataset": {"type": "multimodal_nf"},
-                "cache": {"multimodal_nf": {"image": {"policy": "auto"}, "lidar": {"policy": "read_only"}}},
-                "dataloader": {"num_workers": 2, "test_num_workers": 1, "pin_memory": True},
-            },
-            "model": {"student": {"modalities": ["image", "lidar"]}},
-            "training": {"transfer": {}, "amp": {"enabled": True}},
-        }
-    )
-
-    assert metadata["cache"]["multimodal_nf"]["configured"]["image"]["policy"] == "auto"
-    assert metadata["cache"]["multimodal_nf"]["configured"]["lidar"]["policy"] == "read_only"
-    assert metadata["dataloader_splits"]["train"]["num_workers"] == 2
-    assert metadata["dataloader_splits"]["test"]["num_workers"] == 1
-
-
-def test_profile_summary_exposes_multimodal_nf_sources_and_csi_component():
-    runtime_metadata = {
-        "splits": {
-            "train": {
-                "enabled_modalities": ["image", "lidar", "csi"],
-                "derived_cache": {
-                    "image": {
-                        "policy": "auto",
-                        "source_kind": "derived_cache",
-                        "validation_duration_seconds": 0.25,
-                        "source_fingerprint_scanned": False,
-                        "cache_path_count": 1,
-                        "cache_total_bytes": 128,
-                        "storage_kind": "npy_mmap",
-                        "layout": "source_contiguous_rows",
-                        "recommended_access_pattern": "sequential_or_locality_ordered_windows",
-                        "random_read_risk": True,
-                        "metadata_upgraded": True,
-                        "sources": {
-                            "fixture.h5": {
-                                "metadata_upgraded": True,
-                                "status": {
-                                    "status": "valid",
-                                    "valid": True,
-                                    "sidecar_schema_version": 2,
-                                    "validation": {
-                                        "duration_seconds": 0.25,
-                                        "source_fingerprint_scanned": False,
-                                    },
-                                },
-                            }
-                        },
-                        "io": {
-                            "opened_files": 1,
-                            "mapped_bytes": 128,
-                            "open_seconds": {"count": 1, "mean": 0.01, "p50": 0.01, "p95": 0.01, "min": 0.01, "max": 0.01},
-                            "read_seconds": {"count": 2, "mean": 0.02, "p50": 0.01, "p95": 0.05, "min": 0.01, "max": 0.05},
-                        },
-                    },
-                    "lidar": {"policy": "off", "source_kind": "hdf5"},
-                },
-            }
-        }
-    }
-
-    summary = profile_training_io._multimodal_nf_profile_summary(runtime_metadata)
-    cache_io = profile_training_io._multimodal_nf_cache_io_summary(summary)
-    risk = profile_training_io._io_risk_summary(
-        wait_breakdown={"p95_spikes": {"wait_gt_gpu_step": True}},
-        cache_io=cache_io,
-        multimodal_nf=summary,
-    )
-    cache = profile_training_io._cache_policy_summary(
-        {"multimodal_nf": {"splits": summary["splits"]}, "enabled_modalities": ["image", "lidar", "csi"]}
-    )
-
-    assert "csi" in profile_training_io.GETITEM_COMPONENT_KEYS
-    assert summary["splits"]["train"]["derived_cache"]["image"]["policy"] == "auto"
-    assert summary["cache_validation_seconds"]["image"] == pytest.approx(0.25)
-    assert summary["cache_status_summary"]["valid"] == 1
-    assert summary["cache_status_summary"]["metadata_upgraded"] == 1
-    assert summary["pre_gpu_step_cache_actions"]["metadata_upgraded"] == 1
-    assert cache_io["modalities"]["image"]["opened_files"] == 1
-    assert cache_io["modalities"]["image"]["read_seconds"]["p95"] == pytest.approx(0.05)
-    assert risk["cache_random_read_risk"] is True
-    assert risk["loader_wait_dominates_step"] is True
-    assert cache["multimodal_nf"]["splits"]["train"]["derived_cache"]["lidar"]["source_kind"] == "hdf5"
-
-
 def test_mmw_profile_helpers_mark_image_heavy_loader_wait():
     cfg = {
         "experiment": {"task": "fusion"},
@@ -1264,8 +1456,6 @@ def test_mmw_profile_helpers_mark_image_heavy_loader_wait():
     mmw = profile_training_io._mmw_hist_beam_profile_summary(cfg, runtime)
     risk = profile_training_io._io_risk_summary(
         wait_breakdown={"p95_spikes": {"wait_gt_gpu_step": True}},
-        cache_io={"modalities": {}},
-        multimodal_nf={},
         mmw_hist_beam=mmw,
     )
 
@@ -1477,9 +1667,6 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "train_distill_loss",
         "train_beam_soft_loss",
         "train_unimodal_loss",
-        "train_counterfactual_loss",
-        "train_prior_regularization_loss",
-        "train_reliability_kd_loss",
         "train_occlusion_loss",
         "train_position_loss",
         "train_multitask_loss",
@@ -1507,9 +1694,6 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "train_distill_loss",
         "train_beam_soft_loss",
         "train_unimodal_loss",
-        "train_counterfactual_loss",
-        "train_prior_regularization_loss",
-        "train_reliability_kd_loss",
         "train_occlusion_loss",
         "train_position_loss",
         "train_multitask_loss",
@@ -1742,9 +1926,6 @@ def _tensorboard_history() -> dict:
         "learning_rates": [0.001],
         "train_beam_soft_loss": [],
         "train_unimodal_loss": [],
-        "train_counterfactual_loss": [],
-        "train_prior_regularization_loss": [],
-        "train_reliability_kd_loss": [],
         "train_multitask_loss": [None],
         "val_multitask_loss": [None],
         "train_occlusion_loss": [0.7],
@@ -1830,9 +2011,6 @@ def test_raymobtime_single_task_tensorboard_writes_only_formal_tags():
         "learning_rates": [0.001],
         "train_beam_soft_loss": [],
         "train_unimodal_loss": [],
-        "train_counterfactual_loss": [],
-        "train_prior_regularization_loss": [],
-        "train_reliability_kd_loss": [],
         "train_acc": [0.25],
         "val_beam_top1": [0.4],
         "val_beam_top3": [0.6],
@@ -1891,7 +2069,7 @@ def test_tensorboard_legacy_accuracy_tags_restore_historical_scalars():
 
 
 def test_training_outputs_payload_converts_inactive_optional_metrics_to_nan():
-    payload = _training_outputs_payload(
+    payload = training_outputs_payload(
         {
             "train_loss": [1.0],
             "train_occlusion_loss": [None],

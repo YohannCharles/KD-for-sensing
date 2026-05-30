@@ -7,8 +7,6 @@ from kd_sensing.data.layouts import (
     DEEPSENSE6G_FAMILY,
     MMW_FAMILY,
     RAYMOBTIME_FAMILY,
-    MULTIMODAL_NF_FAMILY,
-    multimodal_nf_layout,
     raymobtime_s008_layout,
 )
 
@@ -184,26 +182,6 @@ DATASET_DESCRIPTORS: dict[str, DatasetDescriptor] = {
         default_target_schema="current_snapshot_beam_selection",
         artifact_boundary="raw data local; generated cache/output/checkpoint ignored",
         metadata={"legacy_dataset_class": "RaymobtimeS008SnapshotDataset", "migration_stage": "descriptor_shim"},
-    ),
-    "multimodal_nf": DatasetDescriptor(
-        dataset_type="multimodal_nf",
-        family=MULTIMODAL_NF_FAMILY,
-        storage_kind="hdf5_frame",
-        default_root=multimodal_nf_layout().root,
-        split_semantics="city_level_frame_index",
-        supported_profiles={
-            "image": _profile("image", "rgb_imagenet"),
-            "lidar": _profile("lidar", "point_cloud_xyz_10000"),
-            "gps": _profile("gps", "uav_xyz_snapshot"),
-            "csi": _profile("csi", "xl_mimo_nf"),
-        },
-        default_target_schema="near_field_3d_codebook_flattened_beam_class",
-        artifact_boundary="HDF5/codebook local input; audit/index/cache/output/checkpoint ignored",
-        metadata={
-            "task_semantics": "current_frame_near_field_beam_selection",
-            "target_schema_aliases": ["near_field_beam_selection"],
-            "codebook_shapes": {"dense": [90, 45, 16], "small": [20, 20, 10]},
-        },
     ),
 }
 

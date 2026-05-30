@@ -11,7 +11,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from kd_sensing.distillation.g2d import extract_modality_feature  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
 from kd_sensing.models.fusion import CLSTokenTransformerFusionNet  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -44,8 +43,9 @@ def test_cls_token_transformer_five_modality_forward_shapes_and_diagnostics():
     assert adapted.logits.shape == (2, 2, 8)
     assert adapted.input_features.shape == (2, 3, 16)
     assert adapted.output_features.shape == (2, 2, 16)
-    gps_feature = extract_modality_feature(adapted, "gps", pool="last", source="modality")
-    assert gps_feature.shape == (2, 16)
+    gps_index = output["modalities"].index("gps")
+    gps_last_token = output["token_features"][:, gps_index, -1, :]
+    assert gps_last_token.shape == (2, 16)
 
 
 def test_cls_token_transformer_auxiliary_heads_are_optional_and_mask_compatible():
