@@ -109,7 +109,7 @@ split 和预处理配置时，应优先复用这些 train-fitted artifacts。只
 并行跑多个实验时，先使用 `num_workers=2~4` 和 `prefetch_factor=1`。单个实验确认 CPU/I/O 不再阻塞后，再逐步调高：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_rkd.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_student_no_kd.yaml \
   -o data.dataloader.num_workers=8 \
   -o data.dataloader.prefetch_factor=2
 ```
@@ -117,7 +117,7 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 默认启用 `training.transfer.non_blocking=true`。AMP 默认关闭，建议等 cache 预热并确认 DataLoader 不再饥饿后，再在 CUDA 上启用：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_rkd.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_student_no_kd.yaml \
   -o training.amp.enabled=true \
   -o training.amp.dtype=float16
 ```

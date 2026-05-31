@@ -13,11 +13,11 @@ from kd_sensing.config import load_config  # noqa: E402
 
 def test_config_load_pipeline_characterization_covers_sources_and_overrides():
     entity = load_config(ROOT / "configs/gps/student_no_kd.yaml")
-    virtual_fusion = load_config(ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml")
+    virtual_fusion = load_config(ROOT / "configs/fusion/gps_mmwave_student_no_kd.yaml")
     snapshot = load_config(ROOT / "configs/fusion/all_modalities_snapshot_next_frame_no_kd.yaml")
     raymobtime = load_config(ROOT / "configs/raymobtime/s008_multitask_selection.yaml")
     overridden = load_config(
-        ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml",
+        ROOT / "configs/fusion/gps_mmwave_student_no_kd.yaml",
         [
             "experiment.objective=beam",
             "training.early_stopping_metric=val_loss",
@@ -29,7 +29,9 @@ def test_config_load_pipeline_characterization_covers_sources_and_overrides():
     assert entity["data"]["dataset"]["scene_slug"] == "scene31"
     assert entity["training"]["early_stopping_metric"] == "val_adba"
     assert virtual_fusion["model"]["modalities"] == ["gps", "mmwave"]
-    assert virtual_fusion["distillation"]["type"] == "logits_kd"
+    assert virtual_fusion["distillation"]["type"] == "no_kd"
+    assert "temperature" not in virtual_fusion["distillation"]
+    assert "alpha" not in virtual_fusion["distillation"]
     assert snapshot["experiment"]["variant"] == "snapshot_next_frame"
     assert snapshot["experiment"]["uses_history_window"] is False
     assert raymobtime["experiment"]["task_semantics"] == "current_snapshot_beam_selection"

@@ -2,7 +2,7 @@
 
 本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线围绕 DeepSense6G、MMW 和 Raymobtime 数据集家族中的 HiST-Beam、history-anchored adaptation、训练、评估、预处理、诊断和可视化入口。
 
-历史 knowledge distillation 代码和 `logits_kd` / `rkd` 配置仍保留用于复现实验和显式 optional baseline，但已经从 active mainline 隔离：默认 quickstart、HiST-Beam LOSO、history-anchored residual、adapter/prototype/calibration 和 quick validation 不构建 frozen teacher、不读取 teacher checkpoint，也不把 KD baseline 纳入主结论 summary。
+历史 knowledge distillation 代码和单模态 `logits_kd` / `rkd` 实体配置仍保留用于复现实验和显式 optional baseline，但已经从 active mainline 隔离：默认 quickstart、HiST-Beam LOSO、history-anchored residual、adapter/prototype/calibration 和 quick validation 不构建 frozen teacher、不读取 teacher checkpoint，也不把 KD baseline 纳入主结论 summary。Fusion KD virtual alias 已退役。
 
 ## 安装
 
@@ -161,9 +161,9 @@ Fusion canonical 配置按固定模态顺序 `image -> radar -> gps -> lidar -> 
 configs/fusion/<canonical_slug>_<teacher_no_kd|student_no_kd>.yaml
 ```
 
-`configs/**/logits_kd.yaml`、`configs/**/rkd.yaml` 和对应 fusion virtual config 只作为 legacy KD / optional baseline 保留。显式运行这些配置时，run metadata 会写出 `method_family=legacy_kd`、`distillation_enabled=true`、`baseline_role=optional_baseline` 和 `reproduction_scope=historical_reproduction`，summary 默认把它们作为 supplemental comparison，而不是 active mainline 证据。
+`configs/{image,radar,gps,lidar,mmwave}/{logits_kd,rkd}.yaml` 只作为 legacy KD / optional baseline 保留。显式运行这些单模态实体配置时，run metadata 会写出 `method_family=legacy_kd`、`distillation_enabled=true`、`baseline_role=optional_baseline` 和 `reproduction_scope=historical_reproduction`，summary 默认把它们作为 supplemental comparison，而不是 active mainline 证据。不存在实体 YAML 的 `configs/fusion/<slug>_logits_kd.yaml` 和 `configs/fusion/<slug>_rkd.yaml` 不再由 virtual config 生成。
 
-很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线的旧配置路径不会被 virtual alias 接管。
+很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 no-KD canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线和 fusion KD alias 的旧配置路径不会被 virtual alias 接管。
 
 CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime、MMW 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
 

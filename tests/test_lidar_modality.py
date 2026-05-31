@@ -81,7 +81,7 @@ LIDAR_FUSION_CONFIGS = [
         for size in (2, 3, 4, 5)
         for combo in combinations(["image", "radar", "gps", "lidar", "mmwave"], size)
         if "lidar" in combo
-        for mode in ["teacher_no_kd", "student_no_kd", "logits_kd", "rkd"]
+        for mode in ["teacher_no_kd", "student_no_kd"]
     ],
 ]
 

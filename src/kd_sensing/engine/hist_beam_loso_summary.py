@@ -15,6 +15,12 @@ def row_eligibility(
     primary_metrics: Mapping[str, Any],
 ) -> dict[str, Any]:
     reasons = list(adaptation_metrics.get("eligibility_reasons", []) or [])
+    status = str(adaptation_metrics.get("eligibility_status", "") or "").strip().lower()
+    used_oracle_fields = list(adaptation_metrics.get("used_target_oracle_fields", []) or [])
+    if status == "unknown_oracle_usage":
+        reasons.append("unknown_oracle_usage")
+    if used_oracle_fields:
+        reasons.append("target_oracle_fields_used")
     if bool(adaptation_metrics.get("main_conclusion_eligible", True)) is False:
         reasons.append("run_marked_ineligible")
     if bool(row.get("distillation_enabled", False)) or str(row.get("method_family", "")) == "legacy_kd":
@@ -50,6 +56,7 @@ def row_eligibility(
     unique = unique_reasons(reasons)
     return {
         "main_conclusion_eligible": len(unique) == 0,
+        "eligibility_status": "eligible" if len(unique) == 0 else "ineligible",
         "eligibility_reasons": unique,
     }
 
@@ -135,7 +142,13 @@ def excluded_run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "strict_validation_eligible": row.get("strict_validation_eligible"),
         "split_metadata_path": row.get("split_metadata_path"),
         "metrics_path": row.get("metrics_path"),
+        "prediction_hist_path": row.get("prediction_hist_path"),
+        "collapse_diagnostics_path": row.get("collapse_diagnostics_path"),
         "run_id": row.get("run_id"),
+        "eligibility_status": row.get("eligibility_status"),
+        "used_target_oracle_fields": row.get("used_target_oracle_fields"),
+        "target_oracle_usage_stage": row.get("target_oracle_usage_stage"),
+        "oracle_usage_summary": row.get("oracle_usage_summary"),
     }
 
 
@@ -250,6 +263,7 @@ def write_quick_validation_conclusion(
         },
         "eligible_run_count": len(rows) - len(excluded_runs),
         "excluded_run_count": len(excluded_runs),
+        "eligible_run_count_zero_reason": _eligible_zero_reason(rows, excluded_runs),
         "inconclusive_comparison_count": inconclusive_count,
         "exclusion_reason_histogram": _reason_histogram(row.get("eligibility_reasons", []) for row in rows),
         "excluded_runs": excluded_runs,
@@ -259,6 +273,15 @@ def write_quick_validation_conclusion(
     path = out_dir / "quick_validation_conclusion.json"
     _write_json(path, payload)
     return path
+
+
+def _eligible_zero_reason(rows: list[dict[str, Any]], excluded_runs: list[dict[str, Any]]) -> str | None:
+    if not rows or len(rows) != len(excluded_runs):
+        return None
+    histogram = reason_histogram(row.get("eligibility_reasons", []) for row in rows)
+    if not histogram:
+        return "no_eligible_runs_without_machine_readable_reason"
+    return ",".join(f"{key}:{value}" for key, value in sorted(histogram.items()))
 
 
 def _claim_scope_from_rows(rows: list[dict[str, Any]]) -> str:
@@ -336,6 +359,8 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "failure_reason": record.get("failure_reason"),
         "metrics_path": _artifact(record, "adapted_target_test_eval.metrics_path") or _artifact(record, "source_only_target_test_eval.metrics_path"),
         "predictions_path": _artifact(record, "adapted_target_test_eval.predictions_path") or _artifact(record, "source_only_target_test_eval.predictions_path"),
+        "prediction_hist_path": _artifact(record, "adapted_target_test_eval.prediction_hist_path") or _artifact(record, "source_only_target_test_eval.prediction_hist_path") or primary_metrics.get("prediction_hist_path"),
+        "collapse_diagnostics_path": _artifact(record, "adapted_target_test_eval.collapse_diagnostics_path") or _artifact(record, "source_only_target_test_eval.collapse_diagnostics_path") or primary_metrics.get("collapse_diagnostics_path"),
         "source_checkpoint_path": _artifact(record, "source_train.source_checkpoint_path") or _artifact(record, "source_checkpoint_path"),
         "adaptation_checkpoint_path": _artifact(record, "target_adaptation.adaptation_checkpoint_path"),
         "source_prototype_path": _artifact(record, "target_adaptation.source_prototype_path") or _artifact(record, "source_train.source_prototype_path"),
@@ -374,6 +399,14 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "markov_delta_top3": primary_metrics.get("markov_delta_top3"),
         "markov_delta_top5": primary_metrics.get("markov_delta_top5"),
         "source_prior_collapse": primary_metrics.get("source_prior_collapse"),
+        "unique_pred_beams": primary_metrics.get("unique_pred_beams"),
+        "histogram_kl_pred_support": primary_metrics.get("kl_pred_support"),
+        "histogram_kl_true_support": primary_metrics.get("kl_true_support"),
+        "histogram_kl_pred_true": primary_metrics.get("kl_pred_true"),
+        "beta_prior_initial": primary_metrics.get("beta_prior_initial"),
+        "beta_prior_final": primary_metrics.get("beta_prior_final"),
+        "beta_prior_effective": primary_metrics.get("beta_prior_effective"),
+        "prototype_diagnostics": primary_metrics.get("prototype_diagnostics"),
         "coarse_accuracy": primary_metrics.get("coarse_accuracy"),
         "fine_accuracy": primary_metrics.get("fine_offset_accuracy"),
         "radio_semantic_accuracy": primary_metrics.get("radio_semantic_accuracy"),
@@ -429,6 +462,10 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "target_labeled_subset_available": _bool_or_false(adaptation_metrics.get("target_labeled_subset_available")),
         "target_unlabeled_subset_available": _bool_or_false(adaptation_metrics.get("target_unlabeled_subset_available")),
         "sensitive_field_policy": adaptation_metrics.get("sensitive_field_policy", {}),
+        "eligibility_status": adaptation_metrics.get("eligibility_status"),
+        "used_target_oracle_fields": list(adaptation_metrics.get("used_target_oracle_fields", []) or []),
+        "target_oracle_usage_stage": adaptation_metrics.get("target_oracle_usage_stage", {}),
+        "target_test_label_usage": primary_metrics.get("target_test_label_usage", adaptation_metrics.get("target_test_label_usage", "evaluation_only")),
         "used_target_labels": _bool_or_false(adaptation_metrics.get("used_target_labels")),
         "used_target_beam_for_training": _bool_or_false(adaptation_metrics.get("used_target_beam_for_training")),
         "used_target_beam_power_for_training": _bool_or_false(adaptation_metrics.get("used_target_beam_power_for_training")),
@@ -463,7 +500,13 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
     }
     eligibility = _row_eligibility(row, adaptation_metrics, primary_metrics)
     row["main_conclusion_eligible"] = eligibility["main_conclusion_eligible"]
+    row["eligibility_status"] = eligibility["eligibility_status"]
     row["eligibility_reasons"] = eligibility["eligibility_reasons"]
+    row["oracle_usage_summary"] = {
+        "used_target_oracle_fields": row.get("used_target_oracle_fields", []),
+        "target_oracle_usage_stage": row.get("target_oracle_usage_stage", {}),
+        "target_test_label_usage": row.get("target_test_label_usage"),
+    }
     row["eligibility_source_artifacts"] = {
         "metrics_path": row.get("metrics_path"),
         "adapt_log_path": _artifact(record, "target_adaptation.adapt_log_path"),
@@ -484,6 +527,8 @@ def _method_family(row: Mapping[str, Any]) -> str:
         return "path_physical_prototype"
     if variant == "v7_shared_physical_private_residual":
         return "shared_physical_private_residual"
+    if variant == "v9_input_conditioned_target_adaptation":
+        return "input_conditioned_target_adaptation"
     if variant in {"v5_adapter_proto", "adapter_proto"}:
         return "coarse_prototype_baseline"
     return "source_or_adapter_baseline"

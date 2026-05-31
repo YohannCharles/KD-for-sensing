@@ -12,7 +12,7 @@
 
 ## 已退役研究线
 
-模态失衡研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断或 G2D 失衡结果汇总入口；当前主线回到普通训练、统一评估、通用模态子集调试、Raymobtime s008 current snapshot workflow 和 CSI hardening。
+模态失衡研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断或 G2D 失衡结果汇总入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、Raymobtime s008 current snapshot workflow、CSI hardening、HiST-Beam/MMW LOSO 和少样本跨场景 adaptation。
 
 历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 
@@ -29,7 +29,7 @@ labels: [B, 3] = [t+1, t+2, t+3]
 logits: [B, 3, 64]
 ```
 
-不要再把历史最后一帧 beam 当作训练 label，也不要输出旧的 current/h0 指标。G2D-lite、G2D-global 和 G2D-horizon 的配置、distiller、SMP 和诊断入口已经退役；当前 KD 入口保留 `no_kd`、`logits_kd` 和 `rkd`。
+不要再把历史最后一帧 beam 当作训练 label，也不要输出旧的 current/h0 指标。G2D-lite、G2D-global 和 G2D-horizon 的配置、distiller、SMP 和诊断入口已经退役；当前主线入口是 no-KD supervised/adaptation，单模态 `logits_kd` 和 `rkd` 只作为 legacy supplemental baseline 保留，fusion KD virtual alias 不再生成。
 
 ## CSI 和 MMW 研究判断
 

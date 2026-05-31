@@ -73,24 +73,24 @@ SINGLE_GRU_PARAMS = [64, 64, 1]
 FUSION_TEACHER_GRU_PARAMS = [64, 64, 2]
 FUSION_STUDENT_GRU_PARAMS = [64, 64, 1]
 SINGLE_CONFIG_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
-FUSION_CONFIG_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
+FUSION_CONFIG_MODES = ("teacher_no_kd", "student_no_kd")
+KD_ONLY_DISTILLATION_FIELDS = (
+    "temperature",
+    "alpha",
+    "alpha_warmup_epochs",
+    "rkd_pairs_per_anchor",
+    "rkd_distance_weight",
+    "rkd_angle_weight",
+)
 
 SINGLE_EXPECTED_PARAMS = {
     "teacher_no_kd": {
         "lr": 0.0001,
         "weight_decay": 0.0001,
-        "temperature": 3.0,
-        "alpha": 0.5,
-        "rkd_distance_weight": 10.0,
-        "rkd_angle_weight": 10.0,
     },
     "student_no_kd": {
         "lr": 0.001,
         "weight_decay": 0.0,
-        "temperature": 3.0,
-        "alpha": 0.4,
-        "rkd_distance_weight": 50.0,
-        "rkd_angle_weight": 50.0,
     },
     "logits_kd": {
         "lr": 0.0008,
@@ -111,10 +111,8 @@ SINGLE_EXPECTED_PARAMS = {
 }
 
 FUSION_IMAGE_RADAR_EXPECTED_PARAMS = {
-    "teacher_no_kd": {"lr": 0.00075, "weight_decay": 0.0001, "temperature": 3.0, "alpha": 0.4},
-    "student_no_kd": {"lr": 0.0004, "weight_decay": 0.0, "temperature": 3.0, "alpha": 0.4},
-    "logits_kd": {"lr": 0.00095, "weight_decay": 0.0, "temperature": 2.0, "alpha": 0.4},
-    "rkd": {"lr": 0.00095, "weight_decay": 0.0, "temperature": 2.0, "alpha": 0.3},
+    "teacher_no_kd": {"lr": 0.00075, "weight_decay": 0.0001},
+    "student_no_kd": {"lr": 0.0004, "weight_decay": 0.0},
 }
 
 
@@ -330,6 +328,11 @@ def _assert_no_kd_lineage(distillation_cfg: dict) -> None:
     assert distillation_cfg["main_conclusion_eligible"] is True
 
 
+def _assert_no_kd_has_no_kd_only_fields(distillation_cfg: dict) -> None:
+    for key in KD_ONLY_DISTILLATION_FIELDS:
+        assert key not in distillation_cfg
+
+
 def _assert_legacy_kd_lineage(distillation_cfg: dict, expected_type: str) -> None:
     assert distillation_cfg["type"] == expected_type
     assert distillation_cfg["teacher_model_name"] == "best.pth"
@@ -412,12 +415,6 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
     assert cfg["scheduler"]["T_0"] == 10
     assert cfg["scheduler"]["T_mult"] == 2
     assert cfg["scheduler"]["eta_min"] == 1e-6
-    assert cfg["distillation"]["temperature"] == expected_params["temperature"]
-    assert cfg["distillation"]["alpha"] == expected_params["alpha"]
-    assert cfg["distillation"]["alpha_warmup_epochs"] == 0
-    assert cfg["distillation"]["rkd_pairs_per_anchor"] == 4
-    assert cfg["distillation"]["rkd_distance_weight"] == expected_params["rkd_distance_weight"]
-    assert cfg["distillation"]["rkd_angle_weight"] == expected_params["rkd_angle_weight"]
 
     expected_student_type = spec["teacher_type"] if mode == "teacher_no_kd" else spec["student_type"]
     expected_student_cls = spec["teacher_cls"] if mode == "teacher_no_kd" else spec["student_cls"]
@@ -430,8 +427,15 @@ def test_canonical_single_modality_config_matrix(modality: str, mode: str, confi
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
         _assert_no_kd_lineage(cfg["distillation"])
+        _assert_no_kd_has_no_kd_only_fields(cfg["distillation"])
     else:
         teacher, student, kd_cfg = _build_teacher_and_student(config_path)
+        assert cfg["distillation"]["temperature"] == expected_params["temperature"]
+        assert cfg["distillation"]["alpha"] == expected_params["alpha"]
+        assert cfg["distillation"]["alpha_warmup_epochs"] == 0
+        assert cfg["distillation"]["rkd_pairs_per_anchor"] == 4
+        assert cfg["distillation"]["rkd_distance_weight"] == expected_params["rkd_distance_weight"]
+        assert cfg["distillation"]["rkd_angle_weight"] == expected_params["rkd_angle_weight"]
         _assert_legacy_kd_lineage(kd_cfg["distillation"], mode)
         assert kd_cfg["paths"]["weights_dir"] == f"outputs/scene31/{modality}_teacher_no_kd/checkpoints"
         assert isinstance(teacher, spec["teacher_cls"])
@@ -512,11 +516,10 @@ def test_canonical_fusion_config_matrix(slug: str, modalities: list[str], mode: 
         assert cfg["data"]["dataloader"]["test_batch_size"] == 32
         assert cfg["training"]["lr"] == expected_params["lr"]
         assert cfg["training"]["weight_decay"] == expected_params["weight_decay"]
-        assert cfg["distillation"]["temperature"] == expected_params["temperature"]
-        assert cfg["distillation"]["alpha"] == expected_params["alpha"]
 
     if mode in {"teacher_no_kd", "student_no_kd"}:
         _assert_no_kd_lineage(cfg["distillation"])
+        _assert_no_kd_has_no_kd_only_fields(cfg["distillation"])
     else:
         teacher, kd_student, kd_cfg = _build_teacher_and_student(config_path)
         _assert_legacy_kd_lineage(kd_cfg["distillation"], mode)
@@ -584,6 +587,7 @@ def test_named_example_configs_keep_current_semantics(
 
     if distillation_type == "no_kd":
         assert cfg["distillation"]["teacher_model_name"] is None
+        _assert_no_kd_has_no_kd_only_fields(cfg["distillation"])
     elif config_path.startswith("configs/fusion/"):
         assert modalities is not None
         slug = "_".join(modalities)
@@ -611,12 +615,16 @@ def test_named_example_configs_keep_current_semantics(
     ("stem", "replacement"),
     [
         ("no_kd", "image_radar_student_no_kd.yaml"),
-        ("logits_kd", "image_radar_logits_kd.yaml"),
-        ("rkd", "image_radar_rkd.yaml"),
     ],
 )
 def test_removed_fusion_alias_config_paths_raise_migration_error(stem: str, replacement: str):
     with pytest.raises(ValueError, match=replacement):
+        load_config(ROOT / f"configs/fusion/{stem}.yaml")
+
+
+@pytest.mark.parametrize("stem", ["logits_kd", "rkd", "gps_mmwave_logits_kd", "gps_mmwave_rkd"])
+def test_fusion_kd_virtual_aliases_raise_retired_error(stem: str):
+    with pytest.raises(ValueError, match="legacy KD fusion virtual alias has been retired"):
         load_config(ROOT / f"configs/fusion/{stem}.yaml")
 
 
@@ -661,9 +669,9 @@ def _assert_modality_data_fields(cfg: dict, modalities: list[str]) -> None:
 
 
 def test_virtual_fusion_config_generator_uses_canonical_semantics():
-    cfg = build_virtual_fusion_config("gps_mmwave_logits_kd")
+    cfg = build_virtual_fusion_config("gps_mmwave_student_no_kd")
 
-    assert cfg["experiment"]["name"] == "gps_mmwave_logits_kd"
+    assert cfg["experiment"]["name"] == "gps_mmwave_student_no_kd"
     assert cfg["experiment"]["task"] == "fusion"
     assert cfg["experiment"]["seed"] == 0
     assert cfg["model"]["teacher"]["modalities"] == ["gps", "mmwave"]
@@ -674,18 +682,20 @@ def test_virtual_fusion_config_generator_uses_canonical_semantics():
     assert cfg["model"]["student"]["num_heads"] == 4
     assert cfg["model"]["teacher"]["gps_input_size"] == 3
     assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
-    _assert_legacy_kd_lineage(cfg["distillation"], "logits_kd")
-    assert cfg["paths"]["weights_dir"] == "outputs/scene31/gps_mmwave_teacher_no_kd/checkpoints"
+    _assert_no_kd_lineage(cfg["distillation"])
+    _assert_no_kd_has_no_kd_only_fields(cfg["distillation"])
+    assert "paths" not in cfg
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
 
 
 def test_base_fusion_recipe_registry_keeps_virtual_config_core_fields():
-    cfg = build_virtual_fusion_config("gps_mmwave_logits_kd")
+    cfg = build_virtual_fusion_config("gps_mmwave_student_no_kd")
 
-    assert cfg["distillation"] == distillation_overrides("gps_mmwave", "logits_kd", False)
-    assert cfg["training"] == training_overrides("logits_kd", False)
-    assert distillation_overrides("image_radar", "logits_kd", True)["temperature"] == 2.0
+    assert cfg["distillation"] == distillation_overrides("gps_mmwave", "student_no_kd", False)
+    assert cfg["training"] == training_overrides("student_no_kd", False)
+    assert distillation_overrides("image_radar", "student_no_kd", True)["type"] == "no_kd"
+    _assert_no_kd_has_no_kd_only_fields(distillation_overrides("image_radar", "student_no_kd", True))
     assert training_overrides("student_no_kd", True)["lr"] == 0.0004
 
 
@@ -702,8 +712,8 @@ def test_objective_and_advanced_overlay_recipes_are_table_driven():
     assert advanced.options == {}
 
 
-def test_virtual_image_radar_config_generator_keeps_compatibility_params():
-    cfg = build_virtual_fusion_config("image_radar_logits_kd")
+def test_virtual_image_radar_no_kd_config_generator_keeps_compatibility_params():
+    cfg = build_virtual_fusion_config("image_radar_student_no_kd")
 
     assert cfg["experiment"]["seed"] == 42
     assert cfg["model"]["teacher"]["type"] == "modular_sequence"
@@ -713,25 +723,25 @@ def test_virtual_image_radar_config_generator_keeps_compatibility_params():
     assert cfg["model"]["student"]["image_channels"] == 3
     assert cfg["model"]["student"]["radar_channels"] == 2
     assert cfg["model"]["student"]["num_layers"] == 2
-    assert cfg["training"]["lr"] == 0.00095
+    assert cfg["training"]["lr"] == 0.0004
     assert cfg["training"]["weight_decay"] == 0.0
-    assert cfg["distillation"]["temperature"] == 2.0
-    assert cfg["distillation"]["alpha"] == 0.4
-    _assert_legacy_kd_lineage(cfg["distillation"], "logits_kd")
-    assert cfg["paths"]["weights_dir"] == "outputs/scene31/image_radar_teacher_no_kd/checkpoints"
+    _assert_no_kd_lineage(cfg["distillation"])
+    _assert_no_kd_has_no_kd_only_fields(cfg["distillation"])
+    assert "paths" not in cfg
     assert cfg["training"]["early_stopping_metric"] == "val_adba"
     assert cfg["training"]["early_stopping_mode"] == "max"
 
 
 def test_load_config_applies_overrides_after_canonical_config_resolution():
-    cfg = _load("configs/fusion/gps_mmwave_logits_kd.yaml")
+    cfg = _load("configs/fusion/gps_mmwave_student_no_kd.yaml")
     overridden = load_config(
-        ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml",
+        ROOT / "configs/fusion/gps_mmwave_student_no_kd.yaml",
         ["training.epochs=1", "training.early_stopping_metric=top1_val_acc", "training.early_stopping_mode=max"],
     )
 
-    assert cfg["experiment"]["name"] == "gps_mmwave_logits_kd"
+    assert cfg["experiment"]["name"] == "gps_mmwave_student_no_kd"
     _assert_default_early_stopping(cfg)
+    _assert_no_kd_has_no_kd_only_fields(cfg["distillation"])
     assert overridden["training"]["epochs"] == 1
     assert overridden["training"]["early_stopping_metric"] == "top1_val_acc"
     assert overridden["training"]["early_stopping_mode"] == "max"
@@ -749,7 +759,7 @@ def test_single_modality_objective_overrides_build_auxiliary_capable_models(moda
 
 
 def test_load_config_keeps_explicit_scene32_override():
-    cfg = load_config(ROOT / "configs/fusion/gps_mmwave_logits_kd.yaml", ["data.dataset.scene=32"])
+    cfg = load_config(ROOT / "configs/fusion/gps_mmwave_student_no_kd.yaml", ["data.dataset.scene=32"])
 
     assert cfg["data"]["dataset"]["scene_id"] == 32
     assert cfg["data"]["dataset"]["scene_slug"] == "scene32"
@@ -947,9 +957,9 @@ def test_advanced_fusion_overlay_builder_rejects_unknown_recipe():
 @pytest.mark.parametrize(
     ("config_path", "match"),
     [
-        ("configs/fusion/mmwave_gps_logits_kd.yaml", "gps_mmwave_logits_kd.yaml"),
-        ("configs/fusion/image_image_rkd.yaml", "duplicate modalities"),
-        ("configs/fusion/image_wifi_logits_kd.yaml", "wifi"),
+        ("configs/fusion/mmwave_gps_student_no_kd.yaml", "gps_mmwave_student_no_kd.yaml"),
+        ("configs/fusion/image_image_student_no_kd.yaml", "duplicate modalities"),
+        ("configs/fusion/image_wifi_student_no_kd.yaml", "wifi"),
         ("configs/fusion/mmwave_student_no_kd.yaml", "configs/mmwave/student_no_kd.yaml"),
         ("configs/fusion/not_a_canonical_name.yaml", "must end with one of"),
     ],

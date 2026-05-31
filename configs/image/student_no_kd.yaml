@@ -83,12 +83,6 @@ model:
 distillation:
   type: no_kd
   teacher_model_name: null
-  temperature: 3.0
-  alpha: 0.4
-  alpha_warmup_epochs: 0
-  rkd_pairs_per_anchor: 4
-  rkd_distance_weight: 50.0
-  rkd_angle_weight: 50.0
 training:
   epochs: 100
   lr: 0.0004

@@ -32,14 +32,14 @@
 
 当前 `configs/fusion/` 根目录有 11 个实体 YAML。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
 
-已退役的 CRAF、MARF、G2D 和 Multimodal-NF 实体 YAML、overlay recipe 和 virtual alias 不再作为支持入口存在。删除实体文件后，配置加载器只为当前 canonical、snapshot、objective-aware 和保留 overlay 生成 virtual config，不接管退役路径。
+已退役的 CRAF、MARF、G2D 和 Multimodal-NF 实体 YAML、overlay recipe 和 virtual alias 不再作为支持入口存在。删除实体文件后，配置加载器只为当前 no-KD canonical、snapshot、objective-aware 和保留 overlay 生成 virtual config，不接管退役路径；fusion `logits_kd` / `rkd` virtual alias 已退役，历史 KD 对照只保留显式实体配置或后续独立 baseline change。
 
 ## 脚本入口 Allowlist
 
 保留入口按 lifecycle 分类如下；新增 `scripts/`、`tools/analysis/` 或 `tools/visualization/` 下的 Python/shell 文件必须同步更新本 inventory 和 `tests/test_architecture_boundaries.py`。
 
 - thin_cli_alias: `scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py`。这些只委托包内 CLI；README 推荐 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。
-- research_diagnostic: `scripts/analyze_csi_hardening_sweep.py`、`scripts/debug_eval_consistency.py`、`scripts/eval_modality_perturbation.py`、`scripts/eval_modality_subsets.py`、`scripts/profile_training_io.py`、`scripts/recommend_parallel_training.py`。
+- research_diagnostic: `scripts/analyze_csi_hardening_sweep.py`、`scripts/debug_eval_consistency.py`、`scripts/profile_training_io.py`、`scripts/recommend_parallel_training.py`。旧模态子集/扰动研究脚本不再作为长期入口；通用 subset/mask 验证保留在 `kd-sensing-evaluate` 使用的共享 evaluation pass 与配置化 `evaluation.modality_subsets` 中。
 - dataset_preparation: `scripts/inspect_dataset.py`、`scripts/mmw/prepare_town10_skybridge.py`、`scripts/mmw/build_sequence_splits_from_manifest.py`。
 - viewer_entrypoint: `tools/visualization/gradio_multimodal_viewer.py`。
 - viewer_support: `tools/visualization/viewer_utils.py`、`tools/visualization/viewer_constants.py`、`tools/visualization/viewer_manifest_io.py`、`tools/visualization/viewer_figures.py`、`tools/visualization/viewer_prediction_tables.py`。

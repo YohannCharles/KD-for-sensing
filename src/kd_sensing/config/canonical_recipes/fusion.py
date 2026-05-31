@@ -17,74 +17,21 @@ _IMAGE_RADAR_DISTILLATION = {
     "teacher_no_kd": {
         "type": "no_kd",
         "teacher_model_name": None,
-        "temperature": 3.0,
-        "alpha": 0.4,
-        "alpha_warmup_epochs": 10,
-        "rkd_pairs_per_anchor": 4,
-        "rkd_distance_weight": 2.0,
-        "rkd_angle_weight": 2.0,
     },
     "student_no_kd": {
         "type": "no_kd",
         "teacher_model_name": None,
-        "temperature": 3.0,
-        "alpha": 0.4,
-        "alpha_warmup_epochs": 0,
-        "rkd_pairs_per_anchor": 4,
-        "rkd_distance_weight": 2.0,
-        "rkd_angle_weight": 2.0,
-    },
-    "logits_kd": {
-        "type": "logits_kd",
-        "teacher_model_name": "best.pth",
-        "temperature": 2.0,
-        "alpha": 0.4,
-        "alpha_warmup_epochs": 0,
-        "rkd_pairs_per_anchor": 4,
-        "rkd_distance_weight": 5.0,
-        "rkd_angle_weight": 5.0,
-    },
-    "rkd": {
-        "type": "rkd",
-        "teacher_model_name": "best.pth",
-        "temperature": 2.0,
-        "alpha": 0.3,
-        "alpha_warmup_epochs": 0,
-        "rkd_pairs_per_anchor": 4,
-        "rkd_distance_weight": 10.0,
-        "rkd_angle_weight": 10.0,
     },
 }
 
 _IMAGE_RADAR_TRAINING = {
     "teacher_no_kd": {"lr": 0.00075, "weight_decay": 0.0001},
     "student_no_kd": {"lr": 0.0004, "weight_decay": 0.0},
-    "logits_kd": {"lr": 0.00095, "weight_decay": 0.0},
-    "rkd": {"lr": 0.00095, "weight_decay": 0.0},
 }
 
 
 def _general_distillation(mode: str) -> dict[str, Any]:
-    cfg: dict[str, Any] = {"type": "no_kd", "teacher_model_name": None}
-    if mode in {"logits_kd", "rkd"}:
-        cfg.update(
-            {
-                "type": mode,
-                "temperature": 3.0,
-                "alpha": 0.4,
-                "alpha_warmup_epochs": 0,
-                "teacher_model_name": "best.pth",
-            }
-        )
-    if mode == "rkd":
-        cfg.update(
-            {
-                "rkd_pairs_per_anchor": 4,
-                "rkd_distance_weight": 10.0,
-                "rkd_angle_weight": 10.0,
-            }
-        )
-    return cfg
+    return {"type": "no_kd", "teacher_model_name": None}
 
 
 FUSION_MODE_RECIPES: dict[str, FusionModeRecipe] = {
@@ -113,8 +60,6 @@ def distillation_overrides(slug: str, mode: str, image_radar: bool) -> dict[str,
     if image_radar:
         return _with_lineage_defaults(dict(recipe.image_radar_distillation))
     cfg = dict(recipe.general_distillation)
-    if mode in {"logits_kd", "rkd"}:
-        cfg["teacher_model_name"] = "best.pth"
     return _with_lineage_defaults(cfg)
 
 

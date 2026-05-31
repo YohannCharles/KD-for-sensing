@@ -70,6 +70,16 @@ def compute_hist_beam_loss(
     flat_logits = _first_tensor(output, ("flat_logits", "beam_logits", "logits"))
     coarse_logits = _tensor(output, "coarse_logits")
     fine_logits = _tensor(output, "fine_logits")
+    if _v8_enabled(hist_cfg, model_cfg, output):
+        return _compute_v8_hist_beam_loss(
+            output,
+            labels,
+            cfg=cfg,
+            weights=weights,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            zero=zero,
+        )
     if _v7_enabled(hist_cfg, model_cfg, output):
         return _compute_v7_hist_beam_loss(
             output,
@@ -699,6 +709,238 @@ def _loss_weights(hist_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> dict[s
         "v7_res_l2": float(weights.get("v7_res_l2", weights.get("residual_l2", 0.01))),
         "v7_gate_l1": float(weights.get("v7_gate_l1", weights.get("gate_l1", 0.001))),
         "v7_diff": float(weights.get("v7_diff", weights.get("difference", 0.01))),
+        "v8_final_ce": float(weights.get("v8_final_ce", weights.get("final_ce", 1.0))),
+        "v8_prior_smooth": float(weights.get("v8_prior_smooth", weights.get("prior_smooth", 0.001))),
+        "v8_sector_ce": float(weights.get("v8_sector_ce", weights.get("sector_ce", 0.2))),
+        "v8_offset_ce": float(weights.get("v8_offset_ce", weights.get("offset_ce", 0.2))),
+        "v9_widened_prior_marginal_kl": float(
+            weights.get("v9_widened_prior_marginal_kl", weights.get("widened_prior_marginal_kl", 0.0))
+        ),
+    }
+
+
+def gaussian_smooth_beam_prior(
+    labels: torch.Tensor | list[int] | tuple[int, ...] | None,
+    num_beams: int,
+    sigma: float = 1.5,
+    eps: float = 1e-4,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    device = device or (labels.device if torch.is_tensor(labels) else torch.device("cpu"))
+    classes = int(num_beams)
+    if classes <= 0:
+        raise ValueError(f"num_beams must be positive, got {classes}.")
+    flat = _labels_to_1d(labels, device=device)
+    valid = flat[flat.ge(0) & flat.lt(classes)]
+    if valid.numel() == 0:
+        return torch.full((classes,), 1.0 / classes, dtype=torch.float32, device=device)
+    bins = torch.arange(classes, device=device, dtype=torch.float32).view(1, -1)
+    centers = valid.to(dtype=torch.float32).view(-1, 1)
+    weights = torch.exp(-0.5 * ((bins - centers) / max(float(sigma), 1e-6)).pow(2))
+    prior = weights.sum(dim=0) + float(eps)
+    return prior / prior.sum().clamp_min(1e-12)
+
+
+def make_beam_soft_labels(
+    labels: torch.Tensor,
+    num_beams: int,
+    sigma: float = 1.0,
+    eps: float = 1e-8,
+    *,
+    ignore_index: int = -100,
+) -> torch.Tensor:
+    classes = int(num_beams)
+    if classes <= 0:
+        raise ValueError(f"num_beams must be positive, got {classes}.")
+    target = labels.to(dtype=torch.long)
+    device = target.device
+    out = torch.zeros(*target.shape, classes, device=device, dtype=torch.float32)
+    valid = target.ne(ignore_index) & target.ge(0) & target.lt(classes)
+    if not torch.any(valid):
+        return out
+    bins = torch.arange(classes, device=device, dtype=torch.float32).view(1, -1)
+    centers = target[valid].to(dtype=torch.float32).view(-1, 1)
+    weights = torch.exp(-0.5 * ((bins - centers) / max(float(sigma), 1e-6)).pow(2)) + float(eps)
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    out[valid] = weights
+    return out
+
+
+def _compute_v8_hist_beam_loss(
+    output: dict[str, Any],
+    labels: torch.Tensor,
+    *,
+    cfg: dict[str, Any],
+    weights: dict[str, float],
+    num_classes: int,
+    ignore_index: int,
+    zero: torch.Tensor,
+) -> HistBeamLossResult:
+    logits_final = _first_tensor(output, ("logits_final", "beam_logits", "logits"))
+    if logits_final is None:
+        raise RuntimeError("V8 HiST-Beam loss requires logits_final, beam_logits, or logits.")
+    ensure_horizon_shape("v8_logits_final", logits_final, labels)
+    v8_cfg = _v8_loss_cfg(cfg, output)
+    use_soft = bool(v8_cfg.get("use_soft_beam_label", True))
+    labels_on_device = labels.to(device=logits_final.device)
+    valid = labels_on_device.ne(ignore_index) & labels_on_device.ge(0) & labels_on_device.lt(int(num_classes))
+    if use_soft and torch.any(valid):
+        sigma = float(v8_cfg.get("soft_label_sigma", 1.0))
+        soft_targets = make_beam_soft_labels(labels_on_device, num_classes, sigma=sigma, ignore_index=ignore_index).to(
+            device=logits_final.device,
+            dtype=logits_final.dtype,
+        )
+        log_probs = F.log_softmax(logits_final, dim=-1)
+        final_loss = -(soft_targets[valid] * log_probs[valid]).sum(dim=-1).mean()
+        final_loss_name = "soft_ce"
+    elif torch.any(valid):
+        final_loss = _flat_ce(logits_final, labels_on_device, num_classes=num_classes, ignore_index=ignore_index)
+        final_loss_name = "hard_ce"
+    else:
+        final_loss = logits_final.sum() * 0.0
+        final_loss_name = "unavailable"
+
+    prior_bias = _tensor(output, "target_prior_bias")
+    if prior_bias is not None and float(v8_cfg.get("loss_prior_smooth_weight", weights["v8_prior_smooth"])) > 0.0:
+        bias = prior_bias[0, 0, :] if prior_bias.ndim == 3 else prior_bias.reshape(-1)
+        prior_smooth = (bias[1:] - bias[:-1]).pow(2).mean() if bias.numel() > 1 else bias.sum() * 0.0
+    else:
+        prior_smooth = zero
+
+    sector_logits = _tensor(output, "sector_logits")
+    offset_logits = _tensor(output, "offset_logits")
+    sector_loss, sector_diag = _v8_sector_loss(
+        sector_logits,
+        labels_on_device,
+        sector_size=int(v8_cfg.get("sector_size", 8)),
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+        zero=zero,
+    )
+    offset_loss, offset_diag = _v8_offset_loss(
+        offset_logits,
+        labels_on_device,
+        sector_size=int(v8_cfg.get("sector_size", 8)),
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+        zero=zero,
+    )
+    prior_weight = float(v8_cfg.get("loss_prior_smooth_weight", weights["v8_prior_smooth"]))
+    marginal_kl, marginal_diag = _v9_widened_prior_marginal_kl(
+        logits_final,
+        v8_cfg,
+        weight=float(weights.get("v9_widened_prior_marginal_kl", 0.0)),
+        zero=zero,
+    )
+    total = (
+        weights["v8_final_ce"] * final_loss
+        + prior_weight * prior_smooth
+        + weights["v8_sector_ce"] * sector_loss
+        + weights["v8_offset_ce"] * offset_loss
+        + marginal_kl
+    )
+    diagnostics = {
+        "hist/loss_total": _scalar(total),
+        "hist/v8/loss_final_soft_ce": _scalar(final_loss) if final_loss_name == "soft_ce" else 0.0,
+        "hist/v8/loss_final_hard_ce": _scalar(final_loss) if final_loss_name == "hard_ce" else 0.0,
+        "hist/v8/loss_final_type": final_loss_name,
+        "hist/v8/loss_prior_smooth": _scalar(prior_smooth),
+        "hist/v8/loss_sector_ce": _scalar(sector_loss),
+        "hist/v8/loss_offset_ce": _scalar(offset_loss),
+        "hist/v8/final_ce_weight": float(weights["v8_final_ce"]),
+        "hist/v8/prior_smooth_weight": prior_weight,
+        "hist/v8/sector_ce_weight": float(weights["v8_sector_ce"]),
+        "hist/v8/offset_ce_weight": float(weights["v8_offset_ce"]),
+        "hist/v8/soft_label_enabled": 1.0 if use_soft else 0.0,
+        "hist/v8/valid_label_count": float(valid.sum().detach().cpu().item()),
+        "hist/v8/target_physical_oracle_used": 0.0,
+        "hist/v9/anti_collapse_loss": _scalar(marginal_kl),
+        "hist/v9/anti_collapse_weight": float(weights.get("v9_widened_prior_marginal_kl", 0.0)),
+        "loss/beam_soft_target": _scalar(final_loss) if final_loss_name == "soft_ce" else 0.0,
+        "loss/beam_smoothing": _scalar(final_loss) if final_loss_name == "soft_ce" else 0.0,
+    }
+    diagnostics.update(sector_diag)
+    diagnostics.update(offset_diag)
+    diagnostics.update(marginal_diag)
+    return HistBeamLossResult(
+        total=total,
+        hierarchical=final_loss,
+        coarse=sector_loss,
+        fine=offset_loss,
+        flat=final_loss,
+        orthogonality=zero,
+        shared_scene=zero,
+        private_scene=zero,
+        angular_smoothing=zero,
+        geometry_consistency=zero,
+        radio_semantic=zero,
+        path_semantic=zero,
+        path_regression=zero,
+        diagnostics=diagnostics,
+    )
+
+
+def widened_target_prior(
+    support_prior: torch.Tensor,
+    *,
+    sigma: float = 3.0,
+    temperature: float = 1.5,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    prior = support_prior.to(dtype=torch.float32).reshape(-1).clamp_min(float(eps))
+    prior = prior / prior.sum().clamp_min(float(eps))
+    classes = int(prior.numel())
+    bins = torch.arange(classes, device=prior.device, dtype=prior.dtype)
+    distance = (bins.view(-1, 1) - bins.view(1, -1)).abs()
+    kernel = torch.exp(-0.5 * (distance / max(float(sigma), 1e-6)).pow(2))
+    widened = kernel @ prior
+    if float(temperature) != 1.0:
+        widened = widened.clamp_min(float(eps)).pow(1.0 / max(float(temperature), 1e-6))
+    widened = widened.clamp_min(float(eps))
+    return widened / widened.sum().clamp_min(float(eps))
+
+
+def prediction_marginal_kl_loss(logits: torch.Tensor, target_prior: torch.Tensor) -> torch.Tensor:
+    probs = torch.softmax(logits, dim=-1)
+    p_bar = probs.reshape(-1, probs.shape[-1]).mean(dim=0).clamp_min(1e-12)
+    p_bar = p_bar / p_bar.sum().clamp_min(1e-12)
+    target = target_prior.to(device=logits.device, dtype=logits.dtype).reshape(-1).clamp_min(1e-12)
+    target = target / target.sum().clamp_min(1e-12)
+    return torch.sum(p_bar * (torch.log(p_bar) - torch.log(target)))
+
+
+def _v9_widened_prior_marginal_kl(
+    logits: torch.Tensor,
+    cfg: dict[str, Any],
+    *,
+    weight: float,
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    if not bool(cfg.get("use_widened_prior_marginal_kl", False)) or float(weight) <= 0.0:
+        return zero, {
+            "hist/v9/widened_prior_marginal_kl_enabled": 0.0,
+            "hist/v9/widened_prior_target": "disabled",
+        }
+    support = cfg.get("support_prior")
+    if support is None:
+        return logits.sum() * 0.0, {
+            "hist/v9/widened_prior_marginal_kl_enabled": 0.0,
+            "hist/v9/widened_prior_unavailable_reason": "support_prior_missing",
+            "hist/v9/widened_prior_target": "widened_support_prior",
+        }
+    support_t = torch.as_tensor(support, device=logits.device, dtype=logits.dtype).reshape(-1)
+    widened = widened_target_prior(
+        support_t,
+        sigma=float(cfg.get("widened_prior_sigma", 3.0)),
+        temperature=float(cfg.get("widened_prior_temperature", 1.5)),
+    ).to(device=logits.device, dtype=logits.dtype)
+    loss = prediction_marginal_kl_loss(logits, widened)
+    return float(weight) * loss, {
+        "hist/v9/widened_prior_marginal_kl_enabled": 1.0,
+        "hist/v9/widened_prior_marginal_kl": _scalar(loss),
+        "hist/v9/widened_prior_target": "widened_support_prior",
+        "hist/v9/widened_prior_sigma": float(cfg.get("widened_prior_sigma", 3.0)),
+        "hist/v9/widened_prior_temperature": float(cfg.get("widened_prior_temperature", 1.5)),
     }
 
 
@@ -982,6 +1224,125 @@ def _v7_enabled(hist_cfg: dict[str, Any], model_cfg: dict[str, Any], output: dic
     return torch.is_tensor(output.get("logits_shared")) and torch.is_tensor(output.get("delta_logits_private"))
 
 
+def _v8_enabled(hist_cfg: dict[str, Any], model_cfg: dict[str, Any], output: dict[str, Any]) -> bool:
+    variant = str(hist_cfg.get("variant", model_cfg.get("variant", ""))).strip().lower()
+    if variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
+        return True
+    meta = output.get("hist_beam")
+    if isinstance(meta, dict) and bool(meta.get("v8_target_prior_head", False)):
+        return True
+    if isinstance(meta, dict) and bool(meta.get("v9_input_conditioned_target_adaptation", False)):
+        return True
+    return torch.is_tensor(output.get("target_logits")) and torch.is_tensor(output.get("target_prior_bias"))
+
+
+def _v8_loss_cfg(cfg: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    v8 = hist_cfg.get("v8") if isinstance(hist_cfg.get("v8"), dict) else {}
+    v9 = hist_cfg.get("v9") if isinstance(hist_cfg.get("v9"), dict) else {}
+    meta = output.get("hist_beam") if isinstance(output.get("hist_beam"), dict) else {}
+    support_prior = v9.get("support_prior")
+    if support_prior is None:
+        prior_bias = _tensor(output, "target_prior_bias")
+        if prior_bias is not None:
+            bias = prior_bias[0, 0, :] if prior_bias.ndim == 3 else prior_bias.reshape(-1)
+            support_prior = torch.softmax(bias.detach().to(dtype=torch.float32), dim=-1).cpu().tolist()
+    return {
+        "use_soft_beam_label": v8.get("use_soft_beam_label", meta.get("v8_use_soft_beam_label", True)),
+        "soft_label_sigma": v8.get("soft_label_sigma", meta.get("v8_soft_label_sigma", 1.0)),
+        "loss_prior_smooth_weight": v8.get("loss_prior_smooth_weight", meta.get("v8_loss_prior_smooth_weight", 0.001)),
+        "sector_size": v8.get("sector_size", meta.get("v8_sector_size", hist_cfg.get("group_size", 8))),
+        "use_widened_prior_marginal_kl": v9.get(
+            "use_widened_prior_marginal_kl",
+            meta.get("v9_use_widened_prior_marginal_kl", False),
+        ),
+        "widened_prior_sigma": v9.get("widened_prior_sigma", meta.get("v9_widened_prior_sigma", 3.0)),
+        "widened_prior_temperature": v9.get(
+            "widened_prior_temperature",
+            meta.get("v9_widened_prior_temperature", 1.5),
+        ),
+        "support_prior": support_prior,
+    }
+
+
+def _v8_sector_loss(
+    sector_logits: torch.Tensor | None,
+    labels: torch.Tensor,
+    *,
+    sector_size: int,
+    num_classes: int,
+    ignore_index: int,
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    if sector_logits is None:
+        return zero, {"hist/v8/sector_available": 0.0, "hist/v8/sector_unavailable_reason": "sector_logits_missing"}
+    ensure_horizon_shape("sector_logits", sector_logits, labels)
+    labels_t = labels.to(device=sector_logits.device, dtype=torch.long)
+    target = torch.div(labels_t, int(sector_size), rounding_mode="floor")
+    valid = labels_t.ne(ignore_index) & labels_t.ge(0) & labels_t.lt(int(num_classes)) & target.lt(sector_logits.shape[-1])
+    if not torch.any(valid):
+        return sector_logits.sum() * 0.0, {
+            "hist/v8/sector_available": 0.0,
+            "hist/v8/sector_unavailable_reason": "no_valid_sector_labels",
+        }
+    safe_target = torch.where(valid, target, torch.full_like(target, int(ignore_index)))
+    loss = F.cross_entropy(
+        sector_logits.reshape(-1, sector_logits.shape[-1]),
+        safe_target.reshape(-1),
+        ignore_index=ignore_index,
+    )
+    return loss, {
+        "hist/v8/sector_available": 1.0,
+        "hist/v8/sector_coverage": float(valid.float().mean().detach().cpu().item()),
+    }
+
+
+def _v8_offset_loss(
+    offset_logits: torch.Tensor | None,
+    labels: torch.Tensor,
+    *,
+    sector_size: int,
+    num_classes: int,
+    ignore_index: int,
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    if offset_logits is None:
+        return zero, {"hist/v8/offset_available": 0.0, "hist/v8/offset_unavailable_reason": "offset_logits_missing"}
+    ensure_horizon_shape("offset_logits", offset_logits, labels)
+    labels_t = labels.to(device=offset_logits.device, dtype=torch.long)
+    target = labels_t.remainder(int(sector_size))
+    valid = (
+        labels_t.ne(ignore_index)
+        & labels_t.ge(0)
+        & labels_t.lt(int(num_classes))
+        & target.ge(0)
+        & target.lt(offset_logits.shape[-1])
+    )
+    if not torch.any(valid):
+        return offset_logits.sum() * 0.0, {
+            "hist/v8/offset_available": 0.0,
+            "hist/v8/offset_unavailable_reason": "no_valid_offset_labels",
+        }
+    safe_target = torch.where(valid, target, torch.full_like(target, int(ignore_index)))
+    loss = F.cross_entropy(
+        offset_logits.reshape(-1, offset_logits.shape[-1]),
+        safe_target.reshape(-1),
+        ignore_index=ignore_index,
+    )
+    return loss, {
+        "hist/v8/offset_available": 1.0,
+        "hist/v8/offset_coverage": float(valid.float().mean().detach().cpu().item()),
+    }
+
+
+def _labels_to_1d(labels: torch.Tensor | list[int] | tuple[int, ...] | None, *, device: torch.device) -> torch.Tensor:
+    if labels is None:
+        return torch.empty(0, dtype=torch.long, device=device)
+    if torch.is_tensor(labels):
+        return labels.detach().to(device=device, dtype=torch.long).reshape(-1)
+    return torch.as_tensor(list(labels), dtype=torch.long, device=device).reshape(-1)
+
+
 def _tensor(output: dict[str, Any], key: str) -> torch.Tensor | None:
     value = output.get(key)
     return value if torch.is_tensor(value) else None
@@ -1012,10 +1373,14 @@ __all__ = [
     "compute_hist_beam_loss",
     "angular_smoothing_loss",
     "entropy_minimization_loss",
+    "gaussian_smooth_beam_prior",
     "hist_beam_enabled",
+    "make_beam_soft_labels",
     "multimodal_geometry_consistency_loss",
     "path_descriptor_regression_loss",
     "path_semantic_ce_loss",
+    "prediction_marginal_kl_loss",
     "prototype_consistency_loss",
     "radio_semantic_ce_loss",
+    "widened_target_prior",
 ]

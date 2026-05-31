@@ -1,0 +1,85 @@
+_base_: mmw_sensor_assisted_quick_validation.yaml
+experiment:
+  name: hist_beam_mmw_sensor_assisted_v9_quick_validation
+model:
+  student:
+    variant: v9_input_conditioned_target_adaptation
+    v8:
+      mode: target_prior_head
+      adapter_dim: 64
+      adapter_dropout: 0.1
+      use_adapter: true
+      use_source_logits_in_final: false
+      beta_prior: 0.5
+    v9:
+      use_target_prior: true
+      beta_prior_max: 1.0
+      learnable_beta_prior: true
+      prior_dropout: 0.0
+      use_prototype_logits: true
+      prototype_type: beam
+      prototype_tau: 0.1
+      eta_prototype: 1.0
+      sector_size: 2
+      prototype_feature_source: target_adapter
+      use_widened_prior_marginal_kl: false
+      widened_prior_sigma: 3.0
+      widened_prior_temperature: 1.5
+      loss_widened_prior_marginal_kl_weight: 0.0
+hist_beam:
+  variant: v9_input_conditioned_target_adaptation
+  collapse_diagnostics:
+    enabled: true
+  v8:
+    mode: target_prior_head
+    adapter_dim: 64
+    adapter_dropout: 0.1
+    use_adapter: true
+    use_target_prior: true
+    use_source_logits_in_final: false
+    beta_prior: 0.5
+    prior_sigma: 1.5
+    prior_eps: 1.0e-4
+  v9:
+    use_target_prior: true
+    beta_prior_max: 1.0
+    learnable_beta_prior: true
+    prior_dropout: 0.0
+    use_prototype_logits: true
+    prototype_type: beam
+    prototype_tau: 0.1
+    eta_prototype: 1.0
+    sector_size: 2
+    prototype_feature_source: target_adapter
+    use_widened_prior_marginal_kl: false
+    widened_prior_sigma: 3.0
+    widened_prior_temperature: 1.5
+    loss_widened_prior_marginal_kl_weight: 0.0
+  v9_quick_validation:
+    groups:
+      A:
+        purpose: a3_collapse_source_diagnostics
+        modes: [A3-base, A3-no-prior, A3-fixed-beta, A3-prior-dropout]
+      B:
+        purpose: prototype_local_calibration_ablation
+        modes: [beam-prototype-only, sector-prototype-only, A3-plus-beam-prototype, A3-plus-sector-prototype]
+      C:
+        purpose: optional_widened_prior_distribution_regularization
+        protocol_gated: true
+        default_enabled: false
+        modes: [A3-plus-widened-prior-kl, A3-plus-prototype-plus-widened-prior-kl]
+  loss_weights:
+    v8_final_ce: 1.0
+    v8_prior_smooth: 0.001
+    v9_widened_prior_marginal_kl: 0.0
+  adaptation:
+    strategy: v9_target_head_only
+    few_shot_stratification: beam_frequency
+loso:
+  variants: [v8_target_prior_head, v9_input_conditioned_target_adaptation]
+  budgets: [10]
+  seeds: [0, 1]
+  v9_groups: [A, B]
+  v9_group_c_enabled: false
+output:
+  run_name: hist_beam_mmw_sensor_assisted_v9_quick_validation

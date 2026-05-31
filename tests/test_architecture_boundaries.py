@@ -24,8 +24,6 @@ from kd_sensing.modalities import (  # noqa: E402
 PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
     "scripts/debug_eval_consistency.py": "research_diagnostic",
-    "scripts/eval_modality_perturbation.py": "research_diagnostic",
-    "scripts/eval_modality_subsets.py": "research_diagnostic",
     "scripts/evaluate.py": "thin_cli_alias",
     "scripts/inspect_dataset.py": "dataset_preparation",
     "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
@@ -190,6 +188,8 @@ def test_project_surface_inventory_guardrails_are_current():
         {path.relative_to(ROOT).as_posix() for path in fusion_yaml}
     )
     assert script_entries == set(PYTHON_ENTRYPOINT_ALLOWLIST)
+    assert "scripts/eval_modality_subsets.py" not in script_entries
+    assert "scripts/eval_modality_perturbation.py" not in script_entries
     assert shell_entries == set(SHELL_ORCHESTRATION_ALLOWLIST)
 
 

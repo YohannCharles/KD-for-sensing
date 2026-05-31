@@ -90,6 +90,9 @@ class EvaluationPassResult:
     path_valid: torch.Tensor | None
     beam_power: torch.Tensor | None
     shared_logits: torch.Tensor | None
+    target_logits: torch.Tensor | None
+    target_prior_bias: torch.Tensor | None
+    prototype_logits: torch.Tensor | None
     alpha: torch.Tensor | None
     delta_logits_private: torch.Tensor | None
     pred_beamspace_power: torch.Tensor | None
@@ -157,6 +160,9 @@ def run_evaluation_pass(
     all_path_valid = []
     all_beam_power = []
     all_shared_logits = []
+    all_target_logits = []
+    all_target_prior_bias = []
+    all_prototype_logits = []
     all_alpha = []
     all_delta_logits_private = []
     all_pred_beamspace_power = []
@@ -318,6 +324,9 @@ def run_evaluation_pass(
                 all_residual_logits.append(residual_logits.detach().cpu())
             for key, bucket in (
                 ("logits_shared", all_shared_logits),
+                ("target_logits", all_target_logits),
+                ("target_prior_bias", all_target_prior_bias),
+                ("prototype_logits", all_prototype_logits),
                 ("alpha", all_alpha),
                 ("delta_logits_private", all_delta_logits_private),
                 ("pred_beamspace_power", all_pred_beamspace_power),
@@ -351,6 +360,9 @@ def run_evaluation_pass(
     path_valid_t = torch.cat(all_path_valid, dim=0) if all_path_valid else None
     beam_power_t = torch.cat(all_beam_power, dim=0) if all_beam_power else None
     shared_logits_t = torch.cat(all_shared_logits, dim=0) if all_shared_logits else None
+    target_logits_t = torch.cat(all_target_logits, dim=0) if all_target_logits else None
+    target_prior_bias_t = torch.cat(all_target_prior_bias, dim=0) if all_target_prior_bias else None
+    prototype_logits_t = torch.cat(all_prototype_logits, dim=0) if all_prototype_logits else None
     alpha_t = torch.cat(all_alpha, dim=0) if all_alpha else None
     delta_logits_private_t = torch.cat(all_delta_logits_private, dim=0) if all_delta_logits_private else None
     pred_beamspace_power_t = torch.cat(all_pred_beamspace_power, dim=0) if all_pred_beamspace_power else None
@@ -468,6 +480,9 @@ def run_evaluation_pass(
         path_valid=path_valid_t,
         beam_power=beam_power_t,
         shared_logits=shared_logits_t,
+        target_logits=target_logits_t,
+        target_prior_bias=target_prior_bias_t,
+        prototype_logits=prototype_logits_t,
         alpha=alpha_t,
         delta_logits_private=delta_logits_private_t,
         pred_beamspace_power=pred_beamspace_power_t,

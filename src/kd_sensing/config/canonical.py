@@ -28,7 +28,7 @@ CANONICAL_DEEPSENSE_MODALITIES = tuple(
 )
 CANONICAL_FUSION_MODALITIES = tuple(modality for modality in CANONICAL_DEEPSENSE_MODALITIES if modality != "csi")
 CANONICAL_SINGLE_MODALITIES = CANONICAL_DEEPSENSE_MODALITIES
-CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd", "logits_kd", "rkd")
+CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd")
 CANONICAL_FUSION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")
 CANONICAL_OBJECTIVE_FUSION_MODE = "no_kd"
 SNAPSHOT_VARIANT = "snapshot_next_frame"
@@ -42,11 +42,11 @@ CANONICAL_OBJECTIVE_SUBSET_ALIASES = {
 }
 REMOVED_FUSION_CONFIG_STEMS = {
     "no_kd": "image_radar_student_no_kd.yaml",
-    "logits_kd": "image_radar_logits_kd.yaml",
-    "rkd": "image_radar_rkd.yaml",
 }
+RETIRED_FUSION_KD_MODES = ("logits_kd", "rkd")
 
 _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MODES)
+_RETIRED_FUSION_KD_SUFFIXES = tuple((f"_{mode}", mode) for mode in RETIRED_FUSION_KD_MODES)
 _MODALITY_INDEX = {name: index for index, name in enumerate(CANONICAL_FUSION_MODALITIES)}
 _CANONICAL_ORDER_TEXT = " > ".join(CANONICAL_FUSION_MODALITIES)
 
@@ -69,6 +69,14 @@ def build_virtual_config(config_path: Path) -> dict[str, Any] | None:
 
 
 def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
+    retired_kd_mode = retired_fusion_kd_mode(stem)
+    if retired_kd_mode is not None:
+        raise ValueError(
+            f"legacy KD fusion virtual alias has been retired for '{stem}.yaml' "
+            f"({retired_kd_mode}). Use an explicit tracked legacy KD entity YAML "
+            "or a dedicated legacy baseline change instead."
+        )
+
     advanced = build_advanced_fusion_overlay_config(stem)
     if advanced is not None:
         return advanced
@@ -109,11 +117,16 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
             "run_name": name,
         },
     }
-    if mode in {"logits_kd", "rkd"}:
-        cfg["paths"] = {
-            "weights_dir": f"outputs/scene31/{slug}_teacher_no_kd/checkpoints"
-        }
     return cfg
+
+
+def retired_fusion_kd_mode(stem: str) -> str | None:
+    if stem in RETIRED_FUSION_KD_MODES:
+        return stem
+    for suffix, mode in _RETIRED_FUSION_KD_SUFFIXES:
+        if stem.endswith(suffix):
+            return mode
+    return None
 
 
 def build_snapshot_single_config(modality: str) -> dict[str, Any]:

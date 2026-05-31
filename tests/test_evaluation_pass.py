@@ -142,6 +142,23 @@ def test_evaluation_pass_matches_validator_and_records_runtime_metadata():
     assert wrapped["enabled_modalities"] == ["gps", "mmwave"]
 
 
+def test_validator_runs_configured_modality_subsets_through_shared_pass():
+    cfg = _cfg()
+    cfg["evaluation"]["modality_subsets"] = {"enabled": True, "subsets": ["all", "gps"]}
+    model = _MaskAwareFusionModel()
+    criterion = torch.nn.CrossEntropyLoss()
+
+    metrics = validate(model, _dataloader(), cfg, criterion, torch.device("cpu"))
+
+    subsets = metrics["modality_subsets"]
+    assert set(subsets) == {"all", "gps"}
+    assert subsets["all"]["topk"] == metrics["topk"]
+    assert subsets["all"]["mask"] == [True, True]
+    assert subsets["gps"]["modalities"] == ["gps"]
+    assert subsets["gps"]["mask"] == [True, False]
+    assert "topk" in subsets["gps"]
+
+
 def test_evaluation_pass_uses_hard_labels_when_soft_targets_are_present():
     cfg = _cfg()
     model = _MaskAwareFusionModel()

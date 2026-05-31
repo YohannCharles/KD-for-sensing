@@ -18,10 +18,10 @@ from kd_sensing.modalities import normalize_modalities
 
 EXECUTION_STATUSES = ("completed", "failed", "partial_failed")
 SOURCE_ONLY_VARIANTS = {"v0_flat", "v1_hierarchical", "v2_shared_private", "v3_decoupled"}
-ADAPTATION_VARIANTS = {"v4_adapter", "v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "v6_full_finetune"}
+ADAPTATION_VARIANTS = {"v4_adapter", "v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v8_target_prior_head", "v9_input_conditioned_target_adaptation", "v7_shared_physical_private_residual", "v6_full_finetune"}
 SUPPORTED_VARIANTS = SOURCE_ONLY_VARIANTS | ADAPTATION_VARIANTS
 DEFAULT_QUICK_VARIANTS = ["v0_flat", "v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"]
-SENSOR_ASSISTED_QUICK_VARIANTS = ["v3_decoupled", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "v6_full_finetune"]
+SENSOR_ASSISTED_QUICK_VARIANTS = ["v3_decoupled", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "v8_target_prior_head", "v9_input_conditioned_target_adaptation", "v6_full_finetune"]
 SENSOR_ASSISTED_QUICK_BUDGETS = [10]
 SENSOR_ASSISTED_QUICK_SEEDS = [0, 1]
 DEFAULT_QUICK_BUDGETS = [0, 10]
@@ -138,6 +138,66 @@ def _stage_cfg(
                 )
     elif is_v7_variant(variant):
         apply_v7_stage_defaults(stage_cfg, hist_cfg, student_cfg)
+    elif variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
+        v8_cfg = hist_cfg.setdefault("v8", {})
+        mode = str(v8_cfg.get("mode", "target_prior_head")).strip().lower()
+        v8_cfg.setdefault("mode", mode)
+        v8_cfg.setdefault("adapter_dim", 64)
+        v8_cfg.setdefault("adapter_dropout", 0.1)
+        v8_cfg.setdefault("use_adapter", mode != "target_linear_probe")
+        v8_cfg.setdefault("use_target_prior", mode != "target_linear_probe")
+        v8_cfg.setdefault("use_source_logits_in_final", mode == "source_prior_only")
+        v8_cfg.setdefault("lambda_src", 1.0 if mode == "source_prior_only" else 0.0)
+        v8_cfg.setdefault("lambda_tgt", 0.0 if mode == "source_prior_only" else 1.0)
+        v8_cfg.setdefault("beta_prior", 1.0)
+        v8_cfg.setdefault("learnable_beta_prior", False)
+        v8_cfg.setdefault("use_coarse_to_fine", mode == "target_prior_coarse_to_fine")
+        v8_cfg.setdefault("sector_size", int(hist_cfg.get("group_size", student_cfg.get("group_size", 8) if isinstance(student_cfg, dict) else 8)))
+        v8_cfg.setdefault("unfreeze_last_fusion_block", False)
+        v8_cfg.setdefault("use_soft_beam_label", True)
+        v8_cfg.setdefault("soft_label_sigma", 1.0)
+        v8_cfg.setdefault("prior_sigma", 1.5)
+        v8_cfg.setdefault("prior_eps", 1.0e-4)
+        v8_cfg.setdefault("loss_prior_smooth_weight", 0.001)
+        v8_cfg.setdefault("run_prototype_probe", False)
+        hist_cfg.setdefault("adaptation", {})["strategy"] = "v8_target_head_only"
+        weights = hist_cfg.setdefault("loss_weights", {})
+        weights.setdefault("v8_final_ce", 1.0)
+        weights.setdefault("v8_prior_smooth", float(v8_cfg.get("loss_prior_smooth_weight", 0.001)))
+        weights.setdefault("v8_sector_ce", 0.2)
+        weights.setdefault("v8_offset_ce", 0.2)
+        source_train = hist_cfg.setdefault("source_train", {})
+        source_train.setdefault("loss_type", "cross_entropy")
+        source_train.setdefault("class_prior_from_source_train", False)
+        source_train.setdefault("logit_adjust_tau", 1.0)
+        source_train.setdefault("debiased_loss_available", False)
+        source_train.setdefault("unsupported_reason", "source_long_tail_debias_not_implemented")
+        if variant == "v9_input_conditioned_target_adaptation":
+            v9_cfg = hist_cfg.setdefault("v9", {})
+            v9_cfg.setdefault("use_target_prior", True)
+            v9_cfg.setdefault("beta_prior_max", 1.0)
+            v9_cfg.setdefault("learnable_beta_prior", True)
+            v9_cfg.setdefault("prior_dropout", 0.0)
+            v9_cfg.setdefault("use_prototype_logits", True)
+            v9_cfg.setdefault("prototype_type", "beam")
+            v9_cfg.setdefault("prototype_tau", 0.1)
+            v9_cfg.setdefault("eta_prototype", 1.0)
+            v9_cfg.setdefault("sector_size", 2)
+            v9_cfg.setdefault("prototype_feature_source", "target_adapter")
+            v9_cfg.setdefault("use_widened_prior_marginal_kl", False)
+            v9_cfg.setdefault("widened_prior_sigma", 3.0)
+            v9_cfg.setdefault("widened_prior_temperature", 1.5)
+            v9_cfg.setdefault("loss_widened_prior_marginal_kl_weight", 0.0)
+            hist_cfg.setdefault("adaptation", {})["strategy"] = "v9_target_head_only"
+            weights.setdefault(
+                "v9_widened_prior_marginal_kl",
+                float(v9_cfg.get("loss_widened_prior_marginal_kl_weight", 0.0)),
+            )
+        if isinstance(student_cfg, dict):
+            student_cfg.setdefault("v8", dict(v8_cfg))
+            if variant == "v9_input_conditioned_target_adaptation":
+                student_cfg.setdefault("v9", dict(hist_cfg.get("v9", {})))
+            student_cfg.setdefault("adapter", {"enabled": True})
     elif variant in {"v8_path_proto", "adapter_path_proto"}:
         path_cfg = hist_cfg.setdefault("path_semantic", {})
         path_cfg.setdefault("enabled", True)

@@ -25,7 +25,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     file_cfg = {}
     if config_path:
         source = load_config_source(config_path)
-        file_cfg = source.data
+        file_cfg = _resolve_base_config(source)
         cfg = deep_merge(cfg, file_cfg)
     override_cfg = parse_overrides(overrides) if overrides else {}
     if override_cfg:
@@ -48,6 +48,29 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     reject_removed_image_path_config(cfg)
     validate_loaded_config(cfg)
     return cfg
+
+
+def _resolve_base_config(source: Any, stack: tuple[Path, ...] = ()) -> dict[str, Any]:
+    file_cfg = copy.deepcopy(source.data)
+    base_entries = file_cfg.pop("_base_", None)
+    if not base_entries:
+        return file_cfg
+    source_path = Path(source.path)
+    if source_path in stack:
+        chain = " -> ".join(str(item) for item in (*stack, source_path))
+        raise ValueError(f"Circular config _base_ reference: {chain}")
+    if isinstance(base_entries, (str, Path)):
+        base_entries = [base_entries]
+    if not isinstance(base_entries, list):
+        raise ValueError("Config _base_ must be a path string or a list of path strings.")
+    merged: dict[str, Any] = {}
+    for entry in base_entries:
+        base_path = Path(str(entry))
+        if not base_path.is_absolute():
+            base_path = source_path.parent / base_path
+        base_source = load_config_source(base_path)
+        merged = deep_merge(merged, _resolve_base_config(base_source, (*stack, source_path)))
+    return deep_merge(merged, file_cfg)
 
 
 def dump_config(cfg: dict[str, Any], path: str | Path) -> None:
@@ -101,4 +124,3 @@ def _has_dotted_key(target: dict[str, Any], key: str) -> bool:
             return False
         cursor = cursor[part]
     return True
-

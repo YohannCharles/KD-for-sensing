@@ -35,6 +35,8 @@ HIST_BEAM_VARIANTS = {
     "adapter_radio_proto",
     "v8_path_proto",
     "adapter_path_proto",
+    "v8_target_prior_head",
+    "v9_input_conditioned_target_adaptation",
     "v7_shared_physical_private_residual",
     "shared_physical_private_residual",
     "v6_full_finetune",
@@ -82,6 +84,37 @@ class HistBeamConfig:
     history_anchor_embedding_dim: int = 32
     lambda_absolute_aux: float = 0.0
     v7_residual_scale: float = 1.0
+    v8_mode: str = "target_prior_head"
+    v8_adapter_dim: int | None = None
+    v8_adapter_dropout: float = 0.0
+    v8_use_adapter: bool = True
+    v8_use_target_prior: bool = True
+    v8_use_source_logits_in_final: bool = False
+    v8_lambda_src: float = 0.0
+    v8_lambda_tgt: float = 1.0
+    v8_beta_prior: float = 1.0
+    v8_learnable_beta_prior: bool = False
+    v8_use_coarse_to_fine: bool = False
+    v8_sector_size: int = 8
+    v8_unfreeze_last_fusion_block: bool = False
+    v8_use_soft_beam_label: bool = True
+    v8_soft_label_sigma: float = 1.0
+    v8_loss_prior_smooth_weight: float = 0.001
+    v8_run_prototype_probe: bool = False
+    v9_use_target_prior: bool = True
+    v9_beta_prior_max: float = 1.0
+    v9_learnable_beta_prior: bool = True
+    v9_prior_dropout: float = 0.0
+    v9_use_prototype_logits: bool = True
+    v9_prototype_type: str = "beam"
+    v9_prototype_tau: float = 0.1
+    v9_eta_prototype: float = 1.0
+    v9_sector_size: int = 2
+    v9_prototype_feature_source: str = "target_adapter"
+    v9_use_widened_prior_marginal_kl: bool = False
+    v9_widened_prior_sigma: float = 3.0
+    v9_widened_prior_temperature: float = 1.5
+    v9_loss_widened_prior_marginal_kl_weight: float = 0.0
 
     @property
     def num_groups(self) -> int:
@@ -108,6 +141,8 @@ class HistBeamConfig:
             "adapter_path_proto",
             "v7_shared_physical_private_residual",
             "shared_physical_private_residual",
+            "v8_target_prior_head",
+            "v9_input_conditioned_target_adaptation",
             "v6_full_finetune",
             "full_finetune",
         }
@@ -127,6 +162,8 @@ class HistBeamConfig:
             "adapter_path_proto",
             "v7_shared_physical_private_residual",
             "shared_physical_private_residual",
+            "v8_target_prior_head",
+            "v9_input_conditioned_target_adaptation",
             "v6_full_finetune",
             "full_finetune",
         }
@@ -134,6 +171,18 @@ class HistBeamConfig:
     @property
     def v7_enabled(self) -> bool:
         return self.variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}
+
+    @property
+    def v8_target_prior_enabled(self) -> bool:
+        return self.variant == "v8_target_prior_head"
+
+    @property
+    def v9_enabled(self) -> bool:
+        return self.variant == "v9_input_conditioned_target_adaptation"
+
+    @property
+    def target_prior_branch_enabled(self) -> bool:
+        return self.v8_target_prior_enabled or self.v9_enabled
 
 
 def resolve_hist_beam_config(
@@ -161,6 +210,8 @@ def resolve_hist_beam_config(
     path_descriptor_dim: int | None = None,
     history_anchor: bool | dict[str, Any] | None = None,
     v7: bool | dict[str, Any] | None = None,
+    v8: bool | dict[str, Any] | None = None,
+    v9: bool | dict[str, Any] | None = None,
     residual_scale: float | None = None,
     proto_type: str | None = None,
     geometry_aware: bool | dict[str, Any] | None = None,
@@ -194,7 +245,11 @@ def resolve_hist_beam_config(
     path_cfg = path_semantic if isinstance(path_semantic, dict) else {}
     history_cfg = history_anchor if isinstance(history_anchor, dict) else {}
     v7_cfg = v7 if isinstance(v7, dict) else {}
+    v8_cfg = v8 if isinstance(v8, dict) else {}
+    v9_cfg = v9 if isinstance(v9, dict) else {}
     is_v7 = normalized_variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}
+    is_v8 = normalized_variant == "v8_target_prior_head"
+    is_v9 = normalized_variant == "v9_input_conditioned_target_adaptation"
     history_enabled = False if is_v7 else _mapping_enabled(history_anchor)
     history_mode = str(history_cfg.get("mode", "residual_delta")).strip().lower()
     if history_mode not in {"residual_delta", "absolute_with_history"}:
@@ -218,6 +273,33 @@ def resolve_hist_beam_config(
         or ("radio_semantic" if normalized_variant in {"v6_radio_proto", "adapter_radio_proto"} else "coarse" if normalized_variant in {"v5_adapter_proto", "adapter_proto"} else "none")
     ).strip().lower()
     resolved_num_path = int(num_path_classes or path_cfg.get("num_path_classes") or path_cfg.get("num_classes") or 24)
+    v8_mode = str(v8_cfg.get("mode", "target_prior_head")).strip().lower()
+    if v8_mode not in {"target_linear_probe", "target_prior_head", "source_prior_only", "target_prior_coarse_to_fine"}:
+        raise ValueError(
+            f"Unsupported HiST-Beam v8.mode '{v8_mode}'. "
+            "Supported modes: ['source_prior_only', 'target_linear_probe', 'target_prior_coarse_to_fine', 'target_prior_head']."
+        )
+    v8_use_adapter = bool(v8_cfg.get("use_adapter", v8_mode != "target_linear_probe"))
+    v8_use_target_prior = bool(v8_cfg.get("use_target_prior", v8_mode != "target_linear_probe"))
+    v8_use_source = bool(v8_cfg.get("use_source_logits_in_final", v8_mode == "source_prior_only"))
+    v8_lambda_src = float(v8_cfg.get("lambda_src", 1.0 if v8_mode == "source_prior_only" else 0.0))
+    v8_lambda_tgt = float(v8_cfg.get("lambda_tgt", 0.0 if v8_mode == "source_prior_only" else 1.0))
+    v8_use_coarse_to_fine = bool(v8_cfg.get("use_coarse_to_fine", v8_mode == "target_prior_coarse_to_fine"))
+    v8_sector_size = int(v8_cfg.get("sector_size", group))
+    if (is_v8 or is_v9) and v8_sector_size <= 0:
+        raise ValueError(f"hist_beam.v8.sector_size must be positive, got {v8_sector_size}.")
+    v9_prototype_type = str(v9_cfg.get("prototype_type", "beam")).strip().lower()
+    if v9_prototype_type not in {"beam", "sector", "none"}:
+        raise ValueError("hist_beam.v9.prototype_type must be one of ['beam', 'sector', 'none'].")
+    v9_sector_size = int(v9_cfg.get("sector_size", 2))
+    if is_v9 and v9_sector_size not in {2, 3}:
+        raise ValueError(f"hist_beam.v9.sector_size must be 2 or 3 for v9 quick validation, got {v9_sector_size}.")
+    v9_beta_max = float(v9_cfg.get("beta_prior_max", 1.0))
+    if is_v9 and v9_beta_max <= 0:
+        raise ValueError(f"hist_beam.v9.beta_prior_max must be positive, got {v9_beta_max}.")
+    v9_tau = float(v9_cfg.get("prototype_tau", v9_cfg.get("tau", 0.1)))
+    if is_v9 and v9_tau <= 0:
+        raise ValueError(f"hist_beam.v9.prototype_tau must be positive, got {v9_tau}.")
     return HistBeamConfig(
         num_classes=classes,
         group_size=group,
@@ -276,6 +358,46 @@ def resolve_hist_beam_config(
             if residual_scale is not None
             else v7_cfg.get("residual_scale", v7_cfg.get("private_residual_scale", 1.0))
         ),
+        v8_mode=v8_mode,
+        v8_adapter_dim=(
+            int(v8_cfg.get("adapter_dim"))
+            if v8_cfg.get("adapter_dim") not in {None, "", "none", "auto"}
+            else None
+        ),
+        v8_adapter_dropout=float(v8_cfg.get("adapter_dropout", 0.0)),
+        v8_use_adapter=v8_use_adapter,
+        v8_use_target_prior=v8_use_target_prior,
+        v8_use_source_logits_in_final=v8_use_source,
+        v8_lambda_src=v8_lambda_src,
+        v8_lambda_tgt=v8_lambda_tgt,
+        v8_beta_prior=float(v8_cfg.get("beta_prior", 1.0)),
+        v8_learnable_beta_prior=bool(v8_cfg.get("learnable_beta_prior", False)),
+        v8_use_coarse_to_fine=v8_use_coarse_to_fine,
+        v8_sector_size=v8_sector_size,
+        v8_unfreeze_last_fusion_block=bool(v8_cfg.get("unfreeze_last_fusion_block", False)),
+        v8_use_soft_beam_label=bool(v8_cfg.get("use_soft_beam_label", True)),
+        v8_soft_label_sigma=float(v8_cfg.get("soft_label_sigma", 1.0)),
+        v8_loss_prior_smooth_weight=float(v8_cfg.get("loss_prior_smooth_weight", 0.001)),
+        v8_run_prototype_probe=bool(v8_cfg.get("run_prototype_probe", False)),
+        v9_use_target_prior=bool(v9_cfg.get("use_target_prior", True)),
+        v9_beta_prior_max=v9_beta_max,
+        v9_learnable_beta_prior=bool(v9_cfg.get("learnable_beta_prior", True)),
+        v9_prior_dropout=float(v9_cfg.get("prior_dropout", 0.0)),
+        v9_use_prototype_logits=bool(v9_cfg.get("use_prototype_logits", v9_prototype_type != "none")),
+        v9_prototype_type=v9_prototype_type,
+        v9_prototype_tau=v9_tau,
+        v9_eta_prototype=float(v9_cfg.get("eta_prototype", 1.0)),
+        v9_sector_size=v9_sector_size,
+        v9_prototype_feature_source=str(v9_cfg.get("prototype_feature_source", "target_adapter")).strip().lower(),
+        v9_use_widened_prior_marginal_kl=bool(v9_cfg.get("use_widened_prior_marginal_kl", False)),
+        v9_widened_prior_sigma=float(v9_cfg.get("widened_prior_sigma", 3.0)),
+        v9_widened_prior_temperature=float(v9_cfg.get("widened_prior_temperature", 1.5)),
+        v9_loss_widened_prior_marginal_kl_weight=float(
+            v9_cfg.get(
+                "loss_widened_prior_marginal_kl_weight",
+                v9_cfg.get("marginal_kl_weight", v9_cfg.get("loss_weight", 0.0)),
+            )
+        ),
     )
 
 
@@ -312,6 +434,8 @@ class HistBeamFusionNet(nn.Module):
         path_descriptor_dim: int | None = None,
         history_anchor: bool | dict[str, Any] | None = None,
         v7: bool | dict[str, Any] | None = None,
+        v8: bool | dict[str, Any] | None = None,
+        v9: bool | dict[str, Any] | None = None,
         residual_scale: float | None = None,
         proto_type: str | None = None,
         geometry_aware: bool | dict[str, Any] | None = None,
@@ -358,6 +482,8 @@ class HistBeamFusionNet(nn.Module):
             path_descriptor_dim=path_descriptor_dim,
             history_anchor=history_anchor,
             v7=v7,
+            v8=v8,
+            v9=v9,
             residual_scale=residual_scale,
             proto_type=proto_type,
             geometry_aware=geometry_aware,
@@ -517,6 +643,56 @@ class HistBeamFusionNet(nn.Module):
             if self.hist_config.v7_enabled
             else None
         )
+        self.target_adapter = (
+            BottleneckAdapter(
+                self.d_model,
+                bottleneck_dim=self.hist_config.v8_adapter_dim,
+                dropout=self.hist_config.v8_adapter_dropout,
+            )
+            if self.hist_config.target_prior_branch_enabled and self.hist_config.v8_use_adapter
+            else None
+        )
+        self.target_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_classes)
+            if self.hist_config.target_prior_branch_enabled
+            else None
+        )
+        self.target_prior_bias = (
+            nn.Parameter(torch.zeros(self.num_classes))
+            if self.hist_config.target_prior_branch_enabled
+            else None
+        )
+        if self.hist_config.v9_enabled:
+            initial = _inverse_sigmoid_clamped(
+                float(self.hist_config.v8_beta_prior) / max(float(self.hist_config.v9_beta_prior_max), 1e-12)
+            )
+            if self.hist_config.v9_learnable_beta_prior:
+                self.beta_prior_raw = nn.Parameter(torch.tensor(initial))
+            else:
+                self.register_buffer("beta_prior_raw", torch.tensor(initial), persistent=True)
+            self.beta_prior = None
+        elif self.hist_config.v8_target_prior_enabled and self.hist_config.v8_learnable_beta_prior:
+            self.beta_prior = nn.Parameter(torch.tensor(float(self.hist_config.v8_beta_prior)))
+            self.beta_prior_raw = None
+        elif self.hist_config.v8_target_prior_enabled:
+            self.register_buffer("beta_prior", torch.tensor(float(self.hist_config.v8_beta_prior)), persistent=True)
+            self.beta_prior_raw = None
+        else:
+            self.beta_prior = None
+            self.beta_prior_raw = None
+        self.sector_head = (
+            nn.Linear(
+                self.d_model,
+                self.num_pred * _num_v8_sectors(self.num_classes, self.hist_config.v8_sector_size),
+            )
+            if self.hist_config.v8_target_prior_enabled and self.hist_config.v8_use_coarse_to_fine
+            else None
+        )
+        self.offset_head = (
+            nn.Linear(self.d_model, self.num_pred * self.hist_config.v8_sector_size)
+            if self.hist_config.v8_target_prior_enabled and self.hist_config.v8_use_coarse_to_fine
+            else None
+        )
         self.absolute_calibration_bias = (
             nn.Parameter(torch.zeros(self.num_classes))
             if self.hist_config.history_anchor_enabled
@@ -546,6 +722,8 @@ class HistBeamFusionNet(nn.Module):
         path_assignment: torch.Tensor | None = None,
         path_prototypes: torch.Tensor | None = None,
         path_prototype_counts: torch.Tensor | None = None,
+        target_prototypes: torch.Tensor | None = None,
+        target_prototype_counts: torch.Tensor | None = None,
         mu_path_c: torch.Tensor | None = None,
         input_beam_batch: torch.Tensor | None = None,
         last_beam_batch: torch.Tensor | None = None,
@@ -678,6 +856,12 @@ class HistBeamFusionNet(nn.Module):
         delta_logits_private = None
         alpha = None
         pred_beamspace_power = None
+        source_logits = None
+        target_logits = None
+        target_prior_bias = None
+        prototype_logits = None
+        sector_logits = None
+        offset_logits = None
         if self.hist_config.history_anchor_enabled:
             if self.hist_config.history_anchor_mode == "residual_delta":
                 if self.residual_head is None:
@@ -716,13 +900,87 @@ class HistBeamFusionNet(nn.Module):
                 dim=-1,
             )
             logits = logits_final
+            source_logits = logits_shared
+        beta_effective = None
+        prior_dropout_active = False
+        prototype_status: dict[str, Any] = {
+            "available": False,
+            "unavailable_reason": "not_requested",
+            "support_count": 0,
+        }
+        if self.hist_config.target_prior_branch_enabled:
+            if self.target_head is None or self.target_prior_bias is None:
+                raise RuntimeError("Target-prior heads are not initialized.")
+            source_logits = beam_log_probs if self.hist_config.hierarchical_enabled else flat_logits
+            target_rep = self.target_adapter(fused) if self.target_adapter is not None else fused
+            target_logits = self.target_head(target_rep).view(batch_size, self.num_pred, self.num_classes)
+            bias = self.target_prior_bias.to(device=target_logits.device, dtype=target_logits.dtype).view(1, 1, -1)
+            target_prior_bias = bias.expand(batch_size, self.num_pred, -1)
+            beta = self._effective_beta_prior(device=target_logits.device, dtype=target_logits.dtype)
+            beta_effective = beta
+            use_target_prior = (
+                self.hist_config.v9_use_target_prior
+                if self.hist_config.v9_enabled
+                else self.hist_config.v8_use_target_prior
+            )
+            prior_term = beta * target_prior_bias if use_target_prior else target_logits.sum() * 0.0
+            if self.hist_config.v9_enabled and self.training and float(self.hist_config.v9_prior_dropout) > 0.0:
+                drop = torch.rand((), device=target_logits.device) < float(self.hist_config.v9_prior_dropout)
+                prior_dropout_active = bool(drop.detach().cpu().item())
+                if prior_dropout_active:
+                    prior_term = target_logits.sum() * 0.0
+            if self.hist_config.v9_enabled and self.hist_config.v9_use_prototype_logits:
+                if target_prototypes is None:
+                    target_prototypes = getattr(self, "_target_prototypes", None)
+                if target_prototype_counts is None:
+                    target_prototype_counts = getattr(self, "_target_prototype_counts", None)
+                proto_feature = target_rep if self.hist_config.v9_prototype_feature_source == "target_adapter" else fused
+                prototype_logits, prototype_status = _target_prototype_logits(
+                    proto_feature,
+                    target_prototypes=target_prototypes,
+                    target_prototype_counts=target_prototype_counts,
+                    num_classes=self.num_classes,
+                    num_pred=self.num_pred,
+                    prototype_type=self.hist_config.v9_prototype_type,
+                    sector_size=self.hist_config.v9_sector_size,
+                    tau=self.hist_config.v9_prototype_tau,
+                )
+                prototype_logits = prototype_logits.to(device=target_logits.device, dtype=target_logits.dtype)
+            else:
+                prototype_logits = target_logits.sum(dim=-1, keepdim=True).expand(-1, self.num_pred, self.num_classes) * 0.0
+            if self.hist_config.v9_enabled:
+                logits_final = target_logits + prior_term + float(self.hist_config.v9_eta_prototype) * prototype_logits
+            elif self.hist_config.v8_use_source_logits_in_final:
+                logits_final = (
+                    float(self.hist_config.v8_lambda_src) * source_logits
+                    + float(self.hist_config.v8_lambda_tgt) * target_logits
+                    + prior_term
+                )
+            else:
+                logits_final = target_logits + prior_term
+            logits = logits_final
+            if self.sector_head is not None:
+                sector_logits = self.sector_head(target_rep).view(
+                    batch_size,
+                    self.num_pred,
+                    _num_v8_sectors(self.num_classes, self.hist_config.v8_sector_size),
+                )
+            if self.offset_head is not None:
+                offset_logits = self.offset_head(target_rep).view(batch_size, self.num_pred, self.hist_config.v8_sector_size)
 
         output_features = fused.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous()
         result: dict[str, torch.Tensor | tuple[str, ...] | dict[str, Any]] = {
             "logits": logits,
             "beam_logits": logits,
+            "features": output_features,
             "logits_shared": logits_shared,
+            "source_logits": source_logits,
             "logits_final": logits_final,
+            "target_logits": target_logits,
+            "target_prior_bias": target_prior_bias,
+            "prototype_logits": prototype_logits,
+            "sector_logits": sector_logits,
+            "offset_logits": offset_logits,
             "delta_logits_private": delta_logits_private,
             "alpha": alpha,
             "pred_beamspace_power": pred_beamspace_power,
@@ -793,6 +1051,51 @@ class HistBeamFusionNet(nn.Module):
                 "uses_input_beam_as_model_input": self.hist_config.history_anchor_enabled,
                 "v7_shared_physical_private_residual": self.hist_config.v7_enabled,
                 "residual_scale": float(self.hist_config.v7_residual_scale),
+                "v8_target_prior_head": self.hist_config.v8_target_prior_enabled,
+                "v9_input_conditioned_target_adaptation": self.hist_config.v9_enabled,
+                "v8_mode": self.hist_config.v8_mode,
+                "v8_use_adapter": self.hist_config.v8_use_adapter,
+                "v8_use_target_prior": self.hist_config.v8_use_target_prior,
+                "v8_use_source_logits_in_final": self.hist_config.v8_use_source_logits_in_final,
+                "v8_lambda_src": float(self.hist_config.v8_lambda_src),
+                "v8_lambda_tgt": float(self.hist_config.v8_lambda_tgt),
+                "v8_beta_prior": float(beta_effective.detach().cpu().item())
+                if torch.is_tensor(beta_effective)
+                else float(self.hist_config.v8_beta_prior),
+                "v8_learnable_beta_prior": self.hist_config.v8_learnable_beta_prior,
+                "v8_use_coarse_to_fine": self.hist_config.v8_use_coarse_to_fine,
+                "v8_sector_size": self.hist_config.v8_sector_size,
+                "v8_unfreeze_last_fusion_block": self.hist_config.v8_unfreeze_last_fusion_block,
+                "v8_use_soft_beam_label": self.hist_config.v8_use_soft_beam_label,
+                "v8_soft_label_sigma": float(self.hist_config.v8_soft_label_sigma),
+                "v8_loss_prior_smooth_weight": float(self.hist_config.v8_loss_prior_smooth_weight),
+                "v8_run_prototype_probe": self.hist_config.v8_run_prototype_probe,
+                "v9_use_target_prior": self.hist_config.v9_use_target_prior,
+                "v9_beta_prior_max": float(self.hist_config.v9_beta_prior_max),
+                "v9_beta_prior_parameterization": "cap_sigmoid" if self.hist_config.v9_enabled else "direct",
+                "v9_learnable_beta_prior": self.hist_config.v9_learnable_beta_prior,
+                "v9_prior_dropout": float(self.hist_config.v9_prior_dropout),
+                "v9_prior_dropout_active": bool(prior_dropout_active),
+                "v9_use_prototype_logits": self.hist_config.v9_use_prototype_logits,
+                "v9_prototype_type": self.hist_config.v9_prototype_type,
+                "v9_prototype_tau": float(self.hist_config.v9_prototype_tau),
+                "v9_eta_prototype": float(self.hist_config.v9_eta_prototype),
+                "v9_sector_size": int(self.hist_config.v9_sector_size),
+                "v9_sector_mapping": "floor_division_shared_score_to_member_beams"
+                if self.hist_config.v9_prototype_type == "sector"
+                else None,
+                "v9_prototype_feature_source": self.hist_config.v9_prototype_feature_source,
+                "prototype_logits_available": bool(prototype_status.get("available", False)),
+                "prototype_logits_unavailable_reason": prototype_status.get("unavailable_reason"),
+                "prototype_support_count": int(prototype_status.get("support_count", 0) or 0),
+                "prototype_support_counts": prototype_status.get("support_counts"),
+                "source_logits_in_final": self.hist_config.v8_use_source_logits_in_final
+                if self.hist_config.v8_target_prior_enabled
+                else False,
+                "prototype_probe_available": False if self.hist_config.v8_run_prototype_probe else None,
+                "prototype_probe_unavailable_reason": "v8_prototype_probe_not_implemented"
+                if self.hist_config.v8_run_prototype_probe
+                else None,
                 "residual_target_enabled": self.hist_config.history_anchor_enabled
                 and self.hist_config.history_anchor_mode == "residual_delta",
                 "private_calibration_type": "absolute_bias_temperature"
@@ -807,6 +1110,107 @@ class HistBeamFusionNet(nn.Module):
         if self.private_scene_classifier is not None:
             result["private_scene_logits"] = self.private_scene_classifier(private)
         return result
+
+    def set_target_prior_from_labels(
+        self,
+        labels: torch.Tensor | list[int] | tuple[int, ...] | None,
+        *,
+        sigma: float = 1.5,
+        eps: float = 1e-4,
+    ) -> dict[str, Any]:
+        if self.target_prior_bias is None:
+            raise RuntimeError("set_target_prior_from_labels is only available for v8_target_prior_head.")
+        from kd_sensing.engine.hist_beam_losses import gaussian_smooth_beam_prior
+
+        device = self.target_prior_bias.device
+        prior = gaussian_smooth_beam_prior(
+            labels,
+            self.num_classes,
+            sigma=sigma,
+            eps=eps,
+            device=device,
+        ).to(dtype=self.target_prior_bias.dtype)
+        with torch.no_grad():
+            self.target_prior_bias.copy_(torch.log(prior.clamp_min(float(eps))))
+        flat = _labels_to_1d_tensor(labels, device=device)
+        valid = flat[flat.ge(0) & flat.lt(self.num_classes)]
+        hist = torch.bincount(valid.to(torch.long), minlength=self.num_classes) if valid.numel() else torch.zeros(
+            self.num_classes,
+            dtype=torch.long,
+            device=device,
+        )
+        fallback_reason = "empty_support_labels" if valid.numel() == 0 else None
+        metadata = {
+            "target_prior_initialized": True,
+            "target_prior_fallback_reason": fallback_reason,
+            "target_support_label_count": int(valid.numel()),
+            "target_support_label_hist": [int(item) for item in hist.detach().cpu().tolist()],
+            "smoothed_target_prior_top_beams": _top_beam_records(prior.detach(), top_k=5),
+            "target_prior_bias_top_beams": _top_beam_records(self.target_prior_bias.detach(), top_k=5),
+        }
+        self._target_prior_metadata = metadata
+        return metadata
+
+    def _effective_beta_prior(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.hist_config.v9_enabled:
+            raw = self.beta_prior_raw
+            if not torch.is_tensor(raw):
+                raw = torch.tensor(0.0, device=device, dtype=dtype)
+            return float(self.hist_config.v9_beta_prior_max) * torch.sigmoid(raw.to(device=device, dtype=dtype))
+        if torch.is_tensor(self.beta_prior):
+            return self.beta_prior.to(device=device, dtype=dtype)
+        return torch.tensor(float(self.hist_config.v8_beta_prior), device=device, dtype=dtype)
+
+    def target_prior_metadata(self) -> dict[str, Any]:
+        return dict(getattr(self, "_target_prior_metadata", {}))
+
+    def set_target_prototypes_from_features(
+        self,
+        features: torch.Tensor,
+        labels: torch.Tensor | list[int] | tuple[int, ...],
+        *,
+        prototype_type: str | None = None,
+        sector_size: int | None = None,
+    ) -> dict[str, Any]:
+        if not self.hist_config.v9_enabled:
+            raise RuntimeError("target support prototypes are only available for v9 input-conditioned adaptation.")
+        feature_tensor = features.detach()
+        if feature_tensor.ndim == 3:
+            feature_tensor = feature_tensor[:, 0, :]
+        if feature_tensor.ndim != 2:
+            raise ValueError(f"features must have shape [N, D] or [N, H, D], got {tuple(feature_tensor.shape)}.")
+        labels_t = _labels_to_1d_tensor(labels, device=feature_tensor.device)
+        if labels_t.numel() != feature_tensor.shape[0]:
+            raise ValueError(f"labels count {labels_t.numel()} does not match feature count {feature_tensor.shape[0]}.")
+        ptype = str(prototype_type or self.hist_config.v9_prototype_type).strip().lower()
+        ssize = int(sector_size or self.hist_config.v9_sector_size)
+        class_count = self.num_classes if ptype == "beam" else _num_v8_sectors(self.num_classes, ssize)
+        assignment = labels_t if ptype == "beam" else torch.div(labels_t, ssize, rounding_mode="floor")
+        valid = labels_t.ge(0) & labels_t.lt(self.num_classes) & assignment.ge(0) & assignment.lt(class_count)
+        prototypes = torch.zeros(class_count, feature_tensor.shape[-1], device=feature_tensor.device, dtype=feature_tensor.dtype)
+        counts = torch.zeros(class_count, device=feature_tensor.device, dtype=torch.long)
+        normalized = F.normalize(feature_tensor, dim=-1)
+        for class_index in range(class_count):
+            mask = valid & assignment.eq(class_index)
+            if torch.any(mask):
+                prototypes[class_index] = F.normalize(normalized[mask].mean(dim=0), dim=0)
+                counts[class_index] = int(mask.sum().item())
+        self._target_prototypes = prototypes
+        self._target_prototype_counts = counts
+        metadata = {
+            "target_prototypes_initialized": bool(counts.gt(0).any().item()),
+            "target_prototype_type": ptype,
+            "target_prototype_sector_size": ssize if ptype == "sector" else None,
+            "target_prototype_support_count": int(counts.sum().detach().cpu().item()),
+            "target_prototype_available_count": int(counts.gt(0).sum().detach().cpu().item()),
+            "target_prototype_counts": [int(item) for item in counts.detach().cpu().tolist()],
+            "target_prototype_unavailable_reason": None if counts.gt(0).any().item() else "empty_support_labels",
+        }
+        self._target_prototype_metadata = metadata
+        return metadata
+
+    def target_prototype_metadata(self) -> dict[str, Any]:
+        return dict(getattr(self, "_target_prototype_metadata", {}))
 
     def _history_anchor(
         self,
@@ -1015,6 +1419,21 @@ class BottleneckPrivateAdapter(nn.Module):
         return x + self.up(self.activation(self.down(x)))
 
 
+class BottleneckAdapter(nn.Module):
+    def __init__(self, dim: int, bottleneck_dim: int | None = None, dropout: float = 0.0):
+        super().__init__()
+        hidden = int(bottleneck_dim or max(dim // 4, 1))
+        self.down = nn.Linear(dim, hidden)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(float(dropout))
+        self.up = nn.Linear(hidden, dim)
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.up(self.dropout(self.activation(self.down(x))))
+
+
 class CoarseConditionedPrivateAdapter(nn.Module):
     def __init__(self, dim: int, num_groups: int, bottleneck_dim: int | None = None):
         super().__init__()
@@ -1168,9 +1587,108 @@ def _adapter_bottleneck_dim(adapter: bool | dict[str, Any] | None, dim: int) -> 
     return max(dim // 4, 1)
 
 
+def _num_v8_sectors(num_classes: int, sector_size: int) -> int:
+    return (int(num_classes) + int(sector_size) - 1) // int(sector_size)
+
+
+def _target_prototype_logits(
+    features: torch.Tensor,
+    *,
+    target_prototypes: torch.Tensor | None,
+    target_prototype_counts: torch.Tensor | None,
+    num_classes: int,
+    num_pred: int,
+    prototype_type: str,
+    sector_size: int,
+    tau: float,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    zeros = features.new_zeros(features.shape[0], int(num_pred), int(num_classes))
+    if prototype_type == "none":
+        return zeros, {"available": False, "unavailable_reason": "prototype_type_none", "support_count": 0}
+    if target_prototypes is None:
+        return zeros, {"available": False, "unavailable_reason": "target_prototypes_missing", "support_count": 0}
+    proto = target_prototypes.to(device=features.device, dtype=features.dtype)
+    if proto.ndim != 2 or proto.shape[-1] != features.shape[-1]:
+        return zeros, {
+            "available": False,
+            "unavailable_reason": f"prototype_shape_mismatch:{tuple(proto.shape)}",
+            "support_count": 0,
+        }
+    counts = (
+        target_prototype_counts.to(device=features.device).reshape(-1)
+        if target_prototype_counts is not None
+        else torch.ones(proto.shape[0], dtype=torch.long, device=features.device)
+    )
+    if counts.numel() != proto.shape[0]:
+        return zeros, {
+            "available": False,
+            "unavailable_reason": f"prototype_count_shape_mismatch:{tuple(counts.shape)}",
+            "support_count": 0,
+        }
+    available = counts.gt(0)
+    if not bool(available.any().detach().cpu().item()):
+        return zeros, {"available": False, "unavailable_reason": "no_available_target_prototypes", "support_count": 0}
+    scores = F.normalize(features, dim=-1) @ F.normalize(proto, dim=-1).t()
+    scores = scores / max(float(tau), 1e-6)
+    scores = scores.masked_fill(~available.view(1, -1), -1e9)
+    if prototype_type == "beam":
+        if proto.shape[0] != int(num_classes):
+            return zeros, {
+                "available": False,
+                "unavailable_reason": f"beam_prototype_count_mismatch:{proto.shape[0]}",
+                "support_count": int(counts[available].sum().detach().cpu().item()),
+            }
+        logits = scores.unsqueeze(1).expand(-1, int(num_pred), -1).contiguous()
+    elif prototype_type == "sector":
+        num_sectors = _num_v8_sectors(int(num_classes), int(sector_size))
+        if proto.shape[0] != num_sectors:
+            return zeros, {
+                "available": False,
+                "unavailable_reason": f"sector_prototype_count_mismatch:{proto.shape[0]}!={num_sectors}",
+                "support_count": int(counts[available].sum().detach().cpu().item()),
+            }
+        beam_to_sector = torch.div(
+            torch.arange(int(num_classes), device=features.device),
+            int(sector_size),
+            rounding_mode="floor",
+        ).clamp(max=num_sectors - 1)
+        logits = scores[:, beam_to_sector].unsqueeze(1).expand(-1, int(num_pred), -1).contiguous()
+    else:
+        return zeros, {"available": False, "unavailable_reason": f"unsupported_prototype_type:{prototype_type}", "support_count": 0}
+    return logits, {
+        "available": True,
+        "unavailable_reason": None,
+        "support_count": int(counts[available].sum().detach().cpu().item()),
+        "support_counts": [int(item) for item in counts.detach().cpu().tolist()],
+    }
+
+
+def _inverse_sigmoid_clamped(value: float) -> float:
+    clipped = min(max(float(value), 1.0e-6), 1.0 - 1.0e-6)
+    return float(torch.logit(torch.tensor(clipped)).item())
+
+
+def _labels_to_1d_tensor(labels: torch.Tensor | list[int] | tuple[int, ...] | None, *, device: torch.device) -> torch.Tensor:
+    if labels is None:
+        return torch.empty(0, dtype=torch.long, device=device)
+    if torch.is_tensor(labels):
+        return labels.detach().to(device=device, dtype=torch.long).reshape(-1)
+    return torch.as_tensor(list(labels), dtype=torch.long, device=device).reshape(-1)
+
+
+def _top_beam_records(values: torch.Tensor, *, top_k: int) -> list[dict[str, float | int]]:
+    tensor = values.detach().cpu().reshape(-1).to(torch.float32)
+    if tensor.numel() == 0:
+        return []
+    count = min(int(top_k), int(tensor.numel()))
+    scores, indices = torch.topk(tensor, k=count)
+    return [{"beam": int(idx.item()), "value": float(score.item())} for score, idx in zip(scores, indices)]
+
+
 __all__ = [
     "DEFAULT_HIST_MODALITIES",
     "HIST_BEAM_VARIANTS",
+    "BottleneckAdapter",
     "BottleneckPrivateAdapter",
     "HistBeamConfig",
     "HistBeamFusionNet",

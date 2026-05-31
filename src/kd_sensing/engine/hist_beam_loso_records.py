@@ -58,6 +58,9 @@ def _run_identity(run: Mapping[str, Any]) -> dict[str, Any]:
         "excluded_sensitive_fields",
         "matrix_scope",
         "quick_validation",
+        "v9_group_ids",
+        "v9_group_c_enabled",
+        "experiment_purpose",
     ):
         if run.get(key) is not None:
             identity[key] = run.get(key)

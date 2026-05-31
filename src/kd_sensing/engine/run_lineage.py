@@ -6,6 +6,16 @@ from typing import Any
 
 KD_DISTILLATION_TYPES = frozenset({"logits_kd", "rkd"})
 NO_KD_DISTILLATION_TYPES = frozenset({"", "none", "no_kd", "supervised", "beam_supervised"})
+KD_ONLY_DISTILLATION_FIELDS = frozenset(
+    {
+        "temperature",
+        "alpha",
+        "alpha_warmup_epochs",
+        "rkd_pairs_per_anchor",
+        "rkd_distance_weight",
+        "rkd_angle_weight",
+    }
+)
 
 
 def distillation_config(cfg: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -108,6 +118,8 @@ def ensure_distillation_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
         cfg["distillation"] = distill_cfg
     distill_cfg.setdefault("type", "no_kd")
     if not distillation_enabled(cfg):
+        for key in KD_ONLY_DISTILLATION_FIELDS:
+            distill_cfg.pop(key, None)
         distill_cfg.setdefault("teacher_model_name", None)
         distill_cfg.setdefault("lifecycle", "active_mainline_no_kd")
         distill_cfg.setdefault("method_family", "mainline_no_kd")
@@ -141,6 +153,7 @@ def apply_lineage_to_row(row: dict[str, Any], metadata: Mapping[str, Any]) -> No
 
 __all__ = [
     "KD_DISTILLATION_TYPES",
+    "KD_ONLY_DISTILLATION_FIELDS",
     "NO_KD_DISTILLATION_TYPES",
     "apply_lineage_to_row",
     "distillation_config",

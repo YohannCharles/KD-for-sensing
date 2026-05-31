@@ -56,7 +56,7 @@ def apply_hist_beam_adaptation_strategy(
             param.requires_grad = True
         summary = trainable_parameter_summary(model)
         return {"strategy": normalized, **summary.to_dict()}
-    if normalized not in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_private_residual", "v7_shared_physical_private_residual", "shared_physical_private_residual"}:
+    if normalized not in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v8_target_prior_head", "v8_target_head_only", "v9_input_conditioned_target_adaptation", "v9_target_head_only", "v7_private_residual", "v7_shared_physical_private_residual", "shared_physical_private_residual"}:
         raise ValueError(f"Unsupported HiST-Beam adaptation strategy '{strategy}'.")
     for _, param in model.named_parameters():
         param.requires_grad = False
@@ -70,6 +70,15 @@ def apply_hist_beam_adaptation_strategy(
     )
     if v7_mode:
         trainable_prefixes = ("private_adapter", "private_residual_head", "residual_gate")
+    elif normalized in {"v8_target_prior_head", "v8_target_head_only", "v9_input_conditioned_target_adaptation", "v9_target_head_only"}:
+        trainable_prefixes = ("target_adapter", "target_head", "target_prior_bias")
+        if bool(getattr(hist_config, "v9_enabled", False)):
+            if bool(getattr(hist_config, "v9_learnable_beta_prior", False)):
+                trainable_prefixes = (*trainable_prefixes, "beta_prior_raw")
+        elif bool(getattr(hist_config, "v8_learnable_beta_prior", False)):
+            trainable_prefixes = (*trainable_prefixes, "beta_prior")
+        if bool(getattr(hist_config, "v8_use_coarse_to_fine", False)):
+            trainable_prefixes = (*trainable_prefixes, "sector_head", "offset_head")
     elif residual_mode:
         trainable_prefixes = (
             "private_adapter",
@@ -89,11 +98,25 @@ def apply_hist_beam_adaptation_strategy(
             param.requires_grad = True
         if train_layernorm_affine and ("norm" in name.lower() or "layernorm" in name.lower()):
             param.requires_grad = True
+    if normalized in {"v8_target_prior_head", "v8_target_head_only", "v9_input_conditioned_target_adaptation", "v9_target_head_only"} and bool(
+        getattr(hist_config, "v8_unfreeze_last_fusion_block", False)
+    ):
+        layers = getattr(getattr(model, "transformer", None), "layers", None)
+        if layers is not None and len(layers) > 0:
+            last_prefix = f"transformer.layers.{len(layers) - 1}."
+            for name, param in model.named_parameters():
+                if name.startswith(last_prefix):
+                    param.requires_grad = True
     summary = trainable_parameter_summary(model)
+    trainable_names = [name for name, param in model.named_parameters() if param.requires_grad]
     return {
         "strategy": normalized,
         "v7_private_residual_freeze_strategy": v7_mode,
         "history_anchor_residual_freeze_strategy": residual_mode,
+        "v8_target_head_only_freeze_strategy": normalized in {"v8_target_prior_head", "v8_target_head_only"},
+        "v9_target_head_only_freeze_strategy": normalized in {"v9_input_conditioned_target_adaptation", "v9_target_head_only"},
+        "v8_unfreeze_last_fusion_block": bool(getattr(hist_config, "v8_unfreeze_last_fusion_block", False)),
+        "trainable_parameter_names": trainable_names,
         **summary.to_dict(),
     }
 
@@ -416,6 +439,7 @@ def adapt_hist_beam_target(
         leakage_flags,
         sensitive_field_policy=sensitive_field_policy,
     )
+    oracle_usage = _target_oracle_usage_summary(leakage_flags)
     return {
         "epochs": int(epochs),
         "adaptation_time_seconds": float(elapsed),
@@ -426,6 +450,11 @@ def adapt_hist_beam_target(
         "target_labeled_subset_available": bool(allow_supervised_target and labeled_dataloader is not None),
         "target_unlabeled_subset_available": bool(unlabeled_dataloader is not None),
         "sensitive_field_policy": sensitive_field_policy,
+        "used_target_oracle_fields": oracle_usage["used_target_oracle_fields"],
+        "target_oracle_usage_stage": oracle_usage["target_oracle_usage_stage"],
+        "target_test_label_usage": "evaluation_only",
+        "target_test_label_used_for_adaptation": False,
+        "eligibility_status": "eligible" if bool(eligibility.get("main_conclusion_eligible", True)) else "ineligible",
         **eligibility,
         **leakage_flags,
         **history_anchor_run_metadata(cfg),
@@ -632,6 +661,23 @@ def _target_sensitive_eligibility(
     return {
         "main_conclusion_eligible": bool(not reasons or allow_sensitive_main),
         "eligibility_reasons": [] if allow_sensitive_main else reasons,
+    }
+
+
+def _target_oracle_usage_summary(leakage_flags: dict[str, bool]) -> dict[str, Any]:
+    mapping = {
+        "used_target_beam_power_for_training": "target_beam_power",
+        "used_target_physical_label_for_training": "target_physical_label",
+        "used_target_csi_for_training": "target_csi",
+        "used_target_path_params_for_training": "target_path_params",
+        "used_target_path_descriptor_for_training": "target_path_descriptor",
+        "used_target_path_label_for_training": "target_path_label",
+        "used_target_radio_label_for_training": "target_radio_label",
+    }
+    fields = [field for flag, field in mapping.items() if bool(leakage_flags.get(flag, False))]
+    return {
+        "used_target_oracle_fields": fields,
+        "target_oracle_usage_stage": {field: "target_adaptation_training_loss" for field in fields},
     }
 
 

@@ -430,6 +430,165 @@ def beam_histogram_metrics(
     return result
 
 
+def prediction_histogram_payload(
+    labels: torch.Tensor,
+    outputs: torch.Tensor,
+    *,
+    num_classes: int,
+    top_k: int = 8,
+) -> dict[str, Any]:
+    if outputs.ndim == 2:
+        outputs = outputs.unsqueeze(1)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    pred = outputs.argmax(dim=-1)
+    valid = labels.ne(-100) & labels.ge(0) & labels.lt(int(num_classes))
+    true_hist = _beam_histogram(labels, num_classes=num_classes)
+    pred_hist = _beam_histogram(torch.where(valid, pred, torch.full_like(pred, -100)), num_classes=num_classes)
+    if torch.any(valid):
+        error = torch.abs(pred[valid].to(torch.float32) - labels[valid].to(torch.float32))
+        mean_abs = float(error.mean().item())
+        within_1 = float(error.le(1).float().mean().item())
+        within_2 = float(error.le(2).float().mean().item())
+        within_3 = float(error.le(3).float().mean().item())
+    else:
+        mean_abs = 0.0
+        within_1 = 0.0
+        within_2 = 0.0
+        within_3 = 0.0
+    return {
+        "true_hist": true_hist,
+        "pred_hist": pred_hist,
+        "true_top_beams": _top_hist_beams(true_hist, top_k=top_k),
+        "pred_top_beams": _top_hist_beams(pred_hist, top_k=top_k),
+        "mean_abs_beam_error": mean_abs,
+        "within_1_acc": within_1,
+        "within_2_acc": within_2,
+        "within_3_acc": within_3,
+        "valid_count": int(valid.sum().item()),
+    }
+
+
+def histogram_kl(lhs_hist: Iterable[float] | torch.Tensor, rhs_hist: Iterable[float] | torch.Tensor, *, eps: float = 1e-12) -> float:
+    lhs = torch.as_tensor(list(lhs_hist) if not torch.is_tensor(lhs_hist) else lhs_hist, dtype=torch.float64).reshape(-1)
+    rhs = torch.as_tensor(list(rhs_hist) if not torch.is_tensor(rhs_hist) else rhs_hist, dtype=torch.float64).reshape(-1)
+    if lhs.numel() != rhs.numel():
+        raise ValueError(f"histogram sizes must match, got {lhs.numel()} and {rhs.numel()}.")
+    if lhs.numel() == 0:
+        return 0.0
+    lhs = lhs.clamp_min(0)
+    rhs = rhs.clamp_min(0)
+    lhs = lhs + float(eps)
+    rhs = rhs + float(eps)
+    lhs = lhs / lhs.sum().clamp_min(float(eps))
+    rhs = rhs / rhs.sum().clamp_min(float(eps))
+    return float(torch.sum(lhs * (torch.log(lhs) - torch.log(rhs))).item())
+
+
+def collapse_diagnostics_payload(
+    labels: torch.Tensor,
+    outputs: torch.Tensor,
+    *,
+    num_classes: int,
+    support_prior: Iterable[float] | torch.Tensor | None = None,
+    target_logits: torch.Tensor | None = None,
+    target_prior_bias: torch.Tensor | None = None,
+    prototype_logits: torch.Tensor | None = None,
+    beta_prior_initial: float | None = None,
+    beta_prior_final: float | None = None,
+    beta_prior_effective: float | None = None,
+    prototype_metadata: dict[str, Any] | None = None,
+    top_k: int = 8,
+) -> dict[str, Any]:
+    final_payload = prediction_histogram_payload(labels, outputs, num_classes=num_classes, top_k=top_k)
+    true_hist = final_payload["true_hist"]
+    pred_hist = final_payload["pred_hist"]
+    if support_prior is None and target_prior_bias is not None:
+        bias = target_prior_bias[0, 0, :] if target_prior_bias.ndim == 3 else target_prior_bias.reshape(-1)
+        support_prior = torch.softmax(bias.detach().cpu().to(torch.float32), dim=-1)
+    support = (
+        [float(item) for item in torch.as_tensor(support_prior, dtype=torch.float32).reshape(-1).tolist()]
+        if support_prior is not None
+        else [1.0 / max(int(num_classes), 1) for _ in range(int(num_classes))]
+    )
+    payload: dict[str, Any] = {
+        "support_prior_hist": support,
+        "true_hist": true_hist,
+        "pred_hist": pred_hist,
+        "true_top_beams": final_payload["true_top_beams"],
+        "pred_top_beams": final_payload["pred_top_beams"],
+        "unique_pred_beams": int(sum(1 for value in pred_hist if int(value) > 0)),
+        "kl_pred_support": histogram_kl(pred_hist, support),
+        "kl_true_support": histogram_kl(true_hist, support),
+        "kl_pred_true": histogram_kl(pred_hist, true_hist),
+        "mean_abs_beam_error": final_payload["mean_abs_beam_error"],
+        "within_3_acc": final_payload["within_3_acc"],
+        "beta_prior_initial": beta_prior_initial,
+        "beta_prior_final": beta_prior_final,
+        "beta_prior_effective": beta_prior_effective,
+        "per_true_beam_confusion": _per_true_beam_confusion(labels, outputs, num_classes=num_classes, top_k=top_k),
+        "branches": {
+            "final": _branch_metrics(outputs, labels, num_classes=num_classes, top_k=top_k),
+        },
+        "prototype": dict(prototype_metadata or {}),
+        "evaluation_only_target_test_label": True,
+    }
+    if target_logits is not None:
+        payload["branches"]["target_logits_only"] = _branch_metrics(target_logits, labels, num_classes=num_classes, top_k=top_k)
+    if target_prior_bias is not None:
+        payload["branches"]["prior_only"] = _branch_metrics(target_prior_bias, labels, num_classes=num_classes, top_k=top_k)
+    if target_logits is not None and target_prior_bias is not None:
+        payload["branches"]["target_logits_plus_prior"] = _branch_metrics(target_logits + target_prior_bias, labels, num_classes=num_classes, top_k=top_k)
+    if prototype_logits is not None:
+        payload["branches"]["prototype_only"] = _branch_metrics(prototype_logits, labels, num_classes=num_classes, top_k=top_k)
+        if target_logits is not None and target_prior_bias is not None:
+            payload["branches"]["target_prior_plus_prototype"] = _branch_metrics(
+                target_logits + target_prior_bias + prototype_logits,
+                labels,
+                num_classes=num_classes,
+                top_k=top_k,
+            )
+    return payload
+
+
+def write_collapse_diagnostics(
+    path: str | Path,
+    labels: torch.Tensor,
+    outputs: torch.Tensor,
+    *,
+    num_classes: int,
+    metadata: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = collapse_diagnostics_payload(labels, outputs, num_classes=num_classes, **kwargs)
+    if metadata:
+        payload["metadata"] = dict(metadata)
+    with target.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return target
+
+
+def write_prediction_histogram(
+    path: str | Path,
+    labels: torch.Tensor,
+    outputs: torch.Tensor,
+    *,
+    num_classes: int,
+    top_k: int = 8,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = prediction_histogram_payload(labels, outputs, num_classes=num_classes, top_k=top_k)
+    if metadata:
+        payload["metadata"] = dict(metadata)
+    with target.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return target
+
+
 def source_prior_collapse_diagnostics(
     *,
     source_histogram: Iterable[int] | None,
@@ -466,6 +625,54 @@ def source_prior_collapse_diagnostics(
         "source_prior_collapse_predicted_top_fraction": pred_top_fraction,
         "source_prior_collapse_threshold": float(top_fraction_threshold),
     }
+
+
+def _branch_metrics(outputs: torch.Tensor, labels: torch.Tensor, *, num_classes: int, top_k: int) -> dict[str, Any]:
+    payload = prediction_histogram_payload(labels, outputs, num_classes=num_classes, top_k=top_k)
+    result = {
+        "pred_hist": payload["pred_hist"],
+        "pred_top_beams": payload["pred_top_beams"],
+        "unique_pred_beams": int(sum(1 for value in payload["pred_hist"] if int(value) > 0)),
+        "within_3_acc": payload["within_3_acc"],
+        "mean_abs_beam_error": payload["mean_abs_beam_error"],
+    }
+    if outputs.ndim == 2:
+        outputs = outputs.unsqueeze(1)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    valid = labels.ne(-100) & labels.ge(0) & labels.lt(int(num_classes))
+    top = torch.topk(outputs, k=min(max(int(top_k), 1), int(num_classes)), dim=-1).indices
+    for k in (1, 3, 5):
+        kk = min(k, top.shape[-1])
+        hit = top[:, :, :kk].eq(labels.unsqueeze(-1)) & valid.unsqueeze(-1)
+        result[f"top{k}"] = float(hit.any(dim=-1)[valid].float().mean().item()) if torch.any(valid) else 0.0
+    return result
+
+
+def _per_true_beam_confusion(labels: torch.Tensor, outputs: torch.Tensor, *, num_classes: int, top_k: int) -> list[dict[str, Any]]:
+    if outputs.ndim == 2:
+        outputs = outputs.unsqueeze(1)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    pred = outputs.argmax(dim=-1)
+    valid = labels.ne(-100) & labels.ge(0) & labels.lt(int(num_classes))
+    true_hist = _beam_histogram(labels, num_classes=num_classes)
+    top_true = [item["beam"] for item in _top_hist_beams(true_hist, top_k=top_k) if item["count"] > 0]
+    rows: list[dict[str, Any]] = []
+    for beam in top_true:
+        mask = valid & labels.eq(int(beam))
+        if not torch.any(mask):
+            continue
+        pred_values = pred[mask].detach().cpu().to(torch.long)
+        pred_hist = torch.bincount(pred_values, minlength=int(num_classes))
+        rows.append(
+            {
+                "true_beam": int(beam),
+                "count": int(mask.sum().item()),
+                "pred_top_beams": _top_hist_beams([int(item) for item in pred_hist.tolist()], top_k=top_k),
+            }
+        )
+    return rows
 
 
 def _radio_value(values: torch.Tensor | None, row_idx: int, horizon: int) -> int | str:
@@ -529,6 +736,15 @@ def _beam_histogram(values: torch.Tensor, *, num_classes: int) -> list[int]:
     return [int(item) for item in torch.bincount(tensor[valid].reshape(-1), minlength=int(num_classes)).tolist()]
 
 
+def _top_hist_beams(hist: Iterable[int], *, top_k: int) -> list[dict[str, int]]:
+    counts = torch.as_tensor(list(hist), dtype=torch.long)
+    if counts.numel() == 0:
+        return []
+    k = min(int(top_k), int(counts.numel()))
+    values, indices = torch.topk(counts, k=k)
+    return [{"beam": int(index.item()), "count": int(value.item())} for value, index in zip(values, indices)]
+
+
 def summarize_loso_runs(records: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for record in records:
@@ -581,12 +797,17 @@ __all__ = [
     "beam_power_metrics",
     "beam_histogram_metrics",
     "calculate_hist_beam_metrics",
+    "collapse_diagnostics_payload",
+    "histogram_kl",
     "markov_delta_baseline_metrics",
     "path_descriptor_regression_metrics",
     "path_semantic_metrics",
+    "prediction_histogram_payload",
     "radio_semantic_metrics",
     "source_prior_collapse_diagnostics",
     "summarize_loso_runs",
     "write_hist_beam_predictions",
+    "write_collapse_diagnostics",
+    "write_prediction_histogram",
     "write_loso_summary",
 ]

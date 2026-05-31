@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
+
+import torch
 
 from kd_sensing.data.loso import sample_few_shot_records
 from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
@@ -403,7 +406,9 @@ class DefaultHistBeamLosoStageExecutor:
         import torch
         from torch.utils.data import DataLoader, Subset
 
+        from kd_sensing.engine.batch import prepare_history_anchor_inputs
         from kd_sensing.engine.data_factory import build_dataloader_kwargs, shutdown_dataloader_workers
+        from kd_sensing.engine.hist_beam_residuals import history_anchor_enabled, num_delta_classes_from_config
         from kd_sensing.engine.hist_beam_adaptation import (
             adapt_hist_beam_target,
             apply_hist_beam_adaptation_strategy,
@@ -412,6 +417,7 @@ class DefaultHistBeamLosoStageExecutor:
         from kd_sensing.engine.hist_beam_prototypes import load_source_prototypes, prototype_coverage_from_counts
         from kd_sensing.engine.loso_data import build_loso_target_stage_loader
         from kd_sensing.engine.optim import build_device, build_model, build_optimizer
+        from kd_sensing.engine.runtime import prepare_task_batch, run_model_step, transfer_non_blocking
 
         source_variant = _source_variant_for(run)
         source_checkpoint = self._source_checkpoint_for(run, context, variant=source_variant)
@@ -428,9 +434,6 @@ class DefaultHistBeamLosoStageExecutor:
         try:
             model = build_model(cfg["model"]["student"]).to(device)
             _load_checkpoint_state(model, source_checkpoint, device=device, strict=False)
-            strategy = "v6_full_finetune" if variant == "v6_full_finetune" else "v7_private_residual" if variant == "v7_shared_physical_private_residual" else variant
-            strategy_metadata = apply_hist_beam_adaptation_strategy(model, strategy)
-            optimizer = build_optimizer(cfg, model)
             target_adapt_loader = loaders["target_adapt"]
             labeled_loader, unlabeled_loader, sampling = _few_shot_adaptation_loaders(
                 target_adapt_loader.dataset,
@@ -438,6 +441,86 @@ class DefaultHistBeamLosoStageExecutor:
                 run,
                 loader_kwargs=build_dataloader_kwargs(cfg["data"]["dataloader"], split="train"),
             )
+            prior_metadata: dict[str, Any] = {}
+            if variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"} and hasattr(model, "set_target_prior_from_labels"):
+                v8_cfg = cfg.get("hist_beam", {}).get("v8", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+                support_labels = [
+                    int(item["beam"])
+                    for item in sampling.get("labeled_samples", [])
+                    if isinstance(item, dict) and item.get("beam") is not None
+                ]
+                prior_metadata = model.set_target_prior_from_labels(
+                    support_labels,
+                    sigma=float(v8_cfg.get("prior_sigma", 1.5)),
+                    eps=float(v8_cfg.get("prior_eps", 1.0e-4)),
+                )
+            v9_target_prototype_metadata: dict[str, Any] = {}
+            if variant == "v9_input_conditioned_target_adaptation" and labeled_loader is not None and hasattr(model, "set_target_prototypes_from_features"):
+                was_training = model.training
+                model.eval()
+                features = []
+                labels_for_features = []
+                with torch.no_grad():
+                    for support_batch in labeled_loader:
+                        prepared_batch = prepare_task_batch(support_batch)
+                        history_kwargs = prepare_history_anchor_inputs(
+                            prepared_batch,
+                            num_pred=cfg["model"].get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1)),
+                            num_classes=num_delta_classes_from_config(
+                                cfg,
+                                default=int(cfg["model"].get("student", cfg["model"]).get("num_classes", cfg["model"].get("num_classes", 64))),
+                            ),
+                            downsample_ratio=cfg["model"].get("downsample_ratio", 1),
+                            device=device,
+                            enabled=history_anchor_enabled(cfg),
+                            non_blocking=transfer_non_blocking(cfg),
+                        )
+                        step = run_model_step(
+                            model,
+                            cfg["experiment"].get("task", "fusion"),
+                            prepared_batch,
+                            model_cfg=cfg["model"].get("student", cfg["model"]),
+                            seq_length=cfg["model"].get("seq_length_student", cfg.get("data", {}).get("dataset", {}).get("seq_len", 8)),
+                            num_pred=cfg["model"].get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1)),
+                            device=device,
+                            downsample_ratio=cfg["model"].get("downsample_ratio", 1),
+                            non_blocking=transfer_non_blocking(cfg),
+                            extra_model_kwargs={key: value for key, value in history_kwargs.items() if key != "residual_labels"},
+                        )
+                        feature_tensor = step.model_output.diagnostics.get("adapter_representation")
+                        if not torch.is_tensor(feature_tensor):
+                            feature_tensor = step.model_output.diagnostics.get("features")
+                        if torch.is_tensor(feature_tensor) and step.labels is not None:
+                            features.append(feature_tensor[:, 0, :].detach())
+                            labels_for_features.append(step.labels[:, 0].detach())
+                if features and labels_for_features:
+                    v9_cfg = cfg.get("hist_beam", {}).get("v9", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+                    v9_target_prototype_metadata = model.set_target_prototypes_from_features(
+                        torch.cat(features, dim=0),
+                        torch.cat(labels_for_features, dim=0),
+                        prototype_type=str(v9_cfg.get("prototype_type", "beam")),
+                        sector_size=int(v9_cfg.get("sector_size", 2)),
+                    )
+                else:
+                    v9_target_prototype_metadata = {
+                        "target_prototypes_initialized": False,
+                        "target_prototype_unavailable_reason": "labeled_support_features_missing",
+                    }
+                if was_training:
+                    model.train()
+            strategy = (
+                "v6_full_finetune"
+                if variant == "v6_full_finetune"
+                else "v7_private_residual"
+                if variant == "v7_shared_physical_private_residual"
+                else "v8_target_head_only"
+                if variant == "v8_target_prior_head"
+                else "v9_target_head_only"
+                if variant == "v9_input_conditioned_target_adaptation"
+                else variant
+            )
+            strategy_metadata = apply_hist_beam_adaptation_strategy(model, strategy)
+            optimizer = build_optimizer(cfg, model)
             prototypes = None
             prototype_metadata: dict[str, Any]
             if variant in {"v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
@@ -460,6 +543,11 @@ class DefaultHistBeamLosoStageExecutor:
                         "prototype_coverage_available": False,
                         "prototype_coverage_unavailable_reason": "source_prototype_missing",
                     }
+            elif variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
+                prototype_metadata = {
+                    "prototype_coverage_available": False,
+                    "prototype_coverage_unavailable_reason": f"{variant}_does_not_require_source_prototypes",
+                }
             else:
                 prototype_metadata = {
                     "prototype_coverage_available": False,
@@ -490,18 +578,38 @@ class DefaultHistBeamLosoStageExecutor:
                 "adaptation_strategy": strategy,
                 "source_checkpoint_path": str(source_checkpoint),
                 "sampling": sampling,
+                "v8_target_prior": prior_metadata,
+                "v9_target_prototypes": v9_target_prototype_metadata,
+                "prototype_probe_available": False
+                if bool((cfg.get("hist_beam", {}).get("v8", {}) if isinstance(cfg.get("hist_beam"), dict) else {}).get("run_prototype_probe", False))
+                else None,
+                "prototype_probe_unavailable_reason": "v8_prototype_probe_not_implemented"
+                if bool((cfg.get("hist_beam", {}).get("v8", {}) if isinstance(cfg.get("hist_beam"), dict) else {}).get("run_prototype_probe", False))
+                else None,
                 **prototype_metadata,
             }
             checkpoint_path = context.stage_dir / "adaptation_checkpoint.pth"
             torch.save(
                 {
                     "model_state": model.state_dict(),
+                    "target_prototypes": getattr(model, "_target_prototypes", None),
+                    "target_prototype_counts": getattr(model, "_target_prototype_counts", None),
+                    "target_prototype_metadata": v9_target_prototype_metadata,
                     "metadata": _run_identity(run) | {"stage": "target_adaptation", "adaptation_strategy": strategy},
                 },
                 checkpoint_path,
             )
             metrics_path = context.stage_dir / "metrics.json"
             adapt_log_path = context.stage_dir / "adapt_log.json"
+            trainable_path = context.stage_dir / "trainable_parameters.json"
+            _write_json(
+                trainable_path,
+                {
+                    "summary": params,
+                    "strategy": strategy,
+                    "trainable_parameter_names": strategy_metadata.get("trainable_parameter_names", []),
+                },
+            )
             _write_json(metrics_path, metrics)
             _write_json(
                 adapt_log_path,
@@ -511,8 +619,12 @@ class DefaultHistBeamLosoStageExecutor:
                     "target_labeled_subset_available": bool(metrics.get("target_labeled_subset_available", False)),
                     "target_unlabeled_subset_available": bool(metrics.get("target_unlabeled_subset_available", False)),
                     "sensitive_field_policy": metrics.get("sensitive_field_policy", {}),
+                    "eligibility_status": metrics.get("eligibility_status"),
                     "main_conclusion_eligible": bool(metrics.get("main_conclusion_eligible", True)),
                     "eligibility_reasons": list(metrics.get("eligibility_reasons", [])),
+                    "used_target_oracle_fields": list(metrics.get("used_target_oracle_fields", []) or []),
+                    "target_oracle_usage_stage": metrics.get("target_oracle_usage_stage", {}),
+                    "target_test_label_usage": metrics.get("target_test_label_usage", "evaluation_only"),
                     "used_target_beam_for_training": bool(metrics.get("used_target_beam_for_training", metrics.get("used_target_labels", False))),
                     "used_target_beam_power_for_training": bool(metrics.get("used_target_beam_power_for_training", False)),
                     "used_target_csi_for_training": bool(metrics.get("used_target_csi_for_training", False)),
@@ -520,12 +632,16 @@ class DefaultHistBeamLosoStageExecutor:
                     "used_target_path_descriptor_for_training": bool(metrics.get("used_target_path_descriptor_for_training", False)),
                     "used_target_path_label_for_training": bool(metrics.get("used_target_path_label_for_training", False)),
                     "used_target_radio_label_for_training": bool(metrics.get("used_target_radio_label_for_training", False)),
+                    "v8_target_prior": prior_metadata,
+                    "v9_target_prototypes": v9_target_prototype_metadata,
+                    "trainable_parameters_path": str(trainable_path),
                 },
             )
             artifacts = {
                 "run_dir": str(context.stage_dir),
                 "metrics_path": str(metrics_path),
                 "adapt_log_path": str(adapt_log_path),
+                "trainable_parameters_path": str(trainable_path),
                 "source_checkpoint_path": str(source_checkpoint),
                 "adaptation_checkpoint_path": str(checkpoint_path),
                 "source_prototype_path": prototype_metadata.get("source_prototype_path"),
@@ -667,7 +783,7 @@ def _evaluate_target_test(
     from kd_sensing.engine.hist_beam_baselines import attach_source_beam_reference, source_prior_collapse_metrics
     from kd_sensing.engine.loso_data import build_loso_target_stage_loader
     from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
-    from kd_sensing.evaluation.hist_beam_outputs import write_hist_beam_predictions
+    from kd_sensing.evaluation.hist_beam_outputs import prediction_histogram_payload, write_collapse_diagnostics, write_hist_beam_predictions, write_prediction_histogram
 
     device = build_device(cfg)
     executor = DefaultHistBeamLosoStageExecutor()
@@ -697,8 +813,79 @@ def _evaluate_target_test(
             }
         )
         metrics.update(source_prior_collapse_metrics(source_reference, metrics))
-        metrics_path = context.stage_dir / "metrics.json"
         predictions_path = context.stage_dir / "predictions.csv"
+        prediction_hist_path = context.stage_dir / "prediction_hist.json"
+        collapse_path = context.stage_dir / "collapse_diagnostics.json"
+        num_classes = int(cfg.get("model", {}).get("student", {}).get("num_classes", cfg.get("model", {}).get("num_classes", 64)))
+        top_k = max(int(value) for value in cfg.get("evaluation", {}).get("k_values", [1, 3, 5]))
+        hist_payload = prediction_histogram_payload(
+            result.labels,
+            result.outputs,
+            num_classes=num_classes,
+            top_k=top_k,
+        )
+        write_prediction_histogram(
+            prediction_hist_path,
+            result.labels,
+            result.outputs,
+            num_classes=num_classes,
+            top_k=top_k,
+            metadata=_run_identity(run) | {"variant": str(variant), "split": "target_test", "summary_type": summary_type},
+        )
+        collapse_enabled = bool(
+            cfg.get("hist_beam", {}).get("collapse_diagnostics", {}).get(
+                "enabled",
+                str(variant) in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"},
+            )
+            if isinstance(cfg.get("hist_beam", {}).get("collapse_diagnostics", {}), dict)
+            else str(variant) in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}
+        )
+        collapse_payload: dict[str, Any] = {}
+        if collapse_enabled:
+            beta_effective = _beta_prior_from_model(model)
+            write_collapse_diagnostics(
+                collapse_path,
+                result.labels,
+                result.outputs,
+                num_classes=num_classes,
+                top_k=top_k,
+                target_logits=result.target_logits,
+                target_prior_bias=result.target_prior_bias,
+                prototype_logits=result.prototype_logits,
+                beta_prior_initial=beta_effective,
+                beta_prior_final=beta_effective,
+                beta_prior_effective=beta_effective,
+                prototype_metadata=getattr(model, "target_prototype_metadata", lambda: {})(),
+                metadata=_run_identity(run) | {
+                    "variant": str(variant),
+                    "split": "target_test",
+                    "summary_type": summary_type,
+                    "target_test_label_usage": "evaluation_only",
+                },
+            )
+            with collapse_path.open("r", encoding="utf-8") as f:
+                collapse_payload = json.load(f)
+        metrics.update(
+            {
+                "prediction_hist_path": str(prediction_hist_path),
+                "collapse_diagnostics_path": str(collapse_path) if collapse_enabled else None,
+                "true_top_beams": hist_payload["true_top_beams"],
+                "pred_top_beams": hist_payload["pred_top_beams"],
+                "unique_pred_beams": int(sum(1 for value in hist_payload["pred_hist"] if int(value) > 0)),
+                "kl_pred_support": collapse_payload.get("kl_pred_support"),
+                "kl_true_support": collapse_payload.get("kl_true_support"),
+                "kl_pred_true": collapse_payload.get("kl_pred_true"),
+                "beta_prior_initial": collapse_payload.get("beta_prior_initial"),
+                "beta_prior_final": collapse_payload.get("beta_prior_final"),
+                "beta_prior_effective": collapse_payload.get("beta_prior_effective"),
+                "prototype_diagnostics": collapse_payload.get("prototype", {}),
+                "mean_abs_beam_error": hist_payload["mean_abs_beam_error"],
+                "within_1_acc": hist_payload["within_1_acc"],
+                "within_2_acc": hist_payload["within_2_acc"],
+                "within_3_acc": hist_payload["within_3_acc"],
+            }
+        )
+        metrics_path = context.stage_dir / "metrics.json"
         _write_json(metrics_path, metrics)
         setup = dict(metrics.get("prediction_setup", {})) if isinstance(metrics.get("prediction_setup"), dict) else {}
         setup.update(_run_identity(run))
@@ -726,6 +913,8 @@ def _evaluate_target_test(
                 "run_dir": str(context.stage_dir),
                 "metrics_path": str(metrics_path),
                 "predictions_path": str(predictions_path),
+                "prediction_hist_path": str(prediction_hist_path),
+                "collapse_diagnostics_path": str(collapse_path) if collapse_enabled else None,
                 "source_checkpoint_path": str(checkpoint_path),
                 "source_beam_reference_path": source_reference_path,
             },
@@ -797,5 +986,30 @@ def _load_checkpoint_state(model: Any, checkpoint_path: str | Path, *, device: A
     payload = torch.load(Path(checkpoint_path), map_location=device)
     state = payload.get("model_state", payload) if isinstance(payload, dict) else payload
     model.load_state_dict(state, strict=strict)
+    if isinstance(payload, dict):
+        target_prototypes = payload.get("target_prototypes")
+        target_counts = payload.get("target_prototype_counts")
+        if torch.is_tensor(target_prototypes):
+            model._target_prototypes = target_prototypes.to(device=device)
+        if torch.is_tensor(target_counts):
+            model._target_prototype_counts = target_counts.to(device=device)
+        metadata = payload.get("target_prototype_metadata")
+        if isinstance(metadata, dict):
+            model._target_prototype_metadata = dict(metadata)
+
+
+def _beta_prior_from_model(model: Any) -> float | None:
+    hist_config = getattr(model, "hist_config", None)
+    if bool(getattr(hist_config, "v9_enabled", False)) and hasattr(model, "_effective_beta_prior"):
+        try:
+            param = next(model.parameters())
+            return float(model._effective_beta_prior(device=param.device, dtype=param.dtype).detach().cpu().item())
+        except Exception:
+            return None
+    beta = getattr(model, "beta_prior", None)
+    if torch.is_tensor(beta):
+        return float(beta.detach().cpu().item())
+    value = getattr(hist_config, "v8_beta_prior", None)
+    return float(value) if value is not None else None
 
 __all__ = ["DefaultHistBeamLosoStageExecutor", "StageExecutionContext", "StageExecutor", "StageRunCallbacks", "execute_loso_stage_runs"]

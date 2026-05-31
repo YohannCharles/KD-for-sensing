@@ -333,6 +333,9 @@ def _build_mmw_run_plan(
                             "excluded_sensitive_fields": excluded_sensitive_fields,
                             "matrix_scope": matrix_scope,
                             "quick_validation": bool(sensor_assisted),
+                            "v9_group_ids": list(loso_cfg.get("v9_groups", [])),
+                            "v9_group_c_enabled": bool(loso_cfg.get("v9_group_c_enabled", False)),
+                            "experiment_purpose": _variant_purpose(str(variant)),
                         }
                     )
     planned_run_count = len(runs)
@@ -357,6 +360,8 @@ def _build_mmw_run_plan(
         "quick_validation": bool(sensor_assisted),
         "matrix": _matrix_metadata(resolved_variants, resolved_budgets, resolved_seeds, matrix_scope=matrix_scope),
         "matrix_overrides": dict(matrix_overrides or {}),
+        "v9_group_ids": list(loso_cfg.get("v9_groups", [])),
+        "v9_group_c_enabled": bool(loso_cfg.get("v9_group_c_enabled", False)),
         "excluded_sensitive_fields": excluded_sensitive_fields,
         "dataset_family": "MMW",
         "claim_scope": availability.get("claim_scope", "unavailable"),
@@ -536,6 +541,14 @@ def _matrix_metadata(
         "scope": matrix_scope,
         "is_full_budget_seed_sweep": matrix_scope != "quick_validation",
     }
+
+
+def _variant_purpose(variant: str) -> str:
+    if variant == "v9_input_conditioned_target_adaptation":
+        return "v9_input_conditioned_target_prior_and_prototype_calibration"
+    if variant == "v8_target_prior_head":
+        return "v8_target_prior_baseline_for_v9"
+    return "baseline_or_ablation"
 
 
 def _unique_path(path: Path) -> Path:
