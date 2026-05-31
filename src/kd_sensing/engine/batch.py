@@ -266,6 +266,7 @@ SENSITIVE_TARGET_FIELDS = (
     "target_beam_distribution",
     "beam",
     "beam_power",
+    "beamspace_power_label",
     "csi",
     "channel",
     "channel_path",
@@ -381,6 +382,37 @@ def prepare_beam_power_targets(
     if power.ndim != 3:
         raise ValueError(f"beam_power must have shape [B, H, C], got {tuple(power.shape)}.")
     return power[:, :num_pred, :]
+
+
+def prepare_beamspace_power_targets(
+    batch: dict[str, torch.Tensor],
+    *,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if "beamspace_power_label" not in batch:
+        return None
+    target = batch["beamspace_power_label"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    if target.ndim == 2:
+        target = target.unsqueeze(1)
+    if target.ndim != 3:
+        raise ValueError(f"beamspace_power_label must have shape [B, H, C], got {tuple(target.shape)}.")
+    target = target[:, :num_pred, :]
+    mask_raw = batch.get("beamspace_power_available")
+    if mask_raw is None:
+        mask = torch.isfinite(target).all(dim=-1) & target.sum(dim=-1).gt(0)
+    else:
+        mask = mask_raw.to(device=device, dtype=torch.bool, non_blocking=non_blocking)
+        if mask.ndim == 1:
+            mask = mask.unsqueeze(1)
+        if mask.ndim != 2:
+            raise ValueError(f"beamspace_power_available must have shape [B, H], got {tuple(mask.shape)}.")
+        mask = mask[:, : target.shape[1]]
+        mask = mask & torch.isfinite(target).all(dim=-1) & target.sum(dim=-1).gt(0)
+    row_sum = target.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    target = torch.where(mask.unsqueeze(-1), target / row_sum, torch.zeros_like(target))
+    return target, mask
 
 
 def prepare_image_inputs(

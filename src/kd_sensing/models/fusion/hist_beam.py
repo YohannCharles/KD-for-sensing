@@ -35,6 +35,8 @@ HIST_BEAM_VARIANTS = {
     "adapter_radio_proto",
     "v8_path_proto",
     "adapter_path_proto",
+    "v7_shared_physical_private_residual",
+    "shared_physical_private_residual",
     "v6_full_finetune",
     "full_finetune",
 }
@@ -79,6 +81,7 @@ class HistBeamConfig:
     num_delta_classes: int = 64
     history_anchor_embedding_dim: int = 32
     lambda_absolute_aux: float = 0.0
+    v7_residual_scale: float = 1.0
 
     @property
     def num_groups(self) -> int:
@@ -103,6 +106,8 @@ class HistBeamConfig:
             "adapter_radio_proto",
             "v8_path_proto",
             "adapter_path_proto",
+            "v7_shared_physical_private_residual",
+            "shared_physical_private_residual",
             "v6_full_finetune",
             "full_finetune",
         }
@@ -120,9 +125,15 @@ class HistBeamConfig:
             "adapter_radio_proto",
             "v8_path_proto",
             "adapter_path_proto",
+            "v7_shared_physical_private_residual",
+            "shared_physical_private_residual",
             "v6_full_finetune",
             "full_finetune",
         }
+
+    @property
+    def v7_enabled(self) -> bool:
+        return self.variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}
 
 
 def resolve_hist_beam_config(
@@ -149,6 +160,8 @@ def resolve_hist_beam_config(
     use_path_regression: bool | None = None,
     path_descriptor_dim: int | None = None,
     history_anchor: bool | dict[str, Any] | None = None,
+    v7: bool | dict[str, Any] | None = None,
+    residual_scale: float | None = None,
     proto_type: str | None = None,
     geometry_aware: bool | dict[str, Any] | None = None,
     geometry_fields: list[str] | tuple[str, ...] | None = None,
@@ -180,7 +193,9 @@ def resolve_hist_beam_config(
     radio_cfg = radio_semantic if isinstance(radio_semantic, dict) else {}
     path_cfg = path_semantic if isinstance(path_semantic, dict) else {}
     history_cfg = history_anchor if isinstance(history_anchor, dict) else {}
-    history_enabled = _mapping_enabled(history_anchor)
+    v7_cfg = v7 if isinstance(v7, dict) else {}
+    is_v7 = normalized_variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}
+    history_enabled = False if is_v7 else _mapping_enabled(history_anchor)
     history_mode = str(history_cfg.get("mode", "residual_delta")).strip().lower()
     if history_mode not in {"residual_delta", "absolute_with_history"}:
         raise ValueError(
@@ -214,7 +229,7 @@ def resolve_hist_beam_config(
         lambda_scene_c=float(weights.get("scene_confusion", weights.get("lambda_scene_c", 0.05))),
         lambda_scene_s=float(weights.get("scene_private", weights.get("lambda_scene_s", 0.05))),
         adapter_enabled=_mapping_enabled(adapter)
-        or normalized_variant in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"},
+        or normalized_variant in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "shared_physical_private_residual"},
         prototype_enabled=_mapping_enabled(prototype)
         or normalized_variant in {"v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"},
         geometry_aware=geometry_enabled,
@@ -256,6 +271,11 @@ def resolve_hist_beam_config(
         num_delta_classes=int(history_cfg.get("num_delta_classes", classes)),
         history_anchor_embedding_dim=int(history_cfg.get("embedding_dim", history_cfg.get("history_anchor_embedding_dim", 32))),
         lambda_absolute_aux=float(history_cfg.get("lambda_absolute_aux", 0.0)),
+        v7_residual_scale=float(
+            residual_scale
+            if residual_scale is not None
+            else v7_cfg.get("residual_scale", v7_cfg.get("private_residual_scale", 1.0))
+        ),
     )
 
 
@@ -291,6 +311,8 @@ class HistBeamFusionNet(nn.Module):
         use_path_regression: bool | None = None,
         path_descriptor_dim: int | None = None,
         history_anchor: bool | dict[str, Any] | None = None,
+        v7: bool | dict[str, Any] | None = None,
+        residual_scale: float | None = None,
         proto_type: str | None = None,
         geometry_aware: bool | dict[str, Any] | None = None,
         geometry_fields: list[str] | tuple[str, ...] | None = None,
@@ -335,6 +357,8 @@ class HistBeamFusionNet(nn.Module):
             use_path_regression=use_path_regression,
             path_descriptor_dim=path_descriptor_dim,
             history_anchor=history_anchor,
+            v7=v7,
+            residual_scale=residual_scale,
             proto_type=proto_type,
             geometry_aware=geometry_aware,
             geometry_fields=geometry_fields,
@@ -471,6 +495,26 @@ class HistBeamFusionNet(nn.Module):
         self.residual_head = (
             nn.Linear(self.d_model, self.num_pred * self.num_delta_classes)
             if self.hist_config.history_anchor_enabled
+            else None
+        )
+        self.shared_beam_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_classes)
+            if self.hist_config.v7_enabled
+            else None
+        )
+        self.physical_beamspace_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_classes)
+            if self.hist_config.v7_enabled
+            else None
+        )
+        self.private_residual_head = (
+            nn.Linear(self.d_model, self.num_pred * self.num_classes)
+            if self.hist_config.v7_enabled
+            else None
+        )
+        self.residual_gate = (
+            nn.Linear(self.d_model, self.num_pred)
+            if self.hist_config.v7_enabled
             else None
         )
         self.absolute_calibration_bias = (
@@ -629,6 +673,11 @@ class HistBeamFusionNet(nn.Module):
         logits = flat_logits if not self.hist_config.hierarchical_enabled else beam_log_probs
         residual_logits = None
         reconstructed_beam_logits = None
+        logits_shared = None
+        logits_final = None
+        delta_logits_private = None
+        alpha = None
+        pred_beamspace_power = None
         if self.hist_config.history_anchor_enabled:
             if self.hist_config.history_anchor_mode == "residual_delta":
                 if self.residual_head is None:
@@ -649,11 +698,34 @@ class HistBeamFusionNet(nn.Module):
             else:
                 reconstructed_beam_logits = flat_logits
                 logits = flat_logits
+        if self.hist_config.v7_enabled:
+            if (
+                self.shared_beam_head is None
+                or self.physical_beamspace_head is None
+                or self.private_residual_head is None
+                or self.residual_gate is None
+            ):
+                raise RuntimeError("V7 heads are not initialized.")
+            logits_shared = self.shared_beam_head(shared).view(batch_size, self.num_pred, self.num_classes)
+            delta_logits_private = self.private_residual_head(adapter_rep).view(batch_size, self.num_pred, self.num_classes)
+            delta_logits_private = delta_logits_private * float(self.hist_config.v7_residual_scale)
+            alpha = torch.sigmoid(self.residual_gate(adapter_rep).view(batch_size, self.num_pred, 1))
+            logits_final = logits_shared + alpha * delta_logits_private
+            pred_beamspace_power = torch.softmax(
+                self.physical_beamspace_head(shared).view(batch_size, self.num_pred, self.num_classes),
+                dim=-1,
+            )
+            logits = logits_final
 
         output_features = fused.unsqueeze(1).expand(-1, self.num_pred, -1).contiguous()
         result: dict[str, torch.Tensor | tuple[str, ...] | dict[str, Any]] = {
             "logits": logits,
             "beam_logits": logits,
+            "logits_shared": logits_shared,
+            "logits_final": logits_final,
+            "delta_logits_private": delta_logits_private,
+            "alpha": alpha,
+            "pred_beamspace_power": pred_beamspace_power,
             "absolute_beam_logits": reconstructed_beam_logits,
             "residual_logits": residual_logits,
             "last_beam": history_anchor,
@@ -719,6 +791,8 @@ class HistBeamFusionNet(nn.Module):
                 "history_anchor_mode": self.hist_config.history_anchor_mode,
                 "num_delta_classes": self.num_delta_classes,
                 "uses_input_beam_as_model_input": self.hist_config.history_anchor_enabled,
+                "v7_shared_physical_private_residual": self.hist_config.v7_enabled,
+                "residual_scale": float(self.hist_config.v7_residual_scale),
                 "residual_target_enabled": self.hist_config.history_anchor_enabled
                 and self.hist_config.history_anchor_mode == "residual_delta",
                 "private_calibration_type": "absolute_bias_temperature"

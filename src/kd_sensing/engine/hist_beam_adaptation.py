@@ -56,16 +56,21 @@ def apply_hist_beam_adaptation_strategy(
             param.requires_grad = True
         summary = trainable_parameter_summary(model)
         return {"strategy": normalized, **summary.to_dict()}
-    if normalized not in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
+    if normalized not in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_private_residual", "v7_shared_physical_private_residual", "shared_physical_private_residual"}:
         raise ValueError(f"Unsupported HiST-Beam adaptation strategy '{strategy}'.")
     for _, param in model.named_parameters():
         param.requires_grad = False
     hist_config = getattr(model, "hist_config", None)
+    v7_mode = normalized in {"v7_private_residual", "v7_shared_physical_private_residual", "shared_physical_private_residual"} or bool(
+        getattr(hist_config, "v7_enabled", False)
+    )
     residual_mode = bool(
         getattr(hist_config, "history_anchor_enabled", False)
         and getattr(hist_config, "history_anchor_mode", "") == "residual_delta"
     )
-    if residual_mode:
+    if v7_mode:
+        trainable_prefixes = ("private_adapter", "private_residual_head", "residual_gate")
+    elif residual_mode:
         trainable_prefixes = (
             "private_adapter",
             "residual_head",
@@ -87,6 +92,7 @@ def apply_hist_beam_adaptation_strategy(
     summary = trainable_parameter_summary(model)
     return {
         "strategy": normalized,
+        "v7_private_residual_freeze_strategy": v7_mode,
         "history_anchor_residual_freeze_strategy": residual_mode,
         **summary.to_dict(),
     }
@@ -144,6 +150,7 @@ def adapt_hist_beam_target(
         "target_test": {
             "beam": "evaluation_only",
             "beam_power": "evaluation_only",
+            "beamspace_power_label": "evaluation_only",
             "csi": "evaluation_only",
             "radio": "evaluation_only",
             "path": "evaluation_only",
@@ -161,7 +168,10 @@ def adapt_hist_beam_target(
         "used_target_beam_for_training": False,
         "used_target_beam_for_supervised_loss": False,
         "used_input_beam_as_input": history_anchor_enabled(cfg),
+        "uses_input_beam_as_model_input": history_anchor_enabled(cfg),
         "used_target_beam_power_for_training": False,
+        "used_target_physical_label_for_training": False,
+        "target_physical_oracle_unused_reason": "target_adaptation_default_blocks_physical_oracle",
         "used_target_csi_for_training": False,
         "used_target_path_params_for_training": False,
         "used_target_path_descriptor_for_training": False,
@@ -233,6 +243,7 @@ def adapt_hist_beam_target(
                                 device=device,
                                 non_blocking=transfer_non_blocking(cfg),
                             )
+                    v7_target = _v7_target_adaptation_enabled(cfg, step.model_output.diagnostics)
                     supervised = compute_hist_beam_loss(
                         {"logits": step.logits, **step.model_output.diagnostics},
                         step.labels,
@@ -241,6 +252,7 @@ def adapt_hist_beam_target(
                         path_semantic_labels=path_labels,
                         path_descriptors=path_targets[0] if path_targets is not None else None,
                         path_descriptor_mask=path_targets[1] if path_targets is not None else None,
+                        v7_adaptation=v7_target,
                     )
                     loss = supervised.total
                     diagnostics.update(supervised.diagnostics)
@@ -605,6 +617,7 @@ def _target_sensitive_eligibility(
     reasons: list[str] = []
     target_sensitive_keys = {
         "used_target_beam_power_for_training": "target_beam_power_supervision",
+        "used_target_physical_label_for_training": "target_physical_label_supervision",
         "used_target_csi_for_training": "target_csi_supervision",
         "used_target_path_params_for_training": "target_path_params_supervision",
         "used_target_path_descriptor_for_training": "target_path_descriptor_supervision",
@@ -620,6 +633,18 @@ def _target_sensitive_eligibility(
         "main_conclusion_eligible": bool(not reasons or allow_sensitive_main),
         "eligibility_reasons": [] if allow_sensitive_main else reasons,
     }
+
+
+def _v7_target_adaptation_enabled(cfg: dict[str, Any], output: dict[str, Any]) -> bool:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    model_cfg = cfg.get("model", {}).get("student", {}) if isinstance(cfg.get("model"), dict) else {}
+    variant = str(hist_cfg.get("variant", model_cfg.get("variant", ""))).strip().lower()
+    if variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}:
+        return True
+    meta = output.get("hist_beam")
+    if isinstance(meta, dict) and bool(meta.get("v7_shared_physical_private_residual", False)):
+        return True
+    return torch.is_tensor(output.get("logits_shared")) and torch.is_tensor(output.get("delta_logits_private"))
 
 
 def _radio_prototypes_from_artifact(prototypes: dict[str, Any]) -> torch.Tensor | None:

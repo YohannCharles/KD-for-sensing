@@ -50,6 +50,10 @@ def compute_hist_beam_loss(
     path_semantic_labels: torch.Tensor | None = None,
     path_descriptors: torch.Tensor | None = None,
     path_descriptor_mask: torch.Tensor | None = None,
+    beamspace_power_labels: torch.Tensor | None = None,
+    beamspace_power_mask: torch.Tensor | None = None,
+    current_epoch: int | None = None,
+    v7_adaptation: bool = False,
     num_classes: int | None = None,
     group_size: int | None = None,
     ignore_index: int = -100,
@@ -66,6 +70,20 @@ def compute_hist_beam_loss(
     flat_logits = _first_tensor(output, ("flat_logits", "beam_logits", "logits"))
     coarse_logits = _tensor(output, "coarse_logits")
     fine_logits = _tensor(output, "fine_logits")
+    if _v7_enabled(hist_cfg, model_cfg, output):
+        return _compute_v7_hist_beam_loss(
+            output,
+            labels,
+            cfg=cfg,
+            weights=weights,
+            beamspace_power_labels=beamspace_power_labels,
+            beamspace_power_mask=beamspace_power_mask,
+            current_epoch=current_epoch,
+            v7_adaptation=v7_adaptation,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            zero=zero,
+        )
     if residual_target_enabled(cfg):
         residual_logits = _tensor(output, "residual_logits")
         last_beam = _tensor(output, "last_beam")
@@ -623,9 +641,19 @@ def _fine_loss_for_true_group(
     return F.cross_entropy(selected, flat_fine_target[flat_valid], ignore_index=ignore_index)
 
 
-def _flat_ce(logits: torch.Tensor, labels: torch.Tensor, *, num_classes: int, ignore_index: int) -> torch.Tensor:
+def _flat_ce(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    num_classes: int,
+    ignore_index: int,
+    class_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
     ensure_horizon_shape("flat_logits", logits, labels)
-    return F.cross_entropy(logits.reshape(-1, num_classes), labels.reshape(-1), ignore_index=ignore_index)
+    weight = None
+    if class_weights is not None:
+        weight = class_weights.to(device=logits.device, dtype=logits.dtype)
+    return F.cross_entropy(logits.reshape(-1, num_classes), labels.reshape(-1), weight=weight, ignore_index=ignore_index)
 
 
 def _orthogonality_loss(shared: torch.Tensor | None, private: torch.Tensor | None, zero: torch.Tensor) -> torch.Tensor:
@@ -664,7 +692,294 @@ def _loss_weights(hist_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> dict[s
         "radio_semantic": float(weights.get("radio_semantic", weights.get("lambda_radio", 0.0))),
         "path_semantic": float(weights.get("path_semantic", weights.get("lambda_path", 0.3))),
         "path_regression": float(weights.get("path_regression", weights.get("lambda_path_reg", 0.05))),
+        "v7_shared_ce": float(weights.get("v7_shared_ce", weights.get("shared_ce", 1.0))),
+        "v7_final_ce": float(weights.get("v7_final_ce", weights.get("final_ce", 1.0))),
+        "v7_bsp_kl": float(weights.get("v7_bsp_kl", weights.get("bsp_kl", weights.get("beamspace_kl", 1.0)))),
+        "v7_phys_kl": float(weights.get("v7_phys_kl", weights.get("phys_kl", weights.get("physical_kl", 1.0)))),
+        "v7_res_l2": float(weights.get("v7_res_l2", weights.get("residual_l2", 0.01))),
+        "v7_gate_l1": float(weights.get("v7_gate_l1", weights.get("gate_l1", 0.001))),
+        "v7_diff": float(weights.get("v7_diff", weights.get("difference", 0.01))),
     }
+
+
+def _compute_v7_hist_beam_loss(
+    output: dict[str, Any],
+    labels: torch.Tensor,
+    *,
+    cfg: dict[str, Any],
+    weights: dict[str, float],
+    beamspace_power_labels: torch.Tensor | None,
+    beamspace_power_mask: torch.Tensor | None,
+    current_epoch: int | None,
+    v7_adaptation: bool,
+    num_classes: int,
+    ignore_index: int,
+    zero: torch.Tensor,
+) -> HistBeamLossResult:
+    logits_shared = _tensor(output, "logits_shared")
+    logits_final = _first_tensor(output, ("logits_final", "beam_logits", "logits"))
+    delta = _tensor(output, "delta_logits_private")
+    alpha = _tensor(output, "alpha")
+    pred_phys = _tensor(output, "pred_beamspace_power")
+    if logits_shared is None or logits_final is None:
+        raise RuntimeError("V7 HiST-Beam loss requires logits_shared and logits_final outputs.")
+    ensure_horizon_shape("logits_shared", logits_shared, labels)
+    ensure_horizon_shape("logits_final", logits_final, labels)
+    warmup_epochs = int(cfg.get("training", {}).get("shared_warmup_epochs", cfg.get("hist_beam", {}).get("shared_warmup_epochs", 0)) or 0)
+    warmup_active = (current_epoch is not None) and int(current_epoch) < warmup_epochs
+    effective_final = logits_shared if warmup_active else logits_final
+    class_weights, class_balance_diag = _v7_class_balance_weights(
+        labels,
+        cfg=cfg,
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+        zero=zero,
+        v7_adaptation=v7_adaptation,
+    )
+    shared_ce = _flat_ce(logits_shared, labels, num_classes=num_classes, ignore_index=ignore_index, class_weights=class_weights)
+    final_ce = (
+        _flat_ce(effective_final, labels, num_classes=num_classes, ignore_index=ignore_index, class_weights=class_weights)
+        if not warmup_active
+        else zero
+    )
+    bsp_kl, bsp_diag = _beamspace_kl(
+        logits_shared,
+        beamspace_power_labels,
+        beamspace_power_mask,
+        temperature=float(_v7_loss_cfg(cfg).get("temperature", _v7_loss_cfg(cfg).get("kl_temperature", 1.0))),
+        zero=zero,
+    )
+    phys_kl, phys_diag = _physical_head_kl(pred_phys, beamspace_power_labels, beamspace_power_mask, zero=zero)
+    if v7_adaptation:
+        bsp_kl = zero
+        phys_kl = zero
+        bsp_diag = {"hist/v7/bsp_available": 0.0, "hist/v7/bsp_unavailable_reason": "target_physical_oracle_not_used_for_training"}
+        phys_diag = {"hist/v7/phys_available": 0.0, "hist/v7/phys_unavailable_reason": "target_physical_oracle_not_used_for_training"}
+    res_l2 = delta.pow(2).mean() if torch.is_tensor(delta) and not warmup_active else zero
+    gate_l1 = alpha.abs().mean() if torch.is_tensor(alpha) and not warmup_active else zero
+    diff = _v7_difference_loss(
+        _tensor(output, "shared_representation"),
+        _tensor(output, "private_representation"),
+        zero=zero,
+    ) if not warmup_active else zero
+    if warmup_active:
+        res_l2 = zero
+        gate_l1 = zero
+        diff = zero
+    if v7_adaptation:
+        total = (
+            weights["v7_final_ce"] * _flat_ce(logits_final, labels, num_classes=num_classes, ignore_index=ignore_index, class_weights=class_weights)
+            + weights["v7_res_l2"] * res_l2
+            + weights["v7_gate_l1"] * gate_l1
+        )
+    elif warmup_active:
+        total = (
+            weights["v7_shared_ce"] * shared_ce
+            + weights["v7_bsp_kl"] * bsp_kl
+            + weights["v7_phys_kl"] * phys_kl
+        )
+    else:
+        total = (
+            weights["v7_shared_ce"] * shared_ce
+            + weights["v7_final_ce"] * final_ce
+            + weights["v7_bsp_kl"] * bsp_kl
+            + weights["v7_phys_kl"] * phys_kl
+            + weights["v7_res_l2"] * res_l2
+            + weights["v7_gate_l1"] * gate_l1
+            + weights["v7_diff"] * diff
+        )
+    diagnostics = {
+        "hist/loss_total": _scalar(total),
+        "hist/v7/loss_shared_ce": _scalar(shared_ce),
+        "hist/v7/loss_final_ce": _scalar(final_ce),
+        "hist/v7/loss_bsp_kl": _scalar(bsp_kl),
+        "hist/v7/loss_phys_kl": _scalar(phys_kl),
+        "hist/v7/loss_res_l2": _scalar(res_l2),
+        "hist/v7/loss_gate_l1": _scalar(gate_l1),
+        "hist/v7/loss_diff": _scalar(diff),
+        "hist/v7/warmup_active": 1.0 if warmup_active else 0.0,
+        "hist/v7/target_adaptation_loss": 1.0 if v7_adaptation else 0.0,
+    }
+    diagnostics.update(bsp_diag)
+    diagnostics.update(phys_diag)
+    diagnostics.update(class_balance_diag)
+    return HistBeamLossResult(
+        total=total,
+        hierarchical=shared_ce,
+        coarse=zero,
+        fine=zero,
+        flat=final_ce,
+        orthogonality=diff,
+        shared_scene=zero,
+        private_scene=zero,
+        angular_smoothing=zero,
+        geometry_consistency=zero,
+        radio_semantic=zero,
+        path_semantic=zero,
+        path_regression=zero,
+        diagnostics=diagnostics,
+    )
+
+
+def _beamspace_kl(
+    logits: torch.Tensor,
+    target: torch.Tensor | None,
+    mask: torch.Tensor | None,
+    *,
+    temperature: float,
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    prepared = _prepare_bsp_target(logits, target, mask)
+    if prepared is None:
+        return logits.sum() * 0.0, {
+            "hist/v7/bsp_available": 0.0,
+            "hist/v7/bsp_coverage": 0.0,
+            "hist/v7/bsp_unavailable_reason": "beamspace_power_label_missing",
+        }
+    target_t, valid = prepared
+    if not torch.any(valid):
+        return logits.sum() * 0.0, {
+            "hist/v7/bsp_available": 0.0,
+            "hist/v7/bsp_coverage": 0.0,
+            "hist/v7/bsp_unavailable_reason": "beamspace_power_label_unavailable",
+        }
+    temp = max(float(temperature), 1e-6)
+    log_probs = F.log_softmax(logits[valid] / temp, dim=-1)
+    loss = F.kl_div(log_probs, target_t[valid], reduction="batchmean") * (temp * temp)
+    return loss, {
+        "hist/v7/bsp_available": 1.0,
+        "hist/v7/bsp_coverage": float(valid.float().mean().detach().cpu().item()),
+        "hist/v7/bsp_valid_count": float(valid.sum().detach().cpu().item()),
+    }
+
+
+def _physical_head_kl(
+    pred: torch.Tensor | None,
+    target: torch.Tensor | None,
+    mask: torch.Tensor | None,
+    *,
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    if pred is None:
+        return zero, {"hist/v7/phys_available": 0.0, "hist/v7/phys_unavailable_reason": "pred_beamspace_power_missing"}
+    prepared = _prepare_bsp_target(pred, target, mask)
+    if prepared is None:
+        return pred.sum() * 0.0, {"hist/v7/phys_available": 0.0, "hist/v7/phys_unavailable_reason": "beamspace_power_label_missing"}
+    target_t, valid = prepared
+    if not torch.any(valid):
+        return pred.sum() * 0.0, {"hist/v7/phys_available": 0.0, "hist/v7/phys_unavailable_reason": "beamspace_power_label_unavailable"}
+    probs = pred.clamp_min(1e-12)
+    log_probs = torch.log(probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12))
+    loss = F.kl_div(log_probs[valid], target_t[valid], reduction="batchmean")
+    return loss, {
+        "hist/v7/phys_available": 1.0,
+        "hist/v7/phys_coverage": float(valid.float().mean().detach().cpu().item()),
+    }
+
+
+def _prepare_bsp_target(
+    reference: torch.Tensor,
+    target: torch.Tensor | None,
+    mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if target is None:
+        return None
+    target_t = target.to(device=reference.device, dtype=reference.dtype)
+    if target_t.ndim == 2:
+        target_t = target_t.unsqueeze(1)
+    if target_t.ndim != 3 or target_t.shape[:2] != reference.shape[:2] or target_t.shape[-1] != reference.shape[-1]:
+        raise ValueError(f"beamspace_power_label shape {tuple(target_t.shape)} does not match logits {tuple(reference.shape)}.")
+    valid = torch.isfinite(target_t).all(dim=-1) & target_t.sum(dim=-1).gt(0)
+    if mask is not None:
+        mask_t = mask.to(device=reference.device, dtype=torch.bool)
+        if mask_t.ndim == 1:
+            mask_t = mask_t.unsqueeze(1)
+        valid = valid & mask_t[:, : target_t.shape[1]]
+    normalized = target_t / target_t.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    return normalized, valid
+
+
+def _v7_difference_loss(shared: torch.Tensor | None, private: torch.Tensor | None, *, zero: torch.Tensor) -> torch.Tensor:
+    if shared is None or private is None:
+        return zero
+    if shared.ndim == 3:
+        shared = shared.reshape(-1, shared.shape[-1])
+    if private.ndim == 3:
+        private = private.reshape(-1, private.shape[-1])
+    if shared.shape[0] < 2 or private.shape[0] < 2:
+        return zero
+    return torch.mean(F.cosine_similarity(shared, private, dim=-1).pow(2))
+
+
+def _v7_loss_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    value = hist_cfg.get("v7_loss", hist_cfg.get("v7", {}))
+    return value if isinstance(value, dict) else {}
+
+
+def _v7_class_balance_weights(
+    labels: torch.Tensor,
+    *,
+    cfg: dict[str, Any],
+    num_classes: int,
+    ignore_index: int,
+    zero: torch.Tensor,
+    v7_adaptation: bool,
+) -> tuple[torch.Tensor | None, dict[str, Any]]:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    balance_cfg = hist_cfg.get("class_balance") if isinstance(hist_cfg.get("class_balance"), dict) else {}
+    if not bool(balance_cfg.get("enabled", False)):
+        return None, {"hist/v7/class_balance_enabled": 0.0}
+    if v7_adaptation and not bool(balance_cfg.get("target_adaptation", balance_cfg.get("adaptation", False))):
+        return None, {"hist/v7/class_balance_enabled": 0.0, "hist/v7/class_balance_skipped_reason": "target_adaptation_disabled"}
+    if not v7_adaptation and not bool(balance_cfg.get("source_training", True)):
+        return None, {"hist/v7/class_balance_enabled": 0.0, "hist/v7/class_balance_skipped_reason": "source_training_disabled"}
+    valid = labels.reshape(-1).to(device=zero.device, dtype=torch.long)
+    valid = valid[valid.ne(ignore_index) & valid.ge(0) & valid.lt(int(num_classes))]
+    if valid.numel() == 0:
+        return None, {"hist/v7/class_balance_enabled": 0.0, "hist/v7/class_balance_skipped_reason": "no_valid_labels"}
+    counts = torch.bincount(valid, minlength=int(num_classes)).to(device=zero.device, dtype=zero.dtype)
+    present = counts.gt(0)
+    if int(present.sum().detach().cpu().item()) <= 1:
+        return None, {
+            "hist/v7/class_balance_enabled": 0.0,
+            "hist/v7/class_balance_skipped_reason": "single_present_class",
+            "hist/v7/class_balance_present_classes": float(present.sum().detach().cpu().item()),
+        }
+    mode = str(balance_cfg.get("mode", "inverse_sqrt")).strip().lower()
+    power = 0.5 if mode in {"inverse_sqrt", "sqrt", "inv_sqrt"} else 1.0
+    if "power" in balance_cfg:
+        power = float(balance_cfg["power"])
+    mean_count = counts[present].mean().clamp_min(1.0)
+    weights = torch.ones(int(num_classes), device=zero.device, dtype=zero.dtype)
+    weights[present] = (mean_count / counts[present].clamp_min(1.0)).pow(float(power))
+    weights[present] = weights[present] / weights[present].mean().clamp_min(1e-12)
+    max_weight = balance_cfg.get("max_weight")
+    if max_weight is not None:
+        weights[present] = weights[present].clamp(max=float(max_weight))
+        weights[present] = weights[present] / weights[present].mean().clamp_min(1e-12)
+    min_weight = balance_cfg.get("min_weight")
+    if min_weight is not None:
+        weights[present] = weights[present].clamp(min=float(min_weight))
+        weights[present] = weights[present] / weights[present].mean().clamp_min(1e-12)
+    return weights, {
+        "hist/v7/class_balance_enabled": 1.0,
+        "hist/v7/class_balance_mode": mode,
+        "hist/v7/class_balance_power": float(power),
+        "hist/v7/class_balance_present_classes": float(present.sum().detach().cpu().item()),
+        "hist/v7/class_balance_min_weight": float(weights[present].min().detach().cpu().item()),
+        "hist/v7/class_balance_max_weight": float(weights[present].max().detach().cpu().item()),
+    }
+
+
+def _v7_enabled(hist_cfg: dict[str, Any], model_cfg: dict[str, Any], output: dict[str, Any]) -> bool:
+    variant = str(hist_cfg.get("variant", model_cfg.get("variant", ""))).strip().lower()
+    if variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}:
+        return True
+    meta = output.get("hist_beam")
+    if isinstance(meta, dict) and bool(meta.get("v7_shared_physical_private_residual", False)):
+        return True
+    return torch.is_tensor(output.get("logits_shared")) and torch.is_tensor(output.get("delta_logits_private"))
 
 
 def _tensor(output: dict[str, Any], key: str) -> torch.Tensor | None:

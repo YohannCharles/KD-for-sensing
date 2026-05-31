@@ -3,13 +3,13 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from torch.utils.data import ConcatDataset, DataLoader, Dataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, WeightedRandomSampler
 
 from kd_sensing.data.loso import LOSOFold, TargetSplit, resolve_loso_fold, split_target_records
 from kd_sensing.data.mmw.protocol import MMWFold
 from kd_sensing.data.samples import _select_portion
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config
-from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
+from kd_sensing.engine.data_factory import build_dataloader, build_dataloader_kwargs, build_dataset, prepare_lidar_normalizer
 
 
 class NamedSplitSubset(Dataset):
@@ -148,7 +148,7 @@ def build_loso_dataloaders(
     return {
         "fold": resolved,
         "target_split": split_result,
-        "source_train": build_dataloader(source_dataset, loader_cfg, split="train"),
+        "source_train": _build_source_train_dataloader(source_dataset, loader_cfg, cfg),
         "target_adapt": build_dataloader(target_adapt, loader_cfg, split="train"),
         "target_test": build_dataloader(target_test, loader_cfg, split="test"),
     }
@@ -165,10 +165,12 @@ def build_loso_source_train_loader(
     loader_cfg = cfg["data"]["dataloader"]
     source_dataset = build_source_multi_scene_dataset(cfg, resolved)
     first_source = source_dataset.datasets[0] if getattr(source_dataset, "datasets", None) else None
+    source_sampling = _source_sampling_metadata(source_dataset, cfg)
     return {
         "fold": resolved,
-        "source_train": build_dataloader(source_dataset, loader_cfg, split="train"),
+        "source_train": _build_source_train_dataloader(source_dataset, loader_cfg, cfg),
         "normalization_kwargs": _normalization_kwargs(first_source),
+        "source_sampling": source_sampling,
     }
 
 
@@ -261,6 +263,69 @@ def _normalization_kwargs(dataset: Any) -> dict[str, Any]:
         if hasattr(dataset, attr):
             kwargs[key] = getattr(dataset, attr)
     return kwargs
+
+
+def _build_source_train_dataloader(dataset: Any, loader_cfg: dict[str, Any], cfg: dict[str, Any]) -> DataLoader:
+    sampler = _source_scene_balance_sampler(dataset, cfg)
+    if sampler is None:
+        return build_dataloader(dataset, loader_cfg, split="train")
+    kwargs = build_dataloader_kwargs(loader_cfg, split="train")
+    kwargs["shuffle"] = False
+    kwargs["sampler"] = sampler
+    return DataLoader(dataset, **kwargs)
+
+
+def _source_scene_balance_sampler(dataset: Any, cfg: dict[str, Any]) -> WeightedRandomSampler | None:
+    if not isinstance(dataset, ConcatDataset):
+        return None
+    datasets = list(getattr(dataset, "datasets", []))
+    if len(datasets) <= 1:
+        return None
+    sampling_cfg = _source_scene_balance_cfg(cfg)
+    if not sampling_cfg.get("enabled", False):
+        return None
+    lengths = [len(item) for item in datasets]
+    if not lengths or any(length <= 0 for length in lengths):
+        return None
+    import torch
+
+    weights: list[float] = []
+    for length in lengths:
+        weights.extend([1.0 / float(length)] * int(length))
+    generator = torch.Generator()
+    generator.manual_seed(int(cfg.get("experiment", {}).get("seed", 0)))
+    return WeightedRandomSampler(
+        torch.as_tensor(weights, dtype=torch.double),
+        num_samples=int(sum(lengths)),
+        replacement=True,
+        generator=generator,
+    )
+
+
+def _source_sampling_metadata(dataset: Any, cfg: dict[str, Any]) -> dict[str, Any]:
+    datasets = list(getattr(dataset, "datasets", [])) if isinstance(dataset, ConcatDataset) else []
+    lengths = [len(item) for item in datasets]
+    scene_ids = [getattr(item, "scene_slug", getattr(item, "scene_id", None)) for item in datasets]
+    balance_cfg = _source_scene_balance_cfg(cfg)
+    enabled = bool(balance_cfg.get("enabled", False) and len(datasets) > 1 and all(length > 0 for length in lengths))
+    return {
+        "scene_balance_enabled": enabled,
+        "source_scene_count": len(datasets),
+        "source_scene_lengths": [int(length) for length in lengths],
+        "source_scene_ids": [None if scene is None else str(scene) for scene in scene_ids],
+        "strategy": "scene_balanced_weighted_sampler" if enabled else "concat_default",
+    }
+
+
+def _source_scene_balance_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
+    source_sampling = hist_cfg.get("source_sampling") if isinstance(hist_cfg.get("source_sampling"), dict) else {}
+    scene_balance = source_sampling.get("scene_balance") if isinstance(source_sampling.get("scene_balance"), dict) else {}
+    training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
+    training_balance = training_cfg.get("source_scene_balance") if isinstance(training_cfg.get("source_scene_balance"), dict) else {}
+    merged = dict(scene_balance)
+    merged.update(training_balance)
+    return merged
 
 
 def _split_target_dataset_records(

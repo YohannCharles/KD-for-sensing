@@ -1,0 +1,98 @@
+experiment:
+  name: hist_beam_v7_shared_physical_private_residual
+  task: fusion
+  objective: beam
+data:
+  dataset:
+    type: mmw
+    condition: sunny
+    scene: Town10_skybridge_seed24
+    enabled_modalities: [image, gps, lidar]
+    physical_label:
+      enabled: true
+      required: false
+      source: auto
+      eps: 1.0e-12
+      temperature: 1.0
+      smoothing_sigma: 1.5
+      power_unit: linear
+      cache_dir: cache/physical_labels
+model:
+  modalities: [image, gps, lidar]
+  feature_size: 64
+  d_model: 128
+  num_classes: 64
+  num_pred: 3
+  downsample_ratio: 1
+  student:
+    type: hist_beam_fusion
+    modalities: [image, gps, lidar]
+    feature_size: 64
+    d_model: 128
+    num_classes: 64
+    num_pred: 3
+    group_size: 8
+    variant: v7_shared_physical_private_residual
+    num_heads: 4
+    num_layers: 2
+    image_encoder:
+      type: resnet18_imagenet_rgb
+      pretrained: false
+      weights: null
+    adapter:
+      enabled: true
+    history_anchor:
+      enabled: false
+    v7:
+      enabled: true
+      residual_scale: 1.0
+hist_beam:
+  enabled: true
+  variant: v7_shared_physical_private_residual
+  num_classes: 64
+  group_size: 8
+  physical_label:
+    enabled: true
+    required: false
+    source: auto
+    eps: 1.0e-12
+    temperature: 1.0
+    smoothing_sigma: 1.5
+    power_unit: linear
+    cache_dir: cache/physical_labels
+  loss_weights:
+    v7_shared_ce: 1.0
+    v7_final_ce: 1.0
+    v7_bsp_kl: 1.0
+    v7_phys_kl: 1.0
+    v7_res_l2: 0.01
+    v7_gate_l1: 0.001
+    v7_diff: 0.01
+  class_balance:
+    enabled: true
+    source_training: true
+    target_adaptation: false
+    mode: inverse_sqrt
+    max_weight: 5.0
+  source_sampling:
+    scene_balance:
+      enabled: true
+  adaptation:
+    strategy: v7_private_residual
+    epochs: 5
+    entropy_weight: 0.0
+    few_shot_stratification: beam_frequency
+distillation:
+  type: no_kd
+loss:
+  type: cross_entropy
+training:
+  epochs: 5
+  lr: 0.0005
+  weight_decay: 0.0001
+  shared_warmup_epochs: 1
+evaluation:
+  k_values: [1, 3, 5]
+output:
+  dir: outputs
+  run_name: hist_beam_v7_shared_physical_private_residual

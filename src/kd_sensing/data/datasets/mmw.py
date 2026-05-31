@@ -17,6 +17,18 @@ from kd_sensing.data.mmw.path_semantics import (
     load_path_payload,
     map_path_fields,
 )
+from kd_sensing.data.mmw.physical_labels import (
+    BeamspacePhysicalLabelConfig,
+    beamspace_label_from_path_payload,
+    beamspace_label_from_power_vector,
+    cache_metadata,
+    dumps_metadata,
+    loads_metadata,
+    metadata_matches,
+    physical_cache_path,
+    physical_label_stats,
+    resolve_physical_label_config,
+)
 from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.registries import DATASETS
@@ -41,6 +53,7 @@ class MMWDataset(DeepSense6GDataset):
         return_modality_availability: bool = False,
         radio_semantic: bool | dict[str, Any] | None = None,
         path_semantic: bool | dict[str, Any] | None = None,
+        physical_label: bool | dict[str, Any] | None = None,
         field_map: dict[str, Any] | None = None,
         return_beam_power: bool | None = None,
         **kwargs: Any,
@@ -98,6 +111,8 @@ class MMWDataset(DeepSense6GDataset):
             field_map=field_map or kwargs.get("field_map"),
         )
         self.path_semantic_enabled = bool(self.path_semantic_config.get("enabled", False))
+        self.physical_label_config = resolve_physical_label_config(physical_label or kwargs.get("physical_label"))
+        self.physical_label_enabled = bool(self.physical_label_config.enabled)
         self.return_beam_power = bool(
             return_beam_power
             if return_beam_power is not None
@@ -136,6 +151,7 @@ class MMWDataset(DeepSense6GDataset):
         self.return_modality_availability = bool(return_modality_availability)
         self._mmw_rows = pd.read_csv(self.root_csv, na_values="").fillna("") if self.root_csv.exists() else pd.DataFrame()
         self._beam_to_channel_path = self._load_beam_to_channel_map()
+        self._physical_label_cache: dict[str, Any] | None = self._load_or_build_physical_label_cache() if self.physical_label_enabled else None
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         sample = super().__getitem__(idx)
@@ -151,6 +167,8 @@ class MMWDataset(DeepSense6GDataset):
             sample.update(radio_payload)
         if self.path_semantic_enabled:
             sample.update(self._path_semantic_for_index(idx, sample))
+        if self.physical_label_enabled:
+            sample.update(self._physical_label_for_index(idx, sample))
         if self.return_metadata and idx < len(self._mmw_rows):
             row = self._mmw_rows.iloc[idx]
             metadata = dict(sample.get("metadata", {}))
@@ -175,6 +193,12 @@ class MMWDataset(DeepSense6GDataset):
                 metadata.setdefault("path_semantic_mode", self.path_label_builder.mode)
                 metadata.setdefault("path_semantic_available", bool(sample.get("path_valid", torch.tensor(False)).any().item()))
                 metadata.setdefault("path_descriptor_dim", int(sample.get("path_descriptor", torch.empty(0)).shape[-1]))
+            if self.physical_label_enabled:
+                metadata.setdefault("beamspace_power_available", bool(sample.get("beamspace_power_available", torch.tensor(False)).any().item()))
+                metadata.setdefault("beamspace_power_source", sample.get("beamspace_power_source", []))
+                metadata.setdefault("beamspace_power_unavailable_reason", sample.get("beamspace_power_unavailable_reason", []))
+                if isinstance(self._physical_label_cache, dict):
+                    metadata.setdefault("physical_label_stats", self._physical_label_cache.get("metadata", {}).get("stats", {}))
             if "modality_availability" in sample:
                 metadata.setdefault("modality_availability", sample["modality_availability"])
             metadata.setdefault("scenario", self.scene_slug)
@@ -253,6 +277,31 @@ class MMWDataset(DeepSense6GDataset):
                 }
             )
         return payload
+
+    def _physical_label_for_index(self, idx: int, sample: dict[str, Any]) -> dict[str, Any]:
+        if self._physical_label_cache is None:
+            labels, available, sources, reasons, diagnostics = self._build_physical_labels_for_index(idx, sample)
+        else:
+            labels = self._physical_label_cache["labels"][idx]
+            available = self._physical_label_cache["available"][idx]
+            sources = [str(item) for item in self._physical_label_cache["sources"][idx].tolist()]
+            reasons = [str(item) for item in self._physical_label_cache["reasons"][idx].tolist()]
+            diagnostics = [{"source": sources[h], "unavailable_reason": reasons[h]} for h in range(len(sources))]
+        if self.physical_label_config.required and not bool(np.asarray(available, dtype=bool).all()):
+            metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
+            sample_id = metadata.get("sample_id", f"{self.scene_slug}:{idx}")
+            missing = [str(reason) for reason, ok in zip(reasons, available) if not bool(ok)]
+            raise RuntimeError(
+                "Required beamspace physical label is unavailable: "
+                f"sample_id={sample_id}, scene={self.scene_slug}, reason={';'.join(missing)}."
+            )
+        return {
+            "beamspace_power_label": torch.tensor(np.asarray(labels, dtype=np.float32), dtype=torch.float32),
+            "beamspace_power_available": torch.tensor(np.asarray(available, dtype=bool), dtype=torch.bool),
+            "beamspace_power_source": sources,
+            "beamspace_power_unavailable_reason": reasons,
+            "beamspace_power_diagnostics": _collate_safe_value(diagnostics),
+        }
 
     def _path_semantic_for_index(self, idx: int, sample: dict[str, Any]) -> dict[str, Any]:
         future_paths = self._future_path_files_for_index(idx)
@@ -396,6 +445,145 @@ class MMWDataset(DeepSense6GDataset):
             for _, row in manifest.iterrows()
             if str(row.get("beam_power_path", "")).strip() and str(row.get("channel_path", "")).strip()
         }
+
+    def _load_or_build_physical_label_cache(self) -> dict[str, Any]:
+        cfg: BeamspacePhysicalLabelConfig = self.physical_label_config
+        classes = int(self.radio_label_builder.num_beams)
+        cache_path = physical_cache_path(
+            cache_dir=cfg.cache_dir,
+            dataset_name="mmw",
+            scene_name=self.scene_slug,
+            num_classes=classes,
+        )
+        expected = cache_metadata(
+            dataset="mmw",
+            scene=self.scene_slug,
+            num_classes=classes,
+            config=cfg,
+            sample_count=len(self),
+            horizon=int(self.num_pred),
+        )
+        if cache_path.exists():
+            try:
+                with np.load(cache_path, allow_pickle=True) as payload:
+                    metadata = loads_metadata(payload["metadata"])
+                    if metadata_matches(metadata, expected) and int(metadata.get("sample_count", -1)) == len(self):
+                        return {
+                            "labels": payload["labels"].astype(np.float32),
+                            "available": payload["available"].astype(bool),
+                            "sources": payload["sources"].astype(str),
+                            "reasons": payload["reasons"].astype(str),
+                            "metadata": metadata,
+                            "path": str(cache_path),
+                        }
+            except Exception:
+                pass
+        labels = np.zeros((len(self), int(self.num_pred), classes), dtype=np.float32)
+        available = np.zeros((len(self), int(self.num_pred)), dtype=bool)
+        sources = np.full((len(self), int(self.num_pred)), "unavailable", dtype="<U64")
+        reasons = np.full((len(self), int(self.num_pred)), "not_constructed", dtype="<U256")
+        hard = np.full((len(self), int(self.num_pred)), -100, dtype=np.int64)
+        for idx in range(len(self)):
+            target_beam = self._target_beam_for_index(idx)
+            hard[idx, : len(target_beam)] = target_beam[: int(self.num_pred)]
+            sample_stub = {"target_beam": torch.tensor(target_beam[: int(self.num_pred)], dtype=torch.long)}
+            row_labels, row_available, row_sources, row_reasons, _ = self._build_physical_labels_for_index(idx, sample_stub)
+            labels[idx] = row_labels
+            available[idx] = row_available
+            sources[idx] = np.asarray(row_sources, dtype=sources.dtype)
+            reasons[idx] = np.asarray(row_reasons, dtype=reasons.dtype)
+        stats = physical_label_stats(labels, available, hard)
+        metadata = cache_metadata(
+            dataset="mmw",
+            scene=self.scene_slug,
+            num_classes=classes,
+            config=cfg,
+            sample_count=len(self),
+            horizon=int(self.num_pred),
+            stats=stats,
+        )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            cache_path,
+            labels=labels,
+            available=available,
+            sources=sources,
+            reasons=reasons,
+            metadata=np.asarray(dumps_metadata(metadata)),
+        )
+        return {
+            "labels": labels,
+            "available": available,
+            "sources": sources,
+            "reasons": reasons,
+            "metadata": metadata,
+            "path": str(cache_path),
+        }
+
+    def _build_physical_labels_for_index(
+        self,
+        idx: int,
+        sample: dict[str, Any],
+    ) -> tuple[np.ndarray, np.ndarray, list[str], list[str], list[dict[str, Any]]]:
+        cfg = self.physical_label_config
+        classes = int(self.radio_label_builder.num_beams)
+        labels = np.zeros((int(self.num_pred), classes), dtype=np.float32)
+        available = np.zeros(int(self.num_pred), dtype=bool)
+        sources: list[str] = []
+        reasons: list[str] = []
+        diagnostics: list[dict[str, Any]] = []
+        future_power_paths = list(self.samples.future_beam_paths[idx][: self.num_pred])
+        future_path_files = self._future_path_files_for_index(idx) if cfg.uses_path else []
+        for horizon in range(int(self.num_pred)):
+            result = None
+            power_reason = ""
+            if cfg.uses_beam_power and horizon < len(future_power_paths):
+                power, power_reason = self._load_beam_power(future_power_paths[horizon])
+                if power is not None:
+                    result = beamspace_label_from_power_vector(power, num_classes=classes, config=cfg)
+            if (result is None or not result.available) and cfg.uses_path and horizon < len(future_path_files):
+                path_text = future_path_files[horizon]
+                if path_text:
+                    try:
+                        payload, file_diag = load_path_payload(joined_resource(self.data_root, path_text))
+                        path_result = beamspace_label_from_path_payload(payload, num_classes=classes, config=cfg)
+                        path_diag = dict(path_result.diagnostics)
+                        path_diag["file_diagnostics"] = file_diag
+                        result = type(path_result)(path_result.label, path_result.source, path_diag)
+                    except Exception as exc:  # noqa: BLE001
+                        result = None
+                        power_reason = str(exc)
+            if result is not None and result.available and result.label is not None:
+                labels[horizon] = result.label
+                available[horizon] = True
+                sources.append(result.source)
+                reasons.append("")
+                diagnostics.append(result.diagnostics)
+            else:
+                reason = ""
+                if result is not None:
+                    reason = str(result.diagnostics.get("unavailable_reason", ""))
+                reason = reason or power_reason or "beamspace_physical_label_unavailable"
+                sources.append(result.source if result is not None else "unavailable")
+                reasons.append(reason)
+                diagnostics.append({"available": False, "unavailable_reason": reason})
+        return labels, available, sources, reasons, diagnostics
+
+    def _target_beam_for_index(self, idx: int) -> list[int]:
+        labels: list[int] = []
+        for rel_path in list(self.samples.future_beam_paths[idx][: self.num_pred]):
+            label = self._beam_label_cache.get(str(rel_path))
+            if label is None:
+                try:
+                    power, _ = self._load_beam_power(rel_path)
+                    label = int(np.asarray(power).reshape(-1).argmax()) if power is not None else -100
+                except Exception:
+                    label = -100
+                self._beam_label_cache[str(rel_path)] = int(label)
+            labels.append(int(label))
+        while len(labels) < int(self.num_pred):
+            labels.append(-100)
+        return labels
 
 
 __all__ = ["MMWDataset"]

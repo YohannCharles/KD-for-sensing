@@ -328,18 +328,45 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
             },
         },
         "src/kd_sensing/engine/hist_beam_loso_execution.py": {
-            "max_lines": 2500,
+            "max_lines": 350,
             "forbidden": [
+                "class DefaultHistBeamLosoStageExecutor",
                 "def execute_loso_stage_runs",
                 "def ensure_mmw_radar_csv_for_preflight",
                 "def row_eligibility",
                 "def matrix_summary",
+                "def _summary_row",
             ],
             "helpers": {
                 "src/kd_sensing/engine/hist_beam_loso_stages.py": "def execute_loso_stage_runs",
                 "src/kd_sensing/engine/hist_beam_loso_preflight.py": "def ensure_mmw_radar_csv_for_preflight",
                 "src/kd_sensing/engine/hist_beam_loso_summary.py": "def row_eligibility",
                 "src/kd_sensing/engine/hist_beam_loso_matrix.py": "def matrix_summary",
+                "src/kd_sensing/engine/hist_beam_loso_records.py": "def _base_run_record",
+                "src/kd_sensing/engine/hist_beam_loso_artifacts.py": "def write_loso_execute_summary",
+                "src/kd_sensing/engine/hist_beam_loso_config.py": "def _stage_cfg",
+            },
+        },
+        "src/kd_sensing/data/mmw/preparation.py": {
+            "max_lines": 250,
+            "forbidden": [
+                "class MMWPreparationConfig",
+                "class SensorFrame",
+                "def index_sensor_frames",
+                "def build_sequence_rows",
+                "def derive_beam_power",
+                "def _write_manifest_csv",
+                "def build_relative_geometry",
+                "def write_data_availability",
+            ],
+            "helpers": {
+                "src/kd_sensing/data/mmw/preparation_config.py": "class MMWPreparationConfig",
+                "src/kd_sensing/data/mmw/preparation_audit.py": "def validate_zip_inputs",
+                "src/kd_sensing/data/mmw/preparation_index.py": "class PreparedFrame",
+                "src/kd_sensing/data/mmw/preparation_splits.py": "def split_sequence_rows",
+                "src/kd_sensing/data/mmw/preparation_beam_power.py": "def derive_beam_power",
+                "src/kd_sensing/data/mmw/preparation_writers.py": "def build_prepared_artifacts",
+                "src/kd_sensing/data/mmw/preparation_geometry.py": "def build_relative_geometry",
             },
         },
     }
@@ -350,6 +377,53 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
         assert [snippet for snippet in expectation["forbidden"] if snippet in text] == []
         for helper, snippet in expectation["helpers"].items():
             assert snippet in (ROOT / helper).read_text(encoding="utf-8")
+
+
+def test_first_batch_hotspot_facades_are_not_internal_helper_import_sources():
+    forbidden = {
+        "kd_sensing.engine.hist_beam_loso_execution": {
+            "_stage_cfg": "kd_sensing.engine.hist_beam_loso_config",
+            "_prototype_decision": "kd_sensing.engine.hist_beam_loso_config",
+            "_few_shot_adaptation_loaders": "kd_sensing.engine.hist_beam_loso_stages",
+        },
+        "kd_sensing.data.mmw.preparation": {
+            "build_sequence_rows": "kd_sensing.data.mmw.preparation_splits",
+            "split_sequence_rows": "kd_sensing.data.mmw.preparation_splits",
+            "compute_split_leakage_diagnostics": "kd_sensing.data.mmw.preparation_splits",
+            "derive_beam_power_from_file": "kd_sensing.data.mmw.preparation_beam_power",
+            "derive_beam_power": "kd_sensing.data.mmw.preparation_beam_power",
+            "index_sensor_frames": "kd_sensing.data.mmw.preparation_index",
+            "index_channel_files": "kd_sensing.data.mmw.preparation_index",
+            "validate_zip_inputs": "kd_sensing.data.mmw.preparation_audit",
+            "write_data_availability": "kd_sensing.data.mmw.preparation_audit",
+        },
+    }
+    public_compat_allowed = {
+        ROOT / "src" / "kd_sensing" / "engine" / "hist_beam_loso_execution.py",
+        ROOT / "src" / "kd_sensing" / "data" / "mmw" / "preparation.py",
+        ROOT / "src" / "kd_sensing" / "data" / "mmw" / "__init__.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "hist_beam_loso.py",
+        ROOT / "scripts" / "mmw" / "prepare_town10_skybridge.py",
+        ROOT / "scripts" / "mmw" / "build_sequence_splits_from_manifest.py",
+    }
+    violations = []
+
+    for path in (ROOT / "src").rglob("*.py"):
+        if path in public_compat_allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.module not in forbidden:
+                continue
+            imported = {alias.name for alias in node.names}
+            for name, recommended in forbidden[node.module].items():
+                if name in imported:
+                    rel = path.relative_to(ROOT).as_posix()
+                    violations.append(
+                        f"{rel} imports {name} from {node.module}; import from {recommended} instead."
+                    )
+
+    assert violations == []
 
 
 def test_duplicate_manifest_fallback_wrapper_is_not_reintroduced():

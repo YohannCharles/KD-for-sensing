@@ -175,6 +175,27 @@ def test_few_shot_sampler_prefers_radio_semantic_stratification():
     assert len({item["radio_semantic_label"] for item in sampled.manifest["labeled_samples"]}) == 3
 
 
+def test_few_shot_sampler_can_use_beam_frequency_stratification():
+    beams = [48] * 6 + [50] * 5 + [47] * 4 + [49] * 3 + [34] * 2 + [1]
+    records = [
+        {"sample_id": f"s{i}", "beam": beam, "radio_semantic_label": i % 2, "relative_azimuth_bin": i % 3}
+        for i, beam in enumerate(beams)
+    ]
+
+    sampled = sample_few_shot_records(
+        records,
+        budget=5,
+        seed=2,
+        group_size=8,
+        stratification="beam_frequency",
+    )
+
+    sampled_beams = [item["beam"] for item in sampled.manifest["labeled_samples"]]
+    assert sampled.manifest["stratification"] == "beam_frequency"
+    assert sampled.manifest["protocol"] == "beam_frequency_stratified_few_shot"
+    assert set(sampled_beams[:4]) == {47, 48, 49, 50}
+
+
 def test_few_shot_sampler_resolves_explicit_and_power_path_labels(tmp_path: Path):
     root = tmp_path / "scenario34"
     root.mkdir()
@@ -1329,12 +1350,16 @@ def test_loso_stage_local_helpers_delay_target_dataset_construction(monkeypatch)
         "data": {"dataset": {"type": "mmw"}, "dataloader": {"batch_size": 1, "num_workers": 0}},
         "model": {"student": {"modalities": ["image", "gps", "mmwave"]}},
         "experiment": {"task": "fusion"},
+        "hist_beam": {"source_sampling": {"scene_balance": {"enabled": True}}},
     }
     fold = {"dataset_family": "MMW", "target_scene": "target", "source_scenes": ["source_a", "source_b"]}
 
     source = build_loso_source_train_loader(cfg, fold)
 
-    assert set(source) >= {"source_train", "normalization_kwargs"}
+    assert set(source) >= {"source_train", "normalization_kwargs", "source_sampling"}
+    assert source["source_sampling"]["scene_balance_enabled"] is True
+    assert source["source_sampling"]["strategy"] == "scene_balanced_weighted_sampler"
+    assert type(source["source_train"].sampler).__name__ == "WeightedRandomSampler"
     assert calls == [("source_a", "train"), ("source_b", "train")]
 
     calls.clear()

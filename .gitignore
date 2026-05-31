@@ -55,6 +55,7 @@ outputs/
 results/
 归档/
 AI优化建议/
+cache/
 # Generated model/checkpoint artifacts
 *.ckpt
 *.pt

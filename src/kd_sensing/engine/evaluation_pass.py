@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from kd_sensing.engine.batch import (
+    prepare_beamspace_power_targets,
     prepare_beam_power_targets,
     prepare_history_anchor_inputs,
     prepare_path_descriptors,
@@ -88,6 +89,12 @@ class EvaluationPassResult:
     path_descriptors: torch.Tensor | None
     path_valid: torch.Tensor | None
     beam_power: torch.Tensor | None
+    shared_logits: torch.Tensor | None
+    alpha: torch.Tensor | None
+    delta_logits_private: torch.Tensor | None
+    pred_beamspace_power: torch.Tensor | None
+    beamspace_power_label: torch.Tensor | None
+    beamspace_power_mask: torch.Tensor | None
     metadata: list[dict[str, Any]]
     objective_metadata: dict[str, Any]
     enabled_modalities: tuple[str, ...]
@@ -149,6 +156,12 @@ def run_evaluation_pass(
     all_path_descriptors = []
     all_path_valid = []
     all_beam_power = []
+    all_shared_logits = []
+    all_alpha = []
+    all_delta_logits_private = []
+    all_pred_beamspace_power = []
+    all_beamspace_power_label = []
+    all_beamspace_power_mask = []
     lidar_quality = LidarQualityAccumulator()
     saw_lidar = False
 
@@ -198,6 +211,12 @@ def run_evaluation_pass(
                 device=device,
                 non_blocking=non_blocking,
             )
+            beamspace_targets = prepare_beamspace_power_targets(
+                batch,
+                num_pred=num_pred,
+                device=device,
+                non_blocking=non_blocking,
+            )
             if radio_labels is not None:
                 all_radio_labels.append(radio_labels.detach().cpu())
             if path_labels is not None:
@@ -207,6 +226,9 @@ def run_evaluation_pass(
                 all_path_valid.append(path_targets[1].detach().cpu())
             if beam_power is not None:
                 all_beam_power.append(beam_power.detach().cpu())
+            if beamspace_targets is not None:
+                all_beamspace_power_label.append(beamspace_targets[0].detach().cpu())
+                all_beamspace_power_mask.append(beamspace_targets[1].detach().cpu())
             if "los_label" in auxiliary_targets:
                 all_los_bucket_labels.append(auxiliary_targets["los_label"].detach().cpu())
             prediction_targets = prepare_prediction_targets(
@@ -294,6 +316,15 @@ def run_evaluation_pass(
             residual_logits = step.model_output.diagnostics.get("residual_logits")
             if torch.is_tensor(residual_logits):
                 all_residual_logits.append(residual_logits.detach().cpu())
+            for key, bucket in (
+                ("logits_shared", all_shared_logits),
+                ("alpha", all_alpha),
+                ("delta_logits_private", all_delta_logits_private),
+                ("pred_beamspace_power", all_pred_beamspace_power),
+            ):
+                value = step.model_output.diagnostics.get(key)
+                if torch.is_tensor(value):
+                    bucket.append(value.detach().cpu())
 
     outputs_t = torch.cat(all_outputs, dim=0)
     labels_t = torch.cat(all_labels, dim=0)
@@ -319,6 +350,12 @@ def run_evaluation_pass(
     path_descriptors_t = torch.cat(all_path_descriptors, dim=0) if all_path_descriptors else None
     path_valid_t = torch.cat(all_path_valid, dim=0) if all_path_valid else None
     beam_power_t = torch.cat(all_beam_power, dim=0) if all_beam_power else None
+    shared_logits_t = torch.cat(all_shared_logits, dim=0) if all_shared_logits else None
+    alpha_t = torch.cat(all_alpha, dim=0) if all_alpha else None
+    delta_logits_private_t = torch.cat(all_delta_logits_private, dim=0) if all_delta_logits_private else None
+    pred_beamspace_power_t = torch.cat(all_pred_beamspace_power, dim=0) if all_pred_beamspace_power else None
+    beamspace_power_label_t = torch.cat(all_beamspace_power_label, dim=0) if all_beamspace_power_label else None
+    beamspace_power_mask_t = torch.cat(all_beamspace_power_mask, dim=0) if all_beamspace_power_mask else None
     input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
     last_beams_t = torch.cat(all_last_beams, dim=0) if all_last_beams else None
     residual_logits_t = torch.cat(all_residual_logits, dim=0) if all_residual_logits else None
@@ -336,6 +373,19 @@ def run_evaluation_pass(
             )
         )
         metrics.update(beam_histogram_metrics(labels_t, outputs_t, num_classes=num_classes, prefix="target_test"))
+        if shared_logits_t is not None:
+            metrics.update(_v7_evaluation_metrics(
+                final_logits=outputs_t,
+                shared_logits=shared_logits_t,
+                labels=labels_t,
+                beam_power=beam_power_t,
+                alpha=alpha_t,
+                delta_logits_private=delta_logits_private_t,
+                pred_beamspace_power=pred_beamspace_power_t,
+                beamspace_power_label=beamspace_power_label_t,
+                beamspace_power_mask=beamspace_power_mask_t,
+                k_values=cfg.get("evaluation", {}).get("k_values", [1, 3, 5]),
+            ))
     if objective in {"current_beam_selection", "selection_multitask"} and all_los_bucket_labels:
         metrics["los_buckets"] = _beam_metrics_by_los_bucket(
             outputs_t,
@@ -417,6 +467,12 @@ def run_evaluation_pass(
         path_descriptors=path_descriptors_t,
         path_valid=path_valid_t,
         beam_power=beam_power_t,
+        shared_logits=shared_logits_t,
+        alpha=alpha_t,
+        delta_logits_private=delta_logits_private_t,
+        pred_beamspace_power=pred_beamspace_power_t,
+        beamspace_power_label=beamspace_power_label_t,
+        beamspace_power_mask=beamspace_power_mask_t,
         metadata=all_metadata,
         objective_metadata=objective_metadata,
         enabled_modalities=enabled_modalities,
@@ -524,6 +580,90 @@ def _hist_beam_metrics_enabled(cfg: dict[str, Any]) -> bool:
     if isinstance(hist_cfg, dict) and hist_cfg.get("enabled") is not False:
         return True
     return cfg.get("model", {}).get("student", {}).get("type") == "hist_beam_fusion"
+
+
+def _v7_evaluation_metrics(
+    *,
+    final_logits: torch.Tensor,
+    shared_logits: torch.Tensor,
+    labels: torch.Tensor,
+    beam_power: torch.Tensor | None,
+    alpha: torch.Tensor | None,
+    delta_logits_private: torch.Tensor | None,
+    pred_beamspace_power: torch.Tensor | None,
+    beamspace_power_label: torch.Tensor | None,
+    beamspace_power_mask: torch.Tensor | None,
+    k_values: list[int] | tuple[int, ...],
+) -> dict[str, Any]:
+    shared_topk, shared_total = calculate_topk_accuracy(shared_logits, labels, k_values)
+    final_topk, final_total = calculate_topk_accuracy(final_logits, labels, k_values)
+    metrics: dict[str, Any] = {
+        "shared_topk": {str(k): v.tolist() for k, v in shared_topk.items()},
+        "final_topk": {str(k): v.tolist() for k, v in final_topk.items()},
+        "shared_total": shared_total.tolist(),
+        "final_total": final_total.tolist(),
+    }
+    for k in (1, 3):
+        if k in shared_topk:
+            metrics[f"shared_top{k}"] = _topk_average(shared_topk[k], shared_total)
+        if k in final_topk:
+            metrics[f"final_top{k}"] = _topk_average(final_topk[k], final_total)
+    shared_power = beam_power_metrics(
+        shared_logits.argmax(dim=-1).reshape(-1),
+        labels.reshape(-1),
+        beam_power.reshape(-1, beam_power.shape[-1]) if beam_power is not None else None,
+    )
+    final_power = beam_power_metrics(
+        final_logits.argmax(dim=-1).reshape(-1),
+        labels.reshape(-1),
+        beam_power.reshape(-1, beam_power.shape[-1]) if beam_power is not None else None,
+    )
+    metrics.update(_prefix_metrics(shared_power, "shared", rename={"normalized_received_power": "nrp"}))
+    metrics.update(_prefix_metrics(final_power, "final", rename={"normalized_received_power": "nrp"}))
+    if alpha is not None:
+        metrics["alpha_mean"] = float(alpha.float().mean().item())
+        metrics["alpha_std"] = float(alpha.float().std(unbiased=False).item())
+    if delta_logits_private is not None:
+        metrics["delta_norm"] = float(delta_logits_private.float().norm(dim=-1).mean().item())
+    if pred_beamspace_power is not None and beamspace_power_label is not None:
+        phys = _physical_kl_metric(pred_beamspace_power, beamspace_power_label, beamspace_power_mask)
+        metrics.update(phys)
+    return metrics
+
+
+def _topk_average(values: torch.Tensor, total: torch.Tensor) -> float:
+    values_t = torch.as_tensor(values, dtype=torch.float32)
+    total_t = torch.as_tensor(total, dtype=torch.float32)
+    valid = total_t.gt(0)
+    return float(values_t[valid].mean().item()) if torch.any(valid) else 0.0
+
+
+def _prefix_metrics(metrics: dict[str, Any], prefix: str, *, rename: dict[str, str] | None = None) -> dict[str, Any]:
+    renamed = rename or {}
+    return {f"{prefix}_{renamed.get(key, key)}": value for key, value in metrics.items()}
+
+
+def _physical_kl_metric(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor | None,
+) -> dict[str, Any]:
+    pred_t = pred.to(torch.float32)
+    target_t = target.to(torch.float32)
+    valid = torch.isfinite(target_t).all(dim=-1) & target_t.sum(dim=-1).gt(0)
+    if mask is not None:
+        valid = valid & mask.to(torch.bool)
+    if not torch.any(valid):
+        return {"phys_kl_available": False, "phys_kl_unavailable_reason": "beamspace_power_label_unavailable"}
+    target_t = target_t / target_t.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    pred_t = pred_t.clamp_min(1e-12)
+    pred_t = pred_t / pred_t.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    kl = torch.sum(target_t[valid] * (torch.log(target_t[valid].clamp_min(1e-12)) - torch.log(pred_t[valid])), dim=-1)
+    return {
+        "phys_kl_available": True,
+        "phys_kl": float(kl.mean().item()),
+        "phys_kl_coverage": float(valid.float().mean().item()),
+    }
 
 
 def _metadata_rows_from_batch(metadata: Any) -> list[dict[str, Any]]:

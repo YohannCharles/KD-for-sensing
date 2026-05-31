@@ -1,7 +1,7 @@
 # legacy-kd-isolation Specification
 
 ## Purpose
-TBD - created by archiving change isolate-legacy-kd-mainline. Update Purpose after archive.
+定义 legacy teacher-student KD 与当前 no-KD、HiST-Beam、MMW sensor-assisted、history-anchored residual 和 target adaptation 主线的隔离边界，确保历史 KD 仅作为显式选择的复现或补充 baseline。
 ## Requirements
 ### Requirement: Legacy KD 隔离边界
 系统 MUST 将 teacher-student 知识蒸馏运行时与当前 active mainline 方法隔离。默认训练、评估、HiST-Beam LOSO、history-anchored residual、adapter/prototype/calibration 和 quick validation 路径 MUST 不构建 frozen teacher、不解析 teacher checkpoint、不计算 KD loss，除非用户显式选择 legacy KD 或 optional KD baseline。
@@ -65,4 +65,3 @@ LLM teacher 蒸馏、privileged modality distillation、self-distillation regula
 - **WHEN** 开发者新增一个非历史 KD 方法并希望参与主结论
 - **THEN** 该方法 MUST 有对应 OpenSpec proposal/spec/tasks
 - **AND** spec MUST 明确 teacher 信息来源、target label/power 使用边界和 `main_conclusion_eligible` 条件
-

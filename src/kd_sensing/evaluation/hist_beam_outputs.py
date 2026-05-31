@@ -229,6 +229,7 @@ def write_hist_beam_predictions(
     last_beams: torch.Tensor | None = None,
     residual_logits: torch.Tensor | None = None,
     residual_labels: torch.Tensor | None = None,
+    shared_logits: torch.Tensor | None = None,
 ) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -238,6 +239,13 @@ def write_hist_beam_predictions(
         labels = labels.unsqueeze(1)
     top_values = torch.topk(outputs, k=min(int(top_k), outputs.shape[-1]), dim=-1).indices.detach().cpu()
     pred = torch.argmax(outputs, dim=-1).detach().cpu()
+    shared_pred = None
+    shared_top_values = None
+    if shared_logits is not None:
+        if shared_logits.ndim == 2:
+            shared_logits = shared_logits.unsqueeze(1)
+        shared_top_values = torch.topk(shared_logits, k=min(int(top_k), shared_logits.shape[-1]), dim=-1).indices.detach().cpu()
+        shared_pred = torch.argmax(shared_logits, dim=-1).detach().cpu()
     labels_cpu = labels.detach().cpu()
     last_beams_cpu = _ensure_prediction_horizon(last_beams.detach().cpu(), labels_cpu.shape[1]) if last_beams is not None else None
     residual_labels_cpu = (
@@ -291,6 +299,10 @@ def write_hist_beam_predictions(
                 "pred_beam",
                 "predicted_beam",
                 "topk_predictions",
+                "final_predicted_beam",
+                "shared_predicted_beam",
+                "final_topk",
+                "shared_topk",
                 "last_beam",
                 "true_residual",
                 "pred_residual",
@@ -325,6 +337,10 @@ def write_hist_beam_predictions(
                         "topk_predictions": json.dumps(
                             [int(item) for item in top_values[row_idx, horizon].tolist()]
                         ),
+                        "final_predicted_beam": int(pred[row_idx, horizon].item()),
+                        "shared_predicted_beam": _optional_tensor_value(shared_pred, row_idx, horizon),
+                        "final_topk": json.dumps([int(item) for item in top_values[row_idx, horizon].tolist()]),
+                        "shared_topk": _optional_tensor_list(shared_top_values, row_idx, horizon),
                         "last_beam": _optional_tensor_value(last_beams_cpu, row_idx, horizon),
                         "true_residual": _optional_tensor_value(residual_labels_cpu, row_idx, horizon),
                         "pred_residual": _optional_tensor_value(residual_pred, row_idx, horizon),

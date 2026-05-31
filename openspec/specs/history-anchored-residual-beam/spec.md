@@ -1,7 +1,7 @@
 # history-anchored-residual-beam Specification
 
 ## Purpose
-TBD - created by archiving change add-history-anchored-residual-beam. Update Purpose after archive.
+定义 history-anchored residual beam 预测的输入边界、环形 residual label、绝对 beam 重建评估、诊断 baseline 和 quick validation 矩阵，确保该实验路径显式 opt-in 且不污染默认 HiST-Beam/P3 输入语义。
 ## Requirements
 ### Requirement: History-anchored beam 输入契约
 系统 MUST 支持一个显式 opt-in 的 history-anchored beam prediction profile。启用该 profile 后，模型训练和评估 MUST 能消费样本历史窗口中的 `input_beam` 或等价 beam history；未启用该 profile 时，现有 sensor-assisted 和普通 HiST-Beam 输入语义 MUST 保持不变。
@@ -89,4 +89,3 @@ history-anchored summary MUST 输出足以判断历史锚定是否解决 absolut
 - **WHEN** 系统生成默认 sensor-assisted quick validation plan
 - **THEN** history-anchored residual 变体 MUST NOT 被静默加入默认 plan
 - **AND** 只有用户显式选择 history-anchored profile 时才生成这些 run
-

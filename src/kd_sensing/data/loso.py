@@ -205,6 +205,7 @@ def sample_few_shot_records(
     num_classes: int = 64,
     radio_label_key: str = "radio_semantic_label",
     radio_builder_config: Mapping[str, Any] | None = None,
+    stratification: str | None = None,
 ) -> FewShotSampling:
     requested = int(budget)
     if requested not in SUPPORTED_LABEL_BUDGETS:
@@ -247,49 +248,113 @@ def sample_few_shot_records(
         )
 
     rng = np.random.default_rng(int(seed))
-    radio_to_indices: dict[int, list[int]] = {}
-    for index, record in enumerate(records):
-        radio_label, radio_source = _resolve_radio_label_with_source(
-            record,
-            radio_label_key=radio_label_key,
-            label_key=label_key,
-            data_root=data_root,
-            num_classes=num_classes,
-            group_size=group_size,
-            radio_builder_config=radio_builder_config,
-        )
-        if radio_label is None:
-            continue
-        radio_to_indices.setdefault(int(radio_label), []).append(index)
-    if radio_to_indices:
-        selected: list[int] = []
-        for radio_label in sorted(radio_to_indices):
-            if len(selected) >= requested:
-                break
-            choices = list(radio_to_indices[radio_label])
-            rng.shuffle(choices)
-            selected.append(int(choices[0]))
-        if len(selected) < requested:
-            remaining = [index for index in range(total) if index not in set(selected)]
-            rng.shuffle(remaining)
-            selected.extend(int(index) for index in remaining[: requested - len(selected)])
-        selected = sorted(selected[:requested])
-        unlabeled = tuple(index for index in range(total) if index not in set(selected))
-        return _few_shot_result(
-            tuple(selected),
-            unlabeled,
+    requested_stratification = _normalize_few_shot_stratification(stratification)
+    if requested_stratification in {"auto", "radio_semantic"}:
+        radio_to_indices: dict[int, list[int]] = {}
+        for index, record in enumerate(records):
+            radio_label, radio_source = _resolve_radio_label_with_source(
+                record,
+                radio_label_key=radio_label_key,
+                label_key=label_key,
+                data_root=data_root,
+                num_classes=num_classes,
+                group_size=group_size,
+                radio_builder_config=radio_builder_config,
+            )
+            if radio_label is None:
+                continue
+            radio_to_indices.setdefault(int(radio_label), []).append(index)
+        if radio_to_indices:
+            selected = _sample_one_per_bucket(
+                radio_to_indices,
+                requested=requested,
+                total=total,
+                rng=rng,
+                frequency_order=False,
+            )
+            unlabeled = tuple(index for index in range(total) if index not in set(selected))
+            return _few_shot_result(
+                tuple(selected),
+                unlabeled,
+                records,
+                requested,
+                seed,
+                group_size,
+                None,
+                sample_id_key,
+                label_key=label_key,
+                data_root=data_root,
+                num_classes=num_classes,
+                stratification="radio_semantic",
+                radio_label_key=radio_label_key,
+                radio_builder_config=radio_builder_config,
+            )
+        if requested_stratification == "radio_semantic":
+            return _few_shot_fallback_result(
+                records,
+                requested=requested,
+                seed=seed,
+                group_size=group_size,
+                sample_id_key=sample_id_key,
+                label_key=label_key,
+                data_root=data_root,
+                num_classes=num_classes,
+                radio_label_key=radio_label_key,
+                radio_builder_config=radio_builder_config,
+                degrade_reason="requested_radio_semantic_stratification_unavailable",
+                rng=rng,
+            )
+
+    if requested_stratification in {"beam_frequency", "beam_label"}:
+        beam_to_indices: dict[int, list[int]] = {}
+        for index, record in enumerate(records):
+            label = _resolve_beam_label(
+                record,
+                label_key=label_key,
+                data_root=data_root,
+                num_classes=num_classes,
+            )
+            if label is None:
+                continue
+            beam_to_indices.setdefault(int(label), []).append(index)
+        if beam_to_indices:
+            selected = _sample_one_per_bucket(
+                beam_to_indices,
+                requested=requested,
+                total=total,
+                rng=rng,
+                frequency_order=True,
+            )
+            unlabeled = tuple(index for index in range(total) if index not in set(selected))
+            return _few_shot_result(
+                tuple(selected),
+                unlabeled,
+                records,
+                requested,
+                seed,
+                group_size,
+                None,
+                sample_id_key,
+                label_key=label_key,
+                data_root=data_root,
+                num_classes=num_classes,
+                stratification="beam_frequency",
+                radio_label_key=radio_label_key,
+                radio_builder_config=radio_builder_config,
+            )
+        return _few_shot_fallback_result(
             records,
-            requested,
-            seed,
-            group_size,
-            None,
-            sample_id_key,
+            requested=requested,
+            seed=seed,
+            group_size=group_size,
+            sample_id_key=sample_id_key,
             label_key=label_key,
             data_root=data_root,
             num_classes=num_classes,
-            stratification="radio_semantic",
             radio_label_key=radio_label_key,
             radio_builder_config=radio_builder_config,
+            degrade_reason="requested_beam_frequency_stratification_unavailable",
+            rng=rng,
         )
 
     group_to_indices: dict[tuple[int, Any], list[int]] = {}
@@ -305,18 +370,13 @@ def sample_few_shot_records(
         azimuth_bin = _clean_group_value(record.get("relative_azimuth_bin"))
         used_azimuth = used_azimuth or azimuth_bin is not None
         group_to_indices.setdefault((group, azimuth_bin), []).append(index)
-    selected: list[int] = []
-    for group in sorted(group_to_indices, key=lambda item: (item[0], str(item[1]))):
-        if len(selected) >= requested:
-            break
-        choices = list(group_to_indices[group])
-        rng.shuffle(choices)
-        selected.append(int(choices[0]))
-    if len(selected) < requested:
-        remaining = [index for index in range(total) if index not in set(selected)]
-        rng.shuffle(remaining)
-        selected.extend(int(index) for index in remaining[: requested - len(selected)])
-    selected = sorted(selected[:requested])
+    selected = _sample_one_per_bucket(
+        group_to_indices,
+        requested=requested,
+        total=total,
+        rng=rng,
+        frequency_order=requested_stratification == "coarse_frequency",
+    )
     unlabeled = tuple(index for index in range(total) if index not in set(selected))
     return _few_shot_result(
         tuple(selected),
@@ -404,9 +464,94 @@ def _few_shot_result(
 def _few_shot_protocol(stratification: str) -> str:
     if stratification == "radio_semantic":
         return "radio_semantic_stratified_few_shot"
+    if stratification == "beam_frequency":
+        return "beam_frequency_stratified_few_shot"
     if stratification == "coarse_sector_relative_azimuth":
         return "coarse_sector_relative_azimuth_stratified_few_shot"
     return "coarse_group_stratified_few_shot"
+
+
+def _normalize_few_shot_stratification(value: str | None) -> str:
+    normalized = str(value or "auto").strip().lower().replace("-", "_")
+    aliases = {
+        "": "auto",
+        "default": "auto",
+        "label": "beam_frequency",
+        "beam": "beam_frequency",
+        "beam_balanced": "beam_frequency",
+        "beam_class": "beam_frequency",
+        "coarse": "coarse_group",
+        "coarse_group_only": "coarse_group",
+        "coarse_sector": "coarse_group",
+        "coarse_sector_relative_azimuth": "coarse_group",
+        "radio": "radio_semantic",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _sample_one_per_bucket(
+    buckets: Mapping[Any, list[int]],
+    *,
+    requested: int,
+    total: int,
+    rng: np.random.Generator,
+    frequency_order: bool,
+) -> list[int]:
+    selected: list[int] = []
+    bucket_keys = sorted(
+        buckets,
+        key=(lambda item: (-len(buckets[item]), str(item))) if frequency_order else (lambda item: str(item)),
+    )
+    for key in bucket_keys:
+        if len(selected) >= requested:
+            break
+        choices = list(buckets[key])
+        rng.shuffle(choices)
+        selected.append(int(choices[0]))
+    if len(selected) < requested:
+        selected_set = set(selected)
+        remaining = [index for index in range(total) if index not in selected_set]
+        rng.shuffle(remaining)
+        selected.extend(int(index) for index in remaining[: requested - len(selected)])
+    return sorted(selected[:requested])
+
+
+def _few_shot_fallback_result(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    requested: int,
+    seed: int,
+    group_size: int,
+    sample_id_key: str,
+    label_key: str,
+    data_root: str | Path | None,
+    num_classes: int,
+    radio_label_key: str,
+    radio_builder_config: Mapping[str, Any] | None,
+    degrade_reason: str,
+    rng: np.random.Generator,
+) -> FewShotSampling:
+    total = len(records)
+    selected = list(range(total))
+    rng.shuffle(selected)
+    selected = sorted(selected[:requested])
+    unlabeled = tuple(index for index in range(total) if index not in set(selected))
+    return _few_shot_result(
+        tuple(selected),
+        unlabeled,
+        records,
+        requested,
+        seed,
+        group_size,
+        degrade_reason,
+        sample_id_key,
+        label_key=label_key,
+        data_root=data_root,
+        num_classes=num_classes,
+        stratification="random_fallback",
+        radio_label_key=radio_label_key,
+        radio_builder_config=radio_builder_config,
+    )
 
 
 def _target_split_metadata(

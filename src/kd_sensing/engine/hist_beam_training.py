@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from kd_sensing.engine.batch import (
+    prepare_beamspace_power_targets,
     prepare_history_anchor_inputs,
     prepare_path_descriptors,
     prepare_path_semantic_labels,
@@ -47,6 +48,7 @@ class HistBeamTrainingExtension(TrainingExtension):
             downsample_ratio=int(model_cfg.get("downsample_ratio", context.model_cfg.get("downsample_ratio", 1))),
             device=context.device,
             enabled=True,
+            include_residual_labels=False,
             non_blocking=context.non_blocking,
             sample_ids=_sample_ids_from_batch(batch),
         )
@@ -73,6 +75,12 @@ class HistBeamTrainingExtension(TrainingExtension):
             device=context.device,
             non_blocking=context.non_blocking,
         )
+        beamspace_targets = prepare_beamspace_power_targets(
+            batch_state.batch,
+            num_pred=context.num_pred,
+            device=context.device,
+            non_blocking=context.non_blocking,
+        )
         result = compute_hist_beam_loss(
             output,
             batch_state.labels,
@@ -92,6 +100,9 @@ class HistBeamTrainingExtension(TrainingExtension):
             ),
             path_descriptors=path_targets[0] if path_targets is not None else None,
             path_descriptor_mask=path_targets[1] if path_targets is not None else None,
+            beamspace_power_labels=beamspace_targets[0] if beamspace_targets is not None else None,
+            beamspace_power_mask=beamspace_targets[1] if beamspace_targets is not None else None,
+            current_epoch=batch_state.epoch,
             num_classes=context.num_classes,
         )
         zero = batch_state.student_logits.sum() * 0.0
