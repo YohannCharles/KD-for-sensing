@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from kd_sensing.engine.hist_beam_loso_artifacts import _write_json
 from kd_sensing.engine.hist_beam_loso_config import _source_variant_for
+from kd_sensing.engine.hist_beam_image_only import IMAGE_ONLY_VARIANTS
 
 
 
@@ -61,6 +62,9 @@ def _run_identity(run: Mapping[str, Any]) -> dict[str, Any]:
         "v9_group_ids",
         "v9_group_c_enabled",
         "experiment_purpose",
+        "disabled_modalities",
+        "protocol_flags",
+        "probe_mode",
     ):
         if run.get(key) is not None:
             identity[key] = run.get(key)
@@ -68,6 +72,14 @@ def _run_identity(run: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _run_id(run: Mapping[str, Any]) -> str:
+    variant = str(run.get("variant"))
+    if variant in IMAGE_ONLY_VARIANTS:
+        return {
+            "image_source_only": "I0_source_only",
+            "image_target_linear_probe": "I1_linear_probe",
+            "image_v8_target_prior_head": "I2_v8_target_prior",
+            "image_v9_sector_proto": "I3_v9_sector_proto",
+        }[variant]
     sources = "-".join(str(item) for item in run.get("source_scenes", []))
     return (
         f"{run.get('fold', 'fold')}"
@@ -79,6 +91,8 @@ def _run_id(run: Mapping[str, Any]) -> str:
 
 
 def _run_dir(output_dir: Path, run_id: str) -> Path:
+    if str(run_id) in {"I0_source_only", "I1_linear_probe", "I2_v8_target_prior", "I3_v9_sector_proto"}:
+        return output_dir / str(run_id)
     return output_dir / "runs" / run_id
 
 

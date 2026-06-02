@@ -5,7 +5,7 @@ from typing import Any
 
 from kd_sensing.data.loso import SUPPORTED_LABEL_BUDGETS
 from kd_sensing.engine.hist_beam_loso_artifacts import _csv_header, _csv_records, _numbered_columns, _resolve_csv_path, _resolve_resource_path, _write_json
-from kd_sensing.engine.hist_beam_loso_config import SUPPORTED_VARIANTS, _cfg_for_scene, _cpu_thread_config, _enabled_modalities, _excluded_sensitive_fields, _modality_profile_metadata
+from kd_sensing.engine.hist_beam_loso_config import _cfg_for_scene, _cpu_thread_config, _enabled_modalities, _excluded_sensitive_fields, _modality_profile_metadata, validate_loso_variant
 from kd_sensing.engine.hist_beam_loso_matrix import matrix_summary
 from kd_sensing.engine.hist_beam_loso_records import _run_identity, _utc_now
 from kd_sensing.preprocessing.mmw_radar import materialize_mmw_radar_split_csv
@@ -46,8 +46,10 @@ def run_loso_execute_preflight(plan: dict[str, Any], cfg: dict[str, Any], output
     if not runs:
         errors.append(preflight_error("matrix", "runs", None, "LOSO execute matrix contains no runs.", None))
     for variant in matrix["variants"]:
-        if variant not in SUPPORTED_VARIANTS:
-            errors.append(preflight_error("matrix", "variant", None, f"Unsupported variant '{variant}'.", None))
+        try:
+            validate_loso_variant(variant)
+        except ValueError as exc:
+            errors.append(preflight_error("matrix", "variant", None, str(exc), None))
     for budget in matrix["budgets"]:
         if int(budget) not in SUPPORTED_LABEL_BUDGETS:
             errors.append(

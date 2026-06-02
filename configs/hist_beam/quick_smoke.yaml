@@ -37,7 +37,7 @@ model:
     num_classes: 64
     num_pred: 1
     group_size: 8
-    variant: v3_decoupled
+    variant: v1_hierarchical
     num_heads: 4
     num_layers: 1
     image_encoder:
@@ -50,7 +50,7 @@ model:
     num_classes: 64
     num_pred: 1
     group_size: 8
-    variant: v3_decoupled
+    variant: v1_hierarchical
     num_heads: 4
     num_layers: 1
     image_encoder:
@@ -61,9 +61,6 @@ hist_beam:
   loss_weights:
     hierarchical: 1.0
     flat: 0.2
-    orthogonality: 0.01
-    scene_confusion: 0.05
-    scene_private: 0.05
 distillation:
   type: no_kd
   teacher_model_name: null

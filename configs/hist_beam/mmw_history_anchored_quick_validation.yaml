@@ -109,9 +109,6 @@ hist_beam:
   loss_weights:
     hierarchical: 1.0
     flat: 0.0
-    orthogonality: 0.01
-    scene_confusion: 0.05
-    scene_private: 0.05
     radio_semantic: 0.0
     lambda_path: 0.0
     lambda_path_reg: 0.0
@@ -160,7 +157,7 @@ loso:
   data_availability_path: dataset/MMW/data_availability.json
   protocol: scenario_loso
   target_scenes: [Town10_crossroad_seed24, Town10_Hroad_seed42]
-  variants: [v3_decoupled, v4_adapter, v6_full_finetune]
+  variants: [v1_hierarchical, v4_adapter, v6_full_finetune]
   budgets: [10]
   seeds: [0, 1]
   reuse_source_checkpoint: true

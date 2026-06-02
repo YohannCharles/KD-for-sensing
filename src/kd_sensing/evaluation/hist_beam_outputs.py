@@ -451,16 +451,27 @@ def prediction_histogram_payload(
         within_1 = float(error.le(1).float().mean().item())
         within_2 = float(error.le(2).float().mean().item())
         within_3 = float(error.le(3).float().mean().item())
+        top_counts = torch.bincount(pred[valid].detach().cpu().reshape(-1).to(torch.long), minlength=int(num_classes))
+        total_pred = float(top_counts.sum().item())
+        top_values = torch.topk(top_counts, k=min(5, int(num_classes))).values.to(torch.float32)
     else:
         mean_abs = 0.0
         within_1 = 0.0
         within_2 = 0.0
         within_3 = 0.0
+        total_pred = 0.0
+        top_values = torch.zeros(min(5, int(num_classes)), dtype=torch.float32)
+    unique_pred = int(sum(1 for value in pred_hist if int(value) > 0))
+    ratio = lambda n: float(top_values[: min(n, top_values.numel())].sum().item() / max(total_pred, 1.0))
     return {
         "true_hist": true_hist,
         "pred_hist": pred_hist,
         "true_top_beams": _top_hist_beams(true_hist, top_k=top_k),
         "pred_top_beams": _top_hist_beams(pred_hist, top_k=top_k),
+        "unique_pred_beams": unique_pred,
+        "top1_pred_beam_ratio": ratio(1),
+        "top2_pred_beam_ratio": ratio(2),
+        "top5_pred_beam_ratio": ratio(5),
         "mean_abs_beam_error": mean_abs,
         "within_1_acc": within_1,
         "within_2_acc": within_2,
@@ -548,6 +559,12 @@ def collapse_diagnostics_payload(
                 num_classes=num_classes,
                 top_k=top_k,
             )
+            payload["[v9-sector] top predicted beams before proto"] = payload["branches"][
+                "target_logits_plus_prior"
+            ]["pred_top_beams"]
+            payload["[v9-sector] top predicted beams after proto"] = payload["branches"][
+                "target_prior_plus_prototype"
+            ]["pred_top_beams"]
     return payload
 
 
@@ -586,6 +603,39 @@ def write_prediction_histogram(
         payload["metadata"] = dict(metadata)
     with target.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    return target
+
+
+def write_confusion_by_true_beam(
+    path: str | Path,
+    labels: torch.Tensor,
+    outputs: torch.Tensor,
+    *,
+    num_classes: int,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if outputs.ndim == 2:
+        outputs = outputs.unsqueeze(1)
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(1)
+    pred = outputs.argmax(dim=-1)
+    valid = labels.ne(-100) & labels.ge(0) & labels.lt(int(num_classes)) & pred.ge(0) & pred.lt(int(num_classes))
+    confusion: dict[str, dict[str, int]] = {}
+    if torch.any(valid):
+        true_values = labels[valid].detach().cpu().to(torch.long)
+        pred_values = pred[valid].detach().cpu().to(torch.long)
+        for true_beam, pred_beam in zip(true_values.tolist(), pred_values.tolist()):
+            true_key = str(int(true_beam))
+            pred_key = str(int(pred_beam))
+            bucket = confusion.setdefault(true_key, {})
+            bucket[pred_key] = int(bucket.get(pred_key, 0) + 1)
+    payload: dict[str, Any] = {"confusion_by_true_beam": confusion}
+    if metadata:
+        payload["metadata"] = dict(metadata)
+    with target.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
     return target
 
 

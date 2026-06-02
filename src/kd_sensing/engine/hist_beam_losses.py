@@ -17,9 +17,6 @@ class HistBeamLossResult:
     coarse: torch.Tensor
     fine: torch.Tensor
     flat: torch.Tensor
-    orthogonality: torch.Tensor
-    shared_scene: torch.Tensor
-    private_scene: torch.Tensor
     angular_smoothing: torch.Tensor
     geometry_consistency: torch.Tensor
     radio_semantic: torch.Tensor
@@ -130,13 +127,6 @@ def compute_hist_beam_loss(
             if lambda_absolute_aux > 0
             else zero
         )
-        orth = _orthogonality_loss(
-            _tensor(output, "shared_representation"),
-            _tensor(output, "private_representation"),
-            zero,
-        )
-        shared_scene = _scene_ce(_tensor(output, "shared_scene_logits"), scene_labels, zero)
-        private_scene = _scene_ce(_tensor(output, "private_scene_logits"), scene_labels, zero)
         geometry, geometry_diag = multimodal_geometry_consistency_loss(output, zero=zero)
         radio, radio_diag = radio_semantic_ce_loss(
             _tensor(output, "radio_logits"),
@@ -159,9 +149,6 @@ def compute_hist_beam_loss(
         total = (
             residual
             + lambda_absolute_aux * absolute_aux
-            + weights["orthogonality"] * orth
-            + weights["scene_confusion"] * shared_scene
-            + weights["scene_private"] * private_scene
             + weights["geometry_consistency"] * geometry
             + weights["radio_semantic"] * radio
             + weights["path_semantic"] * path
@@ -181,9 +168,6 @@ def compute_hist_beam_loss(
             "hist/lambda_absolute_aux": float(lambda_absolute_aux),
             "hist/residual_accuracy": residual_acc,
             "hist/residual_target_enabled": 1.0,
-            "hist/loss_orthogonality": _scalar(orth),
-            "hist/loss_shared_scene": _scalar(shared_scene),
-            "hist/loss_private_scene": _scalar(private_scene),
             "hist/loss_geometry_consistency": _scalar(geometry),
             "hist/loss_radio_semantic": _scalar(radio),
             "hist/loss_path_semantic": _scalar(path),
@@ -199,9 +183,6 @@ def compute_hist_beam_loss(
             coarse=zero,
             fine=zero,
             flat=absolute_aux,
-            orthogonality=orth,
-            shared_scene=shared_scene,
-            private_scene=private_scene,
             angular_smoothing=zero,
             geometry_consistency=geometry,
             radio_semantic=radio,
@@ -241,7 +222,19 @@ def compute_hist_beam_loss(
         diagnostics.update(radio_diag)
         diagnostics.update(path_diag)
         diagnostics.update(path_reg_diag)
-        return HistBeamLossResult(total, zero, zero, zero, flat, zero, zero, zero, zero, zero, radio, path, path_reg, diagnostics)
+        return HistBeamLossResult(
+            total=total,
+            hierarchical=zero,
+            coarse=zero,
+            fine=zero,
+            flat=flat,
+            angular_smoothing=zero,
+            geometry_consistency=zero,
+            radio_semantic=radio,
+            path_semantic=path,
+            path_regression=path_reg,
+            diagnostics=diagnostics,
+        )
 
     ensure_horizon_shape("coarse_logits", coarse_logits, labels)
     ensure_horizon_shape("fine_logits", fine_logits, labels)
@@ -263,13 +256,6 @@ def compute_hist_beam_loss(
         if flat_logits is not None and weights["flat"] > 0
         else zero
     )
-    orth = _orthogonality_loss(
-        _tensor(output, "shared_representation"),
-        _tensor(output, "private_representation"),
-        zero,
-    )
-    shared_scene = _scene_ce(_tensor(output, "shared_scene_logits"), scene_labels, zero)
-    private_scene = _scene_ce(_tensor(output, "private_scene_logits"), scene_labels, zero)
     angular, angular_diag = angular_smoothing_loss(
         _first_tensor(output, ("beam_log_probs", "beam_logits", "logits")),
         labels,
@@ -300,9 +286,6 @@ def compute_hist_beam_loss(
     total = (
         weights["hierarchical"] * hierarchical
         + weights["flat"] * flat
-        + weights["orthogonality"] * orth
-        + weights["scene_confusion"] * shared_scene
-        + weights["scene_private"] * private_scene
         + weights["angular_smoothing"] * angular
         + weights["geometry_consistency"] * geometry
         + weights["radio_semantic"] * radio
@@ -315,9 +298,6 @@ def compute_hist_beam_loss(
         "hist/loss_coarse": _scalar(coarse_loss),
         "hist/loss_fine": _scalar(fine_loss),
         "hist/loss_flat": _scalar(flat),
-        "hist/loss_orthogonality": _scalar(orth),
-        "hist/loss_shared_scene": _scalar(shared_scene),
-        "hist/loss_private_scene": _scalar(private_scene),
         "hist/loss_angular_smoothing": _scalar(angular),
         "hist/loss_geometry_consistency": _scalar(geometry),
         "hist/loss_radio_semantic": _scalar(radio),
@@ -335,9 +315,6 @@ def compute_hist_beam_loss(
         coarse=coarse_loss,
         fine=fine_loss,
         flat=flat,
-        orthogonality=orth,
-        shared_scene=shared_scene,
-        private_scene=private_scene,
         angular_smoothing=angular,
         geometry_consistency=geometry,
         radio_semantic=radio,
@@ -666,37 +643,29 @@ def _flat_ce(
     return F.cross_entropy(logits.reshape(-1, num_classes), labels.reshape(-1), weight=weight, ignore_index=ignore_index)
 
 
-def _orthogonality_loss(shared: torch.Tensor | None, private: torch.Tensor | None, zero: torch.Tensor) -> torch.Tensor:
-    if shared is None or private is None:
-        return zero
-    if shared.ndim == 3:
-        shared = shared.reshape(-1, shared.shape[-1])
-    if private.ndim == 3:
-        private = private.reshape(-1, private.shape[-1])
-    return torch.mean(F.cosine_similarity(shared, private, dim=-1).pow(2))
-
-
-def _scene_ce(logits: torch.Tensor | None, labels: torch.Tensor | None, zero: torch.Tensor) -> torch.Tensor:
-    if logits is None or labels is None:
-        return zero
-    labels = labels.to(device=logits.device, dtype=torch.long)
-    if labels.ndim > 1:
-        labels = labels.reshape(labels.shape[0], -1)[:, 0]
-    if logits.shape[0] != labels.shape[0]:
-        return zero
-    return F.cross_entropy(logits, labels)
-
-
 def _loss_weights(hist_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> dict[str, float]:
     weights = hist_cfg.get("loss_weights") if isinstance(hist_cfg.get("loss_weights"), dict) else {}
     if not weights and isinstance(model_cfg.get("loss_weights"), dict):
         weights = model_cfg["loss_weights"]
+    retired_keys = {
+        "orthogonality",
+        "scene_confusion",
+        "scene_private",
+        "lambda_orth",
+        "lambda_scene_c",
+        "lambda_scene_s",
+    }
+    present_retired = sorted(key for key in retired_keys if key in weights)
+    if present_retired:
+        raise ValueError(
+            "Legacy HiST-Beam shared/private decoupling loss weights are retired "
+            f"and must be removed from the training config: {present_retired}. "
+            "Use current baseline losses such as hierarchical, flat, radio_semantic, "
+            "path_semantic, geometry_consistency, v7_*, v8_* or v9_*."
+        )
     return {
         "hierarchical": float(weights.get("hierarchical", weights.get("lambda_hier", 1.0))),
         "flat": float(weights.get("flat", weights.get("lambda_flat", 0.2))),
-        "orthogonality": float(weights.get("orthogonality", weights.get("lambda_orth", 0.01))),
-        "scene_confusion": float(weights.get("scene_confusion", weights.get("lambda_scene_c", 0.05))),
-        "scene_private": float(weights.get("scene_private", weights.get("lambda_scene_s", 0.05))),
         "angular_smoothing": float(weights.get("angular_smoothing", weights.get("lambda_ang", 0.0))),
         "geometry_consistency": float(weights.get("geometry_consistency", weights.get("lambda_geom", 0.0))),
         "radio_semantic": float(weights.get("radio_semantic", weights.get("lambda_radio", 0.0))),
@@ -868,9 +837,6 @@ def _compute_v8_hist_beam_loss(
         coarse=sector_loss,
         fine=offset_loss,
         flat=final_loss,
-        orthogonality=zero,
-        shared_scene=zero,
-        private_scene=zero,
         angular_smoothing=zero,
         geometry_consistency=zero,
         radio_semantic=zero,
@@ -1051,9 +1017,6 @@ def _compute_v7_hist_beam_loss(
         coarse=zero,
         fine=zero,
         flat=final_ce,
-        orthogonality=diff,
-        shared_scene=zero,
-        private_scene=zero,
         angular_smoothing=zero,
         geometry_consistency=zero,
         radio_semantic=zero,

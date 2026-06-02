@@ -14,6 +14,7 @@ from kd_sensing.engine.batch import (
     prepare_path_semantic_labels,
     prepare_radio_semantic_labels,
 )
+from kd_sensing.engine.hist_beam_image_only import filter_image_only_batch, image_only_protocol_enabled, image_only_run_metadata
 from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
 from kd_sensing.engine.hist_beam_losses import (
     compute_hist_beam_loss,
@@ -56,7 +57,7 @@ def apply_hist_beam_adaptation_strategy(
             param.requires_grad = True
         summary = trainable_parameter_summary(model)
         return {"strategy": normalized, **summary.to_dict()}
-    if normalized not in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v8_target_prior_head", "v8_target_head_only", "v9_input_conditioned_target_adaptation", "v9_target_head_only", "v7_private_residual", "v7_shared_physical_private_residual", "shared_physical_private_residual"}:
+    if normalized not in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v8_target_prior_head", "v8_target_head_only", "image_target_linear_probe", "v9_input_conditioned_target_adaptation", "v9_target_head_only", "v7_private_residual", "v7_shared_physical_private_residual", "shared_physical_private_residual"}:
         raise ValueError(f"Unsupported HiST-Beam adaptation strategy '{strategy}'.")
     for _, param in model.named_parameters():
         param.requires_grad = False
@@ -70,6 +71,8 @@ def apply_hist_beam_adaptation_strategy(
     )
     if v7_mode:
         trainable_prefixes = ("private_adapter", "private_residual_head", "residual_gate")
+    elif normalized == "image_target_linear_probe":
+        trainable_prefixes = ("target_head",)
     elif normalized in {"v8_target_prior_head", "v8_target_head_only", "v9_input_conditioned_target_adaptation", "v9_target_head_only"}:
         trainable_prefixes = ("target_adapter", "target_head", "target_prior_bias")
         if bool(getattr(hist_config, "v9_enabled", False)):
@@ -113,7 +116,8 @@ def apply_hist_beam_adaptation_strategy(
         "strategy": normalized,
         "v7_private_residual_freeze_strategy": v7_mode,
         "history_anchor_residual_freeze_strategy": residual_mode,
-        "v8_target_head_only_freeze_strategy": normalized in {"v8_target_prior_head", "v8_target_head_only"},
+        "v8_target_head_only_freeze_strategy": normalized in {"v8_target_prior_head", "v8_target_head_only", "image_target_linear_probe"},
+        "image_target_linear_probe_freeze_strategy": normalized == "image_target_linear_probe",
         "v9_target_head_only_freeze_strategy": normalized in {"v9_input_conditioned_target_adaptation", "v9_target_head_only"},
         "v8_unfreeze_last_fusion_block": bool(getattr(hist_config, "v8_unfreeze_last_fusion_block", False)),
         "trainable_parameter_names": trainable_names,
@@ -458,6 +462,7 @@ def adapt_hist_beam_target(
         **eligibility,
         **leakage_flags,
         **history_anchor_run_metadata(cfg),
+        **(image_only_run_metadata(cfg, stage="target_adaptation") if image_only_protocol_enabled(cfg) else {}),
         "diagnostics": diagnostics,
     }
 
@@ -723,7 +728,7 @@ def _path_counts_from_artifact(prototypes: dict[str, Any]) -> torch.Tensor | Non
 
 def _target_step(model, batch, cfg: dict[str, Any], device: torch.device, *, require_labels: bool = True):
     model_cfg = cfg["model"]
-    prepared = prepare_task_batch(batch)
+    prepared = filter_image_only_batch(prepare_task_batch(batch), cfg, stage="target_adaptation")
     num_pred = model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1))
     downsample_ratio = model_cfg.get("downsample_ratio", 1)
     history_kwargs = prepare_history_anchor_inputs(

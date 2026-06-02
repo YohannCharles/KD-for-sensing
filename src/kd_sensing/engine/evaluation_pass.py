@@ -16,6 +16,7 @@ from kd_sensing.engine.batch import (
 )
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
+from kd_sensing.engine.hist_beam_image_only import filter_image_only_batch, image_only_protocol_enabled, image_only_run_metadata
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
 from kd_sensing.engine.objectives.metadata import (
     objective_available_metrics,
@@ -173,7 +174,7 @@ def run_evaluation_pass(
 
     with torch.no_grad():
         for batch in dataloader:
-            batch = prepare_task_batch(batch)
+            batch = filter_image_only_batch(prepare_task_batch(batch), cfg, stage="target_test")
             all_metadata.extend(_metadata_rows_from_batch(batch.get("metadata")))
             if "input_beam" in batch:
                 all_input_beams.append(batch["input_beam"].detach().cpu())
@@ -434,6 +435,9 @@ def run_evaluation_pass(
             )
         )
     metrics.update(history_anchor_run_metadata(cfg))
+    if image_only_protocol_enabled(cfg):
+        metrics.update(image_only_run_metadata(cfg, stage="target_test"))
+        metrics["target_test_label_usage"] = "evaluation_only"
     metrics["objective"] = objective_metadata
     metrics["available_metrics"] = objective_available_metrics(objective, metrics)
     metrics["enabled_modalities"] = list(enabled_modalities)

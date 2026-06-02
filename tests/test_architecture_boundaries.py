@@ -28,6 +28,7 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/inspect_dataset.py": "dataset_preparation",
     "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
     "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
+    "scripts/mmw/visualize_town_label_distribution.py": "dataset_preparation",
     "scripts/preprocess.py": "thin_cli_alias",
     "scripts/profile_training_io.py": "research_diagnostic",
     "scripts/recommend_parallel_training.py": "research_diagnostic",
@@ -41,6 +42,7 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
 }
 SHELL_ORCHESTRATION_ALLOWLIST = {
     "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
+    "scripts/run_image_only_legal_crossroad_probe.sh": "shell_orchestration",
     "scripts/run_mmw_sunny_modal15_l5p3_h123.sh": "shell_orchestration",
     "scripts/run_mmw_sunny_modal15_l5p6_h246.sh": "shell_orchestration",
     "scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh": "shell_orchestration",

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from kd_sensing.engine.hist_beam_loso_comparisons import compare_adapter_to_source, compare_proto_to_full
 from kd_sensing.engine.hist_beam_loso_artifacts import _write_json
+from kd_sensing.engine.hist_beam_loso_config import DEFAULT_SOURCE_BASELINE_VARIANT
 from kd_sensing.engine.run_lineage import run_lineage_metadata
 
 def row_eligibility(
@@ -51,6 +52,7 @@ def row_eligibility(
         reasons.append("target_leakage")
     if bool(adaptation_metrics.get("target_leakage", False)):
         reasons.append("target_leakage")
+    reasons.extend(_consumed_oracle_reasons(row, adaptation_metrics))
     reasons.extend(_split_eligibility_reasons(row))
 
     unique = unique_reasons(reasons)
@@ -101,7 +103,55 @@ def _split_eligibility_reasons(row: Mapping[str, Any]) -> list[str]:
         reasons.extend(row_reasons or ["split_not_strict_validation_eligible"])
     elif strict is None:
         reasons.append("split_eligibility_unknown")
+        diagnostics = row.get("split_metadata_path") or row.get("leakage_diagnostics") or row.get("metrics_path")
+        if diagnostics:
+            reasons.append(f"split_eligibility_unknown_diagnostics:{diagnostics}")
+        else:
+            reasons.append("split_eligibility_unknown_missing_metadata_path")
     return reasons
+
+
+def _consumed_oracle_reasons(row: Mapping[str, Any], adaptation_metrics: Mapping[str, Any]) -> list[str]:
+    consumed = adaptation_metrics.get("consumed_fields")
+    if not isinstance(consumed, Mapping):
+        consumed = row.get("consumed_fields")
+    if not isinstance(consumed, Mapping):
+        return []
+    disabled = {
+        "gps",
+        "lidar",
+        "radar",
+        "mmwave",
+        "csi",
+        "channel",
+        "path",
+        "beam_power",
+        "beamspace_power_label",
+        "radio_semantic_label",
+        "path_semantic_label",
+        "path_descriptor",
+        "path_params",
+    }
+    reasons: list[str] = []
+    for stage, stage_fields in consumed.items():
+        if not isinstance(stage_fields, Mapping):
+            continue
+        fields = []
+        for key in ("consumed_input_fields", "consumed_label_fields"):
+            fields.extend(str(item) for item in stage_fields.get(key, []) or [])
+        for field in fields:
+            clean = field.split(":", 1)[0]
+            leaf = clean.rsplit(".", 1)[-1]
+            stage_text = str(stage)
+            if leaf == "target_beam":
+                allowed_support = stage_text == "target_adaptation" and clean.startswith("target_support.")
+                allowed_eval = stage_text in {"source_only_target_test_eval", "adapted_target_test_eval", "target_test"} and field.endswith(":evaluation_only")
+                if not (allowed_support or allowed_eval or clean.startswith("source.")):
+                    reasons.append(f"target_oracle_consumed:{stage_text}:{field}")
+                continue
+            if leaf in disabled:
+                reasons.append(f"target_oracle_consumed:{stage_text}:{field}")
+    return unique_reasons(reasons)
 
 
 def _is_mmw_town10_row(row: Mapping[str, Any]) -> bool:
@@ -185,7 +235,10 @@ def write_quick_validation_conclusion(
     comparisons: list[dict[str, Any]] = []
     groups = sorted({(row["target_scene"], row["budget"], row["seed"]) for row in rows})
     for target_scene, budget, seed in groups:
-        baseline = by_key.get((target_scene, budget, seed, "v3_decoupled"))
+        baseline = by_key.get((target_scene, budget, seed, DEFAULT_SOURCE_BASELINE_VARIANT)) or by_key.get(
+            (target_scene, budget, seed, "v0_flat")
+        )
+        baseline_variant = str(baseline.get("variant")) if isinstance(baseline, Mapping) else DEFAULT_SOURCE_BASELINE_VARIANT
         for variant in ("v4_adapter", "v5_adapter_proto", "v8_path_proto"):
             candidate = by_key.get((target_scene, budget, seed, variant))
             comparisons.append(
@@ -196,6 +249,7 @@ def write_quick_validation_conclusion(
                     variant=variant,
                     baseline=baseline,
                     candidate=candidate,
+                    baseline_variant=baseline_variant,
                 )
             )
         comparisons.append(
@@ -400,6 +454,16 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "markov_delta_top5": primary_metrics.get("markov_delta_top5"),
         "source_prior_collapse": primary_metrics.get("source_prior_collapse"),
         "unique_pred_beams": primary_metrics.get("unique_pred_beams"),
+        "top1_pred_beam_ratio": primary_metrics.get("top1_pred_beam_ratio"),
+        "top2_pred_beam_ratio": primary_metrics.get("top2_pred_beam_ratio"),
+        "top5_pred_beam_ratio": primary_metrics.get("top5_pred_beam_ratio"),
+        "within1": primary_metrics.get("within_1_acc"),
+        "within2": primary_metrics.get("within_2_acc"),
+        "within3": primary_metrics.get("within_3_acc"),
+        "mae": primary_metrics.get("mean_abs_beam_error"),
+        "bpl_db": primary_metrics.get("beam_power_loss_db"),
+        "nrp": primary_metrics.get("normalized_received_power"),
+        "confusion_by_true_beam_path": _artifact(record, "adapted_target_test_eval.confusion_by_true_beam_path") or _artifact(record, "source_only_target_test_eval.confusion_by_true_beam_path") or primary_metrics.get("confusion_by_true_beam_path"),
         "histogram_kl_pred_support": primary_metrics.get("kl_pred_support"),
         "histogram_kl_true_support": primary_metrics.get("kl_true_support"),
         "histogram_kl_pred_true": primary_metrics.get("kl_pred_true"),
@@ -464,6 +528,9 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "sensitive_field_policy": adaptation_metrics.get("sensitive_field_policy", {}),
         "eligibility_status": adaptation_metrics.get("eligibility_status"),
         "used_target_oracle_fields": list(adaptation_metrics.get("used_target_oracle_fields", []) or []),
+        "disabled_modalities": record.get("disabled_modalities") or primary_metrics.get("disabled_modalities") or adaptation_metrics.get("disabled_modalities"),
+        "available_fields": primary_metrics.get("available_fields") or adaptation_metrics.get("available_fields") or source_train_metrics.get("available_fields"),
+        "consumed_fields": _merge_consumed_fields(source_train_metrics, adaptation_metrics, primary_metrics),
         "target_oracle_usage_stage": adaptation_metrics.get("target_oracle_usage_stage", {}),
         "target_test_label_usage": primary_metrics.get("target_test_label_usage", adaptation_metrics.get("target_test_label_usage", "evaluation_only")),
         "used_target_labels": _bool_or_false(adaptation_metrics.get("used_target_labels")),
@@ -532,6 +599,15 @@ def _method_family(row: Mapping[str, Any]) -> str:
     if variant in {"v5_adapter_proto", "adapter_proto"}:
         return "coarse_prototype_baseline"
     return "source_or_adapter_baseline"
+
+
+def _merge_consumed_fields(*sources: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in sources:
+        value = source.get("consumed_fields") if isinstance(source, Mapping) else None
+        if isinstance(value, Mapping):
+            merged.update(dict(value))
+    return merged
 
 
 def _lineage_summary(

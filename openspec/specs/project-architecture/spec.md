@@ -119,7 +119,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 不需要修改诊断 dataset 构建逻辑
 
 ### Requirement: 源码与实验产物边界
-项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。删除 image motion 源码与 cache 支持时，系统 MUST 不删除历史 `outputs/` 实验产物。
+项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。用户明确要求退役并清理某条失败实验路线时，系统 MAY 删除匹配的本地 `outputs/`、`logs/`、cache、checkpoint 和训练诊断产物，但 MUST 先生成可审计清单并限制在未纳入源码的运行产物内。
 
 #### Scenario: 本地产物不进入版本控制
 - **WHEN** 用户运行训练、评估、预处理或诊断命令
@@ -130,7 +130,12 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **WHEN** 开发者阅读 README 或扩展指南
 - **THEN** 文档 MUST 说明 `dataset/`、`All_models/`、`outputs/`、`logs/` 和 cache 目录的角色
 - **AND** 文档 MUST 指明哪些目录通常不应纳入源码变更
-- **AND** 文档 MUST 明确本次删除 image motion 不会清理历史 `outputs/`
+- **AND** 文档 MUST 明确用户未要求清理时，源码删除不应自动清理历史 `outputs/`
+
+#### Scenario: 清理旧失败实验产物
+- **WHEN** 用户明确要求删除已退役失败路线的输出日志和实验结果
+- **THEN** 清理流程 MUST 先写出 machine-readable manifest，记录每个候选路径、匹配原因、产物类型和大小
+- **AND** 清理流程 MUST NOT 删除 `dataset/`、`All_models/` 已跟踪权重、OpenSpec artifacts、源码文件或未匹配失败路线的活跃实验产物
 
 ### Requirement: 包级导入不得牵出重依赖
 项目 MUST 保持包级公共 API 兼容，同时避免 `__init__.py` eager import 触发重依赖运行模块。导入某个具体子模块时，系统 MUST 不因为父包初始化而额外导入训练器、dataset、诊断渲染或大型第三方依赖。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 子模块 MUST 不再作为轻量导入 smoke 的保留对象。
@@ -806,4 +811,3 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **WHEN** 开发者阅读 `docs/project_surface_inventory.md`
 - **THEN** 文档 MUST 不再把旧模态子集/扰动诊断脚本列为长期维护 research diagnostic 入口
 - **AND** 文档 MUST 保留本地产物边界说明，不要求删除或迁移历史 `outputs/`、`logs/` 或 `dataset/`
-

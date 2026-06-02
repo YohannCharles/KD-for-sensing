@@ -6,6 +6,13 @@ from typing import Any, Mapping
 
 from kd_sensing.data.scenes import normalize_deepsense_dataset_config, retarget_deepsense_dataset_config
 from kd_sensing.engine.hist_beam_history_anchor import apply_history_anchor_model_config
+from kd_sensing.engine.hist_beam_image_only import (
+    IMAGE_ONLY_ADAPTATION_VARIANTS,
+    IMAGE_ONLY_SOURCE_VARIANTS,
+    IMAGE_ONLY_VARIANTS,
+    canonical_image_only_variant,
+    image_only_protocol_enabled,
+)
 from kd_sensing.engine.hist_beam_v7 import apply_v7_stage_defaults, is_v7_variant
 from kd_sensing.engine.modality_resolution import (
     SENSOR_ASSISTED_DISALLOWED_MODALITIES,
@@ -17,17 +24,38 @@ from kd_sensing.engine.run_lineage import ensure_distillation_defaults
 from kd_sensing.modalities import normalize_modalities
 
 EXECUTION_STATUSES = ("completed", "failed", "partial_failed")
-SOURCE_ONLY_VARIANTS = {"v0_flat", "v1_hierarchical", "v2_shared_private", "v3_decoupled"}
-ADAPTATION_VARIANTS = {"v4_adapter", "v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v8_target_prior_head", "v9_input_conditioned_target_adaptation", "v7_shared_physical_private_residual", "v6_full_finetune"}
+SOURCE_ONLY_VARIANTS = {"v0_flat", "v1_hierarchical"} | IMAGE_ONLY_SOURCE_VARIANTS
+ADAPTATION_VARIANTS = {"v4_adapter", "v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v8_target_prior_head", "v9_input_conditioned_target_adaptation", "v7_shared_physical_private_residual", "v6_full_finetune"} | IMAGE_ONLY_ADAPTATION_VARIANTS
 SUPPORTED_VARIANTS = SOURCE_ONLY_VARIANTS | ADAPTATION_VARIANTS
-DEFAULT_QUICK_VARIANTS = ["v0_flat", "v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"]
-SENSOR_ASSISTED_QUICK_VARIANTS = ["v3_decoupled", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "v8_target_prior_head", "v9_input_conditioned_target_adaptation", "v6_full_finetune"]
+DEFAULT_SOURCE_BASELINE_VARIANT = "v1_hierarchical"
+RETIRED_HIST_BEAM_VARIANTS = {"v2_shared_private", "shared_private", "v3_decoupled", "decoupled"}
+DEFAULT_QUICK_VARIANTS = ["v0_flat", "v1_hierarchical", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"]
+SENSOR_ASSISTED_QUICK_VARIANTS = ["v1_hierarchical", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "v8_target_prior_head", "v9_input_conditioned_target_adaptation", "v6_full_finetune"]
 SENSOR_ASSISTED_QUICK_BUDGETS = [10]
 SENSOR_ASSISTED_QUICK_SEEDS = [0, 1]
 DEFAULT_QUICK_BUDGETS = [0, 10]
 DEFAULT_QUICK_SEEDS = [0]
 DEFAULT_QUICK_TARGET_SCENES = [34]
 EXECUTION_PROGRESS_FILENAME = "execution_progress.jsonl"
+
+
+def retired_hist_beam_variant_message(variant: Any) -> str:
+    return (
+        f"HiST-Beam variant '{variant}' is retired: the legacy simple shared/private "
+        "knowledge-decoupling route is no longer supported. Use a current baseline such as "
+        "'v0_flat', 'v1_hierarchical', 'v4_adapter', 'v5_adapter_proto', 'v6_radio_proto', "
+        "'v8_path_proto', 'v7_shared_physical_private_residual', 'v8_target_prior_head', "
+        "'v9_input_conditioned_target_adaptation', or 'v6_full_finetune'."
+    )
+
+
+def validate_loso_variant(variant: Any) -> str:
+    normalized = str(variant).strip().lower()
+    if normalized in RETIRED_HIST_BEAM_VARIANTS:
+        raise ValueError(retired_hist_beam_variant_message(variant))
+    if normalized not in SUPPORTED_VARIANTS:
+        raise ValueError(f"Unsupported HiST-Beam LOSO variant '{variant}'. Supported variants: {sorted(SUPPORTED_VARIANTS)}.")
+    return normalized
 
 def _cpu_thread_config(cfg: dict[str, Any]) -> dict[str, Any]:
     thread_cfg = cfg.get("training", {}).get("cpu_threads", {}) if isinstance(cfg.get("training"), dict) else {}
@@ -101,17 +129,20 @@ def _stage_cfg(
     ensure_distillation_defaults(stage_cfg)
     stage_cfg.setdefault("experiment", {})["seed"] = int(run.get("seed", 0))
     stage_cfg["experiment"]["name"] = f"{cfg.get('experiment', {}).get('name', 'hist_beam_loso')}_{stage_name}"
+    model_variant = canonical_image_only_variant(variant)
     model_cfg = stage_cfg.setdefault("model", {})
     model_cfg["modalities"] = list(_enabled_modalities({"enabled_modalities": model_cfg.get("modalities")}, stage_cfg))
     for key in ("student", "teacher"):
         role = model_cfg.get(key)
         if isinstance(role, dict):
-            role["variant"] = variant
+            role["variant"] = model_variant
             role["modalities"] = list(model_cfg["modalities"])
-    stage_cfg.setdefault("hist_beam", {})["variant"] = variant
+    stage_cfg.setdefault("hist_beam", {})["variant"] = model_variant
     hist_cfg = stage_cfg.setdefault("hist_beam", {})
     student_cfg = model_cfg.get("student") if isinstance(model_cfg.get("student"), dict) else {}
-    if variant in {"v6_radio_proto", "adapter_radio_proto"}:
+    if image_only_protocol_enabled(stage_cfg):
+        _apply_image_only_stage_defaults(stage_cfg, hist_cfg, student_cfg, run_variant=variant, model_variant=model_variant)
+    if model_variant in {"v6_radio_proto", "adapter_radio_proto"}:
         radio_cfg = hist_cfg.setdefault("radio_semantic", {})
         radio_cfg.setdefault("enabled", True)
         radio_cfg.setdefault("mode", "peak_spread")
@@ -129,16 +160,16 @@ def _stage_cfg(
             student_cfg.setdefault("num_radio_classes", int(radio_cfg.get("num_radio_classes", 24)))
             student_cfg.setdefault("proto_type", "radio_semantic")
             student_cfg.setdefault("radio_tau", float(hist_cfg.get("radio_tau", 1.0)))
-            if variant == "adapter_radio_proto":
+            if model_variant == "adapter_radio_proto":
                 student_cfg.setdefault("use_radio_condition_in_beam_head", False)
             else:
                 student_cfg.setdefault(
                     "use_radio_condition_in_beam_head",
                     bool(radio_cfg.get("use_radio_condition_in_beam_head", True)),
                 )
-    elif is_v7_variant(variant):
+    elif is_v7_variant(model_variant):
         apply_v7_stage_defaults(stage_cfg, hist_cfg, student_cfg)
-    elif variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
+    elif model_variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
         v8_cfg = hist_cfg.setdefault("v8", {})
         mode = str(v8_cfg.get("mode", "target_prior_head")).strip().lower()
         v8_cfg.setdefault("mode", mode)
@@ -160,7 +191,7 @@ def _stage_cfg(
         v8_cfg.setdefault("prior_eps", 1.0e-4)
         v8_cfg.setdefault("loss_prior_smooth_weight", 0.001)
         v8_cfg.setdefault("run_prototype_probe", False)
-        hist_cfg.setdefault("adaptation", {})["strategy"] = "v8_target_head_only"
+        hist_cfg.setdefault("adaptation", {}).setdefault("strategy", "v8_target_head_only")
         weights = hist_cfg.setdefault("loss_weights", {})
         weights.setdefault("v8_final_ce", 1.0)
         weights.setdefault("v8_prior_smooth", float(v8_cfg.get("loss_prior_smooth_weight", 0.001)))
@@ -172,7 +203,7 @@ def _stage_cfg(
         source_train.setdefault("logit_adjust_tau", 1.0)
         source_train.setdefault("debiased_loss_available", False)
         source_train.setdefault("unsupported_reason", "source_long_tail_debias_not_implemented")
-        if variant == "v9_input_conditioned_target_adaptation":
+        if model_variant == "v9_input_conditioned_target_adaptation":
             v9_cfg = hist_cfg.setdefault("v9", {})
             v9_cfg.setdefault("use_target_prior", True)
             v9_cfg.setdefault("beta_prior_max", 1.0)
@@ -188,17 +219,17 @@ def _stage_cfg(
             v9_cfg.setdefault("widened_prior_sigma", 3.0)
             v9_cfg.setdefault("widened_prior_temperature", 1.5)
             v9_cfg.setdefault("loss_widened_prior_marginal_kl_weight", 0.0)
-            hist_cfg.setdefault("adaptation", {})["strategy"] = "v9_target_head_only"
+            hist_cfg.setdefault("adaptation", {}).setdefault("strategy", "v9_target_head_only")
             weights.setdefault(
                 "v9_widened_prior_marginal_kl",
                 float(v9_cfg.get("loss_widened_prior_marginal_kl_weight", 0.0)),
             )
         if isinstance(student_cfg, dict):
             student_cfg.setdefault("v8", dict(v8_cfg))
-            if variant == "v9_input_conditioned_target_adaptation":
+            if model_variant == "v9_input_conditioned_target_adaptation":
                 student_cfg.setdefault("v9", dict(hist_cfg.get("v9", {})))
             student_cfg.setdefault("adapter", {"enabled": True})
-    elif variant in {"v8_path_proto", "adapter_path_proto"}:
+    elif model_variant in {"v8_path_proto", "adapter_path_proto"}:
         path_cfg = hist_cfg.setdefault("path_semantic", {})
         path_cfg.setdefault("enabled", True)
         path_cfg.setdefault("mode", "kmeans_path_descriptor")
@@ -223,20 +254,20 @@ def _stage_cfg(
         if isinstance(student_cfg, dict):
             student_cfg.setdefault("path_semantic", dict(path_cfg))
             student_cfg.setdefault("use_path_head", True)
-            student_cfg.setdefault("use_path_condition_in_beam_head", variant != "adapter_path_proto")
+            student_cfg.setdefault("use_path_condition_in_beam_head", model_variant != "adapter_path_proto")
             student_cfg.setdefault("path_embed_dim", 32)
             student_cfg.setdefault("num_path_classes", int(path_cfg.get("num_path_classes", 24)))
             student_cfg.setdefault("proto_type", "path")
-    elif variant in {"v5_adapter_proto", "adapter_proto"}:
+    elif model_variant in {"v5_adapter_proto", "adapter_proto"}:
         hist_cfg["proto_type"] = "coarse"
         hist_cfg.setdefault("prototype", {})["proto_type"] = "coarse"
     stage_cfg.setdefault("output", {})["dir"] = str(stage_dir)
     stage_cfg["output"]["run_name"] = stage_name
     stage_cfg["output"]["group_by_scene"] = False
     stage_cfg["output"].setdefault("progress", {})["enabled"] = False
-    if variant == "v0_flat":
+    if model_variant == "v0_flat":
         weights = stage_cfg.setdefault("hist_beam", {}).setdefault("loss_weights", {})
-        weights.update({"hierarchical": 0.0, "flat": 1.0, "orthogonality": 0.0, "scene_confusion": 0.0, "scene_private": 0.0})
+        weights.update({"hierarchical": 0.0, "flat": 1.0})
     return stage_cfg
 
 
@@ -305,13 +336,100 @@ def _throughput_config_summary(cfg: dict[str, Any], *, prototype_strategy: str |
 
 def _source_variant_for(run: Mapping[str, Any]) -> str:
     variant = str(run.get("variant"))
+    if variant in IMAGE_ONLY_VARIANTS:
+        return "v0_flat"
     if is_v7_variant(variant):
-        return variant
+        return DEFAULT_SOURCE_BASELINE_VARIANT
     if variant in {"v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
-        return variant
+        return DEFAULT_SOURCE_BASELINE_VARIANT
     if variant in ADAPTATION_VARIANTS:
-        return "v3_decoupled"
+        return DEFAULT_SOURCE_BASELINE_VARIANT
     return variant
+
+
+def _apply_image_only_stage_defaults(
+    stage_cfg: dict[str, Any],
+    hist_cfg: dict[str, Any],
+    student_cfg: Mapping[str, Any] | dict[str, Any],
+    *,
+    run_variant: str,
+    model_variant: str,
+) -> None:
+    dataset_cfg = stage_cfg.setdefault("data", {}).setdefault("dataset", {})
+    model_cfg = stage_cfg.setdefault("model", {})
+    dataset_cfg["enabled_modalities"] = ["image"]
+    dataset_cfg["use_gps"] = False
+    dataset_cfg["use_lidar"] = False
+    dataset_cfg["use_mmwave"] = False
+    dataset_cfg["use_csi"] = False
+    dataset_cfg["return_beam_power"] = False
+    dataset_cfg["return_geometry"] = False
+    dataset_cfg["return_modality_availability"] = True
+    dataset_cfg["radio_semantic"] = {"enabled": False, "return_beam_power": False}
+    dataset_cfg["path_semantic"] = {"enabled": False}
+    dataset_cfg["physical_label"] = {"enabled": False}
+    model_cfg["modalities"] = ["image"]
+    hist_cfg["modalities"] = ["image"]
+    hist_cfg.setdefault("disabled_modalities", ["gps", "lidar", "radar", "mmwave", "csi"])
+    hist_cfg.setdefault("excluded_sensitive_fields", ["gps", "lidar", "radar", "mmwave", "csi", "channel", "path", "beam_power"])
+    hist_cfg.setdefault("protocol", {})["image_only"] = True
+    hist_cfg.setdefault("image_only", {})["fusion_mode"] = "identity"
+    hist_cfg.setdefault("collapse_diagnostics", {})["enabled"] = True
+    if isinstance(student_cfg, dict):
+        student_cfg["variant"] = model_variant
+        student_cfg["modalities"] = ["image"]
+        student_cfg.setdefault("image_only", {})["fusion_mode"] = "identity"
+        student_cfg.setdefault("radio_semantic", {"enabled": False})
+        student_cfg.setdefault("path_semantic", {"enabled": False})
+        student_cfg["use_radio_head"] = False
+        student_cfg["use_path_head"] = False
+    if run_variant == "image_target_linear_probe":
+        v8_cfg = hist_cfg.setdefault("v8", {})
+        v8_cfg.update(
+            {
+                "mode": "target_linear_probe",
+                "use_adapter": False,
+                "use_target_prior": False,
+                "use_source_logits_in_final": False,
+                "learnable_beta_prior": False,
+                "beta_prior": 0.0,
+                "loss_prior_smooth_weight": 0.0,
+            }
+        )
+        hist_cfg.setdefault("adaptation", {})["strategy"] = "image_target_linear_probe"
+        if isinstance(student_cfg, dict):
+            student_cfg["v8"] = dict(v8_cfg)
+    elif run_variant == "image_v8_target_prior_head":
+        v8_cfg = hist_cfg.setdefault("v8", {})
+        v8_cfg.setdefault("mode", "target_prior_head")
+        v8_cfg.setdefault("use_adapter", True)
+        v8_cfg.setdefault("use_target_prior", True)
+        v8_cfg.setdefault("use_source_logits_in_final", False)
+        v8_cfg.setdefault("beta_prior", 0.5)
+        v8_cfg.setdefault("learnable_beta_prior", True)
+        hist_cfg.setdefault("adaptation", {})["strategy"] = "v8_target_head_only"
+        if isinstance(student_cfg, dict):
+            student_cfg["v8"] = dict(v8_cfg)
+    elif run_variant == "image_v9_sector_proto":
+        v8_cfg = hist_cfg.setdefault("v8", {})
+        v8_cfg.setdefault("mode", "target_prior_head")
+        v8_cfg.setdefault("use_source_logits_in_final", False)
+        v9_cfg = hist_cfg.setdefault("v9", {})
+        v9_cfg.update(
+            {
+                "use_target_prior": True,
+                "use_prototype_logits": True,
+                "prototype_type": "sector",
+                "use_beam_proto": False,
+                "sector_size": int(v9_cfg.get("sector_size", 2)),
+                "prototype_tau": float(v9_cfg.get("prototype_tau", 0.1)),
+                "eta_prototype": float(v9_cfg.get("eta_prototype", 1.0)),
+            }
+        )
+        hist_cfg.setdefault("adaptation", {})["strategy"] = "v9_target_head_only"
+        if isinstance(student_cfg, dict):
+            student_cfg["v8"] = dict(v8_cfg)
+            student_cfg["v9"] = dict(v9_cfg)
 
 
 def _source_cache_key(run: Mapping[str, Any], variant: str) -> str:

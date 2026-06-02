@@ -40,15 +40,17 @@
 
 - thin_cli_alias: `scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py`。这些只委托包内 CLI；README 推荐 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。
 - research_diagnostic: `scripts/analyze_csi_hardening_sweep.py`、`scripts/debug_eval_consistency.py`、`scripts/profile_training_io.py`、`scripts/recommend_parallel_training.py`。旧模态子集/扰动研究脚本不再作为长期入口；通用 subset/mask 验证保留在 `kd-sensing-evaluate` 使用的共享 evaluation pass 与配置化 `evaluation.modality_subsets` 中。
-- dataset_preparation: `scripts/inspect_dataset.py`、`scripts/mmw/prepare_town10_skybridge.py`、`scripts/mmw/build_sequence_splits_from_manifest.py`。
+- dataset_preparation: `scripts/inspect_dataset.py`、`scripts/mmw/prepare_town10_skybridge.py`、`scripts/mmw/build_sequence_splits_from_manifest.py`、`scripts/mmw/visualize_town_label_distribution.py`。
 - viewer_entrypoint: `tools/visualization/gradio_multimodal_viewer.py`。
 - viewer_support: `tools/visualization/viewer_utils.py`、`tools/visualization/viewer_constants.py`、`tools/visualization/viewer_manifest_io.py`、`tools/visualization/viewer_figures.py`、`tools/visualization/viewer_prediction_tables.py`。
-- shell_orchestration: `scripts/run_csi_hardening_matrix.sh`、`scripts/run_mmw_sunny_modal15_l5p3_h123.sh`、`scripts/run_mmw_sunny_modal15_l5p6_h246.sh`、`scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh`、`scripts/watch_modal15_then_run_p3.sh`。
+- shell_orchestration: `scripts/run_csi_hardening_matrix.sh`、`scripts/run_image_only_legal_crossroad_probe.sh`、`scripts/run_mmw_sunny_modal15_l5p3_h123.sh`、`scripts/run_mmw_sunny_modal15_l5p6_h246.sh`、`scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh`、`scripts/watch_modal15_then_run_p3.sh`。
 
 MMW 入口生命周期说明：
 
 - `scripts/mmw/build_sequence_splits_from_manifest.py` 属于 dataset_preparation。职责是在已有 `Prepared/<scene>/manifests/frame_manifest.csv` 基础上生成指定 `seq_len`/`pred_len` 的 sequence split CSV 和 `split_metadata.json`，服务于已完成 manifest 准备但需要补建 split 的本地数据准备流程。推荐长期入口仍是包内 MMW 数据准备能力或 `scripts/mmw/prepare_town10_skybridge.py`；该脚本是短期可审计的补充入口。输出仅允许写入 dataset 或显式本地数据根下的 `Prepared/<scene>/splits/<split_tag>/`，不得写入源码目录。删除/收敛条件是包内公开 split materialization utility 或 preprocessor CLI 覆盖同等参数、metadata 和错误提示后，将该脚本降级为 thin alias 或移除。
+- `scripts/mmw/visualize_town_label_distribution.py` 属于 dataset_preparation。职责是读取本地 MMW Town split/manifest 数据并输出标签分布诊断图或摘要，辅助确认场景标签偏移；输出限定为显式本地诊断路径，不得提交生成图片或统计产物。
 - `scripts/run_mmw_sunny_modal15_l5p3_h123.sh` 和 `scripts/run_mmw_sunny_modal15_l5p6_h246.sh` 属于 shell_orchestration。职责是运行 sunny MMW 15 组 modal quick validation profile，分别固定对应 `seq_len`/`num_pred` 和 metric horizon 组合，并可选调用 split、radar map 和 cache 预热准备。输出边界限定为 `outputs/`、`logs/`、dataset 准备产物和 cache/checkpoint 等本地运行产物，不得提交新生成结果。
+- `scripts/run_image_only_legal_crossroad_probe.sh` 属于 shell_orchestration。职责是编排 image-only legal crossroad probe 的 I0/I1/I2/I3 四模式 quick validation，所有 Python 命令通过 `conda run -n kd_mm_beam` 执行。输出边界限定为 `outputs/image_only_legal_seed0/`、cache/checkpoint、summary 和 diagnostics 等本地运行产物，不得提交新生成结果。
 - `scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh` 和 `scripts/watch_modal15_then_run_p3.sh` 属于 shell_orchestration。职责是编排特定 MMW/HiST-Beam 本地实验批次和依赖等待，不作为包内 CLI 兼容承诺。删除/收敛条件是 HiST-Beam/MMW 包内 CLI 或矩阵配置能原生表达同等调度、metadata 与准备步骤时，将 shell wrapper 收敛为薄 alias 或移除。
 
 `tools/visualization/export_viewer_manifest.py` 不得回流；`kd-sensing-export-viewer-manifest` 和 `python -m kd_sensing.cli.export_viewer_manifest` 已覆盖同一 manifest 导出 workflow。

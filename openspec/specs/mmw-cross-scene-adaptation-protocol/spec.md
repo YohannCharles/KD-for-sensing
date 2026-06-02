@@ -299,3 +299,103 @@ MMW quick validation protocol MUST 能声明 v9 input-conditioned target adaptat
 - **AND** metadata MUST 证明 target_test label、beam_power、path fields 和 radio labels 未参与训练或选择
 - **AND** 若证明缺失，Group C run MUST 被标记为 disabled、debug 或 ineligible
 
+### Requirement: Image-only quick validation eligibility audit
+MMW quick validation eligibility audit MUST judge image-only legal probe runs by strict split eligibility and actual target-side oracle consumption. A run MUST NOT be marked ineligible only because raw dataset files or manifest rows contain path、radio、channel、beam_power、GPS、LiDAR or other disabled fields when those fields were not consumed by model input、loss、adaptation、threshold selection、temperature fitting、prototype update、early stopping or summary selection.
+
+#### Scenario: 合法 image-only run 不因原始字段存在被排除
+- **WHEN** image-only probe run 使用 strict-validation eligible split
+- **AND** consumed fields 只包含 image 输入和允许的 beam labels
+- **THEN** eligibility metadata MUST 记录 `target_oracle_fields_used=false`
+- **AND** eligibility metadata MUST 记录 `target_radio_label_supervision=false`
+- **AND** eligibility metadata MUST 记录 `target_path_label_supervision=false`
+- **AND** summary MUST NOT 因 raw dataset 中存在 path、radio、channel 或 beam_power 字段而排除该 run
+
+#### Scenario: 禁用 oracle 实际被消费时排除
+- **WHEN** image-only probe run 在 adaptation、threshold selection、temperature fitting、prototype update、early stopping、loss 计算或 summary selection 中消费 target_test label、target_test beam_power、target-side path/radio/channel label 或禁用 oracle 字段
+- **THEN** eligibility metadata MUST 将 run 标记为 ineligible
+- **AND** `eligibility_reasons` MUST 包含实际字段名、使用阶段和机器可读 reason code
+- **AND** summary MUST 将该 run 排除出主结论
+
+### Requirement: Image-only split eligibility 明确化
+MMW image-only legal probe MUST 明确记录 split eligibility。系统 MUST NOT 默默输出 `split_eligibility_unknown`；当无法判断 split 是否严格合法时，eligibility metadata MUST 给出缺失 metadata、config path 或 leakage diagnostic path。
+
+#### Scenario: split metadata 完整时可进入主结论
+- **WHEN** source、target_support 和 target_test split metadata 能证明 sample id、窗口上下文和 guard-band 约束满足 strict validation
+- **THEN** run metadata MUST 记录 `split_eligibility_unknown=false`
+- **AND** run metadata MUST 记录 strict split eligibility 的诊断路径或摘要
+
+#### Scenario: split metadata 缺失时给出具体原因
+- **WHEN** eligibility checker 无法判断 split eligibility
+- **THEN** run metadata MUST 记录 `split_eligibility_unknown=true`
+- **AND** `eligibility_reasons` MUST 包含缺失字段、缺失文件或配置路径
+- **AND** summary MUST 将该 run 标记为 excluded/debug，而不是把 unknown 当成 eligible
+
+### Requirement: Image-only oracle usage metadata
+MMW image-only legal probe MUST 在 run metadata 中记录 enabled modalities、disabled modalities、excluded sensitive fields、consumed fields 和 stage-level oracle usage summary。该 metadata MUST 能支持 downstream report 过滤合法 image-only run。
+
+#### Scenario: metadata 记录模态和禁用字段
+- **WHEN** image-only probe run 启动
+- **THEN** run metadata MUST 记录 `enabled_modalities=["image"]`
+- **AND** run metadata MUST 记录 disabled modalities
+- **AND** run metadata MUST 记录 excluded sensitive fields
+- **AND** run metadata MUST 记录 `used_target_oracle_fields=[]`，除非实际消费了禁用 target-side oracle 字段
+
+#### Scenario: metadata 记录 stage-level consumed fields
+- **WHEN** image-only probe run 完成 source training、target adaptation 或 target_test evaluation stage
+- **THEN** run metadata MUST 记录每个 stage 的 consumed input fields 和 consumed label fields
+- **AND** target adaptation stage MUST 仅记录 target support image 和 support beam label 作为合法 consumed fields
+- **AND** target_test evaluation stage MUST 标记 target_test beam label 仅用于 final metrics
+
+### Requirement: Image-only quick validation conclusion
+MMW quick validation summary MUST 为 image-only legal probe 输出机器可读结论。结论 MUST 汇总 eligible run count、ineligible reasons、target oracle flags、split eligibility flags 和各 probe mode 的核心指标。
+
+#### Scenario: eligible run count 大于零
+- **WHEN** image-only probe summary 生成
+- **THEN** summary MUST 输出 `eligible_run_count`
+- **AND** 只有满足 strict split eligibility 且未消费禁用 target oracle 的 run 才能计入 eligible count
+
+#### Scenario: ineligible run 说明可定位
+- **WHEN** 任一 image-only probe run 被排除
+- **THEN** summary MUST 记录 mode、run directory、eligibility_status、eligibility_reasons、split diagnostics path 和 oracle usage summary
+- **AND** reason MUST 足以定位到对应 config path、artifact path 或 stage
+
+### Requirement: MMW 5% target-shot split artifact
+MMW cross-scene adaptation protocol MUST support a 5% target-shot split artifact for scenario-level、town-level 和 weather/condition-level experiments. The artifact MUST be derived from MMW availability/manifest metadata and MUST preserve existing group-safe window leakage diagnostics.
+
+#### Scenario: MMW scenario target-shot split
+- **WHEN** MMW manifest 包含至少一个 source scenario 和一个 target scenario
+- **THEN** split builder MUST 能生成 source、target_labeled、target_unlabeled 和 target_test split
+- **AND** target_labeled MUST 默认占 target adaptation pool 的 5%
+- **AND** split metadata MUST 保留 sample id、window overlap、guard band 和 strict eligibility diagnostics
+
+#### Scenario: MMW weather target-shot split
+- **WHEN** MMW availability 包含多个 weather/condition 且配置选择 condition-level target domain
+- **THEN** split builder MUST 将 target condition 与 source condition 写入 metadata
+- **AND** summary MUST 不把缺少其它 condition 的 run 声称为 weather-shift 验证
+
+### Requirement: MMW geometry-residual label 统计
+MMW cross-scene adaptation protocol MUST support geometry-residual label statistics using direct RSU-CAV relative geometry when available. The protocol MUST record whether `beam_geo` is derived from direct geometry, uniform angle quantization, codebook mapping or unavailable.
+
+#### Scenario: MMW manifest geometry 可用
+- **WHEN** MMW frame manifest 包含 direct relative azimuth 或可解析 RSU/CAV pose
+- **THEN** geometry-residual label builder MUST 能生成 `beam_geo`、`beam_residual` 和 `geo_sector`
+- **AND** split diagnostics MUST 写出 source/target absolute 与 residual histogram
+
+#### Scenario: MMW geometry 不可用
+- **WHEN** 某个 MMW sample 缺少 direct geometry 且配置要求 geometry residual
+- **THEN** 系统 MUST 按 `label_space.geometry.required` 决定失败或标记 unavailable
+- **AND** unavailable reason MUST 写入 manifest 或 diagnostics artifact
+
+### Requirement: MMW target-shot 防 oracle 边界
+MMW target-shot adaptation MUST only use `target_labeled` beam/residual labels for supervised target loss. `target_unlabeled` and `target_test` beam labels、beam_power、path fields、radio labels and channel-derived labels MUST NOT be used for adaptation threshold selection、prototype update、temperature fitting、early stopping or training loss.
+
+#### Scenario: target_test label 不参与 calibration
+- **WHEN** 后续 calibration 或 adaptation 使用 MMW target-shot split artifact
+- **THEN** target_test labels MUST only be available in final evaluation scope
+- **AND** eligibility audit MUST mark the run ineligible if target_test labels influence training, threshold, prototype, temperature or early stopping
+
+#### Scenario: target_labeled residual 监督合法
+- **WHEN** MMW adaptation 使用 `target_labeled` subset 且 label budget 大于 0
+- **THEN** supervised beam 或 residual loss MAY use target_labeled labels
+- **AND** usage metadata MUST record selected sample ids and target_label_fraction
+

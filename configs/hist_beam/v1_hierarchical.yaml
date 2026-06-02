@@ -21,6 +21,3 @@ hist_beam:
   loss_weights:
     hierarchical: 1.0
     flat: 0.2
-    orthogonality: 0.0
-    scene_confusion: 0.0
-    scene_private: 0.0

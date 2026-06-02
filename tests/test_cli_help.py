@@ -16,6 +16,7 @@ import pytest
         ("kd-sensing-hist-beam-loso", "--execute"),
         ("kd-sensing-export-viewer-manifest", "--cache-dir"),
         ("kd-sensing-visualize-modalities", "--cache-dir"),
+        ("kd-sensing-gps-window-baseline", "--execute"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):

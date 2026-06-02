@@ -22,6 +22,8 @@ from kd_sensing.engine.hist_beam_loso_execution import (
     SENSOR_ASSISTED_QUICK_VARIANTS,
     execute_loso_run_plan,
 )
+from kd_sensing.engine.hist_beam_image_only import IMAGE_ONLY_SOURCE_VARIANTS, IMAGE_ONLY_VARIANTS
+from kd_sensing.engine.hist_beam_loso_config import validate_loso_variant
 from kd_sensing.engine.modality_resolution import (
     SENSOR_ASSISTED_DISALLOWED_MODALITIES,
     SENSOR_ASSISTED_PROFILE,
@@ -192,7 +194,7 @@ def build_loso_run_plan(
     except Exception:
         enabled_modalities = list(cfg.get("model", {}).get("modalities", ["image", "radar", "gps"]))
     profile = _matrix_profile(cfg)
-    resolved_variants = list(variants or ["v3_decoupled"])
+    resolved_variants = [validate_loso_variant(item) for item in list(variants or ["v1_hierarchical"])]
     resolved_budgets = list(budgets or [0])
     resolved_seeds = list(seeds or [0])
     skipped = set(skip_scenes or [])
@@ -208,6 +210,17 @@ def build_loso_run_plan(
         for variant in resolved_variants:
             for budget in resolved_budgets:
                 for seed in resolved_seeds:
+                    stages = [
+                        "source_train",
+                        "source_only_target_test_eval",
+                        "summary",
+                    ] if str(variant) in IMAGE_ONLY_SOURCE_VARIANTS else [
+                        "source_train",
+                        "source_only_target_test_eval",
+                        "target_adaptation",
+                        "adapted_target_test_eval",
+                        "summary",
+                    ]
                     runs.append(
                         {
                             "fold": fold.fold_id,
@@ -216,13 +229,7 @@ def build_loso_run_plan(
                             "variant": str(variant),
                             "budget": int(budget),
                             "seed": int(seed),
-                            "stages": [
-                                "source_train",
-                                "source_only_target_test_eval",
-                                "target_adaptation",
-                                "adapted_target_test_eval",
-                                "summary",
-                            ],
+                            "stages": stages,
                             "target_test_for_training": False,
                             "profile": profile,
                             "modality_profile": profile,
@@ -292,10 +299,14 @@ def _build_mmw_run_plan(
     cfg["loso"].setdefault("scene_csv_names", mmw_scene_csv_names(availability))
     profile = _matrix_profile(cfg)
     sensor_assisted = sensor_assisted_profile_enabled(cfg)
+    image_only_profile = str(profile) == "image_only_legal_crossroad_probe"
     enabled_modalities = _resolve_loso_enabled_modalities(cfg)
     excluded_sensitive_fields = _excluded_sensitive_fields(cfg)
-    matrix_scope = "quick_validation" if sensor_assisted else "full_or_configured"
-    resolved_variants = list(variants or (SENSOR_ASSISTED_QUICK_VARIANTS if sensor_assisted else ["v3_decoupled"]))
+    matrix_scope = "quick_validation" if sensor_assisted or image_only_profile else "full_or_configured"
+    resolved_variants = [
+        validate_loso_variant(item)
+        for item in list(variants or (SENSOR_ASSISTED_QUICK_VARIANTS if sensor_assisted else ["v1_hierarchical"]))
+    ]
     resolved_budgets = list(budgets or (SENSOR_ASSISTED_QUICK_BUDGETS if sensor_assisted else [0]))
     resolved_seeds = list(seeds or (SENSOR_ASSISTED_QUICK_SEEDS if sensor_assisted else [0]))
     runs = []
@@ -304,6 +315,18 @@ def _build_mmw_run_plan(
         for variant in resolved_variants:
             for budget in resolved_budgets:
                 for seed in resolved_seeds:
+                    stages = [
+                        "source_train",
+                        "source_only_target_test_eval",
+                        "summary",
+                    ] if str(variant) in IMAGE_ONLY_SOURCE_VARIANTS else [
+                        "source_train",
+                        "source_only_target_test_eval",
+                        "target_adaptation",
+                        "adapted_target_test_eval",
+                        "summary",
+                    ]
+                    image_only = str(variant) in IMAGE_ONLY_VARIANTS
                     runs.append(
                         {
                             "fold": fold.fold_id,
@@ -318,21 +341,25 @@ def _build_mmw_run_plan(
                             "protocol": fold.protocol,
                             "claim_scope": fold.claim_scope,
                             "cross_scene_claim_allowed": fold.cross_scene_claim_allowed,
-                            "stages": [
-                                "source_train",
-                                "source_only_target_test_eval",
-                                "target_adaptation",
-                                "adapted_target_test_eval",
-                                "summary",
-                            ],
+                            "stages": stages,
                             "target_test_for_training": False,
                             "fold_metadata": metadata,
                             "profile": profile,
                             "modality_profile": profile,
                             "enabled_modalities": enabled_modalities,
                             "excluded_sensitive_fields": excluded_sensitive_fields,
+                            "disabled_modalities": ["gps", "lidar", "radar", "mmwave", "csi"] if image_only else [],
+                            "protocol_flags": {
+                                "image_only": image_only,
+                                "allow_target_unlabeled": False if image_only else None,
+                                "allow_target_radio_oracle": False if image_only else None,
+                                "allow_target_path_oracle": False if image_only else None,
+                                "allow_target_beam_power_oracle": False if image_only else None,
+                                "allow_target_test_labels_for_adaptation": False if image_only else None,
+                            },
+                            "probe_mode": str(variant) if image_only else None,
                             "matrix_scope": matrix_scope,
-                            "quick_validation": bool(sensor_assisted),
+                            "quick_validation": bool(sensor_assisted or image_only_profile),
                             "v9_group_ids": list(loso_cfg.get("v9_groups", [])),
                             "v9_group_c_enabled": bool(loso_cfg.get("v9_group_c_enabled", False)),
                             "experiment_purpose": _variant_purpose(str(variant)),
@@ -357,7 +384,7 @@ def _build_mmw_run_plan(
             "sensor_assisted": bool(sensor_assisted),
         },
         "matrix_scope": matrix_scope,
-        "quick_validation": bool(sensor_assisted),
+        "quick_validation": bool(sensor_assisted or image_only_profile),
         "matrix": _matrix_metadata(resolved_variants, resolved_budgets, resolved_seeds, matrix_scope=matrix_scope),
         "matrix_overrides": dict(matrix_overrides or {}),
         "v9_group_ids": list(loso_cfg.get("v9_groups", [])),

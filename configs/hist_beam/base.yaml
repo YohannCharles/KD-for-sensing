@@ -40,7 +40,7 @@ model:
     num_classes: 64
     num_pred: 1
     group_size: 8
-    variant: v3_decoupled
+    variant: v1_hierarchical
     image_encoder:
       type: resnet18_imagenet_rgb
       pretrained: false
@@ -53,7 +53,7 @@ model:
     num_classes: 64
     num_pred: 1
     group_size: 8
-    variant: v3_decoupled
+    variant: v1_hierarchical
     num_heads: 4
     num_layers: 2
     dropout: 0.1
@@ -68,9 +68,6 @@ hist_beam:
   loss_weights:
     hierarchical: 1.0
     flat: 0.2
-    orthogonality: 0.01
-    scene_confusion: 0.05
-    scene_private: 0.05
   prototype:
     enabled: true
     confidence_threshold: 0.6
@@ -98,7 +95,7 @@ output:
   progress:
     enabled: true
 loso:
-  variants: [v0_flat, v1_hierarchical, v3_decoupled, v4_adapter, v5_adapter_proto, v6_full_finetune]
+  variants: [v0_flat, v1_hierarchical, v4_adapter, v5_adapter_proto, v6_full_finetune]
   budgets: [0, 5, 10, 20, 50]
   seeds: [0, 1, 2]
   skip_scenes: []

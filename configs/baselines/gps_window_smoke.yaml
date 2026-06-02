@@ -1,0 +1,27 @@
+experiment:
+  name: gps_window_smoke
+data:
+  data_root: dataset/MMW/sunny
+  split_tag: l5p3_group_safe
+  scenes:
+    - Town10_skybridge_seed24
+  source_scenes:
+    - Town10_crossroad_seed24
+gps_window:
+  algorithm: geometry_last
+  num_classes: 64
+  group_size: 8
+  horizon: 3
+  history_window: 5
+  min_history: 1
+  score_width: 2.0
+  score_temperature: 1.0
+  neighbor_top_k: 5
+  fallback: majority
+  calibration_mode: source
+  max_samples: 64
+output:
+  dir: outputs/gps_window_baseline_smoke
+sweep:
+  enabled: false
+

@@ -21,6 +21,17 @@ from kd_sensing.engine.hist_beam_loso_config import (
     _stage_cfg,
     _throughput_config_summary,
 )
+from kd_sensing.engine.hist_beam_image_only import (
+    canonical_image_only_variant,
+    expected_feature_cache_metadata,
+    extract_image_features_for_cache,
+    feature_cache_dir,
+    filter_image_only_batch,
+    image_feature_cache_enabled,
+    image_only_protocol_enabled,
+    image_only_run_metadata,
+    write_image_feature_cache,
+)
 from kd_sensing.engine.hist_beam_loso_records import _run_identity
 from kd_sensing.engine.hist_beam_loso_summary import _flatten_adaptation_diagnostics
 from kd_sensing.engine.run_lineage import run_lineage_metadata
@@ -197,6 +208,7 @@ class DefaultHistBeamLosoStageExecutor:
 
         from kd_sensing.engine.data_factory import shutdown_dataloader_workers
         from kd_sensing.engine.batch import prepare_beamspace_power_targets, prepare_history_anchor_inputs, prepare_radio_semantic_labels
+        from kd_sensing.config.io import dump_config
         from kd_sensing.engine.hist_beam_baselines import collect_source_beam_reference
         from kd_sensing.engine.hist_beam_losses import compute_hist_beam_loss, hist_beam_enabled
         from kd_sensing.engine.hist_beam_residuals import history_anchor_enabled, num_delta_classes_from_config
@@ -213,6 +225,7 @@ class DefaultHistBeamLosoStageExecutor:
         )
 
         cfg = _stage_cfg(context.cfg, run, variant=variant, stage_name="source_train", stage_dir=context.stage_dir)
+        dump_config(cfg, context.run_dir / "resolved_config.yaml")
         set_seed(cfg.get("experiment", {}).get("seed", 0))
         device = build_device(cfg)
         loaders = build_loso_source_train_loader(cfg, dict(run))
@@ -235,6 +248,7 @@ class DefaultHistBeamLosoStageExecutor:
                 epoch_losses: list[float] = []
                 model.train()
                 for batch in loaders["source_train"]:
+                    batch = filter_image_only_batch(batch, cfg, stage="source_train")
                     optimizer.zero_grad(set_to_none=True)
                     with autocast_context(amp_enabled, device, amp_dtype):
                         history_kwargs = prepare_history_anchor_inputs(
@@ -334,6 +348,37 @@ class DefaultHistBeamLosoStageExecutor:
             else:
                 prototype_status.setdefault("status", "skipped")
             source_reference = collect_source_beam_reference(loaders["source_train"], cfg, device, output_path=context.stage_dir / "source_beam_reference.pt")
+            image_cache_artifacts: dict[str, Any] = {}
+            if image_feature_cache_enabled(cfg):
+                cache_dir = feature_cache_dir(cfg, context.run_dir)
+                features, labels, metadata_rows = extract_image_features_for_cache(
+                    model,
+                    loaders["source_train"],
+                    cfg,
+                    device,
+                    split="source_train",
+                    stage="source_train",
+                )
+                cache_meta = expected_feature_cache_metadata(
+                    cfg,
+                    run,
+                    checkpoint=checkpoint_path,
+                    feature_dim=int(features.shape[-1]),
+                    dtype="float32",
+                )
+                cache_result = write_image_feature_cache(
+                    cache_dir / "source_train.pt",
+                    features=features,
+                    labels=labels,
+                    metadata_rows=metadata_rows,
+                    split="source_train",
+                    cache_metadata=cache_meta,
+                    overwrite=True,
+                )
+                image_cache_artifacts = {
+                    "source_train_feature_cache_path": cache_result["path"],
+                    "feature_cache_meta_path": cache_result["cache_meta_path"],
+                }
             metrics = {
                 "train_loss_last": losses[-1] if losses else None,
                 "train_loss_mean": sum(losses) / len(losses) if losses else None,
@@ -353,6 +398,7 @@ class DefaultHistBeamLosoStageExecutor:
                 **dict(source_reference.get("metadata", {})),
                 **run_lineage_metadata(cfg, default_method_family="hist_beam_mainline"),
                 **history_anchor_run_metadata(cfg),
+                **(image_only_run_metadata(cfg, run, stage="source_train") if image_only_protocol_enabled(cfg) else {}),
             }
             metrics_path = context.stage_dir / "metrics.json"
             _write_json(metrics_path, metrics)
@@ -363,6 +409,7 @@ class DefaultHistBeamLosoStageExecutor:
                 "source_prototype_path": str(prototype_path) if prototype_status.get("path") else None,
                 "source_beam_reference_path": source_reference.get("path"),
                 "progress_path": str(progress_path),
+                **image_cache_artifacts,
             }
             result = {
                 "status": "completed",
@@ -395,6 +442,7 @@ class DefaultHistBeamLosoStageExecutor:
 
     def _target_adaptation(self, run: Mapping[str, Any], context: StageExecutionContext) -> dict[str, Any]:
         variant = str(run.get("variant"))
+        model_variant = canonical_image_only_variant(variant)
         if variant in SOURCE_ONLY_VARIANTS:
             return {
                 "status": "skipped",
@@ -407,6 +455,7 @@ class DefaultHistBeamLosoStageExecutor:
         from torch.utils.data import DataLoader, Subset
 
         from kd_sensing.engine.batch import prepare_history_anchor_inputs
+        from kd_sensing.config.io import dump_config
         from kd_sensing.engine.data_factory import build_dataloader_kwargs, shutdown_dataloader_workers
         from kd_sensing.engine.hist_beam_residuals import history_anchor_enabled, num_delta_classes_from_config
         from kd_sensing.engine.hist_beam_adaptation import (
@@ -422,6 +471,7 @@ class DefaultHistBeamLosoStageExecutor:
         source_variant = _source_variant_for(run)
         source_checkpoint = self._source_checkpoint_for(run, context, variant=source_variant)
         cfg = _stage_cfg(context.cfg, run, variant=variant, stage_name="target_adaptation", stage_dir=context.stage_dir)
+        dump_config(cfg, context.run_dir / "resolved_config.yaml")
         set_seed(cfg.get("experiment", {}).get("seed", 0))
         device = build_device(cfg)
         loaders = build_loso_target_stage_loader(
@@ -442,7 +492,7 @@ class DefaultHistBeamLosoStageExecutor:
                 loader_kwargs=build_dataloader_kwargs(cfg["data"]["dataloader"], split="train"),
             )
             prior_metadata: dict[str, Any] = {}
-            if variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"} and hasattr(model, "set_target_prior_from_labels"):
+            if model_variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"} and hasattr(model, "set_target_prior_from_labels"):
                 v8_cfg = cfg.get("hist_beam", {}).get("v8", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
                 support_labels = [
                     int(item["beam"])
@@ -455,14 +505,14 @@ class DefaultHistBeamLosoStageExecutor:
                     eps=float(v8_cfg.get("prior_eps", 1.0e-4)),
                 )
             v9_target_prototype_metadata: dict[str, Any] = {}
-            if variant == "v9_input_conditioned_target_adaptation" and labeled_loader is not None and hasattr(model, "set_target_prototypes_from_features"):
+            if model_variant == "v9_input_conditioned_target_adaptation" and labeled_loader is not None and hasattr(model, "set_target_prototypes_from_features"):
                 was_training = model.training
                 model.eval()
                 features = []
                 labels_for_features = []
                 with torch.no_grad():
                     for support_batch in labeled_loader:
-                        prepared_batch = prepare_task_batch(support_batch)
+                        prepared_batch = filter_image_only_batch(support_batch, cfg, stage="target_adaptation")
                         history_kwargs = prepare_history_anchor_inputs(
                             prepared_batch,
                             num_pred=cfg["model"].get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 1)),
@@ -510,28 +560,30 @@ class DefaultHistBeamLosoStageExecutor:
                     model.train()
             strategy = (
                 "v6_full_finetune"
-                if variant == "v6_full_finetune"
+                if model_variant == "v6_full_finetune"
                 else "v7_private_residual"
-                if variant == "v7_shared_physical_private_residual"
+                if model_variant == "v7_shared_physical_private_residual"
+                else "image_target_linear_probe"
+                if variant == "image_target_linear_probe"
                 else "v8_target_head_only"
-                if variant == "v8_target_prior_head"
+                if model_variant == "v8_target_prior_head"
                 else "v9_target_head_only"
-                if variant == "v9_input_conditioned_target_adaptation"
-                else variant
+                if model_variant == "v9_input_conditioned_target_adaptation"
+                else model_variant
             )
             strategy_metadata = apply_hist_beam_adaptation_strategy(model, strategy)
             optimizer = build_optimizer(cfg, model)
             prototypes = None
             prototype_metadata: dict[str, Any]
-            if variant in {"v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
+            if model_variant in {"v5_adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto"}:
                 proto_path = self._source_prototype_for(run, context, variant=source_variant)
                 if proto_path is not None and Path(proto_path).exists():
                     prototypes = load_source_prototypes(proto_path, map_location=device)
                     counts_key = (
                         "count_path"
-                        if variant in {"v8_path_proto", "adapter_path_proto"} and "count_path" in prototypes
+                        if model_variant in {"v8_path_proto", "adapter_path_proto"} and "count_path" in prototypes
                         else "count_radio"
-                        if variant in {"v6_radio_proto", "adapter_radio_proto"} and "count_radio" in prototypes
+                        if model_variant in {"v6_radio_proto", "adapter_radio_proto"} and "count_radio" in prototypes
                         else "counts"
                     )
                     prototype_metadata = {
@@ -543,7 +595,7 @@ class DefaultHistBeamLosoStageExecutor:
                         "prototype_coverage_available": False,
                         "prototype_coverage_unavailable_reason": "source_prototype_missing",
                     }
-            elif variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
+            elif model_variant in {"v8_target_prior_head", "v9_input_conditioned_target_adaptation"}:
                 prototype_metadata = {
                     "prototype_coverage_available": False,
                     "prototype_coverage_unavailable_reason": f"{variant}_does_not_require_source_prototypes",
@@ -569,6 +621,37 @@ class DefaultHistBeamLosoStageExecutor:
             adaptation_diagnostics = adaptation.pop("diagnostics", {})
             flattened_diagnostics = _flatten_adaptation_diagnostics(adaptation_diagnostics)
             params = trainable_parameter_summary(model).to_dict()
+            image_cache_artifacts: dict[str, Any] = {}
+            if image_feature_cache_enabled(cfg) and labeled_loader is not None:
+                cache_dir = feature_cache_dir(cfg, context.run_dir)
+                features, labels, metadata_rows = extract_image_features_for_cache(
+                    model,
+                    labeled_loader,
+                    cfg,
+                    device,
+                    split="target_support",
+                    stage="target_adaptation",
+                )
+                cache_meta = expected_feature_cache_metadata(
+                    cfg,
+                    run,
+                    checkpoint=source_checkpoint,
+                    feature_dim=int(features.shape[-1]),
+                    dtype="float32",
+                )
+                cache_result = write_image_feature_cache(
+                    cache_dir / "target_support.pt",
+                    features=features,
+                    labels=labels,
+                    metadata_rows=metadata_rows,
+                    split="target_support",
+                    cache_metadata=cache_meta,
+                    overwrite=True,
+                )
+                image_cache_artifacts = {
+                    "target_support_feature_cache_path": cache_result["path"],
+                    "feature_cache_meta_path": cache_result["cache_meta_path"],
+                }
             metrics = {
                 **run_lineage_metadata(cfg, default_method_family="hist_beam_mainline"),
                 **strategy_metadata,
@@ -587,6 +670,7 @@ class DefaultHistBeamLosoStageExecutor:
                 if bool((cfg.get("hist_beam", {}).get("v8", {}) if isinstance(cfg.get("hist_beam"), dict) else {}).get("run_prototype_probe", False))
                 else None,
                 **prototype_metadata,
+                **(image_only_run_metadata(cfg, run, stage="target_adaptation") if image_only_protocol_enabled(cfg) else {}),
             }
             checkpoint_path = context.stage_dir / "adaptation_checkpoint.pth"
             torch.save(
@@ -614,6 +698,12 @@ class DefaultHistBeamLosoStageExecutor:
             _write_json(
                 adapt_log_path,
                 {
+                    "[image-only A2] trainable parameter names": strategy_metadata.get("trainable_parameter_names", [])
+                    if strategy == "image_target_linear_probe"
+                    else None,
+                    "[image-only A2] trainable ratio": params.get("trainable_ratio")
+                    if strategy == "image_target_linear_probe"
+                    else None,
                     "proto_type": metrics.get("proto_type"),
                     "label_budget": int(run.get("budget", 0)),
                     "target_labeled_subset_available": bool(metrics.get("target_labeled_subset_available", False)),
@@ -646,6 +736,7 @@ class DefaultHistBeamLosoStageExecutor:
                 "adaptation_checkpoint_path": str(checkpoint_path),
                 "source_prototype_path": prototype_metadata.get("source_prototype_path"),
                 "progress_path": str(context.stage_dir / "progress.jsonl"),
+                **image_cache_artifacts,
             }
             key = _adaptation_cache_key(run)
             context.state["adaptation_checkpoints"][key] = {
@@ -779,15 +870,17 @@ def _evaluate_target_test(
     stage_name: str,
 ) -> dict[str, Any]:
     from kd_sensing.engine.data_factory import shutdown_dataloader_workers
+    from kd_sensing.config.io import dump_config
     from kd_sensing.engine.evaluation_pass import run_evaluation_pass
     from kd_sensing.engine.hist_beam_baselines import attach_source_beam_reference, source_prior_collapse_metrics
     from kd_sensing.engine.loso_data import build_loso_target_stage_loader
     from kd_sensing.engine.optim import build_device, build_model, build_task_criterion
-    from kd_sensing.evaluation.hist_beam_outputs import prediction_histogram_payload, write_collapse_diagnostics, write_hist_beam_predictions, write_prediction_histogram
+    from kd_sensing.evaluation.hist_beam_outputs import prediction_histogram_payload, write_collapse_diagnostics, write_confusion_by_true_beam, write_hist_beam_predictions, write_prediction_histogram
 
     device = build_device(cfg)
     executor = DefaultHistBeamLosoStageExecutor()
     source_reference_path = ((context.state["source_checkpoints"].get(_source_cache_key(run, _source_variant_for(run))) or {}).get("artifacts") or {}).get("source_beam_reference_path")
+    dump_config(cfg, context.run_dir / "resolved_config.yaml")
     source_reference = attach_source_beam_reference(cfg, source_reference_path, map_location=device)
     loaders = build_loso_target_stage_loader(
         cfg,
@@ -815,6 +908,7 @@ def _evaluate_target_test(
         metrics.update(source_prior_collapse_metrics(source_reference, metrics))
         predictions_path = context.stage_dir / "predictions.csv"
         prediction_hist_path = context.stage_dir / "prediction_hist.json"
+        confusion_path = context.stage_dir / "confusion_by_true_beam.json"
         collapse_path = context.stage_dir / "collapse_diagnostics.json"
         num_classes = int(cfg.get("model", {}).get("student", {}).get("num_classes", cfg.get("model", {}).get("num_classes", 64)))
         top_k = max(int(value) for value in cfg.get("evaluation", {}).get("k_values", [1, 3, 5]))
@@ -830,6 +924,13 @@ def _evaluate_target_test(
             result.outputs,
             num_classes=num_classes,
             top_k=top_k,
+            metadata=_run_identity(run) | {"variant": str(variant), "split": "target_test", "summary_type": summary_type},
+        )
+        write_confusion_by_true_beam(
+            confusion_path,
+            result.labels,
+            result.outputs,
+            num_classes=num_classes,
             metadata=_run_identity(run) | {"variant": str(variant), "split": "target_test", "summary_type": summary_type},
         )
         collapse_enabled = bool(
@@ -868,10 +969,14 @@ def _evaluate_target_test(
         metrics.update(
             {
                 "prediction_hist_path": str(prediction_hist_path),
+                "confusion_by_true_beam_path": str(confusion_path),
                 "collapse_diagnostics_path": str(collapse_path) if collapse_enabled else None,
                 "true_top_beams": hist_payload["true_top_beams"],
                 "pred_top_beams": hist_payload["pred_top_beams"],
-                "unique_pred_beams": int(sum(1 for value in hist_payload["pred_hist"] if int(value) > 0)),
+                "unique_pred_beams": hist_payload["unique_pred_beams"],
+                "top1_pred_beam_ratio": hist_payload["top1_pred_beam_ratio"],
+                "top2_pred_beam_ratio": hist_payload["top2_pred_beam_ratio"],
+                "top5_pred_beam_ratio": hist_payload["top5_pred_beam_ratio"],
                 "kl_pred_support": collapse_payload.get("kl_pred_support"),
                 "kl_true_support": collapse_payload.get("kl_true_support"),
                 "kl_pred_true": collapse_payload.get("kl_pred_true"),
@@ -885,6 +990,40 @@ def _evaluate_target_test(
                 "within_3_acc": hist_payload["within_3_acc"],
             }
         )
+        image_cache_artifacts: dict[str, Any] = {}
+        if image_feature_cache_enabled(cfg):
+            cache_dir = feature_cache_dir(cfg, context.run_dir)
+            features, labels, metadata_rows = extract_image_features_for_cache(
+                model,
+                loaders["target_test"],
+                cfg,
+                device,
+                split="target_test",
+                stage=stage_name,
+            )
+            cache_meta = expected_feature_cache_metadata(
+                cfg,
+                run,
+                checkpoint=checkpoint_path,
+                feature_dim=int(features.shape[-1]),
+                dtype="float32",
+            )
+            cache_result = write_image_feature_cache(
+                cache_dir / "target_test.pt",
+                features=features,
+                labels=labels,
+                metadata_rows=metadata_rows,
+                split="target_test",
+                cache_metadata=cache_meta,
+                overwrite=True,
+            )
+            image_cache_artifacts = {
+                "target_test_feature_cache_path": cache_result["path"],
+                "feature_cache_meta_path": cache_result["cache_meta_path"],
+            }
+            metrics.update(image_cache_artifacts)
+        if image_only_protocol_enabled(cfg):
+            metrics.update(image_only_run_metadata(cfg, run, stage=stage_name))
         metrics_path = context.stage_dir / "metrics.json"
         _write_json(metrics_path, metrics)
         setup = dict(metrics.get("prediction_setup", {})) if isinstance(metrics.get("prediction_setup"), dict) else {}
@@ -914,9 +1053,11 @@ def _evaluate_target_test(
                 "metrics_path": str(metrics_path),
                 "predictions_path": str(predictions_path),
                 "prediction_hist_path": str(prediction_hist_path),
+                "confusion_by_true_beam_path": str(confusion_path),
                 "collapse_diagnostics_path": str(collapse_path) if collapse_enabled else None,
                 "source_checkpoint_path": str(checkpoint_path),
                 "source_beam_reference_path": source_reference_path,
+                **image_cache_artifacts,
             },
             "metrics": metrics,
         }

@@ -1,0 +1,2213 @@
+{
+  "schema_version": 1,
+  "generated_for_change": "remove-legacy-knowledge-decoupling",
+  "scan_roots": [
+    "outputs",
+    "logs"
+  ],
+  "delete_count": 70,
+  "keep_count": 87,
+  "entries": [
+    {
+      "path": "logs/01_source_v2.log",
+      "kind": "file",
+      "matched_patterns": [
+        "content:shared_private",
+        "content:v2_shared_private"
+      ],
+      "active_excludes": [],
+      "size_bytes": 1650,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "logs/01_source_v3.log",
+      "kind": "file",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 1640,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "logs/agent_runs/execute_hist_beam_quick_validation",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 44398,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "logs/history_anchor_4gpu",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 4584,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "logs/image_only_legal_crossroad_probe",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 575753,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "logs/loso_radio",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 708554,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "logs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/hist_lidar_image_gps_label_p3v8_20260530_200730",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 1681419,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "logs/p3_v8_a2a5_single_target_seed0_4x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v8"
+      ],
+      "size_bytes": 722795,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "logs/v9_fast_4gpu",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 568614,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "logs/v9_rerun_bf16",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 759353,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 16372,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu0/runs/target_Town10_crossroad_seed24__srcTown10_Hroad_seed42-Town10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 3856,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 16372,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu1/runs/target_Town10_crossroad_seed24__srcTown10_Hroad_seed42-Town10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 3856,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 58109,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu2/runs/target_Town10_Hroad_seed42__srcTown10_crossroad_seed24-Town10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 1886,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 58109,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/history_anchor_20ep_gpu3/runs/target_Town10_Hroad_seed42__srcTown10_crossroad_seed24-Town10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_anchor"
+      ],
+      "size_bytes": 1886,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 1776052,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0/I0_source_only",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 11888,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0/logs",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 579294,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_source_only_gpu0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 55644853,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_source_only_gpu0/I0_source_only",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 55606455,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_source_only_gpu0/I0_source_only/source_train",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 47365184,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_target_linear_probe_gpu1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 105672537,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_target_linear_probe_gpu1/I1_linear_probe",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 105627701,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_target_linear_probe_gpu1/I1_linear_probe/source_train",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal"
+      ],
+      "size_bytes": 47365265,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_v8_target_prior_head_gpu2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal",
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 105749277,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_v8_target_prior_head_gpu2/I2_v8_target_prior",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal",
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 105704197,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_v8_target_prior_head_gpu2/I2_v8_target_prior/source_train",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal",
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 47365267,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_v9_sector_proto_gpu3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 105744260,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_v9_sector_proto_gpu3/I3_v9_sector_proto",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 105697626,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/image_only_legal_seed0_image_v9_sector_proto_gpu3/I3_v9_sector_proto/source_train",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:image_only_legal",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 47365196,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 2289687469,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 571029343,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__adapter_radio_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47661246,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47342903,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 278641,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v4_adapter__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47615118,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v4_adapter__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47633152,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47730124,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47641230,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v6_radio_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47668847,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 571033385,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__adapter_radio_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47660672,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47343376,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 279109,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v4_adapter__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47615925,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v4_adapter__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47634064,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47730992,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47642138,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v6_radio_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47668932,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 573634159,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__adapter_radio_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47923906,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47472744,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 408669,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47873142,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47891887,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47990600,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47902308,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v6_radio_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47929206,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 573637552,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__adapter_radio_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47924075,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47473069,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 408993,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47873862,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47892467,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47991247,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47902902,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v6_radio_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:orthogonality"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47928994,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 1152238430,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 287566578,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47482974,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 409086,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47876292,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47894957,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47993755,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47905417,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 287567600,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47483082,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 409184,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47876445,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47895119,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47993910,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47905578,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 287564620,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47482839,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 408931,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget0__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47875798,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47894582,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47993246,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed2/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed2",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47905034,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 287568051,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget0__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47483106,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 409192,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget0__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47876570,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47895159,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget0__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47994016,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/mmw_fixed_source_skybridge_long/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed3/runs/fixed_source_Town10_skybridge_seed24__target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v5_adapter_proto__budget10__seed3",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [],
+      "size_bytes": 47905622,
+      "decision": "delete",
+      "reason": "retired_knowledge_decoupling_match"
+    },
+    {
+      "path": "outputs/p3_4x3090_cpu400/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 47977863,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_4x3090_cpu400/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 47977846,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_4x3090_cpu400/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 47978047,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_4x3090_cpu400/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:scene_confusion",
+        "content:scene_private",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 47978030,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 604357361,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 149611115,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 49114123,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v4_adapter__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 50196592,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v6_full_finetune__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 50210428,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 149612804,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 49114401,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v4_adapter__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 50197226,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1/runs/target_Town10_Hroad_seed42__srcTown10_skybridge_seed24__v6_full_finetune__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 50211285,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 152536791,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 49699472,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 51362605,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v6_full_finetune__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 51383536,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 152536363,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v3_decoupled__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled",
+        "path:decoupled",
+        "path:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 49699460,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v4_adapter__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 51362517,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_history_label_lidar_image_gps_budget10_seed01_20ep/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v6_full_finetune__budget10__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:history_label",
+        "active_exclude:p3_history"
+      ],
+      "size_bytes": 51383234,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_fixed_source_skybridge_budget10_seed01_20ep_4x3090/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 98864787,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_fixed_source_skybridge_budget10_seed01_20ep_4x3090/src_Town10_skybridge_seed24__tgt_Town10_Hroad_seed42__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 98857108,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_fixed_source_skybridge_budget10_seed01_20ep_4x3090/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100073432,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_fixed_source_skybridge_budget10_seed01_20ep_4x3090/src_Town10_skybridge_seed24__tgt_Town10_crossroad_seed24__seed1",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100071045,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_iofix3_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100441505,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v6_full_finetune_probe_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 99849361,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v6_full_finetune_probe_1x3090/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24-Town10_Hroad_seed42-Town10_curvyroad_seed42__v6_full_finetune__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:orthogonality",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 99631728,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v7_residual_1e3_probe_g2_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:residual",
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100444012,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v7_residual_1e4_probe_g1_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:residual",
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100443331,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v7_residual_free_probe_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:residual",
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100625467,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v7_residual_free_probe_g0_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:residual",
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100444432,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v7_target_balance_probe_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100620397,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v7_multisource_crossroad_seed0_v7_target_balance_probe_g3_1x3090",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v7"
+      ],
+      "size_bytes": 100443554,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A2_target_linear_probe",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99440828,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A2_target_linear_probe/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99398941,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A3_target_prior_head",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99473327,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A3_target_prior_head/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99431492,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A4_source_prior_only",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99478152,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A4_source_prior_only/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99436403,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A5_target_prior_coarse_to_fine",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99500889,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/p3_v8_a2a5_single_target_seed0_4x3090/A5_target_prior_coarse_to_fine/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8"
+      ],
+      "size_bytes": 99458740,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu0_v8_a3_base",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v8",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 99970777,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu0_v8_a3_base/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 99924779,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu1_v9_beam_proto",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 98136165,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu1_v9_beam_proto/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v9_input_conditioned_target_adaptation__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 98090221,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu2_v9_sector_proto",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 98118207,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu2_v9_sector_proto/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v9_input_conditioned_target_adaptation__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 98072189,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu3_v9_no_prior",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 98135964,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_fast_4gpu/gpu3_v9_no_prior/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v9_input_conditioned_target_adaptation__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 98090088,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu0_v9_beam_proto",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 100175986,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu0_v9_beam_proto/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v9_input_conditioned_target_adaptation__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 100126830,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu1_v9_sector_proto",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 100156214,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu1_v9_sector_proto/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v9_input_conditioned_target_adaptation__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 100107502,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu2_v9_no_prior",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 100175580,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu2_v9_no_prior/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v9_input_conditioned_target_adaptation__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v9"
+      ],
+      "size_bytes": 100126592,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu3_v8_a3_base",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:v8",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 99969806,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    },
+    {
+      "path": "outputs/v9_rerun_bf16/gpu3_v8_a3_base/runs/target_Town10_crossroad_seed24__srcTown10_skybridge_seed24__v8_target_prior_head__budget10__seed0",
+      "kind": "directory",
+      "matched_patterns": [
+        "content:decoupled",
+        "content:v3_decoupled"
+      ],
+      "active_excludes": [
+        "active_exclude:target_prior",
+        "active_exclude:v8",
+        "active_exclude:v9"
+      ],
+      "size_bytes": 99923768,
+      "decision": "keep",
+      "reason": "active_experiment_exclude"
+    }
+  ]
+}

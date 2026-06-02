@@ -1,10 +1,10 @@
 # hist-beam-cross-scene-adaptation Specification
 
 ## Purpose
-定义 HiST-Beam 跨场景自适应方法的模型变体、层次化 beam label、shared/private 表征、adapter/prototype 适配、训练诊断和评估输出契约，确保快速验证中的 source-only、adapter、adapter+prototype 与 full fine-tuning baseline 可配置、可复现并能被 LOSO workflow 汇总比较。
+定义 HiST-Beam 跨场景自适应方法的模型变体、层次化 beam label、adapter/prototype/residual 适配、训练诊断和评估输出契约，确保快速验证中的 source-only、adapter、adapter+prototype 与 full fine-tuning baseline 可配置、可复现并能被 LOSO workflow 汇总比较。
 ## Requirements
 ### Requirement: HiST-Beam 模型变体配置
-系统 MUST 提供可通过配置和模型注册表构建的 HiST-Beam fusion 模型能力，用于 DeepSense6G 和 MMW 跨场景快速验证。配置 MUST 能选择 flat source-only、hierarchical source-only、shared-private、decoupled shared-private、adapter-only、adapter+coarse prototype、adapter+radio-semantic prototype、adapter+path-level physical prototype、shared physical private residual 和 full fine-tuning baseline 变体，并 MUST 默认保持既有 DeepSense6G `image`、`radar`、`gps` 三模态快速验证兼容。
+系统 MUST 提供可通过配置和模型注册表构建的 HiST-Beam fusion 模型能力，用于 DeepSense6G 和 MMW 跨场景快速验证。配置 MUST 能选择 flat source-only、hierarchical source-only、adapter-only、adapter+coarse prototype、adapter+radio-semantic prototype、adapter+path-level physical prototype、target prior/prototype probe、shared physical private residual、history/residual calibration 和 full fine-tuning baseline 变体，并 MUST 默认保持既有 DeepSense6G `image`、`radar`、`gps` 三模态快速验证兼容。系统 MUST NOT 将 `v2_shared_private`、`shared_private`、`v3_decoupled` 或 `decoupled` 作为可构建或默认 HiST-Beam 变体。
 
 #### Scenario: 构建 flat source-only 变体
 - **WHEN** 用户配置 HiST-Beam 变体为 `v0_flat` 或等价 flat 模式
@@ -14,36 +14,38 @@
 #### Scenario: 构建 hierarchical source-only 变体
 - **WHEN** 用户配置 HiST-Beam 变体为 `v1_hierarchical`
 - **THEN** 系统 MUST 构建 coarse head 和 fine head
-- **AND** 系统 MUST 不启用 shared/private 解耦 loss 或 target adapter
+- **AND** 系统 MUST 不启用旧 shared/private 解耦 loss 或 target adapter
 
-#### Scenario: 构建 shared-private 解耦变体
-- **WHEN** 用户配置 HiST-Beam 变体为 `v3_decoupled`
-- **THEN** 模型 MUST 产生 shared representation、private representation、coarse logits、fine logits 和 beam-level prediction
-- **AND** 训练 MUST 能启用 orthogonality、shared scene confusion 和 private scene preservation loss
+#### Scenario: 拒绝旧 shared-private 解耦变体
+- **WHEN** 用户配置 HiST-Beam 变体为 `v2_shared_private`、`shared_private`、`v3_decoupled` 或 `decoupled`
+- **THEN** 系统 MUST 拒绝构建该模型或 LOSO run
+- **AND** 错误信息 MUST 说明旧简单 shared/private 解耦路线已退役，并指向可用 baseline
 
 #### Scenario: 构建 adapter 和 full fine-tuning 变体
-- **WHEN** 用户配置 HiST-Beam 变体为 `v4_adapter`、`v5_adapter_proto`、`v6_radio_proto`、`v8_path_proto` 或 `v6_full_finetune`
-- **THEN** 系统 MUST 从 source checkpoint 初始化 target adaptation run
-- **AND** 系统 MUST 按变体选择 adapter 训练、coarse/radio/path prototype adaptation 或全量 fine-tuning 策略
-- **AND** 若工程继续保留 `v6_full_finetune` 配置名，summary MUST 将其标记为 V7 full fine-tuning baseline 或等价 full fine-tuning baseline metadata
+- **WHEN** 用户配置 HiST-Beam 变体为 `v4_adapter`、`v5_adapter_proto`、`v6_radio_proto`、`v8_path_proto`、`v8_target_prior_head`、`v9_input_conditioned_target_adaptation` 或 `v6_full_finetune`
+- **THEN** 系统 MUST 从非旧解耦 source checkpoint 或显式配置的合法 source checkpoint 初始化 target adaptation run
+- **AND** 系统 MUST 按变体选择 adapter 训练、coarse/radio/path prototype adaptation、target prior/prototype probe 或全量 fine-tuning 策略
+- **AND** 若工程继续保留 `v6_full_finetune` 配置名，summary MUST 将其标记为 full fine-tuning baseline 或等价 full fine-tuning baseline metadata
 
 #### Scenario: 构建 V6 radio-semantic prototype 变体
 - **WHEN** 用户配置 HiST-Beam 变体为 `v6_radio_proto`
 - **THEN** 系统 MUST 使用 beam_power 派生的 radio-semantic label/prototype 作为 V6 baseline
 - **AND** 系统 MUST 不把 V6 radio prototype 静默标记为 V8 path-level physical prototype
+- **AND** 系统 MUST NOT 要求旧 `v3_decoupled` source baseline 或旧 shared/private scene loss
 
 #### Scenario: 构建 V8 path-level physical prototype 变体
 - **WHEN** 用户配置 HiST-Beam 变体为 `v8_path_proto` 或等价 P3-HiST-Beam 模式
-- **THEN** 模型 MUST 产生 beam_logits、path_logits、shared representation `c` 和 private representation `s`
+- **THEN** 模型 MUST 产生 beam_logits、path_logits、path/prototype 所需表示和可诊断 metadata
 - **AND** target adaptation MUST 支持 `proto_type=path`
 - **AND** path prototype MUST 作为 semantic anchor 或 condition，而不是直接预测 beam
+- **AND** 系统 MUST NOT 要求旧 `v3_decoupled` source baseline 或旧 shared/private scene loss
 
 #### Scenario: 构建 V7 shared physical private residual 变体
 - **WHEN** 用户配置 HiST-Beam 变体为 `v7_shared_physical_private_residual`
 - **THEN** 系统 MUST 构建 shared beam head、physical beamspace head、private adapter、private residual head 和 residual gate
 - **AND** 模型 MUST 输出 `logits_shared`、`logits_final`、`delta_logits_private`、`alpha`、`pred_beamspace_power`、shared representation 和 private representation
 - **AND** `logits` 与 `beam_logits` MUST 指向 `logits_final` 以保持现有评估入口兼容
-- **AND** v7 默认 MUST NOT 启用 history-anchor 或读取历史 beam label
+- **AND** v7 默认 MUST NOT 启用 history-anchor、读取历史 beam label 或启用旧 scene confusion/private preservation loss
 
 ### Requirement: 层次化 beam label 与输出契约
 HiST-Beam MUST 支持将 64 类 beam label 拆分为 coarse group 和 fine offset。`group_size` MUST 可配置，快速验证默认值 MUST 为 8；当 `num_classes=64` 且 `group_size=8` 时，coarse group 数 MUST 为 8。
@@ -68,26 +70,16 @@ HiST-Beam MUST 支持将 64 类 beam label 拆分为 coarse group 和 fine offse
 - **THEN** HiST-Beam 输出 MUST 保持 `[B, H, C]` 的 beam-level 形状
 - **AND** coarse/fine diagnostics MUST 与同一 horizon 对齐
 
-### Requirement: Shared-private 表示解耦
-HiST-Beam shared branch MUST 主要服务 coarse semantics，private branch MUST 主要服务 scene-specific refinement。启用 shared-private 时，coarse head MUST 只读取 shared representation，fine head MUST 读取 shared 与 private 的组合。
+### Requirement: 现代 residual/prototype 表示契约
+V7 residual、history residual、path/radio prototype 和 target-prior/prototype 路线 MAY 输出 shared/private 或 residual/prototype 表示，但这些表示 MUST 由各自 residual、prototype、geometry 或 calibration 契约定义语义，不得复用旧简单 shared/private scene loss。
 
-#### Scenario: coarse head 不读取 private representation
-- **WHEN** 模型启用 shared-private hierarchical 模式
-- **THEN** coarse head 的输入 MUST 只来自 shared representation
-- **AND** private representation 的变化 MUST 不直接作为 coarse head 输入
-
-#### Scenario: private branch 保留 scene 信息
-- **WHEN** 配置启用 private scene preservation loss
-- **THEN** 模型 MUST 输出 private scene classifier logits
-- **AND** private branch 参数 MUST 接收该 loss 的梯度，除非配置显式关闭该 loss
-
-#### Scenario: shared branch 使用 scene confusion
-- **WHEN** 配置启用 shared scene confusion loss
-- **THEN** 模型 MUST 输出 shared scene classifier logits
-- **AND** shared branch MUST 通过 GRL 或等价反向机制降低 scene 可辨识性
+#### Scenario: modern shared/private 字段不触发旧 scene loss
+- **WHEN** 现代路线输出 shared representation 或 private representation
+- **THEN** training loss MUST NOT 因这些字段存在而计算旧 scene confusion 或 private preservation loss
+- **AND** diagnostics MUST 绑定到对应 residual/prototype/calibration 路线
 
 ### Requirement: HiST-Beam 训练 loss
-系统 MUST 在显式启用 HiST-Beam 时计算层次化 loss、flat auxiliary loss、orthogonality loss、shared scene confusion loss 和 private scene preservation loss。普通非 HiST 配置 MUST 不受这些 loss 影响。
+系统 MUST 在显式启用 HiST-Beam 时计算当前变体要求的层次化 loss、flat auxiliary loss、radio/path/prototype/residual/target-prior loss 或 full fine-tuning loss。系统 MUST NOT 为旧简单 shared/private 解耦路线计算 orthogonality loss、shared scene confusion loss 或 private scene preservation loss。普通非 HiST 配置 MUST 不受这些 loss 影响。
 
 #### Scenario: 计算 hierarchical loss
 - **WHEN** 训练 hierarchical 变体
@@ -99,6 +91,11 @@ HiST-Beam shared branch MUST 主要服务 coarse semantics，private branch MUST
 - **WHEN** 配置 `lambda_flat` 大于 0
 - **THEN** 系统 MUST 从 beam-level 输出计算 beam class 辅助 loss
 - **AND** 该 loss MUST 参与总 loss 以约束最终 beam prediction
+
+#### Scenario: 拒绝旧解耦 loss 权重
+- **WHEN** 配置包含旧解耦专属权重 `orthogonality`、`scene_confusion`、`scene_private`、`lambda_orth`、`lambda_scene_c` 或 `lambda_scene_s` 且未处于归档兼容解析场景
+- **THEN** 训练配置解析 MUST 拒绝或忽略这些权重并记录清晰迁移信息
+- **AND** 总 loss MUST 不包含旧 orthogonality、shared scene confusion 或 private scene preservation 项
 
 #### Scenario: HiST loss 不影响普通模型
 - **WHEN** 用户运行非 HiST-Beam 模型或未启用 HiST loss 的配置
@@ -187,7 +184,7 @@ HiST-Beam evaluation 和 adaptation MUST 输出 Top-1、Top-3、Top-5、coarse g
 HiST-Beam quick validation 的每个 source-only evaluation 和 adapted evaluation run MUST 输出可追踪产物。产物 MUST 至少包含 `metrics.json`、target_test predictions、配置快照、fold/split/sampling metadata 和当前 variant metadata。
 
 #### Scenario: source-only evaluation 写出标准产物
-- **WHEN** execute runner 完成 `v0_flat` 或 `v3_decoupled` 的 source-only target_test evaluation
+- **WHEN** execute runner 完成 `v0_flat` 或 `v1_hierarchical` 的 source-only target_test evaluation
 - **THEN** run directory MUST 包含 `metrics.json`
 - **AND** run directory MUST 包含 target_test predictions
 - **AND** artifact metadata MUST 记录 target scene、source scenes、variant、budget、seed 和 source checkpoint path
@@ -241,7 +238,7 @@ HiST-Beam adaptation run MUST 记录 trainable parameter count、total parameter
 系统 MUST 基于 quick validation summary 输出机器可读的快速验证结论。结论 MUST 比较 adapter/prototype variants 相对 source-only 和 full fine-tuning baseline 的效果与效率，并 MUST 明确标记缺失或不可比的 run。
 
 #### Scenario: adapter 与 source-only 对比
-- **WHEN** 同一 target scene、budget 和 seed 下存在 `v3_decoupled` source-only metrics 以及 `v4_adapter` 或 `v5_adapter_proto` adapted metrics
+- **WHEN** 同一 target scene、budget 和 seed 下存在现行 source-only metrics 以及 `v4_adapter` 或 `v5_adapter_proto` adapted metrics
 - **THEN** 结论 MUST 比较 Top-1、Top-3、Top-5、coarse accuracy 和 fine accuracy
 - **AND** 结论 MUST 标明 adapter variant 是否优于 source-only
 
@@ -391,7 +388,7 @@ HiST-Beam MUST 支持 radio-conditioned beam head 作为 opt-in 行为。启用�
 HiST-Beam LOSO executor MUST 根据 variant 和配置决定是否生成 source prototype。只有后续 stage 需要 prototype 的 variant 或用户显式要求保存 prototype 时，source training 才应生成 prototype artifact。
 
 #### Scenario: source-only baseline 跳过 prototype
-- **WHEN** LOSO run 的 source variant 为 `v0_flat`、`v1_hierarchical`、`v2_shared_private` 或其它不需要 target prototype alignment 的 source-only baseline
+- **WHEN** LOSO run 的 source variant 为 `v0_flat`、`v1_hierarchical` 或其它不需要 target prototype alignment 的 source-only baseline
 - **THEN** source training 默认 MUST 跳过 source prototype 生成
 - **AND** run metadata MUST 记录 prototype status 为 `skipped` 及跳过原因
 
@@ -484,7 +481,7 @@ HiST-Beam MUST 支持显式配置的 history-anchored 变体。该变体 MUST �
 - **AND** 输出 MUST 继续兼容现有 Top-K beam evaluation 流程
 
 #### Scenario: 关闭 history anchor 保持旧变体语义
-- **WHEN** 用户运行 `v0_flat`、`v3_decoupled`、`v6_radio_proto`、`v8_path_proto` 或 full fine-tuning baseline 且未显式启用 history anchor
+- **WHEN** 用户运行 `v0_flat`、`v1_hierarchical`、`v6_radio_proto`、`v8_path_proto` 或 full fine-tuning baseline 且未显式启用 history anchor
 - **THEN** 模型 forward MUST 不要求 `input_beam_batch`
 - **AND** source-only evaluation MUST 与当前绝对 beam prediction 语义保持兼容
 
@@ -494,7 +491,7 @@ HiST-Beam MUST 支持显式配置的 history-anchored 变体。该变体 MUST �
 - **AND** summary MUST 将其标记为 history-input absolute classifier ablation，而不是 residual 主方法
 
 ### Requirement: Residual beam loss
-启用 history-anchored residual 模式时，训练流程 MUST 使用 residual/delta label 计算主 beam loss，并 MAY 保留可配置的绝对 beam auxiliary loss。残差 loss MUST 支持多 horizon 输出，并 MUST 与现有 hierarchical、radio、path 和 orthogonality loss 组合。
+启用 history-anchored residual 模式时，训练流程 MUST 使用 residual/delta label 计算主 beam loss，并 MAY 保留可配置的绝对 beam auxiliary loss。残差 loss MUST 支持多 horizon 输出，并 MUST 与现有 hierarchical、radio 和 path loss 组合。
 
 #### Scenario: source training 计算 residual CE
 - **WHEN** source training batch 包含合法 `input_beam` 和 future beam label
@@ -944,3 +941,100 @@ HiST-Beam v8/v9 source-only target evaluation 和 adapted target evaluation MUST
 - **AND** 系统 MUST NOT 读取 target_test label、beam_power、path fields 或 radio labels 参与 loss、threshold、temperature 或 prototype update
 - **AND** 若 protocol metadata 无法证明该使用边界，Group C MUST 默认标记为 disabled 或 ineligible
 
+### Requirement: HiST-Beam image-only variant 输出契约
+HiST-Beam MUST 支持 image-only legal probe variant 或等价配置路径。该路径 MUST 复用现有 image encoder 和 projection，默认以 `identity` fusion 生成 fused image feature，并输出兼容现有 evaluator 的 logits 和 feature 字段。
+
+#### Scenario: 构建 image-only v8/v9 probe variant
+- **WHEN** 配置声明 `hist_beam.variant: image_only_v8_v9_probe` 或等价 image-only HiST-Beam probe 配置
+- **THEN** 模型 MUST 只构建并消费 image 输入分支
+- **AND** 模型 MUST NOT 在 forward 中访问 GPS、LiDAR、radar、mmWave、CSI、channel、path 或 beam_power
+- **AND** 默认 `hist_beam.image_only.fusion_mode` MUST 为 `identity`
+
+#### Scenario: image-only forward 输出 evaluator 兼容字段
+- **WHEN** image-only model forward 完成
+- **THEN** 输出 dict MUST 包含 `logits`、`logits_final` 和 `features`
+- **AND** 当 target head 可用时输出 MUST 包含 `target_logits`
+- **AND** 当 source head 可用时输出 MUST 包含 `source_logits`
+- **AND** source-only 模式下缺失或为空的 `target_logits` MUST NOT 导致 evaluator 报错
+
+### Requirement: Image source-only baseline
+HiST-Beam quick validation MUST 支持 `run_mode: image_source_only`。该模式 MUST 使用 image-only source training 和 target_test evaluation，不执行 target adaptation，并输出标准 beam 分类指标与 collapse diagnostics。
+
+#### Scenario: I0 source-only target eval
+- **WHEN** 用户运行 I0 `image_source_only`
+- **THEN** source training MUST 只使用 source image 和 beam label
+- **AND** target_test evaluation MUST 只使用 target_test image 和 beam label 计算指标
+- **AND** run MUST 输出 Top1、Top3、Top5、Within-1、Within-2、Within-3、MAE、prediction histogram 和 unique predicted beam 统计
+
+### Requirement: Image-only A2 target linear probe
+HiST-Beam target adaptation MUST 支持 `probe_mode: image_target_linear_probe`。该模式 MUST 从 image-only source checkpoint 初始化，冻结 image encoder、projection、optional temporal/fusion backbone 和 source head，只训练 `target_linear_head`。
+
+#### Scenario: I1 冻结 backbone 只训练 target linear head
+- **WHEN** 用户运行 I1 `image_target_linear_probe`
+- **THEN** target adaptation MUST 冻结 image backbone、image projection、fusion/temporal backbone 和 source head
+- **AND** optimizer MUST 只包含 `target_linear_head` 参数
+- **AND** final logits MUST 等于 `target_linear_head(h_image)`
+
+#### Scenario: I1 记录可训练参数
+- **WHEN** I1 target adaptation 启动
+- **THEN** 日志 MUST 输出 `[image-only A2] trainable parameter names`
+- **AND** 日志或 metrics MUST 输出 `[image-only A2] trainable ratio`
+
+### Requirement: Image-only V8 target prior head
+HiST-Beam target adaptation MUST 支持 `probe_mode: image_v8_target_prior_head`。该模式 MUST 冻结 image backbone，训练 target adapter、target head、target prior bias、可学习 beta 和配置允许的 norm affine 参数；target prior MUST 只由 target support beam labels 初始化。
+
+#### Scenario: I2 prior 只由 support labels 初始化
+- **WHEN** 用户运行 I2 `image_v8_target_prior_head`
+- **THEN** `target_prior_bias` MUST 由 target support beam labels 和 Gaussian smoothing 初始化
+- **AND** target test labels MUST NOT 参与 prior 初始化、beta 调整、early stopping 或 target adaptation loss
+- **AND** 日志 MUST 记录用于初始化 prior 的 support labels
+
+#### Scenario: I2 final logits 不混入 source logits
+- **WHEN** I2 model 计算 final logits
+- **THEN** `final_logits` MUST 等于 `target_logits + beta * target_prior_bias`
+- **AND** `hist_beam.v8.use_source_logits_in_final` MUST 默认为 false
+- **AND** beta MUST 被 `beta_prior_max` cap，或在固定 beta 时将固定值写入日志
+
+#### Scenario: I2 soft label 与 adapter 配置可见
+- **WHEN** I2 target adaptation 启动
+- **THEN** resolved config MUST 记录 `prior_sigma`、`prior_eps`、`beta_prior_init`、`beta_prior_max`、`adapter_dim`、`adapter_dropout`、`use_soft_beam_label` 和 `soft_label_sigma`
+- **AND** trainable parameter metadata MUST 反映实际参与优化的 target adapter、target head、prior/beta 和允许 norm affine 参数
+
+### Requirement: Image-only V9 sector prototype
+HiST-Beam target adaptation MUST 支持 `probe_mode: image_v9_sector_proto`。该模式 MUST 从 target support image feature 按 sector 建 prototype，默认不启用 beam-level prototype，并将 sector prototype logits 映射回 beam logits 参与 final logits。
+
+#### Scenario: I3 构建 sector prototype
+- **WHEN** 用户运行 I3 `image_v9_sector_proto`
+- **THEN** 系统 MUST 用 target support image feature 构建 prototype
+- **AND** `sector_label` MUST 按 `beam_label // sector_size` 计算
+- **AND** prototype MUST 为同一 sector 中 normalized support features 的均值
+- **AND** 默认 `sector_size` MUST 为 2 或 3
+- **AND** `hist_beam.v9.use_beam_proto` MUST 默认为 false
+
+#### Scenario: I3 sector logits 映射回 beam logits
+- **WHEN** I3 对 target query/test feature 计算 prototype score
+- **THEN** 系统 MUST 使用 cosine similarity 除以 `proto_temperature` 得到 sector score
+- **AND** 每个 beam 的 proto logit MUST 使用其所属 sector 的 score
+- **AND** 无 prototype 的 sector MUST 使用 0 或明确配置的小值作为 proto logit
+
+#### Scenario: I3 final logits 与日志
+- **WHEN** I3 model 计算 final logits
+- **THEN** `final_logits` MUST 等于 `target_logits + beta * target_prior_bias + eta * sector_proto_logits`
+- **AND** 日志 MUST 输出 `[v9-sector] support labels`
+- **AND** 日志 MUST 输出 `[v9-sector] support sectors`
+- **AND** 日志 MUST 输出 `[v9-sector] prototype sectors`
+- **AND** 日志 MUST 输出 `[v9-sector] top predicted beams before proto`
+- **AND** 日志 MUST 输出 `[v9-sector] top predicted beams after proto`
+
+### Requirement: Image-only adaptation 设备与 dtype 稳定
+HiST-Beam image-only legal probe MUST 保持 tensor device 和 dtype 兼容 bf16/fp16 混合精度。feature cache 若保存低精度 feature，metadata MUST 明确 dtype；默认保存前 MUST 转为 fp32。
+
+#### Scenario: feature cache dtype 可审计
+- **WHEN** image feature cache 写出
+- **THEN** cache metadata MUST 记录 feature dtype
+- **AND** 若运行使用 bf16/fp16，保存到磁盘的 feature MUST 为 fp32 或 metadata MUST 明确记录低精度 dtype 与读取转换策略
+
+#### Scenario: loss backward smoke test
+- **WHEN** image-only target adaptation smoke test 执行
+- **THEN** loss backward MUST 在当前 device 和 dtype 设置下成功
+- **AND** smoke test 命令 MUST 使用 `conda run -n kd_mm_beam`

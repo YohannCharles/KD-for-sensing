@@ -16,7 +16,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/p3_v8_fixed_source_skybridge_budget10_seed01
 LOG_ROOT="${LOG_ROOT:-logs/p3_v8_fixed_source_skybridge_budget10_seed01_20ep}"
 LOG_DIR="${LOG_DIR:-$LOG_ROOT/$RUN_ID}"
 
-VARIANTS="${VARIANTS:-v3_decoupled,v4_adapter,v5_adapter_proto,v6_radio_proto,adapter_path_proto,v8_path_proto,v6_full_finetune}"
+VARIANTS="${VARIANTS:-v1_hierarchical,v4_adapter,v5_adapter_proto,v6_radio_proto,adapter_path_proto,v8_path_proto,v6_full_finetune}"
 BUDGET="${BUDGET:-10}"
 SOURCE_EPOCHS="${SOURCE_EPOCHS:-20}"
 ADAPT_EPOCHS="${ADAPT_EPOCHS:-1}"

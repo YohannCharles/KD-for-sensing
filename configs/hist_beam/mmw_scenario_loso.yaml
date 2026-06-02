@@ -75,9 +75,6 @@ hist_beam:
   loss_weights:
     hierarchical: 1.0
     flat: 0.2
-    orthogonality: 0.01
-    scene_confusion: 0.05
-    scene_private: 0.05
     angular_smoothing: 0.05
     geometry_consistency: 0.02
   angular_smoothing:
@@ -119,7 +116,7 @@ loso:
   dataset_family: MMW
   data_availability_path: dataset/MMW/data_availability.json
   protocol: scenario_loso
-  variants: [v0_flat, v3_decoupled, v4_adapter, v5_adapter_proto, v6_radio_proto, adapter_radio_proto, v6_full_finetune]
+  variants: [v0_flat, v1_hierarchical, v4_adapter, v5_adapter_proto, v6_radio_proto, adapter_radio_proto, v6_full_finetune]
   budgets: [0, 5, 10, 20, 50]
   seeds: [0, 1, 2]
   reuse_source_checkpoint: true

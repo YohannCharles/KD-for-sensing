@@ -218,17 +218,25 @@ class RuntimeDataset(Dataset):
         return metadata
 
     def runtime_metadata(self) -> dict[str, Any]:
-        return {
+        split_metadata = dict(self.sample_index.metadata)
+        runtime = {
             "dataset_type": self.dataset_type,
             "descriptor": dict(self.descriptor),
             "storage_kind": self.sample_index.storage_kind,
             "num_samples": len(self),
             "enabled_modalities": list(self.enabled_modalities),
             "input_profiles": dict(self.input_profiles),
-            "split_metadata": dict(self.sample_index.metadata),
+            "split_metadata": split_metadata,
             "target": self.target_provider.metadata(),
             "adapters": [adapter.metadata() for adapter in self.modality_adapters],
         }
+        target_shot = split_metadata.get("target_shot")
+        if isinstance(target_shot, dict):
+            runtime["target_shot"] = dict(target_shot)
+        target_schema = runtime["target"].get("target_schema") if isinstance(runtime["target"], dict) else None
+        if target_schema:
+            runtime["target_schema"] = target_schema
+        return runtime
 
 
 def write_index_csv(path: str | Path, rows: Iterable[SampleRow]) -> Path:

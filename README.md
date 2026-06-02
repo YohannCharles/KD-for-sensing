@@ -111,7 +111,7 @@ conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
 ```bash
 conda run -n kd_mm_beam kd-sensing-hist-beam-loso \
   --config configs/hist_beam/quick_validation.yaml \
-  --variants v3_decoupled \
+  --variants v1_hierarchical \
   --budgets 0,10 \
   --seeds 0 \
   --max-runs 2

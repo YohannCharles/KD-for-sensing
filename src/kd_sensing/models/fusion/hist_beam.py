@@ -23,10 +23,6 @@ HIST_BEAM_VARIANTS = {
     "flat",
     "v1_hierarchical",
     "hierarchical",
-    "v2_shared_private",
-    "shared_private",
-    "v3_decoupled",
-    "decoupled",
     "v4_adapter",
     "adapter",
     "v5_adapter_proto",
@@ -36,26 +32,53 @@ HIST_BEAM_VARIANTS = {
     "v8_path_proto",
     "adapter_path_proto",
     "v8_target_prior_head",
+    "image_only_v8_v9_probe",
     "v9_input_conditioned_target_adaptation",
     "v7_shared_physical_private_residual",
     "shared_physical_private_residual",
     "v6_full_finetune",
     "full_finetune",
 }
+RETIRED_HIST_BEAM_VARIANTS = {"v2_shared_private", "shared_private", "v3_decoupled", "decoupled"}
 DEFAULT_HIST_MODALITIES = ("image", "radar", "gps")
+
+
+def _retired_variant_message(variant: Any) -> str:
+    return (
+        f"HiST-Beam variant '{variant}' is retired: the legacy simple shared/private "
+        "knowledge-decoupling route is no longer supported. Use a current baseline such as "
+        "'v0_flat', 'v1_hierarchical', 'v4_adapter', 'v5_adapter_proto', 'v6_radio_proto', "
+        "'v8_path_proto', 'v7_shared_physical_private_residual', 'v8_target_prior_head', "
+        "'v9_input_conditioned_target_adaptation', or 'v6_full_finetune'."
+    )
+
+
+def _reject_retired_loss_weights(weights: dict[str, Any]) -> None:
+    retired_keys = {
+        "orthogonality",
+        "scene_confusion",
+        "scene_private",
+        "lambda_orth",
+        "lambda_scene_c",
+        "lambda_scene_s",
+    }
+    present = sorted(key for key in retired_keys if key in weights)
+    if present:
+        raise ValueError(
+            "Legacy HiST-Beam shared/private decoupling loss weights are retired "
+            f"and must be removed from the model config: {present}. Use current losses "
+            "such as hierarchical, flat, radio_semantic, path_semantic, geometry_consistency, v7_*, v8_* or v9_*."
+        )
 
 
 @dataclass(frozen=True)
 class HistBeamConfig:
     num_classes: int = 64
     group_size: int = 8
-    variant: str = "v3_decoupled"
+    variant: str = "v1_hierarchical"
     modalities: tuple[str, ...] = DEFAULT_HIST_MODALITIES
     lambda_hier: float = 1.0
     lambda_flat: float = 0.2
-    lambda_orth: float = 0.01
-    lambda_scene_c: float = 0.05
-    lambda_scene_s: float = 0.05
     adapter_enabled: bool = False
     prototype_enabled: bool = False
     geometry_aware: bool = False
@@ -115,6 +138,7 @@ class HistBeamConfig:
     v9_widened_prior_sigma: float = 3.0
     v9_widened_prior_temperature: float = 1.5
     v9_loss_widened_prior_marginal_kl_weight: float = 0.0
+    image_only_fusion_mode: str = "single_token_transformer"
 
     @property
     def num_groups(self) -> int:
@@ -125,56 +149,12 @@ class HistBeamConfig:
         return self.variant not in {"v0_flat", "flat"}
 
     @property
-    def shared_private_enabled(self) -> bool:
-        return self.variant in {
-            "v2_shared_private",
-            "shared_private",
-            "v3_decoupled",
-            "decoupled",
-            "v4_adapter",
-            "adapter",
-            "v5_adapter_proto",
-            "adapter_proto",
-            "v6_radio_proto",
-            "adapter_radio_proto",
-            "v8_path_proto",
-            "adapter_path_proto",
-            "v7_shared_physical_private_residual",
-            "shared_physical_private_residual",
-            "v8_target_prior_head",
-            "v9_input_conditioned_target_adaptation",
-            "v6_full_finetune",
-            "full_finetune",
-        }
-
-    @property
-    def decoupled_enabled(self) -> bool:
-        return self.variant in {
-            "v3_decoupled",
-            "decoupled",
-            "v4_adapter",
-            "adapter",
-            "v5_adapter_proto",
-            "adapter_proto",
-            "v6_radio_proto",
-            "adapter_radio_proto",
-            "v8_path_proto",
-            "adapter_path_proto",
-            "v7_shared_physical_private_residual",
-            "shared_physical_private_residual",
-            "v8_target_prior_head",
-            "v9_input_conditioned_target_adaptation",
-            "v6_full_finetune",
-            "full_finetune",
-        }
-
-    @property
     def v7_enabled(self) -> bool:
         return self.variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}
 
     @property
     def v8_target_prior_enabled(self) -> bool:
-        return self.variant == "v8_target_prior_head"
+        return self.variant in {"v8_target_prior_head", "image_only_v8_v9_probe"}
 
     @property
     def v9_enabled(self) -> bool:
@@ -189,7 +169,7 @@ def resolve_hist_beam_config(
     *,
     num_classes: int = 64,
     group_size: int = 8,
-    variant: str = "v3_decoupled",
+    variant: str = "v1_hierarchical",
     modalities: list[str] | tuple[str, ...] | None = None,
     loss_weights: dict[str, Any] | None = None,
     adapter: bool | dict[str, Any] | None = None,
@@ -212,6 +192,7 @@ def resolve_hist_beam_config(
     v7: bool | dict[str, Any] | None = None,
     v8: bool | dict[str, Any] | None = None,
     v9: bool | dict[str, Any] | None = None,
+    image_only: bool | dict[str, Any] | None = None,
     residual_scale: float | None = None,
     proto_type: str | None = None,
     geometry_aware: bool | dict[str, Any] | None = None,
@@ -230,6 +211,8 @@ def resolve_hist_beam_config(
             "Use a group_size that evenly partitions the beam classes, for example 8 for 64 classes."
         )
     normalized_variant = str(variant).strip().lower()
+    if normalized_variant in RETIRED_HIST_BEAM_VARIANTS:
+        raise ValueError(_retired_variant_message(variant))
     if normalized_variant not in HIST_BEAM_VARIANTS:
         raise ValueError(
             f"Unknown HiST-Beam variant '{variant}'. Available variants: {sorted(HIST_BEAM_VARIANTS)}."
@@ -239,6 +222,7 @@ def resolve_hist_beam_config(
         context="HiST-Beam modalities",
     )
     weights = loss_weights or {}
+    _reject_retired_loss_weights(weights)
     geometry_enabled = _mapping_enabled(geometry_aware)
     adapter_cfg = adapter if isinstance(adapter, dict) else {}
     radio_cfg = radio_semantic if isinstance(radio_semantic, dict) else {}
@@ -247,8 +231,9 @@ def resolve_hist_beam_config(
     v7_cfg = v7 if isinstance(v7, dict) else {}
     v8_cfg = v8 if isinstance(v8, dict) else {}
     v9_cfg = v9 if isinstance(v9, dict) else {}
+    image_only_cfg = image_only if isinstance(image_only, dict) else {}
     is_v7 = normalized_variant in {"v7_shared_physical_private_residual", "shared_physical_private_residual"}
-    is_v8 = normalized_variant == "v8_target_prior_head"
+    is_v8 = normalized_variant in {"v8_target_prior_head", "image_only_v8_v9_probe"}
     is_v9 = normalized_variant == "v9_input_conditioned_target_adaptation"
     history_enabled = False if is_v7 else _mapping_enabled(history_anchor)
     history_mode = str(history_cfg.get("mode", "residual_delta")).strip().lower()
@@ -307,9 +292,6 @@ def resolve_hist_beam_config(
         modalities=selected_modalities,
         lambda_hier=float(weights.get("hierarchical", weights.get("lambda_hier", 1.0))),
         lambda_flat=float(weights.get("flat", weights.get("lambda_flat", 0.2))),
-        lambda_orth=float(weights.get("orthogonality", weights.get("lambda_orth", 0.01))),
-        lambda_scene_c=float(weights.get("scene_confusion", weights.get("lambda_scene_c", 0.05))),
-        lambda_scene_s=float(weights.get("scene_private", weights.get("lambda_scene_s", 0.05))),
         adapter_enabled=_mapping_enabled(adapter)
         or normalized_variant in {"v4_adapter", "adapter", "v5_adapter_proto", "adapter_proto", "v6_radio_proto", "adapter_radio_proto", "v8_path_proto", "adapter_path_proto", "v7_shared_physical_private_residual", "shared_physical_private_residual"},
         prototype_enabled=_mapping_enabled(prototype)
@@ -398,6 +380,7 @@ def resolve_hist_beam_config(
                 v9_cfg.get("marginal_kl_weight", v9_cfg.get("loss_weight", 0.0)),
             )
         ),
+        image_only_fusion_mode=str(image_only_cfg.get("fusion_mode", "identity" if selected_modalities == ("image",) else "single_token_transformer")).strip().lower(),
     )
 
 
@@ -413,7 +396,7 @@ class HistBeamFusionNet(nn.Module):
         num_classes: int = 64,
         num_pred: int = 1,
         group_size: int = 8,
-        variant: str = "v3_decoupled",
+        variant: str = "v1_hierarchical",
         modalities: list[str] | tuple[str, ...] | None = None,
         loss_weights: dict[str, Any] | None = None,
         adapter: bool | dict[str, Any] | None = None,
@@ -436,6 +419,7 @@ class HistBeamFusionNet(nn.Module):
         v7: bool | dict[str, Any] | None = None,
         v8: bool | dict[str, Any] | None = None,
         v9: bool | dict[str, Any] | None = None,
+        image_only: bool | dict[str, Any] | None = None,
         residual_scale: float | None = None,
         proto_type: str | None = None,
         geometry_aware: bool | dict[str, Any] | None = None,
@@ -452,7 +436,6 @@ class HistBeamFusionNet(nn.Module):
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         num_scenes: int = 4,
-        grl_lambda: float = 1.0,
         image_profile: str | None = "rgb_imagenet",
         **_: Any,
     ):
@@ -484,6 +467,7 @@ class HistBeamFusionNet(nn.Module):
             v7=v7,
             v8=v8,
             v9=v9,
+            image_only=image_only,
             residual_scale=residual_scale,
             proto_type=proto_type,
             geometry_aware=geometry_aware,
@@ -506,7 +490,6 @@ class HistBeamFusionNet(nn.Module):
         self.cls_type_id = len(MODALITY_ORDER)
         self.geometry_type_id = len(MODALITY_ORDER) + 1
         self.num_scenes = int(num_scenes)
-        self.grl_lambda = float(grl_lambda)
         if self.num_pred <= 0:
             raise ValueError(f"num_pred must be positive, got {num_pred}.")
         if self.d_model % int(num_heads) != 0:
@@ -703,8 +686,6 @@ class HistBeamFusionNet(nn.Module):
             if self.hist_config.history_anchor_enabled
             else None
         )
-        self.shared_scene_classifier = nn.Linear(self.d_model, self.num_scenes) if self.num_scenes > 0 else None
-        self.private_scene_classifier = nn.Linear(self.d_model, self.num_scenes) if self.num_scenes > 0 else None
 
     def forward(
         self,
@@ -769,24 +750,29 @@ class HistBeamFusionNet(nn.Module):
             device=stacked.device,
             dtype=stacked.dtype,
         )
-        if geometry_tokens is not None and geometry_token_mask is not None:
+        identity_image_fusion = self.modalities == ("image",) and self.hist_config.image_only_fusion_mode == "identity"
+        if identity_image_fusion:
+            memory = diagnostic_tokens[:, 0, :, :]
+            fused = self.output_norm(memory[:, -1, :])
+        elif geometry_tokens is not None and geometry_token_mask is not None:
             flat_tokens = torch.cat([_serialize_time_first(tokens), geometry_tokens], dim=1)
             flat_padding_mask = torch.cat([_serialize_mask_time_first(token_padding_mask), geometry_token_mask], dim=1)
         else:
             flat_tokens = _serialize_time_first(tokens)
             flat_padding_mask = _serialize_mask_time_first(token_padding_mask)
-        cls_ids = torch.full((batch_size, 1), self.cls_type_id, dtype=torch.long, device=stacked.device)
-        cls = self.input_dropout(
-            self.input_norm(self.cls_token.expand(batch_size, -1, -1) + self.token_type_embedding(cls_ids))
-        )
-        memory = self.transformer(
-            torch.cat([cls, flat_tokens], dim=1),
-            src_key_padding_mask=torch.cat(
-                [torch.zeros(batch_size, 1, dtype=torch.bool, device=stacked.device), flat_padding_mask],
-                dim=1,
-            ),
-        )
-        fused = self.output_norm(memory[:, 0, :])
+        if not identity_image_fusion:
+            cls_ids = torch.full((batch_size, 1), self.cls_type_id, dtype=torch.long, device=stacked.device)
+            cls = self.input_dropout(
+                self.input_norm(self.cls_token.expand(batch_size, -1, -1) + self.token_type_embedding(cls_ids))
+            )
+            memory = self.transformer(
+                torch.cat([cls, flat_tokens], dim=1),
+                src_key_padding_mask=torch.cat(
+                    [torch.zeros(batch_size, 1, dtype=torch.bool, device=stacked.device), flat_padding_mask],
+                    dim=1,
+                ),
+            )
+            fused = self.output_norm(memory[:, 0, :])
         history_anchor = None
         history_context = None
         if self.hist_config.history_anchor_enabled:
@@ -1052,6 +1038,7 @@ class HistBeamFusionNet(nn.Module):
                 "v7_shared_physical_private_residual": self.hist_config.v7_enabled,
                 "residual_scale": float(self.hist_config.v7_residual_scale),
                 "v8_target_prior_head": self.hist_config.v8_target_prior_enabled,
+                "image_only_fusion_mode": self.hist_config.image_only_fusion_mode,
                 "v9_input_conditioned_target_adaptation": self.hist_config.v9_enabled,
                 "v8_mode": self.hist_config.v8_mode,
                 "v8_use_adapter": self.hist_config.v8_use_adapter,
@@ -1103,12 +1090,6 @@ class HistBeamFusionNet(nn.Module):
                 else "none",
             },
         }
-        if self.shared_scene_classifier is not None:
-            result["shared_scene_logits"] = self.shared_scene_classifier(
-                gradient_reverse(shared, lambda_=self.grl_lambda)
-            )
-        if self.private_scene_classifier is not None:
-            result["private_scene_logits"] = self.private_scene_classifier(private)
         return result
 
     def set_target_prior_from_labels(
@@ -1205,6 +1186,15 @@ class HistBeamFusionNet(nn.Module):
             "target_prototype_available_count": int(counts.gt(0).sum().detach().cpu().item()),
             "target_prototype_counts": [int(item) for item in counts.detach().cpu().tolist()],
             "target_prototype_unavailable_reason": None if counts.gt(0).any().item() else "empty_support_labels",
+            "[v9-sector] support labels": [int(item) for item in labels_t.detach().cpu().tolist()],
+            "[v9-sector] support sectors": [int(item) for item in assignment.detach().cpu().tolist()] if ptype == "sector" else None,
+            "[v9-sector] prototype sectors": [
+                int(index)
+                for index, count in enumerate(counts.detach().cpu().tolist())
+                if int(count) > 0
+            ]
+            if ptype == "sector"
+            else None,
         }
         self._target_prototype_metadata = metadata
         return metadata
@@ -1327,9 +1317,6 @@ class HistBeamFusionNet(nn.Module):
         return {
             "shared_norm": float(shared.detach().norm(dim=-1).mean().cpu().item()),
             "private_norm": float(private.detach().norm(dim=-1).mean().cpu().item()),
-            "shared_private_cosine": float(
-                F.cosine_similarity(shared.detach(), private.detach(), dim=-1).mean().cpu().item()
-            ),
         }
 
     def _embed_modality_tokens(self, features: torch.Tensor) -> torch.Tensor:
@@ -1452,21 +1439,6 @@ class CoarseConditionedPrivateAdapter(nn.Module):
             probs = torch.softmax(coarse_logits.detach().mean(dim=1), dim=-1)
             context = probs @ self.group_embedding.weight
         return x + self.up(self.activation(self.down(torch.cat([x, context], dim=-1))))
-
-
-class _GradientReverse(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x: torch.Tensor, lambda_: float):
-        ctx.lambda_ = float(lambda_)
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        return -ctx.lambda_ * grad_output, None
-
-
-def gradient_reverse(x: torch.Tensor, *, lambda_: float = 1.0) -> torch.Tensor:
-    return _GradientReverse.apply(x, float(lambda_))
 
 
 def hierarchical_beam_log_probs(coarse_logits: torch.Tensor, fine_logits: torch.Tensor) -> torch.Tensor:
@@ -1692,7 +1664,6 @@ __all__ = [
     "BottleneckPrivateAdapter",
     "HistBeamConfig",
     "HistBeamFusionNet",
-    "gradient_reverse",
     "hierarchical_beam_log_probs",
     "resolve_hist_beam_config",
 ]

@@ -111,9 +111,6 @@ hist_beam:
   loss_weights:
     hierarchical: 1.0
     flat: 0.2
-    orthogonality: 0.01
-    scene_confusion: 0.05
-    scene_private: 0.05
     radio_semantic: 1.0
     lambda_path: 0.3
     lambda_path_reg: 0.05
@@ -173,7 +170,7 @@ loso:
   profile: sensor_assisted_quick_validation
   data_availability_path: dataset/MMW/data_availability.json
   protocol: scenario_loso
-  variants: [v3_decoupled, v4_adapter, v6_radio_proto, v8_path_proto, adapter_path_proto, v6_full_finetune]
+  variants: [v1_hierarchical, v4_adapter, v6_radio_proto, v8_path_proto, adapter_path_proto, v6_full_finetune]
   optional_variants: [v7_shared_physical_private_residual]
   budgets: [10]
   seeds: [0, 1]

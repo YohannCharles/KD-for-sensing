@@ -112,12 +112,12 @@
 系统 MUST 为 HiST-Beam 快速验证输出 source-only、few-shot adaptation 和 efficiency 三类汇总表或等价 JSON/CSV。汇总 MUST 能按 fold、target scene、variant、budget 和 seed 聚合，并 MUST 记录均值与可追溯的单次运行路径。
 
 #### Scenario: 输出 source-only 表
-- **WHEN** V0、V1、V2 和 V3 source-only evaluation 完成
+- **WHEN** 现行 source-only evaluation 完成
 - **THEN** 汇总 MUST 包含每个 target scene 的 Top-1、Top-3 和 coarse accuracy
 - **AND** 汇总 MUST 包含跨 fold 平均指标
 
 #### Scenario: 输出 few-shot adaptation 表
-- **WHEN** source-only V3、full fine-tuning、adapter-only 和 adapter+prototype evaluation 完成
+- **WHEN** source-only、full fine-tuning、adapter-only 和 adapter+prototype evaluation 完成
 - **THEN** 汇总 MUST 按 label budget 聚合 Top-1、Top-3、Top-5 和 coarse accuracy
 - **AND** 汇总 MUST 保留每个 seed 的原始指标路径
 
@@ -170,7 +170,7 @@
 - **AND** metadata MUST 记录检查过的 scenes、CSV、启用模态、输出目录和 quick validation matrix 摘要
 
 ### Requirement: Quick validation 最小执行矩阵
-系统 MUST 提供 HiST-Beam quick validation 的最小可执行矩阵。默认 CLI smoke MUST 是资源探针；完整方法验证 MUST 通过显式 quick validation 配置支持先执行 target scene `34`，并能用同一入口扩展到 target scenes `33`、`32` 和 `31`。
+系统 MUST 提供 HiST-Beam quick validation 的最小可执行矩阵。默认 CLI smoke MUST 是资源探针；完整方法验证 MUST 通过显式 quick validation 配置支持先执行 target scene `34`，并能用同一入口扩展到 target scenes `33`、`32` 和 `31`。Quick validation MUST NOT 默认计划旧 `v2_shared_private`、`v3_decoupled` 或等价旧简单 shared/private 解耦变体。
 
 #### Scenario: target scene 34 快速验证
 - **WHEN** 用户请求默认 quick validation 或显式配置 target scene `34`
@@ -185,7 +185,8 @@
 
 #### Scenario: method quick validation variants budgets seeds 最小覆盖
 - **WHEN** 用户请求完整 quick validation 方法验证矩阵
-- **THEN** 系统 MUST 覆盖 variants `v0_flat`、`v3_decoupled`、`v4_adapter`、`v5_adapter_proto` 和 `v6_full_finetune`
+- **THEN** 系统 MUST 覆盖当前合法 variants，例如 `v0_flat`、`v1_hierarchical`、`v4_adapter`、`v5_adapter_proto` 和 `v6_full_finetune`
+- **AND** 系统 MUST NOT 覆盖 `v2_shared_private`、`shared_private`、`v3_decoupled` 或 `decoupled`
 - **AND** 系统 MUST 覆盖 label budgets `0` 和 `10`
 - **AND** 系统 MUST 覆盖 seed `0`
 
@@ -209,6 +210,19 @@
 - **WHEN** 用户通过 CLI 或配置指定最大 run 数量
 - **THEN** 系统 MUST 只计划并执行该数量以内的 run
 - **AND** plan metadata MUST 记录原始 planned run count 和实际 run count
+
+### Requirement: LOSO 旧解耦 baseline 退役
+LOSO workflow MUST NOT 将旧 `v3_decoupled` 或等价简单 shared/private 解耦路线作为默认 source checkpoint、summary comparison baseline、quick conclusion 主线或 prototype source fallback。需要 baseline 时，系统 MUST 使用现行合法 source-only、image-only legal、residual/calibration 或显式配置的非旧解耦 baseline。
+
+#### Scenario: adaptation source variant 不回退到 v3
+- **WHEN** runner 为 adapter/prototype/target-prior 变体选择 source checkpoint
+- **THEN** source variant MUST 是合法的非旧解耦 variant 或用户显式指定的合法 source variant
+- **AND** 系统 MUST NOT 自动返回 `v3_decoupled`
+
+#### Scenario: summary comparison 不使用 v3 主 baseline
+- **WHEN** LOSO summary 聚合多个 variant 的结果
+- **THEN** comparison metadata MUST NOT 把 `v3_decoupled` 设为默认 baseline
+- **AND** 缺少旧 `v3_decoupled` run MUST NOT 被记录为方法矩阵缺失
 
 ### Requirement: LOSO execute summary 产物
 系统 MUST 在 execute 结束后输出 LOSO summary CSV/JSON。summary MUST 汇总每个 run 的 stage 状态、metrics 路径、predictions 路径、checkpoint 来源、adaptation 效率指标和失败原因。
@@ -346,4 +360,3 @@ LOSO summary and quick validation conclusion MUST compare coarse prototype and r
 - **WHEN** 生成 radio conclusion 所需的 radio label、beam_power、prototype artifact 或 metrics 缺失
 - **THEN** conclusion MUST 将对应比较标记为 `inconclusive`
 - **AND** conclusion MUST 记录缺失字段和 run path
-

@@ -12,16 +12,17 @@ def compare_adapter_to_source(
     variant: str,
     baseline: dict[str, Any] | None,
     candidate: dict[str, Any] | None,
+    baseline_variant: str = "v1_hierarchical",
 ) -> dict[str, Any]:
     base = {
         "comparison": "adapter_vs_source_only",
         "target_scene": target_scene,
         "budget": budget,
         "seed": seed,
-        "baseline_variant": "v3_decoupled",
+        "baseline_variant": baseline_variant,
         "candidate_variant": variant,
     }
-    missing = _missing_comparison_inputs({"v3_decoupled": baseline, variant: candidate})
+    missing = _missing_comparison_inputs({baseline_variant: baseline, variant: candidate})
     if missing:
         return {**base, "status": "inconclusive", "missing": missing}
     deltas = _accuracy_deltas(candidate, baseline)

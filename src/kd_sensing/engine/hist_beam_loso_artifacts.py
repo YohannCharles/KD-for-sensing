@@ -35,9 +35,11 @@ def write_loso_execute_summary(output_dir: str | Path, run_records: list[dict[st
     }
     json_path = out_dir / "loso_summary.json"
     csv_path = out_dir / "loso_summary.csv"
+    combined_path = out_dir / "combined_summary.csv"
     _write_json(json_path, payload)
     _write_summary_csv(csv_path, rows)
-    return {"json": str(json_path), "csv": str(csv_path)}
+    _write_combined_summary_csv(combined_path, rows)
+    return {"json": str(json_path), "csv": str(csv_path), "combined_summary": str(combined_path)}
 
 
 def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -48,6 +50,52 @@ def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _csv_cell(row.get(key)) for key in fieldnames})
+
+
+def _write_combined_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "mode",
+        "top1",
+        "top3",
+        "top5",
+        "within1",
+        "within2",
+        "within3",
+        "mae",
+        "bpl_db",
+        "nrp",
+        "unique_pred_beams",
+        "top1_pred_beam_ratio",
+        "top5_pred_beam_ratio",
+        "eligible",
+        "eligibility_reasons",
+        "trainable_ratio",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "mode": row.get("variant"),
+                    "top1": row.get("top1"),
+                    "top3": row.get("top3"),
+                    "top5": row.get("top5"),
+                    "within1": row.get("within1"),
+                    "within2": row.get("within2"),
+                    "within3": row.get("within3"),
+                    "mae": row.get("mae"),
+                    "bpl_db": row.get("bpl_db"),
+                    "nrp": row.get("nrp"),
+                    "unique_pred_beams": row.get("unique_pred_beams"),
+                    "top1_pred_beam_ratio": row.get("top1_pred_beam_ratio"),
+                    "top5_pred_beam_ratio": row.get("top5_pred_beam_ratio"),
+                    "eligible": bool(row.get("main_conclusion_eligible", False)),
+                    "eligibility_reasons": _csv_cell(row.get("eligibility_reasons", [])),
+                    "trainable_ratio": row.get("trainable_ratio"),
+                }
+            )
 
 
 def _csv_cell(value: Any) -> Any:

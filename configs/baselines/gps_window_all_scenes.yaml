@@ -1,0 +1,22 @@
+experiment:
+  name: gps_window_all_scenes
+data:
+  data_root: dataset/MMW/sunny
+  split_tag: l5p3_group_safe
+gps_window:
+  algorithm: geometry_last
+  num_classes: 64
+  group_size: 8
+  horizon: 3
+  history_window: 5
+  min_history: 1
+  score_width: 2.0
+  score_temperature: 1.0
+  neighbor_top_k: 5
+  fallback: majority
+  calibration_mode: source
+output:
+  dir: outputs/gps_window_baseline_all_scenes
+sweep:
+  enabled: false
+

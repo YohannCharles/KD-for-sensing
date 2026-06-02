@@ -47,6 +47,7 @@ from kd_sensing.engine.hist_beam_loso_execution import (  # noqa: E402
     write_loso_execute_summary,
     write_quick_validation_conclusion,
 )
+from kd_sensing.engine.hist_beam_loso_config import _source_variant_for  # noqa: E402
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
 from kd_sensing.engine.runtime import prepare_task_inputs  # noqa: E402
 import kd_sensing.engine.loso_data as loso_data_module  # noqa: E402
@@ -666,7 +667,7 @@ def test_hist_beam_metrics_prediction_writer_power_and_summary(tmp_path: Path):
         metadata=[{"sample_id": "a", "scene_slug": "scene31"}, {"sample_id": "b", "scene_slug": "scene32"}],
         group_size=2,
         top_k=3,
-        variant_metadata={"variant": "v3_decoupled"},
+        variant_metadata={"variant": "v1_hierarchical"},
         radio_logits=torch.tensor([[[2.0, 0.0]], [[0.0, 2.0]]]),
         radio_labels=torch.tensor([[0], [1]]),
     )
@@ -725,24 +726,24 @@ def test_hist_beam_quick_smoke_is_resource_probe_and_quick_validation_can_expand
     expanded = build_loso_run_plan(
         validation_cfg,
         target_scenes=[34, 33, 32, 31],
-        variants=["v3_decoupled"],
+        variants=["v1_hierarchical"],
         budgets=[0],
         seeds=[0],
     )
     limited = build_loso_run_plan(
         validation_cfg,
         target_scenes=[34],
-        variants=["v0_flat", "v3_decoupled", "v5_adapter_proto"],
+        variants=["v0_flat", "v1_hierarchical", "v5_adapter_proto"],
         budgets=[0, 10],
         seeds=[0],
         max_runs=2,
     )
-    skipped = build_loso_run_plan(validation_cfg, target_scenes=[34], skip_scenes=[34], variants=["v3_decoupled"], budgets=[0], seeds=[0])
+    skipped = build_loso_run_plan(validation_cfg, target_scenes=[34], skip_scenes=[34], variants=["v1_hierarchical"], budgets=[0], seeds=[0])
     single = build_loso_run_plan(
         validation_cfg,
         target_scene=33,
         source_scenes=None,
-        variants=["v3_decoupled"],
+        variants=["v1_hierarchical"],
         budgets=[0],
         seeds=[0],
     )
@@ -757,7 +758,7 @@ def test_hist_beam_quick_smoke_is_resource_probe_and_quick_validation_can_expand
     assert plan["max_runs"] == 1
     assert {run["variant"] for run in validation_plan["runs"]} == {
         "v0_flat",
-        "v3_decoupled",
+        "v1_hierarchical",
         "v4_adapter",
         "v5_adapter_proto",
         "v6_full_finetune",
@@ -773,6 +774,17 @@ def test_hist_beam_quick_smoke_is_resource_probe_and_quick_validation_can_expand
     assert skipped["runs"] == []
     assert single["runs"][0]["source_scenes"] == [31, 32, 34]
     assert all(run["target_test_for_training"] is False for run in validation_plan["runs"])
+
+
+@pytest.mark.parametrize("variant", ["v2_shared_private", "shared_private", "v3_decoupled", "decoupled"])
+def test_hist_beam_rejects_retired_knowledge_decoupling_variants(variant: str):
+    cfg = load_config(ROOT / "configs/hist_beam/quick_smoke.yaml")
+
+    with pytest.raises(ValueError, match="retired"):
+        HistBeamFusionNet(variant=variant, feature_size=8, d_model=16, num_classes=16, group_size=4, num_heads=4)
+
+    with pytest.raises(ValueError, match="retired"):
+        build_loso_run_plan(cfg, target_scenes=[34], variants=[variant], budgets=[0], seeds=[0])
 
 
 def test_mmw_loso_plan_uses_availability_claim_guard(tmp_path: Path):
@@ -863,7 +875,7 @@ def test_mmw_loso_plan_uses_availability_claim_guard(tmp_path: Path):
         "loso": {"dataset_family": "MMW", "data_availability_path": str(availability_path)},
     }
 
-    loso_plan = build_loso_run_plan(loso_cfg, variants=["v3_decoupled"], budgets=[0], seeds=[0])
+    loso_plan = build_loso_run_plan(loso_cfg, variants=["v1_hierarchical"], budgets=[0], seeds=[0])
 
     assert loso_plan["claim_scope"] == "scenario_loso"
     assert loso_plan["cross_scene_claim_allowed"] is True
@@ -990,14 +1002,14 @@ def test_mmw_sensor_assisted_config_plan_and_forward_kwargs(tmp_path: Path):
     assert cfg["training"]["cpu_threads"]["inter_op"] == 1
     assert {run["budget"] for run in plan["runs"]} == {10}
     assert {run["seed"] for run in plan["runs"]} == {0, 1}
-    assert {"v3_decoupled", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v6_full_finetune"} <= {
+    assert {"v1_hierarchical", "v4_adapter", "v6_radio_proto", "v8_path_proto", "adapter_path_proto", "v6_full_finetune"} <= {
         run["variant"] for run in plan["runs"]
     }
     assert all("radar" not in run["enabled_modalities"] for run in plan["runs"])
     assert all("mmwave" not in run["enabled_modalities"] for run in plan["runs"])
 
 
-@pytest.mark.parametrize("variant", ["v3_decoupled", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"])
+@pytest.mark.parametrize("variant", ["v1_hierarchical", "v4_adapter", "v5_adapter_proto", "v6_radio_proto", "v8_path_proto", "v6_full_finetune"])
 def test_hist_beam_sensor_assisted_variants_build(variant: str):
     model = HistBeamFusionNet(
         modalities=["image", "gps", "lidar"],
@@ -1088,7 +1100,7 @@ def test_sensor_assisted_summary_records_deltas_last_beam_and_v8_comparisons(tmp
         return {"run_id": variant, "variant": variant, "metrics": metrics, **base}
 
     records = [
-        record("v3_decoupled", None, None),
+        record("v1_hierarchical", None, None),
         record("v6_radio_proto", 0.55),
         record("v8_path_proto", 0.62),
         record("adapter_path_proto", 0.50),
@@ -1119,7 +1131,7 @@ def test_sensor_assisted_summary_records_deltas_last_beam_and_v8_comparisons(tmp
 
 def test_quick_validation_excludes_ineligible_candidate_from_win_loss(tmp_path: Path):
     records = [
-        _quick_conclusion_record("v3_decoupled", source_top1=0.4),
+        _quick_conclusion_record("v1_hierarchical", source_top1=0.4),
         _quick_conclusion_record(
             "v4_adapter",
             source_top1=0.4,
@@ -1154,7 +1166,7 @@ def test_quick_validation_excludes_ineligible_candidate_from_win_loss(tmp_path: 
 
 def test_loso_summary_keeps_legacy_kd_baseline_supplemental(tmp_path: Path):
     records = [
-        _quick_conclusion_record("v3_decoupled", source_top1=0.4),
+        _quick_conclusion_record("v1_hierarchical", source_top1=0.4),
         _quick_conclusion_record(
             "v4_adapter",
             source_top1=0.4,
@@ -1178,7 +1190,7 @@ def test_loso_summary_keeps_legacy_kd_baseline_supplemental(tmp_path: Path):
     summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
     conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
 
-    mainline = next(row for row in summary["runs"] if row["variant"] == "v3_decoupled")
+    mainline = next(row for row in summary["runs"] if row["variant"] == "v1_hierarchical")
     legacy = next(row for row in summary["runs"] if row["variant"] == "v4_adapter")
     comparison = next(
         item
@@ -1217,7 +1229,7 @@ def test_quick_validation_excludes_ineligible_mmw_split_from_main_conclusion(tmp
         eligibility_reasons=["guard_band_violation"],
     )
     records = [
-        _quick_conclusion_record("v3_decoupled", source_top1=0.4, prediction_setup=ineligible_setup),
+        _quick_conclusion_record("v1_hierarchical", source_top1=0.4, prediction_setup=ineligible_setup),
         _quick_conclusion_record("v4_adapter", source_top1=0.4, adapted_top1=0.8),
     ]
 
@@ -1226,7 +1238,7 @@ def test_quick_validation_excludes_ineligible_mmw_split_from_main_conclusion(tmp
     summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
     conclusion = json.loads(conclusion_path.read_text(encoding="utf-8"))
 
-    baseline = next(row for row in summary["runs"] if row["variant"] == "v3_decoupled")
+    baseline = next(row for row in summary["runs"] if row["variant"] == "v1_hierarchical")
     assert baseline["main_conclusion_eligible"] is False
     assert baseline["split_strategy"] == "group_safe_time_block"
     assert "guard_band_violation" in baseline["eligibility_reasons"]
@@ -1236,14 +1248,14 @@ def test_quick_validation_excludes_ineligible_mmw_split_from_main_conclusion(tmp
 
 def test_quick_validation_excludes_unknown_mmw_split_from_main_conclusion(tmp_path: Path):
     records = [
-        _quick_conclusion_record("v3_decoupled", source_top1=0.4, include_prediction_setup=False),
+        _quick_conclusion_record("v1_hierarchical", source_top1=0.4, include_prediction_setup=False),
         _quick_conclusion_record("v4_adapter", source_top1=0.4, adapted_top1=0.8),
     ]
 
     summary_paths = write_loso_execute_summary(tmp_path, records, status="completed")
     summary = json.loads(Path(summary_paths["json"]).read_text(encoding="utf-8"))
 
-    baseline = next(row for row in summary["runs"] if row["variant"] == "v3_decoupled")
+    baseline = next(row for row in summary["runs"] if row["variant"] == "v1_hierarchical")
     assert baseline["main_conclusion_eligible"] is False
     assert baseline["split_eligibility"] == "unknown"
     assert "split_eligibility_unknown" in baseline["eligibility_reasons"]
@@ -1254,7 +1266,7 @@ def test_quick_validation_excludes_unknown_mmw_split_from_main_conclusion(tmp_pa
 def test_quick_validation_marks_excluded_baseline_comparison_inconclusive(tmp_path: Path):
     records = [
         _quick_conclusion_record(
-            "v3_decoupled",
+            "v1_hierarchical",
             source_top1=0.4,
             adaptation_metrics={
                 "main_conclusion_eligible": False,
@@ -1275,7 +1287,7 @@ def test_quick_validation_marks_excluded_baseline_comparison_inconclusive(tmp_pa
         if item["comparison"] == "adapter_vs_source_only" and item["candidate_variant"] == "v4_adapter"
     )
     assert comparison["status"] == "inconclusive"
-    assert comparison["missing"][0]["variant"] == "v3_decoupled"
+    assert comparison["missing"][0]["variant"] == "v1_hierarchical"
     assert comparison["missing"][0]["reason"] == "run_excluded_from_main_conclusion"
     assert "target_leakage" in comparison["missing"][0]["eligibility_reasons"]
     assert conclusion["inconclusive_comparison_count"] >= 1
@@ -1283,7 +1295,7 @@ def test_quick_validation_marks_excluded_baseline_comparison_inconclusive(tmp_pa
 
 def test_quick_validation_treats_prototype_no_op_as_ineligible_evidence(tmp_path: Path):
     records = [
-        _quick_conclusion_record("v3_decoupled", source_top1=0.4),
+        _quick_conclusion_record("v1_hierarchical", source_top1=0.4),
         _quick_conclusion_record(
             "v5_adapter_proto",
             source_top1=0.4,
@@ -1378,13 +1390,34 @@ def test_prototype_decision_skips_source_only_and_generates_for_proto_variants()
     cfg = {"hist_beam": {"prototype": {"strategy": "auto"}}}
 
     skipped = _prototype_decision({"variant": "v0_flat"}, cfg, source_variant="v0_flat")
-    generated = _prototype_decision({"variant": "v5_adapter_proto"}, cfg, source_variant="v3_decoupled")
+    generated = _prototype_decision({"variant": "v5_adapter_proto"}, cfg, source_variant="v1_hierarchical")
 
     assert skipped["generate"] is False
     assert skipped["status"] == "skipped"
     assert "source_only_variant" in skipped["reason"]
     assert generated["generate"] is True
     assert "variant_requires_prototype" in generated["reason"]
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_source"),
+    [
+        ("v4_adapter", "v1_hierarchical"),
+        ("v5_adapter_proto", "v1_hierarchical"),
+        ("v6_radio_proto", "v1_hierarchical"),
+        ("adapter_radio_proto", "v1_hierarchical"),
+        ("v8_path_proto", "v1_hierarchical"),
+        ("adapter_path_proto", "v1_hierarchical"),
+        ("v7_shared_physical_private_residual", "v1_hierarchical"),
+        ("v8_target_prior_head", "v1_hierarchical"),
+        ("v9_input_conditioned_target_adaptation", "v1_hierarchical"),
+        ("image_source_only", "v0_flat"),
+        ("image_v8_target_prior_head", "v0_flat"),
+        ("image_v9_sector_proto", "v0_flat"),
+    ],
+)
+def test_retained_routes_do_not_fall_back_to_retired_source_variant(variant: str, expected_source: str):
+    assert _source_variant_for({"variant": variant}) == expected_source
 
 
 def test_hist_beam_stage_cfg_defaults_to_no_kd_lineage(tmp_path: Path):
@@ -1420,7 +1453,7 @@ def test_hist_beam_loso_execute_uses_runner_and_records_stage_metadata(tmp_path:
     executor = MetadataAssertingStageExecutor()
     result = run_hist_beam_loso(
         cfg,
-        args=_loso_args(tmp_path, execute=True, variants="v3_decoupled", budgets="0"),
+        args=_loso_args(tmp_path, execute=True, variants="v1_hierarchical", budgets="0"),
         stage_executor=executor,
     )
 
@@ -1448,7 +1481,7 @@ def test_hist_beam_loso_execute_uses_runner_and_records_stage_metadata(tmp_path:
 def test_hist_beam_loso_execute_preflight_fails_before_stages_for_missing_data(tmp_path: Path):
     cfg = load_config(ROOT / "configs/hist_beam/quick_smoke.yaml")
     cfg["loso"]["scene_data_roots"] = {str(scene): str(tmp_path / f"missing{scene}") for scene in (31, 32, 33, 34)}
-    plan = build_loso_run_plan(cfg, target_scenes=[34], variants=["v3_decoupled"], budgets=[0], seeds=[0])
+    plan = build_loso_run_plan(cfg, target_scenes=[34], variants=["v1_hierarchical"], budgets=[0], seeds=[0])
 
     preflight = run_loso_execute_preflight(plan, cfg, tmp_path / "out")
 
@@ -1493,7 +1526,7 @@ def test_mmw_loso_preflight_reports_public_radar_preparation_command(tmp_path: P
                 "fold": "target_scene",
                 "target_scene": scene,
                 "source_scenes": [],
-                "variant": "v3_decoupled",
+                "variant": "v1_hierarchical",
                 "budget": 0,
                 "seed": 0,
                 "enabled_modalities": ["radar"],
@@ -1527,7 +1560,7 @@ def test_hist_beam_loso_execute_smoke_writes_summary_and_conclusion(tmp_path: Pa
     cfg = _loso_fixture_config(tmp_path)
     result = run_hist_beam_loso(
         cfg,
-        args=_loso_args(tmp_path, execute=True, variants="v3_decoupled,v5_adapter_proto,v6_full_finetune", budgets="0"),
+        args=_loso_args(tmp_path, execute=True, variants="v1_hierarchical,v5_adapter_proto,v6_full_finetune", budgets="0"),
         stage_executor=FakeStageExecutor(),
     )
 
@@ -1572,7 +1605,7 @@ def test_hist_beam_loso_execute_keyboard_interrupt_writes_partial_summary(tmp_pa
     cfg = _loso_fixture_config(tmp_path)
     result = run_hist_beam_loso(
         cfg,
-        args=_loso_args(tmp_path, execute=True, variants="v3_decoupled,v5_adapter_proto", budgets="0"),
+        args=_loso_args(tmp_path, execute=True, variants="v1_hierarchical,v5_adapter_proto", budgets="0"),
         stage_executor=InterruptingStageExecutor(),
     )
 
@@ -1601,7 +1634,7 @@ def test_hist_beam_loso_console_main_returns_zero_for_successful_plan(tmp_path: 
             "--target-scene",
             "34",
             "--variants",
-            "v3_decoupled",
+            "v1_hierarchical",
             "--budgets",
             "0",
             "--seeds",
@@ -1819,7 +1852,7 @@ class InterruptingStageExecutor:
         raise KeyboardInterrupt()
 
 
-def _loso_args(tmp_path: Path, *, execute: bool, variants: str = "v3_decoupled", budgets: str = "0"):
+def _loso_args(tmp_path: Path, *, execute: bool, variants: str = "v1_hierarchical", budgets: str = "0"):
     return SimpleNamespace(
         target_scene=None,
         source_scenes=None,
