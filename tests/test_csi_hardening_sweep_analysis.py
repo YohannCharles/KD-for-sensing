@@ -258,7 +258,7 @@ def _write_run(
         f"{hardening_yaml}"
         "model:\n"
         "  modalities: [csi]\n"
-        "  student:\n"
+        "  primary:\n"
         "    encoders:\n"
         "      csi:\n"
         "        type: pilot_dual_view_csi\n"

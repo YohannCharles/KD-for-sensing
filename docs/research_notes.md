@@ -12,7 +12,7 @@
 
 ## 已退役研究线
 
-模态失衡研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断或 G2D 失衡结果汇总入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、Raymobtime s008 current snapshot workflow、CSI hardening、HiST-Beam/MMW LOSO 和少样本跨场景 adaptation。
+模态失衡、蒸馏和 HiST-Beam/P3 系列研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist 或 P3/V7/V8/V9 probe 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、DeepSense6G GPS residual/Top8/BGAM、MMW GPS v2/BGAM、Raymobtime s008 current snapshot workflow、CSI hardening 和少样本跨场景 adaptation。
 
 历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 
@@ -29,7 +29,7 @@ labels: [B, 3] = [t+1, t+2, t+3]
 logits: [B, 3, 64]
 ```
 
-不要再把历史最后一帧 beam 当作训练 label，也不要输出旧的 current/h0 指标。G2D-lite、G2D-global 和 G2D-horizon 的配置、distiller、SMP 和诊断入口已经退役；当前主线入口是 no-KD supervised/adaptation，单模态 `logits_kd` 和 `rkd` 只作为 legacy supplemental baseline 保留，fusion KD virtual alias 不再生成。
+不要再把历史最后一帧 beam 当作训练 label，也不要输出旧的 current/h0 指标。G2D-lite、G2D-global 和 G2D-horizon 的配置、蒸馏运行时、SMP 和诊断入口已经退役；当前主线入口是 supervised/adaptation，旧 `logits_kd` 和 `rkd` 路径会被 migration guard 拒绝，fusion KD virtual alias 不再生成。
 
 ## CSI 和 MMW 研究判断
 
@@ -80,9 +80,9 @@ Viewer 已从静态 PNG 方向收束为 Gradio manifest workflow。重点能力�
 
 如果目标是复现原始上游代码或 `All_models/` 历史权重，需要特别注意：
 
-- 原始 teacher/student GRU 层数和当前 canonical 配置可能不同；加载旧权重时应显式报告 missing/unexpected keys。
+- 原始角色化 GRU 层数和当前 canonical 配置可能不同；加载旧权重时应显式报告 missing/unexpected keys。
 - `strict=False` 会掩盖结构漂移，做复现时应优先使用严格加载或清晰的兼容报告。
-- batch size、seed、learning rate、KD temperature/alpha 等当前配置不等价于原始实验参数。
+- batch size、seed、learning rate 等当前配置不等价于原始实验参数。
 - 当前包结构和 CLI 已经重构；旧顶层脚本入口不再作为维护入口。
 
 ## 已收束的历史草稿

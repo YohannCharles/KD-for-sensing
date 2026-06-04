@@ -2,6 +2,8 @@
 
 本文汇总当前 `p3_v7_multisource_crossroad_seed0_*` 一组实验的模型结构、损失、训练方式、实验矩阵和初步结论，便于和其他模型或其他 AI 继续讨论。
 
+> Retired note: P3/V7/V8/HiST-Beam 源码、配置和 shell wrapper 已从当前支持面删除。本文只作为历史实验分析保留，文中的运行命令、源码路径和 config 路径不再表示当前可运行入口。
+
 涉及的主要结果目录：
 
 - [`outputs/p3_v7_multisource_crossroad_seed0_iofix3_1x3090`](../outputs/p3_v7_multisource_crossroad_seed0_iofix3_1x3090)
@@ -318,13 +320,6 @@ v8 A3/A5 说明少量 target label 可以把主预测簇从 source 区间拉回 
 7. 是否需要给 v8 增加 prior temperature、entropy regularization 或更弱的 prior mixing，避免预测只落在 5-6 个 beam 上？
 8. 如果要产出 main conclusion，是否需要跑不使用 target path/radio supervision 的 v8 变体，或把这组结果明确标注为 ineligible diagnostic？
 
-## 11. 讨论时最该盯的文件
+## 11. 历史实现线索
 
-- [`src/kd_sensing/models/fusion/hist_beam.py`](../src/kd_sensing/models/fusion/hist_beam.py)
-- [`src/kd_sensing/engine/hist_beam_losses.py`](../src/kd_sensing/engine/hist_beam_losses.py)
-- [`src/kd_sensing/engine/hist_beam_adaptation.py`](../src/kd_sensing/engine/hist_beam_adaptation.py)
-- [`src/kd_sensing/engine/hist_beam_loso_stages.py`](../src/kd_sensing/engine/hist_beam_loso_stages.py)
-- [`configs/hist_beam/mmw_sensor_assisted_quick_validation.yaml`](../configs/hist_beam/mmw_sensor_assisted_quick_validation.yaml)
-- [`configs/hist_beam/v7_shared_physical_private_residual.yaml`](../configs/hist_beam/v7_shared_physical_private_residual.yaml)
-- [`configs/hist_beam/v8_target_prior_head.yaml`](../configs/hist_beam/v8_target_prior_head.yaml)
-- [`openspec/changes/add-v8-target-prior-head/tasks.md`](../openspec/changes/add-v8-target-prior-head/tasks.md)
+这些文件在当前源码树中已经退役。需要复核旧实现时，请通过 git 历史或归档 OpenSpec 查找原 `src/kd_sensing/models/fusion/hist_beam.py`、`src/kd_sensing/engine/hist_beam_*`、`configs/hist_beam/*` 和相关 change 记录；当前开发不应新增对这些路径的依赖。

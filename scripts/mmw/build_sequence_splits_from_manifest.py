@@ -31,12 +31,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--block-size-frames", type=int, help="Frames per group-safe time block.")
     parser.add_argument("--guard-band-frames", type=int, help="Minimum guard band between train/test blocks.")
+    parser.add_argument(
+        "--beam-label-calibration-json",
+        help="Optional JSON object for calibrated split histograms; raw labels and power vectors are preserved.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     data_root = Path(args.data_root)
+    beam_label_calibration = json.loads(args.beam_label_calibration_json) if args.beam_label_calibration_json else None
     reports = []
     for scene in args.scene:
         reports.append(
@@ -51,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 split_strategy=str(args.split_strategy),
                 block_size_frames=args.block_size_frames,
                 guard_band_frames=args.guard_band_frames,
+                beam_label_calibration=beam_label_calibration,
             )
         )
     print(json.dumps({"scenes": reports}, indent=2, sort_keys=True))
@@ -69,6 +75,7 @@ def build_scene_splits(
     split_strategy: str,
     block_size_frames: int | None,
     guard_band_frames: int | None,
+    beam_label_calibration: dict | None,
 ) -> dict:
     return build_sequence_splits_from_manifest(
         data_root=data_root,
@@ -81,6 +88,7 @@ def build_scene_splits(
         split_strategy=split_strategy,
         block_size_frames=block_size_frames,
         guard_band_frames=guard_band_frames,
+        beam_label_calibration=beam_label_calibration,
     )
 
 

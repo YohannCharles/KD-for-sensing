@@ -8,27 +8,27 @@
 
 ```bash
 conda run -n kd_mm_beam python scripts/profile_training_io.py \
-  --config configs/image/student_no_kd.yaml \
+  --config configs/image/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/image_io.json
 
 conda run -n kd_mm_beam python scripts/profile_training_io.py \
-  --config configs/radar/student_no_kd.yaml \
+  --config configs/radar/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/radar_io.json
 
 conda run -n kd_mm_beam python scripts/profile_training_io.py \
-  --config configs/gps/student_no_kd.yaml \
+  --config configs/gps/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/gps_io.json
 
 conda run -n kd_mm_beam python scripts/profile_training_io.py \
-  --config configs/lidar/student_no_kd.yaml \
+  --config configs/lidar/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/lidar_io.json
 
 conda run -n kd_mm_beam python scripts/profile_training_io.py \
-  --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
+  --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
   --samples 32 \
   --output outputs/profile/fusion_all_io.json \
   --csv-output outputs/profile/fusion_all_io.csv
@@ -62,14 +62,14 @@ conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess
 cache 而不补写缺失文件时，使用 `read_only`：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
   -o data.cache.policy=read_only
 ```
 
 可用策略为 `off`、`read_only`、`auto`、`rebuild`，也可以按模态覆盖：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_student_no_kd.yaml \
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
   -o data.cache.policy=read_only \
   -o data.cache.lidar.policy=auto
 ```
@@ -78,7 +78,7 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 
 ```bash
 conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
-  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+  --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml \
   --parallel-runs 4 \
   --cpu-count 32
 ```
@@ -88,7 +88,7 @@ conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
 
 ## Cache 复用与失效
 
-可以长期复用：LiDAR BEV、radar RA/DA 预生成结果、beam label cache。训练参数一般不影响这些缓存，包括 `lr`、`epochs`、`batch_size`、`num_workers`、`seed`、模型结构、KD 类型、loss、scheduler 和输出目录。
+可以长期复用：LiDAR BEV、radar RA/DA 预生成结果、beam label cache。训练参数一般不影响这些缓存，包括 `lr`、`epochs`、`batch_size`、`num_workers`、`seed`、模型结构、loss、scheduler 和输出目录。
 
 需要新 cache 或清理旧 cache 的情况：
 
@@ -109,7 +109,7 @@ split 和预处理配置时，应优先复用这些 train-fitted artifacts。只
 并行跑多个实验时，先使用 `num_workers=2~4` 和 `prefetch_factor=1`。单个实验确认 CPU/I/O 不再阻塞后，再逐步调高：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_student_no_kd.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_lightweight.yaml \
   -o data.dataloader.num_workers=8 \
   -o data.dataloader.prefetch_factor=2
 ```
@@ -117,7 +117,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_stu
 默认启用 `training.transfer.non_blocking=true`。AMP 默认关闭，建议等 cache 预热并确认 DataLoader 不再饥饿后，再在 CUDA 上启用：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_student_no_kd.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_lightweight.yaml \
   -o training.amp.enabled=true \
   -o training.amp.dtype=float16
 ```
@@ -125,7 +125,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_stu
 新配置也支持按 split 覆盖 worker 生命周期：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml \
   -o data.dataloader.train_num_workers=3 \
   -o data.dataloader.test_num_workers=1 \
   -o data.dataloader.train_persistent_workers=true \
@@ -144,7 +144,7 @@ conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_ra
 语义和完整 validation/test split：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml \
   -o training.epoch_subsampling.enabled=true \
   -o training.epoch_subsampling.fraction=0.1 \
   -o output.progress.enabled=false
@@ -153,7 +153,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps
 也可以固定每个 epoch 的 train 样本数：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/gps/student_no_kd.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/gps/lightweight.yaml \
   -o training.epoch_subsampling.enabled=true \
   -o training.epoch_subsampling.num_samples=256
 ```

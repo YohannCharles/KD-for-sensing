@@ -19,7 +19,7 @@ Usage:
                  val_acc/val_atop3/val_atop5/val_adba 和 val_top*_avg 汇总第 1/2/3 帧
 
 输出目录：
-  outputs/other/<scene>/sunny_MMW_<scene>_l5p3_group_safe_h123_<kind>_no_kd
+  outputs/mmw_sunny_modal15/l5p3_group_safe_h123/<scene>/sunny_MMW_<scene>_l5p3_group_safe_h123_<kind>_supervised
 
 常用环境变量：
   GPU_IDS=0,1,2,3
@@ -32,7 +32,7 @@ Usage:
   PREPARE_RADAR_MAPS=1
   PREWARM_CACHE=0
   RUN_IN_BACKGROUND=0
-  POST_MODAL15_CMD='bash scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh'
+  POST_MODAL15_CMD='bash scripts/<current-follow-up>.sh'
 EOF
 }
 

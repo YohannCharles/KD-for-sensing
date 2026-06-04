@@ -10,7 +10,7 @@ from typing import Any
 import torch
 
 from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
-from kd_sensing.engine.run_lineage import run_lineage_metadata
+from kd_sensing.engine.run_lineage import model_capacity, run_lineage_metadata
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -75,31 +75,8 @@ def config_slug(cfg: dict[str, Any]) -> str:
     return sanitize_slug(f"{task}_{artifact_role(cfg)}")
 
 
-def teacher_baseline_slug(cfg: dict[str, Any]) -> str:
-    task = cfg.get("experiment", {}).get("task", "image")
-    if task == "fusion":
-        modalities = (
-            cfg.get("model", {}).get("teacher", {}).get("modalities")
-            or cfg.get("model", {}).get("student", {}).get("modalities")
-            or ["image", "radar"]
-        )
-        prefix = "_".join(str(name) for name in modalities)
-    else:
-        prefix = str(task)
-    return sanitize_slug(f"{prefix}_teacher_no_kd")
-
-
 def artifact_role(cfg: dict[str, Any]) -> str:
-    distillation_type = str(cfg.get("distillation", {}).get("type", "no_kd"))
-    if distillation_type != "no_kd":
-        return sanitize_slug(distillation_type)
-
-    model_cfg = cfg.get("model", {})
-    student_type = str(model_cfg.get("student", {}).get("type", ""))
-    teacher_type = str(model_cfg.get("teacher", {}).get("type", ""))
-    if student_type == teacher_type or student_type.endswith("_teacher"):
-        return "teacher_no_kd"
-    return "student_no_kd"
+    return sanitize_slug(model_capacity(cfg))
 
 
 def sanitize_slug(value: str) -> str:
@@ -179,6 +156,7 @@ def archive_best_checkpoint(
     _remove_old_archives(target_dir, slug=slug, role=role, keep=target, scene_slug=scene_slug_from_config(cfg))
     shutil.copy2(source, target)
 
+    lineage = run_lineage_metadata(cfg)
     metadata = {
         "path": str(target),
         "source": "registry",
@@ -188,6 +166,8 @@ def archive_best_checkpoint(
         "run_dir": str(run_dir),
         "config_slug": slug,
         "artifact_role": role,
+        "training_mode": lineage["training_mode"],
+        "model_capacity": lineage["model_capacity"],
         "metric_name": registry_config(cfg).get("metric", "val_top1"),
         "metric_value": float(val_top1),
         "selection_metric": selection_metric
@@ -209,7 +189,7 @@ def archive_best_checkpoint(
         "split_metadata": split_metadata or {},
         "normalization_artifacts": normalization_artifacts or {},
         "updated": True,
-        "lineage": run_lineage_metadata(cfg),
+        "lineage": lineage,
     }
     metadata.update(scene_metadata_from_config(cfg))
     sidecar = write_sidecar(target, metadata)
@@ -254,35 +234,6 @@ def find_registry_checkpoint(
         source="missing",
         registry_dir=target_dir,
         candidates=[],
-    )
-
-
-def resolve_teacher_checkpoint(cfg: dict[str, Any], weight_name: str | None) -> CheckpointResolution:
-    if not weight_name:
-        return CheckpointResolution(path=None, source="none", requested=weight_name)
-
-    candidate = Path(weight_name).expanduser()
-    if candidate.is_absolute():
-        return CheckpointResolution(path=candidate, source="explicit", requested=weight_name)
-
-    registry_resolution = CheckpointResolution(path=None, source="missing", registry_dir=registry_dir(cfg))
-    if registry_preferred(cfg):
-        registry_resolution = find_registry_checkpoint(
-            cfg,
-            target_slug=teacher_baseline_slug(cfg),
-            role="teacher_no_kd",
-        )
-        if registry_resolution.path is not None:
-            registry_resolution.requested = weight_name
-            return registry_resolution
-
-    return CheckpointResolution(
-        path=None,
-        source="missing",
-        metadata=None,
-        registry_dir=registry_resolution.registry_dir,
-        candidates=registry_resolution.candidates,
-        requested=weight_name,
     )
 
 
@@ -377,8 +328,8 @@ def _enabled_modalities_from_cfg(cfg: dict[str, Any]) -> list[str]:
     task = cfg.get("experiment", {}).get("task", "image")
     if task == "fusion":
         modalities = (
-            cfg.get("model", {}).get("student", {}).get("modalities")
-            or cfg.get("model", {}).get("teacher", {}).get("modalities")
+            cfg.get("model", {}).get("primary", {}).get("modalities")
+            or cfg.get("model", {}).get("modalities")
             or ["image", "radar"]
         )
         return [str(name) for name in modalities]

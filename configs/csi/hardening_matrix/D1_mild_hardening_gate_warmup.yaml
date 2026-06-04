@@ -13,7 +13,7 @@ data:
     num_pred: 3
     use_csi: true
     csi_train_rms: true
-    csi_hardening: &mild_hardening
+    csi_hardening:
       enabled: true
       seed: 49
       mode: train_random_eval_fixed
@@ -25,16 +25,20 @@ data:
         max_degrees: 30.0
       antenna_calibration:
         enabled: true
-        amplitude_range: [0.95, 1.05]
+        amplitude_range:
+        - 0.95
+        - 1.05
         phase_std_degrees: 5.0
   dataloader:
     train_batch_size: 16
     test_batch_size: 16
 model:
-  modalities: [csi]
-  teacher: &csi_model
+  modalities:
+  - csi
+  primary:
     type: modular_sequence
-    modalities: [csi]
+    modalities:
+    - csi
     feature_size: 64
     d_model: 64
     num_classes: 64
@@ -58,10 +62,6 @@ model:
     heads:
       beam:
         type: beam_head
-  student: *csi_model
-distillation:
-  type: no_kd
-  teacher_model_name: null
 training:
   epochs: 100
   lr: 0.0005

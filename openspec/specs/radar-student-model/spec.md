@@ -1,10 +1,10 @@
 # radar-student-model Specification
 
 ## Purpose
-定义 radar student 模型结构、注册名和 KD 兼容行为，确保雷达学生分支可用于无蒸馏训练和多种蒸馏配置。
+定义 radar lightweight 模型结构、注册名和当前训练兼容行为，确保雷达轻量分支可用于 supervised/adaptation 训练。
 ## Requirements
 ### Requirement: RadarStudent 模型结构
-系统 MUST 提供已注册的 `radar_student` 模型，用于 radar-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarStudentModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。
+系统 MUST 提供已注册的 `radar_student` 模型，用于 radar-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarStudentModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。该模型不再作为 KD student 定义。
 
 #### Scenario: 按配置构建 RadarStudent
 - **WHEN** 配置中指定 `model.student.type: radar_student`
@@ -17,6 +17,7 @@
 - **AND** `pred` 的形状 MUST 为 `(batch, sequence, num_classes)`
 - **AND** `features` 的形状 MUST 为 `(batch, sequence, feature_size)`
 - **AND** `output_features` 的 batch 与 sequence 维度 MUST 与输入一致
+- **AND** 系统 MUST 不要求输出 RKD 专用特征
 
 #### Scenario: RadarStudent 参数校验
 - **WHEN** `gru_params` 不包含 `[input_size, hidden_size, num_layers]` 三个值，或 `gru_input_size` 不等于 `feature_size`
@@ -39,25 +40,23 @@ RadarStudent MUST 使用轻量雷达特征提取路径，避免复用 RadarTeach
 - **WHEN** `feature_size` 配置为 64
 - **THEN** RadarStudent 的投影层 MUST 为每个时隙输出 64 维输入特征
 
-### Requirement: RadarStudent 蒸馏兼容
-`RadarStudentModalityNet` MUST 与现有 radar-only 训练、验证、评估和蒸馏流程兼容。系统 MUST 能将 `RadarModalityNet` 作为 frozen teacher，将 `RadarStudentModalityNet` 作为可训练 student，并复用 logits KD 与 RKD distiller。默认 radar teacher 和 radar student 单模态 KD 配置 MUST 使用 `gru_params: [64, 64, 1]`。
+### Requirement: RadarStudent 当前训练兼容
+`RadarStudentModalityNet` MUST 与 radar-only supervised/adaptation 训练、验证和评估流程兼容。旧 radar logits KD 或 RKD 配置 MUST 在配置解析阶段失败。
 
-#### Scenario: 使用 logits KD 训练 RadarStudent
-- **WHEN** radar-only KD 配置指定 `model.teacher.type: radar_teacher` 且 `model.student.type: radar_student`
-- **THEN** 训练流程 MUST 只使用雷达输入完成 teacher 和 student forward
-- **AND** logits KD MUST 使用 teacher/student logits 计算蒸馏损失
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: 使用 supervised 训练 RadarStudent
+- **WHEN** radar-only lightweight 配置指定 `model.primary.type: radar_lightweight` 或等价注册名
+- **THEN** 训练流程 MUST 只使用雷达输入完成 primary model forward
+- **AND** 训练流程 MUST 使用 supervised/adaptation loss 更新该主模型
 
-#### Scenario: 使用 RKD 训练 RadarStudent
-- **WHEN** radar-only RKD 配置指定 `model.teacher.type: radar_teacher` 且 `model.student.type: radar_student`
-- **THEN** `RadarStudentModalityNet` MUST 返回可用于 RKD 的 output_features
-- **AND** 默认配置 MUST 保持 teacher/student output hidden size 一致
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: 旧 radar KD 配置被拒绝
+- **WHEN** 用户运行旧 radar-only logits KD 或 RKD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不构建 distiller
 
 ### Requirement: RadarStudent 默认 GRU 层数
 默认 RadarStudent 单模态配置 MUST 使用一层 GRU，以便与当前 radar-only lightweight student 配置、README 和测试保持一致。
 
-#### Scenario: radar_student no-KD 默认 GRU 层数
-- **WHEN** 用户通过默认 radar student no-KD 配置构建模型
+#### Scenario: radar lightweight 默认 GRU 层数
+- **WHEN** 用户通过默认 radar lightweight 配置构建模型
 - **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
 - **AND** 模型的 `GRU.num_layers` MUST 为 1

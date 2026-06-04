@@ -8,7 +8,6 @@ _LAZY_EXPORTS = {
     "build_dataloaders": (".data_factory", "build_dataloaders"),
     "build_model": (".optim", "build_model"),
     "build_task_criterion": (".optim", "build_task_criterion"),
-    "build_distiller": (".optim", "build_distiller"),
     "build_metrics": (".optim", "build_metrics"),
     "train": (".trainer", "train"),
     "validate": (".validator", "validate"),

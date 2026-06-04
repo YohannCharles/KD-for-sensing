@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
 from kd_sensing.data.layouts import mmw_condition_layout
 from kd_sensing.data.mmw.path_semantics import (
@@ -54,11 +55,17 @@ class MMWDataset(DeepSense6GDataset):
         radio_semantic: bool | dict[str, Any] | None = None,
         path_semantic: bool | dict[str, Any] | None = None,
         physical_label: bool | dict[str, Any] | None = None,
+        beam_label_calibration: bool | dict[str, Any] | None = None,
         field_map: dict[str, Any] | None = None,
         return_beam_power: bool | None = None,
         **kwargs: Any,
     ) -> None:
         scenario = str(scene or scene_slug or scene_id or "town10_skybridge_seed24")
+        beam_label_mapping = resolve_beam_label_mapping(
+            beam_label_calibration or kwargs.pop("beam_label_calibration", None),
+            scene=scenario,
+            default_num_classes=int(kwargs.get("num_classes", 64)),
+        )
         layout = mmw_condition_layout(condition)
         root = data_root or layout.root
         prepared_prefix = Path("Prepared") / scenario / "splits"
@@ -98,6 +105,7 @@ class MMWDataset(DeepSense6GDataset):
             test_csv_name=test_csv_name or str(prepared_prefix / "test.csv"),
             val_csv_name=val_csv_name,
             scene=31,
+            beam_label_mapping=beam_label_mapping,
             **kwargs,
         )
         self.condition = str(condition).strip().lower()
@@ -185,6 +193,7 @@ class MMWDataset(DeepSense6GDataset):
                 if key in row:
                     metadata[key] = _json_scalar(row[key])
             metadata.setdefault("dataset_family", "MMW")
+            metadata.update(self.beam_label_mapping.metadata())
             if self.radio_semantic_enabled:
                 metadata.setdefault("radio_semantic_mode", self.radio_label_builder.mode)
                 metadata.setdefault("radio_semantic_config_version", self.radio_label_builder.config_version)
@@ -214,10 +223,35 @@ class MMWDataset(DeepSense6GDataset):
                     "town": metadata.get("town", ""),
                     "scenario": self.scene_slug,
                     "scene_slug": self.scene_slug,
+                    "beam_label_space": self.beam_label_mapping.label_space,
+                    "beam_label_mapping_fingerprint": self.beam_label_mapping.fingerprint,
                 }
             )
         )
         return sample
+
+    def _target_raw_beam_label_for_index(self, idx: int, horizon: int, beam_path: str) -> int:
+        explicit = self._explicit_target_raw_label(idx, horizon)
+        if explicit is not None:
+            return int(explicit)
+        return self._raw_beam_label(beam_path)
+
+    def _target_beam_label_source_for_index(self, idx: int, horizon: int, beam_path: str) -> str:
+        row = _row_at(self._mmw_rows, idx)
+        if _optional_row_int(_row_first(row, (f"future_beam_label{horizon + 1}",))) is not None:
+            return f"future_beam_label{horizon + 1}"
+        if horizon == 0 and _optional_row_int(_row_first(row, ("beam_label",))) is not None:
+            return "beam_label"
+        return "beam_power_argmax"
+
+    def _explicit_target_raw_label(self, idx: int, horizon: int) -> int | None:
+        row = _row_at(self._mmw_rows, idx)
+        value = _optional_row_int(_row_first(row, (f"future_beam_label{horizon + 1}",)))
+        if value is not None:
+            return value
+        if horizon == 0:
+            return _optional_row_int(_row_first(row, ("beam_label",)))
+        return None
 
     def _geometry_for_index(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         row = _row_at(self._mmw_rows, idx)
@@ -455,14 +489,7 @@ class MMWDataset(DeepSense6GDataset):
             scene_name=self.scene_slug,
             num_classes=classes,
         )
-        expected = cache_metadata(
-            dataset="mmw",
-            scene=self.scene_slug,
-            num_classes=classes,
-            config=cfg,
-            sample_count=len(self),
-            horizon=int(self.num_pred),
-        )
+        expected = self._physical_cache_metadata(classes=classes)
         if cache_path.exists():
             try:
                 with np.load(cache_path, allow_pickle=True) as payload:
@@ -502,6 +529,7 @@ class MMWDataset(DeepSense6GDataset):
             horizon=int(self.num_pred),
             stats=stats,
         )
+        metadata.update(self.beam_label_mapping.metadata())
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             cache_path,
@@ -554,11 +582,12 @@ class MMWDataset(DeepSense6GDataset):
                         result = None
                         power_reason = str(exc)
             if result is not None and result.available and result.label is not None:
-                labels[horizon] = result.label
+                label = self._calibrate_distribution(result.label)
+                labels[horizon] = label
                 available[horizon] = True
                 sources.append(result.source)
                 reasons.append("")
-                diagnostics.append(result.diagnostics)
+                diagnostics.append(self._with_label_mapping_diagnostics(result.diagnostics))
             else:
                 reason = ""
                 if result is not None:
@@ -571,19 +600,34 @@ class MMWDataset(DeepSense6GDataset):
 
     def _target_beam_for_index(self, idx: int) -> list[int]:
         labels: list[int] = []
-        for rel_path in list(self.samples.future_beam_paths[idx][: self.num_pred]):
-            label = self._beam_label_cache.get(str(rel_path))
-            if label is None:
-                try:
-                    power, _ = self._load_beam_power(rel_path)
-                    label = int(np.asarray(power).reshape(-1).argmax()) if power is not None else -100
-                except Exception:
-                    label = -100
-                self._beam_label_cache[str(rel_path)] = int(label)
-            labels.append(int(label))
+        for horizon, rel_path in enumerate(list(self.samples.future_beam_paths[idx][: self.num_pred])):
+            raw = self._target_raw_beam_label_for_index(idx, horizon, str(rel_path))
+            labels.append(int(self._map_beam_label(raw)))
         while len(labels) < int(self.num_pred):
             labels.append(-100)
         return labels
+
+    def _physical_cache_metadata(self, *, classes: int, stats: dict[str, Any] | None = None) -> dict[str, Any]:
+        metadata = cache_metadata(
+            dataset="mmw",
+            scene=self.scene_slug,
+            num_classes=classes,
+            config=self.physical_label_config,
+            sample_count=len(self),
+            horizon=int(self.num_pred),
+            stats=stats,
+        )
+        metadata.update(self.beam_label_mapping.metadata())
+        return metadata
+
+    def _calibrate_distribution(self, distribution: np.ndarray) -> np.ndarray:
+        return self.beam_label_mapping.reorder_distribution(np.asarray(distribution), axis=-1).astype(np.float32)
+
+    def _with_label_mapping_diagnostics(self, diagnostics: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(diagnostics)
+        payload["beam_label_space"] = self.beam_label_mapping.label_space
+        payload["beam_label_mapping_fingerprint"] = self.beam_label_mapping.fingerprint
+        return payload
 
 
 __all__ = ["MMWDataset"]
@@ -624,6 +668,19 @@ def _json_scalar(value: Any) -> Any:
         except Exception:
             return value
     return value
+
+
+def _optional_row_int(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text or text in {"-99", "nan", "None"}:
+        return None
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(parsed):
+        return None
+    return int(parsed)
 
 
 def _collate_safe_value(value: Any) -> Any:

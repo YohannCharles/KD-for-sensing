@@ -12,6 +12,8 @@ gps_window:
   min_history: 2
   beam_direction: 1
   beam_offset: 0
+  boresight_angle_degrees: 0.0
+  auto_calibrate_boresight_angle: false
   auto_calibrate_beam_mapping: true
   auto_calibrate_beam_direction: true
   score_width: 2.0
@@ -19,8 +21,10 @@ gps_window:
   neighbor_top_k: 5
   fallback: majority
   calibration_mode: target_adapt
+  calibration_holdout_fraction: 0.5
+  calibration_holdout_min_samples: 1
+  calibration_holdout_strategy: angle_coverage
 output:
   dir: outputs/gps_window_baseline_target_calibrated
 sweep:
   enabled: false
-

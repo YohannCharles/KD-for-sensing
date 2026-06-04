@@ -13,7 +13,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
     yaml = None
 
 from kd_sensing.config.defaults import DEFAULT_CONFIG
-from kd_sensing.config.migration_guards import reject_removed_image_path_config
+from kd_sensing.config.migration_guards import (
+    reject_removed_config_path,
+    reject_removed_image_path_config,
+    reject_removed_kd_config,
+    reject_removed_override_key,
+    reject_retired_hist_config,
+)
 from kd_sensing.config.normalization import normalize_loaded_config
 from kd_sensing.config.parsing import parse_scalar, parse_simple_yaml, safe_load_yaml
 from kd_sensing.config.source import load_config_source
@@ -24,6 +30,7 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     file_cfg = {}
     if config_path:
+        reject_removed_config_path(config_path)
         source = load_config_source(config_path)
         file_cfg = _resolve_base_config(source)
         cfg = deep_merge(cfg, file_cfg)
@@ -45,6 +52,8 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
         explicit_early_stopping_metric=explicit_early_metric,
         explicit_early_stopping_mode=explicit_early_mode,
     )
+    reject_removed_kd_config(cfg)
+    reject_retired_hist_config(cfg)
     reject_removed_image_path_config(cfg)
     validate_loaded_config(cfg)
     return cfg
@@ -68,6 +77,7 @@ def _resolve_base_config(source: Any, stack: tuple[Path, ...] = ()) -> dict[str,
         base_path = Path(str(entry))
         if not base_path.is_absolute():
             base_path = source_path.parent / base_path
+        reject_removed_config_path(base_path)
         base_source = load_config_source(base_path)
         merged = deep_merge(merged, _resolve_base_config(base_source, (*stack, source_path)))
     return deep_merge(merged, file_cfg)
@@ -101,11 +111,14 @@ def parse_overrides(overrides: Iterable[str]) -> dict[str, Any]:
         if "=" not in item:
             raise ValueError(f"Override must use key=value format, got: {item}")
         key, raw_value = item.split("=", 1)
-        set_by_dotted_key(result, key.strip(), parse_scalar(raw_value.strip()))
+        key = key.strip()
+        reject_removed_override_key(key)
+        set_by_dotted_key(result, key, parse_scalar(raw_value.strip()))
     return result
 
 
 def set_by_dotted_key(target: dict[str, Any], key: str, value: Any) -> None:
+    reject_removed_override_key(key)
     parts = key.split(".")
     if any(not part for part in parts):
         raise ValueError(f"Invalid dotted override key: {key}")

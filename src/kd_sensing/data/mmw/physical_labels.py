@@ -158,7 +158,18 @@ def physical_cache_path(
 
 
 def metadata_matches(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
-    keys = ("version", "dataset", "scene", "num_classes", "temperature", "smoothing_sigma", "source", "power_unit")
+    keys = (
+        "version",
+        "dataset",
+        "scene",
+        "num_classes",
+        "temperature",
+        "smoothing_sigma",
+        "source",
+        "power_unit",
+        "beam_label_space",
+        "beam_label_mapping_fingerprint",
+    )
     return all(left.get(key) == right.get(key) for key in keys)
 
 

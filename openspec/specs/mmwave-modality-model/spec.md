@@ -91,21 +91,18 @@ mmWave teacher 和 mmWave student MUST 校验 `gru_params` 和输入维度配置
 - **AND** 系统 MUST 不构建或加载 frozen teacher
 - **AND** 系统 MUST 只使用 mmWave 输入完成 forward
 
-### Requirement: mmWave KD 兼容性
-mmWave-only teacher/student MUST 与现有 logits KD 和 RKD distiller 兼容。默认 mmWave KD 配置 MUST 使用 `mmwave_teacher` 作为 frozen teacher，并使用 `mmwave_student` 作为可训练 student。默认 mmWave teacher 和 student 配置 MUST 都使用 `gru_params: [64, 64, 1]`。
+### Requirement: mmWave KD 入口已移除
+mmWave-only 训练 MUST 不再支持 logits KD、RKD 或 distiller 运行时。旧 mmWave KD 配置路径 MUST 在配置解析阶段失败，并引导用户使用 `configs/mmwave/strong.yaml`、`configs/mmwave/lightweight.yaml` 或 `configs/mmwave/supervised.yaml`。
 
-#### Scenario: mmWave logits KD
-- **WHEN** 用户运行 mmWave-only logits KD 配置
-- **THEN** 系统 MUST 构建 frozen `mmwave_teacher` 和可训练 `mmwave_student`
-- **AND** 系统 MUST 使用任务 loss 与 logits KL 蒸馏 loss 的加权结果进行训练
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: mmWave logits KD 被拒绝
+- **WHEN** 用户运行旧 mmWave-only logits KD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不构建 frozen mmWave teacher 或 distiller
 
-#### Scenario: mmWave RKD
-- **WHEN** 用户运行 mmWave-only RKD 配置
-- **THEN** 系统 MUST 构建 frozen `mmwave_teacher` 和可训练 `mmwave_student`
-- **AND** 系统 MUST 使用任务 loss 与关系蒸馏 loss 的加权结果进行训练
-- **AND** teacher/student output feature 维度 MUST 在默认配置中保持一致
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: mmWave RKD 被拒绝
+- **WHEN** 用户运行旧 mmWave-only RKD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不计算关系蒸馏损失
 
 ### Requirement: mmWave 单模态默认 GRU 层数
 默认 mmWave teacher 和 mmWave student 单模态配置 MUST 使用一层 GRU，以便与当前 image、radar、GPS 和 LiDAR 单模态配置保持一致。

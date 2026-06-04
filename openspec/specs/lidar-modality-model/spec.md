@@ -83,21 +83,18 @@
 - **AND** 系统 MUST 不构建或加载 frozen teacher
 - **AND** 系统 MUST 只使用 LiDAR 输入完成 forward
 
-### Requirement: LiDAR KD 兼容性
-LiDAR-only teacher/student MUST 与现有 logits KD 和 RKD distiller 兼容。默认 LiDAR KD 配置 MUST 使用 `lidar_teacher` 作为 frozen teacher，并使用 `lidar_student` 作为可训练 student。默认 LiDAR teacher 和 student 配置 MUST 都使用 `gru_params: [64, 64, 1]`。
+### Requirement: LiDAR KD 入口已移除
+LiDAR-only 训练 MUST 不再支持 logits KD、RKD 或 distiller 运行时。旧 LiDAR KD 配置路径 MUST 在配置解析阶段失败，并引导用户使用 `configs/lidar/strong.yaml`、`configs/lidar/lightweight.yaml` 或 `configs/lidar/supervised.yaml`。
 
-#### Scenario: LiDAR logits KD
-- **WHEN** 用户运行 LiDAR-only logits KD 配置
-- **THEN** 系统 MUST 构建 frozen `lidar_teacher` 和可训练 `lidar_student`
-- **AND** 系统 MUST 使用任务 loss 与 logits KL 蒸馏 loss 的加权结果进行训练
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: LiDAR logits KD 被拒绝
+- **WHEN** 用户运行旧 LiDAR-only logits KD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不构建 frozen LiDAR teacher 或 distiller
 
-#### Scenario: LiDAR RKD
-- **WHEN** 用户运行 LiDAR-only RKD 配置
-- **THEN** 系统 MUST 构建 frozen `lidar_teacher` 和可训练 `lidar_student`
-- **AND** 系统 MUST 使用任务 loss 与关系蒸馏 loss 的加权结果进行训练
-- **AND** teacher/student output feature 维度 MUST 在默认配置中保持一致
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: LiDAR RKD 被拒绝
+- **WHEN** 用户运行旧 LiDAR-only RKD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不计算关系蒸馏损失
 
 ### Requirement: LiDAR 单模态默认 GRU 层数
 默认 LiDAR teacher 和 LiDAR student 单模态配置 MUST 使用一层 GRU，以便与当前 LiDAR 配置、README 和测试保持一致。
@@ -127,7 +124,7 @@ LiDAR-only baseline 训练和评估 MUST 报告模型指标与退化基线的对
 - **AND** 报告 MUST 标明 LiDAR 模型相对 last-beam baseline 的差距
 
 ### Requirement: LiDAR canonical 模型配置使用 modular BEV encoder
-LiDAR teacher/student/no-KD/KD canonical 配置 MUST 使用修复后的 LiDAR BEV profile 和 `modular_sequence` + `lidar_cnn` encoder，并保持现有 logits/loss 输出契约不变。
+LiDAR strong/lightweight/supervised canonical 配置 MUST 使用修复后的 LiDAR BEV profile 和 `modular_sequence` + `lidar_cnn` encoder，并保持现有 logits/loss 输出契约不变。
 
 #### Scenario: 构建 LiDAR teacher baseline
 - **WHEN** 用户加载默认 LiDAR teacher/no-KD 配置

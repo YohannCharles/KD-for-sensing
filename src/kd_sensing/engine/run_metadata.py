@@ -7,10 +7,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.config.canonical import SNAPSHOT_VARIANT
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
 from kd_sensing.engine.data_factory import build_dataloader_kwargs, resolve_dataloader_split_config
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_metadata_from_loader
-from kd_sensing.engine.hist_beam_history_anchor import history_anchor_run_metadata
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.evaluation.lidar_diagnostics import (
@@ -105,6 +105,12 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
             "mode": getattr(dataset, "beam_label_cache_mode", None),
             "items": len(getattr(dataset, "_beam_label_cache", {})),
         }
+        cache_metadata = getattr(dataset, "beam_label_cache_metadata", None)
+        if isinstance(cache_metadata, dict):
+            metadata["beam_label_cache"].update(cache_metadata)
+    mapping = getattr(dataset, "beam_label_mapping", None)
+    if mapping is not None and hasattr(mapping, "metadata"):
+        metadata.update(mapping.metadata())
     sample_metadata = getattr(getattr(dataset, "samples", None), "metadata", None)
     if sample_metadata is not None:
         metadata["sampling"] = sample_metadata
@@ -146,7 +152,7 @@ def prediction_setup_metadata(
 ) -> dict[str, Any]:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     model_cfg = cfg.get("model", {})
-    seq_len = int(dataset_cfg.get("seq_len", model_cfg.get("seq_length_student", 0)) or 0)
+    seq_len = int(dataset_cfg.get("seq_len", model_cfg.get("seq_length", 0)) or 0)
     num_pred = int(dataset_cfg.get("num_pred", model_cfg.get("num_pred", 0)) or 0)
     variant = cfg.get("experiment", {}).get("variant") or ("history_window" if seq_len > 1 else "single_frame")
     uses_temporal_core = _uses_temporal_core(cfg)
@@ -162,13 +168,14 @@ def prediction_setup_metadata(
         "train_csv_name": dataset_cfg.get("train_csv_name"),
         "validation_csv_name": dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name"),
         "test_csv_name": dataset_cfg.get("test_csv_name"),
-        **history_anchor_run_metadata(cfg),
     }
+    metadata.update(_beam_label_metadata_from_dataset_config(dataset_cfg))
     lineage = run_lineage_metadata(cfg)
     metadata["lineage"] = lineage
-    metadata["distillation_enabled"] = lineage["distillation_enabled"]
+    metadata["training_mode"] = lineage["training_mode"]
     metadata["method_family"] = lineage["method_family"]
-    metadata["distillation_type"] = lineage["distillation_type"]
+    metadata["model_capacity"] = lineage["model_capacity"]
+    metadata["primary_model"] = lineage["primary_model"]
     metadata["main_conclusion_eligible"] = lineage["main_conclusion_eligible"]
     if dataset_cfg.get("type") == "raymobtime_s008":
         metadata["variant"] = "raymobtime_s008_current_snapshot"
@@ -247,7 +254,6 @@ def throughput_run_metadata(
             "enabled": bool(cfg.get("output", {}).get("progress", {}).get("enabled", True)),
         },
         "cache": cache_run_metadata(cfg, dataloaders),
-        **history_anchor_run_metadata(cfg),
     }
     if train_subsampling:
         metadata["epoch_subsampling"] = {"train": train_subsampling}
@@ -268,6 +274,19 @@ def throughput_run_metadata(
         metadata["splits"] = splits
         metadata["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=splits)
     return metadata
+
+
+def _beam_label_metadata_from_dataset_config(dataset_cfg: dict[str, Any]) -> dict[str, Any]:
+    dataset_type = str(dataset_cfg.get("type") or "deepsense6g").strip().lower()
+    if dataset_type != "mmw":
+        return resolve_beam_label_mapping(None).metadata()
+    scene = dataset_cfg.get("scene") or dataset_cfg.get("scene_slug") or dataset_cfg.get("scene_id")
+    mapping = resolve_beam_label_mapping(
+        dataset_cfg.get("beam_label_calibration"),
+        scene=str(scene) if scene is not None else None,
+        default_num_classes=int(dataset_cfg.get("num_classes", 64)),
+    )
+    return mapping.metadata()
 
 
 def cache_run_metadata(cfg: dict[str, Any], dataloaders: dict[str, DataLoader] | None = None) -> dict[str, Any]:
@@ -342,24 +361,22 @@ def image_run_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resnet18_strategy_from_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
-    for role in ("teacher", "student"):
-        role_cfg = cfg.get("model", {}).get(role, {})
-        if not isinstance(role_cfg, dict):
-            continue
-        image_encoder = role_cfg.get("encoders", {}).get("image") if isinstance(role_cfg.get("encoders"), dict) else None
-        if isinstance(image_encoder, str):
-            image_encoder = {"type": image_encoder}
-        if not isinstance(image_encoder, dict) or image_encoder.get("type") != "resnet18_imagenet_rgb":
-            continue
-        return {
-            "role": role,
-            "freeze_backbone": bool(image_encoder.get("freeze_backbone", True)),
-            "unfreeze_stages": list(image_encoder.get("unfreeze_stages", [])),
-            "unfreeze_last_n_stages": int(image_encoder.get("unfreeze_last_n_stages", 0)),
-            "pretrained": bool(image_encoder.get("pretrained", True)),
-            "weights": image_encoder.get("weights", "DEFAULT"),
-        }
-    return None
+    role_cfg = cfg.get("model", {}).get("primary", {})
+    if not isinstance(role_cfg, dict):
+        return None
+    image_encoder = role_cfg.get("encoders", {}).get("image") if isinstance(role_cfg.get("encoders"), dict) else None
+    if isinstance(image_encoder, str):
+        image_encoder = {"type": image_encoder}
+    if not isinstance(image_encoder, dict) or image_encoder.get("type") != "resnet18_imagenet_rgb":
+        return None
+    return {
+        "role": "primary",
+        "freeze_backbone": bool(image_encoder.get("freeze_backbone", True)),
+        "unfreeze_stages": list(image_encoder.get("unfreeze_stages", [])),
+        "unfreeze_last_n_stages": int(image_encoder.get("unfreeze_last_n_stages", 0)),
+        "pretrained": bool(image_encoder.get("pretrained", True)),
+        "weights": image_encoder.get("weights", "DEFAULT"),
+    }
 
 
 def _serializable_loader_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -421,9 +438,9 @@ def _validate_snapshot_split_metadata(split_metadata: dict[str, Any], csv_path: 
 
 def _uses_temporal_core(cfg: dict[str, Any]) -> bool:
     model_cfg = cfg.get("model", {})
-    role_cfg = model_cfg.get("student", {}) if isinstance(model_cfg.get("student"), dict) else {}
+    role_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
     model_type = str(role_cfg.get("type", ""))
-    if model_type in {"fusion_teacher", "fusion_student", "cls_token_transformer_fusion", "token_transformer_fusion"}:
+    if model_type in {"fusion_strong", "fusion_lightweight", "cls_token_transformer_fusion", "token_transformer_fusion"}:
         return True
     core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
     if core_type == "snapshot_frame":

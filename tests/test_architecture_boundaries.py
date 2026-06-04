@@ -23,11 +23,16 @@ from kd_sensing.modalities import (  # noqa: E402
 
 PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
+    "scripts/analysis/visualize_deepsense_beambench_correspondence.py": "research_diagnostic",
+    "scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py": "research_diagnostic",
     "scripts/debug_eval_consistency.py": "research_diagnostic",
     "scripts/evaluate.py": "thin_cli_alias",
     "scripts/inspect_dataset.py": "dataset_preparation",
     "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
     "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
+    "scripts/mmw/visualize_gps_angle_beam_correspondence.py": "research_diagnostic",
+    "scripts/mmw/visualize_gps_prediction_trajectory.py": "research_diagnostic",
+    "scripts/mmw/visualize_prediction_error_label_distribution.py": "research_diagnostic",
     "scripts/mmw/visualize_town_label_distribution.py": "dataset_preparation",
     "scripts/preprocess.py": "thin_cli_alias",
     "scripts/profile_training_io.py": "research_diagnostic",
@@ -42,11 +47,10 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
 }
 SHELL_ORCHESTRATION_ALLOWLIST = {
     "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
-    "scripts/run_image_only_legal_crossroad_probe.sh": "shell_orchestration",
+    "scripts/run_deepsense_gps_circular_soft_label.sh": "shell_orchestration",
+    "scripts/run_mmw_gps_circular_soft_label_ablation.sh": "shell_orchestration",
     "scripts/run_mmw_sunny_modal15_l5p3_h123.sh": "shell_orchestration",
     "scripts/run_mmw_sunny_modal15_l5p6_h246.sh": "shell_orchestration",
-    "scripts/run_p3_v8_fixed_source_skybridge_budget10_seed01_4gpu.sh": "shell_orchestration",
-    "scripts/watch_modal15_then_run_p3.sh": "shell_orchestration",
 }
 ENTRYPOINT_LIFECYCLES = {
     "package_cli",
@@ -195,6 +199,49 @@ def test_project_surface_inventory_guardrails_are_current():
     assert shell_entries == set(SHELL_ORCHESTRATION_ALLOWLIST)
 
 
+def test_gps_lidar_bgam_workflow_stays_inside_package_boundaries():
+    forbidden_root_entries = [
+        ROOT / "train_gps_lidar_bgam.py",
+        ROOT / "eval_gps_lidar_bgam.py",
+        ROOT / "datasets" / "gps_lidar_dataset.py",
+        ROOT / "models" / "gps_lidar_bgam.py",
+    ]
+    for path in forbidden_root_entries:
+        assert not path.exists()
+
+    forbidden_imports = []
+    bgam_paths = [
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_dataset.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_manifest.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam_model.py",
+    ]
+    for path in bgam_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith(("datasets", "models", "src.run_")):
+                    forbidden_imports.append(f"{path.relative_to(ROOT)} imports {node.module}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith(("datasets", "models", "src.run_")):
+                        forbidden_imports.append(f"{path.relative_to(ROOT)} imports {alias.name}")
+
+    assert forbidden_imports == []
+
+
+def test_shell_orchestration_defaults_do_not_write_to_outputs_other():
+    violations = []
+    forbidden = 'OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/other'
+    for rel_path in sorted(SHELL_ORCHESTRATION_ALLOWLIST):
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        if forbidden in text:
+            violations.append(rel_path)
+
+    assert violations == []
+
+
 def test_entrypoint_lifecycle_categories_are_explicit_and_documented():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     classifications = {
@@ -218,10 +265,6 @@ def test_hotspot_inventory_documents_facades_and_narrow_modules():
         "src/kd_sensing/diagnostics/viewer_manifest_merge.py",
         "src/kd_sensing/data/deepverse/label_builder.py",
         "src/kd_sensing/data/deepverse/label_writers.py",
-        "src/kd_sensing/engine/hist_beam_loso_preflight.py",
-        "src/kd_sensing/engine/hist_beam_loso_stages.py",
-        "src/kd_sensing/engine/hist_beam_loso_summary.py",
-        "src/kd_sensing/engine/hist_beam_loso_matrix.py",
     ]
 
     for rel_path in required_paths:
@@ -329,26 +372,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/data/deepverse/label_writers.py": "def write_label_cache",
             },
         },
-        "src/kd_sensing/engine/hist_beam_loso_execution.py": {
-            "max_lines": 350,
-            "forbidden": [
-                "class DefaultHistBeamLosoStageExecutor",
-                "def execute_loso_stage_runs",
-                "def ensure_mmw_radar_csv_for_preflight",
-                "def row_eligibility",
-                "def matrix_summary",
-                "def _summary_row",
-            ],
-            "helpers": {
-                "src/kd_sensing/engine/hist_beam_loso_stages.py": "def execute_loso_stage_runs",
-                "src/kd_sensing/engine/hist_beam_loso_preflight.py": "def ensure_mmw_radar_csv_for_preflight",
-                "src/kd_sensing/engine/hist_beam_loso_summary.py": "def row_eligibility",
-                "src/kd_sensing/engine/hist_beam_loso_matrix.py": "def matrix_summary",
-                "src/kd_sensing/engine/hist_beam_loso_records.py": "def _base_run_record",
-                "src/kd_sensing/engine/hist_beam_loso_artifacts.py": "def write_loso_execute_summary",
-                "src/kd_sensing/engine/hist_beam_loso_config.py": "def _stage_cfg",
-            },
-        },
         "src/kd_sensing/data/mmw/preparation.py": {
             "max_lines": 250,
             "forbidden": [
@@ -383,11 +406,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
 
 def test_first_batch_hotspot_facades_are_not_internal_helper_import_sources():
     forbidden = {
-        "kd_sensing.engine.hist_beam_loso_execution": {
-            "_stage_cfg": "kd_sensing.engine.hist_beam_loso_config",
-            "_prototype_decision": "kd_sensing.engine.hist_beam_loso_config",
-            "_few_shot_adaptation_loaders": "kd_sensing.engine.hist_beam_loso_stages",
-        },
         "kd_sensing.data.mmw.preparation": {
             "build_sequence_rows": "kd_sensing.data.mmw.preparation_splits",
             "split_sequence_rows": "kd_sensing.data.mmw.preparation_splits",
@@ -401,10 +419,8 @@ def test_first_batch_hotspot_facades_are_not_internal_helper_import_sources():
         },
     }
     public_compat_allowed = {
-        ROOT / "src" / "kd_sensing" / "engine" / "hist_beam_loso_execution.py",
         ROOT / "src" / "kd_sensing" / "data" / "mmw" / "preparation.py",
         ROOT / "src" / "kd_sensing" / "data" / "mmw" / "__init__.py",
-        ROOT / "src" / "kd_sensing" / "cli" / "hist_beam_loso.py",
         ROOT / "scripts" / "mmw" / "prepare_town10_skybridge.py",
         ROOT / "scripts" / "mmw" / "build_sequence_splits_from_manifest.py",
     }
@@ -502,6 +518,53 @@ def test_config_import_does_not_import_runtime_boundaries():
     }
 
 
+def test_deepsense6g_residual_cli_imports_are_package_scoped_and_light():
+    modules = _run_module_presence_probe(
+        "import kd_sensing.cli.inspect_deepsense6g_residual_inputs\n"
+        "import kd_sensing.cli.prepare_deepsense6g_residual_manifest\n"
+        "import kd_sensing.cli.run_deepsense6g_residual_fusion\n"
+        "import kd_sensing.cli.plot_deepsense6g_residual_fusion\n"
+        "import kd_sensing.cli.compare_deepsense6g_residual_with_gps_v2",
+        {
+            "top_level_residual": "src.inspect_deepsense6g_residual_inputs",
+            "trainer": "kd_sensing.engine.trainer",
+            "data_factory": "kd_sensing.engine.data_factory",
+        },
+    )
+
+    assert modules == {
+        "top_level_residual": False,
+        "trainer": False,
+        "data_factory": False,
+    }
+
+
+def test_deepsense6g_top8_selector_cli_imports_are_package_scoped():
+    modules = _run_module_presence_probe(
+        "import kd_sensing.cli.prepare_deepsense6g_top8_candidate_manifest\n"
+        "import kd_sensing.cli.run_deepsense6g_top8_selector\n"
+        "import kd_sensing.cli.plot_deepsense6g_top8_selector\n"
+        "import kd_sensing.cli.compare_deepsense6g_top8_selector_with_gps_v2",
+        {
+            "top_level_run": "src.run_deepsense6g_top8_selector",
+            "top_level_data": "src.data.deepsense6g_topk_candidate_manifest",
+            "top_level_models": "src.models.topk_candidate_selector",
+            "top_level_losses": "src.losses.topk_candidate_losses",
+            "trainer": "kd_sensing.engine.trainer",
+            "data_factory": "kd_sensing.engine.data_factory",
+        },
+    )
+
+    assert modules == {
+        "top_level_run": False,
+        "top_level_data": False,
+        "top_level_models": False,
+        "top_level_losses": False,
+        "trainer": False,
+        "data_factory": False,
+    }
+
+
 def test_engine_light_submodule_does_not_import_heavy_boundaries():
     modules = _run_module_presence_probe(
         "import kd_sensing.engine.model_output",
@@ -565,13 +628,12 @@ def test_visualization_light_helpers_do_not_import_render_or_dataset_stack(state
     assert modules == {key: False for key in modules}
 
 
-def test_distillation_tool_submodule_does_not_import_training_registry_or_transforms():
+def test_beam_loss_submodule_does_not_import_training_registry_or_transforms():
     modules = _run_module_presence_probe(
-        "import kd_sensing.distillation.losses",
+        "import kd_sensing.losses",
         {
             "builder_facade": _dotted("kd_sensing", "engine", "builders"),
             "builder_aggregate": _dotted("kd_sensing", "engine", "_builders_impl"),
-            "distillers": "kd_sensing.distillation.distillers",
             "transform_aggregate": _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
         },
     )
@@ -579,7 +641,6 @@ def test_distillation_tool_submodule_does_not_import_training_registry_or_transf
     assert modules == {
         "builder_facade": False,
         "builder_aggregate": False,
-        "distillers": False,
         "transform_aggregate": False,
     }
 
@@ -590,7 +651,7 @@ def test_lazy_package_exports_remain_available():
             [
                 "from kd_sensing.engine import train",
                 "from kd_sensing.diagnostics import export_viewer_manifest",
-                "from kd_sensing.distillation import FocalLoss",
+                "from kd_sensing.losses import FocalLoss",
                 "assert train is not None",
                 "assert export_viewer_manifest is not None",
                 "assert FocalLoss is not None",
@@ -619,15 +680,15 @@ def test_models_package_import_is_lazy_and_public_symbols_remain_available():
     _run_module_presence_probe(
         "\n".join(
             [
-                "from kd_sensing.models import FusionTeacherModalityNet, GpsModalityNet",
-                "assert FusionTeacherModalityNet is not None",
-                "assert GpsModalityNet is not None",
+                "from kd_sensing.models import FusionStrongModalityNet, GpsStrongModalityNet",
+                "assert FusionStrongModalityNet is not None",
+                "assert GpsStrongModalityNet is not None",
                 "import kd_sensing.models as models",
-                "assert 'FusionTeacherModalityNet' in models.__all__",
+                "assert 'FusionStrongModalityNet' in models.__all__",
                 "try:",
                 "    getattr(models, 'Fusion' + 'ModalityNet')",
                 "except AttributeError as exc:",
-                "    assert 'FusionTeacherModalityNet' in str(exc)",
+                "    assert 'FusionStrongModalityNet' in str(exc)",
                 "else:",
                 "    raise AssertionError('removed alias did not raise')",
             ]
@@ -795,13 +856,6 @@ def test_active_mainline_modules_do_not_import_legacy_kd_runtime_aggregate():
         "src/kd_sensing/engine/evaluation_pass.py",
         "src/kd_sensing/engine/evaluator.py",
         "src/kd_sensing/engine/validator.py",
-        "src/kd_sensing/engine/hist_beam_adaptation.py",
-        "src/kd_sensing/engine/hist_beam_history_anchor.py",
-        "src/kd_sensing/engine/hist_beam_loso_execution.py",
-        "src/kd_sensing/engine/hist_beam_loso_summary.py",
-        "src/kd_sensing/engine/hist_beam_losses.py",
-        "src/kd_sensing/engine/hist_beam_prototypes.py",
-        "src/kd_sensing/engine/hist_beam_training.py",
         "src/kd_sensing/engine/objectives/history.py",
         "src/kd_sensing/engine/run_metadata.py",
         "src/kd_sensing/engine/training_extensions.py",
@@ -823,6 +877,36 @@ def test_active_mainline_modules_do_not_import_legacy_kd_runtime_aggregate():
                     "use the no-KD objective/method extension path or the explicit legacy builder in engine.optim."
                 )
 
+    assert violations == []
+
+
+def test_retired_hist_engine_model_and_evaluation_sources_are_absent():
+    retired_files = [
+        "src/kd_sensing/cli/hist_beam_loso.py",
+        "src/kd_sensing/engine/hist_beam_adaptation.py",
+        "src/kd_sensing/engine/hist_beam_history_anchor.py",
+        "src/kd_sensing/engine/hist_beam_loso_execution.py",
+        "src/kd_sensing/engine/hist_beam_losses.py",
+        "src/kd_sensing/engine/hist_beam_prototypes.py",
+        "src/kd_sensing/engine/hist_beam_training.py",
+        "src/kd_sensing/evaluation/hist_beam_outputs.py",
+        "src/kd_sensing/evaluation/hist_beam_residuals.py",
+        "src/kd_sensing/models/fusion/hist_beam.py",
+    ]
+    for rel_path in retired_files:
+        assert not (ROOT / rel_path).exists()
+
+    forbidden_imports = (
+        "kd_sensing.engine.hist_beam_",
+        "kd_sensing.evaluation.hist_beam_",
+        "kd_sensing.models.fusion.hist_beam",
+    )
+    violations = []
+    for path in (SRC / "kd_sensing").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for snippet in forbidden_imports:
+            if snippet in text:
+                violations.append(f"{path.relative_to(ROOT)} contains retired Hist import '{snippet}'")
     assert violations == []
 
 

@@ -20,6 +20,7 @@ from kd_sensing.data.beam_soft_targets import (
     resolve_soft_beam_label_config,
     soft_distribution_from_power_or_label,
 )
+from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
 from kd_sensing.data.transform_ops.gps import (
     GPSStandardScaler,
     PositionTargetStandardScaler,
@@ -143,6 +144,7 @@ class DeepSense6GDataset(Dataset):
         return_metadata: bool = False,
         portion_strategy: str = "even",
         portion_seed: int = 42,
+        beam_label_mapping: BeamLabelMapping | None = None,
         **extra: object,
     ):
         removed_keys = sorted(key for key in extra if str(key).startswith(REMOVED_IMAGE_OPTION_PREFIX))
@@ -194,6 +196,11 @@ class DeepSense6GDataset(Dataset):
             use_csi,
         )
         self.return_metadata = bool(return_metadata)
+        self.beam_label_mapping = beam_label_mapping or resolve_beam_label_mapping(None, scene=self.scene_slug)
+        self.beam_label_cache_metadata = {
+            "cache_mode": self._resolve_beam_label_cache(beam_label_cache),
+            **self.beam_label_mapping.metadata(),
+        }
         self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
         self._beam_label_cache: dict[str, int] = {}
         self.use_gps = "gps" in self.enabled_modalities
@@ -347,12 +354,20 @@ class DeepSense6GDataset(Dataset):
         beam_paths = self.samples.input_beam_paths[idx][-self.seq_len :]
         future_beam_paths = self.samples.future_beam_paths[idx][: self.num_pred]
 
-        def build_beam_targets() -> tuple[list[int], list[int]]:
-            input_beam = [self._beam_label(beam_path) for beam_path in beam_paths]
-            target_beam = [self._beam_label(beam_path) for beam_path in future_beam_paths]
-            return input_beam, target_beam
+        def build_beam_targets() -> tuple[list[int], list[int], list[int], list[int]]:
+            raw_input_beam = [
+                self._input_raw_beam_label_for_index(idx, horizon, beam_path)
+                for horizon, beam_path in enumerate(beam_paths)
+            ]
+            raw_target_beam = [
+                self._target_raw_beam_label_for_index(idx, horizon, beam_path)
+                for horizon, beam_path in enumerate(future_beam_paths)
+            ]
+            input_beam = [self._map_beam_label(label) for label in raw_input_beam]
+            target_beam = [self._map_beam_label(label) for label in raw_target_beam]
+            return input_beam, target_beam, raw_input_beam, raw_target_beam
 
-        input_beam, target_beam = record("targets", build_beam_targets)
+        input_beam, target_beam, raw_input_beam, raw_target_beam = record("targets", build_beam_targets)
         sample = {
             "input_beam": torch.tensor(input_beam, dtype=torch.int64),
             "target_beam": torch.tensor(target_beam, dtype=torch.int64),
@@ -403,6 +418,14 @@ class DeepSense6GDataset(Dataset):
             sample["lidar"] = lidar_model_input
         if self.return_metadata:
             sample["metadata"] = self._metadata_for_index(idx, beam_paths, future_beam_paths)
+            self._add_beam_label_metadata(
+                sample["metadata"],
+                idx=idx,
+                input_beam=input_beam,
+                target_beam=target_beam,
+                raw_input_beam=raw_input_beam,
+                raw_target_beam=raw_target_beam,
+            )
         return sample, timings
 
     def _metadata_for_index(self, idx: int, beam_paths: list[str], future_beam_paths: list[str]) -> dict[str, Any]:
@@ -605,6 +628,9 @@ class DeepSense6GDataset(Dataset):
             self._beam_label_cache[beam_path] = self._read_beam_label(beam_path)
 
     def _beam_label(self, beam_path: str) -> int:
+        return self._map_beam_label(self._raw_beam_label(beam_path))
+
+    def _raw_beam_label(self, beam_path: str) -> int:
         key = str(beam_path)
         if self.beam_label_cache_mode != "off" and key in self._beam_label_cache:
             return self._beam_label_cache[key]
@@ -612,6 +638,46 @@ class DeepSense6GDataset(Dataset):
         if self.beam_label_cache_mode != "off":
             self._beam_label_cache[key] = label
         return label
+
+    def _input_raw_beam_label_for_index(self, idx: int, horizon: int, beam_path: str) -> int:
+        return self._raw_beam_label(beam_path)
+
+    def _target_raw_beam_label_for_index(self, idx: int, horizon: int, beam_path: str) -> int:
+        return self._raw_beam_label(beam_path)
+
+    def _input_beam_label_source_for_index(self, idx: int, horizon: int, beam_path: str) -> str:
+        return "beam_power_argmax"
+
+    def _target_beam_label_source_for_index(self, idx: int, horizon: int, beam_path: str) -> str:
+        return "beam_power_argmax"
+
+    def _map_beam_label(self, raw_label: int) -> int:
+        return self.beam_label_mapping.map_label(int(raw_label))
+
+    def _add_beam_label_metadata(
+        self,
+        metadata: dict[str, Any],
+        *,
+        idx: int,
+        input_beam: list[int],
+        target_beam: list[int],
+        raw_input_beam: list[int],
+        raw_target_beam: list[int],
+    ) -> None:
+        mapping_metadata = self.beam_label_mapping.metadata()
+        metadata.update(mapping_metadata)
+        metadata["raw_input_beam"] = [int(value) for value in raw_input_beam]
+        metadata["raw_target_beam"] = [int(value) for value in raw_target_beam]
+        metadata["calibrated_input_beam"] = [int(value) for value in input_beam]
+        metadata["calibrated_target_beam"] = [int(value) for value in target_beam]
+        metadata["input_beam_label_source"] = [
+            self._input_beam_label_source_for_index(idx, horizon, beam_path)
+            for horizon, beam_path in enumerate(self.samples.input_beam_paths[idx][-self.seq_len :])
+        ]
+        metadata["target_beam_label_source"] = [
+            self._target_beam_label_source_for_index(idx, horizon, beam_path)
+            for horizon, beam_path in enumerate(self.samples.future_beam_paths[idx][: self.num_pred])
+        ]
 
     def _read_beam_label(self, beam_path: str) -> int:
         path = joined_resource(self.data_root, beam_path)
@@ -667,7 +733,8 @@ class DeepSense6GDataset(Dataset):
         if domain == "target" and source != "gaussian":
             raise ValueError("target-domain soft beam labels must use circular Gaussian targets.")
         cache_key = (
-            f"{domain}|{key}|{label}|{num_classes}|{source}|{cfg.sigma}|{circular}|{cfg.temperature}"
+            f"{domain}|{key}|{label}|{num_classes}|{source}|{cfg.sigma}|{circular}|{cfg.temperature}|"
+            f"{self.beam_label_mapping.fingerprint}"
         )
         if cfg.cache and cache_key in self._soft_beam_distribution_cache:
             return self._soft_beam_distribution_cache[cache_key]
@@ -691,6 +758,11 @@ class DeepSense6GDataset(Dataset):
             temperature=cfg.temperature,
             epsilon=cfg.epsilon,
         )
+        if result[1] and self.beam_label_mapping.enabled:
+            result = (
+                self.beam_label_mapping.reorder_distribution(result[0], axis=-1).astype(np.float32),
+                result[1],
+            )
         if cfg.cache:
             self._soft_beam_distribution_cache[cache_key] = result
         return result
@@ -707,6 +779,8 @@ class DeepSense6GDataset(Dataset):
         configured = self.soft_beam_label_config.num_classes
         if configured is not None:
             return int(configured)
+        if self.beam_label_mapping.enabled:
+            return int(self.beam_label_mapping.num_classes)
         if hard_labels:
             return max(64, max(int(value) for value in hard_labels) + 1)
         return 64

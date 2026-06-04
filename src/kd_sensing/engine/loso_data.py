@@ -318,14 +318,9 @@ def _source_sampling_metadata(dataset: Any, cfg: dict[str, Any]) -> dict[str, An
 
 
 def _source_scene_balance_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
-    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
-    source_sampling = hist_cfg.get("source_sampling") if isinstance(hist_cfg.get("source_sampling"), dict) else {}
-    scene_balance = source_sampling.get("scene_balance") if isinstance(source_sampling.get("scene_balance"), dict) else {}
     training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
     training_balance = training_cfg.get("source_scene_balance") if isinstance(training_cfg.get("source_scene_balance"), dict) else {}
-    merged = dict(scene_balance)
-    merged.update(training_balance)
-    return merged
+    return dict(training_balance)
 
 
 def _split_target_dataset_records(

@@ -15,16 +15,13 @@ class ExtensionContext:
     task: str
     model_cfg: dict[str, Any]
     training_cfg: dict[str, Any]
-    student_model: Any
-    teacher_model: Any | None
-    distiller: Any
+    primary_model: Any
     task_criterion: Any
     run_dir: Path
     device: torch.device
     num_pred: int
     num_classes: int
-    seq_length_student: int
-    seq_length_teacher: int
+    seq_length: int
     non_blocking: bool
 
 
@@ -51,16 +48,12 @@ class BatchState:
     batch: dict[str, torch.Tensor]
     labels: torch.Tensor
     soft_beam_targets: torch.Tensor | None
-    student_output: ModelOutput
-    student_logits: torch.Tensor
+    primary_output: ModelOutput
+    primary_logits: torch.Tensor
     controls: ForwardControls
-    teacher_logits: torch.Tensor | None = None
-    teacher_input_features: torch.Tensor | None = None
-    teacher_output_features: torch.Tensor | None = None
-    teacher_diagnostics: dict[str, Any] = field(default_factory=dict)
     total_loss: torch.Tensor | None = None
     task_loss: torch.Tensor | None = None
-    distill_loss: torch.Tensor | None = None
+    auxiliary_loss: torch.Tensor | None = None
     active_modalities: list[str] | None = None
 
 
@@ -68,8 +61,7 @@ class BatchState:
 class BaseLossResult:
     total_loss: torch.Tensor
     task_loss: torch.Tensor
-    distill_loss: torch.Tensor
-    teacher_diagnostics: dict[str, Any] = field(default_factory=dict)
+    auxiliary_loss: torch.Tensor
     diagnostics: dict[str, float] = field(default_factory=dict)
     active_modalities: list[str] | None = None
 

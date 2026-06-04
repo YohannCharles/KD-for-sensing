@@ -1,0 +1,162 @@
+experiment:
+  name: deepsense6g_gps_top8_candidate_selector
+  protocol: target_adapt_beambench_top8_selector
+  default_ablation: camera_ae_gps_selector_anchor
+
+data:
+  dataset_type: deepsense6g
+  data_root: dataset/DeepSense6G
+  gps_sweep_root: outputs/analysis/deepsense6g_gps_adapter_v2_support_sweep
+  topk_analysis_dir: outputs/analysis/deepsense6g_gps_adapter_v2_support_sweep/topk_analysis
+  label_space: mapping_enabled
+  label_spaces:
+    mapping_enabled:
+      enabled: true
+      label_space: deepsense6g_centered_beam_v1
+      num_classes: 64
+      direction: 1
+      offset: 33
+      fit_source: inline_beambench_center_index_31
+    mapping_disabled:
+      enabled: false
+  support_ratio: 0.15
+  gps_v2_default_support_ratio: 0.15
+  num_beams: 64
+  label: future_beam1_argmax
+  train_split: train
+  test_split: test
+  train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+  test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+  scenes:
+    - scenario31
+    - scenario32
+    - scenario33
+    - scenario34
+
+candidate:
+  topk: 8
+  require_saved_logits: true
+  gps_protocol: target_adapt_beambench
+  gps_ablation: best_by_scene
+  logits_names:
+    - gps_logits.npy
+    - logits.npy
+    - pred_logits.npy
+  logits_index_names:
+    - gps_logits_index.csv
+    - logits_index.csv
+    - pred_logits_index.csv
+  align_with_topk_analysis: true
+  topk_analysis_overall: deepsense6g_gps_v2_topk_overall.csv
+  topk_analysis_by_scene: deepsense6g_gps_v2_topk_by_scene.csv
+
+image:
+  enabled: auto
+  size: 64
+  path_columns:
+    - camera8
+    - camera
+    - rgb
+    - image
+    - image_path
+    - camera_path
+    - rgb_path
+  ae_feature_path: ""
+  ae_feature_index_path: ""
+  missing_feature_policy: fallback_gps_context
+
+modalities:
+  gps_context:
+    enabled: true
+  camera_ae:
+    enabled: auto
+  image:
+    enabled: false
+  lidar:
+    enabled: auto
+  radar:
+    enabled: auto
+
+model:
+  name: topk_candidate_selector
+  topk: 8
+  num_beams: 64
+  candidate_feature_dim: 10
+  gps_context_dim: 14
+  optional_feature_dim: 128
+  hidden_dim: 128
+  dropout: 0.1
+  lambda_init: 0.5
+  lambda_max: 3.0
+
+attention:
+  enabled: false
+  hidden_dim: 128
+  num_heads: 4
+  dropout: 0.1
+  lambda_init: 0.5
+  lambda_max: 3.0
+
+loss:
+  candidate_soft_ce_weight: 1.0
+  target_index_ce_weight: 0.5
+  miss_bce_weight: 0.1
+  prior_anchor_kl_weight: 0.1
+  entropy_regularization_weight: 0.0
+  hard_rank_weight: 2.0
+  good_error_threshold: 4.0
+  circular_sigma: 2.0
+  ignore_index: -100
+
+train:
+  seed: 42
+  mode: source_pretrain_target_finetune
+  supported_modes:
+    - support_only
+    - source_pretrain_target_finetune
+  epochs: 20
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  source_pretrain_epochs: 5
+  support_finetune_epochs: 15
+  early_stopping_metric: target_support_DBA
+  early_stopping_split: target_support_internal_validation
+  source_missing_fallback: support_only
+  query_label_used_for_training: false
+
+ablation:
+  enabled:
+    - gps_top1_baseline
+    - gps_top8_oracle
+    - gps_candidate_prob
+    - gps_context_only_selector
+    - camera_ae_only_selector
+    - camera_ae_gps_selector
+    - camera_ae_gps_selector_anchor
+    - top8_selector_no_gps_prior_fusion
+  optional:
+    - candidate_attention_selector
+
+metrics:
+  dba_delta: 5.0
+  good_error_threshold: 4
+  topk:
+    - 1
+    - 3
+    - 5
+  expected_top8_recall: 0.8733
+  top8_recall_tolerance: 0.03
+  gps_reproduction_tolerance:
+    DBA: 0.02
+    mean_circular_error: 0.20
+    top8: 0.03
+
+outputs:
+  root: outputs/analysis/deepsense6g_top8_selector
+  default_result_dir: outputs/analysis/deepsense6g_top8_selector/r15/mapping_enabled
+  manifest_dir: manifest
+  figures_dir: figures
+  write_predictions: true
+  write_diagnostics: true
+  write_config_snapshot: true

@@ -1,7 +1,7 @@
 # target-shot-domain-splitting Specification
 
 ## Purpose
-TBD - created by archiving change add-target-shot-geometry-residual-foundations. Update Purpose after archive.
+定义 source-target domain、target-shot labeled/unlabeled/test 拆分和 split artifact 复用契约，用于支持跨场景或跨天气快速适应实验，并防止 target_test 泄漏、sample overlap 与不可复现的 target labeled selection。
 ## Requirements
 ### Requirement: 可配置 source-target domain 定义
 系统 MUST 支持通过配置定义多场景/多天气 beam prediction 的 source domain 和 target domain。domain 类型 MUST 至少支持 `scenario`、`weather`、`scenario_weather` 和 `town_scenario_weather`；系统 MUST 使用 sample metadata 中的明确字段构造 domain key，不得依赖不可解析的 sample_id 字符串猜测 domain。
@@ -68,4 +68,3 @@ TBD - created by archiving change add-target-shot-geometry-residual-foundations.
 - **WHEN** batch 来自 `target_labeled` 且 `target_label_fraction > 0`
 - **THEN** supervised beam 或 residual loss MAY 读取该 batch 的 beam/residual label
 - **AND** metadata MUST 记录该监督只来自 target_labeled subset
-

@@ -10,7 +10,6 @@ from kd_sensing.config.canonical_recipes import (
     advanced_overlay_recipe,
     available_advanced_overlay_names,
     deep_merge as _deep_merge,
-    distillation_overrides,
     objective_overlay_recipe,
     resolve_advanced_overlay_recipe_name,
     training_overrides,
@@ -28,11 +27,11 @@ CANONICAL_DEEPSENSE_MODALITIES = tuple(
 )
 CANONICAL_FUSION_MODALITIES = tuple(modality for modality in CANONICAL_DEEPSENSE_MODALITIES if modality != "csi")
 CANONICAL_SINGLE_MODALITIES = CANONICAL_DEEPSENSE_MODALITIES
-CANONICAL_FUSION_MODES = ("teacher_no_kd", "student_no_kd")
+CANONICAL_FUSION_MODES = ("strong", "lightweight")
 CANONICAL_FUSION_OBJECTIVES = ("beam", "occlusion", "position", "multitask")
-CANONICAL_OBJECTIVE_FUSION_MODE = "no_kd"
+CANONICAL_OBJECTIVE_FUSION_MODE = "supervised"
 SNAPSHOT_VARIANT = "snapshot_next_frame"
-SNAPSHOT_MODE = "snapshot_next_frame_no_kd"
+SNAPSHOT_MODE = "snapshot_next_frame_supervised"
 SNAPSHOT_TRAIN_CSV = "train_seqs_SNAPSHOT_NEXT_FRAME.csv"
 SNAPSHOT_VAL_CSV = "val_seqs_SNAPSHOT_NEXT_FRAME.csv"
 CANONICAL_OBJECTIVE_SUBSET_ALIASES = {
@@ -41,9 +40,9 @@ CANONICAL_OBJECTIVE_SUBSET_ALIASES = {
     "weak_only": ["image", "radar", "lidar"],
 }
 REMOVED_FUSION_CONFIG_STEMS = {
-    "no_kd": "image_radar_student_no_kd.yaml",
+    "no_kd": "image_radar_lightweight.yaml",
 }
-RETIRED_FUSION_KD_MODES = ("logits_kd", "rkd")
+RETIRED_FUSION_KD_MODES = ("logits_kd", "rkd", "teacher_no_kd", "student_no_kd")
 
 _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MODES)
 _RETIRED_FUSION_KD_SUFFIXES = tuple((f"_{mode}", mode) for mode in RETIRED_FUSION_KD_MODES)
@@ -72,9 +71,8 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     retired_kd_mode = retired_fusion_kd_mode(stem)
     if retired_kd_mode is not None:
         raise ValueError(
-            f"legacy KD fusion virtual alias has been retired for '{stem}.yaml' "
-            f"({retired_kd_mode}). Use an explicit tracked legacy KD entity YAML "
-            "or a dedicated legacy baseline change instead."
+            f"KD support has been removed for legacy fusion config '{stem}.yaml' "
+            f"({retired_kd_mode}). Use '<slug>_strong.yaml' or '<slug>_lightweight.yaml'."
         )
 
     advanced = build_advanced_fusion_overlay_config(stem)
@@ -94,8 +92,7 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
     slug, modalities, mode = parse_fusion_config_stem(stem)
     name = f"{slug}_{mode}"
     image_radar = modalities == ["image", "radar"]
-    teacher_cfg = _fusion_teacher_baseline_model(modalities)
-    student_cfg = deepcopy(teacher_cfg) if mode == "teacher_no_kd" else _cls_token_transformer_fusion_model(modalities)
+    primary_cfg = _fusion_strong_baseline_model(modalities) if mode == "strong" else _cls_token_transformer_fusion_model(modalities)
 
     cfg: dict[str, Any] = {
         "experiment": {
@@ -108,10 +105,8 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
         },
         "model": {
             "modalities": list(modalities),
-            "teacher": teacher_cfg,
-            "student": student_cfg,
+            "primary": primary_cfg,
         },
-        "distillation": distillation_overrides(slug, mode, image_radar),
         "training": training_overrides(mode, image_radar),
         "output": {
             "run_name": name,
@@ -147,16 +142,10 @@ def build_snapshot_single_config(modality: str) -> dict[str, Any]:
             "feature_size": 64,
             "d_model": 64,
             "num_classes": 64,
-            "seq_length_teacher": 1,
-            "seq_length_student": 1,
+            "seq_length": 1,
             "num_pred": 1,
             "downsample_ratio": 1,
-            "teacher": deepcopy(model_cfg),
-            "student": model_cfg,
-        },
-        "distillation": {
-            "type": "no_kd",
-            "teacher_model_name": None,
+            "primary": model_cfg,
         },
         "training": {
             "early_stopping_metric": "val_adba",
@@ -187,16 +176,10 @@ def build_snapshot_fusion_config(name_slug: str, modalities: list[str]) -> dict[
             "feature_size": 64,
             "d_model": 64,
             "num_classes": 64,
-            "seq_length_teacher": 1,
-            "seq_length_student": 1,
+            "seq_length": 1,
             "num_pred": 1,
             "downsample_ratio": 1,
-            "teacher": deepcopy(model_cfg),
-            "student": model_cfg,
-        },
-        "distillation": {
-            "type": "no_kd",
-            "teacher_model_name": None,
+            "primary": model_cfg,
         },
         "training": {
             "early_stopping_metric": "val_adba",
@@ -211,12 +194,11 @@ def build_snapshot_fusion_config(name_slug: str, modalities: list[str]) -> dict[
 def build_objective_fusion_config(slug: str, modalities: list[str], objective: str) -> dict[str, Any]:
     recipe = objective_overlay_recipe(objective)
     name = f"{slug}_{objective}_{CANONICAL_OBJECTIVE_FUSION_MODE}"
-    teacher_cfg = _fusion_teacher_baseline_model(modalities)
-    student_cfg = _cls_token_transformer_fusion_model(modalities)
+    primary_cfg = _cls_token_transformer_fusion_model(modalities)
     for head_name, enabled in recipe.auxiliary_heads.items():
-        student_cfg.setdefault("auxiliary_heads", {})[head_name] = bool(enabled)
-    if "auxiliary_heads" in student_cfg:
-        student_cfg["auxiliary_heads"]["enabled"] = True
+        primary_cfg.setdefault("auxiliary_heads", {})[head_name] = bool(enabled)
+    if "auxiliary_heads" in primary_cfg:
+        primary_cfg["auxiliary_heads"]["enabled"] = True
 
     dataset = _dataset_overrides(modalities)
     dataset.update(deepcopy(recipe.dataset))
@@ -230,10 +212,8 @@ def build_objective_fusion_config(slug: str, modalities: list[str], objective: s
         },
         "data": {"dataset": dataset},
         "model": {
-            "teacher": teacher_cfg,
-            "student": student_cfg,
+            "primary": primary_cfg,
         },
-        "distillation": {"type": "no_kd", "teacher_model_name": None},
         "loss": deepcopy(recipe.loss),
         "training": {
             "early_stopping_metric": recipe.early_stopping_metric,
@@ -263,18 +243,7 @@ def build_advanced_fusion_overlay_config(stem: str) -> dict[str, Any] | None:
 
 def _advanced_fusion_base(name: str) -> dict[str, Any]:
     modalities = list(CANONICAL_FUSION_MODALITIES)
-    teacher_cfg: dict[str, Any] = {
-        "type": "fusion_teacher",
-        "modalities": modalities,
-        "image_channels": 3,
-        "radar_channels": 2,
-        "gps_input_size": 3,
-        "lidar_channels": 3,
-        "mmwave_input_size": 64,
-        "feature_size": 64,
-        "num_classes": 64,
-        "gru_params": [64, 64, 2],
-    }
+    primary_cfg = _cls_token_transformer_fusion_model(modalities)
     dataset = {
         "type": "deepsense6g",
         "scene": 31,
@@ -301,25 +270,11 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
             "modalities": modalities,
             "feature_size": 64,
             "num_classes": 64,
-            "seq_length_teacher": 8,
-            "seq_length_student": 8,
+            "seq_length": 8,
             "num_pred": 3,
             "downsample_ratio": 1,
-            "teacher": teacher_cfg,
-            "student": {
-                "type": "fusion_student",
-                "modalities": modalities,
-                "image_channels": 3,
-                "radar_channels": 2,
-                "gps_input_size": 3,
-                "lidar_channels": 3,
-                "mmwave_input_size": 64,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64, 2],
-            },
+            "primary": primary_cfg,
         },
-        "distillation": {"type": "no_kd", "teacher_model_name": None},
         "training": {
             "epochs": 100,
             "lr": 0.00075,
@@ -355,9 +310,8 @@ def _multitask_occlusion_position_overlay(name: str) -> dict[str, Any]:
             },
         }
     )
-    cfg["model"]["teacher"] = _fusion_teacher_baseline_model(modalities)
-    cfg["model"]["student"] = _cls_token_transformer_fusion_model(modalities)
-    cfg["model"]["student"]["auxiliary_heads"] = {
+    cfg["model"]["primary"] = _cls_token_transformer_fusion_model(modalities)
+    cfg["model"]["primary"]["auxiliary_heads"] = {
         "enabled": True,
         "occlusion": True,
         "position": True,
@@ -561,11 +515,11 @@ def _add_modality_model_fields(model_cfg: dict[str, Any], modalities: list[str])
     model_cfg.update(model_defaults_for_modalities(modalities))
 
 
-def _fusion_teacher_baseline_model(modalities: list[str]) -> dict[str, Any]:
+def _fusion_strong_baseline_model(modalities: list[str]) -> dict[str, Any]:
     if "image" in modalities or "lidar" in modalities:
         return _modular_resnet_fusion_model(modalities, num_layers=2)
     cfg: dict[str, Any] = {
-        "type": "fusion_teacher",
+        "type": "fusion_strong",
         "modalities": modalities,
         "feature_size": 64,
         "num_classes": 64,

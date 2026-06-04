@@ -9,20 +9,11 @@ This change adds the data-contract foundations for auditable target-shot adaptat
 
 It does not add a residual neural network, residual predictor training loop, feature cache mainline, target prior calibration, or weather-aware fusion.
 
-Example commands:
+This foundation used to be demonstrated with `configs/hist_beam/*` smoke configs. Those configs are now retired; use the package CLIs with a current, explicit target-shot/GPS-anchor config when that workflow is reintroduced.
+
+Minimal runtime-contract example:
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-target-shot-split \
-  --config configs/hist_beam/target_shot_geometry_residual_minimal.yaml \
-  --input dataset/MMW/sunny/Prepared/town10_skybridge_seed24/splits/all_sequences.csv \
-  --output outputs/target_shot_geometry_residual/split.json \
-  --overwrite
-
-conda run -n kd_mm_beam kd-sensing-distribution-shift \
-  --config configs/hist_beam/target_shot_geometry_residual_minimal.yaml \
-  --split-artifact outputs/target_shot_geometry_residual/split.json \
-  --output-dir outputs/target_shot_geometry_residual/distribution_shift
-
 conda run -n kd_mm_beam python - <<'PY'
 from kd_sensing.data.dataset_runtime import RuntimeDataset, SampleIndex, SampleRow
 from kd_sensing.data.geometry_residual import GeometryResidualTargetProvider

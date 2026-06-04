@@ -46,7 +46,7 @@ CLS-token Transformer fusion MUST 将每个启用模态的帧级特征映射到�
 - **AND** 相同模态在不同时间步的 token MUST 能被 Transformer 区分
 
 ### Requirement: Transformer Encoder 融合与输出契约
-CLS-token Transformer fusion MUST 使用包含多头自注意力和前馈网络的 Transformer Encoder 处理 CLS token 与模态 token。模型 MUST 通过 CLS 表示生成未来 beam prediction logits，并兼容现有 `ModelOutput` 适配逻辑。
+CLS-token Transformer fusion MUST 使用包含多头自注意力和前馈网络的 Transformer Encoder 处理 CLS token 与模态 token。模型 MUST 通过 CLS 表示生成未来 beam prediction logits，并兼容现有 `ModelOutput` 适配逻辑。`output_features` 若存在，MUST 用于诊断、auxiliary objective 或 downstream supervised/adaptation workflow，不得作为 KD 兼容要求。
 
 #### Scenario: Transformer Encoder 处理 token 序列
 - **WHEN** CLS token、token-type embedding 和 time embedding 已经加入输入序列
@@ -61,7 +61,8 @@ CLS-token Transformer fusion MUST 使用包含多头自注意力和前馈网络�
 #### Scenario: 输出适配器解析
 - **WHEN** CLS-token Transformer fusion forward 返回结果
 - **THEN** `adapt_model_output()` MUST 能解析 `logits`、`input_features`、`output_features` 和 diagnostics
-- **AND** `output_features` MUST 表示可用于 KD 或诊断的 fused CLS/horizon representation
+- **AND** `output_features` MUST 表示可用于诊断、auxiliary objective 或 downstream supervised/adaptation workflow 的 fused CLS/horizon representation
+- **AND** `output_features` MUST 不被要求服务 RKD 或其它 KD loss
 
 ### Requirement: 模态 mask 与 diagnostics
 CLS-token Transformer fusion MUST 支持 `force_modality_mask`，并 MUST 输出足够的 diagnostics 以支持模态子集评估和调试。

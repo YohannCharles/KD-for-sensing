@@ -1,5 +1,5 @@
 experiment:
-  name: gps_relative_polar_no_kd
+  name: gps_relative_polar_supervised
   task: gps
   seed: 42
 data:
@@ -15,36 +15,23 @@ data:
     num_workers: 4
     prefetch_factor: 1
 model:
-  teacher:
-    type: gps_teacher
-    gps_input_size: 3
-    feature_size: 64
-    num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
-  student:
-    type: gps_teacher
-    gps_input_size: 3
-    feature_size: 64
-    num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
   feature_size: 64
   gru_hidden_size: 64
   num_classes: 64
-  seq_length_teacher: 8
-  seq_length_student: 8
   num_pred: 3
   downsample_ratio: 1
-distillation:
-  type: no_kd
-  teacher_model_name: null
+  seq_length: 8
+  primary:
+    type: gps_strong
+    gps_input_size: 3
+    feature_size: 64
+    num_classes: 64
+    gru_params:
+    - 64
+    - 64
+    - 1
 output:
-  run_name: gps_relative_polar_no_kd
+  run_name: gps_relative_polar_supervised
 scheduler:
   type: cosine_warm_restarts
   T_0: 10

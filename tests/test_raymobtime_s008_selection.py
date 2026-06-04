@@ -458,9 +458,9 @@ def test_raymobtime_config_loads_and_rejects_future_terms():
     assert cfg["data"]["dataset"]["type"] == "raymobtime_s008"
     assert cfg["experiment"]["task_semantics"] == "current_snapshot_beam_selection"
     assert cfg["training"]["early_stopping_metric"] == "val_selection_multitask_loss"
-    assert "ray" in cfg["model"]["student"]["modalities"]
-    assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-    assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "raymobtime_lidar_3d_cnn"
+    assert "ray" in cfg["model"]["primary"]["modalities"]
+    assert cfg["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert cfg["model"]["primary"]["encoders"]["lidar"]["type"] == "raymobtime_lidar_3d_cnn"
     assert cfg["data"]["dataset"]["image_resize_in_dataset"] is False
     assert cfg["training"]["cpu_threads"] == {"intra_op": 2, "inter_op": 1}
 
@@ -469,7 +469,7 @@ def test_raymobtime_config_loads_and_rejects_future_terms():
         ["experiment.objective=current_los_classification", "model.modalities=[coord,image,lidar]"],
     )
     assert los_cfg["training"]["early_stopping_metric"] == "val_los_f1"
-    assert los_cfg["model"]["student"]["modalities"] == ["image", "lidar", "coord"]
+    assert los_cfg["model"]["primary"]["modalities"] == ["image", "lidar", "coord"]
 
     link_cfg = load_config(
         ROOT / "configs/raymobtime/s008_multitask_selection.yaml",
@@ -501,7 +501,7 @@ def test_raymobtime_minimal_train_smoke(tmp_path: Path):
     cfg["output"]["dir"] = str(tmp_path / "outputs")
     cfg["output"]["run_name"] = "smoke"
     cfg["model"]["num_classes"] = 8
-    cfg["model"]["student"]["num_classes"] = 8
+    cfg["model"]["primary"]["num_classes"] = 8
     cfg["training"]["epochs"] = 1
     cfg["training"]["use_early_stopping"] = False
 

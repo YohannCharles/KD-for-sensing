@@ -29,13 +29,13 @@ from kd_sensing.engine.normalization_artifacts import save_normalization_artifac
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion import (  # noqa: E402
     CLSTokenTransformerFusionNet,
-    FusionTeacherModalityNet,
-    FusionStudentModalityNet,
+    FusionStrongModalityNet,
+    FusionLightweightModalityNet,
 )
 from kd_sensing.models.mmwave import (  # noqa: E402
     MmWaveFeatureExtractor,
     MmWaveModalityNet,
-    MmWaveStudentModalityNet,
+    MmWaveLightweightModalityNet,
 )
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -45,11 +45,9 @@ import kd_sensing.models  # noqa: E402,F401
 
 
 MMWAVE_CONFIGS = [
-    "configs/mmwave/teacher_no_kd.yaml",
-    "configs/mmwave/no_kd.yaml",
-    "configs/mmwave/student_no_kd.yaml",
-    "configs/mmwave/logits_kd.yaml",
-    "configs/mmwave/rkd.yaml",
+    "configs/mmwave/strong.yaml",
+    "configs/mmwave/supervised.yaml",
+    "configs/mmwave/lightweight.yaml",
 ]
 
 MMWAVE_FUSION_CONFIGS = [
@@ -57,7 +55,7 @@ MMWAVE_FUSION_CONFIGS = [
     for size in (2, 3, 4, 5)
     for combo in combinations(["image", "radar", "gps", "lidar", "mmwave"], size)
     if "mmwave" in combo
-    for mode in ("teacher_no_kd", "student_no_kd")
+    for mode in ("strong", "lightweight")
 ]
 
 
@@ -234,8 +232,8 @@ def test_mmwave_models_batch_and_fusion_forward_contracts():
         assert extractor(torch.randn(2, 10, 64)).shape == (2, 10, 64)
 
     for model_type, expected_cls in [
-        ("mmwave_teacher", MmWaveModalityNet),
-        ("mmwave_student", MmWaveStudentModalityNet),
+        ("mmwave_strong", MmWaveModalityNet),
+        ("mmwave_lightweight", MmWaveLightweightModalityNet),
     ]:
         model = MODELS.build(
             {
@@ -256,22 +254,22 @@ def test_mmwave_models_batch_and_fusion_forward_contracts():
     batch = {"mmwave": torch.randn(2, 8, 64)}
     mmwave_input = prepare_mmwave_inputs(batch, seq_length=8, num_pred=3, device=torch.device("cpu"))
     fusion_inputs = prepare_fusion_inputs(batch, seq_length=8, num_pred=3, device=torch.device("cpu"), modalities=["mmwave"])
-    student = MmWaveStudentModalityNet(mmwave_input_size=64, feature_size=64, num_classes=64, gru_params=[64, 64, 1])
-    fusion_student = FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
-    fusion_teacher = FusionTeacherModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
+    model = MmWaveLightweightModalityNet(mmwave_input_size=64, feature_size=64, num_classes=64, gru_params=[64, 64, 1])
+    fusion_model = FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
+    fusion_strong = FusionStrongModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
     with torch.no_grad():
-        pred, _, _ = forward_model(student, "mmwave", mmwave_batch=mmwave_input)
-        fusion_pred, _, _ = fusion_student(**fusion_inputs)
+        pred, _, _ = forward_model(model, "mmwave", mmwave_batch=mmwave_input)
+        fusion_pred, _, _ = fusion_model(**fusion_inputs)
     assert mmwave_input.shape == (2, 10, 64)
     assert sorted(fusion_inputs) == ["mmwave_batch"]
     assert pred.shape == (2, 10, 64)
     assert fusion_pred.shape == (2, 10, 64)
     with pytest.raises(ValueError, match="requires 'mmwave' input"):
-        fusion_teacher()
+        fusion_strong()
     with pytest.raises(ValueError, match="mmwave_input_size"):
         MODELS.build(
             {
-                "type": "mmwave_teacher",
+                "type": "mmwave_strong",
                 "mmwave_input_size": 32,
                 "feature_size": 64,
                 "num_classes": 64,
@@ -281,7 +279,7 @@ def test_mmwave_models_batch_and_fusion_forward_contracts():
     with pytest.raises(ValueError, match="gru_params must contain"):
         MODELS.build(
             {
-                "type": "mmwave_student",
+                "type": "mmwave_lightweight",
                 "mmwave_input_size": 64,
                 "feature_size": 64,
                 "num_classes": 64,
@@ -299,7 +297,7 @@ def test_evaluate_loads_registry_mmwave_scaler_without_train_scan(tmp_path: Path
         scale_=np.ones(64, dtype=np.float32),
     ).save(scaler_path)
     cfg = load_config(
-        ROOT / "configs/mmwave/student_no_kd.yaml",
+        ROOT / "configs/mmwave/lightweight.yaml",
         [
             f"data.dataset.data_root={tmp_path}",
             "data.dataset.train_csv_name=missing_train.csv",
@@ -313,7 +311,7 @@ def test_evaluate_loads_registry_mmwave_scaler_without_train_scan(tmp_path: Path
         ],
     )
     source_checkpoint = tmp_path / "source.pth"
-    torch.save(MODELS.build(cfg["model"]["student"]).state_dict(), source_checkpoint)
+    torch.save(MODELS.build(cfg["model"]["primary"]).state_dict(), source_checkpoint)
     archive_best_checkpoint(
         cfg,
         source_checkpoint=source_checkpoint,
@@ -332,7 +330,7 @@ def test_evaluate_loads_registry_mmwave_scaler_without_train_scan(tmp_path: Path
 
 def test_mmwave_trainer_validator_smoke_on_synthetic_dataset(tmp_path: Path):
     cfg = load_config(
-        ROOT / "configs/mmwave/student_no_kd.yaml",
+        ROOT / "configs/mmwave/lightweight.yaml",
         [
             "data.dataset.type=synthetic",
             "data.dataset.length=2",
@@ -358,47 +356,36 @@ def test_mmwave_trainer_validator_smoke_on_synthetic_dataset(tmp_path: Path):
 @pytest.mark.parametrize("config_path", MMWAVE_CONFIGS)
 def test_mmwave_configs_build(config_path: str):
     cfg = load_config(ROOT / config_path)
-    model = MODELS.build(cfg["model"]["student"])
+    model = MODELS.build(cfg["model"]["primary"])
 
     assert cfg["experiment"]["task"] == "mmwave"
+    assert "distillation" not in cfg
     assert cfg["data"]["dataset"]["use_mmwave"] is True
     assert cfg["data"]["dataset"]["mmwave_normalize"] is True
-    assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
-    assert cfg["model"]["student"]["mmwave_input_size"] == 64
-    assert cfg["model"]["teacher"]["gru_params"] == [64, 64, 1]
-    assert cfg["model"]["student"]["gru_params"] == [64, 64, 1]
-    assert isinstance(model, (MmWaveModalityNet, MmWaveStudentModalityNet))
+    assert cfg["model"]["primary"]["mmwave_input_size"] == 64
+    assert cfg["model"]["primary"]["gru_params"] == [64, 64, 1]
+    assert isinstance(model, (MmWaveModalityNet, MmWaveLightweightModalityNet))
 
 
 @pytest.mark.parametrize("config_path", MMWAVE_FUSION_CONFIGS)
 def test_mmwave_fusion_configs_build(config_path: str):
     cfg = load_config(ROOT / config_path)
-    teacher = MODELS.build(cfg["model"]["teacher"])
-    student = MODELS.build(cfg["model"]["student"])
+    primary_cfg = cfg["model"]["primary"]
+    primary = MODELS.build(primary_cfg)
 
     assert cfg["experiment"]["task"] == "fusion"
-    assert "mmwave" in cfg["model"]["teacher"]["modalities"]
-    assert cfg["model"]["teacher"]["modalities"] == cfg["model"]["student"]["modalities"]
+    assert "distillation" not in cfg
+    assert "mmwave" in primary_cfg["modalities"]
     assert cfg["data"]["dataset"]["use_mmwave"] is True
     assert cfg["data"]["dataset"]["mmwave_normalize"] is True
-    assert cfg["model"]["teacher"]["mmwave_input_size"] == 64
-    assert cfg["model"]["student"]["mmwave_input_size"] == 64
-    if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:
-        assert isinstance(teacher, ModularSequenceModel)
-        if "image" in cfg["model"]["teacher"]["modalities"]:
-            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-        if "lidar" in cfg["model"]["teacher"]["modalities"]:
-            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
-        if isinstance(student, ModularSequenceModel):
-            if "image" in cfg["model"]["student"]["modalities"]:
-                assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-            if "lidar" in cfg["model"]["student"]["modalities"]:
-                assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
-        else:
-            assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
+    assert primary_cfg["mmwave_input_size"] == 64
+    if isinstance(primary, ModularSequenceModel):
+        if "image" in primary_cfg["modalities"]:
+            assert primary_cfg["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+        if "lidar" in primary_cfg["modalities"]:
+            assert primary_cfg["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
-        assert isinstance(teacher, FusionTeacherModalityNet)
-        assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
+        assert isinstance(primary, (CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet))
 
 
 def _write_mmwave_sequence_fixture(root: Path, csv_path: Path, *, prefix: str, seq_index: int) -> None:

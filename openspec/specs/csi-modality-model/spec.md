@@ -84,12 +84,14 @@ CSI encoder MUST 通过 `ENCODERS` 注册表以 `pilot_dual_view_csi` 名称构�
 - **AND** 输出 logits MUST 具有 `[B, T, num_classes]` 形状
 
 ### Requirement: CSI 实验配置与消融参数
-项目 MUST 提供 CSI-only 基线配置和至少一个包含 CSI 的 fusion 示例配置。配置 MUST 暴露 clean/noisy、SNR、pilot length、pilot power、delay taps 和 view fusion 参数。
+项目 MUST 提供 CSI-only supervised 配置和至少一个包含 CSI 的 fusion 示例配置，使用户能构建 CSI-only primary model 并运行训练或评估。该配置 MUST 不使用 no-KD 或 distillation 命名，并 MUST 暴露 clean/noisy、SNR、pilot length、pilot power、delay taps 和 view fusion 参数。
 
-#### Scenario: CSI-only no-KD 配置可加载
-- **WHEN** 用户加载 CSI-only no-KD 配置
+#### Scenario: CSI-only supervised 配置可加载
+- **WHEN** 用户加载 CSI-only supervised 配置
 - **THEN** 配置 MUST 设置 `experiment.task: csi`
 - **AND** 配置 MUST 使用 `modular_sequence` 和 `pilot_dual_view_csi` encoder
+- **AND** 配置 MUST 不包含 `distillation.type`
+- **AND** 配置 MUST 不要求 teacher checkpoint
 
 #### Scenario: SNR 消融配置
 - **WHEN** 用户配置评估 SNR 为 `0`、`5`、`10`、`20` 或 `30` dB

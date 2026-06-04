@@ -59,9 +59,9 @@ def _cfg() -> dict:
         "model": {
             "num_pred": 1,
             "downsample_ratio": 1,
-            "seq_length_student": 2,
+            "seq_length": 2,
             "num_classes": 4,
-            "student": {"modalities": ["gps", "mmwave"]},
+            "primary": {"modalities": ["gps", "mmwave"]},
         },
         "training": {"transfer": {"non_blocking": False}, "amp": {"enabled": False}},
         "evaluation": {"k_values": [1, 2], "dba_delta": 5},
@@ -105,9 +105,9 @@ def _selection_cfg(objective: str) -> dict:
         "model": {
             "num_pred": 1,
             "downsample_ratio": 1,
-            "seq_length_student": 1,
+            "seq_length": 1,
             "num_classes": 4,
-            "student": {"modalities": ["coord"]},
+            "primary": {"modalities": ["coord"]},
         },
         "loss": {"objective": {"weights": {"beam_selection": 1.0, "los": 0.5, "link_quality": 0.25}}},
         "training": {"transfer": {"non_blocking": False}, "amp": {"enabled": False}},

@@ -40,13 +40,13 @@ CRITICAL_CONFIG_PATHS = (
     "data.dataset.csi_degradation",
     "model.num_classes",
     "model.num_pred",
-    "model.seq_length_student",
-    "model.student.type",
-    "model.student.num_classes",
-    "model.student.num_pred",
-    "model.student.encoders.csi",
-    "model.student.representation_core",
-    "model.student.heads.beam",
+    "model.seq_length",
+    "model.primary.type",
+    "model.primary.num_classes",
+    "model.primary.num_pred",
+    "model.primary.encoders.csi",
+    "model.primary.representation_core",
+    "model.primary.heads.beam",
 )
 
 ESTIMATION_SNR_MODES = {"est_snr", "estimation_snr"}
@@ -203,8 +203,8 @@ def build_startup_summary(
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     loader_cfg = cfg.get("data", {}).get("dataloader", {})
     model_cfg = cfg.get("model", {})
-    student_cfg = model_cfg.get("student", {}) if isinstance(model_cfg.get("student"), dict) else {}
-    csi_cfg = ((student_cfg.get("encoders") or {}).get("csi") or {}) if isinstance(student_cfg, dict) else {}
+    primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
+    csi_cfg = ((primary_cfg.get("encoders") or {}).get("csi") or {}) if isinstance(primary_cfg, dict) else {}
     parameter_report = module_trainability_report(model)
     objective_metadata = objective_runtime_metadata(cfg)
     summary = {
@@ -217,7 +217,7 @@ def build_startup_summary(
         },
         "objective": objective_metadata,
         "data": {
-            "modalities": list(student_cfg.get("modalities") or model_cfg.get("modalities") or []),
+            "modalities": list(primary_cfg.get("modalities") or model_cfg.get("modalities") or []),
             "dataset_type": dataset_cfg.get("type"),
             "dataset_path": dataset_cfg.get("data_root"),
             "scene": dataset_cfg.get("scene"),
@@ -226,7 +226,7 @@ def build_startup_summary(
             "test_split": dataset_cfg.get("test_csv_name"),
             "seq_len": dataset_cfg.get("seq_len"),
             "num_pred": dataset_cfg.get("num_pred"),
-            "num_classes": model_cfg.get("num_classes") or student_cfg.get("num_classes"),
+            "num_classes": model_cfg.get("num_classes") or primary_cfg.get("num_classes"),
             "batch_size": {
                 "train": loader_cfg.get("train_batch_size", loader_cfg.get("batch_size")),
                 "test": loader_cfg.get("test_batch_size", loader_cfg.get("batch_size")),
@@ -245,9 +245,9 @@ def build_startup_summary(
             "max_epochs": cfg.get("training", {}).get("epochs"),
         },
         "model": {
-            "type": student_cfg.get("type"),
+            "type": primary_cfg.get("type"),
             "csi_encoder_type": csi_cfg.get("type"),
-            "d_model": student_cfg.get("d_model") or model_cfg.get("d_model"),
+            "d_model": primary_cfg.get("d_model") or model_cfg.get("d_model"),
             "delay_taps": csi_cfg.get("delay_taps"),
             "view_fusion": csi_cfg.get("view_fusion"),
             "use_internal_gru": csi_cfg.get("use_internal_gru", True) if csi_cfg else None,
@@ -271,7 +271,7 @@ def evaluate_pilot_noise_validity(
     cfg: dict[str, Any],
     records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    csi_cfg = _student_csi_config(cfg)
+    csi_cfg = _primary_csi_config(cfg)
     if not csi_cfg:
         return {"applicable": False, "valid": None, "reason": "no_csi_encoder"}
     pilot_cfg = _pilot_config(csi_cfg)
@@ -567,14 +567,13 @@ def _pilot_summary(csi_cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _student_csi_config(cfg: dict[str, Any]) -> dict[str, Any]:
+def _primary_csi_config(cfg: dict[str, Any]) -> dict[str, Any]:
     model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    for role in ("student", "teacher"):
-        role_cfg = model.get(role) if isinstance(model, dict) else {}
-        encoders = role_cfg.get("encoders") if isinstance(role_cfg, dict) else {}
-        csi_cfg = encoders.get("csi") if isinstance(encoders, dict) else {}
-        if isinstance(csi_cfg, dict):
-            return csi_cfg
+    role_cfg = model.get("primary") if isinstance(model, dict) else {}
+    encoders = role_cfg.get("encoders") if isinstance(role_cfg, dict) else {}
+    csi_cfg = encoders.get("csi") if isinstance(encoders, dict) else {}
+    if isinstance(csi_cfg, dict):
+        return csi_cfg
     return {}
 
 

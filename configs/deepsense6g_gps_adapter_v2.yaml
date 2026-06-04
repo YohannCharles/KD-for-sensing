@@ -1,0 +1,128 @@
+experiment:
+  name: deepsense6g_gps_adapter_v2
+
+data:
+  dataset_type: deepsense6g
+  data_root: dataset/DeepSense6G
+  analysis_dir: outputs/analysis/deepsense6g_label_distribution
+  output_root: outputs/analysis/deepsense6g_gps_adapter_v2
+  label_space: mapping_enabled
+  label_spaces:
+    mapping_enabled:
+      enabled: true
+      label_space: deepsense6g_centered_beam_v1
+      num_classes: 64
+      direction: 1
+      offset: 33
+      fit_source: inline_beambench_center_index_31
+    mapping_disabled:
+      enabled: false
+  num_beams: 64
+  train_split: train
+  test_split: test
+  train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+  test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+  scenes:
+    - name: scenario31
+      scene_id: 31
+      slug: scenario31
+    - name: scenario32
+      scene_id: 32
+      slug: scenario32
+    - name: scenario33
+      scene_id: 33
+      slug: scenario33
+    - name: scenario34
+      scene_id: 34
+      slug: scenario34
+
+model:
+  name: deepsense6g_gps_v2
+  input_dim: 8
+  hidden_dim: 128
+  dropout: 0.1
+  activation: gelu
+  residual_scale_init: 0.1
+  adapter:
+    type: circular_affine_spline
+    sigma: 2.0
+    tau: 1.0
+    num_bins: 16
+    max_branches: 4
+    min_branch_support: 5
+    smoothness_weight: 0.001
+
+loss:
+  type: circular_soft_ce
+  sigma: 2.0
+  focal_gamma: 2.0
+  class_weight: none
+  effective_num_beta: 0.999
+
+train:
+  seed: 42
+  epochs: 12
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  max_samples_per_split: null
+
+adapt:
+  support_mode: temporal_first
+  support_ratio: 0.2
+  support_num: null
+  seed: 42
+  grid:
+    enabled: true
+    psi_degrees: [-180, -120, -60, 0, 60, 120, 180]
+    delta_beams: [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+    scale: [0.75, 1.0, 1.25]
+    flip: [forward, reverse]
+    criterion: mean_circular_error
+  optimizer:
+    enabled: true
+    steps: 20
+    lr: 0.02
+  branch:
+    max_k: 4
+    min_samples: 8
+    min_branch_support: 5
+
+protocols:
+  - source_other_three
+  - target_adapt_beambench
+  - within_scene_train
+
+metrics:
+  dba_delta: 5.0
+  topk: [1, 3, 5]
+  theta_bins: 12
+
+ablation:
+  enabled:
+    - backbone_only
+    - adapter_v1
+    - circular_affine
+    - circular_affine_spline
+    - branch_mixture_circular
+    - branch_mixture_circular_weighted
+    - geo_only
+    - geo_plus_backbone
+  class_weighted:
+    - branch_mixture_circular_weighted
+  adapter_type:
+    adapter_v1: adapter_v1
+    circular_affine: circular_affine
+    circular_affine_spline: circular_affine_spline
+    branch_mixture_circular: branch_mixture_circular
+    branch_mixture_circular_weighted: branch_mixture_circular
+    geo_only: circular_affine
+    geo_plus_backbone: circular_affine_spline
+    backbone_only: none
+
+output:
+  write_predictions: true
+  write_diagnostics: true
+  write_config_snapshot: true
+  save_logits: true
+  save_prior_probs: true

@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.models.fusion import FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -29,14 +29,14 @@ def _profile_key() -> str:
 @pytest.mark.parametrize(
     ("model_type", "input_tensor", "extra"),
     [
-        ("image_teacher", torch.rand(1, 2, 3, 224, 224), {}),
-        ("image_student", torch.rand(1, 2, 3, 224, 224), {}),
-        ("radar_teacher", torch.rand(1, 2, 2, 128, 64), {"radar_channels": 2}),
-        ("radar_student", torch.rand(1, 2, 2, 128, 64), {"radar_channels": 2}),
-        ("gps_teacher", torch.rand(1, 2, 3), {"gps_input_size": 3}),
-        ("gps_student", torch.rand(1, 2, 3), {"gps_input_size": 3}),
-        ("lidar_teacher", torch.rand(1, 2, 3, 224, 224), {"lidar_channels": 3}),
-        ("lidar_student", torch.rand(1, 2, 3, 224, 224), {"lidar_channels": 3}),
+        ("image_strong", torch.rand(1, 2, 3, 224, 224), {}),
+        ("image_lightweight", torch.rand(1, 2, 3, 224, 224), {}),
+        ("radar_strong", torch.rand(1, 2, 2, 128, 64), {"radar_channels": 2}),
+        ("radar_lightweight", torch.rand(1, 2, 2, 128, 64), {"radar_channels": 2}),
+        ("gps_strong", torch.rand(1, 2, 3), {"gps_input_size": 3}),
+        ("gps_lightweight", torch.rand(1, 2, 3), {"gps_input_size": 3}),
+        ("lidar_strong", torch.rand(1, 2, 3, 224, 224), {"lidar_channels": 3}),
+        ("lidar_lightweight", torch.rand(1, 2, 3, 224, 224), {"lidar_channels": 3}),
     ],
 )
 def test_standard_single_modality_registrations_build_and_forward(model_type: str, input_tensor: torch.Tensor, extra: dict):
@@ -58,7 +58,7 @@ def test_standard_single_modality_registrations_build_and_forward(model_type: st
     assert output_features.shape == (1, 2, 64)
 
 
-@pytest.mark.parametrize("model_type", ["fusion_teacher", "fusion_student"])
+@pytest.mark.parametrize("model_type", ["fusion_strong", "fusion_lightweight"])
 def test_standard_fusion_registrations_build_and_forward(model_type: str):
     model = MODELS.build(
         {
@@ -92,14 +92,14 @@ def test_standard_fusion_registrations_build_and_forward(model_type: str):
 @pytest.mark.parametrize(
     "suffix",
     [
-        "image_teacher",
-        "image_student",
-        "radar_teacher",
-        "radar_student",
-        "gps_teacher",
-        "gps_student",
-        "lidar_teacher",
-        "lidar_student",
+        "image_strong",
+        "image_lightweight",
+        "radar_strong",
+        "radar_lightweight",
+        "gps_strong",
+        "gps_lightweight",
+        "lidar_strong",
+        "lidar_lightweight",
     ],
 )
 def test_retired_single_modality_registrations_are_unknown(suffix: str):
@@ -107,7 +107,7 @@ def test_retired_single_modality_registrations_are_unknown(suffix: str):
         MODELS.build({"type": f"{_retired_prefix()}_{suffix}"})
 
 
-@pytest.mark.parametrize("model_cls", [FusionTeacherModalityNet, FusionStudentModalityNet])
+@pytest.mark.parametrize("model_cls", [FusionStrongModalityNet, FusionLightweightModalityNet])
 def test_retired_fusion_profile_is_not_accepted(model_cls: type):
     kwargs = {
         "feature_size": 64,

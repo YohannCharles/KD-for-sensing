@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def test_import_default_components_registers_cls_token_transformer_and_hist_beam_fusion():
+def test_import_default_components_registers_cls_token_transformer_without_hist_beam_fusion():
     code = f"""
 import json
 import sys
@@ -47,7 +47,7 @@ print(json.dumps({{
     assert payload == {
         "before": False,
         "after": True,
-        "hist_after": True,
+        "hist_after": False,
         "class_name": "CLSTokenTransformerFusionNet",
         "modalities": ["gps", "mmwave"],
     }
@@ -75,7 +75,10 @@ print(json.dumps({{
     [
         ("MODELS", {"type": "craf_fusion"}),
         ("MODELS", {"type": "marf_fusion"}),
-        ("DISTILLERS", {"type": "g2d"}),
+        ("MODELS", {"type": "hist_beam_fusion"}),
+        ("LOSSES", {"type": "g2d"}),
+        ("LOSSES", {"type": "logits_kd"}),
+        ("LOSSES", {"type": "rkd"}),
         ("DATASETS", {"type": "multimodal_nf"}),
         ("PREPROCESSORS", {"type": "multimodal_nf_audit"}),
         ("PREPROCESSORS", {"type": "multimodal_nf_index"}),
@@ -100,3 +103,15 @@ else:
 
     assert cfg["type"] in message
     assert "retired" in message or "Removed component" in message
+
+
+def test_retired_hist_config_path_and_overrides_fail_fast():
+    sys.path.insert(0, str(SRC))
+    from kd_sensing.config.io import load_config
+
+    with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):
+        load_config(ROOT / "configs" / "hist_beam" / "quick_smoke.yaml")
+    with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):
+        load_config(overrides=["model.primary.type=hist_beam_fusion"])
+    with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):
+        load_config(overrides=["hist_beam.enabled=true"])

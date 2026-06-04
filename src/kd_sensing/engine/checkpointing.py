@@ -51,7 +51,7 @@ class CheckpointManager:
         *,
         cfg: dict,
         run_dir: Path,
-        student_model,
+        primary_model,
         optimizer,
         scheduler,
         split_metadata: dict | None,
@@ -62,7 +62,7 @@ class CheckpointManager:
     ) -> None:
         self.cfg = cfg
         self.run_dir = run_dir
-        self.student_model = student_model
+        self.primary_model = primary_model
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.split_metadata = split_metadata
@@ -77,7 +77,7 @@ class CheckpointManager:
             return self.early_stopping_metric, self.early_stopping_mode
         checkpoint = load_checkpoint(
             resume_path,
-            self.student_model,
+            self.primary_model,
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             strict=checkpoint_strict(self.cfg),
@@ -117,7 +117,7 @@ class CheckpointManager:
             state.best_early_stopping_epoch = epoch + 1
             state.epochs_without_improvement = 0
             best_objective_path = self.run_dir / "checkpoints" / "best.pth"
-            torch.save(self.student_model.state_dict(), best_objective_path)
+            torch.save(self.primary_model.state_dict(), best_objective_path)
             write_sidecar(
                 best_objective_path,
                 self._checkpoint_sidecar(
@@ -139,7 +139,7 @@ class CheckpointManager:
             state.best_val_top1 = val_acc
             state.best_top1_epoch = epoch + 1
             best_top1_path = self.run_dir / "checkpoints" / "best_top1.pth"
-            torch.save(self.student_model.state_dict(), best_top1_path)
+            torch.save(self.primary_model.state_dict(), best_top1_path)
             state.registry_checkpoint = archive_best_checkpoint(
                 self.cfg,
                 source_checkpoint=best_top1_path,
@@ -181,7 +181,7 @@ class CheckpointManager:
         save_checkpoint(
             {
                 "epoch": epoch + 1,
-                "state_dict": self.student_model.state_dict(),
+                "state_dict": self.primary_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
                 "test_loss": val_loss,

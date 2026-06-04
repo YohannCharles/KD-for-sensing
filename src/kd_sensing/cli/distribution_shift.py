@@ -34,12 +34,23 @@ def main(argv: list[str] | None = None) -> None:
         split_artifact=artifact,
         split_artifact_path=split_path,
         output_dir=output_dir,
-        label_space=cfg.get("label_space", {}),
+        label_space=_distribution_label_space(cfg),
         smoothing=float(diagnostics_cfg.get("smoothing", 1e-6)),
         make_figures=bool(args.figures or diagnostics_cfg.get("figures", False)),
         figures_required=bool(args.figures_required or diagnostics_cfg.get("figures_required", False)),
     )
     print(json.dumps({"metrics": result["outputs"]["metrics_json"], "summary": result["summary"]}, indent=2))
+
+
+def _distribution_label_space(cfg: dict) -> dict:
+    payload = dict(cfg.get("label_space", {}) or {})
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if isinstance(dataset_cfg, dict) and str(dataset_cfg.get("type", "")).strip().lower() == "mmw":
+        payload.setdefault("beam_label_calibration", dataset_cfg.get("beam_label_calibration"))
+        for key in ("scene", "scene_slug", "scene_id", "num_classes"):
+            if key in dataset_cfg:
+                payload.setdefault(key, dataset_cfg[key])
+    return payload
 
 
 if __name__ == "__main__":

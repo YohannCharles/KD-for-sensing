@@ -30,29 +30,35 @@ from kd_sensing.engine.prediction_objectives import (  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 
 
-def test_objective_config_defaults_validation_and_legacy_compatibility():
-    beam_cfg = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml")
-    occlusion_cfg = load_config(ROOT / "configs/fusion/strong_only_occlusion_no_kd.yaml")
-    position_cfg = load_config(ROOT / "configs/fusion/weak_only_position_no_kd.yaml")
+def test_objective_config_defaults_validation_and_primary_model_autoconfiguration():
+    beam_cfg = load_config(ROOT / "configs/fusion/all_modalities_beam_supervised.yaml")
+    occlusion_cfg = load_config(ROOT / "configs/fusion/strong_only_occlusion_supervised.yaml")
+    position_cfg = load_config(ROOT / "configs/fusion/weak_only_position_supervised.yaml")
 
     assert beam_cfg["experiment"]["objective"] == "beam"
     assert beam_cfg["training"]["early_stopping_metric"] == "val_adba"
     assert occlusion_cfg["experiment"]["objective"] == "occlusion"
     assert occlusion_cfg["training"]["early_stopping_metric"] == "val_occlusion_blocked_f1"
     assert occlusion_cfg["data"]["dataset"]["occlusion_target"]["enabled"] is True
-    assert occlusion_cfg["model"]["student"]["auxiliary_heads"]["occlusion"] is True
+    assert occlusion_cfg["model"]["primary"]["auxiliary_heads"]["occlusion"] is True
     assert position_cfg["experiment"]["objective"] == "position"
     assert position_cfg["training"]["early_stopping_metric"] == "val_position_rmse"
     assert position_cfg["training"]["early_stopping_mode"] == "min"
 
     with pytest.raises(ValueError, match="experiment.objective.*current_beam_selection.*selection_multitask"):
-        load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=bad"])
-    auto_occlusion = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=occlusion"])
-    auto_position = load_config(ROOT / "configs/fusion/all_modalities_no_kd.yaml", ["experiment.objective=position"])
+        load_config(ROOT / "configs/fusion/all_modalities_beam_supervised.yaml", ["experiment.objective=bad"])
+    auto_occlusion = load_config(
+        ROOT / "configs/fusion/all_modalities_beam_supervised.yaml",
+        ["experiment.objective=occlusion"],
+    )
+    auto_position = load_config(
+        ROOT / "configs/fusion/all_modalities_beam_supervised.yaml",
+        ["experiment.objective=position"],
+    )
     assert auto_occlusion["data"]["dataset"]["occlusion_target"]["enabled"] is True
-    assert auto_occlusion["model"]["student"]["auxiliary_heads"]["occlusion"] is True
+    assert auto_occlusion["model"]["primary"]["auxiliary_heads"]["occlusion"] is True
     assert auto_position["data"]["dataset"]["position_target"]["enabled"] is True
-    assert auto_position["model"]["student"]["auxiliary_heads"]["position"] is True
+    assert auto_position["model"]["primary"]["auxiliary_heads"]["position"] is True
     assert auto_position["data"]["dataset"]["train_csv_name"] == "train_seqs_RA_GPS_LIDAR_POS.csv"
 
 
@@ -163,7 +169,7 @@ def test_single_modality_objective_overrides_autoconfigure_targets_and_heads(
     expected_metric: str,
     expected_mode: str,
 ):
-    cfg = load_config(ROOT / f"configs/{modality}/teacher_no_kd.yaml", [f"experiment.objective={objective}"])
+    cfg = load_config(ROOT / f"configs/{modality}/strong.yaml", [f"experiment.objective={objective}"])
     needs_occlusion = objective in {"occlusion", "multitask"}
     needs_position = objective in {"position", "multitask"}
 
@@ -171,10 +177,10 @@ def test_single_modality_objective_overrides_autoconfigure_targets_and_heads(
     assert cfg["experiment"]["objective"] == objective
     assert cfg["training"]["early_stopping_metric"] == expected_metric
     assert cfg["training"]["early_stopping_mode"] == expected_mode
-    assert cfg["model"]["student"]["auxiliary_heads"]["enabled"] is True
-    assert cfg["model"]["student"]["auxiliary_heads"].get("occlusion", False) is needs_occlusion
-    assert cfg["model"]["student"]["auxiliary_heads"].get("position", False) is needs_position
-    assert cfg["model"]["student"]["num_pred"] == cfg["model"]["num_pred"]
+    assert cfg["model"]["primary"]["auxiliary_heads"]["enabled"] is True
+    assert cfg["model"]["primary"]["auxiliary_heads"].get("occlusion", False) is needs_occlusion
+    assert cfg["model"]["primary"]["auxiliary_heads"].get("position", False) is needs_position
+    assert cfg["model"]["primary"]["num_pred"] == cfg["model"]["num_pred"]
     if needs_occlusion:
         assert cfg["data"]["dataset"]["occlusion_target"]["enabled"] is True
     if needs_position:
@@ -189,22 +195,22 @@ def test_single_modality_objective_overrides_autoconfigure_targets_and_heads(
     ("config_path", "modalities"),
     [
         (
-            "configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml",
+            "configs/fusion/image_radar_gps_lidar_mmwave_multitask_supervised.yaml",
             ["image", "radar", "gps", "lidar", "mmwave"],
         ),
-        ("configs/fusion/strong_only_multitask_no_kd.yaml", ["gps", "mmwave"]),
-        ("configs/fusion/weak_only_multitask_no_kd.yaml", ["image", "radar", "lidar"]),
+        ("configs/fusion/strong_only_multitask_supervised.yaml", ["gps", "mmwave"]),
+        ("configs/fusion/weak_only_multitask_supervised.yaml", ["image", "radar", "lidar"]),
     ],
 )
 def test_objective_multitask_virtual_configs_default_to_equal_weights(config_path: str, modalities: list[str]):
     cfg = load_config(ROOT / config_path)
 
     assert cfg["experiment"]["objective"] == "multitask"
-    assert cfg["model"]["student"]["modalities"] == modalities
+    assert cfg["model"]["primary"]["modalities"] == modalities
     assert cfg["data"]["dataset"]["occlusion_target"]["enabled"] is True
     assert cfg["data"]["dataset"]["position_target"]["enabled"] is True
-    assert cfg["model"]["student"]["auxiliary_heads"]["occlusion"] is True
-    assert cfg["model"]["student"]["auxiliary_heads"]["position"] is True
+    assert cfg["model"]["primary"]["auxiliary_heads"]["occlusion"] is True
+    assert cfg["model"]["primary"]["auxiliary_heads"]["position"] is True
     assert multitask_loss_weights(cfg) == {"beam": 1.0, "occlusion": 1.0, "position": 1.0}
     assert cfg["training"]["early_stopping_metric"] == "val_multitask_loss"
     assert cfg["training"]["early_stopping_mode"] == "min"
@@ -212,7 +218,7 @@ def test_objective_multitask_virtual_configs_default_to_equal_weights(config_pat
 
 def test_multitask_weight_and_early_stopping_overrides_are_scoped():
     cfg = load_config(
-        ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml",
+        ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_multitask_supervised.yaml",
         [
             "loss.objective.weights.position=0.25",
             "training.early_stopping_metric=val_loss",
@@ -239,7 +245,7 @@ def test_objective_virtual_configs_select_default_early_stopping(
     expected_metric: str,
     expected_mode: str,
 ):
-    cfg = load_config(ROOT / f"configs/fusion/strong_only_{objective}_no_kd.yaml")
+    cfg = load_config(ROOT / f"configs/fusion/strong_only_{objective}_supervised.yaml")
 
     assert cfg["experiment"]["objective"] == objective
     assert cfg["training"]["early_stopping_metric"] == expected_metric
@@ -332,7 +338,7 @@ def test_beam_objective_keeps_old_auxiliary_loss_compatibility():
                 "position_target": {"enabled": True},
             }
         },
-        "model": {"student": {"auxiliary_heads": {"enabled": True, "occlusion": True, "position": True}}},
+        "model": {"primary": {"auxiliary_heads": {"enabled": True, "occlusion": True, "position": True}}},
         "loss": {
             "auxiliary": {
                 "enabled": True,
@@ -404,23 +410,10 @@ def _tiny_objective_cfg(objective: str, tmp_path: Path) -> dict:
             "modalities": ["gps"],
             "feature_size": 8,
             "num_classes": 8,
-            "seq_length_teacher": 2,
-            "seq_length_student": 2,
+            "seq_length": 2,
             "num_pred": 2,
             "downsample_ratio": 1,
-            "teacher": {
-                "type": "cls_token_transformer_fusion",
-                "modalities": ["gps"],
-                "feature_size": 8,
-                "d_model": 8,
-                "num_classes": 8,
-                "num_pred": 2,
-                "num_heads": 2,
-                "num_layers": 1,
-                "max_seq_len": 4,
-                "gps_input_size": 3,
-            },
-            "student": {
+            "primary": {
                 "type": "cls_token_transformer_fusion",
                 "modalities": ["gps"],
                 "feature_size": 8,
@@ -445,7 +438,6 @@ def _tiny_objective_cfg(objective: str, tmp_path: Path) -> dict:
                 "position": {"type": "mse"},
             },
         },
-        "distillation": {"type": "no_kd", "teacher_model_name": None},
         "training": {
             "epochs": 1,
             "lr": 0.001,

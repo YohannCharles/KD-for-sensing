@@ -548,9 +548,9 @@ def test_model_prediction_export_adds_per_beam_confidence_curves(tmp_path: Path)
         },
         visualization={"splits": ["train"], "modalities": ["gps"]},
     )
-    model_cfg = load_config(ROOT / "configs/gps/teacher_no_kd.yaml")
-    checkpoint_path = tmp_path / "gps_teacher.pth"
-    torch.save(MODELS.build(model_cfg["model"]["student"]).state_dict(), checkpoint_path)
+    model_cfg = load_config(ROOT / "configs/gps/strong.yaml")
+    checkpoint_path = tmp_path / "gps_strong.pth"
+    torch.save(MODELS.build(model_cfg["model"]["primary"]).state_dict(), checkpoint_path)
 
     prediction_result = export_viewer_model_predictions(
         viewer_cfg,
@@ -655,9 +655,7 @@ def test_viewer_cli_can_prepare_dataset_from_config_in_check_only_mode(tmp_path:
                 "    gps_normalize: false",
                 "  dataloader: {}",
                 "model:",
-                "  teacher:",
-                "    modalities: [gps]",
-                "  student:",
+                "  primary:",
                 "    modalities: [gps]",
                 "diagnostics:",
                 "  visualization:",
@@ -707,7 +705,7 @@ def _diagnostic_cfg(
     return {
         "experiment": {"task": "fusion", "seed": 0},
         "data": {"cache": {"policy": cache_policy}, "dataset": dataset, "dataloader": {}},
-        "model": {"teacher": {"modalities": modalities}, "student": {"modalities": modalities}},
+        "model": {"primary": {"modalities": modalities}, "primary": {"modalities": modalities}},
         "diagnostics": {
             "visualization": {
                 "output_dir": str(root / "diagnostics"),

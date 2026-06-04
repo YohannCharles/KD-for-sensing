@@ -370,7 +370,7 @@ def selection_multitask_loss_weights(cfg: dict[str, Any]) -> dict[str, float]:
 def resolve_auxiliary_task_config(cfg: dict[str, Any]) -> AuxiliaryTaskConfig:
     loss_cfg = cfg.get("loss", {})
     data_cfg = cfg.get("data", {}).get("dataset", {})
-    model_cfg = cfg.get("model", {}).get("student", {})
+    model_cfg = cfg.get("model", {}).get("primary", {})
     auxiliary_cfg = _first_mapping(
         loss_cfg.get("auxiliary"),
         loss_cfg.get("multitask"),

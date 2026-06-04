@@ -116,7 +116,6 @@ HEADS = Registry("heads")
 DATASETS = Registry("datasets")
 LOSSES = Registry("losses")
 METRICS = Registry("metrics")
-DISTILLERS = Registry("distillers")
 PREPROCESSORS = Registry("preprocessors")
 
 DATASETS.register_removed(
@@ -145,11 +144,11 @@ DATASETS.register_removed(
 )
 MODELS.register_removed(
     "Fusion" + "ModalityNet",
-    "Use the 'fusion_teacher' registry name or FusionTeacherModalityNet.",
+    "Use the 'fusion_strong' registry name.",
 )
 MODELS.register_removed(
     "Student" + "ModalityNet",
-    "Use the 'fusion_student' registry name or FusionStudentModalityNet.",
+    "Use the 'fusion_lightweight' or 'cls_token_transformer_fusion' registry name.",
 )
 MODELS.register_removed(
     "craf_fusion",
@@ -159,10 +158,13 @@ MODELS.register_removed(
     "marf_fusion",
     "MARF has been retired. Use current canonical fusion models such as 'cls_token_transformer_fusion'.",
 )
-DISTILLERS.register_removed(
-    "g2d",
-    "G2D multimodal distillation has been retired. Use 'no_kd', 'logits_kd', or 'rkd'.",
+MODELS.register_removed(
+    "hist_beam_fusion",
+    "HiST-Beam/Hist has been retired. Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, Raymobtime, or viewer workflows; no compatibility migration is provided.",
 )
+LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervised or adaptation losses.")
+LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
+LOSSES.register_removed("g2d", "G2D has been removed. Use supervised or adaptation losses.")
 PREPROCESSORS.register_removed(
     "multimodal_nf_audit",
     "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
@@ -219,9 +221,8 @@ def import_default_components() -> None:
     import kd_sensing.data.datasets.mmw  # noqa: F401
     import kd_sensing.data.datasets.raymobtime_s008  # noqa: F401
     import kd_sensing.data.datasets.synthetic  # noqa: F401
-    import kd_sensing.distillation.distillers  # noqa: F401
-    import kd_sensing.distillation.losses  # noqa: F401
     import kd_sensing.evaluation.metrics  # noqa: F401
+    import kd_sensing.losses.beam  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.csi  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
@@ -250,7 +251,6 @@ __all__ = [
     "DATASETS",
     "LOSSES",
     "METRICS",
-    "DISTILLERS",
     "PREPROCESSORS",
     "registry_self_check",
     "import_default_components",

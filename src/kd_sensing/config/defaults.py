@@ -90,43 +90,10 @@ DEFAULT_CONFIG = {
         "gru_hidden_size": 64,
         "mmwave_input_size": 64,
         "num_classes": 64,
-        "seq_length_teacher": 8,
-        "seq_length_student": 8,
+        "seq_length": 8,
         "num_pred": 3,
         "downsample_ratio": 1,
-        "teacher": {
-            "type": "modular_sequence",
-            "modalities": ["image"],
-            "image_profile": "rgb_imagenet",
-            "feature_size": 64,
-            "d_model": 64,
-            "num_classes": 64,
-            "num_pred": 3,
-            "encoders": {
-                "image": {
-                    "type": "resnet18_imagenet_rgb",
-                    "output_dim": 64,
-                    "pretrained": True,
-                    "weights": "DEFAULT",
-                    "freeze_backbone": True,
-                    "unfreeze_stages": ["layer4"],
-                    "dropout": 0.1,
-                },
-            },
-            "representation_core": {
-                "type": "single_gru",
-                "d_model": 64,
-                "hidden_size": 64,
-                "num_layers": 1,
-            },
-            "heads": {
-                "beam": {
-                    "type": "beam_head",
-                    "dropout": 0.1,
-                },
-            },
-        },
-        "student": {
+        "primary": {
             "type": "modular_sequence",
             "modalities": ["image"],
             "image_profile": "rgb_imagenet",
@@ -180,16 +147,6 @@ DEFAULT_CONFIG = {
             "weight_after_warmup": None,
             "ignore_index": -100,
         },
-    },
-    "distillation": {
-        "type": "no_kd",
-        "temperature": 3.0,
-        "alpha": 0.4,
-        "alpha_warmup_epochs": 0,
-        "teacher_model_name": None,
-        "rkd_pairs_per_anchor": 4,
-        "rkd_distance_weight": 50.0,
-        "rkd_angle_weight": 50.0,
     },
     "training": {
         "epochs": 100,

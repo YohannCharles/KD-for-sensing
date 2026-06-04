@@ -423,7 +423,7 @@ def test_pilot_disabled_identity_and_mild_snr_diagnostics():
         "experiment": {"name": "csi_A1_mild_pilot_estimation"},
         "debug": {"matrix_role": "A1_mild_pilot_estimation"},
         "model": {
-            "student": {
+            "primary": {
                 "encoders": {
                     "csi": {
                         "type": "pilot_dual_view_csi",
@@ -623,22 +623,23 @@ def test_csi_encoder_first_batch_debug_records_dataflow_and_feature_norms():
 
 
 def test_csi_configs_load_and_mmw_sequences_include_csi_columns():
-    csi_cfg = load_config(ROOT / "configs/csi/no_kd.yaml")
-    fusion_cfg = load_config(ROOT / "configs/fusion/mmwave_csi_no_kd.yaml")
-    degraded_csi_cfg = load_config(ROOT / "configs/csi/medium_degraded_no_kd.yaml")
-    degraded_fusion_cfg = load_config(ROOT / "configs/fusion/mmwave_csi_medium_degraded_no_kd.yaml")
+    csi_cfg = load_config(ROOT / "configs/csi/supervised.yaml")
+    fusion_cfg = load_config(ROOT / "configs/fusion/mmwave_csi_supervised.yaml")
+    degraded_csi_cfg = load_config(ROOT / "configs/csi/medium_degraded_supervised.yaml")
+    degraded_fusion_cfg = load_config(ROOT / "configs/fusion/mmwave_csi_medium_degraded_supervised.yaml")
 
     assert csi_cfg["experiment"]["task"] == "csi"
-    assert csi_cfg["model"]["student"]["encoders"]["csi"]["type"] == "pilot_dual_view_csi"
+    assert csi_cfg["model"]["primary"]["encoders"]["csi"]["type"] == "pilot_dual_view_csi"
+    assert "distillation" not in csi_cfg
     assert "csi_degradation" not in csi_cfg["data"]["dataset"]
-    assert fusion_cfg["model"]["student"]["modalities"] == ["mmwave", "csi"]
+    assert fusion_cfg["model"]["primary"]["modalities"] == ["mmwave", "csi"]
     assert fusion_cfg["data"]["dataset"]["use_csi"] is True
     assert "csi_degradation" not in fusion_cfg["data"]["dataset"]
     assert degraded_csi_cfg["experiment"]["task"] == "csi"
     assert degraded_csi_cfg["data"]["dataset"]["use_csi"] is True
     assert degraded_csi_cfg["data"]["dataset"]["csi_degradation"]["enabled"] is True
     assert degraded_csi_cfg["data"]["dataset"]["csi_degradation"]["profile"] == "medium"
-    assert degraded_fusion_cfg["model"]["student"]["modalities"] == ["mmwave", "csi"]
+    assert degraded_fusion_cfg["model"]["primary"]["modalities"] == ["mmwave", "csi"]
     assert degraded_fusion_cfg["data"]["dataset"]["csi_degradation"]["profile"] == "medium"
 
     rows, _ = build_sequence_rows(_prepared_frames(12), seq_len=8, pred_len=3)

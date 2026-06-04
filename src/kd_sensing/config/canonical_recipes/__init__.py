@@ -8,7 +8,6 @@ from kd_sensing.config.canonical_recipes.advanced import (
 from kd_sensing.config.canonical_recipes.common import deep_merge
 from kd_sensing.config.canonical_recipes.fusion import (
     FusionModeRecipe,
-    distillation_overrides,
     fusion_mode_recipe,
     training_overrides,
 )
@@ -25,7 +24,6 @@ __all__ = [
     "advanced_overlay_recipe",
     "available_advanced_overlay_names",
     "deep_merge",
-    "distillation_overrides",
     "fusion_mode_recipe",
     "objective_overlay_recipe",
     "resolve_advanced_overlay_recipe_name",

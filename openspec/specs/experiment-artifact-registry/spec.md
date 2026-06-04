@@ -1,15 +1,15 @@
 # experiment-artifact-registry Specification
 
 ## Purpose
-定义训练/评估 artifact、checkpoint registry、sidecar metadata 和复现所需记录。
+定义训练/评估 artifact、checkpoint registry、sidecar metadata 和复现所需记录，确保模型权重、归一化工件、场景隔离 registry 与评估入口之间存在可审计、可复用且不依赖 legacy fallback 的解析契约。
 ## Requirements
 ### Requirement: 最佳 checkpoint 归档
 训练流程 MUST 提供统一的最佳 checkpoint 归档能力。默认归档目录 MUST 为 `outputs/best_checkpoints/`，并且可通过配置覆盖。每次训练结束时，归档目录 MUST 至少保存当前配置在验证 Top-1 accuracy 上最高的 checkpoint；当训练过程中出现新的最高验证 Top-1 accuracy 时，系统 MAY 立即更新归档。
 
-#### Scenario: teacher no-KD 训练归档最高精度 checkpoint
-- **WHEN** 用户运行 `configs/<modality>/teacher_no_kd.yaml` 或等价 teacher no-KD 配置完成训练
+#### Scenario: strong 训练归档最高精度 checkpoint
+- **WHEN** 用户运行 `configs/<modality>/strong.yaml` 或等价 strong 配置完成训练
 - **THEN** 系统 MUST 将该配置验证 Top-1 accuracy 最高的 checkpoint 复制到归档目录
-- **AND** 归档文件名 MUST 包含配置 slug、`teacher_no_kd` 和 `acc_<val_top1>`，例如 `<slug>_teacher_no_kd_acc_<val_top1>.pth`
+- **AND** 归档文件名 MUST 包含配置 slug、`strong` 和 `acc_<val_top1>`，例如 `<slug>_strong_acc_<val_top1>.pth`
 - **AND** 原运行目录下的 checkpoint MUST 保留，不得被移动或删除
 
 #### Scenario: 同一 slug 刷新最高精度
@@ -18,57 +18,42 @@
 - **AND** 系统 MUST 避免默认解析到同一 slug 的旧低精度 checkpoint
 
 ### Requirement: checkpoint 解析优先级
-KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加载匹配 checkpoint。显式传入的绝对路径或评估入口 `--weights` MUST 保持最高优先级；未显式指定时，系统 MUST 查找归档目录中的匹配 checkpoint。归档目录缺失或无匹配时，系统 MUST 抛出清晰错误，且 MUST 不再回退到 legacy `paths.weights_dir / distillation.teacher_model_name` 或旧评估配置路径。
-
-#### Scenario: KD teacher 从归档目录加载
-- **WHEN** 用户运行 KD 配置且未显式覆盖 teacher checkpoint 为绝对路径
-- **THEN** 系统 MUST 根据配置推导对应 teacher baseline slug
-- **AND** 如果归档目录存在该 slug 的最高验证 Top-1 checkpoint，系统 MUST 加载该 checkpoint 作为 frozen teacher
-- **AND** `checkpoint_loads` MUST 记录最终加载路径和来源为 registry
+评估权重解析 MUST 支持从最佳 checkpoint 归档目录加载匹配 checkpoint。显式传入的绝对路径或评估入口 `--weights` MUST 保持最高优先级；未显式指定时，系统 MAY 查找归档目录中的匹配 checkpoint。训练流程 MUST 不再为了 KD teacher 加载 checkpoint，且 MUST 不读取 `distillation.teacher_model_name`。
 
 #### Scenario: 显式权重路径覆盖 registry
 - **WHEN** 用户通过评估入口 `--weights` 或配置中的绝对路径显式指定 checkpoint
 - **THEN** 系统 MUST 加载该显式路径
 - **AND** 系统 MUST 不用归档目录中的候选替换该显式路径
 
-#### Scenario: registry 缺失时报错
-- **WHEN** 归档目录没有匹配当前配置的 checkpoint
-- **THEN** 系统 MUST 抛出包含 registry 候选和显式 checkpoint 配置方式的清晰错误
-- **AND** 系统 MUST 不尝试 legacy 权重目录 fallback
+#### Scenario: 训练不解析 KD teacher checkpoint
+- **WHEN** 用户启动任一受支持训练配置
+- **THEN** 训练流程 MUST 不调用 KD teacher checkpoint 解析
+- **AND** 配置中若出现 `distillation.teacher_model_name` MUST 在配置解析阶段失败
 
 ### Requirement: 归档 metadata 与归一化工件关联
-归档 checkpoint MUST 具备可机器读取的 metadata，用于记录源运行目录、配置 slug、模态、KD 模式、epoch、验证 Top-1 accuracy、源 checkpoint 路径、split 信息和训练归一化工件路径。启用 GPS、LiDAR 或 mmWave 归一化时，metadata MUST 能让评估入口复用训练时的 scaler 或 normalizer/stats。
+归档 checkpoint MUST 具备可机器读取的 metadata，用于记录源运行目录、配置 slug、模态、训练模式、epoch、验证 Top-1 accuracy、源 checkpoint 路径、split 信息和训练归一化工件路径。启用 GPS、LiDAR 或 mmWave 归一化时，metadata MUST 能让评估入口复用训练时的 scaler 或 normalizer/stats。
 
 #### Scenario: 写入归档 sidecar
 - **WHEN** 系统将 checkpoint 复制到归档目录
 - **THEN** 系统 MUST 写入同名或可关联的 JSON sidecar metadata
-- **AND** metadata MUST 记录验证 Top-1 accuracy、源 `run_dir`、源 checkpoint、配置 slug 和启用模态
-
-#### Scenario: 评估复用归一化工件
-- **WHEN** 用户评估一个 registry checkpoint 且 metadata 记录了 GPS scaler、LiDAR normalizer/stats 或 mmWave scaler 路径
-- **THEN** 评估入口 MUST 加载 metadata 中的归一化工件
-- **AND** 评估入口 MUST 不为了重新 fit 归一化状态而扫描训练 split
-
-#### Scenario: 评估缺少 mmWave scaler 工件
-- **WHEN** 用户评估启用 mmWave 归一化的 checkpoint 且 metadata 没有记录可用 mmWave scaler 路径
-- **THEN** 评估入口 MUST 抛出清晰错误
-- **AND** 错误信息 MUST 提示提供 mmWave scaler 或使用带 metadata 的训练 checkpoint
+- **AND** metadata MUST 记录验证 Top-1 accuracy、源 `run_dir`、源 checkpoint、配置 slug、训练模式和启用模态
+- **AND** metadata MUST 不记录 KD 模式
 
 ### Requirement: 场景隔离的最佳 checkpoint registry
 最佳 checkpoint registry MUST 按 DeepSense6G 场景隔离。默认 registry 目录 MUST 位于当前场景输出分组下，例如 `outputs/scene9/best_checkpoints/`、`outputs/scene31/best_checkpoints/` 和 `outputs/scene32/best_checkpoints/`。
 
 #### Scenario: Scenario 9 registry 写入 scene9
-- **WHEN** 用户运行 Scenario 9 teacher no-KD 训练并产生新的最高验证 Top-1 checkpoint
+- **WHEN** 用户运行 Scenario 9 strong 训练并产生新的最高验证 Top-1 checkpoint
 - **THEN** 系统 MUST 将归档 checkpoint 写入 `outputs/scene9/best_checkpoints/`
 - **AND** metadata sidecar MUST 记录 `scene_id: 9` 和 `scene_slug: scene9`
 
 #### Scenario: 默认 Scenario 31 registry 不复用其它场景
-- **WHEN** 用户运行默认 Scenario 31 KD 配置且未显式指定绝对 teacher checkpoint
+- **WHEN** 用户运行默认 Scenario 31 评估配置且未显式指定绝对 checkpoint
 - **THEN** 系统 MUST 优先查找 `outputs/scene31/best_checkpoints/`
 - **AND** 系统不得默认加载 `outputs/scene9/best_checkpoints/` 或 `outputs/scene32/best_checkpoints/` 中同 slug 的 checkpoint
 
 #### Scenario: Scenario 32 registry 不复用 scene31
-- **WHEN** 用户运行显式 Scenario 32 KD 配置且未显式指定绝对 teacher checkpoint
+- **WHEN** 用户运行显式 Scenario 32 评估配置且未显式指定绝对 checkpoint
 - **THEN** 系统 MUST 优先查找 `outputs/scene32/best_checkpoints/`
 - **AND** 系统不得默认加载 `outputs/scene31/best_checkpoints/` 中同 slug 的 checkpoint
 
@@ -127,14 +112,6 @@ KD teacher 和评估权重解析 MUST 支持从最佳 checkpoint 归档目录加
 - **THEN** registry 构建流程 MUST 拒绝该输入
 - **AND** 错误信息 MUST 包含期望模态和实际模态
 
-### Requirement: Teacher checkpoint artifact compatibility
-teacher metrics 和 checkpoint registry MUST 不破坏现有 best checkpoint registry、normalization artifacts 和 train log 输出格式。已退役的 teacher-prior CRAF reliability registry MUST 不再作为支持产物。
-
-#### Scenario: 旧 checkpoint registry 继续可用
-- **WHEN** 用户运行既有单模态 KD 或评估配置
-- **THEN** 系统 MUST 继续按现有 best checkpoint registry 解析 teacher checkpoint
-- **AND** 系统 MUST 不要求 teacher reliability registry 存在
-
 ### Requirement: Teacher metrics checkpoint objective selection
 Teacher metrics helper MUST 按 metrics 或 checkpoint metadata 中声明的 selection objective 选择 checkpoint。未显式要求 Top-1 teacher 时，helper MUST 优先使用 objective-selected checkpoint；对 LiDAR teacher，helper MUST NOT 在存在 `best.pth` 或 objective checkpoint metadata 时默认选择 `best_top1.pth`。
 
@@ -163,3 +140,24 @@ Teacher metrics helper MUST 按 metrics 或 checkpoint metadata 中声明的 sel
 - **THEN** teacher reliability registry MUST 保留 objective checkpoint 的指标
 - **AND** registry MAY 记录最高 Top-1 epoch 和 Top-1 value 作为诊断字段
 - **AND** Stage 2/3 默认 teacher 加载 MUST 使用 objective checkpoint 路径
+
+### Requirement: checkpoint 保留策略
+训练和清理工作流 MUST 区分复现必需 checkpoint、选择指标 checkpoint、恢复训练 checkpoint 和临时 checkpoint。默认清理策略 MUST 保护 `best.pth`、`best_top1.pth`、checkpoint sidecar metadata、归一化 artifacts、metrics、最终配置和 startup summary；`last.pth` 或重复 probe checkpoint MAY 进入候选，但 MUST 记录风险等级和保留理由。
+
+#### Scenario: 默认保护最佳 checkpoint
+- **WHEN** 清理 manifest 扫描包含 `checkpoints/best.pth` 或 `checkpoints/best_top1.pth` 的 run
+- **THEN** manifest MUST 默认将这些 checkpoint 标记为 protected
+- **AND** manifest MUST 保留对应 sidecar metadata 的保护关系
+
+#### Scenario: last checkpoint 可作为候选
+- **WHEN** run 已完成且存在 `checkpoints/last.pth`，同时存在受保护的最佳 checkpoint 和 metrics
+- **THEN** manifest MAY 将 `last.pth` 列为可删除候选
+- **AND** manifest MUST 记录该候选不是默认复现 checkpoint
+
+### Requirement: checkpoint retention metadata
+运行产物摘要 MUST 能表达 checkpoint retention 决策所需 metadata。系统 MUST 记录 checkpoint 来源、选择指标、selected epoch、run 状态、是否有 sidecar、是否有归一化 artifact 引用和是否属于 registry 默认候选。
+
+#### Scenario: retention 摘要包含选择信息
+- **WHEN** run index 或清理 manifest 汇总 checkpoint
+- **THEN** summary MUST 包含 checkpoint 来源和 selection metadata（如果可用）
+- **AND** 缺失 metadata 时 MUST 记录缺失状态而不是推断为可删除

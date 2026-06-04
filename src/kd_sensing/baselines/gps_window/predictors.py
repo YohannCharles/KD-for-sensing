@@ -9,6 +9,7 @@ import torch
 from kd_sensing.baselines.gps_window.geometry import (
     angle_to_beam,
     beam_score_kernel,
+    circular_beam_distance,
     circular_mean_degrees,
     circular_velocity_degrees,
     signed_angle_delta_degrees,
@@ -26,17 +27,29 @@ class CalibrationState:
         self.sample_count = 0
         self.beam_direction = 1
         self.beam_offset = 0
+        self.boresight_angle_degrees = 0.0
+        self.boresight_score = 0.0
         self.beam_mapping_score = 0.0
+        self.angle_lookup: tuple[tuple[float, int], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "sample_count": int(self.sample_count),
             "majority_beam": int(self.majority_beam),
             "transition_delta": int(self.transition_delta),
             "beam_direction": int(self.beam_direction),
             "beam_offset": int(self.beam_offset),
+            "boresight_angle_degrees": float(self.boresight_angle_degrees),
+            "boresight_score": float(self.boresight_score),
             "beam_mapping_score": float(self.beam_mapping_score),
+            "angle_lookup_sample_count": len(self.angle_lookup),
         }
+        if self.angle_lookup:
+            angles = [float(angle) for angle, _ in self.angle_lookup]
+            labels = [int(label) for _, label in self.angle_lookup]
+            payload["angle_lookup_angle_range_degrees"] = [min(angles), max(angles)]
+            payload["angle_lookup_label_range"] = [min(labels), max(labels)]
+        return payload
 
 
 def build_calibration_state(samples: list[GpsWindowSample], cfg: GpsWindowBaselineConfig) -> CalibrationState:
@@ -60,26 +73,95 @@ def build_calibration_state(samples: list[GpsWindowSample], cfg: GpsWindowBaseli
     if deltas:
         state.transition_delta = int(Counter(deltas).most_common(1)[0][0])
     state.transition_scores = torch.log(transition_hist / transition_hist.sum())
+    state.beam_direction = 1 if int(cfg.beam_direction) >= 0 else -1
+    state.beam_offset = int(cfg.beam_offset) % int(cfg.num_classes)
+    state.boresight_angle_degrees = float(cfg.boresight_angle_degrees) % 360.0
     if cfg.auto_calibrate_beam_mapping:
-        direction, offset, score = estimate_beam_mapping(samples, cfg)
+        direction, offset, score, boresight = estimate_beam_mapping(samples, cfg)
         state.beam_direction = direction
         state.beam_offset = offset
+        state.boresight_angle_degrees = boresight
         state.beam_mapping_score = score
-    else:
-        state.beam_direction = 1 if int(cfg.beam_direction) >= 0 else -1
-        state.beam_offset = int(cfg.beam_offset) % int(cfg.num_classes)
+        state.boresight_score = score
+    elif cfg.auto_calibrate_boresight_angle:
+        boresight, score = estimate_boresight_angle(
+            samples,
+            cfg,
+            direction=state.beam_direction,
+            offset=state.beam_offset,
+        )
+        state.boresight_angle_degrees = boresight
+        state.boresight_score = score
+    if str(cfg.algorithm or "").strip().lower() == "angle_lookup":
+        state.angle_lookup = build_angle_lookup(samples, cfg)
     return state
 
 
-def estimate_beam_mapping(samples: list[GpsWindowSample], cfg: GpsWindowBaselineConfig) -> tuple[int, int, float]:
+def build_angle_lookup(samples: list[GpsWindowSample], cfg: GpsWindowBaselineConfig) -> tuple[tuple[float, int], ...]:
+    pairs: list[tuple[float, int]] = []
+    for sample in samples:
+        history = sample.available_history[-max(int(cfg.history_window), 1) :]
+        if not history:
+            continue
+        try:
+            angles = _predict_angles(history, cfg)
+        except ValueError:
+            continue
+        for angle, truth in zip(angles, sample.target_beams):
+            if int(truth) < 0:
+                continue
+            pairs.append((float(angle), int(truth) % int(cfg.num_classes)))
+    pairs.sort(key=lambda item: (float(item[0]), int(item[1])))
+    return tuple(pairs)
+
+
+def estimate_beam_mapping(samples: list[GpsWindowSample], cfg: GpsWindowBaselineConfig) -> tuple[int, int, float, float]:
     directions = (1, -1) if cfg.auto_calibrate_beam_direction else (1 if int(cfg.beam_direction) >= 0 else -1,)
-    best = (1 if int(cfg.beam_direction) >= 0 else -1, int(cfg.beam_offset) % int(cfg.num_classes), -1.0)
+    default_boresight = float(cfg.boresight_angle_degrees) % 360.0
+    best = (1 if int(cfg.beam_direction) >= 0 else -1, int(cfg.beam_offset) % int(cfg.num_classes), -1.0, default_boresight)
     for direction in directions:
         for offset in range(int(cfg.num_classes)):
-            score = _mapping_score(samples, cfg, direction=int(direction), offset=int(offset))
+            if cfg.auto_calibrate_boresight_angle:
+                boresight, score = estimate_boresight_angle(samples, cfg, direction=int(direction), offset=int(offset))
+            else:
+                boresight = default_boresight
+                score = _mapping_score(samples, cfg, direction=int(direction), offset=int(offset), boresight=boresight)
             if score > best[2]:
-                best = (int(direction), int(offset), float(score))
+                best = (int(direction), int(offset), float(score), float(boresight))
     return best
+
+
+def estimate_boresight_angle(
+    samples: list[GpsWindowSample],
+    cfg: GpsWindowBaselineConfig,
+    *,
+    direction: int,
+    offset: int,
+) -> tuple[float, float]:
+    candidates: list[float] = []
+    num_classes = int(cfg.num_classes)
+    bin_width = 360.0 / float(num_classes)
+    sign = 1.0 if int(direction) >= 0 else -1.0
+    for sample in samples:
+        history = sample.available_history[-max(int(cfg.history_window), 1) :]
+        if _fallback_reason(sample, cfg, history):
+            continue
+        try:
+            angles = _predict_angles(history, cfg)
+        except ValueError:
+            continue
+        for angle, truth in zip(angles, sample.target_beams):
+            if int(truth) < 0:
+                continue
+            unoffset_beam = (int(truth) - int(offset)) % num_classes
+            beam_center_angle = float(cfg.beam_start_degrees) + (float(unoffset_beam) + 0.5) * bin_width
+            candidates.append(float(angle) - sign * beam_center_angle)
+    if not candidates:
+        boresight = float(cfg.boresight_angle_degrees) % 360.0
+        return boresight, -1.0
+    boresight = circular_mean_degrees(candidates)
+    score = _mapping_score(samples, cfg, direction=int(direction), offset=int(offset), boresight=boresight)
+    return float(boresight), float(score)
 
 
 def predict_sample(
@@ -93,7 +175,13 @@ def predict_sample(
         "beam_offset": int(cfg.beam_offset),
         "effective_beam_direction": int(calibration.beam_direction if calibration is not None else cfg.beam_direction),
         "effective_beam_offset": int(calibration.beam_offset if calibration is not None else cfg.beam_offset),
+        "boresight_angle_degrees": float(cfg.boresight_angle_degrees),
+        "effective_boresight_angle_degrees": float(
+            calibration.boresight_angle_degrees if calibration is not None else cfg.boresight_angle_degrees
+        ),
+        "boresight_score": float(calibration.boresight_score if calibration is not None else 0.0),
         "beam_mapping_score": float(calibration.beam_mapping_score if calibration is not None else 0.0),
+        "angle_lookup_sample_count": len(calibration.angle_lookup) if calibration is not None else 0,
         "gps_coverage": sample.gps_coverage,
         "history_count": len(history),
         "config": cfg.to_dict(),
@@ -174,9 +262,40 @@ def _predict_center_beams(
     calibration: CalibrationState | None = None,
 ) -> list[int]:
     angles = _predict_angles(history, cfg)
+    if str(cfg.algorithm or "").strip().lower() == "angle_lookup":
+        lookup = calibration.angle_lookup if calibration is not None else ()
+        if lookup:
+            return [_angle_lookup_beam(float(angle), lookup, cfg) for angle in angles]
     direction = int(calibration.beam_direction if calibration is not None else cfg.beam_direction)
     offset = int(calibration.beam_offset if calibration is not None else cfg.beam_offset)
-    return _angles_to_beams(angles, cfg, direction=direction, offset=offset)
+    boresight = float(calibration.boresight_angle_degrees if calibration is not None else cfg.boresight_angle_degrees)
+    return _angles_to_beams(angles, cfg, direction=direction, offset=offset, boresight=boresight)
+
+
+def _angle_lookup_beam(
+    angle: float,
+    lookup: tuple[tuple[float, int], ...],
+    cfg: GpsWindowBaselineConfig,
+) -> int:
+    k = max(1, min(int(cfg.angle_lookup_k), len(lookup)))
+    nearest = sorted(
+        lookup,
+        key=lambda item: (abs(signed_angle_delta_degrees(float(angle), float(item[0]))), int(item[1])),
+    )[:k]
+    if len(nearest) == 1:
+        return int(nearest[0][1]) % int(cfg.num_classes)
+    candidate_labels = sorted({int(label) % int(cfg.num_classes) for _, label in nearest})
+    best_label = candidate_labels[0]
+    best_score = float("inf")
+    for candidate in candidate_labels:
+        score = sum(
+            circular_beam_distance(candidate, int(label), num_classes=cfg.num_classes)
+            for _, label in nearest
+        )
+        if score < best_score:
+            best_score = float(score)
+            best_label = int(candidate)
+    return int(best_label) % int(cfg.num_classes)
 
 
 def _predict_angles(history: tuple[dict[str, Any], ...], cfg: GpsWindowBaselineConfig) -> list[float]:
@@ -195,10 +314,11 @@ def _angles_to_beams(
     *,
     direction: int,
     offset: int,
+    boresight: float,
 ) -> list[int]:
     return [
         angle_to_beam(
-            angle,
+            float(angle) - float(boresight),
             num_classes=cfg.num_classes,
             start_degrees=cfg.beam_start_degrees,
             direction=direction,
@@ -268,6 +388,7 @@ def _mapping_score(
     *,
     direction: int,
     offset: int,
+    boresight: float,
 ) -> float:
     total = 0
     score = 0.0
@@ -278,17 +399,26 @@ def _mapping_score(
         if _fallback_reason(sample, cfg, history):
             continue
         try:
-            beams = _angles_to_beams(_predict_angles(history, cfg), cfg, direction=direction, offset=offset)
+            beams = _angles_to_beams(
+                _predict_angles(history, cfg),
+                cfg,
+                direction=direction,
+                offset=offset,
+                boresight=boresight,
+            )
         except ValueError:
             continue
         for pred, truth in zip(beams, sample.target_beams):
             if int(truth) < 0:
                 continue
             neighbors = topk_neighbors(int(pred), num_classes=cfg.num_classes, k=3)
-            linear_distances = [min(abs(int(item) - int(truth)) / 5.0, 1.0) for item in neighbors]
+            circular_distances = [
+                min(circular_beam_distance(int(item), int(truth), num_classes=cfg.num_classes) / 5.0, 1.0)
+                for item in neighbors
+            ]
             best_so_far = 1.0
             dba_terms = []
-            for distance in linear_distances:
+            for distance in circular_distances:
                 best_so_far = min(best_so_far, distance)
                 dba_terms.append(1.0 - best_so_far)
             score += sum(dba_terms) / max(len(dba_terms), 1)

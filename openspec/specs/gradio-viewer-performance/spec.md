@@ -1,7 +1,7 @@
 # gradio-viewer-performance Specification
 
 ## Purpose
-Define frame-navigation performance requirements for the Gradio multimodal viewer, including filtered-index caching, path-based image outputs, split render caches, lazy tab synchronization, and optional profiling logs.
+Define frame-navigation performance requirements for the Gradio multimodal viewer, including filtered-index caching, path-based image outputs, split render caches, lazy tab synchronization, and optional profiling logs, so interactive diagnostics remain responsive without changing the viewer layout or data contract.
 ## Requirements
 ### Requirement: 切帧路径缓存过滤结果
 Gradio viewer MUST cache filtered sample indices for each `(scene, split, show_mode)` combination during a viewer session. Slider changes, previous/next clicks, and timer ticks MUST reuse the cached filtered indices when the filter controls have not changed.

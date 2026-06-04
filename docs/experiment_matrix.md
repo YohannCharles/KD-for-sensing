@@ -4,29 +4,29 @@
 
 ## 单模态和基础 Fusion
 
-单模态 canonical 矩阵保留强模型和轻量模型 no-KD baseline。KD 配置仍可运行，但只作为 legacy/optional supplemental baseline：
+单模态 canonical 矩阵使用 strong、lightweight 和 supervised 三类入口。所有入口都构建单个 `model.primary` 主模型。
 
-| 模态 | 强模型 no-KD baseline | 轻量 no-KD baseline | legacy KD supplemental |
+| 模态 | strong | lightweight | supervised |
 | --- | --- | --- | --- |
-| image | `configs/image/teacher_no_kd.yaml` | `configs/image/student_no_kd.yaml` | `configs/image/logits_kd.yaml`, `configs/image/rkd.yaml` |
-| radar | `configs/radar/teacher_no_kd.yaml` | `configs/radar/student_no_kd.yaml` | `configs/radar/logits_kd.yaml`, `configs/radar/rkd.yaml` |
-| gps | `configs/gps/teacher_no_kd.yaml` | `configs/gps/student_no_kd.yaml` | `configs/gps/logits_kd.yaml`, `configs/gps/rkd.yaml` |
-| lidar | `configs/lidar/teacher_no_kd.yaml` | `configs/lidar/student_no_kd.yaml` | `configs/lidar/logits_kd.yaml`, `configs/lidar/rkd.yaml` |
-| mmwave | `configs/mmwave/teacher_no_kd.yaml` | `configs/mmwave/student_no_kd.yaml` | `configs/mmwave/logits_kd.yaml`, `configs/mmwave/rkd.yaml` |
+| image | `configs/image/strong.yaml` | `configs/image/lightweight.yaml` | `configs/image/supervised.yaml` |
+| radar | `configs/radar/strong.yaml` | `configs/radar/lightweight.yaml` | `configs/radar/supervised.yaml` |
+| gps | `configs/gps/strong.yaml` | `configs/gps/lightweight.yaml` | `configs/gps/supervised.yaml` |
+| lidar | `configs/lidar/strong.yaml` | `configs/lidar/lightweight.yaml` | `configs/lidar/supervised.yaml` |
+| mmwave | `configs/mmwave/strong.yaml` | `configs/mmwave/lightweight.yaml` | `configs/mmwave/supervised.yaml` |
 
-推荐主线顺序是先运行 no-KD supervised / adaptation baseline，再进入 HiST-Beam、MMW sensor-assisted、history-anchored residual、adapter/prototype/calibration、Raymobtime s008、CSI hardening 或 viewer manifest。`logits_kd` 和 `rkd` 不再是 quickstart 或主结论必需步骤；显式运行单模态实体配置时会写出 `method_family=legacy_kd`、`distillation_enabled=true`、`baseline_role=optional_baseline` 和 `reproduction_scope=historical_reproduction`，summary 默认把它们作为 supplemental comparison。
+推荐主线顺序是先运行 supervised/adaptation baseline，再进入 DeepSense6G GPS residual、Top8 selector、GPS+LiDAR BGAM、MMW GPS v2/BGAM、Raymobtime s008、CSI hardening 或 viewer manifest。旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`configs/hist_beam/*` 和 HiST-Beam 入口不再作为支持入口存在；配置加载器会拒绝这些路径并给出迁移建议。
 
 Fusion canonical slug 使用固定顺序 `image -> radar -> gps -> lidar -> mmwave`，覆盖所有 2 到 5 模态组合。例如：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_student_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_student_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-hist-beam-loso --config configs/hist_beam/quick_smoke.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_lightweight.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_lightweight.yaml
+conda run -n kd_mm_beam kd-sensing-run-deepsense6g-top8-selector --config configs/deepsense6g_top8_selector.yaml
 ```
 
-包含 image 或 LiDAR 的 canonical fusion teacher/no-KD 配置使用 `modular_sequence`；默认 student 使用 `cls_token_transformer_fusion`。Fusion virtual config 只生成 `teacher_no_kd` 和 `student_no_kd` 主线；不存在实体 YAML 的 `<slug>_logits_kd.yaml` 或 `<slug>_rkd.yaml` 会失败并提示 legacy KD fusion virtual alias 已退役。需要历史 KD 对照时，使用仍被跟踪的单模态实体配置，或通过独立 baseline change 增加显式 fusion 实体配置。
+包含 image 或 LiDAR 的 canonical fusion strong 配置使用 `modular_sequence`；默认 lightweight 配置使用 `cls_token_transformer_fusion`。Fusion virtual config 只生成 `strong` 和 `lightweight` 主线；旧 `<slug>_logits_kd.yaml` 或 `<slug>_rkd.yaml` 会失败并提示使用当前入口。
 
-HiST-Beam、MMW sensor-assisted quick validation、history-anchored residual quick validation 和默认 LOSO plan 不自动生成 KD variant。KD baseline 若后续用于 HiST-Beam 对照，应以单独 profile 或显式配置进入，并保持 supplemental/legacy 分组。
+已退役的 HiST-Beam、history-anchored Hist、P3/V7/V8/V9 probe 和默认 LOSO plan 不自动生成 KD variant，也不会由 virtual config alias 接管。
 
 ## Snapshot Next-Frame
 
@@ -34,28 +34,28 @@ Snapshot baseline 是 optional/supporting workflow，用于隔离历史窗口收
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/sequences_snapshot_next_frame.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/gps/snapshot_next_frame_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/all_modalities_snapshot_next_frame_no_kd.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/gps/snapshot_next_frame_supervised.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/all_modalities_snapshot_next_frame_supervised.yaml
 ```
 
-单模态入口为 `configs/<image|radar|gps|lidar|mmwave>/snapshot_next_frame_no_kd.yaml`；fusion 入口为 `configs/fusion/<canonical_slug>_snapshot_next_frame_no_kd.yaml`。
+单模态入口为 `configs/<image|radar|gps|lidar|mmwave>/snapshot_next_frame_supervised.yaml`；fusion 入口为 `configs/fusion/<canonical_slug>_snapshot_next_frame_supervised.yaml`。
 
 ## Objective-Aware Fusion
 
-Objective-aware occlusion、position 和 multitask 是 optional/supporting workflow，不是 HiST-Beam/MMW target adaptation 的前置步骤。预测目标由 `experiment.objective` 选择，合法值为 `beam`、`occlusion`、`position` 和 `multitask`。保留入口使用 `<slug>_<objective>_no_kd.yaml` 命名：
+Objective-aware occlusion、position 和 multitask 是 optional/supporting workflow，不是 MMW GPS v2/BGAM 或 DeepSense residual/Top8/BGAM 的前置步骤。预测目标由 `experiment.objective` 选择，合法值为 `beam`、`occlusion`、`position` 和 `multitask`。保留入口使用 `<slug>_<objective>_supervised.yaml` 命名：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_occlusion_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_position_no_kd.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_occlusion_supervised.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_position_supervised.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_multitask_supervised.yaml
 ```
 
-`strong_only_<objective>_no_kd.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_no_kd.yaml` 解析为 `[image, radar, lidar]`，可用于普通模态子集调试。
+`strong_only_<objective>_supervised.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_supervised.yaml` 解析为 `[image, radar, lidar]`，可用于普通模态子集调试。
 
 ## CSI Hardening
 
-CSI hardening 主矩阵位于 `configs/csi/hardening_matrix/`，debug 矩阵位于 `configs/csi/hardening_matrix/debug/`。本变更只做 inventory，不删除这些实体配置。
+CSI hardening 主矩阵位于 `configs/csi/hardening_matrix/`，debug 矩阵位于 `configs/csi/hardening_matrix/debug/`。普通 CSI supervised baseline 使用 `configs/csi/supervised.yaml`，medium degraded baseline 使用 `configs/csi/medium_degraded_supervised.yaml`。
 
 常用检查：
 

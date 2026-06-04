@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.config.io import load_config
 from kd_sensing.diagnostics.visualization.config import parse_visualization_config
 from kd_sensing.diagnostics.visualization.datasets import (
@@ -35,7 +36,7 @@ from kd_sensing.utils.paths import resolve_path
 
 
 DEFAULT_MODEL_CONFIGS = {
-    modality: Path("configs") / modality / "teacher_no_kd.yaml"
+    modality: Path("configs") / modality / "strong.yaml"
     for modality in MODALITY_ORDER
 }
 DATASET_SOURCE_KEYS = {
@@ -55,6 +56,7 @@ DATASET_SOURCE_KEYS = {
     "fft_tuple",
     "clipped_range",
     "beam_label_cache",
+    "beam_label_calibration",
     "lidar_encoding",
     "lidar_bev_size",
     "lidar_roi",
@@ -273,8 +275,8 @@ def _modality_inference_cfg(
     if source_num_pred is not None:
         model_cfg["num_pred"] = int(source_num_pred)
     if source_seq_len is not None:
-        model_cfg["seq_length_teacher"] = int(source_seq_len)
-        model_cfg["seq_length_student"] = int(source_seq_len)
+        model_cfg["seq_length"] = int(source_seq_len)
+        model_cfg["seq_length"] = int(source_seq_len)
     return result
 
 
@@ -286,7 +288,7 @@ def _run_prediction_job(job: dict[str, Any]) -> dict[str, Any]:
     dataset_kwargs = load_normalization_artifacts(checkpoint_metadata)
     datasets = _prediction_datasets(cfg, dataset_kwargs)
 
-    model = build_model(cfg["model"]["student"]).to(device)
+    model = build_model(cfg["model"]["primary"]).to(device)
     load_result = load_model_state(
         job["checkpoint_path"],
         model,
@@ -354,10 +356,11 @@ def _predict_loader(
     model_cfg = cfg["model"]
     num_pred = int(model_cfg.get("num_pred", 3))
     downsample_ratio = int(model_cfg.get("downsample_ratio", 1))
-    seq_length = int(model_cfg.get("seq_length_student", 8))
+    seq_length = int(model_cfg.get("seq_length", 8))
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     results: dict[str, Any] = {}
+    label_metadata = _beam_label_metadata_from_dataset(getattr(loader, "dataset", None))
     with torch.inference_mode():
         for batch in loader:
             sample_ids = list(batch.pop("_sample_id"))
@@ -366,7 +369,7 @@ def _predict_loader(
                     model,
                     modality,
                     batch,
-                    model_cfg=model_cfg.get("student", {}) if isinstance(model_cfg, dict) else {},
+                    model_cfg=model_cfg.get("primary", {}) if isinstance(model_cfg, dict) else {},
                     seq_length=seq_length,
                     num_pred=num_pred,
                     downsample_ratio=downsample_ratio,
@@ -385,6 +388,7 @@ def _predict_loader(
                     label_array[row_index],
                     checkpoint_path,
                     str(device),
+                    label_metadata,
                 )
     return results
 
@@ -396,6 +400,7 @@ def _sample_prediction_payload(
     labels: np.ndarray,
     checkpoint_path: str,
     device: str,
+    label_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del modality
     future_probs = np.asarray(probs)
@@ -417,6 +422,7 @@ def _sample_prediction_payload(
     topk_count = min(5, future_probs.shape[-1])
     topk = np.argsort(-future_probs, axis=-1)[:, :topk_count].astype(int)
     max_confidence = np.max(future_probs, axis=-1)
+    label_metadata = dict(label_metadata or {})
     return {
         "prediction": {
             "top1": top1.tolist(),
@@ -425,12 +431,16 @@ def _sample_prediction_payload(
             "future_labels": future_labels.tolist(),
             "checkpoint": checkpoint_path,
             "device": device,
+            "beam_label_space": label_metadata.get("beam_label_space", "raw"),
+            "beam_label_mapping_fingerprint": label_metadata.get("beam_label_mapping_fingerprint"),
         },
         "confidence": float(np.mean(max_confidence)) if max_confidence.size else None,
         "confidence_curves": future_probs.astype(float).tolist(),
         "beam_distribution": {
             "prob": future_probs.astype(float).tolist(),
             "logit": future_logits.astype(float).tolist(),
+            "beam_label_space": label_metadata.get("beam_label_space", "raw"),
+            "beam_label_mapping_fingerprint": label_metadata.get("beam_label_mapping_fingerprint"),
         },
     }
 
@@ -455,6 +465,24 @@ def _merge_prediction_results(job_results: list[dict[str, Any]]) -> dict[str, An
             entry["confidence_curves"][modality] = payload["confidence_curves"]
             entry["beam_distribution"][modality] = payload["beam_distribution"]
     return merged
+
+
+def _beam_label_metadata_from_dataset(dataset: Any) -> dict[str, Any]:
+    source = getattr(dataset, "dataset", dataset)
+    mapping = getattr(source, "beam_label_mapping", None)
+    if mapping is not None and hasattr(mapping, "metadata"):
+        return mapping.metadata()
+    dataset_cfg = getattr(source, "dataset_cfg", None)
+    if isinstance(dataset_cfg, dict):
+        dataset_type = str(dataset_cfg.get("type") or "").strip().lower()
+        if dataset_type == "mmw":
+            scene = dataset_cfg.get("scene") or dataset_cfg.get("scene_slug") or dataset_cfg.get("scene_id")
+            return resolve_beam_label_mapping(
+                dataset_cfg.get("beam_label_calibration"),
+                scene=str(scene) if scene is not None else None,
+                default_num_classes=int(dataset_cfg.get("num_classes", 64)),
+            ).metadata()
+    return resolve_beam_label_mapping(None).metadata()
 
 
 class _IndexedDataset(Dataset):

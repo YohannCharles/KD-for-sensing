@@ -4,7 +4,7 @@
 定义配置驱动训练、评估、预处理、诊断、运行产物保存、README 入口边界以及 virtual/overlay 配置复现实验的工作流要求。
 ## Requirements
 ### Requirement: 配置驱动实验
-项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、teacher/student 模型、KD 模式、训练超参数、优化器、调度器、输出目录、随机种子、GPS-Rel-Polar 特征模式和 fusion 模态选择。
+项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、primary 模型、supervised/adaptation loss、训练超参数、优化器、调度器、输出目录、随机种子、GPS-Rel-Polar 特征模式和 fusion 模态选择。配置 MUST 不再覆盖 KD 模式或 teacher checkpoint。
 
 #### Scenario: 使用配置启动 image-only 训练
 - **WHEN** 用户通过新 CLI 传入 image-only 训练配置
@@ -42,6 +42,16 @@
 - **THEN** 系统 MUST 只准备并融合 `modalities` 中列出的模态
 - **AND** 系统 MUST 支持 image、radar、gps 的任意非空组合
 
+#### Scenario: 使用配置启动单模态训练
+- **WHEN** 用户通过 CLI 传入 image、radar、GPS、LiDAR 或 mmWave 单模态训练配置
+- **THEN** 系统 MUST 构建对应 dataset、primary model、loss、optimizer 和 scheduler
+- **AND** 系统 MUST 不构建 frozen teacher 或 distiller
+
+#### Scenario: 使用配置启动 fusion 训练
+- **WHEN** 用户通过 CLI 传入 fusion 训练配置
+- **THEN** 系统 MUST 构建同时包含启用模态输入的 dataset、fusion primary model、loss、optimizer 和 scheduler
+- **AND** 系统 MUST 不要求 teacher checkpoint
+
 ### Requirement: 命令行覆盖配置
 实验入口 MUST 支持在命令行覆盖配置值。新 CLI MUST 支持显式传入配置文件和关键参数覆盖；旧脚本 argparse 参数不得作为兼容入口保留，只能作为迁移默认值参考。
 
@@ -78,12 +88,13 @@
 #### Scenario: 训练过程中显示 tqdm 进度
 - **WHEN** 一次训练任务启动且进度显示配置启用
 - **THEN** 系统 MUST 使用 `tqdm` 展示 epoch 或 batch 级训练进度
-- **AND** 进度条 MUST 展示当前 epoch、batch 进度、训练损失、任务损失、蒸馏损失、训练准确率和学习率中的关键状态
+- **AND** 进度条 MUST 展示当前 epoch、batch 进度、训练损失、主任务损失、训练准确率和学习率中的关键状态
 
 #### Scenario: 训练完成后保存进度日志
 - **WHEN** 一次训练任务完成至少一个 epoch
 - **THEN** 系统 MUST 在当前运行目录的训练日志中保存 epoch 级进度摘要
-- **AND** 进度摘要 MUST 包含 epoch 编号、训练损失、训练任务损失、训练蒸馏损失、训练准确率、验证损失、验证准确率和学习率
+- **AND** 进度摘要 MUST 包含 epoch 编号、训练损失、训练主任务损失、训练准确率、验证损失、验证准确率和学习率
+- **AND** 进度摘要 MUST 不包含新的训练蒸馏损失字段
 - **AND** 日志保存 MUST 保持既有历史指标数组兼容
 
 #### Scenario: 通过配置关闭 tqdm 进度显示
@@ -94,7 +105,8 @@
 #### Scenario: 训练过程中写入 TensorBoard 标量日志
 - **WHEN** 一次训练任务完成至少一个 epoch 且 TensorBoard 日志启用
 - **THEN** 系统 MUST 在当前运行目录下写入 TensorBoard event 文件
-- **AND** event 文件 MUST 记录训练总损失、训练任务损失、训练蒸馏损失、训练准确率、验证损失、验证准确率、学习率、验证 `ATop-3`、验证 `ATop-5` 和验证 `ADBA` 标量
+- **AND** event 文件 MUST 记录训练总损失、训练主任务损失、训练准确率、验证损失、验证准确率、学习率、验证 `ATop-3`、验证 `ATop-5` 和验证 `ADBA` 标量
+- **AND** event 文件 MUST 不新增 `loss/distillation` 或 KD 标量
 
 #### Scenario: TensorBoard 记录跨时隙平均验证指标
 - **WHEN** 一次训练 epoch 的验证阶段产出 per-slot Top-K accuracy 和 DBA 结果
@@ -144,15 +156,14 @@
 - **AND** 如果列缺失，系统 MUST 抛出清晰错误并提示重新运行启用 mmWave 的序列预处理
 
 ### Requirement: 训练与评估行为等价
-结构重构后，默认 image-only、radar-only、GPS-only、LiDAR-only 和 fusion 工作流 MUST 通过新脚本保持当前算法的核心训练、验证和评估语义，包括默认序列长度、预测步数、类别数、KD 模式、teacher 权重选择、student 架构选择、early stopping、gradient clipping、checkpoint 恢复和指标计算。上游原代码实际覆盖的 image-only 与 image+radar 配置 MUST 按原代码和随附参数文件对齐 GRU 层数与训练超参数；radar-only、GPS-only 和 LiDAR-only 是本项目新增单模态配置，MUST 在共享字段上与 image 单模态配置保持一致。
+结构重构后，默认 image-only、radar-only、GPS-only、LiDAR-only 和 fusion 工作流 MUST 通过新脚本保持当前算法的核心训练、验证和评估语义，包括默认序列长度、预测步数、类别数、primary 架构选择、early stopping、gradient clipping、checkpoint 恢复和指标计算。上游原代码实际覆盖的 image-only 与 image+radar 配置 MUST 按原代码和随附参数文件对齐 GRU 层数与训练超参数；radar-only、GPS-only 和 LiDAR-only 是本项目新增单模态配置，MUST 在共享字段上与 image 单模态配置保持一致。
 
 #### Scenario: 新配置默认参数
 - **WHEN** 用户使用新脚本和默认配置启动训练或评估
 - **THEN** 系统 MUST 使用从旧实现迁移而来的默认任务语义，并保持相同的任务类型
 - **AND** `configs/image/*.yaml`、`configs/radar/*.yaml`、`configs/gps/*.yaml` 和 `configs/lidar/*.yaml` 中的单模态 teacher 与 student `gru_params` MUST 为 `[64, 64, 1]`
 - **AND** `configs/radar/*.yaml`、`configs/gps/*.yaml` 和 `configs/lidar/*.yaml` 中的共享训练字段 MUST 与 `configs/image/` 下同角色配置一致
-- **AND** `configs/fusion/no_kd.yaml`、`configs/fusion/logits_kd.yaml`、`configs/fusion/rkd.yaml` 和 `configs/fusion/image_radar_*.yaml` 中的 image+radar fusion teacher `gru_params` MUST 为 `[64, 64, 2]`
-- **AND** `configs/fusion/no_kd.yaml`、`configs/fusion/logits_kd.yaml`、`configs/fusion/rkd.yaml` 和 `configs/fusion/image_radar_*.yaml` 中的 image+radar fusion student `gru_params` MUST 为 `[64, 64, 1]`
+- **AND** `configs/fusion/image_radar_strong.yaml` 和 `configs/fusion/image_radar_lightweight.yaml` 中的 image+radar fusion primary `gru_params` MUST 分别匹配 strong/lightweight 默认
 - **AND** image+radar teacher no-KD 配置中作为训练主模型的 `model.student` 若为 `fusion_teacher`，其 `gru_params` MUST 为 `[64, 64, 2]`
 - **AND** `src/kd_sensing/config/defaults.py` MUST 不把所有 teacher/student 的 `gru_params` 统一强制为 `[64, 64, 2]`
 
@@ -185,32 +196,28 @@
 - **THEN** 训练流程 MUST 完成 forward、loss、backward、optimizer step、validation 和 checkpoint 保存的核心路径
 - **AND** 使用目标兼容配置时，smoke test MUST 使用与该配置匹配的 GRU 层数构建模型
 
-### Requirement: Radar-only KD 实验配置
-项目 MUST 提供 radar-only KD 配置，使 radar-only 实验能够通过配置选择 `logits_kd` 和 `rkd` 蒸馏模式。KD 配置 MUST 使用 `experiment.task: radar`，MUST 通过 `radar_teacher` 构建 frozen teacher，MUST 通过 `radar_student` 构建可训练 student，MUST 配置可解析的 RadarTeacher checkpoint 来源，并且 MUST 继续复用统一训练入口、loss、optimizer、scheduler、验证指标和输出目录语义。
+### Requirement: Radar-only KD 实验配置已移除
+项目 MUST 不再提供 radar-only KD 配置。旧 `logits_kd` 和 `rkd` 配置 MUST 在配置解析阶段失败，并引导用户使用 `configs/radar/strong.yaml`、`configs/radar/lightweight.yaml` 或 `configs/radar/supervised.yaml`。
 
 #### Scenario: 使用 logits KD 启动 radar-only 训练
 - **WHEN** 用户通过训练入口传入 `configs/radar/logits_kd.yaml`
-- **THEN** 系统 MUST 构建 `logits_kd` 蒸馏组件
-- **AND** 系统 MUST 构建 frozen `radar_teacher` teacher 和可训练 `radar_student` student
-- **AND** 系统 MUST 只使用雷达输入完成 teacher/student forward
-- **AND** 系统 MUST 使用任务 loss 与 logits KL 蒸馏 loss 的加权结果进行训练
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不构建 frozen teacher 或 distiller
 
 #### Scenario: 使用 RKD 启动 radar-only 训练
 - **WHEN** 用户通过训练入口传入 `configs/radar/rkd.yaml`
-- **THEN** 系统 MUST 构建 `rkd` 蒸馏组件
-- **AND** 系统 MUST 构建 frozen `radar_teacher` teacher 和可训练 `radar_student` student
-- **AND** 系统 MUST 只使用雷达输入完成 teacher/student forward
-- **AND** 系统 MUST 使用任务 loss 与关系蒸馏 loss 的加权结果进行训练
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不构建 frozen teacher 或 distiller
 
-#### Scenario: 使用默认 RadarTeacher checkpoint
-- **WHEN** 用户未覆盖 radar KD 配置中的 teacher 权重字段
-- **THEN** 系统 MUST 从 radar teacher no-KD 训练输出目录解析 teacher checkpoint
-- **AND** 该默认路径 MUST 对应 `outputs/radar_no_kd/checkpoints/best.pth`
+#### Scenario: 旧 RadarTeacher checkpoint 自动解析被移除
+- **WHEN** 用户运行当前 radar 训练配置
+- **THEN** 系统 MUST 不解析 teacher checkpoint
+- **AND** 训练流程 MUST 只更新 `model.primary`
 
-#### Scenario: 覆盖 RadarTeacher checkpoint
-- **WHEN** 用户通过命令行覆盖 `paths.weights_dir` 或 `distillation.teacher_model_name`
-- **THEN** 系统 MUST 使用覆盖后的值解析 radar teacher checkpoint
-- **AND** 系统 MUST 保持其它 radar-only KD 配置语义不变
+#### Scenario: 旧 RadarTeacher checkpoint override 被拒绝
+- **WHEN** 用户通过命令行覆盖 `distillation.teacher_model_name`
+- **THEN** 配置加载 MUST 失败
+- **AND** 错误信息 MUST 指向当前 supervised/adaptation 入口
 
 ### Requirement: RadarStudent no-KD 实验配置
 项目 MUST 提供 radar-only lightweight student no-KD 配置，用于直接训练 `radar_student` 并评估轻量雷达模型在无蒸馏条件下的表现。该配置 MUST 使用 `experiment.task: radar`，MUST 不加载 teacher checkpoint，并 MUST 复用统一训练、验证、评估和输出目录语义。
@@ -296,12 +303,12 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **AND** 未启用的模态字段 MUST 不影响训练启动
 
 ### Requirement: LiDAR 默认实验配置
-项目 MUST 提供 LiDAR-only no-KD、LiDAR student no-KD、LiDAR logits KD、LiDAR RKD 和包含 LiDAR 的 fusion 示例配置。所有默认 LiDAR teacher/student 配置 MUST 使用 `gru_params: [64, 64, 2]`。
+项目 MUST 提供 LiDAR-only strong、lightweight、supervised 和包含 LiDAR 的 fusion 示例配置。所有默认 LiDAR primary 配置 MUST 使用当前 modular BEV encoder 默认参数。
 
 #### Scenario: LiDAR 默认配置可构建
 - **WHEN** 开发者加载 `configs/lidar/*.yaml`
-- **THEN** 系统 MUST 能构建对应 dataset、model、loss、distiller、optimizer 和 scheduler
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 2]`
+- **THEN** 系统 MUST 能构建对应 dataset、model、loss、optimizer 和 scheduler
+- **AND** 配置 MUST 使用 `model.primary`
 
 #### Scenario: LiDAR fusion 示例配置可构建
 - **WHEN** 开发者加载包含 LiDAR 的 `configs/fusion/*.yaml`
@@ -327,88 +334,81 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **THEN** 训练流程 MUST 完成 forward、loss、backward、optimizer step、validation 和 checkpoint 保存的核心路径
 
 ### Requirement: 单模态 canonical 配置矩阵
-项目 MUST 为每个受支持单模态 `image`、`radar`、`gps` 和 `lidar` 提供统一命名的 canonical 配置矩阵。每个单模态目录 MUST 包含 `teacher_no_kd.yaml`、`student_no_kd.yaml`、`logits_kd.yaml` 和 `rkd.yaml`。canonical 配置 MUST 使用统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和输出目录语义。
+项目 MUST 为每个受支持单模态 `image`、`radar`、`gps`、`lidar` 和 `mmwave` 提供统一命名的 canonical 配置矩阵。每个单模态目录 MUST 包含 `strong.yaml`、`lightweight.yaml` 和 `supervised.yaml`。canonical 配置 MUST 使用 `model.primary`、统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和输出目录语义。
 
-#### Scenario: 单模态 teacher no-KD 配置
-- **WHEN** 开发者加载 `configs/<modality>/teacher_no_kd.yaml`
+#### Scenario: 单模态 strong 配置
+- **WHEN** 开发者加载 `configs/<modality>/strong.yaml`
 - **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
-- **AND** 配置 MUST 设置 `distillation.type: no_kd`
-- **AND** 配置 MUST 设置 `distillation.teacher_model_name: null`
-- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_teacher`
-- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_teacher_no_kd`
+- **AND** 配置 MUST 不包含 `distillation`
+- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_strong`
+- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_strong`
 
-#### Scenario: 单模态 student no-KD 配置
-- **WHEN** 开发者加载 `configs/<modality>/student_no_kd.yaml`
+#### Scenario: 单模态 lightweight 配置
+- **WHEN** 开发者加载 `configs/<modality>/lightweight.yaml`
 - **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
-- **AND** 配置 MUST 设置 `distillation.type: no_kd`
-- **AND** 配置 MUST 设置 `distillation.teacher_model_name: null`
-- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_student`
-- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_student_no_kd`
+- **AND** 配置 MUST 不包含 `distillation`
+- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_lightweight`
+- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_lightweight`
 
-#### Scenario: 单模态 logits KD 配置
-- **WHEN** 开发者加载 `configs/<modality>/logits_kd.yaml`
-- **THEN** 配置 MUST 设置 `distillation.type: logits_kd`
-- **AND** 配置 MUST 构建 frozen `<modality>_teacher`
-- **AND** 配置 MUST 构建可训练 `<modality>_student`
-- **AND** 配置 MUST 默认解析对应 canonical teacher no-KD 输出中的 `best.pth`
+#### Scenario: 单模态 supervised 配置
+- **WHEN** 开发者加载 `configs/<modality>/supervised.yaml`
+- **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
+- **AND** 配置 MUST 不包含 `distillation`
+- **AND** 配置 MUST 将被训练主模型配置为明确的 supervised baseline
 
-#### Scenario: 单模态 RKD 配置
-- **WHEN** 开发者加载 `configs/<modality>/rkd.yaml`
-- **THEN** 配置 MUST 设置 `distillation.type: rkd`
-- **AND** 配置 MUST 构建 frozen `<modality>_teacher`
-- **AND** 配置 MUST 构建可训练 `<modality>_student`
-- **AND** 配置 MUST 提供 `rkd_pairs_per_anchor`、`rkd_distance_weight` 和 `rkd_angle_weight`
-- **AND** 配置 MUST 默认解析对应 canonical teacher no-KD 输出中的 `best.pth`
+#### Scenario: 旧单模态 KD 配置被拒绝
+- **WHEN** 开发者加载 `configs/<modality>/logits_kd.yaml` 或 `configs/<modality>/rkd.yaml`
+- **THEN** 配置加载 MUST 失败
+- **AND** 错误信息 MUST 指向 strong、lightweight 或 supervised 入口
 
 ### Requirement: 单模态 legacy no-KD 入口兼容
-项目 MUST 保留现有 `configs/<modality>/no_kd.yaml` 入口作为兼容配置，并 MUST 在文档中说明其历史语义和推荐替代入口。legacy 入口不得改变 canonical 配置矩阵的语义。
+项目 MUST 拒绝现有 `configs/<modality>/no_kd.yaml` 旧入口，并 MUST 在文档中说明其历史语义和推荐替代入口。
 
 #### Scenario: image legacy no-KD 保持 student baseline
 - **WHEN** 用户运行 `configs/image/no_kd.yaml`
-- **THEN** 系统 MUST 继续训练 `image_student`
-- **AND** 文档 MUST 引导新实验优先使用 `configs/image/student_no_kd.yaml`
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 文档 MUST 引导新实验优先使用 `configs/image/lightweight.yaml` 或 `configs/image/supervised.yaml`
 
 #### Scenario: radar GPS LiDAR legacy no-KD 保持 teacher baseline
 - **WHEN** 用户运行 `configs/radar/no_kd.yaml`、`configs/gps/no_kd.yaml` 或 `configs/lidar/no_kd.yaml`
-- **THEN** 系统 MUST 继续训练对应 teacher baseline
-- **AND** 文档 MUST 引导新实验优先使用对应 `teacher_no_kd.yaml`
+- **THEN** 系统 MUST 拒绝这些配置
+- **AND** 文档 MUST 引导新实验优先使用对应 `strong.yaml`、`lightweight.yaml` 或 `supervised.yaml`
 
-### Requirement: teacher/student 角色不得受原脚本残留影响
-配置驱动流程 MUST 以 YAML 中的 `model.student` 作为 no-KD 时的被训练主模型，并 MUST 只在 `distillation.type` 非 `no_kd` 时构建 frozen teacher。默认 canonical student baseline 和 KD 配置 MUST 使用 lightweight student，不得默认使用 teacher-as-student 残留。
+### Requirement: primary 角色不得受原脚本残留影响
+配置驱动流程 MUST 以 YAML 中的 `model.primary` 作为被训练主模型。默认 canonical lightweight baseline MUST 使用 lightweight 注册名，不得默认使用旧 teacher-as-student 残留。
 
 #### Scenario: no-KD 只训练配置中的主模型
-- **WHEN** 配置设置 `distillation.type: no_kd`
+- **WHEN** 配置使用当前 supervised/adaptation 入口
 - **THEN** 训练流程 MUST 不构建或加载 frozen teacher
-- **AND** optimizer MUST 只更新 `model.student` 构建出的主模型
+- **AND** optimizer MUST 只更新 `model.primary` 构建出的主模型
 
 #### Scenario: canonical student baseline 使用 lightweight student
-- **WHEN** 开发者加载任意 canonical `student_no_kd.yaml`
-- **THEN** `model.student.type` MUST 为对应 lightweight student 注册名
-- **AND** `model.student.type` MUST NOT 等于对应 teacher 注册名
+- **WHEN** 开发者加载任意 canonical `lightweight.yaml`
+- **THEN** `model.primary.type` MUST 为对应 lightweight 注册名
+- **AND** `model.primary.type` MUST NOT 等于对应 strong 注册名
 
-#### Scenario: canonical KD 使用 teacher 蒸馏 student
+#### Scenario: canonical KD 路径被拒绝
 - **WHEN** 开发者加载任意 canonical `logits_kd.yaml` 或 `rkd.yaml`
-- **THEN** `model.teacher.type` MUST 为对应 teacher 注册名
-- **AND** `model.student.type` MUST 为对应 lightweight student 注册名
-- **AND** teacher 和 student 的输出 hidden size MUST 对齐以支持 RKD
+- **THEN** 配置加载 MUST 失败
+- **AND** 系统 MUST 不构建 frozen teacher 或 distiller
 
 ### Requirement: canonical 配置命名与输出目录一致
-canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher checkpoint 来源。默认路径 MUST 便于用户按 teacher baseline -> student baseline/KD 的顺序运行实验，并 MUST 支持命令行覆盖。
+canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUST 便于用户按 strong/lightweight/supervised 或当前 workflow 顺序运行实验，并 MUST 支持命令行覆盖。
 
 #### Scenario: canonical run name 与文件语义一致
 - **WHEN** 开发者加载任意 canonical 配置
 - **THEN** `experiment.name` MUST 与不含 `.yaml` 的文件 stem 一致
 - **AND** `output.run_name` MUST 与 `experiment.name` 一致
 
-#### Scenario: canonical KD 默认读取 teacher baseline 输出
-- **WHEN** 用户未覆盖 canonical KD 配置中的 teacher 权重字段
-- **THEN** 系统 MUST 从对应 canonical `teacher_no_kd` 输出目录解析 teacher checkpoint
-- **AND** 默认 checkpoint 文件名 MUST 为 `best.pth`
+#### Scenario: canonical 配置不解析 teacher checkpoint
+- **WHEN** 用户加载当前 canonical 配置
+- **THEN** 系统 MUST 不解析 teacher checkpoint
+- **AND** 训练流程 MUST 只构建 primary model
 
-#### Scenario: canonical KD checkpoint 可覆盖
-- **WHEN** 用户通过命令行覆盖 `paths.weights_dir` 或 `distillation.teacher_model_name`
-- **THEN** 系统 MUST 使用覆盖后的 teacher checkpoint 来源
-- **AND** 系统 MUST 保持该配置的 teacher/student 模型角色不变
+#### Scenario: canonical KD checkpoint override 被拒绝
+- **WHEN** 用户通过命令行覆盖 `distillation.teacher_model_name`
+- **THEN** 配置加载 MUST 失败
+- **AND** 错误信息 MUST 指向当前配置入口
 
 ### Requirement: 稳定实验工件输出记录
 训练和评估流程 MUST 在最终配置、训练日志或测试报告中记录 checkpoint 解析与归档信息。记录内容 MUST 包含实际加载 checkpoint 路径、加载来源、registry 目录、归档 checkpoint 路径、验证 Top-1 accuracy、归一化工件路径和实际 split 样本数。
@@ -425,16 +425,17 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **AND** 报告 MUST 记录 checkpoint 来源是显式路径、registry 还是旧路径回退
 
 ### Requirement: 默认实验 checkpoint 可被时间戳输出目录解耦
-默认 KD 和评估工作流 MUST 不依赖固定 `outputs/<run_name>/checkpoints/best.pth` 作为唯一权重来源。当固定 `run_name` 已存在导致新训练输出目录追加时间戳时，后续 KD 或评估 MUST 能通过 registry 找到对应配置的最高验证 Top-1 checkpoint。
+默认评估工作流 MUST 不依赖固定 `outputs/<run_name>/checkpoints/best.pth` 作为唯一权重来源。当固定 `run_name` 已存在导致新训练输出目录追加时间戳时，后续评估 MAY 通过 registry 找到对应配置的最高验证 Top-1 checkpoint。
 
-#### Scenario: 时间戳 teacher 输出被 KD 复用
-- **WHEN** teacher no-KD 训练因为目标运行目录已存在而写入带时间戳后缀的新运行目录
-- **THEN** 训练完成后 registry MUST 保存该 teacher 的最高验证 Top-1 checkpoint
-- **AND** 后续对应 KD 配置 MUST 能从 registry 加载该 teacher checkpoint
+#### Scenario: 时间戳输出被评估复用
+- **WHEN** 训练因为目标运行目录已存在而写入带时间戳后缀的新运行目录
+- **THEN** 训练完成后 registry MAY 保存该运行的最高验证 Top-1 checkpoint
+- **AND** 后续评估 MUST 能显式指定或从 registry 解析该 checkpoint
 
-#### Scenario: 旧路径保持兼容
+#### Scenario: 旧 KD 权重路径不再作为训练 fallback
 - **WHEN** 用户已有旧式 `paths.weights_dir / teacher_model_name` checkpoint 且 registry 没有匹配候选
-- **THEN** KD teacher 加载 MUST 继续支持旧路径
+- **THEN** 当前训练流程 MUST 不使用该路径加载 teacher
+- **AND** 评估入口仍可通过 `--weights` 显式指定待评估 checkpoint
 
 ### Requirement: mmWave 配置驱动实验
 项目 MUST 支持通过配置文件启动 mmWave-only 训练和评估。mmWave-only 配置 MUST 使用 `experiment.task: mmwave`，并通过统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
@@ -465,18 +466,18 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 - **AND** 未启用的模态字段 MUST 不影响训练启动
 
 ### Requirement: mmWave 默认实验配置
-项目 MUST 提供 mmWave-only teacher no-KD、student no-KD、logits KD、RKD 配置和包含 mmWave 的 canonical fusion 配置。所有默认 mmWave teacher/student 配置 MUST 使用 `mmwave_input_size: 64`、`mmwave_normalize: true` 和 `gru_params: [64, 64, 1]`。
+项目 MUST 提供 mmWave-only strong、lightweight、supervised 配置和包含 mmWave 的 canonical fusion 配置。所有默认 mmWave primary 配置 MUST 使用 `mmwave_input_size: 64`、`mmwave_normalize: true` 和 `gru_params: [64, 64, 1]`。
 
 #### Scenario: mmWave 默认配置可构建
 - **WHEN** 开发者加载 `configs/mmwave/*.yaml`
-- **THEN** 系统 MUST 能构建对应 dataset、model、loss、distiller、optimizer 和 scheduler
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
-- **AND** teacher 和 student 配置的 `mmwave_input_size` MUST 为 64
+- **THEN** 系统 MUST 能构建对应 dataset、model、loss、optimizer 和 scheduler
+- **AND** primary 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+- **AND** primary 配置的 `mmwave_input_size` MUST 为 64
 
-#### Scenario: mmWave KD 配置默认 checkpoint 来源
-- **WHEN** 用户运行 `configs/mmwave/logits_kd.yaml` 或 `configs/mmwave/rkd.yaml` 且未显式覆盖 teacher 权重
-- **THEN** 系统 MUST 从 mmWave teacher no-KD 训练输出或最佳 checkpoint registry 解析 teacher checkpoint
-- **AND** 该默认解析 MUST 与其它单模态 KD 配置的 checkpoint 优先级一致
+#### Scenario: mmWave KD 配置被拒绝
+- **WHEN** 用户运行 `configs/mmwave/logits_kd.yaml` 或 `configs/mmwave/rkd.yaml`
+- **THEN** 配置加载 MUST 失败
+- **AND** 系统 MUST 不解析 teacher checkpoint
 
 ### Requirement: mmWave 预处理入口
 预处理入口 MUST 支持通过配置生成带 mmWave 输入列的 Scenario 9 sequence CSV。该入口 MUST 允许配置 mmWave 源列和 fallback 列，并保持未启用 mmWave 的序列生成行为兼容。
@@ -595,17 +596,17 @@ canonical 配置 MUST 使用可预测的实验名、run name 和默认 teacher c
 训练、评估和测试工作流 MUST 接受由配置加载器生成的虚拟 canonical fusion 配置。虚拟配置 MUST 在进入训练、评估、dry-run、override 合并、验证和 artifact 写出之前被解析为完整配置字典。
 
 #### Scenario: 训练入口使用虚拟 canonical 配置
-- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_logits_kd.yaml`
-- **THEN** 系统 MUST 解析该 canonical path 并启动 fusion logits KD 训练流程
-- **AND** 训练流程 MUST 不要求 `configs/fusion/gps_mmwave_logits_kd.yaml` 在磁盘上存在
+- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_lightweight.yaml`
+- **THEN** 系统 MUST 解析该 canonical path 并启动 fusion lightweight 训练流程
+- **AND** 训练流程 MUST 不要求 `configs/fusion/gps_mmwave_lightweight.yaml` 在磁盘上存在
 
 #### Scenario: 评估入口使用虚拟 canonical 配置
-- **WHEN** 用户运行 `python scripts/evaluate.py --config configs/fusion/gps_mmwave_logits_kd.yaml --weights <path>`
-- **THEN** 系统 MUST 解析该 canonical path 并构建对应 fusion student 模型
+- **WHEN** 用户运行 `python scripts/evaluate.py --config configs/fusion/gps_mmwave_lightweight.yaml --weights <path>`
+- **THEN** 系统 MUST 解析该 canonical path 并构建对应 fusion primary 模型
 - **AND** 评估流程 MUST 只准备该配置启用的模态输入
 
 #### Scenario: dry-run 使用虚拟 canonical 配置
-- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_logits_kd.yaml --dry-run`
+- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_lightweight.yaml --dry-run`
 - **THEN** 系统 MUST 先生成 canonical 配置，再应用 dry-run 覆盖
 - **AND** dry-run MUST 使用 synthetic dataset、单 epoch 和关闭 worker 的现有行为
 
@@ -1445,43 +1446,17 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 输出 MUST 给出生成或引用 strict split metadata 的修复提示
 
 ### Requirement: 默认实验入口去 KD-first 化
-项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 no-KD supervised/adaptation 工作流为默认。KD 配置可以保留为 legacy 或 optional baseline，但不得作为当前主线默认实验入口。
+项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 supervised/adaptation 工作流为默认。旧 KD 配置不得作为当前主线默认实验入口。
 
 #### Scenario: README quickstart 使用 no-KD 主线
 - **WHEN** 开发者阅读 README 或当前主线运行说明
-- **THEN** 推荐的首个训练、评估或 HiST-Beam LOSO 命令 MUST 使用 no-KD supervised/adaptation 配置
+- **THEN** 推荐的首个训练、评估或 HiST-Beam LOSO 命令 MUST 使用 supervised/adaptation 配置
 - **AND** 文档 MUST 不把 `logits_kd` 或 `rkd` 作为当前主线 quickstart
 
 #### Scenario: canonical mainline 配置不要求 teacher checkpoint
 - **WHEN** 用户加载当前推荐的 mainline 配置
 - **THEN** 配置 MUST 能在没有 teacher checkpoint 的情况下完成解析和 dry-run/smoke 构建
-- **AND** 输出 metadata MUST 记录 `distillation_enabled=false`
-
-### Requirement: Legacy KD 配置生命周期可审计
-保留的 KD 配置、脚本或虚拟 canonical recipe MUST 有明确生命周期分类。它们 MUST 被标注为 legacy KD、optional baseline、historical reproduction 或 future optional enhancement 中的一类，并且 MUST 不与 current mainline 配置混淆。
-
-#### Scenario: KD 配置带生命周期标记
-- **WHEN** 仓库中保留 `configs/**/logits_kd.yaml`、`configs/**/rkd.yaml` 或等价 KD recipe
-- **THEN** 配置、相邻 README、inventory 或配置生成 metadata MUST 标明其生命周期分类
-- **AND** 配置 MUST 记录它不是默认 mainline quick validation 的必要输入
-
-#### Scenario: 未标记 KD 入口导致检查失败
-- **WHEN** 开发者新增 KD 相关配置、script、tool 或 canonical recipe
-- **THEN** 表面积或配置生命周期检查 MUST 要求登记该入口
-- **AND** 未登记入口 MUST 导致检查失败或给出清晰修复提示
-
-### Requirement: 实验 summary 区分 KD 与 mainline
-训练、评估、LOSO 和 quick validation 的 summary artifact MUST 能区分 no-KD mainline、legacy KD baseline 和 optional KD enhancement。summary MUST 保留 KD 指标用于补充比较，但不得将其混入 mainline 默认排名或 eligibility 判断。
-
-#### Scenario: summary 写出 method family
-- **WHEN** 系统写出 run-level metrics、run metadata、LOSO summary 或 quick validation conclusion
-- **THEN** artifact MUST 包含 method family、distillation enabled 状态或等价字段
-- **AND** 对 legacy KD run MUST 记录 teacher checkpoint/source 和 distillation type
-
-#### Scenario: mainline ranking 排除 legacy KD
-- **WHEN** quick validation conclusion 计算 current mainline 排名或胜负判断
-- **THEN** conclusion MUST 默认排除 `method_family=legacy_kd` 的 run
-- **AND** 若用户显式请求 KD comparison，conclusion MUST 将其标记为 supplemental comparison
+- **AND** 输出 metadata MUST 不记录 KD-enabled lineage
 
 ### Requirement: 项目描述反映当前主线
 项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态/少样本跨场景 beam prediction、HiST-Beam 或 history-anchored adaptation，而不是 KD-first 工作流。历史 KD 背景可以保留，但必须标记为历史或 baseline。
@@ -1517,4 +1492,235 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 no-K
 - **THEN** 验证命令 MUST 使用 `conda run -n kd_mm_beam`
 - **AND** 命令 MUST 不包含已退役的独立模态诊断脚本
 - **AND** 验证 MUST 覆盖配置加载失败、架构边界和保留 evaluation subset 能力
+
+### Requirement: MMW Town GPS v2 CLI workflow
+项目 MUST 提供配置驱动的 MMW Town GPS-only v2 runner、plotter 和 comparison 入口。入口 MUST 位于 `kd_sensing` 包内并可通过 console script 或 `python -m kd_sensing.cli.<module>` 运行；项目 MUST NOT 要求用户通过 `python -m src.*` 调用该 workflow。
+
+#### Scenario: v2 runner help 可用
+- **WHEN** 用户执行 `conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 包含 `--config`、`--label-space`、`--target-scene`、`--support-ratio`、`--support-num` 和 `--support-mode`
+
+#### Scenario: plotter 和 comparison help 可用
+- **WHEN** 用户执行 v2 plotter 或 comparison console script 的 `--help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 包含 results dir、previous dir 或 new dir 等必要参数
+
+### Requirement: MMW Town GPS v2 default configuration
+项目 MUST 提供 `configs/mmw_town_gps_adapter_v2.yaml` 或等价 v2 配置。配置 MUST 声明数据根、已有分析目录、label space、四个 scene、num_beams、split、model、loss、train、adapt、metrics 和 ablation 矩阵。
+
+#### Scenario: 默认配置可解析
+- **WHEN** 用户通过 v2 runner 传入默认 v2 配置
+- **THEN** 系统 MUST 能解析完整配置
+- **AND** 默认 label space MUST 为 `mapping_enabled`
+- **AND** 默认 scene 列表 MUST 覆盖 crossroad、skybridge、curvyroad 和 Hroad
+
+### Requirement: README documents MMW Town GPS v2
+README MUST 增加 MMW Town GPS-only v2 说明，覆盖普通跨场景 GPS 分类器失败原因、circular beam distance、mapping_enabled/mapping_disabled、SceneAdapterV2 三种 adapter、完整实验命令、summary_by_scene 解读、crossroad/Hroad 残差诊断和后续多模态 residual correction 边界。
+
+#### Scenario: README 提供可执行命令
+- **WHEN** 开发者阅读 README 的 MMW Town GPS-only v2 小节
+- **THEN** 文档 MUST 提供使用 `conda run -n kd_mm_beam` 的 runner、plotter 和 comparison 命令
+- **AND** 文档 MUST 明确本 change 不实现多模态 residual correction
+
+### Requirement: Residual workflow query leakage guard
+DeepSense6G residual workflow MUST prevent target query labels from being used for prior construction, support selection, early stopping, model selection or hyperparameter tuning.
+
+#### Scenario: query label 只用于最终评价
+- **WHEN** 系统运行 `target_adapt_beambench_residual`
+- **THEN** target query label MUST only be used to compute final metrics, predictions diagnostics, figures and comparison report
+- **AND** run metadata MUST record `query_label_used_for_training=false`
+- **AND** model selection split MUST be source validation or target support internal validation
+
+#### Scenario: support/query role 可审计
+- **WHEN** residual manifest 和 predictions 被写出
+- **THEN** 每一行 MUST 包含 support/query role
+- **AND** summary MUST record support count and query count for each target scene
+
+### Requirement: Residual workflow result contract
+DeepSense6G residual workflow MUST produce machine-readable summaries that can compare every residual ablation against GPS v2 baseline.
+
+#### Scenario: residual summary 字段
+- **WHEN** residual evaluation 完成
+- **THEN** summary MUST include protocol、support ratio、label space、train mode、ablation、modalities、num samples、DBA、DBA zero ratio、mean/median circular error、exact/pm/top-k metrics、GPS baseline metrics and residual deltas
+- **AND** 所有 error 字段 MUST 使用 circular distance
+
+#### Scenario: gps_prior_only 复现 GPS v2
+- **WHEN** 用户运行 `gps_prior_only`
+- **THEN** 系统 MUST 读取 GPS v2 r15 prior predictions
+- **AND** summary MUST numerically match v2 r15 within documented tolerance
+- **AND** 若不能匹配 MUST 在 comparison report 中记录差异原因
+
+#### Scenario: 推荐方法选择规则
+- **WHEN** comparison report 选择推荐 residual method
+- **THEN** 系统 MUST 首先考虑 overall DBA
+- **AND** 系统 MUST 同时检查 good sample degradation rate
+- **AND** DBA 略高但大量破坏 GPS good 样本的方法 MUST NOT 被标为推荐方法
+
+### Requirement: Residual workflow acceptance commands
+实现完成后 residual workflow MUST 提供可在 `kd_mm_beam` 环境中运行的 inspection、manifest、train/eval、plot、compare 和 test 命令。
+
+#### Scenario: 验收命令使用 kd_mm_beam
+- **WHEN** 开发者运行 residual workflow 验收
+- **THEN** 所有 Python 命令 MUST 使用 `conda run -n kd_mm_beam`
+- **AND** 命令 MUST 使用 `kd_sensing` 包内 CLI 或 console script
+- **AND** 验收 MUST 包含 residual 新测试与现有 circular metrics 回归
+
+### Requirement: Camera residual staged CLI workflow
+项目 MUST 提供 camera residual 分阶段包内 CLI，用于 manifest 构建、Camera AE 训练、AE feature extraction、residual/gate 训练评估、plot 和 compare。所有项目相关 Python 命令 MUST 通过 `conda run -n kd_mm_beam` 运行。
+
+#### Scenario: manifest CLI
+- **WHEN** 用户运行 camera residual manifest CLI
+- **THEN** CLI MUST 接受 `--config`、`--support-ratio` 和 `--label-space`
+- **AND** CLI MUST 输出 camera residual manifest 和 metadata
+
+#### Scenario: AE train CLI
+- **WHEN** 用户运行 Camera AE train CLI
+- **THEN** CLI MUST 接受 `--config`、`--support-ratio` 和 `--label-space`
+- **AND** CLI MUST 保存 checkpoint、metrics 和 reconstruction examples
+
+#### Scenario: AE feature extraction CLI
+- **WHEN** 用户运行 AE feature extraction CLI
+- **THEN** CLI MUST 接受 `--config`、`--checkpoint`、`--support-ratio` 和 `--label-space`
+- **AND** CLI MUST 输出 features、features index 和 manifest with AE
+
+#### Scenario: residual run CLI
+- **WHEN** 用户运行 camera residual train/eval CLI
+- **THEN** CLI MUST 接受 `--config`、`--support-ratio` 和 `--label-space`
+- **AND** CLI MUST 写出 summary、predictions、correction events、candidate recall 和 run metadata
+
+#### Scenario: plot and compare CLI
+- **WHEN** 用户运行 camera residual plot 或 compare CLI
+- **THEN** plot CLI MUST 从 results dir 生成 figures
+- **AND** compare CLI MUST 读取 GPS v2 baseline 与 camera residual summary 并写出 comparison report
+
+### Requirement: Camera residual query leakage guard
+camera residual workflow MUST 显式记录并执行 query leakage guard。target query label 只能用于最终 evaluation、predictions、figures 和 report。
+
+#### Scenario: early stopping 不使用 query
+- **WHEN** residual/gate 训练启用 early stopping
+- **THEN** early stopping MUST 使用 source validation 或 target support 内部 validation
+- **AND** target query label MUST NOT 用于模型选择
+
+#### Scenario: query label usage metadata
+- **WHEN** camera residual run 完成
+- **THEN** run metadata MUST 记录 query label 只用于 evaluation
+- **AND** metadata MUST 记录 model selection split
+- **AND** metadata MUST 记录 support/query count 和 target scene
+
+#### Scenario: package CLI 边界
+- **WHEN** 实现新增 camera residual 入口
+- **THEN** 入口 MUST 位于 `src/kd_sensing/cli/`
+- **AND** 项目 MUST NOT 新增顶层 `src.*` 运行入口作为兼容包装
+
+### Requirement: DeepSense6G Top8 selector 配置驱动工作流
+项目 MUST 提供 `configs/deepsense6g_top8_selector.yaml`，用于驱动 DeepSense6G GPS Top8 Candidate Selector 的 manifest、训练、评价、绘图和 GPS v2 comparison。配置 MUST 声明数据场景、label space、GPS v2 sweep root、TopK analysis dir、output root、candidate topk、optional modality、model、attention、loss、train、experiment、metrics 和 outputs。
+
+#### Scenario: 默认配置字段
+- **WHEN** 开发者查看 `configs/deepsense6g_top8_selector.yaml`
+- **THEN** 配置 MUST 包含 scenario31-34、`mapping_disabled`、`num_beams=64`、`gps_v2_default_support_ratio=0.15`、`topk=8`、`require_saved_logits=true` 和 `output_root=outputs/analysis/deepsense6g_top8_selector`
+- **AND** 配置 MUST 包含默认 ablations 和 `target_adapt_beambench_top8_selector` protocol
+
+#### Scenario: 命令行覆盖 support ratio 和 label space
+- **WHEN** 用户通过 Top8 selector CLI 传入 `--support-ratio`、`--label-space` 或 `--topk`
+- **THEN** 系统 MUST 使用命令行值覆盖配置默认值
+- **AND** 输出目录 MUST 按 ratio tag 和 label space 分离
+
+#### Scenario: 运行产物保存配置快照
+- **WHEN** Top8 selector workflow 完成一次运行
+- **THEN** result dir MUST 保存 resolved config 或等价配置快照
+- **AND** run metadata MUST 记录 workflow、support ratio、label space、topk、train mode、ablation、source scenes、target scene、support/query count、GPS v2 artifact path 和 query label usage
+
+### Requirement: Top8 selector 验收命令
+项目 MUST 记录并支持 Top8 selector 的分层验收命令。所有项目相关 Python 命令 MUST 使用 `conda run -n kd_mm_beam` 环境运行。
+
+#### Scenario: manifest 验收命令
+- **WHEN** 开发者运行 manifest 验收
+- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-prepare-deepsense6g-top8-candidate-manifest --config configs/deepsense6g_top8_selector.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
+- **AND** 命令 MUST 写出 `manifest/top8_candidate_manifest.csv`
+
+#### Scenario: selector 训练评价验收命令
+- **WHEN** 开发者运行 selector workflow 验收
+- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-run-deepsense6g-top8-selector --config configs/deepsense6g_top8_selector.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
+- **AND** 命令 MUST 写出 summary、predictions、selection events 和 run metadata
+
+#### Scenario: plot 与 comparison 验收命令
+- **WHEN** 开发者运行 plot 与 comparison 验收
+- **THEN** 推荐命令 MUST 覆盖 `kd-sensing-plot-deepsense6g-top8-selector` 和 `kd-sensing-compare-deepsense6g-top8-selector-with-gps-v2`
+- **AND** plotter MUST 写出 `figures/`
+- **AND** comparison MUST 写出 `comparison_with_gps_v2.csv` 和 `comparison_report.md`
+
+#### Scenario: 测试验收命令
+- **WHEN** 开发者运行 Top8 selector 单元测试
+- **THEN** 推荐命令 MUST 覆盖 `tests/test_topk_candidate_manifest.py`、`tests/test_topk_candidate_selector.py`、`tests/test_topk_candidate_losses.py`、`tests/test_candidate_attention_selector.py` 和 `tests/test_circular_metrics.py`
+- **AND** 最终回归仍 MUST 使用 `conda run -n kd_mm_beam pytest -q`
+
+### Requirement: Top8 selector README 工作流说明
+README MUST 新增 “DeepSense6G GPS Top8 Candidate Selector” 章节。该章节 MUST 保持 quickstart 风格，说明为什么从 residual correction 改成 Top8 selector、候选生成与 selector 输入输出、candidate soft label、GPS prior fusion、miss head、完整运行流程、结果文件和有效性判断。
+
+#### Scenario: README 说明主方法与反例
+- **WHEN** 用户阅读 README 的 Top8 selector 章节
+- **THEN** 文档 MUST 明确 GPS v2 是 candidate generator
+- **AND** 文档 MUST 明确其他模态只做候选内选择或重排
+- **AND** 文档 MUST 说明 64 类 direct modality prediction 和 no-GPS-prior fusion 不是主推荐方法
+
+#### Scenario: README 说明结果判读
+- **WHEN** 用户阅读 README 的结果判读说明
+- **THEN** 文档 MUST 指向 `summary_overall.csv`、`summary_by_scene.csv`、`summary_by_top8_hit_miss.csv`、`predictions.csv`、`selection_events.csv` 和 `comparison_report.md`
+- **AND** 文档 MUST 说明如何判断 selector 是否超过 GPS top1 baseline、是否接近 Top8 oracle、target-in-Top8 样本是否提升、scenario32/34 是否受 Top8 上限限制、camera AE 是否优于 GPS context-only selector
+
+### Requirement: GPS+LiDAR BGAM 配置驱动工作流
+项目 MUST 提供 `configs/deepsense6g_gps_lidar_bgam.yaml`，用于驱动 DeepSense6G GPS+LiDAR BGAM 的 manifest enrich、训练、评估、debug mask、ablation 和 comparison。配置 MUST 声明数据场景、GPS v2 artifact、Top8 manifest、LiDAR profile/cache、geometry、BGAM、model、loss、train、eval、ablation、metrics 和 outputs。
+
+#### Scenario: 默认配置字段
+- **WHEN** 开发者查看 `configs/deepsense6g_gps_lidar_bgam.yaml`
+- **THEN** 配置 MUST 包含 scenario31-34、`mapping_disabled`、`num_beams=64`、`support_ratio=0.15`、`topk=8`、GPS v2 sweep root、Top8 manifest path、LiDAR BEV/grid defaults、BGAM default mode `single_soft` 和 output root
+- **AND** 配置 MUST 包含 `anti_leakage.query_label_used_for_training=false`
+
+#### Scenario: 命令行覆盖核心参数
+- **WHEN** 用户通过 BGAM CLI 传入 `--support-ratio`、`--label-space`、`--topk`、`--bgam-mode` 或 `--output-dir`
+- **THEN** 系统 MUST 使用命令行值覆盖配置默认值
+- **AND** 输出目录 MUST 按 ratio tag、label space 和 run name 分离
+
+#### Scenario: 运行产物保存配置快照
+- **WHEN** BGAM workflow 完成一次运行
+- **THEN** result dir MUST 保存 resolved config 或等价配置快照
+- **AND** run metadata MUST 记录 GPS v2 artifact path、Top8 manifest path、LiDAR cache/profile、BGAM mode、beam angle source、support/query count 和 query label usage
+
+### Requirement: GPS+LiDAR BGAM 验收命令
+项目 MUST 记录并支持 GPS+LiDAR BGAM 的分层验收命令。所有项目相关 Python 命令 MUST 使用 `conda run -n kd_mm_beam` 环境运行。
+
+#### Scenario: manifest enrich 验收命令
+- **WHEN** 开发者运行 BGAM manifest enrich 验收
+- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest --config configs/deepsense6g_gps_lidar_bgam.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
+- **AND** 命令 MUST 写出 BGAM manifest 和 metadata
+
+#### Scenario: 训练评价验收命令
+- **WHEN** 开发者运行 BGAM 训练评价验收
+- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --config configs/deepsense6g_gps_lidar_bgam.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
+- **AND** 命令 MUST 写出 metrics、summary、predictions、debug mask metadata 和 run metadata
+
+#### Scenario: 独立评估验收命令
+- **WHEN** 开发者运行已训练 checkpoint 的独立评估
+- **THEN** 推荐命令 MUST 覆盖 `kd-sensing-evaluate-deepsense6g-gps-lidar-bgam`
+- **AND** 命令 MUST 读取配置和 checkpoint
+- **AND** 命令 MUST 写出 `metrics.json` 和 `predictions.csv`
+
+#### Scenario: 测试验收命令
+- **WHEN** 开发者运行 BGAM 单元测试
+- **THEN** 推荐命令 MUST 覆盖 `tests/test_gps_lidar_bgam_geometry.py`、`tests/test_gps_lidar_bgam_model.py`、`tests/test_gps_lidar_bgam_dataset.py` 和 `tests/test_gps_lidar_bgam_runner.py`
+- **AND** 最终回归仍 MUST 使用 `conda run -n kd_mm_beam pytest -q`
+
+### Requirement: GPS+LiDAR BGAM README 工作流说明
+README MUST 新增 GPS+LiDAR BGAM reranker 章节。该章节 MUST 保持 quickstart 风格，说明动机、输入 manifest、GPS/RSU coordinate assumption、beam-angle convention、BGAM modes、训练/评估命令、输出文件、debug mask 和结果判读。
+
+#### Scenario: README 说明输入和假设
+- **WHEN** 用户阅读 README 的 GPS+LiDAR BGAM 章节
+- **THEN** 文档 MUST 说明需要 LiDAR path 或 BEV cache、GPS coordinate、RSU coordinate/yaw、GPS v2 logits/probs 或 Top8 manifest 和 64-beam label
+- **AND** 文档 MUST 明确 future ground-truth beam 不用于 BGAM mask
+
+#### Scenario: README 说明结果判读
+- **WHEN** 用户阅读 README 的 BGAM 结果判读说明
+- **THEN** 文档 MUST 指向 `metrics.json`、`summary_overall.csv`、`summary_by_scene.csv`、`summary_by_bgam_mode.csv`、`predictions.csv`、`debug_masks/` 和 comparison report
+- **AND** 文档 MUST 说明如何比较 GPS-only、GPS+LiDAR no BGAM、soft/hard/topK BGAM 和 topK per-candidate rerank
 

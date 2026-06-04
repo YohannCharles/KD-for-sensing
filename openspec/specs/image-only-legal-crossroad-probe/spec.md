@@ -1,7 +1,7 @@
 # image-only-legal-crossroad-probe Specification
 
 ## Purpose
-TBD - created by archiving change add-image-only-legal-crossroad-probe. Update Purpose after archive.
+定义 MMW Town10 crossroad 上 image-only few-shot probe 的合法输入边界、运行矩阵、feature cache 和 eligibility reporting，用于隔离图像模态能力并防止 GPS、radio/path、beam_power 或 target_test label oracle 泄漏到 adaptation。
 ## Requirements
 ### Requirement: Image-only 合法 crossroad probe 配置
 系统 MUST 提供 `configs/hist_beam/image_only_legal_crossroad_probe.yaml`，用于在 MMW Town10 crossroad target scene 上运行 image-only 合法 few-shot probe。该配置 MUST 显式声明启用模态仅为 `image`，禁用 GPS、LiDAR、radar、mmWave、CSI、channel、path 和 beam_power，且 target adaptation MUST 只允许使用 target support image 与 beam label。
@@ -87,4 +87,3 @@ TBD - created by archiving change add-image-only-legal-crossroad-probe. Update P
 - **WHEN** 开发者实现或修改 image-only probe
 - **THEN** smoke test MUST 覆盖 image-only dataloader one batch、source forward、target adaptation forward、loss backward、eval metrics 和 eligibility check
 - **AND** smoke test 命令 MUST 使用 `conda run -n kd_mm_beam`
-

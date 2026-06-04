@@ -37,8 +37,6 @@ def main(argv: list[str] | None = None) -> dict:
         cfg["data"]["dataloader"]["num_workers"] = 0
         cfg["training"]["epochs"] = 1
         cfg["training"]["use_early_stopping"] = False
-        cfg["distillation"]["type"] = "no_kd"
-        cfg["distillation"]["teacher_model_name"] = None
         cfg["output"]["run_name"] = f"{cfg['experiment']['name']}_dry_run"
     result = train(cfg)
     print_result(result)

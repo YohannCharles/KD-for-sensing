@@ -6,8 +6,13 @@ from typing import Any
 import torch
 
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
+from kd_sensing.engine.gps_coarse_anchor import (
+    GpsCoarseAnchor,
+    GpsCoarseAnchorConfig,
+    compute_gps_coarse_anchor_loss,
+)
+from kd_sensing.engine.model_output import select_prediction_slots
 from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
-from kd_sensing.engine.run_lineage import distillation_enabled
 from kd_sensing.engine.runtime import (
     autocast_context,
     prepare_task_auxiliary_targets,
@@ -28,10 +33,10 @@ from kd_sensing.engine.training_extensions import (
 class BatchStepResult:
     batch: dict[str, torch.Tensor]
     labels: torch.Tensor
-    student_logits: torch.Tensor
+    primary_logits: torch.Tensor
     total_loss: torch.Tensor
     task_loss: torch.Tensor
-    distill_loss: torch.Tensor
+    auxiliary_loss: torch.Tensor
     prediction_loss: Any
     extra_loss_values: dict[str, torch.Tensor]
     scalar_diagnostics: dict[str, float]
@@ -111,55 +116,50 @@ class BatchStepRunner:
                         epoch=epoch,
                     )
                 )
-            set_csi_debug_batch_source(context.student_model, "train")
-            student_step = run_model_step(
-                context.student_model,
+            set_csi_debug_batch_source(context.primary_model, "train")
+            primary_step = run_model_step(
+                context.primary_model,
                 self.task,
                 batch,
-                model_cfg=self.model_cfg["student"],
-                seq_length=context.seq_length_student,
+                model_cfg=self.model_cfg["primary"],
+                seq_length=context.seq_length,
                 num_pred=context.num_pred,
                 device=context.device,
                 non_blocking=context.non_blocking,
                 force_modality_mask=controls.force_modality_mask,
                 extra_model_kwargs=controls.model_kwargs,
             )
-            student_model_output = student_step.model_output
-            student_outputs = student_step.logits
-            student_input_features = student_model_output.input_features
-            student_out_features = student_model_output.output_features
+            primary_model_output = primary_step.model_output
+            primary_outputs = primary_step.logits
             batch_state = BatchState(
                 epoch=epoch,
                 step=step,
                 batch=batch,
                 labels=labels,
                 soft_beam_targets=soft_beam_targets,
-                student_output=student_model_output,
-                student_logits=student_outputs,
+                primary_output=primary_model_output,
+                primary_logits=primary_outputs,
                 controls=controls,
             )
             base_loss = self._compute_base_loss(
                 batch_state=batch_state,
                 batch=batch,
                 labels=labels,
-                student_outputs=student_outputs,
-                student_input_features=student_input_features,
-                student_out_features=student_out_features,
+                primary_outputs=primary_outputs,
                 current_alpha=current_alpha,
             )
-            batch_state.teacher_diagnostics = base_loss.teacher_diagnostics
 
             total_loss = base_loss.total_loss
             task_loss = base_loss.task_loss
-            distill_loss = base_loss.distill_loss
+            auxiliary_loss = base_loss.auxiliary_loss
             batch_state.total_loss = total_loss
             batch_state.task_loss = task_loss
-            batch_state.distill_loss = distill_loss
+            batch_state.auxiliary_loss = auxiliary_loss
             batch_state.active_modalities = base_loss.active_modalities
             scalar_diagnostics = dict(base_loss.diagnostics)
             extra_loss_values = {
-                "beam_soft": student_outputs.sum() * 0.0,
-                "unimodal": student_outputs.sum() * 0.0,
+                "beam_soft": primary_outputs.sum() * 0.0,
+                "unimodal": primary_outputs.sum() * 0.0,
             }
             if "loss/beam_soft_target" in scalar_diagnostics:
                 extra_loss_values["beam_soft"] = task_loss
@@ -173,34 +173,41 @@ class BatchStepRunner:
                         extra_loss_values[key] = bundle.components[key]
                 scalar_diagnostics.update(bundle.diagnostics)
             prediction_loss = compute_prediction_loss(
-                student_model_output,
+                primary_model_output,
                 prediction_targets,
                 self.cfg,
-                reference=student_outputs,
+                reference=primary_outputs,
                 beam_total_loss=total_loss,
                 beam_task_loss=task_loss,
             )
             total_loss = prediction_loss.total
             task_loss = prediction_loss.primary
-            if self.cfg.get("experiment", {}).get("objective", "beam") not in {"beam", "multitask"}:
-                distill_loss = student_outputs.sum() * 0.0
+            anchor_loss = _optional_gps_anchor_loss(
+                primary_model_output.diagnostics,
+                labels,
+                self.cfg,
+                reference=primary_outputs,
+            )
+            if anchor_loss is not None:
+                total_loss = total_loss + anchor_loss[0]
+                scalar_diagnostics.update(anchor_loss[1])
             scalar_diagnostics.update(prediction_loss.diagnostics)
-            scalar_diagnostics.update(raymobtime_gate_scalar_diagnostics(student_model_output.diagnostics))
+            scalar_diagnostics.update(raymobtime_gate_scalar_diagnostics(primary_model_output.diagnostics))
             batch_state.total_loss = total_loss
             batch_state.task_loss = task_loss
-            batch_state.distill_loss = distill_loss
+            batch_state.auxiliary_loss = auxiliary_loss
 
         self._backward_and_step(total_loss, batch_state)
-        prediction = torch.argmax(student_outputs, dim=-1)
+        prediction = torch.argmax(primary_outputs, dim=-1)
         valid = torch.sum(labels != -100).item()
         accuracy = (prediction == labels).sum().item() / max(valid, 1)
         return BatchStepResult(
             batch=batch,
             labels=labels,
-            student_logits=student_outputs,
+            primary_logits=primary_outputs,
             total_loss=total_loss,
             task_loss=task_loss,
-            distill_loss=distill_loss,
+            auxiliary_loss=auxiliary_loss,
             prediction_loss=prediction_loss,
             extra_loss_values=extra_loss_values,
             scalar_diagnostics=scalar_diagnostics,
@@ -213,9 +220,7 @@ class BatchStepRunner:
         batch_state: BatchState,
         batch: dict[str, torch.Tensor],
         labels: torch.Tensor,
-        student_outputs: torch.Tensor,
-        student_input_features: torch.Tensor | None,
-        student_out_features: torch.Tensor | None,
+        primary_outputs: torch.Tensor,
         current_alpha: float,
     ) -> BaseLossResult:
         context = self.context
@@ -225,108 +230,28 @@ class BatchStepRunner:
             if extension_loss is None:
                 continue
             if base_loss is not None:
-                raise RuntimeError("Only one training extension may provide the base distillation loss.")
+                raise RuntimeError("Only one training extension may provide the base supervised loss.")
             base_loss = extension_loss
 
         if base_loss is not None:
             return base_loss
 
-        if not distillation_enabled(self.cfg):
-            student_logits = student_outputs.reshape(-1, context.num_classes)
-            targets = labels.flatten()
-            soft_targets = (
-                batch_state.soft_beam_targets.reshape(-1, context.num_classes)
-                if batch_state.soft_beam_targets is not None
-                else None
-            )
-            task_loss = context.task_criterion(student_logits, soft_targets if soft_targets is not None else targets)
-            distill_loss = student_outputs.sum() * 0.0
-            diagnostics = {}
-            if soft_targets is not None:
-                diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
-            return BaseLossResult(
-                total_loss=task_loss,
-                task_loss=task_loss,
-                distill_loss=distill_loss,
-                teacher_diagnostics={},
-                diagnostics=diagnostics,
-            )
-
-        if context.distiller is None:
-            raise RuntimeError("Explicit KD training requires a distiller instance.")
-
-        if context.teacher_model is not None:
-            with torch.no_grad():
-                set_csi_debug_batch_source(context.teacher_model, "train")
-                teacher_step = run_model_step(
-                    context.teacher_model,
-                    self.task,
-                    batch,
-                    model_cfg=self.model_cfg["teacher"],
-                    seq_length=context.seq_length_teacher,
-                    num_pred=context.num_pred,
-                    device=context.device,
-                    non_blocking=context.non_blocking,
-                    extra_model_kwargs=batch_state.controls.model_kwargs,
-                )
-                teacher_model_output = teacher_step.model_output
-                teacher_outputs = teacher_step.logits
-                teacher_input_features = teacher_model_output.input_features
-                teacher_out_features = teacher_model_output.output_features
-                teacher_diagnostics = teacher_model_output.diagnostics
-        else:
-            raise RuntimeError("Explicit KD training requires a frozen teacher model.")
-        batch_state.teacher_logits = teacher_outputs
-        batch_state.teacher_input_features = teacher_input_features
-        batch_state.teacher_output_features = teacher_out_features
-        batch_state.teacher_diagnostics = teacher_diagnostics
-        student_logits = student_outputs.reshape(-1, context.num_classes)
-        teacher_logits = teacher_outputs.reshape(-1, context.num_classes)
+        primary_logits = primary_outputs.reshape(-1, context.num_classes)
         targets = labels.flatten()
         soft_targets = (
             batch_state.soft_beam_targets.reshape(-1, context.num_classes)
             if batch_state.soft_beam_targets is not None
             else None
         )
-        student_input_window = feature_prefix(
-            student_input_features,
-            context.seq_length_student - 1,
-            name="student input_features",
-        )
-        teacher_input_window = feature_prefix(
-            teacher_input_features,
-            context.seq_length_teacher - 1,
-            name="teacher input_features",
-        )
-        student_output_window = feature_tail(
-            student_out_features,
-            context.num_pred,
-            name="student output_features",
-        )
-        teacher_output_window = feature_tail(
-            teacher_out_features,
-            context.num_pred,
-            name="teacher output_features",
-        )
-        total_loss, task_loss, distill_loss = context.distiller(
-            student_logits,
-            teacher_logits,
-            targets,
-            student_input_window,
-            teacher_input_window,
-            student_output_window,
-            teacher_output_window,
-            current_alpha,
-            soft_targets=soft_targets,
-        )
-        diagnostics = {"loss/distillation": float(distill_loss.detach().cpu().item())}
+        task_loss = context.task_criterion(primary_logits, soft_targets if soft_targets is not None else targets)
+        auxiliary_loss = primary_outputs.sum() * 0.0
+        diagnostics = {}
         if soft_targets is not None:
             diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
         return BaseLossResult(
-            total_loss=total_loss,
+            total_loss=task_loss,
             task_loss=task_loss,
-            distill_loss=distill_loss,
-            teacher_diagnostics=teacher_diagnostics,
+            auxiliary_loss=auxiliary_loss,
             diagnostics=diagnostics,
         )
 
@@ -339,7 +264,7 @@ class BatchStepRunner:
             for extension, state in zip(self.extensions, self.extension_states):
                 extension.after_backward(self.context, state, batch_state)
             if grad_clip:
-                torch.nn.utils.clip_grad_norm_(self.context.student_model.parameters(), grad_clip)
+                torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
             if self.health_tracker is not None:
                 self.health_tracker.observe_gradients()
             self.grad_scaler.step(self.optimizer)
@@ -349,7 +274,7 @@ class BatchStepRunner:
         for extension, state in zip(self.extensions, self.extension_states):
             extension.after_backward(self.context, state, batch_state)
         if grad_clip:
-            torch.nn.utils.clip_grad_norm_(self.context.student_model.parameters(), grad_clip)
+            torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
         if self.health_tracker is not None:
             self.health_tracker.observe_gradients()
         self.optimizer.step()
@@ -370,33 +295,47 @@ def raymobtime_gate_scalar_diagnostics(diagnostics: dict[str, Any]) -> dict[str,
     return result
 
 
-def dummy_teacher(
-    student_outputs: torch.Tensor,
-    student_input_features: torch.Tensor | None,
-    student_out_features: torch.Tensor | None,
-):
-    return (
-        torch.zeros_like(student_outputs),
-        torch.zeros_like(student_input_features) if torch.is_tensor(student_input_features) else None,
-        torch.zeros_like(student_out_features) if torch.is_tensor(student_out_features) else None,
+def _optional_gps_anchor_loss(
+    diagnostics: dict[str, Any],
+    labels: torch.Tensor,
+    cfg: dict[str, Any],
+    *,
+    reference: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, float]] | None:
+    raw_cfg = cfg.get("coarse_anchor")
+    if not isinstance(raw_cfg, dict):
+        model_cfg = cfg.get("model", {}).get("primary", {}) if isinstance(cfg.get("model"), dict) else {}
+        raw_cfg = model_cfg.get("coarse_anchor") if isinstance(model_cfg, dict) else None
+    if not isinstance(raw_cfg, dict) or not bool(raw_cfg.get("enabled", False)):
+        return None
+    if "gps_anchor_coarse_logits" not in diagnostics:
+        return None
+    anchor_cfg = GpsCoarseAnchorConfig.from_mapping(raw_cfg)
+    coarse_logits = select_prediction_slots(diagnostics["gps_anchor_coarse_logits"], labels.shape[1])
+    beam_scores = diagnostics.get("gps_anchor_beam_scores")
+    if torch.is_tensor(beam_scores):
+        beam_scores = select_prediction_slots(beam_scores, labels.shape[1])
+    center = diagnostics.get("gps_anchor_center_beam")
+    confidence = diagnostics.get("gps_anchor_confidence")
+    residual = diagnostics.get("gps_anchor_residual_anchor_beam")
+    if not torch.is_tensor(center):
+        center = torch.zeros(labels.shape, device=reference.device, dtype=torch.long)
+    else:
+        center = center[:, -labels.shape[1] :].to(device=reference.device)
+    if not torch.is_tensor(confidence):
+        confidence = torch.ones(labels.shape, device=reference.device, dtype=reference.dtype)
+    else:
+        confidence = confidence[:, -labels.shape[1] :].to(device=reference.device, dtype=reference.dtype)
+    if not torch.is_tensor(residual):
+        residual = center
+    else:
+        residual = residual[:, -labels.shape[1] :].to(device=reference.device)
+    anchor = GpsCoarseAnchor(
+        coarse_logits=coarse_logits,
+        center_beam=center,
+        confidence=confidence,
+        residual_anchor_beam=residual,
+        beam_scores=beam_scores,
+        metadata={"anchor_source": "gps_neural_coarse"},
     )
-
-
-def feature_prefix(features: torch.Tensor | None, length: int, *, name: str) -> torch.Tensor | None:
-    if features is None:
-        return None
-    if features.ndim < 2:
-        raise ValueError(f"{name} must include a time dimension, got shape {tuple(features.shape)}.")
-    if features.shape[1] < length:
-        raise ValueError(f"{name} has {features.shape[1]} slots but {length} are required.")
-    return features[:, :length, ...]
-
-
-def feature_tail(features: torch.Tensor | None, length: int, *, name: str) -> torch.Tensor | None:
-    if features is None:
-        return None
-    if features.ndim < 2:
-        raise ValueError(f"{name} must include a time dimension, got shape {tuple(features.shape)}.")
-    if features.shape[1] < length:
-        raise ValueError(f"{name} has {features.shape[1]} slots but {length} are required.")
-    return features[:, -length:, ...]
+    return compute_gps_coarse_anchor_loss(anchor, labels, anchor_cfg)

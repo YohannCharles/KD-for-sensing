@@ -17,10 +17,12 @@ data:
     train_batch_size: 16
     test_batch_size: 16
 model:
-  modalities: [csi]
-  teacher: &csi_model
+  modalities:
+  - csi
+  primary:
     type: modular_sequence
-    modalities: [csi]
+    modalities:
+    - csi
     feature_size: 64
     d_model: 64
     num_classes: 64
@@ -43,10 +45,6 @@ model:
     heads:
       beam:
         type: beam_head
-  student: *csi_model
-distillation:
-  type: no_kd
-  teacher_model_name: null
 training:
   epochs: 100
   lr: 0.0005

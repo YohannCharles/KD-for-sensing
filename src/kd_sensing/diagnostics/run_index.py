@@ -158,11 +158,20 @@ def summarize_run_dir(
         now=current_time,
         stale_after=stale_after,
     )
+    cleanup = summarize_cleanup_context(
+        state=state,
+        artifacts=artifacts,
+        timestamps=timestamps,
+        checkpoints=checkpoints,
+        logs=run_logs,
+        stale_after=stale_after,
+    )
     return {
         "run_dir": str(path),
         "run_name": path.name,
         "state": state,
         "state_reason": state_reason,
+        "size_bytes": _path_size_bytes(path),
         "config": config,
         "artifacts": artifacts,
         "metrics": metrics,
@@ -172,6 +181,7 @@ def summarize_run_dir(
         "process": process,
         "resources": _run_resource_summary(process),
         "timestamps": timestamps,
+        "cleanup": cleanup,
     }
 
 
@@ -224,10 +234,10 @@ def summarize_config(run_dir: Path, *, artifacts: dict[str, Any], warnings: list
     cfg = _read_yaml(config_path, warnings=warnings) if config_path is not None else {}
     experiment = cfg.get("experiment", {}) if isinstance(cfg.get("experiment"), dict) else {}
     dataset_cfg = _nested_dict(cfg, "data", "dataset")
-    model_student = _nested_dict(cfg, "model", "student")
+    model_primary = _nested_dict(cfg, "model", "primary")
     runtime = cfg.get("runtime", {}) if isinstance(cfg.get("runtime"), dict) else {}
     objective_meta = runtime.get("prediction_objective") if isinstance(runtime.get("prediction_objective"), dict) else {}
-    modalities = model_student.get("modalities") or cfg.get("modalities")
+    modalities = model_primary.get("modalities") or cfg.get("model", {}).get("modalities") or cfg.get("modalities")
     if modalities is None and experiment.get("task") in {"image", "radar", "gps", "lidar", "mmwave", "csi"}:
         modalities = [experiment["task"]]
     return {
@@ -269,16 +279,100 @@ def summarize_metrics(run_dir: Path, *, artifacts: dict[str, Any], warnings: lis
 def summarize_checkpoints(run_dir: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
     checkpoint_dir = run_dir / "checkpoints"
     paths = sorted(path for path in checkpoint_dir.glob("*") if path.is_file() and _is_checkpoint(path))
-    sidecars = [_read_json(path.with_suffix(path.suffix + ".json"), warnings=warnings) for path in paths]
-    sidecars = [item for item in sidecars if item]
     best = _best_checkpoint(paths)
-    best_sidecar = _read_json(best.with_suffix(best.suffix + ".json"), warnings=warnings) if best is not None else None
+    items = [_checkpoint_item(path, best=best, warnings=warnings) for path in paths]
+    sidecars = [item for item in items if item.get("sidecar_present")]
+    best_sidecar = None
+    for item in items:
+        if item.get("path") == (str(best) if best is not None else None):
+            best_sidecar = item.get("sidecar_metadata")
+            break
+    total_size = sum(int(item.get("size_bytes") or 0) for item in items)
     return {
         "count": len(paths),
         "paths": [str(path) for path in paths],
+        "total_size_bytes": total_size,
         "best_checkpoint": str(best) if best is not None else None,
+        "primary_checkpoint": str(best) if best is not None else None,
         "best_metadata": best_sidecar,
         "sidecar_count": len(sidecars),
+        "items": items,
+        "retention": _checkpoint_retention_summary(items),
+    }
+
+
+def summarize_cleanup_context(
+    *,
+    state: str,
+    artifacts: dict[str, Any],
+    timestamps: dict[str, Any],
+    checkpoints: dict[str, Any],
+    logs: list[dict[str, Any]],
+    stale_after: dt.timedelta,
+) -> dict[str, Any]:
+    missing = list(artifacts.get("missing", []))
+    candidate_reasons: list[dict[str, Any]] = []
+    protection_reasons: list[str] = []
+    if state == "running":
+        protection_reasons.append("run_state_running")
+    elif state == "waiting":
+        protection_reasons.append("run_state_waiting")
+    elif state == "started_no_metrics":
+        protection_reasons.append("recent_unfinished_run")
+
+    if state in {"failed", "killed"}:
+        candidate_reasons.append(
+            {
+                "rule_id": f"run.{state}",
+                "risk": "medium",
+                "reason": f"Run is {state}; review failed or killed output before deleting.",
+                "missing_artifacts": missing,
+                "logs": _cleanup_log_refs(logs),
+            }
+        )
+    elif state == "stale":
+        candidate_reasons.append(
+            {
+                "rule_id": "run.stale",
+                "risk": "high",
+                "reason": "Run is stale and lacks completion artifacts.",
+                "missing_artifacts": missing,
+                "stale_after_seconds": int(stale_after.total_seconds()),
+                "last_updated_at": timestamps.get("last_updated_at"),
+            }
+        )
+    elif state == "partial":
+        candidate_reasons.append(
+            {
+                "rule_id": "run.partial",
+                "risk": "high",
+                "reason": "Run has only a partial artifact set.",
+                "missing_artifacts": missing,
+                "logs": _cleanup_log_refs(logs),
+            }
+        )
+
+    checkpoint_candidates = [
+        item
+        for item in checkpoints.get("retention", {}).get("items", [])
+        if item.get("registry_default_candidate")
+    ]
+    for item in checkpoint_candidates:
+        candidate_reasons.append(
+            {
+                "rule_id": item.get("rule_id"),
+                "risk": item.get("risk", "medium"),
+                "reason": item.get("retention_reason"),
+                "path": item.get("path"),
+            }
+        )
+
+    return {
+        "protected": bool(protection_reasons),
+        "protection_reasons": protection_reasons,
+        "candidate_reasons": candidate_reasons,
+        "missing_artifacts": missing,
+        "stale_after_seconds": int(stale_after.total_seconds()),
     }
 
 
@@ -799,6 +893,153 @@ def _best_checkpoint(paths: list[Path]) -> Path | None:
             if path.name == name:
                 return path
     return paths[0] if paths else None
+
+
+def _checkpoint_item(path: Path, *, best: Path | None, warnings: list[str] | None = None) -> dict[str, Any]:
+    sidecar_path = path.with_suffix(path.suffix + ".json")
+    sidecar = _read_json(sidecar_path, warnings=warnings) if sidecar_path.exists() else None
+    role = _checkpoint_role(path, best=best)
+    return {
+        "path": str(path),
+        "name": path.name,
+        "size_bytes": _path_size_bytes(path),
+        "mtime": _format_dt(_mtime(path)),
+        "source": "run_checkpoint_dir",
+        "retention_role": role,
+        "selection_metadata": _checkpoint_selection_metadata(sidecar),
+        "sidecar_present": sidecar is not None,
+        "sidecar_path": str(sidecar_path) if sidecar is not None else None,
+        "sidecar_metadata": sidecar,
+        "normalization_artifacts": _checkpoint_normalization_artifacts(sidecar),
+        "registry_default_candidate": role in {"recoverable_last", "duplicate_probe"},
+        "registry_protected": role in {"best_reproducible", "best_top1_reproducible"},
+    }
+
+
+def _checkpoint_role(path: Path, *, best: Path | None) -> str:
+    if path.name == "best.pth":
+        return "best_reproducible"
+    if path.name == "best_top1.pth":
+        return "best_top1_reproducible"
+    if path.name == "last.pth" and best is not None and best.name != "last.pth":
+        return "recoverable_last"
+    if "probe" in path.stem.lower() and best is not None:
+        return "duplicate_probe"
+    return "temporary_or_unclassified"
+
+
+def _checkpoint_retention_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    retention_items: list[dict[str, Any]] = []
+    protected_paths: list[str] = []
+    candidate_paths: list[str] = []
+    for item in items:
+        role = str(item.get("retention_role") or "temporary_or_unclassified")
+        protected = bool(item.get("registry_protected"))
+        candidate = bool(item.get("registry_default_candidate"))
+        rule_id = None
+        risk = "medium"
+        reason = "Checkpoint is not classified as a default deletion candidate."
+        if role == "best_reproducible":
+            reason = "Default reproducibility checkpoint; keep with sidecar metadata."
+        elif role == "best_top1_reproducible":
+            reason = "Default top-1 selection checkpoint; keep with sidecar metadata."
+        elif role == "recoverable_last":
+            rule_id = "checkpoint.last_recoverable"
+            reason = "Recoverable last checkpoint; not the default reproducibility checkpoint."
+        elif role == "duplicate_probe":
+            rule_id = "checkpoint.duplicate_probe"
+            reason = "Probe checkpoint duplicates a run that has a primary checkpoint."
+        record = {
+            "path": item.get("path"),
+            "name": item.get("name"),
+            "retention_role": role,
+            "registry_protected": protected,
+            "registry_default_candidate": candidate,
+            "rule_id": rule_id,
+            "risk": risk,
+            "retention_reason": reason,
+            "source": item.get("source"),
+            "selection_metadata": item.get("selection_metadata"),
+            "sidecar_present": item.get("sidecar_present"),
+            "sidecar_path": item.get("sidecar_path"),
+            "normalization_artifacts": item.get("normalization_artifacts"),
+            "size_bytes": item.get("size_bytes"),
+            "mtime": item.get("mtime"),
+        }
+        retention_items.append(record)
+        if protected and item.get("path"):
+            protected_paths.append(str(item["path"]))
+        if candidate and item.get("path"):
+            candidate_paths.append(str(item["path"]))
+    return {
+        "items": retention_items,
+        "protected_paths": protected_paths,
+        "candidate_paths": candidate_paths,
+    }
+
+
+def _checkpoint_selection_metadata(sidecar: dict[str, Any] | None) -> dict[str, Any]:
+    if not sidecar:
+        return {"available": False, "missing": True}
+    keys = (
+        "selection_metric",
+        "selected_metric",
+        "primary_metric",
+        "best_metric",
+        "selected_epoch",
+        "best_epoch",
+        "best_top1_epoch",
+        "epoch",
+    )
+    values = {key: sidecar.get(key) for key in keys if key in sidecar}
+    objective = sidecar.get("objective") if isinstance(sidecar.get("objective"), dict) else None
+    if objective:
+        values["objective"] = objective
+    return {"available": bool(values), "missing": not bool(values), "values": values}
+
+
+def _checkpoint_normalization_artifacts(sidecar: dict[str, Any] | None) -> dict[str, Any]:
+    if not sidecar:
+        return {"available": False, "paths": []}
+    raw = sidecar.get("normalization_artifacts")
+    if raw is None and isinstance(sidecar.get("metadata"), dict):
+        raw = sidecar["metadata"].get("normalization_artifacts")
+    if not isinstance(raw, dict):
+        return {"available": False, "paths": []}
+    paths = [str(value) for value in raw.values() if isinstance(value, (str, Path))]
+    return {"available": bool(paths), "paths": paths, "raw": raw}
+
+
+def _cleanup_log_refs(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs = []
+    for log in logs:
+        refs.append(
+            {
+                "path": log.get("path"),
+                "failure": log.get("failure"),
+                "mtime": log.get("mtime"),
+                "size_bytes": log.get("size_bytes"),
+            }
+        )
+    return refs
+
+
+def _path_size_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return int(path.stat().st_size)
+        if path.is_dir():
+            total = 0
+            for item in path.rglob("*"):
+                try:
+                    if item.is_file():
+                        total += int(item.stat().st_size)
+                except OSError:
+                    continue
+            return total
+    except OSError:
+        return 0
+    return 0
 
 
 def _looks_like_kd_process(cmdline: str) -> bool:

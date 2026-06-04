@@ -90,8 +90,7 @@ def _fingerprint_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
         "data": cfg.get("data", {}),
         "model": {
             "modalities": cfg.get("model", {}).get("modalities"),
-            "teacher": cfg.get("model", {}).get("teacher", {}),
-            "student": cfg.get("model", {}).get("student", {}),
+            "primary": cfg.get("model", {}).get("primary", {}),
         },
         "experiment_task": cfg.get("experiment", {}).get("task"),
         "diagnostics_visualization": diagnostics,

@@ -12,7 +12,6 @@ from kd_sensing.engine.objectives.metadata import (
     objective_requires_position,
     resolve_prediction_objective,
 )
-from kd_sensing.engine.run_lineage import ensure_distillation_defaults
 from kd_sensing.modalities import (
     dataset_defaults_for_modalities,
     dataset_flags_for_modalities,
@@ -23,12 +22,11 @@ from kd_sensing.modalities import (
 )
 
 IMAGE_MODEL_TYPES = {
-    "image_teacher",
-    "image_student",
-    "fusion_teacher",
-    "fusion_student",
+    "image_strong",
+    "image_lightweight",
+    "fusion_strong",
+    "fusion_lightweight",
     "cls_token_transformer_fusion",
-    "hist_beam_fusion",
     "token_transformer_fusion",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
@@ -44,10 +42,9 @@ MODULAR_ROLE_ONLY_KEYS = {
     "image_profile",
 }
 FUSION_MODEL_TYPES = {
-    "fusion_teacher",
-    "fusion_student",
+    "fusion_strong",
+    "fusion_lightweight",
     "cls_token_transformer_fusion",
-    "hist_beam_fusion",
     "token_transformer_fusion",
     "simple_concat_multitask_selection",
     "task_aware_gated_multitask_selection",
@@ -56,12 +53,12 @@ AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "modular_sequence",
     "modular_sequence_model",
-    "gps_teacher",
-    "gps_student",
-    "radar_teacher",
-    "radar_student",
-    "mmwave_teacher",
-    "mmwave_student",
+    "gps_strong",
+    "gps_lightweight",
+    "radar_strong",
+    "radar_lightweight",
+    "mmwave_strong",
+    "mmwave_lightweight",
 }
 RAYMOBTIME_SELECTION_MODEL_TYPES = {
     "simple_concat_multitask_selection",
@@ -69,7 +66,6 @@ RAYMOBTIME_SELECTION_MODEL_TYPES = {
 }
 D_MODEL_ROLE_TYPES = {
     "cls_token_transformer_fusion",
-    "hist_beam_fusion",
     "token_transformer_fusion",
     *MODULAR_MODEL_TYPES,
 }
@@ -90,7 +86,6 @@ def normalize_loaded_config(
     )
     apply_objective_runtime_requirements(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
-    ensure_distillation_defaults(cfg)
     normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_csi_hardening_alias(cfg)
     canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
@@ -166,13 +161,11 @@ def apply_fusion_modality_selection(cfg: dict[str, Any], *, override_cfg: dict[s
     selected = list(normalize_modalities(selected_raw, context="model.modalities"))
     model_cfg["modalities"] = selected
     model_defaults = model_defaults_for_modalities(selected)
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role)
-        if not isinstance(role_cfg, dict):
-            continue
-        role_cfg["modalities"] = list(selected)
+    primary_cfg = model_cfg.get("primary")
+    if isinstance(primary_cfg, dict):
+        primary_cfg["modalities"] = list(selected)
         for key, value in model_defaults.items():
-            role_cfg.setdefault(key, value)
+            primary_cfg.setdefault(key, value)
     dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
     dataset_cfg.update(dataset_flags_for_modalities(selected))
     for key, value in dataset_defaults_for_modalities(selected).items():
@@ -185,17 +178,16 @@ def normalize_csi_hardening_alias(cfg: dict[str, Any]) -> None:
     if alias is None:
         return
     model_cfg = cfg.setdefault("model", {})
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role)
-        if not isinstance(role_cfg, dict) or "csi" not in role_cfg.get("modalities", []):
-            continue
-        encoders = role_cfg.setdefault("encoders", {})
-        if isinstance(encoders, dict):
-            csi_cfg = encoders.setdefault("csi", {"type": "pilot_dual_view_csi"})
-            if isinstance(csi_cfg, dict) and "csi_hardening" not in csi_cfg:
-                csi_cfg["csi_hardening"] = copy.deepcopy(alias)
-                continue
-        role_cfg.setdefault("csi_hardening", copy.deepcopy(alias))
+    primary_cfg = model_cfg.get("primary")
+    if not isinstance(primary_cfg, dict) or "csi" not in primary_cfg.get("modalities", []):
+        return
+    encoders = primary_cfg.setdefault("encoders", {})
+    if isinstance(encoders, dict):
+        csi_cfg = encoders.setdefault("csi", {"type": "pilot_dual_view_csi"})
+        if isinstance(csi_cfg, dict) and "csi_hardening" not in csi_cfg:
+            csi_cfg["csi_hardening"] = copy.deepcopy(alias)
+            return
+    primary_cfg.setdefault("csi_hardening", copy.deepcopy(alias))
 
 
 def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
@@ -215,7 +207,7 @@ def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
         ensure_occlusion_target(dataset_cfg)
     if objective_requires_position(cfg):
         ensure_position_target(dataset_cfg)
-    ensure_student_auxiliary_heads(cfg, objective)
+    ensure_primary_auxiliary_heads(cfg, objective)
     ensure_objective_loss_defaults(cfg, objective)
 
 
@@ -252,10 +244,10 @@ def switch_default_position_csv(dataset_cfg: dict[str, Any]) -> None:
             dataset_cfg[key] = position_name
 
 
-def ensure_student_auxiliary_heads(cfg: dict[str, Any], objective: str) -> None:
+def ensure_primary_auxiliary_heads(cfg: dict[str, Any], objective: str) -> None:
     model_cfg = cfg.setdefault("model", {})
-    student_cfg = model_cfg.setdefault("student", {})
-    raw = student_cfg.get("auxiliary_heads")
+    primary_cfg = model_cfg.setdefault("primary", {})
+    raw = primary_cfg.get("auxiliary_heads")
     if isinstance(raw, dict):
         heads = raw
     elif raw is None:
@@ -267,8 +259,8 @@ def ensure_student_auxiliary_heads(cfg: dict[str, Any], objective: str) -> None:
     if objective in {"position", "multitask"}:
         heads["position"] = True
     heads["enabled"] = bool(heads.get("occlusion", False) or heads.get("position", False) or heads.get("enabled", False))
-    student_cfg["auxiliary_heads"] = heads
-    student_cfg.setdefault(
+    primary_cfg["auxiliary_heads"] = heads
+    primary_cfg.setdefault(
         "num_pred",
         int(model_cfg.get("num_pred", cfg.get("data", {}).get("dataset", {}).get("num_pred", 3))),
     )
@@ -309,24 +301,17 @@ def modalities_from_role_overrides(override_cfg: dict[str, Any] | None) -> list[
     override_model = override_cfg.get("model")
     if not isinstance(override_model, dict) or "modalities" in override_model:
         return None
-    role_modalities = []
-    for role in ("teacher", "student"):
-        role_cfg = override_model.get(role)
-        if isinstance(role_cfg, dict) and role_cfg.get("modalities") is not None:
-            role_modalities.append(list(normalize_modalities(role_cfg["modalities"], context=f"model.{role}.modalities")))
-    if len(role_modalities) != 2 or role_modalities[0] != role_modalities[1]:
-        return None
-    return role_modalities[0]
+    primary_cfg = override_model.get("primary")
+    if isinstance(primary_cfg, dict) and primary_cfg.get("modalities") is not None:
+        return list(normalize_modalities(primary_cfg["modalities"], context="model.primary.modalities"))
+    return None
 
 
 def normalize_model_role_defaults(cfg: dict[str, Any]) -> None:
     """Remove modular default-only fields after a config selects a different model type."""
 
     model_cfg = cfg.setdefault("model", {})
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role)
-        if not isinstance(role_cfg, dict):
-            continue
+    for _, role_cfg in iter_model_configs(cfg):
         model_type = str(role_cfg.get("type", ""))
         if model_type in MODULAR_MODEL_TYPES:
             continue
@@ -368,8 +353,7 @@ def apply_snapshot_runtime_requirements(cfg: dict[str, Any]) -> None:
     model_cfg = cfg.setdefault("model", {})
     require_snapshot_int(dataset_cfg, "seq_len", 1, "data.dataset.seq_len")
     require_snapshot_int(dataset_cfg, "num_pred", 1, "data.dataset.num_pred")
-    require_snapshot_int(model_cfg, "seq_length_teacher", 1, "model.seq_length_teacher")
-    require_snapshot_int(model_cfg, "seq_length_student", 1, "model.seq_length_student")
+    require_snapshot_int(model_cfg, "seq_length", 1, "model.seq_length")
     require_snapshot_int(model_cfg, "num_pred", 1, "model.num_pred")
     if dataset_cfg.get("train_csv_name") in (None, ""):
         dataset_cfg["train_csv_name"] = SNAPSHOT_TRAIN_CSV
@@ -388,25 +372,18 @@ def apply_snapshot_runtime_requirements(cfg: dict[str, Any]) -> None:
             f"snapshot_next_frame requires data.dataset.val_csv_name={SNAPSHOT_VAL_CSV!r}; "
             "run the snapshot preprocessing or explicitly change experiment.variant to leave snapshot mode."
         )
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role)
-        if not isinstance(role_cfg, dict):
-            continue
-        if str(role_cfg.get("type")) not in MODULAR_MODEL_TYPES:
-            raise ValueError(
-                f"snapshot_next_frame requires model.{role}.type='modular_sequence' with snapshot_frame core."
-            )
-        core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
-        if core_type != "snapshot_frame":
-            raise ValueError(
-                f"snapshot_next_frame requires model.{role}.representation_core.type='snapshot_frame', got {core_type!r}."
-            )
-        role_cfg["num_pred"] = 1
-        role_cfg["uses_temporal_core"] = False
-    distill = cfg.setdefault("distillation", {})
-    if distill.get("type", "no_kd") != "no_kd":
-        raise ValueError("snapshot_next_frame baselines require distillation.type='no_kd'.")
-    distill["teacher_model_name"] = None
+    primary_cfg = model_cfg.get("primary")
+    if not isinstance(primary_cfg, dict):
+        raise ValueError("snapshot_next_frame requires model.primary.")
+    if str(primary_cfg.get("type")) not in MODULAR_MODEL_TYPES:
+        raise ValueError("snapshot_next_frame requires model.primary.type='modular_sequence' with snapshot_frame core.")
+    core_type = str(primary_cfg.get("representation_core", {}).get("type", ""))
+    if core_type != "snapshot_frame":
+        raise ValueError(
+            f"snapshot_next_frame requires model.primary.representation_core.type='snapshot_frame', got {core_type!r}."
+        )
+    primary_cfg["num_pred"] = 1
+    primary_cfg["uses_temporal_core"] = False
     experiment["uses_history_window"] = False
     experiment["uses_temporal_core"] = False
 
@@ -472,10 +449,9 @@ def image_encoder_type(model_cfg: dict[str, Any]) -> str | None:
 
 def iter_model_configs(cfg: dict[str, Any]):
     model_cfg = cfg.get("model", {})
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role, {})
-        if isinstance(role_cfg, dict):
-            yield f"model.{role}", role_cfg
+    primary_cfg = model_cfg.get("primary", {})
+    if isinstance(primary_cfg, dict):
+        yield "model.primary", primary_cfg
 
 
 def uses_image(cfg: dict[str, Any]) -> bool:
@@ -496,9 +472,5 @@ def fusion_modalities(cfg: dict[str, Any]) -> set[str]:
     top_level_modalities = cfg.get("model", {}).get("modalities")
     if top_level_modalities:
         return set(normalize_modalities(top_level_modalities, context="model.modalities"))
-    modalities: set[str] = set()
-    for role in ("teacher", "student"):
-        role_modalities = cfg.get("model", {}).get(role, {}).get("modalities")
-        if role_modalities:
-            modalities.update(str(name) for name in role_modalities)
-    return modalities
+    primary_modalities = cfg.get("model", {}).get("primary", {}).get("modalities")
+    return set(str(name) for name in primary_modalities or [])

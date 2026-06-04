@@ -14,6 +14,8 @@ class GpsWindowBaselineConfig:
     beam_start_degrees: float = 0.0
     beam_direction: int = 1
     beam_offset: int = 0
+    boresight_angle_degrees: float = 0.0
+    auto_calibrate_boresight_angle: bool = False
     auto_calibrate_beam_mapping: bool = False
     auto_calibrate_beam_direction: bool = True
     score_width: float = 2.0
@@ -27,8 +29,12 @@ class GpsWindowBaselineConfig:
     low_confidence_range: float | None = None
     fallback: str = "majority"
     fallback_weight: float = 1.0
+    angle_lookup_k: int = 1
     calibration_mode: str = "source"
     support_samples: int = 0
+    calibration_holdout_fraction: float = 0.0
+    calibration_holdout_min_samples: int = 0
+    calibration_holdout_strategy: str = "tail"
     split_tag: str = "l5p3_group_safe"
     max_samples: int | None = None
     claim_scope: str = "gps_only_scene_baseline"
@@ -106,6 +112,9 @@ class GpsWindowRunMetadata:
     ineligible_reason: str | None = None
     calibration_split: str | None = None
     calibration_sample_count: int = 0
+    selection_split: str | None = None
+    selection_sample_count: int = 0
+    evaluation_split: str | None = None
     used_target_test_for_calibration: bool = False
 
     def to_dict(self) -> dict[str, Any]:

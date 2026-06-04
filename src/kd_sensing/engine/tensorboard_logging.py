@@ -31,7 +31,6 @@ def write_tensorboard_scalars(
 
     writer.add_scalar("loss/train", history["train_loss"][-1], step)
     writer.add_scalar("loss/train_task", history["train_task_loss"][-1], step)
-    writer.add_scalar("loss/train_distill", history["train_distill_loss"][-1], step)
     writer.add_scalar("loss/val", history["val_loss"][-1], step)
     for tag, history_key in objective_tensorboard_scalars(objective):
         add_latest_scalar(writer, tag, history, history_key, step)

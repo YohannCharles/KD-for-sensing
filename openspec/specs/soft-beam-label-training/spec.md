@@ -1,7 +1,7 @@
 # soft-beam-label-training Specification
 
 ## Purpose
-定义 beam soft label 的 batch 字段、source/target 域生成规则、soft-target supervised loss 消费方式，以及 hard-label 验证评估保持不变的训练契约。
+定义 beam soft label 的 batch 字段、source/target 域生成规则、soft-target supervised loss 消费方式，以及 hard-label 验证评估保持不变的训练契约，确保 soft target 只在允许的训练域提供额外监督而不污染 target-side 评估结论。
 ## Requirements
 ### Requirement: Beam soft target batch contract
 
@@ -38,18 +38,13 @@
 - **AND** beam 0 与最后一个 beam MUST 按环形距离相邻
 
 ### Requirement: Soft target supervised loss
+系统 SHALL 在 beam soft target 可用且 soft target loss 启用时，使用 soft target distribution 计算主 beam supervised loss；若 soft target 不可用，MUST 回退到 hard-label loss。该流程 MUST 不经过 distillation runtime。
 
-系统 SHALL 在 beam soft target 可用且 soft target loss 启用时，使用 soft target distribution 计算主 beam supervised loss；若 soft target 不可用，MUST 回退到 hard-label loss。
-
-#### Scenario: no-KD 主 loss 使用 soft target
+#### Scenario: supervised 主 loss 使用 soft target
 - **WHEN** batch 包含 `target_beam_distribution` 且 `loss.soft_targets.enabled=true`
-- **THEN** no-KD supervised loss MUST 消费 soft target distribution
+- **THEN** supervised loss MUST 消费 soft target distribution
 - **AND** `loss/beam` 和 `loss/primary` MUST 记录 soft-target supervised loss
-
-#### Scenario: KD 保持蒸馏逻辑
-- **WHEN** 使用 logits KD 或 RKD 且 batch 包含 soft target
-- **THEN** supervised task loss MUST 使用 soft target distribution
-- **AND** distillation loss MUST 保持原有 teacher/student 逻辑
+- **AND** diagnostics MUST 不记录 `loss/distillation`
 
 #### Scenario: validation 和 evaluation 不使用 soft target
 - **WHEN** 验证 DataLoader batch 包含 `target_beam_distribution`
@@ -69,43 +64,33 @@
 - **THEN** 配置 MUST 包含 soft target 相关参数，包括 enable 开关、source、target_source、domain、sigma、circular、temperature 和 ignore index
 
 ### Requirement: Beam soft target 不等同于 KD
-beam-aware soft label、angular soft target 和 beam smoothing target MUST 被视为 beam-space prior 或 supervised label smoothing，而不是 teacher-student KD。无 teacher 的 soft target loss MUST 不被命名、记录或汇总为 distillation loss。
+beam-aware soft label、angular soft target 和 beam smoothing target MUST 被视为 beam-space prior 或 supervised label smoothing，而不是 teacher-student KD。soft target loss MUST 不被命名、记录或汇总为 distillation loss。
 
-#### Scenario: no-KD soft target 日志命名
-- **WHEN** no-KD supervised training 使用 `target_beam_distribution` 或等价 beam soft target
+#### Scenario: supervised soft target 日志命名
+- **WHEN** supervised training 使用 `target_beam_distribution` 或等价 beam soft target
 - **THEN** loss diagnostics MUST 使用 `loss/beam_soft_target`、`loss/beam_smoothing` 或等价非 KD 命名
 - **AND** diagnostics MUST 不生成新的 `loss/kd_soft_label` 或 `loss/distillation` 字段表示该监督项
 
 #### Scenario: soft target metadata 记录来源
 - **WHEN** batch 或 run metadata 记录 beam soft target 的来源
 - **THEN** metadata MUST 区分 `source_power_oracle`、`gaussian_from_hard_label`、`angular_smoothing` 或等价来源
-- **AND** 只有 teacher prediction distribution 才 MAY 标记为 KD soft target
+- **AND** 新写出的 metadata MUST 不把 beam soft target 标记为 KD soft target
 
-### Requirement: KD soft target 与 beam soft target 可共存但必须分离
-若 legacy KD baseline 同时启用 teacher distillation 和 beam soft target supervised loss，系统 MUST 分离 supervised soft-target loss 与 distillation loss 的配置、日志和 summary 字段。
+### Requirement: 旧 KD soft target 命名只读迁移
+历史 artifact 中的 KD soft target 命名 MAY 只读兼容；当前训练 MUST 分离为 beam soft target supervised loss，并拒绝旧 distillation 配置。
 
-#### Scenario: legacy KD 同时使用 beam soft target
-- **WHEN** legacy KD baseline 的 supervised task loss 使用 beam soft target，且 distillation loss 使用 teacher logits 或 features
-- **THEN** supervised loss MUST 记录为 beam/task loss
-- **AND** teacher-student loss MUST 单独记录为 distillation loss
-- **AND** total loss composition MUST 能区分两者权重
+#### Scenario: 历史 KD soft target 只读
+- **WHEN** 历史 artifact 包含 `kd_soft_label` 或等价字段
+- **THEN** 系统 MAY 只读兼容该字段
+- **AND** 新训练产物 MUST 使用 beam soft target 命名
 
 #### Scenario: evaluation 不使用 soft target 或 KD target
 - **WHEN** validation 或 evaluation batch 同时包含 hard label、beam soft target 和可选 teacher output
 - **THEN** hard-label Top-K、DBA、NRP 和 beam power 指标 MUST 使用 hard `target_beam`
 - **AND** evaluation summary MUST 不用 soft target 指标替代 hard-label 主指标
 
-### Requirement: 历史 KD 命名迁移
-项目 MUST 为历史上带有 KD 命名但实际表示 beam soft label 的字段、配置或日志提供迁移路径。新代码 MUST 使用 beam/soft-target/angle smoothing 命名；旧字段若继续读取，MUST 作为兼容输入处理。
-
-#### Scenario: 旧 kd_soft_label 字段兼容读取
-- **WHEN** 历史 artifact 或配置中存在等价的 `kd_soft_label` 命名但其来源不是 teacher distribution
-- **THEN** 系统 MAY 兼容读取该字段
-- **AND** 新写出的 artifact MUST 使用 beam soft target 命名
-- **AND** migration warning 或 metadata MUST 标明旧命名已退役
-
 ### Requirement: V8 target adaptation beam topology soft labels
-系统 MUST 支持在 `v8_target_prior_head` target adaptation 中基于 hard beam label 生成 beam topology soft label，并将其作为 supervised beam smoothing loss 使用。该 loss MUST 与 KD distillation loss 分离命名和记录。
+系统 MUST 支持在 `v8_target_prior_head` target adaptation 中基于 hard beam label 生成 beam topology soft label，并将其作为 supervised beam smoothing loss 使用。该 loss MUST 使用非 KD 命名和记录。
 
 #### Scenario: 从 target support hard label 生成 soft label
 - **WHEN** `hist_beam.variant=v8_target_prior_head` 且 `hist_beam.v8.use_soft_beam_label=true`
@@ -123,3 +108,54 @@ beam-aware soft label、angular soft target 和 beam smoothing target MUST 被�
 - **THEN** v8 supervised final loss MUST 使用 hard-label CE 或明确记录 supervised final loss 不可用原因
 - **AND** evaluation Top-K、NRP 和 prediction histogram MUST 继续使用 hard beam label
 
+### Requirement: Soft beam labels follow calibrated topology
+当 MMW dataset 启用 beam label calibration 且 soft beam label 启用时，系统 MUST 在 calibrated label space 中生成或重排 `target_beam_distribution`，并 MUST 保持该分布与 hard `target_beam` 的 horizon 和 class order 一致。
+
+#### Scenario: Gaussian soft label 使用 calibrated label
+- **WHEN** target-domain soft label 基于 hard label 和 circular Gaussian 生成，且 MMW calibration 已启用
+- **THEN** Gaussian center MUST 使用 calibrated `target_beam`
+- **AND** circular distance MUST 在 calibrated class order 中计算
+
+#### Scenario: source power soft label 重排到 calibrated class order
+- **WHEN** source-domain soft label 从 raw beam power/RSS vector 构造，且 MMW calibration 已启用
+- **THEN** distribution class 维 MUST 按 raw→calibrated mapping 重排
+- **AND** distribution mask 和 horizon 对齐 MUST 保持不变
+
+#### Scenario: hard-label evaluation 仍使用 calibrated hard label
+- **WHEN** validation 或 evaluation batch 同时包含 calibrated `target_beam` 和 `target_beam_distribution`
+- **THEN** hard-label Top-K、DBA 和 validation/evaluation loss MUST 使用 calibrated `target_beam`
+- **AND** metrics metadata MUST declare the calibrated label space
+
+### Requirement: Circular soft target loss for MMW Town GPS v2
+系统 MUST 为 MMW Town GPS-only v2 提供 circular soft target supervised loss。soft target MUST 使用 circular beam distance 构造 Gaussian distribution，并 MUST 归一化为概率分布。
+
+#### Scenario: circular soft target wrap-around
+- **WHEN** `num_beams=64` 且 target beam 为 `0`
+- **THEN** circular soft target MUST 将 beam `63` 作为距离 1 的邻居
+- **AND** distribution 的概率和 MUST 在数值容差内等于 1
+
+#### Scenario: circular soft CE 参与训练
+- **WHEN** v2 配置 `loss.type: circular_soft_ce`
+- **THEN** 系统 MUST 使用 circular soft target 计算 supervised beam loss
+- **AND** validation/evaluation metrics MUST 继续使用 hard target label
+
+### Requirement: Focal and class-balanced circular soft loss
+系统 MUST 支持在 circular soft CE 上启用 focal gamma 和 class-balanced weighting。class weight 模式 MUST 至少支持 `none`、`inverse_freq`、`inverse_sqrt_freq` 和 `effective_num`，并 MUST 从当前训练 split 的 label histogram 计算。
+
+#### Scenario: class weight 默认关闭
+- **WHEN** v2 配置未显式启用 class-balanced weighting
+- **THEN** 系统 MUST 使用 `class_weight: none`
+- **AND** weighted ablation MUST NOT 污染 unweighted ablation 的 summary
+
+#### Scenario: effective_num 权重记录元数据
+- **WHEN** v2 配置 `loss.class_weight: effective_num`
+- **THEN** 系统 MUST 使用配置的 beta 计算 class weights
+- **AND** run metadata MUST 记录 beta、label histogram、权重归一化策略和 fit split
+
+### Requirement: Circular soft loss is not KD
+MMW Town GPS v2 的 circular soft CE、focal circular soft CE 和 class-balanced circular loss MUST 作为 supervised beam smoothing loss 记录，不得标记为 teacher-student KD。
+
+#### Scenario: loss 日志使用非 KD 命名
+- **WHEN** v2 训练使用 circular soft loss
+- **THEN** loss diagnostics MUST 使用 `loss/beam_circular_soft_ce`、`loss/beam_focal_circular_soft_ce` 或等价非 KD 命名
+- **AND** diagnostics MUST NOT 生成新的 `loss/distillation` 或 `loss/kd_soft_label` 字段表示该 supervised loss

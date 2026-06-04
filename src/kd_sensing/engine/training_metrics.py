@@ -43,7 +43,6 @@ class EpochMetricsRecorder:
         self.running = {
             "loss": 0.0,
             "task_loss": 0.0,
-            "distill_loss": 0.0,
             "beam_soft_loss": 0.0,
             "unimodal_loss": 0.0,
             "occlusion_loss": 0.0,
@@ -65,7 +64,6 @@ class EpochMetricsRecorder:
         updates = {
             "loss": result.total_loss.item(),
             "task_loss": result.task_loss.item(),
-            "distill_loss": result.distill_loss.item(),
             "beam_soft_loss": _loss_item(extra_loss_values, "beam_soft"),
             "unimodal_loss": _loss_item(extra_loss_values, "unimodal"),
             "occlusion_loss": prediction_loss.occlusion.item(),
@@ -88,7 +86,6 @@ class EpochMetricsRecorder:
         return {
             "loss": float(self.running["loss"]),
             "task": float(self.running["task_loss"]),
-            "distill": float(self.running["distill_loss"]),
             "acc": float(self.running["acc"]),
         }
 
@@ -159,7 +156,6 @@ class EpochMetricsRecorder:
         self.history["train_loss"].append(float(self.running["loss"]))
         self.history["train_task_loss"].append(float(self.running["task_loss"]))
         self.history["train_objective_loss"].append(float(self.running["task_loss"]))
-        self.history["train_distill_loss"].append(float(self.running["distill_loss"]))
         self.history["train_beam_soft_loss"].append(float(self.running["beam_soft_loss"]))
         self.history["train_unimodal_loss"].append(float(self.running["unimodal_loss"]))
         append_history(self.history, "train_occlusion_loss", train_occlusion_loss)
@@ -235,7 +231,6 @@ class EpochMetricsRecorder:
             "train_loss": float(self.running["loss"]),
             "train_task_loss": float(self.running["task_loss"]),
             "train_objective_loss": float(self.running["task_loss"]),
-            "train_distill_loss": float(self.running["distill_loss"]),
             "train_beam_soft_loss": float(self.running["beam_soft_loss"]),
             "loss/beam_soft_target": float(self.running["beam_soft_loss"]),
             "train_unimodal_loss": float(self.running["unimodal_loss"]),

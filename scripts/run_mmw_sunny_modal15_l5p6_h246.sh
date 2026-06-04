@@ -6,12 +6,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 CONDA_ENV="${CONDA_ENV:-kd_mm_beam}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/other}"
 LOG_ROOT="${LOG_ROOT:-logs/mmw_sunny_modal15_l5p6_h246_train}"
 GPU_IDS="${GPU_IDS:-0,1,2,3}"
 RUN_IN_BACKGROUND="${RUN_IN_BACKGROUND:-1}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 LOG_DIR="${LOG_DIR:-$LOG_ROOT/$RUN_ID}"
+HORIZON_TAG="${HORIZON_TAG:-l5p6_group_safe_h246}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/mmw_sunny_modal15/$HORIZON_TAG}"
 SCHEDULER_LABEL="${SCHEDULER_LABEL:-l5p6/h246}"
 
 EPOCHS="${EPOCHS:-100}"
@@ -19,7 +20,6 @@ SEQ_LEN="${SEQ_LEN:-5}"
 NUM_PRED="${NUM_PRED:-6}"
 SPLIT_TAG="${SPLIT_TAG:-l5p6_group_safe}"
 SPLIT_STRATEGY="${SPLIT_STRATEGY:-group_safe_time_block}"
-HORIZON_TAG="${HORIZON_TAG:-l5p6_group_safe_h246}"
 METRIC_HORIZONS="${METRIC_HORIZONS:-[2,4,6]}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
 TEST_BATCH_SIZE="${TEST_BATCH_SIZE:-128}"
@@ -68,7 +68,7 @@ Usage:
                  val_acc/val_atop3/val_atop5/val_adba 和 val_top*_avg 只汇总第 2/4/6 帧
 
 输出目录：
-  outputs/other/<scene>/sunny_MMW_<scene>_l5p6_group_safe_h246_<kind>_no_kd
+  outputs/mmw_sunny_modal15/l5p6_group_safe_h246/<scene>/sunny_MMW_<scene>_l5p6_group_safe_h246_<kind>_supervised
 
 默认保留：
   tensorboard/events.out.tfevents*
@@ -127,11 +127,11 @@ fi
 
 config_for_kind() {
   case "$1" in
-    image) printf '%s\n' "configs/image/no_kd.yaml" ;;
-    lidar) printf '%s\n' "configs/lidar/no_kd.yaml" ;;
-    radar) printf '%s\n' "configs/radar/no_kd.yaml" ;;
-    gps) printf '%s\n' "configs/gps/no_kd.yaml" ;;
-    fusion4) printf '%s\n' "configs/fusion/all_modalities_no_kd.yaml" ;;
+    image) printf '%s\n' "configs/image/supervised.yaml" ;;
+    lidar) printf '%s\n' "configs/lidar/supervised.yaml" ;;
+    radar) printf '%s\n' "configs/radar/supervised.yaml" ;;
+    gps) printf '%s\n' "configs/gps/supervised.yaml" ;;
+    fusion4) printf '%s\n' "configs/fusion/all_modalities_supervised.yaml" ;;
     *) return 2 ;;
   esac
 }
@@ -150,7 +150,7 @@ modalities_for_kind() {
 run_name_for_job() {
   local scene="$1"
   local kind="$2"
-  printf 'sunny_MMW_%s_%s_%s_no_kd\n' "$scene" "$HORIZON_TAG" "$kind"
+  printf 'sunny_MMW_%s_%s_%s_supervised\n' "$scene" "$HORIZON_TAG" "$kind"
 }
 
 prepare_splits() {
@@ -278,8 +278,7 @@ cleanup_extra_outputs() {
     "$run_dir/Loss_curves.png" \
     "$run_dir/LR_schedule.png" \
     "$run_dir/train_log.json" \
-    "$run_dir/training_outputs.npz" \
-    "$run_dir/teacher_metrics.json"
+    "$run_dir/training_outputs.npz"
 }
 
 run_job() {
@@ -332,11 +331,9 @@ run_job() {
     -o "data.dataloader.prefetch_factor=$PREFETCH_FACTOR"
     -o "data.dataloader.persistent_workers=$PERSISTENT_WORKERS"
     -o "data.dataloader.pin_memory=$PIN_MEMORY"
-    -o "model.seq_length_teacher=$SEQ_LEN"
-    -o "model.seq_length_student=$SEQ_LEN"
+    -o "model.seq_length=$SEQ_LEN"
     -o "model.num_pred=$NUM_PRED"
-    -o "model.teacher.num_pred=$NUM_PRED"
-    -o "model.student.num_pred=$NUM_PRED"
+    -o "model.primary.num_pred=$NUM_PRED"
     -o "training.epochs=$EPOCHS"
     -o "loss.soft_targets.enabled=true"
     -o "training.amp.enabled=$AMP_ENABLED"
@@ -363,10 +360,8 @@ run_job() {
   if [[ "$kind" == "fusion4" ]]; then
     cmd+=(
       -o "model.modalities=$mods"
-      -o "model.teacher.modalities=$mods"
-      -o "model.student.modalities=$mods"
-      -o "model.teacher.mmwave_input_size=64"
-      -o "model.student.mmwave_input_size=64"
+      -o "model.primary.modalities=$mods"
+      -o "model.primary.mmwave_input_size=64"
     )
   fi
 

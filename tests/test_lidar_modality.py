@@ -32,8 +32,8 @@ from kd_sensing.evaluation.lidar_diagnostics import (  # noqa: E402
     degradation_baselines_from_labels,
     lidar_degradation_report,
 )
-from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
-from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarStudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
+from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarLightweightModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
@@ -66,22 +66,20 @@ def tiny_resnet(monkeypatch):
 
 
 LIDAR_CONFIGS = [
-    "configs/lidar/no_kd.yaml",
-    "configs/lidar/teacher_no_kd.yaml",
-    "configs/lidar/student_no_kd.yaml",
-    "configs/lidar/logits_kd.yaml",
-    "configs/lidar/rkd.yaml",
+    "configs/lidar/supervised.yaml",
+    "configs/lidar/strong.yaml",
+    "configs/lidar/lightweight.yaml",
 ]
 
 LIDAR_FUSION_CONFIGS = [
-    "configs/fusion/radar_lidar_no_kd.yaml",
-    "configs/fusion/all_modalities_lidar_no_kd.yaml",
+    "configs/fusion/radar_lidar_supervised.yaml",
+    "configs/fusion/all_modalities_lidar_supervised.yaml",
     *[
         f"configs/fusion/{'_'.join(combo)}_{mode}.yaml"
         for size in (2, 3, 4, 5)
         for combo in combinations(["image", "radar", "gps", "lidar", "mmwave"], size)
         if "lidar" in combo
-        for mode in ["teacher_no_kd", "student_no_kd"]
+        for mode in ["strong", "lightweight"]
     ],
 ]
 
@@ -287,7 +285,7 @@ def test_lidar_streaming_stats_file_reused_for_test_split(tmp_path: Path):
 
 def test_lidar_structured_normalization_config_override():
     cfg = load_config(
-        ROOT / "configs/lidar/teacher_no_kd.yaml",
+        ROOT / "configs/lidar/strong.yaml",
         [
             "data.dataset.lidar_normalization.enabled=true",
             "data.dataset.lidar_normalization.mode=streaming_stats",
@@ -322,7 +320,7 @@ def test_lidar_normalization_conflicts_are_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="lidar_normalize=False.*lidar_normalization.enabled=True"):
         load_config(
-            ROOT / "configs/lidar/teacher_no_kd.yaml",
+            ROOT / "configs/lidar/strong.yaml",
             [
                 "data.dataset.lidar_normalize=false",
                 "data.dataset.lidar_normalization.enabled=true",
@@ -363,8 +361,8 @@ def test_lidar_models_forward_contracts_and_param_validation():
     assert features.shape == (2, 10, 64)
 
     for model_type, expected_cls in [
-        ("lidar_teacher", LidarModalityNet),
-        ("lidar_student", LidarStudentModalityNet),
+        ("lidar_strong", LidarModalityNet),
+        ("lidar_lightweight", LidarLightweightModalityNet),
     ]:
         model = MODELS.build(
             {
@@ -386,7 +384,7 @@ def test_lidar_models_forward_contracts_and_param_validation():
     with pytest.raises(ValueError, match="gru_params must contain"):
         MODELS.build(
             {
-                "type": "lidar_student",
+                "type": "lidar_lightweight",
                 "feature_size": 64,
                 "num_classes": 64,
                 "gru_params": [64, 64],
@@ -395,7 +393,7 @@ def test_lidar_models_forward_contracts_and_param_validation():
     with pytest.raises(ValueError, match="must equal feature_size"):
         MODELS.build(
             {
-                "type": "lidar_teacher",
+                "type": "lidar_strong",
                 "feature_size": 64,
                 "num_classes": 64,
                 "gru_params": [32, 64, 2],
@@ -417,14 +415,14 @@ def test_lidar_batch_and_fusion_paths():
         device=torch.device("cpu"),
         modalities=["lidar"],
     )
-    model = LidarStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
-    fusion_model = FusionStudentModalityNet(
+    model = LidarLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
+    fusion_model = FusionLightweightModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
         modalities=["lidar"],
     )
-    teacher = FusionTeacherModalityNet(
+    strong_fusion = FusionStrongModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -439,7 +437,7 @@ def test_lidar_batch_and_fusion_paths():
     assert pred.shape == (2, 10, 64)
     assert fusion_pred.shape == (2, 10, 64)
     with pytest.raises(ValueError, match="requires 'lidar' input"):
-        teacher()
+        strong_fusion()
 
 
 def test_lidar_quality_and_degradation_baselines_report_expected_fields():
@@ -477,51 +475,45 @@ def test_lidar_quality_and_degradation_baselines_report_expected_fields():
 @pytest.mark.parametrize("config_path", LIDAR_CONFIGS)
 def test_lidar_configs_build(config_path: str):
     cfg = load_config(ROOT / config_path)
-    model = MODELS.build(cfg["model"]["student"])
+    model = MODELS.build(cfg["model"]["primary"])
 
     assert cfg["experiment"]["task"] == "lidar"
+    assert "distillation" not in cfg
     assert cfg["data"]["dataset"]["use_lidar"] is True
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
     assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is False
     assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "none"
     assert cfg["data"]["dataset"]["lidar_cache_dir"] == "lidar_bev_cache"
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
-    assert cfg["model"]["teacher"]["type"] == "modular_sequence"
-    assert cfg["model"]["student"]["type"] == "modular_sequence"
-    assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
-    assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
-    assert cfg["model"]["teacher"]["representation_core"]["num_layers"] == 1
-    assert cfg["model"]["student"]["representation_core"]["num_layers"] == 1
+    assert cfg["model"]["primary"]["type"] == "modular_sequence"
+    assert cfg["model"]["primary"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+    assert cfg["model"]["primary"]["representation_core"]["num_layers"] == 1
     assert isinstance(model, ModularSequenceModel)
 
 
 @pytest.mark.parametrize("config_path", LIDAR_FUSION_CONFIGS)
 def test_lidar_fusion_configs_build(config_path: str):
     cfg = load_config(ROOT / config_path)
-    teacher = MODELS.build(cfg["model"]["teacher"])
-    student = MODELS.build(cfg["model"]["student"])
+    primary_cfg = cfg["model"]["primary"]
+    primary = MODELS.build(primary_cfg)
 
     assert cfg["experiment"]["task"] == "fusion"
-    assert "lidar" in cfg["model"]["teacher"]["modalities"]
-    assert "lidar" in cfg["model"]["student"]["modalities"]
-    assert cfg["model"]["teacher"]["modalities"] == cfg["model"]["student"]["modalities"]
+    assert "distillation" not in cfg
+    assert "lidar" in primary_cfg["modalities"]
     assert cfg["data"]["dataset"]["use_lidar"] is True
     assert cfg["data"]["dataset"]["lidar_bev_size"] == [224, 224]
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
     assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is False
     assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "none"
-    assert cfg["model"]["teacher"]["lidar_channels"] == 3
-    assert cfg["model"]["student"]["lidar_channels"] == 3
-    if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:
-        assert isinstance(teacher, ModularSequenceModel)
-        if "image" in cfg["model"]["teacher"]["modalities"]:
-            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-        if "lidar" in cfg["model"]["teacher"]["modalities"]:
-            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
+    assert primary_cfg["lidar_channels"] == 3
+    if isinstance(primary, ModularSequenceModel):
+        if "image" in primary_cfg["modalities"]:
+            assert primary_cfg["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+        if "lidar" in primary_cfg["modalities"]:
+            assert primary_cfg["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
-        assert isinstance(teacher, FusionTeacherModalityNet)
-    assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet, ModularSequenceModel))
+        assert isinstance(primary, (CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet))
 
 
 def _write_dataset_fixture(root: Path, csv_path: Path) -> None:

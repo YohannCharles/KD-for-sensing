@@ -5,7 +5,6 @@ experiment:
   variant: raymobtime_s008_current_snapshot
   task_semantics: current_snapshot_beam_selection
   seed: 42
-
 data:
   dataset:
     type: raymobtime_s008
@@ -15,7 +14,9 @@ data:
     seq_len: 1
     num_pred: 1
     image_profile: rgb_imagenet
-    image_size: [224, 224]
+    image_size:
+    - 224
+    - 224
     image_resize_in_dataset: false
     normalize: true
     coord_normalize: true
@@ -29,19 +30,25 @@ data:
     pin_memory: false
     persistent_workers: false
     prefetch_factor: null
-
 model:
-  modalities: [coord, image, lidar, ray]
+  modalities:
+  - coord
+  - image
+  - lidar
+  - ray
   image_profile: rgb_imagenet
   feature_size: 64
   num_classes: 256
   num_pred: 1
-  seq_length_teacher: 1
-  seq_length_student: 1
   downsample_ratio: 1
-  student:
+  seq_length: 1
+  primary:
     type: task_aware_gated_multitask_selection
-    modalities: [coord, image, lidar, ray]
+    modalities:
+    - coord
+    - image
+    - lidar
+    - ray
     feature_size: 64
     hidden_size: 128
     num_classes: 256
@@ -61,20 +68,22 @@ model:
         pretrained: true
         weights: DEFAULT
         freeze_backbone: true
-        unfreeze_stages: [layer4]
+        unfreeze_stages:
+        - layer4
         dropout: 0.1
       lidar:
         type: raymobtime_lidar_3d_cnn
         output_dim: 64
         lidar_channels: 1
         stem_channels: 16
-        block_channels: [16, 32]
+        block_channels:
+        - 16
+        - 32
         hidden_size: 128
         dropout: 0.1
       ray:
         type: ray_mlp
         output_dim: 64
-
 loss:
   type: cross_entropy
   objective:
@@ -87,11 +96,6 @@ loss:
     link_quality:
       type: smooth_l1
       beta: 1.0
-
-distillation:
-  type: no_kd
-  teacher_model_name: null
-
 training:
   epochs: 20
   lr: 0.001
@@ -105,12 +109,13 @@ training:
     inter_op: 1
   transfer:
     non_blocking: false
-
 evaluation:
-  k_values: [1, 3, 5]
+  k_values:
+  - 1
+  - 3
+  - 5
   modality_subsets:
     enabled: false
-
 output:
   dir: outputs/raymobtime_s008/experiments
   run_name: s008_multitask_selection

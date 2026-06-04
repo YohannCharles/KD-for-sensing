@@ -6,7 +6,6 @@ import torch
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
-from kd_sensing.engine.hist_beam_history_anchor import apply_history_anchor_model_config
 from kd_sensing.engine.modality_resolution import (
     config_uses_csi,
     config_uses_gps,
@@ -25,7 +24,7 @@ from kd_sensing.engine.objectives.metadata import (
     objective_runtime_metadata,
 )
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
-from kd_sensing.engine.run_lineage import ensure_distillation_defaults, run_lineage_metadata
+from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.engine.run_status import (
     write_complete_status,
     write_failed_status_for_active_run,
@@ -53,8 +52,6 @@ def evaluate(cfg: dict, weights: str | None = None, output_dir: str | None = Non
 def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | None = None) -> dict:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
-    ensure_distillation_defaults(cfg)
-    apply_history_anchor_model_config(cfg)
     device = build_device(cfg)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)
     write_running_status(run_dir, cfg, kind="evaluation")
@@ -133,7 +130,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     )
     loader_cfg = cfg["data"]["dataloader"]
     dataloader = build_dataloader(dataset, loader_cfg, split="test")
-    model = build_model(cfg["model"]["student"]).to(device)
+    model = build_model(cfg["model"]["primary"]).to(device)
     checkpoint_load = None
     if checkpoint_resolution.path is not None:
         if not checkpoint_resolution.path.exists():
@@ -265,14 +262,13 @@ def _apply_csi_rms_to_model_config(cfg: dict, dataset) -> None:
     rms = float(getattr(normalizer, "rms", normalizer))
     model_cfg = cfg.setdefault("model", {})
     model_cfg["csi_train_rms"] = rms
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role)
-        if not isinstance(role_cfg, dict) or "csi" not in role_cfg.get("modalities", []):
-            continue
-        role_cfg["csi_train_rms"] = rms
-        encoders = role_cfg.get("encoders")
-        if isinstance(encoders, dict) and isinstance(encoders.get("csi"), dict):
-            encoders["csi"].setdefault("train_rms", rms)
+    primary_cfg = model_cfg.get("primary")
+    if not isinstance(primary_cfg, dict) or "csi" not in primary_cfg.get("modalities", []):
+        return
+    primary_cfg["csi_train_rms"] = rms
+    encoders = primary_cfg.get("encoders")
+    if isinstance(encoders, dict) and isinstance(encoders.get("csi"), dict):
+        encoders["csi"].setdefault("train_rms", rms)
 
 
 def _evaluation_uses_occlusion_target(cfg: dict) -> bool:

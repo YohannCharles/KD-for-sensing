@@ -3,28 +3,25 @@ from kd_sensing.models.lidar import LidarFeatureExtractor
 from kd_sensing.models.mmwave import MmWaveFeatureExtractor
 
 from .cls_token_transformer import CLSTokenTransformerFusionNet
-from .hist_beam import BottleneckPrivateAdapter, HistBeamFusionNet
 from .networks import (
-    FusionTeacherModalityNet,
-    FusionStudentModalityNet,
+    FusionLightweightModalityNet,
+    FusionStrongModalityNet,
 )
 from .token_transformer import TokenTransformerFusionNet
 
 __all__ = [
-    "BottleneckPrivateAdapter",
     "CLSTokenTransformerFusionNet",
-    "FusionTeacherModalityNet",
-    "HistBeamFusionNet",
+    "FusionStrongModalityNet",
     "LidarFeatureExtractor",
     "MmWaveFeatureExtractor",
     "RadarFeatureExtractor",
-    "FusionStudentModalityNet",
+    "FusionLightweightModalityNet",
     "TokenTransformerFusionNet",
 ]
 
 _REMOVED_ALIASES = {
-    "Fusion" + "ModalityNet": "FusionTeacherModalityNet",
-    "Student" + "ModalityNet": "FusionStudentModalityNet",
+    "Fusion" + "ModalityNet": "FusionStrongModalityNet",
+    "Student" + "ModalityNet": "FusionLightweightModalityNet",
     "CRAFFusionNet": "CRAF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "MARFFusionNet": "MARF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "PriorResidualGate": "teacher-prior CRAF has been retired.",
@@ -33,6 +30,8 @@ _REMOVED_ALIASES = {
     "AnchorFusion": "MARF has been retired.",
     "ModalityRouter": "MARF has been retired.",
     "ResidualAdapter": "MARF has been retired.",
+    "BottleneckPrivateAdapter": "HiST-Beam/Hist has been retired; no compatibility adapter is provided.",
+    "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS candidate, or residual fusion workflows.",
 }
 
 

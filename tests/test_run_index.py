@@ -27,7 +27,7 @@ def _base_cfg(name: str) -> dict:
     return {
         "experiment": {"name": name, "task": "fusion", "objective": "beam", "seed": 7},
         "data": {"dataset": {"type": "deepsense6g"}},
-        "model": {"student": {"modalities": ["image", "lidar"]}},
+        "model": {"primary": {"modalities": ["image", "lidar"]}},
         "output": {"run_name": name},
         "runtime": {"prediction_objective": {"name": "beam", "primary_metric": "val_adba"}},
     }
@@ -62,6 +62,7 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     checkpoint_dir.mkdir()
     (checkpoint_dir / "best.pth").write_bytes(b"weights")
     (checkpoint_dir / "best.pth.json").write_text(json.dumps({"selection_metric": "val_adba"}), encoding="utf-8")
+    (checkpoint_dir / "last.pth").write_bytes(b"recoverable")
     (run_dir / "tensorboard").mkdir()
     (run_dir / "tensorboard" / "events.out.tfevents.test").write_text("", encoding="utf-8")
 
@@ -75,7 +76,16 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     assert run["config"]["modalities"] == ["image", "lidar"]
     assert run["metrics"]["primary"] == {"name": "val_adba", "value": 0.42}
     assert run["checkpoints"]["best_checkpoint"].endswith("checkpoints/best.pth")
+    assert run["size_bytes"] > 0
+    assert run["checkpoints"]["count"] == 2
+    assert run["checkpoints"]["total_size_bytes"] >= len(b"weights") + len(b"recoverable")
+    assert run["checkpoints"]["primary_checkpoint"].endswith("checkpoints/best.pth")
+    retention = {item["name"]: item for item in run["checkpoints"]["retention"]["items"]}
+    assert retention["best.pth"]["registry_protected"] is True
+    assert retention["best.pth"]["selection_metadata"]["available"] is True
+    assert retention["last.pth"]["registry_default_candidate"] is True
     assert run["tensorboard"]["event_count"] == 1
+    assert run["cleanup"]["protected"] is False
 
 
 def test_run_index_classifies_started_stale_partial_and_filters(tmp_path: Path):
@@ -149,6 +159,8 @@ def test_run_index_marks_matching_process_as_running(tmp_path: Path):
     assert run["process"]["pid"] == 1234
     assert run["resources"]["process_rss_mb"] == 512.5
     assert run["resources"]["gpu_indices"] == [0]
+    assert run["cleanup"]["protected"] is True
+    assert "run_state_running" in run["cleanup"]["protection_reasons"]
 
 
 def test_run_index_renderers_include_expected_fields(tmp_path: Path):

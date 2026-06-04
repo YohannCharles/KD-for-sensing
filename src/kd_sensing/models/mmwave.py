@@ -77,7 +77,7 @@ class MmWaveFeatureExtractor(nn.Module):
         return features.view(batch_size, seq_len, -1)
 
 
-@MODELS.register("mmwave_teacher")
+@MODELS.register("mmwave_strong")
 class MmWaveModalityNet(nn.Module):
     def __init__(
         self,
@@ -146,7 +146,7 @@ class MmWaveModalityNet(nn.Module):
         )
 
 
-@MODELS.register("mmwave_student")
+@MODELS.register("mmwave_lightweight")
 class MmWaveStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -205,3 +205,10 @@ class MmWaveStudentModalityNet(nn.Module):
             output_features=seq_out,
             auxiliary_heads=self.auxiliary_heads,
         )
+
+
+MODELS.register_removed("mmwave_teacher", "Use 'mmwave_strong'.")
+MODELS.register_removed("mmwave_student", "Use 'mmwave_lightweight'.")
+
+MmWaveStrongModalityNet = MmWaveModalityNet
+MmWaveLightweightModalityNet = MmWaveStudentModalityNet

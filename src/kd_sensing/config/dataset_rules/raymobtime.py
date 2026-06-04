@@ -29,15 +29,13 @@ def validate_raymobtime_config(cfg: dict[str, Any]) -> None:
             "Raymobtime s008 only supports current snapshot beam selection. "
             f"Remove future/transition configuration keys: {keys}."
         )
-    model_cfg = cfg.get("model", {}).get("student", {})
+    model_cfg = cfg.get("model", {}).get("primary", {})
     model_type = str(model_cfg.get("type", ""))
     if model_type not in RAYMOBTIME_SELECTION_MODEL_TYPES:
         raise ValueError(
-            "Raymobtime s008 requires model.student.type to be simple_concat_multitask_selection "
+            "Raymobtime s008 requires model.primary.type to be simple_concat_multitask_selection "
             "or task_aware_gated_multitask_selection."
         )
-    if cfg.get("distillation", {}).get("type", "no_kd") != "no_kd":
-        raise ValueError("Raymobtime s008 selection configs must use distillation.type='no_kd'.")
     cfg.setdefault("experiment", {})["task_semantics"] = "current_snapshot_beam_selection"
     cfg["experiment"]["uses_history_window"] = False
     cfg["experiment"]["uses_temporal_core"] = False

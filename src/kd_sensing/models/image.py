@@ -69,7 +69,7 @@ class ImageFeatureExtractor(nn.Module):
         return frame_features.view(batch_size, seq_length, -1)
 
 
-@MODELS.register("image_teacher")
+@MODELS.register("image_strong")
 class ImageModalityNet(nn.Module):
     def __init__(
         self,
@@ -124,7 +124,7 @@ class ImageModalityNet(nn.Module):
         return pred, features, enhanced_seq_out
 
 
-@MODELS.register("image_student")
+@MODELS.register("image_lightweight")
 class ImageStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -243,3 +243,10 @@ def _validate_image_profile_channels(encoder_name: str, image_profile: str | Non
         expected_channels=spec.channels,
         actual_channels=image_channels,
     )
+
+
+MODELS.register_removed("image_teacher", "Use 'image_strong'.")
+MODELS.register_removed("image_student", "Use 'image_lightweight'.")
+
+ImageStrongModalityNet = ImageModalityNet
+ImageLightweightModalityNet = ImageStudentModalityNet

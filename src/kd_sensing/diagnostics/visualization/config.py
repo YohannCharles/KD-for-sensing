@@ -96,10 +96,9 @@ def apply_visualization_modalities(cfg: dict[str, Any], modalities: tuple[str, .
     else:
         result["experiment"]["task"] = "fusion"
         model_cfg["modalities"] = list(selected)
-        for role in ("teacher", "student"):
-            role_cfg = model_cfg.get(role)
-            if isinstance(role_cfg, dict):
-                role_cfg.pop("modalities", None)
+        primary_cfg = model_cfg.get("primary")
+        if isinstance(primary_cfg, dict):
+            primary_cfg["modalities"] = list(selected)
     return result
 
 def resolve_metadata_output_paths(

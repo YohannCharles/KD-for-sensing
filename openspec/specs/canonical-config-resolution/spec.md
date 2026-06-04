@@ -4,13 +4,19 @@
 定义 canonical/virtual 配置解析规则，确保实体 YAML、overlay recipe 和命令行覆盖产生一致可复现的最终配置。
 ## Requirements
 ### Requirement: 虚拟 canonical fusion 配置解析
-系统 MUST 支持从 canonical fusion 配置路径生成配置，即使该路径在磁盘上没有实体 YAML 文件。可生成路径 MUST 仅限 `configs/fusion/<slug>_<mode>.yaml`，其中 `<mode>` MUST 是 `teacher_no_kd`、`student_no_kd`、`logits_kd` 或 `rkd`。
+系统 MUST 支持从 canonical fusion 配置路径生成配置，即使该路径在磁盘上没有实体 YAML 文件。可生成路径 MUST 仅限当前 supervised/adaptation 入口，例如 `configs/fusion/<slug>_strong.yaml`、`configs/fusion/<slug>_lightweight.yaml`、snapshot 或 active overlay recipe。系统 MUST 不再生成 `logits_kd`、`rkd` 或包含 `distillation` block 的配置。
 
-#### Scenario: 加载不存在的 canonical fusion 配置路径
-- **WHEN** 用户加载 `configs/fusion/gps_mmwave_logits_kd.yaml` 且该文件不存在
+#### Scenario: 加载 supervised canonical fusion 配置路径
+- **WHEN** 用户加载 `configs/fusion/gps_mmwave_lightweight.yaml` 且该文件不存在
 - **THEN** 系统 MUST 解析该路径并生成可用于训练、评估和测试的最终配置
-- **AND** 最终配置的 `experiment.name` 和 `output.run_name` MUST 为 `gps_mmwave_logits_kd`
+- **AND** 最终配置的 `experiment.name` 和 `output.run_name` MUST 为 `gps_mmwave_lightweight`
 - **AND** 最终配置的 `experiment.task` MUST 为 `fusion`
+- **AND** 最终配置 MUST 不包含 `distillation` 配置块
+
+#### Scenario: KD virtual path 被拒绝
+- **WHEN** 用户加载 `configs/fusion/gps_mmwave_logits_kd.yaml` 或 `configs/fusion/gps_mmwave_rkd.yaml`
+- **THEN** 系统 MUST 抛出清晰错误
+- **AND** 系统 MUST 不生成配置或回退为 lightweight 配置
 
 #### Scenario: 非 canonical 缺失文件不自动生成
 - **WHEN** 用户加载 `configs/custom/missing.yaml` 或 `configs/fusion/not_a_canonical_name.yaml` 且该文件不存在
@@ -26,65 +32,51 @@
 系统 MUST 使用固定模态优先级 `image > radar > gps > lidar > mmwave` 解析 fusion slug。slug MUST 由两个到五个不同合法模态组成；乱序、重复、未知模态和单模态 fusion slug MUST 被拒绝。
 
 #### Scenario: 按 canonical 顺序解析 slug
-- **WHEN** 用户加载 `configs/fusion/image_radar_gps_lidar_mmwave_rkd.yaml`
+- **WHEN** 用户加载 `configs/fusion/image_radar_gps_lidar_mmwave_lightweight.yaml`
 - **THEN** 系统 MUST 将 slug 解析为 `["image", "radar", "gps", "lidar", "mmwave"]`
-- **AND** teacher 和 student 的 `modalities` MUST 使用相同顺序
+- **AND** `model.primary.modalities` MUST 使用相同顺序
 
 #### Scenario: 拒绝乱序 slug
-- **WHEN** 用户加载 `configs/fusion/mmwave_gps_logits_kd.yaml`
+- **WHEN** 用户加载 `configs/fusion/mmwave_gps_lightweight.yaml`
 - **THEN** 系统 MUST 拒绝该路径
 - **AND** 错误信息 MUST 提示 canonical slug 为 `gps_mmwave`
 
 #### Scenario: 拒绝重复模态 slug
-- **WHEN** 用户加载 `configs/fusion/image_image_rkd.yaml`
+- **WHEN** 用户加载 `configs/fusion/image_image_lightweight.yaml`
 - **THEN** 系统 MUST 拒绝该路径
 - **AND** 错误信息 MUST 指出 fusion slug 不能包含重复模态
 
 #### Scenario: 拒绝未知模态 slug
-- **WHEN** 用户加载 `configs/fusion/image_wifi_logits_kd.yaml`
+- **WHEN** 用户加载 `configs/fusion/image_wifi_lightweight.yaml`
 - **THEN** 系统 MUST 拒绝该路径
 - **AND** 错误信息 MUST 包含非法模态名称 `wifi`
 
 #### Scenario: 拒绝单模态 virtual fusion slug
-- **WHEN** 用户加载 `configs/fusion/mmwave_student_no_kd.yaml`
+- **WHEN** 用户加载 `configs/fusion/mmwave_lightweight.yaml`
 - **THEN** 系统 MUST 拒绝该路径
-- **AND** 错误信息 MUST 引导用户使用 `configs/mmwave/student_no_kd.yaml`
+- **AND** 错误信息 MUST 引导用户使用 `configs/mmwave/lightweight.yaml`
 
 ### Requirement: 生成配置语义
-虚拟 canonical fusion 配置 MUST 生成与旧实体 canonical YAML 等价的核心语义，包括任务类型、模态启用字段、teacher/student 模型配置、KD 模式、训练参数和默认 teacher checkpoint 来源。
+虚拟 canonical fusion 配置 MUST 生成当前 supervised/adaptation 语义，包括任务类型、模态启用字段、primary 模型配置、loss、训练参数和输出 run name。生成配置 MUST 不包含 teacher checkpoint 来源、distillation type、temperature、alpha 或 RKD 参数。
 
-#### Scenario: 生成 teacher no-KD fusion 配置
-- **WHEN** 用户加载 `configs/fusion/gps_lidar_mmwave_teacher_no_kd.yaml`
-- **THEN** 最终配置 MUST 设置 `distillation.type: no_kd`
-- **AND** `model.student.type` MUST 为 `fusion_teacher`
-- **AND** teacher 和 student 的 `modalities` MUST 为 `["gps", "lidar", "mmwave"]`
+#### Scenario: 生成 strong fusion 配置
+- **WHEN** 用户加载 `configs/fusion/gps_lidar_mmwave_strong.yaml`
+- **THEN** 最终配置 MUST 不包含 `distillation`
+- **AND** `model.primary.type` MUST 为 strong fusion 模型或明确命名的 strong baseline
+- **AND** `model.primary.modalities` MUST 为 `["gps", "lidar", "mmwave"]`
 - **AND** 配置 MUST 启用 GPS、LiDAR 和 mmWave 对应的数据及模型输入字段
 
-#### Scenario: 生成 student no-KD fusion 配置
-- **WHEN** 用户加载 `configs/fusion/gps_lidar_mmwave_student_no_kd.yaml`
-- **THEN** 最终配置 MUST 设置 `distillation.type: no_kd`
-- **AND** `model.student.type` MUST 为 `fusion_student`
-- **AND** `distillation.teacher_model_name` MUST 为 `null`
-
-#### Scenario: 生成 logits KD fusion 配置
-- **WHEN** 用户加载 `configs/fusion/gps_mmwave_logits_kd.yaml`
-- **THEN** 最终配置 MUST 设置 `distillation.type: logits_kd`
-- **AND** `model.teacher.type` MUST 为 `fusion_teacher`
-- **AND** `model.student.type` MUST 为 `fusion_student`
-- **AND** 默认 teacher checkpoint MUST 指向同 slug teacher no-KD 的 `best.pth`
-
-#### Scenario: 生成 RKD fusion 配置
-- **WHEN** 用户加载 `configs/fusion/radar_lidar_mmwave_rkd.yaml`
-- **THEN** 最终配置 MUST 设置 `distillation.type: rkd`
-- **AND** 最终配置 MUST 包含 RKD pair、distance weight 和 angle weight 参数
-- **AND** teacher 和 student MUST 使用相同 `modalities`
+#### Scenario: 生成 lightweight fusion 配置
+- **WHEN** 用户加载 `configs/fusion/gps_lidar_mmwave_lightweight.yaml`
+- **THEN** 最终配置 MUST 不包含 `distillation`
+- **AND** `model.primary.type` MUST 为 `cls_token_transformer_fusion` 或当前默认 lightweight fusion 模型
+- **AND** `model.primary.modalities` MUST 为 `["gps", "lidar", "mmwave"]`
 
 #### Scenario: 保持 image+radar 兼容参数
-- **WHEN** 用户加载 `configs/fusion/image_radar_logits_kd.yaml`
+- **WHEN** 用户加载 `configs/fusion/image_radar_lightweight.yaml`
 - **THEN** 最终配置 MUST 保持 image+radar upstream 兼容参数
-- **AND** fusion teacher GRU MUST 为 `[64, 64, 2]`
-- **AND** fusion student GRU MUST 为 `[64, 64, 1]`
-- **AND** 默认 teacher checkpoint MUST 使用 `All_models/BothTeacher_best.pth`
+- **AND** primary fusion 模型 GRU MUST 为当前 lightweight 默认
+- **AND** 训练流程 MUST 不要求 teacher checkpoint 来源
 
 #### Scenario: 命令行覆盖应用在生成配置之后
 - **WHEN** 用户加载虚拟 canonical fusion 配置并传入覆盖项 `training.epochs=1`
@@ -97,10 +89,10 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 #### Scenario: 既有 canonical 路径生成语义不变
 - **WHEN** 用户加载既有 virtual canonical fusion 路径
 - **THEN** 系统 MUST 通过 recipe 生成与变更前等价的关键配置语义
-- **AND** experiment name、task、modalities、student/teacher model、distillation、loss、training 和 output run name MUST 保持兼容
+- **AND** experiment name、task、modalities、primary model、loss、training 和 output run name MUST 保持兼容
 
 #### Scenario: objective overlay recipe
-- **WHEN** 用户加载 `configs/fusion/gps_mmwave_occlusion_no_kd.yaml`
+- **WHEN** 用户加载 `configs/fusion/gps_mmwave_occlusion_supervised.yaml`
 - **THEN** 系统 MUST 通过 objective recipe 生成 `experiment.objective: occlusion`
 - **AND** recipe MUST 启用 occlusion target、occlusion head、objective loss 和对应 early stopping 默认值
 
@@ -201,7 +193,7 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **AND** 运行产物 MUST 不依赖原始 YAML 文件继续存在
 
 ### Requirement: 可生成配置删除前必须有等价检查
-删除实体配置前，项目 MUST 有 focused test 或脚本验证替代 virtual/overlay 配置的关键语义。关键语义 MUST 至少覆盖 experiment name、task、dataset type、enabled modalities、model type、distillation/loss type、training schedule、output run name 和 checkpoint 来源。
+删除实体配置前，项目 MUST 有 focused test 或脚本验证替代 virtual/overlay 配置的关键语义。关键语义 MUST 至少覆盖 experiment name、task、dataset type、enabled modalities、model type、loss type、training schedule、output run name 和 checkpoint 来源。
 
 #### Scenario: 关键字段等价
 - **WHEN** 开发者准备删除一个可生成实体 YAML
@@ -232,7 +224,7 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **AND** 不得把该实体 YAML 当作无损可生成配置直接删除
 
 ### Requirement: 高级实体 YAML 删除前必须通过等价检查
-删除高级实体 YAML 前，项目 MUST 提供 focused test 或脚本比较实体配置和替代 virtual/overlay 配置的关键语义。关键语义 MUST 至少覆盖 experiment name、task、dataset type、enabled modalities、model type、loss/distillation type、training schedule、output run name 和 checkpoint 来源。
+删除高级实体 YAML 前，项目 MUST 提供 focused test 或脚本比较实体配置和替代 virtual/overlay 配置的关键语义。关键语义 MUST 至少覆盖 experiment name、task、dataset type、enabled modalities、model type、loss type、training schedule、output run name 和 checkpoint 来源。
 
 #### Scenario: 可生成高级配置关键字段等价
 - **WHEN** 开发者删除一个由 recipe 覆盖的当前支持 token transformer、CSI/GPS/mmWave 组合或 ablation 实体 YAML
@@ -259,7 +251,7 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 
 #### Scenario: 新增 CSI 组合配置有明确 recipe 来源
 - **WHEN** 开发者新增 CSI/GPS/mmWave 或 CSI hardening 组合配置的 virtual/overlay 支持
-- **THEN** recipe MUST 明确声明模态集合、dataset 字段、模型类型、loss/distillation、training 和 output run name
+- **THEN** recipe MUST 明确声明模态集合、dataset 字段、模型类型、loss、training 和 output run name
 - **AND** 非声明路径 MUST 继续抛出清晰缺失配置错误
 
 ### Requirement: 可生成配置不得重新实体化

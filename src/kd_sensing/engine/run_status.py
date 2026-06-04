@@ -117,10 +117,11 @@ def write_failed_status_for_active_run(cfg: dict, exc: BaseException, *, kind: s
 
 def _base_payload(cfg: dict, run_dir: Path, *, kind: str, state: str) -> dict[str, Any]:
     experiment = cfg.get("experiment", {}) if isinstance(cfg.get("experiment"), dict) else {}
-    model_student = _nested_dict(cfg, "model", "student")
+    model_cfg = _nested_dict(cfg, "model")
+    model_primary = _nested_dict(cfg, "model", "primary")
     runtime = cfg.get("runtime", {}) if isinstance(cfg.get("runtime"), dict) else {}
     objective_meta = runtime.get("prediction_objective") if isinstance(runtime.get("prediction_objective"), dict) else {}
-    modalities = model_student.get("modalities")
+    modalities = model_primary.get("modalities") or model_cfg.get("modalities")
     if modalities is None and experiment.get("task") in {"image", "radar", "gps", "lidar", "mmwave", "csi"}:
         modalities = [experiment["task"]]
     return {

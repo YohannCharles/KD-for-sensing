@@ -1,0 +1,70 @@
+experiment:
+  name: mmw_town_gps_top8_candidate_selector
+  protocol: target_adapt_beambench_top8_selector
+  default_ablation: gps_candidate_prob
+
+data:
+  dataset_type: mmw_town
+  condition: sunny
+  data_root: dataset/MMW/sunny
+  gps_v2_artifact_root: outputs/analysis/mmw_town_gps_adapter_v2
+  label_space: mapping_enabled
+  label_spaces:
+    mapping_enabled:
+      enabled: true
+      mapping_file: outputs/analysis/mmw_town_label_distribution/target_adapt_beambench_dba_calibration.json
+      fallback_mapping_file: outputs/analysis/mmw_town_label_distribution/mapping_enabled/beam_label_mapping_midpoint_31_32.json
+    mapping_disabled:
+      enabled: false
+  support_ratio: 0.2
+  num_beams: 64
+  split_tag: l5p3_group_safe
+  train_split: train
+  test_split: test
+  prediction_horizon: 3
+  scenes:
+    - name: crossroad
+      scene_id: 0
+      slug: Town10_crossroad_seed24
+    - name: skybridge
+      scene_id: 1
+      slug: Town10_skybridge_seed24
+    - name: curvyroad
+      scene_id: 2
+      slug: Town10_curvyroad_seed42
+    - name: Hroad
+      scene_id: 3
+      slug: Town10_Hroad_seed42
+
+candidate:
+  topk: 8
+  require_saved_logits: true
+  gps_protocol: target_adapt_beambench
+  gps_ablation: best_by_scene
+  logits_names:
+    - gps_logits.npy
+    - logits.npy
+    - pred_logits.npy
+  logits_index_names:
+    - gps_logits_index.csv
+    - logits_index.csv
+    - pred_logits_index.csv
+
+metrics:
+  dba_delta: 5.0
+  topk:
+    - 1
+    - 3
+    - 5
+    - 8
+  report_normalized_gain: true
+
+outputs:
+  root: outputs/analysis/mmw_town_top8_selector
+  default_result_dir: outputs/analysis/mmw_town_top8_selector/mapping_enabled
+  manifest_dir: manifest
+  manifest_name: top8_candidate_manifest.csv
+  metadata_name: top8_candidate_manifest_metadata.json
+  write_predictions: true
+  write_diagnostics: true
+  write_config_snapshot: true

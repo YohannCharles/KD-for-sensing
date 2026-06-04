@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     dataset_init_elapsed = time.perf_counter() - dataset_init_start
     dataloader = dataloaders[args.split]
     dataset = dataloader.dataset
-    model = build_model(cfg["model"]["student"]).to(device)
+    model = build_model(cfg["model"]["primary"]).to(device)
     model.train()
     criterion = build_task_criterion(cfg)
     optimizer = build_optimizer(cfg, model)
@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     total_samples = sum(batch_sizes[args.warmup :]) if len(batch_sizes) > args.warmup else 0
     total_step_time = sum(step_times)
     runtime_metadata = throughput_run_metadata(cfg, dataloaders, device)
-    mmw_summary = _mmw_hist_beam_profile_summary(cfg, runtime_metadata)
+    mmw_summary = _mmw_sensor_profile_summary(cfg, runtime_metadata)
     wait_breakdown = _wait_vs_gpu_step_breakdown(
         wait_times=loader_times,
         transfer_times=transfer_times,
@@ -203,9 +203,9 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "cache_policy": _cache_policy_summary(runtime_metadata.get("cache", {})),
         "io_risk": _io_risk_summary(
             wait_breakdown=wait_breakdown,
-            mmw_hist_beam=mmw_summary,
+            mmw_sensor_profile=mmw_summary,
         ),
-        "mmw_hist_beam": mmw_summary,
+        "mmw_sensor_profile": mmw_summary,
         "runtime": runtime_metadata,
     }
     payload = json.dumps(result, indent=2)
@@ -254,7 +254,7 @@ def _prepare_task_inputs(
     task = cfg["experiment"].get("task", "image")
     model_cfg = cfg["model"]
     num_pred = model_cfg.get("num_pred", 3)
-    seq_length = model_cfg.get("seq_length_student", 8)
+    seq_length = model_cfg.get("seq_length", 8)
     labels = prepare_labels(
         batch,
         num_pred=num_pred,
@@ -268,9 +268,9 @@ def _prepare_task_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
-            modalities=model_cfg["student"].get("modalities"),
-            image_profile=model_cfg["student"].get("image_profile"),
-            input_profiles=model_cfg["student"].get("input_profiles"),
+            modalities=model_cfg["primary"].get("modalities"),
+            image_profile=model_cfg["primary"].get("image_profile"),
+            input_profiles=model_cfg["primary"].get("input_profiles"),
             non_blocking=non_blocking,
         )
     if task == "radar":
@@ -286,7 +286,7 @@ def _prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
-                profile=model_cfg["student"].get("input_profiles", {}).get("gps"),
+                profile=model_cfg["primary"].get("input_profiles", {}).get("gps"),
                 non_blocking=non_blocking,
             )
         }
@@ -297,7 +297,7 @@ def _prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
-                profile=model_cfg["student"].get("input_profiles", {}).get("lidar"),
+                profile=model_cfg["primary"].get("input_profiles", {}).get("lidar"),
                 non_blocking=non_blocking,
             )
         }
@@ -308,7 +308,7 @@ def _prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
-                profile=model_cfg["student"].get("input_profiles", {}).get("csi"),
+                profile=model_cfg["primary"].get("input_profiles", {}).get("csi"),
                 non_blocking=non_blocking,
             )
         }
@@ -318,7 +318,7 @@ def _prepare_task_inputs(
             seq_length=seq_length,
             num_pred=num_pred,
             device=device,
-            image_profile=model_cfg["student"].get("image_profile"),
+            image_profile=model_cfg["primary"].get("image_profile"),
             non_blocking=non_blocking,
         )
     }
@@ -431,25 +431,25 @@ def _cache_policy_summary(cache_metadata: dict[str, Any]) -> dict[str, Any]:
 def _io_risk_summary(
     *,
     wait_breakdown: dict[str, Any],
-    mmw_hist_beam: dict[str, Any] | None = None,
+    mmw_sensor_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     wait_spikes = wait_breakdown.get("p95_spikes", {}) if isinstance(wait_breakdown, dict) else {}
-    mmw_hist_beam = mmw_hist_beam or {}
+    mmw_sensor_profile = mmw_sensor_profile or {}
     loader_wait_dominates = bool(wait_spikes.get("wait_gt_gpu_step", False))
-    mmw_image_heavy = bool(mmw_hist_beam.get("image_heavy", False))
+    mmw_image_heavy = bool(mmw_sensor_profile.get("image_heavy", False))
     return {
         "loader_wait_dominates_step": loader_wait_dominates,
         "mmw_image_heavy_risk": bool(mmw_image_heavy),
-        "worker_memory_risk": bool(mmw_hist_beam.get("worker_memory_risk", False)),
+        "worker_memory_risk": bool(mmw_sensor_profile.get("worker_memory_risk", False)),
         "primary_actions": _primary_io_actions(
             loader_wait_dominates=loader_wait_dominates,
             mmw_image_heavy=mmw_image_heavy,
-            worker_memory_risk=bool(mmw_hist_beam.get("worker_memory_risk", False)),
+            worker_memory_risk=bool(mmw_sensor_profile.get("worker_memory_risk", False)),
         ),
     }
 
 
-def _mmw_hist_beam_profile_summary(cfg: dict[str, Any], runtime_metadata: dict[str, Any]) -> dict[str, Any]:
+def _mmw_sensor_profile_summary(cfg: dict[str, Any], runtime_metadata: dict[str, Any]) -> dict[str, Any]:
     dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
     dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
     try:
@@ -460,7 +460,7 @@ def _mmw_hist_beam_profile_summary(cfg: dict[str, Any], runtime_metadata: dict[s
         enabled_modalities = list(runtime_metadata.get("cache", {}).get("enabled_modalities", []))
     loader_splits = runtime_metadata.get("dataloader_splits", {}) if isinstance(runtime_metadata, dict) else {}
     train_loader = loader_splits.get("train", {}) if isinstance(loader_splits, dict) else {}
-    seq_len = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length_student", 0)) or 0)
+    seq_len = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length", 0)) or 0)
     batch_size = int(train_loader.get("batch_size", cfg.get("data", {}).get("dataloader", {}).get("batch_size", 0)) or 0)
     num_workers = int(train_loader.get("num_workers", 0) or 0)
     prefetch_factor = train_loader.get("prefetch_factor")

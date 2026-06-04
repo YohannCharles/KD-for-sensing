@@ -31,23 +31,21 @@ def resolve_enabled_modalities(cfg: AnyConfig) -> tuple[str, ...]:
 def _resolve_fusion_modalities(cfg: AnyConfig) -> tuple[str, ...]:
     model_cfg = cfg.get("model", {})
     top_level_modalities = model_cfg.get("modalities")
+    primary_modalities = model_cfg.get("primary", {}).get("modalities")
     if top_level_modalities:
-        return normalize_modalities(top_level_modalities, context="model.modalities")
-    role_modalities = []
-    for role in ("teacher", "student"):
-        modalities = model_cfg.get(role, {}).get("modalities")
-        if modalities:
-            role_modalities.append((role, normalize_modalities(modalities, context=f"model.{role}.modalities")))
-    if not role_modalities:
+        selected = normalize_modalities(top_level_modalities, context="model.modalities")
+        if primary_modalities:
+            primary_selected = normalize_modalities(primary_modalities, context="model.primary.modalities")
+            if selected != primary_selected:
+                raise ValueError(
+                    "model.modalities must match model.primary.modalities for fusion configs; "
+                    f"got {list(selected)} and {list(primary_selected)}."
+                )
+        return selected
+    if primary_modalities:
+        return normalize_modalities(primary_modalities, context="model.primary.modalities")
+    if not primary_modalities:
         return ("image", "radar")
-    first_role, selected = role_modalities[0]
-    for role, modalities in role_modalities[1:]:
-        if modalities != selected:
-            raise ValueError(
-                "Fusion teacher/student modalities must match unless an explicit cross-modal "
-                f"distillation mode is implemented; {first_role}={list(selected)}, {role}={list(modalities)}."
-            )
-    return selected
 
 
 def validate_dataset_modality_flags(dataset_cfg: dict, selected: tuple[str, ...]) -> None:
@@ -63,7 +61,7 @@ def validate_dataset_modality_flags(dataset_cfg: dict, selected: tuple[str, ...]
 
 
 def sensor_assisted_profile_enabled(cfg: AnyConfig) -> bool:
-    return _profile_enabled(cfg, {SENSOR_ASSISTED_PROFILE}, sensor_config_key="sensor_assisted")
+    return _profile_enabled(cfg, {SENSOR_ASSISTED_PROFILE})
 
 
 def history_anchored_quick_profile_enabled(cfg: AnyConfig) -> bool:
@@ -73,24 +71,15 @@ def history_anchored_quick_profile_enabled(cfg: AnyConfig) -> bool:
 def _profile_enabled(
     cfg: AnyConfig,
     profiles: set[str],
-    *,
-    sensor_config_key: str | None = None,
 ) -> bool:
     loso_cfg = cfg.get("loso", {}) if isinstance(cfg.get("loso"), dict) else {}
-    hist_cfg = cfg.get("hist_beam", {}) if isinstance(cfg.get("hist_beam"), dict) else {}
     dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
     candidates = (
         loso_cfg.get("profile"),
         loso_cfg.get("matrix_profile"),
-        hist_cfg.get("profile"),
         dataset_cfg.get("modality_profile"),
     )
-    if any(str(value or "").strip().lower() in profiles for value in candidates):
-        return True
-    if sensor_config_key is None:
-        return False
-    sensor_cfg = hist_cfg.get(sensor_config_key) if isinstance(hist_cfg.get(sensor_config_key), dict) else {}
-    return bool(sensor_cfg.get("enabled", False))
+    return any(str(value or "").strip().lower() in profiles for value in candidates)
 
 
 def validate_sensor_assisted_modalities(cfg: AnyConfig, selected: tuple[str, ...]) -> None:

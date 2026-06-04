@@ -15,10 +15,14 @@ data:
     use_csi: true
     csi_train_rms: true
 model:
-  modalities: [gps, csi]
-  teacher: &gps_csi_model
+  modalities:
+  - gps
+  - csi
+  primary:
     type: modular_sequence
-    modalities: [gps, csi]
+    modalities:
+    - gps
+    - csi
     feature_size: 64
     d_model: 64
     num_classes: 64
@@ -46,10 +50,6 @@ model:
     heads:
       beam:
         type: beam_head
-  student: *gps_csi_model
-distillation:
-  type: no_kd
-  teacher_model_name: null
 training:
   epochs: 100
   lr: 0.0005

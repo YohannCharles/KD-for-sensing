@@ -2,7 +2,6 @@
 
 ## Purpose
 定义 beamspace physical label 的数据契约、构造规则、缓存诊断和 target-domain 泄漏边界。该 spec 约束 v7 shared physical/private residual 等物理先验模型如何读取 beam power、path payload 或等价物理信号，并确保这些标签只在允许的训练阶段参与监督，在 target adaptation 和 target_test 中保持可审计的用途边界。
-
 ## Requirements
 ### Requirement: Beamspace physical label batch contract
 系统 SHALL 在启用物理标签时为 beam prediction batch 提供 `beamspace_power_label`，该字段 MUST 与 `target_beam` 的 future horizon 对齐，并表示每个 horizon 上所有 beam class 的归一化 beamspace power distribution。
@@ -94,3 +93,22 @@
 - **WHEN** target_test batch 包含 beam power 或 `beamspace_power_label`
 - **THEN** evaluation MAY 计算 power metrics 或 physical KL 诊断
 - **AND** 这些字段 MUST NOT 影响模型参数更新
+
+### Requirement: Beamspace physical labels match calibrated class order
+当 MMW beam label calibration 启用时，系统 MUST 将作为监督或评估诊断消费的 `beamspace_power_label` 重排到 calibrated class order，并 MUST 在 cache metadata 中记录 mapping fingerprint。
+
+#### Scenario: beamspace_power_label 重排
+- **WHEN** dataset 从 raw beam power vector 构造 `beamspace_power_label` 且 calibration 已启用
+- **THEN** 输出 `beamspace_power_label` MUST 满足 `label_calibrated[mapping(raw)] = label_raw[raw]`
+- **AND** 每个有效 horizon 的分布和 MUST 在数值容差内等于 1
+
+#### Scenario: physical label cache mapping mismatch
+- **WHEN** 已存在 physical label cache 但其 metadata 的 mapping fingerprint 与当前 calibration 不一致
+- **THEN** dataset MUST rebuild the cache or reject reuse with a clear error
+- **AND** system MUST NOT silently consume raw-order physical labels as calibrated-order labels
+
+#### Scenario: target-domain leakage boundary 保持不变
+- **WHEN** target adaptation batch 包含 calibrated `beamspace_power_label`
+- **THEN** default adaptation loss MUST NOT use target-side physical labels for backpropagation
+- **AND** leakage diagnostics MUST preserve the existing target-domain physical oracle boundary
+

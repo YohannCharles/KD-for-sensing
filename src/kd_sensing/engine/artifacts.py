@@ -21,7 +21,6 @@ from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state
 from kd_sensing.utils.plotting import plot_training_curves
-from kd_sensing.utils.teacher_registry import teacher_metrics_from_training
 
 
 def final_config_with_runtime(
@@ -112,19 +111,6 @@ class ArtifactWriter:
             self.run_dir / "training_outputs.npz",
             **training_outputs_payload(history, objective_metadata, early_stopping_metric, early_stopping_mode),
         )
-        teacher_metrics = teacher_metrics_from_training(
-            self.cfg,
-            history,
-            epoch_logs,
-            best_selected_epoch=best_early_stopping_epoch,
-            selection_metric=early_stopping_metric,
-            selection_mode="early_stopping",
-            checkpoint="checkpoints/best.pth",
-            best_top1_epoch=best_top1_epoch,
-        )
-        if teacher_metrics is not None:
-            with (self.run_dir / "teacher_metrics.json").open("w", encoding="utf-8") as f:
-                json.dump(teacher_metrics, f, indent=2)
         early_stopping_metadata = early_stopping_state(
             metric=early_stopping_metric,
             mode=early_stopping_mode,
@@ -132,11 +118,7 @@ class ArtifactWriter:
             best_epoch=best_early_stopping_epoch,
             epochs_without_improvement=epochs_without_improvement,
         )
-        lineage = run_lineage_metadata(
-            self.cfg,
-            teacher_checkpoint=_teacher_checkpoint_from_loads(checkpoint_loads),
-            teacher_source=_teacher_source_from_loads(checkpoint_loads),
-        )
+        lineage = run_lineage_metadata(self.cfg)
         write_csi_debug_records(self.run_dir, csi_debug_records)
         pilot_noise_validity = evaluate_pilot_noise_validity(self.cfg, csi_debug_records)
         write_pilot_noise_validity_artifact(self.run_dir, pilot_noise_validity)
@@ -148,7 +130,6 @@ class ArtifactWriter:
             "config_diff": config_diff,
             "csi_first_batch_diagnostics": csi_debug_records,
             "pilot_noise_validity": pilot_noise_validity,
-            "teacher_metrics": teacher_metrics,
             "lineage": lineage,
             "checkpoint_loads": checkpoint_loads,
             "optimizer_param_groups": optimizer_groups,
@@ -190,21 +171,6 @@ class ArtifactWriter:
             self.run_dir / "final_config.yaml",
         )
         return {
-            "teacher_metrics": teacher_metrics,
             "early_stopping": early_stopping_metadata,
             "pilot_noise_validity": pilot_noise_validity,
         }
-
-
-def _teacher_checkpoint_from_loads(checkpoint_loads: list[dict[str, Any] | None]) -> str | None:
-    for item in checkpoint_loads:
-        if isinstance(item, dict) and item.get("role") == "teacher":
-            return item.get("path")
-    return None
-
-
-def _teacher_source_from_loads(checkpoint_loads: list[dict[str, Any] | None]) -> str | None:
-    for item in checkpoint_loads:
-        if isinstance(item, dict) and item.get("role") == "teacher":
-            return item.get("source")
-    return None

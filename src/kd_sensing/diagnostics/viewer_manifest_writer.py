@@ -9,6 +9,7 @@ from PIL import Image
 import pandas as pd
 import torch
 
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.data.transform_ops.image import IMAGENET_RGB_MEAN, IMAGENET_RGB_STD
 from kd_sensing.data.transform_ops.lidar import filter_lidar_points, read_lidar_point_cloud
 from kd_sensing.diagnostics.viewer_manifest_paths import _all_row_paths, _all_source_paths, _last_existing_path, _radar_da_path
@@ -35,6 +36,7 @@ def _manifest_record(
     processed = _write_processed_assets(sample, asset_dir, dataset=dataset, data_spaces=data_spaces)
     current_beam = _tensor_int_list(sample.get("input_beam"))
     future_beams = _tensor_int_list(sample.get("target_beam"))
+    label_metadata = _beam_label_metadata(dataset, sample)
     extra = {
         "dataset_index": int(candidate.dataset_index),
         "csv_row_index": int(candidate.csv_row_index),
@@ -44,6 +46,7 @@ def _manifest_record(
         "statistics": modality_statistics(sample),
         "source_paths": _all_source_paths(row, data_root),
         "data_spaces": data_spaces,
+        **label_metadata,
     }
     return {
         "sample_id": sample_id,
@@ -58,9 +61,30 @@ def _manifest_record(
         "label": {
             "current_beam": current_beam[-1] if current_beam else None,
             "future_beams": future_beams or ([candidate.future_label] if candidate.future_label is not None else []),
+            **label_metadata,
         },
         "extra": extra,
     }
+
+
+def _beam_label_metadata(dataset: Any, sample: dict[str, Any]) -> dict[str, Any]:
+    sample_metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
+    mapping = getattr(dataset, "beam_label_mapping", None)
+    if mapping is not None and hasattr(mapping, "metadata"):
+        payload = mapping.metadata()
+    else:
+        payload = resolve_beam_label_mapping(None).metadata()
+    for key in (
+        "raw_input_beam",
+        "raw_target_beam",
+        "calibrated_input_beam",
+        "calibrated_target_beam",
+        "input_beam_label_source",
+        "target_beam_label_source",
+    ):
+        if key in sample_metadata:
+            payload[key] = sample_metadata[key]
+    return payload
 
 
 def _write_raw_assets(

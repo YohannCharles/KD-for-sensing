@@ -63,7 +63,7 @@ def tiny_resnet(monkeypatch):
 
 def test_image_profile_defaults_unknown_and_metadata():
     default_cfg = load_config()
-    cfg = load_config(ROOT / "configs/image/teacher_no_kd.yaml")
+    cfg = load_config(ROOT / "configs/image/strong.yaml")
 
     assert default_cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
     assert cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
@@ -71,7 +71,7 @@ def test_image_profile_defaults_unknown_and_metadata():
     assert image_profile_metadata("rgb_imagenet")["channels"] == 3
     assert image_profile_metadata("rgb_imagenet")["supports_cache"] is False
     with pytest.raises(ValueError, match="optical_flow.*rgb_imagenet"):
-        load_config(ROOT / "configs/image/teacher_no_kd.yaml", ["data.dataset.image_profile=optical_flow"])
+        load_config(ROOT / "configs/image/strong.yaml", ["data.dataset.image_profile=optical_flow"])
 
 
 def test_rgb_imagenet_loader_shape_and_normalization(tmp_path: Path):
@@ -211,24 +211,24 @@ def test_modular_model_shape_error_names_modality(tiny_resnet):
 
 
 def test_image_configs_use_rgb_profile_and_removed_encoders_are_rejected():
-    image_cfg = load_config(ROOT / "configs/image/teacher_no_kd.yaml")
-    fusion_cfg = load_config(ROOT / "configs/fusion/image_gps_no_kd.yaml")
-    virtual_image_radar = load_config(ROOT / "configs/fusion/image_radar_teacher_no_kd.yaml")
-    resnet = load_config(ROOT / "configs/image/resnet18_teacher_no_kd.yaml")
+    image_cfg = load_config(ROOT / "configs/image/strong.yaml")
+    fusion_cfg = load_config(ROOT / "configs/fusion/image_gps_supervised.yaml")
+    virtual_image_radar = load_config(ROOT / "configs/fusion/image_radar_strong.yaml")
+    resnet = load_config(ROOT / "configs/image/resnet18_strong.yaml")
 
     assert image_cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
-    assert image_cfg["model"]["student"]["type"] == "modular_sequence"
-    assert image_cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-    assert image_cfg["model"]["student"]["encoders"]["image"]["pretrained"] is True
-    assert image_cfg["model"]["student"]["encoders"]["image"]["weights"] == "DEFAULT"
+    assert image_cfg["model"]["primary"]["type"] == "modular_sequence"
+    assert image_cfg["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert image_cfg["model"]["primary"]["encoders"]["image"]["pretrained"] is True
+    assert image_cfg["model"]["primary"]["encoders"]["image"]["weights"] == "DEFAULT"
     assert fusion_cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
-    assert fusion_cfg["model"]["student"]["type"] == "modular_sequence"
-    assert fusion_cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert fusion_cfg["model"]["primary"]["type"] == "modular_sequence"
+    assert fusion_cfg["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
     assert virtual_image_radar["data"]["dataset"]["image_profile"] == "rgb_imagenet"
-    assert virtual_image_radar["model"]["student"]["type"] == "modular_sequence"
-    assert virtual_image_radar["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert virtual_image_radar["model"]["primary"]["type"] == "modular_sequence"
+    assert virtual_image_radar["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
     assert resnet["data"]["dataset"]["image_profile"] == "rgb_imagenet"
-    assert resnet["distillation"]["teacher_model_name"] is None
+    assert "distillation" not in resnet
     with pytest.raises(ValueError, match="Removed image encoder"):
         ModularSequenceModel(
             modalities=["image"],

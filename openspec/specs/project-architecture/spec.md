@@ -4,18 +4,19 @@
 Define the package-level architecture, lightweight import boundaries, responsibility splits for training/data/diagnostics modules, and the separation between source-controlled inputs and local runtime artifacts.
 ## Requirements
 ### Requirement: 可导入包结构
-项目 MUST 提供 `src/kd_sensing/` Python 包，并将数据、模型、蒸馏、训练引擎、评估、预处理和通用工具放入职责清晰的子模块。包内模块 MUST 使用包内绝对导入或明确相对导入，不得依赖仓库根目录脚本名作为运行时导入条件。
+项目 MUST 提供 `src/kd_sensing/` Python 包，并将数据、模型、loss、训练引擎、评估、预处理、诊断和通用工具放入职责清晰的子模块。包内模块 MUST 使用包内绝对导入或明确相对导入，不得依赖仓库根目录脚本名作为运行时导入条件。项目 MUST 不再要求或暴露 `kd_sensing.distillation` 子包。项目 MUST 不再要求或暴露 `kd_sensing.distillation` 子包。
 
 #### Scenario: 从项目根目录导入包
 - **WHEN** 开发者在项目根目录安装或设置本地包路径后执行 `import kd_sensing`
 - **THEN** 导入 MUST 成功，并且不触发数据集读取、模型权重加载或训练逻辑
 
 #### Scenario: 导入核心子模块
-- **WHEN** 开发者导入 `kd_sensing.models`、`kd_sensing.data`、`kd_sensing.distillation`、`kd_sensing.engine` 和 `kd_sensing.preprocessing`
+- **WHEN** 开发者导入 `kd_sensing.models`、`kd_sensing.data`、`kd_sensing.engine`、`kd_sensing.preprocessing` 和当前保留的 loss/evaluation 子模块
 - **THEN** 每个子模块 MUST 成功导入，并暴露对应领域的公共构建入口或注册入口
+- **AND** 系统 MUST 不要求 `kd_sensing.distillation` 存在
 
 ### Requirement: 模块边界清晰
-项目 MUST 按职责拆分当前根目录代码：模型定义进入 `models/`，数据集与样本解析进入 `data/`，KD 与 loss 进入 `distillation/` 或 `losses/`，训练/验证/测试循环进入 `engine/`，雷达和 CSV 预处理进入 `preprocessing/`，指标与 checkpoint 等通用逻辑进入 `utils/` 或 `evaluation/`。
+项目 MUST 按职责拆分当前根目录代码：模型定义进入 `models/`，数据集与样本解析进入 `data/`，loss 进入 `losses/`、objective 或 engine 方法模块，训练/验证/测试循环进入 `engine/`，雷达和 CSV 预处理进入 `preprocessing/`，指标与 checkpoint 等通用逻辑进入 `utils/` 或 `evaluation/`。
 
 #### Scenario: 新增模型时不修改数据模块
 - **WHEN** 开发者新增一个 student 或 teacher 模型实现
@@ -65,7 +66,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 系统 MUST 不导入 checkpoint registry、dataset 或模型模块
 
 #### Scenario: 组件构建时才导入默认组件
-- **WHEN** 训练或评估构建 dataset、model、loss、metric、distiller 或 preprocessor
+- **WHEN** 训练或评估构建 dataset、model、loss、metric 或 preprocessor
 - **THEN** 系统 MUST 显式导入默认组件以完成注册
 - **AND** 该默认组件导入边界 MUST 不影响轻量配置加载路径
 
@@ -154,10 +155,9 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 系统 MUST 不导入 `matplotlib`
 - **AND** 系统 MUST 不要求 `kd_sensing.diagnostics.g2d_diagnostics` 存在
 
-#### Scenario: 导入 distillation 工具子模块
-- **WHEN** 开发者导入当前保留的 distillation 工具子模块
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不因为 `kd_sensing.distillation.__init__` 导入 distiller registry、engine builder 或 dataset 转换模块
+#### Scenario: distillation 子包不再作为 smoke 对象
+- **WHEN** 开发者运行轻量导入 smoke
+- **THEN** 检查 MUST 不导入 `kd_sensing.distillation`
 - **AND** 系统 MUST 不要求 `kd_sensing.distillation.g2d_smp` 存在
 
 #### Scenario: 旧包级公共符号仍可访问
@@ -174,7 +174,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 不需要编辑 optimizer、run metadata 或 dataset 构建实现
 
 #### Scenario: optimizer 和 device 构建实现在 optim 模块
-- **WHEN** 开发者查看或修改 optimizer、scheduler、device 或 distiller 参数组构建逻辑
+- **WHEN** 开发者查看或修改 optimizer、scheduler 或 device 构建逻辑
 - **THEN** 主要实现 MUST 位于 `kd_sensing.engine.optim`
 - **AND** 不需要编辑 dataset/dataloader 构建实现
 
@@ -238,7 +238,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 
 #### Scenario: 轻量导入 smoke
 - **WHEN** 开发者运行项目健康检查中的轻量导入 smoke
-- **THEN** 检查 MUST 验证配置、路径、模态契约、engine 轻量子模块、diagnostics 轻量子模块和 distillation 工具子模块可导入
+- **THEN** 检查 MUST 验证配置、路径、模态契约、engine 轻量子模块和 diagnostics 轻量子模块可导入
 - **AND** 检查 MUST 验证这些导入不触发指定重依赖模块
 
 #### Scenario: 快速回归命令覆盖当前红点
@@ -298,18 +298,13 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **THEN** 两条路径 MUST 使用一致的 batch key、sequence padding、future slot 选择和 model output 适配语义
 - **AND** validation metrics MUST 不依赖独立复制的 task forward 分支
 
-### Requirement: Distillation 算法层不得构建运行对象
-`kd_sensing.distillation` 中的算法模块 MUST 专注于张量级 loss、feature/logit 对齐和 schedule 计算。算法模块 MUST 不负责构建模型、解析 checkpoint registry、读取 dataset、准备 batch 输入或选择 device；这些运行时职责 MUST 位于 `kd_sensing.engine` 或更低层 runtime 模块。已退役的 G2D distillation 算法模块和 SMP 工具 MUST 从支持面删除。
+### Requirement: Distillation 子包已移除
+项目 MUST 不再要求或暴露 `kd_sensing.distillation` 子包。监督 soft target、beam smoothing、adapter/prototype loss 和其它当前训练方法 MUST 通过 `losses`、objective 或 training extension 表达。
 
-#### Scenario: 保留 distillation 算法保持纯算法职责
-- **WHEN** 开发者查看当前保留的 `kd_sensing.distillation` 算法模块
-- **THEN** 这些模块 MUST 不导入 model builder、checkpoint loader、artifact registry、dataset builder 或 batch preparation 模块
-- **AND** teacher checkpoint 解析 MUST 位于 engine runtime 或训练配置构建模块
-
-#### Scenario: Distillation 工具轻量导入
-- **WHEN** 开发者导入当前保留的张量级 distillation 工具函数
-- **THEN** 导入 MUST 不触发默认组件注册、模型构建、checkpoint 解析或数据集读取
-- **AND** 系统 MUST 不要求 G2D 或 SMP 工具函数可导入
+#### Scenario: distillation 子包导入不可作为要求
+- **WHEN** 开发者运行架构边界测试
+- **THEN** 测试 MUST 不要求 `kd_sensing.distillation` 可导入
+- **AND** 默认组件导入 MUST 不导入 distiller registry
 
 ### Requirement: 诊断可视化不得集中在 core 聚合实现
 诊断可视化实现 MUST 将配置解析、数据集准备、样本选择、统计汇总、渲染和文件写出放在对应子模块中。`diagnostics.visualization.core` MAY 保留为公开入口编排或兼容 facade，但 MUST 不再作为这些职责的主要实现聚合文件。
@@ -682,31 +677,18 @@ HiST-Beam LOSO executor 继续增长时 MUST 按职责拆分到窄模块。公�
 - **THEN** 架构边界测试 MUST 失败
 - **AND** 失败信息 MUST 指向 no-KD objective、method extension 或 explicit legacy baseline adapter 作为修复路径
 
-### Requirement: Distillation 保留层保持纯算法职责
-若 `kd_sensing.distillation` 继续保留，项目 MUST 将其作为纯算法或 legacy baseline 支撑层，而不是训练对象构建层。该层 MUST 不负责读取 dataset、构建 model、解析 checkpoint、选择 device、创建 optimizer 或写出 run artifact。
+### Requirement: 新主线方法不得包含 distillation 配置段
+新 active mainline 配置和运行时 MUST 用 `model.primary` 与 supervised/adaptation loss 表达训练。任何 `distillation.*`、`teacher_model_name`、`logits_kd`、`rkd` 或旧 `*_no_kd` 路径 MUST 在配置解析阶段失败并给出迁移建议。
 
-#### Scenario: distillation 轻量导入
-- **WHEN** 开发者导入 `kd_sensing.distillation` 中保留的 loss、schedule 或 tensor helper
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不导入 dataset builder、model builder、checkpoint loader 或训练主循环
-
-#### Scenario: teacher checkpoint 解析不在算法层
-- **WHEN** legacy KD baseline 需要加载 teacher checkpoint
-- **THEN** checkpoint 解析 MUST 位于 engine runtime、checkpoint utility 或 legacy baseline adapter
-- **AND** distillation 算法模块 MUST 只接收已经准备好的 teacher/student 张量或特征
-
-### Requirement: 新主线方法默认无需 distillation 配置段
-新 active mainline 配置和运行时 MUST 能在没有 KD-specific 字段的情况下表达 supervised/adaptation 训练。为了兼容旧配置，系统 MAY 接受 `distillation.type: no_kd`，但不得要求 `temperature`、`alpha`、`rkd_*` 或 `teacher_model_name` 作为 no-KD 主线的必要字段。
-
-#### Scenario: no-KD 配置无需 teacher 字段
-- **WHEN** 用户加载当前推荐的 no-KD mainline 配置
+#### Scenario: 当前配置无需 distillation 字段
+- **WHEN** 用户加载当前推荐的 supervised/adaptation mainline 配置
 - **THEN** 配置 validation MUST 不要求 `distillation.teacher_model_name`
-- **AND** 配置 validation MUST 不要求 KD temperature、alpha 或 RKD 权重字段
+- **AND** 最终配置 MUST 不包含 KD temperature、alpha 或 RKD 权重字段
 
-#### Scenario: 旧 no_kd 字段兼容
+#### Scenario: 旧 no_kd 字段被拒绝
 - **WHEN** 用户加载仍包含 `distillation.type: no_kd` 的历史配置
-- **THEN** 系统 MUST 继续按普通 supervised/adaptation 训练处理
-- **AND** 系统 MUST 不把该 run 标记为 KD baseline
+- **THEN** 系统 MUST 拒绝该配置并提示 strong、lightweight 或 supervised 入口
+- **AND** 系统 MUST 不把该 run 作为可运行 baseline
 
 ### Requirement: 第一批源码热点必须收敛为薄 facade
 项目 MUST 优先拆分 `src/kd_sensing/engine/hist_beam_loso_execution.py` 和 `src/kd_sensing/data/mmw/preparation.py` 这两个 2000 行级源码热点。拆分后，这两个文件 MAY 保留现有公开 import 和公开入口，但 MUST 不再作为主要实现聚合文件；主要实现 MUST 位于同包内按职责命名的窄模块中。架构边界测试 MUST 对这些 facade 设置降低后的行数上限和禁止实现片段断言，单个第一批 facade 的上限 MUST 不超过 1000 行。
@@ -811,3 +793,93 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **WHEN** 开发者阅读 `docs/project_surface_inventory.md`
 - **THEN** 文档 MUST 不再把旧模态子集/扰动诊断脚本列为长期维护 research diagnostic 入口
 - **AND** 文档 MUST 保留本地产物边界说明，不要求删除或迁移历史 `outputs/`、`logs/` 或 `dataset/`
+
+### Requirement: 语义化本地输出目录
+项目 MUST 避免新脚本或默认配置继续向语义不清的兜底目录写入实验产物。长期保留的 shell orchestration、诊断脚本和 CLI 默认输出目录 MUST 包含实验族、数据集或能力名称；`outputs/other/` MAY 作为历史清理候选被扫描，但 MUST 不再作为新实验脚本的默认输出根。
+
+#### Scenario: MMW modal15 默认输出目录可识别
+- **WHEN** 用户直接运行 MMW modal15 shell orchestration 且未设置 `OUTPUT_ROOT`
+- **THEN** 脚本 MUST 默认写入包含 `mmw_sunny_modal15` 或等价实验族名称的 `outputs/` 子目录
+- **AND** 帮助文本 MUST 展示该语义化默认路径
+
+#### Scenario: outputs other 不作为新默认值
+- **WHEN** 架构边界测试扫描长期保留脚本和配置
+- **THEN** 测试 MUST 拒绝新增默认输出根为 `outputs/other`
+- **AND** 已存在的历史 `outputs/other/` 本地产物 MUST 只通过清理 manifest 管理
+
+### Requirement: 清理流程不跨越源码边界
+项目 MUST 将本地运行产物清理限定在 `.gitignore` 覆盖的本地产物范围内。清理工具、文档和测试 MUST 明确禁止删除源码、配置、文档、OpenSpec artifacts、已跟踪文件、`dataset/` 真实数据和 `All_models/` 历史复现权重。
+
+#### Scenario: 清理 manifest 不含源码删除动作
+- **WHEN** 用户生成清理候选 manifest
+- **THEN** manifest MUST NOT 将 `src/`、`tests/`、`configs/`、`docs/` 或 `openspec/` 下的已跟踪文件列为可删除候选
+- **AND** 如果这些路径被扫描到，manifest MUST 标记为 protected
+
+#### Scenario: 文档说明本地产物边界
+- **WHEN** 开发者阅读项目表面积 inventory 或 README
+- **THEN** 文档 MUST 说明清理流程先生成 manifest
+- **AND** 文档 MUST 说明真正删除需要用户显式确认
+
+### Requirement: Residual workflow 使用包内 CLI
+DeepSense6G residual workflow 的新运行入口 MUST 位于 `src/kd_sensing/` 包内，并通过包内 CLI 模块或 pyproject console script 暴露。项目 MUST NOT 新增顶层 `src.*` 运行模块或绕过 `kd_sensing` 包结构的兼容包装。
+
+#### Scenario: 包内 inspection CLI
+- **WHEN** 用户运行 residual input inspection
+- **THEN** 入口 MUST 委托 `kd_sensing` 包内实现
+- **AND** 命令参数 MUST 支持 GPS sweep root、label space 和输出检查
+- **AND** import 该 CLI 模块 MUST 不触发训练或读取大型数据
+
+#### Scenario: 包内 residual train/plot/compare CLI
+- **WHEN** 用户运行 residual manifest、train/eval、plot 或 compare 命令
+- **THEN** 入口 MUST 位于 `src/kd_sensing/cli/` 或等价包内 CLI 模块
+- **AND** pyproject console script 若新增 MUST 委托同一包内实现
+- **AND** 项目 MUST NOT 创建 `src/inspect_deepsense6g_residual_inputs.py` 这类绕过包结构的模块
+
+### Requirement: DeepSense6G Top8 selector 包内入口
+项目 MUST 将 DeepSense6G GPS Top8 Candidate Selector 的实现放入 `src/kd_sensing/` 包内。manifest、dataset、model、loss、engine、plotter 和 comparison CLI MUST 按现有职责边界分布在 `kd_sensing.data`、`kd_sensing.models`、`kd_sensing.losses`、`kd_sensing.engine`、`kd_sensing.evaluation`、`kd_sensing.cli` 或 `kd_sensing.utils` 中。项目 MUST NOT 新增长期维护的顶层 `src.data.*`、`src.models.*`、`src.losses.*` 或 `src.run_*.py` 运行入口。
+
+#### Scenario: console scripts 暴露 Top8 selector workflow
+- **WHEN** 开发者完成 editable install 并查看 `pyproject.toml` entry points
+- **THEN** 项目 MUST 暴露 Top8 selector 相关 console scripts
+- **AND** scripts MUST 至少覆盖 manifest 构建、selector 运行、plotter 和 GPS v2 comparison
+- **AND** 每个 console script MUST 委托 `kd_sensing.cli.*` 中的包内实现
+
+#### Scenario: 包内 module CLI 可运行
+- **WHEN** 用户执行 `conda run -n kd_mm_beam python -m kd_sensing.cli.prepare_deepsense6g_top8_candidate_manifest --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 包含 `--config`、`--support-ratio`、`--label-space` 和 `--topk`
+
+#### Scenario: 不新增绕过包结构的 src 入口
+- **WHEN** 架构边界测试扫描新 workflow
+- **THEN** 测试 MUST 验证内部代码不依赖顶层 `src.data`、`src.models`、`src.losses` 或 `src.run_deepsense6g_top8_selector`
+- **AND** 用户文档 MUST 推荐 `kd-sensing-*` 或 `python -m kd_sensing.cli.*` 命令
+
+#### Scenario: 轻量导入边界保持稳定
+- **WHEN** 开发者执行 `import kd_sensing` 或导入配置/路径轻量模块
+- **THEN** 系统 MUST 不因 Top8 selector workflow eager import torch dataset、matplotlib plotter、pandas manifest builder 或训练 runtime
+- **AND** Top8 selector 重依赖模块 MUST 只在对应 CLI、engine 或显式模块导入时加载
+
+### Requirement: GPS+LiDAR BGAM 包内入口
+项目 MUST 将 GPS+LiDAR BGAM reranker 的实现放入 `src/kd_sensing/` 包内。manifest enrich、dataset、geometry utility、model、loss、engine、evaluation、debug plot 和 CLI MUST 按现有职责边界分布在 `kd_sensing.utils`、`kd_sensing.data`、`kd_sensing.models`、`kd_sensing.losses`、`kd_sensing.engine`、`kd_sensing.evaluation` 和 `kd_sensing.cli` 中。项目 MUST NOT 新增长期维护的顶层 `train_gps_lidar_bgam.py`、`eval_gps_lidar_bgam.py`、`datasets/gps_lidar_dataset.py` 或 `models/gps_lidar_bgam.py` 旁路入口。
+
+#### Scenario: console scripts 暴露 BGAM workflow
+- **WHEN** 开发者完成 editable install 并查看 `pyproject.toml` entry points
+- **THEN** 项目 MUST 暴露 GPS+LiDAR BGAM 相关 console scripts
+- **AND** scripts MUST 至少覆盖 manifest enrich、训练/评估运行和独立评估
+- **AND** 每个 console script MUST 委托 `kd_sensing.cli.*` 中的包内实现
+
+#### Scenario: 包内 module CLI 可运行
+- **WHEN** 用户执行 `conda run -n kd_mm_beam python -m kd_sensing.cli.run_deepsense6g_gps_lidar_bgam --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 包含 `--config`、`--support-ratio`、`--label-space`、`--topk` 和 checkpoint 或 evaluation 相关参数
+
+#### Scenario: 不新增顶层旧入口
+- **WHEN** 架构边界测试扫描新 workflow
+- **THEN** 测试 MUST 验证仓库根目录不存在新增的 `train_gps_lidar_bgam.py` 或 `eval_gps_lidar_bgam.py`
+- **AND** 内部代码 MUST 不依赖顶层 `datasets.*`、`models.*` 或 `src.run_*` 入口
+
+#### Scenario: 轻量导入边界保持稳定
+- **WHEN** 开发者执行 `import kd_sensing` 或导入配置/路径轻量模块
+- **THEN** 系统 MUST 不因 BGAM workflow eager import torch dataset、LiDAR point cloud reader、matplotlib plotter 或训练 runtime
+- **AND** BGAM 重依赖模块 MUST 只在对应 CLI、engine 或显式模块导入时加载
+

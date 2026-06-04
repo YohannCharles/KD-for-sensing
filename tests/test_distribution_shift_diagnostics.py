@@ -48,6 +48,39 @@ def test_distribution_distances_smoothing_handles_empty_bins():
     assert all(value >= 0.0 for value in distances.values())
 
 
+def test_distribution_shift_declares_and_does_not_mix_label_spaces(tmp_path: Path):
+    artifact = build_target_shot_split(
+        _rows(),
+        TargetShotSplitConfig(
+            domain_type="scenario_weather",
+            source_domains=("src:sunny",),
+            target_domains=("target:rain",),
+            target_label_fraction=0.2,
+            target_label_selection="random",
+            seed=9,
+        ),
+        dataset_type="mmw",
+    )
+    artifact["stats"]["source"]["beam_label_space"] = "raw"
+    artifact["stats"]["target_test"]["beam_label_space"] = "calibrated_gps_angle"
+
+    result = analyze_distribution_shift(
+        split_artifact=artifact,
+        output_dir=tmp_path,
+        label_space={
+            "beam_label_calibration": {
+                "enabled": True,
+                "label_space": "calibrated_gps_angle",
+                "offset": 10,
+            }
+        },
+    )
+
+    assert result["histograms"]["source"]["beam_label_space"] == "raw"
+    assert result["histograms"]["target_test"]["beam_label_space"] == "calibrated_gps_angle"
+    assert result["metrics"]["target_test"]["skipped_reason"] == "mixed_beam_label_space"
+
+
 def _rows() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for idx in range(20):

@@ -11,14 +11,14 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from kd_sensing.models.fusion import FusionTeacherModalityNet  # noqa: E402
+from kd_sensing.models.fusion import FusionStrongModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 
-def test_fusion_teacher_image_branch_uses_shared_image_feature_extractor():
-    model = FusionTeacherModalityNet(
+def test_fusion_strong_image_branch_uses_shared_image_feature_extractor():
+    model = FusionStrongModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -30,20 +30,18 @@ def test_fusion_teacher_image_branch_uses_shared_image_feature_extractor():
     assert isinstance(model.image_feature_extractor, ImageFeatureExtractor)
 
 
-def test_canonical_image_fusion_teacher_uses_resnet18_profile():
-    cfg = load_config(ROOT / "configs/fusion/image_radar_teacher_no_kd.yaml")
+def test_canonical_image_fusion_strong_uses_resnet18_profile():
+    cfg = load_config(ROOT / "configs/fusion/image_radar_strong.yaml")
 
     assert cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
-    assert cfg["model"]["teacher"]["type"] == "modular_sequence"
-    assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-    assert cfg["model"]["teacher"]["encoders"]["image"]["pretrained"] is True
-    assert cfg["model"]["teacher"]["encoders"]["image"]["weights"] == "DEFAULT"
-    assert cfg["model"]["student"]["type"] == "modular_sequence"
-    assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert cfg["model"]["primary"]["type"] == "modular_sequence"
+    assert cfg["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert cfg["model"]["primary"]["encoders"]["image"]["pretrained"] is True
+    assert cfg["model"]["primary"]["encoders"]["image"]["weights"] == "DEFAULT"
 
 
-def test_fusion_teacher_with_image_forward_returns_expected_shapes():
-    model = FusionTeacherModalityNet(
+def test_fusion_strong_with_image_forward_returns_expected_shapes():
+    model = FusionStrongModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -60,8 +58,8 @@ def test_fusion_teacher_with_image_forward_returns_expected_shapes():
     assert output_features.shape == (1, 2, 64)
 
 
-def test_fusion_teacher_without_image_does_not_create_or_require_image_branch():
-    model = FusionTeacherModalityNet(
+def test_fusion_strong_without_image_does_not_create_or_require_image_branch():
+    model = FusionStrongModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -81,7 +79,7 @@ def test_fusion_teacher_without_image_does_not_create_or_require_image_branch():
 
 
 def test_strict_old_fusion_image_checkpoint_reports_missing_keys(tmp_path: Path):
-    model = FusionTeacherModalityNet(
+    model = FusionStrongModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -94,8 +92,8 @@ def test_strict_old_fusion_image_checkpoint_reports_missing_keys(tmp_path: Path)
         if not key.startswith("image_feature_extractor.channel_attention.")
         and not key.startswith("image_feature_extractor.spatial_attention.")
     }
-    checkpoint_path = tmp_path / "old_fusion_image_teacher.pth"
+    checkpoint_path = tmp_path / "old_fusion_image_strong.pth"
     torch.save(old_state, checkpoint_path)
 
     with pytest.raises(CheckpointLoadError, match="Missing keys:.*image_feature_extractor"):
-        load_model_state(checkpoint_path, model, role="fusion teacher", strict=True)
+        load_model_state(checkpoint_path, model, role="fusion strong", strict=True)

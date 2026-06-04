@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.data.mmw.preparation_config import GROUP_SAFE_TIME_BLOCK, MMW_SPLIT_PROTOCOL_VERSION, SUPPORTED_SEQUENCE_SPLIT_STRATEGIES
 from kd_sensing.data.mmw.preparation_beam_power import _beam_histogram
 from kd_sensing.data.mmw.preparation_geometry import _azimuth_bin
@@ -75,6 +76,7 @@ def split_sequence_rows(
     pred_len: int | None = None,
     block_size_frames: int | None = None,
     guard_band_frames: int | None = None,
+    beam_label_calibration: bool | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     strategy = _normalize_split_strategy(strategy)
     return _split_sequence_rows_group_safe(
@@ -85,6 +87,7 @@ def split_sequence_rows(
         pred_len=pred_len,
         block_size_frames=block_size_frames,
         guard_band_frames=guard_band_frames,
+        beam_label_calibration=beam_label_calibration,
     )
 
 
@@ -97,6 +100,7 @@ def _split_sequence_rows_group_safe(
     pred_len: int | None,
     block_size_frames: int | None,
     guard_band_frames: int | None,
+    beam_label_calibration: bool | dict[str, Any] | None,
 ) -> dict[str, Any]:
     window_length = _window_length(rows, seq_len=seq_len, pred_len=pred_len)
     guard = _resolve_guard_band(seq_len=seq_len, pred_len=pred_len, guard_band_frames=guard_band_frames)
@@ -135,6 +139,7 @@ def _split_sequence_rows_group_safe(
         train_groups=train_group_ids,
         test_groups=test_group_ids,
         diagnostics=diagnostics,
+        beam_label_calibration=beam_label_calibration,
     )
     reasons = list(metadata.get("eligibility_reasons", []))
     if train_rows and test_rows:
@@ -178,14 +183,22 @@ def _base_split_metadata(
     train_groups: list[str],
     test_groups: list[str],
     diagnostics: dict[str, Any],
+    beam_label_calibration: bool | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     label_distribution = {
         "all": _beam_histogram(rows),
         "train": _beam_histogram(train_rows),
         "test": _beam_histogram(test_rows),
     }
+    scene = _first_row_value(rows, "scene_slug") or _first_row_value(rows, "sensor_scenario")
+    mapping = resolve_beam_label_mapping(beam_label_calibration, scene=str(scene) if scene is not None else None)
+    calibrated_label_distribution = {
+        "all": _calibrated_beam_histogram(rows, mapping),
+        "train": _calibrated_beam_histogram(train_rows, mapping),
+        "test": _calibrated_beam_histogram(test_rows, mapping),
+    } if mapping.enabled else {}
     public_group_assignments = [_public_group_assignment(item) for item in group_assignments]
-    return {
+    metadata = {
         "seed": int(seed),
         "split_seed": int(seed),
         "train_ratio": float(train_ratio),
@@ -213,6 +226,7 @@ def _base_split_metadata(
         },
         "beam_label_distribution": label_distribution["all"],
         "label_distribution": label_distribution,
+        "raw_label_distribution": label_distribution,
         "leakage_diagnostics": diagnostics,
         "diagnostics_version": "mmw_split_leakage_v1",
         "fix_hint": (
@@ -220,6 +234,14 @@ def _base_split_metadata(
             "such as l5p6_group_safe."
         ),
     }
+    metadata.update(mapping.metadata())
+    if mapping.enabled:
+        metadata["calibrated_label_distribution"] = calibrated_label_distribution
+        metadata["label_distribution_by_space"] = {
+            "raw": label_distribution,
+            mapping.label_space: calibrated_label_distribution,
+        }
+    return metadata
 
 
 def _normalize_split_strategy(value: object) -> str:
@@ -230,6 +252,22 @@ def _normalize_split_strategy(value: object) -> str:
             f"expected one of {sorted(SUPPORTED_SEQUENCE_SPLIT_STRATEGIES)}."
         )
     return strategy
+
+
+def _calibrated_beam_histogram(rows: list[dict[str, Any]], mapping: Any) -> dict[str, int]:
+    raw = _beam_histogram(rows)
+    counter: Counter[int] = Counter()
+    for label, count in raw.items():
+        counter[int(mapping.map_label(int(label)))] += int(count)
+    return {str(key): int(value) for key, value in sorted(counter.items())}
+
+
+def _first_row_value(rows: list[dict[str, Any]], key: str) -> Any:
+    for row in rows:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
 
 
 def _segment_id(group_key: tuple[str, str, str, str], segment_ordinal: int) -> str:
@@ -638,6 +676,7 @@ def build_sequence_splits_from_manifest(
     split_strategy: str = GROUP_SAFE_TIME_BLOCK,
     block_size_frames: int | None = None,
     guard_band_frames: int | None = None,
+    beam_label_calibration: bool | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(data_root)
     prepared_root = root / "Prepared" / str(scene)
@@ -661,6 +700,7 @@ def build_sequence_splits_from_manifest(
         pred_len=int(pred_len),
         block_size_frames=block_size_frames,
         guard_band_frames=guard_band_frames,
+        beam_label_calibration=beam_label_calibration,
     )
     safe_tag = _safe_split_tag(split_tag)
     split_dir = prepared_root / "splits"

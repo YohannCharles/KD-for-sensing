@@ -67,21 +67,18 @@ GPS teacher 和 GPS student MUST 校验 `gru_params` 和输入维度配置。`gr
 - **AND** GPS 输入特征维度 MUST 为 3
 - **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
 
-### Requirement: GPS KD 兼容性
-GPS-only teacher/student MUST 与现有 logits KD 和 RKD distiller 兼容。默认 GPS KD 配置 MUST 使用 `gps_teacher` 作为 frozen teacher，并使用 `gps_student` 作为可训练 student。默认 GPS teacher 和 student 配置 MUST 都使用 `gru_params: [64, 64, 1]`。
+### Requirement: GPS KD 入口已移除
+GPS-only 训练 MUST 不再支持 logits KD、RKD 或 distiller 运行时。旧 GPS KD 配置路径 MUST 在配置解析阶段失败，并引导用户使用 `configs/gps/strong.yaml`、`configs/gps/lightweight.yaml` 或 `configs/gps/supervised.yaml`。
 
-#### Scenario: GPS logits KD
-- **WHEN** 用户运行 GPS-only logits KD 配置
-- **THEN** 系统 MUST 构建 frozen `gps_teacher` 和可训练 `gps_student`
-- **AND** 系统 MUST 使用任务 loss 与 logits KL 蒸馏 loss 的加权结果进行训练
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: GPS logits KD 被拒绝
+- **WHEN** 用户运行旧 GPS-only logits KD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不构建 frozen GPS teacher 或 distiller
 
-#### Scenario: GPS RKD
-- **WHEN** 用户运行 GPS-only RKD 配置
-- **THEN** 系统 MUST 构建 frozen `gps_teacher` 和可训练 `gps_student`
-- **AND** 系统 MUST 使用任务 loss 与关系蒸馏 loss 的加权结果进行训练
-- **AND** teacher/student output feature 维度 MUST 在默认配置中保持一致
-- **AND** teacher 和 student 配置的 `gru_params` MUST 为 `[64, 64, 1]`
+#### Scenario: GPS RKD 被拒绝
+- **WHEN** 用户运行旧 GPS-only RKD 配置
+- **THEN** 系统 MUST 拒绝该配置
+- **AND** 系统 MUST 不计算关系蒸馏损失
 
 ### Requirement: GPS teacher 默认 GRU 层数
 默认 GPS teacher 单模态配置 MUST 使用一层 GRU，以便与当前单模态配置、README 和测试保持一致。
@@ -90,3 +87,51 @@ GPS-only teacher/student MUST 与现有 logits KD 和 RKD distiller 兼容。默
 - **WHEN** 用户通过默认 GPS teacher no-KD 配置构建模型
 - **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
 - **AND** 模型的 `GRU.num_layers` MUST 为 1
+
+### Requirement: GPS 模型可导出 coarse anchor
+GPS 模型系统 MUST 支持显式 opt-in 的 coarse anchor export profile。启用该 profile 时，GPS encoder 或 GPS-only 模型 MUST 能输出 coarse anchor 字段；未启用时现有 GPS teacher/student 契约 MUST 保持兼容。
+
+#### Scenario: GPS teacher/student 默认契约不变
+- **WHEN** 用户运行现有 GPS teacher 或 GPS student no-KD 配置且未启用 coarse anchor export
+- **THEN** 模型 MUST 继续输出既有 beam logits、input features 和 output features
+- **AND** 系统 MUST NOT 要求 coarse label、coarse loss 或 GPS anchor metadata
+
+#### Scenario: 启用 GPS coarse anchor export
+- **WHEN** 用户配置 GPS 模型 `coarse_anchor.enabled=true`
+- **THEN** 模型或训练 wrapper MUST 输出 `coarse_logits`、`center_beam`、`confidence` 和可选 `beam_scores`
+- **AND** 输出形状 MUST 满足 `gps-coarse-anchor-prediction` 能力定义的 anchor 契约
+- **AND** run metadata MUST 记录 anchor source 为 `gps_neural_coarse` 或等价配置值
+
+#### Scenario: GPS coarse head 参数可配置
+- **WHEN** 用户构建 GPS coarse anchor 模型
+- **THEN** 配置 MUST 支持 `group_size`、`num_classes`、coarse head hidden size、dropout 和 loss weights
+- **AND** 系统 MUST 校验 `num_classes` 能被 `group_size` 整除
+- **AND** 非法配置 MUST 抛出包含 `num_classes` 和 `group_size` 的清晰错误
+
+### Requirement: MMW Town GPS v2 model registration
+系统 MUST 提供显式 opt-in 的 MMW Town GPS v2 模型构建能力。该能力 MUST 与既有 `gps_teacher`、`gps_student` 序列模型分离，并 MUST 通过模型注册或 runner 内部构建入口支持 GPS MLP backbone、SceneAdapterV2 和 residual logits 组合。
+
+#### Scenario: 既有 GPS teacher/student 默认不变
+- **WHEN** 用户运行现有 GPS-only `gps_teacher` 或 `gps_student` 配置
+- **THEN** 系统 MUST 继续接收 `[B, T, 3]` GPS-Rel-Polar 输入
+- **AND** 系统 MUST NOT 要求 MMW Town GPS v2 feature、scene_id、theta 或 branch_id
+
+#### Scenario: 构建 MMW Town GPS v2 模型
+- **WHEN** 用户通过 v2 配置选择 MMW Town GPS v2 model
+- **THEN** 系统 MUST 构建轻量 MLP GPS backbone
+- **AND** 系统 MUST 按配置构建 SceneAdapterV2 或 v1 baseline adapter
+- **AND** forward 输出 MUST 至少包含 `logits`、`residual_logits`、可用的 `geo_logits` 和 adapter diagnostics
+
+### Requirement: MMW Town GPS v2 feature validation
+MMW Town GPS v2 模型 MUST 校验输入 feature 维度、scene id、num_beams 和 adapter 类型。非法配置 MUST 抛出包含字段名和可执行修复提示的错误。
+
+#### Scenario: feature 维度不匹配
+- **WHEN** v2 模型接收的 GPS feature 最后一维不等于配置声明的 input_dim
+- **THEN** 系统 MUST 抛出配置或运行时错误
+- **AND** 错误信息 MUST 包含实际维度、期望维度和 `model.input_dim`
+
+#### Scenario: scene id 超出范围
+- **WHEN** v2 adapter forward 收到超出已注册 scene 数的 scene_id
+- **THEN** 系统 MUST 拒绝 forward
+- **AND** 错误信息 MUST 包含 scene_id、num_scenes 和当前 scene mapping metadata
+

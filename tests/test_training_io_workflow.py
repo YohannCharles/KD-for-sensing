@@ -30,8 +30,7 @@ from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E40
 from kd_sensing.data.layouts import deepsense6g_scene_layout, mmw_condition_layout  # noqa: E402
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E402
-from kd_sensing.distillation.distillers import KnowledgeDistillationLoss  # noqa: E402
-from kd_sensing.distillation.losses import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
+from kd_sensing.losses import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets  # noqa: E402
 from kd_sensing.engine.batch_step import BatchStepRunner  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
@@ -69,7 +68,7 @@ from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E
 from kd_sensing.utils.artifact_registry import (  # noqa: E402
     archive_best_checkpoint,
     find_registry_checkpoint,
-    resolve_teacher_checkpoint,
+    resolve_evaluation_checkpoint,
 )
 
 _PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", ROOT / "scripts/profile_training_io.py")
@@ -94,39 +93,6 @@ class _TinyImageBatchModel(torch.nn.Module):
         return {"logits": logits, "input_features": features, "output_features": features}
 
 
-class _ForbiddenTeacher(torch.nn.Module):
-    def forward(self, *args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("no-KD mainline batch step must not call a teacher")
-
-
-class _ForbiddenDistiller(torch.nn.Module):
-    def forward(self, *args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("no-KD mainline batch step must not call a distiller")
-
-
-class _RecordingDistiller(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.soft_targets: torch.Tensor | None = None
-
-    def forward(  # noqa: PLR0913
-        self,
-        student_logits,
-        teacher_logits,
-        targets,
-        student_input_features=None,
-        teacher_input_features=None,
-        student_output_features=None,
-        teacher_output_features=None,
-        current_alpha=None,
-        soft_targets=None,
-    ):
-        self.soft_targets = soft_targets.detach().cpu().clone() if soft_targets is not None else None
-        task_loss = torch.nn.functional.cross_entropy(student_logits, soft_targets if soft_targets is not None else targets)
-        distill_loss = torch.nn.functional.mse_loss(student_logits, teacher_logits.detach())
-        return task_loss + 0.5 * distill_loss, task_loss, distill_loss
-
-
 class _DisabledGradScaler:
     def is_enabled(self) -> bool:
         return False
@@ -145,10 +111,10 @@ def _removed_encoder_name(prefix: str = "") -> str:
 
 
 def test_deepsense_scene_defaults_and_aliases():
-    default_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml")
-    scene9_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene9"])
-    scene31_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scenario31"])
-    scene32_cfg = load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=scene32"])
+    default_cfg = load_config(ROOT / "configs/mmwave/strong.yaml")
+    scene9_cfg = load_config(ROOT / "configs/mmwave/strong.yaml", ["data.dataset.scene=scene9"])
+    scene31_cfg = load_config(ROOT / "configs/mmwave/strong.yaml", ["data.dataset.scene=scenario31"])
+    scene32_cfg = load_config(ROOT / "configs/mmwave/strong.yaml", ["data.dataset.scene=scene32"])
 
     assert default_cfg["data"]["dataset"]["scene_id"] == 31
     assert default_cfg["data"]["dataset"]["scene_slug"] == "scene31"
@@ -186,7 +152,7 @@ def test_dataset_layout_helpers_define_supported_roots():
 
 def test_deepsense_explicit_legacy_root_is_preserved_by_normalize_and_retarget():
     cfg = load_config(
-        ROOT / "configs/mmwave/teacher_no_kd.yaml",
+        ROOT / "configs/mmwave/strong.yaml",
         ["data.dataset.scene=31", "data.dataset.data_root=dataset/scenario31"],
     )
     dataset_cfg = cfg["data"]["dataset"]
@@ -205,14 +171,14 @@ def test_deepsense_explicit_legacy_root_is_preserved_by_normalize_and_retarget()
 def test_deepsense_scene_specific_dataset_types_are_rejected(removed_type: str, scene: int):
     with pytest.raises(ValueError, match=f"deepsense6g.*scene: {scene}"):
         load_config(
-            ROOT / "configs/mmwave/teacher_no_kd.yaml",
+            ROOT / "configs/mmwave/strong.yaml",
             [f"data.dataset.type={removed_type}", "data.dataset.scene=null"],
         )
 
 
 def test_deepsense_unknown_scene_is_rejected():
     with pytest.raises(ValueError, match="Supported scenes"):
-        load_config(ROOT / "configs/mmwave/teacher_no_kd.yaml", ["data.dataset.scene=99"])
+        load_config(ROOT / "configs/mmwave/strong.yaml", ["data.dataset.scene=99"])
 
 
 def test_sequence_preprocess_scene_override_updates_root_and_csv():
@@ -644,84 +610,66 @@ def test_prepare_soft_beam_targets_falls_back_to_hard_labels_for_invalid_soft_ro
     assert targets[0, 2].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
 
 
-def test_prepare_soft_beam_targets_reads_legacy_kd_soft_label_alias():
+def test_prepare_soft_beam_targets_ignores_removed_kd_soft_label_alias():
     batch = {
         "target_beam": torch.tensor([[1, 3]]),
         "kd_soft_label": torch.tensor([[[0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0]]]),
         "kd_soft_label_mask": torch.tensor([[True, True]]),
     }
 
-    with pytest.warns(DeprecationWarning, match="legacy beam soft-target alias"):
-        targets = prepare_soft_beam_targets(
-            batch,
-            num_pred=2,
-            num_classes=4,
-            downsample_ratio=1,
-            device=torch.device("cpu"),
-        )
+    targets = prepare_soft_beam_targets(
+        batch,
+        num_pred=2,
+        num_classes=4,
+        downsample_ratio=1,
+        device=torch.device("cpu"),
+    )
 
-    assert targets is not None
-    assert targets[0, 0].tolist() == pytest.approx([0.0, 1.0, 0.0, 0.0])
-    assert targets[0, 1].tolist() == pytest.approx([0.0, 0.0, 0.5, 0.5])
+    assert targets is None
 
 
-def test_soft_focal_and_distiller_supervised_loss_consume_soft_targets():
+def test_soft_focal_and_supervised_ce_loss_consume_soft_targets():
     logits = torch.tensor([[2.0, 0.0, -1.0], [0.0, 1.0, 3.0]])
     hard_targets = torch.tensor([0, 1])
     soft_targets = torch.tensor([[0.0, 1.0, 0.0], [0.25, 0.25, 0.5]])
     expected_soft_ce = -(soft_targets * torch.nn.functional.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
 
-    assert FocalLoss(alpha=1.0, gamma=0.0)(logits, soft_targets) == pytest.approx(expected_soft_ce.item())
-    assert SoftTargetCrossEntropyLoss()(logits, soft_targets) == pytest.approx(expected_soft_ce.item())
+    focal_loss = FocalLoss(alpha=1.0, gamma=0.0)(logits, soft_targets)
+    soft_ce = SoftTargetCrossEntropyLoss()(logits, soft_targets)
 
-    distiller = KnowledgeDistillationLoss(SoftTargetCrossEntropyLoss(), kd_mode=0)
-    total_loss, task_loss, distill_loss = distiller(
-        logits,
-        torch.zeros_like(logits),
-        hard_targets,
-        soft_targets=soft_targets,
-    )
-
-    assert task_loss == pytest.approx(expected_soft_ce.item())
-    assert total_loss == pytest.approx(expected_soft_ce.item())
-    assert distill_loss.item() == pytest.approx(0.0)
-    assert not torch.isclose(task_loss, torch.nn.functional.cross_entropy(logits, hard_targets))
+    assert focal_loss == pytest.approx(expected_soft_ce.item())
+    assert soft_ce == pytest.approx(expected_soft_ce.item())
+    assert not torch.isclose(soft_ce, torch.nn.functional.cross_entropy(logits, hard_targets))
 
 
-def test_no_kd_batch_step_uses_beam_soft_target_without_teacher_or_distiller(tmp_path: Path):
+def test_supervised_batch_step_uses_beam_soft_target_without_distillation_runtime(tmp_path: Path):
     cfg = {
         "experiment": {"task": "image", "objective": "beam"},
         "model": {
             "num_pred": 1,
             "downsample_ratio": 1,
-            "seq_length_student": 1,
-            "seq_length_teacher": 1,
+            "seq_length": 1,
             "num_classes": 4,
-            "student": {"image_profile": "rgb_imagenet"},
-            "teacher": {"image_profile": "rgb_imagenet"},
+            "primary": {"image_profile": "rgb_imagenet"},
         },
         "loss": {"soft_targets": {"enabled": True}},
-        "distillation": {"type": "no_kd", "teacher_model_name": None},
         "training": {},
     }
-    student = _TinyImageBatchModel(num_classes=4)
+    primary = _TinyImageBatchModel(num_classes=4)
     task_criterion = SoftTargetCrossEntropyLoss()
-    optimizer = torch.optim.SGD(student.parameters(), lr=0.1)
+    optimizer = torch.optim.SGD(primary.parameters(), lr=0.1)
     extension_context = ExtensionContext(
         cfg=cfg,
         task="image",
         model_cfg=cfg["model"],
         training_cfg=cfg["training"],
-        student_model=student,
-        teacher_model=_ForbiddenTeacher(),
-        distiller=_ForbiddenDistiller(),
+        primary_model=primary,
         task_criterion=task_criterion,
         run_dir=tmp_path,
         device=torch.device("cpu"),
         num_pred=1,
         num_classes=4,
-        seq_length_student=1,
-        seq_length_teacher=1,
+        seq_length=1,
         non_blocking=False,
     )
     extensions = [NoOpTrainingExtension()]
@@ -754,98 +702,17 @@ def test_no_kd_batch_step_uses_beam_soft_target_without_teacher_or_distiller(tmp
     result = runner.run(raw_batch, epoch=0, step=0, current_alpha=0.0)
 
     hard_loss = torch.nn.functional.cross_entropy(
-        result.student_logits.reshape(-1, 4),
+        result.primary_logits.reshape(-1, 4),
         result.labels.flatten(),
     )
-    assert student.calls == 1
+    assert primary.calls == 1
     assert result.scalar_diagnostics["loss/beam_soft_target"] == pytest.approx(result.task_loss.item())
     assert "loss/distillation" not in result.scalar_diagnostics
     assert result.extra_loss_values["beam_soft"].item() == pytest.approx(result.task_loss.item())
-    assert result.distill_loss.item() == pytest.approx(0.0)
     assert not torch.isclose(result.task_loss.detach(), hard_loss.detach())
 
 
-def test_legacy_kd_batch_step_separates_beam_soft_target_and_distillation_loss(tmp_path: Path):
-    cfg = {
-        "experiment": {"task": "image", "objective": "beam"},
-        "model": {
-            "num_pred": 1,
-            "downsample_ratio": 1,
-            "seq_length_student": 1,
-            "seq_length_teacher": 1,
-            "num_classes": 4,
-            "student": {"image_profile": "rgb_imagenet"},
-            "teacher": {"image_profile": "rgb_imagenet"},
-        },
-        "loss": {"soft_targets": {"enabled": True}},
-        "distillation": {
-            "type": "logits_kd",
-            "teacher_model_name": "best.pth",
-            "method_family": "legacy_kd",
-        },
-        "training": {},
-    }
-    student = _TinyImageBatchModel(num_classes=4)
-    teacher = _TinyImageBatchModel(num_classes=4)
-    teacher.weight.data = torch.tensor([-0.5, 0.1, 0.4, 0.7])
-    distiller = _RecordingDistiller()
-    optimizer = torch.optim.SGD(student.parameters(), lr=0.1)
-    extension_context = ExtensionContext(
-        cfg=cfg,
-        task="image",
-        model_cfg=cfg["model"],
-        training_cfg=cfg["training"],
-        student_model=student,
-        teacher_model=teacher,
-        distiller=distiller,
-        task_criterion=SoftTargetCrossEntropyLoss(),
-        run_dir=tmp_path,
-        device=torch.device("cpu"),
-        num_pred=1,
-        num_classes=4,
-        seq_length_student=1,
-        seq_length_teacher=1,
-        non_blocking=False,
-    )
-    extensions = [NoOpTrainingExtension()]
-    runner = BatchStepRunner(
-        cfg=cfg,
-        task="image",
-        model_cfg=cfg["model"],
-        training_cfg=cfg["training"],
-        optimizer=optimizer,
-        grad_scaler=_DisabledGradScaler(),
-        amp_enabled=False,
-        amp_dtype=torch.float32,
-        extension_context=extension_context,
-        extensions=extensions,
-        extension_states=[extension.setup(extension_context) for extension in extensions],
-    )
-    raw_batch = {
-        "image": torch.zeros(2, 1, 3, 8, 8),
-        "target_beam": torch.tensor([[0], [2]]),
-        "target_beam_distribution": torch.tensor(
-            [
-                [[0.0, 0.0, 0.0, 1.0]],
-                [[0.0, 1.0, 0.0, 0.0]],
-            ],
-            dtype=torch.float32,
-        ),
-        "target_beam_distribution_mask": torch.tensor([[True], [True]]),
-    }
-
-    result = runner.run(raw_batch, epoch=0, step=0, current_alpha=0.5)
-
-    assert student.calls == 1
-    assert teacher.calls == 1
-    assert distiller.soft_targets is not None
-    assert result.scalar_diagnostics["loss/beam_soft_target"] == pytest.approx(result.task_loss.item())
-    assert result.scalar_diagnostics["loss/distillation"] == pytest.approx(result.distill_loss.item())
-    assert result.extra_loss_values["beam_soft"].item() == pytest.approx(result.task_loss.item())
-    assert result.distill_loss.item() > 0.0
-
-
-def test_future_slot_selection_and_missing_features_kd_contract():
+def test_future_slot_selection_and_missing_features_supervised_contract():
     labels = prepare_labels(
         {"target_beam": torch.tensor([[0, 1, 2], [1, 2, 3]])},
         num_pred=2,
@@ -855,43 +722,11 @@ def test_future_slot_selection_and_missing_features_kd_contract():
     logits = torch.randn(2, 5, 4)
     selected = select_prediction_slots(logits, num_pred=2)
     model_output = adapt_model_output({"logits": selected})
-    targets = labels.flatten()
-    student_logits = selected.reshape(-1, 4)
-    teacher_logits = selected.detach().reshape(-1, 4)
-    criterion = torch.nn.CrossEntropyLoss()
 
     assert labels.tolist() == [[0, 1], [1, 2]]
     assert torch.equal(selected, logits[:, -2:, :])
     assert model_output.input_features is None
     assert model_output.output_features is None
-    assert KnowledgeDistillationLoss(criterion, kd_mode=0)(
-        student_logits,
-        teacher_logits,
-        targets,
-        None,
-        None,
-        None,
-        None,
-    )[0].ndim == 0
-    assert KnowledgeDistillationLoss(criterion, kd_mode=1)(
-        student_logits,
-        teacher_logits,
-        targets,
-        None,
-        None,
-        None,
-        None,
-    )[0].ndim == 0
-    with pytest.raises(ValueError, match="Relational KD requires real"):
-        KnowledgeDistillationLoss(criterion, kd_mode=2)(
-            student_logits,
-            teacher_logits,
-            targets,
-            None,
-            None,
-            None,
-            None,
-        )
 
 
 def test_dataloader_kwargs_filter_worker_only_options():
@@ -989,16 +824,16 @@ def test_dataloader_kwargs_support_split_specific_worker_options():
 
 
 def test_epoch_subsampling_config_validation_defaults_and_limits():
-    default_cfg = load_config(ROOT / "configs/gps/student_no_kd.yaml")
+    default_cfg = load_config(ROOT / "configs/gps/lightweight.yaml")
     fraction_cfg = load_config(
-        ROOT / "configs/gps/student_no_kd.yaml",
+        ROOT / "configs/gps/lightweight.yaml",
         [
             "training.epoch_subsampling.enabled=true",
             "training.epoch_subsampling.fraction=0.25",
         ],
     )
     count_cfg = load_config(
-        ROOT / "configs/gps/student_no_kd.yaml",
+        ROOT / "configs/gps/lightweight.yaml",
         [
             "training.epoch_subsampling.enabled=true",
             "training.epoch_subsampling.num_samples=8",
@@ -1036,7 +871,7 @@ def test_epoch_subsampling_config_validation_defaults_and_limits():
 )
 def test_epoch_subsampling_config_validation_rejects_invalid_limits(overrides):
     with pytest.raises(ValueError, match="training\\.epoch_subsampling"):
-        load_config(ROOT / "configs/gps/student_no_kd.yaml", overrides)
+        load_config(ROOT / "configs/gps/lightweight.yaml", overrides)
 
 
 def test_epoch_subsample_sampler_reproducible_rotation_and_fixed_subset():
@@ -1172,7 +1007,7 @@ def test_cache_policy_resolves_lidar_and_supported_image_policy():
     cfg = {
         "data": {"cache": {"policy": "read_only", "lidar": {"policy": "auto"}}, "dataset": {}},
         "experiment": {"task": "fusion"},
-        "model": {"teacher": {"modalities": ["image", "lidar"]}, "student": {"modalities": ["image", "lidar"]}},
+        "model": {"primary": {"modalities": ["image", "lidar"]}},
     }
     dataset_cfg = {
         "lidar_use_cache": None,
@@ -1202,7 +1037,7 @@ def test_cache_policy_resolves_lidar_and_supported_image_policy():
 
 def test_load_config_accepts_rgb_image_cache_policy_and_rejects_motion_cache():
     cfg = load_config(
-        ROOT / "configs/hist_beam/mmw_scenario_loso.yaml",
+        ROOT / "configs/fusion/image_gps_supervised.yaml",
         ["data.cache.image.policy=read_only"],
     )
 
@@ -1210,17 +1045,17 @@ def test_load_config_accepts_rgb_image_cache_policy_and_rejects_motion_cache():
 
     with pytest.raises(ValueError, match="Removed image motion cache option"):
         load_config(
-            ROOT / "configs/hist_beam/mmw_scenario_loso.yaml",
+            ROOT / "configs/fusion/image_gps_supervised.yaml",
             ["data.cache.image_motion_policy=auto"],
         )
 
 
 def test_parallel_training_recommendation_outputs_background_overrides():
-    cfg = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml")
+    cfg = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml")
 
     result = recommend_parallel_training(
         cfg,
-        config_path="configs/fusion/image_radar_gps_lidar_mmwave_beam_no_kd.yaml",
+        config_path="configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml",
         parallel_runs=4,
         cpu_count=32,
         check_cache=False,
@@ -1241,7 +1076,7 @@ def test_parallel_training_recommendation_warns_when_lidar_cache_is_cold(tmp_pat
     _write_minimal_csv(train_csv, camera=False, radar=False, gps=False, lidar=True)
     _write_minimal_csv(test_csv, camera=False, radar=False, gps=False, lidar=True)
     cfg = load_config(
-        ROOT / "configs/lidar/student_no_kd.yaml",
+        ROOT / "configs/lidar/lightweight.yaml",
         [
             f"data.dataset.data_root={tmp_path}",
             f"data.dataset.train_csv_name={train_csv.name}",
@@ -1296,7 +1131,7 @@ def test_build_dataset_auto_policy_uses_rgb_image_without_cache_metadata(tmp_pat
                 "beam_label_cache": "lazy",
             },
         },
-        "model": {"teacher": {}, "student": {}},
+        "model": {"primary": {}},
     }
 
     dataset = build_dataset(cfg, "train")
@@ -1330,7 +1165,7 @@ def test_image_derived_cache_hit_miss_and_read_only_policy(tmp_path: Path):
                 "image_size": [8, 8],
             },
         },
-        "model": {"student": {"modalities": ["image"]}},
+        "model": {"primary": {"modalities": ["image"]}},
     }
 
     dataset = build_dataset(cfg, "train")
@@ -1367,7 +1202,7 @@ def test_disabled_image_modality_does_not_initialize_image_cache(tmp_path: Path)
                 "mmwave_normalize": False,
             },
         },
-        "model": {"student": {"modalities": ["gps"]}},
+        "model": {"primary": {"modalities": ["gps"]}},
     }
 
     dataset = build_dataset(cfg, "train")
@@ -1438,7 +1273,7 @@ def test_build_dataset_deepsense_scene_32_records_metadata(tmp_path: Path):
                 "num_pred": 1,
             },
         },
-        "model": {"teacher": {}, "student": {}},
+        "model": {"primary": {}},
     }
 
     dataset = build_dataset(cfg, "train")
@@ -1552,7 +1387,7 @@ def test_dataset_run_metadata_records_mmw_split_eligibility_sidecar(tmp_path: Pa
                     "enabled_modalities": ["radar"],
                 }
             },
-            "model": {"student": {"modalities": ["radar"]}},
+            "model": {"primary": {"modalities": ["radar"]}},
         },
         split_metadata={"train": metadata},
     )
@@ -1660,7 +1495,7 @@ def test_throughput_metadata_includes_cache_policy():
         {
             "experiment": {"task": "fusion"},
             "data": {"cache": {"policy": "read_only", "lidar": {"policy": "auto"}}, "dataloader": {}},
-            "model": {"teacher": {"modalities": ["image", "lidar"]}, "student": {"modalities": ["image", "lidar"]}},
+            "model": {"primary": {"modalities": ["image", "lidar"]}},
             "training": {"transfer": {}, "amp": {}},
         }
     )
@@ -1683,14 +1518,14 @@ def test_mmw_profile_helpers_mark_image_heavy_loader_wait():
             "dataloader": {"batch_size": 4, "num_workers": 2, "prefetch_factor": 2, "persistent_workers": True},
             "cache": {"policy": "off", "image": {"policy": "auto"}},
         },
-        "model": {"student": {"modalities": ["image", "gps", "mmwave"]}},
+        "model": {"primary": {"modalities": ["image", "gps", "mmwave"]}},
         "training": {"transfer": {}, "amp": {}},
     }
     runtime = throughput_run_metadata(cfg)
-    mmw = profile_training_io._mmw_hist_beam_profile_summary(cfg, runtime)
+    mmw = profile_training_io._mmw_sensor_profile_summary(cfg, runtime)
     risk = profile_training_io._io_risk_summary(
         wait_breakdown={"p95_spikes": {"wait_gt_gpu_step": True}},
-        mmw_hist_beam=mmw,
+        mmw_sensor_profile=mmw,
     )
 
     assert mmw["image_heavy"] is True
@@ -1821,7 +1656,7 @@ def test_early_stopping_min_epoch_uses_half_target_epochs(total_epochs: int, exp
 
 def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg = load_config(
-        ROOT / "configs/gps/student_no_kd.yaml",
+        ROOT / "configs/gps/lightweight.yaml",
         [
             "experiment.device=cpu",
             "data.dataset.type=synthetic",
@@ -1865,7 +1700,7 @@ def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, mon
 
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
     cfg = load_config(
-        ROOT / "configs/gps/student_no_kd.yaml",
+        ROOT / "configs/gps/lightweight.yaml",
         [
             "experiment.device=cpu",
             "data.dataset.type=synthetic",
@@ -1898,7 +1733,6 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "train_loss",
         "train_task_loss",
         "train_objective_loss",
-        "train_distill_loss",
         "train_beam_soft_loss",
         "train_unimodal_loss",
         "train_occlusion_loss",
@@ -1925,7 +1759,6 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "train_loss",
         "train_task_loss",
         "train_objective_loss",
-        "train_distill_loss",
         "train_beam_soft_loss",
         "train_unimodal_loss",
         "train_occlusion_loss",
@@ -1957,6 +1790,8 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "optimizer/lr/main",
         "optimizer/params/main",
     } <= set(epoch_log)
+    assert "train_distill_loss" not in history
+    assert "train_distill_loss" not in epoch_log
     assert {
         "epoch",
         "state_dict",
@@ -2031,7 +1866,7 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
 
 def test_train_epoch_subsampling_smoke_logs_metadata(tmp_path: Path):
     cfg = load_config(
-        ROOT / "configs/gps/student_no_kd.yaml",
+        ROOT / "configs/gps/lightweight.yaml",
         [
             "experiment.device=cpu",
             "data.dataset.type=synthetic",
@@ -2327,7 +2162,7 @@ def test_training_outputs_payload_converts_inactive_optional_metrics_to_nan():
     assert payload["loss_weights"].tolist() == [1.0, 1.0, 0.01]
 
 
-def test_multitask_no_kd_training_logs_auxiliary_losses_and_metrics(tmp_path: Path):
+def test_multitask_supervised_training_logs_auxiliary_losses_and_metrics(tmp_path: Path):
     train_csv = tmp_path / "train_aux.csv"
     test_csv = tmp_path / "test_aux.csv"
     _write_aux_training_csv(tmp_path, train_csv, prefix="train", future_max=[1.0, 5.0])
@@ -2360,23 +2195,10 @@ def test_multitask_no_kd_training_logs_auxiliary_losses_and_metrics(tmp_path: Pa
             "modalities": ["gps"],
             "feature_size": 8,
             "num_classes": 64,
-            "seq_length_teacher": 2,
-            "seq_length_student": 2,
+            "seq_length": 2,
             "num_pred": 2,
             "downsample_ratio": 1,
-            "teacher": {
-                "type": "cls_token_transformer_fusion",
-                "modalities": ["gps"],
-                "feature_size": 8,
-                "d_model": 8,
-                "num_classes": 64,
-                "num_pred": 2,
-                "num_heads": 2,
-                "num_layers": 1,
-                "max_seq_len": 4,
-                "gps_input_size": 3,
-            },
-            "student": {
+            "primary": {
                 "type": "cls_token_transformer_fusion",
                 "modalities": ["gps"],
                 "feature_size": 8,
@@ -2398,7 +2220,6 @@ def test_multitask_no_kd_training_logs_auxiliary_losses_and_metrics(tmp_path: Pa
                 "position": {"enabled": True, "weight": 0.01},
             },
         },
-        "distillation": {"type": "no_kd", "teacher_model_name": None},
         "training": {
             "epochs": 1,
             "lr": 0.001,
@@ -2437,14 +2258,13 @@ def test_multitask_no_kd_training_logs_auxiliary_losses_and_metrics(tmp_path: Pa
     assert "position_target_scaler" in final_cfg["runtime"]["normalization_artifacts"]
 
 
-def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path: Path):
+def test_artifact_registry_archives_highest_metric_and_resolves_evaluation_checkpoint(tmp_path: Path):
     registry_dir = tmp_path / "registry"
-    teacher_cfg = {
+    cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
-        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
-        "distillation": {"type": "no_kd"},
-        "output": {"run_name": "gps_teacher_no_kd"},
+        "experiment": {"name": "gps_strong", "task": "gps"},
+        "model": {"primary": {"type": "gps_strong"}},
+        "output": {"run_name": "gps_strong"},
     }
     low = tmp_path / "low.pth"
     high = tmp_path / "high.pth"
@@ -2452,28 +2272,21 @@ def test_artifact_registry_archives_highest_metric_and_resolves_teacher(tmp_path
     torch.save({"value": torch.tensor([2])}, high)
 
     first = archive_best_checkpoint(
-        teacher_cfg,
+        cfg,
         source_checkpoint=high,
         val_top1=0.75,
         epoch=2,
         run_dir=tmp_path / "run_high",
     )
     second = archive_best_checkpoint(
-        teacher_cfg,
+        cfg,
         source_checkpoint=low,
         val_top1=0.25,
         epoch=3,
         run_dir=tmp_path / "run_low",
     )
-    found = find_registry_checkpoint(teacher_cfg, target_slug="gps_teacher_no_kd", role="teacher_no_kd")
-    kd_cfg = {
-        "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
-        "paths": {"weights_dir": str(tmp_path / "missing")},
-        "experiment": {"name": "gps_logits_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
-        "distillation": {"type": "logits_kd", "teacher_model_name": "best.pth"},
-    }
-    resolved = resolve_teacher_checkpoint(kd_cfg, "best.pth")
+    found = find_registry_checkpoint(cfg, target_slug="gps_strong", role="strong")
+    resolved = resolve_evaluation_checkpoint(cfg)
 
     assert first["updated"] is True
     assert second["updated"] is False
@@ -2486,42 +2299,25 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
     scene9_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g", "scene": 9}},
-        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
-        "distillation": {"type": "no_kd"},
-        "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+        "experiment": {"name": "gps_strong", "task": "gps"},
+        "model": {"primary": {"type": "gps_strong"}},
+        "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
     scene31_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g"}},
-        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
-        "distillation": {"type": "no_kd"},
-        "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+        "experiment": {"name": "gps_strong", "task": "gps"},
+        "model": {"primary": {"type": "gps_strong"}},
+        "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
     scene_32_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
-        "experiment": {"name": "gps_teacher_no_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_teacher"}},
-        "distillation": {"type": "no_kd"},
-        "output": {"dir": str(tmp_path), "run_name": "gps_teacher_no_kd"},
+        "experiment": {"name": "gps_strong", "task": "gps"},
+        "model": {"primary": {"type": "gps_strong"}},
+        "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
-    kd_scene31_cfg = {
-        **scene31_cfg,
-        "paths": {"weights_dir": str(tmp_path / "missing")},
-        "experiment": {"name": "gps_logits_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
-        "distillation": {"type": "logits_kd", "teacher_model_name": "best.pth"},
-    }
-    kd_scene_32_cfg = {
-        **scene_32_cfg,
-        "paths": {"weights_dir": str(tmp_path / "missing")},
-        "experiment": {"name": "gps_logits_kd", "task": "gps"},
-        "model": {"teacher": {"type": "gps_teacher"}, "student": {"type": "gps_student"}},
-        "distillation": {"type": "logits_kd", "teacher_model_name": "best.pth"},
-    }
-    checkpoint = tmp_path / "teacher.pth"
+    checkpoint = tmp_path / "primary.pth"
     torch.save({"value": torch.tensor([1])}, checkpoint)
 
     scene9_archive = archive_best_checkpoint(
@@ -2531,7 +2327,7 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         epoch=1,
         run_dir=tmp_path / "scene9_run",
     )
-    missing_scene31 = resolve_teacher_checkpoint(kd_scene31_cfg, "best.pth")
+    missing_scene31 = find_registry_checkpoint(scene31_cfg)
     scene31_archive = archive_best_checkpoint(
         scene31_cfg,
         source_checkpoint=checkpoint,
@@ -2539,8 +2335,8 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         epoch=1,
         run_dir=tmp_path / "scene31_run",
     )
-    resolved_scene31 = resolve_teacher_checkpoint(kd_scene31_cfg, "best.pth")
-    missing_scene_32 = resolve_teacher_checkpoint(kd_scene_32_cfg, "best.pth")
+    resolved_scene31 = find_registry_checkpoint(scene31_cfg)
+    missing_scene_32 = find_registry_checkpoint(scene_32_cfg)
     scene_32_archive = archive_best_checkpoint(
         scene_32_cfg,
         source_checkpoint=checkpoint,
@@ -2548,7 +2344,7 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         epoch=1,
         run_dir=tmp_path / "scene32_run",
     )
-    resolved_scene_32 = resolve_teacher_checkpoint(kd_scene_32_cfg, "best.pth")
+    resolved_scene_32 = find_registry_checkpoint(scene_32_cfg)
 
     assert Path(scene9_archive["path"]).parent == tmp_path / "scene9" / "best_checkpoints"
     assert scene9_archive["scene_slug"] == "scene9"
@@ -2676,18 +2472,18 @@ def test_removed_image_path_config_is_rejected():
     removed_legacy_encoder = _removed_encoder_name(prefix="legacy_")
 
     with pytest.raises(ValueError, match="Removed image motion"):
-        load_config(ROOT / "configs/image/teacher_no_kd.yaml", [f"data.dataset.{removed_use_key}=true"])
+        load_config(ROOT / "configs/image/strong.yaml", [f"data.dataset.{removed_use_key}=true"])
     with pytest.raises(ValueError, match="has been removed"):
-        load_config(ROOT / "configs/image/teacher_no_kd.yaml", [f"data.dataset.image_profile={removed_profile}"])
+        load_config(ROOT / "configs/image/strong.yaml", [f"data.dataset.image_profile={removed_profile}"])
     with pytest.raises(ValueError, match="Removed image encoder"):
         load_config(
-            ROOT / "configs/image/resnet18_teacher_no_kd.yaml",
-            [f"model.student.encoders.image.type={removed_encoder}"],
+            ROOT / "configs/image/resnet18_strong.yaml",
+            [f"model.primary.encoders.image.type={removed_encoder}"],
         )
     with pytest.raises(ValueError, match="Removed image encoder"):
         load_config(
-            ROOT / "configs/image/resnet18_teacher_no_kd.yaml",
-            [f"model.student.encoders.image.type={removed_legacy_encoder}"],
+            ROOT / "configs/image/resnet18_strong.yaml",
+            [f"model.primary.encoders.image.type={removed_legacy_encoder}"],
         )
 
 
@@ -2798,7 +2594,7 @@ def test_builder_rejects_conflicting_dataset_flags():
             {
                 "experiment": {"task": "gps"},
                 "data": {"dataset": {"use_lidar": True}},
-                "model": {"teacher": {}, "student": {}},
+                "model": {"primary": {}},
             }
         )
     with pytest.raises(ValueError, match="must match"):
@@ -2806,7 +2602,7 @@ def test_builder_rejects_conflicting_dataset_flags():
             {
                 "experiment": {"task": "fusion"},
                 "data": {"dataset": {}},
-                "model": {"teacher": {"modalities": ["image"]}, "student": {"modalities": ["radar"]}},
+                "model": {"modalities": ["image"], "primary": {"modalities": ["radar"]}},
             }
         )
 

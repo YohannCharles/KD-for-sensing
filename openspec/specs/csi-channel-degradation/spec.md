@@ -82,3 +82,10 @@ CSI temporal shift MUST 只作用于当前样本的历史 CSI 路径序列，不
 - **WHEN** 用户加载包含 CSI 与其它模态的 degraded fusion 配置
 - **THEN** 配置 MUST 将 `csi` 包含在 fusion `modalities`
 - **AND** dataset MUST 只对 CSI 输入应用 CSI degradation，不得改变其它模态张量或 future beam 标签
+### Requirement: CSI hardening 配置命名去 KD 化
+CSI degradation 和 hardening 配置 MUST 使用 supervised、strong、lightweight 或 workflow-specific 命名，不得通过 `no_kd` 或 distillation block 表达普通 supervised baseline。
+
+#### Scenario: CSI supervised 配置可加载
+- **WHEN** 用户加载 CSI degradation 或 hardening supervised 配置
+- **THEN** 最终配置 MUST 不包含 `distillation`
+- **AND** 输出 run name MUST 不包含 `_no_kd`

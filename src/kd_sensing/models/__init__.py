@@ -5,26 +5,26 @@ from typing import Any
 
 _EXPORTS: dict[str, str] = {
     "GpsFeatureExtractor": "kd_sensing.models.gps",
-    "GpsModalityNet": "kd_sensing.models.gps",
-    "GpsStudentModalityNet": "kd_sensing.models.gps",
+    "GpsLightweightModalityNet": "kd_sensing.models.gps",
+    "GpsStrongModalityNet": "kd_sensing.models.gps",
     "ImageFeatureExtractor": "kd_sensing.models.image",
-    "ImageModalityNet": "kd_sensing.models.image",
-    "ImageStudentModalityNet": "kd_sensing.models.image",
+    "ImageLightweightModalityNet": "kd_sensing.models.image",
+    "ImageStrongModalityNet": "kd_sensing.models.image",
     "ResNet18ImageEncoder": "kd_sensing.models.image_encoders",
     "LidarFeatureExtractor": "kd_sensing.models.lidar",
-    "LidarModalityNet": "kd_sensing.models.lidar",
-    "LidarStudentModalityNet": "kd_sensing.models.lidar",
+    "LidarLightweightModalityNet": "kd_sensing.models.lidar",
+    "LidarStrongModalityNet": "kd_sensing.models.lidar",
     "MmWaveFeatureExtractor": "kd_sensing.models.mmwave",
-    "MmWaveModalityNet": "kd_sensing.models.mmwave",
-    "MmWaveStudentModalityNet": "kd_sensing.models.mmwave",
+    "MmWaveLightweightModalityNet": "kd_sensing.models.mmwave",
+    "MmWaveStrongModalityNet": "kd_sensing.models.mmwave",
     "RadarFeatureExtractor": "kd_sensing.models.radar",
-    "RadarModalityNet": "kd_sensing.models.radar",
-    "RadarStudentModalityNet": "kd_sensing.models.radar",
+    "RadarLightweightModalityNet": "kd_sensing.models.radar",
+    "RadarStrongModalityNet": "kd_sensing.models.radar",
     "PilotCSIChannelEstimator": "kd_sensing.models.csi",
     "PilotDualViewCSIEncoder": "kd_sensing.models.csi",
     "CLSTokenTransformerFusionNet": "kd_sensing.models.fusion",
-    "FusionTeacherModalityNet": "kd_sensing.models.fusion",
-    "FusionStudentModalityNet": "kd_sensing.models.fusion",
+    "FusionLightweightModalityNet": "kd_sensing.models.fusion",
+    "FusionStrongModalityNet": "kd_sensing.models.fusion",
     "TokenTransformerFusionNet": "kd_sensing.models.fusion",
     "BeamClassificationHead": "kd_sensing.models.modular",
     "EarlyConcatGRUCore": "kd_sensing.models.modular",
@@ -32,15 +32,21 @@ _EXPORTS: dict[str, str] = {
     "ModularSequenceModel": "kd_sensing.models.modular",
     "SingleGRUCore": "kd_sensing.models.modular",
     "TokenTransformerCore": "kd_sensing.models.modular",
+    "GPSAnchoredResidualFusion": "kd_sensing.models.deepsense6g_residual_fusion",
+    "GPSAnchoredTopKReranker": "kd_sensing.models.deepsense6g_residual_fusion",
+    "TopKCandidateSelector": "kd_sensing.models.topk_candidate_selector",
+    "CandidateAttentionSelector": "kd_sensing.models.candidate_attention_selector",
 }
 
 __all__ = list(_EXPORTS)
 
 _REMOVED_ALIASES = {
-    "Fusion" + "ModalityNet": "FusionTeacherModalityNet",
-    "Student" + "ModalityNet": "FusionStudentModalityNet",
+    "Fusion" + "ModalityNet": "FusionStrongModalityNet",
+    "Student" + "ModalityNet": "FusionLightweightModalityNet",
     "CRAFFusionNet": "CRAF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "MARFFusionNet": "MARF has been retired; use cls_token_transformer_fusion or a current fusion model.",
+    "BottleneckPrivateAdapter": "HiST-Beam/Hist has been retired; no compatibility adapter is provided.",
+    "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS candidate, or residual fusion workflows.",
 }
 
 

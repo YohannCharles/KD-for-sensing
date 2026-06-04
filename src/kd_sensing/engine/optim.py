@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from kd_sensing.registries import DISTILLERS, LOSSES, METRICS, MODELS, import_default_components
+from kd_sensing.registries import LOSSES, METRICS, MODELS, import_default_components
 
 
 def build_model(model_cfg: dict[str, Any]):
@@ -36,25 +36,6 @@ def build_task_criterion(cfg: dict[str, Any]):
         loss_cfg.pop("alpha", None)
         loss_cfg.pop("gamma", None)
     return LOSSES.build(loss_cfg)
-
-
-def build_distiller(cfg: dict[str, Any], task_criterion):
-    import_default_components()
-    distillation_cfg = cfg.get("distillation") or {"type": "no_kd", "teacher_model_name": None}
-    model_cfg = cfg.get("model", {})
-    modalities = (
-        model_cfg.get("modalities")
-        or model_cfg.get("student", {}).get("modalities")
-        or model_cfg.get("teacher", {}).get("modalities")
-    )
-    return DISTILLERS.build(
-        distillation_cfg,
-        task_criterion=task_criterion,
-        num_pred=model_cfg.get("num_pred", 3),
-        num_classes=model_cfg.get("num_classes", 64),
-        feature_size=model_cfg.get("feature_size", 64),
-        modalities=modalities,
-    )
 
 
 def build_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -128,7 +109,6 @@ def build_device(cfg: dict[str, Any]) -> torch.device:
 
 __all__ = [
     "build_device",
-    "build_distiller",
     "build_metrics",
     "build_model",
     "build_optimizer",

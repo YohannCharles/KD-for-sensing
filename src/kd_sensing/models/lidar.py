@@ -103,7 +103,7 @@ class LidarFeatureExtractor(nn.Module):
         return features.view(batch_size, seq_len, -1)
 
 
-@MODELS.register("lidar_teacher")
+@MODELS.register("lidar_strong")
 class LidarModalityNet(nn.Module):
     def __init__(
         self,
@@ -124,7 +124,7 @@ class LidarModalityNet(nn.Module):
         if gru_hidden_size % num_heads != 0:
             raise ValueError(
                 f"gru_hidden_size ({gru_hidden_size}) must be divisible by num_heads ({num_heads}) "
-                "for lidar_teacher multihead attention."
+                "for lidar_strong multihead attention."
             )
         self.feature_extraction = LidarFeatureExtractor(feature_size, in_channels=lidar_channels)
         self.layer_norm = nn.LayerNorm(gru_input_size)
@@ -161,7 +161,7 @@ class LidarModalityNet(nn.Module):
         return pred, features, enhanced_seq_out
 
 
-@MODELS.register("lidar_student")
+@MODELS.register("lidar_lightweight")
 class LidarStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -230,3 +230,10 @@ class LidarStudentModalityNet(nn.Module):
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
         return pred, features, seq_out
+
+
+MODELS.register_removed("lidar_teacher", "Use 'lidar_strong'.")
+MODELS.register_removed("lidar_student", "Use 'lidar_lightweight'.")
+
+LidarStrongModalityNet = LidarModalityNet
+LidarLightweightModalityNet = LidarStudentModalityNet

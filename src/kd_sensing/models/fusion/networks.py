@@ -40,7 +40,7 @@ def _require_tensor(tensor: torch.Tensor | None, modality: str) -> torch.Tensor:
     return tensor
 
 
-@MODELS.register("fusion_teacher")
+@MODELS.register("fusion_strong")
 class FusionTeacherModalityNet(nn.Module):
     def __init__(
         self,
@@ -205,7 +205,7 @@ class FusionTeacherModalityNet(nn.Module):
         return pred, features, enhanced_seq_out
 
 
-@MODELS.register("fusion_student")
+@MODELS.register("fusion_lightweight")
 class FusionStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -527,3 +527,10 @@ def _validate_image_profile_channels(
         expected_channels=spec.channels,
         actual_channels=image_channels,
     )
+
+
+MODELS.register_removed("fusion_teacher", "Use 'fusion_strong'.")
+MODELS.register_removed("fusion_student", "Use 'fusion_lightweight' or 'cls_token_transformer_fusion'.")
+
+FusionStrongModalityNet = FusionTeacherModalityNet
+FusionLightweightModalityNet = FusionStudentModalityNet

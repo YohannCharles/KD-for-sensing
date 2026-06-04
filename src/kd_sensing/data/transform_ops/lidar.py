@@ -239,6 +239,87 @@ def parameterized_lidar_cache_dir(
     )
 
 
+def lidar_bev_grid_metadata(
+    *,
+    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_path: str | None = None,
+    background_distance_threshold: float = 0.2,
+    cell_center_convention: str = "center",
+    cache_version: str = "bgam_bev_v1",
+) -> dict[str, object]:
+    height, width = int(bev_size[0]), int(bev_size[1])
+    roi_values = [float(value) for value in roi]
+    return {
+        "roi": roi_values,
+        "bev_size": [height, width],
+        "height": height,
+        "width": width,
+        "grid_size": [height, width],
+        "cell_center_convention": str(cell_center_convention or "center"),
+        "fov_degrees": None if fov_degrees is None else [float(value) for value in fov_degrees],
+        "remove_ground": bool(remove_ground),
+        "ground_z_threshold": float(ground_z_threshold),
+        "background_path": str(background_path or ""),
+        "background_distance_threshold": float(background_distance_threshold),
+        "cache_version": str(cache_version or "bgam_bev_v1"),
+        "parameter_hash": lidar_cache_config_hash(
+            bev_size=bev_size,
+            roi=roi,
+            fov_degrees=fov_degrees,
+            remove_ground=remove_ground,
+            ground_z_threshold=ground_z_threshold,
+            background_path=background_path,
+            background_distance_threshold=background_distance_threshold,
+        ),
+    }
+
+
+def write_lidar_bev_metadata(path: str | Path, metadata: dict[str, object]) -> Path:
+    target = Path(path)
+    if target.suffix.lower() != ".json":
+        target = target.with_suffix(target.suffix + ".metadata.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    return target
+
+
+def load_lidar_bev_metadata(path: str | Path) -> dict[str, object]:
+    source = Path(path)
+    candidates = [
+        source.with_suffix(source.suffix + ".metadata.json"),
+        source.with_suffix(".metadata.json"),
+        source.parent / f"{source.stem}_metadata.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def validate_lidar_bev_metadata(
+    metadata: dict[str, object],
+    expected: dict[str, object],
+    *,
+    fields: tuple[str, ...] = ("roi", "bev_size", "cell_center_convention", "parameter_hash"),
+) -> None:
+    if not metadata:
+        return
+    mismatched: list[str] = []
+    for field in fields:
+        if field not in expected or field not in metadata:
+            continue
+        if _metadata_value(metadata[field]) != _metadata_value(expected[field]):
+            mismatched.append(field)
+    if mismatched:
+        names = ", ".join(mismatched)
+        raise ValueError(f"LiDAR BEV cache metadata mismatch for: {names}.")
+
+
 def load_lidar_background_points(data_root: str | Path, background_path: str | None) -> np.ndarray | None:
     if not background_path:
         return None
@@ -545,6 +626,14 @@ def _resize_or_validate_lidar_bev(array: np.ndarray, bev_size: list[int] | tuple
     return resized
 
 
+def _metadata_value(value: object) -> object:
+    if isinstance(value, (list, tuple)):
+        return [round(float(item), 8) if isinstance(item, (int, float)) else item for item in value]
+    if isinstance(value, (int, float)):
+        return round(float(value), 8)
+    return value
+
+
 __all__ = [
     "DEFAULT_LIDAR_BEV_SIZE",
     "DEFAULT_LIDAR_ROI",
@@ -555,9 +644,13 @@ __all__ = [
     "filter_lidar_points",
     "lidar_cache_config_hash",
     "lidar_cache_path",
+    "lidar_bev_grid_metadata",
     "lidar_points_to_bev",
     "load_lidar_background_points",
+    "load_lidar_bev_metadata",
     "load_lidar_bev_sequence",
     "parameterized_lidar_cache_dir",
     "read_lidar_point_cloud",
+    "validate_lidar_bev_metadata",
+    "write_lidar_bev_metadata",
 ]

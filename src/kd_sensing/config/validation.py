@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+from pathlib import Path
 from typing import Any
 
 from kd_sensing.config.dataset_rules.raymobtime import validate_raymobtime_config
@@ -38,6 +40,7 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
 
     validate_epoch_subsampling_config(cfg)
     validate_dataset_input_profiles(cfg)
+    validate_deepsense_label_space_artifacts(cfg)
     validate_raymobtime_config(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     validate_cache_policy(cache_policy, "data.cache.policy")
@@ -77,11 +80,114 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     validate_multitask_config(cfg)
 
 
+def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
+    experiment = str(cfg.get("experiment", {}).get("name") or "")
+    if experiment not in {
+        "deepsense6g_gps_top8_candidate_selector",
+        "deepsense6g_gps_lidar_bgam_reranker",
+        "deepsense6g_gps_adapter_v2",
+        "mmw_town_gps_top8_candidate_selector",
+        "mmw_town_gps_lidar_bgam_reranker",
+        "mmw_town_gps_adapter_v2",
+    }:
+        return
+    data_cfg = cfg.get("data", {})
+    if not isinstance(data_cfg, dict):
+        return
+    selected_label_space = str(data_cfg.get("label_space", "mapping_disabled"))
+    num_beams = int(data_cfg.get("num_beams", 64))
+    try:
+        from kd_sensing.data.beam_label_space import label_space_metadata, validate_label_space_rows
+        from kd_sensing.data.deepsense6g_topk_candidate_manifest import ratio_tag
+    except Exception:
+        return
+    scene_values = _scene_values(data_cfg)
+    expected = label_space_metadata(data_cfg, selected_label_space, num_beams=num_beams)
+    expected_by_scene = {
+        scene: label_space_metadata(data_cfg, selected_label_space, num_beams=num_beams, scene=scene)
+        for scene in scene_values
+    }
+    strict = selected_label_space != "mapping_disabled"
+    ratio = float(data_cfg.get("support_ratio", 0.15))
+    tag = ratio_tag(ratio)
+    candidate_paths: list[tuple[Path, str]] = []
+    if experiment in {"deepsense6g_gps_top8_candidate_selector", "deepsense6g_gps_adapter_v2"}:
+        gps_root = Path(str(data_cfg.get("gps_sweep_root", data_cfg.get("output_root", ""))))
+        if gps_root:
+            gps_dir = gps_root / tag / selected_label_space
+            candidate_paths.extend(
+                [
+                    (gps_dir / "gps_logits_index.csv", "GPS logits index"),
+                    (gps_dir / "predictions.csv", "GPS predictions"),
+                ]
+            )
+    if experiment in {"mmw_town_gps_top8_candidate_selector", "mmw_town_gps_adapter_v2"}:
+        gps_root = Path(str(data_cfg.get("gps_v2_artifact_root", data_cfg.get("output_root", ""))))
+        if gps_root:
+            gps_dir = gps_root if gps_root.name == selected_label_space else gps_root / selected_label_space
+            candidate_paths.extend(
+                [
+                    (gps_dir / "gps_logits_index.csv", "GPS logits index"),
+                    (gps_dir / "predictions.csv", "GPS predictions"),
+                ]
+            )
+    if experiment == "deepsense6g_gps_lidar_bgam_reranker":
+        configured = str(data_cfg.get("top8_manifest_path") or "").strip()
+        if configured:
+            candidate_paths.append((Path(configured), "Top8 candidate manifest"))
+        gps_root = str(data_cfg.get("gps_v2_artifact_root") or "").strip()
+        if gps_root:
+            gps_dir = Path(gps_root)
+            candidate_paths.extend(
+                [
+                    (gps_dir / "gps_logits_index.csv", "GPS logits index"),
+                    (gps_dir / "predictions.csv", "GPS predictions"),
+                ]
+            )
+    if experiment == "mmw_town_gps_lidar_bgam_reranker":
+        configured = str(data_cfg.get("top8_manifest_path") or "").strip()
+        if configured:
+            candidate_paths.append((Path(configured), "MMW Top8 candidate manifest"))
+        gps_root = Path(str(data_cfg.get("gps_v2_artifact_root", data_cfg.get("gps_output_root", ""))))
+        if gps_root:
+            gps_dir = gps_root if gps_root.name == selected_label_space else gps_root / selected_label_space
+            candidate_paths.extend(
+                [
+                    (gps_dir / "gps_logits_index.csv", "GPS logits index"),
+                    (gps_dir / "predictions.csv", "GPS predictions"),
+                ]
+            )
+    for path, artifact_name in candidate_paths:
+        if not path.exists() or path.suffix.lower() != ".csv":
+            continue
+        rows = _read_validation_csv(path)
+        if experiment.startswith("mmw_town") and expected_by_scene:
+            for scene, scene_rows in _rows_by_scene(rows).items():
+                scene_expected = expected_by_scene.get(scene)
+                if scene_expected is None:
+                    continue
+                validate_label_space_rows(
+                    scene_rows,
+                    expected=scene_expected,
+                    source_path=path,
+                    artifact_name=f"{artifact_name} scene={scene}",
+                    require_fields=strict,
+                )
+        else:
+            validate_label_space_rows(
+                rows,
+                expected=expected,
+                source_path=path,
+                artifact_name=artifact_name,
+                require_fields=strict,
+            )
+
+
 def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
     objective = resolve_prediction_objective(cfg)
     cfg.setdefault("experiment", {})["objective"] = objective
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
-    model_cfg = cfg.get("model", {}).get("student", {})
+    model_cfg = cfg.get("model", {}).get("primary", {})
     model_type = str(model_cfg.get("type", ""))
     head_occlusion = auxiliary_head_enabled(model_cfg, "occlusion")
     head_position = auxiliary_head_enabled(model_cfg, "position")
@@ -109,8 +215,8 @@ def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
         if not model_supports_auxiliary_heads(model_type) or not head_occlusion:
             raise ValueError(
                 "experiment.objective='occlusion' or 'multitask' requires "
-                "a student model type with auxiliary head support and "
-                "model.student.auxiliary_heads.occlusion=true."
+                "a primary model type with auxiliary head support and "
+                "model.primary.auxiliary_heads.occlusion=true."
             )
 
     if objective_requires_position(cfg):
@@ -123,8 +229,8 @@ def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
         if not model_supports_auxiliary_heads(model_type) or not head_position:
             raise ValueError(
                 "experiment.objective='position' or 'multitask' requires "
-                "a student model type with auxiliary head support and "
-                "model.student.auxiliary_heads.position=true."
+                "a primary model type with auxiliary head support and "
+                "model.primary.auxiliary_heads.position=true."
             )
 
 
@@ -147,7 +253,7 @@ def _profile_modalities_from_config(cfg: dict[str, Any]) -> tuple[str, ...]:
     try:
         return resolve_enabled_modalities(cfg)
     except ValueError as exc:
-        if "Fusion teacher/student modalities must match" not in str(exc):
+        if "Fusion primary modalities" not in str(exc):
             raise
     task = cfg.get("experiment", {}).get("task", "image")
     if task != "fusion":
@@ -156,12 +262,9 @@ def _profile_modalities_from_config(cfg: dict[str, Any]) -> tuple[str, ...]:
     top_level = model_cfg.get("modalities")
     if top_level:
         return tuple(str(item) for item in top_level)
-    student = model_cfg.get("student", {}).get("modalities")
-    if student:
-        return tuple(str(item) for item in student)
-    teacher = model_cfg.get("teacher", {}).get("modalities")
-    if teacher:
-        return tuple(str(item) for item in teacher)
+    primary = model_cfg.get("primary", {}).get("modalities")
+    if primary:
+        return tuple(str(item) for item in primary)
     return ("image", "radar")
 
 
@@ -202,7 +305,7 @@ def validate_image_model_profiles(cfg: dict[str, Any], image_profile: str) -> No
 
 def validate_multitask_config(cfg: dict[str, Any]) -> None:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
-    model_cfg = cfg.get("model", {}).get("student", {})
+    model_cfg = cfg.get("model", {}).get("primary", {})
     loss_cfg = cfg.get("loss", {})
     occlusion_target = mapping_or_bool_enabled(dataset_cfg.get("occlusion_target"))
     position_target = mapping_or_bool_enabled(dataset_cfg.get("position_target"))
@@ -232,12 +335,35 @@ def validate_multitask_config(cfg: dict[str, Any]) -> None:
     if aux_occlusion or occlusion_target:
         if not model_supports_auxiliary_heads(model_type) or not model_occlusion:
             raise ValueError(
-                "Occlusion auxiliary supervision requires a student model type with auxiliary head support "
-                "and model.student.auxiliary_heads.occlusion=true."
+                "Occlusion auxiliary supervision requires a primary model type with auxiliary head support "
+                "and model.primary.auxiliary_heads.occlusion=true."
             )
     if aux_position or position_target:
         if not model_supports_auxiliary_heads(model_type) or not model_position:
             raise ValueError(
-                "Position auxiliary supervision requires a student model type with auxiliary head support "
-                "and model.student.auxiliary_heads.position=true."
+                "Position auxiliary supervision requires a primary model type with auxiliary head support "
+                "and model.primary.auxiliary_heads.position=true."
             )
+
+
+def _read_validation_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as f:
+        return [dict(row) for row in csv.DictReader(f)]
+
+
+def _scene_values(data_cfg: dict[str, Any]) -> list[str]:
+    values = []
+    for item in data_cfg.get("scenes") or []:
+        if isinstance(item, dict):
+            values.append(str(item.get("slug") or item.get("scene") or item.get("name") or ""))
+        else:
+            values.append(str(item))
+    return [value for value in values if value]
+
+
+def _rows_by_scene(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        scene = str(row.get("scene") or row.get("target_scene") or "")
+        grouped.setdefault(scene, []).append(row)
+    return grouped

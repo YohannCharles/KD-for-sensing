@@ -60,7 +60,7 @@ class RadarFeatureExtractor(nn.Module):
         return frame_features.view(batch_size, seq_length, -1)
 
 
-@MODELS.register("radar_student")
+@MODELS.register("radar_lightweight")
 class RadarStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -155,7 +155,7 @@ class RadarStudentModalityNet(nn.Module):
         )
 
 
-@MODELS.register("radar_teacher")
+@MODELS.register("radar_strong")
 class RadarModalityNet(nn.Module):
     def __init__(
         self,
@@ -181,7 +181,7 @@ class RadarModalityNet(nn.Module):
         if gru_hidden_size % num_heads != 0:
             raise ValueError(
                 f"gru_hidden_size ({gru_hidden_size}) must be divisible by num_heads ({num_heads}) "
-                "for radar_teacher multihead attention."
+                "for radar_strong multihead attention."
             )
 
         self.radar_feature_extractor = RadarFeatureExtractor(feature_size, radar_channels)
@@ -228,3 +228,10 @@ class RadarModalityNet(nn.Module):
             output_features=enhanced_seq_out,
             auxiliary_heads=self.auxiliary_heads,
         )
+
+
+MODELS.register_removed("radar_teacher", "Use 'radar_strong'.")
+MODELS.register_removed("radar_student", "Use 'radar_lightweight'.")
+
+RadarStrongModalityNet = RadarModalityNet
+RadarLightweightModalityNet = RadarStudentModalityNet

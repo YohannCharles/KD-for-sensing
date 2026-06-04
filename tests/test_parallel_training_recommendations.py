@@ -51,7 +51,7 @@ def test_mmw_image_heavy_recommendation_is_memory_aware():
 
     result = recommend_parallel_training(
         cfg,
-        config_path="configs/hist_beam/mmw_scenario_loso.yaml",
+        config_path="configs/fusion/image_gps_supervised.yaml",
         parallel_runs=4,
         cpu_count=16,
         check_cache=False,

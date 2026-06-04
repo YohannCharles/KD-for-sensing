@@ -44,7 +44,7 @@
 新增 ResNet-18 RGB image 路径 MUST 作为默认 RGB 实验入口存在。当前 image-only 与包含 image 的 fusion 配置 MUST 使用 RGB/ImageNet preprocessing、3 通道输入和当前 checkpoint registry 语义。
 
 #### Scenario: image 配置使用 RGB/ImageNet
-- **WHEN** 开发者加载 `configs/image/teacher_no_kd.yaml`、`configs/image/student_no_kd.yaml`、`configs/image/logits_kd.yaml` 或 `configs/image/rkd.yaml`
+- **WHEN** 开发者加载 `configs/image/strong.yaml`、`configs/image/lightweight.yaml` 或 `configs/image/supervised.yaml`
 - **THEN** 配置解析后的 image profile MUST 为 `rgb_imagenet`
 - **AND** 模型 MUST 使用可接收 3 通道 image tensor 的 branch 或 encoder
 
@@ -78,3 +78,10 @@
 - **WHEN** 开发者阅读 README 或扩展指南中的历史差异说明
 - **THEN** 文档 MUST 不推荐旧脚本、旧 config alias 或旧权重 fallback 作为可运行入口
 - **AND** 文档 MUST 给出当前 canonical 训练和评估路线
+### Requirement: 原始兼容不保留 KD 训练模式
+项目对原始代码的兼容 MUST 限定于当前保留的数据、模型、训练、评估和指标语义。原始 teacher-student KD 训练模式、旧 argparse KD 参数和旧 KD 配置路径 MUST 不作为兼容目标。
+
+#### Scenario: 旧 KD argparse 参数不兼容
+- **WHEN** 用户尝试通过旧参数或 override 启用 `kd_mode`、temperature、alpha、logits KD 或 RKD
+- **THEN** 系统 MUST 拒绝该参数
+- **AND** 错误信息 MUST 指向当前 supervised/adaptation 配置

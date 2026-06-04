@@ -32,11 +32,11 @@ def main(argv: list[str] | None = None) -> dict:
     cfg = load_config(args.config, [*args.override, *(item for item in unknown if "=" in item)])
     device = build_device(cfg)
     dataloader = build_dataloaders(cfg)["test"]
-    model = build_model(cfg["model"]["student"]).to(device)
+    model = build_model(cfg["model"]["primary"]).to(device)
     load_model_state(args.ckpt, model, role="debug_eval_consistency", map_location=device, strict=bool(cfg.get("checkpoint", {}).get("strict_load", True)))
     model.eval()
     official = _collect_outputs(model, dataloader, cfg, device, mask=None)
-    all_mask = torch.ones(len(cfg["model"]["student"].get("modalities", ["image", "radar"])), dtype=torch.bool, device=device)
+    all_mask = torch.ones(len(cfg["model"]["primary"].get("modalities", ["image", "radar"])), dtype=torch.bool, device=device)
     subset_all = _collect_outputs(model, dataloader, cfg, device, mask=all_mask)
     official_top1 = _top1(official["logits"], official["labels"], cfg)
     subset_top1 = _top1(subset_all["logits"], subset_all["labels"], cfg)
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> dict:
 def _collect_outputs(model, dataloader, cfg: dict, device: torch.device, *, mask: torch.Tensor | None) -> dict:
     model_cfg = cfg["model"]
     num_pred = model_cfg.get("num_pred", 3)
-    seq_length = model_cfg.get("seq_length_student", 8)
+    seq_length = model_cfg.get("seq_length", 8)
     downsample_ratio = model_cfg.get("downsample_ratio", 1)
     logits = []
     labels_list = []
@@ -76,7 +76,7 @@ def _collect_outputs(model, dataloader, cfg: dict, device: torch.device, *, mask
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
-                modalities=cfg["model"]["student"].get("modalities"),
+                modalities=cfg["model"]["primary"].get("modalities"),
             )
             output = adapt_model_output(forward_model(model, "fusion", **fusion_inputs, force_modality_mask=mask))
             selected = select_prediction_slots(output.logits, num_pred)

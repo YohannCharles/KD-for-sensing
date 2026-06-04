@@ -27,6 +27,7 @@ from kd_sensing.baselines.gps_window.predictors import (
     error_buckets,
     predict_sample,
 )
+from kd_sensing.baselines.gps_window.support_split import split_calibration_support
 from kd_sensing.baselines.gps_window.types import (
     GpsWindowBaselineConfig,
     GpsWindowRunMetadata,
@@ -34,8 +35,7 @@ from kd_sensing.baselines.gps_window.types import (
     normalize_scenarios,
 )
 from kd_sensing.config.io import deep_merge
-from kd_sensing.evaluation.hist_beam_outputs import beam_power_metrics, calculate_hist_beam_metrics
-from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
+from kd_sensing.evaluation.metrics import beam_power_metrics, calculate_beam_group_metrics, calculate_dba_score, calculate_topk_accuracy
 
 
 def run_gps_window_baseline(
@@ -121,13 +121,14 @@ def _run_target_scene(
         cfg=baseline_cfg,
         max_samples=baseline_cfg.max_samples,
     )
-    calibration_samples = _calibration_samples(
+    support_samples = _calibration_samples(
         data_root=data_root,
         target_scene=target_scene,
         source_scenes=source_scenes,
         baseline_cfg=baseline_cfg,
         split_tag=split_tag,
     )
+    fit_samples, selection_samples, calibration_info = _split_calibration_support(support_samples, baseline_cfg)
     if not eval_samples:
         return {"target_scene": target_scene, "status": "skipped", "reason": "empty_target_test"}
     scene_dir = output_dir / str(target_scene)
@@ -139,20 +140,28 @@ def _run_target_scene(
         run_id = f"run_{idx:03d}_{run_cfg.algorithm}_w{run_cfg.history_window}_o{run_cfg.beam_offset}"
         run_dir = scene_dir / run_id
         calibration_metrics = _evaluate_samples(
-            calibration_samples,
+            selection_samples,
             run_cfg,
             data_root=data_root,
             output_dir=run_dir / "calibration",
-            calibration_samples=calibration_samples,
+            calibration_samples=fit_samples,
             write_artifacts=False,
+            calibration_split_label=calibration_info["fit_split"],
+            selection_split_label=calibration_info["selection_split"],
+            evaluation_split_label=calibration_info["selection_split"],
+            selection_sample_count=len(selection_samples),
         )
         eval_result = _evaluate_samples(
             eval_samples,
             run_cfg,
             data_root=data_root,
             output_dir=run_dir,
-            calibration_samples=calibration_samples,
+            calibration_samples=fit_samples,
             write_artifacts=True,
+            calibration_split_label=calibration_info["fit_split"],
+            selection_split_label=calibration_info["selection_split"],
+            evaluation_split_label="target_test",
+            selection_sample_count=len(selection_samples),
         )
         iteration = {
             "run_id": run_id,
@@ -163,7 +172,11 @@ def _run_target_scene(
             "final_eval_metrics": eval_result.get("metrics", {}),
             "error_buckets": eval_result.get("error_buckets", {}),
             "prediction_histogram": eval_result.get("prediction_histogram", {}),
-            "selection_split": eval_result.get("metadata", {}).get("calibration_split"),
+            "selection_split": calibration_info["selection_split"],
+            "support_selection_split": calibration_info["selection_split"],
+            "support_fit_sample_count": len(fit_samples),
+            "support_selection_sample_count": len(selection_samples),
+            "calibration_holdout": calibration_info,
             "used_target_test_for_calibration": False,
         }
         iterations.append(iteration)
@@ -191,6 +204,10 @@ def _evaluate_samples(
     output_dir: Path,
     calibration_samples: list[GpsWindowSample],
     write_artifacts: bool,
+    calibration_split_label: str | None = None,
+    selection_split_label: str | None = None,
+    evaluation_split_label: str | None = None,
+    selection_sample_count: int = 0,
 ) -> dict[str, Any]:
     calibration = build_calibration_state(calibration_samples, cfg)
     predictions = [predict_sample(sample, cfg, calibration) for sample in samples]
@@ -211,16 +228,20 @@ def _evaluate_samples(
         split=samples[0].split if samples else "",
         phase="prediction",
         used_fields=ALLOWED_PREDICTION_FIELDS,
-        calibration_split="source" if cfg.calibration_mode == "source" else "target_adapt_support",
+        calibration_split=calibration_split_label or ("source" if cfg.calibration_mode == "source" else "target_adapt_support"),
     )
+    calibration_split = calibration_split_label or ("source" if cfg.calibration_mode == "source" else "target_adapt_support")
     metadata = GpsWindowRunMetadata(
         config=cfg.to_dict(),
         used_fields=tuple(ALLOWED_PREDICTION_FIELDS),
         used_target_oracle_fields=tuple(guard["used_target_oracle_fields"]),
         eligible_for_main_claim=bool(guard["eligible_for_main_claim"]),
         ineligible_reason=guard["ineligible_reason"],
-        calibration_split="source" if cfg.calibration_mode == "source" else "target_adapt_support",
+        calibration_split=calibration_split,
         calibration_sample_count=len(calibration_samples),
+        selection_split=selection_split_label,
+        selection_sample_count=int(selection_sample_count),
+        evaluation_split=evaluation_split_label,
         used_target_test_for_calibration=False,
     ).to_dict()
     metrics.update(
@@ -234,7 +255,14 @@ def _evaluate_samples(
             "calibration_state": calibration.to_dict(),
             "effective_beam_direction": int(calibration.beam_direction),
             "effective_beam_offset": int(calibration.beam_offset),
+            "effective_boresight_angle_degrees": float(calibration.boresight_angle_degrees),
             "beam_mapping_score": float(calibration.beam_mapping_score),
+            "boresight_score": float(calibration.boresight_score),
+            "calibration_split": calibration_split,
+            "calibration_sample_count": len(calibration_samples),
+            "selection_split": selection_split_label,
+            "selection_sample_count": int(selection_sample_count),
+            "evaluation_split": evaluation_split_label,
             "oracle_guard": guard,
             "used_target_oracle_fields": metadata["used_target_oracle_fields"],
         }
@@ -261,7 +289,7 @@ def _evaluate_samples(
 def _metrics(outputs: torch.Tensor, labels: torch.Tensor, *, cfg: GpsWindowBaselineConfig) -> dict[str, Any]:
     topk, totals = calculate_topk_accuracy(outputs, labels, k_values=(1, 3, 5))
     dba = calculate_dba_score(outputs, labels)
-    hist = calculate_hist_beam_metrics(outputs, labels, group_size=cfg.group_size, num_classes=cfg.num_classes)
+    group_metrics = calculate_beam_group_metrics(outputs, labels, group_size=cfg.group_size, num_classes=cfg.num_classes)
     payload = {
         "top1_by_horizon": _float_list(topk[1]),
         "top3_by_horizon": _float_list(topk[3]),
@@ -273,7 +301,7 @@ def _metrics(outputs: torch.Tensor, labels: torch.Tensor, *, cfg: GpsWindowBasel
         "dba_avg": float(np.mean(dba)) if len(dba) else 0.0,
         "valid_by_horizon": [int(item) for item in totals.tolist()],
     }
-    payload.update(hist)
+    payload.update(group_metrics)
     return payload
 
 
@@ -308,6 +336,19 @@ def _calibration_samples(
     return result
 
 
+def _split_calibration_support(
+    samples: list[GpsWindowSample],
+    baseline_cfg: GpsWindowBaselineConfig,
+) -> tuple[list[GpsWindowSample], list[GpsWindowSample], dict[str, Any]]:
+    return split_calibration_support(
+        samples,
+        calibration_mode=baseline_cfg.calibration_mode,
+        holdout_fraction=baseline_cfg.calibration_holdout_fraction,
+        holdout_min_samples=baseline_cfg.calibration_holdout_min_samples,
+        holdout_strategy=baseline_cfg.calibration_holdout_strategy,
+    )
+
+
 def _parameter_grid(cfg: dict[str, Any], baseline_cfg: GpsWindowBaselineConfig, *, sweep: bool) -> list[dict[str, Any]]:
     sweep_cfg = cfg.get("sweep", {}) if isinstance(cfg.get("sweep"), dict) else {}
     if not sweep and not sweep_cfg.get("enabled", False):
@@ -320,8 +361,13 @@ def _parameter_grid(cfg: dict[str, Any], baseline_cfg: GpsWindowBaselineConfig, 
         "fallback",
         "fallback_weight",
         "beam_offset",
+        "beam_direction",
+        "boresight_angle_degrees",
+        "auto_calibrate_boresight_angle",
+        "auto_calibrate_beam_mapping",
         "angle_smoothing",
         "algorithm",
+        "calibration_holdout_strategy",
     ]
     values = {key: sweep_cfg.get(key, [baseline_cfg.to_dict()[key]]) for key in keys}
     normalized = {key: value if isinstance(value, list) else [value] for key, value in values.items()}
@@ -351,7 +397,13 @@ def _build_plan(
         "scenes": list(target_scenes),
         "source_scenes": list(source_scenes),
         "target_scenes": list(target_scenes),
-        "split": {"split_tag": split_tag, "calibration_mode": baseline_cfg.calibration_mode},
+        "split": {
+            "split_tag": split_tag,
+            "calibration_mode": baseline_cfg.calibration_mode,
+            "calibration_holdout_fraction": baseline_cfg.calibration_holdout_fraction,
+            "calibration_holdout_min_samples": baseline_cfg.calibration_holdout_min_samples,
+            "calibration_holdout_strategy": baseline_cfg.calibration_holdout_strategy,
+        },
         "claim_scope": baseline_cfg.claim_scope,
         "output_dir": str(output_dir),
         "data_root": str(data_root),

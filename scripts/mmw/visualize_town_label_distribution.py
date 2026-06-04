@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
+
 
 DEFAULT_SCENARIOS = (
     "Town10_crossroad_seed24",
@@ -34,6 +36,8 @@ class LabelSeries:
     counts: np.ndarray
     pdf: np.ndarray
     smooth_pdf: np.ndarray
+    beam_label_space: str
+    beam_label_mapping_fingerprint: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
                 label_column=args.label_column,
                 num_classes=args.num_classes,
                 smoothing_sigma=args.smoothing_sigma,
+                beam_label_calibration=json.loads(args.beam_label_calibration_json) if args.beam_label_calibration_json else None,
             )
         )
 
@@ -100,6 +105,7 @@ def load_label_series(
     label_column: str,
     num_classes: int | None,
     smoothing_sigma: float,
+    beam_label_calibration: dict[str, object] | None = None,
 ) -> LabelSeries:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found for {scenario}: {csv_path}")
@@ -110,6 +116,14 @@ def load_label_series(
     if labels.size == 0:
         raise ValueError(f"No non-negative labels found in {csv_path} column {column!r}.")
     class_count = int(num_classes) if num_classes else int(labels.max()) + 1
+    mapping = resolve_beam_label_mapping(
+        beam_label_calibration,
+        scene=scenario,
+        default_num_classes=class_count,
+    )
+    if mapping.enabled:
+        labels = mapping.map_labels(labels)
+        class_count = int(mapping.num_classes)
     if class_count <= int(labels.max()):
         raise ValueError(f"--num-classes={class_count} is smaller than max label {int(labels.max())}.")
     counts = np.bincount(labels, minlength=class_count).astype(float)
@@ -123,6 +137,8 @@ def load_label_series(
         counts=counts,
         pdf=pdf,
         smooth_pdf=smooth_pdf,
+        beam_label_space=mapping.label_space,
+        beam_label_mapping_fingerprint=mapping.fingerprint,
     )
 
 
@@ -219,6 +235,8 @@ def write_summary(series: Iterable[LabelSeries], output_path: Path) -> None:
                 "source_csv": str(item.source_csv),
                 "sample_count": int(len(item.labels)),
                 "num_classes": int(len(item.counts)),
+                "beam_label_space": item.beam_label_space,
+                "beam_label_mapping_fingerprint": item.beam_label_mapping_fingerprint,
                 "unique_label_count": int(len(nonzero)),
                 "min_label": int(item.labels.min()),
                 "max_label": int(item.labels.max()),
@@ -265,6 +283,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--label-column", default="beam_label", help="Label column to plot.")
     parser.add_argument("--num-classes", type=int, default=64, help="Number of label bins/classes.")
     parser.add_argument("--smoothing-sigma", type=float, default=1.2, help="Gaussian smoothing sigma in label bins.")
+    parser.add_argument(
+        "--beam-label-calibration-json",
+        help="Optional JSON calibration config; when enabled labels are mapped before histogramming.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/analysis/mmw_town_label_distribution"))
     parser.add_argument("--figure-name", default="mmw_town_label_distribution.png")
     parser.add_argument("--summary-name", default="mmw_town_label_distribution_summary.json")

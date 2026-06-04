@@ -17,7 +17,6 @@ __all__ = [
     "archive_best_checkpoint",
     "find_registry_checkpoint",
     "resolve_evaluation_checkpoint",
-    "resolve_teacher_checkpoint",
 ]
 
 
@@ -32,7 +31,6 @@ def __getattr__(name: str):
         "archive_best_checkpoint",
         "find_registry_checkpoint",
         "resolve_evaluation_checkpoint",
-        "resolve_teacher_checkpoint",
     }:
         from . import artifact_registry
 

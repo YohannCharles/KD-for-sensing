@@ -185,7 +185,7 @@ def _recommended_worker_budget(*, parallel_runs: int, cpu_count: int, modality_c
 def _is_mmw_image_heavy(cfg: dict[str, Any], modalities: list[str]) -> bool:
     dataset_cfg = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), dict) else {}
     dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
-    seq_len = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length_student", 0)) or 0)
+    seq_len = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length", 0)) or 0)
     return dataset_type == "mmw" and "image" in modalities and seq_len >= 8
 
 

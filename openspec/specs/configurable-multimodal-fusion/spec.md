@@ -117,74 +117,37 @@ Fusion teacher 和 fusion student MUST 支持通过 `modalities` 配置选择参
 - **AND** 模型 MUST 返回 `[B, T, num_classes]` logits
 
 #### Scenario: fusion_student LiDAR KD 兼容
-- **WHEN** fusion KD 配置中的 teacher 和 student 使用包含 LiDAR 的相同 `modalities`
-- **THEN** 系统 MUST 能完成 teacher/student forward
-- **AND** logits KD 与 RKD MUST 能接收 fusion teacher/student 的 logits、input_features 和 output_features
+- **WHEN** fusion 配置中的 primary model 使用包含 LiDAR 的 `modalities`
+- **THEN** 系统 MUST 能完成 primary model forward
+- **AND** loss MUST 能接收 fusion primary model 的 logits、input_features 和 output_features
 
 ### Requirement: Fusion canonical 多模态配置矩阵
-项目 MUST 为 `image`、`radar`、`gps`、`lidar`、`mmwave` 的所有必要多模态组合提供 canonical fusion 配置矩阵。多模态组合 MUST 覆盖全部 10 个双模态组合、10 个三模态组合、5 个四模态组合和 1 个五模态组合。每个组合 MUST 提供可加载的 teacher no-KD、student no-KD、logits KD 和 RKD canonical 配置路径；这些 canonical 配置 MAY 由 loader 生成，不要求每个路径都有实体 YAML 文件。
+项目 MUST 为 `image`、`radar`、`gps`、`lidar`、`mmwave` 的所有必要多模态组合提供 canonical fusion supervised 配置矩阵。多模态组合 MUST 覆盖全部 10 个双模态组合、10 个三模态组合、5 个四模态组合和 1 个五模态组合。每个组合 MUST 提供可加载的 strong 和 lightweight canonical 配置路径；这些 canonical 配置 MAY 由 loader 生成，不要求每个路径都有实体 YAML 文件。
 
 #### Scenario: 双模态 fusion 组合完整
 - **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
-- **THEN** 系统 MUST 为 `image_radar`、`image_gps`、`image_lidar`、`image_mmwave`、`radar_gps`、`radar_lidar`、`radar_mmwave`、`gps_lidar`、`gps_mmwave` 和 `lidar_mmwave` 十个双模态 slug 提供 canonical 配置
-- **AND** 每个 slug MUST 具备可加载的 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml` 路径
-
-#### Scenario: 三模态 fusion 组合完整
-- **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
-- **THEN** 系统 MUST 为 `image_radar_gps`、`image_radar_lidar`、`image_radar_mmwave`、`image_gps_lidar`、`image_gps_mmwave`、`image_lidar_mmwave`、`radar_gps_lidar`、`radar_gps_mmwave`、`radar_lidar_mmwave` 和 `gps_lidar_mmwave` 十个三模态 slug 提供 canonical 配置
-- **AND** 每个 slug MUST 具备可加载的 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml` 路径
-
-#### Scenario: 四模态 fusion 组合完整
-- **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
-- **THEN** 系统 MUST 为 `image_radar_gps_lidar`、`image_radar_gps_mmwave`、`image_radar_lidar_mmwave`、`image_gps_lidar_mmwave` 和 `radar_gps_lidar_mmwave` 五个四模态 slug 提供 canonical 配置
-- **AND** 每个 slug MUST 具备可加载的 `<slug>_teacher_no_kd.yaml`、`<slug>_student_no_kd.yaml`、`<slug>_logits_kd.yaml` 和 `<slug>_rkd.yaml` 路径
+- **THEN** 系统 MUST 为所有合法双模态 slug 提供 `<slug>_strong.yaml` 和 `<slug>_lightweight.yaml`
+- **AND** 系统 MUST 不要求提供 `<slug>_logits_kd.yaml` 或 `<slug>_rkd.yaml`
 
 #### Scenario: 五模态 fusion 组合完整
 - **WHEN** 开发者加载五模态 fusion canonical 配置
-- **THEN** 系统 MUST 提供可加载的 `image_radar_gps_lidar_mmwave_teacher_no_kd.yaml`、`image_radar_gps_lidar_mmwave_student_no_kd.yaml`、`image_radar_gps_lidar_mmwave_logits_kd.yaml` 和 `image_radar_gps_lidar_mmwave_rkd.yaml` 路径
-
-#### Scenario: 不重复提供 fusion 单模态入口
-- **WHEN** 用户需要运行单模态 image、radar、GPS、LiDAR 或 mmWave 实验
-- **THEN** 文档 MUST 引导用户使用 `configs/<modality>/` 下的单模态 canonical 配置
-- **AND** fusion canonical 矩阵 MUST 不要求提供单模态 fusion duplicate 配置
+- **THEN** 系统 MUST 提供可加载的 `image_radar_gps_lidar_mmwave_strong.yaml` 和 `image_radar_gps_lidar_mmwave_lightweight.yaml`
+- **AND** 系统 MUST 拒绝同 slug 的 KD 配置路径
 
 ### Requirement: Fusion canonical 配置语义
-每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug，并 MUST 让 teacher 和 student 使用相同的 `modalities`。推荐/default fusion student 路线 MUST 使用 `cls_token_transformer_fusion` 作为混合方式；已退役的 CRAF、MARF、G2D 配置、overlay 和 alias MUST 不再作为可解析 canonical 或高级方法入口。同一 slug 的四种配置 MUST 只改变训练角色和 KD 模式，不得改变模态集合。canonical 配置语义 MUST 不依赖实体 YAML 文件是否存在。
+每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug。推荐/default fusion lightweight 路线 MUST 使用 `cls_token_transformer_fusion` 或当前 active fusion model。canonical 配置语义 MUST 不依赖实体 YAML 文件是否存在，且 MUST 不包含 distillation 或 frozen teacher runtime。
 
-#### Scenario: fusion teacher no-KD 配置
-- **WHEN** 开发者加载 `configs/fusion/<slug>_teacher_no_kd.yaml`
+#### Scenario: fusion strong 配置
+- **WHEN** 开发者加载 `configs/fusion/<slug>_strong.yaml`
 - **THEN** 配置 MUST 设置 `experiment.task: fusion`
-- **AND** 配置 MUST 设置 `distillation.type: no_kd`
-- **AND** 配置 MUST 将被训练主模型配置为 `fusion_teacher` 或明确命名的 teacher baseline
-- **AND** `model.teacher.modalities` 与 `model.student.modalities` MUST 等于 slug 表示的模态集合
+- **AND** 配置 MUST 将 `model.primary` 配置为 strong fusion baseline
+- **AND** primary model modalities MUST 等于 slug 表示的模态集合
 
-#### Scenario: fusion student no-KD 默认配置
-- **WHEN** 开发者加载 `configs/fusion/<slug>_student_no_kd.yaml` 或推荐/default fusion no-KD student 配置
+#### Scenario: fusion lightweight 默认配置
+- **WHEN** 开发者加载 `configs/fusion/<slug>_lightweight.yaml`
 - **THEN** 配置 MUST 设置 `experiment.task: fusion`
-- **AND** 配置 MUST 设置 `distillation.type: no_kd`
-- **AND** 配置 MUST 将被训练主模型配置为 `cls_token_transformer_fusion`
-- **AND** `model.teacher.modalities` 与 `model.student.modalities` MUST 等于 slug 表示的模态集合
-
-#### Scenario: fusion logits KD 默认配置
-- **WHEN** 开发者加载 `configs/fusion/<slug>_logits_kd.yaml`
-- **THEN** 配置 MUST 设置 `distillation.type: logits_kd`
-- **AND** 配置 MUST 构建 frozen `fusion_teacher` 或明确命名的 teacher baseline
-- **AND** 配置 MUST 构建可训练 `cls_token_transformer_fusion`
-- **AND** teacher 和 student 的 `modalities` MUST 相同
-- **AND** 配置 MUST 默认解析同 slug 的 canonical teacher no-KD 输出中的 `best.pth`
-
-#### Scenario: fusion RKD 默认配置
-- **WHEN** 开发者加载 `configs/fusion/<slug>_rkd.yaml`
-- **THEN** 配置 MUST 设置 `distillation.type: rkd`
-- **AND** 配置 MUST 构建 frozen `fusion_teacher` 或明确命名的 teacher baseline
-- **AND** 配置 MUST 构建可训练 `cls_token_transformer_fusion`
-- **AND** teacher 和 student 的 `modalities` MUST 相同
-- **AND** 配置 MUST 提供 RKD 参数并默认解析同 slug 的 canonical teacher no-KD 输出中的 `best.pth`
-
-#### Scenario: 退役高级方法配置不可解析
-- **WHEN** 用户加载 CRAF、MARF 或 G2D 的实体 YAML、virtual alias 或 overlay recipe
-- **THEN** 系统 MUST 拒绝该配置路径或方法名
-- **AND** 系统 MUST 不生成等价配置或兼容重定向
+- **AND** 配置 MUST 将 `model.primary` 配置为 `cls_token_transformer_fusion` 或当前推荐 lightweight fusion 模型
+- **AND** 配置 MUST 不构建 frozen teacher
 
 ### Requirement: Fusion canonical 数据字段
 canonical fusion 配置 MUST 根据 `modalities` 启用对应 dataset 字段，并不得要求未启用模态的数据列。启用 GPS 的配置 MUST 使用 GPS-Rel-Polar；启用 LiDAR 的配置 MUST 使用 LiDAR BEV 默认字段，并 MUST 沿用 LiDAR 懒加载和内存有界归一化语义；启用 mmWave 的配置 MUST 使用 64 维 dB receive-power 特征，并 MUST 复用训练集 mmWave scaler。
@@ -503,19 +466,19 @@ Fusion 配置体系 MUST 支持 snapshot next-frame no-KD baseline。该 baselin
 - **AND** 模型 MUST 输出 `[B, 1, num_classes]` logits
 
 #### Scenario: 任意合法多模态 snapshot fusion
-- **WHEN** 用户加载 `configs/fusion/<slug>_snapshot_next_frame_no_kd.yaml` 且 `<slug>` 是两个到五个合法模态组成的 canonical slug
+- **WHEN** 用户加载 `configs/fusion/<slug>_snapshot_next_frame_supervised.yaml` 且 `<slug>` 是两个到五个合法模态组成的 canonical slug
 - **THEN** 系统 MUST 使用 `<slug>` 表示的模态集合构建 snapshot fusion
 - **AND** forward MUST 只要求该模态集合对应的输入张量
 - **AND** 未启用模态缺失不得阻止该配置运行
 
 ### Requirement: Snapshot fusion 不依赖 legacy fusion GRU
-Snapshot fusion baseline MUST 不使用 `fusion_teacher`、`fusion_student` 的 GRU 路线作为主模型。若配置中保留 teacher 字段用于兼容结构，训练主模型 MUST 仍是无时序 snapshot 模型。
+Snapshot fusion baseline MUST 不使用 `fusion_teacher`、`fusion_student` 的 GRU 路线作为主模型。训练主模型 MUST 是无时序 snapshot 模型。
 
-#### Scenario: no-KD snapshot fusion 主模型
-- **WHEN** 用户训练 snapshot fusion no-KD 配置
+#### Scenario: supervised snapshot fusion 主模型
+- **WHEN** 用户训练 snapshot fusion supervised 配置
 - **THEN** 可训练主模型 MUST 为无时序 snapshot 模型
 - **AND** 训练流程 MUST 不构建 frozen teacher checkpoint
-- **AND** `distillation.teacher_model_name` MUST 为 `null`
+- **AND** 最终配置 MUST 不包含 `distillation`
 
 #### Scenario: legacy fusion GRU 不参与 snapshot forward
 - **WHEN** snapshot fusion 模型执行 forward
@@ -543,25 +506,10 @@ Snapshot fusion baseline MUST 不使用 `fusion_teacher`、`fusion_student` 的 
 - **THEN** 模型 MUST 分别调用 mmWave encoder 和 CSI encoder
 - **AND** 两个 projected feature MUST 在 batch、time 和 `d_model` 维度上兼容
 
-### Requirement: Canonical fusion virtual config 不扩展 legacy KD 模式
-Canonical fusion virtual config 生成器 MUST 聚焦当前 no-KD strong/lightweight/fusion 主线和仍被 active specs 批准的 objective/snapshot 入口。生成器 MUST 不再把 `logits_kd` 或 `rkd` 作为所有 fusion modality slug 的 canonical virtual mode；不存在实体 YAML 的 legacy KD fusion 路径 MUST 清晰失败。
-
-#### Scenario: no-KD fusion virtual config 继续可用
-- **WHEN** 用户请求当前支持的 no-KD canonical fusion virtual config
-- **THEN** 配置加载器 MUST 生成完整配置
-- **AND** 生成配置 MUST 包含当前主线模型、数据、训练和 lineage metadata
-- **AND** 生成配置 MUST 不包含 KD-only temperature、alpha 或 RKD 权重字段
-
-#### Scenario: KD fusion virtual config 不再接管路径
-- **WHEN** 用户请求不存在实体 YAML 的 fusion `logits_kd` 或 `rkd` 配置
-- **THEN** 配置加载器 MUST 拒绝该路径
-- **AND** 错误信息 MUST 指向 legacy KD virtual alias 已退役，而不是生成或替换为其它配置
-
-### Requirement: Legacy KD baseline 不影响 canonical 模态 slug 解析
+### Requirement: 已退役 KD baseline 不影响 canonical 模态 slug 解析
 删除 fusion KD virtual modes 后，canonical 模态 slug 解析 MUST 继续支持当前合法模态集合、顺序规范化、重复模态拒绝、未知模态拒绝和单模态转发建议。
 
 #### Scenario: canonical slug 校验保持稳定
-- **WHEN** 用户请求 no-KD fusion virtual config，并使用合法模态集合
+- **WHEN** 用户请求当前 fusion virtual config，并使用合法模态集合
 - **THEN** 系统 MUST 按固定模态顺序解析 slug 并生成配置
 - **AND** 重复模态、未知模态或可转为单模态配置的路径 MUST 继续给出清晰错误或建议
-

@@ -23,8 +23,8 @@ from kd_sensing.data.transform_ops.gps import (  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
-from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet  # noqa: E402
-from kd_sensing.models.gps import GpsModalityNet, GpsStudentModalityNet  # noqa: E402
+from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
+from kd_sensing.models.gps import GpsModalityNet, GpsLightweightModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
@@ -37,7 +37,7 @@ GPS_CANONICAL_FUSION_CONFIGS = [
     for size in (2, 3, 4, 5)
     for combo in combinations(["image", "radar", "gps", "lidar", "mmwave"], size)
     if "gps" in combo
-    for mode in ["teacher_no_kd", "student_no_kd"]
+    for mode in ["strong", "lightweight"]
 ]
 
 
@@ -137,7 +137,7 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
     scaler_path = tmp_path / "artifacts" / "gps_scaler.npz"
     GPSStandardScaler(mean_=np.zeros(3, dtype=np.float32), scale_=np.ones(3, dtype=np.float32)).save(scaler_path)
     cfg = load_config(
-        ROOT / "configs/gps/student_no_kd.yaml",
+        ROOT / "configs/gps/lightweight.yaml",
         [
             f"data.dataset.data_root={tmp_path}",
             "data.dataset.train_csv_name=missing_train.csv",
@@ -151,7 +151,7 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
         ],
     )
     source_checkpoint = tmp_path / "source.pth"
-    torch.save(MODELS.build(cfg["model"]["student"]).state_dict(), source_checkpoint)
+    torch.save(MODELS.build(cfg["model"]["primary"]).state_dict(), source_checkpoint)
     archive_best_checkpoint(
         cfg,
         source_checkpoint=source_checkpoint,
@@ -168,10 +168,10 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
     assert result["split_metadata"]["train"]["csv_path"] == "missing_train.csv"
 
 
-def test_gps_teacher_and_student_forward_contracts():
+def test_gps_strong_and_lightweight_forward_contracts():
     for model_type, expected_cls in [
-        ("gps_teacher", GpsModalityNet),
-        ("gps_student", GpsStudentModalityNet),
+        ("gps_strong", GpsModalityNet),
+        ("gps_lightweight", GpsLightweightModalityNet),
     ]:
         model = MODELS.build(
             {
@@ -195,7 +195,7 @@ def test_gps_model_rejects_invalid_params():
     with pytest.raises(ValueError, match="gru_params must contain"):
         MODELS.build(
             {
-                "type": "gps_student",
+                "type": "gps_lightweight",
                 "gps_input_size": 3,
                 "feature_size": 64,
                 "num_classes": 64,
@@ -205,7 +205,7 @@ def test_gps_model_rejects_invalid_params():
     with pytest.raises(ValueError, match="must equal feature_size"):
         MODELS.build(
             {
-                "type": "gps_teacher",
+                "type": "gps_strong",
                 "gps_input_size": 3,
                 "feature_size": 64,
                 "num_classes": 64,
@@ -215,10 +215,10 @@ def test_gps_model_rejects_invalid_params():
 
 
 def test_fusion_modalities_default_and_gps_forward():
-    default_model = FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
+    default_model = FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
     assert default_model.modalities == ("image", "radar")
 
-    gps_model = FusionStudentModalityNet(
+    gps_model = FusionLightweightModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -258,13 +258,13 @@ def test_gps_fusion_batch_path_does_not_require_disabled_modalities():
 
 def test_fusion_modalities_validate_invalid_and_missing_inputs():
     with pytest.raises(ValueError, match="at least one"):
-        FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
+        FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
     with pytest.raises(ValueError, match="Unknown fusion modalities"):
-        FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["thermal"])
+        FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["thermal"])
     with pytest.raises(ValueError, match="duplicates"):
-        FusionStudentModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
+        FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
 
-    model = FusionTeacherModalityNet(
+    model = FusionStrongModalityNet(
         feature_size=64,
         num_classes=64,
         gru_params=[64, 64, 2],
@@ -278,32 +278,22 @@ def test_fusion_modalities_validate_invalid_and_missing_inputs():
 @pytest.mark.parametrize("config_path", GPS_CANONICAL_FUSION_CONFIGS)
 def test_gps_canonical_fusion_configs_build_and_use_relative_polar(config_path: str):
     cfg = load_config(ROOT / config_path)
-    teacher = MODELS.build(cfg["model"]["teacher"])
-    student = MODELS.build(cfg["model"]["student"])
+    primary_cfg = cfg["model"]["primary"]
+    primary = MODELS.build(primary_cfg)
 
     assert cfg["experiment"]["task"] == "fusion"
-    assert "gps" in cfg["model"]["teacher"]["modalities"]
-    assert cfg["model"]["teacher"]["modalities"] == cfg["model"]["student"]["modalities"]
+    assert "distillation" not in cfg
+    assert "gps" in primary_cfg["modalities"]
     assert cfg["data"]["dataset"]["use_gps"] is True
     assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
-    assert cfg["model"]["teacher"]["gps_input_size"] == 3
-    assert cfg["model"]["student"]["gps_input_size"] == 3
-    if "image" in cfg["model"]["teacher"]["modalities"] or "lidar" in cfg["model"]["teacher"]["modalities"]:
-        assert isinstance(teacher, ModularSequenceModel)
-        if "image" in cfg["model"]["teacher"]["modalities"]:
-            assert cfg["model"]["teacher"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-        if "lidar" in cfg["model"]["teacher"]["modalities"]:
-            assert cfg["model"]["teacher"]["encoders"]["lidar"]["type"] == "lidar_cnn"
-        if isinstance(student, ModularSequenceModel):
-            if "image" in cfg["model"]["student"]["modalities"]:
-                assert cfg["model"]["student"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
-            if "lidar" in cfg["model"]["student"]["modalities"]:
-                assert cfg["model"]["student"]["encoders"]["lidar"]["type"] == "lidar_cnn"
-        else:
-            assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
+    assert primary_cfg["gps_input_size"] == 3
+    if isinstance(primary, ModularSequenceModel):
+        if "image" in primary_cfg["modalities"]:
+            assert primary_cfg["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+        if "lidar" in primary_cfg["modalities"]:
+            assert primary_cfg["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
-        assert isinstance(teacher, FusionTeacherModalityNet)
-        assert isinstance(student, (CLSTokenTransformerFusionNet, FusionTeacherModalityNet, FusionStudentModalityNet))
+        assert isinstance(primary, (CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet))
 
 
 def _write_gps_files(root: Path, prefix: str, lat: float, lon: float) -> tuple[list[str], list[str]]:

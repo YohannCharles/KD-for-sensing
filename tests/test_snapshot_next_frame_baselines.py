@@ -138,34 +138,33 @@ def test_snapshot_preprocessing_writes_validation_split_and_metadata(tmp_path: P
 
 @pytest.mark.parametrize("modality", ["image", "radar", "gps", "lidar", "mmwave"])
 def test_single_modality_snapshot_configs_load(modality: str):
-    cfg = load_config(ROOT / f"configs/{modality}/snapshot_next_frame_no_kd.yaml")
+    cfg = load_config(ROOT / f"configs/{modality}/snapshot_next_frame_supervised.yaml")
 
     assert cfg["experiment"]["variant"] == "snapshot_next_frame"
     assert cfg["experiment"]["task"] == modality
+    assert "distillation" not in cfg
     assert cfg["data"]["dataset"]["seq_len"] == 1
     assert cfg["data"]["dataset"]["num_pred"] == 1
     assert cfg["data"]["dataset"]["train_csv_name"] == "train_seqs_SNAPSHOT_NEXT_FRAME.csv"
     assert cfg["data"]["dataset"]["val_csv_name"] == "val_seqs_SNAPSHOT_NEXT_FRAME.csv"
-    assert cfg["model"]["student"]["representation_core"]["type"] == "snapshot_frame"
-    assert cfg["model"]["student"]["num_pred"] == 1
-    assert cfg["distillation"]["type"] == "no_kd"
-    assert cfg["distillation"]["teacher_model_name"] is None
+    assert cfg["model"]["primary"]["representation_core"]["type"] == "snapshot_frame"
+    assert cfg["model"]["primary"]["num_pred"] == 1
 
 
 def test_snapshot_fusion_configs_and_slug_validation_load():
-    cfg = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_snapshot_next_frame_no_kd.yaml")
-    alias = load_config(ROOT / "configs/fusion/all_modalities_snapshot_next_frame_no_kd.yaml")
+    cfg = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_snapshot_next_frame_supervised.yaml")
+    alias = load_config(ROOT / "configs/fusion/all_modalities_snapshot_next_frame_supervised.yaml")
 
-    assert cfg["model"]["student"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
-    assert alias["model"]["student"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
-    assert alias["output"]["run_name"] == "all_modalities_snapshot_next_frame_no_kd"
-    with pytest.raises(ValueError, match="gps_mmwave_snapshot_next_frame_no_kd.yaml"):
-        load_config(ROOT / "configs/fusion/mmwave_gps_snapshot_next_frame_no_kd.yaml")
+    assert cfg["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
+    assert alias["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
+    assert alias["output"]["run_name"] == "all_modalities_snapshot_next_frame_supervised"
+    with pytest.raises(ValueError, match="gps_mmwave_snapshot_next_frame_supervised.yaml"):
+        load_config(ROOT / "configs/fusion/mmwave_gps_snapshot_next_frame_supervised.yaml")
 
 
 def test_snapshot_config_rejects_history_window_override():
     with pytest.raises(ValueError, match="data.dataset.seq_len=1"):
-        load_config(ROOT / "configs/gps/snapshot_next_frame_no_kd.yaml", ["data.dataset.seq_len=2"])
+        load_config(ROOT / "configs/gps/snapshot_next_frame_supervised.yaml", ["data.dataset.seq_len=2"])
 
 
 def test_snapshot_labels_use_future_beam_not_current_input(tmp_path: Path):
@@ -206,7 +205,7 @@ def test_snapshot_labels_use_future_beam_not_current_input(tmp_path: Path):
 
 
 def test_snapshot_artifact_fingerprint_rejects_history_window_split():
-    cfg = load_config(ROOT / "configs/mmwave/snapshot_next_frame_no_kd.yaml")
+    cfg = load_config(ROOT / "configs/mmwave/snapshot_next_frame_supervised.yaml")
 
     with pytest.raises(ValueError, match="non-snapshot split"):
         validate_normalization_artifact_fingerprint(

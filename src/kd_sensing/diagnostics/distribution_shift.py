@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 
 HISTOGRAM_FIELDS = {
     "absolute": "beam_histogram",
@@ -27,9 +28,9 @@ def analyze_distribution_shift(
 ) -> dict[str, Any]:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    label_cfg = dict(label_space or {})
+    label_cfg = _normalize_label_space(label_space)
     stats = split_artifact.get("stats", {}) if isinstance(split_artifact.get("stats"), Mapping) else {}
-    histograms = _collect_histograms(stats)
+    histograms = _collect_histograms(stats, label_cfg)
     metrics = _collect_metrics(histograms, smoothing=float(smoothing), label_space=label_cfg)
     figure_status = _maybe_write_figures(out, histograms, enabled=make_figures, required=figures_required)
     summary = _summary(metrics, label_cfg)
@@ -87,12 +88,20 @@ def distribution_distances(
     }
 
 
-def _collect_histograms(stats: Mapping[str, Any]) -> dict[str, Any]:
+def _collect_histograms(stats: Mapping[str, Any], label_space: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for split, payload in stats.items():
         if not isinstance(payload, Mapping):
             continue
-        result[split] = {"count": int(payload.get("count", 0))}
+        result[split] = {
+            "count": int(payload.get("count", 0)),
+            "label_space": str(payload.get("label_space") or label_space.get("beam_label_space") or "raw"),
+            "beam_label_space": str(payload.get("beam_label_space") or label_space.get("beam_label_space") or "raw"),
+            "beam_label_mapping_fingerprint": payload.get(
+                "beam_label_mapping_fingerprint",
+                label_space.get("beam_label_mapping_fingerprint"),
+            ),
+        }
         for label_name, field in HISTOGRAM_FIELDS.items():
             hist = payload.get(field)
             if isinstance(hist, Mapping) and hist:
@@ -106,6 +115,16 @@ def _collect_metrics(histograms: Mapping[str, Any], *, smoothing: float, label_s
     for target_split in ("target_labeled", "target_unlabeled", "target_test"):
         target = histograms.get(target_split, {}) if isinstance(histograms.get(target_split), Mapping) else {}
         split_metrics: dict[str, Any] = {}
+        source_label_space = source.get("beam_label_space") or source.get("label_space") or label_space.get("beam_label_space", "raw")
+        target_label_space = target.get("beam_label_space") or target.get("label_space") or label_space.get("beam_label_space", "raw")
+        if source_label_space != target_label_space:
+            metrics[target_split] = {
+                "skipped": True,
+                "skipped_reason": "mixed_beam_label_space",
+                "source_beam_label_space": source_label_space,
+                "target_beam_label_space": target_label_space,
+            }
+            continue
         for label_name in HISTOGRAM_FIELDS:
             source_hist = source.get(label_name)
             target_hist = target.get(label_name)
@@ -128,6 +147,25 @@ def _collect_metrics(histograms: Mapping[str, Any], *, smoothing: float, label_s
         "residual": f"residual convention={label_space.get('residual_convention', 'signed_circular')}",
     }
     return metrics
+
+
+def _normalize_label_space(label_space: Mapping[str, Any] | None) -> dict[str, Any]:
+    payload = dict(label_space or {})
+    if "beam_label_space" in payload and "beam_label_mapping_fingerprint" in payload:
+        return payload
+    calibration = payload.get("beam_label_calibration")
+    if calibration is None and isinstance(payload.get("data"), Mapping):
+        dataset_cfg = payload.get("data", {}).get("dataset", {})
+        if isinstance(dataset_cfg, Mapping):
+            calibration = dataset_cfg.get("beam_label_calibration")
+    scene = payload.get("scene") or payload.get("scene_slug") or payload.get("scene_id")
+    mapping = resolve_beam_label_mapping(
+        calibration,
+        scene=str(scene) if scene is not None else None,
+        default_num_classes=int(payload.get("num_classes", 64)),
+    )
+    payload.update(mapping.metadata())
+    return payload
 
 
 def _summary(metrics: Mapping[str, Any], label_space: Mapping[str, Any]) -> dict[str, Any]:

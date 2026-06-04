@@ -10,9 +10,6 @@ from kd_sensing.data.scenes import scene_slug_from_config
 from kd_sensing.engine.artifacts import ArtifactWriter, final_config_with_runtime
 from kd_sensing.engine.batch_step import (
     BatchStepRunner,
-    dummy_teacher as _dummy_teacher,
-    feature_prefix as _feature_prefix,
-    feature_tail as _feature_tail,
 )
 from kd_sensing.engine.checkpointing import (
     CheckpointManager,
@@ -31,12 +28,9 @@ from kd_sensing.engine.debug_diagnostics import (
     write_startup_summary,
 )
 from kd_sensing.engine.epoch_subsampling import epoch_subsampling_epoch_log, set_train_sampler_epoch
-from kd_sensing.engine.hist_beam_history_anchor import apply_history_anchor_model_config
-from kd_sensing.engine.hist_beam_training import HistBeamTrainingExtension
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.optim import (
     build_device,
-    build_distiller,
     build_model,
     build_optimizer,
     build_scheduler,
@@ -50,12 +44,6 @@ from kd_sensing.engine.objectives.metadata import (
 from kd_sensing.engine.run_metadata import (
     dataloaders_run_metadata,
     throughput_run_metadata,
-)
-from kd_sensing.engine.run_lineage import (
-    distillation_config,
-    distillation_enabled,
-    ensure_distillation_defaults,
-    run_lineage_metadata,
 )
 from kd_sensing.engine.run_status import (
     write_complete_status,
@@ -97,8 +85,6 @@ from kd_sensing.engine.training_state import (
     validate_early_stopping_source_available as _validate_early_stopping_source_available,
 )
 from kd_sensing.evaluation.lidar_diagnostics import LidarQualityAccumulator
-from kd_sensing.utils.artifact_registry import resolve_teacher_checkpoint
-from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.seed import set_seed
 
@@ -168,56 +154,8 @@ def _scene_grouped_output_base(cfg: dict) -> Path:
     return base / scene_slug
 
 
-def _teacher_enabled(cfg: dict) -> bool:
-    return distillation_enabled(cfg)
-
-
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
-    return [NoOpTrainingExtension(), HistBeamTrainingExtension()]
-
-
-def _load_teacher_if_needed(cfg: dict, teacher_model, device: torch.device) -> dict | None:
-    weight_name = distillation_config(cfg).get("teacher_model_name")
-    resolution = resolve_teacher_checkpoint(cfg, weight_name)
-    if resolution.path is None and resolution.source == "none":
-        return None
-    if resolution.path is None or not resolution.path.exists():
-        raise FileNotFoundError(
-            "Teacher checkpoint not found in the checkpoint registry. "
-            "Train and archive the teacher, or set distillation.teacher_model_name "
-            f"to an absolute checkpoint path. Resolution: {resolution.to_dict()}"
-        )
-    load_result = load_model_state(
-        resolution.path,
-        teacher_model,
-        role="teacher",
-        map_location=device,
-        strict=_checkpoint_strict(cfg),
-    )
-    summary = checkpoint_load_summary(load_result)
-    if summary is not None:
-        summary.update(
-            {
-                "source": resolution.source,
-                "registry_dir": str(resolution.registry_dir) if resolution.registry_dir is not None else None,
-                "metadata": resolution.metadata,
-            }
-        )
-    return summary
-
-
-def _add_distiller_params_to_optimizer(optimizer: torch.optim.Optimizer, distiller, cfg: dict) -> None:
-    params = [param for param in distiller.parameters() if param.requires_grad]
-    if not params:
-        return
-    optimizer.add_param_group(
-        {
-            "params": params,
-            "name": "distiller",
-            "lr": cfg.get("training", {}).get("lr", 7.5e-4),
-            "param_count": int(sum(param.numel() for param in params)),
-        }
-    )
+    return [NoOpTrainingExtension()]
 
 
 def _progress_enabled(cfg: dict) -> bool:
@@ -240,8 +178,6 @@ def _train_inner(cfg: dict) -> dict:
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     objective = resolve_prediction_objective(cfg)
     cfg.setdefault("experiment", {})["objective"] = objective
-    ensure_distillation_defaults(cfg)
-    apply_history_anchor_model_config(cfg)
     objective_metadata = objective_runtime_metadata(cfg)
     training_cfg = cfg.setdefault("training", {})
     early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg, objective=objective)
@@ -269,38 +205,23 @@ def _train_inner(cfg: dict) -> dict:
     model_cfg = cfg["model"]
     num_pred = model_cfg.get("num_pred", 3)
     num_classes = model_cfg.get("num_classes", 64)
-    seq_length_student = model_cfg.get("seq_length_student", 8)
-    seq_length_teacher = model_cfg.get("seq_length_teacher", seq_length_student)
+    seq_length = model_cfg.get("seq_length", 8)
 
-    student_model = build_model(model_cfg["student"]).to(device)
+    primary_model = build_model(model_cfg["primary"]).to(device)
     state = TrainingState(
         start_epoch=training_cfg.get("start_epoch", 0),
         best_early_stopping_value=_initial_early_stopping_value(early_stopping_mode),
     )
-    teacher_model = None
-    if _teacher_enabled(cfg):
-        teacher_model = build_model(model_cfg["teacher"]).to(device)
-        teacher_load_info = _load_teacher_if_needed(cfg, teacher_model, device)
-        if teacher_load_info is not None:
-            state.checkpoint_loads.append(teacher_load_info)
-        teacher_model.eval()
-        for param in teacher_model.parameters():
-            param.requires_grad = False
 
     task_criterion = build_task_criterion(cfg)
-    distiller = build_distiller(cfg, task_criterion).to(device) if _teacher_enabled(cfg) else None
-    optimizer = build_optimizer(cfg, student_model)
-    if distiller is not None:
-        _add_distiller_params_to_optimizer(optimizer, distiller, cfg)
+    optimizer = build_optimizer(cfg, primary_model)
     scheduler = build_scheduler(cfg, optimizer)
     optimizer_groups = optimizer_param_group_summary(optimizer)
-    configure_csi_debug(student_model, cfg)
-    if teacher_model is not None:
-        configure_csi_debug(teacher_model, cfg)
-    startup_summary = build_startup_summary(cfg, student_model, optimizer, scheduler, device=device)
+    configure_csi_debug(primary_model, cfg)
+    startup_summary = build_startup_summary(cfg, primary_model, optimizer, scheduler, device=device)
     write_startup_summary(run_dir, startup_summary)
     print_startup_summary(startup_summary)
-    health_tracker = ModuleHealthTracker(student_model) if training_health_debug_enabled(cfg) else None
+    health_tracker = ModuleHealthTracker(primary_model) if training_health_debug_enabled(cfg) else None
     csi_debug_records: list[dict] = []
     grad_scaler = make_grad_scaler(cfg, amp_enabled)
     extension_context = ExtensionContext(
@@ -308,16 +229,13 @@ def _train_inner(cfg: dict) -> dict:
         task=task,
         model_cfg=model_cfg,
         training_cfg=training_cfg,
-        student_model=student_model,
-        teacher_model=teacher_model,
-        distiller=distiller,
+        primary_model=primary_model,
         task_criterion=task_criterion,
         run_dir=run_dir,
         device=device,
         num_pred=num_pred,
         num_classes=num_classes,
-        seq_length_student=seq_length_student,
-        seq_length_teacher=seq_length_teacher,
+        seq_length=seq_length,
         non_blocking=non_blocking,
     )
     extensions = _build_training_extensions(cfg)
@@ -336,7 +254,7 @@ def _train_inner(cfg: dict) -> dict:
     checkpoint_manager = CheckpointManager(
         cfg=cfg,
         run_dir=run_dir,
-        student_model=student_model,
+        primary_model=primary_model,
         optimizer=optimizer,
         scheduler=scheduler,
         split_metadata=split_metadata,
@@ -381,18 +299,12 @@ def _train_inner(cfg: dict) -> dict:
             disable=not progress_enabled,
         )
         for epoch in epoch_progress:
-            _set_epoch_recursive(student_model, epoch)
-            if teacher_model is not None:
-                _set_epoch_recursive(teacher_model, epoch)
+            _set_epoch_recursive(primary_model, epoch)
             set_train_sampler_epoch(dataloaders["train"], epoch)
-            student_model.train()
+            primary_model.train()
             train_lidar_quality = LidarQualityAccumulator()
             saw_train_lidar = False
-            distill_cfg = distillation_config(cfg)
-            current_alpha = distill_cfg.get("alpha", 0.4)
-            warmup_epochs = distill_cfg.get("alpha_warmup_epochs", 0)
-            if warmup_epochs and epoch < warmup_epochs:
-                current_alpha = current_alpha * (epoch / warmup_epochs)
+            current_alpha = 0.0
             for extension, extension_state in zip(extensions, extension_states):
                 extension.before_epoch(extension_context, extension_state, epoch=epoch)
             if health_tracker is not None:
@@ -414,13 +326,12 @@ def _train_inner(cfg: dict) -> dict:
                 if "lidar" in batch_result.batch:
                     saw_train_lidar = True
                     train_lidar_quality.update(batch_result.batch["lidar"], raw_lidar=batch_result.batch.get("lidar_raw"))
-                csi_debug_records.extend(consume_csi_debug_records(student_model))
+                csi_debug_records.extend(consume_csi_debug_records(primary_model))
                 progress_metrics = recorder.update_batch(batch_result, step)
                 if progress_enabled:
                     batch_progress.set_postfix(
                         loss=f"{progress_metrics['loss']:.4f}",
                         task=f"{progress_metrics['task']:.4f}",
-                        distill=f"{progress_metrics['distill']:.4f}",
                         acc=f"{progress_metrics['acc']:.4f}",
                         lr=f"{current_lr:.2e}",
                     )
@@ -429,7 +340,7 @@ def _train_inner(cfg: dict) -> dict:
                 scheduler.step()
             try:
                 val_metrics = validate(
-                    student_model,
+                    primary_model,
                     dataloaders["test"],
                     cfg,
                     task_criterion,
@@ -438,7 +349,7 @@ def _train_inner(cfg: dict) -> dict:
                 )
             finally:
                 shutdown_dataloader_workers(dataloaders["test"])
-            csi_debug_records.extend(consume_csi_debug_records(student_model))
+            csi_debug_records.extend(consume_csi_debug_records(primary_model))
             _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
             extension_metrics = {}
             for extension, extension_state in zip(extensions, extension_states):
@@ -580,18 +491,15 @@ def _apply_csi_rms_to_model_config(cfg: dict, dataloaders: dict) -> None:
     rms = float(getattr(normalizer, "rms", normalizer))
     model_cfg = cfg.setdefault("model", {})
     model_cfg["csi_train_rms"] = rms
-    for role in ("teacher", "student"):
-        role_cfg = model_cfg.get(role)
-        if not isinstance(role_cfg, dict):
-            continue
-        if "csi" not in role_cfg.get("modalities", []):
-            continue
-        role_cfg["csi_train_rms"] = rms
-        encoders = role_cfg.get("encoders")
-        if isinstance(encoders, dict):
-            csi_cfg = encoders.get("csi")
-            if isinstance(csi_cfg, dict):
-                csi_cfg.setdefault("train_rms", rms)
+    primary_cfg = model_cfg.get("primary")
+    if not isinstance(primary_cfg, dict) or "csi" not in primary_cfg.get("modalities", []):
+        return
+    primary_cfg["csi_train_rms"] = rms
+    encoders = primary_cfg.get("encoders")
+    if isinstance(encoders, dict):
+        csi_cfg = encoders.get("csi")
+        if isinstance(csi_cfg, dict):
+            csi_cfg.setdefault("train_rms", rms)
 
 
 def _set_epoch_recursive(module, epoch: int) -> None:

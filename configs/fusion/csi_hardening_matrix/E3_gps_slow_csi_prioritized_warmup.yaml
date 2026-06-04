@@ -26,13 +26,19 @@ data:
         max_degrees: 30.0
       antenna_calibration:
         enabled: true
-        amplitude_range: [0.95, 1.05]
+        amplitude_range:
+        - 0.95
+        - 1.05
         phase_std_degrees: 5.0
 model:
-  modalities: [gps, csi]
-  teacher: &gps_csi_model
+  modalities:
+  - gps
+  - csi
+  primary:
     type: modular_sequence
-    modalities: [gps, csi]
+    modalities:
+    - gps
+    - csi
     feature_size: 64
     d_model: 64
     num_classes: 64
@@ -63,10 +69,6 @@ model:
     heads:
       beam:
         type: beam_head
-  student: *gps_csi_model
-distillation:
-  type: no_kd
-  teacher_model_name: null
 training:
   epochs: 100
   lr: 0.0005
@@ -75,10 +77,17 @@ training:
     enabled: true
     epochs: 20
     phase_1:
-      active_modalities: [csi]
-      trainable_components: [encoders.csi, representation_core, heads]
+      active_modalities:
+      - csi
+      trainable_components:
+      - encoders.csi
+      - representation_core
+      - heads
     phase_2:
-      active_modalities: [gps, csi]
-      trainable_components: [all]
+      active_modalities:
+      - gps
+      - csi
+      trainable_components:
+      - all
 output:
   run_name: fusion_E3_gps_slow_csi_prioritized_warmup
