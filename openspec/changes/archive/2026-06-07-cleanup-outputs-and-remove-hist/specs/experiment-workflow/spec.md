@@ -28,7 +28,7 @@
 - **THEN** 文档 MUST 说明对应能力已从当前 active mainline 退役
 - **AND** 文档 MUST 不提供当前推荐运行命令
 
-### Requirement: 当前推荐 workflow 聚焦保留主线
+### Requirement: 当前推荐 workflow 聚焦少样本跨场景主线
 README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、DeepSense6G GPS candidate、Top8 selector、GPS+LiDAR BGAM、camera residual、MMW Town GPS v2、CSI hardening、Raymobtime s008 selection 和 viewer manifest。KD baseline、HiST-Beam/Hist、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
 
 #### Scenario: quickstart 不推荐退役脚本

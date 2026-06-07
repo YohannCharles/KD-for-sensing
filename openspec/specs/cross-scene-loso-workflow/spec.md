@@ -85,71 +85,6 @@
 - **THEN** 系统 MUST 产生相同 labeled sample id 集合
 - **AND** 不同 seed MAY 产生不同 labeled sample id 集合
 
-### Requirement: LOSO 运行编排入口
-系统 MUST 提供配置驱动的包内 LOSO orchestration 入口，用于依次运行 source training、source-only target_test evaluation、target adaptation、adapted target_test evaluation 和结果汇总。入口 MUST 使用 `kd_sensing.cli` 或包内模块，不得新增长期维护的根目录脚本。
-
-#### Scenario: 运行单 fold 单 variant
-- **WHEN** 用户通过 LOSO 入口指定一个 target scene、一个 variant、一个 seed 和一个 budget
-- **THEN** 系统 MUST 只运行对应 fold 和配置组合
-- **AND** 输出目录 MUST 包含 source、adaptation、evaluation 和 summary metadata
-
-#### Scenario: 运行默认快速矩阵
-- **WHEN** 用户请求默认 HiST-Beam quick verification matrix
-- **THEN** 系统 MUST 能遍历四个 LOSO folds、配置的 seeds、配置的 variants 和配置的 label budgets
-- **AND** 系统 MUST 允许用户用配置缩小 variants、budgets 或 folds 以进行 smoke test
-
-#### Scenario: 复用已有 source checkpoint
-- **WHEN** 指定 fold 和 seed 的 source checkpoint 已存在且配置允许复用
-- **THEN** orchestration MUST 能跳过 source retraining 并复用该 checkpoint
-- **AND** summary metadata MUST 记录 checkpoint 来源和复用行为
-
-#### Scenario: 不覆盖既有运行产物
-- **WHEN** LOSO 入口创建输出目录且目标目录已存在
-- **THEN** 系统 MUST 遵守现有输出覆盖和唯一目录规则
-- **AND** 未显式 overwrite 时 MUST 不覆盖已有 metrics、checkpoint、predictions 或 prototype artifact
-
-### Requirement: LOSO 结果汇总
-系统 MUST 为 HiST-Beam 快速验证输出 source-only、few-shot adaptation 和 efficiency 三类汇总表或等价 JSON/CSV。汇总 MUST 能按 fold、target scene、variant、budget 和 seed 聚合，并 MUST 记录均值与可追溯的单次运行路径。
-
-#### Scenario: 输出 source-only 表
-- **WHEN** 现行 source-only evaluation 完成
-- **THEN** 汇总 MUST 包含每个 target scene 的 Top-1、Top-3 和 coarse accuracy
-- **AND** 汇总 MUST 包含跨 fold 平均指标
-
-#### Scenario: 输出 few-shot adaptation 表
-- **WHEN** source-only、full fine-tuning、adapter-only 和 adapter+prototype evaluation 完成
-- **THEN** 汇总 MUST 按 label budget 聚合 Top-1、Top-3、Top-5 和 coarse accuracy
-- **AND** 汇总 MUST 保留每个 seed 的原始指标路径
-
-#### Scenario: 输出 efficiency 表
-- **WHEN** adaptation variants 完成
-- **THEN** 汇总 MUST 包含 trainable params、trainable ratio、adapt time per epoch、total adapt time 和 target_test Top-1
-- **AND** adapter variants MUST 能与 full fine-tuning baseline 横向比较
-
-#### Scenario: 汇总不伪造缺失指标
-- **WHEN** 某个 run 未产生 power metrics 或 prototype metrics
-- **THEN** 汇总 MUST 将对应字段标记为不可用或缺失
-- **AND** 系统 MUST 不用 0 或其它数值伪造真实指标
-
-### Requirement: LOSO execute 执行闭环
-系统 MUST 在用户运行 `kd-sensing-hist-beam-loso --execute` 时执行 LOSO quick validation stages，而不是仅生成 planned run。执行闭环 MUST 至少包含 source training、source-only target_test evaluation、target adaptation、adapted target_test evaluation 和 summary 写出。
-
-#### Scenario: execute 不返回 planned 状态
-- **WHEN** 用户使用合法配置运行 `kd-sensing-hist-beam-loso --execute`
-- **THEN** 系统 MUST 进入真实执行路径
-- **AND** 返回结果中的 `execution.status` MUST 为 `completed`、`failed` 或 `partial_failed`
-- **AND** 返回结果 MUST NOT 使用 `planned` 表示 execute 模式已处理完成
-
-#### Scenario: 按顺序执行单个 run 的 stages
-- **WHEN** execute runner 处理一个 fold、variant、budget 和 seed 组合
-- **THEN** 系统 MUST 按顺序执行 `source_train`、`source_only_target_test_eval`、`target_adaptation`、`adapted_target_test_eval` 和 `summary`
-- **AND** 每个 stage 的状态、开始结束时间、输出路径和失败原因 MUST 写入 run metadata
-
-#### Scenario: 保留 plan-only 行为
-- **WHEN** 用户未传入 `--execute`
-- **THEN** 系统 MUST 只写出 LOSO run plan
-- **AND** 系统 MUST 不启动训练、adaptation 或 evaluation stage
-
 ### Requirement: LOSO execute preflight
 系统 MUST 在启动训练或 adaptation 前执行 preflight。preflight MUST 检查矩阵中涉及的 DeepSense6G scene 数据根目录、CSV、启用模态资源、输出目录写权限和配置合法性。preflight 失败时 MUST 给出明确错误，不得写出表示成功的 summary。
 
@@ -168,98 +103,6 @@
 - **WHEN** preflight 通过
 - **THEN** 系统 MUST 保存 preflight metadata
 - **AND** metadata MUST 记录检查过的 scenes、CSV、启用模态、输出目录和 quick validation matrix 摘要
-
-### Requirement: Quick validation 最小执行矩阵
-系统 MUST 提供 HiST-Beam quick validation 的最小可执行矩阵。默认 CLI smoke MUST 是资源探针；完整方法验证 MUST 通过显式 quick validation 配置支持先执行 target scene `34`，并能用同一入口扩展到 target scenes `33`、`32` 和 `31`。Quick validation MUST NOT 默认计划旧 `v2_shared_private`、`v3_decoupled` 或等价旧简单 shared/private 解耦变体。
-
-#### Scenario: target scene 34 快速验证
-- **WHEN** 用户请求默认 quick validation 或显式配置 target scene `34`
-- **THEN** 系统 MUST 生成并执行 target scene `34` 的 LOSO fold
-- **AND** source scenes MUST 为 `[31, 32, 33]`，除非用户显式覆盖合法 source scenes
-
-#### Scenario: resource smoke 默认保持轻量
-- **WHEN** 用户未显式指定配置运行 `kd-sensing-hist-beam-loso`
-- **THEN** 默认配置 MUST 只生成轻量资源探针矩阵
-- **AND** 矩阵 MUST 能在单个 target scene、单个 variant、单个 budget 和单个 seed 上运行
-- **AND** 配置 MUST 使用短 epoch 和小数据比例，避免默认 CLI 启动长方法验证矩阵
-
-#### Scenario: method quick validation variants budgets seeds 最小覆盖
-- **WHEN** 用户请求完整 quick validation 方法验证矩阵
-- **THEN** 系统 MUST 覆盖当前合法 variants，例如 `v0_flat`、`v1_hierarchical`、`v4_adapter`、`v5_adapter_proto` 和 `v6_full_finetune`
-- **AND** 系统 MUST NOT 覆盖 `v2_shared_private`、`shared_private`、`v3_decoupled` 或 `decoupled`
-- **AND** 系统 MUST 覆盖 label budgets `0` 和 `10`
-- **AND** 系统 MUST 覆盖 seed `0`
-
-#### Scenario: DeepSense6G method quick validation 使用全量数据和 40 epoch
-- **WHEN** 用户使用完整 HiST-Beam quick validation 配置运行 DeepSense6G LOSO execute
-- **THEN** 配置 MUST 使用 `data.dataset.portion: 1.0`
-- **AND** 配置 MUST 使用 `training.epochs: 40`
-- **AND** `portion` MUST NOT 默认缩小 DeepSense6G 训练或测试数据
-
-#### Scenario: 扩展到完整 31-34 target scenes
-- **WHEN** 用户请求完整 quick validation scenes
-- **THEN** 系统 MUST 运行 target scenes `34`、`33`、`32` 和 `31`
-- **AND** 每个 target scene MUST 使用其余三个 scenes 作为 source scenes
-
-#### Scenario: 用户可缩小矩阵
-- **WHEN** 用户通过 CLI 或配置指定 variants、budgets、seeds 或 target scenes 的子集
-- **THEN** 系统 MUST 只执行指定子集
-- **AND** summary metadata MUST 记录矩阵被用户缩小后的实际组合
-
-#### Scenario: 用户可限制 run 数量
-- **WHEN** 用户通过 CLI 或配置指定最大 run 数量
-- **THEN** 系统 MUST 只计划并执行该数量以内的 run
-- **AND** plan metadata MUST 记录原始 planned run count 和实际 run count
-
-### Requirement: LOSO 旧解耦 baseline 退役
-LOSO workflow MUST NOT 将旧 `v3_decoupled` 或等价简单 shared/private 解耦路线作为默认 source checkpoint、summary comparison baseline、quick conclusion 主线或 prototype source fallback。需要 baseline 时，系统 MUST 使用现行合法 source-only、image-only legal、residual/calibration 或显式配置的非旧解耦 baseline。
-
-#### Scenario: adaptation source variant 不回退到 v3
-- **WHEN** runner 为 adapter/prototype/target-prior 变体选择 source checkpoint
-- **THEN** source variant MUST 是合法的非旧解耦 variant 或用户显式指定的合法 source variant
-- **AND** 系统 MUST NOT 自动返回 `v3_decoupled`
-
-#### Scenario: summary comparison 不使用 v3 主 baseline
-- **WHEN** LOSO summary 聚合多个 variant 的结果
-- **THEN** comparison metadata MUST NOT 把 `v3_decoupled` 设为默认 baseline
-- **AND** 缺少旧 `v3_decoupled` run MUST NOT 被记录为方法矩阵缺失
-
-### Requirement: LOSO execute summary 产物
-系统 MUST 在 execute 结束后输出 LOSO summary CSV/JSON。summary MUST 汇总每个 run 的 stage 状态、metrics 路径、predictions 路径、checkpoint 来源、adaptation 效率指标和失败原因。
-
-#### Scenario: 完成矩阵后写出 CSV 和 JSON
-- **WHEN** execute runner 完成所有计划 run，或以 partial failure 结束
-- **THEN** 系统 MUST 写出 `loso_summary.json`
-- **AND** 系统 MUST 写出等价的 CSV summary 或记录 CSV 不可用原因
-
-#### Scenario: summary 保留单次运行路径
-- **WHEN** 某个 run 产生 metrics、predictions、checkpoint、prototype 或 metadata artifact
-- **THEN** summary MUST 记录对应 artifact path
-- **AND** summary MUST 能追溯到 fold、target scene、source scenes、variant、budget 和 seed
-
-#### Scenario: summary 不伪造失败 run 指标
-- **WHEN** 某个 run 或 stage 失败导致 metrics 缺失
-- **THEN** summary MUST 将该 run 标记为 failed 或 missing
-- **AND** 系统 MUST 不用 `0` 或其它数值伪造缺失指标
-
-### Requirement: LOSO execute 进度与中断可诊断
-系统 MUST 在 execute 过程中持续写出可诊断 metadata。用户手动中断时，系统 SHOULD 尽量写出 partial summary；无法捕获的系统级终止至少 MUST 已经写出最近开始的 run/stage metadata。
-
-#### Scenario: stage 开始即写 running metadata
-- **WHEN** execute runner 即将启动某个 stage
-- **THEN** 系统 MUST 在 stage 进入训练或评估前写出 run-level `metadata.json`
-- **AND** metadata MUST 标明当前 stage 为 `running`
-
-#### Scenario: 长训练 stage 写 epoch 进度
-- **WHEN** source training 或 target adaptation 完成一个 epoch
-- **THEN** 系统 SHOULD 写出进度事件
-- **AND** 进度事件 SHOULD 包含 stage、epoch、总 epoch、耗时和可用 loss 统计
-
-#### Scenario: 用户中断后写 partial summary
-- **WHEN** 用户通过可捕获的中断停止 execute
-- **THEN** 当前 stage MUST 标记为 failed
-- **AND** 未启动的计划 run MUST 标记为 missing
-- **AND** 系统 MUST 写出 partial `loso_summary.json`、`loso_summary.csv` 和机器可读结论文件
 
 ### Requirement: 数据集无关的 LOSO fold 规划
 LOSO workflow MUST 在现有 DeepSense6G 31-34 folds 之外支持数据集无关的 fold 规划。对于 MMW，planner MUST 使用 dataset descriptor 和数据可用性 metadata 生成 scenario-level、town-level 或 condition-level source/target folds。
@@ -360,3 +203,17 @@ LOSO summary and quick validation conclusion MUST compare coarse prototype and r
 - **WHEN** 生成 radio conclusion 所需的 radio label、beam_power、prototype artifact 或 metrics 缺失
 - **THEN** conclusion MUST 将对应比较标记为 `inconclusive`
 - **AND** conclusion MUST 记录缺失字段和 run path
+
+### Requirement: LOSO 不再绑定 Hist 默认矩阵
+当前项目 MUST 不再提供 HiST-Beam 默认 LOSO 矩阵或 `kd-sensing-hist-beam-loso` 执行入口。未来若需要跨场景矩阵，MUST 由当前保留 workflow 通过新的 spec 明确定义配置、CLI、输出和防泄漏边界。
+
+#### Scenario: Hist LOSO 入口不可用
+- **WHEN** 用户尝试运行 `kd-sensing-hist-beam-loso`
+- **THEN** 系统 MUST 不把该命令作为当前支持入口
+- **AND** README 和健康检查 MUST 不要求该命令存在
+
+#### Scenario: 当前 LOSO fold 定义可被未来 workflow 复用
+- **WHEN** 未来非 Hist workflow 需要 leave-one-scene-out fold
+- **THEN** 新 workflow MUST 显式声明自己的 runner、配置矩阵和输出契约
+- **AND** 系统 MUST 不复用已退役 Hist run plan 作为隐式默认
+
