@@ -1,0 +1,49 @@
+official:
+  repository_url: https://github.com/ITU-AI-ML-in-5G-Challenge/BeamBench
+  commit: 8e2c29a2afc898a69b9f9f7ece039d1e48ba60e8
+  clone_path: /tmp/beambench-official
+  default_data_folder: ./raw_data/test/
+  default_csv: ml_challenge_test_multi_modal.csv
+  default_model_dir: results/models
+  default_prediction_dir: results/topk
+  readme_eval_command: python3 challenge.py --gpu_id 0 --data_folder ./raw_data/test/ --csv ml_challenge_test_multi_modal.csv
+
+data:
+  num_beams: 64
+  beam_shift: 1
+  scenes: [31, 32, 33, 34]
+  checker:
+    script: scripts/check_dataset.py
+    read_only: true
+
+baselines:
+  camera_ae_gps:
+    type_list: camera_ae_gps
+    modalities: [camera, gps]
+    status: blocked
+    blocked_reason: missing official checkpoint and official test data; camera AE source is present but weights are external.
+  gps_dense:
+    type_list: gps_dense
+    modalities: [gps]
+    status: blocked
+    blocked_reason: missing official gps_dense checkpoint and official test data.
+  late_fusion_pretrained_features:
+    type_list: radar_dense_camera_ae_gps
+    modalities: [radar, camera, gps]
+    status: blocked
+    blocked_reason: missing fusion checkpoint, official test data, and some optional official model sources.
+  lidar_camera_radar_gps:
+    type_list: lidar_ae_camera_ae_radar_cl_gps
+    modalities: [lidar, camera, radar, gps]
+    status: blocked
+    blocked_reason: official repository only ships pyc for lidar/radar contrastive/AE sources and external weights are unavailable.
+  mock_smoke:
+    type_list: mock_tiny_mlp
+    modalities: [camera, lidar, radar, gps]
+    status: runnable_mock_only
+    mock_data: true
+    command: conda run -n kd_mm_beam python scripts/train_baseline.py --mock --epochs 3
+
+outputs:
+  mock_output_dir: outputs/beambench_baseline/mock_smoke
+  official_eval_plan_dir: outputs/beambench_baseline/eval

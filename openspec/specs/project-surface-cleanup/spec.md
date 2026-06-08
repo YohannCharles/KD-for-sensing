@@ -1,7 +1,7 @@
 # project-surface-cleanup Specification
 
 ## Purpose
-TBD - created by archiving change cleanup-outputs-and-remove-hist. Update Purpose after archive.
+定义项目源码表面、退役研究线和本地运行产物清理的长期边界，确保已退役 Hist/KD 入口不会以兼容 wrapper 或 virtual alias 回流，新的输出目录具备清晰语义，删除本地产物必须经过可审计 manifest。
 ## Requirements
 ### Requirement: 退役研究线源码表面清理
 项目 MUST 支持按 OpenSpec change 退役整条研究线。退役后，该研究线的 CLI、配置、模型、engine、evaluation、测试和推荐文档入口 MUST 从当前支持面删除，且不得新增旧入口兼容 wrapper、virtual alias 或二级聚合层。
@@ -41,4 +41,3 @@ TBD - created by archiving change cleanup-outputs-and-remove-hist. Update Purpos
 - **WHEN** manifest 扫描到当前主线 analysis、features、cache、best checkpoint 或带 sidecar metadata 的复现 artifact
 - **THEN** manifest MUST 默认将其标记为 protected 或需要人工确认
 - **AND** 删除阶段 MUST 拒绝删除 protected 路径
-

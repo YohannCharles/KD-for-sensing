@@ -1,7 +1,7 @@
 # gps-pseudo-label-bgam Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-pseudo-label-bgam. Update Purpose after archive.
+定义 GPS pseudo-history label 与 BGAM reranker 的因果输入契约，确保历史 pseudo beam、GPS prior、TopK candidates、LiDAR feature、label-space metadata 和评估诊断都可审计且不泄漏 target/query 真实 beam。该能力服务于 MMW/DeepSense 后续 GPS 引导的 LiDAR 注意力与候选重排实验。
 ## Requirements
 ### Requirement: 历史 GPS pseudo label 生成
 系统 MUST 提供 GPS pseudo-history label generator，用于从 frozen GPS v2 logits/probs、TopK candidate manifest 或配置允许的 geometry fallback 中生成历史 beam/coarse label 序列。pseudo label MUST 使用预测时可观测的 GPS/pose、历史 timestamp、RSU pose、GPS v2 frozen prior 和合法 calibration metadata，不得使用 target/query 真实 beam label、beam power argmax 或 channel oracle。
@@ -96,4 +96,3 @@ BGAM dataset 和 model MUST 支持以历史 GPS pseudo label 替代历史真实 
 - **THEN** 系统 MUST 写出 `pseudo_history_summary.csv` 或等价 JSON
 - **AND** diagnostics MUST 按 scene、history step、confidence bucket 和 label-space 统计 pseudo label circular error、coverage 和 entropy
 - **AND** diagnostics MUST 标记 target/query label 仅用于 evaluation diagnostics
-

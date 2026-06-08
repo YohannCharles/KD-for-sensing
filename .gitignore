@@ -52,7 +52,9 @@ tensorboard/
 lightning_logs/
 checkpoints/
 outputs/
-results/
+results/*
+!results/
+!results/reproduce_baseline.md
 归档/
 AI优化建议/
 cache/

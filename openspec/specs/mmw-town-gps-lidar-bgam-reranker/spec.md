@@ -1,7 +1,7 @@
 # mmw-town-gps-lidar-bgam-reranker Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-pseudo-label-bgam. Update Purpose after archive.
+定义 MMW Town GPS+LiDAR BGAM reranker workflow 的数据、模型、pseudo-history、LiDAR 输入、candidate 重排和评估产物边界，确保默认方法使用 GPS pseudo-history 与 Top8 candidate prior，而不是历史真实 label 或 target oracle。
 ## Requirements
 ### Requirement: MMW Town GPS+LiDAR BGAM reranker workflow
 系统 MUST 提供显式 opt-in 的 MMW Town GPS+LiDAR BGAM reranker workflow。该 workflow MUST 默认使用 MMW Town10 sunny scenes、`mapping_enabled`、MMW GPS v2 logits/Top8 candidates、GPS pseudo-history label 和 RSU/BS-side LiDAR BEV 或 raw point cloud，并将 GPS v2 作为 frozen spatial/candidate prior。
@@ -42,4 +42,3 @@ TBD - created by archiving change add-gps-pseudo-label-bgam. Update Purpose afte
 - **THEN** 系统 MAY 使用历史真实 label 作为对照上界
 - **AND** 输出和 summary MUST 明确标记 `uses_oracle_history_label=true`
 - **AND** 该 ablation MUST NOT 作为主方法或默认 checkpoint selection 来源
-

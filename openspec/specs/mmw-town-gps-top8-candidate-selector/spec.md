@@ -1,7 +1,7 @@
 # mmw-town-gps-top8-candidate-selector Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-pseudo-label-bgam. Update Purpose after archive.
+定义 MMW Town GPS Top8 candidate manifest 的生成、校验和诊断契约，确保 GPS v2 frozen logits 可被重新计算为 mapped 64-beam candidate 集合，并和 scene-specific label-space、support/query metadata、normalized gain 诊断保持一致。
 ## Requirements
 ### Requirement: MMW Town GPS Top8 candidate manifest workflow
 系统 MUST 提供显式 opt-in 的 MMW Town GPS Top8 candidate manifest workflow。该 workflow MUST 默认覆盖 `Town10_crossroad_seed24`、`Town10_skybridge_seed24`、`Town10_curvyroad_seed42` 和 `Town10_Hroad_seed42`，使用 `mapping_enabled`、`num_beams=64`、MMW GPS v2 frozen logits、circular beam distance 和 MMW prepared split 中的 future beam label。
@@ -30,4 +30,3 @@ TBD - created by archiving change add-gps-pseudo-label-bgam. Update Purpose afte
 - **THEN** Top8 manifest SHOULD 计算 `gps_normalized_gain`、candidate normalized gain 和 `top8_oracle_normalized_gain`
 - **AND** 若 label mapping 启用，系统 MUST 用 scene-specific inverse mapping 将 mapped beam 转回 raw beam power index
 - **AND** normalized gain 缺失 MUST 为空值并在 metadata 中可诊断，不得阻塞 Top8 manifest 构建
-

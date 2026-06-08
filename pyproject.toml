@@ -71,6 +71,8 @@ kd-sensing-compare-deepsense6g-top8-selector-with-gps-v2 = "kd_sensing.cli.compa
 kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest = "kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest:main"
 kd-sensing-run-deepsense6g-gps-lidar-bgam = "kd_sensing.cli.run_deepsense6g_gps_lidar_bgam:main"
 kd-sensing-evaluate-deepsense6g-gps-lidar-bgam = "kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam:main"
+kd-sensing-train-beambench-image-ae-gps = "kd_sensing.cli.train_beambench_image_ae_gps:main"
+kd-sensing-run-beambench-image-ae-gps-tableiii = "kd_sensing.cli.run_beambench_image_ae_gps_tableiii:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

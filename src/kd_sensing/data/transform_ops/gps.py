@@ -14,8 +14,11 @@ from kd_sensing.data.transform_ops.io import joined_resource
 
 GPS_FEATURE_DIMS = {
     "relative_polar": 3,
+    "paper_calibrated_relative_polar": 3,
+    "paper_distance_angle": 2,
 }
 SUPPORTED_GPS_FEATURE_MODE = "relative_polar"
+CALIBRATED_GPS_FEATURE_MODES = {"paper_calibrated_relative_polar", "paper_distance_angle"}
 
 
 def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:
@@ -123,11 +126,13 @@ def build_gps_features(
     bs_latlon: np.ndarray | None = None,
     *,
     mode: str = SUPPORTED_GPS_FEATURE_MODE,
+    angle_offset_rad: float | None = None,
 ) -> np.ndarray:
-    if mode != SUPPORTED_GPS_FEATURE_MODE:
+    normalized_mode = str(mode or SUPPORTED_GPS_FEATURE_MODE).strip().lower()
+    if normalized_mode not in GPS_FEATURE_DIMS:
         raise ValueError(
-            f"Unsupported gps_feature_mode '{mode}'. This change only supports "
-            f"'{SUPPORTED_GPS_FEATURE_MODE}'."
+            f"Unsupported gps_feature_mode '{mode}'. This change only supports 'relative_polar' "
+            f"'paper_calibrated_relative_polar', or 'paper_distance_angle'."
         )
     ue_latlon = np.asarray(ue_latlon, dtype=np.float64)
     if ue_latlon.ndim != 2 or ue_latlon.shape[1] < 2:
@@ -143,7 +148,10 @@ def build_gps_features(
     bs_xy = np.asarray([latlon_to_utm_xy(float(lat), float(lon)) for lat, lon in bs_latlon[:, :2]])
     rel_xy = ue_xy - bs_xy
 
-    return _relative_polar_features(rel_xy).astype(np.float32)
+    offset = float(angle_offset_rad or 0.0) if normalized_mode in CALIBRATED_GPS_FEATURE_MODES else 0.0
+    if normalized_mode == "paper_distance_angle":
+        return _paper_distance_angle_features(rel_xy, angle_offset_rad=offset).astype(np.float32)
+    return _relative_polar_features(rel_xy, angle_offset_rad=offset).astype(np.float32)
 
 
 def load_gps_feature_sequence(
@@ -153,6 +161,7 @@ def load_gps_feature_sequence(
     *,
     seq_len: int,
     mode: str = SUPPORTED_GPS_FEATURE_MODE,
+    angle_offset_rad: float | None = None,
     frame_feature_cache: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     selected_gps = gps_paths[-seq_len:]
@@ -167,9 +176,13 @@ def load_gps_feature_sequence(
         [_read_cached_gps_latlon(data_root, path, frame_feature_cache) for path in selected_bs],
         dtype=np.float64,
     )
+    normalized_mode = str(mode or SUPPORTED_GPS_FEATURE_MODE).strip().lower()
     if _all_yaml_paths(selected_gps) and _all_yaml_paths(selected_bs):
-        return _relative_polar_features(ue_latlon[:, :2] - bs_latlon[:, :2]).astype(np.float32)
-    return build_gps_features(ue_latlon, bs_latlon, mode=mode)
+        offset = float(angle_offset_rad or 0.0) if normalized_mode in CALIBRATED_GPS_FEATURE_MODES else 0.0
+        if normalized_mode == "paper_distance_angle":
+            return _paper_distance_angle_features(ue_latlon[:, :2] - bs_latlon[:, :2], angle_offset_rad=offset).astype(np.float32)
+        return _relative_polar_features(ue_latlon[:, :2] - bs_latlon[:, :2], angle_offset_rad=offset).astype(np.float32)
+    return build_gps_features(ue_latlon, bs_latlon, mode=mode, angle_offset_rad=angle_offset_rad)
 
 
 def _read_cached_gps_latlon(
@@ -232,12 +245,23 @@ def load_relative_xy_target_sequence(
     return build_relative_xy_targets(ue_latlon, bs_latlon)
 
 
-def _relative_polar_features(rel_xy: np.ndarray) -> np.ndarray:
+def _relative_polar_features(rel_xy: np.ndarray, *, angle_offset_rad: float = 0.0) -> np.ndarray:
     x = rel_xy[:, 0]
     y = rel_xy[:, 1]
     dist = np.sqrt(x * x + y * y)
-    theta = np.arctan2(y, x)
+    theta = np.arctan2(y, x) - float(angle_offset_rad)
     return np.stack([dist, np.sin(theta), np.cos(theta)], axis=1)
+
+
+def _paper_distance_angle_features(rel_xy: np.ndarray, *, angle_offset_rad: float = 0.0) -> np.ndarray:
+    x = rel_xy[:, 0]
+    y = rel_xy[:, 1]
+    dist = np.sqrt(x * x + y * y)
+    offset = float(angle_offset_rad)
+    rotated_x = x * np.cos(offset) - y * np.sin(offset)
+    rotated_y = x * np.sin(offset) + y * np.cos(offset)
+    angle_deg = np.rad2deg(np.arctan2(rotated_x, rotated_y))
+    return np.stack([dist, angle_deg], axis=1)
 
 
 @dataclass
@@ -416,6 +440,7 @@ __all__ = [
     "GPSMinMaxScaler",
     "GPSStandardScaler",
     "GPS_FEATURE_DIMS",
+    "CALIBRATED_GPS_FEATURE_MODES",
     "PositionTargetStandardScaler",
     "SUPPORTED_GPS_FEATURE_MODE",
     "build_relative_xy_targets",

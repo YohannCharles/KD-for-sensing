@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.modalities import validate_image_encoder_profile
+from kd_sensing.models.camera_autoencoder import CameraAutoEncoder
 from kd_sensing.registries import ENCODERS, MODELS
 
 
@@ -152,7 +153,98 @@ def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[
     return model, feature_dim
 
 
+@ENCODERS.register("camera_ae_frozen")
+@MODELS.register("camera_ae_frozen")
+class CameraAEImageEncoder(nn.Module):
+    """Frozen CameraAutoEncoder encoder for BeamBench-style image-AE features."""
+
+    expected_image_profile = "rgb_imagenet"
+    input_channels = 3
+
+    def __init__(
+        self,
+        output_dim: int | None = None,
+        *,
+        feature_size: int | None = None,
+        d_model: int | None = None,
+        latent_dim: int = 128,
+        image_channels: int = 3,
+        image_size: int = 64,
+        checkpoint_path: str | None = None,
+        checkpoint: str | None = None,
+        require_checkpoint: bool = True,
+        freeze_encoder: bool = True,
+        dropout: float = 0.0,
+        image_profile: str | None = "rgb_imagenet",
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        validate_image_encoder_profile(
+            encoder_name="camera_ae_frozen",
+            image_profile=image_profile,
+            expected_channels=int(image_channels),
+            actual_channels=int(image_channels),
+        )
+        self.latent_dim = int(latent_dim)
+        self.output_dim = _resolve_output_dim(output_dim, feature_size, d_model) if output_dim or feature_size or d_model else self.latent_dim
+        self.image_size = int(image_size)
+        self.checkpoint_path = str(checkpoint_path or checkpoint or "")
+        self.require_checkpoint = bool(require_checkpoint)
+        self.freeze_encoder = bool(freeze_encoder)
+        self.autoencoder = CameraAutoEncoder(
+            latent_dim=self.latent_dim,
+            image_channels=int(image_channels),
+            image_size=self.image_size,
+        )
+        if self.checkpoint_path:
+            payload = torch.load(self.checkpoint_path, map_location="cpu")
+            state_dict = payload.get("model_state_dict", payload)
+            self.autoencoder.load_state_dict(state_dict)
+        elif self.require_checkpoint:
+            raise FileNotFoundError(
+                "camera_ae_frozen requires checkpoint_path. Train one with "
+                "`conda run -n kd_mm_beam kd-sensing-train-deepsense6g-camera-ae ...` first."
+            )
+        if self.freeze_encoder:
+            for param in self.autoencoder.parameters():
+                param.requires_grad = False
+        self.projection = (
+            nn.Identity()
+            if self.output_dim == self.latent_dim and float(dropout) == 0.0
+            else nn.Sequential(nn.Dropout(float(dropout)), nn.Linear(self.latent_dim, self.output_dim))
+        )
+
+    def forward(self, image_batch: torch.Tensor) -> torch.Tensor:
+        if image_batch.ndim != 5:
+            raise ValueError(f"Camera AE image input must have shape [B, T, C, H, W], got {tuple(image_batch.shape)}.")
+        batch_size, seq_len, channels, height, width = image_batch.shape
+        frames = image_batch.reshape(batch_size * seq_len, channels, height, width).to(dtype=torch.float32)
+        if (int(height), int(width)) != (self.image_size, self.image_size):
+            frames = nn.functional.interpolate(
+                frames,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+        with torch.set_grad_enabled(not self.freeze_encoder):
+            latent = self.autoencoder.encode(frames)
+        features = self.projection(latent)
+        return features.view(batch_size, seq_len, self.output_dim)
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "encoder": "camera_ae_frozen",
+            "checkpoint_path": self.checkpoint_path,
+            "require_checkpoint": self.require_checkpoint,
+            "freeze_encoder": self.freeze_encoder,
+            "latent_dim": self.latent_dim,
+            "output_dim": self.output_dim,
+            "image_size": self.image_size,
+        }
+
+
 __all__ = [
+    "CameraAEImageEncoder",
     "RESNET18_STAGES",
     "ResNet18ImageEncoder",
 ]
