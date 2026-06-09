@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from kd_sensing.baselines.beambench.image_ae_gps import run_image_ae_gps_paper_split_training
+from kd_sensing.baselines.beambench.image_ae_gps import (
+    run_image_ae_gps_paper_split_evaluation,
+    run_image_ae_gps_paper_split_training,
+)
 from kd_sensing.config.io import deep_merge, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
 
@@ -21,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-scenes", type=int, nargs="+", default=[32, 33, 34])
     parser.add_argument("--eval-scenes", "--scenes", type=int, nargs="+", default=[31, 32, 33, 34])
     parser.add_argument("--output-root", type=Path, default=Path("outputs/beambench_image_ae_gps_direct_tableiii/paper_split"))
+    parser.add_argument("--fusion-checkpoint", type=Path, default=None, help="Evaluate an existing paper-split checkpoint without retraining.")
     parser.add_argument("--selection-split", choices=("test_as_validation", "validation"), default="validation")
     parser.add_argument("--fusion-val-fraction", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
@@ -49,6 +53,14 @@ def run_main(argv: list[str] | None = None) -> dict[str, Any]:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = _load_config(args.config, _overrides(args, unknown))
+    if args.fusion_checkpoint is not None:
+        return run_image_ae_gps_paper_split_evaluation(
+            args.fusion_checkpoint,
+            config=cfg,
+            train_scenes=tuple(int(scene) for scene in args.train_scenes),
+            eval_scenes=tuple(int(scene) for scene in args.eval_scenes),
+            output_root=args.output_root,
+        )
     return run_image_ae_gps_paper_split_training(
         cfg,
         train_scenes=tuple(int(scene) for scene in args.train_scenes),

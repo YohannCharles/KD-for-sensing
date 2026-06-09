@@ -130,7 +130,7 @@ conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py \
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
   --config configs/fusion/beambench_image_ae_gps_direct.yaml \
   --train-scenes 32 33 34 \
-  --eval-scenes 31 32 33 34 \
+  --eval-scenes 31 \
   --selection-split validation \
   --fusion-val-fraction 0.1 \
   --gps-feature-mode paper_distance_angle \
@@ -141,7 +141,23 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
   --feature-cache-batch-size 256
 ```
 
-其中 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入 `[distance, calibrated_angle_deg]`。若要查看本地上限，可把 `--selection-split validation --fusion-val-fraction 0.1` 改为 `--selection-split test_as_validation`，但该口径不等同官方 unseen test。
+其中 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入 `[distance, calibrated_angle_deg]`，并使用官方代码中的 scene32 校准角 `-0.8125375604986421 + pi/2`。当前配置默认重新训练 512 维 Camera AE；若复用旧 128 维 AE checkpoint，scene31 泛化会明显下降。旧 feature cache 会因 GPS 特征版本和校准角签名变化自动失效。
+
+若要重新评估完整 Table III 四场景，把 `--eval-scenes 31` 改为 `--eval-scenes 31 32 33 34`。
+
+已经训练好的 fusion checkpoint 可直接做 eval-only 四场景汇总：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
+  --config configs/fusion/beambench_image_ae_gps_direct.yaml \
+  --train-scenes 32 33 34 \
+  --eval-scenes 31 32 33 34 \
+  --output-root outputs/beambench_image_ae_gps_direct_tableiii/full_gpsfix_ae512_validation_checkpoint_eval \
+  --fusion-checkpoint outputs/beambench_image_ae_gps_direct_tableiii/scene31_gpsfix_ae512_validation/checkpoints/best_image_ae_gps_direct_paper_split.pt \
+  --num-workers 12 \
+  --fusion-batch-size 512 \
+  --feature-cache-batch-size 256
+```
 
 ## 5. 官方评估 wrapper
 

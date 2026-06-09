@@ -19,6 +19,7 @@ GPS_FEATURE_DIMS = {
 }
 SUPPORTED_GPS_FEATURE_MODE = "relative_polar"
 CALIBRATED_GPS_FEATURE_MODES = {"paper_calibrated_relative_polar", "paper_distance_angle"}
+PAPER_DISTANCE_ANGLE_FEATURE_VERSION = "official_arctan_ratio_v1"
 
 
 def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:
@@ -260,7 +261,8 @@ def _paper_distance_angle_features(rel_xy: np.ndarray, *, angle_offset_rad: floa
     offset = float(angle_offset_rad)
     rotated_x = x * np.cos(offset) - y * np.sin(offset)
     rotated_y = x * np.sin(offset) + y * np.cos(offset)
-    angle_deg = np.rad2deg(np.arctan2(rotated_x, rotated_y))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        angle_deg = np.rad2deg(np.arctan(rotated_x / rotated_y))
     return np.stack([dist, angle_deg], axis=1)
 
 

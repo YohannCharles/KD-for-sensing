@@ -66,3 +66,19 @@
 - [x] 9.4 保留或补充可选的本地 validation selection 模式，避免只能用 test CSV 选择 best checkpoint；报告中必须区分 `test_as_validation` 和 `validation`。
 - [x] 9.5 运行本地 Camera AE+GPS 论文 split 实验，尽可能接近 Table III 目标，并将命令、指标、差距和限制写入 `BASELINE_REPORT.md` 与 `results/reproduce_baseline.md`。
 - [x] 9.6 使用 `conda run -n kd_mm_beam` 运行新增测试、CLI help、架构边界和 OpenSpec strict 校验。
+
+## 10. 用户收窄：优先提升 scene31 泛化
+
+- [x] 10.1 统计 scenes 32-34 与 scene31 的 GPS Direct 角度/距离分布和 future beam label 分布，定位 scene31 泛化瓶颈。
+- [x] 10.2 修复 `paper_distance_angle` 特征与官方 `challenge.py` 不一致的问题：角度使用 `arctan(x/y)` 而不是 `atan2(x, y)`，避免 scene31/34 的 180 度断点。
+- [x] 10.3 为 frozen AE feature cache 签名加入 GPS 特征版本，确保旧 `atan2` cache 不会被继续复用。
+- [x] 10.4 更新文档与推荐命令，说明 scene31 专项复现实验需要重新生成 cache，并先只评估 scene31。
+- [x] 10.5 使用 `conda run -n kd_mm_beam` 运行相关测试、CLI help 和 OpenSpec strict 校验。
+
+## 11. 用户继续：重新追 scenes 32-34 和 overall
+
+- [x] 11.1 使用已修复 GPS 公式、scene 校准角和 512 维 AE，在 scenes 32-34 联合训练并评估 scenes 31-34，记录 strict validation 的每场景和 overall。
+- [x] 11.2 若 strict validation 未接近 Table III overall，运行 `test_as_validation` 本地 upper-bound，区分 checkpoint 选择口径。
+- [x] 11.3 根据 31-34 指标判断剩余主要缺口，必要时补可审计配置而不是只报告单场景结果。
+- [x] 11.4 更新 `BASELINE_REPORT.md`、`results/reproduce_baseline.md`、OpenSpec artifacts 和推荐命令。
+- [x] 11.5 使用 `conda run -n kd_mm_beam` 运行相关测试、CLI help 和 OpenSpec strict 校验。

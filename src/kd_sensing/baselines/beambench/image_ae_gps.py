@@ -19,7 +19,12 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset, random_
 from kd_sensing.baselines.beambench.metrics import beambench_metric_summary_from_logits
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.scenes import resolve_deepsense_scene
-from kd_sensing.data.transform_ops.gps import GPS_FEATURE_DIMS, GPSStandardScaler, load_gps_feature_sequence
+from kd_sensing.data.transform_ops.gps import (
+    GPS_FEATURE_DIMS,
+    GPSStandardScaler,
+    PAPER_DISTANCE_ANGLE_FEATURE_VERSION,
+    load_gps_feature_sequence,
+)
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.models.camera_autoencoder import CameraAutoEncoder
 from kd_sensing.utils.paths import resolve_path
@@ -40,7 +45,7 @@ TARGET_TABLE_III_ROW = {
 
 PAPER_SCENE_CENTER_ANGLES_RAD = {
     31: -0.72,
-    32: -0.76,
+    32: -0.8125375604986421 + float(np.pi) / 2.0,
     33: 0.59,
     34: -0.51,
 }
@@ -946,6 +951,165 @@ def run_image_ae_gps_paper_split_training(
     return report
 
 
+def run_image_ae_gps_paper_split_evaluation(
+    checkpoint_path: str | Path,
+    *,
+    eval_scenes: Sequence[int] = (31, 32, 33, 34),
+    output_root: str | Path = "outputs/beambench_image_ae_gps_direct_tableiii/eval_checkpoint",
+    config: Mapping[str, Any] | ImageAEGPSDirectTrainingConfig | None = None,
+    train_scenes: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Evaluate an existing paper-split checkpoint on scenes 31-34 without retraining."""
+
+    checkpoint = _torch_load(Path(checkpoint_path), map_location="cpu")
+    if "config" not in checkpoint or "model_state_dict" not in checkpoint:
+        raise ValueError(f"Not a BeamBench Image AE + GPS checkpoint: {checkpoint_path}")
+    ckpt_cfg = ImageAEGPSDirectTrainingConfig(**dict(checkpoint["config"]))
+    override_cfg = None
+    if config is not None:
+        override_cfg = config if isinstance(config, ImageAEGPSDirectTrainingConfig) else resolve_image_ae_gps_config(config)
+    if override_cfg is not None:
+        ckpt_cfg = replace(
+            ckpt_cfg,
+            output_dir=str(output_root),
+            device=override_cfg.device,
+            num_workers=override_cfg.num_workers,
+            pin_memory=override_cfg.pin_memory,
+            persistent_workers=override_cfg.persistent_workers,
+            prefetch_factor=override_cfg.prefetch_factor,
+            non_blocking_transfer=override_cfg.non_blocking_transfer,
+            amp=override_cfg.amp,
+            amp_dtype=override_cfg.amp_dtype,
+            amp_grad_scaler=override_cfg.amp_grad_scaler,
+            allow_tf32=override_cfg.allow_tf32,
+            cudnn_benchmark=override_cfg.cudnn_benchmark,
+            fused_optimizer=override_cfg.fused_optimizer,
+            cache_frozen_ae_features=override_cfg.cache_frozen_ae_features,
+            feature_cache_batch_size=override_cfg.feature_cache_batch_size,
+            feature_cache_dir=override_cfg.feature_cache_dir,
+            save_predictions=override_cfg.save_predictions,
+        )
+    _seed_everything(ckpt_cfg.seed)
+    device = _resolve_device(ckpt_cfg.device)
+    runtime_report = _configure_torch_runtime(ckpt_cfg, device)
+    amp_enabled = bool(ckpt_cfg.amp) and device.type == "cuda"
+    amp_dtype = _resolve_amp_dtype(ckpt_cfg.amp_dtype)
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    ae_checkpoint = Path(str(checkpoint.get("ae_checkpoint_path") or ckpt_cfg.ae_checkpoint_path or ""))
+    if not ae_checkpoint.exists():
+        raise FileNotFoundError(f"Camera AE checkpoint recorded by fusion checkpoint is missing: {ae_checkpoint}")
+    model = BeamBenchImageAEGPSDirectModel(
+        num_beams=ckpt_cfg.num_beams,
+        gps_input_size=ckpt_cfg.gps_input_size,
+        ae_latent_dim=ckpt_cfg.ae_latent_dim,
+        image_channels=ckpt_cfg.image_channels,
+        image_size=ckpt_cfg.image_size,
+        hidden_dim=ckpt_cfg.fusion_hidden_dim,
+        dropout=ckpt_cfg.fusion_dropout,
+        ae_checkpoint_path=ae_checkpoint,
+        freeze_ae_encoder=ckpt_cfg.freeze_ae_encoder,
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    gps_scaler = _gps_scaler_from_metadata(checkpoint.get("gps_scaler")) if ckpt_cfg.gps_normalize else None
+    eval_cfgs = [_scene_specific_cfg(ckpt_cfg, scene) for scene in eval_scenes]
+    eval_datasets = [
+        _build_split_dataset(cfg, split="test", gps_scaler=gps_scaler, gps_normalize=ckpt_cfg.gps_normalize)
+        for cfg in eval_cfgs
+    ]
+    eval_source_by_scene: dict[int, Dataset] = {}
+    feature_cache_reports: dict[str, Any] = {}
+    if ckpt_cfg.freeze_ae_encoder and ckpt_cfg.cache_frozen_ae_features:
+        for cfg, dataset in zip(eval_cfgs, eval_datasets, strict=True):
+            source, report = _load_or_build_ae_feature_dataset(
+                model,
+                dataset,
+                cfg,
+                output_dir=root / "feature_cache_sources" / f"test_scene{cfg.scene}",
+                split="test",
+                device=device,
+                ae_checkpoint=ae_checkpoint,
+            )
+            eval_source_by_scene[int(cfg.scene)] = source
+            feature_cache_reports[f"test_scene{cfg.scene}"] = report
+    else:
+        eval_source_by_scene = {int(cfg.scene): dataset for cfg, dataset in zip(eval_cfgs, eval_datasets, strict=True)}
+
+    scene_reports = []
+    eval_scene_ids = [int(scene) for scene in eval_scenes]
+    for scene in eval_scene_ids:
+        scene_dir = root / f"scene{scene}"
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        loader = _build_loader(
+            eval_source_by_scene[int(scene)],
+            batch_size=ckpt_cfg.fusion_batch_size,
+            shuffle=False,
+            num_workers=ckpt_cfg.num_workers,
+            cfg=ckpt_cfg,
+        )
+        result = evaluate_image_ae_gps_model(
+            model,
+            loader,
+            ckpt_cfg,
+            device=device,
+            predictions_path=scene_dir / "predictions.csv" if ckpt_cfg.save_predictions else None,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
+        dataset = eval_datasets[eval_scene_ids.index(int(scene))]
+        scene_report = {
+            "scene": int(scene),
+            "metrics": result["metrics"],
+            "dataset": dataset.metadata(),
+            "predictions_path": str(scene_dir / "predictions.csv") if ckpt_cfg.save_predictions else None,
+        }
+        scene_reports.append(scene_report)
+        (scene_dir / "metrics.json").write_text(
+            json.dumps(_json_ready(result["metrics"]), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        (scene_dir / "run_report.json").write_text(
+            json.dumps(_json_ready(scene_report), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    checkpoint_split = dict(checkpoint.get("paper_split") or {})
+    train_scene_ids = [int(scene) for scene in (train_scenes or checkpoint_split.get("train_scenes") or (32, 33, 34))]
+    summary = _paper_split_summary(scene_reports)
+    report = {
+        "workflow": "beambench_image_ae_gps_direct_paper_split_eval",
+        "paper_target": "Arnold22 BeamBench Table III Camera=AE GPS=Direct Fusion=Yes",
+        "target_table_iii_row": TARGET_TABLE_III_ROW,
+        "status": "local_paper_split_eval_complete",
+        "output_root": str(root),
+        "checkpoint_path": str(checkpoint_path),
+        "ae_checkpoint_path": str(ae_checkpoint),
+        "config": asdict(ckpt_cfg),
+        "device": str(device),
+        "gps_calibration": _paper_split_gps_calibration_metadata(
+            [_scene_specific_cfg(ckpt_cfg, scene) for scene in train_scene_ids],
+            eval_cfgs,
+        ),
+        "paper_split": {
+            "train_scenes": train_scene_ids,
+            "eval_scenes": eval_scene_ids,
+        },
+        "selection": dict(checkpoint.get("selection") or {}),
+        "performance": _performance_metadata(ckpt_cfg, device, amp_enabled, runtime_report, feature_cache_reports),
+        "eval_reports": scene_reports,
+        "summary": summary,
+        "official_comparability_note": (
+            "本地 eval-only 使用已训练 paper-split checkpoint 评估 scenes 31-34；"
+            "未使用官方预训练权重、官方完整 NNI/剪枝搜索和官方 unseen test packaging。"
+        ),
+    }
+    _write_paper_split_summary_artifacts(report, root)
+    (root / "run_report.json").write_text(json.dumps(_json_ready(report), indent=2, sort_keys=True), encoding="utf-8")
+    return report
+
+
 def train_camera_ae_for_image_gps_baseline(
     cfg: ImageAEGPSDirectTrainingConfig,
     dataset: BeamBenchImageAEGPSDataset,
@@ -1702,6 +1866,7 @@ def _feature_cache_signature(
         "num_beams": int(cfg.num_beams),
         "target_beam_source": str(cfg.target_beam_source),
         "gps_feature_mode": str(cfg.gps_feature_mode),
+        "gps_feature_version": _gps_feature_version(cfg.gps_feature_mode),
         "gps_angle_offset_rad": None if cfg.gps_angle_offset_rad is None else float(cfg.gps_angle_offset_rad),
         "gps_normalize": bool(cfg.gps_normalize),
         "ae_latent_dim": int(cfg.ae_latent_dim),
@@ -1709,6 +1874,13 @@ def _feature_cache_signature(
         "ae_checkpoint_mtime_ns": int(checkpoint_stat.st_mtime_ns) if checkpoint_stat is not None else None,
         "ae_checkpoint_size": int(checkpoint_stat.st_size) if checkpoint_stat is not None else None,
     }
+
+
+def _gps_feature_version(mode: str) -> str:
+    normalized = _normalize_gps_feature_mode(mode)
+    if normalized == PAPER_CALIBRATED_GPS_MODE:
+        return PAPER_DISTANCE_ANGLE_FEATURE_VERSION
+    return "default"
 
 
 def _build_loader(
@@ -1844,6 +2016,17 @@ def _gps_scaler_metadata(scaler: GPSStandardScaler | None) -> dict[str, list[flo
         "mean": np.asarray(scaler.mean_, dtype=float).tolist(),
         "scale": np.asarray(scaler.scale_, dtype=float).tolist(),
     }
+
+
+def _gps_scaler_from_metadata(payload: Any) -> GPSStandardScaler | None:
+    if not isinstance(payload, Mapping):
+        return None
+    if "mean" not in payload or "scale" not in payload:
+        return None
+    return GPSStandardScaler(
+        mean_=np.asarray(payload["mean"], dtype=np.float64),
+        scale_=np.asarray(payload["scale"], dtype=np.float64),
+    )
 
 
 def _gps_calibration_metadata(cfg: ImageAEGPSDirectTrainingConfig) -> dict[str, Any]:
@@ -2053,6 +2236,7 @@ __all__ = [
     "TARGET_TABLE_III_ROW",
     "evaluate_image_ae_gps_model",
     "resolve_image_ae_gps_config",
+    "run_image_ae_gps_paper_split_evaluation",
     "run_image_ae_gps_paper_split_training",
     "run_image_ae_gps_training",
     "timestamped_default_output",

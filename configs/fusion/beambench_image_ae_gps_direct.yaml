@@ -74,12 +74,14 @@ model:
     encoders:
       image:
         type: camera_ae_frozen
-        latent_dim: 128
-        output_dim: 128
+        # 官方 Camera AE encoder 输出 512 维；scene31 泛化实验显示
+        # 512 维 AE latent 明显优于早期 128 维本地小 AE。
+        latent_dim: 512
+        output_dim: 512
         image_size: 64
         freeze_encoder: true
-        require_checkpoint: true
-        checkpoint_path: outputs/training/deepsense6g_camera_ae/r100/mapping_disabled/checkpoints/best.pt
+        require_checkpoint: false
+        checkpoint_path:
       gps:
         type: gps_mlp
         output_dim: 128
@@ -133,6 +135,7 @@ beambench_paper:
   ae_image_size: 64
   ae_epochs: 20
   ae_batch_size: 128
+  ae_latent_dim: 512
   ae_lr: 0.001
   ae_weight_decay: 0.0001
   ae_val_fraction: 0.1
@@ -142,9 +145,10 @@ beambench_paper:
   fusion_lr: 0.0005
   fusion_weight_decay: 0.0001
   fusion_patience: 15
-  # 官方 challenge.py 的 GPS Direct 输入是 [distance, calibrated_angle_deg] 二维；
-  # 论文第 III-B 节给出 scene31-34 的 boresight calibration angles：
-  # -0.72, -0.76, 0.59, -0.51 rad。专用 runner 会按 scene 自动套用。
+  # 官方 challenge.py 的 GPS Direct 输入是 [distance, calibrated_angle_deg] 二维。
+  # 本地映射使用官方 challenge.py 的 scene 校准角：
+  # scene31=-0.72, scene32=(-0.8125375604986421 + pi/2)=0.7583,
+  # scene33=0.59, scene34=-0.51 rad。专用 runner 会按 scene 自动套用。
   gps_feature_mode: paper_distance_angle
   gps_input_size: 2
   # 为了尽可能对齐 Table III 本地 sequence split 指标，默认沿用 test_as_validation

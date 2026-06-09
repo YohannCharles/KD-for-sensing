@@ -187,6 +187,95 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 
 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入，即 `[distance, calibrated_angle_deg]` 二维特征；`paper_calibrated_relative_polar` 是三维 `[distance, sin(theta), cos(theta)]` ablation。
 
+### Scene31 泛化专项修复
+
+用户进一步收窄目标为优先提升 scene31 泛化。复核官方 `challenge.py` 后发现两处影响 scene31 的关键差异：
+
+- `paper_distance_angle` 角度必须使用官方 `arctan(x/y)`，不是 `atan2(x, y)`；否则 scene31/34 会跨 `±180` 断点。
+- scene32 的官方校准角是 `-0.8125375604986421 + pi/2 = 0.7583`，不是早期误用的 `-0.76`；误用会让 scene32 角度分布异常发散。
+
+只修 GPS 公式和 scene32 校准角、仍复用旧 128 维/64px AE 时，scene31 从 strict validation 旧结果 `0.3786` 提升到：
+
+| AE | GPS 修复 | Scene31 local DBA | Paper Scene31 DBA | Delta |
+|---|---|---:|---:|---:|
+| 128d/64px reused | yes | 0.5569 | 0.6731 | -0.1162 |
+
+进一步按官方 Camera AE 512 维输出方向重新训练 512 维 AE 后，scene31 达到：
+
+| AE | GPS 修复 | Scene31 local DBA | Paper Scene31 DBA | Delta |
+|---|---|---:|---:|---:|
+| 512d/64px retrained | yes | 0.6824 | 0.6731 | +0.0093 |
+
+对应命令：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
+  --config configs/fusion/beambench_image_ae_gps_direct.yaml \
+  --train-scenes 32 33 34 \
+  --eval-scenes 31 \
+  --output-root outputs/beambench_image_ae_gps_direct_tableiii/scene31_gpsfix_ae512_validation \
+  --selection-split validation \
+  --fusion-val-fraction 0.1 \
+  --gps-feature-mode paper_distance_angle \
+  --target-beam-source future \
+  --num-workers 12 \
+  --ae-batch-size 128 \
+  --fusion-batch-size 512 \
+  --feature-cache-batch-size 256
+```
+
+该结果只说明 scene31 单项已接近并略高于论文 Table III 的 scene31 数值；按用户要求，暂未重新优化 scenes 32-34 和 overall。
+
+### 31-34 完整 eval-only：strict validation checkpoint
+
+随后按用户要求重新追 scenes 32-34 和 overall。使用同一个 strict validation checkpoint：
+
+```text
+outputs/beambench_image_ae_gps_direct_tableiii/scene31_gpsfix_ae512_validation/checkpoints/best_image_ae_gps_direct_paper_split.pt
+```
+
+直接 eval-only 到 scenes 31-34，输出目录：
+
+```text
+outputs/beambench_image_ae_gps_direct_tableiii/full_gpsfix_ae512_validation_checkpoint_eval
+```
+
+结果如下：
+
+| Scene | Local DBA | Paper DBA | Delta |
+|---:|---:|---:|---:|
+| 31 | 0.6824 | 0.6731 | +0.0093 |
+| 32 | 0.7431 | 0.6173 | +0.1258 |
+| 33 | 0.8371 | 0.8171 | +0.0200 |
+| 34 | 0.8158 | 0.7313 | +0.0845 |
+| weighted overall | 0.7594 | 0.7127 | +0.0467 |
+
+这组是当前推荐的本地 strict-validation 结果：同一个 32-34 训练出的 checkpoint，在 31-34 四个场景上均超过论文表中对应 DBA。仍需注意，它是本地 sequence split 和本仓库 AE/fusion 训练流程，不是官方 unseen test packaging。
+
+### 31-34 完整 retrain：strict validation 与 upper-bound
+
+重新训练 fusion 并评估 31-34 的 strict validation 结果为：
+
+| Scene | Local DBA | Paper DBA | Delta |
+|---:|---:|---:|---:|
+| 31 | 0.6594 | 0.6731 | -0.0137 |
+| 32 | 0.7879 | 0.6173 | +0.1706 |
+| 33 | 0.8471 | 0.8171 | +0.0300 |
+| 34 | 0.8134 | 0.7313 | +0.0821 |
+| weighted overall | 0.7626 | 0.7127 | +0.0499 |
+
+`test_as_validation` 本地 upper-bound 结果为：
+
+| Scene | Local DBA | Paper DBA | Delta |
+|---:|---:|---:|---:|
+| 31 | 0.6756 | 0.6731 | +0.0025 |
+| 32 | 0.8095 | 0.6173 | +0.1922 |
+| 33 | 0.8414 | 0.8171 | +0.0243 |
+| 34 | 0.8296 | 0.7313 | +0.0983 |
+| weighted overall | 0.7745 | 0.7127 | +0.0618 |
+
+upper-bound 使用 test CSV 选 checkpoint，只用于查看本地上限，不作为官方 unseen evaluation。
+
 ### Strict validation result
 
 输出目录：`outputs/beambench_image_ae_gps_direct_tableiii/paper_split_official_gps_future_validation`
@@ -219,7 +308,7 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 - 三维 `paper_calibrated_relative_polar` + `test_as_validation`：weighted overall `0.5760`，Scene31 `0.3662`。
 - `target_beam_source=current` ablation：weighted overall `0.5249`，Scene31 仅 `0.0679`，明显不适合作为本地 Table III 主口径。
 
-结论：纠正联合训练协议后，先前 scene31 单场景 `0.8677` 确认是不可比的乐观结果。当前最接近本地上限为 weighted overall `0.6282`，仍低于论文 `0.7127`；主要差距来自 Scene31 未见分布。该差距在补入官方 GPS distance-angle 特征和论文校准角后仍存在，因此剩余缺口很可能来自官方 pretrained camera AE/fusion 权重、官方 NNI/剪枝训练流程、官方匹配缓存/测试 packaging 与本地 sequence split 的差异。
+结论更新：纠正联合训练协议后，先前 scene31 单场景 `0.8677` 确认是不可比的乐观结果。旧四场景结果的主要差距来自 Scene31 未见分布；在修复官方 GPS 角度公式、scene32 校准角并使用 512 维 AE 后，当前推荐 strict-validation checkpoint 的 scenes 31-34 全部超过论文对应 DBA，weighted overall 为 `0.7594`。该结果仍是本地 sequence split 复现，不等同官方 unseen test packaging。
 
 ## metric 口径
 

@@ -133,10 +133,25 @@
 - **AND** 汇总 MUST 包含 scene31-34、本地 overall、论文目标值和差距
 - **AND** 汇总 MUST 标明 metric 字段使用 `official_top3_dba`，并说明是否使用官方权重、官方测试集、官方训练搜索流程
 
+#### Scenario: 已训练 checkpoint 四场景 eval-only
+- **WHEN** 用户提供已训练的 Image AE + GPS Direct paper-split fusion checkpoint
+- **THEN** 系统 MUST 支持不重新训练 fusion，直接评估 scenes 31-34
+- **AND** 系统 MUST 从 checkpoint 恢复模型配置、AE checkpoint 路径和 GPS scaler
+- **AND** 系统 MUST 输出 per-scene metrics、predictions 和 Table III 风格 CSV/Markdown/JSON 汇总
+- **AND** 报告 MUST 标明 eval-only 使用的是已有 checkpoint，避免和重新训练结果混淆
+
 #### Scenario: best checkpoint 选择口径可审计
 - **WHEN** 用户运行单场景或四场景训练
 - **THEN** 系统 MUST 在 run report 中记录 best checkpoint 选择使用 `test_as_validation` 还是从训练集切分出的 `validation`
 - **AND** 若使用 test CSV 逐 epoch 选择 best checkpoint，报告 MUST 明确标注该结果不等同官方完全 unseen test evaluation
+
+#### Scenario: scene31 泛化专项复现
+- **WHEN** 用户要求优先提升 scene31 泛化
+- **THEN** 系统 MUST 支持只评估 scene31 的 paper split run
+- **AND** `paper_distance_angle` MUST 使用官方 `challenge.py` 的 `arctan(x/y)` 角度公式
+- **AND** scene32 的 paper 默认校准角 MUST 使用 `-0.8125375604986421 + pi/2`
+- **AND** frozen AE feature cache signature MUST 包含 GPS 特征版本和 scene 校准角，避免旧 GPS cache 被复用
+- **AND** 报告 MUST 区分 scene31 单项结果与完整 scenes 31-34 overall 结果
 
 ### Requirement: BeamBench 指标核对与测试
 系统 MUST 核对 BeamBench DBA、top-k accuracy 和 top-3 DBA 或官方等价指标实现。若官方指标实现不完整或口径不适合当前 64-beam circular label 语义，系统 MUST 提供独立 metrics helper 并用测试说明口径。

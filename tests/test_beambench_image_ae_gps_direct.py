@@ -176,6 +176,7 @@ def test_beambench_image_ae_gps_dataset_supports_official_distance_angle_gps(tmp
     item = dataset[0]
 
     assert tuple(item["gps"].shape) == (1, 2)
+    assert abs(float(item["gps"][0, 1])) <= 90.0
 
 
 def test_beambench_image_ae_gps_config_resolves_throughput_defaults(tmp_path: Path):
@@ -263,6 +264,33 @@ def test_beambench_image_ae_gps_tableiii_runner_dry_run(tmp_path: Path):
     assert (output_root / "tableiii_camera_ae_gps_summary.md").exists()
     assert (output_root / "tableiii_camera_ae_gps_summary.json").exists()
     assert (output_root / "scene31" / "run_report.json").exists()
+
+    eval_root = tmp_path / "outputs" / "tableiii_eval"
+    eval_summary = run_tableiii_main(
+        [
+            "--config",
+            "configs/fusion/beambench_image_ae_gps_direct.yaml",
+            "--train-scenes",
+            "31",
+            "--eval-scenes",
+            "31",
+            "--output-root",
+            str(eval_root),
+            "--fusion-checkpoint",
+            str(summary["checkpoint_path"]),
+            "--dry-run",
+            "--override",
+            "experiment.device=cpu",
+            "--override",
+            "data.dataloader.num_workers=0",
+        ]
+    )
+
+    assert eval_summary["workflow"] == "beambench_image_ae_gps_direct_paper_split_eval"
+    assert eval_summary["paper_split"]["eval_scenes"] == [31]
+    assert len(eval_summary["summary"]["rows"]) == 1
+    assert (eval_root / "tableiii_camera_ae_gps_summary.csv").exists()
+    assert (eval_root / "scene31" / "run_report.json").exists()
 
 
 def _write_tiny_deepsense_scene(root: Path) -> Path:

@@ -76,6 +76,18 @@ python3 challenge.py --gpu_id 0 --data_folder ./raw_data/test/ --csv ml_challeng
 
 该 runner 支持两类 GPS Direct 特征：`paper_distance_angle` 贴近官方 `challenge.py` 的 `[distance, calibrated_angle_deg]` 二维输入；`paper_calibrated_relative_polar` 作为三维 `[distance, sin(theta), cos(theta)]` ablation。best checkpoint 选择保留可审计字段：为了更干净的本地科学比较，推荐 `validation` 模式；为了观察本地 upper-bound，可运行 `test_as_validation`，但报告必须标注该口径不等同官方完全 unseen test evaluation。
 
+### Decision 9: scene31 泛化优先修复官方 GPS 角度与 AE 表征维度
+
+用户进一步收窄为“先提高 scene31 泛化”。审计发现 `paper_distance_angle` 的本地实现曾使用 `atan2(x, y)`，而官方 `challenge.py` 使用 `arctan(x/y)`，前者会让 scene31/34 角度跨越 `±180` 断点；同时 scene32 的官方校准角不是 `-0.76`，而是 `-0.8125375604986421 + pi/2 = 0.7583`。这两点会污染 scenes 32-34 联合训练中的 GPS 坐标系，尤其影响对 scene31 的迁移。
+
+修复后，frozen AE feature cache 签名必须包含 GPS 特征版本和 scene 校准角，防止旧 cache 被静默复用。Camera AE 默认 latent 也从本地早期 128 维调到更贴近官方 `camera_ae.cfg` 的 512 维；本地 scene31-only validation 实验显示，GPS 修复 + 512 维 AE 可将 scene31 `official_top3_dba` 提升到 `0.6824`，略高于 Table III scene31 `0.6731`。该决策只服务 scene31 单项泛化，暂不声称 scenes 32-34 或 overall 已重新优化完成。
+
+### Decision 10: 完整四场景复查支持 eval-only checkpoint 汇总
+
+用户随后要求同时重新追 scenes 32-34 和 overall。为避免每次复查都重新训练 fusion 并引入 CUDA 随机性，Table III runner 新增 eval-only 模式：传入 `--fusion-checkpoint` 后直接加载已有 paper-split checkpoint、恢复 checkpoint 中保存的 GPS scaler 和 AE checkpoint，并分别评估 scenes 31-34，输出同样的 Table III CSV/Markdown/JSON 汇总。
+
+使用 scene31 泛化专项得到的 strict validation checkpoint 做 eval-only，scenes 31-34 的 `official_top3_dba` 为 `0.6824/0.7431/0.8371/0.8158`，weighted overall 为 `0.7594`，四个场景和 overall 均高于 Table III 的 `0.6731/0.6173/0.8171/0.7313` 和 `0.7127`。该结果仍然是本地 sequence split 和本仓库训练流程，不等同官方 unseen test packaging。
+
 ## Risks / Trade-offs
 
 - [Risk] 官方仓库缺失部分模型源码或预训练权重，导致原样 `challenge.py` 无法运行。→ Mitigation：在 `BASELINE_REPORT.md` 和 `results/reproduce_baseline.md` 记录缺失文件、缺失权重和最小复现阻塞点；mock smoke 只标记为 MOCK，不替代真实结果。

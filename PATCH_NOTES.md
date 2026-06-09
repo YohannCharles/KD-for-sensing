@@ -43,7 +43,10 @@
 - 官方真实评估：未执行，保持 blocked；因此没有产生可比较官方结果。
 - Image AE + GPS Direct 本地训练：使用本仓库 `CameraAutoEncoder` 和本地 DeepSense6G sequence CSV，结构贴合论文目标行，但不使用官方 pretrained AE/fusion 权重和官方完整超参搜索流程；只能作为本地复现路径，不能直接声称等同 Table III 数值。
 - 论文 split runner：按用户纠正后的协议在 scenes 32-34 联合训练并评估 scenes 31-34；支持 `validation` 与 `test_as_validation` 两种 best checkpoint 选择口径，后者只作为本地 upper-bound，不等同官方 unseen test。
-- GPS Direct 特征：新增 `paper_distance_angle` 对齐官方 `challenge.py` 的 `[distance, calibrated_angle_deg]` 二维输入；`paper_calibrated_relative_polar` 保留为三维 ablation。不同 GPS feature mode 会改变模型输入维度和数值可比性，run report 中会记录。
+- GPS Direct 特征：新增并修正 `paper_distance_angle` 对齐官方 `challenge.py` 的 `[distance, calibrated_angle_deg]` 二维输入；角度使用官方 `arctan(x/y)`，scene32 校准角使用 `-0.8125375604986421 + pi/2 = 0.7583`。`paper_calibrated_relative_polar` 保留为三维 ablation。不同 GPS feature mode 会改变模型输入维度和数值可比性，run report 中会记录。
+- Feature cache：cache signature 新增 GPS 特征版本和 scene 校准角，避免旧 `atan2` 或旧 scene32 校准角生成的 frozen AE latent/GPS cache 被复用。
+- Camera AE：默认本地 paper runner 改为重新训练 512 维 AE latent，以贴近官方 Camera AE encoder 输出维度；scene31 专项实验显示 512d AE 配合 GPS 修复可把 scene31 `official_top3_dba` 提升到 `0.6824`。
+- Eval-only：Table III runner 新增 `--fusion-checkpoint`，可直接加载已有 paper-split checkpoint 评估 scenes 31-34 并生成 Table III CSV/Markdown/JSON 汇总，不重新训练 fusion。
 - 训练加速：冻结 AE latent cache 不改变 frozen encoder 的数学输入输出，只避免 fusion 阶段重复读图和重复 encoder forward；AMP/TF32 是 CUDA 吞吐优化，默认启用但可通过 `--no-amp --no-tf32` 关闭以做完全 fp32 调试。
 - mock smoke：使用本仓库 `TinyBeamBenchClassifier` 和生成的 mock CSV，只验证 data loading、forward、loss、metric、checkpoint save/load 和 evaluation，不与官方结果比较。
 - metric：新增字段明确区分 `official_*` 非环形口径与 `circular_*` 64-beam 环形口径，避免混用。
