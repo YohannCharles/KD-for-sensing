@@ -299,7 +299,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--prediction-root",
         type=Path,
-        default=Path("outputs/gps_coarse_anchor/target_adapt_beambench_dba"),
+        default=Path("outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled"),
         help="Directory containing summary.json and per-scenario predictions.csv files.",
     )
     parser.add_argument("--scenarios", default=",".join(DEFAULT_SCENARIOS))

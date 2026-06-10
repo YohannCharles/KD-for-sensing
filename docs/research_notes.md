@@ -12,7 +12,7 @@
 
 ## 已退役研究线
 
-模态失衡、蒸馏和 HiST-Beam/P3 系列研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist 或 P3/V7/V8/V9 probe 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、DeepSense6G GPS residual/Top8/BGAM、MMW GPS v2/BGAM、Raymobtime s008 current snapshot workflow、CSI hardening 和少样本跨场景 adaptation。
+模态失衡、蒸馏、HiST-Beam/P3、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist、P3/V7/V8/V9 probe 或 GPS residual/camera residual 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、DeepSense6G/MMW BGAM、MMW GPS v2、Raymobtime s008 current snapshot workflow、CSI hardening 和少样本跨场景 adaptation。
 
 历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 

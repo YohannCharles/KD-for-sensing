@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 import pytest
 
@@ -21,6 +21,12 @@ import pytest
         ("kd-sensing-mmw-town-gps-v2", "--config"),
         ("kd-sensing-plot-mmw-town-gps-v2", "--results-dir"),
         ("kd-sensing-compare-mmw-town-gps-v2", "--previous-dir"),
+        ("kd-sensing-prepare-mmw-town-gps-lidar-bgam-manifest", "--topk"),
+        ("kd-sensing-run-mmw-town-gps-lidar-bgam", "--topk"),
+        ("kd-sensing-evaluate-mmw-town-gps-lidar-bgam", "--ckpt"),
+        ("kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest", "--topk"),
+        ("kd-sensing-run-deepsense6g-gps-lidar-bgam", "--bgam-mode"),
+        ("kd-sensing-evaluate-deepsense6g-gps-lidar-bgam", "--ckpt"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):
@@ -38,33 +44,15 @@ def test_console_script_help_is_available(command: str, expected: str):
     assert expected in result.stdout
 
 
-@pytest.mark.parametrize(
-    ("command", "module", "expected"),
-    [
-        (
-            "kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest",
-            "kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest",
-            "--support-ratio",
-        ),
-        (
-            "kd-sensing-run-deepsense6g-gps-lidar-bgam",
-            "kd_sensing.cli.run_deepsense6g_gps_lidar_bgam",
-            "--bgam-mode",
-        ),
-        (
-            "kd-sensing-evaluate-deepsense6g-gps-lidar-bgam",
-            "kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam",
-            "--ckpt",
-        ),
-    ],
-)
-def test_gps_lidar_bgam_cli_help_is_available(command: str, module: str, expected: str):
-    executable = shutil.which(command)
-    argv = [executable, "--help"] if executable is not None else [sys.executable, "-m", module, "--help"]
-    result = subprocess.run(argv, text=True, capture_output=True, check=False)
+def test_retired_top8_residual_cli_scripts_are_not_declared():
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    retired_fragments = [
+        "gps-coarse-anchor",
+        "top8",
+        "residual",
+        "camera-ae",
+    ]
+    violations = [fragment for fragment in retired_fragments if fragment in text]
 
-    assert result.returncode == 0, result.stderr
-    assert "--config" in result.stdout
-    assert "--label-space" in result.stdout
-    assert "--topk" in result.stdout
-    assert expected in result.stdout
+    assert violations == []

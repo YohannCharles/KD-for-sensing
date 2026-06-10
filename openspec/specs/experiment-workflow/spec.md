@@ -1459,28 +1459,28 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 输出 metadata MUST 不记录 KD-enabled lineage
 
 ### Requirement: 项目描述反映当前主线
-项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态/少样本跨场景 beam prediction、DeepSense6G/MMW/Raymobtime supervised/adaptation、GPS candidate、residual fusion、CSI hardening、Raymobtime s008 selection 和 viewer manifest，而不是 KD-first 或 HiST-Beam-first 工作流。历史 KD 或 Hist 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
+项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态/少样本跨场景 beam prediction、DeepSense6G/MMW/Raymobtime supervised/adaptation、GPS v2/adapter、MMW Town GPS v2、BGAM、CSI hardening、Raymobtime s008 selection、JEPA、预处理、诊断和 viewer manifest，而不是 KD-first、HiST-Beam-first、Top8/residual-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Top8 selector、residual、camera residual 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
 
-#### Scenario: pyproject 描述不再 KD 或 Hist first
+#### Scenario: pyproject 描述不再 KD Hist 或退役路线 first
 - **WHEN** 开发者查看 `pyproject.toml` 的项目 description
-- **THEN** description MUST 不把 knowledge distillation 或 HiST-Beam 描述为当前唯一或首要工作流
-- **AND** 若提到 KD 或 Hist，MUST 表达其为 legacy、historical 或 retired
+- **THEN** description MUST 不把 knowledge distillation、HiST-Beam、Top8 selector、residual 或 GPS coarse anchor 描述为当前唯一或首要工作流
+- **AND** 若提到这些路线，MUST 表达其为 legacy、historical 或 retired
 
 #### Scenario: 文档保留历史说明
-- **WHEN** README 或 docs 提到历史 KD 或 Hist 代码
+- **WHEN** README 或 docs 提到历史 KD、Hist、Top8 selector、residual、camera residual 或 GPS coarse anchor 代码
 - **THEN** 文档 MUST 说明对应能力已从当前 active mainline 退役
 - **AND** 文档 MUST 不提供当前推荐运行命令
 
 ### Requirement: 当前推荐 workflow 聚焦少样本跨场景主线
-README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、DeepSense6G GPS candidate、Top8 selector、GPS+LiDAR BGAM、camera residual、MMW Town GPS v2、CSI hardening、Raymobtime s008 selection 和 viewer manifest。KD baseline、HiST-Beam/Hist、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
+README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、DeepSense6G GPS v2/adapter、MMW Town GPS v2、BGAM、CSI hardening、Raymobtime s008 selection、JEPA、预处理、诊断和 viewer manifest。KD baseline、HiST-Beam/Hist、Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、residual fusion、camera residual、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
 
 #### Scenario: quickstart 不推荐退役脚本
 - **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
-- **THEN** 文档 MUST 不推荐运行 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*` 或已退役的独立模态诊断脚本
+- **THEN** 文档 MUST 不推荐运行 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*`、retired Top8 selector/residual/GPS coarse anchor 命令或已退役的独立模态诊断脚本
 - **AND** 若需要当前主线实验，文档 MUST 指向仍存在的配置化 CLI 或包内 workflow
 
 #### Scenario: optional workflow 与主线区分
-- **WHEN** 文档提到 legacy KD、HiST-Beam、snapshot next-frame、occlusion、position 或 multitask objective
+- **WHEN** 文档提到 legacy KD、HiST-Beam、Top8 selector、residual、camera residual、GPS coarse anchor、snapshot next-frame、occlusion、position 或 multitask objective
 - **THEN** 文档 MUST 明确它们不是当前主结论的默认步骤
 - **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/Raymobtime 主线
 
@@ -1522,152 +1522,6 @@ README MUST 增加 MMW Town GPS-only v2 说明，覆盖普通跨场景 GPS 分�
 - **WHEN** 开发者阅读 README 的 MMW Town GPS-only v2 小节
 - **THEN** 文档 MUST 提供使用 `conda run -n kd_mm_beam` 的 runner、plotter 和 comparison 命令
 - **AND** 文档 MUST 明确本 change 不实现多模态 residual correction
-
-### Requirement: Residual workflow query leakage guard
-DeepSense6G residual workflow MUST prevent target query labels from being used for prior construction, support selection, early stopping, model selection or hyperparameter tuning.
-
-#### Scenario: query label 只用于最终评价
-- **WHEN** 系统运行 `target_adapt_beambench_residual`
-- **THEN** target query label MUST only be used to compute final metrics, predictions diagnostics, figures and comparison report
-- **AND** run metadata MUST record `query_label_used_for_training=false`
-- **AND** model selection split MUST be source validation or target support internal validation
-
-#### Scenario: support/query role 可审计
-- **WHEN** residual manifest 和 predictions 被写出
-- **THEN** 每一行 MUST 包含 support/query role
-- **AND** summary MUST record support count and query count for each target scene
-
-### Requirement: Residual workflow result contract
-DeepSense6G residual workflow MUST produce machine-readable summaries that can compare every residual ablation against GPS v2 baseline.
-
-#### Scenario: residual summary 字段
-- **WHEN** residual evaluation 完成
-- **THEN** summary MUST include protocol、support ratio、label space、train mode、ablation、modalities、num samples、DBA、DBA zero ratio、mean/median circular error、exact/pm/top-k metrics、GPS baseline metrics and residual deltas
-- **AND** 所有 error 字段 MUST 使用 circular distance
-
-#### Scenario: gps_prior_only 复现 GPS v2
-- **WHEN** 用户运行 `gps_prior_only`
-- **THEN** 系统 MUST 读取 GPS v2 r15 prior predictions
-- **AND** summary MUST numerically match v2 r15 within documented tolerance
-- **AND** 若不能匹配 MUST 在 comparison report 中记录差异原因
-
-#### Scenario: 推荐方法选择规则
-- **WHEN** comparison report 选择推荐 residual method
-- **THEN** 系统 MUST 首先考虑 overall DBA
-- **AND** 系统 MUST 同时检查 good sample degradation rate
-- **AND** DBA 略高但大量破坏 GPS good 样本的方法 MUST NOT 被标为推荐方法
-
-### Requirement: Residual workflow acceptance commands
-实现完成后 residual workflow MUST 提供可在 `kd_mm_beam` 环境中运行的 inspection、manifest、train/eval、plot、compare 和 test 命令。
-
-#### Scenario: 验收命令使用 kd_mm_beam
-- **WHEN** 开发者运行 residual workflow 验收
-- **THEN** 所有 Python 命令 MUST 使用 `conda run -n kd_mm_beam`
-- **AND** 命令 MUST 使用 `kd_sensing` 包内 CLI 或 console script
-- **AND** 验收 MUST 包含 residual 新测试与现有 circular metrics 回归
-
-### Requirement: Camera residual staged CLI workflow
-项目 MUST 提供 camera residual 分阶段包内 CLI，用于 manifest 构建、Camera AE 训练、AE feature extraction、residual/gate 训练评估、plot 和 compare。所有项目相关 Python 命令 MUST 通过 `conda run -n kd_mm_beam` 运行。
-
-#### Scenario: manifest CLI
-- **WHEN** 用户运行 camera residual manifest CLI
-- **THEN** CLI MUST 接受 `--config`、`--support-ratio` 和 `--label-space`
-- **AND** CLI MUST 输出 camera residual manifest 和 metadata
-
-#### Scenario: AE train CLI
-- **WHEN** 用户运行 Camera AE train CLI
-- **THEN** CLI MUST 接受 `--config`、`--support-ratio` 和 `--label-space`
-- **AND** CLI MUST 保存 checkpoint、metrics 和 reconstruction examples
-
-#### Scenario: AE feature extraction CLI
-- **WHEN** 用户运行 AE feature extraction CLI
-- **THEN** CLI MUST 接受 `--config`、`--checkpoint`、`--support-ratio` 和 `--label-space`
-- **AND** CLI MUST 输出 features、features index 和 manifest with AE
-
-#### Scenario: residual run CLI
-- **WHEN** 用户运行 camera residual train/eval CLI
-- **THEN** CLI MUST 接受 `--config`、`--support-ratio` 和 `--label-space`
-- **AND** CLI MUST 写出 summary、predictions、correction events、candidate recall 和 run metadata
-
-#### Scenario: plot and compare CLI
-- **WHEN** 用户运行 camera residual plot 或 compare CLI
-- **THEN** plot CLI MUST 从 results dir 生成 figures
-- **AND** compare CLI MUST 读取 GPS v2 baseline 与 camera residual summary 并写出 comparison report
-
-### Requirement: Camera residual query leakage guard
-camera residual workflow MUST 显式记录并执行 query leakage guard。target query label 只能用于最终 evaluation、predictions、figures 和 report。
-
-#### Scenario: early stopping 不使用 query
-- **WHEN** residual/gate 训练启用 early stopping
-- **THEN** early stopping MUST 使用 source validation 或 target support 内部 validation
-- **AND** target query label MUST NOT 用于模型选择
-
-#### Scenario: query label usage metadata
-- **WHEN** camera residual run 完成
-- **THEN** run metadata MUST 记录 query label 只用于 evaluation
-- **AND** metadata MUST 记录 model selection split
-- **AND** metadata MUST 记录 support/query count 和 target scene
-
-#### Scenario: package CLI 边界
-- **WHEN** 实现新增 camera residual 入口
-- **THEN** 入口 MUST 位于 `src/kd_sensing/cli/`
-- **AND** 项目 MUST NOT 新增顶层 `src.*` 运行入口作为兼容包装
-
-### Requirement: DeepSense6G Top8 selector 配置驱动工作流
-项目 MUST 提供 `configs/deepsense6g_top8_selector.yaml`，用于驱动 DeepSense6G GPS Top8 Candidate Selector 的 manifest、训练、评价、绘图和 GPS v2 comparison。配置 MUST 声明数据场景、label space、GPS v2 sweep root、TopK analysis dir、output root、candidate topk、optional modality、model、attention、loss、train、experiment、metrics 和 outputs。
-
-#### Scenario: 默认配置字段
-- **WHEN** 开发者查看 `configs/deepsense6g_top8_selector.yaml`
-- **THEN** 配置 MUST 包含 scenario31-34、`mapping_disabled`、`num_beams=64`、`gps_v2_default_support_ratio=0.15`、`topk=8`、`require_saved_logits=true` 和 `output_root=outputs/analysis/deepsense6g_top8_selector`
-- **AND** 配置 MUST 包含默认 ablations 和 `target_adapt_beambench_top8_selector` protocol
-
-#### Scenario: 命令行覆盖 support ratio 和 label space
-- **WHEN** 用户通过 Top8 selector CLI 传入 `--support-ratio`、`--label-space` 或 `--topk`
-- **THEN** 系统 MUST 使用命令行值覆盖配置默认值
-- **AND** 输出目录 MUST 按 ratio tag 和 label space 分离
-
-#### Scenario: 运行产物保存配置快照
-- **WHEN** Top8 selector workflow 完成一次运行
-- **THEN** result dir MUST 保存 resolved config 或等价配置快照
-- **AND** run metadata MUST 记录 workflow、support ratio、label space、topk、train mode、ablation、source scenes、target scene、support/query count、GPS v2 artifact path 和 query label usage
-
-### Requirement: Top8 selector 验收命令
-项目 MUST 记录并支持 Top8 selector 的分层验收命令。所有项目相关 Python 命令 MUST 使用 `conda run -n kd_mm_beam` 环境运行。
-
-#### Scenario: manifest 验收命令
-- **WHEN** 开发者运行 manifest 验收
-- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-prepare-deepsense6g-top8-candidate-manifest --config configs/deepsense6g_top8_selector.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
-- **AND** 命令 MUST 写出 `manifest/top8_candidate_manifest.csv`
-
-#### Scenario: selector 训练评价验收命令
-- **WHEN** 开发者运行 selector workflow 验收
-- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-run-deepsense6g-top8-selector --config configs/deepsense6g_top8_selector.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
-- **AND** 命令 MUST 写出 summary、predictions、selection events 和 run metadata
-
-#### Scenario: plot 与 comparison 验收命令
-- **WHEN** 开发者运行 plot 与 comparison 验收
-- **THEN** 推荐命令 MUST 覆盖 `kd-sensing-plot-deepsense6g-top8-selector` 和 `kd-sensing-compare-deepsense6g-top8-selector-with-gps-v2`
-- **AND** plotter MUST 写出 `figures/`
-- **AND** comparison MUST 写出 `comparison_with_gps_v2.csv` 和 `comparison_report.md`
-
-#### Scenario: 测试验收命令
-- **WHEN** 开发者运行 Top8 selector 单元测试
-- **THEN** 推荐命令 MUST 覆盖 `tests/test_topk_candidate_manifest.py`、`tests/test_topk_candidate_selector.py`、`tests/test_topk_candidate_losses.py`、`tests/test_candidate_attention_selector.py` 和 `tests/test_circular_metrics.py`
-- **AND** 最终回归仍 MUST 使用 `conda run -n kd_mm_beam pytest -q`
-
-### Requirement: Top8 selector README 工作流说明
-README MUST 新增 “DeepSense6G GPS Top8 Candidate Selector” 章节。该章节 MUST 保持 quickstart 风格，说明为什么从 residual correction 改成 Top8 selector、候选生成与 selector 输入输出、candidate soft label、GPS prior fusion、miss head、完整运行流程、结果文件和有效性判断。
-
-#### Scenario: README 说明主方法与反例
-- **WHEN** 用户阅读 README 的 Top8 selector 章节
-- **THEN** 文档 MUST 明确 GPS v2 是 candidate generator
-- **AND** 文档 MUST 明确其他模态只做候选内选择或重排
-- **AND** 文档 MUST 说明 64 类 direct modality prediction 和 no-GPS-prior fusion 不是主推荐方法
-
-#### Scenario: README 说明结果判读
-- **WHEN** 用户阅读 README 的结果判读说明
-- **THEN** 文档 MUST 指向 `summary_overall.csv`、`summary_by_scene.csv`、`summary_by_top8_hit_miss.csv`、`predictions.csv`、`selection_events.csv` 和 `comparison_report.md`
-- **AND** 文档 MUST 说明如何判断 selector 是否超过 GPS top1 baseline、是否接近 Top8 oracle、target-in-Top8 样本是否提升、scenario32/34 是否受 Top8 上限限制、camera AE 是否优于 GPS context-only selector
 
 ### Requirement: GPS+LiDAR BGAM 配置驱动工作流
 项目 MUST 提供 `configs/deepsense6g_gps_lidar_bgam.yaml`，用于驱动 DeepSense6G GPS+LiDAR BGAM 的 manifest enrich、训练、评估、debug mask、ablation 和 comparison。配置 MUST 声明数据场景、GPS v2 artifact、Top8 manifest、LiDAR profile/cache、geometry、BGAM、model、loss、train、eval、ablation、metrics 和 outputs。
@@ -1853,4 +1707,17 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **THEN** GPS scaler MUST 只从 stratified train 子集拟合
 - **AND** validation/test MUST 复用该 scaler
 - **AND** runtime metadata MUST 记录 scaler 来源与 split protocol
+
+### Requirement: 当前推荐 workflow 排除 Top8 residual coarse 路线
+README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再把 Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、GPS prior residual correction 或 camera residual 描述为当前可运行或推荐 workflow。当前推荐面 MUST 聚焦仍保留的 supervised/adaptation、GPS v2/adapter、MMW GPS v2、BGAM、CSI hardening、Raymobtime、JEPA、预处理、诊断和 viewer manifest。
+
+#### Scenario: quickstart 不展示退役命令
+- **WHEN** 开发者阅读 README、README_REPRODUCE 或 `docs/experiment_matrix.md`
+- **THEN** 文档 MUST 不提供退役 Top8 selector/residual/GPS coarse anchor 命令作为当前运行步骤
+- **AND** 文档 MUST 指向仍存在的配置化 CLI 和保留 workflow
+
+#### Scenario: 健康检查不要求退役入口
+- **WHEN** 开发者执行快速健康检查或架构边界测试
+- **THEN** 检查 MUST 不要求退役 console scripts、配置、CLI、engine、model 或 loss 可导入
+- **AND** 检查 MAY 断言这些入口已不存在
 

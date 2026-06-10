@@ -91,19 +91,6 @@ def target_shot_runtime_metadata(artifact: Mapping[str, Any], *, artifact_path: 
     }
 
 
-def geometry_residual_runtime_metadata(label_space: Mapping[str, Any], availability: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    return {
-        "target_schema": "geometry_residual",
-        "num_beams": int(label_space.get("num_beams", 64)),
-        "beam_geo_source": label_space.get("beam_geo_source", "uniform_angle_quantization"),
-        "residual_convention": label_space.get("residual_convention", "signed_circular"),
-        "max_residual": label_space.get("max_residual"),
-        "overflow_strategy": label_space.get("overflow_strategy", "boundary"),
-        "num_geo_sectors": label_space.get("num_geo_sectors"),
-        "geometry_availability": dict(availability or {}),
-    }
-
-
 def load_target_shot_runtime_metadata(path: str | Path) -> dict[str, Any]:
     artifact = json.loads(Path(path).read_text(encoding="utf-8"))
     return target_shot_runtime_metadata(artifact, artifact_path=path)
@@ -131,7 +118,6 @@ __all__ = [
     "TargetShotSupervisionGuardError",
     "assert_target_supervision_allowed",
     "filter_target_shot_training_payload",
-    "geometry_residual_runtime_metadata",
     "load_target_shot_runtime_metadata",
     "target_shot_runtime_metadata",
 ]

@@ -1,0 +1,76 @@
+_base_: image_gps_jepa_gps_biased_best_supervised.yaml
+
+experiment:
+  name: fusion_image_gps_jepa_gru
+  objective: beam
+  ablation: jepa_gru
+data:
+  dataset:
+    scene: 31
+    train_scenes:
+    - 32
+    - 33
+    - 34
+    test_scenes:
+    - 31
+    - 32
+    - 33
+    - 34
+    seq_len: 8
+    num_pred: 1
+  validation_from_train:
+    enabled: true
+    fraction: 0.1
+    seed: 42
+  dataloader:
+    train_batch_size: 8
+    test_batch_size: 8
+    train_num_workers: 0
+    test_num_workers: 0
+    train_prefetch_factor:
+    test_prefetch_factor:
+    train_persistent_workers: false
+    test_persistent_workers: false
+    persistent_workers: false
+    pin_memory: false
+model:
+  num_pred: 1
+  seq_length: 8
+  primary:
+    num_pred: 1
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+      dropout: 0.1
+      time_embedding: false
+      modality_embedding: false
+      next_beam_query: false
+training:
+  epochs: 160
+  lr: 0.00075
+  patience: 45
+  min_delta: 0.00005
+  cpu_threads:
+    intra_op: 8
+    inter_op: 1
+  amp:
+    enabled: true
+    dtype: float16
+    grad_scaler: true
+scheduler:
+  type: none
+evaluation:
+  k_values:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 10
+  dba_delta: 5
+  dba_distance_mode: linear
+output:
+  dir: outputs/jepa_image_gps_downstream_ablation
+  group_by_scene: false
+  run_name: jepa_gru_train_s32_s34_val_from_train_test_s31_s34_constant_lr_lowram_b8

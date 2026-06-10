@@ -14,14 +14,14 @@
 | lidar | `configs/lidar/strong.yaml` | `configs/lidar/lightweight.yaml` | `configs/lidar/supervised.yaml` |
 | mmwave | `configs/mmwave/strong.yaml` | `configs/mmwave/lightweight.yaml` | `configs/mmwave/supervised.yaml` |
 
-推荐主线顺序是先运行 supervised/adaptation baseline，再进入 DeepSense6G GPS residual、Top8 selector、GPS+LiDAR BGAM、MMW GPS v2/BGAM、Raymobtime s008、CSI hardening 或 viewer manifest。旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`configs/hist_beam/*` 和 HiST-Beam 入口不再作为支持入口存在；配置加载器会拒绝这些路径并给出迁移建议。
+推荐主线顺序是先运行 supervised/adaptation baseline，再进入 DeepSense6G/MMW GPS+LiDAR BGAM、MMW GPS v2、Raymobtime s008、CSI hardening 或 viewer manifest。旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`configs/hist_beam/*`、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 入口不再作为支持入口存在；配置加载器会拒绝这些路径并给出迁移建议。
 
 Fusion canonical slug 使用固定顺序 `image -> radar -> gps -> lidar -> mmwave`，覆盖所有 2 到 5 模态组合。例如：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_lightweight.yaml
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_lightweight.yaml
-conda run -n kd_mm_beam kd-sensing-run-deepsense6g-top8-selector --config configs/deepsense6g_top8_selector.yaml
+conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --config configs/deepsense6g_gps_lidar_bgam.yaml
 ```
 
 包含 image 或 LiDAR 的 canonical fusion strong 配置使用 `modular_sequence`；默认 lightweight 配置使用 `cls_token_transformer_fusion`。Fusion virtual config 只生成 `strong` 和 `lightweight` 主线；旧 `<slug>_logits_kd.yaml` 或 `<slug>_rkd.yaml` 会失败并提示使用当前入口。
@@ -42,7 +42,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/all_modalities_
 
 ## Objective-Aware Fusion
 
-Objective-aware occlusion、position 和 multitask 是 optional/supporting workflow，不是 MMW GPS v2/BGAM 或 DeepSense residual/Top8/BGAM 的前置步骤。预测目标由 `experiment.objective` 选择，合法值为 `beam`、`occlusion`、`position` 和 `multitask`。保留入口使用 `<slug>_<objective>_supervised.yaml` 命名：
+Objective-aware occlusion、position 和 multitask 是 optional/supporting workflow，不是 MMW GPS v2/BGAM 或 DeepSense BGAM 的前置步骤。预测目标由 `experiment.objective` 选择，合法值为 `beam`、`occlusion`、`position` 和 `multitask`。保留入口使用 `<slug>_<objective>_supervised.yaml` 命名：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml
@@ -82,6 +82,8 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/deepsense6
 
 和 BeamBench Table III 做下游指标复核时，使用 fair low-memory 配置族，而不是 scene31-only 或 `num_pred=3` 的快速调试配置。fair 配置训练 scenes 32、33、34，从训练 split 内部划分 validation 做 early stopping/checkpoint selection，训练结束后单独加载 `best.pth` 在 scenes 31、32、33、34 的 test split 上记录 `final_test_metrics`。该配置固定 prediction window 为 `num_pred=1`，保留当前 image+GPS supervised 的 `seq_len=8`，DBA 距离口径设为 BeamBench linear，scheduler 设为 `none`。这些配置属于 JEPA image+GPS 实验复现面，路径位于 `configs/fusion/experiments/jepa_image_gps/`，不作为 `configs/fusion/` 根目录推荐入口。
 
+当前 Image+GPS+JEPA 下游主线是 GPS-biased checkpoint reuse，即 `image_gps_jepa_gps_biased_best_*` 配置族。supervised 与 random-mask 配置只作为对照；next-beam query/plain-token/GRU/snapshot 系列只作为 ablation，除非在同一评价协议上超过 GPS-biased 主线，否则不替代主结论。
+
 ```bash
 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_supervised_beambench_fair_lowmem.yaml
 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_random_best_beambench_fair_lowmem.yaml
@@ -93,6 +95,8 @@ JEPA random 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_full_s3
 ### 2604.05668 S32-34 对齐复核
 
 和 arXiv:2604.05668 的主表比较时，使用 2604 对齐配置族，而不是 BeamBench-fair 配置。该配置族合并 DeepSense6G scenes 32、33、34 的官方 train/test labeled CSV，并在每个 scene 内按 `future_beam1` 标签固定 seed 做 `80/10/10` stratified train/validation/test split；历史窗口改为 `seq_len=5`，预测窗口保持 `num_pred=1`，DBA 距离口径为 linear。该口径不评估 scene31 泛化，最终报告 S32/S33/S34 test DBA 和三场景宏平均。
+
+2604-style 主报告使用 `image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml` 及其 `best.pth`。当前本地复核的主线结果为：S32/S33/S34 DBA `0.8777 / 0.8853 / 0.8796`，macro DBA `0.8809`。写作时表述为“在我们复现的 2604-style stratified 80/10/10 split 上，Image+GPS + JEPA gps-biased 达到 88.09% macro DBA，高于论文 BEV-Fusion 报告的 86.52%”；不要写成严格证明超过原论文 exact split，因为原文未释放 exact split index/seed。
 
 ```bash
 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_supervised_2604_s32_s34_lowmem.yaml

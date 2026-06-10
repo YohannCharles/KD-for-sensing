@@ -5,7 +5,6 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from kd_sensing.engine.gps_coarse_anchor import gps_anchor_tensors_from_batch
 from kd_sensing.modalities import batch_input_keys_for_modalities, image_profile_spec, normalize_modalities
 
 
@@ -115,24 +114,6 @@ def _soft_beam_target_mask(batch: dict[str, torch.Tensor], target_key: str):
         if key in batch:
             return batch[key]
     return None
-
-
-def prepare_gps_anchor_inputs(
-    batch: dict[str, torch.Tensor],
-    *,
-    num_pred: int,
-    device: torch.device,
-    enabled: bool = False,
-    non_blocking: bool = False,
-) -> dict[str, torch.Tensor]:
-    if not enabled:
-        return {}
-    return gps_anchor_tensors_from_batch(
-        batch,
-        num_pred=num_pred,
-        device=device,
-        non_blocking=non_blocking,
-    )
 
 
 def prepare_auxiliary_targets(

@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kd_sensing.engine.gps_coarse_anchor import GpsCoarseAnchorConfig, GpsCoarseHead
 from kd_sensing.models.auxiliary_heads import (
     TemporalAuxiliaryHeads,
     temporal_output_with_optional_auxiliary,
@@ -68,7 +67,6 @@ class GpsModalityNet(nn.Module):
         gru_params: list[int] | tuple[int, int, int],
         num_pred: int = 3,
         auxiliary_heads: bool | dict | None = None,
-        coarse_anchor: bool | dict | None = None,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -108,24 +106,6 @@ class GpsModalityNet(nn.Module):
             auxiliary_heads=auxiliary_heads,
             dropout=dropout,
         )
-        self.coarse_anchor_cfg = _resolve_coarse_anchor_config(
-            coarse_anchor,
-            num_classes=num_classes,
-            num_pred=num_pred,
-            dropout=dropout,
-        )
-        self.coarse_anchor_head = (
-            GpsCoarseHead(
-                gru_hidden_size,
-                num_classes=self.coarse_anchor_cfg.num_classes,
-                group_size=self.coarse_anchor_cfg.group_size,
-                hidden_size=self.coarse_anchor_cfg.hidden_size,
-                dropout=self.coarse_anchor_cfg.dropout,
-                beam_auxiliary=self.coarse_anchor_cfg.beam_auxiliary,
-            )
-            if self.coarse_anchor_cfg.enabled
-            else None
-        )
 
     def forward(self, gps_batch: torch.Tensor):
         _, seq_len, _ = gps_batch.shape
@@ -136,22 +116,6 @@ class GpsModalityNet(nn.Module):
         context_vector = torch.sum(seq_out * attn_weights, dim=1)
         enhanced_seq_out = seq_out + context_vector.unsqueeze(1).expand(-1, seq_len, -1)
         pred = self.classifier(enhanced_seq_out)
-        if self.coarse_anchor_head is not None:
-            anchor = self.coarse_anchor_head(enhanced_seq_out)
-            return {
-                "logits": pred,
-                "input_features": features,
-                "output_features": enhanced_seq_out,
-                **anchor.to_model_output(),
-                "coarse_anchor": {
-                    "enabled": True,
-                    "anchor_source": "gps_neural_coarse",
-                    "num_classes": self.coarse_anchor_cfg.num_classes,
-                    "group_size": self.coarse_anchor_cfg.group_size,
-                    "loss_weight": self.coarse_anchor_cfg.loss_weight,
-                    "beam_auxiliary_weight": self.coarse_anchor_cfg.beam_auxiliary_weight,
-                },
-            }
         return temporal_output_with_optional_auxiliary(
             logits=pred,
             input_features=features,
@@ -170,7 +134,6 @@ class GpsStudentModalityNet(nn.Module):
         gru_params: list[int] | tuple[int, int, int],
         num_pred: int = 3,
         auxiliary_heads: bool | dict | None = None,
-        coarse_anchor: bool | dict | None = None,
         width_multiplier: float = 1.0,
         dropout: float = 0.1,
     ):
@@ -207,71 +170,18 @@ class GpsStudentModalityNet(nn.Module):
             auxiliary_heads=auxiliary_heads,
             dropout=dropout,
         )
-        self.coarse_anchor_cfg = _resolve_coarse_anchor_config(
-            coarse_anchor,
-            num_classes=num_classes,
-            num_pred=num_pred,
-            dropout=dropout,
-        )
-        self.coarse_anchor_head = (
-            GpsCoarseHead(
-                gru_hidden_size,
-                num_classes=self.coarse_anchor_cfg.num_classes,
-                group_size=self.coarse_anchor_cfg.group_size,
-                hidden_size=self.coarse_anchor_cfg.hidden_size,
-                dropout=self.coarse_anchor_cfg.dropout,
-                beam_auxiliary=self.coarse_anchor_cfg.beam_auxiliary,
-            )
-            if self.coarse_anchor_cfg.enabled
-            else None
-        )
 
     def forward(self, gps_batch: torch.Tensor):
         features = self.feature_extraction(gps_batch)
         features = self.layer_norm(features)
         seq_out, _ = self.GRU(features)
         pred = self.classifier(seq_out)
-        if self.coarse_anchor_head is not None:
-            anchor = self.coarse_anchor_head(seq_out)
-            return {
-                "logits": pred,
-                "input_features": features,
-                "output_features": seq_out,
-                **anchor.to_model_output(),
-                "coarse_anchor": {
-                    "enabled": True,
-                    "anchor_source": "gps_neural_coarse",
-                    "num_classes": self.coarse_anchor_cfg.num_classes,
-                    "group_size": self.coarse_anchor_cfg.group_size,
-                    "loss_weight": self.coarse_anchor_cfg.loss_weight,
-                    "beam_auxiliary_weight": self.coarse_anchor_cfg.beam_auxiliary_weight,
-                },
-            }
         return temporal_output_with_optional_auxiliary(
             logits=pred,
             input_features=features,
             output_features=seq_out,
             auxiliary_heads=self.auxiliary_heads,
         )
-
-
-def _resolve_coarse_anchor_config(
-    coarse_anchor: bool | dict | None,
-    *,
-    num_classes: int,
-    num_pred: int,
-    dropout: float,
-) -> GpsCoarseAnchorConfig:
-    if not coarse_anchor:
-        return GpsCoarseAnchorConfig(enabled=False, anchor_source="gps_neural_coarse", num_classes=num_classes)
-    payload = dict(coarse_anchor) if isinstance(coarse_anchor, dict) else {}
-    payload.setdefault("enabled", True)
-    payload.setdefault("anchor_source", "gps_neural_coarse")
-    payload.setdefault("num_classes", num_classes)
-    payload.setdefault("horizon", num_pred)
-    payload.setdefault("dropout", dropout)
-    return GpsCoarseAnchorConfig.from_mapping(payload)
-
 
 MODELS.register_removed("gps_teacher", "Use 'gps_strong'.")
 MODELS.register_removed("gps_student", "Use 'gps_lightweight'.")

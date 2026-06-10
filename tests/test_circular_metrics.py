@@ -13,7 +13,6 @@ from kd_sensing.evaluation.metrics import (
     gps_good_bad_label,
     signed_circular_residual,
 )
-from kd_sensing.data.deepsense6g_residual import circular_gaussian_prior_from_top1
 from kd_sensing.losses.circular import (
     circular_soft_ce_loss,
     circular_soft_target,
@@ -103,12 +102,3 @@ def test_residual_circular_helpers_wrap_shift_window_and_good_bad():
     good, bad = gps_good_bad_label(np.array([0, 3, 4]), threshold=4)
     assert np.array_equal(good, np.array([True, True, False]))
     assert np.array_equal(bad, np.array([False, False, True]))
-
-
-def test_fallback_gaussian_prior_uses_top1_not_target_label():
-    logits_from_top1, probs_from_top1 = circular_gaussian_prior_from_top1(63, num_beams=64, sigma=2.0)
-    logits_with_different_target, _ = circular_gaussian_prior_from_top1(63, num_beams=64, sigma=2.0)
-
-    assert logits_from_top1.argmax() == 63
-    assert np.isclose(probs_from_top1.sum(), 1.0)
-    assert np.array_equal(logits_from_top1, logits_with_different_target)

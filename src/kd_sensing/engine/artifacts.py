@@ -16,7 +16,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_pilot_noise_validity_artifact,
 )
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
-from kd_sensing.engine.run_metadata import prediction_setup_metadata
+from kd_sensing.engine.run_metadata import jepa_downstream_metadata, prediction_setup_metadata
 from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state
@@ -62,6 +62,9 @@ def final_config_with_runtime(
         runtime["scene"] = scene_metadata
     runtime["lineage"] = run_lineage_metadata(cfg)
     runtime["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
+    jepa_metadata = jepa_downstream_metadata(cfg)
+    if jepa_metadata:
+        runtime["jepa_downstream"] = jepa_metadata
     return final_cfg
 
 

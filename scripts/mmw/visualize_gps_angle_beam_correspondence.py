@@ -25,7 +25,7 @@ DEFAULT_SCENARIOS = (
     "Town10_Hroad_seed42",
 )
 DEFAULT_SPLITS = ("train", "test")
-DEFAULT_PREDICTION_ROOT = Path("outputs/gps_coarse_anchor/within_scene_upper_bound_all_train")
+DEFAULT_PREDICTION_ROOT = Path("outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled")
 DBA_TOP_K = 3
 DBA_DELTA = 5.0
 

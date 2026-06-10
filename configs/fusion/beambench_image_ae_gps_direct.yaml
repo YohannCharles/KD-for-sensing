@@ -185,8 +185,8 @@ reproduction_notes:
     - dataset/DeepSense6G/scenario32
     - dataset/DeepSense6G/scenario33
     - dataset/DeepSense6G/scenario34
-  train_camera_ae_first:
-    command: conda run -n kd_mm_beam kd-sensing-train-deepsense6g-camera-ae --config configs/deepsense6g_camera_residual.yaml --support-ratio 1.0 --label-space mapping_disabled --output-dir outputs/training/deepsense6g_camera_ae/r100/mapping_disabled
+  camera_ae_residual_route:
+    status: retired
   run_scene31:
     command: conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps --config configs/fusion/beambench_image_ae_gps_direct.yaml
   run_other_scenes:

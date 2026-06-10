@@ -6,12 +6,6 @@ from typing import Any
 import torch
 
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
-from kd_sensing.engine.gps_coarse_anchor import (
-    GpsCoarseAnchor,
-    GpsCoarseAnchorConfig,
-    compute_gps_coarse_anchor_loss,
-)
-from kd_sensing.engine.model_output import select_prediction_slots
 from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
 from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
 from kd_sensing.engine.runtime import (
@@ -189,15 +183,6 @@ class BatchStepRunner:
             )
             total_loss = prediction_loss.total
             task_loss = prediction_loss.primary
-            anchor_loss = _optional_gps_anchor_loss(
-                primary_model_output.diagnostics,
-                labels,
-                self.cfg,
-                reference=primary_outputs,
-            )
-            if anchor_loss is not None:
-                total_loss = total_loss + anchor_loss[0]
-                scalar_diagnostics.update(anchor_loss[1])
             scalar_diagnostics.update(prediction_loss.diagnostics)
             scalar_diagnostics.update(raymobtime_gate_scalar_diagnostics(primary_model_output.diagnostics))
             batch_state.total_loss = total_loss
@@ -394,52 +379,6 @@ def raymobtime_gate_scalar_diagnostics(diagnostics: dict[str, Any]) -> dict[str,
         for modality, value in zip(modalities, means):
             result[f"raymobtime/gate/{task}/{modality}"] = float(value)
     return result
-
-
-def _optional_gps_anchor_loss(
-    diagnostics: dict[str, Any],
-    labels: torch.Tensor,
-    cfg: dict[str, Any],
-    *,
-    reference: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]] | None:
-    raw_cfg = cfg.get("coarse_anchor")
-    if not isinstance(raw_cfg, dict):
-        model_cfg = cfg.get("model", {}).get("primary", {}) if isinstance(cfg.get("model"), dict) else {}
-        raw_cfg = model_cfg.get("coarse_anchor") if isinstance(model_cfg, dict) else None
-    if not isinstance(raw_cfg, dict) or not bool(raw_cfg.get("enabled", False)):
-        return None
-    if "gps_anchor_coarse_logits" not in diagnostics:
-        return None
-    anchor_cfg = GpsCoarseAnchorConfig.from_mapping(raw_cfg)
-    coarse_logits = select_prediction_slots(diagnostics["gps_anchor_coarse_logits"], labels.shape[1])
-    beam_scores = diagnostics.get("gps_anchor_beam_scores")
-    if torch.is_tensor(beam_scores):
-        beam_scores = select_prediction_slots(beam_scores, labels.shape[1])
-    center = diagnostics.get("gps_anchor_center_beam")
-    confidence = diagnostics.get("gps_anchor_confidence")
-    residual = diagnostics.get("gps_anchor_residual_anchor_beam")
-    if not torch.is_tensor(center):
-        center = torch.zeros(labels.shape, device=reference.device, dtype=torch.long)
-    else:
-        center = center[:, -labels.shape[1] :].to(device=reference.device)
-    if not torch.is_tensor(confidence):
-        confidence = torch.ones(labels.shape, device=reference.device, dtype=reference.dtype)
-    else:
-        confidence = confidence[:, -labels.shape[1] :].to(device=reference.device, dtype=reference.dtype)
-    if not torch.is_tensor(residual):
-        residual = center
-    else:
-        residual = residual[:, -labels.shape[1] :].to(device=reference.device)
-    anchor = GpsCoarseAnchor(
-        coarse_logits=coarse_logits,
-        center_beam=center,
-        confidence=confidence,
-        residual_anchor_beam=residual,
-        beam_scores=beam_scores,
-        metadata={"anchor_source": "gps_neural_coarse"},
-    )
-    return compute_gps_coarse_anchor_loss(anchor, labels, anchor_cfg)
 
 
 def _jepa_dummy_labels(batch: dict[str, torch.Tensor], context: ExtensionContext) -> torch.Tensor:

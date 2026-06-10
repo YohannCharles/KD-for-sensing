@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -11,11 +12,23 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
+from kd_sensing.engine.data_factory import build_dataloaders  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.engine.validator import validate  # noqa: E402
 from kd_sensing.losses.jepa import jepa_latent_prediction_loss  # noqa: E402
 from kd_sensing.models.jepa import JepaContextImageEncoder, JepaMaskSampler  # noqa: E402
 from kd_sensing.registries import MODELS, import_default_components  # noqa: E402
+
+JEPA_DOWNSTREAM_CONFIGS = {
+    "jepa_gru": ROOT / "configs/fusion/experiments/jepa_image_gps/jepa_gru.yaml",
+    "jepa_snapshot": ROOT / "configs/fusion/experiments/jepa_image_gps/jepa_snapshot.yaml",
+    "jepa_plain_token_transformer": ROOT
+    / "configs/fusion/experiments/jepa_image_gps/jepa_plain_token_transformer.yaml",
+    "jepa_next_query_transformer": ROOT
+    / "configs/fusion/experiments/jepa_image_gps/jepa_next_query_transformer.yaml",
+}
 
 
 def _model_cfg() -> dict:
@@ -204,6 +217,137 @@ def test_jepa_latent_loss_masks_and_empty_mask_protection():
         jepa_latent_prediction_loss(predicted, target, torch.zeros_like(mask))
 
 
+def test_jepa_downstream_ablation_configs_load_and_record_metadata(tmp_path: Path):
+    loaded = {name: load_config(path) for name, path in JEPA_DOWNSTREAM_CONFIGS.items()}
+
+    checkpoints = {
+        cfg["model"]["primary"]["encoders"]["image"]["checkpoint_path"]
+        for cfg in loaded.values()
+    }
+    assert len(checkpoints) == 1
+    for name, cfg in loaded.items():
+        assert cfg["experiment"]["objective"] == "beam"
+        assert cfg["experiment"]["ablation"] == name
+        assert cfg["data"]["dataset"]["scene"] == 31
+        assert cfg["data"]["dataset"]["train_scenes"] == [32, 33, 34]
+        assert "validation_scenes" not in cfg["data"]["dataset"]
+        assert cfg["data"]["dataset"]["test_scenes"] == [31, 32, 33, 34]
+        assert cfg["data"]["validation_from_train"] == {"enabled": True, "fraction": 0.1, "seed": 42}
+        assert cfg["output"]["dir"] == "outputs/jepa_image_gps_downstream_ablation"
+        assert cfg["output"]["group_by_scene"] is False
+        assert "train_s32_s34_val_from_train_test_s31_s34" in cfg["output"]["run_name"]
+        assert "constant_lr" in cfg["output"]["run_name"]
+        assert cfg["scheduler"]["type"] == "none"
+        assert cfg["evaluation"]["dba_distance_mode"] == "linear"
+        assert cfg["training"]["lr"] == 0.00075
+        assert cfg["training"]["epochs"] == 160
+        assert cfg["training"]["patience"] == 45
+        assert cfg["training"]["min_delta"] == 0.00005
+        assert cfg["data"]["dataloader"]["train_num_workers"] == 0
+        assert cfg["data"]["dataloader"]["test_num_workers"] == 0
+        assert cfg["data"]["dataloader"]["pin_memory"] is False
+        assert cfg["data"]["dataloader"]["persistent_workers"] is False
+        assert cfg["data"]["dataloader"]["train_persistent_workers"] is False
+        assert cfg["data"]["dataloader"]["test_persistent_workers"] is False
+        assert cfg["model"]["primary"]["type"] == "modular_sequence"
+        assert cfg["model"]["primary"]["encoders"]["image"]["type"] == "jepa_context_image"
+        assert cfg["model"]["primary"]["encoders"]["image"]["freeze_encoder"] is False
+        assert "distillation" not in cfg
+
+        final_cfg = final_config_with_runtime(cfg, run_dir=tmp_path / name)
+        metadata = final_cfg["runtime"]["jepa_downstream"]
+        assert metadata["ablation"] == name
+        assert metadata["jepa_checkpoint_path"] in checkpoints
+        assert metadata["freeze_image_encoder"] is False
+        assert metadata["representation_core_type"] == cfg["model"]["primary"]["representation_core"]["type"]
+
+    assert loaded["jepa_gru"]["model"]["primary"]["representation_core"]["type"] == "early_concat_gru"
+    assert loaded["jepa_snapshot"]["model"]["primary"]["representation_core"]["type"] == "snapshot_frame"
+    assert loaded["jepa_snapshot"]["data"]["dataset"]["seq_len"] == 1
+    assert loaded["jepa_snapshot"]["data"]["dataset"]["num_pred"] == 1
+    for name in JEPA_DOWNSTREAM_CONFIGS:
+        assert loaded[name]["data"]["dataloader"]["train_batch_size"] == 8
+        assert loaded[name]["data"]["dataloader"]["test_batch_size"] == 8
+    assert loaded["jepa_plain_token_transformer"]["model"]["primary"]["representation_core"]["type"] == "token_transformer"
+    assert (
+        loaded["jepa_next_query_transformer"]["model"]["primary"]["representation_core"]["type"]
+        == "next_beam_query_transformer"
+    )
+
+    next_metadata = final_config_with_runtime(
+        loaded["jepa_next_query_transformer"],
+        run_dir=tmp_path / "next",
+    )["runtime"]["jepa_downstream"]
+    plain_metadata = final_config_with_runtime(
+        loaded["jepa_plain_token_transformer"],
+        run_dir=tmp_path / "plain",
+    )["runtime"]["jepa_downstream"]
+    assert next_metadata["time_embedding_enabled"] is True
+    assert next_metadata["modality_embedding_enabled"] is True
+    assert next_metadata["next_beam_query_enabled"] is True
+    assert plain_metadata["next_beam_query_enabled"] is False
+
+
+def test_jepa_downstream_ablation_validation_loader_uses_train_scenes_and_test_loader_uses_heldout_scenes():
+    cfg = load_config(JEPA_DOWNSTREAM_CONFIGS["jepa_gru"])
+    cfg["data"]["dataset"]["portion"] = 0.01
+    loaders = build_dataloaders(cfg)
+
+    assert "validation" in loaders
+    validation_parts = getattr(loaders["validation"].dataset, "datasets", [])
+    test_parts = getattr(loaders["test"].dataset, "datasets", [])
+
+    assert [_scene_id_for_dataset(part) for part in validation_parts] == [32, 33, 34]
+    assert [_scene_id_for_dataset(part) for part in test_parts] == [31, 32, 33, 34]
+
+
+def _scene_id_for_dataset(dataset) -> int:
+    source = getattr(dataset, "dataset", dataset)
+    return int(source.scene_id)
+
+
+def test_jepa_downstream_ablation_forward_smoke_with_synthetic_image_gps():
+    import_default_components()
+
+    for name, path in JEPA_DOWNSTREAM_CONFIGS.items():
+        cfg = load_config(path)
+        model_cfg = _tiny_downstream_model_cfg(cfg)
+        model = MODELS.build(model_cfg)
+        model.eval()
+        seq_len = 1 if name == "jepa_snapshot" else 2
+
+        with torch.no_grad():
+            output = model(
+                image_batch=torch.randn(2, seq_len, 3, 32, 32),
+                gps_batch=torch.randn(2, seq_len, 3),
+            )
+
+        assert output["logits"].shape[0] == 2
+        assert output["logits"].shape[-1] == 7
+        if name in {"jepa_snapshot", "jepa_next_query_transformer"}:
+            assert output["logits"].shape == (2, 1, 7)
+            assert output["output_features"].shape[1] == 1
+        else:
+            assert output["logits"].shape[1] == seq_len
+
+
+def test_jepa_downstream_ablation_configs_do_not_reference_retired_paths():
+    forbidden = (
+        "HiST",
+        "hist_beam",
+        "teacher_no_kd",
+        "student_no_kd",
+        "no_kd",
+        "logits_kd",
+        "distillation",
+        "legacy fusion",
+    )
+
+    for path in JEPA_DOWNSTREAM_CONFIGS.values():
+        text = path.read_text(encoding="utf-8")
+        assert [snippet for snippet in forbidden if snippet in text] == []
+
+
 def test_jepa_validation_and_training_smoke_records_loss_checkpoint_and_metadata(tmp_path: Path):
     cfg = _tiny_train_cfg(tmp_path)
     result = train(cfg)
@@ -222,3 +366,56 @@ def test_jepa_validation_and_training_smoke_records_loss_checkpoint_and_metadata
     assert {"val_loss", "val_jepa_loss"} <= set(metrics["available_metrics"])
     assert "val_adba" not in metrics
     assert "val_acc" not in metrics
+
+
+def _tiny_downstream_model_cfg(cfg: dict) -> dict:
+    primary = copy.deepcopy(cfg["model"]["primary"])
+    primary.update(
+        {
+            "feature_size": 16,
+            "d_model": 16,
+            "num_classes": 7,
+            "num_pred": 1,
+            "gps_input_size": 3,
+        }
+    )
+    image_encoder = primary["encoders"]["image"]
+    image_encoder.update(
+        {
+            "checkpoint_path": "",
+            "strict": False,
+            "output_dim": 16,
+            "latent_dim": 16,
+            "image_channels": 3,
+            "visual_encoder": {
+                "image_channels": 3,
+                "latent_dim": 16,
+                "patch_size": 8,
+                "depth": 0,
+                "num_heads": 4,
+                "max_tokens": 16,
+                "dropout": 0.0,
+            },
+        }
+    )
+    gps_encoder = primary.setdefault("encoders", {}).setdefault("gps", {"type": "gps_mlp"})
+    gps_encoder.update({"output_dim": 16, "hidden_size": 16, "dropout": 0.0})
+    primary["projectors"] = {
+        "image": {"type": "linear", "d_model": 16, "dropout": 0.0},
+        "gps": {"type": "linear", "d_model": 16, "dropout": 0.0},
+    }
+    core = primary["representation_core"]
+    core["d_model"] = 16
+    core["dropout"] = 0.0
+    if core["type"] in {"early_concat_gru", "snapshot_frame"}:
+        core["hidden_size"] = 16
+        core["output_dim"] = 16
+        core["num_layers"] = 1
+    if core["type"] in {"token_transformer", "next_beam_query_transformer"}:
+        core["num_heads"] = 4
+        core["num_layers"] = 1
+        core["max_seq_len"] = 2
+    if core["type"] == "next_beam_query_transformer":
+        core["output_dim"] = 16
+    primary["heads"] = {"beam": {"type": "beam_head", "dropout": 0.0}}
+    return primary

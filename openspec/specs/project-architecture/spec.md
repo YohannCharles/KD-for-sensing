@@ -820,45 +820,6 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **THEN** 文档 MUST 说明清理流程先生成 manifest
 - **AND** 文档 MUST 说明真正删除需要用户显式确认
 
-### Requirement: Residual workflow 使用包内 CLI
-DeepSense6G residual workflow 的新运行入口 MUST 位于 `src/kd_sensing/` 包内，并通过包内 CLI 模块或 pyproject console script 暴露。项目 MUST NOT 新增顶层 `src.*` 运行模块或绕过 `kd_sensing` 包结构的兼容包装。
-
-#### Scenario: 包内 inspection CLI
-- **WHEN** 用户运行 residual input inspection
-- **THEN** 入口 MUST 委托 `kd_sensing` 包内实现
-- **AND** 命令参数 MUST 支持 GPS sweep root、label space 和输出检查
-- **AND** import 该 CLI 模块 MUST 不触发训练或读取大型数据
-
-#### Scenario: 包内 residual train/plot/compare CLI
-- **WHEN** 用户运行 residual manifest、train/eval、plot 或 compare 命令
-- **THEN** 入口 MUST 位于 `src/kd_sensing/cli/` 或等价包内 CLI 模块
-- **AND** pyproject console script 若新增 MUST 委托同一包内实现
-- **AND** 项目 MUST NOT 创建 `src/inspect_deepsense6g_residual_inputs.py` 这类绕过包结构的模块
-
-### Requirement: DeepSense6G Top8 selector 包内入口
-项目 MUST 将 DeepSense6G GPS Top8 Candidate Selector 的实现放入 `src/kd_sensing/` 包内。manifest、dataset、model、loss、engine、plotter 和 comparison CLI MUST 按现有职责边界分布在 `kd_sensing.data`、`kd_sensing.models`、`kd_sensing.losses`、`kd_sensing.engine`、`kd_sensing.evaluation`、`kd_sensing.cli` 或 `kd_sensing.utils` 中。项目 MUST NOT 新增长期维护的顶层 `src.data.*`、`src.models.*`、`src.losses.*` 或 `src.run_*.py` 运行入口。
-
-#### Scenario: console scripts 暴露 Top8 selector workflow
-- **WHEN** 开发者完成 editable install 并查看 `pyproject.toml` entry points
-- **THEN** 项目 MUST 暴露 Top8 selector 相关 console scripts
-- **AND** scripts MUST 至少覆盖 manifest 构建、selector 运行、plotter 和 GPS v2 comparison
-- **AND** 每个 console script MUST 委托 `kd_sensing.cli.*` 中的包内实现
-
-#### Scenario: 包内 module CLI 可运行
-- **WHEN** 用户执行 `conda run -n kd_mm_beam python -m kd_sensing.cli.prepare_deepsense6g_top8_candidate_manifest --help`
-- **THEN** 命令 MUST 正常退出
-- **AND** 帮助信息 MUST 包含 `--config`、`--support-ratio`、`--label-space` 和 `--topk`
-
-#### Scenario: 不新增绕过包结构的 src 入口
-- **WHEN** 架构边界测试扫描新 workflow
-- **THEN** 测试 MUST 验证内部代码不依赖顶层 `src.data`、`src.models`、`src.losses` 或 `src.run_deepsense6g_top8_selector`
-- **AND** 用户文档 MUST 推荐 `kd-sensing-*` 或 `python -m kd_sensing.cli.*` 命令
-
-#### Scenario: 轻量导入边界保持稳定
-- **WHEN** 开发者执行 `import kd_sensing` 或导入配置/路径轻量模块
-- **THEN** 系统 MUST 不因 Top8 selector workflow eager import torch dataset、matplotlib plotter、pandas manifest builder 或训练 runtime
-- **AND** Top8 selector 重依赖模块 MUST 只在对应 CLI、engine 或显式模块导入时加载
-
 ### Requirement: GPS+LiDAR BGAM 包内入口
 项目 MUST 将 GPS+LiDAR BGAM reranker 的实现放入 `src/kd_sensing/` 包内。manifest enrich、dataset、geometry utility、model、loss、engine、evaluation、debug plot 和 CLI MUST 按现有职责边界分布在 `kd_sensing.utils`、`kd_sensing.data`、`kd_sensing.models`、`kd_sensing.losses`、`kd_sensing.engine`、`kd_sensing.evaluation` 和 `kd_sensing.cli` 中。项目 MUST NOT 新增长期维护的顶层 `train_gps_lidar_bgam.py`、`eval_gps_lidar_bgam.py`、`datasets/gps_lidar_dataset.py` 或 `models/gps_lidar_bgam.py` 旁路入口。
 
@@ -903,4 +864,65 @@ DeepSense6G residual workflow 的新运行入口 MUST 位于 `src/kd_sensing/` �
 - **WHEN** 实施者删除 Hist 源码、配置和文档入口
 - **THEN** 该源码变更 MUST 不在同一步骤中用 ad hoc 命令删除 `outputs/`
 - **AND** 需要删除的运行产物 MUST 先出现在 cleanup manifest 中
+
+### Requirement: OpenSpec 当前规范不得保留脚手架占位
+当前 `openspec/specs/` 中的 spec MUST 具备真实 Purpose 和可理解的需求文本。归档 change 产生的 `TBD`、空泛占位或未替换模板文本 MUST 在进入当前规范后被修复，架构边界测试 MUST 能发现这类漂移。
+
+#### Scenario: 当前 spec purpose 可读
+- **WHEN** 开发者运行架构边界检查或 OpenSpec hygiene 检查
+- **THEN** 当前 specs 的 Purpose MUST 是描述 capability 边界的真实文本
+- **AND** Purpose MUST 不包含 `TBD`、未替换模板提示或归档脚手架说明
+
+#### Scenario: 新归档规范进入当前面
+- **WHEN** 一个 change 被归档并生成或修改 `openspec/specs/` 下的当前 spec
+- **THEN** 归档后的 spec MUST 通过 OpenSpec 校验和项目架构 hygiene 检查
+- **AND** 若归档工具留下占位 Purpose，开发者 MUST 在同一清理批次修复
+
+### Requirement: 架构 guardrail 必须匹配真实支持面
+架构边界测试、inventory 文档和当前支持入口 MUST 使用同一套项目表面定义。新增、迁移或删除配置、脚本和公开入口时，项目 MUST 同步更新 guardrail、inventory 和引用文档，不得通过过宽阈值掩盖真实漂移。
+
+#### Scenario: 配置数量 guardrail 更新
+- **WHEN** `configs/fusion/` 的当前支持 YAML 集合发生变化
+- **THEN** 架构边界测试中的数量阈值或 allowlist MUST 与 inventory 中的分类一致
+- **AND** 测试 MUST 继续限制根目录无限增长
+
+#### Scenario: 脚本 allowlist 更新
+- **WHEN** shell orchestration、thin CLI alias 或 research diagnostic 脚本引用的配置路径变化
+- **THEN** 脚本、inventory 和测试 allowlist MUST 同步更新
+- **AND** 当前脚本 MUST 不引用不存在的配置文件作为默认入口
+
+### Requirement: 大规模表面清理必须有快速验收
+项目 MUST 为大规模表面清理提供快速验收命令，覆盖 OpenSpec 校验、架构边界、CLI help 和被修改入口的引用一致性。所有项目相关 Python 验收 MUST 使用 `kd_mm_beam` 环境。
+
+#### Scenario: 清理实现后的快速验收
+- **WHEN** 支持面清理实现完成
+- **THEN** 开发者 MUST 运行 `openspec validate cleanup-project-surface-drift --strict`
+- **AND** 开发者 MUST 运行 `openspec validate --all --strict`
+- **AND** 开发者 MUST 运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+
+#### Scenario: 修改 CLI 或脚本入口后验收
+- **WHEN** 清理实现修改 console script、shell orchestration 或可视化入口
+- **THEN** 开发者 MUST 运行对应 `--help` 或无副作用 smoke 检查
+- **AND** 检查 MUST 不读取真实 dataset、不启动训练、不写入新的源码内产物
+
+### Requirement: 退役失败实验路线不得保留源码支持面
+当用户明确退役某条失败研究路线并要求不保留兼容时，项目 MUST 从当前源码支持面删除该路线的公开入口、配置、实现模块、测试和文档推荐路径。系统 MUST 不新增兼容 alias、stub CLI、薄 facade 或 registry fallback 来维持旧路线可发现性。
+
+#### Scenario: 退役入口不可安装
+- **WHEN** 开发者刷新 editable install 后检查 console scripts
+- **THEN** 已退役路线的 `kd-sensing-*` 命令 MUST 不再由 `pyproject.toml` 声明
+- **AND** 项目 MUST 不提供等价旧命令 alias 或兼容包装层
+
+#### Scenario: 退役实现不可作为当前模块导入
+- **WHEN** 开发者检查 `src/kd_sensing/cli`、`data`、`engine`、`models` 和 `losses`
+- **THEN** 已退役路线专属模块 MUST 不再作为当前源码模块保留
+- **AND** 保留主线不得从这些退役模块导入 helper
+
+### Requirement: Top8 residual coarse 退役边界
+Top8 selector 训练/plot/compare、GPS coarse anchor、GPS prior residual/delta correction 和 camera residual MUST 不属于当前包结构和推荐入口。BGAM、BGAM 依赖的 TopK candidate manifest/loss 支撑代码、通用 Top-K 指标、circular metrics、GPS-Rel-Polar、GPS v2、CSI、Raymobtime、JEPA 和 viewer manifest MAY 保留。
+
+#### Scenario: 保留通用指标
+- **WHEN** 清理实现扫描到 `topk`、`candidate` 或 `residual` 字符串
+- **THEN** 系统 MUST 按语义判断归属
+- **AND** 普通 evaluation Top-K、viewer top-k 展示、CSI candidate ranking 和 GPS v2 自身 residual 诊断不得仅因字符串命中被删除
 

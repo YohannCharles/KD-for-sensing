@@ -6,9 +6,6 @@ from typing import Any
 import numpy as np
 import torch
 
-from kd_sensing.engine.batch import (
-    prepare_gps_anchor_inputs,
-)
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
 from kd_sensing.engine.objectives.metadata import (
@@ -58,10 +55,6 @@ class EvaluationPassResult:
     outputs: torch.Tensor
     labels: torch.Tensor
     input_beams: torch.Tensor | None
-    gps_anchor_center_beam: torch.Tensor | None
-    gps_anchor_confidence: torch.Tensor | None
-    gps_anchor_coarse_topk: torch.Tensor | None
-    gps_anchor_residual_anchor_beam: torch.Tensor | None
     metadata: list[dict[str, Any]]
     objective_metadata: dict[str, Any]
     enabled_modalities: tuple[str, ...]
@@ -127,10 +120,6 @@ def run_evaluation_pass(
     all_los_bucket_labels = []
     all_link_outputs = []
     all_link_targets = []
-    all_gps_anchor_center_beam = []
-    all_gps_anchor_confidence = []
-    all_gps_anchor_coarse_topk = []
-    all_gps_anchor_residual_anchor_beam = []
     lidar_quality = LidarQualityAccumulator()
     saw_lidar = False
 
@@ -163,26 +152,6 @@ def run_evaluation_pass(
                 auxiliary_targets=auxiliary_targets,
                 cfg=cfg,
             )
-            batch_gps_anchor_kwargs = prepare_gps_anchor_inputs(
-                batch,
-                num_pred=num_pred,
-                device=device,
-                enabled=_gps_anchor_enabled(cfg),
-                non_blocking=non_blocking,
-            )
-            if "gps_anchor_center_beam" in batch_gps_anchor_kwargs:
-                all_gps_anchor_center_beam.append(batch_gps_anchor_kwargs["gps_anchor_center_beam"].detach().cpu())
-            if "gps_anchor_confidence" in batch_gps_anchor_kwargs:
-                all_gps_anchor_confidence.append(batch_gps_anchor_kwargs["gps_anchor_confidence"].detach().cpu())
-            if "gps_anchor_residual_anchor_beam" in batch_gps_anchor_kwargs:
-                all_gps_anchor_residual_anchor_beam.append(
-                    batch_gps_anchor_kwargs["gps_anchor_residual_anchor_beam"].detach().cpu()
-                )
-            if "gps_anchor_coarse_logits" in batch_gps_anchor_kwargs:
-                coarse_logits = batch_gps_anchor_kwargs["gps_anchor_coarse_logits"]
-                all_gps_anchor_coarse_topk.append(
-                    torch.topk(coarse_logits, k=min(3, int(coarse_logits.shape[-1])), dim=-1).indices.detach().cpu()
-                )
             with autocast_context(amp_enabled, device, amp_dtype):
                 set_csi_debug_batch_source(model, "val")
                 step = run_model_step(
@@ -195,9 +164,6 @@ def run_evaluation_pass(
                     device=device,
                     non_blocking=non_blocking,
                     force_modality_mask=force_modality_mask,
-                    extra_model_kwargs={
-                        **batch_gps_anchor_kwargs,
-                    },
                 )
                 outputs = step.logits
                 beam_loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
@@ -252,12 +218,6 @@ def run_evaluation_pass(
         link_targets=torch.cat(all_link_targets, dim=0) if all_link_targets else None,
     )
     metrics = _metrics_from_outputs(val_loss / max(len(dataloader), 1), outputs_t, labels_t, cfg, objective=objective)
-    gps_anchor_center_t = torch.cat(all_gps_anchor_center_beam, dim=0) if all_gps_anchor_center_beam else None
-    gps_anchor_confidence_t = torch.cat(all_gps_anchor_confidence, dim=0) if all_gps_anchor_confidence else None
-    gps_anchor_coarse_topk_t = torch.cat(all_gps_anchor_coarse_topk, dim=0) if all_gps_anchor_coarse_topk else None
-    gps_anchor_residual_t = (
-        torch.cat(all_gps_anchor_residual_anchor_beam, dim=0) if all_gps_anchor_residual_anchor_beam else None
-    )
     input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
     if objective in {"current_beam_selection", "selection_multitask"} and all_los_bucket_labels:
         metrics["los_buckets"] = _beam_metrics_by_los_bucket(
@@ -278,8 +238,6 @@ def run_evaluation_pass(
         val_link_quality_loss=val_link_quality_loss,
         val_selection_multitask_loss=val_selection_multitask_loss,
     )
-    if gps_anchor_center_t is not None:
-        metrics.update(_gps_anchor_conditioning_metrics(outputs_t, labels_t, gps_anchor_center_t, num_classes=num_classes))
     metrics["objective"] = objective_metadata
     metrics["available_metrics"] = objective_available_metrics(objective, metrics)
     metrics["enabled_modalities"] = list(enabled_modalities)
@@ -314,10 +272,6 @@ def run_evaluation_pass(
         outputs=outputs_t,
         labels=labels_t,
         input_beams=input_beams_t,
-        gps_anchor_center_beam=gps_anchor_center_t,
-        gps_anchor_confidence=gps_anchor_confidence_t,
-        gps_anchor_coarse_topk=gps_anchor_coarse_topk_t,
-        gps_anchor_residual_anchor_beam=gps_anchor_residual_t,
         metadata=all_metadata,
         objective_metadata=objective_metadata,
         enabled_modalities=enabled_modalities,
@@ -416,10 +370,6 @@ def _run_jepa_evaluation_pass(
         outputs=outputs_t,
         labels=labels_t,
         input_beams=None,
-        gps_anchor_center_beam=None,
-        gps_anchor_confidence=None,
-        gps_anchor_coarse_topk=None,
-        gps_anchor_residual_anchor_beam=None,
         metadata=all_metadata,
         objective_metadata=objective_metadata,
         enabled_modalities=enabled_modalities,
@@ -439,51 +389,6 @@ def _accumulate_scalar_diagnostics(
         elif torch.is_tensor(value) and value.numel() == 1:
             sums[key] = sums.get(key, 0.0) + float(value.detach().cpu().item())
             counts[key] = counts.get(key, 0) + 1
-
-
-def _gps_anchor_enabled(cfg: dict[str, Any]) -> bool:
-    for candidate in (
-        cfg.get("gps_anchor"),
-        cfg.get("coarse_anchor"),
-        cfg.get("model", {}).get("primary", {}).get("gps_anchor"),
-    ):
-        if isinstance(candidate, dict) and candidate.get("enabled") is not None:
-            return bool(candidate.get("enabled"))
-    return False
-
-
-def _gps_anchor_conditioning_metrics(
-    outputs: torch.Tensor,
-    labels: torch.Tensor,
-    anchor_center: torch.Tensor,
-    *,
-    num_classes: int,
-) -> dict[str, Any]:
-    pred = outputs.detach().cpu().argmax(dim=-1)
-    truth = labels.detach().cpu()
-    anchor = anchor_center.detach().cpu().to(torch.long)
-    if anchor.ndim == 1:
-        anchor = anchor.unsqueeze(1)
-    valid = truth.ge(0) & truth.lt(int(num_classes))
-    model_better = 0
-    total = 0
-    for model_pred, anchor_pred, label, ok in zip(
-        pred.reshape(-1).tolist(),
-        anchor.reshape(-1).tolist(),
-        truth.reshape(-1).tolist(),
-        valid.reshape(-1).tolist(),
-    ):
-        if not ok:
-            continue
-        model_err = min(abs(int(model_pred) - int(label)), int(num_classes) - abs(int(model_pred) - int(label)))
-        anchor_err = min(abs(int(anchor_pred) - int(label)), int(num_classes) - abs(int(anchor_pred) - int(label)))
-        model_better += int(model_err < anchor_err)
-        total += 1
-    return {
-        "uses_gps_coarse_anchor": True,
-        "gps_anchor_residual_improved_rate": float(model_better / max(total, 1)),
-        "gps_anchor_residual_improved_count": int(model_better),
-    }
 
 
 def _metrics_from_outputs(

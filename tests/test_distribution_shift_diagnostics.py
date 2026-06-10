@@ -25,7 +25,6 @@ def test_distribution_shift_outputs_metrics_csv_and_emd_fields(tmp_path: Path):
         split_artifact=artifact,
         split_artifact_path="split.json",
         output_dir=tmp_path,
-        label_space={"type": "geometry_residual", "residual_convention": "signed_circular"},
         smoothing=1e-3,
     )
 
@@ -34,12 +33,11 @@ def test_distribution_shift_outputs_metrics_csv_and_emd_fields(tmp_path: Path):
     assert metrics_path.exists()
     assert csv_path.exists()
     assert "emd_absolute" in result["metrics"]["target_test"]
-    assert "emd_residual" in result["metrics"]["target_test"]
     assert result["summary"]["claim_boundary"].startswith("Distribution distances describe labels only")
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert {"split", "label_space", "bin", "count"} == set(rows[0])
-    assert any(row["label_space"] == "residual" for row in rows)
+    assert any(row["label_space"] == "absolute" for row in rows)
 
 
 def test_distribution_distances_smoothing_handles_empty_bins():

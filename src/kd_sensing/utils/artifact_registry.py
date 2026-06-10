@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
+import time
 from typing import Any
 
 import torch
@@ -100,7 +103,18 @@ def load_checkpoint_metadata(checkpoint_path: str | Path | None) -> dict[str, An
     sidecar = checkpoint_sidecar_path(checkpoint_path)
     if not sidecar.exists():
         return _metadata_from_checkpoint_payload(checkpoint_path)
-    return load_sidecar(sidecar)
+    for attempt in range(2):
+        try:
+            metadata = load_sidecar(sidecar)
+        except (json.JSONDecodeError, OSError):
+            if attempt == 0:
+                time.sleep(0.05)
+                continue
+            return _metadata_from_checkpoint_payload(checkpoint_path)
+        if isinstance(metadata, dict):
+            return metadata
+        return _metadata_from_checkpoint_payload(checkpoint_path)
+    return _metadata_from_checkpoint_payload(checkpoint_path)
 
 
 def load_sidecar(path: str | Path) -> dict[str, Any]:
@@ -111,8 +125,17 @@ def load_sidecar(path: str | Path) -> dict[str, Any]:
 def write_sidecar(checkpoint_path: str | Path, metadata: dict[str, Any]) -> Path:
     sidecar = checkpoint_sidecar_path(checkpoint_path)
     sidecar.parent.mkdir(parents=True, exist_ok=True)
-    with sidecar.open("w", encoding="utf-8") as f:
-        json.dump(_json_ready(metadata), f, indent=2)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{sidecar.name}.", suffix=".tmp", dir=sidecar.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(_json_ready(metadata), f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_path.replace(sidecar)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return sidecar
 
 

@@ -30,6 +30,7 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/check_dataset.py": "dataset_preparation",
     "scripts/eval_baseline.py": "thin_cli_alias",
     "scripts/evaluate.py": "thin_cli_alias",
+    "scripts/figures/draw_jepa_architecture.py": "research_diagnostic",
     "scripts/inspect_dataset.py": "dataset_preparation",
     "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
     "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
@@ -223,36 +224,68 @@ def test_project_surface_inventory_guardrails_are_current():
     assert shell_entries == set(SHELL_ORCHESTRATION_ALLOWLIST)
 
 
-def test_gps_lidar_bgam_workflow_stays_inside_package_boundaries():
+def test_retired_top8_residual_routes_are_not_current_source_modules():
+    retired_paths = [
+        ROOT / "configs" / "deepsense6g_residual_fusion.yaml",
+        ROOT / "configs" / "deepsense6g_camera_residual.yaml",
+        ROOT / "configs" / "deepsense6g_top8_selector.yaml",
+        ROOT / "configs" / "mmw_town_top8_selector.yaml",
+        ROOT / "configs" / "gps" / "gps_coarse_anchor_smoke.yaml",
+        ROOT / "configs" / "gps" / "gps_coarse_anchor_target_adapt.yaml",
+        ROOT / "configs" / "gps" / "gps_neural_coarse_smoke.yaml",
+        ROOT / "src" / "kd_sensing" / "cli" / "gps_coarse_anchor.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "inspect_deepsense6g_residual_inputs.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "prepare_deepsense6g_residual_manifest.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "run_deepsense6g_residual_fusion.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "prepare_deepsense6g_top8_candidate_manifest.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "run_deepsense6g_top8_selector.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "prepare_mmw_town_top8_candidate_manifest.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_residual.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_camera_residual.py",
+        ROOT / "src" / "kd_sensing" / "data" / "geometry_residual.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "gps_coarse_anchor.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_residual_fusion.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_top8_selector.py",
+        ROOT / "src" / "kd_sensing" / "models" / "deepsense6g_residual_fusion.py",
+        ROOT / "src" / "kd_sensing" / "models" / "topk_candidate_selector.py",
+        ROOT / "src" / "kd_sensing" / "losses" / "residual.py",
+    ]
+    violations = [path.relative_to(ROOT).as_posix() for path in retired_paths if path.exists()]
+
+    assert violations == []
+
+
+def test_bgam_modules_stay_inside_package_boundaries():
+    required_package_entries = [
+        ROOT / "configs" / "deepsense6g_gps_lidar_bgam.yaml",
+        ROOT / "configs" / "mmw_town_gps_lidar_bgam.yaml",
+        ROOT / "src" / "kd_sensing" / "cli" / "prepare_deepsense6g_gps_lidar_bgam_manifest.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "run_deepsense6g_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "evaluate_deepsense6g_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "prepare_mmw_town_gps_lidar_bgam_manifest.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "run_mmw_town_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "evaluate_mmw_town_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_dataset.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_manifest.py",
+        ROOT / "src" / "kd_sensing" / "data" / "mmw_town_gps_lidar_bgam_manifest.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "mmw_town_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam_model.py",
+        ROOT / "src" / "kd_sensing" / "losses" / "gps_lidar_bgam_losses.py",
+    ]
+    missing = [path.relative_to(ROOT).as_posix() for path in required_package_entries if not path.exists()]
+    assert missing == []
+
     forbidden_root_entries = [
         ROOT / "train_gps_lidar_bgam.py",
         ROOT / "eval_gps_lidar_bgam.py",
         ROOT / "datasets" / "gps_lidar_dataset.py",
         ROOT / "models" / "gps_lidar_bgam.py",
     ]
-    for path in forbidden_root_entries:
-        assert not path.exists()
+    violations = [path.relative_to(ROOT).as_posix() for path in forbidden_root_entries if path.exists()]
 
-    forbidden_imports = []
-    bgam_paths = [
-        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_dataset.py",
-        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_manifest.py",
-        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_gps_lidar_bgam.py",
-        ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam.py",
-        ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam_model.py",
-    ]
-    for path in bgam_paths:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith(("datasets", "models", "src.run_")):
-                    forbidden_imports.append(f"{path.relative_to(ROOT)} imports {node.module}")
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith(("datasets", "models", "src.run_")):
-                        forbidden_imports.append(f"{path.relative_to(ROOT)} imports {alias.name}")
-
-    assert forbidden_imports == []
+    assert violations == []
 
 
 def test_shell_orchestration_defaults_do_not_write_to_outputs_other():
@@ -542,48 +575,28 @@ def test_config_import_does_not_import_runtime_boundaries():
     }
 
 
-def test_deepsense6g_residual_cli_imports_are_package_scoped_and_light():
+def test_retired_top8_residual_modules_are_not_importable():
     modules = _run_module_presence_probe(
-        "import kd_sensing.cli.inspect_deepsense6g_residual_inputs\n"
-        "import kd_sensing.cli.prepare_deepsense6g_residual_manifest\n"
-        "import kd_sensing.cli.run_deepsense6g_residual_fusion\n"
-        "import kd_sensing.cli.plot_deepsense6g_residual_fusion\n"
-        "import kd_sensing.cli.compare_deepsense6g_residual_with_gps_v2",
+        """
+import importlib.util
+for module in (
+    "kd_sensing.cli.inspect_deepsense6g_residual_inputs",
+    "kd_sensing.cli.prepare_deepsense6g_top8_candidate_manifest",
+    "kd_sensing.cli.gps_coarse_anchor",
+    "kd_sensing.data.deepsense6g_residual",
+    "kd_sensing.engine.gps_coarse_anchor",
+    "kd_sensing.models.topk_candidate_selector",
+    "kd_sensing.losses.residual",
+):
+    assert importlib.util.find_spec(module) is None, module
+""",
         {
-            "top_level_residual": "src.inspect_deepsense6g_residual_inputs",
             "trainer": "kd_sensing.engine.trainer",
             "data_factory": "kd_sensing.engine.data_factory",
         },
     )
 
     assert modules == {
-        "top_level_residual": False,
-        "trainer": False,
-        "data_factory": False,
-    }
-
-
-def test_deepsense6g_top8_selector_cli_imports_are_package_scoped():
-    modules = _run_module_presence_probe(
-        "import kd_sensing.cli.prepare_deepsense6g_top8_candidate_manifest\n"
-        "import kd_sensing.cli.run_deepsense6g_top8_selector\n"
-        "import kd_sensing.cli.plot_deepsense6g_top8_selector\n"
-        "import kd_sensing.cli.compare_deepsense6g_top8_selector_with_gps_v2",
-        {
-            "top_level_run": "src.run_deepsense6g_top8_selector",
-            "top_level_data": "src.data.deepsense6g_topk_candidate_manifest",
-            "top_level_models": "src.models.topk_candidate_selector",
-            "top_level_losses": "src.losses.topk_candidate_losses",
-            "trainer": "kd_sensing.engine.trainer",
-            "data_factory": "kd_sensing.engine.data_factory",
-        },
-    )
-
-    assert modules == {
-        "top_level_run": False,
-        "top_level_data": False,
-        "top_level_models": False,
-        "top_level_losses": False,
         "trainer": False,
         "data_factory": False,
     }

@@ -34,12 +34,9 @@ _EXPORTS: dict[str, str] = {
     "EarlyConcatGRUCore": "kd_sensing.models.modular",
     "LinearProjector": "kd_sensing.models.modular",
     "ModularSequenceModel": "kd_sensing.models.modular",
+    "NextBeamQueryTransformerCore": "kd_sensing.models.modular",
     "SingleGRUCore": "kd_sensing.models.modular",
     "TokenTransformerCore": "kd_sensing.models.modular",
-    "GPSAnchoredResidualFusion": "kd_sensing.models.deepsense6g_residual_fusion",
-    "GPSAnchoredTopKReranker": "kd_sensing.models.deepsense6g_residual_fusion",
-    "TopKCandidateSelector": "kd_sensing.models.topk_candidate_selector",
-    "CandidateAttentionSelector": "kd_sensing.models.candidate_attention_selector",
 }
 
 __all__ = list(_EXPORTS)
@@ -50,7 +47,7 @@ _REMOVED_ALIASES = {
     "CRAFFusionNet": "CRAF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "MARFFusionNet": "MARF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "BottleneckPrivateAdapter": "HiST-Beam/Hist has been retired; no compatibility adapter is provided.",
-    "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS candidate, or residual fusion workflows.",
+    "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS v2, CSI, Raymobtime, JEPA, or viewer workflows.",
 }
 
 

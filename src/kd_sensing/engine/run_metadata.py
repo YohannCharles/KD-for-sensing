@@ -276,7 +276,94 @@ def prediction_setup_metadata(
         metadata["uses_history_window"] = False
         metadata["uses_temporal_core"] = False
         metadata["split_ratio"] = "80/20"
+    jepa_metadata = jepa_downstream_metadata(cfg)
+    if jepa_metadata:
+        metadata["jepa_downstream"] = jepa_metadata
     return metadata
+
+
+def jepa_downstream_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
+    model_cfg = cfg.get("model", {})
+    primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
+    if str(primary_cfg.get("type", "")).strip() not in {"modular_sequence", "modular_sequence_model"}:
+        return {}
+    encoders_cfg = primary_cfg.get("encoders", {})
+    image_encoder_cfg = encoders_cfg.get("image", {}) if isinstance(encoders_cfg, dict) else {}
+    if isinstance(image_encoder_cfg, str):
+        image_encoder_cfg = {"type": image_encoder_cfg}
+    if not isinstance(image_encoder_cfg, dict) or str(image_encoder_cfg.get("type", "")) != "jepa_context_image":
+        return {}
+    core_cfg = primary_cfg.get("representation_core", {})
+    if isinstance(core_cfg, str):
+        core_cfg = {"type": core_cfg}
+    if not isinstance(core_cfg, dict):
+        core_cfg = {}
+    core_type = str(core_cfg.get("type", ""))
+    experiment_cfg = cfg.get("experiment", {})
+    ablation = str(
+        experiment_cfg.get("ablation")
+        or core_cfg.get("ablation")
+        or experiment_cfg.get("variant")
+        or cfg.get("output", {}).get("run_name")
+        or ""
+    )
+    is_next_query = core_type == "next_beam_query_transformer"
+    return {
+        "ablation": ablation,
+        "representation_core_type": core_type,
+        "jepa_checkpoint_path": image_encoder_cfg.get("checkpoint_path") or image_encoder_cfg.get("checkpoint") or "",
+        "freeze_image_encoder": bool(image_encoder_cfg.get("freeze_encoder", False)),
+        "time_embedding_enabled": _metadata_flag_enabled(
+            core_cfg.get("time_embedding"),
+            default=is_next_query,
+        ),
+        "modality_embedding_enabled": _metadata_flag_enabled(
+            core_cfg.get("modality_embedding"),
+            default=is_next_query,
+        ),
+        "next_beam_query_enabled": _metadata_flag_enabled(
+            core_cfg.get("next_beam_query"),
+            default=is_next_query,
+        ),
+        "representation_core": _representation_core_metadata(core_cfg),
+        "image_encoder": {
+            "type": "jepa_context_image",
+            "checkpoint_path": image_encoder_cfg.get("checkpoint_path") or image_encoder_cfg.get("checkpoint") or "",
+            "freeze_encoder": bool(image_encoder_cfg.get("freeze_encoder", False)),
+            "state_dict_prefix": image_encoder_cfg.get("state_dict_prefix", "context_encoder"),
+            "pooling": image_encoder_cfg.get("pooling", "mean"),
+            "latent_dim": image_encoder_cfg.get("latent_dim"),
+        },
+    }
+
+
+def _representation_core_metadata(core_cfg: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "type",
+        "d_model",
+        "hidden_size",
+        "output_dim",
+        "num_heads",
+        "num_layers",
+        "dropout",
+        "max_seq_len",
+        "time_embedding",
+        "modality_embedding",
+        "next_beam_query",
+    )
+    return {field: core_cfg[field] for field in fields if field in core_cfg}
+
+
+def _metadata_flag_enabled(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "off", "none", "disabled", "disable"}
+    if isinstance(value, dict):
+        return bool(value.get("enabled", True))
+    return bool(value)
 
 
 def _validation_source_name(cfg: dict[str, Any], dataset_cfg: dict[str, Any]) -> str | None:
@@ -515,7 +602,7 @@ def _uses_temporal_core(cfg: dict[str, Any]) -> bool:
     core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
     if core_type == "snapshot_frame":
         return False
-    return core_type in {"single_gru", "early_concat_gru", "token_transformer"} or "gru" in core_type
+    return core_type in {"single_gru", "early_concat_gru", "token_transformer", "next_beam_query_transformer"} or "gru" in core_type
 
 
 def _prediction_setup_splits(split_metadata: dict[str, Any]) -> dict[str, Any]:
@@ -553,6 +640,7 @@ __all__ = [
     "dataloaders_run_metadata",
     "dataset_run_metadata",
     "image_run_metadata",
+    "jepa_downstream_metadata",
     "prediction_setup_metadata",
     "throughput_run_metadata",
 ]

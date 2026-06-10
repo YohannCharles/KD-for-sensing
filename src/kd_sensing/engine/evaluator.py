@@ -118,6 +118,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
         dataset_kwargs["gps_scaler"] = _dataset_attr_recursive(train_dataset, "gps_scaler")
         if needs_train_lidar and getattr(train_dataset, "use_lidar", False):
             dataset_kwargs["lidar_normalizer"] = _dataset_attr_recursive(train_dataset, "lidar_normalizer")
+        dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
     elif needs_train_lidar:
         train_dataset = build_split_dataset(cfg, "train")
         prepare_lidar_normalizer(cfg, train_dataset)

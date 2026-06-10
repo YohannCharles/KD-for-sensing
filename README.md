@@ -1,8 +1,8 @@
 # KD for Sensing
 
-本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前支持面围绕 DeepSense6G、MMW 和 Raymobtime 数据集家族中的 supervised/adaptation 训练、GPS v2/Top8/BGAM/residual 系列、CSI hardening、预处理、诊断和可视化入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前支持面围绕 DeepSense6G、MMW 和 Raymobtime 数据集家族中的 supervised/adaptation 训练、GPS v2、BGAM、CSI hardening、预处理、诊断和可视化入口。
 
-蒸馏训练和 HiST-Beam 研究线已经退役。当前 quickstart、GPS residual、Top8 selector、BGAM、camera residual 和 calibration workflow 都只构建单个 `model.primary` 主模型；旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`distillation.*`、`configs/hist_beam/*`、`hist_beam_fusion` 和 `kd-sensing-hist-beam-loso` 会被 migration guard 或 registry 拒绝，并提示使用当前入口。历史输出和权重只作为只读复现资料保留。
+蒸馏训练、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 研究线已经退役。当前 quickstart、BGAM、GPS v2 和 calibration workflow 都只构建单个 `model.primary` 主模型；旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`distillation.*`、`configs/hist_beam/*`、`hist_beam_fusion` 和 `kd-sensing-hist-beam-loso` 会被 migration guard 或 registry 拒绝，并提示使用当前入口。历史输出和权重只作为只读复现资料保留。
 
 ## 安装
 
@@ -23,8 +23,8 @@ conda run -n kd_mm_beam kd-sensing-runs --help
 conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --help
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
-conda run -n kd_mm_beam kd-sensing-run-deepsense6g-residual-fusion --help
-conda run -n kd_mm_beam kd-sensing-run-deepsense6g-top8-selector --help
+conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --help
+conda run -n kd_mm_beam kd-sensing-run-mmw-town-gps-lidar-bgam --help
 ```
 
 等价包内 CLI 入口形如：
@@ -103,7 +103,7 @@ conda run -n kd_mm_beam kd-sensing-evaluate \
 
 已退役入口：
 
-HiST-Beam LOSO、history-anchor Hist、P3/V7/V8/V9 Hist probe 和 image-only legal crossroad probe 不再作为当前可运行入口维护。旧 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*` 和 `hist_beam_fusion` 会快速失败并说明研究线已退役；当前跨场景 follow-up 使用后文的 DeepSense6G residual/Top8/BGAM、MMW GPS v2/BGAM、CSI hardening、Raymobtime 和 viewer workflow。
+HiST-Beam LOSO、history-anchor Hist、P3/V7/V8/V9 Hist probe、image-only legal crossroad probe、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 不再作为当前可运行入口维护。旧 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*` 和 `hist_beam_fusion` 会快速失败并说明研究线已退役；当前跨场景 follow-up 使用后文的 DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、Raymobtime 和 viewer workflow。
 
 实验运行索引：
 
@@ -182,9 +182,9 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/strong.yaml dat
 
 Raymobtime s008 current snapshot beam selection 见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。
 
-### MMW Town GPS Top8 Candidate Manifest
+### MMW Town GPS v2 logits for BGAM
 
-MMW 是 GPS pseudo-history BGAM 的第一阶段主数据集，用来对照 arXiv:2603.15093v1。Top8 manifest 默认读取 `configs/mmw_town_top8_selector.yaml`，覆盖 sunny/Town10 的 crossroad、skybridge、curvyroad 和 Hroad，使用 `mapping_enabled`、64-beam circular label space 和 MMW GPS v2 frozen logits。先重跑 GPS v2 并保存 logits：
+MMW 是 GPS pseudo-history BGAM 的第一阶段主数据集，用来对照 arXiv:2603.15093v1。BGAM 默认使用 `mapping_enabled`、64-beam circular label space 和 MMW GPS v2 frozen logits；候选 manifest 由 BGAM manifest 准备流程消费或生成，不再提供 standalone Top8 manifest CLI/config。先重跑 GPS v2 并保存 logits：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 \
@@ -192,14 +192,9 @@ conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 \
   --label-space mapping_enabled \
   --save-logits \
   --save-prior-probs
-
-conda run -n kd_mm_beam kd-sensing-prepare-mmw-town-top8-candidate-manifest \
-  --config configs/mmw_town_top8_selector.yaml \
-  --label-space mapping_enabled \
-  --topk 8
 ```
 
-manifest builder 从 `gps_logits.npy` 重新计算 Top8，不从 `predictions.csv` 的 Top5 字段截断推导。MMW calibration 是 scene-specific，所以 logits index、predictions、support manifest 和 Top8 manifest 会按 scene 校验 `beam_label_mapping_fingerprint`。若 future beam power path 可用，manifest 还会写 `gps_normalized_gain`、candidate normalized gain 和 Top8 oracle normalized gain，便于和论文的 normalized gain 指标对照。
+BGAM manifest builder 从 `gps_logits.npy` 重新计算候选，不从 `predictions.csv` 的 Top5 字段截断推导。MMW calibration 是 scene-specific，所以 logits index、predictions、support manifest 和 BGAM candidate manifest 会按 scene 校验 `beam_label_mapping_fingerprint`。若 future beam power path 可用，manifest 还会写 `gps_normalized_gain`、candidate normalized gain 和 oracle normalized gain，便于和论文的 normalized gain 指标对照。
 
 ### MMW Town GPS+LiDAR BGAM Reranker
 
@@ -235,7 +230,7 @@ conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
 
 MMW sequence split 默认使用 `group_safe_time_block` 协议，按连续片段、agent 和 time block 切分，并写出 `split_metadata.json`。metadata 会记录 `split_protocol=mmw_sequence_split_v2`、`split_strategy`、guard band、train/test group、样本数、标签分布、泄漏诊断和 `strict_validation_eligible`；训练、评估和 quick summary 会消费这些字段。旧随机滑窗切分不再作为公开准备或 split builder 协议支持；已有旧 CSV 应使用新的 split tag 重新生成 group-safe split，缺失 metadata 或 `strict_validation_eligible=false` 的产物会被保守标记为不进入 strict 主结论。
 
-MMW beam label calibration 默认关闭，普通训练和评估沿用 raw 64-beam label space。需要按 GPS-angle 诊断重映射 label 时，在当前 MMW GPS v2、Top8 或 BGAM 配置中显式选择 `mapping_enabled` 或设置 `data.dataset.beam_label_calibration.enabled=true` 及 offset/mapping file。启用后 `input_beam`、`target_beam`、soft label、beamspace physical label、prediction/diagnostic metadata 会声明 `beam_label_space` 和 mapping fingerprint；`mmwave` sensing power vector 仍保持原始顺序。raw-label 旧 checkpoint 和 mapped-label 新 run 不应直接混比，除非报告明确执行 inverse mapping 或按 label space 分组。
+MMW beam label calibration 默认关闭，普通训练和评估沿用 raw 64-beam label space。需要按 GPS-angle 诊断重映射 label 时，在当前 MMW GPS v2 或 BGAM 配置中显式选择 `mapping_enabled` 或设置 `data.dataset.beam_label_calibration.enabled=true` 及 offset/mapping file。启用后 `input_beam`、`target_beam`、soft label、beamspace physical label、prediction/diagnostic metadata 会声明 `beam_label_space` 和 mapping fingerprint；`mmwave` sensing power vector 仍保持原始顺序。raw-label 旧 checkpoint 和 mapped-label 新 run 不应直接混比，除非报告明确执行 inverse mapping 或按 label space 分组。
 
 ### MMW Town GPS-only v2: circular scene adapter
 
@@ -259,59 +254,9 @@ conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 \
 
 adapter 消融包含 `adapter_v1`、`circular_affine`、`circular_affine_spline` 和 `branch_mixture_circular`，并保留 `backbone_only`、`geo_only`、`geo_plus_backbone`、`branch_mixture_circular_weighted` 对照。crossroad/Hroad 的结构性问题优先查看 `residual_by_theta_bin.csv`、`residual_by_branch.csv` 和 plotter 生成的 signed residual、branch visualization；curvyroad/skybridge 则关注 few-shot support 后是否保持旧 target_adapt_beambench 收益。本 workflow 不实现 camera/LiDAR/radar/mmWave 多模态 residual correction，也不改变现有 GPS v1 或 MMW calibration 默认行为。
 
-### DeepSense6G residual correction after GPS v2
+### Retired GPS residual routes
 
-`configs/deepsense6g_residual_fusion.yaml` 提供 DeepSense6G scenario31-34 的 GPS v2 prior anchored residual correction workflow。它默认读取 `outputs/analysis/deepsense6g_gps_adapter_v2_support_sweep/r15/mapping_disabled/`，把 GPS v2 top1/logits 作为 coarse anchor；当历史 v2 产物没有 `gps_logits.npy` 时，会从 GPS top1 构造 circular Gaussian fallback prior，并在 manifest、metadata 和 predictions 中写入 `gps_prior_source=fallback_gaussian_from_top1`。这不是从零训练多模态 beam predictor：image/LiDAR/radar 只作为 residual correction、gate 或 candidate rerank 的可选输入。
-
-gate 和 good anchor loss 的目的，是尽量不破坏 GPS already-good 样本，同时给 `gps_error >= 4` 的 hard residual 样本留下受控修正空间。主结果应同时看 `DBA`、`delta_DBA_vs_gps`、`good_sample_degradation_rate` 和 `bad_sample_correction_rate`；`within_scene_residual_upper_bound` 只作为 sanity upper bound，不进入主结论。
-
-```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.inspect_deepsense6g_residual_inputs \
-  --gps-sweep-root outputs/analysis/deepsense6g_gps_adapter_v2_support_sweep \
-  --label-space mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.prepare_deepsense6g_residual_manifest \
-  --config configs/deepsense6g_residual_fusion.yaml \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.run_deepsense6g_residual_fusion \
-  --config configs/deepsense6g_residual_fusion.yaml \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.plot_deepsense6g_residual_fusion \
-  --results-dir outputs/analysis/deepsense6g_residual_fusion/r15/mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.compare_deepsense6g_residual_with_gps_v2 \
-  --gps-v2-root outputs/analysis/deepsense6g_gps_adapter_v2_support_sweep \
-  --residual-root outputs/analysis/deepsense6g_residual_fusion/r15/mapping_disabled \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-```
-
-等价 console scripts 为 `kd-sensing-inspect-deepsense6g-residual-inputs`、`kd-sensing-prepare-deepsense6g-residual-manifest`、`kd-sensing-run-deepsense6g-residual-fusion`、`kd-sensing-plot-deepsense6g-residual-fusion` 和 `kd-sensing-compare-deepsense6g-residual-with-gps-v2`。所有 residual 输出写入 `outputs/analysis/deepsense6g_residual_fusion/r15/mapping_disabled/`，包括 `summary_overall.csv`、`summary_by_scene.csv`、`summary_by_gps_good_bad.csv`、`predictions.csv`、`correction_events.csv`、`candidate_recall.csv`、figures 和 `comparison_report.md`。query label 只用于最终评价、诊断图和报告，metadata 会记录 `query_label_used_for_training=false`。
-
-### DeepSense6G camera residual after GPS v2
-
-`configs/deepsense6g_camera_residual.yaml` 是显式 opt-in 的 camera-assisted residual workflow。GPS v2 r15 prior 保持 frozen；Camera AE 只学习无监督 latent feature；residual/gate 阶段只做 local delta、correction gate、good-anchor 保护和可选 candidate rerank，不把 camera direct 64-class beam prediction 作为主方法。默认输出根目录为 `outputs/analysis/deepsense6g_camera_residual/r15/mapping_disabled/`，AE checkpoint 和 feature 分别写入 `outputs/training/deepsense6g_camera_ae/r15/mapping_disabled/` 与 `outputs/features/deepsense6g_camera_ae/r15/mapping_disabled/`。
-
-```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.prepare_deepsense6g_camera_residual_manifest \
-  --config configs/deepsense6g_camera_residual.yaml \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.train_deepsense6g_camera_ae \
-  --config configs/deepsense6g_camera_residual.yaml \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.extract_deepsense6g_camera_ae_features \
-  --config configs/deepsense6g_camera_residual.yaml \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-conda run -n kd_mm_beam python -m kd_sensing.cli.run_deepsense6g_camera_residual \
-  --config configs/deepsense6g_camera_residual.yaml \
-  --support-ratio 0.15 \
-  --label-space mapping_disabled
-```
-
-主判读顺序是先确认 `gps_prior_only` 是否复现 r15，再比较 `gps_context_only_residual` 与 `camera_ae_residual_gated_anchor` 的 `delta_DBA_vs_gps`、`good_sample_degradation_rate`、`bad_sample_correction_rate`、`gate_mean` 和 `gate_auc`。manifest、loss 和 run metadata 都记录 query label 只用于最终 evaluation；若本地 image 或 AE feature 缺失，summary 会写出降级或跳过原因。
+DeepSense6G GPS residual fusion、camera residual、GPS coarse anchor 和 Top8 selector 训练路线已经退役；对应配置、console scripts、engine/model/loss 和 focused tests 不再维护。BGAM 模块仍保留，继续使用 GPS v2 logits/candidate manifest 作为当前 reranker workflow 的输入。
 
 可用 override 增量处理其它 sunny 场景：
 
@@ -335,7 +280,7 @@ conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.p
   --split-strategy group_safe_time_block
 ```
 
-每次准备完成后会写 `dataset/MMW/<condition>/data_availability.json` 和 `dataset/MMW/data_availability.json`。当前 MMW 跨场景验证不再生成 HiST scenario-LOSO 计划；推荐顺序是先完成 Town10 数据准备和 group-safe split，再运行 MMW GPS v2、Top8 manifest 和 GPS+LiDAR BGAM。旧 P3/V7/V8/V9 本地输出如果仍在 `outputs/` 中，只作为历史分析资料，不再作为 README 当前命令来源。
+每次准备完成后会写 `dataset/MMW/<condition>/data_availability.json` 和 `dataset/MMW/data_availability.json`。当前 MMW 跨场景验证不再生成 HiST scenario-LOSO 计划；推荐顺序是先完成 Town10 数据准备和 group-safe split，再运行 MMW GPS v2 和 GPS+LiDAR BGAM。旧 P3/V7/V8/V9 本地输出如果仍在 `outputs/` 中，只作为历史分析资料，不再作为 README 当前命令来源。
 
 包含 image 或 LiDAR 的长跑通常先受 CPU image 解码、DataLoader wait、cache coverage 和 worker RSS 限制。长跑前建议使用 [docs/training_throughput.md](docs/training_throughput.md) 中的 profile 与并行推荐流程；推荐器会优先给出 `num_workers`、`batch_size`、并行度、`persistent_workers` 和 `output.progress.enabled=false` 的保守覆盖。启用 RGB/ImageNet 派生缓存时使用 `data.cache.image.policy=auto|read_only|rebuild|off`，可预热：
 

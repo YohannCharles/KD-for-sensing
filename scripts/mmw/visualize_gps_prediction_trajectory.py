@@ -541,7 +541,7 @@ def _default_display_name(scenario: str) -> str:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize true-vs-predicted GPS beam trajectories for MMW Town scenes.")
     parser.add_argument("--prepared-root", type=Path, default=Path("dataset/MMW/sunny/Prepared"))
-    parser.add_argument("--prediction-root", type=Path, default=Path("outputs/gps_coarse_anchor/target_adapt_beambench_dba"))
+    parser.add_argument("--prediction-root", type=Path, default=Path("outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled"))
     parser.add_argument("--split-tag", default="l5p3_group_safe")
     parser.add_argument("--split", default="test")
     parser.add_argument("--scenarios", default=",".join(DEFAULT_SCENARIOS))

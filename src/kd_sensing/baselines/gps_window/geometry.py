@@ -5,10 +5,6 @@ from typing import Iterable
 
 import torch
 
-from kd_sensing.data.geometry_residual import angle_to_beam as _angle_to_beam
-from kd_sensing.data.geometry_residual import circular_beam_distance as _circular_beam_distance
-from kd_sensing.data.geometry_residual import normalize_angle_degrees
-
 
 def angle_to_beam(
     angle_degrees: float,
@@ -24,7 +20,26 @@ def angle_to_beam(
 
 
 def circular_beam_distance(left: int, right: int, *, num_classes: int) -> int:
-    return _circular_beam_distance(int(left), int(right), num_beams=int(num_classes))
+    beams = _positive_int(num_classes, "num_classes")
+    diff = abs(int(left) % beams - int(right) % beams)
+    return int(min(diff, beams - diff))
+
+
+def normalize_angle_degrees(angle: float) -> float:
+    return float(float(angle) % 360.0)
+
+
+def _angle_to_beam(angle_degrees: float, *, num_beams: int, start_degrees: float = 0.0) -> int:
+    beams = _positive_int(num_beams, "num_beams")
+    shifted = (float(angle_degrees) - float(start_degrees)) % 360.0
+    return int(math.floor(shifted / (360.0 / beams))) % beams
+
+
+def _positive_int(value: int, name: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive, got {value}.")
+    return parsed
 
 
 def signed_angle_delta_degrees(next_angle: float, prev_angle: float) -> float:

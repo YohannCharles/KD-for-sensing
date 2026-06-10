@@ -70,7 +70,9 @@ from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E
 from kd_sensing.utils.artifact_registry import (  # noqa: E402
     archive_best_checkpoint,
     find_registry_checkpoint,
+    load_checkpoint_metadata,
     resolve_evaluation_checkpoint,
+    write_sidecar,
 )
 
 _PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", ROOT / "scripts/profile_training_io.py")
@@ -2440,6 +2442,55 @@ def test_artifact_registry_archives_highest_metric_and_resolves_evaluation_check
     assert found.path == resolved.path
     assert resolved.source == "registry"
     assert "acc_0.7500" in resolved.path.name
+
+
+def test_artifact_registry_tolerates_malformed_sidecar_during_parallel_archival(tmp_path: Path):
+    registry_dir = tmp_path / "registry"
+    cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
+        "experiment": {"name": "gps_strong", "task": "gps"},
+        "model": {"primary": {"type": "gps_strong"}},
+        "output": {"run_name": "gps_strong"},
+    }
+    metadata = {
+        "config_slug": "gps_strong",
+        "artifact_role": "strong",
+        "metric_value": 0.90,
+        "path": str(registry_dir / "gps_strong_strong_acc_0.9000.pth"),
+    }
+    embedded = Path(metadata["path"])
+    embedded.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"checkpoint_registry": metadata}, embedded)
+    embedded.with_suffix(embedded.suffix + ".json").write_text("", encoding="utf-8")
+
+    loaded = load_checkpoint_metadata(embedded)
+    found = find_registry_checkpoint(cfg, target_slug="gps_strong", role="strong")
+
+    assert loaded["metric_value"] == 0.90
+    assert found.path == embedded
+
+    candidate = tmp_path / "candidate.pth"
+    torch.save({"value": torch.tensor([3])}, candidate)
+    archived = archive_best_checkpoint(
+        cfg,
+        source_checkpoint=candidate,
+        val_top1=0.95,
+        epoch=4,
+        run_dir=tmp_path / "run",
+    )
+
+    assert archived["updated"] is True
+    assert load_checkpoint_metadata(archived["path"])["metric_value"] == 0.95
+
+
+def test_write_sidecar_uses_complete_json_file(tmp_path: Path):
+    checkpoint = tmp_path / "model.pth"
+    checkpoint.write_bytes(b"weights")
+
+    sidecar = write_sidecar(checkpoint, {"metric_value": 0.5, "path": checkpoint})
+
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["metric_value"] == 0.5
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_default_registry_is_scene_scoped(tmp_path: Path):

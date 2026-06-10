@@ -83,10 +83,8 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
 def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
     experiment = str(cfg.get("experiment", {}).get("name") or "")
     if experiment not in {
-        "deepsense6g_gps_top8_candidate_selector",
         "deepsense6g_gps_lidar_bgam_reranker",
         "deepsense6g_gps_adapter_v2",
-        "mmw_town_gps_top8_candidate_selector",
         "mmw_town_gps_lidar_bgam_reranker",
         "mmw_town_gps_adapter_v2",
     }:
@@ -98,7 +96,6 @@ def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
     num_beams = int(data_cfg.get("num_beams", 64))
     try:
         from kd_sensing.data.beam_label_space import label_space_metadata, validate_label_space_rows
-        from kd_sensing.data.deepsense6g_topk_candidate_manifest import ratio_tag
     except Exception:
         return
     scene_values = _scene_values(data_cfg)
@@ -109,9 +106,9 @@ def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
     }
     strict = selected_label_space != "mapping_disabled"
     ratio = float(data_cfg.get("support_ratio", 0.15))
-    tag = ratio_tag(ratio)
+    tag = _ratio_tag(ratio)
     candidate_paths: list[tuple[Path, str]] = []
-    if experiment in {"deepsense6g_gps_top8_candidate_selector", "deepsense6g_gps_adapter_v2"}:
+    if experiment == "deepsense6g_gps_adapter_v2":
         gps_root = Path(str(data_cfg.get("gps_sweep_root", data_cfg.get("output_root", ""))))
         if gps_root:
             gps_dir = gps_root / tag / selected_label_space
@@ -121,7 +118,7 @@ def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
                     (gps_dir / "predictions.csv", "GPS predictions"),
                 ]
             )
-    if experiment in {"mmw_town_gps_top8_candidate_selector", "mmw_town_gps_adapter_v2"}:
+    if experiment == "mmw_town_gps_adapter_v2":
         gps_root = Path(str(data_cfg.get("gps_v2_artifact_root", data_cfg.get("output_root", ""))))
         if gps_root:
             gps_dir = gps_root if gps_root.name == selected_label_space else gps_root / selected_label_space
@@ -181,6 +178,10 @@ def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
                 artifact_name=artifact_name,
                 require_fields=strict,
             )
+
+
+def _ratio_tag(ratio: float) -> str:
+    return f"r{int(round(float(ratio) * 100)):02d}"
 
 
 def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:

@@ -34,7 +34,6 @@ class SyntheticSequenceDataset(Dataset):
         csi_rms_normalizer: object | None = None,
         occlusion_target: bool | dict[str, object] | None = None,
         position_target: bool | dict[str, object] | None = None,
-        gps_anchor: bool | dict[str, object] | None = None,
         seed: int = 0,
         **_: object,
     ):
@@ -58,9 +57,6 @@ class SyntheticSequenceDataset(Dataset):
         self.csi_rms_normalizer = csi_rms_normalizer
         self.occlusion_target_enabled = _enabled(occlusion_target)
         self.position_target_enabled = _enabled(position_target)
-        self.gps_anchor_enabled = _enabled(gps_anchor)
-        gps_anchor_cfg = gps_anchor if isinstance(gps_anchor, dict) else {}
-        self.gps_anchor_group_size = int(gps_anchor_cfg.get("group_size", 8))
         self.position_target_normalize = False
         self.occlusion_target_stats = (
             OcclusionTargetStats(
@@ -114,16 +110,6 @@ class SyntheticSequenceDataset(Dataset):
         if self.position_target_enabled:
             sample["position_target"] = torch.rand((self.num_pred, 2), generator=self.generator).float()
             sample["position_valid"] = torch.ones((self.num_pred,), dtype=torch.bool)
-        if self.gps_anchor_enabled:
-            num_groups = max(1, self.num_classes // max(1, self.gps_anchor_group_size))
-            center_beam = torch.randint(0, self.num_classes, (self.num_pred,), generator=self.generator)
-            sample["gps_anchor_coarse_logits"] = torch.randn(
-                (self.num_pred, num_groups),
-                generator=self.generator,
-            ).float()
-            sample["gps_anchor_center_beam"] = center_beam.long()
-            sample["gps_anchor_confidence"] = torch.rand((self.num_pred,), generator=self.generator).float()
-            sample["gps_anchor_residual_anchor_beam"] = center_beam.long()
         return sample
 
 

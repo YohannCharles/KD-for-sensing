@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from kd_sensing.models.gps_lidar_bgam import GPSGuidedBGAM, GPSPriorEncoder, LidarBEVCrossAttention, assert_no_bgam_label_inputs
 from kd_sensing.models.lidar_pillar_encoder import LidarBEVSpatialEncoder, SimplePillarEncoder, freeze_module
-from kd_sensing.models.topk_candidate_selector import sparse_topk_scores_to_logits
 
 
 class GPSLidarBGAMBeamPredictor(nn.Module):
@@ -214,6 +213,23 @@ class GPSLidarBGAMBeamPredictor(nn.Module):
         return self.fusion_mlp(torch.cat([gps_emb, lidar_emb, candidate_emb], dim=-1))
 
 
+def sparse_topk_scores_to_logits(
+    candidate_beams: torch.Tensor,
+    candidate_scores: torch.Tensor,
+    *,
+    num_beams: int = 64,
+    fill_value: float = -1e9,
+) -> torch.Tensor:
+    if candidate_beams.ndim != 2 or candidate_scores.ndim != 2:
+        raise ValueError("candidate_beams and candidate_scores must both have shape [B, K].")
+    if tuple(candidate_beams.shape) != tuple(candidate_scores.shape):
+        raise ValueError(f"Shape mismatch: {tuple(candidate_beams.shape)} vs {tuple(candidate_scores.shape)}.")
+    logits = candidate_scores.new_full((int(candidate_scores.shape[0]), int(num_beams)), float(fill_value))
+    beams = candidate_beams.to(device=candidate_scores.device, dtype=torch.long).remainder(int(num_beams))
+    logits.scatter_(1, beams, candidate_scores)
+    return logits
+
+
 def _candidate_features(
     candidate_beams: torch.Tensor,
     candidate_probs: torch.Tensor,
@@ -245,4 +261,4 @@ def _inverse_softplus_or_floor(value: float) -> float:
     return math.log(math.exp(float(value)) - 1.0)
 
 
-__all__ = ["GPSLidarBGAMBeamPredictor"]
+__all__ = ["GPSLidarBGAMBeamPredictor", "sparse_topk_scores_to_logits"]

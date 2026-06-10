@@ -387,6 +387,94 @@ class TokenTransformerCore(nn.Module):
         return memory.view(batch_size, seq_len, modality_count, d_model).mean(dim=2)
 
 
+@REPRESENTATION_CORES.register("next_beam_query_transformer")
+class NextBeamQueryTransformerCore(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        num_heads: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        max_seq_len: int = 64,
+        output_dim: int | None = None,
+        **_: Any,
+    ):
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = int(modality_count)
+        self.num_heads = int(num_heads)
+        self.num_layers = int(num_layers)
+        self.max_seq_len = int(max_seq_len)
+        self.output_dim = int(output_dim or d_model)
+        if self.d_model <= 0 or self.modality_count <= 0 or self.output_dim <= 0:
+            raise ValueError("next_beam_query_transformer dimensions must be positive.")
+        if self.num_heads <= 0:
+            raise ValueError(f"num_heads must be positive, got {num_heads}.")
+        if self.num_layers <= 0:
+            raise ValueError(f"num_layers must be positive, got {num_layers}.")
+        if self.max_seq_len <= 0:
+            raise ValueError(f"max_seq_len must be positive, got {max_seq_len}.")
+        if self.d_model % self.num_heads != 0:
+            raise ValueError(f"d_model ({self.d_model}) must be divisible by num_heads ({self.num_heads}).")
+
+        self.modality_embedding = nn.Embedding(self.modality_count, self.d_model)
+        self.time_embedding = nn.Embedding(self.max_seq_len, self.d_model)
+        self.next_beam_query = nn.Parameter(torch.zeros(1, 1, self.d_model))
+        self.input_norm = nn.LayerNorm(self.d_model)
+        self.input_dropout = nn.Dropout(float(dropout))
+        layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.num_heads,
+            dropout=float(dropout),
+            dim_feedforward=max(self.d_model * 4, 64),
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(layer, num_layers=self.num_layers)
+        self.output_norm = nn.LayerNorm(self.d_model)
+        self.output_projection = (
+            nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
+        )
+        nn.init.trunc_normal_(self.next_beam_query, std=0.02)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 4:
+            raise ValueError(
+                "next_beam_query_transformer core requires multimodal [B, K, T, D] input, "
+                f"got {tuple(features.shape)}."
+            )
+        batch_size, modality_count, seq_len, d_model = features.shape
+        if int(modality_count) != self.modality_count:
+            raise ValueError(
+                "next_beam_query_transformer core received incompatible modality count: "
+                f"expected K={self.modality_count}, got K={int(modality_count)} from shape {tuple(features.shape)}."
+            )
+        if int(d_model) != self.d_model:
+            raise ValueError(
+                "next_beam_query_transformer core received incompatible feature dimension: "
+                f"expected D={self.d_model}, got D={int(d_model)} from shape {tuple(features.shape)}."
+            )
+        if int(seq_len) > self.max_seq_len:
+            raise ValueError(
+                "next_beam_query_transformer core received too many history steps: "
+                f"T={int(seq_len)} exceeds max_seq_len={self.max_seq_len}."
+            )
+
+        time_ids = torch.arange(int(seq_len), device=features.device)
+        time = self.time_embedding(time_ids).view(1, 1, int(seq_len), self.d_model)
+        modality_ids = torch.arange(self.modality_count, device=features.device)
+        modality = self.modality_embedding(modality_ids).view(1, self.modality_count, 1, self.d_model)
+        tokens = self.input_dropout(self.input_norm(features + time + modality))
+        tokens = tokens.permute(0, 2, 1, 3).contiguous().view(batch_size, int(seq_len) * self.modality_count, self.d_model)
+        query = self.next_beam_query.expand(batch_size, -1, -1)
+        query = self.input_dropout(self.input_norm(query))
+        memory = self.transformer(torch.cat([tokens, query], dim=1))
+        query_hidden = self.output_norm(memory[:, -1, :])
+        return self.output_projection(query_hidden).unsqueeze(1)
+
+
 @HEADS.register("beam_head")
 @HEADS.register("beam")
 class BeamClassificationHead(nn.Module):
@@ -688,6 +776,7 @@ __all__ = [
     "LinearProjector",
     "MmWaveMLPEncoder",
     "ModularSequenceModel",
+    "NextBeamQueryTransformerCore",
     "PilotDualViewCSIEncoder",
     "PointCloudMLPEncoder",
     "RadarCNNEncoder",
