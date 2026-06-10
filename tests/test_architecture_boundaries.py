@@ -80,6 +80,20 @@ RETIRED_GENERATED_FUSION_CONFIGS = {
     "configs/fusion/marf_no_prior_bias_ablation.yaml",
     "configs/fusion/marf_no_subset_training_ablation.yaml",
 }
+FUSION_ROOT_YAML_ALLOWLIST = {
+    "configs/fusion/all_modalities_lidar_supervised.yaml",
+    "configs/fusion/all_modalities_supervised.yaml",
+    "configs/fusion/beambench_image_ae_gps_direct.yaml",
+    "configs/fusion/image_gps_resnet18_modular_supervised.yaml",
+    "configs/fusion/image_gps_supervised.yaml",
+    "configs/fusion/mmwave_csi_medium_degraded_supervised.yaml",
+    "configs/fusion/mmwave_csi_supervised.yaml",
+    "configs/fusion/radar_gps_supervised.yaml",
+    "configs/fusion/radar_lidar_supervised.yaml",
+    "configs/fusion/token_transformer_all_modalities_multitask_supervised.yaml",
+    "configs/fusion/token_transformer_all_modalities_supervised.yaml",
+    "configs/fusion/token_transformer_image_radar_supervised.yaml",
+}
 
 
 def _dotted(*parts: str) -> str:
@@ -185,19 +199,23 @@ def test_source_surface_does_not_track_local_artifacts():
 
 def test_project_surface_inventory_guardrails_are_current():
     fusion_yaml = sorted((ROOT / "configs" / "fusion").glob("*.yaml"))
+    fusion_root_entries = {path.relative_to(ROOT).as_posix() for path in fusion_yaml}
+    tracked = set(_tracked_paths())
     script_entries = {
-        path.relative_to(ROOT).as_posix()
-        for root in [ROOT / "scripts", ROOT / "tools" / "analysis", ROOT / "tools" / "visualization"]
-        for path in root.rglob("*.py")
+        path
+        for path in tracked
+        if path.endswith(".py")
+        and path.startswith(("scripts/", "tools/analysis/", "tools/visualization/"))
     }
     shell_entries = {
-        path.relative_to(ROOT).as_posix()
-        for path in (ROOT / "scripts").rglob("*.sh")
+        path
+        for path in tracked
+        if path.endswith(".sh") and path.startswith("scripts/")
     }
 
-    assert len(fusion_yaml) <= 19
+    assert fusion_root_entries == FUSION_ROOT_YAML_ALLOWLIST
     assert RETIRED_GENERATED_FUSION_CONFIGS.isdisjoint(
-        {path.relative_to(ROOT).as_posix() for path in fusion_yaml}
+        fusion_root_entries
     )
     assert script_entries == set(PYTHON_ENTRYPOINT_ALLOWLIST)
     assert "scripts/eval_modality_subsets.py" not in script_entries
@@ -469,7 +487,7 @@ def test_openspec_specs_have_real_purpose_text():
     violations = []
     for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md")):
         purpose = _openspec_purpose_text(path)
-        if not purpose or len(purpose) < 50 or "TBD - created by archiving" in purpose:
+        if not purpose or len(purpose) < 50 or "TBD" in purpose:
             violations.append(path.relative_to(ROOT).as_posix())
 
     assert violations == []

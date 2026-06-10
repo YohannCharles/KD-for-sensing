@@ -26,10 +26,24 @@
 - `src/kd_sensing/data/transform_ops/csi.py`：后续优先抽出 CSI parsing、hardening feature transforms 和 temporal window helpers；当前避免同时改动数据契约。
 - `src/kd_sensing/engine/batch.py`：后续优先抽出 modality target preparation、label adapters 和 history anchor input helper；当前保持训练 batch contract。
 - `src/kd_sensing/engine/evaluation_pass.py`：后续优先抽出 metrics aggregation、objective-specific outputs 和 prediction metadata helper；当前保持 evaluation result schema。
+- `src/kd_sensing/engine/loso_data.py`：当前保留 LOSO source/target dataloader helper。结构检查未发现当前内部调用，但该模块通过 `__all__` 暴露 `build_loso_dataloaders`、`build_loso_source_train_loader` 和 `build_loso_target_stage_loader`，且当前 OpenSpec 仍保留 cross-scene LOSO/few-shot sampling 语义；若后续完全退役，应另起 change 同步 specs、docs 和外部兼容说明。
+
+本次已删除高置信孤立源码：`src/kd_sensing/evaluation/flops.py`、`src/kd_sensing/evaluation/latency.py` 和 `src/kd_sensing/data/transform_ops/cache.py`。删除前检查确认它们不属于 console script、package `__init__` 公开导出、注册入口、README/docs/OpenSpec 当前声明或测试依赖；image/LiDAR cache 的当前实现入口继续分别位于 `src/kd_sensing/data/transform_ops/image_cache.py` 和 `src/kd_sensing/data/transform_ops/lidar.py`。
 
 ## 配置 YAML
 
-当前 `configs/fusion/` 根目录有 12 个实体 YAML。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
+当前 `configs/fusion/` 根目录有 12 个实体 YAML，只保留长期 canonical 或当前明确薄入口。`configs/fusion/experiments/jepa_image_gps/` 有 11 个 JEPA image+GPS 实验特化 YAML，用于 BeamBench-fair、arXiv:2604.05668 对齐、low-memory 和 best/last checkpoint 复现实验；这些路径可被文档指向，但不算根目录推荐入口。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
+
+`configs/fusion/` 根目录保留分类如下：
+
+- canonical strong/current supervised: `all_modalities_lidar_supervised.yaml`、`all_modalities_supervised.yaml`、`image_gps_supervised.yaml`、`image_gps_resnet18_modular_supervised.yaml`、`mmwave_csi_supervised.yaml`、`mmwave_csi_medium_degraded_supervised.yaml`、`radar_gps_supervised.yaml`、`radar_lidar_supervised.yaml`。
+- current thin/reproducibility entry: `beambench_image_ae_gps_direct.yaml`。
+- current token-transformer/objective-aware entries: `token_transformer_all_modalities_supervised.yaml`、`token_transformer_all_modalities_multitask_supervised.yaml`、`token_transformer_image_radar_supervised.yaml`。
+
+已迁移到 `configs/fusion/experiments/jepa_image_gps/` 的实验特化配置如下：
+
+- fair/2604 当前文档复核配置：`image_gps_supervised_beambench_fair_lowmem.yaml`、`image_gps_jepa_random_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml`、`image_gps_supervised_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml`。
+- scene31/low-memory/best-last 复现保留配置：`image_gps_supervised_lowmem.yaml`、`image_gps_jepa_random_best_supervised.yaml`、`image_gps_jepa_random_last_supervised.yaml`、`image_gps_jepa_gps_biased_best_supervised.yaml`、`image_gps_jepa_random_last_beambench_fair_lowmem.yaml`。
 
 已退役的 CRAF、MARF、G2D、Multimodal-NF 和 KD 实体 YAML、overlay recipe 与 virtual alias 不再作为支持入口存在。删除实体文件后，配置加载器只为当前 strong/lightweight canonical、snapshot、objective-aware 和保留 overlay 生成 virtual config，不接管退役路径；旧 `logits_kd` / `rkd` 路径只作为 migration guard 的拒绝命中保留。
 
@@ -62,6 +76,7 @@ MMW 入口生命周期说明：
 - `scripts/run_mmw_sunny_modal15_l5p3_h123.sh` 和 `scripts/run_mmw_sunny_modal15_l5p6_h246.sh` 属于 shell_orchestration。职责是运行 sunny MMW 15 组 modal quick validation profile，分别固定对应 `seq_len`/`num_pred` 和 metric horizon 组合，并可选调用 split、radar map 和 cache 预热准备。默认输出根为 `outputs/mmw_sunny_modal15/<horizon_tag>/`；输出边界限定为 `outputs/`、`logs/`、dataset 准备产物和 cache/checkpoint 等本地运行产物，不得提交新生成结果。
 - `scripts/run_mmw_gps_circular_soft_label_ablation.sh` 属于 shell_orchestration。职责是运行 sunny MMW GPS neural baseline 的 hard CE 与 circular Gaussian soft-label CE 对照实验，固定 MMW split、GPS-only 输入和 DBA 早停指标，用于诊断 beam codebook 边界/跳变对 GPS 监督的影响。输出边界限定为 `outputs/analysis/mmw_town_label_distribution/gps_circular_soft_label_ablation/`、`logs/mmw_gps_circular_soft_label_ablation/`、checkpoint 和本地训练缓存，不得提交新生成结果。
 - `scripts/run_deepsense_gps_circular_soft_label.sh` 属于 shell_orchestration。职责是运行 DeepSense6G scene31-34 的 GPS-only circular Gaussian soft-label baseline，固定 DeepSense sequence CSV、GPS-only 输入和 DBA 早停指标，用于和 MMW Town GPS 监督诊断对照。输出边界限定为 `outputs/training/deepsense6g_gps_circular_soft_label/`、`logs/deepsense6g_gps_circular_soft_label/`、checkpoint 和本地训练缓存，不得提交新生成结果。
+- `scripts/run_csi_hardening_matrix.sh` 属于 shell_orchestration。默认 CSI A0 配置为 `configs/csi/hardening_matrix/A0_clean_full_strong.yaml`，分析基线 run name 为 `csi_A0_clean_full_strong`；脚本不得重新引用已不存在的 `A0_clean_full_teacher.yaml` 作为默认入口。
 已退役的 image-only legal crossroad probe、P3/V8 批处理和等待式 shell wrapper 已从 allowlist 删除；历史本地输出只通过 runtime cleanup manifest 作为候选审计，不再作为当前入口维护。
 
 `tools/visualization/export_viewer_manifest.py` 不得回流；`kd-sensing-export-viewer-manifest` 和 `python -m kd_sensing.cli.export_viewer_manifest` 已覆盖同一 manifest 导出 workflow。

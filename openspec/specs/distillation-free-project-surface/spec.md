@@ -1,7 +1,7 @@
 # distillation-free-project-surface Specification
 
 ## Purpose
-TBD - created by syncing change remove-distillation-support. Update Purpose after archive.
+定义当前项目去蒸馏化后的支持面契约，明确新训练、评估、配置、注册表和文档不再提供 teacher-student KD 能力，同时只读保留历史产物边界，避免旧 distillation 字段、配置路径或 registry 名称重新进入当前运行面。
 ## Requirements
 ### Requirement: 项目表面不再提供蒸馏能力
 系统 MUST 删除 teacher-student distillation 作为源码、配置、注册表、训练运行时和文档支持能力。新训练、评估、诊断和 summary 输出 MUST 不构建 frozen teacher、不计算 KD loss、不写出 distillation metadata。

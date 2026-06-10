@@ -1,7 +1,7 @@
 # gps-conditioned-jepa-pretraining Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-conditioned-jepa-pretraining. Update Purpose after archive.
+定义 GPS-Rel-Polar 条件化 JEPA 预训练能力的当前契约，覆盖主模型注册、GPS 条件化 latent prediction、mask 采样、EMA target encoder、训练产物以及下游 supervised fusion 复用边界，确保该自监督入口不依赖 beam target、蒸馏 teacher 或历史 checkpoint 脚手架。
 ## Requirements
 ### Requirement: GPS 条件化 JEPA 主模型
 系统 MUST 提供可通过 `MODELS` 注册表构建的 GPS-conditioned JEPA 主模型。该模型 MUST 作为 `model.primary` 使用，内部包含 context visual encoder、EMA target visual encoder、GPS conditioner、latent predictor 和 mask sampler。该模型 MUST 接收 image 输入 `[B, T, 3, H, W]` 与 GPS-Rel-Polar 输入 `[B, T, 3]`，并 MUST 不要求 `target_beam`、beam logits、distiller 或外部 frozen teacher checkpoint。
@@ -114,4 +114,3 @@ JEPA 预训练运行 MUST 保存完整训练产物，并 MUST 显式记录可复
 - **THEN** random-mask JEPA 配置 MUST 指向 `outputs/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/best.pth` 或 `last.pth`
 - **AND** GPS-biased JEPA 配置 MUST 指向 `outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`
 - **AND** 配置 MUST NOT 默认引用 scene31-only JEPA checkpoint
-

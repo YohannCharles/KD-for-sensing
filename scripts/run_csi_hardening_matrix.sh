@@ -329,7 +329,7 @@ run_quick_checks() {
 
 run_csi_ab() {
   run_cfgs \
-    configs/csi/hardening_matrix/A0_clean_full_teacher.yaml \
+    configs/csi/hardening_matrix/A0_clean_full_strong.yaml \
     configs/csi/hardening_matrix/A1_mild_pilot_estimation.yaml \
     configs/csi/hardening_matrix/A2_destructive_degradation.yaml \
     configs/csi/hardening_matrix/B3_antenna_calibration.yaml \
@@ -338,11 +338,11 @@ run_csi_ab() {
     configs/csi/hardening_matrix/B6_medium_hardening_combo.yaml \
     configs/csi/hardening_matrix/C1_view_gate_warmup.yaml \
     configs/csi/hardening_matrix/C2_no_internal_gru.yaml
-  run_analysis analysis_batch1 csi_\* csi_A0_clean_full_teacher "$SCENE_ROOT/analysis_batch1"
+  run_analysis analysis_batch1 csi_\* csi_A0_clean_full_strong "$SCENE_ROOT/analysis_batch1"
 }
 
 run_csi_debug() {
-  local default_reference="outputs/csi_hardening_matrix_20260520_164406/Town10_skybridge_seed24/csi_A0_clean_full_teacher/final_config.yaml"
+  local default_reference="outputs/csi_hardening_matrix_20260520_164406/Town10_skybridge_seed24/csi_A0_clean_full_strong/final_config.yaml"
   train_cfg configs/csi/hardening_matrix/debug/A0_original.yaml
   A0_ORIGINAL_CONFIG="${A0_ORIGINAL_CONFIG:-}"
   if [[ -z "$A0_ORIGINAL_CONFIG" ]]; then
@@ -365,13 +365,13 @@ run_csi_debug() {
 }
 
 run_csi_d() {
-  require_run_dir csi_A0_clean_full_teacher
+  require_run_dir csi_A0_clean_full_strong
   run_cfgs \
     configs/csi/hardening_matrix/D1_mild_hardening_gate_warmup.yaml \
     configs/csi/hardening_matrix/D2_mild_hardening_no_internal_gru.yaml \
     configs/csi/hardening_matrix/D3_mild_hardening_gate_warmup_no_internal_gru.yaml \
     configs/csi/hardening_matrix/D4_medium_hardening_gate_warmup_no_internal_gru.yaml
-  run_analysis analysis_csi_ABCD csi_\* csi_A0_clean_full_teacher "$SCENE_ROOT/analysis_csi_ABCD"
+  run_analysis analysis_csi_ABCD csi_\* csi_A0_clean_full_strong "$SCENE_ROOT/analysis_csi_ABCD"
 }
 
 run_csi_only() {
@@ -419,7 +419,7 @@ case "$STAGE" in
     ;;
   csi-analysis)
     init_run_context
-    run_analysis analysis_csi_ABCD csi_\* csi_A0_clean_full_teacher "$SCENE_ROOT/analysis_csi_ABCD"
+    run_analysis analysis_csi_ABCD csi_\* csi_A0_clean_full_strong "$SCENE_ROOT/analysis_csi_ABCD"
     ;;
   fusion-e0-e3|fusion)
     init_run_context

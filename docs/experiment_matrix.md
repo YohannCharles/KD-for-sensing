@@ -80,12 +80,12 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/deepsense6
 
 ### JEPA 下游复用公平复核
 
-和 BeamBench Table III 做下游指标复核时，使用 fair low-memory 配置族，而不是 scene31-only 或 `num_pred=3` 的快速调试配置。fair 配置训练 scenes 32、33、34，从训练 split 内部划分 validation 做 early stopping/checkpoint selection，训练结束后单独加载 `best.pth` 在 scenes 31、32、33、34 的 test split 上记录 `final_test_metrics`。该配置固定 prediction window 为 `num_pred=1`，保留当前 image+GPS supervised 的 `seq_len=8`，DBA 距离口径设为 BeamBench linear，scheduler 设为 `none`。
+和 BeamBench Table III 做下游指标复核时，使用 fair low-memory 配置族，而不是 scene31-only 或 `num_pred=3` 的快速调试配置。fair 配置训练 scenes 32、33、34，从训练 split 内部划分 validation 做 early stopping/checkpoint selection，训练结束后单独加载 `best.pth` 在 scenes 31、32、33、34 的 test split 上记录 `final_test_metrics`。该配置固定 prediction window 为 `num_pred=1`，保留当前 image+GPS supervised 的 `seq_len=8`，DBA 距离口径设为 BeamBench linear，scheduler 设为 `none`。这些配置属于 JEPA image+GPS 实验复现面，路径位于 `configs/fusion/experiments/jepa_image_gps/`，不作为 `configs/fusion/` 根目录推荐入口。
 
 ```bash
-MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_supervised_beambench_fair_lowmem.yaml
-MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_random_best_beambench_fair_lowmem.yaml
-MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_supervised_beambench_fair_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_random_best_beambench_fair_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml
 ```
 
 JEPA random 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/{best,last}.pth`，GPS-biased 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`。
@@ -95,9 +95,9 @@ JEPA random 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_full_s3
 和 arXiv:2604.05668 的主表比较时，使用 2604 对齐配置族，而不是 BeamBench-fair 配置。该配置族合并 DeepSense6G scenes 32、33、34 的官方 train/test labeled CSV，并在每个 scene 内按 `future_beam1` 标签固定 seed 做 `80/10/10` stratified train/validation/test split；历史窗口改为 `seq_len=5`，预测窗口保持 `num_pred=1`，DBA 距离口径为 linear。该口径不评估 scene31 泛化，最终报告 S32/S33/S34 test DBA 和三场景宏平均。
 
 ```bash
-MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_supervised_2604_s32_s34_lowmem.yaml
-MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml
-MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_supervised_2604_s32_s34_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml
 ```
 
 当前真实数据构建该 split 时，S32/S33/S34 合计 11015 条样本，切分为 train 8839、validation 1088、test 1088；每个 split 的 scene 组成和 scaler 来源会写入 `final_config.yaml` runtime metadata。
