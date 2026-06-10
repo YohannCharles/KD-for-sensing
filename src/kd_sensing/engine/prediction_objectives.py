@@ -46,6 +46,7 @@ class PredictionLossBundle:
     los: torch.Tensor | None = None
     link_quality: torch.Tensor | None = None
     selection_multitask_total: torch.Tensor | None = None
+    jepa: torch.Tensor | None = None
 
 
 def prepare_prediction_targets(

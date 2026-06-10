@@ -59,6 +59,32 @@ def configure_torch_runtime_threads(cfg: dict[str, Any]) -> dict[str, Any]:
     return applied
 
 
+def configure_cuda_performance_settings(cfg: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    if device.type != "cuda":
+        return {}
+    training_cfg = cfg.get("training", {})
+    applied: dict[str, Any] = {}
+    if "allow_tf32" in training_cfg:
+        allow_tf32 = bool(training_cfg.get("allow_tf32"))
+        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+            applied["cuda_matmul_allow_tf32"] = bool(torch.backends.cuda.matmul.allow_tf32)
+        if hasattr(torch.backends, "cudnn") and hasattr(torch.backends.cudnn, "allow_tf32"):
+            torch.backends.cudnn.allow_tf32 = allow_tf32
+            applied["cudnn_allow_tf32"] = bool(torch.backends.cudnn.allow_tf32)
+        if allow_tf32 and hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+            applied["float32_matmul_precision"] = "high"
+    if "cudnn_benchmark" in training_cfg and hasattr(torch.backends, "cudnn"):
+        benchmark = bool(training_cfg.get("cudnn_benchmark"))
+        torch.backends.cudnn.benchmark = benchmark
+        if benchmark:
+            torch.backends.cudnn.deterministic = False
+        applied["cudnn_benchmark"] = bool(torch.backends.cudnn.benchmark)
+        applied["cudnn_deterministic"] = bool(torch.backends.cudnn.deterministic)
+    return applied
+
+
 def _torch_thread_settings(cfg: dict[str, Any]) -> dict[str, int]:
     thread_cfg = cfg.get("training", {}).get("cpu_threads", {})
     if not isinstance(thread_cfg, dict) or thread_cfg.get("enabled", True) is False:

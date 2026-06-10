@@ -51,6 +51,7 @@ class EpochMetricsRecorder:
             "los_loss": 0.0,
             "link_quality_loss": 0.0,
             "selection_multitask_loss": 0.0,
+            "jepa_loss": 0.0,
             "acc": 0.0,
         }
         self.batch_count = 0
@@ -77,6 +78,8 @@ class EpochMetricsRecorder:
             updates["link_quality_loss"] = prediction_loss.link_quality.item()
         if prediction_loss.selection_multitask_total is not None:
             updates["selection_multitask_loss"] = prediction_loss.selection_multitask_total.item()
+        if getattr(prediction_loss, "jepa", None) is not None:
+            updates["jepa_loss"] = prediction_loss.jepa.item()
         for key, value in updates.items():
             self.running[key] = (float(value) + step * self.running[key]) / (step + 1)
         self.epoch_diagnostics.update(result.scalar_diagnostics)
@@ -126,6 +129,10 @@ class EpochMetricsRecorder:
         val_link_rmse = finite_float_or_none(val_metrics.get("val_link_rmse"))
         val_link_r2 = finite_float_or_none(val_metrics.get("val_link_r2"))
         val_selection_multitask_loss = finite_float_or_none(val_metrics.get("val_selection_multitask_loss"))
+        val_jepa_loss = finite_float_or_none(val_metrics.get("val_jepa_loss"))
+        val_jepa_mask_target_ratio = finite_float_or_none(val_metrics.get("val_jepa_mask_target_ratio"))
+        val_jepa_mask_context_ratio = finite_float_or_none(val_metrics.get("val_jepa_mask_context_ratio"))
+        val_jepa_ema_decay = finite_float_or_none(val_metrics.get("val_jepa_ema_decay"))
         active_occlusion = val_occlusion_accuracy is not None or val_occlusion_blocked_f1 is not None
         active_position = val_position_rmse is not None or val_position_mae is not None
         active_selection = (
@@ -152,12 +159,14 @@ class EpochMetricsRecorder:
         train_selection_multitask_loss = (
             float(self.running["selection_multitask_loss"]) if self.objective == "selection_multitask" else None
         )
+        train_jepa_loss = float(self.running["jepa_loss"]) if self.objective == "gps_conditioned_jepa" else None
 
         self.history["train_loss"].append(float(self.running["loss"]))
         self.history["train_task_loss"].append(float(self.running["task_loss"]))
         self.history["train_objective_loss"].append(float(self.running["task_loss"]))
         self.history["train_beam_soft_loss"].append(float(self.running["beam_soft_loss"]))
         self.history["train_unimodal_loss"].append(float(self.running["unimodal_loss"]))
+        append_history(self.history, "train_jepa_loss", train_jepa_loss)
         append_history(self.history, "train_occlusion_loss", train_occlusion_loss)
         append_history(self.history, "train_position_loss", train_position_loss)
         append_history(self.history, "train_multitask_loss", train_multitask_loss)
@@ -186,6 +195,10 @@ class EpochMetricsRecorder:
         append_history(self.history, "val_link_rmse", val_link_rmse)
         append_history(self.history, "val_link_r2", val_link_r2)
         append_history(self.history, "val_selection_multitask_loss", val_selection_multitask_loss)
+        append_history(self.history, "val_jepa_loss", val_jepa_loss)
+        append_history(self.history, "val_jepa_mask_target_ratio", val_jepa_mask_target_ratio)
+        append_history(self.history, "val_jepa_mask_context_ratio", val_jepa_mask_context_ratio)
+        append_history(self.history, "val_jepa_ema_decay", val_jepa_ema_decay)
 
         early_stopping_candidates = {
             **validation_curve_metrics,
@@ -209,6 +222,10 @@ class EpochMetricsRecorder:
             "val_link_rmse": val_link_rmse,
             "val_link_r2": val_link_r2,
             "val_selection_multitask_loss": val_selection_multitask_loss,
+            "val_jepa_loss": val_jepa_loss,
+            "val_jepa_mask_target_ratio": val_jepa_mask_target_ratio,
+            "val_jepa_mask_context_ratio": val_jepa_mask_context_ratio,
+            "val_jepa_ema_decay": val_jepa_ema_decay,
         }.items():
             if value is not None:
                 early_stopping_candidates[key] = value
@@ -240,12 +257,14 @@ class EpochMetricsRecorder:
             "train_los_loss": train_los_loss,
             "train_link_quality_loss": train_link_quality_loss,
             "train_selection_multitask_loss": train_selection_multitask_loss,
+            "train_jepa_loss": train_jepa_loss,
             "loss/occlusion": train_occlusion_loss,
             "loss/position": train_position_loss,
             "loss/multitask_total": train_multitask_loss,
             "loss/los": train_los_loss,
             "loss/link_quality": train_link_quality_loss,
             "loss/selection_multitask_total": train_selection_multitask_loss,
+            "loss/jepa": train_jepa_loss,
             "train_acc": float(self.running["acc"]),
             "val_loss": float(val_loss),
             "val_acc": val_acc,
@@ -267,6 +286,10 @@ class EpochMetricsRecorder:
             "val_link_rmse": val_link_rmse,
             "val_link_r2": val_link_r2,
             "val_selection_multitask_loss": val_selection_multitask_loss,
+            "val_jepa_loss": val_jepa_loss,
+            "val_jepa_mask_target_ratio": val_jepa_mask_target_ratio,
+            "val_jepa_mask_context_ratio": val_jepa_mask_context_ratio,
+            "val_jepa_ema_decay": val_jepa_ema_decay,
             "val_primary_metric": float(primary_metric_value),
             "learning_rate": float(current_lr),
             "validation_metrics": deepcopy(val_metrics),
@@ -379,7 +402,9 @@ def training_outputs_payload(
     payload["primary_metric_mode"] = np.asarray(early_stopping_mode)
     payload["enabled_targets"] = np.asarray(objective_metadata["enabled_targets"], dtype=object)
     payload["enabled_heads"] = np.asarray(objective_metadata["enabled_heads"], dtype=object)
-    if objective_metadata["name"] == "selection_multitask":
+    if objective_metadata["name"] == "gps_conditioned_jepa":
+        weight_names = ("jepa",)
+    elif objective_metadata["name"] == "selection_multitask":
         weight_names = ("beam_selection", "los", "link_quality")
     else:
         weight_names = ("beam", "occlusion", "position")
@@ -398,6 +423,7 @@ def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, 
         "current_los_classification",
         "current_link_quality",
         "selection_multitask",
+        "gps_conditioned_jepa",
     }:
         return epoch_log
     allowed_history = set(history)
@@ -423,6 +449,10 @@ def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, 
         "val_link_rmse",
         "val_link_r2",
         "val_selection_multitask_loss",
+        "val_jepa_loss",
+        "val_jepa_mask_target_ratio",
+        "val_jepa_mask_context_ratio",
+        "val_jepa_ema_decay",
     }
     loss_keys = {
         "train_occlusion_loss": "train_occlusion_loss",
@@ -438,6 +468,7 @@ def prune_epoch_log_for_objective(epoch_log: dict[str, Any], history: dict[str, 
         "loss/link_quality": "train_link_quality_loss",
         "loss/selection_multitask_total": "train_selection_multitask_loss",
         "loss/beam_soft_target": "train_beam_soft_loss",
+        "loss/jepa": "train_jepa_loss",
     }
     for key in metric_keys:
         if key not in allowed_history and key in pruned:
@@ -489,6 +520,10 @@ def checkpoint_task_metrics(epoch_log: dict) -> dict[str, float]:
         "val_link_rmse",
         "val_link_r2",
         "val_selection_multitask_loss",
+        "val_jepa_loss",
+        "val_jepa_mask_target_ratio",
+        "val_jepa_mask_context_ratio",
+        "val_jepa_ema_decay",
     )
     return {
         key: float(epoch_log[key])

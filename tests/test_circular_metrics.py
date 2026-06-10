@@ -5,6 +5,7 @@ import torch
 
 from kd_sensing.evaluation.metrics import (
     beam_classification_circular_summary,
+    calculate_dba_score,
     circular_beam_distance,
     circular_shift_beam,
     circular_topk_min_distance,
@@ -52,6 +53,20 @@ def test_topk_min_distance_and_circular_summary_fields():
     assert summary["top3"] == 1.0
     assert "mean_circular_error" in summary
     assert "median_circular_error" in summary
+
+
+def test_dba_score_supports_beambench_linear_distance_mode():
+    logits = torch.full((1, 1, 64), -10.0)
+    logits[0, 0, 63] = 8.0
+    logits[0, 0, 0] = 7.0
+    logits[0, 0, 1] = 6.0
+    labels = torch.tensor([[0]])
+
+    circular = calculate_dba_score(logits, labels, delta=5, distance_mode="circular")
+    linear = calculate_dba_score(logits, labels, delta=5, distance_mode="linear")
+
+    assert circular[0] > linear[0]
+    assert np.isclose(linear[0], (0.0 + 1.0 + 1.0) / 3.0)
 
 
 def test_circular_soft_target_normalizes_and_wraps_boundary():

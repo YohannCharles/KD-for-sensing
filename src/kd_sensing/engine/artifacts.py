@@ -33,6 +33,7 @@ def final_config_with_runtime(
     throughput_metadata: dict | None = None,
     early_stopping: dict | None = None,
     pilot_noise_validity: dict | None = None,
+    final_test_metrics: dict | None = None,
 ) -> dict:
     final_cfg = deepcopy(cfg)
     canonicalize_lidar_normalization_config(final_cfg)
@@ -54,6 +55,8 @@ def final_config_with_runtime(
         runtime["early_stopping"] = early_stopping
     if pilot_noise_validity is not None:
         runtime["pilot_noise_validity"] = pilot_noise_validity
+    if final_test_metrics is not None:
+        runtime["final_test_metrics"] = final_test_metrics
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
@@ -106,6 +109,7 @@ class ArtifactWriter:
         config_diff: dict[str, Any] | None,
         csi_debug_records: list[dict[str, Any]],
         best_top1_epoch: int,
+        final_test_metrics: dict | None = None,
     ) -> dict[str, Any]:
         np.savez(
             self.run_dir / "training_outputs.npz",
@@ -130,6 +134,7 @@ class ArtifactWriter:
             "config_diff": config_diff,
             "csi_first_batch_diagnostics": csi_debug_records,
             "pilot_noise_validity": pilot_noise_validity,
+            "final_test_metrics": final_test_metrics,
             "lineage": lineage,
             "checkpoint_loads": checkpoint_loads,
             "optimizer_param_groups": optimizer_groups,
@@ -149,6 +154,7 @@ class ArtifactWriter:
                 "startup_summary": startup_summary,
                 "config_diff": config_diff,
                 "pilot_noise_validity": pilot_noise_validity,
+                "final_test_metrics": final_test_metrics,
                 "lineage": lineage,
                 "prediction_objective": objective_metadata,
                 "prediction_setup": prediction_setup_metadata(self.cfg, split_metadata=split_metadata),
@@ -167,6 +173,7 @@ class ArtifactWriter:
                 throughput_metadata=throughput_metadata,
                 early_stopping=early_stopping_metadata,
                 pilot_noise_validity=pilot_noise_validity,
+                final_test_metrics=final_test_metrics,
             ),
             self.run_dir / "final_config.yaml",
         )

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -36,8 +36,10 @@ from kd_sensing.engine.batch_step import BatchStepRunner  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
 from kd_sensing.engine.data_factory import (  # noqa: E402
     build_dataloader,
+    build_dataloaders,
     build_dataset,
     build_dataloader_kwargs,
+    build_protocol_split_datasets,
     shutdown_dataloader_workers,
 )
 from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler  # noqa: E402
@@ -1285,6 +1287,141 @@ def test_build_dataset_deepsense_scene_32_records_metadata(tmp_path: Path):
     assert metadata["csv_name"] == csv_path.name
 
 
+def test_build_dataloaders_deepsense_train_scenes_concat_records_metadata(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "train_scenes": [31, 32],
+                "test_scenes": [31],
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 1,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 2, "test_batch_size": 2, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+
+    loaders = build_dataloaders(cfg)
+    train_dataset = loaders["train"].dataset
+    metadata = dataset_run_metadata(train_dataset)
+
+    assert isinstance(train_dataset, ConcatDataset)
+    assert [dataset.scene_id for dataset in train_dataset.datasets] == [31, 32]
+    assert metadata["multi_scene"] is True
+    assert metadata["scene_slugs"] == ["scene31", "scene32"]
+    assert metadata["component_num_samples"] == [len(train_dataset.datasets[0]), len(train_dataset.datasets[1])]
+    assert train_dataset.datasets[0].gps_scaler is train_dataset.datasets[1].gps_scaler
+    assert metadata["components"][0]["gps_scaler"]["source"] == "multi_scene_train_split_streaming_fit"
+
+
+def test_build_dataloaders_internal_validation_uses_train_subset_scaler(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_multirow_gps_sequence_fixture(tmp_path, csv_path, rows=4, seq_len=1, num_pred=1)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "validation_from_train": {"enabled": True, "fraction": 0.5, "seed": 3},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "train_scenes": [31, 32],
+                "test_scenes": [31],
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 1,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 2, "test_batch_size": 2, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+
+    loaders = build_dataloaders(cfg)
+    train_dataset = loaders["train"].dataset
+    validation_dataset = loaders["validation"].dataset
+    metadata = dataset_run_metadata(validation_dataset)
+
+    assert isinstance(train_dataset, ConcatDataset)
+    assert isinstance(validation_dataset, ConcatDataset)
+    assert all(isinstance(dataset, Subset) for dataset in train_dataset.datasets)
+    assert all(isinstance(dataset, Subset) for dataset in validation_dataset.datasets)
+    assert len(train_dataset) == 4
+    assert len(validation_dataset) == 4
+    assert metadata["multi_scene"] is True
+    assert metadata["components"][0]["internal_validation_split"]["source_split"] == "train"
+    assert metadata["components"][0]["selection_split_role"] == "validation"
+    first_train_base = train_dataset.datasets[0].dataset
+    first_val_base = validation_dataset.datasets[0].dataset
+    assert first_train_base.gps_scaler is first_val_base.gps_scaler
+    assert first_train_base.gps_scaler_metadata["source"] == "internal_train_subset_streaming_fit"
+
+
+def test_build_dataloaders_deepsense_2604_stratified_split_uses_union_and_train_scaler(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    test_csv = tmp_path / "test.csv"
+    _write_stratified_gps_sequence_fixture(tmp_path, train_csv, rows=10, offset=0)
+    _write_stratified_gps_sequence_fixture(tmp_path, test_csv, rows=10, offset=10)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "train_scenes": [31, 32],
+                "validation_scenes": [31, 32],
+                "test_scenes": [31, 32],
+                "data_root": str(tmp_path),
+                "train_csv_name": train_csv.name,
+                "test_csv_name": test_csv.name,
+                "split_protocol": "stratified_80_10_10",
+                "split_seed": 11,
+                "split_fractions": {"train": 0.8, "validation": 0.1, "test": 0.1},
+                "seq_len": 5,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 4, "test_batch_size": 4, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+
+    split_datasets = build_protocol_split_datasets(cfg)
+    loaders = build_dataloaders(cfg)
+
+    assert split_datasets is not None
+    assert set(loaders) == {"train", "test", "validation"}
+    assert len(loaders["train"].dataset) == 32
+    assert len(loaders["validation"].dataset) == 4
+    assert len(loaders["test"].dataset) == 4
+    metadata = dataset_run_metadata(loaders["validation"].dataset)
+    assert metadata["multi_scene"] is True
+    assert metadata["components"][0]["stratified_split"]["source_splits"] == ["train", "test"]
+    assert metadata["components"][0]["split_protocol"] == "stratified_80_10_10"
+    first_train_leaf = loaders["train"].dataset.datasets[0].dataset.datasets[0]
+    first_validation_leaf = loaders["validation"].dataset.datasets[0].dataset.datasets[0]
+    first_test_leaf = loaders["test"].dataset.datasets[0].dataset.datasets[0]
+    assert first_train_leaf.gps_scaler is first_validation_leaf.gps_scaler
+    assert first_train_leaf.gps_scaler is first_test_leaf.gps_scaler
+    assert first_train_leaf.gps_scaler_metadata["source"] == "stratified_train_subset_streaming_fit"
+
+
 def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
     csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
@@ -1662,6 +1799,9 @@ def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, mon
             "data.dataset.type=synthetic",
             "data.dataset.length=2",
             "data.dataset.seed=19",
+            "data.validation_from_train.enabled=true",
+            "data.validation_from_train.fraction=0.5",
+            "data.validation_from_train.seed=19",
             "data.dataloader.train_batch_size=1",
             "data.dataloader.test_batch_size=1",
             "data.dataloader.num_workers=0",
@@ -1696,6 +1836,9 @@ def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, mon
 
     assert [epoch_log["epoch"] for epoch_log in result["epoch_logs"]] == [1, 2, 3]
     assert result["epoch_logs"][-1]["epochs_without_improvement"] >= cfg["training"]["patience"]
+    assert result["final_test_metrics"]["evaluation_split"] == "test"
+    assert result["final_test_metrics"]["model_selection_split"] == "validation"
+    assert result["split_metadata"]["validation"]["selection_split_source"] == "train"
 
 
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
@@ -1816,6 +1959,10 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     assert result["early_stopping"]["mode"] == "max"
     assert final_cfg["runtime"]["run_dir"] == str(run_dir)
     assert final_cfg["runtime"]["output_overwrite"] is True
+    assert result["final_test_metrics"]["evaluation_split"] == "test"
+    assert result["final_test_metrics"]["model_selection_split"] == "test"
+    assert final_cfg["runtime"]["final_test_metrics"]["evaluation_split"] == "test"
+    assert train_log["final_test_metrics"]["evaluation_split"] == "test"
     assert final_cfg["training"]["early_stopping_metric"] == "val_adba"
     assert final_cfg["training"]["early_stopping_mode"] == "max"
     assert final_cfg["runtime"]["early_stopping"]["metric"] == "val_adba"
@@ -2612,6 +2759,8 @@ def _write_full_sequence_fixture(root: Path, csv_path: Path, *, seq_len: int, nu
         beam = np.zeros(64, dtype=np.float32)
         beam[idx] = 1.0
         np.savetxt(root / f"beam_{idx}.txt", beam)
+        np.savetxt(root / f"gps_{idx}.txt", np.asarray([42.0 + idx * 1e-5, -71.0], dtype=np.float32))
+        np.savetxt(root / f"bs_gps_{idx}.txt", np.asarray([42.0, -71.0], dtype=np.float32))
     for idx in range(num_pred):
         future = np.zeros(64, dtype=np.float32)
         future[idx + 10] = 1.0
@@ -2637,6 +2786,78 @@ def _write_full_sequence_fixture(root: Path, csv_path: Path, *, seq_len: int, nu
         + ["1"]
     )
     csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+
+def _write_multirow_gps_sequence_fixture(root: Path, csv_path: Path, *, rows: int, seq_len: int, num_pred: int) -> None:
+    columns = (
+        [f"gps{i}" for i in range(1, seq_len + 1)]
+        + [f"bs_gps{i}" for i in range(1, seq_len + 1)]
+        + [f"beam{i}" for i in range(1, seq_len + 1)]
+        + [f"future_beam{i}" for i in range(1, num_pred + 1)]
+        + ["seq_index"]
+    )
+    lines = [",".join(columns)]
+    for row_idx in range(rows):
+        gps_paths = []
+        bs_paths = []
+        beam_paths = []
+        future_paths = []
+        for idx in range(seq_len):
+            gps_name = f"row{row_idx}_gps_{idx}.txt"
+            bs_name = f"row{row_idx}_bs_{idx}.txt"
+            beam_name = f"row{row_idx}_beam_{idx}.txt"
+            np.savetxt(root / gps_name, np.asarray([42.0 + row_idx * 1e-4 + idx * 1e-5, -71.0], dtype=np.float32))
+            np.savetxt(root / bs_name, np.asarray([42.0, -71.0], dtype=np.float32))
+            beam = np.zeros(64, dtype=np.float32)
+            beam[(row_idx + idx) % 64] = 1.0
+            np.savetxt(root / beam_name, beam)
+            gps_paths.append(gps_name)
+            bs_paths.append(bs_name)
+            beam_paths.append(beam_name)
+        for idx in range(num_pred):
+            future_name = f"row{row_idx}_future_{idx}.txt"
+            future = np.zeros(64, dtype=np.float32)
+            future[(row_idx + idx + 10) % 64] = 1.0
+            np.savetxt(root / future_name, future)
+            future_paths.append(future_name)
+        values = gps_paths + bs_paths + beam_paths + future_paths + [str(row_idx)]
+        lines.append(",".join(values))
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_stratified_gps_sequence_fixture(root: Path, csv_path: Path, *, rows: int, offset: int) -> None:
+    seq_len = 5
+    columns = (
+        [f"gps{i}" for i in range(1, seq_len + 1)]
+        + [f"bs_gps{i}" for i in range(1, seq_len + 1)]
+        + [f"beam{i}" for i in range(1, seq_len + 1)]
+        + ["future_beam1", "seq_index"]
+    )
+    lines = [",".join(columns)]
+    for row_idx in range(rows):
+        global_idx = int(offset + row_idx)
+        label = 10 if row_idx % 2 == 0 else 20
+        gps_paths = []
+        bs_paths = []
+        beam_paths = []
+        for frame_idx in range(seq_len):
+            gps_name = f"s{offset}_row{row_idx}_gps_{frame_idx}.txt"
+            bs_name = f"s{offset}_row{row_idx}_bs_{frame_idx}.txt"
+            beam_name = f"s{offset}_row{row_idx}_beam_{frame_idx}.txt"
+            np.savetxt(root / gps_name, np.asarray([42.0 + global_idx * 1e-4 + frame_idx * 1e-5, -71.0]))
+            np.savetxt(root / bs_name, np.asarray([42.0, -71.0]))
+            beam = np.zeros(64, dtype=np.float32)
+            beam[(label + frame_idx) % 64] = 1.0
+            np.savetxt(root / beam_name, beam)
+            gps_paths.append(gps_name)
+            bs_paths.append(bs_name)
+            beam_paths.append(beam_name)
+        future_name = f"s{offset}_row{row_idx}_future.txt"
+        future = np.zeros(64, dtype=np.float32)
+        future[label] = 1.0
+        np.savetxt(root / future_name, future)
+        lines.append(",".join(gps_paths + bs_paths + beam_paths + [future_name, str(global_idx)]))
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_aux_training_csv(root: Path, csv_path: Path, *, prefix: str, future_max: list[float]) -> None:

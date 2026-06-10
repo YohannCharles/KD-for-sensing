@@ -53,6 +53,55 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps
 
 `strong_only_<objective>_supervised.yaml` 解析为 `[gps, mmwave]`，`weak_only_<objective>_supervised.yaml` 解析为 `[image, radar, lidar]`，可用于普通模态子集调试。
 
+## GPS-conditioned JEPA 预训练
+
+GPS-conditioned JEPA 是 image+GPS 自监督预训练入口，使用 `experiment.objective: gps_conditioned_jepa` 和 `model.primary.type: gps_conditioned_jepa`。canonical smoke 配置位于：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/deepsense6g_gps_conditioned_jepa_smoke.yaml
+```
+
+完整主实验使用 paper-split 风格的 low-memory 配置：训练拼接 DeepSense6G scenes 32、33、34，验证/监控覆盖 scenes 31、32、33、34。该配置使用 1 个训练 worker、0 个验证 worker、关闭 persistent worker/pinned memory，并默认读取已预热的 RGB/ImageNet derived cache，避免 full split 训练时 DataLoader worker 常驻内存被放大：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/deepsense6g_s31_image_derived_cache.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/deepsense6g_s32_image_derived_cache.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/deepsense6g_s33_image_derived_cache.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/deepsense6g_s34_image_derived_cache.yaml
+
+conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/deepsense6g_gps_conditioned_jepa_full_lowmem.yaml
+
+conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/deepsense6g_gps_conditioned_jepa_gps_biased_lowmem.yaml
+```
+
+如果显存仍明显空闲，可优先只调大 batch size；如果显存 OOM，则把两个配置的 `data.dataloader.train_batch_size` 和 `test_batch_size` 从 64 降到 32。不要重新启用 `persistent_workers=true` 或把 worker 数量一次性加回 4；这会重新放大 CPU RAM 占用。
+
+该入口使用 RGB/ImageNet image profile 与 GPS relative-polar 特征，只记录 `val_jepa_loss`、JEPA mask ratio、EMA decay 和通用 loss；不会计算 beam Top-K、DBA、occlusion、position、LOS 或 link 指标。多场景主实验运行产物写入 `outputs/<run_name>/`，checkpoint 保存完整 `model.primary`，`runtime.prediction_objective.jepa.context_encoder_artifact_key` 标明可复用的 context encoder state-dict key。该 checkpoint 可作为后续 fine-tuning change 的初始化来源，但本入口不自动改写 supervised beam/fusion 配置，也不恢复旧 KD/teacher 体系。
+
+### JEPA 下游复用公平复核
+
+和 BeamBench Table III 做下游指标复核时，使用 fair low-memory 配置族，而不是 scene31-only 或 `num_pred=3` 的快速调试配置。fair 配置训练 scenes 32、33、34，从训练 split 内部划分 validation 做 early stopping/checkpoint selection，训练结束后单独加载 `best.pth` 在 scenes 31、32、33、34 的 test split 上记录 `final_test_metrics`。该配置固定 prediction window 为 `num_pred=1`，保留当前 image+GPS supervised 的 `seq_len=8`，DBA 距离口径设为 BeamBench linear，scheduler 设为 `none`。
+
+```bash
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_supervised_beambench_fair_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_random_best_beambench_fair_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml
+```
+
+JEPA random 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/{best,last}.pth`，GPS-biased 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`。
+
+### 2604.05668 S32-34 对齐复核
+
+和 arXiv:2604.05668 的主表比较时，使用 2604 对齐配置族，而不是 BeamBench-fair 配置。该配置族合并 DeepSense6G scenes 32、33、34 的官方 train/test labeled CSV，并在每个 scene 内按 `future_beam1` 标签固定 seed 做 `80/10/10` stratified train/validation/test split；历史窗口改为 `seq_len=5`，预测窗口保持 `num_pred=1`，DBA 距离口径为 linear。该口径不评估 scene31 泛化，最终报告 S32/S33/S34 test DBA 和三场景宏平均。
+
+```bash
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_supervised_2604_s32_s34_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 8-15 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml
+```
+
+当前真实数据构建该 split 时，S32/S33/S34 合计 11015 条样本，切分为 train 8839、validation 1088、test 1088；每个 split 的 scene 组成和 scaler 来源会写入 `final_config.yaml` runtime metadata。
+
 ## CSI Hardening
 
 CSI hardening 主矩阵位于 `configs/csi/hardening_matrix/`，debug 矩阵位于 `configs/csi/hardening_matrix/debug/`。普通 CSI supervised baseline 使用 `configs/csi/supervised.yaml`，medium degraded baseline 使用 `configs/csi/medium_degraded_supervised.yaml`。

@@ -9,6 +9,7 @@ PREDICTION_OBJECTIVES = (
     "current_los_classification",
     "current_link_quality",
     "selection_multitask",
+    "gps_conditioned_jepa",
 )
 
 _DEFAULT_METRICS: dict[str, tuple[str, str]] = {
@@ -20,6 +21,7 @@ _DEFAULT_METRICS: dict[str, tuple[str, str]] = {
     "current_los_classification": ("val_los_f1", "max"),
     "current_link_quality": ("val_link_mae", "min"),
     "selection_multitask": ("val_selection_multitask_loss", "min"),
+    "gps_conditioned_jepa": ("val_jepa_loss", "min"),
 }
 
 _BASE_AVAILABLE_METRICS = ("val_loss",)
@@ -76,6 +78,12 @@ _SELECTION_MULTITASK_AVAILABLE_METRICS = (
     "val_link_rmse",
     "val_link_r2",
     "val_selection_multitask_loss",
+)
+_JEPA_AVAILABLE_METRICS = (
+    "val_jepa_loss",
+    "val_jepa_mask_target_ratio",
+    "val_jepa_mask_context_ratio",
+    "val_jepa_ema_decay",
 )
 
 _METRIC_ALIASES: dict[str, str] = {
@@ -136,6 +144,11 @@ _METRIC_ALIASES: dict[str, str] = {
     "selection_multitask_loss": "val_selection_multitask_loss",
     "val_selection_multitask_loss": "val_selection_multitask_loss",
     "loss/selection_multitask_total": "val_selection_multitask_loss",
+    "gps_conditioned_jepa": "val_jepa_loss",
+    "jepa": "val_jepa_loss",
+    "jepa_loss": "val_jepa_loss",
+    "val_jepa_loss": "val_jepa_loss",
+    "loss/jepa": "val_jepa_loss",
     "los_accuracy": "val_los_accuracy",
     "val_los_accuracy": "val_los_accuracy",
     "los_f1": "val_los_f1",
@@ -178,6 +191,10 @@ _METRIC_MODES: dict[str, str] = {
     "val_link_rmse": "min",
     "val_link_r2": "max",
     "val_selection_multitask_loss": "min",
+    "val_jepa_loss": "min",
+    "val_jepa_mask_target_ratio": "max",
+    "val_jepa_mask_context_ratio": "max",
+    "val_jepa_ema_decay": "max",
 }
 
 _OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
@@ -189,6 +206,7 @@ _OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
     "current_los_classification": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LOS_AVAILABLE_METRICS),
     "current_link_quality": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LINK_AVAILABLE_METRICS),
     "selection_multitask": (*_BASE_AVAILABLE_METRICS, *_SELECTION_MULTITASK_AVAILABLE_METRICS),
+    "gps_conditioned_jepa": (*_BASE_AVAILABLE_METRICS, *_JEPA_AVAILABLE_METRICS),
 }
 
 __all__ = [

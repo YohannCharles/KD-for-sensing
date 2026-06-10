@@ -93,6 +93,10 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("beam", "occlusion", "position")
         required_outputs = ("logits", "occlusion_logits", "position")
         primary_loss = "multitask_total"
+    elif objective == "gps_conditioned_jepa":
+        required_targets = ("self_supervised_image_gps",)
+        required_outputs = ("predicted_target_latent", "target_latent", "loss_mask")
+        primary_loss = "jepa"
     else:
         required_targets = ("target_beam", "los_label", "link_quality")
         required_outputs = ("logits", "los_logits", "link_quality")
@@ -101,6 +105,14 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         "default_metric": metric,
         "default_metric_mode": mode,
     }
+    if objective == "gps_conditioned_jepa":
+        runtime_metadata.update(
+            {
+                "pretraining_kind": "gps_conditioned_jepa",
+                "context_encoder_artifact_key": "model.primary.context_encoder",
+                "self_supervised": True,
+            }
+        )
     return PredictionObjectiveSpec(
         name=objective,
         required_targets=required_targets,
@@ -130,6 +142,16 @@ def normalize_objective_metric(metric: object, *, objective: str = "beam") -> st
     if normalized not in spec.metric_modes:
         supported = ", ".join(sorted(spec.metric_aliases))
         raise ValueError(f"Unsupported early stopping metric '{raw}'. Supported aliases: {supported}.")
+    if (
+        spec.name == "gps_conditioned_jepa"
+        and normalized not in spec.available_metrics
+        and not _is_allowed_pattern_metric(normalized, objective=spec.name)
+    ):
+        available = ", ".join(sorted(spec.available_metrics))
+        raise ValueError(
+            f"Unsupported early stopping metric '{raw}' for experiment.objective='{spec.name}'. "
+            f"Available metrics: {available}."
+        )
     return normalized
 
 
@@ -246,6 +268,12 @@ def configure_objective_defaults(
         training["early_stopping_metric"] = metric
     if not explicit_early_stopping_mode:
         training["early_stopping_mode"] = mode
+    normalized_metric = normalize_objective_metric(training.get("early_stopping_metric"), objective=experiment["objective"])
+    training["early_stopping_metric"] = normalized_metric
+    training["early_stopping_mode"] = objective_metric_mode(
+        normalized_metric,
+        training.get("early_stopping_mode"),
+    )
 
 
 def objective_requires_occlusion(cfg: dict[str, Any]) -> bool:
@@ -263,27 +291,28 @@ def objective_enabled_targets(cfg: dict[str, Any]) -> list[str]:
 def objective_enabled_heads(cfg: dict[str, Any]) -> list[str]:
     heads = []
     for output in objective_spec(cfg).required_outputs:
+        head = None
         if output == "logits":
             objective = resolve_prediction_objective(cfg)
-            heads.append(
-                "beam_selection"
-                if objective in {"current_beam_selection", "selection_multitask"}
-                else "beam"
-            )
+            head = "beam_selection" if objective in {"current_beam_selection", "selection_multitask"} else "beam"
         elif output == "occlusion_logits":
-            heads.append("occlusion")
+            head = "occlusion"
         elif output == "position":
-            heads.append("position")
+            head = "position"
         elif output == "los_logits":
-            heads.append("los")
+            head = "los"
         elif output == "link_quality":
-            heads.append("link_quality")
+            head = "link_quality"
+        elif output in {"predicted_target_latent", "target_latent", "loss_mask"}:
+            head = "jepa_latent_prediction"
+        if head is not None and head not in heads:
+            heads.append(head)
     return heads
 
 
 def objective_runtime_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
     spec = objective_spec(cfg)
-    return {
+    metadata = {
         "name": spec.name,
         "primary_loss": spec.primary_loss_name,
         "primary_metric": spec.default_metric,
@@ -301,6 +330,18 @@ def objective_runtime_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
         "loss_weights": _runtime_loss_weights(cfg, spec.name),
         **spec.runtime_metadata,
     }
+    if spec.name == "gps_conditioned_jepa":
+        primary_cfg = _mapping(_mapping(cfg.get("model")).get("primary"))
+        metadata["jepa"] = {
+            "pretraining_kind": "gps_conditioned_jepa",
+            "context_encoder_artifact_key": "model.primary.context_encoder",
+            "ema_decay": float(primary_cfg.get("ema_decay", 0.996)),
+            "latent_dim": int(primary_cfg.get("latent_dim", _mapping(primary_cfg.get("visual_encoder")).get("latent_dim", 64))),
+            "visual_encoder": dict(_mapping(primary_cfg.get("visual_encoder"))),
+            "gps_conditioner": dict(_mapping(primary_cfg.get("conditioning"))),
+            "mask_sampler": dict(_mapping(primary_cfg.get("mask_sampler"))),
+        }
+    return metadata
 
 
 def multitask_loss_weights(cfg: dict[str, Any]) -> dict[str, float]:
@@ -426,6 +467,13 @@ def resolve_auxiliary_task_config(cfg: dict[str, Any]) -> AuxiliaryTaskConfig:
 
 
 def _runtime_loss_weights(cfg: dict[str, Any], objective: str) -> dict[str, float]:
+    if objective == "gps_conditioned_jepa":
+        loss_cfg = _mapping(_mapping(cfg.get("loss")).get("jepa"))
+        objective_cfg = _mapping(_mapping(cfg.get("loss")).get("objective"))
+        objective_jepa = _mapping(objective_cfg.get("jepa"))
+        return {
+            "jepa": _weight_from_configs(("weight", "jepa"), loss_cfg, objective_jepa, objective_cfg, default=1.0)
+        }
     if objective == "selection_multitask":
         return selection_multitask_loss_weights(cfg)
     if objective in {

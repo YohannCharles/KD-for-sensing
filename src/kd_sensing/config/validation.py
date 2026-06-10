@@ -192,6 +192,25 @@ def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
     head_occlusion = auxiliary_head_enabled(model_cfg, "occlusion")
     head_position = auxiliary_head_enabled(model_cfg, "position")
 
+    if objective == "gps_conditioned_jepa":
+        modalities = set(str(item) for item in model_cfg.get("modalities", cfg.get("model", {}).get("modalities", [])))
+        if model_type != "gps_conditioned_jepa":
+            raise ValueError(
+                "experiment.objective='gps_conditioned_jepa' requires "
+                "model.primary.type='gps_conditioned_jepa'."
+            )
+        if not {"image", "gps"} <= modalities:
+            raise ValueError(
+                "experiment.objective='gps_conditioned_jepa' requires image and GPS modalities "
+                "in model.primary.modalities."
+            )
+        if not mapping_or_bool_enabled(dataset_cfg.get("use_gps")):
+            raise ValueError(
+                "experiment.objective='gps_conditioned_jepa' requires data.dataset.use_gps=true "
+                "and GPS-Rel-Polar input."
+            )
+        return
+
     if objective in {
         "current_beam_selection",
         "current_los_classification",

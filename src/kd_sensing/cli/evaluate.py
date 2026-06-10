@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> dict:
+def run(argv: list[str] | None = None) -> dict:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
@@ -31,5 +31,10 @@ def main(argv: list[str] | None = None) -> dict:
     return result
 
 
+def main(argv: list[str] | None = None) -> int:
+    run(argv)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

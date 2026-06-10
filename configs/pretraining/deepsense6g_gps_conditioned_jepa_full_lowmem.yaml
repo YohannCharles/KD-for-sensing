@@ -1,0 +1,122 @@
+experiment:
+  name: deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem
+  task: fusion
+  objective: gps_conditioned_jepa
+  seed: 7
+  device: auto
+data:
+  cache:
+    policy: "off"
+    image:
+      policy: read_only
+      cache_dir: image_derived_cache
+  dataset:
+    type: deepsense6g
+    scene: 32
+    train_scenes:
+    - 32
+    - 33
+    - 34
+    test_scenes:
+    - 31
+    - 32
+    - 33
+    - 34
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 4
+    num_pred: 1
+    portion: 1.0
+    image_profile: rgb_imagenet
+    image_size:
+    - 224
+    - 224
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+  dataloader:
+    train_batch_size: 64
+    test_batch_size: 64
+    train_num_workers: 1
+    test_num_workers: 0
+    train_prefetch_factor: 1
+    train_persistent_workers: false
+    test_persistent_workers: false
+    pin_memory: false
+    train_drop_last: false
+    test_drop_last: false
+model:
+  modalities:
+  - image
+  - gps
+  feature_size: 64
+  d_model: 64
+  num_classes: 1
+  num_pred: 1
+  downsample_ratio: 1
+  seq_length: 4
+  primary:
+    type: gps_conditioned_jepa
+    modalities:
+    - image
+    - gps
+    image_profile: rgb_imagenet
+    image_channels: 3
+    gps_input_size: 3
+    latent_dim: 64
+    num_classes: 1
+    ema_decay: 0.99
+    visual_encoder:
+      image_channels: 3
+      latent_dim: 64
+      patch_size: 16
+      depth: 1
+      num_heads: 4
+      max_tokens: 196
+      dropout: 0.0
+    conditioning:
+      type: film
+      hidden_dim: 128
+    predictor:
+      hidden_dim: 128
+      max_tokens: 196
+      dropout: 0.0
+    mask_sampler:
+      mode: random
+      context_ratio: 0.6
+      target_ratio: 0.2
+      seed: 7
+loss:
+  type: focal_loss
+  jepa:
+    type: mse
+    latent_normalize: false
+    weight: 1.0
+training:
+  epochs: 100
+  lr: 0.0005
+  weight_decay: 0.0001
+  grad_clip: 5.0
+  patience: 15
+  use_early_stopping: true
+  early_stopping_metric: val_jepa_loss
+  early_stopping_mode: min
+  transfer:
+    non_blocking: false
+  amp:
+    enabled: true
+    dtype: float16
+scheduler:
+  type: none
+evaluation:
+  k_values:
+  - 1
+  dba_delta: 5
+output:
+  dir: outputs
+  run_name: deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem
+  group_by_scene: false
+  tensorboard:
+    enabled: true
+  progress:
+    enabled: false

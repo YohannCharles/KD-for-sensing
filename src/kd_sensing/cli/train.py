@@ -24,13 +24,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> dict:
+def run(argv: list[str] | None = None) -> dict:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
     cfg.setdefault("runtime", {})["cli_config_path"] = args.config
     if args.dry_run:
         cfg["data"]["dataset"]["type"] = "synthetic"
+        for key in ("train_scenes", "test_scenes", "eval_scenes", "validation_scenes"):
+            cfg["data"]["dataset"].pop(key, None)
         cfg["data"]["dataset"]["length"] = 2
         cfg["data"]["dataloader"]["train_batch_size"] = 1
         cfg["data"]["dataloader"]["test_batch_size"] = 1
@@ -43,5 +45,10 @@ def main(argv: list[str] | None = None) -> dict:
     return result
 
 
+def main(argv: list[str] | None = None) -> int:
+    run(argv)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

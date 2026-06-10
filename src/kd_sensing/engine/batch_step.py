@@ -12,6 +12,7 @@ from kd_sensing.engine.gps_coarse_anchor import (
     compute_gps_coarse_anchor_loss,
 )
 from kd_sensing.engine.model_output import select_prediction_slots
+from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
 from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
 from kd_sensing.engine.runtime import (
     autocast_context,
@@ -72,8 +73,14 @@ class BatchStepRunner:
         self.extensions = extensions
         self.extension_states = extension_states
         self.health_tracker = health_tracker
+        self.objective = resolve_prediction_objective(cfg)
 
     def run(self, raw_batch, *, epoch: int, step: int, current_alpha: float) -> BatchStepResult:
+        if self.objective == "gps_conditioned_jepa":
+            return self._run_jepa(raw_batch, epoch=epoch, step=step)
+        return self._run_supervised(raw_batch, epoch=epoch, step=step, current_alpha=current_alpha)
+
+    def _run_supervised(self, raw_batch, *, epoch: int, step: int, current_alpha: float) -> BatchStepResult:
         context = self.context
         batch = prepare_task_batch(raw_batch)
         labels = prepare_task_labels(
@@ -214,6 +221,96 @@ class BatchStepRunner:
             accuracy=float(accuracy),
         )
 
+    def _run_jepa(self, raw_batch, *, epoch: int, step: int) -> BatchStepResult:
+        context = self.context
+        batch = prepare_task_batch(raw_batch)
+        self.optimizer.zero_grad()
+        with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
+            labels = _jepa_dummy_labels(batch, context)
+            controls = ForwardControls()
+            for extension, state in zip(self.extensions, self.extension_states):
+                controls = controls.merge(
+                    extension.before_forward(
+                        context,
+                        state,
+                        batch,
+                        labels,
+                        epoch=epoch,
+                    )
+                )
+            set_csi_debug_batch_source(context.primary_model, "train")
+            primary_step = run_model_step(
+                context.primary_model,
+                self.task,
+                batch,
+                model_cfg=self.model_cfg["primary"],
+                seq_length=context.seq_length,
+                num_pred=context.num_pred,
+                device=context.device,
+                non_blocking=context.non_blocking,
+                force_modality_mask=controls.force_modality_mask,
+                extra_model_kwargs={
+                    **controls.model_kwargs,
+                    "jepa_epoch": int(epoch),
+                    "jepa_step": int(step),
+                },
+            )
+            primary_model_output = primary_step.model_output
+            primary_outputs = primary_step.logits
+            batch_state = BatchState(
+                epoch=epoch,
+                step=step,
+                batch=batch,
+                labels=labels,
+                soft_beam_targets=None,
+                primary_output=primary_model_output,
+                primary_logits=primary_outputs,
+                controls=controls,
+            )
+            base_loss = self._compute_base_loss(
+                batch_state=batch_state,
+                batch=batch,
+                labels=labels,
+                primary_outputs=primary_outputs,
+                current_alpha=0.0,
+            )
+            total_loss = base_loss.total_loss
+            task_loss = base_loss.task_loss
+            auxiliary_loss = base_loss.auxiliary_loss
+            batch_state.total_loss = total_loss
+            batch_state.task_loss = task_loss
+            batch_state.auxiliary_loss = auxiliary_loss
+            batch_state.active_modalities = base_loss.active_modalities
+            scalar_diagnostics = dict(base_loss.diagnostics)
+            extra_loss_values = {
+                "beam_soft": primary_outputs.sum() * 0.0,
+                "unimodal": primary_outputs.sum() * 0.0,
+            }
+            for extension, state in zip(self.extensions, self.extension_states):
+                bundle = extension.after_forward(context, state, batch_state)
+                if bundle is None:
+                    continue
+                total_loss = total_loss + bundle.total
+                scalar_diagnostics.update(bundle.diagnostics)
+            batch_state.total_loss = total_loss
+            batch_state.task_loss = task_loss
+            batch_state.auxiliary_loss = auxiliary_loss
+            prediction_loss = _jepa_prediction_loss_bundle(total_loss, primary_outputs)
+
+        self._backward_and_step(total_loss, batch_state)
+        return BatchStepResult(
+            batch=batch,
+            labels=labels,
+            primary_logits=primary_outputs,
+            total_loss=total_loss,
+            task_loss=task_loss,
+            auxiliary_loss=auxiliary_loss,
+            prediction_loss=prediction_loss,
+            extra_loss_values=extra_loss_values,
+            scalar_diagnostics=scalar_diagnostics,
+            accuracy=0.0,
+        )
+
     def _compute_base_loss(
         self,
         *,
@@ -269,6 +366,8 @@ class BatchStepRunner:
                 self.health_tracker.observe_gradients()
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
+            for extension, state in zip(self.extensions, self.extension_states):
+                extension.after_optimizer_step(self.context, state, batch_state)
             return
         total_loss.backward()
         for extension, state in zip(self.extensions, self.extension_states):
@@ -278,6 +377,8 @@ class BatchStepRunner:
         if self.health_tracker is not None:
             self.health_tracker.observe_gradients()
         self.optimizer.step()
+        for extension, state in zip(self.extensions, self.extension_states):
+            extension.after_optimizer_step(self.context, state, batch_state)
 
 
 def raymobtime_gate_scalar_diagnostics(diagnostics: dict[str, Any]) -> dict[str, float]:
@@ -339,3 +440,34 @@ def _optional_gps_anchor_loss(
         metadata={"anchor_source": "gps_neural_coarse"},
     )
     return compute_gps_coarse_anchor_loss(anchor, labels, anchor_cfg)
+
+
+def _jepa_dummy_labels(batch: dict[str, torch.Tensor], context: ExtensionContext) -> torch.Tensor:
+    missing = [key for key in ("image", "gps") if key not in batch]
+    if missing:
+        missing_text = ", ".join(missing)
+        raise ValueError(
+            f"gps_conditioned_jepa objective requires image and GPS batch fields; missing: {missing_text}."
+        )
+    batch_size = int(batch["image"].shape[0])
+    return torch.zeros(batch_size, context.num_pred, dtype=torch.long, device=context.device)
+
+
+def _jepa_prediction_loss_bundle(total_loss: torch.Tensor, reference: torch.Tensor):
+    from kd_sensing.engine.prediction_objectives import PredictionLossBundle
+
+    zero = reference.sum() * 0.0
+    loss_value = float(total_loss.detach().cpu().item())
+    return PredictionLossBundle(
+        total=total_loss,
+        primary=total_loss,
+        beam=zero,
+        occlusion=zero,
+        position=zero,
+        multitask_total=zero,
+        diagnostics={"loss/jepa": loss_value, "loss/primary": loss_value},
+        los=zero,
+        link_quality=zero,
+        selection_multitask_total=zero,
+        jepa=total_loss,
+    )

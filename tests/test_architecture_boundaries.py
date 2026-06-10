@@ -23,6 +23,7 @@ from kd_sensing.modalities import (  # noqa: E402
 
 PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
+    "scripts/analysis/beambench_ae_gps_diagnostics.py": "research_diagnostic",
     "scripts/analysis/visualize_deepsense_beambench_correspondence.py": "research_diagnostic",
     "scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py": "research_diagnostic",
     "scripts/debug_eval_consistency.py": "research_diagnostic",

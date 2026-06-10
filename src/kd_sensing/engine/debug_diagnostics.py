@@ -221,6 +221,10 @@ def build_startup_summary(
             "dataset_type": dataset_cfg.get("type"),
             "dataset_path": dataset_cfg.get("data_root"),
             "scene": dataset_cfg.get("scene"),
+            "train_scenes": dataset_cfg.get("train_scenes"),
+            "test_scenes": dataset_cfg.get("test_scenes")
+            or dataset_cfg.get("eval_scenes")
+            or dataset_cfg.get("validation_scenes"),
             "train_split": dataset_cfg.get("train_csv_name"),
             "val_split": dataset_cfg.get("val_csv_name"),
             "test_split": dataset_cfg.get("test_csv_name"),

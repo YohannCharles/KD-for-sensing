@@ -5,7 +5,12 @@ import json
 import torch
 
 from kd_sensing.config.io import dump_config
-from kd_sensing.engine.data_factory import build_dataloader, build_dataset, prepare_lidar_normalizer
+from kd_sensing.engine.data_factory import (
+    build_dataloader,
+    build_protocol_split_datasets,
+    build_split_dataset,
+    prepare_lidar_normalizer,
+)
 from kd_sensing.engine.modality_resolution import (
     config_uses_csi,
     config_uses_gps,
@@ -96,19 +101,31 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             "CSI evaluation requires a train-fitted csi_rms_normalizer. "
             "Use a registry checkpoint with normalization metadata or disable data.dataset.csi_train_rms."
         )
-    if needs_train_gps:
-        train_dataset = build_dataset(cfg, "train")
+    protocol_splits = build_protocol_split_datasets(cfg, **dataset_kwargs)
+    if protocol_splits is not None:
+        train_dataset = protocol_splits["train"]
         prepare_lidar_normalizer(cfg, train_dataset)
         split_metadata["train"] = dataset_run_metadata(train_dataset)
-        dataset_kwargs["gps_scaler"] = getattr(train_dataset, "gps_scaler", None)
+        dataset = protocol_splits["test"]
+        if needs_train_gps:
+            dataset_kwargs["gps_scaler"] = _dataset_attr_recursive(train_dataset, "gps_scaler")
         if needs_train_lidar and getattr(train_dataset, "use_lidar", False):
-            dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
-    elif needs_train_lidar:
-        train_dataset = build_dataset(cfg, "train")
+            dataset_kwargs["lidar_normalizer"] = _dataset_attr_recursive(train_dataset, "lidar_normalizer")
+    elif needs_train_gps:
+        train_dataset = build_split_dataset(cfg, "train")
         prepare_lidar_normalizer(cfg, train_dataset)
         split_metadata["train"] = dataset_run_metadata(train_dataset)
-        dataset_kwargs["lidar_normalizer"] = getattr(train_dataset, "lidar_normalizer", None)
-    dataset = build_dataset(cfg, "test", **dataset_kwargs)
+        dataset_kwargs["gps_scaler"] = _dataset_attr_recursive(train_dataset, "gps_scaler")
+        if needs_train_lidar and getattr(train_dataset, "use_lidar", False):
+            dataset_kwargs["lidar_normalizer"] = _dataset_attr_recursive(train_dataset, "lidar_normalizer")
+    elif needs_train_lidar:
+        train_dataset = build_split_dataset(cfg, "train")
+        prepare_lidar_normalizer(cfg, train_dataset)
+        split_metadata["train"] = dataset_run_metadata(train_dataset)
+        dataset_kwargs["lidar_normalizer"] = _dataset_attr_recursive(train_dataset, "lidar_normalizer")
+        dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
+    else:
+        dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
     _apply_csi_rms_to_model_config(cfg, dataset)
     split_metadata["test"] = dataset_run_metadata(dataset)
     normalization_artifacts = {}
@@ -245,6 +262,20 @@ def _evaluation_primary_metric(metrics: dict) -> dict:
     if value is None and name == "top1" and isinstance(metrics.get("topk"), dict):
         value = metrics["topk"].get("1") or metrics["topk"].get(1)
     return {"name": name, "value": value}
+
+
+def _dataset_attr_recursive(dataset, attr: str):
+    value = getattr(dataset, attr, None)
+    if value is not None:
+        return value
+    for component in getattr(dataset, "datasets", []) or []:
+        value = _dataset_attr_recursive(component, attr)
+        if value is not None:
+            return value
+    parent = getattr(dataset, "dataset", None)
+    if parent is not None:
+        return _dataset_attr_recursive(parent, attr)
+    return None
 
 
 def _mmwave_normalization_enabled(cfg: dict) -> bool:

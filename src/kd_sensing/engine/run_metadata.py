@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from kd_sensing.config.canonical import SNAPSHOT_VARIANT
 from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
@@ -22,6 +22,10 @@ from kd_sensing.engine.runtime import amp_runtime_metadata, transfer_non_blockin
 
 
 def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
+    if isinstance(dataset, ConcatDataset):
+        return _concat_dataset_run_metadata(dataset)
+    if isinstance(dataset, Subset):
+        return _subset_dataset_run_metadata(dataset)
     csv_path = getattr(dataset, "root_csv", None)
     csv_name = Path(csv_path).name if csv_path is not None else None
     split_family = _split_family(csv_name)
@@ -133,6 +137,56 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
     return metadata
 
 
+def _concat_dataset_run_metadata(dataset: ConcatDataset) -> dict[str, Any]:
+    components = [dataset_run_metadata(item) for item in getattr(dataset, "datasets", [])]
+    first = components[0] if components else {}
+    scene_slugs = [item.get("scene_slug") for item in components if item.get("scene_slug") is not None]
+    scene_ids = [item.get("scene_id") for item in components if item.get("scene_id") is not None]
+    return {
+        "split": first.get("split"),
+        "scene_id": scene_ids,
+        "scene_slug": "multi_scene",
+        "scene_slugs": scene_slugs,
+        "multi_scene": True,
+        "component_count": len(components),
+        "component_num_samples": [int(item.get("num_samples", 0) or 0) for item in components],
+        "num_samples": len(dataset),
+        "enabled_modalities": list(first.get("enabled_modalities", [])),
+        "split_family": "multi_scene",
+        "components": components,
+    }
+
+
+def _subset_dataset_run_metadata(dataset: Subset) -> dict[str, Any]:
+    parent = dataset_run_metadata(dataset.dataset)
+    metadata = dict(parent)
+    internal_split = getattr(dataset, "internal_split", None)
+    stratified_split = getattr(dataset, "stratified_split", None)
+    split = getattr(dataset, "split", None) or (internal_split or {}).get("role") or parent.get("split")
+    metadata.update(
+        {
+            "split": split,
+            "num_samples": len(dataset),
+            "subset": True,
+            "subset_num_samples": len(dataset),
+            "subset_parent_num_samples": len(dataset.dataset),
+            "subset_index_count": len(dataset.indices),
+        }
+    )
+    if isinstance(internal_split, dict):
+        metadata["internal_validation_split"] = dict(internal_split)
+        metadata["selection_split_role"] = internal_split.get("role")
+        metadata["selection_split_source"] = internal_split.get("source_split")
+    if isinstance(stratified_split, dict):
+        metadata["stratified_split"] = dict(stratified_split)
+        metadata["split_protocol"] = stratified_split.get("protocol")
+        metadata["split_strategy"] = stratified_split.get("strategy")
+        metadata["split_num_samples"] = len(dataset)
+        metadata["selection_split_role"] = stratified_split.get("role")
+        metadata["selection_split_source"] = stratified_split.get("source_split")
+    return metadata
+
+
 def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, Any]:
     metadata = {}
     for split, loader in dataloaders.items():
@@ -166,7 +220,7 @@ def prediction_setup_metadata(
         "objective": cfg.get("experiment", {}).get("objective", "beam"),
         "task": cfg.get("experiment", {}).get("task"),
         "train_csv_name": dataset_cfg.get("train_csv_name"),
-        "validation_csv_name": dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name"),
+        "validation_csv_name": _validation_source_name(cfg, dataset_cfg),
         "test_csv_name": dataset_cfg.get("test_csv_name"),
     }
     metadata.update(_beam_label_metadata_from_dataset_config(dataset_cfg))
@@ -188,6 +242,9 @@ def prediction_setup_metadata(
     for key in ("scene", "scene_id", "scene_slug"):
         if key in scene:
             metadata[key] = scene[key]
+    for key in ("train_scenes", "test_scenes", "eval_scenes", "validation_scenes"):
+        if key in scene:
+            metadata[key] = list(scene[key]) if isinstance(scene[key], (list, tuple)) else scene[key]
     if split_metadata:
         metadata["splits"] = _prediction_setup_splits(split_metadata)
         train_split = split_metadata.get("train", {})
@@ -222,6 +279,15 @@ def prediction_setup_metadata(
     return metadata
 
 
+def _validation_source_name(cfg: dict[str, Any], dataset_cfg: dict[str, Any]) -> str | None:
+    validation_from_train = cfg.get("data", {}).get("validation_from_train")
+    if isinstance(validation_from_train, dict) and bool(validation_from_train.get("enabled", False)):
+        return "internal_train_split"
+    if validation_from_train is True:
+        return "internal_train_split"
+    return dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name")
+
+
 def throughput_run_metadata(
     cfg: dict[str, Any],
     dataloaders: dict[str, DataLoader] | None = None,
@@ -230,8 +296,10 @@ def throughput_run_metadata(
     loader_cfg = cfg.get("data", {}).get("dataloader", {})
     train_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="train")
     test_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="test")
+    validation_loader_kwargs = build_dataloader_kwargs(loader_cfg, split="validation")
     train_loader_settings = resolve_dataloader_split_config(loader_cfg, split="train")
     test_loader_settings = resolve_dataloader_split_config(loader_cfg, split="test")
+    validation_loader_settings = resolve_dataloader_split_config(loader_cfg, split="validation")
     train_subsampling = {}
     if dataloaders is not None and "train" in dataloaders:
         train_subsampling = epoch_subsampling_metadata_from_loader(dataloaders["train"])
@@ -241,10 +309,12 @@ def throughput_run_metadata(
     metadata: dict[str, Any] = {
         "dataloader": {
             "train": _serializable_loader_kwargs(train_loader_kwargs),
+            "validation": _serializable_loader_kwargs(validation_loader_kwargs),
             "test": _serializable_loader_kwargs(test_loader_kwargs),
         },
         "dataloader_splits": {
             "train": _serializable_loader_settings(train_loader_settings),
+            "validation": _serializable_loader_settings(validation_loader_settings),
             "test": _serializable_loader_settings(test_loader_settings),
         },
         "transfer": {

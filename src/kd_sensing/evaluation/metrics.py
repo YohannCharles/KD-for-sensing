@@ -306,7 +306,13 @@ def calculate_topk_accuracy(
     return {k: topk_correct[k] / (total + 1e-8) for k in k_values}, total
 
 
-def calculate_dba_score(outputs: torch.Tensor, labels: torch.Tensor, delta: float = 5):
+def calculate_dba_score(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    delta: float = 5,
+    *,
+    distance_mode: str = "circular",
+):
     num_pred = labels.shape[1]
     num_classes = int(outputs.shape[-1])
     dba_sum = np.zeros((num_pred,))
@@ -321,7 +327,7 @@ def calculate_dba_score(outputs: torch.Tensor, labels: torch.Tensor, delta: floa
             if gt == -100:
                 continue
             preds = idx_np[b, t, :k]
-            distances = _circular_class_distance(preds, int(gt), num_classes=num_classes)
+            distances = _class_distance(preds, int(gt), num_classes=num_classes, mode=distance_mode)
             norm_dists = np.minimum(distances / delta, 1.0)
             y_by_k = 1.0 - np.minimum.accumulate(norm_dists)
             dba_sum[t] += np.mean(y_by_k)
@@ -411,7 +417,13 @@ def beam_power_metrics(
     }
 
 
-def calculate_current_beam_dba(outputs: torch.Tensor, labels: torch.Tensor, delta: float = 5) -> float:
+def calculate_current_beam_dba(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    delta: float = 5,
+    *,
+    distance_mode: str = "circular",
+) -> float:
     if labels.ndim == 1:
         labels = labels.unsqueeze(1)
     if outputs.ndim == 2:
@@ -420,11 +432,24 @@ def calculate_current_beam_dba(outputs: torch.Tensor, labels: torch.Tensor, delt
         raise ValueError("current beam DBA labels must have shape [B, 1] or [B].")
     if outputs.ndim != 3 or outputs.shape[1] != 1:
         raise ValueError("current beam DBA outputs must have shape [B, 1, C] or [B, C].")
-    return float(calculate_dba_score(outputs, labels, delta=delta)[0])
+    return float(calculate_dba_score(outputs, labels, delta=delta, distance_mode=distance_mode)[0])
 
 
 def _circular_class_distance(preds: np.ndarray, truth: int, *, num_classes: int) -> np.ndarray:
     return np.asarray(circular_beam_distance(preds, int(truth), num_beams=int(num_classes)), dtype=np.int64)
+
+
+def _linear_class_distance(preds: np.ndarray, truth: int) -> np.ndarray:
+    return np.abs(np.asarray(preds, dtype=np.int64) - int(truth)).astype(np.int64)
+
+
+def _class_distance(preds: np.ndarray, truth: int, *, num_classes: int, mode: str) -> np.ndarray:
+    normalized = str(mode or "circular").strip().lower().replace("-", "_")
+    if normalized in {"circular", "wrap", "wrapped"}:
+        return _circular_class_distance(preds, truth, num_classes=num_classes)
+    if normalized in {"linear", "official", "beambench", "non_circular", "noncircular"}:
+        return _linear_class_distance(preds, truth)
+    raise ValueError("distance_mode must be one of 'circular' or 'linear'.")
 
 
 def _positive_num_beams(num_beams: int) -> int:

@@ -83,6 +83,22 @@ _SELECTION_HISTORY_FIELDS_BY_OBJECTIVE: dict[str, tuple[str, ...]] = {
         "val_primary_metric",
         "learning_rates",
     ),
+    "gps_conditioned_jepa": (
+        "train_loss",
+        "train_task_loss",
+        "train_objective_loss",
+        "train_beam_soft_loss",
+        "train_unimodal_loss",
+        "train_jepa_loss",
+        "train_acc",
+        "val_loss",
+        "val_jepa_loss",
+        "val_jepa_mask_target_ratio",
+        "val_jepa_mask_context_ratio",
+        "val_jepa_ema_decay",
+        "val_primary_metric",
+        "learning_rates",
+    ),
 }
 
 _OPTIONAL_HISTORY_FIELDS = {
@@ -108,6 +124,11 @@ _OPTIONAL_HISTORY_FIELDS = {
     "val_link_rmse",
     "val_link_r2",
     "val_selection_multitask_loss",
+    "train_jepa_loss",
+    "val_jepa_loss",
+    "val_jepa_mask_target_ratio",
+    "val_jepa_mask_context_ratio",
+    "val_jepa_ema_decay",
 }
 
 _COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
@@ -178,6 +199,14 @@ _SELECTION_MULTITASK_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
     *_SELECTION_TENSORBOARD_SCALARS,
 )
 
+_JEPA_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/jepa_train", "train_jepa_loss"),
+    ("loss/jepa_val", "val_jepa_loss"),
+    ("jepa/mask_target_ratio", "val_jepa_mask_target_ratio"),
+    ("jepa/mask_context_ratio", "val_jepa_mask_context_ratio"),
+    ("jepa/ema_decay", "val_jepa_ema_decay"),
+)
+
 def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str], ...]:
     scalars = list(_COMMON_TENSORBOARD_SCALARS)
     if objective in {"beam", "multitask"}:
@@ -191,6 +220,8 @@ def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str],
         scalars.extend(_CURRENT_LINK_TENSORBOARD_SCALARS)
     elif objective == "selection_multitask":
         scalars.extend(_SELECTION_MULTITASK_TENSORBOARD_SCALARS)
+    elif objective == "gps_conditioned_jepa":
+        scalars.extend(_JEPA_TENSORBOARD_SCALARS)
     else:
         scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
     return tuple(scalars)

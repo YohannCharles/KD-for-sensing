@@ -1,0 +1,131 @@
+experiment:
+  name: fusion_image_gps_supervised_2604_s32_s34_lowmem
+  task: fusion
+  seed: 0
+  device: auto
+  protocol: deepsense6g_2604_s32_s34_stratified80_seq5
+data:
+  dataset:
+    type: deepsense6g
+    scene: 32
+    train_scenes:
+    - 32
+    - 33
+    - 34
+    validation_scenes:
+    - 32
+    - 33
+    - 34
+    test_scenes:
+    - 32
+    - 33
+    - 34
+    split_protocol: stratified_80_10_10
+    split_strategy: stratified_by_target_beam_per_scene
+    split_seed: 42
+    split_source_splits:
+    - train
+    - test
+    split_fractions:
+      train: 0.8
+      validation: 0.1
+      test: 0.1
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 5
+    num_pred: 1
+    portion: 1.0
+    image_profile: rgb_imagenet
+    image_size:
+    - 224
+    - 224
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+  validation_from_train:
+    enabled: false
+  dataloader:
+    train_batch_size: 8
+    test_batch_size: 8
+    num_workers: 0
+    train_num_workers: 0
+    test_num_workers: 0
+    train_prefetch_factor: 1
+    test_prefetch_factor: 1
+    pin_memory: false
+    persistent_workers: false
+    train_persistent_workers: false
+    test_persistent_workers: false
+model:
+  feature_size: 64
+  gru_hidden_size: 64
+  num_classes: 64
+  num_pred: 1
+  downsample_ratio: 1
+  seq_length: 5
+  primary:
+    type: modular_sequence
+    modalities:
+    - image
+    - gps
+    image_profile: rgb_imagenet
+    gps_input_size: 3
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 1
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages:
+        - layer4
+        dropout: 0.1
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
+training:
+  epochs: 100
+  lr: 0.00075
+  weight_decay: 0.0001
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  early_stopping_metric: val_adba
+  early_stopping_mode: max
+  min_delta: 0.0001
+  cpu_threads:
+    intra_op: 8
+    inter_op: 1
+  transfer:
+    non_blocking: true
+  amp:
+    enabled: true
+    dtype: float16
+    grad_scaler: true
+  allow_tf32: true
+  cudnn_benchmark: true
+scheduler:
+  type: none
+evaluation:
+  k_values:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 10
+  dba_delta: 5
+  dba_distance_mode: linear
+output:
+  dir: outputs
+  group_by_scene: false
+  run_name: fusion_image_gps_supervised_2604_s32_s34_lowmem

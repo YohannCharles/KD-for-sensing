@@ -134,7 +134,7 @@ class CheckpointManager:
         else:
             state.epochs_without_improvement += 1
 
-        top1_improved = val_acc > state.best_val_top1
+        top1_improved = self.objective_metadata.get("name") != "gps_conditioned_jepa" and val_acc > state.best_val_top1
         if top1_improved:
             state.best_val_top1 = val_acc
             state.best_top1_epoch = epoch + 1

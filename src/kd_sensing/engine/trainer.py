@@ -51,6 +51,7 @@ from kd_sensing.engine.run_status import (
     write_running_status,
 )
 from kd_sensing.engine.runtime import (
+    configure_cuda_performance_settings,
     configure_torch_runtime_threads,
     make_grad_scaler,
     resolve_amp_settings,
@@ -86,6 +87,7 @@ from kd_sensing.engine.training_state import (
 )
 from kd_sensing.evaluation.lidar_diagnostics import LidarQualityAccumulator
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
+from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.seed import set_seed
 
 
@@ -155,6 +157,10 @@ def _scene_grouped_output_base(cfg: dict) -> Path:
 
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
+    if resolve_prediction_objective(cfg) == "gps_conditioned_jepa":
+        from kd_sensing.engine.jepa import JepaTrainingExtension
+
+        return [JepaTrainingExtension()]
     return [NoOpTrainingExtension()]
 
 
@@ -192,7 +198,10 @@ def _train_inner(cfg: dict) -> dict:
     split_metadata = dataloaders_run_metadata(dataloaders)
     normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
     device = build_device(cfg)
+    cuda_performance = configure_cuda_performance_settings(cfg, device)
     throughput_metadata = throughput_run_metadata(cfg, dataloaders, device)
+    if cuda_performance:
+        throughput_metadata["cuda_performance"] = cuda_performance
     resolved_cfg = artifact_writer.write_initial_configs(
         split_metadata=split_metadata,
         normalization_artifacts=normalization_artifacts,
@@ -291,6 +300,8 @@ def _train_inner(cfg: dict) -> dict:
     progress_enabled = _progress_enabled(cfg)
     total_epochs = training_cfg.get("epochs", 100)
     early_stopping_min_epoch = _early_stopping_min_epoch(total_epochs)
+    validation_loader = dataloaders.get("validation", dataloaders["test"])
+    validation_split_name = "validation" if "validation" in dataloaders else "test"
     try:
         epoch_progress = tqdm(
             range(state.start_epoch, total_epochs),
@@ -341,14 +352,14 @@ def _train_inner(cfg: dict) -> dict:
             try:
                 val_metrics = validate(
                     primary_model,
-                    dataloaders["test"],
+                    validation_loader,
                     cfg,
                     task_criterion,
                     device,
                     output_dir=run_dir,
                 )
             finally:
-                shutdown_dataloader_workers(dataloaders["test"])
+                shutdown_dataloader_workers(validation_loader)
             csi_debug_records.extend(consume_csi_debug_records(primary_model))
             _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
             extension_metrics = {}
@@ -417,6 +428,18 @@ def _train_inner(cfg: dict) -> dict:
             shutdown_dataloader_workers(dataloader)
         _close_tensorboard_writer(tensorboard_writer)
 
+    final_test_metrics, final_test_checkpoint_load = _evaluate_final_test_split(
+        primary_model,
+        dataloaders["test"],
+        cfg,
+        task_criterion,
+        device,
+        run_dir=run_dir,
+        validation_split_name=validation_split_name,
+    )
+    if final_test_checkpoint_load is not None:
+        state.checkpoint_loads.append(final_test_checkpoint_load)
+
     final_artifacts = artifact_writer.write_final_artifacts(
         history=state.history,
         epoch_logs=state.epoch_logs,
@@ -436,6 +459,7 @@ def _train_inner(cfg: dict) -> dict:
         config_diff=config_diff,
         csi_debug_records=csi_debug_records,
         best_top1_epoch=state.best_top1_epoch,
+        final_test_metrics=final_test_metrics,
     )
     write_complete_status(
         run_dir,
@@ -462,6 +486,7 @@ def _train_inner(cfg: dict) -> dict:
         "checkpoint_registry": state.registry_checkpoint,
         "normalization_artifacts": normalization_artifacts,
         "checkpoint_loads": state.checkpoint_loads,
+        "final_test_metrics": final_test_metrics,
         "optimizer_param_groups": optimizer_groups,
         "split_metadata": split_metadata,
         "throughput": throughput_metadata,
@@ -480,6 +505,38 @@ def _best_checkpoint_for_status(run_dir: Path, registry_checkpoint: dict | None)
         if path.exists():
             return path
     return None
+
+
+def _evaluate_final_test_split(
+    primary_model,
+    test_loader,
+    cfg: dict,
+    task_criterion,
+    device,
+    *,
+    run_dir: Path,
+    validation_split_name: str,
+) -> tuple[dict, dict | None]:
+    checkpoint_load = None
+    best_path = run_dir / "checkpoints" / "best.pth"
+    if best_path.exists():
+        load_result = load_model_state(
+            best_path,
+            primary_model,
+            role="final-test-best",
+            map_location=device,
+            strict=_checkpoint_strict(cfg),
+        )
+        checkpoint_load = checkpoint_load_summary(load_result)
+    primary_model.eval()
+    try:
+        metrics = validate(primary_model, test_loader, cfg, task_criterion, device, output_dir=run_dir)
+    finally:
+        shutdown_dataloader_workers(test_loader)
+    metrics["model_selection_split"] = str(validation_split_name)
+    metrics["evaluation_split"] = "test"
+    metrics["checkpoint_for_test"] = str(best_path) if best_path.exists() else "last_in_memory"
+    return metrics, checkpoint_load
 
 
 def _apply_csi_rms_to_model_config(cfg: dict, dataloaders: dict) -> None:

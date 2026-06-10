@@ -141,6 +141,14 @@ class TrainingExtension:
     ) -> None:
         return None
 
+    def after_optimizer_step(
+        self,
+        context: ExtensionContext,
+        state: Any,
+        batch_state: BatchState,
+    ) -> None:
+        return None
+
     def after_epoch(
         self,
         context: ExtensionContext,

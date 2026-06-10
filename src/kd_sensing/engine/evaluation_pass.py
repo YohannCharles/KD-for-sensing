@@ -44,6 +44,7 @@ from kd_sensing.evaluation.metrics import (
     calculate_position_rmse,
     calculate_topk_accuracy,
 )
+from kd_sensing.losses.jepa import jepa_loss_from_output
 from kd_sensing.evaluation.horizon_selection import (
     horizon_indices,
     metric_horizon_source_from_config,
@@ -88,6 +89,22 @@ def run_evaluation_pass(
     num_classes = model_cfg.get("num_classes", 64)
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
+    if objective == "gps_conditioned_jepa":
+        return _run_jepa_evaluation_pass(
+            model,
+            dataloader,
+            cfg,
+            device,
+            task=task,
+            model_cfg=model_cfg,
+            num_pred=num_pred,
+            seq_length=seq_length,
+            non_blocking=non_blocking,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+            objective_metadata=objective_metadata,
+            enabled_modalities=enabled_modalities,
+        )
     val_loss = 0.0
     val_occlusion_loss = 0.0
     val_position_loss = 0.0
@@ -308,6 +325,122 @@ def run_evaluation_pass(
     )
 
 
+def _run_jepa_evaluation_pass(
+    model,
+    dataloader,
+    cfg: dict[str, Any],
+    device: torch.device,
+    *,
+    task: str,
+    model_cfg: dict[str, Any],
+    num_pred: int,
+    seq_length: int,
+    non_blocking: bool,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+    objective_metadata: dict[str, Any],
+    enabled_modalities: tuple[str, ...],
+) -> EvaluationPassResult:
+    val_loss = 0.0
+    all_outputs: list[torch.Tensor] = []
+    all_labels: list[torch.Tensor] = []
+    all_metadata: list[dict[str, Any]] = []
+    diagnostic_sums: dict[str, float] = {}
+    diagnostic_counts: dict[str, int] = {}
+
+    with torch.no_grad():
+        for step_index, batch in enumerate(dataloader):
+            batch = prepare_task_batch(batch)
+            missing = [key for key in ("image", "gps") if key not in batch]
+            if missing:
+                raise ValueError(
+                    "gps_conditioned_jepa objective requires image and GPS fields during validation; "
+                    f"missing: {', '.join(missing)}."
+                )
+            all_metadata.extend(_metadata_rows_from_batch(batch.get("metadata")))
+            with autocast_context(amp_enabled, device, amp_dtype):
+                set_csi_debug_batch_source(model, "val")
+                step = run_model_step(
+                    model,
+                    task,
+                    batch,
+                    model_cfg=cfg["model"]["primary"],
+                    seq_length=seq_length,
+                    num_pred=num_pred,
+                    device=device,
+                    non_blocking=non_blocking,
+                    extra_model_kwargs={
+                        "jepa_epoch": 0,
+                        "jepa_step": int(step_index),
+                    },
+                )
+                result = jepa_loss_from_output(step.model_output, cfg)
+            loss_value = float(result.loss.detach().cpu().item())
+            val_loss += loss_value
+            _accumulate_scalar_diagnostics(diagnostic_sums, diagnostic_counts, result.diagnostics)
+            _accumulate_scalar_diagnostics(diagnostic_sums, diagnostic_counts, step.model_output.diagnostics)
+            all_outputs.append(step.logits.detach().cpu())
+            all_labels.append(torch.zeros(step.logits.shape[0], num_pred, dtype=torch.long))
+
+    batches = max(len(dataloader), 1)
+    loss = float(val_loss / batches)
+    averaged = {
+        key: float(value / max(diagnostic_counts.get(key, 0), 1))
+        for key, value in diagnostic_sums.items()
+        if diagnostic_counts.get(key, 0) > 0
+    }
+    metrics: dict[str, Any] = {
+        "loss": loss,
+        "val_loss": loss,
+        "val_jepa_loss": loss,
+        "topk": {},
+        "total": [0 for _ in range(max(int(num_pred), 1))],
+        "metric_horizons": list(metric_horizons_from_config(cfg, num_pred=max(int(num_pred), 1))),
+        "metric_horizon_indices": list(horizon_indices(metric_horizons_from_config(cfg, num_pred=max(int(num_pred), 1)))),
+        "metric_horizon_source": metric_horizon_source_from_config(cfg),
+        "objective": objective_metadata,
+        "enabled_modalities": list(enabled_modalities),
+    }
+    if "jepa/mask_target_ratio" in averaged:
+        metrics["val_jepa_mask_target_ratio"] = averaged["jepa/mask_target_ratio"]
+    if "jepa/mask_context_ratio" in averaged:
+        metrics["val_jepa_mask_context_ratio"] = averaged["jepa/mask_context_ratio"]
+    if "jepa/ema_decay" in averaged:
+        metrics["val_jepa_ema_decay"] = averaged["jepa/ema_decay"]
+    metrics["jepa"] = averaged
+    metrics["available_metrics"] = objective_available_metrics("gps_conditioned_jepa", metrics)
+    outputs_t = torch.cat(all_outputs, dim=0) if all_outputs else torch.empty(0, max(int(num_pred), 1), 1)
+    labels_t = torch.cat(all_labels, dim=0) if all_labels else torch.empty(0, max(int(num_pred), 1), dtype=torch.long)
+    return EvaluationPassResult(
+        metrics=metrics,
+        outputs=outputs_t,
+        labels=labels_t,
+        input_beams=None,
+        gps_anchor_center_beam=None,
+        gps_anchor_confidence=None,
+        gps_anchor_coarse_topk=None,
+        gps_anchor_residual_anchor_beam=None,
+        metadata=all_metadata,
+        objective_metadata=objective_metadata,
+        enabled_modalities=enabled_modalities,
+        saw_lidar=False,
+    )
+
+
+def _accumulate_scalar_diagnostics(
+    sums: dict[str, float],
+    counts: dict[str, int],
+    diagnostics: dict[str, Any],
+) -> None:
+    for key, value in diagnostics.items():
+        if isinstance(value, (int, float)):
+            sums[key] = sums.get(key, 0.0) + float(value)
+            counts[key] = counts.get(key, 0) + 1
+        elif torch.is_tensor(value) and value.numel() == 1:
+            sums[key] = sums.get(key, 0.0) + float(value.detach().cpu().item())
+            counts[key] = counts.get(key, 0) + 1
+
+
 def _gps_anchor_enabled(cfg: dict[str, Any]) -> bool:
     for candidate in (
         cfg.get("gps_anchor"),
@@ -385,6 +518,7 @@ def _metrics_from_outputs(
             outputs,
             labels,
             cfg.get("evaluation", {}).get("dba_delta", 5),
+            distance_mode=cfg.get("evaluation", {}).get("dba_distance_mode", "circular"),
         )
         metrics["beam_dba_current"] = beam_dba
         metrics["val_beam_dba"] = beam_dba
@@ -396,6 +530,7 @@ def _metrics_from_outputs(
             outputs,
             labels,
             cfg.get("evaluation", {}).get("dba_delta", 5),
+            distance_mode=cfg.get("evaluation", {}).get("dba_distance_mode", "circular"),
         )
         metrics["dba"] = dba_score.tolist()
     return metrics

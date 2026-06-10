@@ -28,6 +28,7 @@ IMAGE_MODEL_TYPES = {
     "fusion_lightweight",
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
+    "gps_conditioned_jepa",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
 ENCODER_CONFIG_MODEL_TYPES = MODULAR_MODEL_TYPES | {
@@ -48,6 +49,7 @@ FUSION_MODEL_TYPES = {
     "token_transformer_fusion",
     "simple_concat_multitask_selection",
     "task_aware_gated_multitask_selection",
+    "gps_conditioned_jepa",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
@@ -202,6 +204,10 @@ def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
     }:
         ensure_objective_loss_defaults(cfg, objective)
         return
+    if objective == "gps_conditioned_jepa":
+        ensure_jepa_runtime_requirements(cfg)
+        ensure_objective_loss_defaults(cfg, objective)
+        return
     dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
     if objective_requires_occlusion(cfg):
         ensure_occlusion_target(dataset_cfg)
@@ -270,6 +276,10 @@ def ensure_objective_loss_defaults(cfg: dict[str, Any], objective: str) -> None:
     loss_cfg = cfg.setdefault("loss", {})
     objective_cfg = loss_cfg.setdefault("objective", {})
     weights_cfg = objective_cfg.setdefault("weights", {})
+    if objective == "gps_conditioned_jepa":
+        loss_cfg.setdefault("jepa", {"type": "mse", "latent_normalize": False, "weight": 1.0})
+        weights_cfg.setdefault("jepa", 1.0)
+        return
     if objective == "selection_multitask":
         weights_cfg.setdefault("beam_selection", 1.0)
         weights_cfg.setdefault("los", 0.5)
@@ -293,6 +303,22 @@ def ensure_objective_loss_defaults(cfg: dict[str, Any], objective: str) -> None:
         objective_cfg.setdefault("occlusion", {}).setdefault("pos_weight", "auto")
     if objective in {"position", "multitask"}:
         objective_cfg.setdefault("position", {}).setdefault("type", "mse")
+
+
+def ensure_jepa_runtime_requirements(cfg: dict[str, Any]) -> None:
+    model_cfg = cfg.setdefault("model", {})
+    model_cfg["modalities"] = ["image", "gps"]
+    primary_cfg = model_cfg.setdefault("primary", {})
+    primary_cfg.setdefault("type", "gps_conditioned_jepa")
+    primary_cfg["modalities"] = ["image", "gps"]
+    primary_cfg.setdefault("image_profile", "rgb_imagenet")
+    primary_cfg.setdefault("image_channels", 3)
+    primary_cfg.setdefault("gps_input_size", 3)
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    dataset_cfg["use_gps"] = True
+    dataset_cfg.setdefault("gps_feature_mode", "relative_polar")
+    dataset_cfg.setdefault("gps_normalize", True)
+    dataset_cfg.setdefault("image_profile", "rgb_imagenet")
 
 
 def modalities_from_role_overrides(override_cfg: dict[str, Any] | None) -> list[str] | None:

@@ -228,6 +228,7 @@ def import_default_components() -> None:
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
     import kd_sensing.models.image_encoders  # noqa: F401
+    import kd_sensing.models.jepa  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
