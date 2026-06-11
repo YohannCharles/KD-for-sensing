@@ -117,6 +117,8 @@ DATASETS = Registry("datasets")
 LOSSES = Registry("losses")
 METRICS = Registry("metrics")
 PREPROCESSORS = Registry("preprocessors")
+JEPA_DOWNSTREAM_POOLERS = Registry("jepa_downstream_poolers")
+JEPA_DOWNSTREAM_ADAPTERS = Registry("jepa_downstream_adapters")
 
 DATASETS.register_removed(
     "scenario9",
@@ -142,6 +144,10 @@ DATASETS.register_removed(
     "multimodal_nf",
     "Multimodal-NF has been retired and no compatibility migration is provided.",
 )
+DATASETS.register_removed(
+    "raymobtime_s008",
+    "Raymobtime s008 has been retired and no compatibility migration is provided.",
+)
 MODELS.register_removed(
     "Fusion" + "ModalityNet",
     "Use the 'fusion_strong' registry name.",
@@ -160,7 +166,27 @@ MODELS.register_removed(
 )
 MODELS.register_removed(
     "hist_beam_fusion",
-    "HiST-Beam/Hist has been retired. Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, Raymobtime, or viewer workflows; no compatibility migration is provided.",
+    "HiST-Beam/Hist has been retired. Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, JEPA, or viewer workflows; no compatibility migration is provided.",
+)
+MODELS.register_removed(
+    "simple_concat_multitask_selection",
+    "Raymobtime s008 selection models have been retired and no compatibility migration is provided.",
+)
+MODELS.register_removed(
+    "task_aware_gated_multitask_selection",
+    "Raymobtime s008 selection models have been retired and no compatibility migration is provided.",
+)
+ENCODERS.register_removed(
+    "coord_mlp",
+    "Raymobtime s008 coordinate encoder has been retired and no compatibility migration is provided.",
+)
+ENCODERS.register_removed(
+    "ray_mlp",
+    "Raymobtime s008 ray feature encoder has been retired and no compatibility migration is provided.",
+)
+ENCODERS.register_removed(
+    "raymobtime_lidar_3d_cnn",
+    "Raymobtime s008 LiDAR occupancy encoder has been retired and no compatibility migration is provided.",
 )
 LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervised or adaptation losses.")
 LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
@@ -176,6 +202,22 @@ PREPROCESSORS.register_removed(
 PREPROCESSORS.register_removed(
     "multimodal_nf_derived_cache",
     "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
+)
+PREPROCESSORS.register_removed(
+    "raymobtime_s008_audit",
+    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
+)
+PREPROCESSORS.register_removed(
+    "raymobtime_s008_index",
+    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
+)
+PREPROCESSORS.register_removed(
+    "raymobtime_s008_ray_features",
+    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
+)
+PREPROCESSORS.register_removed(
+    "raymobtime_s008_cache",
+    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
 )
 
 
@@ -219,7 +261,6 @@ def import_default_components() -> None:
 
     import kd_sensing.data.datasets.deepsense6g  # noqa: F401
     import kd_sensing.data.datasets.mmw  # noqa: F401
-    import kd_sensing.data.datasets.raymobtime_s008  # noqa: F401
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.evaluation.metrics  # noqa: F401
     import kd_sensing.losses.beam  # noqa: F401
@@ -228,16 +269,15 @@ def import_default_components() -> None:
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
     import kd_sensing.models.image_encoders  # noqa: F401
+    import kd_sensing.models.jepa_downstream  # noqa: F401
     import kd_sensing.models.jepa  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
-    import kd_sensing.models.raymobtime_s008  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.image_cache  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401
-    import kd_sensing.preprocessing.raymobtime_s008  # noqa: F401
     import kd_sensing.preprocessing.sequences  # noqa: F401
 
 
@@ -253,6 +293,8 @@ __all__ = [
     "LOSSES",
     "METRICS",
     "PREPROCESSORS",
+    "JEPA_DOWNSTREAM_POOLERS",
+    "JEPA_DOWNSTREAM_ADAPTERS",
     "registry_self_check",
     "import_default_components",
 ]

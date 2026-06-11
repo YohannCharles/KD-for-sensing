@@ -460,6 +460,7 @@ def _train_inner(cfg: dict) -> dict:
         csi_debug_records=csi_debug_records,
         best_top1_epoch=state.best_top1_epoch,
         final_test_metrics=final_test_metrics,
+        primary_model=primary_model,
     )
     write_complete_status(
         run_dir,

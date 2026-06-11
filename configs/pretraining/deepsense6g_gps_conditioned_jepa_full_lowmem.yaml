@@ -9,7 +9,7 @@ data:
     policy: "off"
     image:
       policy: read_only
-      cache_dir: image_derived_cache
+      cache_dir: null
   dataset:
     type: deepsense6g
     scene: 32

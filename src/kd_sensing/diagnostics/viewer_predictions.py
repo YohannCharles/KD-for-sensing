@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
+from kd_sensing.data.layouts import runtime_cache_root
 from kd_sensing.config.io import load_config
 from kd_sensing.diagnostics.visualization.config import parse_visualization_config
 from kd_sensing.diagnostics.visualization.datasets import (
@@ -584,7 +585,11 @@ def _prediction_output_path(
     if output_path is not None:
         return Path(output_path).expanduser()
     digest = _prediction_digest(cfg, jobs=jobs, sample_limit=sample_limit, batch_size=batch_size)[:16]
-    root = Path(cache_dir).expanduser() if cache_dir is not None else Path("outputs/diagnostics/gradio_viewer_cache")
+    root = (
+        Path(cache_dir).expanduser()
+        if cache_dir is not None
+        else Path(runtime_cache_root()) / "diagnostics" / "gradio_viewer"
+    )
     return root / "model_predictions" / digest / "predictions.json"
 
 

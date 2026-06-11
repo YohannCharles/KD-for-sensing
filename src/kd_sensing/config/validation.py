@@ -4,12 +4,10 @@ import csv
 from pathlib import Path
 from typing import Any
 
-from kd_sensing.config.dataset_rules.raymobtime import validate_raymobtime_config
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.config.normalization import (
     IMAGE_MODEL_TYPES,
-    RAYMOBTIME_SELECTION_MODEL_TYPES,
     auxiliary_head_enabled,
     image_encoder_type,
     iter_model_configs,
@@ -41,7 +39,6 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     validate_epoch_subsampling_config(cfg)
     validate_dataset_input_profiles(cfg)
     validate_deepsense_label_space_artifacts(cfg)
-    validate_raymobtime_config(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     validate_cache_policy(cache_policy, "data.cache.policy")
     cache_cfg = cfg.get("data", {}).get("cache", {})
@@ -218,11 +215,6 @@ def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
         "current_link_quality",
         "selection_multitask",
     }:
-        if model_type not in RAYMOBTIME_SELECTION_MODEL_TYPES and dataset_cfg.get("type") == "raymobtime_s008":
-            raise ValueError(
-                f"experiment.objective='{objective}' for Raymobtime s008 requires a snapshot selection model "
-                "such as simple_concat_multitask_selection or task_aware_gated_multitask_selection."
-            )
         return
 
     if objective_requires_occlusion(cfg):

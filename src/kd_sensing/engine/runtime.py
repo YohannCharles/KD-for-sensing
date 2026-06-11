@@ -11,7 +11,6 @@ from kd_sensing.engine.batch import (
     forward_model,
     normalize_batch,
     prepare_auxiliary_targets,
-    prepare_coord_inputs,
     prepare_csi_inputs,
     prepare_fusion_inputs,
     prepare_gps_inputs,
@@ -20,7 +19,6 @@ from kd_sensing.engine.batch import (
     prepare_soft_beam_targets,
     prepare_lidar_inputs,
     prepare_mmwave_inputs,
-    prepare_ray_inputs,
     prepare_radar_inputs,
 )
 from kd_sensing.engine.model_output import ModelOutput, adapt_model_output, select_prediction_slots
@@ -239,26 +237,6 @@ def prepare_task_inputs(
     if task == "csi":
         return {
             "csi_batch": prepare_csi_inputs(
-                batch,
-                seq_length=seq_length,
-                num_pred=num_pred,
-                device=device,
-                non_blocking=non_blocking,
-            )
-        }
-    if task == "coord":
-        return {
-            "coord_batch": prepare_coord_inputs(
-                batch,
-                seq_length=seq_length,
-                num_pred=num_pred,
-                device=device,
-                non_blocking=non_blocking,
-            )
-        }
-    if task == "ray":
-        return {
-            "ray_batch": prepare_ray_inputs(
                 batch,
                 seq_length=seq_length,
                 num_pred=num_pred,

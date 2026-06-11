@@ -6,8 +6,6 @@ from typing import Any
 from kd_sensing.data.layouts import (
     DEEPSENSE6G_FAMILY,
     MMW_FAMILY,
-    RAYMOBTIME_FAMILY,
-    raymobtime_s008_layout,
 )
 
 
@@ -166,22 +164,6 @@ DATASET_DESCRIPTORS: dict[str, DatasetDescriptor] = {
         default_target_schema="future_beam_sequence",
         artifact_boundary="dataset input local; generated prepared CSV/cache/output/checkpoint ignored",
         metadata={"legacy_dataset_class": "MMWDataset", "migration_stage": "descriptor_shim"},
-    ),
-    "raymobtime_s008": DatasetDescriptor(
-        dataset_type="raymobtime_s008",
-        family=RAYMOBTIME_FAMILY,
-        storage_kind="npz_snapshot",
-        default_root=raymobtime_s008_layout().root,
-        split_semantics="snapshot_cache_index_train_val_test",
-        supported_profiles={
-            "coord": _profile("coord", "vehicle_xyz_snapshot"),
-            "image": _profile("image", "rgb_imagenet"),
-            "lidar": _profile("lidar", "occupancy_grid_3d"),
-            "ray": _profile("ray", "ray_feature_snapshot"),
-        },
-        default_target_schema="current_snapshot_beam_selection",
-        artifact_boundary="raw data local; generated cache/output/checkpoint ignored",
-        metadata={"legacy_dataset_class": "RaymobtimeS008SnapshotDataset", "migration_stage": "descriptor_shim"},
     ),
 }
 

@@ -24,7 +24,7 @@ data:
     - -3.0
     - 5.0
     lidar_fov_degrees: null
-    lidar_cache_dir: lidar_bev_cache
+    lidar_cache_dir: null
     lidar_normalize: false
     lidar_normalization:
       enabled: false

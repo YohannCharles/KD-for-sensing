@@ -31,10 +31,7 @@ IMAGE_MODEL_TYPES = {
     "gps_conditioned_jepa",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
-ENCODER_CONFIG_MODEL_TYPES = MODULAR_MODEL_TYPES | {
-    "simple_concat_multitask_selection",
-    "task_aware_gated_multitask_selection",
-}
+ENCODER_CONFIG_MODEL_TYPES = set(MODULAR_MODEL_TYPES)
 MODULAR_ROLE_ONLY_KEYS = {
     "encoders",
     "projectors",
@@ -47,8 +44,6 @@ FUSION_MODEL_TYPES = {
     "fusion_lightweight",
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
-    "simple_concat_multitask_selection",
-    "task_aware_gated_multitask_selection",
     "gps_conditioned_jepa",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
@@ -61,10 +56,6 @@ AUXILIARY_HEAD_MODEL_TYPES = {
     "radar_lightweight",
     "mmwave_strong",
     "mmwave_lightweight",
-}
-RAYMOBTIME_SELECTION_MODEL_TYPES = {
-    "simple_concat_multitask_selection",
-    "task_aware_gated_multitask_selection",
 }
 D_MODEL_ROLE_TYPES = {
     "cls_token_transformer_fusion",

@@ -9,11 +9,9 @@ import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.models.modular import ModularSequenceModel, NextBeamQueryTransformerCore  # noqa: E402
-from kd_sensing.registries import ENCODERS, REPRESENTATION_CORES  # noqa: E402
+from kd_sensing.modalities import MODALITY_ORDER  # noqa: E402
+from kd_sensing.registries import ENCODERS, PROJECTORS, REPRESENTATION_CORES  # noqa: E402
 
 
 @ENCODERS.register("next_query_test_identity", force=True)
@@ -28,6 +26,69 @@ class NextQueryTestIdentityEncoder(nn.Module):
         if int(batch.shape[-1]) != self.output_dim:
             raise ValueError(f"expected D={self.output_dim}, got {tuple(batch.shape)}.")
         return batch
+
+
+@ENCODERS.register("next_query_test_context_identity", force=True)
+class NextQueryTestContextIdentityEncoder(nn.Module):
+    def __init__(
+        self,
+        output_dim: int = 8,
+        required_context_modalities: list[str] | tuple[str, ...] | None = None,
+        context_feature_source: str = "projected",
+        **_: object,
+    ):
+        super().__init__()
+        self.output_dim = int(output_dim)
+        self.required_context_modalities = tuple(required_context_modalities or ())
+        self.context_feature_source = str(context_feature_source)
+        self.context_feature_kwargs = {
+            modality: f"{modality}_condition_features" for modality in self.required_context_modalities
+        }
+
+    def forward(self, batch: torch.Tensor, **context_features: torch.Tensor) -> torch.Tensor:
+        if batch.ndim != 3:
+            raise ValueError(f"next_query_test_context_identity expects [B, T, D], got {tuple(batch.shape)}.")
+        output = batch
+        for modality in self.required_context_modalities:
+            key = f"{modality}_condition_features"
+            if key not in context_features:
+                raise ValueError(f"missing condition feature {key}.")
+            condition = context_features[key]
+            if int(condition.shape[-1]) == int(output.shape[-1]):
+                addition = condition
+            else:
+                addition = condition.mean(dim=-1, keepdim=True).expand_as(output)
+            output = output + addition
+        return output
+
+
+@ENCODERS.register("next_query_test_scaled_identity", force=True)
+class NextQueryTestScaledIdentityEncoder(nn.Module):
+    def __init__(self, output_dim: int = 8, scale: float = 1.0, **_: object):
+        super().__init__()
+        self.output_dim = int(output_dim)
+        self.scale = float(scale)
+
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+        if batch.ndim != 3:
+            raise ValueError(f"next_query_test_scaled_identity expects [B, T, D], got {tuple(batch.shape)}.")
+        return batch[..., : self.output_dim] * self.scale
+
+
+@PROJECTORS.register("next_query_test_scale_projector", force=True)
+class NextQueryTestScaleProjector(nn.Module):
+    def __init__(self, input_dim: int, d_model: int, scale: float = 1.0, **_: object):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.output_dim = int(d_model)
+        self.scale = float(scale)
+        if self.input_dim != self.output_dim:
+            raise ValueError("next_query_test_scale_projector requires input_dim == d_model.")
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 3:
+            raise ValueError(f"next_query_test_scale_projector expects [B, T, D], got {tuple(features.shape)}.")
+        return features * self.scale
 
 
 def test_next_beam_query_transformer_core_forward_shape_and_registry_build():
@@ -112,6 +173,144 @@ def test_existing_modular_sequence_cores_keep_forward_shapes(core_cfg: dict, seq
     assert output["output_features"].shape[:2] == (2, expected_time)
 
 
+def test_modular_sequence_dependency_aware_projected_gps_context_and_errors():
+    model = _conditioned_modular_model(
+        image_dependencies=("gps",),
+        gps_dependencies=(),
+    )
+
+    output = model(image_batch=torch.zeros(2, 3, 8), gps_batch=torch.ones(2, 3, 8))
+
+    assert output["logits"].shape == (2, 3, 5)
+    assert set(output["encoder_features"]) == {"image", "gps"}
+    assert set(output["modality_features"]) == {"image", "gps"}
+    torch.testing.assert_close(output["encoder_features"]["image"], torch.ones(2, 3, 8))
+
+    with pytest.raises(ValueError, match="requires condition modalities .*gps"):
+        ModularSequenceModel(
+            modalities=["image"],
+            encoders={
+                "image": {
+                    "type": "next_query_test_context_identity",
+                    "output_dim": 8,
+                    "required_context_modalities": ["gps"],
+                }
+            },
+            projectors={"image": {"type": "identity", "input_dim": 8, "d_model": 8}},
+            representation_core={"type": "single_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+            feature_size=8,
+            d_model=8,
+            num_classes=5,
+            num_pred=1,
+        )
+    with pytest.raises(ValueError, match="Condition feature batch/time dimensions"):
+        model(image_batch=torch.zeros(2, 3, 8), gps_batch=torch.ones(2, 2, 8))
+
+    cycle_model = _conditioned_modular_model(
+        image_dependencies=("gps",),
+        gps_dependencies=("image",),
+    )
+    with pytest.raises(ValueError, match="circular dependencies"):
+        cycle_model(image_batch=torch.zeros(2, 3, 8), gps_batch=torch.ones(2, 3, 8))
+
+
+def test_modular_sequence_context_feature_sources_encoded_and_raw_are_distinct():
+    encoded_model = ModularSequenceModel(
+        modalities=["image", "gps"],
+        encoders={
+            "image": {
+                "type": "next_query_test_context_identity",
+                "output_dim": 8,
+                "required_context_modalities": ["gps"],
+                "context_feature_source": "encoded",
+            },
+            "gps": {"type": "next_query_test_scaled_identity", "output_dim": 8, "scale": 2.0},
+        },
+        projectors={
+            "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+            "gps": {"type": "next_query_test_scale_projector", "input_dim": 8, "d_model": 8, "scale": 5.0},
+        },
+        representation_core={"type": "early_concat_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+
+    encoded_output = encoded_model(image_batch=torch.zeros(2, 3, 8), gps_batch=torch.ones(2, 3, 8))
+
+    torch.testing.assert_close(encoded_output["encoder_features"]["image"], torch.full((2, 3, 8), 2.0))
+    torch.testing.assert_close(encoded_output["modality_features"]["gps"], torch.full((2, 3, 8), 10.0))
+
+    raw_model = ModularSequenceModel(
+        modalities=["image", "gps"],
+        encoders={
+            "image": {
+                "type": "next_query_test_context_identity",
+                "output_dim": 8,
+                "required_context_modalities": ["gps"],
+                "context_feature_source": "raw",
+            },
+            "gps": {"type": "next_query_test_scaled_identity", "output_dim": 8, "scale": 2.0},
+        },
+        projectors={
+            "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+            "gps": {"type": "next_query_test_scale_projector", "input_dim": 8, "d_model": 8, "scale": 5.0},
+        },
+        representation_core={"type": "early_concat_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+
+    raw_output = raw_model(image_batch=torch.zeros(2, 3, 8), gps_batch=torch.ones(2, 3, 8))
+
+    torch.testing.assert_close(raw_output["encoder_features"]["image"], torch.ones(2, 3, 8))
+    torch.testing.assert_close(raw_output["modality_features"]["gps"], torch.full((2, 3, 8), 10.0))
+    metadata = raw_model.training_strategy_metadata()
+    assert metadata["conditioned_encoders"]["image"]["context_feature_source"] == "raw"
+
+
+def test_modular_sequence_rejects_self_dependency_and_keeps_plain_encoders_single_input():
+    with pytest.raises(ValueError, match="cannot depend on its own condition feature"):
+        ModularSequenceModel(
+            modalities=["gps"],
+            encoders={
+                "gps": {
+                    "type": "next_query_test_context_identity",
+                    "output_dim": 8,
+                    "required_context_modalities": ["gps"],
+                }
+            },
+            projectors={"gps": {"type": "identity", "input_dim": 8, "d_model": 8}},
+            representation_core={"type": "single_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+            feature_size=8,
+            d_model=8,
+            num_classes=5,
+            num_pred=1,
+        )
+
+    modalities = list(MODALITY_ORDER)
+    model = ModularSequenceModel(
+        modalities=modalities,
+        encoders={modality: {"type": "next_query_test_identity", "output_dim": 8} for modality in modalities},
+        projectors={modality: {"type": "identity", "input_dim": 8, "d_model": 8} for modality in modalities},
+        representation_core={"type": "early_concat_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+    batch = {f"{modality}_batch": torch.randn(2, 3, 8) for modality in modalities}
+
+    output = model(**batch)
+
+    assert output["logits"].shape == (2, 3, 5)
+    assert set(output["encoder_features"]) == set(modalities)
+    assert model.training_strategy_metadata()["conditioned_encoders"] == {}
+
+
 def _modular_model(modalities: list[str], core_cfg: dict, *, num_classes: int) -> ModularSequenceModel:
     encoders = {modality: {"type": "next_query_test_identity", "output_dim": 8} for modality in modalities}
     projectors = {modality: {"type": "identity", "input_dim": 8, "d_model": 8} for modality in modalities}
@@ -123,5 +322,36 @@ def _modular_model(modalities: list[str], core_cfg: dict, *, num_classes: int) -
         feature_size=8,
         d_model=8,
         num_classes=num_classes,
+        num_pred=1,
+    )
+
+
+def _conditioned_modular_model(
+    *,
+    image_dependencies: tuple[str, ...],
+    gps_dependencies: tuple[str, ...],
+) -> ModularSequenceModel:
+    return ModularSequenceModel(
+        modalities=["image", "gps"],
+        encoders={
+            "image": {
+                "type": "next_query_test_context_identity",
+                "output_dim": 8,
+                "required_context_modalities": list(image_dependencies),
+            },
+            "gps": {
+                "type": "next_query_test_context_identity",
+                "output_dim": 8,
+                "required_context_modalities": list(gps_dependencies),
+            },
+        },
+        projectors={
+            "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+            "gps": {"type": "identity", "input_dim": 8, "d_model": 8},
+        },
+        representation_core={"type": "early_concat_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
         num_pred=1,
     )

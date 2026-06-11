@@ -64,7 +64,7 @@ lidar:
   profile: bev_cache
   source: rsu
   data_root: dataset/MMW/sunny
-  cache_dir: dataset/MMW/sunny/lidar_bev_cache
+  cache_dir: outputs/cache/MMW/sunny/lidar_bev
   missing_policy: zeros
   input_channels: 3
   bev_size:

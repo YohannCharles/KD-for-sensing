@@ -513,10 +513,8 @@ class ModularSequenceModel(nn.Module):
         image_channels: int | None = None,
         radar_channels: int = 2,
         gps_input_size: int = 3,
-        coord_input_size: int = 3,
         lidar_channels: int = 3,
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
-        ray_input_size: int = 14,
         csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
         **_: Any,
@@ -543,10 +541,8 @@ class ModularSequenceModel(nn.Module):
                 encoder_cfgs.get(modality),
                 radar_channels=radar_channels,
                 gps_input_size=gps_input_size,
-                coord_input_size=coord_input_size,
                 lidar_channels=lidar_channels,
                 mmwave_input_size=mmwave_input_size,
-                ray_input_size=ray_input_size,
                 csi_train_rms=csi_train_rms,
             )
             self._validate_modality_encoder_profile(modality, encoder_cfg)
@@ -557,6 +553,7 @@ class ModularSequenceModel(nn.Module):
             projector_cfg = self._projector_config(projector_cfgs.get(modality), input_dim=raw_dim)
             self.projectors[modality] = PROJECTORS.build(projector_cfg)
 
+        self._validate_encoder_context_dependencies()
         core_cfg = self._core_config(representation_core)
         self.representation_core = REPRESENTATION_CORES.build(core_cfg)
         core_output_dim = int(getattr(self.representation_core, "output_dim", self.d_model))
@@ -580,8 +577,6 @@ class ModularSequenceModel(nn.Module):
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
         csi_batch: torch.Tensor | None = None,
-        coord_batch: torch.Tensor | None = None,
-        ray_batch: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         raw_inputs = {
             "image": image_batch,
@@ -590,23 +585,55 @@ class ModularSequenceModel(nn.Module):
             "lidar": lidar_batch,
             "mmwave": mmwave_batch,
             "csi": csi_batch,
-            "coord": coord_batch,
-            "ray": ray_batch,
         }
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
         batch_size = None
         seq_len = None
-        for modality in self.modalities:
-            tensor = raw_inputs[modality]
-            if tensor is None:
-                raise ValueError(f"Modular sequence model requires '{modality}' input because it is enabled.")
-            features = self.encoders[modality](tensor)
-            batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
-            encoded[modality] = features
-            projected_features = self.projectors[modality](features)
-            _check_projected_features(projected_features, modality, self.d_model)
-            projected[modality] = projected_features
+        pending = list(self.modalities)
+        while pending:
+            progressed = False
+            for modality in list(pending):
+                encoder = self.encoders[modality]
+                dependencies = _encoder_context_dependencies(encoder)
+                source = _encoder_context_source(encoder)
+                if not _encoder_dependencies_satisfied(dependencies, source=source, encoded=encoded, projected=projected):
+                    continue
+                tensor = raw_inputs[modality]
+                if tensor is None:
+                    raise ValueError(f"Modular sequence model requires '{modality}' input because it is enabled.")
+                context_kwargs = _encoder_context_kwargs(
+                    encoder,
+                    modality=modality,
+                    raw_tensor=tensor,
+                    dependencies=dependencies,
+                    raw_inputs=raw_inputs,
+                    encoded=encoded,
+                    projected=projected,
+                )
+                features = encoder(tensor, **context_kwargs) if context_kwargs else encoder(tensor)
+                batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
+                encoded[modality] = features
+                projected_features = self.projectors[modality](features)
+                _check_projected_features(projected_features, modality, self.d_model)
+                projected[modality] = projected_features
+                pending.remove(modality)
+                progressed = True
+            if not progressed:
+                unmet = {
+                    modality: _unmet_context_dependencies(
+                        _encoder_context_dependencies(self.encoders[modality]),
+                        source=_encoder_context_source(self.encoders[modality]),
+                        encoded=encoded,
+                        projected=projected,
+                    )
+                    for modality in pending
+                }
+                raise ValueError(
+                    "Unable to satisfy modular sequence encoder condition dependencies; "
+                    f"pending modalities={pending}, unmet dependencies={unmet}. "
+                    "Check for missing condition modalities or circular dependencies."
+                )
         ordered = [projected[modality] for modality in self.modalities]
         if len(ordered) == 1:
             core_input = ordered[0]
@@ -629,6 +656,39 @@ class ModularSequenceModel(nn.Module):
         output.update(self.auxiliary_heads(output_features))
         return output
 
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        encoders: dict[str, Any] = {}
+        conditioned: dict[str, Any] = {}
+        for modality, encoder in self.encoders.items():
+            metadata = (
+                encoder.training_strategy_metadata()
+                if hasattr(encoder, "training_strategy_metadata")
+                else {"type": encoder.__class__.__name__}
+            )
+            dependencies = _encoder_context_dependencies(encoder)
+            source = _encoder_context_source(encoder)
+            if dependencies:
+                metadata = {
+                    **metadata,
+                    "required_context_modalities": list(dependencies),
+                    "context_feature_source": source,
+                    "context_feature_kwargs": dict(getattr(encoder, "context_feature_kwargs", {}) or {}),
+                }
+                conditioned[modality] = {
+                    "required_context_modalities": list(dependencies),
+                    "context_feature_source": source,
+                    "context_feature_kwargs": metadata["context_feature_kwargs"],
+                }
+            encoders[modality] = metadata
+        return {
+            "type": "modular_sequence",
+            "modalities": list(self.modalities),
+            "d_model": self.d_model,
+            "encoders": encoders,
+            "conditioned_encoders": conditioned,
+            "representation_core_type": self.representation_core.__class__.__name__,
+        }
+
     def _encoder_config(
         self,
         modality: str,
@@ -636,10 +696,8 @@ class ModularSequenceModel(nn.Module):
         *,
         radar_channels: int,
         gps_input_size: int,
-        coord_input_size: int,
         lidar_channels: int,
         mmwave_input_size: int,
-        ray_input_size: int,
         csi_train_rms: float,
     ) -> dict[str, Any]:
         if raw_cfg is None:
@@ -657,14 +715,10 @@ class ModularSequenceModel(nn.Module):
             cfg.setdefault("radar_channels", radar_channels)
         elif modality == "gps":
             cfg.setdefault("gps_input_size", gps_input_size)
-        elif modality == "coord":
-            cfg.setdefault("coord_input_size", coord_input_size)
         elif modality == "lidar":
             cfg.setdefault("lidar_channels", lidar_channels)
         elif modality == "mmwave":
             cfg.setdefault("mmwave_input_size", mmwave_input_size)
-        elif modality == "ray":
-            cfg.setdefault("ray_input_size", ray_input_size)
         elif modality == "csi":
             cfg.setdefault("train_rms", csi_train_rms)
         return cfg
@@ -706,6 +760,21 @@ class ModularSequenceModel(nn.Module):
                 "Use 'resnet18_imagenet_rgb' with image_profile 'rgb_imagenet'."
             )
 
+    def _validate_encoder_context_dependencies(self) -> None:
+        enabled = set(self.modalities)
+        for modality, encoder in self.encoders.items():
+            dependencies = _encoder_context_dependencies(encoder)
+            missing = [dependency for dependency in dependencies if dependency not in enabled]
+            if missing:
+                raise ValueError(
+                    f"Encoder for modality '{modality}' requires condition modalities {missing}, "
+                    f"but enabled model.primary.modalities are {list(self.modalities)}."
+                )
+            if modality in dependencies:
+                raise ValueError(
+                    f"Encoder for modality '{modality}' cannot depend on its own condition feature."
+                )
+
 
 def _default_encoder_type(modality: str, image_profile: str) -> str:
     if modality == "image":
@@ -713,12 +782,146 @@ def _default_encoder_type(modality: str, image_profile: str) -> str:
     return {
         "radar": "radar_cnn",
         "gps": "gps_mlp",
-        "coord": "coord_mlp",
         "lidar": "lidar_cnn",
         "mmwave": "mmwave_mlp",
         "csi": "pilot_dual_view_csi",
-        "ray": "ray_mlp",
     }[modality]
+
+
+def _encoder_context_dependencies(encoder: nn.Module) -> tuple[str, ...]:
+    raw = getattr(encoder, "required_context_modalities", ())
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    return tuple(str(item) for item in raw)
+
+
+def _encoder_context_source(encoder: nn.Module) -> str:
+    source = str(getattr(encoder, "context_feature_source", "projected")).strip().lower()
+    if source == "none":
+        return source
+    if source not in {"projected", "encoded", "raw"}:
+        raise ValueError(
+            "Encoder requested unsupported condition feature source "
+            f"{source!r}; supported sources are 'projected', 'encoded', and 'raw'."
+        )
+    return source
+
+
+def _encoder_dependencies_satisfied(
+    dependencies: tuple[str, ...],
+    *,
+    source: str,
+    encoded: dict[str, torch.Tensor],
+    projected: dict[str, torch.Tensor],
+) -> bool:
+    if source == "raw":
+        return True
+    if source == "none":
+        return not dependencies
+    if source == "encoded":
+        return all(dependency in encoded for dependency in dependencies)
+    if source == "projected":
+        return all(dependency in projected for dependency in dependencies)
+    return False
+
+
+def _unmet_context_dependencies(
+    dependencies: tuple[str, ...],
+    *,
+    source: str,
+    encoded: dict[str, torch.Tensor],
+    projected: dict[str, torch.Tensor],
+) -> list[str]:
+    if source == "raw":
+        return []
+    if source == "none":
+        return [] if not dependencies else list(dependencies)
+    if source == "encoded":
+        return [dependency for dependency in dependencies if dependency not in encoded]
+    if source == "projected":
+        return [dependency for dependency in dependencies if dependency not in projected]
+    return list(dependencies)
+
+
+def _encoder_context_kwargs(
+    encoder: nn.Module,
+    *,
+    modality: str,
+    raw_tensor: torch.Tensor,
+    dependencies: tuple[str, ...],
+    raw_inputs: dict[str, torch.Tensor | None],
+    encoded: dict[str, torch.Tensor],
+    projected: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    if not dependencies:
+        return {}
+    source = _encoder_context_source(encoder)
+    kwarg_names = getattr(encoder, "context_feature_kwargs", {})
+    if not isinstance(kwarg_names, dict):
+        kwarg_names = {}
+    context_kwargs: dict[str, torch.Tensor] = {}
+    for dependency in dependencies:
+        if source == "projected":
+            feature = projected[dependency]
+        elif source == "encoded":
+            feature = encoded[dependency]
+        elif source == "raw":
+            feature = raw_inputs.get(dependency)
+            if feature is None:
+                raise ValueError(
+                    f"Encoder for modality '{modality}' requested raw condition feature from '{dependency}', "
+                    "but that raw batch input is missing."
+                )
+        else:
+            raise ValueError(
+                f"Encoder for modality '{modality}' requested unsupported condition feature source "
+                f"{source!r}; supported sources are 'projected', 'encoded', and 'raw'."
+            )
+        _check_condition_feature_shape(
+            modality=modality,
+            dependency=dependency,
+            raw_tensor=raw_tensor,
+            condition_features=feature,
+            source=source,
+        )
+        kwarg = str(kwarg_names.get(dependency, f"{dependency}_condition_features"))
+        context_kwargs[kwarg] = feature
+    return context_kwargs
+
+
+def _check_condition_feature_shape(
+    *,
+    modality: str,
+    dependency: str,
+    raw_tensor: torch.Tensor,
+    condition_features: torch.Tensor,
+    source: str,
+) -> None:
+    if source != "raw" and condition_features.ndim != 3:
+        raise ValueError(
+            f"Condition feature for modality '{dependency}' must have shape [B, T, D], "
+            f"got {tuple(condition_features.shape)} while encoding '{modality}'."
+        )
+    if source == "raw" and condition_features.ndim < 2:
+        raise ValueError(
+            f"Raw condition feature for modality '{dependency}' must expose batch/time dimensions, "
+            f"got {tuple(condition_features.shape)} while encoding '{modality}'."
+        )
+    if raw_tensor.ndim < 2:
+        raise ValueError(
+            f"Modular sequence input for modality '{modality}' must expose batch/time dimensions, "
+            f"got {tuple(raw_tensor.shape)}."
+        )
+    raw_batch_time = tuple(int(value) for value in raw_tensor.shape[:2])
+    condition_batch_time = tuple(int(value) for value in condition_features.shape[:2])
+    if raw_batch_time != condition_batch_time:
+        raise ValueError(
+            "Condition feature batch/time dimensions must match the conditioned encoder input; "
+            f"modality '{modality}' input shape {tuple(raw_tensor.shape)}, "
+            f"condition modality '{dependency}' feature shape {tuple(condition_features.shape)}."
+        )
 
 
 def _snapshot_projection(input_dim: int, output_dim: int, *, dropout: float, activation: str) -> nn.Module:

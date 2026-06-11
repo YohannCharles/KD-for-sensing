@@ -2,12 +2,75 @@
 
 本 inventory 记录 `refine-source-architecture-and-entry-surface` 的可审计基线。统计口径只覆盖源码、配置、文档和 OpenSpec artifact；`dataset/`、`outputs/`、`logs/`、cache、checkpoint、下载压缩包和其它本地运行产物不属于本 change 的处理范围。
 
+## 项目健康护栏基线
+
+`strengthen-project-health-guardrails` 于 2026-06-11 生成当前维护性基线：`src/kd_sensing` 有 241 个 Python 文件、62504 行；`tests/` 有 48 个 Python 文件、15635 行；`configs/` 有 105 个 YAML；仓库根目录有 11 个 Markdown，`docs/` 有 7 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
+
+分层健康检查命令如下：
+
+- OpenSpec：`openspec validate strengthen-project-health-guardrails --strict`
+- 架构边界与健康护栏：`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+- CLI/config smoke：`conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q`
+- 触碰训练、数据集、诊断、CLI、配置解析或模型 forward 时，追加对应 focused tests，并在 tasks 或最终说明中记录未运行项及原因。
+
+新增热点维护规则：
+
+- 新增长函数、长类、manifest builder、orchestration workflow 或兼容 facade 时，先拆到窄模块；若暂缓拆分，必须在本 inventory 记录文件、符号、规模指标、拆分方向和暂缓原因。
+- 兼容 facade 只保留公开 import/CLI 语义；内部实现不得从 facade 回流导入 helper，应直接依赖职责明确的窄模块。
+- 普通 pytest 文件依赖 `tests/conftest.py` 或 editable install 导入 `src/`；只有架构边界 import probe、subprocess smoke 或显式隔离环境测试可以在子进程代码中局部设置 `sys.path`。
+
+当前 AST 热点清单如下；预算用于阻止热点静默扩大，不代表本 change 立即重构这些 runtime 逻辑：
+
+| 文件 | 符号 | 类型 | 当前规模 | 推荐拆分方向 | 暂缓原因 / 优先级 |
+| --- | --- | --- | --- | --- | --- |
+| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1099 行 | scene/CSV audit、modality sample assembly、label/history adapters、cache/transform glue | 数据契约和真实路径耦合强；优先级 P1 |
+| `src/kd_sensing/data/datasets/mmw.py` | `MMWDataset` | 超长 dataset 类 | 592 行 | manifest parsing、sequence window、label-space metadata、sensor feature loading | MMW group-safe split 与 label calibration 仍在演进；优先级 P1 |
+| `src/kd_sensing/engine/trainer.py` | `_train_inner` | 超长训练 orchestration 函数 | 316 行 | dataloader setup、epoch loop、validation/checkpoint coordination、artifact finalization | 训练数值语义敏感；优先级 P1 |
+| `src/kd_sensing/engine/mmw_town_gps_v2.py` | `run_mmw_town_gps_v2` | 超长诊断 workflow 函数 | 277 行 | protocol dispatch、label-space resolution、summary writing、plot handoff | MMW GPS v2 仍承担对照解释；优先级 P2 |
+| `src/kd_sensing/baselines/beambench/image_ae_gps.py` | `run_image_ae_gps_training` | BeamBench Image AE+GPS workflow | 234 行 | AE train/load、fusion dataset build、metric/report writers | 复现实验入口需要保持 Table III 语义；优先级 P1 |
+| `src/kd_sensing/baselines/beambench/image_ae_gps.py` | `run_image_ae_gps_paper_split_training` | BeamBench Image AE+GPS workflow | 259 行 | scene split orchestration、checkpoint reuse、per-scene summary | 与本地 scene31-34 复现产物耦合；优先级 P1 |
+| `src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py` | `run_deepsense6g_gps_lidar_bgam` | BGAM orchestration | 234 行 | manifest loading、ablation dispatch、summary writer | 需与 MMW BGAM contract 对齐后再拆；优先级 P2 |
+| `src/kd_sensing/engine/evaluation_pass.py` | `run_evaluation_pass` | evaluation pass | 216 行 | metric aggregation、objective outputs、prediction metadata | evaluation schema 为多个 CLI 共享；优先级 P2 |
+| `src/kd_sensing/engine/batch.py` | module helpers | batch preparation 热点 | 文件级 batch contract | modality target preparation、label adapters、history anchor inputs | 触碰会影响训练/验证公共 batch contract；优先级 P2 |
+| `src/kd_sensing/diagnostics/run_index.py` | module helpers | 诊断 run index 热点 | 文件级诊断 contract | process/resource collection、artifact summary、CSV/render writers | 输出 schema 已在 README 暴露；优先级 P3 |
+| `src/kd_sensing/diagnostics/viewer_manifest.py` | `export_viewer_manifest` facade/workflow | manifest builder 热点 | facade 预算 220 行 | schema、cache、path、merge、writer 窄模块继续保持职责分离 | 已拆第一批，后续只防回流；优先级 P3 |
+
+## 配置生命周期分类
+
+`configs/` 当前 105 个 YAML 按生命周期维护：
+
+- canonical/current root configs：`configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml`、`configs/deepsense6g_gps_adapter_v2.yaml`、`configs/deepsense6g_gps_lidar_bgam.yaml`、`configs/mmw_town_gps_adapter_v2.yaml`、`configs/mmw_town_gps_lidar_bgam.yaml`。
+- canonical fusion root：`configs/fusion/*.yaml` 只保留长期 supervised、token-transformer/objective-aware 和 BeamBench Image AE+GPS thin/reproducibility 入口；具体 allowlist 见下文 `configs/fusion/` 根目录分类。
+- experiment reproduction：`configs/fusion/experiments/jepa_image_gps/*.yaml` 记录 JEPA image+GPS、GPS-biased checkpoint reuse、GPS query pooling、2604/BeamBench fair、best/last 与 next-beam downstream ablation；这些不是 root canonical 入口。
+- CSI experiment matrix：`configs/csi/hardening_matrix/*.yaml` 是主矩阵，`configs/csi/hardening_matrix/debug/*.yaml` 是 debug/smoke，`configs/fusion/csi_hardening_matrix/*.yaml` 是 GPS+CSI 验证矩阵。
+- dataset preparation：`configs/preprocess/*.yaml` 服务当前数据准备、索引和 cache；退役历史配置 `configs/deepverse/dt31_generation.yaml` 已不作为当前推荐入口，Raymobtime s008 预处理配置已删除。
+- diagnostics：`configs/diagnostics/modality_visualization.yaml` 服务 viewer manifest/diagnostic，不是训练入口。
+- baseline/reproduction：`configs/baselines/*.yaml` 和 `configs/pretraining/*.yaml` 服务 GPS window baseline、BeamBench reproduction 和 GPS-conditioned JEPA pretraining 复现。
+- retired history：已删除的 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、CRAF/MARF/G2D/Multimodal-NF 实体配置只允许作为历史或 migration guard 说明出现，不得作为当前推荐入口。
+
+## 文档生命周期分类
+
+根目录 Markdown：
+
+- current quickstart：`README.md`。
+- agent/developer operating rules：`AGENTS.md`。
+- environment/data setup：`ENVIRONMENT.md`、`DATASET_STRUCTURE.md`。
+- reproducibility/report records：`README_REPRODUCE.md`、`BASELINE_REPORT.md`、`results/reproduce_baseline.md`。
+- historical research notes：`TODO_FOR_ATTENTION_MODULE.md`、`deep-research-report.md`、`PATCH_NOTES.md`、`跨场景自适应方案.md`、`跨场景自适应方案_融合推理修改版.md`。这些文档只能作为历史背景，不得把退役 KD/HiST/Top8/residual/camera residual 路线重新描述为当前推荐入口。
+
+`docs/` Markdown：
+
+- current architecture/health inventory：`docs/project_surface_inventory.md`。
+- current workflow guide：`docs/experiment_matrix.md`、`docs/extension_guide.md`、`docs/training_throughput.md`。
+- dataset/diagnostic focused notes：`docs/research_notes.md`。
+- historical analysis：`docs/p3_v7_multisource_crossroad_analysis.md`，只保留研究背景，不作为当前长期入口。
+
 ## 源码热点模块
 
 本批次拆分的热点 facade 与职责模块如下：
 
 - `tools/visualization/viewer_utils.py` 保留兼容导出；manifest 读取、路径解析和 scene/split/show mode 过滤迁移到 `tools/visualization/viewer_manifest_io.py`，图表构造迁移到 `tools/visualization/viewer_figures.py`，prediction summary 和 legacy prediction adapter 迁移到 `tools/visualization/viewer_prediction_tables.py`，常量迁移到 `tools/visualization/viewer_constants.py`。
-- `src/kd_sensing/preprocessing/raymobtime_s008.py` 保留 preprocessor registry；paths/audit、index、beam labels、ray features 和 cache writer 分别迁移到 `raymobtime_s008_paths.py`、`raymobtime_s008_index.py`、`raymobtime_s008_beam_labels.py`、`raymobtime_s008_ray_features.py`、`raymobtime_s008_cache.py`，共享常量和窄 helper 在 `raymobtime_s008_common.py`。
+- Raymobtime s008 dataset、预处理器、selection 模型、配置和 focused test 已退役删除；旧 registry 名称和配置路径只保留 migration guard 错误信息。
 - `src/kd_sensing/models/csi.py` 保留公开 import 路径；pilot estimation、CSI hardening、view tokenizer/fusion、debug helpers 和 encoder registry glue 分别迁移到 `csi_estimation.py`、`csi_hardening.py`、`csi_views.py`、`csi_debug.py`、`csi_encoder.py`。
 - `src/kd_sensing/engine/objective_metadata.py` 保留公开兼容 facade；objective 名称、默认 metric、metric alias 和 mode 表迁移到 `src/kd_sensing/engine/objectives/registry.py`，history fields 与 TensorBoard scalar schema 迁移到 `src/kd_sensing/engine/objectives/history.py`，runtime metadata/validation helper 在 `src/kd_sensing/engine/objectives/metadata.py`。
 - `src/kd_sensing/diagnostics/viewer_manifest.py` 保留 manifest 导出公开 orchestration；sample id/JSON schema、cache metadata、row path resolution、prediction/quality/gate merge 和 asset writer 分别迁移到 `src/kd_sensing/diagnostics/viewer_manifest_schema.py`、`src/kd_sensing/diagnostics/viewer_manifest_cache.py`、`src/kd_sensing/diagnostics/viewer_manifest_paths.py`、`src/kd_sensing/diagnostics/viewer_manifest_merge.py` 和 `src/kd_sensing/diagnostics/viewer_manifest_writer.py`。
@@ -32,7 +95,7 @@
 
 ## 配置 YAML
 
-当前 `configs/fusion/` 根目录有 12 个实体 YAML，只保留长期 canonical 或当前明确薄入口。`configs/fusion/experiments/jepa_image_gps/` 有 15 个 JEPA image+GPS 实验特化 YAML，用于 BeamBench-fair、arXiv:2604.05668 对齐、low-memory、best/last checkpoint 复现实验和 next-beam downstream ablation；其中 GPS-biased checkpoint reuse 是 JEPA 下游主线，next-beam downstream 配置只作为 supporting ablation。这些路径可被文档指向，但不算根目录推荐入口。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
+当前 `configs/fusion/` 根目录有 12 个实体 YAML，只保留长期 canonical 或当前明确薄入口。`configs/fusion/experiments/jepa_image_gps/` 有 18 个 JEPA image+GPS 实验特化 YAML，用于 BeamBench-fair、arXiv:2604.05668 对齐、low-memory、best/last checkpoint 复现实验、GPS query pooling 和 next-beam downstream ablation；其中 GPS-biased/GPS-query checkpoint reuse 是 JEPA 下游主线，next-beam downstream 配置只作为 supporting ablation。这些路径可被文档指向，但不算根目录推荐入口。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
 
 `configs/fusion/` 根目录保留分类如下：
 
@@ -42,7 +105,7 @@
 
 已迁移到 `configs/fusion/experiments/jepa_image_gps/` 的实验特化配置如下：
 
-- fair/2604 当前文档复核配置：`image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml` 和 `image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml` 是主线；`image_gps_supervised_beambench_fair_lowmem.yaml`、`image_gps_jepa_random_best_beambench_fair_lowmem.yaml`、`image_gps_supervised_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml` 是对照。
+- fair/2604 当前文档复核配置：`image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml` 和 `image_gps_jepa_gps_query_pool_best_2604_s32_s34_fasttrain.yaml` 是主线或快速复核主线；`image_gps_supervised_beambench_fair_lowmem.yaml`、`image_gps_jepa_random_best_beambench_fair_lowmem.yaml`、`image_gps_supervised_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml` 是对照。
 - scene31/low-memory/best-last 复现保留配置：`image_gps_supervised_lowmem.yaml`、`image_gps_jepa_random_best_supervised.yaml`、`image_gps_jepa_random_last_supervised.yaml`、`image_gps_jepa_gps_biased_best_supervised.yaml`、`image_gps_jepa_random_last_beambench_fair_lowmem.yaml`。
 - next-beam downstream ablation 配置：`jepa_gru.yaml`、`jepa_snapshot.yaml`、`jepa_plain_token_transformer.yaml`、`jepa_next_query_transformer.yaml`。
 

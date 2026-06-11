@@ -8,9 +8,6 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass  # noqa: E402
 from kd_sensing.engine.validator import validate  # noqa: E402
 
@@ -28,8 +25,8 @@ class _MaskAwareFusionModel(torch.nn.Module):
 
 
 class _SelectionHeadsModel(torch.nn.Module):
-    def forward(self, coord_batch=None, **kwargs):  # noqa: ANN001, ARG002
-        batch_size = coord_batch.shape[0]
+    def forward(self, gps_batch=None, **kwargs):  # noqa: ANN001, ARG002
+        batch_size = gps_batch.shape[0]
         logits = torch.tensor([[[4.0, 1.0, 0.0, -1.0]], [[0.0, 1.0, 4.0, -1.0]]], dtype=torch.float32)
         los_logits = torch.tensor([[2.0], [-2.0]], dtype=torch.float32)
         link_quality = torch.tensor([[-58.0], [-62.0]], dtype=torch.float32)
@@ -101,13 +98,13 @@ def _dataloader_with_soft_targets():
 def _selection_cfg(objective: str) -> dict:
     return {
         "experiment": {"task": "fusion", "objective": objective},
-        "data": {"dataset": {"type": "raymobtime_s008"}},
+        "data": {"dataset": {}},
         "model": {
             "num_pred": 1,
             "downsample_ratio": 1,
             "seq_length": 1,
             "num_classes": 4,
-            "primary": {"modalities": ["coord"]},
+            "primary": {"modalities": ["gps"]},
         },
         "loss": {"objective": {"weights": {"beam_selection": 1.0, "los": 0.5, "link_quality": 0.25}}},
         "training": {"transfer": {"non_blocking": False}, "amp": {"enabled": False}},
@@ -118,7 +115,7 @@ def _selection_cfg(objective: str) -> dict:
 def _selection_dataloader():
     return [
         {
-            "coord": torch.zeros(2, 1, 3),
+            "gps": torch.zeros(2, 1, 3),
             "target_beam": torch.tensor([[0], [2]]),
             "los_label": torch.tensor([[1.0], [0.0]]),
             "link_quality": torch.tensor([[-60.0], [-61.0]]),
@@ -230,7 +227,7 @@ def test_evaluation_pass_force_mask_all_enabled_matches_normal_pass():
         ),
     ],
 )
-def test_raymobtime_selection_evaluation_promotes_only_current_objective_metrics(
+def test_current_selection_evaluation_promotes_only_current_objective_metrics(
     objective: str,
     expected: set[str],
     forbidden: set[str],

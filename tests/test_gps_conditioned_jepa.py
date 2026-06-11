@@ -9,17 +9,20 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
 from kd_sensing.engine.data_factory import build_dataloaders  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.engine.validator import validate  # noqa: E402
 from kd_sensing.losses.jepa import jepa_latent_prediction_loss  # noqa: E402
-from kd_sensing.models.jepa import JepaContextImageEncoder, JepaMaskSampler  # noqa: E402
-from kd_sensing.registries import MODELS, import_default_components  # noqa: E402
+from kd_sensing.models.jepa import GPSQueryPool, JepaContextImageEncoder, JepaMaskSampler  # noqa: E402
+from kd_sensing.models.jepa_downstream import (  # noqa: E402
+    IdentityJepaAdapter,
+    MeanPatchPooler,
+    build_jepa_downstream_adapter,
+    build_jepa_downstream_pooler,
+)
+from kd_sensing.registries import MODELS, RegistryError, import_default_components  # noqa: E402
 
 JEPA_DOWNSTREAM_CONFIGS = {
     "jepa_gru": ROOT / "configs/fusion/experiments/jepa_image_gps/jepa_gru.yaml",
@@ -29,6 +32,17 @@ JEPA_DOWNSTREAM_CONFIGS = {
     "jepa_next_query_transformer": ROOT
     / "configs/fusion/experiments/jepa_image_gps/jepa_next_query_transformer.yaml",
 }
+GPS_QUERY_DOWNSTREAM_CONFIGS = {
+    "fair_gps_query_pooling": ROOT
+    / "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml",
+    "fair_gps_query_pooling_2604": ROOT
+    / "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml",
+}
+PARAM_GROUP_DERIVED_CONFIG = (
+    ROOT
+    / "configs/fusion/experiments/jepa_image_gps/"
+    "image_gps_jepa_gps_biased_pooler_param_groups_beambench_fair_lowmem.yaml"
+)
 
 
 def _model_cfg() -> dict:
@@ -145,6 +159,74 @@ def test_jepa_concat_conditioner_forward_shape():
     assert output["predicted_target_latent"].shape == output["target_latent"].shape
 
 
+def test_gps_query_pool_shape_attention_map_and_dimension_validation():
+    pool = GPSQueryPool(latent_dim=8, condition_dim=5, k_queries=3, num_heads=2, dropout=0.0)
+    patch_tokens = torch.randn(2, 4, 6, 8)
+    condition = torch.randn(2, 4, 5)
+
+    pooled, attention = pool(patch_tokens, condition, return_attention=True)
+
+    assert pooled.shape == (2, 4, 8)
+    assert attention.shape == (2, 4, 3, 6)
+    assert attention.requires_grad is False
+    torch.testing.assert_close(attention.sum(dim=-1), torch.ones(2, 4, 3), atol=1e-6, rtol=1e-6)
+    with pytest.raises(ValueError, match="patch tokens shape .*condition feature shape"):
+        pool(patch_tokens, torch.randn(2, 3, 5))
+    with pytest.raises(ValueError, match="expected condition feature dim 5"):
+        pool(patch_tokens, torch.randn(2, 4, 4))
+
+
+def test_jepa_downstream_pooler_adapter_registry_builds_and_reports_unknown_names():
+    import_default_components()
+    tokens = torch.randn(2, 3, 5, 8)
+
+    mean_pooler = build_jepa_downstream_pooler({"type": "mean", "latent_dim": 8})
+    assert isinstance(mean_pooler, MeanPatchPooler)
+    assert mean_pooler(tokens).shape == (2, 3, 8)
+    torch.testing.assert_close(mean_pooler(tokens), tokens.mean(dim=2))
+
+    gps_pooler = build_jepa_downstream_pooler(
+        {
+            "type": "gps_query_attention",
+            "latent_dim": 8,
+            "condition_dim": 8,
+            "k_queries": 2,
+            "num_heads": 2,
+            "dropout": 0.0,
+            "condition_source": "projected_gps",
+        }
+    )
+    assert isinstance(gps_pooler, GPSQueryPool)
+    assert gps_pooler.required_context_modalities == ("gps",)
+    assert gps_pooler.context_feature_source == "projected"
+    assert gps_pooler.context_feature_kwargs == {"gps": "gps_condition_features"}
+    assert gps_pooler(tokens, torch.randn(2, 3, 8)).shape == (2, 3, 8)
+
+    adapter = build_jepa_downstream_adapter({"type": "identity", "latent_dim": 8})
+    assert isinstance(adapter, IdentityJepaAdapter)
+    pooled = torch.randn(2, 3, 8)
+    assert adapter(pooled) is pooled
+
+    with pytest.raises(RegistryError, match="does_not_exist.*jepa_downstream_poolers.*Available names"):
+        build_jepa_downstream_pooler({"type": "does_not_exist"})
+    with pytest.raises(RegistryError, match="does_not_exist.*jepa_downstream_adapters.*Available names"):
+        build_jepa_downstream_adapter({"type": "does_not_exist"})
+
+
+def test_gps_query_pool_averages_k_query_tokens_after_attention():
+    pool = GPSQueryPool(latent_dim=4, condition_dim=3, k_queries=2, num_heads=2, dropout=0.0)
+    pool.attention = _EchoQueryAttention()
+    patch_tokens = torch.randn(1, 2, 5, 4)
+    condition = torch.randn(1, 2, 3)
+
+    pooled, attention = pool(patch_tokens, condition, return_attention=True)
+
+    queries = pool.gps_to_q(condition.reshape(2, 3)).reshape(1, 2, 2, 4)
+    expected = pool.output_norm(queries).mean(dim=2)
+    torch.testing.assert_close(pooled, expected)
+    assert attention.shape == (1, 2, 2, 5)
+
+
 def test_jepa_context_image_encoder_loads_best_and_last_payloads(tmp_path: Path):
     import_default_components()
     source = MODELS.build(_model_cfg())
@@ -175,6 +257,138 @@ def test_jepa_context_image_encoder_loads_best_and_last_payloads(tmp_path: Path)
         assert output.shape == (2, 3, 16)
         assert torch.equal(encoder.context_encoder.patch_embed.weight, source.context_encoder.patch_embed.weight)
         assert all(not param.requires_grad for param in encoder.context_encoder.parameters())
+
+    gps_query_encoder = JepaContextImageEncoder(
+        checkpoint_path=str(best_path),
+        output_dim=16,
+        latent_dim=16,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 16,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        pooling="gps_query_attention",
+        gps_query_pool={"condition_dim": 16, "k_queries": 2, "num_heads": 4, "dropout": 0.0},
+    )
+    assert gps_query_encoder.required_context_modalities == ("gps",)
+    assert gps_query_encoder.training_strategy_metadata()["gps_query_pooling_enabled"] is True
+    assert gps_query_encoder(
+        torch.randn(2, 3, 3, 32, 32),
+        gps_condition_features=torch.randn(2, 3, 16),
+    ).shape == (2, 3, 16)
+
+
+def test_jepa_context_image_encoder_mean_default_and_gps_query_forward_errors():
+    mean_encoder = JepaContextImageEncoder(
+        output_dim=16,
+        latent_dim=16,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 16,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+    )
+    assert mean_encoder.pooling == "mean"
+    assert mean_encoder.required_context_modalities == ()
+    assert mean_encoder(torch.randn(2, 3, 3, 32, 32)).shape == (2, 3, 16)
+
+    gps_query_encoder = JepaContextImageEncoder(
+        output_dim=16,
+        latent_dim=16,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 16,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        pooling="gps_query_attention",
+        gps_query_pool={
+            "condition_dim": 16,
+            "k_queries": 2,
+            "num_heads": 4,
+            "dropout": 0.0,
+            "return_attention": True,
+        },
+    )
+    with pytest.raises(ValueError, match="GPS-query pooling requires GPS condition feature"):
+        gps_query_encoder(torch.randn(2, 3, 3, 32, 32))
+    output = gps_query_encoder(
+        torch.randn(2, 3, 3, 32, 32),
+        gps_condition_features=torch.randn(2, 3, 16),
+    )
+    assert output.shape == (2, 3, 16)
+    assert gps_query_encoder.last_attention_map is not None
+    assert gps_query_encoder.last_attention_map.shape == (2, 3, 2, 16)
+
+
+def test_jepa_context_image_encoder_accepts_explicit_pooler_adapter_config_and_metadata():
+    encoder = JepaContextImageEncoder(
+        output_dim=16,
+        latent_dim=16,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 16,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        pooler={
+            "type": "gps_query_attention",
+            "condition_dim": 16,
+            "k_queries": 2,
+            "num_heads": 4,
+            "dropout": 0.0,
+            "condition_source": "projected_gps",
+            "return_attention": True,
+        },
+        adapter={"type": "identity"},
+    )
+
+    output = encoder(
+        torch.randn(2, 3, 3, 32, 32),
+        gps_condition_features=torch.randn(2, 3, 16),
+    )
+
+    metadata = encoder.training_strategy_metadata()
+    assert output.shape == (2, 3, 16)
+    assert encoder.pooling == "gps_query_attention"
+    assert encoder.required_context_modalities == ("gps",)
+    assert encoder.context_feature_source == "projected"
+    assert metadata["pooler_type"] == "gps_query_attention"
+    assert metadata["adapter_type"] == "identity"
+    assert metadata["condition_source"] == "projected_gps"
+    assert metadata["gps_query_pool"]["return_attention"] is True
+    assert encoder.last_attention_map is not None
+
+    with pytest.raises(RegistryError, match="unknown_pooler.*jepa_downstream_poolers"):
+        JepaContextImageEncoder(
+            output_dim=16,
+            latent_dim=16,
+            image_profile="rgb_imagenet",
+            visual_encoder={"patch_size": 8, "depth": 0, "max_tokens": 16},
+            pooler={"type": "unknown_pooler"},
+        )
+    with pytest.raises(RegistryError, match="unknown_adapter.*jepa_downstream_adapters"):
+        JepaContextImageEncoder(
+            output_dim=16,
+            latent_dim=16,
+            image_profile="rgb_imagenet",
+            visual_encoder={"patch_size": 8, "depth": 0, "max_tokens": 16},
+            adapter={"type": "unknown_adapter"},
+        )
 
 
 def test_jepa_mask_sampler_random_and_gps_biased_are_reproducible_and_non_overlapping():
@@ -215,6 +429,26 @@ def test_jepa_latent_loss_masks_and_empty_mask_protection():
     assert result.diagnostics["loss/jepa"] == pytest.approx(0.5)
     with pytest.raises(ValueError, match="no valid target tokens"):
         jepa_latent_prediction_loss(predicted, target, torch.zeros_like(mask))
+
+
+class _EchoQueryAttention(torch.nn.Module):
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        need_weights: bool = False,
+        average_attn_weights: bool = True,
+    ):
+        del value, average_attn_weights
+        weights = torch.full(
+            (query.shape[0], query.shape[1], key.shape[1]),
+            1.0 / float(key.shape[1]),
+            device=query.device,
+            dtype=query.dtype,
+        )
+        return query, weights if need_weights else None
 
 
 def test_jepa_downstream_ablation_configs_load_and_record_metadata(tmp_path: Path):
@@ -288,6 +522,119 @@ def test_jepa_downstream_ablation_configs_load_and_record_metadata(tmp_path: Pat
     assert plain_metadata["next_beam_query_enabled"] is False
 
 
+def test_gps_query_downstream_configs_load_and_record_metadata(tmp_path: Path):
+    baseline = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml"
+    )
+    baseline_metadata = final_config_with_runtime(baseline, run_dir=tmp_path / "baseline")["runtime"]["jepa_downstream"]
+    assert baseline["model"]["primary"]["encoders"]["image"].get("pooling", "mean") == "mean"
+    assert baseline_metadata["pooling"] == "mean"
+    assert baseline_metadata["pooler_type"] == "mean"
+    assert baseline_metadata["adapter_type"] == "identity"
+    assert baseline_metadata["gps_query_pooling_enabled"] is False
+
+    for name, path in GPS_QUERY_DOWNSTREAM_CONFIGS.items():
+        cfg = load_config(path)
+        image_encoder = cfg["model"]["primary"]["encoders"]["image"]
+        checkpoint = image_encoder["checkpoint_path"]
+
+        assert cfg["model"]["primary"]["type"] == "modular_sequence"
+        assert image_encoder["type"] == "jepa_context_image"
+        assert image_encoder["pooling"] == "gps_query_attention"
+        assert image_encoder["gps_query_pool"]["k_queries"] == 4
+        assert image_encoder["gps_query_pool"]["num_heads"] == 4
+        assert image_encoder["gps_query_pool"]["condition_source"] == "projected_gps"
+        assert "gps_biased_s32_s34_lowmem/checkpoints/best.pth" in checkpoint
+        assert "outputs/scene31" not in checkpoint
+
+        metadata = final_config_with_runtime(cfg, run_dir=tmp_path / name)["runtime"]["jepa_downstream"]
+        assert metadata["pooling"] == "gps_query_attention"
+        assert metadata["pooler_type"] == "gps_query_attention"
+        assert metadata["adapter_type"] == "identity"
+        assert metadata["gps_query_pooling_enabled"] is True
+        assert metadata["gps_query_k_queries"] == 4
+        assert metadata["gps_query_num_heads"] == 4
+        assert metadata["gps_query_condition_source"] == "projected_gps"
+        assert metadata["jepa_checkpoint_path"] == checkpoint
+        assert metadata["freeze_image_encoder"] is False
+        assert metadata["image_encoder"]["gps_query_pool"]["enabled"] is True
+
+
+def test_jepa_downstream_param_group_derived_config_inherits_baseline_scope(tmp_path: Path):
+    baseline = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml"
+    )
+    cfg = load_config(PARAM_GROUP_DERIVED_CONFIG)
+
+    baseline_image = baseline["model"]["primary"]["encoders"]["image"]
+    image_encoder = cfg["model"]["primary"]["encoders"]["image"]
+
+    assert image_encoder["checkpoint_path"] == baseline_image["checkpoint_path"]
+    assert cfg["model"]["primary"]["modalities"] == baseline["model"]["primary"]["modalities"] == ["image", "gps"]
+    assert cfg["experiment"]["objective"] == baseline["experiment"]["objective"] == "beam"
+    assert cfg["data"]["dataset"]["train_scenes"] == baseline["data"]["dataset"]["train_scenes"]
+    assert cfg["data"]["dataset"]["test_scenes"] == baseline["data"]["dataset"]["test_scenes"]
+    assert image_encoder["pooler"]["type"] == "gps_query_attention"
+    assert image_encoder["adapter"]["type"] == "identity"
+    assert [group["name"] for group in cfg["training"]["optimizer"]["parameter_groups"]] == [
+        "jepa_context_encoder",
+        "jepa_pooler_adapter",
+        "gps_encoder_projector",
+        "fusion_head",
+    ]
+
+    metadata = final_config_with_runtime(cfg, run_dir=tmp_path / "param_groups")["runtime"]["jepa_downstream"]
+    assert metadata["ablation"] == "fair_gps_biased_pooler_param_groups"
+    assert metadata["pooler_type"] == "gps_query_attention"
+    assert metadata["adapter_type"] == "identity"
+    assert metadata["jepa_checkpoint_path"] == image_encoder["checkpoint_path"]
+
+
+def test_jepa_downstream_runtime_metadata_prefers_model_declaration_and_records_optimizer_summary(tmp_path: Path):
+    import_default_components()
+    cfg = load_config(GPS_QUERY_DOWNSTREAM_CONFIGS["fair_gps_query_pooling"])
+    model_cfg = _tiny_downstream_model_cfg(cfg)
+    model_cfg["encoders"]["image"]["pooler"] = {
+        "type": "gps_query_attention",
+        "condition_dim": 16,
+        "latent_dim": 16,
+        "k_queries": 2,
+        "num_heads": 4,
+        "dropout": 0.0,
+        "condition_source": "projected_gps",
+        "return_attention": False,
+    }
+    model_cfg["encoders"]["image"].pop("pooling", None)
+    model_cfg["encoders"]["image"].pop("gps_query_pool", None)
+    model_cfg["encoders"]["image"]["adapter"] = {"type": "identity"}
+    model = MODELS.build(model_cfg)
+    optimizer_groups = [
+        {"index": 0, "name": "jepa_pooler", "lr": 0.001, "weight_decay": 0.0, "param_count": 128},
+        {"index": 1, "name": "fusion_head", "lr": 0.00075, "weight_decay": 0.0001, "param_count": 64},
+    ]
+
+    metadata = final_config_with_runtime(
+        cfg,
+        run_dir=tmp_path / "model_metadata",
+        model=model,
+        optimizer_groups=optimizer_groups,
+    )["runtime"]["jepa_downstream"]
+
+    assert metadata["source"] == "model"
+    assert metadata["jepa_checkpoint_path"] == ""
+    assert metadata["state_dict_prefix"] == "context_encoder"
+    assert metadata["pooler_type"] == "gps_query_attention"
+    assert metadata["adapter_type"] == "identity"
+    assert metadata["gps_query_k_queries"] == 2
+    assert metadata["gps_query_num_heads"] == 4
+    assert metadata["gps_query_condition_source"] == "projected_gps"
+    assert metadata["attention_diagnostics"] is False
+    assert metadata["optimizer_param_groups"] == optimizer_groups
+    assert metadata["conditioned_encoders"]["image"]["context_feature_source"] == "projected"
+
+
 def test_jepa_downstream_ablation_validation_loader_uses_train_scenes_and_test_loader_uses_heldout_scenes():
     cfg = load_config(JEPA_DOWNSTREAM_CONFIGS["jepa_gru"])
     cfg["data"]["dataset"]["portion"] = 0.01
@@ -331,6 +678,26 @@ def test_jepa_downstream_ablation_forward_smoke_with_synthetic_image_gps():
             assert output["logits"].shape[1] == seq_len
 
 
+def test_gps_query_downstream_forward_smoke_with_synthetic_image_gps():
+    import_default_components()
+    cfg = load_config(GPS_QUERY_DOWNSTREAM_CONFIGS["fair_gps_query_pooling"])
+    model_cfg = _tiny_downstream_model_cfg(cfg)
+    model = MODELS.build(model_cfg)
+    model.eval()
+
+    with torch.no_grad():
+        output = model(
+            image_batch=torch.randn(2, 2, 3, 32, 32),
+            gps_batch=torch.randn(2, 2, 3),
+        )
+
+    assert output["logits"].shape == (2, 2, 7)
+    assert set(output["encoder_features"]) == {"image", "gps"}
+    assert set(output["modality_features"]) == {"image", "gps"}
+    assert output["encoder_features"]["image"].shape == (2, 2, 16)
+    assert output["modality_features"]["gps"].shape == (2, 2, 16)
+
+
 def test_jepa_downstream_ablation_configs_do_not_reference_retired_paths():
     forbidden = (
         "HiST",
@@ -343,7 +710,7 @@ def test_jepa_downstream_ablation_configs_do_not_reference_retired_paths():
         "legacy fusion",
     )
 
-    for path in JEPA_DOWNSTREAM_CONFIGS.values():
+    for path in (*JEPA_DOWNSTREAM_CONFIGS.values(), *GPS_QUERY_DOWNSTREAM_CONFIGS.values()):
         text = path.read_text(encoding="utf-8")
         assert [snippet for snippet in forbidden if snippet in text] == []
 
@@ -398,6 +765,8 @@ def _tiny_downstream_model_cfg(cfg: dict) -> dict:
             },
         }
     )
+    if isinstance(image_encoder.get("gps_query_pool"), dict):
+        image_encoder["gps_query_pool"].update({"condition_dim": 16, "latent_dim": 16})
     gps_encoder = primary.setdefault("encoders", {}).setdefault("gps", {"type": "gps_mlp"})
     gps_encoder.update({"output_dim": 16, "hidden_size": 16, "dropout": 0.0})
     primary["projectors"] = {

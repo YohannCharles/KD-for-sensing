@@ -8,9 +8,6 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
 from kd_sensing.models.fusion import FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
 from kd_sensing.registries import MODELS, RegistryError  # noqa: E402

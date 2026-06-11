@@ -59,3 +59,14 @@ kd-sensing-run-beambench-image-ae-gps-tableiii = "kd_sensing.cli.run_beambench_i
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: focused checks that are intentionally slower than unit smoke tests",
+    "integration: checks that exercise subprocess, CLI, or file workflow boundaries",
+    "local_data: checks that require explicit local dataset artifacts",
+]
+filterwarnings = [
+    "error::pytest.PytestUnknownMarkWarning",
+]

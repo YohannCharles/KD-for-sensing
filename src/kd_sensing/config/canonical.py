@@ -22,9 +22,7 @@ from kd_sensing.modalities import (
 )
 from kd_sensing.utils.paths import project_root
 
-CANONICAL_DEEPSENSE_MODALITIES = tuple(
-    modality for modality in MODALITY_ORDER if modality not in {"coord", "ray"}
-)
+CANONICAL_DEEPSENSE_MODALITIES = tuple(MODALITY_ORDER)
 CANONICAL_FUSION_MODALITIES = tuple(modality for modality in CANONICAL_DEEPSENSE_MODALITIES if modality != "csi")
 CANONICAL_SINGLE_MODALITIES = CANONICAL_DEEPSENSE_MODALITIES
 CANONICAL_FUSION_MODES = ("strong", "lightweight")

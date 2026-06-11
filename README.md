@@ -1,6 +1,6 @@
 # KD for Sensing
 
-本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前支持面围绕 DeepSense6G、MMW 和 Raymobtime 数据集家族中的 supervised/adaptation 训练、GPS v2、BGAM、CSI hardening、预处理、诊断和可视化入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前支持面围绕 DeepSense6G 和 MMW 数据集家族中的 supervised/adaptation 训练、GPS v2、BGAM、CSI hardening、预处理、诊断和可视化入口。
 
 蒸馏训练、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 研究线已经退役。当前 quickstart、BGAM、GPS v2 和 calibration workflow 都只构建单个 `model.primary` 主模型；旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`distillation.*`、`configs/hist_beam/*`、`hist_beam_fusion` 和 `kd-sensing-hist-beam-loso` 会被 migration guard 或 registry 拒绝，并提示使用当前入口。历史输出和权重只作为只读复现资料保留。
 
@@ -51,16 +51,21 @@ tools/visualization/ # Gradio viewer 和 viewer 支持工具
 
 ## 快速健康检查
 
-窄改动优先运行相关测试。涉及架构、导入边界、CLI 或公共 workflow 时，先跑：
+窄改动优先运行相关测试。涉及 OpenSpec、架构、导入边界、CLI 或公共 workflow 时，按层运行：
 
 ```bash
+openspec validate strengthen-project-health-guardrails --strict
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
-conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
-conda run -n kd_mm_beam pytest tests/test_raymobtime_s008_selection.py tests/test_modality_visual_diagnostics.py -q
+conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
 ```
 
-最终回归：
+触碰训练、数据集、诊断、CLI、配置解析或模型 forward 时，追加对应 focused tests；例如配置加载和 modality visualization 相关改动可运行：
+
+```bash
+conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py tests/test_modality_visual_diagnostics.py -q
+```
+
+这些检查不启动真实训练、不读取 `dataset/` 真实数据、不写入 checkpoint 或训练输出。最终回归：
 
 ```bash
 conda run -n kd_mm_beam pytest -q
@@ -103,7 +108,7 @@ conda run -n kd_mm_beam kd-sensing-evaluate \
 
 已退役入口：
 
-HiST-Beam LOSO、history-anchor Hist、P3/V7/V8/V9 Hist probe、image-only legal crossroad probe、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 不再作为当前可运行入口维护。旧 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*` 和 `hist_beam_fusion` 会快速失败并说明研究线已退役；当前跨场景 follow-up 使用后文的 DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、Raymobtime 和 viewer workflow。
+HiST-Beam LOSO、history-anchor Hist、P3/V7/V8/V9 Hist probe、image-only legal crossroad probe、GPS coarse anchor、Top8 selector、GPS residual、camera residual 和 Raymobtime s008 不再作为当前可运行入口维护。旧 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*`、`hist_beam_fusion`、`configs/raymobtime/*`、`configs/preprocess/raymobtime_s008_*.yaml` 和 `raymobtime_s008` dataset/model/preprocessor 名称会快速失败并说明研究线已退役；当前跨场景 follow-up 使用后文的 DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening 和 viewer workflow。
 
 实验运行索引：
 
@@ -139,7 +144,7 @@ Viewer manifest 导出：
 ```bash
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --cache-dir outputs/cache/diagnostics/gradio_viewer \
   --scenes 9,32
 ```
 
@@ -163,12 +168,12 @@ configs/fusion/<canonical_slug>_<strong|lightweight>.yaml
 
 很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 strong/lightweight canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线和 fusion KD alias 的旧配置路径不会被 virtual alias 接管。
 
-CSI hardening、snapshot next-frame、objective-aware fusion、Raymobtime、MMW 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
+CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
 
 ## 数据和产物边界
 
 - `dataset/` 是本地数据输入，默认不提交；源码中只保留 `dataset/.gitkeep`。
-- `outputs/`、`logs/`、cache、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交。
+- `outputs/`、`outputs/cache/`、`logs/`、legacy 根 `cache/`、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交；新可再生成 cache 默认写入 `outputs/cache/`。
 - `All_models/` 中已跟踪权重是历史复现实验资料；新生成的 `.pth`、`.pt`、`.ckpt` 不应进入源码变更。
 - 本地产物清理必须先生成 manifest；真正删除需要显式确认，且默认保护 `dataset/`、`All_models/`、源码、配置、文档、OpenSpec、已跟踪文件和活跃运行。
 - 当前训练入口不读取蒸馏权重；评估入口仍可通过 `--weights` 指定待评估模型权重。
@@ -179,8 +184,6 @@ DeepSense6G 默认场景是 Scenario 31，数据根目录解析为 `dataset/Deep
 conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/strong.yaml data.dataset.scene=9
 conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/strong.yaml data.dataset.scene=32
 ```
-
-Raymobtime s008 current snapshot beam selection 见 [docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)。
 
 ### MMW Town GPS v2 logits for BGAM
 
@@ -300,7 +303,7 @@ Gradio 交互式 viewer 入口保留在 `tools/visualization/gradio_multimodal_v
 ```bash
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/diagnostics/gradio_viewer_cache \
+  --cache-dir outputs/cache/diagnostics/gradio_viewer \
   --scenes 32 \
   --predictions outputs/eval/predictions.json \
   --quality outputs/eval/quality.json \
@@ -310,7 +313,6 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 ## 文档索引
 
 - 实验矩阵和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
-- Raymobtime s008：[docs/Raymobtime_s008_selection.md](docs/Raymobtime_s008_selection.md)
 - 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)
 - 新组件扩展指南：[docs/extension_guide.md](docs/extension_guide.md)

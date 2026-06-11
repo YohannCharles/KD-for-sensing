@@ -10,9 +10,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.data.transform_ops.lidar import read_lidar_point_cloud  # noqa: E402
 from kd_sensing.preprocessing.csv import process_radar_and_create_new_csv  # noqa: E402
 from kd_sensing.preprocessing.sequences import (  # noqa: E402

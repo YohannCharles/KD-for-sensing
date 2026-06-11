@@ -1,5 +1,0 @@
-preprocessing:
-  type: raymobtime_s008_ray_features
-  data_root: dataset/Raymobtime/s008
-  cache_dir: outputs/raymobtime_s008/cache
-  link_target_name: link_power_max_dbm

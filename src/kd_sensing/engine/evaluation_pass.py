@@ -242,14 +242,6 @@ def run_evaluation_pass(
     metrics["available_metrics"] = objective_available_metrics(objective, metrics)
     metrics["enabled_modalities"] = list(enabled_modalities)
     dataset = getattr(dataloader, "dataset", None)
-    if dataset is not None and hasattr(dataset, "raymobtime_metadata"):
-        raymobtime_metadata = dataset.raymobtime_metadata()
-        metrics["task_semantics"] = raymobtime_metadata.get("task_semantics")
-        metrics["link_target"] = {
-            "name": raymobtime_metadata.get("link_target_name"),
-            "unit": raymobtime_metadata.get("link_target_unit"),
-            "aggregation": getattr(dataset, "cache_metadata", {}).get("link_target_aggregation"),
-        }
     baselines = degradation_baselines_from_labels(
         labels_t,
         input_beams=input_beams_t,

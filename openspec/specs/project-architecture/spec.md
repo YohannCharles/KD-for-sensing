@@ -120,7 +120,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 不需要修改诊断 dataset 构建逻辑
 
 ### Requirement: 源码与实验产物边界
-项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。用户明确要求退役并清理某条失败实验路线时，系统 MAY 删除匹配的本地 `outputs/`、`logs/`、cache、checkpoint 和训练诊断产物，但 MUST 先生成可审计清单并限制在未纳入源码的运行产物内。
+项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。用户明确要求退役并清理某条失败实验路线或数据集工作流时，系统 MAY 删除匹配的本地 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 和训练诊断产物，但 MUST 先生成可审计清单并限制在未纳入源码且属于目标路线的路径内。
 
 #### Scenario: 本地产物不进入版本控制
 - **WHEN** 用户运行训练、评估、预处理或诊断命令
@@ -137,6 +137,12 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **WHEN** 用户明确要求删除已退役失败路线的输出日志和实验结果
 - **THEN** 清理流程 MUST 先写出 machine-readable manifest，记录每个候选路径、匹配原因、产物类型和大小
 - **AND** 清理流程 MUST NOT 删除 `dataset/`、`All_models/` 已跟踪权重、OpenSpec artifacts、源码文件或未匹配失败路线的活跃实验产物
+
+#### Scenario: 清理退役数据集工作流
+- **WHEN** 用户明确要求删除 Raymobtime s008 代码和数据集
+- **THEN** 清理流程 MUST 先写出 machine-readable manifest，记录每个 Raymobtime s008 候选数据、cache、日志、checkpoint、诊断和输出路径
+- **AND** 清理流程 MUST 只删除 manifest 中属于 Raymobtime s008 的允许路径
+- **AND** 清理流程 MUST NOT 删除其它数据集、外部未知 data_root、`All_models/` 已跟踪权重、OpenSpec artifacts 或非 Raymobtime 活跃实验产物
 
 ### Requirement: 包级导入不得牵出重依赖
 项目 MUST 保持包级公共 API 兼容，同时避免 `__init__.py` eager import 触发重依赖运行模块。导入某个具体子模块时，系统 MUST 不因为父包初始化而额外导入训练器、dataset、诊断渲染或大型第三方依赖。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 子模块 MUST 不再作为轻量导入 smoke 的保留对象。
@@ -925,4 +931,74 @@ Top8 selector 训练/plot/compare、GPS coarse anchor、GPS prior residual/delta
 - **WHEN** 清理实现扫描到 `topk`、`candidate` 或 `residual` 字符串
 - **THEN** 系统 MUST 按语义判断归属
 - **AND** 普通 evaluation Top-K、viewer top-k 展示、CSI candidate ranking 和 GPS v2 自身 residual 诊断不得仅因字符串命中被删除
+
+### Requirement: JEPA downstream 扩展实现边界
+项目 MUST 将 JEPA Stage 1 预训练主模型、JEPA downstream pooler/adapter、模块化 conditioned encoder、optimizer 参数组和 runtime metadata 维护在职责清晰的窄模块中。新增 JEPA downstream pooler 或 adapter MUST 不要求修改 dataset、训练主循环、checkpoint schema 或旧兼容入口。
+
+#### Scenario: 新增 JEPA pooler 不修改训练主循环
+- **WHEN** 开发者新增一个 JEPA downstream pooler
+- **THEN** 变更 MUST 限定在 JEPA downstream pooler/adapter 模块、注册代码、配置和测试
+- **AND** 不需要修改 `engine.trainer` 主循环或 supervised beam loss/metric 流程
+
+#### Scenario: 新增 JEPA adapter 不修改 dataset
+- **WHEN** 开发者新增一个 JEPA downstream adapter
+- **THEN** 变更 MUST 不要求修改 DeepSense6G dataset、GPS transform、image preprocessing 或 DataLoader 构建逻辑
+- **AND** adapter MUST 通过模型配置和 registry 接入
+
+#### Scenario: 不恢复退役入口
+- **WHEN** JEPA downstream extensibility change 落地
+- **THEN** 系统 MUST 不新增 KD/distillation、HiST/Hist、Top8 selector、GPS residual、camera residual 或 legacy fusion 兼容入口
+- **AND** 新能力 MUST 通过当前 `src/kd_sensing` 包结构和 registry 边界接入
+
+### Requirement: optimizer 参数组构建位于 optim 模块
+训练引擎 MUST 将参数组解析、模块名 pattern 匹配、重复匹配检测、未匹配参数处理和参数组 summary 维护在 `kd_sensing.engine.optim` 或等价窄模块中。训练主循环 MUST 只消费构建好的 optimizer 和 summary。
+
+#### Scenario: 修改 JEPA 参数组不触碰 trainer
+- **WHEN** 开发者调整 JEPA context encoder、GPS encoder、pooler、core 或 head 的参数组匹配规则
+- **THEN** 主要变更 MUST 限定在 optimizer 构建模块及其测试
+- **AND** 不需要编辑 `engine.trainer` 的 epoch 或 batch 编排逻辑
+
+#### Scenario: 参数组 summary 写入现有日志路径
+- **WHEN** 训练使用多个 optimizer 参数组
+- **THEN** 现有训练日志和 TensorBoard scalar 映射 MUST 能记录每组 learning rate 和参数数量
+- **AND** 未声明参数组时 MUST 保持现有单 `main` 组日志字段
+
+### Requirement: runtime metadata 收集位于 run metadata 模块
+JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer 或等价窄模块收集。模型和子模块 MAY 暴露只读 metadata 方法；训练主循环 MUST 不手写 JEPA downstream 专属字段。
+
+#### Scenario: 模型声明 metadata 被聚合
+- **WHEN** `model.primary` 或其子模块提供 JEPA downstream training strategy metadata
+- **THEN** runtime metadata 收集模块 MUST 将其写入 `final_config.yaml` 或等价运行 metadata
+- **AND** metadata MUST 包含 pooler、adapter、checkpoint、freeze 和参数组摘要中的正式字段
+
+#### Scenario: config fallback 兼容历史配置
+- **WHEN** metadata 在模型构建前需要从配置生成
+- **THEN** run metadata 模块 MAY 使用配置解析作为 fallback
+- **AND** fallback MUST 与模型声明 metadata 的核心字段保持一致
+
+### Requirement: 项目健康护栏纳入架构边界
+项目 MUST 将健康护栏纳入架构边界测试，使包结构、轻量导入、入口 allowlist、热点 inventory、测试 bootstrap 和分层验证命令保持一致。架构边界测试 MUST 能在全量 pytest 之前暴露项目支持面或维护性边界漂移。
+
+#### Scenario: 架构边界检查健康护栏文件
+- **WHEN** 开发者运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+- **THEN** 测试 MUST 验证 shared pytest bootstrap、项目表面积 inventory 和当前健康检查命令说明存在且互相一致
+- **AND** 测试 MUST 拒绝新增未分类的长期脚本入口、未登记热点或明显回流的兼容 facade helper
+
+#### Scenario: 新增热点必须声明边界
+- **WHEN** 新代码引入超长 orchestration 函数、dataset 类、manifest builder 或兼容 facade
+- **THEN** 变更 MUST 同步更新热点 inventory 或拆分到职责明确的窄模块
+- **AND** 架构边界测试 MUST 提供可定位到文件和符号的失败信息
+
+### Requirement: 测试基础设施不得重复项目路径注入
+项目 MUST 将普通测试的源码路径注入集中管理。除架构边界 import probe、subprocess smoke 或明确隔离环境测试外，测试文件不得各自维护重复的 `ROOT/SRC/sys.path.insert` 启动逻辑。
+
+#### Scenario: 普通测试文件不复制 bootstrap
+- **WHEN** 开发者新增或修改普通单元测试
+- **THEN** 测试 MUST 通过 shared pytest bootstrap 导入 `kd_sensing`
+- **AND** 文件级 `sys.path.insert` 复制片段 MUST 被架构边界测试拒绝或要求显式例外说明
+
+#### Scenario: 子进程边界测试可控
+- **WHEN** 架构边界测试需要在干净解释器中验证某个 import 不牵出重依赖
+- **THEN** 该测试 MAY 在子进程代码中显式设置 `sys.path`
+- **AND** 该例外 MUST 保持局部，不得作为普通测试模板传播
 

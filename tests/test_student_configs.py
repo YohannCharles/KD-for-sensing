@@ -10,9 +10,6 @@ import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.canonical import (  # noqa: E402
     CANONICAL_FUSION_MODALITIES,
@@ -340,9 +337,6 @@ def test_cli_overrides_can_select_fusion_modalities_on_new_paths():
 @pytest.mark.parametrize(
     "config_path",
     [
-        "configs/raymobtime/s008_smoke_selection.yaml",
-        "configs/raymobtime/s008_multitask_selection.yaml",
-        "configs/gps/gps_neural_coarse_smoke.yaml",
         "configs/gps/ablation_relative_polar.yaml",
     ],
 )

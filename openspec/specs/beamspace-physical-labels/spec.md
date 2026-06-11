@@ -59,10 +59,10 @@
 - **AND** 字段缺失时 MUST 提示可通过 config 指定 key name
 
 ### Requirement: Physical label cache and diagnostics
-系统 SHALL 缓存构造后的物理标签，并在首次构造时输出 scene-level 统计，便于复现实验和排查物理标签质量。
+系统 SHALL 缓存构造后的物理标签，并在首次构造时输出 scene-level 统计，便于复现实验和排查物理标签质量。未显式配置 cache_dir 时，物理标签 cache MUST 默认位于 `outputs/cache/physical_labels`。
 
 #### Scenario: 从缓存读取 BSP
-- **WHEN** `cache/physical_labels/<dataset_name>/<scene_name>/beamspace_power_<num_classes>.npz` 已存在且 metadata 匹配当前配置
+- **WHEN** `outputs/cache/physical_labels/<dataset_name>/<scene_name>/beamspace_power_<num_classes>.npz` 已存在且 metadata 匹配当前配置
 - **THEN** dataset MUST 优先读取缓存
 - **AND** 不应重复解析所有原始 beam power 或 path 文件
 
@@ -73,8 +73,8 @@
 
 #### Scenario: 首次构造输出统计
 - **WHEN** scene-level BSP 缓存首次生成
-- **THEN** 系统 MUST 记录样本数、beam 数、label entropy mean/std
-- **AND** 系统 MUST 记录 `argmax(beamspace_power_label) == hard beam` 的 top1 agreement 诊断
+- **THEN** 系统 MUST 记录 availability、source 分布、entropy、peak probability 和 fallback 原因统计
+- **AND** 统计 MUST 可写入 dataset metadata 或训练 runtime metadata
 
 ### Requirement: Target-domain physical label leakage boundary
 系统 SHALL 区分 source pretraining、target labeled adaptation、target unlabeled adaptation 和 target_test 中物理标签的允许用途。target adaptation 默认 MUST NOT 使用 target-side beam power/RSS/path oracle 作为训练监督。

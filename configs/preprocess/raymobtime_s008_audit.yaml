@@ -1,4 +1,0 @@
-preprocessing:
-  type: raymobtime_s008_audit
-  data_root: dataset/Raymobtime/s008
-  output_dir: outputs/raymobtime_s008/audit

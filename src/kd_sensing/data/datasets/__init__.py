@@ -1,7 +1,6 @@
 __all__ = [
     "DeepSense6GDataset",
     "MMWDataset",
-    "RaymobtimeS008SnapshotDataset",
     "SyntheticSequenceDataset",
 ]
 
@@ -19,10 +18,6 @@ def __getattr__(name: str):
         from . import synthetic
 
         return synthetic.SyntheticSequenceDataset
-    if name == "RaymobtimeS008SnapshotDataset":
-        from . import raymobtime_s008
-
-        return raymobtime_s008.RaymobtimeS008SnapshotDataset
     if name == "MultimodalNFDataset":
         raise AttributeError(
             "MultimodalNFDataset has been removed. Multimodal-NF has been retired and no compatibility "

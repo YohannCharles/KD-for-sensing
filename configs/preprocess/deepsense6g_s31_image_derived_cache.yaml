@@ -4,7 +4,7 @@ preprocessing:
   - dataset/DeepSense6G/scenario31/train_seqs_RA_GPS_LIDAR.csv
   - dataset/DeepSense6G/scenario31/test_seqs_RA_GPS_LIDAR.csv
   data_root: dataset/DeepSense6G/scenario31
-  cache_dir: image_derived_cache
+  cache_dir: outputs/cache/DeepSense6G/scenario31/image_derived
   image_prefix: camera
   image_size:
   - 224

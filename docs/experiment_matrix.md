@@ -14,7 +14,7 @@
 | lidar | `configs/lidar/strong.yaml` | `configs/lidar/lightweight.yaml` | `configs/lidar/supervised.yaml` |
 | mmwave | `configs/mmwave/strong.yaml` | `configs/mmwave/lightweight.yaml` | `configs/mmwave/supervised.yaml` |
 
-推荐主线顺序是先运行 supervised/adaptation baseline，再进入 DeepSense6G/MMW GPS+LiDAR BGAM、MMW GPS v2、Raymobtime s008、CSI hardening 或 viewer manifest。旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`configs/hist_beam/*`、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 入口不再作为支持入口存在；配置加载器会拒绝这些路径并给出迁移建议。
+推荐主线顺序是先运行 supervised/adaptation baseline，再进入 DeepSense6G/MMW GPS+LiDAR BGAM、MMW GPS v2、CSI hardening 或 viewer manifest。旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`configs/hist_beam/*`、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual、camera residual 和 Raymobtime s008 入口不再作为支持入口存在；配置加载器会拒绝这些路径并给出迁移或退役说明。
 
 Fusion canonical slug 使用固定顺序 `image -> radar -> gps -> lidar -> mmwave`，覆盖所有 2 到 5 模态组合。例如：
 
@@ -119,9 +119,9 @@ conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_csi_hardening
 
 GPS+CSI 验证矩阵位于 `configs/fusion/csi_hardening_matrix/`，包括 GPS-only、GPS+clean CSI、GPS+slow CSI 和 prioritized warmup 配置。对应合同由 `tests/test_student_configs.py::test_gps_csi_validation_matrix_configs_load` 覆盖。
 
-## Raymobtime
+## 已退役：Raymobtime s008
 
-Raymobtime s008 是独立数据集家族，默认根目录为 `dataset/Raymobtime/s008`，任务语义为 current snapshot beam selection。预处理、训练、评估和 sensing-only / sensing+ray 实验边界见 [Raymobtime_s008_selection.md](Raymobtime_s008_selection.md)。
+Raymobtime s008 的 dataset type、预处理配置、selection 模型、`coord/ray` 模态和 focused tests 已退役并从当前矩阵删除。旧 `configs/raymobtime/*`、`configs/preprocess/raymobtime_s008_*.yaml`、`raymobtime_s008`、`simple_concat_multitask_selection`、`task_aware_gated_multitask_selection` 和 `raymobtime_lidar_3d_cnn` 只保留快速失败提示，不再作为推荐入口。
 
 ## 运行产物
 

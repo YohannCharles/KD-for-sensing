@@ -9,9 +9,6 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.engine.model_output import ModelOutput  # noqa: E402
 from kd_sensing.engine.prediction_objectives import (  # noqa: E402
@@ -139,7 +136,7 @@ def test_objective_metadata_contract_covers_metrics_aliases_history_and_logging(
         assert ("beam/val_top1", "val_beam_top1") not in objective_tensorboard_scalars(objective)
 
 
-def test_raymobtime_single_task_tensorboard_scalars_are_isolated():
+def test_current_selection_objective_tensorboard_scalars_are_isolated():
     beam_tags = {tag for tag, _ in objective_tensorboard_scalars("current_beam_selection")}
     los_tags = {tag for tag, _ in objective_tensorboard_scalars("current_los_classification")}
     link_tags = {tag for tag, _ in objective_tensorboard_scalars("current_link_quality")}

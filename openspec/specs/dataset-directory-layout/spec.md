@@ -43,7 +43,7 @@
 - **AND** 每个条件目录 MUST 包含 `Sensor_Data` 与 `Channel_Data` 两个语义子目录
 
 ### Requirement: 数据文件不自动迁移
-代码变更 MUST 不自动移动、复制或删除 `dataset/` 下的真实数据文件。目录迁移 MUST 由用户显式执行，或通过显式配置 `data_root` 继续使用旧目录。
+代码变更 MUST 不自动移动、复制或删除 `dataset/` 下的真实数据文件。目录迁移 MUST 由用户显式执行，或通过显式配置 `data_root` 继续使用旧目录。新生成的可再生 cache SHOULD 默认写入 `outputs/cache/`，而不是数据集原始目录；显式配置到 `dataset/` 下的历史 cache 路径 MAY 继续使用。
 
 #### Scenario: 默认配置不移动旧数据
 - **WHEN** 用户运行默认 DeepSense6G 配置且本地存在旧 `dataset/scenario31`
@@ -55,34 +55,24 @@
 - **THEN** 系统 MUST 使用该显式路径构建 dataset
 - **AND** 该行为 MUST 不依赖 `dataset/DeepSense6G/scenario31` 是否存在
 
-### Requirement: Raymobtime 数据集家族目录规范
-项目 MUST 将 Raymobtime 本地数据作为独立数据集家族放在 `dataset/Raymobtime/` 下。Raymobtime s008 的默认规范根目录 MUST 为 `dataset/Raymobtime/s008`，并 MUST 保留用户显式传入外部 `data_root` 的能力。
+#### Scenario: 新 cache 默认不写入 dataset
+- **WHEN** DeepSense6G 或 MMW cache 路径未显式配置
+- **THEN** 系统 MUST 将可再生 cache 默认写入 `outputs/cache/` 下的数据集 family 子目录
+- **AND** 系统 MUST 不在 `dataset/` 下自动新建默认 cache 目录
 
-#### Scenario: Raymobtime s008 默认目录
-- **WHEN** 用户使用 `data.dataset.type: raymobtime_s008` 且未显式配置 `data.dataset.data_root`
-- **THEN** dataset layout descriptor MUST 返回 `dataset/Raymobtime/s008`
-- **AND** 返回路径 MUST 可被现有项目根路径解析工具解析
+### Requirement: Runtime cache layout descriptor
+项目 MUST 提供集中式 runtime cache layout descriptor 或等价机制，用于描述可再生成 cache 的默认根目录和语义子目录。默认 runtime cache 根 MUST 为 `outputs/cache`；数据集相关 cache MUST 按 family 和 scene/condition 分层；非数据集专属 cache MUST 使用明确的 cache kind 子目录。
 
-#### Scenario: Raymobtime 与现有数据集家族平级
-- **WHEN** 项目同时存在 DeepSense6G、MMW 和 Raymobtime 本地数据
-- **THEN** DeepSense6G 数据 MUST 位于 `dataset/DeepSense6G/`
-- **AND** MMW 数据 MUST 位于 `dataset/MMW/`
-- **AND** Raymobtime 数据 MUST 位于 `dataset/Raymobtime/`
+#### Scenario: DeepSense6G cache 默认路径
+- **WHEN** 代码请求 DeepSense6G Scenario 31 的 image-derived 或 LiDAR BEV cache 默认路径
+- **THEN** layout descriptor MUST 返回 `outputs/cache/DeepSense6G/scenario31/image_derived` 或 `outputs/cache/DeepSense6G/scenario31/lidar_bev`
 
-#### Scenario: 显式外部 data_root
-- **WHEN** 用户配置 `data.dataset.type: raymobtime_s008` 且显式设置 `data.dataset.data_root`
-- **THEN** 系统 MUST 使用该显式路径构建 dataset 或预处理任务
-- **AND** 系统 MUST 不自动移动、复制或删除该路径下的真实数据文件
+#### Scenario: MMW cache 默认路径
+- **WHEN** 代码请求 MMW sunny 条件的 image-derived 或 LiDAR BEV cache 默认路径
+- **THEN** layout descriptor MUST 返回 `outputs/cache/MMW/sunny/image_derived` 或 `outputs/cache/MMW/sunny/lidar_bev`
 
-### Requirement: Raymobtime s008 本地产物边界
-Raymobtime s008 的原始数据、cache、审计报告、训练输出、日志和 checkpoint MUST 继续遵守源码与本地产物边界。项目文档和配置 MUST 不要求提交这些本地产物。
+#### Scenario: Root physical label cache 收敛
+- **WHEN** MMW physical label cache 未显式配置 cache_dir
+- **THEN** 系统 MUST 默认使用 `outputs/cache/physical_labels`
+- **AND** 系统 MUST 不默认创建根目录 `cache/physical_labels`
 
-#### Scenario: Raymobtime cache 默认不提交
-- **WHEN** 用户运行 Raymobtime s008 预处理并生成 cache
-- **THEN** cache MUST 默认写入 `outputs/`、`dataset/Raymobtime/s008/cache` 或用户配置的 ignored 目录
-- **AND** 项目文档 MUST 标记这些文件为本地产物
-
-#### Scenario: 不自动迁移 Raymobtime_s008 旧目录
-- **WHEN** 用户本地已有 `Raymobtime_s008/` 或其它外部数据目录
-- **THEN** 系统 MUST 不自动把该目录移动到 `dataset/Raymobtime/s008`
-- **AND** 用户 MUST 能通过显式 `data_root` 继续使用该目录

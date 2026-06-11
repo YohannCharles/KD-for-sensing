@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from kd_sensing.data.layouts import runtime_cache_root
 from kd_sensing.diagnostics.viewer_manifest_schema import _json_ready
 
 def _manifest_output_path(
@@ -22,7 +23,11 @@ def _manifest_output_path(
     if output_path is not None:
         return Path(output_path).expanduser()
     digest = _cache_digest(cfg, predictions=predictions, quality=quality, gate=gate, sample_limit=sample_limit)[:16]
-    root = Path(cache_dir).expanduser() if cache_dir is not None else default_dir / "viewer_cache"
+    root = (
+        Path(cache_dir).expanduser()
+        if cache_dir is not None
+        else Path(runtime_cache_root()) / "diagnostics" / "gradio_viewer"
+    )
     return root / digest / "samples.json"
 
 

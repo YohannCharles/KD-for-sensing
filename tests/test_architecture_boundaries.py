@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -11,9 +12,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.modalities import (  # noqa: E402
     MODALITY_ORDER,
     batch_input_keys_for_modalities,
@@ -95,6 +93,139 @@ FUSION_ROOT_YAML_ALLOWLIST = {
     "configs/fusion/token_transformer_all_modalities_supervised.yaml",
     "configs/fusion/token_transformer_image_radar_supervised.yaml",
 }
+
+HEALTH_CHECK_COMMANDS = (
+    "openspec validate strengthen-project-health-guardrails --strict",
+    "conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q",
+    "conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q",
+)
+CONFIG_LIFECYCLE_MARKERS = (
+    "configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml",
+    "configs/fusion/experiments/jepa_image_gps/*.yaml",
+    "configs/csi/hardening_matrix/*.yaml",
+    "configs/csi/hardening_matrix/debug/*.yaml",
+    "configs/fusion/csi_hardening_matrix/*.yaml",
+    "configs/preprocess/*.yaml",
+    "configs/deepverse/dt31_generation.yaml",
+    "configs/diagnostics/modality_visualization.yaml",
+    "configs/baselines/*.yaml",
+    "configs/pretraining/*.yaml",
+    "retired history",
+)
+HOTSPOT_SYMBOL_BUDGETS = {
+    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1100,
+    ("src/kd_sensing/data/datasets/mmw.py", "MMWDataset", "class"): 600,
+    ("src/kd_sensing/engine/trainer.py", "_train_inner", "function"): 320,
+    ("src/kd_sensing/engine/mmw_town_gps_v2.py", "run_mmw_town_gps_v2", "function"): 280,
+    ("src/kd_sensing/baselines/beambench/image_ae_gps.py", "run_image_ae_gps_training", "function"): 240,
+    (
+        "src/kd_sensing/baselines/beambench/image_ae_gps.py",
+        "run_image_ae_gps_paper_split_training",
+        "function",
+    ): 265,
+    (
+        "src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py",
+        "run_deepsense6g_gps_lidar_bgam",
+        "function",
+    ): 240,
+    ("src/kd_sensing/engine/evaluation_pass.py", "run_evaluation_pass", "function"): 220,
+}
+REQUIRED_HOTSPOT_INVENTORY_MARKERS = (
+    "src/kd_sensing/data/datasets/deepsense6g.py",
+    "DeepSense6GDataset",
+    "src/kd_sensing/data/datasets/mmw.py",
+    "MMWDataset",
+    "src/kd_sensing/engine/trainer.py",
+    "_train_inner",
+    "src/kd_sensing/baselines/beambench/image_ae_gps.py",
+    "run_image_ae_gps_training",
+    "run_image_ae_gps_paper_split_training",
+    "src/kd_sensing/engine/evaluation_pass.py",
+    "run_evaluation_pass",
+    "src/kd_sensing/engine/batch.py",
+    "src/kd_sensing/diagnostics/run_index.py",
+    "src/kd_sensing/diagnostics/viewer_manifest.py",
+)
+LONG_FUNCTION_LIMIT = 230
+LONG_CLASS_LIMIT = 590
+CONFIG_REFERENCE_RE = re.compile(r"configs/[A-Za-z0-9_./-]+\.yaml")
+CONFIG_REFERENCE_SCAN_ROOTS = (
+    ROOT / "README.md",
+    ROOT / "docs",
+    ROOT / "scripts",
+    ROOT / "openspec" / "specs",
+    ROOT / "openspec" / "changes" / "strengthen-project-health-guardrails" / "specs",
+)
+HISTORICAL_DOCS_WITH_ARCHIVED_CONFIGS = {
+    "docs/p3_v7_multisource_crossroad_analysis.md",
+}
+NON_CURRENT_CONFIG_CONTEXT_MARKERS = (
+    "旧",
+    "退役",
+    "不再",
+    "不存在",
+    "缺失",
+    "拒绝",
+    "失败",
+    "历史",
+    "migration",
+    "retired",
+    "removed",
+    "no longer",
+    "MUST not",
+)
+RETIRED_CONFIG_TOKENS = (
+    "hist_beam",
+    "top8",
+    "residual",
+    "camera_residual",
+    "coarse_anchor",
+    "logits_kd",
+    "rkd",
+    "teacher_no_kd",
+    "student_no_kd",
+    "no_kd",
+    "craf",
+    "marf",
+    "g2d",
+    "multimodal_nf",
+    "image_motion",
+    "raymobtime",
+    "raymobtime_s008",
+)
+ROOT_DOCUMENT_LIFECYCLE_EXCLUSIONS = set()
+CURRENT_DOCS_TO_CHECK_FOR_RETIRED_RECOMMENDATIONS = (
+    ROOT / "README.md",
+    ROOT / "docs" / "experiment_matrix.md",
+    ROOT / "docs" / "extension_guide.md",
+    ROOT / "docs" / "training_throughput.md",
+)
+RETIRED_ROUTE_TEXT_MARKERS = (
+    "HiST-Beam",
+    "Top8 selector",
+    "GPS residual",
+    "camera residual",
+    "logits_kd",
+    "rkd",
+    "teacher_no_kd",
+    "student_no_kd",
+    "no_kd",
+    "Raymobtime s008",
+    "raymobtime_s008",
+)
+RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
+    "退役",
+    "旧",
+    "不再",
+    "拒绝",
+    "历史",
+    "fail",
+    "removed",
+    "retired",
+    "Retired",
+    "migration",
+)
+
 
 
 def _dotted(*parts: str) -> str:
@@ -178,6 +309,74 @@ def _tracked_paths() -> list[str]:
     return sorted(path for path in result.stdout.decode("utf-8").split("\0") if path)
 
 
+def _iter_scan_files(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root]
+    if not root.exists():
+        return []
+    return sorted(path for path in root.rglob("*") if path.is_file() and path.suffix in {".md", ".py", ".sh"})
+
+
+def _symbol_lengths(path: Path) -> dict[tuple[str, str], int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    symbols: dict[tuple[str, str], int] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if not hasattr(node, "end_lineno"):
+            continue
+        kind = "class" if isinstance(node, ast.ClassDef) else "function"
+        symbols[(node.name, kind)] = node.end_lineno - node.lineno + 1
+    return symbols
+
+
+def _is_sys_path_insert_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "insert"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "path"
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == "sys"
+    )
+
+
+def _is_supported_virtual_config_reference(rel_path: str) -> bool:
+    path = Path(rel_path)
+    stem = path.stem
+    parts = path.parts
+    if len(parts) >= 3 and parts[0] == "configs" and parts[1] == "fusion":
+        if any(token in stem for token in RETIRED_CONFIG_TOKENS):
+            return False
+        if stem.endswith(("_strong", "_lightweight", "_supervised")):
+            return True
+        if stem.endswith("_snapshot_next_frame_supervised"):
+            return True
+        objective_suffixes = (
+            "_beam_supervised",
+            "_occlusion_supervised",
+            "_position_supervised",
+            "_multitask_supervised",
+        )
+        return stem.endswith(objective_suffixes)
+    if len(parts) == 3 and parts[0] == "configs" and parts[1] in {"image", "radar", "gps", "lidar", "mmwave"}:
+        return stem == "snapshot_next_frame_supervised"
+    return False
+
+
+def _is_classified_non_current_config_reference(rel_path: str, rel_source: str, line: str) -> bool:
+    if rel_source in HISTORICAL_DOCS_WITH_ARCHIVED_CONFIGS:
+        return True
+    if any(marker in line for marker in NON_CURRENT_CONFIG_CONTEXT_MARKERS):
+        return True
+    if rel_source.startswith("openspec/specs/") and any(token in rel_path for token in RETIRED_CONFIG_TOKENS):
+        return True
+    return False
+
+
 def test_source_surface_does_not_track_local_artifacts():
     violations: list[str] = []
     for raw_path in _tracked_paths():
@@ -224,6 +423,149 @@ def test_project_surface_inventory_guardrails_are_current():
     assert shell_entries == set(SHELL_ORCHESTRATION_ALLOWLIST)
 
 
+
+def test_shared_pytest_bootstrap_and_pytest_config_are_declared():
+    conftest = ROOT / "tests" / "conftest.py"
+    conftest_text = conftest.read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "SRC = ROOT / \"src\"" in conftest_text
+    assert "sys.path.insert(0, path_text)" in conftest_text
+    assert "kd_sensing" not in conftest_text
+    assert "[tool.pytest.ini_options]" in pyproject
+    assert "testpaths = [\"tests\"]" in pyproject
+    assert "pytest.PytestUnknownMarkWarning" in pyproject
+    assert "local_data:" in pyproject
+
+
+def test_regular_tests_do_not_duplicate_src_path_bootstrap():
+    violations: list[str] = []
+    for path in sorted((ROOT / "tests").glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if _is_sys_path_insert_call(node):
+                rel = path.relative_to(ROOT).as_posix()
+                violations.append(
+                    f"{rel}:{node.lineno} duplicates sys.path bootstrap; use tests/conftest.py "
+                    "or keep path control inside a subprocess code string for import-boundary probes."
+                )
+
+    assert violations == []
+
+
+def test_health_inventory_documents_hotspots_and_commands():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    health_spec = (
+        ROOT
+        / "openspec"
+        / "changes"
+        / "strengthen-project-health-guardrails"
+        / "specs"
+        / "project-health-guardrails"
+        / "spec.md"
+    ).read_text(encoding="utf-8")
+
+    for command in HEALTH_CHECK_COMMANDS:
+        assert command in inventory
+        assert command in readme or command in health_spec
+    for marker in REQUIRED_HOTSPOT_INVENTORY_MARKERS:
+        assert marker in inventory
+    for marker in CONFIG_LIFECYCLE_MARKERS:
+        assert marker in inventory
+    assert "新增热点维护规则" in inventory
+    assert "tests/conftest.py" in inventory
+
+
+def test_hotspot_static_budget_matches_inventory():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    budget_keys = set(HOTSPOT_SYMBOL_BUDGETS)
+    violations: list[str] = []
+
+    for (rel_path, symbol, kind), max_lines in HOTSPOT_SYMBOL_BUDGETS.items():
+        lengths = _symbol_lengths(ROOT / rel_path)
+        actual = lengths.get((symbol, kind))
+        if actual is None:
+            violations.append(f"{rel_path}:{symbol} missing from AST scan")
+            continue
+        if actual > max_lines:
+            violations.append(
+                f"{rel_path}:{symbol} is {actual} lines, budget {max_lines}; "
+                "split to a narrow module or update docs/project_surface_inventory.md with a reasoned budget."
+            )
+        if rel_path not in inventory or symbol not in inventory:
+            violations.append(f"{rel_path}:{symbol} is budgeted but missing from hotspot inventory")
+
+    for path in sorted((SRC / "kd_sensing").rglob("*.py")):
+        rel_path = path.relative_to(ROOT).as_posix()
+        for (symbol, kind), lines in _symbol_lengths(path).items():
+            threshold = LONG_CLASS_LIMIT if kind == "class" else LONG_FUNCTION_LIMIT
+            if lines <= threshold:
+                continue
+            if (rel_path, symbol, kind) in budget_keys:
+                continue
+            violations.append(
+                f"{rel_path}:{symbol} {kind} is {lines} lines and not registered; "
+                "update docs/project_surface_inventory.md, add a budget, or split the symbol."
+            )
+
+    assert violations == []
+
+
+def test_config_lifecycle_inventory_and_references_are_current():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    for marker in CONFIG_LIFECYCLE_MARKERS:
+        assert marker in inventory
+
+    violations: list[str] = []
+    for root in CONFIG_REFERENCE_SCAN_ROOTS:
+        for path in _iter_scan_files(root):
+            rel_source = path.relative_to(ROOT).as_posix()
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                for match in CONFIG_REFERENCE_RE.finditer(line):
+                    rel_path = match.group(0).rstrip(".,;:")
+                    if (ROOT / rel_path).exists():
+                        continue
+                    if _is_supported_virtual_config_reference(rel_path):
+                        continue
+                    if _is_classified_non_current_config_reference(rel_path, rel_source, line):
+                        continue
+                    violations.append(
+                        f"{rel_source}:{line_number} references missing config {rel_path}; "
+                        "create it, document it as a virtual/current config, or mark the reference retired/historical."
+                    )
+
+    assert violations == []
+
+
+def test_root_and_docs_markdown_lifecycle_inventory_is_complete():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    root_docs = {
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.glob("*.md")
+        if path.name not in ROOT_DOCUMENT_LIFECYCLE_EXCLUSIONS
+    }
+    docs_docs = {path.relative_to(ROOT).as_posix() for path in (ROOT / "docs").glob("*.md")}
+    missing = sorted(rel_path for rel_path in root_docs | docs_docs if rel_path not in inventory)
+
+    assert missing == []
+
+    recommendation_violations: list[str] = []
+    for path in CURRENT_DOCS_TO_CHECK_FOR_RETIRED_RECOMMENDATIONS:
+        if not path.exists():
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not any(marker in line for marker in RETIRED_ROUTE_TEXT_MARKERS):
+                continue
+            if any(marker in line for marker in RETIRED_ROUTE_CLASSIFICATION_MARKERS):
+                continue
+            recommendation_violations.append(
+                f"{rel}:{line_number} mentions a retired route without historical/retired wording: {line.strip()}"
+            )
+
+    assert recommendation_violations == []
+
 def test_retired_top8_residual_routes_are_not_current_source_modules():
     retired_paths = [
         ROOT / "configs" / "deepsense6g_residual_fusion.yaml",
@@ -249,6 +591,12 @@ def test_retired_top8_residual_routes_are_not_current_source_modules():
         ROOT / "src" / "kd_sensing" / "models" / "deepsense6g_residual_fusion.py",
         ROOT / "src" / "kd_sensing" / "models" / "topk_candidate_selector.py",
         ROOT / "src" / "kd_sensing" / "losses" / "residual.py",
+        ROOT / "src" / "kd_sensing" / "data" / "datasets" / "raymobtime_s008.py",
+        ROOT / "src" / "kd_sensing" / "preprocessing" / "raymobtime_s008.py",
+        ROOT / "src" / "kd_sensing" / "models" / "raymobtime_s008.py",
+        ROOT / "configs" / "raymobtime",
+        ROOT / "docs" / "Raymobtime_s008_selection.md",
+        ROOT / "tests" / "test_raymobtime_s008_selection.py",
     ]
     violations = [path.relative_to(ROOT).as_posix() for path in retired_paths if path.exists()]
 
@@ -353,21 +701,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "tools/visualization/viewer_manifest_io.py": "def load_manifest",
                 "tools/visualization/viewer_figures.py": "def make_future_distribution_plot",
                 "tools/visualization/viewer_prediction_tables.py": "def _legacy_prediction_summary_row",
-            },
-        },
-        "src/kd_sensing/preprocessing/raymobtime_s008.py": {
-            "max_lines": 100,
-            "forbidden": [
-                "def _assign_splits",
-                "def _load_ray_table",
-                "def normalize_beam_labels",
-                "def _cache_metadata",
-            ],
-            "helpers": {
-                "src/kd_sensing/preprocessing/raymobtime_s008_index.py": "def _assign_splits",
-                "src/kd_sensing/preprocessing/raymobtime_s008_beam_labels.py": "def normalize_beam_labels",
-                "src/kd_sensing/preprocessing/raymobtime_s008_ray_features.py": "def _load_ray_table",
-                "src/kd_sensing/preprocessing/raymobtime_s008_cache.py": "def _cache_metadata",
             },
         },
         "src/kd_sensing/models/csi.py": {
@@ -735,10 +1068,8 @@ def test_models_package_import_is_lazy_and_public_symbols_remain_available():
 
 
 def test_modality_contract_normalizes_and_validates_modalities():
-    assert MODALITY_ORDER[:6] == ("image", "radar", "gps", "lidar", "mmwave", "csi")
-    assert MODALITY_ORDER[-2:] == ("coord", "ray")
+    assert MODALITY_ORDER == ("image", "radar", "gps", "lidar", "mmwave", "csi")
     assert normalize_modalities(["csi", "lidar", "image", "gps"]) == ("image", "gps", "lidar", "csi")
-    assert normalize_modalities(["ray", "coord", "lidar", "image"]) == ("image", "lidar", "coord", "ray")
 
     with pytest.raises(ValueError, match="thermal"):
         normalize_modalities(["image", "thermal"])
@@ -754,15 +1085,12 @@ def test_modality_contract_derives_dataset_flags_and_batch_keys():
         "use_lidar": False,
         "use_mmwave": True,
         "use_csi": True,
-        "use_coord": False,
-        "use_ray": False,
     }
-    assert batch_input_keys_for_modalities(["radar", "mmwave", "csi", "coord", "ray"]) == {
+    assert batch_input_keys_for_modalities(["radar", "mmwave", "csi", "gps"]) == {
         "radar": "radar_batch",
         "mmwave": "mmwave_batch",
         "csi": "csi_batch",
-        "coord": "coord_batch",
-        "ray": "ray_batch",
+        "gps": "gps_batch",
     }
 
 
@@ -949,13 +1277,13 @@ def test_retired_hist_engine_model_and_evaluation_sources_are_absent():
 
 def test_config_io_pipeline_delegates_business_rules():
     io_text = (SRC / "kd_sensing" / "config" / "io.py").read_text(encoding="utf-8")
-    helper_expectations = {
-        "source.py": "def load_config_source",
-        "normalization.py": "def normalize_loaded_config",
-        "validation.py": "def validate_loaded_config",
-        "migration_guards.py": "def reject_removed_image_path_config",
-        "dataset_rules/raymobtime.py": "def validate_raymobtime_config",
-    }
+    helper_expectations = (
+        ("source.py", "def load_config_source"),
+        ("normalization.py", "def normalize_loaded_config"),
+        ("validation.py", "def validate_loaded_config"),
+        ("migration_guards.py", "def reject_removed_image_path_config"),
+        ("migration_guards.py", "def reject_retired_raymobtime_config"),
+    )
 
     assert "load_config_source" in io_text
     assert "normalize_loaded_config" in io_text
@@ -966,7 +1294,7 @@ def test_config_io_pipeline_delegates_business_rules():
     assert "REMOVED_IMAGE_ENCODERS" not in io_text
     assert "snapshot_next_frame requires" not in io_text
     assert "configure_objective_defaults" not in io_text
-    for module, snippet in helper_expectations.items():
+    for module, snippet in helper_expectations:
         assert snippet in (SRC / "kd_sensing" / "config" / module).read_text(encoding="utf-8")
 
 

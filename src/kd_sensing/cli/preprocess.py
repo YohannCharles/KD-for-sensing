@@ -20,10 +20,6 @@ def build_parser() -> argparse.ArgumentParser:
             "lidar_bev_cache",
             "image_derived_cache",
             "mmw_radar_maps",
-            "raymobtime_s008_audit",
-            "raymobtime_s008_index",
-            "raymobtime_s008_ray_features",
-            "raymobtime_s008_cache",
         ],
         help="Preprocessor name. Defaults to preprocessing.type from the config.",
     )

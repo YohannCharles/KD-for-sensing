@@ -3,11 +3,13 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+import re
 
 import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 
+from kd_sensing.data.layouts import deepsense6g_lidar_bev_cache_root, mmw_lidar_bev_cache_root, runtime_cache_root
 from kd_sensing.data.transform_ops.io import atomic_save_npy
 from kd_sensing.data.transform_ops.lidar import (
     DEFAULT_LIDAR_BEV_SIZE,
@@ -24,7 +26,7 @@ from kd_sensing.utils.paths import resolve_path
 def generate_lidar_bev_cache(
     csv_path: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
     data_root: str | Path = "dataset/DeepSense6G/scenario31",
-    cache_dir: str | Path = "dataset/DeepSense6G/scenario31/lidar_bev_cache",
+    cache_dir: str | Path | None = None,
     lidar_prefix: str = "lidar",
     lidar_columns: list[str] | tuple[str, ...] | None = None,
     bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
@@ -41,8 +43,9 @@ def generate_lidar_bev_cache(
 ) -> dict[str, str | int]:
     resolved_csv_paths = _normalize_csv_paths(csv_path, csv_paths)
     data_root = resolve_path(data_root)
+    cache_base = _resolve_lidar_cache_base(data_root, cache_dir)
     cache_dir = parameterized_lidar_cache_dir(
-        resolve_path(cache_dir),
+        cache_base,
         bev_size=bev_size,
         roi=roi,
         fov_degrees=fov_degrees,
@@ -106,6 +109,29 @@ def generate_lidar_bev_cache(
         background_distance_threshold=background_distance_threshold,
     )
     return {"cache_dir": str(cache_dir), "count": len(rel_paths), "generated": generated, "skipped": skipped}
+
+
+def _resolve_lidar_cache_base(data_root: Path, cache_dir: str | Path | None) -> Path:
+    if cache_dir is None:
+        return _default_lidar_cache_base(data_root)
+    path = Path(cache_dir).expanduser()
+    if path.is_absolute():
+        return path
+    first_part = path.parts[0] if path.parts else ""
+    if first_part in {"outputs", "dataset", "cache", "logs"}:
+        return resolve_path(path)
+    return data_root / path
+
+
+def _default_lidar_cache_base(data_root: Path) -> Path:
+    normalized = data_root.as_posix()
+    match = re.search(r"(?:^|/)DeepSense6G/scenario(\d+)(?:/|$)", normalized)
+    if match:
+        return resolve_path(deepsense6g_lidar_bev_cache_root(match.group(1)))
+    match = re.search(r"(?:^|/)MMW/([^/]+)(?:/|$)", normalized)
+    if match:
+        return resolve_path(mmw_lidar_bev_cache_root(match.group(1)))
+    return resolve_path(Path(runtime_cache_root()) / "lidar_bev")
 
 
 def _normalize_csv_paths(

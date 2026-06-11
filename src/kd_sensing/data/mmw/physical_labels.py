@@ -8,6 +8,7 @@ import math
 
 import numpy as np
 
+from kd_sensing.data.layouts import physical_labels_cache_root
 from kd_sensing.data.mmw.path_semantics import map_path_fields, path_power
 
 
@@ -22,7 +23,7 @@ class BeamspacePhysicalLabelConfig:
     temperature: float = 1.0
     smoothing_sigma: float = 1.5
     source: str = "auto"
-    cache_dir: str = "cache/physical_labels"
+    cache_dir: str = physical_labels_cache_root()
     field_map: Mapping[str, Any] | None = field(default=None)
     power_unit: str = "linear"
     path_power_unit: str = "linear"
@@ -69,7 +70,7 @@ def resolve_physical_label_config(value: bool | Mapping[str, Any] | None) -> Bea
         temperature=float(payload.get("temperature", 1.0)),
         smoothing_sigma=float(payload.get("smoothing_sigma", payload.get("sigma", 1.5))),
         source=str(payload.get("source", "auto")).strip().lower(),
-        cache_dir=str(payload.get("cache_dir", "cache/physical_labels")),
+        cache_dir=str(payload.get("cache_dir", physical_labels_cache_root())),
         field_map=field_map if isinstance(field_map, Mapping) else None,
         power_unit=power_unit,
         path_power_unit=str(payload.get("path_power_unit", "linear")).strip().lower(),

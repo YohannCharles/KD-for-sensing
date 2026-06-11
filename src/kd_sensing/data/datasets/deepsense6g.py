@@ -66,6 +66,7 @@ from kd_sensing.data.datasets.deepsense6g_targets import (
     resolve_occlusion_target_config,
     resolve_position_target_config,
 )
+from kd_sensing.data.layouts import deepsense6g_image_cache_root, deepsense6g_lidar_bev_cache_root
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, resolve_image_profile
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
@@ -73,6 +74,16 @@ from kd_sensing.utils.paths import resolve_path
 
 VALID_MODALITIES = MODALITY_ORDER
 REMOVED_IMAGE_OPTION_PREFIX = "image_" + "motion_"
+
+
+def _resolve_dataset_cache_base(data_root: Path, cache_dir: str | Path) -> Path:
+    path = Path(cache_dir).expanduser()
+    if path.is_absolute():
+        return path
+    first_part = path.parts[0] if path.parts else ""
+    if first_part in {"outputs", "dataset", "cache", "logs"}:
+        return resolve_path(path)
+    return data_root / path
 
 
 @DATASETS.register("deepsense6g")
@@ -542,10 +553,9 @@ class DeepSense6GDataset(Dataset):
         return summary
 
     def _resolve_image_cache_dir(self, image_cache_dir: str | None) -> Path:
-        base = Path(image_cache_dir or "image_derived_cache").expanduser()
-        if not base.is_absolute():
-            base = self.data_root / base
-        return base
+        if image_cache_dir is None:
+            return resolve_path(deepsense6g_image_cache_root(self.scene_id))
+        return _resolve_dataset_cache_base(self.data_root, image_cache_dir)
 
     def _build_image_cache(self) -> ImageDerivedCache | None:
         if self.image_cache_policy == "off" or self.image_cache_dir is None:
@@ -1025,13 +1035,10 @@ class DeepSense6GDataset(Dataset):
         return CSIRMSNormalizer(rms=float(value), sample_count=0)
 
     def _resolve_lidar_cache_dir(self, lidar_cache_dir: str | None) -> Path | None:
-        if not lidar_cache_dir:
-            return None
-        path = Path(lidar_cache_dir).expanduser()
-        if path.is_absolute():
-            base = path
+        if lidar_cache_dir is None:
+            base = resolve_path(deepsense6g_lidar_bev_cache_root(self.scene_id))
         else:
-            base = self.data_root / path
+            base = _resolve_dataset_cache_base(self.data_root, lidar_cache_dir)
         return parameterized_lidar_cache_dir(
             base,
             bev_size=self.lidar_bev_size,

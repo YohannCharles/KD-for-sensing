@@ -34,6 +34,13 @@ conda run -n kd_mm_beam python scripts/preprocess.py --help
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 ```
 
+## 系统配置与启动项安全
+
+- 禁止修改、重写或把训练命令写入容器启动/认证配置文件，例如 `/root/.container_env`、`/etc/profile`、`/etc/environment`、SSH 配置、系统账号密码配置等；除非用户明确点名要求修改具体文件，并且先说明风险、备份原文件、展示拟修改内容。
+- `/root/.container_env` 只能保留容器平台写入的运行状态、用户名、密码、IP、网关等字段；严禁把 `cd ...`、`CUDA_VISIBLE_DEVICES=...`、`python scripts/train.py ...`、`nohup ...`、`tmux ...` 等命令写入 `USERNAME`、`PASSWD` 或其他凭证字段。
+- 需要长时间运行训练时，优先在当前 shell 中使用 `conda run -n kd_mm_beam ...`、`tmux`、`nohup`、项目脚本或平台提供的任务系统；不要通过污染系统凭证文件实现“开机自启”。
+- 如确实需要配置自启动，必须先征得用户明确确认，并使用专门的启动机制或进程管理工具；不要自行猜测容器平台的内部配置文件用途。
+
 ## 验证
 
 窄改动优先运行相关测试；涉及架构、导入边界、CLI 或公共工作流时，至少考虑以下快速检查：
@@ -42,7 +49,7 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
-conda run -n kd_mm_beam pytest tests/test_raymobtime_s008_selection.py tests/test_modality_visual_diagnostics.py -q
+conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py tests/test_modality_visual_diagnostics.py -q
 ```
 
 最终回归命令：
@@ -68,5 +75,5 @@ openspec status --change <change>
 ## 产物边界
 
 - `dataset/` 是本地数据输入，默认不提交。
-- `outputs/`、`logs/`、cache、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交。
+- `outputs/`、`outputs/cache/`、`logs/`、legacy 根 `cache/`、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交；新可再生成 cache 默认归入 `outputs/cache/`。
 - `All_models/` 中已跟踪权重是历史复现实验资料；新生成的 `.pth`、`.pt`、`.ckpt` 不应进入源码变更。

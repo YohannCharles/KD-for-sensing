@@ -6,9 +6,9 @@ from typing import Any
 
 
 DATASET_ROOT = PurePosixPath("dataset")
+RUNTIME_CACHE_ROOT = PurePosixPath("outputs") / "cache"
 DEEPSENSE6G_FAMILY = "DeepSense6G"
 MMW_FAMILY = "MMW"
-RAYMOBTIME_FAMILY = "Raymobtime"
 DEEPSENSE6G_SCENE_IDS = (9, 31, 32, 33, 34)
 MMW_CONDITIONS = ("sunny", "rainy", "foggy")
 
@@ -41,6 +41,18 @@ class DeepSense6GSceneLayout:
     def radar_csv_path(self) -> str:
         return str(PurePosixPath(self.canonical_root) / self.radar_csv_name)
 
+    @property
+    def cache_root(self) -> str:
+        return str(RUNTIME_CACHE_ROOT / DEEPSENSE6G_FAMILY / self.scenario_slug)
+
+    @property
+    def image_cache_root(self) -> str:
+        return str(PurePosixPath(self.cache_root) / "image_derived")
+
+    @property
+    def lidar_bev_cache_root(self) -> str:
+        return str(PurePosixPath(self.cache_root) / "lidar_bev")
+
 
 @dataclass(frozen=True)
 class MMWConditionLayout:
@@ -68,45 +80,17 @@ class MMWConditionLayout:
     def required_subdirs(self) -> tuple[str, str]:
         return ("Sensor_Data", "Channel_Data")
 
-
-@dataclass(frozen=True)
-class RaymobtimeS008Layout:
-    scenario: str = "s008"
-
-    @property
-    def root(self) -> str:
-        return str(DATASET_ROOT / RAYMOBTIME_FAMILY / self.scenario)
-
-    @property
-    def baseline_root(self) -> str:
-        return str(PurePosixPath(self.root) / "baseline_data")
-
-    @property
-    def raw_root(self) -> str:
-        return str(PurePosixPath(self.root) / "raw_data")
-
     @property
     def cache_root(self) -> str:
-        return str(PurePosixPath(self.root) / "cache")
+        return str(RUNTIME_CACHE_ROOT / MMW_FAMILY / self.condition)
 
     @property
-    def coord_csv_name(self) -> str:
-        return "CoordVehiclesRxPerScene_s008.csv"
+    def image_cache_root(self) -> str:
+        return str(PurePosixPath(self.cache_root) / "image_derived")
 
     @property
-    def ray_zip_name(self) -> str:
-        return "ray_tracing_data_s008_carrier60GHz.zip"
-
-    @property
-    def required_paths(self) -> tuple[str, ...]:
-        return (
-            "baseline_data/beam_output",
-            "baseline_data/coord_input",
-            "baseline_data/lidar_input",
-            "baseline_data/image_v2_input",
-            f"raw_data/{self.coord_csv_name}",
-            f"raw_data/{self.ray_zip_name}",
-        )
+    def lidar_bev_cache_root(self) -> str:
+        return str(PurePosixPath(self.cache_root) / "lidar_bev")
 
 
 def deepsense6g_scene_layout(scene_id: Any) -> DeepSense6GSceneLayout:
@@ -131,6 +115,22 @@ def deepsense6g_radar_csv_path(scene_id: Any) -> str:
     return deepsense6g_scene_layout(scene_id).radar_csv_path
 
 
+def runtime_cache_root() -> str:
+    return str(RUNTIME_CACHE_ROOT)
+
+
+def physical_labels_cache_root() -> str:
+    return str(RUNTIME_CACHE_ROOT / "physical_labels")
+
+
+def deepsense6g_image_cache_root(scene_id: Any) -> str:
+    return deepsense6g_scene_layout(scene_id).image_cache_root
+
+
+def deepsense6g_lidar_bev_cache_root(scene_id: Any) -> str:
+    return deepsense6g_scene_layout(scene_id).lidar_bev_cache_root
+
+
 def mmw_condition_layout(condition: Any) -> MMWConditionLayout:
     condition_key = str(condition or "").strip().lower()
     if condition_key not in MMW_CONDITIONS:
@@ -140,12 +140,12 @@ def mmw_condition_layout(condition: Any) -> MMWConditionLayout:
     return MMWConditionLayout(condition=condition_key)
 
 
-def raymobtime_s008_layout() -> RaymobtimeS008Layout:
-    return RaymobtimeS008Layout()
+def mmw_image_cache_root(condition: Any) -> str:
+    return mmw_condition_layout(condition).image_cache_root
 
 
-def raymobtime_s008_root() -> str:
-    return raymobtime_s008_layout().root
+def mmw_lidar_bev_cache_root(condition: Any) -> str:
+    return mmw_condition_layout(condition).lidar_bev_cache_root
 
 
 def _normalize_int_token(value: Any, *, context: str) -> int:

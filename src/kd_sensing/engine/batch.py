@@ -413,8 +413,6 @@ def prepare_fusion_inputs(
         "lidar": prepare_lidar_inputs,
         "mmwave": prepare_mmwave_inputs,
         "csi": prepare_csi_inputs,
-        "coord": prepare_coord_inputs,
-        "ray": prepare_ray_inputs,
     }
     inputs: dict[str, torch.Tensor] = {}
     for modality in selected:
@@ -649,46 +647,6 @@ def prepare_csi_inputs(
     return torch.cat([csi, zeros], dim=1)
 
 
-def prepare_coord_inputs(
-    batch: dict[str, torch.Tensor],
-    *,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    profile: str | None = None,
-    non_blocking: bool = False,
-) -> torch.Tensor:
-    return _prepare_snapshot_vector_input(
-        batch,
-        sample_key="coord",
-        display_name="coord",
-        seq_length=seq_length,
-        num_pred=num_pred,
-        device=device,
-        non_blocking=non_blocking,
-    )
-
-
-def prepare_ray_inputs(
-    batch: dict[str, torch.Tensor],
-    *,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    profile: str | None = None,
-    non_blocking: bool = False,
-) -> torch.Tensor:
-    return _prepare_snapshot_vector_input(
-        batch,
-        sample_key="ray",
-        display_name="ray",
-        seq_length=seq_length,
-        num_pred=num_pred,
-        device=device,
-        non_blocking=non_blocking,
-    )
-
-
 def prepare_geometry_inputs(
     batch: dict[str, torch.Tensor],
     *,
@@ -763,8 +721,6 @@ def forward_model(
     lidar_batch: torch.Tensor | None = None,
     mmwave_batch: torch.Tensor | None = None,
     csi_batch: torch.Tensor | None = None,
-    coord_batch: torch.Tensor | None = None,
-    ray_batch: torch.Tensor | None = None,
     geometry_batch: torch.Tensor | None = None,
     geometry_mask: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
@@ -778,8 +734,6 @@ def forward_model(
             "lidar_batch": lidar_batch,
             "mmwave_batch": mmwave_batch,
             "csi_batch": csi_batch,
-            "coord_batch": coord_batch,
-            "ray_batch": ray_batch,
             "geometry_batch": geometry_batch,
             "geometry_mask": geometry_mask,
         }
@@ -821,18 +775,6 @@ def forward_model(
         if getattr(model, "supports_modality_kwargs", False):
             return model(csi_batch=csi_batch)
         return model(csi_batch)
-    if task == "coord":
-        if coord_batch is None:
-            raise ValueError("coord task requires coord_batch")
-        if getattr(model, "supports_modality_kwargs", False):
-            return model(coord_batch=coord_batch)
-        return model(coord_batch)
-    if task == "ray":
-        if ray_batch is None:
-            raise ValueError("ray task requires ray_batch")
-        if getattr(model, "supports_modality_kwargs", False):
-            return model(ray_batch=ray_batch)
-        return model(ray_batch)
     if image_batch is None:
         raise ValueError("Image task requires image_batch")
     if getattr(model, "supports_modality_kwargs", False):

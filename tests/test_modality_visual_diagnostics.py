@@ -12,10 +12,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-for path in (ROOT, SRC):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
-
 from kd_sensing.diagnostics.viewer_predictions import (  # noqa: E402
     _sample_prediction_payload,
     export_viewer_model_predictions,

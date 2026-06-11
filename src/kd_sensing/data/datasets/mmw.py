@@ -99,6 +99,12 @@ class MMWDataset(DeepSense6GDataset):
             test_csv_name = _ensure_bs_gps_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
             if val_csv_name:
                 val_csv_name = _ensure_bs_gps_columns(root, val_csv_name, scenario)
+        if kwargs.get("image_cache_dir") is None:
+            kwargs["image_cache_dir"] = layout.image_cache_root
+        if kwargs.get("lidar_cache_dir") is None and (
+            bool(kwargs.get("use_lidar", False)) or "lidar" in set(kwargs.get("enabled_modalities") or ())
+        ):
+            kwargs["lidar_cache_dir"] = layout.lidar_bev_cache_root
         super().__init__(
             data_root=root,
             train_csv_name=train_csv_name or str(prepared_prefix / "train.csv"),

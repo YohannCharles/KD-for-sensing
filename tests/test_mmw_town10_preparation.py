@@ -13,9 +13,6 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.data.datasets.mmw import MMWDataset  # noqa: E402
 from kd_sensing.data.mmw.preparation import (  # noqa: E402
     ChannelFile,

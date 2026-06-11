@@ -14,9 +14,6 @@ from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
 from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
@@ -27,7 +24,12 @@ import kd_sensing.data.transform_ops.io as io_transforms  # noqa: E402
 import kd_sensing.data.transform_ops.lidar as lidar_transforms  # noqa: E402
 import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.data.layouts import deepsense6g_scene_layout, mmw_condition_layout  # noqa: E402
+from kd_sensing.data.layouts import (  # noqa: E402
+    deepsense6g_scene_layout,
+    mmw_condition_layout,
+    physical_labels_cache_root,
+    runtime_cache_root,
+)
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E402
 from kd_sensing.losses import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
@@ -144,14 +146,20 @@ def test_dataset_layout_helpers_define_supported_roots():
     assert scene31.canonical_root == "dataset/DeepSense6G/scenario31"
     assert scene31.legacy_root == "dataset/scenario31"
     assert scene31.radar_csv_path == "dataset/DeepSense6G/scenario31/scenario31_RA.csv"
+    assert scene31.image_cache_root == "outputs/cache/DeepSense6G/scenario31/image_derived"
+    assert scene31.lidar_bev_cache_root == "outputs/cache/DeepSense6G/scenario31/lidar_bev"
     assert scene9.canonical_root == "dataset/DeepSense6G/scenario9"
     assert sunny.sensor_data_root == "dataset/MMW/sunny/Sensor_Data"
     assert sunny.channel_data_root == "dataset/MMW/sunny/Channel_Data"
+    assert sunny.image_cache_root == "outputs/cache/MMW/sunny/image_derived"
+    assert sunny.lidar_bev_cache_root == "outputs/cache/MMW/sunny/lidar_bev"
     assert sunny.prepared_scenario_root("Town10_skybridge_seed24") == (
         "dataset/MMW/sunny/Prepared/Town10_skybridge_seed24"
     )
     assert rainy.required_subdirs == ("Sensor_Data", "Channel_Data")
     assert foggy.root == "dataset/MMW/foggy"
+    assert runtime_cache_root() == "outputs/cache"
+    assert physical_labels_cache_root() == "outputs/cache/physical_labels"
 
 
 def test_deepsense_explicit_legacy_root_is_preserved_by_normalize_and_retarget():
@@ -2218,7 +2226,7 @@ def test_non_beam_objectives_do_not_write_beam_tensorboard_scalars(objective: st
     assert "dba/val_adba" not in tags
 
 
-def test_raymobtime_single_task_tensorboard_writes_only_formal_tags():
+def test_current_selection_objectives_tensorboard_write_only_formal_tags():
     base = {
         "train_loss": [1.0],
         "train_task_loss": [0.9],

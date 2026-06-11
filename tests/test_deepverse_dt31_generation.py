@@ -11,9 +11,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.data.deepverse import DeepVerseDependencyError, DeepVerseDT31Generator, DeepVerseLabelBuilder
 from kd_sensing.data.deepverse.codebook import compute_beam_gain, make_ula_dft_codebook
 from kd_sensing.data.deepverse.label_builder import BLOCKAGE_IGNORE_INDEX

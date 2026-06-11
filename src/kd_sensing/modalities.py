@@ -40,7 +40,7 @@ class InputProfileSpec:
     metadata: dict[str, Any]
 
 
-MODALITY_ORDER = ("image", "radar", "gps", "lidar", "mmwave", "csi", "coord", "ray")
+MODALITY_ORDER = ("image", "radar", "gps", "lidar", "mmwave", "csi")
 DEFAULT_IMAGE_PROFILE = "rgb_imagenet"
 REMOVED_IMAGE_PROFILE = "motion" + "_mask"
 REMOVED_IMAGE_ENCODERS = ("motion" + "_cnn", "legacy_" + "motion" + "_cnn")
@@ -89,15 +89,6 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             semantics="LiDAR bird's-eye-view raster sequence",
             shape="[T, C, H, W]",
             metadata={"default_dataset": "deepsense6g"},
-        ),
-        "occupancy_grid_3d": InputProfileSpec(
-            modality="lidar",
-            name="occupancy_grid_3d",
-            sample_key="lidar",
-            fusion_input_key="lidar_batch",
-            semantics="Raymobtime 3D occupancy grid snapshot",
-            shape="[T, C, D, H, W]",
-            metadata={"default_dataset": "raymobtime_s008"},
         ),
     },
     "csi": {
@@ -154,7 +145,7 @@ MODALITY_SPECS: dict[str, ModalitySpec] = {
             "lidar_ground_z_threshold": 0.1,
             "lidar_background_path": None,
             "lidar_background_distance_threshold": 0.2,
-            "lidar_cache_dir": "lidar_bev_cache",
+            "lidar_cache_dir": None,
             "lidar_normalize": False,
             "lidar_normalization": {"enabled": False, "mode": "none"},
             "lidar_augment": False,
@@ -184,24 +175,6 @@ MODALITY_SPECS: dict[str, ModalitySpec] = {
         },
         dataset_field_defaults={"csi_train_rms": True},
         normalizer_artifact_key="csi_rms_normalizer",
-    ),
-    "coord": ModalitySpec(
-        name="coord",
-        dataset_flag="use_coord",
-        sample_keys=("coord",),
-        fusion_input_key="coord_batch",
-        model_field_defaults={"coord_input_size": 3},
-        dataset_field_defaults={"coord_normalize": True},
-        normalizer_artifact_key="coord_normalizer",
-    ),
-    "ray": ModalitySpec(
-        name="ray",
-        dataset_flag="use_ray",
-        sample_keys=("ray",),
-        fusion_input_key="ray_batch",
-        model_field_defaults={"ray_input_size": 14},
-        dataset_field_defaults={"ray_normalize": True},
-        normalizer_artifact_key="ray_normalizer",
     ),
 }
 

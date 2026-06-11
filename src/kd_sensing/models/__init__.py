@@ -11,6 +11,7 @@ _EXPORTS: dict[str, str] = {
     "ImageLightweightModalityNet": "kd_sensing.models.image",
     "ImageStrongModalityNet": "kd_sensing.models.image",
     "GPSConditionedJEPA": "kd_sensing.models.jepa",
+    "GPSQueryPool": "kd_sensing.models.jepa",
     "JepaContextImageEncoder": "kd_sensing.models.jepa",
     "JepaMaskSampler": "kd_sensing.models.jepa",
     "VisualPatchTokenEncoder": "kd_sensing.models.jepa",
@@ -47,7 +48,7 @@ _REMOVED_ALIASES = {
     "CRAFFusionNet": "CRAF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "MARFFusionNet": "MARF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "BottleneckPrivateAdapter": "HiST-Beam/Hist has been retired; no compatibility adapter is provided.",
-    "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS v2, CSI, Raymobtime, JEPA, or viewer workflows.",
+    "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS v2, CSI, JEPA, or viewer workflows.",
 }
 
 

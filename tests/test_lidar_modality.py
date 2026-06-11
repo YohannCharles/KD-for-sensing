@@ -12,9 +12,6 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
 from kd_sensing.data.transform_ops.lidar import (  # noqa: E402
@@ -483,7 +480,7 @@ def test_lidar_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["lidar_normalize"] is False
     assert cfg["data"]["dataset"]["lidar_normalization"]["enabled"] is False
     assert cfg["data"]["dataset"]["lidar_normalization"]["mode"] == "none"
-    assert cfg["data"]["dataset"]["lidar_cache_dir"] == "lidar_bev_cache"
+    assert cfg["data"]["dataset"]["lidar_cache_dir"] is None
     assert cfg["data"]["dataset"]["lidar_roi"] == [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
     assert cfg["model"]["primary"]["type"] == "modular_sequence"
     assert cfg["model"]["primary"]["encoders"]["lidar"]["type"] == "lidar_cnn"

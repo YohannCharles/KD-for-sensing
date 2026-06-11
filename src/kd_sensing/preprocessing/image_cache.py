@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
 from tqdm.auto import tqdm
 
+from kd_sensing.data.layouts import deepsense6g_image_cache_root, mmw_image_cache_root, runtime_cache_root
 from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform
 from kd_sensing.data.transform_ops.image_cache import (
     IMAGE_DERIVED_CACHE_VERSION,
@@ -28,7 +30,7 @@ def prewarm_image_derived_cache(
     *,
     csv_paths: list[str | Path] | tuple[str | Path, ...] | None = None,
     data_root: str | Path,
-    cache_dir: str | Path = "image_derived_cache",
+    cache_dir: str | Path | None = None,
     image_prefix: str = "camera",
     image_columns: list[str] | tuple[str, ...] | None = None,
     image_size: list[int] | tuple[int, int] = (224, 224),
@@ -44,9 +46,7 @@ def prewarm_image_derived_cache(
         raise ValueError("image-derived cache prewarm requires policy 'auto' or 'rebuild'.")
     resolved_csv_paths = _normalize_csv_paths(csv_path, csv_paths)
     root = resolve_path(data_root)
-    cache_root = Path(cache_dir).expanduser()
-    if not cache_root.is_absolute():
-        cache_root = root / cache_root
+    cache_root = _resolve_image_cache_root(root, cache_dir)
     cache = ImageDerivedCache(
         ImageDerivedCacheConfig(
             cache_dir=cache_root,
@@ -104,6 +104,29 @@ def prewarm_image_derived_cache(
     cache_root.mkdir(parents=True, exist_ok=True)
     (cache_root / "prewarm_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return report
+
+
+def _resolve_image_cache_root(data_root: Path, cache_dir: str | Path | None) -> Path:
+    if cache_dir is None:
+        return _default_image_cache_root(data_root)
+    path = Path(cache_dir).expanduser()
+    if path.is_absolute():
+        return path
+    first_part = path.parts[0] if path.parts else ""
+    if first_part in {"outputs", "dataset", "cache", "logs"}:
+        return resolve_path(path)
+    return data_root / path
+
+
+def _default_image_cache_root(data_root: Path) -> Path:
+    normalized = data_root.as_posix()
+    match = re.search(r"(?:^|/)DeepSense6G/scenario(\d+)(?:/|$)", normalized)
+    if match:
+        return resolve_path(deepsense6g_image_cache_root(match.group(1)))
+    match = re.search(r"(?:^|/)MMW/([^/]+)(?:/|$)", normalized)
+    if match:
+        return resolve_path(mmw_image_cache_root(match.group(1)))
+    return resolve_path(Path(runtime_cache_root()) / "image_derived")
 
 
 def _normalize_csv_paths(

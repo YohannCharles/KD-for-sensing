@@ -9,9 +9,6 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.diagnostics.communication_state_features import (  # noqa: E402
     assign_buckets,
     communication_state_feature_records,

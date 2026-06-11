@@ -8,9 +8,6 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.models.fusion import FusionStrongModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
 from kd_sensing.config import load_config  # noqa: E402

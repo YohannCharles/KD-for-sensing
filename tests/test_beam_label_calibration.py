@@ -9,14 +9,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from kd_sensing.data.beam_label_calibration import (  # noqa: E402
     BeamLabelCalibrationError,
     resolve_beam_label_mapping,
 )
 from kd_sensing.data.datasets.mmw import MMWDataset  # noqa: E402
+from kd_sensing.data.mmw.physical_labels import resolve_physical_label_config  # noqa: E402
 from kd_sensing.data.mmw.preparation_splits import split_sequence_rows  # noqa: E402
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata  # noqa: E402
 
@@ -30,6 +28,12 @@ def test_default_mapping_keeps_raw_label_space_and_identity_distribution():
     assert mapping.map_label(0) == 0
     assert mapping.map_label(63) == 63
     np.testing.assert_array_equal(mapping.reorder_distribution(distribution), distribution)
+
+
+def test_physical_label_default_cache_uses_runtime_cache_root():
+    cfg = resolve_physical_label_config(True)
+
+    assert cfg.cache_dir == "outputs/cache/physical_labels"
 
 
 def test_affine_mapping_handles_edges_inverse_and_direction_minus_one():

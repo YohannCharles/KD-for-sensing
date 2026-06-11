@@ -27,6 +27,9 @@ def final_config_with_runtime(
     cfg: dict,
     *,
     run_dir: Path,
+    primary_model: Any | None = None,
+    model: Any | None = None,
+    optimizer_groups: list[dict[str, Any]] | None = None,
     split_metadata: dict | None = None,
     normalization_artifacts: dict | None = None,
     checkpoint_registry: dict | None = None,
@@ -62,7 +65,8 @@ def final_config_with_runtime(
         runtime["scene"] = scene_metadata
     runtime["lineage"] = run_lineage_metadata(cfg)
     runtime["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
-    jepa_metadata = jepa_downstream_metadata(cfg)
+    runtime_model = primary_model if primary_model is not None else model
+    jepa_metadata = jepa_downstream_metadata(cfg, model=runtime_model, optimizer_groups=optimizer_groups)
     if jepa_metadata:
         runtime["jepa_downstream"] = jepa_metadata
     return final_cfg
@@ -113,6 +117,7 @@ class ArtifactWriter:
         csi_debug_records: list[dict[str, Any]],
         best_top1_epoch: int,
         final_test_metrics: dict | None = None,
+        primary_model: Any | None = None,
     ) -> dict[str, Any]:
         np.savez(
             self.run_dir / "training_outputs.npz",
@@ -170,6 +175,8 @@ class ArtifactWriter:
             final_config_with_runtime(
                 self.cfg,
                 run_dir=self.run_dir,
+                primary_model=primary_model,
+                optimizer_groups=optimizer_groups,
                 split_metadata=split_metadata,
                 normalization_artifacts=normalization_artifacts,
                 checkpoint_registry=checkpoint_registry,

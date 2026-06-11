@@ -80,9 +80,19 @@ print(json.dumps({{
         ("LOSSES", {"type": "logits_kd"}),
         ("LOSSES", {"type": "rkd"}),
         ("DATASETS", {"type": "multimodal_nf"}),
+        ("DATASETS", {"type": "raymobtime_s008"}),
+        ("MODELS", {"type": "simple_concat_multitask_selection"}),
+        ("MODELS", {"type": "task_aware_gated_multitask_selection"}),
+        ("ENCODERS", {"type": "coord_mlp"}),
+        ("ENCODERS", {"type": "ray_mlp"}),
+        ("ENCODERS", {"type": "raymobtime_lidar_3d_cnn"}),
         ("PREPROCESSORS", {"type": "multimodal_nf_audit"}),
         ("PREPROCESSORS", {"type": "multimodal_nf_index"}),
         ("PREPROCESSORS", {"type": "multimodal_nf_derived_cache"}),
+        ("PREPROCESSORS", {"type": "raymobtime_s008_audit"}),
+        ("PREPROCESSORS", {"type": "raymobtime_s008_index"}),
+        ("PREPROCESSORS", {"type": "raymobtime_s008_ray_features"}),
+        ("PREPROCESSORS", {"type": "raymobtime_s008_cache"}),
     ],
 )
 def test_retired_components_raise_removed_registry_errors(registry_name: str, cfg: dict):
@@ -106,7 +116,6 @@ else:
 
 
 def test_retired_hist_config_path_and_overrides_fail_fast():
-    sys.path.insert(0, str(SRC))
     from kd_sensing.config.io import load_config
 
     with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):

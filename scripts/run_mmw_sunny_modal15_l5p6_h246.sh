@@ -253,7 +253,7 @@ prewarm_cache() {
       --config configs/preprocess/mmw_image_derived_cache.yaml \
       -o "preprocessing.csv_paths=$csv_paths" \
       -o "preprocessing.data_root=dataset/MMW/sunny" \
-      -o "preprocessing.cache_dir=image_derived_cache" \
+      -o "preprocessing.cache_dir=outputs/cache/MMW/sunny/image_derived" \
       -o "preprocessing.progress=false" \
       >"$image_log" 2>&1 || { tail -80 "$image_log" || true; die "image cache prewarm failed for $scene"; }
     log "PREWARM lidar cache scene=$scene"
@@ -261,7 +261,7 @@ prewarm_cache() {
       --config configs/preprocess/lidar_bev_cache.yaml \
       -o "preprocessing.csv_paths=$csv_paths" \
       -o "preprocessing.data_root=dataset/MMW/sunny" \
-      -o "preprocessing.cache_dir=dataset/MMW/sunny/lidar_bev_cache" \
+      -o "preprocessing.cache_dir=outputs/cache/MMW/sunny/lidar_bev" \
       -o "preprocessing.lidar_prefix=lidar" \
       -o "preprocessing.overwrite=false" \
       -o "preprocessing.progress=false" \
@@ -319,8 +319,8 @@ run_job() {
     -o "data.dataset.image_profile=rgb_imagenet"
     -o "data.dataset.image_use_cache=true"
     -o "data.dataset.image_write_cache=true"
-    -o "data.dataset.image_cache_dir=image_derived_cache"
-    -o "data.dataset.lidar_cache_dir=lidar_bev_cache"
+    -o "data.dataset.image_cache_dir=outputs/cache/MMW/sunny/image_derived"
+    -o "data.dataset.lidar_cache_dir=outputs/cache/MMW/sunny/lidar_bev"
     -o "data.dataset.lidar_use_cache=true"
     -o "data.dataset.lidar_write_cache=true"
     -o "data.dataset.use_mmwave=false"

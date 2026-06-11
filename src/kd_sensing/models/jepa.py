@@ -10,6 +10,13 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.modalities import image_profile_spec, validate_image_encoder_profile
+from kd_sensing.models.jepa_downstream import (
+    GPSQueryPool,
+    build_jepa_downstream_adapter,
+    build_jepa_downstream_pooler,
+    normalize_jepa_downstream_adapter_config,
+    normalize_jepa_downstream_pooler_config,
+)
 from kd_sensing.registries import ENCODERS, MODELS
 from kd_sensing.utils.checkpoint import CheckpointLoadError
 
@@ -272,6 +279,9 @@ class JepaContextImageEncoder(nn.Module):
         strict: bool = True,
         state_dict_prefix: str = "context_encoder",
         pooling: str = "mean",
+        pooler: dict[str, Any] | str | None = None,
+        adapter: dict[str, Any] | str | None = None,
+        gps_query_pool: dict[str, Any] | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -281,14 +291,46 @@ class JepaContextImageEncoder(nn.Module):
         self.freeze_encoder = bool(freeze_encoder)
         self.strict = bool(strict)
         self.state_dict_prefix = str(state_dict_prefix).strip().rstrip(".") or "context_encoder"
-        self.pooling = str(pooling).strip().lower()
-        if self.pooling != "mean":
-            raise ValueError("jepa_context_image currently supports pooling='mean' only.")
+        self.pooler_config = normalize_jepa_downstream_pooler_config(
+            pooler=pooler,
+            pooling=pooling,
+            gps_query_pool=gps_query_pool,
+            latent_dim=self.latent_dim,
+        )
+        self.adapter_config = normalize_jepa_downstream_adapter_config(
+            adapter=adapter,
+            latent_dim=self.latent_dim,
+            output_dim=self.output_dim,
+        )
+        self.pooling = str(self.pooler_config.get("type", "mean")).strip().lower()
         if self.output_dim != self.latent_dim:
             raise ValueError(
                 "jepa_context_image requires output_dim to equal latent_dim because it reuses the JEPA "
                 f"context encoder projection directly; got output_dim={self.output_dim}, latent_dim={self.latent_dim}."
             )
+        self.pooler = build_jepa_downstream_pooler(self.pooler_config)
+        self.adapter = build_jepa_downstream_adapter(self.adapter_config)
+        self.required_context_modalities = tuple(getattr(self.pooler, "required_context_modalities", ()))
+        self.context_feature_source = str(getattr(self.pooler, "context_feature_source", "none"))
+        raw_kwargs = getattr(self.pooler, "context_feature_kwargs", {})
+        self.context_feature_kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
+        self.gps_query_pool_config: dict[str, Any] = {}
+        object.__setattr__(
+            self,
+            "gps_query_pool",
+            self.pooler if isinstance(self.pooler, GPSQueryPool) else None,
+        )
+        self.last_attention_map: torch.Tensor | None = None
+        if self.pooling == "gps_query_attention":
+            self.gps_query_pool_config = {
+                "latent_dim": getattr(self.pooler, "latent_dim", self.latent_dim),
+                "condition_dim": getattr(self.pooler, "condition_dim", self.latent_dim),
+                "k_queries": getattr(self.pooler, "k_queries", None),
+                "num_heads": getattr(self.pooler, "num_heads", None),
+                "dropout": self.pooler_config.get("dropout", 0.0),
+                "return_attention": getattr(self.pooler, "return_attention", False),
+                "condition_source": getattr(self.pooler, "condition_source", "projected_gps"),
+            }
         encoder_cfg = dict(visual_encoder or {})
         encoder_cfg.setdefault("image_channels", image_channels)
         encoder_cfg.setdefault("latent_dim", self.latent_dim)
@@ -305,19 +347,82 @@ class JepaContextImageEncoder(nn.Module):
             for param in self.context_encoder.parameters():
                 param.requires_grad_(False)
 
-    def forward(self, image_batch: torch.Tensor) -> torch.Tensor:
+    def forward(self, image_batch: torch.Tensor, gps_condition_features: torch.Tensor | None = None) -> torch.Tensor:
         tokens, _ = self.context_encoder(image_batch)
-        return tokens.mean(dim=2)
+        if self.required_context_modalities and gps_condition_features is None:
+            if self.pooling == "gps_query_attention":
+                raise ValueError("jepa_context_image GPS-query pooling requires GPS condition feature.")
+            raise ValueError(f"jepa_context_image pooler {self.pooling!r} requires condition features.")
+        result = self.pooler(tokens, condition_features=gps_condition_features)
+        if isinstance(result, tuple):
+            pooled, attention_map = result
+            self.last_attention_map = attention_map
+            return self.adapter(pooled)
+        self.last_attention_map = getattr(self.pooler, "last_attention_map", None)
+        return self.adapter(result)
+
+    def _load_from_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        prefix: str,
+        local_metadata: dict[str, Any],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
+    ) -> None:
+        legacy_prefix = f"{prefix}gps_query_pool."
+        pooler_prefix = f"{prefix}pooler."
+        if any(key.startswith(legacy_prefix) for key in state_dict) and not any(
+            key.startswith(pooler_prefix) for key in state_dict
+        ):
+            for key, value in list(state_dict.items()):
+                if key.startswith(legacy_prefix):
+                    state_dict[f"{pooler_prefix}{key[len(legacy_prefix):]}"] = value
+                    state_dict.pop(key)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def training_strategy_metadata(self) -> dict[str, Any]:
-        return {
+        metadata: dict[str, Any] = {
             "encoder": "jepa_context_image",
             "checkpoint_path": self.checkpoint_path,
             "state_dict_prefix": self.state_dict_prefix,
             "freeze_encoder": self.freeze_encoder,
             "pooling": self.pooling,
+            "pooler_type": self.pooling,
+            "adapter_type": str(self.adapter_config.get("type", "identity")),
+            "condition_source": self.gps_query_pool_config.get("condition_source"),
+            "attention_diagnostics": bool(self.gps_query_pool_config.get("return_attention", False)),
             "latent_dim": self.latent_dim,
         }
+        pooler_metadata = (
+            self.pooler.training_strategy_metadata()
+            if hasattr(self.pooler, "training_strategy_metadata")
+            else {"type": self.pooling}
+        )
+        adapter_metadata = (
+            self.adapter.training_strategy_metadata()
+            if hasattr(self.adapter, "training_strategy_metadata")
+            else {"type": self.adapter_config.get("type", "identity")}
+        )
+        metadata["pooler"] = pooler_metadata
+        metadata["adapter"] = adapter_metadata
+        if self.pooling == "gps_query_attention":
+            metadata["gps_query_pooling_enabled"] = True
+            metadata["gps_query_pool"] = dict(self.gps_query_pool_config)
+            metadata["required_context_modalities"] = list(self.required_context_modalities)
+            metadata["context_feature_source"] = self.context_feature_source
+        else:
+            metadata["gps_query_pooling_enabled"] = False
+        return metadata
 
 
 @MODELS.register("gps_conditioned_jepa")
@@ -486,6 +591,7 @@ def _extract_prefixed_state(state_dict: dict[str, Any], *, prefixes: tuple[str, 
 
 __all__ = [
     "GPSConditionedJEPA",
+    "GPSQueryPool",
     "GpsConditioner",
     "JepaContextImageEncoder",
     "JepaMaskSample",

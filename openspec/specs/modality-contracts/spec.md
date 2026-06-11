@@ -127,79 +127,23 @@
 - **THEN** 系统 MUST 拒绝该配置
 - **AND** 错误信息 MUST 包含 `motion_mask` 已删除和可用 image 输入契约
 
-### Requirement: Raymobtime snapshot 模态契约
-中心化模态契约 MUST 支持 Raymobtime s008 所需的 `coord` 和 `ray` 模态。新增模态 MUST 不改变既有 `image`、`radar`、`gps`、`lidar`、`mmwave` 和 `csi` 的相对顺序、默认字段和旧配置行为。
-
-#### Scenario: 枚举 Raymobtime 新模态
-- **WHEN** 开发者查询受支持模态
-- **THEN** 系统 MUST 返回既有模态以及 `coord` 和 `ray`
-- **AND** 既有六个模态的相对顺序 MUST 保持不变
-- **AND** `coord` 和 `ray` MUST 只在用户显式配置或 Raymobtime 配置中启用
-
-#### Scenario: 查询 coord 模态元数据
-- **WHEN** 开发者查询 `coord` 模态契约
-- **THEN** 系统 MUST 返回样本字段 `coord`
-- **AND** 系统 MUST 返回 fusion 输入字段 `coord_batch`
-- **AND** 系统 MUST 返回 dataset flag `use_coord`
-- **AND** 系统 MUST 返回当前 snapshot coordinate 输入契约和默认 `coord_input_size`
-
-#### Scenario: 查询 ray 模态元数据
-- **WHEN** 开发者查询 `ray` 模态契约
-- **THEN** 系统 MUST 返回样本字段 `ray`
-- **AND** 系统 MUST 返回 fusion 输入字段 `ray_batch`
-- **AND** 系统 MUST 返回 dataset flag `use_ray`
-- **AND** 系统 MUST 返回 path-level ray-tracing feature 输入契约和默认 `ray_input_size`
-
-### Requirement: Raymobtime 模态列表标准化
-系统 MUST 通过中心化模态契约标准化包含 `coord` 和 `ray` 的模态列表。标准化 MUST 继续拒绝未知模态、空列表和重复模态，并 MUST 按固定顺序返回结果。
-
-#### Scenario: 标准化 Raymobtime 全模态
-- **WHEN** 用户配置 Raymobtime 模态列表 `["ray", "coord", "lidar", "image"]`
-- **THEN** 系统 MUST 返回同一组模态的规范顺序
-- **AND** dataset、batch 准备、模型构建和分析输出 MUST 使用同一个标准化结果
-
-#### Scenario: 拒绝重复 Raymobtime 模态
-- **WHEN** 用户配置 `modalities: ["coord", "coord", "image"]`
-- **THEN** 系统 MUST 拒绝该配置
-- **AND** 错误信息 MUST 指出模态列表包含重复项
-
-#### Scenario: 拒绝未知 Raymobtime 模态
-- **WHEN** 用户配置 `modalities: ["coord", "ray_path"]`
-- **THEN** 系统 MUST 拒绝该配置
-- **AND** 错误信息 MUST 包含未知模态和可用模态列表
-
-### Requirement: coord/ray batch 输入准备
-训练、验证、评估和诊断路径 MUST 能根据模态契约把 `coord` 和 `ray` batch 字段准备为模型输入。Raymobtime snapshot 输入 MUST 保留单步维度，并在模型进入前校验维度和 dtype。
-
-#### Scenario: 准备 coord batch
-- **WHEN** 模型启用 `coord` 模态且 batch 包含 `coord`
-- **THEN** runtime MUST 构造 `coord_batch`
-- **AND** `coord_batch` MUST 具有 `[B, 1, F_coord]` 语义
-- **AND** 缺失 `coord` 字段时 MUST 报出包含当前模态名的清晰错误
-
-#### Scenario: 准备 ray batch
-- **WHEN** 模型启用 `ray` 模态且 batch 包含 `ray`
-- **THEN** runtime MUST 构造 `ray_batch`
-- **AND** `ray_batch` MUST 具有 `[B, 1, F_ray]` 语义
-- **AND** 缺失 `ray` 字段时 MUST 报出包含当前模态名的清晰错误
-
-#### Scenario: 旧配置不启用 coord/ray
-- **WHEN** 用户加载现有 DeepSense6G、MMW 或 CSI 配置
-- **THEN** 数据构建流程 MUST 不设置 `use_coord` 或 `use_ray`
-- **AND** batch 准备 MUST 不要求 `coord` 或 `ray` 字段
-
 ### Requirement: 模态 profile 契约
-中心化模态契约 MUST 支持当前保留 dataset-specific input profile，用于在不新增模态名称的情况下表达同一模态在不同数据集中的输入语义、shape、默认字段和 batch 准备规则。profile 标准化 MUST 拒绝未知 profile，并 MUST 保持未配置旧 profile 时的既有行为。Multimodal-NF 专属 `uav_xyz_snapshot`、`xl_mimo_nf` 和 `point_cloud_xyz_10000` profiles MUST 不再作为支持 profile 保留。
+中心化模态契约 MUST 支持当前保留 dataset-specific input profile，用于在不新增模态名称的情况下表达同一模态在不同数据集中的输入语义、shape、默认字段和 batch 准备规则。profile 标准化 MUST 拒绝未知 profile，并 MUST 保持未配置旧 profile 时的既有行为。Multimodal-NF 专属 `uav_xyz_snapshot`、`xl_mimo_nf` 和 `point_cloud_xyz_10000` profiles MUST 不再作为支持 profile 保留，Raymobtime s008 专属 profile MUST 不再作为当前保留 profile。
 
-#### Scenario: DeepSense/MMW/Raymobtime profile 保留
-- **WHEN** 开发者查询当前保留数据集的 image、GPS、LiDAR、mmWave、CSI、coord 或 ray profile
+#### Scenario: 保留数据集 profile 可查询
+- **WHEN** 开发者查询当前保留数据集的 image、GPS、LiDAR、mmWave 或 CSI profile
 - **THEN** 系统 MUST 返回对应 sample key、fusion input key 和输入语义
-- **AND** 查询 MUST 不要求 Multimodal-NF profile 存在
+- **AND** 查询 MUST 不要求 Multimodal-NF 或 Raymobtime s008 profile 存在
 
 #### Scenario: Multimodal-NF profile 被拒绝
 - **WHEN** 用户配置 `uav_xyz_snapshot`、`xl_mimo_nf` 或 `point_cloud_xyz_10000`
 - **THEN** 系统 MUST 拒绝该 profile 或因 dataset type 已退役而失败
 - **AND** 错误信息 MUST 包含 profile 名称和当前可用 profile 列表
+
+#### Scenario: Raymobtime profile 被拒绝
+- **WHEN** 用户配置 Raymobtime s008 专属 coord、ray 或 LiDAR occupancy profile
+- **THEN** 系统 MUST 拒绝该 profile 或因 Raymobtime s008 已退役而失败
+- **AND** 错误信息 MUST 包含 Raymobtime s008 已退役或当前可用 profile 列表
 
 ### Requirement: profile 列表标准化
 系统 MUST 能基于当前保留 dataset descriptor 和用户配置标准化启用模态对应的 input profiles。标准化 MUST 在 metadata 中记录每个模态的 resolved profile。系统 MUST 不再为 `data.dataset.type: multimodal_nf` 解析默认 profile。
@@ -226,3 +170,4 @@
 - **WHEN** batch 或配置请求 Multimodal-NF `xl_mimo_nf` CSI batch 或 `point_cloud_xyz_10000` LiDAR batch
 - **THEN** runtime MUST 不构造这些 batch 输入
 - **AND** 系统 MUST 报告 profile 或 dataset type 不受支持
+

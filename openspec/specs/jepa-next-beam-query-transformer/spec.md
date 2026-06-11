@@ -1,7 +1,7 @@
 # jepa-next-beam-query-transformer Specification
 
 ## Purpose
-TBD - created by archiving change add-jepa-next-beam-query-transformer. Update Purpose after archive.
+记录 JEPA context image encoder 下游 next-beam query Transformer 的模型边界、配置矩阵和运行 metadata 契约，确保该路线只复用 JEPA context encoder 权重，并以可复现的 supervised beam ablation 与现有 GRU、snapshot、plain token transformer 基线比较。
 ## Requirements
 ### Requirement: JEPA 下游 next-beam query Transformer 主方法
 系统 MUST 提供 JEPA context image encoder 下游复用的 next-beam query Transformer 主方法。该方法 MUST 保留 `jepa_context_image` 作为 image encoder，从 JEPA checkpoint 加载 `context_encoder` 权重，并将 image/GPS 历史表征交给 `next_beam_query_transformer` 生成单步下一时刻 beam logits。
@@ -74,4 +74,3 @@ JEPA next-query downstream MUST 不重新引入已退役的 HiST/Hist、KD disti
 - **WHEN** 开发者实现 JEPA next-query downstream
 - **THEN** 新模型能力 MUST 通过 `src/kd_sensing` 当前注册表和 `modular_sequence` 边界接入
 - **AND** 实现 MUST NOT 新增绕过当前包结构的旧入口或兼容聚合层
-

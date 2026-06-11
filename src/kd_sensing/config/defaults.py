@@ -63,7 +63,7 @@ DEFAULT_CONFIG = {
             "lidar_ground_z_threshold": 0.1,
             "lidar_background_path": None,
             "lidar_background_distance_threshold": 0.2,
-            "lidar_cache_dir": "lidar_bev_cache",
+            "lidar_cache_dir": None,
             "lidar_use_cache": None,
             "lidar_write_cache": None,
             "lidar_normalize": False,

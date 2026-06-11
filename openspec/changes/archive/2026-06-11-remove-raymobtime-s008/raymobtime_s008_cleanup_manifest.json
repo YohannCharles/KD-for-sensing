@@ -1,0 +1,253 @@
+{
+  "change": "remove-raymobtime-s008",
+  "generated_at": "2026-06-11T06:31:23.387864+00:00",
+  "root": "/root/projects/KD-for-sensing",
+  "safety_scope": [
+    "Only Raymobtime s008 source/config/doc/test paths are targeted.",
+    "Only local artifact paths under dataset/Raymobtime/s008, outputs/raymobtime_s008, outputs/cache/Raymobtime/s008, logs/raymobtime_s008, checkpoints/raymobtime_s008, and cache/raymobtime_s008 are targeted.",
+    "Non-Raymobtime dataset, All_models, OpenSpec artifacts, and active experiment outputs are excluded."
+  ],
+  "candidates": [
+    {
+      "path": "src/kd_sensing/data/datasets/raymobtime_s008.py",
+      "type": "file",
+      "size_bytes": 14897,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008.py",
+      "type": "file",
+      "size_bytes": 1831,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008_common.py",
+      "type": "file",
+      "size_bytes": 9963,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008_index.py",
+      "type": "file",
+      "size_bytes": 7604,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008_beam_labels.py",
+      "type": "file",
+      "size_bytes": 8437,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008_ray_features.py",
+      "type": "file",
+      "size_bytes": 22972,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008_cache.py",
+      "type": "file",
+      "size_bytes": 7784,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/preprocessing/raymobtime_s008_paths.py",
+      "type": "file",
+      "size_bytes": 3712,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/models/raymobtime_s008.py",
+      "type": "file",
+      "size_bytes": 22292,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "src/kd_sensing/config/dataset_rules/raymobtime.py",
+      "type": "file",
+      "size_bytes": 2506,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 source module",
+      "planned_action": "delete_tracked_source",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "configs/raymobtime/s008_multitask_selection.yaml",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 legacy config",
+      "planned_action": "delete_tracked_config",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "configs/raymobtime/s008_smoke_selection.yaml",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 legacy config",
+      "planned_action": "delete_tracked_config",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "configs/preprocess/raymobtime_s008_audit.yaml",
+      "type": "file",
+      "size_bytes": 126,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 legacy config",
+      "planned_action": "delete_tracked_config",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "configs/preprocess/raymobtime_s008_index.yaml",
+      "type": "file",
+      "size_bytes": 176,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 legacy config",
+      "planned_action": "delete_tracked_config",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "configs/preprocess/raymobtime_s008_ray_features.yaml",
+      "type": "file",
+      "size_bytes": 171,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 legacy config",
+      "planned_action": "delete_tracked_config",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "configs/preprocess/raymobtime_s008_cache.yaml",
+      "type": "file",
+      "size_bytes": 252,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 legacy config",
+      "planned_action": "delete_tracked_config",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "docs/Raymobtime_s008_selection.md",
+      "type": "file",
+      "size_bytes": 4779,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 current workflow documentation",
+      "planned_action": "delete_tracked_doc",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "tests/test_raymobtime_s008_selection.py",
+      "type": "file",
+      "size_bytes": 29072,
+      "exists_before_cleanup": true,
+      "match_reason": "Raymobtime s008 focused test",
+      "planned_action": "delete_tracked_test",
+      "cleanup_status": "deleted",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "dataset/Raymobtime/s008",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 local data/output/cache/log/checkpoint artifact",
+      "planned_action": "delete_if_present",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "outputs/raymobtime_s008",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 local data/output/cache/log/checkpoint artifact",
+      "planned_action": "delete_if_present",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "outputs/cache/Raymobtime/s008",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 local data/output/cache/log/checkpoint artifact",
+      "planned_action": "delete_if_present",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "logs/raymobtime_s008",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 local data/output/cache/log/checkpoint artifact",
+      "planned_action": "delete_if_present",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "checkpoints/raymobtime_s008",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 local data/output/cache/log/checkpoint artifact",
+      "planned_action": "delete_if_present",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "cache/raymobtime_s008",
+      "type": "missing",
+      "size_bytes": 0,
+      "exists_before_cleanup": false,
+      "match_reason": "Raymobtime s008 local data/output/cache/log/checkpoint artifact",
+      "planned_action": "delete_if_present",
+      "cleanup_status": "not_present_before_cleanup",
+      "exists_after_cleanup": false
+    }
+  ],
+  "updated_at": "2026-06-11T06:32:09.834998+00:00"
+}

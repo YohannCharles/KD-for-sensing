@@ -125,15 +125,6 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["input_profiles"] = runtime_metadata.get("input_profiles")
         metadata["target"] = runtime_metadata.get("target")
         metadata["runtime_contract"] = runtime_metadata
-    if hasattr(dataset, "raymobtime_metadata"):
-        raymobtime = dataset.raymobtime_metadata()
-        metadata["raymobtime"] = raymobtime
-        metadata["task_semantics"] = raymobtime.get("task_semantics")
-        metadata["split_metadata_path"] = raymobtime.get("split_metadata_path")
-        metadata["cache_metadata_path"] = raymobtime.get("cache_metadata_path")
-        metadata["num_beam_classes"] = raymobtime.get("num_beam_classes")
-        metadata["num_tx_beams"] = raymobtime.get("num_tx_beams")
-        metadata["num_rx_beams"] = raymobtime.get("num_rx_beams")
     return metadata
 
 
@@ -231,13 +222,6 @@ def prediction_setup_metadata(
     metadata["model_capacity"] = lineage["model_capacity"]
     metadata["primary_model"] = lineage["primary_model"]
     metadata["main_conclusion_eligible"] = lineage["main_conclusion_eligible"]
-    if dataset_cfg.get("type") == "raymobtime_s008":
-        metadata["variant"] = "raymobtime_s008_current_snapshot"
-        metadata["task_semantics"] = "current_snapshot_beam_selection"
-        metadata["uses_history_window"] = False
-        metadata["uses_temporal_core"] = False
-        metadata["cache_dir"] = dataset_cfg.get("cache_dir")
-        metadata["link_target_name"] = dataset_cfg.get("link_target_name", "link_power_max_dbm")
     scene = cfg.get("data", {}).get("dataset", {})
     for key in ("scene", "scene_id", "scene_slug"):
         if key in scene:
@@ -282,11 +266,16 @@ def prediction_setup_metadata(
     return metadata
 
 
-def jepa_downstream_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
+def jepa_downstream_metadata(
+    cfg: dict[str, Any],
+    model: Any | None = None,
+    optimizer_groups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    model_metadata = _model_training_strategy_metadata(model)
     model_cfg = cfg.get("model", {})
     primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
     if str(primary_cfg.get("type", "")).strip() not in {"modular_sequence", "modular_sequence_model"}:
-        return {}
+        return _jepa_metadata_from_model(model_metadata)
     encoders_cfg = primary_cfg.get("encoders", {})
     image_encoder_cfg = encoders_cfg.get("image", {}) if isinstance(encoders_cfg, dict) else {}
     if isinstance(image_encoder_cfg, str):
@@ -308,11 +297,44 @@ def jepa_downstream_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
     is_next_query = core_type == "next_beam_query_transformer"
-    return {
+    checkpoint_path = image_encoder_cfg.get("checkpoint_path") or image_encoder_cfg.get("checkpoint") or ""
+    freeze_encoder = bool(image_encoder_cfg.get("freeze_encoder", False))
+    pooler_cfg = image_encoder_cfg.get("pooler")
+    pooler_type = _component_type(pooler_cfg)
+    if pooler_type is None:
+        pooler_type = str(image_encoder_cfg.get("pooling", "mean"))
+    pooling = str(pooler_type)
+    gps_query_pool = image_encoder_cfg.get("gps_query_pool", {})
+    if pooling == "gps_query_attention" and isinstance(pooler_cfg, dict):
+        gps_query_pool = {**gps_query_pool, **pooler_cfg} if isinstance(gps_query_pool, dict) else dict(pooler_cfg)
+    if not isinstance(gps_query_pool, dict):
+        gps_query_pool = {}
+    adapter_type = _component_type(image_encoder_cfg.get("adapter")) or "identity"
+    gps_query_enabled = pooling == "gps_query_attention"
+    gps_query_metadata = {
+        "enabled": gps_query_enabled,
+        "k_queries": gps_query_pool.get("k_queries"),
+        "num_heads": gps_query_pool.get("num_heads"),
+        "condition_dim": gps_query_pool.get("condition_dim"),
+        "condition_source": gps_query_pool.get("condition_source", "projected_gps" if gps_query_enabled else None),
+        "return_attention": bool(gps_query_pool.get("return_attention", False)),
+    }
+    metadata = {
+        "source": "config",
         "ablation": ablation,
         "representation_core_type": core_type,
-        "jepa_checkpoint_path": image_encoder_cfg.get("checkpoint_path") or image_encoder_cfg.get("checkpoint") or "",
-        "freeze_image_encoder": bool(image_encoder_cfg.get("freeze_encoder", False)),
+        "jepa_checkpoint_path": checkpoint_path,
+        "state_dict_prefix": image_encoder_cfg.get("state_dict_prefix", "context_encoder"),
+        "freeze_image_encoder": freeze_encoder,
+        "pooling": pooling,
+        "pooler_type": pooling,
+        "adapter_type": adapter_type,
+        "condition_source": gps_query_metadata["condition_source"],
+        "attention_diagnostics": gps_query_metadata["return_attention"],
+        "gps_query_pooling_enabled": gps_query_enabled,
+        "gps_query_k_queries": gps_query_metadata["k_queries"],
+        "gps_query_num_heads": gps_query_metadata["num_heads"],
+        "gps_query_condition_source": gps_query_metadata["condition_source"],
         "time_embedding_enabled": _metadata_flag_enabled(
             core_cfg.get("time_embedding"),
             default=is_next_query,
@@ -328,12 +350,70 @@ def jepa_downstream_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
         "representation_core": _representation_core_metadata(core_cfg),
         "image_encoder": {
             "type": "jepa_context_image",
-            "checkpoint_path": image_encoder_cfg.get("checkpoint_path") or image_encoder_cfg.get("checkpoint") or "",
-            "freeze_encoder": bool(image_encoder_cfg.get("freeze_encoder", False)),
+            "checkpoint_path": checkpoint_path,
+            "freeze_encoder": freeze_encoder,
             "state_dict_prefix": image_encoder_cfg.get("state_dict_prefix", "context_encoder"),
-            "pooling": image_encoder_cfg.get("pooling", "mean"),
+            "pooling": pooling,
+            "pooler_type": pooling,
+            "adapter_type": adapter_type,
+            "gps_query_pool": gps_query_metadata,
             "latent_dim": image_encoder_cfg.get("latent_dim"),
         },
+    }
+    model_jepa = _jepa_metadata_from_model(model_metadata)
+    if model_jepa:
+        model_jepa["source"] = "model"
+        metadata.update({key: value for key, value in model_jepa.items() if value is not None})
+        metadata["model_declared"] = model_jepa
+    if optimizer_groups is not None:
+        metadata["optimizer_param_groups"] = list(optimizer_groups)
+    return metadata
+
+
+def _component_type(raw: Any) -> str | None:
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        return str(raw.get("type", "")) or None
+    return None
+
+
+def _model_training_strategy_metadata(model: Any | None) -> dict[str, Any]:
+    if model is None or not hasattr(model, "training_strategy_metadata"):
+        return {}
+    raw = model.training_strategy_metadata()
+    return raw if isinstance(raw, dict) else {}
+
+
+def _jepa_metadata_from_model(model_metadata: dict[str, Any]) -> dict[str, Any]:
+    if not model_metadata:
+        return {}
+    encoders = model_metadata.get("encoders")
+    if not isinstance(encoders, dict):
+        return {}
+    image_encoder = encoders.get("image")
+    if not isinstance(image_encoder, dict) or image_encoder.get("encoder") != "jepa_context_image":
+        return {}
+    pooler = image_encoder.get("pooler") if isinstance(image_encoder.get("pooler"), dict) else {}
+    adapter = image_encoder.get("adapter") if isinstance(image_encoder.get("adapter"), dict) else {}
+    gps_query_pool = image_encoder.get("gps_query_pool") if isinstance(image_encoder.get("gps_query_pool"), dict) else {}
+    pooler_type = image_encoder.get("pooler_type") or pooler.get("type")
+    adapter_type = image_encoder.get("adapter_type") or adapter.get("type")
+    return {
+        "image_encoder": image_encoder,
+        "pooling": image_encoder.get("pooling") or pooler_type,
+        "pooler_type": pooler_type,
+        "adapter_type": adapter_type,
+        "jepa_checkpoint_path": image_encoder.get("checkpoint_path"),
+        "state_dict_prefix": image_encoder.get("state_dict_prefix"),
+        "freeze_image_encoder": image_encoder.get("freeze_encoder"),
+        "gps_query_pooling_enabled": bool(image_encoder.get("gps_query_pooling_enabled", False)),
+        "gps_query_k_queries": gps_query_pool.get("k_queries") or pooler.get("k_queries"),
+        "gps_query_num_heads": gps_query_pool.get("num_heads") or pooler.get("num_heads"),
+        "gps_query_condition_source": gps_query_pool.get("condition_source") or pooler.get("condition_source"),
+        "condition_source": gps_query_pool.get("condition_source") or pooler.get("condition_source"),
+        "attention_diagnostics": image_encoder.get("attention_diagnostics"),
+        "conditioned_encoders": model_metadata.get("conditioned_encoders", {}),
     }
 
 

@@ -18,6 +18,22 @@ REMOVED_KD_OVERRIDE_KEYS = {
 RETIRED_HIST_MODEL_NAMES = {
     "hist_beam_fusion",
 }
+RETIRED_RAYMOBTIME_DATASET_TYPES = {"raymobtime_s008"}
+RETIRED_RAYMOBTIME_MODEL_TYPES = {
+    "simple_concat_multitask_selection",
+    "task_aware_gated_multitask_selection",
+}
+RETIRED_RAYMOBTIME_ENCODER_TYPES = {
+    "coord_mlp",
+    "ray_mlp",
+    "raymobtime_lidar_3d_cnn",
+}
+RETIRED_RAYMOBTIME_PREPROCESSORS = {
+    "raymobtime_s008_audit",
+    "raymobtime_s008_index",
+    "raymobtime_s008_ray_features",
+    "raymobtime_s008_cache",
+}
 
 
 def reject_removed_config_path(config_path: str | Path | None) -> None:
@@ -30,7 +46,12 @@ def reject_removed_config_path(config_path: str | Path | None) -> None:
         raise ValueError(
             f"HiST-Beam/Hist research line has been retired; legacy config path "
             f"'{path.as_posix()}' is no longer supported. Use current supervised, adapter, "
-            "GPS candidate, residual fusion, MMW GPS v2, CSI, Raymobtime, or viewer workflows."
+            "GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
+        )
+    if _is_retired_raymobtime_config_path(path):
+        raise ValueError(
+            f"Raymobtime s008 has been retired; legacy config path '{path.as_posix()}' "
+            "is no longer supported and no compatibility migration is provided."
         )
     suggestion = _replacement_config_path(path)
     if suggestion is None:
@@ -52,7 +73,7 @@ def reject_removed_override_key(key: str) -> None:
     if lowered == "hist_beam" or lowered.startswith("hist_beam."):
         raise ValueError(
             f"HiST-Beam/Hist research line has been retired; override '{normalized}' is no longer supported. "
-            "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, Raymobtime, or viewer workflows."
+            "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
         )
     if lowered in REMOVED_KD_OVERRIDE_KEYS:
         raise ValueError(
@@ -83,16 +104,67 @@ def reject_retired_hist_config(cfg: dict[str, Any]) -> None:
     if "hist_beam" in cfg:
         raise ValueError(
             "HiST-Beam/Hist research line has been retired; config key 'hist_beam' is no longer supported. "
-            "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, Raymobtime, or viewer workflows."
+            "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
         )
     for location, model_cfg in iter_model_configs(cfg):
         model_type = str(model_cfg.get("type", "")).strip()
         if model_type in RETIRED_HIST_MODEL_NAMES:
             raise ValueError(
                 f"HiST-Beam/Hist research line has been retired; {location}.type='{model_type}' is no longer supported. "
-                "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, Raymobtime, or viewer workflows."
+                "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
             )
     _reject_retired_hist_values(cfg)
+
+
+def reject_retired_raymobtime_config(cfg: dict[str, Any]) -> None:
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    if isinstance(dataset_cfg, dict):
+        dataset_type = str(dataset_cfg.get("type", "")).strip()
+        if dataset_type in RETIRED_RAYMOBTIME_DATASET_TYPES:
+            raise ValueError(
+                "Raymobtime s008 has been retired; data.dataset.type='raymobtime_s008' "
+                "is no longer supported and no compatibility migration is provided."
+            )
+
+    preprocessing_cfg = cfg.get("preprocessing", {})
+    if isinstance(preprocessing_cfg, dict):
+        preprocessor_type = str(preprocessing_cfg.get("type", "")).strip()
+        if preprocessor_type in RETIRED_RAYMOBTIME_PREPROCESSORS:
+            raise ValueError(
+                f"Raymobtime s008 has been retired; preprocessing.type='{preprocessor_type}' "
+                "is no longer supported and no compatibility migration is provided."
+            )
+
+    for location, model_cfg in iter_model_configs(cfg):
+        model_type = str(model_cfg.get("type", "")).strip()
+        if model_type in RETIRED_RAYMOBTIME_MODEL_TYPES:
+            raise ValueError(
+                f"Raymobtime s008 has been retired; {location}.type='{model_type}' "
+                "is no longer supported and no compatibility migration is provided."
+            )
+        modalities = model_cfg.get("modalities", ())
+        if isinstance(modalities, str):
+            modalities = (modalities,)
+        if isinstance(modalities, (list, tuple, set)):
+            retired_modalities = sorted({str(item) for item in modalities if str(item) in {"coord", "ray"}})
+            if retired_modalities:
+                names = ", ".join(retired_modalities)
+                raise ValueError(
+                    f"Raymobtime s008 has been retired; {location}.modalities contains retired "
+                    f"modality/modalities: {names}."
+                )
+        encoders = model_cfg.get("encoders", {})
+        if isinstance(encoders, dict):
+            for modality, encoder_cfg in encoders.items():
+                encoder_type = encoder_cfg if isinstance(encoder_cfg, str) else None
+                if isinstance(encoder_cfg, dict):
+                    encoder_type = encoder_cfg.get("type")
+                encoder_name = str(encoder_type or "").strip()
+                if encoder_name in RETIRED_RAYMOBTIME_ENCODER_TYPES:
+                    raise ValueError(
+                        f"Raymobtime s008 has been retired; {location}.encoders.{modality}.type="
+                        f"'{encoder_name}' is no longer supported."
+                    )
 
 
 def reject_removed_image_path_config(cfg: dict[str, Any]) -> None:
@@ -186,6 +258,20 @@ def _is_retired_hist_config_path(path: Path) -> bool:
     except ValueError:
         rel_parts = parts[-3:] if len(parts) >= 3 else parts
     return len(rel_parts) >= 2 and rel_parts[0] == "configs" and rel_parts[1] == "hist_beam"
+
+
+def _is_retired_raymobtime_config_path(path: Path) -> bool:
+    parts = path.parts
+    try:
+        configs_index = parts.index("configs")
+        rel_parts = parts[configs_index:]
+    except ValueError:
+        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    if len(rel_parts) >= 2 and rel_parts[0] == "configs" and rel_parts[1] == "raymobtime":
+        return True
+    if len(rel_parts) >= 3 and rel_parts[0] == "configs" and rel_parts[1] == "preprocess":
+        return path.stem.startswith("raymobtime_s008_")
+    return False
 
 
 def _reject_removed_kd_values(value: Any, *, path: str = "") -> None:

@@ -1,6 +1,6 @@
 # 研究笔记收束
 
-本文件浓缩原根目录零散方案草稿中仍有价值的研究判断。实现契约仍以 `openspec/specs/` 为准；运行入口、实验矩阵和可视化说明分别看 `README.md`、`docs/experiment_matrix.md`、`docs/Raymobtime_s008_selection.md` 和 `tools/visualization/README.md`。
+本文件浓缩原根目录零散方案草稿中仍有价值的研究判断。实现契约仍以 `openspec/specs/` 为准；运行入口、实验矩阵和可视化说明分别看 `README.md`、`docs/experiment_matrix.md` 和 `tools/visualization/README.md`。
 
 ## 文档取舍
 
@@ -12,7 +12,7 @@
 
 ## 已退役研究线
 
-模态失衡、蒸馏、HiST-Beam/P3、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist、P3/V7/V8/V9 probe 或 GPS residual/camera residual 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、DeepSense6G/MMW BGAM、MMW GPS v2、Raymobtime s008 current snapshot workflow、CSI hardening 和少样本跨场景 adaptation。
+模态失衡、蒸馏、HiST-Beam/P3、GPS coarse anchor、Top8 selector、GPS residual、camera residual 和 Raymobtime s008 研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist、P3/V7/V8/V9 probe 或 GPS residual/camera residual 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening 和少样本跨场景 adaptation。
 
 历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 
@@ -70,7 +70,7 @@ CSI hardening 的目标不是降上限，而是制造 high-ceiling but slow-to-l
 
 ## 数据集与 Viewer
 
-Raymobtime s008 在本仓库中定义为 current snapshot beam selection：当前 `coord/image/lidar/ray` 预测当前 beam class，同时预测 LOS/NLOS 与 link quality。运行说明见 `docs/Raymobtime_s008_selection.md`。
+Raymobtime s008 的 current snapshot beam selection workflow 已退役；旧 `coord/ray` 模态、专用预处理器和 selection 模型不再作为当前 dataset 或 viewer 入口维护。
 
 DeepVerse DT31 的价值在于把监督来源和模型输入解耦：用 ray-tracing channel 生成 beam label，用 LoS/status 生成 blockage label，用 mobility ground truth 生成 trajectory label，但模型默认只输入 camera、LiDAR、radar、weak wireless history 和 noisy position。先完成 cache/manifest/label，再做训练和 task-aware gate 实验。契约见 `openspec/specs/deepverse-dt31-data-generation/spec.md`。
 

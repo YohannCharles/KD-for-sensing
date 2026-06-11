@@ -184,7 +184,6 @@ class BatchStepRunner:
             total_loss = prediction_loss.total
             task_loss = prediction_loss.primary
             scalar_diagnostics.update(prediction_loss.diagnostics)
-            scalar_diagnostics.update(raymobtime_gate_scalar_diagnostics(primary_model_output.diagnostics))
             batch_state.total_loss = total_loss
             batch_state.task_loss = task_loss
             batch_state.auxiliary_loss = auxiliary_loss
@@ -364,22 +363,6 @@ class BatchStepRunner:
         self.optimizer.step()
         for extension, state in zip(self.extensions, self.extension_states):
             extension.after_optimizer_step(self.context, state, batch_state)
-
-
-def raymobtime_gate_scalar_diagnostics(diagnostics: dict[str, Any]) -> dict[str, float]:
-    gates = diagnostics.get("task_gates") or diagnostics.get("gates")
-    modalities = diagnostics.get("gate_modalities") or diagnostics.get("modalities")
-    if not isinstance(gates, dict) or not isinstance(modalities, (list, tuple)):
-        return {}
-    result: dict[str, float] = {}
-    for task, gate in gates.items():
-        if not torch.is_tensor(gate) or gate.ndim != 2:
-            continue
-        means = gate.detach().float().mean(dim=0).cpu().tolist()
-        for modality, value in zip(modalities, means):
-            result[f"raymobtime/gate/{task}/{modality}"] = float(value)
-    return result
-
 
 def _jepa_dummy_labels(batch: dict[str, torch.Tensor], context: ExtensionContext) -> torch.Tensor:
     missing = [key for key in ("image", "gps") if key not in batch]
