@@ -22,7 +22,10 @@ from kd_sensing.data.beam_soft_targets import (
 )
 from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
 from kd_sensing.data.transform_ops.gps import (
+    CALIBRATED_GPS_FEATURE_MODES,
+    GPS_FEATURE_DIMS,
     GPSStandardScaler,
+    PAPER_SCENE_CENTER_ANGLES_RAD,
     PositionTargetStandardScaler,
     SUPPORTED_GPS_FEATURE_MODE,
     load_gps_feature_sequence,
@@ -117,6 +120,8 @@ class DeepSense6GDataset(Dataset):
         beam_label_cache: bool | str = "lazy",
         use_gps: bool = False,
         gps_feature_mode: str = SUPPORTED_GPS_FEATURE_MODE,
+        gps_angle_offset_rad: float | None = None,
+        gps_angle_offset_source: str | None = None,
         gps_normalize: bool = True,
         gps_scaler: GPSStandardScaler | None = None,
         use_mmwave: bool = False,
@@ -215,7 +220,11 @@ class DeepSense6GDataset(Dataset):
         self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
         self._beam_label_cache: dict[str, int] = {}
         self.use_gps = "gps" in self.enabled_modalities
-        self.gps_feature_mode = gps_feature_mode
+        self.gps_feature_mode = self._normalize_gps_feature_mode(gps_feature_mode)
+        self.gps_angle_offset_rad, self.gps_angle_offset_source = self._resolve_gps_angle_offset(
+            gps_angle_offset_rad,
+            gps_angle_offset_source,
+        )
         self.gps_normalize = gps_normalize
         self.gps_scaler = gps_scaler
         self.gps_scaler_metadata: dict[str, Any] = {}
@@ -801,15 +810,44 @@ class DeepSense6GDataset(Dataset):
                 f"GPS is enabled but {self.root_csv} does not contain gps1..gpsN columns. "
                 "Regenerate sequence CSVs with include_gps: true."
             )
-        if self.gps_feature_mode != SUPPORTED_GPS_FEATURE_MODE:
+        if self.gps_feature_mode not in GPS_FEATURE_DIMS:
             raise ValueError(
                 f"Unsupported gps_feature_mode '{self.gps_feature_mode}'. "
-                f"This change only supports '{SUPPORTED_GPS_FEATURE_MODE}'."
+                "This change only supports 'relative_polar', "
+                "'paper_calibrated_relative_polar', or 'paper_distance_angle'."
             )
         if self.samples.bs_gps_paths is None:
             raise ValueError(
                 f"gps_feature_mode '{self.gps_feature_mode}' requires bs_gps1..bs_gpsN columns in {self.root_csv}."
             )
+
+    def _normalize_gps_feature_mode(self, mode: str | None) -> str:
+        normalized = str(mode or SUPPORTED_GPS_FEATURE_MODE).strip().lower()
+        if normalized not in GPS_FEATURE_DIMS:
+            supported = ", ".join(sorted(GPS_FEATURE_DIMS))
+            raise ValueError(f"Unsupported gps_feature_mode '{mode}'. Supported modes: {supported}.")
+        return normalized
+
+    def _resolve_gps_angle_offset(
+        self,
+        explicit_value: float | None,
+        source: str | None,
+    ) -> tuple[float | None, str]:
+        if self.gps_feature_mode not in CALIBRATED_GPS_FEATURE_MODES:
+            return None, "not_applicable"
+        if explicit_value is not None:
+            return float(explicit_value), "explicit"
+        source_key = str(source or "paper_scene_default").strip().lower()
+        if source_key in {"none", "zero", "disabled"}:
+            return 0.0, source_key
+        if source_key != "paper_scene_default":
+            raise ValueError(
+                "gps_angle_offset_source must be 'paper_scene_default', 'explicit', "
+                "'none', 'zero', or 'disabled'."
+            )
+        if int(self.scene_id) in PAPER_SCENE_CENTER_ANGLES_RAD:
+            return float(PAPER_SCENE_CENTER_ANGLES_RAD[int(self.scene_id)]), "paper_scene_default"
+        return 0.0, "paper_scene_default_missing"
 
     def _prepare_gps_scaler(self) -> None:
         if not self.gps_normalize:
@@ -840,6 +878,7 @@ class DeepSense6GDataset(Dataset):
                     bs_paths,
                     seq_len=self.seq_len,
                     mode=self.gps_feature_mode,
+                    angle_offset_rad=self.gps_angle_offset_rad,
                     frame_feature_cache=self._gps_frame_feature_cache,
                 )
             )
@@ -865,6 +904,7 @@ class DeepSense6GDataset(Dataset):
                 bs_paths,
                 seq_len=self.seq_len,
                 mode=self.gps_feature_mode,
+                angle_offset_rad=self.gps_angle_offset_rad,
                 frame_feature_cache=self._gps_frame_feature_cache,
             )
         return self._gps_feature_cache[idx]

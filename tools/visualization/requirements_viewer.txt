@@ -1,5 +1,0 @@
-gradio
-plotly
-numpy
-pandas
-pillow

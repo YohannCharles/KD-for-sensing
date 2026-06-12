@@ -408,6 +408,15 @@ def _metrics_from_outputs(
         "metric_horizons": list(metric_horizons),
         "metric_horizon_indices": list(horizon_indices(metric_horizons)),
         "metric_horizon_source": metric_horizon_source_from_config(cfg),
+        "label_space": str(cfg.get("evaluation", {}).get("label_space", "64_beam")),
+        "beam_shift": int(cfg.get("evaluation", {}).get("beam_shift", 0)),
+        "metric_profile": str(cfg.get("evaluation", {}).get("metric_profile", "64_beam_circular_topk")),
+        "circular_beam_distance": bool(
+            cfg.get("evaluation", {}).get(
+                "circular_beam_distance",
+                cfg.get("evaluation", {}).get("dba_distance_mode", "circular") == "circular",
+            )
+        ),
     }
     if objective in {"current_beam_selection", "selection_multitask"}:
         metrics.update(_flat_current_beam_metrics(topk_acc, total))
@@ -440,29 +449,50 @@ def _metadata_rows_from_batch(metadata: Any) -> list[dict[str, Any]]:
         return [dict(item) for item in metadata if isinstance(item, dict)]
     if not isinstance(metadata, dict):
         return []
-    length = 0
-    for value in metadata.values():
-        if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
-            length = max(length, int(value.shape[0]))
-        elif isinstance(value, (list, tuple)):
-            length = max(length, len(value))
-        else:
-            length = max(length, 1)
+    length = _metadata_batch_size(metadata)
     rows: list[dict[str, Any]] = []
     for index in range(length):
         row = {}
         for key, value in metadata.items():
-            row[key] = _metadata_value_at(value, index)
+            row[key] = _metadata_value_at(value, index, batch_size=length)
         rows.append(row)
     return rows
 
 
-def _metadata_value_at(value: Any, index: int) -> Any:
+def _metadata_batch_size(metadata: dict[str, Any]) -> int:
+    for key in ("dataset_index", "sample_id", "target_beam_path", "input_beam_path"):
+        if key in metadata:
+            length = _metadata_batch_length(metadata[key])
+            if length > 0:
+                return length
+    length = 0
+    for value in metadata.values():
+        length = max(length, _metadata_batch_length(value))
+    return max(length, 1)
+
+
+def _metadata_batch_length(value: Any) -> int:
     if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
-        item = value[index]
-        return item.item() if hasattr(item, "item") else item
+        return int(value.shape[0])
     if isinstance(value, (list, tuple)):
-        return value[index] if index < len(value) else None
+        return len(value)
+    return 0
+
+
+def _metadata_value_at(value: Any, index: int, *, batch_size: int) -> Any:
+    if isinstance(value, dict):
+        return {key: _metadata_value_at(item, index, batch_size=batch_size) for key, item in value.items()}
+    if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
+        if int(value.shape[0]) == batch_size:
+            item = value[index]
+            return item.item() if hasattr(item, "item") else item
+        return value.tolist() if hasattr(value, "tolist") else value
+    if isinstance(value, (list, tuple)):
+        if len(value) == batch_size:
+            return value[index]
+        if value and all(_metadata_batch_length(item) == batch_size for item in value):
+            return [_metadata_value_at(item, index, batch_size=batch_size) for item in value]
+        return list(value)
     return value
 
 

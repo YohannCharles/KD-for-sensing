@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -197,13 +198,20 @@ class CameraAEImageEncoder(nn.Module):
             image_size=self.image_size,
         )
         if self.checkpoint_path:
+            checkpoint_file = Path(self.checkpoint_path)
+            if not checkpoint_file.exists():
+                raise FileNotFoundError(
+                    "Camera AE checkpoint is required for camera_ae_frozen but was not found at "
+                    f"{checkpoint_file}. Provide a trained Camera AE checkpoint or set "
+                    "require_checkpoint=false for mock/smoke runs."
+                )
             payload = torch.load(self.checkpoint_path, map_location="cpu")
             state_dict = payload.get("model_state_dict", payload)
             self.autoencoder.load_state_dict(state_dict)
         elif self.require_checkpoint:
             raise FileNotFoundError(
-                "camera_ae_frozen requires checkpoint_path. Train one with "
-                "`conda run -n kd_mm_beam kd-sensing-train-deepsense6g-camera-ae ...` first."
+                "Camera AE checkpoint is required for camera_ae_frozen. Provide checkpoint_path "
+                "for a trained Camera AE encoder, or set require_checkpoint=false for mock/smoke runs."
             )
         if self.freeze_encoder:
             for param in self.autoencoder.parameters():

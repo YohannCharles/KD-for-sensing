@@ -110,8 +110,19 @@ def resolve_dataset_profiles(
         raw_profile = explicit_profiles.get(key)
         if raw_profile is None:
             raw_profile = cfg.get(f"{key}_profile")
+        if key == "gps" and raw_profile is None:
+            raw_profile = _gps_profile_from_feature_mode(cfg.get("gps_feature_mode"))
         resolved[key] = descriptor.profile_for(key, raw_profile).default_profile
     return resolved
+
+
+def _gps_profile_from_feature_mode(mode: Any) -> str | None:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "paper_distance_angle":
+        return "paper_distance_angle_direct"
+    if normalized == "paper_calibrated_relative_polar":
+        return "paper_calibrated_relative_polar_history"
+    return None
 
 
 def descriptor_metadata(dataset_type: str | None) -> dict[str, Any]:
@@ -132,7 +143,7 @@ def _profile(modality: str, default: str, *supported: str) -> ModalityProfile:
 _DEEPSENSE_PROFILES = {
     "image": _profile("image", "rgb_imagenet"),
     "radar": _profile("radar", "ra_da_maps"),
-    "gps": _profile("gps", "relative_polar_history"),
+    "gps": _profile("gps", "relative_polar_history", "paper_calibrated_relative_polar_history", "paper_distance_angle_direct"),
     "lidar": _profile("lidar", "bev_projection"),
     "mmwave": _profile("mmwave", "power_history"),
     "csi": _profile("csi", "pilot_dual_view"),

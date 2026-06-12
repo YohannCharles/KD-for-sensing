@@ -16,10 +16,15 @@ from kd_sensing.engine.debug_diagnostics import (
     write_pilot_noise_validity_artifact,
 )
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
-from kd_sensing.engine.run_metadata import jepa_downstream_metadata, prediction_setup_metadata
+from kd_sensing.engine.run_metadata import (
+    jepa_downstream_metadata,
+    prediction_setup_metadata,
+    vision_position_baseline_metadata,
+)
 from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state
+from kd_sensing.utils.runtime_output_layout import output_layout_summary, runtime_scope_metadata_from_config
 from kd_sensing.utils.plotting import plot_training_curves
 
 
@@ -63,9 +68,20 @@ def final_config_with_runtime(
     scene_metadata = scene_metadata_from_config(cfg)
     if scene_metadata:
         runtime["scene"] = scene_metadata
+    scope_metadata = runtime_scope_metadata_from_config(cfg)
+    if scope_metadata:
+        runtime["scene_scope"] = scope_metadata
+        runtime["output_scope"] = {
+            **scope_metadata,
+            "run_dir": str(run_dir),
+            "layout": output_layout_summary(run_dir),
+        }
     runtime["lineage"] = run_lineage_metadata(cfg)
     runtime["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
     runtime_model = primary_model if primary_model is not None else model
+    baseline_metadata = vision_position_baseline_metadata(cfg, model=runtime_model)
+    if baseline_metadata:
+        runtime["baseline"] = baseline_metadata
     jepa_metadata = jepa_downstream_metadata(cfg, model=runtime_model, optimizer_groups=optimizer_groups)
     if jepa_metadata:
         runtime["jepa_downstream"] = jepa_metadata
@@ -131,6 +147,7 @@ class ArtifactWriter:
             epochs_without_improvement=epochs_without_improvement,
         )
         lineage = run_lineage_metadata(self.cfg)
+        baseline_metadata = vision_position_baseline_metadata(self.cfg, model=primary_model)
         write_csi_debug_records(self.run_dir, csi_debug_records)
         pilot_noise_validity = evaluate_pilot_noise_validity(self.cfg, csi_debug_records)
         write_pilot_noise_validity_artifact(self.run_dir, pilot_noise_validity)
@@ -151,9 +168,17 @@ class ArtifactWriter:
             "throughput": throughput_metadata,
             "prediction_objective": objective_metadata,
             "prediction_setup": prediction_setup_metadata(self.cfg, split_metadata=split_metadata),
+            "baseline": baseline_metadata or None,
+            "scene_scope": runtime_scope_metadata_from_config(self.cfg),
             "runtime": {
                 "run_dir": str(self.run_dir),
                 "output_overwrite": bool(self.cfg.get("output", {}).get("overwrite", False)),
+                "scene_scope": runtime_scope_metadata_from_config(self.cfg),
+                "output_scope": {
+                    **runtime_scope_metadata_from_config(self.cfg),
+                    "run_dir": str(self.run_dir),
+                    "layout": output_layout_summary(self.run_dir),
+                },
                 "splits": split_metadata,
                 "normalization_artifacts": normalization_artifacts,
                 "checkpoint_registry": checkpoint_registry,
@@ -166,6 +191,7 @@ class ArtifactWriter:
                 "lineage": lineage,
                 "prediction_objective": objective_metadata,
                 "prediction_setup": prediction_setup_metadata(self.cfg, split_metadata=split_metadata),
+                "baseline": baseline_metadata or None,
             },
         }
         with (self.run_dir / "train_log.json").open("w", encoding="utf-8") as f:

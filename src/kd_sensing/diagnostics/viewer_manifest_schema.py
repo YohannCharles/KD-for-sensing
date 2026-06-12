@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from kd_sensing.diagnostics.visualization.sampling import SampleCandidate
+from kd_sensing.diagnostics.viewer_manifest_sampling import SampleCandidate
 
 def _sample_id(dataset: Any, split: str, candidate: SampleCandidate) -> str:
     scene_slug = str(getattr(dataset, "scene_slug", "scene"))

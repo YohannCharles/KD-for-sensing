@@ -45,5 +45,5 @@ baselines:
     command: conda run -n kd_mm_beam python scripts/train_baseline.py --mock --epochs 3
 
 outputs:
-  mock_output_dir: outputs/beambench_baseline/mock_smoke
-  official_eval_plan_dir: outputs/beambench_baseline/eval
+  mock_output_dir: outputs/evaluations/beambench_baseline/mock_smoke
+  official_eval_plan_dir: outputs/evaluations/beambench_baseline/eval

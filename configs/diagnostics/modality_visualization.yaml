@@ -1,5 +1,5 @@
 experiment:
-  name: gradio_viewer_manifest
+  name: viewer_manifest
   task: fusion
   seed: 0
   device: auto
@@ -33,7 +33,7 @@ model:
   modalities: [image, radar, gps, lidar, mmwave]
 diagnostics:
   visualization:
-    output_dir: outputs/diagnostics/gradio_viewer_manifest
+    output_dir: outputs/analysis/diagnostics/viewer_manifest
     splits: [train, test]
     sample_count: 2
     per_seq_sample_count: null
@@ -46,6 +46,6 @@ diagnostics:
     preserve_existing_outputs: true
 output:
   dir: outputs
-  run_name: gradio_viewer_manifest
+  run_name: viewer_manifest
   progress:
     enabled: false

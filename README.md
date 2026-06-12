@@ -1,6 +1,6 @@
 # KD for Sensing
 
-本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前支持面围绕 DeepSense6G 和 MMW 数据集家族中的 supervised/adaptation 训练、GPS v2、BGAM、CSI hardening、预处理、诊断和可视化入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线收敛到 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite、Arnold22 Camera AE+GPS Direct、JEPA visual analysis、预处理和 manifest 诊断导出入口。
 
 蒸馏训练、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 研究线已经退役。当前 quickstart、BGAM、GPS v2 和 calibration workflow 都只构建单个 `model.primary` 主模型；旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`distillation.*`、`configs/hist_beam/*`、`hist_beam_fusion` 和 `kd-sensing-hist-beam-loso` 会被 migration guard 或 registry 拒绝，并提示使用当前入口。历史输出和权重只作为只读复现资料保留。
 
@@ -44,7 +44,6 @@ scripts/          # 保留的薄 alias、研究诊断和数据准备脚本
 src/kd_sensing/   # 包内 CLI、config、data、engine、models、diagnostics 等实现
 tests/            # 架构边界、配置加载、训练/诊断单元测试
 tools/analysis/   # 研究分析脚本
-tools/visualization/ # Gradio viewer 和 viewer 支持工具
 ```
 
 配置相对路径从项目根目录解析，因此可以在子目录中启动命令。
@@ -59,10 +58,10 @@ conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
 ```
 
-触碰训练、数据集、诊断、CLI、配置解析或模型 forward 时，追加对应 focused tests；例如配置加载和 modality visualization 相关改动可运行：
+触碰训练、数据集、诊断、CLI、配置解析或模型 forward 时，追加对应 focused tests；例如配置加载和 manifest/JEPA visual analysis 相关改动可运行：
 
 ```bash
-conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py tests/test_modality_visual_diagnostics.py -q
+conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py tests/test_jepa_visual_analysis.py -q
 ```
 
 这些检查不启动真实训练、不读取 `dataset/` 真实数据、不写入 checkpoint 或训练输出。最终回归：
@@ -119,6 +118,7 @@ conda run -n kd_mm_beam kd-sensing-runs --outputs outputs --logs logs --format j
 ```
 
 `kd-sensing-runs` 只读扫描本地 `outputs/`、`logs/`、当前 Python 进程和可用资源快照，不删除、不移动、不重写训练产物、日志、checkpoint、cache 或 TensorBoard 文件。状态分类包括 `running`、`complete`、`started_no_metrics`、`partial`、`failed`、`killed`、`waiting`、`stale` 和 `unknown`；JSON 输出稳定包含 `generated_at`、`roots`、`runs`、`resources` 和 `warnings`。
+默认扫描 `outputs/` 时会跳过 `outputs/cache/`、`outputs/archive/` 和 `outputs/cleanup_manifests/` 等非当前 run 分区；如需审计这些目录，可显式传入 `--outputs outputs/cache` 或 `--outputs outputs/archive`。
 
 本地产物清理 manifest：
 
@@ -130,6 +130,17 @@ conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --delete \
 ```
 
 `kd-sensing-clean-runtime-artifacts` 默认只生成 dry-run JSON manifest，不删除、不移动、不压缩、不重写本地数据、输出、日志、cache、checkpoint、源码、配置、文档或 OpenSpec artifact。删除阶段必须显式传入 manifest 和 `--confirm-delete`，并在执行前重新验证路径仍未被 git 跟踪、未受保护且仍位于 manifest 扫描根内。
+
+本地 outputs 整理 manifest：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-organize-runtime-outputs --outputs-root outputs
+conda run -n kd_mm_beam kd-sensing-organize-runtime-outputs --execute \
+  --manifest outputs/cleanup_manifests/runtime_organize_<timestamp>.json \
+  --confirm-organize
+```
+
+`kd-sensing-organize-runtime-outputs` 的默认模式只生成 move/archive/protect/review 计划，不移动、不删除、不重写任何本地产物。执行阶段必须显式确认，并会重新检查 source 状态、git tracked 保护和 target 冲突。
 
 预处理：
 
@@ -144,11 +155,22 @@ Viewer manifest 导出：
 ```bash
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/cache/diagnostics/gradio_viewer \
+  --cache-dir outputs/cache/diagnostics/viewer_manifest \
   --scenes 9,32
 ```
 
 `kd-sensing-visualize-modalities` 保留为包内薄 alias，只委托 manifest 导出 CLI，不恢复旧静态 PNG 总览图流程。推荐命令仍是 `kd-sensing-export-viewer-manifest` 或 `python -m kd_sensing.cli.export_viewer_manifest`。
+
+JEPA visual analysis 离线论文图导出：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis \
+  --analysis-config configs/diagnostics/jepa_visual_analysis_2604.yaml \
+  --output-dir outputs/visual_analysis/jepa_query_pool_2604 \
+  --force
+```
+
+该入口默认只读模型 config、checkpoint、split 和已有 cache；新增产物只写入 `--output-dir` 下的 `figures/`、`tables/`、`cache/`、`case_payloads/`、`analysis_manifest.json` 和 `report.md`。示例配置中的 `fair_base`、`fair_gps_biased` 可按本地 checkpoint 路径替换；没有 attention 或 UMAP 时分析会在 manifest/report 中记录 warning 并降级到剩余图表。解释结论时优先引用 `report.md`、`tables/comparison_samples.csv`、`tables/embedding_neighbors.csv` 和对应 PNG/SVG 图，同时保留 caveat：投影和 attention 是诊断证据，不是单独的因果证明。
 
 ## 配置和实验矩阵
 
@@ -174,11 +196,12 @@ CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实�
 
 - `dataset/` 是本地数据输入，默认不提交；源码中只保留 `dataset/.gitkeep`。
 - `outputs/`、`outputs/cache/`、`logs/`、legacy 根 `cache/`、TensorBoard 产物和新生成 checkpoint 是本地运行产物，默认不提交；新可再生成 cache 默认写入 `outputs/cache/`。
+- 当前 runtime output 分区为：`outputs/cache/`、`outputs/cleanup_manifests/`、`outputs/analysis/`、`outputs/visual_analysis/`、`outputs/evaluations/`、`outputs/scene<id>/`、`outputs/scenegroup_*/` 和 `outputs/archive/`。新训练默认写入 scene/scenegroup scope；根级 `outputs/<run_name>/`、数字场景根和根级 `outputs/best_checkpoints/` 只按 legacy 输入审计。
 - `All_models/` 中已跟踪权重是历史复现实验资料；新生成的 `.pth`、`.pt`、`.ckpt` 不应进入源码变更。
 - 本地产物清理必须先生成 manifest；真正删除需要显式确认，且默认保护 `dataset/`、`All_models/`、源码、配置、文档、OpenSpec、已跟踪文件和活跃运行。
 - 当前训练入口不读取蒸馏权重；评估入口仍可通过 `--weights` 指定待评估模型权重。
 
-DeepSense6G 默认场景是 Scenario 31，数据根目录解析为 `dataset/DeepSense6G/scenario31`，输出默认写入 `outputs/scene31/<run_name>/`。可通过配置或 CLI override 切换场景：
+DeepSense6G 默认场景是 Scenario 31，数据根目录解析为 `dataset/DeepSense6G/scenario31`，单场景输出默认写入 `outputs/scene31/<run_name>/`；包含多个 `train_scenes`/`eval_scenes` 的配置默认写入 `outputs/scenegroup_<range-or-list>/<run_name>/`。可通过配置或 CLI override 切换场景：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-train --config configs/mmwave/strong.yaml data.dataset.scene=9
@@ -294,16 +317,16 @@ conda run -n kd_mm_beam python scripts/preprocess.py \
 
 若 profile 或日志出现 loader wait 支配 step、退出码 137、`Killed` 或 worker RSS 过高，优先降低并行 runs、batch size 和 train workers，关闭 persistent workers，或预热 image-derived cache；不要默认继续增加 worker。
 
-## Viewer
+## Viewer Manifest
 
-Gradio 交互式 viewer 入口保留在 `tools/visualization/gradio_multimodal_viewer.py`。安装可选依赖、启动 viewer、后台运行、manifest 格式、prediction/quality/gate 合并和故障排查见 [tools/visualization/README.md](tools/visualization/README.md)。
+仓库级 Gradio viewer 支持已退役；当前保留包内 manifest 导出能力，供外部查看器、离线诊断或 JEPA visual analysis 消费。`kd-sensing-visualize-modalities` 仍是薄 alias，只委托 `kd-sensing-export-viewer-manifest`，不恢复旧静态 PNG 总览图或仓库级 Web UI。
 
 离线 manifest 导出推荐：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/cache/diagnostics/gradio_viewer \
+  --cache-dir outputs/cache/diagnostics/viewer_manifest \
   --scenes 32 \
   --predictions outputs/eval/predictions.json \
   --quality outputs/eval/quality.json \
@@ -316,7 +339,6 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 - 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)
 - 新组件扩展指南：[docs/extension_guide.md](docs/extension_guide.md)
-- Viewer 详细说明：[tools/visualization/README.md](tools/visualization/README.md)
 - 项目表面积 inventory：[docs/project_surface_inventory.md](docs/project_surface_inventory.md)
 - 架构与需求契约：`openspec/specs/`
 

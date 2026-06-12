@@ -11,10 +11,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from kd_sensing.baselines.gps_window.support_split import angle_coverage_indices
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
 from kd_sensing.data.beam_soft_targets import read_beam_power_vector
+from kd_sensing.data.mmw.support_selection import angle_coverage_indices
 from kd_sensing.data.transform_ops.gps import latlon_to_utm_xy, read_gps_latlon
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.evaluation.metrics import (

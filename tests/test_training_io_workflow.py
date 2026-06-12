@@ -1432,6 +1432,96 @@ def test_build_dataloaders_deepsense_2604_stratified_split_uses_union_and_train_
     assert first_train_leaf.gps_scaler_metadata["source"] == "stratified_train_subset_streaming_fit"
 
 
+def test_deepsense_2604_sequence_group_split_keeps_seq_index_exclusive(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    test_csv = tmp_path / "test.csv"
+    _write_stratified_gps_sequence_fixture(tmp_path, train_csv, rows=20, offset=0, seq_block_size=2)
+    _write_stratified_gps_sequence_fixture(tmp_path, test_csv, rows=20, offset=20, seq_block_size=2)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "data_root": str(tmp_path),
+                "train_csv_name": train_csv.name,
+                "test_csv_name": test_csv.name,
+                "split_protocol": "stratified_80_10_10",
+                "split_strategy": "stratified_by_target_beam_per_scene_sequence_group",
+                "split_seed": 11,
+                "split_fractions": {"train": 0.8, "validation": 0.1, "test": 0.1},
+                "seq_len": 5,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 4, "test_batch_size": 4, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+
+    split_datasets = build_protocol_split_datasets(cfg)
+
+    assert split_datasets is not None
+    train_seq = _seq_index_keys_for_dataset(split_datasets["train"])
+    validation_seq = _seq_index_keys_for_dataset(split_datasets["validation"])
+    test_seq = _seq_index_keys_for_dataset(split_datasets["test"])
+    assert train_seq.isdisjoint(validation_seq)
+    assert train_seq.isdisjoint(test_seq)
+    assert validation_seq.isdisjoint(test_seq)
+    assert len(split_datasets["train"]) == 32
+    assert len(split_datasets["validation"]) == 4
+    assert len(split_datasets["test"]) == 4
+
+
+def _seq_index_keys_for_dataset(dataset) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for leaf, indices in _leaf_indices_for_test(dataset):
+        frame = pd.read_csv(leaf.root_csv, na_values="").fillna(-99)
+        for idx in indices:
+            keys.add((str(getattr(leaf, "scene_id", "")), str(frame.iloc[int(idx)]["seq_index"])))
+    return keys
+
+
+def _leaf_indices_for_test(dataset) -> list[tuple[object, list[int]]]:
+    if isinstance(dataset, ConcatDataset):
+        result: list[tuple[object, list[int]]] = []
+        for component in dataset.datasets:
+            result.extend(_leaf_indices_for_test(component))
+        return result
+    if isinstance(dataset, Subset):
+        parent = dataset.dataset
+        if isinstance(parent, ConcatDataset):
+            grouped: dict[int, list[int]] = {}
+            cumulative = list(parent.cumulative_sizes)
+            for raw_index in dataset.indices:
+                global_index = int(raw_index)
+                component_idx = int(np.searchsorted(cumulative, global_index, side="right"))
+                previous = cumulative[component_idx - 1] if component_idx > 0 else 0
+                grouped.setdefault(component_idx, []).append(global_index - previous)
+            result: list[tuple[object, list[int]]] = []
+            for component_idx, local_indices in sorted(grouped.items()):
+                component = parent.datasets[component_idx]
+                if isinstance(component, Subset):
+                    base_pairs = _leaf_indices_for_test(component)
+                    if len(base_pairs) == 1:
+                        base_dataset, base_indices = base_pairs[0]
+                        result.append((base_dataset, [base_indices[int(index)] for index in local_indices]))
+                    else:
+                        result.extend(base_pairs)
+                else:
+                    result.append((component, [int(index) for index in local_indices]))
+            return result
+        if isinstance(parent, Subset):
+            base_pairs = _leaf_indices_for_test(parent)
+            if len(base_pairs) == 1:
+                base_dataset, base_indices = base_pairs[0]
+                return [(base_dataset, [base_indices[int(index)] for index in dataset.indices])]
+        return [(parent, [int(index) for index in dataset.indices])]
+    return [(dataset, list(range(len(dataset))))]
+
+
 def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
     csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
@@ -1724,6 +1814,27 @@ def test_scene_grouped_run_dir_defaults_and_resume_reuses(tmp_path: Path):
     assert scene32 == tmp_path / "scene32" / "scene32_fixed"
 
 
+def test_multiscene_run_dir_defaults_to_scenegroup_and_explicit_output_can_opt_out(tmp_path: Path):
+    cfg = {
+        "experiment": {"name": "exp"},
+        "data": {"dataset": {"type": "deepsense6g", "train_scenes": [32, 33, 34]}},
+        "output": {"dir": str(tmp_path), "run_name": "fixed"},
+        "training": {},
+    }
+    explicit = {
+        **cfg,
+        "output": {"dir": str(tmp_path / "manual_root"), "run_name": "fixed", "group_by_scene": False},
+    }
+
+    grouped = create_run_dir(cfg)
+    manual = create_run_dir(explicit)
+    resume = create_run_dir({**cfg, "training": {"resume": True}})
+
+    assert grouped == tmp_path / "scenegroup_s32_s34" / "fixed"
+    assert manual == tmp_path / "manual_root" / "fixed"
+    assert resume == grouped
+
+
 def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
     cfg = {"experiment": {"name": "eval"}, "output": {"dir": str(tmp_path), "run_name": "fixed"}}
 
@@ -1733,6 +1844,8 @@ def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
     assert first != second
     assert first.exists()
     assert second.exists()
+    assert first.parent == tmp_path / "evaluations" / "eval"
+    assert second.parent == tmp_path / "evaluations" / "eval"
     assert first.name.startswith("evaluation_fixed")
     assert second.name.startswith("evaluation_fixed")
 
@@ -1747,7 +1860,7 @@ def test_scene_grouped_eval_dir_and_explicit_eval_output(tmp_path: Path):
     grouped = create_eval_run_dir(cfg)
     explicit = create_eval_run_dir(cfg, output_dir=str(tmp_path / "manual_eval"))
 
-    assert grouped.parent == tmp_path / "scene9"
+    assert grouped.parent == tmp_path / "evaluations" / "eval"
     assert grouped.name.startswith("evaluation_fixed")
     assert explicit == tmp_path / "manual_eval"
 
@@ -2568,6 +2681,42 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
     assert resolved_scene_32.metadata["scene_slug"] == "scene32"
 
 
+def test_default_registry_is_scenegroup_scoped_for_multiscene_configs(tmp_path: Path):
+    single_cfg = {
+        "checkpoint": {"registry": {"enabled": True, "prefer": True}},
+        "data": {"dataset": {"type": "deepsense6g"}},
+        "experiment": {"name": "gps_strong", "task": "gps"},
+        "model": {"primary": {"type": "gps_strong"}},
+        "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
+    }
+    group_cfg = {
+        **single_cfg,
+        "data": {"dataset": {"type": "deepsense6g", "train_scenes": [32, 33, 34], "test_scenes": [31, 32, 33, 34]}},
+    }
+    checkpoint = tmp_path / "primary.pth"
+    torch.save({"value": torch.tensor([1])}, checkpoint)
+
+    group_archive = archive_best_checkpoint(
+        group_cfg,
+        source_checkpoint=checkpoint,
+        val_top1=0.82,
+        epoch=1,
+        run_dir=tmp_path / "scenegroup_run",
+    )
+    missing_single = find_registry_checkpoint(single_cfg)
+    resolved_group = find_registry_checkpoint(group_cfg)
+
+    assert Path(group_archive["path"]).parent == tmp_path / "scenegroup_s32_s34" / "best_checkpoints"
+    assert group_archive["scene_scope"] == "scenegroup"
+    assert group_archive["scene_slug"] == "scenegroup_s32_s34"
+    assert group_archive["train_scenes"] == [32, 33, 34]
+    assert group_archive["test_scenes"] == [31, 32, 33, 34]
+    assert missing_single.source == "missing"
+    assert missing_single.registry_dir == tmp_path / "scene31" / "best_checkpoints"
+    assert resolved_group.path == Path(group_archive["path"])
+    assert resolved_group.metadata["scene_slug"] == "scenegroup_s32_s34"
+
+
 def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):
     csv_path = tmp_path / "seq.csv"
     _write_full_sequence_fixture(tmp_path, csv_path, seq_len=1, num_pred=1)
@@ -2884,7 +3033,14 @@ def _write_multirow_gps_sequence_fixture(root: Path, csv_path: Path, *, rows: in
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_stratified_gps_sequence_fixture(root: Path, csv_path: Path, *, rows: int, offset: int) -> None:
+def _write_stratified_gps_sequence_fixture(
+    root: Path,
+    csv_path: Path,
+    *,
+    rows: int,
+    offset: int,
+    seq_block_size: int = 1,
+) -> None:
     seq_len = 5
     columns = (
         [f"gps{i}" for i in range(1, seq_len + 1)]
@@ -2915,7 +3071,8 @@ def _write_stratified_gps_sequence_fixture(root: Path, csv_path: Path, *, rows: 
         future = np.zeros(64, dtype=np.float32)
         future[label] = 1.0
         np.savetxt(root / future_name, future)
-        lines.append(",".join(gps_paths + bs_paths + beam_paths + [future_name, str(global_idx)]))
+        seq_index = int(offset + (row_idx // max(int(seq_block_size), 1)))
+        lines.append(",".join(gps_paths + bs_paths + beam_paths + [future_name, str(seq_index)]))
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

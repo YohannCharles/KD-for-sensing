@@ -28,6 +28,53 @@ conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --config confi
 
 已退役的 HiST-Beam、history-anchored Hist、P3/V7/V8/V9 probe 和默认 LOSO plan 不自动生成 KD variant，也不会由 virtual config alias 接管。
 
+## Vision-Position Baselines
+
+Vision-Position baseline suite 默认改为 BeamBench 对齐的输入、样本和指标口径：`seq_len=1`、`num_pred=1`，GPS 使用官方 challenge.py 风格的 `paper_distance_angle` 二维 Direct 输入，并按 scene 自动套用 paper calibration angle；DBA 使用 linear/non-circular 距离，Top-K 记录 `1/3/5`。这些 preset 仍复用项目通用的 `kd-sensing-train`、`kd-sensing-evaluate`、supervised loss、checkpoint 和 TensorBoard 流程，用作 BeamBench 口径下的模型对照。
+
+| preset | config | primary model | enabled modalities |
+| --- | --- | --- | --- |
+| `camera_ae_gps` | `configs/fusion/camera_ae_gps.yaml` | `vision_position_late_fusion` + `camera_ae_frozen` | image, gps |
+| `resnet_gps` | `configs/fusion/resnet_gps.yaml` | `vision_position_late_fusion` + `resnet18_imagenet_rgb` | image, gps |
+| `transformer_image_gps` | `configs/fusion/transformer_image_gps.yaml` | `vision_position_transformer_fusion` | image, gps |
+| `gps_only_neural` | `configs/fusion/gps_only_neural.yaml` | `gps_sequence_baseline` | gps |
+
+推荐 BeamBench train/eval scene 口径使用显式 scene override：训练 scenes 32、33、34，最终测试 scenes 31、32、33、34。通用 preset 的 S31 test 样本数会随 `seq_len=1,num_pred=1` 回到 BeamBench sequence CSV 口径，而不是旧 5 帧窗口的 652 条。
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/resnet_gps.yaml \
+  -o data.dataset.train_scenes=[32,33,34] \
+  -o data.dataset.test_scenes=[31,32,33,34] \
+  -o data.validation_from_train.enabled=true
+
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/transformer_image_gps.yaml \
+  -o data.dataset.train_scenes=[32,33,34] \
+  -o data.dataset.test_scenes=[31,32,33,34] \
+  -o data.validation_from_train.enabled=true
+
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/gps_only_neural.yaml \
+  -o data.dataset.train_scenes=[32,33,34] \
+  -o data.dataset.test_scenes=[31,32,33,34] \
+  -o data.validation_from_train.enabled=true
+```
+
+`camera_ae_gps` virtual preset 只对齐 BeamBench 的输入、split 和 metric 口径；它仍然是通用 trainer 下的 `vision_position_late_fusion` 模型，不等价于 Arnold22 Table III 的 Camera=AE, GPS=Direct, Fusion=Yes 专用模型。复现 Table III 或解释 S31 约 0.6 的 camera AE+GPS 结果时，必须使用专用 BeamBench runner：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
+  --config configs/fusion/beambench_image_ae_gps_direct.yaml \
+  --train-scenes 32 33 34 \
+  --eval-scenes 31 32 33 34 \
+  --selection-split validation \
+  --gps-feature-mode paper_distance_angle \
+  --target-beam-source future \
+  --output-root outputs/scenegroup_s32_s34/beambench_image_ae_gps_direct_tableiii/beambench_aligned
+```
+
+专用 runner 使用 `BeamBenchImageAEGPSDirectModel`、Camera AE 64x64 latent、`paper_distance_angle` 二维 GPS Direct 输入、`future_beam1` target 和 official/linear Top-3 DBA 汇总。`configs/fusion/beambench_image_ae_gps_direct.yaml` 顶层和 `beambench_paper` 节均保持该口径；不要把通用 `camera_ae_gps` virtual preset 的结果描述成 Table III 数值复现。
+
+四个 preset 默认只启用合法输入字段：image+GPS preset 读取 image、GPS、input beam 和 target beam；GPS-only neural 读取 GPS、input beam 和 target beam。radar、LiDAR、mmWave、CSI 缺失不会阻止这些 preset 运行。单场景产物写入 ignored 的 `outputs/scene<id>/<run_name>/`，多场景产物写入 `outputs/scenegroup_<range-or-list>/<run_name>/`；不要提交真实数据、cache、checkpoint、metrics 或训练日志。
+
 ## Snapshot Next-Frame
 
 Snapshot baseline 是 optional/supporting workflow，用于隔离历史窗口收益，不是当前 few-shot cross-scene 主结论的默认步骤。输入只取当前帧 `seq_len=1`，监督只取下一帧 `num_pred=1`，模型 core 为 `snapshot_frame`。
@@ -76,13 +123,15 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/deepsense6
 
 如果显存仍明显空闲，可优先只调大 batch size；如果显存 OOM，则把两个配置的 `data.dataloader.train_batch_size` 和 `test_batch_size` 从 64 降到 32。不要重新启用 `persistent_workers=true` 或把 worker 数量一次性加回 4；这会重新放大 CPU RAM 占用。
 
-该入口使用 RGB/ImageNet image profile 与 GPS relative-polar 特征，只记录 `val_jepa_loss`、JEPA mask ratio、EMA decay 和通用 loss；不会计算 beam Top-K、DBA、occlusion、position、LOS 或 link 指标。多场景主实验运行产物写入 `outputs/<run_name>/`，checkpoint 保存完整 `model.primary`，`runtime.prediction_objective.jepa.context_encoder_artifact_key` 标明可复用的 context encoder state-dict key。该 checkpoint 可作为后续 fine-tuning change 的初始化来源，但本入口不自动改写 supervised beam/fusion 配置，也不恢复旧 KD/teacher 体系。
+该入口使用 RGB/ImageNet image profile 与 GPS relative-polar 特征，只记录 `val_jepa_loss`、JEPA mask ratio、EMA decay 和通用 loss；不会计算 beam Top-K、DBA、occlusion、position、LOS 或 link 指标。多场景主实验运行产物写入 `outputs/scenegroup_s32_s34/<run_name>/`，checkpoint 保存完整 `model.primary`，`runtime.prediction_objective.jepa.context_encoder_artifact_key` 标明可复用的 context encoder state-dict key。该 checkpoint 可作为后续 fine-tuning change 的初始化来源，但本入口不自动改写 supervised beam/fusion 配置，也不恢复旧 KD/teacher 体系。
 
 ### JEPA 下游复用公平复核
 
-和 BeamBench Table III 做下游指标复核时，使用 fair low-memory 配置族，而不是 scene31-only 或 `num_pred=3` 的快速调试配置。fair 配置训练 scenes 32、33、34，从训练 split 内部划分 validation 做 early stopping/checkpoint selection，训练结束后单独加载 `best.pth` 在 scenes 31、32、33、34 的 test split 上记录 `final_test_metrics`。该配置固定 prediction window 为 `num_pred=1`，保留当前 image+GPS supervised 的 `seq_len=8`，DBA 距离口径设为 BeamBench linear，scheduler 设为 `none`。这些配置属于 JEPA image+GPS 实验复现面，路径位于 `configs/fusion/experiments/jepa_image_gps/`，不作为 `configs/fusion/` 根目录推荐入口。
+和 BeamBench Table III 做下游指标复核时，使用 fair low-memory 配置族，而不是 scene31-only 或 `num_pred=3` 的快速调试配置。fair 配置训练 scenes 32、33、34，从训练 split 内部划分 validation 做 early stopping/checkpoint selection，训练结束后单独加载 `best.pth` 在 scenes 31、32、33、34 的 test split 上记录 `final_test_metrics`。该配置固定 `seq_len=1`、`num_pred=1`、GPS `paper_distance_angle` 二维输入、scene paper calibration angle、BeamBench linear DBA 和 `1/3/5` Top-K，scheduler 设为 `none`。这些配置属于 JEPA image+GPS 实验复现面，路径位于 `configs/fusion/experiments/jepa_image_gps/`，不作为 `configs/fusion/` 根目录推荐入口。
 
-当前 Image+GPS+JEPA 下游主线是 GPS-biased checkpoint reuse，即 `image_gps_jepa_gps_biased_best_*` 配置族。supervised 与 random-mask 配置只作为对照；next-beam query/plain-token/GRU/snapshot 系列只作为 ablation，除非在同一评价协议上超过 GPS-biased 主线，否则不替代主结论。
+这里的 fair/BeamBench 对齐是输入、split、target 和 metric 对齐，不是 Table III Camera AE+GPS Direct 模型本身；Table III row 仍以 `configs/fusion/beambench_image_ae_gps_direct.yaml` 专用 runner 为准。
+
+当前 Image+GPS+JEPA 下游主线是 GPS-biased checkpoint reuse 和 GPS-query pooling，即 `image_gps_jepa_gps_biased_best_*` 与 `image_gps_jepa_gps_query_pool_best_*` 配置族。supervised 与 random-mask 配置只作为对照；next-beam query/plain-token/GRU/snapshot 系列已退役删除，必要时只从 git 历史恢复作历史复核，不再作为当前配置矩阵维护。
 
 ```bash
 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 0-7 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_supervised_beambench_fair_lowmem.yaml
@@ -90,7 +139,7 @@ MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NU
 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 taskset -c 16-23 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml
 ```
 
-JEPA random 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/{best,last}.pth`，GPS-biased 配置默认复用 `outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`。
+JEPA random 配置默认复用 `outputs/scenegroup_s32_s34/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/{best,last}.pth`，GPS-biased 配置默认复用 `outputs/scenegroup_s32_s34/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`。
 
 ### 2604.05668 S32-34 对齐复核
 
@@ -125,4 +174,4 @@ Raymobtime s008 的 dataset type、预处理配置、selection 模型、`coord/r
 
 ## 运行产物
 
-训练输出默认写入 `outputs/<scene_slug>/<run_name>/`，包括 `final_config.yaml`、`resolved_config.yaml`、`train_log.json`、`metrics.json`、checkpoint、TensorBoard 和可选 normalization/target artifact。使用 virtual/overlay config 时，运行产物仍保存完整解析配置，不依赖原始 YAML 文件继续存在。
+训练输出默认写入 `outputs/scene<id>/<run_name>/` 或 `outputs/scenegroup_<range-or-list>/<run_name>/`，包括 `final_config.yaml`、`resolved_config.yaml`、`train_log.json`、`metrics.json`、checkpoint、TensorBoard 和可选 normalization/target artifact。评估集合默认写入 `outputs/evaluations/<study_id>/`，长期分析写入 `outputs/analysis/` 或当前保留的 `outputs/visual_analysis/`，可再生成 cache 写入 `outputs/cache/`，registry 写入当前 scene/scenegroup 下的 `best_checkpoints/`。根级 `outputs/<run_name>/`、数字场景根、根级 `outputs/best_checkpoints/` 和 `outputs/eval_*` 只作为 legacy/archive 审计对象。使用 virtual/overlay config 时，运行产物仍保存完整解析配置，不依赖原始 YAML 文件继续存在。

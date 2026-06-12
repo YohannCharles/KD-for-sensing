@@ -1,7 +1,7 @@
 # gps-query-jepa-pooling Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-query-jepa-pooling. Update Purpose after archive.
+定义 GPS-query attention pooling 在 JEPA 下游 image encoder 中的边界、输入输出契约、诊断信息和派生配置要求，使 Image+GPS beam prediction 能在不恢复 JEPA 预训练分支或旧 KD 路线的前提下复用 GPS 条件视觉 token 聚合。
 ## Requirements
 ### Requirement: GPS-query Attention Pooling 模块
 系统 MUST 提供 `GPSQueryPool` 模块，用 GPS/motion 条件特征生成 query，并从 JEPA patch tokens 中聚合 beam prediction 相关的视觉局部信息。该模块 MUST 接收 patch tokens `[B,T,N,D]` 与条件特征 `[B,T,C]`，MUST 支持可配置 `k_queries`、`num_heads`、`condition_dim`、`latent_dim` 和 dropout，默认 MUST 输出 `[B,T,D]`。
@@ -66,4 +66,3 @@ TBD - created by archiving change add-gps-query-jepa-pooling. Update Purpose aft
 - **THEN** metadata MUST 标记 `pooling` 为 `gps_query_attention`
 - **AND** metadata MUST 记录 `k_queries`、`num_heads`、`condition_source` 和 JEPA checkpoint 路径
 - **AND** metadata MUST 能与 mean-pooling `fair_gps_biased` baseline 区分
-

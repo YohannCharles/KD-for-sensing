@@ -51,7 +51,7 @@ def _touch_old(path: Path, *, hours: int) -> None:
 
 def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     outputs = tmp_path / "outputs"
-    run_dir = _write_started_run(outputs, "complete_run")
+    run_dir = _write_started_run(outputs / "scene31", "complete_run")
     (run_dir / "metrics.json").write_text(
         json.dumps({"objective": {"primary_metric": "val_adba"}, "val_adba": 0.42, "topk": {"1": 0.5}}),
         encoding="utf-8",
@@ -72,6 +72,8 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     assert len(index["runs"]) == 1
     run = index["runs"][0]
     assert run["state"] == "complete"
+    assert run["runtime_layout"]["canonical_partition"] == "scene"
+    assert run["runtime_layout"]["scope_slug"] == "scene31"
     assert run["config"]["dataset_family"] == "deepsense6g"
     assert run["config"]["modalities"] == ["image", "lidar"]
     assert run["metrics"]["primary"] == {"name": "val_adba", "value": 0.42}
@@ -86,6 +88,26 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     assert retention["last.pth"]["registry_default_candidate"] is True
     assert run["tensorboard"]["event_count"] == 1
     assert run["cleanup"]["protected"] is False
+
+
+def test_run_index_skips_non_run_partitions_by_default_but_allows_explicit_scan(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    cache_run = _write_started_run(outputs / "cache", "cached_run")
+    active_run = _write_started_run(outputs / "scene31", "active_run")
+    archive_run = _write_started_run(outputs / "archive", "archived_run")
+    manifests_run = _write_started_run(outputs / "cleanup_manifests", "manifest_run")
+
+    default_index = build_run_index(outputs=outputs, logs=None, include_resources=False, now=NOW)
+    explicit_cache = build_run_index(outputs=outputs / "cache", logs=None, include_resources=False, now=NOW)
+
+    assert [run["run_name"] for run in default_index["runs"]] == [active_run.name]
+    assert any("outputs/cache" in warning for warning in default_index["warnings"])
+    assert any("outputs/archive" in warning for warning in default_index["warnings"])
+    assert any("outputs/cleanup_manifests" in warning for warning in default_index["warnings"])
+    assert [run["run_name"] for run in explicit_cache["runs"]] == [cache_run.name]
+    assert explicit_cache["roots"]["explicit_non_run_partitions"] == [str((outputs / "cache").resolve())]
+    assert archive_run.exists()
+    assert manifests_run.exists()
 
 
 def test_run_index_classifies_started_stale_partial_and_filters(tmp_path: Path):

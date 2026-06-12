@@ -33,11 +33,14 @@ _EXPORTS: dict[str, str] = {
     "TokenTransformerFusionNet": "kd_sensing.models.fusion",
     "BeamClassificationHead": "kd_sensing.models.modular",
     "EarlyConcatGRUCore": "kd_sensing.models.modular",
+    "GpsSequenceBaselineNet": "kd_sensing.models.vision_position",
     "LinearProjector": "kd_sensing.models.modular",
     "ModularSequenceModel": "kd_sensing.models.modular",
     "NextBeamQueryTransformerCore": "kd_sensing.models.modular",
     "SingleGRUCore": "kd_sensing.models.modular",
     "TokenTransformerCore": "kd_sensing.models.modular",
+    "VisionPositionLateFusionNet": "kd_sensing.models.vision_position",
+    "VisionPositionTransformerFusionNet": "kd_sensing.models.vision_position",
 }
 
 __all__ = list(_EXPORTS)

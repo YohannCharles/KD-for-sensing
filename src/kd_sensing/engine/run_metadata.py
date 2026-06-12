@@ -76,6 +76,9 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
             metadata["mmwave_scaler"] = dict(getattr(dataset, "mmwave_scaler_metadata"))
     if getattr(dataset, "use_gps", False):
         metadata["gps_normalize"] = bool(getattr(dataset, "gps_normalize", False))
+        metadata["gps_feature_mode"] = getattr(dataset, "gps_feature_mode", None)
+        metadata["gps_angle_offset_rad"] = getattr(dataset, "gps_angle_offset_rad", None)
+        metadata["gps_angle_offset_source"] = getattr(dataset, "gps_angle_offset_source", None)
         if getattr(dataset, "gps_scaler_metadata", None):
             metadata["gps_scaler"] = dict(getattr(dataset, "gps_scaler_metadata"))
     if getattr(dataset, "use_csi", False):
@@ -263,7 +266,164 @@ def prediction_setup_metadata(
     jepa_metadata = jepa_downstream_metadata(cfg)
     if jepa_metadata:
         metadata["jepa_downstream"] = jepa_metadata
+    baseline_metadata = vision_position_baseline_metadata(cfg)
+    if baseline_metadata:
+        metadata.update(baseline_metadata)
+        metadata["baseline"] = baseline_metadata
     return metadata
+
+
+def vision_position_baseline_metadata(cfg: dict[str, Any], model: Any | None = None) -> dict[str, Any]:
+    model_metadata = _model_training_strategy_metadata(model)
+    model_cfg = cfg.get("model", {})
+    primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
+    model_type = str(primary_cfg.get("type", ""))
+    preset = (
+        cfg.get("experiment", {}).get("baseline_preset")
+        or model_cfg.get("baseline_preset")
+        or primary_cfg.get("baseline_preset")
+        or model_metadata.get("baseline_preset")
+    )
+    baseline_model_types = {
+        "vision_position_late_fusion",
+        "vision_position_transformer_fusion",
+        "gps_sequence_baseline",
+        "gps_only_neural_baseline",
+    }
+    if not preset and model_type not in baseline_model_types:
+        return {}
+    try:
+        enabled_modalities = list(resolve_enabled_modalities(cfg))
+    except Exception:
+        enabled_modalities = list(primary_cfg.get("modalities", model_cfg.get("modalities", [])) or [])
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    eval_cfg = cfg.get("evaluation", {})
+    image_encoder_cfg = _image_encoder_config(primary_cfg)
+    gps_encoder_cfg = _gps_encoder_config(primary_cfg)
+    encoder_type = _component_type(image_encoder_cfg) or primary_cfg.get("image_encoder_type")
+    temporal = (
+        primary_cfg.get("temporal_aggregation")
+        or primary_cfg.get("temporal_model")
+        or primary_cfg.get("representation_core", {}).get("type")
+        or model_metadata.get("temporal_aggregation")
+    )
+    metric_profile = str(eval_cfg.get("metric_profile") or _metric_profile_from_config(eval_cfg))
+    mock_data = bool(
+        dataset_cfg.get("mock_data", False)
+        or str(dataset_cfg.get("type", "")).strip().lower() in {"synthetic", "synthetic_sequence"}
+    )
+    metadata: dict[str, Any] = {
+        "baseline_preset": str(preset) if preset else None,
+        "enabled_modalities": enabled_modalities,
+        "primary_model": model_type or model_metadata.get("type"),
+        "encoder_type": encoder_type,
+        "gps_encoder_type": _component_type(gps_encoder_cfg),
+        "gps_feature_mode": dataset_cfg.get("gps_feature_mode", primary_cfg.get("gps_feature_mode")),
+        "temporal_aggregation": temporal,
+        "num_classes": int(model_cfg.get("num_classes", primary_cfg.get("num_classes", 64))),
+        "num_pred": int(model_cfg.get("num_pred", primary_cfg.get("num_pred", dataset_cfg.get("num_pred", 0)) or 0)),
+        "label_space": str(eval_cfg.get("label_space") or "64_beam"),
+        "beam_shift": int(eval_cfg.get("beam_shift", dataset_cfg.get("beam_shift", 0))),
+        "metric_profile": metric_profile,
+        "circular_beam_distance": bool(eval_cfg.get("circular_beam_distance", eval_cfg.get("dba_distance_mode", "circular") == "circular")),
+        "topk": list(eval_cfg.get("k_values", [1, 2, 3, 5, 10])),
+        "normalization_artifact": dataset_cfg.get("gps_normalization_artifact")
+        or dataset_cfg.get("normalization_artifact")
+        or ("train_split:gps_scaler" if dataset_cfg.get("gps_normalize", False) else None),
+        "mock_data": mock_data,
+        "real_data": not mock_data,
+    }
+    if "image" in enabled_modalities:
+        profile = resolve_image_profile(dataset_cfg.get("image_profile"))
+        metadata["image_profile"] = profile
+        metadata["image_normalization"] = dataset_cfg.get("image_normalization", "imagenet")
+        metadata["image_augmentation"] = bool(dataset_cfg.get("image_augment", dataset_cfg.get("augmentation", False)))
+        metadata["freeze_image_encoder"] = _bool_from_config(
+            image_encoder_cfg,
+            ("freeze_encoder", "freeze_backbone"),
+        )
+        metadata["pretrained_weights"] = _pretrained_from_encoder(image_encoder_cfg)
+    if model_type in {"gps_sequence_baseline", "gps_only_neural_baseline"}:
+        metadata["uses_neural_network"] = True
+        metadata["non_neural_window_baseline"] = False
+    if model_type == "vision_position_transformer_fusion":
+        for key in ("token_organization", "d_model", "num_heads", "num_layers", "dropout", "max_seq_len"):
+            if key in primary_cfg:
+                metadata[key] = primary_cfg[key]
+    paper_cfg = cfg.get("beambench_paper", {})
+    paper_style = primary_cfg.get("paper_style", {})
+    if isinstance(paper_style, dict) or isinstance(paper_cfg, dict):
+        metadata["official_pretrained_weights"] = bool(
+            (paper_style or {}).get("official_pretrained_weights", (paper_cfg or {}).get("official_pretrained_weights", False))
+        )
+        metadata["official_test_set"] = bool(
+            (paper_style or {}).get("official_test_set", (paper_cfg or {}).get("official_test_set", False))
+        )
+        metadata["official_search_procedure"] = bool(
+            (paper_style or {}).get("official_search_procedure", (paper_cfg or {}).get("official_search_procedure", False))
+        )
+        metadata["table_iii_equivalent"] = bool(
+            metadata["official_pretrained_weights"]
+            and metadata["official_test_set"]
+            and metadata["official_search_procedure"]
+        )
+    return metadata
+
+
+def _image_encoder_config(primary_cfg: dict[str, Any]) -> dict[str, Any]:
+    image_encoder = primary_cfg.get("image_encoder")
+    if isinstance(image_encoder, str):
+        return {"type": image_encoder}
+    if isinstance(image_encoder, dict):
+        return dict(image_encoder)
+    encoders = primary_cfg.get("encoders", {})
+    if isinstance(encoders, dict):
+        image_cfg = encoders.get("image")
+        if isinstance(image_cfg, str):
+            return {"type": image_cfg}
+        if isinstance(image_cfg, dict):
+            return dict(image_cfg)
+    return {}
+
+
+def _gps_encoder_config(primary_cfg: dict[str, Any]) -> dict[str, Any]:
+    gps_encoder = primary_cfg.get("gps_encoder")
+    if isinstance(gps_encoder, str):
+        return {"type": gps_encoder}
+    if isinstance(gps_encoder, dict):
+        return dict(gps_encoder)
+    encoders = primary_cfg.get("encoders", {})
+    if isinstance(encoders, dict):
+        gps_cfg = encoders.get("gps")
+        if isinstance(gps_cfg, str):
+            return {"type": gps_cfg}
+        if isinstance(gps_cfg, dict):
+            return dict(gps_cfg)
+    return {}
+
+
+def _metric_profile_from_config(eval_cfg: dict[str, Any]) -> str:
+    distance_mode = str(eval_cfg.get("dba_distance_mode", "circular"))
+    if distance_mode in {"linear", "official", "beambench", "non_circular", "noncircular"}:
+        return "beambench_linear_topk"
+    return "64_beam_circular_topk"
+
+
+def _bool_from_config(cfg: dict[str, Any], keys: tuple[str, ...]) -> bool | None:
+    for key in keys:
+        if key in cfg:
+            return bool(cfg[key])
+    return None
+
+
+def _pretrained_from_encoder(cfg: dict[str, Any]) -> bool | str | None:
+    if "pretrained" in cfg:
+        return bool(cfg["pretrained"])
+    if cfg.get("weights") not in (None, "", "none", "None"):
+        return cfg.get("weights")
+    if cfg.get("checkpoint_path") or cfg.get("checkpoint"):
+        return True
+    return None
 
 
 def jepa_downstream_metadata(
@@ -723,4 +883,5 @@ __all__ = [
     "jepa_downstream_metadata",
     "prediction_setup_metadata",
     "throughput_run_metadata",
+    "vision_position_baseline_metadata",
 ]

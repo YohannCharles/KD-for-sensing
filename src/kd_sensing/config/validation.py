@@ -302,6 +302,8 @@ def validate_image_model_profiles(cfg: dict[str, Any], image_profile: str) -> No
         expected_channels = None
         if encoder_type == "resnet18_imagenet_rgb":
             expected_channels = 3
+        elif encoder_type == "camera_ae_frozen":
+            expected_channels = 3
         elif encoder_type in REMOVED_IMAGE_ENCODERS:
             raise ValueError(
                 f"Removed image encoder '{encoder_type}' is no longer supported. "

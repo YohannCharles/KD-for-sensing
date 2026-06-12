@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/beambench_baseline/eval"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs/evaluations/beambench_baseline/eval"))
     parser.add_argument("--execute", action="store_true", help="Actually run official challenge.py when all inputs exist.")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--num-beams", type=int, default=64)

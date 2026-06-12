@@ -11,9 +11,9 @@ from kd_sensing.baselines.beambench.pipeline import MockTrainingConfig, train_mo
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Train/evaluate a BeamBench baseline wrapper.")
     parser.add_argument("--mock", action="store_true", help="Create and run the explicit MOCK smoke dataset.")
-    parser.add_argument("--data-root", type=Path, default=Path("outputs/beambench_baseline/mock_dataset"))
+    parser.add_argument("--data-root", type=Path, default=Path("outputs/cache/beambench_baseline/mock_dataset"))
     parser.add_argument("--csv", type=Path, default=Path("ml_challenge_mock_multi_modal.csv"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/beambench_baseline/mock_smoke"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs/evaluations/beambench_baseline/mock_smoke"))
     parser.add_argument("--num-beams", type=int, default=64)
     parser.add_argument("--beam-shift", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=3)

@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 from tqdm.auto import tqdm
 
-from kd_sensing.data.scenes import scene_slug_from_config
 from kd_sensing.engine.artifacts import ArtifactWriter, final_config_with_runtime
 from kd_sensing.engine.batch_step import (
     BatchStepRunner,
@@ -86,6 +85,7 @@ from kd_sensing.engine.training_state import (
     validate_early_stopping_source_available as _validate_early_stopping_source_available,
 )
 from kd_sensing.evaluation.lidar_diagnostics import LidarQualityAccumulator
+from kd_sensing.utils.runtime_output_layout import evaluation_output_base, scoped_output_base
 from kd_sensing.utils.paths import output_dir as resolve_output_dir, resolve_path
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.seed import set_seed
@@ -134,7 +134,8 @@ def create_eval_run_dir(cfg: dict, output_dir: str | None = None) -> Path:
         path = resolve_output_dir(output_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
-    base = _scene_grouped_output_base(cfg)
+    root = resolve_output_dir(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
+    base = evaluation_output_base(root, cfg)
     run_name = cfg.get("output", {}).get("evaluation_run_name") or cfg.get("output", {}).get("run_name")
     if not run_name:
         run_name = cfg.get("experiment", {}).get("name", "run")
@@ -147,13 +148,7 @@ def create_eval_run_dir(cfg: dict, output_dir: str | None = None) -> Path:
 
 def _scene_grouped_output_base(cfg: dict) -> Path:
     base = resolve_output_dir(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
-    output_cfg = cfg.get("output", {})
-    if output_cfg.get("group_by_scene", True) is False:
-        return base
-    scene_slug = scene_slug_from_config(cfg)
-    if not scene_slug or base.name == scene_slug:
-        return base
-    return base / scene_slug
+    return scoped_output_base(base, cfg, purpose="training")
 
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import csv
 from bisect import bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,16 @@ STRATIFIED_2604_PROTOCOLS = {
     "stratified_80_10_10",
     "deepsense6g_2604_stratified_80_10_10",
     "2604_stratified_80_10_10",
+}
+STRATIFIED_SAMPLE_STRATEGIES = {
+    "stratified_by_target_beam_per_scene",
+    "sample_stratified_by_target_beam_per_scene",
+}
+STRATIFIED_SEQUENCE_GROUP_STRATEGIES = {
+    "stratified_by_target_beam_per_scene_sequence_group",
+    "stratified_by_target_beam_per_scene_group_safe",
+    "sequence_group_stratified_by_target_beam_per_scene",
+    "group_safe_stratified_by_target_beam_per_scene",
 }
 
 
@@ -132,8 +143,10 @@ def build_protocol_split_datasets(cfg: dict[str, Any], **extra_dataset_kwargs: A
     for scene_offset, scene in enumerate(all_scenes):
         full_scene = _build_protocol_union_dataset(cfg, scene, source_splits, extra_dataset_kwargs)
         labels = _target_labels_for_dataset(full_scene)
-        index_splits = _stratified_indices_by_label(
+        index_splits = _protocol_indices_by_strategy(
+            full_scene,
             labels,
+            split_cfg=split_cfg,
             seed=int(split_cfg["seed"]) + scene_offset,
             validation_fraction=float(split_cfg["validation_fraction"]),
             test_fraction=float(split_cfg["test_fraction"]),
@@ -361,6 +374,35 @@ def _stratified_2604_split_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _protocol_indices_by_strategy(
+    dataset: Any,
+    labels: list[int],
+    *,
+    split_cfg: dict[str, Any],
+    seed: int,
+    validation_fraction: float,
+    test_fraction: float,
+) -> dict[str, list[int]]:
+    strategy = str(split_cfg.get("strategy") or "stratified_by_target_beam_per_scene").strip().lower()
+    if strategy in STRATIFIED_SAMPLE_STRATEGIES:
+        return _stratified_indices_by_label(
+            labels,
+            seed=seed,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+        )
+    if strategy in STRATIFIED_SEQUENCE_GROUP_STRATEGIES:
+        return _stratified_indices_by_label_and_sequence_group(
+            labels,
+            _sequence_group_keys_for_dataset(dataset),
+            seed=seed,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+        )
+    supported = sorted(STRATIFIED_SAMPLE_STRATEGIES | STRATIFIED_SEQUENCE_GROUP_STRATEGIES)
+    raise ValueError(f"Unsupported stratified_80_10_10 split_strategy '{strategy}'. Expected one of {supported}.")
+
+
 def _dataset_scenes_for_protocol_role(cfg: dict[str, Any], role: str) -> tuple[Any, ...]:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     if not isinstance(dataset_cfg, dict):
@@ -470,6 +512,143 @@ def _stratified_indices_by_label(
             raise ValueError(f"stratified_80_10_10 split produced an empty {role} split.")
         splits[role] = sorted(indices)
     return splits
+
+
+def _stratified_indices_by_label_and_sequence_group(
+    labels: list[int],
+    group_keys: list[str],
+    *,
+    seed: int,
+    validation_fraction: float,
+    test_fraction: float,
+) -> dict[str, list[int]]:
+    if len(labels) != len(group_keys):
+        raise ValueError(
+            "stratified sequence-group split requires one group key per label; "
+            f"got {len(group_keys)} group keys for {len(labels)} labels."
+        )
+    groups: dict[str, dict[str, Any]] = {}
+    for idx, (label, group_key) in enumerate(zip(labels, group_keys, strict=True)):
+        group = groups.setdefault(str(group_key), {"indices": [], "labels": Counter()})
+        group["indices"].append(int(idx))
+        group["labels"][int(label)] += 1
+    if len(groups) < 3:
+        raise ValueError("stratified sequence-group split requires at least three seq_index groups.")
+
+    group_items = []
+    for key, payload in groups.items():
+        label_counts: Counter = payload["labels"]
+        dominant_label = min(
+            label_counts,
+            key=lambda label: (-int(label_counts[label]), int(label)),
+        )
+        group_items.append((key, int(dominant_label), list(payload["indices"])))
+
+    total_groups = len(group_items)
+    test_group_count = _holdout_group_count(total_groups, test_fraction)
+    validation_group_count = _holdout_group_count(total_groups, validation_fraction)
+    if test_group_count + validation_group_count >= total_groups:
+        overflow = test_group_count + validation_group_count - max(0, total_groups - 1)
+        while overflow > 0 and validation_group_count >= test_group_count and validation_group_count > 0:
+            validation_group_count -= 1
+            overflow -= 1
+        while overflow > 0 and test_group_count > 0:
+            test_group_count -= 1
+            overflow -= 1
+
+    rng = np.random.default_rng(int(seed))
+    buckets: dict[int, list[tuple[str, list[int]]]] = defaultdict(list)
+    for key, label, indices in group_items:
+        buckets[int(label)].append((key, indices))
+    for bucket in buckets.values():
+        rng.shuffle(bucket)
+
+    test_counts = _proportional_group_counts(
+        {label: len(items) for label, items in buckets.items()},
+        test_group_count,
+    )
+    remaining_by_label = {
+        label: len(items) - int(test_counts.get(label, 0))
+        for label, items in buckets.items()
+    }
+    validation_counts = _proportional_group_counts(remaining_by_label, validation_group_count)
+
+    splits = {"train": [], "validation": [], "test": []}
+    for label in sorted(buckets):
+        bucket = buckets[label]
+        test_count = int(test_counts.get(label, 0))
+        validation_count = int(validation_counts.get(label, 0))
+        for _, indices in bucket[:test_count]:
+            splits["test"].extend(indices)
+        for _, indices in bucket[test_count : test_count + validation_count]:
+            splits["validation"].extend(indices)
+        for _, indices in bucket[test_count + validation_count :]:
+            splits["train"].extend(indices)
+
+    for role, indices in splits.items():
+        if not indices:
+            raise ValueError(f"stratified sequence-group split produced an empty {role} split.")
+        splits[role] = sorted(int(index) for index in indices)
+    return splits
+
+
+def _holdout_group_count(total_groups: int, fraction: float) -> int:
+    if total_groups <= 2 or fraction <= 0:
+        return 0
+    return max(1, int(round(float(total_groups) * float(fraction))))
+
+
+def _proportional_group_counts(capacity_by_label: dict[int, int], target_count: int) -> dict[int, int]:
+    target = max(0, int(target_count))
+    if target <= 0:
+        return {label: 0 for label in capacity_by_label}
+    total_capacity = sum(max(0, int(value)) for value in capacity_by_label.values())
+    target = min(target, total_capacity)
+    counts: dict[int, int] = {}
+    remainders = []
+    for label, capacity in sorted(capacity_by_label.items()):
+        available = max(0, int(capacity))
+        raw = (float(available) * float(target) / float(total_capacity)) if total_capacity else 0.0
+        count = min(available, int(np.floor(raw)))
+        counts[int(label)] = count
+        remainders.append((raw - count, int(label)))
+    remaining = target - sum(counts.values())
+    for _, label in sorted(remainders, key=lambda item: (-item[0], item[1])):
+        if remaining <= 0:
+            break
+        if counts[label] >= max(0, int(capacity_by_label[label])):
+            continue
+        counts[label] += 1
+        remaining -= 1
+    return counts
+
+
+def _sequence_group_keys_for_dataset(dataset: Any) -> list[str]:
+    group_keys: list[str] = []
+    for leaf, indices in _leaf_datasets_with_indices(dataset):
+        csv_path = getattr(leaf, "root_csv", None)
+        if csv_path is None:
+            raise ValueError("sequence-group stratified split requires DeepSense6G datasets with root_csv.")
+        seq_values = _csv_column_values(csv_path, "seq_index")
+        if seq_values is None:
+            raise ValueError(f"sequence-group stratified split requires a seq_index column in {csv_path}.")
+        scene = getattr(leaf, "scene_id", getattr(leaf, "scene_slug", ""))
+        for idx in indices:
+            local_idx = int(idx)
+            if local_idx >= len(seq_values):
+                raise ValueError(
+                    f"sequence-group stratified split index {local_idx} exceeds seq_index rows in {csv_path}."
+                )
+            group_keys.append(f"{scene}:{seq_values[local_idx]}")
+    return group_keys
+
+
+def _csv_column_values(path: str | Path, column: str) -> list[str] | None:
+    with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None or column not in reader.fieldnames:
+            return None
+        return [str(row.get(column, "")) for row in reader]
 
 
 def _annotate_protocol_subset(

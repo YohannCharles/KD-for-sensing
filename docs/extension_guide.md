@@ -262,20 +262,19 @@ fusion mode defaults, objective overlays, and supported advanced overlays are ta
 implementation modules directly when editing model internals. A plain `import kd_sensing.models` should not
 pull in fusion, GPS, LiDAR, mmWave, image encoder, or radar implementation modules.
 
-## Diagnostics Visualization Internals
+## Viewer Manifest Internals
 
-`kd_sensing.diagnostics.visualization.core` is a public orchestration entry point only. Keep concrete
-implementation in the focused submodules:
+`kd_sensing.diagnostics.viewer_manifest` is the public manifest export orchestration entry point. Keep concrete
+implementation in the focused helper modules:
 
-- `config.py`: `VisualizationConfig`, parsing, final config snapshot, metadata paths.
-- `datasets.py`: diagnostic dataset construction, train-fitted normalization reuse, scene metadata.
-- `sampling.py`: candidate collection, filtering, and sample selection summaries.
-- `stats.py`: tensor, modality, and split statistics.
-- `render.py`: sample records, PNG paths, and overview rendering.
-- `writers.py`: JSON, JSONL, CSV, and summary writes.
+- `viewer_manifest_config.py`: `VisualizationConfig`, parsing, final config snapshot, metadata paths.
+- `viewer_manifest_datasets.py`: diagnostic dataset construction, train-fitted normalization reuse, scene metadata.
+- `viewer_manifest_sampling.py`: candidate collection, filtering, and sample selection summaries.
+- `viewer_manifest_stats.py`: tensor, modality, and split statistics.
+- `viewer_manifest_writer.py`: raw/processed asset and manifest record writing.
 
-Visualization implementation work should target the submodule that owns the behavior; the installed CLI
-exports viewer manifests through `kd-sensing-export-viewer-manifest`.
+Manifest implementation work should target the module that owns the behavior; the installed CLI exports
+viewer manifests through `kd-sensing-export-viewer-manifest`.
 
 ## Advanced Fusion Overlays
 

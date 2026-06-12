@@ -1,7 +1,7 @@
 # jepa-downstream-extensibility Specification
 
 ## Purpose
-TBD - created by archiving change modularize-jepa-downstream-extensibility. Update Purpose after archive.
+定义 JEPA context image encoder 在 supervised downstream 中的可插拔 pooler、adapter、optimizer 参数组和 runtime metadata 契约，保证派生实验能与 GPS-biased mean-pooling baseline 可比，同时不改变 Stage 1 JEPA checkpoint 或主训练评估流程。
 ## Requirements
 ### Requirement: JEPA downstream pooler 和 adapter 可插拔
 系统 MUST 为 JEPA context image encoder 的下游 supervised reuse 提供可插拔 pooler/adapter 边界。pooler MUST 消费 JEPA context encoder 输出的 patch tokens `[B,T,N,D]`，并默认输出现有 fusion projector 可消费的 `[B,T,D]` image feature。adapter MAY 在 pooling 前后执行轻量可训练变换，但 MUST 不修改 Stage 1 JEPA checkpoint schema、target encoder EMA、mask sampler 或 latent prediction loss。
@@ -66,4 +66,3 @@ TBD - created by archiving change modularize-jepa-downstream-extensibility. Upda
 - **WHEN** 分别运行 mean-pooling `fair_gps_biased` baseline 与某个 JEPA downstream 派生配置
 - **THEN** runtime metadata MUST 能通过 ablation、pooler 或 adapter 字段区分两者
 - **AND** metadata MUST 记录二者使用的 JEPA checkpoint 路径以便审计实验口径
-

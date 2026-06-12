@@ -24,14 +24,6 @@ from kd_sensing.models.jepa_downstream import (  # noqa: E402
 )
 from kd_sensing.registries import MODELS, RegistryError, import_default_components  # noqa: E402
 
-JEPA_DOWNSTREAM_CONFIGS = {
-    "jepa_gru": ROOT / "configs/fusion/experiments/jepa_image_gps/jepa_gru.yaml",
-    "jepa_snapshot": ROOT / "configs/fusion/experiments/jepa_image_gps/jepa_snapshot.yaml",
-    "jepa_plain_token_transformer": ROOT
-    / "configs/fusion/experiments/jepa_image_gps/jepa_plain_token_transformer.yaml",
-    "jepa_next_query_transformer": ROOT
-    / "configs/fusion/experiments/jepa_image_gps/jepa_next_query_transformer.yaml",
-}
 GPS_QUERY_DOWNSTREAM_CONFIGS = {
     "fair_gps_query_pooling": ROOT
     / "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml",
@@ -451,83 +443,21 @@ class _EchoQueryAttention(torch.nn.Module):
         return query, weights if need_weights else None
 
 
-def test_jepa_downstream_ablation_configs_load_and_record_metadata(tmp_path: Path):
-    loaded = {name: load_config(path) for name, path in JEPA_DOWNSTREAM_CONFIGS.items()}
-
-    checkpoints = {
-        cfg["model"]["primary"]["encoders"]["image"]["checkpoint_path"]
-        for cfg in loaded.values()
-    }
-    assert len(checkpoints) == 1
-    for name, cfg in loaded.items():
-        assert cfg["experiment"]["objective"] == "beam"
-        assert cfg["experiment"]["ablation"] == name
-        assert cfg["data"]["dataset"]["scene"] == 31
-        assert cfg["data"]["dataset"]["train_scenes"] == [32, 33, 34]
-        assert "validation_scenes" not in cfg["data"]["dataset"]
-        assert cfg["data"]["dataset"]["test_scenes"] == [31, 32, 33, 34]
-        assert cfg["data"]["validation_from_train"] == {"enabled": True, "fraction": 0.1, "seed": 42}
-        assert cfg["output"]["dir"] == "outputs/jepa_image_gps_downstream_ablation"
-        assert cfg["output"]["group_by_scene"] is False
-        assert "train_s32_s34_val_from_train_test_s31_s34" in cfg["output"]["run_name"]
-        assert "constant_lr" in cfg["output"]["run_name"]
-        assert cfg["scheduler"]["type"] == "none"
-        assert cfg["evaluation"]["dba_distance_mode"] == "linear"
-        assert cfg["training"]["lr"] == 0.00075
-        assert cfg["training"]["epochs"] == 160
-        assert cfg["training"]["patience"] == 45
-        assert cfg["training"]["min_delta"] == 0.00005
-        assert cfg["data"]["dataloader"]["train_num_workers"] == 0
-        assert cfg["data"]["dataloader"]["test_num_workers"] == 0
-        assert cfg["data"]["dataloader"]["pin_memory"] is False
-        assert cfg["data"]["dataloader"]["persistent_workers"] is False
-        assert cfg["data"]["dataloader"]["train_persistent_workers"] is False
-        assert cfg["data"]["dataloader"]["test_persistent_workers"] is False
-        assert cfg["model"]["primary"]["type"] == "modular_sequence"
-        assert cfg["model"]["primary"]["encoders"]["image"]["type"] == "jepa_context_image"
-        assert cfg["model"]["primary"]["encoders"]["image"]["freeze_encoder"] is False
-        assert "distillation" not in cfg
-
-        final_cfg = final_config_with_runtime(cfg, run_dir=tmp_path / name)
-        metadata = final_cfg["runtime"]["jepa_downstream"]
-        assert metadata["ablation"] == name
-        assert metadata["jepa_checkpoint_path"] in checkpoints
-        assert metadata["freeze_image_encoder"] is False
-        assert metadata["representation_core_type"] == cfg["model"]["primary"]["representation_core"]["type"]
-
-    assert loaded["jepa_gru"]["model"]["primary"]["representation_core"]["type"] == "early_concat_gru"
-    assert loaded["jepa_snapshot"]["model"]["primary"]["representation_core"]["type"] == "snapshot_frame"
-    assert loaded["jepa_snapshot"]["data"]["dataset"]["seq_len"] == 1
-    assert loaded["jepa_snapshot"]["data"]["dataset"]["num_pred"] == 1
-    for name in JEPA_DOWNSTREAM_CONFIGS:
-        assert loaded[name]["data"]["dataloader"]["train_batch_size"] == 8
-        assert loaded[name]["data"]["dataloader"]["test_batch_size"] == 8
-    assert loaded["jepa_plain_token_transformer"]["model"]["primary"]["representation_core"]["type"] == "token_transformer"
-    assert (
-        loaded["jepa_next_query_transformer"]["model"]["primary"]["representation_core"]["type"]
-        == "next_beam_query_transformer"
-    )
-
-    next_metadata = final_config_with_runtime(
-        loaded["jepa_next_query_transformer"],
-        run_dir=tmp_path / "next",
-    )["runtime"]["jepa_downstream"]
-    plain_metadata = final_config_with_runtime(
-        loaded["jepa_plain_token_transformer"],
-        run_dir=tmp_path / "plain",
-    )["runtime"]["jepa_downstream"]
-    assert next_metadata["time_embedding_enabled"] is True
-    assert next_metadata["modality_embedding_enabled"] is True
-    assert next_metadata["next_beam_query_enabled"] is True
-    assert plain_metadata["next_beam_query_enabled"] is False
-
-
 def test_gps_query_downstream_configs_load_and_record_metadata(tmp_path: Path):
     baseline = load_config(
         ROOT
         / "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml"
     )
     baseline_metadata = final_config_with_runtime(baseline, run_dir=tmp_path / "baseline")["runtime"]["jepa_downstream"]
+    assert baseline["experiment"]["protocol"] == "beambench_tableiii_input_s32_s34_train_s31_s34_test"
+    assert baseline["data"]["dataset"]["seq_len"] == 1
+    assert baseline["data"]["dataset"]["num_pred"] == 1
+    assert baseline["data"]["dataset"]["gps_feature_mode"] == "paper_distance_angle"
+    assert baseline["data"]["dataset"]["gps_angle_offset_source"] == "paper_scene_default"
+    assert baseline["model"]["primary"]["gps_input_size"] == 2
+    assert baseline["model"]["primary"]["seq_length"] == 1
+    assert baseline["evaluation"]["k_values"] == [1, 3, 5]
+    assert baseline["evaluation"]["dba_distance_mode"] == "linear"
     assert baseline["model"]["primary"]["encoders"]["image"].get("pooling", "mean") == "mean"
     assert baseline_metadata["pooling"] == "mean"
     assert baseline_metadata["pooler_type"] == "mean"
@@ -635,49 +565,6 @@ def test_jepa_downstream_runtime_metadata_prefers_model_declaration_and_records_
     assert metadata["conditioned_encoders"]["image"]["context_feature_source"] == "projected"
 
 
-def test_jepa_downstream_ablation_validation_loader_uses_train_scenes_and_test_loader_uses_heldout_scenes():
-    cfg = load_config(JEPA_DOWNSTREAM_CONFIGS["jepa_gru"])
-    cfg["data"]["dataset"]["portion"] = 0.01
-    loaders = build_dataloaders(cfg)
-
-    assert "validation" in loaders
-    validation_parts = getattr(loaders["validation"].dataset, "datasets", [])
-    test_parts = getattr(loaders["test"].dataset, "datasets", [])
-
-    assert [_scene_id_for_dataset(part) for part in validation_parts] == [32, 33, 34]
-    assert [_scene_id_for_dataset(part) for part in test_parts] == [31, 32, 33, 34]
-
-
-def _scene_id_for_dataset(dataset) -> int:
-    source = getattr(dataset, "dataset", dataset)
-    return int(source.scene_id)
-
-
-def test_jepa_downstream_ablation_forward_smoke_with_synthetic_image_gps():
-    import_default_components()
-
-    for name, path in JEPA_DOWNSTREAM_CONFIGS.items():
-        cfg = load_config(path)
-        model_cfg = _tiny_downstream_model_cfg(cfg)
-        model = MODELS.build(model_cfg)
-        model.eval()
-        seq_len = 1 if name == "jepa_snapshot" else 2
-
-        with torch.no_grad():
-            output = model(
-                image_batch=torch.randn(2, seq_len, 3, 32, 32),
-                gps_batch=torch.randn(2, seq_len, 3),
-            )
-
-        assert output["logits"].shape[0] == 2
-        assert output["logits"].shape[-1] == 7
-        if name in {"jepa_snapshot", "jepa_next_query_transformer"}:
-            assert output["logits"].shape == (2, 1, 7)
-            assert output["output_features"].shape[1] == 1
-        else:
-            assert output["logits"].shape[1] == seq_len
-
-
 def test_gps_query_downstream_forward_smoke_with_synthetic_image_gps():
     import_default_components()
     cfg = load_config(GPS_QUERY_DOWNSTREAM_CONFIGS["fair_gps_query_pooling"])
@@ -710,7 +597,7 @@ def test_jepa_downstream_ablation_configs_do_not_reference_retired_paths():
         "legacy fusion",
     )
 
-    for path in (*JEPA_DOWNSTREAM_CONFIGS.values(), *GPS_QUERY_DOWNSTREAM_CONFIGS.values()):
+    for path in (*GPS_QUERY_DOWNSTREAM_CONFIGS.values(), PARAM_GROUP_DERIVED_CONFIG):
         text = path.read_text(encoding="utf-8")
         assert [snippet for snippet in forbidden if snippet in text] == []
 

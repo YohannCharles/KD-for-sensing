@@ -19,6 +19,13 @@ GPS_FEATURE_DIMS = {
 }
 SUPPORTED_GPS_FEATURE_MODE = "relative_polar"
 CALIBRATED_GPS_FEATURE_MODES = {"paper_calibrated_relative_polar", "paper_distance_angle"}
+PAPER_CALIBRATED_GPS_MODE = "paper_distance_angle"
+PAPER_SCENE_CENTER_ANGLES_RAD = {
+    31: -0.72,
+    32: -0.8125375604986421 + float(np.pi) / 2.0,
+    33: 0.59,
+    34: -0.51,
+}
 PAPER_DISTANCE_ANGLE_FEATURE_VERSION = "official_arctan_ratio_v1"
 
 
@@ -443,6 +450,8 @@ __all__ = [
     "GPSStandardScaler",
     "GPS_FEATURE_DIMS",
     "CALIBRATED_GPS_FEATURE_MODES",
+    "PAPER_CALIBRATED_GPS_MODE",
+    "PAPER_SCENE_CENTER_ANGLES_RAD",
     "PositionTargetStandardScaler",
     "SUPPORTED_GPS_FEATURE_MODE",
     "build_relative_xy_targets",

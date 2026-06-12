@@ -20,15 +20,15 @@ from kd_sensing.diagnostics.viewer_manifest_merge import (
 )
 from kd_sensing.diagnostics.viewer_manifest_schema import _json_ready, _sample_id
 from kd_sensing.diagnostics.viewer_manifest_writer import _manifest_record
-from kd_sensing.diagnostics.visualization.config import (
+from kd_sensing.diagnostics.viewer_manifest_config import (
     apply_visualization_modalities,
     parse_visualization_config,
 )
-from kd_sensing.diagnostics.visualization.datasets import (
+from kd_sensing.diagnostics.viewer_manifest_datasets import (
     build_diagnostic_datasets,
     selected_csv_frame_for_dataset,
 )
-from kd_sensing.diagnostics.visualization.sampling import (
+from kd_sensing.diagnostics.viewer_manifest_sampling import (
     collect_candidates,
     select_sample_candidates,
 )
@@ -46,7 +46,7 @@ def export_viewer_manifest(
     force_rebuild: bool = False,
     sample_limit: int | None = None,
 ) -> dict[str, Any]:
-    """Prepare a cached Gradio viewer dataset from existing dataset/config metadata."""
+    """Prepare a cached viewer manifest dataset from existing dataset/config metadata."""
 
     requested_viz = parse_visualization_config(cfg)
     manifest_path = _manifest_output_path(
@@ -108,19 +108,15 @@ def export_viewer_manifest(
     meta = _manifest_meta(digest=digest, cfg=cfg, manifest_path=manifest_path, records=records)
     meta_path.write_text(json.dumps(_json_ready(meta), indent=2, ensure_ascii=False), encoding="utf-8")
 
-    viewer_command = (
-        "conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py "
-        f"--manifest {manifest_path}"
-    )
     return {
         "mode": "viewer_dataset_cache",
-        "message": "Prepared a reusable Gradio viewer dataset cache from the selected dataset config.",
+        "message": "Prepared a reusable viewer manifest dataset cache from the selected dataset config.",
         "cache_hit": False,
         "cache_dir": str(cache_root),
         "manifest_path": str(manifest_path),
         "meta_path": str(meta_path),
         "sample_count": len(records),
-        "viewer_command": viewer_command,
+        "viewer_command": f"manifest ready at {manifest_path}",
     }
 
 

@@ -12,6 +12,12 @@ import subprocess
 from typing import Any, Iterable
 
 from kd_sensing.config.parsing import safe_load_yaml
+from kd_sensing.utils.runtime_output_layout import (
+    DEFAULT_NON_RUN_PARTITIONS,
+    is_default_outputs_root,
+    is_default_skipped_partition,
+    output_layout_summary,
+)
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -63,6 +69,7 @@ def build_run_index(
     now: dt.datetime | None = None,
     processes: list[dict[str, Any]] | None = None,
     resources: dict[str, Any] | None = None,
+    include_legacy_containers: bool = False,
 ) -> dict[str, Any]:
     """Build a read-only index of local experiment run directories."""
 
@@ -86,7 +93,7 @@ def build_run_index(
     run_dirs: list[Path] = []
     for root in output_roots:
         if root.exists():
-            run_dirs.extend(discover_run_dirs(root))
+            run_dirs.extend(discover_run_dirs(root, warnings=warnings, include_legacy_containers=include_legacy_containers))
         else:
             warnings.append(f"outputs root does not exist: {root}")
 
@@ -107,6 +114,9 @@ def build_run_index(
         "roots": {
             "outputs": [str(path) for path in output_roots],
             "logs": [str(path) for path in log_roots],
+            "explicit_non_run_partitions": [
+                str(path) for path in output_roots if is_default_skipped_partition(path)
+            ],
         },
         "filters": _filters_to_dict(filter_spec),
         "runs": runs,
@@ -115,18 +125,55 @@ def build_run_index(
     }
 
 
-def discover_run_dirs(outputs_root: str | Path) -> list[Path]:
+def discover_run_dirs(
+    outputs_root: str | Path,
+    *,
+    warnings: list[str] | None = None,
+    include_legacy_containers: bool = False,
+) -> list[Path]:
     root = Path(outputs_root)
     candidates: set[Path] = set()
-    for path in root.rglob("*"):
-        if not path.is_file():
+    skip_default_partitions = is_default_outputs_root(root)
+    for current, dirnames, filenames in os.walk(root):
+        current_path = Path(current)
+        if skip_default_partitions and current_path == root:
+            for dirname in list(dirnames):
+                if dirname in DEFAULT_NON_RUN_PARTITIONS:
+                    skipped = current_path / dirname
+                    if warnings is not None:
+                        warnings.append(f"skipped non-run outputs partition by default: {skipped}")
+                    dirnames.remove(dirname)
+                elif (
+                    not include_legacy_containers
+                    and not _is_canonical_scan_partition_name(dirname)
+                    and not _shallow_child_may_contain_run(current_path / dirname)
+                ):
+                    skipped = current_path / dirname
+                    if warnings is not None:
+                        warnings.append(f"skipped non-canonical outputs partition by default: {skipped}")
+                    dirnames.remove(dirname)
+        if skip_default_partitions and current_path != root:
+            _prune_default_outputs_children(root, current_path, dirnames, warnings=warnings)
+        if _directory_contains_run_marker(current_path, filenames):
+            candidates.add(current_path)
+            dirnames[:] = []
             continue
-        if _is_discovery_artifact(path):
-            candidates.add(path.parent)
-        elif _is_checkpoint(path):
-            candidates.add(path.parent.parent if path.parent.name == "checkpoints" else path.parent)
-        elif _is_tensorboard_event(path):
-            candidates.add(path.parent.parent if path.parent.name == "tensorboard" else path.parent)
+        if current_path.name == "checkpoints" and any(_is_checkpoint(current_path / name) for name in filenames):
+            candidates.add(current_path.parent)
+            dirnames[:] = []
+            continue
+        if current_path.name == "tensorboard" and any(_is_tensorboard_event(current_path / name) for name in filenames):
+            candidates.add(current_path.parent)
+            dirnames[:] = []
+            continue
+        for filename in filenames:
+            path = current_path / filename
+            if _is_discovery_artifact(path):
+                candidates.add(path.parent)
+            elif _is_checkpoint(path):
+                candidates.add(path.parent.parent if path.parent.name == "checkpoints" else path.parent)
+            elif _is_tensorboard_event(path):
+                candidates.add(path.parent.parent if path.parent.name == "tensorboard" else path.parent)
     return sorted(candidates, key=lambda path: path.as_posix())
 
 
@@ -166,12 +213,14 @@ def summarize_run_dir(
         logs=run_logs,
         stale_after=stale_after,
     )
+    layout = output_layout_summary(path)
     return {
         "run_dir": str(path),
         "run_name": path.name,
         "state": state,
         "state_reason": state_reason,
-        "size_bytes": _path_size_bytes(path),
+        "size_bytes": _run_size_bytes(artifacts=artifacts, checkpoints=checkpoints),
+        "runtime_layout": layout,
         "config": config,
         "artifacts": artifacts,
         "metrics": metrics,
@@ -204,7 +253,7 @@ def summarize_artifacts(run_dir: Path) -> dict[str, Any]:
         for path in (run_dir / "checkpoints").glob("*.json")
         if path.is_file()
     )
-    tensorboard_events = sorted(str(path) for path in run_dir.rglob("events.out.tfevents*") if path.is_file())
+    tensorboard_events = [str(path) for path in _tensorboard_event_paths(run_dir)]
     items["checkpoints"] = {"present": bool(checkpoint_files), "paths": checkpoint_files}
     items["checkpoint_sidecars"] = {"present": bool(checkpoint_sidecars), "paths": checkpoint_sidecars}
     items["tensorboard_events"] = {"present": bool(tensorboard_events), "paths": tensorboard_events}
@@ -250,6 +299,7 @@ def summarize_config(run_dir: Path, *, artifacts: dict[str, Any], warnings: list
         "seed": experiment.get("seed"),
         "output_run_name": _nested_dict(cfg, "output").get("run_name"),
         "scene": runtime.get("scene"),
+        "scene_scope": runtime.get("scene_scope") or runtime.get("output_scope"),
     }
 
 
@@ -377,7 +427,7 @@ def summarize_cleanup_context(
 
 
 def summarize_tensorboard(run_dir: Path) -> dict[str, Any]:
-    events = sorted(path for path in run_dir.rglob("events.out.tfevents*") if path.is_file())
+    events = _tensorboard_event_paths(run_dir)
     latest = max((_mtime(path) for path in events), default=None)
     return {
         "event_count": len(events),
@@ -763,6 +813,80 @@ def _artifact_paths(artifacts: dict[str, Any]) -> list[Path]:
     return paths
 
 
+def _run_size_bytes(*, artifacts: dict[str, Any], checkpoints: dict[str, Any]) -> int:
+    paths = set(_artifact_paths(artifacts))
+    for item in checkpoints.get("items", []):
+        raw = item.get("path")
+        if raw:
+            paths.add(Path(raw))
+        sidecar = item.get("sidecar_path")
+        if sidecar:
+            paths.add(Path(sidecar))
+    return sum(_path_size_bytes(path) for path in paths)
+
+
+def _directory_contains_run_marker(path: Path, filenames: Iterable[str]) -> bool:
+    names = set(filenames)
+    if names & DISCOVERY_FILENAMES:
+        return True
+    checkpoint_dir = path / "checkpoints"
+    if not checkpoint_dir.exists() or not checkpoint_dir.is_dir():
+        return False
+    try:
+        return any(_is_checkpoint(item) for item in checkpoint_dir.iterdir() if item.is_file())
+    except OSError:
+        return False
+
+
+def _is_canonical_scan_partition_name(name: str) -> bool:
+    if name in {"analysis", "visual_analysis", "evaluations", "training"}:
+        return True
+    if re.fullmatch(r"scene\d+", name):
+        return True
+    return name.startswith("scenegroup_")
+
+
+def _shallow_child_may_contain_run(path: Path) -> bool:
+    try:
+        filenames = [item.name for item in path.iterdir() if item.is_file()]
+    except OSError:
+        return False
+    return _directory_contains_run_marker(path, filenames)
+
+
+def _prune_default_outputs_children(
+    outputs_root: Path,
+    current_path: Path,
+    dirnames: list[str],
+    *,
+    warnings: list[str] | None,
+) -> None:
+    try:
+        rel_parts = current_path.relative_to(outputs_root).parts
+    except ValueError:
+        return
+    if not rel_parts:
+        return
+    partition = rel_parts[0]
+    for dirname in list(dirnames):
+        child = current_path / dirname
+        if dirname in {"best_checkpoints", "cache", "feature_cache", "features"}:
+            _remove_pruned_dirname(dirnames, dirname, child, warnings=warnings)
+            continue
+        if partition in {"analysis", "visual_analysis", "training"} and len(rel_parts) == 1:
+            if not _shallow_child_may_contain_run(child):
+                _remove_pruned_dirname(dirnames, dirname, child, warnings=warnings)
+        elif partition == "evaluations" and len(rel_parts) == 2:
+            if not _shallow_child_may_contain_run(child):
+                _remove_pruned_dirname(dirnames, dirname, child, warnings=warnings)
+
+
+def _remove_pruned_dirname(dirnames: list[str], dirname: str, path: Path, *, warnings: list[str] | None) -> None:
+    if warnings is not None:
+        warnings.append(f"skipped non-run outputs subtree by default: {path}")
+    dirnames.remove(dirname)
+
+
 def _is_discovery_artifact(path: Path) -> bool:
     return path.name in DISCOVERY_FILENAMES
 
@@ -775,6 +899,21 @@ def _is_checkpoint(path: Path) -> bool:
 
 def _is_tensorboard_event(path: Path) -> bool:
     return path.name.startswith("events.out.tfevents")
+
+
+def _tensorboard_event_paths(run_dir: Path) -> list[Path]:
+    roots = [run_dir / "tensorboard", run_dir]
+    events: set[Path] = set()
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        try:
+            for path in root.glob("events.out.tfevents*"):
+                if path.is_file():
+                    events.add(path)
+        except OSError:
+            continue
+    return sorted(events, key=lambda path: path.as_posix())
 
 
 def _first_present_path(artifacts: dict[str, Any], keys: Iterable[str]) -> Path | None:

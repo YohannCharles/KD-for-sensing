@@ -14,6 +14,7 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
 from kd_sensing.data.transform_ops.gps import (  # noqa: E402
     GPSStandardScaler,
+    PAPER_SCENE_CENTER_ANGLES_RAD,
     build_gps_features,
     read_gps_latlon,
 )
@@ -80,6 +81,27 @@ def test_gps_feature_builder_rejects_non_relative_polar_modes(mode: str):
 
     with pytest.raises(ValueError, match="only supports 'relative_polar'"):
         build_gps_features(ue, bs, mode=mode)
+
+
+def test_deepsense_dataset_supports_beambench_paper_distance_angle_gps(tmp_path: Path):
+    csv_path = tmp_path / "train.csv"
+    gps_paths, bs_paths = _write_gps_files(tmp_path, "train", 33.0, -111.0)
+    _write_sequence_csv(csv_path, gps_paths, bs_paths, seq_index=1)
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        scene=31,
+        use_gps=True,
+        gps_feature_mode="paper_distance_angle",
+        gps_normalize=False,
+    )
+    features = dataset._gps_features_for_index(0)
+
+    assert features.shape == (8, 2)
+    assert dataset.gps_angle_offset_rad == PAPER_SCENE_CENTER_ANGLES_RAD[31]
+    assert dataset.gps_angle_offset_source == "paper_scene_default"
 
 
 def test_gps_scaler_fits_train_and_reuses_for_test_split(tmp_path: Path):

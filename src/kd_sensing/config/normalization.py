@@ -29,6 +29,8 @@ IMAGE_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
+    "vision_position_late_fusion",
+    "vision_position_transformer_fusion",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
 ENCODER_CONFIG_MODEL_TYPES = set(MODULAR_MODEL_TYPES)
@@ -45,6 +47,10 @@ FUSION_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
+    "gps_only_neural_baseline",
+    "gps_sequence_baseline",
+    "vision_position_late_fusion",
+    "vision_position_transformer_fusion",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
@@ -61,6 +67,10 @@ D_MODEL_ROLE_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     *MODULAR_MODEL_TYPES,
+    "gps_only_neural_baseline",
+    "gps_sequence_baseline",
+    "vision_position_late_fusion",
+    "vision_position_transformer_fusion",
 }
 
 
@@ -453,6 +463,11 @@ def model_supports_auxiliary_heads(model_type: str) -> bool:
 
 
 def image_encoder_type(model_cfg: dict[str, Any]) -> str | None:
+    image_encoder = model_cfg.get("image_encoder")
+    if isinstance(image_encoder, str):
+        return image_encoder
+    if isinstance(image_encoder, dict) and "type" in image_encoder:
+        return str(image_encoder["type"])
     encoders = model_cfg.get("encoders")
     if not isinstance(encoders, dict):
         return None

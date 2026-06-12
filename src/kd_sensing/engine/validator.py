@@ -134,9 +134,33 @@ def validate(model, dataloader, cfg: dict, criterion, device: torch.device, outp
         "split_seed",
         "split_sequence_count",
         "split_num_samples",
+        "baseline_preset",
+        "encoder_type",
+        "gps_encoder_type",
+        "gps_feature_mode",
+        "temporal_aggregation",
+        "num_classes",
+        "label_space",
+        "beam_shift",
+        "metric_profile",
+        "circular_beam_distance",
+        "normalization_artifact",
+        "mock_data",
+        "real_data",
+        "image_profile",
+        "image_normalization",
+        "image_augmentation",
+        "uses_neural_network",
+        "non_neural_window_baseline",
+        "official_pretrained_weights",
+        "official_test_set",
+        "official_search_procedure",
+        "table_iii_equivalent",
     ):
         if key in setup:
             metrics[key] = setup[key]
+    if "topk" in setup:
+        metrics["configured_topk"] = setup["topk"]
     if output_dir is not None:
         target = Path(output_dir)
         target.mkdir(parents=True, exist_ok=True)

@@ -513,7 +513,7 @@ canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUS
 - **AND** profile 输出 MUST 不记录 image motion cache 目录或读写开关
 
 ### Requirement: 场景化训练与评估输出
-训练和默认评估流程 MUST 按 DeepSense6G 场景归类输出运行目录。默认输出根目录保持 `outputs`，DeepSense6G 运行目录 MUST 写入 `outputs/<scene_slug>/<run_name>/` 或等价的用户配置根目录下。
+训练和默认评估流程 MUST 按 DeepSense6G scene 或 scenegroup 归类输出运行目录。默认输出根目录保持 `outputs`，单场景 DeepSense6G 运行目录 MUST 写入 `outputs/<scene_slug>/<run_name>/` 或等价的用户配置根目录下；多场景 DeepSense6G 运行目录 MUST 写入 `outputs/scenegroup_<scene-range-or-list>/<run_name>/` 或等价的用户配置根目录下。评估矩阵和成组评估输出 MUST 优先写入 `outputs/evaluations/<study_id>/`，除非用户显式传入完整输出目录。
 
 #### Scenario: 显式 Scenario 9 训练输出归档到 scene9
 - **WHEN** 用户显式选择 Scenario 9 并运行训练且 `output.dir: outputs`
@@ -521,42 +521,29 @@ canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUS
 - **AND** checkpoints、`final_config.yaml`、`train_log.json`、metrics、TensorBoard event 和训练曲线 MUST 都写入该运行目录
 
 #### Scenario: 默认 Scenario 31 训练输出归档到 scene31
-- **WHEN** 用户运行未显式设置 `data.dataset.scene` 的默认 DeepSense6G 训练配置
+- **WHEN** 用户运行未显式设置 `data.dataset.scene` 的默认 DeepSense6G 单场景训练配置
 - **THEN** 运行目录 MUST 创建在 `outputs/scene31/<run_name>/`
-- **AND** 同名 Scenario 9 或 Scenario 32 运行目录不得被覆盖
+- **AND** 同名 Scenario 9、Scenario 32 或 scenegroup 运行目录不得被覆盖
 
 #### Scenario: 显式 Scenario 32 训练输出归档到 scene32
 - **WHEN** 用户显式选择 Scenario 32 并运行训练且 `output.dir: outputs`
 - **THEN** 运行目录 MUST 创建在 `outputs/scene32/<run_name>/`
-- **AND** 同名 Scenario 31 运行目录不得被覆盖
+- **AND** 同名 Scenario 31 或 scenegroup 运行目录不得被覆盖
 
-#### Scenario: resume 使用默认场景化运行目录
-- **WHEN** 用户设置 `training.resume: true`、固定 `output.run_name` 且使用默认 Scenario 31
-- **THEN** 系统 MUST 从 `outputs/scene31/<run_name>/checkpoints/last.pth` 恢复训练
-- **AND** 系统不得回退到不同场景的同名运行目录
+#### Scenario: 多场景训练输出归档到 scenegroup
+- **WHEN** 用户运行包含多个 DeepSense6G scene 的训练配置且 `output.dir: outputs`
+- **THEN** 运行目录 MUST 创建在 `outputs/scenegroup_<scene-range-or-list>/<run_name>/`
+- **AND** 同名单场景运行目录不得被覆盖
+
+#### Scenario: resume 使用默认场景或 scenegroup 运行目录
+- **WHEN** 用户设置 `training.resume: true`、固定 `output.run_name` 且使用默认输出根
+- **THEN** 系统 MUST 从当前配置对应的 `outputs/<scene-or-scenegroup>/<run_name>/checkpoints/last.pth` 恢复训练
+- **AND** 系统不得回退到不同 scene 或 scenegroup 的同名运行目录
 
 #### Scenario: 显式评估输出目录保持完整路径
 - **WHEN** 用户通过评估入口显式传入 `--output-dir`
 - **THEN** 系统 MUST 使用该目录作为完整输出目录
-- **AND** 系统不得额外追加 `scene_slug`
-
-### Requirement: 当前训练产物迁移到 Scenario 9
-变更实施后，现有本地训练产物 MUST 被归类到 Scenario 9 输出目录。迁移 MUST 保留每个运行目录下的 checkpoint、日志、配置、metrics、TensorBoard 和 artifacts。
-
-#### Scenario: 迁移现有运行目录
-- **WHEN** 仓库中存在 `outputs/<run_name>/` 形式的历史训练目录
-- **THEN** 迁移后该目录 MUST 位于 `outputs/scene9/<run_name>/`
-- **AND** 原目录内容 MUST 保持完整
-
-#### Scenario: 迁移现有最佳 checkpoint 目录
-- **WHEN** 仓库中存在 `outputs/best_checkpoints/`
-- **THEN** 迁移后历史 Scenario 9 registry MUST 位于 `outputs/scene9/best_checkpoints/`
-- **AND** KD 配置默认解析 MUST 能找到迁移后的 teacher checkpoint
-
-#### Scenario: 迁移避免覆盖
-- **WHEN** `outputs/scene9/<run_name>/` 已经存在
-- **THEN** 迁移 MUST 避免静默覆盖
-- **AND** 系统 MUST 选择清晰的冲突处理方式或报告需要人工处理的冲突路径
+- **AND** 系统不得额外追加 `scene_slug` 或 scenegroup slug
 
 ### Requirement: 场景选择命令行覆盖
 训练和评估入口 MUST 支持通过现有 dotted override 选择场景，不需要新增独立 CLI 参数。
@@ -1344,17 +1331,17 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 系统 MUST 不为其提供 virtual fallback
 
 ### Requirement: 入口收敛不得让研究脚本成为核心依赖
-保留的 `scripts/`、`tools/analysis/` 和 `tools/visualization/` 研究或支持脚本 MUST 不成为核心训练、评估、预处理或 manifest 导出 workflow 的必需依赖。核心 workflow MUST 通过包内模块、console script 或明确保留的薄 alias 完成。
+保留的 `scripts/` 和 `tools/analysis/` 研究或支持脚本 MUST 不成为核心训练、评估、预处理或 manifest 导出 workflow 的必需依赖。仓库级 `tools/visualization/` viewer support 已退役，核心 workflow MUST 通过包内模块、console script 或明确保留的薄 alias 完成。
 
 #### Scenario: 训练入口不依赖研究脚本
 - **WHEN** 用户运行 `kd-sensing-train` 或 `python -m kd_sensing.cli.train`
 - **THEN** 训练 workflow MUST 不要求调用 `scripts/analyze_*`、`tools/analysis/*` 或 viewer 支持脚本
 - **AND** 研究脚本删除或重分类 MUST 不破坏核心训练入口
 
-#### Scenario: viewer 支持脚本边界清晰
-- **WHEN** 用户启动 Gradio viewer 或导出 viewer manifest
+#### Scenario: viewer manifest 边界清晰
+- **WHEN** 用户导出 viewer manifest 或使用 `kd-sensing-visualize-modalities` 兼容入口
 - **THEN** manifest 导出 MUST 通过 `kd-sensing-export-viewer-manifest` 或包内 CLI 完成
-- **AND** `tools/visualization/gradio_multimodal_viewer.py` MAY 作为 viewer entrypoint 保留，但 MUST 不复制 manifest 导出 CLI 的 parser 和业务逻辑
+- **AND** 仓库级 Gradio viewer entrypoint MUST 不再作为当前支持脚本保留
 
 ### Requirement: 本 change 不改变本地产物策略
 源码、配置和入口优化完成后，本地产物策略 MUST 保持现状。工作流 MAY 继续生成 outputs、logs、cache 和 checkpoint，但本 change MUST 不要求清理、压缩、迁移或提交这些产物。
@@ -1660,8 +1647,8 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **THEN** 系统 MUST 继续拒绝该配置
 - **AND** 错误信息 MUST 继续指向当前 supervised/adaptation 或 JEPA 预训练入口，而不是恢复旧 KD workflow
 
-### Requirement: BeamBench-fair supervised 下游验证
-项目 MUST 提供 image+GPS supervised fair low-memory 配置族，用于比较 supervised baseline 与 JEPA context encoder 初始化的下游 beam prediction。该配置族 MUST 使用 DeepSense6G scenes 32、33、34 的训练 split 作为训练来源，MUST 使用训练 split 内部划分的 validation 子集做 checkpoint selection，MUST 在训练完成后单独评估 scenes 31、32、33、34 的 test split，并 MUST 将 final test metrics 写入运行 metadata。
+### Requirement: BeamBench 对齐 supervised 下游验证
+项目 MUST 提供 image+GPS supervised fair low-memory 配置族，用于比较 supervised baseline 与 JEPA context encoder 初始化的下游 beam prediction。该配置族 MUST 使用 DeepSense6G scenes 32、33、34 的训练 split 作为训练来源，MUST 使用训练 split 内部划分的 validation 子集做 checkpoint selection，MUST 在训练完成后单独评估 scenes 31、32、33、34 的 test split，并 MUST 将 final test metrics 写入运行 metadata。保留 `beambench_fair` 文件名的配置 MUST 表示 BeamBench Table III 的输入、split、target 和 metric 口径对齐，不得继续使用旧的 8 帧 relative-polar fair 口径。
 
 #### Scenario: fair 配置使用独立选模 split
 - **WHEN** 用户加载 BeamBench-fair supervised 下游配置
@@ -1682,11 +1669,16 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **AND** linear 模式 MUST 使用非环形 beam index 距离
 - **AND** 未显式设置该字段的现有配置 MUST 继续使用 circular DBA 默认行为
 
-#### Scenario: fair 配置固定论文预测窗口
+#### Scenario: fair 配置固定 BeamBench 输入和预测窗口
 - **WHEN** fair supervised 配置被加载
 - **THEN** `data.dataset.num_pred` 和 `model.num_pred` MUST 为 1
+- **AND** `data.dataset.seq_len` 和 `model.seq_length` MUST 为 1
+- **AND** GPS 输入 MUST 使用 `paper_distance_angle` 二维 Direct 特征
+- **AND** `model.primary.gps_input_size` MUST 为 2
+- **AND** scene paper calibration angle MUST 通过 `gps_angle_offset_source: paper_scene_default` 或等价运行 metadata 记录
+- **AND** `evaluation.k_values` MUST 为 `[1, 3, 5]`
 - **AND** scheduler MUST 设置为 `none`
-- **AND** 配置 MUST NOT 因 BeamBench 原文未明确历史输入长度而强制修改现有 `seq_len: 8` 工作流
+- **AND** Table III Camera AE+GPS Direct 数值复现 MUST 使用专用 BeamBench runner，不得把通用 Image+GPS/JEPA fair 配置伪装成 Table III row 模型
 
 ### Requirement: 2604.05668 对齐 supervised 下游验证
 项目 MUST 提供 image+GPS supervised 2604 对齐配置族，用于与 arXiv:2604.05668 的 S32/S33/S34 主表口径比较。该配置族 MUST 合并 DeepSense6G scenes 32、33、34 的官方 train/test labeled CSV，MUST 在每个 scene 内按 beam label 做固定 seed 的 80/10/10 stratified train/validation/test split，MUST 使用 `seq_len: 5` 和 `num_pred: 1`，并 MUST 记录 split protocol 与每个 split 的样本数。
@@ -1738,4 +1730,22 @@ README、实验矩阵、快速健康检查和配置驱动 workflow 文档 MUST �
 - **WHEN** 用户传入 `configs/raymobtime/` 或 `configs/preprocess/raymobtime_s008_*.yaml` 下的旧配置路径
 - **THEN** 系统 MUST 拒绝该 workflow 或这些配置文件 MUST 已被删除
 - **AND** 错误信息 MUST 指出 Raymobtime s008 已退役
+
+### Requirement: 多场景训练输出 scope
+训练和默认评估流程 MUST 能为 DeepSense6G 多场景协议生成稳定 scenegroup scope。配置包含 `train_scenes`、`validation_scenes`、`test_scenes` 或 `eval_scenes`，且有效 scene 集合不是单个 scene 时，默认输出根 MUST 使用 `outputs/scenegroup_<scene-range-or-list>/` 或用户显式配置的等价根目录。
+
+#### Scenario: S32-S34 多场景训练输出
+- **WHEN** 配置声明 `train_scenes: [32, 33, 34]` 且 `output.dir: outputs`
+- **THEN** 默认训练运行目录 MUST 创建在 `outputs/scenegroup_s32_s34/<run_name>/`
+- **AND** final config runtime metadata MUST 记录 scene scope、source scenes、validation scenes 和 test scenes
+
+#### Scenario: S31-S34 多场景评估输出
+- **WHEN** 配置声明评估覆盖 scenes 31、32、33、34 且未显式传入完整 `--output-dir`
+- **THEN** 默认评估集合 MUST 写入 `outputs/evaluations/<study_id>/` 或 `outputs/scenegroup_s31_s34/evaluation_<run_name>_<timestamp>/`
+- **AND** 输出 metadata MUST 能区分训练 source scenes 与 evaluation scenes
+
+#### Scenario: 显式输出目录仍保持完整路径
+- **WHEN** 用户通过训练配置 `output.dir` 或评估入口 `--output-dir` 显式传入完整输出目录
+- **THEN** 系统 MUST 尊重该路径
+- **AND** 系统 MUST 不额外追加 scene 或 scenegroup 片段
 

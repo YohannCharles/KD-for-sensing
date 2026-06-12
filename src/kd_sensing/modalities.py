@@ -79,6 +79,24 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             shape="[T, 3]",
             metadata={"default_dataset": "deepsense6g"},
         ),
+        "paper_calibrated_relative_polar_history": InputProfileSpec(
+            modality="gps",
+            name="paper_calibrated_relative_polar_history",
+            sample_key="gps",
+            fusion_input_key="gps_batch",
+            semantics="BeamBench paper-calibrated relative polar GPS features",
+            shape="[T, 3]",
+            metadata={"default_dataset": "deepsense6g", "gps_feature_mode": "paper_calibrated_relative_polar"},
+        ),
+        "paper_distance_angle_direct": InputProfileSpec(
+            modality="gps",
+            name="paper_distance_angle_direct",
+            sample_key="gps",
+            fusion_input_key="gps_batch",
+            semantics="BeamBench challenge.py GPS Direct features: distance and calibrated angle in degrees",
+            shape="[T, 2]",
+            metadata={"default_dataset": "deepsense6g", "gps_feature_mode": "paper_distance_angle"},
+        ),
     },
     "lidar": {
         "bev_projection": InputProfileSpec(

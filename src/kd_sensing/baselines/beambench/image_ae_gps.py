@@ -22,7 +22,9 @@ from kd_sensing.data.scenes import resolve_deepsense_scene
 from kd_sensing.data.transform_ops.gps import (
     GPS_FEATURE_DIMS,
     GPSStandardScaler,
+    PAPER_CALIBRATED_GPS_MODE,
     PAPER_DISTANCE_ANGLE_FEATURE_VERSION,
+    PAPER_SCENE_CENTER_ANGLES_RAD,
     load_gps_feature_sequence,
 )
 from kd_sensing.data.transform_ops.io import joined_resource
@@ -43,22 +45,12 @@ TARGET_TABLE_III_ROW = {
     "overall": 0.7127,
 }
 
-PAPER_SCENE_CENTER_ANGLES_RAD = {
-    31: -0.72,
-    32: -0.8125375604986421 + float(np.pi) / 2.0,
-    33: 0.59,
-    34: -0.51,
-}
-
-PAPER_CALIBRATED_GPS_MODE = "paper_distance_angle"
-
-
 @dataclass(frozen=True)
 class ImageAEGPSDirectTrainingConfig:
     data_root: str
     train_csv_name: str = "train_seqs_RA_GPS_LIDAR.csv"
     test_csv_name: str = "test_seqs_RA_GPS_LIDAR.csv"
-    output_dir: str = "outputs/beambench_image_ae_gps_direct/scene31"
+    output_dir: str = "outputs/scene31/beambench_image_ae_gps_direct"
     scene: int = 31
     seq_len: int = 1
     num_pred: int = 1
@@ -695,7 +687,7 @@ def run_image_ae_gps_paper_split_training(
     *,
     train_scenes: Sequence[int] = (32, 33, 34),
     eval_scenes: Sequence[int] = (31, 32, 33, 34),
-    output_root: str | Path = "outputs/beambench_image_ae_gps_direct_tableiii/paper_split",
+    output_root: str | Path = "outputs/scenegroup_s32_s34/beambench_image_ae_gps_direct_tableiii/paper_split",
 ) -> dict[str, Any]:
     """Train once on scenes 32-34 and evaluate scene31-34, matching the paper split more closely."""
 
@@ -955,7 +947,7 @@ def run_image_ae_gps_paper_split_evaluation(
     checkpoint_path: str | Path,
     *,
     eval_scenes: Sequence[int] = (31, 32, 33, 34),
-    output_root: str | Path = "outputs/beambench_image_ae_gps_direct_tableiii/eval_checkpoint",
+    output_root: str | Path = "outputs/evaluations/beambench_image_ae_gps_direct_tableiii/eval_checkpoint",
     config: Mapping[str, Any] | ImageAEGPSDirectTrainingConfig | None = None,
     train_scenes: Sequence[int] | None = None,
 ) -> dict[str, Any]:
@@ -1282,10 +1274,10 @@ def resolve_image_ae_gps_config(raw: Mapping[str, Any]) -> ImageAEGPSDirectTrain
     data_root = str(dataset.get("data_root") or scene.default_data_root)
     output_dir = paper.get("output_dir")
     if not output_dir:
-        output_dir = Path(str(output.get("dir", "outputs"))) / "beambench_image_ae_gps_direct" / scene.scene_slug
+        output_dir = Path(str(output.get("dir", "outputs"))) / scene.scene_slug / "beambench_image_ae_gps_direct"
         run_name = str(output.get("run_name") or "").strip()
         if run_name:
-            output_dir = Path(str(output.get("dir", "outputs"))) / run_name
+            output_dir = Path(str(output.get("dir", "outputs"))) / scene.scene_slug / run_name
 
     dry_run = bool(paper.get("dry_run", False))
     max_train_samples = _optional_int(paper.get("max_train_samples"))
@@ -2224,7 +2216,7 @@ def _bool(value: Any, *, default: bool = False) -> bool:
 def timestamped_default_output(scene: int | str) -> str:
     scene_obj = resolve_deepsense_scene(scene)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"outputs/beambench_image_ae_gps_direct/{scene_obj.scene_slug}/{stamp}"
+    return f"outputs/{scene_obj.scene_slug}/beambench_image_ae_gps_direct/{stamp}"
 
 
 __all__ = [

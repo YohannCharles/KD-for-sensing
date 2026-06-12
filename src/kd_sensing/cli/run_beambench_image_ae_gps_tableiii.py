@@ -23,7 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", default="configs/fusion/beambench_image_ae_gps_direct.yaml")
     parser.add_argument("--train-scenes", type=int, nargs="+", default=[32, 33, 34])
     parser.add_argument("--eval-scenes", "--scenes", type=int, nargs="+", default=[31, 32, 33, 34])
-    parser.add_argument("--output-root", type=Path, default=Path("outputs/beambench_image_ae_gps_direct_tableiii/paper_split"))
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("outputs/scenegroup_s32_s34/beambench_image_ae_gps_direct_tableiii/paper_split"),
+    )
     parser.add_argument("--fusion-checkpoint", type=Path, default=None, help="Evaluate an existing paper-split checkpoint without retraining.")
     parser.add_argument("--selection-split", choices=("test_as_validation", "validation"), default="validation")
     parser.add_argument("--fusion-val-fraction", type=float, default=None)

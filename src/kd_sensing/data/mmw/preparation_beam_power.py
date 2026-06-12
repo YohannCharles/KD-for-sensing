@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from kd_sensing.data.deepverse.codebook import compute_beam_gain, make_ula_dft_codebook
+from kd_sensing.data.beam_codebook import compute_beam_gain, make_ula_dft_codebook
 from kd_sensing.data.mmw.preparation_config import ALGORITHM_VERSION
 
 

@@ -14,8 +14,8 @@ from kd_sensing.data.transform_ops.image import IMAGENET_RGB_MEAN, IMAGENET_RGB_
 from kd_sensing.data.transform_ops.lidar import filter_lidar_points, read_lidar_point_cloud
 from kd_sensing.diagnostics.viewer_manifest_paths import _all_row_paths, _all_source_paths, _last_existing_path, _radar_da_path
 from kd_sensing.diagnostics.viewer_manifest_schema import _json_ready
-from kd_sensing.diagnostics.visualization.sampling import SampleCandidate
-from kd_sensing.diagnostics.visualization.stats import modality_statistics
+from kd_sensing.diagnostics.viewer_manifest_sampling import SampleCandidate
+from kd_sensing.diagnostics.viewer_manifest_stats import modality_statistics
 from kd_sensing.modalities import DEFAULT_IMAGE_PROFILE
 
 def _manifest_record(

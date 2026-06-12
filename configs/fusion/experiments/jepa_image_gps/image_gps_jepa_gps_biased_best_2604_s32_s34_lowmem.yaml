@@ -8,4 +8,4 @@ model:
   primary:
     encoders:
       image:
-        checkpoint_path: outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth
+        checkpoint_path: outputs/scenegroup_s32_s34/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth

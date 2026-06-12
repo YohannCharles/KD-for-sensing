@@ -223,7 +223,7 @@ DEFAULT_CONFIG = {
         "strict_load": True,
         "registry": {
             "enabled": True,
-            "dir": "outputs/best_checkpoints",
+            "dir": "outputs",
             "prefer": True,
             "metric": "val_top1",
             "filename": "{slug}_{role}_acc_{acc}.pth",

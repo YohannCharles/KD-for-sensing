@@ -11,8 +11,11 @@ import pytest
 from kd_sensing.config.io import dump_config
 from kd_sensing.diagnostics.runtime_artifact_cleanup import (
     apply_cleanup_manifest,
+    apply_runtime_output_organize_manifest,
     build_cleanup_manifest,
+    build_runtime_output_organize_manifest,
     write_cleanup_manifest,
+    write_runtime_output_organize_manifest,
 )
 
 
@@ -251,6 +254,75 @@ def test_cleanup_manifest_classifies_retired_hist_outputs_without_hist2_false_po
     assert not {rule_id for rule_id in hist2_rules if rule_id.startswith("retired.")}
 
 
+def test_runtime_output_organize_manifest_classifies_legacy_outputs_and_protects_cache(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    root_run = _write_started_run(outputs, "root_run")
+    deepsense_cfg = _base_cfg("root_run")
+    deepsense_cfg["data"]["dataset"] = {"type": "deepsense6g"}
+    dump_config(deepsense_cfg, root_run / "final_config.yaml")
+    dump_config(deepsense_cfg, root_run / "resolved_config.yaml")
+    numeric = outputs / "31"
+    numeric.mkdir(parents=True)
+    (numeric / "legacy.txt").write_text("legacy", encoding="utf-8")
+    registry = outputs / "best_checkpoints"
+    registry.mkdir(parents=True)
+    (registry / "model.pth").write_bytes(b"weights")
+    legacy_eval = outputs / "eval_old"
+    legacy_eval.mkdir(parents=True)
+    (legacy_eval / "metrics.json").write_text("{}", encoding="utf-8")
+    cache = outputs / "cache"
+    cache.mkdir(parents=True)
+    (cache / "summary.json").write_text("{}", encoding="utf-8")
+
+    manifest = build_runtime_output_organize_manifest(project_root=tmp_path, outputs_root=outputs, now=NOW)
+    by_rule = {record["rule_id"]: record for record in manifest["plans"]}
+
+    assert by_rule["organize.legacy_root_run"]["action"] == "move"
+    assert by_rule["organize.legacy_root_run"]["target_path"].endswith("outputs/scene31/root_run")
+    assert by_rule["organize.legacy_numeric_scene"]["action"] == "archive"
+    assert by_rule["organize.legacy_registry"]["action"] == "review"
+    assert by_rule["organize.legacy_registry"]["requires_manual_review"] is True
+    assert by_rule["organize.legacy_evaluation"]["target_path"].endswith("outputs/archive/legacy_eval_runs/eval_old")
+    assert by_rule["organize.cache_protected"]["action"] == "protect"
+    assert by_rule["organize.cache_protected"]["protected"] is True
+    assert root_run.exists()
+    assert numeric.exists()
+    assert registry.exists()
+    assert legacy_eval.exists()
+    assert cache.exists()
+
+
+def test_runtime_output_organize_apply_requires_confirmation_and_skips_conflicts(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    root_run = _write_started_run(outputs, "root_run")
+    deepsense_cfg = _base_cfg("root_run")
+    deepsense_cfg["data"]["dataset"] = {"type": "deepsense6g"}
+    dump_config(deepsense_cfg, root_run / "final_config.yaml")
+    dump_config(deepsense_cfg, root_run / "resolved_config.yaml")
+    target = outputs / "scene31" / "root_run"
+    target.mkdir(parents=True)
+    (target / "final_config.yaml").write_text("existing", encoding="utf-8")
+
+    manifest = build_runtime_output_organize_manifest(project_root=tmp_path, outputs_root=outputs, now=NOW)
+    manifest_path = write_runtime_output_organize_manifest(manifest, output_path=tmp_path / "organize.json")
+
+    with pytest.raises(ValueError, match="Organization refused"):
+        apply_runtime_output_organize_manifest(manifest_path, project_root=tmp_path)
+
+    report = apply_runtime_output_organize_manifest(
+        manifest_path,
+        project_root=tmp_path,
+        confirm_organize=True,
+        report_path=tmp_path / "organize_report.json",
+    )
+
+    assert root_run.exists()
+    assert target.exists()
+    assert report["summary"]["moved_count"] == 0
+    assert report["summary"]["skipped_count"] >= 1
+    assert any(item["reason"] in {"manual_review_required", "target_exists"} for item in report["skipped"])
+
+
 def test_cleanup_console_script_help_works_through_conda():
     conda = shutil.which("conda")
     if conda is None:
@@ -266,3 +338,20 @@ def test_cleanup_console_script_help_works_through_conda():
     assert result.returncode == 0, result.stderr
     assert "--manifest" in result.stdout
     assert "--confirm-delete" in result.stdout
+
+
+def test_organize_console_script_help_works_through_conda():
+    conda = shutil.which("conda")
+    if conda is None:
+        pytest.skip("conda is not available")
+
+    result = subprocess.run(
+        [conda, "run", "-n", "kd_mm_beam", "python", "-m", "kd_sensing.cli.organize_runtime_outputs", "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--manifest" in result.stdout
+    assert "--confirm-organize" in result.stdout

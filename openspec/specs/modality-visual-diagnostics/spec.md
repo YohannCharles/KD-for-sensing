@@ -4,17 +4,17 @@
 Define the compatibility and manifest-preparation behavior for modality visualization diagnostics after the primary user workflow has moved to the Gradio viewer.
 ## Requirements
 ### Requirement: 诊断入口与配置
-系统 MUST 将模态可视化诊断入口统一到 Gradio viewer manifest 数据准备和 viewer 工作流。旧静态 PNG 报告入口和旧兼容命令 MUST 不再作为可运行工作流或安装入口保留。
+系统 MUST 将模态诊断入口收敛到 viewer manifest 数据准备和 JEPA visual analysis。旧静态 PNG 报告入口、仓库级 Gradio viewer support、`tools/visualization/` 启动路径和旧兼容命令 MUST 不再作为可运行工作流或安装入口保留。Manifest 导出 MAY 继续读取 `diagnostics.visualization` 配置字段以保持配置兼容，但实现 MUST 位于当前 `viewer_manifest_*` helper 边界中。
 
 #### Scenario: 旧命令被拒绝
-- **WHEN** 用户运行旧的 `the retired modality visualization command` 或 `the retired script entry`
+- **WHEN** 用户运行旧的 `the retired modality visualization command`、`the retired script entry` 或仓库级 Gradio viewer 启动路径
 - **THEN** 系统 MUST 拒绝该入口或不再提供该入口
-- **AND** 错误信息或文档 MUST 指向 manifest 导出命令和 Gradio viewer 启动命令
+- **AND** 错误信息或文档 MUST 指向 `kd-sensing-export-viewer-manifest` 和 `kd-sensing-jepa-visual-analysis`
 
 #### Scenario: manifest 导出使用 canonical 入口
 - **WHEN** 用户准备 viewer manifest
 - **THEN** 用户 MUST 使用 `kd-sensing-export-viewer-manifest` 或对应包内 CLI
-- **AND** 该入口 MUST 不要求生成 PNG 总览图作为成功条件
+- **AND** 该入口 MUST 不要求生成 PNG 总览图或启动 Gradio Web UI 作为成功条件
 
 #### Scenario: 不修改训练配置
 - **WHEN** 用户使用训练配置准备 viewer manifest
@@ -22,7 +22,7 @@ Define the compatibility and manifest-preparation behavior for modality visualiz
 - **AND** 系统 MUST 不修改原始训练配置文件
 
 ### Requirement: 复用真实处理后张量
-Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量或由同一预处理/cache policy 产生的处理后文件路径生成 viewer 记录，确保 Gradio 展示内容与训练、验证或评估输入一致。系统 MUST 不用单独的旁路预处理逻辑替代 Dataset 的 RGB/ImageNet image、radar RA/DA、LiDAR BEV、GPS 和 mmWave 处理。模型预测导出能力写出的 future distribution MUST 与 `prepare_labels()` 的 future-only 语义一致。
+Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量或由同一预处理/cache policy 产生的处理后文件路径生成样本记录，确保 manifest 内容与训练、验证或评估输入一致。系统 MUST 不用单独的旁路预处理逻辑替代 Dataset 的 RGB/ImageNet image、radar RA/DA、LiDAR BEV、GPS 和 mmWave 处理。模型预测导出能力写出的 future distribution MUST 与 `prepare_labels()` 的 future-only 语义一致。
 
 #### Scenario: image manifest 使用 RGB/ImageNet 来源
 - **WHEN** manifest 导出启用 image 模态
@@ -32,7 +32,7 @@ Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量�
 #### Scenario: radar manifest 使用 RA/DA 来源
 - **WHEN** manifest 导出启用 radar 模态
 - **THEN** 输出样本记录 MUST 引用 Dataset 对应的 processed radar RA/DA 表示或其可视化文件
-- **AND** 样本记录 MUST 保留足够元数据用于 Gradio viewer 区分 raw radar 与 processed radar
+- **AND** 样本记录 MUST 保留足够元数据用于外部查看器区分 raw radar 与 processed radar
 
 #### Scenario: LiDAR manifest 使用 BEV 来源
 - **WHEN** manifest 导出启用 LiDAR 模态
@@ -41,16 +41,16 @@ Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量�
 
 #### Scenario: GPS 和 mmWave manifest 使用数值序列
 - **WHEN** manifest 导出启用 GPS 或 mmWave 模态
-- **THEN** 输出样本记录 MUST 引用 Dataset 对应的 GPS 或 mmWave 数值序列、JSON 文件或 viewer 可解析的中间文件
-- **AND** Viewer MUST 能将这些记录渲染为轨迹、曲线、bar chart 或 heatmap
+- **THEN** 输出样本记录 MUST 引用 Dataset 对应的 GPS 或 mmWave 数值序列、JSON 文件或外部 viewer 可解析的中间文件
+- **AND** 记录 MUST 包含足够元数据让外部工具渲染轨迹、曲线、bar chart 或 heatmap
 
 #### Scenario: 模型预测导出 beam distribution
-- **WHEN** 用户使用 viewer 的模型预测导出能力生成单模态预测诊断
+- **WHEN** 用户使用模型预测导出能力生成单模态预测诊断
 - **THEN** 输出预测文件 MUST 为每个样本和模态写入 `beam_distribution[modality].prob`
 - **AND** 如果 logits 可用，输出预测文件 MUST 同时写入 `beam_distribution[modality].logit`
 - **AND** `prob` MUST 来自 softmax 后分布，`logit` MUST 来自 softmax 前输出，shape MUST 为 `[num_pred, num_beams]`
 - **AND** `beam_distribution[modality].prob[0]`、`confidence_curves[modality][0]` 和 `prediction.modalities[modality].future_labels[0]` MUST 共同表示 `t+1`
-- **AND** Manifest 合并 MUST 将该字段保留到样本顶层，供 Gradio viewer 读取
+- **AND** Manifest 合并 MUST 将该字段保留到样本顶层，供外部 viewer 或离线诊断读取
 
 #### Scenario: 模型预测导出不执行旧 slot 偏移
 - **WHEN** 已经通过统一 helper 得到与 future labels 对齐的模型预测
@@ -58,12 +58,7 @@ Manifest 数据准备能力 MUST 基于 Dataset 实际返回的处理后张量�
 - **AND** 导出器 MUST 不执行 `probs[1:]`、`logits[1:]` 或 `labels[1:]` 风格的旧 current-slot 偏移
 
 ### Requirement: 只读诊断行为
-Gradio viewer 与 manifest 数据准备入口 MUST 默认保持只读行为，不得修改训练 checkpoint、训练日志、评估报告或已存在的 split CSV。对 LiDAR BEV cache 的访问 MUST 遵循现有 cache policy；当 policy 为 `read_only` 或 `off` 时，manifest 导出不得写入新的 LiDAR BEV cache 文件。系统 MUST 不再读取或写入 image motion cache。
-
-#### Scenario: Viewer 不修改训练产物
-- **WHEN** 用户启动 Gradio viewer 浏览已有 manifest
-- **THEN** 系统 MUST 不修改 checkpoint、`train_log.json`、`metrics.json`、`final_config.yaml` 或 split CSV
-- **AND** Viewer MUST 只读取 manifest 引用的图片或 JSON 文件
+Manifest 数据准备入口和 JEPA visual analysis MUST 默认保持只读输入行为，不得修改训练 checkpoint、训练日志、评估报告或已存在的 split CSV。对 LiDAR BEV cache 的访问 MUST 遵循现有 cache policy；当 policy 为 `read_only` 或 `off` 时，manifest 导出不得写入新的 LiDAR BEV cache 文件。系统 MUST 不再读取或写入 image motion cache。
 
 #### Scenario: Manifest 导出不修改训练产物
 - **WHEN** 用户对已有训练配置运行 manifest 导出
@@ -83,12 +78,12 @@ Gradio viewer 与 manifest 数据准备入口 MUST 默认保持只读行为，�
 - **AND** manifest 导出 MUST 不访问 image motion cache 文件
 
 ### Requirement: 可视化诊断内部轻量模块边界
-Manifest/viewer 诊断内部 MUST 区分轻量 helper 与重依赖运行模块。配置解析、采样候选选择、metadata 写出和 JSON payload 规范化 MUST 保持轻量导入；数据集构建、processed asset 生成、PNG 渲染和模型预测导出 MAY 导入 pandas、torch、PIL、matplotlib 或 engine builders，但这些依赖 MUST 限定在对应职责模块或函数内。
+Manifest 诊断内部 MUST 区分轻量 helper 与重依赖运行模块。配置解析、采样候选选择、metadata 写出和 JSON payload 规范化 MUST 保持轻量导入，并 MUST 位于 `kd_sensing.diagnostics.viewer_manifest_*` 或等价当前命名模块中；旧 `kd_sensing.diagnostics.visualization` 包名 MUST 不再作为当前 helper 边界。数据集构建、processed asset 生成和模型预测导出 MAY 导入 pandas、torch、PIL 或 engine builders，但这些依赖 MUST 限定在对应职责模块或函数内。
 
 #### Scenario: 解析 viewer 诊断配置不导入渲染依赖
-- **WHEN** 开发者导入或调用 viewer 诊断配置解析 helper
+- **WHEN** 开发者导入或调用 viewer manifest 配置解析 helper
 - **THEN** 系统 MUST 能解析 `diagnostics.visualization` 的输出目录、splits、sample count、seed、filters、modalities 和 scene comparison 配置
-- **AND** 该路径 MUST 不导入 matplotlib、PIL 或 PNG render helper
+- **AND** 该路径 MUST 不导入 matplotlib、旧 PNG render helper 或 `kd_sensing.diagnostics.visualization.core`
 
 #### Scenario: 采样 helper 不读取 dataset
 - **WHEN** 开发者导入采样 helper 并传入候选记录
@@ -101,7 +96,7 @@ Manifest/viewer 诊断内部 MUST 区分轻量 helper 与重依赖运行模块�
 - **AND** helper MUST 不导入 dataset builder、model builder、matplotlib 或 PIL
 
 ### Requirement: Manifest 行为保持兼容
-收紧诊断内部 import 边界时，manifest 导出和 viewer prediction 导出的公开行为 MUST 保持兼容。输出 manifest、metadata、processed asset 路径、prediction bundle 合并和 viewer 启动命令语义 MUST 不因内部模块整理而改变。
+收紧诊断内部 import 边界时，manifest 导出和 viewer prediction 导出的公开行为 MUST 保持兼容。输出 manifest、metadata、processed asset 路径、prediction bundle 合并和显式 cache 参数语义 MUST 不因内部模块整理而改变。默认 cache 目录 MAY 从 Gradio 命名收敛为 viewer manifest 命名。`viewer_command` MAY 不再指向仓库级 Gradio viewer，但 MUST 不指向已删除的 `tools/visualization` 路径。
 
 #### Scenario: manifest 导出 payload 兼容
 - **WHEN** 用户运行 `kd-sensing-export-viewer-manifest` 或包内 CLI 导出 viewer manifest

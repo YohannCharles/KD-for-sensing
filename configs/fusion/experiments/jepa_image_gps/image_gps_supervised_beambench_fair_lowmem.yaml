@@ -3,7 +3,7 @@ experiment:
   task: fusion
   seed: 0
   device: auto
-  protocol: beambench_fair_s32_s34_train_s31_s34_test
+  protocol: beambench_tableiii_input_s32_s34_train_s31_s34_test
 data:
   dataset:
     type: deepsense6g
@@ -19,7 +19,7 @@ data:
     - 34
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
-    seq_len: 8
+    seq_len: 1
     num_pred: 1
     portion: 1.0
     image_profile: rgb_imagenet
@@ -27,7 +27,8 @@ data:
     - 224
     - 224
     use_gps: true
-    gps_feature_mode: relative_polar
+    gps_feature_mode: paper_distance_angle
+    gps_angle_offset_source: paper_scene_default
     gps_normalize: true
   validation_from_train:
     enabled: true
@@ -51,18 +52,19 @@ model:
   num_classes: 64
   num_pred: 1
   downsample_ratio: 1
-  seq_length: 8
+  seq_length: 1
   primary:
     type: modular_sequence
     modalities:
     - image
     - gps
     image_profile: rgb_imagenet
-    gps_input_size: 3
+    gps_input_size: 2
     feature_size: 64
     d_model: 64
     num_classes: 64
     num_pred: 1
+    seq_length: 1
     encoders:
       image:
         type: resnet18_imagenet_rgb
@@ -108,10 +110,8 @@ scheduler:
 evaluation:
   k_values:
   - 1
-  - 2
   - 3
   - 5
-  - 10
   dba_delta: 5
   dba_distance_mode: linear
 output:

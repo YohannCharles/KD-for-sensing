@@ -102,22 +102,23 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 错误信息 MUST 指向 `kd_sensing.data.transform_ops.<modality>` 或通用 transform 子模块
 
 ### Requirement: 诊断可视化内部模块化
-诊断可视化实现 MUST 将配置解析、数据集准备、样本选择、统计汇总、渲染和文件写出拆成职责明确的内部模块。公开入口和 CLI 行为 MUST 保持兼容。
+诊断可视化入口 MUST 收敛为包内 viewer manifest 导出和 JEPA visual analysis。项目 MUST 不再维护旧静态 modality visualization PNG workflow、`kd_sensing.diagnostics.visualization` 内部渲染模块或仓库级 Gradio viewer support。`kd-sensing-visualize-modalities` MAY 作为兼容薄 alias 保留，但 MUST 委托 `kd-sensing-export-viewer-manifest`，不得恢复独立 parser、旧 PNG 总览图或 `tools/visualization/` support 依赖。
 
-#### Scenario: 公开诊断入口兼容
-- **WHEN** 现有代码调用 `kd_sensing.diagnostics.modality_visualization.visualize_modalities`
-- **THEN** 调用 MUST 继续成功
-- **AND** 返回 payload、summary 路径和主要输出文件语义 MUST 保持兼容
+#### Scenario: viewer manifest 导出入口兼容
+- **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 包含 manifest 导出参数，例如 `--config`、`--cache-dir`、`--scenes` 和 `--run-models`
 
-#### Scenario: 修改样本选择不触碰渲染逻辑
-- **WHEN** 开发者调整按 `seq_index` 或 label 选择样本的策略
-- **THEN** 变更 MUST 限定在 sampling 相关模块和测试
-- **AND** 不需要修改 PNG 渲染函数或 metadata 写出函数
+#### Scenario: modality visualization 兼容 alias 不恢复 PNG workflow
+- **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-visualize-modalities --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 明确该入口导出 viewer manifest
+- **AND** 该入口 MUST 不导入 `kd_sensing.diagnostics.visualization.core` 或仓库级 `tools/visualization` helper
 
-#### Scenario: 修改 PNG 渲染不触碰数据集构建
-- **WHEN** 开发者调整单样本 PNG 布局
-- **THEN** 变更 MUST 限定在 render 相关模块和可视化测试
-- **AND** 不需要修改诊断 dataset 构建逻辑
+#### Scenario: JEPA visual analysis 作为论文图出口
+- **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 该入口 MUST 使用 `kd_sensing.diagnostics.jepa_visual_analysis` 生成本地分析 manifest、图表、表格和 report
 
 ### Requirement: 源码与实验产物边界
 项目 MUST 明确源码、配置、文档、OpenSpec artifacts 与本地数据、训练日志、缓存和输出产物的边界。本地运行产物 MUST 保持在 `.gitignore` 覆盖范围内，文档 MUST 指明哪些目录是可复现输入、哪些目录是可删除生成物。用户明确要求退役并清理某条失败实验路线或数据集工作流时，系统 MAY 删除匹配的本地 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 和训练诊断产物，但 MUST 先生成可审计清单并限制在未纳入源码且属于目标路线的路径内。
@@ -208,7 +209,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 扫描 MUST 指向对应的窄 transform 模块作为迁移路径
 
 ### Requirement: 安装入口与 pyproject 声明一致
-项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的兼容 console script MUST 是薄 alias，不得复制长期维护的 parser 或主实现。项目 MUST 不再要求安装 `kd-sensing-raymobtime-analysis`。
+项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的兼容 console script MUST 是薄 alias，不得复制长期维护的 parser 或主实现。项目 MUST 不再要求安装 `kd-sensing-raymobtime-analysis`、GPS window baseline 或仓库级 Gradio viewer support 入口。BeamBench 相关 console scripts MAY 保持当前声明。
 
 #### Scenario: 可视化 manifest 导出入口可用
 - **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help`
@@ -218,13 +219,13 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 #### Scenario: 可视化兼容入口可用
 - **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-visualize-modalities --help`
 - **THEN** 命令 MUST 正常退出
-- **AND** 帮助信息 MUST 明确该入口导出 viewer manifest 或指向 Gradio viewer 工作流
-- **AND** 该入口 MUST 委托 manifest 导出 CLI，不得复制独立 parser 或旧静态 PNG 主流程
+- **AND** 帮助信息 MUST 明确该入口导出 viewer manifest
+- **AND** 该入口 MUST 委托 manifest 导出 CLI，不得复制独立 parser、旧静态 PNG 主流程或仓库级 Gradio viewer support
 
 #### Scenario: 安装元数据刷新后入口齐全
 - **WHEN** 开发者在 `kd_mm_beam` 中执行 `python -m pip install -e .`
-- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-visualize-modalities` 和 `kd-sensing-export-viewer-manifest`
-- **AND** 安装生成的 entry points MUST 不要求包含 `kd-sensing-raymobtime-analysis`
+- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-visualize-modalities`、`kd-sensing-export-viewer-manifest` 和 `kd-sensing-jepa-visual-analysis`
+- **AND** 安装生成的 entry points MUST 不要求包含 `kd-sensing-raymobtime-analysis`、`kd-sensing-gps-window-baseline` 或仓库级 Gradio viewer support 入口
 
 ### Requirement: 内置权重与本地产物边界明确
 项目 MUST 明确区分内置复现权重和本地生成 checkpoint。已跟踪的 `All_models` 权重如果继续保留，MUST 被文档标记为内置复现输入；新训练、评估或诊断产生的 checkpoint 和缓存 MUST 继续被忽略。
@@ -274,7 +275,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 当包内 CLI 与 `tools/` 脚本提供同一工作流时，项目 MUST 以包内 CLI 或 `python -m kd_sensing.cli.<name>` 作为推荐入口。已被包内 CLI 覆盖的重复 fallback wrapper MUST 删除；仍保留的研究脚本或薄 alias MUST 有明确生命周期分类。
 
 #### Scenario: viewer manifest 推荐包内 CLI
-- **WHEN** 文档或 orchestration 脚本需要导出 Gradio viewer manifest
+- **WHEN** 文档或 orchestration 脚本需要导出 viewer manifest
 - **THEN** 推荐命令 MUST 使用 `kd-sensing-export-viewer-manifest` 或包内 CLI 模块
 - **AND** 项目 MUST 不再保留 `tools/visualization/export_viewer_manifest.py` fallback wrapper
 
@@ -312,40 +313,40 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **THEN** 测试 MUST 不要求 `kd_sensing.distillation` 可导入
 - **AND** 默认组件导入 MUST 不导入 distiller registry
 
-### Requirement: 诊断可视化不得集中在 core 聚合实现
-诊断可视化实现 MUST 将配置解析、数据集准备、样本选择、统计汇总、渲染和文件写出放在对应子模块中。`diagnostics.visualization.core` MAY 保留为公开入口编排或兼容 facade，但 MUST 不再作为这些职责的主要实现聚合文件。
+### Requirement: Viewer manifest 实现不得集中在聚合模块
+Viewer manifest 实现 MUST 将配置解析、数据集准备、样本选择、统计汇总、schema/cache/path/merge/writer 放在对应 `viewer_manifest_*` 子模块中。`kd_sensing.diagnostics.viewer_manifest` MUST 保留为公开入口编排，不得回流承载这些职责的主要实现。
 
 #### Scenario: 修改样本选择只触碰 sampling
 - **WHEN** 开发者调整按 `seq_index`、label 或随机种子选择样本的策略
-- **THEN** 主要变更 MUST 位于 `diagnostics.visualization.sampling` 和相关测试
-- **AND** 不需要修改 render、stats、datasets 或 writers 的主要实现
+- **THEN** 主要变更 MUST 位于 `kd_sensing.diagnostics.viewer_manifest_sampling` 和相关测试
+- **AND** 不需要修改 stats、datasets、schema、merge 或 writer 的主要实现
 
-#### Scenario: 修改渲染只触碰 render
-- **WHEN** 开发者调整单样本 PNG 或 processed asset 的渲染布局
-- **THEN** 主要变更 MUST 位于 `diagnostics.visualization.render` 和相关测试
-- **AND** 不需要修改 dataset 构建、sample selection 或 metadata 写出实现
+#### Scenario: 修改 asset 写出只触碰 writer
+- **WHEN** 开发者调整 raw/processed asset 或 manifest record 写出
+- **THEN** 主要变更 MUST 位于 `kd_sensing.diagnostics.viewer_manifest_writer` 和相关测试
+- **AND** 不需要修改 dataset 构建、sample selection 或 prediction merge 实现
 
-#### Scenario: core 仅承担入口编排
-- **WHEN** 开发者查看 `diagnostics.visualization.core`
+#### Scenario: viewer_manifest 仅承担入口编排
+- **WHEN** 开发者查看 `kd_sensing.diagnostics.viewer_manifest`
 - **THEN** 该模块 MUST 主要负责公开入口编排、兼容导出或薄协调
-- **AND** 具体配置、数据集、采样、统计、渲染和写出逻辑 MUST 能在对应子模块中找到主要实现
+- **AND** 具体配置、数据集、采样、统计、schema/cache/path/merge/writer 逻辑 MUST 能在对应子模块中找到主要实现
 
 ### Requirement: 架构增长回归检查
-项目 MUST 提供快速架构回归检查，用于发现训练方法逻辑重新堆入 `trainer.py`、诊断可视化重新堆入 `core.py`、或内部代码重新依赖二级兼容聚合层的问题。该检查 MUST 可在不启动真实训练的情况下运行，并 MUST 使用 `kd_mm_beam` 环境。检查 MUST 同时防止已退役的 G2D、CRAF、MARF 和 Multimodal-NF 模块重新进入 active code path。
+项目 MUST 提供快速架构回归检查，用于发现训练方法逻辑重新堆入 `trainer.py`、viewer manifest 逻辑重新堆入公开编排模块、或内部代码重新依赖二级兼容聚合层的问题。该检查 MUST 可在不启动真实训练的情况下运行，并 MUST 使用 `kd_mm_beam` 环境。检查 MUST 同时防止已退役的 G2D、CRAF、MARF、Multimodal-NF、旧静态 visualization、GPS window 和 DeepVerse/DT31 模块重新进入 active code path。
 
 #### Scenario: 检查训练主循环扩张
 - **WHEN** 开发者运行架构边界测试
 - **THEN** 测试 MUST 验证新增训练方法主要通过扩展模块接入
 - **AND** 测试 MUST 防止 `trainer.py` 新增退役 G2D、CRAF、MARF 等方法特有的大段私有 helper
 
-#### Scenario: 检查诊断 core 聚合回退
+#### Scenario: 检查 viewer manifest 聚合回退
 - **WHEN** 开发者运行架构边界测试
-- **THEN** 测试 MUST 验证诊断可视化主要实现位于 config、datasets、sampling、stats、render 和 writers 子模块
-- **AND** 测试 MUST 防止 `diagnostics.visualization.core` 再次成为主要实现聚合文件
+- **THEN** 测试 MUST 验证 viewer manifest 主要实现位于 `viewer_manifest_*` 子模块
+- **AND** 测试 MUST 防止旧 `kd_sensing.diagnostics.visualization` 包或仓库级 `tools/visualization` viewer support 回流
 
 #### Scenario: 检查退役模块残留
 - **WHEN** 开发者运行架构边界测试
-- **THEN** 测试 MUST 验证 active import、registry 和配置推荐面不再引用 G2D、CRAF、MARF 或 Multimodal-NF
+- **THEN** 测试 MUST 验证 active import、registry 和配置推荐面不再引用 G2D、CRAF、MARF、Multimodal-NF、GPS window、DeepVerse/DT31 或旧静态 visualization
 - **AND** 测试 MUST 不要求这些退役模块可导入
 
 #### Scenario: 快速检查命令可运行
@@ -510,21 +511,21 @@ README、docs 和 OpenSpec MUST 按职责维护当前行为，不得长期保留
 - **AND** torch loss 计算语义 MUST 与变更前保持兼容
 - **AND** objective 元数据 MUST 来自同一轻量契约，避免配置路径和 runtime 路径维护两套表
 
-### Requirement: 诊断可视化轻量 helper import 边界
-诊断可视化内部模块 MUST 按职责控制 import 边界。配置解析、采样选择、metadata 写出和 JSON 序列化 helper MUST 不导入 matplotlib、PIL、dataset builder、model builder 或训练 runtime。渲染、数据集构建和模型预测导出等重依赖职责 MUST 留在对应重模块或函数内部。
+### Requirement: Viewer manifest 轻量 helper import 边界
+Viewer manifest 内部模块 MUST 按职责控制 import 边界。配置解析和采样选择等轻量 helper MUST 不导入 matplotlib、PIL、dataset builder、model builder 或训练 runtime。数据集构建、统计汇总、processed asset 写出和模型预测导出等重依赖职责 MUST 留在对应运行模块或函数内部。
 
-#### Scenario: 导入可视化配置 helper 不触发渲染栈
-- **WHEN** 开发者执行 `import kd_sensing.diagnostics.visualization.config`
+#### Scenario: 导入 manifest 配置 helper 不触发渲染栈
+- **WHEN** 开发者执行 `import kd_sensing.diagnostics.viewer_manifest_config`
 - **THEN** 导入 MUST 成功
 - **AND** 系统 MUST 不导入 `matplotlib`
 - **AND** 系统 MUST 不导入 `PIL.Image`
 - **AND** 系统 MUST 不导入 `kd_sensing.engine.data_factory`
 
-#### Scenario: 导入采样和写出 helper 不构建数据集
-- **WHEN** 开发者导入 `kd_sensing.diagnostics.visualization.sampling` 或 `kd_sensing.diagnostics.visualization.writers`
+#### Scenario: 导入采样 helper 不构建数据集
+- **WHEN** 开发者导入 `kd_sensing.diagnostics.viewer_manifest_sampling`
 - **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不导入 dataset builder、model builder 或 visualization core
-- **AND** 这些模块 MUST 只在调用实际需要的数据结构或文件写出逻辑时处理输入参数
+- **AND** 系统 MUST 不导入 dataset builder、model builder、writer 或旧 visualization core
+- **AND** 该模块 MUST 只处理候选样本过滤、随机选择和 JSON 标量规范化
 
 ### Requirement: OpenSpec 文档健康检查结构化
 项目 MUST 使用结构化方式检查 OpenSpec capability purpose。健康检查 MUST 只检查每个 spec 的 `## Purpose` 段落是否为空、过短或仍为归档占位文本，不得因为正文中描述被拒绝的占位文本而误判。所有项目相关 Python 检查 MUST 使用 `kd_mm_beam` 环境。
@@ -542,10 +543,10 @@ README、docs 和 OpenSpec MUST 按职责维护当前行为，不得长期保留
 ### Requirement: 源码热点模块必须按职责收敛
 项目 MUST 将继续增长的大文件拆分到职责明确的窄模块中。拆分后，公开入口 MAY 保留薄 facade 或兼容导出，但主要实现 MUST 位于按职责命名的模块中，不得重新形成新的私有聚合层。已退役的互补性分析模块 MUST 不再作为源码热点分层要求。
 
-#### Scenario: 修改 viewer 过滤逻辑不触碰图表渲染
-- **WHEN** 开发者调整 Gradio viewer 的 scene、split、show mode 或低质量样本过滤逻辑
-- **THEN** 主要变更 MUST 位于 viewer 过滤或 manifest IO 相关模块
-- **AND** 不需要修改 Plotly 图表构造、prediction summary 表格或 Gradio 布局编排实现
+#### Scenario: 修改 manifest 过滤逻辑不触碰 asset 写出
+- **WHEN** 开发者调整 viewer manifest 的 scene、split、sample limit 或低质量样本过滤逻辑
+- **THEN** 主要变更 MUST 位于 viewer manifest 过滤、cache 或 IO 相关模块
+- **AND** 不需要修改 processed asset 写出、prediction summary 合并或 JEPA visual analysis 图表实现
 
 #### Scenario: 修改 CSI hardening 不触碰 tokenizer
 - **WHEN** 开发者调整 CSI hardening、pilot estimation 或噪声诊断逻辑
@@ -566,10 +567,10 @@ Raymobtime s008 预处理实现 MUST 将路径解析、文件审计、index 构�
 - **AND** 不需要修改 required path 审计、NPZ shape summary 或 raw CSV audit 实现
 
 ### Requirement: 入口生命周期必须可审计
-项目 MUST 为 `scripts/`、`tools/analysis/` 和 `tools/visualization/` 中保留的入口维护生命周期分类。新增或保留入口 MUST 属于包内 CLI、薄 alias、研究诊断脚本、数据准备脚本、viewer entrypoint、viewer support 或 shell orchestration 中的一类，并在架构检查 allowlist 或 inventory 中记录原因。
+项目 MUST 为 `scripts/` 和 `tools/analysis/` 中保留的入口维护生命周期分类。新增或保留入口 MUST 属于包内 CLI、薄 alias、研究诊断脚本、数据准备脚本或 shell orchestration 中的一类，并在架构检查 allowlist 或 inventory 中记录原因。仓库级 `tools/visualization/` viewer support 已退役，MUST 不再作为当前入口分类回流。
 
 #### Scenario: 新增脚本入口需要分类
-- **WHEN** 开发者新增 `scripts/`、`tools/analysis/` 或 `tools/visualization/` 下的 Python 或 shell 入口
+- **WHEN** 开发者新增 `scripts/` 或 `tools/analysis/` 下的 Python 或 shell 入口
 - **THEN** 架构边界检查 MUST 要求该入口出现在生命周期 allowlist 或 inventory 中
 - **AND** 如果该入口复制已有 console script 或包内 CLI 工作流，检查 MUST 拒绝该入口
 
@@ -613,7 +614,7 @@ Raymobtime s008 预处理实现 MUST 将路径解析、文件审计、index 构�
 - **AND** 失败信息 MUST 指向推荐的窄模块路径
 
 #### Scenario: inventory 更新
-- **WHEN** 新增或拆分 scripts、tools、viewer support 或大型 domain helper
+- **WHEN** 新增或拆分 scripts、tools、viewer manifest helper 或大型 domain helper
 - **THEN** 项目表面积 inventory 或等价文档 MUST 记录该入口的 lifecycle 和职责
 - **AND** 测试 allowlist MUST 与文档保持一致
 
@@ -634,7 +635,7 @@ Raymobtime s008 预处理实现 MUST 将路径解析、文件审计、index 构�
 新增或保留的 MMW Python 脚本、shell orchestration 和研究支持入口 MUST 具有可审计生命周期。项目表面积 inventory 与架构边界测试 allowlist MUST 同步记录入口类别、保留原因、推荐入口关系、输出产物边界和删除或收敛条件。
 
 #### Scenario: 新增 MMW 脚本入口需要 inventory
-- **WHEN** 开发者新增 `scripts/`、`scripts/mmw/`、`tools/analysis/` 或 `tools/visualization/` 下的 MMW Python 或 shell 入口
+- **WHEN** 开发者新增 `scripts/`、`scripts/mmw/` 或 `tools/analysis/` 下的 MMW Python 或 shell 入口
 - **THEN** 架构边界检查 MUST 要求该入口出现在项目表面积 inventory 或等价生命周期文档中
 - **AND** inventory MUST 说明该入口属于包内 CLI、薄 alias、研究诊断脚本、数据准备脚本或 shell orchestration 中的哪一类
 - **AND** 对应测试 allowlist MUST 与 inventory 保持一致
@@ -735,7 +736,7 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 #### Scenario: inventory 记录第一批与第二梯队热点
 - **WHEN** 开发者运行架构边界测试或审阅 `docs/project_surface_inventory.md`
 - **THEN** inventory MUST 记录 `hist_beam_loso_execution.py` 和 `data/mmw/preparation.py` 的 facade 到窄模块映射
-- **AND** inventory MUST 记录第二梯队热点清单，至少包含 `models/fusion/hist_beam.py`、`diagnostics/run_index.py`、`tools/visualization/gradio_multimodal_viewer.py`、`data/transform_ops/csi.py`、`engine/batch.py` 和 `engine/evaluation_pass.py`
+- **AND** inventory MUST 记录第二梯队热点清单，至少包含 `models/fusion/hist_beam.py`、`diagnostics/run_index.py`、`diagnostics/viewer_manifest.py`、`data/transform_ops/csi.py`、`engine/batch.py` 和 `engine/evaluation_pass.py`
 - **AND** inventory MUST 说明第二梯队热点的后续拆分方向或暂缓原因
 
 #### Scenario: 内部代码不得从第一批 facade 回流导入 helper
@@ -1001,4 +1002,37 @@ JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer
 - **WHEN** 架构边界测试需要在干净解释器中验证某个 import 不牵出重依赖
 - **THEN** 该测试 MAY 在子进程代码中显式设置 `sys.path`
 - **AND** 该例外 MUST 保持局部，不得作为普通测试模板传播
+
+### Requirement: 当前支持面收敛到 Image+GPS JEPA query-pool
+项目 MUST 将当前推荐训练、评估、诊断和实验配置支持面收敛到 Image+GPS JEPA query-pool 主线及其必要对照。保留面 MUST 包含 `jepa_context_image + GPSQueryPool` JEPA downstream、`fair_gps_biased` paired baseline、supervised/random-best 控制组、vision-position baseline suite 和 `jepa_visual_analysis` 论文图/诊断出口。退役路线 MUST 不再作为 README 推荐入口、pyproject console script、架构 allowlist 或当前配置矩阵出现。
+
+#### Scenario: README 展示当前主线
+- **WHEN** 开发者阅读 README 的项目定位、主要入口和配置矩阵
+- **THEN** 文档 MUST 把 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite 和 JEPA visual analysis 描述为当前主线
+- **AND** 文档 MUST 不把 GPS window、DeepVerse/DT31、旧静态 modality visualization 或仓库级 Gradio viewer support 描述为当前入口
+- **AND** 文档 MAY 继续保留 BeamBench/Arnold22 Camera AE+GPS Direct 当前入口和复现辅助说明
+
+#### Scenario: 架构测试拒绝退役入口回流
+- **WHEN** 开发者运行架构边界测试
+- **THEN** 测试 MUST 拒绝退役的 viewer support、GPS window baseline、DeepVerse/DT31 workflow、Top8 selector dataset 和旧静态 modality visualization 文件重新出现在当前 allowlist 中
+- **AND** 测试 MUST 继续允许 JEPA query-pool、paired control、vision-position baseline、BeamBench/Arnold22 Camera AE+GPS Direct 和 JEPA visual analysis 相关入口
+
+#### Scenario: 配置矩阵只保留必要 JEPA 对照
+- **WHEN** 开发者查看 `configs/fusion/experiments/jepa_image_gps/` 和实验矩阵文档
+- **THEN** 当前配置 MUST 保留 query-pool、GPS-biased baseline、supervised baseline 和 random-best 控制组
+- **AND** scene31-only、非 BeamBench 的 last-checkpoint 和 next-beam downstream ablation 配置 MUST 不再作为当前配置文件维护
+- **AND** `beambench_fair` 相关配置 MAY 继续保留用于 Arnold22/BeamBench 口径对照
+
+### Requirement: 退役 DeepVerse/DT31 数据生成路线
+项目 MUST 不再维护 DeepVerse/DT31 数据生成、label builder、split、sanity check 或对应配置作为当前源码工作流。DeepVerse/DT31 的历史研究资料 MAY 留在非入口历史文档中，但 MUST 明确为退役背景，且 MUST 不再通过 registry、preprocess config、README quickstart 或架构 allowlist 暴露为当前 workflow。
+
+#### Scenario: DeepVerse/DT31 源码入口不存在
+- **WHEN** 开发者检查 `src/kd_sensing/data/deepverse/`、`configs/deepverse/` 和当前脚本入口 allowlist
+- **THEN** DeepVerse/DT31 generator、label builder、split、sanity check 和 generation config MUST 不再作为源码入口存在
+- **AND** 当前 README 和 inventory MUST 不推荐 DeepVerse/DT31 数据生成命令
+
+#### Scenario: 不清理本地 DeepVerse 数据产物
+- **WHEN** 本 change 删除 DeepVerse/DT31 源码和配置
+- **THEN** 系统 MUST 不自动删除 `dataset/`、`outputs/`、`logs/`、cache 或 checkpoint 中的历史 DeepVerse 本地产物
+- **AND** 如需清理本地产物，仍 MUST 使用 runtime cleanup manifest 工作流
 

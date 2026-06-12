@@ -26,7 +26,7 @@ def _manifest_output_path(
     root = (
         Path(cache_dir).expanduser()
         if cache_dir is not None
-        else Path(runtime_cache_root()) / "diagnostics" / "gradio_viewer"
+        else Path(runtime_cache_root()) / "diagnostics" / "viewer_manifest"
     )
     return root / digest / "samples.json"
 
@@ -52,16 +52,13 @@ def _cached_manifest_result(manifest_path: Path, meta_path: Path, digest: str) -
         return None
     return {
         "mode": "viewer_dataset_cache",
-        "message": "Reused existing Gradio viewer dataset cache.",
+        "message": "Reused existing viewer manifest dataset cache.",
         "cache_hit": True,
         "cache_dir": str(manifest_path.parent),
         "manifest_path": str(manifest_path),
         "meta_path": str(meta_path),
         "sample_count": len(records),
-        "viewer_command": (
-            "conda run -n kd_mm_beam python tools/visualization/gradio_multimodal_viewer.py "
-            f"--manifest {manifest_path}"
-        ),
+        "viewer_command": f"manifest ready at {manifest_path}",
     }
 
 

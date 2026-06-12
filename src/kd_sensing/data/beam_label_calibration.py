@@ -135,6 +135,7 @@ class BeamLabelMapping:
         return reordered
 
     def metadata(self) -> dict[str, Any]:
+        permutation = list(self.permutation) if self.permutation is not None else []
         return {
             "beam_label_space": self.label_space,
             "beam_label_mapping_fingerprint": self.fingerprint,
@@ -144,10 +145,10 @@ class BeamLabelMapping:
                 "num_classes": int(self.num_classes),
                 "direction": int(self.direction),
                 "offset": int(self.offset),
-                "permutation": list(self.permutation) if self.permutation is not None else None,
-                "scene": self.scene,
+                "permutation": permutation,
+                "scene": str(self.scene or ""),
                 "scene_override_applied": bool(self.scene_override_applied),
-                "fit_source": self.fit_source,
+                "fit_source": str(self.fit_source or ""),
                 "algorithm_version": self.algorithm_version,
             },
         }

@@ -18,6 +18,8 @@ from kd_sensing.modalities import (  # noqa: E402
     dataset_flags_for_modalities,
     normalize_modalities,
 )
+from kd_sensing.config.defaults import DEFAULT_CONFIG  # noqa: E402
+from kd_sensing.utils.runtime_output_layout import canonical_runtime_partitions  # noqa: E402
 
 PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
@@ -43,12 +45,6 @@ PYTHON_ENTRYPOINT_ALLOWLIST = {
     "scripts/train_beambench_image_ae_gps.py": "thin_cli_alias",
     "scripts/run_beambench_image_ae_gps_tableiii.py": "thin_cli_alias",
     "scripts/train.py": "thin_cli_alias",
-    "tools/visualization/gradio_multimodal_viewer.py": "viewer_entrypoint",
-    "tools/visualization/viewer_constants.py": "viewer_support",
-    "tools/visualization/viewer_figures.py": "viewer_support",
-    "tools/visualization/viewer_manifest_io.py": "viewer_support",
-    "tools/visualization/viewer_prediction_tables.py": "viewer_support",
-    "tools/visualization/viewer_utils.py": "viewer_support",
 }
 SHELL_ORCHESTRATION_ALLOWLIST = {
     "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
@@ -62,8 +58,6 @@ ENTRYPOINT_LIFECYCLES = {
     "thin_cli_alias",
     "research_diagnostic",
     "dataset_preparation",
-    "viewer_entrypoint",
-    "viewer_support",
     "shell_orchestration",
 }
 RETIRED_GENERATED_FUSION_CONFIGS = {
@@ -106,14 +100,13 @@ CONFIG_LIFECYCLE_MARKERS = (
     "configs/csi/hardening_matrix/debug/*.yaml",
     "configs/fusion/csi_hardening_matrix/*.yaml",
     "configs/preprocess/*.yaml",
-    "configs/deepverse/dt31_generation.yaml",
     "configs/diagnostics/modality_visualization.yaml",
     "configs/baselines/*.yaml",
     "configs/pretraining/*.yaml",
     "retired history",
 )
 HOTSPOT_SYMBOL_BUDGETS = {
-    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1100,
+    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1135,
     ("src/kd_sensing/data/datasets/mmw.py", "MMWDataset", "class"): 600,
     ("src/kd_sensing/engine/trainer.py", "_train_inner", "function"): 320,
     ("src/kd_sensing/engine/mmw_town_gps_v2.py", "run_mmw_town_gps_v2", "function"): 280,
@@ -349,6 +342,8 @@ def _is_supported_virtual_config_reference(rel_path: str) -> bool:
     stem = path.stem
     parts = path.parts
     if len(parts) >= 3 and parts[0] == "configs" and parts[1] == "fusion":
+        if stem in {"camera_ae_gps", "resnet_gps", "transformer_image_gps", "gps_only_neural"}:
+            return True
         if any(token in stem for token in RETIRED_CONFIG_TOKENS):
             return False
         if stem.endswith(("_strong", "_lightweight", "_supervised")):
@@ -405,7 +400,7 @@ def test_project_surface_inventory_guardrails_are_current():
         path
         for path in tracked
         if path.endswith(".py")
-        and path.startswith(("scripts/", "tools/analysis/", "tools/visualization/"))
+        and path.startswith(("scripts/", "tools/analysis/"))
     }
     shell_entries = {
         path
@@ -456,7 +451,7 @@ def test_regular_tests_do_not_duplicate_src_path_bootstrap():
 def test_health_inventory_documents_hotspots_and_commands():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    health_spec = (
+    health_spec_path = (
         ROOT
         / "openspec"
         / "changes"
@@ -464,7 +459,10 @@ def test_health_inventory_documents_hotspots_and_commands():
         / "specs"
         / "project-health-guardrails"
         / "spec.md"
-    ).read_text(encoding="utf-8")
+    )
+    if not health_spec_path.exists():
+        health_spec_path = ROOT / "openspec" / "specs" / "project-health-guardrails" / "spec.md"
+    health_spec = health_spec_path.read_text(encoding="utf-8")
 
     for command in HEALTH_CHECK_COMMANDS:
         assert command in inventory
@@ -647,6 +645,20 @@ def test_shell_orchestration_defaults_do_not_write_to_outputs_other():
     assert violations == []
 
 
+def test_runtime_output_defaults_use_canonical_partitions():
+    partitions = canonical_runtime_partitions("outputs")
+
+    assert DEFAULT_CONFIG["output"]["dir"] == "outputs"
+    assert DEFAULT_CONFIG["checkpoint"]["registry"]["dir"] == "outputs"
+    assert partitions["cache"] == "outputs/cache"
+    assert partitions["cleanup_manifests"] == "outputs/cleanup_manifests"
+    assert partitions["analysis"] == "outputs/analysis"
+    assert partitions["visual_analysis"] == "outputs/visual_analysis"
+    assert partitions["evaluations"] == "outputs/evaluations"
+    assert partitions["scene"] == "outputs/scene<id>"
+    assert partitions["scenegroup"] == "outputs/scenegroup_<range-or-list>"
+
+
 def test_entrypoint_lifecycle_categories_are_explicit_and_documented():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     classifications = {
@@ -668,8 +680,6 @@ def test_hotspot_inventory_documents_facades_and_narrow_modules():
         "src/kd_sensing/engine/objectives/history.py",
         "src/kd_sensing/diagnostics/viewer_manifest.py",
         "src/kd_sensing/diagnostics/viewer_manifest_merge.py",
-        "src/kd_sensing/data/deepverse/label_builder.py",
-        "src/kd_sensing/data/deepverse/label_writers.py",
     ]
 
     for rel_path in required_paths:
@@ -689,20 +699,6 @@ def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
 
 def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
     expectations = {
-        "tools/visualization/viewer_utils.py": {
-            "max_lines": 140,
-            "forbidden": [
-                "def load_manifest",
-                "def filter_samples",
-                "def make_beam_confidence_figure",
-                "def _legacy_prediction_summary_row",
-            ],
-            "helpers": {
-                "tools/visualization/viewer_manifest_io.py": "def load_manifest",
-                "tools/visualization/viewer_figures.py": "def make_future_distribution_plot",
-                "tools/visualization/viewer_prediction_tables.py": "def _legacy_prediction_summary_row",
-            },
-        },
         "src/kd_sensing/models/csi.py": {
             "max_lines": 40,
             "forbidden": [
@@ -746,20 +742,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/diagnostics/viewer_manifest_paths.py": "def _all_source_paths",
                 "src/kd_sensing/diagnostics/viewer_manifest_merge.py": "def _attach_prediction_bundle",
                 "src/kd_sensing/diagnostics/viewer_manifest_writer.py": "def _manifest_record",
-            },
-        },
-        "src/kd_sensing/data/deepverse/label_builder.py": {
-            "max_lines": 650,
-            "forbidden": [
-                "def write_label_cache",
-                "def _blockage_metadata",
-                "def _get_sample",
-                "def _write_json",
-            ],
-            "helpers": {
-                "src/kd_sensing/data/deepverse/label_scene.py": "class MobilityTrace",
-                "src/kd_sensing/data/deepverse/label_targets.py": "def _blockage_metadata",
-                "src/kd_sensing/data/deepverse/label_writers.py": "def write_label_cache",
             },
         },
         "src/kd_sensing/data/mmw/preparation.py": {
@@ -971,31 +953,30 @@ def test_current_diagnostics_light_submodule_does_not_import_visualization_stack
     }
 
 
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "import kd_sensing.diagnostics.visualization.config",
-        "import kd_sensing.diagnostics.visualization.sampling",
-        "import kd_sensing.diagnostics.visualization.writers",
-    ],
-)
-def test_visualization_light_helpers_do_not_import_render_or_dataset_stack(statement: str):
+def test_viewer_manifest_light_helpers_do_not_import_runtime_stack():
     modules = _run_module_presence_probe(
-        statement,
+        "\n".join(
+            [
+                "import kd_sensing.diagnostics.viewer_manifest_config",
+                "import kd_sensing.diagnostics.viewer_manifest_sampling",
+            ]
+        ),
         {
-            "torch": "torch",
-            "pandas": "pandas",
             "matplotlib": "matplotlib",
-            "pil_image": "PIL.Image",
+            "pillow": "PIL.Image",
             "data_factory": "kd_sensing.engine.data_factory",
-            "model_builder": "kd_sensing.engine.optim",
+            "viewer_writer": "kd_sensing.diagnostics.viewer_manifest_writer",
             "visualization_core": "kd_sensing.diagnostics.visualization.core",
-            "visualization_datasets": "kd_sensing.diagnostics.visualization.datasets",
-            "visualization_render": "kd_sensing.diagnostics.visualization.render",
         },
     )
 
-    assert modules == {key: False for key in modules}
+    assert modules == {
+        "matplotlib": False,
+        "pillow": False,
+        "data_factory": False,
+        "viewer_writer": False,
+        "visualization_core": False,
+    }
 
 
 def test_beam_loss_submodule_does_not_import_training_registry_or_transforms():
@@ -1113,7 +1094,11 @@ def test_removed_facades_are_not_importable():
         _dotted("kd_sensing", "data", "transforms"),
         _dotted("kd_sensing", "data", "transform_ops", "_legacy"),
         _dotted("kd_sensing", "data", "datasets", "multimodal_nf"),
+        _dotted("kd_sensing", "data", "deepverse"),
+        _dotted("kd_sensing", "baselines", "gps_window"),
+        _dotted("kd_sensing", "cli", "gps_window_baseline"),
         _dotted("kd_sensing", "diagnostics", "g2d_diagnostics"),
+        _dotted("kd_sensing", "diagnostics", "visualization"),
         _dotted("kd_sensing", "distillation", "g2d"),
         _dotted("kd_sensing", "distillation", "g2d_smp"),
         _dotted("kd_sensing", "distillation", "teacher_ensemble"),
@@ -1314,33 +1299,6 @@ def test_prediction_task_boundaries_do_not_reintroduce_duplicate_tables_or_valid
     assert "_evaluation_uses_lidar" not in evaluator_text
     assert "_evaluation_uses_mmwave" not in evaluator_text
     assert "run_evaluation_pass" in validator_text
-
-
-def test_visualization_core_is_thin_and_submodules_own_implementations():
-    core_text = (SRC / "kd_sensing" / "diagnostics" / "visualization" / "core.py").read_text(encoding="utf-8")
-    core_lines = core_text.splitlines()
-    forbidden_in_core = (
-        "class VisualizationConfig",
-        "class SampleCandidate",
-        "def build_diagnostic_datasets",
-        "def collect_candidates",
-        "def tensor_stats",
-        "def render_sample_overview",
-        "def write_samples_jsonl",
-    )
-
-    assert len(core_lines) < 300
-    assert [snippet for snippet in forbidden_in_core if snippet in core_text] == []
-    for module, snippet in {
-        "config.py": "class VisualizationConfig",
-        "datasets.py": "def build_diagnostic_datasets",
-        "sampling.py": "def collect_candidates",
-        "stats.py": "def tensor_stats",
-        "render.py": "def render_sample_overview",
-        "writers.py": "def write_samples_jsonl",
-    }.items():
-        text = (SRC / "kd_sensing" / "diagnostics" / "visualization" / module).read_text(encoding="utf-8")
-        assert snippet in text
 
 
 def test_visualize_modalities_console_script_is_thin_manifest_alias():

@@ -275,6 +275,7 @@ def import_default_components() -> None:
     import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
+    import kd_sensing.models.vision_position  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.image_cache  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401

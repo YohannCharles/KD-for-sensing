@@ -1,7 +1,7 @@
 # project-health-guardrails Specification
 
 ## Purpose
-TBD - created by archiving change strengthen-project-health-guardrails. Update Purpose after archive.
+定义项目健康护栏的检查层级、维护性热点 inventory、共享 pytest bootstrap、配置生命周期扫描和 OpenSpec 文档质量规则，使日常改动能快速发现入口漂移、旧路线回流、占位规范和本地产物边界问题。
 ## Requirements
 ### Requirement: 分层项目健康检查
 项目 MUST 提供可记录、可重复的分层健康检查 workflow，用于在不启动真实训练、不读取真实数据、不写入源码内产物的前提下验证 OpenSpec、架构边界、CLI 入口和配置加载核心路径。所有项目相关 Python 检查 MUST 使用 `kd_mm_beam` 环境。
@@ -55,4 +55,3 @@ TBD - created by archiving change strengthen-project-health-guardrails. Update P
 - **WHEN** 本 change 实现项目健康护栏
 - **THEN** 系统 MUST 不新增长期训练/评估 CLI 或兼容 wrapper
 - **AND** 若新增开发检查 helper，helper MUST 不成为 README 推荐的训练入口或旧研究路线替代入口
-

@@ -109,7 +109,7 @@ class EpochMetricsRecorder:
         val_loss = float(val_metrics["loss"])
         total = val_metrics.get("total", [])
         horizons = metric_horizons_from_metrics(val_metrics, num_pred=len(total))
-        top1 = val_metrics["topk"].get("1", [0.0])
+        top1 = _topk_values(val_metrics.get("topk"), 1)
         val_acc = mean_valid_slots(top1, total, horizons=horizons) if top1 else 0.0
         validation_curve_metrics = aggregate_validation_metrics(val_metrics)
 
@@ -345,6 +345,23 @@ def aggregate_validation_metrics(val_metrics: dict) -> dict[str, float]:
         "val_adba": aggregated["adba"],
         "val_beam_dba": float(val_metrics.get("val_beam_dba", 0.0) or 0.0),
     }
+
+
+def _topk_values(topk: Any, k: int) -> list[float]:
+    if isinstance(topk, dict):
+        values = topk.get(str(k), topk.get(k, []))
+    elif isinstance(topk, (list, tuple)):
+        index = int(k) - 1
+        values = topk[index] if 0 <= index < len(topk) else []
+    else:
+        values = []
+    if isinstance(values, np.ndarray):
+        return [float(value) for value in values.tolist()]
+    if isinstance(values, (list, tuple)):
+        return [float(value) for value in values]
+    if values is None:
+        return []
+    return [float(values)]
 
 
 def validation_subset_epoch_scalars(val_metrics: dict) -> dict[str, float]:

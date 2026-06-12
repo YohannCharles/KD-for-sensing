@@ -12,18 +12,19 @@ from typing import Any
 
 import torch
 
-from kd_sensing.data.scenes import scene_metadata_from_config, scene_slug_from_config
 from kd_sensing.engine.run_lineage import model_capacity, run_lineage_metadata
 from kd_sensing.utils.paths import resolve_path
+from kd_sensing.utils.runtime_output_layout import runtime_output_scope_from_config, runtime_scope_metadata_from_config
 
 
 DEFAULT_REGISTRY = {
     "enabled": True,
-    "dir": "outputs/best_checkpoints",
+    "dir": "outputs",
     "prefer": True,
     "metric": "val_top1",
     "filename": "{slug}_{role}_acc_{acc}.pth",
 }
+LEGACY_DEFAULT_REGISTRY_DIR = "outputs/best_checkpoints"
 
 
 @dataclass
@@ -62,7 +63,7 @@ def registry_preferred(cfg: dict[str, Any]) -> bool:
 
 def registry_dir(cfg: dict[str, Any]) -> Path:
     configured_dir = registry_config(cfg).get("dir", DEFAULT_REGISTRY["dir"])
-    if configured_dir == DEFAULT_REGISTRY["dir"]:
+    if configured_dir in {DEFAULT_REGISTRY["dir"], LEGACY_DEFAULT_REGISTRY_DIR}:
         return _default_scene_registry_dir(cfg)
     return resolve_path(configured_dir)
 
@@ -176,7 +177,7 @@ def archive_best_checkpoint(
                 "skipped_source_checkpoint": str(source),
                 "skipped_metric_value": float(val_top1),
             }
-    _remove_old_archives(target_dir, slug=slug, role=role, keep=target, scene_slug=scene_slug_from_config(cfg))
+    _remove_old_archives(target_dir, slug=slug, role=role, keep=target, scene_slug=_scope_slug_from_config(cfg))
     shutil.copy2(source, target)
 
     lineage = run_lineage_metadata(cfg)
@@ -214,7 +215,7 @@ def archive_best_checkpoint(
         "updated": True,
         "lineage": lineage,
     }
-    metadata.update(scene_metadata_from_config(cfg))
+    metadata.update(runtime_scope_metadata_from_config(cfg))
     sidecar = write_sidecar(target, metadata)
     metadata["sidecar_path"] = str(sidecar)
     write_sidecar(target, metadata)
@@ -242,7 +243,7 @@ def find_registry_checkpoint(
 ) -> CheckpointResolution:
     target_dir = registry_dir(cfg)
     slug = sanitize_slug(target_slug or config_slug(cfg))
-    candidates = _registry_candidates(target_dir, slug=slug, role=role, scene_slug=scene_slug_from_config(cfg))
+    candidates = _registry_candidates(target_dir, slug=slug, role=role, scene_slug=_scope_slug_from_config(cfg))
     if candidates:
         best = max(candidates, key=lambda item: (item["metric_value"], item["mtime"]))
         return CheckpointResolution(
@@ -385,10 +386,15 @@ def _json_ready(value: Any) -> Any:
 def _default_scene_registry_dir(cfg: dict[str, Any]) -> Path:
     base = resolve_path(cfg.get("output", {}).get("dir", cfg.get("paths", {}).get("output_dir", "outputs")))
     if cfg.get("output", {}).get("group_by_scene", True) is not False:
-        scene_slug = scene_slug_from_config(cfg)
-        if scene_slug and base.name != scene_slug:
-            base = base / scene_slug
+        scope = runtime_output_scope_from_config(cfg)
+        if scope is not None and base.name != scope.slug:
+            base = base / scope.slug
     return base / "best_checkpoints"
+
+
+def _scope_slug_from_config(cfg: dict[str, Any]) -> str | None:
+    scope = runtime_output_scope_from_config(cfg)
+    return scope.slug if scope is not None else None
 
 
 def _metadata_from_checkpoint_payload(checkpoint_path: str | Path) -> dict[str, Any] | None:

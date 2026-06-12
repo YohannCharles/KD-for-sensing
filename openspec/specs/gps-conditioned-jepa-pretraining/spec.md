@@ -128,4 +128,4 @@ JEPA 预训练运行 MUST 保存完整训练产物，并 MUST 显式记录可复
 - **AND** GPS-biased JEPA 配置 MUST 指向 `outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`
 - **AND** 配置 MUST NOT 默认引用 scene31-only JEPA checkpoint
 - **AND** JEPA downstream 派生配置 MUST 继承与 baseline 匹配的多场景 checkpoint 口径
-
+- **AND** BeamBench-fair downstream 配置 MUST 继承 `seq_len=1`、`num_pred=1`、GPS `paper_distance_angle`、scene paper calibration angle 和 linear DBA 口径

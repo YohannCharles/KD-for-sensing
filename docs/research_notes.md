@@ -1,13 +1,13 @@
 # 研究笔记收束
 
-本文件浓缩原根目录零散方案草稿中仍有价值的研究判断。实现契约仍以 `openspec/specs/` 为准；运行入口、实验矩阵和可视化说明分别看 `README.md`、`docs/experiment_matrix.md` 和 `tools/visualization/README.md`。
+本文件浓缩原根目录零散方案草稿中仍有价值的研究判断。实现契约仍以 `openspec/specs/` 为准；运行入口、实验矩阵和 manifest/JEPA 可视化说明分别看 `README.md`、`docs/experiment_matrix.md` 和 `docs/extension_guide.md`。
 
 ## 文档取舍
 
 - 根目录只保留 `README.md` 和 `AGENTS.md`；历史方案草稿不再作为入口文档维护。
 - 需求、架构边界和行为契约进入 `openspec/specs/`。
 - 实验运行顺序、配置矩阵和常用命令进入 `docs/experiment_matrix.md`。
-- Viewer、manifest 和性能排查进入 `tools/visualization/README.md`。
+- Viewer manifest 和性能排查进入 README、`docs/extension_guide.md` 与包内 manifest 导出 CLI；仓库级 Gradio viewer support 已退役。
 - 本文件只保留研究路线判断、负结果解释和跨文档的阅读导航。
 
 ## 已退役研究线
@@ -72,9 +72,9 @@ CSI hardening 的目标不是降上限，而是制造 high-ceiling but slow-to-l
 
 Raymobtime s008 的 current snapshot beam selection workflow 已退役；旧 `coord/ray` 模态、专用预处理器和 selection 模型不再作为当前 dataset 或 viewer 入口维护。
 
-DeepVerse DT31 的价值在于把监督来源和模型输入解耦：用 ray-tracing channel 生成 beam label，用 LoS/status 生成 blockage label，用 mobility ground truth 生成 trajectory label，但模型默认只输入 camera、LiDAR、radar、weak wireless history 和 noisy position。先完成 cache/manifest/label，再做训练和 task-aware gate 实验。契约见 `openspec/specs/deepverse-dt31-data-generation/spec.md`。
+DeepVerse DT31 曾作为把监督来源和模型输入解耦的候选路线：用 ray-tracing channel 生成 beam label，用 LoS/status 生成 blockage label，用 mobility ground truth 生成 trajectory label。该数据生成、label builder、split 和 sanity workflow 已退役，本仓库当前不再维护 DT31 入口。
 
-Viewer 已从静态 PNG 方向收束为 Gradio manifest workflow。重点能力包括 raw/processed modalities、prediction/quality/gate 合并和 future beam distribution。入口和字段约定见 `tools/visualization/README.md`。
+Viewer 已从静态 PNG 和仓库级 Gradio viewer 收束为包内 manifest 导出 workflow。重点能力包括 raw/processed modalities、prediction/quality/gate 合并和 future beam distribution；交互式查看可由外部工具消费 manifest。
 
 ## 原论文复现边界
 
