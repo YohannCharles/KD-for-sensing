@@ -166,6 +166,79 @@ def plan_official_evaluation(
     return report
 
 
+def plan_official_classical_evaluation(
+    *,
+    official_root: str | Path,
+    data_folder: str | Path,
+    csv: str = "ml_challenge_test_multi_modal.csv",
+    gpu_id: int = 0,
+    beams_shift: int = 1,
+    output_dir: str | Path | None = None,
+    execute: bool = False,
+) -> dict[str, Any]:
+    root = Path(official_root)
+    data_root = Path(data_folder)
+    command = [
+        "python3",
+        "classical.py",
+        "--gpu_id",
+        str(int(gpu_id)),
+        "--data_folder",
+        str(data_root),
+        "--csv",
+        str(csv),
+        "--root",
+        str(root),
+        "--beams_shift",
+        str(int(beams_shift)),
+    ]
+    missing = []
+    if not root.exists():
+        missing.append(f"official_root:{root}")
+    if not (root / "classical.py").exists():
+        missing.append("classical.py")
+    if not (data_root / csv).exists():
+        missing.append(f"data_csv:{data_root / csv}")
+    for filename in ("classic.npy", "classic_angle.npy", "classic_corr.npy"):
+        path = root / DEFAULT_MODEL_DIR / filename
+        if not path.exists():
+            missing.append(f"checkpoint:{path}")
+    audit = audit_official_repository(root) if root.exists() else {}
+    prediction_path = root / DEFAULT_PREDICTION_DIR / "classical.csv"
+    report: dict[str, Any] = {
+        "mode": "official_classical_evaluation",
+        "official_commit": audit.get("official_commit", OFFICIAL_COMMIT),
+        "command": command,
+        "command_text": " ".join(command),
+        "cwd": str(root),
+        "data_folder": str(data_root),
+        "csv": str(csv),
+        "beams_shift": int(beams_shift),
+        "checkpoint_dir": str(root / DEFAULT_MODEL_DIR),
+        "prediction_path": str(prediction_path),
+        "execute": bool(execute),
+        "blocked": bool(missing),
+        "blocked_reasons": sorted(dict.fromkeys(str(item) for item in missing)),
+        "audit": audit,
+    }
+    if output_dir is not None:
+        output = Path(output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "official_classical_plan.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    if execute and missing:
+        report["returncode"] = 2
+        return report
+    if execute:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
+        report["returncode"] = int(result.returncode)
+        report["stdout_tail"] = result.stdout[-4000:]
+        report["stderr_tail"] = result.stderr[-4000:]
+    return report
+
+
 def _missing_checkpoint_paths(root: Path, *, type_list: str, seed: int, adapt: str) -> list[str]:
     model_dir = root / DEFAULT_MODEL_DIR
     missing = []

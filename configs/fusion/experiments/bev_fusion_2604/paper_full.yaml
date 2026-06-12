@@ -1,0 +1,143 @@
+experiment:
+  name: bev_fusion_2604_paper_full_s32_s34
+  task: fusion
+  seed: 42
+  device: auto
+  protocol: deepsense6g_2604_s32_s34_stratified80_seq5
+  paper: arXiv:2604.05668
+  paper_exact_split_available: false
+  paper_approximation: false
+data:
+  dataset:
+    type: deepsense6g
+    scene: 32
+    train_scenes: [32, 33, 34]
+    validation_scenes: [32, 33, 34]
+    test_scenes: [32, 33, 34]
+    split_protocol: stratified_80_10_10
+    split_strategy: stratified_by_target_beam_per_scene
+    split_seed: 42
+    split_source_splits: [train, test]
+    split_fractions:
+      train: 0.8
+      validation: 0.1
+      test: 0.1
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 5
+    num_pred: 1
+    portion: 1.0
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_gps_bev_xy: true
+    gps_bev_xy_source: history_relative_xy
+    gps_bev_roi: [-80.0, 80.0, -80.0, 80.0]
+    use_lidar: true
+    lidar_bev_size: [128, 128]
+    lidar_roi: [-80.0, 80.0, -80.0, 80.0, -3.0, 5.0]
+    lidar_normalize: false
+    lidar_augment: false
+    augmentation:
+      horizontal_flip: false
+      beam_index_reversal: false
+  validation_from_train:
+    enabled: false
+  dataloader:
+    train_batch_size: 2
+    test_batch_size: 2
+    num_workers: 2
+    train_num_workers: 2
+    test_num_workers: 2
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 1
+model:
+  modalities: [image, radar, gps, lidar]
+  d_model: 256
+  num_classes: 64
+  num_pred: 1
+  downsample_ratio: 1
+  seq_length: 5
+  primary:
+    type: bev_fusion_2604
+    modalities: [image, radar, gps, lidar]
+    num_classes: 64
+    num_pred: 1
+    d_model: 256
+    bev_size: [128, 128]
+    image_channels: 3
+    radar_channels: 2
+    lidar_channels: 3
+    gps_input_size: 3
+    camera_backbone:
+      type: resnet34
+      pretrained: false
+      freeze_backbone: false
+    camera_to_bev:
+      num_layers: 3
+      num_heads: 4
+      dropout: 0.1
+    gps_spatial:
+      roi: [-80.0, 80.0, -80.0, 80.0]
+      gaussian_sigma_cells: 1.5
+      clip_out_of_bounds: true
+    gps_pathway: dual_path
+    fusion_core:
+      type: bev_spatial
+      dropout: 0.1
+    temporal_core:
+      type: transformer
+      num_layers: 4
+      num_heads: 4
+      max_seq_len: 8
+      dropout: 0.1
+    paper_approximation: false
+loss:
+  type: focal_loss
+  alpha: 1
+  gamma: 2
+  class_weight_strategy: train_split_frequency_alpha
+training:
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.01
+  optimizer:
+    type: adamw
+    lr: 0.0001
+    weight_decay: 0.01
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  early_stopping_metric: val_adba
+  early_stopping_mode: max
+  min_delta: 0.0001
+  transfer:
+    non_blocking: true
+  amp:
+    enabled: true
+    dtype: float16
+    grad_scaler: true
+  allow_tf32: true
+  cudnn_benchmark: true
+scheduler:
+  type: none
+evaluation:
+  k_values: [1, 3, 5]
+  dba_delta: 5
+  dba_distance_mode: linear
+  metric_profile: 2604_linear_topk
+  record_latency: false
+  report:
+    type: bev_fusion_2604
+    paper_targets:
+      S32: 0.8660
+      S33: 0.8627
+      S34: 0.8670
+      overall: 0.8652
+output:
+  dir: outputs
+  group_by_scene: false
+  run_name: bev_fusion_2604_paper_full_s32_s34

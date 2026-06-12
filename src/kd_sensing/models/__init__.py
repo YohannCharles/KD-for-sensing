@@ -32,6 +32,7 @@ _EXPORTS: dict[str, str] = {
     "FusionStrongModalityNet": "kd_sensing.models.fusion",
     "TokenTransformerFusionNet": "kd_sensing.models.fusion",
     "BeamClassificationHead": "kd_sensing.models.modular",
+    "BEVFusion2604Net": "kd_sensing.models.bev_fusion_2604",
     "EarlyConcatGRUCore": "kd_sensing.models.modular",
     "GpsSequenceBaselineNet": "kd_sensing.models.vision_position",
     "LinearProjector": "kd_sensing.models.modular",

@@ -53,6 +53,7 @@ def build_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
             {
                 "type": "dba",
                 "delta": eval_cfg.get("dba_delta", 5),
+                "distance_mode": eval_cfg.get("dba_distance_mode", "circular"),
             }
         ),
     }

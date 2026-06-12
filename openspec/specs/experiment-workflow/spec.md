@@ -1674,6 +1674,7 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **THEN** `data.dataset.num_pred` 和 `model.num_pred` MUST 为 1
 - **AND** `data.dataset.seq_len` 和 `model.seq_length` MUST 为 1
 - **AND** GPS 输入 MUST 使用 `paper_distance_angle` 二维 Direct 特征
+- **AND** beam target MUST 设置为 `beam_target_source: current`
 - **AND** `model.primary.gps_input_size` MUST 为 2
 - **AND** scene paper calibration angle MUST 通过 `gps_angle_offset_source: paper_scene_default` 或等价运行 metadata 记录
 - **AND** `evaluation.k_values` MUST 为 `[1, 3, 5]`
@@ -1748,4 +1749,3 @@ README、实验矩阵、快速健康检查和配置驱动 workflow 文档 MUST �
 - **WHEN** 用户通过训练配置 `output.dir` 或评估入口 `--output-dir` 显式传入完整输出目录
 - **THEN** 系统 MUST 尊重该路径
 - **AND** 系统 MUST 不额外追加 scene 或 scenegroup 片段
-

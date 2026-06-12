@@ -38,6 +38,7 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         "num_samples": len(dataset),
         "enabled_modalities": list(getattr(dataset, "enabled_modalities", [])),
         "split_family": split_family,
+        "beam_target_source": getattr(dataset, "beam_target_source", None),
     }
     if csv_path is not None:
         split_metadata = split_metadata_summary_for_csv(
@@ -81,6 +82,13 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         metadata["gps_angle_offset_source"] = getattr(dataset, "gps_angle_offset_source", None)
         if getattr(dataset, "gps_scaler_metadata", None):
             metadata["gps_scaler"] = dict(getattr(dataset, "gps_scaler_metadata"))
+    if getattr(dataset, "use_gps_bev_xy", False):
+        metadata["gps_bev_xy"] = {
+            "enabled": True,
+            "source": getattr(dataset, "gps_bev_xy_source", None),
+            "roi": [float(value) for value in getattr(dataset, "gps_bev_roi", ())],
+            "standardized": False,
+        }
     if getattr(dataset, "use_csi", False):
         metadata["csi_train_rms"] = bool(getattr(dataset, "csi_train_rms", False))
         normalizer = getattr(dataset, "csi_rms_normalizer", None)
@@ -270,7 +278,83 @@ def prediction_setup_metadata(
     if baseline_metadata:
         metadata.update(baseline_metadata)
         metadata["baseline"] = baseline_metadata
+    bev_2604 = bev_fusion_2604_metadata(cfg)
+    if bev_2604:
+        metadata.update(bev_2604)
+        metadata["bev_fusion_2604"] = bev_2604
     return metadata
+
+
+def bev_fusion_2604_metadata(cfg: dict[str, Any], model: Any | None = None) -> dict[str, Any]:
+    model_cfg = cfg.get("model", {})
+    primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
+    model_metadata = _model_training_strategy_metadata(model)
+    model_type = str(primary_cfg.get("type", model_metadata.get("type", "")))
+    if model_type != "bev_fusion_2604":
+        return {}
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    eval_cfg = cfg.get("evaluation", {})
+    experiment_cfg = cfg.get("experiment", {})
+    bev_size = primary_cfg.get("bev_size", model_metadata.get("bev_size", [128, 128]))
+    gps_pathway = primary_cfg.get("gps_pathway", model_metadata.get("gps_pathway", "dual_path"))
+    if isinstance(gps_pathway, dict):
+        gps_pathway = gps_pathway.get("mode", gps_pathway.get("type", "dual_path"))
+    fusion_core = primary_cfg.get("fusion_core", model_metadata.get("fusion_core", "bev_spatial"))
+    if isinstance(fusion_core, dict):
+        fusion_core = fusion_core.get("type", fusion_core.get("mode", "bev_spatial"))
+    temporal_core = primary_cfg.get("temporal_core", model_metadata.get("temporal_core", "transformer"))
+    if isinstance(temporal_core, dict):
+        temporal_core = temporal_core.get("type", temporal_core.get("mode", "transformer"))
+    mock_data = bool(
+        dataset_cfg.get("mock_data", False)
+        or str(dataset_cfg.get("type", "")).strip().lower() in {"synthetic", "synthetic_sequence"}
+    )
+    paper_approximation = bool(
+        primary_cfg.get("paper_approximation", experiment_cfg.get("paper_approximation", False))
+        or mock_data
+        or list(bev_size) != [128, 128]
+        or int(primary_cfg.get("d_model", model_cfg.get("d_model", model_metadata.get("d_model", 0))) or 0) != 256
+    )
+    ablation_name = (
+        experiment_cfg.get("ablation_name")
+        or experiment_cfg.get("ablation")
+        or primary_cfg.get("ablation_name")
+        or model_metadata.get("ablation_name")
+    )
+    return {
+        "primary_model": "bev_fusion_2604",
+        "paper": "arXiv:2604.05668",
+        "paper_target_dba": {
+            "S32": 0.8660,
+            "S33": 0.8627,
+            "S34": 0.8670,
+            "overall": 0.8652,
+        },
+        "paper_exact_split_available": bool(experiment_cfg.get("paper_exact_split_available", False)),
+        "mock_data": mock_data,
+        "real_data": not mock_data,
+        "paper_approximation": paper_approximation,
+        "bev_shape": list(bev_size),
+        "bev_size": list(bev_size),
+        "gps_pathway": str(gps_pathway),
+        "fusion_core": str(fusion_core),
+        "temporal_core": str(temporal_core),
+        "ablation_name": ablation_name,
+        "metric_profile": str(eval_cfg.get("metric_profile") or _metric_profile_from_config(eval_cfg)),
+        "dba_distance_mode": str(eval_cfg.get("dba_distance_mode", "circular")),
+        "topk": list(eval_cfg.get("k_values", [1, 3, 5])),
+        "camera_backbone": _component_type(primary_cfg.get("camera_backbone")) or model_metadata.get("camera_backbone"),
+        "model_size": {
+            "d_model": int(primary_cfg.get("d_model", model_cfg.get("d_model", model_metadata.get("d_model", 0))) or 0),
+            "temporal_layers": _nested_int(primary_cfg.get("temporal_core"), "num_layers", model_metadata.get("temporal_layers")),
+            "temporal_heads": _nested_int(primary_cfg.get("temporal_core"), "num_heads", model_metadata.get("temporal_heads")),
+        },
+        "gps_bev_xy": {
+            "enabled": bool(dataset_cfg.get("use_gps_bev_xy", False)),
+            "source": dataset_cfg.get("gps_bev_xy_source", "history_relative_xy"),
+            "standardized": False,
+        },
+    }
 
 
 def vision_position_baseline_metadata(cfg: dict[str, Any], model: Any | None = None) -> dict[str, Any]:
@@ -319,6 +403,7 @@ def vision_position_baseline_metadata(cfg: dict[str, Any], model: Any | None = N
         "encoder_type": encoder_type,
         "gps_encoder_type": _component_type(gps_encoder_cfg),
         "gps_feature_mode": dataset_cfg.get("gps_feature_mode", primary_cfg.get("gps_feature_mode")),
+        "beam_target_source": dataset_cfg.get("beam_target_source", "future"),
         "temporal_aggregation": temporal,
         "num_classes": int(model_cfg.get("num_classes", primary_cfg.get("num_classes", 64))),
         "num_pred": int(model_cfg.get("num_pred", primary_cfg.get("num_pred", dataset_cfg.get("num_pred", 0)) or 0)),
@@ -362,11 +447,26 @@ def vision_position_baseline_metadata(cfg: dict[str, Any], model: Any | None = N
         metadata["official_search_procedure"] = bool(
             (paper_style or {}).get("official_search_procedure", (paper_cfg or {}).get("official_search_procedure", False))
         )
-        metadata["table_iii_equivalent"] = bool(
+        computed_equivalent = bool(
             metadata["official_pretrained_weights"]
             and metadata["official_test_set"]
             and metadata["official_search_procedure"]
         )
+        if isinstance(paper_cfg, dict) and "table_iii_equivalent" in paper_cfg:
+            metadata["table_iii_equivalent"] = bool(paper_cfg.get("table_iii_equivalent"))
+        else:
+            metadata["table_iii_equivalent"] = computed_equivalent
+        for key in (
+            "protocol_aligned",
+            "protocol_alignment",
+            "paper_rows_not_equivalent",
+            "non_equivalent_reason",
+            "recommended_table_iii_config",
+            "recommended_table_iii_cli",
+            "recommended_table_iii_source",
+        ):
+            if isinstance(paper_cfg, dict) and key in paper_cfg:
+                metadata[key] = paper_cfg[key]
     return metadata
 
 
@@ -536,6 +636,15 @@ def _component_type(raw: Any) -> str | None:
     if isinstance(raw, dict):
         return str(raw.get("type", "")) or None
     return None
+
+
+def _nested_int(raw: Any, key: str, fallback: Any = None) -> int | None:
+    value = raw.get(key) if isinstance(raw, dict) else None
+    if value is None:
+        value = fallback
+    if value in (None, ""):
+        return None
+    return int(value)
 
 
 def _model_training_strategy_metadata(model: Any | None) -> dict[str, Any]:

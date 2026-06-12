@@ -1,7 +1,7 @@
 # jepa-visual-analysis-suite Specification
 
 ## Purpose
-TBD - created by archiving change add-jepa-visual-analysis-suite. Update Purpose after archive.
+Define the supported offline JEPA visual-analysis workflow for comparing trained image/GPS beam-prediction models, exporting figures, tables, case payloads, cache metadata, and source-grounded reports without mutating training artifacts.
 ## Requirements
 ### Requirement: JEPA 可视化分析 CLI
 系统 MUST 提供一个离线 JEPA 可视化分析入口，用于从分析配置读取多个模型的 config、checkpoint、评估 split 和图表开关，并将所有分析产物写入指定输出目录。该入口 MUST 不启动训练、不修改 checkpoint、不修改训练日志、不修改 split CSV。
@@ -197,4 +197,3 @@ TBD - created by archiving change add-jepa-visual-analysis-suite. Update Purpose
 - **THEN** 系统 MUST 降级到可用方法或跳过对应图
 - **AND** 系统 MUST 在 manifest 和 report 中记录 warning
 - **AND** CLI MUST 以成功状态完成，除非所有必需输入均不可用
-

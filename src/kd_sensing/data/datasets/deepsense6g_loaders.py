@@ -24,6 +24,9 @@ class DeepSense6GModalityLoader:
             gps_features = ds.gps_scaler.transform(gps_features)
         return torch.tensor(gps_features, dtype=torch.float32)
 
+    def load_gps_bev_xy(self, idx: int) -> torch.Tensor:
+        return torch.tensor(self.dataset._gps_bev_xy_for_index(idx), dtype=torch.float32)
+
     def load_mmwave(self, idx: int) -> torch.Tensor:
         ds = self.dataset
         mmwave_features = ds._mmwave_features_for_index(idx)

@@ -30,6 +30,7 @@ data:
     gps_feature_mode: paper_distance_angle
     gps_angle_offset_source: paper_scene_default
     gps_normalize: true
+    beam_target_source: current
   validation_from_train:
     enabled: true
     fraction: 0.1

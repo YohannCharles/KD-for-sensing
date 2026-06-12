@@ -450,7 +450,37 @@ def prepare_fusion_inputs(
             device=device,
             non_blocking=non_blocking,
         )
+    if "gps_bev_xy" in batch:
+        inputs["gps_bev_xy_batch"] = prepare_gps_bev_xy_inputs(
+            batch,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+            non_blocking=non_blocking,
+        )
     return inputs
+
+
+def prepare_gps_bev_xy_inputs(
+    batch: dict[str, torch.Tensor],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> torch.Tensor:
+    if "gps_bev_xy" not in batch:
+        raise ValueError("GPS BEV XY input is required but batch does not contain a 'gps_bev_xy' field.")
+    xy = batch["gps_bev_xy"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    if xy.ndim == 2:
+        xy = xy.unsqueeze(0)
+    if xy.ndim != 3 or int(xy.shape[-1]) != 2:
+        raise ValueError(f"gps_bev_xy must have shape [B, T, 2], got {tuple(xy.shape)}.")
+    xy = xy[:, -seq_length:, :]
+    batch_size, _, feature_dim = xy.shape
+    pad_steps = max(num_pred - 1, 0)
+    zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=xy.dtype, device=device)
+    return torch.cat([xy, zeros], dim=1)
 
 
 def prepare_gps_inputs(
@@ -723,6 +753,7 @@ def forward_model(
     csi_batch: torch.Tensor | None = None,
     geometry_batch: torch.Tensor | None = None,
     geometry_mask: torch.Tensor | None = None,
+    gps_bev_xy_batch: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
     **extra_model_kwargs,
 ):
@@ -736,6 +767,7 @@ def forward_model(
             "csi_batch": csi_batch,
             "geometry_batch": geometry_batch,
             "geometry_mask": geometry_mask,
+            "gps_bev_xy_batch": gps_bev_xy_batch,
         }
         kwargs = {key: value for key, value in kwargs.items() if value is not None}
         if force_modality_mask is not None:

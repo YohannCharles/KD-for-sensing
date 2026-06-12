@@ -11,8 +11,8 @@ Mainline reporting uses the GPS-biased JEPA reuse configs:
 
 The retained `beambench_fair` filenames now mean the downstream Image+GPS/JEPA controls use
 BeamBench Table III style `seq_len=1`, `num_pred=1`, `paper_distance_angle` GPS Direct features,
-scene paper calibration angles, S32-S34 training scenes, S31-S34 test scenes, and linear DBA with
-Top-1/3/5. They do not become the Table III Camera AE+GPS Direct model. For that row, use
+scene paper calibration angles, current-beam targets, S32-S34 training scenes, S31-S34 test scenes,
+and linear DBA with Top-1/3/5. They do not become the Table III Camera AE+GPS Direct model. For that row, use
 `configs/fusion/beambench_image_ae_gps_direct.yaml` with
 `kd-sensing-run-beambench-image-ae-gps-tableiii`.
 

@@ -220,6 +220,31 @@ def load_gps_raw_sequence(
     return np.asarray([read_gps_latlon(data_root, path) for path in selected_gps], dtype=np.float32)
 
 
+def load_relative_xy_sequence(
+    data_root: str | Path,
+    gps_paths: list[str],
+    bs_gps_paths: list[str] | None,
+    *,
+    seq_len: int,
+) -> np.ndarray:
+    """Load unstandardized UE-minus-BS XY history in meters for BEV masking."""
+
+    selected_gps = gps_paths[-seq_len:]
+    if not bs_gps_paths:
+        raise ValueError("GPS BEV XY generation requires bs_gps columns in the sequence CSV.")
+    selected_bs = bs_gps_paths[-seq_len:]
+    if len(selected_gps) < int(seq_len) or len(selected_bs) < int(seq_len):
+        raise ValueError(
+            f"GPS BEV XY generation requires {int(seq_len)} GPS and BS GPS paths, "
+            f"got {len(selected_gps)} and {len(selected_bs)}."
+        )
+    ue_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_gps], dtype=np.float64)
+    bs_latlon = np.asarray([read_gps_latlon(data_root, path) for path in selected_bs], dtype=np.float64)
+    if _all_yaml_paths(selected_gps) and _all_yaml_paths(selected_bs):
+        return (ue_latlon[:, :2] - bs_latlon[:, :2]).astype(np.float32)
+    return build_relative_xy_targets(ue_latlon, bs_latlon)
+
+
 def build_relative_xy_targets(ue_latlon: np.ndarray, bs_latlon: np.ndarray) -> np.ndarray:
     ue_latlon = np.asarray(ue_latlon, dtype=np.float64)
     bs_latlon = np.asarray(bs_latlon, dtype=np.float64)
@@ -460,6 +485,7 @@ __all__ = [
     "load_gps_feature_sequence",
     "load_gps_raw_sequence",
     "load_gps_scaler",
+    "load_relative_xy_sequence",
     "load_relative_xy_target_sequence",
     "read_gps_latlon",
 ]

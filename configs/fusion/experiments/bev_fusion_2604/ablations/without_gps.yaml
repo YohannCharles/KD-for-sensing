@@ -1,0 +1,16 @@
+_base_: ../low_memory.yaml
+experiment:
+  name: bev_fusion_2604_without_gps
+  ablation_name: without_gps
+model:
+  modalities: [image, radar, lidar]
+  primary:
+    modalities: [image, radar, lidar]
+    gps_pathway: none
+    ablation_name: without_gps
+data:
+  dataset:
+    use_gps: false
+    use_gps_bev_xy: false
+output:
+  run_name: bev_fusion_2604_without_gps

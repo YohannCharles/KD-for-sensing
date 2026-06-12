@@ -1,7 +1,7 @@
 # vision-position-baseline-suite Specification
 
 ## Purpose
-TBD - created by archiving change add-vision-position-baselines. Update Purpose after archive.
+Define the current DeepSense6G vision-position baseline suite, including supported image+GPS and GPS-only presets, BeamBench-aligned configuration contracts, model registry requirements, evaluation metadata, and reporting caveats.
 ## Requirements
 ### Requirement: Vision-Position baseline preset 矩阵
 系统 MUST 提供 DeepSense6G Vision-Position beam prediction baseline preset 矩阵，至少覆盖 Camera AE + GPS、ResNet + GPS late fusion、Transformer image+gps fusion 和 GPS-only neural baseline。每个 preset MUST 通过现有配置加载和 `MODELS` registry 构建，不得要求新增绕过 `kd_sensing` 包结构的长期训练脚本。
@@ -29,6 +29,7 @@ TBD - created by archiving change add-vision-position-baselines. Update Purpose 
 - **THEN** 配置 MUST 只启用 GPS 输入和必要 beam label
 - **AND** 模型 MUST 使用 MLP、GRU 或 LSTM 类神经网络处理 GPS 序列
 - **AND** run metadata MUST 标记该 baseline 使用神经网络，而不是已有非神经 GPS window baseline
+- **AND** metadata MUST 标记该 preset 不等价于 Arnold22 BeamBench Table III 的 GPS `Classical*` 或 `Dense†` 行
 
 ### Requirement: 统一输入输出契约
 Vision-Position baseline 模型 MUST 接收现有 DeepSense6G batch 字段，并保持统一 logits 输出契约。图像输入 MUST 支持 `[B, T, C, H, W]`，GPS 输入 MUST 支持 `[B, T, D]`，输出 logits MUST 支持 `[B, H, 64]` 或可由现有 engine 标准化为该形状，其中 `H` 为预测 horizon。
@@ -83,6 +84,7 @@ Vision-Position baseline preset MUST 能通过现有 `kd-sensing-train` 和 `kd-
 - **WHEN** baseline 输出 metrics artifact
 - **THEN** artifact MUST 记录 label space、beam shift、metric profile 和是否使用 circular beam distance
 - **AND** 不同口径的 DBA 或 normalized gain 字段 MUST 不混用同一字段名
+- **AND** BeamBench-aligned preset MUST 记录 `beam_target_source`，并在 Table III 口径下使用当前 beam target 而不是 sequence `future_beam*` target
 
 ### Requirement: baseline metadata 和本地产物边界
 Vision-Position baseline run MUST 记录足以复现实验配置的 metadata，并遵守本仓库本地产物边界。metadata MUST 包含 baseline preset、启用模态、encoder 类型、GPS feature mode、temporal aggregation、num classes、num_pred、image profile、normalization artifact 和 mock/real data 标记。
@@ -119,4 +121,3 @@ Vision-Position baseline suite MUST 提供不依赖真实 DeepSense6G 数据的�
 - **WHEN** 开发者运行 `conda run -n kd_mm_beam kd-sensing-train --help` 或 `conda run -n kd_mm_beam kd-sensing-evaluate --help`
 - **THEN** 命令 MUST 正常退出
 - **AND** 新 baseline 不得破坏现有训练和评估入口
-

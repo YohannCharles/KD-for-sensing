@@ -173,9 +173,9 @@ beambench_paper:
   freeze_ae_encoder: true
   cache_frozen_ae_features: true
   feature_cache_batch_size: 256
-  # 本地 sequence CSV 按挑战式 horizon 提供 future_beam1..3，默认使用 future_beam1。
-  # current 可作为 beamN ablation，但不是本地最接近 Table III 的口径。
-  target_beam_source: future
+  # Arnold22 BeamBench Table III 的 challenge.py/classical.py 评估当前 beam
+  # selection；future 只用于本地 sequence-prediction ablation。
+  target_beam_source: current
   amp: true
   amp_dtype: float16
   amp_grad_scaler: true

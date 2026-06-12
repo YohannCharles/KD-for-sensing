@@ -1,0 +1,14 @@
+_base_: ../low_memory.yaml
+experiment:
+  name: bev_fusion_2604_without_lidar
+  ablation_name: without_lidar
+model:
+  modalities: [image, radar, gps]
+  primary:
+    modalities: [image, radar, gps]
+    ablation_name: without_lidar
+data:
+  dataset:
+    use_lidar: false
+output:
+  run_name: bev_fusion_2604_without_lidar

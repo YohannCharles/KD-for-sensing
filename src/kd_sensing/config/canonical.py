@@ -97,6 +97,7 @@ def build_vision_position_baseline_config(preset: str) -> dict[str, Any]:
         "gps_angle_offset_source": "paper_scene_default",
         "gps_normalize": True,
         "gps_normalization_artifact": "train_split:gps_scaler",
+        "beam_target_source": "current",
         "mock_data": False,
         "return_metadata": True,
     }
@@ -190,6 +191,20 @@ def build_vision_position_baseline_config(preset: str) -> dict[str, Any]:
         }
     if preset == "gps_only_neural":
         cfg["experiment"]["uses_neural_network"] = True
+        cfg["beambench_paper"] = {
+            "official_pretrained_weights": False,
+            "official_test_set": False,
+            "official_search_procedure": False,
+            "table_iii_equivalent": False,
+            "protocol_aligned": False,
+            "paper_rows_not_equivalent": ["Classical*", "Dense\u2020"],
+            "non_equivalent_reason": (
+                "Arnold22 BeamBench GPS Classical* is a calibrated least-square rule and GPS Dense\u2020 "
+                "uses the official dense_model/gps_dense.cfg pipeline; this preset is a project-local "
+                "supervised neural GPS baseline."
+            ),
+            "recommended_table_iii_source": "official BeamBench classical.py and challenge.py --type_list gps_dense",
+        }
     return cfg
 
 

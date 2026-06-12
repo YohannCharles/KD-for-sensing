@@ -626,8 +626,9 @@ class TopKAccuracyMetric:
 
 @METRICS.register("dba")
 class DBAMetric:
-    def __init__(self, delta: float = 5):
+    def __init__(self, delta: float = 5, distance_mode: str = "circular"):
         self.delta = delta
+        self.distance_mode = str(distance_mode)
 
     def __call__(self, outputs: torch.Tensor, labels: torch.Tensor):
-        return calculate_dba_score(outputs, labels, self.delta)
+        return calculate_dba_score(outputs, labels, self.delta, distance_mode=self.distance_mode)

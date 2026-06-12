@@ -106,9 +106,9 @@ def test_beambench_image_ae_gps_dataset_reads_local_scene(tmp_path: Path):
 
     assert tuple(item["image"].shape) == (1, 3, 32, 32)
     assert tuple(item["gps"].shape) == (1, 2)
-    assert int(item["target"]) == 4
+    assert int(item["target"]) == 0
 
-    current_dataset = BeamBenchImageAEGPSDataset(
+    future_dataset = BeamBenchImageAEGPSDataset(
         data_root=data_root,
         csv_name="train_seqs_RA_GPS_LIDAR.csv",
         split="train",
@@ -116,10 +116,10 @@ def test_beambench_image_ae_gps_dataset_reads_local_scene(tmp_path: Path):
         num_pred=1,
         image_size=32,
         max_samples=2,
-        target_beam_source="current",
+        target_beam_source="future",
     )
 
-    assert int(current_dataset[0]["target"]) == 0
+    assert int(future_dataset[0]["target"]) == 4
 
 
 def test_beambench_image_ae_gps_dataset_supports_paper_calibrated_gps(tmp_path: Path):
@@ -218,7 +218,7 @@ def test_beambench_image_ae_gps_config_resolves_throughput_defaults(tmp_path: Pa
     assert cfg.gps_feature_mode == PAPER_CALIBRATED_GPS_MODE
     assert cfg.gps_angle_offset_rad == PAPER_SCENE_CENTER_ANGLES_RAD[31]
     assert cfg.gps_input_size == 2
-    assert cfg.target_beam_source == "future"
+    assert cfg.target_beam_source == "current"
 
 
 def test_beambench_image_ae_gps_tableiii_runner_dry_run(tmp_path: Path):

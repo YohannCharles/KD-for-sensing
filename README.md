@@ -335,6 +335,7 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 
 ## 文档索引
 
+- AI/维护者修改前导航：[docs/agent_navigation.md](docs/agent_navigation.md)
 - 实验矩阵和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
 - 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)

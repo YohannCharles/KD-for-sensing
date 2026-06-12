@@ -29,6 +29,7 @@ from kd_sensing.data.transform_ops.gps import (
     PositionTargetStandardScaler,
     SUPPORTED_GPS_FEATURE_MODE,
     load_gps_feature_sequence,
+    load_relative_xy_sequence,
 )
 from kd_sensing.data.transform_ops.csi import (
     CSIDegradationConfig,
@@ -124,6 +125,9 @@ class DeepSense6GDataset(Dataset):
         gps_angle_offset_source: str | None = None,
         gps_normalize: bool = True,
         gps_scaler: GPSStandardScaler | None = None,
+        use_gps_bev_xy: bool = False,
+        gps_bev_xy_source: str = "history_relative_xy",
+        gps_bev_roi: list[float] | tuple[float, ...] | None = None,
         use_mmwave: bool = False,
         mmwave_normalize: bool = True,
         mmwave_scaler: MmWaveStandardScaler | None = None,
@@ -161,6 +165,7 @@ class DeepSense6GDataset(Dataset):
         portion_strategy: str = "even",
         portion_seed: int = 42,
         beam_label_mapping: BeamLabelMapping | None = None,
+        beam_target_source: str = "future",
         **extra: object,
     ):
         removed_keys = sorted(key for key in extra if str(key).startswith(REMOVED_IMAGE_OPTION_PREFIX))
@@ -212,6 +217,9 @@ class DeepSense6GDataset(Dataset):
             use_csi,
         )
         self.return_metadata = bool(return_metadata)
+        self.beam_target_source = self._normalize_beam_target_source(beam_target_source)
+        if self.beam_target_source == "current" and int(num_pred) > int(seq_len):
+            raise ValueError("beam_target_source='current' requires num_pred <= seq_len.")
         self.beam_label_mapping = beam_label_mapping or resolve_beam_label_mapping(None, scene=self.scene_slug)
         self.beam_label_cache_metadata = {
             "cache_mode": self._resolve_beam_label_cache(beam_label_cache),
@@ -230,6 +238,12 @@ class DeepSense6GDataset(Dataset):
         self.gps_scaler_metadata: dict[str, Any] = {}
         self._gps_feature_cache: dict[int, np.ndarray] = {}
         self._gps_frame_feature_cache: dict[str, np.ndarray] = {}
+        self.use_gps_bev_xy = bool(use_gps_bev_xy)
+        self.gps_bev_xy_source = str(gps_bev_xy_source or "history_relative_xy")
+        if self.gps_bev_xy_source != "history_relative_xy":
+            raise ValueError("gps_bev_xy_source must be 'history_relative_xy'.")
+        self.gps_bev_roi = tuple(gps_bev_roi or (-60.0, 60.0, -60.0, 60.0))
+        self._gps_bev_xy_cache: dict[int, np.ndarray] = {}
         self.use_mmwave = "mmwave" in self.enabled_modalities
         self.mmwave_normalize = bool(mmwave_normalize)
         self.mmwave_scaler = mmwave_scaler
@@ -300,7 +314,8 @@ class DeepSense6GDataset(Dataset):
                 self.position_target_enabled and self.position_target_source == "future_gps_local_xy"
             ),
             include_history_position_targets=(
-                self.position_target_enabled and self.position_target_source == "last_input_gps_local_xy"
+                self.use_gps_bev_xy
+                or (self.position_target_enabled and self.position_target_source == "last_input_gps_local_xy")
             ),
         )
         self.target_provider = DeepSense6GTargetProvider(
@@ -316,6 +331,8 @@ class DeepSense6GDataset(Dataset):
         if self.use_gps:
             self._ensure_gps_columns()
             self._prepare_gps_scaler()
+        if self.use_gps_bev_xy:
+            self._ensure_gps_bev_xy_columns()
         if self.position_target_enabled:
             self._ensure_position_target_columns()
             self._prepare_position_target_scaler()
@@ -359,7 +376,7 @@ class DeepSense6GDataset(Dataset):
     def _getitem_with_timing(self, idx: int, *, collect_timing: bool) -> tuple[dict[str, Any], dict[str, float]]:
         timings = {
             name: 0.0
-            for name in ("targets", "auxiliary_targets", "image", "radar", "gps", "mmwave", "csi", "lidar")
+            for name in ("targets", "auxiliary_targets", "image", "radar", "gps", "gps_bev_xy", "mmwave", "csi", "lidar")
         }
 
         def record(name: str, fn):
@@ -373,6 +390,7 @@ class DeepSense6GDataset(Dataset):
 
         beam_paths = self.samples.input_beam_paths[idx][-self.seq_len :]
         future_beam_paths = self.samples.future_beam_paths[idx][: self.num_pred]
+        target_beam_paths = self._target_beam_paths(beam_paths, future_beam_paths)
 
         def build_beam_targets() -> tuple[list[int], list[int], list[int], list[int]]:
             raw_input_beam = [
@@ -381,7 +399,7 @@ class DeepSense6GDataset(Dataset):
             ]
             raw_target_beam = [
                 self._target_raw_beam_label_for_index(idx, horizon, beam_path)
-                for horizon, beam_path in enumerate(future_beam_paths)
+                for horizon, beam_path in enumerate(target_beam_paths)
             ]
             input_beam = [self._map_beam_label(label) for label in raw_input_beam]
             target_beam = [self._map_beam_label(label) for label in raw_target_beam]
@@ -395,7 +413,7 @@ class DeepSense6GDataset(Dataset):
         if self.soft_beam_label_config.enabled:
             distributions, mask = record(
                 "targets",
-                lambda: self._soft_beam_targets_for_paths(future_beam_paths, target_beam),
+                lambda: self._soft_beam_targets_for_paths(target_beam_paths, target_beam),
             )
             sample["target_beam_distribution"] = torch.tensor(distributions, dtype=torch.float32)
             sample["target_beam_distribution_mask"] = torch.tensor(mask, dtype=torch.bool)
@@ -428,6 +446,8 @@ class DeepSense6GDataset(Dataset):
             sample["radar_da"] = radar_da
         if self.use_gps:
             sample["gps"] = record("gps", lambda: self.modality_loader.load_gps(idx))
+        if self.use_gps_bev_xy:
+            sample["gps_bev_xy"] = record("gps_bev_xy", lambda: self.modality_loader.load_gps_bev_xy(idx))
         if self.use_mmwave:
             sample["mmwave"] = record("mmwave", lambda: self.modality_loader.load_mmwave(idx))
         if self.use_csi:
@@ -437,10 +457,11 @@ class DeepSense6GDataset(Dataset):
             sample["lidar_raw"] = lidar_raw
             sample["lidar"] = lidar_model_input
         if self.return_metadata:
-            sample["metadata"] = self._metadata_for_index(idx, beam_paths, future_beam_paths)
+            sample["metadata"] = self._metadata_for_index(idx, beam_paths, target_beam_paths, future_beam_paths)
             self._add_beam_label_metadata(
                 sample["metadata"],
                 idx=idx,
+                target_beam_paths=target_beam_paths,
                 input_beam=input_beam,
                 target_beam=target_beam,
                 raw_input_beam=raw_input_beam,
@@ -448,8 +469,15 @@ class DeepSense6GDataset(Dataset):
             )
         return sample, timings
 
-    def _metadata_for_index(self, idx: int, beam_paths: list[str], future_beam_paths: list[str]) -> dict[str, Any]:
+    def _metadata_for_index(
+        self,
+        idx: int,
+        beam_paths: list[str],
+        target_beam_paths: list[str],
+        future_beam_paths: list[str],
+    ) -> dict[str, Any]:
         last_beam_path = str(beam_paths[-1]) if beam_paths else ""
+        first_target_beam_path = str(target_beam_paths[0]) if target_beam_paths else ""
         first_future_beam_path = str(future_beam_paths[0]) if future_beam_paths else ""
         key = "|".join(
             [
@@ -457,7 +485,7 @@ class DeepSense6GDataset(Dataset):
                 self.split,
                 str(idx),
                 last_beam_path,
-                first_future_beam_path,
+                first_target_beam_path,
             ]
         )
         digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
@@ -468,8 +496,10 @@ class DeepSense6GDataset(Dataset):
             "scene_slug": self.scene_slug,
             "split": self.split,
             "root_csv": str(self.root_csv),
+            "beam_target_source": self.beam_target_source,
             "input_beam_path": last_beam_path,
-            "target_beam_path": first_future_beam_path,
+            "target_beam_path": first_target_beam_path,
+            "future_beam_path": first_future_beam_path,
         }
         if "image" in self.enabled_modalities:
             metadata["image_profile"] = self.image_profile
@@ -482,14 +512,29 @@ class DeepSense6GDataset(Dataset):
         self._add_path_metadata(metadata, "csi_path", getattr(self.samples, "csi_paths", None), idx)
         if self.use_csi and self.csi_degradation.enabled:
             metadata["csi_degradation"] = self._csi_degradation_metadata_for_index(idx)
-        seq_id, frame_idx = self._parse_sequence_position(
-            first_future_beam_path or last_beam_path or metadata.get("mmwave_path", "")
-        )
+        if self.use_gps_bev_xy:
+            metadata["gps_bev_xy_source"] = self.gps_bev_xy_source
+            metadata["gps_bev_roi"] = [float(value) for value in self.gps_bev_roi]
+        seq_id, frame_idx = self._parse_sequence_position(first_target_beam_path or last_beam_path or metadata.get("mmwave_path", ""))
         if seq_id is not None:
             metadata["seq_id"] = seq_id
         if frame_idx is not None:
             metadata["frame_idx"] = int(frame_idx)
         return metadata
+
+    def _target_beam_paths(self, beam_paths: list[str], future_beam_paths: list[str]) -> list[str]:
+        if self.beam_target_source == "current":
+            return beam_paths[-self.num_pred :]
+        return future_beam_paths[: self.num_pred]
+
+    @staticmethod
+    def _normalize_beam_target_source(value: object) -> str:
+        normalized = str(value or "future").strip().lower().replace("-", "_")
+        if normalized in {"future", "future_beam", "future_beam1", "next"}:
+            return "future"
+        if normalized in {"current", "current_beam", "beam", "beam_last", "last_beam"}:
+            return "current"
+        raise ValueError("beam_target_source must be 'future' or 'current'.")
 
     @staticmethod
     def _add_path_metadata(metadata: dict[str, Any], key: str, paths: list[list[str]] | None, idx: int) -> None:
@@ -678,6 +723,7 @@ class DeepSense6GDataset(Dataset):
         metadata: dict[str, Any],
         *,
         idx: int,
+        target_beam_paths: list[str],
         input_beam: list[int],
         target_beam: list[int],
         raw_input_beam: list[int],
@@ -695,7 +741,7 @@ class DeepSense6GDataset(Dataset):
         ]
         metadata["target_beam_label_source"] = [
             self._target_beam_label_source_for_index(idx, horizon, beam_path)
-            for horizon, beam_path in enumerate(self.samples.future_beam_paths[idx][: self.num_pred])
+            for horizon, beam_path in enumerate(target_beam_paths)
         ]
 
     def _read_beam_label(self, beam_path: str) -> int:
@@ -908,6 +954,25 @@ class DeepSense6GDataset(Dataset):
                 frame_feature_cache=self._gps_frame_feature_cache,
             )
         return self._gps_feature_cache[idx]
+
+    def _ensure_gps_bev_xy_columns(self) -> None:
+        if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
+            raise ValueError(
+                f"GPS BEV XY is enabled but {self.root_csv} does not contain gps1..gpsN "
+                "and bs_gps1..bs_gpsN columns. Regenerate sequence CSVs with GPS and BS GPS history."
+            )
+
+    def _gps_bev_xy_for_index(self, idx: int) -> np.ndarray:
+        if idx not in self._gps_bev_xy_cache:
+            if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
+                raise ValueError("GPS BEV XY paths are unavailable for this dataset.")
+            self._gps_bev_xy_cache[idx] = load_relative_xy_sequence(
+                self.data_root,
+                self.samples.gps_paths[idx],
+                self.samples.bs_gps_paths[idx],
+                seq_len=self.seq_len,
+            )
+        return self._gps_bev_xy_cache[idx]
 
     def _ensure_mmwave_columns(self) -> None:
         if self.samples.mmwave_paths is None:

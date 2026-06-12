@@ -1,0 +1,42 @@
+_base_: paper_full.yaml
+experiment:
+  name: bev_fusion_2604_low_memory_s32_s34
+  paper_approximation: true
+data:
+  dataset:
+    image_size: [224, 224]
+    lidar_bev_size: [32, 32]
+  dataloader:
+    train_batch_size: 4
+    test_batch_size: 4
+    num_workers: 0
+    train_num_workers: 0
+    test_num_workers: 0
+    pin_memory: false
+    persistent_workers: false
+    train_persistent_workers: false
+    test_persistent_workers: false
+model:
+  d_model: 96
+  primary:
+    d_model: 96
+    bev_size: [32, 32]
+    camera_backbone:
+      type: lightweight_cnn
+      width: 32
+    camera_to_bev:
+      num_layers: 1
+      num_heads: 4
+      dropout: 0.1
+    temporal_core:
+      type: transformer
+      num_layers: 2
+      num_heads: 4
+      max_seq_len: 8
+      dropout: 0.1
+    paper_approximation: true
+training:
+  amp:
+    enabled: false
+output:
+  run_name: bev_fusion_2604_low_memory_s32_s34

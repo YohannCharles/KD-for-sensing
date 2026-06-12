@@ -31,6 +31,7 @@ IMAGE_MODEL_TYPES = {
     "gps_conditioned_jepa",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
+    "bev_fusion_2604",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
 ENCODER_CONFIG_MODEL_TYPES = set(MODULAR_MODEL_TYPES)
@@ -51,6 +52,7 @@ FUSION_MODEL_TYPES = {
     "gps_sequence_baseline",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
+    "bev_fusion_2604",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
@@ -71,6 +73,7 @@ D_MODEL_ROLE_TYPES = {
     "gps_sequence_baseline",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
+    "bev_fusion_2604",
 }
 
 

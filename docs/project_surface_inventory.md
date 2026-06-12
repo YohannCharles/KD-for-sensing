@@ -4,7 +4,7 @@
 
 ## 项目健康护栏基线
 
-`strengthen-project-health-guardrails` 于 2026-06-11 生成维护性基线；`prune-to-jepa-query-pool-surface` 收口后，当前 `src/kd_sensing` 有 209 个 Python 文件、59350 行；`tests/` 有 48 个 Python 文件、14604 行；`configs/` 有 89 个 YAML；仓库根目录有 11 个 Markdown，`docs/` 有 6 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
+`strengthen-project-health-guardrails` 于 2026-06-11 生成维护性基线；`prune-to-jepa-query-pool-surface` 收口后，当前 `src/kd_sensing` 有 209 个 Python 文件、59350 行；`tests/` 有 48 个 Python 文件、14604 行；`configs/` 有 89 个 YAML；仓库根目录有 11 个 Markdown，`docs/` 有 7 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
 
 分层健康检查命令如下：
 
@@ -23,7 +23,7 @@
 
 | 文件 | 符号 | 类型 | 当前规模 | 推荐拆分方向 | 暂缓原因 / 优先级 |
 | --- | --- | --- | --- | --- | --- |
-| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1132 行 | scene/CSV audit、modality sample assembly、label/history adapters、cache/transform glue、BeamBench GPS Direct calibration glue | 数据契约和真实路径耦合强；本轮为支持 `paper_distance_angle` scene calibration 小幅扩容，后续仍优先拆分；优先级 P1 |
+| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1196 行 | scene/CSV audit、modality sample assembly、label/history adapters、cache/transform glue、BeamBench GPS Direct calibration glue、2604 GPS BEV XY coordinate glue | 数据契约和真实路径耦合强；本轮为支持 `paper_distance_angle` scene calibration、BeamBench `beam_target_source=current` 和 BEV-Fusion 2604 `gps_bev_xy` raw coordinate 契约小幅扩容，后续仍优先拆分；优先级 P1 |
 | `src/kd_sensing/data/datasets/mmw.py` | `MMWDataset` | 超长 dataset 类 | 592 行 | manifest parsing、sequence window、label-space metadata、sensor feature loading | MMW group-safe split 与 label calibration 仍在演进；优先级 P1 |
 | `src/kd_sensing/engine/trainer.py` | `_train_inner` | 超长训练 orchestration 函数 | 316 行 | dataloader setup、epoch loop、validation/checkpoint coordination、artifact finalization | 训练数值语义敏感；优先级 P1 |
 | `src/kd_sensing/engine/mmw_town_gps_v2.py` | `run_mmw_town_gps_v2` | 超长诊断 workflow 函数 | 277 行 | protocol dispatch、label-space resolution、summary writing、plot handoff | MMW GPS v2 仍承担对照解释；优先级 P2 |
@@ -60,6 +60,7 @@
 
 `docs/` Markdown：
 
+- current agent/maintainer navigation：`docs/agent_navigation.md`；它只提供修改前权威来源、当前状态、任务路由、误读边界和验证选择导航，不替代 README、AGENTS 或 OpenSpec specs，也不维护完整项目表面积审计。
 - current architecture/health inventory：`docs/project_surface_inventory.md`。
 - current workflow guide：`docs/experiment_matrix.md`、`docs/extension_guide.md`、`docs/training_throughput.md`。
 - dataset/diagnostic focused notes：`docs/research_notes.md`。
@@ -103,11 +104,11 @@
 
 已迁移到 `configs/fusion/experiments/jepa_image_gps/` 的实验特化配置如下：
 
-- fair/2604 当前文档复核配置：`image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml` 和 `image_gps_jepa_gps_query_pool_best_2604_s32_s34_fasttrain.yaml` 是主线或快速复核主线；`image_gps_supervised_beambench_fair_lowmem.yaml`、`image_gps_jepa_random_best_beambench_fair_lowmem.yaml`、`image_gps_supervised_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml` 是对照。保留 `beambench_fair` 文件名的配置现在对齐 BeamBench Table III 的输入/split/metric 口径：`seq_len=1`、`num_pred=1`、GPS `paper_distance_angle`、scene paper calibration angle、S32-S34 train、S31-S34 test 和 linear DBA；它们仍是 Image+GPS/JEPA 下游模型，不是 Table III Camera AE+GPS Direct 模型。
+- fair/2604 当前文档复核配置：`image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml` 和 `image_gps_jepa_gps_query_pool_best_2604_s32_s34_fasttrain.yaml` 是主线或快速复核主线；`image_gps_supervised_beambench_fair_lowmem.yaml`、`image_gps_jepa_random_best_beambench_fair_lowmem.yaml`、`image_gps_supervised_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml` 是对照。保留 `beambench_fair` 文件名的配置现在对齐 BeamBench Table III 的输入/split/target/metric 口径：`seq_len=1`、`num_pred=1`、`beam_target_source=current`、GPS `paper_distance_angle`、scene paper calibration angle、S32-S34 train、S31-S34 test 和 linear DBA；它们仍是 Image+GPS/JEPA 下游模型，不是 Table III Camera AE+GPS Direct 模型。
 - BeamBench fair 保留复查配置：`image_gps_jepa_random_last_beambench_fair_lowmem.yaml` 和 `image_gps_jepa_gps_biased_pooler_param_groups_beambench_fair_lowmem.yaml`。
 - 已退役删除配置：scene31-only low-memory/best-last 配置、非 BeamBench last-checkpoint 配置，以及 `jepa_gru.yaml`、`jepa_snapshot.yaml`、`jepa_plain_token_transformer.yaml`、`jepa_next_query_transformer.yaml` next-beam downstream ablation 配置。
 
-已退役的 CRAF、MARF、G2D、Multimodal-NF 和 KD 实体 YAML、overlay recipe 与 virtual alias 不再作为支持入口存在。删除实体文件后，配置加载器只为当前 strong/lightweight canonical、snapshot、objective-aware、Vision-Position baseline preset 和保留 overlay 生成 virtual config，不接管退役路径；旧 `logits_kd` / `rkd` 路径只作为 migration guard 的拒绝命中保留。Vision-Position 当前 virtual preset 为 `configs/fusion/{camera_ae_gps,resnet_gps,transformer_image_gps,gps_only_neural}.yaml`，默认使用 BeamBench 输入和指标口径；其中 `camera_ae_gps` virtual preset 不得作为 Arnold22 Table III row 的数值复现入口，Table III row 只能走 `configs/fusion/beambench_image_ae_gps_direct.yaml` 和 `scripts/run_beambench_image_ae_gps_tableiii.py`。
+已退役的 CRAF、MARF、G2D、Multimodal-NF 和 KD 实体 YAML、overlay recipe 与 virtual alias 不再作为支持入口存在。删除实体文件后，配置加载器只为当前 strong/lightweight canonical、snapshot、objective-aware、Vision-Position baseline preset 和保留 overlay 生成 virtual config，不接管退役路径；旧 `logits_kd` / `rkd` 路径只作为 migration guard 的拒绝命中保留。Vision-Position 当前 virtual preset 为 `configs/fusion/{camera_ae_gps,resnet_gps,transformer_image_gps,gps_only_neural}.yaml`，默认使用 BeamBench-style `seq_len=1`、`num_pred=1`、`paper_distance_angle`、`beam_target_source=current` 和 linear DBA 口径；这些 preset 只是项目对照，不得作为 Arnold22 Table III row 的数值复现入口。`gps_only_neural` 不是论文 GPS `Classical*` 或 `Dense†` 行；Table III Camera AE+GPS row 只能走 `configs/fusion/beambench_image_ae_gps_direct.yaml` 和 `scripts/run_beambench_image_ae_gps_tableiii.py`。
 
 ## 脚本入口 Allowlist
 
@@ -123,7 +124,7 @@ MMW 入口生命周期说明：
 
 - `scripts/check_dataset.py` 属于 dataset_preparation。职责是只读检查 BeamBench/DeepSense6G CSV 字段、传感器路径引用、beam label 范围以及 scene/sample/sequence/timestamp 标识解析；输出可写入显式 JSON 报告，不移动、不删除、不生成真实数据。
 - `scripts/train_baseline.py` 和 `scripts/eval_baseline.py` 属于 thin_cli_alias。职责是委托 `kd_sensing.baselines.beambench` 中的 BeamBench 复现实现：前者打通 mock train/eval/checkpoint smoke，后者生成官方 `challenge.py` 评估计划或执行 mock checkpoint 评估。真实官方评估只有在官方数据、权重、源码和环境齐备且显式传入 `--execute` 时才运行。
-- `scripts/train_beambench_image_ae_gps.py` 属于 thin_cli_alias。职责是委托 `kd_sensing.baselines.beambench.image_ae_gps` 中的论文 row 专用实现：从本地 DeepSense6G scene31-34 sequence CSV 读取 camera/GPS/future beam，先训练或加载 Camera AE，再冻结 AE encoder 训练 GPS Direct concat fusion classifier，输出 checkpoint、history、predictions 和 BeamBench DBA/top-k metrics；输出限定在 `outputs/scene<id>/` 或显式用户路径下，不得提交新 checkpoint、日志或 predictions。
+- `scripts/train_beambench_image_ae_gps.py` 属于 thin_cli_alias。职责是委托 `kd_sensing.baselines.beambench.image_ae_gps` 中的论文 row 专用实现：从本地 DeepSense6G scene31-34 sequence CSV 读取 camera/GPS/current beam target，先训练或加载 Camera AE，再冻结 AE encoder 训练 GPS Direct concat fusion classifier，输出 checkpoint、history、predictions 和 BeamBench DBA/top-k metrics；输出限定在 `outputs/scene<id>/` 或显式用户路径下，不得提交新 checkpoint、日志或 predictions。
 - `scripts/run_beambench_image_ae_gps_tableiii.py` 属于 thin_cli_alias。职责是委托 `kd_sensing.cli.run_beambench_image_ae_gps_tableiii`，顺序运行 scene31-34 的 Camera AE + GPS Direct 本地复现实验并输出 Table III 风格 CSV/Markdown/JSON 汇总；默认输出限定在 `outputs/scenegroup_s32_s34/`，评估-only 汇总可写入 `outputs/evaluations/`，不得提交新 checkpoint、feature cache、predictions 或 summary runtime artifact。
 - `scripts/analysis/beambench_ae_gps_diagnostics.py` 属于 research_diagnostic。职责是读取本地 BeamBench AE+GPS 复现实验产物，汇总训练历史、预测和指标诊断，辅助分析 Camera AE + GPS Direct row 的本地复现差异；输出限定为 `outputs/analysis/` 等显式诊断路径，不得提交生成统计、图表或 checkpoint。
 - `scripts/analysis/visualize_deepsense_beambench_correspondence.py` 属于 research_diagnostic。职责是读取本地 DeepSense6G scene31-34 原始 scenario CSV、GPS 和 beam labels，输出 BeamBench Fig.2 风格的 calibrated GPS angle 与 centered beam index 空间对应图；输出限定为 `outputs/analysis/` 等显式本地诊断路径，不得提交生成图片或统计产物。

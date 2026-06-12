@@ -454,6 +454,37 @@ def test_num_pred_one_target_shape_and_prepare_labels(monkeypatch, tmp_path: Pat
     assert labels.tolist() == [[10]]
 
 
+def test_deepsense_dataset_can_use_current_beam_target(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_full_sequence_fixture(tmp_path, csv_path, seq_len=2, num_pred=1)
+    monkeypatch.setattr(
+        deepsense6g_module,
+        "load_rgb_imagenet_frames",
+        lambda *args, **kwargs: torch.zeros(2, 3, 8, 8),  # noqa: ARG005
+    )
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        seq_len=2,
+        num_pred=1,
+        enabled_modalities=["image"],
+        image_profile="rgb_imagenet",
+        beam_target_source="current",
+        return_metadata=True,
+    )
+
+    sample = dataset[0]
+
+    assert sample["input_beam"].tolist() == [0, 1]
+    assert sample["target_beam"].tolist() == [1]
+    assert sample["metadata"]["beam_target_source"] == "current"
+    assert sample["metadata"]["target_beam_path"] == "beam_1.txt"
+    assert sample["metadata"]["future_beam_path"] == "future_0.txt"
+    assert sample["metadata"]["target_beam_label_source"] == ["beam_power_argmax"]
+
+
 def test_soft_beam_distribution_generation_handles_power_and_circular_fallback():
     distribution = beam_power_to_distribution([-1.0, 0.0, 3.0, 1.0], num_classes=4)
     circular = gaussian_beam_distribution(0, num_classes=4, sigma=1.0, circular=True)

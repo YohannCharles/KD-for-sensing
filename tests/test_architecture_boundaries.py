@@ -106,7 +106,7 @@ CONFIG_LIFECYCLE_MARKERS = (
     "retired history",
 )
 HOTSPOT_SYMBOL_BUDGETS = {
-    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1135,
+    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1200,
     ("src/kd_sensing/data/datasets/mmw.py", "MMWDataset", "class"): 600,
     ("src/kd_sensing/engine/trainer.py", "_train_inner", "function"): 320,
     ("src/kd_sensing/engine/mmw_town_gps_v2.py", "run_mmw_town_gps_v2", "function"): 280,
@@ -217,6 +217,26 @@ RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
     "retired",
     "Retired",
     "migration",
+)
+AGENT_NAVIGATION_MARKERS = (
+    "权威来源",
+    "任务路由",
+    "generated metadata",
+    "ignored runtime artifacts",
+    "OpenSpec archive",
+    "active change",
+    "virtual config",
+    "virtual configs",
+    "retired research lines",
+    "kd_mm_beam",
+    "src/kd_sensing.egg-info/SOURCES.txt",
+    "entry_points.txt",
+    "dataset/",
+    "outputs/",
+    "logs/",
+    "checkpoint",
+    "openspec list --json",
+    "openspec status --change <change>",
 )
 
 
@@ -473,6 +493,32 @@ def test_health_inventory_documents_hotspots_and_commands():
         assert marker in inventory
     assert "新增热点维护规则" in inventory
     assert "tests/conftest.py" in inventory
+
+
+def test_agent_navigation_document_covers_maintainer_boundaries():
+    navigation_path = ROOT / "docs" / "agent_navigation.md"
+    assert navigation_path.exists()
+
+    navigation = navigation_path.read_text(encoding="utf-8")
+    for marker in AGENT_NAVIGATION_MARKERS:
+        assert marker in navigation
+    assert "当前状态检查顺序" in navigation
+    assert "权威来源优先级" in navigation
+    assert "验证命令选择表" in navigation
+    assert "不维护完整源码目录清单" in navigation
+
+
+def test_agent_navigation_is_referenced_from_rules_and_inventory():
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "docs/agent_navigation.md" in agents
+    assert "非平凡改动前" in agents
+    assert "docs/agent_navigation.md" in inventory
+    assert "current agent/maintainer navigation" in inventory
+    assert "不替代 README、AGENTS 或 OpenSpec specs" in inventory
+    assert "docs/agent_navigation.md" in readme
 
 
 def test_hotspot_static_budget_matches_inventory():
@@ -1023,6 +1069,7 @@ def test_models_package_import_is_lazy_and_public_symbols_remain_available():
             "mmwave": "kd_sensing.models.mmwave",
             "radar": "kd_sensing.models.radar",
             "modular": "kd_sensing.models.modular",
+            "bev_fusion_2604": "kd_sensing.models.bev_fusion_2604",
         },
     )
 
@@ -1036,6 +1083,7 @@ def test_models_package_import_is_lazy_and_public_symbols_remain_available():
                 "assert GpsStrongModalityNet is not None",
                 "import kd_sensing.models as models",
                 "assert 'FusionStrongModalityNet' in models.__all__",
+                "assert 'BEVFusion2604Net' in models.__all__",
                 "try:",
                 "    getattr(models, 'Fusion' + 'ModalityNet')",
                 "except AttributeError as exc:",

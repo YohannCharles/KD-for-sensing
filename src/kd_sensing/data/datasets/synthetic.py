@@ -24,6 +24,8 @@ class SyntheticSequenceDataset(Dataset):
         lidar_size: list[int] | tuple[int, int] = (224, 224),
         use_gps: bool = False,
         gps_input_size: int = 3,
+        use_gps_bev_xy: bool = False,
+        gps_bev_roi: list[float] | tuple[float, ...] = (-20.0, 20.0, -20.0, 20.0),
         use_lidar: bool = False,
         lidar_channels: int = 3,
         use_mmwave: bool = False,
@@ -47,6 +49,8 @@ class SyntheticSequenceDataset(Dataset):
         self.lidar_size = tuple(lidar_size)
         self.use_gps = use_gps
         self.gps_input_size = gps_input_size
+        self.use_gps_bev_xy = bool(use_gps_bev_xy)
+        self.gps_bev_roi = tuple(float(value) for value in gps_bev_roi)
         self.use_lidar = use_lidar
         self.lidar_channels = lidar_channels
         self.use_mmwave = use_mmwave
@@ -90,6 +94,12 @@ class SyntheticSequenceDataset(Dataset):
         }
         if self.use_gps:
             sample["gps"] = torch.rand((self.seq_len, self.gps_input_size), generator=self.generator)
+        if self.use_gps_bev_xy:
+            x_min, x_max, y_min, y_max = self.gps_bev_roi
+            xy = torch.rand((self.seq_len, 2), generator=self.generator)
+            xy[:, 0] = xy[:, 0] * (x_max - x_min) + x_min
+            xy[:, 1] = xy[:, 1] * (y_max - y_min) + y_min
+            sample["gps_bev_xy"] = xy.float()
         if self.use_lidar:
             sample["lidar"] = torch.rand(
                 (self.seq_len, self.lidar_channels, *self.lidar_size),

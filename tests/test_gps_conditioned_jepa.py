@@ -454,6 +454,7 @@ def test_gps_query_downstream_configs_load_and_record_metadata(tmp_path: Path):
     assert baseline["data"]["dataset"]["num_pred"] == 1
     assert baseline["data"]["dataset"]["gps_feature_mode"] == "paper_distance_angle"
     assert baseline["data"]["dataset"]["gps_angle_offset_source"] == "paper_scene_default"
+    assert baseline["data"]["dataset"]["beam_target_source"] == "current"
     assert baseline["model"]["primary"]["gps_input_size"] == 2
     assert baseline["model"]["primary"]["seq_length"] == 1
     assert baseline["evaluation"]["k_values"] == [1, 3, 5]
@@ -470,6 +471,8 @@ def test_gps_query_downstream_configs_load_and_record_metadata(tmp_path: Path):
         checkpoint = image_encoder["checkpoint_path"]
 
         assert cfg["model"]["primary"]["type"] == "modular_sequence"
+        if "beambench_fair" in path.name:
+            assert cfg["data"]["dataset"]["beam_target_source"] == "current"
         assert image_encoder["type"] == "jepa_context_image"
         assert image_encoder["pooling"] == "gps_query_attention"
         assert image_encoder["gps_query_pool"]["k_queries"] == 4

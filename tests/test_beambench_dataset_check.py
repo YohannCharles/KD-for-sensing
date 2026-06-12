@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from kd_sensing.baselines.beambench.dataset_check import check_dataset, resolve_csv_fields
+from kd_sensing.baselines.beambench.official import plan_official_classical_evaluation
 
 
 def test_resolve_csv_fields_covers_official_and_sequence_aliases():
@@ -97,6 +98,31 @@ def test_check_dataset_reports_missing_paths_invalid_labels_and_identifiers(tmp_
 def test_check_dataset_missing_csv_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         check_dataset(tmp_path, "missing.csv")
+
+
+def test_plan_official_classical_evaluation_checks_required_artifacts(tmp_path: Path):
+    official_root = tmp_path / "BeamBench"
+    data_root = tmp_path / "raw_data" / "test"
+    model_dir = official_root / "results" / "models"
+    official_root.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+    model_dir.mkdir(parents=True)
+    (official_root / "classical.py").write_text("print('mock')\n", encoding="utf-8")
+    (data_root / "ml_challenge_test_multi_modal.csv").write_text("unit2_loc_1,unit2_loc_2,unit1_loc\n", encoding="utf-8")
+    np.savetxt(model_dir / "classic.npy", np.zeros(4, dtype=np.float32))
+
+    report = plan_official_classical_evaluation(
+        official_root=official_root,
+        data_folder=data_root,
+        output_dir=tmp_path / "plan",
+    )
+
+    assert report["mode"] == "official_classical_evaluation"
+    assert "classical.py" in report["command_text"]
+    assert report["prediction_path"].endswith("results/topk/classical.csv")
+    assert report["blocked"] is True
+    assert any("classic_angle.npy" in reason for reason in report["blocked_reasons"])
+    assert (tmp_path / "plan" / "official_classical_plan.json").exists()
 
 
 def _write_file(path: Path) -> None:

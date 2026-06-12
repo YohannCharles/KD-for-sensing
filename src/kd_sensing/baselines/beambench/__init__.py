@@ -18,7 +18,11 @@ from kd_sensing.baselines.beambench.metrics import (
     official_topk_accuracy,
 )
 from kd_sensing.baselines.beambench.mock import create_mock_dataset
-from kd_sensing.baselines.beambench.official import audit_official_repository, plan_official_evaluation
+from kd_sensing.baselines.beambench.official import (
+    audit_official_repository,
+    plan_official_classical_evaluation,
+    plan_official_evaluation,
+)
 from kd_sensing.baselines.beambench.pipeline import evaluate_checkpoint, train_mock_baseline
 
 __all__ = [
@@ -35,6 +39,7 @@ __all__ = [
     "official_dba_score",
     "official_topk_accuracy",
     "plan_official_evaluation",
+    "plan_official_classical_evaluation",
     "resolve_csv_fields",
     "run_image_ae_gps_paper_split_training",
     "run_image_ae_gps_training",

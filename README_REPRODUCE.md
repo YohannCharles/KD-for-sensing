@@ -134,14 +134,14 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
   --selection-split validation \
   --fusion-val-fraction 0.1 \
   --gps-feature-mode paper_distance_angle \
-  --target-beam-source future \
+  --target-beam-source current \
   --num-workers 12 \
   --ae-batch-size 128 \
   --fusion-batch-size 512 \
   --feature-cache-batch-size 256
 ```
 
-其中 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入 `[distance, calibrated_angle_deg]`，并使用官方代码中的 scene32 校准角 `-0.8125375604986421 + pi/2`。当前配置默认重新训练 512 维 Camera AE；若复用旧 128 维 AE checkpoint，scene31 泛化会明显下降。旧 feature cache 会因 GPS 特征版本和校准角签名变化自动失效。
+其中 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入 `[distance, calibrated_angle_deg]`，`--target-beam-source current` 对齐 Arnold22 Table III 当前 beam selection 语义。当前配置默认重新训练 512 维 Camera AE；若复用旧 128 维 AE checkpoint，scene31 泛化会明显下降。旧 feature cache 会因 GPS 特征版本、校准角和 target source 签名变化自动失效。
 
 若要重新评估完整 Table III 四场景，把 `--eval-scenes 31` 改为 `--eval-scenes 31 32 33 34`。
 

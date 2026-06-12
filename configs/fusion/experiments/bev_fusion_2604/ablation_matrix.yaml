@@ -1,0 +1,18 @@
+ablation_matrix:
+  base_config: configs/fusion/experiments/bev_fusion_2604/low_memory.yaml
+  shared_protocol:
+    scenes: [32, 33, 34]
+    seq_len: 5
+    num_pred: 1
+    metric_profile: 2604_linear_topk
+    split_protocol: stratified_80_10_10
+  configs:
+    without_camera: ablations/without_camera.yaml
+    without_lidar: ablations/without_lidar.yaml
+    without_radar: ablations/without_radar.yaml
+    without_gps: ablations/without_gps.yaml
+    one_d_fusion: ablations/one_d_fusion.yaml
+    single_frame: ablations/single_frame.yaml
+    mean_pool_temporal: ablations/mean_pool_temporal.yaml
+    gps_spatial_only: ablations/gps_spatial_only.yaml
+    gps_global_only: ablations/gps_global_only.yaml

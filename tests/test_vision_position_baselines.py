@@ -192,6 +192,7 @@ def test_vision_position_virtual_configs_load(preset: str, primary_type: str, mo
     assert cfg["data"]["dataset"]["num_pred"] == 1
     assert cfg["data"]["dataset"]["gps_feature_mode"] == "paper_distance_angle"
     assert cfg["data"]["dataset"]["gps_angle_offset_source"] == "paper_scene_default"
+    assert cfg["data"]["dataset"]["beam_target_source"] == "current"
     assert cfg["model"]["num_pred"] == 1
     assert cfg["model"]["primary"]["num_pred"] == 1
     assert cfg["model"]["primary"]["gps_input_size"] == 2
@@ -203,6 +204,11 @@ def test_vision_position_virtual_configs_load(preset: str, primary_type: str, mo
         assert cfg["beambench_paper"]["table_iii_equivalent"] is False
         assert cfg["beambench_paper"]["protocol_aligned"] is True
         assert cfg["beambench_paper"]["recommended_table_iii_config"] == "configs/fusion/beambench_image_ae_gps_direct.yaml"
+    if preset == "gps_only_neural":
+        assert cfg["beambench_paper"]["table_iii_equivalent"] is False
+        assert cfg["beambench_paper"]["protocol_aligned"] is False
+        assert "Classical*" in cfg["beambench_paper"]["paper_rows_not_equivalent"]
+        assert cfg["beambench_paper"]["recommended_table_iii_source"].endswith("challenge.py --type_list gps_dense")
 
 
 def test_vision_position_field_selection_uses_only_enabled_modalities():

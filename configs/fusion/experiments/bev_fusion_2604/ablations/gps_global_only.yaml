@@ -1,0 +1,10 @@
+_base_: ../low_memory.yaml
+experiment:
+  name: bev_fusion_2604_gps_global_only
+  ablation_name: gps_global_only
+model:
+  primary:
+    gps_pathway: global_only
+    ablation_name: gps_global_only
+output:
+  run_name: bev_fusion_2604_gps_global_only

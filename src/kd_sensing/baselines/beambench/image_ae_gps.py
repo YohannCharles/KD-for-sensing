@@ -55,7 +55,7 @@ class ImageAEGPSDirectTrainingConfig:
     seq_len: int = 1
     num_pred: int = 1
     num_beams: int = 64
-    target_beam_source: str = "future"
+    target_beam_source: str = "current"
     image_size: int = 64
     image_channels: int = 3
     gps_input_size: int = 2
@@ -123,7 +123,7 @@ class BeamBenchImageAEGPSDataset(Dataset):
         num_pred: int = 1,
         image_size: int = 64,
         num_beams: int = 64,
-        target_beam_source: str = "future",
+        target_beam_source: str = "current",
         portion: float = 1.0,
         portion_strategy: str = "even",
         portion_seed: int = 42,
@@ -1324,7 +1324,7 @@ def resolve_image_ae_gps_config(raw: Mapping[str, Any]) -> ImageAEGPSDirectTrain
         seq_len=int(dataset.get("seq_len", 1)),
         num_pred=int(dataset.get("num_pred", 1)),
         num_beams=int(model.get("num_classes", primary.get("num_classes", 64))),
-        target_beam_source=_normalize_target_beam_source(str(paper.get("target_beam_source", "future"))),
+        target_beam_source=_normalize_target_beam_source(str(paper.get("target_beam_source", "current"))),
         image_size=int(paper.get("ae_image_size", image_encoder.get("image_size", 64))),
         image_channels=int(primary.get("image_channels", 3)),
         gps_input_size=_resolve_gps_input_size(
@@ -1465,7 +1465,7 @@ def _normalize_selection_split(value: str) -> str:
 
 
 def _normalize_target_beam_source(value: str) -> str:
-    normalized = str(value or "future").strip().lower().replace("-", "_")
+    normalized = str(value or "current").strip().lower().replace("-", "_")
     if normalized in {"current", "current_beam", "beam", "beam_last", "last_beam"}:
         return "current"
     if normalized in {"future", "future_beam", "future_beam1", "next"}:

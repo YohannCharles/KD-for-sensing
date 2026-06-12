@@ -411,6 +411,7 @@ def _metrics_from_outputs(
         "label_space": str(cfg.get("evaluation", {}).get("label_space", "64_beam")),
         "beam_shift": int(cfg.get("evaluation", {}).get("beam_shift", 0)),
         "metric_profile": str(cfg.get("evaluation", {}).get("metric_profile", "64_beam_circular_topk")),
+        "dba_distance_mode": str(cfg.get("evaluation", {}).get("dba_distance_mode", "circular")),
         "circular_beam_distance": bool(
             cfg.get("evaluation", {}).get(
                 "circular_beam_distance",

@@ -53,6 +53,8 @@
 
 该实现直接读取本地 DeepSense6G scene sequence CSV，先训练或加载本仓库 `CameraAutoEncoder`，再冻结 AE encoder，将 image AE latent 与 GPS direct feature concat fusion 到 64-beam classifier，并输出 BeamBench DBA/top-k metrics。它可用于本地 Scenes 31-34 对照实验；若未使用官方权重和官方完整训练搜索流程，不能声称复现官方 Table III 数值。
 
+2026-06-12 口径修订：严格 Arnold22 Table III 使用当前 beam selection，项目命令必须设置 `--target-beam-source current` 或继承 `configs/fusion/beambench_image_ae_gps_direct.yaml` 的 current 默认值。下文早期带 `--target-beam-source future` 的命令和数值仅保留为历史本地 sequence horizon ablation，不再作为 Table III strict setup 或推荐结果。
+
 建议命令：
 
 ```bash
@@ -303,6 +305,8 @@ upper-bound 使用 test CSV 选 checkpoint，只用于查看本地上限，不�
 该 upper-bound 使用 `test_as_validation` 选择 best checkpoint，可帮助观察本地训练最多接近到哪里，但不是官方 unseen test 口径。
 
 ### Ablation observations
+
+以下 ablation 记录来自 2026-06-12 口径修订前的历史本地运行；其中 `future` target 结果不得再作为 Table III strict setup 解读。
 
 - 三维 `paper_calibrated_relative_polar` + strict validation：weighted overall `0.5976`，Scene31 `0.2435`，Scene32/33/34 分别为 `0.7236/0.8295/0.8029`。
 - 三维 `paper_calibrated_relative_polar` + `test_as_validation`：weighted overall `0.5760`，Scene31 `0.3662`。
