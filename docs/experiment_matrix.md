@@ -54,7 +54,7 @@ conda run -n kd_mm_beam python scripts/eval_baseline.py \
   --execute
 ```
 
-严格复现 Camera=AE, GPS=Direct, Fusion=Yes 行时，优先使用官方权重；本仓库专用 runner 只是在本地 sequence CSV 上的 paper-style substitute，默认 `beam_target_source=current`、`seq_len=1`、`num_pred=1`、GPS `paper_distance_angle`、linear Top-3 DBA：
+严格复现 Camera=AE, GPS=Direct, Fusion=Yes 行时，优先使用官方权重；本仓库专用 runner 只是在本地 sequence CSV 上的 paper-style substitute，默认 `beam_target_source=current`、`seq_len=1`、`num_pred=1`、GPS `paper_distance_angle`、官方 `dense_model` 风格 fusion head（128/256/512/128 + LeakyReLU + Sigmoid + BCE）和 linear Top-3 DBA：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
@@ -162,6 +162,33 @@ MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NU
 ```
 
 JEPA random 配置默认复用 `outputs/scenegroup_s32_s34/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/{best,last}.pth`，GPS-biased 配置默认复用 `outputs/scenegroup_s32_s34/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`。
+
+### JEPA vs GPS shortcut benchmark
+
+GPS shortcut benchmark 使用 manifest 编排模型矩阵、扰动套件、seed、metric、图表和输出目录，不新增仓库根脚本。最小 smoke 不读取真实 `dataset/`，只使用 synthetic 指标验证 schema、runner、聚合和 visual-analysis ingestion：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
+  --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml \
+  --output-dir outputs/analysis/jepa_gps_shortcut_benchmark/smoke \
+  --force
+```
+
+真实 BeamBench-fair 压力测试从 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml` 开始，推荐矩阵包含 GPS-only neural、Camera AE+GPS Direct、Image+GPS supervised、JEPA GPS-biased 和 JEPA GPS-query pooling。manifest 字段固定为 `models`、`protocol`、`perturbation_suites`、`metrics`、`figures`、`seeds`、`outputs` 和 `comparability`；模型条目必须显式给出 config、weights 或可审计的训练计划，并声明 split、sample_count、label_space、metric_profile、normalization artifact、checkpoint provenance 和 enabled modalities。示例中的 checkpoint 路径是本地占位，不提交 `.pth/.pt/.ckpt`。
+
+核心扰动套件覆盖 clean GPS、Gaussian jitter、cumulative drift、GPS missing/dropout、misleading GPS distractor、fog/rain、night、occlusion、motion blur、GPS/image temporal delay、sampling-rate mismatch 和 Scenario C asynchronous position feedback。Scenario C canonical preset 包含 `C0_sync`、`C1_mild_stale`、`C2_low_rate`、`C3_random_async`、`C4_severe_async`，只移动 GPS 输入并记录 valid mask、delay steps、source index、stride、dropout 和 fallback metadata，不移动当前 image sequence 或 beam label。输出表格包括 `tables/metrics_by_condition.csv`（model、suite、condition、severity、seed、split、sample_count、primary metric、clean delta）、`tables/robustness_summary.csv`（relative drop、collapse slope、area-under-robustness-curve、comparability status）和 `tables/shortcut_reliance_summary.csv`（drop GPS、drop image、misleading GPS、GPS-only collapse slope）。
+
+论文图和报告建议通过 visual analysis 只读消费 runner manifest：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis \
+  --analysis-config configs/diagnostics/jepa_visual_analysis_2604.yaml \
+  --output-dir outputs/visual_analysis/jepa_gps_shortcut_benchmark \
+  --force \
+  -o benchmark.runner_manifest=outputs/analysis/jepa_gps_shortcut_benchmark/beambench_fair/benchmark_manifest.json
+```
+
+报告中必须区分三类证据：任务性能指标、drop/misleading/delay 反事实 intervention、attention/embedding/ablation 等解释性诊断。GPS distractor 是 synthetic counterfactual，不应写成自然采样环境；attention 或 gradient 不能单独作为因果证明。所有 benchmark metrics、figures、reports、cache 和真实 checkpoint 都是本地产物，默认只写入 ignored 的 `outputs/analysis/` 或 `outputs/visual_analysis/`，不进入源码变更。
 
 ### 2604.05668 S32-34 对齐复核
 

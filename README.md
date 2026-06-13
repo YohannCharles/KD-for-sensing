@@ -23,6 +23,8 @@ conda run -n kd_mm_beam kd-sensing-runs --help
 conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --help
 conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
 conda run -n kd_mm_beam kd-sensing-visualize-modalities --help
+conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
 conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --help
 conda run -n kd_mm_beam kd-sensing-run-mmw-town-gps-lidar-bgam --help
 ```
@@ -171,6 +173,17 @@ conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis \
 ```
 
 该入口默认只读模型 config、checkpoint、split 和已有 cache；新增产物只写入 `--output-dir` 下的 `figures/`、`tables/`、`cache/`、`case_payloads/`、`analysis_manifest.json` 和 `report.md`。示例配置中的 `fair_base`、`fair_gps_biased` 可按本地 checkpoint 路径替换；没有 attention 或 UMAP 时分析会在 manifest/report 中记录 warning 并降级到剩余图表。解释结论时优先引用 `report.md`、`tables/comparison_samples.csv`、`tables/embedding_neighbors.csv` 和对应 PNG/SVG 图，同时保留 caveat：投影和 attention 是诊断证据，不是单独的因果证明。
+
+JEPA vs GPS shortcut benchmark：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
+  --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml \
+  --output-dir outputs/analysis/jepa_gps_shortcut_benchmark/smoke \
+  --force
+```
+
+Benchmark 产物写入 ignored 的 `outputs/analysis/...`，包括 `benchmark_manifest.json`、`tables/metrics_by_condition.csv`、`tables/robustness_summary.csv`、`tables/shortcut_reliance_summary.csv` 和可选曲线图。真实 BeamBench-fair 矩阵使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml`，其中 checkpoint 路径是本地占位，需要替换为实际 run；不要提交真实 checkpoint、metrics、figures、cache 或 reports。`kd-sensing-jepa-visual-analysis` 可通过 `benchmark.runner_manifest=<path>` 只读消费 runner manifest，生成 `benchmark_robustness_matrix.csv`、GPS collapse/image degradation/temporal delay 曲线和 GPS shortcut reliance 报告段落。
 
 ## 配置和实验矩阵
 

@@ -101,6 +101,8 @@ CONFIG_LIFECYCLE_MARKERS = (
     "configs/fusion/csi_hardening_matrix/*.yaml",
     "configs/preprocess/*.yaml",
     "configs/diagnostics/modality_visualization.yaml",
+    "configs/diagnostics/jepa_visual_analysis_2604.yaml",
+    "configs/diagnostics/jepa_gps_shortcut_benchmark_*.yaml",
     "configs/baselines/*.yaml",
     "configs/pretraining/*.yaml",
     "retired history",

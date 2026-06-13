@@ -18,6 +18,12 @@ from torch.utils.data._utils.collate import default_collate
 
 from kd_sensing.config.io import deep_merge, load_config, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
+from kd_sensing.diagnostics.jepa_gps_shortcut_benchmark import (
+    GPS_SUITE_TYPES,
+    IMAGE_SUITE_TYPES,
+    TEMPORAL_SUITE_TYPES,
+    read_benchmark_analysis_bundle,
+)
 from kd_sensing.engine.data_factory import (
     build_dataloader_kwargs,
     build_protocol_split_datasets,
@@ -161,6 +167,7 @@ def run_jepa_visual_analysis(
 
     warnings: list[str] = []
     registry = OutputRegistry(out)
+    benchmark_context = _write_benchmark_analysis_outputs(cfg, tables_dir, figures_dir, payload_dir, registry, warnings)
     model_specs = dict(cfg.get("models", {}) or {})
     analyses: dict[str, ModelAnalysis] = {}
     model_failures: dict[str, str] = {}
@@ -233,6 +240,7 @@ def run_jepa_visual_analysis(
         model_failures=model_failures,
         dry_run=dry_run,
         registry=registry,
+        benchmark_context=benchmark_context,
     )
     report = _build_report(
         cfg,
@@ -241,6 +249,7 @@ def run_jepa_visual_analysis(
         embedding_neighbor_rows=embedding_neighbor_rows,
         case_rows=case_rows,
         robustness_rows=robustness_rows,
+        benchmark_context=benchmark_context,
         warnings=warnings,
     )
     report_path = out / "report.md"
@@ -432,6 +441,13 @@ def _default_analysis_config() -> dict[str, Any]:
             "image_masking": {"enabled": False, "ratios": [], "mode": "random"},
             "seed": 42,
         },
+        "benchmark": {
+            "manifest": None,
+            "runner_manifest": None,
+            "metrics_by_condition": None,
+            "robustness_summary": None,
+            "case_studies": ["jepa_recovery", "gps_shortcut_failure", "shared_failure"],
+        },
         "outputs": {
             "output_dir": "outputs/visual_analysis/jepa",
             "formats": list(DEFAULT_OUTPUT_FORMATS),
@@ -447,7 +463,7 @@ def _validate_analysis_config(cfg: dict[str, Any], *, path: Path) -> None:
     for name, spec in models.items():
         if not isinstance(spec, dict):
             raise ValueError(f"models.{name} must be a mapping.")
-    for section in ("split", "sampling", "figures", "robustness", "outputs"):
+    for section in ("split", "sampling", "figures", "robustness", "benchmark", "outputs"):
         if not isinstance(cfg.get(section), dict):
             raise ValueError(f"{section} must be a mapping in {path}.")
     formats = cfg.get("outputs", {}).get("formats", DEFAULT_OUTPUT_FORMATS)
@@ -1429,6 +1445,130 @@ def _robustness_skipped_row(model: str, condition: str, severity: float, cfg: Ma
     }
 
 
+def _write_benchmark_analysis_outputs(
+    cfg: Mapping[str, Any],
+    tables_dir: Path,
+    figures_dir: Path,
+    payload_dir: Path,
+    registry: OutputRegistry,
+    warnings: list[str],
+) -> dict[str, Any]:
+    benchmark_cfg = cfg.get("benchmark", {}) if isinstance(cfg.get("benchmark"), Mapping) else {}
+    manifest_path = benchmark_cfg.get("manifest") or benchmark_cfg.get("runner_manifest")
+    metrics_path = benchmark_cfg.get("metrics_by_condition")
+    robustness_path = benchmark_cfg.get("robustness_summary")
+    if not any((manifest_path, metrics_path, robustness_path)):
+        return {"enabled": False}
+    context: dict[str, Any] = {
+        "enabled": True,
+        "manifest_path": str(manifest_path) if manifest_path else None,
+        "metrics_by_condition": str(metrics_path) if metrics_path else None,
+        "robustness_summary": str(robustness_path) if robustness_path else None,
+        "generated_figures": [],
+        "skipped": [],
+    }
+    try:
+        bundle = read_benchmark_analysis_bundle(
+            manifest_path,
+            metrics_by_condition=metrics_path,
+            robustness_summary=robustness_path,
+        )
+    except Exception as exc:
+        message = f"benchmark_ingestion_failed:{exc}"
+        warnings.append(message)
+        registry.skipped_output(tables_dir / "benchmark_robustness_matrix.csv", reason=message, kind="table")
+        context["status"] = "failed"
+        context["skipped"].append(message)
+        return context
+    warnings.extend(f"benchmark:{item}" for item in bundle.get("warnings", []))
+    metrics_rows = list(bundle.get("metrics_rows", []))
+    matrix_rows = list(bundle.get("matrix_rows", []))
+    robustness_rows = list(bundle.get("robustness_rows", []))
+    case_rows = list(bundle.get("case_rows", []))
+    context.update(
+        {
+            "status": "generated" if metrics_rows else "no_metrics",
+            "manifest_path": bundle.get("manifest_path"),
+            "manifest_digest": bundle.get("manifest_digest"),
+            "metrics_path": bundle.get("metrics_path"),
+            "robustness_path": bundle.get("robustness_path"),
+            "metrics_row_count": len(metrics_rows),
+            "matrix_row_count": len(matrix_rows),
+            "case_row_count": len(case_rows),
+        }
+    )
+    if not metrics_rows:
+        registry.skipped_output(tables_dir / "benchmark_metrics_by_condition.csv", reason="benchmark_metrics_unavailable", kind="table")
+        registry.skipped_output(tables_dir / "benchmark_robustness_matrix.csv", reason="benchmark_metrics_unavailable", kind="table")
+        context["skipped"].append("benchmark_metrics_unavailable")
+        return context
+    _write_csv(tables_dir / "benchmark_metrics_by_condition.csv", metrics_rows)
+    _write_csv(tables_dir / "benchmark_robustness_matrix.csv", matrix_rows)
+    _write_csv(tables_dir / "benchmark_robustness_summary.csv", robustness_rows)
+    _write_csv(tables_dir / "benchmark_case_selection.csv", case_rows)
+    for row in case_rows:
+        payload_path = payload_dir / f"benchmark_{_safe_slug(row.get('case_group', 'case'))}_{_safe_slug(row.get('suite', 'suite'))}.json"
+        payload_path.write_text(json.dumps(_json_ready(row), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not case_rows:
+        registry.skipped_output(payload_dir / "benchmark_cases.json", reason="no_benchmark_case_matches", kind="case_payload")
+        context["skipped"].append("no_benchmark_case_matches")
+    if bool(cfg.get("figures", {}).get("robustness", True)):
+        context["generated_figures"] = _write_benchmark_curve_outputs(figures_dir, matrix_rows, cfg, registry, warnings)
+    return context
+
+
+def _write_benchmark_curve_outputs(
+    figures_dir: Path,
+    matrix_rows: list[dict[str, Any]],
+    cfg: Mapping[str, Any],
+    registry: OutputRegistry,
+    warnings: list[str],
+) -> list[str]:
+    if not matrix_rows:
+        registry.skipped_output(figures_dir / "benchmark_gps_collapse_curve.png", reason="no_benchmark_matrix_rows", kind="figure")
+        return []
+    if not _matplotlib_available(warnings):
+        registry.skipped_output(figures_dir / "benchmark_gps_collapse_curve.png", reason="matplotlib_unavailable", kind="figure")
+        return []
+    import matplotlib.pyplot as plt
+
+    groups = {
+        "benchmark_gps_collapse_curve": lambda row: str(row.get("suite_type")) in GPS_SUITE_TYPES,
+        "benchmark_image_degradation_curve": lambda row: str(row.get("suite_type")) in IMAGE_SUITE_TYPES,
+        "benchmark_temporal_delay_curve": lambda row: str(row.get("suite_type")) in TEMPORAL_SUITE_TYPES,
+    }
+    generated: list[str] = []
+    for figure_name, predicate in groups.items():
+        rows = [row for row in matrix_rows if predicate(row)]
+        if not rows:
+            registry.skipped_output(figures_dir / f"{figure_name}.png", reason="no_matching_benchmark_rows", kind="figure")
+            continue
+        fig, ax = plt.subplots(figsize=(7, 4))
+        by_model: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            by_model.setdefault(str(row.get("model")), []).append(row)
+        for model, model_rows in sorted(by_model.items()):
+            model_rows.sort(key=lambda item: float(item.get("severity") or 0.0))
+            ax.plot(
+                [float(row.get("severity") or 0.0) for row in model_rows],
+                [float(row.get("perturbed_metric") or 0.0) for row in model_rows],
+                marker="o",
+                label=model,
+            )
+        metric = rows[0].get("metric", "primary_metric")
+        split = rows[0].get("split", "")
+        sample_count = rows[0].get("sample_count", "")
+        ax.set_title(f"{figure_name.replace('_', ' ')} | split={split} n={sample_count}")
+        ax.set_xlabel("severity")
+        ax.set_ylabel(str(metric))
+        ax.legend(fontsize=7)
+        fig.tight_layout()
+        _save_figure(fig, figures_dir / figure_name, _output_formats(cfg), dpi=int(cfg.get("outputs", {}).get("dpi", 180)))
+        plt.close(fig)
+        generated.append(f"figures/{figure_name}.png")
+    return generated
+
+
 def _build_manifest(
     cfg: Mapping[str, Any],
     *,
@@ -1439,6 +1579,7 @@ def _build_manifest(
     model_failures: Mapping[str, str],
     dry_run: bool,
     registry: OutputRegistry,
+    benchmark_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     model_records = {}
     for name, spec in (cfg.get("models", {}) or {}).items():
@@ -1468,6 +1609,7 @@ def _build_manifest(
         "figures": cfg.get("figures", {}),
         "sampling": cfg.get("sampling", {}),
         "robustness": cfg.get("robustness", {}),
+        "benchmark": benchmark_context,
         "warnings": sorted(set(str(item) for item in warnings)),
         "outputs": registry.list_outputs(),
     }
@@ -1481,6 +1623,7 @@ def _build_report(
     embedding_neighbor_rows: list[dict[str, Any]],
     case_rows: list[dict[str, Any]],
     robustness_rows: list[dict[str, Any]],
+    benchmark_context: Mapping[str, Any],
     warnings: list[str],
 ) -> str:
     lines = [
@@ -1538,6 +1681,21 @@ def _build_report(
                 f"- robustness_summary.csv 记录 {len(robustness_rows)} 行 clean/drop/noise/masking 条件；cache-only 分析会把需重跑 forward 的条件标记为 skipped/status。",
             ]
         )
+    if benchmark_context.get("enabled"):
+        lines.extend(
+            [
+                "",
+                "## GPS shortcut reliance",
+                f"- benchmark_robustness_matrix.csv 汇总 {int(benchmark_context.get('matrix_row_count', 0))} 行跨模型扰动结果；benchmark_case_selection.csv 记录 aggregate case study 选择。",
+                "- drop GPS、misleading GPS 和 temporal delay 属于 counterfactual intervention；attention/embedding 只作为解释性诊断，不单独构成因果证明。",
+            ]
+        )
+        generated_figures = benchmark_context.get("generated_figures", [])
+        if generated_figures:
+            lines.append("- Benchmark 曲线输出：" + ", ".join(f"`{item}`" for item in generated_figures) + "。")
+        skipped = benchmark_context.get("skipped", [])
+        if skipped:
+            lines.append("- 部分 benchmark 图表或 case payload 已降级/跳过：" + ", ".join(str(item) for item in skipped) + "。")
     lines.extend(
         [
             "",

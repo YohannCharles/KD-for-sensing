@@ -45,6 +45,16 @@ TARGET_TABLE_III_ROW = {
     "overall": 0.7127,
 }
 
+OFFICIAL_DENSE_MODEL_CFG = {
+    "lin1_size": 128,
+    "lin2_size": 256,
+    "lin3_size": 512,
+    "lin4_size": 128,
+    "act_func": "LeakyReLU",
+    "last_act_func": "Sigmoid",
+    "loss_func": "BCE",
+}
+
 @dataclass(frozen=True)
 class ImageAEGPSDirectTrainingConfig:
     data_root: str
@@ -87,6 +97,11 @@ class ImageAEGPSDirectTrainingConfig:
     selection_split: str = "test_as_validation"
     fusion_hidden_dim: int = 256
     fusion_dropout: float = 0.2
+    fusion_architecture: str = "official_dense_model"
+    fusion_loss: str = "bce"
+    fusion_activation: str = "LeakyReLU"
+    fusion_last_activation: str = "Sigmoid"
+    fusion_dense_hidden_sizes: tuple[int, int, int, int] = (128, 256, 512, 128)
     freeze_ae_encoder: bool = True
     dba_delta: float = 5.0
     topk: tuple[int, ...] = (1, 3, 5)
@@ -349,6 +364,56 @@ class BeamBenchImageAEGPSFeatureDataset(Dataset):
         }
 
 
+class BeamBenchDenseModel(nn.Module):
+    """Official BeamBench dense_model equivalent used for GPS Direct heads."""
+
+    def __init__(
+        self,
+        *,
+        input_dim: int,
+        output_dim: int = 64,
+        hidden_sizes: Sequence[int] = (128, 256, 512, 128),
+        activation: str = "LeakyReLU",
+        last_activation: str = "Sigmoid",
+    ) -> None:
+        super().__init__()
+        sizes = tuple(int(item) for item in hidden_sizes)
+        if len(sizes) != 4:
+            raise ValueError(f"BeamBench dense_model expects four hidden sizes, got {sizes}.")
+        self.input_dim = int(input_dim)
+        self.output_dim = int(output_dim)
+        self.hidden_sizes = sizes
+        self.activation_name = str(activation)
+        self.last_activation_name = str(last_activation)
+        layers: list[nn.Module] = []
+        in_dim = self.input_dim
+        for hidden in sizes:
+            layers.append(nn.Linear(in_dim, hidden))
+            layers.append(_official_dense_activation(self.activation_name))
+            in_dim = hidden
+        layers.append(nn.Linear(in_dim, self.output_dim))
+        layers.append(_official_dense_activation(self.last_activation_name))
+        self.linear_layer = nn.Sequential(*layers)
+
+    @property
+    def outputs_probabilities(self) -> bool:
+        return self.last_activation_name.strip().lower() == "sigmoid"
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.linear_layer(inputs.view(inputs.size(0), -1))
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "model": "BeamBenchDenseModel",
+            "official_source": "ITU-AI-ML-in-5G-Challenge/BeamBench models/dense_model.py",
+            "input_dim": self.input_dim,
+            "output_dim": self.output_dim,
+            "hidden_sizes": list(self.hidden_sizes),
+            "activation": self.activation_name,
+            "last_activation": self.last_activation_name,
+        }
+
+
 class BeamBenchImageAEGPSDirectModel(nn.Module):
     """Camera AE + GPS direct fusion classifier for Arnold22 BeamBench Table III."""
 
@@ -362,6 +427,10 @@ class BeamBenchImageAEGPSDirectModel(nn.Module):
         image_size: int = 64,
         hidden_dim: int = 256,
         dropout: float = 0.2,
+        fusion_architecture: str = "official_dense_model",
+        fusion_dense_hidden_sizes: Sequence[int] = (128, 256, 512, 128),
+        fusion_activation: str = "LeakyReLU",
+        fusion_last_activation: str = "Sigmoid",
         ae_checkpoint_path: str | Path | None = None,
         freeze_ae_encoder: bool = True,
     ) -> None:
@@ -371,6 +440,7 @@ class BeamBenchImageAEGPSDirectModel(nn.Module):
         self.ae_latent_dim = int(ae_latent_dim)
         self.image_size = int(image_size)
         self.freeze_ae_encoder = bool(freeze_ae_encoder)
+        self.fusion_architecture = _normalize_fusion_architecture(fusion_architecture)
         self.camera_ae = CameraAutoEncoder(
             latent_dim=self.ae_latent_dim,
             image_channels=int(image_channels),
@@ -383,27 +453,38 @@ class BeamBenchImageAEGPSDirectModel(nn.Module):
         if self.freeze_ae_encoder:
             for param in self.camera_ae.parameters():
                 param.requires_grad = False
-        hidden = int(hidden_dim)
-        self.image_projection = nn.Sequential(
-            nn.LayerNorm(self.ae_latent_dim),
-            nn.Linear(self.ae_latent_dim, hidden),
-            nn.GELU(),
-        )
-        self.gps_encoder = nn.Sequential(
-            nn.Linear(self.gps_input_size, hidden),
-            nn.LayerNorm(hidden),
-            nn.GELU(),
-            nn.Dropout(float(dropout)),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-        )
-        self.fusion_head = nn.Sequential(
-            nn.Linear(hidden * 2, hidden),
-            nn.LayerNorm(hidden),
-            nn.GELU(),
-            nn.Dropout(float(dropout)),
-            nn.Linear(hidden, self.num_beams),
-        )
+        if self.fusion_architecture == "official_dense_model":
+            self.fusion_head = BeamBenchDenseModel(
+                input_dim=self.ae_latent_dim + self.gps_input_size,
+                output_dim=self.num_beams,
+                hidden_sizes=tuple(int(item) for item in fusion_dense_hidden_sizes),
+                activation=str(fusion_activation),
+                last_activation=str(fusion_last_activation),
+            )
+            self.image_projection = nn.Identity()
+            self.gps_encoder = nn.Identity()
+        else:
+            hidden = int(hidden_dim)
+            self.image_projection = nn.Sequential(
+                nn.LayerNorm(self.ae_latent_dim),
+                nn.Linear(self.ae_latent_dim, hidden),
+                nn.GELU(),
+            )
+            self.gps_encoder = nn.Sequential(
+                nn.Linear(self.gps_input_size, hidden),
+                nn.LayerNorm(hidden),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+                nn.Linear(hidden, hidden),
+                nn.GELU(),
+            )
+            self.fusion_head = nn.Sequential(
+                nn.Linear(hidden * 2, hidden),
+                nn.LayerNorm(hidden),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+                nn.Linear(hidden, self.num_beams),
+            )
 
     def forward(self, image: torch.Tensor, gps: torch.Tensor) -> torch.Tensor:
         if image.ndim != 5:
@@ -431,6 +512,9 @@ class BeamBenchImageAEGPSDirectModel(nn.Module):
         gps_last = gps.to(dtype=torch.float32)[:, -1, :]
         if int(gps_last.shape[-1]) != self.gps_input_size:
             raise ValueError(f"gps feature dim must be {self.gps_input_size}, got {int(gps_last.shape[-1])}.")
+        if self.fusion_architecture == "official_dense_model":
+            fused = torch.cat([image_latent.to(dtype=torch.float32), gps_last], dim=-1)
+            return self.fusion_head(fused)
         fused = torch.cat([self.image_projection(image_latent.to(dtype=torch.float32)), self.gps_encoder(gps_last)], dim=-1)
         return self.fusion_head(fused)
 
@@ -443,6 +527,8 @@ class BeamBenchImageAEGPSDirectModel(nn.Module):
             "ae_latent_dim": self.ae_latent_dim,
             "image_size": self.image_size,
             "freeze_ae_encoder": self.freeze_ae_encoder,
+            "fusion_architecture": self.fusion_architecture,
+            "fusion_head": self.fusion_head.metadata() if hasattr(self.fusion_head, "metadata") else type(self.fusion_head).__name__,
         }
 
 
@@ -519,6 +605,10 @@ def run_image_ae_gps_training(config: Mapping[str, Any] | ImageAEGPSDirectTraini
         image_size=cfg.image_size,
         hidden_dim=cfg.fusion_hidden_dim,
         dropout=cfg.fusion_dropout,
+        fusion_architecture=cfg.fusion_architecture,
+        fusion_dense_hidden_sizes=cfg.fusion_dense_hidden_sizes,
+        fusion_activation=cfg.fusion_activation,
+        fusion_last_activation=cfg.fusion_last_activation,
         ae_checkpoint_path=ae_checkpoint,
         freeze_ae_encoder=cfg.freeze_ae_encoder,
     ).to(device)
@@ -741,6 +831,10 @@ def run_image_ae_gps_paper_split_training(
         image_size=base_cfg.image_size,
         hidden_dim=base_cfg.fusion_hidden_dim,
         dropout=base_cfg.fusion_dropout,
+        fusion_architecture=base_cfg.fusion_architecture,
+        fusion_dense_hidden_sizes=base_cfg.fusion_dense_hidden_sizes,
+        fusion_activation=base_cfg.fusion_activation,
+        fusion_last_activation=base_cfg.fusion_last_activation,
         ae_checkpoint_path=ae_checkpoint,
         freeze_ae_encoder=base_cfg.freeze_ae_encoder,
     ).to(device)
@@ -1000,6 +1094,10 @@ def run_image_ae_gps_paper_split_evaluation(
         image_size=ckpt_cfg.image_size,
         hidden_dim=ckpt_cfg.fusion_hidden_dim,
         dropout=ckpt_cfg.fusion_dropout,
+        fusion_architecture=ckpt_cfg.fusion_architecture,
+        fusion_dense_hidden_sizes=ckpt_cfg.fusion_dense_hidden_sizes,
+        fusion_activation=ckpt_cfg.fusion_activation,
+        fusion_last_activation=ckpt_cfg.fusion_last_activation,
         ae_checkpoint_path=ae_checkpoint,
         freeze_ae_encoder=ckpt_cfg.freeze_ae_encoder,
     ).to(device)
@@ -1361,6 +1459,11 @@ def resolve_image_ae_gps_config(raw: Mapping[str, Any]) -> ImageAEGPSDirectTrain
         selection_split=_normalize_selection_split(str(paper.get("selection_split", "test_as_validation"))),
         fusion_hidden_dim=int(paper.get("fusion_hidden_dim", primary.get("d_model", model.get("d_model", 256)))),
         fusion_dropout=float(paper.get("fusion_dropout", training.get("dropout", 0.2))),
+        fusion_architecture=_normalize_fusion_architecture(str(paper.get("fusion_architecture", "official_dense_model"))),
+        fusion_loss=str(paper.get("fusion_loss", OFFICIAL_DENSE_MODEL_CFG["loss_func"])).lower(),
+        fusion_activation=str(paper.get("fusion_activation", OFFICIAL_DENSE_MODEL_CFG["act_func"])),
+        fusion_last_activation=str(paper.get("fusion_last_activation", OFFICIAL_DENSE_MODEL_CFG["last_act_func"])),
+        fusion_dense_hidden_sizes=_fusion_dense_hidden_sizes(paper.get("fusion_dense_hidden_sizes")),
         freeze_ae_encoder=bool(image_encoder.get("freeze_encoder", paper.get("freeze_ae_encoder", True))),
         dba_delta=float(paper.get("dba_delta", raw.get("evaluation", {}).get("dba_delta", 5.0) if isinstance(raw.get("evaluation"), Mapping) else 5.0)),
         topk=topk,
@@ -1409,7 +1512,7 @@ def _train_classifier_epoch(
         optimizer.zero_grad(set_to_none=True)
         with _autocast_context(amp_enabled, device, amp_dtype):
             logits = _classifier_logits_from_batch(model, batch, device=device, non_blocking=non_blocking)
-            loss = F.cross_entropy(logits, labels)
+            loss = _fusion_classification_loss(logits, labels, model=model)
         if _scaler_enabled(grad_scaler):
             grad_scaler.scale(loss).backward()
             grad_scaler.step(optimizer)
@@ -1420,6 +1523,20 @@ def _train_classifier_epoch(
         total += float(loss.detach().cpu()) * int(labels.numel())
         count += int(labels.numel())
     return total / max(count, 1)
+
+
+def _fusion_classification_loss(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    model: BeamBenchImageAEGPSDirectModel,
+) -> torch.Tensor:
+    if getattr(model, "fusion_architecture", "") == "official_dense_model":
+        targets = F.one_hot(labels, num_classes=int(model.num_beams)).to(dtype=outputs.dtype)
+        if isinstance(model.fusion_head, BeamBenchDenseModel) and model.fusion_head.outputs_probabilities:
+            return F.binary_cross_entropy(outputs.clamp(1e-7, 1.0 - 1e-7), targets)
+        return F.binary_cross_entropy_with_logits(outputs, targets)
+    return F.cross_entropy(outputs, labels)
 
 
 def _resolve_classifier_selection_sources(
@@ -1462,6 +1579,50 @@ def _normalize_selection_split(value: str) -> str:
     if normalized in {"val", "valid", "validation", "train_validation"}:
         return "validation"
     raise ValueError("beambench_paper.selection_split must be 'test_as_validation' or 'validation'.")
+
+
+def _normalize_fusion_architecture(value: str) -> str:
+    normalized = str(value or "official_dense_model").strip().lower().replace("-", "_")
+    if normalized in {"official_dense", "official_dense_model", "beambench_dense", "dense_model"}:
+        return "official_dense_model"
+    if normalized in {"legacy", "legacy_layernorm_gelu", "project_mlp"}:
+        return "legacy_layernorm_gelu"
+    raise ValueError("beambench_paper.fusion_architecture must be 'official_dense_model' or 'legacy_layernorm_gelu'.")
+
+
+def _official_dense_activation(name: str) -> nn.Module:
+    normalized = str(name or "Linear").strip().lower().replace("_", "").replace("-", "")
+    if normalized == "relu":
+        return nn.ReLU()
+    if normalized == "leakyrelu":
+        return nn.LeakyReLU()
+    if normalized == "sigmoid":
+        return nn.Sigmoid()
+    if normalized == "tanh":
+        return nn.Tanh()
+    if normalized == "softplus":
+        return nn.Softplus()
+    if normalized in {"linear", "identity"}:
+        return nn.Identity()
+    raise ValueError(f"Unsupported BeamBench dense_model activation: {name}")
+
+
+def _fusion_dense_hidden_sizes(value: Any) -> tuple[int, int, int, int]:
+    if value in (None, ""):
+        return (
+            int(OFFICIAL_DENSE_MODEL_CFG["lin1_size"]),
+            int(OFFICIAL_DENSE_MODEL_CFG["lin2_size"]),
+            int(OFFICIAL_DENSE_MODEL_CFG["lin3_size"]),
+            int(OFFICIAL_DENSE_MODEL_CFG["lin4_size"]),
+        )
+    if isinstance(value, str):
+        items = [item.strip() for item in value.replace(";", ",").split(",") if item.strip()]
+    else:
+        items = list(value)
+    sizes = tuple(int(item) for item in items)
+    if len(sizes) != 4:
+        raise ValueError("beambench_paper.fusion_dense_hidden_sizes must contain exactly four integers.")
+    return sizes  # type: ignore[return-value]
 
 
 def _normalize_target_beam_source(value: str) -> str:

@@ -40,6 +40,7 @@ kd-sensing-organize-runtime-outputs = "kd_sensing.cli.organize_runtime_outputs:m
 kd-sensing-export-viewer-manifest = "kd_sensing.cli.export_viewer_manifest:main"
 kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"
 kd-sensing-jepa-visual-analysis = "kd_sensing.cli.jepa_visual_analysis:main"
+kd-sensing-jepa-gps-shortcut-benchmark = "kd_sensing.cli.jepa_gps_shortcut_benchmark:main"
 kd-sensing-target-shot-split = "kd_sensing.cli.target_shot_split:main"
 kd-sensing-distribution-shift = "kd_sensing.cli.distribution_shift:main"
 kd-sensing-mmw-town-gps-v2 = "kd_sensing.cli.mmw_town_gps_v2:main"

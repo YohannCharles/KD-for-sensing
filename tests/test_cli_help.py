@@ -18,6 +18,7 @@ import pytest
         ("kd-sensing-export-viewer-manifest", "--cache-dir"),
         ("kd-sensing-visualize-modalities", "--cache-dir"),
         ("kd-sensing-jepa-visual-analysis", "--analysis-config"),
+        ("kd-sensing-jepa-gps-shortcut-benchmark", "--manifest"),
         ("kd-sensing-mmw-town-gps-v2", "--config"),
         ("kd-sensing-plot-mmw-town-gps-v2", "--results-dir"),
         ("kd-sensing-compare-mmw-town-gps-v2", "--previous-dir"),

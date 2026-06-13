@@ -168,6 +168,19 @@ beambench_paper:
   # fusion_val_fraction: 0.1。
   selection_split: test_as_validation
   fusion_val_fraction: 0.0
+  # Official BeamBench challenge.py uses models/dense_model.py for both
+  # GPS Dense and late fusion over Camera AE latent + GPS Direct features:
+  # Linear 128/256/512/128, LeakyReLU, final Sigmoid, BCE.
+  fusion_architecture: official_dense_model
+  fusion_loss: bce
+  fusion_dense_hidden_sizes:
+    - 128
+    - 256
+    - 512
+    - 128
+  fusion_activation: LeakyReLU
+  fusion_last_activation: Sigmoid
+  # Kept only for legacy_layernorm_gelu ablations.
   fusion_hidden_dim: 256
   fusion_dropout: 0.2
   freeze_ae_encoder: true

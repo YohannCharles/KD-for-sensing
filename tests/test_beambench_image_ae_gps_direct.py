@@ -31,11 +31,16 @@ def test_beambench_image_ae_gps_direct_model_forward():
     logits = model(torch.randn(2, 1, 3, 32, 32), torch.randn(2, 1, 3))
 
     assert tuple(logits.shape) == (2, 64)
+    assert torch.all(logits >= 0.0)
+    assert torch.all(logits <= 1.0)
     assert all(not param.requires_grad for param in model.camera_ae.parameters())
+    assert model.metadata()["fusion_architecture"] == "official_dense_model"
 
     latent_logits = model.forward_from_latent(torch.randn(2, 16), torch.randn(2, 1, 3))
 
     assert tuple(latent_logits.shape) == (2, 64)
+    assert torch.all(latent_logits >= 0.0)
+    assert torch.all(latent_logits <= 1.0)
 
 
 def test_beambench_image_ae_gps_direct_dry_run_trains(tmp_path: Path):
@@ -219,6 +224,11 @@ def test_beambench_image_ae_gps_config_resolves_throughput_defaults(tmp_path: Pa
     assert cfg.gps_angle_offset_rad == PAPER_SCENE_CENTER_ANGLES_RAD[31]
     assert cfg.gps_input_size == 2
     assert cfg.target_beam_source == "current"
+    assert cfg.fusion_architecture == "official_dense_model"
+    assert cfg.fusion_loss == "bce"
+    assert cfg.fusion_dense_hidden_sizes == (128, 256, 512, 128)
+    assert cfg.fusion_activation == "LeakyReLU"
+    assert cfg.fusion_last_activation == "Sigmoid"
 
 
 def test_beambench_image_ae_gps_tableiii_runner_dry_run(tmp_path: Path):
