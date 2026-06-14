@@ -2,6 +2,8 @@
 
 本文件记录 `reproduce-beambench-baseline` 的可执行 workflow。所有项目相关 Python 命令都使用 `kd_mm_beam` 环境。
 
+当前 Arnold22 Table III `Camera=AE, GPS=Direct, Fusion=Yes` 本地 substitute 口径以 `BASELINE_REPORT.md` 开头的 Current Summary 为准；结果 provenance 和 blocked/upper-bound/historical 状态见 `docs/result_claims_registry.md`。本文件只给运行入口，不把旧历史流水账提升为当前结果。
+
 ## 1. 环境检查
 
 ```bash
@@ -124,13 +126,13 @@ conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py \
 
 该实现是项目内本地训练复现路径，不依赖官方预训练权重；若没有官方权重和官方完整训练搜索流程，不能把本地数值声称为官方 Table III 数值。
 
-论文 Table III 对齐实验应使用 joint split runner，而不是逐场景分别训练：
+论文 Table III 对齐实验应使用 joint split runner，而不是逐场景分别训练。当前推荐命令固定 `--target-beam-source current`、`seq_len=1`、`num_pred=1`、GPS `paper_distance_angle` 和 linear DBA；旧 `future` target 只允许作为 historical sequence-prediction ablation。
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
   --config configs/fusion/beambench_image_ae_gps_direct.yaml \
   --train-scenes 32 33 34 \
-  --eval-scenes 31 \
+  --eval-scenes 31 32 33 34 \
   --selection-split validation \
   --fusion-val-fraction 0.1 \
   --gps-feature-mode paper_distance_angle \
@@ -143,7 +145,7 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 
 其中 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入 `[distance, calibrated_angle_deg]`，`--target-beam-source current` 对齐 Arnold22 Table III 当前 beam selection 语义。当前配置默认重新训练 512 维 Camera AE；若复用旧 128 维 AE checkpoint，scene31 泛化会明显下降。旧 feature cache 会因 GPS 特征版本、校准角和 target source 签名变化自动失效。
 
-若要重新评估完整 Table III 四场景，把 `--eval-scenes 31` 改为 `--eval-scenes 31 32 33 34`。
+若只做 scene31 排障，可临时改为 `--eval-scenes 31`，但报告必须标记为 scene31-only diagnostic/historical ablation，不能作为当前完整 Table III substitute。
 
 已经训练好的 fusion checkpoint 可直接做 eval-only 四场景汇总：
 
@@ -158,6 +160,8 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
   --fusion-batch-size 512 \
   --feature-cache-batch-size 256
 ```
+
+如果该 checkpoint 来自旧 `future` target、旧 GPS 公式、旧 AE 维度或 `test_as_validation` 选模，eval-only 结果必须在 `BASELINE_REPORT.md` 和 `docs/result_claims_registry.md` 中标记为 historical ablation 或 upper-bound，不能覆盖 Current Summary。
 
 ## 5. 官方评估 wrapper
 
@@ -201,4 +205,4 @@ conda run -n kd_mm_beam python scripts/eval_baseline.py \
 - `TODO_FOR_ATTENTION_MODULE.md`
 - `results/reproduce_baseline.md`
 
-运行后请把实际 command、commit、dataset split、modalities、checkpoint path、metrics、日志路径和 mock/real 标记补入 `BASELINE_REPORT.md` 与 `results/reproduce_baseline.md`。真实复现不可用时必须写 blocked，不能填虚假指标。
+运行后请把实际 command、commit、dataset split、modalities、checkpoint path、metrics、日志路径和 mock/real 标记补入 `BASELINE_REPORT.md`、`results/reproduce_baseline.md` 与 `docs/result_claims_registry.md`。真实复现不可用时必须写 blocked，不能填虚假指标。

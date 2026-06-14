@@ -1,6 +1,6 @@
 # KD for Sensing
 
-本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线收敛到 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite、Arnold22 Camera AE+GPS Direct、JEPA visual analysis、预处理和 manifest 诊断导出入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线收敛到 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite、Arnold22 Camera AE+GPS Direct、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、JEPA visual analysis、预处理和 manifest 诊断导出入口。
 
 蒸馏训练、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual 和 camera residual 研究线已经退役。当前 quickstart、BGAM、GPS v2 和 calibration workflow 都只构建单个 `model.primary` 主模型；旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`distillation.*`、`configs/hist_beam/*`、`hist_beam_fusion` 和 `kd-sensing-hist-beam-loso` 会被 migration guard 或 registry 拒绝，并提示使用当前入口。历史输出和权重只作为只读复现资料保留。
 
@@ -40,7 +40,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.export_viewer_manifest --help
 
 ```text
 configs/          # 训练、评估和预处理配置；高级 fusion 优先由 canonical/overlay recipe 生成
-docs/             # 实验矩阵、数据集说明、研究笔记、扩展指南和性能调优说明
+docs/             # 主线模型目录、协议表、结果账本、实验矩阵、扩展指南和性能调优说明
 openspec/specs/   # 当前需求和架构契约
 scripts/          # 保留的薄 alias、研究诊断和数据准备脚本
 src/kd_sensing/   # 包内 CLI、config、data、engine、models、diagnostics 等实现
@@ -205,7 +205,7 @@ configs/fusion/<canonical_slug>_<strong|lightweight>.yaml
 
 很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 strong/lightweight canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线和 fusion KD alias 的旧配置路径不会被 virtual alias 接管。
 
-CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序见 [docs/experiment_matrix.md](docs/experiment_matrix.md)。
+当前主线横向说明分三层维护：模型目录见 [docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)，参数协议见 [docs/experiment_protocols.md](docs/experiment_protocols.md)，可引用结果和 blocked 状态见 [docs/result_claims_registry.md](docs/result_claims_registry.md)。[docs/experiment_matrix.md](docs/experiment_matrix.md) 只保留 quickstart 顺序和关键 caveat；CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序从这里跳转。
 
 ## 数据和产物边界
 
@@ -351,7 +351,10 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 ## 文档索引
 
 - AI/维护者修改前导航：[docs/agent_navigation.md](docs/agent_navigation.md)
-- 实验矩阵和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
+- 当前主线模型目录：[docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)
+- 实验协议和参数口径：[docs/experiment_protocols.md](docs/experiment_protocols.md)
+- 结果和 claim 账本：[docs/result_claims_registry.md](docs/result_claims_registry.md)
+- 实验矩阵 quickstart 和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
 - 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)
 - 新组件扩展指南：[docs/extension_guide.md](docs/extension_guide.md)

@@ -4,64 +4,59 @@
 定义配置驱动训练、评估、预处理、诊断、运行产物保存、README 入口边界以及 virtual/overlay 配置复现实验的工作流要求。
 ## Requirements
 ### Requirement: 配置驱动实验
-项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、primary 模型、supervised/adaptation loss、训练超参数、优化器、调度器、输出目录、随机种子、GPS-Rel-Polar 特征模式和 fusion 模态选择。配置 MUST 不再覆盖 KD 模式或 teacher checkpoint。
+项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、`model.primary` 主模型、supervised/adaptation/JEPA/BGAM/CSI 或诊断目标、训练超参数、优化器、调度器、输出目录、随机种子、GPS 特征模式和 fusion 模态选择。当前支持的训练配置 MUST 不覆盖 KD 模式或 teacher checkpoint；旧 KD、teacher/student no-KD、Hist、Top8 standalone、residual 和 camera residual 路径 MUST 在配置解析或 registry 层被拒绝。
 
 #### Scenario: 使用配置启动 image-only 训练
-- **WHEN** 用户通过新 CLI 传入 image-only 训练配置
-- **THEN** 系统 MUST 构建 image-only dataset、teacher/student 模型、KD/loss、optimizer 和 scheduler，并进入训练流程
-
-#### Scenario: 使用配置启动 image+radar 训练
-- **WHEN** 用户通过新 CLI 传入 fusion 训练配置
-- **THEN** 系统 MUST 构建同时包含图像和雷达输入的 dataset、fusion teacher/student 模型、KD/loss、optimizer 和 scheduler，并进入训练流程
-
-#### Scenario: 使用配置启动 radar-only 训练
-- **WHEN** 用户通过新 CLI 传入 radar-only 训练配置
-- **THEN** 系统 MUST 构建包含雷达输入的 dataset、配置指定的 radar-only 主模型、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** 训练流程 MUST 支持 `radar_teacher` baseline 和 `radar_student` lightweight student
-- **AND** 训练流程 MUST 不要求模型接收图像输入
-
-#### Scenario: 使用配置启动 radar-only 评估
-- **WHEN** 用户通过新 CLI 传入 radar-only 评估配置和 radar-only 模型权重
-- **THEN** 系统 MUST 构建配置指定的 radar-only 模型并只使用雷达输入完成评估
-- **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
-
-#### Scenario: 使用配置启动 GPS-only 训练
-- **WHEN** 用户通过新 CLI 传入 GPS-only 训练配置
-- **THEN** 系统 MUST 构建包含 GPS 输入的 dataset、配置指定的 GPS teacher/student 模型、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** 训练流程 MUST 不要求模型接收图像或雷达输入
-- **AND** GPS 输入 MUST 使用 `relative_polar` 三维特征
-
-#### Scenario: 使用配置启动 GPS-only 评估
-- **WHEN** 用户通过新 CLI 传入 GPS-only 评估配置和 GPS 模型权重
-- **THEN** 系统 MUST 构建配置指定的 GPS 模型并只使用 GPS 输入完成评估
-- **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
-- **AND** GPS 输入 MUST 使用 `relative_polar` 三维特征
-
-#### Scenario: 使用配置启动可选模态 fusion 训练
-- **WHEN** 用户通过新 CLI 传入带 `modalities` 的 fusion 配置
-- **THEN** 系统 MUST 只准备并融合 `modalities` 中列出的模态
-- **AND** 系统 MUST 支持 image、radar、gps 的任意非空组合
-
-#### Scenario: 使用配置启动单模态训练
-- **WHEN** 用户通过 CLI 传入 image、radar、GPS、LiDAR 或 mmWave 单模态训练配置
-- **THEN** 系统 MUST 构建对应 dataset、primary model、loss、optimizer 和 scheduler
+- **WHEN** 用户通过当前 CLI 传入 image-only 训练配置
+- **THEN** 系统 MUST 构建 image-only dataset、`model.primary`、loss、optimizer 和 scheduler，并进入训练流程
 - **AND** 系统 MUST 不构建 frozen teacher 或 distiller
 
 #### Scenario: 使用配置启动 fusion 训练
-- **WHEN** 用户通过 CLI 传入 fusion 训练配置
-- **THEN** 系统 MUST 构建同时包含启用模态输入的 dataset、fusion primary model、loss、optimizer 和 scheduler
+- **WHEN** 用户通过当前 CLI 传入 fusion 训练配置
+- **THEN** 系统 MUST 构建同时包含启用模态输入的 dataset、fusion `model.primary`、loss、optimizer 和 scheduler
 - **AND** 系统 MUST 不要求 teacher checkpoint
 
+#### Scenario: 使用配置启动 radar-only 训练
+- **WHEN** 用户通过当前 CLI 传入 radar-only 训练配置
+- **THEN** 系统 MUST 构建包含 radar 输入的 dataset、配置指定的 radar primary model、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** 训练流程 MUST 不要求 image 输入、teacher checkpoint 或 distiller
+
+#### Scenario: 使用配置启动 GPS-only 训练
+- **WHEN** 用户通过当前 CLI 传入 GPS-only 训练配置
+- **THEN** 系统 MUST 构建包含 GPS 输入的 dataset、配置指定的 GPS primary model、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** GPS 输入 MUST 使用配置声明的当前 GPS feature mode 和 train-split normalization
+
+#### Scenario: 使用配置启动单模态评估
+- **WHEN** 用户通过当前 CLI 传入 image、radar、GPS、LiDAR、mmWave 或 CSI 单模态评估配置和模型权重
+- **THEN** 系统 MUST 构建配置指定的 primary model 并只使用启用模态完成评估
+- **AND** 系统 MUST 保存当前 objective 支持的 Top-K、DBA、loss 或诊断指标
+
+#### Scenario: 使用配置启动可选模态 fusion 训练
+- **WHEN** 用户通过当前 CLI 传入带 `modalities` 的 fusion 配置
+- **THEN** 系统 MUST 只准备并融合 `modalities` 中列出的当前支持模态
+- **AND** 未启用模态的文件缺失 MUST 不阻止当前任务启动
+
+#### Scenario: 使用当前 JEPA 和 BGAM workflow
+- **WHEN** 用户运行当前 JEPA pretraining/downstream、GPS-query pooling、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、viewer manifest 或 benchmark 配置
+- **THEN** 系统 MUST 使用对应 current workflow 的 `model.primary`、runner manifest 或诊断 schema
+- **AND** 系统 MUST 不恢复 legacy KD、Hist、standalone Top8 selector、GPS residual 或 camera residual runtime
+
 ### Requirement: 命令行覆盖配置
-实验入口 MUST 支持在命令行覆盖配置值。新 CLI MUST 支持显式传入配置文件和关键参数覆盖；旧脚本 argparse 参数不得作为兼容入口保留，只能作为迁移默认值参考。
+实验入口 MUST 支持在命令行覆盖配置值。当前 CLI MUST 支持显式传入配置文件和关键参数覆盖；旧脚本 argparse 参数不得作为兼容入口保留，只能作为迁移默认值参考。命令行覆盖 MUST 不能绕过当前配置解析 guard 来重新启用 KD、teacher checkpoint、retired config alias 或旧研究路线。
 
 #### Scenario: 覆盖训练轮数
 - **WHEN** 用户通过命令行将训练轮数覆盖为 `1`
 - **THEN** 系统 MUST 使用覆盖后的训练轮数，而不是配置文件中的默认训练轮数
 
-#### Scenario: 覆盖 KD 模式
-- **WHEN** 用户通过命令行将 `kd_mode` 覆盖为 no-KD、logits KD 或 RKD 中的一种
-- **THEN** 系统 MUST 构建对应蒸馏逻辑，并保持该模式下原有损失计算语义
+#### Scenario: 覆盖当前实验参数
+- **WHEN** 用户通过命令行覆盖 batch size、learning rate、scene、output run name、GPS feature mode、difficulty profile 或 manifest path
+- **THEN** 系统 MUST 在最终配置、运行 metadata 或输出 manifest 中记录覆盖后的值
+- **AND** 相对路径 MUST 继续按项目根目录解析
+
+#### Scenario: 拒绝 KD 模式覆盖
+- **WHEN** 用户通过命令行覆盖 `kd_mode`、`distillation.*`、`teacher_model_name`、`logits_kd`、`rkd`、`teacher_no_kd` 或 `student_no_kd`
+- **THEN** 配置加载 MUST 失败
+- **AND** 错误信息 MUST 指向当前 `model.primary`、supervised/adaptation、JEPA、BGAM 或保留 baseline 入口
 
 ### Requirement: 统一实验输出
 训练和评估流程 MUST 将运行产物写入统一输出目录。输出目录 MUST 至少包含本次运行的有效配置、checkpoint 或权重引用、metrics、训练曲线或日志，以及测试报告。训练和评估流程 MUST 默认创建互不覆盖的运行目录；只有在用户显式启用覆盖、显式恢复训练或传入确定性输出目录时，系统才 MAY 复用既有目录。训练流程 MUST 在启用 TensorBoard 时写入可由 TensorBoard 读取的标量 event 日志，并且 MUST 支持通过配置关闭该日志写入。训练流程 MUST 在启用进度显示时提供 `tqdm` 训练进度条，并且 MUST 将每个 epoch 的进度摘要保存到运行日志。
@@ -156,34 +151,20 @@
 - **AND** 如果列缺失，系统 MUST 抛出清晰错误并提示重新运行启用 mmWave 的序列预处理
 
 ### Requirement: 训练与评估行为等价
-结构重构后，默认 image-only、radar-only、GPS-only、LiDAR-only 和 fusion 工作流 MUST 通过新脚本保持当前算法的核心训练、验证和评估语义，包括默认序列长度、预测步数、类别数、primary 架构选择、early stopping、gradient clipping、checkpoint 恢复和指标计算。上游原代码实际覆盖的 image-only 与 image+radar 配置 MUST 按原代码和随附参数文件对齐 GRU 层数与训练超参数；radar-only、GPS-only 和 LiDAR-only 是本项目新增单模态配置，MUST 在共享字段上与 image 单模态配置保持一致。
+结构重构后，默认 image-only、radar-only、GPS-only、LiDAR-only、mmWave 和 fusion 工作流 MUST 通过当前 CLI 保持核心训练、验证和评估语义，包括默认序列长度、预测步数、类别数、`model.primary` 架构选择、early stopping、gradient clipping、checkpoint 恢复和指标计算。历史 teacher/student 参数只可作为 checkpoint 读取、迁移 guard 或已明确标记的兼容背景出现，不得要求当前训练流程构建成对 KD runtime。
 
 #### Scenario: 新配置默认参数
 - **WHEN** 用户使用新脚本和默认配置启动训练或评估
 - **THEN** 系统 MUST 使用从旧实现迁移而来的默认任务语义，并保持相同的任务类型
-- **AND** `configs/image/*.yaml`、`configs/radar/*.yaml`、`configs/gps/*.yaml` 和 `configs/lidar/*.yaml` 中的单模态 teacher 与 student `gru_params` MUST 为 `[64, 64, 1]`
-- **AND** `configs/radar/*.yaml`、`configs/gps/*.yaml` 和 `configs/lidar/*.yaml` 中的共享训练字段 MUST 与 `configs/image/` 下同角色配置一致
-- **AND** `configs/fusion/image_radar_strong.yaml` 和 `configs/fusion/image_radar_lightweight.yaml` 中的 image+radar fusion primary `gru_params` MUST 分别匹配 strong/lightweight 默认
-- **AND** image+radar teacher no-KD 配置中作为训练主模型的 `model.student` 若为 `fusion_teacher`，其 `gru_params` MUST 为 `[64, 64, 2]`
-- **AND** `src/kd_sensing/config/defaults.py` MUST 不把所有 teacher/student 的 `gru_params` 统一强制为 `[64, 64, 2]`
+- **AND** `configs/<modality>/{strong,lightweight,supervised}.yaml` MUST 使用 `model.primary`
+- **AND** current lightweight/supervised 配置 MUST 不依赖 `model.teacher`、`model.student`、`distillation.*` 或 teacher checkpoint
+- **AND** 历史 teacher/student GRU 参数 MAY 在原代码兼容说明或墓碑 spec 中保留，但 MUST 标记为历史兼容而不是当前训练入口
 
-#### Scenario: 默认 student 架构与 GRU 层数
-- **WHEN** 用户使用默认 image-only、radar-only、GPS-only、LiDAR-only 或 fusion student 实验配置构建模型
-- **THEN** 系统 MUST 为 image-only 工作流构建轻量 `image_student`
-- **AND** 系统 MUST 为 radar-only 工作流构建轻量 `radar_student`
-- **AND** 系统 MUST 为 GPS-only 工作流构建轻量 `gps_student`
-- **AND** 系统 MUST 为 LiDAR-only 工作流构建轻量 `lidar_student`
-- **AND** 系统 MUST 为 fusion 工作流构建轻量 `fusion_student`
-- **AND** image、radar、GPS 和 LiDAR 单模态 student 模型的 `GRU.num_layers` MUST 为 1
-- **AND** 原代码兼容 image+radar fusion student 模型的 `GRU.num_layers` MUST 为 1
-- **AND** 文档 MUST 说明二层 GRU student 是历史 canonical 配置或特定扩展配置，不是当前单模态和 image+radar 兼容配置的默认结构
-
-#### Scenario: 默认 teacher GRU 层数
-- **WHEN** 用户通过目标兼容配置构建 image、radar、GPS、LiDAR 或 image+radar fusion teacher 模型
-- **THEN** image、radar、GPS 和 LiDAR 单模态 teacher 模型的 `GRU.num_layers` MUST 为 1
-- **AND** image、radar、GPS 和 LiDAR 单模态 teacher 配置 MUST 使用 `gru_params: [64, 64, 1]`
-- **AND** image+radar fusion teacher 模型的 `GRU.num_layers` MUST 为 2
-- **AND** image+radar fusion teacher 配置 MUST 使用 `gru_params: [64, 64, 2]`
+#### Scenario: 默认 primary 架构与 GRU 层数
+- **WHEN** 用户使用默认 image-only、radar-only、GPS-only、LiDAR-only、mmWave 或 fusion 当前实验配置构建模型
+- **THEN** 系统 MUST 按 `model.primary.type` 构建对应 strong、lightweight、supervised、JEPA、BGAM、CSI 或 baseline/control 模型
+- **AND** current lightweight primary 的 GRU/temporal 参数 MUST 由其配置显式声明
+- **AND** 文档 MUST 说明二层 GRU teacher/student 是历史 canonical 配置或特定兼容背景，不是当前默认结构
 
 #### Scenario: checkpoint 恢复语义
 - **WHEN** 用户在训练配置中启用 `training.resume`
@@ -219,14 +200,13 @@
 - **THEN** 配置加载 MUST 失败
 - **AND** 错误信息 MUST 指向当前 supervised/adaptation 入口
 
-### Requirement: RadarStudent no-KD 实验配置
-项目 MUST 提供 radar-only lightweight student no-KD 配置，用于直接训练 `radar_student` 并评估轻量雷达模型在无蒸馏条件下的表现。该配置 MUST 使用 `experiment.task: radar`，MUST 不加载 teacher checkpoint，并 MUST 复用统一训练、验证、评估和输出目录语义。
+### Requirement: RadarStudent legacy no-KD 请求迁移
+项目 MUST 拒绝旧 `configs/radar/student_no_kd.yaml` 入口，并将其解释为历史 no-KD/student 路径的 migration guard。当前 radar 轻量或 supervised 实验 MUST 使用 `configs/radar/lightweight.yaml`、`configs/radar/supervised.yaml` 或等价 `model.primary` 配置。
 
-#### Scenario: 使用 no-KD 启动 RadarStudent 训练
+#### Scenario: 旧 RadarStudent no-KD 请求迁移
 - **WHEN** 用户通过训练入口传入 `configs/radar/student_no_kd.yaml`
-- **THEN** 系统 MUST 构建 `radar_student` 作为可训练主模型
-- **AND** 系统 MUST 不构建或加载 frozen teacher
-- **AND** 系统 MUST 只使用雷达输入完成 forward
+- **THEN** 系统 MUST 拒绝该旧入口
+- **AND** 错误信息 MUST 指向当前 radar lightweight 或 supervised 配置
 
 ### Requirement: 预处理流程可单独运行
 CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独立入口提供，并支持配置指定输入 CSV、数据根目录、输出 CSV 名称、FFT 参数、处理比例和是否输出 GPS 序列列。
@@ -258,43 +238,43 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **AND** GPS 配置文档 MUST 引导用户使用 GPS-Rel-Polar
 
 ### Requirement: 可选模态 fusion 实验配置
-项目 MUST 提供可选模态 fusion 配置，使用户能通过 `modalities` 手动选择 `image`、`radar`、`gps` 的任意非空组合。Fusion KD 配置 MUST 要求 teacher 和 student 使用相同的 `modalities`，除非用户显式选择受支持的跨模态蒸馏配置。
+项目 MUST 提供可选模态 fusion 配置，使用户能通过 `modalities` 手动选择当前支持模态的任意合法非空组合。Fusion 配置 MUST 构建单个 `model.primary`，不得要求 teacher/student 成对模型或 Fusion KD 配置。
 
 #### Scenario: 运行 image+gps fusion
 - **WHEN** 用户运行 `modalities: ["image", "gps"]` 的 fusion 配置
-- **THEN** 系统 MUST 构建只包含 image 和 gps 分支的 fusion teacher/student
-- **AND** 系统 MUST 不要求 radar 输入
+- **THEN** 系统 MUST 构建只包含 image 和 gps 分支的 fusion primary model
+- **AND** 系统 MUST 不要求 radar 输入、teacher checkpoint 或 distiller
 
 #### Scenario: 运行 radar+gps fusion
 - **WHEN** 用户运行 `modalities: ["radar", "gps"]` 的 fusion 配置
-- **THEN** 系统 MUST 构建只包含 radar 和 gps 分支的 fusion teacher/student
+- **THEN** 系统 MUST 构建只包含 radar 和 gps 分支的 fusion primary model
 - **AND** 系统 MUST 不要求 image 输入
 
-#### Scenario: 运行 image+radar+gps fusion
-- **WHEN** 用户运行 `modalities: ["image", "radar", "gps"]` 的 fusion 配置
-- **THEN** 系统 MUST 构建包含全部三种模态分支的 fusion teacher/student
+#### Scenario: 运行多模态 fusion
+- **WHEN** 用户运行包含 image、radar、gps、lidar、mmwave 或 csi 的合法 fusion 配置
+- **THEN** 系统 MUST 构建配置声明的启用模态输入和 fusion primary model
 - **AND** 系统 MUST 使用统一训练、验证和评估流程输出指标
 
 ### Requirement: LiDAR 配置驱动实验
-项目 MUST 支持通过配置文件启动 LiDAR-only 训练和评估。LiDAR-only 配置 MUST 使用 `experiment.task: lidar`，并通过统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
+项目 MUST 支持通过配置文件启动 LiDAR-only 训练和评估。LiDAR-only 配置 MUST 使用当前 LiDAR dataset、preprocessing/cache contract、`model.primary`、统一训练/验证/评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
 
 #### Scenario: 使用配置启动 LiDAR-only 训练
-- **WHEN** 用户通过新 CLI 传入 LiDAR-only 训练配置
-- **THEN** 系统 MUST 构建包含 LiDAR 输入的 dataset、配置指定的 LiDAR teacher/student 模型、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** 训练流程 MUST 不要求图像、雷达或 GPS 输入
-- **AND** LiDAR 输入 MUST 使用 BEV 张量格式
+- **WHEN** 用户通过当前 CLI 传入 LiDAR-only 训练配置
+- **THEN** 系统 MUST 构建包含 LiDAR 输入的 dataset、配置指定的 LiDAR primary model、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** 训练流程 MUST 不要求 image、radar、GPS、teacher checkpoint 或 distiller
+- **AND** LiDAR 输入 MUST 使用当前配置声明的 BEV、streaming stats 或 raw point cloud profile
 
 #### Scenario: 使用配置启动 LiDAR-only 评估
-- **WHEN** 用户通过新 CLI 传入 LiDAR-only 评估配置和 LiDAR 模型权重
-- **THEN** 系统 MUST 构建配置指定的 LiDAR 模型并只使用 LiDAR 输入完成评估
-- **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
+- **WHEN** 用户通过当前 CLI 传入 LiDAR-only 评估配置和 LiDAR 模型权重
+- **THEN** 系统 MUST 构建配置指定的 LiDAR primary model 并只使用 LiDAR 输入完成评估
+- **AND** 系统 MUST 保存当前 metric profile 声明的 Top-K、DBA、loss 或诊断指标
 
 ### Requirement: LiDAR fusion 配置驱动实验
-项目 MUST 支持通过 fusion `modalities` 配置启用 LiDAR。包含 LiDAR 的 fusion 配置 MUST 复用统一 fusion 训练和评估流程。
+项目 MUST 支持通过 fusion `modalities` 配置启用 LiDAR。包含 LiDAR 的 fusion 配置 MUST 复用统一 fusion 训练和评估流程，并 MUST 构建单个 fusion primary model。
 
 #### Scenario: 使用配置启动 image+radar+gps+lidar fusion 训练
 - **WHEN** 用户通过训练入口传入 `modalities: ["image", "radar", "gps", "lidar"]` 的 fusion 配置
-- **THEN** 系统 MUST 构建四个模态输入所需的 dataset 字段和 fusion teacher/student 模型
+- **THEN** 系统 MUST 构建四个模态输入所需的 dataset 字段和 fusion primary model
 - **AND** 系统 MUST 在 batch 准备阶段构造 image、radar、gps 和 lidar 输入
 
 #### Scenario: 使用配置启动 LiDAR 参与的双模态 fusion 训练
@@ -312,7 +292,7 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 
 #### Scenario: LiDAR fusion 示例配置可构建
 - **WHEN** 开发者加载包含 LiDAR 的 `configs/fusion/*.yaml`
-- **THEN** 系统 MUST 能构建对应 fusion teacher 和 fusion student
+- **THEN** 系统 MUST 能构建对应 fusion primary model
 - **AND** fusion `modalities` MUST 只包含合法模态名称
 
 ### Requirement: LiDAR 预处理入口
@@ -438,26 +418,26 @@ canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUS
 - **AND** 评估入口仍可通过 `--weights` 显式指定待评估 checkpoint
 
 ### Requirement: mmWave 配置驱动实验
-项目 MUST 支持通过配置文件启动 mmWave-only 训练和评估。mmWave-only 配置 MUST 使用 `experiment.task: mmwave`，并通过统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
+项目 MUST 支持通过配置文件启动 mmWave-only 训练和评估。mmWave-only 配置 MUST 使用 `experiment.task: mmwave`、当前 mmWave dataset contract 和 `model.primary`，并通过统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
 
 #### Scenario: 使用配置启动 mmWave-only 训练
-- **WHEN** 用户通过新 CLI 传入 mmWave-only 训练配置
-- **THEN** 系统 MUST 构建包含 mmWave 输入的 dataset、配置指定的 mmWave teacher/student 模型、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** 训练流程 MUST 不要求图像、雷达、GPS 或 LiDAR 输入
+- **WHEN** 用户通过当前 CLI 传入 mmWave-only 训练配置
+- **THEN** 系统 MUST 构建包含 mmWave 输入的 dataset、配置指定的 mmWave primary model、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** 训练流程 MUST 不要求图像、雷达、GPS、LiDAR、teacher checkpoint 或 distiller
 - **AND** mmWave 输入 MUST 使用 `[B, T, 64]` 的 dB receive-power 特征序列
 
 #### Scenario: 使用配置启动 mmWave-only 评估
-- **WHEN** 用户通过新 CLI 传入 mmWave-only 评估配置和 mmWave 模型权重
+- **WHEN** 用户通过当前 CLI 传入 mmWave-only 评估配置和 mmWave 模型权重
 - **THEN** 系统 MUST 构建配置指定的 mmWave 模型并只使用 mmWave 输入完成评估
 - **AND** 系统 MUST 保存 Top-K、DBA 和 loss 指标
 - **AND** 评估流程 MUST 复用训练时保存的 mmWave scaler
 
 ### Requirement: mmWave fusion 配置驱动实验
-项目 MUST 支持通过 fusion `modalities` 配置启用 mmWave。包含 mmWave 的 fusion 配置 MUST 复用统一 fusion 训练和评估流程。
+项目 MUST 支持通过 fusion `modalities` 配置启用 mmWave。包含 mmWave 的 fusion 配置 MUST 复用统一 fusion 训练和评估流程，并 MUST 构建单个 fusion primary model。
 
 #### Scenario: 使用配置启动五模态 fusion 训练
 - **WHEN** 用户通过训练入口传入 `modalities: ["image", "radar", "gps", "lidar", "mmwave"]` 的 fusion 配置
-- **THEN** 系统 MUST 构建五个模态输入所需的 dataset 字段和 fusion teacher/student 模型
+- **THEN** 系统 MUST 构建五个模态输入所需的 dataset 字段和 fusion primary model
 - **AND** 系统 MUST 在 batch 准备阶段构造 image、radar、gps、lidar 和 mmWave 输入
 
 #### Scenario: 使用配置启动 mmWave 参与的双模态 fusion 训练
@@ -1376,12 +1356,12 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 输出 MUST 给出生成或引用 strict split metadata 的修复提示
 
 ### Requirement: 默认实验入口去 KD-first 化
-项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 supervised/adaptation 工作流为默认。旧 KD 配置不得作为当前主线默认实验入口。
+项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 supervised/adaptation、JEPA、BGAM、CSI hardening、baseline/control、诊断或 viewer manifest 工作流为默认。旧 KD 配置不得作为当前主线默认实验入口。
 
-#### Scenario: README quickstart 使用 no-KD 主线
+#### Scenario: README quickstart 使用当前主线
 - **WHEN** 开发者阅读 README 或当前主线运行说明
-- **THEN** 推荐的首个训练、评估或 HiST-Beam LOSO 命令 MUST 使用 supervised/adaptation 配置
-- **AND** 文档 MUST 不把 `logits_kd` 或 `rkd` 作为当前主线 quickstart
+- **THEN** 推荐的首个训练、评估或诊断命令 MUST 使用当前 supervised/adaptation、JEPA、BGAM、CSI、baseline/control 或 viewer manifest 配置
+- **AND** 文档 MUST 不把 `logits_kd`、`rkd`、Hist/HiST、standalone Top8 selector、GPS residual 或 camera residual 作为当前主线 quickstart
 
 #### Scenario: canonical mainline 配置不要求 teacher checkpoint
 - **WHEN** 用户加载当前推荐的 mainline 配置
@@ -1389,7 +1369,7 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 输出 metadata MUST 不记录 KD-enabled lineage
 
 ### Requirement: 项目描述反映当前主线
-项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、DeepSense6G/MMW BGAM、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA、预处理、诊断和 viewer manifest，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
+项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、DeepSense6G/MMW BGAM、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA visual analysis、预处理、诊断和 viewer manifest，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
 
 #### Scenario: pyproject 描述不再 KD Hist 或退役路线 first
 - **WHEN** 开发者查看 `pyproject.toml` 的项目 description
@@ -1402,20 +1382,25 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 文档 MUST 不提供当前推荐运行命令
 
 ### Requirement: 当前推荐 workflow 聚焦少样本跨场景主线
-README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、DeepSense6G GPS v2/adapter、MMW Town GPS v2、BGAM、CSI hardening、Raymobtime s008 selection、JEPA、预处理、诊断和 viewer manifest。KD baseline、HiST-Beam/Hist、Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、residual fusion、camera residual、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
+README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理、诊断和 viewer manifest。KD baseline、HiST-Beam/Hist、Raymobtime s008、Top8 selector standalone workflow、GPS coarse anchor、residual fusion、camera residual、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、supporting、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
 
 #### Scenario: quickstart 不推荐退役脚本
 - **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
-- **THEN** 文档 MUST 不推荐运行 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*`、retired Top8 selector/residual/GPS coarse anchor 命令或已退役的独立模态诊断脚本
+- **THEN** 文档 MUST 不推荐运行 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*`、Raymobtime s008、retired Top8 selector/residual/GPS coarse anchor 命令或已退役的独立模态诊断脚本
 - **AND** 若需要当前主线实验，文档 MUST 指向仍存在的配置化 CLI 或包内 workflow
 
 #### Scenario: optional workflow 与主线区分
 - **WHEN** 文档提到 legacy KD、HiST-Beam、Top8 selector、residual、camera residual、GPS coarse anchor、snapshot next-frame、occlusion、position 或 multitask objective
 - **THEN** 文档 MUST 明确它们不是当前主结论的默认步骤
-- **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/Raymobtime 主线
+- **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/JEPA/BGAM/CSI 主线
+
+#### Scenario: 当前 workflow 文档声明运行状态
+- **WHEN** 文档列出当前实验配置、benchmark manifest 或诊断配置
+- **THEN** 文档 MUST 标明该条目是 formal、lowmem、smoke、debug、evaluation-only、upper-bound、historical ablation 还是 mock
+- **AND** upper-bound、mock、smoke 或 historical ablation MUST 不得被写成正式结论
 
 ### Requirement: 健康检查反映保留入口
-快速健康检查 MUST 覆盖当前仍支持的架构边界、包内 CLI、viewer manifest、Raymobtime、modality visual diagnostics 和当前主线 focused tests。健康检查 MUST 不要求已退役的模态失衡诊断脚本、fusion KD virtual alias 或 HiST-Beam/Hist CLI 可用。
+快速健康检查 MUST 覆盖当前仍支持的架构边界、包内 CLI、viewer manifest、modality visual diagnostics、文档健康和当前主线 focused tests。健康检查 MUST 不要求 Raymobtime s008、已退役的模态失衡诊断脚本、fusion KD virtual alias 或 HiST-Beam/Hist CLI 可用。
 
 #### Scenario: focused validation 不依赖退役入口
 - **WHEN** 开发者执行本 change 的 focused 验证
@@ -1578,7 +1563,7 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **AND** 输出 run name MUST 明确区分该 run 是 scenes32-34 训练口径
 
 ### Requirement: 现有 supervised/adaptation workflow 不变
-新增 JEPA 预训练 workflow MUST 不改变现有 beam、occlusion、position、multitask、Raymobtime selection、GPS v2、Top8、BGAM、CSI hardening、viewer 或 supervised fusion workflow 的默认配置和指标。
+新增 JEPA 预训练 workflow MUST 不改变现有 beam、occlusion、position、multitask、GPS v2、BGAM、CSI hardening、viewer 或 supervised fusion workflow 的默认配置和指标。Raymobtime s008、legacy KD、standalone Top8 selector 和 residual 路线仍只作为退役或 supporting guard 语义保留，不属于当前默认 workflow。
 
 #### Scenario: 默认 beam 配置行为不变
 - **WHEN** 用户加载未设置 `experiment.objective` 的现有 supervised beam 配置
@@ -1645,7 +1630,7 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **AND** runtime metadata MUST 记录 scaler 来源与 split protocol
 
 ### Requirement: 当前推荐 workflow 排除 Top8 residual coarse 路线
-README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再把 Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、GPS prior residual correction 或 camera residual 描述为当前可运行或推荐 workflow。当前推荐面 MUST 聚焦仍保留的 supervised/adaptation、GPS v2/adapter、MMW GPS v2、BGAM、CSI hardening、Raymobtime、JEPA、预处理、诊断和 viewer manifest。
+README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再把 Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、GPS prior residual correction 或 camera residual 描述为当前可运行或推荐 workflow。当前推荐面 MUST 聚焦仍保留的 supervised/adaptation、Image+GPS JEPA、GPS v2/adapter、MMW GPS v2、BGAM、CSI hardening、Vision-Position baseline、Arnold22 Camera AE+GPS Direct、预处理、诊断和 viewer manifest。
 
 #### Scenario: quickstart 不展示退役命令
 - **WHEN** 开发者阅读 README、README_REPRODUCE 或 `docs/experiment_matrix.md`

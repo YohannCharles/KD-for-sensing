@@ -1,5 +1,7 @@
 # GPS + CSI Validation Matrix
 
+Protocol status and claim provenance are tracked in `docs/experiment_protocols.md` and `docs/result_claims_registry.md`. E0 is the GPS-only control; E1-E3 are `formal/control` GPS+CSI validation entries and should be compared only after CSI-only debug/formal gates are clear.
+
 Use `scripts/run_csi_hardening_matrix.sh` for staged execution and logging.
 
 Recommended order:

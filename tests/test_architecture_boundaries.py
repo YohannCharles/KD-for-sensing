@@ -108,11 +108,12 @@ CONFIG_LIFECYCLE_MARKERS = (
     "retired history",
 )
 HOTSPOT_SYMBOL_BUDGETS = {
-    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1200,
+    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1210,
+    ("src/kd_sensing/data/datasets/deepsense6g.py", "__init__", "function"): 265,
     ("src/kd_sensing/data/datasets/mmw.py", "MMWDataset", "class"): 600,
     ("src/kd_sensing/engine/trainer.py", "_train_inner", "function"): 320,
     ("src/kd_sensing/engine/mmw_town_gps_v2.py", "run_mmw_town_gps_v2", "function"): 280,
-    ("src/kd_sensing/baselines/beambench/image_ae_gps.py", "run_image_ae_gps_training", "function"): 240,
+    ("src/kd_sensing/baselines/beambench/image_ae_gps.py", "run_image_ae_gps_training", "function"): 245,
     (
         "src/kd_sensing/baselines/beambench/image_ae_gps.py",
         "run_image_ae_gps_paper_split_training",
@@ -330,8 +331,63 @@ CURRENT_WORKFLOW_DOCS = (
     ROOT / "docs" / "agent_navigation.md",
     ROOT / "docs" / "project_surface_inventory.md",
     ROOT / "docs" / "experiment_matrix.md",
+    ROOT / "docs" / "mainline_model_catalog.md",
+    ROOT / "docs" / "experiment_protocols.md",
+    ROOT / "docs" / "result_claims_registry.md",
     ROOT / "docs" / "extension_guide.md",
     ROOT / "docs" / "training_throughput.md",
+)
+MAINLINE_EXPERIMENT_DOCS = (
+    "docs/mainline_model_catalog.md",
+    "docs/experiment_protocols.md",
+    "docs/result_claims_registry.md",
+)
+MAINLINE_DOC_INDEX_PATHS = (
+    ROOT / "README.md",
+    ROOT / "docs" / "experiment_matrix.md",
+    ROOT / "docs" / "project_surface_inventory.md",
+)
+HIGH_RISK_RESULT_WORDING_PATHS = (
+    ROOT / "README_REPRODUCE.md",
+    ROOT / "BASELINE_REPORT.md",
+    ROOT / "results" / "reproduce_baseline.md",
+    ROOT / "docs" / "experiment_matrix.md",
+    ROOT / "docs" / "experiment_protocols.md",
+    ROOT / "docs" / "result_claims_registry.md",
+    ROOT / "configs" / "fusion" / "beambench_image_ae_gps_direct.yaml",
+)
+FUTURE_TARGET_MARKERS = (
+    "target-beam-source future",
+    "target_beam_source: future",
+)
+FUTURE_TARGET_CONTEXT_MARKERS = (
+    "historical",
+    "ablation",
+    "sequence-prediction",
+    "history",
+    "历史",
+    "不得",
+    "not current",
+)
+TEST_AS_VALIDATION_CONTEXT_MARKERS = (
+    "upper-bound",
+    "上界",
+    "test CSV",
+    "非 official",
+    "not official",
+    "not strict",
+    "不得",
+)
+MOCK_SMOKE_CONTEXT_MARKERS = (
+    "mock",
+    "MOCK",
+    "smoke",
+    "only",
+    "只验证",
+    "不得",
+    "不能",
+    "not a result",
+    "Validates",
 )
 
 
@@ -528,6 +584,12 @@ def _has_non_current_context(line: str) -> bool:
     return any(marker in line for marker in NON_CURRENT_CONTEXT_MARKERS)
 
 
+def _nearby_text(lines: list[str], line_index: int, radius: int = 12) -> str:
+    start = max(0, line_index - radius)
+    end = min(len(lines), line_index + radius + 1)
+    return "\n".join(lines[start:end])
+
+
 def test_source_surface_does_not_track_local_artifacts():
     violations: list[str] = []
     for raw_path in _tracked_paths():
@@ -546,6 +608,67 @@ def test_source_surface_does_not_track_local_artifacts():
             violations.append(raw_path)
 
     assert violations == []
+
+
+def test_mainline_experiment_docs_are_indexed_and_current():
+    lifecycles, _, _ = _openspec_lifecycle_inventory()
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+
+    assert lifecycles.get("mainline-experiment-documentation") == "current"
+    for rel_path in MAINLINE_EXPERIMENT_DOCS:
+        path = ROOT / rel_path
+        assert path.exists(), f"{rel_path} must exist"
+        assert rel_path in inventory, f"{rel_path} must be classified in docs/project_surface_inventory.md"
+
+    for index_path in MAINLINE_DOC_INDEX_PATHS:
+        text = index_path.read_text(encoding="utf-8")
+        for rel_path in MAINLINE_EXPERIMENT_DOCS:
+            assert rel_path in text, f"{index_path.relative_to(ROOT)} must link to {rel_path}"
+
+
+def test_high_risk_result_wording_has_local_caveats():
+    violations: list[str] = []
+
+    for path in HIGH_RISK_RESULT_WORDING_PATHS:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        rel = path.relative_to(ROOT).as_posix()
+        for index, line in enumerate(lines):
+            window = _nearby_text(lines, index)
+            if any(marker in line for marker in FUTURE_TARGET_MARKERS):
+                if not any(marker in window for marker in FUTURE_TARGET_CONTEXT_MARKERS):
+                    violations.append(
+                        f"{rel}:{index + 1} mentions future target without historical/ablation caveat"
+                    )
+            if "test_as_validation" in line:
+                if not any(marker in window for marker in TEST_AS_VALIDATION_CONTEXT_MARKERS):
+                    violations.append(
+                        f"{rel}:{index + 1} mentions test_as_validation without upper-bound caveat"
+                    )
+            if "mock_data: true" in line:
+                if not any(marker in window for marker in MOCK_SMOKE_CONTEXT_MARKERS):
+                    violations.append(
+                        f"{rel}:{index + 1} mentions mock_data without mock/smoke caveat"
+                    )
+
+    assert violations == []
+
+
+def test_experiment_workflow_does_not_restore_legacy_kd_active_wording():
+    spec = (ROOT / "openspec" / "specs" / "experiment-workflow" / "spec.md").read_text(
+        encoding="utf-8"
+    )
+    forbidden_snippets = (
+        "构建 image-only dataset、teacher/student 模型",
+        "fusion teacher/student 模型、KD/loss",
+        "构建对应蒸馏逻辑",
+        "项目 MUST 提供 radar-only lightweight student no-KD 配置",
+        "Fusion KD 配置 MUST 要求 teacher 和 student",
+        "系统 MUST 构建只包含 image 和 gps 分支的 fusion teacher/student",
+        "系统 MUST 构建五个模态输入所需的 dataset 字段和 fusion teacher/student 模型",
+        "Raymobtime s008 selection",
+    )
+
+    assert [snippet for snippet in forbidden_snippets if snippet in spec] == []
 
 
 def test_project_surface_inventory_guardrails_are_current():

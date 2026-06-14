@@ -1,0 +1,47 @@
+# 结果和 Claim 账本
+
+本账本只保存源码可维护的摘要、配置路径、本地产物路径引用和 caveat。真实 checkpoint、metrics CSV、predictions、figures、feature cache、TensorBoard event 和训练日志仍留在 ignored 的 `outputs/`、`logs/`、`outputs/cache/` 或本地数据目录，不进入源码变更。
+
+Claim status：
+
+- `official reproduction`：官方数据、权重、源码、环境和官方 exact test packaging 均满足。
+- `blocked official reproduction`：官方复现缺必要条件，不能填入伪造数值。
+- `local substitute`：本仓库本地替代实验，可用于项目内对照，但不是官方结果。
+- `local strict-validation`：checkpoint selection 不使用 test split；可作为本地 strict 证据。
+- `upper-bound`：使用 test split、oracle 或其它上界信息选模，只用于上界诊断。
+- `mock/smoke`：只验证代码路径或 schema。
+- `historical ablation`：旧口径记录，不能覆盖 current summary。
+- `unverified`：文档保留计划或入口，但当前未登记可引用数值。
+
+| claim_id | model line | config / runner | run date / commit | dataset / split | target / metric field | value summary | checkpoint provenance | claim status | caveat |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `CLAIM-BB-OFFICIAL-BLOCKED` | Arnold22 official Table III | official BeamBench `challenge.py` plan via `scripts/eval_baseline.py` | 2026-06-07, local audit commit `00b693b9...` | official raw test CSV unavailable locally | official DBA | no official metric reported | official AE/fusion weights missing; official exact packaging incomplete | `blocked official reproduction` | Do not fill paper or leaderboard numbers until official data, weights, source/config and environment are available. |
+| `CLAIM-BB-TIII-CURRENT-BLOCKED` | Arnold22 Camera AE+GPS Direct current local substitute | `configs/fusion/beambench_image_ae_gps_direct.yaml`; `kd-sensing-run-beambench-image-ae-gps-tableiii` | current protocol defined by docs | DeepSense6G S32-S34 train, S31-S34 eval | `beam_target_source=current`, `paper_distance_angle`, linear `official_top3_dba` / Top-1/3/5 | no current-target strict numeric summary is promoted in this change | future run should write ignored checkpoint under `outputs/scenegroup_s32_s34/...` | `local substitute / unverified` | Current summary defines the protocol; old `future` target values below are historical ablations and cannot be copied as current Table III substitute. |
+| `CLAIM-BB-FUTURE-STRICT-HIST` | Arnold22 local paper-split historical ablation | old `kd-sensing-run-beambench-image-ae-gps-tableiii --target-beam-source future` | 2026-06-08 log | DeepSense6G S32-S34 train, S31-S34 eval | future target, `official_top3_dba` | selected historical rows include weighted overall `0.5820`, `0.7594`, `0.7626` depending GPS/AE/checkpoint stage | local checkpoints under `outputs/beambench_image_ae_gps_direct_tableiii/...` | `historical ablation` | Kept for lineage only; not Table III strict setup after current-target correction. |
+| `CLAIM-BB-UPPER-HIST` | Arnold22 local upper-bound | `--selection-split test_as_validation` historical runs | 2026-06-08 log | DeepSense6G S31-S34 test CSV used for selection | `official_top3_dba` | historical upper-bound examples include weighted overall `0.6282` and `0.7745` | local checkpoints under ignored `outputs/...` | `upper-bound` | Uses test CSV for checkpoint selection; not official unseen evaluation and not strict-validation evidence. |
+| `CLAIM-BB-MOCK-001` | BeamBench mock smoke | `python scripts/train_baseline.py --mock` | 2026-06-07, `00b693b9...` | generated mock only | DBA / TopK smoke | sample count 12; metrics recorded only as smoke | `outputs/beambench_baseline/mock_smoke/checkpoints/mock_beambench_baseline.pt` | `mock/smoke` | `mock_data: true`; validates code path only, not paper, official or leaderboard comparison. |
+| `CLAIM-JEPA-2604-LOCAL-001` | Image+GPS JEPA GPS-biased 2604-style | `configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml` | local result recorded in `docs/experiment_matrix.md` before this split | DeepSense6G S32/S33/S34 stratified 80/10/10 | `2604_linear_topk`, DBA | S32/S33/S34 DBA `0.8777 / 0.8853 / 0.8796`, macro `0.8809` | local `best.pth` under ignored `outputs/scenegroup_s32_s34/...` | `local strict-validation` | State as local 2604-style split, not proof over the original paper exact split because exact split index/seed is unavailable. |
+| `CLAIM-JEPA-BBFAIR-PENDING` | Image+GPS JEPA BeamBench-fair family | `configs/fusion/experiments/jepa_image_gps/*beambench_fair_lowmem.yaml` | pending | DeepSense6G S32-S34 train, S31-S34 test | current target, `paper_distance_angle`, BeamBench linear DBA | no promoted numeric claim in this registry | local checkpoints only | `unverified` | Must compare GPS-biased, GPS-query, supervised and random controls within the same BeamBench-fair family. |
+| `CLAIM-JEPA-QUERY-PENDING` | GPS-query pooling derivative | `image_gps_jepa_gps_query_pool_best_*` | pending | BeamBench-fair or 2604-style family | family metric profile | no promoted numeric claim | local checkpoints only | `unverified` | Do not mix BeamBench-fair and 2604-style claims. |
+| `CLAIM-BEV2604-PENDING` | BEV-Fusion 2604 reproduction | `configs/fusion/experiments/bev_fusion_2604/paper_full.yaml` | pending | DeepSense6G S32/S33/S34 stratified 80/10/10 | `2604_linear_topk` | no promoted numeric claim | local checkpoint path only when run | `unverified` | `low_memory` is paper approximation and `smoke` is mock/schema only. |
+| `CLAIM-DS-BGAM-PENDING` | DeepSense6G GPS+LiDAR BGAM | `configs/deepsense6g_gps_lidar_bgam.yaml` | pending | scenario31-34 support/query | TopK, DBA, candidate rerank summary | no promoted numeric claim | local BGAM checkpoint under `outputs/analysis/...` | `unverified` | Consumes GPS v2 logits/candidate manifest; standalone Top8 selector route remains retired. |
+| `CLAIM-MMW-GPSV2-PENDING` | MMW Town GPS v2 | `configs/mmw_town_gps_adapter_v2.yaml` | pending | Town10 sunny group-safe split | circular error, DBA, TopK | no promoted numeric claim | local outputs under `outputs/analysis/mmw_town_gps_adapter_v2/` | `unverified` | `within_scene_train` is sanity/upper-bound style evidence, not cross-scene generalization. |
+| `CLAIM-MMW-BGAM-PENDING` | MMW Town GPS+LiDAR BGAM | `configs/mmw_town_gps_lidar_bgam.yaml` | pending | Town10 sunny group-safe split | TopK, DBA, normalized gain | no promoted numeric claim | local outputs under `outputs/analysis/mmw_town_gps_lidar_bgam/` | `unverified` | Requires local GPS v2 prior, candidate manifest and LiDAR cache; do not submit these artifacts. |
+| `CLAIM-CSI-HARDENING-PENDING` | CSI hardening / GPS+CSI matrix | `configs/csi/hardening_matrix/` and `configs/fusion/csi_hardening_matrix/` | pending | configured CSI / GPS+CSI splits | TopK, DBA, loss | no promoted numeric claim | local run roots only | `unverified` | Debug matrix validates inheritance/parity; full matrix claims need explicit run provenance. |
+| `CLAIM-JEPA-SHORTCUT-SMOKE` | JEPA shortcut benchmark smoke | `configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml` | current smoke | synthetic benchmark metrics | synthetic robustness schema | no research metric | no checkpoint | `mock/smoke` | Smoke only verifies runner, aggregation and visual-analysis ingestion. |
+| `CLAIM-JEPA-SHORTCUT-PENDING` | JEPA shortcut benchmark BeamBench-fair | `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml` | pending | local checkpoint matrix | robustness/drop/shortcut reliance | no promoted numeric claim | checkpoint paths are local placeholders | `unverified` | Replace weights with audited local runs; do not commit metrics/figures/cache. |
+| `CLAIM-JEPA-VIS-DIAG` | JEPA visual analysis | `configs/diagnostics/jepa_visual_analysis_2604.yaml` | diagnostic-only | existing local artifacts | analysis tables/figures | no standalone performance claim | reads local checkpoints/cache | `diagnostic-only` | Attention, UMAP and nearest-neighbor evidence must be paired with task metrics; not standalone causal proof. |
+| `CLAIM-VIEWER-DIAG` | Viewer manifest | `configs/diagnostics/modality_visualization.yaml` | diagnostic-only | configured sample manifest | manifest schema/statistics | no performance claim | no checkpoint | `diagnostic-only` | Current viewer workflow exports manifest/assets; old static PNG overview/Web UI remains retired. |
+
+## Claim 更新规则
+
+新增或更新 claim 时必须记录：
+
+- config path 或 runner command；
+- run date 或 commit；
+- dataset/scenes、split protocol、selection split；
+- target source、metric field、label space；
+- checkpoint provenance 和本地产物路径；
+- claim status 与 caveat。
+
+如果结果来自 mock、smoke、upper-bound、historical ablation 或 blocked official reproduction，必须在同一行显式标记，不能在 README、实验矩阵或论文草稿中写成正式结果。

@@ -1,5 +1,36 @@
 # BeamBench baseline 复现报告
 
+## Current Summary：Arnold22 Table III 本地 substitute 口径
+
+本节是当前推荐口径的优先入口；后续章节保留历史流水账和 ablation，不得覆盖本节。
+
+目标行：Arnold22 BeamBench Table III `Camera=AE, Radar=none, Lidar=none, GPS=Direct, Fusion=Yes`。
+
+当前本地 substitute 协议必须同时满足：
+
+- target：`beam_target_source=current` 或配置中等价 `target_beam_source: current`
+- window：`seq_len=1`、`num_pred=1`
+- GPS Direct：`paper_distance_angle`，使用 scene paper calibration angle
+- metric：linear/non-circular DBA，Top-1/3/5，字段以 `official_top3_dba` 或 `beambench_linear_topk` 对齐
+- selection：strict 本地结果使用 train split 内 validation 做 checkpoint selection；`test_as_validation` 只能标记为 upper-bound
+- claim status：缺官方 AE/fusion pretrained 权重、official exact test packaging、官方环境和官方完整训练搜索流程时，只能写 `local substitute`、`local strict-validation`、`upper-bound` 或 `blocked official reproduction`
+
+当前推荐命令：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
+  --config configs/fusion/beambench_image_ae_gps_direct.yaml \
+  --train-scenes 32 33 34 \
+  --eval-scenes 31 32 33 34 \
+  --selection-split validation \
+  --fusion-val-fraction 0.1 \
+  --gps-feature-mode paper_distance_angle \
+  --target-beam-source current \
+  --output-root outputs/scenegroup_s32_s34/beambench_image_ae_gps_direct_tableiii/beambench_aligned
+```
+
+当前状态：official reproduction 仍为 blocked；本 change 不提升任何旧 `future` target 数值为当前结果。旧 `--target-beam-source future`、旧 GPS 公式、旧 AE 维度、scene31-only、dry-run、mock 和 `test_as_validation` 记录全部是 historical ablation、smoke/mock 或 upper-bound。结果 provenance 统一见 `docs/result_claims_registry.md`，当前主线入口见 `docs/mainline_model_catalog.md` 和 `README_REPRODUCE.md`。
+
 ## 审计摘要
 
 - 当前仓库 commit：`00b693b9b0aa42e213884bdf3ddf36a4a25c70f8`
@@ -130,7 +161,9 @@ conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py --config 
 
 这些数值只证明真实本地数据训练闭环可运行；样本数和 epoch 均为 dry-run，不能作为论文结果。
 
-## 本地 Image AE + GPS Direct scene31 完整运行
+## Historical log：本地 Image AE + GPS Direct scene31 完整运行
+
+状态：historical scene31-only local run。该记录使用单场景 local sequence split，只能解释早期训练闭环和 scene31 专项现象，不作为当前 Table III strict setup 或当前推荐结果。
 
 Command 由用户在本地完成，输出目录为：
 
@@ -162,7 +195,7 @@ outputs/beambench_image_ae_gps_direct_scene31
 
 训练解读：AE 重构验证 loss 从 `0.01456` 降到 `0.0009905`，说明 camera AE 预训练正常；fusion DBA 在前 10 epoch 快速提升到 `0.8466`，epoch 35 达到最佳 `0.8677`，之后 train loss 继续下降但 DBA 基本平台化，属于轻微过拟合/饱和，early stopping 选择 best checkpoint 是合理的。该结果仍不能直接与论文 Table III scene31 `0.6731` 做数值高低比较，因为本运行使用本地 sequence CSV split 和本仓库训练流程，而非官方 pretrained 权重、官方完整搜索流程和官方 challenge test packaging。
 
-## 本地论文 split：scenes 32-34 联合训练，scenes 31-34 测试
+## Historical log：本地论文 split，scenes 32-34 联合训练，scenes 31-34 测试
 
 用户纠正后，Table III 复现协议改为：在 scenes 32、33、34 上联合训练一个 Camera AE+GPS Direct fusion classifier，并在 scenes 31、32、33、34 上评估同一个 best checkpoint。论文目标行为：
 
@@ -171,6 +204,8 @@ outputs/beambench_image_ae_gps_direct_scene31
 | 0.6731 | 0.6173 | 0.8171 | 0.7313 | 0.7127 |
 
 已新增 joint runner：
+
+状态：historical sequence-prediction ablation。下面的旧命令包含 `--target-beam-source future`，不得作为当前 Table III strict setup 或推荐结果；当前命令见本文开头 Current Summary。
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
@@ -189,7 +224,7 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 
 `paper_distance_angle` 对齐官方 `challenge.py` 的 GPS Direct 输入，即 `[distance, calibrated_angle_deg]` 二维特征；`paper_calibrated_relative_polar` 是三维 `[distance, sin(theta), cos(theta)]` ablation。
 
-### Scene31 泛化专项修复
+### Historical ablation：Scene31 泛化专项修复
 
 用户进一步收窄目标为优先提升 scene31 泛化。复核官方 `challenge.py` 后发现两处影响 scene31 的关键差异：
 
@@ -210,6 +245,8 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 
 对应命令：
 
+状态：historical scene31-only sequence-prediction ablation。下面旧命令包含 `--target-beam-source future`，不得作为当前 Table III strict setup 或当前推荐结果。
+
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
   --config configs/fusion/beambench_image_ae_gps_direct.yaml \
@@ -228,7 +265,7 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 
 该结果只说明 scene31 单项已接近并略高于论文 Table III 的 scene31 数值；按用户要求，暂未重新优化 scenes 32-34 和 overall。
 
-### 31-34 完整 eval-only：strict validation checkpoint
+### Historical ablation：31-34 完整 eval-only strict-validation checkpoint
 
 随后按用户要求重新追 scenes 32-34 和 overall。使用同一个 strict validation checkpoint：
 
@@ -252,9 +289,9 @@ outputs/beambench_image_ae_gps_direct_tableiii/full_gpsfix_ae512_validation_chec
 | 34 | 0.8158 | 0.7313 | +0.0845 |
 | weighted overall | 0.7594 | 0.7127 | +0.0467 |
 
-这组是当前推荐的本地 strict-validation 结果：同一个 32-34 训练出的 checkpoint，在 31-34 四个场景上均超过论文表中对应 DBA。仍需注意，它是本地 sequence split 和本仓库 AE/fusion 训练流程，不是官方 unseen test packaging。
+这组是历史 future-target local strict-validation 结果：同一个 32-34 训练出的 checkpoint，在 31-34 四个场景上均超过论文表中对应 DBA。它仍使用本地 sequence split 和本仓库 AE/fusion 训练流程，不是官方 unseen test packaging；在 current-target 口径确立后，不得作为当前 Table III substitute 主结论。
 
-### 31-34 完整 retrain：strict validation 与 upper-bound
+### Historical ablation：31-34 完整 retrain，strict validation 与 upper-bound
 
 重新训练 fusion 并评估 31-34 的 strict validation 结果为：
 
@@ -278,9 +315,9 @@ outputs/beambench_image_ae_gps_direct_tableiii/full_gpsfix_ae512_validation_chec
 
 upper-bound 使用 test CSV 选 checkpoint，只用于查看本地上限，不作为官方 unseen evaluation。
 
-### Strict validation result
+### Historical strict validation result
 
-输出目录：`outputs/beambench_image_ae_gps_direct_tableiii/paper_split_official_gps_future_validation`
+状态：historical sequence-prediction ablation。输出目录：`outputs/beambench_image_ae_gps_direct_tableiii/paper_split_official_gps_future_validation`
 
 | Scene | Local DBA | Paper DBA | Delta |
 |---:|---:|---:|---:|
@@ -290,9 +327,9 @@ upper-bound 使用 test CSV 选 checkpoint，只用于查看本地上限，不�
 | 34 | 0.8045 | 0.7313 | +0.0732 |
 | weighted overall | 0.5820 | 0.7127 | -0.1307 |
 
-### Local upper-bound result
+### Historical local upper-bound result
 
-输出目录：`outputs/beambench_image_ae_gps_direct_tableiii/paper_split_official_gps_future_test_as_validation`
+状态：historical sequence-prediction ablation + upper-bound。输出目录：`outputs/beambench_image_ae_gps_direct_tableiii/paper_split_official_gps_future_test_as_validation`
 
 | Scene | Local DBA | Paper DBA | Delta |
 |---:|---:|---:|---:|
@@ -309,10 +346,10 @@ upper-bound 使用 test CSV 选 checkpoint，只用于查看本地上限，不�
 以下 ablation 记录来自 2026-06-12 口径修订前的历史本地运行；其中 `future` target 结果不得再作为 Table III strict setup 解读。
 
 - 三维 `paper_calibrated_relative_polar` + strict validation：weighted overall `0.5976`，Scene31 `0.2435`，Scene32/33/34 分别为 `0.7236/0.8295/0.8029`。
-- 三维 `paper_calibrated_relative_polar` + `test_as_validation`：weighted overall `0.5760`，Scene31 `0.3662`。
+- 三维 `paper_calibrated_relative_polar` + `test_as_validation` upper-bound：weighted overall `0.5760`，Scene31 `0.3662`。
 - `target_beam_source=current` ablation：weighted overall `0.5249`，Scene31 仅 `0.0679`，明显不适合作为本地 Table III 主口径。
 
-结论更新：纠正联合训练协议后，先前 scene31 单场景 `0.8677` 确认是不可比的乐观结果。旧四场景结果的主要差距来自 Scene31 未见分布；在修复官方 GPS 角度公式、scene32 校准角并使用 512 维 AE 后，当前推荐 strict-validation checkpoint 的 scenes 31-34 全部超过论文对应 DBA，weighted overall 为 `0.7594`。该结果仍是本地 sequence split 复现，不等同官方 unseen test packaging。
+结论更新：纠正联合训练协议后，先前 scene31 单场景 `0.8677` 确认是不可比的乐观结果。旧四场景 future-target 结果的主要差距来自 Scene31 未见分布；在修复官方 GPS 角度公式、scene32 校准角并使用 512 维 AE 后，historical local strict-validation checkpoint 的 scenes 31-34 全部超过论文对应 DBA，weighted overall 为 `0.7594`。该结果仍是本地 sequence split 复现，不等同官方 unseen test packaging，也不再覆盖 current-target summary。
 
 ## metric 口径
 

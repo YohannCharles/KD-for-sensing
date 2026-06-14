@@ -1,5 +1,7 @@
 # BeamBench baseline 运行记录
 
+本文件是按时间记录的 historical log。当前可引用结论和推荐口径以 `BASELINE_REPORT.md` 开头的 Current Summary、`README_REPRODUCE.md` 当前命令和 `docs/result_claims_registry.md` 为准；本文件中的旧命令、旧 target、scene31-only、dry-run、mock、upper-bound 和 historical ablation 不会自动成为当前正式结果。
+
 ## Target Correction
 
 User-requested target row is Arnold22 BeamBench Table III:
@@ -95,7 +97,7 @@ Notes：
 
 ## 2026-06-08 local paper-split Image AE + GPS Direct runs
 
-Corrected protocol from the user: train once on scenes 32-34 and evaluate scenes 31-34 with the same checkpoint. The prior per-scene scene31 result is not comparable to Table III.
+Corrected protocol from the user: train once on scenes 32-34 and evaluate scenes 31-34 with the same checkpoint. The prior per-scene scene31 result is not comparable to Table III. The commands in this historical subsection still use `--target-beam-source future`; they are historical sequence-prediction ablations and must not be used as the current Table III strict setup.
 
 Main strict-validation command:
 
@@ -113,7 +115,7 @@ Strict validation result:
 | 34 | 0.8045 | 0.7313 | +0.0732 |
 | weighted overall | 0.5820 | 0.7127 | -0.1307 |
 
-Local upper-bound command:
+Local upper-bound command. This is both historical sequence-prediction ablation and upper-bound because it uses `test_as_validation`; it is not official unseen evaluation:
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii --config configs/fusion/beambench_image_ae_gps_direct.yaml --train-scenes 32 33 34 --eval-scenes 31 32 33 34 --output-root outputs/beambench_image_ae_gps_direct_tableiii/paper_split_official_gps_future_test_as_validation --selection-split test_as_validation --gps-feature-mode paper_distance_angle --target-beam-source future --num-workers 12 --ae-batch-size 128 --fusion-batch-size 512 --feature-cache-batch-size 256 --override beambench_paper.ae_checkpoint_path=outputs/beambench_image_ae_gps_direct_tableiii/paper_split_paper_calibrated_validation/camera_ae/checkpoints/best.pt
@@ -129,22 +131,22 @@ Upper-bound result:
 | 34 | 0.7731 | 0.7313 | +0.0418 |
 | weighted overall | 0.6282 | 0.7127 | -0.0845 |
 
-Additional ablations:
+Additional historical ablations:
 
 - `paper_calibrated_relative_polar` + validation: output `outputs/beambench_image_ae_gps_direct_tableiii/paper_split_paper_calibrated_validation`, weighted overall `0.5976`.
-- `paper_calibrated_relative_polar` + `test_as_validation`: output `outputs/beambench_image_ae_gps_direct_tableiii/paper_split_paper_calibrated_test_as_validation`, weighted overall `0.5760`.
-- `target_beam_source=current`: output `outputs/beambench_image_ae_gps_direct_tableiii/paper_split_current_paper_calibrated_validation`, weighted overall `0.5249`; Scene31 `0.0679`, so it is not the main local Table III substitute.
+- `paper_calibrated_relative_polar` + `test_as_validation` upper-bound: output `outputs/beambench_image_ae_gps_direct_tableiii/paper_split_paper_calibrated_test_as_validation`, weighted overall `0.5760`.
+- `target_beam_source=current`: output `outputs/beambench_image_ae_gps_direct_tableiii/paper_split_current_paper_calibrated_validation`, weighted overall `0.5249`; Scene31 `0.0679`. This old run used the earlier GPS/AE setup and is retained only as historical ablation, not the current substitute protocol.
 
 Important comparability note: the local upper-bound uses test CSV for checkpoint selection and is not official unseen evaluation. All local runs still lack official pretrained weights, official NNI/pruning search, official matching cache, and official challenge test packaging.
 
 ## 2026-06-08 scene31 generalization fix
 
-User narrowed the goal to scene31 generalization only. We found and fixed two local/official mismatches:
+User narrowed the goal to scene31 generalization only. This is a historical scene31-only diagnostic/historical ablation, not a current full Table III substitute. We found and fixed two local/official mismatches:
 
 - `paper_distance_angle` now uses official `arctan(x/y)` rather than `atan2(x, y)`, avoiding a `±180` discontinuity.
 - scene32 now uses the official challenge calibration angle `-0.8125375604986421 + pi/2 = 0.7583`, not the earlier `-0.76` approximation.
 
-With the old reused 128d/64px AE:
+With the old reused 128d/64px AE. Historical sequence-prediction ablation: the command below uses `--target-beam-source future` and is not current Table III strict setup:
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii --config configs/fusion/beambench_image_ae_gps_direct.yaml --train-scenes 32 33 34 --eval-scenes 31 --output-root outputs/beambench_image_ae_gps_direct_tableiii/scene31_gpsfix_validation --selection-split validation --fusion-val-fraction 0.1 --gps-feature-mode paper_distance_angle --target-beam-source future --num-workers 12 --ae-batch-size 128 --fusion-batch-size 512 --feature-cache-batch-size 256 --override beambench_paper.ae_checkpoint_path=outputs/beambench_image_ae_gps_direct_tableiii/paper_split_validation/camera_ae/checkpoints/best.pt
@@ -152,7 +154,7 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii --config 
 
 Result: scene31 `official_top3_dba = 0.5569`.
 
-With a retrained 512d/64px AE:
+With a retrained 512d/64px AE. Historical sequence-prediction ablation: the command below uses `--target-beam-source future` and is not current Table III strict setup:
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii --config configs/fusion/beambench_image_ae_gps_direct.yaml --train-scenes 32 33 34 --eval-scenes 31 --output-root outputs/beambench_image_ae_gps_direct_tableiii/scene31_gpsfix_ae512_validation --selection-split validation --fusion-val-fraction 0.1 --gps-feature-mode paper_distance_angle --target-beam-source future --num-workers 12 --ae-batch-size 128 --fusion-batch-size 512 --feature-cache-batch-size 256 --override model.primary.encoders.image.checkpoint_path= --override model.primary.encoders.image.latent_dim=512 --override beambench_paper.ae_latent_dim=512
@@ -168,7 +170,9 @@ This is a scene31-only result; scenes 32-34 and overall were intentionally left 
 
 ## 2026-06-08 full scenes 31-34 after GPS + AE fixes
 
-The user then asked to chase scenes 32-34 and overall as well. Current recommended strict-validation checkpoint:
+The user then asked to chase scenes 32-34 and overall as well. This subsection remains a historical future-target local strict-validation record. It no longer overrides the Current Summary in `BASELINE_REPORT.md`.
+
+Historical strict-validation checkpoint:
 
 ```text
 outputs/beambench_image_ae_gps_direct_tableiii/scene31_gpsfix_ae512_validation/checkpoints/best_image_ae_gps_direct_paper_split.pt
@@ -200,7 +204,7 @@ Full retrain `test_as_validation` upper-bound:
 - output: `outputs/beambench_image_ae_gps_direct_tableiii/full_gpsfix_ae512_test_as_validation`
 - result: scene31/32/33/34 = `0.6756 / 0.8095 / 0.8414 / 0.8296`, weighted overall `0.7745`
 
-The eval-only strict-validation checkpoint is preferred for reporting because it keeps checkpoint selection on local validation while exceeding all four Table III scene DBA targets. The upper-bound remains explicitly non-official because it selects best checkpoint on test CSV.
+At the time, the eval-only strict-validation checkpoint was preferred within the old future-target local analysis because it kept checkpoint selection on local validation while exceeding all four Table III scene DBA targets. After current-target correction, it is historical ablation only. The upper-bound remains explicitly non-official because it selects best checkpoint on test CSV.
 
 ## 2026-06-07 mock smoke
 

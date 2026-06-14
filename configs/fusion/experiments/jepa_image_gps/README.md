@@ -4,6 +4,20 @@ This directory stores experiment-specific image+GPS supervised reuse configs for
 
 Root-level fusion YAML files are reserved for long-lived canonical or currently recommended thin entries. Low-memory variants, BeamBench-fair checks, 2604-style checks, and paired query-pool controls belong here unless promoted by a future OpenSpec change.
 
+Protocol and claim status are centralized in:
+
+- `docs/mainline_model_catalog.md`
+- `docs/experiment_protocols.md`
+- `docs/result_claims_registry.md`
+
+Status summary:
+
+| family | configs | status | claim registry |
+| --- | --- | --- | --- |
+| BeamBench-fair supervised/random/GPS-biased/GPS-query | `*beambench_fair_lowmem.yaml` | `lowmem formal/control`; current target, `seq_len=1`, `num_pred=1`, `paper_distance_angle`, linear DBA | `CLAIM-JEPA-BBFAIR-PENDING`, `CLAIM-JEPA-QUERY-PENDING` |
+| 2604-style supervised/random/GPS-biased/GPS-query | `*2604_s32_s34_lowmem.yaml` and `*fasttrain.yaml` | `lowmem formal/control`; S32/S33/S34 stratified 80/10/10, `seq_len=5`, `num_pred=1` | `CLAIM-JEPA-2604-LOCAL-001` |
+| BeamBench Table III Camera AE+GPS Direct | not in this directory | use `configs/fusion/beambench_image_ae_gps_direct.yaml` and dedicated runner | `CLAIM-BB-TIII-CURRENT-BLOCKED` |
+
 Mainline reporting uses the GPS-biased JEPA reuse configs:
 
 - BeamBench input/split/metric alignment: `image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml`.
@@ -65,7 +79,8 @@ recipes when comparing adapter or parameter-group variants.
 
 The current 2604-style primary result is the `fair_gps_biased` evaluation, with S32/S33/S34 DBA
 `0.8777 / 0.8853 / 0.8796` and macro DBA `0.8809`. Treat this as the main Image+GPS+JEPA
-result for BEV-Fusion comparisons. The supervised and random-mask variants are controls.
+result for local 2604-style BEV-Fusion comparisons, with the split caveat recorded in
+`docs/result_claims_registry.md`. The supervised and random-mask variants are controls.
 
 The next-beam downstream ablation matrix has been retired. Current JEPA downstream comparisons
 should stay on the GPS-biased mean-pooling baseline, GPS-query pooling derivative, supervised

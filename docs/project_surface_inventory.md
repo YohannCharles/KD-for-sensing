@@ -4,7 +4,7 @@
 
 ## 项目健康护栏基线
 
-`strengthen-project-health-guardrails` 于 2026-06-11 生成维护性基线；`prune-to-jepa-query-pool-surface` 收口后，当前 `src/kd_sensing` 约有 211 个 Python 文件，`tests/` 约有 49 个 Python 文件，`configs/` 约有 91 个 YAML；仓库根目录有 11 个 Markdown，`docs/` 有 7 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
+`strengthen-project-health-guardrails` 于 2026-06-11 生成维护性基线；`prune-to-jepa-query-pool-surface` 收口后，当前 `src/kd_sensing` 约有 211 个 Python 文件，`tests/` 约有 49 个 Python 文件，`configs/` 约有 91 个 YAML；仓库根目录有 11 个 Markdown，`docs/` 有 10 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
 
 分层健康检查命令如下：
 
@@ -23,11 +23,12 @@
 
 | 文件 | 符号 | 类型 | 当前规模 | 推荐拆分方向 | 暂缓原因 / 优先级 |
 | --- | --- | --- | --- | --- | --- |
-| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1196 行 | scene/CSV audit、modality sample assembly、label/history adapters、cache/transform glue、BeamBench GPS Direct calibration glue、2604 GPS BEV XY coordinate glue | 数据契约和真实路径耦合强；本轮为支持 `paper_distance_angle` scene calibration、BeamBench `beam_target_source=current` 和 BEV-Fusion 2604 `gps_bev_xy` raw coordinate 契约小幅扩容，后续仍优先拆分；优先级 P1 |
+| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1209 行 | scene/CSV audit、modality sample assembly、label/history adapters、cache/transform glue、BeamBench GPS Direct calibration glue、2604 GPS BEV XY coordinate glue | 数据契约和真实路径耦合强；近期为支持 `paper_distance_angle` scene calibration、BeamBench `beam_target_source=current` 和 BEV-Fusion 2604 `gps_bev_xy` raw coordinate 契约小幅扩容，后续仍优先拆分；优先级 P1 |
+| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset.__init__` | 超长初始化函数 | 261 行 | scene/dataframe audit、feature mode setup、cache policy、target source 和 modality flags 拆到窄 helper | 初始化契约与多条 current baseline/reproduction 配置耦合；本次只登记预算，不改数据语义；优先级 P1 |
 | `src/kd_sensing/data/datasets/mmw.py` | `MMWDataset` | 超长 dataset 类 | 592 行 | manifest parsing、sequence window、label-space metadata、sensor feature loading | MMW group-safe split 与 label calibration 仍在演进；优先级 P1 |
 | `src/kd_sensing/engine/trainer.py` | `_train_inner` | 超长训练 orchestration 函数 | 316 行 | dataloader setup、epoch loop、validation/checkpoint coordination、artifact finalization | 训练数值语义敏感；优先级 P1 |
 | `src/kd_sensing/engine/mmw_town_gps_v2.py` | `run_mmw_town_gps_v2` | 超长诊断 workflow 函数 | 277 行 | protocol dispatch、label-space resolution、summary writing、plot handoff | MMW GPS v2 仍承担对照解释；优先级 P2 |
-| `src/kd_sensing/baselines/beambench/image_ae_gps.py` | `run_image_ae_gps_training` | BeamBench Image AE+GPS workflow | 234 行 | AE train/load、fusion dataset build、metric/report writers | 复现实验入口需要保持 Table III 语义；优先级 P1 |
+| `src/kd_sensing/baselines/beambench/image_ae_gps.py` | `run_image_ae_gps_training` | BeamBench Image AE+GPS workflow | 244 行 | AE train/load、fusion dataset build、metric/report writers | 复现实验入口需要保持 Table III 语义；本次只同步预算，不改训练语义；优先级 P1 |
 | `src/kd_sensing/baselines/beambench/image_ae_gps.py` | `run_image_ae_gps_paper_split_training` | BeamBench Image AE+GPS workflow | 259 行 | scene split orchestration、checkpoint reuse、per-scene summary | 与本地 scene31-34 复现产物耦合；优先级 P1 |
 | `src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py` | `run_deepsense6g_gps_lidar_bgam` | BGAM orchestration | 234 行 | manifest loading、ablation dispatch、summary writer | 需与 MMW BGAM contract 对齐后再拆；优先级 P2 |
 | `src/kd_sensing/engine/evaluation_pass.py` | `run_evaluation_pass` | evaluation pass | 216 行 | metric aggregation、objective outputs、prediction metadata | evaluation schema 为多个 CLI 共享；优先级 P2 |
@@ -103,6 +104,7 @@
 | `legacy-kd-isolation` | `retired-tombstone` | legacy KD 入口只作为拒绝、历史读取和 migration guard 墓碑。 |
 | `lidar-modality-model` | `current` | 当前 LiDAR 模态模型契约。 |
 | `lidar-preprocessing` | `current` | 当前 LiDAR 点云/BEV cache/scaler 预处理契约。 |
+| `mainline-experiment-documentation` | `current` | 当前主线模型目录、实验协议表和结果/claim 账本治理能力；不替代 OpenSpec 行为契约。 |
 | `mmw-beam-label-calibration` | `current` | 当前 MMW beam label calibration 契约。 |
 | `mmw-cross-scene-adaptation-protocol` | `supporting` | MMW split/adaptation protocol 支撑；MMW HiST wording 只可作历史边界。 |
 | `mmw-sensor-assisted-beam-prediction` | `current` | 当前 MMW sensor-assisted beam prediction 边界。 |
@@ -146,17 +148,18 @@
 
 根目录 Markdown：
 
-- current quickstart：`README.md`。
+- current quickstart and short index：`README.md`；只保留安装、主要入口、quickstart、数据/产物边界和文档索引，不复制完整模型目录、协议表或结果账本。
 - agent/developer operating rules：`AGENTS.md`。
 - environment/data setup：`ENVIRONMENT.md`、`DATASET_STRUCTURE.md`。
-- reproducibility/report records：`README_REPRODUCE.md`、`BASELINE_REPORT.md`、`results/reproduce_baseline.md`。
+- current reproducibility/reporting：`README_REPRODUCE.md` 提供 BeamBench/Arnold22 当前推荐命令并指向 current summary；`BASELINE_REPORT.md` 开头维护 current summary、claim status 和 caveat；`results/reproduce_baseline.md` 是历史流水账，不能覆盖 current summary。
 - historical research notes：`TODO_FOR_ATTENTION_MODULE.md`、`deep-research-report.md`、`PATCH_NOTES.md`、`跨场景自适应方案.md`、`跨场景自适应方案_融合推理修改版.md`。这些文档只能作为历史背景，不得把退役 KD/HiST/Top8/residual/camera residual 路线重新描述为当前推荐入口。
 
 `docs/` Markdown：
 
 - current agent/maintainer navigation：`docs/agent_navigation.md`；它只提供修改前权威来源、当前状态、任务路由、误读边界和验证选择导航，不替代 README、AGENTS 或 OpenSpec specs，也不维护完整项目表面积审计。
-- current architecture/health inventory：`docs/project_surface_inventory.md`。
-- current workflow guide：`docs/experiment_matrix.md`、`docs/extension_guide.md`、`docs/training_throughput.md`。
+- current architecture/health inventory：`docs/project_surface_inventory.md`；记录 capability lifecycle、文档生命周期和源码/配置/入口表面积，不承担实验参数横向比较。
+- current mainline workflow facts：`docs/mainline_model_catalog.md` 维护当前主线模型、baseline/control、诊断和 benchmark 目录；`docs/experiment_protocols.md` 维护 formal/lowmem/smoke/debug/upper-bound/historical ablation 参数口径；`docs/result_claims_registry.md` 维护可引用结果、blocked official、本地 substitute、upper-bound、mock/smoke 和 historical ablation 的 claim provenance。
+- current workflow quickstart：`docs/experiment_matrix.md`、`docs/extension_guide.md`、`docs/training_throughput.md`；`docs/experiment_matrix.md` 只保留推荐顺序、入口命令和关键 caveat，并指向三份 current mainline 文档。
 - dataset/diagnostic focused notes：`docs/research_notes.md`。
 - historical analysis：`docs/p3_v7_multisource_crossroad_analysis.md`，只保留研究背景，不作为当前长期入口。
 

@@ -163,9 +163,11 @@ beambench_paper:
   # scene33=0.59, scene34=-0.51 rad。专用 runner 会按 scene 自动套用。
   gps_feature_mode: paper_distance_angle
   gps_input_size: 2
-  # 为了尽可能对齐 Table III 本地 sequence split 指标，默认沿用 test_as_validation
-  # 选择 best checkpoint；做严格本地 held-out 实验时可改为 validation 并设置
-  # fusion_val_fraction: 0.1。
+  # Historical default retained for old local upper-bound runs only:
+  # test_as_validation selects the best checkpoint on the test CSV and must not
+  # be reported as strict-validation, current substitute, or official result.
+  # Current recommended Table III local substitute commands override this to
+  # validation with fusion_val_fraction: 0.1.
   selection_split: test_as_validation
   fusion_val_fraction: 0.0
   # Official BeamBench challenge.py uses models/dense_model.py for both
