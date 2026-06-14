@@ -16,6 +16,9 @@ VISION_POSITION_PRESETS = (
     "resnet_gps",
     "transformer_image_gps",
     "gps_only_neural",
+    "amr_net_gps_image_image_only",
+    "amr_net_gps_image_gps_only",
+    "amr_net_gps_image_image_gps_fusion",
 )
 
 
@@ -151,7 +154,16 @@ class VisionPositionLateFusionNet(nn.Module, _HorizonClassifierMixin):
         gps_input_size: int = 3,
         dropout: float = 0.1,
         baseline_preset: str | None = None,
+        model_name: str | None = None,
         gps_feature_mode: str = "relative_polar",
+        paper_model_group: str | None = None,
+        target_source: str | None = None,
+        metric_profile: str | None = None,
+        claim_status: str | None = None,
+        paper_reported_row: bool | None = None,
+        fusion_type: str = "late_concat_mlp",
+        gps_normalizer_provenance: str | None = None,
+        uses_lidar: bool = False,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -166,9 +178,18 @@ class VisionPositionLateFusionNet(nn.Module, _HorizonClassifierMixin):
         self.history_length = int(history_length or seq_length) if (history_length or seq_length) else None
         self.temporal_aggregation = str(temporal_aggregation or "mean").lower()
         self.baseline_preset = baseline_preset
+        self.model_name = model_name
         self.gps_feature_mode = str(gps_feature_mode)
         self.image_profile = image_profile
         self.image_encoder_type = str(image_encoder_type)
+        self.paper_model_group = paper_model_group
+        self.target_source = target_source
+        self.metric_profile = metric_profile
+        self.claim_status = claim_status
+        self.paper_reported_row = paper_reported_row
+        self.fusion_type = str(fusion_type)
+        self.gps_normalizer_provenance = gps_normalizer_provenance
+        self.uses_lidar = bool(uses_lidar)
 
         self.image_encoder = _build_image_encoder(
             image_encoder,
@@ -275,10 +296,13 @@ class VisionPositionLateFusionNet(nn.Module, _HorizonClassifierMixin):
             "gps_features": gps_features,
             "modalities": self.modalities,
             "baseline_preset": self.baseline_preset,
+            "model_name": self.model_name,
             "encoder_type": self.encoder_type,
             "gps_feature_mode": self.gps_feature_mode,
             "temporal_aggregation": self.temporal_aggregation,
             "label_space": "64_beam",
+            "paper_model_group": self.paper_model_group,
+            "claim_status": self.claim_status,
         }
 
     @property
@@ -293,12 +317,32 @@ class VisionPositionLateFusionNet(nn.Module, _HorizonClassifierMixin):
         )
         return {
             "type": "vision_position_late_fusion",
+            "model_registry_name": "vision_position_late_fusion",
+            "architecture_category": "whole_model_exception",
             "baseline_preset": self.baseline_preset,
+            "model_name": self.model_name,
+            "paper_model_group": self.paper_model_group,
             "modalities": list(self.modalities),
+            "enabled_modalities": list(self.modalities),
             "encoder_type": image_metadata.get("encoder") or image_metadata.get("type") or self.image_encoder.__class__.__name__,
             "image_encoder": image_metadata,
             "gps_encoder_type": self.gps_encoder.__class__.__name__,
+            "gps_normalizer_provenance": self.gps_normalizer_provenance,
+            "uses_external_checkpoint": bool(image_metadata.get("checkpoint_path") or image_metadata.get("pretrained", False)),
+            "freeze_policy": {
+                "image_encoder": bool(
+                    image_metadata.get("freeze_encoder", image_metadata.get("freeze_backbone", False))
+                ),
+                "gps_encoder": False,
+            },
+            "consumes_reliability_metadata": False,
             "gps_feature_mode": self.gps_feature_mode,
+            "fusion_type": self.fusion_type,
+            "target_source": self.target_source,
+            "metric_profile": self.metric_profile,
+            "claim_status": self.claim_status,
+            "paper_reported_row": self.paper_reported_row,
+            "uses_lidar": self.uses_lidar,
             "temporal_aggregation": self.temporal_aggregation,
             "num_classes": self.num_classes,
             "num_pred": self.num_pred,
@@ -325,7 +369,15 @@ class GpsSequenceBaselineNet(nn.Module, _HorizonClassifierMixin):
         seq_length: int | None = None,
         dropout: float = 0.1,
         baseline_preset: str | None = "gps_only_neural",
+        model_name: str | None = None,
         gps_feature_mode: str = "relative_polar",
+        paper_model_group: str | None = None,
+        target_source: str | None = None,
+        metric_profile: str | None = None,
+        claim_status: str | None = None,
+        paper_reported_row: bool | None = None,
+        gps_normalizer_provenance: str | None = None,
+        uses_lidar: bool = False,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -338,7 +390,15 @@ class GpsSequenceBaselineNet(nn.Module, _HorizonClassifierMixin):
         self.history_length = int(history_length or seq_length) if (history_length or seq_length) else None
         self.temporal_model = str(temporal_model or "gru").lower()
         self.baseline_preset = baseline_preset
+        self.model_name = model_name
         self.gps_feature_mode = str(gps_feature_mode)
+        self.paper_model_group = paper_model_group
+        self.target_source = target_source
+        self.metric_profile = metric_profile
+        self.claim_status = claim_status
+        self.paper_reported_row = paper_reported_row
+        self.gps_normalizer_provenance = gps_normalizer_provenance
+        self.uses_lidar = bool(uses_lidar)
         self.gps_encoder = GpsFeatureExtractor(
             self.feature_size,
             gps_input_size=int(gps_input_size),
@@ -404,20 +464,37 @@ class GpsSequenceBaselineNet(nn.Module, _HorizonClassifierMixin):
             "sequence_features": sequence_features,
             "modalities": self.modalities,
             "baseline_preset": self.baseline_preset,
+            "model_name": self.model_name,
             "uses_neural_network": True,
             "gps_feature_mode": self.gps_feature_mode,
             "temporal_aggregation": self.temporal_model,
             "label_space": "64_beam",
+            "paper_model_group": self.paper_model_group,
+            "claim_status": self.claim_status,
         }
 
     def training_strategy_metadata(self) -> dict[str, Any]:
         return {
             "type": "gps_sequence_baseline",
+            "model_registry_name": "gps_sequence_baseline",
+            "architecture_category": "whole_model_exception",
             "baseline_preset": self.baseline_preset,
+            "model_name": self.model_name,
+            "paper_model_group": self.paper_model_group,
             "modalities": list(self.modalities),
+            "enabled_modalities": list(self.modalities),
             "uses_neural_network": True,
+            "uses_external_checkpoint": False,
+            "freeze_policy": "none",
+            "consumes_reliability_metadata": False,
             "non_neural_window_baseline": False,
             "gps_feature_mode": self.gps_feature_mode,
+            "gps_normalizer_provenance": self.gps_normalizer_provenance,
+            "target_source": self.target_source,
+            "metric_profile": self.metric_profile,
+            "claim_status": self.claim_status,
+            "paper_reported_row": self.paper_reported_row,
+            "uses_lidar": self.uses_lidar,
             "temporal_aggregation": self.temporal_model,
             "num_classes": self.num_classes,
             "num_pred": self.num_pred,
@@ -435,7 +512,14 @@ class VisionPositionTransformerFusionNet(CLSTokenTransformerFusionNet):
         seq_length: int | None = None,
         token_organization: str = "cls_time_major_image_gps_tokens",
         baseline_preset: str | None = "transformer_image_gps",
+        model_name: str | None = None,
         gps_feature_mode: str = "relative_polar",
+        paper_model_group: str | None = None,
+        target_source: str | None = None,
+        metric_profile: str | None = None,
+        claim_status: str | None = None,
+        paper_reported_row: bool | None = None,
+        uses_lidar: bool = False,
         **kwargs: Any,
     ) -> None:
         selected = tuple(modalities or ("image", "gps"))
@@ -444,7 +528,14 @@ class VisionPositionTransformerFusionNet(CLSTokenTransformerFusionNet):
         self.history_length = int(history_length or seq_length) if (history_length or seq_length) else None
         self.token_organization = str(token_organization)
         self.baseline_preset = baseline_preset
+        self.model_name = model_name
         self.gps_feature_mode = str(gps_feature_mode)
+        self.paper_model_group = paper_model_group
+        self.target_source = target_source
+        self.metric_profile = metric_profile
+        self.claim_status = claim_status
+        self.paper_reported_row = paper_reported_row
+        self.uses_lidar = bool(uses_lidar)
         super().__init__(modalities=list(selected), **kwargs)
 
     def forward(self, image_batch: torch.Tensor | None = None, gps_batch: torch.Tensor | None = None, **kwargs: Any):
@@ -463,22 +554,38 @@ class VisionPositionTransformerFusionNet(CLSTokenTransformerFusionNet):
             gps_batch = gps_batch[:, : self.history_length, :]
         output = super().forward(image_batch=image_batch, gps_batch=gps_batch, **kwargs)
         output["baseline_preset"] = self.baseline_preset
+        output["model_name"] = self.model_name
         output["token_organization"] = self.token_organization
         output["gps_feature_mode"] = self.gps_feature_mode
         output["label_space"] = "64_beam"
+        output["paper_model_group"] = self.paper_model_group
+        output["claim_status"] = self.claim_status
         return output
 
     def training_strategy_metadata(self) -> dict[str, Any]:
         return {
             "type": "vision_position_transformer_fusion",
+            "model_registry_name": "vision_position_transformer_fusion",
+            "architecture_category": "whole_model_exception",
             "baseline_preset": self.baseline_preset,
+            "model_name": self.model_name,
+            "paper_model_group": self.paper_model_group,
             "modalities": list(self.modalities),
+            "enabled_modalities": list(self.modalities),
+            "uses_external_checkpoint": False,
+            "freeze_policy": "none",
+            "consumes_reliability_metadata": False,
             "token_organization": self.token_organization,
             "d_model": self.d_model,
             "num_heads": self.transformer.layers[0].self_attn.num_heads if self.transformer.layers else None,
             "num_layers": len(self.transformer.layers),
             "max_seq_len": self.max_seq_len,
             "gps_feature_mode": self.gps_feature_mode,
+            "target_source": self.target_source,
+            "metric_profile": self.metric_profile,
+            "claim_status": self.claim_status,
+            "paper_reported_row": self.paper_reported_row,
+            "uses_lidar": self.uses_lidar,
             "num_classes": self.num_classes,
             "num_pred": self.num_pred,
             "label_space": "64_beam",

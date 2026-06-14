@@ -78,6 +78,66 @@ def _manifest_dict(config: Path, weights: Path) -> dict:
     }
 
 
+def _scenario_d_manifest_dict(config: Path, weights: Path) -> dict:
+    base_model = {
+        "config": str(config),
+        "weights": str(weights),
+        "split": "test",
+        "sample_count": 4,
+        "label_space": "beam8",
+        "metric_profile": "beambench_dba_topk",
+        "normalization_artifact": "synthetic",
+        "checkpoint_provenance": "unit",
+    }
+    return {
+        "version": bench.BENCHMARK_VERSION,
+        "models": {
+            "gps": {
+                **base_model,
+                "group": "gps_only",
+                "modalities": ["gps"],
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.60, "top1": 0.25, "top3": 0.5},
+            },
+            "cnn_gps": {
+                **base_model,
+                "group": "cnn_gps",
+                "modalities": ["image", "gps"],
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.68, "top1": 0.50, "top3": 0.75},
+            },
+            "image_ae_gps": {
+                **base_model,
+                "group": "image_ae_gps",
+                "modalities": ["image", "gps"],
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.66, "top1": 0.50, "top3": 0.75},
+            },
+            "image_jepa_only": {
+                **base_model,
+                "group": "image_jepa_only",
+                "modalities": ["image"],
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.64, "top1": 0.50, "top3": 0.75},
+            },
+            "image_jepa_gps": {
+                **base_model,
+                "group": "image_jepa_gps",
+                "modalities": ["image", "gps"],
+                "consumes_reliability_metadata": True,
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.72, "top1": 0.50, "top3": 0.75},
+            },
+        },
+        "protocol": {"mode": "evaluation_only", "split": "test"},
+        "scenario_d": {"strict_model_groups": True, "allow_partial": False},
+        "perturbation_suites": [
+            {"id": "scenario_d", "type": "scenario_d_image_observability", "preset": "canonical"},
+            {"id": "scenario_cxd", "type": "scenario_c_x_d_image_observability"},
+        ],
+        "metrics": {"primary": "dba", "topk": [1, 3]},
+        "figures": {"enabled": False, "formats": ["png"]},
+        "seeds": [3],
+        "outputs": {"output_dir": str(config.parent / "scenario_d_out")},
+        "comparability": {"mode": "strict", "keys": ["split", "sample_count", "label_space", "metric_profile"]},
+    }
+
+
 def test_manifest_schema_validation_reports_clear_errors(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     weights = tmp_path / "weights.pth"
@@ -146,6 +206,39 @@ def test_scenario_c_manifest_preset_expands_canonical_conditions(tmp_path: Path)
     assert conditions["C2_low_rate"]["gps_dropout_prob"] == 0.1
     assert conditions["C3_random_async"]["gps_stride_choices"] == [1, 2, 3]
     assert conditions["C4_severe_async"]["gps_stride_choices"] == [2, 3, 4]
+
+
+def test_scenario_d_manifest_preset_and_required_groups(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    raw = _scenario_d_manifest_dict(config, weights)
+
+    manifest = bench.validate_benchmark_manifest(raw, validate_paths=True)
+    scenario_d = next(suite for suite in manifest["perturbation_suites"] if suite["id"] == "scenario_d")
+    scenario_cxd = next(suite for suite in manifest["perturbation_suites"] if suite["id"] == "scenario_cxd")
+
+    assert [condition["id"] for condition in scenario_d["scenario_d_conditions"]] == [
+        "D0_full_image",
+        "D1_weather",
+        "D2_low_light",
+        "D3_motion_blur",
+        "D4_partial_occlusion",
+        "D5_frame_dropout",
+        "D6_burst_missing",
+        "D7_joint_worst_case",
+    ]
+    assert scenario_d["scenario_d_conditions"][-1]["operator_params"]["image_burst_dropout_prob"] == 0.5
+    assert len(scenario_cxd["scenario_c_conditions"]) == 5
+    assert len(scenario_cxd["scenario_d_conditions"]) == 8
+    assert manifest["scenario_d_model_groups"]["missing"] == []
+    assert manifest["models"]["image_jepa_gps"]["consumes_reliability_metadata"] is True
+
+    bad = json.loads(json.dumps(raw))
+    bad["models"].pop("image_jepa_only")
+    with pytest.raises(bench.BenchmarkManifestError, match="missing required model groups"):
+        bench.validate_benchmark_manifest(bad, validate_paths=False)
 
 
 def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> None:
@@ -347,6 +440,40 @@ def test_runner_writes_metrics_aggregation_and_manifest(tmp_path: Path) -> None:
     c2_rows = [row for row in scenario_rows if row["condition"] == "C2_low_rate"]
     assert c2_rows and c2_rows[0]["gps_dropout_prob"] == "0.1"
     assert manifest_out["output_files"]["metrics_by_condition"] == "tables/metrics_by_condition.csv"
+
+
+def test_runner_writes_scenario_d_matrix_artifacts(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    manifest_path = tmp_path / "scenario_d_manifest.yaml"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    manifest_path.write_text(json.dumps(_scenario_d_manifest_dict(config, weights)), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "scenario_d_out",
+        force=True,
+        command=["test"],
+    )
+
+    scenario_csv = Path(result["scenario_d_results"])
+    heatmap_path = Path(result["scenario_d_heatmap"])
+    assert scenario_csv.exists()
+    assert heatmap_path.exists()
+    heatmap = np.load(heatmap_path)
+    assert heatmap.shape == (5, 5, 8)
+    rows = list(csv.DictReader(scenario_csv.open("r", encoding="utf-8", newline="")))
+    cxd_rows = [row for row in rows if row["suite_type"] == "scenario_c_x_d_image_observability"]
+    assert len(cxd_rows) == 5 * 5 * 8
+    assert any(row["gps_condition"] == "C4_severe_async" and row["image_condition"] == "D7_joint_worst_case" for row in cxd_rows)
+    assert any(row["consumes_reliability_metadata"] == "True" for row in cxd_rows if row["model"] == "image_jepa_gps")
+    assert {"top1", "top3", "dba", "rsi", "modality_dominance_ratio"} <= set(rows[0])
+    for name in ("robustness_surface.png", "phase_transition_curve.png", "modality_dominance.png"):
+        assert (Path(result["output_dir"]) / "plots" / name).exists()
+    manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    assert manifest_out["output_files"]["scenario_d_image_observability"] == "results/scenario_d_image_observability.csv"
+    assert manifest_out["models"]["image_jepa_gps"]["consumes_reliability_metadata"] is True
 
 
 def test_visual_analysis_ingests_benchmark_runner_outputs(tmp_path: Path) -> None:

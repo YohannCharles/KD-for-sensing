@@ -87,6 +87,87 @@ FUSION_ROOT_YAML_ALLOWLIST = {
     "configs/fusion/token_transformer_all_modalities_supervised.yaml",
     "configs/fusion/token_transformer_image_radar_supervised.yaml",
 }
+EXISTING_MODEL_REGISTRATION_ALLOWLIST = {
+    "bev_fusion_2604",
+    "camera_ae_frozen",
+    "cls_token_transformer_fusion",
+    "fusion_lightweight",
+    "fusion_strong",
+    "gps_conditioned_jepa",
+    "gps_lightweight",
+    "gps_only_neural_baseline",
+    "gps_sequence_baseline",
+    "gps_strong",
+    "image_lightweight",
+    "image_strong",
+    "jepa_context_image",
+    "lidar_feature_extractor",
+    "lidar_lightweight",
+    "lidar_strong",
+    "mmwave_feature_extractor",
+    "mmwave_lightweight",
+    "mmwave_strong",
+    "modular_sequence",
+    "modular_sequence_model",
+    "radar_feature_extractor",
+    "radar_lightweight",
+    "radar_strong",
+    "resnet18_imagenet_rgb",
+    "token_transformer_fusion",
+    "vision_position_late_fusion",
+    "vision_position_transformer_fusion",
+}
+BATCH_RUNTIME_FUNCTION_ALLOWLIST = {
+    "src/kd_sensing/engine/batch.py": {
+        "forward_model",
+        "prepare_auxiliary_targets",
+        "prepare_beam_power_targets",
+        "prepare_beamspace_power_targets",
+        "prepare_csi_inputs",
+        "prepare_fusion_inputs",
+        "prepare_geometry_inputs",
+        "prepare_geometry_mask",
+        "prepare_gps_bev_xy_inputs",
+        "prepare_gps_inputs",
+        "prepare_image_inputs",
+        "prepare_labels",
+        "prepare_lidar_inputs",
+        "prepare_mmwave_inputs",
+        "prepare_path_descriptors",
+        "prepare_path_semantic_labels",
+        "prepare_radar_inputs",
+        "prepare_radio_semantic_labels",
+        "prepare_reliability_metadata_inputs",
+        "prepare_soft_beam_targets",
+    },
+    "src/kd_sensing/engine/runtime.py": {
+        "forward_task_model",
+        "prepare_task_auxiliary_targets",
+        "prepare_task_batch",
+        "prepare_task_inputs",
+        "prepare_task_labels",
+        "prepare_task_soft_beam_targets",
+    },
+    "src/kd_sensing/engine/validator.py": {
+        "_resolve_validation_prior",
+        "_validate_modality_subsets",
+        "_validate_with_force_mask",
+        "validate",
+    },
+}
+GOVERNANCE_SCAN_PREFIXES = (
+    "AGENTS.md",
+    "README.md",
+    "configs/",
+    "docs/",
+    "openspec/specs/",
+    "pyproject.toml",
+    "scripts/",
+    "src/",
+    "tests/",
+    "tools/analysis/",
+)
+GOVERNANCE_SCAN_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".toml", ".sh"}
 
 HEALTH_CHECK_COMMANDS = (
     "openspec validate strengthen-project-health-guardrails --strict",
@@ -473,6 +554,81 @@ def _tracked_paths() -> list[str]:
     return sorted(path for path in result.stdout.decode("utf-8").split("\0") if path)
 
 
+def _active_change_artifact_paths() -> list[str]:
+    changes_root = ROOT / "openspec" / "changes"
+    if not changes_root.exists():
+        return []
+    paths: list[str] = []
+    for path in sorted(changes_root.glob("*")):
+        if not path.is_dir() or path.name == "archive":
+            continue
+        for artifact in sorted(path.rglob("*")):
+            if artifact.is_file() and artifact.suffix in {".md", ".yaml", ".yml", ".json"}:
+                paths.append(artifact.relative_to(ROOT).as_posix())
+    return paths
+
+
+def _governance_scan_paths() -> list[str]:
+    tracked = {
+        path
+        for path in _tracked_paths()
+        if path.endswith(tuple(GOVERNANCE_SCAN_SUFFIXES))
+        and any(path == prefix or path.startswith(prefix) for prefix in GOVERNANCE_SCAN_PREFIXES)
+    }
+    active_artifacts = set(_active_change_artifact_paths())
+    return sorted(tracked | active_artifacts)
+
+
+def _model_registration_names(path: Path) -> list[tuple[str, int]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    registrations: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            func = decorator.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "register"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "MODELS"
+            ):
+                continue
+            if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                registrations.append((str(decorator.args[0].value), decorator.lineno))
+            else:
+                registrations.append((node.name, decorator.lineno))
+    return registrations
+
+
+def _active_change_spec_capabilities() -> set[str]:
+    capabilities: set[str] = set()
+    changes_root = ROOT / "openspec" / "changes"
+    if not changes_root.exists():
+        return capabilities
+    for path in sorted(changes_root.glob("*/specs/*/spec.md")):
+        if "archive" in path.parts:
+            continue
+        capabilities.add(path.parent.name)
+    return capabilities
+
+
+def _current_or_active_spec_paths(capability: str) -> list[Path]:
+    current = ROOT / "openspec" / "specs" / capability / "spec.md"
+    if current.exists():
+        return [current]
+    changes_root = ROOT / "openspec" / "changes"
+    if not changes_root.exists():
+        return []
+    return [
+        path
+        for path in sorted(changes_root.glob(f"*/specs/{capability}/spec.md"))
+        if "archive" not in path.parts
+    ]
+
+
 def _iter_scan_files(root: Path) -> list[Path]:
     if root.is_file():
         return [root]
@@ -610,6 +766,90 @@ def test_source_surface_does_not_track_local_artifacts():
     assert violations == []
 
 
+def test_governance_scans_stay_on_source_docs_specs_and_tests():
+    forbidden_prefixes = ("dataset/", "outputs/", "logs/", "cache/", ".pytest_cache/")
+    forbidden_suffixes = (".pth", ".pt", ".ckpt")
+    violations = [
+        path
+        for path in _governance_scan_paths()
+        if path.startswith(forbidden_prefixes) or path.endswith(forbidden_suffixes)
+    ]
+
+    assert violations == []
+
+
+def test_model_registrations_are_documented_or_allowlisted():
+    documented_text = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in _governance_scan_paths()
+        if path.startswith(("docs/", "openspec/specs/", "openspec/changes/"))
+    )
+    violations: list[str] = []
+    for rel_path in _tracked_paths():
+        if not rel_path.startswith("src/kd_sensing/models/") or not rel_path.endswith(".py"):
+            continue
+        for name, line_number in _model_registration_names(ROOT / rel_path):
+            if name in EXISTING_MODEL_REGISTRATION_ALLOWLIST:
+                continue
+            if name in documented_text:
+                continue
+            violations.append(
+                f"{rel_path}:{line_number} registers MODELS name '{name}' without current spec, "
+                "active change artifact, inventory entry, or explicit allowlist."
+            )
+
+    assert violations == []
+
+
+def test_extension_guide_defaults_to_modular_model_extension():
+    guide = (ROOT / "docs" / "extension_guide.md").read_text(encoding="utf-8")
+    add_model = guide.split("## Add a Model", 1)[1].split("## Add a Dataset", 1)[0]
+    default_section = add_model.split("### Whole-model Exceptions", 1)[0]
+
+    assert "modular_sequence" in default_section
+    assert "@ENCODERS.register" in default_section or "@REPRESENTATION_CORES.register" in default_section
+    assert "@MODELS.register" not in default_section, (
+        "Add a Model must not present direct whole-model registration as the default baseline path; "
+        "use modular_sequence config or a subcomponent registry example first."
+    )
+    assert "### Whole-model Exceptions" in add_model
+    assert "@MODELS.register" in add_model
+
+
+def test_batch_runtime_extension_surface_is_allowlisted():
+    violations: list[str] = []
+    for rel_path, allowed in BATCH_RUNTIME_FUNCTION_ALLOWLIST.items():
+        tree = ast.parse((ROOT / rel_path).read_text(encoding="utf-8"))
+        discovered = {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (
+                node.name.startswith("prepare_")
+                or node.name.startswith("forward_")
+                or node.name == "validate"
+                or node.name.startswith("_validate_")
+                or node.name.startswith("_resolve_validation_")
+            )
+        }
+        extra = sorted(discovered - allowed)
+        missing = sorted(allowed - discovered)
+        for name in extra:
+            violations.append(f"{rel_path}:{name} is a new batch/runtime/validation branch; update contract tests.")
+        for name in missing:
+            violations.append(f"{rel_path}:{name} is allowlisted but no longer exists; update the allowlist.")
+
+    runtime_definitions: list[str] = []
+    for rel_path in _tracked_paths():
+        if not rel_path.endswith(".py") or not rel_path.startswith("src/kd_sensing/"):
+            continue
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        if "def forward_task_model" in text and rel_path != "src/kd_sensing/engine/runtime.py":
+            runtime_definitions.append(rel_path)
+    assert violations == []
+    assert runtime_definitions == []
+
+
 def test_mainline_experiment_docs_are_indexed_and_current():
     lifecycles, _, _ = _openspec_lifecycle_inventory()
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
@@ -624,6 +864,29 @@ def test_mainline_experiment_docs_are_indexed_and_current():
         text = index_path.read_text(encoding="utf-8")
         for rel_path in MAINLINE_EXPERIMENT_DOCS:
             assert rel_path in text, f"{index_path.relative_to(ROOT)} must link to {rel_path}"
+
+
+def test_amr_net_gps_image_quickstart_stays_synchronized():
+    matrix = (ROOT / "docs" / "experiment_matrix.md").read_text(encoding="utf-8")
+    required_matrix_markers = (
+        "AMR-Net_gps_image",
+        "configs/baselines/amr_net_gps_image.yaml",
+        "kd-sensing-run-amr-net-gps-image",
+        "blocked_official",
+        "10000718",
+        "LiDAR",
+    )
+    missing_matrix_markers = [marker for marker in required_matrix_markers if marker not in matrix]
+    assert missing_matrix_markers == []
+
+    for rel_path in (
+        "docs/mainline_model_catalog.md",
+        "docs/experiment_protocols.md",
+        "docs/result_claims_registry.md",
+        "docs/project_surface_inventory.md",
+    ):
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        assert "AMR-Net_gps_image" in text, f"{rel_path} must mention AMR-Net_gps_image when the quickstart does"
 
 
 def test_high_risk_result_wording_has_local_caveats():
@@ -876,9 +1139,10 @@ def test_openspec_lifecycle_inventory_covers_current_specs():
         path.parent.name
         for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md"))
     }
+    active_change_capabilities = _active_change_spec_capabilities()
 
     missing = sorted(spec_capabilities - set(lifecycles))
-    extra = sorted(set(lifecycles) - spec_capabilities)
+    extra = sorted(set(lifecycles) - spec_capabilities - active_change_capabilities)
 
     assert duplicates == []
     assert invalid == []
@@ -887,7 +1151,7 @@ def test_openspec_lifecycle_inventory_covers_current_specs():
         "docs/project_surface_inventory.md as current, supporting, or retired-tombstone. "
         f"Missing: {missing}"
     )
-    assert extra == [], f"Lifecycle inventory references non-current specs: {extra}"
+    assert extra == [], f"Lifecycle inventory references non-current specs or active change specs: {extra}"
     assert set(lifecycles.values()) <= OPENSPEC_LIFECYCLE_ALLOWED
 
 
@@ -919,11 +1183,11 @@ def test_retired_tombstone_specs_are_visibly_retired():
 
 def test_current_specs_and_docs_do_not_recommend_retired_routes():
     lifecycles, _, _ = _openspec_lifecycle_inventory()
-    scan_paths = [
-        ROOT / "openspec" / "specs" / capability / "spec.md"
-        for capability, lifecycle in sorted(lifecycles.items())
-        if lifecycle == "current"
-    ]
+    scan_paths: list[Path] = []
+    for capability, lifecycle in sorted(lifecycles.items()):
+        if lifecycle != "current":
+            continue
+        scan_paths.extend(_current_or_active_spec_paths(capability))
     scan_paths.extend(path for path in CURRENT_WORKFLOW_DOCS if path.exists())
     violations: list[str] = []
 

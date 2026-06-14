@@ -30,7 +30,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 
 | 改动类型 | 先读什么 | 主要修改区域 | 常用验证 |
 | --- | --- | --- | --- |
-| 模型 / forward / registry 暴露 | 对应 OpenSpec specs、README 当前模型说明、`docs/project_surface_inventory.md` 热点和退役边界 | `src/kd_sensing/models/`、`src/kd_sensing/registries.py`、默认组件和 forward 输出消费处 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`，再追加模型/forward focused tests |
+| 模型 / forward / registry 暴露 | `model-architecture-extension-contract`、`modular-sequence-model`、`component-registry`、README 当前模型说明、`docs/project_surface_inventory.md` 热点和退役边界 | `src/kd_sensing/models/`、`src/kd_sensing/registries.py`、默认组件、`engine.batch` / `engine.runtime` forward 输出消费处 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`，再追加模型/forward focused tests |
 | 数据与 batch contract | dataset/modality contract specs、README 数据边界、inventory 中 `engine.batch` 热点 | `src/kd_sensing/data/`、`src/kd_sensing/engine/batch.py`、shared runtime、相关 dataset tests | 相关 dataset/batch focused tests；避免读取真实 `dataset/` |
 | 配置和 virtual config | 配置生命周期 specs、README 配置章节、inventory 配置生命周期分类 | `src/kd_sensing/config/`、`configs/`、canonical recipe / virtual config 生成规则 | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` 和架构边界测试 |
 | CLI / scripts 入口 | README 主要入口、inventory 脚本入口 allowlist、`pyproject.toml` console scripts | `src/kd_sensing/cli/`、`scripts/` allowlist、`pyproject.toml` | CLI help smoke、`tests/test_cli_help.py`、架构边界测试 |
@@ -38,6 +38,17 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 | 诊断 / viewer / visual analysis | README Viewer Manifest、诊断 specs、inventory viewer manifest 热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/export_viewer_manifest.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q` 和 CLI help |
 | OpenSpec artifact | active change 的 proposal/design/spec/tasks、inventory lifecycle、当前 specs、`openspec status` | `openspec/changes/<change>/` 或 `openspec/specs/` | `openspec validate <change> --strict`，必要时 `openspec status --change <change>` |
 | 文档生命周期 | AGENTS 文档边界、README 文档索引、OpenSpec capability lifecycle、inventory 文档生命周期分类 | README、`AGENTS.md`、`docs/*.md`、OpenSpec 文档 | 架构边界测试；检查不把历史、supporting 或退役墓碑路线写成当前推荐入口 |
+
+新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该 workflow 有明确名称或专用入口，还应在架构边界测试中加一个轻量文档同步 guard，防止以后只改账本而漏掉 quickstart。
+
+模型/forward/registry 改动先归类：
+
+- config-only baseline：只改 YAML、canonical recipe、overlay 或 hyperparameter，优先复用 `modular_sequence`。
+- component baseline：新增或替换 `ENCODERS`、`PROJECTORS`、`REPRESENTATION_CORES` 或 `HEADS`，并通过 `model.primary` 配置选择。
+- whole-model exception：新增 `@MODELS.register(...)` 前必须在 active OpenSpec artifact 或 current spec 中说明原因，并补 registry build、synthetic forward、`adapt_model_output` 和 metadata tests。
+- workflow/paper reproduction：官方协议、多阶段训练、feature cache 或特殊 Table 报告走 `src/kd_sensing/baselines/<family>/`、包内 CLI 或已登记薄 alias，不复制通用训练循环。
+
+触碰 observability/reliability metadata 时，还要确认普通 baseline 可忽略新增 metadata，opt-in 模型才接收 reliability fields，并追加 difficulty/batch 或 observability-aware fusion focused tests。
 
 ## 常见误读清单
 
@@ -71,5 +82,6 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 | 配置解析、virtual config、migration guard | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
 | 诊断、viewer manifest、模态可视化 | `conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q` |
 | 训练、数据、模型 forward 或 shared runtime | 先跑对应 focused tests；高风险改动再考虑 `conda run -n kd_mm_beam pytest -q` |
+| reliability-aware / observability-aware 模型 metadata | 对应模型 focused tests、difficulty/batch tests；同时覆盖普通 baseline 忽略 metadata 和 opt-in 模型接收 metadata |
 
 所有验证都应避免把新生成的 `dataset/` 内容、`outputs/`、`logs/`、cache、checkpoint 或 `.egg-info` 变更纳入源码提交。

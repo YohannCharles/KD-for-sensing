@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 from kd_sensing.models.modular import ModularSequenceModel, NextBeamQueryTransformerCore  # noqa: E402
 from kd_sensing.modalities import MODALITY_ORDER  # noqa: E402
-from kd_sensing.registries import ENCODERS, PROJECTORS, REPRESENTATION_CORES  # noqa: E402
+from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
+from kd_sensing.registries import ENCODERS, HEADS, PROJECTORS, REPRESENTATION_CORES  # noqa: E402
 
 
 @ENCODERS.register("next_query_test_identity", force=True)
@@ -26,6 +27,13 @@ class NextQueryTestIdentityEncoder(nn.Module):
         if int(batch.shape[-1]) != self.output_dim:
             raise ValueError(f"expected D={self.output_dim}, got {tuple(batch.shape)}.")
         return batch
+
+    def training_strategy_metadata(self) -> dict[str, object]:
+        return {
+            "encoder_strategy": "identity",
+            "uses_external_checkpoint": False,
+            "freeze_policy": "none",
+        }
 
 
 @ENCODERS.register("next_query_test_context_identity", force=True)
@@ -89,6 +97,69 @@ class NextQueryTestScaleProjector(nn.Module):
         if features.ndim != 3:
             raise ValueError(f"next_query_test_scale_projector expects [B, T, D], got {tuple(features.shape)}.")
         return features * self.scale
+
+
+@ENCODERS.register("next_query_test_observability_identity", force=True)
+class NextQueryTestObservabilityIdentityEncoder(NextQueryTestIdentityEncoder):
+    supports_observability_metadata = True
+
+    def forward(
+        self,
+        batch: torch.Tensor,
+        *,
+        image_valid_mask: torch.Tensor | None = None,
+        image_observability_score: torch.Tensor | None = None,
+        benchmark_condition_metadata: dict[str, object] | None = None,
+    ) -> torch.Tensor:
+        del image_valid_mask, image_observability_score, benchmark_condition_metadata
+        return super().forward(batch)
+
+    def training_strategy_metadata(self) -> dict[str, object]:
+        metadata = super().training_strategy_metadata()
+        metadata["consumes_reliability_metadata"] = True
+        return metadata
+
+
+@REPRESENTATION_CORES.register("next_query_test_metadata_core", force=True)
+class NextQueryTestMetadataCore(nn.Module):
+    def __init__(self, d_model: int, output_dim: int | None = None, **_: object):
+        super().__init__()
+        self.d_model = int(d_model)
+        self.output_dim = int(output_dim or d_model)
+        self.projection = nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim == 4:
+            features = features.mean(dim=1)
+        if features.ndim != 3:
+            raise ValueError(f"next_query_test_metadata_core expects [B, T, D], got {tuple(features.shape)}.")
+        return self.projection(features)
+
+    def training_strategy_metadata(self) -> dict[str, object]:
+        return {
+            "core_strategy": "metadata_core",
+            "consumes_reliability_metadata": False,
+        }
+
+
+@HEADS.register("next_query_test_metadata_head", force=True)
+class NextQueryTestMetadataHead(nn.Module):
+    def __init__(self, input_dim: int, num_classes: int, **_: object):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.num_classes = int(num_classes)
+        self.classifier = nn.Linear(self.input_dim, self.num_classes)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 3:
+            raise ValueError(f"next_query_test_metadata_head expects [B, T, D], got {tuple(features.shape)}.")
+        return self.classifier(features)
+
+    def training_strategy_metadata(self) -> dict[str, object]:
+        return {
+            "head_strategy": "metadata_head",
+            "consumes_reliability_metadata": False,
+        }
 
 
 def test_next_beam_query_transformer_core_forward_shape_and_registry_build():
@@ -309,6 +380,63 @@ def test_modular_sequence_rejects_self_dependency_and_keeps_plain_encoders_singl
     assert output["logits"].shape == (2, 3, 5)
     assert set(output["encoder_features"]) == set(modalities)
     assert model.training_strategy_metadata()["conditioned_encoders"] == {}
+
+
+def test_modular_sequence_training_metadata_aggregates_component_metadata():
+    model = ModularSequenceModel(
+        modalities=["gps"],
+        encoders={"gps": {"type": "next_query_test_identity", "output_dim": 8}},
+        projectors={"gps": {"type": "identity", "input_dim": 8, "d_model": 8}},
+        representation_core={"type": "next_query_test_metadata_core", "d_model": 8, "output_dim": 8},
+        heads={"beam": {"type": "next_query_test_metadata_head", "input_dim": 8, "num_classes": 5}},
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+
+    output = model(gps_batch=torch.randn(2, 3, 8))
+    adapted = adapt_model_output(output)
+    metadata = model.training_strategy_metadata()
+
+    assert output["logits"].shape == (2, 3, 5)
+    assert adapted.logits.shape == (2, 3, 5)
+    assert metadata["architecture_category"] == "component_baseline"
+    assert metadata["encoders"]["gps"]["registry_type"] == "next_query_test_identity"
+    assert metadata["encoders"]["gps"]["encoder_strategy"] == "identity"
+    assert metadata["projectors"]["gps"]["registry_type"] == "identity"
+    assert metadata["representation_core_type"] == "next_query_test_metadata_core"
+    assert metadata["representation_core"]["core_strategy"] == "metadata_core"
+    assert metadata["heads"]["beam"]["registry_type"] == "next_query_test_metadata_head"
+    assert metadata["heads"]["beam"]["head_strategy"] == "metadata_head"
+    assert metadata["consumes_reliability_metadata"] is False
+    assert metadata["reliability_metadata"]["consumers"] == []
+
+
+def test_modular_sequence_training_metadata_marks_reliability_consuming_encoders():
+    model = ModularSequenceModel(
+        modalities=["image"],
+        encoders={"image": {"type": "next_query_test_observability_identity", "output_dim": 8}},
+        projectors={"image": {"type": "identity", "input_dim": 8, "d_model": 8}},
+        representation_core={"type": "next_query_test_metadata_core", "d_model": 8, "output_dim": 8},
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+
+    output = model(
+        image_batch=torch.randn(2, 3, 8),
+        image_valid_mask=torch.ones(2, 3, dtype=torch.bool),
+        image_observability_score=torch.ones(2, 3),
+    )
+    metadata = model.training_strategy_metadata()
+
+    assert output["logits"].shape == (2, 3, 5)
+    assert metadata["encoders"]["image"]["consumes_reliability_metadata"] is True
+    assert metadata["consumes_reliability_metadata"] is True
+    assert metadata["reliability_metadata_consumers"] == ["encoders.image"]
+    assert "image_observability_score" in metadata["reliability_metadata"]["fields"]
 
 
 def _modular_model(modalities: list[str], core_cfg: dict, *, num_classes: int) -> ModularSequenceModel:

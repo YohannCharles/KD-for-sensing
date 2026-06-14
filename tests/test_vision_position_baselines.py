@@ -139,6 +139,18 @@ def _assert_logits_contract(output: dict, batch_size: int = 2) -> None:
     assert output["output_features"].shape[:2] == (batch_size, 3)
 
 
+def _assert_whole_model_metadata_contract(model: object, *, registry_name: str, modalities: list[str]) -> dict:
+    assert hasattr(model, "training_strategy_metadata")
+    metadata = model.training_strategy_metadata()
+    assert metadata["model_registry_name"] == registry_name
+    assert metadata["modalities"] == modalities
+    assert metadata["architecture_category"] == "whole_model_exception"
+    assert "uses_external_checkpoint" in metadata
+    assert "freeze_policy" in metadata
+    assert "consumes_reliability_metadata" in metadata
+    return metadata
+
+
 def test_vision_position_models_forward_shape_contracts():
     import_default_components()
     batch_size = 2
@@ -169,6 +181,32 @@ def test_vision_position_models_forward_shape_contracts():
 
     gps_only = MODELS.build(_gps_sequence_cfg())
     _assert_logits_contract(gps_only(gps_batch=torch.rand(batch_size, steps, 3)))
+
+
+def test_vision_position_whole_model_metadata_contracts_are_auditable():
+    import_default_components()
+
+    camera = MODELS.build(_camera_late_fusion_cfg())
+    camera_metadata = _assert_whole_model_metadata_contract(
+        camera,
+        registry_name="vision_position_late_fusion",
+        modalities=["image", "gps"],
+    )
+    assert camera_metadata["freeze_policy"]["image_encoder"] is True
+
+    transformer = MODELS.build(_transformer_cfg())
+    _assert_whole_model_metadata_contract(
+        transformer,
+        registry_name="vision_position_transformer_fusion",
+        modalities=["image", "gps"],
+    )
+
+    gps_only = MODELS.build(_gps_sequence_cfg())
+    _assert_whole_model_metadata_contract(
+        gps_only,
+        registry_name="gps_sequence_baseline",
+        modalities=["gps"],
+    )
 
 
 @pytest.mark.parametrize(

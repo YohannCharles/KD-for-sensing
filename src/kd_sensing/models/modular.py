@@ -517,6 +517,7 @@ class ModularSequenceModel(nn.Module):
         mmwave_input_size: int = MMWAVE_INPUT_SIZE,
         csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
+        paper_metadata: dict[str, Any] | None = None,
         **_: Any,
     ):
         super().__init__()
@@ -528,10 +529,13 @@ class ModularSequenceModel(nn.Module):
         self.num_pred = int(num_pred)
         self.image_profile = resolve_image_profile(image_profile)
         self.image_channels = int(image_channels or image_profile_spec(self.image_profile).channels)
+        self.paper_metadata = dict(paper_metadata or {})
 
         self.encoders = nn.ModuleDict()
         self.projectors = nn.ModuleDict()
         self.encoder_output_dims: dict[str, int] = {}
+        self.encoder_configs: dict[str, dict[str, Any]] = {}
+        self.projector_configs: dict[str, dict[str, Any]] = {}
 
         encoder_cfgs = dict(encoders or {})
         projector_cfgs = dict(projectors or {})
@@ -546,21 +550,25 @@ class ModularSequenceModel(nn.Module):
                 csi_train_rms=csi_train_rms,
             )
             self._validate_modality_encoder_profile(modality, encoder_cfg)
+            self.encoder_configs[modality] = dict(encoder_cfg)
             encoder = ENCODERS.build(encoder_cfg)
             self.encoders[modality] = encoder
             raw_dim = int(getattr(encoder, "output_dim", encoder_cfg.get("output_dim", self.feature_size)))
             self.encoder_output_dims[modality] = raw_dim
             projector_cfg = self._projector_config(projector_cfgs.get(modality), input_dim=raw_dim)
+            self.projector_configs[modality] = dict(projector_cfg)
             self.projectors[modality] = PROJECTORS.build(projector_cfg)
 
         self._validate_encoder_context_dependencies()
         core_cfg = self._core_config(representation_core)
+        self.representation_core_config = dict(core_cfg)
         self.representation_core = REPRESENTATION_CORES.build(core_cfg)
         core_output_dim = int(getattr(self.representation_core, "output_dim", self.d_model))
         head_cfgs = dict(heads or {})
         beam_cfg = dict(head_cfgs.get("beam") or head_cfgs.get("beam_head") or {"type": "beam_head"})
         beam_cfg.setdefault("input_dim", core_output_dim)
         beam_cfg.setdefault("num_classes", self.num_classes)
+        self.head_configs = {"beam": dict(beam_cfg)}
         self.heads = nn.ModuleDict({"beam": HEADS.build(beam_cfg)})
         self.auxiliary_heads = TemporalAuxiliaryHeads(
             core_output_dim,
@@ -577,7 +585,14 @@ class ModularSequenceModel(nn.Module):
         lidar_batch: torch.Tensor | None = None,
         mmwave_batch: torch.Tensor | None = None,
         csi_batch: torch.Tensor | None = None,
+        image_valid_mask: torch.Tensor | None = None,
+        image_observability_score: torch.Tensor | None = None,
+        gps_valid_mask: torch.Tensor | None = None,
+        gps_delay_steps: torch.Tensor | None = None,
+        benchmark_condition_metadata: dict[str, Any] | None = None,
+        image_degradation_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        del gps_valid_mask, gps_delay_steps, image_degradation_metadata
         raw_inputs = {
             "image": image_batch,
             "radar": radar_batch,
@@ -585,6 +600,11 @@ class ModularSequenceModel(nn.Module):
             "lidar": lidar_batch,
             "mmwave": mmwave_batch,
             "csi": csi_batch,
+        }
+        reliability_inputs = {
+            "image_valid_mask": image_valid_mask,
+            "image_observability_score": image_observability_score,
+            "benchmark_condition_metadata": benchmark_condition_metadata,
         }
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
@@ -611,6 +631,7 @@ class ModularSequenceModel(nn.Module):
                     encoded=encoded,
                     projected=projected,
                 )
+                context_kwargs.update(_encoder_reliability_kwargs(encoder, modality=modality, reliability_inputs=reliability_inputs))
                 features = encoder(tensor, **context_kwargs) if context_kwargs else encoder(tensor)
                 batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
                 encoded[modality] = features
@@ -659,11 +680,12 @@ class ModularSequenceModel(nn.Module):
     def training_strategy_metadata(self) -> dict[str, Any]:
         encoders: dict[str, Any] = {}
         conditioned: dict[str, Any] = {}
+        reliability_consumers: list[str] = []
         for modality, encoder in self.encoders.items():
-            metadata = (
-                encoder.training_strategy_metadata()
-                if hasattr(encoder, "training_strategy_metadata")
-                else {"type": encoder.__class__.__name__}
+            metadata = _component_training_strategy_metadata(
+                encoder,
+                self.encoder_configs.get(modality, {}),
+                role="encoder",
             )
             dependencies = _encoder_context_dependencies(encoder)
             source = _encoder_context_source(encoder)
@@ -679,15 +701,63 @@ class ModularSequenceModel(nn.Module):
                     "context_feature_source": source,
                     "context_feature_kwargs": metadata["context_feature_kwargs"],
                 }
+            if _component_consumes_reliability_metadata(encoder, metadata):
+                reliability_consumers.append(f"encoders.{modality}")
             encoders[modality] = metadata
-        return {
+        projectors = {
+            modality: _component_training_strategy_metadata(
+                projector,
+                self.projector_configs.get(modality, {}),
+                role="projector",
+            )
+            for modality, projector in self.projectors.items()
+        }
+        core_metadata = _component_training_strategy_metadata(
+            self.representation_core,
+            self.representation_core_config,
+            role="representation_core",
+        )
+        if _component_consumes_reliability_metadata(self.representation_core, core_metadata):
+            reliability_consumers.append("representation_core")
+        heads = {
+            name: _component_training_strategy_metadata(
+                head,
+                self.head_configs.get(name, {}),
+                role="head",
+            )
+            for name, head in self.heads.items()
+        }
+        for name, metadata in heads.items():
+            if _component_consumes_reliability_metadata(self.heads[name], metadata):
+                reliability_consumers.append(f"heads.{name}")
+        core_type = str(self.representation_core_config.get("type", self.representation_core.__class__.__name__))
+        metadata = {
             "type": "modular_sequence",
+            "architecture_category": "component_baseline",
             "modalities": list(self.modalities),
             "d_model": self.d_model,
             "encoders": encoders,
+            "projectors": projectors,
             "conditioned_encoders": conditioned,
-            "representation_core_type": self.representation_core.__class__.__name__,
+            "representation_core_type": core_type,
+            "representation_core_class": self.representation_core.__class__.__name__,
+            "representation_core": core_metadata,
+            "heads": heads,
+            "consumes_reliability_metadata": bool(reliability_consumers),
+            "reliability_metadata_consumers": reliability_consumers,
+            "reliability_metadata": {
+                "consumed": bool(reliability_consumers),
+                "consumers": list(reliability_consumers),
+                "fields": [
+                    "image_valid_mask",
+                    "image_observability_score",
+                    "benchmark_condition_metadata",
+                ],
+            },
         }
+        if self.paper_metadata:
+            metadata.update(self.paper_metadata)
+        return metadata
 
     def _encoder_config(
         self,
@@ -809,6 +879,49 @@ def _encoder_context_source(encoder: nn.Module) -> str:
     return source
 
 
+def _component_training_strategy_metadata(
+    component: nn.Module,
+    cfg: dict[str, Any],
+    *,
+    role: str,
+) -> dict[str, Any]:
+    raw = component.training_strategy_metadata() if hasattr(component, "training_strategy_metadata") else {}
+    metadata = dict(raw) if isinstance(raw, dict) else {}
+    registry_type = cfg.get("type")
+    if registry_type not in (None, ""):
+        registry_type = str(registry_type)
+        metadata.setdefault("type", registry_type)
+        metadata.setdefault("registry_type", registry_type)
+        if role == "encoder":
+            metadata.setdefault("encoder", registry_type)
+        elif role == "projector":
+            metadata.setdefault("projector", registry_type)
+        elif role == "representation_core":
+            metadata.setdefault("core", registry_type)
+        elif role == "head":
+            metadata.setdefault("head", registry_type)
+    metadata.setdefault("class", component.__class__.__name__)
+    metadata.setdefault("component_role", role)
+    if "consumes_reliability_metadata" not in metadata:
+        metadata["consumes_reliability_metadata"] = _component_consumes_reliability_metadata(component, metadata)
+    return metadata
+
+
+def _component_consumes_reliability_metadata(component: nn.Module, metadata: dict[str, Any] | None = None) -> bool:
+    metadata = metadata or {}
+    for key in ("consumes_reliability_metadata", "supports_reliability_metadata", "supports_observability_metadata"):
+        if key in metadata:
+            return bool(metadata.get(key))
+    temporal_fallback = metadata.get("temporal_fallback")
+    if isinstance(temporal_fallback, dict) and bool(temporal_fallback.get("enabled", False)):
+        return True
+    return bool(
+        getattr(component, "consumes_reliability_metadata", False)
+        or getattr(component, "supports_reliability_metadata", False)
+        or getattr(component, "supports_observability_metadata", False)
+    )
+
+
 def _encoder_dependencies_satisfied(
     dependencies: tuple[str, ...],
     *,
@@ -889,6 +1002,19 @@ def _encoder_context_kwargs(
         kwarg = str(kwarg_names.get(dependency, f"{dependency}_condition_features"))
         context_kwargs[kwarg] = feature
     return context_kwargs
+
+
+def _encoder_reliability_kwargs(
+    encoder: nn.Module,
+    *,
+    modality: str,
+    reliability_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    if modality != "image":
+        return {}
+    if not bool(getattr(encoder, "supports_observability_metadata", False)):
+        return {}
+    return {key: value for key, value in reliability_inputs.items() if value is not None}
 
 
 def _check_condition_feature_shape(

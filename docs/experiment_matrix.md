@@ -28,6 +28,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 
 - Image+GPS JEPA BeamBench-fair：`configs/fusion/experiments/jepa_image_gps/*beambench_fair_lowmem.yaml`
 - Image+GPS JEPA 2604-style：`configs/fusion/experiments/jepa_image_gps/*2604_s32_s34_lowmem.yaml`
+- AMR-Net_gps_image source audit：`configs/baselines/amr_net_gps_image.yaml` + `kd-sensing-run-amr-net-gps-image`
 - Arnold22 Camera AE+GPS Direct：`configs/fusion/beambench_image_ae_gps_direct.yaml` + 专用 Table III runner
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
 - DeepSense6G/MMW BGAM：`configs/deepsense6g_gps_lidar_bgam.yaml`、`configs/mmw_town_gps_lidar_bgam.yaml`
@@ -81,6 +82,17 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 ```
 
 缺 official AE/fusion 权重、official exact test packaging 或官方完整训练搜索流程时，claim status 必须是 `local substitute`、`local strict-validation`、`blocked official reproduction` 或 `upper-bound`，不得写成 official reproduction。旧 `--target-beam-source future` 记录只作为 historical sequence-prediction ablation，不是当前 Table III strict setup。
+
+## AMR-Net_gps_image Source Audit
+
+AMR-Net_gps_image 入口只使用 image 和 GPS，不启用 LiDAR。当前公开 metadata 将 IEEE document `11282996` 指向 JIOT 2026 AMR-Net 论文，但 DeepSense6G Scenario 23 作者代码对应 IEEE document `10000718`；因此该入口默认只写 blocked/local substitute audit、mock smoke metrics 和 manifest，不声明 official reproduction。
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-amr-net-gps-image \
+  --config configs/baselines/amr_net_gps_image.yaml
+```
+
+输出默认位于 ignored 的 `outputs/analysis/amr_net_gps_image/`。若要把结果升级为 official reproduction，必须先提供并审计 IEEE PDF/BibTeX、官方代码或训练/评估协议、official split 和权重；否则 claim status 只能是 `blocked_official`、`mock_smoke`、`paper_protocol_audited` 或 `local_substitute`。
 
 ## Image+GPS JEPA
 

@@ -383,6 +383,57 @@ def test_jepa_context_image_encoder_accepts_explicit_pooler_adapter_config_and_m
         )
 
 
+def test_jepa_context_image_encoder_temporal_fallback_uses_past_only():
+    torch.manual_seed(123)
+    encoder = JepaContextImageEncoder(
+        output_dim=8,
+        latent_dim=8,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 8,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        temporal_fallback={
+            "enabled": True,
+            "history_window": 4,
+            "observability_threshold": 0.5,
+            "insufficient_history": "raw",
+        },
+    )
+    image = torch.randn(1, 5, 3, 32, 32)
+    clean = encoder(
+        image,
+        image_valid_mask=torch.ones(1, 5, dtype=torch.bool),
+        image_observability_score=torch.ones(1, 5),
+        benchmark_condition_metadata={"gps_condition": "C0_sync", "image_condition": "D0_full_image"},
+    )
+    degraded = encoder(
+        image,
+        image_valid_mask=torch.tensor([[True, True, True, True, True]]),
+        image_observability_score=torch.tensor([[1.0, 1.0, 1.0, 1.0, 0.2]]),
+        benchmark_condition_metadata={"gps_condition": "C4_severe_async", "image_condition": "D6_burst_missing"},
+    )
+
+    assert torch.allclose(degraded[:, 4, :], clean[:, 0:4, :].mean(dim=1), atol=1e-5)
+    assert torch.allclose(degraded[:, :4, :], clean[:, :4, :], atol=1e-5)
+    metadata = encoder.last_temporal_fallback_metadata
+    assert metadata["affected_count"] == 1
+    assert metadata["source_history_range"][4] == [0, 3]
+    assert metadata["jepa_advantage_condition"] is True
+
+    first_frame = encoder(
+        image,
+        image_valid_mask=torch.tensor([[False, True, True, True, True]]),
+        image_observability_score=torch.tensor([[0.0, 1.0, 1.0, 1.0, 1.0]]),
+    )
+    assert torch.allclose(first_frame[:, 0, :], clean[:, 0, :], atol=1e-5)
+    assert encoder.last_temporal_fallback_metadata["insufficient_history_count"] == 1
+
+
 def test_jepa_mask_sampler_random_and_gps_biased_are_reproducible_and_non_overlapping():
     gps = torch.zeros(2, 2, 3)
     for mode in ("random", "gps_angle_biased"):

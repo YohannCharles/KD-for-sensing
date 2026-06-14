@@ -28,6 +28,7 @@ import pytest
         ("kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest", "--topk"),
         ("kd-sensing-run-deepsense6g-gps-lidar-bgam", "--bgam-mode"),
         ("kd-sensing-evaluate-deepsense6g-gps-lidar-bgam", "--ckpt"),
+        ("kd-sensing-run-amr-net-gps-image", "--claim-status"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):

@@ -12,6 +12,7 @@ from kd_sensing.data.difficulty.operators.image import (
     ImageFogRainOperator,
     ImageMotionBlurOperator,
     ImageNightOperator,
+    ImageObservabilityTransform,
     ImageOcclusionOperator,
 )
 from kd_sensing.registries import DIFFICULTY_OPERATORS
@@ -33,6 +34,8 @@ def _register_defaults() -> None:
         "scenario_c": ScenarioCAsyncPositionFeedbackOperator,
         "scenario_c_async_position_feedback": ScenarioCAsyncPositionFeedbackOperator,
         "image_clean": ImageCleanOperator,
+        "image_observability": ImageObservabilityTransform,
+        "scenario_d_image_observability": ImageObservabilityTransform,
         "image_fog_rain": ImageFogRainOperator,
         "image_night": ImageNightOperator,
         "image_occlusion": ImageOcclusionOperator,
@@ -55,6 +58,7 @@ __all__ = [
     "ImageFogRainOperator",
     "ImageMotionBlurOperator",
     "ImageNightOperator",
+    "ImageObservabilityTransform",
     "ImageOcclusionOperator",
     "ScenarioCAsyncPositionFeedbackOperator",
 ]

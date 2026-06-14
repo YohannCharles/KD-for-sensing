@@ -17,7 +17,9 @@ from kd_sensing.data.difficulty import (
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
+from kd_sensing.engine.runtime import prepare_task_inputs
 from kd_sensing.engine.training_extensions import ExtensionContext
+from kd_sensing.modalities import difficulty_metadata_fields
 from kd_sensing.registries import DIFFICULTY_OPERATORS, RegistryError
 
 
@@ -135,6 +137,256 @@ def test_profile_digest_is_stable_and_validation_rejects_bad_profiles() -> None:
         normalize_difficulty_profiles([{"id": "shift", "operator": "gps_clean", "target_shift": True}])
     with pytest.raises(ValueError, match="Allowed stages"):
         normalize_difficulty_profiles([{"id": "stage", "stage": "preprocess_dataset_files", "operator": "gps_clean"}])
+
+
+def test_scenario_d_profile_normalizes_canonical_conditions_and_rejects_bad_config() -> None:
+    profiles = normalize_difficulty_profiles(
+        [
+            {
+                "id": f"profile_{index}",
+                "stage": "benchmark",
+                "condition": condition,
+                "operators": [{"type": "scenario_d_image_observability"}],
+            }
+            for index, condition in enumerate(
+                [
+                    "D0_full_image",
+                    "D1_weather",
+                    "D2_low_light",
+                    "D3_motion_blur",
+                    "D4_partial_occlusion",
+                    "D5_frame_dropout",
+                    "D6_burst_missing",
+                    "D7_joint_worst_case",
+                ]
+            )
+        ],
+        default_stage="benchmark",
+    )
+
+    assert [profile.condition for profile in profiles] == [
+        "D0_full_image",
+        "D1_weather",
+        "D2_low_light",
+        "D3_motion_blur",
+        "D4_partial_occlusion",
+        "D5_frame_dropout",
+        "D6_burst_missing",
+        "D7_joint_worst_case",
+    ]
+    d7 = profiles[-1]
+    assert d7.severity == 7.0
+    assert d7.operators[0].modality == "image"
+    assert d7.operators[0].affected_modalities == ("image",)
+    assert d7.operators[0].params["image_occlusion_prob"] == 0.5
+    assert d7.operators[0].params["image_burst_dropout_prob"] == 0.5
+    assert d7.operators[0].params["max_burst_len"] == 3
+
+    with pytest.raises(ValueError, match="Unknown Scenario D image observability condition 'D9_magic'.*Available D-levels"):
+        normalize_difficulty_profiles(
+            [{"id": "bad", "condition": "D9_magic", "operator": "scenario_d_image_observability"}],
+            default_stage="benchmark",
+        )
+    with pytest.raises(ValueError, match="image_dropout_prob=.*must be in \\[0, 1\\]"):
+        normalize_difficulty_profiles(
+            [
+                {
+                    "id": "bad_prob",
+                    "condition": "D5_frame_dropout",
+                    "operator": {"type": "scenario_d_image_observability", "image_dropout_prob": 1.5},
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="max_burst_len must be positive"):
+        normalize_difficulty_profiles(
+            [
+                {
+                    "id": "bad_burst",
+                    "condition": "D6_burst_missing",
+                    "operator": {"type": "scenario_d_image_observability", "max_burst_len": 0},
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="pseudo modality 'missing_image_modality'.*canonical modality 'image'"):
+        normalize_difficulty_profiles(
+            [
+                {
+                    "id": "pseudo_image",
+                    "condition": "D0_full_image",
+                    "operator": {"type": "scenario_d_image_observability", "modality": "missing_image_modality"},
+                }
+            ]
+        )
+
+
+def test_image_observability_transform_is_deterministic_and_preserves_targets() -> None:
+    context = DifficultyContext(stage="benchmark", split="test", seed=11, sample_ids=("a", "b"))
+    clean_profile = normalize_difficulty_profiles(
+        [
+            {
+                "id": "clean_d0",
+                "stage": "benchmark",
+                "condition": "D0_full_image",
+                "operator": "scenario_d_image_observability",
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    clean = apply_difficulty_pipeline(_batch(), clean_profile, context)
+    assert torch.equal(clean.batch["image"], _batch()["image"])
+    assert clean.batch["image_valid_mask"].tolist() == [[True, True, True], [True, True, True]]
+    assert torch.allclose(clean.batch["image_observability_score"], torch.ones(2, 3))
+
+    physical_profile = normalize_difficulty_profiles(
+        [
+            {
+                "id": "physical_d4",
+                "stage": "benchmark",
+                "condition": "D4_partial_occlusion",
+                "operators": [
+                    {
+                        "type": "scenario_d_image_observability",
+                        "image_occlusion_prob": 1.0,
+                        "image_occlusion_ratio": 0.5,
+                    }
+                ],
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    physical = apply_difficulty_pipeline(_batch(), physical_profile, context)
+    assert physical.batch["image"].shape == _batch()["image"].shape
+    assert physical.batch["image"].dtype == _batch()["image"].dtype
+    assert bool(physical.batch["image_valid_mask"].all())
+    assert physical.batch["image_observability_score"].max().item() < 1.0
+    assert torch.equal(physical.batch["target_beam"], _batch()["target_beam"])
+    assert physical.batch["metadata"]["sample_id"] == ["a", "b"]
+
+    d7_profile = normalize_difficulty_profiles(
+        [
+            {
+                "id": "joint_d7",
+                "stage": "benchmark",
+                "condition": "D7_joint_worst_case",
+                "operators": [
+                    {
+                        "type": "scenario_d_image_observability",
+                        "image_occlusion_prob": 1.0,
+                        "image_occlusion_ratio": 0.5,
+                        "image_burst_dropout_prob": 1.0,
+                        "max_burst_len": 2,
+                    }
+                ],
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    first = apply_difficulty_pipeline(_batch(), d7_profile, context)
+    second = apply_difficulty_pipeline(_batch(), d7_profile, context)
+
+    assert torch.equal(first.batch["image"], second.batch["image"])
+    assert torch.equal(first.batch["image_valid_mask"], second.batch["image_valid_mask"])
+    assert torch.equal(first.batch["image_burst_dropout_mask"], second.batch["image_burst_dropout_mask"])
+    assert torch.equal(first.batch["image_observability_score"], second.batch["image_observability_score"])
+    assert not bool(first.batch["image_valid_mask"].all())
+    assert bool(first.batch["image_burst_dropout_mask"].any())
+    assert first.batch["image_observability_score"].min().item() == 0.0
+    assert "partial_occlusion" in first.batch["image_degradation_metadata"]["corruption_types"]
+    assert "burst_missing" in first.batch["image_degradation_metadata"]["corruption_types"]
+    assert first.batch["image_degradation_metadata"]["physical_corruption_keeps_valid"] is True
+    assert first.batch["image_degradation_metadata"]["missing_invalidates_frame"] is True
+    assert first.batch["image_observability_replay"]["condition"] == "D7_joint_worst_case"
+    assert torch.equal(first.batch["target_beam"], _batch()["target_beam"])
+    assert torch.equal(first.batch["beam_power"], _batch()["beam_power"])
+
+
+def test_image_observability_metadata_fields_are_queryable() -> None:
+    fields = difficulty_metadata_fields("image")
+
+    for key in (
+        "image_valid_mask",
+        "image_observability_score",
+        "image_dropout_mask",
+        "image_burst_dropout_mask",
+        "image_degradation_metadata",
+    ):
+        assert key in fields
+    assert "not target supervision" in fields["image_observability_score"].lower()
+
+
+def test_batch_mapping_passes_reliability_metadata_only_for_opt_in_models() -> None:
+    batch = _batch()
+    batch.update(
+        {
+            "image_valid_mask": torch.tensor([[True, False, True], [True, True, False]]),
+            "image_observability_score": torch.tensor([[1.0, 0.2, 0.8], [0.9, 0.7, 0.0]]),
+            "image_dropout_mask": torch.tensor([[False, True, False], [False, False, True]]),
+            "image_burst_dropout_mask": torch.tensor([[False, False, False], [False, False, True]]),
+            "gps_valid_mask": torch.tensor([[True, True, False], [True, False, False]]),
+            "gps_delay_steps": torch.tensor([[0, 1, 4], [0, 2, 3]]),
+            "metadata": {
+                "sample_id": ["a", "b"],
+                "split": ["test", "test"],
+                "benchmark_perturbation": {
+                    "gps_condition": "C4_severe_async",
+                    "image_condition": "D6_burst_missing",
+                },
+            },
+        }
+    )
+
+    baseline_inputs = prepare_task_inputs(
+        batch,
+        "fusion",
+        model_cfg={"modalities": ["image", "gps"], "image_profile": "rgb_imagenet"},
+        seq_length=2,
+        num_pred=2,
+        device=torch.device("cpu"),
+    )
+    assert "image_valid_mask" not in baseline_inputs
+    assert "gps_delay_steps" not in baseline_inputs
+
+    aware_inputs = prepare_task_inputs(
+        batch,
+        "fusion",
+        model_cfg={
+            "modalities": ["image", "gps"],
+            "image_profile": "rgb_imagenet",
+            "observability_aware_fusion": {"enabled": True},
+        },
+        seq_length=2,
+        num_pred=2,
+        device=torch.device("cpu"),
+    )
+
+    assert aware_inputs["image_valid_mask"].tolist() == [[False, True, True], [True, False, True]]
+    assert torch.allclose(
+        aware_inputs["image_observability_score"],
+        torch.tensor([[0.2, 0.8, 1.0], [0.7, 0.0, 1.0]]),
+    )
+    assert aware_inputs["gps_valid_mask"].tolist() == [[True, False, True], [False, False, True]]
+    assert torch.allclose(
+        aware_inputs["gps_delay_steps"],
+        torch.tensor([[1.0, 4.0, 0.0], [2.0, 3.0, 0.0]]),
+    )
+    assert aware_inputs["benchmark_condition_metadata"]["gps_condition"] == "C4_severe_async"
+    assert aware_inputs["benchmark_condition_metadata"]["image_condition"] == "D6_burst_missing"
+
+    missing = dict(batch)
+    missing.pop("image_observability_score")
+    with pytest.raises(ValueError, match="required reliability metadata 'image_observability_score' is missing"):
+        prepare_task_inputs(
+            missing,
+            "fusion",
+            model_cfg={
+                "modalities": ["image", "gps"],
+                "image_profile": "rgb_imagenet",
+                "observability_aware_fusion": {"enabled": True},
+            },
+            seq_length=2,
+            num_pred=1,
+            device=torch.device("cpu"),
+        )
 
 
 def test_pipeline_is_deterministic_shape_safe_and_blocks_target_mutation() -> None:

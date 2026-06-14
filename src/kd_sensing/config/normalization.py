@@ -91,6 +91,9 @@ def normalize_loaded_config(
         explicit_early_stopping_mode=explicit_early_stopping_mode,
     )
     apply_objective_runtime_requirements(cfg)
+    from kd_sensing.baselines.amr_net_gps_image.preset import validate_amr_net_gps_image_preset_config
+
+    validate_amr_net_gps_image_preset_config(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
     normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_csi_hardening_alias(cfg)

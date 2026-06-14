@@ -35,6 +35,9 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
     validate_prediction_objective_config(cfg)
+    from kd_sensing.baselines.amr_net_gps_image.preset import validate_amr_net_gps_image_preset_config
+
+    validate_amr_net_gps_image_preset_config(cfg)
     from kd_sensing.engine.epoch_subsampling import validate_epoch_subsampling_config
 
     validate_epoch_subsampling_config(cfg)

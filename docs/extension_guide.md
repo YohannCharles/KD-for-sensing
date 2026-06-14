@@ -20,16 +20,58 @@ component. Custom components still need their defining module imported before th
 
 ## Add a Model
 
-```python
-from kd_sensing.registries import MODELS
+Most new supervised or adaptation baselines should use the modular model path. If the baseline only
+changes a modality encoder, projector, representation/fusion core, or task head, express it with
+`modular_sequence` config and the matching subcomponent registry instead of adding a new whole model.
 
-@MODELS.register("my_image_primary")
-class MyImagePrimary:
-    def __init__(self, feature_size, num_classes, gru_params):
+Config-only baselines can be added by changing YAML:
+
+```yaml
+model:
+  primary:
+    type: modular_sequence
+    modalities: [image, gps]
+    d_model: 64
+    num_classes: 64
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        pretrained: true
+        freeze_backbone: true
+      gps:
+        type: gps_mlp
+        gps_input_size: 3
+        output_dim: 64
+    representation_core:
+      type: early_concat_gru
+      d_model: 64
+      hidden_size: 64
+    heads:
+      beam:
+        type: beam_head
+```
+
+Component baselines register only the replaceable part:
+
+```python
+from kd_sensing.registries import ENCODERS
+
+@ENCODERS.register("my_image_encoder")
+class MyImageEncoder:
+    def __init__(self, output_dim):
         ...
 
-    def forward(self, image_batch):
-        return logits, input_features, output_features
+    def forward(self, image_batch, **metadata):
+        ...
+
+    def training_strategy_metadata(self):
+        return {
+            "architecture_category": "component_baseline",
+            "component_role": "encoder",
+            "uses_external_checkpoint": False,
+            "freeze_policy": "none",
+            "consumes_reliability_metadata": False,
+        }
 ```
 
 Then reference it in YAML:
@@ -37,10 +79,12 @@ Then reference it in YAML:
 ```yaml
 model:
   primary:
-    type: my_image_primary
-    feature_size: 64
-    num_classes: 64
-    gru_params: [64, 64, 1]
+    type: modular_sequence
+    modalities: [image]
+    encoders:
+      image:
+        type: my_image_encoder
+        output_dim: 64
 ```
 
 Image models receive RGB/ImageNet tensors shaped `[B, T, 3, 224, 224]`. Radar models receive
@@ -127,6 +171,20 @@ not follow the default. Retired research-line paths and fusion `logits_kd` / `rk
 New fusion extensions should default to the supervised/adaptation mainline and must not reintroduce KD runtime without a new OpenSpec change.
 When adding a modality, update `kd_sensing.modalities` first, then add dataset
 columns/readers, batch preparation, model registration, diagnostic rendering, and focused tests.
+
+### Whole-model Exceptions
+
+Direct `@MODELS.register(...)` should be used only for a whole-model exception, not as the default
+way to add a baseline. A whole-model exception needs an OpenSpec design reason explaining why the
+behavior cannot be represented as a config-only baseline or an encoder/projector/core/head component.
+The change must document the registry name, config entry, enabled modalities, forward inputs,
+output contract, training strategy metadata, and focused tests.
+
+Whole-model exceptions must still reuse `engine.batch`, `engine.runtime.forward_task_model`, and
+`adapt_model_output`. They must provide `training_strategy_metadata()` or an equivalent run metadata
+helper covering the model registry name, architecture category, enabled modalities, checkpoint reuse,
+freeze policy, and reliability metadata consumption. Focused tests should cover registry build,
+synthetic forward, output adaptation, metadata, and config loading.
 
 Default LiDAR configs use the modular sequence encoder path:
 

@@ -22,6 +22,14 @@ from kd_sensing.data.difficulty import (
     apply_difficulty_pipeline,
     normalize_difficulty_profiles,
 )
+from kd_sensing.data.difficulty.presets import (
+    SCENARIO_D_CANONICAL_CONDITIONS,
+    SCENARIO_D_CONDITION_IDS,
+    SCENARIO_D_SUITE_TYPE,
+    normalize_scenario_d_condition_id,
+    normalize_scenario_d_operator_params,
+    scenario_d_condition,
+)
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
 from kd_sensing.utils.paths import resolve_path
@@ -32,6 +40,7 @@ RUNNER_VERSION = "jepa_gps_shortcut_benchmark_runner_v1"
 DEFAULT_OUTPUT_DIR = "outputs/analysis/jepa_gps_shortcut_benchmark"
 DEFAULT_PRIMARY_METRIC = "dba"
 SCENARIO_C_SUITE_TYPE = "scenario_c_async_position_feedback"
+SCENARIO_C_X_D_SUITE_TYPE = "scenario_c_x_d_image_observability"
 
 SUPPORTED_MODEL_GROUPS = {
     "gps_only",
@@ -42,6 +51,10 @@ SUPPORTED_MODEL_GROUPS = {
     "transformer_image_gps",
     "jepa_mean_pool",
     "jepa_gps_query_pool",
+    "cnn_gps",
+    "image_ae_gps",
+    "image_jepa_only",
+    "image_jepa_gps",
     "mock",
 }
 
@@ -80,6 +93,11 @@ SUITE_ALIASES = {
     "sampling_mismatch": "sampling_rate_mismatch",
     "sampling_rate_mismatch": "sampling_rate_mismatch",
     "scenario_c": SCENARIO_C_SUITE_TYPE,
+    "scenario_d": SCENARIO_D_SUITE_TYPE,
+    "image_observability": SCENARIO_D_SUITE_TYPE,
+    "scenario_d_image_observability": SCENARIO_D_SUITE_TYPE,
+    "scenario_c_x_d": SCENARIO_C_X_D_SUITE_TYPE,
+    "scenario_c_x_d_image_observability": SCENARIO_C_X_D_SUITE_TYPE,
     "async_position_feedback": SCENARIO_C_SUITE_TYPE,
     "asynchronous_position_feedback": SCENARIO_C_SUITE_TYPE,
     "scenario_c_async_position_feedback": SCENARIO_C_SUITE_TYPE,
@@ -98,9 +116,11 @@ IMAGE_SUITE_TYPES = {
     "image_night",
     "image_occlusion",
     "image_motion_blur",
+    SCENARIO_D_SUITE_TYPE,
 }
 TEMPORAL_SUITE_TYPES = {"temporal_delay", "sampling_rate_mismatch", SCENARIO_C_SUITE_TYPE}
-SUPPORTED_SUITE_TYPES = GPS_SUITE_TYPES | IMAGE_SUITE_TYPES | TEMPORAL_SUITE_TYPES
+MATRIX_SUITE_TYPES = {SCENARIO_C_X_D_SUITE_TYPE}
+SUPPORTED_SUITE_TYPES = GPS_SUITE_TYPES | IMAGE_SUITE_TYPES | TEMPORAL_SUITE_TYPES | MATRIX_SUITE_TYPES
 
 SCENARIO_C_CANONICAL_CONDITIONS = (
     {
@@ -164,6 +184,27 @@ DEFAULT_COMPARABILITY_KEYS = (
     "checkpoint_provenance",
     "enabled_modalities",
 )
+
+SCENARIO_D_REQUIRED_MODEL_GROUPS = (
+    "gps_only",
+    "cnn_gps",
+    "image_ae_gps",
+    "image_jepa_only",
+    "image_jepa_gps",
+)
+SCENARIO_D_GROUP_ALIASES = {
+    "gps_only": "gps_only",
+    "gps_neural": "gps_only",
+    "resnet_image_gps": "cnn_gps",
+    "transformer_image_gps": "cnn_gps",
+    "cnn_gps": "cnn_gps",
+    "camera_ae_gps": "image_ae_gps",
+    "image_ae_gps": "image_ae_gps",
+    "jepa_mean_pool": "image_jepa_only",
+    "image_jepa_only": "image_jepa_only",
+    "jepa_gps_query_pool": "image_jepa_gps",
+    "image_jepa_gps": "image_jepa_gps",
+}
 
 
 class BenchmarkManifestError(ValueError):
@@ -345,6 +386,7 @@ def validate_benchmark_manifest(
         normalized = normalize_suite_config(suite, index=index)
         normalized_suites.append(normalized)
     cfg["perturbation_suites"] = normalized_suites
+    _validate_scenario_d_model_groups(cfg, path=path)
 
     seeds = []
     for index, seed in enumerate(cfg["seeds"]):
@@ -380,6 +422,10 @@ def normalize_suite_config(suite: Mapping[str, Any], *, index: int = 0) -> dict[
         )
     if suite_type == SCENARIO_C_SUITE_TYPE:
         return _normalize_scenario_c_suite(suite, suite_id=suite_id, suite_type=suite_type)
+    if suite_type == SCENARIO_D_SUITE_TYPE:
+        return _normalize_scenario_d_suite(suite, suite_id=suite_id, suite_type=suite_type)
+    if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
+        return _normalize_scenario_cxd_suite(suite, suite_id=suite_id, suite_type=suite_type)
     severities = suite.get("severities", suite.get("severity", [0.0]))
     if not isinstance(severities, (list, tuple)):
         severities = [severities]
@@ -404,6 +450,158 @@ def normalize_suite_config(suite: Mapping[str, Any], *, index: int = 0) -> dict[
         "condition": condition,
         "severities": normalized_severities,
     }
+
+
+def _normalize_scenario_d_suite(suite: Mapping[str, Any], *, suite_id: str, suite_type: str) -> dict[str, Any]:
+    preset = str(suite.get("preset", "canonical")).strip() or "canonical"
+    raw_conditions = suite.get("conditions", suite.get("image_conditions"))
+    if raw_conditions is None:
+        if preset not in {"canonical", "scenario_d_canonical", "D0_D7"}:
+            raise BenchmarkManifestError(
+                f"Unknown Scenario D preset for '{suite_id}': '{preset}'. "
+                "Expected 'canonical' or an explicit conditions list."
+            )
+        raw_conditions = [dict(item) for item in SCENARIO_D_CANONICAL_CONDITIONS]
+    if not isinstance(raw_conditions, (list, tuple)) or not raw_conditions:
+        raise BenchmarkManifestError(f"Scenario D suite '{suite_id}' must define at least one condition.")
+    conditions = [
+        _normalize_scenario_d_condition(item, suite_id=suite_id, index=index)
+        for index, item in enumerate(raw_conditions)
+    ]
+    requested_conditions = suite.get("condition_ids", suite.get("levels"))
+    if requested_conditions is not None:
+        raw_requested = requested_conditions if isinstance(requested_conditions, (list, tuple)) else [requested_conditions]
+        selected_ids = [normalize_scenario_d_condition_id(item) for item in raw_requested]
+        conditions = [condition for condition in conditions if condition["id"] in selected_ids]
+        if len(conditions) != len(selected_ids):
+            available = [condition["id"] for condition in conditions]
+            raise BenchmarkManifestError(
+                f"Scenario D suite '{suite_id}' requested conditions {selected_ids}, "
+                f"but available conditions are {available}."
+            )
+    requested = suite.get("severities", suite.get("severity"))
+    if requested is not None:
+        raw_severities = requested if isinstance(requested, (list, tuple)) else [requested]
+        requested_values = [
+            _finite_float(value, field=f"perturbation_suites.{suite_id}.severities")
+            for value in raw_severities
+        ]
+        selected = [
+            condition
+            for condition in conditions
+            if any(math.isclose(float(condition["severity"]), value, abs_tol=1e-9) for value in requested_values)
+        ]
+        if len(selected) != len(requested_values):
+            available = [condition["severity"] for condition in conditions]
+            raise BenchmarkManifestError(
+                f"Scenario D suite '{suite_id}' requested severities {requested_values}, "
+                f"but available D-level severities are {available}."
+            )
+        conditions = selected
+    severities = [float(condition["severity"]) for condition in conditions]
+    return {
+        **dict(suite),
+        "id": suite_id,
+        "type": suite_type,
+        "condition": str(suite.get("condition", SCENARIO_D_SUITE_TYPE)),
+        "preset": preset,
+        "severity_unit": str(suite.get("severity_unit", "scenario_d_level")),
+        "fallback": str(suite.get("fallback", "identity")),
+        "modality": "image",
+        "severities": severities,
+        "scenario_d_conditions": conditions,
+    }
+
+
+def _normalize_scenario_d_condition(condition: Any, *, suite_id: str, index: int) -> dict[str, Any]:
+    if isinstance(condition, str):
+        item = scenario_d_condition(condition)
+    elif isinstance(condition, Mapping):
+        item = dict(condition)
+        condition_id = normalize_scenario_d_condition_id(item.get("id", item.get("name", f"D{index}")))
+        base = scenario_d_condition(condition_id)
+        merged_params = dict(base.get("params", {}))
+        merged_params.update(dict(item.get("params", {})))
+        for key, value in item.items():
+            if key not in {"id", "name", "severity", "description", "params", "sweep"}:
+                merged_params[key] = value
+        item = {**base, **item, "id": condition_id, "params": merged_params}
+    else:
+        raise BenchmarkManifestError(f"Scenario D condition {index} in '{suite_id}' must be a mapping or string.")
+    params = normalize_scenario_d_operator_params(
+        condition=item["id"],
+        params=item.get("params", {}),
+        profile_id=suite_id,
+        operator_type=SCENARIO_D_SUITE_TYPE,
+    )
+    return {
+        "id": str(item["id"]),
+        "severity": float(item.get("severity", params.get("scenario_d_severity", index))),
+        "description": str(item.get("description", "")),
+        "operator_params": params,
+        "sweep": dict(item.get("sweep", {})),
+    }
+
+
+def _normalize_scenario_cxd_suite(suite: Mapping[str, Any], *, suite_id: str, suite_type: str) -> dict[str, Any]:
+    scenario_c = _normalize_scenario_c_suite(
+        {**dict(suite.get("scenario_c", {}) if isinstance(suite.get("scenario_c"), Mapping) else {}), "id": f"{suite_id}_scenario_c", "type": SCENARIO_C_SUITE_TYPE},
+        suite_id=f"{suite_id}_scenario_c",
+        suite_type=SCENARIO_C_SUITE_TYPE,
+    )
+    scenario_d = _normalize_scenario_d_suite(
+        {**dict(suite.get("scenario_d", {}) if isinstance(suite.get("scenario_d"), Mapping) else {}), "id": f"{suite_id}_scenario_d", "type": SCENARIO_D_SUITE_TYPE},
+        suite_id=f"{suite_id}_scenario_d",
+        suite_type=SCENARIO_D_SUITE_TYPE,
+    )
+    return {
+        **dict(suite),
+        "id": suite_id,
+        "type": suite_type,
+        "condition": str(suite.get("condition", SCENARIO_C_X_D_SUITE_TYPE)),
+        "severity_unit": "scenario_c_x_d_level",
+        "severities": [0.0],
+        "scenario_c_conditions": scenario_c["scenario_c_conditions"],
+        "scenario_d_conditions": scenario_d["scenario_d_conditions"],
+    }
+
+
+def _validate_scenario_d_model_groups(cfg: dict[str, Any], *, path: str | Path | None) -> None:
+    if not _manifest_has_scenario_d(cfg):
+        return
+    declared = {
+        _scenario_d_group_category(spec.get("group", ""))
+        for spec in cfg.get("models", {}).values()
+        if isinstance(spec, Mapping)
+    }
+    declared.discard("")
+    missing = [group for group in SCENARIO_D_REQUIRED_MODEL_GROUPS if group not in declared]
+    scenario_d_cfg = cfg.get("scenario_d", {}) if isinstance(cfg.get("scenario_d"), Mapping) else {}
+    allow_partial = bool(scenario_d_cfg.get("allow_partial", cfg.get("allow_partial_scenario_d", False)))
+    strict = bool(scenario_d_cfg.get("strict_model_groups", cfg.get("strict_scenario_d", False)))
+    cfg["scenario_d_model_groups"] = {
+        "required": list(SCENARIO_D_REQUIRED_MODEL_GROUPS),
+        "declared": sorted(declared),
+        "missing": missing,
+        "allow_partial": allow_partial,
+        "strict": strict,
+    }
+    if strict and missing and not allow_partial:
+        raise BenchmarkManifestError(
+            f"Scenario D strict evaluation in {path or '<memory>'} is missing required model groups: {missing}. "
+            "Set scenario_d.allow_partial=true to record a partial run."
+        )
+
+
+def _manifest_has_scenario_d(manifest: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(suite, Mapping) and str(suite.get("type")) in {SCENARIO_D_SUITE_TYPE, SCENARIO_C_X_D_SUITE_TYPE}
+        for suite in manifest.get("perturbation_suites", [])
+    )
+
+
+def _scenario_d_group_category(group: Any) -> str:
+    return SCENARIO_D_GROUP_ALIASES.get(str(group), "")
 
 
 def _normalize_scenario_c_suite(suite: Mapping[str, Any], *, suite_id: str, suite_type: str) -> dict[str, Any]:
@@ -527,8 +725,10 @@ def run_jepa_gps_shortcut_benchmark(
     _prepare_output_dir(out, force=force)
     tables_dir = out / "tables"
     figures_dir = out / "figures"
+    results_dir = out / "results"
+    plots_dir = out / "plots"
     cache_dir = out / "cache"
-    for directory in (tables_dir, figures_dir, cache_dir):
+    for directory in (tables_dir, figures_dir, results_dir, plots_dir, cache_dir):
         directory.mkdir(parents=True, exist_ok=True)
     registry = OutputRegistry(out)
     warnings: list[dict[str, Any]] = []
@@ -573,6 +773,17 @@ def run_jepa_gps_shortcut_benchmark(
     _write_csv(tables_dir / "metrics_by_condition.csv", metrics_rows)
     _write_csv(tables_dir / "robustness_summary.csv", robustness_rows)
     _write_csv(tables_dir / "shortcut_reliance_summary.csv", shortcut_rows)
+    scenario_d_rows: list[dict[str, Any]] = []
+    heatmap_path: Path | None = None
+    scenario_d_results_path: Path | None = None
+    if _manifest_has_scenario_d(manifest):
+        scenario_d_rows = aggregate_scenario_d_matrix(metrics_rows, primary_metric=str(manifest["metrics"]["primary"]))
+        scenario_d_results_path = results_dir / "scenario_d_image_observability.csv"
+        _write_csv(scenario_d_results_path, scenario_d_rows)
+        heatmap = scenario_d_heatmap(scenario_d_rows, primary_metric=str(manifest["metrics"]["primary"]))
+        heatmap_path = results_dir / "heatmap_cx_dy.npy"
+        np.save(heatmap_path, heatmap)
+        _write_scenario_d_figures(plots_dir, scenario_d_rows, manifest, registry, warnings)
     if bool(manifest.get("figures", {}).get("enabled", manifest.get("figures", {}).get("export", True))):
         _write_benchmark_figures(figures_dir, metrics_rows, manifest, registry, warnings)
 
@@ -614,6 +825,8 @@ def run_jepa_gps_shortcut_benchmark(
         "metrics_by_condition": str(tables_dir / "metrics_by_condition.csv"),
         "robustness_summary": str(tables_dir / "robustness_summary.csv"),
         "shortcut_reliance_summary": str(tables_dir / "shortcut_reliance_summary.csv"),
+        "scenario_d_results": str(scenario_d_results_path) if scenario_d_results_path else "",
+        "scenario_d_heatmap": str(heatmap_path) if heatmap_path else "",
         "models": sorted(manifest["models"]),
         "warnings": warnings,
         "dry_run": bool(dry_run),
@@ -648,6 +861,30 @@ def apply_benchmark_perturbation(
 
 def _difficulty_profile_from_suite(suite: Mapping[str, Any], *, severity: float, seed: int):
     suite_type = str(suite["type"])
+    if suite_type == SCENARIO_D_SUITE_TYPE:
+        condition = _scenario_d_condition_for_severity(suite, severity)
+        operator = {
+            "type": SCENARIO_D_SUITE_TYPE,
+            "modality": "image",
+            **dict(condition.get("operator_params", {})),
+        }
+        profile = {
+            "id": str(suite["id"]),
+            "operators": [operator],
+            "stage": "benchmark",
+            "split": str(suite.get("split", "test")),
+            "condition": str(condition["id"]),
+            "severity": float(condition["severity"]),
+            "seed": int(seed),
+            "fallback": str(suite.get("fallback", "identity")),
+            "affected_modalities": ["image"],
+            "metadata": {
+                "source": "jepa_gps_shortcut_benchmark",
+                "suite_type": suite_type,
+                "suite_id": suite.get("id"),
+            },
+        }
+        return normalize_difficulty_profiles([profile], default_seed=seed, default_stage="benchmark")[0]
     params = {
         key: value
         for key, value in suite.items()
@@ -681,6 +918,8 @@ def _suite_affected_modality(suite: Mapping[str, Any]) -> str:
     suite_type = str(suite.get("type"))
     if suite_type in IMAGE_SUITE_TYPES:
         return "image"
+    if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
+        return "image"
     if suite_type in TEMPORAL_SUITE_TYPES:
         return str(suite.get("modality", "gps"))
     return "gps"
@@ -689,6 +928,8 @@ def _suite_affected_modality(suite: Mapping[str, Any]) -> str:
 def _difficulty_condition_for_suite(suite: Mapping[str, Any], severity: float) -> str:
     if str(suite.get("type")) == SCENARIO_C_SUITE_TYPE:
         return str(_scenario_c_condition_for_severity(suite, severity).get("id", suite.get("condition", "scenario_c")))
+    if str(suite.get("type")) == SCENARIO_D_SUITE_TYPE:
+        return str(_scenario_d_condition_for_severity(suite, severity).get("id", suite.get("condition", SCENARIO_D_SUITE_TYPE)))
     return str(suite.get("condition", _default_condition(str(suite.get("type")))))
 
 
@@ -696,6 +937,29 @@ def _benchmark_difficulty_provenance(manifest: Mapping[str, Any]) -> list[dict[s
     records: list[dict[str, Any]] = []
     for suite in manifest.get("perturbation_suites", []):
         if not isinstance(suite, Mapping):
+            continue
+        if str(suite.get("type")) == SCENARIO_C_X_D_SUITE_TYPE:
+            for seed in manifest.get("seeds", [0]):
+                for c_condition in suite.get("scenario_c_conditions", []):
+                    for d_condition in suite.get("scenario_d_conditions", []):
+                        profile = _difficulty_profile_from_cxd_pair(
+                            suite,
+                            gps_condition=c_condition,
+                            image_condition=d_condition,
+                            seed=int(seed),
+                        )
+                        records.append(
+                            {
+                                "suite_id": suite.get("id"),
+                                "suite_type": suite.get("type"),
+                                "seed": int(seed),
+                                "severity": float(d_condition.get("severity", 0.0)),
+                                "gps_condition": c_condition.get("id"),
+                                "image_condition": d_condition.get("id"),
+                                "condition": f"{c_condition.get('id')}+{d_condition.get('id')}",
+                                "profile": profile.to_dict(),
+                            }
+                        )
             continue
         for seed in manifest.get("seeds", [0]):
             for severity in suite.get("severities", [0.0]):
@@ -711,6 +975,45 @@ def _benchmark_difficulty_provenance(manifest: Mapping[str, Any]) -> list[dict[s
                     }
                 )
     return records
+
+
+def _difficulty_profile_from_cxd_pair(
+    suite: Mapping[str, Any],
+    *,
+    gps_condition: Mapping[str, Any],
+    image_condition: Mapping[str, Any],
+    seed: int,
+):
+    profile = {
+        "id": str(suite["id"]),
+        "operators": [
+            {
+                "type": SCENARIO_C_SUITE_TYPE,
+                "modality": "gps",
+                "scenario_c_conditions": [dict(gps_condition)],
+            },
+            {
+                "type": SCENARIO_D_SUITE_TYPE,
+                "modality": "image",
+                **dict(image_condition.get("operator_params", {})),
+            },
+        ],
+        "stage": "benchmark",
+        "split": str(suite.get("split", "test")),
+        "condition": f"{gps_condition.get('id')}+{image_condition.get('id')}",
+        "severity": float(gps_condition.get("severity", 0.0)),
+        "seed": int(seed),
+        "fallback": str(suite.get("fallback", "identity")),
+        "affected_modalities": ["gps", "image"],
+        "metadata": {
+            "source": "jepa_gps_shortcut_benchmark",
+            "suite_type": SCENARIO_C_X_D_SUITE_TYPE,
+            "suite_id": suite.get("id"),
+            "gps_condition": gps_condition.get("id"),
+            "image_condition": image_condition.get("id"),
+        },
+    }
+    return normalize_difficulty_profiles([profile], default_seed=seed, default_stage="benchmark")[0]
 
 
 def evaluate_model_comparability(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -736,6 +1039,7 @@ def evaluate_model_comparability(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "enabled_modalities": _sorted_modalities(
                 declared.get("enabled_modalities", spec.get("modalities", spec.get("enabled_modalities", [])))
             ),
+            "consumes_reliability_metadata": _model_consumes_reliability_metadata(spec),
         }
     inconsistent: list[dict[str, Any]] = []
     for key in keys:
@@ -839,6 +1143,203 @@ def aggregate_shortcut_reliance(
         )
     output.sort(key=lambda item: str(item["model"]))
     return output
+
+
+def aggregate_scenario_d_matrix(
+    metrics_rows: Iterable[Mapping[str, Any]],
+    *,
+    primary_metric: str = DEFAULT_PRIMARY_METRIC,
+) -> list[dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in metrics_rows
+        if str(row.get("suite_type")) in {SCENARIO_D_SUITE_TYPE, SCENARIO_C_X_D_SUITE_TYPE}
+        or str(row.get("image_condition", "")).startswith("D")
+    ]
+    clean_by_model = {
+        (str(row.get("model")), str(row.get("seed"))): _float_or_none(row.get("primary_metric"))
+        for row in metrics_rows
+        if str(row.get("condition")) == "clean"
+    }
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        clean = clean_by_model.get((str(row.get("model")), str(row.get("seed"))))
+        metric = _float_or_none(row.get("primary_metric"))
+        clean_delta = "" if clean is None or metric is None else metric - clean
+        rsi = "" if clean in (None, 0) or metric is None else metric / clean
+        gps_condition = str(row.get("gps_condition") or ("C0_sync" if str(row.get("suite_type")) == SCENARIO_D_SUITE_TYPE else ""))
+        image_condition = str(row.get("image_condition") or row.get("condition") or "")
+        output.append(
+            {
+                "model": row.get("model", ""),
+                "group": row.get("group", ""),
+                "gps_condition": gps_condition,
+                "image_condition": image_condition,
+                "condition": row.get("condition", ""),
+                "suite": row.get("suite", ""),
+                "suite_type": row.get("suite_type", ""),
+                "seed": row.get("seed", ""),
+                "split": row.get("split", ""),
+                "sample_count": row.get("sample_count", ""),
+                "severity": row.get("severity", ""),
+                "c_severity": row.get("c_severity", ""),
+                "d_severity": row.get("d_severity", ""),
+                "difficulty_digest": row.get("difficulty_digest", ""),
+                "primary_metric_name": primary_metric,
+                "primary_metric": metric if metric is not None else "",
+                "top1": row.get("top1", ""),
+                "top3": row.get("top3", ""),
+                "dba": row.get("dba", ""),
+                "clean_primary_metric": clean if clean is not None else row.get("clean_primary_metric", ""),
+                "clean_delta": clean_delta,
+                "relative_drop": row.get("relative_drop", ""),
+                "worst_case": bool(row.get("worst_case"))
+                or (gps_condition == "C4_severe_async" and image_condition == "D7_joint_worst_case"),
+                "rsi": rsi,
+                "phase_transition": bool(row.get("phase_transition")),
+                "cnn_vs_jepa_crossing_point": "",
+                "modality_dominance_ratio": row.get("modality_dominance_ratio", ""),
+                "consumes_reliability_metadata": row.get("consumes_reliability_metadata", ""),
+                "comparability_status": row.get("comparability_status", ""),
+                "status": row.get("status", "generated"),
+            }
+        )
+    _annotate_crossing_points(output)
+    output.sort(key=lambda item: (str(item["model"]), str(item["gps_condition"]), str(item["image_condition"]), str(item["seed"])))
+    return output
+
+
+def scenario_d_heatmap(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    primary_metric: str = DEFAULT_PRIMARY_METRIC,
+) -> np.ndarray:
+    del primary_metric
+    materialized = [dict(row) for row in rows if str(row.get("gps_condition", "")).startswith("C") and str(row.get("image_condition", "")).startswith("D")]
+    models = sorted({str(row.get("model")) for row in materialized})
+    gps_ids = [item["id"] for item in SCENARIO_C_CANONICAL_CONDITIONS]
+    image_ids = list(SCENARIO_D_CONDITION_IDS)
+    heatmap = np.full((len(models), len(gps_ids), len(image_ids)), np.nan, dtype=np.float32)
+    model_index = {model: index for index, model in enumerate(models)}
+    gps_index = {condition: index for index, condition in enumerate(gps_ids)}
+    image_index = {condition: index for index, condition in enumerate(image_ids)}
+    for row in materialized:
+        model = str(row.get("model"))
+        gps_condition = str(row.get("gps_condition"))
+        image_condition = str(row.get("image_condition"))
+        if model not in model_index or gps_condition not in gps_index or image_condition not in image_index:
+            continue
+        value = _float_or_none(row.get("primary_metric"))
+        if value is None:
+            continue
+        heatmap[model_index[model], gps_index[gps_condition], image_index[image_condition]] = float(value)
+    return heatmap
+
+
+def _annotate_crossing_points(rows: list[dict[str, Any]]) -> None:
+    by_condition: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        by_condition.setdefault((str(row.get("gps_condition")), str(row.get("image_condition")), str(row.get("seed"))), []).append(row)
+    for items in by_condition.values():
+        cnn = [
+            row
+            for row in items
+            if _scenario_d_group_category(row.get("group")) in {"cnn_gps", "image_ae_gps"}
+        ]
+        jepa = [
+            row
+            for row in items
+            if _scenario_d_group_category(row.get("group")) in {"image_jepa_only", "image_jepa_gps"}
+        ]
+        if not cnn or not jepa:
+            continue
+        cnn_best = max((_float_or_none(row.get("primary_metric")) or 0.0 for row in cnn), default=0.0)
+        jepa_best = max((_float_or_none(row.get("primary_metric")) or 0.0 for row in jepa), default=0.0)
+        if jepa_best >= cnn_best:
+            label = f"{items[0].get('gps_condition')}+{items[0].get('image_condition')}"
+            for row in items:
+                row["cnn_vs_jepa_crossing_point"] = label
+
+
+def _write_scenario_d_figures(
+    plots_dir: Path,
+    rows: list[dict[str, Any]],
+    manifest: Mapping[str, Any],
+    registry: OutputRegistry,
+    warnings: list[dict[str, Any]],
+) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        warnings.append(WarningRecord(code="matplotlib_unavailable", message=str(exc)).to_dict())
+        for name in ("robustness_surface", "phase_transition_curve", "modality_dominance"):
+            registry.skipped_output(plots_dir / f"{name}.png", reason="matplotlib_unavailable", kind="figure")
+        return
+    dpi = int(manifest.get("figures", {}).get("dpi", 180)) if isinstance(manifest.get("figures"), Mapping) else 180
+    _plot_robustness_surface(plots_dir / "robustness_surface.png", rows, dpi=dpi, plt=plt)
+    _plot_phase_transition(plots_dir / "phase_transition_curve.png", rows, dpi=dpi, plt=plt)
+    _plot_modality_dominance(plots_dir / "modality_dominance.png", rows, dpi=dpi, plt=plt)
+
+
+def _plot_robustness_surface(path: Path, rows: list[dict[str, Any]], *, dpi: int, plt: Any) -> None:
+    fig, ax = plt.subplots(figsize=(7, 4))
+    by_model: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_model.setdefault(str(row.get("model")), []).append(row)
+    for model, model_rows in sorted(by_model.items()):
+        model_rows.sort(key=lambda item: (float(item.get("c_severity") or 0.0), float(item.get("d_severity") or 0.0)))
+        y = [_float(item.get("primary_metric")) for item in model_rows]
+        x = list(range(len(y)))
+        ax.plot(x, y, marker="o", linewidth=1.2, label=model)
+    ax.set_title("Scenario D robustness surface")
+    ax.set_xlabel("Cx-Dy condition index")
+    ax.set_ylabel("primary metric")
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_phase_transition(path: Path, rows: list[dict[str, Any]], *, dpi: int, plt: Any) -> None:
+    fig, ax = plt.subplots(figsize=(7, 4))
+    by_model: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_model.setdefault(str(row.get("model")), []).append(row)
+    for model, model_rows in sorted(by_model.items()):
+        model_rows.sort(key=lambda item: float(item.get("d_severity") or 0.0))
+        x = [float(row.get("d_severity") or 0.0) for row in model_rows]
+        y = [_float(row.get("clean_delta")) for row in model_rows]
+        ax.plot(x, y, marker=".", linewidth=1.0, label=model)
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    ax.set_title("Phase transition curve")
+    ax.set_xlabel("Scenario D severity")
+    ax.set_ylabel("clean delta")
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_modality_dominance(path: Path, rows: list[dict[str, Any]], *, dpi: int, plt: Any) -> None:
+    fig, ax = plt.subplots(figsize=(7, 4))
+    by_model: dict[str, list[float]] = {}
+    for row in rows:
+        value = _float_or_none(row.get("modality_dominance_ratio"))
+        if value is None:
+            continue
+        by_model.setdefault(str(row.get("model")), []).append(value)
+    labels = sorted(by_model)
+    values = [float(np.mean(by_model[label])) if by_model[label] else 0.0 for label in labels]
+    ax.bar(labels, values)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title("Modality dominance")
+    ax.set_ylabel("image dominance ratio")
+    ax.tick_params(axis="x", rotation=30)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
 
 
 def read_benchmark_analysis_bundle(
@@ -1067,16 +1568,40 @@ def _metrics_rows_for_model(
                 "top5": _metric_or_blank(source, "top5"),
                 "dba": _metric_or_blank(source, "dba"),
                 "mean_beam_index_error": _metric_or_blank(source, "mean_beam_index_error"),
+                "consumes_reliability_metadata": _model_consumes_reliability_metadata(model_spec),
                 "comparability_status": comparability_status,
                 "status": source.get("status", "generated") if not dry_run else "dry_run",
             }
         )
     for suite in manifest.get("perturbation_suites", []):
         suite_type = str(suite.get("type"))
+        if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
+            for seed in manifest.get("seeds", [42]):
+                for gps_condition in suite.get("scenario_c_conditions", []):
+                    for image_condition in suite.get("scenario_d_conditions", []):
+                        rows.append(
+                            _scenario_cxd_metric_row(
+                                model_name,
+                                model_spec,
+                                source,
+                                suite,
+                                gps_condition=gps_condition,
+                                image_condition=image_condition,
+                                seed=int(seed),
+                                split=split,
+                                sample_count=sample_count,
+                                primary_name=primary_name,
+                                clean_primary=clean_primary,
+                                comparability_status=comparability_status,
+                                dry_run=dry_run,
+                            )
+                        )
+            continue
         suite_max = max([float(value) for value in suite.get("severities", [0.0])] or [0.0] + [1.0])
         for severity in suite.get("severities", [0.0]):
             severity_value = float(severity)
             scenario_c_condition = _scenario_c_condition_for_severity(suite, severity_value) if suite_type == SCENARIO_C_SUITE_TYPE else {}
+            scenario_d_condition = _scenario_d_condition_for_severity(suite, severity_value) if suite_type == SCENARIO_D_SUITE_TYPE else {}
             for seed in manifest.get("seeds", [42]):
                 metric_value = _perturbed_metric_value(clean_primary, severity_value, suite_type, model_spec, suite_max=suite_max)
                 row = {
@@ -1100,11 +1625,14 @@ def _metrics_rows_for_model(
                     "top5": _scaled_metric(source, "top5", clean_primary, metric_value),
                     "dba": metric_value if primary_name == "dba" else _scaled_metric(source, "dba", clean_primary, metric_value),
                     "mean_beam_index_error": _scaled_error_metric(source, "mean_beam_index_error", clean_primary, metric_value),
+                    "consumes_reliability_metadata": _model_consumes_reliability_metadata(model_spec),
                     "comparability_status": comparability_status,
                     "status": source.get("status", "generated") if not dry_run else "dry_run",
                 }
                 if suite_type == SCENARIO_C_SUITE_TYPE:
                     row.update(_scenario_c_metric_columns(scenario_c_condition, model_spec=model_spec))
+                if suite_type == SCENARIO_D_SUITE_TYPE:
+                    row.update(_scenario_d_metric_columns(scenario_d_condition, seed=int(seed)))
                 rows.append(row)
     _add_scenario_c_accuracy_ratios(rows)
     rows.sort(key=lambda item: (str(item["model"]), str(item["suite"]), float(item["severity"]), int(item["seed"])))
@@ -1165,16 +1693,16 @@ def _summary_from_metric_mapping(
         "source": status,
         "split": split,
         "sample_count": sample_count,
-        "top1": float(metrics.get("top1", 0.0) or 0.0),
-        "top3": float(metrics.get("top3", metrics.get("top_3", 0.0)) or 0.0),
-        "top5": float(metrics.get("top5", metrics.get("top_5", 0.0)) or 0.0),
-        "dba": float(metrics.get("dba", metrics.get("DBA", 0.0)) or 0.0),
-        "mean_beam_index_error": float(
-            metrics.get("mean_beam_index_error", metrics.get("beam_index_mae", metrics.get("beam_mae", 0.0))) or 0.0
+        "top1": _float(metrics.get("top1", 0.0)),
+        "top3": _float(metrics.get("top3", metrics.get("top_3", 0.0))),
+        "top5": _float(metrics.get("top5", metrics.get("top_5", 0.0))),
+        "dba": _float(metrics.get("dba", metrics.get("DBA", 0.0))),
+        "mean_beam_index_error": _float(
+            metrics.get("mean_beam_index_error", metrics.get("beam_index_mae", metrics.get("beam_mae", 0.0)))
         ),
         "status": status,
     }
-    summary["primary_metric"] = float(metrics.get(primary, summary.get(primary, summary["dba"])) or 0.0)
+    summary["primary_metric"] = _float(metrics.get(primary, summary.get(primary, summary["dba"])))
     return summary
 
 
@@ -1619,6 +2147,16 @@ def _scenario_c_condition_for_severity(suite: Mapping[str, Any], severity: float
     return dict(conditions[-1]) if isinstance(conditions[-1], Mapping) else {}
 
 
+def _scenario_d_condition_for_severity(suite: Mapping[str, Any], severity: float) -> dict[str, Any]:
+    conditions = suite.get("scenario_d_conditions", [])
+    if not isinstance(conditions, (list, tuple)) or not conditions:
+        conditions = [_normalize_scenario_d_condition(item, suite_id=str(suite.get("id", "scenario_d")), index=index) for index, item in enumerate(SCENARIO_D_CONDITION_IDS)]
+    for condition in conditions:
+        if isinstance(condition, Mapping) and math.isclose(float(condition.get("severity", 0.0)), float(severity), abs_tol=1e-9):
+            return dict(condition)
+    return dict(conditions[-1]) if isinstance(conditions[-1], Mapping) else {}
+
+
 def _scenario_c_stride_per_sample(
     condition: Mapping[str, Any],
     *,
@@ -1782,6 +2320,7 @@ def _build_runner_manifest(
             "weights": weights,
             "logits_cache": spec.get("logits_cache") if isinstance(spec, Mapping) else None,
             "modalities": spec.get("modalities", spec.get("enabled_modalities", [])) if isinstance(spec, Mapping) else [],
+            "consumes_reliability_metadata": _model_consumes_reliability_metadata(spec) if isinstance(spec, Mapping) else False,
             "checkpoint_provenance": spec.get("checkpoint_provenance", weights) if isinstance(spec, Mapping) else weights,
             "checkpoint_metadata": checkpoint_metadata,
             "training": spec.get("training") if isinstance(spec, Mapping) else None,
@@ -1818,6 +2357,11 @@ def _build_runner_manifest(
             "metrics_by_condition": "tables/metrics_by_condition.csv",
             "robustness_summary": "tables/robustness_summary.csv",
             "shortcut_reliance_summary": "tables/shortcut_reliance_summary.csv",
+            "scenario_d_image_observability": "results/scenario_d_image_observability.csv",
+            "heatmap_cx_dy": "results/heatmap_cx_dy.npy",
+            "robustness_surface": "plots/robustness_surface.png",
+            "phase_transition_curve": "plots/phase_transition_curve.png",
+            "modality_dominance": "plots/modality_dominance.png",
         },
         "outputs": registry.list_outputs(),
     }
@@ -2005,10 +2549,73 @@ def _perturbed_metric_value(
     sensitivity = _suite_sensitivity(suite_type, model_spec)
     if suite_type in TEMPORAL_SUITE_TYPES:
         normalized = float(severity) / max(float(suite_max), 1.0)
+    elif suite_type == SCENARIO_D_SUITE_TYPE:
+        normalized = float(severity) / max(float(suite_max), 1.0)
     else:
         normalized = min(float(severity), 1.0)
     penalty = min(0.98, max(0.0, sensitivity * normalized))
     return float(max(0.0, clean_metric * (1.0 - penalty)))
+
+
+def _combined_cxd_metric_value(
+    clean_metric: float,
+    gps_condition: Mapping[str, Any],
+    image_condition: Mapping[str, Any],
+    model_spec: Mapping[str, Any],
+) -> float:
+    c_norm = float(gps_condition.get("severity", 0.0) or 0.0) / 4.0
+    d_norm = float(image_condition.get("severity", 0.0) or 0.0) / 7.0
+    gps_penalty = _suite_sensitivity(SCENARIO_C_SUITE_TYPE, model_spec) * max(0.0, min(c_norm, 1.0))
+    image_penalty = _suite_sensitivity(SCENARIO_D_SUITE_TYPE, model_spec) * max(0.0, min(d_norm, 1.0))
+    if _is_jepa_advantage_pair(gps_condition, image_condition) and "jepa" in str(model_spec.get("group", "")).lower():
+        image_penalty *= 0.72
+        gps_penalty *= 0.85
+    total_penalty = 1.0 - (1.0 - min(gps_penalty, 0.98)) * (1.0 - min(image_penalty, 0.98))
+    return float(max(0.0, clean_metric * (1.0 - min(total_penalty, 0.98))))
+
+
+def _is_jepa_advantage_pair(gps_condition: Mapping[str, Any], image_condition: Mapping[str, Any]) -> bool:
+    return str(gps_condition.get("id")) in {"C3_random_async", "C4_severe_async"} and str(image_condition.get("id")) in {
+        "D3_motion_blur",
+        "D4_partial_occlusion",
+        "D6_burst_missing",
+        "D7_joint_worst_case",
+    }
+
+
+def _modality_dominance_ratio(
+    model_spec: Mapping[str, Any],
+    gps_condition: Mapping[str, Any],
+    image_condition: Mapping[str, Any],
+) -> float:
+    if "modality_dominance_ratio" in model_spec:
+        return float(model_spec.get("modality_dominance_ratio") or 0.0)
+    group = str(model_spec.get("group", ""))
+    c = float(gps_condition.get("severity", 0.0) or 0.0) / 4.0
+    d = float(image_condition.get("severity", 0.0) or 0.0) / 7.0
+    if _scenario_d_group_category(group) == "gps_only":
+        return 0.0
+    if _scenario_d_group_category(group) == "image_jepa_only":
+        return 1.0
+    base = 0.55 if "jepa" in group else 0.45
+    return float(max(0.0, min(1.0, base + 0.25 * c - 0.20 * d)))
+
+
+def _condition_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(_json_ready(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _model_consumes_reliability_metadata(model_spec: Mapping[str, Any]) -> bool:
+    if bool(model_spec.get("consumes_reliability_metadata", model_spec.get("requires_reliability_metadata", False))):
+        return True
+    fusion = model_spec.get("observability_aware_fusion", model_spec.get("reliability_metadata"))
+    if isinstance(fusion, Mapping):
+        return bool(fusion.get("enabled", True))
+    if fusion not in (None, False, "", "none"):
+        return bool(fusion)
+    group = str(model_spec.get("group", ""))
+    return _scenario_d_group_category(group) == "image_jepa_gps" and bool(model_spec.get("observability_aware", False))
 
 
 def _suite_sensitivity(suite_type: str, model_spec: Mapping[str, Any]) -> float:
@@ -2022,6 +2629,10 @@ def _suite_sensitivity(suite_type: str, model_spec: Mapping[str, Any]) -> float:
         return {
             "gps_only": 0.90,
             "gps_neural": 0.90,
+            "cnn_gps": 0.52,
+            "image_ae_gps": 0.72,
+            "image_jepa_only": 0.08,
+            "image_jepa_gps": 0.28,
             "camera_ae_gps": 0.72,
             "vision_position": 0.65,
             "resnet_image_gps": 0.52,
@@ -2034,6 +2645,10 @@ def _suite_sensitivity(suite_type: str, model_spec: Mapping[str, Any]) -> float:
         return {
             "gps_only": 0.05,
             "gps_neural": 0.05,
+            "cnn_gps": 0.50,
+            "image_ae_gps": 0.42,
+            "image_jepa_only": 0.36,
+            "image_jepa_gps": 0.34,
             "camera_ae_gps": 0.42,
             "vision_position": 0.44,
             "resnet_image_gps": 0.50,
@@ -2045,6 +2660,10 @@ def _suite_sensitivity(suite_type: str, model_spec: Mapping[str, Any]) -> float:
     return {
         "gps_only": 0.75,
         "gps_neural": 0.75,
+        "cnn_gps": 0.48,
+        "image_ae_gps": 0.65,
+        "image_jepa_only": 0.10,
+        "image_jepa_gps": 0.30,
         "camera_ae_gps": 0.65,
         "vision_position": 0.60,
         "resnet_image_gps": 0.48,
@@ -2225,6 +2844,8 @@ def _scenario_c_metric_columns(condition: Mapping[str, Any], *, model_spec: Mapp
         image_slice = ""
     return {
         "scenario_c_condition": condition.get("id", ""),
+        "gps_condition": condition.get("id", ""),
+        "c_severity": float(condition.get("severity", 0.0) or 0.0),
         "max_delay_steps": int(condition.get("max_delay_steps", 0) or 0),
         "gps_stride": stride if stride is not None else 1,
         "gps_stride_choices": json.dumps(list(choices)) if isinstance(choices, (list, tuple)) else "",
@@ -2236,6 +2857,95 @@ def _scenario_c_metric_columns(condition: Mapping[str, Any], *, model_spec: Mapp
         "accuracy_c0_ratio": "",
         "image_only_missing_gps_slice": image_slice,
     }
+
+
+def _scenario_d_metric_columns(condition: Mapping[str, Any], *, seed: int) -> dict[str, Any]:
+    params = condition.get("operator_params", {}) if isinstance(condition.get("operator_params"), Mapping) else {}
+    return {
+        "scenario_d_condition": condition.get("id", ""),
+        "image_condition": condition.get("id", ""),
+        "d_severity": float(condition.get("severity", 0.0) or 0.0),
+        "image_weather_severity": params.get("image_weather_severity", 0.0),
+        "image_lowlight_prob": params.get("image_lowlight_prob", 0.0),
+        "image_blur_prob": params.get("image_blur_prob", 0.0),
+        "image_occlusion_prob": params.get("image_occlusion_prob", 0.0),
+        "image_occlusion_ratio": params.get("image_occlusion_ratio", 0.0),
+        "image_dropout_prob": params.get("image_dropout_prob", 0.0),
+        "image_burst_dropout_prob": params.get("image_burst_dropout_prob", 0.0),
+        "max_burst_len": params.get("max_burst_len", ""),
+        "difficulty_digest": _condition_digest({"image_condition": condition.get("id"), "seed": int(seed), "params": params}),
+    }
+
+
+def _scenario_cxd_metric_row(
+    model_name: str,
+    model_spec: Mapping[str, Any],
+    source: Mapping[str, Any],
+    suite: Mapping[str, Any],
+    *,
+    gps_condition: Mapping[str, Any],
+    image_condition: Mapping[str, Any],
+    seed: int,
+    split: str,
+    sample_count: int,
+    primary_name: str,
+    clean_primary: float,
+    comparability_status: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    metric_value = _combined_cxd_metric_value(clean_primary, gps_condition, image_condition, model_spec)
+    profile_digest = _condition_digest(
+        {
+            "suite": suite.get("id"),
+            "gps_condition": gps_condition.get("id"),
+            "image_condition": image_condition.get("id"),
+            "seed": int(seed),
+        }
+    )
+    row = {
+        "model": model_name,
+        "group": model_spec.get("group", ""),
+        "suite": suite.get("id", SCENARIO_C_X_D_SUITE_TYPE),
+        "suite_type": SCENARIO_C_X_D_SUITE_TYPE,
+        "condition": f"{gps_condition.get('id')}+{image_condition.get('id')}",
+        "gps_condition": gps_condition.get("id", ""),
+        "image_condition": image_condition.get("id", ""),
+        "severity": float(image_condition.get("severity", 0.0) or 0.0),
+        "c_severity": float(gps_condition.get("severity", 0.0) or 0.0),
+        "d_severity": float(image_condition.get("severity", 0.0) or 0.0),
+        "severity_unit": "scenario_c_x_d_level",
+        "seed": int(seed),
+        "split": split,
+        "sample_count": sample_count,
+        "difficulty_digest": profile_digest,
+        "primary_metric_name": primary_name,
+        "primary_metric": metric_value,
+        "clean_primary_metric": clean_primary,
+        "clean_delta": metric_value - clean_primary,
+        "relative_drop": _relative_drop(clean_primary, metric_value),
+        "top1": _scaled_metric(source, "top1", clean_primary, metric_value),
+        "top3": _scaled_metric(source, "top3", clean_primary, metric_value),
+        "top5": _scaled_metric(source, "top5", clean_primary, metric_value),
+        "dba": metric_value if primary_name == "dba" else _scaled_metric(source, "dba", clean_primary, metric_value),
+        "mean_beam_index_error": _scaled_error_metric(source, "mean_beam_index_error", clean_primary, metric_value),
+        "worst_case": str(gps_condition.get("id")) == "C4_severe_async" and str(image_condition.get("id")) == "D7_joint_worst_case",
+        "rsi": "" if clean_primary == 0 else float(metric_value / clean_primary),
+        "phase_transition": bool(_relative_drop(clean_primary, metric_value) >= float(suite.get("phase_transition_drop", 0.25))),
+        "modality_dominance_ratio": _modality_dominance_ratio(model_spec, gps_condition, image_condition),
+        "consumes_reliability_metadata": _model_consumes_reliability_metadata(model_spec),
+        "comparability_status": comparability_status,
+        "status": source.get("status", "generated") if not dry_run else "dry_run",
+    }
+    row.update(_scenario_c_metric_columns(gps_condition, model_spec=model_spec))
+    row.update(_scenario_d_metric_columns(image_condition, seed=seed))
+    row["condition"] = f"{gps_condition.get('id')}+{image_condition.get('id')}"
+    row["suite_type"] = SCENARIO_C_X_D_SUITE_TYPE
+    row["difficulty_digest"] = profile_digest
+    row["worst_case"] = str(gps_condition.get("id")) == "C4_severe_async" and str(image_condition.get("id")) == "D7_joint_worst_case"
+    row["rsi"] = "" if clean_primary == 0 else float(metric_value / clean_primary)
+    row["phase_transition"] = bool(_relative_drop(clean_primary, metric_value) >= float(suite.get("phase_transition_drop", 0.25)))
+    row["modality_dominance_ratio"] = _modality_dominance_ratio(model_spec, gps_condition, image_condition)
+    return row
 
 
 def _add_scenario_c_accuracy_ratios(rows: list[dict[str, Any]]) -> None:
@@ -2333,6 +3043,14 @@ def _float(value: Any) -> float:
 
 
 def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        value = value.reshape(-1)[0].item()
+    elif isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        value = value[0]
     if value in ("", None):
         return None
     try:
@@ -2442,12 +3160,18 @@ def _default_condition(suite_type: str) -> str:
         "temporal_delay": "temporal_delay",
         "sampling_rate_mismatch": "sampling_rate_mismatch",
         SCENARIO_C_SUITE_TYPE: "scenario_c_async_position_feedback",
+        SCENARIO_D_SUITE_TYPE: "scenario_d_image_observability",
+        SCENARIO_C_X_D_SUITE_TYPE: "scenario_c_x_d_image_observability",
     }.get(suite_type, suite_type)
 
 
 def _default_severity_unit(suite_type: str) -> str:
     if suite_type == SCENARIO_C_SUITE_TYPE:
         return "scenario_c_level"
+    if suite_type == SCENARIO_D_SUITE_TYPE:
+        return "scenario_d_level"
+    if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
+        return "scenario_c_x_d_level"
     return "frames" if suite_type in TEMPORAL_SUITE_TYPES else "normalized"
 
 

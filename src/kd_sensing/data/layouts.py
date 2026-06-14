@@ -9,7 +9,7 @@ DATASET_ROOT = PurePosixPath("dataset")
 RUNTIME_CACHE_ROOT = PurePosixPath("outputs") / "cache"
 DEEPSENSE6G_FAMILY = "DeepSense6G"
 MMW_FAMILY = "MMW"
-DEEPSENSE6G_SCENE_IDS = (9, 31, 32, 33, 34)
+DEEPSENSE6G_SCENE_IDS = (9, 23, 31, 32, 33, 34)
 MMW_CONDITIONS = ("sunny", "rainy", "foggy")
 
 

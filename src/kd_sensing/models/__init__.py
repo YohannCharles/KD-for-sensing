@@ -22,6 +22,7 @@ _EXPORTS: dict[str, str] = {
     "MmWaveFeatureExtractor": "kd_sensing.models.mmwave",
     "MmWaveLightweightModalityNet": "kd_sensing.models.mmwave",
     "MmWaveStrongModalityNet": "kd_sensing.models.mmwave",
+    "ObservabilityAwareFusion": "kd_sensing.models.observability_aware_fusion",
     "RadarFeatureExtractor": "kd_sensing.models.radar",
     "RadarLightweightModalityNet": "kd_sensing.models.radar",
     "RadarStrongModalityNet": "kd_sensing.models.radar",

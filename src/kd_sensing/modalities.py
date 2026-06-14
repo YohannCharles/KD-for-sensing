@@ -382,6 +382,10 @@ def difficulty_metadata_fields(modality: str) -> dict[str, Any]:
         }
     if name == "image":
         return {
+            "image_valid_mask": "input reliability mask; false means the image frame is missing and should not be trusted as available input",
+            "image_observability_score": "input reliability score in [0, 1] computed from image corruption and missing factors; not target supervision",
+            "image_dropout_mask": "input frame dropout mask produced by image observability difficulty",
+            "image_burst_dropout_mask": "input burst-missing mask produced by image observability difficulty",
             "image_degradation_metadata": "image difficulty provenance including degradation type, severity, seed, frame range and parameters",
             "image_occlusion_mask": "optional input occlusion mask produced by image difficulty",
         }

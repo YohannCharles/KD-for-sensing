@@ -9,6 +9,7 @@ import torch
 
 from kd_sensing.engine.batch import (
     forward_model,
+    model_cfg_consumes_reliability_metadata,
     normalize_batch,
     prepare_auxiliary_targets,
     prepare_csi_inputs,
@@ -16,6 +17,7 @@ from kd_sensing.engine.batch import (
     prepare_gps_inputs,
     prepare_image_inputs,
     prepare_labels,
+    reliability_metadata_strict,
     prepare_soft_beam_targets,
     prepare_lidar_inputs,
     prepare_mmwave_inputs,
@@ -190,6 +192,8 @@ def prepare_task_inputs(
             modalities=(model_cfg or {}).get("modalities"),
             image_profile=(model_cfg or {}).get("image_profile"),
             input_profiles=(model_cfg or {}).get("input_profiles"),
+            include_reliability_metadata=model_cfg_consumes_reliability_metadata(model_cfg),
+            strict_reliability_metadata=reliability_metadata_strict(model_cfg),
             non_blocking=non_blocking,
         )
     if task == "radar":

@@ -17,6 +17,7 @@ from kd_sensing.models.jepa_downstream import (
     normalize_jepa_downstream_adapter_config,
     normalize_jepa_downstream_pooler_config,
 )
+from kd_sensing.models.observability_aware_fusion import is_jepa_advantage_condition
 from kd_sensing.registries import ENCODERS, MODELS
 from kd_sensing.utils.checkpoint import CheckpointLoadError
 
@@ -282,6 +283,7 @@ class JepaContextImageEncoder(nn.Module):
         pooler: dict[str, Any] | str | None = None,
         adapter: dict[str, Any] | str | None = None,
         gps_query_pool: dict[str, Any] | None = None,
+        temporal_fallback: dict[str, Any] | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -303,6 +305,10 @@ class JepaContextImageEncoder(nn.Module):
             output_dim=self.output_dim,
         )
         self.pooling = str(self.pooler_config.get("type", "mean")).strip().lower()
+        self.temporal_fallback_config = _normalize_temporal_fallback_config(temporal_fallback)
+        self.temporal_fallback_enabled = bool(self.temporal_fallback_config.get("enabled", False))
+        self.supports_observability_metadata = self.temporal_fallback_enabled
+        self.last_temporal_fallback_metadata: dict[str, Any] = {"enabled": self.temporal_fallback_enabled, "affected_count": 0}
         if self.output_dim != self.latent_dim:
             raise ValueError(
                 "jepa_context_image requires output_dim to equal latent_dim because it reuses the JEPA "
@@ -347,7 +353,16 @@ class JepaContextImageEncoder(nn.Module):
             for param in self.context_encoder.parameters():
                 param.requires_grad_(False)
 
-    def forward(self, image_batch: torch.Tensor, gps_condition_features: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        image_batch: torch.Tensor,
+        gps_condition_features: torch.Tensor | None = None,
+        *,
+        image_valid_mask: torch.Tensor | None = None,
+        image_observability_score: torch.Tensor | None = None,
+        benchmark_condition_metadata: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> torch.Tensor:
         tokens, _ = self.context_encoder(image_batch)
         if self.required_context_modalities and gps_condition_features is None:
             if self.pooling == "gps_query_attention":
@@ -357,9 +372,42 @@ class JepaContextImageEncoder(nn.Module):
         if isinstance(result, tuple):
             pooled, attention_map = result
             self.last_attention_map = attention_map
-            return self.adapter(pooled)
+            features = self.adapter(pooled)
+            return self._maybe_apply_temporal_fallback(
+                features,
+                image_valid_mask=image_valid_mask,
+                image_observability_score=image_observability_score,
+                benchmark_condition_metadata=benchmark_condition_metadata,
+            )
         self.last_attention_map = getattr(self.pooler, "last_attention_map", None)
-        return self.adapter(result)
+        features = self.adapter(result)
+        return self._maybe_apply_temporal_fallback(
+            features,
+            image_valid_mask=image_valid_mask,
+            image_observability_score=image_observability_score,
+            benchmark_condition_metadata=benchmark_condition_metadata,
+        )
+
+    def _maybe_apply_temporal_fallback(
+        self,
+        features: torch.Tensor,
+        *,
+        image_valid_mask: torch.Tensor | None,
+        image_observability_score: torch.Tensor | None,
+        benchmark_condition_metadata: dict[str, Any] | None,
+    ) -> torch.Tensor:
+        if not self.temporal_fallback_enabled:
+            self.last_temporal_fallback_metadata = {"enabled": False, "affected_count": 0}
+            return features
+        output, metadata = _apply_temporal_context_fallback(
+            features,
+            image_valid_mask=image_valid_mask,
+            image_observability_score=image_observability_score,
+            benchmark_condition_metadata=benchmark_condition_metadata,
+            config=self.temporal_fallback_config,
+        )
+        self.last_temporal_fallback_metadata = metadata
+        return output
 
     def _load_from_state_dict(
         self,
@@ -402,6 +450,7 @@ class JepaContextImageEncoder(nn.Module):
             "condition_source": self.gps_query_pool_config.get("condition_source"),
             "attention_diagnostics": bool(self.gps_query_pool_config.get("return_attention", False)),
             "latent_dim": self.latent_dim,
+            "temporal_fallback": dict(self.temporal_fallback_config),
         }
         pooler_metadata = (
             self.pooler.training_strategy_metadata()
@@ -423,6 +472,147 @@ class JepaContextImageEncoder(nn.Module):
         else:
             metadata["gps_query_pooling_enabled"] = False
         return metadata
+
+
+def _normalize_temporal_fallback_config(raw: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    history_window = int(cfg.get("history_window", cfg.get("window", 4)) or 4)
+    if history_window <= 0:
+        raise ValueError(f"JEPA temporal fallback history_window must be positive, got {history_window}.")
+    strategy = str(cfg.get("insufficient_history", cfg.get("fallback", "raw"))).strip().lower() or "raw"
+    if strategy not in {"raw", "skip", "zero", "clamp"}:
+        raise ValueError("JEPA temporal fallback insufficient_history must be one of raw, skip, zero, or clamp.")
+    threshold = float(cfg.get("observability_threshold", cfg.get("threshold", 0.35)))
+    if threshold < 0.0 or threshold > 1.0:
+        raise ValueError(f"JEPA temporal fallback threshold must be in [0, 1], got {threshold}.")
+    mixture = str(cfg.get("mixture", cfg.get("mode", "replace"))).strip().lower() or "replace"
+    if mixture not in {"replace", "gated_mixture"}:
+        raise ValueError("JEPA temporal fallback mixture must be replace or gated_mixture.")
+    return {
+        "enabled": enabled,
+        "history_window": history_window,
+        "observability_threshold": threshold,
+        "insufficient_history": strategy,
+        "mixture": mixture,
+    }
+
+
+def _apply_temporal_context_fallback(
+    features: torch.Tensor,
+    *,
+    image_valid_mask: torch.Tensor | None,
+    image_observability_score: torch.Tensor | None,
+    benchmark_condition_metadata: dict[str, Any] | None,
+    config: dict[str, Any],
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    if features.ndim != 3:
+        raise ValueError(f"JEPA temporal fallback expects features [B, T, D], got {tuple(features.shape)}.")
+    batch_size, steps, _ = features.shape
+    valid = _fallback_mask_or_default(
+        image_valid_mask,
+        batch_size=batch_size,
+        steps=steps,
+        dtype=torch.bool,
+        device=features.device,
+        default=True,
+        name="image_valid_mask",
+    )
+    score = _fallback_mask_or_default(
+        image_observability_score,
+        batch_size=batch_size,
+        steps=steps,
+        dtype=features.dtype,
+        device=features.device,
+        default=1.0,
+        name="image_observability_score",
+    ).clamp(0.0, 1.0)
+    threshold = float(config.get("observability_threshold", 0.35))
+    trigger = (~valid) | score.lt(threshold)
+    advantage = is_jepa_advantage_condition(benchmark_condition_metadata)
+    if advantage:
+        trigger = trigger | score.lt(max(threshold, 0.5))
+    output = features.clone()
+    history_window = int(config.get("history_window", 4))
+    strategy = str(config.get("insufficient_history", "raw"))
+    mixture = str(config.get("mixture", "replace"))
+    source_ranges: list[list[int] | None] = [None for _ in range(steps)]
+    affected = 0
+    insufficient = 0
+    for step in range(steps):
+        frame_trigger = trigger[:, step]
+        if not bool(frame_trigger.any()):
+            continue
+        start = max(0, step - history_window)
+        end = step
+        if end > start:
+            predicted = features[:, start:end, :].mean(dim=1)
+            source_ranges[step] = [start, end - 1]
+        else:
+            insufficient += int(frame_trigger.sum().item())
+            predicted = _insufficient_history_prediction(features[:, step, :], strategy=strategy)
+            source_ranges[step] = None
+        if mixture == "gated_mixture":
+            gate = (1.0 - score[:, step]).to(dtype=features.dtype).unsqueeze(-1)
+            replacement = gate * predicted + (1.0 - gate) * features[:, step, :]
+        else:
+            replacement = predicted
+        output[:, step, :] = torch.where(frame_trigger.unsqueeze(-1), replacement, output[:, step, :])
+        affected += int(frame_trigger.sum().item())
+    metadata = {
+        "enabled": True,
+        "affected_count": affected,
+        "insufficient_history_count": insufficient,
+        "history_window": history_window,
+        "fallback_strategy": strategy,
+        "mixture": mixture,
+        "source_history_range": source_ranges,
+        "jepa_advantage_condition": bool(advantage),
+        "threshold": threshold,
+        "triggered_mask": trigger.detach().cpu().tolist(),
+        "warnings": [
+            {
+                "code": "jepa_temporal_fallback_insufficient_history",
+                "affected_count": insufficient,
+                "fallback": strategy,
+            }
+        ]
+        if insufficient
+        else [],
+    }
+    return output, metadata
+
+
+def _fallback_mask_or_default(
+    value: torch.Tensor | None,
+    *,
+    batch_size: int,
+    steps: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    default: bool | float,
+    name: str,
+) -> torch.Tensor:
+    if value is None:
+        return torch.full((batch_size, steps), default, dtype=dtype, device=device)
+    tensor = torch.as_tensor(value, dtype=dtype, device=device)
+    if tensor.ndim == 1:
+        tensor = tensor.unsqueeze(1)
+    if tensor.ndim != 2:
+        raise ValueError(f"{name} must have shape [B, T] or [B], got {tuple(tensor.shape)}.")
+    if int(tensor.shape[0]) != int(batch_size):
+        raise ValueError(f"{name} batch dimension must be {batch_size}, got {int(tensor.shape[0])}.")
+    if int(tensor.shape[1]) == int(steps):
+        return tensor
+    if int(tensor.shape[1]) == 1:
+        return tensor.expand(-1, steps)
+    raise ValueError(f"{name} time dimension must be {steps} or 1, got {int(tensor.shape[1])}.")
+
+
+def _insufficient_history_prediction(current: torch.Tensor, *, strategy: str) -> torch.Tensor:
+    if strategy == "zero":
+        return torch.zeros_like(current)
+    return current
 
 
 @MODELS.register("gps_conditioned_jepa")

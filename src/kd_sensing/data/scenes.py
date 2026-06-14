@@ -12,6 +12,7 @@ DEFAULT_TEST_CSV_NAME = "test_seqs_RA_GPS_LIDAR.csv"
 DEEPSENSE_DATASET_TYPES = {"deepsense6g"}
 REMOVED_DEEPSENSE_DATASET_TYPES = {
     "scenario9": 9,
+    "scenario23": 23,
     "scenario31": 31,
     "scenario32": 32,
     "scenario33": 33,
@@ -43,6 +44,13 @@ DEEPSENSE_SCENES: dict[int, DeepSenseScene] = {
         aliases=("9", "scene9", "scenario9"),
         default_data_root=deepsense6g_scene_root(9),
         legacy_data_root=deepsense6g_legacy_scene_root(9),
+    ),
+    23: DeepSenseScene(
+        scene_id=23,
+        scene_slug="scene23",
+        aliases=("23", "scene23", "scenario23"),
+        default_data_root=deepsense6g_scene_root(23),
+        legacy_data_root=deepsense6g_legacy_scene_root(23),
     ),
     31: DeepSenseScene(
         scene_id=31,

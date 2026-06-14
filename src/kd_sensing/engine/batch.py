@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -403,6 +403,8 @@ def prepare_fusion_inputs(
     modalities: list[str] | tuple[str, ...] | None = None,
     image_profile: str | None = None,
     input_profiles: dict[str, str] | None = None,
+    include_reliability_metadata: bool = False,
+    strict_reliability_metadata: bool = True,
     non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
     selected = normalize_modalities(tuple(modalities or ("image", "radar")), context="fusion batch modalities")
@@ -470,7 +472,166 @@ def prepare_fusion_inputs(
             device=device,
             non_blocking=non_blocking,
         )
+    if include_reliability_metadata:
+        inputs.update(
+            prepare_reliability_metadata_inputs(
+                batch,
+                seq_length=seq_length,
+                num_pred=num_pred,
+                device=device,
+                modalities=selected,
+                strict=strict_reliability_metadata,
+                non_blocking=non_blocking,
+            )
+        )
     return inputs
+
+
+def prepare_reliability_metadata_inputs(
+    batch: dict[str, Any],
+    *,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    modalities: list[str] | tuple[str, ...],
+    strict: bool = True,
+    non_blocking: bool = False,
+) -> dict[str, Any]:
+    selected = normalize_modalities(tuple(modalities), context="reliability metadata modalities")
+    inputs: dict[str, Any] = {}
+    specs: dict[str, tuple[str, torch.dtype, bool]] = {}
+    if "image" in selected:
+        specs.update(
+            {
+                "image_valid_mask": ("image_valid_mask", torch.bool, True),
+                "image_observability_score": ("image_observability_score", torch.float32, True),
+                "image_dropout_mask": ("image_dropout_mask", torch.bool, False),
+                "image_burst_dropout_mask": ("image_burst_dropout_mask", torch.bool, False),
+            }
+        )
+    if "gps" in selected:
+        specs.update(
+            {
+                "gps_valid_mask": ("gps_valid_mask", torch.bool, True),
+                "gps_delay_steps": ("gps_delay_steps", torch.float32, True),
+                "gps_dropout_mask": ("gps_dropout_mask", torch.bool, False),
+            }
+        )
+    for key, (output_key, dtype, required) in specs.items():
+        if key not in batch:
+            if strict and required:
+                raise ValueError(
+                    f"Model config declares observability-aware fusion, but required reliability metadata "
+                    f"'{key}' is missing from the batch."
+                )
+            continue
+        inputs[output_key] = _prepare_temporal_metadata_input(
+            batch[key],
+            key=key,
+            seq_length=seq_length,
+            num_pred=num_pred,
+            device=device,
+            dtype=dtype,
+            pad_value=_metadata_pad_value(key),
+            non_blocking=non_blocking,
+        )
+    condition = _benchmark_condition_metadata(batch)
+    if condition:
+        inputs["benchmark_condition_metadata"] = condition
+    if "image_degradation_metadata" in batch:
+        inputs["image_degradation_metadata"] = batch["image_degradation_metadata"]
+    return inputs
+
+
+def model_cfg_consumes_reliability_metadata(model_cfg: Mapping[str, Any] | None) -> bool:
+    if not isinstance(model_cfg, Mapping):
+        return False
+    for key in ("requires_reliability_metadata", "consume_reliability_metadata", "observability_aware"):
+        if bool(model_cfg.get(key, False)):
+            return True
+    fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
+    if isinstance(fusion, Mapping):
+        return bool(fusion.get("enabled", True))
+    if fusion not in (None, False, "", "none"):
+        return bool(fusion)
+    model_type = str(model_cfg.get("type", "")).strip().lower()
+    return "observability_aware" in model_type
+
+
+def reliability_metadata_strict(model_cfg: Mapping[str, Any] | None) -> bool:
+    if not isinstance(model_cfg, Mapping):
+        return True
+    fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
+    if isinstance(fusion, Mapping):
+        return bool(fusion.get("strict", fusion.get("require_fields", True)))
+    return bool(model_cfg.get("strict_reliability_metadata", True))
+
+
+def _prepare_temporal_metadata_input(
+    raw: Any,
+    *,
+    key: str,
+    seq_length: int,
+    num_pred: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    pad_value: bool | float,
+    non_blocking: bool,
+) -> torch.Tensor:
+    value = torch.as_tensor(raw).to(device=device, dtype=dtype, non_blocking=non_blocking)
+    if value.ndim == 1:
+        value = value.unsqueeze(1)
+    if value.ndim != 2:
+        raise ValueError(f"{key} must have shape [B, T] or [B], got {tuple(value.shape)}.")
+    value = value[:, -int(seq_length) :]
+    value = _left_pad_metadata(value, int(seq_length), pad_value=pad_value)
+    pad_steps = max(int(num_pred) - 1, 0)
+    if pad_steps <= 0:
+        return value
+    pad = torch.full(
+        (int(value.shape[0]), pad_steps),
+        pad_value,
+        dtype=value.dtype,
+        device=device,
+    )
+    return torch.cat([value, pad], dim=1)
+
+
+def _left_pad_metadata(value: torch.Tensor, seq_length: int, *, pad_value: bool | float) -> torch.Tensor:
+    if int(value.shape[1]) >= int(seq_length):
+        return value
+    pad_steps = int(seq_length) - int(value.shape[1])
+    pad = torch.full((int(value.shape[0]), pad_steps), pad_value, dtype=value.dtype, device=value.device)
+    return torch.cat([pad, value], dim=1)
+
+
+def _metadata_pad_value(key: str) -> bool | float:
+    if key.endswith("valid_mask"):
+        return True
+    if key.endswith("dropout_mask"):
+        return False
+    if key == "image_observability_score":
+        return 1.0
+    if key == "gps_delay_steps":
+        return 0.0
+    return 0.0
+
+
+def _benchmark_condition_metadata(batch: Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(batch.get("benchmark_condition_metadata"), Mapping):
+        return dict(batch["benchmark_condition_metadata"])
+    metadata = batch.get("metadata")
+    if isinstance(metadata, Mapping):
+        perturbation = metadata.get("benchmark_perturbation")
+        if isinstance(perturbation, Mapping):
+            return dict(perturbation)
+    difficulty = batch.get("difficulty")
+    if isinstance(difficulty, Mapping):
+        return {
+            "difficulty_condition": difficulty.get("condition"),
+            "difficulty_profile_digest": difficulty.get("profile_digest"),
+        }
+    return {}
 
 
 def prepare_gps_bev_xy_inputs(

@@ -1,0 +1,92 @@
+experiment:
+  name: AMR-Net_gps_image
+  task: fusion
+  objective: beam
+  baseline_preset: amr_net_gps_image
+  paper: amr_net_gps_image
+  seed: 42
+
+data:
+  dataset:
+    type: deepsense6g
+    scene: 23
+    seq_len: 1
+    num_pred: 1
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    enabled_modalities: [image, gps]
+    use_gps: true
+    use_lidar: false
+    use_mmwave: false
+    use_csi: false
+    gps_feature_mode: paper_distance_angle
+    gps_angle_offset_source: paper_scene_default
+    gps_normalize: true
+    beam_target_source: current
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+  dataloader:
+    train_batch_size: 32
+    test_batch_size: 32
+    num_workers: 4
+
+model:
+  modalities: [image, gps]
+  num_classes: 64
+  num_pred: 1
+  primary:
+    type: vision_position_late_fusion
+    baseline_preset: amr_net_gps_image
+    model_name: AMR-Net_gps_image
+    paper_model_group: image_gps_fusion
+    modalities: [image, gps]
+    feature_size: 64
+    fusion_hidden_size: 64
+    temporal_hidden_size: 64
+    num_classes: 64
+    num_pred: 1
+    history_length: 1
+    temporal_aggregation: mean
+    image_encoder_type: resnet18_imagenet_rgb
+    image_encoder:
+      type: resnet18_imagenet_rgb
+      output_dim: 64
+      pretrained: false
+      weights: null
+      freeze_backbone: true
+    gps_encoder:
+      type: gps_mlp
+      output_dim: 64
+      hidden_size: 64
+      dropout: 0.0
+    gps_input_size: 2
+    gps_feature_mode: paper_distance_angle
+    target_source: current
+    metric_profile: amr_net_gps_image_top1_top3_top5
+    claim_status: blocked_official
+    paper_reported_row: false
+    fusion_type: late_concat_mlp
+    uses_lidar: false
+
+evaluation:
+  k_values: [1, 3, 5]
+  metric_profile: amr_net_gps_image_top1_top3_top5
+  dba_distance_mode: circular
+  label_space: 64_beam
+
+output:
+  root: outputs/analysis/amr_net_gps_image
+  run_name: AMR-Net_gps_image_local_substitute
+
+amr_net_gps_image:
+  id: amr_net_gps_image
+  model_name: AMR-Net_gps_image
+  preset: amr_net_gps_image
+  article_number: 11282996
+  official_claim_status: blocked_official
+  local_substitute:
+    ieee_document: 10000718
+    scenario: 23
+    author_code_url: https://github.com/gourangc/Sensing-Aided-Drone-Beam-Prediction
+    author_code_commit: 4b80592ed3517726f3fc5af441db25acd1811d3e
+  caveat: article_11282996_metadata_conflicts_with_scenario23_author_package
