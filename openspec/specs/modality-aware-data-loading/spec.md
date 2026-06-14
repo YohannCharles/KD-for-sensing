@@ -720,30 +720,18 @@ Residual fusion Dataset/DataLoader MUST 根据 manifest 与 ablation 启用模�
 - **THEN** Dataset MUST 校验 array shape 是否可被选定 encoder 处理
 - **AND** shape 不一致且无法使用预处理 feature 时 MUST 报告清晰错误或跳过该 ablation
 
-### Requirement: Camera residual manifest data loading
-系统 MUST 支持从 camera residual manifest 构建 Dataset/DataLoader。该数据加载路径 MUST 按当前 stage 和 ablation 只读取需要的 image 或 AE feature，并在 image 缺失时保持 GPS-only baseline 可运行。
+### Requirement: Camera residual manifest data loading 已退役
+Camera residual manifest Dataset/DataLoader 路线已退役，不属于当前数据加载支持面。项目 MUST 不再要求从 camera residual manifest 构建训练或评估 DataLoader；旧 manifest 字段只能作为历史说明、migration guard 或本地产物审计背景出现。
 
-#### Scenario: gps_prior_only 不读取 image
-- **WHEN** ablation 为 `gps_prior_only`
-- **THEN** Dataset MUST NOT 读取 image 文件
-- **AND** Dataset MUST NOT 要求 `ae_feature_path` 存在
-- **AND** 样本 MUST 仍包含 GPS prior、GPS pred、GPS context、target label 和 split role
+#### Scenario: camera residual loader 不作为当前入口
+- **WHEN** 用户引用 camera residual 配置、manifest loader 或旧 residual ablation
+- **THEN** 系统 MUST 不把该路径作为当前训练或评估入口
+- **AND** 错误信息、文档或 guardrail MUST 明确 camera residual 已退役
 
-#### Scenario: AE training 跳过 missing image
-- **WHEN** AE training Dataset 读取 manifest
-- **THEN** Dataset MUST 只使用 `image_exists=true` 的样本
-- **AND** 没有任何可用 image 时 MUST 抛出清晰错误
-
-#### Scenario: residual training 使用 AE feature
-- **WHEN** ablation 需要 `camera_ae_feature`
-- **THEN** Dataset MUST 根据 `ae_feature_path` 和 `ae_feature_row_index` 读取 feature
-- **AND** feature 不可用的样本 MUST 按配置跳过或降级为 GPS context only
-- **AND** 降级或跳过原因 MUST 写入 run metadata 或 summary
-
-#### Scenario: query label 不进入训练 batch
-- **WHEN** Dataset 为 train/support loader 构建 batch
-- **THEN** target query 样本 MUST 不进入训练 batch
-- **AND** 如果 evaluation loader 包含 query label，loss 计算 MUST 使用 evaluation-only 路径，不得反向传播或用于 early stopping
+#### Scenario: 历史 camera residual 产物只读
+- **WHEN** cleanup、run index 或历史报告扫描到 camera residual manifest、AE feature 或 summary
+- **THEN** 这些文件 MAY 被只读展示或列为清理候选
+- **AND** 系统 MUST 不因此恢复 camera residual Dataset/DataLoader
 
 ### Requirement: 模态数据加载不依赖蒸馏配置
 Dataset、batch preparation 和 label 对齐 MUST 由 experiment task、enabled modalities、prediction objective 和 supervised/adaptation workflow 决定。数据加载层 MUST 不读取 `distillation` 配置来决定 batch 字段或 label 语义。
@@ -753,11 +741,11 @@ Dataset、batch preparation 和 label 对齐 MUST 由 experiment task、enabled 
 - **THEN** batch preparation MUST 只根据 task 和 enabled modalities 构造输入
 - **AND** 配置中若出现 `distillation` 字段 MUST 在配置解析阶段失败
 
-### Requirement: DeepSense6G Top8 selector optional modality loading
-DeepSense6G Top8 candidate dataset MUST 按配置和 manifest availability 加载 optional modalities。未启用或不可用的 camera AE、image tensor、LiDAR feature 和 radar feature MUST 不阻止 GPS context-only selector 运行；启用某个 optional modality 时，dataset MUST 只读取该模态需要的 path 或 feature，不触发其它模态 IO。
+### Requirement: DeepSense6G TopK candidate optional modality loading 支撑语义
+DeepSense6G TopK candidate dataset helper MAY 按当前 BGAM 或候选重排支撑路径的配置和 manifest availability 加载 optional modalities。未启用或不可用的 camera AE、image tensor、LiDAR feature 和 radar feature MUST 不阻止 GPS context-only candidate support 运行；启用某个 optional modality 时，dataset helper MUST 只读取该模态需要的 path 或 feature，不触发其它模态 IO。该 helper MUST 不恢复旧 Top8 selector standalone workflow。
 
-#### Scenario: GPS context-only selector 不读取图像或点云
-- **WHEN** 配置运行 `gps_context_only_selector`
+#### Scenario: GPS context-only candidate support 不读取图像或点云
+- **WHEN** 当前 BGAM 或 supporting helper 运行 GPS context-only candidate path
 - **THEN** dataset MUST 读取 Top8 candidate manifest、candidate fields 和 GPS context fields
 - **AND** dataset MUST NOT 读取 image file、camera AE feature、LiDAR feature 或 radar feature
 - **AND** 返回样本 MUST 不包含未启用 optional modality 的大张量
@@ -771,7 +759,7 @@ DeepSense6G Top8 candidate dataset MUST 按配置和 manifest availability 加�
 #### Scenario: camera AE 缺失时记录原因
 - **WHEN** 配置启用 camera AE feature 但 manifest 中 feature row index 无效或 artifact 缺失
 - **THEN** dataset MUST 返回缺失标记
-- **AND** runner MUST 跳过 camera AE 相关 ablation 或降级到 GPS context-only selector
+- **AND** 当前消费 workflow MUST 跳过 camera AE 相关 ablation 或降级到 GPS context-only candidate support
 - **AND** summary MUST 写入 `skipped_reason`
 
 #### Scenario: image/LiDAR/radar feature 按需读取
@@ -779,8 +767,8 @@ DeepSense6G Top8 candidate dataset MUST 按配置和 manifest availability 加�
 - **THEN** dataset MUST 只读取对应模态字段中声明的 path 或 feature
 - **AND** 其它未启用模态 MUST 不触发 path 解析、cache 初始化或文件读取
 
-### Requirement: Top8 selector normalization fit boundary
-Top8 selector dataset MUST 支持为 candidate features 和 GPS context 保存 normalization metadata。E、N、log_range、speed、candidate logits 等统计量 MUST 只从允许训练的 source/support 样本拟合，target query 样本 MUST 不参与 fit。
+### Requirement: TopK candidate normalization fit boundary
+TopK candidate dataset helper MUST 支持为 candidate features 和 GPS context 保存 normalization metadata。E、N、log_range、speed、candidate logits 等统计量 MUST 只从允许训练的 source/support 样本拟合，target query 样本 MUST 不参与 fit；该 normalization 支撑不得恢复旧 Top8 selector 训练 workflow。
 
 #### Scenario: support/source fit scaler
 - **WHEN** dataset 构建 normalization artifact
@@ -837,4 +825,3 @@ BGAM manifest loader MUST 支持配置化字段名映射，以兼容 Top8 manife
 - **WHEN** manifest 提供 `gps_prob_0` 到 `gps_prob_63` 或 `gps_logits_path`
 - **THEN** loader MUST 读取或构造 `[64]` GPS prior tensor
 - **AND** loader MUST 从该 prior 生成 TopK candidates 或校验与 manifest candidates 一致
-

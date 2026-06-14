@@ -1,0 +1,17 @@
+_base_: ../fusion/image_gps_supervised.yaml
+
+difficulty:
+  profiles:
+    gps_severe_async_eval:
+      stage: evaluation
+      split: test
+      condition: C4_severe_async
+      severity: 4.0
+      seed: 42
+      fallback: forward_fill
+      operators:
+        - type: scenario_c_async_position_feedback
+          modality: gps
+
+output:
+  run_name: fusion_image_gps_clean_train_severe_async_eval

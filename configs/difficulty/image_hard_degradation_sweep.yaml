@@ -1,0 +1,43 @@
+_base_: ../fusion/image_gps_supervised.yaml
+
+difficulty:
+  profiles:
+    image_fog_rain_hard_eval:
+      stage: evaluation
+      split: test
+      condition: image_fog_rain
+      severity: 0.75
+      seed: 42
+      operators:
+        - type: image_fog_rain
+          modality: image
+    image_night_hard_eval:
+      stage: evaluation
+      split: test
+      condition: image_night
+      severity: 0.75
+      seed: 42
+      operators:
+        - type: image_night
+          modality: image
+    image_occlusion_hard_eval:
+      stage: evaluation
+      split: test
+      condition: image_occlusion
+      severity: 0.5
+      seed: 42
+      operators:
+        - type: image_occlusion
+          modality: image
+    image_motion_blur_hard_eval:
+      stage: evaluation
+      split: test
+      condition: image_motion_blur
+      severity: 0.75
+      seed: 42
+      operators:
+        - type: image_motion_blur
+          modality: image
+
+output:
+  run_name: fusion_image_gps_image_hard_degradation_eval

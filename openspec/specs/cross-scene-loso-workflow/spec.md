@@ -1,7 +1,7 @@
 # cross-scene-loso-workflow Specification
 
 ## Purpose
-定义跨场景 leave-one-scene-out 工作流的 fold 规划、target adapt/test 防泄漏拆分、few-shot 采样和执行汇总契约，确保 DeepSense6G HiST-Beam 快速验证在不同 target scene、label budget 和随机 seed 下可复现、可审计，并避免 target_test 参与任何训练或适配决策。
+定义跨场景 leave-one-scene-out 的通用 fold 规划、target adapt/test 防泄漏拆分、few-shot 采样和执行汇总支撑契约。该 capability 只作为 supporting helper 保留；DeepSense6G HiST-Beam 默认矩阵和 `kd-sensing-hist-beam-loso` 执行入口已退役，不属于当前推荐 workflow。
 ## Requirements
 ### Requirement: DeepSense6G 31-34 LOSO fold 定义
 系统 MUST 提供 DeepSense6G scenarios 31、32、33、34 的 leave-one-scene-out fold 定义。每个 fold MUST 包含三个 source scenes 和一个 target scene，并 MUST 可通过配置或 orchestration 入口选择单个 fold 或全部 fold。
@@ -216,4 +216,3 @@ LOSO summary and quick validation conclusion MUST compare coarse prototype and r
 - **WHEN** 未来非 Hist workflow 需要 leave-one-scene-out fold
 - **THEN** 新 workflow MUST 显式声明自己的 runner、配置矩阵和输出契约
 - **AND** 系统 MUST 不复用已退役 Hist run plan 作为隐式默认
-

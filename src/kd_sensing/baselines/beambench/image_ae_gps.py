@@ -63,6 +63,9 @@ class ImageAEGPSDirectTrainingConfig:
     output_dir: str = "outputs/scene31/beambench_image_ae_gps_direct"
     scene: int = 31
     seq_len: int = 1
+    gps_seq_len: int | None = None
+    gps_source_seq_len: int | None = None
+    gps_input_seq_len: int | None = None
     num_pred: int = 1
     num_beams: int = 64
     target_beam_source: str = "current"
@@ -135,6 +138,9 @@ class BeamBenchImageAEGPSDataset(Dataset):
         csv_name: str,
         split: str,
         seq_len: int = 1,
+        gps_seq_len: int | None = None,
+        gps_source_seq_len: int | None = None,
+        gps_input_seq_len: int | None = None,
         num_pred: int = 1,
         image_size: int = 64,
         num_beams: int = 64,
@@ -155,6 +161,14 @@ class BeamBenchImageAEGPSDataset(Dataset):
             self.csv_path = self.data_root / self.csv_path
         self.split = str(split)
         self.seq_len = int(seq_len)
+        selected_gps_source_seq_len = gps_source_seq_len if gps_source_seq_len is not None else gps_seq_len
+        self.gps_source_seq_len = (
+            int(selected_gps_source_seq_len) if selected_gps_source_seq_len is not None else self.seq_len
+        )
+        if self.gps_source_seq_len <= 0:
+            raise ValueError("gps_source_seq_len must be positive when provided.")
+        self.gps_seq_len = self.gps_source_seq_len
+        self.gps_input_seq_len = int(gps_input_seq_len) if gps_input_seq_len is not None else None
         self.num_pred = int(num_pred)
         self.image_size = int(image_size)
         self.num_beams = int(num_beams)
@@ -169,6 +183,7 @@ class BeamBenchImageAEGPSDataset(Dataset):
             portion=portion,
             enabled_modalities=("image", "gps"),
             seq_len=self.seq_len,
+            gps_source_seq_len=self.gps_source_seq_len,
             num_pred=self.num_pred,
             portion_strategy=portion_strategy,
             portion_seed=portion_seed,
@@ -218,7 +233,7 @@ class BeamBenchImageAEGPSDataset(Dataset):
             self.data_root,
             self.samples.gps_paths[raw_index],
             self.samples.bs_gps_paths[raw_index],
-            seq_len=self.seq_len,
+            seq_len=self.gps_source_seq_len,
             mode=self.gps_feature_mode,
             angle_offset_rad=self.gps_angle_offset_rad,
         ).astype(np.float32, copy=False)
@@ -259,7 +274,7 @@ class BeamBenchImageAEGPSDataset(Dataset):
                     self.data_root,
                     self.samples.gps_paths[raw_index],
                     self.samples.bs_gps_paths[raw_index],
-                    seq_len=self.seq_len,
+                    seq_len=self.gps_source_seq_len,
                     mode=self.gps_feature_mode,
                     angle_offset_rad=self.gps_angle_offset_rad,
                 )
@@ -273,6 +288,9 @@ class BeamBenchImageAEGPSDataset(Dataset):
             "split": self.split,
             "sample_count": len(self),
             "seq_len": self.seq_len,
+            "gps_seq_len": self.gps_source_seq_len,
+            "gps_source_seq_len": self.gps_source_seq_len,
+            "gps_input_seq_len": self.gps_input_seq_len,
             "num_pred": self.num_pred,
             "image_size": self.image_size,
             "num_beams": self.num_beams,
@@ -549,6 +567,9 @@ def run_image_ae_gps_training(config: Mapping[str, Any] | ImageAEGPSDirectTraini
         csv_name=cfg.train_csv_name,
         split="train",
         seq_len=cfg.seq_len,
+        gps_seq_len=cfg.gps_seq_len,
+        gps_source_seq_len=cfg.gps_source_seq_len,
+        gps_input_seq_len=cfg.gps_input_seq_len,
         num_pred=cfg.num_pred,
         image_size=cfg.image_size,
         num_beams=cfg.num_beams,
@@ -567,6 +588,9 @@ def run_image_ae_gps_training(config: Mapping[str, Any] | ImageAEGPSDirectTraini
         csv_name=cfg.test_csv_name,
         split="test",
         seq_len=cfg.seq_len,
+        gps_seq_len=cfg.gps_seq_len,
+        gps_source_seq_len=cfg.gps_source_seq_len,
+        gps_input_seq_len=cfg.gps_input_seq_len,
         num_pred=cfg.num_pred,
         image_size=cfg.image_size,
         num_beams=cfg.num_beams,
@@ -1420,6 +1444,11 @@ def resolve_image_ae_gps_config(raw: Mapping[str, Any]) -> ImageAEGPSDirectTrain
         output_dir=str(output_dir),
         scene=int(scene.scene_id),
         seq_len=int(dataset.get("seq_len", 1)),
+        gps_seq_len=_optional_int(dataset.get("gps_seq_len", paper.get("gps_seq_len"))),
+        gps_source_seq_len=_optional_int(
+            dataset.get("gps_source_seq_len", paper.get("gps_source_seq_len"))
+        ),
+        gps_input_seq_len=_optional_int(dataset.get("gps_input_seq_len", paper.get("gps_input_seq_len"))),
         num_pred=int(dataset.get("num_pred", 1)),
         num_beams=int(model.get("num_classes", primary.get("num_classes", 64))),
         target_beam_source=_normalize_target_beam_source(str(paper.get("target_beam_source", "current"))),
@@ -1735,6 +1764,9 @@ def _build_split_dataset(
         csv_name=csv_name,
         split=split,
         seq_len=cfg.seq_len,
+        gps_seq_len=cfg.gps_seq_len,
+        gps_source_seq_len=cfg.gps_source_seq_len,
+        gps_input_seq_len=cfg.gps_input_seq_len,
         num_pred=cfg.num_pred,
         image_size=cfg.image_size,
         num_beams=cfg.num_beams,
@@ -2014,6 +2046,9 @@ def _feature_cache_signature(
         "csv_path": str(dataset.csv_path),
         "sample_count": len(dataset),
         "seq_len": int(cfg.seq_len),
+        "gps_seq_len": None if cfg.gps_seq_len is None else int(cfg.gps_seq_len),
+        "gps_source_seq_len": None if cfg.gps_source_seq_len is None else int(cfg.gps_source_seq_len),
+        "gps_input_seq_len": None if cfg.gps_input_seq_len is None else int(cfg.gps_input_seq_len),
         "num_pred": int(cfg.num_pred),
         "image_size": int(cfg.image_size),
         "num_beams": int(cfg.num_beams),

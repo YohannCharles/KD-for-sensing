@@ -1142,80 +1142,23 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **THEN** summary artifact MUST 记录当前 sweep 是否基于修复后的 pilot scaling 配置
 - **AND** 如果同一项目中存在旧 invalid sweep，summary artifact MUST 不把旧 sweep 的候选结果混入当前 ranking
 
-### Requirement: Raymobtime s008 配置驱动预处理 workflow
-项目 MUST 为 Raymobtime s008 提供配置驱动的预处理 workflow。所有项目相关 Python 命令 MUST 使用 `conda run -n kd_mm_beam`，并 MUST 通过包内 CLI、`scripts/preprocess.py` 或 console script 调用。
+### Requirement: Raymobtime s008 workflow 已退役
+Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已退役，不属于当前实验入口。旧 `configs/raymobtime/*`、`configs/preprocess/raymobtime_s008_*.yaml`、`raymobtime_s008` dataset/model/preprocessor 名称和 selection 模型名称 MUST 只作为 migration guard 命中或历史说明出现。
 
-#### Scenario: 运行 Raymobtime 审计命令
-- **WHEN** 用户运行 `conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/raymobtime_s008_audit.yaml`
-- **THEN** 系统 MUST 执行 Raymobtime s008 审计预处理
-- **AND** 命令输出 MUST 记录审计摘要路径
+#### Scenario: 旧 Raymobtime 预处理配置被拒绝
+- **WHEN** 用户运行 `kd-sensing-preprocess` 并引用 Raymobtime s008 预处理配置或 preprocessor type
+- **THEN** 系统 MUST fail fast
+- **AND** 错误信息 MUST 明确 Raymobtime s008 已退役且无兼容迁移入口
 
-#### Scenario: 运行 Raymobtime cache 构建命令
-- **WHEN** 用户运行 Raymobtime s008 index、ray feature 或 cache 构建配置
-- **THEN** 系统 MUST 根据配置中的 `data_root`、`cache_dir`、split seed 和输出目录生成对应 cache
-- **AND** 命令输出 MUST 记录 index、label、ray feature 和 split metadata 路径
-
-#### Scenario: 预处理 action 可发现
-- **WHEN** 用户查看 `conda run -n kd_mm_beam kd-sensing-preprocess --help`
-- **THEN** 帮助信息 MUST 能发现 Raymobtime s008 预处理 action 或说明可通过配置中的 `preprocessing.type` 选择
-- **AND** Raymobtime action MUST 不要求新增顶层旧脚本
-
-### Requirement: Raymobtime s008 训练与评估 workflow
-项目 MUST 提供可通过统一训练和评估入口运行的 Raymobtime s008 current beam selection 与 selection multitask 配置。训练和评估产物 MUST 记录 snapshot 语义、数据 split、启用模态、objective、指标和输出路径。
-
-#### Scenario: 加载 Raymobtime multitask 配置
+#### Scenario: 旧 Raymobtime 训练配置被拒绝
 - **WHEN** 用户运行退役历史命令 `conda run -n kd_mm_beam kd-sensing-train --config configs/raymobtime/s008_multitask_selection.yaml`
-- **THEN** 系统 MUST 构建 `raymobtime_s008` dataset
-- **AND** 系统 MUST 构建 `selection_multitask` objective
-- **AND** 系统 MUST 构建配置指定的 snapshot 多任务模型
-- **AND** 系统 MUST 不加载 teacher checkpoint
+- **THEN** 系统 MUST 不构建 `raymobtime_s008` dataset、selection 模型或 Raymobtime cache
+- **AND** 错误信息 MUST 指向当前保留 workflow 或说明该研究线已退役
 
-#### Scenario: Raymobtime 评估报告
-- **WHEN** 用户对 Raymobtime s008 checkpoint 运行统一评估入口
-- **THEN** 评估报告 MUST 包含 beam Top-K、LOS 指标、link 指标、enabled modalities、objective、split metadata 路径和样本数
-- **AND** 报告 MUST 标记该任务为 current snapshot beam selection
-
-#### Scenario: 缺失 cache 的错误提示
-- **WHEN** 用户在未构建 Raymobtime cache 的情况下启动训练
-- **THEN** 系统 MUST 拒绝构建 dataset
-- **AND** 错误信息 MUST 提示先运行 Raymobtime s008 审计、index、ray feature 和 cache 预处理
-
-### Requirement: Raymobtime s008 smoke workflow
-项目 MUST 提供不依赖真实大规模训练的 Raymobtime s008 smoke workflow，用于验证 dataset、模型、loss、metrics、checkpoint 和评估路径。smoke workflow MUST 使用小 fixture 或可配置的极小 batch 限制。
-
-#### Scenario: Raymobtime dataset smoke test
-- **WHEN** 开发者运行 Raymobtime s008 dataset 相关测试
-- **THEN** 测试 MUST 使用小 fixture 验证审计、index、label 标准化、ray feature no-LOS 输入和 dataset sample contract
-- **AND** 测试命令 MUST 使用 `conda run -n kd_mm_beam pytest ...`
-
-#### Scenario: Raymobtime 训练 smoke test
-- **WHEN** 开发者运行 Raymobtime s008 最小训练 smoke
-- **THEN** 训练流程 MUST 完成 forward、loss、backward、validation 和 checkpoint 保存
-- **AND** smoke 配置 MUST 使用 current snapshot 输出，不得创建 GRU/RNN/LSTM 模块
-
-#### Scenario: Raymobtime 评估 smoke test
-- **WHEN** 开发者运行 Raymobtime s008 最小评估 smoke
-- **THEN** 评估流程 MUST 输出 beam、LOS 和 link 指标
-- **AND** 评估报告 MUST 能被模态失衡分析读取
-
-### Requirement: Raymobtime s008 实验矩阵与分析 workflow
-项目 MUST 提供 Raymobtime s008 推荐实验矩阵，用于运行和比较单模态、多模态、sensing-only、sensing+ray 和 task-aware gated 配置。项目 MUST 不再要求提供 Raymobtime s008 模态失衡分析 CLI、失衡诊断报告或失衡判定 workflow。
-
-#### Scenario: 单模态与多模态矩阵
-- **WHEN** 用户查看 Raymobtime s008 推荐配置或分析说明
-- **THEN** 系统 MUST 覆盖 `coord` only、`image` only、`lidar` only、`ray` only，以及至少 `coord+image`、`coord+lidar`、`coord+ray`、`image+lidar`、`coord+image+lidar` 和 `coord+image+lidar+ray`
-- **AND** 每组 MUST 能选择 simple concat 或 task-aware gated 模型
-
-#### Scenario: sensing-only 单任务主矩阵
-- **WHEN** 用户需要 Raymobtime s008 sensing-only 单任务主实验
-- **THEN** 推荐运行矩阵 MUST 覆盖 `coord`、`image`、`lidar` 和 `coord+image+lidar` 四组输入条件
-- **AND** 每组 MUST 分别运行 `current_beam_selection`、`current_los_classification` 和 `current_link_quality`
-- **AND** 该矩阵共 12 个训练 run，包含 `ray` 的 sensing+ray run MUST 单独标注为补充实验
-
-#### Scenario: 普通评估产物可比较
-- **WHEN** Raymobtime s008 训练或评估完成
-- **THEN** 系统 MUST 继续输出 objective 对应的 `metrics.json` 或 `test_report.json`
-- **AND** 系统 MUST 不要求额外生成模态失衡 analysis CSV、drop modality delta 或 diagnosis report
+#### Scenario: Raymobtime smoke 与矩阵不作为当前要求
+- **WHEN** 开发者运行当前架构边界、config load 或实验 workflow 测试
+- **THEN** 测试 MUST 不要求 Raymobtime dataset smoke、训练 smoke、评估 smoke 或推荐实验矩阵存在
+- **AND** 若测试覆盖 Raymobtime 名称，MUST 只验证 migration guard 或 registry 拒绝语义
 
 ### Requirement: 训练编排重构保持输出兼容
 训练编排内部重构后，训练入口 MUST 保持现有用户可见输出和恢复语义兼容。`final_config.yaml`、`resolved_config.yaml`、`train_log.json`、`training_outputs.npz`、checkpoint、checkpoint sidecar、teacher metrics、TensorBoard events 和 debug artifacts 的关键字段、路径和含义 MUST 与变更前兼容，除非对应 change 明确声明 breaking change。
@@ -1250,7 +1193,7 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 
 #### Scenario: config load characterization
 - **WHEN** 开发者运行 config loading focused tests
-- **THEN** 测试 MUST 覆盖实体 YAML、virtual canonical 配置、snapshot 配置、Raymobtime 配置和命令行覆盖
+- **THEN** 测试 MUST 覆盖实体 YAML、virtual canonical 配置、snapshot 配置、Raymobtime migration guard 和命令行覆盖
 - **AND** 测试 MUST 验证 normalization 与 validation 结果保持兼容
 
 #### Scenario: CLI help characterization
@@ -1267,7 +1210,7 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 用户 MUST 能通过链接进入当前保留能力的详细实验矩阵或 viewer 文档
 
 #### Scenario: 长实验说明迁移到 docs
-- **WHEN** README 中的某段内容主要描述当前保留的 CSI hardening、viewer、Raymobtime 或 MMW 详细实验流程
+- **WHEN** README 中的某段内容主要描述当前保留的 CSI hardening、viewer、MMW、BGAM 或 JEPA 详细实验流程
 - **THEN** 该内容 MUST 迁移到对应 `docs/` 文件或 OpenSpec spec
 - **AND** README MUST 保留简短摘要和链接
 
@@ -1446,7 +1389,7 @@ CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行
 - **AND** 输出 metadata MUST 不记录 KD-enabled lineage
 
 ### Requirement: 项目描述反映当前主线
-项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态/少样本跨场景 beam prediction、DeepSense6G/MMW/Raymobtime supervised/adaptation、GPS v2/adapter、MMW Town GPS v2、BGAM、CSI hardening、Raymobtime s008 selection、JEPA、预处理、诊断和 viewer manifest，而不是 KD-first、HiST-Beam-first、Top8/residual-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Top8 selector、residual、camera residual 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
+项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、DeepSense6G/MMW BGAM、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA、预处理、诊断和 viewer manifest，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
 
 #### Scenario: pyproject 描述不再 KD Hist 或退役路线 first
 - **WHEN** 开发者查看 `pyproject.toml` 的项目 description

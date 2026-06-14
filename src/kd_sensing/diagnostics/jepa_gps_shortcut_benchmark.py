@@ -17,6 +17,11 @@ import torch
 
 from kd_sensing.config.io import load_config
 from kd_sensing.config.parsing import safe_load_yaml
+from kd_sensing.data.difficulty import (
+    DifficultyContext,
+    apply_difficulty_pipeline,
+    normalize_difficulty_profiles,
+)
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
 from kd_sensing.utils.paths import resolve_path
@@ -627,26 +632,85 @@ def apply_benchmark_perturbation(
     suite_id = str(suite_cfg["id"])
     suite_type = str(suite_cfg["type"])
     condition = str(suite_cfg.get("condition", _default_condition(suite_type)))
-    result = _clone_batch(batch)
-    warnings: list[WarningRecord] = []
-    metadata_rows = _metadata_rows(result.get("metadata"))
-    ids = list(sample_ids or _sample_ids_from_metadata(metadata_rows, batch_size=_batch_size(result)))
+    ids = list(sample_ids or _sample_ids_from_metadata(_metadata_rows(batch.get("metadata")), batch_size=_batch_size(batch)))
     seed_value = _stable_seed(seed, suite_id, condition, severity, ids)
-
-    if suite_type == "gps_clean":
-        _annotate_perturbation(result, suite_cfg, severity=severity, seed=seed_value, warnings=[])
-        return result, []
-    if suite_type in GPS_SUITE_TYPES:
-        _apply_gps_perturbation(result, suite_cfg, severity=severity, seed=seed_value, warnings=warnings)
-    elif suite_type in IMAGE_SUITE_TYPES:
-        _apply_image_perturbation(result, suite_cfg, severity=severity, seed=seed_value, warnings=warnings)
-    elif suite_type in TEMPORAL_SUITE_TYPES:
-        _apply_temporal_perturbation(result, suite_cfg, severity=severity, seed=seed_value, warnings=warnings)
-    else:  # pragma: no cover - normalize_suite_config guards this.
-        raise BenchmarkManifestError(f"Unsupported suite type: {suite_type}")
-    warning_payloads = [item.to_dict() for item in warnings]
+    profile = _difficulty_profile_from_suite(suite_cfg, severity=severity, seed=seed)
+    difficulty = apply_difficulty_pipeline(
+        batch,
+        profile,
+        DifficultyContext(stage="benchmark", split=str(suite_cfg.get("split", "test")), seed=seed_value, sample_ids=tuple(ids)),
+    )
+    warning_payloads = [item.to_dict() for item in difficulty.warnings]
+    result = difficulty.batch
     _annotate_perturbation(result, suite_cfg, severity=severity, seed=seed_value, warnings=warning_payloads)
     return result, warning_payloads
+
+
+def _difficulty_profile_from_suite(suite: Mapping[str, Any], *, severity: float, seed: int):
+    suite_type = str(suite["type"])
+    params = {
+        key: value
+        for key, value in suite.items()
+        if key not in {"id", "name", "type", "severities", "severity", "severity_unit"}
+    }
+    operator = {
+        "type": suite_type,
+        **params,
+        "modality": _suite_affected_modality(suite),
+    }
+    profile = {
+        "id": str(suite["id"]),
+        "operators": [operator],
+        "stage": "benchmark",
+        "split": str(suite.get("split", "test")),
+        "condition": _difficulty_condition_for_suite(suite, severity),
+        "severity": float(severity),
+        "seed": int(seed),
+        "fallback": str(suite.get("fallback", "identity")),
+        "affected_modalities": [_suite_affected_modality(suite)],
+        "metadata": {
+            "source": "jepa_gps_shortcut_benchmark",
+            "suite_type": suite_type,
+            "suite_id": suite.get("id"),
+        },
+    }
+    return normalize_difficulty_profiles([profile], default_seed=seed, default_stage="benchmark")[0]
+
+
+def _suite_affected_modality(suite: Mapping[str, Any]) -> str:
+    suite_type = str(suite.get("type"))
+    if suite_type in IMAGE_SUITE_TYPES:
+        return "image"
+    if suite_type in TEMPORAL_SUITE_TYPES:
+        return str(suite.get("modality", "gps"))
+    return "gps"
+
+
+def _difficulty_condition_for_suite(suite: Mapping[str, Any], severity: float) -> str:
+    if str(suite.get("type")) == SCENARIO_C_SUITE_TYPE:
+        return str(_scenario_c_condition_for_severity(suite, severity).get("id", suite.get("condition", "scenario_c")))
+    return str(suite.get("condition", _default_condition(str(suite.get("type")))))
+
+
+def _benchmark_difficulty_provenance(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for suite in manifest.get("perturbation_suites", []):
+        if not isinstance(suite, Mapping):
+            continue
+        for seed in manifest.get("seeds", [0]):
+            for severity in suite.get("severities", [0.0]):
+                profile = _difficulty_profile_from_suite(suite, severity=float(severity), seed=int(seed))
+                records.append(
+                    {
+                        "suite_id": suite.get("id"),
+                        "suite_type": suite.get("type"),
+                        "seed": int(seed),
+                        "severity": float(severity),
+                        "condition": _difficulty_condition_for_suite(suite, float(severity)),
+                        "profile": profile.to_dict(),
+                    }
+                )
+    return records
 
 
 def evaluate_model_comparability(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -1737,6 +1801,7 @@ def _build_runner_manifest(
         "models": model_records,
         "protocol": manifest.get("protocol", {}),
         "perturbation_suites": manifest.get("perturbation_suites", []),
+        "difficulty_provenance": _benchmark_difficulty_provenance(manifest),
         "seeds": manifest.get("seeds", []),
         "metrics": manifest.get("metrics", {}),
         "figures": manifest.get("figures", {}),
@@ -1838,6 +1903,16 @@ def _annotate_perturbation(
         "fallback": suite.get("fallback", ""),
         "warnings": warnings,
     }
+    difficulty = batch.get("difficulty")
+    if isinstance(difficulty, Mapping):
+        annotation["difficulty_profile_digest"] = difficulty.get("profile_digest")
+        annotation["difficulty_profile_id"] = difficulty.get("profile_id")
+        annotation["difficulty_operator_registry"] = [
+            item.get("registry_name", item.get("type"))
+            for item in difficulty.get("operators", [])
+            if isinstance(item, Mapping)
+        ]
+        annotation["difficulty_replay"] = difficulty.get("replay", {})
     if str(suite.get("type")) == SCENARIO_C_SUITE_TYPE:
         condition = _scenario_c_condition_for_severity(suite, severity)
         annotation.update(

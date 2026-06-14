@@ -107,6 +107,8 @@ class DeepSense6GDataset(Dataset):
         scene_id: str | int | None = None,
         scene_slug: str | None = None,
         seq_len: int = 8,
+        gps_seq_len: int | None = None,
+        gps_source_seq_len: int | None = None,
         num_pred: int = 3,
         image_profile: str | None = None,
         image_size: list[int] | tuple[int, int] = (224, 224),
@@ -197,8 +199,15 @@ class DeepSense6GDataset(Dataset):
         self.root_csv = Path(selected_csv)
         if not self.root_csv.is_absolute():
             self.root_csv = self.data_root / self.root_csv
-        self.seq_len = seq_len
-        self.num_pred = num_pred
+        self.seq_len = int(seq_len)
+        selected_gps_source_seq_len = gps_source_seq_len if gps_source_seq_len is not None else gps_seq_len
+        self.gps_source_seq_len = (
+            int(selected_gps_source_seq_len) if selected_gps_source_seq_len is not None else self.seq_len
+        )
+        if self.gps_source_seq_len <= 0:
+            raise ValueError("gps_source_seq_len must be positive when provided.")
+        self.gps_seq_len = self.gps_source_seq_len
+        self.num_pred = int(num_pred)
         self.image_profile = resolve_image_profile(image_profile)
         self.image_profile_spec = image_profile_spec(self.image_profile)
         self.image_size = tuple(image_size)
@@ -306,8 +315,9 @@ class DeepSense6GDataset(Dataset):
             self.root_csv,
             portion=portion,
             enabled_modalities=self.enabled_modalities,
-            seq_len=seq_len,
-            num_pred=num_pred,
+            seq_len=self.seq_len,
+            gps_source_seq_len=self.gps_source_seq_len,
+            num_pred=self.num_pred,
             portion_strategy=portion_strategy,
             portion_seed=portion_seed,
             include_position_targets=(
@@ -497,6 +507,9 @@ class DeepSense6GDataset(Dataset):
             "split": self.split,
             "root_csv": str(self.root_csv),
             "beam_target_source": self.beam_target_source,
+            "seq_len": int(self.seq_len),
+            "gps_seq_len": int(self.gps_source_seq_len),
+            "gps_source_seq_len": int(self.gps_source_seq_len),
             "input_beam_path": last_beam_path,
             "target_beam_path": first_target_beam_path,
             "future_beam_path": first_future_beam_path,
@@ -922,7 +935,7 @@ class DeepSense6GDataset(Dataset):
                     self.data_root,
                     self.samples.gps_paths[idx],
                     bs_paths,
-                    seq_len=self.seq_len,
+                    seq_len=self.gps_source_seq_len,
                     mode=self.gps_feature_mode,
                     angle_offset_rad=self.gps_angle_offset_rad,
                     frame_feature_cache=self._gps_frame_feature_cache,
@@ -948,7 +961,7 @@ class DeepSense6GDataset(Dataset):
                 self.data_root,
                 self.samples.gps_paths[idx],
                 bs_paths,
-                seq_len=self.seq_len,
+                seq_len=self.gps_source_seq_len,
                 mode=self.gps_feature_mode,
                 angle_offset_rad=self.gps_angle_offset_rad,
                 frame_feature_cache=self._gps_frame_feature_cache,
@@ -970,7 +983,7 @@ class DeepSense6GDataset(Dataset):
                 self.data_root,
                 self.samples.gps_paths[idx],
                 self.samples.bs_gps_paths[idx],
-                seq_len=self.seq_len,
+                seq_len=self.gps_source_seq_len,
             )
         return self._gps_bev_xy_cache[idx]
 

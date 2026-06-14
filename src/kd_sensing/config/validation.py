@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
+from kd_sensing.data.difficulty.schema import normalize_config_difficulty
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.config.normalization import (
     IMAGE_MODEL_TYPES,
@@ -39,6 +40,7 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     validate_epoch_subsampling_config(cfg)
     validate_dataset_input_profiles(cfg)
     validate_deepsense_label_space_artifacts(cfg)
+    normalize_config_difficulty(cfg)
     cache_policy = str(cfg.get("data", {}).get("cache", {}).get("policy", "auto"))
     validate_cache_policy(cache_policy, "data.cache.policy")
     cache_cfg = cfg.get("data", {}).get("cache", {})

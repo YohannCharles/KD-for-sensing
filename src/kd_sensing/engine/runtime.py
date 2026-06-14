@@ -184,6 +184,7 @@ def prepare_task_inputs(
         return prepare_fusion_inputs(
             batch,
             seq_length=seq_length,
+            gps_input_seq_len=_gps_input_seq_len(model_cfg),
             num_pred=num_pred,
             device=device,
             modalities=(model_cfg or {}).get("modalities"),
@@ -207,6 +208,7 @@ def prepare_task_inputs(
             "gps_batch": prepare_gps_inputs(
                 batch,
                 seq_length=seq_length,
+                input_seq_length=_gps_input_seq_len(model_cfg),
                 num_pred=num_pred,
                 device=device,
                 profile=(model_cfg or {}).get("input_profiles", {}).get("lidar"),
@@ -254,6 +256,13 @@ def prepare_task_inputs(
             non_blocking=non_blocking,
         )
     }
+
+
+def _gps_input_seq_len(model_cfg: dict[str, Any] | None) -> int | None:
+    if not isinstance(model_cfg, dict):
+        return None
+    value = model_cfg.get("gps_input_seq_len", model_cfg.get("gps_history_len"))
+    return int(value) if value is not None else None
 
 
 def forward_task_model(

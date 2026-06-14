@@ -368,3 +368,21 @@ def sample_keys_for_modalities(modalities: list[str] | tuple[str, ...]) -> dict[
         name: MODALITY_SPECS[name].sample_keys
         for name in normalize_modalities(tuple(modalities), context="sample modalities")
     }
+
+
+def difficulty_metadata_fields(modality: str) -> dict[str, Any]:
+    name = modality_spec(modality).name
+    if name == "gps":
+        return {
+            "gps_valid_mask": "input reliability mask; false means delayed/missing GPS should not be trusted as fresh input",
+            "gps_stale_mask": "input reliability mask; true means historical GPS was reused",
+            "gps_delay_steps": "non-negative input delay measured in frame steps",
+            "gps_source_index": "source GPS time index, constrained to be no later than the current input step",
+            "gps_dropout_mask": "input dropout mask produced by GPS missing/async difficulty",
+        }
+    if name == "image":
+        return {
+            "image_degradation_metadata": "image difficulty provenance including degradation type, severity, seed, frame range and parameters",
+            "image_occlusion_mask": "optional input occlusion mask produced by image difficulty",
+        }
+    return {}

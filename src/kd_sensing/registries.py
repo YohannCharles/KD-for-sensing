@@ -119,6 +119,7 @@ METRICS = Registry("metrics")
 PREPROCESSORS = Registry("preprocessors")
 JEPA_DOWNSTREAM_POOLERS = Registry("jepa_downstream_poolers")
 JEPA_DOWNSTREAM_ADAPTERS = Registry("jepa_downstream_adapters")
+DIFFICULTY_OPERATORS = Registry("difficulty_operators")
 
 DATASETS.register_removed(
     "scenario9",
@@ -283,6 +284,12 @@ def import_default_components() -> None:
     import kd_sensing.preprocessing.sequences  # noqa: F401
 
 
+def import_default_difficulty_operators() -> None:
+    """Import built-in difficulty operators without pulling them into light registry imports."""
+
+    import kd_sensing.data.difficulty.operators  # noqa: F401
+
+
 __all__ = [
     "Registry",
     "RegistryError",
@@ -297,6 +304,8 @@ __all__ = [
     "PREPROCESSORS",
     "JEPA_DOWNSTREAM_POOLERS",
     "JEPA_DOWNSTREAM_ADAPTERS",
+    "DIFFICULTY_OPERATORS",
     "registry_self_check",
     "import_default_components",
+    "import_default_difficulty_operators",
 ]

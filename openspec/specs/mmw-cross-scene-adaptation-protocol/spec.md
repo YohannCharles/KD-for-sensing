@@ -1,7 +1,7 @@
 # mmw-cross-scene-adaptation-protocol Specification
 
 ## Purpose
-定义 MMW Town10 跨场景适配的数据可用性、manifest、split protocol 和 target adaptation 契约，确保单场景 smoke 与可声明的 cross-scene LOSO 实验被清晰区分，并让 MMW HiST-Beam 训练、评估和报告可复现、可审计。
+定义 MMW Town10 跨场景适配的数据可用性、manifest、split protocol 和 target adaptation 支撑契约，确保单场景 smoke 与可声明的 cross-scene evidence 被清晰区分。该 capability 支撑当前 MMW 数据准备、GPS v2、BGAM 或未来显式定义的 current workflow；不恢复 MMW HiST-Beam 旧训练、评估或报告入口。
 ## Requirements
 ### Requirement: MMW 跨场景适配数据可用性登记
 系统 MUST 为 Multimodal-Wireless 跨场景适配维护机器可读的数据可用性登记。登记 MUST 按 condition、town、scenario、sensor zip、channel zip、prepared root 和处理状态记录每个本地数据单元；当只有一个 scenario 可用时，系统 MUST 将其标记为 single-scene smoke 可用，而不是 LOSO 可用。
@@ -431,4 +431,3 @@ MMW target-shot adaptation MUST only use `target_labeled` beam/residual labels f
 - **WHEN** 用户同时配置 `support_num` 和 `support_ratio`
 - **THEN** 系统 MUST 使用 `support_num` 或抛出清晰的优先级错误
 - **AND** metadata MUST 记录实际使用的 support count
-

@@ -104,6 +104,33 @@ def test_deepsense_dataset_supports_beambench_paper_distance_angle_gps(tmp_path:
     assert dataset.gps_angle_offset_source == "paper_scene_default"
 
 
+def test_deepsense_dataset_can_use_longer_gps_source_history_than_sequence(tmp_path: Path):
+    csv_path = tmp_path / "train.csv"
+    gps_paths, bs_paths = _write_gps_files(tmp_path, "train", 33.0, -111.0)
+    _write_beam_files(tmp_path)
+    _write_sequence_csv(csv_path, gps_paths, bs_paths, seq_index=1)
+
+    dataset = DeepSense6GDataset(
+        data_root=str(tmp_path),
+        csv_name=str(csv_path),
+        split="train",
+        scene=31,
+        seq_len=5,
+        gps_source_seq_len=6,
+        num_pred=1,
+        enabled_modalities=["gps"],
+        use_gps=True,
+        gps_feature_mode="relative_polar",
+        gps_normalize=False,
+    )
+    sample = dataset[0]
+
+    assert tuple(sample["input_beam"].shape) == (5,)
+    assert tuple(sample["target_beam"].shape) == (1,)
+    assert tuple(sample["gps"].shape) == (6, 3)
+    assert dataset.gps_source_seq_len == 6
+
+
 def test_gps_scaler_fits_train_and_reuses_for_test_split(tmp_path: Path):
     train_csv = tmp_path / "train.csv"
     test_csv = tmp_path / "test.csv"
@@ -273,6 +300,22 @@ def test_gps_fusion_batch_path_does_not_require_disabled_modalities():
             device=torch.device("cpu"),
             modalities=["gps"],
         )
+
+
+def test_short_gps_history_is_left_padded_for_fusion_inputs():
+    batch = {"gps": torch.tensor([[[10.0], [20.0], [30.0], [40.0], [50.0], [60.0]]])}
+
+    fusion_inputs = prepare_fusion_inputs(
+        batch,
+        seq_length=5,
+        gps_input_seq_len=2,
+        num_pred=1,
+        device=torch.device("cpu"),
+        modalities=["gps"],
+    )
+
+    assert fusion_inputs["gps_batch"].shape == (1, 5, 1)
+    assert fusion_inputs["gps_batch"][0, :, 0].tolist() == [50.0, 50.0, 50.0, 50.0, 60.0]
 
 
 def test_fusion_modalities_validate_invalid_and_missing_inputs():

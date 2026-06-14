@@ -185,6 +185,8 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
 
 Benchmark 产物写入 ignored 的 `outputs/analysis/...`，包括 `benchmark_manifest.json`、`tables/metrics_by_condition.csv`、`tables/robustness_summary.csv`、`tables/shortcut_reliance_summary.csv` 和可选曲线图。真实 BeamBench-fair 矩阵使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml`，其中 checkpoint 路径是本地占位，需要替换为实际 run；不要提交真实 checkpoint、metrics、figures、cache 或 reports。`kd-sensing-jepa-visual-analysis` 可通过 `benchmark.runner_manifest=<path>` 只读消费 runner manifest，生成 `benchmark_robustness_matrix.csv`、GPS collapse/image degradation/temporal delay 曲线和 GPS shortcut reliance 报告段落。
 
+模态 difficulty profile 用于描述输入难度条件，不是新模态，也不会新增 `delayed_gps`、`image_hard` 等模型输入分支。profile 复用 canonical modality key，例如 `gps` 和 `image`，只扰动输入 tensor 及 `gps_valid_mask`、`gps_source_index`、`image_degradation_metadata` 等输入可靠性 metadata；`target_beam`、`beam_power`、soft target、sample id 和 split metadata 会被 guard 保护。示例配置位于 `configs/difficulty/`，覆盖 clean baseline、GPS mild async training、GPS severe async evaluation、GPS/image dropout training 和 image hard degradation evaluation sweep。新增 operator 时，在 `kd_sensing.data.difficulty.operators` 中实现轻量 batch transform，并通过 `DIFFICULTY_OPERATORS` 显式注册；训练、评估和 benchmark 会复用同一 profile/schema/pipeline。启用 difficulty 后，resolved profile、digest、stage/split、seed、warnings 和 replay metadata 会写入 `final_config.yaml`、runtime metadata 或 benchmark manifest；表格、图、cache 和 debug 输出仍只写入 ignored 的 `outputs/`、`logs/` 或 manifest 指定目录。
+
 ## 配置和实验矩阵
 
 单模态 canonical 配置使用：

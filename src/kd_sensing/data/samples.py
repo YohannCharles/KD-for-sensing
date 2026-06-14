@@ -29,6 +29,8 @@ def create_samples(
     *,
     enabled_modalities: list[str] | tuple[str, ...] | set[str] | None = None,
     seq_len: int | None = None,
+    gps_seq_len: int | None = None,
+    gps_source_seq_len: int | None = None,
     num_pred: int | None = None,
     portion_strategy: str = "even",
     portion_seed: int = 42,
@@ -80,6 +82,7 @@ def create_samples(
         beam_cols=beam_cols,
         future_beam_cols=future_beam_cols,
         seq_len=seq_len,
+        gps_seq_len=gps_source_seq_len if gps_source_seq_len is not None else gps_seq_len,
         num_pred=num_pred,
         include_position_targets=include_position_targets,
         include_history_position_targets=include_history_position_targets,
@@ -205,12 +208,14 @@ def _validate_required_columns(
     beam_cols: list[str],
     future_beam_cols: list[str],
     seq_len: int | None,
+    gps_seq_len: int | None,
     num_pred: int | None,
     include_position_targets: bool,
     include_history_position_targets: bool,
 ) -> None:
     path = Path(csv_path)
     minimum_seq = int(seq_len) if seq_len is not None else 1
+    minimum_gps_seq = int(gps_seq_len) if gps_seq_len is not None else minimum_seq
     minimum_pred = int(num_pred) if num_pred is not None else 1
     requirements = {
         "beam": (beam_cols, minimum_seq, "beam1..beamN"),
@@ -221,8 +226,8 @@ def _validate_required_columns(
     if "radar" in enabled_modalities:
         requirements["radar"] = (radar_cols, minimum_seq, "radar1..radarN")
     if "gps" in enabled_modalities or include_history_position_targets:
-        requirements["gps"] = (gps_cols, minimum_seq, "gps1..gpsN")
-        requirements["bs_gps"] = (bs_gps_cols, minimum_seq, "bs_gps1..bs_gpsN")
+        requirements["gps"] = (gps_cols, minimum_gps_seq, "gps1..gpsN")
+        requirements["bs_gps"] = (bs_gps_cols, minimum_gps_seq, "bs_gps1..bs_gpsN")
     if include_position_targets:
         requirements["future_gps"] = (future_gps_cols, minimum_pred, "future_gps1..future_gpsN")
         requirements["future_bs_gps"] = (

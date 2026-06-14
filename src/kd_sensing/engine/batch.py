@@ -397,6 +397,7 @@ def prepare_fusion_inputs(
     batch: dict[str, torch.Tensor],
     *,
     seq_length: int,
+    gps_input_seq_len: int | None = None,
     num_pred: int,
     device: torch.device,
     modalities: list[str] | tuple[str, ...] | None = None,
@@ -423,6 +424,17 @@ def prepare_fusion_inputs(
                 num_pred=num_pred,
                 device=device,
                 image_profile=image_profile,
+                non_blocking=non_blocking,
+            )
+            continue
+        if modality == "gps":
+            inputs[input_keys[modality]] = prepare_gps_inputs(
+                batch,
+                seq_length=seq_length,
+                input_seq_length=gps_input_seq_len,
+                num_pred=num_pred,
+                device=device,
+                profile=(input_profiles or {}).get(modality),
                 non_blocking=non_blocking,
             )
             continue
@@ -477,6 +489,7 @@ def prepare_gps_bev_xy_inputs(
     if xy.ndim != 3 or int(xy.shape[-1]) != 2:
         raise ValueError(f"gps_bev_xy must have shape [B, T, 2], got {tuple(xy.shape)}.")
     xy = xy[:, -seq_length:, :]
+    xy = _left_pad_temporal_sequence(xy, seq_length)
     batch_size, _, feature_dim = xy.shape
     pad_steps = max(num_pred - 1, 0)
     zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=xy.dtype, device=device)
@@ -487,6 +500,7 @@ def prepare_gps_inputs(
     batch: dict[str, torch.Tensor],
     *,
     seq_length: int,
+    input_seq_length: int | None = None,
     num_pred: int,
     device: torch.device,
     profile: str | None = None,
@@ -500,7 +514,11 @@ def prepare_gps_inputs(
     if gps.ndim != 3:
         profile_text = f" for profile '{profile}'" if profile else ""
         raise ValueError(f"GPS input{profile_text} must have shape [B, T, F], got {tuple(gps.shape)}.")
-    gps = gps[:, -seq_length:, :]
+    window = int(input_seq_length) if input_seq_length is not None else int(seq_length)
+    if window <= 0:
+        raise ValueError("GPS input_seq_length must be positive when provided.")
+    gps = gps[:, -window:, :]
+    gps = _left_pad_temporal_sequence(gps, seq_length)
     batch_size, _, feature_dim = gps.shape
     pad_steps = max(num_pred - 1, 0)
     zeros = torch.zeros(
@@ -511,6 +529,16 @@ def prepare_gps_inputs(
         device=device,
     )
     return torch.cat([gps, zeros], dim=1)
+
+
+def _left_pad_temporal_sequence(value: torch.Tensor, seq_length: int) -> torch.Tensor:
+    if int(value.shape[1]) >= int(seq_length):
+        return value
+    if int(value.shape[1]) <= 0:
+        raise ValueError("Temporal input must contain at least one timestep before left padding.")
+    pad_steps = int(seq_length) - int(value.shape[1])
+    earliest = value[:, :1, ...].expand(-1, pad_steps, *([-1] * (value.ndim - 2)))
+    return torch.cat([earliest, value], dim=1)
 
 
 def prepare_radar_inputs(

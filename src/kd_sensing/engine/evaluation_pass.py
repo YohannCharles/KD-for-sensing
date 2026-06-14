@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
 
+from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.modality_resolution import config_uses_lidar, resolve_enabled_modalities
 from kd_sensing.engine.objectives.metadata import (
@@ -122,10 +123,12 @@ def run_evaluation_pass(
     all_link_targets = []
     lidar_quality = LidarQualityAccumulator()
     saw_lidar = False
+    difficulty_seed = int(cfg.get("experiment", {}).get("seed", 0))
+    split_name = _evaluation_split_name(dataloader, cfg)
 
     with torch.no_grad():
-        for batch in dataloader:
-            batch = prepare_task_batch(batch)
+        for step_index, batch in enumerate(dataloader):
+            batch = _apply_evaluation_difficulty(prepare_task_batch(batch), cfg, split_name, difficulty_seed, step_index)
             all_metadata.extend(_metadata_rows_from_batch(batch.get("metadata")))
             if "input_beam" in batch:
                 all_input_beams.append(batch["input_beam"].detach().cpu())
@@ -293,10 +296,12 @@ def _run_jepa_evaluation_pass(
     all_metadata: list[dict[str, Any]] = []
     diagnostic_sums: dict[str, float] = {}
     diagnostic_counts: dict[str, int] = {}
+    difficulty_seed = int(cfg.get("experiment", {}).get("seed", 0))
+    split_name = _evaluation_split_name(dataloader, cfg)
 
     with torch.no_grad():
         for step_index, batch in enumerate(dataloader):
-            batch = prepare_task_batch(batch)
+            batch = _apply_evaluation_difficulty(prepare_task_batch(batch), cfg, split_name, difficulty_seed, step_index)
             missing = [key for key in ("image", "gps") if key not in batch]
             if missing:
                 raise ValueError(
@@ -495,6 +500,50 @@ def _metadata_value_at(value: Any, index: int, *, batch_size: int) -> Any:
             return [_metadata_value_at(item, index, batch_size=batch_size) for item in value]
         return list(value)
     return value
+
+
+def _evaluation_split_name(dataloader, cfg: Mapping[str, Any]) -> str:
+    dataset = getattr(dataloader, "dataset", None)
+    split = getattr(dataset, "split", None)
+    if split:
+        return str(split)
+    configured = cfg.get("evaluation", {}).get("split") if isinstance(cfg.get("evaluation"), Mapping) else None
+    return str(configured or cfg.get("protocol", {}).get("split", "test"))
+
+
+def _sample_ids_from_batch(batch: Mapping[str, Any]) -> list[str]:
+    rows = _metadata_rows_from_batch(batch.get("metadata"))
+    ids = [str(row.get("sample_id", "")) for row in rows if row.get("sample_id") not in (None, "")]
+    if ids:
+        return ids
+    value = batch.get("sample_id", batch.get("sample_ids"))
+    if value is None:
+        return []
+    if torch.is_tensor(value):
+        return [str(item.item() if hasattr(item, "item") else item) for item in value.reshape(-1)]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _apply_evaluation_difficulty(
+    batch: dict[str, Any],
+    cfg: Mapping[str, Any],
+    split_name: str,
+    seed: int,
+    step_index: int,
+) -> dict[str, Any]:
+    return apply_configured_difficulty(
+        batch,
+        cfg,
+        DifficultyContext(
+            stage="evaluation",
+            split=split_name,
+            seed=seed,
+            step=step_index,
+            sample_ids=tuple(_sample_ids_from_batch(batch)),
+        ),
+    ).batch
 
 
 def _beam_metrics_by_los_bucket(

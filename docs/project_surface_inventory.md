@@ -48,6 +48,100 @@
 - baseline/reproduction：`configs/baselines/*.yaml` 和 `configs/pretraining/*.yaml` 服务 BeamBench reproduction 和 GPS-conditioned JEPA pretraining 复现；GPS window baseline 配置已删除。
 - retired history：已删除的 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、CRAF/MARF/G2D/Multimodal-NF 实体配置只允许作为历史或 migration guard 说明出现，不得作为当前推荐入口。
 
+## OpenSpec capability lifecycle 分类
+
+`openspec/specs/` 同时保存当前需求契约、支撑能力和退役墓碑。维护者和 AI agent 读取某个 capability 前，先按下表判断 lifecycle，再决定它是否代表当前入口：
+
+- `current`：当前需求契约、可推荐入口或当前运行能力。
+- `supporting`：被当前 workflow 消费的 helper、metric、manifest、cleanup、migration guard 或数据契约，不作为 standalone 推荐入口。
+- `retired-tombstone`：只保留退役、拒绝、迁移边界和防回流说明，不属于当前支持能力。
+
+| Capability | Lifecycle | 说明 |
+| --- | --- | --- |
+| `ai-maintainer-navigation` | `current` | 当前 agent/maintainer 导航契约。 |
+| `automated-cache-policy` | `current` | 当前 cache policy 契约。 |
+| `beam-distribution-shift-diagnostics` | `supporting` | source/target label 分布诊断支撑，不是独立训练入口。 |
+| `beambench-baseline-reproduction` | `current` | BeamBench/Arnold22 baseline 复现与报告能力。 |
+| `beamspace-physical-labels` | `supporting` | 物理标签、beam power/path label 和泄漏边界支撑。 |
+| `bev-fusion-2604-reproduction` | `current` | 2604 paper-aligned BEV-Fusion 复现实验能力。 |
+| `canonical-config-resolution` | `current` | 当前实体/virtual/overlay config 解析契约。 |
+| `cls-token-transformer-fusion` | `current` | 当前 CLS-token Transformer fusion 模型能力。 |
+| `component-registry` | `current` | 当前 registry 与退役组件拒绝边界。 |
+| `configurable-multimodal-fusion` | `current` | 当前 fusion 配置和 virtual overlay 运行语义。 |
+| `cross-scene-loso-workflow` | `supporting` | 通用 LOSO fold/split/few-shot 支撑；Hist 默认 runner 已退役。 |
+| `csi-channel-data` | `current` | 当前 CSI 数据列和样本字段契约。 |
+| `csi-channel-degradation` | `current` | 当前 CSI degradation profile 能力。 |
+| `csi-hardening-debug-validation` | `current` | 当前 CSI hardening debug 矩阵验证。 |
+| `csi-hardening-experiment-matrix` | `current` | 当前 CSI hardening 控制变量矩阵。 |
+| `csi-modality-model` | `current` | 当前 CSI 模态模型契约。 |
+| `dataset-directory-layout` | `current` | 当前数据集目录和本地产物边界。 |
+| `dataset-runtime-contracts` | `current` | 当前 dataset descriptor/sample/adapter/target provider 契约。 |
+| `deepsense6g-camera-ae-residual-correction` | `retired-tombstone` | DeepSense6G camera residual 路线已退役。 |
+| `deepsense6g-gps-lidar-bgam-reranker` | `current` | 当前 DeepSense6G GPS+LiDAR BGAM reranker workflow。 |
+| `deepsense6g-gps-residual-fusion` | `retired-tombstone` | DeepSense6G GPS residual fusion 路线已退役。 |
+| `deepsense6g-gps-top8-candidate-selector` | `supporting` | 旧 standalone selector 已退役；BGAM 可复用 TopK manifest/dataset/loss 支撑语义。 |
+| `deepsense6g-scene-selection` | `current` | 当前 DeepSense6G scene 选择与输出隔离。 |
+| `distillation-free-project-surface` | `current` | 当前去蒸馏化项目表面和旧 KD 拒绝契约。 |
+| `experiment-artifact-registry` | `current` | 当前 checkpoint/artifact registry 与历史产物隔离。 |
+| `experiment-run-index` | `current` | 当前只读 run index 能力。 |
+| `experiment-workflow` | `current` | 当前配置驱动训练/评估/预处理/诊断 workflow。 |
+| `first-class-prediction-tasks` | `current` | 当前 prediction objective 元数据、loss 和指标契约。 |
+| `geometry-residual-beam-labels` | `retired-tombstone` | geometry residual label 路线已退役。 |
+| `gps-coarse-anchor-prediction` | `retired-tombstone` | GPS coarse anchor prediction 已退役。 |
+| `gps-conditioned-jepa-pretraining` | `current` | 当前 GPS-conditioned JEPA 预训练能力。 |
+| `gps-modality-model` | `current` | 当前 GPS 模态模型契约。 |
+| `gps-preprocessing` | `current` | 当前 GPS sequence/relative-polar/scaler 预处理契约。 |
+| `gps-pseudo-label-bgam` | `current` | 当前 BGAM pseudo-history label 与 candidate 输入契约。 |
+| `gps-query-jepa-pooling` | `current` | 当前 Image+GPS JEPA query-pool 下游能力。 |
+| `hist-beam-cross-scene-adaptation` | `retired-tombstone` | HiST/Hist 跨场景适配研究线已退役。 |
+| `history-anchored-residual-beam` | `retired-tombstone` | history-anchor Hist 路径已退役。 |
+| `image-only-legal-crossroad-probe` | `retired-tombstone` | image-only Hist probe 已退役。 |
+| `image-preprocessing-profiles` | `current` | 当前 image profile 与 RGB/ImageNet 预处理契约。 |
+| `jepa-downstream-extensibility` | `current` | 当前 JEPA downstream pooler/adapter 扩展契约。 |
+| `jepa-gps-shortcut-benchmark` | `current` | 当前 JEPA vs GPS shortcut benchmark 能力。 |
+| `jepa-visual-analysis-suite` | `current` | 当前 JEPA visual analysis 离线诊断能力。 |
+| `legacy-kd-isolation` | `retired-tombstone` | legacy KD 入口只作为拒绝、历史读取和 migration guard 墓碑。 |
+| `lidar-modality-model` | `current` | 当前 LiDAR 模态模型契约。 |
+| `lidar-preprocessing` | `current` | 当前 LiDAR 点云/BEV cache/scaler 预处理契约。 |
+| `mmw-beam-label-calibration` | `current` | 当前 MMW beam label calibration 契约。 |
+| `mmw-cross-scene-adaptation-protocol` | `supporting` | MMW split/adaptation protocol 支撑；MMW HiST wording 只可作历史边界。 |
+| `mmw-sensor-assisted-beam-prediction` | `current` | 当前 MMW sensor-assisted beam prediction 边界。 |
+| `mmw-town-gps-adapter-v2` | `current` | 当前 MMW Town GPS-only v2 workflow。 |
+| `mmw-town-gps-lidar-bgam-reranker` | `current` | 当前 MMW Town GPS+LiDAR BGAM reranker workflow。 |
+| `mmw-town-gps-top8-candidate-selector` | `supporting` | standalone Top8 CLI/config 已退役；BGAM 内部候选 manifest 支撑可保留。 |
+| `mmw-town10-dataset-preparation` | `current` | 当前 MMW Town10 数据准备能力。 |
+| `mmwave-modality-model` | `current` | 当前 mmWave 模态模型契约。 |
+| `mmwave-preprocessing` | `current` | 当前 mmWave sequence/power/scaler 预处理契约。 |
+| `modality-aware-data-loading` | `current` | 当前按模态选择加载、normalization 和 cache 行为契约。 |
+| `modality-contracts` | `current` | 当前中心化模态顺序、batch key 和 profile 拒绝边界。 |
+| `modality-difficulty-pipeline` | `current` | 当前 difficulty profile/operator pipeline。 |
+| `modality-visual-diagnostics` | `current` | 当前 viewer manifest 兼容诊断入口。 |
+| `modular-sequence-model` | `current` | 当前模块化序列模型结构。 |
+| `multi-task-occlusion-position-learning` | `current` | 当前 occlusion/position 辅助监督能力。 |
+| `original-code-compatibility` | `supporting` | 历史 checkpoint/config 读取兼容支撑，不是旧训练入口。 |
+| `path-prototype-hist-beam-adaptation` | `retired-tombstone` | P3/HiST path prototype 已退役。 |
+| `project-architecture` | `current` | 当前包结构、入口、轻量导入和退役边界。 |
+| `project-health-guardrails` | `current` | 当前健康护栏、inventory 和静态检查契约。 |
+| `project-surface-cleanup` | `current` | 当前源码表面清理、退役路线和本地产物边界。 |
+| `spec-lifecycle-boundaries` | `current` | 当前 OpenSpec capability lifecycle 分类和读取边界。 |
+| `radar-student-model` | `current` | 当前 radar student 模型契约。 |
+| `radar-teacher-model` | `current` | 当前 radar teacher/复现兼容模型契约。 |
+| `radio-semantic-hist-beam-adaptation` | `retired-tombstone` | radio-semantic Hist 路线已退役。 |
+| `raymobtime-s008-retirement` | `retired-tombstone` | Raymobtime s008 退役墓碑。 |
+| `resnet18-image-encoder` | `current` | 当前 ResNet-18 ImageNet encoder 能力。 |
+| `runtime-artifact-cleanup` | `current` | 当前只读 cleanup manifest 和显式删除 workflow。 |
+| `snapshot-next-frame-baselines` | `current` | 当前 snapshot next-frame baseline 契约。 |
+| `soft-beam-label-training` | `current` | 当前 circular/soft beam label supervised training。 |
+| `target-shot-domain-splitting` | `current` | 当前 source-target domain 和 target-shot split 契约。 |
+| `training-throughput-optimization` | `current` | 当前训练吞吐 profiling 与建议。 |
+| `vision-position-baseline-suite` | `current` | 当前 Vision-Position baseline preset 矩阵。 |
+
+退役/支撑例外摘要：
+
+- HiST/Hist、Raymobtime s008、GPS coarse anchor、GPS residual、camera residual、geometry residual、image-only Hist probe、P3/Radio-semantic Hist、legacy KD、CRAF/MARF/G2D 和 Multimodal-NF 不属于当前推荐入口；只能在退役墓碑、migration guard、历史说明或拒绝边界中出现。
+- Top8/TopK 的旧 standalone selector 训练、plot、compare CLI/config 已退役；BGAM 当前 workflow 可继续消费 GPS logits 重新计算出的 candidate manifest、TopK loss/metric 或字段映射支撑语义。
+- 通用 LOSO/few-shot split、beamspace physical label、distribution diagnostics、runtime cleanup 和历史 checkpoint 读取属于 supporting 或 current guardrail；它们不得恢复 Hist、Raymobtime、旧 KD 或 residual 研究线的旧 CLI、root config、console script 或实体 YAML。
+
 ## 文档生命周期分类
 
 根目录 Markdown：

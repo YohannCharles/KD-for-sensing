@@ -189,7 +189,13 @@ def test_beambench_image_ae_gps_config_resolves_throughput_defaults(tmp_path: Pa
         {
             "experiment": {"device": "cuda"},
             "data": {
-                "dataset": {"scene": 31, "data_root": str(tmp_path)},
+                "dataset": {
+                    "scene": 31,
+                    "data_root": str(tmp_path),
+                    "seq_len": 5,
+                    "gps_source_seq_len": 6,
+                    "gps_input_seq_len": 2,
+                },
                 "dataloader": {
                     "num_workers": 6,
                     "pin_memory": True,
@@ -211,6 +217,9 @@ def test_beambench_image_ae_gps_config_resolves_throughput_defaults(tmp_path: Pa
     )
 
     assert cfg.num_workers == 6
+    assert cfg.seq_len == 5
+    assert cfg.gps_source_seq_len == 6
+    assert cfg.gps_input_seq_len == 2
     assert cfg.pin_memory is True
     assert cfg.persistent_workers is True
     assert cfg.prefetch_factor == 3

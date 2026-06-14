@@ -1,10 +1,10 @@
 # deepsense6g-gps-top8-candidate-selector Specification
 
 ## Purpose
-定义 DeepSense6G GPS Top8 candidate selector 的候选 manifest、dataset、模型、loss、训练协议和诊断产物契约，确保 GPS v2 作为 frozen candidate generator，optional modalities 只在 Top8 候选内提供可审计的选择、重排或 miss 诊断证据。
+定义 DeepSense6G GPS TopK candidate manifest、dataset 字段和 loss/metric 支撑契约。该 capability 为 BGAM 或其它当前 workflow 提供 supporting-only 候选语义；旧 DeepSense6G GPS Top8 selector 训练、plot、compare workflow 已退役，不属于当前 standalone 入口。
 ## Requirements
-### Requirement: Top8 candidate manifest
-系统 MUST 提供 GPS v2 Top8 candidate manifest builder，从 GPS v2 logits 重新计算 Top8 candidates，并将 GPS context、candidate metadata、Top8 hit/miss label、nearest/oracle candidate、optional modality availability 和对齐诊断写为每样本一行。默认输出 MUST 为 `outputs/analysis/deepsense6g_top8_selector/r15/mapping_disabled/manifest/top8_candidate_manifest.csv`。
+### Requirement: Top8 candidate manifest 支撑语义
+BGAM 或其它当前 workflow MAY 通过包内 helper 从 GPS v2 logits 重新计算 Top8 candidates，并将 GPS context、candidate metadata、Top8 hit/miss label、nearest/oracle candidate、optional modality availability 和对齐诊断写为每样本一行。系统 MUST 不为旧 selector 恢复 standalone manifest CLI、root config 或默认输出 workflow。
 
 #### Scenario: 使用真实 GPS logits 构建 Top8
 - **WHEN** 用户运行 Top8 candidate manifest builder 且 `topk=8`
@@ -31,8 +31,8 @@
 - **AND** 系统 MUST 与 `outputs/analysis/deepsense6g_gps_adapter_v2_support_sweep/topk_analysis/` 中已有 TopK analysis 进行对齐检查
 - **AND** 若差异明显，系统 MUST 写出 warning 并记录到 metadata
 
-### Requirement: TopK candidate dataset
-系统 MUST 提供 TopK candidate dataset，用于读取 Top8 candidate manifest 并返回稳定张量字段。dataset MUST 支持没有 optional modality 时运行 GPS context-only selector，并 MUST 只用 train/source/support 样本拟合 E/N/log_range/speed 等 normalization 参数。
+### Requirement: TopK candidate dataset 支撑语义
+保留的 TopK candidate dataset helper MAY 用于当前 BGAM 或候选重排支撑路径读取 Top8 candidate manifest 并返回稳定张量字段。dataset helper MUST 支持没有 optional modality 时运行 GPS context-only 支撑逻辑，并 MUST 只用 train/source/support 样本拟合 E/N/log_range/speed 等 normalization 参数；它不得恢复旧 selector 训练入口。
 
 #### Scenario: dataset 返回候选与标签张量
 - **WHEN** dataset 读取一个 Top8 manifest 样本
@@ -57,8 +57,8 @@
 - **AND** GPS context-only selector MUST 仍可构建和运行
 - **AND** 对应 optional ablation MUST 在 summary 中记录 `skipped_reason`
 
-### Requirement: TopK candidate selector losses
-系统 MUST 提供 `TopKCandidateSelectorLoss`，总 loss MUST 由 candidate circular soft CE、target-in-Top8 index CE、miss BCE、GPS prior anchor KL 和 entropy regularization 组成，并 MUST 支持 hard-rank sample weighting。
+### Requirement: TopK candidate selector loss 支撑语义
+保留的 `TopKCandidateSelectorLoss` 或等价 loss helper MAY 作为 BGAM/候选支撑代码使用。总 loss MUST 由 candidate circular soft CE、target-in-Top8 index CE、miss BCE、GPS prior anchor KL 和 entropy regularization 组成，并 MUST 支持 hard-rank sample weighting；该 loss helper 本身不得重新暴露旧 selector standalone workflow。
 
 #### Scenario: candidate circular soft CE 对所有样本有效
 - **WHEN** 系统计算 candidate soft target
@@ -94,4 +94,3 @@ DeepSense6G GPS Top8 candidate selector 训练/plot/compare workflow 不再属�
 - **THEN** 项目 MUST 不声明 DeepSense6G Top8 selector 相关 `kd-sensing-*` 命令
 - **AND** 项目 MUST 不保留 `configs/deepsense6g_top8_selector.yaml`
 - **AND** 项目 MUST 不保留 Top8 selector 专属 model、engine 或 tests
-

@@ -9,6 +9,7 @@ import numpy as np
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
+from kd_sensing.data.difficulty import runtime_difficulty_metadata
 from kd_sensing.data.scenes import scene_metadata_from_config
 from kd_sensing.engine.debug_diagnostics import (
     evaluate_pilot_noise_validity,
@@ -78,6 +79,9 @@ def final_config_with_runtime(
         }
     runtime["lineage"] = run_lineage_metadata(cfg)
     runtime["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
+    difficulty_metadata = runtime_difficulty_metadata(cfg)
+    if difficulty_metadata is not None:
+        runtime["difficulty"] = difficulty_metadata
     runtime_model = primary_model if primary_model is not None else model
     baseline_metadata = vision_position_baseline_metadata(cfg, model=runtime_model)
     if baseline_metadata:
@@ -169,6 +173,7 @@ class ArtifactWriter:
             "prediction_objective": objective_metadata,
             "prediction_setup": prediction_setup_metadata(self.cfg, split_metadata=split_metadata),
             "baseline": baseline_metadata or None,
+            "difficulty": runtime_difficulty_metadata(self.cfg),
             "scene_scope": runtime_scope_metadata_from_config(self.cfg),
             "runtime": {
                 "run_dir": str(self.run_dir),
@@ -192,6 +197,7 @@ class ArtifactWriter:
                 "prediction_objective": objective_metadata,
                 "prediction_setup": prediction_setup_metadata(self.cfg, split_metadata=split_metadata),
                 "baseline": baseline_metadata or None,
+                "difficulty": runtime_difficulty_metadata(self.cfg),
             },
         }
         with (self.run_dir / "train_log.json").open("w", encoding="utf-8") as f:

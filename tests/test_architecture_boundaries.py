@@ -223,8 +223,13 @@ RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
 AGENT_NAVIGATION_MARKERS = (
     "权威来源",
     "任务路由",
+    "OpenSpec capability lifecycle",
+    "current",
+    "supporting",
+    "retired-tombstone",
     "generated metadata",
     "ignored runtime artifacts",
+    ".pytest_cache/v/cache/lastfailed",
     "OpenSpec archive",
     "active change",
     "virtual config",
@@ -239,6 +244,94 @@ AGENT_NAVIGATION_MARKERS = (
     "checkpoint",
     "openspec list --json",
     "openspec status --change <change>",
+)
+OPENSPEC_LIFECYCLE_ALLOWED = {"current", "supporting", "retired-tombstone"}
+OPENSPEC_LIFECYCLE_HEADING = "## OpenSpec capability lifecycle 分类"
+RETIREMENT_WORDING_MARKERS = (
+    "退役",
+    "不属于当前支持",
+    "不属于当前",
+    "拒绝",
+    "历史",
+    "migration guard",
+    "防回流",
+    "no longer",
+    "retired",
+    "Retired",
+    "已删除",
+)
+LEGACY_ROUTE_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\bHiST(?:-Beam)?\b",
+        r"\bHist\b",
+        r"Raymobtime s008",
+        r"raymobtime_s008",
+        r"standalone Top8",
+        r"Top8 selector",
+        r"GPS residual",
+        r"camera residual",
+        r"\bCRAF\b",
+        r"\bMARF\b",
+        r"\bG2D\b",
+        r"Multimodal-NF",
+        r"legacy KD",
+        r"旧 KD",
+        r"logits_kd",
+        r"\brkd\b",
+    )
+)
+ACTIVE_ENTRY_WORDING_RE = re.compile(
+    r"active mainline|当前主线|当前推荐|推荐入口|默认入口|默认 workflow|长期入口|"
+    r"当前入口|quickstart|可运行训练|可运行 workflow"
+)
+LEGACY_ACTIVE_WORDING_RE = re.compile(
+    ACTIVE_ENTRY_WORDING_RE.pattern
+    + r"|MUST support|MUST provide|系统 MUST 支持|MUST 支持|项目 MUST 提供|"
+    r"作为当前(?:入口|能力|workflow|支持能力)"
+)
+NON_CURRENT_CONTEXT_MARKERS = (
+    "退役",
+    "不再",
+    "不得",
+    "不属于",
+    "已删除",
+    "拒绝",
+    "历史",
+    "migration",
+    "retired",
+    "Retired",
+    "removed",
+    "supporting",
+    "支撑",
+    "防回流",
+    "旧",
+    "不可用",
+    "不要求",
+    "不能",
+    "不作为",
+    "不构建",
+    "只作为",
+    "仅作",
+    "不会",
+    "无关",
+    "不把",
+    "不声明",
+    "不包含",
+    "不新增",
+    "禁止",
+    "删除",
+    "fail fast",
+    "MUST NOT",
+    "已从当前支持面",
+)
+CURRENT_WORKFLOW_DOCS = (
+    ROOT / "README.md",
+    ROOT / "docs" / "agent_navigation.md",
+    ROOT / "docs" / "project_surface_inventory.md",
+    ROOT / "docs" / "experiment_matrix.md",
+    ROOT / "docs" / "extension_guide.md",
+    ROOT / "docs" / "training_throughput.md",
 )
 
 
@@ -392,6 +485,47 @@ def _is_classified_non_current_config_reference(rel_path: str, rel_source: str, 
     if rel_source.startswith("openspec/specs/") and any(token in rel_path for token in RETIRED_CONFIG_TOKENS):
         return True
     return False
+
+
+def _openspec_lifecycle_inventory() -> tuple[dict[str, str], list[str], list[str]]:
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    assert OPENSPEC_LIFECYCLE_HEADING in inventory
+    section = inventory.split(OPENSPEC_LIFECYCLE_HEADING, 1)[1].split("\n## ", 1)[0]
+    lifecycles: dict[str, str] = {}
+    duplicates: list[str] = []
+    invalid: list[str] = []
+
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        parts = [part.strip() for part in line.strip("|").split("|")]
+        if len(parts) < 3:
+            continue
+        capability = parts[0].strip("`")
+        lifecycle = parts[1].strip("`")
+        if lifecycle not in OPENSPEC_LIFECYCLE_ALLOWED:
+            invalid.append(f"{capability}: {lifecycle}")
+            continue
+        if capability in lifecycles:
+            duplicates.append(capability)
+        lifecycles[capability] = lifecycle
+
+    return lifecycles, duplicates, invalid
+
+
+def _openspec_first_requirement(path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("### Requirement:"):
+            return line
+    return ""
+
+
+def _has_legacy_route_reference(line: str) -> bool:
+    return any(pattern.search(line) for pattern in LEGACY_ROUTE_PATTERNS)
+
+
+def _has_non_current_context(line: str) -> bool:
+    return any(marker in line for marker in NON_CURRENT_CONTEXT_MARKERS)
 
 
 def test_source_surface_does_not_track_local_artifacts():
@@ -611,6 +745,80 @@ def test_root_and_docs_markdown_lifecycle_inventory_is_complete():
             )
 
     assert recommendation_violations == []
+
+
+def test_openspec_lifecycle_inventory_covers_current_specs():
+    lifecycles, duplicates, invalid = _openspec_lifecycle_inventory()
+    spec_capabilities = {
+        path.parent.name
+        for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md"))
+    }
+
+    missing = sorted(spec_capabilities - set(lifecycles))
+    extra = sorted(set(lifecycles) - spec_capabilities)
+
+    assert duplicates == []
+    assert invalid == []
+    assert missing == [], (
+        "Every openspec/specs/<capability>/spec.md must be classified in "
+        "docs/project_surface_inventory.md as current, supporting, or retired-tombstone. "
+        f"Missing: {missing}"
+    )
+    assert extra == [], f"Lifecycle inventory references non-current specs: {extra}"
+    assert set(lifecycles.values()) <= OPENSPEC_LIFECYCLE_ALLOWED
+
+
+def test_retired_tombstone_specs_are_visibly_retired():
+    lifecycles, _, _ = _openspec_lifecycle_inventory()
+    wording_violations: list[str] = []
+    active_violations: list[str] = []
+
+    for capability, lifecycle in sorted(lifecycles.items()):
+        if lifecycle != "retired-tombstone":
+            continue
+        path = ROOT / "openspec" / "specs" / capability / "spec.md"
+        opening = f"{_openspec_purpose_text(path)} {_openspec_first_requirement(path)}"
+        if not any(marker in opening for marker in RETIREMENT_WORDING_MARKERS):
+            wording_violations.append(
+                f"{path.relative_to(ROOT)} must state retirement, rejection, history, or migration-guard "
+                "semantics in its Purpose or first requirement."
+            )
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if ACTIVE_ENTRY_WORDING_RE.search(line) and not _has_non_current_context(line):
+                active_violations.append(
+                    f"{path.relative_to(ROOT)}:{line_number} contains active-entry wording without "
+                    f"retired/historical context: {line.strip()}"
+                )
+
+    assert wording_violations == []
+    assert active_violations == []
+
+
+def test_current_specs_and_docs_do_not_recommend_retired_routes():
+    lifecycles, _, _ = _openspec_lifecycle_inventory()
+    scan_paths = [
+        ROOT / "openspec" / "specs" / capability / "spec.md"
+        for capability, lifecycle in sorted(lifecycles.items())
+        if lifecycle == "current"
+    ]
+    scan_paths.extend(path for path in CURRENT_WORKFLOW_DOCS if path.exists())
+    violations: list[str] = []
+
+    for path in scan_paths:
+        rel = path.relative_to(ROOT).as_posix()
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not _has_legacy_route_reference(line):
+                continue
+            if not LEGACY_ACTIVE_WORDING_RE.search(line):
+                continue
+            if _has_non_current_context(line):
+                continue
+            violations.append(
+                f"{rel}:{line_number} describes a retired route with current/active wording: {line.strip()}"
+            )
+
+    assert violations == []
+
 
 def test_retired_top8_residual_routes_are_not_current_source_modules():
     retired_paths = [

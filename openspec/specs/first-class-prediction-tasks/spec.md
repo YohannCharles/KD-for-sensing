@@ -120,17 +120,17 @@
 - **THEN** objective 相关字段 MUST 来自当前 objective metadata 的日志字段声明
 - **AND** beam、occlusion、position 和 multitask 的既有公开字段名 MUST 继续兼容
 
-#### Scenario: Raymobtime selection 单任务 TensorBoard 隔离
+#### Scenario: current beam selection 单任务 TensorBoard 隔离
 - **WHEN** 当前 objective 为 `current_beam_selection`
 - **THEN** objective metadata 的 TensorBoard scalar MUST 包含 `beam/val_top1`、`beam/val_top3`、`beam/val_top5` 和 `beam/val_dba_current`
 - **AND** 该 objective 的 TensorBoard scalar MUST NOT 包含 `los/accuracy`、`los/f1`、`los/auc`、`link/mae`、`link/rmse` 或 `link/r2`
 
-#### Scenario: Raymobtime LOS 单任务 TensorBoard 隔离
+#### Scenario: current LOS 单任务 TensorBoard 隔离
 - **WHEN** 当前 objective 为 `current_los_classification`
 - **THEN** objective metadata 的 TensorBoard scalar MUST 包含 `los/accuracy`、`los/f1` 和 `los/auc`
 - **AND** 该 objective 的 TensorBoard scalar MUST NOT 包含 `beam/val_top1`、`beam/val_top3`、`beam/val_top5`、`beam/val_dba_current`、`link/mae`、`link/rmse` 或 `link/r2`
 
-#### Scenario: Raymobtime link 单任务 TensorBoard 隔离
+#### Scenario: current link quality 单任务 TensorBoard 隔离
 - **WHEN** 当前 objective 为 `current_link_quality`
 - **THEN** objective metadata 的 TensorBoard scalar MUST 包含 `link/mae`、`link/rmse` 和 `link/r2`
 - **AND** 该 objective 的 TensorBoard scalar MUST NOT 包含 `beam/val_top1`、`beam/val_top3`、`beam/val_top5`、`beam/val_dba_current`、`los/accuracy`、`los/f1` 或 `los/auc`
@@ -159,7 +159,7 @@
 - **AND** 默认 early stopping mode MUST 为 `max`
 
 #### Scenario: current beam target 形状
-- **WHEN** batch 包含 Raymobtime s008 当前 beam label
+- **WHEN** batch 包含当前 snapshot beam label
 - **THEN** target helper MUST 返回形状兼容 `[B, 1]` 的 beam class labels
 - **AND** 该 label MUST 表示当前最优 Tx/Rx beam pair 的 class
 
@@ -201,18 +201,18 @@
 - **AND** `available_metrics` MUST 包含这些字段，以支持 early stopping 校验和结果汇总
 - **AND** TensorBoard scalar MUST 同时包含 beam、LOS、link 和 selection multitask total loss 的正式 tag
 
-### Requirement: Raymobtime 单任务 LOS 与 link quality 预测目标
-系统 MUST 支持 Raymobtime s008 的 LOS/NLOS 分类和 link quality 回归作为独立单任务 objective。单任务 objective MUST 复用当前 snapshot batch 契约，并 MUST 不要求 future-only DBA 指标。单任务 objective 的正式 metrics、history 和 TensorBoard 输出 MUST 只暴露当前 objective 的指标。
+### Requirement: current snapshot LOS 与 link quality 预测目标
+系统 MUST 支持当前 snapshot 的 LOS/NLOS 分类和 link quality 回归作为独立单任务 objective。单任务 objective MUST 复用当前 snapshot batch 契约，并 MUST 不要求 future-only DBA 指标。单任务 objective 的正式 metrics、history 和 TensorBoard 输出 MUST 只暴露当前 objective 的指标。Raymobtime s008 dataset/config 本身已退役，不能作为这些 objective 的当前数据入口。
 
 #### Scenario: 解析 current LOS classification objective
-- **WHEN** 用户加载 `experiment.objective: current_los_classification` 的 Raymobtime s008 配置
+- **WHEN** 用户加载 `experiment.objective: current_los_classification` 的当前 snapshot 配置
 - **THEN** 系统 MUST 将主 target 解析为 `los_label`
 - **AND** 系统 MUST 将主模型输出解析为 `los_logits`
 - **AND** 默认 early stopping metric MUST 为 `val_los_f1`
 - **AND** 默认 early stopping mode MUST 为 `max`
 
 #### Scenario: 解析 current link quality objective
-- **WHEN** 用户加载 `experiment.objective: current_link_quality` 的 Raymobtime s008 配置
+- **WHEN** 用户加载 `experiment.objective: current_link_quality` 的当前 snapshot 配置
 - **THEN** 系统 MUST 将主 target 解析为 `link_quality`
 - **AND** 系统 MUST 将主模型输出解析为 `link_quality`
 - **AND** 默认 early stopping metric MUST 为 `val_link_mae`
@@ -231,7 +231,7 @@
 - **AND** validation metrics MUST NOT 暴露 `val_beam_top1`、`val_beam_top3`、`val_beam_top5`、`val_beam_dba`、`val_los_accuracy`、`val_los_f1` 或 `val_los_auc`
 
 ### Requirement: Selection objective 运行产物
-系统 MUST 在 Raymobtime current beam selection 和 selection multitask 的训练产物、评估报告和 final config runtime metadata 中记录 objective、启用 tasks、主 metric、metric mode、target 口径和 model heads。
+系统 MUST 在 current beam selection 和 selection multitask 的训练产物、评估报告和 final config runtime metadata 中记录 objective、启用 tasks、主 metric、metric mode、target 口径和 model heads。
 
 #### Scenario: current beam selection 产物
 - **WHEN** current beam selection 训练完成
@@ -246,7 +246,7 @@
 - **AND** 运行产物 MUST 记录 loss 权重、link target 名称和 LOS label 来源
 
 #### Scenario: 拒绝 future 命名配置
-- **WHEN** Raymobtime s008 配置包含 `future_beam`、`beam_prediction_horizon`、`beam_tracking` 或 LOS transition 目标
+- **WHEN** current snapshot objective 配置包含 `future_beam`、`beam_prediction_horizon`、`beam_tracking` 或 LOS transition 目标
 - **THEN** 配置校验 MUST 拒绝该配置
 - **AND** 错误信息 MUST 指向 `current_beam_selection` 或 `selection_multitask` objective
 
@@ -339,4 +339,3 @@
 - **WHEN** 配置设置 `experiment.objective: gps_conditioned_jepa` 且 `training.early_stopping_metric: val_jepa_loss`
 - **THEN** early stopping metric 校验 MUST 通过
 - **AND** checkpoint metadata MUST 记录 primary metric 为 `val_jepa_loss` 且 mode 为 `min`
-

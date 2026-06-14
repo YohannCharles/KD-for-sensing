@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
 from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
@@ -68,6 +69,7 @@ class BatchStepRunner:
         self.extension_states = extension_states
         self.health_tracker = health_tracker
         self.objective = resolve_prediction_objective(cfg)
+        self.difficulty_seed = int(cfg.get("experiment", {}).get("seed", 0))
 
     def run(self, raw_batch, *, epoch: int, step: int, current_alpha: float) -> BatchStepResult:
         if self.objective == "gps_conditioned_jepa":
@@ -77,6 +79,11 @@ class BatchStepRunner:
     def _run_supervised(self, raw_batch, *, epoch: int, step: int, current_alpha: float) -> BatchStepResult:
         context = self.context
         batch = prepare_task_batch(raw_batch)
+        batch = apply_configured_difficulty(
+            batch,
+            self.cfg,
+            DifficultyContext(stage="train", split="train", seed=self.difficulty_seed, epoch=epoch, step=step),
+        ).batch
         labels = prepare_task_labels(
             batch,
             num_pred=context.num_pred,
@@ -208,6 +215,11 @@ class BatchStepRunner:
     def _run_jepa(self, raw_batch, *, epoch: int, step: int) -> BatchStepResult:
         context = self.context
         batch = prepare_task_batch(raw_batch)
+        batch = apply_configured_difficulty(
+            batch,
+            self.cfg,
+            DifficultyContext(stage="train", split="train", seed=self.difficulty_seed, epoch=epoch, step=step),
+        ).batch
         self.optimizer.zero_grad()
         with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
             labels = _jepa_dummy_labels(batch, context)

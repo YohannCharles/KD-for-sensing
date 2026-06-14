@@ -1,0 +1,20 @@
+_base_: ../fusion/image_gps_supervised.yaml
+
+difficulty:
+  profiles:
+    gps_image_dropout_train:
+      stage: train
+      split: train
+      condition: gps_image_dropout
+      severity: 0.35
+      seed: 42
+      fallback: zero_fill
+      operators:
+        - type: gps_missing
+          modality: gps
+          dropout_prob: 0.35
+        - type: image_occlusion
+          modality: image
+
+output:
+  run_name: fusion_image_gps_dropout_train
