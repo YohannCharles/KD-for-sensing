@@ -94,6 +94,7 @@ EXISTING_MODEL_REGISTRATION_ALLOWLIST = {
     "fusion_lightweight",
     "fusion_strong",
     "gps_conditioned_jepa",
+    "jepa_msac",
     "gps_lightweight",
     "gps_only_neural_baseline",
     "gps_sequence_baseline",
@@ -887,6 +888,30 @@ def test_amr_net_gps_image_quickstart_stays_synchronized():
     ):
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         assert "AMR-Net_gps_image" in text, f"{rel_path} must mention AMR-Net_gps_image when the quickstart does"
+
+
+def test_jepa_msac_quickstart_stays_synchronized():
+    matrix = (ROOT / "docs" / "experiment_matrix.md").read_text(encoding="utf-8")
+    required_matrix_markers = (
+        "JEPA-MSAC Scenario 32",
+        "configs/pretraining/jepa_msac_s32_smoke.yaml",
+        "configs/pretraining/jepa_msac_s32_paper.yaml",
+        "kd-sensing-run-jepa-msac",
+        "mock/smoke",
+        "unverified",
+    )
+    missing_matrix_markers = [marker for marker in required_matrix_markers if marker not in matrix]
+    assert missing_matrix_markers == []
+
+    for rel_path in (
+        "docs/mainline_model_catalog.md",
+        "docs/experiment_protocols.md",
+        "docs/result_claims_registry.md",
+        "docs/project_surface_inventory.md",
+        "README.md",
+    ):
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        assert "JEPA-MSAC" in text, f"{rel_path} must mention JEPA-MSAC when the quickstart does"
 
 
 def test_high_risk_result_wording_has_local_caveats():

@@ -28,6 +28,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 
 - Image+GPS JEPA BeamBench-fair：`configs/fusion/experiments/jepa_image_gps/*beambench_fair_lowmem.yaml`
 - Image+GPS JEPA 2604-style：`configs/fusion/experiments/jepa_image_gps/*2604_s32_s34_lowmem.yaml`
+- JEPA-MSAC Scenario 32 workflow：`configs/pretraining/jepa_msac_s32_{smoke,paper}.yaml` + `kd-sensing-run-jepa-msac`
 - AMR-Net_gps_image source audit：`configs/baselines/amr_net_gps_image.yaml` + `kd-sensing-run-amr-net-gps-image`
 - Arnold22 Camera AE+GPS Direct：`configs/fusion/beambench_image_ae_gps_direct.yaml` + 专用 Table III runner
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
@@ -113,6 +114,26 @@ MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NU
 ```
 
 GPS-query pooling configs must be paired against the matching GPS-biased mean-pooling baseline from the same family. Do not mix BeamBench-fair and 2604-style checkpoints, label spaces, split protocols or schedules.
+
+## JEPA-MSAC Scenario 32
+
+JEPA-MSAC 是 paper/workflow reproduction，不是普通 `modular_sequence` baseline。Smoke 入口只用 synthetic tensors 验证 tokenizer、temporal block mask、masked latent loss、Stage 2 heads、metrics/report 和 dry-run manifest；真实 Scenario 32 缺字段时只写 blocked reason。
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-jepa-msac \
+  --config configs/pretraining/jepa_msac_s32_smoke.yaml \
+  --stage report \
+  --dry-run
+```
+
+Paper-aligned 本地长实验入口如下，输出仍只允许写入 ignored 的 `outputs/analysis/jepa_msac/` 或显式本地目录；完成审计前 claim status 只能是 `unverified`、`local-ready`、`blocked` 或 `mock/smoke`。
+
+```bash
+conda run -n kd_mm_beam kd-sensing-run-jepa-msac \
+  --config configs/pretraining/jepa_msac_s32_paper.yaml \
+  --stage all \
+  --output-dir outputs/analysis/jepa_msac/paper_aligned
+```
 
 ## BEV-Fusion 2604
 

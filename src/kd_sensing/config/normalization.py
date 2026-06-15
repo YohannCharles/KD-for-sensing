@@ -29,6 +29,7 @@ IMAGE_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
+    "jepa_msac",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
     "bev_fusion_2604",
@@ -48,11 +49,13 @@ FUSION_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
+    "jepa_msac",
     "gps_only_neural_baseline",
     "gps_sequence_baseline",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
     "bev_fusion_2604",
+    "jepa_msac",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
@@ -215,6 +218,10 @@ def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
         ensure_jepa_runtime_requirements(cfg)
         ensure_objective_loss_defaults(cfg, objective)
         return
+    if objective == "jepa_msac_pretraining":
+        ensure_jepa_msac_runtime_requirements(cfg)
+        ensure_objective_loss_defaults(cfg, objective)
+        return
     dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
     if objective_requires_occlusion(cfg):
         ensure_occlusion_target(dataset_cfg)
@@ -287,6 +294,10 @@ def ensure_objective_loss_defaults(cfg: dict[str, Any], objective: str) -> None:
         loss_cfg.setdefault("jepa", {"type": "mse", "latent_normalize": False, "weight": 1.0})
         weights_cfg.setdefault("jepa", 1.0)
         return
+    if objective == "jepa_msac_pretraining":
+        loss_cfg.setdefault("jepa_msac", {"type": "smooth_l1", "beta": 1.0, "weight": 1.0})
+        weights_cfg.setdefault("jepa_msac", 1.0)
+        return
     if objective == "selection_multitask":
         weights_cfg.setdefault("beam_selection", 1.0)
         weights_cfg.setdefault("los", 0.5)
@@ -325,6 +336,26 @@ def ensure_jepa_runtime_requirements(cfg: dict[str, Any]) -> None:
     dataset_cfg["use_gps"] = True
     dataset_cfg.setdefault("gps_feature_mode", "relative_polar")
     dataset_cfg.setdefault("gps_normalize", True)
+    dataset_cfg.setdefault("image_profile", "rgb_imagenet")
+
+
+def ensure_jepa_msac_runtime_requirements(cfg: dict[str, Any]) -> None:
+    model_cfg = cfg.setdefault("model", {})
+    model_cfg.setdefault("modalities", ["image", "radar", "gps", "lidar", "mmwave"])
+    primary_cfg = model_cfg.setdefault("primary", {})
+    primary_cfg.setdefault("type", "jepa_msac")
+    primary_cfg.setdefault("modalities", ["image", "radar", "gps", "lidar", "mmwave"])
+    primary_cfg.setdefault("num_beams", 64)
+    primary_cfg.setdefault("t_hist", 8)
+    primary_cfg.setdefault("t_pred", 5)
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    dataset_cfg.setdefault("scene", 32)
+    dataset_cfg.setdefault("seq_len", 8)
+    dataset_cfg.setdefault("num_pred", 5)
+    dataset_cfg.setdefault("use_gps", True)
+    dataset_cfg.setdefault("use_lidar", True)
+    dataset_cfg.setdefault("use_mmwave", True)
+    dataset_cfg.setdefault("gps_feature_mode", "relative_polar")
     dataset_cfg.setdefault("image_profile", "rgb_imagenet")
 
 

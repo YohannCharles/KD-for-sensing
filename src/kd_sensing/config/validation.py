@@ -35,6 +35,9 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
     validate_prediction_objective_config(cfg)
+    from kd_sensing.baselines.jepa_msac.config import validate_jepa_msac_workflow_config
+
+    validate_jepa_msac_workflow_config(cfg)
     from kd_sensing.baselines.amr_net_gps_image.preset import validate_amr_net_gps_image_preset_config
 
     validate_amr_net_gps_image_preset_config(cfg)
@@ -211,6 +214,25 @@ def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
             raise ValueError(
                 "experiment.objective='gps_conditioned_jepa' requires data.dataset.use_gps=true "
                 "and GPS-Rel-Polar input."
+            )
+        return
+
+    if objective == "jepa_msac_pretraining":
+        modalities = set(str(item) for item in model_cfg.get("modalities", cfg.get("model", {}).get("modalities", [])))
+        if model_type != "jepa_msac":
+            raise ValueError(
+                "experiment.objective='jepa_msac_pretraining' requires model.primary.type='jepa_msac'."
+            )
+        if "rf" in modalities:
+            raise ValueError(
+                "JEPA-MSAC RF is workflow-local beam-power history, not a canonical modality. "
+                "Use workflow.jepa_msac.rf_history_source."
+            )
+        required = {"image", "radar", "gps", "lidar", "mmwave"}
+        if not required <= modalities:
+            raise ValueError(
+                "experiment.objective='jepa_msac_pretraining' requires canonical modalities "
+                "image, radar, gps, lidar, and mmwave; RF is mapped from workflow-local beam power."
             )
         return
 

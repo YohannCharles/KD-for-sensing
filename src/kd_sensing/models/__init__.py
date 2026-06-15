@@ -15,6 +15,7 @@ _EXPORTS: dict[str, str] = {
     "JepaContextImageEncoder": "kd_sensing.models.jepa",
     "JepaMaskSampler": "kd_sensing.models.jepa",
     "VisualPatchTokenEncoder": "kd_sensing.models.jepa",
+    "JepaMsacModel": "kd_sensing.models.jepa_msac",
     "ResNet18ImageEncoder": "kd_sensing.models.image_encoders",
     "LidarFeatureExtractor": "kd_sensing.models.lidar",
     "LidarLightweightModalityNet": "kd_sensing.models.lidar",

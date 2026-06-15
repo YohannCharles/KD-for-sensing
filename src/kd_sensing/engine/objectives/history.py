@@ -99,6 +99,18 @@ _SELECTION_HISTORY_FIELDS_BY_OBJECTIVE: dict[str, tuple[str, ...]] = {
         "val_primary_metric",
         "learning_rates",
     ),
+    "jepa_msac_pretraining": (
+        "train_loss",
+        "train_task_loss",
+        "train_objective_loss",
+        "train_jepa_loss",
+        "val_loss",
+        "val_jepa_msac_loss",
+        "val_jepa_msac_mask_ratio",
+        "val_jepa_msac_ema_momentum",
+        "val_primary_metric",
+        "learning_rates",
+    ),
 }
 
 _OPTIONAL_HISTORY_FIELDS = {
@@ -129,6 +141,9 @@ _OPTIONAL_HISTORY_FIELDS = {
     "val_jepa_mask_target_ratio",
     "val_jepa_mask_context_ratio",
     "val_jepa_ema_decay",
+    "val_jepa_msac_loss",
+    "val_jepa_msac_mask_ratio",
+    "val_jepa_msac_ema_momentum",
 }
 
 _COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
@@ -222,6 +237,15 @@ def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str],
         scalars.extend(_SELECTION_MULTITASK_TENSORBOARD_SCALARS)
     elif objective == "gps_conditioned_jepa":
         scalars.extend(_JEPA_TENSORBOARD_SCALARS)
+    elif objective == "jepa_msac_pretraining":
+        scalars.extend(
+            (
+                ("loss/jepa_msac_train", "train_jepa_loss"),
+                ("loss/jepa_msac_val", "val_jepa_msac_loss"),
+                ("jepa_msac/mask_ratio", "val_jepa_msac_mask_ratio"),
+                ("jepa_msac/ema_momentum", "val_jepa_msac_ema_momentum"),
+            )
+        )
     else:
         scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
     return tuple(scalars)

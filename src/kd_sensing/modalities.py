@@ -325,6 +325,12 @@ def normalize_modalities(modalities: list[str] | tuple[str, ...], *, context: st
         raise ValueError(f"{context} must contain at least one modality.")
     invalid = [name for name in selected if name not in MODALITY_SPECS]
     if invalid:
+        if "rf" in invalid:
+            raise ValueError(
+                f"Unknown modalities in {context}: {invalid}. Available modalities: {list(MODALITY_ORDER)}. "
+                "JEPA-MSAC uses RF as workflow-local beam-power history; declare it under "
+                "workflow.jepa_msac.rf_history_source instead of canonical modalities."
+            )
         raise ValueError(f"Unknown modalities in {context}: {invalid}. Available modalities: {list(MODALITY_ORDER)}.")
     duplicates = sorted({name for name in selected if selected.count(name) > 1})
     if duplicates:
