@@ -99,6 +99,30 @@ protocol:
 scenario_d:
   strict_model_groups: true
   allow_partial: false
+analysis:
+  cxd_phase_transition:
+    enabled: true
+    primary_metric: dba
+    phase_diagram: true
+    dominance: true
+    crossing: true
+    failure_decomposition: true
+    fallback_policy: mock_unavailable
+    paired_models:
+      cnn: [mock_cnn_gps, mock_image_ae_gps]
+      jepa: [mock_image_jepa_only, mock_image_jepa_gps]
+      gps_query_pool_jepa: [mock_image_jepa_gps]
+    diagnostic_sources: []
+    thresholds:
+      failure_drop: 0.05
+      dominance_margin: 0.03
+      superadditive_margin: 0.03
+    artifact_plan:
+      cxd_phase_diagram: results/cxd_phase_diagram.csv
+      cxd_phase_heatmap: results/cxd_phase_heatmap.npy
+      modality_dominance: results/modality_dominance.csv
+      crossing_region_Cx_Dy: results/crossing_region_Cx_Dy.json
+      failure_mode_decomposition: results/failure_mode_decomposition.csv
 perturbation_suites:
   - id: scenario_d_image_observability
     type: scenario_d_image_observability

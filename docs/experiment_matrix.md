@@ -178,6 +178,11 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --output-dir outputs/analysis/jepa_gps_shortcut_benchmark/smoke \
   --force
 
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
+  --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml \
+  --output-dir outputs/analysis/scenario_d_image_observability/smoke \
+  --force
+
 conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis \
   --analysis-config configs/diagnostics/jepa_visual_analysis_2604.yaml \
   --output-dir outputs/visual_analysis/jepa_query_pool_2604 \
@@ -192,6 +197,8 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
   --cache-dir outputs/cache/diagnostics/viewer_manifest \
   --scenes 32
 ```
+
+Scenario D smoke writes only ignored local artifacts: legacy `results/scenario_d_image_observability.csv` / `results/heatmap_cx_dy.npy` plus CxD phase, dominance-status, crossing and failure-decomposition outputs. Synthetic dominance rows remain mock/unavailable unless the manifest points to real gradient, attention/fusion weight or latent diagnostics.
 
 Difficulty profiles under `configs/difficulty/` are training/evaluation reliability profiles, not new modalities. They may perturb input tensors and reliability metadata, but must not move `target_beam`, soft targets or split metadata.
 

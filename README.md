@@ -186,7 +186,7 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --force
 ```
 
-Benchmark 产物写入 ignored 的 `outputs/analysis/...`，包括 `benchmark_manifest.json`、`tables/metrics_by_condition.csv`、`tables/robustness_summary.csv`、`tables/shortcut_reliance_summary.csv` 和可选曲线图。真实 BeamBench-fair 矩阵使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml`，其中 checkpoint 路径是本地占位，需要替换为实际 run；不要提交真实 checkpoint、metrics、figures、cache 或 reports。`kd-sensing-jepa-visual-analysis` 可通过 `benchmark.runner_manifest=<path>` 只读消费 runner manifest，生成 `benchmark_robustness_matrix.csv`、GPS collapse/image degradation/temporal delay 曲线和 GPS shortcut reliance 报告段落。
+Benchmark 产物写入 ignored 的 `outputs/analysis/...`，包括 `benchmark_manifest.json`、`tables/metrics_by_condition.csv`、`tables/robustness_summary.csv`、`tables/shortcut_reliance_summary.csv` 和可选曲线图。Scenario D / CxD smoke 使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml`，在保留 `results/scenario_d_image_observability.csv`、`results/heatmap_cx_dy.npy` 的同时写出 `results/cxd_phase_diagram.csv`、`results/cxd_phase_heatmap.npy`、`results/modality_dominance.csv`、`results/crossing_region_Cx_Dy.json`、`results/failure_mode_decomposition.csv` 和对应 PNG；synthetic dominance 行只标记 mock/unavailable，不冒充真实解释证据。真实 BeamBench-fair 矩阵使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml`，其中 checkpoint 路径是本地占位，需要替换为实际 run；不要提交真实 checkpoint、metrics、figures、cache 或 reports。`kd-sensing-jepa-visual-analysis` 可通过 `benchmark.runner_manifest=<path>` 只读消费 runner manifest，生成 `benchmark_robustness_matrix.csv`、GPS collapse/image degradation/temporal delay 曲线和 GPS shortcut reliance 报告段落。
 
 JEPA-MSAC Scenario 32 workflow：
 

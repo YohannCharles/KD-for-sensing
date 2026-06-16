@@ -300,6 +300,49 @@ def test_image_observability_transform_is_deterministic_and_preserves_targets() 
     assert torch.equal(first.batch["beam_power"], _batch()["beam_power"])
 
 
+def test_cxd_difficulty_profile_preserves_labels_soft_targets_and_split_metadata() -> None:
+    suite = bench.normalize_suite_config({"id": "scenario_cxd", "type": "scenario_c_x_d_image_observability"})
+    gps_condition = next(item for item in suite["scenario_c_conditions"] if item["id"] == "C4_severe_async")
+    image_condition = next(item for item in suite["scenario_d_conditions"] if item["id"] == "D7_joint_worst_case")
+    profile = bench._difficulty_profile_from_cxd_pair(
+        suite,
+        gps_condition=gps_condition,
+        image_condition=image_condition,
+        seed=19,
+    )
+    batch = _batch()
+    batch["soft_target"] = torch.eye(4, dtype=torch.float32)[[0, 2]].unsqueeze(1)
+    batch["split_metadata"] = {"fold": "unit", "rows": [1, 2]}
+    batch["metadata"] = {
+        **batch["metadata"],
+        "split_metadata": {"fold": "unit", "rows": [1, 2]},
+    }
+    before = {
+        "target_beam": batch["target_beam"].clone(),
+        "beam_power": batch["beam_power"].clone(),
+        "soft_target": batch["soft_target"].clone(),
+        "sample_id": list(batch["metadata"]["sample_id"]),
+        "split": list(batch["metadata"]["split"]),
+        "split_metadata": dict(batch["metadata"]["split_metadata"]),
+    }
+
+    result = apply_difficulty_pipeline(
+        batch,
+        profile,
+        DifficultyContext(stage="benchmark", split="test", seed=19, sample_ids=("a", "b")),
+    )
+
+    assert torch.equal(result.batch["target_beam"], before["target_beam"])
+    assert torch.equal(result.batch["beam_power"], before["beam_power"])
+    assert torch.equal(result.batch["soft_target"], before["soft_target"])
+    assert result.batch["metadata"]["sample_id"] == before["sample_id"]
+    assert result.batch["metadata"]["split"] == before["split"]
+    assert result.batch["metadata"]["split_metadata"] == before["split_metadata"]
+    assert result.batch["difficulty"]["condition"] == "C4_severe_async+D7_joint_worst_case"
+    assert result.batch["metadata"]["difficulty_profiles"][0]["profile"]["metadata"]["gps_condition"] == "C4_severe_async"
+    assert result.batch["metadata"]["difficulty_profiles"][0]["profile"]["metadata"]["image_condition"] == "D7_joint_worst_case"
+
+
 def test_image_observability_metadata_fields_are_queryable() -> None:
     fields = difficulty_metadata_fields("image")
 

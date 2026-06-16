@@ -234,11 +234,18 @@ def test_scenario_d_manifest_preset_and_required_groups(tmp_path: Path) -> None:
     assert len(scenario_cxd["scenario_d_conditions"]) == 8
     assert manifest["scenario_d_model_groups"]["missing"] == []
     assert manifest["models"]["image_jepa_gps"]["consumes_reliability_metadata"] is True
+    assert manifest["analysis"]["cxd_phase_transition"]["enabled"] is True
+    assert manifest["analysis"]["cxd_phase_transition"]["fallback_policy"] == "unavailable"
 
     bad = json.loads(json.dumps(raw))
     bad["models"].pop("image_jepa_only")
     with pytest.raises(bench.BenchmarkManifestError, match="missing required model groups"):
         bench.validate_benchmark_manifest(bad, validate_paths=False)
+
+    bad_fallback = json.loads(json.dumps(raw))
+    bad_fallback["analysis"] = {"cxd_phase_transition": {"fallback_policy": "heuristic_only"}}
+    with pytest.raises(bench.BenchmarkManifestError, match="heuristic-only formal evidence"):
+        bench.validate_benchmark_manifest(bad_fallback, validate_paths=False)
 
 
 def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> None:
@@ -459,21 +466,239 @@ def test_runner_writes_scenario_d_matrix_artifacts(tmp_path: Path) -> None:
 
     scenario_csv = Path(result["scenario_d_results"])
     heatmap_path = Path(result["scenario_d_heatmap"])
+    cxd_csv = Path(result["cxd_phase_diagram"])
+    cxd_heatmap_path = Path(result["cxd_phase_heatmap"])
+    dominance_path = Path(result["modality_dominance"])
+    crossing_path = Path(result["crossing_region_Cx_Dy"])
+    failure_path = Path(result["failure_mode_decomposition"])
     assert scenario_csv.exists()
     assert heatmap_path.exists()
+    assert cxd_csv.exists()
+    assert cxd_heatmap_path.exists()
+    assert dominance_path.exists()
+    assert crossing_path.exists()
+    assert failure_path.exists()
     heatmap = np.load(heatmap_path)
     assert heatmap.shape == (5, 5, 8)
+    cxd_heatmap = np.load(cxd_heatmap_path)
+    assert cxd_heatmap.shape == (5, 1, 5, 8)
     rows = list(csv.DictReader(scenario_csv.open("r", encoding="utf-8", newline="")))
     cxd_rows = [row for row in rows if row["suite_type"] == "scenario_c_x_d_image_observability"]
     assert len(cxd_rows) == 5 * 5 * 8
     assert any(row["gps_condition"] == "C4_severe_async" and row["image_condition"] == "D7_joint_worst_case" for row in cxd_rows)
     assert any(row["consumes_reliability_metadata"] == "True" for row in cxd_rows if row["model"] == "image_jepa_gps")
     assert {"top1", "top3", "dba", "rsi", "modality_dominance_ratio"} <= set(rows[0])
+    phase_rows = list(csv.DictReader(cxd_csv.open("r", encoding="utf-8", newline="")))
+    assert len(phase_rows) == 5 * 5 * 8
+    assert {"relative_drop", "rsi", "cxd_grid_status", "incomplete_cxd_grid"} <= set(phase_rows[0])
+    assert {row["cxd_grid_status"] for row in phase_rows} == {"complete_cxd_grid"}
+    dominance_rows = list(csv.DictReader(dominance_path.open("r", encoding="utf-8", newline="")))
+    assert len(dominance_rows) == len(phase_rows)
+    assert {row["diagnostic_status"] for row in dominance_rows} == {"mock_unavailable"}
+    crossing = json.loads(crossing_path.read_text(encoding="utf-8"))
+    assert crossing["summary"]["crossing_count"] > 0
+    failure_rows = list(csv.DictReader(failure_path.open("r", encoding="utf-8", newline="")))
+    assert any(row["worst_case"] == "True" for row in failure_rows)
     for name in ("robustness_surface.png", "phase_transition_curve.png", "modality_dominance.png"):
+        assert (Path(result["output_dir"]) / "plots" / name).exists()
+    for name in ("cxd_accuracy_heatmap.png", "cnn_jepa_crossover_curve.png", "modality_dominance_heatmap.png"):
         assert (Path(result["output_dir"]) / "plots" / name).exists()
     manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
     assert manifest_out["output_files"]["scenario_d_image_observability"] == "results/scenario_d_image_observability.csv"
+    assert manifest_out["output_files"]["cxd_phase_diagram"] == "results/cxd_phase_diagram.csv"
+    assert manifest_out["output_files"]["modality_dominance"] == "results/modality_dominance.csv"
+    assert any(item["path"] == "results/crossing_region_Cx_Dy.json" and item["status"] == "generated" for item in manifest_out["outputs"])
     assert manifest_out["models"]["image_jepa_gps"]["consumes_reliability_metadata"] is True
+
+
+def test_cxd_phase_aggregation_marks_incomplete_grid_without_filling() -> None:
+    rows = []
+    for gps in ("C0_sync", "C1_mild_stale"):
+        for image in ("D0_full_image", "D1_weather"):
+            if gps == "C1_mild_stale" and image == "D1_weather":
+                continue
+            rows.append(
+                {
+                    "model": "m",
+                    "group": "cnn_gps",
+                    "suite_type": bench.SCENARIO_C_X_D_SUITE_TYPE,
+                    "condition": f"{gps}+{image}",
+                    "gps_condition": gps,
+                    "image_condition": image,
+                    "seed": 1,
+                    "split": "test",
+                    "primary_metric": 0.8,
+                    "clean_primary_metric": 1.0,
+                    "c_severity": 0 if gps == "C0_sync" else 1,
+                    "d_severity": 0 if image == "D0_full_image" else 1,
+                }
+            )
+
+    phase = bench.aggregate_cxd_phase_diagram(rows)
+    heatmap = bench.cxd_phase_heatmap(phase)
+
+    assert {row["cxd_grid_status"] for row in phase} == {"incomplete_cxd_grid"}
+    assert all(row["incomplete_cxd_grid"] is True for row in phase)
+    assert "C1_mild_stale+D1_weather" in phase[0]["missing_cxd_conditions"]
+    assert heatmap.shape == (1, 1, 5, 8)
+    assert np.isnan(heatmap[0, 0, 1, 1])
+
+
+def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_path: Path) -> None:
+    phase_rows = [
+        {
+            "model": "jepa",
+            "group": "image_jepa_gps",
+            "gps_condition": "C0_sync",
+            "image_condition": "D0_full_image",
+            "seed": 3,
+            "split": "test",
+            "sample_count": 4,
+            "primary_metric": 0.7,
+        },
+        {
+            "model": "cnn",
+            "group": "cnn_gps",
+            "gps_condition": "C0_sync",
+            "image_condition": "D0_full_image",
+            "seed": 3,
+            "split": "test",
+            "sample_count": 4,
+            "primary_metric": 0.6,
+        },
+    ]
+    manifest = {
+        "models": {"jepa": {"group": "image_jepa_gps"}, "cnn": {"group": "cnn_gps"}},
+        "analysis": {"cxd_phase_transition": {"fallback_policy": "unavailable"}},
+    }
+    diagnostics_path = tmp_path / "dominance.csv"
+    diagnostics_path.write_text(
+        "model,gps_condition,image_condition,seed,split,gps_gradient_norm,image_gradient_norm,aggregation\n"
+        "jepa,C0_sync,D0_full_image,3,test,2,6,batch_mean\n"
+        "missing,C0_sync,D0_full_image,3,test,1,1,batch_mean\n",
+        encoding="utf-8",
+    )
+    records = bench.load_cxd_diagnostic_records(
+        {
+            **manifest,
+            "analysis": {"cxd_phase_transition": {"diagnostic_sources": [{"path": str(diagnostics_path), "type": "csv"}]}},
+        }
+    )
+    warnings: list[dict] = []
+    dominance = bench.compute_modality_dominance(phase_rows, manifest, diagnostic_records=records, warnings=warnings)
+
+    jepa = next(row for row in dominance if row["model"] == "jepa")
+    cnn = next(row for row in dominance if row["model"] == "cnn")
+    assert jepa["diagnostic_source"] == "gradient_norm"
+    assert jepa["diagnostic_aggregation"] == "batch_mean"
+    assert float(jepa["gps_contribution_score"]) == pytest.approx(0.25)
+    assert float(jepa["image_contribution_score"]) == pytest.approx(0.75)
+    assert cnn["diagnostic_status"] == "unavailable"
+    assert warnings and warnings[0]["code"] == "cxd_diagnostic_rows_unmatched"
+
+    unavailable = bench.compute_modality_dominance(
+        phase_rows[:1],
+        manifest,
+        diagnostic_records=[
+            {
+                "model": "jepa",
+                "gps_condition": "C0_sync",
+                "image_condition": "D0_full_image",
+                "seed": 3,
+                "split": "test",
+                "gps_gradient_norm": 0,
+                "image_gradient_norm": 0,
+            }
+        ],
+    )
+    assert unavailable[0]["diagnostic_status"] == "unavailable"
+    assert unavailable[0]["unavailable_reason"] == "gradient_norm_denominator_missing_or_zero"
+
+    attention = bench.compute_modality_dominance(
+        phase_rows[:1],
+        manifest,
+        diagnostic_records=[
+            {
+                "model": "jepa",
+                "gps_condition": "C0_sync",
+                "image_condition": "D0_full_image",
+                "seed": 3,
+                "split": "test",
+                "gps_attention_weight": 1,
+                "image_attention_weight": 3,
+                "jepa_latent_variance": 0.42,
+            }
+        ],
+    )
+    assert attention[0]["diagnostic_source"] == "attention_fusion_weights"
+    assert float(attention[0]["jepa_latent_contribution_score"]) == pytest.approx(0.42)
+
+
+def test_crossing_query_pool_shift_and_failure_decomposition() -> None:
+    manifest = {
+        "models": {
+            "cnn": {"group": "cnn_gps", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
+            "jepa_biased": {"group": "image_jepa_gps", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
+            "jepa_query": {"group": "jepa_gps_query_pool", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
+        },
+        "metrics": {"primary": "dba", "profile": "profile"},
+        "analysis": {
+            "cxd_phase_transition": {
+                "paired_models": {
+                    "cnn": ["cnn"],
+                    "jepa": ["jepa_biased", "jepa_query"],
+                    "gps_biased_jepa": ["jepa_biased"],
+                    "gps_query_pool_jepa": ["jepa_query"],
+                },
+                "thresholds": {"failure_drop": 0.05, "dominance_margin": 0.03, "superadditive_margin": 0.03},
+            }
+        },
+    }
+    rows = []
+    values = {
+        ("cnn", "C0_sync", "D0_full_image"): 0.80,
+        ("cnn", "C1_mild_stale", "D0_full_image"): 0.70,
+        ("cnn", "C0_sync", "D1_weather"): 0.74,
+        ("cnn", "C1_mild_stale", "D1_weather"): 0.62,
+        ("jepa_biased", "C0_sync", "D0_full_image"): 0.78,
+        ("jepa_biased", "C1_mild_stale", "D0_full_image"): 0.68,
+        ("jepa_biased", "C0_sync", "D1_weather"): 0.72,
+        ("jepa_biased", "C1_mild_stale", "D1_weather"): 0.63,
+        ("jepa_query", "C0_sync", "D0_full_image"): 0.79,
+        ("jepa_query", "C1_mild_stale", "D0_full_image"): 0.73,
+        ("jepa_query", "C0_sync", "D1_weather"): 0.75,
+        ("jepa_query", "C1_mild_stale", "D1_weather"): 0.67,
+    }
+    for (model, gps, image), metric in values.items():
+        rows.append(
+            {
+                "model": model,
+                "group": manifest["models"][model]["group"],
+                "gps_condition": gps,
+                "image_condition": image,
+                "condition": f"{gps}+{image}",
+                "seed": 1,
+                "split": "test",
+                "sample_count": 4,
+                "label_space": "beam8",
+                "metric_profile": "profile",
+                "primary_metric_name": "dba",
+                "primary_metric": metric,
+                "difficulty_digest": f"{gps}+{image}",
+                "c_severity": 0 if gps == "C0_sync" else 1,
+                "d_severity": 0 if image == "D0_full_image" else 1,
+            }
+        )
+
+    crossing = bench.detect_cnn_jepa_crossing(rows, manifest)
+    assert crossing["summary"]["crossing_count"] > 0
+    assert crossing["summary"]["query_pool_shift"]["shift"] == "earlier"
+
+    failure = bench.decompose_cxd_failure_modes([row for row in rows if row["model"] == "cnn"], manifest)
+    joint = next(row for row in failure if row["condition_id"] == "C1_mild_stale+D1_weather")
+    assert joint["failure_mode"] in {"both_fail", "superadditive_joint_fail"}
+    assert float(joint["gps_only_drop"]) == pytest.approx(0.10)
+    assert float(joint["image_only_drop"]) == pytest.approx(0.06)
 
 
 def test_visual_analysis_ingests_benchmark_runner_outputs(tmp_path: Path) -> None:
