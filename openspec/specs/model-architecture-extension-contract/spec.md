@@ -77,6 +77,6 @@
 - **AND** benchmark comparability 或 run metadata MUST 记录该模型消费了 reliability metadata
 
 #### Scenario: 普通 baseline 不被污染
-- **WHEN** standard CNN+GPS、Image-AE+GPS、GPS-only 或不声明 reliability-aware 的模型运行
+- **WHEN** standard Image ResNet+GPS、Image-AE+GPS、GPS-only 或不声明 reliability-aware 的模型运行
 - **THEN** 新增 reliability metadata MUST 不成为必需 forward 输入
 - **AND** 模型可比性 metadata MUST 能区分其未消费 reliability metadata

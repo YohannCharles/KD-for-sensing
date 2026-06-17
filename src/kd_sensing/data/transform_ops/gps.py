@@ -10,23 +10,14 @@ except ModuleNotFoundError:  # pragma: no cover - minimal environments
     yaml = None
 
 from kd_sensing.data.transform_ops.io import joined_resource
-
-
-GPS_FEATURE_DIMS = {
-    "relative_polar": 3,
-    "paper_calibrated_relative_polar": 3,
-    "paper_distance_angle": 2,
-}
-SUPPORTED_GPS_FEATURE_MODE = "relative_polar"
-CALIBRATED_GPS_FEATURE_MODES = {"paper_calibrated_relative_polar", "paper_distance_angle"}
-PAPER_CALIBRATED_GPS_MODE = "paper_distance_angle"
-PAPER_SCENE_CENTER_ANGLES_RAD = {
-    31: -0.72,
-    32: -0.8125375604986421 + float(np.pi) / 2.0,
-    33: 0.59,
-    34: -0.51,
-}
-PAPER_DISTANCE_ANGLE_FEATURE_VERSION = "official_arctan_ratio_v1"
+from kd_sensing.data.datasets.deepsense6g_gps_contract import (
+    CALIBRATED_GPS_FEATURE_MODES,
+    GPS_FEATURE_DIMS,
+    PAPER_CALIBRATED_GPS_MODE,
+    PAPER_DISTANCE_ANGLE_FEATURE_VERSION,
+    PAPER_SCENE_CENTER_ANGLES_RAD,
+    SUPPORTED_GPS_FEATURE_MODE,
+)
 
 
 def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:

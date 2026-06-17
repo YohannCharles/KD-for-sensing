@@ -6,7 +6,7 @@
 
 - 使用简体中文撰写说明、计划、OpenSpec 产物和提交相关描述。
 - 先阅读已有实现、README 和相关 OpenSpec，再改代码；优先沿用现有模块边界和配置风格。
-- 非平凡改动前先阅读 `docs/agent_navigation.md`，用它确认权威来源、当前状态、任务路由和常见误读边界；本文件仍不维护完整目录清单。
+- 非平凡改动前先阅读 `docs/agent_navigation.md`，并通过其中指向的 `docs/maintainer_context_index.yaml` 确认任务路由、机器可读治理表和最小验证命令；本文件仍不维护完整目录清单。
 - 非平凡功能、架构调整、训练流程变化、数据契约变化和兼容性变化应先走 OpenSpec change。
 - 不要把本地数据、训练输出、日志、缓存、checkpoint 或临时验证产物纳入源码变更。
 - 不要新增旧入口、兼容聚合层或绕过当前 `src/kd_sensing` 包结构的运行方式。

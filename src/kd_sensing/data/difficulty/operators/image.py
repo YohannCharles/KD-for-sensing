@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from kd_sensing.data.difficulty.presets import SCENARIO_D_CONDITION_IDS
+from kd_sensing.data.difficulty.presets import PREDICTIVE_JEPA_CONDITION_IDS, SCENARIO_D_CONDITION_IDS
 from kd_sensing.data.difficulty.schema import (
     DifficultyContext,
     DifficultyOperatorConfig,
@@ -377,6 +377,273 @@ class ImageMotionBlurOperator(_BaseImageOperator):
         )
 
 
+class PredictiveJepaRobustnessOperator(_BaseImageOperator):
+    def __call__(
+        self,
+        batch: dict[str, Any],
+        *,
+        config: DifficultyOperatorConfig,
+        profile: DifficultyProfile,
+        context: DifficultyContext,
+    ) -> DifficultyOperatorOutcome:
+        params = dict(self.params)
+        condition = str(params.get("predictive_condition", params.get("condition", profile.condition)))
+        seed = int(context.derived_seed(profile, config))
+        generator = self._generator(profile, config, context)
+        history_window = int(params.get("history_window", 4))
+        warnings: list[DifficultyWarning] = []
+        image_metadata = self._apply_image(batch, params=params, condition=condition, seed=seed, generator=generator)
+        gps_metadata, gps_warnings = self._apply_gps(batch, params=params, condition=condition, seed=seed, generator=generator)
+        warnings.extend(gps_warnings)
+        replay = {
+            "operator": config.type,
+            "condition": condition,
+            "available_conditions": list(PREDICTIVE_JEPA_CONDITION_IDS),
+            "seed": seed,
+            "profile_digest": profile.digest,
+            "operator_digest": config.digest,
+            "sample_ids": list(context.sample_ids),
+            "history_window": history_window,
+            "image": image_metadata,
+            "gps": gps_metadata,
+            "counterfactual_input_intervention": bool(gps_metadata.get("counterfactual_status")),
+        }
+        batch["predictive_jepa_replay_metadata"] = replay
+        return DifficultyOperatorOutcome(
+            metadata={
+                "condition": condition,
+                "available_conditions": list(PREDICTIVE_JEPA_CONDITION_IDS),
+                "history_window": history_window,
+                "image": image_metadata,
+                "gps": gps_metadata,
+                "replay": "predictive_jepa_replay_metadata",
+            },
+            warnings=tuple(warnings),
+        )
+
+    def _apply_image(
+        self,
+        batch: dict[str, Any],
+        *,
+        params: dict[str, Any],
+        condition: str,
+        seed: int,
+        generator: torch.Generator,
+    ) -> dict[str, Any]:
+        key = self._image_key(batch)
+        image = batch.get(key) if key else None
+        if not torch.is_tensor(image):
+            return {"state": "missing", "fallback": "skip"}
+        original_dtype = image.dtype
+        value = image.to(dtype=torch.float32).clone()
+        batch_size, steps = _image_time_shape(value)
+        current_step = _target_time_index(params, steps)
+        device = image.device
+        valid_mask = torch.ones((batch_size, steps), dtype=torch.bool, device=device)
+        score = torch.ones((batch_size, steps), dtype=torch.float32, device=device)
+        source_index = torch.arange(steps, dtype=torch.long, device=device).reshape(1, steps).expand(batch_size, steps).clone()
+        history_available = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        for step in range(steps):
+            if step > 0:
+                history_available[:, step] = True
+        source_ranges = _history_source_ranges(steps, history_window=int(params.get("history_window", 4)))
+        current_missing_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        semantic_frame_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        corruption_types: list[str] = []
+        counts: dict[str, int] = {}
+
+        if bool(params.get("semantic_occlusion", False)):
+            ratio = _prob(params.get("occlusion_ratio", 0.35), name="occlusion_ratio")
+            pixel_mask = torch.zeros_like(value, dtype=torch.bool)
+            for batch_index in range(batch_size):
+                _occlude_single_frame(
+                    value[batch_index, current_step],
+                    pixel_mask[batch_index, current_step],
+                    ratio=ratio,
+                    generator=generator,
+                )
+            semantic_frame_mask[:, current_step] = True
+            score[:, current_step] = (score[:, current_step] - 0.45 * ratio).clamp(0.0, 1.0)
+            batch["image_semantic_occlusion_mask"] = pixel_mask.to(device=device)
+            batch["image_occlusion_mask"] = pixel_mask.to(device=device)
+            corruption_types.append("semantic_occlusion_proxy")
+            counts["semantic_occlusion_frames"] = int(batch_size)
+
+        if bool(params.get("novel_weather", False)):
+            severity = _prob(params.get("weather_severity", 0.65), name="weather_severity")
+            alpha = min(0.85, 0.65 * severity)
+            current = value[:, current_step]
+            current = current * (1.0 - alpha) + torch.full_like(current, 0.75) * alpha
+            current = _add_rain_streaks(current, generator=generator, strength=severity)
+            value[:, current_step] = current
+            score[:, current_step] = (score[:, current_step] - 0.25 * severity).clamp(0.0, 1.0)
+            corruption_types.append("novel_weather")
+            counts["novel_weather_frames"] = int(batch_size)
+
+        if bool(params.get("current_frame_missing", False)):
+            current_missing_mask[:, current_step] = True
+            value = torch.where(_expand_temporal_mask(current_missing_mask, value), torch.zeros_like(value), value)
+            valid_mask[:, current_step] = False
+            score[:, current_step] = 0.0
+            corruption_types.append("current_frame_missing")
+            counts["current_missing_frames"] = int(batch_size)
+
+        batch[str(key)] = value.to(dtype=original_dtype)
+        batch["image_valid_mask"] = valid_mask
+        batch["image_observability_score"] = score
+        batch["image_source_index"] = source_index
+        batch["image_history_available_mask"] = history_available
+        batch["image_current_missing_mask"] = current_missing_mask
+        batch["image_semantic_frame_mask"] = semantic_frame_mask
+        metadata = {
+            "operator": "predictive_jepa_robustness",
+            "condition": condition,
+            "available_conditions": list(PREDICTIVE_JEPA_CONDITION_IDS),
+            "seed": seed,
+            "input_space": "normalized_image_tensor",
+            "frame_range": _frame_range(image),
+            "target_time_index": current_step,
+            "history_window": int(params.get("history_window", 4)),
+            "history_source_range": source_ranges,
+            "history_available_mask": history_available.detach().cpu().tolist(),
+            "valid_mask": "image_valid_mask",
+            "observability_score": "image_observability_score",
+            "source_index": "image_source_index",
+            "current_frame_missing_mask": "image_current_missing_mask",
+            "semantic_frame_mask": "image_semantic_frame_mask",
+            "corruption_types": corruption_types or ["clean"],
+            "corruption_counts": counts,
+            "missing_expression": str(params.get("missing_expression", "zero_fill")),
+            "semantic_occlusion_proxy": bool(params.get("semantic_occlusion", False)),
+            "parameters": {
+                key: params.get(key)
+                for key in (
+                    "current_frame_missing",
+                    "semantic_occlusion",
+                    "occlusion_ratio",
+                    "novel_weather",
+                    "weather_severity",
+                    "history_window",
+                    "target_time_index",
+                    "missing_expression",
+                )
+                if key in params
+            },
+        }
+        batch["image_degradation_metadata"] = metadata
+        batch["image_predictive_replay"] = {
+            "operator": "predictive_jepa_robustness",
+            "condition": condition,
+            "seed": seed,
+            "profile_digest": batch.get("difficulty", {}).get("profile_digest"),
+            "target_time_index": current_step,
+            "history_source_range": source_ranges,
+        }
+        return metadata
+
+    def _apply_gps(
+        self,
+        batch: dict[str, Any],
+        *,
+        params: dict[str, Any],
+        condition: str,
+        seed: int,
+        generator: torch.Generator,
+    ) -> tuple[dict[str, Any], list[DifficultyWarning]]:
+        gps = batch.get("gps")
+        warnings: list[DifficultyWarning] = []
+        if not torch.is_tensor(gps):
+            return {"state": "missing", "fallback": "skip"}, warnings
+        value = gps.clone()
+        batch_size = int(value.shape[0])
+        steps = int(value.shape[1]) if value.ndim >= 3 else 1
+        current_step = _target_time_index(params, steps)
+        device = gps.device
+        valid_mask = torch.ones((batch_size, steps), dtype=torch.bool, device=device)
+        source_index = torch.arange(steps, dtype=torch.long, device=device).reshape(1, steps).expand(batch_size, steps).clone()
+        source_sample_index = torch.arange(batch_size, dtype=torch.long, device=device).reshape(batch_size, 1).expand(batch_size, steps).clone()
+        counterfactual_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        status = ""
+        fallback = "none"
+        fallback_reason = ""
+        distance = torch.zeros((batch_size,), dtype=torch.float32, device=device)
+        beam_offset: list[float] = []
+
+        if bool(params.get("plausible_wrong_gps", False)):
+            counterfactual_mask[:, current_step] = True
+            if batch_size >= 2:
+                shift = int(torch.randint(1, batch_size, (1,), generator=generator).item())
+                peer = (torch.arange(batch_size, device=device) + shift) % batch_size
+                if value.ndim >= 3:
+                    original = value[:, current_step, :].clone()
+                    replacement = value[peer, current_step, :]
+                    value[:, current_step, :] = replacement
+                else:
+                    original = value.clone()
+                    replacement = value[peer]
+                    value[:] = replacement
+                source_sample_index[:, current_step] = peer.to(dtype=torch.long)
+                distance = (replacement.to(torch.float32) - original.to(torch.float32)).pow(2).sum(dim=-1).sqrt()
+                beam_offset = _beam_offsets(batch.get("target_beam"), peer.detach().cpu())
+                status = "counterfactual_peer_replacement"
+            else:
+                fallback = str(params.get("gps_counterfactual_fallback", "deterministic_jitter"))
+                fallback_reason = "insufficient_batch_peer_pool"
+                jitter_std = float(params.get("gps_jitter_std", 0.5))
+                if value.ndim >= 3:
+                    noise = torch.randn(value[:, current_step, :].shape, generator=generator, dtype=torch.float32).to(device)
+                    value[:, current_step, :] = value[:, current_step, :] + noise.to(dtype=value.dtype) * jitter_std
+                    distance = noise.pow(2).sum(dim=-1).sqrt() * jitter_std
+                else:
+                    noise = torch.randn(value.shape, generator=generator, dtype=torch.float32).to(device)
+                    value[:] = value + noise.to(dtype=value.dtype) * jitter_std
+                    distance = noise.reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt() * jitter_std
+                status = "counterfactual_fallback_jitter"
+                warnings.append(
+                    DifficultyWarning(
+                        code="predictive_jepa_plausible_wrong_gps_fallback",
+                        message="Plausible wrong GPS peer pool was insufficient; deterministic jitter fallback was used.",
+                        operator="predictive_jepa_robustness",
+                        condition=condition,
+                        sample_count=batch_size,
+                        affected_count=batch_size,
+                        fallback=fallback,
+                    )
+                )
+
+        batch["gps"] = value
+        batch["gps_valid_mask"] = valid_mask
+        batch["gps_source_index"] = source_index
+        batch["gps_source_sample_index"] = source_sample_index
+        batch["gps_counterfactual_mask"] = counterfactual_mask
+        metadata = {
+            "operator": "predictive_jepa_robustness",
+            "condition": condition,
+            "seed": seed,
+            "input_space": "gps_tensor",
+            "target_time_index": current_step,
+            "valid_mask": "gps_valid_mask",
+            "source_index": "gps_source_index",
+            "source_sample_index": "gps_source_sample_index",
+            "counterfactual_mask": "gps_counterfactual_mask",
+            "counterfactual_status": status,
+            "scene_constraint": str(params.get("scene_constraint", "same_split_or_batch")),
+            "distance_criteria": {
+                "min_l2": float(distance.min().item()) if distance.numel() else 0.0,
+                "mean_l2": float(distance.mean().item()) if distance.numel() else 0.0,
+            },
+            "beam_offset_criteria": {
+                "offsets": beam_offset,
+                "min_abs_offset": min(beam_offset) if beam_offset else None,
+            },
+            "fallback": fallback,
+            "fallback_reason": fallback_reason,
+            "counterfactual_input_intervention": bool(status),
+        }
+        batch["gps_counterfactual_metadata"] = metadata
+        return metadata, warnings
+
+
 def _attach_image_metadata(
     batch: dict[str, Any],
     config: DifficultyOperatorConfig,
@@ -401,6 +668,38 @@ def _frame_range(image: torch.Tensor) -> list[int]:
     if image.ndim == 4:
         return [0, max(int(image.shape[1]) - 1, 0)]
     return [0, 0]
+
+
+def _target_time_index(params: dict[str, Any], steps: int) -> int:
+    if steps <= 0:
+        return 0
+    raw = int(params.get("target_time_index", -1) or -1)
+    if raw < 0:
+        raw = steps + raw
+    return max(0, min(raw, steps - 1))
+
+
+def _history_source_ranges(steps: int, *, history_window: int) -> list[list[int] | None]:
+    ranges: list[list[int] | None] = []
+    window = max(1, int(history_window))
+    for step in range(steps):
+        start = max(0, step - window)
+        end = step
+        ranges.append([start, end - 1] if end > start else None)
+    return ranges
+
+
+def _beam_offsets(target_beam: Any, source_sample_index: torch.Tensor) -> list[float]:
+    if not torch.is_tensor(target_beam):
+        return []
+    target = target_beam.detach().cpu()
+    if target.ndim == 0:
+        return []
+    flat = target.reshape(int(target.shape[0]), -1)[:, 0].to(dtype=torch.float32)
+    if int(flat.shape[0]) != int(source_sample_index.numel()):
+        return []
+    source = source_sample_index.to(dtype=torch.long).clamp(0, max(int(flat.shape[0]) - 1, 0))
+    return (flat[source] - flat).abs().tolist()
 
 
 def _image_time_shape(image: torch.Tensor) -> tuple[int, int]:

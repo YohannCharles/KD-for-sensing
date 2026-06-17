@@ -2,6 +2,8 @@
 
 本 inventory 记录 `refine-source-architecture-and-entry-surface` 的可审计基线。统计口径只覆盖源码、配置、文档和 OpenSpec artifact；`dataset/`、`outputs/`、`logs/`、cache、checkpoint、下载压缩包和其它本地运行产物不属于本 change 的处理范围。
 
+机器可读治理表的长期来源已经迁移到 `docs/maintainer_context_index.yaml`。本 inventory 保留审计解释、历史上下文、caveat、热点暂缓原因和 lifecycle 说明；脚本入口、root fusion config、模型注册例外、batch/runtime 分支、热点 budget、热点 action metadata、健康检查命令和退役路线 token 等可测试清单以维护上下文索引为准。索引中的 hotspot `priority`、`status`、`split_targets`、`next_change`、`rationale` 和 `validation_commands` 只提供机器可读行动摘要，本 inventory 继续承担长解释和审计上下文。索引不替代 README、AGENTS 或 OpenSpec specs；当索引、inventory、README 或 specs 看似冲突时，应视为治理漂移，通过 OpenSpec change 同步。
+
 ## 项目健康护栏基线
 
 `strengthen-project-health-guardrails` 于 2026-06-11 生成维护性基线；`prune-to-jepa-query-pool-surface` 收口后，当前 `src/kd_sensing` 约有 211 个 Python 文件，`tests/` 约有 49 个 Python 文件，`configs/` 约有 91 个 YAML；仓库根目录有 11 个 Markdown，`docs/` 有 10 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
@@ -13,18 +15,20 @@
 - CLI/config smoke：`conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q`
 - 触碰训练、数据集、诊断、CLI、配置解析或模型 forward 时，追加对应 focused tests，并在 tasks 或最终说明中记录未运行项及原因。
 
+上述分层命令也登记在 `docs/maintainer_context_index.yaml` 的 `governance.health_checks.quick_commands` 中，供架构边界测试读取；本节只保留人类可读说明。
+
 新增热点维护规则：
 
 - 新增长函数、长类、manifest builder、orchestration workflow 或兼容 facade 时，先拆到窄模块；若暂缓拆分，必须在本 inventory 记录文件、符号、规模指标、拆分方向和暂缓原因。
 - 兼容 facade 只保留公开 import/CLI 语义；内部实现不得从 facade 回流导入 helper，应直接依赖职责明确的窄模块。
 - 普通 pytest 文件依赖 `tests/conftest.py` 或 editable install 导入 `src/`；只有架构边界 import probe、subprocess smoke 或显式隔离环境测试可以在子进程代码中局部设置 `sys.path`。
 
-当前 AST 热点清单如下；预算用于阻止热点静默扩大，不代表本 change 立即重构这些 runtime 逻辑：
+当前 AST 热点清单如下；机器可读预算和 action metadata 位于 `docs/maintainer_context_index.yaml` 的 `governance.hotspots`，本节说明预算理由、推荐拆分方向和暂缓原因。索引里的短 `rationale` 与 `validation_commands` 供 agent 和架构边界测试读取，本表继续保留为什么暂缓、为什么这样拆和哪些 schema 需要小心。预算用于阻止热点静默扩大，不代表本 change 立即重构这些 runtime 逻辑：
 
 | 文件 | 符号 | 类型 | 当前规模 | 推荐拆分方向 | 暂缓原因 / 优先级 |
 | --- | --- | --- | --- | --- | --- |
-| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1209 行 | scene/CSV audit、modality sample assembly、label/history adapters、cache/transform glue、BeamBench GPS Direct calibration glue、2604 GPS BEV XY coordinate glue | 数据契约和真实路径耦合强；近期为支持 `paper_distance_angle` scene calibration、BeamBench `beam_target_source=current` 和 BEV-Fusion 2604 `gps_bev_xy` raw coordinate 契约小幅扩容，后续仍优先拆分；优先级 P1 |
-| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset.__init__` | 超长初始化函数 | 261 行 | scene/dataframe audit、feature mode setup、cache policy、target source 和 modality flags 拆到窄 helper | 初始化契约与多条 current baseline/reproduction 配置耦合；本次只登记预算，不改数据语义；优先级 P1 |
+| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset` | 超长 dataset 类 | 1054 行 | 已拆出 `deepsense6g_contract.py`、`deepsense6g_gps_contract.py`、`deepsense6g_columns.py`、`deepsense6g_cache_paths.py`；后续继续拆 modality sample assembly、label/history adapters、resource reader glue 和 target provider adapter | 数据契约 helper 已覆盖 GPS feature mode/scene calibration、`beam_target_source=current`、`gps_bev_xy_source`、required columns、metadata parsing 和 cache path；真实资源读取与样本组装仍和多条 current workflow 耦合，继续预算监控；优先级 P1 |
+| `src/kd_sensing/data/datasets/deepsense6g.py` | `DeepSense6GDataset.__init__` | 超长初始化函数 | 263 行 | 已拆出 CSV path、feature mode setup、cache path、target source 和 column guard；后续拆 resource reader setup、scaler/normalizer setup 和 target provider setup | 初始化仍承担 loader/scaler orchestration，保持 265 行预算并要求新契约规则进入 helper；优先级 P1 |
 | `src/kd_sensing/data/datasets/mmw.py` | `MMWDataset` | 超长 dataset 类 | 592 行 | manifest parsing、sequence window、label-space metadata、sensor feature loading | MMW group-safe split 与 label calibration 仍在演进；优先级 P1 |
 | `src/kd_sensing/engine/trainer.py` | `_train_inner` | 超长训练 orchestration 函数 | 316 行 | dataloader setup、epoch loop、validation/checkpoint coordination、artifact finalization | 训练数值语义敏感；优先级 P1 |
 | `src/kd_sensing/engine/mmw_town_gps_v2.py` | `run_mmw_town_gps_v2` | 超长诊断 workflow 函数 | 277 行 | protocol dispatch、label-space resolution、summary writing、plot handoff | MMW GPS v2 仍承担对照解释；优先级 P2 |
@@ -33,19 +37,20 @@
 | `src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py` | `run_deepsense6g_gps_lidar_bgam` | BGAM orchestration | 234 行 | manifest loading、ablation dispatch、summary writer | 需与 MMW BGAM contract 对齐后再拆；优先级 P2 |
 | `src/kd_sensing/engine/evaluation_pass.py` | `run_evaluation_pass` | evaluation pass | 216 行 | metric aggregation、objective outputs、prediction metadata | evaluation schema 为多个 CLI 共享；优先级 P2 |
 | `src/kd_sensing/engine/batch.py` | module helpers | batch preparation 热点 | 文件级 batch contract | modality target preparation、label adapters、history anchor inputs | 触碰会影响训练/验证公共 batch contract；优先级 P2 |
+| `src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py` | module runner facade | JEPA shortcut benchmark 公开 import/CLI facade | 文件级 399 行，预算 450 行 | 只保留 `run_jepa_gps_shortcut_benchmark`、manifest/schema、perturbation、CxD 和 analysis bundle helper 的兼容 re-export；suite-specific helper 实现不得回流 | 已拆到 `src/kd_sensing/diagnostics/jepa_benchmark_common.py`、`src/kd_sensing/diagnostics/jepa_benchmark_manifest.py`、`src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py`、`src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py`、`src/kd_sensing/diagnostics/jepa_benchmark_predictive.py`、`src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py`、`src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py`、`src/kd_sensing/diagnostics/jepa_benchmark_plots.py` 和 `src/kd_sensing/diagnostics/jepa_benchmark_runner.py`；优先级 P0 |
 | `src/kd_sensing/diagnostics/run_index.py` | module helpers | 诊断 run index 热点 | 文件级诊断 contract | process/resource collection、artifact summary、CSV/render writers | 输出 schema 已在 README 暴露；优先级 P3 |
 | `src/kd_sensing/diagnostics/viewer_manifest.py` | `export_viewer_manifest` facade/workflow | manifest builder 热点 | facade 预算 220 行 | schema、cache、path、merge、writer 窄模块继续保持职责分离 | 已拆第一批，后续只防回流；优先级 P3 |
 
 ## 配置生命周期分类
 
-`configs/` 当前 89 个 YAML 按生命周期维护：
+`configs/` 当前 91 个 YAML 按生命周期维护：
 
 - canonical/current root configs：`configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml`、`configs/deepsense6g_gps_adapter_v2.yaml`、`configs/deepsense6g_gps_lidar_bgam.yaml`、`configs/mmw_town_gps_adapter_v2.yaml`、`configs/mmw_town_gps_lidar_bgam.yaml`。
 - canonical fusion root：`configs/fusion/*.yaml` 只保留长期 supervised、token-transformer/objective-aware 和 BeamBench Image AE+GPS thin/reproducibility 入口；具体 allowlist 见下文 `configs/fusion/` 根目录分类。
 - experiment reproduction：`configs/fusion/experiments/jepa_image_gps/*.yaml` 记录 JEPA image+GPS、GPS-biased checkpoint reuse、GPS query pooling、2604/BeamBench fair 和必要 supervised/random-best 对照；这些不是 root canonical 入口。
 - CSI experiment matrix：`configs/csi/hardening_matrix/*.yaml` 是主矩阵，`configs/csi/hardening_matrix/debug/*.yaml` 是 debug/smoke，`configs/fusion/csi_hardening_matrix/*.yaml` 是 GPS+CSI 验证矩阵。
 - dataset preparation：`configs/preprocess/*.yaml` 服务当前数据准备、索引和 cache；DeepVerse/DT31 与 Raymobtime s008 预处理配置已删除。
-- diagnostics：`configs/diagnostics/modality_visualization.yaml` 服务 viewer manifest/diagnostic；`configs/diagnostics/jepa_visual_analysis_2604.yaml` 服务 JEPA 离线分析；`configs/diagnostics/jepa_gps_shortcut_benchmark_*.yaml` 服务 JEPA vs GPS shortcut benchmark 和 Scenario D image observability smoke/canonical manifest。它们不是训练入口。
+- diagnostics：`configs/diagnostics/modality_visualization.yaml` 服务 viewer manifest/diagnostic；`configs/diagnostics/jepa_visual_analysis_2604.yaml` 服务 JEPA 离线分析；`configs/diagnostics/jepa_gps_shortcut_benchmark_*.yaml` 服务 JEPA vs GPS shortcut benchmark、Scenario D image observability 和 Predictive Robustness smoke/canonical manifest。它们不是训练入口，predictive smoke manifest 只提供 mock/smoke schema evidence。
 - baseline/reproduction：`configs/baselines/*.yaml` 和 `configs/pretraining/*.yaml` 服务 BeamBench reproduction、GPS-conditioned JEPA pretraining 和 JEPA-MSAC Scenario 32 workflow 复现；GPS window baseline 配置已删除。
 - retired history：已删除的 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、CRAF/MARF/G2D/Multimodal-NF 实体配置只允许作为历史或 migration guard 说明出现，不得作为当前推荐入口。
 
@@ -70,6 +75,7 @@
 | `component-registry` | `current` | 当前 registry 与退役组件拒绝边界。 |
 | `configurable-multimodal-fusion` | `current` | 当前 fusion 配置和 virtual overlay 运行语义。 |
 | `cross-scene-loso-workflow` | `supporting` | 通用 LOSO fold/split/few-shot 支撑；Hist 默认 runner 已退役。 |
+| `cxd-phase-transition-analysis` | `current` | 当前 CxD phase diagram、dominance、crossing 和 failure decomposition 诊断契约。 |
 | `csi-channel-data` | `current` | 当前 CSI 数据列和样本字段契约。 |
 | `csi-channel-degradation` | `current` | 当前 CSI degradation profile 能力。 |
 | `csi-hardening-debug-validation` | `current` | 当前 CSI hardening debug 矩阵验证。 |
@@ -106,6 +112,7 @@
 | `legacy-kd-isolation` | `retired-tombstone` | legacy KD 入口只作为拒绝、历史读取和 migration guard 墓碑。 |
 | `lidar-modality-model` | `current` | 当前 LiDAR 模态模型契约。 |
 | `lidar-preprocessing` | `current` | 当前 LiDAR 点云/BEV cache/scaler 预处理契约。 |
+| `maintainer-context-index` | `current` | 当前机器可读维护上下文索引、任务路由和治理事实入口；不替代 OpenSpec 行为契约或 inventory 审计解释。 |
 | `mainline-experiment-documentation` | `current` | 当前主线模型目录、实验协议表和结果/claim 账本治理能力；不替代 OpenSpec 行为契约。 |
 | `mmw-beam-label-calibration` | `current` | 当前 MMW beam label calibration 契约。 |
 | `mmw-cross-scene-adaptation-protocol` | `supporting` | MMW split/adaptation protocol 支撑；MMW HiST wording 只可作历史边界。 |
@@ -129,6 +136,7 @@
 | `project-architecture` | `current` | 当前包结构、入口、轻量导入和退役边界。 |
 | `project-health-guardrails` | `current` | 当前健康护栏、inventory 和静态检查契约。 |
 | `project-surface-cleanup` | `current` | 当前源码表面清理、退役路线和本地产物边界。 |
+| `predictive-jepa-robustness` | `current` | 当前 JEPA Predictive Robustness workflow 契约；pending/unverified，不代表真实 P0-P5 数值 claim 已完成。 |
 | `spec-lifecycle-boundaries` | `current` | 当前 OpenSpec capability lifecycle 分类和读取边界。 |
 | `radar-student-model` | `current` | 当前 radar student 模型契约。 |
 | `radar-teacher-model` | `current` | 当前 radar teacher/复现兼容模型契约。 |
@@ -185,12 +193,13 @@
 - Raymobtime s008 dataset、预处理器、selection 模型、配置和 focused test 已退役删除；旧 registry 名称和配置路径只保留 migration guard 错误信息。
 - `src/kd_sensing/models/csi.py` 保留公开 import 路径；pilot estimation、CSI hardening、view tokenizer/fusion、debug helpers 和 encoder registry glue 分别迁移到 `csi_estimation.py`、`csi_hardening.py`、`csi_views.py`、`csi_debug.py`、`csi_encoder.py`。
 - `src/kd_sensing/engine/objective_metadata.py` 保留公开兼容 facade；objective 名称、默认 metric、metric alias 和 mode 表迁移到 `src/kd_sensing/engine/objectives/registry.py`，history fields 与 TensorBoard scalar schema 迁移到 `src/kd_sensing/engine/objectives/history.py`，runtime metadata/validation helper 在 `src/kd_sensing/engine/objectives/metadata.py`。
+- `src/kd_sensing/data/datasets/deepsense6g.py` 保留 DeepSense6G runtime dataset orchestration；GPS contract、target source、metadata parsing、beam label cache mode、required columns 和 image/LiDAR cache path resolution 分别迁移到 `deepsense6g_gps_contract.py`、`deepsense6g_contract.py`、`deepsense6g_columns.py` 和 `deepsense6g_cache_paths.py`。后续新增 GPS feature mode、beam target source、column guard 或 cache path rule 必须优先进入这些 helper，并使用 synthetic tests 避免读取真实 `dataset/`。
 - `src/kd_sensing/diagnostics/viewer_manifest.py` 保留 manifest 导出公开 orchestration；配置解析、dataset 构建、采样、statistics、sample id/JSON schema、cache metadata、row path resolution、prediction/quality/gate merge 和 asset writer 分别位于 `src/kd_sensing/diagnostics/viewer_manifest_config.py`、`src/kd_sensing/diagnostics/viewer_manifest_datasets.py`、`src/kd_sensing/diagnostics/viewer_manifest_sampling.py`、`src/kd_sensing/diagnostics/viewer_manifest_stats.py`、`src/kd_sensing/diagnostics/viewer_manifest_schema.py`、`src/kd_sensing/diagnostics/viewer_manifest_cache.py`、`src/kd_sensing/diagnostics/viewer_manifest_paths.py`、`src/kd_sensing/diagnostics/viewer_manifest_merge.py` 和 `src/kd_sensing/diagnostics/viewer_manifest_writer.py`。
-- `src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py` 提供 JEPA vs GPS shortcut benchmark manifest schema、deterministic perturbation helper、metrics aggregation、runner manifest writer 和 visual-analysis ingestion bundle helper；默认输出限定在 `outputs/analysis/`，不读取真实 `dataset/`，除非用户显式用真实 config/weights 执行评估计划。
+- `src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py` 保留 JEPA vs GPS shortcut benchmark 公开 facade 和兼容导出；内部职责已拆到 `src/kd_sensing/diagnostics/jepa_benchmark_common.py`、`src/kd_sensing/diagnostics/jepa_benchmark_manifest.py`、`src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py`、`src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py`、`src/kd_sensing/diagnostics/jepa_benchmark_predictive.py`、`src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py`、`src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py`、`src/kd_sensing/diagnostics/jepa_benchmark_plots.py` 和 `src/kd_sensing/diagnostics/jepa_benchmark_runner.py`。新增 Scenario C/D/CxD、Predictive、manifest/schema、artifact writer、plotting 或 runner manifest helper 必须落在这些窄模块，不得把 suite-specific implementation 写回 facade；默认输出限定在 `outputs/analysis/`，不读取真实 `dataset/`，除非用户显式用真实 config/weights 执行评估计划。
 - DeepVerse/DT31 generator、label builder、split、sanity check 和 focused test 已退役删除；MMW beam power 所需的通用 ULA/DFT codebook helper 保留在 `src/kd_sensing/data/beam_codebook.py`。
 - `src/kd_sensing/data/mmw/preparation.py` 保留 Town10/Skybridge MMW preparation 公开 orchestration 和兼容导出；配置 schema、默认常量和 override loading 迁移到 `src/kd_sensing/data/mmw/preparation_config.py`，zip/input audit、extract marker、availability report 迁移到 `src/kd_sensing/data/mmw/preparation_audit.py`，sensor/channel indexing 与 path parsing 迁移到 `src/kd_sensing/data/mmw/preparation_index.py`，sequence row、group-safe split、guard band 和 leakage diagnostics 迁移到 `src/kd_sensing/data/mmw/preparation_splits.py`，channel payload、DFT/codebook beam power 和 power validation 迁移到 `src/kd_sensing/data/mmw/preparation_beam_power.py`，manifest/split/report 写出迁移到 `src/kd_sensing/data/mmw/preparation_writers.py`，relative geometry、pose/proxy features 和 azimuth bin helper 迁移到 `src/kd_sensing/data/mmw/preparation_geometry.py`。
 
-新增内部代码不得从 `kd_sensing.engine.objective_metadata` 或 `kd_sensing.data.mmw.preparation` 回流导入窄 helper；应直接使用上面的窄模块。`kd_sensing.diagnostics.viewer_manifest` 和 `kd_sensing.data.mmw.preparation` 可作为公开 orchestration/import 入口，但内部 helper 引用应分别指向 `viewer_manifest_*` 与 `preparation_*` 窄模块。
+新增内部代码不得从 `kd_sensing.engine.objective_metadata`、`kd_sensing.data.mmw.preparation` 或 `kd_sensing.diagnostics.jepa_gps_shortcut_benchmark` 回流导入窄 helper；应直接使用上面的窄模块。`kd_sensing.diagnostics.viewer_manifest`、`kd_sensing.data.mmw.preparation` 和 `kd_sensing.diagnostics.jepa_gps_shortcut_benchmark` 可作为公开 orchestration/import 入口，但内部 helper 引用应分别指向 `viewer_manifest_*`、`preparation_*` 与 `jepa_benchmark_*` 窄模块。
 
 ## 第二梯队热点
 
@@ -207,7 +216,7 @@
 
 ## 配置 YAML
 
-当前 `configs/fusion/` 根目录有 12 个实体 YAML，只保留长期 canonical 或当前明确薄入口。`configs/fusion/experiments/jepa_image_gps/` 有 11 个 JEPA image+GPS 实验特化 YAML，用于 BeamBench-fair、arXiv:2604.05668 对齐、GPS-biased/GPS-query checkpoint reuse、必要 supervised/random-best 对照和保留的 BeamBench fair 复查配置；其中 GPS-biased/GPS-query checkpoint reuse 是 JEPA 下游主线。这些路径可被文档指向，但不算根目录推荐入口。`configs/pretraining/jepa_msac_s32_smoke.yaml` 和 `configs/pretraining/jepa_msac_s32_paper.yaml` 是 JEPA-MSAC Scenario 32 workflow 配置，默认输出到 ignored 的 `outputs/analysis/jepa_msac/`，RF 只通过 workflow-local beam-power history 映射。`configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml` 是不读真实数据的 benchmark smoke manifest，`configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml` 是引用现有 Vision-Position baseline 与 JEPA downstream 配置的 canonical benchmark manifest，checkpoint 路径为本地占位；`configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml` 是 Scenario D / CxD image observability smoke manifest，默认输出到 ignored `outputs/analysis/scenario_d_image_observability/smoke`，不提交 CSV/NPY/PNG。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
+当前 `configs/fusion/` 根目录有 12 个实体 YAML，只保留长期 canonical 或当前明确薄入口；机器可读 root allowlist 位于 `docs/maintainer_context_index.yaml` 的 `governance.configs.fusion_root_allowlist`。`configs/fusion/experiments/jepa_image_gps/` 有 12 个 JEPA image+GPS 实验特化 YAML，用于 BeamBench-fair、arXiv:2604.05668 对齐、GPS-biased/GPS-query checkpoint reuse、Predictive Robustness pending workflow、必要 supervised/random-best 对照和保留的 BeamBench fair 复查配置；其中 GPS-biased/GPS-query checkpoint reuse 是 JEPA 下游主线，predictive hybrid 是 pending/unverified current workflow。这些路径可被文档指向，但不算根目录推荐入口。`configs/pretraining/jepa_msac_s32_smoke.yaml` 和 `configs/pretraining/jepa_msac_s32_paper.yaml` 是 JEPA-MSAC Scenario 32 workflow 配置，默认输出到 ignored 的 `outputs/analysis/jepa_msac/`，RF 只通过 workflow-local beam-power history 映射。`configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml` 是不读真实数据的 benchmark smoke manifest，`configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml` 是引用现有 Vision-Position baseline 与 JEPA downstream 配置的 canonical benchmark manifest，checkpoint 路径为本地占位；`configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml` 是 Scenario D / CxD image observability smoke manifest，默认输出到 ignored `outputs/analysis/scenario_d_image_observability/smoke`，不提交 CSV/NPY/PNG；`configs/diagnostics/jepa_gps_shortcut_benchmark_predictive_robustness_smoke.yaml` 是 Predictive Robustness P0-P5 mock/smoke manifest，使用 synthetic metrics、mock weights 和 `allow_missing_artifacts` 只验证 schema、strict comparability 字段和 claim gating，不产生真实数值 claim。`configs/csi/hardening_matrix/` 有 13 个主矩阵 YAML，`configs/csi/hardening_matrix/debug/` 有 5 个 debug YAML；`configs/fusion/csi_hardening_matrix/` 有 4 个 GPS+CSI 验证矩阵 YAML。
 
 `configs/fusion/` 根目录保留分类如下：
 
@@ -218,6 +227,7 @@
 已迁移到 `configs/fusion/experiments/jepa_image_gps/` 的实验特化配置如下：
 
 - fair/2604 当前文档复核配置：`image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml`、`image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml` 和 `image_gps_jepa_gps_query_pool_best_2604_s32_s34_fasttrain.yaml` 是主线或快速复核主线；`image_gps_supervised_beambench_fair_lowmem.yaml`、`image_gps_jepa_random_best_beambench_fair_lowmem.yaml`、`image_gps_supervised_2604_s32_s34_lowmem.yaml`、`image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml` 是对照。保留 `beambench_fair` 文件名的配置现在对齐 BeamBench Table III 的输入/split/target/metric 口径：`seq_len=1`、`num_pred=1`、`beam_target_source=current`、GPS `paper_distance_angle`、scene paper calibration angle、S32-S34 train、S31-S34 test 和 linear DBA；它们仍是 Image+GPS/JEPA 下游模型，不是 Table III Camera AE+GPS Direct 模型。
+- Predictive Robustness pending 配置：`image_gps_jepa_predictive_hybrid_beambench_fair_lowmem.yaml` 是 BeamBench-fair 派生训练 profile，默认训练 `P4_joint_predictive_recovery`；单个 P4 train/curriculum profile 不等价于完整 P0-P5 benchmark，真实 claim 只能来自本地 real manifest 的 strict comparable P0-P5 train-then-evaluate。
 - BeamBench fair 保留复查配置：`image_gps_jepa_random_last_beambench_fair_lowmem.yaml` 和 `image_gps_jepa_gps_biased_pooler_param_groups_beambench_fair_lowmem.yaml`。
 - 已退役删除配置：scene31-only low-memory/best-last 配置、非 BeamBench last-checkpoint 配置，以及 `jepa_gru.yaml`、`jepa_snapshot.yaml`、`jepa_plain_token_transformer.yaml`、`jepa_next_query_transformer.yaml` next-beam downstream ablation 配置。
 
@@ -225,9 +235,11 @@
 
 ## 脚本入口 Allowlist
 
-保留入口按 lifecycle 分类如下；新增 `scripts/` 或 `tools/analysis/` 下的 Python/shell 文件必须同步更新本 inventory 和 `tests/test_architecture_boundaries.py`。
+保留入口按 lifecycle 分类如下；机器可读 allowlist 位于 `docs/maintainer_context_index.yaml` 的 `governance.entrypoints`，`tests/test_architecture_boundaries.py` 从索引读取。每个长期保留入口必须在索引中记录 `owner_module` 或 `owner_script`、`responsibility`、`output_boundary` 和 lifecycle；名称、owner 或参数容易与退役路线混淆时，还要记录 `retired_route_guard`。新增 `scripts/` 或 `tools/analysis/` 下的 Python/shell 文件必须先更新维护上下文索引，并在本 inventory 保留职责、输出边界和 caveat 说明。
 
-- package_cli: `kd_sensing.cli.jepa_visual_analysis`、`kd_sensing.cli.jepa_gps_shortcut_benchmark`、`kd_sensing.cli.run_jepa_msac`、`kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest`、`kd_sensing.cli.run_deepsense6g_gps_lidar_bgam`、`kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam`、`kd_sensing.cli.prepare_mmw_town_gps_lidar_bgam_manifest`、`kd_sensing.cli.run_mmw_town_gps_lidar_bgam`、`kd_sensing.cli.evaluate_mmw_town_gps_lidar_bgam`、`kd_sensing.cli.run_amr_net_gps_image`。JEPA visual analysis 与 GPS shortcut benchmark 是只读模型/benchmark 产物的诊断入口，输出限定在 ignored 的 `outputs/visual_analysis/` 或 `outputs/analysis/`；JEPA-MSAC 是 Scenario 32 paper/workflow reproduction 入口，输出限定在 ignored 的 `outputs/analysis/jepa_msac/`，未完成长训练前只记录 local-ready/unverified/blocked/mock 状态；GPS+LiDAR BGAM 是保留的包内入口；AMR-Net_gps_image 入口只写 source-audit/report/mock manifest 到 ignored `outputs/analysis/amr_net_gps_image/`，不启动真实长训练、不启用 LiDAR、不声明 official reproduction。GPS coarse anchor、Top8 selector、DeepSense6G residual 和 camera residual 入口已退役，不再作为当前 package CLI。
+职责边界：package CLI 只做 argparse、配置/override glue、轻量 IO、调用 owner module 和 user-facing exit code；真实训练、评估、benchmark、dataset preparation 或诊断主逻辑必须位于 `baselines/`、`diagnostics/`、`engine/`、`data/` 或对应窄模块。`scripts/` 下的 thin alias 只能导入并委托 package CLI 或包内 owner module，不得复制训练 loop、optimizer step、模型 forward 分支或大段 dataset parsing；research diagnostic 和 dataset preparation 脚本可以保留脚本自身作为 owner，但必须声明只读/输出边界。所有入口默认输出只能落在 ignored 的 `outputs/`、`logs/`、cache/checkpoint、本地 dataset preparation target、`docs/figures/` 或显式用户路径中，不得把新生成产物写回源码目录。
+
+- package_cli: 核心 `kd_sensing.cli.train`、`kd_sensing.cli.evaluate`、`kd_sensing.cli.preprocess`、run-index、runtime cleanup、viewer manifest、target-shot split 和 distribution-shift 入口都只承担 parser/config glue，owner module 位于 engine、data 或 diagnostics；`kd_sensing.cli.jepa_visual_analysis`、`kd_sensing.cli.jepa_gps_shortcut_benchmark`、`kd_sensing.cli.run_jepa_msac`、`kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest`、`kd_sensing.cli.run_deepsense6g_gps_lidar_bgam`、`kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam`、`kd_sensing.cli.prepare_mmw_town_gps_lidar_bgam_manifest`、`kd_sensing.cli.run_mmw_town_gps_lidar_bgam`、`kd_sensing.cli.evaluate_mmw_town_gps_lidar_bgam`、`kd_sensing.cli.run_amr_net_gps_image` 等 paper/workflow 或诊断入口也必须通过 owner metadata 明确真实实现。JEPA visual analysis 与 GPS shortcut benchmark 是只读模型/benchmark 产物的诊断入口，输出限定在 ignored 的 `outputs/visual_analysis/` 或 `outputs/analysis/`；JEPA-MSAC 是 Scenario 32 paper/workflow reproduction 入口，输出限定在 ignored 的 `outputs/analysis/jepa_msac/`，未完成长训练前只记录 local-ready/unverified/blocked/mock 状态；GPS+LiDAR BGAM 是保留的包内入口；AMR-Net_gps_image 入口只写 source-audit/report/mock manifest 到 ignored `outputs/analysis/amr_net_gps_image/`，不启动真实长训练、不启用 LiDAR、不声明 official reproduction。GPS coarse anchor、Top8 selector、DeepSense6G residual 和 camera residual 入口已退役，不再作为当前 package CLI。
 - thin_cli_alias: `scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py`、`scripts/train_baseline.py`、`scripts/eval_baseline.py`、`scripts/train_beambench_image_ae_gps.py`、`scripts/run_beambench_image_ae_gps_tableiii.py`。前三者只委托包内主训练/评估/预处理 CLI；README 推荐 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。`scripts/train_baseline.py` 和 `scripts/eval_baseline.py` 是 BeamBench baseline 审计/mock smoke 薄入口，`scripts/train_beambench_image_ae_gps.py` 是 Arnold22 BeamBench Table III `Camera=AE, GPS=Direct, Fusion=Yes` 本地训练薄入口，`scripts/run_beambench_image_ae_gps_tableiii.py` 是四场景 Table III 本地复现实验薄入口；主要实现位于 `src/kd_sensing/baselines/beambench/` 和 `src/kd_sensing/cli/`，默认输出限定在 ignored 的 `outputs/evaluations/beambench_baseline/`、`outputs/scene<id>/beambench_image_ae_gps_direct/` 或 `outputs/scenegroup_s32_s34/beambench_image_ae_gps_direct_tableiii/`。
 - research_diagnostic: `scripts/analyze_csi_hardening_sweep.py`、`scripts/analysis/beambench_ae_gps_diagnostics.py`、`scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py`、`scripts/analysis/visualize_deepsense_beambench_correspondence.py`、`scripts/debug_eval_consistency.py`、`scripts/figures/draw_jepa_architecture.py`、`scripts/profile_training_io.py`、`scripts/recommend_parallel_training.py`、`scripts/mmw/visualize_gps_angle_beam_correspondence.py`、`scripts/mmw/visualize_gps_prediction_trajectory.py`、`scripts/mmw/visualize_prediction_error_label_distribution.py`。旧模态子集/扰动研究脚本不再作为长期入口；通用 subset/mask 验证保留在 `kd-sensing-evaluate` 使用的共享 evaluation pass 与配置化 `evaluation.modality_subsets` 中。
 - dataset_preparation: `scripts/inspect_dataset.py`、`scripts/check_dataset.py`、`scripts/mmw/prepare_town10_skybridge.py`、`scripts/mmw/build_sequence_splits_from_manifest.py`、`scripts/mmw/visualize_town_label_distribution.py`。

@@ -1,0 +1,959 @@
+schema_version: 1
+kind: maintainer_context_index
+purpose:
+  summary: >
+    Machine-readable maintainer context for AI agents, maintainers, and static
+    architecture guardrails. This file centralizes routing and governance facts
+    that were previously repeated across Markdown prose and pytest constants.
+  stable_path: docs/maintainer_context_index.yaml
+  authority_boundaries:
+    does_not_replace:
+      - openspec/specs/
+      - README.md
+      - AGENTS.md
+      - docs/project_surface_inventory.md
+    inventory_role: explanatory audit notes, historical caveats, and hotspot rationale
+    openspec_role: behavioral requirements and architecture contracts
+    readme_role: install, quickstart, and compact workflow index
+  runtime_contract:
+    runtime_config: false
+    training_config: false
+    imported_by_runtime: false
+    no_runtime_side_effects: true
+    validation_reads_source_docs_specs_tests_only: true
+
+routing:
+  task_types:
+    - id: model_forward_registry
+      lifecycle: current
+      labels:
+        - 模型
+        - forward
+        - registry
+      read_first:
+        - openspec/specs/model-architecture-extension-contract/spec.md
+        - openspec/specs/modular-sequence-model/spec.md
+        - openspec/specs/component-registry/spec.md
+        - README.md
+        - docs/project_surface_inventory.md
+      primary_paths:
+        - src/kd_sensing/models/
+        - src/kd_sensing/registries.py
+        - src/kd_sensing/engine/batch.py
+        - src/kd_sensing/engine/runtime.py
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      model_extension_routes:
+        - config-only baseline
+        - component baseline
+        - whole-model exception
+        - workflow/paper reproduction
+    - id: data_batch_contract
+      lifecycle: current
+      labels:
+        - 数据
+        - batch
+        - dataset contract
+      read_first:
+        - openspec/specs/dataset-runtime-contracts/spec.md
+        - openspec/specs/modality-contracts/spec.md
+        - README.md
+        - docs/project_surface_inventory.md
+      primary_paths:
+        - src/kd_sensing/data/
+        - src/kd_sensing/engine/batch.py
+        - src/kd_sensing/engine/runtime.py
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    - id: config_virtual_config
+      lifecycle: current
+      labels:
+        - 配置
+        - virtual config
+      read_first:
+        - openspec/specs/canonical-config-resolution/spec.md
+        - openspec/specs/configurable-multimodal-fusion/spec.md
+        - README.md
+        - docs/project_surface_inventory.md
+      primary_paths:
+        - src/kd_sensing/config/
+        - configs/
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    - id: cli_scripts
+      lifecycle: current
+      labels:
+        - CLI
+        - scripts
+      read_first:
+        - README.md
+        - pyproject.toml
+        - docs/project_surface_inventory.md
+        - openspec/specs/project-architecture/spec.md
+      primary_paths:
+        - src/kd_sensing/cli/
+        - scripts/
+        - pyproject.toml
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_cli_help.py -q
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      guardrails:
+        - Do not restore retired route console scripts, compatibility wrappers, or legacy root scripts.
+    - id: diagnostics_viewer
+      lifecycle: current
+      labels:
+        - 诊断
+        - viewer
+        - visual analysis
+      read_first:
+        - openspec/specs/modality-visual-diagnostics/spec.md
+        - openspec/specs/jepa-visual-analysis-suite/spec.md
+        - openspec/specs/jepa-gps-shortcut-benchmark/spec.md
+        - README.md
+        - docs/project_surface_inventory.md
+      primary_paths:
+        - src/kd_sensing/diagnostics/
+        - src/kd_sensing/cli/export_viewer_manifest.py
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    - id: runtime_outputs_cache_cleanup
+      lifecycle: current
+      labels:
+        - 输出产物
+        - cache
+        - cleanup
+      read_first:
+        - openspec/specs/runtime-artifact-cleanup/spec.md
+        - openspec/specs/experiment-run-index/spec.md
+        - README.md
+        - docs/project_surface_inventory.md
+      primary_paths:
+        - src/kd_sensing/utils/runtime_output_layout.py
+        - src/kd_sensing/cli/cleanup_runtime_artifacts.py
+        - src/kd_sensing/cli/organize_runtime_outputs.py
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py -q
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      guardrails:
+        - Default tests and governance checks must not read or write local runtime artifacts.
+    - id: openspec_artifact
+      lifecycle: current
+      labels:
+        - OpenSpec artifact
+      read_first:
+        - openspec/specs/project-architecture/spec.md
+        - docs/project_surface_inventory.md
+      primary_paths:
+        - openspec/specs/
+        - openspec/changes/
+      validation_commands:
+        - openspec validate <change> --strict
+      guardrails:
+        - Active change artifacts can guide implementation; archived changes are historical context only.
+    - id: documentation_lifecycle
+      lifecycle: current
+      labels:
+        - 文档生命周期
+      read_first:
+        - AGENTS.md
+        - docs/agent_navigation.md
+        - docs/project_surface_inventory.md
+        - openspec/specs/spec-lifecycle-boundaries/spec.md
+      primary_paths:
+        - README.md
+        - AGENTS.md
+        - docs/
+        - openspec/specs/
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      guardrails:
+        - README remains a quickstart and short index; do not turn it into a governance database.
+
+governance:
+  entrypoints:
+    lifecycle_values:
+      - package_cli
+      - thin_cli_alias
+      - research_diagnostic
+      - dataset_preparation
+      - shell_orchestration
+    package_cli:
+      - name: kd-sensing-train
+        target: kd_sensing.cli.train:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.trainer
+        responsibility: parser/config glue for training workflow
+        output_boundary: ignored outputs/ and logs/ runtime artifacts
+      - name: kd-sensing-evaluate
+        target: kd_sensing.cli.evaluate:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.evaluator
+        responsibility: parser/config glue for evaluation workflow
+        output_boundary: ignored outputs/evaluations/ or explicit user path
+      - name: kd-sensing-preprocess
+        target: kd_sensing.cli.preprocess:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.preprocessing
+        responsibility: parser/config glue for registered preprocessing actions
+        output_boundary: dataset preparation target or explicit user path
+      - name: kd-sensing-runs
+        target: kd_sensing.cli.runs:console_main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.run_index
+        responsibility: local run-index diagnostic CLI
+        output_boundary: read-only/stdout unless explicit user path is provided
+      - name: kd-sensing-clean-runtime-artifacts
+        target: kd_sensing.cli.cleanup_runtime_artifacts:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.runtime_artifact_cleanup
+        responsibility: runtime artifact cleanup manifest CLI
+        output_boundary: ignored outputs/cleanup_manifests/ with explicit confirmed deletion only
+      - name: kd-sensing-organize-runtime-outputs
+        target: kd_sensing.cli.organize_runtime_outputs:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.runtime_artifact_cleanup
+        responsibility: runtime output organization CLI
+        output_boundary: ignored outputs/ and logs/ runtime artifact roots
+      - name: kd-sensing-export-viewer-manifest
+        target: kd_sensing.cli.export_viewer_manifest:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.viewer_manifest
+        responsibility: viewer manifest export CLI
+        output_boundary: ignored outputs/visual_analysis/ and outputs/cache/ or explicit user path
+      - name: kd-sensing-visualize-modalities
+        target: kd_sensing.cli.visualize_modalities:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.viewer_manifest
+        responsibility: thin package alias for viewer manifest export
+        output_boundary: ignored outputs/visual_analysis/ and outputs/cache/ or explicit user path
+        retired_route_guard: do not restore tools/visualization wrapper
+      - name: kd-sensing-jepa-visual-analysis
+        target: kd_sensing.cli.jepa_visual_analysis:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.jepa_visual_analysis
+        responsibility: JEPA visual diagnostic CLI
+        output_boundary: ignored outputs/visual_analysis/ or explicit user path
+      - name: kd-sensing-jepa-gps-shortcut-benchmark
+        target: kd_sensing.cli.jepa_gps_shortcut_benchmark:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.jepa_gps_shortcut_benchmark
+        responsibility: JEPA GPS shortcut benchmark CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - name: kd-sensing-target-shot-split
+        target: kd_sensing.cli.target_shot_split:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.data.target_shot_splits
+        responsibility: target-shot split materialization CLI
+        output_boundary: dataset preparation target or explicit user path
+      - name: kd-sensing-distribution-shift
+        target: kd_sensing.cli.distribution_shift:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.diagnostics.distribution_shift
+        responsibility: source/target distribution diagnostic CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - name: kd-sensing-mmw-town-gps-v2
+        target: kd_sensing.cli.mmw_town_gps_v2:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.mmw_town_gps_v2
+        responsibility: MMW Town GPS-only v2 experiment CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+        retired_route_guard: no GPS residual or standalone Top8 route
+      - name: kd-sensing-plot-mmw-town-gps-v2
+        target: kd_sensing.cli.plot_mmw_town_gps_v2:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.cli.plot_mmw_town_gps_v2
+        responsibility: MMW Town GPS-only v2 result plotting CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - name: kd-sensing-compare-mmw-town-gps-v2
+        target: kd_sensing.cli.compare_mmw_town_gps_v2:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.cli.compare_mmw_town_gps_v2
+        responsibility: MMW Town GPS-only v2 comparison report CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - name: kd-sensing-prepare-mmw-town-gps-lidar-bgam-manifest
+        target: kd_sensing.cli.prepare_mmw_town_gps_lidar_bgam_manifest:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.data.mmw_town_gps_lidar_bgam_manifest
+        responsibility: MMW Town GPS+LiDAR BGAM manifest preparation CLI
+        output_boundary: dataset preparation target or explicit user path
+        retired_route_guard: no standalone Top8 selector entry
+      - name: kd-sensing-run-mmw-town-gps-lidar-bgam
+        target: kd_sensing.cli.run_mmw_town_gps_lidar_bgam:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.mmw_town_gps_lidar_bgam
+        responsibility: MMW Town GPS+LiDAR BGAM run CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+        retired_route_guard: no standalone Top8 selector entry
+      - name: kd-sensing-evaluate-mmw-town-gps-lidar-bgam
+        target: kd_sensing.cli.evaluate_mmw_town_gps_lidar_bgam:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.mmw_town_gps_lidar_bgam
+        responsibility: MMW Town GPS+LiDAR BGAM evaluation CLI
+        output_boundary: ignored outputs/evaluations/ or explicit user path
+        retired_route_guard: no standalone Top8 selector entry
+      - name: kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest
+        target: kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.data.deepsense6g_gps_lidar_bgam_manifest
+        responsibility: DeepSense6G GPS+LiDAR BGAM manifest preparation CLI
+        output_boundary: dataset preparation target or explicit user path
+        retired_route_guard: no DeepSense6G residual route
+      - name: kd-sensing-run-deepsense6g-gps-lidar-bgam
+        target: kd_sensing.cli.run_deepsense6g_gps_lidar_bgam:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.deepsense6g_gps_lidar_bgam
+        responsibility: DeepSense6G GPS+LiDAR BGAM run CLI
+        output_boundary: ignored outputs/analysis/ or explicit user path
+        retired_route_guard: no DeepSense6G residual route
+      - name: kd-sensing-evaluate-deepsense6g-gps-lidar-bgam
+        target: kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.engine.deepsense6g_gps_lidar_bgam
+        responsibility: DeepSense6G GPS+LiDAR BGAM evaluation CLI
+        output_boundary: ignored outputs/evaluations/ or explicit user path
+        retired_route_guard: no DeepSense6G residual route
+      - name: kd-sensing-train-beambench-image-ae-gps
+        target: kd_sensing.cli.train_beambench_image_ae_gps:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.baselines.beambench.image_ae_gps
+        responsibility: BeamBench Image AE+GPS training CLI
+        output_boundary: ignored outputs/scene<id>/ or explicit user path
+        retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
+      - name: kd-sensing-run-beambench-image-ae-gps-tableiii
+        target: kd_sensing.cli.run_beambench_image_ae_gps_tableiii:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.baselines.beambench.image_ae_gps
+        responsibility: BeamBench Image AE+GPS Table III orchestration CLI
+        output_boundary: ignored outputs/scenegroup_s32_s34/ or outputs/evaluations/ or explicit user path
+        retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
+      - name: kd-sensing-run-amr-net-gps-image
+        target: kd_sensing.cli.run_amr_net_gps_image:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.baselines.amr_net_gps_image.report
+        responsibility: AMR-Net GPS+image source-audit/report CLI
+        output_boundary: ignored outputs/analysis/amr_net_gps_image/ or explicit user path
+        retired_route_guard: source audit only; no LiDAR or official long-training reproduction
+      - name: kd-sensing-run-jepa-msac
+        target: kd_sensing.cli.run_jepa_msac:main
+        lifecycle: package_cli
+        owner_module: kd_sensing.baselines.jepa_msac.workflow
+        responsibility: JEPA-MSAC paper/workflow reproduction CLI
+        output_boundary: ignored outputs/analysis/jepa_msac/ or explicit user path
+    python_allowlist:
+      - path: scripts/analyze_csi_hardening_sweep.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/analyze_csi_hardening_sweep.py
+        responsibility: CSI hardening local artifact analysis
+        output_boundary: read-only local outputs/ with optional ignored outputs/analysis/ reports
+      - path: scripts/analysis/beambench_ae_gps_diagnostics.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/analysis/beambench_ae_gps_diagnostics.py
+        responsibility: BeamBench AE+GPS local artifact diagnostics
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - path: scripts/analysis/visualize_deepsense_beambench_correspondence.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/analysis/visualize_deepsense_beambench_correspondence.py
+        responsibility: DeepSense6G BeamBench correspondence visualization
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - path: scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py
+        responsibility: DeepSense6G GPS v2 support sweep artifact summary
+        output_boundary: ignored outputs/analysis/ or explicit user path
+        retired_route_guard: diagnostic summary only; no residual route restoration
+      - path: scripts/debug_eval_consistency.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/debug_eval_consistency.py
+        responsibility: local evaluation consistency debug probe
+        output_boundary: read-only local outputs/ and explicit user path only
+      - path: scripts/check_dataset.py
+        lifecycle: dataset_preparation
+        owner_module: kd_sensing.cli.beambench_check_dataset
+        responsibility: thin dataset audit alias for BeamBench checker
+        output_boundary: read-only dataset audit with optional explicit JSON report
+      - path: scripts/eval_baseline.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.beambench_eval_baseline
+        responsibility: thin alias to BeamBench baseline evaluation CLI
+        output_boundary: ignored outputs/evaluations/beambench_baseline/ or explicit user path
+      - path: scripts/evaluate.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.evaluate
+        responsibility: thin alias to package evaluation CLI
+        output_boundary: ignored outputs/evaluations/ or explicit user path
+      - path: scripts/figures/draw_jepa_architecture.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/figures/draw_jepa_architecture.py
+        responsibility: JEPA architecture figure generator
+        output_boundary: docs/figures/ or explicit user path; no cache/checkpoint output
+      - path: scripts/inspect_dataset.py
+        lifecycle: dataset_preparation
+        owner_script: scripts/inspect_dataset.py
+        responsibility: local MMW dataset root inspection
+        output_boundary: read-only dataset inspection and stdout
+      - path: scripts/mmw/build_sequence_splits_from_manifest.py
+        lifecycle: dataset_preparation
+        owner_module: kd_sensing.data.mmw.preparation
+        responsibility: MMW sequence split materialization helper
+        output_boundary: dataset preparation target under Prepared/<scene>/splits/ or explicit user path
+      - path: scripts/mmw/prepare_town10_skybridge.py
+        lifecycle: dataset_preparation
+        owner_module: kd_sensing.data.mmw.preparation
+        responsibility: MMW Town10 skybridge preparation wrapper
+        output_boundary: dataset preparation target or explicit user path
+      - path: scripts/mmw/visualize_gps_angle_beam_correspondence.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/mmw/visualize_gps_angle_beam_correspondence.py
+        responsibility: MMW GPS angle/beam correspondence visualization
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - path: scripts/mmw/visualize_gps_prediction_trajectory.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/mmw/visualize_gps_prediction_trajectory.py
+        responsibility: MMW GPS prediction trajectory visualization
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - path: scripts/mmw/visualize_prediction_error_label_distribution.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/mmw/visualize_prediction_error_label_distribution.py
+        responsibility: MMW prediction error label distribution visualization
+        output_boundary: ignored outputs/analysis/ or explicit user path
+      - path: scripts/mmw/visualize_town_label_distribution.py
+        lifecycle: dataset_preparation
+        owner_script: scripts/mmw/visualize_town_label_distribution.py
+        responsibility: MMW Town label distribution data diagnostic
+        output_boundary: explicit local dataset diagnostic path or ignored outputs/analysis/
+      - path: scripts/preprocess.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.preprocess
+        responsibility: thin alias to package preprocessing CLI
+        output_boundary: dataset preparation target or explicit user path
+      - path: scripts/profile_training_io.py
+        lifecycle: research_diagnostic
+        owner_script: scripts/profile_training_io.py
+        responsibility: local training IO throughput profiler
+        output_boundary: read-only local data with optional ignored outputs/analysis/ reports
+      - path: scripts/recommend_parallel_training.py
+        lifecycle: research_diagnostic
+        owner_module: kd_sensing.engine.throughput_recommendations
+        responsibility: parallel training override recommendation diagnostic
+        output_boundary: read-only/stdout only
+      - path: scripts/train_baseline.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.beambench_train_baseline
+        responsibility: thin alias to BeamBench baseline training CLI
+        output_boundary: ignored outputs/evaluations/beambench_baseline/ or explicit user path
+      - path: scripts/train_beambench_image_ae_gps.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.train_beambench_image_ae_gps
+        responsibility: thin alias to BeamBench Image AE+GPS training CLI
+        output_boundary: ignored outputs/scene<id>/ or explicit user path
+        retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
+      - path: scripts/run_beambench_image_ae_gps_tableiii.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.run_beambench_image_ae_gps_tableiii
+        responsibility: thin alias to BeamBench Image AE+GPS Table III CLI
+        output_boundary: ignored outputs/scenegroup_s32_s34/ or outputs/evaluations/ or explicit user path
+        retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
+      - path: scripts/train.py
+        lifecycle: thin_cli_alias
+        owner_module: kd_sensing.cli.train
+        responsibility: thin alias to package training CLI
+        output_boundary: ignored outputs/ and logs/ runtime artifacts
+    shell_allowlist:
+      - path: scripts/run_csi_hardening_matrix.sh
+        lifecycle: shell_orchestration
+        owner_script: scripts/run_csi_hardening_matrix.sh
+        responsibility: CSI hardening matrix shell orchestration
+        output_boundary: ignored outputs/ and logs/ runtime artifacts
+        retired_route_guard: no A0_clean_full_teacher default restoration
+      - path: scripts/run_deepsense_gps_circular_soft_label.sh
+        lifecycle: shell_orchestration
+        owner_script: scripts/run_deepsense_gps_circular_soft_label.sh
+        responsibility: DeepSense6G GPS circular soft-label shell orchestration
+        output_boundary: ignored outputs/training/ and logs/ runtime artifacts
+      - path: scripts/run_mmw_gps_circular_soft_label_ablation.sh
+        lifecycle: shell_orchestration
+        owner_script: scripts/run_mmw_gps_circular_soft_label_ablation.sh
+        responsibility: MMW GPS circular soft-label ablation shell orchestration
+        output_boundary: ignored outputs/analysis/ and logs/ runtime artifacts
+      - path: scripts/run_mmw_sunny_modal15_l5p3_h123.sh
+        lifecycle: shell_orchestration
+        owner_script: scripts/run_mmw_sunny_modal15_l5p3_h123.sh
+        responsibility: MMW sunny modal15 quick validation shell orchestration
+        output_boundary: ignored outputs/mmw_sunny_modal15/ and logs/ runtime artifacts
+      - path: scripts/run_mmw_sunny_modal15_l5p6_h246.sh
+        lifecycle: shell_orchestration
+        owner_script: scripts/run_mmw_sunny_modal15_l5p6_h246.sh
+        responsibility: MMW sunny modal15 quick validation shell orchestration
+        output_boundary: ignored outputs/mmw_sunny_modal15/ and logs/ runtime artifacts
+
+  configs:
+    fusion_root_allowlist:
+      - configs/fusion/all_modalities_lidar_supervised.yaml
+      - configs/fusion/all_modalities_supervised.yaml
+      - configs/fusion/beambench_image_ae_gps_direct.yaml
+      - configs/fusion/image_gps_resnet18_modular_supervised.yaml
+      - configs/fusion/image_gps_supervised.yaml
+      - configs/fusion/mmwave_csi_medium_degraded_supervised.yaml
+      - configs/fusion/mmwave_csi_supervised.yaml
+      - configs/fusion/radar_gps_supervised.yaml
+      - configs/fusion/radar_lidar_supervised.yaml
+      - configs/fusion/token_transformer_all_modalities_multitask_supervised.yaml
+      - configs/fusion/token_transformer_all_modalities_supervised.yaml
+      - configs/fusion/token_transformer_image_radar_supervised.yaml
+    retired_generated_fusion_configs:
+      - configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml
+      - configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml
+      - configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml
+      - configs/fusion/craf_all_modalities_no_kd.yaml
+      - configs/fusion/craf_all_modalities_no_counterfactual.yaml
+      - configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml
+      - configs/fusion/marf.yaml
+      - configs/fusion/marf_subset_training.yaml
+      - configs/fusion/marf_no_residual_ablation.yaml
+      - configs/fusion/marf_no_prior_bias_ablation.yaml
+      - configs/fusion/marf_no_subset_training_ablation.yaml
+    lifecycle_markers:
+      - configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml
+      - configs/fusion/experiments/jepa_image_gps/*.yaml
+      - configs/csi/hardening_matrix/*.yaml
+      - configs/csi/hardening_matrix/debug/*.yaml
+      - configs/fusion/csi_hardening_matrix/*.yaml
+      - configs/preprocess/*.yaml
+      - configs/diagnostics/modality_visualization.yaml
+      - configs/diagnostics/jepa_visual_analysis_2604.yaml
+      - configs/diagnostics/jepa_gps_shortcut_benchmark_*.yaml
+      - configs/baselines/*.yaml
+      - configs/pretraining/*.yaml
+      - retired history
+
+  models:
+    registration_allowlist:
+      - bev_fusion_2604
+      - camera_ae_frozen
+      - cls_token_transformer_fusion
+      - fusion_lightweight
+      - fusion_strong
+      - gps_conditioned_jepa
+      - jepa_msac
+      - gps_lightweight
+      - gps_only_neural_baseline
+      - gps_sequence_baseline
+      - gps_strong
+      - image_lightweight
+      - image_strong
+      - jepa_context_image
+      - lidar_feature_extractor
+      - lidar_lightweight
+      - lidar_strong
+      - mmwave_feature_extractor
+      - mmwave_lightweight
+      - mmwave_strong
+      - modular_sequence
+      - modular_sequence_model
+      - radar_feature_extractor
+      - radar_lightweight
+      - radar_strong
+      - resnet18_imagenet_rgb
+      - token_transformer_fusion
+      - vision_position_late_fusion
+      - vision_position_transformer_fusion
+
+  batch_runtime:
+    function_allowlist:
+      - path: src/kd_sensing/engine/batch.py
+        functions:
+          - forward_model
+          - prepare_auxiliary_targets
+          - prepare_beam_power_targets
+          - prepare_beamspace_power_targets
+          - prepare_csi_inputs
+          - prepare_fusion_inputs
+          - prepare_geometry_inputs
+          - prepare_geometry_mask
+          - prepare_gps_bev_xy_inputs
+          - prepare_gps_inputs
+          - prepare_image_inputs
+          - prepare_labels
+          - prepare_lidar_inputs
+          - prepare_mmwave_inputs
+          - prepare_path_descriptors
+          - prepare_path_semantic_labels
+          - prepare_radar_inputs
+          - prepare_radio_semantic_labels
+          - prepare_reliability_metadata_inputs
+          - prepare_soft_beam_targets
+      - path: src/kd_sensing/engine/runtime.py
+        functions:
+          - forward_task_model
+          - prepare_task_auxiliary_targets
+          - prepare_task_batch
+          - prepare_task_inputs
+          - prepare_task_labels
+          - prepare_task_soft_beam_targets
+      - path: src/kd_sensing/engine/validator.py
+        functions:
+          - _resolve_validation_prior
+          - _validate_modality_subsets
+          - _validate_with_force_mask
+          - validate
+
+  hotspots:
+    global_limits:
+      long_function_lines: 230
+      long_class_lines: 590
+    action_metadata:
+      priority_values:
+        - P0
+        - P1
+        - P2
+        - P3
+      status_values:
+        - split-next
+        - monitor
+        - facade-budget
+        - defer-with-rationale
+    symbol_budgets:
+      - path: src/kd_sensing/data/datasets/deepsense6g.py
+        symbol: DeepSense6GDataset
+        kind: class
+        max_lines: 1070
+        priority: P1
+        status: split-next
+        split_targets:
+          - contract_helpers_extracted
+          - modality_sample_assembly
+          - label_history_adapters
+          - resource_reader_glue
+          - target_provider_adapter
+        next_change: extract-deepsense6g-dataset-contract-helpers
+        rationale: DeepSense6G contract helpers now hold GPS, target source, columns, metadata parsing, and cache path rules; dataset class remains oversized because resource loading and sample assembly still orchestrate current workflows.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_deepsense6g_contract_helpers.py -q
+          - conda run -n kd_mm_beam pytest tests/test_gps_modality.py tests/test_lidar_modality.py tests/test_mmwave_modality.py tests/test_csi_modality.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/data/datasets/deepsense6g.py
+        symbol: __init__
+        kind: function
+        max_lines: 265
+        priority: P1
+        status: monitor
+        split_targets:
+          - resource_reader_setup
+          - scaler_and_normalizer_setup
+          - target_provider_setup
+        next_change: extract-deepsense6g-dataset-contract-helpers
+        rationale: Contract normalization, CSV path resolution, column guard, and cache path setup moved to helpers; initialization stays budgeted because loader/scaler orchestration still needs dataset state.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_deepsense6g_contract_helpers.py -q
+          - conda run -n kd_mm_beam pytest tests/test_gps_modality.py tests/test_lidar_modality.py tests/test_training_io_workflow.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/data/datasets/mmw.py
+        symbol: MMWDataset
+        kind: class
+        max_lines: 600
+        priority: P1
+        status: defer-with-rationale
+        split_targets:
+          - manifest_parsing
+          - sequence_window_materialization
+          - label_space_metadata
+          - sensor_feature_loading
+        rationale: MMW split and label calibration semantics are still evolving, so split only with focused dataset coverage.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_mmw_town10_preparation.py tests/test_beam_label_calibration.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/engine/trainer.py
+        symbol: _train_inner
+        kind: function
+        max_lines: 320
+        priority: P1
+        status: split-next
+        split_targets:
+          - dataloader_setup
+          - epoch_loop
+          - validation_checkpoint_coordination
+          - artifact_finalization
+        rationale: Trainer orchestration is numerically sensitive but should split around stable coordination boundaries.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_training_io_workflow.py tests/test_epoch_subsampling.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/engine/mmw_town_gps_v2.py
+        symbol: run_mmw_town_gps_v2
+        kind: function
+        max_lines: 280
+        priority: P2
+        status: defer-with-rationale
+        split_targets:
+          - protocol_dispatch
+          - label_space_resolution
+          - summary_writing
+          - plot_handoff
+        rationale: MMW GPS v2 remains an explanatory diagnostic workflow, so defer until adapter contract stabilizes.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_mmw_town_gps_adapter_v2.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/baselines/beambench/image_ae_gps.py
+        symbol: run_image_ae_gps_training
+        kind: function
+        max_lines: 245
+        priority: P1
+        status: defer-with-rationale
+        split_targets:
+          - ae_train_load
+          - fusion_dataset_build
+          - metric_report_writers
+        rationale: BeamBench Table III reproduction semantics must stay stable while workflow helpers are extracted.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_beambench_image_ae_gps_direct.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/baselines/beambench/image_ae_gps.py
+        symbol: run_image_ae_gps_paper_split_training
+        kind: function
+        max_lines: 265
+        priority: P1
+        status: defer-with-rationale
+        split_targets:
+          - scene_split_orchestration
+          - checkpoint_reuse
+          - per_scene_summary
+        rationale: Paper split runner is coupled to local scene31-34 reproduction artifacts and should split carefully.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_beambench_image_ae_gps_direct.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py
+        symbol: run_deepsense6g_gps_lidar_bgam
+        kind: function
+        max_lines: 240
+        priority: P2
+        status: monitor
+        split_targets:
+          - manifest_loading
+          - ablation_dispatch
+          - summary_writer
+        rationale: DeepSense6G BGAM should align with the MMW BGAM contract before deeper extraction.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_gps_lidar_bgam_runner.py tests/test_gps_lidar_bgam_dataset.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/engine/evaluation_pass.py
+        symbol: run_evaluation_pass
+        kind: function
+        max_lines: 220
+        priority: P2
+        status: monitor
+        split_targets:
+          - metric_aggregation
+          - objective_outputs
+          - prediction_metadata
+        rationale: Evaluation result schema is shared by several CLIs, so keep budgeted while extracting schema-safe helpers.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_evaluation_pass.py tests/test_modality_difficulty.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    file_budgets:
+      - path: src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py
+        max_lines: 450
+        priority: P0
+        status: facade-budget
+        split_targets:
+          - jepa_benchmark_manifest.py
+          - jepa_benchmark_scenario_c.py
+          - jepa_benchmark_scenario_d.py
+          - jepa_benchmark_predictive.py
+          - jepa_benchmark_artifacts.py
+          - jepa_benchmark_plots.py
+          - jepa_benchmark_runner.py
+        rationale: JEPA shortcut benchmark facade now only preserves public import and CLI compatibility; suite-specific helpers must stay in narrow modules.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_common.py
+        max_lines: 900
+        priority: P0
+        status: monitor
+        split_targets:
+          - benchmark_constants
+          - scalar_helpers
+          - shared_schema_primitives
+        rationale: Shared constants and scalar helpers support split JEPA benchmark modules without reintroducing facade implementation.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_manifest.py
+        max_lines: 600
+        priority: P0
+        status: monitor
+        split_targets:
+          - manifest_validation
+          - suite_normalization_dispatch
+          - comparability_checks
+        rationale: Manifest/schema normalization is isolated so benchmark output schema changes remain reviewable.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py
+        max_lines: 620
+        priority: P0
+        status: monitor
+        split_targets:
+          - async_gps_source_indices
+          - scenario_c_condition_normalization
+          - scenario_c_metric_columns
+        rationale: Scenario C async GPS source-index, mask, fallback, and warning schema are isolated from the public facade.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py
+        max_lines: 1350
+        priority: P0
+        status: monitor
+        split_targets:
+          - scenario_d_condition_normalization
+          - cxd_phase_diagram
+          - dominance_and_crossing_analysis
+        rationale: Scenario D and CxD phase analysis remain a scoped module with stable result CSV, heatmap, dominance, crossing, and failure schemas.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_predictive.py
+        max_lines: 420
+        priority: P0
+        status: monitor
+        split_targets:
+          - predictive_p0_p5_normalization
+          - predictive_metric_rows
+          - predictive_claim_gating
+        rationale: Predictive JEPA P0-P5 schema, mock/smoke gating, and strict comparability fields are isolated for regression review.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py
+        max_lines: 680
+        priority: P0
+        status: monitor
+        split_targets:
+          - benchmark_difficulty_profiles
+          - deterministic_perturbation_application
+          - legacy_perturbation_helpers
+        rationale: Perturbation and difficulty-profile helpers stay outside the facade while preserving deterministic batch annotations.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py
+        max_lines: 260
+        priority: P0
+        status: monitor
+        split_targets:
+          - output_registry
+          - csv_json_path_helpers
+          - output_kind_classification
+        rationale: Artifact path planning and CSV/JSON helper behavior are isolated for output schema compatibility checks.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_plots.py
+        max_lines: 340
+        priority: P0
+        status: monitor
+        split_targets:
+          - cxd_phase_plots
+          - scenario_d_plots
+          - benchmark_curve_plots
+        rationale: Optional matplotlib plotting and graceful fallback stay separated from schema and runner logic.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - path: src/kd_sensing/diagnostics/jepa_benchmark_runner.py
+        max_lines: 950
+        priority: P0
+        status: monitor
+        split_targets:
+          - benchmark_orchestration
+          - runner_manifest_writer
+          - visual_analysis_bundle_reader
+        rationale: Runner orchestration, manifest writing, and visual-analysis ingestion remain narrow enough to preserve public CLI behavior.
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_gps_shortcut_benchmark.py -q
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    inventory_markers:
+      - src/kd_sensing/data/datasets/deepsense6g.py
+      - DeepSense6GDataset
+      - DeepSense6GDataset.__init__
+      - src/kd_sensing/data/datasets/mmw.py
+      - MMWDataset
+      - src/kd_sensing/engine/trainer.py
+      - _train_inner
+      - src/kd_sensing/engine/mmw_town_gps_v2.py
+      - run_mmw_town_gps_v2
+      - src/kd_sensing/baselines/beambench/image_ae_gps.py
+      - run_image_ae_gps_training
+      - run_image_ae_gps_paper_split_training
+      - src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py
+      - run_deepsense6g_gps_lidar_bgam
+      - src/kd_sensing/engine/evaluation_pass.py
+      - run_evaluation_pass
+      - src/kd_sensing/engine/batch.py
+      - src/kd_sensing/diagnostics/run_index.py
+      - src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_common.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_manifest.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_predictive.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_plots.py
+      - src/kd_sensing/diagnostics/jepa_benchmark_runner.py
+      - src/kd_sensing/diagnostics/viewer_manifest.py
+
+  health_checks:
+    quick_commands:
+      - openspec validate strengthen-project-health-guardrails --strict
+      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
+
+  retired_routes:
+    config_tokens:
+      - hist_beam
+      - top8
+      - residual
+      - camera_residual
+      - coarse_anchor
+      - logits_kd
+      - rkd
+      - teacher_no_kd
+      - student_no_kd
+      - no_kd
+      - craf
+      - marf
+      - g2d
+      - multimodal_nf
+      - image_motion
+      - raymobtime
+      - raymobtime_s008
+    text_markers:
+      - HiST-Beam
+      - Top8 selector
+      - GPS residual
+      - camera residual
+      - logits_kd
+      - rkd
+      - teacher_no_kd
+      - student_no_kd
+      - no_kd
+      - Raymobtime s008
+      - raymobtime_s008
+
+references:
+  agents:
+    - AGENTS.md
+  navigation:
+    - docs/agent_navigation.md
+  inventory:
+    - docs/project_surface_inventory.md
+  tests:
+    - tests/test_architecture_boundaries.py
+  specs:
+    - openspec/specs/ai-maintainer-navigation/spec.md
+    - openspec/specs/maintainer-context-index/spec.md
+    - openspec/specs/project-health-guardrails/spec.md

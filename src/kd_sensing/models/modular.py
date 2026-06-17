@@ -475,6 +475,161 @@ class NextBeamQueryTransformerCore(nn.Module):
         return self.output_projection(query_hidden).unsqueeze(1)
 
 
+@REPRESENTATION_CORES.register("feature_consistency_gate")
+@REPRESENTATION_CORES.register("jepa_feature_consistency_gate")
+class FeatureConsistencyGateCore(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        output_dim: int | None = None,
+        image_index: int = 0,
+        gps_index: int = 1,
+        history_window: int = 4,
+        hidden_dim: int | None = None,
+        dropout: float = 0.0,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = int(modality_count)
+        self.output_dim = int(output_dim or d_model)
+        self.image_index = int(image_index)
+        self.gps_index = int(gps_index)
+        self.history_window = int(history_window)
+        if self.d_model <= 0 or self.modality_count <= 0 or self.output_dim <= 0:
+            raise ValueError("feature_consistency_gate dimensions must be positive.")
+        if not 0 <= self.image_index < self.modality_count:
+            raise ValueError(
+                "feature_consistency_gate image_index must select an enabled modality, "
+                f"got image_index={self.image_index}, modality_count={self.modality_count}."
+            )
+        if not 0 <= self.gps_index < self.modality_count:
+            raise ValueError(
+                "feature_consistency_gate gps_index must select an enabled modality, "
+                f"got gps_index={self.gps_index}, modality_count={self.modality_count}."
+            )
+        if self.history_window <= 0:
+            raise ValueError(f"feature_consistency_gate history_window must be positive, got {history_window}.")
+        hidden = int(hidden_dim or max(self.d_model * 2, 32))
+        self.gps_residual_projection = nn.Sequential(
+            nn.LayerNorm(self.d_model),
+            nn.Linear(self.d_model, self.d_model),
+        )
+        self.gate = nn.Sequential(
+            nn.LayerNorm(self.d_model * 5),
+            nn.Linear(self.d_model * 5, hidden),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(hidden, 3),
+        )
+        self.output_projection = (
+            nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
+        )
+        self.last_feature_consistency_diagnostics: dict[str, Any] | None = None
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 4:
+            raise ValueError(
+                "feature_consistency_gate core requires multimodal [B, K, T, D] input, "
+                f"got {tuple(features.shape)}."
+            )
+        batch_size, modality_count, seq_len, d_model = features.shape
+        if int(modality_count) != self.modality_count:
+            raise ValueError(
+                "feature_consistency_gate received incompatible modality count: "
+                f"expected K={self.modality_count}, got K={int(modality_count)} from shape {tuple(features.shape)}."
+            )
+        if int(d_model) != self.d_model:
+            raise ValueError(
+                "feature_consistency_gate received incompatible feature dimension: "
+                f"expected D={self.d_model}, got D={int(d_model)} from shape {tuple(features.shape)}."
+            )
+        current = features[:, self.image_index, :, :]
+        gps = features[:, self.gps_index, :, :]
+        predicted, availability, source_ranges = self._predict_from_history(current)
+        gps_residual = current + self.gps_residual_projection(gps - current)
+        gate_input = torch.cat(
+            [
+                current,
+                predicted,
+                gps_residual,
+                current - predicted,
+                gps - current,
+            ],
+            dim=-1,
+        )
+        weights = torch.softmax(self.gate(gate_input), dim=-1)
+        fused = (
+            weights[..., 0:1] * current
+            + weights[..., 1:2] * predicted
+            + weights[..., 2:3] * gps_residual
+        )
+        self.last_feature_consistency_diagnostics = {
+            "type": "feature_consistency_gate",
+            "branch_availability": {
+                "current": True,
+                "temporal_predicted": bool(availability.any().item()),
+                "gps_residual": True,
+            },
+            "history_window": self.history_window,
+            "history_source_range": source_ranges,
+            "insufficient_history_count": int((~availability).sum().item()),
+            "gate_weight_mean": weights.detach().mean(dim=(0, 1)).cpu().tolist(),
+            "latent_consistency": {
+                "current_predicted_l2": float((current - predicted).detach().pow(2).mean().sqrt().cpu().item()),
+                "gps_residual_l2": float((gps - current).detach().pow(2).mean().sqrt().cpu().item()),
+            },
+            "condition_id_consumed": False,
+            "blocked_condition_fields": [
+                "c_idx",
+                "d_idx",
+                "predictive_condition_id",
+                "gps_condition",
+                "image_condition",
+            ],
+        }
+        return self.output_projection(fused)
+
+    def _predict_from_history(
+        self,
+        current: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, list[list[int] | None]]:
+        batch_size, seq_len, _ = current.shape
+        predicted = torch.zeros_like(current)
+        availability = torch.zeros((batch_size, seq_len), dtype=torch.bool, device=current.device)
+        source_ranges: list[list[int] | None] = [None for _ in range(seq_len)]
+        for step in range(seq_len):
+            start = max(0, step - self.history_window)
+            end = step
+            if end > start:
+                predicted[:, step, :] = current[:, start:end, :].mean(dim=1)
+                availability[:, step] = True
+                source_ranges[step] = [start, end - 1]
+            else:
+                predicted[:, step, :] = current[:, step, :]
+        return predicted, availability, source_ranges
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "feature_consistency_gate",
+            "d_model": self.d_model,
+            "output_dim": self.output_dim,
+            "modality_count": self.modality_count,
+            "image_index": self.image_index,
+            "gps_index": self.gps_index,
+            "history_window": self.history_window,
+            "consumes_reliability_metadata": False,
+            "forbidden_condition_fields": [
+                "c_idx",
+                "d_idx",
+                "predictive_condition_id",
+                "gps_condition",
+                "image_condition",
+            ],
+        }
+
+
 @HEADS.register("beam_head")
 @HEADS.register("beam")
 class BeamClassificationHead(nn.Module):
@@ -608,6 +763,8 @@ class ModularSequenceModel(nn.Module):
         }
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
+        encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]] = {}
+        encoder_runtime_metadata: dict[str, Any] = {}
         batch_size = None
         seq_len = None
         pending = list(self.modalities)
@@ -633,6 +790,18 @@ class ModularSequenceModel(nn.Module):
                 )
                 context_kwargs.update(_encoder_reliability_kwargs(encoder, modality=modality, reliability_inputs=reliability_inputs))
                 features = encoder(tensor, **context_kwargs) if context_kwargs else encoder(tensor)
+                temporal_aux_metadata = getattr(encoder, "last_temporal_auxiliary_metadata", None)
+                if isinstance(temporal_aux_metadata, dict) and bool(temporal_aux_metadata.get("enabled", False)):
+                    current_latent = getattr(encoder, "last_current_latent", None)
+                    predicted_latent = getattr(encoder, "last_temporal_predicted_latent", None)
+                    if isinstance(current_latent, torch.Tensor) and isinstance(predicted_latent, torch.Tensor):
+                        encoder_auxiliary_features[modality] = {
+                            "current_latent": current_latent,
+                            "temporal_predicted_latent": predicted_latent,
+                        }
+                    encoder_runtime_metadata[modality] = {
+                        "temporal_auxiliary": temporal_aux_metadata,
+                    }
                 batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
                 encoded[modality] = features
                 projected_features = self.projectors[modality](features)
@@ -674,6 +843,13 @@ class ModularSequenceModel(nn.Module):
             "encoder_features": encoded,
             "image_profile": self.image_profile,
         }
+        if encoder_auxiliary_features:
+            output["encoder_auxiliary_features"] = encoder_auxiliary_features
+        if encoder_runtime_metadata:
+            output["runtime_metadata"] = {"encoder_temporal_auxiliary": encoder_runtime_metadata}
+        feature_consistency_diagnostics = getattr(self.representation_core, "last_feature_consistency_diagnostics", None)
+        if isinstance(feature_consistency_diagnostics, dict):
+            output["feature_consistency_diagnostics"] = feature_consistency_diagnostics
         output.update(self.auxiliary_heads(output_features))
         return output
 

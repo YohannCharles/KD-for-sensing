@@ -1,7 +1,7 @@
 # cxd-phase-transition-analysis Specification
 
 ## Purpose
-TBD - created by archiving change add-cxd-phase-transition-analysis. Update Purpose after archive.
+定义当前 JEPA GPS shortcut / Scenario D benchmark 的 CxD phase transition analysis 契约：从同一 run 的 condition-level metrics 生成 CxD phase diagram、modality dominance、ResNet-vs-JEPA crossing detection、failure decomposition 和本地产物边界，用于支撑鲁棒性诊断而不替代训练入口或真实 claim provenance。
 ## Requirements
 ### Requirement: CxD phase diagram 聚合
 系统 MUST 提供 CxD phase transition analysis，用于从同一 benchmark run 的 condition-level metrics 聚合 `C0_sync` 到 `C4_severe_async` 与 `D0_full_image` 到 `D7_joint_worst_case` 的二维 phase diagram。聚合 MUST 保留 model、group、seed、split、sample_count、primary metric、Top-1、Top-3、DBA、clean metric、clean delta、relative drop、RSI、difficulty digest 和 comparability status。
@@ -40,14 +40,14 @@ TBD - created by archiving change add-cxd-phase-transition-analysis. Update Purp
 - **AND** `results/modality_dominance.csv` 中对应 rows MUST 标记 `diagnostic_status=unavailable`
 - **AND** runner manifest MUST 记录 unavailable reason
 
-### Requirement: CNN 与 JEPA crossing detection
-系统 MUST 检测 CNN/AE/ResNet 类 image+GPS baseline 与 Image-JEPA/Image-JEPA+GPS/query-pool 模型之间的 crossing region。检测 MUST 只在 strict comparable 的 rows 上执行，且 MUST 输出 crossing condition、metric margin、参与配对模型、regime label 和 query_pool 相对 biased 的 shift summary。
+### Requirement: ResNet 与 JEPA crossing detection
+系统 MUST 检测 ResNet/AE/ResNet 类 image+GPS baseline 与 Image-JEPA/Image-JEPA+GPS/query-pool 模型之间的 crossing region。检测 MUST 只在 strict comparable 的 rows 上执行，且 MUST 输出 crossing condition、metric margin、参与配对模型、regime label 和 query_pool 相对 biased 的 shift summary。
 
-#### Scenario: 检测 JEPA 超过 CNN 的 crossing region
-- **WHEN** 同一 `(Cx, Dy, seed, split, metric profile)` 下存在可比较的 CNN+GPS 与 JEPA 模型指标
-- **THEN** analysis MUST 标记 JEPA primary metric 大于 CNN primary metric 的 condition 为 crossing region
+#### Scenario: 检测 JEPA 超过 ResNet 的 crossing region
+- **WHEN** 同一 `(Cx, Dy, seed, split, metric profile)` 下存在可比较的 Image ResNet+GPS 与 JEPA 模型指标
+- **THEN** analysis MUST 标记 JEPA primary metric 大于 ResNet primary metric 的 condition 为 crossing region
 - **AND** analysis MUST 写出 `results/crossing_region_Cx_Dy.json`
-- **AND** crossing summary MUST 记录 CNN best、JEPA best、metric margin 和 condition id
+- **AND** crossing summary MUST 记录 ResNet best、JEPA best、metric margin 和 condition id
 
 #### Scenario: 区分低退化和高退化 regime
 - **WHEN** crossing summary 已生成
@@ -85,11 +85,10 @@ TBD - created by archiving change add-cxd-phase-transition-analysis. Update Purp
 - **AND** output dir MUST 包含 `results/modality_dominance.csv`
 - **AND** output dir MUST 包含 `results/crossing_region_Cx_Dy.json`
 - **AND** output dir MUST 包含 `results/failure_mode_decomposition.csv`
-- **AND** 图表可用时 MUST 写出 `plots/cxd_accuracy_heatmap.png`、`plots/cnn_jepa_crossover_curve.png` 和 `plots/modality_dominance_heatmap.png`
+- **AND** 图表可用时 MUST 写出 `plots/cxd_accuracy_heatmap.png`、`plots/resnet_jepa_crossover_curve.png` 和 `plots/modality_dominance_heatmap.png`
 
 #### Scenario: 图表依赖不可用时保留表格
 - **WHEN** matplotlib 或等价可视化依赖不可用
 - **THEN** system MUST 仍写出 CSV、JSON 和 NPY artifact
 - **AND** runner manifest MUST 标记图表为 skipped
 - **AND** CLI MUST 成功完成，除非必需的 metrics 输入不可用
-

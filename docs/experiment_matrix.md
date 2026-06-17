@@ -115,6 +115,30 @@ MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NU
 
 GPS-query pooling configs must be paired against the matching GPS-biased mean-pooling baseline from the same family. Do not mix BeamBench-fair and 2604-style checkpoints, label spaces, split protocols or schedules.
 
+Predictive hybrid 是独立的 BeamBench-fair 派生线，不等同 GPS-query pooling baseline。训练入口启用 `hybrid_residual_query`、temporal auxiliary branch、`feature_consistency_gate` 和 `seq_len=4` / `history_window=3`，训练 difficulty profile 默认使用 `P4_joint_predictive_recovery`。单个 `P4_joint_predictive_recovery` train/curriculum profile 不等价于完整 P0-P5 predictive benchmark，也不产生真实数值 claim：
+
+```bash
+MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_predictive_hybrid_beambench_fair_lowmem.yaml
+```
+
+Predictive robustness smoke 只验证 P0-P5 schema、strict comparability、margin-vs-ResNet 和输出 manifest，不产生真实性能 claim：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
+  --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_predictive_robustness_smoke.yaml \
+  --output-dir outputs/analysis/predictive_jepa_robustness/smoke \
+  --force
+```
+
+真实 train-then-evaluate 需要先训练并登记本地 checkpoint provenance，再用本地派生 manifest 替换 smoke manifest 中的 `synthetic_metrics`、mock weights 和 `allow_missing_artifacts`，并提供 P0-P5 condition-level metrics、strict comparability fields、difficulty digest、seed、split、sample_count 和 Image ResNet+GPS baseline。真实运行产物仍写入 ignored `outputs/analysis/predictive_jepa_robustness/`：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
+  --manifest outputs/analysis/predictive_jepa_robustness/real/manifest.yaml \
+  --output-dir outputs/analysis/predictive_jepa_robustness/real \
+  --force
+```
+
 ## JEPA-MSAC Scenario 32
 
 JEPA-MSAC 是 paper/workflow reproduction，不是普通 `modular_sequence` baseline。Smoke 入口只用 synthetic tensors 验证 tokenizer、temporal block mask、masked latent loss、Stage 2 heads、metrics/report 和 dry-run manifest；真实 Scenario 32 缺字段时只写 blocked reason。
@@ -181,6 +205,11 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml \
   --output-dir outputs/analysis/scenario_d_image_observability/smoke \
+  --force
+
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
+  --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_predictive_robustness_smoke.yaml \
+  --output-dir outputs/analysis/predictive_jepa_robustness/smoke \
   --force
 
 conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis \

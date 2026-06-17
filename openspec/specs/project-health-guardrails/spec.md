@@ -199,3 +199,146 @@
 - **THEN** 实现 MUST 复用 `prepare_task_inputs`、`forward_task_model` 或现有共享 runtime
 - **AND** 架构或 focused tests MUST 拒绝仅服务某个 baseline 的训练/验证 forward 分支回流
 
+### Requirement: 归档后 current spec 治理检查
+项目健康护栏 MUST 检查归档后进入 `openspec/specs/` 的 current capability 同时具备 lifecycle inventory 分类、非占位 Purpose 和对应文档 caveat。检查 MUST 不读取真实 `dataset/`、`outputs/`、checkpoint、cache 或 logs。
+
+#### Scenario: 新 current spec 缺少 lifecycle 分类
+- **WHEN** `openspec/specs/<capability>/spec.md` 存在且该 capability 不在 `docs/project_surface_inventory.md` 的 lifecycle inventory 中
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 指向补充 `current`、`supporting` 或 `retired-tombstone` 分类
+
+#### Scenario: 归档生成的 Purpose 未清理
+- **WHEN** current spec 的 `## Purpose` 为空、长度不足或包含 `TBD`
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 指向对应 spec 文件
+
+### Requirement: current JEPA 合法语境不被旧路线 guard 误判
+项目健康护栏 MUST 继续拒绝退役路线 active wording，但 MUST 允许 current JEPA specs 和 diagnostics 中对现有 GPS-query baseline compatibility、condition-id 禁用字段和 forbidden-field diagnostics 的合法描述。
+
+#### Scenario: GPS-query compatibility wording 被允许
+- **WHEN** current JEPA spec 描述 `GPS-query` 或 `gps_query_pool` 作为现有 baseline compatibility、对照模型或默认行为兼容性
+- **THEN** retired-route wording guard MUST 不把该行判定为退役路线回流
+- **AND** 文档 MUST 不把该 baseline 写成旧 KD、HiST、Top8 selector standalone、GPS residual 或 camera residual 路线
+
+#### Scenario: forbidden condition 字段诊断被允许
+- **WHEN** current source 或 spec 记录 `condition_id_consumed=false`、`blocked_condition_fields`、`forbidden_condition_fields`、`gps_condition` 或 `image_condition`
+- **THEN** 健康护栏 MUST 将其解释为防止 condition-aware router 的诊断或安全边界
+- **AND** 只有在同一上下文把这些字段描述为模型直接输入或当前 router 入口时才应失败
+
+### Requirement: 健康护栏验证维护上下文索引
+项目健康护栏 SHALL 验证维护上下文索引存在、格式可读、必填 section 齐全，并与 AGENTS、AI 维护导航、project surface inventory、OpenSpec specs 和源码路径保持一致。检查 MUST 不读取真实数据、不启动训练、不写入本地产物。
+
+#### Scenario: 索引缺失或不可解析
+- **WHEN** 开发者运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+- **THEN** 测试 MUST 验证维护上下文索引存在且可解析
+- **AND** 缺失、YAML 格式错误或必填 section 缺失时测试 MUST 失败并说明修复路径
+
+#### Scenario: AGENTS 和 inventory 未引用索引
+- **WHEN** 维护上下文索引已经存在
+- **THEN** 健康护栏 MUST 验证 `AGENTS.md`、`docs/agent_navigation.md` 或 `docs/project_surface_inventory.md` 中有稳定引用或分类说明
+- **AND** 缺少引用时测试 MUST 失败，避免索引成为无人读取的旁路文件
+
+### Requirement: 健康护栏从索引读取治理 allowlist
+项目健康护栏 SHALL 将长期治理 allowlist 和热点预算的数据来源迁移到维护上下文索引。测试 MAY 继续包含断言逻辑，但 MUST 不在测试文件中维护与索引重复的长期事实表。
+
+#### Scenario: 脚本入口检查使用索引
+- **WHEN** 架构边界测试检查 `scripts/`、`tools/analysis/` 或 shell orchestration 文件
+- **THEN** 允许入口及其 lifecycle MUST 来自维护上下文索引
+- **AND** 新增未登记入口 MUST 失败并提示更新索引和必要文档
+
+#### Scenario: 配置、模型和 batch/runtime 检查使用索引
+- **WHEN** 架构边界测试检查 root fusion config、整模型注册、batch/runtime 分支或 hotspot budget
+- **THEN** 对应 allowlist 或 budget MUST 来自维护上下文索引
+- **AND** 测试 MUST 继续拒绝未登记的新公开入口、未说明例外的新整模型注册和未登记热点扩张
+
+### Requirement: 索引一致性检查不放宽退役路线护栏
+项目健康护栏 SHALL 在读取维护上下文索引后继续拒绝 retired route 回流。索引中的 retired token、migration guard 和 forbidden-entry 分类 MUST 用于增强检查，而不是允许旧 KD、HiST/Hist、Top8 standalone、GPS residual、camera residual、Raymobtime s008、CRAF/MARF/G2D 或 Multimodal-NF 重新成为当前入口。
+
+#### Scenario: retired route 被登记为当前入口
+- **WHEN** 维护上下文索引、README、inventory、pyproject 或 configs 中把退役路线登记为 current quickstart、root config、console script 或长期 workflow
+- **THEN** 健康检查 MUST 失败
+- **AND** 失败信息 MUST 要求改为 retired/supporting/migration guard 语义或删除该入口
+
+#### Scenario: migration guard 合法引用被允许
+- **WHEN** 索引或 specs 只在 migration guard、历史说明、拒绝边界或 retired tombstone 中提到退役路线
+- **THEN** 健康检查 MUST 允许该引用
+- **AND** 检查 MUST 不把合法拒绝说明误判为入口回流
+
+### Requirement: Dataset contract helper 热点治理
+项目健康护栏 SHALL 鼓励 DeepSense6G dataset contract helper 拆分，并防止新的契约规则继续堆入 `DeepSense6GDataset` 超长类。热点 inventory 和 maintainer context index MUST 记录 helper 拆分方向和预算。
+
+#### Scenario: DeepSense6GDataset 预算下降或保持有理由
+- **WHEN** helper 拆分完成
+- **THEN** `docs/maintainer_context_index.yaml` MUST 更新 `DeepSense6GDataset` 和 `__init__` 的热点预算或记录暂缓原因
+- **AND** `docs/project_surface_inventory.md` MUST 说明哪些契约 helper 已拆出
+
+#### Scenario: 新契约规则进入 helper
+- **WHEN** 后续新增 GPS feature mode、beam target source、column guard 或 cache path rule
+- **THEN** 主要实现 MUST 位于 DeepSense6G contract helper 模块
+- **AND** 架构或 focused tests MUST 防止这些规则继续扩大 dataset class 主体
+
+### Requirement: JEPA benchmark facade 和窄模块预算
+项目健康护栏 SHALL 为拆分后的 JEPA benchmark facade 和窄模块维护热点预算。`jepa_gps_shortcut_benchmark.py` 的预算 MUST 下降，新增窄模块 MUST 在 maintainer context index 和 inventory 中登记职责、预算和防回流边界。
+
+#### Scenario: facade 超预算失败
+- **WHEN** 架构边界测试扫描 `src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py`
+- **THEN** 文件行数 MUST 不超过维护上下文索引登记的 facade budget
+- **AND** 超预算时测试 MUST 要求继续拆分到窄模块，而不是扩大 facade
+
+#### Scenario: 新窄模块登记预算
+- **WHEN** 拆分新增 JEPA benchmark 内部模块
+- **THEN** `docs/maintainer_context_index.yaml` MUST 登记对应 file 或 symbol budget
+- **AND** `docs/project_surface_inventory.md` MUST 说明模块职责和暂缓/后续拆分理由
+
+### Requirement: 薄 CLI alias 健康检查
+项目健康护栏 SHALL 检查 CLI 和 scripts 入口不变厚。检查 MUST 基于 maintainer context index 中的 entrypoint lifecycle、owner module 和 output boundary，拒绝未登记入口和明显复制 workflow 逻辑的 thin alias。
+
+#### Scenario: 新脚本缺少 owner module
+- **WHEN** `scripts/`、`tools/analysis/` 或 package CLI 新增入口
+- **THEN** 维护上下文索引 MUST 登记 owner module、responsibility 和 output boundary
+- **AND** 缺少登记时架构边界测试 MUST 失败
+
+#### Scenario: thin alias 包含训练循环 marker
+- **WHEN** lifecycle 为 `thin_cli_alias` 的脚本包含大段训练循环、模型 forward、optimizer step 或 dataset parsing 主逻辑
+- **THEN** 健康检查 MUST 失败或要求重新分类为 owner module
+- **AND** 修复路径 MUST 是委托包内实现或创建正式 package module
+
+### Requirement: 维护上下文索引测试 helper 私有化
+项目健康护栏 SHALL 使用测试私有 helper 读取和验证维护上下文索引。架构边界测试 MUST 不长期内联大段 YAML schema validation 和 projection logic；helper MUST 不成为 runtime API。
+
+#### Scenario: 架构测试通过 helper 读取索引
+- **WHEN** `tests/test_architecture_boundaries.py` 需要 entrypoint allowlist、hotspot budget 或 retired route token
+- **THEN** 测试 MUST 通过测试私有 helper 获取这些数据
+- **AND** 测试文件 MUST 不重新维护与 helper 重复的大段 schema validation 逻辑
+
+#### Scenario: runtime 不导入测试 helper
+- **WHEN** 开发者导入 `kd_sensing` 或运行训练/评估 CLI
+- **THEN** runtime MUST 不导入 `tests.helpers.maintainer_context` 或等价测试 helper
+- **AND** helper MUST 不出现在 README 推荐 runtime 入口中
+
+### Requirement: pyproject 和 maintainer index 双向一致
+项目健康护栏 SHALL 验证 `pyproject.toml` 的 `[project.scripts]` 与维护上下文索引中的 `governance.entrypoints.package_cli` 双向一致。新增、删除或重命名 console script MUST 同步更新索引。
+
+#### Scenario: pyproject 新增脚本但索引缺失
+- **WHEN** `[project.scripts]` 出现新的 `kd-sensing-*` console script
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 要求在 `docs/maintainer_context_index.yaml` 中登记名称、target 和 lifecycle
+
+#### Scenario: 索引登记脚本但 pyproject 缺失
+- **WHEN** 索引 `package_cli` 登记的 console script 不存在于 `pyproject.toml`
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 要求恢复 pyproject 声明或删除索引登记
+
+### Requirement: 验证 hotspot 行动元数据
+项目健康护栏 SHALL 验证维护上下文索引中的 hotspot action metadata。检查 MUST 覆盖 priority/status 合法性、split target 列表类型、validation command 环境约束和 inventory marker 对齐。
+
+#### Scenario: hotspot metadata 缺字段
+- **WHEN** hotspot budget entry 缺少 priority、status、split targets、rationale 或 validation commands
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 指向缺失字段
+
+#### Scenario: hotspot validation command 未使用环境
+- **WHEN** hotspot metadata 中的 Python/pytest validation command 未使用 `conda run -n kd_mm_beam`
+- **THEN** 健康检查 MUST 失败
+- **AND** 失败信息 MUST 指向对应 hotspot entry
+

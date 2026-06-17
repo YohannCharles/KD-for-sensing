@@ -9,7 +9,7 @@ import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-from kd_sensing.models.modular import ModularSequenceModel, NextBeamQueryTransformerCore  # noqa: E402
+from kd_sensing.models.modular import FeatureConsistencyGateCore, ModularSequenceModel, NextBeamQueryTransformerCore  # noqa: E402
 from kd_sensing.modalities import MODALITY_ORDER  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
 from kd_sensing.registries import ENCODERS, HEADS, PROJECTORS, REPRESENTATION_CORES  # noqa: E402
@@ -242,6 +242,61 @@ def test_existing_modular_sequence_cores_keep_forward_shapes(core_cfg: dict, seq
 
     assert output["logits"].shape == (2, expected_time, 7)
     assert output["output_features"].shape[:2] == (2, expected_time)
+
+
+def test_feature_consistency_gate_core_uses_past_latents_and_reports_diagnostics():
+    core = REPRESENTATION_CORES.build(
+        {
+            "type": "feature_consistency_gate",
+            "d_model": 8,
+            "modality_count": 2,
+            "output_dim": 6,
+            "history_window": 2,
+            "dropout": 0.0,
+        }
+    )
+    features = torch.randn(2, 2, 4, 8)
+
+    output = core(features)
+
+    assert isinstance(core, FeatureConsistencyGateCore)
+    assert output.shape == (2, 4, 6)
+    diagnostics = core.last_feature_consistency_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["branch_availability"]["current"] is True
+    assert diagnostics["branch_availability"]["temporal_predicted"] is True
+    assert diagnostics["branch_availability"]["gps_residual"] is True
+    assert diagnostics["history_source_range"][0] is None
+    assert diagnostics["history_source_range"][1] == [0, 0]
+    assert diagnostics["history_source_range"][3] == [1, 2]
+    assert diagnostics["condition_id_consumed"] is False
+    assert {"c_idx", "d_idx", "predictive_condition_id"} <= set(diagnostics["blocked_condition_fields"])
+
+
+def test_modular_sequence_feature_consistency_gate_outputs_runtime_diagnostics():
+    model = _modular_model(
+        ["image", "gps"],
+        {
+            "type": "feature_consistency_gate",
+            "d_model": 8,
+            "output_dim": 8,
+            "history_window": 2,
+            "dropout": 0.0,
+        },
+        num_classes=5,
+    )
+
+    output = model(
+        image_batch=torch.randn(2, 4, 8),
+        gps_batch=torch.randn(2, 4, 8),
+        benchmark_condition_metadata={"predictive_condition_id": "P4_joint_predictive_recovery"},
+    )
+
+    assert output["logits"].shape == (2, 4, 5)
+    assert output["feature_consistency_diagnostics"]["condition_id_consumed"] is False
+    metadata = model.training_strategy_metadata()
+    assert metadata["representation_core_type"] == "feature_consistency_gate"
+    assert "predictive_condition_id" in metadata["representation_core"]["forbidden_condition_fields"]
 
 
 def test_modular_sequence_dependency_aware_projected_gps_context_and_errors():

@@ -55,4 +55,4 @@ Observability-aware fusion MUST 支持 uncertainty gating。当 image observabil
 #### Scenario: clean condition 不强制 fallback
 - **WHEN** benchmark condition 为 `C0_sync + D0_full_image`
 - **THEN** observability-aware fusion MUST 不因 Scenario D 配置强制启用 JEPA fallback
-- **AND** CNN+GPS 或 standard fusion baseline MUST 仍可作为 clean ceiling 对照
+- **AND** Image ResNet+GPS 或 standard fusion baseline MUST 仍可作为 clean ceiling 对照

@@ -33,12 +33,12 @@ Benchmark MUST 组合 Scenario C GPS quality axis 与 Scenario D image observabi
 - **AND** 每个模型 MUST 输出 5x8 条 condition-level metric row 或等价矩阵记录
 
 #### Scenario: 模型组严格可比
-- **WHEN** manifest 同时包含 GPS-only、CNN+GPS、Image-AE+GPS、Image-JEPA only 和 Image-JEPA+GPS 模型组
+- **WHEN** manifest 同时包含 GPS-only、Image ResNet+GPS、Image-AE+GPS、Image-JEPA only 和 Image-JEPA+GPS 模型组
 - **THEN** benchmark MUST 校验这些模型的 split、label space、metric profile 和 sample_count 可比较
 - **AND** 不可比较模型 MUST 被拒绝写入同一 strict matrix，或被隔离并在 report 中记录原因
 
 ### Requirement: Scenario D 指标和论文产物
-Benchmark MUST 输出 Scenario D 的结构化指标和论文图产物。输出 MUST 包含 Top-1、Top-3、DBA、worst-case performance、RSI、phase transition curves、CNN vs JEPA crossing point 和 modality dominance ratio。
+Benchmark MUST 输出 Scenario D 的结构化指标和论文图产物。输出 MUST 包含 Top-1、Top-3、DBA、worst-case performance、RSI、phase transition curves、ResNet vs JEPA crossing point 和 modality dominance ratio。
 
 #### Scenario: 写出指定结果文件
 - **WHEN** Scenario D benchmark 完成
@@ -100,10 +100,10 @@ Scenario D benchmark MUST 区分 performance metric 与 dominance diagnostic evi
 - **AND** report 或 manifest MUST 标记该 dominance evidence 不足以支撑模态主导结论
 
 ### Requirement: Scenario D crossing boundary 可比较性
-Scenario D benchmark MUST 只在严格可比较的模型和 condition rows 上计算 CNN vs JEPA crossing boundary。比较 MUST 保持同一 split、label space、metric profile、sample_count、seed 和 difficulty digest。
+Scenario D benchmark MUST 只在严格可比较的模型和 condition rows 上计算 ResNet vs JEPA crossing boundary。比较 MUST 保持同一 split、label space、metric profile、sample_count、seed 和 difficulty digest。
 
 #### Scenario: 不可比较模型不进入 crossing boundary
-- **WHEN** CNN 与 JEPA 模型的 split、metric profile、sample_count 或 difficulty digest 不一致
+- **WHEN** ResNet 与 JEPA 模型的 split、metric profile、sample_count 或 difficulty digest 不一致
 - **THEN** benchmark MUST 不把它们写入同一 crossing boundary
 - **AND** manifest MUST 记录不可比较字段
 - **AND** 对应 crossing result MUST 标记为 unavailable 或 isolated group

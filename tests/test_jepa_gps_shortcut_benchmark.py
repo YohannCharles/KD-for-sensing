@@ -98,9 +98,9 @@ def _scenario_d_manifest_dict(config: Path, weights: Path) -> dict:
                 "modalities": ["gps"],
                 "synthetic_metrics": {"sample_count": 4, "dba": 0.60, "top1": 0.25, "top3": 0.5},
             },
-            "cnn_gps": {
+            "resnet_image_gps": {
                 **base_model,
-                "group": "cnn_gps",
+                "group": "resnet_image_gps",
                 "modalities": ["image", "gps"],
                 "synthetic_metrics": {"sample_count": 4, "dba": 0.68, "top1": 0.50, "top3": 0.75},
             },
@@ -135,6 +135,73 @@ def _scenario_d_manifest_dict(config: Path, weights: Path) -> dict:
         "seeds": [3],
         "outputs": {"output_dir": str(config.parent / "scenario_d_out")},
         "comparability": {"mode": "strict", "keys": ["split", "sample_count", "label_space", "metric_profile"]},
+    }
+
+
+def _predictive_manifest_dict(config: Path, weights: Path) -> dict:
+    base_model = {
+        "config": str(config),
+        "weights": str(weights),
+        "split": "test",
+        "sample_count": 4,
+        "label_space": "beam8",
+        "metric_profile": "beambench_dba_topk",
+        "normalization_artifact": "synthetic",
+        "difficulty_digest": "synthetic_predictive_p0_p5",
+        "checkpoint_provenance": "unit",
+    }
+    return {
+        "version": bench.BENCHMARK_VERSION,
+        "models": {
+            "resnet_image_gps": {
+                **base_model,
+                "group": "resnet_image_gps",
+                "modalities": ["image", "gps"],
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.62, "top1": 0.40, "top3": 0.66},
+            },
+            "jepa_query": {
+                **base_model,
+                "group": "jepa_gps_query_pool",
+                "modalities": ["image", "gps"],
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.64, "top1": 0.42, "top3": 0.68},
+            },
+            "jepa_predictive": {
+                **base_model,
+                "group": "jepa_predictive_hybrid",
+                "modalities": ["image", "gps"],
+                "consumes_reliability_metadata": True,
+                "synthetic_metrics": {"sample_count": 4, "dba": 0.69, "top1": 0.47, "top3": 0.72},
+            },
+        },
+        "protocol": {"mode": "evaluation_only", "split": "test"},
+        "predictive_jepa_robustness": {
+            "strict_model_groups": True,
+            "allow_partial": False,
+            "history_window": 2,
+            "claim_margin_dba": 0.05,
+        },
+        "perturbation_suites": [
+            {
+                "id": "predictive",
+                "type": "predictive_jepa_robustness",
+                "preset": "canonical",
+                "history_window": 2,
+                "conditions": [
+                    "P0_clean_current",
+                    "P1_current_frame_missing_history_available",
+                    "P3_plausible_wrong_gps_current_image",
+                    "P4_joint_predictive_recovery",
+                ],
+            }
+        ],
+        "metrics": {"primary": "dba", "topk": [1, 3]},
+        "figures": {"enabled": False, "formats": ["png"]},
+        "seeds": [3],
+        "outputs": {"output_dir": str(config.parent / "predictive_out")},
+        "comparability": {
+            "mode": "strict",
+            "keys": ["split", "sample_count", "label_space", "metric_profile", "normalization_artifact", "difficulty_digest"],
+        },
     }
 
 
@@ -248,6 +315,40 @@ def test_scenario_d_manifest_preset_and_required_groups(tmp_path: Path) -> None:
         bench.validate_benchmark_manifest(bad_fallback, validate_paths=False)
 
 
+def test_predictive_manifest_preset_required_groups_and_comparability(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    raw = _predictive_manifest_dict(config, weights)
+
+    manifest = bench.validate_benchmark_manifest(raw, validate_paths=True)
+    predictive = next(suite for suite in manifest["perturbation_suites"] if suite["id"] == "predictive")
+
+    assert predictive["type"] == "predictive_jepa_robustness"
+    assert [condition["id"] for condition in predictive["predictive_conditions"]] == [
+        "P0_clean_current",
+        "P1_current_frame_missing_history_available",
+        "P3_plausible_wrong_gps_current_image",
+        "P4_joint_predictive_recovery",
+    ]
+    assert predictive["history_window"] == 2
+    assert predictive["predictive_conditions"][-1]["operator_params"]["plausible_wrong_gps"] is True
+    assert predictive["output_artifact_plan"]["predictive_margin_vs_resnet"] == "results/predictive_margin_vs_resnet.json"
+    assert manifest["predictive_model_groups"]["missing"] == []
+    assert bench.evaluate_model_comparability(manifest)["status"] == "passed"
+
+    bad = json.loads(json.dumps(raw))
+    bad["models"].pop("jepa_query")
+    with pytest.raises(bench.BenchmarkManifestError, match="Predictive JEPA strict evaluation.*missing required model groups"):
+        bench.validate_benchmark_manifest(bad, validate_paths=False)
+
+    bad_condition = json.loads(json.dumps(raw))
+    bad_condition["perturbation_suites"][0]["conditions"] = ["P9_magic"]
+    with pytest.raises(ValueError, match="Unknown Predictive JEPA robustness condition"):
+        bench.validate_benchmark_manifest(bad_condition, validate_paths=False)
+
+
 def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> None:
     batch = {
         "gps": torch.arange(24, dtype=torch.float32).reshape(4, 3, 2),
@@ -283,6 +384,36 @@ def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> Non
     )
     assert delayed["gps"].shape == batch["gps"].shape
     assert warnings == []
+
+
+def test_predictive_benchmark_perturbation_delegates_to_shared_difficulty_pipeline() -> None:
+    batch = {
+        "gps": torch.arange(24, dtype=torch.float32).reshape(4, 3, 2),
+        "image": torch.ones((4, 3, 3, 8, 8), dtype=torch.float32),
+        "target_beam": torch.tensor([[0], [1], [2], [3]]),
+        "beam_power": torch.arange(16, dtype=torch.float32).reshape(4, 1, 4),
+        "metadata": {"sample_id": ["a", "b", "c", "d"], "split": ["test"] * 4},
+    }
+    suite = {
+        "id": "predictive",
+        "type": "predictive_jepa_robustness",
+        "conditions": ["P4_joint_predictive_recovery"],
+        "history_window": 2,
+    }
+
+    first, first_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=4, seed=19)
+    second, second_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=4, seed=19)
+
+    assert first_warnings == second_warnings == []
+    assert torch.equal(first["image"], second["image"])
+    assert torch.equal(first["gps"], second["gps"])
+    assert first["difficulty"]["profile"]["operators"][0]["type"] == "predictive_jepa_robustness"
+    assert first["difficulty"]["profile"]["operators"][0]["affected_modalities"] == ["image", "gps"]
+    assert first["predictive_jepa_replay_metadata"]["condition"] == "P4_joint_predictive_recovery"
+    assert first["image_valid_mask"][:, -1].tolist() == [False, False, False, False]
+    assert first["gps_counterfactual_mask"][:, -1].tolist() == [True, True, True, True]
+    assert torch.equal(first["target_beam"], batch["target_beam"])
+    assert torch.equal(first["beam_power"], batch["beam_power"])
 
 
 def test_scenario_c_fixed_delay_preserves_targets_and_blocks_future_gps() -> None:
@@ -501,7 +632,7 @@ def test_runner_writes_scenario_d_matrix_artifacts(tmp_path: Path) -> None:
     assert any(row["worst_case"] == "True" for row in failure_rows)
     for name in ("robustness_surface.png", "phase_transition_curve.png", "modality_dominance.png"):
         assert (Path(result["output_dir"]) / "plots" / name).exists()
-    for name in ("cxd_accuracy_heatmap.png", "cnn_jepa_crossover_curve.png", "modality_dominance_heatmap.png"):
+    for name in ("cxd_accuracy_heatmap.png", "resnet_jepa_crossover_curve.png", "modality_dominance_heatmap.png"):
         assert (Path(result["output_dir"]) / "plots" / name).exists()
     manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
     assert manifest_out["output_files"]["scenario_d_image_observability"] == "results/scenario_d_image_observability.csv"
@@ -509,6 +640,53 @@ def test_runner_writes_scenario_d_matrix_artifacts(tmp_path: Path) -> None:
     assert manifest_out["output_files"]["modality_dominance"] == "results/modality_dominance.csv"
     assert any(item["path"] == "results/crossing_region_Cx_Dy.json" and item["status"] == "generated" for item in manifest_out["outputs"])
     assert manifest_out["models"]["image_jepa_gps"]["consumes_reliability_metadata"] is True
+
+
+def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    manifest_path = tmp_path / "predictive_manifest.yaml"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    manifest_path.write_text(json.dumps(_predictive_manifest_dict(config, weights)), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "predictive_out",
+        force=True,
+        command=["test"],
+    )
+
+    condition_path = Path(result["predictive_condition_metrics"])
+    summary_path = Path(result["predictive_regional_summary"])
+    margin_path = Path(result["predictive_margin_vs_resnet"])
+    assert condition_path.exists()
+    assert summary_path.exists()
+    assert margin_path.exists()
+    rows = list(csv.DictReader(condition_path.open("r", encoding="utf-8", newline="")))
+    assert {row["predictive_condition"] for row in rows} >= {
+        "P0_clean_current",
+        "P1_current_frame_missing_history_available",
+        "P3_plausible_wrong_gps_current_image",
+        "P4_joint_predictive_recovery",
+    }
+    assert any(row["counterfactual_input_intervention"] == "True" for row in rows)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))["summary"]
+    predictive = next(row for row in summary if row["group"] == "jepa_predictive_hybrid")
+    assert predictive["predictive_dba"] > predictive["resnet_predictive_dba"]
+    assert predictive["margin_vs_resnet_dba"] >= 0.05
+    assert predictive["claim_pass_5pt"] is False
+    assert predictive["claim_status"] == "mock/smoke"
+    margins = json.loads(margin_path.read_text(encoding="utf-8"))["margins"]
+    assert any(row["group"] == "jepa_predictive_hybrid" for row in margins)
+    manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    assert manifest_out["output_files"]["predictive_condition_metrics"] == "results/predictive_condition_metrics.csv"
+    assert manifest_out["output_files"]["predictive_margin_vs_resnet"] == "results/predictive_margin_vs_resnet.json"
+    assert manifest_out["predictive_model_groups"]["missing"] == []
+    assert any(
+        item["path"] == "results/predictive_regional_summary.json" and item["status"] == "generated"
+        for item in manifest_out["outputs"]
+    )
 
 
 def test_cxd_phase_aggregation_marks_incomplete_grid_without_filling() -> None:
@@ -520,7 +698,7 @@ def test_cxd_phase_aggregation_marks_incomplete_grid_without_filling() -> None:
             rows.append(
                 {
                     "model": "m",
-                    "group": "cnn_gps",
+                    "group": "resnet_image_gps",
                     "suite_type": bench.SCENARIO_C_X_D_SUITE_TYPE,
                     "condition": f"{gps}+{image}",
                     "gps_condition": gps,
@@ -557,8 +735,8 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
             "primary_metric": 0.7,
         },
         {
-            "model": "cnn",
-            "group": "cnn_gps",
+            "model": "resnet",
+            "group": "resnet_image_gps",
             "gps_condition": "C0_sync",
             "image_condition": "D0_full_image",
             "seed": 3,
@@ -568,7 +746,7 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
         },
     ]
     manifest = {
-        "models": {"jepa": {"group": "image_jepa_gps"}, "cnn": {"group": "cnn_gps"}},
+        "models": {"jepa": {"group": "image_jepa_gps"}, "resnet": {"group": "resnet_image_gps"}},
         "analysis": {"cxd_phase_transition": {"fallback_policy": "unavailable"}},
     }
     diagnostics_path = tmp_path / "dominance.csv"
@@ -588,12 +766,12 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
     dominance = bench.compute_modality_dominance(phase_rows, manifest, diagnostic_records=records, warnings=warnings)
 
     jepa = next(row for row in dominance if row["model"] == "jepa")
-    cnn = next(row for row in dominance if row["model"] == "cnn")
+    resnet = next(row for row in dominance if row["model"] == "resnet")
     assert jepa["diagnostic_source"] == "gradient_norm"
     assert jepa["diagnostic_aggregation"] == "batch_mean"
     assert float(jepa["gps_contribution_score"]) == pytest.approx(0.25)
     assert float(jepa["image_contribution_score"]) == pytest.approx(0.75)
-    assert cnn["diagnostic_status"] == "unavailable"
+    assert resnet["diagnostic_status"] == "unavailable"
     assert warnings and warnings[0]["code"] == "cxd_diagnostic_rows_unmatched"
 
     unavailable = bench.compute_modality_dominance(
@@ -637,7 +815,7 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
 def test_crossing_query_pool_shift_and_failure_decomposition() -> None:
     manifest = {
         "models": {
-            "cnn": {"group": "cnn_gps", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
+            "resnet": {"group": "resnet_image_gps", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
             "jepa_biased": {"group": "image_jepa_gps", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
             "jepa_query": {"group": "jepa_gps_query_pool", "sample_count": 4, "label_space": "beam8", "metric_profile": "profile"},
         },
@@ -645,7 +823,7 @@ def test_crossing_query_pool_shift_and_failure_decomposition() -> None:
         "analysis": {
             "cxd_phase_transition": {
                 "paired_models": {
-                    "cnn": ["cnn"],
+                    "resnet": ["resnet"],
                     "jepa": ["jepa_biased", "jepa_query"],
                     "gps_biased_jepa": ["jepa_biased"],
                     "gps_query_pool_jepa": ["jepa_query"],
@@ -656,10 +834,10 @@ def test_crossing_query_pool_shift_and_failure_decomposition() -> None:
     }
     rows = []
     values = {
-        ("cnn", "C0_sync", "D0_full_image"): 0.80,
-        ("cnn", "C1_mild_stale", "D0_full_image"): 0.70,
-        ("cnn", "C0_sync", "D1_weather"): 0.74,
-        ("cnn", "C1_mild_stale", "D1_weather"): 0.62,
+        ("resnet", "C0_sync", "D0_full_image"): 0.80,
+        ("resnet", "C1_mild_stale", "D0_full_image"): 0.70,
+        ("resnet", "C0_sync", "D1_weather"): 0.74,
+        ("resnet", "C1_mild_stale", "D1_weather"): 0.62,
         ("jepa_biased", "C0_sync", "D0_full_image"): 0.78,
         ("jepa_biased", "C1_mild_stale", "D0_full_image"): 0.68,
         ("jepa_biased", "C0_sync", "D1_weather"): 0.72,
@@ -690,11 +868,11 @@ def test_crossing_query_pool_shift_and_failure_decomposition() -> None:
             }
         )
 
-    crossing = bench.detect_cnn_jepa_crossing(rows, manifest)
+    crossing = bench.detect_resnet_jepa_crossing(rows, manifest)
     assert crossing["summary"]["crossing_count"] > 0
     assert crossing["summary"]["query_pool_shift"]["shift"] == "earlier"
 
-    failure = bench.decompose_cxd_failure_modes([row for row in rows if row["model"] == "cnn"], manifest)
+    failure = bench.decompose_cxd_failure_modes([row for row in rows if row["model"] == "resnet"], manifest)
     joint = next(row for row in failure if row["condition_id"] == "C1_mild_stale+D1_weather")
     assert joint["failure_mode"] in {"both_fail", "superadditive_joint_fail"}
     assert float(joint["gps_only_drop"]) == pytest.approx(0.10)

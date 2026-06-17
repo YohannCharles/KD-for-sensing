@@ -284,6 +284,7 @@ class JepaContextImageEncoder(nn.Module):
         adapter: dict[str, Any] | str | None = None,
         gps_query_pool: dict[str, Any] | None = None,
         temporal_fallback: dict[str, Any] | None = None,
+        temporal_auxiliary: dict[str, Any] | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -307,8 +308,17 @@ class JepaContextImageEncoder(nn.Module):
         self.pooling = str(self.pooler_config.get("type", "mean")).strip().lower()
         self.temporal_fallback_config = _normalize_temporal_fallback_config(temporal_fallback)
         self.temporal_fallback_enabled = bool(self.temporal_fallback_config.get("enabled", False))
-        self.supports_observability_metadata = self.temporal_fallback_enabled
+        self.temporal_auxiliary_config = _normalize_temporal_auxiliary_config(temporal_auxiliary)
+        self.temporal_auxiliary_enabled = bool(self.temporal_auxiliary_config.get("enabled", False))
+        self.supports_observability_metadata = self.temporal_fallback_enabled or self.temporal_auxiliary_enabled
         self.last_temporal_fallback_metadata: dict[str, Any] = {"enabled": self.temporal_fallback_enabled, "affected_count": 0}
+        self.last_current_latent: torch.Tensor | None = None
+        self.last_temporal_predicted_latent: torch.Tensor | None = None
+        self.last_temporal_auxiliary_metadata: dict[str, Any] = {
+            "enabled": self.temporal_auxiliary_enabled,
+            "available": False,
+            "insufficient_history_count": 0,
+        }
         if self.output_dim != self.latent_dim:
             raise ValueError(
                 "jepa_context_image requires output_dim to equal latent_dim because it reuses the JEPA "
@@ -367,26 +377,39 @@ class JepaContextImageEncoder(nn.Module):
         if self.required_context_modalities and gps_condition_features is None:
             if self.pooling == "gps_query_attention":
                 raise ValueError("jepa_context_image GPS-query pooling requires GPS condition feature.")
+            if self.pooling == "hybrid_residual_query":
+                raise ValueError("jepa_context_image hybrid residual query pooling requires GPS condition feature.")
             raise ValueError(f"jepa_context_image pooler {self.pooling!r} requires condition features.")
         result = self.pooler(tokens, condition_features=gps_condition_features)
         if isinstance(result, tuple):
             pooled, attention_map = result
             self.last_attention_map = attention_map
-            features = self.adapter(pooled)
-            return self._maybe_apply_temporal_fallback(
-                features,
-                image_valid_mask=image_valid_mask,
-                image_observability_score=image_observability_score,
-                benchmark_condition_metadata=benchmark_condition_metadata,
-            )
-        self.last_attention_map = getattr(self.pooler, "last_attention_map", None)
-        features = self.adapter(result)
+        else:
+            self.last_attention_map = getattr(self.pooler, "last_attention_map", None)
+            pooled = result
+        features = self.adapter(pooled)
+        self._update_temporal_auxiliary(features)
         return self._maybe_apply_temporal_fallback(
             features,
             image_valid_mask=image_valid_mask,
             image_observability_score=image_observability_score,
             benchmark_condition_metadata=benchmark_condition_metadata,
         )
+
+    def _update_temporal_auxiliary(self, features: torch.Tensor) -> None:
+        if not self.temporal_auxiliary_enabled:
+            self.last_current_latent = None
+            self.last_temporal_predicted_latent = None
+            self.last_temporal_auxiliary_metadata = {
+                "enabled": False,
+                "available": False,
+                "insufficient_history_count": 0,
+            }
+            return
+        predicted, metadata = _compute_temporal_auxiliary_prediction(features, self.temporal_auxiliary_config)
+        self.last_current_latent = features
+        self.last_temporal_predicted_latent = predicted
+        self.last_temporal_auxiliary_metadata = metadata
 
     def _maybe_apply_temporal_fallback(
         self,
@@ -451,6 +474,8 @@ class JepaContextImageEncoder(nn.Module):
             "attention_diagnostics": bool(self.gps_query_pool_config.get("return_attention", False)),
             "latent_dim": self.latent_dim,
             "temporal_fallback": dict(self.temporal_fallback_config),
+            "temporal_auxiliary": dict(self.temporal_auxiliary_config),
+            "temporal_auxiliary_enabled": self.temporal_auxiliary_enabled,
         }
         pooler_metadata = (
             self.pooler.training_strategy_metadata()
@@ -471,6 +496,12 @@ class JepaContextImageEncoder(nn.Module):
             metadata["context_feature_source"] = self.context_feature_source
         else:
             metadata["gps_query_pooling_enabled"] = False
+        if self.pooling == "hybrid_residual_query":
+            metadata["hybrid_residual_query_enabled"] = True
+            metadata["required_context_modalities"] = list(self.required_context_modalities)
+            metadata["context_feature_source"] = self.context_feature_source
+        else:
+            metadata["hybrid_residual_query_enabled"] = False
         return metadata
 
 
@@ -496,6 +527,67 @@ def _normalize_temporal_fallback_config(raw: dict[str, Any] | None) -> dict[str,
         "insufficient_history": strategy,
         "mixture": mixture,
     }
+
+
+def _normalize_temporal_auxiliary_config(raw: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    history_window = int(cfg.get("history_window", cfg.get("window", 4)) or 4)
+    if history_window <= 0:
+        raise ValueError(f"JEPA temporal auxiliary history_window must be positive, got {history_window}.")
+    strategy = str(cfg.get("insufficient_history", cfg.get("fallback", "raw"))).strip().lower() or "raw"
+    if strategy not in {"raw", "skip", "zero", "clamp"}:
+        raise ValueError("JEPA temporal auxiliary insufficient_history must be one of raw, skip, zero, or clamp.")
+    return {
+        "enabled": enabled,
+        "history_window": history_window,
+        "insufficient_history": strategy,
+    }
+
+
+def _compute_temporal_auxiliary_prediction(
+    features: torch.Tensor,
+    config: dict[str, Any],
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    if features.ndim != 3:
+        raise ValueError(f"JEPA temporal auxiliary expects features [B, T, D], got {tuple(features.shape)}.")
+    batch_size, steps, _ = features.shape
+    history_window = int(config.get("history_window", 4))
+    strategy = str(config.get("insufficient_history", "raw"))
+    predicted = torch.zeros_like(features)
+    availability = torch.zeros((batch_size, steps), dtype=torch.bool, device=features.device)
+    source_ranges: list[list[int] | None] = [None for _ in range(steps)]
+    insufficient = 0
+    for step in range(steps):
+        start = max(0, step - history_window)
+        end = step
+        if end > start:
+            predicted[:, step, :] = features[:, start:end, :].mean(dim=1)
+            availability[:, step] = True
+            source_ranges[step] = [start, end - 1]
+        else:
+            insufficient += batch_size
+            predicted[:, step, :] = _insufficient_history_prediction(features[:, step, :], strategy=strategy)
+    metadata = {
+        "enabled": True,
+        "available": bool(availability.any().item()),
+        "available_count": int(availability.sum().item()),
+        "insufficient_history_count": int(insufficient),
+        "history_window": history_window,
+        "fallback_strategy": strategy,
+        "source_history_range": source_ranges,
+        "availability_mask": availability.detach().cpu().tolist(),
+        "warnings": [
+            {
+                "code": "jepa_temporal_auxiliary_insufficient_history",
+                "affected_count": int(insufficient),
+                "fallback": strategy,
+            }
+        ]
+        if insufficient
+        else [],
+    }
+    return predicted, metadata
 
 
 def _apply_temporal_context_fallback(

@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 
 SCENARIO_D_SUITE_TYPE = "scenario_d_image_observability"
+PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE = "predictive_jepa_robustness"
 
 SCENARIO_D_CANONICAL_CONDITIONS: tuple[dict[str, Any], ...] = (
     {
@@ -74,6 +75,7 @@ SCENARIO_D_ALIASES = {
 }
 
 SCENARIO_D_OPERATOR_TYPES = {"scenario_d_image_observability", "image_observability"}
+PREDICTIVE_JEPA_OPERATOR_TYPES = {"predictive_jepa_robustness"}
 
 PROBABILITY_FIELDS = (
     "image_dropout_prob",
@@ -86,10 +88,70 @@ PROBABILITY_FIELDS = (
     "image_lowlight_severity",
 )
 
+PREDICTIVE_JEPA_CANONICAL_CONDITIONS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "P0_clean_current",
+        "severity": 0.0,
+        "description": "clean current image and GPS",
+        "params": {},
+    },
+    {
+        "id": "P1_current_frame_missing_history_available",
+        "severity": 1.0,
+        "description": "current image frame missing while history remains available",
+        "params": {"current_frame_missing": True, "history_window": 4, "missing_expression": "zero_fill"},
+    },
+    {
+        "id": "P2_semantic_occlusion_history_available",
+        "severity": 2.0,
+        "description": "deterministic beam-relevant proxy semantic occlusion with usable history",
+        "params": {"semantic_occlusion": True, "occlusion_ratio": 0.35, "history_window": 4},
+    },
+    {
+        "id": "P3_plausible_wrong_gps_current_image",
+        "severity": 3.0,
+        "description": "current image available but GPS is replaced by a plausible wrong batch peer",
+        "params": {"plausible_wrong_gps": True, "history_window": 4},
+    },
+    {
+        "id": "P4_joint_predictive_recovery",
+        "severity": 4.0,
+        "description": "joint current-image missing or occluded plus plausible wrong GPS",
+        "params": {
+            "current_frame_missing": True,
+            "semantic_occlusion": True,
+            "occlusion_ratio": 0.4,
+            "plausible_wrong_gps": True,
+            "history_window": 4,
+            "missing_expression": "zero_fill",
+        },
+    },
+    {
+        "id": "P5_novel_weather_history_available",
+        "severity": 5.0,
+        "description": "novel weather/domain shift on current frame with usable history",
+        "params": {"novel_weather": True, "weather_severity": 0.65, "history_window": 4},
+    },
+)
+PREDICTIVE_JEPA_CONDITION_IDS = tuple(item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS)
+PREDICTIVE_JEPA_ALIASES = {
+    item["id"].lower(): item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS
+} | {
+    item["id"].split("_", 1)[0].lower(): item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS
+}
+
 
 def is_scenario_d_condition(value: Any) -> bool:
     try:
         normalize_scenario_d_condition_id(value)
+    except ValueError:
+        return False
+    return True
+
+
+def is_predictive_jepa_condition(value: Any) -> bool:
+    try:
+        normalize_predictive_jepa_condition_id(value)
     except ValueError:
         return False
     return True
@@ -105,6 +167,16 @@ def normalize_scenario_d_condition_id(value: Any) -> str:
     return resolved
 
 
+def normalize_predictive_jepa_condition_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(_unknown_predictive_jepa_message(text))
+    resolved = PREDICTIVE_JEPA_ALIASES.get(text.lower())
+    if resolved is None:
+        raise ValueError(_unknown_predictive_jepa_message(text))
+    return resolved
+
+
 def scenario_d_condition(condition_id: Any) -> dict[str, Any]:
     normalized = normalize_scenario_d_condition_id(condition_id)
     for item in SCENARIO_D_CANONICAL_CONDITIONS:
@@ -117,8 +189,23 @@ def scenario_d_condition(condition_id: Any) -> dict[str, Any]:
     raise ValueError(_unknown_scenario_d_message(normalized))
 
 
+def predictive_jepa_condition(condition_id: Any) -> dict[str, Any]:
+    normalized = normalize_predictive_jepa_condition_id(condition_id)
+    for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS:
+        if item["id"] == normalized:
+            return {
+                **item,
+                "params": dict(item.get("params", {})),
+            }
+    raise ValueError(_unknown_predictive_jepa_message(normalized))
+
+
 def scenario_d_severity(condition_id: Any) -> float:
     return float(scenario_d_condition(condition_id)["severity"])
+
+
+def predictive_jepa_severity(condition_id: Any) -> float:
+    return float(predictive_jepa_condition(condition_id)["severity"])
 
 
 def scenario_d_condition_for_severity(severity: Any) -> dict[str, Any]:
@@ -164,6 +251,60 @@ def normalize_scenario_d_operator_params(
     return merged
 
 
+def normalize_predictive_jepa_operator_params(
+    *,
+    condition: Any,
+    params: Mapping[str, Any] | None = None,
+    profile_id: str = "predictive_jepa_robustness",
+    operator_type: str = PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
+) -> dict[str, Any]:
+    raw_params = dict(params or {})
+    raw_condition = (
+        raw_params.pop("predictive_condition", None)
+        or raw_params.pop("p_level", None)
+        or raw_params.get("condition")
+        or condition
+    )
+    condition_payload = predictive_jepa_condition(raw_condition)
+    merged = dict(condition_payload.get("params", {}))
+    merged.update(raw_params)
+    merged["predictive_condition"] = str(condition_payload["id"])
+    merged["condition"] = str(condition_payload["id"])
+    merged["predictive_severity"] = float(condition_payload["severity"])
+    merged.setdefault("history_window", 4)
+    merged.setdefault("target_time_index", -1)
+    merged.setdefault("gps_counterfactual_fallback", "deterministic_jitter")
+    merged["modality"] = "image"
+    _validate_predictive_jepa_params(merged, profile_id=profile_id, operator_type=operator_type)
+    return merged
+
+
+def _validate_predictive_jepa_params(params: Mapping[str, Any], *, profile_id: str, operator_type: str) -> None:
+    condition = str(params.get("predictive_condition", params.get("condition", "")))
+    if condition:
+        normalize_predictive_jepa_condition_id(condition)
+    for field in ("occlusion_ratio", "weather_severity"):
+        if field not in params or params[field] in (None, ""):
+            continue
+        value = _finite_float(params[field], field=field, profile_id=profile_id, operator_type=operator_type)
+        if value < 0.0 or value > 1.0:
+            raise ValueError(
+                f"difficulty profile '{profile_id}' operator '{operator_type}' has illegal {field}={value}; "
+                "Predictive JEPA probabilities/severities must be in [0, 1]."
+            )
+    for field in ("history_window",):
+        try:
+            value = int(params.get(field, 4))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"difficulty profile '{profile_id}' operator '{operator_type}' {field} must be a positive integer."
+            ) from exc
+        if value <= 0:
+            raise ValueError(
+                f"difficulty profile '{profile_id}' operator '{operator_type}' {field} must be positive, got {value}."
+            )
+
+
 def _validate_scenario_d_params(params: Mapping[str, Any], *, profile_id: str, operator_type: str) -> None:
     condition = str(params.get("scenario_d_condition", params.get("condition", "")))
     if condition:
@@ -207,3 +348,8 @@ def _finite_float(value: Any, *, field: str, profile_id: str, operator_type: str
 def _unknown_scenario_d_message(value: Any) -> str:
     available = ", ".join(SCENARIO_D_CONDITION_IDS)
     return f"Unknown Scenario D image observability condition '{value}'. Available D-levels: {available}."
+
+
+def _unknown_predictive_jepa_message(value: Any) -> str:
+    available = ", ".join(PREDICTIVE_JEPA_CONDITION_IDS)
+    return f"Unknown Predictive JEPA robustness condition '{value}'. Available P-levels: {available}."

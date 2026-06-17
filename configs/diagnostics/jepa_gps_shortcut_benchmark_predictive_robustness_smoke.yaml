@@ -1,0 +1,111 @@
+version: jepa_gps_shortcut_benchmark_v1
+models:
+  mock_resnet_image_gps:
+    group: resnet_image_gps
+    config: configs/fusion/experiments/jepa_image_gps/image_gps_supervised_beambench_fair_lowmem.yaml
+    weights: outputs/analysis/predictive_jepa_robustness/mock_not_committed/resnet_image_gps/best.pth
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    split: test
+    sample_count: 8
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: synthetic
+    difficulty_digest: synthetic_predictive_p0_p5
+    checkpoint_provenance: synthetic_predictive_smoke
+    synthetic_metrics:
+      sample_count: 8
+      dba: 0.62
+      top1: 0.40
+      top3: 0.66
+      top5: 0.78
+  mock_jepa_gps_query_pool:
+    group: jepa_gps_query_pool
+    config: configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml
+    weights: outputs/analysis/predictive_jepa_robustness/mock_not_committed/jepa_gps_query_pool/best.pth
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    split: test
+    sample_count: 8
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: synthetic
+    difficulty_digest: synthetic_predictive_p0_p5
+    checkpoint_provenance: synthetic_predictive_smoke
+    synthetic_metrics:
+      sample_count: 8
+      dba: 0.64
+      top1: 0.42
+      top3: 0.68
+      top5: 0.80
+  mock_jepa_predictive_hybrid:
+    group: jepa_predictive_hybrid
+    config: configs/fusion/experiments/jepa_image_gps/image_gps_jepa_predictive_hybrid_beambench_fair_lowmem.yaml
+    weights: outputs/analysis/predictive_jepa_robustness/mock_not_committed/jepa_predictive_hybrid/best.pth
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    consumes_reliability_metadata: true
+    split: test
+    sample_count: 8
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: synthetic
+    difficulty_digest: synthetic_predictive_p0_p5
+    checkpoint_provenance: synthetic_predictive_smoke
+    synthetic_metrics:
+      sample_count: 8
+      dba: 0.69
+      top1: 0.47
+      top3: 0.72
+      top5: 0.84
+protocol:
+  mode: evaluation_only
+  split: test
+  dataset_profile: synthetic_predictive_robustness
+  read_only_inputs: [config, synthetic_metrics]
+predictive_jepa_robustness:
+  strict_model_groups: true
+  allow_partial: false
+  history_window: 3
+  claim_margin_dba: 0.05
+  claim_status: mock/smoke
+  provenance_status: unavailable
+  evidence_level: schema_only
+  baseline_group: resnet_image_gps
+  candidate_group: jepa_predictive_hybrid
+  overall_cxd_sanity:
+    enabled: true
+    source: scenario_d_image_observability
+perturbation_suites:
+  - id: predictive_jepa_robustness
+    type: predictive_jepa_robustness
+    preset: canonical
+    history_window: 3
+    conditions:
+      - P0_clean_current
+      - P1_current_frame_missing_history_available
+      - P2_semantic_occlusion_history_available
+      - P3_plausible_wrong_gps_current_image
+      - P4_joint_predictive_recovery
+      - P5_novel_weather_history_available
+metrics:
+  primary: dba
+  topk: [1, 3, 5]
+  dba_delta: 5
+  distance_mode: linear
+  profile: beambench_dba_topk
+figures:
+  enabled: true
+  formats: [png]
+  dpi: 120
+seeds: [7]
+outputs:
+  output_dir: outputs/analysis/predictive_jepa_robustness/smoke
+  artifact_plan:
+    condition_metrics: results/predictive_condition_metrics.csv
+    regional_summary: results/predictive_regional_summary.json
+    margin_vs_resnet: results/predictive_margin_vs_resnet.json
+    warnings: results/predictive_warnings.json
+comparability:
+  mode: strict
+  keys: [split, sample_count, label_space, metric_profile, normalization_artifact, difficulty_digest]

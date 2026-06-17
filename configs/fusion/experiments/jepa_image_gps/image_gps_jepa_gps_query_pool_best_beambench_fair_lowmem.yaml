@@ -11,7 +11,7 @@ model:
       image:
         pooling: gps_query_attention
         gps_query_pool:
-          k_queries: 4
+          k_queries: 2
           num_heads: 4
           condition_dim: 64
           latent_dim: 64

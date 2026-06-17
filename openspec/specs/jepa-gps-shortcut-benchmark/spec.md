@@ -235,12 +235,12 @@ JEPA GPS shortcut benchmark MUST 支持 Scenario D image observability suite。S
 - **AND** 每个 row MUST 记录 `gps_condition`、`image_condition`、C severity、D severity、seed 和 difficulty digest
 
 ### Requirement: Scenario D required model groups
-Benchmark MUST 支持 Scenario D 指定的模型组：GPS-only、CNN+GPS、Image-AE+GPS、Image-JEPA only 和 Image-JEPA+GPS。Runner MUST 将这些模型组映射到现有 config/weights/registry 语义，并 MUST 记录模型是否消费 image/GPS reliability metadata。
+Benchmark MUST 支持 Scenario D 指定的模型组：GPS-only、Image ResNet+GPS、Image-AE+GPS、Image-JEPA only 和 Image-JEPA+GPS。Runner MUST 将这些模型组映射到现有 config/weights/registry 语义，并 MUST 记录模型是否消费 image/GPS reliability metadata。
 
 #### Scenario: required model group 校验
 - **WHEN** manifest 声明 strict Scenario D evaluation
 - **THEN** runner MUST 校验 required model groups 是否齐全，或在显式允许 partial run 时记录缺失模型组
-- **AND** report MUST 区分 standard fusion、CNN/AE visual encoder、JEPA visual encoder 和 observability-aware fusion
+- **AND** report MUST 区分 standard fusion、ResNet/AE visual encoder、JEPA visual encoder 和 observability-aware fusion
 
 #### Scenario: Image-JEPA only 不消费 GPS 输入
 - **WHEN** model group 为 Image-JEPA only
@@ -248,7 +248,7 @@ Benchmark MUST 支持 Scenario D 指定的模型组：GPS-only、CNN+GPS、Image
 - **AND** 模型 forward MUST 不要求 GPS input tensor
 
 ### Requirement: Scenario D aggregation 和图表
-Benchmark MUST 聚合 Scenario D matrix，并导出 Cx-Dy heatmap、robustness surface、phase transition、CNN vs JEPA crossing point 和 modality dominance 图表或表格。图表生成失败时，metrics CSV 和 manifest MUST 仍然写出，并记录 warning。
+Benchmark MUST 聚合 Scenario D matrix，并导出 Cx-Dy heatmap、robustness surface、phase transition、ResNet vs JEPA crossing point 和 modality dominance 图表或表格。图表生成失败时，metrics CSV 和 manifest MUST 仍然写出，并记录 warning。
 
 #### Scenario: 输出 Cx-Dy aggregation
 - **WHEN** Scenario D matrix 完成至少一个模型
@@ -321,4 +321,96 @@ JEPA GPS shortcut benchmark MUST 提供 focused tests 覆盖 CxD phase aggregati
 - **THEN** tests MUST 不读取真实 `dataset/`
 - **AND** tests MUST 不写入 checkpoint、cache 或真实 metrics 到源码目录
 - **AND** tests MUST 验证新增 CSV/JSON/NPY artifact schema 与 manifest registration
+
+### Requirement: Predictive robustness benchmark suite
+JEPA GPS shortcut benchmark MUST 支持 `predictive_jepa_robustness` suite。该 suite MUST 复用 shared difficulty pipeline，并 MUST 能与现有 model comparability、manifest、metrics 和 output boundary 机制共存。
+
+#### Scenario: Manifest 引用 predictive suite
+- **WHEN** benchmark manifest 声明 suite type `predictive_jepa_robustness`
+- **THEN** runner MUST 标准化 predictive condition、difficulty operator 参数、seed、history window 和 output artifact plan
+- **AND** runner MUST 将 image/GPS corruption 委托给 shared difficulty pipeline
+- **AND** runner MUST 不维护独立平行的 corruption 实现
+
+#### Scenario: 支持 required model groups
+- **WHEN** manifest 声明 strict predictive robustness evaluation
+- **THEN** runner MUST 至少支持 Image ResNet+GPS、JEPA predictive hybrid、JEPA GPS-query-pool 或其它声明的 JEPA baseline model group
+- **AND** report MUST 区分 supervised ResNet visual encoder、JEPA encoder reuse、predictive auxiliary branch 和 feature-consistency fusion
+
+### Requirement: Predictive regional aggregation
+Benchmark MUST 为 Predictive Robustness suite 输出 regional aggregation 和 margin-vs-ResNet summary。该 aggregation MUST 与现有 metrics_by_condition 和 robustness_summary 兼容，但 MUST 明确标记 predictive claim 口径。
+
+#### Scenario: 写出 predictive summary
+- **WHEN** predictive robustness benchmark 完成至少一个 strict comparable model group
+- **THEN** runner MUST 写出 condition-level metrics、`predictive_dba`、`predictive_top1`、`resnet_predictive_dba`、`margin_vs_resnet_dba`、`claim_pass_5pt`、sample_count、seed 和 comparability status
+- **AND** runner manifest MUST 在 `output_files` 中登记 predictive summary 文件
+
+#### Scenario: 同时记录 overall sanity
+- **WHEN** benchmark manifest 同时启用 Scenario D CxD 或 overall sanity
+- **THEN** runner MUST 将 overall CxD metrics 与 predictive metrics 分字段记录
+- **AND** report MUST 不用 overall CxD mean 覆盖 predictive main claim
+
+### Requirement: Predictive claim comparability
+Predictive robustness claim MUST 只在严格可比较行上计算。比较 MUST 保持同一 split、label space、metric profile、sample_count、seed、difficulty digest 和 target semantics。
+
+#### Scenario: 不可比较时标记 unavailable
+- **WHEN** JEPA predictive hybrid 与 Image ResNet+GPS 的 split、sample_count、metric profile、difficulty digest 或 enabled predictive condition 不一致
+- **THEN** runner MUST 不计算正式 `claim_pass_5pt`
+- **AND** corresponding margin result MUST 标记为 `unavailable` 或 `not_comparable` 并记录原因
+
+#### Scenario: mock 或 partial run 不生成真实 claim
+- **WHEN** benchmark 使用 synthetic metrics、mock weights、partial required model groups 或 allow_missing_artifacts
+- **THEN** runner MUST 继续输出 schema-compatible metrics
+- **AND** claim status MUST 标记为 `mock/smoke`、`pending` 或 `unavailable`
+
+### Requirement: Benchmark runner suite 模块化边界
+JEPA GPS shortcut benchmark runner MUST 保持公共 CLI 和输出 schema 兼容，同时将 suite-specific normalization、metric row construction、aggregation 和 artifact planning 拆分到职责明确的窄 helper 或模块。新增 suite 不得继续无边界扩大单一 runner facade。
+
+#### Scenario: predictive suite helper 可独立测试
+- **WHEN** runner 支持 `predictive_jepa_robustness` suite
+- **THEN** predictive condition normalization、predictive metric row construction 和 predictive regional aggregation MUST 位于可单独导入测试的 helper 或窄模块中
+- **AND** existing `run_jepa_gps_shortcut_benchmark` facade MUST 继续返回兼容 result dict 和 output_files
+
+#### Scenario: 拆分不改变输出 schema
+- **WHEN** benchmark runner 内部 helper 被拆分
+- **THEN** `metrics_by_condition.csv`、`robustness_summary.csv`、`shortcut_reliance_summary.csv`、predictive summary JSON/CSV 和 `benchmark_manifest.json` 的核心字段 MUST 保持兼容
+- **AND** focused tests MUST 验证旧 manifest 和 predictive smoke manifest 的 output registration
+
+### Requirement: Runner 热点预算和暂缓理由
+若 implementation 阶段无法安全拆分 benchmark runner，项目 MUST 在 `docs/project_surface_inventory.md` 登记新的热点预算、拆分方向和暂缓原因。暂缓登记 MUST 不替代未来拆分，但 MUST 防止热点静默扩大。
+
+#### Scenario: 拆分暂缓但 inventory 更新
+- **WHEN** implementation 判断 `jepa_gps_shortcut_benchmark.py` 拆分风险超过本 change 范围
+- **THEN** inventory MUST 记录当前规模、suite-specific 拆分方向、暂缓原因和后续优先级
+- **AND** 架构边界测试 MUST 能防止该 runner 在未登记的情况下继续显著扩大
+
+#### Scenario: 后续新增 suite 前先处理预算
+- **WHEN** 后续 change 计划为 benchmark runner 新增 suite、analysis family 或 artifact family
+- **THEN** 维护者 MUST 先确认 runner 已拆分到窄模块或 inventory 中有明确预算和拆分任务
+- **AND** 新增 suite MUST 不复制已有 difficulty corruption、aggregation 或 writer 逻辑
+
+### Requirement: Benchmark runner 内部模块化
+JEPA GPS shortcut benchmark runner SHALL 将 manifest/schema、suite-specific perturbation normalization、metric aggregation、artifact writing 和 plotting 拆分到职责明确的内部模块。原 `kd_sensing.diagnostics.jepa_gps_shortcut_benchmark` MUST 保留为公开 facade，并 MUST 不承载新增 suite-specific helper 实现。
+
+#### Scenario: 公开 facade 保持兼容
+- **WHEN** 现有代码从 `kd_sensing.diagnostics.jepa_gps_shortcut_benchmark` 导入公开 runner 或 analysis bundle helper
+- **THEN** 导入 MUST 继续成功
+- **AND** CLI `kd-sensing-jepa-gps-shortcut-benchmark` MUST 继续调用同一公开语义
+
+#### Scenario: suite helper 不回流 facade
+- **WHEN** 新增或修改 Scenario C、Scenario D、CxD 或 Predictive JEPA helper
+- **THEN** 主要实现 MUST 位于对应窄模块
+- **AND** facade MUST 只做兼容导出、薄 orchestration 或向后兼容包装
+
+### Requirement: Benchmark 输出 schema 保持兼容
+拆分 JEPA GPS shortcut benchmark runner MUST 保持现有 manifest 输入、输出文件名、CSV/JSON 字段、warnings schema 和 visual-analysis ingestion bundle 兼容。任何输出 schema 变更 MUST 通过单独 OpenSpec change 明确声明。
+
+#### Scenario: smoke manifest 输出字段稳定
+- **WHEN** 测试运行 smoke 或 mock benchmark manifest
+- **THEN** 输出 `benchmark_manifest.json`、`metrics_by_condition.csv` 和 `robustness_summary.csv` 的必需字段 MUST 与拆分前兼容
+- **AND** mock/smoke 行 MUST 继续标记为 mock、smoke 或 unavailable，不得冒充真实数值 claim
+
+#### Scenario: Scenario D/CxD artifact 保持可消费
+- **WHEN** Scenario D 或 CxD smoke manifest 完成
+- **THEN** runner MUST 继续写出现有 Scenario D/CxD result tables、heatmap artifacts 和 phase/dominance/crossing metadata
+- **AND** `kd-sensing-jepa-visual-analysis` MUST 能继续只读消费 runner manifest
 

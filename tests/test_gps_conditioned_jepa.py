@@ -17,6 +17,7 @@ from kd_sensing.engine.validator import validate  # noqa: E402
 from kd_sensing.losses.jepa import jepa_latent_prediction_loss  # noqa: E402
 from kd_sensing.models.jepa import GPSQueryPool, JepaContextImageEncoder, JepaMaskSampler  # noqa: E402
 from kd_sensing.models.jepa_downstream import (  # noqa: E402
+    HybridResidualQueryPool,
     IdentityJepaAdapter,
     MeanPatchPooler,
     build_jepa_downstream_adapter,
@@ -194,6 +195,28 @@ def test_jepa_downstream_pooler_adapter_registry_builds_and_reports_unknown_name
     assert gps_pooler.context_feature_kwargs == {"gps": "gps_condition_features"}
     assert gps_pooler(tokens, torch.randn(2, 3, 8)).shape == (2, 3, 8)
 
+    hybrid_pooler = build_jepa_downstream_pooler(
+        {
+            "type": "hybrid_residual_query",
+            "latent_dim": 8,
+            "condition_dim": 8,
+            "content_queries": 2,
+            "gps_queries": 2,
+            "num_heads": 2,
+            "dropout": 0.0,
+            "condition_source": "projected_gps",
+            "residual_alpha_init": 0.05,
+            "return_attention": True,
+        }
+    )
+    assert isinstance(hybrid_pooler, HybridResidualQueryPool)
+    assert hybrid_pooler.required_context_modalities == ("gps",)
+    hybrid_output = hybrid_pooler(tokens, torch.randn(2, 3, 8))
+    assert hybrid_output.shape == (2, 3, 8)
+    assert hybrid_pooler.last_attention_maps["content"].shape == (2, 3, 2, 5)
+    assert hybrid_pooler.last_attention_maps["gps"].shape == (2, 3, 2, 5)
+    assert hybrid_pooler.last_diagnostics["residual_alpha_init"] == pytest.approx(0.05)
+
     adapter = build_jepa_downstream_adapter({"type": "identity", "latent_dim": 8})
     assert isinstance(adapter, IdentityJepaAdapter)
     pooled = torch.randn(2, 3, 8)
@@ -217,6 +240,46 @@ def test_gps_query_pool_averages_k_query_tokens_after_attention():
     expected = pool.output_norm(queries).mean(dim=2)
     torch.testing.assert_close(pooled, expected)
     assert attention.shape == (1, 2, 2, 5)
+
+
+def test_hybrid_residual_query_pooler_optional_and_required_gps_paths():
+    tokens = torch.randn(2, 4, 6, 8)
+    condition = torch.randn(2, 4, 5)
+    required = HybridResidualQueryPool(
+        latent_dim=8,
+        condition_dim=5,
+        content_queries=2,
+        gps_queries=3,
+        num_heads=2,
+        dropout=0.0,
+        residual_alpha_init=0.15,
+        return_attention=True,
+    )
+
+    output = required(tokens, condition)
+
+    assert output.shape == (2, 4, 8)
+    assert required.required_context_modalities == ("gps",)
+    assert required.last_diagnostics["gps_condition_available"] is True
+    assert required.last_diagnostics["residual_alpha"] == pytest.approx(0.15)
+    assert required.last_attention_maps["content"].shape == (2, 4, 2, 6)
+    assert required.last_attention_maps["gps"].shape == (2, 4, 3, 6)
+    with pytest.raises(ValueError, match="requires GPS condition features"):
+        required(tokens)
+
+    optional = HybridResidualQueryPool(
+        latent_dim=8,
+        condition_dim=5,
+        content_queries=1,
+        gps_queries=1,
+        num_heads=2,
+        dropout=0.0,
+        require_condition=False,
+    )
+    optional_output = optional(tokens)
+    assert optional.required_context_modalities == ()
+    assert optional_output.shape == (2, 4, 8)
+    assert optional.last_diagnostics["gps_condition_available"] is False
 
 
 def test_jepa_context_image_encoder_loads_best_and_last_payloads(tmp_path: Path):
@@ -381,6 +444,60 @@ def test_jepa_context_image_encoder_accepts_explicit_pooler_adapter_config_and_m
             visual_encoder={"patch_size": 8, "depth": 0, "max_tokens": 16},
             adapter={"type": "unknown_adapter"},
         )
+
+
+def test_jepa_context_image_encoder_hybrid_pooler_and_temporal_auxiliary_metadata():
+    encoder = JepaContextImageEncoder(
+        output_dim=8,
+        latent_dim=8,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 8,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        pooler={
+            "type": "hybrid_residual_query",
+            "condition_dim": 8,
+            "content_queries": 2,
+            "gps_queries": 2,
+            "num_heads": 2,
+            "dropout": 0.0,
+            "residual_alpha_init": 0.2,
+            "return_attention": True,
+        },
+        temporal_auxiliary={
+            "enabled": True,
+            "history_window": 2,
+            "insufficient_history": "zero",
+        },
+    )
+
+    image = torch.randn(2, 4, 3, 32, 32)
+    output = encoder(image, gps_condition_features=torch.randn(2, 4, 8))
+
+    metadata = encoder.training_strategy_metadata()
+    aux_metadata = encoder.last_temporal_auxiliary_metadata
+    assert output.shape == (2, 4, 8)
+    assert encoder.pooling == "hybrid_residual_query"
+    assert encoder.required_context_modalities == ("gps",)
+    assert metadata["hybrid_residual_query_enabled"] is True
+    assert metadata["pooler"]["residual_alpha_init"] == pytest.approx(0.2)
+    assert metadata["temporal_auxiliary_enabled"] is True
+    assert encoder.last_current_latent is not None
+    assert encoder.last_temporal_predicted_latent is not None
+    assert encoder.last_current_latent.shape == encoder.last_temporal_predicted_latent.shape == (2, 4, 8)
+    assert aux_metadata["available"] is True
+    assert aux_metadata["source_history_range"][0] is None
+    assert aux_metadata["source_history_range"][1] == [0, 0]
+    assert aux_metadata["source_history_range"][3] == [1, 2]
+    assert aux_metadata["insufficient_history_count"] == 2
+
+    with pytest.raises(ValueError, match="hybrid residual query pooling requires GPS condition feature"):
+        encoder(torch.randn(1, 2, 3, 32, 32))
 
 
 def test_jepa_context_image_encoder_temporal_fallback_uses_past_only():

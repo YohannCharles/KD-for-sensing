@@ -219,7 +219,7 @@ Difficulty profile MUST 使用中心化模态契约中的 canonical modality nam
 - **AND** 缺少字段时 MUST 抛出清晰错误或记录配置声明的 fallback warning
 
 #### Scenario: legacy-compatible baseline 忽略 metadata
-- **WHEN** standard CNN+GPS 或 Image-AE+GPS baseline 不声明 reliability metadata 输入
+- **WHEN** standard Image ResNet+GPS 或 Image-AE+GPS baseline 不声明 reliability metadata 输入
 - **THEN** batch 准备 MUST 允许其忽略 Scenario D metadata
 - **AND** benchmark comparability metadata MUST 记录该模型未消费 reliability metadata
 

@@ -14,6 +14,7 @@ from kd_sensing.data.difficulty.operators.image import (
     ImageNightOperator,
     ImageObservabilityTransform,
     ImageOcclusionOperator,
+    PredictiveJepaRobustnessOperator,
 )
 from kd_sensing.registries import DIFFICULTY_OPERATORS
 
@@ -40,6 +41,7 @@ def _register_defaults() -> None:
         "image_night": ImageNightOperator,
         "image_occlusion": ImageOcclusionOperator,
         "image_motion_blur": ImageMotionBlurOperator,
+        "predictive_jepa_robustness": PredictiveJepaRobustnessOperator,
     }.items():
         DIFFICULTY_OPERATORS.register(name, force=True)(component)
 
@@ -60,5 +62,6 @@ __all__ = [
     "ImageNightOperator",
     "ImageObservabilityTransform",
     "ImageOcclusionOperator",
+    "PredictiveJepaRobustnessOperator",
     "ScenarioCAsyncPositionFeedbackOperator",
 ]

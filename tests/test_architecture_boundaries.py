@@ -12,6 +12,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+from tests.helpers.maintainer_context import (  # noqa: E402
+    MAINTAINER_CONTEXT_INDEX_REL_PATH,
+    OPENSPEC_LIFECYCLE_ALLOWED,
+    assert_pyproject_scripts_match_index,
+    batch_runtime_function_allowlist,
+    config_allowlists,
+    entrypoint_allowlists,
+    health_check_commands,
+    hotspot_budgets,
+    load_maintainer_context_index,
+    model_registration_allowlist,
+    retired_route_tokens,
+)
 from kd_sensing.modalities import (  # noqa: E402
     MODALITY_ORDER,
     batch_input_keys_for_modalities,
@@ -21,141 +34,22 @@ from kd_sensing.modalities import (  # noqa: E402
 from kd_sensing.config.defaults import DEFAULT_CONFIG  # noqa: E402
 from kd_sensing.utils.runtime_output_layout import canonical_runtime_partitions  # noqa: E402
 
-PYTHON_ENTRYPOINT_ALLOWLIST = {
-    "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
-    "scripts/analysis/beambench_ae_gps_diagnostics.py": "research_diagnostic",
-    "scripts/analysis/visualize_deepsense_beambench_correspondence.py": "research_diagnostic",
-    "scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py": "research_diagnostic",
-    "scripts/debug_eval_consistency.py": "research_diagnostic",
-    "scripts/check_dataset.py": "dataset_preparation",
-    "scripts/eval_baseline.py": "thin_cli_alias",
-    "scripts/evaluate.py": "thin_cli_alias",
-    "scripts/figures/draw_jepa_architecture.py": "research_diagnostic",
-    "scripts/inspect_dataset.py": "dataset_preparation",
-    "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
-    "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
-    "scripts/mmw/visualize_gps_angle_beam_correspondence.py": "research_diagnostic",
-    "scripts/mmw/visualize_gps_prediction_trajectory.py": "research_diagnostic",
-    "scripts/mmw/visualize_prediction_error_label_distribution.py": "research_diagnostic",
-    "scripts/mmw/visualize_town_label_distribution.py": "dataset_preparation",
-    "scripts/preprocess.py": "thin_cli_alias",
-    "scripts/profile_training_io.py": "research_diagnostic",
-    "scripts/recommend_parallel_training.py": "research_diagnostic",
-    "scripts/train_baseline.py": "thin_cli_alias",
-    "scripts/train_beambench_image_ae_gps.py": "thin_cli_alias",
-    "scripts/run_beambench_image_ae_gps_tableiii.py": "thin_cli_alias",
-    "scripts/train.py": "thin_cli_alias",
-}
-SHELL_ORCHESTRATION_ALLOWLIST = {
-    "scripts/run_csi_hardening_matrix.sh": "shell_orchestration",
-    "scripts/run_deepsense_gps_circular_soft_label.sh": "shell_orchestration",
-    "scripts/run_mmw_gps_circular_soft_label_ablation.sh": "shell_orchestration",
-    "scripts/run_mmw_sunny_modal15_l5p3_h123.sh": "shell_orchestration",
-    "scripts/run_mmw_sunny_modal15_l5p6_h246.sh": "shell_orchestration",
-}
-ENTRYPOINT_LIFECYCLES = {
-    "package_cli",
-    "thin_cli_alias",
-    "research_diagnostic",
-    "dataset_preparation",
-    "shell_orchestration",
-}
-RETIRED_GENERATED_FUSION_CONFIGS = {
-    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml",
-    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml",
-    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml",
-    "configs/fusion/craf_all_modalities_no_kd.yaml",
-    "configs/fusion/craf_all_modalities_no_counterfactual.yaml",
-    "configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml",
-    "configs/fusion/marf.yaml",
-    "configs/fusion/marf_subset_training.yaml",
-    "configs/fusion/marf_no_residual_ablation.yaml",
-    "configs/fusion/marf_no_prior_bias_ablation.yaml",
-    "configs/fusion/marf_no_subset_training_ablation.yaml",
-}
-FUSION_ROOT_YAML_ALLOWLIST = {
-    "configs/fusion/all_modalities_lidar_supervised.yaml",
-    "configs/fusion/all_modalities_supervised.yaml",
-    "configs/fusion/beambench_image_ae_gps_direct.yaml",
-    "configs/fusion/image_gps_resnet18_modular_supervised.yaml",
-    "configs/fusion/image_gps_supervised.yaml",
-    "configs/fusion/mmwave_csi_medium_degraded_supervised.yaml",
-    "configs/fusion/mmwave_csi_supervised.yaml",
-    "configs/fusion/radar_gps_supervised.yaml",
-    "configs/fusion/radar_lidar_supervised.yaml",
-    "configs/fusion/token_transformer_all_modalities_multitask_supervised.yaml",
-    "configs/fusion/token_transformer_all_modalities_supervised.yaml",
-    "configs/fusion/token_transformer_image_radar_supervised.yaml",
-}
-EXISTING_MODEL_REGISTRATION_ALLOWLIST = {
-    "bev_fusion_2604",
-    "camera_ae_frozen",
-    "cls_token_transformer_fusion",
-    "fusion_lightweight",
-    "fusion_strong",
-    "gps_conditioned_jepa",
-    "jepa_msac",
-    "gps_lightweight",
-    "gps_only_neural_baseline",
-    "gps_sequence_baseline",
-    "gps_strong",
-    "image_lightweight",
-    "image_strong",
-    "jepa_context_image",
-    "lidar_feature_extractor",
-    "lidar_lightweight",
-    "lidar_strong",
-    "mmwave_feature_extractor",
-    "mmwave_lightweight",
-    "mmwave_strong",
-    "modular_sequence",
-    "modular_sequence_model",
-    "radar_feature_extractor",
-    "radar_lightweight",
-    "radar_strong",
-    "resnet18_imagenet_rgb",
-    "token_transformer_fusion",
-    "vision_position_late_fusion",
-    "vision_position_transformer_fusion",
-}
-BATCH_RUNTIME_FUNCTION_ALLOWLIST = {
-    "src/kd_sensing/engine/batch.py": {
-        "forward_model",
-        "prepare_auxiliary_targets",
-        "prepare_beam_power_targets",
-        "prepare_beamspace_power_targets",
-        "prepare_csi_inputs",
-        "prepare_fusion_inputs",
-        "prepare_geometry_inputs",
-        "prepare_geometry_mask",
-        "prepare_gps_bev_xy_inputs",
-        "prepare_gps_inputs",
-        "prepare_image_inputs",
-        "prepare_labels",
-        "prepare_lidar_inputs",
-        "prepare_mmwave_inputs",
-        "prepare_path_descriptors",
-        "prepare_path_semantic_labels",
-        "prepare_radar_inputs",
-        "prepare_radio_semantic_labels",
-        "prepare_reliability_metadata_inputs",
-        "prepare_soft_beam_targets",
-    },
-    "src/kd_sensing/engine/runtime.py": {
-        "forward_task_model",
-        "prepare_task_auxiliary_targets",
-        "prepare_task_batch",
-        "prepare_task_inputs",
-        "prepare_task_labels",
-        "prepare_task_soft_beam_targets",
-    },
-    "src/kd_sensing/engine/validator.py": {
-        "_resolve_validation_prior",
-        "_validate_modality_subsets",
-        "_validate_with_force_mask",
-        "validate",
-    },
-}
+MAINTAINER_CONTEXT_INDEX_PATH = ROOT / MAINTAINER_CONTEXT_INDEX_REL_PATH
+MAINTAINER_CONTEXT_INDEX = load_maintainer_context_index(ROOT)
+ENTRYPOINT_ALLOWLISTS = entrypoint_allowlists(MAINTAINER_CONTEXT_INDEX)
+CONFIG_ALLOWLISTS = config_allowlists(MAINTAINER_CONTEXT_INDEX)
+HOTSPOT_BUDGETS = hotspot_budgets(MAINTAINER_CONTEXT_INDEX)
+RETIRED_ROUTE_TOKENS = retired_route_tokens(MAINTAINER_CONTEXT_INDEX)
+
+PYTHON_ENTRYPOINT_ALLOWLIST = ENTRYPOINT_ALLOWLISTS["python"]
+SHELL_ORCHESTRATION_ALLOWLIST = ENTRYPOINT_ALLOWLISTS["shell"]
+PYTHON_ENTRYPOINT_METADATA = ENTRYPOINT_ALLOWLISTS["python_entries"]
+PACKAGE_CLI_METADATA = ENTRYPOINT_ALLOWLISTS["package_cli"]
+ENTRYPOINT_LIFECYCLES = ENTRYPOINT_ALLOWLISTS["lifecycles"]
+RETIRED_GENERATED_FUSION_CONFIGS = CONFIG_ALLOWLISTS["retired_generated_fusion"]
+FUSION_ROOT_YAML_ALLOWLIST = CONFIG_ALLOWLISTS["fusion_root_yaml"]
+EXISTING_MODEL_REGISTRATION_ALLOWLIST = model_registration_allowlist(MAINTAINER_CONTEXT_INDEX)
+BATCH_RUNTIME_FUNCTION_ALLOWLIST = batch_runtime_function_allowlist(MAINTAINER_CONTEXT_INDEX)
 GOVERNANCE_SCAN_PREFIXES = (
     "AGENTS.md",
     "README.md",
@@ -170,62 +64,14 @@ GOVERNANCE_SCAN_PREFIXES = (
 )
 GOVERNANCE_SCAN_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".toml", ".sh"}
 
-HEALTH_CHECK_COMMANDS = (
-    "openspec validate strengthen-project-health-guardrails --strict",
-    "conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q",
-    "conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q",
-)
-CONFIG_LIFECYCLE_MARKERS = (
-    "configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml",
-    "configs/fusion/experiments/jepa_image_gps/*.yaml",
-    "configs/csi/hardening_matrix/*.yaml",
-    "configs/csi/hardening_matrix/debug/*.yaml",
-    "configs/fusion/csi_hardening_matrix/*.yaml",
-    "configs/preprocess/*.yaml",
-    "configs/diagnostics/modality_visualization.yaml",
-    "configs/diagnostics/jepa_visual_analysis_2604.yaml",
-    "configs/diagnostics/jepa_gps_shortcut_benchmark_*.yaml",
-    "configs/baselines/*.yaml",
-    "configs/pretraining/*.yaml",
-    "retired history",
-)
-HOTSPOT_SYMBOL_BUDGETS = {
-    ("src/kd_sensing/data/datasets/deepsense6g.py", "DeepSense6GDataset", "class"): 1210,
-    ("src/kd_sensing/data/datasets/deepsense6g.py", "__init__", "function"): 265,
-    ("src/kd_sensing/data/datasets/mmw.py", "MMWDataset", "class"): 600,
-    ("src/kd_sensing/engine/trainer.py", "_train_inner", "function"): 320,
-    ("src/kd_sensing/engine/mmw_town_gps_v2.py", "run_mmw_town_gps_v2", "function"): 280,
-    ("src/kd_sensing/baselines/beambench/image_ae_gps.py", "run_image_ae_gps_training", "function"): 245,
-    (
-        "src/kd_sensing/baselines/beambench/image_ae_gps.py",
-        "run_image_ae_gps_paper_split_training",
-        "function",
-    ): 265,
-    (
-        "src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py",
-        "run_deepsense6g_gps_lidar_bgam",
-        "function",
-    ): 240,
-    ("src/kd_sensing/engine/evaluation_pass.py", "run_evaluation_pass", "function"): 220,
-}
-REQUIRED_HOTSPOT_INVENTORY_MARKERS = (
-    "src/kd_sensing/data/datasets/deepsense6g.py",
-    "DeepSense6GDataset",
-    "src/kd_sensing/data/datasets/mmw.py",
-    "MMWDataset",
-    "src/kd_sensing/engine/trainer.py",
-    "_train_inner",
-    "src/kd_sensing/baselines/beambench/image_ae_gps.py",
-    "run_image_ae_gps_training",
-    "run_image_ae_gps_paper_split_training",
-    "src/kd_sensing/engine/evaluation_pass.py",
-    "run_evaluation_pass",
-    "src/kd_sensing/engine/batch.py",
-    "src/kd_sensing/diagnostics/run_index.py",
-    "src/kd_sensing/diagnostics/viewer_manifest.py",
-)
-LONG_FUNCTION_LIMIT = 230
-LONG_CLASS_LIMIT = 590
+HEALTH_CHECK_COMMANDS = health_check_commands(MAINTAINER_CONTEXT_INDEX)
+CONFIG_LIFECYCLE_MARKERS = CONFIG_ALLOWLISTS["lifecycle_markers"]
+HOTSPOT_SYMBOL_BUDGETS = HOTSPOT_BUDGETS["symbol"]
+HOTSPOT_FILE_BUDGETS = HOTSPOT_BUDGETS["file"]
+REQUIRED_HOTSPOT_INVENTORY_MARKERS = HOTSPOT_BUDGETS["inventory_markers"]
+LONG_FUNCTION_LIMIT = HOTSPOT_BUDGETS["long_function_limit"]
+LONG_CLASS_LIMIT = HOTSPOT_BUDGETS["long_class_limit"]
+RETIRED_CONFIG_TOKENS = RETIRED_ROUTE_TOKENS["config"]
 CONFIG_REFERENCE_RE = re.compile(r"configs/[A-Za-z0-9_./-]+\.yaml")
 CONFIG_REFERENCE_SCAN_ROOTS = (
     ROOT / "README.md",
@@ -252,25 +98,6 @@ NON_CURRENT_CONFIG_CONTEXT_MARKERS = (
     "no longer",
     "MUST not",
 )
-RETIRED_CONFIG_TOKENS = (
-    "hist_beam",
-    "top8",
-    "residual",
-    "camera_residual",
-    "coarse_anchor",
-    "logits_kd",
-    "rkd",
-    "teacher_no_kd",
-    "student_no_kd",
-    "no_kd",
-    "craf",
-    "marf",
-    "g2d",
-    "multimodal_nf",
-    "image_motion",
-    "raymobtime",
-    "raymobtime_s008",
-)
 ROOT_DOCUMENT_LIFECYCLE_EXCLUSIONS = set()
 CURRENT_DOCS_TO_CHECK_FOR_RETIRED_RECOMMENDATIONS = (
     ROOT / "README.md",
@@ -278,19 +105,7 @@ CURRENT_DOCS_TO_CHECK_FOR_RETIRED_RECOMMENDATIONS = (
     ROOT / "docs" / "extension_guide.md",
     ROOT / "docs" / "training_throughput.md",
 )
-RETIRED_ROUTE_TEXT_MARKERS = (
-    "HiST-Beam",
-    "Top8 selector",
-    "GPS residual",
-    "camera residual",
-    "logits_kd",
-    "rkd",
-    "teacher_no_kd",
-    "student_no_kd",
-    "no_kd",
-    "Raymobtime s008",
-    "raymobtime_s008",
-)
+RETIRED_ROUTE_TEXT_MARKERS = RETIRED_ROUTE_TOKENS["text"]
 RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
     "退役",
     "旧",
@@ -306,6 +121,8 @@ RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
 AGENT_NAVIGATION_MARKERS = (
     "权威来源",
     "任务路由",
+    "docs/maintainer_context_index.yaml",
+    "机器可读",
     "OpenSpec capability lifecycle",
     "current",
     "supporting",
@@ -328,7 +145,6 @@ AGENT_NAVIGATION_MARKERS = (
     "openspec list --json",
     "openspec status --change <change>",
 )
-OPENSPEC_LIFECYCLE_ALLOWED = {"current", "supporting", "retired-tombstone"}
 OPENSPEC_LIFECYCLE_HEADING = "## OpenSpec capability lifecycle 分类"
 RETIREMENT_WORDING_MARKERS = (
     "退役",
@@ -741,10 +557,129 @@ def _has_non_current_context(line: str) -> bool:
     return any(marker in line for marker in NON_CURRENT_CONTEXT_MARKERS)
 
 
+def _has_allowed_current_jepa_context(line: str, nearby: str = "") -> bool:
+    text = f"{line}\n{nearby}"
+    if ("GPS-query" in text or "gps_query_pool" in text) and "JEPA" in text:
+        return any(marker in text for marker in ("baseline", "compatibility", "兼容", "对照", "pooler"))
+    condition_markers = (
+        "condition_id_consumed",
+        "blocked_condition_fields",
+        "forbidden_condition_fields",
+        "gps_condition",
+        "image_condition",
+    )
+    if any(marker in text for marker in condition_markers):
+        return any(
+            marker in text
+            for marker in (
+                "diagnostic",
+                "diagnostics",
+                "诊断",
+                "forbidden",
+                "blocked",
+                "禁用",
+                "安全边界",
+                "MUST NOT",
+                "不读取",
+                "不消费",
+                "condition id",
+            )
+        )
+    return False
+
+
 def _nearby_text(lines: list[str], line_index: int, radius: int = 12) -> str:
     start = max(0, line_index - radius)
     end = min(len(lines), line_index + radius + 1)
     return "\n".join(lines[start:end])
+
+
+def test_maintainer_context_index_schema_is_valid():
+    assert MAINTAINER_CONTEXT_INDEX_PATH.exists()
+    assert MAINTAINER_CONTEXT_INDEX["kind"] == "maintainer_context_index"
+    assert len(MAINTAINER_CONTEXT_INDEX["routing"]["task_types"]) >= 8
+    assert PYTHON_ENTRYPOINT_ALLOWLIST
+    assert SHELL_ORCHESTRATION_ALLOWLIST
+    assert FUSION_ROOT_YAML_ALLOWLIST
+    assert EXISTING_MODEL_REGISTRATION_ALLOWLIST
+    assert BATCH_RUNTIME_FUNCTION_ALLOWLIST
+    assert HOTSPOT_SYMBOL_BUDGETS
+    assert HEALTH_CHECK_COMMANDS
+    assert RETIRED_CONFIG_TOKENS
+
+
+def test_pyproject_scripts_match_maintainer_context_index():
+    assert_pyproject_scripts_match_index(ROOT, MAINTAINER_CONTEXT_INDEX)
+
+
+def test_thin_cli_aliases_delegate_without_workflow_logic():
+    forbidden_markers = (
+        "for epoch in",
+        "for batch in",
+        ".backward(",
+        "optimizer.step(",
+        "model.train(",
+        "model.eval(",
+        ".forward(",
+        "forward_model(",
+        "run_model_step(",
+        "build_dataloaders(",
+        "DataLoader(",
+        "Dataset(",
+        "pd.read_csv(",
+        "csv.DictReader(",
+        "torch.optim",
+    )
+    violations: list[str] = []
+
+    for rel_path, metadata in sorted(PYTHON_ENTRYPOINT_METADATA.items()):
+        if metadata["lifecycle"] != "thin_cli_alias":
+            continue
+        path = ROOT / rel_path
+        text = path.read_text(encoding="utf-8")
+        owner_module = metadata.get("owner_module")
+        if not isinstance(owner_module, str) or not owner_module:
+            violations.append(f"{rel_path} is thin_cli_alias but has no owner_module")
+            continue
+        owner_imports = (
+            f"from {owner_module} import",
+            f"import {owner_module}",
+        )
+        if not any(snippet in text for snippet in owner_imports):
+            violations.append(f"{rel_path} does not directly delegate owner module {owner_module}")
+        if len(text.splitlines()) > 80:
+            violations.append(f"{rel_path} is too long for a thin CLI alias")
+        for marker in forbidden_markers:
+            if marker in text:
+                violations.append(f"{rel_path} contains workflow marker {marker!r}")
+
+    assert violations == []
+
+
+def test_beambench_check_dataset_aliases_delegate_owner_module():
+    script_text = (ROOT / "scripts" / "check_dataset.py").read_text(encoding="utf-8")
+    cli_alias_path = SRC / "kd_sensing" / "cli" / "beambench_check_dataset.py"
+    cli_alias_text = cli_alias_path.read_text(encoding="utf-8")
+
+    assert PYTHON_ENTRYPOINT_METADATA["scripts/check_dataset.py"]["owner_module"] == "kd_sensing.cli.beambench_check_dataset"
+    assert "from kd_sensing.cli.beambench_check_dataset import main" in script_text
+    assert "from kd_sensing.baselines.beambench.dataset_check import main" in cli_alias_text
+    assert "argparse.ArgumentParser" not in cli_alias_text
+    assert "Dataset(" not in cli_alias_text
+
+
+def test_runtime_source_does_not_import_maintainer_context_helper():
+    helper_markers = (
+        "tests.helpers.maintainer_context",
+        "helpers.maintainer_context",
+    )
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for path in sorted((SRC / "kd_sensing").rglob("*.py"))
+        if any(marker in path.read_text(encoding="utf-8") for marker in helper_markers)
+    ]
+
+    assert violations == []
 
 
 def test_source_surface_does_not_track_local_artifacts():
@@ -815,6 +750,16 @@ def test_extension_guide_defaults_to_modular_model_extension():
     )
     assert "### Whole-model Exceptions" in add_model
     assert "@MODELS.register" in add_model
+
+
+def test_predictive_jepa_gate_stays_modular_representation_core():
+    modular_source = (ROOT / "src" / "kd_sensing" / "models" / "modular.py").read_text(encoding="utf-8")
+
+    assert '@REPRESENTATION_CORES.register("feature_consistency_gate")' in modular_source
+    assert '@REPRESENTATION_CORES.register("jepa_feature_consistency_gate")' in modular_source
+    assert '@MODELS.register("feature_consistency_gate")' not in modular_source
+    assert '"predictive_condition_id"' in modular_source
+    assert '"condition_id_consumed": False' in modular_source
 
 
 def test_batch_runtime_extension_surface_is_allowlisted():
@@ -912,6 +857,41 @@ def test_jepa_msac_quickstart_stays_synchronized():
     ):
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         assert "JEPA-MSAC" in text, f"{rel_path} must mention JEPA-MSAC when the quickstart does"
+
+
+def test_predictive_jepa_robustness_governance_boundaries_are_synchronized():
+    lifecycles, _, _ = _openspec_lifecycle_inventory()
+    assert lifecycles.get("predictive-jepa-robustness") == "current"
+
+    spec_text = (ROOT / "openspec" / "specs" / "predictive-jepa-robustness" / "spec.md").read_text(
+        encoding="utf-8"
+    )
+    assert "TBD" not in spec_text
+    assert "P0-P5" in spec_text
+    assert "strict comparable train-then-evaluate" in spec_text
+
+    for rel_path in (
+        "docs/experiment_matrix.md",
+        "docs/experiment_protocols.md",
+        "docs/mainline_model_catalog.md",
+        "docs/result_claims_registry.md",
+    ):
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        assert "P4_joint_predictive_recovery" in text, f"{rel_path} must identify the single train profile"
+        assert "P0-P5" in text, f"{rel_path} must identify the full benchmark suite"
+        assert "不等价于完整 P0-P5" in text or "does not equal a full P0-P5" in text
+
+    smoke_manifest = (
+        ROOT / "configs" / "diagnostics" / "jepa_gps_shortcut_benchmark_predictive_robustness_smoke.yaml"
+    ).read_text(encoding="utf-8")
+    for marker in (
+        "synthetic_metrics",
+        "mock_not_committed",
+        "allow_missing_artifacts: true",
+        "claim_status: mock/smoke",
+        "provenance_status: unavailable",
+    ):
+        assert marker in smoke_manifest
 
 
 def test_high_risk_result_wording_has_local_caveats():
@@ -1057,10 +1037,15 @@ def test_agent_navigation_document_covers_maintainer_boundaries():
 
 def test_agent_navigation_is_referenced_from_rules_and_inventory():
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    navigation = (ROOT / "docs" / "agent_navigation.md").read_text(encoding="utf-8")
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "docs/agent_navigation.md" in agents
+    assert "docs/maintainer_context_index.yaml" in agents
+    assert "docs/maintainer_context_index.yaml" in navigation
+    assert "docs/maintainer_context_index.yaml" in inventory
+    assert "机器可读治理" in inventory
     assert "非平凡改动前" in agents
     assert "docs/agent_navigation.md" in inventory
     assert "current agent/maintainer navigation" in inventory
@@ -1072,6 +1057,16 @@ def test_hotspot_static_budget_matches_inventory():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     budget_keys = set(HOTSPOT_SYMBOL_BUDGETS)
     violations: list[str] = []
+
+    for rel_path, max_lines in HOTSPOT_FILE_BUDGETS.items():
+        actual = len((ROOT / rel_path).read_text(encoding="utf-8").splitlines())
+        if actual > max_lines:
+            violations.append(
+                f"{rel_path} is {actual} lines, budget {max_lines}; "
+                "split suite-specific benchmark helpers or update docs/project_surface_inventory.md with a reasoned budget."
+            )
+        if rel_path not in inventory:
+            violations.append(f"{rel_path} is file-budgeted but missing from hotspot inventory")
 
     for (rel_path, symbol, kind), max_lines in HOTSPOT_SYMBOL_BUDGETS.items():
         lengths = _symbol_lengths(ROOT / rel_path)
@@ -1218,18 +1213,43 @@ def test_current_specs_and_docs_do_not_recommend_retired_routes():
 
     for path in scan_paths:
         rel = path.relative_to(ROOT).as_posix()
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line_number, line in enumerate(lines, start=1):
             if not _has_legacy_route_reference(line):
                 continue
             if not LEGACY_ACTIVE_WORDING_RE.search(line):
                 continue
             if _has_non_current_context(line):
                 continue
+            if _has_allowed_current_jepa_context(line, _nearby_text(lines, line_number - 1, radius=4)):
+                continue
             violations.append(
                 f"{rel}:{line_number} describes a retired route with current/active wording: {line.strip()}"
             )
 
     assert violations == []
+
+
+def test_current_jepa_compatibility_wording_is_not_retired_route_regression():
+    allowed_lines = [
+        "JEPA GPS-query baseline compatibility MUST preserve the existing gps_query_pool control behavior.",
+        "condition_id_consumed=false documents a feature-consistency gate diagnostic safety boundary.",
+        "blocked_condition_fields and forbidden_condition_fields list gps_condition and image_condition as forbidden diagnostics, not model inputs.",
+    ]
+    forbidden_lines = [
+        "GPS residual is the active mainline workflow.",
+        "Top8 selector standalone is the active mainline.",
+        "HiST-Beam MUST support the default workflow.",
+    ]
+
+    for line in allowed_lines:
+        assert _has_allowed_current_jepa_context(line, line)
+
+    for line in forbidden_lines:
+        assert _has_legacy_route_reference(line)
+        assert LEGACY_ACTIVE_WORDING_RE.search(line)
+        assert not _has_non_current_context(line)
+        assert not _has_allowed_current_jepa_context(line, line)
 
 
 def test_retired_top8_residual_routes_are_not_current_source_modules():
@@ -1348,11 +1368,23 @@ def test_hotspot_inventory_documents_facades_and_narrow_modules():
         "src/kd_sensing/engine/objectives/history.py",
         "src/kd_sensing/diagnostics/viewer_manifest.py",
         "src/kd_sensing/diagnostics/viewer_manifest_merge.py",
+        "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_common.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_manifest.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_predictive.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_plots.py",
+        "src/kd_sensing/diagnostics/jepa_benchmark_runner.py",
     ]
 
     for rel_path in required_paths:
         assert rel_path in inventory
     assert "不得从 `kd_sensing.engine.objective_metadata`" in inventory
+    assert "kd_sensing.diagnostics.jepa_gps_shortcut_benchmark" in inventory
+    assert "jepa_benchmark_*` 窄模块" in inventory
 
 
 def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
@@ -1412,6 +1444,27 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/diagnostics/viewer_manifest_writer.py": "def _manifest_record",
             },
         },
+        "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py": {
+            "max_lines": 450,
+            "forbidden": [
+                "def _normalize_scenario_c_suite",
+                "def _apply_scenario_c_async_position_feedback",
+                "def aggregate_cxd_phase_diagram",
+                "def _predictive_jepa_metric_row",
+                "class OutputRegistry",
+                "def _write_benchmark_figures",
+            ],
+            "helpers": {
+                "src/kd_sensing/diagnostics/jepa_benchmark_manifest.py": "def validate_benchmark_manifest",
+                "src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py": "def _apply_scenario_c_async_position_feedback",
+                "src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py": "def aggregate_cxd_phase_diagram",
+                "src/kd_sensing/diagnostics/jepa_benchmark_predictive.py": "def _predictive_jepa_metric_row",
+                "src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py": "def apply_benchmark_perturbation",
+                "src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py": "class OutputRegistry",
+                "src/kd_sensing/diagnostics/jepa_benchmark_plots.py": "def _write_benchmark_figures",
+                "src/kd_sensing/diagnostics/jepa_benchmark_runner.py": "def run_jepa_gps_shortcut_benchmark",
+            },
+        },
         "src/kd_sensing/data/mmw/preparation.py": {
             "max_lines": 250,
             "forbidden": [
@@ -1456,6 +1509,16 @@ def test_first_batch_hotspot_facades_are_not_internal_helper_import_sources():
             "index_channel_files": "kd_sensing.data.mmw.preparation_index",
             "validate_zip_inputs": "kd_sensing.data.mmw.preparation_audit",
             "write_data_availability": "kd_sensing.data.mmw.preparation_audit",
+        },
+        "kd_sensing.diagnostics.jepa_gps_shortcut_benchmark": {
+            "_normalize_scenario_c_suite": "kd_sensing.diagnostics.jepa_benchmark_scenario_c",
+            "_apply_scenario_c_async_position_feedback": "kd_sensing.diagnostics.jepa_benchmark_scenario_c",
+            "apply_benchmark_perturbation": "kd_sensing.diagnostics.jepa_benchmark_perturbations",
+            "aggregate_cxd_phase_diagram": "kd_sensing.diagnostics.jepa_benchmark_scenario_d",
+            "compute_modality_dominance": "kd_sensing.diagnostics.jepa_benchmark_scenario_d",
+            "_predictive_jepa_metric_row": "kd_sensing.diagnostics.jepa_benchmark_predictive",
+            "OutputRegistry": "kd_sensing.diagnostics.jepa_benchmark_artifacts",
+            "_write_benchmark_figures": "kd_sensing.diagnostics.jepa_benchmark_plots",
         },
     }
     public_compat_allowed = {

@@ -64,7 +64,7 @@ model:
       image:
         pooler:
           type: gps_query_attention
-          k_queries: 4
+          k_queries: 2
           num_heads: 4
           condition_source: projected_gps
         adapter:

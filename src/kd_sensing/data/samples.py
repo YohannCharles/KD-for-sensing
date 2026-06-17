@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from kd_sensing.data.datasets.deepsense6g_columns import sorted_numbered_columns, validate_required_columns
+
 
 @dataclass
 class SequenceSamples:
@@ -56,18 +58,18 @@ def create_samples(
     data_samples_csi = []
     pred_beam = []
     inp_beam = []
-    camera_cols = _sorted_numbered_columns(frame.columns, "camera")
-    radar_cols = _sorted_numbered_columns(frame.columns, "radar")
-    future_beam_cols = _sorted_numbered_columns(frame.columns, "future_beam")
-    beam_cols = _sorted_numbered_columns(frame.columns, "beam")
-    gps_cols = _sorted_numbered_columns(frame.columns, "gps")
-    bs_gps_cols = _sorted_numbered_columns(frame.columns, "bs_gps")
-    future_gps_cols = _sorted_numbered_columns(frame.columns, "future_gps")
-    future_bs_gps_cols = _sorted_numbered_columns(frame.columns, "future_bs_gps")
-    lidar_cols = _sorted_numbered_columns(frame.columns, "lidar")
-    mmwave_cols = _sorted_numbered_columns(frame.columns, "mmwave")
-    csi_cols = _sorted_numbered_columns(frame.columns, "csi")
-    _validate_required_columns(
+    camera_cols = sorted_numbered_columns(frame.columns, "camera")
+    radar_cols = sorted_numbered_columns(frame.columns, "radar")
+    future_beam_cols = sorted_numbered_columns(frame.columns, "future_beam")
+    beam_cols = sorted_numbered_columns(frame.columns, "beam")
+    gps_cols = sorted_numbered_columns(frame.columns, "gps")
+    bs_gps_cols = sorted_numbered_columns(frame.columns, "bs_gps")
+    future_gps_cols = sorted_numbered_columns(frame.columns, "future_gps")
+    future_bs_gps_cols = sorted_numbered_columns(frame.columns, "future_bs_gps")
+    lidar_cols = sorted_numbered_columns(frame.columns, "lidar")
+    mmwave_cols = sorted_numbered_columns(frame.columns, "mmwave")
+    csi_cols = sorted_numbered_columns(frame.columns, "csi")
+    validate_required_columns(
         csv_path,
         selected_modalities,
         camera_cols=camera_cols,
@@ -190,74 +192,3 @@ def _safe_scalar(value):
     if hasattr(value, "item"):
         return value.item()
     return value
-
-
-def _validate_required_columns(
-    csv_path: str | Path,
-    enabled_modalities: tuple[str, ...],
-    *,
-    camera_cols: list[str],
-    radar_cols: list[str],
-    gps_cols: list[str],
-    bs_gps_cols: list[str],
-    future_gps_cols: list[str],
-    future_bs_gps_cols: list[str],
-    lidar_cols: list[str],
-    mmwave_cols: list[str],
-    csi_cols: list[str],
-    beam_cols: list[str],
-    future_beam_cols: list[str],
-    seq_len: int | None,
-    gps_seq_len: int | None,
-    num_pred: int | None,
-    include_position_targets: bool,
-    include_history_position_targets: bool,
-) -> None:
-    path = Path(csv_path)
-    minimum_seq = int(seq_len) if seq_len is not None else 1
-    minimum_gps_seq = int(gps_seq_len) if gps_seq_len is not None else minimum_seq
-    minimum_pred = int(num_pred) if num_pred is not None else 1
-    requirements = {
-        "beam": (beam_cols, minimum_seq, "beam1..beamN"),
-        "future_beam": (future_beam_cols, minimum_pred, "future_beam1..future_beamN"),
-    }
-    if "image" in enabled_modalities:
-        requirements["image"] = (camera_cols, minimum_seq, "camera1..cameraN")
-    if "radar" in enabled_modalities:
-        requirements["radar"] = (radar_cols, minimum_seq, "radar1..radarN")
-    if "gps" in enabled_modalities or include_history_position_targets:
-        requirements["gps"] = (gps_cols, minimum_gps_seq, "gps1..gpsN")
-        requirements["bs_gps"] = (bs_gps_cols, minimum_gps_seq, "bs_gps1..bs_gpsN")
-    if include_position_targets:
-        requirements["future_gps"] = (future_gps_cols, minimum_pred, "future_gps1..future_gpsN")
-        requirements["future_bs_gps"] = (
-            future_bs_gps_cols,
-            minimum_pred,
-            "future_bs_gps1..future_bs_gpsN",
-        )
-    if "lidar" in enabled_modalities:
-        requirements["lidar"] = (lidar_cols, minimum_seq, "lidar1..lidarN")
-    if "mmwave" in enabled_modalities:
-        requirements["mmwave"] = (mmwave_cols, minimum_seq, "mmwave1..mmwaveN")
-    if "csi" in enabled_modalities:
-        requirements["csi"] = (csi_cols, minimum_seq, "csi1..csiN")
-    for name, (columns, minimum, expected) in requirements.items():
-        if len(columns) < minimum:
-            hint = ""
-            if name in {"future_gps", "future_bs_gps"}:
-                hint = " Regenerate sequence CSVs with include_position_targets: true."
-            raise ValueError(
-                f"{name} is enabled but {path} contains {len(columns)} {expected} columns; "
-                f"expected at least {minimum}.{hint}"
-            )
-
-
-def _sorted_numbered_columns(columns, prefix: str) -> list[str]:
-    selected = []
-    for col in columns:
-        if not col.startswith(prefix):
-            continue
-        suffix = col[len(prefix) :]
-        if suffix.isdigit():
-            selected.append(col)
-    return sorted(selected, key=lambda name: int(name[len(prefix) :]))

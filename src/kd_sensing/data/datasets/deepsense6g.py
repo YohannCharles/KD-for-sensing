@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import OrderedDict
 import hashlib
 from pathlib import Path
-import re
 import time
 from typing import Any
 
@@ -22,10 +21,8 @@ from kd_sensing.data.beam_soft_targets import (
 )
 from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
 from kd_sensing.data.transform_ops.gps import (
-    CALIBRATED_GPS_FEATURE_MODES,
     GPS_FEATURE_DIMS,
     GPSStandardScaler,
-    PAPER_SCENE_CENTER_ANGLES_RAD,
     PositionTargetStandardScaler,
     SUPPORTED_GPS_FEATURE_MODE,
     load_gps_feature_sequence,
@@ -54,7 +51,6 @@ from kd_sensing.data.transform_ops.lidar import (
     LidarBEVStreamingStats,
     load_lidar_background_points,
     load_lidar_bev_sequence,
-    parameterized_lidar_cache_dir,
 )
 from kd_sensing.data.transform_ops.mmwave import (
     MMWAVE_POWER_DIM,
@@ -70,24 +66,36 @@ from kd_sensing.data.datasets.deepsense6g_targets import (
     resolve_occlusion_target_config,
     resolve_position_target_config,
 )
-from kd_sensing.data.layouts import deepsense6g_image_cache_root, deepsense6g_lidar_bev_cache_root
-from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, resolve_image_profile
+from kd_sensing.data.datasets.deepsense6g_cache_paths import (
+    resolve_image_cache_dir,
+    resolve_lidar_cache_dir_from_state,
+)
+from kd_sensing.data.datasets.deepsense6g_columns import (
+    ensure_enabled_contract_columns,
+)
+from kd_sensing.data.datasets.deepsense6g_contract import (
+    add_path_metadata,
+    normalize_beam_target_source,
+    parse_sequence_position,
+    resolve_beam_label_cache_mode,
+    resolve_enabled_modalities,
+    resolve_sequence_csv_path,
+    resolve_target_beam_paths,
+    validate_beam_target_source_contract,
+)
+from kd_sensing.data.datasets.deepsense6g_gps_contract import (
+    normalize_gps_bev_xy_source,
+    normalize_gps_feature_mode,
+    resolve_gps_angle_offset,
+    resolve_gps_source_seq_len,
+)
+from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, resolve_image_profile
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
 
 
 VALID_MODALITIES = MODALITY_ORDER
 REMOVED_IMAGE_OPTION_PREFIX = "image_" + "motion_"
-
-
-def _resolve_dataset_cache_base(data_root: Path, cache_dir: str | Path) -> Path:
-    path = Path(cache_dir).expanduser()
-    if path.is_absolute():
-        return path
-    first_part = path.parts[0] if path.parts else ""
-    if first_part in {"outputs", "dataset", "cache", "logs"}:
-        return resolve_path(path)
-    return data_root / path
 
 
 @DATASETS.register("deepsense6g")
@@ -184,63 +192,62 @@ class DeepSense6GDataset(Dataset):
         if data_root is None:
             data_root = self.scene.default_data_root
         self.data_root = resolve_path(data_root)
-        selected_csv = root_csv or csv_name
-        if selected_csv is None:
-            if split == "train":
-                default_csv = self.scene.default_train_csv_name
-                configured_csv = train_csv_name
-            elif split in {"val", "validation"}:
-                default_csv = val_csv_name or test_csv_name or self.scene.default_test_csv_name
-                configured_csv = val_csv_name or test_csv_name
-            else:
-                default_csv = self.scene.default_test_csv_name
-                configured_csv = test_csv_name
-            selected_csv = configured_csv or default_csv
-        self.root_csv = Path(selected_csv)
-        if not self.root_csv.is_absolute():
-            self.root_csv = self.data_root / self.root_csv
-        self.seq_len = int(seq_len)
-        selected_gps_source_seq_len = gps_source_seq_len if gps_source_seq_len is not None else gps_seq_len
-        self.gps_source_seq_len = (
-            int(selected_gps_source_seq_len) if selected_gps_source_seq_len is not None else self.seq_len
+        self.root_csv = resolve_sequence_csv_path(
+            self.data_root,
+            self.scene,
+            root_csv=root_csv,
+            csv_name=csv_name,
+            split=split,
+            train_csv_name=train_csv_name,
+            val_csv_name=val_csv_name,
+            test_csv_name=test_csv_name,
         )
-        if self.gps_source_seq_len <= 0:
-            raise ValueError("gps_source_seq_len must be positive when provided.")
+        self.seq_len = int(seq_len)
+        self.gps_source_seq_len = resolve_gps_source_seq_len(
+            seq_len=self.seq_len,
+            gps_seq_len=gps_seq_len,
+            gps_source_seq_len=gps_source_seq_len,
+        )
         self.gps_seq_len = self.gps_source_seq_len
         self.num_pred = int(num_pred)
         self.image_profile = resolve_image_profile(image_profile)
         self.image_profile_spec = image_profile_spec(self.image_profile)
         self.image_size = tuple(image_size)
         self.image_cache_policy = str(image_cache_policy or self._policy_from_cache_flags(image_use_cache, image_write_cache))
-        self.image_cache_dir = self._resolve_image_cache_dir(image_cache_dir) if "image" in (enabled_modalities or ("image", "radar")) else None
+        self.image_cache_dir = (
+            resolve_image_cache_dir(scene_id=self.scene_id, data_root=self.data_root, image_cache_dir=image_cache_dir)
+            if "image" in (enabled_modalities or ("image", "radar"))
+            else None
+        )
         self.image_cache_transform_version = str(image_cache_transform_version)
         self.image_cache = self._build_image_cache() if "image" in (enabled_modalities or ("image", "radar")) else None
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
-        self.enabled_modalities = self._resolve_enabled_modalities(
+        self.enabled_modalities = resolve_enabled_modalities(
             enabled_modalities,
-            use_gps,
-            use_lidar,
-            use_mmwave,
-            use_csi,
+            use_gps=use_gps,
+            use_lidar=use_lidar,
+            use_mmwave=use_mmwave,
+            use_csi=use_csi,
         )
         self.return_metadata = bool(return_metadata)
-        self.beam_target_source = self._normalize_beam_target_source(beam_target_source)
-        if self.beam_target_source == "current" and int(num_pred) > int(seq_len):
-            raise ValueError("beam_target_source='current' requires num_pred <= seq_len.")
+        self.beam_target_source = normalize_beam_target_source(beam_target_source)
+        validate_beam_target_source_contract(self.beam_target_source, num_pred=num_pred, seq_len=seq_len)
         self.beam_label_mapping = beam_label_mapping or resolve_beam_label_mapping(None, scene=self.scene_slug)
+        self.beam_label_cache_mode = resolve_beam_label_cache_mode(beam_label_cache)
         self.beam_label_cache_metadata = {
-            "cache_mode": self._resolve_beam_label_cache(beam_label_cache),
+            "cache_mode": self.beam_label_cache_mode,
             **self.beam_label_mapping.metadata(),
         }
-        self.beam_label_cache_mode = self._resolve_beam_label_cache(beam_label_cache)
         self._beam_label_cache: dict[str, int] = {}
         self.use_gps = "gps" in self.enabled_modalities
-        self.gps_feature_mode = self._normalize_gps_feature_mode(gps_feature_mode)
-        self.gps_angle_offset_rad, self.gps_angle_offset_source = self._resolve_gps_angle_offset(
-            gps_angle_offset_rad,
-            gps_angle_offset_source,
+        self.gps_feature_mode = normalize_gps_feature_mode(gps_feature_mode)
+        self.gps_angle_offset_rad, self.gps_angle_offset_source = resolve_gps_angle_offset(
+            gps_feature_mode=self.gps_feature_mode,
+            scene_id=self.scene_id,
+            explicit_value=gps_angle_offset_rad,
+            source=gps_angle_offset_source,
         )
         self.gps_normalize = gps_normalize
         self.gps_scaler = gps_scaler
@@ -248,9 +255,7 @@ class DeepSense6GDataset(Dataset):
         self._gps_feature_cache: dict[int, np.ndarray] = {}
         self._gps_frame_feature_cache: dict[str, np.ndarray] = {}
         self.use_gps_bev_xy = bool(use_gps_bev_xy)
-        self.gps_bev_xy_source = str(gps_bev_xy_source or "history_relative_xy")
-        if self.gps_bev_xy_source != "history_relative_xy":
-            raise ValueError("gps_bev_xy_source must be 'history_relative_xy'.")
+        self.gps_bev_xy_source = normalize_gps_bev_xy_source(gps_bev_xy_source)
         self.gps_bev_roi = tuple(gps_bev_roi or (-60.0, 60.0, -60.0, 60.0))
         self._gps_bev_xy_cache: dict[int, np.ndarray] = {}
         self.use_mmwave = "mmwave" in self.enabled_modalities
@@ -301,7 +306,7 @@ class DeepSense6GDataset(Dataset):
         self.lidar_augment = lidar_augment
         self.lidar_point_dropout = lidar_point_dropout
         self.lidar_jitter_std = lidar_jitter_std
-        self.lidar_cache_dir = self._resolve_lidar_cache_dir(lidar_cache_dir) if self.use_lidar else None
+        self.lidar_cache_dir = resolve_lidar_cache_dir_from_state(self, lidar_cache_dir) if self.use_lidar else None
         self.lidar_background_points = (
             load_lidar_background_points(self.data_root, lidar_background_path) if self.use_lidar else None
         )
@@ -338,22 +343,27 @@ class DeepSense6GDataset(Dataset):
             self._prepare_beam_label_cache()
         if self.occlusion_target_enabled:
             self._prepare_occlusion_target_stats()
+        ensure_enabled_contract_columns(
+            root_csv=self.root_csv,
+            samples=self.samples,
+            use_gps=self.use_gps,
+            use_gps_bev_xy=self.use_gps_bev_xy,
+            use_mmwave=self.use_mmwave,
+            use_csi=self.use_csi,
+            use_lidar=self.use_lidar,
+            gps_feature_mode=self.gps_feature_mode,
+            supported_gps_modes=GPS_FEATURE_DIMS,
+        )
         if self.use_gps:
-            self._ensure_gps_columns()
             self._prepare_gps_scaler()
-        if self.use_gps_bev_xy:
-            self._ensure_gps_bev_xy_columns()
         if self.position_target_enabled:
             self._ensure_position_target_columns()
             self._prepare_position_target_scaler()
         if self.use_mmwave:
-            self._ensure_mmwave_columns()
             self._prepare_mmwave_scaler()
         if self.use_csi:
-            self._ensure_csi_columns()
             self._prepare_csi_rms_normalizer()
         if self.use_lidar:
-            self._ensure_lidar_columns()
             self._prepare_lidar_normalizer_from_config()
 
     def __len__(self) -> int:
@@ -517,18 +527,18 @@ class DeepSense6GDataset(Dataset):
         if "image" in self.enabled_modalities:
             metadata["image_profile"] = self.image_profile
             metadata["processed_image_source"] = "rgb_imagenet"
-        self._add_path_metadata(metadata, "image_path", getattr(self.samples, "rgb_paths", None), idx)
-        self._add_path_metadata(metadata, "radar_path", getattr(self.samples, "radar_paths", None), idx)
-        self._add_path_metadata(metadata, "gps_path", getattr(self.samples, "gps_paths", None), idx)
-        self._add_path_metadata(metadata, "lidar_path", getattr(self.samples, "lidar_paths", None), idx)
-        self._add_path_metadata(metadata, "mmwave_path", getattr(self.samples, "mmwave_paths", None), idx)
-        self._add_path_metadata(metadata, "csi_path", getattr(self.samples, "csi_paths", None), idx)
+        add_path_metadata(metadata, "image_path", getattr(self.samples, "rgb_paths", None), idx)
+        add_path_metadata(metadata, "radar_path", getattr(self.samples, "radar_paths", None), idx)
+        add_path_metadata(metadata, "gps_path", getattr(self.samples, "gps_paths", None), idx)
+        add_path_metadata(metadata, "lidar_path", getattr(self.samples, "lidar_paths", None), idx)
+        add_path_metadata(metadata, "mmwave_path", getattr(self.samples, "mmwave_paths", None), idx)
+        add_path_metadata(metadata, "csi_path", getattr(self.samples, "csi_paths", None), idx)
         if self.use_csi and self.csi_degradation.enabled:
             metadata["csi_degradation"] = self._csi_degradation_metadata_for_index(idx)
         if self.use_gps_bev_xy:
             metadata["gps_bev_xy_source"] = self.gps_bev_xy_source
             metadata["gps_bev_roi"] = [float(value) for value in self.gps_bev_roi]
-        seq_id, frame_idx = self._parse_sequence_position(first_target_beam_path or last_beam_path or metadata.get("mmwave_path", ""))
+        seq_id, frame_idx = parse_sequence_position(first_target_beam_path or last_beam_path or metadata.get("mmwave_path", ""))
         if seq_id is not None:
             metadata["seq_id"] = seq_id
         if frame_idx is not None:
@@ -536,63 +546,12 @@ class DeepSense6GDataset(Dataset):
         return metadata
 
     def _target_beam_paths(self, beam_paths: list[str], future_beam_paths: list[str]) -> list[str]:
-        if self.beam_target_source == "current":
-            return beam_paths[-self.num_pred :]
-        return future_beam_paths[: self.num_pred]
-
-    @staticmethod
-    def _normalize_beam_target_source(value: object) -> str:
-        normalized = str(value or "future").strip().lower().replace("-", "_")
-        if normalized in {"future", "future_beam", "future_beam1", "next"}:
-            return "future"
-        if normalized in {"current", "current_beam", "beam", "beam_last", "last_beam"}:
-            return "current"
-        raise ValueError("beam_target_source must be 'future' or 'current'.")
-
-    @staticmethod
-    def _add_path_metadata(metadata: dict[str, Any], key: str, paths: list[list[str]] | None, idx: int) -> None:
-        if not paths or idx >= len(paths) or not paths[idx]:
-            return
-        metadata[key] = str(paths[idx][-1])
-
-    @staticmethod
-    def _parse_sequence_position(path: str) -> tuple[str | None, int | None]:
-        text = str(path)
-        seq_id = None
-        frame_idx = None
-        seq_match = re.search(r"(?:^|[/_-])seq(?:uence)?[_-]?([A-Za-z0-9]+)", text, flags=re.IGNORECASE)
-        if seq_match:
-            seq_id = seq_match.group(1)
-        frame_match = re.search(
-            r"(?:frame|frm|camera|radar|beam|gps|lidar|mmwave|pwr)[_-]?(\d+)",
-            Path(text).stem,
-            flags=re.IGNORECASE,
+        return resolve_target_beam_paths(
+            beam_paths,
+            future_beam_paths,
+            source=self.beam_target_source,
+            num_pred=self.num_pred,
         )
-        if frame_match:
-            frame_idx = int(frame_match.group(1))
-        return seq_id, frame_idx
-
-    def _resolve_enabled_modalities(
-        self,
-        enabled_modalities: list[str] | tuple[str, ...] | None,
-        use_gps: bool,
-        use_lidar: bool,
-        use_mmwave: bool,
-        use_csi: bool,
-    ) -> tuple[str, ...]:
-        if enabled_modalities is None:
-            selected = ["image", "radar"]
-            if use_gps:
-                selected.append("gps")
-            if use_lidar:
-                selected.append("lidar")
-            if use_mmwave:
-                selected.append("mmwave")
-            if use_csi:
-                selected.append("csi")
-        else:
-            selected = [str(modality) for modality in enabled_modalities]
-        return normalize_modalities(selected, context="DeepSense6G modalities")
 
     def _build_image_transform(self, image_size: list[int] | tuple[int, int]):
         return build_rgb_imagenet_transform(image_size)
@@ -618,11 +577,6 @@ class DeepSense6GDataset(Dataset):
         summary["enabled"] = self.image_cache_policy != "off"
         summary["accessed"] = bool(summary["hits"] or summary["misses"] or summary["generated"])
         return summary
-
-    def _resolve_image_cache_dir(self, image_cache_dir: str | None) -> Path:
-        if image_cache_dir is None:
-            return resolve_path(deepsense6g_image_cache_root(self.scene_id))
-        return _resolve_dataset_cache_base(self.data_root, image_cache_dir)
 
     def _build_image_cache(self) -> ImageDerivedCache | None:
         if self.image_cache_policy == "off" or self.image_cache_dir is None:
@@ -655,18 +609,6 @@ class DeepSense6GDataset(Dataset):
             self.fft_tuple,
             self.clipped_range,
         )
-
-    def _resolve_beam_label_cache(self, config: bool | str) -> str:
-        if isinstance(config, bool):
-            return "eager" if config else "off"
-        mode = str(config).lower()
-        if mode in {"true", "yes", "on"}:
-            return "eager"
-        if mode in {"false", "no", "off", "none"}:
-            return "off"
-        if mode not in {"eager", "lazy"}:
-            raise ValueError("beam_label_cache must be one of eager, lazy, off, true, or false.")
-        return mode
 
     def _prepare_occlusion_target_stats(self) -> None:
         self.target_provider.prepare_occlusion_target_stats()
@@ -863,51 +805,6 @@ class DeepSense6GDataset(Dataset):
             return max(64, max(int(value) for value in hard_labels) + 1)
         return 64
 
-    def _ensure_gps_columns(self) -> None:
-        if self.samples.gps_paths is None:
-            raise ValueError(
-                f"GPS is enabled but {self.root_csv} does not contain gps1..gpsN columns. "
-                "Regenerate sequence CSVs with include_gps: true."
-            )
-        if self.gps_feature_mode not in GPS_FEATURE_DIMS:
-            raise ValueError(
-                f"Unsupported gps_feature_mode '{self.gps_feature_mode}'. "
-                "This change only supports 'relative_polar', "
-                "'paper_calibrated_relative_polar', or 'paper_distance_angle'."
-            )
-        if self.samples.bs_gps_paths is None:
-            raise ValueError(
-                f"gps_feature_mode '{self.gps_feature_mode}' requires bs_gps1..bs_gpsN columns in {self.root_csv}."
-            )
-
-    def _normalize_gps_feature_mode(self, mode: str | None) -> str:
-        normalized = str(mode or SUPPORTED_GPS_FEATURE_MODE).strip().lower()
-        if normalized not in GPS_FEATURE_DIMS:
-            supported = ", ".join(sorted(GPS_FEATURE_DIMS))
-            raise ValueError(f"Unsupported gps_feature_mode '{mode}'. Supported modes: {supported}.")
-        return normalized
-
-    def _resolve_gps_angle_offset(
-        self,
-        explicit_value: float | None,
-        source: str | None,
-    ) -> tuple[float | None, str]:
-        if self.gps_feature_mode not in CALIBRATED_GPS_FEATURE_MODES:
-            return None, "not_applicable"
-        if explicit_value is not None:
-            return float(explicit_value), "explicit"
-        source_key = str(source or "paper_scene_default").strip().lower()
-        if source_key in {"none", "zero", "disabled"}:
-            return 0.0, source_key
-        if source_key != "paper_scene_default":
-            raise ValueError(
-                "gps_angle_offset_source must be 'paper_scene_default', 'explicit', "
-                "'none', 'zero', or 'disabled'."
-            )
-        if int(self.scene_id) in PAPER_SCENE_CENTER_ANGLES_RAD:
-            return float(PAPER_SCENE_CENTER_ANGLES_RAD[int(self.scene_id)]), "paper_scene_default"
-        return 0.0, "paper_scene_default_missing"
-
     def _prepare_gps_scaler(self) -> None:
         if not self.gps_normalize:
             self.gps_scaler = None
@@ -968,13 +865,6 @@ class DeepSense6GDataset(Dataset):
             )
         return self._gps_feature_cache[idx]
 
-    def _ensure_gps_bev_xy_columns(self) -> None:
-        if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
-            raise ValueError(
-                f"GPS BEV XY is enabled but {self.root_csv} does not contain gps1..gpsN "
-                "and bs_gps1..bs_gpsN columns. Regenerate sequence CSVs with GPS and BS GPS history."
-            )
-
     def _gps_bev_xy_for_index(self, idx: int) -> np.ndarray:
         if idx not in self._gps_bev_xy_cache:
             if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
@@ -986,13 +876,6 @@ class DeepSense6GDataset(Dataset):
                 seq_len=self.gps_source_seq_len,
             )
         return self._gps_bev_xy_cache[idx]
-
-    def _ensure_mmwave_columns(self) -> None:
-        if self.samples.mmwave_paths is None:
-            raise ValueError(
-                f"mmWave is enabled but {self.root_csv} does not contain mmwave1..mmwaveN columns. "
-                "Regenerate sequence CSVs with include_mmwave: true."
-            )
 
     def _prepare_mmwave_scaler(self) -> None:
         if not self.mmwave_normalize:
@@ -1048,13 +931,6 @@ class DeepSense6GDataset(Dataset):
                 frame_feature_cache=self._mmwave_frame_feature_cache,
             )
         return self._mmwave_feature_cache[idx]
-
-    def _ensure_csi_columns(self) -> None:
-        if self.samples.csi_paths is None:
-            raise ValueError(
-                f"CSI is enabled but {self.root_csv} does not contain csi1..csiN columns. "
-                "Regenerate sequence CSVs with CSI export enabled."
-            )
 
     def _prepare_csi_rms_normalizer(self) -> None:
         if not self.csi_train_rms:
@@ -1152,22 +1028,6 @@ class DeepSense6GDataset(Dataset):
             return CSIRMSNormalizer(rms=float(value["rms"]), sample_count=int(value.get("sample_count", 0)))
         return CSIRMSNormalizer(rms=float(value), sample_count=0)
 
-    def _resolve_lidar_cache_dir(self, lidar_cache_dir: str | None) -> Path | None:
-        if lidar_cache_dir is None:
-            base = resolve_path(deepsense6g_lidar_bev_cache_root(self.scene_id))
-        else:
-            base = _resolve_dataset_cache_base(self.data_root, lidar_cache_dir)
-        return parameterized_lidar_cache_dir(
-            base,
-            bev_size=self.lidar_bev_size,
-            roi=self.lidar_roi,
-            fov_degrees=self.lidar_fov_degrees,
-            remove_ground=self.lidar_remove_ground,
-            ground_z_threshold=self.lidar_ground_z_threshold,
-            background_path=self.lidar_background_path,
-            background_distance_threshold=self.lidar_background_distance_threshold,
-        )
-
     def _resolve_lidar_stats_path(self, stats_path: str | None) -> Path | None:
         if not stats_path:
             return None
@@ -1219,13 +1079,6 @@ class DeepSense6GDataset(Dataset):
             if max_items <= 0:
                 raise ValueError("lidar_memory_cache.max_items must be positive when provided.")
         return enabled, max_items
-
-    def _ensure_lidar_columns(self) -> None:
-        if self.samples.lidar_paths is None:
-            raise ValueError(
-                f"LiDAR is enabled but {self.root_csv} does not contain lidar1..lidarN columns. "
-                "Regenerate sequence CSVs with include_lidar: true."
-            )
 
     def _prepare_lidar_normalizer_from_config(self) -> None:
         if not self.lidar_normalize:
