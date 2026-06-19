@@ -26,21 +26,16 @@ from kd_sensing.data.difficulty.presets import (
     PREDICTIVE_JEPA_CANONICAL_CONDITIONS,
     PREDICTIVE_JEPA_CONDITION_IDS,
     PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
-    SCENARIO_D_CANONICAL_CONDITIONS,
-    SCENARIO_D_CONDITION_IDS,
-    SCENARIO_D_SUITE_TYPE,
     normalize_predictive_jepa_condition_id,
     normalize_predictive_jepa_operator_params,
-    normalize_scenario_d_condition_id,
-    normalize_scenario_d_operator_params,
     predictive_jepa_condition,
-    scenario_d_condition,
 )
 from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_accuracy
 from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
 from kd_sensing.utils.paths import resolve_path
 
 from kd_sensing.diagnostics.jepa_benchmark_common import *
+from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage import _normalize_gps_query_advantage_slice
 
 
 def _normalize_predictive_jepa_suite(suite: Mapping[str, Any], *, suite_id: str, suite_type: str) -> dict[str, Any]:
@@ -95,6 +90,12 @@ def _normalize_predictive_jepa_suite(suite: Mapping[str, Any], *, suite_id: str,
     artifact_plan = suite.get("artifact_plan", suite.get("artifacts", {}))
     if artifact_plan is not None and not isinstance(artifact_plan, Mapping):
         raise BenchmarkManifestError(f"Predictive JEPA suite '{suite_id}' artifact_plan must be a mapping.")
+    advantage_slice = _normalize_gps_query_advantage_slice(
+        suite.get("gps_query_advantage_slice", suite.get("advantage_slice")),
+        suite_id=suite_id,
+        history_window=history_window,
+        split=str(suite.get("split", "test")),
+    )
     return {
         **dict(suite),
         "id": suite_id,
@@ -103,6 +104,7 @@ def _normalize_predictive_jepa_suite(suite: Mapping[str, Any], *, suite_id: str,
         "severity_unit": "predictive_p_level",
         "severities": [float(condition["severity"]) for condition in conditions],
         "predictive_conditions": conditions,
+        "gps_query_advantage_slice": advantage_slice,
         "history_window": history_window,
         "artifact_plan": dict(artifact_plan or {}),
         "output_artifact_plan": {
@@ -156,6 +158,11 @@ def _predictive_jepa_condition_for_severity(suite: Mapping[str, Any], severity: 
             _normalize_predictive_jepa_condition(item, suite_id=str(suite.get("id", "predictive")), index=index)
             for index, item in enumerate(PREDICTIVE_JEPA_CANONICAL_CONDITIONS)
         ]
+    advantage_slice = suite.get("gps_query_advantage_slice", {})
+    if isinstance(advantage_slice, Mapping) and bool(advantage_slice.get("enabled", False)):
+        advantage_conditions = advantage_slice.get("conditions", [])
+        if isinstance(advantage_conditions, (list, tuple)):
+            conditions = list(conditions) + [item for item in advantage_conditions if isinstance(item, Mapping)]
     for condition in conditions:
         if isinstance(condition, Mapping) and math.isclose(float(condition.get("severity", 0.0)), float(severity), abs_tol=1e-9):
             return dict(condition)
@@ -351,6 +358,7 @@ def _predictive_jepa_metric_row(
 
 
 __all__ = [
+    "_normalize_gps_query_advantage_slice",
     "_mean_numeric",
     "_normalize_predictive_jepa_condition",
     "_normalize_predictive_jepa_suite",

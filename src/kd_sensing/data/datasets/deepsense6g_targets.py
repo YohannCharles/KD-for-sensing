@@ -16,6 +16,7 @@ from kd_sensing.data.transform_ops.mmwave import (
     finite_max_mmwave_power,
     fit_occlusion_threshold_from_paths,
 )
+from kd_sensing.data.beam_soft_targets import resolve_soft_beam_label_config
 
 
 def resolve_occlusion_target_config(config: bool | dict[str, Any] | None) -> dict[str, Any]:
@@ -68,6 +69,37 @@ def coerce_occlusion_stats(stats: OcclusionTargetStats | dict[str, Any] | None) 
     if isinstance(stats, dict):
         return OcclusionTargetStats.from_dict(stats)
     raise TypeError("occlusion_target_stats must be OcclusionTargetStats, mapping, or None.")
+
+
+def configure_deepsense6g_target_state(
+    dataset,
+    *,
+    occlusion_target: bool | dict[str, Any] | None,
+    occlusion_target_stats: OcclusionTargetStats | dict[str, Any] | None,
+    position_target: bool | dict[str, Any] | None,
+    position_target_scaler: PositionTargetStandardScaler | None,
+    soft_beam_labels: bool | dict[str, Any] | None,
+) -> None:
+    dataset.occlusion_target_config = resolve_occlusion_target_config(occlusion_target)
+    dataset.occlusion_target_enabled = bool(dataset.occlusion_target_config["enabled"])
+    dataset.position_target_config = resolve_position_target_config(position_target)
+    dataset.soft_beam_label_config = resolve_soft_beam_label_config(soft_beam_labels)
+    dataset._soft_beam_distribution_cache: dict[str, tuple[np.ndarray, bool]] = {}
+    dataset.position_target_enabled = bool(dataset.position_target_config["enabled"])
+    dataset.position_target_source = str(dataset.position_target_config["source"])
+    dataset.position_target_normalize = bool(dataset.position_target_config["normalize"])
+    dataset.target_provider = DeepSense6GTargetProvider(
+        dataset,
+        occlusion_stats=occlusion_target_stats,
+        position_scaler=position_target_scaler,
+    )
+
+
+def prepare_deepsense6g_targets(dataset) -> None:
+    if dataset.beam_label_cache_mode == "eager":
+        dataset._prepare_beam_label_cache()
+    if dataset.occlusion_target_enabled:
+        dataset._prepare_occlusion_target_stats()
 
 
 class DeepSense6GTargetProvider:
@@ -258,7 +290,9 @@ class DeepSense6GTargetProvider:
 
 __all__ = [
     "DeepSense6GTargetProvider",
+    "configure_deepsense6g_target_state",
     "coerce_occlusion_stats",
+    "prepare_deepsense6g_targets",
     "resolve_occlusion_target_config",
     "resolve_position_target_config",
 ]

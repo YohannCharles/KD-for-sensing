@@ -14,8 +14,9 @@ from kd_sensing.data.difficulty import (
     normalize_config_difficulty,
     normalize_difficulty_profiles,
 )
-from kd_sensing.data.difficulty.presets import PREDICTIVE_JEPA_CONDITION_IDS
+from kd_sensing.data.difficulty.presets import GPS_QUERY_ADVANTAGE_CONDITION_IDS, PREDICTIVE_JEPA_CONDITION_IDS
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
+from kd_sensing.engine.batch import forward_model
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
 from kd_sensing.engine.runtime import prepare_task_inputs
@@ -66,6 +67,25 @@ def _batch() -> dict:
         "target_beam": torch.tensor([[0], [2]]),
         "beam_power": torch.arange(8, dtype=torch.float32).reshape(2, 1, 4),
         "metadata": {"sample_id": ["a", "b"], "split": ["train", "train"]},
+    }
+
+
+def _advantage_batch() -> dict:
+    image = torch.zeros(4, 3, 1, 4, 4, dtype=torch.float32)
+    image[0] = 0.10
+    image[1] = 0.12
+    image[2] = 0.80
+    image[3] = 0.82
+    return {
+        "gps": torch.arange(24, dtype=torch.float32).reshape(4, 3, 2),
+        "image": image,
+        "target_beam": torch.tensor([[0], [4], [8], [12]]),
+        "beam_power": torch.arange(16, dtype=torch.float32).reshape(4, 1, 4),
+        "metadata": {
+            "sample_id": ["s0", "s1", "s2", "s3"],
+            "split": ["test", "test", "test", "test"],
+            "scene": ["scene32", "scene32", "scene32", "scene32"],
+        },
     }
 
 
@@ -262,6 +282,39 @@ def test_predictive_jepa_profile_normalizes_p_levels_and_rejects_unknown_conditi
         )
 
 
+def test_gps_query_advantage_profile_normalizes_without_expanding_p_suite() -> None:
+    profile = normalize_difficulty_profiles(
+        [
+            {
+                "id": "advantage_a2",
+                "stage": "benchmark",
+                "condition": "A2_visual_ambiguous_wrong_gps",
+                "operator": {"type": "predictive_jepa_robustness", "min_beam_offset": 4},
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+
+    assert GPS_QUERY_ADVANTAGE_CONDITION_IDS == (
+        "A0_visual_ambiguous_peer",
+        "A1_beam_offset_wrong_gps",
+        "A2_visual_ambiguous_wrong_gps",
+    )
+    assert list(PREDICTIVE_JEPA_CONDITION_IDS) == [
+        "P0_clean_current",
+        "P1_current_frame_missing_history_available",
+        "P2_semantic_occlusion_history_available",
+        "P3_plausible_wrong_gps_current_image",
+        "P4_joint_predictive_recovery",
+        "P5_novel_weather_history_available",
+    ]
+    assert profile.condition == "A2_visual_ambiguous_wrong_gps"
+    assert profile.severity == 12.0
+    assert profile.operators[0].params["visual_ambiguous_peer"] is True
+    assert profile.operators[0].params["beam_offset_constrained_wrong_gps"] is True
+    assert profile.operators[0].params["min_beam_offset"] == 4
+
+
 def test_image_observability_transform_is_deterministic_and_preserves_targets() -> None:
     context = DifficultyContext(stage="benchmark", split="test", seed=11, sample_ids=("a", "b"))
     clean_profile = normalize_difficulty_profiles(
@@ -449,6 +502,64 @@ def test_predictive_jepa_conditions_cover_image_variants_and_gps_fallback() -> N
     assert [warning.code for warning in fallback.warnings] == ["predictive_jepa_plausible_wrong_gps_fallback"]
 
 
+def test_gps_query_advantage_difficulty_is_deterministic_and_beam_offset_constrained() -> None:
+    profile = normalize_difficulty_profiles(
+        [
+            {
+                "id": "advantage_a2",
+                "stage": "benchmark",
+                "condition": "A2_visual_ambiguous_wrong_gps",
+                "operator": {
+                    "type": "predictive_jepa_robustness",
+                    "history_window": 2,
+                    "min_beam_offset": 4,
+                    "scene_constraint": "same_split_or_batch",
+                    "visual_ambiguous_top_k": 2,
+                },
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    context = DifficultyContext(stage="benchmark", split="test", seed=41, sample_ids=("s0", "s1", "s2", "s3"))
+
+    first = apply_difficulty_pipeline(_advantage_batch(), profile, context)
+    second = apply_difficulty_pipeline(_advantage_batch(), profile, context)
+    changed_seed = apply_difficulty_pipeline(
+        _advantage_batch(),
+        profile,
+        DifficultyContext(stage="benchmark", split="test", seed=42, sample_ids=("s0", "s1", "s2", "s3")),
+    )
+
+    assert torch.equal(first.batch["image"], second.batch["image"])
+    assert torch.equal(first.batch["gps"], second.batch["gps"])
+    assert torch.equal(first.batch["gps_source_sample_index"], second.batch["gps_source_sample_index"])
+    assert first.batch["predictive_jepa_replay_metadata"] == second.batch["predictive_jepa_replay_metadata"]
+    assert torch.equal(first.batch["target_beam"], _advantage_batch()["target_beam"])
+    assert torch.equal(first.batch["beam_power"], _advantage_batch()["beam_power"])
+    assert first.batch["metadata"]["sample_id"] == ["s0", "s1", "s2", "s3"]
+
+    visual = first.batch["visual_ambiguous_hard_negative_metadata"]
+    assert visual["fallback_count"] == 0
+    assert all(offset is not None and offset >= 4 for offset in visual["beam_offset"])
+    assert all(peer_id in {"s0", "s1", "s2", "s3"} for peer_id in visual["peer_sample_id"])
+    assert first.batch["predictive_jepa_replay_metadata"]["image"]["visual_ambiguous_peer"]["min_beam_offset"] == 4.0
+
+    gps_metadata = first.batch["gps_counterfactual_metadata"]
+    assert gps_metadata["counterfactual_status"] == "counterfactual_peer_replacement"
+    assert gps_metadata["fallback_count"] == 0
+    assert all(offset >= 4 for offset in gps_metadata["beam_offset_criteria"]["offsets"])
+    assert all(size >= 1 for size in gps_metadata["selection_pool_size"])
+    assert gps_metadata["peer_sample_id"] == [
+        first.batch["metadata"]["sample_id"][int(index)]
+        for index in first.batch["gps_source_sample_index"][:, -1].tolist()
+    ]
+    assert not torch.equal(first.batch["gps"][:, -1], _advantage_batch()["gps"][:, -1])
+
+    changed_offsets = changed_seed.batch["gps_counterfactual_metadata"]["beam_offset_criteria"]["offsets"]
+    assert all(offset >= 4 for offset in changed_offsets)
+    assert changed_seed.batch["predictive_jepa_replay_metadata"]["gps"]["selection_pool_size"] == gps_metadata["selection_pool_size"]
+
+
 def test_cxd_difficulty_profile_preserves_labels_soft_targets_and_split_metadata() -> None:
     suite = bench.normalize_suite_config({"id": "scenario_cxd", "type": "scenario_c_x_d_image_observability"})
     gps_condition = next(item for item in suite["scenario_c_conditions"] if item["id"] == "C4_severe_async")
@@ -564,6 +675,22 @@ def test_batch_mapping_passes_reliability_metadata_only_for_opt_in_models() -> N
     assert aware_inputs["benchmark_condition_metadata"]["gps_condition"] == "C4_severe_async"
     assert aware_inputs["benchmark_condition_metadata"]["image_condition"] == "D6_burst_missing"
 
+    geometry_inputs = prepare_task_inputs(
+        batch,
+        "fusion",
+        model_cfg={
+            "modalities": ["image", "gps"],
+            "image_profile": "rgb_imagenet",
+            "geometry_prior": {"enabled": True},
+        },
+        seq_length=2,
+        num_pred=2,
+        device=torch.device("cpu"),
+    )
+    assert "gps_valid_mask" in geometry_inputs
+    assert "gps_delay_steps" in geometry_inputs
+    assert geometry_inputs["benchmark_condition_metadata"]["gps_condition"] == "C4_severe_async"
+
     missing = dict(batch)
     missing.pop("image_observability_score")
     with pytest.raises(ValueError, match="required reliability metadata 'image_observability_score' is missing"):
@@ -579,6 +706,49 @@ def test_batch_mapping_passes_reliability_metadata_only_for_opt_in_models() -> N
             num_pred=1,
             device=torch.device("cpu"),
         )
+    geometry_missing = prepare_task_inputs(
+        missing,
+        "fusion",
+        model_cfg={
+            "modalities": ["image", "gps"],
+            "image_profile": "rgb_imagenet",
+            "geometry_prior": {"enabled": True},
+        },
+        seq_length=2,
+        num_pred=1,
+        device=torch.device("cpu"),
+    )
+    assert "image_observability_score" not in geometry_missing
+    assert "gps_valid_mask" in geometry_missing
+
+
+def test_forward_model_filters_unaccepted_reliability_metadata() -> None:
+    class _FusionModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.image_valid_mask = None
+
+        def forward(self, image_batch=None, gps_batch=None, image_valid_mask=None):  # noqa: ANN001
+            self.image_valid_mask = image_valid_mask
+            return {"logits": torch.zeros(image_batch.shape[0], 1, 4)}
+
+    model = _FusionModel()
+    image = torch.randn(2, 3, 3, 8, 8)
+    gps = torch.randn(2, 3, 3)
+    valid = torch.ones(2, 3, dtype=torch.bool)
+    dropout = torch.zeros(2, 3, dtype=torch.bool)
+
+    output = forward_model(
+        model,
+        "fusion",
+        image_batch=image,
+        gps_batch=gps,
+        image_valid_mask=valid,
+        image_dropout_mask=dropout,
+    )
+
+    assert output["logits"].shape == (2, 1, 4)
+    assert model.image_valid_mask is valid
 
 
 def test_pipeline_is_deterministic_shape_safe_and_blocks_target_mutation() -> None:

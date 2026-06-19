@@ -8,7 +8,11 @@ import torch
 from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
-from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
+from kd_sensing.engine.prediction_objectives import (
+    build_dba_aware_soft_targets,
+    compute_prediction_loss,
+    prepare_prediction_targets,
+)
 from kd_sensing.engine.runtime import (
     autocast_context,
     prepare_task_auxiliary_targets,
@@ -336,11 +340,24 @@ class BatchStepRunner:
             if batch_state.soft_beam_targets is not None
             else None
         )
+        dba_diagnostics: dict[str, float] = {}
+        if soft_targets is None:
+            dba_targets, dba_diagnostics = build_dba_aware_soft_targets(
+                labels,
+                num_classes=context.num_classes,
+                cfg=self.cfg,
+            )
+            if dba_targets is not None:
+                soft_targets = dba_targets.reshape(-1, context.num_classes)
         task_loss = context.task_criterion(primary_logits, soft_targets if soft_targets is not None else targets)
         auxiliary_loss = primary_outputs.sum() * 0.0
-        diagnostics = {}
+        diagnostics = dict(dba_diagnostics)
         if soft_targets is not None:
-            diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
+            if dba_diagnostics:
+                diagnostics["loss/beam_circular_soft_ce"] = float(task_loss.detach().cpu().item())
+                diagnostics["loss/beam_dba_aware"] = float(task_loss.detach().cpu().item())
+            else:
+                diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
         return BaseLossResult(
             total_loss=task_loss,
             task_loss=task_loss,

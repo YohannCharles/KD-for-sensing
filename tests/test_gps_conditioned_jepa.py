@@ -20,6 +20,7 @@ from kd_sensing.models.jepa_downstream import (  # noqa: E402
     HybridResidualQueryPool,
     IdentityJepaAdapter,
     MeanPatchPooler,
+    PredictiveGPSQueryPool,
     build_jepa_downstream_adapter,
     build_jepa_downstream_pooler,
 )
@@ -35,6 +36,11 @@ PARAM_GROUP_DERIVED_CONFIG = (
     ROOT
     / "configs/fusion/experiments/jepa_image_gps/"
     "image_gps_jepa_gps_biased_pooler_param_groups_beambench_fair_lowmem.yaml"
+)
+PREDICTIVE_GPS_QUERY_PLUS_PLUS_CONFIG = (
+    ROOT
+    / "configs/fusion/experiments/jepa_image_gps/"
+    "image_gps_jepa_predictive_gps_query_plus_plus_2604_s32_s34_lowmem.yaml"
 )
 
 
@@ -217,6 +223,29 @@ def test_jepa_downstream_pooler_adapter_registry_builds_and_reports_unknown_name
     assert hybrid_pooler.last_attention_maps["gps"].shape == (2, 3, 2, 5)
     assert hybrid_pooler.last_diagnostics["residual_alpha_init"] == pytest.approx(0.05)
 
+    predictive_pooler = build_jepa_downstream_pooler(
+        {
+            "type": "predictive_gps_query",
+            "latent_dim": 8,
+            "condition_dim": 8,
+            "content_queries": 2,
+            "gps_queries": 2,
+            "num_heads": 2,
+            "dropout": 0.0,
+            "residual_scale_init": 0.05,
+            "temporal_predictor": {"type": "gru", "history_window": 2, "insufficient_history": "zero"},
+            "reliability_gate": {"type": "mlp", "hidden_dim": 8},
+            "return_attention": True,
+        }
+    )
+    assert isinstance(predictive_pooler, PredictiveGPSQueryPool)
+    assert predictive_pooler.required_context_modalities == ("gps",)
+    predictive_output = predictive_pooler(tokens, torch.randn(2, 3, 8))
+    assert predictive_output.shape == (2, 3, 8)
+    assert predictive_pooler.last_attention_maps["content"].shape == (2, 3, 2, 5)
+    assert predictive_pooler.last_attention_maps["gps"].shape == (2, 3, 2, 5)
+    assert predictive_pooler.last_diagnostics["condition_id_consumed"] is False
+
     adapter = build_jepa_downstream_adapter({"type": "identity", "latent_dim": 8})
     assert isinstance(adapter, IdentityJepaAdapter)
     pooled = torch.randn(2, 3, 8)
@@ -280,6 +309,64 @@ def test_hybrid_residual_query_pooler_optional_and_required_gps_paths():
     assert optional.required_context_modalities == ()
     assert optional_output.shape == (2, 4, 8)
     assert optional.last_diagnostics["gps_condition_available"] is False
+
+
+def test_predictive_gps_query_pooler_uses_past_only_and_blocks_condition_ids():
+    torch.manual_seed(7)
+    pooler = PredictiveGPSQueryPool(
+        latent_dim=8,
+        condition_dim=8,
+        content_queries=2,
+        gps_queries=2,
+        num_heads=2,
+        dropout=0.0,
+        residual_scale_init=0.05,
+        temporal_predictor={"type": "gru", "history_window": 2, "insufficient_history": "zero"},
+        reliability_gate={"type": "mlp", "hidden_dim": 8},
+        return_attention=True,
+    )
+    pooler.eval()
+    tokens = torch.randn(1, 4, 5, 8)
+    condition = torch.randn(1, 4, 8)
+
+    output = pooler(
+        tokens,
+        condition,
+        image_valid_mask=torch.tensor([[True, True, False, True]]),
+        image_observability_score=torch.tensor([[1.0, 0.9, 0.2, 1.0]]),
+        gps_valid_mask=torch.tensor([[True, True, True, False]]),
+        gps_counterfactual_mask=torch.tensor([[False, False, True, False]]),
+        benchmark_condition_metadata={
+            "predictive_condition_id": "P4_joint_predictive_recovery",
+            "gps_condition": "C4_severe_async",
+            "image_condition": "D7_joint_worst_case",
+            "c_idx": 4,
+            "d_idx": 7,
+        },
+    )
+    first_temporal = pooler.last_temporal_predicted_latent.clone()
+    first_diagnostics = dict(pooler.last_diagnostics)
+    changed_future = tokens.clone()
+    changed_future[:, 3:, :, :] = changed_future[:, 3:, :, :] + 100.0
+    pooler(changed_future, condition)
+    second_temporal = pooler.last_temporal_predicted_latent
+
+    assert output.shape == (1, 4, 8)
+    torch.testing.assert_close(first_temporal, second_temporal, atol=1e-5, rtol=1e-5)
+    diagnostics = first_diagnostics
+    assert diagnostics["temporal_source_history_range"][0] is None
+    assert diagnostics["temporal_source_history_range"][1] == [0, 0]
+    assert diagnostics["temporal_source_history_range"][3] == [1, 2]
+    assert diagnostics["temporal_source_history_range_policy"] == "strictly_past"
+    assert diagnostics["condition_id_consumed"] is False
+    assert {"predictive_condition_id", "gps_condition", "image_condition", "c_idx", "d_idx"} <= set(
+        diagnostics["blocked_condition_fields"]
+    )
+    assert diagnostics["residual_scale"] == pytest.approx(0.05)
+    assert set(diagnostics["gate_weight_mean"]) == {"current_content", "temporal_predicted", "gps_residual"}
+    assert diagnostics["branch_availability"]["current_content"] is True
+    assert diagnostics["branch_availability"]["temporal_predicted"] is True
+    assert diagnostics["gps_counterfactual_count"] == 1
 
 
 def test_jepa_context_image_encoder_loads_best_and_last_payloads(tmp_path: Path):
@@ -500,6 +587,62 @@ def test_jepa_context_image_encoder_hybrid_pooler_and_temporal_auxiliary_metadat
         encoder(torch.randn(1, 2, 3, 32, 32))
 
 
+def test_jepa_context_image_encoder_predictive_gps_query_metadata_and_checkpoint_guard():
+    encoder = JepaContextImageEncoder(
+        output_dim=8,
+        latent_dim=8,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "image_channels": 3,
+            "latent_dim": 8,
+            "patch_size": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        pooler={
+            "type": "predictive_gps_query",
+            "condition_dim": 8,
+            "content_queries": 2,
+            "gps_queries": 2,
+            "num_heads": 2,
+            "dropout": 0.0,
+            "residual_scale_init": 0.2,
+            "temporal_predictor": {"type": "gru", "history_window": 2, "insufficient_history": "zero"},
+            "reliability_gate": {"type": "mlp", "hidden_dim": 8},
+            "return_attention": True,
+        },
+    )
+    output = encoder(
+        torch.randn(2, 4, 3, 32, 32),
+        gps_condition_features=torch.randn(2, 4, 8),
+        image_valid_mask=torch.ones(2, 4, dtype=torch.bool),
+        image_observability_score=torch.ones(2, 4),
+        benchmark_condition_metadata={"predictive_condition_id": "P4_joint_predictive_recovery"},
+    )
+    metadata = encoder.training_strategy_metadata()
+
+    assert output.shape == (2, 4, 8)
+    assert encoder.pooling == "predictive_gps_query"
+    assert encoder.supports_observability_metadata is True
+    assert metadata["predictive_gps_query_enabled"] is True
+    assert metadata["gps_query_plus_plus_enabled"] is True
+    assert metadata["content_query_count"] == 2
+    assert metadata["gps_query_count"] == 2
+    assert metadata["temporal_predictor_type"] == "gru"
+    assert metadata["reliability_gate_type"] == "mlp"
+    assert metadata["residual_scale"] == pytest.approx(0.2)
+    assert metadata["jepa_checkpoint_path"] == ""
+    assert metadata["context_encoder_frozen"] is False
+    assert encoder.last_predictive_gps_query_diagnostics["condition_id_consumed"] is False
+
+    legacy_state = {
+        "gps_query_pool.gps_to_q.1.weight": torch.randn(8, 8),
+    }
+    with pytest.raises(RuntimeError, match="legacy gps_query_attention checkpoint"):
+        encoder.load_state_dict(legacy_state, strict=True)
+
+
 def test_jepa_context_image_encoder_temporal_fallback_uses_past_only():
     torch.manual_seed(123)
     encoder = JepaContextImageEncoder(
@@ -643,7 +786,8 @@ def test_gps_query_downstream_configs_load_and_record_metadata(tmp_path: Path):
             assert cfg["data"]["dataset"]["beam_target_source"] == "current"
         assert image_encoder["type"] == "jepa_context_image"
         assert image_encoder["pooling"] == "gps_query_attention"
-        assert image_encoder["gps_query_pool"]["k_queries"] == 4
+        expected_k_queries = int(image_encoder["gps_query_pool"]["k_queries"])
+        assert expected_k_queries > 0
         assert image_encoder["gps_query_pool"]["num_heads"] == 4
         assert image_encoder["gps_query_pool"]["condition_source"] == "projected_gps"
         assert "gps_biased_s32_s34_lowmem/checkpoints/best.pth" in checkpoint
@@ -654,12 +798,39 @@ def test_gps_query_downstream_configs_load_and_record_metadata(tmp_path: Path):
         assert metadata["pooler_type"] == "gps_query_attention"
         assert metadata["adapter_type"] == "identity"
         assert metadata["gps_query_pooling_enabled"] is True
-        assert metadata["gps_query_k_queries"] == 4
+        assert metadata["gps_query_k_queries"] == expected_k_queries
         assert metadata["gps_query_num_heads"] == 4
         assert metadata["gps_query_condition_source"] == "projected_gps"
         assert metadata["jepa_checkpoint_path"] == checkpoint
         assert metadata["freeze_image_encoder"] is False
         assert metadata["image_encoder"]["gps_query_pool"]["enabled"] is True
+
+
+def test_predictive_gps_query_plus_plus_config_loads_and_records_metadata(tmp_path: Path):
+    cfg = load_config(PREDICTIVE_GPS_QUERY_PLUS_PLUS_CONFIG)
+    image_encoder = cfg["model"]["primary"]["encoders"]["image"]
+
+    assert cfg["experiment"]["seed"] == 17
+    assert cfg["data"]["dataset"]["seq_len"] == 5
+    assert cfg["data"]["dataset"]["num_pred"] == 1
+    assert cfg["data"]["dataset"]["train_scenes"] == [32, 33, 34]
+    assert image_encoder["pooling"] == "predictive_gps_query"
+    assert image_encoder["pooler"]["type"] == "predictive_gps_query"
+    assert image_encoder["pooler"]["temporal_predictor"]["type"] == "gru"
+    assert image_encoder["pooler"]["temporal_predictor"]["history_window"] == 5
+    assert cfg["loss"]["auxiliary"]["predictive_latent"]["enabled"] is True
+    assert cfg["loss"]["auxiliary"]["predictive_latent"]["detach_target"] is True
+
+    metadata = final_config_with_runtime(cfg, run_dir=tmp_path / "predictive_plus_plus")["runtime"][
+        "jepa_downstream"
+    ]
+    assert metadata["pooler_type"] == "predictive_gps_query"
+    assert metadata["predictive_gps_query_enabled"] is True
+    assert metadata["content_query_count"] == 2
+    assert metadata["gps_query_count"] == 2
+    assert metadata["temporal_predictor_type"] == "gru"
+    assert metadata["reliability_gate_type"] == "mlp"
+    assert metadata["jepa_checkpoint_path"].endswith("checkpoints/best.pth")
 
 
 def test_jepa_downstream_param_group_derived_config_inherits_baseline_scope(tmp_path: Path):

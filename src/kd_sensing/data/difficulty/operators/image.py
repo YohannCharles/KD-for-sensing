@@ -451,6 +451,18 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
         semantic_frame_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
         corruption_types: list[str] = []
         counts: dict[str, int] = {}
+        visual_ambiguous_metadata: dict[str, Any] = {}
+
+        if bool(params.get("visual_ambiguous_peer", False)):
+            visual_ambiguous_metadata = _select_visual_ambiguous_peers(
+                batch,
+                image=image,
+                params=params,
+                current_step=current_step,
+                generator=generator,
+                seed=seed,
+            )
+            batch["visual_ambiguous_hard_negative_metadata"] = visual_ambiguous_metadata
 
         if bool(params.get("semantic_occlusion", False)):
             ratio = _prob(params.get("occlusion_ratio", 0.35), name="occlusion_ratio")
@@ -515,12 +527,18 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
             "corruption_counts": counts,
             "missing_expression": str(params.get("missing_expression", "zero_fill")),
             "semantic_occlusion_proxy": bool(params.get("semantic_occlusion", False)),
+            "visual_ambiguous_peer": visual_ambiguous_metadata,
             "parameters": {
                 key: params.get(key)
                 for key in (
                     "current_frame_missing",
                     "semantic_occlusion",
                     "occlusion_ratio",
+                    "visual_ambiguous_peer",
+                    "visual_similarity_source",
+                    "min_beam_offset",
+                    "beam_offset_min",
+                    "scene_constraint",
                     "novel_weather",
                     "weather_severity",
                     "history_window",
@@ -568,45 +586,90 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
         fallback_reason = ""
         distance = torch.zeros((batch_size,), dtype=torch.float32, device=device)
         beam_offset: list[float] = []
+        peer_indices: list[int] = list(range(batch_size))
+        peer_sample_ids: list[str | None] = [None for _ in range(batch_size)]
+        selection_pool_sizes: list[int] = [0 for _ in range(batch_size)]
+        fallback_reasons: list[str] = ["" for _ in range(batch_size)]
 
         if bool(params.get("plausible_wrong_gps", False)):
-            counterfactual_mask[:, current_step] = True
-            if batch_size >= 2:
-                shift = int(torch.randint(1, batch_size, (1,), generator=generator).item())
-                peer = (torch.arange(batch_size, device=device) + shift) % batch_size
+            min_offset = _beam_offset_threshold(params)
+            beam_constrained = bool(params.get("beam_offset_constrained_wrong_gps", False)) or min_offset > 0
+            scene_constraint = str(params.get("scene_constraint", "same_split_or_batch"))
+            fallback = str(params.get("gps_counterfactual_fallback", "deterministic_jitter"))
+            sample_ids = _sample_ids(batch, batch_size)
+            peer_indices, selection_pool_sizes, fallback_reasons = _select_peer_indices(
+                batch,
+                batch_size=batch_size,
+                min_beam_offset=min_offset,
+                scene_constraint=scene_constraint,
+                fallback=fallback,
+                generator=generator,
+            )
+            peer_tensor = torch.tensor([max(index, 0) for index in peer_indices], dtype=torch.long, device=device)
+            has_peer = torch.tensor([index >= 0 for index in peer_indices], dtype=torch.bool, device=device)
+            if bool(has_peer.any()):
                 if value.ndim >= 3:
                     original = value[:, current_step, :].clone()
-                    replacement = value[peer, current_step, :]
-                    value[:, current_step, :] = replacement
+                    replacement = value[peer_tensor, current_step, :].clone()
+                    value[has_peer, current_step, :] = replacement[has_peer]
                 else:
                     original = value.clone()
-                    replacement = value[peer]
-                    value[:] = replacement
-                source_sample_index[:, current_step] = peer.to(dtype=torch.long)
-                distance = (replacement.to(torch.float32) - original.to(torch.float32)).pow(2).sum(dim=-1).sqrt()
-                beam_offset = _beam_offsets(batch.get("target_beam"), peer.detach().cpu())
+                    replacement = value[peer_tensor].clone()
+                    value[has_peer] = replacement[has_peer]
+                source_sample_index[has_peer, current_step] = peer_tensor[has_peer]
+                counterfactual_mask[has_peer, current_step] = True
+                distance = (replacement.to(torch.float32) - original.to(torch.float32)).reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt()
+                distance = torch.where(has_peer, distance, torch.zeros_like(distance))
+            no_peer = ~has_peer
+            if bool(no_peer.any()):
+                if fallback == "fail":
+                    raise ValueError(
+                        "Beam-offset-constrained wrong GPS could not find enough peer samples; "
+                        "adjust min_beam_offset, scene_constraint, or fallback."
+                    )
+                if fallback not in {"skip", "identity"}:
+                    jitter_std = float(params.get("gps_jitter_std", 0.5))
+                    if value.ndim >= 3:
+                        noise = torch.randn(value[:, current_step, :].shape, generator=generator, dtype=torch.float32).to(device)
+                        value[no_peer, current_step, :] = value[no_peer, current_step, :] + noise[no_peer].to(dtype=value.dtype) * jitter_std
+                        distance = torch.where(no_peer, noise.reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt() * jitter_std, distance)
+                    else:
+                        noise = torch.randn(value.shape, generator=generator, dtype=torch.float32).to(device)
+                        value[no_peer] = value[no_peer] + noise[no_peer].to(dtype=value.dtype) * jitter_std
+                        distance = torch.where(no_peer, noise.reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt() * jitter_std, distance)
+                    source_sample_index[no_peer, current_step] = -1
+                    counterfactual_mask[no_peer, current_step] = True
+            beam_offset = _beam_offsets_for_indices(batch.get("target_beam"), peer_indices)
+            peer_sample_ids = [sample_ids[index] if index >= 0 and index < len(sample_ids) else None for index in peer_indices]
+            fallback_count = sum(1 for reason in fallback_reasons if reason)
+            if bool(has_peer.all()):
                 status = "counterfactual_peer_replacement"
-            else:
-                fallback = str(params.get("gps_counterfactual_fallback", "deterministic_jitter"))
-                fallback_reason = "insufficient_batch_peer_pool"
-                jitter_std = float(params.get("gps_jitter_std", 0.5))
-                if value.ndim >= 3:
-                    noise = torch.randn(value[:, current_step, :].shape, generator=generator, dtype=torch.float32).to(device)
-                    value[:, current_step, :] = value[:, current_step, :] + noise.to(dtype=value.dtype) * jitter_std
-                    distance = noise.pow(2).sum(dim=-1).sqrt() * jitter_std
-                else:
-                    noise = torch.randn(value.shape, generator=generator, dtype=torch.float32).to(device)
-                    value[:] = value + noise.to(dtype=value.dtype) * jitter_std
-                    distance = noise.reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt() * jitter_std
+            elif not bool(has_peer.any()) and bool(counterfactual_mask[:, current_step].any()):
                 status = "counterfactual_fallback_jitter"
+            elif bool(counterfactual_mask[:, current_step].any()):
+                status = "counterfactual_partial_peer_replacement"
+            else:
+                status = "counterfactual_skipped"
+            fallback_reason = (
+                "none"
+                if fallback_count == 0
+                else fallback_reasons[0]
+                if fallback_count == batch_size and fallback_reasons[0]
+                else "partial_peer_selection_fallback"
+            )
+            if fallback_count:
                 warnings.append(
                     DifficultyWarning(
-                        code="predictive_jepa_plausible_wrong_gps_fallback",
-                        message="Plausible wrong GPS peer pool was insufficient; deterministic jitter fallback was used.",
+                        code=(
+                            "predictive_jepa_beam_offset_wrong_gps_fallback"
+                            if beam_constrained
+                            else "predictive_jepa_plausible_wrong_gps_fallback"
+                        ),
+                        message="Beam-offset-constrained wrong GPS peer selection used fallback for some samples.",
                         operator="predictive_jepa_robustness",
                         condition=condition,
                         sample_count=batch_size,
-                        affected_count=batch_size,
+                        affected_count=fallback_count,
                         fallback=fallback,
                     )
                 )
@@ -628,9 +691,16 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
             "counterfactual_mask": "gps_counterfactual_mask",
             "counterfactual_status": status,
             "scene_constraint": str(params.get("scene_constraint", "same_split_or_batch")),
+            "min_beam_offset": _beam_offset_threshold(params),
+            "peer_sample_id": peer_sample_ids,
+            "peer_sample_index": peer_indices,
+            "selection_pool_size": selection_pool_sizes,
+            "fallback_count": sum(1 for reason in fallback_reasons if reason),
+            "fallback_reasons": fallback_reasons,
             "distance_criteria": {
                 "min_l2": float(distance.min().item()) if distance.numel() else 0.0,
                 "mean_l2": float(distance.mean().item()) if distance.numel() else 0.0,
+                "per_sample_l2": distance.detach().cpu().tolist(),
             },
             "beam_offset_criteria": {
                 "offsets": beam_offset,
@@ -700,6 +770,258 @@ def _beam_offsets(target_beam: Any, source_sample_index: torch.Tensor) -> list[f
         return []
     source = source_sample_index.to(dtype=torch.long).clamp(0, max(int(flat.shape[0]) - 1, 0))
     return (flat[source] - flat).abs().tolist()
+
+
+def _select_visual_ambiguous_peers(
+    batch: dict[str, Any],
+    *,
+    image: torch.Tensor,
+    params: dict[str, Any],
+    current_step: int,
+    generator: torch.Generator,
+    seed: int,
+) -> dict[str, Any]:
+    batch_size = int(image.shape[0])
+    min_offset = _beam_offset_threshold(params)
+    scene_constraint = str(params.get("scene_constraint", "same_split_or_batch"))
+    features = _visual_feature_matrix(batch, image=image, current_step=current_step, source=str(params.get("visual_similarity_source", "image_tensor_current")))
+    sample_ids = _sample_ids(batch, batch_size)
+    peer_indices: list[int] = []
+    peer_ids: list[str | None] = []
+    beam_offsets: list[float | None] = []
+    similarity_scores: list[float | None] = []
+    selection_pool_sizes: list[int] = []
+    fallback_reasons: list[str] = []
+    top_k = max(1, int(params.get("visual_ambiguous_top_k", 1) or 1))
+    for sample_index in range(batch_size):
+        candidates = _candidate_peer_indices(
+            batch,
+            sample_index=sample_index,
+            batch_size=batch_size,
+            min_beam_offset=min_offset,
+            scene_constraint=scene_constraint,
+        )
+        selection_pool_sizes.append(len(candidates))
+        if not candidates:
+            peer_indices.append(-1)
+            peer_ids.append(None)
+            beam_offsets.append(None)
+            similarity_scores.append(None)
+            fallback_reasons.append("insufficient_visual_ambiguous_peer_pool")
+            continue
+        distances = []
+        for candidate in candidates:
+            distance = float((features[sample_index] - features[candidate]).pow(2).sum().sqrt().item())
+            distances.append((distance, candidate))
+        distances.sort(key=lambda item: (item[0], item[1]))
+        top = distances[: min(top_k, len(distances))]
+        chosen_pos = int(torch.randint(0, len(top), (1,), generator=generator).item()) if len(top) > 1 else 0
+        distance, peer_index = top[chosen_pos]
+        peer_indices.append(peer_index)
+        peer_ids.append(sample_ids[peer_index] if peer_index < len(sample_ids) else None)
+        offset = _beam_offsets_for_indices(batch.get("target_beam"), [peer_index], sample_index=sample_index)
+        beam_offsets.append(offset[0] if offset else None)
+        similarity_scores.append(1.0 / (1.0 + distance))
+        fallback_reasons.append("")
+    metadata = {
+        "operator": "visual_ambiguous_hard_negative",
+        "seed": seed,
+        "visual_similarity_source": str(params.get("visual_similarity_source", "image_tensor_current")),
+        "scene_constraint": scene_constraint,
+        "min_beam_offset": min_offset,
+        "peer_sample_index": peer_indices,
+        "peer_sample_id": peer_ids,
+        "similarity_score": similarity_scores,
+        "beam_offset": beam_offsets,
+        "selection_pool_size": selection_pool_sizes,
+        "fallback_count": sum(1 for reason in fallback_reasons if reason),
+        "fallback_reasons": fallback_reasons,
+        "counterfactual_input_intervention": False,
+    }
+    batch["visual_ambiguous_peer_index"] = torch.tensor(peer_indices, dtype=torch.long, device=image.device)
+    batch["visual_ambiguous_peer_sample_id"] = peer_ids
+    return metadata
+
+
+def _visual_feature_matrix(
+    batch: dict[str, Any],
+    *,
+    image: torch.Tensor,
+    current_step: int,
+    source: str,
+) -> torch.Tensor:
+    for key in (source, "image_embedding", "image_embeddings", "image_features"):
+        value = batch.get(key)
+        if not torch.is_tensor(value):
+            continue
+        feature = value.detach().to(dtype=torch.float32)
+        if feature.ndim >= 3:
+            step = max(0, min(current_step, int(feature.shape[1]) - 1))
+            feature = feature[:, step]
+        return feature.reshape(int(feature.shape[0]), -1).cpu()
+    if image.ndim >= 5:
+        step = max(0, min(current_step, int(image.shape[1]) - 1))
+        feature = image[:, step]
+    elif image.ndim >= 4:
+        feature = image
+    else:
+        feature = image.reshape(int(image.shape[0]), -1)
+    return feature.detach().to(dtype=torch.float32).reshape(int(feature.shape[0]), -1).cpu()
+
+
+def _select_peer_indices(
+    batch: dict[str, Any],
+    *,
+    batch_size: int,
+    min_beam_offset: float,
+    scene_constraint: str,
+    fallback: str,
+    generator: torch.Generator,
+) -> tuple[list[int], list[int], list[str]]:
+    peers: list[int] = []
+    pool_sizes: list[int] = []
+    fallback_reasons: list[str] = []
+    for sample_index in range(batch_size):
+        candidates = _candidate_peer_indices(
+            batch,
+            sample_index=sample_index,
+            batch_size=batch_size,
+            min_beam_offset=min_beam_offset,
+            scene_constraint=scene_constraint,
+        )
+        pool_sizes.append(len(candidates))
+        reason = ""
+        if not candidates and fallback == "relax_beam_offset":
+            candidates = _candidate_peer_indices(
+                batch,
+                sample_index=sample_index,
+                batch_size=batch_size,
+                min_beam_offset=0.0,
+                scene_constraint=scene_constraint,
+            )
+            reason = "relaxed_beam_offset" if candidates else ""
+        if not candidates:
+            peers.append(-1)
+            fallback_reasons.append(reason or "insufficient_batch_peer_pool")
+            continue
+        choice = int(torch.randint(0, len(candidates), (1,), generator=generator).item()) if len(candidates) > 1 else 0
+        peers.append(int(candidates[choice]))
+        fallback_reasons.append(reason)
+    return peers, pool_sizes, fallback_reasons
+
+
+def _candidate_peer_indices(
+    batch: dict[str, Any],
+    *,
+    sample_index: int,
+    batch_size: int,
+    min_beam_offset: float,
+    scene_constraint: str,
+) -> list[int]:
+    target_values = _target_beam_values(batch.get("target_beam"), batch_size=batch_size)
+    scenes = _metadata_values(batch, ("scene", "scene_id"), batch_size=batch_size)
+    splits = _metadata_values(batch, ("split", "split_name", "dataset_split"), batch_size=batch_size)
+    candidates: list[int] = []
+    for candidate in range(batch_size):
+        if candidate == sample_index:
+            continue
+        if not _constraint_allows(
+            sample_index,
+            candidate,
+            scene_constraint=scene_constraint,
+            scenes=scenes,
+            splits=splits,
+        ):
+            continue
+        if target_values is not None and abs(float(target_values[candidate]) - float(target_values[sample_index])) < min_beam_offset:
+            continue
+        candidates.append(candidate)
+    return candidates
+
+
+def _constraint_allows(
+    sample_index: int,
+    candidate: int,
+    *,
+    scene_constraint: str,
+    scenes: list[str | None],
+    splits: list[str | None],
+) -> bool:
+    mode = scene_constraint.strip().lower()
+    if mode in {"batch", "same_batch", "none", "any"}:
+        return True
+    if mode == "same_scene":
+        return bool(scenes[sample_index]) and scenes[sample_index] == scenes[candidate]
+    if mode == "same_split":
+        return bool(splits[sample_index]) and splits[sample_index] == splits[candidate]
+    if mode in {"same_scene_or_split", "same_scene_then_split"}:
+        if scenes[sample_index] is not None and scenes[candidate] is not None:
+            return scenes[sample_index] == scenes[candidate]
+        return bool(splits[sample_index]) and splits[sample_index] == splits[candidate]
+    if mode == "same_split_or_batch":
+        if splits[sample_index] is not None and splits[candidate] is not None:
+            return splits[sample_index] == splits[candidate]
+        return True
+    return True
+
+
+def _beam_offset_threshold(params: dict[str, Any]) -> float:
+    raw = params.get("min_beam_offset", params.get("beam_offset_min", params.get("wrong_gps_min_beam_offset", 0)))
+    try:
+        return max(0.0, float(raw or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _target_beam_values(target_beam: Any, *, batch_size: int) -> list[float] | None:
+    if not torch.is_tensor(target_beam):
+        return None
+    target = target_beam.detach().cpu()
+    if target.ndim == 0 or int(target.shape[0]) < batch_size:
+        return None
+    return target.reshape(int(target.shape[0]), -1)[:batch_size, 0].to(dtype=torch.float32).tolist()
+
+
+def _beam_offsets_for_indices(target_beam: Any, peer_indices: list[int], *, sample_index: int | None = None) -> list[float]:
+    max_peer = max([index for index in peer_indices if index >= 0], default=0)
+    batch_size = max(len(peer_indices), max_peer + 1)
+    if sample_index is not None:
+        batch_size = max(batch_size, sample_index + 1)
+    target_values = _target_beam_values(target_beam, batch_size=max(batch_size, len(peer_indices)))
+    if target_values is None:
+        return []
+    offsets: list[float] = []
+    if sample_index is not None:
+        for peer_index in peer_indices:
+            offsets.append(abs(float(target_values[peer_index]) - float(target_values[sample_index])) if peer_index >= 0 else 0.0)
+        return offsets
+    for index, peer_index in enumerate(peer_indices):
+        offsets.append(abs(float(target_values[peer_index]) - float(target_values[index])) if peer_index >= 0 else 0.0)
+    return offsets
+
+
+def _sample_ids(batch: dict[str, Any], batch_size: int) -> list[str]:
+    values = _metadata_values(batch, ("sample_id", "sample_ids"), batch_size=batch_size)
+    return [str(value) if value not in (None, "") else f"sample_{index}" for index, value in enumerate(values)]
+
+
+def _metadata_values(batch: dict[str, Any], names: tuple[str, ...], *, batch_size: int) -> list[str | None]:
+    metadata = batch.get("metadata")
+    for name in names:
+        value = None
+        if isinstance(metadata, dict) and name in metadata:
+            value = metadata[name]
+        elif name in batch:
+            value = batch[name]
+        if value is None:
+            continue
+        if torch.is_tensor(value):
+            flattened = value.detach().cpu().reshape(-1).tolist()
+            return [str(flattened[index]) if index < len(flattened) else None for index in range(batch_size)]
+        if isinstance(value, (list, tuple)):
+            return [str(value[index]) if index < len(value) else None for index in range(batch_size)]
+        return [str(value) for _ in range(batch_size)]
+    return [None for _ in range(batch_size)]
 
 
 def _image_time_shape(image: torch.Tensor) -> tuple[int, int]:

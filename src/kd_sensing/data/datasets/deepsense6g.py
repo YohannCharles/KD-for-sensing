@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 import hashlib
 from pathlib import Path
 import time
@@ -16,7 +15,6 @@ from kd_sensing.data.scenes import resolve_deepsense_scene
 from kd_sensing.data.beam_soft_targets import (
     SoftBeamLabelConfig,
     read_beam_power_vector,
-    resolve_soft_beam_label_config,
     soft_distribution_from_power_or_label,
 )
 from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
@@ -32,7 +30,6 @@ from kd_sensing.data.transform_ops.csi import (
     CSIDegradationConfig,
     CSIRMSNormalizer,
     load_csi_sequence,
-    resolve_csi_degradation_config,
 )
 from kd_sensing.data.transform_ops.image import (
     build_rgb_imagenet_transform,
@@ -49,7 +46,6 @@ from kd_sensing.data.transform_ops.lidar import (
     DEFAULT_LIDAR_ROI,
     LidarBEVNormalizer,
     LidarBEVStreamingStats,
-    load_lidar_background_points,
     load_lidar_bev_sequence,
 )
 from kd_sensing.data.transform_ops.mmwave import (
@@ -59,16 +55,11 @@ from kd_sensing.data.transform_ops.mmwave import (
     load_mmwave_feature_sequence,
 )
 from kd_sensing.data.transform_ops.radar import load_radar_maps
-from kd_sensing.data.datasets.deepsense6g_loaders import DeepSense6GModalityLoader
+from kd_sensing.data.datasets.deepsense6g_loaders import configure_deepsense6g_resource_readers
 from kd_sensing.data.datasets.deepsense6g_targets import (
-    DeepSense6GTargetProvider,
+    configure_deepsense6g_target_state,
     coerce_occlusion_stats,
-    resolve_occlusion_target_config,
-    resolve_position_target_config,
-)
-from kd_sensing.data.datasets.deepsense6g_cache_paths import (
-    resolve_image_cache_dir,
-    resolve_lidar_cache_dir_from_state,
+    prepare_deepsense6g_targets,
 )
 from kd_sensing.data.datasets.deepsense6g_columns import (
     ensure_enabled_contract_columns,
@@ -84,10 +75,18 @@ from kd_sensing.data.datasets.deepsense6g_contract import (
     validate_beam_target_source_contract,
 )
 from kd_sensing.data.datasets.deepsense6g_gps_contract import (
-    normalize_gps_bev_xy_source,
     normalize_gps_feature_mode,
     resolve_gps_angle_offset,
     resolve_gps_source_seq_len,
+)
+from kd_sensing.data.datasets.deepsense6g_sample_assembly import (
+    build_auxiliary_target_tensors,
+    build_beam_target_tensors,
+)
+from kd_sensing.data.datasets.deepsense6g_scalers import _StreamingFeatureStats
+from kd_sensing.data.datasets.deepsense6g_scalers import (
+    configure_deepsense6g_scaler_state,
+    prepare_deepsense6g_scalers_and_normalizers,
 )
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, resolve_image_profile
 from kd_sensing.registries import DATASETS
@@ -213,14 +212,7 @@ class DeepSense6GDataset(Dataset):
         self.image_profile = resolve_image_profile(image_profile)
         self.image_profile_spec = image_profile_spec(self.image_profile)
         self.image_size = tuple(image_size)
-        self.image_cache_policy = str(image_cache_policy or self._policy_from_cache_flags(image_use_cache, image_write_cache))
-        self.image_cache_dir = (
-            resolve_image_cache_dir(scene_id=self.scene_id, data_root=self.data_root, image_cache_dir=image_cache_dir)
-            if "image" in (enabled_modalities or ("image", "radar"))
-            else None
-        )
         self.image_cache_transform_version = str(image_cache_transform_version)
-        self.image_cache = self._build_image_cache() if "image" in (enabled_modalities or ("image", "radar")) else None
         self.fft_tuple = tuple(fft_tuple)
         self.clipped_range = clipped_range
         self.split = split
@@ -249,37 +241,27 @@ class DeepSense6GDataset(Dataset):
             explicit_value=gps_angle_offset_rad,
             source=gps_angle_offset_source,
         )
-        self.gps_normalize = gps_normalize
-        self.gps_scaler = gps_scaler
-        self.gps_scaler_metadata: dict[str, Any] = {}
-        self._gps_feature_cache: dict[int, np.ndarray] = {}
-        self._gps_frame_feature_cache: dict[str, np.ndarray] = {}
-        self.use_gps_bev_xy = bool(use_gps_bev_xy)
-        self.gps_bev_xy_source = normalize_gps_bev_xy_source(gps_bev_xy_source)
-        self.gps_bev_roi = tuple(gps_bev_roi or (-60.0, 60.0, -60.0, 60.0))
-        self._gps_bev_xy_cache: dict[int, np.ndarray] = {}
-        self.use_mmwave = "mmwave" in self.enabled_modalities
-        self.mmwave_normalize = bool(mmwave_normalize)
-        self.mmwave_scaler = mmwave_scaler
-        self.mmwave_scaler_metadata: dict[str, Any] = {}
-        self._mmwave_feature_cache: dict[int, np.ndarray] = {}
-        self._mmwave_frame_feature_cache: dict[str, np.ndarray] = {}
-        self.use_csi = "csi" in self.enabled_modalities
-        self.csi_train_rms = bool(csi_train_rms)
-        self.csi_rms_normalizer = self._coerce_csi_rms_normalizer(csi_rms_normalizer)
-        self.csi_degradation = resolve_csi_degradation_config(csi_degradation)
-        self._csi_clean_cache: dict[int, np.ndarray] = {}
-        self._csi_degraded_cache: dict[int, np.ndarray] = {}
-        self._csi_degradation_diagnostics: dict[int, dict[str, Any]] = {}
-        self._csi_cache = self._csi_clean_cache
-        self.occlusion_target_config = resolve_occlusion_target_config(occlusion_target)
-        self.occlusion_target_enabled = bool(self.occlusion_target_config["enabled"])
-        self.position_target_config = resolve_position_target_config(position_target)
-        self.soft_beam_label_config = resolve_soft_beam_label_config(soft_beam_labels)
-        self._soft_beam_distribution_cache: dict[str, tuple[np.ndarray, bool]] = {}
-        self.position_target_enabled = bool(self.position_target_config["enabled"])
-        self.position_target_source = str(self.position_target_config["source"])
-        self.position_target_normalize = bool(self.position_target_config["normalize"])
+        configure_deepsense6g_scaler_state(
+            self,
+            gps_normalize=gps_normalize,
+            gps_scaler=gps_scaler,
+            use_gps_bev_xy=use_gps_bev_xy,
+            gps_bev_xy_source=gps_bev_xy_source,
+            gps_bev_roi=gps_bev_roi,
+            mmwave_normalize=mmwave_normalize,
+            mmwave_scaler=mmwave_scaler,
+            csi_train_rms=csi_train_rms,
+            csi_rms_normalizer=csi_rms_normalizer,
+            csi_degradation=csi_degradation,
+        )
+        configure_deepsense6g_target_state(
+            self,
+            occlusion_target=occlusion_target,
+            occlusion_target_stats=occlusion_target_stats,
+            position_target=position_target,
+            position_target_scaler=position_target_scaler,
+            soft_beam_labels=soft_beam_labels,
+        )
         self.use_lidar = "lidar" in self.enabled_modalities
         self.lidar_encoding = str(lidar_encoding)
         if self.lidar_encoding != "bev":
@@ -306,16 +288,17 @@ class DeepSense6GDataset(Dataset):
         self.lidar_augment = lidar_augment
         self.lidar_point_dropout = lidar_point_dropout
         self.lidar_jitter_std = lidar_jitter_std
-        self.lidar_cache_dir = resolve_lidar_cache_dir_from_state(self, lidar_cache_dir) if self.use_lidar else None
-        self.lidar_background_points = (
-            load_lidar_background_points(self.data_root, lidar_background_path) if self.use_lidar else None
+        configure_deepsense6g_resource_readers(
+            self,
+            enabled_modalities=self.enabled_modalities,
+            image_cache_dir=image_cache_dir,
+            image_use_cache=image_use_cache,
+            image_write_cache=image_write_cache,
+            image_cache_policy=image_cache_policy,
+            image_size=image_size,
+            lidar_cache_dir=lidar_cache_dir,
+            lidar_background_path=lidar_background_path,
         )
-        self._lidar_bev_cache: OrderedDict[int, np.ndarray] = OrderedDict()
-        if "image" not in self.enabled_modalities:
-            self.image_cache_dir = None
-            self.image_cache = None
-            self.image_cache_policy = "off"
-        self.transform = self._build_image_transform(image_size) if "image" in self.enabled_modalities else None
         self.samples = create_samples(
             self.root_csv,
             portion=portion,
@@ -333,16 +316,7 @@ class DeepSense6GDataset(Dataset):
                 or (self.position_target_enabled and self.position_target_source == "last_input_gps_local_xy")
             ),
         )
-        self.target_provider = DeepSense6GTargetProvider(
-            self,
-            occlusion_stats=occlusion_target_stats,
-            position_scaler=position_target_scaler,
-        )
-        self.modality_loader = DeepSense6GModalityLoader(self)
-        if self.beam_label_cache_mode == "eager":
-            self._prepare_beam_label_cache()
-        if self.occlusion_target_enabled:
-            self._prepare_occlusion_target_stats()
+        prepare_deepsense6g_targets(self)
         ensure_enabled_contract_columns(
             root_csv=self.root_csv,
             samples=self.samples,
@@ -354,17 +328,7 @@ class DeepSense6GDataset(Dataset):
             gps_feature_mode=self.gps_feature_mode,
             supported_gps_modes=GPS_FEATURE_DIMS,
         )
-        if self.use_gps:
-            self._prepare_gps_scaler()
-        if self.position_target_enabled:
-            self._ensure_position_target_columns()
-            self._prepare_position_target_scaler()
-        if self.use_mmwave:
-            self._prepare_mmwave_scaler()
-        if self.use_csi:
-            self._prepare_csi_rms_normalizer()
-        if self.use_lidar:
-            self._prepare_lidar_normalizer_from_config()
+        prepare_deepsense6g_scalers_and_normalizers(self)
 
     def __len__(self) -> int:
         return len(self.samples.input_beam_paths)
@@ -412,24 +376,14 @@ class DeepSense6GDataset(Dataset):
         future_beam_paths = self.samples.future_beam_paths[idx][: self.num_pred]
         target_beam_paths = self._target_beam_paths(beam_paths, future_beam_paths)
 
-        def build_beam_targets() -> tuple[list[int], list[int], list[int], list[int]]:
-            raw_input_beam = [
-                self._input_raw_beam_label_for_index(idx, horizon, beam_path)
-                for horizon, beam_path in enumerate(beam_paths)
-            ]
-            raw_target_beam = [
-                self._target_raw_beam_label_for_index(idx, horizon, beam_path)
-                for horizon, beam_path in enumerate(target_beam_paths)
-            ]
-            input_beam = [self._map_beam_label(label) for label in raw_input_beam]
-            target_beam = [self._map_beam_label(label) for label in raw_target_beam]
-            return input_beam, target_beam, raw_input_beam, raw_target_beam
-
-        input_beam, target_beam, raw_input_beam, raw_target_beam = record("targets", build_beam_targets)
-        sample = {
-            "input_beam": torch.tensor(input_beam, dtype=torch.int64),
-            "target_beam": torch.tensor(target_beam, dtype=torch.int64),
-        }
+        sample, beam_metadata = record(
+            "targets",
+            lambda: build_beam_target_tensors(self, idx, beam_paths, target_beam_paths),
+        )
+        input_beam = beam_metadata["input_beam"]
+        target_beam = beam_metadata["target_beam"]
+        raw_input_beam = beam_metadata["raw_input_beam"]
+        raw_target_beam = beam_metadata["raw_target_beam"]
         if self.soft_beam_label_config.enabled:
             distributions, mask = record(
                 "targets",
@@ -438,26 +392,10 @@ class DeepSense6GDataset(Dataset):
             sample["target_beam_distribution"] = torch.tensor(distributions, dtype=torch.float32)
             sample["target_beam_distribution_mask"] = torch.tensor(mask, dtype=torch.bool)
 
-        def build_auxiliary_targets() -> dict[str, torch.Tensor]:
-            values: dict[str, torch.Tensor] = {}
-            if self.occlusion_target_enabled:
-                occlusion_label, occlusion_valid = self.target_provider.occlusion_targets_for_paths(future_beam_paths)
-                values["occlusion_label"] = torch.tensor(occlusion_label, dtype=torch.float32)
-                values["occlusion_valid"] = torch.tensor(occlusion_valid, dtype=torch.bool)
-            if self.position_target_enabled:
-                position_target, position_valid = self.target_provider.position_targets_for_index(idx)
-                if self.position_target_scaler is not None and self.position_target_normalize:
-                    scaled = position_target.copy()
-                    valid = position_valid.astype(bool)
-                    if np.any(valid):
-                        scaled[valid] = self.position_target_scaler.transform(scaled[valid])
-                    position_target = scaled
-                values["position_target"] = torch.tensor(position_target, dtype=torch.float32)
-                values["position_valid"] = torch.tensor(position_valid, dtype=torch.bool)
-            return values
-
         if self.occlusion_target_enabled or self.position_target_enabled:
-            sample.update(record("auxiliary_targets", build_auxiliary_targets))
+            sample.update(
+                record("auxiliary_targets", lambda: build_auxiliary_target_tensors(self, idx, future_beam_paths))
+            )
         if "image" in self.enabled_modalities:
             sample["image"] = record("image", lambda: self.modality_loader.load_image(idx))
         if "radar" in self.enabled_modalities:
@@ -1153,36 +1091,3 @@ class DeepSense6GDataset(Dataset):
                 while len(self._lidar_bev_cache) > self.lidar_memory_cache_max_items:
                     self._lidar_bev_cache.popitem(last=False)
         return bev
-
-
-class _StreamingFeatureStats:
-    def __init__(self) -> None:
-        self.count = 0
-        self.sum: np.ndarray | None = None
-        self.sum_sq: np.ndarray | None = None
-
-    def update(self, features: np.ndarray) -> None:
-        array = np.asarray(features, dtype=np.float64)
-        if array.ndim != 2:
-            raise ValueError(f"Streaming feature stats expect [N, D] features, got {array.shape}.")
-        if array.shape[0] == 0:
-            return
-        batch_sum = array.sum(axis=0)
-        batch_sum_sq = np.square(array).sum(axis=0)
-        if self.sum is None:
-            self.sum = batch_sum
-            self.sum_sq = batch_sum_sq
-        else:
-            self.sum += batch_sum
-            assert self.sum_sq is not None
-            self.sum_sq += batch_sum_sq
-        self.count += int(array.shape[0])
-
-    def finalize(self) -> tuple[np.ndarray, np.ndarray]:
-        if self.count <= 0 or self.sum is None or self.sum_sq is None:
-            raise ValueError("Cannot fit scaler from an empty feature stream.")
-        mean = self.sum / float(self.count)
-        variance = np.maximum(self.sum_sq / float(self.count) - np.square(mean), 0.0)
-        scale = np.sqrt(variance)
-        scale[scale < 1e-8] = 1.0
-        return mean.astype(np.float32), scale.astype(np.float32)

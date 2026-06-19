@@ -140,6 +140,52 @@ PREDICTIVE_JEPA_ALIASES = {
     item["id"].split("_", 1)[0].lower(): item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS
 }
 
+GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "A0_visual_ambiguous_peer",
+        "severity": 10.0,
+        "description": "mark visually similar same-split/scene peer whose beam differs by a configured margin",
+        "params": {
+            "visual_ambiguous_peer": True,
+            "visual_similarity_source": "image_tensor_current",
+            "min_beam_offset": 1,
+            "scene_constraint": "same_split_or_batch",
+        },
+    },
+    {
+        "id": "A1_beam_offset_wrong_gps",
+        "severity": 11.0,
+        "description": "replace current-step GPS by a peer constrained by target beam offset",
+        "params": {
+            "plausible_wrong_gps": True,
+            "beam_offset_constrained_wrong_gps": True,
+            "min_beam_offset": 1,
+            "scene_constraint": "same_split_or_batch",
+            "gps_counterfactual_fallback": "deterministic_jitter",
+        },
+    },
+    {
+        "id": "A2_visual_ambiguous_wrong_gps",
+        "severity": 12.0,
+        "description": "combine visual ambiguity metadata with beam-offset-constrained wrong GPS",
+        "params": {
+            "visual_ambiguous_peer": True,
+            "visual_similarity_source": "image_tensor_current",
+            "plausible_wrong_gps": True,
+            "beam_offset_constrained_wrong_gps": True,
+            "min_beam_offset": 1,
+            "scene_constraint": "same_split_or_batch",
+            "gps_counterfactual_fallback": "deterministic_jitter",
+        },
+    },
+)
+GPS_QUERY_ADVANTAGE_CONDITION_IDS = tuple(item["id"] for item in GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS)
+GPS_QUERY_ADVANTAGE_ALIASES = {
+    item["id"].lower(): item["id"] for item in GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS
+} | {
+    item["id"].split("_", 1)[0].lower(): item["id"] for item in GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS
+}
+
 
 def is_scenario_d_condition(value: Any) -> bool:
     try:
@@ -152,6 +198,14 @@ def is_scenario_d_condition(value: Any) -> bool:
 def is_predictive_jepa_condition(value: Any) -> bool:
     try:
         normalize_predictive_jepa_condition_id(value)
+    except ValueError:
+        return False
+    return True
+
+
+def is_gps_query_advantage_condition(value: Any) -> bool:
+    try:
+        normalize_gps_query_advantage_condition_id(value)
     except ValueError:
         return False
     return True
@@ -174,6 +228,16 @@ def normalize_predictive_jepa_condition_id(value: Any) -> str:
     resolved = PREDICTIVE_JEPA_ALIASES.get(text.lower())
     if resolved is None:
         raise ValueError(_unknown_predictive_jepa_message(text))
+    return resolved
+
+
+def normalize_gps_query_advantage_condition_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(_unknown_gps_query_advantage_message(text))
+    resolved = GPS_QUERY_ADVANTAGE_ALIASES.get(text.lower())
+    if resolved is None:
+        raise ValueError(_unknown_gps_query_advantage_message(text))
     return resolved
 
 
@@ -200,12 +264,27 @@ def predictive_jepa_condition(condition_id: Any) -> dict[str, Any]:
     raise ValueError(_unknown_predictive_jepa_message(normalized))
 
 
+def gps_query_advantage_condition(condition_id: Any) -> dict[str, Any]:
+    normalized = normalize_gps_query_advantage_condition_id(condition_id)
+    for item in GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS:
+        if item["id"] == normalized:
+            return {
+                **item,
+                "params": dict(item.get("params", {})),
+            }
+    raise ValueError(_unknown_gps_query_advantage_message(normalized))
+
+
 def scenario_d_severity(condition_id: Any) -> float:
     return float(scenario_d_condition(condition_id)["severity"])
 
 
 def predictive_jepa_severity(condition_id: Any) -> float:
     return float(predictive_jepa_condition(condition_id)["severity"])
+
+
+def gps_query_advantage_severity(condition_id: Any) -> float:
+    return float(gps_query_advantage_condition(condition_id)["severity"])
 
 
 def scenario_d_condition_for_severity(severity: Any) -> dict[str, Any]:
@@ -265,7 +344,12 @@ def normalize_predictive_jepa_operator_params(
         or raw_params.get("condition")
         or condition
     )
-    condition_payload = predictive_jepa_condition(raw_condition)
+    if is_predictive_jepa_condition(raw_condition):
+        condition_payload = predictive_jepa_condition(raw_condition)
+    elif is_gps_query_advantage_condition(raw_condition):
+        condition_payload = gps_query_advantage_condition(raw_condition)
+    else:
+        raise ValueError(_unknown_predictive_jepa_message(raw_condition))
     merged = dict(condition_payload.get("params", {}))
     merged.update(raw_params)
     merged["predictive_condition"] = str(condition_payload["id"])
@@ -282,7 +366,8 @@ def normalize_predictive_jepa_operator_params(
 def _validate_predictive_jepa_params(params: Mapping[str, Any], *, profile_id: str, operator_type: str) -> None:
     condition = str(params.get("predictive_condition", params.get("condition", "")))
     if condition:
-        normalize_predictive_jepa_condition_id(condition)
+        if not (is_predictive_jepa_condition(condition) or is_gps_query_advantage_condition(condition)):
+            raise ValueError(_unknown_predictive_jepa_message(condition))
     for field in ("occlusion_ratio", "weather_severity"):
         if field not in params or params[field] in (None, ""):
             continue
@@ -302,6 +387,14 @@ def _validate_predictive_jepa_params(params: Mapping[str, Any], *, profile_id: s
         if value <= 0:
             raise ValueError(
                 f"difficulty profile '{profile_id}' operator '{operator_type}' {field} must be positive, got {value}."
+            )
+    for field in ("min_beam_offset", "beam_offset_min", "wrong_gps_min_beam_offset"):
+        if field not in params or params[field] in (None, ""):
+            continue
+        value = _finite_float(params[field], field=field, profile_id=profile_id, operator_type=operator_type)
+        if value < 0:
+            raise ValueError(
+                f"difficulty profile '{profile_id}' operator '{operator_type}' {field} must be non-negative, got {value}."
             )
 
 
@@ -353,3 +446,8 @@ def _unknown_scenario_d_message(value: Any) -> str:
 def _unknown_predictive_jepa_message(value: Any) -> str:
     available = ", ".join(PREDICTIVE_JEPA_CONDITION_IDS)
     return f"Unknown Predictive JEPA robustness condition '{value}'. Available P-levels: {available}."
+
+
+def _unknown_gps_query_advantage_message(value: Any) -> str:
+    available = ", ".join(GPS_QUERY_ADVANTAGE_CONDITION_IDS)
+    return f"Unknown GPS-query advantage condition '{value}'. Available advantage levels: {available}."

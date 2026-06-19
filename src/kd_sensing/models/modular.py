@@ -15,6 +15,7 @@ from kd_sensing.modalities import (
 )
 from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
 from kd_sensing.models.csi import PilotDualViewCSIEncoder
+import kd_sensing.models.geometry_prior  # noqa: F401
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image_encoders import ResNet18ImageEncoder
 from kd_sensing.models.lidar import LidarFeatureExtractor
@@ -673,6 +674,10 @@ class ModularSequenceModel(nn.Module):
         csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
         paper_metadata: dict[str, Any] | None = None,
+        geometry_prior: bool | dict[str, Any] | None = None,
+        logit_fusion: dict[str, Any] | None = None,
+        geometry_prior_fusion: dict[str, Any] | None = None,
+        reranker: bool | dict[str, Any] | None = None,
         **_: Any,
     ):
         super().__init__()
@@ -725,6 +730,42 @@ class ModularSequenceModel(nn.Module):
         beam_cfg.setdefault("num_classes", self.num_classes)
         self.head_configs = {"beam": dict(beam_cfg)}
         self.heads = nn.ModuleDict({"beam": HEADS.build(beam_cfg)})
+        self.geometry_prior_config: dict[str, Any] = _optional_component_config(
+            geometry_prior,
+            default_type="gps_geometry_prior",
+        )
+        self.geometry_prior: nn.Module | None = None
+        self.geometry_prior_fusion_config: dict[str, Any] = {}
+        self.geometry_prior_fusion: nn.Module | None = None
+        if self.geometry_prior_config:
+            if "gps" not in self.modalities:
+                raise ValueError("model.primary.geometry_prior.enabled=true requires 'gps' in model.primary.modalities.")
+            prior_cfg = dict(self.geometry_prior_config)
+            prior_cfg.setdefault("num_classes", self.num_classes)
+            prior_cfg.setdefault("num_pred", self.num_pred)
+            prior_cfg.setdefault("history_window", self.num_pred)
+            prior_cfg.setdefault("gps_source_window", self.num_pred)
+            self.geometry_prior_config = prior_cfg
+            self.geometry_prior = HEADS.build(prior_cfg)
+            fusion_cfg = _optional_component_config(
+                logit_fusion or geometry_prior_fusion or prior_cfg.get("fusion"),
+                default_type="geometry_prior_logit_fusion",
+                default_enabled=True,
+            )
+            fusion_cfg.setdefault("num_classes", self.num_classes)
+            fusion_cfg.setdefault("mode", prior_cfg.get("mode", "assistive"))
+            self.geometry_prior_fusion_config = fusion_cfg
+            self.geometry_prior_fusion = HEADS.build(fusion_cfg)
+        self.reranker_config: dict[str, Any] = _optional_component_config(
+            reranker,
+            default_type="safe_residual_beam_reranker",
+        )
+        self.reranker: nn.Module | None = None
+        if self.reranker_config:
+            rerank_cfg = dict(self.reranker_config)
+            rerank_cfg.setdefault("num_classes", self.num_classes)
+            self.reranker_config = rerank_cfg
+            self.reranker = HEADS.build(rerank_cfg)
         self.auxiliary_heads = TemporalAuxiliaryHeads(
             core_output_dim,
             num_pred=self.num_pred,
@@ -744,10 +785,11 @@ class ModularSequenceModel(nn.Module):
         image_observability_score: torch.Tensor | None = None,
         gps_valid_mask: torch.Tensor | None = None,
         gps_delay_steps: torch.Tensor | None = None,
+        gps_counterfactual_mask: torch.Tensor | None = None,
         benchmark_condition_metadata: dict[str, Any] | None = None,
         image_degradation_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del gps_valid_mask, gps_delay_steps, image_degradation_metadata
+        del image_degradation_metadata
         raw_inputs = {
             "image": image_batch,
             "radar": radar_batch,
@@ -759,6 +801,9 @@ class ModularSequenceModel(nn.Module):
         reliability_inputs = {
             "image_valid_mask": image_valid_mask,
             "image_observability_score": image_observability_score,
+            "gps_valid_mask": gps_valid_mask,
+            "gps_delay_steps": gps_delay_steps,
+            "gps_counterfactual_mask": gps_counterfactual_mask,
             "benchmark_condition_metadata": benchmark_condition_metadata,
         }
         encoded: dict[str, torch.Tensor] = {}
@@ -802,6 +847,9 @@ class ModularSequenceModel(nn.Module):
                     encoder_runtime_metadata[modality] = {
                         "temporal_auxiliary": temporal_aux_metadata,
                     }
+                predictive_diagnostics = getattr(encoder, "last_predictive_gps_query_diagnostics", None)
+                if isinstance(predictive_diagnostics, dict):
+                    encoder_runtime_metadata.setdefault(modality, {})["predictive_gps_query"] = predictive_diagnostics
                 batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
                 encoded[modality] = features
                 projected_features = self.projectors[modality](features)
@@ -833,7 +881,41 @@ class ModularSequenceModel(nn.Module):
             core_input = stacked
             input_features = torch.cat(ordered, dim=-1)
         output_features = self.representation_core(core_input)
-        logits = self.heads["beam"](output_features)
+        image_logits = self.heads["beam"](output_features)
+        logits = image_logits
+        geometry_prior_payload: dict[str, Any] | None = None
+        geometry_fusion_payload: dict[str, Any] | None = None
+        rerank_payload: dict[str, Any] | None = None
+        if self.geometry_prior is not None and self.geometry_prior_fusion is not None:
+            geometry_prior_payload = self.geometry_prior(
+                gps_batch,
+                target_time=int(image_logits.shape[1]),
+                gps_valid_mask=gps_valid_mask,
+                gps_delay_steps=gps_delay_steps,
+                gps_counterfactual_mask=gps_counterfactual_mask,
+            )
+            geometry_fusion_payload = self.geometry_prior_fusion(
+                image_logits=image_logits,
+                prior_logits=geometry_prior_payload["logits"],
+                prior_distribution=geometry_prior_payload.get("distribution"),
+                prior_availability_mask=geometry_prior_payload.get("availability_mask"),
+                image_valid_mask=image_valid_mask,
+                image_observability_score=image_observability_score,
+                gps_valid_mask=gps_valid_mask,
+                gps_delay_steps=gps_delay_steps,
+                gps_counterfactual_mask=gps_counterfactual_mask,
+            )
+            logits = geometry_fusion_payload["logits"]
+        if self.reranker is not None:
+            rerank_payload = self.reranker(
+                anchor_logits=image_logits,
+                geometry_prior_logits=geometry_prior_payload["logits"] if geometry_prior_payload is not None else None,
+                image_observability_score=image_observability_score,
+                gps_valid_mask=gps_valid_mask,
+                gps_delay_steps=gps_delay_steps,
+                gps_counterfactual_mask=gps_counterfactual_mask,
+            )
+            logits = rerank_payload["logits"]
         output = {
             "logits": logits,
             "input_features": input_features,
@@ -843,10 +925,58 @@ class ModularSequenceModel(nn.Module):
             "encoder_features": encoded,
             "image_profile": self.image_profile,
         }
+        if geometry_prior_payload is not None and geometry_fusion_payload is not None:
+            fusion_diagnostics = dict(geometry_fusion_payload.get("diagnostics", {}))
+            output.update(
+                {
+                    "anchor_logits": image_logits,
+                    "image_logits": image_logits,
+                    "geometry_prior_logits": geometry_prior_payload["logits"],
+                    "geometry_prior_distribution": geometry_prior_payload["distribution"],
+                    "geometry_prior_entropy": geometry_prior_payload["entropy"],
+                    "geometry_prior_topk_indices": geometry_prior_payload["topk_indices"],
+                    "geometry_prior_topk_probabilities": geometry_prior_payload["topk_probabilities"],
+                    "geometry_prior_availability_mask": geometry_prior_payload["availability_mask"],
+                    "geometry_prior_unavailable_reason": geometry_prior_payload["unavailable_reason"],
+                    "geometry_prior_diagnostics": {
+                        "entropy": geometry_prior_payload["entropy"],
+                        "topk_indices": geometry_prior_payload["topk_indices"],
+                        "availability_mask": geometry_prior_payload["availability_mask"],
+                        "unavailable_reason": geometry_prior_payload["unavailable_reason"],
+                        "metadata": geometry_prior_payload["metadata"],
+                    },
+                    "geometry_prior_fusion_diagnostics": fusion_diagnostics,
+                    "branch_weights": fusion_diagnostics.get("branch_weights"),
+                }
+            )
+        elif rerank_payload is not None:
+            output["anchor_logits"] = image_logits
+        if rerank_payload is not None:
+            rerank_diagnostics = dict(rerank_payload.get("diagnostics", {}))
+            output.update(
+                {
+                    "rerank_logits": rerank_diagnostics.get("rerank_logits", rerank_payload["logits"]),
+                    "safe_rerank_diagnostics": rerank_diagnostics,
+                    "candidate_ids": rerank_diagnostics.get("candidate_ids"),
+                    "candidate_source_mask": rerank_diagnostics.get("candidate_source_mask"),
+                    "selected_source": rerank_diagnostics.get("selected_source"),
+                    "target_rank_delta": rerank_diagnostics.get("target_rank_delta"),
+                    "fallback_reason": rerank_diagnostics.get("fallback_reason_code"),
+                    "gate_confidence": rerank_diagnostics.get("gate_confidence"),
+                    "condition_id_consumed": False,
+                }
+            )
         if encoder_auxiliary_features:
             output["encoder_auxiliary_features"] = encoder_auxiliary_features
         if encoder_runtime_metadata:
             output["runtime_metadata"] = {"encoder_temporal_auxiliary": encoder_runtime_metadata}
+            predictive_runtime = {
+                modality: metadata["predictive_gps_query"]
+                for modality, metadata in encoder_runtime_metadata.items()
+                if isinstance(metadata, dict) and isinstance(metadata.get("predictive_gps_query"), dict)
+            }
+            if predictive_runtime:
+                output["predictive_gps_query_diagnostics"] = predictive_runtime
         feature_consistency_diagnostics = getattr(self.representation_core, "last_feature_consistency_diagnostics", None)
         if isinstance(feature_consistency_diagnostics, dict):
             output["feature_consistency_diagnostics"] = feature_consistency_diagnostics
@@ -906,11 +1036,44 @@ class ModularSequenceModel(nn.Module):
         for name, metadata in heads.items():
             if _component_consumes_reliability_metadata(self.heads[name], metadata):
                 reliability_consumers.append(f"heads.{name}")
+        geometry_prior_metadata: dict[str, Any] | None = None
+        if self.geometry_prior is not None:
+            geometry_prior_metadata = _component_training_strategy_metadata(
+                self.geometry_prior,
+                self.geometry_prior_config,
+                role="geometry_prior",
+            )
+            if _component_consumes_reliability_metadata(self.geometry_prior, geometry_prior_metadata):
+                reliability_consumers.append("geometry_prior")
+        geometry_fusion_metadata: dict[str, Any] | None = None
+        if self.geometry_prior_fusion is not None:
+            geometry_fusion_metadata = _component_training_strategy_metadata(
+                self.geometry_prior_fusion,
+                self.geometry_prior_fusion_config,
+                role="logit_fusion",
+            )
+            if _component_consumes_reliability_metadata(self.geometry_prior_fusion, geometry_fusion_metadata):
+                reliability_consumers.append("geometry_prior_logit_fusion")
+        reranker_metadata: dict[str, Any] | None = None
+        if self.reranker is not None:
+            reranker_metadata = _component_training_strategy_metadata(
+                self.reranker,
+                self.reranker_config,
+                role="safe_residual_reranker",
+            )
+            if _component_consumes_reliability_metadata(self.reranker, reranker_metadata):
+                reliability_consumers.append("safe_residual_reranker")
         core_type = str(self.representation_core_config.get("type", self.representation_core.__class__.__name__))
         metadata = {
             "type": "modular_sequence",
             "architecture_category": "component_baseline",
+            "model_group": "safe_residual_beam_rerank_fusion"
+            if reranker_metadata
+            else "geometry_prior_beam_fusion"
+            if geometry_prior_metadata
+            else "modular_sequence",
             "modalities": list(self.modalities),
+            "enabled_modalities": list(self.modalities),
             "d_model": self.d_model,
             "encoders": encoders,
             "projectors": projectors,
@@ -919,6 +1082,27 @@ class ModularSequenceModel(nn.Module):
             "representation_core_class": self.representation_core.__class__.__name__,
             "representation_core": core_metadata,
             "heads": heads,
+            "geometry_prior": geometry_prior_metadata
+            or {
+                "enabled": False,
+                "mode": "disabled",
+            },
+            "geometry_prior_mode": (geometry_prior_metadata or {}).get("prior_mode", "disabled"),
+            "fusion_mode": (geometry_fusion_metadata or {}).get("fusion_mode", core_type),
+            "logit_fusion": geometry_fusion_metadata or {"enabled": False, "mode": "disabled"},
+            "safe_residual_reranker": reranker_metadata
+            or {
+                "enabled": False,
+                "mode": "disabled",
+            },
+            "reranker": reranker_metadata
+            or {
+                "enabled": False,
+                "mode": "disabled",
+            },
+            "loss_mode": "config_resolved",
+            "teacher_guidance_mode": "config_resolved",
+            "curriculum_mode": "config_resolved",
             "consumes_reliability_metadata": bool(reliability_consumers),
             "reliability_metadata_consumers": reliability_consumers,
             "reliability_metadata": {
@@ -927,6 +1111,9 @@ class ModularSequenceModel(nn.Module):
                 "fields": [
                     "image_valid_mask",
                     "image_observability_score",
+                    "gps_valid_mask",
+                    "gps_delay_steps",
+                    "gps_counterfactual_mask",
                     "benchmark_condition_metadata",
                 ],
             },
@@ -1032,6 +1219,30 @@ def _default_encoder_type(modality: str, image_profile: str) -> str:
         "mmwave": "mmwave_mlp",
         "csi": "pilot_dual_view_csi",
     }[modality]
+
+
+def _optional_component_config(
+    raw_cfg: Any,
+    *,
+    default_type: str,
+    default_enabled: bool = False,
+) -> dict[str, Any]:
+    if raw_cfg in (None, False, "", "none"):
+        if not default_enabled:
+            return {}
+        raw_cfg = {}
+    if raw_cfg is True:
+        raw_cfg = {}
+    if isinstance(raw_cfg, str):
+        raw_cfg = {"type": raw_cfg}
+    if not isinstance(raw_cfg, dict):
+        raise ValueError(f"Optional component config must be a mapping, string, bool, or null, got {type(raw_cfg).__name__}.")
+    cfg = dict(raw_cfg)
+    enabled = cfg.pop("enabled", default_enabled or bool(cfg))
+    if not enabled:
+        return {}
+    cfg.setdefault("type", default_type)
+    return cfg
 
 
 def _encoder_context_dependencies(encoder: nn.Module) -> tuple[str, ...]:

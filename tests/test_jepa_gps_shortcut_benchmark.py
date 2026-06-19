@@ -9,12 +9,65 @@ import pytest
 import torch
 
 from kd_sensing.cli import jepa_gps_shortcut_benchmark as benchmark_cli
+from kd_sensing.cli import predictive_gps_query_visualizations as predictive_viz_cli
 from kd_sensing.diagnostics import jepa_visual_analysis as jva
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
+from kd_sensing.diagnostics.predictive_gps_query_visualizations import run_predictive_gps_query_visualizations
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDICTIVE_PLUS_PLUS_STRICT_MANIFEST = (
+    ROOT / "configs/diagnostics/jepa_gps_shortcut_benchmark_predictive_gps_query_plus_plus_strict.yaml"
+)
 
 
 def _write_minimal_config(path: Path) -> None:
     path.write_text("experiment:\n  seed: 1\n", encoding="utf-8")
+
+
+def _write_real_forward_config(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "experiment": {"name": "real_forward_smoke", "task": "fusion", "seed": 5, "device": "cpu"},
+                "data": {
+                    "dataset": {
+                        "type": "synthetic_sequence",
+                        "length": 4,
+                        "seq_len": 3,
+                        "num_pred": 1,
+                        "num_classes": 8,
+                        "use_gps": True,
+                        "gps_input_size": 3,
+                        "mock_data": True,
+                    },
+                    "dataloader": {"test_batch_size": 2, "num_workers": 0, "pin_memory": False},
+                },
+                "model": {
+                    "num_classes": 8,
+                    "num_pred": 1,
+                    "seq_length": 3,
+                    "downsample_ratio": 1,
+                    "primary": {
+                        "type": "modular_sequence",
+                        "modalities": ["gps"],
+                        "gps_input_size": 3,
+                        "feature_size": 8,
+                        "d_model": 8,
+                        "num_classes": 8,
+                        "num_pred": 1,
+                        "representation_core": {"type": "single_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+                        "heads": {"beam": {"type": "beam_head", "dropout": 0.0}},
+                    },
+                },
+                "loss": {"type": "cross_entropy"},
+                "training": {"transfer": {"non_blocking": False}, "cpu_threads": {"intra_op": 1, "inter_op": 1}},
+                "scheduler": {"type": "none"},
+                "evaluation": {"k_values": [1, 3, 5], "dba_delta": 5, "dba_distance_mode": "linear"},
+                "output": {"dir": "outputs", "run_name": "real_forward_smoke"},
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _manifest_dict(config: Path, weights: Path) -> dict:
@@ -186,6 +239,7 @@ def _predictive_manifest_dict(config: Path, weights: Path) -> dict:
                 "type": "predictive_jepa_robustness",
                 "preset": "canonical",
                 "history_window": 2,
+                "gps_query_advantage_slice": {"enabled": True},
                 "conditions": [
                     "P0_clean_current",
                     "P1_current_frame_missing_history_available",
@@ -334,9 +388,63 @@ def test_predictive_manifest_preset_required_groups_and_comparability(tmp_path: 
     ]
     assert predictive["history_window"] == 2
     assert predictive["predictive_conditions"][-1]["operator_params"]["plausible_wrong_gps"] is True
+    advantage = predictive["gps_query_advantage_slice"]
+    assert advantage["enabled"] is True
+    assert [condition["id"] for condition in advantage["conditions"]] == [
+        "A0_visual_ambiguous_peer",
+        "A1_beam_offset_wrong_gps",
+        "A2_visual_ambiguous_wrong_gps",
+    ]
+    assert advantage["combined_condition_count"] == 8
+    assert {condition["id"] for condition in advantage["combined_conditions"]} >= {
+        "C3_random_async+D3_motion_blur",
+        "C4_severe_async+D7_joint_worst_case",
+    }
+    renormalized_cxd = bench._normalize_gps_query_advantage_cxd_condition(
+        {
+            "gps_condition": advantage["combined_conditions"][0]["gps_condition"],
+            "image_condition": advantage["combined_conditions"][0]["image_condition"],
+        },
+        suite_id="predictive",
+        index=0,
+    )
+    assert renormalized_cxd["id"] == advantage["combined_conditions"][0]["id"]
     assert predictive["output_artifact_plan"]["predictive_margin_vs_resnet"] == "results/predictive_margin_vs_resnet.json"
+    assert (
+        predictive["output_artifact_plan"]["predictive_gps_query_advantage_metrics"]
+        == "results/predictive_gps_query_advantage_metrics.csv"
+    )
     assert manifest["predictive_model_groups"]["missing"] == []
     assert bench.evaluate_model_comparability(manifest)["status"] == "passed"
+
+    strict_raw = json.loads(json.dumps(raw))
+    strict_raw["comparison_protocol"] = {
+        "history_window": 2,
+        "gps_input_source_window": 2,
+        "prediction_horizon": 1,
+        "scene_set": [32, 33, 34],
+        "seed": 17,
+        "distance_metric": "linear",
+        "beam_label_space": "beam8",
+    }
+    strict_raw["comparability"]["keys"] = [
+        "split",
+        "sample_count",
+        "label_space",
+        "metric_profile",
+        "history_window",
+        "gps_input_source_window",
+        "prediction_horizon",
+        "scene_set",
+        "seed",
+        "distance_metric",
+        "beam_label_space",
+    ]
+    strict_raw["models"]["jepa_predictive"]["strict_comparison"] = {"history_window": 3}
+    strict_manifest = bench.validate_benchmark_manifest(strict_raw, validate_paths=False)
+    strict_status = bench.evaluate_model_comparability(strict_manifest)
+    assert strict_status["status"] == "failed"
+    assert any(item["field"] == "history_window" for item in strict_status["inconsistent_fields"])
 
     bad = json.loads(json.dumps(raw))
     bad["models"].pop("jepa_query")
@@ -347,6 +455,46 @@ def test_predictive_manifest_preset_required_groups_and_comparability(tmp_path: 
     bad_condition["perturbation_suites"][0]["conditions"] = ["P9_magic"]
     with pytest.raises(ValueError, match="Unknown Predictive JEPA robustness condition"):
         bench.validate_benchmark_manifest(bad_condition, validate_paths=False)
+
+
+def test_predictive_gps_query_plus_plus_strict_manifest_declares_advantage_and_comparison_fields() -> None:
+    raw = bench.load_benchmark_manifest(PREDICTIVE_PLUS_PLUS_STRICT_MANIFEST, validate_paths=False)
+    predictive = next(suite for suite in raw["perturbation_suites"] if suite["id"] == "predictive_jepa_robustness")
+    comparison = bench.evaluate_model_comparability(raw)
+
+    assert predictive["gps_query_advantage_slice"]["enabled"] is True
+    assert predictive["gps_query_advantage_slice"]["combined_condition_count"] == 8
+    assert raw["comparison_protocol"]["history_window"] == 5
+    assert raw["comparison_protocol"]["gps_input_source_window"] == 2
+    assert raw["comparison_protocol"]["prediction_horizon"] == 1
+    assert raw["comparison_protocol"]["scene_set"] == [32, 33, 34]
+    assert raw["predictive_model_groups"]["missing"] == []
+    assert comparison["status"] == "passed"
+    model_record = comparison["models"]["predictive_gps_query_plus_plus"]
+    assert model_record["history_window"] == 5
+    assert model_record["gps_input_source_window"] == 2
+    assert model_record["prediction_horizon"] == 1
+    assert model_record["distance_metric"] == "linear"
+
+
+def test_metric_mapping_accepts_evaluator_metrics_shape() -> None:
+    summary = bench._summary_from_metric_mapping(
+        "model",
+        {
+            "topk": {"1": [0.46], "3": [0.83], "5": [0.94]},
+            "dba": [0.886],
+            "total": [1088],
+        },
+        primary="dba",
+        split="test",
+        status="delegated_evaluate",
+    )
+
+    assert summary["sample_count"] == 1088
+    assert summary["top1"] == pytest.approx(0.46)
+    assert summary["top3"] == pytest.approx(0.83)
+    assert summary["top5"] == pytest.approx(0.94)
+    assert summary["primary_metric"] == pytest.approx(0.886)
 
 
 def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> None:
@@ -412,6 +560,39 @@ def test_predictive_benchmark_perturbation_delegates_to_shared_difficulty_pipeli
     assert first["predictive_jepa_replay_metadata"]["condition"] == "P4_joint_predictive_recovery"
     assert first["image_valid_mask"][:, -1].tolist() == [False, False, False, False]
     assert first["gps_counterfactual_mask"][:, -1].tolist() == [True, True, True, True]
+    assert torch.equal(first["target_beam"], batch["target_beam"])
+    assert torch.equal(first["beam_power"], batch["beam_power"])
+
+
+def test_predictive_advantage_perturbation_records_beam_offset_replay() -> None:
+    batch = {
+        "gps": torch.arange(24, dtype=torch.float32).reshape(4, 3, 2),
+        "image": torch.ones((4, 3, 3, 8, 8), dtype=torch.float32),
+        "target_beam": torch.tensor([[0], [1], [2], [3]]),
+        "beam_power": torch.arange(16, dtype=torch.float32).reshape(4, 1, 4),
+        "metadata": {"sample_id": ["a", "b", "c", "d"], "split": ["test"] * 4},
+    }
+    suite = {
+        "id": "predictive",
+        "type": "predictive_jepa_robustness",
+        "conditions": ["P0_clean_current"],
+        "history_window": 2,
+        "gps_query_advantage_slice": {"enabled": True},
+    }
+
+    first, first_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=11, seed=23)
+    second, second_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=11, seed=23)
+
+    assert first_warnings == second_warnings == []
+    assert torch.equal(first["gps"], second["gps"])
+    assert first["predictive_jepa_replay_metadata"]["condition"] == "A1_beam_offset_wrong_gps"
+    assert first["gps_counterfactual_mask"][:, -1].tolist() == [True, True, True, True]
+    wrong_gps = first["gps_counterfactual_metadata"]
+    assert wrong_gps["fallback_count"] == 0
+    assert wrong_gps["min_beam_offset"] == 1
+    assert all(offset >= 1 for offset in wrong_gps["beam_offset_criteria"]["offsets"])
+    assert len(wrong_gps["peer_sample_id"]) == 4
+    assert wrong_gps["peer_sample_id"] == second["gps_counterfactual_metadata"]["peer_sample_id"]
     assert torch.equal(first["target_beam"], batch["target_beam"])
     assert torch.equal(first["beam_power"], batch["beam_power"])
 
@@ -580,6 +761,66 @@ def test_runner_writes_metrics_aggregation_and_manifest(tmp_path: Path) -> None:
     assert manifest_out["output_files"]["metrics_by_condition"] == "tables/metrics_by_condition.csv"
 
 
+def test_runner_real_forward_mode_writes_reusable_logits_cache(tmp_path: Path) -> None:
+    config = tmp_path / "real_forward_config.yaml"
+    manifest_path = tmp_path / "real_forward_manifest.yaml"
+    _write_real_forward_config(config)
+    raw = {
+        "version": bench.BENCHMARK_VERSION,
+        "models": {
+            "gps_real_forward": {
+                "group": "gps_only",
+                "config": str(config),
+                "allow_missing_artifacts": True,
+                "real_forward": {"allow_untrained": True},
+                "modalities": ["gps"],
+                "split": "test",
+                "sample_count": 4,
+                "label_space": "beam8",
+                "metric_profile": "beambench_dba_topk",
+                "normalization_artifact": "synthetic",
+                "checkpoint_provenance": "unit_untrained",
+            }
+        },
+        "protocol": {"mode": "evaluation_only", "split": "test"},
+        "evaluation": {"mode": "real_forward", "real_forward": {"sample_count": 4, "cache_subdir": "real_forward"}},
+        "perturbation_suites": [{"id": "gps_missing", "type": "gps_missing", "severities": [0.5]}],
+        "metrics": {"primary": "dba", "topk": [1, 3, 5], "dba_delta": 5, "distance_mode": "linear"},
+        "figures": {"enabled": False, "formats": ["png"]},
+        "seeds": [7],
+        "outputs": {"output_dir": str(tmp_path / "real_forward_out")},
+        "comparability": {"mode": "mark", "keys": ["split", "sample_count", "label_space", "metric_profile"]},
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    first = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "real_forward_out",
+        force=True,
+        command=["test"],
+    )
+    rows = list(csv.DictReader(Path(first["metrics_by_condition"]).open("r", encoding="utf-8", newline="")))
+    assert {row["condition"] for row in rows} == {"clean", "drop_gps"}
+    assert all(row["status"] == "real_forward" for row in rows)
+    assert all(row["evidence_scope"] == "real_forward" for row in rows)
+    assert any(row["cache_status"] == "computed" for row in rows)
+    cache_files = list((Path(first["output_dir"]) / "cache" / "real_forward").glob("*.npz"))
+    assert len(cache_files) == 2
+
+    second = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "real_forward_out",
+        force=True,
+        command=["test"],
+    )
+    second_rows = list(csv.DictReader(Path(second["metrics_by_condition"]).open("r", encoding="utf-8", newline="")))
+    assert all(row["cache_status"] == "hit" for row in second_rows)
+    manifest_out = json.loads(Path(second["manifest"]).read_text(encoding="utf-8"))
+    shard_matrix = manifest_out["models"]["gps_real_forward"]["summary"]["shard_matrix"]
+    assert len(shard_matrix) == 2
+    assert all(item["evidence_scope"] == "real_forward" for item in shard_matrix)
+
+
 def test_runner_writes_scenario_d_matrix_artifacts(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     weights = tmp_path / "weights.pth"
@@ -660,9 +901,17 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
     condition_path = Path(result["predictive_condition_metrics"])
     summary_path = Path(result["predictive_regional_summary"])
     margin_path = Path(result["predictive_margin_vs_resnet"])
+    advantage_path = Path(result["predictive_gps_query_advantage_metrics"])
+    advantage_margin_path = Path(result["predictive_gps_query_advantage_margins"])
+    claim_gate_path = Path(result["predictive_claim_gate"])
+    diagnostics_bundle_path = Path(result["predictive_diagnostics_bundle_manifest"])
     assert condition_path.exists()
     assert summary_path.exists()
     assert margin_path.exists()
+    assert advantage_path.exists()
+    assert advantage_margin_path.exists()
+    assert claim_gate_path.exists()
+    assert diagnostics_bundle_path.exists()
     rows = list(csv.DictReader(condition_path.open("r", encoding="utf-8", newline="")))
     assert {row["predictive_condition"] for row in rows} >= {
         "P0_clean_current",
@@ -670,7 +919,18 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
         "P3_plausible_wrong_gps_current_image",
         "P4_joint_predictive_recovery",
     }
+    assert all(row["suite_type"] == "predictive_jepa_robustness" for row in rows)
     assert any(row["counterfactual_input_intervention"] == "True" for row in rows)
+    advantage_rows = list(csv.DictReader(advantage_path.open("r", encoding="utf-8", newline="")))
+    assert {row["advantage_condition"] for row in advantage_rows} >= {
+        "A0_visual_ambiguous_peer",
+        "A1_beam_offset_wrong_gps",
+        "A2_visual_ambiguous_wrong_gps",
+        "C3_random_async+D3_motion_blur",
+        "C4_severe_async+D7_joint_worst_case",
+    }
+    assert all(row["suite_type"] == "gps_query_advantage_slice" for row in advantage_rows)
+    assert any(row["history_source_range_policy"] == "strictly_past" for row in advantage_rows)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))["summary"]
     predictive = next(row for row in summary if row["group"] == "jepa_predictive_hybrid")
     assert predictive["predictive_dba"] > predictive["resnet_predictive_dba"]
@@ -679,14 +939,42 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
     assert predictive["claim_status"] == "mock/smoke"
     margins = json.loads(margin_path.read_text(encoding="utf-8"))["margins"]
     assert any(row["group"] == "jepa_predictive_hybrid" for row in margins)
+    advantage_margins = json.loads(advantage_margin_path.read_text(encoding="utf-8"))["margins"]
+    assert any(
+        row["group"] == "jepa_predictive_hybrid" and row["margin_vs_gps_query_dba"] != ""
+        for row in advantage_margins
+    )
+    claim_gate = json.loads(claim_gate_path.read_text(encoding="utf-8"))["claim_gate"]
+    assert claim_gate["advantage_only_cannot_upgrade_primary_claim"] is True
+    assert claim_gate["claim_status"] == "mock/smoke"
+    diagnostics_bundle = json.loads(diagnostics_bundle_path.read_text(encoding="utf-8"))
+    assert diagnostics_bundle["explanatory_figures_do_not_establish_claim"] is True
     manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
     assert manifest_out["output_files"]["predictive_condition_metrics"] == "results/predictive_condition_metrics.csv"
     assert manifest_out["output_files"]["predictive_margin_vs_resnet"] == "results/predictive_margin_vs_resnet.json"
+    assert (
+        manifest_out["output_files"]["predictive_gps_query_advantage_metrics"]
+        == "results/predictive_gps_query_advantage_metrics.csv"
+    )
     assert manifest_out["predictive_model_groups"]["missing"] == []
     assert any(
         item["path"] == "results/predictive_regional_summary.json" and item["status"] == "generated"
         for item in manifest_out["outputs"]
     )
+    assert any(
+        item["path"] == "results/predictive_diagnostics_bundle_manifest.json" and item["status"] == "generated"
+        for item in manifest_out["outputs"]
+    )
+
+    viz = run_predictive_gps_query_visualizations(
+        manifest_path=result["manifest"],
+        output_dir=tmp_path / "predictive_viz",
+        force=True,
+    )
+    viz_manifest = json.loads(Path(viz["manifest"]).read_text(encoding="utf-8"))
+    assert viz_manifest["evidence_scope"] == "explanatory_diagnostics_not_primary_claim"
+    assert Path(viz["branch_weight_by_condition"]).name == "branch_weight_by_condition.csv"
+    assert (tmp_path / "predictive_viz" / "figures" / "target_rank_cdf.png").exists()
 
 
 def test_cxd_phase_aggregation_marks_incomplete_grid_without_filling() -> None:
@@ -935,3 +1223,21 @@ def test_benchmark_cli_help_and_main(monkeypatch: pytest.MonkeyPatch, capsys: py
     exit_code = benchmark_cli.main(["--manifest", "config.yaml", "--dry-run"])
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"manifest": "benchmark_manifest.json", "dry_run": True}
+
+
+def test_predictive_gps_query_visualizations_cli_help_and_main(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        predictive_viz_cli.main(["--help"])
+    assert exc.value.code == 0
+    assert "Predictive GPS-query++ diagnostics" in capsys.readouterr().out
+
+    def fake_run(**kwargs):
+        return {"manifest": "viz_manifest.json", "force": kwargs["force"]}
+
+    monkeypatch.setattr(predictive_viz_cli, "run_predictive_gps_query_visualizations", fake_run)
+    exit_code = predictive_viz_cli.main(["--manifest", "benchmark_manifest.json", "--force"])
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"force": True, "manifest": "viz_manifest.json"}

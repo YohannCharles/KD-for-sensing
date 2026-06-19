@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 import numpy as np
@@ -62,6 +62,34 @@ class EvaluationPassResult:
     saw_lidar: bool
 
 
+@dataclass
+class _EvaluationPassState:
+    loss: float = 0.0
+    occlusion_loss: float = 0.0
+    position_loss: float = 0.0
+    multitask_loss: float = 0.0
+    los_loss: float = 0.0
+    link_quality_loss: float = 0.0
+    selection_multitask_loss: float = 0.0
+    outputs: list[torch.Tensor] = field(default_factory=list)
+    labels: list[torch.Tensor] = field(default_factory=list)
+    input_beams: list[torch.Tensor] = field(default_factory=list)
+    metadata: list[dict[str, Any]] = field(default_factory=list)
+    occlusion_logits: list[torch.Tensor] = field(default_factory=list)
+    occlusion_labels: list[torch.Tensor] = field(default_factory=list)
+    occlusion_valid: list[torch.Tensor] = field(default_factory=list)
+    position_outputs: list[torch.Tensor] = field(default_factory=list)
+    position_targets: list[torch.Tensor] = field(default_factory=list)
+    position_valid: list[torch.Tensor] = field(default_factory=list)
+    los_logits: list[torch.Tensor] = field(default_factory=list)
+    los_labels: list[torch.Tensor] = field(default_factory=list)
+    los_bucket_labels: list[torch.Tensor] = field(default_factory=list)
+    link_outputs: list[torch.Tensor] = field(default_factory=list)
+    link_targets: list[torch.Tensor] = field(default_factory=list)
+    lidar_quality: LidarQualityAccumulator = field(default_factory=LidarQualityAccumulator)
+    saw_lidar: bool = False
+
+
 def run_evaluation_pass(
     model,
     dataloader,
@@ -99,42 +127,14 @@ def run_evaluation_pass(
             objective_metadata=objective_metadata,
             enabled_modalities=enabled_modalities,
         )
-    val_loss = 0.0
-    val_occlusion_loss = 0.0
-    val_position_loss = 0.0
-    val_multitask_loss = 0.0
-    val_los_loss = 0.0
-    val_link_quality_loss = 0.0
-    val_selection_multitask_loss = 0.0
-    all_outputs = []
-    all_labels = []
-    all_input_beams = []
-    all_metadata: list[dict[str, Any]] = []
-    all_occlusion_logits = []
-    all_occlusion_labels = []
-    all_occlusion_valid = []
-    all_position_outputs = []
-    all_position_targets = []
-    all_position_valid = []
-    all_los_logits = []
-    all_los_labels = []
-    all_los_bucket_labels = []
-    all_link_outputs = []
-    all_link_targets = []
-    lidar_quality = LidarQualityAccumulator()
-    saw_lidar = False
+    state = _EvaluationPassState()
     difficulty_seed = int(cfg.get("experiment", {}).get("seed", 0))
     split_name = _evaluation_split_name(dataloader, cfg)
 
     with torch.no_grad():
         for step_index, batch in enumerate(dataloader):
             batch = _apply_evaluation_difficulty(prepare_task_batch(batch), cfg, split_name, difficulty_seed, step_index)
-            all_metadata.extend(_metadata_rows_from_batch(batch.get("metadata")))
-            if "input_beam" in batch:
-                all_input_beams.append(batch["input_beam"].detach().cpu())
-            if "lidar" in batch:
-                saw_lidar = True
-                lidar_quality.update(batch["lidar"], raw_lidar=batch.get("lidar_raw"))
+            _record_evaluation_batch_metadata(state, batch)
             labels = prepare_task_labels(
                 batch,
                 num_pred=num_pred,
@@ -149,7 +149,7 @@ def run_evaluation_pass(
                 non_blocking=non_blocking,
             )
             if "los_label" in auxiliary_targets:
-                all_los_bucket_labels.append(auxiliary_targets["los_label"].detach().cpu())
+                state.los_bucket_labels.append(auxiliary_targets["los_label"].detach().cpu())
             prediction_targets = prepare_prediction_targets(
                 labels=labels,
                 auxiliary_targets=auxiliary_targets,
@@ -179,54 +179,112 @@ def run_evaluation_pass(
                     beam_task_loss=beam_loss,
                 )
                 loss = prediction_loss.total
-            val_loss += loss.item()
-            val_occlusion_loss += prediction_loss.occlusion.item()
-            val_position_loss += prediction_loss.position.item()
-            val_multitask_loss += prediction_loss.multitask_total.item()
-            if prediction_loss.los is not None:
-                val_los_loss += prediction_loss.los.item()
-            if prediction_loss.link_quality is not None:
-                val_link_quality_loss += prediction_loss.link_quality.item()
-            if prediction_loss.selection_multitask_total is not None:
-                val_selection_multitask_loss += prediction_loss.selection_multitask_total.item()
-            all_outputs.append(outputs.detach().cpu())
-            all_labels.append(labels.detach().cpu())
-            if "occlusion_logits" in step.model_output.diagnostics and "occlusion_label" in auxiliary_targets:
-                all_occlusion_logits.append(step.model_output.diagnostics["occlusion_logits"].detach().cpu())
-                all_occlusion_labels.append(auxiliary_targets["occlusion_label"].detach().cpu())
-                all_occlusion_valid.append(auxiliary_targets["occlusion_valid"].detach().cpu())
-            if "position" in step.model_output.diagnostics and "position_target" in auxiliary_targets:
-                all_position_outputs.append(step.model_output.diagnostics["position"].detach().cpu())
-                all_position_targets.append(auxiliary_targets["position_target"].detach().cpu())
-                all_position_valid.append(auxiliary_targets["position_valid"].detach().cpu())
-            if "los_logits" in step.model_output.diagnostics and "los_label" in auxiliary_targets:
-                all_los_logits.append(step.model_output.diagnostics["los_logits"].detach().cpu())
-                all_los_labels.append(auxiliary_targets["los_label"].detach().cpu())
-            if "link_quality" in step.model_output.diagnostics and "link_quality" in auxiliary_targets:
-                all_link_outputs.append(step.model_output.diagnostics["link_quality"].detach().cpu())
-                all_link_targets.append(auxiliary_targets["link_quality"].detach().cpu())
-    outputs_t = torch.cat(all_outputs, dim=0)
-    labels_t = torch.cat(all_labels, dim=0)
+            _record_evaluation_batch_outputs(
+                state,
+                outputs=outputs,
+                labels=labels,
+                diagnostics=step.model_output.diagnostics,
+                auxiliary_targets=auxiliary_targets,
+                prediction_loss=prediction_loss,
+                loss=loss,
+            )
+    return _finalize_supervised_evaluation_result(
+        state,
+        dataloader=dataloader,
+        cfg=cfg,
+        objective=objective,
+        objective_metadata=objective_metadata,
+        enabled_modalities=enabled_modalities,
+        num_classes=num_classes,
+        downsample_ratio=downsample_ratio,
+    )
+
+
+def _record_evaluation_batch_metadata(state: _EvaluationPassState, batch: Mapping[str, Any]) -> None:
+    state.metadata.extend(_metadata_rows_from_batch(batch.get("metadata")))
+    if "input_beam" in batch:
+        state.input_beams.append(batch["input_beam"].detach().cpu())
+    if "lidar" in batch:
+        state.saw_lidar = True
+        state.lidar_quality.update(batch["lidar"], raw_lidar=batch.get("lidar_raw"))
+
+
+def _record_evaluation_batch_outputs(
+    state: _EvaluationPassState,
+    *,
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    diagnostics: Mapping[str, Any],
+    auxiliary_targets: Mapping[str, torch.Tensor],
+    prediction_loss,
+    loss: torch.Tensor,
+) -> None:
+    state.loss += loss.item()
+    state.occlusion_loss += prediction_loss.occlusion.item()
+    state.position_loss += prediction_loss.position.item()
+    state.multitask_loss += prediction_loss.multitask_total.item()
+    if prediction_loss.los is not None:
+        state.los_loss += prediction_loss.los.item()
+    if prediction_loss.link_quality is not None:
+        state.link_quality_loss += prediction_loss.link_quality.item()
+    if prediction_loss.selection_multitask_total is not None:
+        state.selection_multitask_loss += prediction_loss.selection_multitask_total.item()
+
+    state.outputs.append(outputs.detach().cpu())
+    state.labels.append(labels.detach().cpu())
+    if "occlusion_logits" in diagnostics and "occlusion_label" in auxiliary_targets:
+        state.occlusion_logits.append(diagnostics["occlusion_logits"].detach().cpu())
+        state.occlusion_labels.append(auxiliary_targets["occlusion_label"].detach().cpu())
+        state.occlusion_valid.append(auxiliary_targets["occlusion_valid"].detach().cpu())
+    if "position" in diagnostics and "position_target" in auxiliary_targets:
+        state.position_outputs.append(diagnostics["position"].detach().cpu())
+        state.position_targets.append(auxiliary_targets["position_target"].detach().cpu())
+        state.position_valid.append(auxiliary_targets["position_valid"].detach().cpu())
+    if "los_logits" in diagnostics and "los_label" in auxiliary_targets:
+        state.los_logits.append(diagnostics["los_logits"].detach().cpu())
+        state.los_labels.append(auxiliary_targets["los_label"].detach().cpu())
+    if "link_quality" in diagnostics and "link_quality" in auxiliary_targets:
+        state.link_outputs.append(diagnostics["link_quality"].detach().cpu())
+        state.link_targets.append(auxiliary_targets["link_quality"].detach().cpu())
+
+
+def _cat_or_none(values: list[torch.Tensor]) -> torch.Tensor | None:
+    return torch.cat(values, dim=0) if values else None
+
+
+def _finalize_supervised_evaluation_result(
+    state: _EvaluationPassState,
+    *,
+    dataloader,
+    cfg: dict[str, Any],
+    objective: str,
+    objective_metadata: dict[str, Any],
+    enabled_modalities: tuple[str, ...],
+    num_classes: int,
+    downsample_ratio: int,
+) -> EvaluationPassResult:
+    outputs_t = torch.cat(state.outputs, dim=0)
+    labels_t = torch.cat(state.labels, dim=0)
     auxiliary_metrics = _auxiliary_metrics_from_outputs(
         dataloader,
-        occlusion_logits=torch.cat(all_occlusion_logits, dim=0) if all_occlusion_logits else None,
-        occlusion_labels=torch.cat(all_occlusion_labels, dim=0) if all_occlusion_labels else None,
-        occlusion_valid=torch.cat(all_occlusion_valid, dim=0) if all_occlusion_valid else None,
-        position_outputs=torch.cat(all_position_outputs, dim=0) if all_position_outputs else None,
-        position_targets=torch.cat(all_position_targets, dim=0) if all_position_targets else None,
-        position_valid=torch.cat(all_position_valid, dim=0) if all_position_valid else None,
-        los_logits=torch.cat(all_los_logits, dim=0) if all_los_logits else None,
-        los_labels=torch.cat(all_los_labels, dim=0) if all_los_labels else None,
-        link_outputs=torch.cat(all_link_outputs, dim=0) if all_link_outputs else None,
-        link_targets=torch.cat(all_link_targets, dim=0) if all_link_targets else None,
+        occlusion_logits=_cat_or_none(state.occlusion_logits),
+        occlusion_labels=_cat_or_none(state.occlusion_labels),
+        occlusion_valid=_cat_or_none(state.occlusion_valid),
+        position_outputs=_cat_or_none(state.position_outputs),
+        position_targets=_cat_or_none(state.position_targets),
+        position_valid=_cat_or_none(state.position_valid),
+        los_logits=_cat_or_none(state.los_logits),
+        los_labels=_cat_or_none(state.los_labels),
+        link_outputs=_cat_or_none(state.link_outputs),
+        link_targets=_cat_or_none(state.link_targets),
     )
-    metrics = _metrics_from_outputs(val_loss / max(len(dataloader), 1), outputs_t, labels_t, cfg, objective=objective)
-    input_beams_t = torch.cat(all_input_beams, dim=0) if all_input_beams else None
-    if objective in {"current_beam_selection", "selection_multitask"} and all_los_bucket_labels:
+    metrics = _metrics_from_outputs(state.loss / max(len(dataloader), 1), outputs_t, labels_t, cfg, objective=objective)
+    input_beams_t = _cat_or_none(state.input_beams)
+    if objective in {"current_beam_selection", "selection_multitask"} and state.los_bucket_labels:
         metrics["los_buckets"] = _beam_metrics_by_los_bucket(
             outputs_t,
             labels_t,
-            torch.cat(all_los_bucket_labels, dim=0),
+            torch.cat(state.los_bucket_labels, dim=0),
             cfg,
         )
     _attach_objective_metrics(
@@ -234,12 +292,12 @@ def run_evaluation_pass(
         auxiliary_metrics,
         objective=objective,
         dataloader_len=len(dataloader),
-        val_occlusion_loss=val_occlusion_loss,
-        val_position_loss=val_position_loss,
-        val_multitask_loss=val_multitask_loss,
-        val_los_loss=val_los_loss,
-        val_link_quality_loss=val_link_quality_loss,
-        val_selection_multitask_loss=val_selection_multitask_loss,
+        val_occlusion_loss=state.occlusion_loss,
+        val_position_loss=state.position_loss,
+        val_multitask_loss=state.multitask_loss,
+        val_los_loss=state.los_loss,
+        val_link_quality_loss=state.link_quality_loss,
+        val_selection_multitask_loss=state.selection_multitask_loss,
     )
     metrics["objective"] = objective_metadata
     metrics["available_metrics"] = objective_available_metrics(objective, metrics)
@@ -252,8 +310,8 @@ def run_evaluation_pass(
         downsample_ratio=downsample_ratio,
     )
     metrics["degradation_baselines"] = baselines
-    if saw_lidar:
-        quality_summary = lidar_quality.finalize(
+    if state.saw_lidar:
+        quality_summary = state.lidar_quality.finalize(
             split=getattr(dataset, "split", None),
             preprocessing=lidar_preprocessing_metadata_from_dataset(dataset),
         )
@@ -267,10 +325,10 @@ def run_evaluation_pass(
         outputs=outputs_t,
         labels=labels_t,
         input_beams=input_beams_t,
-        metadata=all_metadata,
+        metadata=state.metadata,
         objective_metadata=objective_metadata,
         enabled_modalities=enabled_modalities,
-        saw_lidar=saw_lidar,
+        saw_lidar=state.saw_lidar,
     )
 
 

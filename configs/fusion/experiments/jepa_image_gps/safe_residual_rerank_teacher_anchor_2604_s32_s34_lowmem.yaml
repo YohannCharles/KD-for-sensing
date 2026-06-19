@@ -1,0 +1,23 @@
+_base_: safe_residual_rerank_prior_candidates_2604_s32_s34_lowmem.yaml
+
+experiment:
+  name: safe_residual_rerank_teacher_anchor_2604_s32_s34_lowmem
+  ablation: safe_residual_rerank_teacher_anchor
+loss:
+  teacher_guidance:
+    enabled: true
+    mode: opt_in_stabilization
+    checkpoint_path: outputs/analysis/predictive_gps_query_plus_plus/strict/image_resnet_gps/checkpoints/best.pth
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_image_resnet_gps
+    logits_path: outputs/analysis/real_perturbation_residual_rerank_fusion/teacher/image_resnet_gps_logits.pt
+    allow_missing: true
+    temperature: 2.0
+    weight: 0.2
+    detach_policy: detach_teacher
+    enabled_splits:
+      - train
+  safe_rerank:
+    weight: 0.2
+    no_regret_weight: 0.2
+output:
+  run_name: safe_residual_rerank_teacher_anchor_2604_s32_s34_lowmem

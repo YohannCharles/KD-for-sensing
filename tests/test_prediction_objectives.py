@@ -13,6 +13,7 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.engine.model_output import ModelOutput  # noqa: E402
 from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     PredictionTargets,
+    build_dba_aware_soft_targets,
     compute_prediction_loss,
     multitask_loss_weights,
     normalize_objective_metric,
@@ -24,6 +25,8 @@ from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     objective_tensorboard_scalars,
     resolve_prediction_objective,
 )
+from kd_sensing.engine.teacher_guidance import TeacherGuidanceTrainingExtension  # noqa: E402
+from kd_sensing.engine.training_extensions import BatchState, ExtensionContext, ForwardControls  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 
 
@@ -349,6 +352,210 @@ def test_beam_objective_keeps_old_auxiliary_loss_compatibility():
 
     assert result.total.item() > beam.item()
     assert result.multitask_total.item() == pytest.approx(result.occlusion.item() + 0.5 * result.position.item())
+
+
+def test_predictive_latent_auxiliary_loss_is_opt_in_and_detaches_target():
+    logits = torch.randn(1, 2, 3)
+    predicted = torch.zeros(1, 2, 4, requires_grad=True)
+    current = torch.ones(1, 2, 4, requires_grad=True)
+    output = ModelOutput(
+        logits=logits,
+        input_features=None,
+        output_features=None,
+        diagnostics={
+            "encoder_auxiliary_features": {
+                "image": {
+                    "temporal_predicted_latent": predicted,
+                    "current_latent": current,
+                }
+            }
+        },
+    )
+    targets = PredictionTargets(labels=torch.tensor([[0, 1]]))
+    beam = logits.sum() * 0.0 + 1.0
+
+    disabled = compute_prediction_loss(
+        output,
+        targets,
+        {"experiment": {"objective": "beam"}},
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+    enabled = compute_prediction_loss(
+        output,
+        targets,
+        {
+            "experiment": {"objective": "beam"},
+            "loss": {"auxiliary": {"predictive_latent": {"enabled": True, "weight": 0.5}}},
+        },
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+
+    assert disabled.total.item() == pytest.approx(beam.item())
+    assert enabled.total.item() > beam.item()
+    assert enabled.diagnostics["loss/predictive_latent_auxiliary"] == pytest.approx(0.5)
+    assert enabled.diagnostics["predictive_latent_auxiliary/sample_count"] == 2
+    assert enabled.diagnostics["predictive_latent_auxiliary/target_detached"] == 1.0
+
+
+def test_safe_rerank_auxiliary_loss_uses_candidate_coverage_and_ignores_invalid_labels():
+    logits = torch.tensor([[[0.1, 2.0, 0.0, -0.5]], [[1.0, 0.0, -0.1, -0.2]]], dtype=torch.float32)
+    anchor_logits = torch.tensor([[[2.0, 0.1, 0.0, -0.5]], [[1.0, 0.0, -0.1, -0.2]]], dtype=torch.float32)
+    output = ModelOutput(
+        logits=logits,
+        input_features=None,
+        output_features=None,
+        diagnostics={
+            "rerank_logits": logits,
+            "anchor_logits": anchor_logits,
+            "candidate_ids": torch.tensor([[[0, 1, -1]], [[0, 2, -1]]]),
+            "residual_scale": torch.ones(2, 1) * 0.2,
+        },
+    )
+    targets = PredictionTargets(labels=torch.tensor([[1], [-100]]))
+    beam = logits.sum() * 0.0 + 0.5
+
+    result = compute_prediction_loss(
+        output,
+        targets,
+        {
+            "experiment": {"objective": "beam"},
+            "loss": {
+                "safe_rerank": {
+                    "enabled": True,
+                    "weight": 1.0,
+                    "pairwise_margin_weight": 0.25,
+                    "no_regret_weight": 0.5,
+                }
+            },
+        },
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+
+    assert result.total.item() > beam.item()
+    assert result.diagnostics["rerank_loss/candidate_coverage"] == pytest.approx(1.0)
+    assert result.diagnostics["rerank_loss/skipped_samples"] == pytest.approx(0.0)
+    assert result.diagnostics["rerank_loss/anchor_correct_count"] == pytest.approx(0.0)
+    assert result.diagnostics["rerank_loss/residual_scale_mean"] == pytest.approx(0.2)
+
+
+def test_safe_rerank_auxiliary_loss_accepts_half_precision_logits():
+    logits = torch.tensor([[[0.1, 2.0, 0.0, -0.5]]], dtype=torch.float16)
+    anchor_logits = torch.tensor([[[2.0, 0.1, 0.0, -0.5]]], dtype=torch.float16)
+    output = ModelOutput(
+        logits=logits,
+        input_features=None,
+        output_features=None,
+        diagnostics={
+            "rerank_logits": logits,
+            "anchor_logits": anchor_logits,
+            "candidate_ids": torch.tensor([[[0, 1, -1]]]),
+        },
+    )
+    beam = logits.float().sum() * 0.0 + 0.5
+
+    result = compute_prediction_loss(
+        output,
+        PredictionTargets(labels=torch.tensor([[1]])),
+        {"experiment": {"objective": "beam"}, "loss": {"safe_rerank": {"enabled": True, "weight": 1.0}}},
+        reference=logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+
+    assert torch.isfinite(result.total)
+    assert result.diagnostics["rerank_loss/candidate_coverage"] == pytest.approx(1.0)
+
+
+def test_dba_aware_beam_loss_builds_circular_soft_targets_from_hard_labels():
+    labels = torch.tensor([[0, 7, -100]])
+    targets, diagnostics = build_dba_aware_soft_targets(
+        labels,
+        num_classes=8,
+        cfg={
+            "loss": {
+                "dba_aware": {
+                    "enabled": True,
+                    "mode": "circular_gaussian",
+                    "distance_mode": "circular",
+                    "sigma": 1.0,
+                }
+            }
+        },
+    )
+
+    assert targets is not None
+    torch.testing.assert_close(targets[0, 0].sum(), torch.tensor(1.0))
+    torch.testing.assert_close(targets[0, 1].sum(), torch.tensor(1.0))
+    assert targets[0, 0, 0] > targets[0, 0, 4]
+    assert targets[0, 0, 7] > targets[0, 0, 4]
+    torch.testing.assert_close(targets[0, 2], torch.zeros(8))
+    assert diagnostics["loss/beam_dba_aware_sample_count"] == 2.0
+
+    disabled, disabled_diag = build_dba_aware_soft_targets(labels, num_classes=8, cfg={"loss": {}})
+    assert disabled is None
+    assert disabled_diag == {}
+
+
+def test_teacher_guidance_extension_uses_non_retired_loss_names_and_detaches_teacher(tmp_path: Path):
+    extension = TeacherGuidanceTrainingExtension()
+    cfg = {
+        "loss": {
+            "teacher_guidance": {
+                "enabled": True,
+                "weight": 0.5,
+                "temperature": 2.0,
+                "checkpoint_path": "outputs/teacher/image_resnet_gps/best.pth",
+                "checkpoint_provenance": "unit_test_teacher",
+                "enabled_splits": ["train"],
+            }
+        }
+    }
+    logits = torch.tensor([[[2.0, 0.0, -1.0], [0.0, 1.0, 2.0]]], requires_grad=True)
+    teacher_logits = torch.tensor([[[3.0, 0.0, -1.0], [0.0, 2.0, 3.0]]])
+    context = ExtensionContext(
+        cfg=cfg,
+        task="fusion",
+        model_cfg={"num_pred": 2, "num_classes": 3, "seq_length": 2, "primary": {}},
+        training_cfg={},
+        primary_model=torch.nn.Linear(1, 1),
+        task_criterion=torch.nn.CrossEntropyLoss(),
+        run_dir=tmp_path,
+        device=torch.device("cpu"),
+        num_pred=2,
+        num_classes=3,
+        seq_length=2,
+        non_blocking=False,
+    )
+    state = extension.setup(context)
+    batch_state = BatchState(
+        epoch=0,
+        step=0,
+        batch={"teacher_logits": teacher_logits},
+        labels=torch.tensor([[0, 2]]),
+        soft_beam_targets=None,
+        primary_output=ModelOutput(logits=logits, input_features=None, output_features=None, diagnostics={}),
+        primary_logits=logits,
+        controls=ForwardControls(),
+    )
+
+    bundle = extension.after_forward(context, state, batch_state)
+    loads = extension.checkpoint_loads(state)
+    epoch_meta = extension.after_epoch(context, state, epoch=0)
+
+    assert bundle is not None
+    assert bundle.total.item() > 0
+    assert "loss/teacher_guidance" in bundle.diagnostics
+    assert "loss/geometry_teacher_kl" in bundle.diagnostics
+    assert all("distillation" not in key and "kd_soft_label" not in key for key in bundle.diagnostics)
+    assert loads[0]["role"] == "teacher_guidance_stabilization"
+    assert loads[0]["provenance"] == "unit_test_teacher"
+    assert epoch_meta["teacher_guidance"]["mode"] == "opt_in_stabilization"
 
 
 @pytest.mark.parametrize("objective", ["beam", "occlusion", "position", "multitask"])

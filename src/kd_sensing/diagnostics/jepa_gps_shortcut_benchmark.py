@@ -123,13 +123,26 @@ from kd_sensing.diagnostics.jepa_benchmark_perturbations import (
 
 from kd_sensing.diagnostics.jepa_benchmark_predictive import (
     _mean_numeric,
-    _normalize_predictive_jepa_condition,
-    _normalize_predictive_jepa_suite,
     _overall_cxd_dba_for_model,
     _predictive_jepa_condition_for_severity,
     _predictive_jepa_metric_row,
     _predictive_jepa_metric_value,
     aggregate_predictive_robustness_summary,
+)
+from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage import (
+    _normalize_gps_query_advantage_slice,
+    _normalize_gps_query_advantage_condition,
+    _normalize_gps_query_advantage_cxd_condition,
+)
+from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage_metrics import (
+    _predictive_gps_query_advantage_metric_rows,
+    aggregate_gps_query_advantage_margins,
+    build_predictive_claim_gate,
+    build_predictive_diagnostics_bundle_manifest,
+)
+from kd_sensing.diagnostics.jepa_benchmark_predictive import (
+    _normalize_predictive_jepa_condition,
+    _normalize_predictive_jepa_suite,
 )
 
 from kd_sensing.diagnostics.jepa_benchmark_scenario_c import (
@@ -313,6 +326,9 @@ __all__ = [
     "_normalize_cxd_diagnostic_sources",
     "_normalize_cxd_fallback_policy",
     "_normalize_cxd_paired_models",
+    "_normalize_gps_query_advantage_condition",
+    "_normalize_gps_query_advantage_cxd_condition",
+    "_normalize_gps_query_advantage_slice",
     "_normalize_predictive_jepa_condition",
     "_normalize_predictive_jepa_suite",
     "_normalize_scenario_c_condition",
@@ -331,6 +347,7 @@ __all__ = [
     "_plot_robustness_surface",
     "_positive_int",
     "_perturbed_metric_value",
+    "_predictive_gps_query_advantage_metric_rows",
     "_predictive_group_category",
     "_predictive_jepa_condition_for_severity",
     "_predictive_jepa_metric_row",
@@ -375,12 +392,15 @@ __all__ = [
     "_write_csv",
     "_write_cxd_phase_figures",
     "_write_scenario_d_figures",
+    "aggregate_gps_query_advantage_margins",
     "aggregate_cxd_phase_diagram",
     "aggregate_predictive_robustness_summary",
     "aggregate_robustness_summary",
     "aggregate_scenario_d_matrix",
     "aggregate_shortcut_reliance",
     "apply_benchmark_perturbation",
+    "build_predictive_claim_gate",
+    "build_predictive_diagnostics_bundle_manifest",
     "compute_modality_dominance",
     "cxd_phase_heatmap",
     "decompose_cxd_failure_modes",

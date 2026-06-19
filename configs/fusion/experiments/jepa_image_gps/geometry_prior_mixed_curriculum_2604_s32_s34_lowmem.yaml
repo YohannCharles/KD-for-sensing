@@ -1,0 +1,45 @@
+_base_: geometry_prior_teacher_guided_2604_s32_s34_lowmem.yaml
+
+experiment:
+  name: geometry_prior_mixed_curriculum_2604_s32_s34_lowmem
+  ablation: geometry_prior_mixed_curriculum
+training:
+  curriculum:
+    enabled: true
+    mode: clean_first_geometry_prior
+    seed: 17
+    schedule:
+      - phase: clean_warmup
+        epochs: 5
+        ratios:
+          clean: 1.0
+          p_suite: 0.0
+          advantage: 0.0
+      - phase: p_suite_mix
+        epochs: 15
+        ratios:
+          clean: 0.7
+          p_suite: 0.3
+          advantage: 0.0
+      - phase: advantage_mix
+        epochs: 20
+        ratios:
+          clean: 0.6
+          p_suite: 0.3
+          advantage: 0.1
+    conditions:
+      clean:
+        - P0_clean_current
+      p_suite:
+        - P1_current_frame_missing_history_available
+        - P2_semantic_occlusion_history_available
+        - P3_plausible_wrong_gps_current_image
+        - P4_joint_predictive_recovery
+        - P5_novel_weather_history_available
+      advantage:
+        - A0_clean_alignment
+        - A1_visual_ambiguous_wrong_gps
+        - A2_async_wrong_gps
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+output:
+  run_name: geometry_prior_mixed_curriculum_2604_s32_s34_lowmem

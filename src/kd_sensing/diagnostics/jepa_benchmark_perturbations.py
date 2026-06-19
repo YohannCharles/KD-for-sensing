@@ -219,6 +219,57 @@ def _benchmark_difficulty_provenance(manifest: Mapping[str, Any]) -> list[dict[s
                         "profile": profile.to_dict(),
                     }
                 )
+            if str(suite.get("type")) == PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE:
+                advantage_slice = suite.get("gps_query_advantage_slice", {})
+                if isinstance(advantage_slice, Mapping) and bool(advantage_slice.get("enabled", False)):
+                    for condition in advantage_slice.get("conditions", []):
+                        if not isinstance(condition, Mapping):
+                            continue
+                        profile = _difficulty_profile_from_suite(
+                            suite,
+                            severity=float(condition.get("severity", 0.0)),
+                            seed=int(seed),
+                        )
+                        records.append(
+                            {
+                                "suite_id": suite.get("id"),
+                                "suite_type": GPS_QUERY_ADVANTAGE_SLICE_TYPE,
+                                "parent_suite_type": suite.get("type"),
+                                "seed": int(seed),
+                                "severity": float(condition.get("severity", 0.0)),
+                                "condition": condition.get("id"),
+                                "advantage_family": condition.get("advantage_family", "hard_negative"),
+                                "profile": profile.to_dict(),
+                            }
+                        )
+                    for condition in advantage_slice.get("combined_conditions", []):
+                        if not isinstance(condition, Mapping):
+                            continue
+                        profile = _difficulty_profile_from_advantage_cxd_pair(
+                            suite,
+                            condition=condition,
+                            seed=int(seed),
+                        )
+                        records.append(
+                            {
+                                "suite_id": suite.get("id"),
+                                "suite_type": GPS_QUERY_ADVANTAGE_SLICE_TYPE,
+                                "parent_suite_type": suite.get("type"),
+                                "seed": int(seed),
+                                "severity": float(condition.get("severity", 0.0)),
+                                "condition": condition.get("id"),
+                                "gps_condition": condition.get("gps_condition", {}).get("id")
+                                if isinstance(condition.get("gps_condition"), Mapping)
+                                else "",
+                                "image_condition": condition.get("image_condition", {}).get("id")
+                                if isinstance(condition.get("image_condition"), Mapping)
+                                else "",
+                                "advantage_family": condition.get("advantage_family", "combined_cxd"),
+                                "history_source_range_policy": condition.get("history_source_range_policy", "strictly_past"),
+                                "source_history_range_field": condition.get("source_history_range_field", "gps_source_index"),
+                                "profile": profile.to_dict(),
+                            }
+                        )
     return records
 
 
@@ -256,6 +307,52 @@ def _difficulty_profile_from_cxd_pair(
             "suite_id": suite.get("id"),
             "gps_condition": gps_condition.get("id"),
             "image_condition": image_condition.get("id"),
+        },
+    }
+    return normalize_difficulty_profiles([profile], default_seed=seed, default_stage="benchmark")[0]
+
+
+def _difficulty_profile_from_advantage_cxd_pair(
+    suite: Mapping[str, Any],
+    *,
+    condition: Mapping[str, Any],
+    seed: int,
+):
+    gps_condition = condition.get("gps_condition", {}) if isinstance(condition.get("gps_condition"), Mapping) else {}
+    image_condition = condition.get("image_condition", {}) if isinstance(condition.get("image_condition"), Mapping) else {}
+    profile = {
+        "id": f"{suite['id']}_gps_query_advantage",
+        "operators": [
+            {
+                "type": SCENARIO_C_SUITE_TYPE,
+                "modality": "gps",
+                "scenario_c_conditions": [dict(gps_condition)],
+            },
+            {
+                "type": SCENARIO_D_SUITE_TYPE,
+                "modality": "image",
+                **dict(image_condition.get("operator_params", {})),
+            },
+        ],
+        "stage": "benchmark",
+        "split": str(suite.get("split", "test")),
+        "condition": str(condition.get("id", f"{gps_condition.get('id')}+{image_condition.get('id')}")),
+        "severity": float(condition.get("severity", image_condition.get("severity", 0.0)) or 0.0),
+        "seed": int(seed),
+        "fallback": str(suite.get("fallback", "identity")),
+        "affected_modalities": ["gps", "image"],
+        "metadata": {
+            "source": "jepa_gps_shortcut_benchmark",
+            "suite_type": GPS_QUERY_ADVANTAGE_SLICE_TYPE,
+            "parent_suite_type": PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
+            "suite_id": suite.get("id"),
+            "advantage_condition": condition.get("id"),
+            "advantage_family": condition.get("advantage_family", "combined_cxd"),
+            "gps_condition": gps_condition.get("id"),
+            "image_condition": image_condition.get("id"),
+            "history_source_range_policy": condition.get("history_source_range_policy", "strictly_past"),
+            "source_history_range_field": condition.get("source_history_range_field", "gps_source_index"),
+            "no_future_leak_required": bool(condition.get("no_future_leak_required", True)),
         },
     }
     return normalize_difficulty_profiles([profile], default_seed=seed, default_stage="benchmark")[0]
@@ -610,6 +707,7 @@ __all__ = [
     "_clone_batch",
     "_difficulty_condition_for_suite",
     "_difficulty_profile_from_cxd_pair",
+    "_difficulty_profile_from_advantage_cxd_pair",
     "_difficulty_profile_from_suite",
     "_sampling_rate_mismatch",
     "_suite_affected_modality",

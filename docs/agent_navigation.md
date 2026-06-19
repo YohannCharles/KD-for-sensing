@@ -7,7 +7,7 @@
 1. 先读用户当前请求和本轮对话中的限制；它们只约束本次工作，不自动改写长期契约。
 2. 读 `AGENTS.md`，确认命令环境、OpenSpec、文档边界和本地产物边界；所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
 3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 仍可能影响当前工作树解释。
-4. 读 `docs/maintainer_context_index.yaml`，用机器可读索引快速定位任务路由、治理表、入口/配置/model/batch/runtime allowlist、热点预算、退役 token 和验证命令；索引只负责定位上下文，不替代 OpenSpec requirements、README quickstart 或 inventory 审计解释。
+4. 读 `docs/maintainer_context_index.yaml`，用机器可读索引快速定位任务路由、治理表、architecture sizing baseline、入口/配置/model/batch/runtime allowlist、热点预算、remediation wave、退役 token 和验证命令；索引只负责定位上下文，不替代 OpenSpec requirements、README quickstart 或 inventory 审计解释。
 5. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看索引和 `docs/project_surface_inventory.md` 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
 6. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
 7. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
@@ -44,6 +44,25 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 | 文档生命周期 | 索引的 `documentation_lifecycle` 路由、AGENTS 文档边界、README 文档索引、OpenSpec capability lifecycle、inventory 文档生命周期分类 | README、`AGENTS.md`、`docs/*.md`、OpenSpec 文档 | 架构边界测试；检查不把历史、supporting 或退役墓碑路线写成当前推荐入口 |
 
 新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该 workflow 有明确名称或专用入口，还应在 `docs/maintainer_context_index.yaml` 的 entrypoint owner metadata 中登记 owner module/script、responsibility、output boundary 和必要 retired route guard，并在架构边界测试中加一个轻量文档同步 guard，防止以后只改账本而漏掉 quickstart。
+
+## 热点右尺寸化决策矩阵
+
+修改已登记 hotspot、接近预算的 workflow、dataset、diagnostic module 或 facade 前，先读取 `docs/maintainer_context_index.yaml` 的 `governance.architecture_sizing_baseline` 和 `governance.hotspots`。不要把 Python 文件数、function 数或 import 数机械解释成“所有大文件都要拆”：这些只是趋势信号；每次变更先判断动作属于 `split`、`consolidate`、`monitor`、`accepted-size`、`hard-budget`、源码窄修复或 `keep-and-test`。
+
+| 场景 | 默认动作 | 需要确认 |
+| --- | --- | --- |
+| 公开 CLI/import facade 超预算或吸收 helper | `hard-budget` / `owner-facade`，实现移回窄模块 | `enforcement: hard-fail`、public import/CLI smoke、无 helper 回流 |
+| 业务 workflow、dataset 或 diagnostic 稍超预算 | 按 rationale 和 `headroom_lines` 判断 `split`、`monitor` 或 `accepted-size` | focused tests、headroom 是否仍足够、是否有下一步 split target |
+| 单调用点包装类、只为减行数的 helper、重复 `utils` 聚合 | `consolidate` 或登记 `merge-candidate` | owner 清晰、合并不绕过 `src/kd_sensing` 包结构、不恢复旧入口 |
+| 小而内聚的 loss/model/helper | `keep-and-test` 或 `right-size-accepted` | 保留理由、focused tests、未来增长触发条件 |
+
+`right-size-accepted` 不是永久豁免；它只表示当前尺寸比继续拆分更可维护，仍必须保留 validation commands、accepted rationale 和 rollback note。`merge-candidate` 也不是搁置标签；它必须写明 owner、`consolidation_targets`、public surface policy 和验证命令。
+
+## Remediation Wave Campaign
+
+当用户明确要求完整修复热点架构并接受高风险时，按 remediation wave 实施，而不是把多个热点混成单次不可定位的大改。开始前确认 active OpenSpec change，读取维护上下文索引，列出 wave 顺序、目标文件、计划动作、公开 surface 策略、focused tests 和 rollback 条件。
+
+当前 `right-size-project-architecture` campaign 的 remediation wave 顺序由索引的 `governance.hotspots.remediation_waves` 维护：Wave 0 是治理 schema、architecture sizing baseline、inventory、AI 导航和架构边界测试；Wave 1 是 BeamBench Image AE+GPS；Wave 2 是 DeepSense6G/MMW dataset 与 trainer；Wave 3 是 evaluation pass 和 diagnostics 二级热点；Wave 4 是 JEPA benchmark accepted owner；Wave 5 是 consolidation/import 面收口与 keep-and-test。当前 IDE 打开的文件只作为局部线索；即使打开 loss、model、diagnostics 或 dataset 文件，也必须放回 remediation wave、public surface policy、merge-candidate/accepted owner 和 rollback 边界判断。
 
 模型/forward/registry 改动先归类：
 

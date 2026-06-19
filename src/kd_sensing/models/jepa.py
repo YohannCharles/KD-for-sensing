@@ -12,6 +12,7 @@ import torch.nn as nn
 from kd_sensing.modalities import image_profile_spec, validate_image_encoder_profile
 from kd_sensing.models.jepa_downstream import (
     GPSQueryPool,
+    PredictiveGPSQueryPool,
     build_jepa_downstream_adapter,
     build_jepa_downstream_pooler,
     normalize_jepa_downstream_adapter_config,
@@ -319,6 +320,7 @@ class JepaContextImageEncoder(nn.Module):
             "available": False,
             "insufficient_history_count": 0,
         }
+        self.last_predictive_gps_query_diagnostics: dict[str, Any] | None = None
         if self.output_dim != self.latent_dim:
             raise ValueError(
                 "jepa_context_image requires output_dim to equal latent_dim because it reuses the JEPA "
@@ -326,6 +328,10 @@ class JepaContextImageEncoder(nn.Module):
             )
         self.pooler = build_jepa_downstream_pooler(self.pooler_config)
         self.adapter = build_jepa_downstream_adapter(self.adapter_config)
+        self.supports_observability_metadata = self.supports_observability_metadata or isinstance(
+            self.pooler,
+            PredictiveGPSQueryPool,
+        )
         self.required_context_modalities = tuple(getattr(self.pooler, "required_context_modalities", ()))
         self.context_feature_source = str(getattr(self.pooler, "context_feature_source", "none"))
         raw_kwargs = getattr(self.pooler, "context_feature_kwargs", {})
@@ -370,6 +376,8 @@ class JepaContextImageEncoder(nn.Module):
         *,
         image_valid_mask: torch.Tensor | None = None,
         image_observability_score: torch.Tensor | None = None,
+        gps_valid_mask: torch.Tensor | None = None,
+        gps_counterfactual_mask: torch.Tensor | None = None,
         benchmark_condition_metadata: dict[str, Any] | None = None,
         **_: Any,
     ) -> torch.Tensor:
@@ -379,8 +387,23 @@ class JepaContextImageEncoder(nn.Module):
                 raise ValueError("jepa_context_image GPS-query pooling requires GPS condition feature.")
             if self.pooling == "hybrid_residual_query":
                 raise ValueError("jepa_context_image hybrid residual query pooling requires GPS condition feature.")
+            if self.pooling == "predictive_gps_query":
+                raise ValueError("jepa_context_image Predictive GPS-query++ pooling requires GPS condition feature.")
             raise ValueError(f"jepa_context_image pooler {self.pooling!r} requires condition features.")
-        result = self.pooler(tokens, condition_features=gps_condition_features)
+        if self.pooling == "predictive_gps_query":
+            result = self.pooler(
+                tokens,
+                condition_features=gps_condition_features,
+                image_valid_mask=image_valid_mask,
+                image_observability_score=image_observability_score,
+                gps_valid_mask=gps_valid_mask,
+                gps_counterfactual_mask=gps_counterfactual_mask,
+                benchmark_condition_metadata=benchmark_condition_metadata,
+            )
+            self.last_predictive_gps_query_diagnostics = getattr(self.pooler, "last_diagnostics", None)
+        else:
+            result = self.pooler(tokens, condition_features=gps_condition_features)
+            self.last_predictive_gps_query_diagnostics = None
         if isinstance(result, tuple):
             pooled, attention_map = result
             self.last_attention_map = attention_map
@@ -389,6 +412,8 @@ class JepaContextImageEncoder(nn.Module):
             pooled = result
         features = self.adapter(pooled)
         self._update_temporal_auxiliary(features)
+        if self.pooling == "predictive_gps_query":
+            self._update_predictive_gps_query_auxiliary()
         return self._maybe_apply_temporal_fallback(
             features,
             image_valid_mask=image_valid_mask,
@@ -410,6 +435,24 @@ class JepaContextImageEncoder(nn.Module):
         self.last_current_latent = features
         self.last_temporal_predicted_latent = predicted
         self.last_temporal_auxiliary_metadata = metadata
+
+    def _update_predictive_gps_query_auxiliary(self) -> None:
+        diagnostics = self.last_predictive_gps_query_diagnostics or {}
+        current = getattr(self.pooler, "last_current_latent", None)
+        predicted = getattr(self.pooler, "last_temporal_predicted_latent", None)
+        self.last_current_latent = current if torch.is_tensor(current) else None
+        self.last_temporal_predicted_latent = predicted if torch.is_tensor(predicted) else None
+        self.last_temporal_auxiliary_metadata = {
+            "enabled": True,
+            "objective": "predictive_gps_query_temporal_latent",
+            "available": bool(diagnostics.get("branch_availability", {}).get("temporal_predicted", False)),
+            "history_window": diagnostics.get("pooler", {}).get("history_window", None)
+            or diagnostics.get("history_window", None),
+            "source_history_range": diagnostics.get("temporal_source_history_range", []),
+            "availability_mask": diagnostics.get("temporal_availability_mask", []),
+            "insufficient_history_count": int(diagnostics.get("insufficient_history_count", 0) or 0),
+            "fallback_strategy": diagnostics.get("fallback_strategy", "zero"),
+        }
 
     def _maybe_apply_temporal_fallback(
         self,
@@ -444,6 +487,14 @@ class JepaContextImageEncoder(nn.Module):
     ) -> None:
         legacy_prefix = f"{prefix}gps_query_pool."
         pooler_prefix = f"{prefix}pooler."
+        if self.pooling == "predictive_gps_query" and any(key.startswith(legacy_prefix) for key in state_dict):
+            message = (
+                "Cannot silently load legacy gps_query_attention checkpoint keys into predictive_gps_query; "
+                "use strict=False only for an explicit non-strict transfer."
+            )
+            if strict:
+                error_msgs.append(message)
+                return
         if any(key.startswith(legacy_prefix) for key in state_dict) and not any(
             key.startswith(pooler_prefix) for key in state_dict
         ):
@@ -502,6 +553,26 @@ class JepaContextImageEncoder(nn.Module):
             metadata["context_feature_source"] = self.context_feature_source
         else:
             metadata["hybrid_residual_query_enabled"] = False
+        if self.pooling == "predictive_gps_query":
+            metadata["predictive_gps_query_enabled"] = True
+            metadata["gps_query_plus_plus_enabled"] = True
+            metadata["required_context_modalities"] = list(self.required_context_modalities)
+            metadata["context_feature_source"] = self.context_feature_source
+            metadata["condition_source"] = pooler_metadata.get("condition_source")
+            metadata["content_query_count"] = pooler_metadata.get("content_queries")
+            metadata["gps_query_count"] = pooler_metadata.get("gps_queries")
+            metadata["temporal_predictor_type"] = pooler_metadata.get("temporal_predictor_type")
+            metadata["reliability_gate_type"] = pooler_metadata.get("reliability_gate_type")
+            metadata["residual_scale"] = pooler_metadata.get("residual_scale")
+            metadata["auxiliary_losses"] = {
+                "temporal_auxiliary_enabled": self.temporal_auxiliary_enabled,
+                "temporal_auxiliary": dict(self.temporal_auxiliary_config),
+            }
+            metadata["jepa_checkpoint_path"] = self.checkpoint_path
+            metadata["context_encoder_frozen"] = self.freeze_encoder
+        else:
+            metadata["predictive_gps_query_enabled"] = False
+            metadata["gps_query_plus_plus_enabled"] = False
         return metadata
 
 

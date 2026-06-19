@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import torch
 
+import kd_sensing.baselines.beambench.image_ae_gps as image_ae_gps_public_owner
 from kd_sensing.baselines.beambench.image_ae_gps import (
     BeamBenchImageAEGPSDataset,
     BeamBenchImageAEGPSDirectModel,
@@ -16,6 +17,13 @@ from kd_sensing.baselines.beambench.image_ae_gps import (
     run_image_ae_gps_training,
 )
 from kd_sensing.cli.run_beambench_image_ae_gps_tableiii import run_main as run_tableiii_main
+
+
+def test_beambench_image_ae_gps_public_owner_exports_workflows():
+    assert image_ae_gps_public_owner.run_image_ae_gps_training is run_image_ae_gps_training
+    assert "run_image_ae_gps_training" in image_ae_gps_public_owner.__all__
+    assert "run_image_ae_gps_paper_split_training" in image_ae_gps_public_owner.__all__
+    assert "run_image_ae_gps_paper_split_evaluation" in image_ae_gps_public_owner.__all__
 
 
 def test_beambench_image_ae_gps_direct_model_forward():
@@ -278,11 +286,24 @@ def test_beambench_image_ae_gps_tableiii_runner_dry_run(tmp_path: Path):
     assert summary["paper_split"]["train_scenes"] == [31]
     assert summary["paper_split"]["eval_scenes"] == [31]
     assert len(summary["summary"]["rows"]) == 1
+    assert summary["summary"]["metric_field"] == "official_top3_dba"
+    assert "local_weighted_overall" in summary["summary"]
+    assert "gps_calibration" in summary
+    assert "31" in summary["gps_calibration"]["train_scenes"]
+    assert summary["performance"]["feature_cache"]["active"] is True
+    assert "train_scene31" in summary["performance"]["feature_cache"]["reports"]
+    assert "test_scene31" in summary["performance"]["feature_cache"]["reports"]
     assert summary["summary"]["rows"][0]["scene"] == 31
     assert (output_root / "tableiii_camera_ae_gps_summary.csv").exists()
     assert (output_root / "tableiii_camera_ae_gps_summary.md").exists()
     assert (output_root / "tableiii_camera_ae_gps_summary.json").exists()
     assert (output_root / "scene31" / "run_report.json").exists()
+    checkpoint = torch.load(summary["checkpoint_path"], map_location="cpu", weights_only=False)
+    assert checkpoint["paper_split"]["train_scenes"] == [31]
+    assert checkpoint["paper_split"]["eval_scenes"] == [31]
+    assert checkpoint["ae_checkpoint_path"] == summary["ae_checkpoint_path"]
+    assert "gps_calibration" in checkpoint
+    assert "feature_cache" in checkpoint["performance"]
 
     eval_root = tmp_path / "outputs" / "tableiii_eval"
     eval_summary = run_tableiii_main(
@@ -308,6 +329,9 @@ def test_beambench_image_ae_gps_tableiii_runner_dry_run(tmp_path: Path):
     assert eval_summary["workflow"] == "beambench_image_ae_gps_direct_paper_split_eval"
     assert eval_summary["paper_split"]["eval_scenes"] == [31]
     assert len(eval_summary["summary"]["rows"]) == 1
+    assert eval_summary["selection"] == summary["selection"]
+    assert eval_summary["performance"]["feature_cache"]["active"] is True
+    assert "test_scene31" in eval_summary["performance"]["feature_cache"]["reports"]
     assert (eval_root / "tableiii_camera_ae_gps_summary.csv").exists()
     assert (eval_root / "scene31" / "run_report.json").exists()
 

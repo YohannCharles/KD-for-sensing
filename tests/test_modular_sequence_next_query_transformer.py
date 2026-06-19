@@ -9,6 +9,7 @@ import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+from kd_sensing.models.geometry_prior import GpsGeometryPriorBranch, SafeResidualBeamReranker  # noqa: E402
 from kd_sensing.models.modular import FeatureConsistencyGateCore, ModularSequenceModel, NextBeamQueryTransformerCore  # noqa: E402
 from kd_sensing.modalities import MODALITY_ORDER  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
@@ -297,6 +298,210 @@ def test_modular_sequence_feature_consistency_gate_outputs_runtime_diagnostics()
     metadata = model.training_strategy_metadata()
     assert metadata["representation_core_type"] == "feature_consistency_gate"
     assert "predictive_condition_id" in metadata["representation_core"]["forbidden_condition_fields"]
+
+
+def test_gps_geometry_prior_branch_distribution_fallback_and_label_space_validation():
+    prior = GpsGeometryPriorBranch(
+        num_classes=8,
+        num_pred=2,
+        feature_mode="calibrated_angle",
+        angle_index=0,
+        sigma=1.5,
+        label_space="beam8",
+        class_order="circular",
+    )
+    gps = torch.tensor([[[0.0, 1.0], [1.0, 0.0]], [[0.5, 0.0], [0.7, 0.0]]])
+    payload = prior(gps, target_time=2, gps_valid_mask=torch.tensor([[True, True], [True, False]]))
+
+    assert payload["logits"].shape == (2, 2, 8)
+    assert payload["distribution"].shape == (2, 2, 8)
+    torch.testing.assert_close(payload["distribution"].sum(dim=-1), torch.ones(2, 2))
+    assert payload["entropy"].shape == (2, 2)
+    assert payload["topk_indices"].shape == (2, 2, 5)
+    assert payload["availability_mask"][1, 1].item() is False
+    torch.testing.assert_close(payload["logits"][1, 1], torch.zeros(8))
+    assert payload["unavailable_reason"] == "gps_missing_or_invalid"
+    assert payload["metadata"]["feature_mode"] == "calibrated_angle"
+
+    with pytest.raises(ValueError, match="label space mismatch"):
+        GpsGeometryPriorBranch(num_classes=8, label_space="beam64")
+    with pytest.raises(ValueError, match="mapping fingerprint mismatch"):
+        GpsGeometryPriorBranch(num_classes=8, label_space="beam8", mapping_fingerprint="prior", beam_mapping_fingerprint="beam")
+
+
+def test_modular_sequence_geometry_prior_logit_fusion_outputs_diagnostics_and_ignores_condition_ids():
+    model = ModularSequenceModel(
+        modalities=["image", "gps"],
+        encoders={
+            "image": {"type": "next_query_test_identity", "output_dim": 8},
+            "gps": {"type": "next_query_test_identity", "output_dim": 8},
+        },
+        projectors={
+            "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+            "gps": {"type": "identity", "input_dim": 8, "d_model": 8},
+        },
+        representation_core={"type": "early_concat_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+        geometry_prior={
+            "enabled": True,
+            "type": "gps_geometry_prior",
+            "feature_mode": "calibrated_angle",
+            "angle_index": 0,
+            "sigma": 1.5,
+            "label_space": "beam5",
+            "normalization_artifact": "synthetic",
+            "calibration_source": "unit_test",
+        },
+        logit_fusion={
+            "enabled": True,
+            "type": "geometry_prior_logit_fusion",
+            "mode": "assistive",
+            "prior_weight": 0.4,
+            "max_prior_weight": 0.45,
+            "min_image_weight": 0.55,
+        },
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+    gps = torch.zeros(2, 3, 8)
+    gps[:, :, 0] = torch.tensor([[0.0, 0.5, 1.0], [0.0, 0.5, 1.0]])
+
+    output = model(
+        image_batch=torch.randn(2, 3, 8),
+        gps_batch=gps,
+        gps_valid_mask=torch.ones(2, 3, dtype=torch.bool),
+        gps_delay_steps=torch.zeros(2, 3),
+        gps_counterfactual_mask=torch.tensor([[False, False, False], [False, False, True]]),
+        image_valid_mask=torch.ones(2, 3, dtype=torch.bool),
+        image_observability_score=torch.ones(2, 3),
+        benchmark_condition_metadata={
+            "condition": "P4_joint_predictive_recovery",
+            "predictive_condition_id": "P4_joint_predictive_recovery",
+            "gps_condition": "C4_severe_async",
+            "image_condition": "D7_joint_worst_case",
+            "c_idx": 4,
+            "d_idx": 7,
+        },
+    )
+    adapted = adapt_model_output(output)
+
+    assert adapted.logits.shape == (2, 3, 5)
+    assert output["image_logits"].shape == (2, 3, 5)
+    assert output["geometry_prior_logits"].shape == (2, 3, 5)
+    torch.testing.assert_close(output["geometry_prior_distribution"].sum(dim=-1), torch.ones(2, 3))
+    diagnostics = output["geometry_prior_fusion_diagnostics"]
+    assert diagnostics["condition_id_consumed"] is False
+    assert {"condition", "predictive_condition_id", "gps_condition", "image_condition", "c_idx", "d_idx"} <= set(
+        diagnostics["blocked_condition_fields"]
+    )
+    assert diagnostics["geometry_prior_weight"][0, -1].item() <= 0.45
+    assert diagnostics["geometry_prior_weight"][1, -1].item() < diagnostics["geometry_prior_weight"][0, -1].item()
+    metadata = model.training_strategy_metadata()
+    assert metadata["model_group"] == "geometry_prior_beam_fusion"
+    assert metadata["geometry_prior"]["feature_mode"] == "calibrated_angle"
+    assert metadata["fusion_mode"] == "assistive"
+    assert "geometry_prior" in metadata["reliability_metadata_consumers"]
+
+
+def test_modular_sequence_safe_residual_reranker_outputs_bounded_diagnostics_and_ignores_condition_ids():
+    model = ModularSequenceModel(
+        modalities=["image", "gps"],
+        encoders={
+            "image": {"type": "next_query_test_identity", "output_dim": 8},
+            "gps": {"type": "next_query_test_identity", "output_dim": 8},
+        },
+        projectors={
+            "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+            "gps": {"type": "identity", "input_dim": 8, "d_model": 8},
+        },
+        representation_core={"type": "early_concat_gru", "d_model": 8, "hidden_size": 8, "num_layers": 1},
+        geometry_prior={
+            "enabled": True,
+            "type": "gps_geometry_prior",
+            "feature_mode": "calibrated_angle",
+            "angle_index": 0,
+            "sigma": 1.5,
+            "label_space": "beam5",
+        },
+        logit_fusion={"enabled": True, "type": "geometry_prior_logit_fusion", "mode": "assistive"},
+        reranker={
+            "enabled": True,
+            "type": "safe_residual_beam_reranker",
+            "anchor_top_k": 2,
+            "prior_top_k": 2,
+            "neighborhood_radius": 1,
+            "max_residual_scale": 0.2,
+            "fallback_policy": "never",
+            "min_gate_confidence": 0.0,
+        },
+        feature_size=8,
+        d_model=8,
+        num_classes=5,
+        num_pred=1,
+    )
+    gps = torch.zeros(2, 3, 8)
+    gps[:, :, 0] = torch.tensor([[0.0, 0.5, 1.0], [0.0, 0.5, 1.0]])
+
+    output = model(
+        image_batch=torch.randn(2, 3, 8),
+        gps_batch=gps,
+        gps_valid_mask=torch.ones(2, 3, dtype=torch.bool),
+        gps_delay_steps=torch.zeros(2, 3),
+        image_observability_score=torch.full((2, 3), 0.2),
+        benchmark_condition_metadata={"condition": "P4_joint_predictive_recovery", "c_idx": 4},
+    )
+
+    diagnostics = output["safe_rerank_diagnostics"]
+    assert output["logits"].shape == (2, 3, 5)
+    assert output["rerank_logits"].shape == (2, 3, 5)
+    assert diagnostics["candidate_ids"].shape[:2] == (2, 3)
+    assert diagnostics["selected_source"].shape == (2, 3)
+    assert diagnostics["condition_id_consumed"] is False
+    assert diagnostics["residual_magnitude"].max().item() <= 0.200001
+    metadata = model.training_strategy_metadata()
+    assert metadata["model_group"] == "safe_residual_beam_rerank_fusion"
+    assert "safe_residual_reranker" in metadata["reliability_metadata_consumers"]
+
+
+def test_safe_residual_reranker_scatter_matches_anchor_dtype_when_residual_head_is_float32():
+    class Float32ResidualHead(nn.Module):
+        def forward(self, features: torch.Tensor) -> torch.Tensor:
+            return torch.ones((*features.shape[:-1], 1), dtype=torch.float32, device=features.device)
+
+    reranker = SafeResidualBeamReranker(
+        num_classes=8,
+        anchor_top_k=2,
+        prior_top_k=2,
+        neighborhood_radius=1,
+        max_candidates=4,
+        max_residual_scale=0.2,
+        fallback_policy="never",
+    )
+    reranker.residual_head = Float32ResidualHead()
+    anchor_logits = torch.randn(2, 1, 8, dtype=torch.float16)
+    prior_logits = torch.randn(2, 1, 8, dtype=torch.float16)
+
+    output = reranker(anchor_logits=anchor_logits, geometry_prior_logits=prior_logits)
+
+    assert output["logits"].dtype == anchor_logits.dtype
+    assert output["diagnostics"]["full_residual"].dtype == anchor_logits.dtype
+    assert output["diagnostics"]["residual_scores"].dtype == anchor_logits.dtype
+
+
+def test_geometry_prior_config_requires_gps_modality():
+    with pytest.raises(ValueError, match="requires 'gps'"):
+        ModularSequenceModel(
+            modalities=["image"],
+            encoders={"image": {"type": "next_query_test_identity", "output_dim": 8}},
+            projectors={"image": {"type": "identity", "input_dim": 8, "d_model": 8}},
+            representation_core={"type": "single_gru", "d_model": 8, "hidden_size": 8},
+            geometry_prior={"enabled": True, "type": "gps_geometry_prior", "label_space": "beam5"},
+            feature_size=8,
+            d_model=8,
+            num_classes=5,
+            num_pred=1,
+        )
 
 
 def test_modular_sequence_dependency_aware_projected_gps_context_and_errors():

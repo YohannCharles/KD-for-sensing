@@ -12,11 +12,37 @@ MAINTAINER_CONTEXT_INDEX_REL_PATH = Path("docs") / "maintainer_context_index.yam
 OPENSPEC_LIFECYCLE_ALLOWED = {"current", "supporting", "retired-tombstone"}
 RUNTIME_ARTIFACT_PREFIXES = ("dataset/", "outputs/", "logs/", "cache/", ".pytest_cache/")
 RUNTIME_ARTIFACT_SUFFIXES = (".pth", ".pt", ".ckpt")
+ARCHITECTURE_BASELINE_REQUIRED_FIELDS = {
+    "captured_at",
+    "purpose",
+    "measurement_scope",
+    "codegraph",
+    "ast",
+    "interpretation",
+}
 HOTSPOT_ACTION_REQUIRED_FIELDS = {
     "priority",
     "status",
-    "split_targets",
+    "enforcement",
+    "planned_action",
+    "public_surface_policy",
     "rationale",
+    "rollback_note",
+    "validation_commands",
+}
+HOTSPOT_ACTION_CLUE_FIELDS = {
+    "split_targets",
+    "consolidation_targets",
+    "accepted_size_rationale",
+    "next_change",
+}
+HOTSPOT_WAVE_REQUIRED_FIELDS = {
+    "id",
+    "target_paths",
+    "owner_module",
+    "planned_action",
+    "public_surface_policy",
+    "rollback_note",
     "validation_commands",
 }
 ENTRYPOINT_OUTPUT_BOUNDARY_MARKERS = (
@@ -76,7 +102,7 @@ def _check_index_command(command: str, label: str) -> None:
 
 
 def _check_owner_module(root: Path, module: str, label: str) -> None:
-    if not module.startswith("kd_sensing."):
+    if module != "kd_sensing" and not module.startswith("kd_sensing."):
         _index_fail(f"{label}.owner_module must be inside kd_sensing: {module}")
     module_path = Path("src") / Path(*module.split("."))
     module_file = (root / module_path).with_suffix(".py")
@@ -124,12 +150,107 @@ def _check_entrypoint_metadata(
         _index_fail(f"{label}.retired_route_guard must be a non-empty string when present")
 
 
+def _check_positive_int(value: object, label: str) -> None:
+    if not isinstance(value, int) or value <= 0:
+        _index_fail(f"{label} must be a positive integer")
+
+
+def _check_architecture_sizing_baseline(root: Path, value: object) -> None:
+    baseline = _index_mapping(value, "governance.architecture_sizing_baseline")
+    missing = sorted(ARCHITECTURE_BASELINE_REQUIRED_FIELDS - set(baseline))
+    if missing:
+        _index_fail(f"governance.architecture_sizing_baseline missing fields: {missing}")
+
+    captured_at = baseline.get("captured_at")
+    if not isinstance(captured_at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", captured_at):
+        _index_fail("governance.architecture_sizing_baseline.captured_at must be YYYY-MM-DD")
+
+    purpose = baseline.get("purpose")
+    if not isinstance(purpose, str) or "not standalone" not in purpose:
+        _index_fail("governance.architecture_sizing_baseline.purpose must say counts are not standalone KPIs")
+
+    measurement_scope = _index_mapping(
+        baseline.get("measurement_scope"),
+        "governance.architecture_sizing_baseline.measurement_scope",
+    )
+    includes = [str(path) for path in _index_list(measurement_scope.get("includes"), "architecture baseline includes")]
+    excludes = [str(path) for path in _index_list(measurement_scope.get("excludes"), "architecture baseline excludes")]
+    for rel_path in includes:
+        _check_index_path(root, rel_path, "governance.architecture_sizing_baseline.measurement_scope.includes")
+    required_excludes = {
+        "dataset/",
+        "outputs/",
+        "logs/",
+        "cache/",
+        ".pytest_cache/",
+        "*.pth",
+        "*.pt",
+        "*.ckpt",
+    }
+    missing_excludes = sorted(required_excludes - set(excludes))
+    if missing_excludes:
+        _index_fail(
+            "governance.architecture_sizing_baseline.measurement_scope.excludes missing "
+            f"local artifact patterns: {missing_excludes}"
+        )
+
+    codegraph = _index_mapping(baseline.get("codegraph"), "governance.architecture_sizing_baseline.codegraph")
+    for key in ("files_indexed", "python_files", "total_nodes", "total_edges", "function_nodes", "import_nodes"):
+        _check_positive_int(codegraph.get(key), f"governance.architecture_sizing_baseline.codegraph.{key}")
+
+    ast_baseline = _index_mapping(baseline.get("ast"), "governance.architecture_sizing_baseline.ast")
+    for key in ("python_files", "function_defs", "import_statements"):
+        _check_positive_int(ast_baseline.get(key), f"governance.architecture_sizing_baseline.ast.{key}")
+    if codegraph["python_files"] != ast_baseline["python_files"]:
+        _index_fail("architecture baseline CodeGraph and AST python file counts must match")
+
+    distribution = _index_list(
+        ast_baseline.get("source_tree_distribution"),
+        "governance.architecture_sizing_baseline.ast.source_tree_distribution",
+    )
+    roots = {str(item.get("root")) for item in distribution if isinstance(item, dict)}
+    if {"src", "tests", "scripts"} - roots:
+        _index_fail("architecture baseline source_tree_distribution must include src, tests, and scripts")
+    for item in distribution:
+        entry = _index_mapping(item, "architecture baseline source_tree_distribution[]")
+        root_name = str(entry.get("root"))
+        _check_index_path(root, f"{root_name}/", "architecture baseline source_tree_distribution.root")
+        for key in ("python_files", "function_defs", "import_statements"):
+            _check_positive_int(entry.get(key), f"architecture baseline source_tree_distribution.{root_name}.{key}")
+
+    major_subpackages = _index_list(
+        ast_baseline.get("major_subpackages"),
+        "governance.architecture_sizing_baseline.ast.major_subpackages",
+    )
+    if len(major_subpackages) < 6:
+        _index_fail("architecture baseline must list major src/kd_sensing subpackages")
+    for item in major_subpackages:
+        entry = _index_mapping(item, "architecture baseline major_subpackages[]")
+        rel_path = str(entry.get("path"))
+        if not rel_path.startswith("src/kd_sensing/"):
+            _index_fail(f"architecture baseline major subpackage must be under src/kd_sensing: {rel_path}")
+        _check_index_path(root, rel_path, "architecture baseline major_subpackages.path")
+        for key in ("python_files", "function_defs", "import_statements"):
+            _check_positive_int(entry.get(key), f"architecture baseline major_subpackages.{rel_path}.{key}")
+
+    interpretation = _index_list(
+        baseline.get("interpretation"),
+        "governance.architecture_sizing_baseline.interpretation",
+    )
+    interpretation_text = "\n".join(str(item) for item in interpretation)
+    if "trend signals only" not in interpretation_text or "Local datasets" not in interpretation_text:
+        _index_fail("architecture baseline interpretation must explain trend-only counts and local artifact exclusion")
+
+
 def _check_hotspot_action_metadata(
     entry: dict[str, Any],
     label: str,
     *,
     priority_values: set[str],
     status_values: set[str],
+    enforcement_values: set[str],
+    planned_action_values: set[str],
+    public_surface_policy_values: set[str],
 ) -> None:
     missing = sorted(HOTSPOT_ACTION_REQUIRED_FIELDS - set(entry))
     if missing:
@@ -142,12 +263,58 @@ def _check_hotspot_action_metadata(
     if status not in status_values:
         _index_fail(f"{label}.status has illegal value {status!r}")
 
-    split_targets = _index_list(entry.get("split_targets"), f"{label}.split_targets")
-    if not split_targets:
-        _index_fail(f"{label}.split_targets must not be empty")
-    for target in split_targets:
-        if not isinstance(target, str) or not target.strip():
-            _index_fail(f"{label}.split_targets must contain non-empty strings")
+    enforcement = str(entry.get("enforcement"))
+    if enforcement not in enforcement_values:
+        _index_fail(f"{label}.enforcement has illegal value {enforcement!r}")
+
+    planned_action = str(entry.get("planned_action"))
+    if planned_action not in planned_action_values:
+        _index_fail(f"{label}.planned_action has illegal value {planned_action!r}")
+
+    public_surface_policy = str(entry.get("public_surface_policy"))
+    if public_surface_policy not in public_surface_policy_values:
+        _index_fail(f"{label}.public_surface_policy has illegal value {public_surface_policy!r}")
+
+    if not any(field in entry and entry[field] not in (None, "", []) for field in HOTSPOT_ACTION_CLUE_FIELDS):
+        _index_fail(
+            f"{label} must include one of {sorted(HOTSPOT_ACTION_CLUE_FIELDS)} "
+            "so agents can choose split, consolidate, accepted-size, or next-change action"
+        )
+
+    for field in ("split_targets", "consolidation_targets"):
+        if field not in entry or entry[field] is None:
+            continue
+        targets = _index_list(entry.get(field), f"{label}.{field}")
+        if not targets:
+            _index_fail(f"{label}.{field} must not be empty when present")
+        for target in targets:
+            if not isinstance(target, str) or not target.strip():
+                _index_fail(f"{label}.{field} must contain non-empty strings")
+
+    accepted_size_rationale = entry.get("accepted_size_rationale")
+    if accepted_size_rationale is not None and (
+        not isinstance(accepted_size_rationale, str) or not accepted_size_rationale.strip()
+    ):
+        _index_fail(f"{label}.accepted_size_rationale must be a non-empty string when present")
+    if status == "right-size-accepted" and accepted_size_rationale is None:
+        _index_fail(f"{label}.accepted_size_rationale is required for right-size-accepted owner")
+    if planned_action == "accepted-size" and accepted_size_rationale is None:
+        _index_fail(f"{label}.accepted_size_rationale is required for accepted-size action")
+    if status == "merge-candidate" or planned_action == "consolidate":
+        if not entry.get("consolidation_targets"):
+            _index_fail(f"{label}.consolidation_targets is required for merge/consolidate action")
+
+    rollback_note = entry.get("rollback_note")
+    if not isinstance(rollback_note, str) or not rollback_note.strip():
+        _index_fail(f"{label}.rollback_note must be a non-empty string")
+
+    headroom = entry.get("headroom_lines", 0)
+    if not isinstance(headroom, int) or headroom < 0:
+        _index_fail(f"{label}.headroom_lines must be a non-negative integer when present")
+    if enforcement == "hard-fail" and headroom != 0:
+        _index_fail(f"{label}.headroom_lines must be 0 for hard-fail enforcement")
+    if enforcement == "headroom" and headroom <= 0:
+        _index_fail(f"{label}.headroom_lines must be positive for headroom enforcement")
 
     rationale = entry.get("rationale")
     if not isinstance(rationale, str) or not rationale.strip():
@@ -165,6 +332,63 @@ def _check_hotspot_action_metadata(
         next_change = entry["next_change"]
         if not isinstance(next_change, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", next_change):
             _index_fail(f"{label}.next_change must be a kebab-case change id")
+
+
+def _check_hotspot_remediation_wave(
+    root: Path,
+    entry: dict[str, Any],
+    label: str,
+    *,
+    planned_action_values: set[str],
+    public_surface_policy_values: set[str],
+) -> None:
+    missing = sorted(HOTSPOT_WAVE_REQUIRED_FIELDS - set(entry))
+    if missing:
+        _index_fail(f"{label} missing remediation wave fields: {missing}")
+
+    wave_id = entry.get("id")
+    if not isinstance(wave_id, str) or not re.fullmatch(r"wave-[a-z0-9][a-z0-9-]*", wave_id):
+        _index_fail(f"{label}.id must be a wave-* kebab-case id")
+
+    target_paths = _index_list(entry.get("target_paths"), f"{label}.target_paths")
+    if not target_paths:
+        _index_fail(f"{label}.target_paths must not be empty")
+    for rel_path in target_paths:
+        _check_index_path(root, str(rel_path), f"{label}.target_paths")
+
+    owner_module = entry.get("owner_module")
+    if not isinstance(owner_module, str) or not owner_module.strip():
+        _index_fail(f"{label}.owner_module must be a non-empty string")
+    _check_owner_module(root, owner_module, label)
+
+    planned_action = str(entry.get("planned_action"))
+    if planned_action not in planned_action_values:
+        _index_fail(f"{label}.planned_action has illegal value {planned_action!r}")
+
+    public_surface_policy = str(entry.get("public_surface_policy"))
+    if public_surface_policy not in public_surface_policy_values:
+        _index_fail(f"{label}.public_surface_policy has illegal value {public_surface_policy!r}")
+
+    rollback_note = entry.get("rollback_note")
+    if not isinstance(rollback_note, str) or not rollback_note.strip():
+        _index_fail(f"{label}.rollback_note must be a non-empty string")
+
+    commands = _index_list(entry.get("validation_commands"), f"{label}.validation_commands")
+    if not commands:
+        _index_fail(f"{label}.validation_commands must not be empty")
+    for command in commands:
+        if not isinstance(command, str) or not command.strip():
+            _index_fail(f"{label}.validation_commands must contain non-empty strings")
+        _check_index_command(command, f"{label}.validation_commands")
+
+    if "consolidation_targets" in entry and entry["consolidation_targets"] is not None:
+        targets = _index_list(entry["consolidation_targets"], f"{label}.consolidation_targets")
+        if not targets:
+            _index_fail(f"{label}.consolidation_targets must not be empty when present")
+    if "accepted_size_rationale" in entry and (
+        not isinstance(entry["accepted_size_rationale"], str) or not entry["accepted_size_rationale"].strip()
+    ):
+        _index_fail(f"{label}.accepted_size_rationale must be a non-empty string when present")
 
 
 def _check_hotspot_inventory_marker(markers: set[str], marker: str, label: str) -> None:
@@ -316,6 +540,8 @@ def _validate_maintainer_context_index(root: Path, data: dict[str, Any]) -> None
             _check_index_command(str(command), f"routing.task_types.{task_id}.validation_commands")
 
     governance = _index_mapping(data["governance"], "governance")
+    _check_architecture_sizing_baseline(root, governance.get("architecture_sizing_baseline"))
+
     entrypoints = _index_mapping(governance.get("entrypoints"), "governance.entrypoints")
     lifecycle_values = set(_index_list(entrypoints.get("lifecycle_values"), "governance.entrypoints.lifecycle_values"))
     for section in ("python_allowlist", "shell_allowlist"):
@@ -418,20 +644,73 @@ def _validate_maintainer_context_index(root: Path, data: dict[str, Any]) -> None
             "governance.hotspots.action_metadata.status_values",
         )
     ]
+    enforcement_value_list = [
+        str(value)
+        for value in _index_list(
+            action_metadata.get("enforcement_values"),
+            "governance.hotspots.action_metadata.enforcement_values",
+        )
+    ]
+    planned_action_value_list = [
+        str(value)
+        for value in _index_list(
+            action_metadata.get("planned_action_values"),
+            "governance.hotspots.action_metadata.planned_action_values",
+        )
+    ]
+    public_surface_policy_value_list = [
+        str(value)
+        for value in _index_list(
+            action_metadata.get("public_surface_policy_values"),
+            "governance.hotspots.action_metadata.public_surface_policy_values",
+        )
+    ]
     _index_unique(priority_value_list, "governance.hotspots.action_metadata.priority_values")
     _index_unique(status_value_list, "governance.hotspots.action_metadata.status_values")
+    _index_unique(enforcement_value_list, "governance.hotspots.action_metadata.enforcement_values")
+    _index_unique(planned_action_value_list, "governance.hotspots.action_metadata.planned_action_values")
+    _index_unique(
+        public_surface_policy_value_list,
+        "governance.hotspots.action_metadata.public_surface_policy_values",
+    )
     priority_values = set(priority_value_list)
     status_values = set(status_value_list)
+    enforcement_values = set(enforcement_value_list)
+    planned_action_values = set(planned_action_value_list)
+    public_surface_policy_values = set(public_surface_policy_value_list)
     if not priority_values:
         _index_fail("governance.hotspots.action_metadata.priority_values must not be empty")
     if not status_values:
         _index_fail("governance.hotspots.action_metadata.status_values must not be empty")
+    if not enforcement_values:
+        _index_fail("governance.hotspots.action_metadata.enforcement_values must not be empty")
+    if not planned_action_values:
+        _index_fail("governance.hotspots.action_metadata.planned_action_values must not be empty")
+    if not public_surface_policy_values:
+        _index_fail("governance.hotspots.action_metadata.public_surface_policy_values must not be empty")
     for value in priority_values:
         if not re.fullmatch(r"P[0-9]", value):
             _index_fail(f"governance.hotspots.action_metadata.priority_values has illegal value {value!r}")
-    for value in status_values:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", value):
-            _index_fail(f"governance.hotspots.action_metadata.status_values has illegal value {value!r}")
+    for label, values in (
+        ("status_values", status_values),
+        ("enforcement_values", enforcement_values),
+        ("planned_action_values", planned_action_values),
+        ("public_surface_policy_values", public_surface_policy_values),
+    ):
+        for value in values:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", value):
+                _index_fail(f"governance.hotspots.action_metadata.{label} has illegal value {value!r}")
+    for required_status in ("facade-budget", "right-size-accepted", "merge-candidate"):
+        if required_status not in status_values:
+            _index_fail(f"governance.hotspots.action_metadata.status_values missing {required_status}")
+    for required_action in ("split", "consolidate", "keep-and-test", "owner-facade", "hard-budget", "accepted-size"):
+        if required_action not in planned_action_values:
+            _index_fail(f"governance.hotspots.action_metadata.planned_action_values missing {required_action}")
+    for required_policy in ("keep-public-import", "thin-owner", "no-public-surface", "remove-internal-only"):
+        if required_policy not in public_surface_policy_values:
+            _index_fail(
+                f"governance.hotspots.action_metadata.public_surface_policy_values missing {required_policy}"
+            )
     inventory_marker_list = [
         str(marker)
         for marker in _index_list(
@@ -459,6 +738,9 @@ def _validate_maintainer_context_index(root: Path, data: dict[str, Any]) -> None
             label,
             priority_values=priority_values,
             status_values=status_values,
+            enforcement_values=enforcement_values,
+            planned_action_values=planned_action_values,
+            public_surface_policy_values=public_surface_policy_values,
         )
         _check_hotspot_inventory_marker(inventory_markers, path, f"{label}.path")
         _check_hotspot_inventory_marker(inventory_markers, symbol, f"{label}.symbol")
@@ -477,9 +759,26 @@ def _validate_maintainer_context_index(root: Path, data: dict[str, Any]) -> None
             label,
             priority_values=priority_values,
             status_values=status_values,
+            enforcement_values=enforcement_values,
+            planned_action_values=planned_action_values,
+            public_surface_policy_values=public_surface_policy_values,
         )
         _check_hotspot_inventory_marker(inventory_markers, path, f"{label}.path")
     _index_unique(file_budget_paths, "governance.hotspots.file_budgets.path")
+
+    wave_ids = []
+    for item in _index_list(hotspots.get("remediation_waves"), "governance.hotspots.remediation_waves"):
+        entry = _index_mapping(item, "governance.hotspots.remediation_waves[]")
+        wave_id = str(entry.get("id"))
+        wave_ids.append(wave_id)
+        _check_hotspot_remediation_wave(
+            root,
+            entry,
+            f"governance.hotspots.remediation_waves.{wave_id}",
+            planned_action_values=planned_action_values,
+            public_surface_policy_values=public_surface_policy_values,
+        )
+    _index_unique(wave_ids, "governance.hotspots.remediation_waves.id")
 
     health_checks = _index_mapping(governance.get("health_checks"), "governance.health_checks")
     commands = [str(command) for command in _index_list(health_checks.get("quick_commands"), "governance.health_checks.quick_commands")]
@@ -551,9 +850,16 @@ def hotspot_budgets(index: dict[str, Any]) -> dict[str, object]:
             for item in hotspots["symbol_budgets"]
         },
         "file": {item["path"]: item["max_lines"] for item in hotspots["file_budgets"]},
+        "symbol_metadata": {
+            (item["path"], item["symbol"], item["kind"]): item
+            for item in hotspots["symbol_budgets"]
+        },
+        "file_metadata": {item["path"]: item for item in hotspots["file_budgets"]},
         "inventory_markers": tuple(hotspots["inventory_markers"]),
         "long_function_limit": hotspots["global_limits"]["long_function_lines"],
         "long_class_limit": hotspots["global_limits"]["long_class_lines"],
+        "action_metadata": hotspots["action_metadata"],
+        "remediation_waves": tuple(hotspots["remediation_waves"]),
     }
 
 

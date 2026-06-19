@@ -9,8 +9,11 @@ from typing import Any, Iterable, Mapping
 from kd_sensing.data.difficulty.presets import (
     PREDICTIVE_JEPA_OPERATOR_TYPES,
     SCENARIO_D_OPERATOR_TYPES,
+    gps_query_advantage_severity,
+    is_gps_query_advantage_condition,
     is_predictive_jepa_condition,
     is_scenario_d_condition,
+    normalize_gps_query_advantage_condition_id,
     normalize_predictive_jepa_condition_id,
     normalize_predictive_jepa_operator_params,
     normalize_scenario_d_operator_params,
@@ -320,10 +323,16 @@ def _normalize_profile(
     scenario_d_condition = _scenario_d_condition_from_profile(raw, condition)
     predictive_jepa_condition = _predictive_jepa_condition_from_profile(raw, condition)
     if predictive_jepa_condition is not None:
-        condition = normalize_predictive_jepa_condition_id(predictive_jepa_condition)
+        condition = (
+            normalize_predictive_jepa_condition_id(predictive_jepa_condition)
+            if is_predictive_jepa_condition(predictive_jepa_condition)
+            else normalize_gps_query_advantage_condition_id(predictive_jepa_condition)
+        )
     severity_default = (
         predictive_jepa_severity(predictive_jepa_condition)
-        if predictive_jepa_condition is not None
+        if predictive_jepa_condition is not None and is_predictive_jepa_condition(predictive_jepa_condition)
+        else gps_query_advantage_severity(predictive_jepa_condition)
+        if predictive_jepa_condition is not None and is_gps_query_advantage_condition(predictive_jepa_condition)
         else scenario_d_severity(scenario_d_condition)
         if scenario_d_condition is not None
         else 0.0
@@ -507,13 +516,13 @@ def _scenario_d_condition_from_profile(raw: Mapping[str, Any], condition: str) -
 
 
 def _predictive_jepa_condition_from_profile(raw: Mapping[str, Any], condition: str) -> str | None:
-    if is_predictive_jepa_condition(condition):
+    if is_predictive_jepa_condition(condition) or is_gps_query_advantage_condition(condition):
         return condition
     raw_operator = raw.get("operators", raw.get("operator"))
     for item in _as_list(raw_operator):
         if isinstance(item, Mapping) and str(item.get("type", item.get("name", ""))).strip() in PREDICTIVE_JEPA_OPERATOR_TYPES:
             for key in ("predictive_condition", "p_level", "condition"):
-                if key in item and is_predictive_jepa_condition(item[key]):
+                if key in item and (is_predictive_jepa_condition(item[key]) or is_gps_query_advantage_condition(item[key])):
                     return str(item[key])
     return None
 

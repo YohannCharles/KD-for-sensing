@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import torch
+
+from kd_sensing.data.datasets.deepsense6g_cache_paths import (
+    resolve_image_cache_dir,
+    resolve_lidar_cache_dir_from_state,
+)
+from kd_sensing.data.transform_ops.lidar import load_lidar_background_points
 
 
 class DeepSense6GModalityLoader:
@@ -63,4 +71,42 @@ class DeepSense6GModalityLoader:
         return self.load_lidar_pair(idx)[1]
 
 
-__all__ = ["DeepSense6GModalityLoader"]
+def configure_deepsense6g_resource_readers(
+    dataset,
+    *,
+    enabled_modalities,
+    image_cache_dir,
+    image_use_cache: bool,
+    image_write_cache: bool,
+    image_cache_policy,
+    image_size,
+    lidar_cache_dir,
+    lidar_background_path,
+) -> None:
+    dataset.image_cache_policy = str(
+        image_cache_policy or dataset._policy_from_cache_flags(image_use_cache, image_write_cache)
+    )
+    dataset.image_cache_dir = (
+        resolve_image_cache_dir(
+            scene_id=dataset.scene_id,
+            data_root=dataset.data_root,
+            image_cache_dir=image_cache_dir,
+        )
+        if "image" in enabled_modalities
+        else None
+    )
+    dataset.image_cache = dataset._build_image_cache() if "image" in enabled_modalities else None
+    dataset.lidar_cache_dir = resolve_lidar_cache_dir_from_state(dataset, lidar_cache_dir) if dataset.use_lidar else None
+    dataset.lidar_background_points = (
+        load_lidar_background_points(dataset.data_root, lidar_background_path) if dataset.use_lidar else None
+    )
+    dataset._lidar_bev_cache: OrderedDict[int, object] = OrderedDict()
+    if "image" not in enabled_modalities:
+        dataset.image_cache_dir = None
+        dataset.image_cache = None
+        dataset.image_cache_policy = "off"
+    dataset.transform = dataset._build_image_transform(image_size) if "image" in enabled_modalities else None
+    dataset.modality_loader = DeepSense6GModalityLoader(dataset)
+
+
+__all__ = ["DeepSense6GModalityLoader", "configure_deepsense6g_resource_readers"]

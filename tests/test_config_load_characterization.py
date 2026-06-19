@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 from kd_sensing.config import load_config  # noqa: E402
+from kd_sensing.diagnostics.jepa_benchmark_manifest import load_benchmark_manifest  # noqa: E402
 from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
 
 
@@ -77,6 +78,69 @@ def test_predictive_jepa_hybrid_config_loads_and_preserves_existing_jepa_baselin
 
     assert gps_query["model"]["primary"]["encoders"]["image"]["pooling"] == "gps_query_attention"
     assert resnet_image_gps["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+
+
+def test_geometry_prior_beam_fusion_configs_and_strict_manifest_load():
+    fusion = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/"
+        "geometry_prior_logit_fusion_2604_s32_s34_lowmem.yaml"
+    )
+    dba = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/"
+        "geometry_prior_dba_aware_loss_2604_s32_s34_lowmem.yaml"
+    )
+    teacher = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/"
+        "geometry_prior_teacher_guided_2604_s32_s34_lowmem.yaml"
+    )
+    curriculum = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/"
+        "geometry_prior_mixed_curriculum_2604_s32_s34_lowmem.yaml"
+    )
+    rerank = load_config(
+        ROOT
+        / "configs/fusion/experiments/jepa_image_gps/"
+        "safe_residual_rerank_strict_candidate_2604_s32_s34_lowmem.yaml"
+    )
+    manifest = load_benchmark_manifest(
+        ROOT / "configs/diagnostics/geometry_prior_beam_fusion_strict.yaml",
+        validate_paths=False,
+    )
+    rerank_manifest = load_benchmark_manifest(
+        ROOT / "configs/diagnostics/real_perturbation_residual_rerank_fusion_strict.yaml",
+        validate_paths=False,
+    )
+
+    prior_cfg = fusion["model"]["primary"]["geometry_prior"]
+    assert fusion["experiment"]["seed"] == 17
+    assert fusion["model"]["gps_input_seq_len"] == 2
+    assert prior_cfg["enabled"] is True
+    assert prior_cfg["type"] == "gps_geometry_prior"
+    assert prior_cfg["label_space"] == "beam64"
+    assert fusion["model"]["primary"]["logit_fusion"]["type"] == "geometry_prior_logit_fusion"
+    assert dba["loss"]["dba_aware"]["enabled"] is True
+    assert "distillation" not in dba["loss"]
+    assert teacher["loss"]["teacher_guidance"]["mode"] == "opt_in_stabilization"
+    assert "teacher_checkpoint" not in teacher["loss"]["teacher_guidance"]
+    assert curriculum["training"]["curriculum"]["mode"] == "clean_first_geometry_prior"
+    assert rerank["model"]["primary"]["reranker"]["type"] == "safe_residual_beam_reranker"
+    assert rerank["model"]["primary"]["reranker"]["max_residual_scale"] == 0.35
+    assert rerank["loss"]["safe_rerank"]["enabled"] is True
+    assert rerank["loss"]["safe_rerank"]["no_regret_weight"] == 0.25
+    assert manifest["comparison_protocol"]["history_window"] == 5
+    assert manifest["comparison_protocol"]["gps_input_source_window"] == 2
+    assert manifest["comparison_protocol"]["prediction_horizon"] == 1
+    assert manifest["comparison_protocol"]["scene_set"] == [32, 33, 34]
+    assert manifest["comparison_protocol"]["seed"] == 17
+    assert manifest["geometry_prior_claim_gate"]["clean_regression_threshold_dba"] == 0.02
+    assert "geometry_prior_logit_fusion" in manifest["models"]
+    assert rerank_manifest["evaluation"]["mode"] == "real_forward"
+    assert rerank_manifest["geometry_prior_claim_gate"]["require_real_forward_perturbations"] is True
+    assert rerank_manifest["models"]["safe_residual_rerank_strict_candidate"]["group"] == "safe_residual_beam_rerank_fusion"
 
 
 def test_retired_raymobtime_configs_fail_fast(tmp_path: Path):

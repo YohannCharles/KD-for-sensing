@@ -268,6 +268,7 @@ def import_default_components() -> None:
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.bev_fusion_2604  # noqa: F401
     import kd_sensing.models.csi  # noqa: F401
+    import kd_sensing.models.geometry_prior  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
     import kd_sensing.models.image_encoders  # noqa: F401

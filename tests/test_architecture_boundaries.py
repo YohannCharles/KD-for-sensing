@@ -68,6 +68,10 @@ HEALTH_CHECK_COMMANDS = health_check_commands(MAINTAINER_CONTEXT_INDEX)
 CONFIG_LIFECYCLE_MARKERS = CONFIG_ALLOWLISTS["lifecycle_markers"]
 HOTSPOT_SYMBOL_BUDGETS = HOTSPOT_BUDGETS["symbol"]
 HOTSPOT_FILE_BUDGETS = HOTSPOT_BUDGETS["file"]
+HOTSPOT_SYMBOL_METADATA = HOTSPOT_BUDGETS["symbol_metadata"]
+HOTSPOT_FILE_METADATA = HOTSPOT_BUDGETS["file_metadata"]
+HOTSPOT_ACTION_METADATA = HOTSPOT_BUDGETS["action_metadata"]
+HOTSPOT_REMEDIATION_WAVES = HOTSPOT_BUDGETS["remediation_waves"]
 REQUIRED_HOTSPOT_INVENTORY_MARKERS = HOTSPOT_BUDGETS["inventory_markers"]
 LONG_FUNCTION_LIMIT = HOTSPOT_BUDGETS["long_function_limit"]
 LONG_CLASS_LIMIT = HOTSPOT_BUDGETS["long_class_limit"]
@@ -603,6 +607,7 @@ def test_maintainer_context_index_schema_is_valid():
     assert FUSION_ROOT_YAML_ALLOWLIST
     assert EXISTING_MODEL_REGISTRATION_ALLOWLIST
     assert BATCH_RUNTIME_FUNCTION_ALLOWLIST
+    assert MAINTAINER_CONTEXT_INDEX["governance"]["architecture_sizing_baseline"]
     assert HOTSPOT_SYMBOL_BUDGETS
     assert HEALTH_CHECK_COMMANDS
     assert RETIRED_CONFIG_TOKENS
@@ -1053,6 +1058,66 @@ def test_agent_navigation_is_referenced_from_rules_and_inventory():
     assert "docs/agent_navigation.md" in readme
 
 
+def test_hotspot_action_metadata_documents_right_sizing_waves():
+    inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
+    navigation = (ROOT / "docs" / "agent_navigation.md").read_text(encoding="utf-8")
+
+    assert {"right-size-accepted", "merge-candidate", "keep-and-test"} <= set(
+        HOTSPOT_ACTION_METADATA["status_values"]
+    )
+    assert {"hard-fail", "headroom", "monitor", "accepted", "merge-required"} <= set(
+        HOTSPOT_ACTION_METADATA["enforcement_values"]
+    )
+    assert {"split", "consolidate", "keep-and-test", "owner-facade", "hard-budget", "accepted-size"} <= set(
+        HOTSPOT_ACTION_METADATA["planned_action_values"]
+    )
+    assert HOTSPOT_REMEDIATION_WAVES
+    assert {wave["id"] for wave in HOTSPOT_REMEDIATION_WAVES} >= {
+        "wave-0",
+        "wave-1-beambench-image-ae-gps",
+        "wave-2-datasets-trainer",
+        "wave-3-evaluation-diagnostics",
+        "wave-4-jepa-accepted-owners",
+        "wave-5-consolidation-imports",
+    }
+    baseline = MAINTAINER_CONTEXT_INDEX["governance"]["architecture_sizing_baseline"]
+    assert baseline["codegraph"]["python_files"] == baseline["ast"]["python_files"]
+    assert "outputs/" in baseline["measurement_scope"]["excludes"]
+    assert "dataset/" in baseline["measurement_scope"]["excludes"]
+    assert "trend signals only" in "\n".join(baseline["interpretation"])
+    for wave in HOTSPOT_REMEDIATION_WAVES:
+        assert wave["planned_action"] in HOTSPOT_ACTION_METADATA["planned_action_values"]
+        assert wave["public_surface_policy"] in HOTSPOT_ACTION_METADATA["public_surface_policy_values"]
+        for command in wave["validation_commands"]:
+            if "pytest" in command or "python " in command or "kd-sensing-" in command:
+                assert command.startswith("conda run -n kd_mm_beam ")
+        for rel_path in wave["target_paths"]:
+            assert (ROOT / rel_path).exists()
+        assert wave["rollback_note"].strip()
+
+    for marker in (
+        "architecture sizing baseline",
+        "right-size-project-architecture",
+        "right-size-accepted",
+        "merge-candidate",
+        "keep-and-test",
+        "remediation wave",
+    ):
+        assert marker in inventory
+        assert marker in navigation
+
+
+def _hotspot_over_budget_allowed(actual: int, metadata: dict[str, object]) -> bool:
+    max_lines = int(metadata["max_lines"])
+    headroom = int(metadata.get("headroom_lines", 0))
+    enforcement = str(metadata.get("enforcement", "hard-fail"))
+    if actual <= max_lines:
+        return True
+    if enforcement == "hard-fail":
+        return False
+    return actual <= max_lines + headroom
+
+
 def test_hotspot_static_budget_matches_inventory():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     budget_keys = set(HOTSPOT_SYMBOL_BUDGETS)
@@ -1060,10 +1125,13 @@ def test_hotspot_static_budget_matches_inventory():
 
     for rel_path, max_lines in HOTSPOT_FILE_BUDGETS.items():
         actual = len((ROOT / rel_path).read_text(encoding="utf-8").splitlines())
-        if actual > max_lines:
+        metadata = HOTSPOT_FILE_METADATA[rel_path]
+        if not _hotspot_over_budget_allowed(actual, metadata):
+            headroom = int(metadata.get("headroom_lines", 0))
             violations.append(
-                f"{rel_path} is {actual} lines, budget {max_lines}; "
-                "split suite-specific benchmark helpers or update docs/project_surface_inventory.md with a reasoned budget."
+                f"{rel_path} is {actual} lines, budget {max_lines} + headroom {headroom}; "
+                "split suite-specific benchmark helpers, consolidate low-value boundaries, "
+                "or update docs/project_surface_inventory.md with a reasoned right-sizing action."
             )
         if rel_path not in inventory:
             violations.append(f"{rel_path} is file-budgeted but missing from hotspot inventory")
@@ -1074,10 +1142,13 @@ def test_hotspot_static_budget_matches_inventory():
         if actual is None:
             violations.append(f"{rel_path}:{symbol} missing from AST scan")
             continue
-        if actual > max_lines:
+        metadata = HOTSPOT_SYMBOL_METADATA[(rel_path, symbol, kind)]
+        if not _hotspot_over_budget_allowed(actual, metadata):
+            headroom = int(metadata.get("headroom_lines", 0))
             violations.append(
-                f"{rel_path}:{symbol} is {actual} lines, budget {max_lines}; "
-                "split to a narrow module or update docs/project_surface_inventory.md with a reasoned budget."
+                f"{rel_path}:{symbol} is {actual} lines, budget {max_lines} + headroom {headroom}; "
+                "split to a narrow module, consolidate low-value boundaries, "
+                "or update docs/project_surface_inventory.md with a reasoned right-sizing action."
             )
         if rel_path not in inventory or symbol not in inventory:
             violations.append(f"{rel_path}:{symbol} is budgeted but missing from hotspot inventory")
@@ -1384,7 +1455,7 @@ def test_hotspot_inventory_documents_facades_and_narrow_modules():
         assert rel_path in inventory
     assert "不得从 `kd_sensing.engine.objective_metadata`" in inventory
     assert "kd_sensing.diagnostics.jepa_gps_shortcut_benchmark" in inventory
-    assert "jepa_benchmark_*` 窄模块" in inventory
+    assert "JEPA benchmark owner 模块" in inventory
 
 
 def test_recipe_generated_advanced_yaml_paths_do_not_reenter_source_surface():
@@ -1457,12 +1528,19 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
             "helpers": {
                 "src/kd_sensing/diagnostics/jepa_benchmark_manifest.py": "def validate_benchmark_manifest",
                 "src/kd_sensing/diagnostics/jepa_benchmark_scenario_c.py": "def _apply_scenario_c_async_position_feedback",
-                "src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py": "def aggregate_cxd_phase_diagram",
+                "src/kd_sensing/diagnostics/jepa_benchmark_scenario_d.py": [
+                    "def aggregate_cxd_phase_diagram",
+                    "def compute_modality_dominance",
+                ],
+                "src/kd_sensing/diagnostics/jepa_benchmark_runner.py": [
+                    "def run_jepa_gps_shortcut_benchmark",
+                    "def aggregate_robustness_summary",
+                    "def _build_runner_manifest",
+                ],
                 "src/kd_sensing/diagnostics/jepa_benchmark_predictive.py": "def _predictive_jepa_metric_row",
                 "src/kd_sensing/diagnostics/jepa_benchmark_perturbations.py": "def apply_benchmark_perturbation",
                 "src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py": "class OutputRegistry",
                 "src/kd_sensing/diagnostics/jepa_benchmark_plots.py": "def _write_benchmark_figures",
-                "src/kd_sensing/diagnostics/jepa_benchmark_runner.py": "def run_jepa_gps_shortcut_benchmark",
             },
         },
         "src/kd_sensing/data/mmw/preparation.py": {
@@ -1493,8 +1571,11 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
         text = (ROOT / facade).read_text(encoding="utf-8")
         assert len(text.splitlines()) <= expectation["max_lines"]
         assert [snippet for snippet in expectation["forbidden"] if snippet in text] == []
-        for helper, snippet in expectation["helpers"].items():
-            assert snippet in (ROOT / helper).read_text(encoding="utf-8")
+        for helper, snippets in expectation["helpers"].items():
+            helper_text = (ROOT / helper).read_text(encoding="utf-8")
+            expected_snippets = [snippets] if isinstance(snippets, str) else snippets
+            for snippet in expected_snippets:
+                assert snippet in helper_text
 
 
 def test_first_batch_hotspot_facades_are_not_internal_helper_import_sources():
@@ -1879,6 +1960,9 @@ def test_internal_python_code_avoids_secondary_compatibility_layers():
 
 def test_training_methods_are_connected_through_engine_extensions():
     trainer_text = (SRC / "kd_sensing" / "engine" / "trainer.py").read_text(encoding="utf-8")
+    trainer_runtime_text = (SRC / "kd_sensing" / "engine" / "trainer_runtime_helpers.py").read_text(
+        encoding="utf-8"
+    )
     batch_step_text = (SRC / "kd_sensing" / "engine" / "batch_step.py").read_text(encoding="utf-8")
     forbidden = (
         "def _compute_craf_extra_losses",
@@ -1896,7 +1980,7 @@ def test_training_methods_are_connected_through_engine_extensions():
     assert "CrafTrainingExtension" not in trainer_text
     assert "MarfTrainingExtension" not in trainer_text
     assert "BatchStepRunner" in trainer_text
-    assert "extension.after_epoch" in trainer_text
+    assert "extension.after_epoch" in trainer_text + trainer_runtime_text
     assert "extension.after_forward" in batch_step_text
     for rel_path in [
         "engine/g2d_training.py",

@@ -102,6 +102,9 @@ def validate_benchmark_manifest(
         )
     protocol["mode"] = mode
     protocol.setdefault("split", "test")
+    evaluation = _normalize_evaluation_config(cfg.get("evaluation", {}), protocol=protocol, path=path)
+    cfg["evaluation"] = evaluation
+    real_forward_mode = str(evaluation.get("mode")) == "real_forward"
 
     models = cfg["models"]
     if not models:
@@ -139,10 +142,17 @@ def validate_benchmark_manifest(
             )
         weights = model.get("weights")
         has_synthetic = isinstance(model.get("synthetic_metrics"), Mapping)
-        if mode in {"evaluation_only", "reuse_existing_runs"} and not weights and not logits_cache and not has_synthetic:
+        if mode in {"evaluation_only", "reuse_existing_runs"} and not weights and not logits_cache and not has_synthetic and not real_forward_mode:
             raise BenchmarkManifestError(
                 f"models.{name}.weights is required for protocol={mode} unless logits_cache or synthetic_metrics is provided."
             )
+        if real_forward_mode and not weights and not bool(model.get("allow_missing_artifacts", False)):
+            model_rf_cfg = model.get("real_forward", {})
+            if not isinstance(model_rf_cfg, Mapping) or not bool(model_rf_cfg.get("allow_untrained", False)):
+                raise BenchmarkManifestError(
+                    f"models.{name}.weights is required for evaluation.mode=real_forward "
+                    "unless allow_missing_artifacts=true and real_forward.allow_untrained=true."
+                )
         if weights:
             _validate_existing_path(
                 weights,
@@ -197,6 +207,44 @@ def validate_benchmark_manifest(
     comparability.setdefault("mode", "mark")
     comparability.setdefault("keys", list(DEFAULT_COMPARABILITY_KEYS))
     cfg["analysis"] = _normalize_analysis_config(cfg, path=path, validate_paths=validate_paths)
+    return cfg
+
+
+def _normalize_evaluation_config(
+    raw: Any,
+    *,
+    protocol: Mapping[str, Any],
+    path: str | Path | None,
+) -> dict[str, Any]:
+    if raw in (None, ""):
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise BenchmarkManifestError(f"evaluation must be a mapping in {path or '<memory>'}.")
+    cfg = dict(raw)
+    mode = str(cfg.get("mode", protocol.get("evaluation_mode", "synthetic"))).strip().lower().replace("-", "_")
+    aliases = {"": "synthetic", "default": "synthetic", "deterministic": "synthetic", "degraded_clean": "synthetic", "synthetic_degradation": "synthetic", "real": "real_forward", "forward": "real_forward", "real_forward_logits": "real_forward"}
+    mode = aliases.get(mode, mode)
+    if mode not in {"synthetic", "real_forward"}:
+        raise BenchmarkManifestError(
+            f"Unknown evaluation.mode '{cfg.get('mode')}' in {path or '<memory>'}; "
+            "expected 'synthetic' or 'real_forward'."
+        )
+    cfg["mode"] = mode
+    real_forward = cfg.get("real_forward", {})
+    if real_forward in (None, ""):
+        real_forward = {}
+    if real_forward is True:
+        real_forward = {"enabled": True}
+    if not isinstance(real_forward, Mapping):
+        raise BenchmarkManifestError(f"evaluation.real_forward must be a mapping in {path or '<memory>'}.")
+    rf = dict(real_forward)
+    rf.setdefault("enabled", mode == "real_forward")
+    rf.setdefault("resume", True)
+    rf.setdefault("cache_subdir", "real_forward")
+    rf.setdefault("missing_cache_policy", "compute")
+    if "sample_count" in cfg and "sample_count" not in rf:
+        rf["sample_count"] = cfg["sample_count"]
+    cfg["real_forward"] = rf
     return cfg
 
 
@@ -474,10 +522,16 @@ def _manifest_has_predictive_jepa(manifest: Mapping[str, Any]) -> bool:
 def evaluate_model_comparability(manifest: Mapping[str, Any]) -> dict[str, Any]:
     keys = tuple(str(item) for item in manifest.get("comparability", {}).get("keys", DEFAULT_COMPARABILITY_KEYS))
     model_records: dict[str, dict[str, Any]] = {}
+    comparison_protocol = (
+        manifest.get("strict_comparison", manifest.get("comparison_protocol", {}))
+        if isinstance(manifest.get("strict_comparison", manifest.get("comparison_protocol", {})), Mapping)
+        else {}
+    )
     for name, spec in manifest.get("models", {}).items():
         if not isinstance(spec, Mapping):
             continue
         declared = dict(spec.get("comparability", {}) or {})
+        strict_declared = dict(spec.get("strict_comparison", spec.get("comparison_protocol", {})) or {})
         model_records[str(name)] = {
             "split": declared.get("split", spec.get("split", manifest.get("protocol", {}).get("split", "test"))),
             "sample_count": declared.get("sample_count", spec.get("sample_count", "")),
@@ -495,11 +549,41 @@ def evaluate_model_comparability(manifest: Mapping[str, Any]) -> dict[str, Any]:
                 "difficulty_digest",
                 spec.get("difficulty_digest", spec.get("difficulty_fingerprint", "")),
             ),
-            "seed": declared.get("seed", spec.get("seed", "")),
+            "seed": declared.get("seed", strict_declared.get("seed", spec.get("seed", comparison_protocol.get("seed", "")))),
             "enabled_modalities": _sorted_modalities(
                 declared.get("enabled_modalities", spec.get("modalities", spec.get("enabled_modalities", [])))
             ),
             "consumes_reliability_metadata": _model_consumes_reliability_metadata(spec),
+            "history_window": declared.get(
+                "history_window",
+                strict_declared.get("history_window", comparison_protocol.get("history_window", "")),
+            ),
+            "gps_input_source_window": declared.get(
+                "gps_input_source_window",
+                strict_declared.get(
+                    "gps_input_source_window",
+                    strict_declared.get("gps_source_window", comparison_protocol.get("gps_input_source_window", "")),
+                ),
+            ),
+            "prediction_horizon": declared.get(
+                "prediction_horizon",
+                strict_declared.get("prediction_horizon", comparison_protocol.get("prediction_horizon", "")),
+            ),
+            "scene_set": declared.get(
+                "scene_set",
+                strict_declared.get("scene_set", comparison_protocol.get("scene_set", "")),
+            ),
+            "distance_metric": declared.get(
+                "distance_metric",
+                strict_declared.get(
+                    "distance_metric",
+                    strict_declared.get("distance_mode", comparison_protocol.get("distance_metric", "")),
+                ),
+            ),
+            "beam_label_space": declared.get(
+                "beam_label_space",
+                strict_declared.get("beam_label_space", spec.get("label_space", comparison_protocol.get("beam_label_space", ""))),
+            ),
         }
     inconsistent: list[dict[str, Any]] = []
     for key in keys:

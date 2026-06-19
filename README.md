@@ -374,6 +374,7 @@ conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
 ## 文档索引
 
 - AI/维护者修改前导航：[docs/agent_navigation.md](docs/agent_navigation.md)
+- 机器可读维护上下文索引：[docs/maintainer_context_index.yaml](docs/maintainer_context_index.yaml)
 - 当前主线模型目录：[docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)
 - 实验协议和参数口径：[docs/experiment_protocols.md](docs/experiment_protocols.md)
 - 结果和 claim 账本：[docs/result_claims_registry.md](docs/result_claims_registry.md)

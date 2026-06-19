@@ -1,0 +1,30 @@
+_base_: geometry_prior_logit_fusion_2604_s32_s34_lowmem.yaml
+
+experiment:
+  name: safe_residual_rerank_clean_smoke_2604_s32_s34_lowmem
+  ablation: safe_residual_rerank_clean_smoke
+model:
+  primary:
+    reranker:
+      enabled: true
+      type: safe_residual_beam_reranker
+      anchor_top_k: 8
+      prior_top_k: 8
+      neighborhood_radius: 1
+      max_candidates: 16
+      max_residual_scale: 0.2
+      fallback_policy: no_regret
+      fallback_on_gps_invalid: true
+      gps_invalid_residual_scale: 0.1
+      min_gate_confidence: 0.02
+      diagnostics_mode: full
+loss:
+  safe_rerank:
+    enabled: true
+    weight: 0.05
+    candidate_ce_weight: 1.0
+    pairwise_margin_weight: 0.0
+    no_regret_weight: 0.1
+    anchor_dba_threshold: 1
+output:
+  run_name: safe_residual_rerank_clean_smoke_2604_s32_s34_lowmem

@@ -23,6 +23,7 @@ from kd_sensing.data.difficulty import (
     normalize_difficulty_profiles,
 )
 from kd_sensing.data.difficulty.presets import (
+    GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS,
     PREDICTIVE_JEPA_CANONICAL_CONDITIONS,
     PREDICTIVE_JEPA_CONDITION_IDS,
     PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
@@ -40,6 +41,311 @@ from kd_sensing.evaluation.metrics import calculate_dba_score, calculate_topk_ac
 from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
 from kd_sensing.utils.paths import resolve_path
 
+
+class BenchmarkManifestError(ValueError):
+    """Raised when a benchmark manifest cannot be parsed or validated."""
+
+
+@dataclass
+class WarningRecord:
+    code: str
+    message: str
+    suite_id: str | None = None
+    condition: str | None = None
+    severity: float | None = None
+    sample_count: int | None = None
+    affected_count: int | None = None
+    fallback: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "code": self.code,
+            "message": self.message,
+            "suite_id": self.suite_id,
+            "condition": self.condition,
+            "severity": self.severity,
+            "sample_count": self.sample_count,
+            "affected_count": self.affected_count,
+            "fallback": self.fallback,
+        }
+        return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _condition_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(_json_ready(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if torch.is_tensor(value):
+        return value.detach().cpu().tolist()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _csv_scalar(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(_json_ready(value), sort_keys=True)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _relative_to_root(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _output_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".png", ".svg", ".pdf"}:
+        return "figure"
+    if suffix == ".csv":
+        return "table"
+    if suffix == ".npz":
+        return "cache"
+    if suffix == ".md":
+        return "report"
+    if suffix == ".json":
+        return "manifest"
+    return "artifact"
+
+
+def _sample_ids_from_metadata(rows: list[dict[str, Any]], *, batch_size: int | None) -> list[str]:
+    count = batch_size or len(rows)
+    output = []
+    for index in range(count):
+        row = rows[index] if index < len(rows) else {}
+        sample_id = row.get("sample_id") or row.get("id") or row.get("sequence_id") or index
+        output.append(str(sample_id))
+    return output
+
+
+def _metadata_rows(metadata: Any) -> list[dict[str, Any]]:
+    if metadata is None:
+        return []
+    if isinstance(metadata, list):
+        return [dict(item) for item in metadata if isinstance(item, Mapping)]
+    if not isinstance(metadata, Mapping):
+        return []
+    length = 0
+    for value in metadata.values():
+        if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
+            length = max(length, int(value.shape[0]))
+        elif isinstance(value, (list, tuple)):
+            length = max(length, len(value))
+        else:
+            length = max(length, 1)
+    rows = []
+    for index in range(length):
+        row = {}
+        for key, value in metadata.items():
+            row[key] = _metadata_value_at(value, index)
+        rows.append(row)
+    return rows
+
+
+def _metadata_value_at(value: Any, index: int) -> Any:
+    if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
+        item = value[index]
+        if hasattr(item, "numel") and int(item.numel()) != 1:
+            return item.detach().cpu().tolist() if hasattr(item, "detach") else item.tolist()
+        return item.item() if hasattr(item, "item") else item
+    if isinstance(value, (list, tuple)):
+        return value[index] if index < len(value) else None
+    return value
+
+
+def _batch_size(batch: Mapping[str, Any]) -> int | None:
+    for key in ("gps", "image", "images", "labels", "label", "target"):
+        value = batch.get(key)
+        if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
+            return int(value.shape[0])
+    return None
+
+
+def _stable_seed(seed: int, suite_id: str, condition: str, severity: float, sample_ids: list[str]) -> int:
+    body = json.dumps(
+        {
+            "seed": int(seed),
+            "suite_id": suite_id,
+            "condition": condition,
+            "severity": float(severity),
+            "sample_ids": sample_ids,
+        },
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return int(digest[:12], 16) % (2**31 - 1)
+
+
+def _case_row(group: str, row: Mapping[str, Any], other: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {
+        "case_group": group,
+        "selection_scope": "aggregate_condition_proxy",
+        "model": row.get("model", ""),
+        "paired_model": other.get("model", "") if other else "",
+        "suite": row.get("suite", ""),
+        "condition": row.get("condition", ""),
+        "severity": row.get("severity", ""),
+        "seed": row.get("seed", ""),
+        "relative_drop": row.get("relative_drop", ""),
+        "paired_relative_drop": other.get("relative_drop", "") if other else "",
+        "status": "selected",
+    }
+
+
+def _metric_or_blank(source: Mapping[str, Any], key: str) -> Any:
+    return source.get(key, "")
+
+
+def _topk_value(topk: Mapping[int, Any], key: int) -> float:
+    value = topk.get(key, 0.0)
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.size == 0:
+        return 0.0
+    return float(arr.reshape(-1)[0])
+
+
+def _scaled_metric(source: Mapping[str, Any], key: str, clean_primary: float, perturbed_primary: float) -> Any:
+    value = _float_or_none(source.get(key))
+    if value is None:
+        return ""
+    ratio = 0.0 if clean_primary == 0 else perturbed_primary / clean_primary
+    return float(max(0.0, value * ratio))
+
+
+def _scaled_error_metric(source: Mapping[str, Any], key: str, clean_primary: float, perturbed_primary: float) -> Any:
+    value = _float_or_none(source.get(key))
+    if value is None:
+        return ""
+    relative_drop = max(0.0, _relative_drop(clean_primary, perturbed_primary))
+    return float(max(0.0, value * (1.0 + relative_drop)))
+
+
+def _relative_drop(clean: float | None, value: float | None) -> float:
+    if clean is None or value is None or abs(clean) < 1e-12:
+        return 0.0
+    return float((clean - value) / max(abs(clean), 1e-12))
+
+
+def _collapse_slope(pairs: list[tuple[float, float]]) -> float:
+    if len(pairs) < 2:
+        return 0.0
+    xs = np.asarray([item[0] for item in pairs], dtype=np.float64)
+    ys = np.asarray([item[1] for item in pairs], dtype=np.float64)
+    if np.allclose(xs, xs[0]):
+        return 0.0
+    return float(np.polyfit(xs, ys, deg=1)[0])
+
+
+def _area_under_curve(pairs: list[tuple[float, float]]) -> float:
+    if not pairs:
+        return 0.0
+    pairs = sorted(pairs)
+    if len(pairs) == 1 or math.isclose(pairs[-1][0], pairs[0][0]):
+        return float(pairs[0][1])
+    xs = np.asarray([item[0] for item in pairs], dtype=np.float64)
+    ys = np.asarray([item[1] for item in pairs], dtype=np.float64)
+    return float(np.trapezoid(ys, xs) / max(float(xs[-1] - xs[0]), 1e-12))
+
+
+def _max_drop(rows: list[dict[str, Any]], *, condition_names: set[str]) -> float:
+    values = []
+    for row in rows:
+        if str(row.get("condition")) in condition_names or str(row.get("suite_type")) in condition_names:
+            values.append(_float(row.get("relative_drop")))
+    return float(max(values, default=0.0))
+
+
+def _finite_float(value: Any, *, field: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise BenchmarkManifestError(f"{field} must be numeric, got {value!r}.") from exc
+    if not math.isfinite(result):
+        raise BenchmarkManifestError(f"{field} must be finite, got {value!r}.")
+    return result
+
+
+def _non_negative_int(value: Any, *, field: str) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise BenchmarkManifestError(f"{field} must be an integer, got {value!r}.") from exc
+    if result < 0:
+        raise BenchmarkManifestError(f"{field} must be non-negative, got {value!r}.")
+    return result
+
+
+def _positive_int(value: Any, *, field: str) -> int:
+    result = _non_negative_int(value, field=field)
+    if result <= 0:
+        raise BenchmarkManifestError(f"{field} must be positive, got {value!r}.")
+    return result
+
+
+def _float(value: Any) -> float:
+    result = _float_or_none(value)
+    return 0.0 if result is None else result
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        value = value.reshape(-1)[0].item()
+    elif isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        value = value[0]
+    if value in ("", None):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(result):
+        return None
+    return result
+
+
+def _float_or_blank(value: Any) -> float | str:
+    result = _float_or_none(value)
+    return "" if result is None else result
+
+
+def _comparable_scalar(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return json.dumps(sorted(str(item) for item in value))
+    if isinstance(value, Mapping):
+        return json.dumps(_json_ready(value), sort_keys=True)
+    return str(value)
+
+
+def _sorted_modalities(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Iterable):
+        return sorted(str(item) for item in value)
+    return []
 
 BENCHMARK_VERSION = "jepa_gps_shortcut_benchmark_v1"
 
@@ -59,6 +365,9 @@ SCENARIO_C_SUITE_TYPE = "scenario_c_async_position_feedback"
 SCENARIO_C_X_D_SUITE_TYPE = "scenario_c_x_d_image_observability"
 
 
+GPS_QUERY_ADVANTAGE_SLICE_TYPE = "gps_query_advantage_slice"
+
+
 SUPPORTED_MODEL_GROUPS = {
     "gps_only",
     "gps_neural",
@@ -69,6 +378,16 @@ SUPPORTED_MODEL_GROUPS = {
     "jepa_mean_pool",
     "jepa_gps_query_pool",
     "jepa_predictive_hybrid",
+    "geometry_prior",
+    "geometry_prior_prior_only",
+    "geometry_prior_fusion",
+    "geometry_prior_dba_aware",
+    "geometry_prior_teacher_guided",
+    "geometry_prior_mixed_curriculum",
+    "safe_residual_beam_rerank_fusion",
+    "safe_residual_rerank_fusion",
+    "real_perturbation_residual_rerank_fusion",
+    "image_only_control",
     "image_ae_gps",
     "image_jepa_only",
     "image_jepa_gps",
@@ -309,36 +628,22 @@ PREDICTIVE_OUTPUT_FILES = {
     "predictive_regional_summary": "results/predictive_regional_summary.json",
     "predictive_margin_vs_resnet": "results/predictive_margin_vs_resnet.json",
     "predictive_warnings": "results/predictive_warnings.json",
+    "predictive_gps_query_advantage_metrics": "results/predictive_gps_query_advantage_metrics.csv",
+    "predictive_gps_query_advantage_margins": "results/predictive_gps_query_advantage_margins.json",
+    "predictive_claim_gate": "results/predictive_claim_gate.json",
+    "predictive_diagnostics_bundle_manifest": "results/predictive_diagnostics_bundle_manifest.json",
 }
 
 
-class BenchmarkManifestError(ValueError):
-    """Raised when a benchmark manifest cannot be parsed or validated."""
+GPS_QUERY_ADVANTAGE_CXD_GPS_CONDITION_IDS = ("C3_random_async", "C4_severe_async")
 
 
-@dataclass
-class WarningRecord:
-    code: str
-    message: str
-    suite_id: str | None = None
-    condition: str | None = None
-    severity: float | None = None
-    sample_count: int | None = None
-    affected_count: int | None = None
-    fallback: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = {
-            "code": self.code,
-            "message": self.message,
-            "suite_id": self.suite_id,
-            "condition": self.condition,
-            "severity": self.severity,
-            "sample_count": self.sample_count,
-            "affected_count": self.affected_count,
-            "fallback": self.fallback,
-        }
-        return {key: value for key, value in payload.items() if value not in (None, "")}
+GPS_QUERY_ADVANTAGE_CXD_IMAGE_CONDITION_IDS = (
+    "D3_motion_blur",
+    "D4_partial_occlusion",
+    "D6_burst_missing",
+    "D7_joint_worst_case",
+)
 
 
 def _scenario_d_group_category(group: Any) -> str:
@@ -365,9 +670,6 @@ def _crossing_condition_rank(item: Mapping[str, Any]) -> tuple[int, int, str, st
     )
 
 
-def _condition_digest(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(_json_ready(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def _model_consumes_reliability_metadata(model_spec: Mapping[str, Any]) -> bool:
@@ -454,32 +756,12 @@ def _suite_sensitivity(suite_type: str, model_spec: Mapping[str, Any]) -> float:
     }.get(group, 0.40)
 
 
-def _metric_or_blank(source: Mapping[str, Any], key: str) -> Any:
-    return source.get(key, "")
 
 
-def _topk_value(topk: Mapping[int, Any], key: int) -> float:
-    value = topk.get(key, 0.0)
-    arr = np.asarray(value, dtype=np.float64)
-    if arr.size == 0:
-        return 0.0
-    return float(arr.reshape(-1)[0])
 
 
-def _scaled_metric(source: Mapping[str, Any], key: str, clean_primary: float, perturbed_primary: float) -> Any:
-    value = _float_or_none(source.get(key))
-    if value is None:
-        return ""
-    ratio = 0.0 if clean_primary == 0 else perturbed_primary / clean_primary
-    return float(max(0.0, value * ratio))
 
 
-def _scaled_error_metric(source: Mapping[str, Any], key: str, clean_primary: float, perturbed_primary: float) -> Any:
-    value = _float_or_none(source.get(key))
-    if value is None:
-        return ""
-    relative_drop = max(0.0, _relative_drop(clean_primary, perturbed_primary))
-    return float(max(0.0, value * (1.0 + relative_drop)))
 
 
 def _perturbed_metric_value(
@@ -503,180 +785,38 @@ def _perturbed_metric_value(
     return float(max(0.0, clean_metric * (1.0 - penalty)))
 
 
-def _relative_drop(clean: float | None, value: float | None) -> float:
-    if clean is None or value is None or abs(clean) < 1e-12:
-        return 0.0
-    return float((clean - value) / max(abs(clean), 1e-12))
 
 
-def _collapse_slope(pairs: list[tuple[float, float]]) -> float:
-    if len(pairs) < 2:
-        return 0.0
-    xs = np.asarray([item[0] for item in pairs], dtype=np.float64)
-    ys = np.asarray([item[1] for item in pairs], dtype=np.float64)
-    if np.allclose(xs, xs[0]):
-        return 0.0
-    return float(np.polyfit(xs, ys, deg=1)[0])
 
 
-def _area_under_curve(pairs: list[tuple[float, float]]) -> float:
-    if not pairs:
-        return 0.0
-    pairs = sorted(pairs)
-    if len(pairs) == 1 or math.isclose(pairs[-1][0], pairs[0][0]):
-        return float(pairs[0][1])
-    xs = np.asarray([item[0] for item in pairs], dtype=np.float64)
-    ys = np.asarray([item[1] for item in pairs], dtype=np.float64)
-    return float(np.trapezoid(ys, xs) / max(float(xs[-1] - xs[0]), 1e-12))
 
 
-def _max_drop(rows: list[dict[str, Any]], *, condition_names: set[str]) -> float:
-    values = []
-    for row in rows:
-        if str(row.get("condition")) in condition_names or str(row.get("suite_type")) in condition_names:
-            values.append(_float(row.get("relative_drop")))
-    return float(max(values, default=0.0))
 
 
-def _finite_float(value: Any, *, field: str) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise BenchmarkManifestError(f"{field} must be numeric, got {value!r}.") from exc
-    if not math.isfinite(result):
-        raise BenchmarkManifestError(f"{field} must be finite, got {value!r}.")
-    return result
 
 
-def _non_negative_int(value: Any, *, field: str) -> int:
-    try:
-        result = int(value)
-    except (TypeError, ValueError) as exc:
-        raise BenchmarkManifestError(f"{field} must be an integer, got {value!r}.") from exc
-    if result < 0:
-        raise BenchmarkManifestError(f"{field} must be non-negative, got {value!r}.")
-    return result
 
 
-def _positive_int(value: Any, *, field: str) -> int:
-    result = _non_negative_int(value, field=field)
-    if result <= 0:
-        raise BenchmarkManifestError(f"{field} must be positive, got {value!r}.")
-    return result
 
 
-def _float(value: Any) -> float:
-    result = _float_or_none(value)
-    return 0.0 if result is None else result
 
 
-def _float_or_none(value: Any) -> float | None:
-    if isinstance(value, np.ndarray):
-        if value.size == 0:
-            return None
-        value = value.reshape(-1)[0].item()
-    elif isinstance(value, (list, tuple)):
-        if not value:
-            return None
-        value = value[0]
-    if value in ("", None):
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result):
-        return None
-    return result
 
 
-def _float_or_blank(value: Any) -> float | str:
-    result = _float_or_none(value)
-    return "" if result is None else result
 
 
-def _comparable_scalar(value: Any) -> str:
-    if isinstance(value, (list, tuple, set)):
-        return json.dumps(sorted(str(item) for item in value))
-    if isinstance(value, Mapping):
-        return json.dumps(_json_ready(value), sort_keys=True)
-    return str(value)
 
 
-def _sorted_modalities(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, Iterable):
-        return sorted(str(item) for item in value)
-    return []
 
 
-def _sample_ids_from_metadata(rows: list[dict[str, Any]], *, batch_size: int | None) -> list[str]:
-    count = batch_size or len(rows)
-    output = []
-    for index in range(count):
-        row = rows[index] if index < len(rows) else {}
-        sample_id = row.get("sample_id") or row.get("id") or row.get("sequence_id") or index
-        output.append(str(sample_id))
-    return output
 
 
-def _metadata_rows(metadata: Any) -> list[dict[str, Any]]:
-    if metadata is None:
-        return []
-    if isinstance(metadata, list):
-        return [dict(item) for item in metadata if isinstance(item, Mapping)]
-    if not isinstance(metadata, Mapping):
-        return []
-    length = 0
-    for value in metadata.values():
-        if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
-            length = max(length, int(value.shape[0]))
-        elif isinstance(value, (list, tuple)):
-            length = max(length, len(value))
-        else:
-            length = max(length, 1)
-    rows = []
-    for index in range(length):
-        row = {}
-        for key, value in metadata.items():
-            row[key] = _metadata_value_at(value, index)
-        rows.append(row)
-    return rows
 
 
-def _metadata_value_at(value: Any, index: int) -> Any:
-    if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
-        item = value[index]
-        if hasattr(item, "numel") and int(item.numel()) != 1:
-            return item.detach().cpu().tolist() if hasattr(item, "detach") else item.tolist()
-        return item.item() if hasattr(item, "item") else item
-    if isinstance(value, (list, tuple)):
-        return value[index] if index < len(value) else None
-    return value
 
 
-def _batch_size(batch: Mapping[str, Any]) -> int | None:
-    for key in ("gps", "image", "images", "labels", "label", "target"):
-        value = batch.get(key)
-        if hasattr(value, "shape") and len(getattr(value, "shape", ())) > 0:
-            return int(value.shape[0])
-    return None
 
 
-def _stable_seed(seed: int, suite_id: str, condition: str, severity: float, sample_ids: list[str]) -> int:
-    body = json.dumps(
-        {
-            "seed": int(seed),
-            "suite_id": suite_id,
-            "condition": condition,
-            "severity": float(severity),
-            "sample_ids": sample_ids,
-        },
-        sort_keys=True,
-    )
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    return int(digest[:12], 16) % (2**31 - 1)
 
 
 def _default_condition(suite_type: str) -> str:
@@ -711,72 +851,16 @@ def _default_severity_unit(suite_type: str) -> str:
     return "frames" if suite_type in TEMPORAL_SUITE_TYPES else "normalized"
 
 
-def _case_row(group: str, row: Mapping[str, Any], other: Mapping[str, Any] | None) -> dict[str, Any]:
-    return {
-        "case_group": group,
-        "selection_scope": "aggregate_condition_proxy",
-        "model": row.get("model", ""),
-        "paired_model": other.get("model", "") if other else "",
-        "suite": row.get("suite", ""),
-        "condition": row.get("condition", ""),
-        "severity": row.get("severity", ""),
-        "seed": row.get("seed", ""),
-        "relative_drop": row.get("relative_drop", ""),
-        "paired_relative_drop": other.get("relative_drop", "") if other else "",
-        "status": "selected",
-    }
 
 
-def _json_ready(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _json_ready(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if torch.is_tensor(value):
-        return value.detach().cpu().tolist()
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
 
 
-def _csv_scalar(value: Any) -> Any:
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(_json_ready(value), sort_keys=True)
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _relative_to_root(path: Path, root: Path) -> str:
-    try:
-        return str(path.relative_to(root))
-    except ValueError:
-        return str(path)
 
 
-def _output_kind(path: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix in {".png", ".svg", ".pdf"}:
-        return "figure"
-    if suffix == ".csv":
-        return "table"
-    if suffix == ".npz":
-        return "cache"
-    if suffix == ".md":
-        return "report"
-    if suffix == ".json":
-        return "manifest"
-    return "artifact"
 
 
 __all__ = [
@@ -792,6 +876,10 @@ __all__ = [
     "DEFAULT_COMPARABILITY_KEYS",
     "DEFAULT_OUTPUT_DIR",
     "DEFAULT_PRIMARY_METRIC",
+    "GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS",
+    "GPS_QUERY_ADVANTAGE_CXD_GPS_CONDITION_IDS",
+    "GPS_QUERY_ADVANTAGE_CXD_IMAGE_CONDITION_IDS",
+    "GPS_QUERY_ADVANTAGE_SLICE_TYPE",
     "GPS_SUITE_TYPES",
     "IMAGE_SUITE_TYPES",
     "MATRIX_SUITE_TYPES",

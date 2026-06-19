@@ -1,0 +1,237 @@
+version: jepa_gps_shortcut_benchmark_v1
+comparison_protocol:
+  history_window: 5
+  gps_input_source_window: 2
+  image_history_window: 5
+  prediction_horizon: 1
+  scene_set: [32, 33, 34]
+  seed: 17
+  difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+  distance_metric: linear
+  beam_label_space: beam64
+models:
+  image_resnet_gps:
+    group: resnet_image_gps
+    config: configs/fusion/experiments/jepa_image_gps/image_gps_supervised_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/predictive_gps_query_plus_plus/strict/image_resnet_gps/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch34_val_adba0.8880514705882299
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+  jepa_gps_query_baseline:
+    group: jepa_gps_query_pool
+    config: configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_query_pool_k4_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/predictive_gps_query_plus_plus/strict/jepa_gps_query_baseline/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch24_val_adba0.8828431372548958
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+      gps_query_k: 4
+  geometry_prior_prior_only:
+    group: geometry_prior_prior_only
+    config: configs/fusion/experiments/jepa_image_gps/geometry_prior_prior_only_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/geometry_prior_beam_fusion/strict/geometry_prior_prior_only/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [gps]
+    consumes_reliability_metadata: true
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch64_val_adba0.8890318627450925
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+  geometry_prior_logit_fusion:
+    group: geometry_prior_fusion
+    config: configs/fusion/experiments/jepa_image_gps/geometry_prior_logit_fusion_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/geometry_prior_beam_fusion/strict/geometry_prior_logit_fusion/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    consumes_reliability_metadata: true
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch50_val_adba0.8903799019607781
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+  geometry_prior_dba_aware:
+    group: geometry_prior_dba_aware
+    config: configs/fusion/experiments/jepa_image_gps/geometry_prior_dba_aware_loss_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/geometry_prior_beam_fusion/strict/geometry_prior_dba_aware/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    consumes_reliability_metadata: true
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch25_val_adba0.8806372549019559
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+  geometry_prior_teacher_guided:
+    group: geometry_prior_teacher_guided
+    config: configs/fusion/experiments/jepa_image_gps/geometry_prior_teacher_guided_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/geometry_prior_beam_fusion/strict/geometry_prior_teacher_guided/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    consumes_reliability_metadata: true
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch29_val_adba0.8841299019607792
+    teacher_provenance: strict_real_run_2026-06-18_seed17_image_resnet_gps
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+  geometry_prior_mixed_curriculum:
+    group: geometry_prior_mixed_curriculum
+    config: configs/fusion/experiments/jepa_image_gps/geometry_prior_mixed_curriculum_2604_s32_s34_lowmem.yaml
+    weights: outputs/analysis/geometry_prior_beam_fusion/strict/geometry_prior_mixed_curriculum/checkpoints/best.pth
+    delegate_evaluate: true
+    allow_missing_artifacts: true
+    modalities: [image, gps]
+    consumes_reliability_metadata: true
+    split: test
+    sample_count: 1088
+    label_space: beam64
+    metric_profile: beambench_dba_topk
+    normalization_artifact: deepsense6g_2604_s32_s34_stratified80_seq5
+    difficulty_digest: geometry_prior_clean_first_p0_p5_advantage_h5_g2_f1_v1
+    checkpoint_provenance: strict_real_run_2026-06-18_seed17_best_epoch29_val_adba0.8841299019607792
+    strict_comparison:
+      history_window: 5
+      gps_input_source_window: 2
+      prediction_horizon: 1
+      scene_set: [32, 33, 34]
+      seed: 17
+      distance_metric: linear
+      beam_label_space: beam64
+protocol:
+  mode: evaluation_only
+  split: test
+  dataset_profile: deepsense6g_2604_s32_s34_h5_g2_f1
+geometry_prior_claim_gate:
+  baseline_group: resnet_image_gps
+  gps_query_baseline_group: jepa_gps_query_pool
+  candidate_groups:
+    - geometry_prior_fusion
+    - geometry_prior_dba_aware
+    - geometry_prior_teacher_guided
+    - geometry_prior_mixed_curriculum
+  clean_regression_threshold_dba: 0.02
+  claim_margin_dba: 0.0
+predictive_jepa_robustness:
+  strict_model_groups: false
+  allow_partial: true
+  history_window: 5
+  claim_margin_dba: 0.05
+  baseline_group: resnet_image_gps
+  gps_query_baseline_group: jepa_gps_query_pool
+perturbation_suites:
+  - id: geometry_prior_clean_first
+    type: predictive_jepa_robustness
+    preset: canonical
+    history_window: 5
+    gps_query_advantage_slice:
+      enabled: true
+    conditions:
+      - P0_clean_current
+      - P1_current_frame_missing_history_available
+      - P2_semantic_occlusion_history_available
+      - P3_plausible_wrong_gps_current_image
+      - P4_joint_predictive_recovery
+      - P5_novel_weather_history_available
+metrics:
+  primary: dba
+  topk: [1, 3, 5]
+  dba_delta: 5
+  distance_mode: linear
+  profile: beambench_dba_topk
+figures:
+  enabled: true
+  formats: [png]
+  dpi: 160
+seeds: [17]
+outputs:
+  output_dir: outputs/analysis/geometry_prior_beam_fusion/strict
+comparability:
+  mode: strict
+  keys:
+    - split
+    - sample_count
+    - label_space
+    - metric_profile
+    - normalization_artifact
+    - difficulty_digest
+    - history_window
+    - gps_input_source_window
+    - prediction_horizon
+    - scene_set
+    - seed
+    - distance_metric
+    - beam_label_space

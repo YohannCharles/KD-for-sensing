@@ -31,6 +31,12 @@ def build_task_criterion(cfg: dict[str, Any]):
         "position",
         "los",
         "link_quality",
+        "dba_aware",
+        "beam_topology_smoothing",
+        "teacher_guidance",
+        "rerank",
+        "safe_rerank",
+        "safe_residual_rerank",
     ):
         loss_cfg.pop(auxiliary_key, None)
     if loss_cfg.get("type") == "cross_entropy":

@@ -1,0 +1,16 @@
+_base_: safe_residual_rerank_prior_candidates_2604_s32_s34_lowmem.yaml
+
+experiment:
+  name: safe_residual_rerank_no_regret_ablation_2604_s32_s34_lowmem
+  ablation: safe_residual_rerank_no_regret_ablation
+model:
+  primary:
+    reranker:
+      fallback_policy: never
+      fallback_on_gps_invalid: false
+loss:
+  safe_rerank:
+    no_regret_weight: 0.0
+    anchor_dba_threshold: null
+output:
+  run_name: safe_residual_rerank_no_regret_ablation_2604_s32_s34_lowmem

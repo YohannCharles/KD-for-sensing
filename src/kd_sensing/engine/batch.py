@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Mapping
 
 import torch
@@ -515,6 +516,7 @@ def prepare_reliability_metadata_inputs(
                 "gps_valid_mask": ("gps_valid_mask", torch.bool, True),
                 "gps_delay_steps": ("gps_delay_steps", torch.float32, True),
                 "gps_dropout_mask": ("gps_dropout_mask", torch.bool, False),
+                "gps_counterfactual_mask": ("gps_counterfactual_mask", torch.bool, False),
             }
         )
     for key, (output_key, dtype, required) in specs.items():
@@ -549,6 +551,12 @@ def model_cfg_consumes_reliability_metadata(model_cfg: Mapping[str, Any] | None)
     for key in ("requires_reliability_metadata", "consume_reliability_metadata", "observability_aware"):
         if bool(model_cfg.get(key, False)):
             return True
+    if _model_cfg_has_predictive_gps_query_pooler(model_cfg):
+        return True
+    if _model_cfg_has_geometry_prior(model_cfg):
+        return True
+    if _model_cfg_has_safe_reranker(model_cfg):
+        return True
     fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
     if isinstance(fusion, Mapping):
         return bool(fusion.get("enabled", True))
@@ -564,7 +572,50 @@ def reliability_metadata_strict(model_cfg: Mapping[str, Any] | None) -> bool:
     fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
     if isinstance(fusion, Mapping):
         return bool(fusion.get("strict", fusion.get("require_fields", True)))
+    if _model_cfg_has_predictive_gps_query_pooler(model_cfg):
+        return bool(model_cfg.get("strict_reliability_metadata", False))
+    if _model_cfg_has_geometry_prior(model_cfg):
+        return bool(model_cfg.get("strict_reliability_metadata", False))
+    if _model_cfg_has_safe_reranker(model_cfg):
+        return bool(model_cfg.get("strict_reliability_metadata", False))
     return bool(model_cfg.get("strict_reliability_metadata", True))
+
+
+def _model_cfg_has_predictive_gps_query_pooler(model_cfg: Mapping[str, Any]) -> bool:
+    encoders = model_cfg.get("encoders")
+    if not isinstance(encoders, Mapping):
+        return False
+    for encoder in encoders.values():
+        if not isinstance(encoder, Mapping):
+            continue
+        pooler = encoder.get("pooler")
+        pooler_type = str(pooler.get("type", "")) if isinstance(pooler, Mapping) else str(encoder.get("pooling", ""))
+        if pooler_type.strip().lower() in {
+            "predictive_gps_query",
+            "predictive_gps_query++",
+            "predictive_gps_query_plus_plus",
+            "gps_query_plus_plus",
+        }:
+            return True
+    return False
+
+
+def _model_cfg_has_geometry_prior(model_cfg: Mapping[str, Any]) -> bool:
+    raw = model_cfg.get("geometry_prior")
+    if raw is True:
+        return True
+    if isinstance(raw, Mapping):
+        return bool(raw.get("enabled", True))
+    return False
+
+
+def _model_cfg_has_safe_reranker(model_cfg: Mapping[str, Any]) -> bool:
+    raw = model_cfg.get("reranker")
+    if raw is True:
+        return True
+    if isinstance(raw, Mapping):
+        return bool(raw.get("enabled", True))
+    return False
 
 
 def _prepare_temporal_metadata_input(
@@ -963,7 +1014,7 @@ def forward_model(
             if not getattr(model, "supports_force_modality_mask", False):
                 raise ValueError("force_modality_mask is only supported by models that opt in to modality masks.")
             kwargs["force_modality_mask"] = force_modality_mask
-        kwargs.update({key: value for key, value in extra_model_kwargs.items() if value is not None})
+        kwargs.update(_filter_supported_model_kwargs(model, extra_model_kwargs))
         return model(**kwargs)
     if task == "radar":
         radar_input = radar_batch if radar_batch is not None else image_batch
@@ -1001,3 +1052,17 @@ def forward_model(
     if getattr(model, "supports_modality_kwargs", False):
         return model(image_batch=image_batch)
     return model(image_batch)
+
+
+def _filter_supported_model_kwargs(model, kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    materialized = {key: value for key, value in kwargs.items() if value is not None}
+    if not materialized:
+        return {}
+    try:
+        signature = inspect.signature(model.forward)
+    except (TypeError, ValueError, AttributeError):
+        return materialized
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+        return materialized
+    allowed = set(signature.parameters)
+    return {key: value for key, value in materialized.items() if key in allowed}
