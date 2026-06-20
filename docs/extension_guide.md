@@ -143,7 +143,7 @@ training or reading a real dataset:
 ```bash
 conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
   --config configs/image/supervised.yaml \
-  --format markdown
+  --format json
 ```
 
 The maintained human-readable registry inventory is `docs/model_architecture_inventory.md`; update that
@@ -392,7 +392,7 @@ pull in fusion, GPS, LiDAR, mmWave, image encoder, or radar implementation modul
 
 ## Retired Viewer Manifest
 
-The repository-level Gradio viewer, viewer manifest export CLI, `kd-sensing-visualize-modalities` alias, and
+The retired repository-level Gradio viewer, viewer manifest export CLI, `kd-sensing-visualize-modalities` alias, and
 `viewer_manifest_*` helper modules are retired. Do not add compatibility stubs or new helper modules under
 the old viewer names. Current diagnostic work belongs in JEPA visual analysis, GPS shortcut benchmark, or an
 explicitly specified non-viewer diagnostic owner.
@@ -432,7 +432,7 @@ class MyMetric:
         ...
 ```
 
-Preprocessors can expose a `run()` method and be invoked by `scripts/preprocess.py`.
+Preprocessors can expose a `run()` method and be invoked by `kd-sensing-preprocess`.
 
 ## Error Handling
 

@@ -1110,7 +1110,7 @@ def test_parallel_training_recommendation_outputs_background_overrides():
     assert "data.cache.policy=auto" in result["overrides"]
     assert result["recommendations"]["prefetch_factor"] == 1
     assert "training.amp.enabled=true" in result["optional_overrides"]
-    assert result["commands"]["train"].startswith("conda run -n kd_mm_beam python scripts/train.py")
+    assert result["commands"]["train"].startswith("conda run -n kd_mm_beam kd-sensing-train")
 
 
 def test_parallel_training_recommendation_warns_when_lidar_cache_is_cold(tmp_path: Path):

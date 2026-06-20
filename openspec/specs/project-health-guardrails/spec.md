@@ -245,6 +245,29 @@
 - **THEN** 健康护栏 MUST 将其解释为防止 condition-aware router 的诊断或安全边界
 - **AND** 只有在同一上下文把这些字段描述为模型直接输入或当前 router 入口时才应失败
 
+### Requirement: 架构边界测试验证结构化事实而非 prose mirror
+项目健康护栏 MUST 将长期稳定事实放入机器可读索引、inventory lifecycle、OpenSpec requirements、pyproject 或 AST/path/import 扫描中验证。架构边界测试 MUST 不逐字镜像 README、docs 或 OpenSpec 的自然语言段落，除非该文本本身是退役 token、公开入口名、路径、命令或需要静态拒绝的 lifecycle wording。
+
+#### Scenario: 文档自然语言改写不触发结构测试失败
+- **WHEN** README 或 docs 在不改变入口、路径、lifecycle、命令、配置引用或退役语义的情况下改写说明文字
+- **THEN** 架构边界测试 MUST 不因固定短语缺失而失败
+- **AND** 测试 MUST 继续验证机器可读索引、路径和 OpenSpec lifecycle 是否一致
+
+#### Scenario: 当前入口事实仍被验证
+- **WHEN** README、docs、OpenSpec 或维护索引声明当前 CLI、配置路径、dataset type、模型注册名或诊断入口
+- **THEN** 架构边界测试 MUST 验证对应路径、pyproject entry point、索引 entry 或源码 owner 存在
+- **AND** stale 当前入口引用 MUST 失败
+
+#### Scenario: 退役 wording guard 保留
+- **WHEN** current docs 或 current specs 将已退役路线写成 quickstart、active mainline、默认 workflow 或长期入口
+- **THEN** 健康护栏 MUST 继续失败
+- **AND** 失败信息 MUST 指向加入退役限定、更新 lifecycle 或删除推荐入口
+
+#### Scenario: 护栏检查无运行副作用
+- **WHEN** 开发者运行架构边界测试或文档健康检查
+- **THEN** 检查 MUST 只读取已跟踪源码、配置、文档、OpenSpec artifact、pyproject 和测试文件
+- **AND** 检查 MUST 不读取真实 `dataset/`、`outputs/`、`logs/`、checkpoint、cache 或 TensorBoard event
+
 ### Requirement: 健康护栏验证维护上下文索引
 项目健康护栏 SHALL 验证维护上下文索引存在、格式可读、必填 section 齐全，并与 AGENTS、AI 维护导航、project surface inventory、OpenSpec specs 和源码路径保持一致。检查 MUST 不读取真实数据、不启动训练、不写入本地产物。
 
@@ -310,16 +333,16 @@
 - **THEN** `docs/maintainer_context_index.yaml` MUST 登记对应 file 或 symbol budget
 - **AND** `docs/project_surface_inventory.md` MUST 说明模块职责和暂缓/后续拆分理由
 
-### Requirement: 薄 CLI alias 健康检查
-项目健康护栏 SHALL 检查 CLI 和 scripts 入口不变厚。检查 MUST 基于 maintainer context index 中的 entrypoint lifecycle、owner module 和 output boundary，拒绝未登记入口和明显复制 workflow 逻辑的 thin alias。
+### Requirement: CLI 和脚本入口健康检查
+项目健康护栏 SHALL 检查 CLI 和 scripts 入口不变厚。检查 MUST 基于 maintainer context index 中的 entrypoint lifecycle、owner module 和 output boundary，拒绝未登记入口、恢复 Python thin alias 和明显复制 workflow 逻辑的脚本。
 
 #### Scenario: 新脚本缺少 owner module
 - **WHEN** `scripts/`、`tools/analysis/` 或 package CLI 新增入口
 - **THEN** 维护上下文索引 MUST 登记 owner module、responsibility 和 output boundary
 - **AND** 缺少登记时架构边界测试 MUST 失败
 
-#### Scenario: thin alias 包含训练循环 marker
-- **WHEN** lifecycle 为 `thin_cli_alias` 的脚本包含大段训练循环、模型 forward、optimizer step 或 dataset parsing 主逻辑
+#### Scenario: 脚本入口包含训练循环 marker
+- **WHEN** 保留的 `scripts/` research diagnostic、dataset preparation 或 shell orchestration 包含大段训练循环、模型 forward、optimizer step 或重复 package CLI 主逻辑
 - **THEN** 健康检查 MUST 失败或要求重新分类为 owner module
 - **AND** 修复路径 MUST 是委托包内实现或创建正式 package module
 
@@ -379,4 +402,3 @@
 - **WHEN** 模块低于热点阈值、职责内聚且无重复抽象或公开边界问题
 - **THEN** 健康护栏 MUST NOT 要求仅因相邻热点修复而拆分该模块
 - **AND** 维护者 MAY 只补测试或登记为 monitor
-

@@ -401,6 +401,24 @@ JEPA GPS shortcut benchmark runner SHALL 将 manifest/schema、suite-specific pe
 - **THEN** 主要实现 MUST 位于对应窄模块
 - **AND** facade MUST 只做兼容导出、薄 orchestration 或向后兼容包装
 
+### Requirement: Benchmark facade 只暴露公开 runner API
+JEPA GPS shortcut benchmark facade MUST 只暴露 CLI、runner、manifest loading、公开常量和下游分析需要的稳定 API。Suite-specific helper、metric normalization helper、summary helper 或 underscore private helper MUST 留在职责明确的窄模块中，facade MUST 不把它们重新导出为事实公共 API。
+
+#### Scenario: CLI 继续使用公开 facade
+- **WHEN** 用户执行 `conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help` 或通过包内 CLI 启动 benchmark
+- **THEN** CLI MUST 继续导入公开 facade runner/API
+- **AND** CLI MUST 不依赖 facade 重新导出的 private helper
+
+#### Scenario: 测试直接覆盖窄模块 helper
+- **WHEN** 单元测试需要验证 GPS query advantage normalization、metric summary 或 suite-specific helper
+- **THEN** 测试 MUST 从 helper 所在窄模块导入目标符号
+- **AND** 测试 MUST 不通过 `jepa_gps_shortcut_benchmark._private_name` 访问 helper
+
+#### Scenario: facade 超预算时失败
+- **WHEN** benchmark facade 重新承载已迁出的 helper 实现、重新导出 private helper 或超过维护索引声明的 facade 预算
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 要求将实现移回窄模块或删除不需要的 facade 导出
+
 ### Requirement: Benchmark 输出 schema 保持兼容
 拆分 JEPA GPS shortcut benchmark runner MUST 保持现有 manifest 输入、输出文件名、CSV/JSON 字段、warnings schema 和 visual-analysis ingestion bundle 兼容。任何输出 schema 变更 MUST 通过单独 OpenSpec change 明确声明。
 
@@ -494,4 +512,3 @@ Benchmark MUST 能聚合模型输出中的 branch diagnostics，同时允许普�
 - **WHEN** Image ResNet+GPS 或其它 baseline 不输出 rerank diagnostics
 - **THEN** benchmark MUST 继续计算 metrics
 - **AND** diagnostics 表中该模型对应字段 MUST 为 `unavailable`
-

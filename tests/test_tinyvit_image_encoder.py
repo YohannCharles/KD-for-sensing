@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 import kd_sensing.models.tinyvit as tinyvit
+from kd_sensing.models.jepa import build_visual_token_encoder
 from kd_sensing.models.modular import ModularSequenceModel
 from kd_sensing.models.tinyvit import TINYVIT_VARIANTS, TinyViTImageEncoder
 from kd_sensing.registries import ENCODERS, import_default_components
@@ -84,6 +85,27 @@ def test_tinyvit_synthetic_forward_returns_frame_features_only(fake_tinyvit_back
     assert isinstance(output, torch.Tensor)
     assert output.shape == (2, 3, 12)
     assert output.ndim == 3
+
+
+def test_tinyvit_jepa_frame_token_encoder_builds_single_token(fake_tinyvit_backbone):
+    import_default_components()
+    encoder = build_visual_token_encoder(
+        {
+            "type": "tinyvit_frame",
+            "encoder_type": "tinyvit_5m_scratch_rgb",
+            "latent_dim": 8,
+            "freeze_backbone": False,
+        }
+    )
+
+    tokens, grid = encoder(torch.randn(2, 3, 3, 224, 224))
+    metadata = encoder.visual_token_metadata()
+
+    assert tokens.shape == (2, 3, 1, 8)
+    assert grid == (1, 1)
+    assert metadata["visual_encoder_type"] == "tinyvit_frame"
+    assert metadata["token_count"] == 1
+    assert metadata["backbone"] == "tinyvit_5m_scratch_rgb"
 
 
 def test_tinyvit_rejects_wrong_profile_channels_and_shapes(fake_tinyvit_backbone):

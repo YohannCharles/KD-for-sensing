@@ -327,7 +327,7 @@ def _validate_snapshot_csv_exists(cfg: dict[str, Any], dataset_cfg: dict[str, An
     if not csv_name:
         raise FileNotFoundError(
             "Snapshot next-frame baseline requires snapshot CSVs. "
-            "Run: python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml"
+            "Run: kd-sensing-preprocess --config configs/preprocess/sequences_snapshot_next_frame.yaml"
         )
     data_root = dataset_cfg.get("data_root")
     csv_path = Path(str(csv_name))
@@ -338,7 +338,7 @@ def _validate_snapshot_csv_exists(cfg: dict[str, Any], dataset_cfg: dict[str, An
         raise FileNotFoundError(
             f"Snapshot next-frame baseline expected {csv_path}. "
             f"Generate {sorted(expected)} first with: "
-            "python scripts/preprocess.py --config configs/preprocess/sequences_snapshot_next_frame.yaml"
+            "kd-sensing-preprocess --config configs/preprocess/sequences_snapshot_next_frame.yaml"
         )
 
 

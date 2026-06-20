@@ -15,7 +15,12 @@ from kd_sensing.data.difficulty import (
     normalize_difficulty_profiles,
 )
 from kd_sensing.data.difficulty.presets import GPS_QUERY_ADVANTAGE_CONDITION_IDS, PREDICTIVE_JEPA_CONDITION_IDS
-from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
+from kd_sensing.diagnostics.jepa_benchmark_manifest import normalize_suite_config
+from kd_sensing.diagnostics.jepa_benchmark_perturbations import (
+    _benchmark_difficulty_provenance,
+    _difficulty_profile_from_cxd_pair,
+    apply_benchmark_perturbation,
+)
 from kd_sensing.engine.batch import forward_model
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
@@ -561,10 +566,10 @@ def test_gps_query_advantage_difficulty_is_deterministic_and_beam_offset_constra
 
 
 def test_cxd_difficulty_profile_preserves_labels_soft_targets_and_split_metadata() -> None:
-    suite = bench.normalize_suite_config({"id": "scenario_cxd", "type": "scenario_c_x_d_image_observability"})
+    suite = normalize_suite_config({"id": "scenario_cxd", "type": "scenario_c_x_d_image_observability"})
     gps_condition = next(item for item in suite["scenario_c_conditions"] if item["id"] == "C4_severe_async")
     image_condition = next(item for item in suite["scenario_d_conditions"] if item["id"] == "D7_joint_worst_case")
-    profile = bench._difficulty_profile_from_cxd_pair(
+    profile = _difficulty_profile_from_cxd_pair(
         suite,
         gps_condition=gps_condition,
         image_condition=image_condition,
@@ -900,12 +905,12 @@ def test_benchmark_wrapper_uses_shared_difficulty_pipeline_and_records_provenanc
         "fallback": "zero_fill",
     }
 
-    result, warnings = bench.apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
+    result, warnings = apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
 
     assert warnings == []
     assert result["gps"].flatten().tolist() == [0.0, 0.0, 0.0, 1.0, 2.0]
     assert result["metadata"]["benchmark_perturbation"]["difficulty_profile_digest"] == result["difficulty"]["profile_digest"]
-    provenance = bench._benchmark_difficulty_provenance({"perturbation_suites": [bench.normalize_suite_config(suite)], "seeds": [17]})
+    provenance = _benchmark_difficulty_provenance({"perturbation_suites": [normalize_suite_config(suite)], "seeds": [17]})
     assert provenance[0]["profile"]["digest"] == result["difficulty"]["profile_digest"]
 
 

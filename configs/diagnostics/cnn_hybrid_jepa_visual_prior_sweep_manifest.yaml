@@ -8,6 +8,12 @@ mode_defaults:
     checkpoint_selections: [primary, best_top1]
     gpu_list: [0, 1, 2, 3]
     max_parallel: 8
+  screening:
+    seeds: [42]
+    checkpoint_selections: [primary, best_top1]
+    eval_checkpoint_selections: [best_top1]
+    gpu_list: [0, 1, 2, 3]
+    max_parallel: 8
 comparison_protocol:
   split: beambench_tableiii_input_s32_s34_train_s31_s34_test
   scene_set: [32, 33, 34]
@@ -108,6 +114,9 @@ families:
     backbones: [resnet18, resnet34]
     token_sources: [layer4, layer3+layer4]
     pretrained: [scratch, imagenet]
+  tinyvit_jepa_encoders:
+    variants: [5m, 11m]
+    pretrained: [scratch, 22k]
   hybrid_tokenizers:
     tokenizers:
       - conv_stem_s16

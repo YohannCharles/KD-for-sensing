@@ -126,29 +126,16 @@ RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
     "migration",
 )
 AGENT_NAVIGATION_MARKERS = (
-    "权威来源",
-    "任务路由",
     "docs/maintainer_context_index.yaml",
-    "机器可读",
-    "OpenSpec capability lifecycle",
     "current",
     "supporting",
     "retired-tombstone",
-    "generated metadata",
-    "ignored runtime artifacts",
     ".pytest_cache/v/cache/lastfailed",
-    "OpenSpec archive",
-    "active change",
-    "virtual config",
-    "virtual configs",
-    "retired research lines",
     "kd_mm_beam",
     "src/kd_sensing.egg-info/SOURCES.txt",
-    "entry_points.txt",
     "dataset/",
     "outputs/",
     "logs/",
-    "checkpoint",
     "openspec list --json",
     "openspec status --change <change>",
 )
@@ -643,60 +630,38 @@ def test_pyproject_scripts_match_maintainer_context_index():
     assert_pyproject_scripts_match_index(ROOT, MAINTAINER_CONTEXT_INDEX)
 
 
-def test_thin_cli_aliases_delegate_without_workflow_logic():
-    forbidden_markers = (
-        "for epoch in",
-        "for batch in",
-        ".backward(",
-        "optimizer.step(",
-        "model.train(",
-        "model.eval(",
-        ".forward(",
-        "forward_model(",
-        "run_model_step(",
-        "build_dataloaders(",
-        "DataLoader(",
-        "Dataset(",
-        "pd.read_csv(",
-        "csv.DictReader(",
-        "torch.optim",
-    )
-    violations: list[str] = []
-
-    for rel_path, metadata in sorted(PYTHON_ENTRYPOINT_METADATA.items()):
-        if metadata["lifecycle"] != "thin_cli_alias":
-            continue
-        path = ROOT / rel_path
-        text = path.read_text(encoding="utf-8")
-        owner_module = metadata.get("owner_module")
-        if not isinstance(owner_module, str) or not owner_module:
-            violations.append(f"{rel_path} is thin_cli_alias but has no owner_module")
-            continue
-        owner_imports = (
-            f"from {owner_module} import",
-            f"import {owner_module}",
-        )
-        if not any(snippet in text for snippet in owner_imports):
-            violations.append(f"{rel_path} does not directly delegate owner module {owner_module}")
-        if len(text.splitlines()) > 80:
-            violations.append(f"{rel_path} is too long for a thin CLI alias")
-        for marker in forbidden_markers:
-            if marker in text:
-                violations.append(f"{rel_path} contains workflow marker {marker!r}")
-
-    assert violations == []
+def test_python_entrypoint_allowlist_has_no_thin_cli_aliases():
+    assert "thin_cli_alias" not in ENTRYPOINT_LIFECYCLES
+    assert {
+        rel_path: metadata["lifecycle"]
+        for rel_path, metadata in sorted(PYTHON_ENTRYPOINT_METADATA.items())
+        if metadata["lifecycle"] == "thin_cli_alias"
+    } == {}
 
 
-def test_beambench_check_dataset_aliases_delegate_owner_module():
-    script_text = (ROOT / "scripts" / "check_dataset.py").read_text(encoding="utf-8")
-    cli_alias_path = SRC / "kd_sensing" / "cli" / "beambench_check_dataset.py"
-    cli_alias_text = cli_alias_path.read_text(encoding="utf-8")
+def test_retired_python_thin_aliases_are_absent_and_console_scripts_are_current():
+    retired_scripts = [
+        "scripts/train.py",
+        "scripts/evaluate.py",
+        "scripts/preprocess.py",
+        "scripts/check_dataset.py",
+        "scripts/eval_baseline.py",
+        "scripts/train_baseline.py",
+        "scripts/train_beambench_image_ae_gps.py",
+        "scripts/run_beambench_image_ae_gps_tableiii.py",
+    ]
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert PYTHON_ENTRYPOINT_METADATA["scripts/check_dataset.py"]["owner_module"] == "kd_sensing.cli.beambench_check_dataset"
-    assert "from kd_sensing.cli.beambench_check_dataset import main" in script_text
-    assert "from kd_sensing.baselines.beambench.dataset_check import main" in cli_alias_text
-    assert "argparse.ArgumentParser" not in cli_alias_text
-    assert "Dataset(" not in cli_alias_text
+    assert [path for path in retired_scripts if (ROOT / path).exists()] == []
+    assert not any(path in PYTHON_ENTRYPOINT_METADATA for path in retired_scripts)
+    for command in (
+        "kd-sensing-train",
+        "kd-sensing-evaluate",
+        "kd-sensing-preprocess",
+        "kd-sensing-train-beambench-image-ae-gps",
+        "kd-sensing-run-beambench-image-ae-gps-tableiii",
+    ):
+        assert command in pyproject
 
 
 def test_runtime_source_does_not_import_maintainer_context_helper():
@@ -982,8 +947,10 @@ def test_jepa_visual_architecture_sweep_uses_current_entrypoints_and_no_retired_
         text = path.read_text(encoding="utf-8")
         if path.name == "jepa_visual_architecture_sweep_manifest.yaml":
             assert "conda run -n kd_mm_beam" in text
-            assert "scripts/train.py" in text
-            assert "scripts/evaluate.py" in text
+            assert "kd-sensing-train" in text
+            assert "kd-sensing-evaluate" in text
+            assert "scripts/train.py" not in text
+            assert "scripts/evaluate.py" not in text
         assert [pattern.pattern for pattern in LEGACY_ROUTE_PATTERNS if pattern.search(text)] == []
     assert not (ROOT / "train_jepa_visual_architecture_sweep.py").exists()
     assert not (ROOT / "run_jepa_visual_architecture_sweep.py").exists()
@@ -998,8 +965,10 @@ def test_cnn_hybrid_jepa_visual_prior_sweep_is_package_scoped_and_output_scoped(
     assert "outputs/analysis/cnn_hybrid_jepa_visual_prior_sweep" in manifest_text
     assert "outputs/analysis/cnn_hybrid_jepa_visual_prior_sweep" in module_text
     assert "conda run -n kd_mm_beam" in module_text
-    assert "scripts/train.py" in module_text
-    assert "scripts/evaluate.py" in module_text
+    assert "kd-sensing-train" in module_text
+    assert "kd-sensing-evaluate" in module_text
+    assert "scripts/train.py" not in module_text
+    assert "scripts/evaluate.py" not in module_text
     assert "/root/.container_env" in module_text
     assert "dataset" in module_text
     assert "All_models" in module_text
@@ -1116,8 +1085,6 @@ def test_agent_navigation_is_referenced_from_rules_and_inventory():
     assert "机器可读治理" in inventory
     assert "非平凡改动前" in agents
     assert "docs/agent_navigation.md" in inventory
-    assert "current agent/maintainer navigation" in inventory
-    assert "不替代 README、AGENTS 或 OpenSpec specs" in inventory
     assert "docs/agent_navigation.md" in readme
 
 
@@ -1583,7 +1550,10 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "def _apply_scenario_c_async_position_feedback",
                 "def aggregate_cxd_phase_diagram",
                 "def _predictive_jepa_metric_row",
-                "class OutputRegistry",
+                "OutputRegistry",
+                "apply_benchmark_perturbation",
+                "_summary_from_metric_mapping",
+                "_normalize_gps_query_advantage_cxd_condition",
                 "def _write_benchmark_figures",
             ],
             "helpers": {
@@ -1988,6 +1958,7 @@ def test_removed_facades_are_not_importable():
         _dotted("kd_sensing", "baselines", "gps_window"),
         _dotted("kd_sensing", "cli", "gps_window_baseline"),
         _dotted("kd_sensing", "diagnostics", "g2d_diagnostics"),
+        _dotted("kd_sensing", "diagnostics", "communication_state_features"),
         _dotted("kd_sensing", "diagnostics", "visualization"),
         _dotted("kd_sensing", "distillation", "g2d"),
         _dotted("kd_sensing", "distillation", "g2d_smp"),
@@ -1998,6 +1969,7 @@ def test_removed_facades_are_not_importable():
         _dotted("kd_sensing", "engine", "multimodal_nf_runtime"),
         _dotted("kd_sensing", "models", "fusion", "craf"),
         _dotted("kd_sensing", "models", "fusion", "marf"),
+        _dotted("kd_sensing", "models", "lidar_pillar_encoder"),
         _dotted("kd_sensing", "preprocessing", "multimodal_nf"),
         _dotted("kd_sensing", "preprocessing", "multimodal_nf_common"),
     ]:

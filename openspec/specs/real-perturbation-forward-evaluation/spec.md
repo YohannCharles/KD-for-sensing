@@ -1,7 +1,7 @@
 # real-perturbation-forward-evaluation Specification
 
 ## Purpose
-TBD - created by archiving change add-real-perturbation-residual-rerank-fusion. Update Purpose after archive.
+定义 benchmark real-forward 扰动评估的真实 forward、logits/diagnostics cache、分片续跑和 leakage guard 契约，确保 P0-P5 等 condition 的指标来自模型在对应扰动 batch 上的实际输出。
 ## Requirements
 ### Requirement: Real perturbation forward evaluation
 系统 MUST 支持 benchmark real-forward 模式，在每个声明的 condition 上真实应用 difficulty transform、执行模型 forward，并从实际 logits 与 hard `target_beam` 计算 Top-K、DBA 和 primary metric。
@@ -54,4 +54,3 @@ Real-forward evaluation MUST 保持 target labels、beam power oracle、future f
 - **WHEN** batch metadata 包含 condition、suite、c_idx、d_idx 或 advantage label
 - **THEN** 这些字段 MUST 只用于输出文件名、groupby 和 report
 - **AND** model/reranker/gate input tensor MUST 不消费 condition id
-

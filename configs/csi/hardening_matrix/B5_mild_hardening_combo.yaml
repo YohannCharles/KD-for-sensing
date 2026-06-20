@@ -1,18 +1,9 @@
+_base_: _base/csi_only.yaml
 experiment:
   name: csi_B5_mild_hardening_combo
-  task: csi
   seed: 45
 data:
   dataset:
-    type: mmw
-    condition: sunny
-    scene: Town10_skybridge_seed24
-    train_csv_name: Prepared/Town10_skybridge_seed24/splits/train.csv
-    test_csv_name: Prepared/Town10_skybridge_seed24/splits/test.csv
-    seq_len: 8
-    num_pred: 3
-    use_csi: true
-    csi_train_rms: true
     csi_hardening:
       enabled: true
       seed: 45
@@ -30,46 +21,17 @@ data:
         - 0.95
         - 1.05
         phase_std_degrees: 5.0
-  dataloader:
-    train_batch_size: 16
-    test_batch_size: 16
-model:
-  modalities:
-  - csi
-  primary:
-    type: modular_sequence
-    modalities:
-    - csi
-    feature_size: 64
-    d_model: 64
-    num_classes: 64
-    num_pred: 3
-    encoders:
-      csi:
-        type: pilot_dual_view_csi
-        output_dim: 64
-        train_rms: 1.0
-        csi_estimation:
-          mode: none
-        delay_taps: 32
-        view_fusion: symmetric_gate
-    representation_core:
-      type: single_gru
-      d_model: 64
-      hidden_size: 64
-      num_layers: 1
-    heads:
-      beam:
-        type: beam_head
-training:
-  epochs: 100
-  lr: 0.0005
-  weight_decay: 0.0001
 debug:
-  enabled: true
   matrix_role: B5_mild_hardening_combo
-  pilot_scaling_config_version: fixed_estimation_snr_v1
-  csi_first_batch:
-    enabled: true
 output:
   run_name: csi_B5_mild_hardening_combo
+config_resolution:
+  style: base+overlay
+  base_config: _base/csi_only.yaml
+  overlay_id: B5_mild_hardening_combo
+  control_variables:
+  - csi_estimation
+  - csi_hardening
+  - csi_degradation
+  - view_gate_warmup
+  - use_internal_gru

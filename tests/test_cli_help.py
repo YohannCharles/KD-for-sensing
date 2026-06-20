@@ -20,6 +20,8 @@ import pytest
         ("kd-sensing-mmw-town-gps-v2", "--config"),
         ("kd-sensing-plot-mmw-town-gps-v2", "--results-dir"),
         ("kd-sensing-compare-mmw-town-gps-v2", "--previous-dir"),
+        ("kd-sensing-train-beambench-image-ae-gps", "--scene"),
+        ("kd-sensing-run-beambench-image-ae-gps-tableiii", "--output-root"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):

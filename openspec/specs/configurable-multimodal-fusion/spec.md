@@ -623,7 +623,7 @@ architecture sweep 中的每个实体 YAML、virtual config 或生成配置 MUST
 - **AND** 需要实际加载权重的 forward test MUST 抛出包含 checkpoint path 和 variant id 的清晰错误或使用 mock checkpoint
 
 ### Requirement: Architecture sweep 不新增旧入口
-architecture sweep MUST 不新增 root-level 旧式训练脚本、兼容聚合层、退役研究线实体配置或绕过 `src/kd_sensing` 包结构的运行方式。运行命令 MUST 复用现有 `scripts/train.py`、`scripts/evaluate.py`、包内 CLI 或已登记薄 alias。
+architecture sweep MUST 不新增 root-level 旧式训练脚本、兼容聚合层、退役研究线实体配置或绕过 `src/kd_sensing` 包结构的运行方式。运行命令 MUST 复用 `kd-sensing-train`、`kd-sensing-evaluate`、其它 package console scripts 或包内 CLI module。
 
 #### Scenario: 运行命令使用当前入口
 - **WHEN** sweep manifest 写出 train/evaluate command
@@ -679,4 +679,3 @@ Safe residual rerank 配置 MUST 显式声明 anchor logits 来源。Anchor MAY 
 - **WHEN** 用户配置 current 保留的 `cls_token_transformer_fusion` 或 `token_transformer_fusion`
 - **THEN** 系统 MUST 继续按对应 current spec 或 config 构建模型
 - **AND** 本 change MUST 不改变这些保留模型的 forward/output 契约
-

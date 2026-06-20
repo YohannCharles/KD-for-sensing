@@ -41,7 +41,7 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
 
     assert REQUIRED_FAMILIES <= source_families
     assert manifest["output_root"] == DEFAULT_OUTPUT_ROOT.as_posix()
-    assert len(base) == 172
+    assert len(base) == 176
     assert len(expanded) == len(base) * 3 * 2
     assert len({candidate["variant_id"] for candidate in base}) == len(base)
     assert {row["seed"] for row in expanded} == {17, 23, 42}
@@ -100,6 +100,55 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
     teacher_rows = [candidate for candidate in base if candidate["family"] == "teacher_guided_stabilization"]
     assert len(teacher_rows) == 3 * 5 * 2 * 3
     assert all("teacher_guidance" in row for row in teacher_rows)
+
+    tinyvit_rows = [candidate for candidate in base if candidate["family"] == "tinyvit_jepa_encoders"]
+    assert len(tinyvit_rows) == 4
+    assert {row["visual_encoder"]["encoder_type"] for row in tinyvit_rows} == {
+        "tinyvit_5m_scratch_rgb",
+        "tinyvit_5m_22k_rgb",
+        "tinyvit_11m_scratch_rgb",
+        "tinyvit_11m_22k_rgb",
+    }
+
+
+def test_screening_mode_limits_candidates_best_top1_eval_and_excludes_teacher(tmp_path: Path):
+    bundle = generate_runtime_bundle(output_root=_output_root(tmp_path), mode="screening", force=True)
+    output_root = Path(bundle["output_root"])
+    expanded = json.loads(Path(bundle["manifest_expanded_json"]).read_text(encoding="utf-8"))
+    all_jobs = _read_tsv(bundle["job_paths"]["all"])
+    stage1_jobs = _read_tsv(bundle["job_paths"]["stage1"])
+    downstream_jobs = _read_tsv(bundle["job_paths"]["downstream"])
+    teacher_jobs = _read_tsv(bundle["job_paths"]["teacher_guided"])
+    reeval_jobs = _read_tsv(bundle["job_paths"]["reeval"])
+
+    assert bundle["base_candidate_count"] == 31
+    assert len(expanded) == 62
+    assert {row["seed"] for row in expanded} == {42}
+    assert {row["checkpoint_selection"] for row in expanded} == {"primary", "best_top1"}
+    assert len(stage1_jobs) == 14
+    assert len(downstream_jobs) == 31
+    assert teacher_jobs == []
+    assert len(reeval_jobs) == 31
+    assert {job["checkpoint_selection"] for job in reeval_jobs} == {"best_top1"}
+    assert len(all_jobs) == 77
+
+    assert {
+        "tinyvit_5m_scratch_jepa_stage1",
+        "tinyvit_5m_22k_jepa_stage1",
+        "tinyvit_11m_scratch_jepa_stage1",
+        "tinyvit_11m_22k_jepa_stage1",
+    } <= {row["variant_id"] for row in expanded}
+    assert not any(job["variant_id"].startswith("tinyvit_") for job in stage1_jobs)
+    tinyvit_job = next(job for job in downstream_jobs if job["variant_id"] == "tinyvit_5m_scratch_jepa_stage1")
+    cfg = load_config(tinyvit_job["config_path"])
+    image_encoder = cfg["model"]["primary"]["encoders"]["image"]
+    visual = image_encoder["visual_encoder"]
+    assert image_encoder["type"] == "jepa_context_image"
+    assert image_encoder["checkpoint_path"] == ""
+    assert visual["type"] == "tinyvit_frame"
+    assert visual["encoder_type"] == "tinyvit_5m_scratch_rgb"
+    assert visual["freeze_backbone"] is False
+    assert (output_root / "run_full_sweep.sh").read_text(encoding="utf-8").find("--mode screening") >= 0
 
 
 def test_generator_writes_configs_jobs_and_current_teacher_guidance(tmp_path: Path):
@@ -169,7 +218,7 @@ def test_runner_dry_run_gpu_dependency_status_and_cleanup_guard(tmp_path: Path):
     assert {row["gpu"] for row in status_rows if row["gpu"]} <= {"0", "1", "2", "3"}
     assert all(row["status"] == "dry_run" for row in status_rows)
     dry_run_text = Path(result["dry_run_commands"]).read_text(encoding="utf-8")
-    assert "CUDA_VISIBLE_DEVICES=0 conda run -n kd_mm_beam python scripts/train.py" in dry_run_text
+    assert "CUDA_VISIBLE_DEVICES=0 conda run -n kd_mm_beam kd-sensing-train" in dry_run_text
     snapshot = json.loads((output_root / "status/concurrency_snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["gpu_list"] == ["0", "1", "2", "3"]
     assert snapshot["max_parallel"] == 8

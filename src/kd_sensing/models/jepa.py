@@ -599,6 +599,10 @@ class CNNFeatureMapTokenEncoder(VisualPatchTokenEncoder):
         checkpoint_policy: str | None = None,
         **kwargs: Any,
     ) -> None:
+        kwargs.pop("patch_size", None)
+        kwargs.pop("kernel_size", None)
+        kwargs.pop("stride", None)
+        kwargs.pop("depth", None)
         super().__init__(
             image_channels=image_channels,
             latent_dim=latent_dim,
@@ -665,6 +669,115 @@ class CNNFeatureMapTokenEncoder(VisualPatchTokenEncoder):
             stages=(self.stage,),
             pretrained=self.pretrained,
             freeze_backbone=self.freeze_backbone,
+        )
+
+
+@JEPA_VISUAL_TOKEN_ENCODERS.register("tinyvit_frame")
+class TinyViTFrameTokenEncoder(nn.Module):
+    """Expose a TinyViT frame encoder as a single JEPA visual token."""
+
+    def __init__(
+        self,
+        *,
+        image_channels: int = 3,
+        latent_dim: int = 64,
+        encoder_type: str = "tinyvit_5m_scratch_rgb",
+        output_dim: int | None = None,
+        variant_id: str | None = None,
+        token_source: str = "tinyvit_frame",
+        visual_encoder_type: str = "tinyvit_frame",
+        image_profile: str | None = "rgb_imagenet",
+        max_tokens: int = 1,
+        checkpoint_policy: str | None = None,
+        freeze_backbone: bool = False,
+        allow_download: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        import kd_sensing.models.tinyvit  # noqa: F401
+
+        validate_image_encoder_profile(
+            encoder_name=str(encoder_type),
+            image_profile=image_profile,
+            expected_channels=3,
+            actual_channels=image_channels,
+        )
+        self.latent_dim = int(output_dim if output_dim is not None else latent_dim)
+        self.encoder_type = str(encoder_type)
+        self.variant_id = str(variant_id or self.encoder_type).strip() or self.encoder_type
+        self.token_source = str(token_source).strip() or "tinyvit_frame"
+        self.visual_encoder_type = _normalize_visual_encoder_type(visual_encoder_type)
+        self.max_tokens = max(1, int(max_tokens))
+        self.checkpoint_policy = _normalize_checkpoint_policy(
+            checkpoint_policy,
+            default="fresh_stage1_required",
+        )
+        for stale_key in ("patch_size", "kernel_size", "stride", "depth"):
+            kwargs.pop(stale_key, None)
+        self.encoder = ENCODERS.build(
+            {
+                "type": self.encoder_type,
+                "output_dim": self.latent_dim,
+                "image_channels": int(image_channels),
+                "image_profile": image_profile,
+                "freeze_backbone": bool(freeze_backbone),
+                "allow_download": bool(allow_download),
+                **kwargs,
+            }
+        )
+        self.last_metadata: VisualTokenMetadata | None = None
+
+    def forward(self, image_batch: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
+        features = self.encoder(image_batch)
+        if features.ndim != 3:
+            raise ValueError(
+                "TinyViT JEPA frame token encoder expects [B, T, D] features from the image encoder, "
+                f"got {tuple(features.shape)}."
+            )
+        tokens = features.unsqueeze(2)
+        self.last_metadata = VisualTokenMetadata(
+            variant_id=self.variant_id,
+            visual_encoder_type=self.visual_encoder_type,
+            token_source=self.token_source,
+            image_size=(224, 224),
+            effective_stride=(224, 224),
+            token_grid=(1, 1),
+            token_count=1,
+            positional_encoding="tinyvit_global_frame",
+            checkpoint_policy=self.checkpoint_policy,
+            max_tokens=self.max_tokens,
+            backbone=self.encoder_type,
+            stages=("global_frame",),
+            pretrained="22k" in self.encoder_type,
+            freeze_backbone=bool(getattr(self.encoder, "freeze_backbone", False)),
+        )
+        return tokens, (1, 1)
+
+    def visual_token_metadata(self) -> dict[str, Any]:
+        return (self.last_metadata or self._metadata()).to_dict()
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        metadata = self.visual_token_metadata()
+        if hasattr(self.encoder, "training_strategy_metadata"):
+            metadata["image_encoder"] = self.encoder.training_strategy_metadata()
+        return metadata
+
+    def _metadata(self) -> VisualTokenMetadata:
+        return VisualTokenMetadata(
+            variant_id=self.variant_id,
+            visual_encoder_type=self.visual_encoder_type,
+            token_source=self.token_source,
+            image_size=(224, 224),
+            effective_stride=(224, 224),
+            token_grid=(1, 1),
+            token_count=1,
+            positional_encoding="tinyvit_global_frame",
+            checkpoint_policy=self.checkpoint_policy,
+            max_tokens=self.max_tokens,
+            backbone=self.encoder_type,
+            stages=("global_frame",),
+            pretrained="22k" in self.encoder_type,
+            freeze_backbone=bool(getattr(self.encoder, "freeze_backbone", False)),
         )
 
 
@@ -1733,6 +1846,7 @@ __all__ = [
     "JepaMaskSampler",
     "OverlapPatchTokenEncoder",
     "TargetLatentPredictor",
+    "TinyViTFrameTokenEncoder",
     "VisualTokenMetadata",
     "VisualPatchTokenEncoder",
     "build_visual_token_encoder",

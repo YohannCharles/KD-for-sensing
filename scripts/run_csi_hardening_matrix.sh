@@ -184,7 +184,7 @@ train_cfg() {
   fi
 
   local -a cmd=(
-    conda run -n "$CONDA_ENV" python scripts/train.py
+    conda run -n "$CONDA_ENV" kd-sensing-train
     --config "$cfg"
     -o "output.dir=$RUN_ROOT"
     -o output.progress.enabled=false

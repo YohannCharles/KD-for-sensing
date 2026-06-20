@@ -12,6 +12,19 @@ from kd_sensing.cli import jepa_gps_shortcut_benchmark as benchmark_cli
 from kd_sensing.cli import predictive_gps_query_visualizations as predictive_viz_cli
 from kd_sensing.diagnostics import jepa_visual_analysis as jva
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
+from kd_sensing.diagnostics.jepa_benchmark_perturbations import apply_benchmark_perturbation
+from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage import (
+    _normalize_gps_query_advantage_cxd_condition,
+)
+from kd_sensing.diagnostics.jepa_benchmark_runner import _summary_from_metric_mapping
+from kd_sensing.diagnostics.jepa_benchmark_scenario_d import (
+    aggregate_cxd_phase_diagram,
+    compute_modality_dominance,
+    cxd_phase_heatmap,
+    decompose_cxd_failure_modes,
+    detect_resnet_jepa_crossing,
+    load_cxd_diagnostic_records,
+)
 from kd_sensing.diagnostics.predictive_gps_query_visualizations import run_predictive_gps_query_visualizations
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -295,7 +308,7 @@ def test_manifest_schema_validation_reports_clear_errors(tmp_path: Path) -> None
     bad_train["models"]["gps"].pop("weights")
     bad_train["models"]["gps"].pop("synthetic_metrics")
     bad_train["models"]["gps"]["training"] = {
-        "train_command": "python scripts/train.py --config x.yaml",
+        "train_command": "kd-sensing-train --config x.yaml",
         "evaluate_command": "conda run -n kd_mm_beam kd-sensing-evaluate --config x.yaml --weights y.pth",
     }
     with pytest.raises(bench.BenchmarkManifestError, match="conda run -n kd_mm_beam"):
@@ -400,7 +413,7 @@ def test_predictive_manifest_preset_required_groups_and_comparability(tmp_path: 
         "C3_random_async+D3_motion_blur",
         "C4_severe_async+D7_joint_worst_case",
     }
-    renormalized_cxd = bench._normalize_gps_query_advantage_cxd_condition(
+    renormalized_cxd = _normalize_gps_query_advantage_cxd_condition(
         {
             "gps_condition": advantage["combined_conditions"][0]["gps_condition"],
             "image_condition": advantage["combined_conditions"][0]["image_condition"],
@@ -478,7 +491,7 @@ def test_predictive_gps_query_plus_plus_strict_manifest_declares_advantage_and_c
 
 
 def test_metric_mapping_accepts_evaluator_metrics_shape() -> None:
-    summary = bench._summary_from_metric_mapping(
+    summary = _summary_from_metric_mapping(
         "model",
         {
             "topk": {"1": [0.46], "3": [0.83], "5": [0.94]},
@@ -505,8 +518,8 @@ def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> Non
         "metadata": {"sample_id": ["a", "b", "c", "d"]},
     }
     suite = {"id": "gps_missing", "type": "gps_missing", "severities": [0.5]}
-    first, first_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=0.5, seed=11)
-    second, second_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=0.5, seed=11)
+    first, first_warnings = apply_benchmark_perturbation(batch, suite, severity=0.5, seed=11)
+    second, second_warnings = apply_benchmark_perturbation(batch, suite, severity=0.5, seed=11)
 
     assert torch.equal(first["gps"], second["gps"])
     assert first["gps"].shape == batch["gps"].shape
@@ -514,7 +527,7 @@ def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> Non
     assert first_warnings == second_warnings
     assert "gps_missing_mask" in first
 
-    occluded, _ = bench.apply_benchmark_perturbation(
+    occluded, _ = apply_benchmark_perturbation(
         batch,
         {"id": "occ", "type": "image_occlusion", "severities": [0.25]},
         severity=0.25,
@@ -524,7 +537,7 @@ def test_synthetic_batch_perturbations_are_deterministic_and_shape_safe() -> Non
     assert occluded["image"].dtype == batch["image"].dtype
     assert torch.equal(occluded["gps"], batch["gps"])
 
-    delayed, warnings = bench.apply_benchmark_perturbation(
+    delayed, warnings = apply_benchmark_perturbation(
         batch,
         {"id": "delay", "type": "temporal_delay", "modality": "gps", "severities": [2], "fallback": "clamp"},
         severity=2,
@@ -549,8 +562,8 @@ def test_predictive_benchmark_perturbation_delegates_to_shared_difficulty_pipeli
         "history_window": 2,
     }
 
-    first, first_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=4, seed=19)
-    second, second_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=4, seed=19)
+    first, first_warnings = apply_benchmark_perturbation(batch, suite, severity=4, seed=19)
+    second, second_warnings = apply_benchmark_perturbation(batch, suite, severity=4, seed=19)
 
     assert first_warnings == second_warnings == []
     assert torch.equal(first["image"], second["image"])
@@ -580,8 +593,8 @@ def test_predictive_advantage_perturbation_records_beam_offset_replay() -> None:
         "gps_query_advantage_slice": {"enabled": True},
     }
 
-    first, first_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=11, seed=23)
-    second, second_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=11, seed=23)
+    first, first_warnings = apply_benchmark_perturbation(batch, suite, severity=11, seed=23)
+    second, second_warnings = apply_benchmark_perturbation(batch, suite, severity=11, seed=23)
 
     assert first_warnings == second_warnings == []
     assert torch.equal(first["gps"], second["gps"])
@@ -620,8 +633,8 @@ def test_scenario_c_fixed_delay_preserves_targets_and_blocks_future_gps() -> Non
         ],
     }
 
-    first, first_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
-    second, second_warnings = bench.apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
+    first, first_warnings = apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
+    second, second_warnings = apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
 
     assert torch.equal(first["gps_async"], second["gps_async"])
     assert first_warnings == second_warnings
@@ -656,7 +669,7 @@ def test_scenario_c_low_rate_and_timestamp_paths_are_auditable() -> None:
         ],
     }
 
-    low_rate, _ = bench.apply_benchmark_perturbation(low_rate_batch, low_rate_suite, severity=2, seed=5)
+    low_rate, _ = apply_benchmark_perturbation(low_rate_batch, low_rate_suite, severity=2, seed=5)
     assert low_rate["gps_source_index"].tolist() == [[-1, -1, 0, 0, 2, 2]]
     assert low_rate["gps_delay_steps"].tolist() == [[2, 2, 2, 3, 2, 3]]
     assert low_rate["gps_valid_mask"].tolist() == [[False, False, True, True, True, True]]
@@ -677,8 +690,8 @@ def test_scenario_c_low_rate_and_timestamp_paths_are_auditable() -> None:
             }
         ],
     }
-    random_first, _ = bench.apply_benchmark_perturbation(low_rate_batch, random_suite, severity=3, seed=9)
-    random_second, _ = bench.apply_benchmark_perturbation(low_rate_batch, random_suite, severity=3, seed=9)
+    random_first, _ = apply_benchmark_perturbation(low_rate_batch, random_suite, severity=3, seed=9)
+    random_second, _ = apply_benchmark_perturbation(low_rate_batch, random_suite, severity=3, seed=9)
     assert torch.equal(random_first["gps_async"], random_second["gps_async"])
     assert torch.equal(random_first["gps_valid_mask"], random_second["gps_valid_mask"])
     assert bool(((random_first["gps_source_index"] == -1) | (random_first["gps_source_index"] <= torch.arange(6).reshape(1, 6))).all())
@@ -705,7 +718,7 @@ def test_scenario_c_low_rate_and_timestamp_paths_are_auditable() -> None:
             "gps_timestamp": torch.tensor([[0.0, 1.0, 2.0, 3.0]]),
         },
     }
-    timestamp_result, timestamp_warnings = bench.apply_benchmark_perturbation(
+    timestamp_result, timestamp_warnings = apply_benchmark_perturbation(
         timestamp_batch,
         timestamp_suite,
         severity=1,
@@ -714,7 +727,7 @@ def test_scenario_c_low_rate_and_timestamp_paths_are_auditable() -> None:
     assert timestamp_warnings[0]["code"] == "scenario_c_invalid_gps_zero_fill"
     assert timestamp_result["gps_source_index"].tolist() == [[-1, 0, 1, 2]]
 
-    fallback_result, fallback_warnings = bench.apply_benchmark_perturbation(
+    fallback_result, fallback_warnings = apply_benchmark_perturbation(
         {"gps": timestamp_batch["gps"], "metadata": {"sample_id": ["toy"]}},
         timestamp_suite,
         severity=1,
@@ -1000,8 +1013,8 @@ def test_cxd_phase_aggregation_marks_incomplete_grid_without_filling() -> None:
                 }
             )
 
-    phase = bench.aggregate_cxd_phase_diagram(rows)
-    heatmap = bench.cxd_phase_heatmap(phase)
+    phase = aggregate_cxd_phase_diagram(rows)
+    heatmap = cxd_phase_heatmap(phase)
 
     assert {row["cxd_grid_status"] for row in phase} == {"incomplete_cxd_grid"}
     assert all(row["incomplete_cxd_grid"] is True for row in phase)
@@ -1044,14 +1057,14 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
         "missing,C0_sync,D0_full_image,3,test,1,1,batch_mean\n",
         encoding="utf-8",
     )
-    records = bench.load_cxd_diagnostic_records(
+    records = load_cxd_diagnostic_records(
         {
             **manifest,
             "analysis": {"cxd_phase_transition": {"diagnostic_sources": [{"path": str(diagnostics_path), "type": "csv"}]}},
         }
     )
     warnings: list[dict] = []
-    dominance = bench.compute_modality_dominance(phase_rows, manifest, diagnostic_records=records, warnings=warnings)
+    dominance = compute_modality_dominance(phase_rows, manifest, diagnostic_records=records, warnings=warnings)
 
     jepa = next(row for row in dominance if row["model"] == "jepa")
     resnet = next(row for row in dominance if row["model"] == "resnet")
@@ -1062,7 +1075,7 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
     assert resnet["diagnostic_status"] == "unavailable"
     assert warnings and warnings[0]["code"] == "cxd_diagnostic_rows_unmatched"
 
-    unavailable = bench.compute_modality_dominance(
+    unavailable = compute_modality_dominance(
         phase_rows[:1],
         manifest,
         diagnostic_records=[
@@ -1080,7 +1093,7 @@ def test_modality_dominance_uses_real_diagnostics_and_downgrades_mismatch(tmp_pa
     assert unavailable[0]["diagnostic_status"] == "unavailable"
     assert unavailable[0]["unavailable_reason"] == "gradient_norm_denominator_missing_or_zero"
 
-    attention = bench.compute_modality_dominance(
+    attention = compute_modality_dominance(
         phase_rows[:1],
         manifest,
         diagnostic_records=[
@@ -1156,11 +1169,11 @@ def test_crossing_query_pool_shift_and_failure_decomposition() -> None:
             }
         )
 
-    crossing = bench.detect_resnet_jepa_crossing(rows, manifest)
+    crossing = detect_resnet_jepa_crossing(rows, manifest)
     assert crossing["summary"]["crossing_count"] > 0
     assert crossing["summary"]["query_pool_shift"]["shift"] == "earlier"
 
-    failure = bench.decompose_cxd_failure_modes([row for row in rows if row["model"] == "resnet"], manifest)
+    failure = decompose_cxd_failure_modes([row for row in rows if row["model"] == "resnet"], manifest)
     joint = next(row for row in failure if row["condition_id"] == "C1_mild_stale+D1_weather")
     assert joint["failure_mode"] in {"both_fail", "superadditive_joint_fail"}
     assert float(joint["gps_only_drop"]) == pytest.approx(0.10)

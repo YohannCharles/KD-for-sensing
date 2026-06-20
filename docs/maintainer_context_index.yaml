@@ -257,7 +257,6 @@ governance:
   entrypoints:
     lifecycle_values:
       - package_cli
-      - thin_cli_alias
       - research_diagnostic
       - dataset_preparation
       - shell_orchestration
@@ -388,21 +387,6 @@ governance:
         owner_script: scripts/debug_eval_consistency.py
         responsibility: local evaluation consistency debug probe
         output_boundary: read-only local outputs/ and explicit user path only
-      - path: scripts/check_dataset.py
-        lifecycle: dataset_preparation
-        owner_module: kd_sensing.cli.beambench_check_dataset
-        responsibility: thin dataset audit alias for BeamBench checker
-        output_boundary: read-only dataset audit with optional explicit JSON report
-      - path: scripts/eval_baseline.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.beambench_eval_baseline
-        responsibility: thin alias to BeamBench baseline evaluation CLI
-        output_boundary: ignored outputs/evaluations/beambench_baseline/ or explicit user path
-      - path: scripts/evaluate.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.evaluate
-        responsibility: thin alias to package evaluation CLI
-        output_boundary: ignored outputs/evaluations/ or explicit user path
       - path: scripts/figures/draw_jepa_architecture.py
         lifecycle: research_diagnostic
         owner_script: scripts/figures/draw_jepa_architecture.py
@@ -428,11 +412,6 @@ governance:
         owner_script: scripts/mmw/visualize_town_label_distribution.py
         responsibility: MMW Town label distribution data diagnostic
         output_boundary: explicit local dataset diagnostic path or ignored outputs/analysis/
-      - path: scripts/preprocess.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.preprocess
-        responsibility: thin alias to package preprocessing CLI
-        output_boundary: dataset preparation target or explicit user path
       - path: scripts/profile_training_io.py
         lifecycle: research_diagnostic
         owner_script: scripts/profile_training_io.py
@@ -443,28 +422,6 @@ governance:
         owner_module: kd_sensing.engine.throughput_recommendations
         responsibility: parallel training override recommendation diagnostic
         output_boundary: read-only/stdout only
-      - path: scripts/train_baseline.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.beambench_train_baseline
-        responsibility: thin alias to BeamBench baseline training CLI
-        output_boundary: ignored outputs/evaluations/beambench_baseline/ or explicit user path
-      - path: scripts/train_beambench_image_ae_gps.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.train_beambench_image_ae_gps
-        responsibility: thin alias to BeamBench Image AE+GPS training CLI
-        output_boundary: ignored outputs/scene<id>/ or explicit user path
-        retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
-      - path: scripts/run_beambench_image_ae_gps_tableiii.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.run_beambench_image_ae_gps_tableiii
-        responsibility: thin alias to BeamBench Image AE+GPS Table III CLI
-        output_boundary: ignored outputs/scenegroup_s32_s34/ or outputs/evaluations/ or explicit user path
-        retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
-      - path: scripts/train.py
-        lifecycle: thin_cli_alias
-        owner_module: kd_sensing.cli.train
-        responsibility: thin alias to package training CLI
-        output_boundary: ignored outputs/ and logs/ runtime artifacts
     shell_allowlist:
       - path: scripts/run_csi_hardening_matrix.sh
         lifecycle: shell_orchestration
@@ -502,8 +459,10 @@ governance:
     lifecycle_markers:
       - configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml
       - configs/fusion/experiments/jepa_image_gps/*.yaml
+      - configs/csi/hardening_matrix/_base/*.yaml
       - configs/csi/hardening_matrix/*.yaml
       - configs/csi/hardening_matrix/debug/*.yaml
+      - configs/fusion/csi_hardening_matrix/_base/*.yaml
       - configs/fusion/csi_hardening_matrix/*.yaml
       - configs/preprocess/*.yaml
       - configs/diagnostics/modality_visualization.yaml
@@ -512,6 +471,77 @@ governance:
       - configs/baselines/*.yaml
       - configs/pretraining/*.yaml
       - retired history
+
+  surface_cleanup:
+    deleted:
+      - path: src/kd_sensing/diagnostics/communication_state_features.py
+        planned_action: delete
+        public_surface_policy: remove-internal-only
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+        rollback_note: Restore only through a new OpenSpec change that registers a current diagnostic consumer.
+      - path: src/kd_sensing/models/lidar_pillar_encoder.py
+        planned_action: delete
+        public_surface_policy: no-current-surface
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+        rollback_note: Reintroduce pillar support only with registry/config/dataset/forward tests.
+    remove_internal_only:
+      - path: src/kd_sensing/data/dataset_runtime.py
+        kept_symbols:
+          - SampleRow
+        removed_symbols:
+          - SampleIndex
+          - RuntimeDataset
+          - ModalityAdapter
+          - TargetProvider
+          - write_index_csv
+        public_surface_policy: remove-internal-only
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_target_shot_splits.py tests/test_architecture_boundaries.py -q
+        rollback_note: Restore adapter framework only when a current dataset owner consumes it.
+    merged:
+      - from: src/kd_sensing/diagnostics/jepa_visual_analysis.py
+        into: src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py
+        symbol: OutputRegistry
+        public_surface_policy: merge-into-owner
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py tests/test_jepa_gps_shortcut_benchmark.py -q
+        rollback_note: Keep one owner helper unless output schemas diverge.
+    config_classification:
+      csi_hardening:
+        style: base+overlay
+        base_configs:
+          - configs/csi/hardening_matrix/_base/csi_only.yaml
+          - configs/fusion/csi_hardening_matrix/_base/gps_only.yaml
+          - configs/fusion/csi_hardening_matrix/_base/gps_csi.yaml
+        overlay_id_range:
+          - A0
+          - A1
+          - A2
+          - B3
+          - B4
+          - B5
+          - B6
+          - C1
+          - C2
+          - D1
+          - D2
+          - D3
+          - D4
+          - E0
+          - E1
+          - E2
+          - E3
+        validation_commands:
+          - conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_csi_matrix_configs_use_primary_encoder -q
+    dependency_audit:
+      removed_dev_dependencies:
+        - thop
+        - pytorch-model-summary
+      runtime_dependencies_changed: false
+      validation_commands:
+        - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 
   models:
     registration_allowlist:
@@ -628,6 +658,7 @@ governance:
         - thin-owner
         - no-public-surface
         - remove-internal-only
+        - merge-into-owner
     symbol_budgets:
       - path: src/kd_sensing/data/datasets/deepsense6g.py
         symbol: DeepSense6GDataset
@@ -1177,6 +1208,31 @@ governance:
         rollback_note: Remove any low-value helper boundary created by this change and keep public imports stable.
         validation_commands:
           - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+      - id: wave-6-surface-cleanup
+        target_paths:
+          - pyproject.toml
+          - docs/maintainer_context_index.yaml
+          - docs/project_surface_inventory.md
+          - src/kd_sensing/data/dataset_runtime.py
+          - src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py
+          - src/kd_sensing/diagnostics/jepa_benchmark_artifacts.py
+          - configs/csi/hardening_matrix/_base/csi_only.yaml
+          - configs/fusion/csi_hardening_matrix/_base/gps_csi.yaml
+          - tests/test_architecture_boundaries.py
+          - tests/test_student_configs.py
+        owner_module: kd_sensing
+        planned_action: consolidate
+        public_surface_policy: remove-internal-only
+        consolidation_targets:
+          - Python thin aliases deleted in favor of package console scripts
+          - orphan diagnostics and LiDAR pillar prototype removed from current surface
+          - duplicate OutputRegistry merged into benchmark artifact owner
+          - CSI hardening matrix expressed as base+overlay
+        rollback_note: Roll back by restoring deleted files and index entries only if a current OpenSpec change re-registers the surface.
+        validation_commands:
+          - openspec validate simplify-overengineered-surfaces --strict
+          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+          - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
     inventory_markers:
       - src/kd_sensing/data/datasets/deepsense6g.py
       - DeepSense6GDataset

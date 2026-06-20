@@ -1187,7 +1187,7 @@ def _looks_like_kd_process(cmdline: str) -> bool:
         return True
     if "kd-sensing-train" in lower or "kd-sensing-evaluate" in lower:
         return True
-    return "scripts/train.py" in lower or "scripts/evaluate.py" in lower
+    return False
 
 
 def _process_kind(cmdline: str) -> str:

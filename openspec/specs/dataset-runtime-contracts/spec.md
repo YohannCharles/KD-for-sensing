@@ -60,8 +60,8 @@
 - **THEN** 系统 MUST 不再提供该 target provider
 - **AND** 错误信息 MUST 指出 Multimodal-NF 已退役
 
-### Requirement: RuntimeDataset flat sample 契约
-系统 MUST 提供薄 runtime dataset 或等价组合方式，通过 sample index、modality adapters 和 target provider 构建 flat dict sample。flat sample keys MUST 与中心化模态契约和 prediction objective 契约一致。
+### Requirement: Dataset flat sample 契约
+系统 MUST 通过当前 dataset 实现、data factory、metadata helper 或等价轻量类型构建 flat dict sample。flat sample keys MUST 与中心化模态契约和 prediction objective 契约一致；该契约 MUST 不要求保留未接入的通用 `RuntimeDataset`、`SampleIndex`、`ModalityAdapter`、`TargetProvider` 或 index writer framework。
 
 #### Scenario: Flat sample 输出
 - **WHEN** 用户从任一支持数据集取样
@@ -72,6 +72,22 @@
 #### Scenario: Runtime metadata
 - **WHEN** 训练或评估构建 dataloaders
 - **THEN** run metadata MUST 记录 dataset type、descriptor family、storage kind、split metadata、enabled modalities、input profiles 和 target schema
+- **AND** metadata MAY 由现有 dataset attributes、run metadata helper 和轻量 `SampleRow` 等价类型提供
+
+#### Scenario: flat sample 行为由现有 dataset 满足
+- **WHEN** 当前保留 dataset 构建 dataloader 并返回样本
+- **THEN** flat sample keys、target fields、sample id、split metadata 和 enabled modality behavior MUST 保持与现有 dataset contract 兼容
+- **AND** 系统 MUST 不要求通过独立 `RuntimeDataset` wrapper 才能满足该行为
+
+#### Scenario: 保留仍被消费的轻量 row 类型
+- **WHEN** `SampleRow` 或等价轻量 row 类型仍被 target-shot split、metadata 或测试消费
+- **THEN** 本 change MUST 保留该类型或迁移到实际 owner 模块
+- **AND** 删除未接入 framework MUST 不破坏 target-shot split artifact 读取
+
+#### Scenario: 删除未消费 adapter framework
+- **WHEN** 通用 sample index、modality adapter、target provider 或 index writer 没有内部调用、公开导出、配置、docs 或 current OpenSpec 消费
+- **THEN** 本 change MAY 删除这些符号和只服务它们的测试
+- **AND** dataset runtime metadata、sensitive field guard 和 difficulty metadata 契约 MUST 继续由现有 runtime 路径满足
 
 ### Requirement: Dataset runtime capability purpose 明确
 `dataset-runtime-contracts` spec MUST 使用真实目的说明描述 dataset descriptor、sample index、modality adapter、target provider 和 runtime metadata 契约。该 spec MUST 不长期保留 archived TBD Purpose 文案。
@@ -101,7 +117,7 @@ Dataset runtime metadata MUST 同时记录当前保留 dataset family 信息和�
 - **AND** 系统 MUST 报告该 dataset type 已退役
 
 ### Requirement: Path auxiliary target flat sample 契约
-RuntimeDataset 或等价 dataset MUST 支持在 flat sample 中表达 path-level auxiliary targets。该契约 MUST 将 `path_params`、`path_descriptor`、`path_semantic_label` 和 `path_valid` 标记为 target/diagnostic 字段，而不是 input modality 字段。
+当前 dataset 或等价 dataset MUST 支持在 flat sample 中表达 path-level auxiliary targets。该契约 MUST 将 `path_params`、`path_descriptor`、`path_semantic_label` 和 `path_valid` 标记为 target/diagnostic 字段，而不是 input modality 字段。
 
 #### Scenario: flat sample 包含 path auxiliary targets
 - **WHEN** 当前 dataset family 支持 path-level propagation parameters 且配置启用 path semantics
@@ -246,4 +262,3 @@ DeepSense6G GPS feature mode、scene calibration、GPS angle offset、GPS BEV XY
 - **WHEN** BeamBench-fair 或 Table III 风格配置声明 `beam_target_source=current`
 - **THEN** helper MUST 保持 current beam target 语义
 - **AND** `num_pred`、`seq_len` 和 target path 选择规则 MUST 与现有实现兼容
-

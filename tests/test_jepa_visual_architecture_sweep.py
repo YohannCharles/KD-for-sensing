@@ -100,7 +100,7 @@ def test_jepa_visual_architecture_sweep_summary_and_claim_gate(monkeypatch, tmp_
         candidate={"variant_id": "patch16_mean_baseline", "family": "baseline", "run_tier": "strict"},
         metrics={"top1": 0.5, "top3": 0.7, "top5": 0.8, "dba": 0.6, "adjacent_beam_error": 0.2},
         diagnostics={"status": "available", "attention_entropy": 1.2, "attention_peakiness": 0.4},
-        provenance={"command": "conda run -n kd_mm_beam python scripts/evaluate.py --config cfg.yaml"},
+        provenance={"command": "conda run -n kd_mm_beam kd-sensing-evaluate --config cfg.yaml"},
     )
     paths = write_sweep_summary([{**gated[1], **row}], output_root="outputs/analysis/jepa_visual_architecture_sweep")
 

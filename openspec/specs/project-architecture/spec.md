@@ -27,19 +27,27 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **THEN** 变更 MUST 限定在 `preprocessing/` 与配置/注册代码内，且不需要修改模型定义文件
 
 ### Requirement: 统一新脚本入口并移除旧入口
-项目 MUST 使用 `scripts/train.py`、`scripts/evaluate.py`、`scripts/preprocess.py` 或包内 CLI 作为唯一运行入口。项目 MUST 删除现有顶层旧脚本入口，包括 `train_image.py`、`train_both.py`、`test_model_image.py`、`test_model_both.py`、`CSV_process.py` 和 `gen_data_seq.py`，不得保留兼容包装脚本。
+项目 MUST 使用 `pyproject.toml` 声明的 `kd-sensing-*` package console scripts 或包内 CLI module 作为当前支持的运行入口。`scripts/*.py` 中只转发到包内 CLI 的 Python thin alias MUST 从当前支持面删除，不得作为 README、AGENTS、docs、OpenSpec 或维护索引推荐入口。项目 MUST 继续删除现有顶层旧脚本入口，包括 `train_image.py`、`train_both.py`、`test_model_image.py`、`test_model_both.py`、`CSV_process.py` 和 `gen_data_seq.py`，不得保留兼容包装脚本。
 
-#### Scenario: 运行新训练脚本帮助信息
-- **WHEN** 开发者执行 `python scripts/train.py --help`
-- **THEN** 命令 MUST 正常退出，并展示配置文件、训练任务和命令行覆盖相关的参数说明
+#### Scenario: 运行训练 console script 帮助信息
+- **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-train --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 展示配置文件、训练任务和命令行覆盖相关的参数说明
 
-#### Scenario: 运行新评估和预处理脚本帮助信息
-- **WHEN** 开发者执行 `python scripts/evaluate.py --help` 或 `python scripts/preprocess.py --help`
-- **THEN** 命令 MUST 正常退出，并展示对应任务的参数说明
+#### Scenario: 运行评估和预处理 console script 帮助信息
+- **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-evaluate --help` 或 `conda run -n kd_mm_beam kd-sensing-preprocess --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 帮助信息 MUST 展示对应任务的参数说明
 
-#### Scenario: 旧脚本入口已删除
-- **WHEN** 结构重构完成后检查仓库根目录
+#### Scenario: 旧脚本入口和 thin alias 已删除
+- **WHEN** 结构收敛完成后检查仓库根目录和 `scripts/`
 - **THEN** 根目录 MUST 不存在 `train_image.py`、`train_both.py`、`test_model_image.py`、`test_model_both.py`、`CSV_process.py` 或 `gen_data_seq.py`
+- **AND** `scripts/` MUST 不保留 `train.py`、`evaluate.py`、`preprocess.py`、`check_dataset.py`、`eval_baseline.py`、`train_baseline.py`、`train_beambench_image_ae_gps.py` 或 `run_beambench_image_ae_gps_tableiii.py` 这类 Python thin alias
+
+#### Scenario: 文档不推荐 thin alias
+- **WHEN** 开发者阅读 README、AGENTS、`docs/agent_navigation.md`、维护索引或当前 OpenSpec specs 中的运行入口说明
+- **THEN** 当前训练、评估、预处理和 BeamBench workflow MUST 指向 `kd-sensing-*` console scripts 或明确包内 CLI
+- **AND** 文档 MUST 不把已删除的 `scripts/*.py` thin alias 写成当前推荐命令
 
 ### Requirement: 项目根路径与资源路径统一
 项目 MUST 提供统一路径解析工具，用于解析项目根目录、数据目录、权重目录、配置目录和输出目录。运行入口 MUST 通过该工具解析相对路径，避免依赖当前工作目录偶然匹配。
@@ -209,7 +217,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 扫描 MUST 指向对应的窄 transform 模块作为迁移路径
 
 ### Requirement: 安装入口与 pyproject 声明一致
-项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的兼容 console script MUST 是薄 alias，不得复制长期维护的 parser 或主实现。项目 MUST 不再要求安装 `kd-sensing-raymobtime-analysis`、GPS window baseline、viewer manifest 或仓库级 Gradio viewer support 入口。BeamBench 相关 console scripts MAY 保持当前声明。
+项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的 console script MUST 是 parser/config glue，不得复制长期维护的 parser 或主实现。项目 MUST 不再要求安装 `kd-sensing-raymobtime-analysis`、GPS window baseline、viewer manifest 或仓库级 Gradio viewer support 入口。BeamBench 相关 console scripts MAY 保持当前声明。
 
 #### Scenario: 退役 viewer scripts 不声明
 - **WHEN** 开发者检查 `pyproject.toml` entry points
@@ -267,7 +275,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 不得新增对 `kd_sensing.data.transform_ops._legacy` 的依赖
 
 ### Requirement: 重复 CLI 脚本不得作为推荐入口
-当包内 CLI 与 `tools/` 脚本提供同一工作流时，项目 MUST 以包内 CLI 或 `python -m kd_sensing.cli.<name>` 作为推荐入口。已被包内 CLI 覆盖的重复 fallback wrapper MUST 删除；仍保留的研究脚本或薄 alias MUST 有明确生命周期分类。
+当包内 CLI 与 `tools/` 脚本提供同一工作流时，项目 MUST 以包内 CLI 或 `python -m kd_sensing.cli.<name>` 作为推荐入口。已被包内 CLI 覆盖的重复 fallback wrapper MUST 删除；仍保留的研究、数据准备或 shell 脚本 MUST 有明确生命周期分类。
 
 #### Scenario: viewer manifest wrapper 不回流
 - **WHEN** 文档或 orchestration 脚本提到旧 viewer manifest 导出
@@ -345,7 +353,7 @@ Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper �
 - **AND** 命令 MUST 能在全量 pytest 前暴露架构边界回归
 
 ### Requirement: 兼容冗余入口已删除
-项目 MUST 删除已经迁移到 canonical 模块的兼容入口。源码、测试、文档和推荐命令 MUST 不再依赖 `the builder facade module`、`the transform facade module`、`the transform aggregate module`、场景专用 dataset 兼容模块或复制旧实现的可视化脚本入口。明确保留的 console-script 兼容入口 MUST 作为薄 alias 存在，并 MUST 指向当前包内主实现。
+项目 MUST 删除已经迁移到 canonical 模块的兼容入口。源码、测试、文档和推荐命令 MUST 不再依赖 `the builder facade module`、`the transform facade module`、`the transform aggregate module`、场景专用 dataset 兼容模块或复制旧实现的可视化脚本入口。明确保留的 console-script 入口 MUST 指向当前包内主实现。
 
 #### Scenario: 兼容 facade 不再作为公开入口
 - **WHEN** 开发者在源码、测试、README 或扩展指南中搜索已删除的兼容 facade
@@ -453,7 +461,7 @@ Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper �
 #### Scenario: 重复入口回流被拒绝
 - **WHEN** 项目中新增 `scripts/` 或 `tools/` Python 入口
 - **THEN** 检查 MUST 判断该入口是否复制已有 `kd_sensing.cli.*` parser/main 或 console script 工作流
-- **AND** 重复入口 MUST 被拒绝，除非对应 OpenSpec requirement 明确允许该薄 alias 或研究脚本边界
+- **AND** 重复入口 MUST 被拒绝，除非对应 OpenSpec requirement 明确允许该 package CLI、研究脚本或数据准备脚本边界
 
 #### Scenario: 表面积 inventory 可审计
 - **WHEN** 开发者运行架构边界测试或专用 inventory 命令
@@ -554,7 +562,7 @@ Raymobtime s008 预处理 workflow 已退役，不属于当前源码支持面。
 - **AND** 本地 `dataset/` 或历史 archive 中存在 Raymobtime 资料 MUST 不被解释为当前支持能力
 
 ### Requirement: 入口生命周期必须可审计
-项目 MUST 为 `scripts/` 和 `tools/analysis/` 中保留的入口维护生命周期分类。新增或保留入口 MUST 属于包内 CLI、薄 alias、研究诊断脚本、数据准备脚本或 shell orchestration 中的一类，并在架构检查 allowlist 或 inventory 中记录原因。仓库级 `tools/visualization/` viewer support 已退役，MUST 不再作为当前入口分类回流。
+项目 MUST 为 `scripts/` 和 `tools/analysis/` 中保留的入口维护生命周期分类。新增或保留入口 MUST 属于 package CLI、研究诊断脚本、数据准备脚本或 shell orchestration 中的一类，并在架构检查 allowlist 或 inventory 中记录原因。仓库级 `tools/visualization/` viewer support 已退役，MUST 不再作为当前入口分类回流。
 
 #### Scenario: 新增脚本入口需要分类
 - **WHEN** 开发者新增 `scripts/` 或 `tools/analysis/` 下的 Python 或 shell 入口
@@ -564,7 +572,7 @@ Raymobtime s008 预处理 workflow 已退役，不属于当前源码支持面。
 #### Scenario: 重复 wrapper 不作为推荐入口
 - **WHEN** 包内 CLI 或 console script 已覆盖训练、评估、预处理或当前诊断工作流
 - **THEN** README 和工具文档 MUST 推荐包内 CLI 或 console script
-- **AND** 对应 `scripts/` 或 `tools/` fallback wrapper MUST 删除或被明确标注为短期薄 alias
+- **AND** 对应 `scripts/` 或 `tools/` fallback wrapper MUST 删除或被明确标注为短期研究/数据准备入口
 
 ### Requirement: 架构优化不得触碰本地数据和产物
 源码、配置和入口表面积优化 MUST 不移动、删除、压缩或重写 `dataset/`、`outputs/`、`logs/`、cache、checkpoint、下载压缩包或其它本地运行产物。相关检查 MUST 只验证源码控制范围内的文件和忽略规则。
@@ -624,7 +632,7 @@ Raymobtime s008 预处理 workflow 已退役，不属于当前源码支持面。
 #### Scenario: 新增 MMW 脚本入口需要 inventory
 - **WHEN** 开发者新增 `scripts/`、`scripts/mmw/` 或 `tools/analysis/` 下的 MMW Python 或 shell 入口
 - **THEN** 架构边界检查 MUST 要求该入口出现在项目表面积 inventory 或等价生命周期文档中
-- **AND** inventory MUST 说明该入口属于包内 CLI、薄 alias、研究诊断脚本、数据准备脚本或 shell orchestration 中的哪一类
+- **AND** inventory MUST 说明该入口属于 package CLI、研究诊断脚本、数据准备脚本或 shell orchestration 中的哪一类
 - **AND** 对应测试 allowlist MUST 与 inventory 保持一致
 
 #### Scenario: 未登记入口导致表面积检查失败
@@ -637,7 +645,7 @@ Raymobtime s008 预处理 workflow 已退役，不属于当前源码支持面。
 - **WHEN** 多个 shell orchestration 覆盖同一 MMW quick validation 工作流
 - **THEN** inventory MUST 标记推荐入口和补充 profile 的关系
 - **AND** README 或 docs MUST 不把重复 shell wrapper 描述为唯一 canonical 入口
-- **AND** 若已有包内 CLI 覆盖同一工作流，重复 shell wrapper MUST 标记为短期薄 alias 或研究脚本
+- **AND** 若已有包内 CLI 覆盖同一工作流，重复 shell wrapper MUST 标记为短期研究脚本或删除
 
 ### Requirement: HiST-Beam LOSO executor 退役边界
 HiST-Beam/Hist 专用 LOSO executor 已从当前支持面退役。项目 MUST 不再把 `hist_beam_loso_execution.py`、`kd-sensing-hist-beam-loso` 或 Hist 专用 run plan 描述为当前热点、当前推荐入口或待拆分 facade；通用 LOSO/few-shot split helper 如保留，只能作为 supporting 能力并由新的 current workflow 显式消费。
@@ -1054,29 +1062,29 @@ JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer
 
 #### Scenario: 论文复现 workflow 有边界
 - **WHEN** 开发者新增包含官方协议、多阶段训练、特殊 metrics 或报告产物的 workflow baseline
-- **THEN** 代码 MUST 位于 `src/kd_sensing/baselines/<family>/`、包内 CLI 或明确生命周期的薄 alias
+- **THEN** 代码 MUST 位于 `src/kd_sensing/baselines/<family>/`、包内 CLI 或 package console script
 - **AND** 文档 MUST 标记其不是普通 `modular_sequence` baseline，并说明输出只写入 ignored runtime artifact root
 
 ### Requirement: 新模型不得扩大入口表面
-新增模型架构能力 MUST 不新增 root-level 旧脚本、兼容聚合层、退役研究线实体配置或绕过 `src/kd_sensing` 包结构的运行方式。若需要新增 CLI，MUST 是包内 console script 或 lifecycle 登记的薄 alias，并同步 pyproject、README/docs、inventory 和架构边界测试。
+新增模型架构能力 MUST 不新增 root-level 旧脚本、兼容聚合层、退役研究线实体配置或绕过 `src/kd_sensing` 包结构的运行方式。若需要新增 CLI，MUST 是package console script 或包内 CLI，并同步 pyproject、README/docs、inventory 和架构边界测试。
 
 #### Scenario: 新模型需要命令入口
 - **WHEN** whole-model exception 或 workflow baseline 需要新的用户命令
-- **THEN** 入口 MUST 通过包内 CLI 或登记的薄 alias 暴露
+- **THEN** 入口 MUST 通过 package console script 或包内 CLI 暴露
 - **AND** 系统 MUST 不新增仓库根长期训练脚本或未登记脚本入口
 
 ### Requirement: CLI 与实现模块职责分离
-项目 SHALL 保持 CLI/脚本入口与真实 workflow 实现的职责分离。Package CLI 和 thin alias MUST 只承担参数解析、配置覆盖、轻量 IO、调用包内实现和 user-facing exit code；训练、评估、benchmark、dataset preparation 或诊断主逻辑 MUST 位于对应职责模块。
+项目 SHALL 保持 CLI/脚本入口与真实 workflow 实现的职责分离。Package CLI、保留的研究诊断脚本、数据准备脚本和 shell orchestration MUST 只承担参数解析、配置覆盖、轻量 IO、调用包内实现和 user-facing exit code；训练、评估、benchmark、dataset preparation 或诊断主逻辑 MUST 位于对应职责模块。
 
 #### Scenario: package CLI 调用 owner module
 - **WHEN** 新增或修改 package console script
 - **THEN** CLI 文件 MUST 调用 `baselines/`、`diagnostics/`、`engine/`、`data/` 或其它对应 owner module 中的实现
 - **AND** CLI 文件 MUST 不复制通用训练循环、评估循环、模型 forward 分支或 dataset parsing 主逻辑
 
-#### Scenario: scripts thin alias 不恢复旧入口
-- **WHEN** 新增或保留 `scripts/` 下的 thin alias
-- **THEN** 脚本 MUST 委托 package CLI 或包内 owner module
-- **AND** 脚本 MUST 不恢复 retired route、旧兼容聚合层或仓库根旧式入口
+#### Scenario: scripts 不恢复 Python thin alias
+- **WHEN** 新增或保留 `scripts/` 下的 Python thin alias
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 对应入口 MUST 改为 package console script、包内 CLI 或直接移除
 
 ### Requirement: 入口输出边界显式
 每个长期保留 CLI 或脚本入口 SHALL 有明确输出边界。入口 MUST 将训练、诊断、cache、checkpoint 和报告输出限定在 ignored 本地产物目录或显式用户指定目录，不得写入源码目录。

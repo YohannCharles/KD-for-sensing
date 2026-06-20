@@ -43,16 +43,16 @@
 - **AND** 模型输出 MUST 能被 `adapt_model_output` 消费
 
 ### Requirement: Workflow baseline 边界
-论文复现、官方协议包装或多阶段训练流程 MUST 放在 `src/kd_sensing/baselines/<family>/`、包内 CLI 或当前 allowlist 中的薄脚本入口。Workflow baseline MUST 明确标记与通用可训练 baseline 的区别，并 MUST 复用现有数据/metric/产物边界；不得复制长期通用训练循环或恢复退役入口。
+论文复现、官方协议包装或多阶段训练流程 MUST 放在 `src/kd_sensing/baselines/<family>/`、包内 CLI 或 package console script 中。Workflow baseline MUST 明确标记与通用可训练 baseline 的区别，并 MUST 复用现有数据/metric/产物边界；不得复制长期通用训练循环或恢复退役入口。
 
 #### Scenario: 论文复现 baseline 使用 workflow 路径
 - **WHEN** baseline 包含官方源码审计、多阶段训练、feature cache、特殊 metric 或 Table 风格报告
-- **THEN** 实现 MUST 使用 `kd_sensing.baselines.<family>` workflow、包内 CLI 或当前 allowlist 中的薄脚本入口
+- **THEN** 实现 MUST 使用 `kd_sensing.baselines.<family>` workflow、包内 CLI 或 package console script
 - **AND** 文档和 metadata MUST 标记其为 paper/workflow baseline，而不是普通 `modular_sequence` baseline
 
 #### Scenario: workflow baseline 不恢复旧入口
 - **WHEN** 新增 workflow baseline 需要命令入口
-- **THEN** 入口 MUST 是包内 CLI 或已登记生命周期的薄 alias
+- **THEN** 入口 MUST 是包内 CLI 或 package console script
 - **AND** 系统 MUST 不新增 root-level 旧式训练脚本、兼容聚合层或退役研究线入口
 
 ### Requirement: 模型训练策略 metadata
@@ -199,4 +199,3 @@ Geometry-prior baseline MUST 写出可审计训练策略 metadata，覆盖 geome
 - **WHEN** 架构边界测试读取 `docs/maintainer_context_index.yaml` 的 model registration allowlist
 - **THEN** allowlist MUST 只包含 current `MODELS` 注册名
 - **AND** removed guard 名称 MUST 被单独记录或通过测试断言其不可构建
-

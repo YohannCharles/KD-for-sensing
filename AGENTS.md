@@ -29,16 +29,17 @@ conda run -n kd_mm_beam <command>
 常用入口：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --help
-conda run -n kd_mm_beam python scripts/evaluate.py --help
-conda run -n kd_mm_beam python scripts/preprocess.py --help
-conda run -n kd_mm_beam kd-sensing-export-viewer-manifest --help
+conda run -n kd_mm_beam kd-sensing-train --help
+conda run -n kd_mm_beam kd-sensing-evaluate --help
+conda run -n kd_mm_beam kd-sensing-preprocess --help
+conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
+conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
 ```
 
 ## 系统配置与启动项安全
 
 - 禁止修改、重写或把训练命令写入容器启动/认证配置文件，例如 `/root/.container_env`、`/etc/profile`、`/etc/environment`、SSH 配置、系统账号密码配置等；除非用户明确点名要求修改具体文件，并且先说明风险、备份原文件、展示拟修改内容。
-- `/root/.container_env` 只能保留容器平台写入的运行状态、用户名、密码、IP、网关等字段；严禁把 `cd ...`、`CUDA_VISIBLE_DEVICES=...`、`python scripts/train.py ...`、`nohup ...`、`tmux ...` 等命令写入 `USERNAME`、`PASSWD` 或其他凭证字段。
+- `/root/.container_env` 只能保留容器平台写入的运行状态、用户名、密码、IP、网关等字段；严禁把 `cd ...`、`CUDA_VISIBLE_DEVICES=...`、`kd-sensing-train ...`、`nohup ...`、`tmux ...` 等命令写入 `USERNAME`、`PASSWD` 或其他凭证字段。
 - 需要长时间运行训练时，优先在当前 shell 中使用 `conda run -n kd_mm_beam ...`、`tmux`、`nohup`、项目脚本或平台提供的任务系统；不要通过污染系统凭证文件实现“开机自启”。
 - 如确实需要配置自启动，必须先征得用户明确确认，并使用专门的启动机制或进程管理工具；不要自行猜测容器平台的内部配置文件用途。
 

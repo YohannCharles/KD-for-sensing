@@ -127,9 +127,9 @@ candidates:
 command_manifest:
   train:
     - variant_id: patch8_stage1_gps_query
-      command: conda run -n kd_mm_beam python scripts/train.py --config configs/pretraining/jepa_visual_sweep_patch8_smoke.yaml
+      command: conda run -n kd_mm_beam kd-sensing-train --config configs/pretraining/jepa_visual_sweep_patch8_smoke.yaml
     - variant_id: gps_query_k_tokens_core
-      command: conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_k_token_pooler_smoke.yaml
+      command: conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_k_token_pooler_smoke.yaml
   evaluate:
     - variant_id: patch16_mean_baseline
-      command: conda run -n kd_mm_beam python scripts/evaluate.py --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml
+      command: conda run -n kd_mm_beam kd-sensing-evaluate --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml

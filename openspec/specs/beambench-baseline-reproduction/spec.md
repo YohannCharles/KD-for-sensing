@@ -21,10 +21,10 @@
 - **AND** 系统 MUST NOT 把无法运行的官方 baseline 标记为已复现
 
 ### Requirement: BeamBench 数据接口检查
-系统 MUST 提供 `scripts/check_dataset.py` 或等价薄入口，用于检查 BeamBench/DeepSense6G 数据目录和 CSV 字段。该检查 MUST 不修改、不移动、不删除真实数据文件。
+系统 MUST 提供 `kd_sensing.cli.beambench_check_dataset` 或等价包内 CLI，用于检查 BeamBench/DeepSense6G 数据目录和 CSV 字段。该检查 MUST 不修改、不移动、不删除真实数据文件。
 
 #### Scenario: CSV 存在性与字段检查
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/check_dataset.py --data-root <path> --csv <file>`
+- **WHEN** 用户运行 `conda run -n kd_mm_beam python -m kd_sensing.cli.beambench_check_dataset --data-root <path> --csv <file>`
 - **THEN** 系统 MUST 验证 CSV 文件存在且可读取
 - **AND** 系统 MUST 报告 camera、LiDAR、radar、GPS、label、scene id、sample id 和 sequence id 相关字段是否存在或可由配置解析
 

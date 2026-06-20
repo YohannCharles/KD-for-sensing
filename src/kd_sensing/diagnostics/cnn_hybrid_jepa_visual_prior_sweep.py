@@ -39,12 +39,47 @@ REQUIRED_FAMILIES = {
     "overlap_stage1",
     "cnn_supervised_tokens",
     "cnn_jepa_tokens",
+    "tinyvit_jepa_encoders",
     "hybrid_tokenizers",
     "pooler_core_ablation",
     "teacher_guided_stabilization",
     "compute_controls",
     "seed_confirm",
 }
+
+SCREENING_VARIANT_IDS = (
+    "gps_only_control",
+    "patch16_mean_baseline",
+    "patch16_gps_query_pool",
+    "patch14_stage1_gps_query",
+    "patch16_resolution_stage1_gps_query",
+    "patch14_resolution_stage1_gps_query",
+    "patch12_resolution_stage1_gps_query",
+    "overlap_k16_s8_resolution_stage1",
+    "overlap_k12_s6_resolution_stage1",
+    "resnet18_layer4_scratch_full_ft_supervised",
+    "resnet18_layer4_imagenet_full_ft_supervised",
+    "resnet18_layer3_layer4_scratch_full_ft_supervised",
+    "resnet34_layer4_imagenet_full_ft_supervised",
+    "resnet18_layer4_scratch_jepa_stage1",
+    "resnet18_layer4_imagenet_jepa_stage1",
+    "resnet18_layer3_layer4_scratch_jepa_stage1",
+    "resnet34_layer4_imagenet_jepa_stage1",
+    "tinyvit_5m_scratch_jepa_stage1",
+    "tinyvit_5m_22k_jepa_stage1",
+    "tinyvit_11m_scratch_jepa_stage1",
+    "tinyvit_11m_22k_jepa_stage1",
+    "conv_stem_s16_stage1",
+    "conv_stem_s8_stage1",
+    "local_patch14_stage1",
+    "cvt_patch14_stage1",
+    "pooler_mean",
+    "pooler_gps_query_k2_frame",
+    "pooler_gps_query_k2_tokens",
+    "pooler_token_aware_core",
+    "matched_trainable_params",
+    "matched_token_count",
+)
 
 STRICT_COMPARABILITY_FIELDS = (
     "split",
@@ -81,6 +116,7 @@ JOB_FIELDS = (
     "variant_id",
     "run_id",
     "family",
+    "checkpoint_selection",
     "stage",
     "depends_on",
     "command",
@@ -195,17 +231,11 @@ def generate_runtime_bundle(
     skip_unavailable: bool = False,
     project_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    if mode != "full":
-        raise FullSweepManifestError(f"Only full mode is supported for {SWEEP_NAME}, got {mode!r}.")
     root = Path(project_root or Path.cwd()).resolve()
     manifest = load_full_sweep_manifest(manifest_path)
     defaults = _mode_defaults(manifest, mode)
     selected_families = {str(item) for item in families or [] if str(item)}
-    base_candidates = [
-        dict(candidate)
-        for candidate in manifest["base_candidates"]
-        if not selected_families or str(candidate["family"]) in selected_families
-    ]
+    base_candidates = _select_base_candidates(manifest["base_candidates"], mode=mode, families=selected_families)
     if not base_candidates:
         raise FullSweepManifestError("Full sweep candidate selection is empty.")
     out_root = Path(output_root or manifest["output_root"])
@@ -225,21 +255,25 @@ def generate_runtime_bundle(
         project_root=root,
         config_paths=config_paths,
         skip_unavailable=skip_unavailable,
+        eval_checkpoint_selections=defaults.get("eval_checkpoint_selections"),
     )
     job_paths = _write_job_tables(jobs, out_root)
-    run_script = _write_run_script(out_root)
+    run_script = _write_run_script(out_root, mode=mode)
     summary_script = _write_summary_script(out_root)
     run_note = _write_run_note(
         out_root,
         manifest_path=Path(manifest_path),
         expanded_count=len(expanded),
         job_count=len(jobs["all"]),
+        mode=mode,
     )
     return {
         "name": SWEEP_NAME,
+        "mode": mode,
         "output_root": out_root.as_posix(),
         "manifest": manifest,
         "expanded_candidates": expanded,
+        "base_candidate_count": len(base_candidates),
         "manifest_expanded_json": manifest_expanded_json.as_posix(),
         "manifest_expanded_csv": manifest_expanded_csv.as_posix(),
         "job_paths": {key: value.as_posix() for key, value in job_paths.items()},
@@ -248,6 +282,27 @@ def generate_runtime_bundle(
         "run_note": run_note.as_posix(),
         "job_count": len(jobs["all"]),
     }
+
+
+def _select_base_candidates(
+    base_candidates: Iterable[Mapping[str, Any]],
+    *,
+    mode: str,
+    families: set[str],
+) -> list[dict[str, Any]]:
+    rows = [dict(candidate) for candidate in base_candidates]
+    if mode == "screening":
+        screening_ids = set(SCREENING_VARIANT_IDS)
+        rows = [row for row in rows if str(row["variant_id"]) in screening_ids]
+        found = {str(row["variant_id"]) for row in rows}
+        missing = sorted(screening_ids - found)
+        if missing:
+            raise FullSweepManifestError(f"Screening mode is missing required variants: {missing}.")
+    elif mode != "full":
+        raise FullSweepManifestError(f"Unsupported mode for {SWEEP_NAME}: {mode!r}.")
+    if families:
+        rows = [row for row in rows if str(row["family"]) in families]
+    return rows
 
 
 def expand_candidate_runs(
@@ -273,10 +328,10 @@ def expand_candidate_runs(
                 record["seed"] = int(seed)
                 record["checkpoint_selection"] = str(checkpoint_selection)
                 record["strict_comparability"] = strict
-                record["metrics_path"] = (out_root / "metrics" / run_id / "metrics.json").as_posix()
-                record["checkpoint_path"] = (out_root / "runs" / run_id / "checkpoints" / "best.pth").as_posix()
                 for field, value in strict.items():
                     record[field] = value
+                record["metrics_path"] = _row_metrics_path(record)
+                record["checkpoint_path"] = _checkpoint_for_selection(record)
                 records.append(record)
     return records
 
@@ -288,8 +343,10 @@ def build_job_manifest(
     project_root: str | Path,
     config_paths: Mapping[str, Mapping[str, str]],
     skip_unavailable: bool = False,
+    eval_checkpoint_selections: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     out_root = Path(output_root)
+    eval_selection_filter = {str(item) for item in eval_checkpoint_selections or [] if str(item)}
     jobs: dict[str, list[dict[str, str]]] = {
         "stage1": [],
         "downstream": [],
@@ -343,6 +400,8 @@ def build_job_manifest(
     for record in expanded:
         run_id = str(record["run_id"])
         checkpoint_selection = str(record["checkpoint_selection"])
+        if eval_selection_filter and checkpoint_selection not in eval_selection_filter:
+            continue
         primary_run_id = run_id.replace(f"__{checkpoint_selection}", "__primary")
         dependency = primary_terminal_jobs.get(primary_run_id)
         depends_on = [dependency] if dependency else []
@@ -490,6 +549,7 @@ def _expand_base_candidates(manifest: Mapping[str, Any]) -> list[dict[str, Any]]
     candidates.extend(_overlap_candidates(_mapping(families["overlap_stage1"]), comparison, output_root))
     candidates.extend(_cnn_supervised_candidates(_mapping(families["cnn_supervised_tokens"]), comparison, output_root))
     candidates.extend(_cnn_jepa_candidates(_mapping(families["cnn_jepa_tokens"]), comparison, output_root))
+    candidates.extend(_tinyvit_jepa_candidates(_mapping(families["tinyvit_jepa_encoders"]), comparison, output_root))
     candidates.extend(_hybrid_candidates(_mapping(families["hybrid_tokenizers"]), comparison, output_root))
     candidates.extend(_pooler_candidates(_mapping(families["pooler_core_ablation"]), comparison, output_root))
     candidates.extend(_teacher_guided_candidates(_mapping(families["teacher_guided_stabilization"]), comparison, output_root))
@@ -654,6 +714,35 @@ def _cnn_jepa_candidates(spec: Mapping[str, Any], comparison: Mapping[str, Any],
                         freeze_policy="full_ft",
                     )
                 )
+    return rows
+
+
+def _tinyvit_jepa_candidates(spec: Mapping[str, Any], comparison: Mapping[str, Any], output_root: Path) -> list[dict[str, Any]]:
+    rows = []
+    variants = _string_list(spec.get("variants", ["5m", "11m"]))
+    pretrained_options = _string_list(spec.get("pretrained", ["scratch", "22k"]))
+    for variant in variants:
+        for pretrained_source in pretrained_options:
+            visual = _tinyvit_visual(variant, pretrained_source)
+            variant_id = f"tinyvit_{variant}_{pretrained_source}_jepa_stage1"
+            rows.append(
+                _base_candidate(
+                    variant_id=variant_id,
+                    family="tinyvit_jepa_encoders",
+                    stage_plan="supervised_only",
+                    checkpoint_policy="supervised_only_anchor",
+                    availability="available",
+                    visual_encoder=visual,
+                    pooler=_gps_query_pooler(2),
+                    token_metadata=_token_metadata(visual),
+                    params_metadata=_params_metadata(visual, _gps_query_pooler(2), freeze_policy="full_ft"),
+                    comparison=comparison,
+                    output_root=output_root,
+                    pretrained_source=pretrained_source,
+                    freeze_policy="full_ft",
+                    local_prior_mechanism="tinyvit_global_frame",
+                )
+            )
     return rows
 
 
@@ -895,8 +984,10 @@ def _pretraining_config(record: Mapping[str, Any], path: Path, project_root: Pat
             }
         },
         "output": {
-            "dir": str(Path(record["output_root"]) / "runs"),
-            "run_name": str(record["run_id"]),
+            "dir": str(_run_stage_parent(record)),
+            "run_name": "stage1",
+            "group_by_scene": False,
+            "overwrite": True,
             "tensorboard": {"enabled": False},
             "progress": {"enabled": False},
         },
@@ -910,8 +1001,10 @@ def _downstream_config(record: Mapping[str, Any], path: Path, project_root: Path
         "_base_": _rel_config_path(path, project_root / base),
         "experiment": {"name": str(record["run_id"]), "seed": int(record["seed"])},
         "output": {
-            "dir": str(Path(record["output_root"]) / "runs"),
-            "run_name": str(record["run_id"]),
+            "dir": str(_run_stage_parent(record)),
+            "run_name": "downstream",
+            "group_by_scene": False,
+            "overwrite": True,
             "tensorboard": {"enabled": False},
             "progress": {"enabled": False},
         },
@@ -961,21 +1054,21 @@ def _teacher_config(record: Mapping[str, Any], path: Path, project_root: Path) -
 
 
 def _eval_config(record: Mapping[str, Any], path: Path, project_root: Path) -> dict[str, Any]:
-    return {
-        "_base_": _rel_config_path(path, project_root / _base_downstream_config(record)),
-        "experiment": {"name": f"{record['run_id']}__eval", "seed": int(record["seed"])},
-        "evaluation": {
-            "weights": _checkpoint_for_selection(record),
-            "checkpoint_selection": str(record["checkpoint_selection"]),
-        },
-        "output": {
-            "dir": str(Path(record["output_root"]) / "eval"),
-            "run_name": str(record["run_id"]),
-            "tensorboard": {"enabled": False},
-            "progress": {"enabled": False},
-        },
-        "sweep": _config_sweep_metadata(record),
+    config = _downstream_config(record, path, project_root)
+    config["experiment"] = {"name": f"{record['run_id']}__eval", "seed": int(record["seed"])}
+    config["evaluation"] = {
+        "weights": _checkpoint_for_selection(record),
+        "checkpoint_selection": str(record["checkpoint_selection"]),
     }
+    config["output"] = {
+        "dir": str(Path(record["output_root"]) / "eval"),
+        "run_name": str(record["run_id"]),
+        "group_by_scene": False,
+        "tensorboard": {"enabled": False},
+        "progress": {"enabled": False},
+    }
+    config["sweep"] = _config_sweep_metadata(record)
+    return config
 
 
 def _stage1_job(record: Mapping[str, Any], output_root: Path, config_paths: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
@@ -986,8 +1079,9 @@ def _stage1_job(record: Mapping[str, Any], output_root: Path, config_paths: Mapp
         stage="stage1",
         output_root=output_root,
         config_path=config,
-        command=f"{CONDA_PREFIX}python scripts/train.py --config {config}",
-        metrics_path=str(output_root / "metrics" / run_id / "stage1_metrics.json"),
+        command=f"{CONDA_PREFIX}kd-sensing-train --config {config}",
+        output_dir=str(_training_run_dir(record, "stage1")),
+        metrics_path=str(_training_run_dir(record, "stage1") / "metrics.json"),
     )
 
 
@@ -1005,8 +1099,9 @@ def _downstream_job(
         stage="downstream",
         output_root=output_root,
         config_path=config,
-        command=f"{CONDA_PREFIX}python scripts/train.py --config {config}",
-        metrics_path=str(output_root / "metrics" / run_id / "downstream_metrics.json"),
+        command=f"{CONDA_PREFIX}kd-sensing-train --config {config}",
+        output_dir=str(_training_run_dir(record, "downstream")),
+        metrics_path=str(_training_run_dir(record, "downstream") / "metrics.json"),
         depends_on=depends_on,
     )
 
@@ -1020,7 +1115,7 @@ def _teacher_job(record: Mapping[str, Any], output_root: Path, config_paths: Map
         stage="teacher",
         output_root=output_root,
         config_path=config,
-        command=f"{CONDA_PREFIX}python scripts/train.py --config {config}",
+        command=f"{CONDA_PREFIX}kd-sensing-train --config {config}",
         output_dir=str(output_root / "teachers" / teacher_variant / f"seed{int(record['seed'])}"),
         metrics_path=str(output_root / "teachers" / teacher_variant / f"seed{int(record['seed'])}" / "metrics.json"),
     )
@@ -1040,8 +1135,9 @@ def _teacher_guided_student_job(
         stage="teacher_guided",
         output_root=output_root,
         config_path=config,
-        command=f"{CONDA_PREFIX}python scripts/train.py --config {config}",
-        metrics_path=str(output_root / "metrics" / run_id / "teacher_guided_metrics.json"),
+        command=f"{CONDA_PREFIX}kd-sensing-train --config {config}",
+        output_dir=str(_training_run_dir(record, "downstream")),
+        metrics_path=str(_training_run_dir(record, "downstream") / "metrics.json"),
         depends_on=depends_on,
     )
 
@@ -1060,8 +1156,12 @@ def _eval_job(
         stage="reeval",
         output_root=output_root,
         config_path=config,
-        command=f"{CONDA_PREFIX}python scripts/evaluate.py --config {config} --weights {_checkpoint_for_selection(record)}",
-        metrics_path=str(record["metrics_path"]),
+        command=(
+            f"{CONDA_PREFIX}kd-sensing-evaluate --config {config} "
+            f"--weights {_checkpoint_for_selection(record)} --output-dir {_eval_output_dir(record)}"
+        ),
+        output_dir=str(_eval_output_dir(record)),
+        metrics_path=str(_eval_metrics_path(record)),
         depends_on=depends_on,
     )
 
@@ -1109,6 +1209,7 @@ def _job_row(
         "variant_id": str(record["variant_id"]),
         "run_id": run_id,
         "family": str(record["family"]),
+        "checkpoint_selection": str(record["checkpoint_selection"]),
         "stage": stage,
         "depends_on": ";".join(depends_on or []),
         "command": command,
@@ -1506,12 +1607,12 @@ def _write_job_tables(jobs: Mapping[str, list[dict[str, str]]], output_root: Pat
     return paths
 
 
-def _write_run_script(output_root: Path) -> Path:
+def _write_run_script(output_root: Path, *, mode: str) -> Path:
     path = output_root / "run_full_sweep.sh"
     text = f"""#!/usr/bin/env bash
 set -euo pipefail
 OUTPUT_ROOT="${{OUTPUT_ROOT:-{output_root.as_posix()}}}"
-conda run -n kd_mm_beam python -m kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep --mode full --output-root "$OUTPUT_ROOT" --run-jobs "$@"
+conda run -n kd_mm_beam python -m kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep --mode {mode} --output-root "$OUTPUT_ROOT" --run-jobs "$@"
 """
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -1530,7 +1631,7 @@ conda run -n kd_mm_beam python -m kd_sensing.diagnostics.cnn_hybrid_jepa_visual_
     return path
 
 
-def _write_run_note(output_root: Path, *, manifest_path: Path, expanded_count: int, job_count: int) -> Path:
+def _write_run_note(output_root: Path, *, manifest_path: Path, expanded_count: int, job_count: int, mode: str) -> Path:
     path = output_root / "RUN_NOTE.md"
     path.write_text(
         "\n".join(
@@ -1538,6 +1639,7 @@ def _write_run_note(output_root: Path, *, manifest_path: Path, expanded_count: i
                 "# CNN/Hybrid JEPA Visual Prior Sweep Runtime Bundle",
                 "",
                 f"- Source manifest: `{manifest_path.as_posix()}`",
+                f"- Mode: `{mode}`",
                 f"- Expanded rows: `{expanded_count}`",
                 f"- Jobs: `{job_count}`",
                 "- Default GPUs: `0,1,2,3`",
@@ -1547,7 +1649,7 @@ def _write_run_note(output_root: Path, *, manifest_path: Path, expanded_count: i
                 "Dry-run command:",
                 "",
                 "```bash",
-                f"conda run -n kd_mm_beam python -m kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep --mode full --dry-run --output-root {output_root.as_posix()}",
+                f"conda run -n kd_mm_beam python -m kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep --mode {mode} --dry-run --output-root {output_root.as_posix()}",
                 "```",
                 "",
                 "Actual training is intentionally an explicit action through `run_full_sweep.sh` or `--run-jobs`.",
@@ -1619,6 +1721,7 @@ def _status_entry(
         "variant_id": job.get("variant_id", ""),
         "run_id": job.get("run_id", ""),
         "family": job.get("family", ""),
+        "checkpoint_selection": job.get("checkpoint_selection", ""),
         "stage": job.get("stage", ""),
         "status": status,
         "reason": reason or job.get("skip_reason", ""),
@@ -1797,10 +1900,16 @@ def _assert_cleanable_output_root(path: str | Path) -> None:
 
 
 def _mode_defaults(manifest: Mapping[str, Any], mode: str) -> dict[str, Any]:
-    defaults = _mapping(_mapping(manifest.get("mode_defaults", {})).get(mode, {}))
+    mode_defaults = _mapping(manifest.get("mode_defaults", {}))
+    if mode not in mode_defaults and mode != "full":
+        raise FullSweepManifestError(f"Unsupported mode for {SWEEP_NAME}: {mode!r}.")
+    defaults = _mapping(mode_defaults.get(mode, {}))
     return {
         "seeds": [int(seed) for seed in defaults.get("seeds", [17, 23, 42])],
         "checkpoint_selections": [str(item) for item in defaults.get("checkpoint_selections", ["primary", "best_top1"])],
+        "eval_checkpoint_selections": [
+            str(item) for item in defaults.get("eval_checkpoint_selections", defaults.get("checkpoint_selections", []))
+        ],
         "gpu_list": [str(item) for item in defaults.get("gpu_list", [0, 1, 2, 3])],
         "max_parallel": int(defaults.get("max_parallel", 8)),
     }
@@ -1856,6 +1965,10 @@ def _token_metadata(visual: Mapping[str, Any]) -> dict[str, Any]:
         grid = [14, 14]
         count = 14 * 14 + 7 * 7
         stride = [16, 16]
+    elif visual_type == "tinyvit_frame":
+        grid = [1, 1]
+        count = 1
+        stride = [224, 224]
     elif visual_type == "conv_stem":
         effective = int(visual.get("effective_stride", _stem_stride(visual)))
         grid = _conv_grid(image_size[0], image_size[1], 1, effective)
@@ -1902,6 +2015,11 @@ def _params_metadata(
             image_encoder_params = 14_050_000
             visual_context_encoder_params = 14_020_000
             total = 14_110_000
+    elif visual_type == "tinyvit_frame":
+        encoder_type = str(visual.get("encoder_type", "tinyvit_5m_scratch_rgb"))
+        total = 5_500_000 if "5m" in encoder_type else 11_000_000
+        image_encoder_params = total
+        visual_context_encoder_params = total
     elif visual_type == "conv_stem":
         total = 450_000 + token_count * 256
     elif visual_type in {"local_token_mixing", "cvt"}:
@@ -1958,6 +2076,28 @@ def _cnn_visual(backbone: str, token_source: str, pretrained_source: str, freeze
         "pretrained": pretrained,
         "freeze_backbone": freeze_backbone,
         "max_tokens": 256,
+        "checkpoint_policy": "supervised_only_anchor",
+    }
+
+
+def _tinyvit_visual(variant: str, pretrained_source: str) -> dict[str, Any]:
+    normalized_variant = str(variant).strip().lower()
+    normalized_pretrained = str(pretrained_source).strip().lower()
+    if normalized_variant not in {"5m", "11m"}:
+        raise FullSweepManifestError(f"Unknown TinyViT variant {variant!r}.")
+    if normalized_pretrained not in {"scratch", "22k"}:
+        raise FullSweepManifestError(f"Unknown TinyViT pretrained source {pretrained_source!r}.")
+    encoder_type = f"tinyvit_{normalized_variant}_{'22k' if normalized_pretrained == '22k' else 'scratch'}_rgb"
+    return {
+        "type": "tinyvit_frame",
+        "encoder_type": encoder_type,
+        "variant": normalized_variant,
+        "pretrained": normalized_pretrained == "22k",
+        "pretrained_source": "imagenet22k_distill" if normalized_pretrained == "22k" else "scratch",
+        "freeze_backbone": False,
+        "allow_download": True,
+        "max_tokens": 1,
+        "token_count": 1,
         "checkpoint_policy": "supervised_only_anchor",
     }
 
@@ -2085,6 +2225,37 @@ def _config_sweep_metadata(record: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _primary_run_id(record: Mapping[str, Any]) -> str:
+    run_id = str(record["run_id"])
+    selection = str(record.get("checkpoint_selection", "primary"))
+    suffix = f"__{selection}"
+    if selection and run_id.endswith(suffix):
+        return f"{run_id[: -len(suffix)]}__primary"
+    return run_id
+
+
+def _run_stage_parent(record: Mapping[str, Any], *, run_id: str | None = None) -> Path:
+    return Path(record["output_root"]) / "runs" / str(run_id or record["run_id"])
+
+
+def _training_run_dir(record: Mapping[str, Any], stage: str, *, run_id: str | None = None) -> Path:
+    return _run_stage_parent(record, run_id=run_id) / stage
+
+
+def _eval_output_dir(record: Mapping[str, Any]) -> Path:
+    return Path(record["output_root"]) / "eval" / str(record["run_id"])
+
+
+def _eval_metrics_path(record: Mapping[str, Any]) -> str:
+    return (_eval_output_dir(record) / "metrics.json").as_posix()
+
+
+def _row_metrics_path(record: Mapping[str, Any]) -> str:
+    if str(record.get("checkpoint_selection", "primary")) == "primary":
+        return (_training_run_dir(record, "downstream") / "metrics.json").as_posix()
+    return _eval_metrics_path(record)
+
+
 def _base_downstream_config(record: Mapping[str, Any]) -> Path:
     base_config = str(record.get("base_config", ""))
     if base_config:
@@ -2098,16 +2269,14 @@ def _base_downstream_config(record: Mapping[str, Any]) -> Path:
 
 def _stage1_checkpoint_path(record: Mapping[str, Any]) -> str:
     if str(record.get("stage_plan")) == "stage1_then_downstream":
-        primary_run_id = str(record["run_id"]).replace(f"__{record['checkpoint_selection']}", "__primary")
-        return str(Path(record["output_root"]) / "runs" / primary_run_id / "stage1" / "checkpoints" / "best.pth")
+        return str(_training_run_dir(record, "stage1", run_id=_primary_run_id(record)) / "checkpoints" / "best.pth")
     return ""
 
 
 def _checkpoint_for_selection(record: Mapping[str, Any]) -> str:
     selection = str(record.get("checkpoint_selection", "primary"))
-    primary_run_id = str(record["run_id"]).replace(f"__{selection}", "__primary")
     name = "best_top1.pth" if selection == "best_top1" else "best.pth" if selection == "primary" else "last.pth"
-    return str(Path(record["output_root"]) / "runs" / primary_run_id / "downstream" / "checkpoints" / name)
+    return str(_training_run_dir(record, "downstream", run_id=_primary_run_id(record)) / "checkpoints" / name)
 
 
 def _visual_type(record: Mapping[str, Any]) -> str:
@@ -2253,7 +2422,7 @@ def _num_tag(value: float) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate and run the CNN/hybrid JEPA visual-prior full sweep.")
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST.as_posix())
-    parser.add_argument("--mode", default="full", choices=["full"])
+    parser.add_argument("--mode", default="full", choices=["full", "screening"])
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--families", nargs="*", default=None)
     parser.add_argument("--force", action="store_true")

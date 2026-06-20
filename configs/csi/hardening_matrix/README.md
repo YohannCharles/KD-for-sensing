@@ -1,6 +1,7 @@
 # CSI Hardening Matrix
 
 Protocol status and claim provenance are tracked in `docs/experiment_protocols.md` and `docs/result_claims_registry.md`. The full matrix is `formal`; the debug matrix is `debug` and must pass clone/parity checks before any full-sweep interpretation.
+Formal A/B/C/D configs are lightweight overlays on `_base/csi_only.yaml`; inspect the resolved config from `kd-sensing-train` for the full merged values.
 
 Use `scripts/run_csi_hardening_matrix.sh` for staged execution and logging. Run commands through the project conda environment, for example:
 

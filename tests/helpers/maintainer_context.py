@@ -559,7 +559,7 @@ def _validate_maintainer_context_index(root: Path, data: dict[str, Any]) -> None
                 root,
                 entry,
                 f"governance.entrypoints.{section}.{path}",
-                require_owner_module=lifecycle == "thin_cli_alias",
+                require_owner_module=False,
             )
         _index_unique(paths, f"governance.entrypoints.{section}.path")
 

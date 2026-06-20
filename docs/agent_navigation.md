@@ -69,7 +69,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 - config-only baseline：只改 YAML、canonical recipe、overlay 或 hyperparameter，优先复用 `modular_sequence`。
 - component baseline：新增或替换 `ENCODERS`、`PROJECTORS`、`REPRESENTATION_CORES` 或 `HEADS`，并通过 `model.primary` 配置选择。
 - whole-model exception：新增 `@MODELS.register(...)` 前必须在 active OpenSpec artifact 或 current spec 中说明原因，并补 registry build、synthetic forward、`adapt_model_output` 和 metadata tests。
-- workflow/paper reproduction：官方协议、多阶段训练、feature cache 或特殊 Table 报告走 `src/kd_sensing/baselines/<family>/`、包内 CLI 或已登记薄 alias，不复制通用训练循环。
+- workflow/paper reproduction：官方协议、多阶段训练、feature cache 或特殊 Table 报告走 `src/kd_sensing/baselines/<family>/`、包内 CLI 或 package console script，不复制通用训练循环。
 
 触碰 observability/reliability metadata 时，还要确认普通 baseline 可忽略新增 metadata，opt-in 模型才接收 reliability fields，并追加 difficulty/batch 或 observability-aware fusion focused tests。
 

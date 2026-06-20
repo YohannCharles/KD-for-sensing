@@ -364,9 +364,14 @@ def test_specialized_configs_use_primary_without_distillation(config_path: str):
         "configs/csi/hardening_matrix/A1_mild_pilot_estimation.yaml",
         "configs/csi/hardening_matrix/A2_destructive_degradation.yaml",
         "configs/csi/hardening_matrix/B3_antenna_calibration.yaml",
+        "configs/csi/hardening_matrix/B4_fixed_antenna_permutation.yaml",
         "configs/csi/hardening_matrix/B5_mild_hardening_combo.yaml",
+        "configs/csi/hardening_matrix/B6_medium_hardening_combo.yaml",
         "configs/csi/hardening_matrix/C1_view_gate_warmup.yaml",
         "configs/csi/hardening_matrix/C2_no_internal_gru.yaml",
+        "configs/csi/hardening_matrix/D1_mild_hardening_gate_warmup.yaml",
+        "configs/csi/hardening_matrix/D2_mild_hardening_no_internal_gru.yaml",
+        "configs/csi/hardening_matrix/D3_mild_hardening_gate_warmup_no_internal_gru.yaml",
         "configs/csi/hardening_matrix/D4_medium_hardening_gate_warmup_no_internal_gru.yaml",
         "configs/fusion/csi_hardening_matrix/E0_gps_only.yaml",
         "configs/fusion/csi_hardening_matrix/E1_gps_clean_csi_joint.yaml",
@@ -379,8 +384,19 @@ def test_csi_matrix_configs_use_primary_encoder(config_path: str):
     _assert_distillation_free_config(cfg)
 
     primary = cfg["model"]["primary"]
+    assert cfg["config_resolution"]["style"] == "base+overlay"
+    assert cfg["config_resolution"]["overlay_id"] == Path(config_path).stem
     if "csi" in primary.get("modalities", []):
         assert primary["encoders"]["csi"]["type"] == "pilot_dual_view_csi"
+
+    dataset = cfg["data"]["dataset"]
+    if Path(config_path).stem == "A2_destructive_degradation":
+        assert dataset["csi_degradation"]["enabled"] is True
+        assert "csi_hardening" not in dataset
+    if Path(config_path).stem.startswith("D"):
+        assert "csi_degradation" not in dataset
+    if Path(config_path).stem in {"E1_gps_clean_csi_joint", "E2_gps_slow_csi_joint", "E3_gps_slow_csi_prioritized_warmup"}:
+        assert primary["modalities"] == ["gps", "csi"]
 
 
 def test_modular_radar_configs_forward_contracts():

@@ -53,8 +53,8 @@ conda run -n kd_mm_beam python scripts/profile_training_io.py \
 先生成统一 split，再预热 LiDAR cache：
 
 ```bash
-conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/sequences_ra_gps_lidar.yaml
-conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/sequences_ra_gps_lidar.yaml
+conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/lidar_bev_cache.yaml
 ```
 
 训练和评估入口默认使用 `data.cache.policy: auto`：包含 LiDAR 的任务自动读取/写入 LiDAR BEV cache，
@@ -62,14 +62,14 @@ conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess
 cache 而不补写缺失文件时，使用 `read_only`：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
   -o data.cache.policy=read_only
 ```
 
 可用策略为 `off`、`read_only`、`auto`、`rebuild`，也可以按模态覆盖：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
   -o data.cache.policy=read_only \
   -o data.cache.lidar.policy=auto
 ```
@@ -125,7 +125,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_lig
 新配置也支持按 split 覆盖 worker 生命周期：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train.py --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml \
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml \
   -o data.dataloader.train_num_workers=3 \
   -o data.dataloader.test_num_workers=1 \
   -o data.dataloader.train_persistent_workers=true \

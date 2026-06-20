@@ -529,7 +529,7 @@ canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUS
 训练和评估入口 MUST 支持通过现有 dotted override 选择场景，不需要新增独立 CLI 参数。
 
 #### Scenario: 命令行覆盖到 Scenario 9
-- **WHEN** 用户运行 `python scripts/train.py --config <config> data.dataset.scene=9`
+- **WHEN** 用户运行 `kd-sensing-train --config <config> data.dataset.scene=9`
 - **THEN** 系统 MUST 使用 Scenario 9 的数据默认值和输出目录分组
 - **AND** 最终配置 MUST 记录覆盖后的场景
 
@@ -563,17 +563,17 @@ canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUS
 训练、评估和测试工作流 MUST 接受由配置加载器生成的虚拟 canonical fusion 配置。虚拟配置 MUST 在进入训练、评估、dry-run、override 合并、验证和 artifact 写出之前被解析为完整配置字典。
 
 #### Scenario: 训练入口使用虚拟 canonical 配置
-- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_lightweight.yaml`
+- **WHEN** 用户运行 `kd-sensing-train --config configs/fusion/gps_mmwave_lightweight.yaml`
 - **THEN** 系统 MUST 解析该 canonical path 并启动 fusion lightweight 训练流程
 - **AND** 训练流程 MUST 不要求 `configs/fusion/gps_mmwave_lightweight.yaml` 在磁盘上存在
 
 #### Scenario: 评估入口使用虚拟 canonical 配置
-- **WHEN** 用户运行 `python scripts/evaluate.py --config configs/fusion/gps_mmwave_lightweight.yaml --weights <path>`
+- **WHEN** 用户运行 `kd-sensing-evaluate --config configs/fusion/gps_mmwave_lightweight.yaml --weights <path>`
 - **THEN** 系统 MUST 解析该 canonical path 并构建对应 fusion primary 模型
 - **AND** 评估流程 MUST 只准备该配置启用的模态输入
 
 #### Scenario: dry-run 使用虚拟 canonical 配置
-- **WHEN** 用户运行 `python scripts/train.py --config configs/fusion/gps_mmwave_lightweight.yaml --dry-run`
+- **WHEN** 用户运行 `kd-sensing-train --config configs/fusion/gps_mmwave_lightweight.yaml --dry-run`
 - **THEN** 系统 MUST 先生成 canonical 配置，再应用 dry-run 覆盖
 - **AND** dry-run MUST 使用 synthetic dataset、单 epoch 和关闭 worker 的现有行为
 
@@ -1254,7 +1254,7 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 系统 MUST 不为其提供 virtual fallback
 
 ### Requirement: 入口收敛不得让研究脚本成为核心依赖
-保留的 `scripts/` 和 `tools/analysis/` 研究或支持脚本 MUST 不成为核心训练、评估、预处理或 manifest 导出 workflow 的必需依赖。仓库级 `tools/visualization/` viewer support 已退役，核心 workflow MUST 通过包内模块、console script 或明确保留的薄 alias 完成。
+保留的 `scripts/` 和 `tools/analysis/` 研究或支持脚本 MUST 不成为核心训练、评估、预处理或 manifest 导出 workflow 的必需依赖。仓库级 `tools/visualization/` viewer support 已退役，核心 workflow MUST 通过包内模块或 package console script 完成。
 
 #### Scenario: 训练入口不依赖研究脚本
 - **WHEN** 用户运行 `kd-sensing-train` 或 `python -m kd_sensing.cli.train`

@@ -38,7 +38,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.jepa_visual_analysis --help
 configs/          # 训练、评估和预处理配置；高级 fusion 优先由 canonical/overlay recipe 生成
 docs/             # 主线模型目录、协议表、结果账本、实验矩阵、扩展指南和性能调优说明
 openspec/specs/   # 当前需求和架构契约
-scripts/          # 保留的薄 alias、研究诊断和数据准备脚本
+scripts/          # 保留的研究诊断、数据准备和 shell orchestration 脚本
 src/kd_sensing/   # 包内 CLI、config、data、engine、models、diagnostics 等实现
 tests/            # 架构边界、配置加载、训练/诊断单元测试
 tools/analysis/   # 研究分析脚本
@@ -294,7 +294,7 @@ conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.p
 包含 image 或 LiDAR 的长跑通常先受 CPU image 解码、DataLoader wait、cache coverage 和 worker RSS 限制。长跑前建议使用 [docs/training_throughput.md](docs/training_throughput.md) 中的 profile 与并行推荐流程；推荐器会优先给出 `num_workers`、`batch_size`、并行度、`persistent_workers` 和 `output.progress.enabled=false` 的保守覆盖。启用 RGB/ImageNet 派生缓存时使用 `data.cache.image.policy=auto|read_only|rebuild|off`，可预热：
 
 ```bash
-conda run -n kd_mm_beam python scripts/preprocess.py \
+conda run -n kd_mm_beam kd-sensing-preprocess \
   --config configs/preprocess/mmw_image_derived_cache.yaml
 ```
 
@@ -320,7 +320,7 @@ conda run -n kd_mm_beam python scripts/preprocess.py \
 
 ## 破坏性变更
 
-旧的顶层脚本入口已移除；请使用 console script、包内 CLI 或保留的 `scripts/` 薄 alias。
+旧的顶层脚本入口和 Python thin alias 已移除；请使用 console script、包内 CLI 或保留的研究/数据准备脚本。
 
 | 旧命令 | 当前入口 |
 | --- | --- |

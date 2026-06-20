@@ -292,19 +292,18 @@ LiDAR BEV cache MUST 记录足以复现当前 LiDAR baseline、diagnostic 和 fu
 - **THEN** 系统 MUST 拒绝复用该 cache 或按配置在线重建
 - **AND** 错误信息 MUST 包含不匹配的参数名
 
-### Requirement: Raw pillar pseudo-image fallback
-系统 MUST 支持为当前 LiDAR baseline、diagnostic 或 future attention consumer 构造 raw point cloud 到 pillar pseudo-image 的轻量 fallback。该 fallback MUST 使用现有 LiDAR reader/filter 逻辑，并 MUST 不引入重型点云依赖；旧 GPS+LiDAR BGAM workflow MUST NOT 作为当前 fallback 入口。
+### Requirement: 未接入 LiDAR pillar encoder 原型不属于当前支持面
+当前 LiDAR preprocessing support surface MUST 以点云读取、BEV 伪图像构造、cache、normalization、质量摘要和启用 LiDAR 的 dataset flat sample 为准。未注册、未配置、未被训练/评估/诊断入口消费的 pillar encoder 或 spatial encoder 原型 MUST 不作为当前必须保留的 LiDAR 能力。
 
-#### Scenario: raw 点云构造 pillar pseudo-image
-- **WHEN** 配置 `lidar.profile=pillar6` 且样本提供 raw point cloud
-- **THEN** 系统 MUST 按 ROI/grid 过滤并 pillarize 点云
-- **AND** 每个 cell MUST 至少计算 point count normalized、mean z、max z、mean intensity、mean x offset 和 mean y offset
-- **AND** 输出 MUST 为固定 shape `[6,H,W]` 或配置指定等价通道数
+#### Scenario: 删除未接入 pillar encoder
+- **WHEN** `lidar_pillar_encoder` 或等价原型没有 registry、config、dataset、trainer、CLI、README/docs 或 current OpenSpec 消费
+- **THEN** 本 change MAY 删除该源码模块
+- **AND** LiDAR BEV 构造、cache 预热、normalization 和质量摘要 MUST 保持可用
 
-#### Scenario: 空点云 fallback
-- **WHEN** raw 点云经过过滤后没有有效点
-- **THEN** 系统 MUST 返回固定 shape 的全零 pillar pseudo-image
-- **AND** 系统 MUST 不修改该样本的 label、candidate beams 或 GPS prior
+#### Scenario: 新增 pillar 能力必须重新走 OpenSpec
+- **WHEN** 后续需要 `lidar.profile=pillar6`、pillar scatter 或 LiDAR spatial encoder 作为当前训练能力
+- **THEN** 项目 MUST 通过新的 OpenSpec change 声明模型注册、配置入口、dataset contract、forward metadata 和 focused tests
+- **AND** 不得通过恢复未接入原型文件把该能力静默加入 current surface
 
 ### Requirement: LiDAR debug quality summary
 当前 LiDAR baseline、diagnostic 或 attention prototype MUST 能记录 LiDAR BEV 输入质量摘要，以便判断模型或诊断是否被空 BEV、极端稀疏或 cache 混用影响。旧 BGAM debug mask/report 已退役，MUST NOT 作为当前质量摘要入口。

@@ -1,19 +1,9 @@
+_base_: _base/gps_csi.yaml
 experiment:
   name: fusion_E2_gps_slow_csi_joint
-  task: fusion
   seed: 62
 data:
   dataset:
-    type: mmw
-    condition: sunny
-    scene: Town10_skybridge_seed24
-    train_csv_name: Prepared/Town10_skybridge_seed24/splits/train.csv
-    test_csv_name: Prepared/Town10_skybridge_seed24/splits/test.csv
-    seq_len: 8
-    num_pred: 3
-    use_gps: true
-    use_csi: true
-    csi_train_rms: true
     csi_hardening:
       enabled: true
       seed: 62
@@ -31,47 +21,21 @@ data:
         - 1.05
         phase_std_degrees: 5.0
 model:
-  modalities:
-  - gps
-  - csi
   primary:
-    type: modular_sequence
-    modalities:
-    - gps
-    - csi
-    feature_size: 64
-    d_model: 64
-    num_classes: 64
-    num_pred: 3
     encoders:
-      gps:
-        type: gps_mlp
-        output_dim: 64
       csi:
-        type: pilot_dual_view_csi
-        output_dim: 64
-        train_rms: 1.0
-        csi_estimation:
-          mode: physical
-          pilot_len: 16
-          pilot_power: 1.0
-          noise_var: 0.01
-        delay_taps: 32
-        view_fusion: symmetric_gate
         view_gate_warmup_epochs: 30
         view_gate_warmup_mode: mean
         use_internal_gru: false
-    representation_core:
-      type: early_concat_gru
-      d_model: 64
-      hidden_size: 64
-      num_layers: 1
-    heads:
-      beam:
-        type: beam_head
-training:
-  epochs: 100
-  lr: 0.0005
-  weight_decay: 0.0001
 output:
   run_name: fusion_E2_gps_slow_csi_joint
+config_resolution:
+  style: base+overlay
+  base_config: _base/gps_csi.yaml
+  overlay_id: E2_gps_slow_csi_joint
+  control_variables:
+  - modalities
+  - csi_hardening
+  - csi_prioritized_warmup
+  - use_internal_gru
+  - view_gate_warmup

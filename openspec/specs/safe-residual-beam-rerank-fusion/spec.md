@@ -1,7 +1,7 @@
 # safe-residual-beam-rerank-fusion Specification
 
 ## Purpose
-TBD - created by archiving change add-real-perturbation-residual-rerank-fusion. Update Purpose after archive.
+定义 opt-in anchor-safe residual beam reranker 的候选 beam 集合、有界 residual、no-regret fallback gate、训练目标和诊断字段，使重排只能在可审计候选空间内辅助 anchor logits。
 ## Requirements
 ### Requirement: Anchor-safe residual reranker
 系统 MUST 支持 opt-in safe residual beam reranker。该 reranker MUST 以 anchor logits 为主预测，只在候选 beam 集合内添加有界 residual score 或执行候选重排。
@@ -54,4 +54,3 @@ Reranker training MUST 保留 hard beam supervised objective，并 MAY 增加 ca
 - **WHEN** anchor prediction 已正确或 DBA 高于配置阈值
 - **THEN** no-regret loss MAY 惩罚 reranker 明显降低 anchor score margin
 - **AND** logs MUST 使用 `loss/rerank_*` 或 `loss/no_regret_*` 等非 retired 命名
-

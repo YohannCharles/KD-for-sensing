@@ -1,0 +1,43 @@
+experiment:
+  name: fusion_E0_gps_only
+  task: gps
+  seed: 60
+data:
+  dataset:
+    type: mmw
+    condition: sunny
+    scene: Town10_skybridge_seed24
+    train_csv_name: Prepared/Town10_skybridge_seed24/splits/train.csv
+    test_csv_name: Prepared/Town10_skybridge_seed24/splits/test.csv
+    seq_len: 8
+    num_pred: 3
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+model:
+  primary:
+    type: modular_sequence
+    modalities:
+    - gps
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 3
+    encoders:
+      gps:
+        type: gps_mlp
+        output_dim: 64
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+training:
+  epochs: 100
+  lr: 0.00075
+  weight_decay: 0.0001
+output:
+  run_name: fusion_E0_gps_only

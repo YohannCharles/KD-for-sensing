@@ -1,7 +1,7 @@
 # jepa-visual-architecture-sweep Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-query-jepa-visual-architecture-sweep. Update Purpose after archive.
+定义 GPS-query JEPA visual architecture sweep 的候选矩阵、严格可比性 metadata、诊断指标和输出产物边界，用于比较视觉 tokenizer、pooler/core、CNN/hybrid 先验与非 JEPA anchor 的可运行证据。
 ## Requirements
 ### Requirement: Architecture sweep 候选矩阵
 系统 MUST 提供 GPS-query JEPA visual architecture sweep 候选矩阵。矩阵 MUST 覆盖当前 patch16 baseline、patch/token 粒度、overlap tokenizer、conv stem tokenizer、局部 token mixing、CNN feature-map tokens、多尺度 tokens、frame embedding anchor、pooler/core ablation 和非 Transformer 对照，并 MUST 为每个候选声明唯一 `variant_id`。
@@ -207,4 +207,3 @@ JEPA visual architecture sweep 的 Pareto、family best 和 Markdown summary MUS
 - **WHEN** summary 生成 Markdown 报告
 - **THEN** 报告 MUST 包含参数规模对照段落或表格
 - **AND** 报告 MUST 避免只按最终指标排名而隐藏参数量差异
-

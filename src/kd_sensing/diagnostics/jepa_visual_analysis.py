@@ -18,6 +18,7 @@ from torch.utils.data._utils.collate import default_collate
 
 from kd_sensing.config.io import deep_merge, load_config, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
+from kd_sensing.diagnostics.jepa_benchmark_artifacts import OutputRegistry
 from kd_sensing.diagnostics.jepa_gps_shortcut_benchmark import (
     GPS_SUITE_TYPES,
     IMAGE_SUITE_TYPES,
@@ -73,37 +74,6 @@ DEFAULT_FIGURES = {
     "robustness": True,
 }
 DEFAULT_OUTPUT_FORMATS = ("png", "svg")
-
-
-@dataclass
-class OutputRegistry:
-    root: Path
-    skipped: list[dict[str, Any]] = field(default_factory=list)
-
-    def skipped_output(self, path: str | Path, *, reason: str, kind: str) -> None:
-        self.skipped.append(
-            {
-                "path": _relative_to_root(Path(path), self.root),
-                "kind": kind,
-                "status": "skipped",
-                "reason": str(reason),
-            }
-        )
-
-    def list_outputs(self) -> list[dict[str, Any]]:
-        records: list[dict[str, Any]] = []
-        if self.root.exists():
-            for path in sorted(item for item in self.root.rglob("*") if item.is_file()):
-                records.append(
-                    {
-                        "path": _relative_to_root(path, self.root),
-                        "kind": _output_kind(path),
-                        "status": "generated",
-                        "size_bytes": int(path.stat().st_size),
-                    }
-                )
-        records.extend(self.skipped)
-        return records
 
 
 @dataclass
@@ -2516,30 +2486,6 @@ def _safe_slug(value: Any) -> str:
         else:
             cleaned.append("_")
     return "".join(cleaned).strip("._") or "item"
-
-
-def _relative_to_root(path: Path, root: Path) -> str:
-    try:
-        return str(path.relative_to(root))
-    except ValueError:
-        return str(path)
-
-
-def _output_kind(path: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix in {".png", ".svg", ".pdf"}:
-        return "figure"
-    if suffix == ".csv":
-        return "table"
-    if suffix == ".npz":
-        return "cache"
-    if suffix == ".md":
-        return "report"
-    if path.name == "analysis_manifest.json":
-        return "manifest"
-    if suffix == ".json":
-        return "json"
-    return "artifact"
 
 
 __all__ = [

@@ -1,7 +1,7 @@
 # model-architecture-summary Specification
 
 ## Purpose
-TBD - created by archiving change add-model-architecture-summary. Update Purpose after archive.
+定义模型架构摘要的统一 schema、参数统计口径、组件目录、sweep manifest 兼容和只读 CLI 边界，使维护者能比较当前模型与候选配置而不读取真实数据、不启动训练或写入 checkpoint。
 ## Requirements
 ### Requirement: 统一模型架构摘要 schema
 系统 MUST 提供统一的模型架构摘要 schema，用于描述已构建模型实例、sweep 候选和既有 run artifact 的模型结构、组件组合、参数量、token/compute proxy、checkpoint/freeze 策略和 warning。摘要 MUST 是 JSON 可序列化对象，并 MUST 包含 `schema_version`、`source`、`model`、`parameters`、`components`、`warnings` 和 `comparability` 顶层字段。
@@ -106,4 +106,3 @@ TBD - created by archiving change add-model-architecture-summary. Update Purpose
 - **WHEN** 训练流程启用或默认写入新架构摘要
 - **THEN** `startup_summary.json` MUST 包含 `architecture_summary` 或等价新增字段
 - **AND** 新字段 MUST 使用统一模型架构摘要 schema
-

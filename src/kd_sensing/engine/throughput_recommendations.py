@@ -368,15 +368,15 @@ def _train_command(config_path: str | Path | None, overrides: list[str]) -> str 
     if config_path is None:
         return None
     override_args = " ".join(f"-o {item}" for item in overrides)
-    return f"conda run -n kd_mm_beam python scripts/train.py --config {config_path} {override_args}".strip()
+    return f"conda run -n kd_mm_beam kd-sensing-train --config {config_path} {override_args}".strip()
 
 
 def _lidar_prewarm_command() -> str:
-    return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/lidar_bev_cache.yaml"
+    return "conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/lidar_bev_cache.yaml"
 
 
 def _image_derived_cache_prewarm_command() -> str:
-    return "conda run -n kd_mm_beam python scripts/preprocess.py --config configs/preprocess/mmw_image_derived_cache.yaml"
+    return "conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/mmw_image_derived_cache.yaml"
 
 
 def _skipped_cache_status(modalities: list[str]) -> dict[str, Any]:

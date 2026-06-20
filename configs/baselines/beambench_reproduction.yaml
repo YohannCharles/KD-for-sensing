@@ -13,7 +13,7 @@ data:
   beam_shift: 1
   scenes: [31, 32, 33, 34]
   checker:
-    script: scripts/check_dataset.py
+    module: kd_sensing.cli.beambench_check_dataset
     read_only: true
 
 baselines:
@@ -42,7 +42,7 @@ baselines:
     modalities: [camera, lidar, radar, gps]
     status: runnable_mock_only
     mock_data: true
-    command: conda run -n kd_mm_beam python scripts/train_baseline.py --mock --epochs 3
+    command: conda run -n kd_mm_beam python -m kd_sensing.cli.beambench_train_baseline --mock --epochs 3
 
 outputs:
   mock_output_dir: outputs/evaluations/beambench_baseline/mock_smoke

@@ -26,8 +26,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "pytorch-model-summary",
-    "thop",
 ]
 
 [project.scripts]
