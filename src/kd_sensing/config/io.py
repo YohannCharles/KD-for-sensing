@@ -14,11 +14,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
 
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.config.migration_guards import (
+    reject_retired_bgam_viewer_config,
     reject_removed_config_path,
     reject_removed_image_path_config,
     reject_removed_kd_config,
     reject_removed_override_key,
     reject_retired_hist_config,
+    reject_retired_priority_workflow_config,
     reject_retired_raymobtime_config,
 )
 from kd_sensing.config.normalization import normalize_loaded_config
@@ -39,6 +41,8 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     if override_cfg:
         cfg = deep_merge(cfg, override_cfg)
     reject_retired_raymobtime_config(cfg)
+    reject_retired_bgam_viewer_config(cfg)
+    reject_retired_priority_workflow_config(cfg)
     file_cfg_for_keys = file_cfg if config_path else {}
     override_changes_objective = _has_dotted_key(override_cfg, "experiment.objective")
     explicit_early_metric = _has_dotted_key(override_cfg, "training.early_stopping_metric") or (
@@ -57,6 +61,8 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     reject_removed_kd_config(cfg)
     reject_retired_hist_config(cfg)
     reject_retired_raymobtime_config(cfg)
+    reject_retired_bgam_viewer_config(cfg)
+    reject_retired_priority_workflow_config(cfg)
     reject_removed_image_path_config(cfg)
     validate_loaded_config(cfg)
     return cfg

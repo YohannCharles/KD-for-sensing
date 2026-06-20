@@ -4,7 +4,7 @@
 定义配置驱动训练、评估、预处理、诊断、运行产物保存、README 入口边界以及 virtual/overlay 配置复现实验的工作流要求。
 ## Requirements
 ### Requirement: 配置驱动实验
-项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、`model.primary` 主模型、supervised/adaptation/JEPA/BGAM/CSI 或诊断目标、训练超参数、优化器、调度器、输出目录、随机种子、GPS 特征模式和 fusion 模态选择。当前支持的训练配置 MUST 不覆盖 KD 模式或 teacher checkpoint；旧 KD、teacher/student no-KD、Hist、Top8 standalone、residual 和 camera residual 路径 MUST 在配置解析或 registry 层被拒绝。
+项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、`model.primary` 主模型、supervised/adaptation/JEPA/CSI 或诊断目标、训练超参数、优化器、调度器、输出目录、随机种子、GPS 特征模式和 fusion 模态选择。当前支持的训练配置 MUST 不覆盖 KD 模式或 teacher checkpoint；旧 KD、teacher/student no-KD、Hist、Top8 standalone、residual、camera residual、BGAM 和 viewer manifest 路径 MUST 在配置解析或 registry 层被拒绝。
 
 #### Scenario: 使用配置启动 image-only 训练
 - **WHEN** 用户通过当前 CLI 传入 image-only 训练配置
@@ -36,10 +36,10 @@
 - **THEN** 系统 MUST 只准备并融合 `modalities` 中列出的当前支持模态
 - **AND** 未启用模态的文件缺失 MUST 不阻止当前任务启动
 
-#### Scenario: 使用当前 JEPA 和 BGAM workflow
-- **WHEN** 用户运行当前 JEPA pretraining/downstream、GPS-query pooling、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、viewer manifest 或 benchmark 配置
+#### Scenario: 使用当前 JEPA、GPS、CSI 和诊断 workflow
+- **WHEN** 用户运行当前 JEPA pretraining/downstream、GPS-query pooling、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark 或其它 current benchmark 配置
 - **THEN** 系统 MUST 使用对应 current workflow 的 `model.primary`、runner manifest 或诊断 schema
-- **AND** 系统 MUST 不恢复 legacy KD、Hist、standalone Top8 selector、GPS residual 或 camera residual runtime
+- **AND** 系统 MUST 不恢复 legacy KD、Hist、standalone Top8 selector、GPS residual、camera residual、BGAM 或 viewer manifest runtime
 
 ### Requirement: 命令行覆盖配置
 实验入口 MUST 支持在命令行覆盖配置值。当前 CLI MUST 支持显式传入配置文件和关键参数覆盖；旧脚本 argparse 参数不得作为兼容入口保留，只能作为迁移默认值参考。命令行覆盖 MUST 不能绕过当前配置解析 guard 来重新启用 KD、teacher checkpoint、retired config alias 或旧研究路线。
@@ -56,7 +56,7 @@
 #### Scenario: 拒绝 KD 模式覆盖
 - **WHEN** 用户通过命令行覆盖 `kd_mode`、`distillation.*`、`teacher_model_name`、`logits_kd`、`rkd`、`teacher_no_kd` 或 `student_no_kd`
 - **THEN** 配置加载 MUST 失败
-- **AND** 错误信息 MUST 指向当前 `model.primary`、supervised/adaptation、JEPA、BGAM 或保留 baseline 入口
+- **AND** 错误信息 MUST 指向当前 `model.primary`、supervised/adaptation、JEPA、CSI、诊断或保留 baseline 入口
 
 ### Requirement: 统一实验输出
 训练和评估流程 MUST 将运行产物写入统一输出目录。输出目录 MUST 至少包含本次运行的有效配置、checkpoint 或权重引用、metrics、训练曲线或日志，以及测试报告。训练和评估流程 MUST 默认创建互不覆盖的运行目录；只有在用户显式启用覆盖、显式恢复训练或传入确定性输出目录时，系统才 MAY 复用既有目录。训练流程 MUST 在启用 TensorBoard 时写入可由 TensorBoard 读取的标量 event 日志，并且 MUST 支持通过配置关闭该日志写入。训练流程 MUST 在启用进度显示时提供 `tqdm` 训练进度条，并且 MUST 将每个 epoch 的进度摘要保存到运行日志。
@@ -162,7 +162,7 @@
 
 #### Scenario: 默认 primary 架构与 GRU 层数
 - **WHEN** 用户使用默认 image-only、radar-only、GPS-only、LiDAR-only、mmWave 或 fusion 当前实验配置构建模型
-- **THEN** 系统 MUST 按 `model.primary.type` 构建对应 strong、lightweight、supervised、JEPA、BGAM、CSI 或 baseline/control 模型
+- **THEN** 系统 MUST 按 `model.primary.type` 构建对应 strong、lightweight、supervised、JEPA、CSI 或 baseline/control 模型
 - **AND** current lightweight primary 的 GRU/temporal 参数 MUST 由其配置显式声明
 - **AND** 文档 MUST 说明二层 GRU teacher/student 是历史 canonical 配置或特定兼容背景，不是当前默认结构
 
@@ -1178,7 +1178,7 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 
 #### Scenario: CLI help characterization
 - **WHEN** 开发者运行 CLI help focused tests
-- **THEN** `kd-sensing-train --help`、`kd-sensing-evaluate --help`、`kd-sensing-preprocess --help`、`kd-sensing-export-viewer-manifest --help` 和 `kd-sensing-visualize-modalities --help` MUST 正常退出
+- **THEN** `kd-sensing-train --help`、`kd-sensing-evaluate --help`、`kd-sensing-preprocess --help`、`kd-sensing-jepa-visual-analysis --help` 和 `kd-sensing-jepa-gps-shortcut-benchmark --help` MUST 正常退出
 - **AND** 检查 MUST 不读取真实数据集、不加载 checkpoint、不启动训练
 
 ### Requirement: 推荐实验文档保持精简入口
@@ -1190,7 +1190,7 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 用户 MUST 能通过链接进入当前保留能力的详细实验矩阵或 viewer 文档
 
 #### Scenario: 长实验说明迁移到 docs
-- **WHEN** README 中的某段内容主要描述当前保留的 CSI hardening、viewer、MMW、BGAM 或 JEPA 详细实验流程
+- **WHEN** README 中的某段内容主要描述当前保留的 CSI hardening、MMW、JEPA 或诊断 benchmark 详细实验流程
 - **THEN** 该内容 MUST 迁移到对应 `docs/` 文件或 OpenSpec spec
 - **AND** README MUST 保留简短摘要和链接
 
@@ -1223,16 +1223,16 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 系统 MUST 不生成同名 virtual 配置
 
 ### Requirement: 源码表面积优化必须保持核心 workflow 兼容
-删除冗余配置、拆分源码模块或收敛入口后，训练、评估、预处理、viewer manifest 导出和研究诊断的公开工作流 MUST 保持现有用户可见语义。实现 MAY 调整内部模块位置，但 MUST 不要求用户改用未记录的新命令。
+删除冗余配置、拆分源码模块或收敛入口后，训练、评估、预处理和当前研究诊断的公开工作流 MUST 保持现有用户可见语义。实现 MAY 调整内部模块位置，但 MUST 不要求用户改用未记录的新命令。已退役的 viewer manifest 导出不属于该兼容承诺。
 
 #### Scenario: 核心 CLI help 继续可用
 - **WHEN** 本 change 完成后开发者运行核心入口 help 检查
-- **THEN** `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess` 和 `kd-sensing-export-viewer-manifest` MUST 正常退出
+- **THEN** `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-jepa-visual-analysis` 和 `kd-sensing-jepa-gps-shortcut-benchmark` MUST 正常退出
 - **AND** 对应包内 CLI 模块 MUST 继续可通过 `python -m kd_sensing.cli.<name> --help` 调用
 
 #### Scenario: 拆分模块不改变公共返回结构
-- **WHEN** 用户通过既有公开函数或 CLI 运行训练、评估、预处理或 viewer manifest 导出
-- **THEN** 返回 payload、日志字段、manifest 字段和主要输出路径语义 MUST 与拆分前兼容
+- **WHEN** 用户通过既有公开函数或 CLI 运行训练、评估、预处理或当前研究诊断
+- **THEN** 返回 payload、日志字段、诊断字段和主要输出路径语义 MUST 与拆分前兼容
 - **AND** 内部模块重命名 MUST 不要求用户修改配置文件中的公共字段
 
 ### Requirement: 删除实体配置后 workflow 必须可复现
@@ -1262,8 +1262,8 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 研究脚本删除或重分类 MUST 不破坏核心训练入口
 
 #### Scenario: viewer manifest 边界清晰
-- **WHEN** 用户导出 viewer manifest 或使用 `kd-sensing-visualize-modalities` 兼容入口
-- **THEN** manifest 导出 MUST 通过 `kd-sensing-export-viewer-manifest` 或包内 CLI 完成
+- **WHEN** 用户引用 viewer manifest 导出或 `kd-sensing-visualize-modalities` 兼容入口
+- **THEN** 系统 MUST 拒绝该退役入口或不再提供该入口
 - **AND** 仓库级 Gradio viewer entrypoint MUST 不再作为当前支持脚本保留
 
 ### Requirement: 本 change 不改变本地产物策略
@@ -1356,11 +1356,11 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 输出 MUST 给出生成或引用 strict split metadata 的修复提示
 
 ### Requirement: 默认实验入口去 KD-first 化
-项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 supervised/adaptation、JEPA、BGAM、CSI hardening、baseline/control、诊断或 viewer manifest 工作流为默认。旧 KD 配置不得作为当前主线默认实验入口。
+项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 supervised/adaptation、JEPA、CSI hardening、baseline/control 或当前诊断工作流为默认。旧 KD、BGAM 和 viewer manifest 配置不得作为当前主线默认实验入口。
 
 #### Scenario: README quickstart 使用当前主线
 - **WHEN** 开发者阅读 README 或当前主线运行说明
-- **THEN** 推荐的首个训练、评估或诊断命令 MUST 使用当前 supervised/adaptation、JEPA、BGAM、CSI、baseline/control 或 viewer manifest 配置
+- **THEN** 推荐的首个训练、评估或诊断命令 MUST 使用当前 supervised/adaptation、JEPA、CSI、baseline/control 或当前诊断配置
 - **AND** 文档 MUST 不把 `logits_kd`、`rkd`、Hist/HiST、standalone Top8 selector、GPS residual 或 camera residual 作为当前主线 quickstart
 
 #### Scenario: canonical mainline 配置不要求 teacher checkpoint
@@ -1369,7 +1369,7 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 输出 metadata MUST 不记录 KD-enabled lineage
 
 ### Requirement: 项目描述反映当前主线
-项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、DeepSense6G/MMW BGAM、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA visual analysis、预处理、诊断和 viewer manifest，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
+项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和诊断，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first、BGAM-first、viewer-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual、BGAM、viewer manifest 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
 
 #### Scenario: pyproject 描述不再 KD Hist 或退役路线 first
 - **WHEN** 开发者查看 `pyproject.toml` 的项目 description
@@ -1382,7 +1382,7 @@ Raymobtime s008 预处理、训练、评估、smoke 和实验矩阵 workflow 已
 - **AND** 文档 MUST 不提供当前推荐运行命令
 
 ### Requirement: 当前推荐 workflow 聚焦少样本跨场景主线
-README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理、诊断和 viewer manifest。KD baseline、HiST-Beam/Hist、Raymobtime s008、Top8 selector standalone workflow、GPS coarse anchor、residual fusion、camera residual、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、supporting、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
+README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和当前诊断。KD baseline、HiST-Beam/Hist、Raymobtime s008、Top8 selector standalone workflow、GPS coarse anchor、residual fusion、camera residual、BGAM、viewer manifest、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、supporting、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
 
 #### Scenario: quickstart 不推荐退役脚本
 - **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
@@ -1392,7 +1392,7 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supe
 #### Scenario: optional workflow 与主线区分
 - **WHEN** 文档提到 legacy KD、HiST-Beam、Top8 selector、residual、camera residual、GPS coarse anchor、snapshot next-frame、occlusion、position 或 multitask objective
 - **THEN** 文档 MUST 明确它们不是当前主结论的默认步骤
-- **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/JEPA/BGAM/CSI 主线
+- **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/JEPA/CSI 主线
 
 #### Scenario: 当前 workflow 文档声明运行状态
 - **WHEN** 文档列出当前实验配置、benchmark manifest 或诊断配置
@@ -1400,7 +1400,7 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supe
 - **AND** upper-bound、mock、smoke 或 historical ablation MUST 不得被写成正式结论
 
 ### Requirement: 健康检查反映保留入口
-快速健康检查 MUST 覆盖当前仍支持的架构边界、包内 CLI、viewer manifest、modality visual diagnostics、文档健康和当前主线 focused tests。健康检查 MUST 不要求 Raymobtime s008、已退役的模态失衡诊断脚本、fusion KD virtual alias 或 HiST-Beam/Hist CLI 可用。
+快速健康检查 MUST 覆盖当前仍支持的架构边界、包内 CLI、JEPA visual analysis、GPS shortcut benchmark、文档健康和当前主线 focused tests。健康检查 MUST 不要求 Raymobtime s008、已退役的模态失衡诊断脚本、fusion KD virtual alias、BGAM、viewer manifest 或 HiST-Beam/Hist CLI 可用。
 
 #### Scenario: focused validation 不依赖退役入口
 - **WHEN** 开发者执行本 change 的 focused 验证
@@ -1438,67 +1438,32 @@ README MUST 增加 MMW Town GPS-only v2 说明，覆盖普通跨场景 GPS 分�
 - **THEN** 文档 MUST 提供使用 `conda run -n kd_mm_beam` 的 runner、plotter 和 comparison 命令
 - **AND** 文档 MUST 明确本 change 不实现多模态 residual correction
 
-### Requirement: GPS+LiDAR BGAM 配置驱动工作流
-项目 MUST 提供 `configs/deepsense6g_gps_lidar_bgam.yaml`，用于驱动 DeepSense6G GPS+LiDAR BGAM 的 manifest enrich、训练、评估、debug mask、ablation 和 comparison。配置 MUST 声明数据场景、GPS v2 artifact、Top8 manifest、LiDAR profile/cache、geometry、BGAM、model、loss、train、eval、ablation、metrics 和 outputs。
+### Requirement: GPS+LiDAR BGAM workflow 已从实验入口退役
+当前训练、评估、quickstart、CLI help、run metadata 和推荐文档 MUST 不再包含 GPS+LiDAR BGAM workflow。旧 BGAM 配置路径、console script、manifest enrich、dataset、model、loss、engine、debug mask 和 focused tests 不得作为当前 workflow 兼容承诺。
 
-#### Scenario: 默认配置字段
-- **WHEN** 开发者查看 `configs/deepsense6g_gps_lidar_bgam.yaml`
-- **THEN** 配置 MUST 包含 scenario31-34、`mapping_disabled`、`num_beams=64`、`support_ratio=0.15`、`topk=8`、GPS v2 sweep root、Top8 manifest path、LiDAR BEV/grid defaults、BGAM default mode `single_soft` 和 output root
-- **AND** 配置 MUST 包含 `anti_leakage.query_label_used_for_training=false`
+#### Scenario: BGAM 配置和命令不存在
+- **WHEN** 开发者检查配置、pyproject entry points 和包内 CLI
+- **THEN** 项目 MUST 不保留 `configs/deepsense6g_gps_lidar_bgam.yaml` 或 `configs/mmw_town_gps_lidar_bgam.yaml`
+- **AND** 项目 MUST 不声明 GPS+LiDAR BGAM prepare/run/evaluate 相关 `kd-sensing-*` 命令
+- **AND** 项目 MUST 不保留等价 virtual config 或 thin alias
 
-#### Scenario: 命令行覆盖核心参数
-- **WHEN** 用户通过 BGAM CLI 传入 `--support-ratio`、`--label-space`、`--topk`、`--bgam-mode` 或 `--output-dir`
-- **THEN** 系统 MUST 使用命令行值覆盖配置默认值
-- **AND** 输出目录 MUST 按 ratio tag、label space 和 run name 分离
-
-#### Scenario: 运行产物保存配置快照
-- **WHEN** BGAM workflow 完成一次运行
-- **THEN** result dir MUST 保存 resolved config 或等价配置快照
-- **AND** run metadata MUST 记录 GPS v2 artifact path、Top8 manifest path、LiDAR cache/profile、BGAM mode、beam angle source、support/query count 和 query label usage
-
-### Requirement: GPS+LiDAR BGAM 验收命令
-项目 MUST 记录并支持 GPS+LiDAR BGAM 的分层验收命令。所有项目相关 Python 命令 MUST 使用 `conda run -n kd_mm_beam` 环境运行。
-
-#### Scenario: manifest enrich 验收命令
-- **WHEN** 开发者运行 BGAM manifest enrich 验收
-- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest --config configs/deepsense6g_gps_lidar_bgam.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
-- **AND** 命令 MUST 写出 BGAM manifest 和 metadata
-
-#### Scenario: 训练评价验收命令
-- **WHEN** 开发者运行 BGAM 训练评价验收
-- **THEN** 推荐命令 MUST 为 `conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --config configs/deepsense6g_gps_lidar_bgam.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8`
-- **AND** 命令 MUST 写出 metrics、summary、predictions、debug mask metadata 和 run metadata
-
-#### Scenario: 独立评估验收命令
-- **WHEN** 开发者运行已训练 checkpoint 的独立评估
-- **THEN** 推荐命令 MUST 覆盖 `kd-sensing-evaluate-deepsense6g-gps-lidar-bgam`
-- **AND** 命令 MUST 读取配置和 checkpoint
-- **AND** 命令 MUST 写出 `metrics.json` 和 `predictions.csv`
-
-#### Scenario: 测试验收命令
-- **WHEN** 开发者运行 BGAM 单元测试
-- **THEN** 推荐命令 MUST 覆盖 `tests/test_gps_lidar_bgam_geometry.py`、`tests/test_gps_lidar_bgam_model.py`、`tests/test_gps_lidar_bgam_dataset.py` 和 `tests/test_gps_lidar_bgam_runner.py`
+#### Scenario: BGAM 实现和测试不存在
+- **WHEN** 开发者检查 `src/kd_sensing` 和 `tests`
+- **THEN** 项目 MUST 不保留 `gps_lidar_bgam` 专属 data、engine、model、loss 或 diagnostics 模块
+- **AND** 项目 MUST 不保留 `tests/test_gps_lidar_bgam_*.py` focused tests
 - **AND** 最终回归仍 MUST 使用 `conda run -n kd_mm_beam pytest -q`
 
-### Requirement: GPS+LiDAR BGAM README 工作流说明
-README MUST 新增 GPS+LiDAR BGAM reranker 章节。该章节 MUST 保持 quickstart 风格，说明动机、输入 manifest、GPS/RSU coordinate assumption、beam-angle convention、BGAM modes、训练/评估命令、输出文件、debug mask 和结果判读。
-
-#### Scenario: README 说明输入和假设
-- **WHEN** 用户阅读 README 的 GPS+LiDAR BGAM 章节
-- **THEN** 文档 MUST 说明需要 LiDAR path 或 BEV cache、GPS coordinate、RSU coordinate/yaw、GPS v2 logits/probs 或 Top8 manifest 和 64-beam label
-- **AND** 文档 MUST 明确 future ground-truth beam 不用于 BGAM mask
-
-#### Scenario: README 说明结果判读
-- **WHEN** 用户阅读 README 的 BGAM 结果判读说明
-- **THEN** 文档 MUST 指向 `metrics.json`、`summary_overall.csv`、`summary_by_scene.csv`、`summary_by_bgam_mode.csv`、`predictions.csv`、`debug_masks/` 和 comparison report
-- **AND** 文档 MUST 说明如何比较 GPS-only、GPS+LiDAR no BGAM、soft/hard/topK BGAM 和 topK per-candidate rerank
+#### Scenario: README 说明退役而非运行
+- **WHEN** README 或实验矩阵提到 GPS+LiDAR BGAM
+- **THEN** 文档 MUST 明确其已退役或仅作为历史背景
+- **AND** 文档 MUST 指向当前 MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark 或其它 current workflow
 
 ### Requirement: Hist workflow 已从当前实验入口退役
 当前训练、评估、quickstart、CLI help、run metadata 和推荐文档 MUST 不再包含 HiST-Beam/Hist LOSO 入口。旧 Hist 配置路径、console script 和 run plan 不得作为当前 workflow 兼容承诺。
 
 #### Scenario: CLI help 不包含 Hist 保留入口
 - **WHEN** 开发者执行当前推荐的 CLI help 验证
-- **THEN** `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-export-viewer-manifest` 和 `kd-sensing-visualize-modalities` MUST 正常退出
+- **THEN** `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-jepa-visual-analysis` 和 `kd-sensing-jepa-gps-shortcut-benchmark` MUST 正常退出
 - **AND** 验证 MUST 不要求 `kd-sensing-hist-beam-loso` 存在
 
 #### Scenario: 旧 Hist 配置路径失败
@@ -1563,7 +1528,7 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **AND** 输出 run name MUST 明确区分该 run 是 scenes32-34 训练口径
 
 ### Requirement: 现有 supervised/adaptation workflow 不变
-新增 JEPA 预训练 workflow MUST 不改变现有 beam、occlusion、position、multitask、GPS v2、BGAM、CSI hardening、viewer 或 supervised fusion workflow 的默认配置和指标。Raymobtime s008、legacy KD、standalone Top8 selector 和 residual 路线仍只作为退役或 supporting guard 语义保留，不属于当前默认 workflow。
+新增 JEPA 预训练 workflow MUST 不改变现有 beam、occlusion、position、multitask、GPS v2、CSI hardening 或 supervised fusion workflow 的默认配置和指标。Raymobtime s008、legacy KD、standalone Top8 selector、residual、BGAM 和 viewer 路线仍只作为退役或 supporting guard 语义保留，不属于当前默认 workflow。
 
 #### Scenario: 默认 beam 配置行为不变
 - **WHEN** 用户加载未设置 `experiment.objective` 的现有 supervised beam 配置
@@ -1630,7 +1595,7 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **AND** runtime metadata MUST 记录 scaler 来源与 split protocol
 
 ### Requirement: 当前推荐 workflow 排除 Top8 residual coarse 路线
-README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再把 Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、GPS prior residual correction 或 camera residual 描述为当前可运行或推荐 workflow。当前推荐面 MUST 聚焦仍保留的 supervised/adaptation、Image+GPS JEPA、GPS v2/adapter、MMW GPS v2、BGAM、CSI hardening、Vision-Position baseline、Arnold22 Camera AE+GPS Direct、预处理、诊断和 viewer manifest。
+README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再把 Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、GPS prior residual correction、camera residual、BGAM 或 viewer manifest 描述为当前可运行或推荐 workflow。当前推荐面 MUST 聚焦仍保留的 supervised/adaptation、Image+GPS JEPA、GPS v2/adapter、MMW GPS v2、CSI hardening、Vision-Position baseline、Arnold22 Camera AE+GPS Direct、预处理和当前诊断。
 
 #### Scenario: quickstart 不展示退役命令
 - **WHEN** 开发者阅读 README、README_REPRODUCE 或 `docs/experiment_matrix.md`
@@ -1677,3 +1642,30 @@ README、实验矩阵、快速健康检查和配置驱动 workflow 文档 MUST �
 - **WHEN** 用户通过训练配置 `output.dir` 或评估入口 `--output-dir` 显式传入完整输出目录
 - **THEN** 系统 MUST 尊重该路径
 - **AND** 系统 MUST 不额外追加 scene 或 scenegroup 片段
+
+### Requirement: 优先退役 workflow 不得作为当前实验入口
+当前实验 workflow MUST 不再推荐、声明或验证 AMR-Net_gps_image mock/source-audit runner、JEPA-MSAC mock/paper-aligned runner、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*` 脚本，或非 CSI 的本地 shell orchestration 脚本。历史背景 MAY 保留，但 MUST 不提供 current 运行命令。
+
+#### Scenario: 实验矩阵不推荐退役 workflow
+- **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
+- **THEN** 文档 MUST 不推荐运行 `kd-sensing-run-amr-net-gps-image`
+- **AND** 文档 MUST 不推荐运行 `kd-sensing-run-jepa-msac`
+- **AND** 文档 MUST 不推荐运行被退役的 MMW 旁支诊断脚本或非 CSI shell orchestration 脚本
+
+#### Scenario: 配置加载拒绝退役配置
+- **WHEN** 用户加载 `configs/baselines/amr_net_gps_image.yaml`、`configs/pretraining/jepa_msac_s32_smoke.yaml` 或 `configs/pretraining/jepa_msac_s32_paper.yaml`
+- **THEN** 配置加载 MUST 失败或对应实体配置 MUST 不存在
+- **AND** 错误信息或文档 MUST 说明该 workflow 已退役并指向当前 baseline、diagnostic 或 reproduction 入口
+
+### Requirement: 当前替代入口必须清晰
+退役上述 workflow 后，项目 MUST 在文档中给出当前替代入口。替代入口 MUST 是仍受支持的 package CLI、current config 或明确保留的 shell runner，不得新增旧式兼容 wrapper。
+
+#### Scenario: MMW 诊断迁移到 package CLI
+- **WHEN** 文档说明 MMW GPS v2 图表或对比
+- **THEN** 文档 MUST 指向 `kd-sensing-plot-mmw-town-gps-v2` 和 `kd-sensing-compare-mmw-town-gps-v2`
+- **AND** 文档 MUST 不要求用户直接运行退役的 `scripts/mmw/visualize_gps_*` 脚本
+
+#### Scenario: shell runner 迁移到当前入口
+- **WHEN** 文档说明 DeepSense GPS soft-label、MMW soft-label ablation 或 MMW sunny modal15 历史实验
+- **THEN** 文档 MUST 将其标记为 historical 或 retired
+- **AND** 当前运行建议 MUST 使用 `kd-sensing-train`、当前 package diagnostics、保留的 CSI hardening matrix runner 或明确 current 的配置

@@ -22,14 +22,34 @@ model:
   downsample_ratio: 1
   seq_length: 8
   primary:
-    type: gps_strong
+    type: modular_sequence
+    modalities:
+    - gps
     gps_input_size: 3
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
+    num_pred: 3
+    encoders:
+      gps:
+        type: gps_mlp
+        output_dim: 64
+        gps_input_size: 3
+        hidden_size: 64
+        dropout: 0.1
+    projectors:
+      gps:
+        type: linear
+        dropout: 0.0
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
 output:
   run_name: gps_relative_polar_supervised
 scheduler:

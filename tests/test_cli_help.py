@@ -15,21 +15,11 @@ import pytest
         ("kd-sensing-preprocess", "--action"),
         ("kd-sensing-runs", "--outputs"),
         ("kd-sensing-clean-runtime-artifacts", "--manifest"),
-        ("kd-sensing-export-viewer-manifest", "--cache-dir"),
-        ("kd-sensing-visualize-modalities", "--cache-dir"),
         ("kd-sensing-jepa-visual-analysis", "--analysis-config"),
         ("kd-sensing-jepa-gps-shortcut-benchmark", "--manifest"),
         ("kd-sensing-mmw-town-gps-v2", "--config"),
         ("kd-sensing-plot-mmw-town-gps-v2", "--results-dir"),
         ("kd-sensing-compare-mmw-town-gps-v2", "--previous-dir"),
-        ("kd-sensing-prepare-mmw-town-gps-lidar-bgam-manifest", "--topk"),
-        ("kd-sensing-run-mmw-town-gps-lidar-bgam", "--topk"),
-        ("kd-sensing-evaluate-mmw-town-gps-lidar-bgam", "--ckpt"),
-        ("kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest", "--topk"),
-        ("kd-sensing-run-deepsense6g-gps-lidar-bgam", "--bgam-mode"),
-        ("kd-sensing-evaluate-deepsense6g-gps-lidar-bgam", "--ckpt"),
-        ("kd-sensing-run-amr-net-gps-image", "--claim-status"),
-        ("kd-sensing-run-jepa-msac", "--pretrained-checkpoint"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):
@@ -56,6 +46,11 @@ def test_retired_top8_residual_cli_scripts_are_not_declared():
         "top8",
         "residual",
         "camera-ae",
+        "bgam",
+        "viewer-manifest",
+        "visualize-modalities",
+        "run-amr-net-gps-image",
+        "run-jepa-msac",
     ]
     violations = [fragment for fragment in retired_fragments if fragment in text]
 

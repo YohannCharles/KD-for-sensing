@@ -351,50 +351,39 @@ def test_lidar_quality_accepts_3d_spatial_lidar_tensors():
 
 
 def test_lidar_models_forward_contracts_and_param_validation():
-    extractor = MODELS.build({"type": "lidar_feature_extractor", "n_feature": 64, "in_channels": 3})
-    assert isinstance(extractor, LidarFeatureExtractor)
+    extractor = LidarFeatureExtractor(n_feature=64, in_channels=3)
     with torch.no_grad():
-        features = extractor(torch.randn(2, 10, 3, 32, 32))
-    assert features.shape == (2, 10, 64)
+        features = extractor(torch.randn(1, 2, 3, 224, 224))
+    assert features.shape == (1, 2, 64)
 
-    for model_type, expected_cls in [
-        ("lidar_strong", LidarModalityNet),
-        ("lidar_lightweight", LidarLightweightModalityNet),
+    for model_cls in [
+        LidarModalityNet,
+        LidarLightweightModalityNet,
     ]:
-        model = MODELS.build(
-            {
-                "type": model_type,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64, 2],
-                "lidar_channels": 3,
-            }
+        model = model_cls(
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64, 2],
+            lidar_channels=3,
         )
-        assert isinstance(model, expected_cls)
         model.eval()
         with torch.no_grad():
-            pred, input_features, output_features = model(torch.randn(2, 10, 3, 32, 32))
-        assert pred.shape == (2, 10, 64)
-        assert input_features.shape == (2, 10, 64)
-        assert output_features.shape == (2, 10, 64)
+            pred, input_features, output_features = model(torch.randn(1, 2, 3, 224, 224))
+        assert pred.shape == (1, 2, 64)
+        assert input_features.shape == (1, 2, 64)
+        assert output_features.shape == (1, 2, 64)
 
     with pytest.raises(ValueError, match="gru_params must contain"):
-        MODELS.build(
-            {
-                "type": "lidar_lightweight",
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64],
-            }
+        LidarLightweightModalityNet(
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64],
         )
     with pytest.raises(ValueError, match="must equal feature_size"):
-        MODELS.build(
-            {
-                "type": "lidar_strong",
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [32, 64, 2],
-            }
+        LidarModalityNet(
+            feature_size=64,
+            num_classes=64,
+            gru_params=[32, 64, 2],
         )
 
 

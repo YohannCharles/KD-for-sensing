@@ -6,9 +6,11 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+RETIREMENT_FIXTURE = ROOT / "tests" / "fixtures" / "legacy_model_registry_retirement.yaml"
 
 
 def test_import_default_components_registers_cls_token_transformer_without_hist_beam_fusion():
@@ -113,6 +115,44 @@ else:
 
     assert cfg["type"] in message
     assert "retired" in message or "Removed component" in message
+
+
+def test_legacy_model_registry_retirement_fixture_matches_removed_guards():
+    from kd_sensing import registries
+
+    registries.import_default_components()
+    payload = yaml.safe_load(RETIREMENT_FIXTURE.read_text(encoding="utf-8"))
+    registry_map = {
+        "models": registries.MODELS,
+        "encoders": registries.ENCODERS,
+        "representation_cores": registries.REPRESENTATION_CORES,
+        "heads": registries.HEADS,
+    }
+    hint_markers = (
+        "modular_sequence",
+        "radar_cnn",
+        "gps_mlp",
+        "lidar_cnn",
+        "mmwave_mlp",
+        "gps_sequence_baseline",
+        "token_transformer",
+        "token_aware_transformer",
+        "safe_residual_beam_reranker",
+        "cls_token_transformer_fusion",
+    )
+
+    for entry in payload["retired"]:
+        registry = registry_map[entry["registry"]]
+        assert entry["name"] not in registry.list()
+        with pytest.raises(registries.RegistryError) as exc_info:
+            registry.build({"type": entry["name"]})
+        message = str(exc_info.value)
+        assert f"Removed component '{entry['name']}'" in message
+        assert f"registry '{registry.name}'" in message
+        assert any(marker in message for marker in hint_markers), message
+
+    for entry in payload["deferred"]:
+        assert entry["name"] in registry_map[entry["registry"]].list()
 
 
 def test_retired_hist_config_path_and_overrides_fail_fast():

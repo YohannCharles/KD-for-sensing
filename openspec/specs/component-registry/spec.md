@@ -15,25 +15,22 @@ Define the lightweight registry contract for models, datasets, losses, metrics, 
 - **THEN** 系统 MUST 返回对应 dataset 实例，并能被 DataLoader 使用
 
 ### Requirement: 可扩展模型和模态
-新增 strong、lightweight、backbone、head、radar 或 fusion 模型时，开发者 MUST 能通过新增模块和注册名称扩展系统，而不需要复制训练脚本或修改训练循环主体。
+新增普通 strong、lightweight、backbone、head、radar、GPS、LiDAR、mmWave、CSI 或 fusion baseline 时，开发者 MUST 优先通过 `modular_sequence` 配置、virtual recipe 或新增 `ENCODERS`、`PROJECTORS`、`REPRESENTATION_CORES`、`HEADS` 子组件扩展系统，而不需要复制训练脚本或修改训练循环主体。新增完整 `MODELS` 注册名 MUST 作为 whole-model exception 或 workflow/paper reproduction 在 OpenSpec artifact 中说明原因。
 
-#### Scenario: 新增 image-only lightweight model
-- **WHEN** 开发者实现并注册一个新的 image-only lightweight 模型
-- **THEN** 用户 MUST 能在配置中选择该模型，并复用现有 image-only 训练流程
+#### Scenario: 新增 image-only lightweight baseline
+- **WHEN** 开发者实现一个新的 image-only lightweight baseline
+- **THEN** 用户 MUST 能通过 `model.primary.type: modular_sequence` 和 `model.primary.encoders.image.type` 选择该 baseline
+- **AND** 实现 MUST 复用现有 image-only 训练流程
 
-#### Scenario: 新增多模态 fusion 模型
-- **WHEN** 开发者实现并注册一个新的 image+radar fusion 模型
-- **THEN** 用户 MUST 能在配置中选择该模型，并复用现有 fusion 训练流程
+#### Scenario: 新增多模态 fusion baseline
+- **WHEN** 开发者实现一个新的 image+radar 或 radar+GPS fusion baseline
+- **THEN** 用户 MUST 能通过 `modular_sequence` 的 encoders、projectors、representation core 和 heads 配置表达该 baseline
+- **AND** 实现 MUST 不新增完整 `MODELS` 注册名，除非 active OpenSpec design 记录 whole-model exception 理由
 
-#### Scenario: 新增 radar-only strong model
-- **WHEN** 开发者实现并注册一个新的 radar-only strong 模型
-- **THEN** 用户 MUST 能在配置中选择该模型，并复用 radar-only 训练和评估流程
-- **AND** 模型 MUST 保持统一的 `(pred, features, output_features)` 输出约定
-
-#### Scenario: 新增 radar-only lightweight model
-- **WHEN** 开发者实现并注册一个新的 radar-only lightweight 模型
-- **THEN** 用户 MUST 能在配置中选择该模型，并复用 radar-only 训练和评估流程
-- **AND** 模型 MUST 保持统一的 `(pred, features, output_features)` 输出约定
+#### Scenario: 新增 radar-only baseline
+- **WHEN** 开发者实现 radar-only strong 或 lightweight baseline
+- **THEN** 用户 MUST 能通过 `model.primary.encoders.radar.type: radar_cnn` 或新的 radar encoder 组件选择该行为
+- **AND** 模型输出 MUST 继续兼容 `ModelOutput` 适配和 beam prediction loss/metric
 
 ### Requirement: 蒸馏扩展点已移除
 项目删除 teacher-student KD 支持后，distiller 扩展点不再属于受支持架构。新监督损失 MUST 放入 loss、objective 或 training extension 模块；未来蒸馏方法 MUST 通过新的 OpenSpec change 重新定义。
@@ -71,21 +68,6 @@ Define the lightweight registry contract for models, datasets, losses, metrics, 
 - **WHEN** 开发者按照 README 或扩展指南新增并注册一个 metric
 - **THEN** 该 metric MUST 能被评估配置引用，并出现在评估结果输出中
 
-### Requirement: LiDAR 组件注册
-项目 MUST 通过现有组件注册表注册 LiDAR 模型和预处理器，使用户能通过配置构建 LiDAR teacher、student、feature extractor、dataset 处理路径和离线预处理流程。
-
-#### Scenario: 按名称构建 LiDAR teacher
-- **WHEN** 配置中指定 `type: lidar_teacher` 及其初始化参数
-- **THEN** 系统 MUST 通过 `MODELS` 注册表返回 `LidarModalityNet` 实例
-
-#### Scenario: 按名称构建 LiDAR student
-- **WHEN** 配置中指定 `type: lidar_student` 及其初始化参数
-- **THEN** 系统 MUST 通过 `MODELS` 注册表返回 `LidarStudentModalityNet` 实例
-
-#### Scenario: 按名称构建 LiDAR 预处理器
-- **WHEN** 配置中指定 LiDAR BEV 预处理器名称及其初始化参数
-- **THEN** 系统 MUST 通过 `PREPROCESSORS` 注册表返回可运行的 LiDAR 预处理器实例
-
 ### Requirement: LiDAR 注册错误可诊断
 LiDAR 相关注册错误 MUST 使用现有注册表错误风格，并在未知名称、重复名称或缺失必需参数时提供清晰错误信息。
 
@@ -98,26 +80,6 @@ LiDAR 相关注册错误 MUST 使用现有注册表错误风格，并在未知�
 - **WHEN** 配置中引用已注册 LiDAR 组件但缺少必需构造参数
 - **THEN** 系统 MUST 抛出明确异常
 - **AND** 错误信息 MUST 包含缺失字段或原始构建错误
-
-### Requirement: mmWave 组件注册
-项目 MUST 通过现有组件注册表注册 mmWave 模型和预处理器，使用户能通过配置构建 mmWave teacher、student、feature extractor、dataset 处理路径和序列预处理流程。
-
-#### Scenario: 按名称构建 mmWave teacher
-- **WHEN** 配置中指定 `type: mmwave_teacher` 及其初始化参数
-- **THEN** 系统 MUST 通过 `MODELS` 注册表返回 `MmWaveModalityNet` 实例
-
-#### Scenario: 按名称构建 mmWave student
-- **WHEN** 配置中指定 `type: mmwave_student` 及其初始化参数
-- **THEN** 系统 MUST 通过 `MODELS` 注册表返回 `MmWaveStudentModalityNet` 实例
-
-#### Scenario: 按名称构建 mmWave feature extractor
-- **WHEN** 配置中指定 `type: mmwave_feature_extractor` 及其初始化参数
-- **THEN** 系统 MUST 通过 `MODELS` 注册表返回 `MmWaveFeatureExtractor` 实例
-
-#### Scenario: 按名称运行 mmWave 序列预处理
-- **WHEN** 配置中指定序列预处理器并启用 `include_mmwave: true`
-- **THEN** 系统 MUST 通过 `PREPROCESSORS` 注册表构建可运行的序列预处理器
-- **AND** 预处理器 MUST 输出可被 mmWave dataset 路径读取的 `mmwave1..mmwaveN` 列
 
 ### Requirement: mmWave 注册错误可诊断
 mmWave 相关注册错误 MUST 使用现有注册表错误风格，并在未知名称、重复名称或缺失必需参数时提供清晰错误信息。
@@ -186,17 +148,28 @@ mmWave 相关注册错误 MUST 使用现有注册表错误风格，并在未知�
 - **AND** 未知 encoder 名称 MUST 使用现有 registry 错误风格报告可用名称
 
 ### Requirement: 默认组件导入包含新增组件
-默认组件导入流程 MUST 注册 ResNet-18 image encoder、模块化序列模型和内置 core/head 组件，同时保持 registry 本身轻量可导入。导入 `kd_sensing.registries` MUST 不急切导入 torchvision、dataset、训练器或 checkpoint 文件。
+默认组件导入流程 MUST 注册 ResNet-18 image encoder、TinyViT image encoder、模块化序列模型和内置 core/head 组件，同时保持 registry 本身轻量可导入。导入 `kd_sensing.registries` MUST 不急切导入 torchvision、timm、dataset、训练器、checkpoint 文件、预训练权重接口或触发任何权重下载。
 
 #### Scenario: 构建前导入默认组件
 - **WHEN** 构建流程调用默认组件导入函数后再构建模块化序列模型
 - **THEN** `MODELS` 注册表或对应子组件 registry MUST 包含新增注册名
 - **AND** 用户配置中的新增注册名 MUST 可解析
 
-#### Scenario: 轻量导入 registry 不触发 torchvision
+#### Scenario: 轻量导入 registry 不触发 torchvision 或 TinyViT 权重
 - **WHEN** 开发者仅执行 `import kd_sensing.registries`
 - **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不 eager import torchvision 或 ResNet-18 预训练权重接口
+- **AND** 系统 MUST 不 eager import torchvision、timm 或 TinyViT 预训练权重接口
+- **AND** 系统 MUST 不访问网络、不创建 checkpoint cache、不加载 TinyViT 权重
+
+#### Scenario: 构建 TinyViT encoder 注册名
+- **WHEN** 构建流程调用默认组件导入函数后查看 `ENCODERS.list()`
+- **THEN** 输出 MUST 包含 `tinyvit_5m_scratch_rgb`、`tinyvit_5m_22k_rgb`、`tinyvit_11m_scratch_rgb` 和 `tinyvit_11m_22k_rgb`
+- **AND** 系统 MUST 能通过 `ENCODERS.build()` 构建这些 TinyViT image encoder
+
+#### Scenario: 未知 TinyViT 名称使用 registry 错误风格
+- **WHEN** 用户请求不存在或拼写错误的 TinyViT encoder 注册名
+- **THEN** 系统 MUST 使用现有 registry 错误风格抛出异常
+- **AND** 错误信息 MUST 包含请求名称、registry 名称和可用 encoder 名称
 
 ### Requirement: 模块化组件错误可诊断
 模块化模型构建失败时，系统 MUST 抛出包含组件类别、请求名称、相关模态和可用名称的清晰错误。shape 或 profile 不匹配错误 MUST 在构建或首次 forward 的早期暴露，并包含实际输入 shape。
@@ -439,4 +412,27 @@ JEPA downstream pooler/adapter 的注册 MUST 不破坏 registry 轻量导入边
 - **WHEN** 开发者阅读 Add a Model 或新增 baseline 指南
 - **THEN** 首个示例 MUST 展示 `modular_sequence` 配置或子组件 registry
 - **AND** 文档 MUST 不把直接 `@MODELS.register` 整模型作为普通 baseline 的默认建议
+
+### Requirement: Legacy model registry names are retired with migration guards
+项目 MUST 将已退役的 legacy model、encoder、core 和 head 注册名登记为 removed guard，而不是继续作为 current 可构建组件暴露。removed guard MUST 区分未知名称和已退役名称，并 MUST 给出明确迁移目标。
+
+#### Scenario: 旧整模型注册名被拒绝并给出迁移目标
+- **WHEN** 用户通过 `MODELS.build()` 请求 `radar_strong`、`gps_lightweight`、`mmwave_strong`、`fusion_lightweight` 或其它本 change 退役的旧整模型注册名
+- **THEN** 系统 MUST 抛出 removed component 错误
+- **AND** 错误信息 MUST 包含请求名称、registry 名称和 `modular_sequence` 迁移目标
+
+#### Scenario: 旧别名被拒绝并指向 canonical 名称
+- **WHEN** 用户请求 `modular_sequence_model`、`gps_only_neural_baseline`、`jepa_token_transformer` 或 `safe_residual_reranker`
+- **THEN** 系统 MUST 抛出 removed component 错误
+- **AND** 错误信息 MUST 指向对应 canonical 名称或配置路径
+
+#### Scenario: feature extractor 不作为完整模型列出
+- **WHEN** 默认组件导入完成后开发者查看 `MODELS.list()`
+- **THEN** 输出 MUST NOT 包含 `radar_feature_extractor`、`lidar_feature_extractor` 或 `mmwave_feature_extractor`
+- **AND** 对应 feature extractor 类 MAY 继续通过窄模块导入或由 encoder 组件内部复用
+
+#### Scenario: current registry discovery 只列当前入口
+- **WHEN** 文档、架构摘要或架构边界测试检查 current registry surface
+- **THEN** current model/encoder/core/head 清单 MUST 不把 removed guard 名称展示为可推荐入口
+- **AND** removed 名称 MAY 出现在退役边界或 migration table 中
 

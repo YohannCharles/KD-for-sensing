@@ -102,26 +102,40 @@ def _minimal_registry_config(model_type: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("model_type", "expected_cls"),
+    "model_type",
     [
-        ("image_strong", ImageStrongModalityNet),
-        ("image_lightweight", ImageLightweightModalityNet),
-        ("radar_strong", RadarStrongModalityNet),
-        ("radar_lightweight", RadarLightweightModalityNet),
-        ("gps_strong", GpsStrongModalityNet),
-        ("gps_lightweight", GpsLightweightModalityNet),
-        ("lidar_strong", LidarStrongModalityNet),
-        ("lidar_lightweight", LidarLightweightModalityNet),
-        ("mmwave_strong", MmWaveStrongModalityNet),
-        ("mmwave_lightweight", MmWaveLightweightModalityNet),
-        ("fusion_strong", FusionStrongModalityNet),
-        ("fusion_lightweight", FusionLightweightModalityNet),
+        "image_strong",
+        "image_lightweight",
+        "radar_strong",
+        "radar_lightweight",
+        "gps_strong",
+        "gps_lightweight",
+        "lidar_strong",
+        "lidar_lightweight",
+        "mmwave_strong",
+        "mmwave_lightweight",
+        "fusion_strong",
+        "fusion_lightweight",
     ],
 )
-def test_strong_and_lightweight_registry_names_are_public(model_type: str, expected_cls: type):
-    model = MODELS.build(_minimal_registry_config(model_type))
+def test_strong_and_lightweight_registry_names_are_removed(model_type: str):
+    with pytest.raises(RegistryError, match="Removed component"):
+        MODELS.build(_minimal_registry_config(model_type))
 
-    assert isinstance(model, expected_cls)
+
+def test_legacy_whole_model_classes_remain_narrow_imports():
+    assert ImageStrongModalityNet.__name__ == "ImageModalityNet"
+    assert ImageLightweightModalityNet.__name__ == "ImageStudentModalityNet"
+    assert RadarStrongModalityNet.__name__ == "RadarModalityNet"
+    assert RadarLightweightModalityNet.__name__ == "RadarStudentModalityNet"
+    assert GpsStrongModalityNet.__name__ == "GpsModalityNet"
+    assert GpsLightweightModalityNet.__name__ == "GpsStudentModalityNet"
+    assert LidarStrongModalityNet.__name__ == "LidarModalityNet"
+    assert LidarLightweightModalityNet.__name__ == "LidarStudentModalityNet"
+    assert MmWaveStrongModalityNet.__name__ == "MmWaveModalityNet"
+    assert MmWaveLightweightModalityNet.__name__ == "MmWaveStudentModalityNet"
+    assert FusionStrongModalityNet.__name__ == "FusionTeacherModalityNet"
+    assert FusionLightweightModalityNet.__name__ == "FusionStudentModalityNet"
 
 
 @pytest.mark.parametrize(
@@ -149,15 +163,15 @@ def test_removed_teacher_student_registry_names_fail_fast(removed_type: str):
 @pytest.mark.parametrize(
     ("config_path", "expected_type", "expected_cls"),
     [
-        ("configs/radar/strong.yaml", "radar_strong", RadarStrongModalityNet),
-        ("configs/radar/lightweight.yaml", "radar_lightweight", RadarLightweightModalityNet),
-        ("configs/radar/supervised.yaml", "radar_strong", RadarStrongModalityNet),
-        ("configs/gps/strong.yaml", "gps_strong", GpsStrongModalityNet),
-        ("configs/gps/lightweight.yaml", "gps_lightweight", GpsLightweightModalityNet),
-        ("configs/gps/supervised.yaml", "gps_strong", GpsStrongModalityNet),
-        ("configs/mmwave/strong.yaml", "mmwave_strong", MmWaveStrongModalityNet),
-        ("configs/mmwave/lightweight.yaml", "mmwave_lightweight", MmWaveLightweightModalityNet),
-        ("configs/mmwave/supervised.yaml", "mmwave_strong", MmWaveStrongModalityNet),
+        ("configs/radar/strong.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/radar/lightweight.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/radar/supervised.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/gps/strong.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/gps/lightweight.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/gps/supervised.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/mmwave/strong.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/mmwave/lightweight.yaml", "modular_sequence", ModularSequenceModel),
+        ("configs/mmwave/supervised.yaml", "modular_sequence", ModularSequenceModel),
         ("configs/image/strong.yaml", "modular_sequence", ModularSequenceModel),
         ("configs/image/lightweight.yaml", "modular_sequence", ModularSequenceModel),
         ("configs/image/supervised.yaml", "modular_sequence", ModularSequenceModel),
@@ -184,7 +198,7 @@ def test_run_lineage_metadata_uses_distillation_free_fields():
             "training_mode": "adaptation",
             "method_family": "gps_adapter_v2",
         },
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"primary": {"type": "modular_sequence", "modalities": ["gps"]}},
     }
 
     lineage = run_lineage_metadata(cfg)
@@ -192,8 +206,8 @@ def test_run_lineage_metadata_uses_distillation_free_fields():
     assert lineage == {
         "training_mode": "adaptation",
         "method_family": "gps_adapter_v2",
-        "model_capacity": "strong",
-        "primary_model": "gps_strong",
+        "model_capacity": "primary",
+        "primary_model": "modular_sequence",
         "main_conclusion_eligible": True,
     }
     assert is_historical_kd_metadata({"distillation_enabled": True}) is True
@@ -227,7 +241,7 @@ def test_virtual_fusion_configs_use_primary_and_no_distillation(slug: str, modal
     assert cfg["model"]["modalities"] == modalities
     assert cfg["model"]["primary"]["modalities"] == modalities
     if mode == "strong":
-        expected_type = "modular_sequence" if {"image", "lidar"} & set(modalities) else "fusion_strong"
+        expected_type = "modular_sequence"
     else:
         expected_type = "cls_token_transformer_fusion"
     assert cfg["model"]["primary"]["type"] == expected_type
@@ -257,8 +271,6 @@ def test_existing_fusion_supervised_configs_are_primary_only(config_path: str):
     assert primary["modalities"] == cfg["model"].get("modalities", primary["modalities"])
     assert primary["type"] in {
         "cls_token_transformer_fusion",
-        "fusion_lightweight",
-        "fusion_strong",
         "modular_sequence",
         "token_transformer_fusion",
     }
@@ -371,45 +383,69 @@ def test_csi_matrix_configs_use_primary_encoder(config_path: str):
         assert primary["encoders"]["csi"]["type"] == "pilot_dual_view_csi"
 
 
-def test_radar_strong_and_lightweight_forward_contracts():
+def test_modular_radar_configs_forward_contracts():
     batch = torch.rand(2, 8, 2, 128, 64)
-    for model_type in ("radar_strong", "radar_lightweight"):
-        model = MODELS.build(
-            {
-                "type": model_type,
-                "radar_channels": 2,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64, 1],
-            }
-        )
-        output = adapt_model_output(model(batch))
+    for config_path in ("configs/radar/strong.yaml", "configs/radar/lightweight.yaml"):
+        cfg = _load(config_path)
+        model = MODELS.build(cfg["model"]["primary"])
+        output = adapt_model_output(model(radar_batch=batch))
         assert output.logits.shape == (2, 8, 64)
         assert output.input_features.shape[:2] == (2, 8)
 
 
+def test_modular_gps_configs_forward_contracts():
+    batch = torch.rand(2, 8, 3)
+    for config_path in ("configs/gps/strong.yaml", "configs/gps/lightweight.yaml"):
+        cfg = _load(config_path)
+        model = MODELS.build(cfg["model"]["primary"])
+        output = adapt_model_output(model(gps_batch=batch))
+        assert output.logits.shape == (2, 8, 64)
+        assert output.input_features.shape[:2] == (2, 8)
+
+
+def test_modular_mmwave_configs_forward_contracts():
+    batch = torch.rand(2, 8, 64)
+    for config_path in ("configs/mmwave/strong.yaml", "configs/mmwave/lightweight.yaml"):
+        cfg = _load(config_path)
+        model = MODELS.build(cfg["model"]["primary"])
+        output = adapt_model_output(model(mmwave_batch=batch))
+        assert output.logits.shape == (2, 8, 64)
+        assert output.input_features.shape[:2] == (2, 8)
+
+
+def test_modular_radar_gps_fusion_config_forward_contract():
+    cfg = _load("configs/fusion/radar_gps_supervised.yaml")
+    primary = cfg["model"]["primary"]
+    model = MODELS.build(primary)
+
+    assert primary["type"] == "modular_sequence"
+    assert primary["modalities"] == ["radar", "gps"]
+    output = adapt_model_output(
+        model(
+            radar_batch=torch.rand(2, 8, 2, 128, 64),
+            gps_batch=torch.rand(2, 8, 3),
+        )
+    )
+    assert output.logits.shape == (2, 8, 64)
+    assert output.input_features.shape[:2] == (2, 8)
+
+
 def test_radar_strong_rejects_invalid_attention_heads():
     with pytest.raises(ValueError, match="divisible by num_heads"):
-        MODELS.build(
-            {
-                "type": "radar_strong",
-                "radar_channels": 2,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 65, 1],
-                "num_heads": 8,
-            }
+        RadarStrongModalityNet(
+            radar_channels=2,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 65, 1],
+            num_heads=8,
         )
 
 
 def test_radar_lightweight_rejects_invalid_gru_params_length():
     with pytest.raises(ValueError, match="gru_params"):
-        MODELS.build(
-            {
-                "type": "radar_lightweight",
-                "radar_channels": 2,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64],
-            }
+        RadarLightweightModalityNet(
+            radar_channels=2,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64],
         )

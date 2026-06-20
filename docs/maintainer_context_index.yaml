@@ -104,8 +104,8 @@ routing:
       lifecycle: current
       labels:
         - 诊断
-        - viewer
         - visual analysis
+        - benchmark
       read_first:
         - openspec/specs/modality-visual-diagnostics/spec.md
         - openspec/specs/jepa-visual-analysis-suite/spec.md
@@ -114,9 +114,10 @@ routing:
         - docs/project_surface_inventory.md
       primary_paths:
         - src/kd_sensing/diagnostics/
-        - src/kd_sensing/cli/export_viewer_manifest.py
+        - src/kd_sensing/cli/jepa_visual_analysis.py
+        - src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py
       validation_commands:
-        - conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q
+        - conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q
         - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
     - id: runtime_outputs_cache_cleanup
       lifecycle: current
@@ -297,19 +298,6 @@ governance:
         owner_module: kd_sensing.diagnostics.runtime_artifact_cleanup
         responsibility: runtime output organization CLI
         output_boundary: ignored outputs/ and logs/ runtime artifact roots
-      - name: kd-sensing-export-viewer-manifest
-        target: kd_sensing.cli.export_viewer_manifest:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.diagnostics.viewer_manifest
-        responsibility: viewer manifest export CLI
-        output_boundary: ignored outputs/visual_analysis/ and outputs/cache/ or explicit user path
-      - name: kd-sensing-visualize-modalities
-        target: kd_sensing.cli.visualize_modalities:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.diagnostics.viewer_manifest
-        responsibility: thin package alias for viewer manifest export
-        output_boundary: ignored outputs/visual_analysis/ and outputs/cache/ or explicit user path
-        retired_route_guard: do not restore tools/visualization wrapper
       - name: kd-sensing-jepa-visual-analysis
         target: kd_sensing.cli.jepa_visual_analysis:main
         lifecycle: package_cli
@@ -359,48 +347,6 @@ governance:
         owner_module: kd_sensing.cli.compare_mmw_town_gps_v2
         responsibility: MMW Town GPS-only v2 comparison report CLI
         output_boundary: ignored outputs/analysis/ or explicit user path
-      - name: kd-sensing-prepare-mmw-town-gps-lidar-bgam-manifest
-        target: kd_sensing.cli.prepare_mmw_town_gps_lidar_bgam_manifest:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.data.mmw_town_gps_lidar_bgam_manifest
-        responsibility: MMW Town GPS+LiDAR BGAM manifest preparation CLI
-        output_boundary: dataset preparation target or explicit user path
-        retired_route_guard: no standalone Top8 selector entry
-      - name: kd-sensing-run-mmw-town-gps-lidar-bgam
-        target: kd_sensing.cli.run_mmw_town_gps_lidar_bgam:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.engine.mmw_town_gps_lidar_bgam
-        responsibility: MMW Town GPS+LiDAR BGAM run CLI
-        output_boundary: ignored outputs/analysis/ or explicit user path
-        retired_route_guard: no standalone Top8 selector entry
-      - name: kd-sensing-evaluate-mmw-town-gps-lidar-bgam
-        target: kd_sensing.cli.evaluate_mmw_town_gps_lidar_bgam:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.engine.mmw_town_gps_lidar_bgam
-        responsibility: MMW Town GPS+LiDAR BGAM evaluation CLI
-        output_boundary: ignored outputs/evaluations/ or explicit user path
-        retired_route_guard: no standalone Top8 selector entry
-      - name: kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest
-        target: kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.data.deepsense6g_gps_lidar_bgam_manifest
-        responsibility: DeepSense6G GPS+LiDAR BGAM manifest preparation CLI
-        output_boundary: dataset preparation target or explicit user path
-        retired_route_guard: no DeepSense6G residual route
-      - name: kd-sensing-run-deepsense6g-gps-lidar-bgam
-        target: kd_sensing.cli.run_deepsense6g_gps_lidar_bgam:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.engine.deepsense6g_gps_lidar_bgam
-        responsibility: DeepSense6G GPS+LiDAR BGAM run CLI
-        output_boundary: ignored outputs/analysis/ or explicit user path
-        retired_route_guard: no DeepSense6G residual route
-      - name: kd-sensing-evaluate-deepsense6g-gps-lidar-bgam
-        target: kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.engine.deepsense6g_gps_lidar_bgam
-        responsibility: DeepSense6G GPS+LiDAR BGAM evaluation CLI
-        output_boundary: ignored outputs/evaluations/ or explicit user path
-        retired_route_guard: no DeepSense6G residual route
       - name: kd-sensing-train-beambench-image-ae-gps
         target: kd_sensing.cli.train_beambench_image_ae_gps:main
         lifecycle: package_cli
@@ -415,19 +361,6 @@ governance:
         responsibility: BeamBench Image AE+GPS Table III orchestration CLI
         output_boundary: ignored outputs/scenegroup_s32_s34/ or outputs/evaluations/ or explicit user path
         retired_route_guard: Arnold22 Camera AE+GPS row only; no KD or residual route
-      - name: kd-sensing-run-amr-net-gps-image
-        target: kd_sensing.cli.run_amr_net_gps_image:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.baselines.amr_net_gps_image.report
-        responsibility: AMR-Net GPS+image source-audit/report CLI
-        output_boundary: ignored outputs/analysis/amr_net_gps_image/ or explicit user path
-        retired_route_guard: source audit only; no LiDAR or official long-training reproduction
-      - name: kd-sensing-run-jepa-msac
-        target: kd_sensing.cli.run_jepa_msac:main
-        lifecycle: package_cli
-        owner_module: kd_sensing.baselines.jepa_msac.workflow
-        responsibility: JEPA-MSAC paper/workflow reproduction CLI
-        output_boundary: ignored outputs/analysis/jepa_msac/ or explicit user path
     python_allowlist:
       - path: scripts/analyze_csi_hardening_sweep.py
         lifecycle: research_diagnostic
@@ -490,21 +423,6 @@ governance:
         owner_module: kd_sensing.data.mmw.preparation
         responsibility: MMW Town10 skybridge preparation wrapper
         output_boundary: dataset preparation target or explicit user path
-      - path: scripts/mmw/visualize_gps_angle_beam_correspondence.py
-        lifecycle: research_diagnostic
-        owner_script: scripts/mmw/visualize_gps_angle_beam_correspondence.py
-        responsibility: MMW GPS angle/beam correspondence visualization
-        output_boundary: ignored outputs/analysis/ or explicit user path
-      - path: scripts/mmw/visualize_gps_prediction_trajectory.py
-        lifecycle: research_diagnostic
-        owner_script: scripts/mmw/visualize_gps_prediction_trajectory.py
-        responsibility: MMW GPS prediction trajectory visualization
-        output_boundary: ignored outputs/analysis/ or explicit user path
-      - path: scripts/mmw/visualize_prediction_error_label_distribution.py
-        lifecycle: research_diagnostic
-        owner_script: scripts/mmw/visualize_prediction_error_label_distribution.py
-        responsibility: MMW prediction error label distribution visualization
-        output_boundary: ignored outputs/analysis/ or explicit user path
       - path: scripts/mmw/visualize_town_label_distribution.py
         lifecycle: dataset_preparation
         owner_script: scripts/mmw/visualize_town_label_distribution.py
@@ -554,26 +472,6 @@ governance:
         responsibility: CSI hardening matrix shell orchestration
         output_boundary: ignored outputs/ and logs/ runtime artifacts
         retired_route_guard: no A0_clean_full_teacher default restoration
-      - path: scripts/run_deepsense_gps_circular_soft_label.sh
-        lifecycle: shell_orchestration
-        owner_script: scripts/run_deepsense_gps_circular_soft_label.sh
-        responsibility: DeepSense6G GPS circular soft-label shell orchestration
-        output_boundary: ignored outputs/training/ and logs/ runtime artifacts
-      - path: scripts/run_mmw_gps_circular_soft_label_ablation.sh
-        lifecycle: shell_orchestration
-        owner_script: scripts/run_mmw_gps_circular_soft_label_ablation.sh
-        responsibility: MMW GPS circular soft-label ablation shell orchestration
-        output_boundary: ignored outputs/analysis/ and logs/ runtime artifacts
-      - path: scripts/run_mmw_sunny_modal15_l5p3_h123.sh
-        lifecycle: shell_orchestration
-        owner_script: scripts/run_mmw_sunny_modal15_l5p3_h123.sh
-        responsibility: MMW sunny modal15 quick validation shell orchestration
-        output_boundary: ignored outputs/mmw_sunny_modal15/ and logs/ runtime artifacts
-      - path: scripts/run_mmw_sunny_modal15_l5p6_h246.sh
-        lifecycle: shell_orchestration
-        owner_script: scripts/run_mmw_sunny_modal15_l5p6_h246.sh
-        responsibility: MMW sunny modal15 quick validation shell orchestration
-        output_boundary: ignored outputs/mmw_sunny_modal15/ and logs/ runtime artifacts
 
   configs:
     fusion_root_allowlist:
@@ -620,32 +518,39 @@ governance:
       - bev_fusion_2604
       - camera_ae_frozen
       - cls_token_transformer_fusion
-      - fusion_lightweight
-      - fusion_strong
       - gps_conditioned_jepa
-      - jepa_msac
-      - gps_lightweight
-      - gps_only_neural_baseline
       - gps_sequence_baseline
-      - gps_strong
-      - image_lightweight
-      - image_strong
       - jepa_context_image
-      - lidar_feature_extractor
-      - lidar_lightweight
-      - lidar_strong
-      - mmwave_feature_extractor
-      - mmwave_lightweight
-      - mmwave_strong
       - modular_sequence
-      - modular_sequence_model
-      - radar_feature_extractor
-      - radar_lightweight
-      - radar_strong
       - resnet18_imagenet_rgb
       - token_transformer_fusion
       - vision_position_late_fusion
       - vision_position_transformer_fusion
+    removed_guard_names:
+      models:
+        - fusion_lightweight
+        - fusion_strong
+        - gps_lightweight
+        - gps_only_neural_baseline
+        - gps_strong
+        - image_lightweight
+        - image_strong
+        - lidar_feature_extractor
+        - lidar_lightweight
+        - lidar_strong
+        - mmwave_feature_extractor
+        - mmwave_lightweight
+        - mmwave_strong
+        - modular_sequence_model
+        - radar_feature_extractor
+        - radar_lightweight
+        - radar_strong
+      encoders:
+        - point_cloud_mlp
+      representation_cores:
+        - jepa_token_transformer
+      heads:
+        - safe_residual_reranker
 
   batch_runtime:
     function_allowlist:
@@ -871,25 +776,6 @@ governance:
         rollback_note: Restore paper split orchestration in place while keeping summary artifacts, checkpoint reuse metadata, and CLI behavior compatible.
         validation_commands:
           - conda run -n kd_mm_beam pytest tests/test_beambench_image_ae_gps_direct.py -q
-          - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-      - path: src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py
-        symbol: run_deepsense6g_gps_lidar_bgam
-        kind: function
-        max_lines: 240
-        priority: P2
-        status: monitor
-        enforcement: monitor
-        planned_action: monitor
-        public_surface_policy: keep-public-import
-        headroom_lines: 15
-        split_targets:
-          - manifest_loading
-          - ablation_dispatch
-          - summary_writer
-        rationale: DeepSense6G BGAM should align with the MMW BGAM contract before deeper extraction.
-        rollback_note: Keep BGAM manifest loading and summary writer in the workflow until DeepSense6G/MMW BGAM contracts share focused coverage.
-        validation_commands:
-          - conda run -n kd_mm_beam pytest tests/test_gps_lidar_bgam_runner.py tests/test_gps_lidar_bgam_dataset.py -q
           - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
       - path: src/kd_sensing/engine/evaluation_pass.py
         symbol: run_evaluation_pass
@@ -1120,7 +1006,7 @@ governance:
         rationale: JEPA visual analysis remains a public diagnostic CLI owner; report/table/figure/cache responsibilities are registered for future internal owner extraction without changing output schema.
         rollback_note: Revert internal owner extraction if visual analysis manifest, table columns, figure paths, or cache metadata drift.
         validation_commands:
-          - conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q
+          - conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q
           - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
       - path: src/kd_sensing/diagnostics/runtime_artifact_cleanup.py
         max_lines: 1350
@@ -1249,7 +1135,6 @@ governance:
       - id: wave-3-evaluation-diagnostics
         target_paths:
           - src/kd_sensing/engine/evaluation_pass.py
-          - src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py
           - src/kd_sensing/engine/mmw_town_gps_v2.py
           - src/kd_sensing/diagnostics/jepa_visual_analysis.py
           - src/kd_sensing/diagnostics/run_index.py
@@ -1281,7 +1166,6 @@ governance:
       - id: wave-5-consolidation-imports
         target_paths:
           - src/kd_sensing/losses/jepa.py
-          - src/kd_sensing/losses/gps_lidar_bgam_losses.py
           - src/kd_sensing/models/csi_encoder.py
         owner_module: kd_sensing.models.csi_encoder
         planned_action: keep-and-test
@@ -1308,8 +1192,6 @@ governance:
       - run_image_ae_gps_training
       - src/kd_sensing/baselines/beambench/image_ae_gps_paper_split.py
       - run_image_ae_gps_paper_split_training
-      - src/kd_sensing/engine/deepsense6g_gps_lidar_bgam.py
-      - run_deepsense6g_gps_lidar_bgam
       - src/kd_sensing/engine/evaluation_pass.py
       - run_evaluation_pass
       - src/kd_sensing/engine/batch.py
@@ -1327,13 +1209,11 @@ governance:
       - src/kd_sensing/diagnostics/jepa_benchmark_plots.py
       - src/kd_sensing/diagnostics/jepa_benchmark_runner.py
       - run_jepa_gps_shortcut_benchmark
-      - src/kd_sensing/diagnostics/viewer_manifest.py
       - src/kd_sensing/models/modular.py
       - src/kd_sensing/config/canonical.py
       - src/kd_sensing/data/difficulty/operators/image.py
       - src/kd_sensing/data/transform_ops/csi.py
       - src/kd_sensing/losses/jepa.py
-      - src/kd_sensing/losses/gps_lidar_bgam_losses.py
       - src/kd_sensing/models/csi_encoder.py
 
   health_checks:
@@ -1361,6 +1241,21 @@ governance:
       - image_motion
       - raymobtime
       - raymobtime_s008
+      - bgam
+      - gps_lidar_bgam
+      - viewer_manifest
+      - modality_visualization
+      - amr_net_gps_image
+      - jepa_msac
+      - jepa_msac_s32
+      - jepa_msac_pretraining
+      - run_amr_net_gps_image
+      - run_jepa_msac
+      - gps_circular_soft_label
+      - mmw_sunny_modal15
+      - visualize_gps_angle_beam_correspondence
+      - visualize_gps_prediction_trajectory
+      - visualize_prediction_error_label_distribution
     text_markers:
       - HiST-Beam
       - Top8 selector
@@ -1373,6 +1268,16 @@ governance:
       - no_kd
       - Raymobtime s008
       - raymobtime_s008
+      - BGAM
+      - viewer manifest
+      - Gradio viewer
+      - AMR-Net_gps_image
+      - JEPA-MSAC
+      - kd-sensing-run-amr-net-gps-image
+      - kd-sensing-run-jepa-msac
+      - scripts/mmw/visualize_gps_
+      - gps_circular_soft_label
+      - run_mmw_sunny_modal15
 
 references:
   agents:

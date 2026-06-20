@@ -16,9 +16,6 @@ VISION_POSITION_PRESETS = (
     "resnet_gps",
     "transformer_image_gps",
     "gps_only_neural",
-    "amr_net_gps_image_image_only",
-    "amr_net_gps_image_gps_only",
-    "amr_net_gps_image_image_gps_fusion",
 )
 
 
@@ -351,7 +348,6 @@ class VisionPositionLateFusionNet(nn.Module, _HorizonClassifierMixin):
 
 
 @MODELS.register("gps_sequence_baseline")
-@MODELS.register("gps_only_neural_baseline")
 class GpsSequenceBaselineNet(nn.Module, _HorizonClassifierMixin):
     supports_modality_kwargs = True
 
@@ -500,6 +496,12 @@ class GpsSequenceBaselineNet(nn.Module, _HorizonClassifierMixin):
             "num_pred": self.num_pred,
             "label_space": "64_beam",
         }
+
+
+MODELS.register_removed(
+    "gps_only_neural_baseline",
+    "Use 'gps_sequence_baseline' for the retained AMR-Net GPS-only baseline.",
+)
 
 
 @MODELS.register("vision_position_transformer_fusion")

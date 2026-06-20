@@ -10,7 +10,6 @@ PREDICTION_OBJECTIVES = (
     "current_link_quality",
     "selection_multitask",
     "gps_conditioned_jepa",
-    "jepa_msac_pretraining",
 )
 
 _DEFAULT_METRICS: dict[str, tuple[str, str]] = {
@@ -23,7 +22,6 @@ _DEFAULT_METRICS: dict[str, tuple[str, str]] = {
     "current_link_quality": ("val_link_mae", "min"),
     "selection_multitask": ("val_selection_multitask_loss", "min"),
     "gps_conditioned_jepa": ("val_jepa_loss", "min"),
-    "jepa_msac_pretraining": ("val_jepa_msac_loss", "min"),
 }
 
 _BASE_AVAILABLE_METRICS = ("val_loss",)
@@ -151,10 +149,6 @@ _METRIC_ALIASES: dict[str, str] = {
     "jepa_loss": "val_jepa_loss",
     "val_jepa_loss": "val_jepa_loss",
     "loss/jepa": "val_jepa_loss",
-    "jepa_msac": "val_jepa_msac_loss",
-    "jepa_msac_loss": "val_jepa_msac_loss",
-    "val_jepa_msac_loss": "val_jepa_msac_loss",
-    "loss/jepa_msac": "val_jepa_msac_loss",
     "los_accuracy": "val_los_accuracy",
     "val_los_accuracy": "val_los_accuracy",
     "los_f1": "val_los_f1",
@@ -201,9 +195,6 @@ _METRIC_MODES: dict[str, str] = {
     "val_jepa_mask_target_ratio": "max",
     "val_jepa_mask_context_ratio": "max",
     "val_jepa_ema_decay": "max",
-    "val_jepa_msac_loss": "min",
-    "val_jepa_msac_mask_ratio": "max",
-    "val_jepa_msac_ema_momentum": "max",
 }
 
 _OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
@@ -216,12 +207,6 @@ _OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
     "current_link_quality": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LINK_AVAILABLE_METRICS),
     "selection_multitask": (*_BASE_AVAILABLE_METRICS, *_SELECTION_MULTITASK_AVAILABLE_METRICS),
     "gps_conditioned_jepa": (*_BASE_AVAILABLE_METRICS, *_JEPA_AVAILABLE_METRICS),
-    "jepa_msac_pretraining": (
-        *_BASE_AVAILABLE_METRICS,
-        "val_jepa_msac_loss",
-        "val_jepa_msac_mask_ratio",
-        "val_jepa_msac_ema_momentum",
-    ),
 }
 
 __all__ = [

@@ -214,21 +214,17 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
     assert result["split_metadata"]["train"]["csv_path"] == "missing_train.csv"
 
 
-def test_gps_strong_and_lightweight_forward_contracts():
-    for model_type, expected_cls in [
-        ("gps_strong", GpsModalityNet),
-        ("gps_lightweight", GpsLightweightModalityNet),
+def test_gps_legacy_classes_forward_contracts_when_directly_instantiated():
+    for model_cls in [
+        GpsModalityNet,
+        GpsLightweightModalityNet,
     ]:
-        model = MODELS.build(
-            {
-                "type": model_type,
-                "gps_input_size": 3,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64, 2],
-            }
+        model = model_cls(
+            gps_input_size=3,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64, 2],
         )
-        assert isinstance(model, expected_cls)
         model.eval()
         with torch.no_grad():
             pred, features, output_features = model(torch.randn(2, 10, 3))
@@ -239,24 +235,18 @@ def test_gps_strong_and_lightweight_forward_contracts():
 
 def test_gps_model_rejects_invalid_params():
     with pytest.raises(ValueError, match="gru_params must contain"):
-        MODELS.build(
-            {
-                "type": "gps_lightweight",
-                "gps_input_size": 3,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64],
-            }
+        GpsLightweightModalityNet(
+            gps_input_size=3,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64],
         )
     with pytest.raises(ValueError, match="must equal feature_size"):
-        MODELS.build(
-            {
-                "type": "gps_strong",
-                "gps_input_size": 3,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [32, 64, 1],
-            }
+        GpsModalityNet(
+            gps_input_size=3,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[32, 64, 1],
         )
 
 

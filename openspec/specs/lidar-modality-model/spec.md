@@ -4,56 +4,17 @@
 定义 LiDAR 模态模型、BEV encoder、normalization 和输入质量诊断契约。
 ## Requirements
 ### Requirement: LiDARFeatureExtractor 结构
-系统 MUST 提供 `LidarFeatureExtractor`，用于从 LiDAR BEV 序列中提取每个时隙的固定长度特征。该 feature extractor MUST 接收形状为 `(batch, sequence, channels, height, width)` 的 LiDAR BEV 张量，并输出 `(batch, sequence, feature_size)`。
+系统 MUST 提供 `LidarFeatureExtractor`，用于从 LiDAR BEV 序列中提取每个时隙的固定长度特征。该 feature extractor MUST 接收形状为 `(batch, sequence, channels, height, width)` 的 LiDAR BEV 张量，并输出 `(batch, sequence, feature_size)`。该类 MAY 通过 `kd_sensing.models.lidar` 或 `kd_sensing.models` 窄导入暴露，但 MUST NOT 作为 current `MODELS` 注册名暴露。
 
 #### Scenario: LiDAR feature extractor 前向输出
 - **WHEN** `LidarFeatureExtractor` 接收形状为 `(B, T, C, H, W)` 的 LiDAR BEV 输入
 - **THEN** 输出 MUST 为形状 `(B, T, feature_size)` 的特征张量
 - **AND** 输出 feature 维 MUST 等于构造参数 `n_feature` 或 `feature_size`
 
-#### Scenario: LiDAR feature extractor 注册与导出
-- **WHEN** 开发者从 `kd_sensing.models.lidar` 或 `kd_sensing.models` 导入 LiDAR feature extractor
-- **THEN** 系统 MUST 暴露 `LidarFeatureExtractor`
-- **AND** 系统 MUST 通过模型注册表提供 `lidar_feature_extractor` 或等价配置构建入口
-
-### Requirement: LiDARTeacher 模型结构
-系统 MUST 提供已注册的 `lidar_teacher` 模型，用于 LiDAR-only beam prediction。该模型的公开实现类和包导出名称 MUST 为 `LidarModalityNet`，并 MUST 接收 LiDAR BEV 序列张量，使用 `LidarFeatureExtractor`、LayerNorm、GRU temporal modeling、attention 或等价时序增强模块和 MLP classifier 输出 beam logits。
-
-#### Scenario: 按配置构建 LiDARTeacher
-- **WHEN** 配置中指定 `model.teacher.type: lidar_teacher` 或 `model.student.type: lidar_teacher`
-- **THEN** 系统 MUST 通过 `MODELS` 注册表构建 `LidarModalityNet` 实例
-- **AND** 构建参数 MUST 支持 `feature_size`、`num_classes`、`gru_params`、`lidar_channels` 和 attention 相关参数
-
-#### Scenario: LiDARTeacher 前向输出契约
-- **WHEN** `LidarModalityNet` 接收形状为 `(batch, sequence, channels, height, width)` 的 LiDAR BEV 输入张量
-- **THEN** 模型 MUST 返回 `(pred, features, output_features)`
-- **AND** `pred` 的形状 MUST 为 `(batch, sequence, num_classes)`
-- **AND** `features` 的形状 MUST 为 `(batch, sequence, feature_size)`
-- **AND** `output_features` 的 batch 与 sequence 维度 MUST 与输入一致
-
-#### Scenario: LiDARTeacher 参数校验
-- **WHEN** `gru_params` 不包含 `[input_size, hidden_size, num_layers]` 三个值，或 `gru_input_size` 不等于 `feature_size`
-- **THEN** `LidarModalityNet` MUST 在构建时抛出明确异常
-
-### Requirement: LiDARStudent 模型结构
-系统 MUST 提供已注册的 `lidar_student` 模型，用于 LiDAR-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `LidarStudentModalityNet`，并 MUST 使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。
-
-#### Scenario: 按配置构建 LiDARStudent
-- **WHEN** 配置中指定 `model.student.type: lidar_student`
-- **THEN** 系统 MUST 通过 `MODELS` 注册表构建 `LidarStudentModalityNet` 实例
-- **AND** 构建参数 MUST 支持 `feature_size`、`num_classes`、`gru_params`、`lidar_channels` 和 `width_multiplier`
-
-#### Scenario: LiDARStudent 前向输出契约
-- **WHEN** `LidarStudentModalityNet` 接收形状为 `(batch, sequence, channels, height, width)` 的 LiDAR BEV 输入张量
-- **THEN** 模型 MUST 返回 `(pred, features, output_features)`
-- **AND** `pred` 的形状 MUST 为 `(batch, sequence, num_classes)`
-- **AND** `features` 的形状 MUST 为 `(batch, sequence, feature_size)`
-- **AND** `output_features` 的 batch 与 sequence 维度 MUST 与输入一致
-
-#### Scenario: LiDARStudent 不依赖固定 BEV 尺寸
-- **WHEN** `LidarStudentModalityNet` 对每个 LiDAR 时隙提取空间特征
-- **THEN** 系统 MUST 使用 adaptive pooling 将空间特征聚合为固定长度向量
-- **AND** 模型 MUST 不依赖固定 flatten 输入尺寸
+#### Scenario: LiDAR feature extractor 不作为完整模型注册
+- **WHEN** 开发者查看 current `MODELS.list()`
+- **THEN** 输出 MUST NOT 包含 `lidar_feature_extractor`
+- **AND** 需要配置构建 LiDAR encoder 时 MUST 使用 `ENCODERS` 中的 `lidar_cnn`
 
 ### Requirement: LiDAR-only 输入准备
 系统 MUST 提供 LiDAR-only 输入准备路径，从 batch 中读取 `lidar`，按现有预测窗口规则补齐未来占位帧，并将结果传给 LiDAR 模型。
@@ -68,20 +29,6 @@
 - **THEN** LiDAR-only 输入 MUST 包含最近 8 个 LiDAR 时隙和 2 个未来 zero padding 时隙
 - **AND** 验证和损失计算 MUST 使用最后 `num_pred` 个输出时隙与 `[t+1, t+2, t+3]` 标签对齐
 - **AND** 输出时隙对齐 MUST 不包含历史窗口最后一个 beam
-
-### Requirement: LiDAR-only 基线配置
-项目 MUST 提供 LiDAR-only 配置，用于训练和评估 LiDAR teacher baseline 和 lightweight student baseline。配置 MUST 使用 `experiment.task: lidar`，并通过 `lidar_teacher` 或 `lidar_student` 构建主模型。
-
-#### Scenario: 启动 LiDAR teacher no-KD 训练
-- **WHEN** 用户使用 LiDAR teacher no-KD 配置运行训练入口
-- **THEN** 系统 MUST 构建 `lidar_teacher` 作为被优化的主模型
-- **AND** 训练流程 MUST 完成 forward、task loss、backward、optimizer step、validation 和 checkpoint 保存
-
-#### Scenario: 启动 LiDAR student no-KD 训练
-- **WHEN** 用户使用 LiDAR student no-KD 配置运行训练入口
-- **THEN** 系统 MUST 构建 `lidar_student` 作为被优化的主模型
-- **AND** 系统 MUST 不构建或加载 frozen teacher
-- **AND** 系统 MUST 只使用 LiDAR 输入完成 forward
 
 ### Requirement: LiDAR KD 入口已移除
 LiDAR-only 训练 MUST 不再支持 logits KD、RKD 或 distiller 运行时。旧 LiDAR KD 配置路径 MUST 在配置解析阶段失败，并引导用户使用 `configs/lidar/strong.yaml`、`configs/lidar/lightweight.yaml` 或 `configs/lidar/supervised.yaml`。
@@ -136,3 +83,17 @@ LiDAR strong/lightweight/supervised canonical 配置 MUST 使用修复后的 LiD
 - **WHEN** LiDAR 模型输出序列长度大于 `num_pred`
 - **THEN** 系统 MUST 继续只使用最后 `num_pred` 个输出时隙对齐 `[t+1, t+2, t+3]` 标签
 - **AND** 系统 MUST 不把历史窗口最后一个 beam 重新纳入训练 label
+
+### Requirement: LiDAR legacy model names are removed
+LiDAR legacy whole-model 注册名和 feature extractor `MODELS` 注册名 MUST 被 removed guard 拒绝。Current LiDAR canonical 配置 MUST 继续使用 `modular_sequence + lidar_cnn`。
+
+#### Scenario: 请求 LiDAR legacy 注册名
+- **WHEN** 用户请求 `lidar_teacher`、`lidar_student`、`lidar_strong`、`lidar_lightweight` 或 `lidar_feature_extractor`
+- **THEN** registry MUST 抛出 removed component 错误
+- **AND** 错误信息 MUST 建议使用 `modular_sequence + lidar_cnn + single_gru`
+
+#### Scenario: LiDAR canonical 配置仍使用 modular path
+- **WHEN** 用户加载 `configs/lidar/strong.yaml`、`configs/lidar/lightweight.yaml` 或 `configs/lidar/supervised.yaml`
+- **THEN** 最终配置的 `model.primary.type` MUST 为 `modular_sequence`
+- **AND** `model.primary.encoders.lidar.type` MUST 为 `lidar_cnn`
+

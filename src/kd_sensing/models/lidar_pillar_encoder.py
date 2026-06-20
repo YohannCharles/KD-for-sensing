@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class LidarBEVSpatialEncoder(nn.Module):
-    """Small CNN that preserves a spatial BEV feature map for BGAM."""
+    """Small CNN that preserves a spatial BEV feature map."""
 
     def __init__(
         self,

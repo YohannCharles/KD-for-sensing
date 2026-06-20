@@ -274,8 +274,9 @@ BeamBench/Arnold22 的当前结果、官方 blocked 状态、本地 substitute�
 
 #### Scenario: LiDAR encoder 插入点
 - **WHEN** 文档描述 LiDAR 关键区域注意力或 beam-guided attention
-- **THEN** 文档 MUST 指向 LiDAR encoder 输出 BEV feature、global feature 或 BGAM mask/gate 前后的候选插入位置
+- **THEN** 文档 MUST 指向当前 LiDAR encoder 输出 BEV feature、global feature 或可插拔 attention token 位置
 - **AND** 文档 MUST 说明该位置是否保留二维空间维度供 attention 使用
+- **AND** 文档 MUST 不把已退役的 BGAM mask/gate 描述为当前插入点
 
 #### Scenario: GPS embedding 与 fusion 插入点
 - **WHEN** 文档描述 beam-guided attention 或 cross-attention fusion

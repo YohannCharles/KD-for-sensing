@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from kd_sensing.cli.plot_mmw_town_gps_v2 import plot_results
 from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.engine.mmw_town_gps_v2 import (
     FeatureScaler,
@@ -15,8 +16,6 @@ from kd_sensing.engine.mmw_town_gps_v2 import (
     run_mmw_town_gps_v2,
     select_support_samples,
 )
-from kd_sensing.data.mmw_town_gps_lidar_bgam_manifest import build_mmw_town_gps_lidar_bgam_manifest
-from kd_sensing.data.mmw_town_topk_candidate_manifest import build_mmw_town_topk_candidate_manifest
 from kd_sensing.models.mmw_town_gps_v2 import MMWTownGpsV2Model, SceneAdapterV2, SceneAdapterV2Config
 
 
@@ -119,54 +118,6 @@ def test_runner_mapping_disabled_uses_raw_label_space(tmp_path: Path):
     assert all(row["true_beam"] == row["true_beam_raw"] for row in predictions)
 
 
-def test_mmw_top8_and_bgam_manifest_build_from_gps_logits(tmp_path: Path):
-    data_root, mapping_file = _write_tiny_mmw_dataset(tmp_path)
-    gps_cfg = _tiny_config(data_root, mapping_file, tmp_path / "gps")
-    gps_result = run_mmw_town_gps_v2(gps_cfg, target_scene="target_scene", save_logits=True, save_prior_probs=True)
-    gps_dir = Path(gps_result["output_dir"])
-
-    cfg = _tiny_config(data_root, mapping_file, tmp_path / "unused")
-    cfg["experiment"] = {"name": "mmw_town_gps_lidar_bgam_reranker"}
-    cfg["data"]["gps_v2_artifact_root"] = str(gps_dir.parent)
-    cfg["data"]["top8_manifest_path"] = str(tmp_path / "top8" / "mapping_enabled" / "manifest" / "top8_candidate_manifest.csv")
-    cfg["data"]["topk_candidate_source"] = str(tmp_path / "top8")
-    cfg["data"]["topk"] = 4
-    cfg["candidate"] = {"topk": 4, "num_beams": 8, "gps_protocol": "target_adapt_beambench", "gps_ablation": "best_by_scene"}
-    cfg["history"] = {
-        "history_len": 3,
-        "alignment_policy": "nearest_past",
-        "pseudo_label_source": "gps_v2_logits",
-        "group_keys": ["scene", "agent", "split"],
-    }
-    cfg["geometry"] = {"fallback_beam_angle_table": "dft_ula_approximation"}
-    cfg["lidar"] = {"bev_size": [8, 8], "roi": [-4, 4, -4, 4, -1, 2], "input_channels": 3, "missing_policy": "zeros"}
-    cfg["outputs"] = {
-        "root": str(tmp_path / "bgam"),
-        "topk_root": str(tmp_path / "top8"),
-        "manifest_dir": "manifest",
-        "manifest_name": "gps_lidar_bgam_manifest.csv",
-        "metadata_name": "gps_lidar_bgam_manifest_metadata.json",
-        "use_support_ratio_subdir": False,
-    }
-
-    top8 = build_mmw_town_topk_candidate_manifest(cfg, topk=4, output_dir=tmp_path / "top8")
-    top8_rows = _read_csv(Path(top8["manifest_path"]))
-    assert top8_rows
-    assert all(row["label_space"] == "mapping_enabled" for row in top8_rows)
-    assert {"beam_label_space", "beam_label_mapping_fingerprint", "top8_manifest_row_index"} <= set(top8_rows[0])
-    assert any(row["support_query_role"] == "support" for row in top8_rows)
-    assert any(row["support_query_role"].startswith("query") for row in top8_rows)
-
-    bgam = build_mmw_town_gps_lidar_bgam_manifest(cfg, topk=4, output_dir=tmp_path / "bgam")
-    manifest_rows = _read_csv(Path(bgam["manifest_path"]))
-    assert manifest_rows
-    assert (Path(bgam["metadata_path"])).exists()
-    assert (Path(bgam["pseudo_history_summary_path"])).exists()
-    assert all(row["dataset_family"] == "MMW" for row in manifest_rows)
-    assert all(row["history_pseudo_beams"] for row in manifest_rows)
-    assert all(row["history_label_space"] == "mapping_enabled" for row in manifest_rows)
-
-
 def test_model_forward_variants_shape_spline_branch_and_validation():
     cfg = SceneAdapterV2Config(
         adapter_type="branch_mixture_circular",
@@ -210,6 +161,43 @@ def test_model_forward_variants_shape_spline_branch_and_validation():
         model(torch.randn(1, 7), theta_degrees=torch.tensor([0.0]), scene_id=torch.tensor([0]))
     with pytest.raises(ValueError, match="scene_id"):
         adapter(torch.tensor([0.0]), torch.tensor([9]))
+
+
+def test_package_plotter_writes_current_structural_figures_and_unavailable_note(tmp_path: Path):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    predictions_path = results_dir / "predictions.csv"
+    rows = [
+        {
+            "scene": "target_scene",
+            "E": idx,
+            "N": idx * 0.5,
+            "true_beam": idx % 8,
+            "pred_beam": (idx + 1) % 8,
+            "circular_error": 1,
+            "theta_degrees": idx * 20.0,
+            "signed_residual": 1,
+            "branch_id": idx % 2,
+        }
+        for idx in range(6)
+    ]
+    with predictions_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = plot_results(results_dir)
+
+    figures_dir = Path(result["figures_dir"])
+    assert result["figure_count"] >= 6
+    assert (figures_dir / "target_scene_signed_residual_vs_theta.png").exists()
+    assert (figures_dir / "target_scene_residual_histogram.png").exists()
+    assert (figures_dir / "target_scene_label_distribution_compare.png").exists()
+
+    empty_dir = tmp_path / "empty"
+    unavailable = plot_results(empty_dir)
+    assert unavailable["figure_count"] == 0
+    assert (empty_dir / "figures" / "plot_unavailable.txt").exists()
 
 
 def _tiny_config(data_root: Path, mapping_file: Path, output_root: Path) -> dict:

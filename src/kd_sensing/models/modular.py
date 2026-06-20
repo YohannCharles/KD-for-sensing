@@ -83,7 +83,6 @@ class LidarCNNEncoder(LidarFeatureExtractor):
         super().__init__(self.output_dim, in_channels=int(in_channels or lidar_channels))
 
 
-@ENCODERS.register("point_cloud_mlp")
 class PointCloudMLPEncoder(nn.Module):
     def __init__(
         self,
@@ -164,8 +163,8 @@ class LinearProjector(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        if features.ndim != 3:
-            raise ValueError(f"Projector input must have shape [B, T, D], got {tuple(features.shape)}.")
+        if features.ndim not in {3, 4}:
+            raise ValueError(f"Projector input must have shape [B, T, D] or [B, T, K, D], got {tuple(features.shape)}.")
         return self.net(features)
 
 
@@ -181,8 +180,8 @@ class IdentityProjector(nn.Module):
             )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        if features.ndim != 3:
-            raise ValueError(f"Projector input must have shape [B, T, D], got {tuple(features.shape)}.")
+        if features.ndim not in {3, 4}:
+            raise ValueError(f"Projector input must have shape [B, T, D] or [B, T, K, D], got {tuple(features.shape)}.")
         return features
 
 
@@ -351,6 +350,7 @@ class SnapshotFrameCore(nn.Module):
         )
 
 
+@REPRESENTATION_CORES.register("token_aware_transformer")
 @REPRESENTATION_CORES.register("token_transformer")
 class TokenTransformerCore(nn.Module):
     def __init__(
@@ -651,7 +651,6 @@ class BeamClassificationHead(nn.Module):
 
 
 @MODELS.register("modular_sequence")
-@MODELS.register("modular_sequence_model")
 class ModularSequenceModel(nn.Module):
     def __init__(
         self,
@@ -850,6 +849,9 @@ class ModularSequenceModel(nn.Module):
                 predictive_diagnostics = getattr(encoder, "last_predictive_gps_query_diagnostics", None)
                 if isinstance(predictive_diagnostics, dict):
                     encoder_runtime_metadata.setdefault(modality, {})["predictive_gps_query"] = predictive_diagnostics
+                visual_token_diagnostics = getattr(encoder, "last_visual_token_diagnostics", None)
+                if isinstance(visual_token_diagnostics, dict) and visual_token_diagnostics:
+                    encoder_runtime_metadata.setdefault(modality, {})["visual_tokens"] = visual_token_diagnostics
                 batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
                 encoded[modality] = features
                 projected_features = self.projectors[modality](features)
@@ -873,7 +875,16 @@ class ModularSequenceModel(nn.Module):
                     "Check for missing condition modalities or circular dependencies."
                 )
         ordered = [projected[modality] for modality in self.modalities]
-        if len(ordered) == 1:
+        has_token_features = any(features.ndim == 4 for features in ordered)
+        if has_token_features:
+            token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
+            token_features = torch.cat(token_pieces, dim=2)
+            core_input = token_features.permute(0, 2, 1, 3).contiguous()
+            input_features = torch.cat(
+                [features.mean(dim=2) if features.ndim == 4 else features for features in ordered],
+                dim=-1,
+            )
+        elif len(ordered) == 1:
             core_input = ordered[0]
             input_features = core_input
         else:
@@ -925,6 +936,8 @@ class ModularSequenceModel(nn.Module):
             "encoder_features": encoded,
             "image_profile": self.image_profile,
         }
+        if has_token_features:
+            output["token_features"] = core_input
         if geometry_prior_payload is not None and geometry_fusion_payload is not None:
             fusion_diagnostics = dict(geometry_fusion_payload.get("diagnostics", {}))
             output.update(
@@ -1180,7 +1193,7 @@ class ModularSequenceModel(nn.Module):
         if modality != "image":
             return
         encoder_name = str(encoder_cfg.get("type"))
-        if encoder_name == "resnet18_imagenet_rgb":
+        if encoder_name == "resnet18_imagenet_rgb" or encoder_name.startswith("tinyvit_"):
             validate_image_encoder_profile(
                 encoder_name=encoder_name,
                 image_profile=self.image_profile,
@@ -1464,8 +1477,10 @@ def _check_temporal_features(
     batch_size: int | None,
     seq_len: int | None,
 ) -> tuple[int, int]:
-    if features.ndim != 3:
-        raise ValueError(f"{modality} encoder output must have shape [B, T, D], got {tuple(features.shape)}.")
+    if features.ndim not in {3, 4}:
+        raise ValueError(
+            f"{modality} encoder output must have shape [B, T, D] or [B, T, K, D], got {tuple(features.shape)}."
+        )
     current_batch, current_seq = int(features.shape[0]), int(features.shape[1])
     if batch_size is not None and (current_batch != batch_size or current_seq != seq_len):
         raise ValueError(
@@ -1477,10 +1492,22 @@ def _check_temporal_features(
 
 
 def _check_projected_features(features: torch.Tensor, modality: str, d_model: int) -> None:
-    if features.ndim != 3 or int(features.shape[-1]) != int(d_model):
+    if features.ndim not in {3, 4} or int(features.shape[-1]) != int(d_model):
         raise ValueError(
-            f"{modality} projector output must have shape [B, T, {int(d_model)}], got {tuple(features.shape)}."
+            f"{modality} projector output must have shape [B, T, {int(d_model)}] or "
+            f"[B, T, K, {int(d_model)}], got {tuple(features.shape)}."
         )
+
+
+MODELS.register_removed("modular_sequence_model", "Use 'modular_sequence'.")
+ENCODERS.register_removed(
+    "point_cloud_mlp",
+    "Use 'lidar_cnn' for current LiDAR BEV configs; point cloud input is not a current registry surface.",
+)
+REPRESENTATION_CORES.register_removed(
+    "jepa_token_transformer",
+    "Use 'token_transformer' or 'token_aware_transformer'.",
+)
 
 
 __all__ = [

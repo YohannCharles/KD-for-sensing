@@ -119,6 +119,7 @@ METRICS = Registry("metrics")
 PREPROCESSORS = Registry("preprocessors")
 JEPA_DOWNSTREAM_POOLERS = Registry("jepa_downstream_poolers")
 JEPA_DOWNSTREAM_ADAPTERS = Registry("jepa_downstream_adapters")
+JEPA_VISUAL_TOKEN_ENCODERS = Registry("jepa_visual_token_encoders")
 DIFFICULTY_OPERATORS = Registry("difficulty_operators")
 
 DATASETS.register_removed(
@@ -151,11 +152,11 @@ DATASETS.register_removed(
 )
 MODELS.register_removed(
     "Fusion" + "ModalityNet",
-    "Use the 'fusion_strong' registry name.",
+    "Use modular_sequence fusion configs with current modality encoders and early_concat_gru.",
 )
 MODELS.register_removed(
     "Student" + "ModalityNet",
-    "Use the 'fusion_lightweight' or 'cls_token_transformer_fusion' registry name.",
+    "Use 'cls_token_transformer_fusion' for current lightweight fusion or modular_sequence fusion configs.",
 )
 MODELS.register_removed(
     "craf_fusion",
@@ -274,11 +275,11 @@ def import_default_components() -> None:
     import kd_sensing.models.image_encoders  # noqa: F401
     import kd_sensing.models.jepa_downstream  # noqa: F401
     import kd_sensing.models.jepa  # noqa: F401
-    import kd_sensing.models.jepa_msac  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
+    import kd_sensing.models.tinyvit  # noqa: F401
     import kd_sensing.models.vision_position  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.image_cache  # noqa: F401
@@ -306,6 +307,7 @@ __all__ = [
     "PREPROCESSORS",
     "JEPA_DOWNSTREAM_POOLERS",
     "JEPA_DOWNSTREAM_ADAPTERS",
+    "JEPA_VISUAL_TOKEN_ENCODERS",
     "DIFFICULTY_OPERATORS",
     "registry_self_check",
     "import_default_components",

@@ -769,17 +769,7 @@ def _add_modality_model_fields(model_cfg: dict[str, Any], modalities: list[str])
 
 
 def _fusion_strong_baseline_model(modalities: list[str]) -> dict[str, Any]:
-    if "image" in modalities or "lidar" in modalities:
-        return _modular_resnet_fusion_model(modalities, num_layers=2)
-    cfg: dict[str, Any] = {
-        "type": "fusion_strong",
-        "modalities": modalities,
-        "feature_size": 64,
-        "num_classes": 64,
-        "gru_params": [64, 64, 2],
-    }
-    _add_modality_model_fields(cfg, modalities)
-    return cfg
+    return _modular_resnet_fusion_model(modalities, num_layers=2)
 
 
 def _cls_token_transformer_fusion_model(modalities: list[str]) -> dict[str, Any]:

@@ -33,10 +33,10 @@
 ### Requirement: supporting capability 不等于 standalone 当前入口
 `supporting` capability MAY 保留支撑代码、数据契约、loss、metric、manifest schema、migration guard 或历史读取逻辑，但 MUST 明确不作为 standalone 当前推荐入口。支撑能力被当前 workflow 消费时，文档 MUST 指向实际 current workflow，而不是恢复旧入口。
 
-#### Scenario: TopK 支撑代码保留但 selector 入口退役
-- **WHEN** BGAM 或其它当前 workflow 复用 TopK candidate manifest、loss 或 metric 支撑代码
-- **THEN** lifecycle inventory MAY 将对应能力标为 `supporting`
-- **AND** 文档 MUST 不把旧 Top8 selector 训练、plot、compare CLI 或 root config 描述为当前入口
+#### Scenario: TopK 指标保留但 selector/BGAM 支撑退役
+- **WHEN** 当前 GPS v2、CSI、benchmark 或通用评估 workflow 复用 Top-K metric、candidate ranking 诊断或 circular metric 支撑代码
+- **THEN** lifecycle inventory MAY 将通用指标能力标为 `supporting`
+- **AND** 文档 MUST 不把旧 Top8 selector、BGAM-only candidate manifest/loss、训练、plot、compare CLI 或 root config 描述为当前入口
 
 #### Scenario: 通用 helper 保留但历史 workflow 不复活
 - **WHEN** 当前源码保留通用 LOSO、metric、cleanup、migration guard 或 artifact reader helper
@@ -115,4 +115,3 @@ OpenSpec change 归档后，维护者 MUST 以 `openspec list --json`、current 
 - **WHEN** lifecycle inventory 将新 capability 标记为 `current`，但该能力的实验结果仍为 `pending`、`mock/smoke`、`blocked` 或 `unverified`
 - **THEN** current 文档 MUST 区分“能力入口/契约为 current”和“数值 claim 尚未 verified”
 - **AND** 文档 MUST 不把 smoke 或 synthetic 指标写成真实结果
-

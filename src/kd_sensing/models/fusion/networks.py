@@ -40,7 +40,6 @@ def _require_tensor(tensor: torch.Tensor | None, modality: str) -> torch.Tensor:
     return tensor
 
 
-@MODELS.register("fusion_strong")
 class FusionTeacherModalityNet(nn.Module):
     def __init__(
         self,
@@ -205,7 +204,6 @@ class FusionTeacherModalityNet(nn.Module):
         return pred, features, enhanced_seq_out
 
 
-@MODELS.register("fusion_lightweight")
 class FusionStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -529,8 +527,16 @@ def _validate_image_profile_channels(
     )
 
 
-MODELS.register_removed("fusion_teacher", "Use 'fusion_strong'.")
-MODELS.register_removed("fusion_student", "Use 'fusion_lightweight' or 'cls_token_transformer_fusion'.")
+MODELS.register_removed(
+    "fusion_strong",
+    "Use model.primary.type='modular_sequence' fusion with current modality encoders, projectors, early_concat_gru, and beam_head.",
+)
+MODELS.register_removed(
+    "fusion_lightweight",
+    "Use model.primary.type='modular_sequence' fusion or the current 'cls_token_transformer_fusion' lightweight route.",
+)
+MODELS.register_removed("fusion_teacher", "Use modular_sequence fusion configs.")
+MODELS.register_removed("fusion_student", "Use 'cls_token_transformer_fusion' or modular_sequence fusion configs.")
 
 FusionStrongModalityNet = FusionTeacherModalityNet
 FusionLightweightModalityNet = FusionStudentModalityNet

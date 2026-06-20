@@ -249,7 +249,7 @@ def lidar_bev_grid_metadata(
     background_path: str | None = None,
     background_distance_threshold: float = 0.2,
     cell_center_convention: str = "center",
-    cache_version: str = "bgam_bev_v1",
+    cache_version: str = "lidar_bev_v1",
 ) -> dict[str, object]:
     height, width = int(bev_size[0]), int(bev_size[1])
     roi_values = [float(value) for value in roi]
@@ -265,7 +265,7 @@ def lidar_bev_grid_metadata(
         "ground_z_threshold": float(ground_z_threshold),
         "background_path": str(background_path or ""),
         "background_distance_threshold": float(background_distance_threshold),
-        "cache_version": str(cache_version or "bgam_bev_v1"),
+        "cache_version": str(cache_version or "lidar_bev_v1"),
         "parameter_hash": lidar_cache_config_hash(
             bev_size=bev_size,
             roi=roi,

@@ -69,7 +69,6 @@ class ImageFeatureExtractor(nn.Module):
         return frame_features.view(batch_size, seq_length, -1)
 
 
-@MODELS.register("image_strong")
 class ImageModalityNet(nn.Module):
     def __init__(
         self,
@@ -124,7 +123,6 @@ class ImageModalityNet(nn.Module):
         return pred, features, enhanced_seq_out
 
 
-@MODELS.register("image_lightweight")
 class ImageStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -245,8 +243,16 @@ def _validate_image_profile_channels(encoder_name: str, image_profile: str | Non
     )
 
 
-MODELS.register_removed("image_teacher", "Use 'image_strong'.")
-MODELS.register_removed("image_student", "Use 'image_lightweight'.")
+MODELS.register_removed(
+    "image_strong",
+    "Use model.primary.type='modular_sequence' with encoders.image.type='resnet18_imagenet_rgb'.",
+)
+MODELS.register_removed(
+    "image_lightweight",
+    "Use model.primary.type='modular_sequence' with encoders.image.type='resnet18_imagenet_rgb' and lightweight config parameters.",
+)
+MODELS.register_removed("image_teacher", "Use configs/image/strong.yaml with model.primary.type='modular_sequence'.")
+MODELS.register_removed("image_student", "Use configs/image/lightweight.yaml with model.primary.type='modular_sequence'.")
 
 ImageStrongModalityNet = ImageModalityNet
 ImageLightweightModalityNet = ImageStudentModalityNet

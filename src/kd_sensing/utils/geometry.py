@@ -238,7 +238,7 @@ def load_beam_angle_table(
             "beam_angle_source": "dft_ula_approximation",
             "beam_angle_convention": convention,
             "num_beams": int(num_beams),
-            "warning": "Beam-to-angle mapping uses a DFT-ULA approximation; physical BGAM interpretation depends on dataset convention.",
+            "warning": "Beam-to-angle mapping uses a DFT-ULA approximation; physical interpretation depends on dataset convention.",
         },
     )
 

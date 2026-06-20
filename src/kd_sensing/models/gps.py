@@ -57,7 +57,6 @@ def _validate_gps_gru_params(
     return int(gru_input_size), int(gru_hidden_size), int(gru_num_layers)
 
 
-@MODELS.register("gps_strong")
 class GpsModalityNet(nn.Module):
     def __init__(
         self,
@@ -124,7 +123,6 @@ class GpsModalityNet(nn.Module):
         )
 
 
-@MODELS.register("gps_lightweight")
 class GpsStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -183,8 +181,16 @@ class GpsStudentModalityNet(nn.Module):
             auxiliary_heads=self.auxiliary_heads,
         )
 
-MODELS.register_removed("gps_teacher", "Use 'gps_strong'.")
-MODELS.register_removed("gps_student", "Use 'gps_lightweight'.")
+MODELS.register_removed(
+    "gps_strong",
+    "Use model.primary.type='modular_sequence' with encoders.gps.type='gps_mlp', representation_core.type='single_gru', and heads.beam.type='beam_head'.",
+)
+MODELS.register_removed(
+    "gps_lightweight",
+    "Use configs/gps/lightweight.yaml with model.primary.type='modular_sequence' and encoders.gps.type='gps_mlp'.",
+)
+MODELS.register_removed("gps_teacher", "Use configs/gps/strong.yaml with model.primary.type='modular_sequence'.")
+MODELS.register_removed("gps_student", "Use configs/gps/lightweight.yaml with model.primary.type='modular_sequence'.")
 
 GpsStrongModalityNet = GpsModalityNet
 GpsLightweightModalityNet = GpsStudentModalityNet

@@ -7,12 +7,12 @@
 - 根目录只保留 `README.md` 和 `AGENTS.md`；历史方案草稿不再作为入口文档维护。
 - 需求、架构边界和行为契约进入 `openspec/specs/`。
 - 实验运行顺序、配置矩阵和常用命令进入 `docs/experiment_matrix.md`。
-- Viewer manifest 和性能排查进入 README、`docs/extension_guide.md` 与包内 manifest 导出 CLI；仓库级 Gradio viewer support 已退役。
+- JEPA visual analysis、GPS shortcut benchmark 和性能排查进入 README、`docs/extension_guide.md`；viewer manifest 导出和仓库级 Gradio viewer support 已退役。
 - 本文件只保留研究路线判断、负结果解释和跨文档的阅读导航。
 
 ## 已退役研究线
 
-模态失衡、蒸馏、HiST-Beam/P3、GPS coarse anchor、Top8 selector、GPS residual、camera residual 和 Raymobtime s008 研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist、P3/V7/V8/V9 probe 或 GPS residual/camera residual 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、DeepSense6G/MMW BGAM、MMW GPS v2、CSI hardening 和少样本跨场景 adaptation。
+模态失衡、蒸馏、HiST-Beam/P3、GPS coarse anchor、Top8 selector、GPS residual、camera residual、BGAM、viewer manifest、仓库级 Gradio viewer 和 Raymobtime s008 研究线已经退役。本仓库不再维护专用审计、互补 case mining、阶段性效用验证、Raymobtime 失衡诊断、G2D 失衡结果汇总、HiST LOSO、history-anchor Hist、P3/V7/V8/V9 probe、GPS residual/camera residual、BGAM 或 viewer manifest 入口；旧模态子集/扰动独立脚本也不再作为长期入口。当前主线回到普通训练、统一评估、配置化通用模态子集调试、MMW GPS v2、CSI hardening、JEPA visual analysis 和少样本跨场景 adaptation。
 
 历史输出如已存在于本地 `outputs/`，可作为静态资料保留，但 README、OpenSpec 和工具文档不再把这些研究流程列为当前可运行入口。
 
@@ -68,13 +68,13 @@ CSI hardening 的目标不是降上限，而是制造 high-ceiling but slow-to-l
 - `openspec/specs/mmwave-preprocessing/spec.md`
 - `docs/extension_guide.md`
 
-## 数据集与 Viewer
+## 数据集与退役 Viewer
 
-Raymobtime s008 的 current snapshot beam selection workflow 已退役；旧 `coord/ray` 模态、专用预处理器和 selection 模型不再作为当前 dataset 或 viewer 入口维护。
+Raymobtime s008 的 current snapshot beam selection workflow 已退役；旧 `coord/ray` 模态、专用预处理器和 selection 模型不再作为当前 dataset 或诊断入口维护。
 
 DeepVerse DT31 曾作为把监督来源和模型输入解耦的候选路线：用 ray-tracing channel 生成 beam label，用 LoS/status 生成 blockage label，用 mobility ground truth 生成 trajectory label。该数据生成、label builder、split 和 sanity workflow 已退役，本仓库当前不再维护 DT31 入口。
 
-Viewer 已从静态 PNG 和仓库级 Gradio viewer 收束为包内 manifest 导出 workflow。重点能力包括 raw/processed modalities、prediction/quality/gate 合并和 future beam distribution；交互式查看可由外部工具消费 manifest。
+Viewer manifest 导出已随仓库级 Gradio viewer 一并退役；raw/processed modality payload、prediction/quality/gate 合并和 future beam distribution 不再作为当前仓库内 viewer 契约维护。当前诊断证据由 JEPA visual analysis、GPS shortcut benchmark 或其它明确 current 的诊断 owner 负责。
 
 ## 原论文复现边界
 

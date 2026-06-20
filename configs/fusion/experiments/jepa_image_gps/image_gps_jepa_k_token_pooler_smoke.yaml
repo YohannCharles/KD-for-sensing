@@ -1,0 +1,32 @@
+_base_: image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml
+experiment:
+  name: fusion_image_gps_jepa_k_token_pooler_smoke
+  ablation: gps_query_k_token_pooler
+output:
+  dir: outputs/analysis/jepa_visual_architecture_sweep
+  run_name: fusion_image_gps_jepa_k_token_pooler_smoke
+model:
+  primary:
+    representation_core:
+      type: token_aware_transformer
+      d_model: 64
+      num_heads: 4
+      num_layers: 1
+      dropout: 0.0
+    encoders:
+      image:
+        pooling: gps_query_attention
+        gps_query_pool:
+          k_queries: 4
+          num_heads: 4
+          condition_dim: 64
+          latent_dim: 64
+          dropout: 0.0
+          condition_source: projected_gps
+          return_attention: true
+          output_mode: tokens
+        visual_encoder:
+          type: patch_vit
+          patch_size: 16
+          max_tokens: 196
+          checkpoint_policy: exact_reuse

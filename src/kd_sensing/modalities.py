@@ -312,6 +312,11 @@ def validate_image_encoder_profile(
             "ResNet-18 ImageNet encoder 'resnet18_imagenet_rgb' requires image_profile "
             "'rgb_imagenet' and 3-channel RGB input."
         )
+    if encoder_name.startswith("tinyvit_") and spec.name != "rgb_imagenet":
+        raise ValueError(
+            f"TinyViT ImageNet encoder '{encoder_name}' requires image_profile "
+            "'rgb_imagenet' and 3-channel RGB input."
+        )
     if encoder_name in REMOVED_IMAGE_ENCODERS:
         raise ValueError(
             f"Image encoder '{encoder_name}' has been removed with the image motion path. "
@@ -328,8 +333,8 @@ def normalize_modalities(modalities: list[str] | tuple[str, ...], *, context: st
         if "rf" in invalid:
             raise ValueError(
                 f"Unknown modalities in {context}: {invalid}. Available modalities: {list(MODALITY_ORDER)}. "
-                "JEPA-MSAC uses RF as workflow-local beam-power history; declare it under "
-                "workflow.jepa_msac.rf_history_source instead of canonical modalities."
+                "RF is not a canonical modality in current workflows; use an explicit workflow-local "
+                "beam-power field in a current diagnostic if needed."
             )
         raise ValueError(f"Unknown modalities in {context}: {invalid}. Available modalities: {list(MODALITY_ORDER)}.")
     duplicates = sorted({name for name in selected if selected.count(name) > 1})

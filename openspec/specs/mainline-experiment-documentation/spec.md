@@ -10,7 +10,7 @@
 
 #### Scenario: 主线模型目录覆盖当前支持面
 - **WHEN** 开发者阅读主线模型目录
-- **THEN** 文档 MUST 至少覆盖 Image+GPS JEPA GPS-biased reuse、GPS-query pooling、supervised/random controls、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct 本地 substitute、BEV-Fusion 2604、DeepSense6G/MMW GPS+LiDAR BGAM、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark 和 viewer manifest
+- **THEN** 文档 MUST 至少覆盖 Image+GPS JEPA GPS-biased reuse、GPS-query pooling、supervised/random controls、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct 本地 substitute、BEV-Fusion 2604、MMW GPS v2、CSI hardening、JEPA visual analysis 和 GPS shortcut benchmark
 - **AND** 每行 MUST 标明对应 config、入口命令或诊断入口、数据集/场景、split/target、metric profile、运行状态和主要 caveat
 
 #### Scenario: 退役路线不得进入 current 主线表
@@ -26,8 +26,8 @@
 - **THEN** 表格 MUST 记录 config path、run status、dataset/scenes、split protocol、selection split、seed、epochs、batch size、learning rate、seq_len、num_pred、target source、GPS feature mode、label space、metric profile、输出目录和 focused validation 命令
 - **AND** 对 smoke、debug、lowmem、upper-bound、mock 或 historical ablation 条目 MUST 显式标记状态
 
-#### Scenario: BGAM 和 benchmark 配置状态清晰
-- **WHEN** 表格列出 DeepSense6G/MMW BGAM、JEPA shortcut benchmark 或 difficulty profile
+#### Scenario: benchmark 配置状态清晰
+- **WHEN** 表格列出 JEPA shortcut benchmark、difficulty profile 或其它当前诊断配置
 - **THEN** 文档 MUST 标明该配置是正式实验、quick validation、smoke schema check、diagnostic-only、evaluation-only 还是 upper-bound
 - **AND** 文档 MUST 标明输出仍写入 ignored 的 `outputs/`、`logs/` 或 manifest 指定目录
 
@@ -69,3 +69,25 @@ README、`docs/experiment_matrix.md`、`docs/project_surface_inventory.md` 和 O
 - **WHEN** 新增 `docs/mainline_model_catalog.md`、`docs/experiment_protocols.md` 或 `docs/result_claims_registry.md`
 - **THEN** `docs/project_surface_inventory.md` MUST 记录这些文档的生命周期和职责
 - **AND** OpenSpec lifecycle inventory MUST 将 `mainline-experiment-documentation` 标记为 current
+
+### Requirement: 主线文档不得保留优先退役 claim 行
+主线模型目录、实验协议表和结果 claim 账本 MUST 从 current 表中移除 AMR-Net_gps_image 和 JEPA-MSAC 的 pending、mock-smoke、blocked official 或 local-ready current 行。若保留历史背景，MUST 放入 retired/historical/tombstone 说明，不得作为当前可运行或待引用 claim 占位。
+
+#### Scenario: 主线目录不列 AMR 和 JEPA-MSAC current 行
+- **WHEN** 开发者阅读 `docs/mainline_model_catalog.md`
+- **THEN** 文档 MUST 不把 AMR-Net_gps_image 列为 current model line
+- **AND** 文档 MUST 不把 JEPA-MSAC Scenario 32 列为 current model line
+- **AND** 如提到二者，MUST 标记为 retired、historical 或 blocked background
+
+#### Scenario: claim 账本不保留 current pending 占位
+- **WHEN** 开发者阅读 `docs/result_claims_registry.md`
+- **THEN** 账本 MUST 不保留 AMR-Net_gps_image 或 JEPA-MSAC 的 current pending/mock-smoke claim 行
+- **AND** 账本 MAY 保留一段退役说明，解释历史 blocked 原因和本地产物只作为 archive 背景
+
+### Requirement: 当前文档只推荐保留入口
+README、实验矩阵和协议表 MUST 只推荐仍维护的 current package CLI、config、diagnostic 或 shell runner。被退役入口的命令 MAY 出现在历史说明中，但 MUST 明确不可作为当前 quickstart 或正式复现实验。
+
+#### Scenario: README quickstart 无退役命令
+- **WHEN** 开发者阅读 README 的 quickstart、实验矩阵索引或 MMW 小节
+- **THEN** README MUST 不提供 `kd-sensing-run-amr-net-gps-image` 或 `kd-sensing-run-jepa-msac` 作为当前命令
+- **AND** README MUST 不提供被退役 shell orchestration 脚本作为当前命令

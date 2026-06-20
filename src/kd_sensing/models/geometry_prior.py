@@ -383,7 +383,6 @@ class GeometryPriorLogitFusion(nn.Module):
 
 
 @HEADS.register("safe_residual_beam_reranker")
-@HEADS.register("safe_residual_reranker")
 class SafeResidualBeamReranker(nn.Module):
     """Anchor-safe candidate reranker with bounded residual logits."""
 
@@ -731,6 +730,9 @@ def _gather_source_mask(source_mask: torch.Tensor, beam_ids: torch.Tensor) -> to
     gather_ids = beam_ids.to(dtype=torch.long).unsqueeze(-1).unsqueeze(-1)
     gather_ids = gather_ids.expand(-1, -1, 1, int(source_mask.shape[-1]))
     return torch.gather(source_mask, 2, gather_ids).squeeze(2)
+
+
+HEADS.register_removed("safe_residual_reranker", "Use 'safe_residual_beam_reranker'.")
 
 
 __all__ = [

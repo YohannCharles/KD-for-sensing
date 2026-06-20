@@ -58,17 +58,23 @@
 - **AND** 未配置辅助 loss 时训练流程 MUST 能忽略辅助输出并继续 beam-only 训练
 
 ### Requirement: 新入口不破坏保留模型
-模块化序列模型 MUST 作为新注册入口存在，不得替换或重命名现有单模态或保留的 legacy fusion 注册名。实现 MAY 复用现有 encoder/core 代码，但 MUST 保持保留模型构造参数和 forward 语义兼容。
+模块化序列模型 MUST 作为普通 supervised/adaptation baseline 的 canonical 组合入口存在。已迁移到 `modular_sequence` 的 legacy strong/lightweight 整模型注册名 MAY 被退役为 removed guard；仍保留的完整 `MODELS` 注册名 MUST 属于 current whole-model exception、workflow/paper reproduction 或明确 spec 需求。
 
-#### Scenario: 保留注册名仍可构建
-- **WHEN** 构建流程导入默认模型组件后请求 `image_teacher`、`image_student`、`fusion_teacher`、`fusion_student` 或当前保留 fusion 注册名
-- **THEN** 系统 MUST 继续返回对应现有模型
-- **AND** 这些模型 MUST 不要求新增模块化配置字段
+#### Scenario: 退役注册名不可构建但可诊断
+- **WHEN** 构建流程导入默认模型组件后请求已退役的 `image_strong`、`radar_lightweight`、`gps_strong`、`lidar_lightweight`、`mmwave_strong`、`fusion_lightweight` 或等价旧注册名
+- **THEN** 系统 MUST 拒绝构建
+- **AND** 错误信息 MUST 指向 `modular_sequence` 以及对应 encoder/core/head 迁移组合
 
-#### Scenario: 新注册名独立构建
-- **WHEN** 用户配置新的模块化序列模型注册名
-- **THEN** 系统 MUST 只使用该入口解析 encoder、projector、core 和 head 配置
-- **AND** 错误信息 MUST 指向缺失或非法的模块化子配置
+#### Scenario: canonical 单模态配置仍可构建
+- **WHEN** 用户加载 current image、radar、GPS、LiDAR 或 mmWave canonical root config
+- **THEN** 系统 MUST 构建 `modular_sequence` 模型
+- **AND** 模型 MUST 按启用模态解析 encoder、projector、representation core 和 beam head
+- **AND** 训练循环 MUST 不需要为旧整模型名称新增专用 forward 分支
+
+#### Scenario: 保留 whole-model exception 独立构建
+- **WHEN** 用户配置 current whole-model exception，例如 `bev_fusion_2604`、`gps_conditioned_jepa` 或其它仍在 current spec 中保留的注册名
+- **THEN** 系统 MUST 继续通过 `MODELS` 构建该模型
+- **AND** 该模型 MUST 保持其 documented forward/output/metadata 契约
 
 ### Requirement: Snapshot frame representation core
 模块化序列模型 MUST 提供 `snapshot_frame` representation core，用于无历史窗口的当前帧预测。该 core MUST 支持单模态 `[B, 1, D]` 输入和多模态 `[B, K, 1, D]` 输入，并输出可被现有 heads 消费的 `[B, 1, D_out]` 表示。
@@ -269,3 +275,51 @@ observability-aware、reliability-aware 或 uncertainty-gated fusion 行为 MUST
 - **THEN** 配置 MUST 能显式选择可组合 adaptive fusion 行为或记录使用显式 helper 的边界
 - **AND** 普通 early-concat、CLS-token transformer 和 JEPA baseline MUST 不被静默替换语义
 
+### Requirement: 模块化模型架构摘要分组
+`ModularSequenceModel` MUST 支持统一模型架构摘要能力识别其内部组件。摘要 MUST 按 `encoders.<modality>`、`projectors.<modality>`、`representation_core`、`heads.<name>`、可选 geometry prior、logit fusion 和 reranker 分组，并 MUST 保持现有 forward、batch runtime 和 `training_strategy_metadata()` 行为兼容。
+
+#### Scenario: image-only modular summary
+- **WHEN** 用户对 image-only `modular_sequence` 模型生成架构摘要
+- **THEN** 摘要 MUST 包含 image encoder、image projector、representation core 和 beam head 组件
+- **AND** 每个组件 MUST 包含 path、class、registry type 或 fallback class name、total params 和 trainable params
+
+#### Scenario: image+GPS modular summary
+- **WHEN** 用户对 image+GPS `modular_sequence` 模型生成架构摘要
+- **THEN** 摘要 MUST 分别包含 image encoder 和 GPS encoder 参数量
+- **AND** 摘要 MUST 包含多模态 representation core 参数量
+
+#### Scenario: optional component summary
+- **WHEN** `modular_sequence` 启用 geometry prior、logit fusion 或 safe residual reranker
+- **THEN** 摘要 MUST 将这些 opt-in 组件作为独立组件条目记录
+- **AND** 摘要 MUST 记录其是否消费 reliability metadata
+
+### Requirement: 模块化组件 metadata 与参数摘要合并
+`ModularSequenceModel` 的架构摘要 MUST 合并组件 `training_strategy_metadata()` 与实际参数统计。组件 metadata 中的 registry type、checkpoint、freeze policy、token metadata、reliability metadata 和 output dimension MUST 保留；参数统计 MUST 由实际 module 参数或声明候选 metadata 提供。
+
+#### Scenario: TinyViT metadata 合并
+- **WHEN** `modular_sequence` 使用 TinyViT image encoder
+- **THEN** 摘要 MUST 记录 TinyViT registry type、variant、pretrained source、checkpoint source、freeze policy、trainable stages、backbone_dim 和 output_dim
+- **AND** 摘要 MUST 记录 image encoder total params、trainable params 和 effective/excluded 参数口径
+
+#### Scenario: JEPA context image metadata 合并
+- **WHEN** `modular_sequence` 使用 JEPA context image encoder
+- **THEN** 摘要 MUST 记录 visual tokenizer 或 context encoder 相关 metadata
+- **AND** 摘要 MUST 能报告 image encoder params 和 visual/context encoder params
+
+#### Scenario: 普通组件缺少 metadata
+- **WHEN** 某个 projector、core 或 head 没有 `training_strategy_metadata()`
+- **THEN** 摘要 MUST 仍记录该组件 class、path、total params 和 trainable params
+- **AND** 摘要 MUST 不要求组件为了被统计而改变 forward 签名
+
+### Requirement: 模块化摘要不改变运行契约
+架构摘要能力 MUST 是只读观测能力。生成 `modular_sequence` 摘要 MUST 不改变模型参数、`requires_grad` 状态、forward 输出、batch runtime 输入或训练 optimizer 参数组。
+
+#### Scenario: 摘要前后参数状态不变
+- **WHEN** 用户对 `modular_sequence` 模型调用架构摘要 helper
+- **THEN** 模型所有参数的 `requires_grad` 状态 MUST 保持不变
+- **AND** 模型 forward 输出结构 MUST 不因摘要调用而改变
+
+#### Scenario: 摘要不创建 optimizer
+- **WHEN** 用户只生成 `modular_sequence` 架构摘要
+- **THEN** 系统 MUST 不创建 optimizer 或 scheduler
+- **AND** 系统 MUST 不执行训练 batch 或 validation batch

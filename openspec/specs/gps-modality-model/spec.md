@@ -3,54 +3,6 @@
 ## Purpose
 定义 GPS teacher/student 模型、特征模式和配置兼容行为，确保 GPS 分支能在单模态与 fusion 训练中稳定复用。
 ## Requirements
-### Requirement: GPS teacher 模型
-系统 MUST 提供已注册的 `gps_teacher` 模型，用于 GPS-only beam prediction。该模型 MUST 接收 `[B, T, 3]` GPS-Rel-Polar 特征序列，使用 `GpsFeatureExtractor` 提取每个时隙 embedding，经过 LayerNorm、GRU temporal modeling、时序增强模块和 MLP classifier 后输出 beam logits。
-
-#### Scenario: 构建 gps_teacher
-- **WHEN** 配置中指定 `model.teacher.type: gps_teacher` 或 `model.student.type: gps_teacher`
-- **THEN** 模型注册表 MUST 能构建 `gps_teacher`
-- **AND** 构建参数 MUST 支持 `gps_input_size`、`feature_size`、`num_classes` 和 `gru_params`
-- **AND** GPS-Rel-Polar 配置中的 `gps_input_size` MUST 为 3
-
-#### Scenario: gps_teacher forward contract
-- **WHEN** `gps_teacher` 接收形状为 `[B, T, 3]` 的 GPS 输入张量
-- **THEN** 模型 MUST 返回 `(pred, input_features, output_features)`
-- **AND** `pred` 的形状 MUST 为 `[B, T, num_classes]`
-- **AND** `input_features` 的形状 MUST 为 `[B, T, feature_size]`
-- **AND** `output_features` 的 batch 和 sequence 维度 MUST 与输入一致
-
-### Requirement: GPS student 模型
-系统 MUST 提供已注册的 `gps_student` 模型，用于 lightweight GPS-only beam prediction。该模型 MUST 接收 `[B, T, 3]` GPS-Rel-Polar 特征序列，使用比 teacher 更轻量的 `GpsFeatureExtractor` 或投影层、LayerNorm、GRU temporal modeling 和小型 classifier 输出 beam logits。默认 GPS student 配置 MUST 使用 `gru_params: [64, 64, 1]`。
-
-#### Scenario: 构建 gps_student
-- **WHEN** 配置中指定 `model.student.type: gps_student`
-- **THEN** 模型注册表 MUST 能构建 `gps_student`
-- **AND** 构建参数 MUST 支持 `gps_input_size`、`feature_size`、`num_classes`、`gru_params` 和可选宽度控制参数
-- **AND** GPS-Rel-Polar 配置中的 `gps_input_size` MUST 为 3
-
-#### Scenario: gps_student forward contract
-- **WHEN** `gps_student` 接收形状为 `[B, T, 3]` 的 GPS 输入张量
-- **THEN** 模型 MUST 返回 `(pred, input_features, output_features)`
-- **AND** `pred` 的形状 MUST 为 `[B, T, num_classes]`
-- **AND** `input_features` 的形状 MUST 为 `[B, T, feature_size]`
-- **AND** `output_features` 的 batch 和 sequence 维度 MUST 与输入一致
-
-#### Scenario: gps_student 默认 GRU 层数
-- **WHEN** 用户通过默认 GPS student 配置构建模型
-- **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
-- **AND** 模型的 `GRU.num_layers` MUST 为 1
-
-### Requirement: GPS 模型参数校验
-GPS teacher 和 GPS student MUST 校验 `gru_params` 和输入维度配置。`gru_params` MUST 包含 `[input_size, hidden_size, num_layers]`，且 `input_size` MUST 等于 `feature_size`。
-
-#### Scenario: 非法 gru_params 长度
-- **WHEN** 用户用长度不是 3 的 `gru_params` 构建 `gps_teacher` 或 `gps_student`
-- **THEN** 系统 MUST 抛出配置错误
-
-#### Scenario: GRU 输入维度不匹配
-- **WHEN** 用户配置的 `gru_params[0]` 不等于 `feature_size`
-- **THEN** 系统 MUST 抛出包含实际维度和期望维度的错误
-
 ### Requirement: GPS-only 任务输入
 训练、验证和评估流程 MUST 支持 `experiment.task: gps`。GPS-only 任务 MUST 只准备 GPS 输入和 label，不要求 image 或 radar 输入。
 
@@ -79,14 +31,6 @@ GPS-only 训练 MUST 不再支持 logits KD、RKD 或 distiller 运行时。旧 
 - **WHEN** 用户运行旧 GPS-only RKD 配置
 - **THEN** 系统 MUST 拒绝该配置
 - **AND** 系统 MUST 不计算关系蒸馏损失
-
-### Requirement: GPS teacher 默认 GRU 层数
-默认 GPS teacher 单模态配置 MUST 使用一层 GRU，以便与当前单模态配置、README 和测试保持一致。
-
-#### Scenario: gps_teacher 默认 GRU 层数
-- **WHEN** 用户通过默认 GPS teacher no-KD 配置构建模型
-- **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
-- **AND** 模型的 `GRU.num_layers` MUST 为 1
 
 ### Requirement: GPS 模型可导出 coarse anchor
 GPS 模型系统 MUST 支持显式 opt-in 的 coarse anchor export profile。启用该 profile 时，GPS encoder 或 GPS-only 模型 MUST 能输出 coarse anchor 字段；未启用时现有 GPS teacher/student 契约 MUST 保持兼容。
@@ -134,4 +78,26 @@ MMW Town GPS v2 模型 MUST 校验输入 feature 维度、scene id、num_beams �
 - **WHEN** v2 adapter forward 收到超出已注册 scene 数的 scene_id
 - **THEN** 系统 MUST 拒绝 forward
 - **AND** 错误信息 MUST 包含 scene_id、num_scenes 和当前 scene mapping metadata
+
+### Requirement: GPS canonical 配置使用 modular_sequence
+GPS strong、lightweight、supervised 和当前保留的 GPS ablation canonical 配置 MUST 使用 `modular_sequence`、`gps_mlp` encoder、projector、`single_gru` representation core 和 `beam_head`，而不是旧 GPS whole-model 注册名。
+
+#### Scenario: 构建 GPS strong/supervised 配置
+- **WHEN** 用户加载 `configs/gps/strong.yaml` 或 `configs/gps/supervised.yaml`
+- **THEN** 最终配置的 `model.primary.type` MUST 为 `modular_sequence`
+- **AND** `model.primary.encoders.gps.type` MUST 为 `gps_mlp`
+- **AND** 模型 forward MUST 只要求 GPS batch 输入和 beam labels
+
+#### Scenario: 构建 GPS lightweight 配置
+- **WHEN** 用户加载 `configs/gps/lightweight.yaml`
+- **THEN** 系统 MUST 构建 `modular_sequence` GPS-only 模型
+- **AND** lightweight 差异 MUST 通过配置参数表达，而不是通过 `gps_lightweight` whole-model 注册名表达
+
+### Requirement: GPS legacy model names are removed
+GPS legacy whole-model 注册名 MUST 被 removed guard 拒绝。该规则覆盖 `gps_teacher`、`gps_student`、`gps_strong`、`gps_lightweight`、`gps_sequence_baseline` 的退役场景；若某名称仍需作为 current baseline，必须在 design 中单独说明并保留 focused tests。
+
+#### Scenario: 请求 GPS legacy 注册名
+- **WHEN** 用户请求构建退役 GPS 注册名
+- **THEN** registry MUST 抛出 removed component 错误
+- **AND** 错误信息 MUST 建议使用 `modular_sequence + gps_mlp + single_gru`
 

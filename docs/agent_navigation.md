@@ -39,7 +39,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 | 配置和 virtual config | 索引的 `config_virtual_config` 路由和 root fusion allowlist、配置生命周期 specs、README 配置章节、inventory 配置生命周期分类 | `src/kd_sensing/config/`、`configs/`、canonical recipe / virtual config 生成规则 | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` 和架构边界测试 |
 | CLI / scripts 入口 | 索引的 `cli_scripts` 路由、entrypoint allowlist、owner metadata、README 主要入口、`pyproject.toml` console scripts | `src/kd_sensing/cli/`、`scripts/` allowlist、`pyproject.toml`；真实 workflow 逻辑应位于索引登记的 owner module/script | CLI help smoke、`tests/test_cli_help.py`、架构边界测试 |
 | 输出产物 / cache / cleanup | 索引的 `runtime_outputs_cache_cleanup` 路由、README 数据和产物边界、inventory 本地产物分类、cleanup manifest workflow | `src/kd_sensing/utils/runtime_output_layout.py`、diagnostic / cleanup CLI；默认输出在 ignored `outputs/` | 不写入 `outputs/` 或 `logs/` 的单元测试；必要时只生成 dry-run manifest |
-| 诊断 / viewer / visual analysis | 索引的 `diagnostics_viewer` 路由、README Viewer Manifest、诊断 specs、inventory viewer manifest 热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/export_viewer_manifest.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q` 和 CLI help |
+| 诊断 / visual analysis / benchmark | 索引的 `diagnostics_viewer` 路由、诊断 specs、JEPA visual analysis、GPS shortcut benchmark、inventory 诊断热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/jepa_visual_analysis.py`、`src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` 和 CLI help |
 | OpenSpec artifact | 索引的 `openspec_artifact` 路由、active change 的 proposal/design/spec/tasks、inventory lifecycle、当前 specs、`openspec status` | `openspec/changes/<change>/` 或 `openspec/specs/` | `openspec validate <change> --strict`，必要时 `openspec status --change <change>` |
 | 文档生命周期 | 索引的 `documentation_lifecycle` 路由、AGENTS 文档边界、README 文档索引、OpenSpec capability lifecycle、inventory 文档生命周期分类 | README、`AGENTS.md`、`docs/*.md`、OpenSpec 文档 | 架构边界测试；检查不把历史、supporting 或退役墓碑路线写成当前推荐入口 |
 
@@ -82,7 +82,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 - pytest cache：`.pytest_cache/v/cache/lastfailed` 只记录本地上一次 pytest 状态，可能已经过期；真实红点以当前测试文件和实际 `pytest` 命令结果为准。
 - 本地数据：`dataset/` 是本地输入，默认只允许源码里保留 `dataset/.gitkeep`；测试和文档改动不得读取真实数据来证明契约。
 - OpenSpec archive：`openspec/changes/archive/` 是历史记录，只能解释演进过程；未跟踪 archive 目录、已归档但未提交的 change 或 archive 中的新 spec 不能当作 active change。当前需求以 active change、lifecycle inventory 和当前 `openspec/specs/` 为准。
-- retired research lines：旧 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、Raymobtime s008、CRAF/MARF/G2D/Multimodal-NF 等只能作为历史或 migration guard 说明出现，不得用兼容 wrapper、旧 CLI 或实体 YAML 恢复为当前入口。
+- retired research lines：旧 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、BGAM、viewer manifest、仓库级 Gradio viewer、Raymobtime s008、CRAF/MARF/G2D/Multimodal-NF 等只能作为历史或 migration guard 说明出现，不得用兼容 wrapper、旧 CLI 或实体 YAML 恢复为当前入口。
 - virtual configs：部分 `configs/fusion/*.yaml` 路径可能由配置加载器生成，没有实体 YAML；先查 README、inventory 和 config specs。不得让 virtual config 接管退役 `logits_kd` / `rkd` / old residual 路径。
 - active change 状态：目录存在不等于正在实施，任务全勾选也不等于已经归档；同时看 `openspec list --json`、`openspec status --change <change>`、tasks 和工作树状态。
 - 当前打开文件：IDE 打开的 generated metadata、历史报告或输出摘要只是局部上下文，不能替代 README、AGENTS、OpenSpec 和源码测试。
@@ -106,7 +106,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 | 架构、文档生命周期、入口 allowlist、本地产物边界 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` |
 | CLI 或 console script | `conda run -n kd_mm_beam pytest tests/test_cli_help.py -q`，并按需运行对应 `--help` |
 | 配置解析、virtual config、migration guard | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
-| 诊断、viewer manifest、模态可视化 | `conda run -n kd_mm_beam pytest tests/test_modality_visual_diagnostics.py -q` |
+| 诊断、JEPA visual analysis、GPS shortcut benchmark | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` |
 | 训练、数据、模型 forward 或 shared runtime | 先跑对应 focused tests；高风险改动再考虑 `conda run -n kd_mm_beam pytest -q` |
 | reliability-aware / observability-aware 模型 metadata | 对应模型 focused tests、difficulty/batch tests；同时覆盖普通 baseline 忽略 metadata 和 opt-in 模型接收 metadata |
 

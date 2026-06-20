@@ -3,31 +3,6 @@
 ## Purpose
 定义 radar lightweight 模型结构、注册名和当前训练兼容行为，确保雷达轻量分支可用于 supervised/adaptation 训练。
 ## Requirements
-### Requirement: RadarStudent 模型结构
-系统 MUST 提供已注册的 `radar_student` 模型，用于 radar-only lightweight beam prediction。该模型的公开实现类和包导出名称 MUST 为 `RadarStudentModalityNet`，并 MUST 接收 RA/DA 拼接后的雷达序列张量，使用轻量 CNN embedding、adaptive pooling、特征投影、LayerNorm、GRU temporal modeling 和 MLP classifier 输出 beam logits。该模型不再作为 KD student 定义。
-
-#### Scenario: 按配置构建 RadarStudent
-- **WHEN** 配置中指定 `model.student.type: radar_student`
-- **THEN** 系统 MUST 通过 `MODELS` 注册表构建 `RadarStudentModalityNet` 实例
-- **AND** 构建参数 MUST 支持 `feature_size`、`num_classes`、`gru_params`、`radar_channels`
-
-#### Scenario: RadarStudent 前向输出契约
-- **WHEN** `RadarStudentModalityNet` 接收形状为 `(batch, sequence, channels, height, width)` 的雷达输入张量
-- **THEN** 模型 MUST 返回 `(pred, features, output_features)`
-- **AND** `pred` 的形状 MUST 为 `(batch, sequence, num_classes)`
-- **AND** `features` 的形状 MUST 为 `(batch, sequence, feature_size)`
-- **AND** `output_features` 的 batch 与 sequence 维度 MUST 与输入一致
-- **AND** 系统 MUST 不要求输出 RKD 专用特征
-
-#### Scenario: RadarStudent 参数校验
-- **WHEN** `gru_params` 不包含 `[input_size, hidden_size, num_layers]` 三个值，或 `gru_input_size` 不等于 `feature_size`
-- **THEN** `RadarStudentModalityNet` MUST 在构建时抛出明确异常
-
-#### Scenario: Radar student 公共导出命名
-- **WHEN** 开发者从 `kd_sensing.models.radar` 或 `kd_sensing.models` 导入 radar student 类
-- **THEN** 系统 MUST 暴露 `RadarStudentModalityNet`
-- **AND** 仓库内代码、测试和主文档 MUST 不再引用旧 radar student 类名
-
 ### Requirement: RadarStudent 轻量特征提取
 RadarStudent MUST 使用轻量雷达特征提取路径，避免复用 RadarTeacher 的固定 flatten 全连接 embedding 作为主干。轻量特征提取 MUST 使用 depthwise separable convolution block 或等价轻量卷积结构，并通过 adaptive pooling 生成固定长度帧特征。
 
@@ -40,23 +15,20 @@ RadarStudent MUST 使用轻量雷达特征提取路径，避免复用 RadarTeach
 - **WHEN** `feature_size` 配置为 64
 - **THEN** RadarStudent 的投影层 MUST 为每个时隙输出 64 维输入特征
 
-### Requirement: RadarStudent 当前训练兼容
-`RadarStudentModalityNet` MUST 与 radar-only supervised/adaptation 训练、验证和评估流程兼容。旧 radar logits KD 或 RKD 配置 MUST 在配置解析阶段失败。
+### Requirement: Radar lightweight canonical 配置使用 modular_sequence
+Radar lightweight canonical 配置 MUST 使用 `modular_sequence`、`radar_cnn` encoder、projector、`single_gru` representation core 和 `beam_head`，而不是旧 Radar lightweight whole-model 注册名。
 
-#### Scenario: 使用 supervised 训练 RadarStudent
-- **WHEN** radar-only lightweight 配置指定 `model.primary.type: radar_lightweight` 或等价注册名
-- **THEN** 训练流程 MUST 只使用雷达输入完成 primary model forward
-- **AND** 训练流程 MUST 使用 supervised/adaptation loss 更新该主模型
+#### Scenario: 构建 radar lightweight 配置
+- **WHEN** 用户加载 `configs/radar/lightweight.yaml`
+- **THEN** 最终配置的 `model.primary.type` MUST 为 `modular_sequence`
+- **AND** `model.primary.encoders.radar.type` MUST 为 `radar_cnn`
+- **AND** lightweight 差异 MUST 通过配置参数表达
 
-#### Scenario: 旧 radar KD 配置被拒绝
-- **WHEN** 用户运行旧 radar-only logits KD 或 RKD 配置
-- **THEN** 系统 MUST 拒绝该配置
-- **AND** 系统 MUST 不构建 distiller
+### Requirement: Radar lightweight legacy names are removed
+Radar student/lightweight legacy whole-model 注册名 MUST 被 removed guard 拒绝，并指向 modular radar baseline。
 
-### Requirement: RadarStudent 默认 GRU 层数
-默认 RadarStudent 单模态配置 MUST 使用一层 GRU，以便与当前 radar-only lightweight student 配置、README 和测试保持一致。
+#### Scenario: 请求 radar lightweight legacy 注册名
+- **WHEN** 用户请求 `radar_student` 或 `radar_lightweight`
+- **THEN** registry MUST 抛出 removed component 错误
+- **AND** 错误信息 MUST 建议使用 `modular_sequence + radar_cnn + single_gru`
 
-#### Scenario: radar lightweight 默认 GRU 层数
-- **WHEN** 用户通过默认 radar lightweight 配置构建模型
-- **THEN** 配置中的 `gru_params` MUST 为 `[64, 64, 1]`
-- **AND** 模型的 `GRU.num_layers` MUST 为 1

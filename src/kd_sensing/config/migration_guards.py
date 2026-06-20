@@ -34,6 +34,25 @@ RETIRED_RAYMOBTIME_PREPROCESSORS = {
     "raymobtime_s008_ray_features",
     "raymobtime_s008_cache",
 }
+RETIRED_BGAM_EXPERIMENT_NAMES = {
+    "deepsense6g_gps_lidar_bgam_reranker",
+    "mmw_town_gps_lidar_bgam_reranker",
+}
+RETIRED_BGAM_MODEL_TYPES = {
+    "gps_lidar_bgam_beam_predictor",
+}
+RETIRED_PRIORITY_CONFIG_STEMS = {
+    "amr_net_gps_image",
+    "jepa_msac_s32_smoke",
+    "jepa_msac_s32_paper",
+}
+RETIRED_PRIORITY_MODEL_TYPES = {
+    "jepa_msac",
+}
+RETIRED_PRIORITY_OBJECTIVES = {
+    "jepa_msac_pretraining",
+}
+RETIRED_AMR_PRESET = "amr_net_gps_image"
 
 
 def reject_removed_config_path(config_path: str | Path | None) -> None:
@@ -46,12 +65,31 @@ def reject_removed_config_path(config_path: str | Path | None) -> None:
         raise ValueError(
             f"HiST-Beam/Hist research line has been retired; legacy config path "
             f"'{path.as_posix()}' is no longer supported. Use current supervised, adapter, "
-            "GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
+            "MMW GPS v2, CSI, JEPA visual analysis, or current benchmark workflows."
+        )
+    if _is_retired_bgam_config_path(path):
+        raise ValueError(
+            f"GPS+LiDAR BGAM has been retired; legacy config path '{path.as_posix()}' "
+            "is no longer supported and no compatibility migration is provided. "
+            "Use current supervised/adaptation, JEPA, MMW GPS v2, CSI, or retained diagnostics."
+        )
+    if _is_retired_viewer_config_path(path):
+        raise ValueError(
+            f"Viewer manifest and repository Gradio viewer support have been retired; "
+            f"legacy config path '{path.as_posix()}' is no longer supported. "
+            "Use kd-sensing-jepa-visual-analysis or kd-sensing-jepa-gps-shortcut-benchmark."
         )
     if _is_retired_raymobtime_config_path(path):
         raise ValueError(
             f"Raymobtime s008 has been retired; legacy config path '{path.as_posix()}' "
             "is no longer supported and no compatibility migration is provided."
+        )
+    if _is_retired_priority_workflow_config_path(path):
+        raise ValueError(
+            f"AMR-Net_gps_image and JEPA-MSAC priority legacy workflows have been retired; "
+            f"legacy config path '{path.as_posix()}' is no longer supported. "
+            "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
+            "JEPA visual analysis, GPS shortcut benchmark, or MMW GPS v2 package CLIs."
         )
     suggestion = _replacement_config_path(path)
     if suggestion is None:
@@ -73,7 +111,19 @@ def reject_removed_override_key(key: str) -> None:
     if lowered == "hist_beam" or lowered.startswith("hist_beam."):
         raise ValueError(
             f"HiST-Beam/Hist research line has been retired; override '{normalized}' is no longer supported. "
-            "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
+            "Use current supervised, adapter, MMW GPS v2, CSI, JEPA visual analysis, or benchmark workflows."
+        )
+    if "bgam" in lowered or lowered.startswith("diagnostics.visualization"):
+        raise ValueError(
+            f"BGAM/viewer manifest support has been retired; override '{normalized}' is no longer supported. "
+            "Use current supervised/adaptation, JEPA, MMW GPS v2, CSI, or retained diagnostics."
+        )
+    if "jepa_msac" in lowered or "amr_net_gps_image" in lowered:
+        raise ValueError(
+            f"AMR-Net_gps_image and JEPA-MSAC priority legacy workflows have been retired; "
+            f"override '{normalized}' is no longer supported. "
+            "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
+            "JEPA visual analysis, GPS shortcut benchmark, or MMW GPS v2 package CLIs."
         )
     if lowered in REMOVED_KD_OVERRIDE_KEYS:
         raise ValueError(
@@ -104,16 +154,47 @@ def reject_retired_hist_config(cfg: dict[str, Any]) -> None:
     if "hist_beam" in cfg:
         raise ValueError(
             "HiST-Beam/Hist research line has been retired; config key 'hist_beam' is no longer supported. "
-            "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
+            "Use current supervised, adapter, MMW GPS v2, CSI, JEPA visual analysis, or benchmark workflows."
         )
     for location, model_cfg in iter_model_configs(cfg):
         model_type = str(model_cfg.get("type", "")).strip()
         if model_type in RETIRED_HIST_MODEL_NAMES:
             raise ValueError(
                 f"HiST-Beam/Hist research line has been retired; {location}.type='{model_type}' is no longer supported. "
-                "Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, or viewer workflows."
+                "Use current supervised, adapter, MMW GPS v2, CSI, JEPA visual analysis, or benchmark workflows."
             )
     _reject_retired_hist_values(cfg)
+
+
+def reject_retired_bgam_viewer_config(cfg: dict[str, Any]) -> None:
+    experiment = cfg.get("experiment", {})
+    if isinstance(experiment, dict):
+        experiment_name = str(experiment.get("name", "")).strip()
+        if experiment_name in RETIRED_BGAM_EXPERIMENT_NAMES:
+            raise ValueError(
+                f"GPS+LiDAR BGAM has been retired; experiment.name='{experiment_name}' "
+                "is no longer supported and no compatibility migration is provided."
+            )
+
+    diagnostics = cfg.get("diagnostics", {})
+    if isinstance(diagnostics, dict):
+        visualization = diagnostics.get("visualization")
+        if visualization is not None:
+            raise ValueError(
+                "Viewer manifest and repository Gradio viewer support have been retired; "
+                "diagnostics.visualization is no longer a current config surface. "
+                "Use kd-sensing-jepa-visual-analysis or kd-sensing-jepa-gps-shortcut-benchmark."
+            )
+
+    for location, model_cfg in iter_model_configs(cfg):
+        model_type = str(model_cfg.get("type", "")).strip()
+        if model_type in RETIRED_BGAM_MODEL_TYPES or "bgam" in model_type.lower():
+            raise ValueError(
+                f"GPS+LiDAR BGAM has been retired; {location}.type='{model_type}' "
+                "is no longer supported."
+            )
+
+    _reject_retired_bgam_viewer_values(cfg)
 
 
 def reject_retired_raymobtime_config(cfg: dict[str, Any]) -> None:
@@ -165,6 +246,51 @@ def reject_retired_raymobtime_config(cfg: dict[str, Any]) -> None:
                         f"Raymobtime s008 has been retired; {location}.encoders.{modality}.type="
                         f"'{encoder_name}' is no longer supported."
                     )
+
+
+def reject_retired_priority_workflow_config(cfg: dict[str, Any]) -> None:
+    experiment = cfg.get("experiment", {})
+    if isinstance(experiment, dict):
+        objective = str(experiment.get("objective", "")).strip()
+        if objective in RETIRED_PRIORITY_OBJECTIVES:
+            raise ValueError(
+                "JEPA-MSAC has been retired; experiment.objective='jepa_msac_pretraining' "
+                "is no longer a current objective. Use gps_conditioned_jepa, JEPA visual analysis, "
+                "or GPS shortcut benchmark workflows."
+            )
+        baseline = str(experiment.get("baseline_preset", "")).strip()
+        paper = str(experiment.get("paper", "")).strip()
+        name = str(experiment.get("name", "")).strip()
+        if RETIRED_AMR_PRESET in {baseline, paper, name}:
+            raise ValueError(
+                "AMR-Net_gps_image has been retired as a current source-audit/mock workflow. "
+                "Use current Vision-Position or BeamBench Image AE+GPS baselines."
+            )
+
+    workflow = cfg.get("workflow", {})
+    if isinstance(workflow, dict) and "jepa_msac" in workflow:
+        raise ValueError(
+            "JEPA-MSAC has been retired; workflow.jepa_msac is no longer a current config surface. "
+            "Use current GPS-conditioned JEPA or retained JEPA diagnostics."
+        )
+
+    for location, model_cfg in iter_model_configs(cfg):
+        model_type = str(model_cfg.get("type", "")).strip()
+        if model_type in RETIRED_PRIORITY_MODEL_TYPES:
+            raise ValueError(
+                f"JEPA-MSAC has been retired; {location}.type='{model_type}' is no longer supported. "
+                "Use current GPS-conditioned JEPA or modular_sequence configurations."
+            )
+        baseline = str(model_cfg.get("baseline_preset", "")).strip()
+        model_name = str(model_cfg.get("model_name", "")).strip()
+        normalized_model_name = model_name.lower().replace("-", "_")
+        if baseline == RETIRED_AMR_PRESET or RETIRED_AMR_PRESET in normalized_model_name:
+            raise ValueError(
+                f"AMR-Net_gps_image has been retired; {location} no longer supports "
+                "AMR-Net_gps_image paper preset/model groups."
+            )
+
+    _reject_retired_priority_values(cfg)
 
 
 def reject_removed_image_path_config(cfg: dict[str, Any]) -> None:
@@ -274,6 +400,44 @@ def _is_retired_raymobtime_config_path(path: Path) -> bool:
     return False
 
 
+def _is_retired_bgam_config_path(path: Path) -> bool:
+    parts = path.parts
+    try:
+        configs_index = parts.index("configs")
+        rel_parts = parts[configs_index:]
+    except ValueError:
+        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    if not rel_parts or rel_parts[0] != "configs":
+        return False
+    stem = path.stem.lower()
+    return "bgam" in stem or "top8_selector" in stem
+
+
+def _is_retired_viewer_config_path(path: Path) -> bool:
+    parts = path.parts
+    try:
+        configs_index = parts.index("configs")
+        rel_parts = parts[configs_index:]
+    except ValueError:
+        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    return (
+        len(rel_parts) >= 3
+        and rel_parts[0] == "configs"
+        and rel_parts[1] == "diagnostics"
+        and path.stem == "modality_visualization"
+    )
+
+
+def _is_retired_priority_workflow_config_path(path: Path) -> bool:
+    parts = path.parts
+    try:
+        configs_index = parts.index("configs")
+        rel_parts = parts[configs_index:]
+    except ValueError:
+        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    return bool(rel_parts and rel_parts[0] == "configs" and path.stem in RETIRED_PRIORITY_CONFIG_STEMS)
+
+
 def _reject_removed_kd_values(value: Any, *, path: str = "") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -312,4 +476,56 @@ def _reject_retired_hist_values(value: Any, *, path: str = "") -> None:
         if "configs/hist_beam" in lowered or lowered in RETIRED_HIST_MODEL_NAMES:
             raise ValueError(
                 f"HiST-Beam/Hist research line has been retired; config value at '{path}' references retired entry '{value}'."
+            )
+
+
+def _reject_retired_bgam_viewer_values(value: Any, *, path: str = "") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            lowered_key = str(key).lower()
+            if lowered_key == "bgam":
+                raise ValueError(
+                    "GPS+LiDAR BGAM has been retired; config key 'bgam' is no longer supported."
+                )
+            _reject_retired_bgam_viewer_values(child, path=child_path)
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_retired_bgam_viewer_values(child, path=f"{path}[{index}]")
+        return
+    if isinstance(value, str):
+        lowered = value.lower()
+        if "gps_lidar_bgam" in lowered or "lidar_bgam" in lowered or "viewer_manifest" in lowered:
+            raise ValueError(
+                f"BGAM/viewer manifest support has been retired; config value at '{path}' "
+                f"references retired entry '{value}'."
+            )
+
+
+def _reject_retired_priority_values(value: Any, *, path: str = "") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            lowered_key = str(key).lower()
+            if lowered_key in {"jepa_msac", "amr_net_gps_image"}:
+                raise ValueError(
+                    f"Priority legacy workflow config key '{child_path}' has been retired. "
+                    "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
+                    "or retained JEPA diagnostics."
+                )
+            _reject_retired_priority_values(child, path=child_path)
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_retired_priority_values(child, path=f"{path}[{index}]")
+        return
+    if isinstance(value, str):
+        lowered = value.lower()
+        normalized = lowered.replace("-", "_")
+        if "jepa_msac" in normalized or "amr_net_gps_image" in normalized:
+            raise ValueError(
+                f"Priority legacy workflow config value at '{path}' references retired entry '{value}'. "
+                "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
+                "or retained JEPA diagnostics."
             )

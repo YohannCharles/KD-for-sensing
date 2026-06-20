@@ -100,26 +100,95 @@ paired with the `resnet18_imagenet_rgb` encoder for RGB street-view experiments 
 The RGB profile produces `[B, T, 3, 224, 224]` ImageNet-normalized tensors and does not read or write an image cache.
 
 The default image strong config uses `modular_sequence` with the ImageNet-pretrained
-`resnet18_imagenet_rgb` encoder. Legacy small-CNN image configs remain available as explicit
-lightweight ablations. Radar/GPS/LiDAR/mmWave single-modality configs use `gru_params: [64, 64, 1]`.
-Image-containing canonical fusion strong configs also use the ResNet-18 image profile; other
-fusion configs may use their own encoder depth or lightweight branch. Canonical fusion virtual configs use
+`resnet18_imagenet_rgb` encoder. Radar/GPS/LiDAR/mmWave single-modality configs also use
+`modular_sequence`, with `radar_cnn`, `gps_mlp`, `lidar_cnn`, or `mmwave_mlp` selected under
+`model.primary.encoders`. Image-containing canonical fusion strong configs also use the ResNet-18
+image profile; other fusion configs may use their own encoder depth or lightweight branch. Canonical fusion virtual configs use
 `strong` and `lightweight`; `experiment.name` and `output.run_name`
 match the config stem. The trainable main model is always `model.primary`. Public radar config names are
-`radar_strong` and `radar_lightweight`; the corresponding Python classes may keep older internal names.
+`configs/radar/strong.yaml` and `configs/radar/lightweight.yaml`; the corresponding Python classes may keep older internal names,
+but the registry names `radar_strong` and `radar_lightweight` are removed guards.
 Checkpoint loading is strict by default; set `checkpoint.strict_load: false` only when intentionally
 inspecting a partially compatible checkpoint, and check the reported missing/unexpected keys.
 
-Built-in GPS model names follow the same strong/lightweight pattern as image and radar:
+TinyViT is available only as an opt-in image encoder component; default image and image+GPS configs
+continue to use `resnet18_imagenet_rgb`. Use the existing config and override the image encoder:
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/image/supervised.yaml \
+  -o model.primary.encoders.image.type=tinyvit_5m_22k_rgb
+```
+
+Available TinyViT encoder names are:
+
+- `tinyvit_5m_scratch_rgb`: TinyViT-5M, random initialization, no checkpoint load or download.
+- `tinyvit_5m_22k_rgb`: TinyViT-5M with ImageNet-22k distill checkpoint loading.
+- `tinyvit_11m_scratch_rgb`: TinyViT-11M, random initialization, no checkpoint load or download.
+- `tinyvit_11m_22k_rgb`: TinyViT-11M with ImageNet-22k distill checkpoint loading.
+
+TinyViT follows the same `rgb_imagenet` input profile as ResNet-18: `[B, T, 3, 224, 224]`,
+ImageNet-normalized RGB frames, and no encoder-side resize. The 22k variants first use
+`checkpoint_path` when provided; otherwise, with `allow_download=true`, they use the upstream
+`wkcn/TinyViT-model-zoo` torch hub URL/cache path. The loader filters ImageNet classification
+`head.*` weights and non-persistent `attention_bias_idxs` buffers, and records checkpoint provenance in
+`training_strategy_metadata()`. TinyViT freezes the backbone by default, so only the projection and
+downstream modular components train unless `freeze_backbone: false`, `unfreeze_stages`, or
+`unfreeze_last_n_stages` is configured. TinyViT is not a KD or distillation training workflow in this
+project; it is only a frame-level image encoder component, and no TinyViT weights, cache files,
+checkpoints, logs, or training outputs should be committed.
+
+Use the package architecture summary entry to inspect parameter counts and component roles without
+training or reading a real dataset:
+
+```bash
+conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+  --config configs/image/supervised.yaml \
+  --format markdown
+```
+
+The maintained human-readable registry inventory is `docs/model_architecture_inventory.md`; update that
+page whenever adding or retiring a model, encoder, projector, representation core, or head.
+
+TinyViT override preflight is useful before launching a run, especially when reusing ResNet-specific
+options:
+
+```bash
+conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+  --config configs/image/supervised.yaml \
+  -o model.primary.encoders.image.type=tinyvit_5m_scratch_rgb \
+  -o model.primary.encoders.image.unfreeze_stages='[layer4]' \
+  --no-build \
+  --format json
+```
+
+JEPA visual sweep candidates can be rendered with the same fields used by startup summaries:
+
+```bash
+conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+  --sweep-manifest configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml \
+  --variant-id patch14_stage1_gps_query \
+  --format csv
+```
+
+Built-in GPS configs follow the same modular strong/lightweight pattern as image and radar:
 
 ```yaml
 model:
   primary:
-    type: gps_lightweight
+    type: modular_sequence
+    modalities: [gps]
     gps_input_size: 3
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params: [64, 64, 1]
+    encoders:
+      gps:
+        type: gps_mlp
+    representation_core:
+      type: single_gru
+    heads:
+      beam:
+        type: beam_head
 ```
 
 Fusion modality selection is configured on `model.primary.modalities` and may be mirrored by top-level
@@ -165,7 +234,8 @@ takes precedence. Top-level `model.modalities` and `model.primary.modalities` mu
 are present. Generated configs
 derive `use_gps`, `use_lidar`, `use_mmwave`, GPS defaults, LiDAR defaults, mmWave defaults, and model
 input fields from the modality contract. Generated fusion lightweight configs use
-`cls_token_transformer_fusion` by default; strong configs keep the explicit strong baseline.
+`cls_token_transformer_fusion` by default; strong configs use `modular_sequence` with the current
+modality encoders and `early_concat_gru`.
 Use explicit early-concat or token-transformer YAML/overlay paths when a baseline should
 not follow the default. Retired research-line paths and fusion `logits_kd` / `rkd` virtual aliases are rejected instead of being generated as virtual configs.
 New fusion extensions should default to the supervised/adaptation mainline and must not reintroduce KD runtime without a new OpenSpec change.
@@ -320,19 +390,12 @@ fusion mode defaults, objective overlays, and supported advanced overlays are ta
 implementation modules directly when editing model internals. A plain `import kd_sensing.models` should not
 pull in fusion, GPS, LiDAR, mmWave, image encoder, or radar implementation modules.
 
-## Viewer Manifest Internals
+## Retired Viewer Manifest
 
-`kd_sensing.diagnostics.viewer_manifest` is the public manifest export orchestration entry point. Keep concrete
-implementation in the focused helper modules:
-
-- `viewer_manifest_config.py`: `VisualizationConfig`, parsing, final config snapshot, metadata paths.
-- `viewer_manifest_datasets.py`: diagnostic dataset construction, train-fitted normalization reuse, scene metadata.
-- `viewer_manifest_sampling.py`: candidate collection, filtering, and sample selection summaries.
-- `viewer_manifest_stats.py`: tensor, modality, and split statistics.
-- `viewer_manifest_writer.py`: raw/processed asset and manifest record writing.
-
-Manifest implementation work should target the module that owns the behavior; the installed CLI exports
-viewer manifests through `kd-sensing-export-viewer-manifest`.
+The repository-level Gradio viewer, viewer manifest export CLI, `kd-sensing-visualize-modalities` alias, and
+`viewer_manifest_*` helper modules are retired. Do not add compatibility stubs or new helper modules under
+the old viewer names. Current diagnostic work belongs in JEPA visual analysis, GPS shortcut benchmark, or an
+explicitly specified non-viewer diagnostic owner.
 
 ## Advanced Fusion Overlays
 

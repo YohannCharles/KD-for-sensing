@@ -1,0 +1,152 @@
+name: cnn_hybrid_jepa_visual_prior_sweep
+version: 1
+output_root: outputs/analysis/cnn_hybrid_jepa_visual_prior_sweep
+manifest_schema: cnn_hybrid_jepa_visual_prior_sweep.v1
+mode_defaults:
+  full:
+    seeds: [17, 23, 42]
+    checkpoint_selections: [primary, best_top1]
+    gpu_list: [0, 1, 2, 3]
+    max_parallel: 8
+comparison_protocol:
+  split: beambench_tableiii_input_s32_s34_train_s31_s34_test
+  scene_set: [32, 33, 34]
+  history_window: 5
+  gps_input_source_window: 2
+  prediction_horizon: 1
+  beam_label_space: beam64
+  metric_profile: beambench_linear_topk
+  distance_metric: linear
+  normalization_artifact: config_resolved
+  difficulty_digest: clean_or_declared_condition_profile
+strict_comparability_fields:
+  - split
+  - scene_set
+  - seed
+  - history_window
+  - gps_input_source_window
+  - prediction_horizon
+  - beam_label_space
+  - metric_profile
+  - distance_metric
+  - normalization_artifact
+  - difficulty_digest
+  - output_root
+families:
+  existing_controls:
+    candidates:
+      - variant_id: gps_only_control
+        visual_encoder: {type: none, token_count: 0}
+        pooler: {type: none, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+        base_config: configs/gps/strong.yaml
+      - variant_id: patch16_mean_baseline
+        visual_encoder: {type: patch_vit, patch_size: 16}
+        pooler: {type: mean, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+        base_config: configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml
+      - variant_id: patch16_gps_query_pool
+        visual_encoder: {type: patch_vit, patch_size: 16}
+        pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: exact_reuse
+        availability: available
+        base_config: configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml
+      - variant_id: patch14_stage1_gps_query
+        visual_encoder: {type: patch_vit, patch_size: 14}
+        pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+        stage_plan: stage1_then_downstream
+        checkpoint_policy: fresh_stage1_required
+        availability: available
+      - variant_id: overlap_k16_s8_stage1
+        visual_encoder: {type: overlap_patch, kernel_size: 16, stride: 8}
+        pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+        stage_plan: stage1_then_downstream
+        checkpoint_policy: fresh_stage1_required
+        availability: available
+      - variant_id: overlap_k20_s10
+        visual_encoder: {type: overlap_patch, kernel_size: 20, stride: 10}
+        pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+        stage_plan: stage1_then_downstream
+        checkpoint_policy: fresh_stage1_required
+        availability: available
+      - variant_id: resnet18_layer4_tokens
+        visual_encoder: {type: cnn_feature_map, backbone: resnet18, stage: layer4, pretrained: false}
+        pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+      - variant_id: resnet18_layer3_layer4_tokens
+        visual_encoder: {type: multi_scale_cnn, backbone: resnet18, stages: [layer3, layer4], pretrained: false}
+        pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+  patch_resolution_stage1:
+    patch_sizes: [16, 14, 12, 10, 8]
+    image_size: 224
+    pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+  overlap_stage1:
+    kernel_stride_pairs:
+      - [12, 6]
+      - [14, 7]
+      - [16, 8]
+      - [20, 10]
+      - [24, 12]
+    image_size: 224
+    pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+  cnn_supervised_tokens:
+    backbones: [resnet18, resnet34]
+    token_sources: [layer3, layer4, layer3+layer4]
+    pretrained: [scratch, imagenet]
+    freeze_policies: [full_ft, freeze_backbone_projection, unfreeze_layer4]
+  cnn_jepa_tokens:
+    backbones: [resnet18, resnet34]
+    token_sources: [layer4, layer3+layer4]
+    pretrained: [scratch, imagenet]
+  hybrid_tokenizers:
+    tokenizers:
+      - conv_stem_s16
+      - conv_stem_s8
+      - local_patch16
+      - local_patch14
+      - cvt_patch16
+      - cvt_patch14
+      - conv_stem_patch14
+      - conv_stem_patch12
+  pooler_core_ablation:
+    variants:
+      - mean
+      - gps_query_k1_frame
+      - gps_query_k2_frame
+      - gps_query_k4_frame
+      - gps_query_k2_tokens
+      - gps_query_k4_tokens
+      - hybrid_residual_query
+      - token_aware_core
+  teacher_guided_stabilization:
+    teachers:
+      - resnet18_l4_scratch
+      - resnet18_l4_imagenet_unfreeze_layer4
+      - resnet34_l4_imagenet
+    students:
+      - patch14
+      - patch12
+      - overlap_k16_s8
+      - conv_stem_s16
+      - local_patch14
+    temperatures: [2, 4]
+    weights: [0.1, 0.3, 0.5]
+  compute_controls:
+    controls:
+      - matched_trainable_params
+      - matched_token_count
+      - frozen_backbone_controls
+      - random_feature_controls
+  seed_confirm:
+    policy: all_primary_candidates
+    seeds: [17, 23, 42]

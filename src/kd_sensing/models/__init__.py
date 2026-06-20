@@ -15,7 +15,6 @@ _EXPORTS: dict[str, str] = {
     "JepaContextImageEncoder": "kd_sensing.models.jepa",
     "JepaMaskSampler": "kd_sensing.models.jepa",
     "VisualPatchTokenEncoder": "kd_sensing.models.jepa",
-    "JepaMsacModel": "kd_sensing.models.jepa_msac",
     "ResNet18ImageEncoder": "kd_sensing.models.image_encoders",
     "LidarFeatureExtractor": "kd_sensing.models.lidar",
     "LidarLightweightModalityNet": "kd_sensing.models.lidar",
@@ -57,6 +56,7 @@ _REMOVED_ALIASES = {
     "MARFFusionNet": "MARF has been retired; use cls_token_transformer_fusion or a current fusion model.",
     "BottleneckPrivateAdapter": "HiST-Beam/Hist has been retired; no compatibility adapter is provided.",
     "HistBeamFusionNet": "HiST-Beam/Hist has been retired; use current supervised, adapter, GPS v2, CSI, JEPA, or viewer workflows.",
+    "JepaMsacModel": "JEPA-MSAC has been retired; use current GPS-conditioned JEPA, JEPA visual analysis, or GPS shortcut benchmark workflows.",
 }
 
 

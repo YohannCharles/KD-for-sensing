@@ -223,25 +223,20 @@ def test_mmwave_dataset_keeps_old_csv_compatible_when_disabled(tmp_path: Path):
 
 
 def test_mmwave_models_batch_and_fusion_forward_contracts():
-    extractor = MODELS.build({"type": "mmwave_feature_extractor", "n_feature": 64, "mmwave_input_size": 64})
-    assert isinstance(extractor, MmWaveFeatureExtractor)
+    extractor = MmWaveFeatureExtractor(n_feature=64, mmwave_input_size=64)
     with torch.no_grad():
         assert extractor(torch.randn(2, 10, 64)).shape == (2, 10, 64)
 
-    for model_type, expected_cls in [
-        ("mmwave_strong", MmWaveModalityNet),
-        ("mmwave_lightweight", MmWaveLightweightModalityNet),
+    for model_cls in [
+        MmWaveModalityNet,
+        MmWaveLightweightModalityNet,
     ]:
-        model = MODELS.build(
-            {
-                "type": model_type,
-                "mmwave_input_size": 64,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64, 1],
-            }
+        model = model_cls(
+            mmwave_input_size=64,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64, 1],
         )
-        assert isinstance(model, expected_cls)
         with torch.no_grad():
             pred, features, output_features = model(torch.randn(2, 10, 64))
         assert pred.shape == (2, 10, 64)
@@ -264,24 +259,18 @@ def test_mmwave_models_batch_and_fusion_forward_contracts():
     with pytest.raises(ValueError, match="requires 'mmwave' input"):
         fusion_strong()
     with pytest.raises(ValueError, match="mmwave_input_size"):
-        MODELS.build(
-            {
-                "type": "mmwave_strong",
-                "mmwave_input_size": 32,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64, 1],
-            }
+        MmWaveModalityNet(
+            mmwave_input_size=32,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64, 1],
         )
     with pytest.raises(ValueError, match="gru_params must contain"):
-        MODELS.build(
-            {
-                "type": "mmwave_lightweight",
-                "mmwave_input_size": 64,
-                "feature_size": 64,
-                "num_classes": 64,
-                "gru_params": [64, 64],
-            }
+        MmWaveLightweightModalityNet(
+            mmwave_input_size=64,
+            feature_size=64,
+            num_classes=64,
+            gru_params=[64, 64],
         )
 
 
@@ -360,8 +349,10 @@ def test_mmwave_configs_build(config_path: str):
     assert cfg["data"]["dataset"]["use_mmwave"] is True
     assert cfg["data"]["dataset"]["mmwave_normalize"] is True
     assert cfg["model"]["primary"]["mmwave_input_size"] == 64
-    assert cfg["model"]["primary"]["gru_params"] == [64, 64, 1]
-    assert isinstance(model, (MmWaveModalityNet, MmWaveLightweightModalityNet))
+    assert cfg["model"]["primary"]["type"] == "modular_sequence"
+    assert cfg["model"]["primary"]["encoders"]["mmwave"]["type"] == "mmwave_mlp"
+    assert cfg["model"]["primary"]["representation_core"]["num_layers"] == 1
+    assert isinstance(model, ModularSequenceModel)
 
 
 @pytest.mark.parametrize("config_path", MMWAVE_FUSION_CONFIGS)

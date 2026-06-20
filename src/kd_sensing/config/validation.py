@@ -35,12 +35,6 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     """Validate structural constraints that current model implementations rely on."""
 
     validate_prediction_objective_config(cfg)
-    from kd_sensing.baselines.jepa_msac.config import validate_jepa_msac_workflow_config
-
-    validate_jepa_msac_workflow_config(cfg)
-    from kd_sensing.baselines.amr_net_gps_image.preset import validate_amr_net_gps_image_preset_config
-
-    validate_amr_net_gps_image_preset_config(cfg)
     from kd_sensing.engine.epoch_subsampling import validate_epoch_subsampling_config
 
     validate_epoch_subsampling_config(cfg)
@@ -88,9 +82,7 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
 def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
     experiment = str(cfg.get("experiment", {}).get("name") or "")
     if experiment not in {
-        "deepsense6g_gps_lidar_bgam_reranker",
         "deepsense6g_gps_adapter_v2",
-        "mmw_town_gps_lidar_bgam_reranker",
         "mmw_town_gps_adapter_v2",
     }:
         return
@@ -125,32 +117,6 @@ def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
             )
     if experiment == "mmw_town_gps_adapter_v2":
         gps_root = Path(str(data_cfg.get("gps_v2_artifact_root", data_cfg.get("output_root", ""))))
-        if gps_root:
-            gps_dir = gps_root if gps_root.name == selected_label_space else gps_root / selected_label_space
-            candidate_paths.extend(
-                [
-                    (gps_dir / "gps_logits_index.csv", "GPS logits index"),
-                    (gps_dir / "predictions.csv", "GPS predictions"),
-                ]
-            )
-    if experiment == "deepsense6g_gps_lidar_bgam_reranker":
-        configured = str(data_cfg.get("top8_manifest_path") or "").strip()
-        if configured:
-            candidate_paths.append((Path(configured), "Top8 candidate manifest"))
-        gps_root = str(data_cfg.get("gps_v2_artifact_root") or "").strip()
-        if gps_root:
-            gps_dir = Path(gps_root)
-            candidate_paths.extend(
-                [
-                    (gps_dir / "gps_logits_index.csv", "GPS logits index"),
-                    (gps_dir / "predictions.csv", "GPS predictions"),
-                ]
-            )
-    if experiment == "mmw_town_gps_lidar_bgam_reranker":
-        configured = str(data_cfg.get("top8_manifest_path") or "").strip()
-        if configured:
-            candidate_paths.append((Path(configured), "MMW Top8 candidate manifest"))
-        gps_root = Path(str(data_cfg.get("gps_v2_artifact_root", data_cfg.get("gps_output_root", ""))))
         if gps_root:
             gps_dir = gps_root if gps_root.name == selected_label_space else gps_root / selected_label_space
             candidate_paths.extend(
@@ -214,25 +180,6 @@ def validate_prediction_objective_config(cfg: dict[str, Any]) -> None:
             raise ValueError(
                 "experiment.objective='gps_conditioned_jepa' requires data.dataset.use_gps=true "
                 "and GPS-Rel-Polar input."
-            )
-        return
-
-    if objective == "jepa_msac_pretraining":
-        modalities = set(str(item) for item in model_cfg.get("modalities", cfg.get("model", {}).get("modalities", [])))
-        if model_type != "jepa_msac":
-            raise ValueError(
-                "experiment.objective='jepa_msac_pretraining' requires model.primary.type='jepa_msac'."
-            )
-        if "rf" in modalities:
-            raise ValueError(
-                "JEPA-MSAC RF is workflow-local beam-power history, not a canonical modality. "
-                "Use workflow.jepa_msac.rf_history_source."
-            )
-        required = {"image", "radar", "gps", "lidar", "mmwave"}
-        if not required <= modalities:
-            raise ValueError(
-                "experiment.objective='jepa_msac_pretraining' requires canonical modalities "
-                "image, radar, gps, lidar, and mmwave; RF is mapped from workflow-local beam power."
             )
         return
 

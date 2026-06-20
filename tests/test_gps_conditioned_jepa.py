@@ -15,7 +15,12 @@ from kd_sensing.engine.data_factory import build_dataloaders  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.engine.validator import validate  # noqa: E402
 from kd_sensing.losses.jepa import jepa_latent_prediction_loss  # noqa: E402
-from kd_sensing.models.jepa import GPSQueryPool, JepaContextImageEncoder, JepaMaskSampler  # noqa: E402
+from kd_sensing.models.jepa import (  # noqa: E402
+    GPSQueryPool,
+    JepaContextImageEncoder,
+    JepaMaskSampler,
+    build_visual_token_encoder,
+)
 from kd_sensing.models.jepa_downstream import (  # noqa: E402
     HybridResidualQueryPool,
     IdentityJepaAdapter,
@@ -148,6 +153,140 @@ def test_jepa_registry_forward_shape_gps_validation_detach_and_ema_update():
     model.update_target_encoder()
     after = next(model.target_encoder.parameters()).detach()
     assert not torch.equal(before, after)
+
+
+def test_visual_token_encoder_registry_default_metadata_and_token_budget():
+    import_default_components()
+    encoder = build_visual_token_encoder(
+        {
+            "type": "patch_vit",
+            "image_channels": 3,
+            "latent_dim": 8,
+            "patch_size": 16,
+            "depth": 0,
+            "max_tokens": 4,
+        },
+        image_channels=3,
+        latent_dim=8,
+        image_profile="rgb_imagenet",
+    )
+
+    tokens, grid = encoder(torch.randn(1, 1, 3, 32, 32))
+
+    metadata = encoder.visual_token_metadata()
+    assert tokens.shape == (1, 1, 4, 8)
+    assert grid == (2, 2)
+    assert metadata["variant_id"] == "patch16"
+    assert metadata["token_source"] == "patch_vit"
+    assert metadata["token_grid"] == [2, 2]
+    assert metadata["token_count"] == 4
+    assert metadata["checkpoint_policy"] == "exact_reuse"
+
+    with pytest.raises(RegistryError, match="unknown_visual.*jepa_visual_token_encoders"):
+        build_visual_token_encoder({"type": "unknown_visual"}, image_channels=3, latent_dim=8)
+    with pytest.raises(ValueError, match="token budget exceeded.*token_count=16.*max_tokens=4"):
+        build_visual_token_encoder(
+            {
+                "type": "patch_vit",
+                "image_channels": 3,
+                "latent_dim": 8,
+                "patch_size": 8,
+                "depth": 0,
+                "max_tokens": 4,
+            },
+            image_channels=3,
+            latent_dim=8,
+            image_profile="rgb_imagenet",
+        )(torch.randn(1, 1, 3, 32, 32))
+
+
+@pytest.mark.parametrize(
+    ("visual_cfg", "expected_grid", "expected_tokens", "policy"),
+    [
+        ({"type": "patch_vit", "patch_size": 14, "max_tokens": 16}, (2, 2), 4, "fresh_stage1_required"),
+        ({"type": "patch_vit", "patch_size": 8, "max_tokens": 16}, (4, 4), 16, "fresh_stage1_required"),
+        ({"type": "overlap_patch", "kernel_size": 16, "stride": 8, "max_tokens": 16}, (3, 3), 9, "fresh_stage1_required"),
+        (
+            {"type": "conv_stem", "stem_channels": [8, 8], "stem_strides": [2, 2], "max_tokens": 64},
+            (8, 8),
+            64,
+            "fresh_stage1_required",
+        ),
+        ({"type": "local_token_mixing", "patch_size": 16, "max_tokens": 4}, (2, 2), 4, "partial_reuse"),
+        ({"type": "cvt", "patch_size": 16, "max_tokens": 4}, (2, 2), 4, "partial_reuse"),
+    ],
+)
+def test_visual_tokenizer_variants_shape_metadata_and_stage1_forward(
+    visual_cfg: dict,
+    expected_grid: tuple[int, int],
+    expected_tokens: int,
+    policy: str,
+):
+    cfg = {
+        "image_channels": 3,
+        "latent_dim": 8,
+        "depth": 0,
+        "num_heads": 2,
+        **visual_cfg,
+    }
+    encoder = build_visual_token_encoder(cfg, image_channels=3, latent_dim=8, image_profile="rgb_imagenet")
+
+    tokens, grid = encoder(torch.randn(2, 2, 3, 32, 32))
+
+    metadata = encoder.visual_token_metadata()
+    assert tokens.shape == (2, 2, expected_tokens, 8)
+    assert grid == expected_grid
+    assert metadata["token_grid"] == [expected_grid[0], expected_grid[1]]
+    assert metadata["token_count"] == expected_tokens
+    assert metadata["checkpoint_policy"] == policy
+
+
+def test_cnn_and_multiscale_visual_token_sources_shape_metadata():
+    pytest.importorskip("torchvision.models")
+    image = torch.randn(1, 1, 3, 64, 64)
+    single = build_visual_token_encoder(
+        {
+            "type": "cnn_feature_map",
+            "image_channels": 3,
+            "latent_dim": 8,
+            "backbone": "resnet18",
+            "stage": "layer3",
+            "pretrained": False,
+            "freeze_backbone": True,
+            "max_tokens": 64,
+        },
+        image_channels=3,
+        latent_dim=8,
+        image_profile="rgb_imagenet",
+    )
+    multi = build_visual_token_encoder(
+        {
+            "type": "multi_scale_cnn",
+            "image_channels": 3,
+            "latent_dim": 8,
+            "backbone": "resnet18",
+            "pretrained": False,
+            "freeze_backbone": True,
+            "max_tokens": 80,
+        },
+        image_channels=3,
+        latent_dim=8,
+        image_profile="rgb_imagenet",
+    )
+    single.eval()
+    multi.eval()
+
+    single_tokens, single_grid = single(image)
+    multi_tokens, multi_grid = multi(image)
+
+    assert single_tokens.shape == (1, 1, 16, 8)
+    assert single_grid == (4, 4)
+    assert single.visual_token_metadata()["backbone"] == "resnet18"
+    assert single.visual_token_metadata()["stage"] == "layer3"
+    assert single.visual_token_metadata()["checkpoint_policy"] == "supervised_only_anchor"
+    assert multi_tokens.shape == (1, 1, 20, 8)
+    assert multi_grid == (4, 4)
+    assert multi.visual_token_metadata()["scale_token_counts"] == {"layer3": 16, "layer4": 4}
 
 
 def test_jepa_concat_conditioner_forward_shape():
@@ -474,6 +613,119 @@ def test_jepa_context_image_encoder_mean_default_and_gps_query_forward_errors():
     assert gps_query_encoder.last_attention_map.shape == (2, 3, 2, 16)
 
 
+def test_jepa_context_image_encoder_records_visual_token_diagnostics_for_new_tokenizer():
+    encoder = JepaContextImageEncoder(
+        output_dim=8,
+        latent_dim=8,
+        image_channels=3,
+        image_profile="rgb_imagenet",
+        visual_encoder={
+            "type": "overlap_patch",
+            "image_channels": 3,
+            "latent_dim": 8,
+            "kernel_size": 16,
+            "stride": 8,
+            "depth": 0,
+            "max_tokens": 16,
+        },
+        pooler={
+            "type": "gps_query_attention",
+            "condition_dim": 8,
+            "k_queries": 2,
+            "num_heads": 2,
+            "return_attention": True,
+        },
+    )
+
+    output = encoder(torch.randn(2, 3, 3, 32, 32), gps_condition_features=torch.randn(2, 3, 8))
+
+    diagnostics = encoder.last_visual_token_diagnostics
+    metadata = encoder.training_strategy_metadata()
+    assert output.shape == (2, 3, 8)
+    assert diagnostics["token_grid"] == [3, 3]
+    assert diagnostics["token_count"] == 9
+    assert diagnostics["attention_shape"] == [2, 3, 2, 9]
+    assert diagnostics["attention_entropy"] > 0.0
+    assert metadata["visual_token_encoder"]["visual_encoder_type"] == "overlap_patch"
+    assert metadata["checkpoint_policy"] == "fresh_stage1_required"
+
+
+def test_k_token_pooler_output_mode_requires_token_aware_core():
+    import_default_components()
+    base_cfg = {
+        "type": "modular_sequence",
+        "modalities": ["image", "gps"],
+        "feature_size": 8,
+        "d_model": 8,
+        "num_classes": 7,
+        "num_pred": 1,
+        "image_profile": "rgb_imagenet",
+        "image_channels": 3,
+        "gps_input_size": 3,
+        "encoders": {
+            "image": {
+                "type": "jepa_context_image",
+                "checkpoint_path": "",
+                "strict": False,
+                "output_dim": 8,
+                "latent_dim": 8,
+                "image_channels": 3,
+                "visual_encoder": {
+                    "type": "patch_vit",
+                    "image_channels": 3,
+                    "latent_dim": 8,
+                    "patch_size": 16,
+                    "depth": 0,
+                    "max_tokens": 4,
+                },
+                "pooler": {
+                    "type": "gps_query_attention",
+                    "condition_dim": 8,
+                    "latent_dim": 8,
+                    "k_queries": 2,
+                    "num_heads": 2,
+                    "return_attention": True,
+                    "output_mode": "tokens",
+                },
+            },
+            "gps": {"type": "gps_mlp", "output_dim": 8, "hidden_size": 8, "dropout": 0.0},
+        },
+        "projectors": {
+            "image": {"type": "linear", "d_model": 8, "dropout": 0.0},
+            "gps": {"type": "linear", "d_model": 8, "dropout": 0.0},
+        },
+        "representation_core": {
+            "type": "token_aware_transformer",
+            "d_model": 8,
+            "num_heads": 2,
+            "num_layers": 1,
+            "dropout": 0.0,
+        },
+        "heads": {"beam": {"type": "beam_head", "dropout": 0.0}},
+    }
+    model = MODELS.build(copy.deepcopy(base_cfg))
+    model.eval()
+
+    with torch.no_grad():
+        output = model(image_batch=torch.randn(2, 2, 3, 32, 32), gps_batch=torch.randn(2, 2, 3))
+
+    assert output["logits"].shape == (2, 2, 7)
+    assert output["encoder_features"]["image"].shape == (2, 2, 2, 8)
+    assert output["token_features"].shape == (2, 3, 2, 8)
+    assert output["runtime_metadata"]["encoder_temporal_auxiliary"]["image"]["visual_tokens"]["token_count"] == 4
+
+    bad_cfg = copy.deepcopy(base_cfg)
+    bad_cfg["representation_core"] = {
+        "type": "early_concat_gru",
+        "d_model": 8,
+        "modality_count": 2,
+        "hidden_size": 8,
+    }
+    bad_model = MODELS.build(bad_cfg)
+    with pytest.raises(ValueError, match="expected K=2, D=8, got .*3"):
+        bad_model(image_batch=torch.randn(1, 2, 3, 32, 32), gps_batch=torch.randn(1, 2, 3))
+
+
 def test_jepa_context_image_encoder_accepts_explicit_pooler_adapter_config_and_metadata():
     encoder = JepaContextImageEncoder(
         output_dim=16,
@@ -704,6 +956,12 @@ def test_jepa_mask_sampler_random_and_gps_biased_are_reproducible_and_non_overla
             num_tokens=16,
             grid_size=(4, 4),
             gps_batch=gps,
+            token_metadata={
+                "visual_encoder_type": "patch_vit",
+                "checkpoint_policy": "exact_reuse",
+                "token_grid": [4, 4],
+                "token_count": 16,
+            },
             epoch=1,
             step=2,
         )
@@ -713,12 +971,37 @@ def test_jepa_mask_sampler_random_and_gps_biased_are_reproducible_and_non_overla
             num_tokens=16,
             grid_size=(4, 4),
             gps_batch=gps,
+            token_metadata={
+                "visual_encoder_type": "patch_vit",
+                "checkpoint_policy": "exact_reuse",
+                "token_grid": [4, 4],
+                "token_count": 16,
+            },
             epoch=1,
             step=2,
         )
         assert torch.equal(first.context_mask, second.context_mask)
         assert torch.equal(first.target_mask, second.target_mask)
         assert not torch.any(first.context_mask & first.target_mask)
+        assert first.diagnostics["jepa/token_count"] == pytest.approx(16.0)
+        assert first.diagnostics["jepa/token_grid_h"] == pytest.approx(4.0)
+        assert first.diagnostics["jepa/checkpoint_policy"] == "exact_reuse"
+
+    multiscale = JepaMaskSampler(mode="gps_angle_biased", context_ratio=0.5, target_ratio=0.25, seed=3).sample(
+        batch_size=1,
+        seq_len=1,
+        num_tokens=20,
+        grid_size=(4, 4),
+        gps_batch=torch.zeros(1, 1, 3),
+        token_metadata={
+            "visual_encoder_type": "multi_scale_cnn",
+            "token_grid": [4, 4],
+            "token_count": 20,
+            "scale_token_counts": {"layer3": 16, "layer4": 4},
+        },
+    )
+    assert multiscale.context_mask.shape == (1, 1, 20)
+    assert multiscale.diagnostics["jepa/multiscale_token_count"] == pytest.approx(20.0)
 
 
 def test_jepa_latent_loss_masks_and_empty_mask_protection():

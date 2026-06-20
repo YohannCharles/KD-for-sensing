@@ -97,10 +97,6 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
         required_targets = ("self_supervised_image_gps",)
         required_outputs = ("predicted_target_latent", "target_latent", "loss_mask")
         primary_loss = "jepa"
-    elif objective == "jepa_msac_pretraining":
-        required_targets = ("self_supervised_multimodal_msac",)
-        required_outputs = ("predicted_target_latent", "target_latent", "loss_mask")
-        primary_loss = "jepa_msac"
     else:
         required_targets = ("target_beam", "los_label", "link_quality")
         required_outputs = ("logits", "los_logits", "link_quality")
@@ -115,16 +111,6 @@ def objective_spec(cfg_or_objective: dict[str, Any] | str) -> PredictionObjectiv
                 "pretraining_kind": "gps_conditioned_jepa",
                 "context_encoder_artifact_key": "model.primary.context_encoder",
                 "self_supervised": True,
-            }
-        )
-    if objective == "jepa_msac_pretraining":
-        runtime_metadata.update(
-            {
-                "pretraining_kind": "jepa_msac",
-                "workflow_family": "jepa_msac",
-                "context_encoder_artifact_key": "model.primary.context_encoder",
-                "self_supervised": True,
-                "paper_workflow_baseline": True,
             }
         )
     return PredictionObjectiveSpec(
@@ -318,7 +304,7 @@ def objective_enabled_heads(cfg: dict[str, Any]) -> list[str]:
         elif output == "link_quality":
             head = "link_quality"
         elif output in {"predicted_target_latent", "target_latent", "loss_mask"}:
-            head = "jepa_msac_latent_prediction" if resolve_prediction_objective(cfg) == "jepa_msac_pretraining" else "jepa_latent_prediction"
+            head = "jepa_latent_prediction"
         if head is not None and head not in heads:
             heads.append(head)
     return heads
@@ -354,17 +340,6 @@ def objective_runtime_metadata(cfg: dict[str, Any]) -> dict[str, Any]:
             "visual_encoder": dict(_mapping(primary_cfg.get("visual_encoder"))),
             "gps_conditioner": dict(_mapping(primary_cfg.get("conditioning"))),
             "mask_sampler": dict(_mapping(primary_cfg.get("mask_sampler"))),
-        }
-    if spec.name == "jepa_msac_pretraining":
-        primary_cfg = _mapping(_mapping(cfg.get("model")).get("primary"))
-        metadata["jepa_msac"] = {
-            "pretraining_kind": "jepa_msac",
-            "workflow_family": "jepa_msac",
-            "ema_momentum": float(primary_cfg.get("ema_momentum", 0.996)),
-            "latent_dim": int(primary_cfg.get("latent_dim", 64)),
-            "mask_ratio": float(primary_cfg.get("mask_ratio", 0.5)),
-            "mask_pattern": str(primary_cfg.get("mask_pattern", "random")),
-            "early_stopping_metric": "val_jepa_msac_loss",
         }
     return metadata
 
@@ -498,13 +473,6 @@ def _runtime_loss_weights(cfg: dict[str, Any], objective: str) -> dict[str, floa
         objective_jepa = _mapping(objective_cfg.get("jepa"))
         return {
             "jepa": _weight_from_configs(("weight", "jepa"), loss_cfg, objective_jepa, objective_cfg, default=1.0)
-        }
-    if objective == "jepa_msac_pretraining":
-        loss_cfg = _mapping(_mapping(cfg.get("loss")).get("jepa_msac"))
-        objective_cfg = _mapping(_mapping(cfg.get("loss")).get("objective"))
-        objective_jepa = _mapping(objective_cfg.get("jepa_msac"))
-        return {
-            "jepa_msac": _weight_from_configs(("weight", "jepa_msac"), loss_cfg, objective_jepa, objective_cfg, default=1.0)
         }
     if objective == "selection_multitask":
         return selection_multitask_loss_weights(cfg)

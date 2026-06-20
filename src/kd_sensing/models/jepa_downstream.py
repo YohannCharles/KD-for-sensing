@@ -15,11 +15,19 @@ class MeanPatchPooler(nn.Module):
     context_feature_source = "none"
     context_feature_kwargs: dict[str, str] = {}
 
-    def __init__(self, latent_dim: int | None = None, **_: Any) -> None:
+    def __init__(self, latent_dim: int | None = None, output_mode: str = "frame", **_: Any) -> None:
         super().__init__()
         self.latent_dim = None if latent_dim is None else int(latent_dim)
+        self.output_mode = _normalize_pooler_output_mode(output_mode)
+        self.last_diagnostics: dict[str, Any] = {}
 
-    def forward(self, patch_tokens: torch.Tensor, condition_features: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        patch_tokens: torch.Tensor,
+        condition_features: torch.Tensor | None = None,
+        *,
+        token_metadata: dict[str, Any] | None = None,
+    ) -> torch.Tensor:
         del condition_features
         if patch_tokens.ndim != 4:
             raise ValueError(
@@ -29,12 +37,22 @@ class MeanPatchPooler(nn.Module):
             raise ValueError(
                 f"MeanPatchPooler expected patch token dim {self.latent_dim}, got {tuple(patch_tokens.shape)}."
             )
+        self.last_diagnostics = _pooler_token_diagnostics(
+            token_metadata=token_metadata,
+            attention_map=None,
+            output_mode=self.output_mode,
+            query_count=int(patch_tokens.shape[2]) if self.output_mode == "tokens" else 1,
+            condition_source="none",
+        )
+        if self.output_mode == "tokens":
+            return patch_tokens
         return patch_tokens.mean(dim=2)
 
     def training_strategy_metadata(self) -> dict[str, Any]:
         return {
             "type": self.pooler_type,
             "latent_dim": self.latent_dim,
+            "output_mode": self.output_mode,
             "requires_condition": False,
         }
 
@@ -54,6 +72,7 @@ class GPSQueryPool(nn.Module):
         return_attention: bool = False,
         hidden_dim: int | None = None,
         condition_source: str = "projected_gps",
+        output_mode: str = "frame",
     ) -> None:
         super().__init__()
         self.latent_dim = int(latent_dim)
@@ -61,6 +80,7 @@ class GPSQueryPool(nn.Module):
         self.k_queries = int(k_queries)
         self.num_heads = int(num_heads)
         self.return_attention = bool(return_attention)
+        self.output_mode = _normalize_pooler_output_mode(output_mode)
         self.condition_source = _normalize_condition_source(condition_source)
         self.required_context_modalities = ("gps",)
         self.context_feature_source = _context_feature_source_kind(self.condition_source)
@@ -91,6 +111,7 @@ class GPSQueryPool(nn.Module):
         )
         self.output_norm = nn.LayerNorm(self.latent_dim)
         self.last_attention_map: torch.Tensor | None = None
+        self.last_diagnostics: dict[str, Any] = {}
 
     def forward(
         self,
@@ -98,6 +119,7 @@ class GPSQueryPool(nn.Module):
         condition_features: torch.Tensor | None = None,
         *,
         return_attention: bool | None = None,
+        token_metadata: dict[str, Any] | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if condition_features is None:
             raise ValueError("GPSQueryPool requires GPS condition features.")
@@ -115,15 +137,33 @@ class GPSQueryPool(nn.Module):
             need_weights=with_attention,
             average_attn_weights=True,
         )
-        pooled_queries = self.output_norm(attended).mean(dim=1)
-        pooled = pooled_queries.reshape(batch_size, seq_len, self.latent_dim)
+        attended = self.output_norm(attended)
+        if self.output_mode == "tokens":
+            pooled = attended.reshape(batch_size, seq_len, self.k_queries, self.latent_dim)
+        else:
+            pooled_queries = attended.mean(dim=1)
+            pooled = pooled_queries.reshape(batch_size, seq_len, self.latent_dim)
         if not with_attention:
             self.last_attention_map = None
+            self.last_diagnostics = _pooler_token_diagnostics(
+                token_metadata=token_metadata,
+                attention_map=None,
+                output_mode=self.output_mode,
+                query_count=self.k_queries,
+                condition_source=self.context_feature_source,
+            )
             return pooled
         if attention is None:
             raise RuntimeError("GPSQueryPool requested attention diagnostics but MultiheadAttention returned None.")
         attention_map = attention.detach().reshape(batch_size, seq_len, self.k_queries, num_tokens)
         self.last_attention_map = attention_map
+        self.last_diagnostics = _pooler_token_diagnostics(
+            token_metadata=token_metadata,
+            attention_map=attention_map,
+            output_mode=self.output_mode,
+            query_count=self.k_queries,
+            condition_source=self.context_feature_source,
+        )
         return pooled, attention_map
 
     def _validate_inputs(self, patch_tokens: torch.Tensor, condition_features: torch.Tensor) -> None:
@@ -159,6 +199,8 @@ class GPSQueryPool(nn.Module):
             "k_queries": self.k_queries,
             "num_heads": self.num_heads,
             "condition_source": self.condition_source,
+            "output_mode": self.output_mode,
+            "k_tokens": self.k_queries if self.output_mode == "tokens" else 1,
             "return_attention": self.return_attention,
             "attention_diagnostics": self.return_attention,
             "requires_condition": True,
@@ -187,6 +229,7 @@ class HybridResidualQueryPool(nn.Module):
         gps_required: bool | None = None,
         residual_alpha_init: float = 0.1,
         return_attention: bool = False,
+        output_mode: str = "frame",
     ) -> None:
         super().__init__()
         self.latent_dim = int(latent_dim)
@@ -195,6 +238,7 @@ class HybridResidualQueryPool(nn.Module):
         self.gps_queries = int(gps_queries if gps_queries is not None else k_queries if k_queries is not None else 2)
         self.num_heads = int(num_heads)
         self.return_attention = bool(return_attention)
+        self.output_mode = _normalize_pooler_output_mode(output_mode)
         self.condition_source = _normalize_condition_source(condition_source)
         if require_condition is None:
             require_condition = True if gps_required is None else bool(gps_required)
@@ -255,6 +299,7 @@ class HybridResidualQueryPool(nn.Module):
         condition_features: torch.Tensor | None = None,
         *,
         return_attention: bool | None = None,
+        token_metadata: dict[str, Any] | None = None,
     ) -> torch.Tensor:
         self._validate_patch_tokens(patch_tokens)
         batch_size, seq_len, num_tokens, latent_dim = patch_tokens.shape
@@ -275,6 +320,7 @@ class HybridResidualQueryPool(nn.Module):
 
         gps_latent = mean_latent
         gps_attention_map: torch.Tensor | None = None
+        gps_attended_tokens: torch.Tensor | None = None
         gps_available = condition_features is not None
         if condition_features is None:
             if self.require_condition:
@@ -292,6 +338,7 @@ class HybridResidualQueryPool(nn.Module):
                 average_attn_weights=True,
             )
             gps_latent = gps_attended.mean(dim=1).reshape(batch_size, seq_len, latent_dim)
+            gps_attended_tokens = gps_attended
             if with_attention:
                 if gps_attention is None:
                     raise RuntimeError(
@@ -304,6 +351,11 @@ class HybridResidualQueryPool(nn.Module):
         residual = self.residual_mlp(torch.cat([content_delta, gps_delta], dim=-1))
         alpha = self.residual_alpha.to(dtype=patch_tokens.dtype, device=patch_tokens.device).clamp(0.0, 1.0)
         pooled = self.output_norm(mean_latent + alpha * residual)
+        if self.output_mode == "tokens":
+            query_pieces = [content_attended]
+            if gps_attended_tokens is not None:
+                query_pieces.append(gps_attended_tokens)
+            pooled = self.output_norm(torch.cat(query_pieces, dim=1)).reshape(batch_size, seq_len, -1, latent_dim)
 
         attention_maps: dict[str, torch.Tensor] = {}
         if with_attention:
@@ -330,6 +382,15 @@ class HybridResidualQueryPool(nn.Module):
             "content_queries": self.content_queries,
             "gps_queries": self.gps_queries,
             "attention_diagnostics": bool(with_attention),
+            "output_mode": self.output_mode,
+            "k_tokens": int(pooled.shape[2]) if pooled.ndim == 4 else 1,
+            **_pooler_token_diagnostics(
+                token_metadata=token_metadata,
+                attention_map=self.last_attention_map,
+                output_mode=self.output_mode,
+                query_count=int(pooled.shape[2]) if pooled.ndim == 4 else 1,
+                condition_source=self.context_feature_source,
+            ),
         }
         return pooled
 
@@ -371,6 +432,8 @@ class HybridResidualQueryPool(nn.Module):
             "gps_queries": self.gps_queries,
             "num_heads": self.num_heads,
             "condition_source": self.condition_source,
+            "output_mode": self.output_mode,
+            "k_tokens": self.content_queries + self.gps_queries if self.output_mode == "tokens" else 1,
             "return_attention": self.return_attention,
             "attention_diagnostics": self.return_attention,
             "requires_condition": self.require_condition,
@@ -412,6 +475,7 @@ class PredictiveGPSQueryPool(nn.Module):
         temporal_predictor: dict[str, Any] | str | None = None,
         reliability_gate: dict[str, Any] | str | None = None,
         return_attention: bool = False,
+        output_mode: str = "frame",
     ) -> None:
         super().__init__()
         self.latent_dim = int(latent_dim)
@@ -420,6 +484,7 @@ class PredictiveGPSQueryPool(nn.Module):
         self.gps_queries = int(gps_queries if gps_queries is not None else k_queries if k_queries is not None else 2)
         self.num_heads = int(num_heads)
         self.return_attention = bool(return_attention)
+        self.output_mode = _normalize_pooler_output_mode(output_mode)
         self.condition_source = _normalize_condition_source(condition_source)
         self.required_context_modalities = ("gps",)
         self.context_feature_source = _context_feature_source_kind(self.condition_source)
@@ -509,6 +574,7 @@ class PredictiveGPSQueryPool(nn.Module):
         gps_counterfactual_mask: torch.Tensor | None = None,
         benchmark_condition_metadata: dict[str, Any] | None = None,
         return_attention: bool | None = None,
+        token_metadata: dict[str, Any] | None = None,
     ) -> torch.Tensor:
         if condition_features is None:
             raise ValueError("PredictiveGPSQueryPool requires GPS condition features.")
@@ -582,6 +648,13 @@ class PredictiveGPSQueryPool(nn.Module):
         )
         stacked = torch.stack([content_latent, temporal_latent, gps_residual_latent], dim=2)
         pooled = self.output_norm((stacked * gate_weights.unsqueeze(-1)).sum(dim=2))
+        if self.output_mode == "tokens":
+            pooled = self.output_norm(torch.cat([content_attended, gps_attended], dim=1)).reshape(
+                batch_size,
+                seq_len,
+                self.content_queries + self.gps_queries,
+                latent_dim,
+            )
 
         attention_maps: dict[str, torch.Tensor] = {}
         if with_attention:
@@ -608,6 +681,9 @@ class PredictiveGPSQueryPool(nn.Module):
             benchmark_condition_metadata=benchmark_condition_metadata,
             attention_maps=attention_maps,
             residual_scale=scale,
+            token_metadata=token_metadata,
+            output_mode=self.output_mode,
+            output_query_count=int(pooled.shape[2]) if pooled.ndim == 4 else 1,
         )
         return pooled
 
@@ -701,6 +777,9 @@ class PredictiveGPSQueryPool(nn.Module):
         benchmark_condition_metadata: dict[str, Any] | None,
         attention_maps: dict[str, torch.Tensor],
         residual_scale: torch.Tensor,
+        token_metadata: dict[str, Any] | None,
+        output_mode: str,
+        output_query_count: int,
     ) -> dict[str, Any]:
         gate_mean = gate_weights.detach().mean(dim=(0, 1)).cpu().tolist()
         gps_counterfactual_count = 0
@@ -746,10 +825,19 @@ class PredictiveGPSQueryPool(nn.Module):
             "insufficient_history_count": temporal_metadata["insufficient_history_count"],
             "fallback_strategy": temporal_metadata["fallback_strategy"],
             "gps_counterfactual_count": gps_counterfactual_count,
+            "output_mode": output_mode,
+            "k_tokens": int(output_query_count),
             "latent_consistency": {
                 "current_temporal_l2_mean": gate_metadata["temporal_consistency_mean"],
                 "current_gps_residual_l2_mean": gate_metadata["gps_consistency_mean"],
             },
+            **_pooler_token_diagnostics(
+                token_metadata=token_metadata,
+                attention_map=attention_maps.get("gps"),
+                output_mode=output_mode,
+                query_count=output_query_count,
+                condition_source=self.context_feature_source,
+            ),
         }
 
     def _validate_inputs(self, patch_tokens: torch.Tensor, condition_features: torch.Tensor) -> None:
@@ -788,6 +876,8 @@ class PredictiveGPSQueryPool(nn.Module):
             "gps_queries": self.gps_queries,
             "num_heads": self.num_heads,
             "condition_source": self.condition_source,
+            "output_mode": self.output_mode,
+            "k_tokens": self.content_queries + self.gps_queries if self.output_mode == "tokens" else 1,
             "return_attention": self.return_attention,
             "attention_diagnostics": self.return_attention,
             "requires_condition": True,
@@ -854,6 +944,7 @@ def normalize_jepa_downstream_pooler_config(
             cfg = {"type": pooling_name}
     cfg.setdefault("latent_dim", int(latent_dim))
     cfg["type"] = _normalize_pooler_type(cfg.get("type", "mean"))
+    cfg["output_mode"] = _normalize_pooler_output_mode(cfg.get("output_mode", "frame"))
     if str(cfg.get("type")) == "gps_query_attention":
         cfg.setdefault("condition_dim", int(latent_dim))
         cfg.setdefault("k_queries", 4)
@@ -998,10 +1089,56 @@ def _mask_or_default(
     return tensor
 
 
+def _normalize_pooler_output_mode(value: Any) -> str:
+    mode = str(value or "frame").strip().lower()
+    aliases = {
+        "pooled": "frame",
+        "mean": "frame",
+        "frames": "frame",
+        "k_tokens": "tokens",
+        "queries": "tokens",
+        "query_tokens": "tokens",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"frame", "tokens"}:
+        raise ValueError("JEPA downstream pooler output_mode must be 'frame' or 'tokens'.")
+    return mode
+
+
+def _pooler_token_diagnostics(
+    *,
+    token_metadata: dict[str, Any] | None,
+    attention_map: torch.Tensor | None,
+    output_mode: str,
+    query_count: int,
+    condition_source: str,
+) -> dict[str, Any]:
+    metadata = dict(token_metadata or {})
+    diagnostics: dict[str, Any] = {
+        "token_grid": metadata.get("token_grid"),
+        "token_count": metadata.get("token_count"),
+        "variant_id": metadata.get("variant_id"),
+        "checkpoint_policy": metadata.get("checkpoint_policy"),
+        "condition_feature_source": condition_source,
+        "output_mode": output_mode,
+        "query_count": int(query_count),
+    }
+    if torch.is_tensor(attention_map):
+        diagnostics["attention_shape"] = [int(dim) for dim in attention_map.shape]
+        diagnostics["attention_entropy"] = _attention_entropy(attention_map)
+        diagnostics["attention_peakiness"] = _attention_peakiness(attention_map)
+    return diagnostics
+
+
 def _attention_entropy(attention: torch.Tensor) -> float:
     probs = attention.detach().to(dtype=torch.float32).clamp_min(1.0e-12)
     entropy = -(probs * probs.log()).sum(dim=-1)
     return float(entropy.mean().cpu().item())
+
+
+def _attention_peakiness(attention: torch.Tensor) -> float:
+    probs = attention.detach().to(dtype=torch.float32)
+    return float(probs.max(dim=-1).values.mean().cpu().item())
 
 
 def _normalize_condition_source(value: Any) -> str:

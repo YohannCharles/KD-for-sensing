@@ -2564,7 +2564,7 @@ def test_artifact_registry_archives_highest_metric_and_resolves_evaluation_check
     cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
         "experiment": {"name": "gps_strong", "task": "gps"},
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"capacity": "strong", "primary": {"type": "modular_sequence", "modalities": ["gps"]}},
         "output": {"run_name": "gps_strong"},
     }
     low = tmp_path / "low.pth"
@@ -2601,7 +2601,7 @@ def test_artifact_registry_tolerates_malformed_sidecar_during_parallel_archival(
     cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True, "dir": str(registry_dir)}},
         "experiment": {"name": "gps_strong", "task": "gps"},
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"capacity": "strong", "primary": {"type": "modular_sequence", "modalities": ["gps"]}},
         "output": {"run_name": "gps_strong"},
     }
     metadata = {
@@ -2650,21 +2650,21 @@ def test_default_registry_is_scene_scoped(tmp_path: Path):
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g", "scene": 9}},
         "experiment": {"name": "gps_strong", "task": "gps"},
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"capacity": "strong", "primary": {"type": "modular_sequence", "modalities": ["gps"]}},
         "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
     scene31_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g"}},
         "experiment": {"name": "gps_strong", "task": "gps"},
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"capacity": "strong", "primary": {"type": "modular_sequence", "modalities": ["gps"]}},
         "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
     scene_32_cfg = {
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g", "scene": 32}},
         "experiment": {"name": "gps_strong", "task": "gps"},
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"capacity": "strong", "primary": {"type": "modular_sequence", "modalities": ["gps"]}},
         "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
     checkpoint = tmp_path / "primary.pth"
@@ -2717,7 +2717,7 @@ def test_default_registry_is_scenegroup_scoped_for_multiscene_configs(tmp_path: 
         "checkpoint": {"registry": {"enabled": True, "prefer": True}},
         "data": {"dataset": {"type": "deepsense6g"}},
         "experiment": {"name": "gps_strong", "task": "gps"},
-        "model": {"primary": {"type": "gps_strong"}},
+        "model": {"capacity": "strong", "primary": {"type": "modular_sequence", "modalities": ["gps"]}},
         "output": {"dir": str(tmp_path), "run_name": "gps_strong"},
     }
     group_cfg = {

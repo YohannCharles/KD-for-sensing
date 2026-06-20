@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
 import shutil
@@ -9,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -35,6 +37,7 @@ from kd_sensing.config.defaults import DEFAULT_CONFIG  # noqa: E402
 from kd_sensing.utils.runtime_output_layout import canonical_runtime_partitions  # noqa: E402
 
 MAINTAINER_CONTEXT_INDEX_PATH = ROOT / MAINTAINER_CONTEXT_INDEX_REL_PATH
+LEGACY_MODEL_RETIREMENT_FIXTURE = ROOT / "tests" / "fixtures" / "legacy_model_registry_retirement.yaml"
 MAINTAINER_CONTEXT_INDEX = load_maintainer_context_index(ROOT)
 ENTRYPOINT_ALLOWLISTS = entrypoint_allowlists(MAINTAINER_CONTEXT_INDEX)
 CONFIG_ALLOWLISTS = config_allowlists(MAINTAINER_CONTEXT_INDEX)
@@ -174,6 +177,20 @@ LEGACY_ROUTE_PATTERNS = tuple(
         r"Top8 selector",
         r"GPS residual",
         r"camera residual",
+        r"\bBGAM\b",
+        r"viewer manifest",
+        r"Gradio viewer",
+        r"AMR-Net_gps_image",
+        r"\bamr_net_gps_image\b",
+        r"kd-sensing-run-amr-net-gps-image",
+        r"JEPA-MSAC",
+        r"\bjepa_msac\b",
+        r"jepa_msac_pretraining",
+        r"kd-sensing-run-jepa-msac",
+        r"scripts/mmw/visualize_gps_",
+        r"gps_circular_soft_label",
+        r"run_mmw_sunny_modal15",
+        r"visualize-modalities",
         r"\bCRAF\b",
         r"\bMARF\b",
         r"\bG2D\b",
@@ -238,6 +255,13 @@ CURRENT_WORKFLOW_DOCS = (
     ROOT / "docs" / "result_claims_registry.md",
     ROOT / "docs" / "extension_guide.md",
     ROOT / "docs" / "training_throughput.md",
+)
+
+JEPA_VISUAL_SWEEP_FILES = (
+    ROOT / "configs" / "diagnostics" / "jepa_visual_architecture_sweep_manifest.yaml",
+    ROOT / "configs" / "fusion" / "experiments" / "jepa_image_gps" / "architecture_sweep_smoke.yaml",
+    ROOT / "configs" / "fusion" / "experiments" / "jepa_image_gps" / "architecture_sweep_lowmem.yaml",
+    ROOT / "configs" / "fusion" / "experiments" / "jepa_image_gps" / "architecture_sweep_strict.yaml",
 )
 MAINLINE_EXPERIMENT_DOCS = (
     "docs/mainline_model_catalog.md",
@@ -372,7 +396,9 @@ def _tracked_paths() -> list[str]:
         check=True,
         capture_output=True,
     )
-    return sorted(path for path in result.stdout.decode("utf-8").split("\0") if path)
+    return sorted(
+        path for path in result.stdout.decode("utf-8").split("\0") if path and (ROOT / path).exists()
+    )
 
 
 def _active_change_artifact_paths() -> list[str]:
@@ -742,6 +768,17 @@ def test_model_registrations_are_documented_or_allowlisted():
     assert violations == []
 
 
+def test_retired_legacy_model_registry_names_are_not_model_allowlist_entries():
+    payload = yaml.safe_load(LEGACY_MODEL_RETIREMENT_FIXTURE.read_text(encoding="utf-8"))
+    retired_model_names = {
+        str(entry["name"])
+        for entry in payload["retired"]
+        if entry.get("registry") == "models"
+    }
+
+    assert retired_model_names.isdisjoint(EXISTING_MODEL_REGISTRATION_ALLOWLIST)
+
+
 def test_extension_guide_defaults_to_modular_model_extension():
     guide = (ROOT / "docs" / "extension_guide.md").read_text(encoding="utf-8")
     add_model = guide.split("## Add a Model", 1)[1].split("## Add a Dataset", 1)[0]
@@ -817,51 +854,47 @@ def test_mainline_experiment_docs_are_indexed_and_current():
             assert rel_path in text, f"{index_path.relative_to(ROOT)} must link to {rel_path}"
 
 
-def test_amr_net_gps_image_quickstart_stays_synchronized():
-    matrix = (ROOT / "docs" / "experiment_matrix.md").read_text(encoding="utf-8")
-    required_matrix_markers = (
-        "AMR-Net_gps_image",
-        "configs/baselines/amr_net_gps_image.yaml",
+def test_priority_legacy_workflows_are_retired_from_current_surfaces():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    retired_commands = {
         "kd-sensing-run-amr-net-gps-image",
-        "blocked_official",
-        "10000718",
-        "LiDAR",
-    )
-    missing_matrix_markers = [marker for marker in required_matrix_markers if marker not in matrix]
-    assert missing_matrix_markers == []
-
-    for rel_path in (
-        "docs/mainline_model_catalog.md",
-        "docs/experiment_protocols.md",
-        "docs/result_claims_registry.md",
-        "docs/project_surface_inventory.md",
-    ):
-        text = (ROOT / rel_path).read_text(encoding="utf-8")
-        assert "AMR-Net_gps_image" in text, f"{rel_path} must mention AMR-Net_gps_image when the quickstart does"
-
-
-def test_jepa_msac_quickstart_stays_synchronized():
-    matrix = (ROOT / "docs" / "experiment_matrix.md").read_text(encoding="utf-8")
-    required_matrix_markers = (
-        "JEPA-MSAC Scenario 32",
+        "kd-sensing-run-jepa-msac",
+    }
+    retired_configs = {
+        "configs/baselines/amr_net_gps_image.yaml",
         "configs/pretraining/jepa_msac_s32_smoke.yaml",
         "configs/pretraining/jepa_msac_s32_paper.yaml",
-        "kd-sensing-run-jepa-msac",
-        "mock/smoke",
-        "unverified",
-    )
-    missing_matrix_markers = [marker for marker in required_matrix_markers if marker not in matrix]
-    assert missing_matrix_markers == []
+    }
+    retired_modules = {
+        "kd_sensing.cli.run_amr_net_gps_image",
+        "kd_sensing.cli.run_jepa_msac",
+        "kd_sensing.baselines.amr_net_gps_image",
+        "kd_sensing.baselines.jepa_msac",
+        "kd_sensing.models.jepa_msac",
+        "kd_sensing.losses.jepa_msac",
+    }
 
-    for rel_path in (
-        "docs/mainline_model_catalog.md",
-        "docs/experiment_protocols.md",
-        "docs/result_claims_registry.md",
-        "docs/project_surface_inventory.md",
-        "README.md",
-    ):
-        text = (ROOT / rel_path).read_text(encoding="utf-8")
-        assert "JEPA-MSAC" in text, f"{rel_path} must mention JEPA-MSAC when the quickstart does"
+    assert retired_commands.isdisjoint(PACKAGE_CLI_METADATA)
+    assert all(command not in pyproject for command in retired_commands)
+    assert all(not (ROOT / rel_path).exists() for rel_path in retired_configs)
+    for module_name in sorted(retired_modules):
+        assert importlib.util.find_spec(module_name) is None
+
+
+def test_priority_legacy_scripts_are_not_current_allowlist_entries():
+    retired_scripts = {
+        "scripts/mmw/visualize_gps_angle_beam_correspondence.py",
+        "scripts/mmw/visualize_gps_prediction_trajectory.py",
+        "scripts/mmw/visualize_prediction_error_label_distribution.py",
+        "scripts/run_deepsense_gps_circular_soft_label.sh",
+        "scripts/run_mmw_gps_circular_soft_label_ablation.sh",
+        "scripts/run_mmw_sunny_modal15_l5p3_h123.sh",
+        "scripts/run_mmw_sunny_modal15_l5p6_h246.sh",
+    }
+
+    assert retired_scripts.isdisjoint(PYTHON_ENTRYPOINT_ALLOWLIST)
+    assert retired_scripts.isdisjoint(SHELL_ORCHESTRATION_ALLOWLIST)
+    assert all(not (ROOT / rel_path).exists() for rel_path in retired_scripts)
 
 
 def test_predictive_jepa_robustness_governance_boundaries_are_synchronized():
@@ -942,6 +975,36 @@ def test_experiment_workflow_does_not_restore_legacy_kd_active_wording():
     )
 
     assert [snippet for snippet in forbidden_snippets if snippet in spec] == []
+
+
+def test_jepa_visual_architecture_sweep_uses_current_entrypoints_and_no_retired_routes():
+    for path in JEPA_VISUAL_SWEEP_FILES:
+        text = path.read_text(encoding="utf-8")
+        if path.name == "jepa_visual_architecture_sweep_manifest.yaml":
+            assert "conda run -n kd_mm_beam" in text
+            assert "scripts/train.py" in text
+            assert "scripts/evaluate.py" in text
+        assert [pattern.pattern for pattern in LEGACY_ROUTE_PATTERNS if pattern.search(text)] == []
+    assert not (ROOT / "train_jepa_visual_architecture_sweep.py").exists()
+    assert not (ROOT / "run_jepa_visual_architecture_sweep.py").exists()
+
+
+def test_cnn_hybrid_jepa_visual_prior_sweep_is_package_scoped_and_output_scoped():
+    manifest = ROOT / "configs" / "diagnostics" / "cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml"
+    module = SRC / "kd_sensing" / "diagnostics" / "cnn_hybrid_jepa_visual_prior_sweep.py"
+    manifest_text = manifest.read_text(encoding="utf-8")
+    module_text = module.read_text(encoding="utf-8")
+
+    assert "outputs/analysis/cnn_hybrid_jepa_visual_prior_sweep" in manifest_text
+    assert "outputs/analysis/cnn_hybrid_jepa_visual_prior_sweep" in module_text
+    assert "conda run -n kd_mm_beam" in module_text
+    assert "scripts/train.py" in module_text
+    assert "scripts/evaluate.py" in module_text
+    assert "/root/.container_env" in module_text
+    assert "dataset" in module_text
+    assert "All_models" in module_text
+    assert not (ROOT / "train_cnn_hybrid_jepa_visual_prior_sweep.py").exists()
+    assert not (ROOT / "run_cnn_hybrid_jepa_visual_prior_sweep.py").exists()
 
 
 def test_project_surface_inventory_guardrails_are_current():
@@ -1323,12 +1386,15 @@ def test_current_jepa_compatibility_wording_is_not_retired_route_regression():
         assert not _has_allowed_current_jepa_context(line, line)
 
 
-def test_retired_top8_residual_routes_are_not_current_source_modules():
+def test_retired_top8_residual_bgam_viewer_routes_are_not_current_source_modules():
     retired_paths = [
         ROOT / "configs" / "deepsense6g_residual_fusion.yaml",
         ROOT / "configs" / "deepsense6g_camera_residual.yaml",
         ROOT / "configs" / "deepsense6g_top8_selector.yaml",
         ROOT / "configs" / "mmw_town_top8_selector.yaml",
+        ROOT / "configs" / "deepsense6g_gps_lidar_bgam.yaml",
+        ROOT / "configs" / "mmw_town_gps_lidar_bgam.yaml",
+        ROOT / "configs" / "diagnostics" / "modality_visualization.yaml",
         ROOT / "configs" / "gps" / "gps_coarse_anchor_smoke.yaml",
         ROOT / "configs" / "gps" / "gps_coarse_anchor_target_adapt.yaml",
         ROOT / "configs" / "gps" / "gps_neural_coarse_smoke.yaml",
@@ -1339,49 +1405,62 @@ def test_retired_top8_residual_routes_are_not_current_source_modules():
         ROOT / "src" / "kd_sensing" / "cli" / "prepare_deepsense6g_top8_candidate_manifest.py",
         ROOT / "src" / "kd_sensing" / "cli" / "run_deepsense6g_top8_selector.py",
         ROOT / "src" / "kd_sensing" / "cli" / "prepare_mmw_town_top8_candidate_manifest.py",
-        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_residual.py",
-        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_camera_residual.py",
-        ROOT / "src" / "kd_sensing" / "data" / "geometry_residual.py",
-        ROOT / "src" / "kd_sensing" / "engine" / "gps_coarse_anchor.py",
-        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_residual_fusion.py",
-        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_top8_selector.py",
-        ROOT / "src" / "kd_sensing" / "models" / "deepsense6g_residual_fusion.py",
-        ROOT / "src" / "kd_sensing" / "models" / "topk_candidate_selector.py",
-        ROOT / "src" / "kd_sensing" / "losses" / "residual.py",
-        ROOT / "src" / "kd_sensing" / "data" / "datasets" / "raymobtime_s008.py",
-        ROOT / "src" / "kd_sensing" / "preprocessing" / "raymobtime_s008.py",
-        ROOT / "src" / "kd_sensing" / "models" / "raymobtime_s008.py",
-        ROOT / "configs" / "raymobtime",
-        ROOT / "docs" / "Raymobtime_s008_selection.md",
-        ROOT / "tests" / "test_raymobtime_s008_selection.py",
-    ]
-    violations = [path.relative_to(ROOT).as_posix() for path in retired_paths if path.exists()]
-
-    assert violations == []
-
-
-def test_bgam_modules_stay_inside_package_boundaries():
-    required_package_entries = [
-        ROOT / "configs" / "deepsense6g_gps_lidar_bgam.yaml",
-        ROOT / "configs" / "mmw_town_gps_lidar_bgam.yaml",
         ROOT / "src" / "kd_sensing" / "cli" / "prepare_deepsense6g_gps_lidar_bgam_manifest.py",
         ROOT / "src" / "kd_sensing" / "cli" / "run_deepsense6g_gps_lidar_bgam.py",
         ROOT / "src" / "kd_sensing" / "cli" / "evaluate_deepsense6g_gps_lidar_bgam.py",
         ROOT / "src" / "kd_sensing" / "cli" / "prepare_mmw_town_gps_lidar_bgam_manifest.py",
         ROOT / "src" / "kd_sensing" / "cli" / "run_mmw_town_gps_lidar_bgam.py",
         ROOT / "src" / "kd_sensing" / "cli" / "evaluate_mmw_town_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "export_viewer_manifest.py",
+        ROOT / "src" / "kd_sensing" / "cli" / "visualize_modalities.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_residual.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_camera_residual.py",
+        ROOT / "src" / "kd_sensing" / "data" / "geometry_residual.py",
+        ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_topk_candidate_manifest.py",
+        ROOT / "src" / "kd_sensing" / "data" / "mmw_town_topk_candidate_manifest.py",
         ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_dataset.py",
         ROOT / "src" / "kd_sensing" / "data" / "deepsense6g_gps_lidar_bgam_manifest.py",
         ROOT / "src" / "kd_sensing" / "data" / "mmw_town_gps_lidar_bgam_manifest.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "gps_coarse_anchor.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_residual_fusion.py",
+        ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_top8_selector.py",
         ROOT / "src" / "kd_sensing" / "engine" / "deepsense6g_gps_lidar_bgam.py",
         ROOT / "src" / "kd_sensing" / "engine" / "mmw_town_gps_lidar_bgam.py",
+        ROOT / "src" / "kd_sensing" / "models" / "deepsense6g_residual_fusion.py",
+        ROOT / "src" / "kd_sensing" / "models" / "topk_candidate_selector.py",
         ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam.py",
         ROOT / "src" / "kd_sensing" / "models" / "gps_lidar_bgam_model.py",
+        ROOT / "src" / "kd_sensing" / "losses" / "residual.py",
         ROOT / "src" / "kd_sensing" / "losses" / "gps_lidar_bgam_losses.py",
+        ROOT / "src" / "kd_sensing" / "losses" / "topk_candidate_losses.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_cache.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_config.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_datasets.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_merge.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_paths.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_sampling.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_schema.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_stats.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_manifest_writer.py",
+        ROOT / "src" / "kd_sensing" / "diagnostics" / "viewer_predictions.py",
+        ROOT / "src" / "kd_sensing" / "data" / "datasets" / "raymobtime_s008.py",
+        ROOT / "src" / "kd_sensing" / "preprocessing" / "raymobtime_s008.py",
+        ROOT / "src" / "kd_sensing" / "models" / "raymobtime_s008.py",
+        ROOT / "configs" / "raymobtime",
+        ROOT / "docs" / "Raymobtime_s008_selection.md",
+        ROOT / "tests" / "test_raymobtime_s008_selection.py",
+        ROOT / "tests" / "test_gps_lidar_bgam_geometry.py",
+        ROOT / "tests" / "test_gps_lidar_bgam_model.py",
+        ROOT / "tests" / "test_gps_lidar_bgam_dataset.py",
+        ROOT / "tests" / "test_gps_lidar_bgam_runner.py",
     ]
-    missing = [path.relative_to(ROOT).as_posix() for path in required_package_entries if not path.exists()]
-    assert missing == []
+    violations = [path.relative_to(ROOT).as_posix() for path in retired_paths if path.exists()]
 
+    assert violations == []
+
+
+def test_retired_bgam_root_scripts_are_not_reintroduced():
     forbidden_root_entries = [
         ROOT / "train_gps_lidar_bgam.py",
         ROOT / "eval_gps_lidar_bgam.py",
@@ -1437,8 +1516,6 @@ def test_hotspot_inventory_documents_facades_and_narrow_modules():
         "src/kd_sensing/engine/objective_metadata.py",
         "src/kd_sensing/engine/objectives/registry.py",
         "src/kd_sensing/engine/objectives/history.py",
-        "src/kd_sensing/diagnostics/viewer_manifest.py",
-        "src/kd_sensing/diagnostics/viewer_manifest_merge.py",
         "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py",
         "src/kd_sensing/diagnostics/jepa_benchmark_common.py",
         "src/kd_sensing/diagnostics/jepa_benchmark_manifest.py",
@@ -1497,22 +1574,6 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
                 "src/kd_sensing/engine/objectives/registry.py": "_METRIC_ALIASES",
                 "src/kd_sensing/engine/objectives/history.py": "_HISTORY_FIELDS",
                 "src/kd_sensing/engine/objectives/metadata.py": "def objective_runtime_metadata",
-            },
-        },
-        "src/kd_sensing/diagnostics/viewer_manifest.py": {
-            "max_lines": 220,
-            "forbidden": [
-                "def _manifest_record",
-                "def _cache_digest",
-                "def _load_external_mapping",
-                "def _save_raw_lidar_preview",
-            ],
-            "helpers": {
-                "src/kd_sensing/diagnostics/viewer_manifest_schema.py": "def _json_ready",
-                "src/kd_sensing/diagnostics/viewer_manifest_cache.py": "def _cache_digest",
-                "src/kd_sensing/diagnostics/viewer_manifest_paths.py": "def _all_source_paths",
-                "src/kd_sensing/diagnostics/viewer_manifest_merge.py": "def _attach_prediction_bundle",
-                "src/kd_sensing/diagnostics/viewer_manifest_writer.py": "def _manifest_record",
             },
         },
         "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py": {
@@ -1643,6 +1704,19 @@ def test_duplicate_manifest_fallback_wrapper_is_not_reintroduced():
     assert violations == []
 
 
+def test_retired_bgam_viewer_console_scripts_are_not_declared():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    retired_fragments = (
+        "export-viewer-manifest",
+        "visualize-modalities",
+        "gps-lidar-bgam",
+        "top8-candidate-manifest",
+    )
+    violations = [fragment for fragment in retired_fragments if fragment in pyproject]
+
+    assert violations == []
+
+
 def test_openspec_specs_have_real_purpose_text():
     violations = []
     for path in sorted((ROOT / "openspec" / "specs").glob("*/spec.md")):
@@ -1710,10 +1784,40 @@ for module in (
     "kd_sensing.cli.inspect_deepsense6g_residual_inputs",
     "kd_sensing.cli.prepare_deepsense6g_top8_candidate_manifest",
     "kd_sensing.cli.gps_coarse_anchor",
+    "kd_sensing.cli.export_viewer_manifest",
+    "kd_sensing.cli.visualize_modalities",
+    "kd_sensing.cli.prepare_deepsense6g_gps_lidar_bgam_manifest",
+    "kd_sensing.cli.run_deepsense6g_gps_lidar_bgam",
+    "kd_sensing.cli.evaluate_deepsense6g_gps_lidar_bgam",
+    "kd_sensing.cli.prepare_mmw_town_gps_lidar_bgam_manifest",
+    "kd_sensing.cli.run_mmw_town_gps_lidar_bgam",
+    "kd_sensing.cli.evaluate_mmw_town_gps_lidar_bgam",
     "kd_sensing.data.deepsense6g_residual",
+    "kd_sensing.data.deepsense6g_topk_candidate_manifest",
+    "kd_sensing.data.mmw_town_topk_candidate_manifest",
+    "kd_sensing.data.deepsense6g_gps_lidar_bgam_dataset",
+    "kd_sensing.data.deepsense6g_gps_lidar_bgam_manifest",
+    "kd_sensing.data.mmw_town_gps_lidar_bgam_manifest",
     "kd_sensing.engine.gps_coarse_anchor",
+    "kd_sensing.engine.deepsense6g_gps_lidar_bgam",
+    "kd_sensing.engine.mmw_town_gps_lidar_bgam",
     "kd_sensing.models.topk_candidate_selector",
+    "kd_sensing.models.gps_lidar_bgam",
+    "kd_sensing.models.gps_lidar_bgam_model",
     "kd_sensing.losses.residual",
+    "kd_sensing.losses.gps_lidar_bgam_losses",
+    "kd_sensing.losses.topk_candidate_losses",
+    "kd_sensing.diagnostics.viewer_manifest",
+    "kd_sensing.diagnostics.viewer_manifest_cache",
+    "kd_sensing.diagnostics.viewer_manifest_config",
+    "kd_sensing.diagnostics.viewer_manifest_datasets",
+    "kd_sensing.diagnostics.viewer_manifest_merge",
+    "kd_sensing.diagnostics.viewer_manifest_paths",
+    "kd_sensing.diagnostics.viewer_manifest_sampling",
+    "kd_sensing.diagnostics.viewer_manifest_schema",
+    "kd_sensing.diagnostics.viewer_manifest_stats",
+    "kd_sensing.diagnostics.viewer_manifest_writer",
+    "kd_sensing.diagnostics.viewer_predictions",
 ):
     assert importlib.util.find_spec(module) is None, module
 """,
@@ -1765,32 +1869,6 @@ def test_current_diagnostics_light_submodule_does_not_import_visualization_stack
     }
 
 
-def test_viewer_manifest_light_helpers_do_not_import_runtime_stack():
-    modules = _run_module_presence_probe(
-        "\n".join(
-            [
-                "import kd_sensing.diagnostics.viewer_manifest_config",
-                "import kd_sensing.diagnostics.viewer_manifest_sampling",
-            ]
-        ),
-        {
-            "matplotlib": "matplotlib",
-            "pillow": "PIL.Image",
-            "data_factory": "kd_sensing.engine.data_factory",
-            "viewer_writer": "kd_sensing.diagnostics.viewer_manifest_writer",
-            "visualization_core": "kd_sensing.diagnostics.visualization.core",
-        },
-    )
-
-    assert modules == {
-        "matplotlib": False,
-        "pillow": False,
-        "data_factory": False,
-        "viewer_writer": False,
-        "visualization_core": False,
-    }
-
-
 def test_beam_loss_submodule_does_not_import_training_registry_or_transforms():
     modules = _run_module_presence_probe(
         "import kd_sensing.losses",
@@ -1813,10 +1891,8 @@ def test_lazy_package_exports_remain_available():
         "\n".join(
             [
                 "from kd_sensing.engine import train",
-                "from kd_sensing.diagnostics import export_viewer_manifest",
                 "from kd_sensing.losses import FocalLoss",
                 "assert train is not None",
-                "assert export_viewer_manifest is not None",
                 "assert FocalLoss is not None",
             ]
         ),
@@ -1944,6 +2020,7 @@ def test_internal_python_code_avoids_secondary_compatibility_layers():
         "from kd_sensing.preprocessing.multimodal_nf_common import",
         "import kd_sensing.preprocessing.multimodal_nf_common",
         "from kd_sensing.diagnostics.viewer_manifest import _",
+        "from kd_sensing.diagnostics import export_viewer_manifest",
     )
     violations = []
     for root in roots:
@@ -2118,20 +2195,9 @@ def test_prediction_task_boundaries_do_not_reintroduce_duplicate_tables_or_valid
     assert "run_evaluation_pass" in validator_text
 
 
-def test_visualize_modalities_console_script_is_thin_manifest_alias():
+def test_visualize_modalities_console_script_is_retired():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     alias_path = SRC / "kd_sensing" / "cli" / "visualize_modalities.py"
-    alias_text = alias_path.read_text(encoding="utf-8")
-    tree = ast.parse(alias_text)
-    function_names = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
 
-    assert 'kd-sensing-visualize-modalities = "kd_sensing.cli.visualize_modalities:main"' in pyproject
-    assert function_names == ["main"]
-    assert "argparse.ArgumentParser" not in alias_text
-    assert "export_viewer_manifest_main" in alias_text
-
-    command = shutil.which("kd-sensing-visualize-modalities")
-    if command is not None:
-        result = subprocess.run([command, "--help"], text=True, capture_output=True, check=False)
-        assert result.returncode == 0
-        assert "--cache-dir" in result.stdout
+    assert "kd-sensing-visualize-modalities" not in pyproject
+    assert not alias_path.exists()

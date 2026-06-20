@@ -22,19 +22,15 @@ from kd_sensing.modalities import (
 )
 
 IMAGE_MODEL_TYPES = {
-    "image_strong",
-    "image_lightweight",
-    "fusion_strong",
-    "fusion_lightweight",
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
-    "jepa_msac",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
     "bev_fusion_2604",
+    "modular_sequence",
 }
-MODULAR_MODEL_TYPES = {"modular_sequence", "modular_sequence_model"}
+MODULAR_MODEL_TYPES = {"modular_sequence"}
 ENCODER_CONFIG_MODEL_TYPES = set(MODULAR_MODEL_TYPES)
 MODULAR_ROLE_ONLY_KEYS = {
     "encoders",
@@ -44,35 +40,22 @@ MODULAR_ROLE_ONLY_KEYS = {
     "image_profile",
 }
 FUSION_MODEL_TYPES = {
-    "fusion_strong",
-    "fusion_lightweight",
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
-    "jepa_msac",
-    "gps_only_neural_baseline",
     "gps_sequence_baseline",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
     "bev_fusion_2604",
-    "jepa_msac",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "modular_sequence",
-    "modular_sequence_model",
-    "gps_strong",
-    "gps_lightweight",
-    "radar_strong",
-    "radar_lightweight",
-    "mmwave_strong",
-    "mmwave_lightweight",
 }
 D_MODEL_ROLE_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     *MODULAR_MODEL_TYPES,
-    "gps_only_neural_baseline",
     "gps_sequence_baseline",
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
@@ -94,9 +77,6 @@ def normalize_loaded_config(
         explicit_early_stopping_mode=explicit_early_stopping_mode,
     )
     apply_objective_runtime_requirements(cfg)
-    from kd_sensing.baselines.amr_net_gps_image.preset import validate_amr_net_gps_image_preset_config
-
-    validate_amr_net_gps_image_preset_config(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
     normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_csi_hardening_alias(cfg)
@@ -218,10 +198,6 @@ def apply_objective_runtime_requirements(cfg: dict[str, Any]) -> None:
         ensure_jepa_runtime_requirements(cfg)
         ensure_objective_loss_defaults(cfg, objective)
         return
-    if objective == "jepa_msac_pretraining":
-        ensure_jepa_msac_runtime_requirements(cfg)
-        ensure_objective_loss_defaults(cfg, objective)
-        return
     dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
     if objective_requires_occlusion(cfg):
         ensure_occlusion_target(dataset_cfg)
@@ -294,10 +270,6 @@ def ensure_objective_loss_defaults(cfg: dict[str, Any], objective: str) -> None:
         loss_cfg.setdefault("jepa", {"type": "mse", "latent_normalize": False, "weight": 1.0})
         weights_cfg.setdefault("jepa", 1.0)
         return
-    if objective == "jepa_msac_pretraining":
-        loss_cfg.setdefault("jepa_msac", {"type": "smooth_l1", "beta": 1.0, "weight": 1.0})
-        weights_cfg.setdefault("jepa_msac", 1.0)
-        return
     if objective == "selection_multitask":
         weights_cfg.setdefault("beam_selection", 1.0)
         weights_cfg.setdefault("los", 0.5)
@@ -336,26 +308,6 @@ def ensure_jepa_runtime_requirements(cfg: dict[str, Any]) -> None:
     dataset_cfg["use_gps"] = True
     dataset_cfg.setdefault("gps_feature_mode", "relative_polar")
     dataset_cfg.setdefault("gps_normalize", True)
-    dataset_cfg.setdefault("image_profile", "rgb_imagenet")
-
-
-def ensure_jepa_msac_runtime_requirements(cfg: dict[str, Any]) -> None:
-    model_cfg = cfg.setdefault("model", {})
-    model_cfg.setdefault("modalities", ["image", "radar", "gps", "lidar", "mmwave"])
-    primary_cfg = model_cfg.setdefault("primary", {})
-    primary_cfg.setdefault("type", "jepa_msac")
-    primary_cfg.setdefault("modalities", ["image", "radar", "gps", "lidar", "mmwave"])
-    primary_cfg.setdefault("num_beams", 64)
-    primary_cfg.setdefault("t_hist", 8)
-    primary_cfg.setdefault("t_pred", 5)
-    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
-    dataset_cfg.setdefault("scene", 32)
-    dataset_cfg.setdefault("seq_len", 8)
-    dataset_cfg.setdefault("num_pred", 5)
-    dataset_cfg.setdefault("use_gps", True)
-    dataset_cfg.setdefault("use_lidar", True)
-    dataset_cfg.setdefault("use_mmwave", True)
-    dataset_cfg.setdefault("gps_feature_mode", "relative_polar")
     dataset_cfg.setdefault("image_profile", "rgb_imagenet")
 
 

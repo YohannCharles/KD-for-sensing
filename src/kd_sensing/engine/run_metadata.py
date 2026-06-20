@@ -372,7 +372,6 @@ def vision_position_baseline_metadata(cfg: dict[str, Any], model: Any | None = N
         "vision_position_late_fusion",
         "vision_position_transformer_fusion",
         "gps_sequence_baseline",
-        "gps_only_neural_baseline",
     }
     if not preset and model_type not in baseline_model_types:
         return {}
@@ -428,7 +427,7 @@ def vision_position_baseline_metadata(cfg: dict[str, Any], model: Any | None = N
             ("freeze_encoder", "freeze_backbone"),
         )
         metadata["pretrained_weights"] = _pretrained_from_encoder(image_encoder_cfg)
-    if model_type in {"gps_sequence_baseline", "gps_only_neural_baseline"}:
+    if model_type == "gps_sequence_baseline":
         metadata["uses_neural_network"] = True
         metadata["non_neural_window_baseline"] = False
     if model_type == "vision_position_transformer_fusion":
@@ -534,7 +533,7 @@ def jepa_downstream_metadata(
     model_metadata = _model_training_strategy_metadata(model)
     model_cfg = cfg.get("model", {})
     primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
-    if str(primary_cfg.get("type", "")).strip() not in {"modular_sequence", "modular_sequence_model"}:
+    if str(primary_cfg.get("type", "")).strip() != "modular_sequence":
         return _jepa_metadata_from_model(model_metadata)
     encoders_cfg = primary_cfg.get("encoders", {})
     image_encoder_cfg = encoders_cfg.get("image", {}) if isinstance(encoders_cfg, dict) else {}
@@ -571,6 +570,12 @@ def jepa_downstream_metadata(
         gps_query_pool = {}
     hybrid_pooler = pooler_cfg if pooling == "hybrid_residual_query" and isinstance(pooler_cfg, dict) else {}
     predictive_pooler = pooler_cfg if pooling == "predictive_gps_query" and isinstance(pooler_cfg, dict) else {}
+    output_mode = "frame"
+    if isinstance(pooler_cfg, dict):
+        output_mode = str(pooler_cfg.get("output_mode", output_mode))
+    if pooling == "gps_query_attention" and isinstance(gps_query_pool, dict):
+        output_mode = str(gps_query_pool.get("output_mode", output_mode))
+    visual_token_metadata = _jepa_visual_token_metadata_from_config(image_encoder_cfg)
     temporal_auxiliary = image_encoder_cfg.get("temporal_auxiliary", {})
     if not isinstance(temporal_auxiliary, dict):
         temporal_auxiliary = {}
@@ -628,6 +633,13 @@ def jepa_downstream_metadata(
         "freeze_image_encoder": freeze_encoder,
         "pooling": pooling,
         "pooler_type": pooling,
+        "pooler_output_mode": output_mode,
+        "visual_token_encoder": visual_token_metadata,
+        "visual_token_metadata": visual_token_metadata,
+        "checkpoint_policy": visual_token_metadata.get("checkpoint_policy"),
+        "token_source": visual_token_metadata.get("token_source"),
+        "token_count": visual_token_metadata.get("token_count"),
+        "token_grid": visual_token_metadata.get("token_grid"),
         "adapter_type": adapter_type,
         "condition_source": gps_query_metadata["condition_source"]
         or hybrid_metadata["condition_source"]
@@ -675,12 +687,14 @@ def jepa_downstream_metadata(
             "state_dict_prefix": image_encoder_cfg.get("state_dict_prefix", "context_encoder"),
             "pooling": pooling,
             "pooler_type": pooling,
+            "pooler_output_mode": output_mode,
             "adapter_type": adapter_type,
             "gps_query_pool": gps_query_metadata,
             "hybrid_residual_query": hybrid_metadata,
             "predictive_gps_query": predictive_metadata,
             "temporal_auxiliary": dict(temporal_auxiliary),
             "latent_dim": image_encoder_cfg.get("latent_dim"),
+            "visual_token_encoder": visual_token_metadata,
         },
     }
     model_jepa = _jepa_metadata_from_model(model_metadata)
@@ -710,6 +724,110 @@ def _nested_int(raw: Any, key: str, fallback: Any = None) -> int | None:
     return int(value)
 
 
+def _jepa_visual_token_metadata_from_config(image_encoder_cfg: dict[str, Any]) -> dict[str, Any]:
+    raw_visual = image_encoder_cfg.get("visual_encoder", {})
+    visual = dict(raw_visual) if isinstance(raw_visual, dict) else {}
+    encoder_type = _normalize_jepa_visual_encoder_type(visual.get("type", "patch_vit"))
+    patch_size = int(visual.get("patch_size", 16) or 16)
+    kernel_size = int(visual.get("kernel_size", patch_size) or patch_size)
+    stride_default = 8 if encoder_type == "overlap_patch" else patch_size
+    stride = int(visual.get("stride", stride_default) or stride_default)
+    max_tokens = int(visual.get("max_tokens", 256) or 256)
+    image_size = _image_size_pair_from_config(visual.get("image_size", image_encoder_cfg.get("image_size", [224, 224])))
+    if encoder_type == "conv_stem":
+        stem_strides = visual.get("stem_strides", [2, 2, 4])
+        stride = 1
+        if isinstance(stem_strides, (list, tuple)):
+            for item in stem_strides:
+                stride *= int(item)
+        grid = (max(image_size[0] // max(stride, 1), 1), max(image_size[1] // max(stride, 1), 1))
+    elif encoder_type == "cnn_feature_map":
+        stage = str(visual.get("stage", "layer4"))
+        stride = 16 if stage == "layer3" else 32
+        grid = (max(image_size[0] // stride, 1), max(image_size[1] // stride, 1))
+    elif encoder_type == "multi_scale_cnn":
+        grid_l3 = (max(image_size[0] // 16, 1), max(image_size[1] // 16, 1))
+        grid_l4 = (max(image_size[0] // 32, 1), max(image_size[1] // 32, 1))
+        grid = grid_l3
+        token_count = grid_l3[0] * grid_l3[1] + grid_l4[0] * grid_l4[1]
+        return {
+            "variant_id": str(visual.get("variant_id", "resnet18_layer3_layer4_tokens")),
+            "visual_encoder.type": encoder_type,
+            "visual_encoder_type": encoder_type,
+            "token_source": "multi_scale_cnn",
+            "image_size": list(image_size),
+            "effective_stride": [16, 16],
+            "token_grid": list(grid),
+            "token_count": int(token_count),
+            "positional_encoding": str(visual.get("positional_encoding", "learned_absolute")),
+            "checkpoint_policy": str(visual.get("checkpoint_policy", "supervised_only_anchor")),
+            "max_tokens": max_tokens,
+            "backbone": str(visual.get("backbone", "resnet18")),
+            "stages": list(visual.get("stages", ["layer3", "layer4"])),
+            "scale_token_counts": {
+                "layer3": int(grid_l3[0] * grid_l3[1]),
+                "layer4": int(grid_l4[0] * grid_l4[1]),
+            },
+        }
+    else:
+        grid = (
+            max((image_size[0] - kernel_size) // max(stride, 1) + 1, 1),
+            max((image_size[1] - kernel_size) // max(stride, 1) + 1, 1),
+        )
+    default_policy = "exact_reuse" if encoder_type == "patch_vit" and patch_size == 16 else "fresh_stage1_required"
+    if encoder_type in {"local_token_mixing", "cvt"}:
+        default_policy = "partial_reuse"
+    if encoder_type == "cnn_feature_map":
+        default_policy = "supervised_only_anchor"
+    token_source = {
+        "patch_vit": "patch_vit",
+        "overlap_patch": "overlap_patch",
+        "conv_stem": "conv_stem",
+        "local_token_mixing": "patch_vit_with_local_mixing",
+        "cvt": "patch_vit_with_cvt_depthwise_projection",
+        "cnn_feature_map": "cnn_feature_map",
+    }.get(encoder_type, encoder_type)
+    return {
+        "variant_id": str(visual.get("variant_id", f"patch{patch_size}" if encoder_type == "patch_vit" else encoder_type)),
+        "visual_encoder.type": encoder_type,
+        "visual_encoder_type": encoder_type,
+        "token_source": token_source,
+        "image_size": list(image_size),
+        "effective_stride": [stride, stride],
+        "token_grid": [int(grid[0]), int(grid[1])],
+        "token_count": int(grid[0] * grid[1]),
+        "positional_encoding": str(visual.get("positional_encoding", "learned_absolute")),
+        "checkpoint_policy": str(visual.get("checkpoint_policy", default_policy)),
+        "max_tokens": max_tokens,
+        **({"backbone": str(visual.get("backbone", "resnet18")), "stage": str(visual.get("stage", "layer4"))} if encoder_type == "cnn_feature_map" else {}),
+    }
+
+
+def _normalize_jepa_visual_encoder_type(value: Any) -> str:
+    encoder_type = str(value or "patch_vit").strip().lower()
+    aliases = {
+        "patch16": "patch_vit",
+        "patch14": "patch_vit",
+        "patch8": "patch_vit",
+        "overlap": "overlap_patch",
+        "overlap_tokenizer": "overlap_patch",
+        "conv_stem_tokenizer": "conv_stem",
+        "local_vit": "local_token_mixing",
+        "cvt_depthwise": "cvt",
+        "cnn_tokens": "cnn_feature_map",
+        "multi_scale_tokens": "multi_scale_cnn",
+    }
+    return aliases.get(encoder_type, encoder_type)
+
+
+def _image_size_pair_from_config(value: Any) -> tuple[int, int]:
+    if isinstance(value, int):
+        return (int(value), int(value))
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (int(value[0]), int(value[1]))
+    return (224, 224)
+
+
 def _model_training_strategy_metadata(model: Any | None) -> dict[str, Any]:
     if model is None or not hasattr(model, "training_strategy_metadata"):
         return {}
@@ -733,10 +851,24 @@ def _jepa_metadata_from_model(model_metadata: dict[str, Any]) -> dict[str, Any]:
     predictive_pooler = pooler if pooler.get("type") == "predictive_gps_query" else {}
     pooler_type = image_encoder.get("pooler_type") or pooler.get("type")
     adapter_type = image_encoder.get("adapter_type") or adapter.get("type")
+    visual_metadata = (
+        image_encoder.get("visual_token_metadata")
+        if isinstance(image_encoder.get("visual_token_metadata"), dict)
+        else image_encoder.get("visual_token_encoder")
+        if isinstance(image_encoder.get("visual_token_encoder"), dict)
+        else {}
+    )
     return {
         "image_encoder": image_encoder,
         "pooling": image_encoder.get("pooling") or pooler_type,
         "pooler_type": pooler_type,
+        "pooler_output_mode": image_encoder.get("pooler_output_mode") or pooler.get("output_mode"),
+        "visual_token_encoder": visual_metadata,
+        "visual_token_metadata": visual_metadata,
+        "checkpoint_policy": image_encoder.get("checkpoint_policy") or visual_metadata.get("checkpoint_policy"),
+        "token_source": image_encoder.get("token_source") or visual_metadata.get("token_source"),
+        "token_count": image_encoder.get("token_count") or visual_metadata.get("token_count"),
+        "token_grid": image_encoder.get("token_grid") or visual_metadata.get("token_grid"),
         "adapter_type": adapter_type,
         "jepa_checkpoint_path": image_encoder.get("checkpoint_path"),
         "state_dict_prefix": image_encoder.get("state_dict_prefix"),
@@ -1034,7 +1166,7 @@ def _uses_temporal_core(cfg: dict[str, Any]) -> bool:
     model_cfg = cfg.get("model", {})
     role_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
     model_type = str(role_cfg.get("type", ""))
-    if model_type in {"fusion_strong", "fusion_lightweight", "cls_token_transformer_fusion", "token_transformer_fusion"}:
+    if model_type in {"cls_token_transformer_fusion", "token_transformer_fusion"}:
         return True
     core_type = str(role_cfg.get("representation_core", {}).get("type", ""))
     if core_type == "snapshot_frame":

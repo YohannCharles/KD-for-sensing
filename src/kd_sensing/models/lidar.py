@@ -39,7 +39,6 @@ def _ds_conv_block(in_channels: int, out_channels: int, stride: int = 1) -> nn.S
     )
 
 
-@MODELS.register("lidar_feature_extractor")
 class LidarFeatureExtractor(nn.Module):
     def __init__(self, n_feature: int, in_channels: int = 3):
         super().__init__()
@@ -103,7 +102,6 @@ class LidarFeatureExtractor(nn.Module):
         return features.view(batch_size, seq_len, -1)
 
 
-@MODELS.register("lidar_strong")
 class LidarModalityNet(nn.Module):
     def __init__(
         self,
@@ -161,7 +159,6 @@ class LidarModalityNet(nn.Module):
         return pred, features, enhanced_seq_out
 
 
-@MODELS.register("lidar_lightweight")
 class LidarStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -232,8 +229,20 @@ class LidarStudentModalityNet(nn.Module):
         return pred, features, seq_out
 
 
-MODELS.register_removed("lidar_teacher", "Use 'lidar_strong'.")
-MODELS.register_removed("lidar_student", "Use 'lidar_lightweight'.")
+MODELS.register_removed(
+    "lidar_feature_extractor",
+    "Use encoders.lidar.type='lidar_cnn' in model.primary.type='modular_sequence', or import LidarFeatureExtractor directly.",
+)
+MODELS.register_removed(
+    "lidar_strong",
+    "Use model.primary.type='modular_sequence' with encoders.lidar.type='lidar_cnn', representation_core.type='single_gru', and heads.beam.type='beam_head'.",
+)
+MODELS.register_removed(
+    "lidar_lightweight",
+    "Use configs/lidar/lightweight.yaml with model.primary.type='modular_sequence' and encoders.lidar.type='lidar_cnn'.",
+)
+MODELS.register_removed("lidar_teacher", "Use configs/lidar/strong.yaml with model.primary.type='modular_sequence'.")
+MODELS.register_removed("lidar_student", "Use configs/lidar/lightweight.yaml with model.primary.type='modular_sequence'.")
 
 LidarStrongModalityNet = LidarModalityNet
 LidarLightweightModalityNet = LidarStudentModalityNet

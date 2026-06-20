@@ -10,7 +10,6 @@ from kd_sensing.models.auxiliary_heads import (
 from kd_sensing.registries import MODELS
 
 
-@MODELS.register("radar_feature_extractor")
 class RadarFeatureExtractor(nn.Module):
     def __init__(self, n_feature: int, in_channels: int = 1):
         super().__init__()
@@ -60,7 +59,6 @@ class RadarFeatureExtractor(nn.Module):
         return frame_features.view(batch_size, seq_length, -1)
 
 
-@MODELS.register("radar_lightweight")
 class RadarStudentModalityNet(nn.Module):
     def __init__(
         self,
@@ -155,7 +153,6 @@ class RadarStudentModalityNet(nn.Module):
         )
 
 
-@MODELS.register("radar_strong")
 class RadarModalityNet(nn.Module):
     def __init__(
         self,
@@ -230,8 +227,20 @@ class RadarModalityNet(nn.Module):
         )
 
 
-MODELS.register_removed("radar_teacher", "Use 'radar_strong'.")
-MODELS.register_removed("radar_student", "Use 'radar_lightweight'.")
+MODELS.register_removed(
+    "radar_feature_extractor",
+    "Use encoders.radar.type='radar_cnn' in model.primary.type='modular_sequence', or import RadarFeatureExtractor directly.",
+)
+MODELS.register_removed(
+    "radar_strong",
+    "Use model.primary.type='modular_sequence' with encoders.radar.type='radar_cnn', representation_core.type='single_gru', and heads.beam.type='beam_head'.",
+)
+MODELS.register_removed(
+    "radar_lightweight",
+    "Use configs/radar/lightweight.yaml with model.primary.type='modular_sequence' and encoders.radar.type='radar_cnn'.",
+)
+MODELS.register_removed("radar_teacher", "Use configs/radar/strong.yaml with model.primary.type='modular_sequence'.")
+MODELS.register_removed("radar_student", "Use configs/radar/lightweight.yaml with model.primary.type='modular_sequence'.")
 
 RadarStrongModalityNet = RadarModalityNet
 RadarLightweightModalityNet = RadarStudentModalityNet

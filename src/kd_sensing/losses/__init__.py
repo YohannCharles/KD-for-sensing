@@ -8,11 +8,6 @@ from kd_sensing.losses.circular import (
 )
 from kd_sensing.losses.beam import FocalLoss, SoftTargetCrossEntropyLoss
 from kd_sensing.losses.jepa import JepaLossResult, jepa_latent_prediction_loss, jepa_loss_from_output
-from kd_sensing.losses.jepa_msac import (
-    jepa_msac_pretraining_metadata,
-    jepa_msac_stage2_losses,
-    masked_latent_smooth_l1_loss,
-)
 
 __all__ = [
     "FocalLoss",
@@ -24,7 +19,4 @@ __all__ = [
     "focal_circular_soft_ce_loss",
     "jepa_latent_prediction_loss",
     "jepa_loss_from_output",
-    "jepa_msac_pretraining_metadata",
-    "jepa_msac_stage2_losses",
-    "masked_latent_smooth_l1_loss",
 ]

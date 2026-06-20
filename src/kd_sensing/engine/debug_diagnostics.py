@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from kd_sensing.config.io import safe_load_yaml
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
+from kd_sensing.models.architecture_summary import summarize_model_architecture
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -205,7 +206,12 @@ def build_startup_summary(
     model_cfg = cfg.get("model", {})
     primary_cfg = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), dict) else {}
     csi_cfg = ((primary_cfg.get("encoders") or {}).get("csi") or {}) if isinstance(primary_cfg, dict) else {}
-    parameter_report = module_trainability_report(model)
+    architecture_summary = summarize_model_architecture(
+        model,
+        cfg=primary_cfg,
+        source={"kind": "instance", "config_path": "startup_summary"},
+    )
+    parameter_report = module_trainability_report(model, architecture_summary=architecture_summary)
     objective_metadata = objective_runtime_metadata(cfg)
     summary = {
         "experiment": {
@@ -260,6 +266,7 @@ def build_startup_summary(
             "csi_degradation_enabled": _mapping_enabled(dataset_cfg.get("csi_degradation")),
         },
         "parameters": parameter_report,
+        "architecture_summary": architecture_summary,
     }
     warnings = [
         f"{name} has zero trainable parameters at {item['path']}"
@@ -347,13 +354,25 @@ def write_startup_summary(run_dir: Path, summary: dict[str, Any]) -> None:
     _write_json(run_dir / "startup_summary.json", summary)
 
 
-def module_trainability_report(model: nn.Module) -> dict[str, Any]:
+def module_trainability_report(
+    model: nn.Module,
+    *,
+    architecture_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    architecture_summary = architecture_summary or summarize_model_architecture(model)
     modules = _major_modules(model)
-    total_params = sum(param.numel() for param in model.parameters())
-    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    parameter_summary = architecture_summary.get("parameters", {})
+    total_params = int(parameter_summary.get("total_params", 0))
+    trainable_params = int(parameter_summary.get("trainable_params", 0))
     module_report = {}
     for name, (path, module, required) in modules.items():
-        module_params = list(module.parameters())
+        seen: set[int] = set()
+        module_params = []
+        for param in module.parameters():
+            if id(param) in seen:
+                continue
+            seen.add(id(param))
+            module_params.append(param)
         total = sum(param.numel() for param in module_params)
         trainable = sum(param.numel() for param in module_params if param.requires_grad)
         module_report[name] = {
@@ -364,8 +383,13 @@ def module_trainability_report(model: nn.Module) -> dict[str, Any]:
             "suspicious": bool(required and total > 0 and trainable == 0),
         }
     return {
+        "schema_version": architecture_summary.get("schema_version"),
         "total_params": int(total_params),
         "trainable_params": int(trainable_params),
+        "frozen_params": int(parameter_summary.get("frozen_params", total_params - trainable_params)),
+        "effective_params": int(parameter_summary.get("effective_params", total_params)),
+        "excluded_params": int(parameter_summary.get("excluded_params", 0)),
+        "excluded_parameter_groups": parameter_summary.get("excluded_parameter_groups", []),
         "modules": module_report,
     }
 

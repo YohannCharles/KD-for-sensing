@@ -741,87 +741,17 @@ Dataset、batch preparation 和 label 对齐 MUST 由 experiment task、enabled 
 - **THEN** batch preparation MUST 只根据 task 和 enabled modalities 构造输入
 - **AND** 配置中若出现 `distillation` 字段 MUST 在配置解析阶段失败
 
-### Requirement: DeepSense6G TopK candidate optional modality loading 支撑语义
-DeepSense6G TopK candidate dataset helper MAY 按当前 BGAM 或候选重排支撑路径的配置和 manifest availability 加载 optional modalities。未启用或不可用的 camera AE、image tensor、LiDAR feature 和 radar feature MUST 不阻止 GPS context-only candidate support 运行；启用某个 optional modality 时，dataset helper MUST 只读取该模态需要的 path 或 feature，不触发其它模态 IO。该 helper MUST 不恢复旧 Top8 selector standalone workflow。
+### Requirement: Retired TopK/BGAM candidate loaders do not return as data-loading contracts
+DeepSense6G TopK candidate dataset helper、BGAM-only candidate manifest loader、BGAM normalization helper 和 GPS+LiDAR BGAM dataset 不再属于当前数据加载契约。系统 MUST 删除这些旧 module path 或让其不可导入，并 MUST NOT 通过兼容 facade、virtual config 或新的 data-loading alias 恢复旧 Top8 selector/BGAM workflow。
 
-#### Scenario: GPS context-only candidate support 不读取图像或点云
-- **WHEN** 当前 BGAM 或 supporting helper 运行 GPS context-only candidate path
-- **THEN** dataset MUST 读取 Top8 candidate manifest、candidate fields 和 GPS context fields
-- **AND** dataset MUST NOT 读取 image file、camera AE feature、LiDAR feature 或 radar feature
-- **AND** 返回样本 MUST 不包含未启用 optional modality 的大张量
+#### Scenario: 旧 candidate loader 不存在
+- **WHEN** 开发者检查 source tree 和 import surface
+- **THEN** 项目 MUST 不保留 `kd_sensing.data.deepsense6g_topk_candidate_manifest`
+- **AND** 项目 MUST 不保留 `kd_sensing.data.mmw_town_topk_candidate_manifest`
+- **AND** 项目 MUST 不保留 `kd_sensing.data.deepsense6g_gps_lidar_bgam_dataset`
 
-#### Scenario: camera AE 可用时按 row index 读取
-- **WHEN** 配置启用 camera AE feature 且 manifest 包含有效 `camera_ae_feature_row_index`
-- **THEN** dataset MUST 从配置的 AE feature artifact 读取对应 feature row
-- **AND** 返回样本 MUST 包含 `camera_ae_feature`
-- **AND** dataset MUST 在 metadata 中记录 AE feature artifact path 或 fingerprint
-
-#### Scenario: camera AE 缺失时记录原因
-- **WHEN** 配置启用 camera AE feature 但 manifest 中 feature row index 无效或 artifact 缺失
-- **THEN** dataset MUST 返回缺失标记
-- **AND** 当前消费 workflow MUST 跳过 camera AE 相关 ablation 或降级到 GPS context-only candidate support
-- **AND** summary MUST 写入 `skipped_reason`
-
-#### Scenario: image/LiDAR/radar feature 按需读取
-- **WHEN** 配置启用 image tensor、LiDAR feature 或 radar feature
-- **THEN** dataset MUST 只读取对应模态字段中声明的 path 或 feature
-- **AND** 其它未启用模态 MUST 不触发 path 解析、cache 初始化或文件读取
-
-### Requirement: TopK candidate normalization fit boundary
-TopK candidate dataset helper MUST 支持为 candidate features 和 GPS context 保存 normalization metadata。E、N、log_range、speed、candidate logits 等统计量 MUST 只从允许训练的 source/support 样本拟合，target query 样本 MUST 不参与 fit；该 normalization 支撑不得恢复旧 Top8 selector 训练 workflow。
-
-#### Scenario: support/source fit scaler
-- **WHEN** dataset 构建 normalization artifact
-- **THEN** scaler fit MUST 只使用 source training rows、target support rows 或 target support internal train rows
-- **AND** metadata MUST 记录 fit split、样本数、字段名和随机种子
-
-#### Scenario: query 不参与 normalization fit
-- **WHEN** manifest 中包含 target query rows
-- **THEN** target query rows MUST 只使用已经拟合好的 normalization 参数进行 transform
-- **AND** target query label 或 query 统计量 MUST NOT 影响 scaler 参数
-
-### Requirement: GPS+LiDAR BGAM 按需模态加载
-GPS+LiDAR BGAM dataset MUST 按配置和 manifest availability 加载 GPS prior、TopK candidates 和 LiDAR 输入。未启用 LiDAR、image、camera AE 或 radar 时，dataset MUST 不触发对应模态 IO；GPS-only ablation MUST 不读取 LiDAR 点云或 BEV cache。
-
-#### Scenario: gps_only 不读取 LiDAR
-- **WHEN** 配置运行 `gps_only` ablation
-- **THEN** dataset MUST 只读取 BGAM manifest 中的 GPS prior、candidate beams/probs 和 label/evaluation metadata
-- **AND** dataset MUST NOT 读取 raw LiDAR point cloud、LiDAR BEV cache、image、camera AE 或 radar feature
-
-#### Scenario: BGAM ablation 按需读取 LiDAR
-- **WHEN** 配置运行包含 BGAM 或 LiDAR 的 ablation
-- **THEN** dataset MUST 读取当前样本所需的 `lidar_bev_cache_path` 或 `lidar_path`
-- **AND** dataset MUST NOT 读取未启用的 image、camera AE 或 radar feature
-- **AND** LiDAR 读取 MUST 发生在取样阶段而不是 dataset 初始化阶段
-
-#### Scenario: LiDAR 缺失时记录 skipped reason
-- **WHEN** 配置启用 LiDAR ablation 但 manifest 行缺少 LiDAR path 或文件不存在
-- **THEN** 系统 MUST 早失败或按配置跳过该 ablation
-- **AND** summary/run metadata MUST 写入 `skipped_reason`、缺失字段和受影响样本数
-
-### Requirement: GPS+LiDAR BGAM 防泄漏数据边界
-GPS+LiDAR BGAM 数据构建 MUST 区分训练输入、loss label 和最终评价字段。future ground-truth beam label MUST 只作为 loss/evaluation target；target query rows MUST 不参与 normalization fit、mask construction、early stopping 或 checkpoint selection。
-
-#### Scenario: target label 不进入模型输入
-- **WHEN** dataset 返回一个训练或评估样本
-- **THEN** `gt_beam` 或 `target_label` MUST 单独作为 label 字段返回
-- **AND** 模型输入字段 MUST 不包含由 target label 派生的 BGAM mask、AoD prior、candidate probability 或 LiDAR feature
-
-#### Scenario: query 不参与 normalizer fit
-- **WHEN** BGAM dataset 或 runner fit GPS/LiDAR/candidate normalizer
-- **THEN** fit rows MUST 只来自 source train、target support 或 target support internal train split
-- **AND** target query rows MUST 只使用已 fit 的 normalizer transform
-- **AND** metadata MUST 记录 `query_label_used_for_training=false`
-
-### Requirement: GPS+LiDAR BGAM manifest column mapping
-BGAM manifest loader MUST 支持配置化字段名映射，以兼容 Top8 manifest、DeepSense6G sequence CSV 和用户提供的 GPS+LiDAR manifest。字段映射 MUST 输出统一内部字段，并 MUST 在缺失必要字段时给出清晰错误。
-
-#### Scenario: local coordinate columns
-- **WHEN** manifest 提供 local coordinate columns
-- **THEN** loader MUST 按配置映射为 `user_x`、`user_y`、`rsu_x`、`rsu_y` 和 `rsu_yaw`
-- **AND** loader MUST 使用这些字段生成 `theta_gps` 和 `distance_to_rsu`
-
-#### Scenario: GPS logits/probs columns
-- **WHEN** manifest 提供 `gps_prob_0` 到 `gps_prob_63` 或 `gps_logits_path`
-- **THEN** loader MUST 读取或构造 `[64]` GPS prior tensor
-- **AND** loader MUST 从该 prior 生成 TopK candidates 或校验与 manifest candidates 一致
+#### Scenario: 当前数据加载仍按需读取模态
+- **WHEN** 当前 supervised/adaptation、GPS v2、CSI、JEPA 或保留诊断 workflow 构建 dataset
+- **THEN** dataset MUST 只读取当前任务启用的模态和字段
+- **AND** 未启用的 image、camera AE、LiDAR、radar、mmWave 或 CSI 输入 MUST 不触发 path 解析、cache 初始化或文件读取
+- **AND** 实现 MUST NOT 通过旧 TopK candidate 或 BGAM manifest 字段恢复退役 workflow

@@ -28,14 +28,11 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 
 - Image+GPS JEPA BeamBench-fair：`configs/fusion/experiments/jepa_image_gps/*beambench_fair_lowmem.yaml`
 - Image+GPS JEPA 2604-style：`configs/fusion/experiments/jepa_image_gps/*2604_s32_s34_lowmem.yaml`
-- JEPA-MSAC Scenario 32 workflow：`configs/pretraining/jepa_msac_s32_{smoke,paper}.yaml` + `kd-sensing-run-jepa-msac`
-- AMR-Net_gps_image source audit：`configs/baselines/amr_net_gps_image.yaml` + `kd-sensing-run-amr-net-gps-image`
 - Arnold22 Camera AE+GPS Direct：`configs/fusion/beambench_image_ae_gps_direct.yaml` + 专用 Table III runner
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
-- DeepSense6G/MMW BGAM：`configs/deepsense6g_gps_lidar_bgam.yaml`、`configs/mmw_town_gps_lidar_bgam.yaml`
 - MMW GPS v2：`configs/mmw_town_gps_adapter_v2.yaml`
 - CSI hardening：`configs/csi/hardening_matrix/` 和 `configs/fusion/csi_hardening_matrix/`
-- JEPA shortcut benchmark / visual analysis / viewer manifest：`configs/diagnostics/*.yaml`
+- JEPA shortcut benchmark / visual analysis：`configs/diagnostics/*.yaml`
 
 ## 单模态和基础 Fusion
 
@@ -84,16 +81,9 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 
 缺 official AE/fusion 权重、official exact test packaging 或官方完整训练搜索流程时，claim status 必须是 `local substitute`、`local strict-validation`、`blocked official reproduction` 或 `upper-bound`，不得写成 official reproduction。旧 `--target-beam-source future` 记录只作为 historical sequence-prediction ablation，不是当前 Table III strict setup。
 
-## AMR-Net_gps_image Source Audit
+## Retired AMR-Net_gps_image Tombstone
 
-AMR-Net_gps_image 入口只使用 image 和 GPS，不启用 LiDAR。当前公开 metadata 将 IEEE document `11282996` 指向 JIOT 2026 AMR-Net 论文，但 DeepSense6G Scenario 23 作者代码对应 IEEE document `10000718`；因此该入口默认只写 blocked/local substitute audit、mock smoke metrics 和 manifest，不声明 official reproduction。
-
-```bash
-conda run -n kd_mm_beam kd-sensing-run-amr-net-gps-image \
-  --config configs/baselines/amr_net_gps_image.yaml
-```
-
-输出默认位于 ignored 的 `outputs/analysis/amr_net_gps_image/`。若要把结果升级为 official reproduction，必须先提供并审计 IEEE PDF/BibTeX、官方代码或训练/评估协议、official split 和权重；否则 claim status 只能是 `blocked_official`、`mock_smoke`、`paper_protocol_audited` 或 `local_substitute`。
+AMR-Net_gps_image / IEEE `11282996` source-audit mock runner 已退役，不再提供 current CLI、实体配置、mock metrics 或 claim 占位。历史背景只保留 metadata conflict caveat：公开 document `11282996` 与 DeepSense6G Scenario 23 作者包 document `10000718` 不一致；旧本地产物不能声明 official reproduction。当前 GPS+Image 对照使用 Vision-Position suite 或 Arnold22 Camera AE+GPS Direct。
 
 ## Image+GPS JEPA
 
@@ -139,25 +129,9 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --force
 ```
 
-## JEPA-MSAC Scenario 32
+## Retired JEPA-MSAC Scenario 32 Tombstone
 
-JEPA-MSAC 是 paper/workflow reproduction，不是普通 `modular_sequence` baseline。Smoke 入口只用 synthetic tensors 验证 tokenizer、temporal block mask、masked latent loss、Stage 2 heads、metrics/report 和 dry-run manifest；真实 Scenario 32 缺字段时只写 blocked reason。
-
-```bash
-conda run -n kd_mm_beam kd-sensing-run-jepa-msac \
-  --config configs/pretraining/jepa_msac_s32_smoke.yaml \
-  --stage report \
-  --dry-run
-```
-
-Paper-aligned 本地长实验入口如下，输出仍只允许写入 ignored 的 `outputs/analysis/jepa_msac/` 或显式本地目录；完成审计前 claim status 只能是 `unverified`、`local-ready`、`blocked` 或 `mock/smoke`。
-
-```bash
-conda run -n kd_mm_beam kd-sensing-run-jepa-msac \
-  --config configs/pretraining/jepa_msac_s32_paper.yaml \
-  --stage all \
-  --output-dir outputs/analysis/jepa_msac/paper_aligned
-```
+JEPA-MSAC Scenario 32 mock/paper workflow 已退役，不再提供 current CLI、pretraining config、whole-model registry surface、loss、objective 或 focused smoke。历史说明只作为 tombstone 保留；当前 JEPA 相关工作使用 GPS-conditioned JEPA、JEPA visual analysis、GPS shortcut benchmark 或仍维护的 JEPA downstream configs。
 
 ## BEV-Fusion 2604
 
@@ -170,20 +144,14 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/bev
 
 `paper_full.yaml` is the formal 2604-aligned protocol. `low_memory.yaml` is a paper approximation and `smoke.yaml` is synthetic/mock schema validation only. Ablations under `configs/fusion/experiments/bev_fusion_2604/ablations/` inherit the same split and must be reported by `ablation_name`.
 
-## BGAM, MMW, CSI, Diagnostics
+## MMW, CSI, Diagnostics
 
-DeepSense6G BGAM:
-
-```bash
-conda run -n kd_mm_beam kd-sensing-prepare-deepsense6g-gps-lidar-bgam-manifest --config configs/deepsense6g_gps_lidar_bgam.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8
-conda run -n kd_mm_beam kd-sensing-run-deepsense6g-gps-lidar-bgam --config configs/deepsense6g_gps_lidar_bgam.yaml --support-ratio 0.15 --label-space mapping_disabled --topk 8
-```
-
-MMW GPS v2 and MMW BGAM:
+MMW GPS v2:
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --config configs/mmw_town_gps_adapter_v2.yaml --label-space mapping_enabled --save-logits --save-prior-probs
-conda run -n kd_mm_beam kd-sensing-run-mmw-town-gps-lidar-bgam --config configs/mmw_town_gps_lidar_bgam.yaml --label-space mapping_enabled --topk 8
+conda run -n kd_mm_beam kd-sensing-plot-mmw-town-gps-v2 --results-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
+conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 --previous-dir outputs/analysis/mmw_town_label_distribution --new-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
 ```
 
 CSI hardening:
@@ -218,19 +186,10 @@ conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis \
   --force
 ```
 
-Viewer manifest:
-
-```bash
-conda run -n kd_mm_beam kd-sensing-export-viewer-manifest \
-  --config configs/diagnostics/modality_visualization.yaml \
-  --cache-dir outputs/cache/diagnostics/viewer_manifest \
-  --scenes 32
-```
-
 Scenario D smoke writes only ignored local artifacts: legacy `results/scenario_d_image_observability.csv` / `results/heatmap_cx_dy.npy` plus CxD phase, dominance-status, crossing and failure-decomposition outputs. Synthetic dominance rows remain mock/unavailable unless the manifest points to real gradient, attention/fusion weight or latent diagnostics.
 
 Difficulty profiles under `configs/difficulty/` are training/evaluation reliability profiles, not new modalities. They may perturb input tensors and reliability metadata, but must not move `target_beam`, soft targets or split metadata.
 
 ## 已退役边界
 
-HiST-Beam、history-anchored Hist、Raymobtime s008、standalone Top8 selector、GPS coarse anchor、GPS residual、camera residual、CRAF/MARF/G2D、Multimodal-NF 和旧 KD/Fusion KD 路线不再作为当前入口维护。旧配置、CLI、registry 名称或 historical output 只能作为退役、历史或 migration guard 说明出现。
+HiST-Beam、history-anchored Hist、Raymobtime s008、standalone Top8 selector、GPS coarse anchor、GPS residual、camera residual、BGAM、viewer manifest、Gradio viewer、AMR-Net_gps_image、JEPA-MSAC、非 CSI shell orchestration、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*`、CRAF/MARF/G2D、Multimodal-NF 和旧 KD/Fusion KD 路线不再作为当前入口维护。旧配置、CLI、registry 名称或 historical output 只能作为退役、历史或 migration guard 说明出现。

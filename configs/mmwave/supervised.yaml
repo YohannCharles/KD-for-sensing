@@ -27,14 +27,34 @@ model:
   downsample_ratio: 1
   seq_length: 8
   primary:
-    type: mmwave_strong
+    type: modular_sequence
+    modalities:
+    - mmwave
     mmwave_input_size: 64
     feature_size: 64
+    d_model: 64
     num_classes: 64
-    gru_params:
-    - 64
-    - 64
-    - 1
+    num_pred: 3
+    encoders:
+      mmwave:
+        type: mmwave_mlp
+        output_dim: 64
+        mmwave_input_size: 64
+        hidden_size: 128
+        dropout: 0.1
+    projectors:
+      mmwave:
+        type: linear
+        dropout: 0.0
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+    heads:
+      beam:
+        type: beam_head
+        dropout: 0.1
 training:
   epochs: 100
   lr: 0.0001

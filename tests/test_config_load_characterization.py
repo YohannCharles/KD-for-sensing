@@ -80,6 +80,57 @@ def test_predictive_jepa_hybrid_config_loads_and_preserves_existing_jepa_baselin
     assert resnet_image_gps["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
 
 
+def test_tinyvit_image_encoder_override_is_opt_in_and_default_stays_resnet18():
+    default_image = load_config(ROOT / "configs/image/supervised.yaml")
+    tinyvit_image = load_config(
+        ROOT / "configs/image/supervised.yaml",
+        ["model.primary.encoders.image.type=tinyvit_5m_scratch_rgb"],
+    )
+    tinyvit_fusion = load_config(
+        ROOT / "configs/fusion/image_gps_supervised.yaml",
+        ["model.primary.encoders.image.type=tinyvit_11m_22k_rgb"],
+    )
+
+    assert default_image["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    assert tinyvit_image["model"]["primary"]["encoders"]["image"]["type"] == "tinyvit_5m_scratch_rgb"
+    assert tinyvit_fusion["model"]["primary"]["encoders"]["image"]["type"] == "tinyvit_11m_22k_rgb"
+    assert tinyvit_image["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert tinyvit_fusion["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+
+
+def test_legacy_model_registry_surface_root_configs_are_modular():
+    expected = {
+        "configs/radar/strong.yaml": ("radar", "radar_cnn", "single_gru"),
+        "configs/radar/lightweight.yaml": ("radar", "radar_cnn", "single_gru"),
+        "configs/radar/supervised.yaml": ("radar", "radar_cnn", "single_gru"),
+        "configs/gps/strong.yaml": ("gps", "gps_mlp", "single_gru"),
+        "configs/gps/lightweight.yaml": ("gps", "gps_mlp", "single_gru"),
+        "configs/gps/supervised.yaml": ("gps", "gps_mlp", "single_gru"),
+        "configs/gps/ablation_relative_polar.yaml": ("gps", "gps_mlp", "single_gru"),
+        "configs/mmwave/strong.yaml": ("mmwave", "mmwave_mlp", "single_gru"),
+        "configs/mmwave/lightweight.yaml": ("mmwave", "mmwave_mlp", "single_gru"),
+        "configs/mmwave/supervised.yaml": ("mmwave", "mmwave_mlp", "single_gru"),
+    }
+
+    for rel_path, (modality, encoder_type, core_type) in expected.items():
+        cfg = load_config(ROOT / rel_path)
+        primary = cfg["model"]["primary"]
+        assert primary["type"] == "modular_sequence"
+        assert primary["modalities"] == [modality]
+        assert primary["encoders"][modality]["type"] == encoder_type
+        assert primary["representation_core"]["type"] == core_type
+        assert primary["heads"]["beam"]["type"] == "beam_head"
+
+    fusion = load_config(ROOT / "configs/fusion/radar_gps_supervised.yaml")
+    primary = fusion["model"]["primary"]
+    assert primary["type"] == "modular_sequence"
+    assert primary["modalities"] == ["radar", "gps"]
+    assert primary["encoders"]["radar"]["type"] == "radar_cnn"
+    assert primary["encoders"]["gps"]["type"] == "gps_mlp"
+    assert primary["representation_core"]["type"] == "early_concat_gru"
+    assert primary["heads"]["beam"]["type"] == "beam_head"
+
+
 def test_geometry_prior_beam_fusion_configs_and_strict_manifest_load():
     fusion = load_config(
         ROOT
@@ -168,3 +219,40 @@ model:
 
     with pytest.raises(ValueError, match="Raymobtime s008 has been retired"):
         load_config(config_path)
+
+
+def test_retired_bgam_and_viewer_configs_fail_fast(tmp_path: Path):
+    retired_paths = [
+        ROOT / "configs/deepsense6g_gps_lidar_bgam.yaml",
+        ROOT / "configs/mmw_town_gps_lidar_bgam.yaml",
+        ROOT / "configs/diagnostics/modality_visualization.yaml",
+    ]
+    for path in retired_paths:
+        with pytest.raises(ValueError, match="retired|退役|no longer supported"):
+            load_config(path)
+
+    bgam_config = tmp_path / "retired_bgam.yaml"
+    bgam_config.write_text(
+        """
+experiment:
+  name: deepsense6g_gps_lidar_bgam_reranker
+model:
+  primary:
+    type: gps_lidar_bgam_beam_predictor
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="BGAM"):
+        load_config(bgam_config)
+
+    viewer_config = tmp_path / "retired_viewer.yaml"
+    viewer_config.write_text(
+        """
+diagnostics:
+  visualization:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Viewer manifest"):
+        load_config(viewer_config)
