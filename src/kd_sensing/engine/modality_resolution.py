@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from kd_sensing._typing import AnyConfig
 from kd_sensing.modalities import MODALITY_ORDER, MODALITY_SPECS, normalize_modalities
 

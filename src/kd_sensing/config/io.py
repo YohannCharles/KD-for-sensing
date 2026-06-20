@@ -1,7 +1,5 @@
 """YAML config loading and command-line override parsing."""
 
-from __future__ import annotations
-
 import copy
 import json
 from pathlib import Path

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from .gps import GPSMinMaxScaler, GPSStandardScaler, PositionTargetStandardScaler, load_gps_scaler
 from .lidar import LidarBEVNormalizer, LidarBEVStreamingStats
 from .mmwave import MmWaveStandardScaler, OcclusionTargetStats

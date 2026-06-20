@@ -1,8 +1,7 @@
-from __future__ import annotations
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from skimage import io
 import torch
 
 from kd_sensing.data.transform_ops.io import joined_resource
@@ -12,6 +11,11 @@ from kd_sensing.data.transform_ops.image_cache import ImageDerivedCache
 DEFAULT_IMAGE_PROFILE = "rgb_imagenet"
 IMAGENET_RGB_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_RGB_STD = (0.229, 0.224, 0.225)
+
+
+def read_image_array(path: str | Path) -> np.ndarray:
+    with Image.open(path) as image:
+        return np.asarray(image).copy()
 
 
 def build_image_transform(image_size: list[int] | tuple[int, int] = (224, 224)):
@@ -53,7 +57,7 @@ def load_rgb_imagenet_frames(
     for rel_path in selected:
         frame = image_cache.load(data_root, rel_path) if image_cache is not None else None
         if frame is None:
-            image = io.imread(joined_resource(data_root, rel_path))
+            image = read_image_array(joined_resource(data_root, rel_path))
             frame = transform(image)
             if image_cache is not None:
                 image_cache.store(data_root, rel_path, frame)
@@ -78,4 +82,5 @@ __all__ = [
     "build_image_transform",
     "build_rgb_imagenet_transform",
     "load_rgb_imagenet_frames",
+    "read_image_array",
 ]

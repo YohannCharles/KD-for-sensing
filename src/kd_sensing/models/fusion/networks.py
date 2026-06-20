@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 import torch
 import torch.nn as nn
 
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image import ImageFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
-from kd_sensing.models.csi import PilotDualViewCSIEncoder
+from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder
 from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, validate_image_encoder_profile

@@ -1,7 +1,5 @@
 """Lightweight component registries used by config-driven workflows."""
 
-from __future__ import annotations
-
 import inspect
 from typing import Any, Callable, Dict, Iterable, Optional
 
@@ -118,7 +116,6 @@ LOSSES = Registry("losses")
 METRICS = Registry("metrics")
 PREPROCESSORS = Registry("preprocessors")
 JEPA_DOWNSTREAM_POOLERS = Registry("jepa_downstream_poolers")
-JEPA_DOWNSTREAM_ADAPTERS = Registry("jepa_downstream_adapters")
 JEPA_VISUAL_TOKEN_ENCODERS = Registry("jepa_visual_token_encoders")
 DIFFICULTY_OPERATORS = Registry("difficulty_operators")
 
@@ -142,14 +139,6 @@ DATASETS.register_removed(
     "scenario34",
     "Use {'type': 'deepsense6g', 'scene': 34}.",
 )
-DATASETS.register_removed(
-    "multimodal_nf",
-    "Multimodal-NF has been retired and no compatibility migration is provided.",
-)
-DATASETS.register_removed(
-    "raymobtime_s008",
-    "Raymobtime s008 has been retired and no compatibility migration is provided.",
-)
 MODELS.register_removed(
     "Fusion" + "ModalityNet",
     "Use modular_sequence fusion configs with current modality encoders and early_concat_gru.",
@@ -158,69 +147,8 @@ MODELS.register_removed(
     "Student" + "ModalityNet",
     "Use 'cls_token_transformer_fusion' for current lightweight fusion or modular_sequence fusion configs.",
 )
-MODELS.register_removed(
-    "craf_fusion",
-    "CRAF has been retired. Use current canonical fusion models such as 'cls_token_transformer_fusion'.",
-)
-MODELS.register_removed(
-    "marf_fusion",
-    "MARF has been retired. Use current canonical fusion models such as 'cls_token_transformer_fusion'.",
-)
-MODELS.register_removed(
-    "hist_beam_fusion",
-    "HiST-Beam/Hist has been retired. Use current supervised, adapter, GPS candidate, residual fusion, MMW GPS v2, CSI, JEPA, or viewer workflows; no compatibility migration is provided.",
-)
-MODELS.register_removed(
-    "simple_concat_multitask_selection",
-    "Raymobtime s008 selection models have been retired and no compatibility migration is provided.",
-)
-MODELS.register_removed(
-    "task_aware_gated_multitask_selection",
-    "Raymobtime s008 selection models have been retired and no compatibility migration is provided.",
-)
-ENCODERS.register_removed(
-    "coord_mlp",
-    "Raymobtime s008 coordinate encoder has been retired and no compatibility migration is provided.",
-)
-ENCODERS.register_removed(
-    "ray_mlp",
-    "Raymobtime s008 ray feature encoder has been retired and no compatibility migration is provided.",
-)
-ENCODERS.register_removed(
-    "raymobtime_lidar_3d_cnn",
-    "Raymobtime s008 LiDAR occupancy encoder has been retired and no compatibility migration is provided.",
-)
 LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervised or adaptation losses.")
 LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
-LOSSES.register_removed("g2d", "G2D has been removed. Use supervised or adaptation losses.")
-PREPROCESSORS.register_removed(
-    "multimodal_nf_audit",
-    "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
-)
-PREPROCESSORS.register_removed(
-    "multimodal_nf_index",
-    "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
-)
-PREPROCESSORS.register_removed(
-    "multimodal_nf_derived_cache",
-    "Multimodal-NF preprocessing has been retired and no compatibility migration is provided.",
-)
-PREPROCESSORS.register_removed(
-    "raymobtime_s008_audit",
-    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
-)
-PREPROCESSORS.register_removed(
-    "raymobtime_s008_index",
-    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
-)
-PREPROCESSORS.register_removed(
-    "raymobtime_s008_ray_features",
-    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
-)
-PREPROCESSORS.register_removed(
-    "raymobtime_s008_cache",
-    "Raymobtime s008 preprocessing has been retired and no compatibility migration is provided.",
-)
 
 
 def registry_self_check() -> dict[str, str]:
@@ -268,7 +196,7 @@ def import_default_components() -> None:
     import kd_sensing.losses.beam  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.bev_fusion_2604  # noqa: F401
-    import kd_sensing.models.csi  # noqa: F401
+    import kd_sensing.models.csi_encoder  # noqa: F401
     import kd_sensing.models.geometry_prior  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
@@ -306,7 +234,6 @@ __all__ = [
     "METRICS",
     "PREPROCESSORS",
     "JEPA_DOWNSTREAM_POOLERS",
-    "JEPA_DOWNSTREAM_ADAPTERS",
     "JEPA_VISUAL_TOKEN_ENCODERS",
     "DIFFICULTY_OPERATORS",
     "registry_self_check",

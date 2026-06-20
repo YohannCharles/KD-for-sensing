@@ -4,7 +4,7 @@
 定义 JEPA context image encoder 在 supervised downstream 中的可插拔 pooler、adapter、optimizer 参数组和 runtime metadata 契约，保证派生实验能与 GPS-biased mean-pooling baseline 可比，同时不改变 Stage 1 JEPA checkpoint 或主训练评估流程。
 ## Requirements
 ### Requirement: JEPA downstream pooler 和 adapter 可插拔
-系统 MUST 为 JEPA context image encoder 的下游 supervised reuse 提供可插拔 pooler/adapter 边界。pooler MUST 消费 JEPA context encoder 输出的 patch tokens `[B,T,N,D]`，并默认输出现有 fusion projector 可消费的 `[B,T,D]` image feature。adapter MAY 在 pooling 前后执行轻量可训练变换，但 MUST 不修改 Stage 1 JEPA checkpoint schema、target encoder EMA、mask sampler 或 latent prediction loss。
+系统 MUST 为 JEPA context image encoder 的下游 supervised reuse 提供可插拔 pooler 边界，并 MAY 在存在非 identity 实现时提供 adapter 边界。pooler MUST 消费 JEPA context encoder 输出的 patch tokens `[B,T,N,D]`，并默认输出现有 fusion projector 可消费的 `[B,T,D]` image feature。identity adapter MAY 被实现为内联 no-op，而不是独立注册组件；任何非 identity adapter MUST 不修改 Stage 1 JEPA checkpoint schema、target encoder EMA、mask sampler 或 latent prediction loss。
 
 #### Scenario: 默认 mean pooler 兼容
 - **WHEN** 用户配置 `jepa_context_image` 且未显式声明 pooler 或继续使用 `pooling: mean`
@@ -17,8 +17,13 @@
 - **AND** pooler 输出 MUST 默认保持 `[B,T,D]`
 - **AND** 系统 MUST 不要求 JEPA target encoder、EMA 更新或 JEPA latent loss 参与 supervised downstream 训练
 
-#### Scenario: adapter 不改变训练主输出契约
-- **WHEN** 用户为 JEPA downstream image encoder 配置 adapter
+#### Scenario: identity adapter 为无操作路径
+- **WHEN** 用户未配置 JEPA downstream adapter 或配置 adapter 为 `identity`
+- **THEN** 系统 MUST 保持现有 image feature shape 和 downstream 输出契约
+- **AND** 系统 MAY 通过内联 no-op 而不是 adapter registry 完成该行为
+
+#### Scenario: 非 identity adapter 不改变训练主输出契约
+- **WHEN** 用户为 JEPA downstream image encoder 配置非 identity adapter
 - **THEN** adapter 输出 MUST 继续被转换为现有 model output 可消费的 image feature
 - **AND** `ModelOutput` 适配、beam loss、beam metrics 和 checkpoint workflow MUST 无需新增 JEPA 专用分支
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from kd_sensing.baselines.beambench.image_ae_gps_config import (
     ImageAEGPSDirectTrainingConfig,
     TARGET_TABLE_III_ROW,

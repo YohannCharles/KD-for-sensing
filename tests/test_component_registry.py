@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import subprocess
 import sys
@@ -97,7 +95,7 @@ print(json.dumps({{
         ("PREPROCESSORS", {"type": "raymobtime_s008_cache"}),
     ],
 )
-def test_retired_components_raise_removed_registry_errors(registry_name: str, cfg: dict):
+def test_retired_components_are_not_registered_or_redirected(registry_name: str, cfg: dict):
     code = f"""
 import json
 import sys
@@ -114,10 +112,10 @@ else:
     message = json.loads(result.stdout)["message"]
 
     assert cfg["type"] in message
-    assert "retired" in message or "Removed component" in message
+    assert registry_name.lower() in message
 
 
-def test_legacy_model_registry_retirement_fixture_matches_removed_guards():
+def test_legacy_model_registry_retirement_fixture_names_are_not_current_entries():
     from kd_sensing import registries
 
     registries.import_default_components()
@@ -147,9 +145,10 @@ def test_legacy_model_registry_retirement_fixture_matches_removed_guards():
         with pytest.raises(registries.RegistryError) as exc_info:
             registry.build({"type": entry["name"]})
         message = str(exc_info.value)
-        assert f"Removed component '{entry['name']}'" in message
+        assert entry["name"] in message
         assert f"registry '{registry.name}'" in message
-        assert any(marker in message for marker in hint_markers), message
+        if "Removed component" in message:
+            assert any(marker in message for marker in hint_markers), message
 
     for entry in payload["deferred"]:
         assert entry["name"] in registry_map[entry["registry"]].list()

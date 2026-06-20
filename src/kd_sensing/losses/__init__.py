@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from kd_sensing.losses.circular import (
     circular_soft_ce_loss,
     circular_soft_target,

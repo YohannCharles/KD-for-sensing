@@ -64,7 +64,7 @@ Scenario 9 dataset MUST 避免对重复 beam label 文本执行重复 `np.loadtx
 - **AND** profile 输出 MUST 不包含 image motion cache hit、miss、write 或 cache 目录指标
 
 #### Scenario: 旧 image motion 预处理入口不可用
-- **WHEN** 用户运行 image motion mask cache 预处理入口或加载 `configs/preprocess/image_motion_cache.yaml`
+- **WHEN** 用户运行旧 image motion mask cache 预处理入口或加载已退役的 `configs/preprocess/image_motion_cache.yaml`
 - **THEN** 系统 MUST 拒绝该操作
 - **AND** 错误信息 MUST 说明 image motion cache 已删除且不会生成替代 cache
 

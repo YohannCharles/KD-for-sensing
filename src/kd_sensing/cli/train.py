@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 
 from kd_sensing.cli.common import load_cli_config, print_result

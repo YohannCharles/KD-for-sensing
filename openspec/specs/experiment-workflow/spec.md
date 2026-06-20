@@ -204,7 +204,7 @@
 项目 MUST 拒绝旧 `configs/radar/student_no_kd.yaml` 入口，并将其解释为历史 no-KD/student 路径的 migration guard。当前 radar 轻量或 supervised 实验 MUST 使用 `configs/radar/lightweight.yaml`、`configs/radar/supervised.yaml` 或等价 `model.primary` 配置。
 
 #### Scenario: 旧 RadarStudent no-KD 请求迁移
-- **WHEN** 用户通过训练入口传入 `configs/radar/student_no_kd.yaml`
+- **WHEN** 用户通过训练入口传入已退役的 `configs/radar/student_no_kd.yaml`
 - **THEN** 系统 MUST 拒绝该旧入口
 - **AND** 错误信息 MUST 指向当前 radar lightweight 或 supervised 配置
 
@@ -345,12 +345,12 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 项目 MUST 拒绝现有 `configs/<modality>/no_kd.yaml` 旧入口，并 MUST 在文档中说明其历史语义和推荐替代入口。
 
 #### Scenario: image legacy no-KD 保持 student baseline
-- **WHEN** 用户运行 `configs/image/no_kd.yaml`
+- **WHEN** 用户运行已退役的 `configs/image/no_kd.yaml`
 - **THEN** 系统 MUST 拒绝该配置
 - **AND** 文档 MUST 引导新实验优先使用 `configs/image/lightweight.yaml` 或 `configs/image/supervised.yaml`
 
 #### Scenario: radar GPS LiDAR legacy no-KD 保持 teacher baseline
-- **WHEN** 用户运行 `configs/radar/no_kd.yaml`、`configs/gps/no_kd.yaml` 或 `configs/lidar/no_kd.yaml`
+- **WHEN** 用户运行已退役的 `configs/radar/no_kd.yaml`、`configs/gps/no_kd.yaml` 或 `configs/lidar/no_kd.yaml`
 - **THEN** 系统 MUST 拒绝这些配置
 - **AND** 文档 MUST 引导新实验优先使用对应 `strong.yaml`、`lightweight.yaml` 或 `supervised.yaml`
 

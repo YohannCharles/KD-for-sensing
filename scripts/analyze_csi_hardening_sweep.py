@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
 import argparse
 import csv
 import glob
@@ -43,29 +41,14 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "summary.csv"
     ranked_path = out_dir / "ranked_candidates.csv"
-    pd = _load_pandas()
-    if pd is None:
-        summary_rows = add_reference_metrics_rows(rows, args.clean_teacher_run)
-        summary_rows = add_debug_decision_rows(summary_rows)
-        _write_csv(summary_path, summary_rows)
-        ranked_rows = rank_candidate_rows(summary_rows)
-        _write_csv(ranked_path, ranked_rows)
-        write_plots_rows(summary_rows, out_dir)
-        _write_json(out_dir / "analysis_metadata.json", build_analysis_metadata(summary_rows, Path(args.runs_root)))
-        run_count = len(summary_rows)
-    else:
-        summary = pd.DataFrame(rows)
-        summary = add_reference_metrics(summary, args.clean_teacher_run)
-        summary = add_debug_decisions(summary)
-        summary.to_csv(summary_path, index=False)
-        ranked = rank_candidates(summary)
-        ranked.to_csv(ranked_path, index=False)
-        write_plots(summary, out_dir)
-        _write_json(
-            out_dir / "analysis_metadata.json",
-            build_analysis_metadata([row.to_dict() for _, row in summary.iterrows()], Path(args.runs_root)),
-        )
-        run_count = int(len(summary))
+    summary_rows = add_reference_metrics_rows(rows, args.clean_teacher_run)
+    summary_rows = add_debug_decision_rows(summary_rows)
+    _write_csv(summary_path, summary_rows)
+    ranked_rows = rank_candidate_rows(summary_rows)
+    _write_csv(ranked_path, ranked_rows)
+    write_plots_rows(summary_rows, out_dir)
+    _write_json(out_dir / "analysis_metadata.json", build_analysis_metadata(summary_rows, Path(args.runs_root)))
+    run_count = len(summary_rows)
     return {
         "runs": run_count,
         "summary": str(summary_path),
@@ -145,34 +128,6 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def add_reference_metrics(summary: pd.DataFrame, clean_teacher_run: str) -> pd.DataFrame:
-    pd = _load_pandas()
-    if pd is None:
-        raise ModuleNotFoundError("pandas is required for DataFrame-based summary operations.")
-    if summary.empty:
-        for column in ("clean_final_acc", "ceiling_gap_acc", "E90_ratio", "is_destructive", "is_slow_high_ceiling"):
-            summary[column] = []
-        return summary
-    clean = _select_clean_reference(summary, clean_teacher_run)
-    clean_final = _to_float(clean.get("final_acc"))
-    clean_e90 = _to_float(clean.get("E90"))
-    rows = []
-    for _, row in summary.iterrows():
-        item = row.to_dict()
-        final_acc = _to_float(item.get("final_acc"))
-        e90 = _to_float(item.get("E90"))
-        gap = clean_final - final_acc if clean_final is not None and final_acc is not None else None
-        ratio = e90 / clean_e90 if e90 is not None and clean_e90 not in (None, 0.0) else None
-        item["clean_final_acc"] = clean_final
-        item["clean_E90"] = clean_e90
-        item["ceiling_gap_acc"] = gap
-        item["E90_ratio"] = ratio
-        item["is_destructive"] = bool(gap is not None and gap > 0.05)
-        item["is_slow_high_ceiling"] = bool(gap is not None and ratio is not None and gap <= 0.03 and ratio >= 1.5)
-        rows.append(item)
-    return pd.DataFrame(rows)
-
-
 def add_reference_metrics_rows(rows: list[dict[str, Any]], clean_teacher_run: str) -> list[dict[str, Any]]:
     if not rows:
         return []
@@ -194,18 +149,6 @@ def add_reference_metrics_rows(rows: list[dict[str, Any]], clean_teacher_run: st
         item["is_slow_high_ceiling"] = bool(gap is not None and ratio is not None and gap <= 0.03 and ratio >= 1.5)
         result.append(item)
     return result
-
-
-def add_debug_decisions(summary: pd.DataFrame) -> pd.DataFrame:
-    if summary.empty:
-        summary["full_sweep_status"] = []
-        summary["debug_decision"] = []
-        return summary
-    rows = add_debug_decision_rows([row.to_dict() for _, row in summary.iterrows()])
-    pd = _load_pandas()
-    if pd is None:
-        raise ModuleNotFoundError("pandas is required for DataFrame-based summary operations.")
-    return pd.DataFrame(rows)
 
 
 def add_debug_decision_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -275,22 +218,6 @@ def add_debug_decision_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def rank_candidates(summary: pd.DataFrame) -> pd.DataFrame:
-    if summary.empty:
-        return summary.copy()
-    ranked = summary.copy()
-    if "candidate_eligible" in ranked.columns:
-        ranked = ranked[ranked["candidate_eligible"].map(_truthy)]
-    if ranked.empty:
-        return ranked
-    ranked["candidate_score"] = ranked.apply(_candidate_score, axis=1)
-    return ranked.sort_values(
-        by=["is_slow_high_ceiling", "candidate_score", "E90_ratio", "ceiling_gap_acc"],
-        ascending=[False, False, False, True],
-        na_position="last",
-    )
-
-
 def rank_candidate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ranked = []
     for row in rows:
@@ -309,10 +236,6 @@ def rank_candidate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ),
         reverse=True,
     )
-
-
-def write_plots(summary: pd.DataFrame, out_dir: Path) -> None:
-    write_plots_rows([row.to_dict() for _, row in summary.iterrows()], out_dir)
 
 
 def write_plots_rows(rows: list[dict[str, Any]], out_dir: Path) -> None:
@@ -553,23 +476,6 @@ def _uses_fixed_pilot_scaling_config(config: dict[str, Any], pilot_validity: dic
     return False
 
 
-def _select_clean_reference(summary: pd.DataFrame, clean_teacher_run: str) -> pd.Series:
-    value = str(clean_teacher_run)
-    for column in ("run_name", "experiment_name", "run_dir"):
-        matches = summary[summary[column].astype(str).isin({value})]
-        if not matches.empty:
-            return matches.iloc[0]
-    name = Path(value).name
-    for column in ("run_name", "experiment_name"):
-        matches = summary[summary[column].astype(str).isin({name})]
-        if not matches.empty:
-            return matches.iloc[0]
-    path_matches = summary[summary["run_dir"].astype(str).map(lambda item: Path(item).name == name)]
-    if not path_matches.empty:
-        return path_matches.iloc[0]
-    raise ValueError(f"Clean teacher run '{clean_teacher_run}' was not found in analyzed runs.")
-
-
 def _select_clean_reference_row(rows: list[dict[str, Any]], clean_teacher_run: str) -> dict[str, Any]:
     value = str(clean_teacher_run)
     name = Path(value).name
@@ -580,10 +486,6 @@ def _select_clean_reference_row(rows: list[dict[str, Any]], clean_teacher_run: s
         if name in {str(row.get("run_name")), str(row.get("experiment_name")), Path(str(row.get("run_dir"))).name}:
             return row
     raise ValueError(f"Clean teacher run '{clean_teacher_run}' was not found in analyzed runs.")
-
-
-def _candidate_score(row: pd.Series) -> float:
-    return _candidate_score_mapping(row.to_dict())
 
 
 def _candidate_score_mapping(row: dict[str, Any]) -> float:
@@ -787,15 +689,6 @@ def _json_list(value: Any) -> list[float]:
             return []
         return _numeric_list(decoded)
     return _numeric_list(value)
-
-
-def _load_pandas():
-    try:
-        import pandas as pd
-
-        return pd
-    except ModuleNotFoundError:
-        return None
 
 
 def _load_pyplot():

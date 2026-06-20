@@ -7,16 +7,14 @@ name = "kd-sensing"
 version = "0.1.0"
 description = "Multimodal few-shot cross-scene beam prediction workflows for supervised and adaptation experiments."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-    "h5py",
     "matplotlib",
     "numpy",
     "pandas",
     "pillow",
     "pyyaml",
     "scipy",
-    "scikit-image",
     "tensorboard",
     "torch",
     "torchvision",
@@ -26,6 +24,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+]
+hdf5 = [
+    "h5py",
 ]
 
 [project.scripts]

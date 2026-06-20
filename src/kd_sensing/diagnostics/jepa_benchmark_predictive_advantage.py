@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any, Mapping
 
 from kd_sensing.data.difficulty.presets import (

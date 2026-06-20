@@ -7,8 +7,6 @@ Copyright (c) 2022 Microsoft.
 Licensed under the MIT License.
 """
 
-from __future__ import annotations
-
 import itertools
 from dataclasses import dataclass
 from pathlib import Path

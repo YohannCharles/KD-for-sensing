@@ -1,7 +1,5 @@
 """Default configuration migrated from the original argparse scripts."""
 
-from __future__ import annotations
-
 DEFAULT_CONFIG = {
     "experiment": {
         "name": "kd_sensing",

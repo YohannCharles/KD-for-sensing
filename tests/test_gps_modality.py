@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import sys
 from itertools import combinations
 from pathlib import Path

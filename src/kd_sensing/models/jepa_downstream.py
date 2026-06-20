@@ -1,11 +1,9 @@
-from __future__ import annotations
-
 from typing import Any
 
 import torch
 import torch.nn as nn
 
-from kd_sensing.registries import JEPA_DOWNSTREAM_ADAPTERS, JEPA_DOWNSTREAM_POOLERS
+from kd_sensing.registries import JEPA_DOWNSTREAM_POOLERS
 
 
 @JEPA_DOWNSTREAM_POOLERS.register("mean")
@@ -892,7 +890,6 @@ class PredictiveGPSQueryPool(nn.Module):
         }
 
 
-@JEPA_DOWNSTREAM_ADAPTERS.register("identity")
 class IdentityJepaAdapter(nn.Module):
     adapter_type = "identity"
 
@@ -922,7 +919,12 @@ def build_jepa_downstream_pooler(cfg: Any = None, **extra_kwargs: Any) -> nn.Mod
 
 
 def build_jepa_downstream_adapter(cfg: Any = None, **extra_kwargs: Any) -> nn.Module:
-    return JEPA_DOWNSTREAM_ADAPTERS.build(_normalize_component_config(cfg, default_type="identity"), **extra_kwargs)
+    params = _normalize_component_config(cfg, default_type="identity")
+    params.update(extra_kwargs)
+    adapter_type = str(params.pop("type", "identity")).strip().lower()
+    if adapter_type != "identity":
+        raise ValueError(f"Unsupported JEPA downstream adapter '{adapter_type}'. Only 'identity' is available.")
+    return IdentityJepaAdapter(**params)
 
 
 def normalize_jepa_downstream_pooler_config(

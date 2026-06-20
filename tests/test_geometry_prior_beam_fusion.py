@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from kd_sensing.diagnostics.geometry_prior_beam_fusion import (
     aggregate_geometry_prior_diagnostics,
     build_geometry_prior_claim_gate,

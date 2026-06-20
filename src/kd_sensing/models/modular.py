@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any
 
 import torch
@@ -14,7 +12,7 @@ from kd_sensing.modalities import (
     validate_image_encoder_profile,
 )
 from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
-from kd_sensing.models.csi import PilotDualViewCSIEncoder
+from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder
 import kd_sensing.models.geometry_prior  # noqa: F401
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image_encoders import ResNet18ImageEncoder

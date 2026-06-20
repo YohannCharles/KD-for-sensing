@@ -1,7 +1,5 @@
 """BeamBench baseline reproduction helpers."""
 
-from __future__ import annotations
-
 from kd_sensing.baselines.beambench.dataset_check import check_dataset, resolve_csv_fields
 from kd_sensing.baselines.beambench.image_ae_gps import (
     BeamBenchImageAEGPSDataset,

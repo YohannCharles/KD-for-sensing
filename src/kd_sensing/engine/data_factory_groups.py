@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 from bisect import bisect_right
 from collections import Counter, defaultdict

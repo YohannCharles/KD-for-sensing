@@ -12,10 +12,10 @@
 - **THEN** 项目 MUST 不声明 `kd-sensing-export-viewer-manifest`
 - **AND** 项目 MUST 不声明 `kd-sensing-visualize-modalities`
 - **AND** 项目 MUST 不保留 `src/kd_sensing/cli/export_viewer_manifest.py`
-- **AND** 项目 MUST 不保留 `configs/diagnostics/modality_visualization.yaml`
+- **AND** 项目 MUST 不保留已退役的 `configs/diagnostics/modality_visualization.yaml`
 
 #### Scenario: 旧 viewer 配置快速失败
-- **WHEN** 用户传入 `configs/diagnostics/modality_visualization.yaml` 或包含 `diagnostics.visualization` 的配置
+- **WHEN** 用户传入已退役的 `configs/diagnostics/modality_visualization.yaml` 或包含 `diagnostics.visualization` 的配置
 - **THEN** migration guard MUST 早失败
 - **AND** 错误信息 MUST 说明 viewer manifest 和仓库级 Gradio viewer 已退役
 

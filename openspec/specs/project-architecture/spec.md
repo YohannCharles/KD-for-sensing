@@ -119,7 +119,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 项目 MUST 不保留仓库级 `tools/visualization` viewer support helper
 
 #### Scenario: 旧 visualization 配置被拒绝
-- **WHEN** 用户传入 `configs/diagnostics/modality_visualization.yaml` 或 `diagnostics.visualization`
+- **WHEN** 用户传入已退役的 `configs/diagnostics/modality_visualization.yaml` 或 `diagnostics.visualization`
 - **THEN** 配置加载 MUST 早失败
 - **AND** 错误信息 MUST 说明 viewer manifest 和仓库级 Gradio viewer 已退役
 
@@ -396,23 +396,23 @@ Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper �
 - **THEN** 训练和评估路径 MUST 抛出一致的错误信息
 - **AND** 错误 MUST 来自统一模态解析逻辑
 
-### Requirement: models 包级延迟导出
-`kd_sensing.models` MUST 保持公开符号兼容，同时通过延迟导入暴露重依赖模型类。导入 `kd_sensing.models` 本身 MUST 不 eager import fusion、GPS、LiDAR、mmWave、image encoder 或其它模型实现模块。
+### Requirement: models 包级轻量导入
+`kd_sensing.models` MUST 保持轻量可导入，但不再 MUST 维持所有历史 package-level 模型符号兼容。该包 MAY 只暴露明确保留的当前公共符号、package metadata 或轻量 helper；当前内部代码、文档和测试 MUST 优先从真实 owner 模块、registry/config 名称或 package CLI 访问模型能力。删除的历史别名和便利导出 MAY 直接产生普通 `ImportError` 或 `AttributeError`，除非本 change 明确保留某个迁移 guard。
 
 #### Scenario: 轻量导入 models 包
 - **WHEN** 开发者执行 `import kd_sensing.models`
 - **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不导入各模型实现模块
+- **AND** 系统 MUST 不导入各模型实现模块、训练 runtime、dataset reader 或重依赖视觉/科学计算模块
 
-#### Scenario: 按需访问公开模型符号
-- **WHEN** 开发者执行 `from kd_sensing.models import FusionTeacherModalityNet`
-- **THEN** 系统 MUST 按需导入对应实现模块并返回该公开符号
-- **AND** `__all__` 中的既有公开模型符号 MUST 继续可访问
+#### Scenario: 当前模型符号使用 owner 路径
+- **WHEN** 当前源码、README、docs 或 tests 需要引用模型实现类
+- **THEN** 引用 MUST 使用真实 owner 模块、canonical registry 名称或配置构建路径
+- **AND** 不得要求 `kd_sensing.models.__all__` 继续列出历史便利导出
 
-#### Scenario: removed alias 错误保持兼容
-- **WHEN** 现有代码访问已移除的模型别名
-- **THEN** `kd_sensing.models` MUST 继续抛出清晰 `AttributeError`
-- **AND** 错误信息 MUST 指向替代公开符号
+#### Scenario: removed alias 不再强制兼容
+- **WHEN** 现有外部代码访问已移除的模型别名或历史 package-level 导出
+- **THEN** 系统 MAY 抛出普通导入或属性错误
+- **AND** 只有仍被当前迁移文档明确覆盖的别名才需要清晰替代符号提示
 
 ### Requirement: 训练运行时编排职责拆分
 训练引擎 MUST 将训练运行时状态、单 batch step、epoch metrics/history、checkpoint/sidecar、TensorBoard 和最终 artifact 写出拆到职责明确的窄模块或 helper。`kd_sensing.engine.trainer.train` MAY 保留为公开入口和顶层生命周期编排器，但 MUST 不继续直接承载这些细节的主要实现。
@@ -1195,7 +1195,7 @@ JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer
 - **AND** 失败信息 MUST 指向对应窄模块或 owner 模块作为迁移路径
 
 ### Requirement: 优先退役入口不得作为 current public surface
-项目 MUST 将本 change 标记的优先退役入口从 current public surface 移除。被移除的入口 MUST 不再出现在 `pyproject.toml` console scripts、`docs/maintainer_context_index.yaml` entrypoint allowlist、README quickstart、CLI help smoke 或 `scripts/` allowlist 中。历史说明 MAY 保留，但 MUST 标记为 retired、historical、blocked background 或 tombstone。
+项目 MUST 将本 change 标记的优先退役入口从 current public surface 移除。被移除的入口 MUST 不再出现在 `pyproject.toml` console scripts、README quickstart、CLI help smoke、当前 structured inventory 或 `scripts/` current allowlist 中。历史说明 MAY 保留，但 MUST 标记为 retired、historical、blocked background 或 tombstone；项目不再 MUST 为这些入口维护 `docs/maintainer_context_index.yaml` 条目。
 
 #### Scenario: 退役 package CLI 不再声明
 - **WHEN** 开发者检查 `pyproject.toml` 和安装后的 console script help smoke
@@ -1203,12 +1203,12 @@ JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer
 - **AND** 项目 MUST 不声明 `kd-sensing-run-jepa-msac`
 - **AND** CLI help smoke MUST 不要求这两个命令存在
 
-#### Scenario: 退役 script 不在 allowlist
-- **WHEN** 开发者检查 `docs/maintainer_context_index.yaml` 的 `python_allowlist` 和 `shell_allowlist`
-- **THEN** allowlist MUST 不包含 `scripts/mmw/visualize_gps_angle_beam_correspondence.py`
-- **AND** allowlist MUST 不包含 `scripts/mmw/visualize_gps_prediction_trajectory.py`
-- **AND** allowlist MUST 不包含 `scripts/mmw/visualize_prediction_error_label_distribution.py`
-- **AND** allowlist MUST 不包含 `scripts/run_deepsense_gps_circular_soft_label.sh`、`scripts/run_mmw_gps_circular_soft_label_ablation.sh`、`scripts/run_mmw_sunny_modal15_l5p3_h123.sh` 或 `scripts/run_mmw_sunny_modal15_l5p6_h246.sh`
+#### Scenario: 退役 script 不在 current allowlist
+- **WHEN** 开发者检查脚本入口健康检查、当前 structured inventory 或保留的脚本 allowlist
+- **THEN** current 入口 MUST 不包含 `scripts/mmw/visualize_gps_angle_beam_correspondence.py`
+- **AND** current 入口 MUST 不包含 `scripts/mmw/visualize_gps_prediction_trajectory.py`
+- **AND** current 入口 MUST 不包含 `scripts/mmw/visualize_prediction_error_label_distribution.py`
+- **AND** current 入口 MUST 不包含 `scripts/run_deepsense_gps_circular_soft_label.sh`、`scripts/run_mmw_gps_circular_soft_label_ablation.sh`、`scripts/run_mmw_sunny_modal15_l5p3_h123.sh` 或 `scripts/run_mmw_sunny_modal15_l5p6_h246.sh`
 
 ### Requirement: 退役入口回流必须被架构边界测试拒绝
 项目 MUST 通过架构边界测试防止优先退役入口以同名文件、等价 wrapper、thin alias、compat facade、virtual config 或 console script 形式回流。保留的历史说明 MUST 不要求对应模块可导入或命令可运行。
@@ -1222,3 +1222,17 @@ JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer
 - **WHEN** 开发者运行架构边界测试
 - **THEN** 测试 MUST 验证被退役的 MMW 旁支诊断脚本和非 CSI shell orchestration 脚本未重新出现在源码树 current allowlist 中
 - **AND** 测试 MUST 指向当前 package CLI、MMW GPS v2 plotter/comparison、JEPA visual analysis、GPS shortcut benchmark 或 CSI hardening runner 作为迁移方向
+
+### Requirement: 兼容 facade 收缩后 owner 路径成为当前入口
+项目 MAY 删除不再属于 current public surface 的兼容 facade、legacy wrapper 和 re-export 模块。删除前，当前内部源码、README、docs、OpenSpec、tests 和示例 MUST 改用真实 owner 模块、canonical registry 名称、配置路径或 package CLI；删除后不得新增等价 wrapper 恢复旧入口。
+
+#### Scenario: 内部代码迁出 facade
+- **WHEN** 内部源码仍通过兼容 facade 导入当前实现
+- **THEN** 本 change MUST 将导入改为真实 owner 模块或 registry/config 构建路径
+- **AND** 架构边界测试 MUST 拒绝该 facade 重新成为内部依赖
+
+#### Scenario: 外部兼容路径作为 breaking change 删除
+- **WHEN** 某个历史 import 路径未被当前 docs、CLI、registry 或配置声明为支持入口
+- **THEN** 本 change MAY 删除该路径
+- **AND** 变更说明 MUST 将其标记为 breaking change 并给出当前 owner 路径或当前入口类别
+

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 import hashlib
 import json
@@ -41,7 +39,7 @@ from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
 from kd_sensing.utils.paths import resolve_path
 
 
-from kd_sensing.diagnostics.jepa_benchmark_artifacts import _output_formats
+from kd_sensing.diagnostics.jepa_benchmark_artifacts import OutputRegistry, _output_formats
 from kd_sensing.diagnostics.jepa_benchmark_common import *
 
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
 import re
@@ -9,7 +7,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from kd_sensing.data.layouts import deepsense6g_image_cache_root, mmw_image_cache_root, runtime_cache_root
-from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform
+from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform, read_image_array
 from kd_sensing.data.transform_ops.image_cache import (
     IMAGE_DERIVED_CACHE_VERSION,
     ImageDerivedCache,
@@ -18,12 +16,6 @@ from kd_sensing.data.transform_ops.image_cache import (
 from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.registries import PREPROCESSORS
 from kd_sensing.utils.paths import resolve_path
-
-try:
-    from skimage import io
-except Exception:  # pragma: no cover - dependency exists in project env.
-    io = None
-
 
 def prewarm_image_derived_cache(
     csv_path: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
@@ -40,8 +32,6 @@ def prewarm_image_derived_cache(
     overwrite: bool = False,
     progress: bool = True,
 ) -> dict[str, Any]:
-    if io is None:
-        raise ModuleNotFoundError("scikit-image is required to prewarm image-derived cache.")
     if policy not in {"auto", "rebuild"}:
         raise ValueError("image-derived cache prewarm requires policy 'auto' or 'rebuild'.")
     resolved_csv_paths = _normalize_csv_paths(csv_path, csv_paths)
@@ -80,7 +70,7 @@ def prewarm_image_derived_cache(
             if not overwrite and cache.load(root, rel_path) is not None:
                 skipped += 1
                 continue
-            image = io.imread(joined_resource(root, rel_path))
+            image = read_image_array(joined_resource(root, rel_path))
             tensor = transform(image)
             if cache.store(root, rel_path, tensor) is None:
                 failures += 1

@@ -402,10 +402,10 @@ Fusion 配置 MUST 能声明多任务辅助监督相关选项，包括启用状�
 - **THEN** 配置名或 virtual config stem MUST 包含 canonical 模态 slug 和 objective 名称
 - **AND** 配置中的 `experiment.objective` MUST 与名称中的 objective 一致
 
-#### Scenario: 旧配置兼容
-- **WHEN** 用户继续使用既有 `configs/fusion/all_modalities_no_kd.yaml`
-- **THEN** 系统 MUST 将该配置视为 `experiment.objective: beam`
-- **AND** 系统 MUST 不要求用户修改旧运行命令
+#### Scenario: 旧 no-KD 配置退役
+- **WHEN** 用户继续使用已退役的 `configs/fusion/all_modalities_no_kd.yaml`
+- **THEN** 系统 MUST 拒绝该旧配置
+- **AND** 错误信息 MUST 指向当前 supervised 或 objective-aware 入口
 
 ### Requirement: 模态失衡 objective 子集
 fusion 配置系统 MUST 支持为模态失衡研究生成强模态、弱模态、单模态和全模态 objective 对照实验。每个 objective 配置 MUST 使用同一套 target 生成语义和同一套 metric 名称。
@@ -428,7 +428,7 @@ fusion 配置系统 MUST 支持为模态失衡研究生成强模态、弱模态�
 objective-aware fusion canonical 配置 MUST 在 `experiment.objective: multitask` 时默认使用 beam、occlusion 和 position 三个任务等权 loss。该默认值 MUST 应用于所有由 virtual canonical generator 生成的 multitask fusion 配置，包括 all-modalities、strong-only、weak-only 和显式模态 slug。
 
 #### Scenario: 五模态 multitask 默认等权
-- **WHEN** 开发者加载 `configs/fusion/image_radar_gps_lidar_mmwave_multitask_no_kd.yaml`
+- **WHEN** 开发者加载 `configs/fusion/image_radar_gps_lidar_mmwave_multitask_supervised.yaml`
 - **THEN** 解析后的配置 MUST 设置 `experiment.objective: multitask`
 - **AND** 解析后的配置 MUST 启用 beam、occlusion 和 position 三类 targets 与 heads
 - **AND** 解析后的配置 MUST 设置 `loss.objective.weights.beam: 1.0`
@@ -436,12 +436,12 @@ objective-aware fusion canonical 配置 MUST 在 `experiment.objective: multitas
 - **AND** 解析后的配置 MUST 设置 `loss.objective.weights.position: 1.0`
 
 #### Scenario: strong-only multitask 默认等权
-- **WHEN** 开发者加载 `configs/fusion/strong_only_multitask_no_kd.yaml`
+- **WHEN** 开发者加载 `configs/fusion/strong_only_multitask_supervised.yaml`
 - **THEN** 解析后的配置 MUST 只包含 strong modalities `[gps, mmwave]`
 - **AND** 解析后的配置 MUST 设置 beam、occlusion 和 position 三个 objective 权重均为 `1.0`
 
 #### Scenario: weak-only multitask 默认等权
-- **WHEN** 开发者加载 `configs/fusion/weak_only_multitask_no_kd.yaml`
+- **WHEN** 开发者加载 `configs/fusion/weak_only_multitask_supervised.yaml`
 - **THEN** 解析后的配置 MUST 只包含 weak modalities `[image, radar, lidar]`
 - **AND** 解析后的配置 MUST 设置 beam、occlusion 和 position 三个 objective 权重均为 `1.0`
 

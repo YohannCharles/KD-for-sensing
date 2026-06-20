@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from kd_sensing.utils.runtime_output_layout import (

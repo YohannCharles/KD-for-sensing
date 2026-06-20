@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import numpy as np
 
 from kd_sensing.data.datasets.deepsense6g_gps_contract import normalize_gps_bev_xy_source

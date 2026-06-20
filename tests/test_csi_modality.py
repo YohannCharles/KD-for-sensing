@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import sys
 from pathlib import Path
@@ -24,7 +22,9 @@ from kd_sensing.data.transform_ops.csi import (  # noqa: E402
 )
 from kd_sensing.engine.batch import forward_model, prepare_csi_inputs, prepare_fusion_inputs, prepare_labels  # noqa: E402
 from kd_sensing.engine.debug_diagnostics import evaluate_pilot_noise_validity  # noqa: E402
-from kd_sensing.models.csi import CSIHardening, PilotCSIChannelEstimator, PilotDualViewCSIEncoder  # noqa: E402
+from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder  # noqa: E402
+from kd_sensing.models.csi_estimation import PilotCSIChannelEstimator  # noqa: E402
+from kd_sensing.models.csi_hardening import CSIHardening  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import ENCODERS, import_default_components  # noqa: E402
 

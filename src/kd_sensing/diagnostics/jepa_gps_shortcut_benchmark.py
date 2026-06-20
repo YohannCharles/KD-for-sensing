@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from kd_sensing.diagnostics.jepa_benchmark_common import (
     BENCHMARK_VERSION,
     BenchmarkManifestError,

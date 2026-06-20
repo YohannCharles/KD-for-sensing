@@ -246,16 +246,16 @@
 - **AND** 只有在同一上下文把这些字段描述为模型直接输入或当前 router 入口时才应失败
 
 ### Requirement: 架构边界测试验证结构化事实而非 prose mirror
-项目健康护栏 MUST 将长期稳定事实放入机器可读索引、inventory lifecycle、OpenSpec requirements、pyproject 或 AST/path/import 扫描中验证。架构边界测试 MUST 不逐字镜像 README、docs 或 OpenSpec 的自然语言段落，除非该文本本身是退役 token、公开入口名、路径、命令或需要静态拒绝的 lifecycle wording。
+项目健康护栏 MUST 验证长期稳定事实，例如入口路径、console script、lifecycle、配置引用、轻量导入边界、退役 token 和本地产物边界。事实来源 MAY 是 OpenSpec requirements、project surface inventory、pyproject、AST/path/import 扫描或小型测试常量；架构边界测试 MUST 不逐字镜像 README、docs 或 OpenSpec 的自然语言段落，也不 MUST 通过大型维护上下文索引间接验证可直接读取的事实。
 
 #### Scenario: 文档自然语言改写不触发结构测试失败
 - **WHEN** README 或 docs 在不改变入口、路径、lifecycle、命令、配置引用或退役语义的情况下改写说明文字
 - **THEN** 架构边界测试 MUST 不因固定短语缺失而失败
-- **AND** 测试 MUST 继续验证机器可读索引、路径和 OpenSpec lifecycle 是否一致
+- **AND** 测试 MUST 继续验证路径、命令、OpenSpec lifecycle 或退役语义是否一致
 
 #### Scenario: 当前入口事实仍被验证
-- **WHEN** README、docs、OpenSpec 或维护索引声明当前 CLI、配置路径、dataset type、模型注册名或诊断入口
-- **THEN** 架构边界测试 MUST 验证对应路径、pyproject entry point、索引 entry 或源码 owner 存在
+- **WHEN** README、docs、OpenSpec 或 current inventory 声明当前 CLI、配置路径、dataset type、模型注册名或诊断入口
+- **THEN** 架构边界测试 MUST 验证对应路径、pyproject entry point 或源码 owner 存在
 - **AND** stale 当前入口引用 MUST 失败
 
 #### Scenario: 退役 wording guard 保留
@@ -268,52 +268,13 @@
 - **THEN** 检查 MUST 只读取已跟踪源码、配置、文档、OpenSpec artifact、pyproject 和测试文件
 - **AND** 检查 MUST 不读取真实 `dataset/`、`outputs/`、`logs/`、checkpoint、cache 或 TensorBoard event
 
-### Requirement: 健康护栏验证维护上下文索引
-项目健康护栏 SHALL 验证维护上下文索引存在、格式可读、必填 section 齐全，并与 AGENTS、AI 维护导航、project surface inventory、OpenSpec specs 和源码路径保持一致。检查 MUST 不读取真实数据、不启动训练、不写入本地产物。
-
-#### Scenario: 索引缺失或不可解析
-- **WHEN** 开发者运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
-- **THEN** 测试 MUST 验证维护上下文索引存在且可解析
-- **AND** 缺失、YAML 格式错误或必填 section 缺失时测试 MUST 失败并说明修复路径
-
-#### Scenario: AGENTS 和 inventory 未引用索引
-- **WHEN** 维护上下文索引已经存在
-- **THEN** 健康护栏 MUST 验证 `AGENTS.md`、`docs/agent_navigation.md` 或 `docs/project_surface_inventory.md` 中有稳定引用或分类说明
-- **AND** 缺少引用时测试 MUST 失败，避免索引成为无人读取的旁路文件
-
-### Requirement: 健康护栏从索引读取治理 allowlist
-项目健康护栏 SHALL 将长期治理 allowlist 和热点预算的数据来源迁移到维护上下文索引。测试 MAY 继续包含断言逻辑，但 MUST 不在测试文件中维护与索引重复的长期事实表。
-
-#### Scenario: 脚本入口检查使用索引
-- **WHEN** 架构边界测试检查 `scripts/`、`tools/analysis/` 或 shell orchestration 文件
-- **THEN** 允许入口及其 lifecycle MUST 来自维护上下文索引
-- **AND** 新增未登记入口 MUST 失败并提示更新索引和必要文档
-
-#### Scenario: 配置、模型和 batch/runtime 检查使用索引
-- **WHEN** 架构边界测试检查 root fusion config、整模型注册、batch/runtime 分支或 hotspot budget
-- **THEN** 对应 allowlist 或 budget MUST 来自维护上下文索引
-- **AND** 测试 MUST 继续拒绝未登记的新公开入口、未说明例外的新整模型注册和未登记热点扩张
-
-### Requirement: 索引一致性检查不放宽退役路线护栏
-项目健康护栏 SHALL 在读取维护上下文索引后继续拒绝 retired route 回流。索引中的 retired token、migration guard 和 forbidden-entry 分类 MUST 用于增强检查，而不是允许旧 KD、HiST/Hist、Top8 standalone、GPS residual、camera residual、Raymobtime s008、CRAF/MARF/G2D 或 Multimodal-NF 重新成为当前入口。
-
-#### Scenario: retired route 被登记为当前入口
-- **WHEN** 维护上下文索引、README、inventory、pyproject 或 configs 中把退役路线登记为 current quickstart、root config、console script 或长期 workflow
-- **THEN** 健康检查 MUST 失败
-- **AND** 失败信息 MUST 要求改为 retired/supporting/migration guard 语义或删除该入口
-
-#### Scenario: migration guard 合法引用被允许
-- **WHEN** 索引或 specs 只在 migration guard、历史说明、拒绝边界或 retired tombstone 中提到退役路线
-- **THEN** 健康检查 MUST 允许该引用
-- **AND** 检查 MUST 不把合法拒绝说明误判为入口回流
-
 ### Requirement: Dataset contract helper 热点治理
-项目健康护栏 SHALL 鼓励 DeepSense6G dataset contract helper 拆分，并防止新的契约规则继续堆入 `DeepSense6GDataset` 超长类。热点 inventory 和 maintainer context index MUST 记录 helper 拆分方向和预算。
+项目健康护栏 MUST 鼓励 DeepSense6G dataset contract helper 拆分，并防止新的契约规则继续堆入 `DeepSense6GDataset` 超长类。热点治理 MAY 记录在 project surface inventory、OpenSpec tasks 或 focused tests 中；项目不再 MUST 通过维护上下文索引记录 helper 拆分方向和预算。
 
 #### Scenario: DeepSense6GDataset 预算下降或保持有理由
 - **WHEN** helper 拆分完成
-- **THEN** `docs/maintainer_context_index.yaml` MUST 更新 `DeepSense6GDataset` 和 `__init__` 的热点预算或记录暂缓原因
-- **AND** `docs/project_surface_inventory.md` MUST 说明哪些契约 helper 已拆出
+- **THEN** `docs/project_surface_inventory.md`、OpenSpec tasks 或 focused tests MUST 记录保留职责、拆分方向或暂缓原因
+- **AND** 不得为了记录预算而强制恢复 `docs/maintainer_context_index.yaml`
 
 #### Scenario: 新契约规则进入 helper
 - **WHEN** 后续新增 GPS feature mode、beam target source、column guard 或 cache path rule
@@ -321,69 +282,30 @@
 - **AND** 架构或 focused tests MUST 防止这些规则继续扩大 dataset class 主体
 
 ### Requirement: JEPA benchmark facade 和窄模块预算
-项目健康护栏 SHALL 为拆分后的 JEPA benchmark facade 和窄模块维护热点预算。`jepa_gps_shortcut_benchmark.py` 的预算 MUST 下降，新增窄模块 MUST 在 maintainer context index 和 inventory 中登记职责、预算和防回流边界。
+项目健康护栏 MUST 防止 JEPA benchmark facade 重新变厚。若 facade 被保留，它 MUST 只委托窄 owner 模块；若本 change 删除 facade，当前 CLI、docs 和 tests MUST 直接指向保留的 owner 模块或正式入口。窄模块职责和预算 MAY 记录在 project surface inventory、OpenSpec tasks 或 focused tests 中，不再 MUST 登记到维护上下文索引。
 
 #### Scenario: facade 超预算失败
-- **WHEN** 架构边界测试扫描 `src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py`
-- **THEN** 文件行数 MUST 不超过维护上下文索引登记的 facade budget
-- **AND** 超预算时测试 MUST 要求继续拆分到窄模块，而不是扩大 facade
+- **WHEN** 架构边界测试扫描保留的 `src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py`
+- **THEN** 文件行数或导入职责 MUST 保持薄 facade 范围
+- **AND** 超预算时测试 MUST 要求继续拆分到窄模块或删除 facade，而不是扩大 facade
 
-#### Scenario: 新窄模块登记预算
+#### Scenario: 新窄模块登记职责
 - **WHEN** 拆分新增 JEPA benchmark 内部模块
-- **THEN** `docs/maintainer_context_index.yaml` MUST 登记对应 file 或 symbol budget
-- **AND** `docs/project_surface_inventory.md` MUST 说明模块职责和暂缓/后续拆分理由
+- **THEN** project surface inventory、OpenSpec tasks 或 focused tests MUST 说明模块职责和防回流边界
+- **AND** 不得为了登记该模块而强制维护完整上下文索引
 
 ### Requirement: CLI 和脚本入口健康检查
-项目健康护栏 SHALL 检查 CLI 和 scripts 入口不变厚。检查 MUST 基于 maintainer context index 中的 entrypoint lifecycle、owner module 和 output boundary，拒绝未登记入口、恢复 Python thin alias 和明显复制 workflow 逻辑的脚本。
+项目健康护栏 MUST 检查 CLI 和 scripts 入口不变厚。检查 MUST 基于 `pyproject.toml`、真实脚本路径、current docs、project surface inventory 或 focused tests 中的最小入口事实，拒绝未登记 current 入口、恢复 Python thin alias 和明显复制 workflow 逻辑的脚本。
 
 #### Scenario: 新脚本缺少 owner module
-- **WHEN** `scripts/`、`tools/analysis/` 或 package CLI 新增入口
-- **THEN** 维护上下文索引 MUST 登记 owner module、responsibility 和 output boundary
+- **WHEN** `scripts/`、`tools/analysis/` 或 package CLI 新增 current 入口
+- **THEN** 变更 MUST 在 project surface inventory、README/docs 或 OpenSpec tasks 中登记 owner module、responsibility 和 output boundary
 - **AND** 缺少登记时架构边界测试 MUST 失败
 
 #### Scenario: 脚本入口包含训练循环 marker
 - **WHEN** 保留的 `scripts/` research diagnostic、dataset preparation 或 shell orchestration 包含大段训练循环、模型 forward、optimizer step 或重复 package CLI 主逻辑
 - **THEN** 健康检查 MUST 失败或要求重新分类为 owner module
 - **AND** 修复路径 MUST 是委托包内实现或创建正式 package module
-
-### Requirement: 维护上下文索引测试 helper 私有化
-项目健康护栏 SHALL 使用测试私有 helper 读取和验证维护上下文索引。架构边界测试 MUST 不长期内联大段 YAML schema validation 和 projection logic；helper MUST 不成为 runtime API。
-
-#### Scenario: 架构测试通过 helper 读取索引
-- **WHEN** `tests/test_architecture_boundaries.py` 需要 entrypoint allowlist、hotspot budget 或 retired route token
-- **THEN** 测试 MUST 通过测试私有 helper 获取这些数据
-- **AND** 测试文件 MUST 不重新维护与 helper 重复的大段 schema validation 逻辑
-
-#### Scenario: runtime 不导入测试 helper
-- **WHEN** 开发者导入 `kd_sensing` 或运行训练/评估 CLI
-- **THEN** runtime MUST 不导入 `tests.helpers.maintainer_context` 或等价测试 helper
-- **AND** helper MUST 不出现在 README 推荐 runtime 入口中
-
-### Requirement: pyproject 和 maintainer index 双向一致
-项目健康护栏 SHALL 验证 `pyproject.toml` 的 `[project.scripts]` 与维护上下文索引中的 `governance.entrypoints.package_cli` 双向一致。新增、删除或重命名 console script MUST 同步更新索引。
-
-#### Scenario: pyproject 新增脚本但索引缺失
-- **WHEN** `[project.scripts]` 出现新的 `kd-sensing-*` console script
-- **THEN** 架构边界测试 MUST 失败
-- **AND** 失败信息 MUST 要求在 `docs/maintainer_context_index.yaml` 中登记名称、target 和 lifecycle
-
-#### Scenario: 索引登记脚本但 pyproject 缺失
-- **WHEN** 索引 `package_cli` 登记的 console script 不存在于 `pyproject.toml`
-- **THEN** 架构边界测试 MUST 失败
-- **AND** 失败信息 MUST 要求恢复 pyproject 声明或删除索引登记
-
-### Requirement: 验证 hotspot 行动元数据
-项目健康护栏 SHALL 验证维护上下文索引中的 hotspot action metadata。检查 MUST 覆盖 priority/status 合法性、split target 列表类型、validation command 环境约束和 inventory marker 对齐。
-
-#### Scenario: hotspot metadata 缺字段
-- **WHEN** hotspot budget entry 缺少 priority、status、split targets、rationale 或 validation commands
-- **THEN** 架构边界测试 MUST 失败
-- **AND** 失败信息 MUST 指向缺失字段
-
-#### Scenario: hotspot validation command 未使用环境
-- **WHEN** hotspot metadata 中的 Python/pytest validation command 未使用 `conda run -n kd_mm_beam`
-- **THEN** 健康检查 MUST 失败
-- **AND** 失败信息 MUST 指向对应 hotspot entry
 
 ### Requirement: 高风险源码表面修复按 wave 管理
 项目 MAY 对热点模块执行高风险结构重构，但该重构 MUST 按 remediation wave 管理。每个 wave MUST 记录目标文件、owner 边界、公开 import/CLI 保持策略、focused validation commands 和回滚条件。高风险 wave MUST 不把训练数学语义、数据 split 语义、beam label 口径、checkpoint schema 或默认输出目录作为隐式变更。
@@ -402,3 +324,30 @@
 - **WHEN** 模块低于热点阈值、职责内聚且无重复抽象或公开边界问题
 - **THEN** 健康护栏 MUST NOT 要求仅因相邻热点修复而拆分该模块
 - **AND** 维护者 MAY 只补测试或登记为 monitor
+
+### Requirement: 健康护栏使用最小结构化来源
+项目健康护栏 MUST 优先验证权威来源本身，包括 `pyproject.toml`、真实源码路径、OpenSpec requirements、当前 README/docs 中的路径或命令、轻量 import probes 和小型 lifecycle inventory。健康护栏 MUST NOT 要求维护一个完整镜像源码结构、入口 allowlist、热点预算和文档路由的长期 YAML，除非该 YAML 被明确保留为最小 inventory。
+
+#### Scenario: pyproject 脚本直接验证
+- **WHEN** 架构边界测试检查 console scripts
+- **THEN** 测试 MUST 直接读取 `pyproject.toml` 的 `[project.scripts]`
+- **AND** 测试 MUST 不要求同一脚本清单在维护上下文索引中重复登记
+
+#### Scenario: 热点事实从小型来源验证
+- **WHEN** 架构边界测试检查热点、facade 或 current entrypoint 回流
+- **THEN** 测试 MUST 使用 OpenSpec、项目表面积 inventory、真实文件路径或少量测试常量中的稳定事实
+- **AND** 测试 MUST 不要求维护完整源码目录清单或大段 YAML schema projection logic
+
+### Requirement: 退役路线护栏不依赖单一索引
+项目健康护栏 MUST 继续拒绝 retired route 以 CLI、配置、registry 名称、facade、script 或 quickstart wording 回流，但该护栏 MUST 不依赖 `docs/maintainer_context_index.yaml` 的存在。退役 token 和禁止入口 MAY 存在于 OpenSpec requirements、project surface inventory 或 focused tests 中。
+
+#### Scenario: retired route 被写成当前入口
+- **WHEN** README、current docs、OpenSpec current specs、pyproject、configs 或 registry 把退役路线登记为 current quickstart、root config、console script 或长期 workflow
+- **THEN** 健康检查 MUST 失败
+- **AND** 失败信息 MUST 要求改为 retired/supporting/migration guard 语义或删除该入口
+
+#### Scenario: migration guard 合法引用被允许
+- **WHEN** docs 或 specs 只在 migration guard、历史说明、拒绝边界或 retired tombstone 中提到退役路线
+- **THEN** 健康检查 MUST 允许该引用
+- **AND** 检查 MUST 不把合法拒绝说明误判为入口回流
+

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import torch
 
 from kd_sensing.models.camera_autoencoder import CameraAutoEncoder

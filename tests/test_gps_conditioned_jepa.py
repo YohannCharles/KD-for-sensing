@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import copy
 import sys
 from pathlib import Path
@@ -314,7 +312,7 @@ def test_gps_query_pool_shape_attention_map_and_dimension_validation():
         pool(patch_tokens, torch.randn(2, 4, 4))
 
 
-def test_jepa_downstream_pooler_adapter_registry_builds_and_reports_unknown_names():
+def test_jepa_downstream_poolers_build_and_identity_adapter_is_noop():
     import_default_components()
     tokens = torch.randn(2, 3, 5, 8)
 
@@ -392,7 +390,7 @@ def test_jepa_downstream_pooler_adapter_registry_builds_and_reports_unknown_name
 
     with pytest.raises(RegistryError, match="does_not_exist.*jepa_downstream_poolers.*Available names"):
         build_jepa_downstream_pooler({"type": "does_not_exist"})
-    with pytest.raises(RegistryError, match="does_not_exist.*jepa_downstream_adapters.*Available names"):
+    with pytest.raises(ValueError, match="Unsupported JEPA downstream adapter 'does_not_exist'.*identity"):
         build_jepa_downstream_adapter({"type": "does_not_exist"})
 
 
@@ -775,7 +773,7 @@ def test_jepa_context_image_encoder_accepts_explicit_pooler_adapter_config_and_m
             visual_encoder={"patch_size": 8, "depth": 0, "max_tokens": 16},
             pooler={"type": "unknown_pooler"},
         )
-    with pytest.raises(RegistryError, match="unknown_adapter.*jepa_downstream_adapters"):
+    with pytest.raises(ValueError, match="Unsupported JEPA downstream adapter 'unknown_adapter'.*identity"):
         JepaContextImageEncoder(
             output_dim=16,
             latent_dim=16,

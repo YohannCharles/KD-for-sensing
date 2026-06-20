@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from kd_sensing.config import load_config

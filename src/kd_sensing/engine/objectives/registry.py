@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 PREDICTION_OBJECTIVES = (
     "beam",
     "occlusion",

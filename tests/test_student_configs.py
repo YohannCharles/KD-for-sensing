@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import sys
 from itertools import combinations
 from pathlib import Path
@@ -214,9 +212,10 @@ def test_run_lineage_metadata_uses_distillation_free_fields():
     assert is_historical_kd_metadata({"method_family": "legacy_kd"}) is True
 
 
-def test_fusion_registry_removed_aliases_fail_but_public_exports_remain():
-    assert kd_sensing.models.FusionStrongModalityNet is FusionStrongModalityNet
-    assert kd_sensing.models.FusionLightweightModalityNet is not None
+def test_fusion_registry_removed_aliases_fail_and_owner_exports_remain():
+    assert FusionStrongModalityNet is not None
+    assert FusionLightweightModalityNet is not None
+    assert kd_sensing.models.__all__ == []
     for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet"]:
         with pytest.raises(AttributeError, match=alias):
             getattr(kd_sensing.models, alias)

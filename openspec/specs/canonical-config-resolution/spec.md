@@ -150,7 +150,7 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **AND** 最终配置 MUST 构建无时序 snapshot fusion 模型
 
 #### Scenario: 拒绝非法 snapshot slug
-- **WHEN** 用户加载 `configs/fusion/mmwave_gps_snapshot_next_frame_no_kd.yaml`
+- **WHEN** 用户加载应被拒绝的非法路径 `configs/fusion/mmwave_gps_snapshot_next_frame_no_kd.yaml`
 - **THEN** 系统 MUST 拒绝该路径
 - **AND** 错误信息 MUST 提示 canonical slug 为 `gps_mmwave`
 

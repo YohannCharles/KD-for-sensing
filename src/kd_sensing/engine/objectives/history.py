@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 _HISTORY_FIELDS: tuple[str, ...] = (
     "train_loss",
     "train_task_loss",

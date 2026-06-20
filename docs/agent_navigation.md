@@ -7,8 +7,8 @@
 1. 先读用户当前请求和本轮对话中的限制；它们只约束本次工作，不自动改写长期契约。
 2. 读 `AGENTS.md`，确认命令环境、OpenSpec、文档边界和本地产物边界；所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
 3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 仍可能影响当前工作树解释。
-4. 读 `docs/maintainer_context_index.yaml`，用机器可读索引快速定位任务路由、治理表、architecture sizing baseline、入口/配置/model/batch/runtime allowlist、热点预算、remediation wave、退役 token 和验证命令；索引只负责定位上下文，不替代 OpenSpec requirements、README quickstart 或 inventory 审计解释。
-5. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看索引和 `docs/project_surface_inventory.md` 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
+4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、验证命令等最小结构化事实，不维护完整源码目录清单。
+5. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
 6. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
 7. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
 8. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动和 ignored runtime artifacts 没有被误当作源码需求。
@@ -20,34 +20,34 @@
 1. 用户当前请求和显式限制。
 2. `AGENTS.md` 中的操作规则、命令环境和产物边界。
 3. active OpenSpec change 的 proposal/design/spec/tasks，以及 `openspec status --change <change>` 给出的状态。
-4. `docs/maintainer_context_index.yaml` 中的机器可读治理事实，用于定位路由、allowlist、热点预算和验证命令。
-5. `docs/project_surface_inventory.md` 中的 OpenSpec capability lifecycle 分类，以及当前 `openspec/specs/` 中已归档为当前需求的 specs。
+4. `docs/project_surface_inventory.md` 中的 OpenSpec capability lifecycle 分类、入口说明、热点 rationale 和历史 caveat。
+5. `docs/maintainer_context_index.yaml` 中无法从 pyproject、OpenSpec、真实路径或 inventory 推导的最小结构化事实。
 6. README、`docs/` workflow、`docs/project_surface_inventory.md` 其它 inventory 内容和复现说明。
 7. 源码和测试中已经存在的实现契约。
 8. `openspec/changes/archive/`、历史报告、旧研究笔记、本地数据和运行产物。
 
-OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capability 文件名也不能覆盖 lifecycle 分类：旧能力名称如果被标为 `retired-tombstone`，就只能作为墓碑解释；标为 `supporting` 时，也必须继续查 README、inventory 或 current workflow spec 来确认实际推荐入口。当前打开文件不等于项目权威入口，尤其不要从 generated metadata、测试 allowlist 或输出目录反推当前支持面；先用 `docs/maintainer_context_index.yaml` 确认该文件所属 lifecycle 和任务路由。
+OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capability 文件名也不能覆盖 lifecycle 分类：旧能力名称如果被标为 `retired-tombstone`，就只能作为墓碑解释；标为 `supporting` 时，也必须继续查 README、inventory 或 current workflow spec 来确认实际推荐入口。当前打开文件不等于项目权威入口，尤其不要从 generated metadata、测试常量或输出目录反推当前支持面；先用 inventory 和 current specs 确认 lifecycle。
 
-`docs/maintainer_context_index.yaml` 和 `docs/project_surface_inventory.md` 职责不同：前者是机器可读治理事实入口，供 agent 和架构边界测试读取；后者保留解释性审计、历史上下文、caveat 和暂缓原因。二者或 README、导航文档、OpenSpec specs 之间出现看似冲突时，先视为治理漂移，通过 OpenSpec change 同步索引、inventory 和对应 specs，不要任选一处作为事实。
+`docs/maintainer_context_index.yaml` 和 `docs/project_surface_inventory.md` 职责不同：前者只是最小结构化事实清单；后者保留解释性审计、历史上下文、caveat 和暂缓原因。二者或 README、导航文档、OpenSpec specs 之间出现看似冲突时，先视为治理漂移，通过 OpenSpec change 同步 inventory、最小索引和对应 specs，不要任选一处作为事实。
 
 ## 任务路由表
 
 | 改动类型 | 先读什么 | 主要修改区域 | 常用验证 |
 | --- | --- | --- | --- |
-| 模型 / forward / registry 暴露 | `docs/maintainer_context_index.yaml` 的 `model_forward_registry` 路由、`model-architecture-extension-contract`、`modular-sequence-model`、`component-registry`、README 当前模型说明、inventory 热点和退役边界 | `src/kd_sensing/models/`、`src/kd_sensing/registries.py`、默认组件、`engine.batch` / `engine.runtime` forward 输出消费处 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`，再追加模型/forward focused tests |
+| 模型 / forward / registry 暴露 | `model-architecture-extension-contract`、`modular-sequence-model`、`component-registry`、README 当前模型说明、inventory 热点和退役边界 | `src/kd_sensing/models/`、`src/kd_sensing/registries.py`、默认组件、`engine.batch` / `engine.runtime` forward 输出消费处 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`，再追加模型/forward focused tests |
 | 数据与 batch contract | 索引的 `data_batch_contract` 路由、dataset/modality contract specs、README 数据边界、inventory 中 `engine.batch` 热点 | `src/kd_sensing/data/`、`src/kd_sensing/engine/batch.py`、shared runtime、相关 dataset tests | 相关 dataset/batch focused tests；避免读取真实 `dataset/` |
-| 配置和 virtual config | 索引的 `config_virtual_config` 路由和 root fusion allowlist、配置生命周期 specs、README 配置章节、inventory 配置生命周期分类 | `src/kd_sensing/config/`、`configs/`、canonical recipe / virtual config 生成规则 | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` 和架构边界测试 |
-| CLI / scripts 入口 | 索引的 `cli_scripts` 路由、entrypoint allowlist、owner metadata、README 主要入口、`pyproject.toml` console scripts | `src/kd_sensing/cli/`、`scripts/` allowlist、`pyproject.toml`；真实 workflow 逻辑应位于索引登记的 owner module/script | CLI help smoke、`tests/test_cli_help.py`、架构边界测试 |
-| 输出产物 / cache / cleanup | 索引的 `runtime_outputs_cache_cleanup` 路由、README 数据和产物边界、inventory 本地产物分类、cleanup manifest workflow | `src/kd_sensing/utils/runtime_output_layout.py`、diagnostic / cleanup CLI；默认输出在 ignored `outputs/` | 不写入 `outputs/` 或 `logs/` 的单元测试；必要时只生成 dry-run manifest |
-| 诊断 / visual analysis / benchmark | 索引的 `diagnostics_viewer` 路由、诊断 specs、JEPA visual analysis、GPS shortcut benchmark、inventory 诊断热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/jepa_visual_analysis.py`、`src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` 和 CLI help |
-| OpenSpec artifact | 索引的 `openspec_artifact` 路由、active change 的 proposal/design/spec/tasks、inventory lifecycle、当前 specs、`openspec status` | `openspec/changes/<change>/` 或 `openspec/specs/` | `openspec validate <change> --strict`，必要时 `openspec status --change <change>` |
+| 配置和 virtual config | 配置生命周期 specs、README 配置章节、inventory 配置生命周期分类 | `src/kd_sensing/config/`、`configs/`、canonical recipe / virtual config 生成规则 | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` 和架构边界测试 |
+| CLI / scripts 入口 | README 主要入口、`pyproject.toml` console scripts、inventory 脚本入口分类 | `src/kd_sensing/cli/`、`scripts/`、`pyproject.toml`；真实 workflow 逻辑应位于 owner module/script | CLI help smoke、`tests/test_cli_help.py`、架构边界测试 |
+| 输出产物 / cache / cleanup | README 数据和产物边界、inventory 本地产物分类、cleanup manifest workflow | `src/kd_sensing/utils/runtime_output_layout.py`、diagnostic / cleanup CLI；默认输出在 ignored `outputs/` | 不写入 `outputs/` 或 `logs/` 的单元测试；必要时只生成 dry-run manifest |
+| 诊断 / visual analysis / benchmark | 诊断 specs、JEPA visual analysis、GPS shortcut benchmark、inventory 诊断热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/jepa_visual_analysis.py`、`src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` 和 CLI help |
+| OpenSpec artifact | active change 的 proposal/design/spec/tasks、inventory lifecycle、当前 specs、`openspec status` | `openspec/changes/<change>/` 或 `openspec/specs/` | `openspec validate <change> --strict`，必要时 `openspec status --change <change>` |
 | 文档生命周期 | 索引的 `documentation_lifecycle` 路由、AGENTS 文档边界、README 文档索引、OpenSpec capability lifecycle、inventory 文档生命周期分类 | README、`AGENTS.md`、`docs/*.md`、OpenSpec 文档 | 架构边界测试；检查不把历史、supporting 或退役墓碑路线写成当前推荐入口 |
 
-新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该 workflow 有明确名称或专用入口，还应在 `docs/maintainer_context_index.yaml` 的 entrypoint owner metadata 中登记 owner module/script、responsibility、output boundary 和必要 retired route guard，并在架构边界测试中加一个轻量文档同步 guard，防止以后只改账本而漏掉 quickstart。
+新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该 workflow 有明确名称或专用入口，还应在 inventory 或 focused 架构测试中登记 owner module/script、responsibility、output boundary 和必要 retired route guard。
 
 ## 热点右尺寸化决策矩阵
 
-修改已登记 hotspot、接近预算的 workflow、dataset、diagnostic module 或 facade 前，先读取 `docs/maintainer_context_index.yaml` 的 `governance.architecture_sizing_baseline` 和 `governance.hotspots`。不要把 Python 文件数、function 数或 import 数机械解释成“所有大文件都要拆”：这些只是趋势信号；每次变更先判断动作属于 `split`、`consolidate`、`monitor`、`accepted-size`、`hard-budget`、源码窄修复或 `keep-and-test`。
+修改已登记 hotspot、接近预算的 workflow、dataset、diagnostic module 或 facade 前，先读取 inventory 中的 architecture sizing baseline、hotspot rationale 和当前 focused tests。不要把 Python 文件数、function 数或 import 数机械解释成“所有大文件都要拆”：这些只是趋势信号；每次变更先判断动作属于 `split`、`consolidate`、`monitor`、`accepted-size`、`hard-budget`、源码窄修复或 `keep-and-test`。
 
 | 场景 | 默认动作 | 需要确认 |
 | --- | --- | --- |
@@ -60,9 +60,9 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 
 ## Remediation Wave Campaign
 
-当用户明确要求完整修复热点架构并接受高风险时，按 remediation wave 实施，而不是把多个热点混成单次不可定位的大改。开始前确认 active OpenSpec change，读取维护上下文索引，列出 wave 顺序、目标文件、计划动作、公开 surface 策略、focused tests 和 rollback 条件。
+当用户明确要求完整修复热点架构并接受高风险时，按 remediation wave 实施，而不是把多个热点混成单次不可定位的大改。开始前确认 active OpenSpec change，读取 inventory，列出 wave 顺序、目标文件、计划动作、公开 surface 策略、focused tests 和 rollback 条件。
 
-当前 `right-size-project-architecture` campaign 的 remediation wave 顺序由索引的 `governance.hotspots.remediation_waves` 维护：Wave 0 是治理 schema、architecture sizing baseline、inventory、AI 导航和架构边界测试；Wave 1 是 BeamBench Image AE+GPS；Wave 2 是 DeepSense6G/MMW dataset 与 trainer；Wave 3 是 evaluation pass 和 diagnostics 二级热点；Wave 4 是 JEPA benchmark accepted owner；Wave 5 是 consolidation/import 面收口与 keep-and-test。当前 IDE 打开的文件只作为局部线索；即使打开 loss、model、diagnostics 或 dataset 文件，也必须放回 remediation wave、public surface policy、merge-candidate/accepted owner 和 rollback 边界判断。
+当前 `right-size-project-architecture` campaign 的 remediation wave 顺序记录在 inventory 和对应 OpenSpec change 中：Wave 0 是治理 schema、architecture sizing baseline、inventory、AI 导航和架构边界测试；Wave 1 是 BeamBench Image AE+GPS；Wave 2 是 DeepSense6G/MMW dataset 与 trainer；Wave 3 是 evaluation pass 和 diagnostics 二级热点；Wave 4 是 JEPA benchmark accepted owner；Wave 5 是 consolidation/import 面收口与 keep-and-test。当前 IDE 打开的文件只作为局部线索；即使打开 loss、model、diagnostics 或 dataset 文件，也必须放回 remediation wave、public surface policy、merge-candidate/accepted owner 和 rollback 边界判断。
 
 模型/forward/registry 改动先归类：
 
@@ -76,7 +76,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 ## 常见误读清单
 
 - generated metadata：`src/kd_sensing.egg-info/SOURCES.txt`、`entry_points.txt`、`dependency_links.txt` 等是 packaging 生成元数据，不是源码结构或入口权威；判断入口时看 `pyproject.toml`、`src/kd_sensing/`、README 和 OpenSpec。
-- machine-readable index：`docs/maintainer_context_index.yaml` 是路由和治理事实索引，不是运行时配置、训练配置或 OpenSpec requirement 全文；它的 allowlist 和 budget 由架构边界测试消费，解释原因仍回到 inventory 和 specs。
+- machine-readable index：`docs/maintainer_context_index.yaml` 只保存退役 token 和验证命令等最小结构化事实；它不是运行时配置、训练配置、OpenSpec requirement 全文、入口 allowlist、hotspot budget 或完整源码目录清单。
 - OpenSpec capability lifecycle：先看 `docs/project_surface_inventory.md` 的 `current`、`supporting`、`retired-tombstone` 分类。`supporting` 不等于 standalone 当前入口；`retired-tombstone` 只保留退役、防回流或 migration guard 说明。
 - ignored runtime artifacts：`outputs/`、`outputs/cache/`、`logs/`、legacy 根 `cache/`、`.pytest_cache`、`__pycache__`、`.pyc`、TensorBoard 文件和 checkpoint 是本地运行产物，不能自动纳入源码变更，也不能作为当前支持入口证据。
 - pytest cache：`.pytest_cache/v/cache/lastfailed` 只记录本地上一次 pytest 状态，可能已经过期；真实红点以当前测试文件和实际 `pytest` 命令结果为准。
@@ -91,8 +91,8 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 ## 修改前检查清单
 
 - 本次改动是否非平凡、涉及架构、训练流程、数据契约、配置兼容或公共入口；如果是，先确认或创建 OpenSpec change。
-- 是否已用 `docs/maintainer_context_index.yaml` 定位任务路由、相关治理表和最小验证命令。
-- 触碰 CLI、console script 或 `scripts/` 入口时，是否已先查 `governance.entrypoints` 的 owner module/script、responsibility、output boundary 和 retired route guard，并确认改动仍是 thin parser/IO glue 或登记的 owner 实现。
+- 是否已用 inventory、OpenSpec 和最小结构化事实定位任务路由、退役边界和最小验证命令。
+- 触碰 CLI、console script 或 `scripts/` 入口时，是否已先查 `pyproject.toml`、inventory 和 OpenSpec 中的 owner module/script、responsibility、output boundary 和 retired route guard，并确认改动仍是 thin parser/IO glue 或登记的 owner 实现。
 - 是否已经读过 active change 的 proposal/design/spec/tasks 和相关当前 specs。
 - 是否确认要修改的文件不是 generated metadata、ignored runtime artifacts、本地数据或历史 archive。
 - 是否确认不新增旧入口、兼容聚合层、退役研究线实体配置或绕过 `src/kd_sensing` 包结构的运行方式。

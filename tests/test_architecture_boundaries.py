@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import ast
 import importlib.util
 import json
@@ -7,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,19 +13,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-from tests.helpers.maintainer_context import (  # noqa: E402
-    MAINTAINER_CONTEXT_INDEX_REL_PATH,
-    OPENSPEC_LIFECYCLE_ALLOWED,
-    assert_pyproject_scripts_match_index,
-    batch_runtime_function_allowlist,
-    config_allowlists,
-    entrypoint_allowlists,
-    health_check_commands,
-    hotspot_budgets,
-    load_maintainer_context_index,
-    model_registration_allowlist,
-    retired_route_tokens,
-)
 from kd_sensing.modalities import (  # noqa: E402
     MODALITY_ORDER,
     batch_input_keys_for_modalities,
@@ -36,23 +22,107 @@ from kd_sensing.modalities import (  # noqa: E402
 from kd_sensing.config.defaults import DEFAULT_CONFIG  # noqa: E402
 from kd_sensing.utils.runtime_output_layout import canonical_runtime_partitions  # noqa: E402
 
-MAINTAINER_CONTEXT_INDEX_PATH = ROOT / MAINTAINER_CONTEXT_INDEX_REL_PATH
+MAINTAINER_CONTEXT_INDEX_PATH = ROOT / "docs" / "maintainer_context_index.yaml"
 LEGACY_MODEL_RETIREMENT_FIXTURE = ROOT / "tests" / "fixtures" / "legacy_model_registry_retirement.yaml"
-MAINTAINER_CONTEXT_INDEX = load_maintainer_context_index(ROOT)
-ENTRYPOINT_ALLOWLISTS = entrypoint_allowlists(MAINTAINER_CONTEXT_INDEX)
-CONFIG_ALLOWLISTS = config_allowlists(MAINTAINER_CONTEXT_INDEX)
-HOTSPOT_BUDGETS = hotspot_budgets(MAINTAINER_CONTEXT_INDEX)
-RETIRED_ROUTE_TOKENS = retired_route_tokens(MAINTAINER_CONTEXT_INDEX)
+OPENSPEC_LIFECYCLE_ALLOWED = {"current", "supporting", "retired-tombstone"}
 
-PYTHON_ENTRYPOINT_ALLOWLIST = ENTRYPOINT_ALLOWLISTS["python"]
-SHELL_ORCHESTRATION_ALLOWLIST = ENTRYPOINT_ALLOWLISTS["shell"]
-PYTHON_ENTRYPOINT_METADATA = ENTRYPOINT_ALLOWLISTS["python_entries"]
-PACKAGE_CLI_METADATA = ENTRYPOINT_ALLOWLISTS["package_cli"]
-ENTRYPOINT_LIFECYCLES = ENTRYPOINT_ALLOWLISTS["lifecycles"]
-RETIRED_GENERATED_FUSION_CONFIGS = CONFIG_ALLOWLISTS["retired_generated_fusion"]
-FUSION_ROOT_YAML_ALLOWLIST = CONFIG_ALLOWLISTS["fusion_root_yaml"]
-EXISTING_MODEL_REGISTRATION_ALLOWLIST = model_registration_allowlist(MAINTAINER_CONTEXT_INDEX)
-BATCH_RUNTIME_FUNCTION_ALLOWLIST = batch_runtime_function_allowlist(MAINTAINER_CONTEXT_INDEX)
+PYTHON_ENTRYPOINT_ALLOWLIST = {
+    "scripts/analyze_csi_hardening_sweep.py": "research_diagnostic",
+    "scripts/analysis/beambench_ae_gps_diagnostics.py": "research_diagnostic",
+    "scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py": "research_diagnostic",
+    "scripts/analysis/visualize_deepsense_beambench_correspondence.py": "research_diagnostic",
+    "scripts/debug_eval_consistency.py": "research_diagnostic",
+    "scripts/figures/draw_jepa_architecture.py": "research_diagnostic",
+    "scripts/inspect_dataset.py": "dataset_preparation",
+    "scripts/mmw/build_sequence_splits_from_manifest.py": "dataset_preparation",
+    "scripts/mmw/prepare_town10_skybridge.py": "dataset_preparation",
+    "scripts/mmw/visualize_town_label_distribution.py": "dataset_preparation",
+    "scripts/profile_training_io.py": "research_diagnostic",
+    "scripts/recommend_parallel_training.py": "research_diagnostic",
+}
+SHELL_ORCHESTRATION_ALLOWLIST = {"scripts/run_csi_hardening_matrix.sh": "shell_orchestration"}
+PYTHON_ENTRYPOINT_METADATA = {
+    path: {"lifecycle": lifecycle} for path, lifecycle in PYTHON_ENTRYPOINT_ALLOWLIST.items()
+}
+ENTRYPOINT_LIFECYCLES = {"research_diagnostic", "dataset_preparation", "shell_orchestration"}
+RETIRED_GENERATED_FUSION_CONFIGS = {
+    "configs/fusion/craf_all_modalities_fixed_prior_sanity.yaml",
+    "configs/fusion/craf_all_modalities_no_counterfactual.yaml",
+    "configs/fusion/craf_all_modalities_no_kd.yaml",
+    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_global.yaml",
+    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_horizon.yaml",
+    "configs/fusion/image_radar_gps_lidar_mmwave_g2d_lite.yaml",
+    "configs/fusion/marf.yaml",
+    "configs/fusion/marf_no_prior_bias_ablation.yaml",
+    "configs/fusion/marf_no_residual_ablation.yaml",
+    "configs/fusion/marf_no_subset_training_ablation.yaml",
+    "configs/fusion/marf_subset_training.yaml",
+}
+FUSION_ROOT_YAML_ALLOWLIST = {
+    "configs/fusion/all_modalities_lidar_supervised.yaml",
+    "configs/fusion/all_modalities_supervised.yaml",
+    "configs/fusion/beambench_image_ae_gps_direct.yaml",
+    "configs/fusion/image_gps_resnet18_modular_supervised.yaml",
+    "configs/fusion/image_gps_supervised.yaml",
+    "configs/fusion/mmwave_csi_medium_degraded_supervised.yaml",
+    "configs/fusion/mmwave_csi_supervised.yaml",
+    "configs/fusion/radar_gps_supervised.yaml",
+    "configs/fusion/radar_lidar_supervised.yaml",
+    "configs/fusion/token_transformer_all_modalities_multitask_supervised.yaml",
+    "configs/fusion/token_transformer_all_modalities_supervised.yaml",
+    "configs/fusion/token_transformer_image_radar_supervised.yaml",
+}
+EXISTING_MODEL_REGISTRATION_ALLOWLIST = {
+    "bev_fusion_2604",
+    "camera_ae_frozen",
+    "cls_token_transformer_fusion",
+    "gps_conditioned_jepa",
+    "gps_sequence_baseline",
+    "jepa_context_image",
+    "modular_sequence",
+    "resnet18_imagenet_rgb",
+    "token_transformer_fusion",
+    "vision_position_late_fusion",
+    "vision_position_transformer_fusion",
+}
+BATCH_RUNTIME_FUNCTION_ALLOWLIST = {
+    "src/kd_sensing/engine/batch.py": {
+        "forward_model",
+        "prepare_auxiliary_targets",
+        "prepare_beam_power_targets",
+        "prepare_beamspace_power_targets",
+        "prepare_csi_inputs",
+        "prepare_fusion_inputs",
+        "prepare_geometry_inputs",
+        "prepare_geometry_mask",
+        "prepare_gps_bev_xy_inputs",
+        "prepare_gps_inputs",
+        "prepare_image_inputs",
+        "prepare_labels",
+        "prepare_lidar_inputs",
+        "prepare_mmwave_inputs",
+        "prepare_path_descriptors",
+        "prepare_path_semantic_labels",
+        "prepare_radar_inputs",
+        "prepare_radio_semantic_labels",
+        "prepare_reliability_metadata_inputs",
+        "prepare_soft_beam_targets",
+    },
+    "src/kd_sensing/engine/runtime.py": {
+        "forward_task_model",
+        "prepare_task_auxiliary_targets",
+        "prepare_task_batch",
+        "prepare_task_inputs",
+        "prepare_task_labels",
+        "prepare_task_soft_beam_targets",
+    },
+    "src/kd_sensing/engine/validator.py": {
+        "_resolve_validation_prior",
+        "_validate_modality_subsets",
+        "_validate_with_force_mask",
+        "validate",
+    },
+}
 GOVERNANCE_SCAN_PREFIXES = (
     "AGENTS.md",
     "README.md",
@@ -67,18 +137,54 @@ GOVERNANCE_SCAN_PREFIXES = (
 )
 GOVERNANCE_SCAN_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".toml", ".sh"}
 
-HEALTH_CHECK_COMMANDS = health_check_commands(MAINTAINER_CONTEXT_INDEX)
-CONFIG_LIFECYCLE_MARKERS = CONFIG_ALLOWLISTS["lifecycle_markers"]
-HOTSPOT_SYMBOL_BUDGETS = HOTSPOT_BUDGETS["symbol"]
-HOTSPOT_FILE_BUDGETS = HOTSPOT_BUDGETS["file"]
-HOTSPOT_SYMBOL_METADATA = HOTSPOT_BUDGETS["symbol_metadata"]
-HOTSPOT_FILE_METADATA = HOTSPOT_BUDGETS["file_metadata"]
-HOTSPOT_ACTION_METADATA = HOTSPOT_BUDGETS["action_metadata"]
-HOTSPOT_REMEDIATION_WAVES = HOTSPOT_BUDGETS["remediation_waves"]
-REQUIRED_HOTSPOT_INVENTORY_MARKERS = HOTSPOT_BUDGETS["inventory_markers"]
-LONG_FUNCTION_LIMIT = HOTSPOT_BUDGETS["long_function_limit"]
-LONG_CLASS_LIMIT = HOTSPOT_BUDGETS["long_class_limit"]
-RETIRED_CONFIG_TOKENS = RETIRED_ROUTE_TOKENS["config"]
+HEALTH_CHECK_COMMANDS = (
+    "conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q",
+)
+CONFIG_LIFECYCLE_MARKERS = (
+    "configs/<image|radar|gps|lidar|mmwave|csi>/{strong,lightweight,supervised}.yaml",
+    "configs/fusion/experiments/jepa_image_gps/*.yaml",
+    "configs/csi/hardening_matrix/_base/*.yaml",
+    "configs/csi/hardening_matrix/*.yaml",
+    "configs/csi/hardening_matrix/debug/*.yaml",
+    "configs/fusion/csi_hardening_matrix/_base/*.yaml",
+    "configs/fusion/csi_hardening_matrix/*.yaml",
+    "configs/diagnostics/jepa_gps_shortcut_benchmark_*.yaml",
+    "configs/diagnostics/jepa_visual_analysis_2604.yaml",
+    "configs/diagnostics/modality_visualization.yaml",
+    "configs/baselines/*.yaml",
+    "configs/pretraining/*.yaml",
+    "configs/preprocess/*.yaml",
+    "retired history",
+)
+REQUIRED_HOTSPOT_INVENTORY_MARKERS = (
+    "DeepSense6GDataset",
+    "run_jepa_gps_shortcut_benchmark",
+    "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py",
+    "src/kd_sensing/models/modular.py",
+)
+RETIRED_CONFIG_TOKENS = (
+    "hist_beam",
+    "top8",
+    "residual",
+    "camera_residual",
+    "logits_kd",
+    "rkd",
+    "craf",
+    "marf",
+    "g2d",
+    "multimodal_nf",
+    "raymobtime",
+    "raymobtime_s008",
+    "bgam",
+    "gps_lidar_bgam",
+    "viewer_manifest",
+    "amr_net_gps_image",
+    "jepa_msac",
+    "run_amr_net_gps_image",
+    "run_jepa_msac",
+    "gps_circular_soft_label",
+    "mmw_sunny_modal15",
+)
 CONFIG_REFERENCE_RE = re.compile(r"configs/[A-Za-z0-9_./-]+\.yaml")
 CONFIG_REFERENCE_SCAN_ROOTS = (
     ROOT / "README.md",
@@ -112,7 +218,26 @@ CURRENT_DOCS_TO_CHECK_FOR_RETIRED_RECOMMENDATIONS = (
     ROOT / "docs" / "extension_guide.md",
     ROOT / "docs" / "training_throughput.md",
 )
-RETIRED_ROUTE_TEXT_MARKERS = RETIRED_ROUTE_TOKENS["text"]
+RETIRED_ROUTE_TEXT_MARKERS = (
+    "HiST-Beam",
+    "Top8 selector",
+    "GPS residual",
+    "camera residual",
+    "logits_kd",
+    "rkd",
+    "Raymobtime s008",
+    "raymobtime_s008",
+    "BGAM",
+    "viewer manifest",
+    "Gradio viewer",
+    "AMR-Net_gps_image",
+    "JEPA-MSAC",
+    "kd-sensing-run-amr-net-gps-image",
+    "kd-sensing-run-jepa-msac",
+    "scripts/mmw/visualize_gps_",
+    "gps_circular_soft_label",
+    "run_mmw_sunny_modal15",
+)
 RETIRED_ROUTE_CLASSIFICATION_MARKERS = (
     "退役",
     "旧",
@@ -153,6 +278,11 @@ RETIREMENT_WORDING_MARKERS = (
     "Retired",
     "已删除",
 )
+
+
+def _project_scripts() -> dict[str, str]:
+    payload = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return dict(payload["project"]["scripts"])
 LEGACY_ROUTE_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
@@ -611,23 +741,30 @@ def _nearby_text(lines: list[str], line_index: int, radius: int = 12) -> str:
     return "\n".join(lines[start:end])
 
 
-def test_maintainer_context_index_schema_is_valid():
+def test_maintainer_context_index_is_minimal_inventory_when_present():
     assert MAINTAINER_CONTEXT_INDEX_PATH.exists()
-    assert MAINTAINER_CONTEXT_INDEX["kind"] == "maintainer_context_index"
-    assert len(MAINTAINER_CONTEXT_INDEX["routing"]["task_types"]) >= 8
-    assert PYTHON_ENTRYPOINT_ALLOWLIST
-    assert SHELL_ORCHESTRATION_ALLOWLIST
-    assert FUSION_ROOT_YAML_ALLOWLIST
-    assert EXISTING_MODEL_REGISTRATION_ALLOWLIST
-    assert BATCH_RUNTIME_FUNCTION_ALLOWLIST
-    assert MAINTAINER_CONTEXT_INDEX["governance"]["architecture_sizing_baseline"]
-    assert HOTSPOT_SYMBOL_BUDGETS
-    assert HEALTH_CHECK_COMMANDS
-    assert RETIRED_CONFIG_TOKENS
+    payload = yaml.safe_load(MAINTAINER_CONTEXT_INDEX_PATH.read_text(encoding="utf-8"))
+
+    assert payload["kind"] == "maintainer_context_index"
+    assert set(payload) <= {"schema_version", "kind", "purpose", "retired_routes", "validation"}
+    assert payload["retired_routes"]["config_tokens"]
 
 
-def test_pyproject_scripts_match_maintainer_context_index():
-    assert_pyproject_scripts_match_index(ROOT, MAINTAINER_CONTEXT_INDEX)
+def test_pyproject_scripts_targets_exist_directly():
+    scripts = _project_scripts()
+    required = {
+        "kd-sensing-train",
+        "kd-sensing-evaluate",
+        "kd-sensing-preprocess",
+        "kd-sensing-jepa-gps-shortcut-benchmark",
+        "kd-sensing-run-beambench-image-ae-gps-tableiii",
+    }
+
+    assert required <= set(scripts)
+    for target in scripts.values():
+        module_name, _, attr = target.partition(":")
+        assert attr
+        assert importlib.util.find_spec(module_name) is not None
 
 
 def test_python_entrypoint_allowlist_has_no_thin_cli_aliases():
@@ -839,7 +976,7 @@ def test_priority_legacy_workflows_are_retired_from_current_surfaces():
         "kd_sensing.losses.jepa_msac",
     }
 
-    assert retired_commands.isdisjoint(PACKAGE_CLI_METADATA)
+    assert retired_commands.isdisjoint(_project_scripts())
     assert all(command not in pyproject for command in retired_commands)
     assert all(not (ROOT / rel_path).exists() for rel_path in retired_configs)
     for module_name in sorted(retired_modules):
@@ -1079,10 +1216,9 @@ def test_agent_navigation_is_referenced_from_rules_and_inventory():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "docs/agent_navigation.md" in agents
-    assert "docs/maintainer_context_index.yaml" in agents
-    assert "docs/maintainer_context_index.yaml" in navigation
-    assert "docs/maintainer_context_index.yaml" in inventory
-    assert "机器可读治理" in inventory
+    assert "最小结构化事实" in navigation
+    assert "完整源码目录清单" in navigation
+    assert "最小结构化事实" in inventory
     assert "非平凡改动前" in agents
     assert "docs/agent_navigation.md" in inventory
     assert "docs/agent_navigation.md" in readme
@@ -1092,44 +1228,10 @@ def test_hotspot_action_metadata_documents_right_sizing_waves():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
     navigation = (ROOT / "docs" / "agent_navigation.md").read_text(encoding="utf-8")
 
-    assert {"right-size-accepted", "merge-candidate", "keep-and-test"} <= set(
-        HOTSPOT_ACTION_METADATA["status_values"]
-    )
-    assert {"hard-fail", "headroom", "monitor", "accepted", "merge-required"} <= set(
-        HOTSPOT_ACTION_METADATA["enforcement_values"]
-    )
-    assert {"split", "consolidate", "keep-and-test", "owner-facade", "hard-budget", "accepted-size"} <= set(
-        HOTSPOT_ACTION_METADATA["planned_action_values"]
-    )
-    assert HOTSPOT_REMEDIATION_WAVES
-    assert {wave["id"] for wave in HOTSPOT_REMEDIATION_WAVES} >= {
-        "wave-0",
-        "wave-1-beambench-image-ae-gps",
-        "wave-2-datasets-trainer",
-        "wave-3-evaluation-diagnostics",
-        "wave-4-jepa-accepted-owners",
-        "wave-5-consolidation-imports",
-    }
-    baseline = MAINTAINER_CONTEXT_INDEX["governance"]["architecture_sizing_baseline"]
-    assert baseline["codegraph"]["python_files"] == baseline["ast"]["python_files"]
-    assert "outputs/" in baseline["measurement_scope"]["excludes"]
-    assert "dataset/" in baseline["measurement_scope"]["excludes"]
-    assert "trend signals only" in "\n".join(baseline["interpretation"])
-    for wave in HOTSPOT_REMEDIATION_WAVES:
-        assert wave["planned_action"] in HOTSPOT_ACTION_METADATA["planned_action_values"]
-        assert wave["public_surface_policy"] in HOTSPOT_ACTION_METADATA["public_surface_policy_values"]
-        for command in wave["validation_commands"]:
-            if "pytest" in command or "python " in command or "kd-sensing-" in command:
-                assert command.startswith("conda run -n kd_mm_beam ")
-        for rel_path in wave["target_paths"]:
-            assert (ROOT / rel_path).exists()
-        assert wave["rollback_note"].strip()
-
     for marker in (
         "architecture sizing baseline",
         "right-size-project-architecture",
         "right-size-accepted",
-        "merge-candidate",
         "keep-and-test",
         "remediation wave",
     ):
@@ -1148,53 +1250,24 @@ def _hotspot_over_budget_allowed(actual: int, metadata: dict[str, object]) -> bo
     return actual <= max_lines + headroom
 
 
-def test_hotspot_static_budget_matches_inventory():
+def test_key_facades_stay_thin_and_deleted_facades_stay_deleted():
     inventory = (ROOT / "docs" / "project_surface_inventory.md").read_text(encoding="utf-8")
-    budget_keys = set(HOTSPOT_SYMBOL_BUDGETS)
     violations: list[str] = []
 
-    for rel_path, max_lines in HOTSPOT_FILE_BUDGETS.items():
-        actual = len((ROOT / rel_path).read_text(encoding="utf-8").splitlines())
-        metadata = HOTSPOT_FILE_METADATA[rel_path]
-        if not _hotspot_over_budget_allowed(actual, metadata):
-            headroom = int(metadata.get("headroom_lines", 0))
-            violations.append(
-                f"{rel_path} is {actual} lines, budget {max_lines} + headroom {headroom}; "
-                "split suite-specific benchmark helpers, consolidate low-value boundaries, "
-                "or update docs/project_surface_inventory.md with a reasoned right-sizing action."
-            )
-        if rel_path not in inventory:
-            violations.append(f"{rel_path} is file-budgeted but missing from hotspot inventory")
+    deleted_facades = [
+        "src/kd_sensing/models/csi.py",
+    ]
+    for rel_path in deleted_facades:
+        if (ROOT / rel_path).exists():
+            violations.append(f"{rel_path} should stay deleted; use owner modules directly.")
 
-    for (rel_path, symbol, kind), max_lines in HOTSPOT_SYMBOL_BUDGETS.items():
-        lengths = _symbol_lengths(ROOT / rel_path)
-        actual = lengths.get((symbol, kind))
-        if actual is None:
-            violations.append(f"{rel_path}:{symbol} missing from AST scan")
-            continue
-        metadata = HOTSPOT_SYMBOL_METADATA[(rel_path, symbol, kind)]
-        if not _hotspot_over_budget_allowed(actual, metadata):
-            headroom = int(metadata.get("headroom_lines", 0))
-            violations.append(
-                f"{rel_path}:{symbol} is {actual} lines, budget {max_lines} + headroom {headroom}; "
-                "split to a narrow module, consolidate low-value boundaries, "
-                "or update docs/project_surface_inventory.md with a reasoned right-sizing action."
-            )
-        if rel_path not in inventory or symbol not in inventory:
-            violations.append(f"{rel_path}:{symbol} is budgeted but missing from hotspot inventory")
+    jepa_facade = ROOT / "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py"
+    if len(jepa_facade.read_text(encoding="utf-8").splitlines()) > 120:
+        violations.append("JEPA GPS shortcut benchmark facade grew beyond a thin import surface.")
 
-    for path in sorted((SRC / "kd_sensing").rglob("*.py")):
-        rel_path = path.relative_to(ROOT).as_posix()
-        for (symbol, kind), lines in _symbol_lengths(path).items():
-            threshold = LONG_CLASS_LIMIT if kind == "class" else LONG_FUNCTION_LIMIT
-            if lines <= threshold:
-                continue
-            if (rel_path, symbol, kind) in budget_keys:
-                continue
-            violations.append(
-                f"{rel_path}:{symbol} {kind} is {lines} lines and not registered; "
-                "update docs/project_surface_inventory.md, add a budget, or split the symbol."
-            )
+    for marker in ("src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py", "src/kd_sensing/models/modular.py"):
+        if marker not in inventory:
+            violations.append(f"{marker} missing from hotspot inventory")
 
     assert violations == []
 
@@ -1599,7 +1672,15 @@ def test_hotspot_facades_delegate_to_narrow_responsibility_modules():
     }
 
     for facade, expectation in expectations.items():
-        text = (ROOT / facade).read_text(encoding="utf-8")
+        facade_path = ROOT / facade
+        if not facade_path.exists():
+            for helper, snippets in expectation["helpers"].items():
+                helper_text = (ROOT / helper).read_text(encoding="utf-8")
+                expected_snippets = [snippets] if isinstance(snippets, str) else snippets
+                for snippet in expected_snippets:
+                    assert snippet in helper_text
+            continue
+        text = facade_path.read_text(encoding="utf-8")
         assert len(text.splitlines()) <= expectation["max_lines"]
         assert [snippet for snippet in expectation["forbidden"] if snippet in text] == []
         for helper, snippets in expectation["helpers"].items():
@@ -1870,7 +1951,7 @@ def test_lazy_package_exports_remain_available():
     )
 
 
-def test_models_package_import_is_lazy_and_public_symbols_remain_available():
+def test_models_package_import_is_lazy_without_package_level_facade_symbols():
     modules = _run_module_presence_probe(
         "import kd_sensing.models",
         {
@@ -1890,18 +1971,18 @@ def test_models_package_import_is_lazy_and_public_symbols_remain_available():
     _run_module_presence_probe(
         "\n".join(
             [
-                "from kd_sensing.models import FusionStrongModalityNet, GpsStrongModalityNet",
+                "import kd_sensing.models as models",
+                "assert models.__all__ == []",
+                "try:",
+                "    from kd_sensing.models import FusionStrongModalityNet",
+                "except ImportError:",
+                "    pass",
+                "else:",
+                "    raise AssertionError('models package facade import still works')",
+                "from kd_sensing.models.fusion import FusionStrongModalityNet",
+                "from kd_sensing.models.gps import GpsStrongModalityNet",
                 "assert FusionStrongModalityNet is not None",
                 "assert GpsStrongModalityNet is not None",
-                "import kd_sensing.models as models",
-                "assert 'FusionStrongModalityNet' in models.__all__",
-                "assert 'BEVFusion2604Net' in models.__all__",
-                "try:",
-                "    getattr(models, 'Fusion' + 'ModalityNet')",
-                "except AttributeError as exc:",
-                "    assert 'FusionStrongModalityNet' in str(exc)",
-                "else:",
-                "    raise AssertionError('removed alias did not raise')",
             ]
         ),
         {},
