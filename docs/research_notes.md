@@ -53,7 +53,7 @@ MMW path-level CSI 退化用于把 ray-tracing perfect channel 变成更接近�
 - `medium`: gain AWGN 10 dB、path dropout 20%、AoA/AoD noise 3 deg、delay noise 0.5 ns、antenna phase error 10 deg、temporal shift `[-1,0,1]`。
 - `hard`: gain AWGN 5 dB、path dropout 30%、dominant path attenuation 0.5、AoA/AoD noise 5 deg、delay noise 1 ns、antenna phase error 20 deg、temporal shift `[-2,-1,0,1,2]`。
 
-CSI hardening 的目标不是降上限，而是制造 high-ceiling but slow-to-learn CSI。候选设置应满足 `ceiling_gap <= 0.02~0.03` 且 `E90_ratio >= 1.5`；下降超过 `0.05` 的配置只作为 destructive negative control。配置矩阵与分析脚本契约见 `openspec/specs/csi-channel-degradation/spec.md` 和 `openspec/specs/csi-hardening-experiment-matrix/spec.md`。
+CSI hardening 的目标不是降上限，而是制造 high-ceiling but slow-to-learn CSI。候选设置应满足 `ceiling_gap <= 0.02~0.03` 且 `E90_ratio >= 1.5`；下降超过 `0.05` 的配置只作为 destructive negative control。历史 `scripts/analyze_csi_hardening_sweep.py` 只服务一次性调试汇总，当前已从支持面删除；复查时直接查看 run history、resolved config、debug matrix parity 和本节阈值，配置矩阵契约见 `openspec/specs/csi-channel-degradation/spec.md` 与 `openspec/specs/csi-hardening-experiment-matrix/spec.md`。
 
 ## 模态预处理判断
 

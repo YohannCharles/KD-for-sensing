@@ -21,6 +21,17 @@ DEFAULT_MANIFEST = Path("configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_
 DEFAULT_OUTPUT_ROOT = Path("outputs/analysis/cnn_hybrid_jepa_visual_prior_sweep")
 OUTPUT_ROOT_MARKER = ".cnn_hybrid_jepa_visual_prior_sweep_output_root"
 CONDA_PREFIX = "conda run -n kd_mm_beam "
+TRAIN_SCENES = [32, 33, 34]
+STAGE1_PRETRAIN_EPOCHS = 20
+STAGE1_PRETRAIN_PORTION = 1.0
+STAGE1_DATALOADER = {
+    "train_batch_size": 16,
+    "test_batch_size": 16,
+    "num_workers": 0,
+    "pin_memory": False,
+    "persistent_workers": False,
+}
+TRAINING_CPU_THREADS = {"intra_op": 4, "inter_op": 2}
 
 BASE_PRETRAINING_CONFIG = Path("configs/pretraining/deepsense6g_gps_conditioned_jepa_smoke.yaml")
 BASE_JEPA_DOWNSTREAM_CONFIG = Path(
@@ -33,6 +44,7 @@ BASE_GPS_ONLY_CONFIG = Path("configs/gps/strong.yaml")
 
 REQUIRED_FAMILIES = {
     "existing_controls",
+    "image_only_controls",
     "patch_resolution_stage1",
     "overlap_stage1",
     "cnn_supervised_tokens",
@@ -47,6 +59,9 @@ REQUIRED_FAMILIES = {
 
 SCREENING_VARIANT_IDS = (
     "gps_only_control",
+    "image_only_resnet18_imagenet_gru",
+    "image_only_patch16_mean",
+    "image_only_tinyvit_5m_22k_mean",
     "patch16_mean_baseline",
     "patch16_gps_query_pool",
     "patch14_stage1_gps_query",
@@ -209,6 +224,7 @@ def validate_full_sweep_manifest(
         base_candidates,
         seeds=defaults["seeds"],
         checkpoint_selections=defaults["checkpoint_selections"],
+        eval_scene_groups=defaults["eval_scene_groups"],
         output_root=output_root,
     )
     payload["manifest_path"] = "" if manifest_path is None else Path(manifest_path).as_posix()
@@ -243,6 +259,7 @@ def generate_runtime_bundle(
         base_candidates,
         seeds=defaults["seeds"],
         checkpoint_selections=defaults["checkpoint_selections"],
+        eval_scene_groups=defaults["eval_scene_groups"],
         output_root=out_root,
     )
     manifest_expanded_json, manifest_expanded_csv = _write_expanded_manifest(expanded, out_root)
@@ -308,29 +325,40 @@ def expand_candidate_runs(
     *,
     seeds: Iterable[int],
     checkpoint_selections: Iterable[str],
+    eval_scene_groups: Mapping[str, Iterable[int]] | None = None,
     output_root: str | Path,
 ) -> list[dict[str, Any]]:
     out_root = Path(output_root)
+    groups = {str(key): [int(scene) for scene in value] for key, value in (eval_scene_groups or {}).items()}
     records: list[dict[str, Any]] = []
     for candidate in base_candidates:
         for seed in seeds:
             for checkpoint_selection in checkpoint_selections:
-                variant_id = str(candidate["variant_id"])
-                run_id = f"{variant_id}__seed{int(seed)}__{checkpoint_selection}"
-                strict = dict(candidate["strict_comparability"])
-                strict["seed"] = int(seed)
-                strict["output_root"] = out_root.as_posix()
-                record = dict(candidate)
-                record["base_variant_id"] = variant_id
-                record["run_id"] = run_id
-                record["seed"] = int(seed)
-                record["checkpoint_selection"] = str(checkpoint_selection)
-                record["strict_comparability"] = strict
-                for field, value in strict.items():
-                    record[field] = value
-                record["metrics_path"] = _row_metrics_path(record)
-                record["checkpoint_path"] = _checkpoint_for_selection(record)
-                records.append(record)
+                selection = str(checkpoint_selection)
+                scene_groups = {"": []} if selection == "primary" or not groups else groups
+                for group_id, eval_scenes in scene_groups.items():
+                    variant_id = str(candidate["variant_id"])
+                    suffix = f"__eval_{group_id}" if group_id else ""
+                    run_id = f"{variant_id}__seed{int(seed)}__{selection}{suffix}"
+                    strict = dict(candidate["strict_comparability"])
+                    strict["seed"] = int(seed)
+                    strict["output_root"] = out_root.as_posix()
+                    if group_id:
+                        strict["eval_scene_group"] = group_id
+                        strict["eval_scene_set"] = list(eval_scenes)
+                    record = dict(candidate)
+                    record["base_variant_id"] = variant_id
+                    record["run_id"] = run_id
+                    record["seed"] = int(seed)
+                    record["checkpoint_selection"] = selection
+                    record["eval_scene_group"] = group_id
+                    record["eval_scene_set"] = list(eval_scenes)
+                    record["strict_comparability"] = strict
+                    for field, value in strict.items():
+                        record[field] = value
+                    record["metrics_path"] = _row_metrics_path(record)
+                    record["checkpoint_path"] = _checkpoint_for_selection(record)
+                    records.append(record)
     return records
 
 
@@ -400,7 +428,7 @@ def build_job_manifest(
         checkpoint_selection = str(record["checkpoint_selection"])
         if eval_selection_filter and checkpoint_selection not in eval_selection_filter:
             continue
-        primary_run_id = run_id.replace(f"__{checkpoint_selection}", "__primary")
+        primary_run_id = _primary_run_id(record)
         dependency = primary_terminal_jobs.get(primary_run_id)
         depends_on = [dependency] if dependency else []
         if str(record.get("availability", "available")) != "available":
@@ -543,6 +571,8 @@ def _expand_base_candidates(manifest: Mapping[str, Any]) -> list[dict[str, Any]]
     candidates: list[dict[str, Any]] = []
     for raw in _mapping(families["existing_controls"]).get("candidates", []):
         candidates.append(_candidate_from_raw(raw, "existing_controls", comparison, output_root=output_root))
+    for raw in _mapping(families["image_only_controls"]).get("candidates", []):
+        candidates.append(_candidate_from_raw(raw, "image_only_controls", comparison, output_root=output_root))
     candidates.extend(_patch_resolution_candidates(_mapping(families["patch_resolution_stage1"]), comparison, output_root))
     candidates.extend(_overlap_candidates(_mapping(families["overlap_stage1"]), comparison, output_root))
     candidates.extend(_cnn_supervised_candidates(_mapping(families["cnn_supervised_tokens"]), comparison, output_root))
@@ -581,6 +611,9 @@ def _candidate_from_raw(
         comparison=comparison,
         output_root=output_root,
         base_config=str(raw.get("base_config", "")),
+        model_passthrough=bool(raw.get("model_passthrough", False)),
+        modalities=list(raw.get("modalities", [])) if raw.get("modalities") else [],
+        representation_core=dict(raw.get("representation_core", {})) if raw.get("representation_core") else None,
     )
 
 
@@ -972,9 +1005,11 @@ def _write_generated_configs(
 
 def _pretraining_config(record: Mapping[str, Any], path: Path, project_root: Path) -> dict[str, Any]:
     visual = _config_visual_encoder(record)
-    return {
+    config = {
         "_base_": _rel_config_path(path, project_root / BASE_PRETRAINING_CONFIG),
         "experiment": {"name": str(record["run_id"]), "seed": int(record["seed"])},
+        "training": {"epochs": STAGE1_PRETRAIN_EPOCHS, "cpu_threads": dict(TRAINING_CPU_THREADS)},
+        "data": {"dataloader": dict(STAGE1_DATALOADER)},
         "model": {
             "primary": {
                 "visual_encoder": visual,
@@ -991,6 +1026,9 @@ def _pretraining_config(record: Mapping[str, Any], path: Path, project_root: Pat
         },
         "sweep": _config_sweep_metadata(record),
     }
+    _apply_scene_protocol(config, test_scenes=TRAIN_SCENES)
+    config["data"]["dataset"]["portion"] = STAGE1_PRETRAIN_PORTION
+    return config
 
 
 def _downstream_config(record: Mapping[str, Any], path: Path, project_root: Path) -> dict[str, Any]:
@@ -1006,11 +1044,17 @@ def _downstream_config(record: Mapping[str, Any], path: Path, project_root: Path
             "tensorboard": {"enabled": False},
             "progress": {"enabled": False},
         },
+        "training": {"cpu_threads": dict(TRAINING_CPU_THREADS)},
         "strict_comparability": dict(record["strict_comparability"]),
         "sweep": _config_sweep_metadata(record),
     }
-    if _visual_type(record) != "none":
-        config.setdefault("model", {}).setdefault("primary", {}).setdefault("encoders", {})["image"] = {
+    primary = config.setdefault("model", {}).setdefault("primary", {})
+    modalities = _string_list(record.get("modalities", []))
+    if modalities:
+        config["model"]["modalities"] = modalities
+        primary["modalities"] = modalities
+    if _visual_type(record) != "none" and not bool(record.get("model_passthrough", False)):
+        primary.setdefault("encoders", {})["image"] = {
             "type": "jepa_context_image",
             "checkpoint_path": _stage1_checkpoint_path(record),
             "strict": False,
@@ -1028,6 +1072,7 @@ def _downstream_config(record: Mapping[str, Any], path: Path, project_root: Path
         guidance["checkpoint_path"] = str(record.get("teacher_checkpoint_source", ""))
         guidance["logits_path"] = str(record.get("teacher_logits_source", ""))
         config["loss"] = {"teacher_guidance": guidance}
+    _apply_scene_protocol(config, test_scenes=list(record.get("eval_scene_set") or [31, 32, 33, 34]))
     return config
 
 
@@ -1066,6 +1111,7 @@ def _eval_config(record: Mapping[str, Any], path: Path, project_root: Path) -> d
         "progress": {"enabled": False},
     }
     config["sweep"] = _config_sweep_metadata(record)
+    _apply_scene_protocol(config, test_scenes=list(record.get("eval_scene_set") or [31, 32, 33, 34]))
     return config
 
 
@@ -1324,10 +1370,10 @@ def _summary_row(record: Mapping[str, Any], statuses: Mapping[str, Mapping[str, 
     status = _record_status(record, metrics, statuses)
     row["status"] = status
     row.update(metrics)
-    row["top1"] = _metric_value(metrics, "top1")
-    row["top3"] = _metric_value(metrics, "top3")
-    row["top5"] = _metric_value(metrics, "top5")
-    row["dba"] = _metric_value(metrics, "dba", "DBA")
+    row["top1"] = _metric_value(metrics, "top1", "val_top1_avg", "val_acc")
+    row["top3"] = _metric_value(metrics, "top3", "val_top3_avg", "val_atop3")
+    row["top5"] = _metric_value(metrics, "top5", "val_top5_avg", "val_atop5")
+    row["dba"] = _metric_value(metrics, "dba", "DBA", "val_adba")
     row["beam_distance"] = _metric_value(metrics, "beam_distance", "adjacent_beam_error", "mean_circular_error")
     token_metadata = _mapping(record.get("token_metadata", {}))
     parameters = _mapping(architecture_summary.get("parameters", {}))
@@ -1356,7 +1402,7 @@ def _claim_gate_reason(row: Mapping[str, Any]) -> tuple[bool, str]:
         reasons.append("strict_comparable_false")
     if bool(row.get("smoke_only", False)):
         reasons.append("smoke_only")
-    if str(row.get("checkpoint_selection", "")) not in {"primary", "best_top1", "last"}:
+    if str(row.get("checkpoint_selection", "")) not in {"primary", "best_top1", "best_dba", "last"}:
         reasons.append("checkpoint_selection_mismatch")
     strict = row.get("strict_comparability")
     if not isinstance(strict, Mapping):
@@ -1431,23 +1477,28 @@ def _seed_aggregation_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _checkpoint_selection_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
+    grouped: dict[tuple[str, int, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
-        grouped[(str(row.get("variant_id")), int(row.get("seed", 0)))][str(row.get("checkpoint_selection"))] = row
+        grouped[(str(row.get("variant_id")), int(row.get("seed", 0)), str(row.get("eval_scene_group", "")))][
+            str(row.get("checkpoint_selection"))
+        ] = row
     result = []
-    for (variant_id, seed), selections in sorted(grouped.items()):
+    for (variant_id, seed, eval_scene_group), selections in sorted(grouped.items()):
         primary = selections.get("primary", {})
-        best = selections.get("best_top1", {})
+        best_top1 = selections.get("best_top1", {})
+        best_dba = selections.get("best_dba", {})
         result.append(
             {
                 "variant_id": variant_id,
                 "seed": seed,
+                "eval_scene_group": eval_scene_group,
                 "primary_top1": primary.get("top1"),
-                "best_top1": best.get("top1"),
-                "delta_top1": _numeric(best.get("top1")) - _numeric(primary.get("top1")),
+                "best_top1": best_top1.get("top1"),
+                "delta_top1": _numeric(best_top1.get("top1")) - _numeric(primary.get("top1")),
                 "primary_dba": primary.get("dba"),
-                "best_dba": best.get("dba"),
-                "delta_dba": _numeric(best.get("dba")) - _numeric(primary.get("dba")),
+                "best_top1_dba": best_top1.get("dba"),
+                "best_dba": best_dba.get("dba"),
+                "delta_dba": _numeric(best_dba.get("dba")) - _numeric(primary.get("dba")),
             }
         )
     return result
@@ -1908,6 +1959,10 @@ def _mode_defaults(manifest: Mapping[str, Any], mode: str) -> dict[str, Any]:
         "eval_checkpoint_selections": [
             str(item) for item in defaults.get("eval_checkpoint_selections", defaults.get("checkpoint_selections", []))
         ],
+        "eval_scene_groups": {
+            str(key): [int(scene) for scene in value]
+            for key, value in _mapping(defaults.get("eval_scene_groups", {})).items()
+        },
         "gpu_list": [str(item) for item in defaults.get("gpu_list", [0, 1, 2, 3])],
         "max_parallel": int(defaults.get("max_parallel", 8)),
     }
@@ -1967,6 +2022,10 @@ def _token_metadata(visual: Mapping[str, Any]) -> dict[str, Any]:
         grid = [1, 1]
         count = 1
         stride = [224, 224]
+    elif visual_type == "cnn_frame":
+        grid = [1, 1]
+        count = 1
+        stride = [224, 224]
     elif visual_type == "conv_stem":
         effective = int(visual.get("effective_stride", _stem_stride(visual)))
         grid = _conv_grid(image_size[0], image_size[1], 1, effective)
@@ -2001,7 +2060,11 @@ def _params_metadata(
     total = 250_000 + token_count * 512
     image_encoder_params = 0
     visual_context_encoder_params = 0
-    if visual_type in {"cnn_feature_map", "multi_scale_cnn"}:
+    if visual_type == "cnn_frame":
+        total = 11_300_000 if backbone == "resnet18" else 21_800_000
+        image_encoder_params = total
+        visual_context_encoder_params = total
+    elif visual_type in {"cnn_feature_map", "multi_scale_cnn"}:
         total = 11_700_000 if backbone == "resnet18" else 21_800_000
         if visual_type == "multi_scale_cnn":
             total += 100_000
@@ -2223,12 +2286,25 @@ def _config_sweep_metadata(record: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _apply_scene_protocol(config: dict[str, Any], *, test_scenes: Iterable[int]) -> None:
+    dataset = config.setdefault("data", {}).setdefault("dataset", {})
+    scenes = [int(scene) for scene in test_scenes]
+    dataset["scene"] = int(TRAIN_SCENES[0])
+    dataset["train_scenes"] = list(TRAIN_SCENES)
+    dataset["validation_scenes"] = list(TRAIN_SCENES)
+    dataset["test_scenes"] = scenes
+    dataset["eval_scenes"] = scenes
+
+
 def _primary_run_id(record: Mapping[str, Any]) -> str:
     run_id = str(record["run_id"])
     selection = str(record.get("checkpoint_selection", "primary"))
-    suffix = f"__{selection}"
-    if selection and run_id.endswith(suffix):
-        return f"{run_id[: -len(suffix)]}__primary"
+    marker = f"__{selection}"
+    if selection != "primary" and marker in run_id:
+        return f"{run_id.split(marker, 1)[0]}__primary"
+    suffix = "__primary"
+    if run_id.endswith(suffix):
+        return run_id
     return run_id
 
 
@@ -2273,7 +2349,7 @@ def _stage1_checkpoint_path(record: Mapping[str, Any]) -> str:
 
 def _checkpoint_for_selection(record: Mapping[str, Any]) -> str:
     selection = str(record.get("checkpoint_selection", "primary"))
-    name = "best_top1.pth" if selection == "best_top1" else "best.pth" if selection == "primary" else "last.pth"
+    name = "best_top1.pth" if selection == "best_top1" else "last.pth" if selection == "last" else "best.pth"
     return str(_training_run_dir(record, "downstream", run_id=_primary_run_id(record)) / "checkpoints" / name)
 
 
@@ -2358,6 +2434,10 @@ def _dry_run_command_line(entry: Mapping[str, Any], job: Mapping[str, str]) -> s
 def _read_metrics_value(value: Any) -> float | None:
     if value in (None, ""):
         return None
+    if isinstance(value, (list, tuple)):
+        values = [_read_metrics_value(item) for item in value]
+        values = [item for item in values if item is not None]
+        return mean(values) if values else None
     try:
         return float(value)
     except (TypeError, ValueError):

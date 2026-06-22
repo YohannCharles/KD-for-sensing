@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from kd_sensing.baselines.beambench.image_ae_gps import (
+from kd_sensing.baselines.beambench.image_ae_gps_paper_split import (
     run_image_ae_gps_paper_split_evaluation,
     run_image_ae_gps_paper_split_training,
 )

@@ -27,7 +27,8 @@ from kd_sensing.evaluation.lidar_diagnostics import (  # noqa: E402
     degradation_baselines_from_labels,
     lidar_degradation_report,
 )
-from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
+from kd_sensing.models.fusion.networks import FusionLightweightModalityNet, FusionStrongModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarLightweightModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402

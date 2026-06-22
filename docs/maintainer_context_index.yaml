@@ -49,5 +49,5 @@ retired_routes:
     - run_mmw_sunny_modal15
 validation:
   focused:
-    - openspec validate prune-overengineered-project-surface --strict
+    - openspec validate prune-remaining-overengineered-surface --strict
     - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q

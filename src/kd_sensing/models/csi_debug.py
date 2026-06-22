@@ -132,7 +132,3 @@ def _hardening_has_explicit_gain_scaling(config: dict[str, Any]) -> bool:
 def _relative_drift(before: float, after: float) -> float:
     denom = max(abs(float(before)), 1e-12)
     return abs(float(after) - float(before)) / denom
-
-
-
-__all__ = []

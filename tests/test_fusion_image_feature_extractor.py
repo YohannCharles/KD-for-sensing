@@ -6,7 +6,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-from kd_sensing.models.fusion import FusionStrongModalityNet  # noqa: E402
+from kd_sensing.models.fusion.networks import FusionStrongModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402

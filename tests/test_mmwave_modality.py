@@ -22,8 +22,8 @@ from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepar
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.models.fusion import (  # noqa: E402
-    CLSTokenTransformerFusionNet,
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
+from kd_sensing.models.fusion.networks import (  # noqa: E402
     FusionStrongModalityNet,
     FusionLightweightModalityNet,
 )

@@ -12,22 +12,26 @@ import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
-from kd_sensing.baselines.beambench.image_ae_gps import (
-    BeamBenchImageAEGPSDirectModel,
-    BeamBenchImageAEGPSFeatureDataset,
+from kd_sensing.baselines.beambench.image_ae_gps_ae import (
+    _encode_last_camera_ae_latent,
+    _load_or_build_ae_feature_dataset,
+)
+from kd_sensing.baselines.beambench.image_ae_gps_config import (
     ImageAEGPSDirectTrainingConfig,
     _autocast_context,
-    _build_loader,
-    _build_split_dataset,
-    _encode_last_camera_ae_latent,
     _gps_scaler_from_metadata,
-    _load_or_build_ae_feature_dataset,
-    _metadata_rows,
     _resolve_amp_dtype,
     _resolve_device,
     _scene_specific_cfg,
     _torch_load,
 )
+from kd_sensing.baselines.beambench.image_ae_gps_datasets import (
+    BeamBenchImageAEGPSFeatureDataset,
+    _build_loader,
+    _build_split_dataset,
+    _metadata_rows,
+)
+from kd_sensing.baselines.beambench.image_ae_gps_models import BeamBenchImageAEGPSDirectModel
 from kd_sensing.baselines.beambench.metrics import beambench_metric_summary_from_logits
 from kd_sensing.models.camera_autoencoder import CameraAutoEncoder
 

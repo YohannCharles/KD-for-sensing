@@ -10,6 +10,7 @@ from kd_sensing.cli import jepa_gps_shortcut_benchmark as benchmark_cli
 from kd_sensing.cli import predictive_gps_query_visualizations as predictive_viz_cli
 from kd_sensing.diagnostics import jepa_visual_analysis as jva
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
+from kd_sensing.diagnostics import jepa_benchmark_runner as runner
 from kd_sensing.diagnostics.jepa_benchmark_perturbations import apply_benchmark_perturbation
 from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage import (
     _normalize_gps_query_advantage_cxd_condition,
@@ -830,6 +831,39 @@ def test_runner_real_forward_mode_writes_reusable_logits_cache(tmp_path: Path) -
     shard_matrix = manifest_out["models"]["gps_real_forward"]["summary"]["shard_matrix"]
     assert len(shard_matrix) == 2
     assert all(item["evidence_scope"] == "real_forward" for item in shard_matrix)
+
+
+def test_real_forward_dataloader_falls_back_to_train_scaler(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class _Dataset:
+        use_gps = True
+
+        def __init__(self, split: str, gps_scaler: object | None = None):
+            self.split = split
+            self.gps_scaler = gps_scaler if gps_scaler is not None else "train_scaler"
+
+    def fake_build_split_dataset(cfg, split, **kwargs):
+        calls.append((split, dict(kwargs)))
+        if split == "test" and "gps_scaler" not in kwargs:
+            raise ValueError("GPS normalization for non-train split requires a train-fitted gps_scaler.")
+        return _Dataset(split, gps_scaler=kwargs.get("gps_scaler"))
+
+    def fake_build_dataloader(dataset, loader_cfg, *, split):
+        return {"dataset": dataset, "split": split}
+
+    monkeypatch.setattr("kd_sensing.engine.data_factory.build_split_dataset", fake_build_split_dataset)
+    monkeypatch.setattr("kd_sensing.engine.data_factory.build_dataloader", fake_build_dataloader)
+
+    dataloader = runner._build_real_forward_dataloader({"data": {"dataloader": {}}}, "test", {})
+
+    assert dataloader["split"] == "test"
+    assert dataloader["dataset"].gps_scaler == "train_scaler"
+    assert calls == [
+        ("test", {}),
+        ("train", {}),
+        ("test", {"gps_scaler": "train_scaler"}),
+    ]
 
 
 def test_runner_writes_scenario_d_matrix_artifacts(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
-from kd_sensing._typing import AnyConfig
+from typing import Any
+
 from kd_sensing.modalities import MODALITY_ORDER, MODALITY_SPECS, normalize_modalities
 
 
@@ -10,7 +11,7 @@ SENSOR_ASSISTED_EXCLUDED_MODALITIES = ("radar",)
 SENSOR_ASSISTED_DISALLOWED_MODALITIES = ("mmwave", "csi", "channel", "path", "beam_power")
 
 
-def resolve_enabled_modalities(cfg: AnyConfig) -> tuple[str, ...]:
+def resolve_enabled_modalities(cfg: dict[str, Any]) -> tuple[str, ...]:
     task = cfg.get("experiment", {}).get("task", "image")
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     if task == "fusion":
@@ -26,7 +27,7 @@ def resolve_enabled_modalities(cfg: AnyConfig) -> tuple[str, ...]:
     return selected
 
 
-def _resolve_fusion_modalities(cfg: AnyConfig) -> tuple[str, ...]:
+def _resolve_fusion_modalities(cfg: dict[str, Any]) -> tuple[str, ...]:
     model_cfg = cfg.get("model", {})
     top_level_modalities = model_cfg.get("modalities")
     primary_modalities = model_cfg.get("primary", {}).get("modalities")
@@ -58,16 +59,16 @@ def validate_dataset_modality_flags(dataset_cfg: dict, selected: tuple[str, ...]
             )
 
 
-def sensor_assisted_profile_enabled(cfg: AnyConfig) -> bool:
+def sensor_assisted_profile_enabled(cfg: dict[str, Any]) -> bool:
     return _profile_enabled(cfg, {SENSOR_ASSISTED_PROFILE})
 
 
-def history_anchored_quick_profile_enabled(cfg: AnyConfig) -> bool:
+def history_anchored_quick_profile_enabled(cfg: dict[str, Any]) -> bool:
     return _profile_enabled(cfg, {HISTORY_ANCHORED_QUICK_PROFILE})
 
 
 def _profile_enabled(
-    cfg: AnyConfig,
+    cfg: dict[str, Any],
     profiles: set[str],
 ) -> bool:
     loso_cfg = cfg.get("loso", {}) if isinstance(cfg.get("loso"), dict) else {}
@@ -80,7 +81,7 @@ def _profile_enabled(
     return any(str(value or "").strip().lower() in profiles for value in candidates)
 
 
-def validate_sensor_assisted_modalities(cfg: AnyConfig, selected: tuple[str, ...]) -> None:
+def validate_sensor_assisted_modalities(cfg: dict[str, Any], selected: tuple[str, ...]) -> None:
     if not (sensor_assisted_profile_enabled(cfg) or history_anchored_quick_profile_enabled(cfg)):
         return
     selected_set = set(str(item) for item in selected)
@@ -113,19 +114,19 @@ def validate_sensor_assisted_modalities(cfg: AnyConfig, selected: tuple[str, ...
             )
 
 
-def config_uses_gps(cfg: AnyConfig) -> bool:
+def config_uses_gps(cfg: dict[str, Any]) -> bool:
     return "gps" in resolve_enabled_modalities(cfg)
 
 
-def config_uses_lidar(cfg: AnyConfig) -> bool:
+def config_uses_lidar(cfg: dict[str, Any]) -> bool:
     return "lidar" in resolve_enabled_modalities(cfg)
 
 
-def config_uses_mmwave(cfg: AnyConfig) -> bool:
+def config_uses_mmwave(cfg: dict[str, Any]) -> bool:
     return "mmwave" in resolve_enabled_modalities(cfg)
 
 
-def config_uses_csi(cfg: AnyConfig) -> bool:
+def config_uses_csi(cfg: dict[str, Any]) -> bool:
     return "csi" in resolve_enabled_modalities(cfg)
 
 

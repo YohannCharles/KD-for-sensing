@@ -192,6 +192,49 @@ def test_geometry_prior_beam_fusion_configs_and_strict_manifest_load():
     assert rerank_manifest["models"]["safe_residual_rerank_strict_candidate"]["group"] == "safe_residual_beam_rerank_fusion"
 
 
+def test_base_overlay_configs_preserve_key_load_semantics():
+    cases = [
+        (
+            "configs/csi/hardening_matrix/A0_clean_full_strong.yaml",
+            "configs/csi/hardening_matrix/_base/csi_only.yaml",
+            "A0_clean_full_strong",
+        ),
+        (
+            "configs/fusion/csi_hardening_matrix/E1_gps_clean_csi_joint.yaml",
+            "configs/fusion/csi_hardening_matrix/_base/gps_csi.yaml",
+            "E1_gps_clean_csi_joint",
+        ),
+    ]
+
+    for overlay_path, base_path, overlay_id in cases:
+        overlay = load_config(ROOT / overlay_path)
+        base = load_config(ROOT / base_path)
+
+        assert _config_signature(overlay) == _config_signature(base)
+        assert overlay["config_resolution"]["style"] == "base+overlay"
+        assert overlay["config_resolution"]["overlay_id"] == overlay_id
+
+
+def _config_signature(cfg: dict) -> dict:
+    dataset = cfg["data"]["dataset"]
+    model = cfg["model"]
+    primary = model["primary"]
+    training = cfg["training"]
+    return {
+        "experiment_name": cfg["experiment"]["name"],
+        "task": cfg["experiment"]["task"],
+        "objective": cfg["experiment"].get("objective"),
+        "dataset_type": dataset["type"],
+        "enabled_modalities": tuple(primary["modalities"]),
+        "model_type": primary["type"],
+        "loss_type": cfg.get("loss", {}).get("type"),
+        "epochs": training.get("epochs"),
+        "lr": training.get("lr"),
+        "output_run_name": cfg["output"]["run_name"],
+        "checkpoint_policy": cfg.get("checkpoint", cfg.get("artifacts", {})),
+    }
+
+
 def test_retired_raymobtime_configs_fail_fast(tmp_path: Path):
     with pytest.raises(ValueError, match="Raymobtime s008 has been retired"):
         load_config(ROOT / "configs/raymobtime/s008_multitask_selection.yaml")

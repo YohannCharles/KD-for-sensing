@@ -16,8 +16,8 @@ from kd_sensing.config.canonical import (  # noqa: E402
 from kd_sensing.config.canonical_recipes import training_overrides  # noqa: E402
 from kd_sensing.engine.run_lineage import is_historical_kd_metadata, run_lineage_metadata  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
-from kd_sensing.models.fusion import (  # noqa: E402
-    CLSTokenTransformerFusionNet,
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
+from kd_sensing.models.fusion.networks import (  # noqa: E402
     FusionLightweightModalityNet,
     FusionStrongModalityNet,
 )
@@ -215,7 +215,7 @@ def test_run_lineage_metadata_uses_distillation_free_fields():
 def test_fusion_registry_removed_aliases_fail_and_owner_exports_remain():
     assert FusionStrongModalityNet is not None
     assert FusionLightweightModalityNet is not None
-    assert kd_sensing.models.__all__ == []
+    assert "__all__" not in vars(kd_sensing.models)
     for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet"]:
         with pytest.raises(AttributeError, match=alias):
             getattr(kd_sensing.models, alias)

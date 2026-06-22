@@ -8,8 +8,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from kd_sensing.data.dataset_runtime import SampleRow
-
 
 SUPPORTED_DOMAIN_TYPES = {"scenario", "weather", "scenario_weather", "town_scenario_weather"}
 SUPPORTED_SELECTIONS = {
@@ -74,7 +72,7 @@ class TargetShotSplitConfig:
         }
 
 
-def build_domain_key(row: Mapping[str, Any] | SampleRow, *, domain_type: str, dataset_type: str | None = None) -> str:
+def build_domain_key(row: Mapping[str, Any], *, domain_type: str, dataset_type: str | None = None) -> str:
     record = _row_record(row)
     domain_type = str(domain_type or "scenario").strip().lower()
     if domain_type not in SUPPORTED_DOMAIN_TYPES:
@@ -95,7 +93,7 @@ def build_domain_key(row: Mapping[str, Any] | SampleRow, *, domain_type: str, da
 
 
 def build_target_shot_split(
-    rows: Iterable[Mapping[str, Any] | SampleRow],
+    rows: Iterable[Mapping[str, Any]],
     config: TargetShotSplitConfig | Mapping[str, Any],
     *,
     dataset_type: str | None = None,
@@ -190,7 +188,7 @@ def load_target_shot_artifact(path: str | Path) -> dict[str, Any]:
 
 def validate_target_shot_artifact(
     artifact: Mapping[str, Any],
-    rows: Iterable[Mapping[str, Any] | SampleRow],
+    rows: Iterable[Mapping[str, Any]],
     config: TargetShotSplitConfig | Mapping[str, Any],
 ) -> None:
     cfg = config if isinstance(config, TargetShotSplitConfig) else TargetShotSplitConfig.from_config(config)
@@ -222,7 +220,7 @@ def validate_target_shot_artifact(
 
 
 def load_or_build_target_shot_split(
-    rows: Iterable[Mapping[str, Any] | SampleRow],
+    rows: Iterable[Mapping[str, Any]],
     config: TargetShotSplitConfig | Mapping[str, Any],
     *,
     dataset_type: str | None = None,
@@ -240,7 +238,7 @@ def load_or_build_target_shot_split(
     return artifact
 
 
-def sample_id_fingerprint(rows: Iterable[Mapping[str, Any] | SampleRow]) -> str:
+def sample_id_fingerprint(rows: Iterable[Mapping[str, Any]]) -> str:
     ids = [str(_row_record(row).get("sample_id", "")) for row in rows]
     payload = json.dumps(ids, separators=(",", ":"), sort_keys=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -370,11 +368,8 @@ def _label_count(pool_size: int, fraction: float) -> int:
     return min(pool_size, max(1, int(round(pool_size * float(fraction)))))
 
 
-def _row_record(row: Mapping[str, Any] | SampleRow, *, index: int | None = None) -> dict[str, Any]:
-    if isinstance(row, SampleRow):
-        base = row.to_dict()
-    else:
-        base = dict(row)
+def _row_record(row: Mapping[str, Any], *, index: int | None = None) -> dict[str, Any]:
+    base = dict(row)
     metadata = _coerce_mapping(base.get("metadata"))
     target_ref = _coerce_mapping(base.get("target_ref"))
     resource_refs = _coerce_mapping(base.get("resource_refs"))

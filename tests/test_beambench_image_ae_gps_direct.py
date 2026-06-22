@@ -5,23 +5,22 @@ import numpy as np
 from PIL import Image
 import torch
 
-import kd_sensing.baselines.beambench.image_ae_gps as image_ae_gps_public_owner
-from kd_sensing.baselines.beambench.image_ae_gps import (
-    BeamBenchImageAEGPSDataset,
-    BeamBenchImageAEGPSDirectModel,
+import kd_sensing.baselines.beambench as beambench_package
+from kd_sensing.baselines.beambench.image_ae_gps_config import resolve_image_ae_gps_config
+from kd_sensing.baselines.beambench.image_ae_gps_datasets import BeamBenchImageAEGPSDataset
+from kd_sensing.baselines.beambench.image_ae_gps_models import BeamBenchImageAEGPSDirectModel
+from kd_sensing.baselines.beambench.image_ae_gps_training import run_image_ae_gps_training
+from kd_sensing.data.transform_ops.gps import (
     PAPER_CALIBRATED_GPS_MODE,
     PAPER_SCENE_CENTER_ANGLES_RAD,
-    resolve_image_ae_gps_config,
-    run_image_ae_gps_training,
 )
 from kd_sensing.cli.run_beambench_image_ae_gps_tableiii import run_main as run_tableiii_main
 
 
-def test_beambench_image_ae_gps_public_owner_exports_workflows():
-    assert image_ae_gps_public_owner.run_image_ae_gps_training is run_image_ae_gps_training
-    assert "run_image_ae_gps_training" in image_ae_gps_public_owner.__all__
-    assert "run_image_ae_gps_paper_split_training" in image_ae_gps_public_owner.__all__
-    assert "run_image_ae_gps_paper_split_evaluation" in image_ae_gps_public_owner.__all__
+def test_beambench_package_import_is_lightweight():
+    assert "__all__" not in vars(beambench_package)
+    assert "run_image_ae_gps_training" not in vars(beambench_package)
+    assert "BeamBenchImageAEGPSDirectModel" not in vars(beambench_package)
 
 
 def test_beambench_image_ae_gps_direct_model_forward():

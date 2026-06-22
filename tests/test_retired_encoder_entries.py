@@ -7,7 +7,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.models.fusion import FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
+from kd_sensing.models.fusion.networks import FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsLightweightModalityNet, GpsStrongModalityNet  # noqa: E402
 from kd_sensing.models.image import ImageLightweightModalityNet, ImageStrongModalityNet  # noqa: E402
 from kd_sensing.models.lidar import LidarLightweightModalityNet, LidarStrongModalityNet  # noqa: E402

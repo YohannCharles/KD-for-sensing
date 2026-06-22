@@ -11,6 +11,25 @@ SRC = ROOT / "src"
 RETIREMENT_FIXTURE = ROOT / "tests" / "fixtures" / "legacy_model_registry_retirement.yaml"
 
 
+def test_registry_core_errors_cover_build_unknown_duplicate_and_missing_parameter():
+    from kd_sensing.registries import Registry, RegistryError
+
+    registry = Registry("tiny")
+
+    @registry.register("example")
+    class Example:
+        def __init__(self, value: int):
+            self.value = value
+
+    assert registry.build({"type": "example", "value": 7}).value == 7
+    with pytest.raises(RegistryError, match="Unknown component 'missing'"):
+        registry.build({"type": "missing"})
+    with pytest.raises(RegistryError, match="Duplicate registration 'example'"):
+        registry.register("example")(Example)
+    with pytest.raises(RegistryError, match="Missing required parameters: value"):
+        registry.build({"type": "example"})
+
+
 def test_import_default_components_registers_cls_token_transformer_without_hist_beam_fusion():
     code = f"""
 import json

@@ -10,8 +10,11 @@ mode_defaults:
     max_parallel: 8
   screening:
     seeds: [42]
-    checkpoint_selections: [primary, best_top1]
-    eval_checkpoint_selections: [best_top1]
+    checkpoint_selections: [primary, best_top1, best_dba]
+    eval_checkpoint_selections: [best_top1, best_dba]
+    eval_scene_groups:
+      s31_s34: [31, 32, 33, 34]
+      s32_s34: [32, 33, 34]
     gpu_list: [0, 1, 2, 3]
     max_parallel: 8
 comparison_protocol:
@@ -92,6 +95,42 @@ families:
         stage_plan: supervised_only
         checkpoint_policy: supervised_only_anchor
         availability: available
+  image_only_controls:
+    candidates:
+      - variant_id: image_only_resnet18_imagenet_gru
+        visual_encoder: {type: cnn_frame, backbone: resnet18, pretrained: true, freeze_backbone: true}
+        pooler: {type: mean, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+        base_config: configs/fusion/experiments/jepa_image_gps/image_only_supervised_beambench_fair_lowmem.yaml
+        model_passthrough: true
+        modalities: [image]
+      - variant_id: image_only_patch16_mean
+        visual_encoder: {type: patch_vit, patch_size: 16}
+        pooler: {type: mean, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+        modalities: [image]
+        representation_core: {type: single_gru, d_model: 64, hidden_size: 64, num_layers: 2}
+      - variant_id: image_only_tinyvit_5m_22k_mean
+        visual_encoder:
+          type: tinyvit_frame
+          encoder_type: tinyvit_5m_22k_rgb
+          variant: 5m
+          pretrained: true
+          pretrained_source: imagenet22k_distill
+          freeze_backbone: false
+          allow_download: true
+          max_tokens: 1
+          token_count: 1
+        pooler: {type: mean, output_mode: frame}
+        stage_plan: supervised_only
+        checkpoint_policy: supervised_only_anchor
+        availability: available
+        modalities: [image]
+        representation_core: {type: single_gru, d_model: 64, hidden_size: 64, num_layers: 2}
   patch_resolution_stage1:
     patch_sizes: [16, 14, 12, 10, 8]
     image_size: 224

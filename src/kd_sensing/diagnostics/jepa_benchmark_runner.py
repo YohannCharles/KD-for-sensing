@@ -50,7 +50,80 @@ from kd_sensing.diagnostics.jepa_benchmark_artifacts import (
     _resolve_output_dir,
     _write_csv,
 )
-from kd_sensing.diagnostics.jepa_benchmark_common import *
+from kd_sensing.diagnostics.jepa_benchmark_common import (
+    BENCHMARK_VERSION,
+    BenchmarkManifestError,
+    CXD_CORE_OUTPUT_FILES,
+    CXD_GPS_CONDITION_IDS,
+    CXD_IMAGE_CONDITION_IDS,
+    CXD_IMAGE_GPS_BASELINE_GROUPS,
+    CXD_JEPA_GROUPS,
+    CXD_PLOT_OUTPUT_FILES,
+    CXD_STRICT_COMPARABILITY_KEYS,
+    DEFAULT_COMPARABILITY_KEYS,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PRIMARY_METRIC,
+    GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS,
+    GPS_QUERY_ADVANTAGE_CXD_GPS_CONDITION_IDS,
+    GPS_QUERY_ADVANTAGE_CXD_IMAGE_CONDITION_IDS,
+    GPS_QUERY_ADVANTAGE_SLICE_TYPE,
+    GPS_SUITE_TYPES,
+    IMAGE_SUITE_TYPES,
+    MATRIX_SUITE_TYPES,
+    PREDICTIVE_GROUP_ALIASES,
+    PREDICTIVE_OUTPUT_FILES,
+    PREDICTIVE_REQUIRED_MODEL_GROUPS,
+    PREDICTIVE_SUITE_TYPES,
+    RUNNER_VERSION,
+    SCENARIO_C_CANONICAL_CONDITIONS,
+    SCENARIO_C_SUITE_TYPE,
+    SCENARIO_C_X_D_SUITE_TYPE,
+    SCENARIO_D_GROUP_ALIASES,
+    SCENARIO_D_REQUIRED_MODEL_GROUPS,
+    SUITE_ALIASES,
+    SUPPORTED_MODEL_GROUPS,
+    SUPPORTED_PROTOCOLS,
+    SUPPORTED_SUITE_TYPES,
+    TEMPORAL_SUITE_TYPES,
+    WarningRecord,
+    _area_under_curve,
+    _batch_size,
+    _case_row,
+    _collapse_slope,
+    _comparable_scalar,
+    _condition_digest,
+    _condition_index,
+    _crossing_condition_rank,
+    _csv_scalar,
+    _default_condition,
+    _default_severity_unit,
+    _finite_float,
+    _float,
+    _float_or_blank,
+    _float_or_none,
+    _json_ready,
+    _max_drop,
+    _metadata_rows,
+    _metadata_value_at,
+    _metric_or_blank,
+    _model_consumes_reliability_metadata,
+    _non_negative_int,
+    _output_kind,
+    _positive_int,
+    _perturbed_metric_value,
+    _predictive_group_category,
+    _relative_drop,
+    _relative_to_root,
+    _sample_ids_from_metadata,
+    _scaled_error_metric,
+    _scaled_metric,
+    _scenario_d_group_category,
+    _sha256_text,
+    _sorted_modalities,
+    _stable_seed,
+    _suite_sensitivity,
+    _topk_value,
+)
 from kd_sensing.diagnostics.jepa_benchmark_manifest import (
     evaluate_model_comparability,
     load_benchmark_manifest,
@@ -828,7 +901,7 @@ def _summary_from_real_forward(
     split: str,
     warnings: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    from kd_sensing.engine.data_factory import build_dataloader, build_split_dataset, shutdown_dataloader_workers
+    from kd_sensing.engine.data_factory import shutdown_dataloader_workers
     from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts
     from kd_sensing.engine.optim import build_device, build_model
     from kd_sensing.engine.runtime import configure_torch_runtime_threads, run_model_step, transfer_non_blocking
@@ -849,8 +922,7 @@ def _summary_from_real_forward(
     weights_path = _resolve_optional_checkpoint(model_name, model_spec, settings, warnings)
     checkpoint_metadata = load_checkpoint_metadata(weights_path) if weights_path is not None else None
     dataset_kwargs = load_normalization_artifacts(checkpoint_metadata)
-    dataset = build_split_dataset(cfg, split, **dataset_kwargs)
-    dataloader = build_dataloader(dataset, cfg["data"]["dataloader"], split=split)
+    dataloader = _build_real_forward_dataloader(cfg, split, dataset_kwargs)
     model = build_model(cfg["model"]["primary"]).to(device)
     checkpoint_load = None
     if weights_path is not None:
@@ -965,6 +1037,23 @@ def _summary_from_real_forward(
         "checkpoint_load": checkpoint_load,
     }
     return summary
+
+
+def _build_real_forward_dataloader(cfg: dict[str, Any], split: str, dataset_kwargs: dict[str, Any]):
+    from kd_sensing.engine.data_factory import build_dataloader, build_split_dataset
+    from kd_sensing.engine.data_factory_scalers import normalization_kwargs, prepare_lidar_normalizer
+
+    try:
+        dataset = build_split_dataset(cfg, split, **dataset_kwargs)
+    except ValueError as exc:
+        message = str(exc)
+        if split == "train" or "requires a train-fitted" not in message:
+            raise
+        train_dataset = build_split_dataset(cfg, "train", **dataset_kwargs)
+        prepare_lidar_normalizer(cfg, train_dataset)
+        resolved_kwargs = {**normalization_kwargs(train_dataset), **dataset_kwargs}
+        dataset = build_split_dataset(cfg, split, **resolved_kwargs)
+    return build_dataloader(dataset, cfg["data"]["dataloader"], split=split)
 
 
 def _real_forward_settings(manifest: Mapping[str, Any], model_spec: Mapping[str, Any]) -> dict[str, Any]:

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from kd_sensing.baselines.beambench.image_ae_gps import run_image_ae_gps_training
+from kd_sensing.baselines.beambench.image_ae_gps_training import run_image_ae_gps_training
 from kd_sensing.config.io import deep_merge, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
 

@@ -258,32 +258,13 @@ run_analysis() {
   local pattern="$2"
   local clean_run="$3"
   local out_dir="$4"
-  require_run_dir "$clean_run"
-  run_logged "$name" \
-    conda run -n "$CONDA_ENV" python scripts/analyze_csi_hardening_sweep.py \
-      --runs_root "$SCENE_ROOT" \
-      --pattern "$pattern" \
-      --clean_teacher_run "$clean_run" \
-      --out "$out_dir"
+  log "Skipping retired CSI sweep analyzer ($name): pattern=$pattern clean_run=$clean_run out=$out_dir"
+  log "Use run histories plus docs/research_notes.md CSI hardening notes for manual interpretation."
 }
 
 require_analysis_gate() {
   local summary_path="$1"
-  require_file "$summary_path"
-  conda run -n "$CONDA_ENV" python - "$summary_path" <<'PY'
-import csv
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-rows = list(csv.DictReader(path.open("r", encoding="utf-8", newline="")))
-statuses = {row.get("full_sweep_status") for row in rows}
-if statuses == {"valid"}:
-    sys.exit(0)
-invalid = sorted(status for status in statuses if status)
-print(f"CSI debug gate did not pass; statuses={invalid}", file=sys.stderr)
-sys.exit(1)
-PY
+  log "Skipping retired CSI analysis gate for $summary_path; inspect debug run histories manually."
 }
 
 run_quick_checks() {
@@ -305,9 +286,7 @@ run_quick_checks() {
   start_quick test_config_matrix \
     conda run -n "$CONDA_ENV" pytest tests/test_student_configs.py -q
   start_quick test_training_io_analysis \
-    conda run -n "$CONDA_ENV" pytest tests/test_training_io_workflow.py tests/test_csi_hardening_sweep_analysis.py -q
-  start_quick analyze_help \
-    conda run -n "$CONDA_ENV" python scripts/analyze_csi_hardening_sweep.py --help
+    conda run -n "$CONDA_ENV" pytest tests/test_training_io_workflow.py -q
   start_quick openspec_status \
     openspec status --change fix-csi-pilot-estimation-noise-scaling
 

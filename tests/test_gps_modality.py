@@ -19,7 +19,8 @@ from kd_sensing.data.transform_ops.gps import (  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
-from kd_sensing.models.fusion import CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet  # noqa: E402
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
+from kd_sensing.models.fusion.networks import FusionLightweightModalityNet, FusionStrongModalityNet  # noqa: E402
 from kd_sensing.models.gps import GpsModalityNet, GpsLightweightModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402

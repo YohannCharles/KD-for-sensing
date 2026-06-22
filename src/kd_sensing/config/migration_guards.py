@@ -161,7 +161,6 @@ def reject_retired_hist_config(cfg: dict[str, Any]) -> None:
                 f"HiST-Beam/Hist research line has been retired; {location}.type='{model_type}' is no longer supported. "
                 "Use current supervised, adapter, MMW GPS v2, CSI, JEPA visual analysis, or benchmark workflows."
             )
-    _reject_retired_hist_values(cfg)
 
 
 def reject_retired_bgam_viewer_config(cfg: dict[str, Any]) -> None:
@@ -191,8 +190,6 @@ def reject_retired_bgam_viewer_config(cfg: dict[str, Any]) -> None:
                 f"GPS+LiDAR BGAM has been retired; {location}.type='{model_type}' "
                 "is no longer supported."
             )
-
-    _reject_retired_bgam_viewer_values(cfg)
 
 
 def reject_retired_raymobtime_config(cfg: dict[str, Any]) -> None:
@@ -271,6 +268,17 @@ def reject_retired_priority_workflow_config(cfg: dict[str, Any]) -> None:
             "JEPA-MSAC has been retired; workflow.jepa_msac is no longer a current config surface. "
             "Use current GPS-conditioned JEPA or retained JEPA diagnostics."
         )
+    loss = cfg.get("loss", {})
+    if isinstance(loss, dict) and "jepa_msac" in loss:
+        raise ValueError(
+            "JEPA-MSAC has been retired; loss.jepa_msac is no longer a current config surface. "
+            "Use current GPS-conditioned JEPA or retained JEPA diagnostics."
+        )
+    if "amr_net_gps_image" in cfg:
+        raise ValueError(
+            "AMR-Net_gps_image has been retired as a current source-audit/mock workflow. "
+            "Use current Vision-Position or BeamBench Image AE+GPS baselines."
+        )
 
     for location, model_cfg in iter_model_configs(cfg):
         model_type = str(model_cfg.get("type", "")).strip()
@@ -287,8 +295,6 @@ def reject_retired_priority_workflow_config(cfg: dict[str, Any]) -> None:
                 f"AMR-Net_gps_image has been retired; {location} no longer supports "
                 "AMR-Net_gps_image paper preset/model groups."
             )
-
-    _reject_retired_priority_values(cfg)
 
 
 def reject_removed_image_path_config(cfg: dict[str, Any]) -> None:
@@ -337,12 +343,7 @@ def reject_removed_image_path_config(cfg: dict[str, Any]) -> None:
 
 
 def _replacement_config_path(path: Path) -> str | None:
-    parts = path.parts
-    try:
-        configs_index = parts.index("configs")
-        rel_parts = parts[configs_index:]
-    except ValueError:
-        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    rel_parts = _config_rel_parts(path)
     if len(rel_parts) < 3 or rel_parts[0] != "configs":
         return None
     section = rel_parts[1]
@@ -374,23 +375,21 @@ def _replacement_config_path(path: Path) -> str | None:
     return f"configs/{section}/{new_stem}{path.suffix}"
 
 
-def _is_retired_hist_config_path(path: Path) -> bool:
+def _config_rel_parts(path: Path) -> tuple[str, ...]:
     parts = path.parts
     try:
-        configs_index = parts.index("configs")
-        rel_parts = parts[configs_index:]
+        return parts[parts.index("configs") :]
     except ValueError:
-        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+        return parts[-3:] if len(parts) >= 3 else parts
+
+
+def _is_retired_hist_config_path(path: Path) -> bool:
+    rel_parts = _config_rel_parts(path)
     return len(rel_parts) >= 2 and rel_parts[0] == "configs" and rel_parts[1] == "hist_beam"
 
 
 def _is_retired_raymobtime_config_path(path: Path) -> bool:
-    parts = path.parts
-    try:
-        configs_index = parts.index("configs")
-        rel_parts = parts[configs_index:]
-    except ValueError:
-        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    rel_parts = _config_rel_parts(path)
     if len(rel_parts) >= 2 and rel_parts[0] == "configs" and rel_parts[1] == "raymobtime":
         return True
     if len(rel_parts) >= 3 and rel_parts[0] == "configs" and rel_parts[1] == "preprocess":
@@ -399,12 +398,7 @@ def _is_retired_raymobtime_config_path(path: Path) -> bool:
 
 
 def _is_retired_bgam_config_path(path: Path) -> bool:
-    parts = path.parts
-    try:
-        configs_index = parts.index("configs")
-        rel_parts = parts[configs_index:]
-    except ValueError:
-        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    rel_parts = _config_rel_parts(path)
     if not rel_parts or rel_parts[0] != "configs":
         return False
     stem = path.stem.lower()
@@ -412,12 +406,7 @@ def _is_retired_bgam_config_path(path: Path) -> bool:
 
 
 def _is_retired_viewer_config_path(path: Path) -> bool:
-    parts = path.parts
-    try:
-        configs_index = parts.index("configs")
-        rel_parts = parts[configs_index:]
-    except ValueError:
-        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    rel_parts = _config_rel_parts(path)
     return (
         len(rel_parts) >= 3
         and rel_parts[0] == "configs"
@@ -427,12 +416,7 @@ def _is_retired_viewer_config_path(path: Path) -> bool:
 
 
 def _is_retired_priority_workflow_config_path(path: Path) -> bool:
-    parts = path.parts
-    try:
-        configs_index = parts.index("configs")
-        rel_parts = parts[configs_index:]
-    except ValueError:
-        rel_parts = parts[-3:] if len(parts) >= 3 else parts
+    rel_parts = _config_rel_parts(path)
     return bool(rel_parts and rel_parts[0] == "configs" and path.stem in RETIRED_PRIORITY_CONFIG_STEMS)
 
 
@@ -458,72 +442,3 @@ def _reject_removed_kd_values(value: Any, *, path: str = "") -> None:
                 f"KD support has been removed; config value at '{path}' references removed KD entry '{value}'."
             )
 
-
-def _reject_retired_hist_values(value: Any, *, path: str = "") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
-            _reject_retired_hist_values(child, path=child_path)
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_retired_hist_values(child, path=f"{path}[{index}]")
-        return
-    if isinstance(value, str):
-        lowered = value.lower()
-        if "configs/hist_beam" in lowered or lowered in RETIRED_HIST_MODEL_NAMES:
-            raise ValueError(
-                f"HiST-Beam/Hist research line has been retired; config value at '{path}' references retired entry '{value}'."
-            )
-
-
-def _reject_retired_bgam_viewer_values(value: Any, *, path: str = "") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
-            lowered_key = str(key).lower()
-            if lowered_key == "bgam":
-                raise ValueError(
-                    "GPS+LiDAR BGAM has been retired; config key 'bgam' is no longer supported."
-                )
-            _reject_retired_bgam_viewer_values(child, path=child_path)
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_retired_bgam_viewer_values(child, path=f"{path}[{index}]")
-        return
-    if isinstance(value, str):
-        lowered = value.lower()
-        if "gps_lidar_bgam" in lowered or "lidar_bgam" in lowered or "viewer_manifest" in lowered:
-            raise ValueError(
-                f"BGAM/viewer manifest support has been retired; config value at '{path}' "
-                f"references retired entry '{value}'."
-            )
-
-
-def _reject_retired_priority_values(value: Any, *, path: str = "") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
-            lowered_key = str(key).lower()
-            if lowered_key in {"jepa_msac", "amr_net_gps_image"}:
-                raise ValueError(
-                    f"Priority legacy workflow config key '{child_path}' has been retired. "
-                    "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
-                    "or retained JEPA diagnostics."
-                )
-            _reject_retired_priority_values(child, path=child_path)
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_retired_priority_values(child, path=f"{path}[{index}]")
-        return
-    if isinstance(value, str):
-        lowered = value.lower()
-        normalized = lowered.replace("-", "_")
-        if "jepa_msac" in normalized or "amr_net_gps_image" in normalized:
-            raise ValueError(
-                f"Priority legacy workflow config value at '{path}' references retired entry '{value}'. "
-                "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
-                "or retained JEPA diagnostics."
-            )

@@ -151,41 +151,6 @@ LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervise
 LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
 
 
-def registry_self_check() -> dict[str, str]:
-    """Small self-check used by smoke scripts and docs."""
-
-    local = Registry("self_check")
-
-    @local.register("example")
-    class Example:
-        def __init__(self, value: int):
-            self.value = value
-
-    instance = local.build({"type": "example", "value": 7})
-    if instance.value != 7:
-        raise RegistryError("Registry self-check failed to build the example component.")
-
-    try:
-        local.build({"type": "missing"})
-    except RegistryError as exc:
-        unknown_message = str(exc)
-    else:
-        raise RegistryError("Registry self-check expected an unknown-name error.")
-
-    try:
-        local.register("example")(Example)
-    except RegistryError as exc:
-        duplicate_message = str(exc)
-    else:
-        raise RegistryError("Registry self-check expected a duplicate-name error.")
-
-    return {
-        "build": "ok",
-        "unknown": unknown_message,
-        "duplicate": duplicate_message,
-    }
-
-
 def import_default_components() -> None:
     """Import modules that register built-in components."""
 
@@ -236,7 +201,6 @@ __all__ = [
     "JEPA_DOWNSTREAM_POOLERS",
     "JEPA_VISUAL_TOKEN_ENCODERS",
     "DIFFICULTY_OPERATORS",
-    "registry_self_check",
     "import_default_components",
     "import_default_difficulty_operators",
 ]

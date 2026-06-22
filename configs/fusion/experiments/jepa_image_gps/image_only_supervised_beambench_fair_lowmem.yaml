@@ -1,0 +1,20 @@
+_base_: image_gps_supervised_beambench_fair_lowmem.yaml
+
+experiment:
+  name: image_only_supervised_beambench_fair_lowmem
+  ablation: image_only_control
+
+model:
+  modalities:
+    - image
+  primary:
+    modalities:
+      - image
+    representation_core:
+      type: single_gru
+      d_model: 64
+      hidden_size: 64
+      num_layers: 2
+
+output:
+  run_name: image_only_supervised_beambench_fair_lowmem

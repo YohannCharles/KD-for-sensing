@@ -7,7 +7,6 @@ from typing import Any
 from kd_sensing.config.canonical_recipes import (
     advanced_overlay_recipe,
     available_advanced_overlay_names,
-    deep_merge as _deep_merge,
     objective_overlay_recipe,
     resolve_advanced_overlay_recipe_name,
     training_overrides,
@@ -50,6 +49,12 @@ _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MO
 _RETIRED_FUSION_KD_SUFFIXES = tuple((f"_{mode}", mode) for mode in RETIRED_FUSION_KD_MODES)
 _MODALITY_INDEX = {name: index for index, name in enumerate(CANONICAL_FUSION_MODALITIES)}
 _CANONICAL_ORDER_TEXT = " > ".join(CANONICAL_FUSION_MODALITIES)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    from kd_sensing.config.io import deep_merge
+
+    return deep_merge(base, override)
 
 
 def build_virtual_config(config_path: Path) -> dict[str, Any] | None:

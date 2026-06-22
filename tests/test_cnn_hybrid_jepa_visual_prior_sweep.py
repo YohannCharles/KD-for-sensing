@@ -39,7 +39,7 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
 
     assert REQUIRED_FAMILIES <= source_families
     assert manifest["output_root"] == DEFAULT_OUTPUT_ROOT.as_posix()
-    assert len(base) == 176
+    assert len(base) == 179
     assert len(expanded) == len(base) * 3 * 2
     assert len({candidate["variant_id"] for candidate in base}) == len(base)
     assert {row["seed"] for row in expanded} == {17, 23, 42}
@@ -47,6 +47,9 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
 
     anchors = {
         "gps_only_control",
+        "image_only_resnet18_imagenet_gru",
+        "image_only_patch16_mean",
+        "image_only_tinyvit_5m_22k_mean",
         "patch16_mean_baseline",
         "patch16_gps_query_pool",
         "patch14_stage1_gps_query",
@@ -108,6 +111,13 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
         "tinyvit_11m_22k_rgb",
     }
 
+    image_only_rows = [candidate for candidate in base if candidate["family"] == "image_only_controls"]
+    assert {row["variant_id"] for row in image_only_rows} == {
+        "image_only_resnet18_imagenet_gru",
+        "image_only_patch16_mean",
+        "image_only_tinyvit_5m_22k_mean",
+    }
+
 
 def test_screening_mode_limits_candidates_best_top1_eval_and_excludes_teacher(tmp_path: Path):
     bundle = generate_runtime_bundle(output_root=_output_root(tmp_path), mode="screening", force=True)
@@ -119,22 +129,28 @@ def test_screening_mode_limits_candidates_best_top1_eval_and_excludes_teacher(tm
     teacher_jobs = _read_tsv(bundle["job_paths"]["teacher_guided"])
     reeval_jobs = _read_tsv(bundle["job_paths"]["reeval"])
 
-    assert bundle["base_candidate_count"] == 31
-    assert len(expanded) == 62
+    assert bundle["base_candidate_count"] == 34
+    assert len(expanded) == 170
     assert {row["seed"] for row in expanded} == {42}
-    assert {row["checkpoint_selection"] for row in expanded} == {"primary", "best_top1"}
+    assert {row["checkpoint_selection"] for row in expanded} == {"primary", "best_top1", "best_dba"}
     assert len(stage1_jobs) == 14
-    assert len(downstream_jobs) == 31
+    assert len(downstream_jobs) == 34
     assert teacher_jobs == []
-    assert len(reeval_jobs) == 31
-    assert {job["checkpoint_selection"] for job in reeval_jobs} == {"best_top1"}
-    assert len(all_jobs) == 77
+    assert len(reeval_jobs) == 136
+    assert {job["checkpoint_selection"] for job in reeval_jobs} == {"best_top1", "best_dba"}
+    assert {job["run_id"].rsplit("__eval_", 1)[-1] for job in reeval_jobs} == {"s31_s34", "s32_s34"}
+    assert len(all_jobs) == 185
 
     assert {
         "tinyvit_5m_scratch_jepa_stage1",
         "tinyvit_5m_22k_jepa_stage1",
         "tinyvit_11m_scratch_jepa_stage1",
         "tinyvit_11m_22k_jepa_stage1",
+    } <= {row["variant_id"] for row in expanded}
+    assert {
+        "image_only_resnet18_imagenet_gru",
+        "image_only_patch16_mean",
+        "image_only_tinyvit_5m_22k_mean",
     } <= {row["variant_id"] for row in expanded}
     assert not any(job["variant_id"].startswith("tinyvit_") for job in stage1_jobs)
     tinyvit_job = next(job for job in downstream_jobs if job["variant_id"] == "tinyvit_5m_scratch_jepa_stage1")
@@ -146,6 +162,40 @@ def test_screening_mode_limits_candidates_best_top1_eval_and_excludes_teacher(tm
     assert visual["type"] == "tinyvit_frame"
     assert visual["encoder_type"] == "tinyvit_5m_scratch_rgb"
     assert visual["freeze_backbone"] is False
+    assert cfg["data"]["dataset"]["train_scenes"] == [32, 33, 34]
+    assert cfg["data"]["dataset"]["test_scenes"] == [31, 32, 33, 34]
+    image_only_job = next(job for job in downstream_jobs if job["variant_id"] == "image_only_patch16_mean")
+    image_only_cfg = load_config(image_only_job["config_path"])
+    assert image_only_cfg["model"]["primary"]["modalities"] == ["image"]
+    assert image_only_cfg["model"]["primary"]["encoders"]["image"]["pooler"]["type"] == "mean"
+    assert image_only_cfg["model"]["primary"]["representation_core"]["type"] == "single_gru"
+    resnet_image_only_job = next(
+        job for job in downstream_jobs if job["variant_id"] == "image_only_resnet18_imagenet_gru"
+    )
+    resnet_image_only_cfg = load_config(resnet_image_only_job["config_path"])
+    assert resnet_image_only_cfg["model"]["primary"]["modalities"] == ["image"]
+    assert resnet_image_only_cfg["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    best_dba_job = next(
+        job
+        for job in reeval_jobs
+        if job["variant_id"] == "patch14_stage1_gps_query"
+        and job["checkpoint_selection"] == "best_dba"
+        and job["run_id"].endswith("__eval_s32_s34")
+    )
+    assert best_dba_job["command"].find("/checkpoints/best.pth") >= 0
+    eval_cfg = load_config(best_dba_job["config_path"])
+    assert eval_cfg["data"]["dataset"]["train_scenes"] == [32, 33, 34]
+    assert eval_cfg["data"]["dataset"]["test_scenes"] == [32, 33, 34]
+    stage1_cfg = load_config(stage1_jobs[0]["config_path"])
+    assert stage1_cfg["data"]["dataset"]["train_scenes"] == [32, 33, 34]
+    assert stage1_cfg["data"]["dataset"]["test_scenes"] == [32, 33, 34]
+    assert stage1_cfg["data"]["dataset"]["portion"] == 1.0
+    assert stage1_cfg["data"]["dataloader"]["train_batch_size"] == 16
+    assert stage1_cfg["data"]["dataloader"]["test_batch_size"] == 16
+    assert stage1_cfg["data"]["dataloader"]["num_workers"] == 0
+    assert stage1_cfg["training"]["epochs"] == 20
+    assert stage1_cfg["training"]["cpu_threads"] == {"intra_op": 4, "inter_op": 2}
+    assert cfg["training"]["cpu_threads"] == {"intra_op": 4, "inter_op": 2}
     assert (output_root / "run_full_sweep.sh").read_text(encoding="utf-8").find("--mode screening") >= 0
 
 

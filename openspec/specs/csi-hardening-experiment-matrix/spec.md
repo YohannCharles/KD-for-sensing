@@ -35,28 +35,17 @@
 - **AND** 配置 MUST 表达 warmup 结束后 GPS 与 CSI 联合训练的阶段
 
 ### Requirement: CSI hardening sweep 分析脚本
-系统 MUST 提供 `scripts/analyze_csi_hardening_sweep.py`，读取多个训练 run 的日志并输出候选排序。分析脚本 MUST 计算 final last10、best、E50、E80、E90、ceiling gap、E90 ratio、destructive 判定和 slow-high-ceiling 判定。
+系统 SHOULD 保留 CSI hardening debug/sweep 的解释边界和关键判定阈值，但 MUST 不要求长期维护一次性 `scripts/analyze_csi_hardening_sweep.py` 分析脚本。需要复查 sweep 时，开发者 SHOULD 使用 run history、resolved config、debug matrix parity 和 `docs/research_notes.md` 中的 high-ceiling/slow-to-learn 判定阈值。
 
-#### Scenario: 生成 summary 与 ranked candidates
-- **WHEN** 用户运行 `conda run -n kd_mm_beam python scripts/analyze_csi_hardening_sweep.py --runs_root <dir> --pattern "csi_*" --clean_teacher_run csi_A0_clean_full_teacher --out <out_dir>`
-- **THEN** 脚本 MUST 在输出目录生成 `summary.csv`
-- **AND** 脚本 MUST 生成按推荐分数排序的 `ranked_candidates.csv`
+#### Scenario: 历史分析脚本可退役
+- **WHEN** 当前 workflow 不再需要 `scripts/analyze_csi_hardening_sweep.py`
+- **THEN** 项目 MAY 删除该脚本和只服务它的测试
+- **AND** CSI hardening 配置、训练脚本和文档 MUST 不继续要求该脚本存在
 
-#### Scenario: 计算收敛 epoch
-- **WHEN** 某个 run 存在逐 epoch `beam/accuracy_val` 或等价验证准确率序列
-- **THEN** 脚本 MUST 将 `final_acc` 计算为最后 10 个可用 epoch 的平均值
-- **AND** `E50`、`E80`、`E90` MUST 分别为第一次达到 `0.50 * final_acc`、`0.80 * final_acc`、`0.90 * final_acc` 的 epoch
-
-#### Scenario: 标记 destructive 与 slow-high-ceiling
-- **WHEN** clean teacher run 和 variant run 都有 final accuracy
-- **THEN** 脚本 MUST 计算 `ceiling_gap_acc = final_acc_clean_teacher - final_acc_variant`
-- **AND** 当 `ceiling_gap_acc > 0.05` 时 MUST 标记 `is_destructive`
-- **AND** 当 `ceiling_gap_acc <= 0.03` 且 `E90_ratio >= 1.5` 时 MUST 标记 `is_slow_high_ceiling`
-
-#### Scenario: 输出可视化图表
-- **WHEN** 输入 run 至少包含两个有效验证曲线
-- **THEN** 脚本 MUST 输出 `learning_curves.png`
-- **AND** 脚本 MUST 输出 `ceiling_gap_vs_E90_ratio.png`
+#### Scenario: 解释边界保留
+- **WHEN** 开发者解释 CSI hardening sweep 或 debug matrix
+- **THEN** 文档 MUST 保留 destructive negative control、high-ceiling/slow-to-learn、clone parity 和 debug-first caveat
+- **AND** 结论 MUST 不把未验证本地 run 写成正式结果 claim
 
 ### Requirement: CSI hardening matrix 可由 base config 和 overlay recipe 表达
 CSI hardening matrix MUST 保持 A/B/C/D/E 组逻辑配置 ID 可加载和可审计，但系统 MAY 使用 base config、overlay YAML、recipe table 或现有配置解析机制生成 resolved config。项目 MUST 不要求每个矩阵 ID 长期维护一份重复完整 YAML 文件。
@@ -85,3 +74,4 @@ CSI hardening matrix MUST 保持 A/B/C/D/E 组逻辑配置 ID 可加载和可审
 - **WHEN** 架构边界测试或配置加载测试验证 CSI hardening matrix
 - **THEN** 测试 MUST 验证配置 ID、关键 resolved 字段、控制变量和 destructive/hardening 边界
 - **AND** 测试 MUST 不要求每个配置 ID 都对应一份完整实体 YAML
+

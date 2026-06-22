@@ -1,7 +1,8 @@
 import csv
+import json
 from pathlib import Path
 
-from kd_sensing.data.target_shot_splits import TargetShotSplitConfig, build_target_shot_split
+from kd_sensing.data.target_shot_splits import TargetShotSplitConfig, build_domain_key, build_target_shot_split
 from kd_sensing.diagnostics.distribution_shift import analyze_distribution_shift, distribution_distances
 
 
@@ -75,6 +76,37 @@ def test_distribution_shift_declares_and_does_not_mix_label_spaces(tmp_path: Pat
     assert result["histograms"]["source"]["beam_label_space"] == "raw"
     assert result["histograms"]["target_test"]["beam_label_space"] == "calibrated_gps_angle"
     assert result["metrics"]["target_test"]["skipped_reason"] == "mixed_beam_label_space"
+
+
+def test_target_shot_mapping_rows_accept_json_metadata_strings():
+    row = {
+        "sample_id": "sample-1",
+        "split": "train",
+        "dataset_type": "mmw",
+        "metadata": json.dumps({"town": "Town10", "scenario": "skybridge", "weather": "sunny"}),
+        "resource_refs": json.dumps({"gps": "gps.txt"}),
+        "target_ref": json.dumps({"beam": "beam.txt"}),
+    }
+
+    assert build_domain_key(row, domain_type="town_scenario_weather") == "Town10:skybridge:sunny"
+    target = {
+        **row,
+        "sample_id": "sample-2",
+        "split": "test",
+        "metadata": json.dumps({"town": "Town10", "scenario": "skybridge", "weather": "rain"}),
+    }
+    artifact = build_target_shot_split(
+        [row, target],
+        TargetShotSplitConfig(
+            domain_type="town_scenario_weather",
+            source_domains=("Town10:skybridge:sunny",),
+            target_domains=("Town10:skybridge:rain",),
+            target_label_fraction=0.5,
+            seed=1,
+        ),
+        dataset_type="mmw",
+    )
+    assert artifact["input_sample_count"] == 2
 
 
 def _rows() -> list[dict[str, object]]:
