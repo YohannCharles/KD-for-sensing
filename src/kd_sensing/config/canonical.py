@@ -4,13 +4,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from kd_sensing.config.canonical_recipes import (
-    advanced_overlay_recipe,
-    available_advanced_overlay_names,
-    objective_overlay_recipe,
-    resolve_advanced_overlay_recipe_name,
-    training_overrides,
-)
 from kd_sensing.modalities import (
     MODALITY_ORDER,
     dataset_defaults_for_modalities,
@@ -49,6 +42,83 @@ _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MO
 _RETIRED_FUSION_KD_SUFFIXES = tuple((f"_{mode}", mode) for mode in RETIRED_FUSION_KD_MODES)
 _MODALITY_INDEX = {name: index for index, name in enumerate(CANONICAL_FUSION_MODALITIES)}
 _CANONICAL_ORDER_TEXT = " > ".join(CANONICAL_FUSION_MODALITIES)
+_IMAGE_RADAR_TRAINING = {
+    "strong": {"lr": 0.00075, "weight_decay": 0.0001},
+    "lightweight": {"lr": 0.0004, "weight_decay": 0.0},
+}
+_ADVANCED_OVERLAY_BUILDERS = {
+    "multitask_occlusion_position": "multitask_occlusion_position",
+}
+_ADVANCED_OVERLAY_ALIASES: dict[str, str] = {}
+_BASE_OBJECTIVE_LOSS = {
+    "type": "focal_loss",
+    "alpha": 1,
+    "gamma": 2,
+    "soft_targets": {"enabled": False, "ignore_index": -100},
+    "beam_soft": {"enabled": False, "weight": 0.0},
+    "unimodal_aux": {"weight": 0.0},
+    "objective": {
+        "weights": {"beam": 1.0, "occlusion": 1.0, "position": 0.01},
+        "occlusion": {"pos_weight": "auto"},
+        "position": {"type": "mse"},
+    },
+}
+
+
+def training_overrides(mode: str, image_radar: bool) -> dict[str, float | str]:
+    try:
+        training = _IMAGE_RADAR_TRAINING[mode] if image_radar else {"lr": 0.00075, "weight_decay": 0.0001}
+    except KeyError as exc:
+        supported = ", ".join(sorted(_IMAGE_RADAR_TRAINING))
+        raise ValueError(f"Unknown canonical fusion mode '{mode}'. Available modes: {supported}.") from exc
+    return {"early_stopping_metric": "val_adba", "early_stopping_mode": "max", **training}
+
+
+def _objective_loss(*, position_weight: float) -> dict[str, Any]:
+    cfg = deepcopy(_BASE_OBJECTIVE_LOSS)
+    cfg["objective"]["weights"]["position"] = position_weight
+    return cfg
+
+
+_OBJECTIVE_OVERLAY_RECIPES: dict[str, dict[str, Any]] = {
+    "beam": {
+        "dataset": {},
+        "auxiliary_heads": {},
+        "loss": _objective_loss(position_weight=0.01),
+        "early_stopping_metric": "val_adba",
+        "early_stopping_mode": "max",
+    },
+    "occlusion": {
+        "dataset": {"occlusion_target": {"enabled": True, "threshold_percentile": 20.0}},
+        "auxiliary_heads": {"occlusion": True},
+        "loss": _objective_loss(position_weight=0.01),
+        "early_stopping_metric": "val_occlusion_blocked_f1",
+        "early_stopping_mode": "max",
+    },
+    "position": {
+        "dataset": {
+            "train_csv_name": "train_seqs_RA_GPS_LIDAR_POS.csv",
+            "test_csv_name": "test_seqs_RA_GPS_LIDAR_POS.csv",
+            "position_target": {"enabled": True, "source": "future_gps_local_xy", "normalize": True},
+        },
+        "auxiliary_heads": {"position": True},
+        "loss": _objective_loss(position_weight=1.0),
+        "early_stopping_metric": "val_position_rmse",
+        "early_stopping_mode": "min",
+    },
+    "multitask": {
+        "dataset": {
+            "train_csv_name": "train_seqs_RA_GPS_LIDAR_POS.csv",
+            "test_csv_name": "test_seqs_RA_GPS_LIDAR_POS.csv",
+            "occlusion_target": {"enabled": True, "threshold_percentile": 20.0},
+            "position_target": {"enabled": True, "source": "future_gps_local_xy", "normalize": True},
+        },
+        "auxiliary_heads": {"occlusion": True, "position": True},
+        "loss": _objective_loss(position_weight=1.0),
+        "early_stopping_metric": "val_multitask_loss",
+        "early_stopping_mode": "min",
+    },
+}
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -441,16 +511,20 @@ def build_snapshot_fusion_config(name_slug: str, modalities: list[str]) -> dict[
 
 
 def build_objective_fusion_config(slug: str, modalities: list[str], objective: str) -> dict[str, Any]:
-    recipe = objective_overlay_recipe(objective)
+    try:
+        recipe = _OBJECTIVE_OVERLAY_RECIPES[objective]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_OBJECTIVE_OVERLAY_RECIPES))
+        raise ValueError(f"Unknown objective overlay recipe '{objective}'. Available objectives: {supported}.") from exc
     name = f"{slug}_{objective}_{CANONICAL_OBJECTIVE_FUSION_MODE}"
     primary_cfg = _cls_token_transformer_fusion_model(modalities)
-    for head_name, enabled in recipe.auxiliary_heads.items():
+    for head_name, enabled in recipe["auxiliary_heads"].items():
         primary_cfg.setdefault("auxiliary_heads", {})[head_name] = bool(enabled)
     if "auxiliary_heads" in primary_cfg:
         primary_cfg["auxiliary_heads"]["enabled"] = True
 
     dataset = _dataset_overrides(modalities)
-    dataset.update(deepcopy(recipe.dataset))
+    dataset.update(deepcopy(recipe["dataset"]))
 
     cfg: dict[str, Any] = {
         "experiment": {
@@ -463,10 +537,10 @@ def build_objective_fusion_config(slug: str, modalities: list[str], objective: s
         "model": {
             "primary": primary_cfg,
         },
-        "loss": deepcopy(recipe.loss),
+        "loss": deepcopy(recipe["loss"]),
         "training": {
-            "early_stopping_metric": recipe.early_stopping_metric,
-            "early_stopping_mode": recipe.early_stopping_mode,
+            "early_stopping_metric": recipe["early_stopping_metric"],
+            "early_stopping_mode": recipe["early_stopping_mode"],
             "lr": 0.00075,
             "weight_decay": 0.0001,
         },
@@ -476,18 +550,28 @@ def build_objective_fusion_config(slug: str, modalities: list[str], objective: s
 
 
 def build_advanced_fusion_overlay_config(stem: str) -> dict[str, Any] | None:
-    recipe = resolve_advanced_overlay_recipe_name(stem)
+    recipe = _resolve_advanced_overlay_recipe_name(stem)
     if recipe is None:
         return None
-    overlay_recipe = advanced_overlay_recipe(recipe)
-    if overlay_recipe is None:
+    builder = _ADVANCED_OVERLAY_BUILDERS.get(recipe)
+    if builder is None:
         raise ValueError(
             f"Unknown advanced fusion overlay '{stem}.yaml'. "
-            f"Available overlays: {available_advanced_overlay_names()}."
+            f"Available overlays: {_available_advanced_overlay_names()}."
         )
-    if overlay_recipe.builder == "multitask_occlusion_position":
+    if builder == "multitask_occlusion_position":
         return _multitask_occlusion_position_overlay(stem)
-    raise ValueError(f"Advanced overlay recipe '{recipe}' references unknown builder '{overlay_recipe.builder}'.")
+    raise ValueError(f"Advanced overlay recipe '{recipe}' references unknown builder '{builder}'.")
+
+
+def _resolve_advanced_overlay_recipe_name(stem: str) -> str | None:
+    if stem.startswith("overlay_"):
+        return stem[len("overlay_") :]
+    return _ADVANCED_OVERLAY_ALIASES.get(stem)
+
+
+def _available_advanced_overlay_names() -> list[str]:
+    return sorted([f"overlay_{name}" for name in _ADVANCED_OVERLAY_BUILDERS] + list(_ADVANCED_OVERLAY_ALIASES))
 
 
 def _advanced_fusion_base(name: str) -> dict[str, Any]:

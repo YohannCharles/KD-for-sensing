@@ -28,8 +28,7 @@ from kd_sensing.evaluation.lidar_diagnostics import (  # noqa: E402
     lidar_degradation_report,
 )
 from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.fusion.networks import FusionLightweightModalityNet, FusionStrongModalityNet  # noqa: E402
-from kd_sensing.models.lidar import LidarFeatureExtractor, LidarModalityNet, LidarLightweightModalityNet  # noqa: E402
+from kd_sensing.models.lidar import LidarFeatureExtractor  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 
@@ -349,41 +348,16 @@ def test_lidar_quality_accepts_3d_spatial_lidar_tensors():
     assert quality["raw"]["zero_ratio"] == [pytest.approx(59.0 / 60.0)]
 
 
-def test_lidar_models_forward_contracts_and_param_validation():
+def test_lidar_feature_extractor_forward_contracts_and_param_validation():
     extractor = LidarFeatureExtractor(n_feature=64, in_channels=3)
     with torch.no_grad():
         features = extractor(torch.randn(1, 2, 3, 224, 224))
     assert features.shape == (1, 2, 64)
 
-    for model_cls in [
-        LidarModalityNet,
-        LidarLightweightModalityNet,
-    ]:
-        model = model_cls(
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64, 2],
-            lidar_channels=3,
-        )
-        model.eval()
-        with torch.no_grad():
-            pred, input_features, output_features = model(torch.randn(1, 2, 3, 224, 224))
-        assert pred.shape == (1, 2, 64)
-        assert input_features.shape == (1, 2, 64)
-        assert output_features.shape == (1, 2, 64)
-
-    with pytest.raises(ValueError, match="gru_params must contain"):
-        LidarLightweightModalityNet(
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64],
-        )
-    with pytest.raises(ValueError, match="must equal feature_size"):
-        LidarModalityNet(
-            feature_size=64,
-            num_classes=64,
-            gru_params=[32, 64, 2],
-        )
+    with pytest.raises(ValueError, match="shape"):
+        extractor(torch.randn(1, 3, 224, 224))
+    with pytest.raises(ValueError, match="channel count"):
+        extractor(torch.randn(1, 2, 1, 224, 224))
 
 
 def test_lidar_batch_and_fusion_paths():
@@ -400,29 +374,26 @@ def test_lidar_batch_and_fusion_paths():
         device=torch.device("cpu"),
         modalities=["lidar"],
     )
-    model = LidarLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
-    fusion_model = FusionLightweightModalityNet(
+    cfg = load_config(ROOT / "configs/lidar/lightweight.yaml")
+    model = MODELS.build(cfg["model"]["primary"])
+    fusion_model = CLSTokenTransformerFusionNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 2],
+        num_pred=3,
         modalities=["lidar"],
-    )
-    strong_fusion = FusionStrongModalityNet(
-        feature_size=64,
-        num_classes=64,
-        gru_params=[64, 64, 2],
-        modalities=["lidar"],
+        num_heads=4,
+        num_layers=1,
     )
     with torch.no_grad():
-        pred, _, _ = forward_model(model, "lidar", lidar_batch=lidar_input)
-        fusion_pred, _, _ = fusion_model(**fusion_inputs)
+        output = forward_model(model, "lidar", lidar_batch=lidar_input)
+        fusion_output = fusion_model(**fusion_inputs)
 
     assert lidar_input.shape == (2, 10, 3, 16, 16)
     assert sorted(fusion_inputs) == ["lidar_batch"]
-    assert pred.shape == (2, 10, 64)
-    assert fusion_pred.shape == (2, 10, 64)
+    assert output["logits"].shape == (2, 10, 64)
+    assert fusion_output["logits"].shape == (2, 3, 64)
     with pytest.raises(ValueError, match="requires 'lidar' input"):
-        strong_fusion()
+        fusion_model()
 
 
 def test_lidar_quality_and_degradation_baselines_report_expected_fields():
@@ -498,7 +469,7 @@ def test_lidar_fusion_configs_build(config_path: str):
         if "lidar" in primary_cfg["modalities"]:
             assert primary_cfg["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
-        assert isinstance(primary, (CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet))
+        assert isinstance(primary, CLSTokenTransformerFusionNet)
 
 
 def _write_dataset_fixture(root: Path, csv_path: Path) -> None:

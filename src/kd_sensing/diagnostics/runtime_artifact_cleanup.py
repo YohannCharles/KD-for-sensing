@@ -464,10 +464,6 @@ def _collect_path_rule_matches(matches: dict[Path, dict[str, Any]], scan_root: P
     if _matches_current_mainline_output_partition(scan_root, project_root):
         _add_current_mainline_output_match(matches, scan_root)
         return
-    retired = _retired_hist_output_rule(scan_root, project_root)
-    if retired is not None:
-        _add_retired_hist_output_match(matches, scan_root, retired)
-        return
     if _matches_python_cache(scan_root):
         _add_python_cache_match(matches, scan_root)
         return
@@ -496,9 +492,6 @@ def _collect_path_rule_matches(matches: dict[Path, dict[str, Any]], scan_root: P
             path = current_path / dirname
             if _matches_current_mainline_output_partition(path, project_root):
                 _add_current_mainline_output_match(matches, path)
-                dirnames.remove(dirname)
-            elif (retired := _retired_hist_output_rule(path, project_root)) is not None:
-                _add_retired_hist_output_match(matches, path, retired)
                 dirnames.remove(dirname)
             elif dirname == "__pycache__":
                 _add_python_cache_match(matches, path)
@@ -1045,18 +1038,6 @@ def _add_current_mainline_output_match(matches: dict[Path, dict[str, Any]], path
     )
 
 
-def _add_retired_hist_output_match(matches: dict[Path, dict[str, Any]], path: Path, rule: tuple[str, str, str]) -> None:
-    rule_id, artifact_type, reason = rule
-    _add_match(
-        matches,
-        path,
-        rule_id=rule_id,
-        artifact_type=artifact_type,
-        risk="medium",
-        reason=reason,
-    )
-
-
 def _add_log_matches(matches: dict[Path, dict[str, Any]], scan_root: Path, *, project_root: Path) -> None:
     rel = _relative_path(scan_root, project_root)
     if rel != "logs":
@@ -1198,47 +1179,6 @@ def _is_current_mainline_output_path(path: Path, project_root: Path) -> bool:
     rel = _relative_path(path, project_root)
     protected = tuple(f"outputs/{partition}" for partition in PROTECTED_MAINLINE_PARTITIONS)
     return any(rel == prefix or rel.startswith(f"{prefix}/") for prefix in protected)
-
-
-def _retired_hist_output_rule(path: Path, project_root: Path) -> tuple[str, str, str] | None:
-    rel = _relative_path(path, project_root)
-    if not rel.startswith("outputs/"):
-        return None
-    parts = rel.split("/")
-    if len(parts) < 2:
-        return None
-    name = parts[1].lower()
-    if name == "hist_beam_loso":
-        return (
-            "retired.hist_output",
-            "retired_hist_output",
-            "Retired HiST-Beam LOSO output.",
-        )
-    if name.startswith("history_anchor_"):
-        return (
-            "retired.history_anchor_hist_output",
-            "retired_hist_output",
-            "Retired history-anchor Hist output.",
-        )
-    if name.startswith("image_only_legal_"):
-        return (
-            "retired.image_only_hist_output",
-            "retired_hist_output",
-            "Retired image-only Hist probe output.",
-        )
-    if name.startswith("p3_v8_"):
-        return (
-            "retired.p3_hist_probe",
-            "retired_hist_probe_output",
-            "Retired P3/HiST path prototype probe output.",
-        )
-    if name.startswith("v9_") or "_v9_" in name or "_image_v8_" in name:
-        return (
-            "retired.v8_v9_hist_probe",
-            "retired_hist_probe_output",
-            "Retired V8/V9 Hist probe output.",
-        )
-    return None
 
 
 def _is_personal_backup_archive(path: Path) -> bool:

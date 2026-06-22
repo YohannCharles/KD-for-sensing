@@ -2,7 +2,6 @@
 
 ## Purpose
 定义 TinyViT-5M 和 TinyViT-11M 作为 opt-in RGB/ImageNet image encoder 组件的注册名、输入输出、22k 权重加载、冻结/微调策略和 metadata 契约。该能力只替换帧级视觉表征提取，不替换当前默认 `resnet18_imagenet_rgb`，也不恢复 KD 或 distillation 训练流程。
-
 ## Requirements
 ### Requirement: TinyViT RGB image encoder versions
 系统 MUST 提供 TinyViT-5M 和 TinyViT-11M 作为可注册、可配置的 RGB/ImageNet image encoder。系统 MUST 暴露四个 opt-in encoder 注册名：`tinyvit_5m_scratch_rgb`、`tinyvit_5m_22k_rgb`、`tinyvit_11m_scratch_rgb` 和 `tinyvit_11m_22k_rgb`。这些 encoder MUST 作为 `ENCODERS` 组件使用，并 MUST 不替换当前默认 `resnet18_imagenet_rgb`。
@@ -111,3 +110,17 @@ TinyViT image encoder MUST 支持可配置训练策略，并 MUST 通过 `traini
 - **WHEN** `modular_sequence` 使用 TinyViT image encoder 完成构建或训练
 - **THEN** run metadata MUST 记录 image encoder 类型、TinyViT variant、预训练来源、权重路径或 URL、freeze policy、trainable stages、backbone_dim 和 output_dim
 - **AND** 普通 TinyViT baseline MUST 标记为不消费 reliability metadata
+
+### Requirement: TinyViT preset 注册可表驱动
+TinyViT encoder 的四个公开注册名 MAY 通过单一 preset 表和循环注册实现。实现 MUST 保持注册名、variant、pretrained 标志、pretrained_source、metadata 和构建参数覆盖语义不变。
+
+#### Scenario: 四个 TinyViT 注册名保持可用
+- **WHEN** 构建流程调用默认组件导入后查看 `ENCODERS.list()`
+- **THEN** 列表 MUST 包含 `tinyvit_5m_scratch_rgb`、`tinyvit_5m_22k_rgb`、`tinyvit_11m_scratch_rgb` 和 `tinyvit_11m_22k_rgb`
+- **AND** 每个注册名 MUST 能通过 `ENCODERS.build()` 构建对应 TinyViT image encoder
+
+#### Scenario: preset 注册不新增抽象层
+- **WHEN** TinyViT 注册从复制粘贴调用改为表驱动循环
+- **THEN** 实现 MUST 不新增通用 registry wrapper、plugin 系统或额外 factory class
+- **AND** 未知 TinyViT 名称 MUST 继续使用现有 registry 错误风格
+

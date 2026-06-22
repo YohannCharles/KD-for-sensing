@@ -6,23 +6,25 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-from kd_sensing.models.fusion.networks import FusionStrongModalityNet  # noqa: E402
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
 from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
 
 
-def test_fusion_strong_image_branch_uses_shared_image_feature_extractor():
-    model = FusionStrongModalityNet(
+def test_cls_token_fusion_image_branch_uses_shared_image_feature_extractor():
+    model = CLSTokenTransformerFusionNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 2],
+        num_pred=3,
         modalities=["image", "radar"],
         image_channels=1,
         radar_channels=2,
+        num_heads=4,
+        num_layers=1,
     )
 
-    assert isinstance(model.image_feature_extractor, ImageFeatureExtractor)
+    assert isinstance(model.encoders["image"], ImageFeatureExtractor)
 
 
 def test_canonical_image_fusion_strong_uses_resnet18_profile():
@@ -35,60 +37,66 @@ def test_canonical_image_fusion_strong_uses_resnet18_profile():
     assert cfg["model"]["primary"]["encoders"]["image"]["weights"] == "DEFAULT"
 
 
-def test_fusion_strong_with_image_forward_returns_expected_shapes():
-    model = FusionStrongModalityNet(
+def test_cls_token_fusion_with_image_forward_returns_expected_shapes():
+    model = CLSTokenTransformerFusionNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 2],
+        num_pred=3,
         modalities=["image"],
         image_channels=1,
+        num_heads=4,
+        num_layers=1,
     )
     model.eval()
 
     with torch.no_grad():
-        pred, features, output_features = model(image_batch=torch.rand(1, 2, 1, 224, 224))
+        output = model(image_batch=torch.rand(1, 2, 1, 224, 224))
 
-    assert pred.shape == (1, 2, 64)
-    assert features.shape == (1, 2, 64)
-    assert output_features.shape == (1, 2, 64)
+    assert output["logits"].shape == (1, 3, 64)
+    assert output["input_features"].shape == (1, 2, 64)
+    assert output["output_features"].shape == (1, 3, 64)
 
 
-def test_fusion_strong_without_image_does_not_create_or_require_image_branch():
-    model = FusionStrongModalityNet(
+def test_cls_token_fusion_without_image_does_not_create_or_require_image_branch():
+    model = CLSTokenTransformerFusionNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 2],
+        num_pred=3,
         modalities=["radar"],
         radar_channels=2,
+        num_heads=4,
+        num_layers=1,
     )
     model.eval()
 
-    assert not hasattr(model, "image_feature_extractor")
+    assert "image" not in model.encoders
 
     with torch.no_grad():
-        pred, features, output_features = model(radar_batch=torch.rand(1, 2, 2, 128, 64))
+        output = model(radar_batch=torch.rand(1, 2, 2, 128, 64))
 
-    assert pred.shape == (1, 2, 64)
-    assert features.shape == (1, 2, 64)
-    assert output_features.shape == (1, 2, 64)
+    assert output["logits"].shape == (1, 3, 64)
+    assert output["input_features"].shape == (1, 2, 64)
+    assert output["output_features"].shape == (1, 3, 64)
 
 
-def test_strict_old_fusion_image_checkpoint_reports_missing_keys(tmp_path: Path):
-    model = FusionStrongModalityNet(
+def test_strict_old_cls_token_image_checkpoint_reports_missing_keys(tmp_path: Path):
+    model = CLSTokenTransformerFusionNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 2],
+        num_pred=3,
         modalities=["image"],
         image_channels=1,
+        num_heads=4,
+        num_layers=1,
     )
     old_state = {
         key: value
         for key, value in model.state_dict().items()
-        if not key.startswith("image_feature_extractor.channel_attention.")
-        and not key.startswith("image_feature_extractor.spatial_attention.")
+        if not key.startswith("encoders.image.channel_attention.")
+        and not key.startswith("encoders.image.spatial_attention.")
     }
     checkpoint_path = tmp_path / "old_fusion_image_strong.pth"
     torch.save(old_state, checkpoint_path)
 
-    with pytest.raises(CheckpointLoadError, match="Missing keys:.*image_feature_extractor"):
-        load_model_state(checkpoint_path, model, role="fusion strong", strict=True)
+    with pytest.raises(CheckpointLoadError, match="Missing keys:.*encoders.image"):
+        load_model_state(checkpoint_path, model, role="cls-token fusion", strict=True)

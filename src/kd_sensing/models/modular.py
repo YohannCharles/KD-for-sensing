@@ -386,6 +386,143 @@ class TokenTransformerCore(nn.Module):
         return memory.view(batch_size, seq_len, modality_count, d_model).mean(dim=2)
 
 
+@REPRESENTATION_CORES.register("amber_lite_missing_modality_transformer")
+class AmberLiteMissingModalityTransformerCore(nn.Module):
+    supports_missing_modality_metadata = True
+    supports_reliability_metadata = True
+
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        num_heads: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        max_seq_len: int = 64,
+        output_dim: int | None = None,
+        mask_token_strategy: str = "learned_per_modality",
+        **_: Any,
+    ):
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = int(modality_count)
+        self.num_heads = int(num_heads)
+        self.num_layers = int(num_layers)
+        self.max_seq_len = int(max_seq_len)
+        self.output_dim = int(output_dim or d_model)
+        self.mask_token_strategy = str(mask_token_strategy)
+        if self.d_model <= 0 or self.modality_count <= 0 or self.output_dim <= 0:
+            raise ValueError("amber_lite_missing_modality_transformer dimensions must be positive.")
+        if self.num_heads <= 0 or self.d_model % self.num_heads != 0:
+            raise ValueError(f"d_model ({self.d_model}) must be divisible by num_heads ({num_heads}).")
+        if self.max_seq_len <= 0:
+            raise ValueError(f"max_seq_len must be positive, got {max_seq_len}.")
+        if self.mask_token_strategy not in {"learned_per_modality", "learned_shared"}:
+            raise ValueError(
+                "mask_token_strategy must be 'learned_per_modality' or 'learned_shared', "
+                f"got {mask_token_strategy!r}."
+            )
+
+        token_count = self.modality_count if self.mask_token_strategy == "learned_per_modality" else 1
+        self.mask_tokens = nn.Parameter(torch.zeros(token_count, self.d_model))
+        self.modality_embedding = nn.Embedding(self.modality_count, self.d_model)
+        self.time_embedding = nn.Embedding(self.max_seq_len, self.d_model)
+        self.input_norm = nn.LayerNorm(self.d_model)
+        self.input_dropout = nn.Dropout(float(dropout))
+        layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.num_heads,
+            dropout=float(dropout),
+            dim_feedforward=max(self.d_model * 4, 64),
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(layer, num_layers=self.num_layers)
+        self.output_norm = nn.LayerNorm(self.d_model)
+        self.output_projection = (
+            nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
+        )
+        nn.init.trunc_normal_(self.mask_tokens, std=0.02)
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        *,
+        modality_available: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if features.ndim != 4:
+            raise ValueError(
+                "amber_lite_missing_modality_transformer requires multimodal [B, K, T, D] input, "
+                f"got {tuple(features.shape)}."
+            )
+        batch_size, modality_count, seq_len, d_model = features.shape
+        if int(modality_count) != self.modality_count:
+            raise ValueError(
+                "amber_lite_missing_modality_transformer received incompatible modality count: "
+                f"expected K={self.modality_count}, got K={int(modality_count)}."
+            )
+        if int(d_model) != self.d_model:
+            raise ValueError(
+                "amber_lite_missing_modality_transformer received incompatible feature dimension: "
+                f"expected D={self.d_model}, got D={int(d_model)}."
+            )
+        if int(seq_len) > self.max_seq_len:
+            raise ValueError(
+                "amber_lite_missing_modality_transformer received too many history steps: "
+                f"T={int(seq_len)} exceeds max_seq_len={self.max_seq_len}."
+            )
+
+        if modality_available is not None:
+            availability = _coerce_core_availability_mask(
+                modality_available,
+                features=features,
+                core_name="amber_lite_missing_modality_transformer",
+            )
+            mask_tokens = self._mask_tokens(features.device, features.dtype)
+            features = torch.where(availability.unsqueeze(-1), features, mask_tokens)
+
+        time_ids = torch.arange(int(seq_len), device=features.device)
+        time = self.time_embedding(time_ids).view(1, 1, int(seq_len), self.d_model)
+        modality_ids = torch.arange(self.modality_count, device=features.device)
+        modality = self.modality_embedding(modality_ids).view(1, self.modality_count, 1, self.d_model)
+        tokens = self.input_dropout(self.input_norm(features + time + modality))
+        tokens = tokens.permute(0, 2, 1, 3).contiguous().view(
+            batch_size,
+            int(seq_len) * self.modality_count,
+            self.d_model,
+        )
+        memory = self.transformer(tokens)
+        fused = memory.view(batch_size, int(seq_len), self.modality_count, self.d_model).mean(dim=2)
+        return self.output_projection(self.output_norm(fused))
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "amber_lite_missing_modality_transformer",
+            "d_model": self.d_model,
+            "output_dim": self.output_dim,
+            "modality_count": self.modality_count,
+            "num_heads": self.num_heads,
+            "num_layers": self.num_layers,
+            "max_seq_len": self.max_seq_len,
+            "mask_token_strategy": self.mask_token_strategy,
+            "consumes_reliability_metadata": True,
+            "consumes_missing_modality_metadata": True,
+            "missing_metadata_fields": [
+                "image_valid_mask",
+                "radar_valid_mask",
+                "gps_valid_mask",
+                "lidar_valid_mask",
+            ],
+        }
+
+    def _mask_tokens(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        tokens = self.mask_tokens
+        if self.mask_token_strategy == "learned_shared":
+            tokens = tokens.expand(self.modality_count, -1)
+        return tokens.to(device=device, dtype=dtype).view(1, self.modality_count, 1, self.d_model)
+
+
 @REPRESENTATION_CORES.register("next_beam_query_transformer")
 class NextBeamQueryTransformerCore(nn.Module):
     def __init__(
@@ -779,14 +916,21 @@ class ModularSequenceModel(nn.Module):
         mmwave_batch: torch.Tensor | None = None,
         csi_batch: torch.Tensor | None = None,
         image_valid_mask: torch.Tensor | None = None,
+        radar_valid_mask: torch.Tensor | None = None,
         image_observability_score: torch.Tensor | None = None,
         gps_valid_mask: torch.Tensor | None = None,
+        lidar_valid_mask: torch.Tensor | None = None,
         gps_delay_steps: torch.Tensor | None = None,
+        image_dropout_mask: torch.Tensor | None = None,
+        radar_dropout_mask: torch.Tensor | None = None,
+        gps_dropout_mask: torch.Tensor | None = None,
+        lidar_dropout_mask: torch.Tensor | None = None,
         gps_counterfactual_mask: torch.Tensor | None = None,
         benchmark_condition_metadata: dict[str, Any] | None = None,
         image_degradation_metadata: dict[str, Any] | None = None,
+        missing_modality_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del image_degradation_metadata
+        del image_degradation_metadata, missing_modality_metadata
         raw_inputs = {
             "image": image_batch,
             "radar": radar_batch,
@@ -797,11 +941,33 @@ class ModularSequenceModel(nn.Module):
         }
         reliability_inputs = {
             "image_valid_mask": image_valid_mask,
+            "radar_valid_mask": radar_valid_mask,
             "image_observability_score": image_observability_score,
             "gps_valid_mask": gps_valid_mask,
+            "lidar_valid_mask": lidar_valid_mask,
             "gps_delay_steps": gps_delay_steps,
+            "image_dropout_mask": image_dropout_mask,
+            "radar_dropout_mask": radar_dropout_mask,
+            "gps_dropout_mask": gps_dropout_mask,
+            "lidar_dropout_mask": lidar_dropout_mask,
             "gps_counterfactual_mask": gps_counterfactual_mask,
             "benchmark_condition_metadata": benchmark_condition_metadata,
+        }
+        modality_valid_inputs = {
+            "image": image_valid_mask,
+            "radar": radar_valid_mask,
+            "gps": gps_valid_mask,
+            "lidar": lidar_valid_mask,
+            "mmwave": None,
+            "csi": None,
+        }
+        modality_dropout_inputs = {
+            "image": image_dropout_mask,
+            "radar": radar_dropout_mask,
+            "gps": gps_dropout_mask,
+            "lidar": lidar_dropout_mask,
+            "mmwave": None,
+            "csi": None,
         }
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
@@ -878,18 +1044,44 @@ class ModularSequenceModel(nn.Module):
             token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
             token_features = torch.cat(token_pieces, dim=2)
             core_input = token_features.permute(0, 2, 1, 3).contiguous()
+            availability_mask = _core_input_availability_mask(
+                projected,
+                self.modalities,
+                valid_masks=modality_valid_inputs,
+                dropout_masks=modality_dropout_inputs,
+                token_features=True,
+            )
             input_features = torch.cat(
                 [features.mean(dim=2) if features.ndim == 4 else features for features in ordered],
                 dim=-1,
             )
         elif len(ordered) == 1:
             core_input = ordered[0]
+            availability_mask = _core_input_availability_mask(
+                projected,
+                self.modalities,
+                valid_masks=modality_valid_inputs,
+                dropout_masks=modality_dropout_inputs,
+                token_features=False,
+            )
             input_features = core_input
         else:
             stacked = torch.stack(ordered, dim=1)
             core_input = stacked
+            availability_mask = _core_input_availability_mask(
+                projected,
+                self.modalities,
+                valid_masks=modality_valid_inputs,
+                dropout_masks=modality_dropout_inputs,
+                token_features=False,
+            )
             input_features = torch.cat(ordered, dim=-1)
-        output_features = self.representation_core(core_input)
+        if bool(getattr(self.representation_core, "supports_missing_modality_metadata", False)):
+            if core_input.ndim == 3:
+                core_input = core_input.unsqueeze(1)
+            output_features = self.representation_core(core_input, modality_available=availability_mask)
+        else:
+            output_features = self.representation_core(core_input)
         image_logits = self.heads["beam"](output_features)
         logits = image_logits
         geometry_prior_payload: dict[str, Any] | None = None
@@ -934,6 +1126,11 @@ class ModularSequenceModel(nn.Module):
             "encoder_features": encoded,
             "image_profile": self.image_profile,
         }
+        if bool(getattr(self.representation_core, "supports_missing_modality_metadata", False)):
+            output["missing_modality_metadata"] = _missing_modality_output_metadata(
+                availability_mask,
+                modalities=self.modalities,
+            )
         if has_token_features:
             output["token_features"] = core_input
         if geometry_prior_payload is not None and geometry_fusion_payload is not None:
@@ -1034,8 +1231,13 @@ class ModularSequenceModel(nn.Module):
             self.representation_core_config,
             role="representation_core",
         )
+        missing_metadata_consumers: list[str] = []
         if _component_consumes_reliability_metadata(self.representation_core, core_metadata):
             reliability_consumers.append("representation_core")
+        if bool(core_metadata.get("consumes_missing_modality_metadata", False)) or bool(
+            getattr(self.representation_core, "supports_missing_modality_metadata", False)
+        ):
+            missing_metadata_consumers.append("representation_core")
         heads = {
             name: _component_training_strategy_metadata(
                 head,
@@ -1127,6 +1329,14 @@ class ModularSequenceModel(nn.Module):
                     "gps_counterfactual_mask",
                     "benchmark_condition_metadata",
                 ],
+            },
+            "consumes_missing_modality_metadata": bool(missing_metadata_consumers),
+            "missing_modality_metadata": {
+                "consumed": bool(missing_metadata_consumers),
+                "consumers": list(missing_metadata_consumers),
+                "fields": [f"{modality}_valid_mask" for modality in self.modalities],
+                "dropout_fields": [f"{modality}_dropout_mask" for modality in self.modalities],
+                "mask_token_strategy": core_metadata.get("mask_token_strategy", "none"),
             },
         }
         if self.paper_metadata:
@@ -1307,7 +1517,12 @@ def _component_training_strategy_metadata(
 
 def _component_consumes_reliability_metadata(component: nn.Module, metadata: dict[str, Any] | None = None) -> bool:
     metadata = metadata or {}
-    for key in ("consumes_reliability_metadata", "supports_reliability_metadata", "supports_observability_metadata"):
+    for key in (
+        "consumes_reliability_metadata",
+        "supports_reliability_metadata",
+        "supports_observability_metadata",
+        "consumes_missing_modality_metadata",
+    ):
         if key in metadata:
             return bool(metadata.get(key))
     temporal_fallback = metadata.get("temporal_fallback")
@@ -1317,6 +1532,7 @@ def _component_consumes_reliability_metadata(component: nn.Module, metadata: dic
         getattr(component, "consumes_reliability_metadata", False)
         or getattr(component, "supports_reliability_metadata", False)
         or getattr(component, "supports_observability_metadata", False)
+        or getattr(component, "supports_missing_modality_metadata", False)
     )
 
 
@@ -1469,6 +1685,120 @@ def _snapshot_activation(name: str) -> nn.Module:
     return nn.GELU()
 
 
+def _core_input_availability_mask(
+    projected: dict[str, torch.Tensor],
+    modalities: tuple[str, ...],
+    *,
+    valid_masks: dict[str, torch.Tensor | None],
+    dropout_masks: dict[str, torch.Tensor | None],
+    token_features: bool,
+) -> torch.Tensor | None:
+    pieces: list[torch.Tensor] = []
+    for modality in modalities:
+        features = projected[modality]
+        mask = _modality_availability_from_inputs(
+            modality,
+            features,
+            valid_mask=valid_masks.get(modality),
+            dropout_mask=dropout_masks.get(modality),
+        )
+        if token_features:
+            token_count = int(features.shape[2]) if features.ndim == 4 else 1
+            mask = mask.unsqueeze(2).expand(-1, -1, token_count)
+        pieces.append(mask)
+    if not pieces:
+        return None
+    if token_features:
+        return torch.cat(pieces, dim=2).permute(0, 2, 1).contiguous()
+    return torch.stack(pieces, dim=1)
+
+
+def _modality_availability_from_inputs(
+    modality: str,
+    features: torch.Tensor,
+    *,
+    valid_mask: torch.Tensor | None,
+    dropout_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    batch_size, seq_len = int(features.shape[0]), int(features.shape[1])
+    if valid_mask is not None:
+        mask = _coerce_temporal_mask(
+            valid_mask,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=features.device,
+            name=f"{modality}_valid_mask",
+        )
+    elif dropout_mask is not None:
+        mask = ~_coerce_temporal_mask(
+            dropout_mask,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=features.device,
+            name=f"{modality}_dropout_mask",
+        )
+    else:
+        mask = torch.ones((batch_size, seq_len), dtype=torch.bool, device=features.device)
+    return mask
+
+
+def _coerce_temporal_mask(
+    mask: torch.Tensor,
+    *,
+    batch_size: int,
+    seq_len: int,
+    device: torch.device,
+    name: str,
+) -> torch.Tensor:
+    value = torch.as_tensor(mask, dtype=torch.bool, device=device)
+    if value.ndim == 1:
+        value = value.unsqueeze(1)
+    if value.ndim != 2:
+        raise ValueError(f"{name} must have shape [B, T] or [B], got {tuple(value.shape)}.")
+    if int(value.shape[0]) != int(batch_size):
+        raise ValueError(f"{name} batch size must be {batch_size}, got {tuple(value.shape)}.")
+    if int(value.shape[1]) == int(seq_len):
+        return value
+    if int(value.shape[1]) == 1:
+        return value.expand(-1, int(seq_len))
+    raise ValueError(f"{name} time dimension must be 1 or {seq_len}, got {tuple(value.shape)}.")
+
+
+def _coerce_core_availability_mask(
+    mask: torch.Tensor,
+    *,
+    features: torch.Tensor,
+    core_name: str,
+) -> torch.Tensor:
+    value = torch.as_tensor(mask, dtype=torch.bool, device=features.device)
+    expected = tuple(int(item) for item in features.shape[:3])
+    if value.ndim != 3 or tuple(int(item) for item in value.shape) != expected:
+        raise ValueError(f"{core_name} modality_available must have shape {expected}, got {tuple(value.shape)}.")
+    return value
+
+
+def _missing_modality_output_metadata(
+    availability_mask: torch.Tensor | None,
+    *,
+    modalities: tuple[str, ...],
+) -> dict[str, Any]:
+    if availability_mask is None:
+        return {"available": True, "modalities": list(modalities), "missing_counts": {}}
+    missing = ~availability_mask.detach()
+    counts: dict[str, int] = {}
+    for index, modality in enumerate(modalities):
+        if index >= int(missing.shape[1]):
+            break
+        counts[modality] = int(missing[:, index, :].sum().cpu().item())
+    return {
+        "available": True,
+        "modalities": list(modalities),
+        "availability_mask": availability_mask,
+        "missing_counts": counts,
+        "provenance": "input_valid_or_dropout_masks",
+    }
+
+
 def _check_temporal_features(
     features: torch.Tensor,
     modality: str,
@@ -1510,6 +1840,7 @@ REPRESENTATION_CORES.register_removed(
 
 __all__ = [
     "BeamClassificationHead",
+    "AmberLiteMissingModalityTransformerCore",
     "EarlyConcatGRUCore",
     "GpsMLPEncoder",
     "IdentityProjector",

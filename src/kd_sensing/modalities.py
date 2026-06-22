@@ -67,6 +67,17 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             metadata={"channels": 3, "default_size": [224, 224]},
         ),
     },
+    "radar": {
+        "ra_da_maps": InputProfileSpec(
+            modality="radar",
+            name="ra_da_maps",
+            sample_key="radar",
+            fusion_input_key="radar_batch",
+            semantics="DeepSense6G radar range-angle and doppler-angle map sequence",
+            shape="[T, 2, 128, 64]",
+            metadata={"default_dataset": "deepsense6g"},
+        ),
+    },
     "gps": {
         "relative_polar_history": InputProfileSpec(
             modality="gps",
@@ -107,6 +118,26 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             metadata={"default_dataset": "deepsense6g"},
         ),
     },
+    "mmwave": {
+        "power_history": InputProfileSpec(
+            modality="mmwave",
+            name="power_history",
+            sample_key="mmwave",
+            fusion_input_key="mmwave_batch",
+            semantics="DeepSense6G 64-beam mmWave power history",
+            shape="[T, 64]",
+            metadata={"default_dataset": "deepsense6g"},
+        ),
+        "mmw_power_history": InputProfileSpec(
+            modality="mmwave",
+            name="mmw_power_history",
+            sample_key="mmwave",
+            fusion_input_key="mmwave_batch",
+            semantics="MMW Town prepared 64-beam power history",
+            shape="[T, 64]",
+            metadata={"default_dataset": "mmw"},
+        ),
+    },
     "csi": {
         "pilot_dual_view": InputProfileSpec(
             modality="csi",
@@ -116,6 +147,15 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             semantics="existing CSI tensor for pilot dual-view encoder",
             shape="[T, Nsc, Nant, 2]",
             metadata={"complex_layout": "real_imag_last"},
+        ),
+        "mmw_channel_history": InputProfileSpec(
+            modality="csi",
+            name="mmw_channel_history",
+            sample_key="csi",
+            fusion_input_key="csi_batch",
+            semantics="MMW Town prepared CSI channel history",
+            shape="[T, Nsc, Nant, 2]",
+            metadata={"default_dataset": "mmw", "complex_layout": "real_imag_last"},
         ),
     },
 }

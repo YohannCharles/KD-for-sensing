@@ -202,14 +202,9 @@ def test_cleanup_apply_skips_candidate_containing_manifest_protected_path(tmp_pa
     assert report["skipped"][0]["reason"] == "manifest_protected_path_overlap"
 
 
-def test_cleanup_manifest_classifies_retired_hist_outputs_without_hist2_false_positive(tmp_path: Path):
+def test_cleanup_manifest_covers_transient_outputs_and_current_partition_protection(tmp_path: Path):
     outputs = tmp_path / "outputs"
     for name in (
-        "hist_beam_loso",
-        "history_anchor_20ep_gpu0",
-        "image_only_legal_seed0",
-        "p3_v8_a2a5_single_target_seed0_4x3090",
-        "v9_fast_4gpu",
         "_debug_iofix_plan",
         "gps_window_baseline_plan_check",
         "quick_smoke_run",
@@ -217,9 +212,6 @@ def test_cleanup_manifest_classifies_retired_hist_outputs_without_hist2_false_po
         directory = outputs / name
         directory.mkdir(parents=True)
         (directory / "artifact.txt").write_text(name, encoding="utf-8")
-    hist2 = outputs / "gps_window_baseline_target_calibrated_hist2"
-    hist2.mkdir(parents=True)
-    (hist2 / "metrics.json").write_text("{}", encoding="utf-8")
     for partition in ("analysis", "cache", "features", "training"):
         directory = outputs / partition / "current_mainline"
         directory.mkdir(parents=True)
@@ -234,22 +226,11 @@ def test_cleanup_manifest_classifies_retired_hist_outputs_without_hist2_false_po
 
     candidates = _records_by_rule(manifest, "candidates")
     protected = _records_by_rule(manifest, "protected")
-    assert "retired.hist_output" in candidates
-    assert "retired.history_anchor_hist_output" in candidates
-    assert "retired.image_only_hist_output" in candidates
-    assert "retired.p3_hist_probe" in candidates
-    assert "retired.v8_v9_hist_probe" in candidates
     assert "transient.debug" in candidates
     assert "transient.plan_check" in candidates
     assert "transient.smoke" in candidates
     assert "protected.current_mainline_output" in protected
-    hist2_rules = {
-        rule_id
-        for record in manifest["candidates"]
-        if record["relative_path"] == "outputs/gps_window_baseline_target_calibrated_hist2"
-        for rule_id in record.get("matched_rules", [record.get("rule_id")])
-    }
-    assert not {rule_id for rule_id in hist2_rules if rule_id.startswith("retired.")}
+    assert not {rule_id for rule_id in candidates if rule_id.startswith("retired.")}
 
 
 def test_runtime_output_organize_manifest_classifies_legacy_outputs_and_protects_cache(tmp_path: Path):

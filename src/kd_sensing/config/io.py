@@ -1,14 +1,10 @@
 """YAML config loading and command-line override parsing."""
 
 import copy
-import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-try:
-    import yaml
-except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
-    yaml = None
+import yaml
 
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.config.migration_guards import (
@@ -22,7 +18,7 @@ from kd_sensing.config.migration_guards import (
     reject_retired_raymobtime_config,
 )
 from kd_sensing.config.normalization import normalize_loaded_config
-from kd_sensing.config.parsing import parse_scalar, parse_simple_yaml, safe_load_yaml
+from kd_sensing.config.parsing import parse_scalar, safe_load_yaml
 from kd_sensing.config.source import load_config_source
 from kd_sensing.config.validation import validate_loaded_config
 
@@ -94,10 +90,7 @@ def dump_config(cfg: dict[str, Any], path: str | Path) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", encoding="utf-8") as f:
-        if yaml is not None:
-            yaml.safe_dump(cfg, f, sort_keys=False)
-        else:
-            json.dump(cfg, f, indent=2)
+        yaml.safe_dump(cfg, f, sort_keys=False)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

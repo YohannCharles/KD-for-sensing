@@ -1,19 +1,409 @@
 from dataclasses import dataclass
 from typing import Any
 
-from kd_sensing.engine.objectives.history import (
-    _HISTORY_FIELDS,
-    _OPTIONAL_HISTORY_FIELDS,
-    _SELECTION_HISTORY_FIELDS_BY_OBJECTIVE,
-    _tensorboard_scalars_for_objective,
+PREDICTION_OBJECTIVES = (
+    "beam",
+    "occlusion",
+    "position",
+    "multitask",
+    "current_beam_selection",
+    "current_los_classification",
+    "current_link_quality",
+    "selection_multitask",
+    "gps_conditioned_jepa",
 )
-from kd_sensing.engine.objectives.registry import (
-    PREDICTION_OBJECTIVES,
-    _DEFAULT_METRICS,
-    _METRIC_ALIASES,
-    _METRIC_MODES,
-    _OBJECTIVE_AVAILABLE_METRICS,
+
+_DEFAULT_METRICS: dict[str, tuple[str, str]] = {
+    "beam": ("val_adba", "max"),
+    "occlusion": ("val_occlusion_blocked_f1", "max"),
+    "position": ("val_position_rmse", "min"),
+    "multitask": ("val_multitask_loss", "min"),
+    "current_beam_selection": ("val_beam_top1", "max"),
+    "current_los_classification": ("val_los_f1", "max"),
+    "current_link_quality": ("val_link_mae", "min"),
+    "selection_multitask": ("val_selection_multitask_loss", "min"),
+    "gps_conditioned_jepa": ("val_jepa_loss", "min"),
+}
+
+_BASE_AVAILABLE_METRICS = ("val_loss",)
+_BEAM_AVAILABLE_METRICS = (
+    "val_acc",
+    "val_adba",
+    "val_atop3",
+    "val_atop5",
+    "val_top1_avg",
+    "val_top3_avg",
+    "val_top5_avg",
 )
+_OCCLUSION_AVAILABLE_METRICS = ("val_occlusion_accuracy", "val_occlusion_blocked_f1")
+_POSITION_AVAILABLE_METRICS = ("val_position_rmse", "val_position_mae")
+_MULTITASK_AVAILABLE_METRICS = (
+    *_BEAM_AVAILABLE_METRICS,
+    *_OCCLUSION_AVAILABLE_METRICS,
+    *_POSITION_AVAILABLE_METRICS,
+    "val_multitask_loss",
+)
+_CURRENT_BEAM_AVAILABLE_METRICS = ("val_beam_top1", "val_beam_top3", "val_beam_top5", "val_beam_dba")
+_CURRENT_LOS_AVAILABLE_METRICS = ("val_los_accuracy", "val_los_f1", "val_los_auc")
+_CURRENT_LINK_AVAILABLE_METRICS = ("val_link_mae", "val_link_rmse", "val_link_r2")
+_SELECTION_MULTITASK_AVAILABLE_METRICS = (
+    *_CURRENT_BEAM_AVAILABLE_METRICS,
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+    "val_selection_multitask_loss",
+)
+_JEPA_AVAILABLE_METRICS = (
+    "val_jepa_loss",
+    "val_jepa_mask_target_ratio",
+    "val_jepa_mask_context_ratio",
+    "val_jepa_ema_decay",
+)
+
+_METRIC_ALIASES: dict[str, str] = {
+    "adba": "val_adba",
+    "dba": "val_adba",
+    "val_adba": "val_adba",
+    "val_dba": "val_adba",
+    "dba/val_adba": "val_adba",
+    "beam/adba": "val_adba",
+    "beam/dba": "val_adba",
+    "beam/val_adba": "val_adba",
+    "beam/val_dba": "val_adba",
+    "top1": "val_acc",
+    "val_top1": "val_acc",
+    "val_acc": "val_acc",
+    "val_acc_top1": "val_acc",
+    "top1_val_acc": "val_acc",
+    "accuracy/val": "val_acc",
+    "accuracy/val_top1": "val_acc",
+    "beam/accuracy_val": "val_acc",
+    "beam/val_top1": "val_acc",
+    "beam/val_acc": "val_acc",
+    "val/acc_top1": "val_acc",
+    "val/top1": "val_acc",
+    "loss": "val_loss",
+    "val_loss": "val_loss",
+    "loss/val": "val_loss",
+    "occlusion": "val_occlusion_blocked_f1",
+    "occlusion_f1": "val_occlusion_blocked_f1",
+    "blocked_f1": "val_occlusion_blocked_f1",
+    "val_occlusion_blocked_f1": "val_occlusion_blocked_f1",
+    "occlusion/blocked_f1": "val_occlusion_blocked_f1",
+    "position": "val_position_rmse",
+    "position_rmse": "val_position_rmse",
+    "val_position_rmse": "val_position_rmse",
+    "position/rmse": "val_position_rmse",
+    "multitask": "val_multitask_loss",
+    "multitask_loss": "val_multitask_loss",
+    "val_multitask_loss": "val_multitask_loss",
+    "loss/multitask_total": "val_multitask_loss",
+    "current_beam_selection": "val_beam_top1",
+    "beam_selection": "val_beam_top1",
+    "beam_top1": "val_beam_top1",
+    "val_beam_top1": "val_beam_top1",
+    "beam_top3": "val_beam_top3",
+    "val_beam_top3": "val_beam_top3",
+    "beam_top5": "val_beam_top5",
+    "val_beam_top5": "val_beam_top5",
+    "beam_dba": "val_beam_dba",
+    "current_beam_dba": "val_beam_dba",
+    "beam_dba_current": "val_beam_dba",
+    "val_beam_dba": "val_beam_dba",
+    "beam/val_dba_current": "val_beam_dba",
+    "current_los_classification": "val_los_f1",
+    "los": "val_los_f1",
+    "los_classification": "val_los_f1",
+    "selection_multitask": "val_selection_multitask_loss",
+    "selection_multitask_loss": "val_selection_multitask_loss",
+    "val_selection_multitask_loss": "val_selection_multitask_loss",
+    "loss/selection_multitask_total": "val_selection_multitask_loss",
+    "gps_conditioned_jepa": "val_jepa_loss",
+    "jepa": "val_jepa_loss",
+    "jepa_loss": "val_jepa_loss",
+    "val_jepa_loss": "val_jepa_loss",
+    "loss/jepa": "val_jepa_loss",
+    "los_accuracy": "val_los_accuracy",
+    "val_los_accuracy": "val_los_accuracy",
+    "los_f1": "val_los_f1",
+    "val_los_f1": "val_los_f1",
+    "los_auc": "val_los_auc",
+    "val_los_auc": "val_los_auc",
+    "link_mae": "val_link_mae",
+    "val_link_mae": "val_link_mae",
+    "current_link_quality": "val_link_mae",
+    "link_quality": "val_link_mae",
+    "link_quality_regression": "val_link_mae",
+    "link_rmse": "val_link_rmse",
+    "val_link_rmse": "val_link_rmse",
+    "link_r2": "val_link_r2",
+    "val_link_r2": "val_link_r2",
+}
+
+_METRIC_MODES: dict[str, str] = {
+    "val_loss": "min",
+    "val_acc": "max",
+    "val_adba": "max",
+    "val_atop3": "max",
+    "val_atop5": "max",
+    "val_top1_avg": "max",
+    "val_top3_avg": "max",
+    "val_top5_avg": "max",
+    "val_occlusion_accuracy": "max",
+    "val_occlusion_blocked_f1": "max",
+    "val_position_rmse": "min",
+    "val_position_mae": "min",
+    "val_multitask_loss": "min",
+    "val_beam_top1": "max",
+    "val_beam_top3": "max",
+    "val_beam_top5": "max",
+    "val_beam_dba": "max",
+    "val_los_accuracy": "max",
+    "val_los_f1": "max",
+    "val_los_auc": "max",
+    "val_link_mae": "min",
+    "val_link_rmse": "min",
+    "val_link_r2": "max",
+    "val_selection_multitask_loss": "min",
+    "val_jepa_loss": "min",
+    "val_jepa_mask_target_ratio": "max",
+    "val_jepa_mask_context_ratio": "max",
+    "val_jepa_ema_decay": "max",
+}
+
+_OBJECTIVE_AVAILABLE_METRICS: dict[str, tuple[str, ...]] = {
+    "beam": (*_BASE_AVAILABLE_METRICS, *_BEAM_AVAILABLE_METRICS),
+    "occlusion": (*_BASE_AVAILABLE_METRICS, *_OCCLUSION_AVAILABLE_METRICS),
+    "position": (*_BASE_AVAILABLE_METRICS, *_POSITION_AVAILABLE_METRICS),
+    "multitask": (*_BASE_AVAILABLE_METRICS, *_MULTITASK_AVAILABLE_METRICS),
+    "current_beam_selection": (*_BASE_AVAILABLE_METRICS, *_CURRENT_BEAM_AVAILABLE_METRICS),
+    "current_los_classification": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LOS_AVAILABLE_METRICS),
+    "current_link_quality": (*_BASE_AVAILABLE_METRICS, *_CURRENT_LINK_AVAILABLE_METRICS),
+    "selection_multitask": (*_BASE_AVAILABLE_METRICS, *_SELECTION_MULTITASK_AVAILABLE_METRICS),
+    "gps_conditioned_jepa": (*_BASE_AVAILABLE_METRICS, *_JEPA_AVAILABLE_METRICS),
+}
+
+_HISTORY_FIELDS: tuple[str, ...] = (
+    "train_loss",
+    "train_task_loss",
+    "train_objective_loss",
+    "train_beam_soft_loss",
+    "train_unimodal_loss",
+    "train_occlusion_loss",
+    "train_position_loss",
+    "train_multitask_loss",
+    "train_acc",
+    "val_loss",
+    "val_acc",
+    "val_atop3",
+    "val_atop5",
+    "val_adba",
+    "val_occlusion_accuracy",
+    "val_occlusion_blocked_f1",
+    "val_position_rmse",
+    "val_position_mae",
+    "val_multitask_loss",
+    "val_primary_metric",
+    "learning_rates",
+)
+
+_SELECTION_COMMON_HISTORY_FIELDS: tuple[str, ...] = (
+    "train_loss",
+    "train_task_loss",
+    "train_objective_loss",
+    "train_beam_soft_loss",
+    "train_unimodal_loss",
+    "train_acc",
+    "val_loss",
+    "val_primary_metric",
+    "learning_rates",
+)
+
+_SELECTION_HISTORY_FIELDS_BY_OBJECTIVE: dict[str, tuple[str, ...]] = {
+    "current_beam_selection": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_beam_dba",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "current_los_classification": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "train_los_loss",
+        "val_los_accuracy",
+        "val_los_f1",
+        "val_los_auc",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "current_link_quality": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "train_link_quality_loss",
+        "val_link_mae",
+        "val_link_rmse",
+        "val_link_r2",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "selection_multitask": (
+        *_SELECTION_COMMON_HISTORY_FIELDS[:-2],
+        "train_los_loss",
+        "train_link_quality_loss",
+        "train_selection_multitask_loss",
+        "val_beam_top1",
+        "val_beam_top3",
+        "val_beam_top5",
+        "val_beam_dba",
+        "val_los_accuracy",
+        "val_los_f1",
+        "val_los_auc",
+        "val_link_mae",
+        "val_link_rmse",
+        "val_link_r2",
+        "val_selection_multitask_loss",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+    "gps_conditioned_jepa": (
+        "train_loss",
+        "train_task_loss",
+        "train_objective_loss",
+        "train_beam_soft_loss",
+        "train_unimodal_loss",
+        "train_jepa_loss",
+        "train_acc",
+        "val_loss",
+        "val_jepa_loss",
+        "val_jepa_mask_target_ratio",
+        "val_jepa_mask_context_ratio",
+        "val_jepa_ema_decay",
+        "val_primary_metric",
+        "learning_rates",
+    ),
+}
+
+_OPTIONAL_HISTORY_FIELDS = {
+    "train_occlusion_loss",
+    "train_position_loss",
+    "train_multitask_loss",
+    "val_occlusion_accuracy",
+    "val_occlusion_blocked_f1",
+    "val_position_rmse",
+    "val_position_mae",
+    "val_multitask_loss",
+    "train_los_loss",
+    "train_link_quality_loss",
+    "train_selection_multitask_loss",
+    "val_beam_top1",
+    "val_beam_top3",
+    "val_beam_top5",
+    "val_beam_dba",
+    "val_los_accuracy",
+    "val_los_f1",
+    "val_los_auc",
+    "val_link_mae",
+    "val_link_rmse",
+    "val_link_r2",
+    "val_selection_multitask_loss",
+    "train_jepa_loss",
+    "val_jepa_loss",
+    "val_jepa_mask_target_ratio",
+    "val_jepa_mask_context_ratio",
+    "val_jepa_ema_decay",
+}
+
+_COMMON_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/train_objective", "train_objective_loss"),
+    ("objective/val_primary_metric", "val_primary_metric"),
+    ("loss/beam_soft_target", "train_beam_soft_loss"),
+    ("loss/train_unimodal_aux", "train_unimodal_loss"),
+)
+_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/accuracy_train", "train_acc"),
+    ("beam/accuracy_val", "val_acc"),
+    ("beam/val_atop3", "val_atop3"),
+    ("beam/val_atop5", "val_atop5"),
+    ("beam/val_adba", "val_adba"),
+)
+_AUXILIARY_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/multitask_total", "train_multitask_loss"),
+    ("loss/val_multitask_total", "val_multitask_loss"),
+    ("loss/occlusion", "train_occlusion_loss"),
+    ("loss/position", "train_position_loss"),
+    ("occlusion/accuracy", "val_occlusion_accuracy"),
+    ("occlusion/blocked_f1", "val_occlusion_blocked_f1"),
+    ("position/rmse", "val_position_rmse"),
+    ("position/mae", "val_position_mae"),
+)
+_SELECTION_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+    ("beam/val_dba_current", "val_beam_dba"),
+    ("los/accuracy", "val_los_accuracy"),
+    ("los/f1", "val_los_f1"),
+    ("los/auc", "val_los_auc"),
+    ("link/mae", "val_link_mae"),
+    ("link/rmse", "val_link_rmse"),
+    ("link/r2", "val_link_r2"),
+)
+_CURRENT_BEAM_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("beam/val_top1", "val_beam_top1"),
+    ("beam/val_top3", "val_beam_top3"),
+    ("beam/val_top5", "val_beam_top5"),
+    ("beam/val_dba_current", "val_beam_dba"),
+)
+_CURRENT_LOS_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/los", "train_los_loss"),
+    ("los/accuracy", "val_los_accuracy"),
+    ("los/f1", "val_los_f1"),
+    ("los/auc", "val_los_auc"),
+)
+_CURRENT_LINK_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/link_quality", "train_link_quality_loss"),
+    ("link/mae", "val_link_mae"),
+    ("link/rmse", "val_link_rmse"),
+    ("link/r2", "val_link_r2"),
+)
+_SELECTION_MULTITASK_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/selection_multitask_total", "train_selection_multitask_loss"),
+    ("loss/val_selection_multitask_total", "val_selection_multitask_loss"),
+    ("loss/los", "train_los_loss"),
+    ("loss/link_quality", "train_link_quality_loss"),
+    *_SELECTION_TENSORBOARD_SCALARS,
+)
+_JEPA_TENSORBOARD_SCALARS: tuple[tuple[str, str], ...] = (
+    ("loss/jepa_train", "train_jepa_loss"),
+    ("loss/jepa_val", "val_jepa_loss"),
+    ("jepa/mask_target_ratio", "val_jepa_mask_target_ratio"),
+    ("jepa/mask_context_ratio", "val_jepa_mask_context_ratio"),
+    ("jepa/ema_decay", "val_jepa_ema_decay"),
+)
+
+
+def _tensorboard_scalars_for_objective(objective: str) -> tuple[tuple[str, str], ...]:
+    scalars = list(_COMMON_TENSORBOARD_SCALARS)
+    if objective in {"beam", "multitask"}:
+        scalars.extend(_BEAM_TENSORBOARD_SCALARS)
+        scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
+    elif objective == "current_beam_selection":
+        scalars.extend(_CURRENT_BEAM_TENSORBOARD_SCALARS)
+    elif objective == "current_los_classification":
+        scalars.extend(_CURRENT_LOS_TENSORBOARD_SCALARS)
+    elif objective == "current_link_quality":
+        scalars.extend(_CURRENT_LINK_TENSORBOARD_SCALARS)
+    elif objective == "selection_multitask":
+        scalars.extend(_SELECTION_MULTITASK_TENSORBOARD_SCALARS)
+    elif objective == "gps_conditioned_jepa":
+        scalars.extend(_JEPA_TENSORBOARD_SCALARS)
+    else:
+        scalars.extend(_AUXILIARY_TENSORBOARD_SCALARS)
+    return tuple(scalars)
 
 
 @dataclass(frozen=True)
@@ -564,30 +954,3 @@ def _weight_from_configs(
                     continue
                 return float(value)
     return float(default)
-
-
-__all__ = [
-    "PREDICTION_OBJECTIVES",
-    "AuxiliaryTaskConfig",
-    "PredictionObjectiveSpec",
-    "configure_objective_defaults",
-    "default_primary_metric",
-    "multitask_loss_weights",
-    "normalize_objective_metric",
-    "objective_available_metrics",
-    "objective_enabled_heads",
-    "objective_enabled_targets",
-    "objective_history_fields",
-    "objective_metric_mode",
-    "objective_optional_history_fields",
-    "objective_requires_occlusion",
-    "objective_requires_position",
-    "objective_runtime_metadata",
-    "objective_spec",
-    "objective_tensorboard_scalars",
-    "produced_metric_names",
-    "resolve_auxiliary_task_config",
-    "resolve_prediction_objective",
-    "selection_multitask_loss_weights",
-    "validate_objective_metric_available",
-]

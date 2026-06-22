@@ -1,3 +1,4 @@
+import csv
 import json
 from pathlib import Path
 
@@ -142,6 +143,155 @@ def test_cached_analysis_writes_manifest_outputs_and_degrades(monkeypatch: pytes
     assert (tmp_path / "out" / "cache" / "embeddings_gps_query_pool.npz").exists()
     assert any("attention_unavailable:gps_query_pool" in warning for warning in manifest["warnings"])
     assert any("embedding_reducer_fallback:umap_unavailable" in warning for warning in manifest["warnings"])
+
+
+def test_gps_query_evidence_package_uses_synthetic_metrics_attention_and_cases(tmp_path: Path) -> None:
+    labels = np.asarray([0, 1, 2, 3], dtype=np.int64)
+    sample_ids = np.asarray(["gain", "regression", "near", "failure"], dtype=object)
+    metadata = json.dumps(
+        [
+            {"scene": 31, "scene_group": "Scene31", "condition": "P0_clean_current", "global_index": 0},
+            {"scene": 32, "scene_group": "S32-S34", "condition": "P1_current_frame_missing_history_available", "global_index": 1},
+            {"scene": 33, "scene_group": "S32-S34", "condition": "P2_semantic_occlusion_history_available", "global_index": 2},
+            {"scene": 34, "scene_group": "S32-S34", "condition": "P3_plausible_wrong_gps_current_image", "global_index": 3},
+        ]
+    )
+    mean_cache = tmp_path / "mean.npz"
+    query_cache = tmp_path / "query.npz"
+    anchor_cache = tmp_path / "anchor.npz"
+    mean_logits = np.asarray(
+        [
+            [0, 0, 0, 9, 8, 7, 0, 0],
+            [0, 9, 8, 7, 0, 0, 0, 0],
+            [0, 0, 7, 9, 8, 0, 0, 0],
+            [7, 0, 0, 0, 0, 0, 9, 8],
+        ],
+        dtype=np.float32,
+    )
+    query_logits = np.asarray(
+        [
+            [9, 8, 7, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 9, 8, 7, 0],
+            [0, 0, 8, 9, 7, 0, 0, 0],
+            [7, 0, 0, 0, 0, 0, 9, 8],
+        ],
+        dtype=np.float32,
+    )
+    attention = np.asarray(
+        [
+            [[[0.7, 0.1, 0.1, 0.1], [0.1, 0.7, 0.1, 0.1]]],
+            [[[0.1, 0.1, 0.7, 0.1], [0.1, 0.1, 0.1, 0.7]]],
+            [[[0.25, 0.25, 0.25, 0.25], [0.4, 0.2, 0.2, 0.2]]],
+            [[[0.1, 0.1, 0.1, 0.7], [0.25, 0.25, 0.25, 0.25]]],
+        ],
+        dtype=np.float32,
+    )
+    np.savez_compressed(mean_cache, logits=mean_logits, labels=labels, sample_ids=sample_ids, metadata_json=metadata)
+    np.savez_compressed(
+        query_cache,
+        logits=query_logits,
+        labels=labels,
+        sample_ids=sample_ids,
+        metadata_json=metadata,
+        attention=attention,
+        token_grid_shape=np.asarray([2, 2], dtype=np.int64),
+    )
+    np.savez_compressed(anchor_cache, logits=query_logits, labels=labels, sample_ids=sample_ids, metadata_json=metadata)
+
+    metrics = tmp_path / "metrics.csv"
+    metrics.write_text(
+        "\n".join(
+            [
+                "model,condition,scene_group,metric,value,sample_count,split,seed,checkpoint_selection,label_space,metric_profile",
+                "gps_query_pool,P0_clean_current,Scene31,dba,0.70,4,test,0,best,beam8,linear_dba",
+                "mean_pool,P0_clean_current,Scene31,dba,0.55,4,test,0,best,beam8,linear_dba",
+                "image_gps_anchor,P0_clean_current,Scene31,dba,0.80,4,test,0,best,beam8,linear_dba",
+                "gps_query_pool,P1_current_frame_missing_history_available,S32-S34,dba,0.60,4,test,0,best,beam8,linear_dba",
+                "mean_pool,P1_current_frame_missing_history_available,S32-S34,dba,0.50,4,test,0,best,beam8,linear_dba",
+                "image_gps_anchor,P1_current_frame_missing_history_available,S32-S34,dba,0.61,4,test,0,best,beam8,linear_dba",
+                "gps_query_pool,P2_semantic_occlusion_history_available,S32-S34,dba,0.62,4,test,0,best,beam8,linear_dba",
+                "mean_pool,P2_semantic_occlusion_history_available,S32-S34,dba,0.51,4,test,0,best,beam8,linear_dba",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "analysis.yaml"
+    provenance = [
+        "      split: test",
+        "      scene_set: S31-S34",
+        "      seed: 0",
+        "      checkpoint_selection: best",
+        "      label_space: beam8",
+        "      metric_profile: linear_dba",
+    ]
+    config.write_text(
+        "\n".join(
+            [
+                "models:",
+                "  mean_pool:",
+                f"    logits_cache: {mean_cache}",
+                "    provenance:",
+                *provenance,
+                "  gps_query_pool:",
+                f"    logits_cache: {query_cache}",
+                "    provenance:",
+                *provenance,
+                "  image_gps_anchor:",
+                f"    logits_cache: {anchor_cache}",
+                "    provenance:",
+                *provenance,
+                "sampling:",
+                "  seed: 0",
+                "  query_model: gps_query_pool",
+                "  baseline_model: mean_pool",
+                "  cases_per_group: 1",
+                "  near_distance_threshold: 0",
+                "  far_distance_threshold: 1",
+                "figures:",
+                "  embedding: false",
+                "  error_anatomy: false",
+                "  attention: true",
+                "  case_studies: true",
+                "  robustness: false",
+                "outputs:",
+                "  formats: [png]",
+                "evidence:",
+                "  enabled: true",
+                "  model_pairs:",
+                "    - name: gps_query_vs_mean",
+                "      query_model: gps_query_pool",
+                "      baseline_model: mean_pool",
+                "  anchor_baselines:",
+                "    - name: strong_anchor",
+                "      model: image_gps_anchor",
+                "  metrics:",
+                f"    p0_p5: {metrics}",
+                "  claim_gate:",
+                "    metric: dba",
+                "    min_clean_delta: 0.01",
+                "    min_mean_delta: 0.01",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = jva.run_jepa_visual_analysis(analysis_config=config, output_dir=tmp_path / "out", force=True)
+    out = Path(result["output_dir"])
+    evidence_manifest = json.loads((out / "evidence_manifest.json").read_text(encoding="utf-8"))
+    delta_rows = list(csv.DictReader((out / "tables" / "paired_delta_by_condition.csv").open(encoding="utf-8")))
+    attention_rows = list(csv.DictReader((out / "tables" / "attention_summary.csv").open(encoding="utf-8")))
+    case_rows = list(csv.DictReader((out / "tables" / "case_selection.csv").open(encoding="utf-8")))
+    claim_rows = list(csv.DictReader((out / "tables" / "claim_gate_summary.csv").open(encoding="utf-8")))
+
+    assert evidence_manifest["model_pairs"][0]["comparability_status"] == "strict"
+    assert delta_rows[0]["comparability_status"] == "strict"
+    assert any(row["status"] == "supported" for row in claim_rows if row["claim"] == "gps_query_paired_effectiveness")
+    assert attention_rows[0]["token_grid_height"] == "2"
+    assert attention_rows[0]["aggregation_method"] == "mean_time_query"
+    assert {"query_gain", "query_regression", "shared_near_miss", "shared_failure"}.issubset({row["group"] for row in case_rows})
+    assert any((out / "cases").glob("query_gain_*.json"))
+    assert any("attention_overlay_unavailable:gps_query_pool" in warning for warning in evidence_manifest["warnings"])
 
 
 def test_metadata_sanitizer_handles_none_and_nested_values() -> None:

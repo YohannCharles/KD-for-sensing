@@ -50,4 +50,5 @@ retired_routes:
 validation:
   focused:
     - openspec validate prune-remaining-overengineered-surface --strict
-    - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py tests/test_config_load_characterization.py tests/test_component_registry.py tests/test_cli_help.py -q
+    - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py tests/test_tinyvit_image_encoder.py tests/test_prediction_objectives.py -q

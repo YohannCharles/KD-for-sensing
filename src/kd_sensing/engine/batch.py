@@ -403,6 +403,7 @@ def prepare_fusion_inputs(
     image_profile: str | None = None,
     input_profiles: dict[str, str] | None = None,
     include_reliability_metadata: bool = False,
+    include_missing_modality_metadata: bool = False,
     strict_reliability_metadata: bool = True,
     non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
@@ -477,11 +478,12 @@ def prepare_fusion_inputs(
                 batch,
                 seq_length=seq_length,
                 num_pred=num_pred,
-                device=device,
-                modalities=selected,
-                strict=strict_reliability_metadata,
-                non_blocking=non_blocking,
-            )
+            device=device,
+            modalities=selected,
+            include_missing_modality_metadata=include_missing_modality_metadata,
+            strict=strict_reliability_metadata,
+            non_blocking=non_blocking,
+        )
         )
     return inputs
 
@@ -493,6 +495,7 @@ def prepare_reliability_metadata_inputs(
     num_pred: int,
     device: torch.device,
     modalities: list[str] | tuple[str, ...],
+    include_missing_modality_metadata: bool = False,
     strict: bool = True,
     non_blocking: bool = False,
 ) -> dict[str, Any]:
@@ -517,6 +520,10 @@ def prepare_reliability_metadata_inputs(
                 "gps_counterfactual_mask": ("gps_counterfactual_mask", torch.bool, False),
             }
         )
+    if include_missing_modality_metadata:
+        for modality in selected:
+            specs.setdefault(f"{modality}_valid_mask", (f"{modality}_valid_mask", torch.bool, False))
+            specs.setdefault(f"{modality}_dropout_mask", (f"{modality}_dropout_mask", torch.bool, False))
     for key, (output_key, dtype, required) in specs.items():
         if key not in batch:
             if strict and required:
@@ -549,6 +556,8 @@ def model_cfg_consumes_reliability_metadata(model_cfg: Mapping[str, Any] | None)
     for key in ("requires_reliability_metadata", "consume_reliability_metadata", "observability_aware"):
         if bool(model_cfg.get(key, False)):
             return True
+    if model_cfg_consumes_missing_modality_metadata(model_cfg):
+        return True
     if _model_cfg_has_predictive_gps_query_pooler(model_cfg):
         return True
     if _model_cfg_has_geometry_prior(model_cfg):
@@ -567,6 +576,11 @@ def model_cfg_consumes_reliability_metadata(model_cfg: Mapping[str, Any] | None)
 def reliability_metadata_strict(model_cfg: Mapping[str, Any] | None) -> bool:
     if not isinstance(model_cfg, Mapping):
         return True
+    if model_cfg_consumes_missing_modality_metadata(model_cfg):
+        missing_cfg = model_cfg.get("missing_modality_metadata", {})
+        if isinstance(missing_cfg, Mapping) and "strict" in missing_cfg:
+            return bool(missing_cfg.get("strict"))
+        return bool(model_cfg.get("strict_missing_modality_metadata", False))
     fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
     if isinstance(fusion, Mapping):
         return bool(fusion.get("strict", fusion.get("require_fields", True)))
@@ -577,6 +591,22 @@ def reliability_metadata_strict(model_cfg: Mapping[str, Any] | None) -> bool:
     if _model_cfg_has_safe_reranker(model_cfg):
         return bool(model_cfg.get("strict_reliability_metadata", False))
     return bool(model_cfg.get("strict_reliability_metadata", True))
+
+
+def model_cfg_consumes_missing_modality_metadata(model_cfg: Mapping[str, Any] | None) -> bool:
+    if not isinstance(model_cfg, Mapping):
+        return False
+    if bool(model_cfg.get("consume_missing_modality_metadata", False)):
+        return True
+    raw = model_cfg.get("missing_modality_metadata")
+    if isinstance(raw, Mapping):
+        if bool(raw.get("enabled", True)):
+            return True
+    elif raw not in (None, False, "", "none"):
+        return bool(raw)
+    core = model_cfg.get("representation_core")
+    core_type = str(core.get("type", "")) if isinstance(core, Mapping) else str(core or "")
+    return core_type == "amber_lite_missing_modality_transformer"
 
 
 def _model_cfg_has_predictive_gps_query_pooler(model_cfg: Mapping[str, Any]) -> bool:

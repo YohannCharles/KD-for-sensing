@@ -20,8 +20,7 @@ from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
 from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.fusion.networks import FusionLightweightModalityNet, FusionStrongModalityNet  # noqa: E402
-from kd_sensing.models.gps import GpsModalityNet, GpsLightweightModalityNet  # noqa: E402
+from kd_sensing.models.gps import GpsFeatureExtractor  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
 from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
@@ -213,59 +212,15 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
     assert result["split_metadata"]["train"]["csv_path"] == "missing_train.csv"
 
 
-def test_gps_legacy_classes_forward_contracts_when_directly_instantiated():
-    for model_cls in [
-        GpsModalityNet,
-        GpsLightweightModalityNet,
-    ]:
-        model = model_cls(
-            gps_input_size=3,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64, 2],
-        )
-        model.eval()
-        with torch.no_grad():
-            pred, features, output_features = model(torch.randn(2, 10, 3))
-        assert pred.shape == (2, 10, 64)
-        assert features.shape == (2, 10, 64)
-        assert output_features.shape == (2, 10, 64)
-
-
-def test_gps_model_rejects_invalid_params():
-    with pytest.raises(ValueError, match="gru_params must contain"):
-        GpsLightweightModalityNet(
-            gps_input_size=3,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64],
-        )
-    with pytest.raises(ValueError, match="must equal feature_size"):
-        GpsModalityNet(
-            gps_input_size=3,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[32, 64, 1],
-        )
-
-
-def test_fusion_modalities_default_and_gps_forward():
-    default_model = FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2])
-    assert default_model.modalities == ("image", "radar")
-
-    gps_model = FusionLightweightModalityNet(
-        feature_size=64,
-        num_classes=64,
-        gru_params=[64, 64, 2],
-        modalities=["gps"],
-        gps_input_size=3,
-    )
-    gps_model.eval()
+def test_gps_feature_extractor_forward_and_validation():
+    extractor = GpsFeatureExtractor(64, gps_input_size=3)
     with torch.no_grad():
-        pred, features, output_features = gps_model(gps_batch=torch.randn(2, 10, 3))
-    assert pred.shape == (2, 10, 64)
+        features = extractor(torch.randn(2, 10, 3))
     assert features.shape == (2, 10, 64)
-    assert output_features.shape == (2, 10, 64)
+    with pytest.raises(ValueError, match="shape"):
+        extractor(torch.randn(2, 3))
+    with pytest.raises(ValueError, match="feature_dim"):
+        extractor(torch.randn(2, 10, 2))
 
 
 def test_gps_fusion_batch_path_does_not_require_disabled_modalities():
@@ -307,20 +262,15 @@ def test_short_gps_history_is_left_padded_for_fusion_inputs():
     assert fusion_inputs["gps_batch"][0, :, 0].tolist() == [50.0, 50.0, 50.0, 50.0, 60.0]
 
 
-def test_fusion_modalities_validate_invalid_and_missing_inputs():
-    with pytest.raises(ValueError, match="at least one"):
-        FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=[])
-    with pytest.raises(ValueError, match="Unknown fusion modalities"):
-        FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["thermal"])
-    with pytest.raises(ValueError, match="duplicates"):
-        FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["gps", "gps"])
-
-    model = FusionStrongModalityNet(
+def test_current_gps_fusion_model_rejects_missing_input():
+    model = CLSTokenTransformerFusionNet(
         feature_size=64,
         num_classes=64,
-        gru_params=[64, 64, 2],
+        num_pred=3,
         modalities=["gps"],
         gps_input_size=3,
+        num_heads=4,
+        num_layers=1,
     )
     with pytest.raises(ValueError, match="requires 'gps' input"):
         model()
@@ -344,7 +294,7 @@ def test_gps_canonical_fusion_configs_build_and_use_relative_polar(config_path: 
         if "lidar" in primary_cfg["modalities"]:
             assert primary_cfg["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
-        assert isinstance(primary, (CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet))
+        assert isinstance(primary, CLSTokenTransformerFusionNet)
 
 
 def _write_gps_files(root: Path, prefix: str, lat: float, lon: float) -> tuple[list[str], list[str]]:

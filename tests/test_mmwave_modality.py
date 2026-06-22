@@ -23,14 +23,8 @@ from kd_sensing.engine.evaluator import evaluate  # noqa: E402
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
 from kd_sensing.engine.trainer import train  # noqa: E402
 from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.fusion.networks import (  # noqa: E402
-    FusionStrongModalityNet,
-    FusionLightweightModalityNet,
-)
 from kd_sensing.models.mmwave import (  # noqa: E402
     MmWaveFeatureExtractor,
-    MmWaveModalityNet,
-    MmWaveLightweightModalityNet,
 )
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
 from kd_sensing.registries import MODELS  # noqa: E402
@@ -220,56 +214,35 @@ def test_mmwave_dataset_keeps_old_csv_compatible_when_disabled(tmp_path: Path):
         )
 
 
-def test_mmwave_models_batch_and_fusion_forward_contracts():
+def test_mmwave_feature_extractor_batch_and_fusion_forward_contracts():
     extractor = MmWaveFeatureExtractor(n_feature=64, mmwave_input_size=64)
     with torch.no_grad():
         assert extractor(torch.randn(2, 10, 64)).shape == (2, 10, 64)
 
-    for model_cls in [
-        MmWaveModalityNet,
-        MmWaveLightweightModalityNet,
-    ]:
-        model = model_cls(
-            mmwave_input_size=64,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64, 1],
-        )
-        with torch.no_grad():
-            pred, features, output_features = model(torch.randn(2, 10, 64))
-        assert pred.shape == (2, 10, 64)
-        assert features.shape == (2, 10, 64)
-        assert output_features.shape == (2, 10, 64)
-
     batch = {"mmwave": torch.randn(2, 8, 64)}
     mmwave_input = prepare_mmwave_inputs(batch, seq_length=8, num_pred=3, device=torch.device("cpu"))
     fusion_inputs = prepare_fusion_inputs(batch, seq_length=8, num_pred=3, device=torch.device("cpu"), modalities=["mmwave"])
-    model = MmWaveLightweightModalityNet(mmwave_input_size=64, feature_size=64, num_classes=64, gru_params=[64, 64, 1])
-    fusion_model = FusionLightweightModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
-    fusion_strong = FusionStrongModalityNet(feature_size=64, num_classes=64, gru_params=[64, 64, 2], modalities=["mmwave"])
+    cfg = load_config(ROOT / "configs/mmwave/lightweight.yaml")
+    model = MODELS.build(cfg["model"]["primary"])
+    fusion_model = CLSTokenTransformerFusionNet(
+        feature_size=64,
+        num_classes=64,
+        num_pred=3,
+        modalities=["mmwave"],
+        num_heads=4,
+        num_layers=1,
+    )
     with torch.no_grad():
-        pred, _, _ = forward_model(model, "mmwave", mmwave_batch=mmwave_input)
-        fusion_pred, _, _ = fusion_model(**fusion_inputs)
+        output = forward_model(model, "mmwave", mmwave_batch=mmwave_input)
+        fusion_output = fusion_model(**fusion_inputs)
     assert mmwave_input.shape == (2, 10, 64)
     assert sorted(fusion_inputs) == ["mmwave_batch"]
-    assert pred.shape == (2, 10, 64)
-    assert fusion_pred.shape == (2, 10, 64)
+    assert output["logits"].shape == (2, 10, 64)
+    assert fusion_output["logits"].shape == (2, 3, 64)
     with pytest.raises(ValueError, match="requires 'mmwave' input"):
-        fusion_strong()
+        fusion_model()
     with pytest.raises(ValueError, match="mmwave_input_size"):
-        MmWaveModalityNet(
-            mmwave_input_size=32,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64, 1],
-        )
-    with pytest.raises(ValueError, match="gru_params must contain"):
-        MmWaveLightweightModalityNet(
-            mmwave_input_size=64,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64],
-        )
+        MmWaveFeatureExtractor(n_feature=64, mmwave_input_size=32)
 
 
 def test_evaluate_loads_registry_mmwave_scaler_without_train_scan(tmp_path: Path):
@@ -371,7 +344,7 @@ def test_mmwave_fusion_configs_build(config_path: str):
         if "lidar" in primary_cfg["modalities"]:
             assert primary_cfg["encoders"]["lidar"]["type"] == "lidar_cnn"
     else:
-        assert isinstance(primary, (CLSTokenTransformerFusionNet, FusionStrongModalityNet, FusionLightweightModalityNet))
+        assert isinstance(primary, CLSTokenTransformerFusionNet)
 
 
 def _write_mmwave_sequence_fixture(root: Path, csv_path: Path, *, prefix: str, seq_index: int) -> None:

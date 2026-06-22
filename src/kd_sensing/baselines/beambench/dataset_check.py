@@ -417,3 +417,7 @@ def _field_sort_key(name: str) -> tuple[str, int, str]:
         else:
             break
     return (name[: len(name) - len(digits)], int(digits or -1), name)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

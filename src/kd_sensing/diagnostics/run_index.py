@@ -141,11 +141,7 @@ def discover_run_dirs(
                     if warnings is not None:
                         warnings.append(f"skipped non-run outputs partition by default: {skipped}")
                     dirnames.remove(dirname)
-                elif (
-                    not include_legacy_containers
-                    and not _is_canonical_scan_partition_name(dirname)
-                    and not _shallow_child_may_contain_run(current_path / dirname)
-                ):
+                elif not include_legacy_containers and not _is_canonical_scan_partition_name(dirname):
                     skipped = current_path / dirname
                     if warnings is not None:
                         warnings.append(f"skipped non-canonical outputs partition by default: {skipped}")

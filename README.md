@@ -1,6 +1,6 @@
 # KD for Sensing
 
-本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线收敛到 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite、Arnold22 Camera AE+GPS Direct、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和保留诊断入口。
+本仓库提供基于 `src/kd_sensing` 包的多模态少样本跨场景 beam prediction 工作流，当前主线收敛到 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite、AMBER-lite / WCL-style / TII-VLRG-style local missing-modality baselines、Arnold22 Camera AE+GPS Direct、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和保留诊断入口。
 
 蒸馏训练、HiST-Beam、GPS coarse anchor、Top8 selector、GPS residual、camera residual、DeepSense6G/MMW BGAM、viewer manifest、仓库级 Gradio viewer、AMR-Net_gps_image mock/source-audit runner 和 JEPA-MSAC Scenario 32 mock workflow 已经退役。当前 quickstart、GPS v2 和 calibration workflow 都只构建单个 `model.primary` 主模型或明确的诊断 workflow；旧 `teacher_no_kd`、`student_no_kd`、`no_kd`、`logits_kd`、`rkd`、`distillation.*`、`configs/hist_beam/*`、`hist_beam_fusion`、BGAM 配置、viewer manifest 配置、AMR/JEPA-MSAC 配置和对应 `kd-sensing-*` 命令会被 migration guard 或入口清单拒绝。历史输出和权重只作为只读复现资料保留。
 
@@ -23,6 +23,8 @@ conda run -n kd_mm_beam kd-sensing-runs --help
 conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --help
 conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
+conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
+conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit --help
 ```
 
 等价包内 CLI 入口形如：

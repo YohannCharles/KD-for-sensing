@@ -5,15 +5,7 @@ from kd_sensing.data.layouts import (
     DEEPSENSE6G_FAMILY,
     MMW_FAMILY,
 )
-
-
-@dataclass(frozen=True)
-class ModalityProfile:
-    modality: str
-    default_profile: str
-    supported_profiles: tuple[str, ...]
-    sample_key: str
-    fusion_input_key: str
+from kd_sensing.modalities import InputProfileSpec, modality_profile_spec
 
 
 @dataclass(frozen=True)
@@ -23,7 +15,7 @@ class DatasetDescriptor:
     storage_kind: str
     default_root: str
     split_semantics: str
-    supported_profiles: dict[str, ModalityProfile]
+    supported_profiles: dict[str, tuple[str, ...]]
     default_target_schema: str
     artifact_boundary: str
     metadata: dict[str, Any]
@@ -32,31 +24,23 @@ class DatasetDescriptor:
     def supported_modalities(self) -> tuple[str, ...]:
         return tuple(self.supported_profiles.keys())
 
-    def profile_for(self, modality: str, profile: str | None = None) -> ModalityProfile:
+    def profile_for(self, modality: str, profile: str | None = None) -> InputProfileSpec:
         try:
-            spec = self.supported_profiles[str(modality)]
+            profiles = self.supported_profiles[str(modality)]
         except KeyError as exc:
             available = ", ".join(self.supported_profiles)
             raise ValueError(
                 f"Dataset '{self.dataset_type}' does not support modality '{modality}'. "
                 f"Available modalities: {available}."
             ) from exc
-        resolved = spec.default_profile if profile in (None, "") else str(profile)
-        if resolved not in spec.supported_profiles:
-            available = ", ".join(spec.supported_profiles)
+        resolved = profiles[0] if profile in (None, "") else str(profile)
+        if resolved not in profiles:
+            available = ", ".join(profiles)
             raise ValueError(
                 f"Dataset '{self.dataset_type}' does not support profile '{resolved}' "
                 f"for modality '{modality}'. Available profiles: {available}."
             )
-        if resolved == spec.default_profile:
-            return spec
-        return ModalityProfile(
-            modality=spec.modality,
-            default_profile=resolved,
-            supported_profiles=spec.supported_profiles,
-            sample_key=spec.sample_key,
-            fusion_input_key=spec.fusion_input_key,
-        )
+        return modality_profile_spec(str(modality), resolved)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,18 +51,25 @@ class DatasetDescriptor:
             "split_semantics": self.split_semantics,
             "supported_modalities": list(self.supported_modalities),
             "supported_profiles": {
-                name: {
-                    "default_profile": spec.default_profile,
-                    "supported_profiles": list(spec.supported_profiles),
-                    "sample_key": spec.sample_key,
-                    "fusion_input_key": spec.fusion_input_key,
-                }
-                for name, spec in self.supported_profiles.items()
+                name: _profile_metadata(name, profiles)
+                for name, profiles in self.supported_profiles.items()
             },
             "default_target_schema": self.default_target_schema,
             "artifact_boundary": self.artifact_boundary,
             "metadata": dict(self.metadata),
         }
+
+
+def _profile_metadata(modality: str, profiles: tuple[str, ...]) -> dict[str, Any]:
+    default = modality_profile_spec(modality, profiles[0])
+    return {
+        "default_profile": profiles[0],
+        "supported_profiles": list(profiles),
+        "sample_key": default.sample_key,
+        "fusion_input_key": default.fusion_input_key,
+        "semantics": default.semantics,
+        "shape": default.shape,
+    }
 
 
 def dataset_descriptor(dataset_type: str | None) -> DatasetDescriptor:
@@ -110,7 +101,7 @@ def resolve_dataset_profiles(
             raw_profile = cfg.get(f"{key}_profile")
         if key == "gps" and raw_profile is None:
             raw_profile = _gps_profile_from_feature_mode(cfg.get("gps_feature_mode"))
-        resolved[key] = descriptor.profile_for(key, raw_profile).default_profile
+        resolved[key] = descriptor.profile_for(key, raw_profile).name
     return resolved
 
 
@@ -127,24 +118,13 @@ def descriptor_metadata(dataset_type: str | None) -> dict[str, Any]:
     return dataset_descriptor(dataset_type).to_dict()
 
 
-def _profile(modality: str, default: str, *supported: str) -> ModalityProfile:
-    profiles = (default, *supported)
-    return ModalityProfile(
-        modality=modality,
-        default_profile=default,
-        supported_profiles=tuple(dict.fromkeys(profiles)),
-        sample_key=modality,
-        fusion_input_key=f"{modality}_batch",
-    )
-
-
 _DEEPSENSE_PROFILES = {
-    "image": _profile("image", "rgb_imagenet"),
-    "radar": _profile("radar", "ra_da_maps"),
-    "gps": _profile("gps", "relative_polar_history", "paper_calibrated_relative_polar_history", "paper_distance_angle_direct"),
-    "lidar": _profile("lidar", "bev_projection"),
-    "mmwave": _profile("mmwave", "power_history"),
-    "csi": _profile("csi", "pilot_dual_view"),
+    "image": ("rgb_imagenet",),
+    "radar": ("ra_da_maps",),
+    "gps": ("relative_polar_history", "paper_calibrated_relative_polar_history", "paper_distance_angle_direct"),
+    "lidar": ("bev_projection",),
+    "mmwave": ("power_history",),
+    "csi": ("pilot_dual_view",),
 }
 
 DATASET_DESCRIPTORS: dict[str, DatasetDescriptor] = {
@@ -167,22 +147,11 @@ DATASET_DESCRIPTORS: dict[str, DatasetDescriptor] = {
         split_semantics="prepared_sequence_csv_train_validation_test",
         supported_profiles={
             **_DEEPSENSE_PROFILES,
-            "mmwave": _profile("mmwave", "mmw_power_history"),
-            "csi": _profile("csi", "mmw_channel_history", "pilot_dual_view"),
+            "mmwave": ("mmw_power_history",),
+            "csi": ("mmw_channel_history", "pilot_dual_view"),
         },
         default_target_schema="future_beam_sequence",
         artifact_boundary="dataset input local; generated prepared CSV/cache/output/checkpoint ignored",
         metadata={"legacy_dataset_class": "MMWDataset", "migration_stage": "descriptor_shim"},
     ),
 }
-
-
-__all__ = [
-    "DATASET_DESCRIPTORS",
-    "DatasetDescriptor",
-    "ModalityProfile",
-    "dataset_descriptor",
-    "descriptor_metadata",
-    "list_dataset_descriptors",
-    "resolve_dataset_profiles",
-]

@@ -92,17 +92,27 @@ def test_run_index_skips_non_run_partitions_by_default_but_allows_explicit_scan(
     outputs = tmp_path / "outputs"
     cache_run = _write_started_run(outputs / "cache", "cached_run")
     active_run = _write_started_run(outputs / "scene31", "active_run")
+    legacy_root_run = _write_started_run(outputs, "legacy_root_run")
     archive_run = _write_started_run(outputs / "archive", "archived_run")
     manifests_run = _write_started_run(outputs / "cleanup_manifests", "manifest_run")
 
     default_index = build_run_index(outputs=outputs, logs=None, include_resources=False, now=NOW)
     explicit_cache = build_run_index(outputs=outputs / "cache", logs=None, include_resources=False, now=NOW)
+    legacy_index = build_run_index(
+        outputs=outputs,
+        logs=None,
+        include_resources=False,
+        include_legacy_containers=True,
+        now=NOW,
+    )
 
     assert [run["run_name"] for run in default_index["runs"]] == [active_run.name]
     assert any("outputs/cache" in warning for warning in default_index["warnings"])
     assert any("outputs/archive" in warning for warning in default_index["warnings"])
     assert any("outputs/cleanup_manifests" in warning for warning in default_index["warnings"])
+    assert any("legacy_root_run" in warning for warning in default_index["warnings"])
     assert [run["run_name"] for run in explicit_cache["runs"]] == [cache_run.name]
+    assert {run["run_name"] for run in legacy_index["runs"]} == {active_run.name, legacy_root_run.name}
     assert explicit_cache["roots"]["explicit_non_run_partitions"] == [str((outputs / "cache").resolve())]
     assert archive_run.exists()
     assert manifests_run.exists()
@@ -110,9 +120,10 @@ def test_run_index_skips_non_run_partitions_by_default_but_allows_explicit_scan(
 
 def test_run_index_classifies_started_stale_partial_and_filters(tmp_path: Path):
     outputs = tmp_path / "outputs"
-    fresh = _write_started_run(outputs, "fresh_run")
-    stale = _write_started_run(outputs, "stale_run")
-    partial = outputs / "partial_run"
+    scene = outputs / "scene31"
+    fresh = _write_started_run(scene, "fresh_run")
+    stale = _write_started_run(scene, "stale_run")
+    partial = scene / "partial_run"
     partial.mkdir(parents=True)
     dump_config(_base_cfg("partial_run"), partial / "final_config.yaml")
     (partial / "metrics.json").write_text(json.dumps({"loss": 1.0}), encoding="utf-8")
@@ -140,8 +151,9 @@ def test_run_index_uses_associated_killed_and_waiting_logs(tmp_path: Path):
     outputs = tmp_path / "outputs"
     logs = tmp_path / "logs"
     logs.mkdir()
-    killed_run = _write_started_run(outputs, "killed_run")
-    waiting_run = _write_started_run(outputs, "waiting_run")
+    scene = outputs / "scene31"
+    killed_run = _write_started_run(scene, "killed_run")
+    waiting_run = _write_started_run(scene, "waiting_run")
     (logs / "killed_run.log").write_text("epoch 1\nKilled\n", encoding="utf-8")
     (logs / "waiting_run.log").write_text(
         "waiting for checkpoint outputs/teacher/checkpoints/best.pth before launching\n",
@@ -161,7 +173,7 @@ def test_run_index_uses_associated_killed_and_waiting_logs(tmp_path: Path):
 
 def test_run_index_marks_matching_process_as_running(tmp_path: Path):
     outputs = tmp_path / "outputs"
-    run_dir = _write_started_run(outputs, "live_run")
+    run_dir = _write_started_run(outputs / "scene31", "live_run")
     processes = [
         {
             "pid": 1234,
@@ -185,7 +197,7 @@ def test_run_index_marks_matching_process_as_running(tmp_path: Path):
 
 def test_run_index_renderers_include_expected_fields(tmp_path: Path):
     outputs = tmp_path / "outputs"
-    _write_started_run(outputs, "render_run")
+    _write_started_run(outputs / "scene31", "render_run")
 
     index = build_run_index(outputs=outputs, logs=None, include_resources=False, now=NOW)
 

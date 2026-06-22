@@ -8,7 +8,7 @@ import kd_sensing.models.tinyvit as tinyvit
 from kd_sensing.models.jepa import build_visual_token_encoder
 from kd_sensing.models.modular import ModularSequenceModel
 from kd_sensing.models.tinyvit import TINYVIT_VARIANTS, TinyViTImageEncoder
-from kd_sensing.registries import ENCODERS, import_default_components
+from kd_sensing.registries import ENCODERS, RegistryError, import_default_components
 
 
 TINYVIT_ENCODER_NAMES = (
@@ -68,6 +68,13 @@ def test_tinyvit_registry_names_build_with_default_component_import(fake_tinyvit
         assert isinstance(encoder, TinyViTImageEncoder)
 
     assert set(TINYVIT_ENCODER_NAMES) <= set(ENCODERS.list())
+
+
+def test_tinyvit_unknown_registry_name_uses_registry_error():
+    import_default_components()
+
+    with pytest.raises(RegistryError, match="Unknown component 'tinyvit_missing_rgb'.*Available names:"):
+        ENCODERS.build({"type": "tinyvit_missing_rgb"})
 
 
 def test_tinyvit_variant_table_records_expected_backbone_dims():

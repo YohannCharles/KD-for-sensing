@@ -382,9 +382,9 @@ beam-compatible auxiliary targets for occlusion, position, and multitask objecti
 field names and tensor shapes. `deepsense6g_loaders.py` is the modality loader boundary for image, radar,
 GPS, LiDAR, and mmWave inputs. Disabled targets and modalities should not initialize or read their resources.
 
-Canonical virtual config generation is recipe driven under `kd_sensing.config.canonical_recipes`. Base
-fusion mode defaults, objective overlays, and supported advanced overlays are table entries; keep
-`config/canonical.py` as path parsing and recipe application glue.
+Canonical virtual config generation is table driven in `kd_sensing.config.canonical`. Base fusion mode
+defaults, objective overlays, and supported advanced overlays live there with the path parsing and
+recipe application glue.
 
 `kd_sensing.models` is a lazy export package. Keep public names in its export mapping, but import concrete
 implementation modules directly when editing model internals. A plain `import kd_sensing.models` should not

@@ -7,6 +7,7 @@ import torch
 
 from kd_sensing.engine.batch import (
     forward_model,
+    model_cfg_consumes_missing_modality_metadata,
     model_cfg_consumes_reliability_metadata,
     normalize_batch,
     prepare_auxiliary_targets,
@@ -191,6 +192,7 @@ def prepare_task_inputs(
             image_profile=(model_cfg or {}).get("image_profile"),
             input_profiles=(model_cfg or {}).get("input_profiles"),
             include_reliability_metadata=model_cfg_consumes_reliability_metadata(model_cfg),
+            include_missing_modality_metadata=model_cfg_consumes_missing_modality_metadata(model_cfg),
             strict_reliability_metadata=reliability_metadata_strict(model_cfg),
             non_blocking=non_blocking,
         )

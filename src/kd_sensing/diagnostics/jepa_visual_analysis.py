@@ -17,6 +17,11 @@ from torch.utils.data._utils.collate import default_collate
 from kd_sensing.config.io import deep_merge, load_config, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
 from kd_sensing.diagnostics.jepa_benchmark_artifacts import OutputRegistry
+from kd_sensing.diagnostics.gps_query_evidence import (
+    DEFAULT_GPS_QUERY_EVIDENCE_CONFIG,
+    gps_query_evidence_enabled,
+    write_gps_query_evidence_package,
+)
 from kd_sensing.diagnostics.jepa_gps_shortcut_benchmark import (
     GPS_SUITE_TYPES,
     IMAGE_SUITE_TYPES,
@@ -63,7 +68,7 @@ from kd_sensing.utils.seed import set_seed
 
 
 ANALYSIS_VERSION = "jepa_visual_analysis_suite_v1"
-DEFAULT_CASE_GROUPS = ("query_gain", "query_regression", "shared_near_miss", "far_error")
+DEFAULT_CASE_GROUPS = ("query_gain", "query_regression", "shared_near_miss", "shared_failure")
 DEFAULT_FIGURES = {
     "embedding": True,
     "error_anatomy": True,
@@ -199,6 +204,19 @@ def run_jepa_visual_analysis(
         registry.skipped_output(tables_dir / "model_metrics.csv", reason="no_completed_models", kind="table")
         registry.skipped_output(tables_dir / "comparison_samples.csv", reason="no_completed_models", kind="table")
 
+    evidence_context: dict[str, Any] = {"enabled": False}
+    if gps_query_evidence_enabled(cfg):
+        evidence_context = write_gps_query_evidence_package(
+            cfg,
+            output_dir=out,
+            analyses=analyses,
+            comparison_rows=comparison_rows,
+            command=command,
+            warnings=warnings,
+            formats=_output_formats(cfg),
+            dpi=int(cfg.get("outputs", {}).get("dpi", 180)),
+        )
+
     manifest = _build_manifest(
         cfg,
         output_dir=out,
@@ -209,6 +227,7 @@ def run_jepa_visual_analysis(
         dry_run=dry_run,
         registry=registry,
         benchmark_context=benchmark_context,
+        evidence_context=evidence_context,
     )
     report = _build_report(
         cfg,
@@ -218,6 +237,7 @@ def run_jepa_visual_analysis(
         case_rows=case_rows,
         robustness_rows=robustness_rows,
         benchmark_context=benchmark_context,
+        evidence_context=evidence_context,
         warnings=warnings,
     )
     report_path = out / "report.md"
@@ -305,12 +325,18 @@ def sample_metrics_from_logits(
         scene = _metadata_value(row_meta, ("scene", "scene_id", "scene_slug", "town", "scenario"), default="")
         source_csv = _metadata_value(row_meta, ("csv_path", "source_csv", "root_csv"), default="")
         global_index = _metadata_value(row_meta, ("global_index", "index", "row_index", "sample_index"), default=index)
+        condition = _metadata_value(row_meta, ("condition", "difficulty", "suite"), default="")
+        scene_group = _metadata_value(row_meta, ("scene_group", "scene_set", "group"), default="")
+        image_path = _metadata_value(row_meta, ("image_path", "image_file", "frame_path", "rgb_path"), default="")
         row = {
             "model": model_name,
             "sample_id": sample_id,
             "scene": scene,
+            "scene_group": scene_group,
+            "condition": condition,
             "split": split,
             "source_csv": source_csv,
+            "image_path": image_path,
             "global_index": global_index,
             "target": int(truth),
             "top1": top1,
@@ -421,6 +447,7 @@ def _default_analysis_config() -> dict[str, Any]:
             "formats": list(DEFAULT_OUTPUT_FORMATS),
             "dpi": 180,
         },
+        "evidence": deepcopy(DEFAULT_GPS_QUERY_EVIDENCE_CONFIG),
     }
 
 
@@ -431,7 +458,7 @@ def _validate_analysis_config(cfg: dict[str, Any], *, path: Path) -> None:
     for name, spec in models.items():
         if not isinstance(spec, dict):
             raise ValueError(f"models.{name} must be a mapping.")
-    for section in ("split", "sampling", "figures", "robustness", "benchmark", "outputs"):
+    for section in ("split", "sampling", "figures", "robustness", "benchmark", "outputs", "evidence"):
         if not isinstance(cfg.get(section), dict):
             raise ValueError(f"{section} must be a mapping in {path}.")
     formats = cfg.get("outputs", {}).get("formats", DEFAULT_OUTPUT_FORMATS)
@@ -530,6 +557,7 @@ def _load_cached_model_analysis(
             attention,
             rows,
             max_maps=int(suite_cfg.get("sampling", {}).get("max_attention_cases", 256) or 256),
+            token_grid=_token_grid_from_payload(payload),
         )
     elif bool(suite_cfg.get("figures", {}).get("attention", True)):
         warnings.append(f"attention_unavailable:{model_name}:cached_payload_missing_attention")
@@ -924,10 +952,10 @@ def _write_comparison_outputs(
         for row in analysis.sample_rows:
             sample_id = str(row["sample_id"])
             out = joined.setdefault(sample_id, {"sample_id": sample_id})
-            for key in ("scene", "split", "source_csv", "global_index", "target"):
+            for key in ("scene", "scene_group", "condition", "split", "source_csv", "image_path", "global_index", "target"):
                 out.setdefault(key, row.get(key))
             for key, value in row.items():
-                if key in {"sample_id", "scene", "split", "source_csv", "global_index", "target", "model"}:
+                if key in {"sample_id", "scene", "scene_group", "condition", "split", "source_csv", "image_path", "global_index", "target", "model"}:
                     continue
                 out[f"{name}_{key}"] = value
     near_threshold = float(cfg.get("sampling", {}).get("near_distance_threshold", 2))
@@ -958,6 +986,7 @@ def _write_comparison_outputs(
             and (q_rank < b_rank or q_dba > b_dba)
         )
         row["far_error"] = int(bool(all_top3) and all(value > far_threshold for value in all_top3 if not math.isnan(value)))
+        row["shared_failure"] = row["far_error"]
         rows.append(row)
     rows.sort(key=lambda item: str(item["sample_id"]))
     _write_csv(tables_dir / "comparison_samples.csv", rows)
@@ -1548,6 +1577,7 @@ def _build_manifest(
     dry_run: bool,
     registry: OutputRegistry,
     benchmark_context: Mapping[str, Any],
+    evidence_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     model_records = {}
     for name, spec in (cfg.get("models", {}) or {}).items():
@@ -1578,6 +1608,7 @@ def _build_manifest(
         "sampling": cfg.get("sampling", {}),
         "robustness": cfg.get("robustness", {}),
         "benchmark": benchmark_context,
+        "evidence": evidence_context,
         "warnings": sorted(set(str(item) for item in warnings)),
         "outputs": registry.list_outputs(),
     }
@@ -1592,6 +1623,7 @@ def _build_report(
     case_rows: list[dict[str, Any]],
     robustness_rows: list[dict[str, Any]],
     benchmark_context: Mapping[str, Any],
+    evidence_context: Mapping[str, Any],
     warnings: list[str],
 ) -> str:
     lines = [
@@ -1664,6 +1696,8 @@ def _build_report(
         skipped = benchmark_context.get("skipped", [])
         if skipped:
             lines.append("- 部分 benchmark 图表或 case payload 已降级/跳过：" + ", ".join(str(item) for item in skipped) + "。")
+    if evidence_context.get("enabled"):
+        lines.extend(str(item) for item in evidence_context.get("report_lines", []))
     lines.extend(
         [
             "",
@@ -1786,12 +1820,23 @@ def _attention_from_model(model: torch.nn.Module) -> torch.Tensor | None:
     return None
 
 
+def _token_grid_from_payload(payload: Mapping[str, Any]) -> tuple[int, int] | None:
+    for key in ("token_grid_shape", "token_grid", "patch_grid_shape", "grid_shape"):
+        if key not in payload:
+            continue
+        values = np.asarray(payload[key]).reshape(-1)
+        if values.size >= 2:
+            return int(values[0]), int(values[1])
+    return None
+
+
 def _attention_diagnostics_from_array(
     model_name: str,
     attention: np.ndarray,
     sample_rows: list[dict[str, Any]],
     *,
     max_maps: int,
+    token_grid: tuple[int, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, np.ndarray]]:
     arr = np.asarray(attention, dtype=np.float64)
     if arr.ndim == 3:
@@ -1807,7 +1852,7 @@ def _attention_diagnostics_from_array(
         probs = item.reshape(-1, item.shape[-1])
         entropy = np.asarray([_entropy(row / max(row.sum(), 1e-12)) for row in probs], dtype=np.float64)
         avg = item.mean(axis=(0, 1))
-        grid = _attention_grid(avg)
+        grid = _attention_grid(avg, token_grid=token_grid)
         center_y, center_x = _attention_center_of_mass(grid)
         rows.append(
             {
@@ -1820,7 +1865,12 @@ def _attention_diagnostics_from_array(
                 "center_x": float(center_x),
                 "time_steps": int(item.shape[0]),
                 "queries": int(item.shape[1]),
+                "query_count": int(item.shape[1]),
                 "patches": int(item.shape[2]),
+                "patch_count": int(item.shape[2]),
+                "token_grid_height": int(grid.shape[0]),
+                "token_grid_width": int(grid.shape[1]),
+                "aggregation_method": "mean_time_query",
             }
         )
         if len(maps) < max_maps:
@@ -1828,8 +1878,13 @@ def _attention_diagnostics_from_array(
     return rows, maps
 
 
-def _attention_grid(values: np.ndarray) -> np.ndarray:
+def _attention_grid(values: np.ndarray, *, token_grid: tuple[int, int] | None = None) -> np.ndarray:
     flat = np.asarray(values, dtype=np.float64).reshape(-1)
+    if token_grid is not None:
+        height, width = token_grid
+        if height <= 0 or width <= 0 or height * width != flat.size:
+            raise ValueError(f"token_grid {token_grid} does not match {flat.size} attention patches.")
+        return flat.reshape(height, width)
     width = int(round(math.sqrt(flat.size)))
     if width > 0 and width * width == flat.size:
         return flat.reshape(width, width)

@@ -1,8 +1,15 @@
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import tomllib
 
 import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
 
 
 @pytest.mark.parametrize(
@@ -15,22 +22,22 @@ import pytest
         ("kd-sensing-clean-runtime-artifacts", "--manifest"),
         ("kd-sensing-jepa-visual-analysis", "--analysis-config"),
         ("kd-sensing-jepa-gps-shortcut-benchmark", "--manifest"),
+        ("kd-sensing-wcl2025-missing-modality-audit", "--output-root"),
         ("kd-sensing-mmw-town-gps-v2", "--config"),
         ("kd-sensing-plot-mmw-town-gps-v2", "--results-dir"),
         ("kd-sensing-compare-mmw-town-gps-v2", "--previous-dir"),
         ("kd-sensing-train-beambench-image-ae-gps", "--scene"),
         ("kd-sensing-run-beambench-image-ae-gps-tableiii", "--output-root"),
+        ("kd-sensing-tii-vlrg-transformer", "--execute"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):
-    executable = shutil.which(command)
-    assert executable is not None, f"{command} console script is not installed"
-
     result = subprocess.run(
-        [executable, "--help"],
+        _help_command(command),
         text=True,
         capture_output=True,
         check=False,
+        env=_source_env(),
     )
 
     assert result.returncode == 0, result.stderr
@@ -38,8 +45,7 @@ def test_console_script_help_is_available(command: str, expected: str):
 
 
 def test_retired_top8_residual_cli_scripts_are_not_declared():
-    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    text = pyproject.read_text(encoding="utf-8")
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     retired_fragments = [
         "gps-coarse-anchor",
         "gps-window",
@@ -64,3 +70,22 @@ def test_organize_runtime_outputs_cli_help_declares_confirmation_flag():
 
     assert "--manifest" in help_text
     assert "--confirm-organize" in help_text
+
+
+def _help_command(command: str) -> list[str]:
+    executable = shutil.which(command)
+    if executable is not None:
+        return [executable, "--help"]
+    target = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"][command]
+    module_name, function_name = target.split(":", 1)
+    code = f"from {module_name} import {function_name} as _main; raise SystemExit(_main(['--help']))"
+    return [sys.executable, "-c", code]
+
+
+def _source_env() -> dict[str, str]:
+    env = dict(os.environ)
+    paths = [str(SRC)]
+    if env.get("PYTHONPATH"):
+        paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(paths)
+    return env

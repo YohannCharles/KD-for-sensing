@@ -147,6 +147,16 @@ MODELS.register_removed(
     "Student" + "ModalityNet",
     "Use 'cls_token_transformer_fusion' for current lightweight fusion or modular_sequence fusion configs.",
 )
+MODELS.register_removed(
+    "fusion_strong",
+    "Use model.primary.type='modular_sequence' fusion with current modality encoders, projectors, early_concat_gru, and beam_head.",
+)
+MODELS.register_removed(
+    "fusion_lightweight",
+    "Use model.primary.type='modular_sequence' fusion or the current 'cls_token_transformer_fusion' lightweight route.",
+)
+MODELS.register_removed("fusion_teacher", "Use modular_sequence fusion configs.")
+MODELS.register_removed("fusion_student", "Use 'cls_token_transformer_fusion' or modular_sequence fusion configs.")
 LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervised or adaptation losses.")
 LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
 

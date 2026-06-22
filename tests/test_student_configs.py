@@ -1,4 +1,3 @@
-import sys
 from itertools import combinations
 from pathlib import Path
 
@@ -12,21 +11,13 @@ from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.config.canonical import (  # noqa: E402
     CANONICAL_FUSION_MODALITIES,
     build_virtual_fusion_config,
+    training_overrides,
 )
-from kd_sensing.config.canonical_recipes import training_overrides  # noqa: E402
 from kd_sensing.engine.run_lineage import is_historical_kd_metadata, run_lineage_metadata  # noqa: E402
 from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
 from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.fusion.networks import (  # noqa: E402
-    FusionLightweightModalityNet,
-    FusionStrongModalityNet,
-)
-from kd_sensing.models.gps import GpsLightweightModalityNet, GpsStrongModalityNet  # noqa: E402
-from kd_sensing.models.image import ImageLightweightModalityNet, ImageStrongModalityNet  # noqa: E402
-from kd_sensing.models.lidar import LidarLightweightModalityNet, LidarStrongModalityNet  # noqa: E402
-from kd_sensing.models.mmwave import MmWaveLightweightModalityNet, MmWaveStrongModalityNet  # noqa: E402
 from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.models.radar import RadarLightweightModalityNet, RadarStrongModalityNet  # noqa: E402
+from kd_sensing.models.radar import RadarFeatureExtractor  # noqa: E402
 from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
 
 import kd_sensing.models  # noqa: E402,F401
@@ -121,21 +112,6 @@ def test_strong_and_lightweight_registry_names_are_removed(model_type: str):
         MODELS.build(_minimal_registry_config(model_type))
 
 
-def test_legacy_whole_model_classes_remain_narrow_imports():
-    assert ImageStrongModalityNet.__name__ == "ImageModalityNet"
-    assert ImageLightweightModalityNet.__name__ == "ImageStudentModalityNet"
-    assert RadarStrongModalityNet.__name__ == "RadarModalityNet"
-    assert RadarLightweightModalityNet.__name__ == "RadarStudentModalityNet"
-    assert GpsStrongModalityNet.__name__ == "GpsModalityNet"
-    assert GpsLightweightModalityNet.__name__ == "GpsStudentModalityNet"
-    assert LidarStrongModalityNet.__name__ == "LidarModalityNet"
-    assert LidarLightweightModalityNet.__name__ == "LidarStudentModalityNet"
-    assert MmWaveStrongModalityNet.__name__ == "MmWaveModalityNet"
-    assert MmWaveLightweightModalityNet.__name__ == "MmWaveStudentModalityNet"
-    assert FusionStrongModalityNet.__name__ == "FusionTeacherModalityNet"
-    assert FusionLightweightModalityNet.__name__ == "FusionStudentModalityNet"
-
-
 @pytest.mark.parametrize(
     "removed_type",
     [
@@ -212,11 +188,10 @@ def test_run_lineage_metadata_uses_distillation_free_fields():
     assert is_historical_kd_metadata({"method_family": "legacy_kd"}) is True
 
 
-def test_fusion_registry_removed_aliases_fail_and_owner_exports_remain():
-    assert FusionStrongModalityNet is not None
-    assert FusionLightweightModalityNet is not None
+def test_fusion_registry_removed_aliases_fail_and_current_owner_exports_remain():
+    assert CLSTokenTransformerFusionNet is not None
     assert "__all__" not in vars(kd_sensing.models)
-    for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet"]:
+    for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet", "fusion_strong", "fusion_lightweight"]:
         with pytest.raises(AttributeError, match=alias):
             getattr(kd_sensing.models, alias)
         with pytest.raises(RegistryError, match="Removed component"):
@@ -445,22 +420,9 @@ def test_modular_radar_gps_fusion_config_forward_contract():
     assert output.input_features.shape[:2] == (2, 8)
 
 
-def test_radar_strong_rejects_invalid_attention_heads():
-    with pytest.raises(ValueError, match="divisible by num_heads"):
-        RadarStrongModalityNet(
-            radar_channels=2,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 65, 1],
-            num_heads=8,
-        )
-
-
-def test_radar_lightweight_rejects_invalid_gru_params_length():
-    with pytest.raises(ValueError, match="gru_params"):
-        RadarLightweightModalityNet(
-            radar_channels=2,
-            feature_size=64,
-            num_classes=64,
-            gru_params=[64, 64],
-        )
+def test_radar_feature_extractor_rejects_invalid_inputs():
+    extractor = RadarFeatureExtractor(64, in_channels=2)
+    with pytest.raises(ValueError, match="128x64"):
+        extractor(torch.rand(1, 2, 2, 64, 64))
+    with pytest.raises(ValueError, match="channel count"):
+        extractor(torch.rand(1, 2, 1, 128, 64))

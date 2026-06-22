@@ -1,2 +1,1 @@
-from kd_sensing.engine.objectives.metadata import *
-from kd_sensing.engine.objectives.metadata import __all__
+"""Prediction objective helpers live in ``kd_sensing.engine.objectives.metadata``."""

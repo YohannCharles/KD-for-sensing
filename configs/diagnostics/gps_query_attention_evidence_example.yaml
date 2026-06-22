@@ -1,0 +1,78 @@
+models:
+  mean_pool:
+    logits_cache: outputs/analysis/gps_query_evidence_inputs/mean_pool_forward_cache.npz
+    provenance:
+      split: s31_s34_test
+      scene_set: S31-S34
+      seed: 0
+      checkpoint_selection: best
+      label_space: beam8_linear
+      metric_profile: beambench_dba_topk
+  gps_query_pool:
+    logits_cache: outputs/analysis/gps_query_evidence_inputs/gps_query_forward_cache.npz
+    provenance:
+      split: s31_s34_test
+      scene_set: S31-S34
+      seed: 0
+      checkpoint_selection: best
+      label_space: beam8_linear
+      metric_profile: beambench_dba_topk
+  image_gps_anchor:
+    logits_cache: outputs/analysis/gps_query_evidence_inputs/image_gps_anchor_forward_cache.npz
+    provenance:
+      split: s31_s34_test
+      scene_set: S31-S34
+      seed: 0
+      checkpoint_selection: best
+      label_space: beam8_linear
+      metric_profile: beambench_dba_topk
+
+split:
+  evaluation_split: test
+  scenes: [31, 32, 33, 34]
+  horizon_index: 0
+
+sampling:
+  seed: 0
+  query_model: gps_query_pool
+  baseline_model: mean_pool
+  case_groups: [query_gain, query_regression, shared_near_miss, shared_failure]
+  cases_per_group: 3
+  near_distance_threshold: 2
+  far_distance_threshold: 5
+
+figures:
+  embedding: false
+  error_anatomy: false
+  attention: true
+  case_studies: true
+  robustness: false
+
+benchmark:
+  metrics_by_condition: outputs/analysis/rollback_bbfair_matrix/tables/p0_p5_metrics_by_condition.csv
+
+outputs:
+  output_dir: outputs/analysis/gps_query_effectiveness_visualization/example
+  formats: [png]
+  dpi: 180
+
+evidence:
+  enabled: true
+  model_pairs:
+    - name: gps_query_vs_mean_pool
+      query_model: gps_query_pool
+      baseline_model: mean_pool
+  anchor_baselines:
+    - name: strong_image_gps_anchor
+      model: image_gps_anchor
+  metrics:
+    p0_p5: outputs/analysis/rollback_bbfair_matrix/tables/p0_p5_metrics_by_condition.csv
+    benchmark_manifest: outputs/analysis/rollback_bbfair_matrix/benchmark_manifest.json
+  forward_cache:
+    gps_query_pool: outputs/analysis/gps_query_evidence_inputs/gps_query_forward_cache.npz
+  claim_gate:
+    metric: dba
+    min_clean_delta: 0.0
+    min_mean_delta: 0.0
+    max_clean_regression: 0.0
+    min_sample_count: 1

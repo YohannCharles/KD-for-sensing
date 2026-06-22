@@ -145,7 +145,6 @@ def reject_removed_kd_config(cfg: dict[str, Any]) -> None:
                 f"KD support has been removed; {keys} are no longer supported. "
                 "Use a single 'model.primary' config."
             )
-    _reject_removed_kd_values(cfg)
 
 
 def reject_retired_hist_config(cfg: dict[str, Any]) -> None:
@@ -419,26 +418,4 @@ def _is_retired_priority_workflow_config_path(path: Path) -> bool:
     rel_parts = _config_rel_parts(path)
     return bool(rel_parts and rel_parts[0] == "configs" and path.stem in RETIRED_PRIORITY_CONFIG_STEMS)
 
-
-def _reject_removed_kd_values(value: Any, *, path: str = "") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
-            lowered_key = str(key).lower()
-            if lowered_key in {"teacher_model_name", "teacher_checkpoint"}:
-                raise ValueError(
-                    f"KD support has been removed; config key '{child_path}' is no longer supported."
-                )
-            _reject_removed_kd_values(child, path=child_path)
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_removed_kd_values(child, path=f"{path}[{index}]")
-        return
-    if isinstance(value, str):
-        lowered = value.lower()
-        if any(token in lowered for token in ("logits_kd", "rkd", "legacy_kd")):
-            raise ValueError(
-                f"KD support has been removed; config value at '{path}' references removed KD entry '{value}'."
-            )
 

@@ -29,7 +29,10 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 - Image+GPS JEPA BeamBench-fair：`configs/fusion/experiments/jepa_image_gps/*beambench_fair_lowmem.yaml`
 - Image+GPS JEPA 2604-style：`configs/fusion/experiments/jepa_image_gps/*2604_s32_s34_lowmem.yaml`
 - Arnold22 Camera AE+GPS Direct：`configs/fusion/beambench_image_ae_gps_direct.yaml` + 专用 Table III runner
+- TII-VLRG-style Transformer baseline：`configs/fusion/tii_vlrg_transformer_baseline.yaml`
+- WCL-style missing-modality baseline：`configs/fusion/experiments/wcl2025_missing_modality/local_substitute.yaml`
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
+- AMBER-lite missing-modality：`configs/fusion/amber_lite_missing_modality.yaml`
 - MMW GPS v2：`configs/mmw_town_gps_adapter_v2.yaml`
 - CSI hardening：`configs/csi/hardening_matrix/` 和 `configs/fusion/csi_hardening_matrix/`
 - JEPA shortcut benchmark / visual analysis：`configs/diagnostics/*.yaml`
@@ -80,6 +83,40 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 ```
 
 缺 official AE/fusion 权重、official exact test packaging 或官方完整训练搜索流程时，claim status 必须是 `local substitute`、`local strict-validation`、`blocked official reproduction` 或 `upper-bound`，不得写成 official reproduction。旧 `--target-beam-source future` 记录只作为 historical sequence-prediction ablation，不是当前 Table III strict setup。
+
+TII-VLRG-style Transformer 默认作为本仓库本地可训练 baseline 运行，不依赖 TII 官方源码、权重或 checkpoint：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train \
+  --config configs/fusion/tii_vlrg_transformer_baseline.yaml
+```
+
+旧 TII external wrapper 只用于可选导入外部 repo/checkpoint/prediction 的结果，不作为本地 baseline 训练前置。缺 repo/checkpoint/prediction 时只写 `pending` 或 `unavailable`：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer \
+  --config configs/baselines/tii_vlrg_transformer_reproduction.yaml \
+  --dry-run \
+  --output-root outputs/analysis/tii_vlrg_transformer_reproduction
+```
+
+确认外部 repo、checkpoint 和 prediction/metrics 输出路径后才使用 `--execute`；stdout/stderr、manifest、prediction、metrics 和 logs 仍限定在 ignored output root。
+
+WCL-style missing-modality baseline 默认作为本地五模态可训练 baseline 运行，使用 image/radar/GPS/LiDAR/mmWave `modular_sequence`、token fusion 和训练期 `modality_dropout` difficulty profile：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train \
+  --config configs/fusion/experiments/wcl2025_missing_modality/local_substitute.yaml
+```
+
+WCL source audit 仍可作为可选背景命令，但不再是项目 baseline 的前置：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit \
+  --output-root outputs/analysis/wcl2025_missing_modality_reproduction
+```
+
+这些本地 baseline 的 condition-level summary 仍应记录 split、sample_count、label_space、metric_profile、difficulty_digest 和 seed；字段缺失时不要升级为正式结果 claim。
 
 ## Retired AMR-Net_gps_image Tombstone
 
@@ -143,6 +180,20 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/bev
 ```
 
 `paper_full.yaml` is the formal 2604-aligned protocol. `low_memory.yaml` is a paper approximation and `smoke.yaml` is synthetic/mock schema validation only. Ablations under `configs/fusion/experiments/bev_fusion_2604/ablations/` inherit the same split and must be reported by `ablation_name`.
+
+## AMBER-lite Missing-Modality
+
+AMBER-lite 是本地实验 baseline，不是完整 AMBER 官方复现。训练入口复用 `modular_sequence`，默认不下载外部权重，对 image/radar/GPS/LiDAR 做训练期 modality dropout，真实运行产物只写入 ignored `outputs/analysis/local_baselines/amber_lite_missing_modality/`：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/amber_lite_missing_modality.yaml
+```
+
+评估 suite manifest 覆盖 clean、单模态缺失、多模态缺失、poor image、LiDAR/radar unavailable、wrong/async GPS。缺真实 metrics、LiDAR/radar artifact 或 strict comparability 字段时，summary row 必须保持 `pending`、`unavailable` 或 `not_comparable`，不得进入 strict ranking：
+
+```bash
+configs/diagnostics/amber_lite_missing_modality_eval.yaml
+```
 
 ## MMW, CSI, Diagnostics
 

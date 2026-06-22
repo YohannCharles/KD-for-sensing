@@ -802,43 +802,19 @@ def _build_tinyvit_encoder_factory(
     return factory
 
 
-ENCODERS.register("tinyvit_5m_scratch_rgb")(
-    _build_tinyvit_encoder_factory(
-        variant="5m",
-        pretrained=False,
-        pretrained_source="scratch",
-        registry_name="tinyvit_5m_scratch_rgb",
-    )
-)
-ENCODERS.register("tinyvit_5m_22k_rgb")(
-    _build_tinyvit_encoder_factory(
-        variant="5m",
-        pretrained=True,
-        pretrained_source="imagenet22k_distill",
-        registry_name="tinyvit_5m_22k_rgb",
-    )
-)
-ENCODERS.register("tinyvit_11m_scratch_rgb")(
-    _build_tinyvit_encoder_factory(
-        variant="11m",
-        pretrained=False,
-        pretrained_source="scratch",
-        registry_name="tinyvit_11m_scratch_rgb",
-    )
-)
-ENCODERS.register("tinyvit_11m_22k_rgb")(
-    _build_tinyvit_encoder_factory(
-        variant="11m",
-        pretrained=True,
-        pretrained_source="imagenet22k_distill",
-        registry_name="tinyvit_11m_22k_rgb",
-    )
+_TINYVIT_ENCODER_PRESETS = (
+    ("tinyvit_5m_scratch_rgb", "5m", False, "scratch"),
+    ("tinyvit_5m_22k_rgb", "5m", True, "imagenet22k_distill"),
+    ("tinyvit_11m_scratch_rgb", "11m", False, "scratch"),
+    ("tinyvit_11m_22k_rgb", "11m", True, "imagenet22k_distill"),
 )
 
-
-__all__ = [
-    "TinyViT",
-    "TinyViTImageEncoder",
-    "TINYVIT_VARIANTS",
-    "TINYVIT_STAGES",
-]
+for _registry_name, _variant, _pretrained, _pretrained_source in _TINYVIT_ENCODER_PRESETS:
+    ENCODERS.register(_registry_name)(
+        _build_tinyvit_encoder_factory(
+            variant=_variant,
+            pretrained=_pretrained,
+            pretrained_source=_pretrained_source,
+            registry_name=_registry_name,
+        )
+    )
