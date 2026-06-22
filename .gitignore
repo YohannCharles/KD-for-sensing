@@ -39,7 +39,7 @@ pip-wheel-metadata/
 *~
 .DS_Store
 Thumbs.db
-
+.codegraph/
 # Dataset downloads and extracted local data
 dataset/*
 !dataset/.gitkeep
