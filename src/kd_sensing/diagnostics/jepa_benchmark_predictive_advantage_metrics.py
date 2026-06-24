@@ -7,6 +7,8 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     GPS_QUERY_ADVANTAGE_SLICE_TYPE,
     PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
     PREDICTIVE_OUTPUT_FILES,
+    REUSED_WEIGHT_FUSION_DIAGNOSTIC_OUTPUT_FILES,
+    SCENARIO_C_X_D_SUITE_TYPE,
     _condition_digest,
     _float_or_none,
     _model_consumes_reliability_metadata,
@@ -16,6 +18,15 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     _scaled_metric,
 )
 from kd_sensing.diagnostics.jepa_benchmark_predictive import _predictive_jepa_metric_value
+
+
+_FUSION_DIAGNOSTIC_BASELINES = {
+    "gps_only": {"gps_only", "gps_neural"},
+    "image_only": {"image_only_control", "image_jepa_only"},
+    "mean_pooling": {"jepa_mean_pool"},
+    "gps_query": {"jepa_gps_query_pool", "image_jepa_gps"},
+    "supervised_fusion": {"resnet_image_gps", "transformer_image_gps", "camera_ae_gps", "image_ae_gps"},
+}
 
 
 def _predictive_gps_query_advantage_metric_rows(
@@ -357,7 +368,7 @@ def build_predictive_claim_gate(
     elif not model or not advantage_available:
         gate_status = "unavailable"
     elif p_pass and advantage_vs_resnet and advantage_vs_query:
-        gate_status = "pass"
+        gate_status = "p_suite_pass_pending_fusion_diagnostic"
     elif advantage_vs_resnet and advantage_vs_query and not p_pass:
         gate_status = "mechanism_evidence_pending_primary"
     elif p_pass:
@@ -385,6 +396,7 @@ def build_predictive_claim_gate(
         "advantage_pass_vs_gps_query": advantage_vs_query,
         "claim_status": gate_status,
         "advantage_only_cannot_upgrade_primary_claim": True,
+        "fusion_mechanism_requires_reused_weight_diagnostic": True,
     }
 
 
@@ -420,6 +432,168 @@ def build_predictive_diagnostics_bundle_manifest(
     }
 
 
+def fusion_diagnostic_condition_rows(
+    metrics_rows: Iterable[Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    suite_ids = _fusion_diagnostic_suite_ids(manifest)
+    rows = []
+    for row in metrics_rows:
+        suite = str(row.get("suite", ""))
+        suite_type = str(row.get("suite_type", ""))
+        if suite_type == SCENARIO_C_X_D_SUITE_TYPE and suite in suite_ids:
+            rows.append(_fusion_condition_row(row, "cxd_orthogonal_slice"))
+        elif suite_type == GPS_QUERY_ADVANTAGE_SLICE_TYPE and suite.split(":", 1)[0] in suite_ids:
+            rows.append(_fusion_condition_row(row, "hard_negative_slice"))
+    rows.sort(key=lambda item: (str(item.get("condition")), str(item.get("model")), int(item.get("seed") or 0)))
+    return rows
+
+
+def fusion_diagnostic_paired_margins(
+    condition_rows: Iterable[Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in condition_rows]
+    by_condition: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_condition.setdefault(str(row.get("condition")), []).append(row)
+    output: list[dict[str, Any]] = []
+    fallback_limit = _fusion_fallback_limit(manifest)
+    for condition, items in by_condition.items():
+        baselines = {
+            name: next((item for item in items if str(item.get("group")) in groups), None)
+            for name, groups in _FUSION_DIAGNOSTIC_BASELINES.items()
+        }
+        for item in items:
+            value = _float_or_none(item.get("dba"))
+            for baseline_name, baseline in baselines.items():
+                baseline_value = _float_or_none(baseline.get("dba")) if baseline else None
+                fallback_count = int(float(item.get("fallback_count", 0) or 0))
+                status = _diagnostic_status(item, fallback_limit=fallback_limit)
+                if baseline is None or value is None or baseline_value is None:
+                    status = "unavailable"
+                output.append(
+                    {
+                        "condition": condition,
+                        "model": item.get("model", ""),
+                        "group": item.get("group", ""),
+                        "baseline_group": baseline_name,
+                        "baseline_model": baseline.get("model", "") if baseline else "",
+                        "dba": value if value is not None else "",
+                        "baseline_dba": baseline_value if baseline_value is not None else "",
+                        "margin_dba": "" if value is None or baseline_value is None else value - baseline_value,
+                        "sample_count": item.get("sample_count", ""),
+                        "split": item.get("split", ""),
+                        "seed": item.get("seed", ""),
+                        "difficulty_digest": item.get("difficulty_digest", ""),
+                        "fallback_count": fallback_count,
+                        "fallback_too_high": bool(fallback_count > fallback_limit),
+                        "comparability_status": item.get("comparability_status", ""),
+                        "claim_status": status,
+                    }
+                )
+    output.sort(key=lambda item: (str(item["condition"]), str(item["model"]), str(item["baseline_group"])))
+    return output
+
+
+def fusion_diagnostic_summary(
+    condition_rows: Iterable[Mapping[str, Any]],
+    paired_margins: Iterable[Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    rows = [dict(row) for row in condition_rows]
+    by_model: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if str(row.get("evidence_slice")) == "cxd_orthogonal_slice":
+            by_model.setdefault(str(row.get("model")), []).append(row)
+    image_baseline = _first_model_by_group(rows, _FUSION_DIAGNOSTIC_BASELINES["image_only"])
+    gps_baseline = _first_model_by_group(rows, _FUSION_DIAGNOSTIC_BASELINES["gps_only"])
+    fallback_limit = _fusion_fallback_limit(manifest)
+    model_rows = []
+    for model, items in by_model.items():
+        clean = _mean_for_conditions(items, {"C0_sync+D0_full_image"})
+        image_bad = _mean_for_conditions(items, {"C0_sync+D4_partial_occlusion", "C0_sync+D6_burst_missing"})
+        gps_bad = _mean_for_conditions(items, {"C3_random_async+D0_full_image", "C4_severe_async+D0_full_image"})
+        joint_bad = _mean_for_conditions(items, {"C3_random_async+D4_partial_occlusion", "C4_severe_async+D6_burst_missing", "C4_severe_async+D7_joint_worst_case"})
+        image_ref = _mean_for_conditions(image_baseline, {"C0_sync+D4_partial_occlusion", "C0_sync+D6_burst_missing"})
+        gps_ref = _mean_for_conditions(gps_baseline, {"C3_random_async+D0_full_image", "C4_severe_async+D0_full_image"})
+        status = _diagnostic_status(items[0], fallback_limit=fallback_limit)
+        if None in (clean, image_bad, gps_bad, joint_bad):
+            status = "unavailable"
+        model_rows.append(
+            {
+                "model": model,
+                "group": items[0].get("group", ""),
+                "image_rescue": "" if image_bad is None or image_ref is None else image_bad - image_ref,
+                "gps_rescue": "" if gps_bad is None or gps_ref is None else gps_bad - gps_ref,
+                "fusion_interaction": "" if None in (clean, image_bad, gps_bad, joint_bad) else (clean - joint_bad) - ((clean - image_bad) + (clean - gps_bad)),
+                "clean_dba": clean if clean is not None else "",
+                "image_bad_dba": image_bad if image_bad is not None else "",
+                "gps_bad_dba": gps_bad if gps_bad is not None else "",
+                "joint_bad_dba": joint_bad if joint_bad is not None else "",
+                "condition_count": len({str(item.get("condition")) for item in items}),
+                "fallback_count": int(sum(int(float(item.get("fallback_count", 0) or 0)) for item in items)),
+                "comparability_status": items[0].get("comparability_status", ""),
+                "claim_status": status,
+            }
+        )
+    return {
+        "version": "reused_weight_fusion_diagnostic_summary_v1",
+        "report_note": "P0-P5 is a compatibility robustness table; CxD/A-slice metrics are the fusion-mechanism diagnostic table.",
+        "output_files": REUSED_WEIGHT_FUSION_DIAGNOSTIC_OUTPUT_FILES,
+        "models": sorted(model_rows, key=lambda item: (str(item["group"]), str(item["model"]))),
+        "paired_margin_count": len([dict(row) for row in paired_margins]),
+        "comparability": manifest.get("comparability", {}),
+    }
+
+
+def _fusion_diagnostic_suite_ids(manifest: Mapping[str, Any]) -> set[str]:
+    return {
+        str(suite.get("id"))
+        for suite in manifest.get("perturbation_suites", [])
+        if isinstance(suite, Mapping) and bool(suite.get("reused_weight_fusion_diagnostic", False))
+    }
+
+
+def _fusion_condition_row(row: Mapping[str, Any], evidence_slice: str) -> dict[str, Any]:
+    params = row.get("operator_params", {}) if isinstance(row.get("operator_params"), Mapping) else {}
+    return {
+        **dict(row),
+        "evidence_slice": row.get("evidence_slice", evidence_slice),
+        "claim_scope": "mechanism_diagnostic",
+        "hard_negative_peer_pool": params.get("peer_pool_size", params.get("peer_selection_pool", "")),
+        "beam_offset_constraint": params.get("min_beam_offset", params.get("beam_offset_min", "")),
+        "fallback_count": int(float(row.get("fallback_count", 0) or 0)),
+    }
+
+
+def _diagnostic_status(row: Mapping[str, Any], *, fallback_limit: int) -> str:
+    status = str(row.get("status", ""))
+    if row.get("comparability_status") != "passed":
+        return "not_comparable"
+    if status in {"synthetic", "dry_run"} or "mock" in status:
+        return "mock/smoke"
+    if int(float(row.get("fallback_count", 0) or 0)) > fallback_limit:
+        return "not_comparable"
+    return "mechanism_evidence"
+
+
+def _fusion_fallback_limit(manifest: Mapping[str, Any]) -> int:
+    cfg = manifest.get("reused_weight_fusion_diagnostic", {})
+    if not isinstance(cfg, Mapping):
+        cfg = {}
+    return int(cfg.get("max_claim_fallback_count", cfg.get("max_fallback_count", 0)) or 0)
+
+
+def _first_model_by_group(rows: list[dict[str, Any]], groups: set[str]) -> list[dict[str, Any]]:
+    model = next((row.get("model") for row in rows if str(row.get("group")) in groups), None)
+    return [row for row in rows if row.get("model") == model] if model else []
+
+
+def _mean_for_conditions(rows: Iterable[Mapping[str, Any]], conditions: set[str]) -> float | None:
+    return _mean_numeric(row.get("dba") for row in rows if str(row.get("condition")) in conditions)
+
+
 def _mean_numeric(values: Iterable[Any]) -> float | None:
     numbers = [_float_or_none(value) for value in values]
     numbers = [value for value in numbers if value is not None]
@@ -433,4 +607,7 @@ __all__ = [
     "aggregate_gps_query_advantage_margins",
     "build_predictive_claim_gate",
     "build_predictive_diagnostics_bundle_manifest",
+    "fusion_diagnostic_condition_rows",
+    "fusion_diagnostic_paired_margins",
+    "fusion_diagnostic_summary",
 ]

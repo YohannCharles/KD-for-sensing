@@ -38,10 +38,12 @@ CURRENT_PATHS = (
 
 DELETED_SURFACE_PATHS = (
     "src/kd_sensing/_typing.py",
+    "src/kd_sensing/config/source.py",
     "src/kd_sensing/engine/objective_metadata.py",
     "src/kd_sensing/engine/objectives/history.py",
     "src/kd_sensing/engine/objectives/registry.py",
     "src/kd_sensing/data/dataset_runtime.py",
+    "src/kd_sensing/data/transform_ops/normalization.py",
     "src/kd_sensing/config/canonical_recipes/common.py",
     "src/kd_sensing/config/canonical_recipes/advanced.py",
     "src/kd_sensing/config/canonical_recipes/fusion.py",
@@ -55,11 +57,13 @@ DELETED_SURFACE_PATHS = (
 
 FORBIDDEN_IMPORTS = (
     "from kd_sensing._typing import",
+    "from kd_sensing.config.source import",
     "from kd_sensing.engine.objective_metadata import",
     "import kd_sensing.engine.objective_metadata",
     "from kd_sensing.engine.objectives import",
     "from kd_sensing.data import",
     "from kd_sensing.data.datasets import",
+    "from kd_sensing.data.transform_ops.normalization import",
     "from kd_sensing.baselines.beambench.image_ae_gps import",
     "import kd_sensing.baselines.beambench.image_ae_gps",
     "from kd_sensing.diagnostics.jepa_benchmark_common import *",
@@ -132,6 +136,33 @@ def test_internal_code_uses_owner_modules_not_retired_facades():
     assert not violations
 
 
+def test_lightweight_package_markers_do_not_grow_eager_barrel_exports():
+    package_markers = (
+        "src/kd_sensing/data/__init__.py",
+        "src/kd_sensing/data/transform_ops/__init__.py",
+        "src/kd_sensing/diagnostics/__init__.py",
+        "src/kd_sensing/baselines/beambench/__init__.py",
+        "src/kd_sensing/models/__init__.py",
+    )
+    forbidden_fragments = (
+        "from kd_sensing.",
+        "import kd_sensing.",
+        "from .datasets",
+        "from .jepa_",
+        "from .image_ae_gps",
+        "from .fusion",
+        "from .normalization",
+    )
+    violations: list[str] = []
+    for rel_path in package_markers:
+        path = ROOT / rel_path
+        text = path.read_text(encoding="utf-8")
+        for fragment in forbidden_fragments:
+            if fragment in text:
+                violations.append(f"{rel_path}: {fragment}")
+    assert not violations
+
+
 def test_retired_route_mentions_are_contextualized():
     docs = [
         ROOT / "README.md",
@@ -188,10 +219,12 @@ def _python_sources() -> list[Path]:
     roots = (SRC, ROOT / "tests", ROOT / "scripts")
     ignored = {Path(__file__).resolve()}
     return [
-        path
-        for root in roots
-        for path in root.rglob("*.py")
-        if path.resolve() not in ignored and "__pycache__" not in path.parts
+        ROOT / rel_path
+        for rel_path in _git_ls_files()
+        if rel_path.endswith(".py")
+        and (ROOT / rel_path).exists()
+        and any((ROOT / rel_path).is_relative_to(root) for root in roots)
+        and (ROOT / rel_path).resolve() not in ignored
     ]
 
 

@@ -39,7 +39,7 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
 
     assert REQUIRED_FAMILIES <= source_families
     assert manifest["output_root"] == DEFAULT_OUTPUT_ROOT.as_posix()
-    assert len(base) == 179
+    assert len(base) == 182
     assert len(expanded) == len(base) * 3 * 2
     assert len({candidate["variant_id"] for candidate in base}) == len(base)
     assert {row["seed"] for row in expanded} == {17, 23, 42}
@@ -57,6 +57,9 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
         "overlap_k20_s10",
         "resnet18_layer4_tokens",
         "resnet18_layer3_layer4_tokens",
+        "pooler_gps_query_k2_tokens_weighted_readout",
+        "pooler_learned_query_k2_tokens",
+        "pooler_self_attention_k2_tokens",
     }
     assert anchors <= {candidate["variant_id"] for candidate in base}
     required_fields = {
@@ -71,10 +74,27 @@ def test_full_sweep_manifest_schema_candidate_axes_and_seed_expansion():
         "pooler",
         "token_metadata",
         "params_metadata",
+        "pooler_type",
+        "pooler_output_mode",
+        "k_queries",
+        "token_readout_type",
+        "representation_core_type",
         "strict_comparability",
         "metrics_path_template",
     }
     assert required_fields <= set(base[0])
+    readout = next(candidate for candidate in base if candidate["variant_id"] == "pooler_gps_query_k2_tokens_weighted_readout")
+    assert readout["pooler"]["output_mode"] == "tokens"
+    assert readout["token_readout_type"] == "learned_query_weighted"
+    assert readout["representation_core"]["type"] == "query_weighted_token_readout"
+    learned_query = next(candidate for candidate in base if candidate["variant_id"] == "pooler_learned_query_k2_tokens")
+    assert learned_query["pooler"]["type"] == "learned_query_attention"
+    assert learned_query["pooler"]["output_mode"] == "tokens"
+    assert learned_query["representation_core"]["type"] == "token_aware_transformer"
+    self_attention = next(candidate for candidate in base if candidate["variant_id"] == "pooler_self_attention_k2_tokens")
+    assert self_attention["pooler"]["type"] == "self_attention"
+    assert self_attention["pooler"]["output_mode"] == "tokens"
+    assert self_attention["representation_core"]["type"] == "token_aware_transformer"
 
     patch_sizes = {
         candidate["visual_encoder"]["patch_size"]
@@ -129,17 +149,17 @@ def test_screening_mode_limits_candidates_best_top1_eval_and_excludes_teacher(tm
     teacher_jobs = _read_tsv(bundle["job_paths"]["teacher_guided"])
     reeval_jobs = _read_tsv(bundle["job_paths"]["reeval"])
 
-    assert bundle["base_candidate_count"] == 34
-    assert len(expanded) == 170
+    assert bundle["base_candidate_count"] == 37
+    assert len(expanded) == 185
     assert {row["seed"] for row in expanded} == {42}
     assert {row["checkpoint_selection"] for row in expanded} == {"primary", "best_top1", "best_dba"}
     assert len(stage1_jobs) == 14
-    assert len(downstream_jobs) == 34
+    assert len(downstream_jobs) == 37
     assert teacher_jobs == []
-    assert len(reeval_jobs) == 136
+    assert len(reeval_jobs) == 148
     assert {job["checkpoint_selection"] for job in reeval_jobs} == {"best_top1", "best_dba"}
     assert {job["run_id"].rsplit("__eval_", 1)[-1] for job in reeval_jobs} == {"s31_s34", "s32_s34"}
-    assert len(all_jobs) == 185
+    assert len(all_jobs) == 200
 
     assert {
         "tinyvit_5m_scratch_jepa_stage1",
@@ -175,6 +195,18 @@ def test_screening_mode_limits_candidates_best_top1_eval_and_excludes_teacher(tm
     resnet_image_only_cfg = load_config(resnet_image_only_job["config_path"])
     assert resnet_image_only_cfg["model"]["primary"]["modalities"] == ["image"]
     assert resnet_image_only_cfg["model"]["primary"]["encoders"]["image"]["type"] == "resnet18_imagenet_rgb"
+    readout_job = next(job for job in downstream_jobs if job["variant_id"] == "pooler_gps_query_k2_tokens_weighted_readout")
+    readout_cfg = load_config(readout_job["config_path"])
+    assert readout_cfg["model"]["primary"]["encoders"]["image"]["pooler"]["output_mode"] == "tokens"
+    assert readout_cfg["model"]["primary"]["representation_core"]["type"] == "query_weighted_token_readout"
+    learned_query_job = next(job for job in downstream_jobs if job["variant_id"] == "pooler_learned_query_k2_tokens")
+    learned_query_cfg = load_config(learned_query_job["config_path"])
+    assert learned_query_cfg["model"]["primary"]["encoders"]["image"]["pooler"]["type"] == "learned_query_attention"
+    assert learned_query_cfg["model"]["primary"]["representation_core"]["type"] == "token_aware_transformer"
+    self_attention_job = next(job for job in downstream_jobs if job["variant_id"] == "pooler_self_attention_k2_tokens")
+    self_attention_cfg = load_config(self_attention_job["config_path"])
+    assert self_attention_cfg["model"]["primary"]["encoders"]["image"]["pooler"]["type"] == "self_attention"
+    assert self_attention_cfg["model"]["primary"]["representation_core"]["type"] == "token_aware_transformer"
     best_dba_job = next(
         job
         for job in reeval_jobs
@@ -302,6 +334,30 @@ def test_summary_outputs_full_rows_strict_ranking_pareto_and_markdown(tmp_path: 
             ),
             encoding="utf-8",
         )
+    gate_specs = {
+        "pooler_mean": {"top1": 0.40, "dba": 0.70},
+        "pooler_gps_query_k2_frame": {"top1": 0.42, "dba": 0.74},
+        "pooler_gps_query_k2_tokens_weighted_readout": {
+            "top1": 0.44,
+            "dba": 0.75,
+            "diagnostics": {
+                "status": "available",
+                "attention_entropy": 1.1,
+                "effective_patch_count": 3.0,
+                "query_diversity": 0.2,
+                "token_readout": {"readout_weight_mean": [0.3, 0.4, 0.3]},
+            },
+        },
+    }
+    for variant_id, metrics in gate_specs.items():
+        row = next(
+            item
+            for item in expanded
+            if item["variant_id"] == variant_id and item["checkpoint_selection"] == "primary" and item["seed"] == 17
+        )
+        metrics_path = Path(row["metrics_path"])
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
 
     outputs = generate_summary(output_root=output_root)
 
@@ -311,8 +367,10 @@ def test_summary_outputs_full_rows_strict_ranking_pareto_and_markdown(tmp_path: 
     assert len(full_rows) == len(expanded)
     assert any(row["status"] == "missing" for row in full_rows)
     eligible = [row for row in full_rows if row["claim_eligible"]]
-    assert {row["seed"] for row in eligible} == {17, 23, 42}
-    assert all(row["variant_id"] == "patch16_gps_query_pool" for row in eligible)
+    assert {row["seed"] for row in eligible if row["variant_id"] == "patch16_gps_query_pool"} == {17, 23, 42}
+    assert {"pooler_mean", "pooler_gps_query_k2_frame", "pooler_gps_query_k2_tokens_weighted_readout"} <= {
+        row["variant_id"] for row in eligible
+    }
 
     strict_text = Path(outputs["strict_ranking_csv"]).read_text(encoding="utf-8")
     family_text = Path(outputs["family_best_csv"]).read_text(encoding="utf-8")
@@ -325,6 +383,11 @@ def test_summary_outputs_full_rows_strict_ranking_pareto_and_markdown(tmp_path: 
     assert "overlap" in markdown
     assert "CNN local prior" in markdown
     assert "teacher-guided" in markdown
+    readout_gate = json.loads(Path(outputs["readout_gate_json"]).read_text(encoding="utf-8"))
+    gate_row = next(row for row in readout_gate if row["variant_id"] == "pooler_gps_query_k2_tokens_weighted_readout")
+    assert gate_row["delta_dba_vs_pooler_gps_query_k2_frame"] == pytest.approx(0.01)
+    assert gate_row["delta_dba_vs_pooler_mean"] == pytest.approx(0.05)
+    assert gate_row["status"] == "pass"
 
 
 def test_claim_gate_rejects_unavailable_smoke_mismatched_and_missing_rows():

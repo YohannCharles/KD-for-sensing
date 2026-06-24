@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 import torch.nn as nn
@@ -384,6 +384,85 @@ class TokenTransformerCore(nn.Module):
         tokens = features.permute(0, 2, 1, 3).reshape(batch_size, seq_len * modality_count, d_model)
         memory = self.transformer(tokens)
         return memory.view(batch_size, seq_len, modality_count, d_model).mean(dim=2)
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "token_aware_transformer",
+            "d_model": self.d_model,
+            "modality_count": self.modality_count,
+            "token_readout_type": "legacy_uniform_mean",
+            "token_readout_trainable": False,
+            "readout_trainable_params": 0,
+            "readout_aggregation": "mean_dim_2_after_transformer",
+            "k_tokens": self.modality_count,
+        }
+
+
+@REPRESENTATION_CORES.register("gps_query_weighted_token_readout")
+@REPRESENTATION_CORES.register("query_weighted_token_readout")
+class QueryWeightedTokenReadoutCore(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        dropout: float = 0.0,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = int(modality_count)
+        if self.d_model <= 0 or self.modality_count <= 0:
+            raise ValueError("query_weighted_token_readout dimensions must be positive.")
+        self.readout_logits = nn.Parameter(torch.zeros(self.modality_count))
+        self.dropout = nn.Dropout(float(dropout))
+        self.output_dim = self.d_model
+        self.last_token_readout_diagnostics: dict[str, Any] | None = None
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 4:
+            raise ValueError(f"query_weighted_token_readout expects [B, K, T, D], got {tuple(features.shape)}.")
+        batch_size, modality_count, seq_len, d_model = features.shape
+        if int(modality_count) != self.modality_count or int(d_model) != self.d_model:
+            raise ValueError(
+                "query_weighted_token_readout received incompatible features: "
+                f"expected K={self.modality_count}, D={self.d_model}, got {tuple(features.shape)}."
+            )
+        weights = torch.softmax(self.readout_logits, dim=0).to(device=features.device, dtype=features.dtype)
+        output = (self.dropout(features) * weights.view(1, self.modality_count, 1, 1)).sum(dim=1)
+        self.last_token_readout_diagnostics = {
+            "token_readout_type": "learned_query_weighted",
+            "k_tokens": self.modality_count,
+            "readout_weight_mean": weights.detach().cpu().tolist(),
+            "readout_weight_min": float(weights.detach().min().cpu().item()),
+            "readout_weight_max": float(weights.detach().max().cpu().item()),
+            "readout_trainable_params": int(self.readout_logits.numel()),
+            "output_shape": [int(batch_size), int(seq_len), int(d_model)],
+            "condition_id_consumed": False,
+            "blocked_condition_fields": [
+                "target_beam",
+                "beam_power",
+                "sample_label",
+                "predictive_condition_id",
+                "gps_condition",
+                "image_condition",
+                "c_idx",
+                "d_idx",
+            ],
+        }
+        return output
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "query_weighted_token_readout",
+            "d_model": self.d_model,
+            "modality_count": self.modality_count,
+            "token_readout_type": "learned_query_weighted",
+            "token_readout_trainable": True,
+            "readout_trainable_params": int(self.readout_logits.numel()),
+            "k_tokens": self.modality_count,
+            "output_shape": "[B,T,D]",
+            "condition_id_consumed": False,
+        }
 
 
 @REPRESENTATION_CORES.register("amber_lite_missing_modality_transformer")
@@ -1188,6 +1267,9 @@ class ModularSequenceModel(nn.Module):
         feature_consistency_diagnostics = getattr(self.representation_core, "last_feature_consistency_diagnostics", None)
         if isinstance(feature_consistency_diagnostics, dict):
             output["feature_consistency_diagnostics"] = feature_consistency_diagnostics
+        token_readout_diagnostics = getattr(self.representation_core, "last_token_readout_diagnostics", None)
+        if isinstance(token_readout_diagnostics, dict):
+            output["token_readout_diagnostics"] = token_readout_diagnostics
         output.update(self.auxiliary_heads(output_features))
         return output
 
@@ -1277,6 +1359,7 @@ class ModularSequenceModel(nn.Module):
             if _component_consumes_reliability_metadata(self.reranker, reranker_metadata):
                 reliability_consumers.append("safe_residual_reranker")
         core_type = str(self.representation_core_config.get("type", self.representation_core.__class__.__name__))
+        token_readout_type = str(core_metadata.get("token_readout_type", "frame_feature"))
         metadata = {
             "type": "modular_sequence",
             "architecture_category": "component_baseline",
@@ -1294,6 +1377,10 @@ class ModularSequenceModel(nn.Module):
             "representation_core_type": core_type,
             "representation_core_class": self.representation_core.__class__.__name__,
             "representation_core": core_metadata,
+            "token_readout_type": token_readout_type,
+            "token_readout_trainable": bool(core_metadata.get("token_readout_trainable", False)),
+            "readout_trainable_params": int(core_metadata.get("readout_trainable_params", 0) or 0),
+            "k_tokens": core_metadata.get("k_tokens"),
             "heads": heads,
             "geometry_prior": geometry_prior_metadata
             or {
@@ -1394,8 +1481,20 @@ class ModularSequenceModel(nn.Module):
             raw_cfg = {"type": "single_gru" if len(self.modalities) == 1 else "early_concat_gru"}
         cfg = dict(raw_cfg)
         cfg.setdefault("d_model", self.d_model)
-        cfg.setdefault("modality_count", len(self.modalities))
+        cfg.setdefault("modality_count", self._core_token_count(cfg) if _core_consumes_tokens(cfg) else len(self.modalities))
         return cfg
+
+    def _core_token_count(self, core_cfg: Mapping[str, Any]) -> int:
+        del core_cfg
+        count = 0
+        for modality in self.modalities:
+            cfg = self.encoder_configs.get(modality, {})
+            pooler = cfg.get("pooler") if isinstance(cfg.get("pooler"), dict) else cfg.get("gps_query_pool", {})
+            if isinstance(pooler, dict) and str(pooler.get("output_mode", "frame")) == "tokens":
+                count += int(pooler.get("k_queries", 1) or 1)
+            else:
+                count += 1
+        return count
 
     def _validate_modality_encoder_profile(self, modality: str, encoder_cfg: dict[str, Any]) -> None:
         if modality != "image":
@@ -1464,6 +1563,15 @@ def _optional_component_config(
         return {}
     cfg.setdefault("type", default_type)
     return cfg
+
+
+def _core_consumes_tokens(cfg: Mapping[str, Any]) -> bool:
+    return str(cfg.get("type", "")).lower() in {
+        "token_aware_transformer",
+        "token_transformer",
+        "query_weighted_token_readout",
+        "gps_query_weighted_token_readout",
+    }
 
 
 def _encoder_context_dependencies(encoder: nn.Module) -> tuple[str, ...]:

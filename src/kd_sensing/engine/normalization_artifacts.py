@@ -7,14 +7,10 @@ from torch.utils.data import DataLoader
 
 from kd_sensing.config.canonical import SNAPSHOT_VARIANT
 from kd_sensing.data.split_metadata import split_metadata_summary_for_csv
-from kd_sensing.data.transform_ops.normalization import (
-    LidarBEVNormalizer,
-    MmWaveStandardScaler,
-    OcclusionTargetStats,
-    PositionTargetStandardScaler,
-    load_gps_scaler,
-)
 from kd_sensing.data.transform_ops.csi import CSIRMSNormalizer
+from kd_sensing.data.transform_ops.gps import PositionTargetStandardScaler, load_gps_scaler
+from kd_sensing.data.transform_ops.lidar import LidarBEVNormalizer
+from kd_sensing.data.transform_ops.mmwave import MmWaveStandardScaler, OcclusionTargetStats
 
 
 def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: str | Path) -> dict[str, Any]:

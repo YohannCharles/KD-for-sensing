@@ -271,6 +271,58 @@ def _predictive_manifest_dict(config: Path, weights: Path) -> dict:
     }
 
 
+def _fusion_diagnostic_manifest_dict(config: Path, weights: Path, *, comparability_mode: str = "strict") -> dict:
+    base_model = {
+        "config": str(config),
+        "weights": str(weights),
+        "split": "test",
+        "sample_count": 4,
+        "label_space": "beam8",
+        "metric_profile": "beambench_dba_topk",
+        "normalization_artifact": "synthetic",
+        "difficulty_digest": "fusion_diag_default",
+        "checkpoint_provenance": "unit",
+    }
+    models = {
+        "gps": {**base_model, "group": "gps_only", "modalities": ["gps"], "synthetic_metrics": {"sample_count": 4, "dba": 0.56, "top1": 0.30, "top3": 0.55, "top5": 0.70}},
+        "image": {**base_model, "group": "image_jepa_only", "modalities": ["image"], "synthetic_metrics": {"sample_count": 4, "dba": 0.58, "top1": 0.32, "top3": 0.56, "top5": 0.72}},
+        "mean": {**base_model, "group": "jepa_mean_pool", "modalities": ["image", "gps"], "synthetic_metrics": {"sample_count": 4, "dba": 0.60, "top1": 0.34, "top3": 0.58, "top5": 0.74}},
+        "query": {**base_model, "group": "jepa_gps_query_pool", "modalities": ["image", "gps"], "synthetic_metrics": {"sample_count": 4, "dba": 0.66, "top1": 0.40, "top3": 0.64, "top5": 0.80}},
+        "resnet": {**base_model, "group": "resnet_image_gps", "modalities": ["image", "gps"], "synthetic_metrics": {"sample_count": 4, "dba": 0.62, "top1": 0.36, "top3": 0.60, "top5": 0.76}},
+        "image_ae": {**base_model, "group": "image_ae_gps", "modalities": ["image", "gps"], "synthetic_metrics": {"sample_count": 4, "dba": 0.61, "top1": 0.35, "top3": 0.59, "top5": 0.75}},
+    }
+    return {
+        "version": bench.BENCHMARK_VERSION,
+        "models": models,
+        "protocol": {"mode": "evaluation_only", "split": "test"},
+        "reused_weight_fusion_diagnostic": {"max_claim_fallback_count": 0},
+        "perturbation_suites": [
+            {
+                "id": "fusion_diag",
+                "type": "reused_weight_fusion_diagnostic",
+                "preset": bench.REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE,
+                "history_window": 2,
+                "gps_query_advantage_slice": {
+                    "enabled": True,
+                    "conditions": [
+                        "A0_visual_ambiguous_peer",
+                        {"id": "A1_beam_offset_wrong_gps", "params": {"expected_fallback_count": 2, "peer_pool_size": 9, "min_beam_offset": 3}},
+                        "A2_visual_ambiguous_wrong_gps",
+                    ],
+                },
+            }
+        ],
+        "metrics": {"primary": "dba", "topk": [1, 3, 5]},
+        "figures": {"enabled": False},
+        "seeds": [3],
+        "outputs": {"output_dir": str(config.parent / "fusion_diag_out")},
+        "comparability": {
+            "mode": comparability_mode,
+            "keys": ["split", "sample_count", "label_space", "metric_profile", "normalization_artifact", "difficulty_digest"],
+        },
+    }
+
+
 def test_manifest_schema_validation_reports_clear_errors(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     weights = tmp_path / "weights.pth"
@@ -467,6 +519,37 @@ def test_predictive_manifest_preset_required_groups_and_comparability(tmp_path: 
     bad_condition["perturbation_suites"][0]["conditions"] = ["P9_magic"]
     with pytest.raises(ValueError, match="Unknown Predictive JEPA robustness condition"):
         bench.validate_benchmark_manifest(bad_condition, validate_paths=False)
+
+
+def test_reused_weight_fusion_diagnostic_manifest_defaults(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+
+    manifest = bench.validate_benchmark_manifest(_fusion_diagnostic_manifest_dict(config, weights), validate_paths=True)
+    suite = next(item for item in manifest["perturbation_suites"] if item["id"] == "fusion_diag")
+
+    assert suite["type"] == bench.SCENARIO_C_X_D_SUITE_TYPE
+    assert suite["reused_weight_fusion_diagnostic"] is True
+    assert [item["id"] for item in suite["cxd_pairs"]] == [
+        "C0_sync+D0_full_image",
+        "C0_sync+D4_partial_occlusion",
+        "C0_sync+D6_burst_missing",
+        "C3_random_async+D0_full_image",
+        "C4_severe_async+D0_full_image",
+        "C3_random_async+D4_partial_occlusion",
+        "C4_severe_async+D6_burst_missing",
+        "C4_severe_async+D7_joint_worst_case",
+    ]
+    advantage = suite["gps_query_advantage_slice"]
+    assert [item["id"] for item in advantage["conditions"]] == [
+        "A0_visual_ambiguous_peer",
+        "A1_beam_offset_wrong_gps",
+        "A2_visual_ambiguous_wrong_gps",
+    ]
+    assert advantage["conditions"][1]["operator_params"]["expected_fallback_count"] == 2
+    assert bench.evaluate_model_comparability(manifest)["status"] == "passed"
 
 
 def test_predictive_gps_query_plus_plus_strict_manifest_declares_advantage_and_comparison_fields() -> None:
@@ -1020,6 +1103,78 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
     assert viz_manifest["evidence_scope"] == "explanatory_diagnostics_not_primary_claim"
     assert Path(viz["branch_weight_by_condition"]).name == "branch_weight_by_condition.csv"
     assert (tmp_path / "predictive_viz" / "figures" / "target_rank_cdf.png").exists()
+
+
+def test_runner_writes_reused_weight_fusion_diagnostic_outputs(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    manifest_path = tmp_path / "fusion_manifest.yaml"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    manifest_path.write_text(json.dumps(_fusion_diagnostic_manifest_dict(config, weights)), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "fusion_out",
+        force=True,
+        command=["test"],
+    )
+
+    condition_path = Path(result["fusion_diagnostic_condition_metrics"])
+    margin_path = Path(result["fusion_diagnostic_paired_margins"])
+    summary_path = Path(result["fusion_diagnostic_summary"])
+    assert condition_path.exists()
+    assert margin_path.exists()
+    assert summary_path.exists()
+    condition_rows = list(csv.DictReader(condition_path.open("r", encoding="utf-8", newline="")))
+    assert {row["condition"] for row in condition_rows if row["evidence_slice"] == "cxd_orthogonal_slice"} == {
+        "C0_sync+D0_full_image",
+        "C0_sync+D4_partial_occlusion",
+        "C0_sync+D6_burst_missing",
+        "C3_random_async+D0_full_image",
+        "C4_severe_async+D0_full_image",
+        "C3_random_async+D4_partial_occlusion",
+        "C4_severe_async+D6_burst_missing",
+        "C4_severe_async+D7_joint_worst_case",
+    }
+    assert any(row["advantage_condition"] == "A1_beam_offset_wrong_gps" and row["fallback_count"] == "2" for row in condition_rows)
+    assert any(row["hard_negative_peer_pool"] == "9" and row["beam_offset_constraint"] == "3" for row in condition_rows)
+
+    margin_rows = list(csv.DictReader(margin_path.open("r", encoding="utf-8", newline="")))
+    assert {"gps_only", "image_only", "mean_pooling", "gps_query", "supervised_fusion"} <= {
+        row["baseline_group"] for row in margin_rows
+    }
+    assert any(row["condition"] == "A1_beam_offset_wrong_gps" and row["fallback_too_high"] == "True" for row in margin_rows)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    query = next(row for row in summary["models"] if row["group"] == "jepa_gps_query_pool")
+    assert query["image_rescue"] != ""
+    assert query["gps_rescue"] != ""
+    assert query["fusion_interaction"] != ""
+    assert summary["report_note"].startswith("P0-P5 is a compatibility robustness table")
+    manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    assert manifest_out["output_files"]["fusion_diagnostic_condition_metrics"] == "results/fusion_diagnostic_metrics.csv"
+    assert any(item["path"] == "results/fusion_diagnostic_summary.json" for item in manifest_out["outputs"])
+
+
+def test_reused_weight_fusion_diagnostic_marks_not_comparable(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    manifest_path = tmp_path / "fusion_manifest_mismatch.yaml"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    raw = _fusion_diagnostic_manifest_dict(config, weights, comparability_mode="mark")
+    raw["models"]["image"]["metric_profile"] = "other_metric"
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "fusion_out_mismatch",
+        force=True,
+    )
+
+    rows = list(csv.DictReader(Path(result["fusion_diagnostic_paired_margins"]).open("r", encoding="utf-8", newline="")))
+    assert rows
+    assert {row["claim_status"] for row in rows} == {"not_comparable"}
 
 
 def test_cxd_phase_aggregation_marks_incomplete_grid_without_filling() -> None:

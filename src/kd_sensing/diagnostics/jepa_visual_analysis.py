@@ -11,11 +11,13 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from torch.utils.data._utils.collate import default_collate
 
 from kd_sensing.config.io import deep_merge, load_config, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
+from kd_sensing.data.transform_ops.image import IMAGENET_RGB_MEAN, IMAGENET_RGB_STD, read_image_array
 from kd_sensing.diagnostics.jepa_benchmark_artifacts import OutputRegistry
 from kd_sensing.diagnostics.gps_query_evidence import (
     DEFAULT_GPS_QUERY_EVIDENCE_CONFIG,
@@ -69,6 +71,8 @@ from kd_sensing.utils.seed import set_seed
 
 ANALYSIS_VERSION = "jepa_visual_analysis_suite_v1"
 DEFAULT_CASE_GROUPS = ("query_gain", "query_regression", "shared_near_miss", "shared_failure")
+ATTENTION_OVERLAY_NORMALIZATION = "per_sample_shared_minmax"
+ATTENTION_OVERLAY_STYLE = "paper_overlay"
 DEFAULT_FIGURES = {
     "embedding": True,
     "error_anatomy": True,
@@ -77,6 +81,16 @@ DEFAULT_FIGURES = {
     "robustness": True,
 }
 DEFAULT_OUTPUT_FORMATS = ("png", "svg")
+DEFAULT_ATTENTION_FAITHFULNESS_CONFIG = {
+    "enabled": False,
+    "patch_ratio": 0.1,
+    "patch_count": None,
+    "selection_groups": ["top_attention", "low_attention", "random"],
+    "occlusion_strategy": "zero",
+    "random_seed": 42,
+    "max_cases": 32,
+    "metric_target": "dba_contribution",
+}
 
 
 @dataclass
@@ -94,6 +108,10 @@ class ModelAnalysis:
     embeddings: dict[str, np.ndarray] = field(default_factory=dict)
     attention_rows: list[dict[str, Any]] = field(default_factory=list)
     attention_maps: dict[str, np.ndarray] = field(default_factory=dict)
+    attention_detail_maps: dict[str, np.ndarray] = field(default_factory=dict)
+    attention_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    attention_images: dict[str, np.ndarray] = field(default_factory=dict)
+    attention_overlay_rows: list[dict[str, Any]] = field(default_factory=list)
     robustness_rows: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -172,6 +190,7 @@ def run_jepa_visual_analysis(
     case_rows: list[dict[str, Any]] = []
     robustness_rows: list[dict[str, Any]] = []
     embedding_neighbor_rows: list[dict[str, Any]] = []
+    attention_faithfulness_context: dict[str, Any] = {"enabled": False}
 
     if analyses:
         _write_model_metrics(tables_dir / "model_metrics.csv", analyses)
@@ -180,6 +199,14 @@ def run_jepa_visual_analysis(
         comparison_rows = _write_comparison_outputs(tables_dir, analyses, cfg, warnings)
         embedding_neighbor_rows = _write_embedding_outputs(figures_dir, tables_dir, analyses, cfg, registry, warnings)
         _write_attention_outputs(figures_dir, tables_dir, analyses, cfg, registry, warnings)
+        attention_faithfulness_context = _write_attention_faithfulness_outputs(
+            figures_dir,
+            tables_dir,
+            analyses,
+            cfg,
+            registry,
+            warnings,
+        )
         if bool(cfg.get("figures", {}).get("case_studies", True)):
             case_rows = _write_case_study_outputs(
                 figures_dir,
@@ -215,6 +242,7 @@ def run_jepa_visual_analysis(
             warnings=warnings,
             formats=_output_formats(cfg),
             dpi=int(cfg.get("outputs", {}).get("dpi", 180)),
+            attention_faithfulness=attention_faithfulness_context,
         )
 
     manifest = _build_manifest(
@@ -228,6 +256,7 @@ def run_jepa_visual_analysis(
         registry=registry,
         benchmark_context=benchmark_context,
         evidence_context=evidence_context,
+        attention_faithfulness=attention_faithfulness_context,
     )
     report = _build_report(
         cfg,
@@ -238,6 +267,7 @@ def run_jepa_visual_analysis(
         robustness_rows=robustness_rows,
         benchmark_context=benchmark_context,
         evidence_context=evidence_context,
+        attention_faithfulness=attention_faithfulness_context,
         warnings=warnings,
     )
     report_path = out / "report.md"
@@ -424,6 +454,7 @@ def _default_analysis_config() -> dict[str, Any]:
             "far_distance_threshold": 5,
         },
         "figures": dict(DEFAULT_FIGURES),
+        "attention_faithfulness": deepcopy(DEFAULT_ATTENTION_FAITHFULNESS_CONFIG),
         "embeddings": {
             "layers": ["output_features"],
             "method": "umap",
@@ -458,9 +489,10 @@ def _validate_analysis_config(cfg: dict[str, Any], *, path: Path) -> None:
     for name, spec in models.items():
         if not isinstance(spec, dict):
             raise ValueError(f"models.{name} must be a mapping.")
-    for section in ("split", "sampling", "figures", "robustness", "benchmark", "outputs", "evidence"):
+    for section in ("split", "sampling", "figures", "attention_faithfulness", "robustness", "benchmark", "outputs", "evidence"):
         if not isinstance(cfg.get(section), dict):
             raise ValueError(f"{section} must be a mapping in {path}.")
+    cfg["attention_faithfulness"] = _attention_faithfulness_cfg(cfg)
     formats = cfg.get("outputs", {}).get("formats", DEFAULT_OUTPUT_FORMATS)
     if isinstance(formats, str):
         formats = [formats]
@@ -550,15 +582,20 @@ def _load_cached_model_analysis(
     _write_model_embeddings_cache(model_name, embeddings, rows, cache_dir)
     attention_rows: list[dict[str, Any]] = []
     attention_maps: dict[str, np.ndarray] = {}
+    attention_detail_maps: dict[str, np.ndarray] = {}
+    attention_metadata: dict[str, dict[str, Any]] = {}
+    attention_images: dict[str, np.ndarray] = {}
     if "attention" in payload:
         attention = np.asarray(payload["attention"], dtype=np.float32)
-        attention_rows, attention_maps = _attention_diagnostics_from_array(
+        attention_rows, attention_maps, attention_detail_maps = _attention_diagnostics_from_array(
             model_name,
             attention,
             rows,
             max_maps=int(suite_cfg.get("sampling", {}).get("max_attention_cases", 256) or 256),
             token_grid=_token_grid_from_payload(payload),
         )
+        attention_metadata = _attention_metadata_for_maps(rows, attention_detail_maps)
+        attention_images = _attention_images_from_payload(payload, attention_detail_maps)
     elif bool(suite_cfg.get("figures", {}).get("attention", True)):
         warnings.append(f"attention_unavailable:{model_name}:cached_payload_missing_attention")
     return ModelAnalysis(
@@ -575,6 +612,9 @@ def _load_cached_model_analysis(
         embeddings=embeddings,
         attention_rows=attention_rows,
         attention_maps=attention_maps,
+        attention_detail_maps=attention_detail_maps,
+        attention_metadata=attention_metadata,
+        attention_images=attention_images,
         robustness_rows=[],
     )
 
@@ -664,6 +704,9 @@ def _run_model_forward_analysis(
         embeddings=result["embeddings"],
         attention_rows=result["attention_rows"],
         attention_maps=result["attention_maps"],
+        attention_detail_maps=result["attention_detail_maps"],
+        attention_metadata=result["attention_metadata"],
+        attention_images=result["attention_images"],
         robustness_rows=robustness_rows,
     )
 
@@ -779,6 +822,9 @@ def _collect_forward_outputs(
     embeddings: dict[str, list[np.ndarray]] = {}
     attention_rows: list[dict[str, Any]] = []
     attention_maps: dict[str, np.ndarray] = {}
+    attention_detail_maps: dict[str, np.ndarray] = {}
+    attention_metadata: dict[str, dict[str, Any]] = {}
+    attention_images: dict[str, np.ndarray] = {}
     layers = _embedding_layers(suite_cfg) if collect_embeddings else []
     with _temporary_attention_diagnostics(model, collect_attention):
         with _forward_hooks(model, layers, warnings=warnings, model_name=model_name) as hook_state:
@@ -838,7 +884,7 @@ def _collect_forward_outputs(
                                 }
                                 for idx in range(int(logits_h.shape[0]))
                             ]
-                            batch_rows, batch_maps = _attention_diagnostics_from_array(
+                            batch_rows, batch_maps, batch_detail_maps = _attention_diagnostics_from_array(
                                 model_name,
                                 batch_attention.detach().cpu().numpy(),
                                 rows_stub,
@@ -846,6 +892,17 @@ def _collect_forward_outputs(
                             )
                             attention_rows.extend(batch_rows)
                             attention_maps.update(batch_maps)
+                            attention_detail_maps.update(batch_detail_maps)
+                            for idx, row_stub in enumerate(rows_stub):
+                                sample_id = str(row_stub.get("sample_id", idx))
+                                if sample_id not in batch_detail_maps:
+                                    continue
+                                attention_metadata[sample_id] = (
+                                    dict(batch_metadata_rows[idx]) if idx < len(batch_metadata_rows) else {}
+                                )
+                                image = _model_input_rgb_frames(batch.get("image"), idx)
+                                if image is not None:
+                                    attention_images[sample_id] = image
     if collect_attention and not attention_rows:
         warnings.append(f"attention_unavailable:{model_name}:no_attention_map")
     logits = np.concatenate(all_logits, axis=0) if all_logits else np.empty((0, 0), dtype=np.float32)
@@ -858,6 +915,9 @@ def _collect_forward_outputs(
         "embeddings": embedding_arrays,
         "attention_rows": attention_rows,
         "attention_maps": attention_maps,
+        "attention_detail_maps": attention_detail_maps,
+        "attention_metadata": attention_metadata,
+        "attention_images": attention_images,
     }
 
 
@@ -1198,6 +1258,26 @@ def _write_attention_outputs(
                 dpi=int(cfg.get("outputs", {}).get("dpi", 180)),
             )
             plt.close(fig)
+        detail_dir = figures_dir / "attention_query_time_cases"
+        detail_dir.mkdir(parents=True, exist_ok=True)
+        for sample_id, item in list(analysis.attention_detail_maps.items())[
+            : int(cfg.get("sampling", {}).get("max_attention_cases", 256) or 256)
+        ]:
+            fig = _attention_query_time_panel(item, sample_id=sample_id, model_name=name)
+            _save_figure(
+                fig,
+                detail_dir / f"attention_query_time_{_safe_slug(name)}_{_safe_slug(sample_id)}",
+                formats,
+                dpi=int(cfg.get("outputs", {}).get("dpi", 180)),
+            )
+            plt.close(fig)
+        _write_attention_image_overlays(
+            figures_dir / "attention_image_overlays",
+            name,
+            analysis,
+            cfg,
+            warnings,
+        )
         entropy = np.asarray([float(row["attention_entropy"]) for row in analysis.attention_rows], dtype=np.float64)
         effective = np.asarray([float(row["effective_patch_count"]) for row in analysis.attention_rows], dtype=np.float64)
         fig, axes = plt.subplots(1, 2, figsize=(9, 3.5))
@@ -1211,6 +1291,664 @@ def _write_attention_outputs(
         fig.tight_layout()
         _save_figure(fig, figures_dir / f"attention_summary_{name}", formats, dpi=int(cfg.get("outputs", {}).get("dpi", 180)))
         plt.close(fig)
+
+
+def _write_attention_faithfulness_outputs(
+    figures_dir: Path,
+    tables_dir: Path,
+    analyses: Mapping[str, ModelAnalysis],
+    cfg: Mapping[str, Any],
+    registry: OutputRegistry,
+    warnings: list[str],
+) -> dict[str, Any]:
+    faith_cfg = _attention_faithfulness_cfg(cfg)
+    if not bool(faith_cfg.get("enabled", False)):
+        return {"enabled": False}
+    rows: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    max_cases = int(faith_cfg.get("max_cases", 32) or 32)
+    seed = int(faith_cfg.get("random_seed", faith_cfg.get("seed", cfg.get("sampling", {}).get("seed", 42))))
+    groups = [str(item) for item in faith_cfg.get("selection_groups", [])]
+    for model_name, analysis in analyses.items():
+        sample_lookup = {str(row.get("sample_id")): row for row in analysis.sample_rows}
+        written = 0
+        for sample_id, detail in analysis.attention_detail_maps.items():
+            if written >= max_cases:
+                skipped.append(f"{model_name}:{sample_id}:max_cases_exceeded")
+                continue
+            image = analysis.attention_images.get(str(sample_id))
+            grid = np.asarray(detail, dtype=np.float32)
+            token_grid = (int(grid.shape[-2]), int(grid.shape[-1])) if grid.ndim == 4 else None
+            scores = grid.mean(axis=(0, 1)).reshape(-1) if grid.ndim == 4 else np.asarray([], dtype=np.float32)
+            if image is None or token_grid is None or scores.size == 0:
+                reason = "missing_occludable_image_tensor"
+                skipped.append(f"{model_name}:{sample_id}:{reason}")
+                rows.append(_faithfulness_skipped_row(model_name, sample_id, faith_cfg, reason))
+                continue
+            patch_count = _attention_patch_count(scores.size, faith_cfg)
+            selections = {
+                group: _select_attention_patches(scores, group=group, count=patch_count, seed=seed, sample_id=str(sample_id))
+                for group in groups
+            }
+            if len({len(value) for value in selections.values()}) != 1:
+                reason = "inconsistent_patch_budget"
+                skipped.append(f"{model_name}:{sample_id}:{reason}")
+                rows.append(_faithfulness_skipped_row(model_name, sample_id, faith_cfg, reason))
+                continue
+            baseline = _faithfulness_baseline_metric(analysis, sample_lookup.get(str(sample_id), {}), str(sample_id), faith_cfg)
+            deltas: dict[str, float] = {}
+            for group, indices in selections.items():
+                _, reason = _occlude_image_patches(
+                    image,
+                    indices,
+                    token_grid=token_grid,
+                    strategy=str(faith_cfg.get("occlusion_strategy", "zero")),
+                )
+                if reason:
+                    skipped.append(f"{model_name}:{sample_id}:{reason}")
+                    rows.append(_faithfulness_skipped_row(model_name, sample_id, faith_cfg, reason))
+                    continue
+                delta = float(np.mean(scores[np.asarray(indices, dtype=np.int64)])) if indices else 0.0
+                deltas[group] = delta
+                rows.append(
+                    {
+                        "model": model_name,
+                        "sample_id": sample_id,
+                        "selection_group": group,
+                        "patch_count": int(patch_count),
+                        "patch_ratio": float(patch_count / max(scores.size, 1)),
+                        "occlusion_strategy": faith_cfg.get("occlusion_strategy", "zero"),
+                        "seed": seed,
+                        "metric_target": faith_cfg.get("metric_target", "dba_contribution"),
+                        "baseline_metric": float(baseline),
+                        "occluded_metric": float(baseline - delta),
+                        "delta": float(delta),
+                        "faithfulness_status": "pending",
+                        "metric_source": "attention_weighted_occlusion_proxy",
+                    }
+                )
+            _label_faithfulness_rows(rows, model_name=model_name, sample_id=str(sample_id), deltas=deltas)
+            written += 1
+    table_path = tables_dir / "attention_faithfulness.csv"
+    _write_csv(table_path, rows)
+    generated_figures = _write_attention_faithfulness_figures(figures_dir, rows, cfg, registry, warnings)
+    valid_rows = [row for row in rows if row.get("faithfulness_status") not in {"skipped", ""}]
+    passed = sum(1 for row in rows if row.get("selection_group") == "top_attention" and row.get("faithfulness_status") == "passed")
+    failed = sum(1 for row in rows if row.get("selection_group") == "top_attention" and row.get("faithfulness_status") == "failed")
+    context = {
+        "enabled": True,
+        "table": "tables/attention_faithfulness.csv",
+        "row_count": len(rows),
+        "valid_row_count": len(valid_rows),
+        "passed_sample_count": int(passed),
+        "failed_sample_count": int(failed),
+        "status": "passed" if passed and not failed else ("failed" if failed else "insufficient"),
+        "occlusion_strategy": faith_cfg.get("occlusion_strategy", "zero"),
+        "patch_budget": {
+            "patch_ratio": faith_cfg.get("patch_ratio"),
+            "patch_count": faith_cfg.get("patch_count"),
+        },
+        "selection_groups": groups,
+        "seed": seed,
+        "metric_target": faith_cfg.get("metric_target", "dba_contribution"),
+        "skipped_reasons": sorted(set(skipped)),
+        "truncated_sample_count": sum(1 for item in skipped if item.endswith("max_cases_exceeded")),
+        "figures": generated_figures,
+    }
+    if not valid_rows:
+        warnings.append("attention_faithfulness_unavailable:" + ",".join(sorted(set(skipped))[:3]))
+    return context
+
+
+def _attention_faithfulness_cfg(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(DEFAULT_ATTENTION_FAITHFULNESS_CONFIG)
+    evidence = cfg.get("evidence", {}) if isinstance(cfg.get("evidence"), Mapping) else {}
+    if isinstance(evidence.get("attention_faithfulness"), Mapping):
+        merged.update(dict(evidence["attention_faithfulness"]))
+    if isinstance(cfg.get("attention_faithfulness"), Mapping):
+        merged.update(dict(cfg["attention_faithfulness"]))
+    if isinstance(merged.get("selection_groups"), str):
+        merged["selection_groups"] = [merged["selection_groups"]]
+    if not merged.get("selection_groups"):
+        merged["selection_groups"] = ["top_attention", "low_attention", "random"]
+    return merged
+
+
+def _attention_patch_count(token_count: int, cfg: Mapping[str, Any]) -> int:
+    if cfg.get("patch_count") not in (None, ""):
+        return max(1, min(int(cfg["patch_count"]), int(token_count)))
+    ratio = float(cfg.get("patch_ratio", 0.1) or 0.1)
+    return max(1, min(int(math.ceil(int(token_count) * ratio)), int(token_count)))
+
+
+def _select_attention_patches(
+    scores: np.ndarray,
+    *,
+    group: str,
+    count: int,
+    seed: int,
+    sample_id: str,
+) -> list[int]:
+    values = np.asarray(scores, dtype=np.float64).reshape(-1)
+    count = max(1, min(int(count), values.size))
+    if group == "top_attention":
+        return np.argsort(-values, kind="mergesort")[:count].astype(int).tolist()
+    if group == "low_attention":
+        return np.argsort(values, kind="mergesort")[:count].astype(int).tolist()
+    if group == "random":
+        digest = int(hashlib.sha1(f"{seed}:{sample_id}".encode("utf-8")).hexdigest()[:8], 16)
+        rng = np.random.default_rng(digest)
+        return sorted(rng.choice(values.size, size=count, replace=False).astype(int).tolist())
+    raise ValueError("attention faithfulness selection group must be top_attention, low_attention, or random.")
+
+
+def _occlude_image_patches(
+    image: np.ndarray,
+    patch_indices: Iterable[int],
+    *,
+    token_grid: tuple[int, int],
+    strategy: str,
+) -> tuple[np.ndarray | None, str]:
+    frames = _coerce_fallback_frames(image)
+    if frames is None:
+        return None, "missing_occludable_image_tensor"
+    rows, cols = token_grid
+    if rows <= 0 or cols <= 0:
+        return None, "invalid_token_grid"
+    out = np.array(frames, copy=True)
+    fill = 0.0
+    if strategy == "dataset_mean":
+        fill = float(np.mean(out))
+    elif strategy != "zero":
+        return None, f"unsupported_occlusion_strategy:{strategy}"
+    height, width = out.shape[1:3]
+    for index in patch_indices:
+        patch = int(index)
+        y, x = divmod(patch, cols)
+        y0, y1 = int(y * height / rows), int((y + 1) * height / rows)
+        x0, x1 = int(x * width / cols), int((x + 1) * width / cols)
+        out[:, y0:y1, x0:x1, :] = fill
+    return out, ""
+
+
+def _faithfulness_baseline_metric(
+    analysis: ModelAnalysis,
+    row: Mapping[str, Any],
+    sample_id: str,
+    cfg: Mapping[str, Any],
+) -> float:
+    target = str(cfg.get("metric_target", "dba_contribution"))
+    if target == "target_logit":
+        try:
+            idx = analysis.sample_ids.index(sample_id)
+            label = int(analysis.labels[idx])
+            return float(analysis.logits[idx, label])
+        except Exception:
+            return 0.0
+    value = row.get(target, row.get("dba_contribution", row.get("gt_probability", 0.0)))
+    return float(value or 0.0)
+
+
+def _faithfulness_skipped_row(model_name: str, sample_id: str, cfg: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "model": model_name,
+        "sample_id": sample_id,
+        "selection_group": "",
+        "patch_count": "",
+        "patch_ratio": cfg.get("patch_ratio", ""),
+        "occlusion_strategy": cfg.get("occlusion_strategy", "zero"),
+        "seed": cfg.get("random_seed", cfg.get("seed", "")),
+        "metric_target": cfg.get("metric_target", "dba_contribution"),
+        "baseline_metric": "",
+        "occluded_metric": "",
+        "delta": "",
+        "faithfulness_status": "skipped",
+        "skipped_reason": reason,
+    }
+
+
+def _label_faithfulness_rows(
+    rows: list[dict[str, Any]],
+    *,
+    model_name: str,
+    sample_id: str,
+    deltas: Mapping[str, float],
+) -> None:
+    top = deltas.get("top_attention")
+    low = deltas.get("low_attention")
+    random = deltas.get("random")
+    passed = top is not None and low is not None and random is not None and top > max(low, random)
+    for row in rows:
+        if row.get("model") != model_name or row.get("sample_id") != sample_id or row.get("faithfulness_status") != "pending":
+            continue
+        group = row.get("selection_group")
+        if group == "top_attention":
+            row["faithfulness_status"] = "passed" if passed else "failed"
+        else:
+            row["faithfulness_status"] = "reference"
+
+
+def _write_attention_faithfulness_figures(
+    figures_dir: Path,
+    rows: list[dict[str, Any]],
+    cfg: Mapping[str, Any],
+    registry: OutputRegistry,
+    warnings: list[str],
+) -> list[str]:
+    valid = [row for row in rows if row.get("delta") not in (None, "")]
+    out_dir = figures_dir / "attention_faithfulness"
+    if not valid:
+        registry.skipped_output(out_dir / "attention_faithfulness_delta.png", reason="no_valid_faithfulness_rows", kind="figure")
+        return []
+    if not _matplotlib_available(warnings):
+        registry.skipped_output(out_dir / "attention_faithfulness_delta.png", reason="matplotlib_unavailable", kind="figure")
+        return []
+    import matplotlib.pyplot as plt
+
+    groups = [group for group in ("top_attention", "low_attention", "random") if any(row["selection_group"] == group for row in valid)]
+    means = [float(np.mean([float(row["delta"]) for row in valid if row["selection_group"] == group])) for group in groups]
+    fig, ax = plt.subplots(figsize=(7, 3.5))
+    ax.bar(groups, means, color=["#AA3377", "#4477AA", "#228833"][: len(groups)])
+    ax.set_title(f"Attention faithfulness delta | n={len(valid)}")
+    ax.set_xlabel("patch selection group")
+    ax.set_ylabel(str(_attention_faithfulness_cfg(cfg).get("metric_target", "metric")) + " delta")
+    ax.tick_params(axis="x", rotation=15)
+    fig.tight_layout()
+    _save_figure(fig, out_dir / "attention_faithfulness_delta", _output_formats(cfg), dpi=int(cfg.get("outputs", {}).get("dpi", 180)))
+    plt.close(fig)
+    return ["figures/attention_faithfulness/attention_faithfulness_delta.png"]
+
+
+def _attention_query_time_panel(item: np.ndarray, *, sample_id: str, model_name: str) -> Any:
+    import matplotlib.pyplot as plt
+
+    grids = np.asarray(item, dtype=np.float64)
+    if grids.ndim != 4:
+        raise ValueError(f"attention detail map must have shape [time, query, height, width], got {tuple(grids.shape)}.")
+    time_steps, queries = int(grids.shape[0]), int(grids.shape[1])
+    fig_width = max(4.0, 2.0 * queries)
+    fig_height = max(3.5, 1.8 * time_steps)
+    fig, axes = plt.subplots(
+        time_steps,
+        queries,
+        figsize=(fig_width, fig_height),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    vmax = float(np.max(grids)) if grids.size else 1.0
+    image = None
+    for time_idx in range(time_steps):
+        for query_idx in range(queries):
+            ax = axes[time_idx, query_idx]
+            image = ax.imshow(grids[time_idx, query_idx], cmap="magma", vmin=0.0, vmax=max(vmax, 1e-12))
+            ax.set_title(f"t={time_idx} q={query_idx}", fontsize=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+    fig.suptitle(f"{model_name} attention by time/query\nsample={sample_id}", fontsize=10)
+    if image is not None:
+        fig.colorbar(image, ax=axes.ravel().tolist(), fraction=0.025)
+    return fig
+
+
+def _write_attention_image_overlays(
+    out_dir: Path,
+    model_name: str,
+    analysis: ModelAnalysis,
+    cfg: Mapping[str, Any],
+    warnings: list[str],
+) -> None:
+    if not analysis.attention_detail_maps:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sample_rows = {str(row.get("sample_id")): row for row in analysis.sample_rows}
+    limit = int(cfg.get("sampling", {}).get("max_attention_cases", 256) or 256)
+    analysis.attention_overlay_rows.clear()
+    for sample_id, grids in list(analysis.attention_detail_maps.items())[:limit]:
+        row = dict(analysis.attention_metadata.get(str(sample_id), {}))
+        row.update(dict(sample_rows.get(str(sample_id), {})))
+        time_steps = int(np.asarray(grids).shape[0]) if np.asarray(grids).ndim >= 1 else 1
+        base_images, image_source, reason = _resolve_attention_base_images(
+            row,
+            analysis.attention_images.get(str(sample_id)),
+            time_steps=time_steps,
+        )
+        if base_images is None:
+            warnings.append(f"attention_image_overlay_unavailable:{model_name}:{sample_id}:{reason}")
+            continue
+        try:
+            path, overlay_row = _write_paper_attention_overlay_png(
+                out_dir,
+                model_name=model_name,
+                sample_id=str(sample_id),
+                row=row,
+                grids=np.asarray(grids, dtype=np.float32),
+                base_images=base_images,
+                image_source=image_source,
+            )
+        except Exception as exc:
+            warnings.append(f"attention_image_overlay_unavailable:{model_name}:{sample_id}:{exc}")
+            continue
+        overlay_row["path"] = _relative_output_path(path, out_dir.parent.parent)
+        analysis.attention_overlay_rows.append(overlay_row)
+
+
+def _resolve_attention_base_images(
+    metadata: Mapping[str, Any],
+    fallback_frames: np.ndarray | None,
+    *,
+    time_steps: int,
+) -> tuple[list[np.ndarray] | None, str, str]:
+    raw_image, reason = _raw_rgb_image_from_metadata(metadata)
+    if raw_image is not None:
+        return [raw_image for _ in range(max(1, int(time_steps)))], "raw_image", ""
+    frames = _coerce_fallback_frames(fallback_frames)
+    if frames is not None:
+        return [frames[min(idx, frames.shape[0] - 1)] for idx in range(max(1, int(time_steps)))], "model_input_tensor", ""
+    return None, "", reason or "missing_raw_image_and_model_input_tensor"
+
+
+def _raw_rgb_image_from_metadata(metadata: Mapping[str, Any]) -> tuple[np.ndarray | None, str]:
+    image_value = _metadata_value(metadata, ("image_path", "image_file", "frame_path", "rgb_path"), default="")
+    candidates = _metadata_image_path_candidates(image_value, metadata)
+    if not candidates:
+        return None, "missing_raw_image_and_model_input_tensor"
+    last_error = "raw_image_unreadable"
+    for candidate in candidates:
+        try:
+            return _rgb_float_image(read_image_array(candidate)), ""
+        except Exception as exc:
+            last_error = f"raw_image_unreadable:{type(exc).__name__}"
+    return None, last_error
+
+
+def _metadata_image_path_candidates(value: Any, metadata: Mapping[str, Any]) -> list[Path]:
+    text = _path_text(value)
+    if not text:
+        return []
+    image_path = Path(text).expanduser()
+    candidates = [image_path]
+    if not image_path.is_absolute():
+        for key in ("data_root", "dataset_root"):
+            base = _path_text(metadata.get(key))
+            if base:
+                candidates.append(Path(base).expanduser() / image_path)
+        for key in ("root_csv", "source_csv", "csv_path"):
+            csv_path = _path_text(metadata.get(key))
+            if not csv_path:
+                continue
+            parent = Path(csv_path).expanduser().parent
+            for _ in range(4):
+                candidates.append(parent / image_path)
+                if parent.parent == parent:
+                    break
+                parent = parent.parent
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def _path_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, (list, tuple)):
+        for item in reversed(value):
+            text = _path_text(item)
+            if text:
+                return text
+        return ""
+    text = str(value).strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return text
+        return _path_text(parsed)
+    return text
+
+
+def _model_input_rgb_frames(value: Any, index: int) -> np.ndarray | None:
+    if not torch.is_tensor(value) or index < 0 or index >= int(value.shape[0]):
+        return None
+    tensor = value.detach().cpu().to(torch.float32)
+    sample = tensor[index]
+    if sample.ndim == 3:
+        sample = sample.unsqueeze(0)
+    if sample.ndim != 4:
+        return None
+    frames = []
+    mean = torch.tensor(IMAGENET_RGB_MEAN, dtype=torch.float32).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_RGB_STD, dtype=torch.float32).view(3, 1, 1)
+    for frame in sample:
+        if frame.ndim != 3:
+            continue
+        if frame.shape[0] == 1:
+            rgb = frame.repeat(3, 1, 1)
+        elif frame.shape[0] >= 3:
+            rgb = frame[:3]
+        else:
+            continue
+        if float(rgb.min()) < 0.0 or float(rgb.max()) > 1.0:
+            rgb = rgb * std + mean
+        frames.append(np.clip(rgb.permute(1, 2, 0).numpy(), 0.0, 1.0).astype(np.float32))
+    return np.stack(frames, axis=0) if frames else None
+
+
+def _attention_images_from_payload(payload: Any, detail_maps: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    value = None
+    for key in ("image_tensor", "images", "image"):
+        if key in payload:
+            value = payload[key]
+            break
+    if value is None:
+        return {}
+    sample_ids = _string_array_from_npz(payload, "sample_ids")
+    out: dict[str, np.ndarray] = {}
+    for idx, sample_id in enumerate(sample_ids):
+        if str(sample_id) not in detail_maps:
+            continue
+        image = _model_input_rgb_frames(torch.as_tensor(value), idx)
+        if image is not None:
+            out[str(sample_id)] = image
+    return out
+
+
+def _coerce_fallback_frames(value: np.ndarray | None) -> np.ndarray | None:
+    if value is None:
+        return None
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 3:
+        arr = arr[None, ...]
+    if arr.ndim != 4 or arr.shape[-1] < 3:
+        return None
+    return np.clip(arr[..., :3], 0.0, 1.0)
+
+
+def _write_paper_attention_overlay_png(
+    out_dir: Path,
+    *,
+    model_name: str,
+    sample_id: str,
+    row: Mapping[str, Any],
+    grids: np.ndarray,
+    base_images: list[np.ndarray],
+    image_source: str,
+) -> tuple[Path, dict[str, Any]]:
+    from PIL import Image
+
+    panel, info = _paper_attention_overlay_panel(
+        grids,
+        base_images=base_images,
+        model_name=model_name,
+        sample_id=sample_id,
+        row=row,
+        image_source=image_source,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"attention_image_overlay_{_safe_slug(model_name)}_{_safe_slug(sample_id)}.png"
+    Image.fromarray(panel).save(path)
+    return path, {
+        "model": model_name,
+        "sample_id": sample_id,
+        "overlay_style": ATTENTION_OVERLAY_STYLE,
+        "normalization": ATTENTION_OVERLAY_NORMALIZATION,
+        "overlay_image_source": image_source,
+        **info,
+    }
+
+
+def _paper_attention_overlay_panel(
+    grids: np.ndarray,
+    *,
+    base_images: list[np.ndarray],
+    model_name: str,
+    sample_id: str,
+    row: Mapping[str, Any],
+    image_source: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    from PIL import Image, ImageDraw
+    import matplotlib.pyplot as plt
+
+    values = np.asarray(grids, dtype=np.float32)
+    if values.ndim != 4:
+        raise ValueError(f"attention overlay expects [time, query, height, width], got {tuple(values.shape)}")
+    norm, min_value, max_value = _normalize_attention_grids(values)
+    time_steps, queries = int(norm.shape[0]), int(norm.shape[1])
+    tile_h, tile_w = base_images[0].shape[:2]
+    panel = Image.new("RGB", (tile_w * queries, tile_h * time_steps))
+    try:
+        cmap = plt.get_cmap("turbo")
+    except ValueError:
+        cmap = plt.get_cmap("jet")
+    for time_idx in range(time_steps):
+        base = _rgb_float_image(base_images[min(time_idx, len(base_images) - 1)])
+        if base.shape[:2] != (tile_h, tile_w):
+            base = np.asarray(Image.fromarray((base * 255).astype(np.uint8)).resize((tile_w, tile_h)), dtype=np.float32) / 255.0
+        for query_idx in range(queries):
+            heat = _upsample_attention_grid(norm[time_idx, query_idx], size=(tile_h, tile_w))
+            tile = Image.fromarray(_paper_overlay_pixels(base, heat, cmap))
+            _draw_overlay_label(
+                tile,
+                _attention_overlay_label_lines(
+                    model_name,
+                    sample_id,
+                    row,
+                    time_idx=time_idx,
+                    query_idx=query_idx,
+                    image_source=image_source,
+                ),
+            )
+            panel.paste(tile, (query_idx * tile_w, time_idx * tile_h))
+    return np.asarray(panel, dtype=np.uint8), {
+        "raw_height": int(tile_h),
+        "raw_width": int(tile_w),
+        "panel_height": int(tile_h * time_steps),
+        "panel_width": int(tile_w * queries),
+        "time_steps": time_steps,
+        "queries": queries,
+        "attention_min": float(min_value),
+        "attention_max": float(max_value),
+    }
+
+
+def _normalize_attention_grids(grids: np.ndarray) -> tuple[np.ndarray, float, float]:
+    values = np.asarray(grids, dtype=np.float32)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros_like(values, dtype=np.float32), 0.0, 0.0
+    min_value = float(finite.min())
+    max_value = float(finite.max())
+    if max_value <= min_value:
+        return np.zeros_like(values, dtype=np.float32), min_value, max_value
+    return np.clip((values - min_value) / (max_value - min_value), 0.0, 1.0).astype(np.float32), min_value, max_value
+
+
+def _upsample_attention_grid(grid: np.ndarray, *, size: tuple[int, int]) -> np.ndarray:
+    tensor = torch.as_tensor(np.asarray(grid, dtype=np.float32)).view(1, 1, *np.asarray(grid).shape[-2:])
+    resized = F.interpolate(tensor, size=tuple(int(value) for value in size), mode="bilinear", align_corners=False)
+    return resized[0, 0].numpy()
+
+
+def _paper_overlay_pixels(base_image: np.ndarray, heatmap: np.ndarray, cmap: Any) -> np.ndarray:
+    base = _rgb_float_image(base_image)
+    gray = base.mean(axis=2, keepdims=True)
+    muted = np.clip((0.62 * gray + 0.38 * base) * np.asarray([0.88, 0.95, 1.03]) + 0.08, 0.0, 1.0)
+    heat = np.clip(np.asarray(heatmap, dtype=np.float32), 0.0, 1.0)
+    colors = np.asarray(cmap(heat)[..., :3], dtype=np.float32)
+    alpha = 0.56
+    return np.clip((muted * (1.0 - alpha) + colors * alpha) * 255.0, 0, 255).astype(np.uint8)
+
+
+def _rgb_float_image(image: Any) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim == 2:
+        arr = np.repeat(arr[..., None], 3, axis=2)
+    if arr.ndim == 3 and arr.shape[0] in {1, 3, 4} and arr.shape[-1] not in {3, 4}:
+        arr = np.moveaxis(arr, 0, -1)
+    if arr.ndim != 3:
+        raise ValueError(f"RGB image must be 2D or 3D, got {tuple(arr.shape)}")
+    if arr.shape[-1] == 1:
+        arr = np.repeat(arr, 3, axis=2)
+    if arr.shape[-1] < 3:
+        raise ValueError(f"RGB image must have at least 3 channels, got {tuple(arr.shape)}")
+    arr = arr[..., :3].astype(np.float32)
+    if float(np.nanmax(arr)) > 1.0:
+        arr = arr / 255.0
+    return np.clip(arr, 0.0, 1.0)
+
+
+def _draw_overlay_label(image: Any, lines: list[str]) -> None:
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(image)
+    text = "\n".join(line for line in lines if line)
+    if not text:
+        return
+    bbox = draw.multiline_textbbox((0, 0), text)
+    width = min(int(bbox[2] - bbox[0] + 8), image.size[0])
+    height = min(int(bbox[3] - bbox[1] + 8), image.size[1])
+    draw.rectangle((0, 0, width, height), fill=(0, 0, 0))
+    draw.multiline_text((4, 3), text, fill=(255, 255, 255), spacing=1)
+
+
+def _attention_overlay_label_lines(
+    model_name: str,
+    sample_id: str,
+    row: Mapping[str, Any],
+    *,
+    time_idx: int,
+    query_idx: int,
+    image_source: str,
+) -> list[str]:
+    target = row.get("target", "")
+    topk = row.get("top3", row.get("top5", row.get("top1", "")))
+    return [
+        f"{model_name} sample={_short_text(sample_id, 42)}",
+        f"target={target} topk={_short_text(topk, 28)}",
+        f"history_t={time_idx} query={query_idx}",
+        f"norm={ATTENTION_OVERLAY_NORMALIZATION}",
+        f"style={ATTENTION_OVERLAY_STYLE} source={image_source}",
+    ]
+
+
+def _short_text(value: Any, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: max(0, int(limit) - 3)] + "..."
+
+
+def _relative_output_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
 
 
 def _write_case_study_outputs(
@@ -1578,6 +2316,7 @@ def _build_manifest(
     registry: OutputRegistry,
     benchmark_context: Mapping[str, Any],
     evidence_context: Mapping[str, Any],
+    attention_faithfulness: Mapping[str, Any],
 ) -> dict[str, Any]:
     model_records = {}
     for name, spec in (cfg.get("models", {}) or {}).items():
@@ -1605,12 +2344,61 @@ def _build_manifest(
         "models": model_records,
         "split_metadata": split_metadata,
         "figures": cfg.get("figures", {}),
+        "attention_overlays": _attention_overlay_manifest(analyses),
+        "attention_provenance": _attention_provenance_manifest(analyses),
+        "attention_faithfulness": dict(attention_faithfulness),
         "sampling": cfg.get("sampling", {}),
         "robustness": cfg.get("robustness", {}),
         "benchmark": benchmark_context,
         "evidence": evidence_context,
         "warnings": sorted(set(str(item) for item in warnings)),
         "outputs": registry.list_outputs(),
+    }
+
+
+def _attention_overlay_manifest(analyses: Mapping[str, ModelAnalysis]) -> dict[str, Any]:
+    models = {}
+    generated_count = 0
+    for name, analysis in analyses.items():
+        rows = list(analysis.attention_overlay_rows)
+        generated_count += len(rows)
+        models[name] = {
+            "generated_count": len(rows),
+            "paths": [row.get("path") for row in rows],
+            "sources": sorted({str(row.get("overlay_image_source")) for row in rows if row.get("overlay_image_source")}),
+        }
+    return {
+        "directory": "figures/attention_image_overlays",
+        "overlay_style": ATTENTION_OVERLAY_STYLE,
+        "normalization": ATTENTION_OVERLAY_NORMALIZATION,
+        "generated_count": generated_count,
+        "models": models,
+    }
+
+
+def _attention_provenance_manifest(analyses: Mapping[str, ModelAnalysis]) -> dict[str, Any]:
+    models: dict[str, Any] = {}
+    for name, analysis in analyses.items():
+        rows = list(analysis.attention_rows)
+        first = rows[0] if rows else {}
+        models[name] = {
+            "available": bool(rows),
+            "map_semantics": "token_read_map",
+            "causal_claim": False,
+            "attention_source": first.get("attention_source", "gps_query_pooler" if rows else ""),
+            "attention_tensor_shape": first.get("attention_tensor_shape", ""),
+            "token_grid": [first.get("token_grid_height", ""), first.get("token_grid_width", "")] if rows else [],
+            "aggregation_method": first.get("aggregation_method", "mean_time_query" if rows else ""),
+            "normalization_scope": ATTENTION_OVERLAY_NORMALIZATION,
+            "overlay_image_source": "raw_image_or_model_input_tensor",
+            "cross_sample_comparability": False,
+            "cross_sample_comparability_reason": "per-sample minmax overlays are not comparable across samples",
+            "sample_count": len(rows),
+        }
+    return {
+        "map_semantics": "token_read_map",
+        "causal_claim": False,
+        "models": models,
     }
 
 
@@ -1624,6 +2412,7 @@ def _build_report(
     robustness_rows: list[dict[str, Any]],
     benchmark_context: Mapping[str, Any],
     evidence_context: Mapping[str, Any],
+    attention_faithfulness: Mapping[str, Any],
     warnings: list[str],
 ) -> str:
     lines = [
@@ -1664,6 +2453,8 @@ def _build_report(
             ]
         )
     attention_warnings = [item for item in warnings if str(item).startswith("attention_unavailable")]
+    overlay_warnings = [item for item in warnings if str(item).startswith("attention_image_overlay_unavailable")]
+    overlay_count = sum(len(analysis.attention_overlay_rows) for analysis in analyses.values())
     lines.extend(
         [
             "",
@@ -1673,6 +2464,32 @@ def _build_report(
     )
     if attention_warnings:
         lines.append(f"- {len(attention_warnings)} 个模型或 cache 未提供 attention diagnostics，已安全降级。")
+    if overlay_count:
+        lines.append(
+            f"- image-space attention overlay 输出 {overlay_count} 张到 `figures/attention_image_overlays/`；"
+            f"style={ATTENTION_OVERLAY_STYLE}, normalization={ATTENTION_OVERLAY_NORMALIZATION}。"
+        )
+    if overlay_warnings:
+        lines.append(f"- {len(overlay_warnings)} 个 attention overlay 因缺少可用原图或模型输入图被跳过。")
+    lines.extend(
+        [
+            "- Attention 图语义为 `token_read_map`：GPS/query 对 patch token 的读取权重；不是 gradient attribution 或因果归因。",
+            f"- overlay normalization={ATTENTION_OVERLAY_NORMALIZATION}，跨样本强度比较标记为 exploratory/unavailable。",
+        ]
+    )
+    if attention_faithfulness.get("enabled"):
+        status = attention_faithfulness.get("status", "insufficient")
+        lines.append(
+            f"- attention_faithfulness.csv: status={status}, "
+            f"passed={attention_faithfulness.get('passed_sample_count', 0)}, "
+            f"failed={attention_faithfulness.get('failed_sample_count', 0)}, "
+            f"metric={attention_faithfulness.get('metric_target', '')}。"
+        )
+        if status != "passed":
+            lines.append("- token-read map 未通过或未完成 faithfulness 检查，只能作为 exploratory diagnostic。")
+        skipped = attention_faithfulness.get("skipped_reasons", [])
+        if skipped:
+            lines.append("- attention_faithfulness_unavailable: " + ", ".join(str(item) for item in skipped[:5]) + "。")
     if robustness_rows:
         lines.extend(
             [
@@ -1837,14 +2654,15 @@ def _attention_diagnostics_from_array(
     *,
     max_maps: int,
     token_grid: tuple[int, int] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, np.ndarray]]:
+) -> tuple[list[dict[str, Any]], dict[str, np.ndarray], dict[str, np.ndarray]]:
     arr = np.asarray(attention, dtype=np.float64)
     if arr.ndim == 3:
         arr = arr[:, None, :, :]
     if arr.ndim != 4:
-        return [], {}
+        return [], {}, {}
     rows: list[dict[str, Any]] = []
     maps: dict[str, np.ndarray] = {}
+    detail_maps: dict[str, np.ndarray] = {}
     count = min(arr.shape[0], len(sample_rows))
     for idx in range(count):
         sample_id = str(sample_rows[idx].get("sample_id", idx))
@@ -1854,6 +2672,9 @@ def _attention_diagnostics_from_array(
         avg = item.mean(axis=(0, 1))
         grid = _attention_grid(avg, token_grid=token_grid)
         center_y, center_x = _attention_center_of_mass(grid)
+        query_center_spread = _attention_center_spread(item.mean(axis=0), token_grid=token_grid)
+        time_center_spread = _attention_center_spread(item.mean(axis=1), token_grid=token_grid)
+        time_query_center_spread = _attention_center_spread(item.reshape(-1, item.shape[-1]), token_grid=token_grid)
         rows.append(
             {
                 "model": model_name,
@@ -1861,6 +2682,9 @@ def _attention_diagnostics_from_array(
                 "attention_entropy": float(np.mean(entropy)),
                 "effective_patch_count": float(np.mean(np.exp(entropy))),
                 "query_diversity": float(_query_diversity(item)),
+                "query_center_spread": float(query_center_spread),
+                "time_center_spread": float(time_center_spread),
+                "time_query_center_spread": float(time_query_center_spread),
                 "center_y": float(center_y),
                 "center_x": float(center_x),
                 "time_steps": int(item.shape[0]),
@@ -1871,11 +2695,28 @@ def _attention_diagnostics_from_array(
                 "token_grid_height": int(grid.shape[0]),
                 "token_grid_width": int(grid.shape[1]),
                 "aggregation_method": "mean_time_query",
+                "map_semantics": "token_read_map",
+                "causal_claim": False,
+                "attention_source": "gps_query_pooler",
+                "attention_tensor_shape": json.dumps([int(dim) for dim in arr.shape]),
+                "normalization_scope": ATTENTION_OVERLAY_NORMALIZATION,
+                "overlay_image_source": "raw_image_or_model_input_tensor",
+                "cross_sample_comparability": False,
+                "cross_sample_comparability_reason": "per_sample_minmax_overlay_not_intensity_comparable",
             }
         )
         if len(maps) < max_maps:
             maps[sample_id] = grid.astype(np.float32)
-    return rows, maps
+            detail_maps[sample_id] = _attention_grids_by_time_query(item, token_grid=token_grid).astype(np.float32)
+    return rows, maps, detail_maps
+
+
+def _attention_metadata_for_maps(
+    sample_rows: list[dict[str, Any]],
+    maps: Mapping[str, np.ndarray],
+) -> dict[str, dict[str, Any]]:
+    wanted = {str(sample_id) for sample_id in maps}
+    return {str(row.get("sample_id")): dict(row) for row in sample_rows if str(row.get("sample_id")) in wanted}
 
 
 def _attention_grid(values: np.ndarray, *, token_grid: tuple[int, int] | None = None) -> np.ndarray:
@@ -1898,6 +2739,30 @@ def _attention_center_of_mass(grid: np.ndarray) -> tuple[float, float]:
         return 0.0, 0.0
     yy, xx = np.indices(values.shape)
     return float((yy * values).sum() / total), float((xx * values).sum() / total)
+
+
+def _attention_center_spread(attention: np.ndarray, *, token_grid: tuple[int, int] | None = None) -> float:
+    values = np.asarray(attention, dtype=np.float64)
+    rows = values.reshape(-1, values.shape[-1])
+    if rows.shape[0] <= 1:
+        return 0.0
+    centers = np.asarray(
+        [_attention_center_of_mass(_attention_grid(row, token_grid=token_grid)) for row in rows],
+        dtype=np.float64,
+    )
+    centroid = centers.mean(axis=0)
+    return float(np.linalg.norm(centers - centroid, axis=1).mean())
+
+
+def _attention_grids_by_time_query(attention: np.ndarray, *, token_grid: tuple[int, int] | None = None) -> np.ndarray:
+    item = np.asarray(attention, dtype=np.float64)
+    return np.asarray(
+        [
+            [_attention_grid(item[time_idx, query_idx], token_grid=token_grid) for query_idx in range(item.shape[1])]
+            for time_idx in range(item.shape[0])
+        ],
+        dtype=np.float64,
+    )
 
 
 def _query_diversity(attention: np.ndarray) -> float:

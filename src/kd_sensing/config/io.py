@@ -1,11 +1,13 @@
 """YAML config loading and command-line override parsing."""
 
 import copy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import yaml
 
+from kd_sensing.config.canonical import build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.config.migration_guards import (
     reject_retired_bgam_viewer_config,
@@ -19,8 +21,15 @@ from kd_sensing.config.migration_guards import (
 )
 from kd_sensing.config.normalization import normalize_loaded_config
 from kd_sensing.config.parsing import parse_scalar, safe_load_yaml
-from kd_sensing.config.source import load_config_source
 from kd_sensing.config.validation import validate_loaded_config
+from kd_sensing.utils.paths import resolve_path
+
+
+@dataclass(frozen=True)
+class LoadedConfigSource:
+    path: Path
+    data: dict[str, Any]
+    source_type: str
 
 
 def load_config(config_path: Optional[str | Path] = None, overrides: Optional[Iterable[str]] = None) -> dict[str, Any]:
@@ -84,6 +93,17 @@ def _resolve_base_config(source: Any, stack: tuple[Path, ...] = ()) -> dict[str,
         base_source = load_config_source(base_path)
         merged = deep_merge(merged, _resolve_base_config(base_source, (*stack, source_path)))
     return deep_merge(merged, file_cfg)
+
+
+def load_config_source(config_path: str | Path) -> LoadedConfigSource:
+    path = resolve_path(config_path)
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            return LoadedConfigSource(path=path, data=safe_load_yaml(f.read()) or {}, source_type="file")
+    file_cfg = build_virtual_config(path)
+    if file_cfg is None:
+        raise FileNotFoundError(f"Config file not found: {path}")
+    return LoadedConfigSource(path=path, data=file_cfg, source_type="virtual")
 
 
 def dump_config(cfg: dict[str, Any], path: str | Path) -> None:

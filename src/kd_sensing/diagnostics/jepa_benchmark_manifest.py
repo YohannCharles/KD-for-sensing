@@ -121,6 +121,7 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     _topk_value,
 )
 from kd_sensing.diagnostics.jepa_benchmark_predictive import _normalize_predictive_jepa_suite
+from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage import _normalize_gps_query_advantage_slice
 from kd_sensing.diagnostics.jepa_benchmark_scenario_c import _normalize_scenario_c_suite
 from kd_sensing.diagnostics.jepa_benchmark_scenario_d import _normalize_scenario_cxd_suite, _normalize_scenario_d_suite
 
@@ -333,7 +334,16 @@ def normalize_suite_config(suite: Mapping[str, Any], *, index: int = 0) -> dict[
     if suite_type == SCENARIO_D_SUITE_TYPE:
         return _normalize_scenario_d_suite(suite, suite_id=suite_id, suite_type=suite_type)
     if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
-        return _normalize_scenario_cxd_suite(suite, suite_id=suite_id, suite_type=suite_type)
+        normalized = _normalize_scenario_cxd_suite(suite, suite_id=suite_id, suite_type=suite_type)
+        if bool(normalized.get("reused_weight_fusion_diagnostic", False)):
+            normalized["gps_query_advantage_slice"] = _normalize_gps_query_advantage_slice(
+                suite.get("gps_query_advantage_slice", {"enabled": True}),
+                suite_id=suite_id,
+                history_window=int(suite.get("history_window", 4) or 4),
+                split=str(suite.get("split", "test")),
+            )
+            normalized.setdefault("claim_scope", "mechanism_diagnostic")
+        return normalized
     if suite_type == PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE:
         return _normalize_predictive_jepa_suite(suite, suite_id=suite_id, suite_type=suite_type)
     severities = suite.get("severities", suite.get("severity", [0.0]))

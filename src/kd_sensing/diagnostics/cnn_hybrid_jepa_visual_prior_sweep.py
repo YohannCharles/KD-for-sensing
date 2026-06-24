@@ -89,6 +89,9 @@ SCREENING_VARIANT_IDS = (
     "pooler_mean",
     "pooler_gps_query_k2_frame",
     "pooler_gps_query_k2_tokens",
+    "pooler_gps_query_k2_tokens_weighted_readout",
+    "pooler_learned_query_k2_tokens",
+    "pooler_self_attention_k2_tokens",
     "pooler_token_aware_core",
     "matched_trainable_params",
     "matched_token_count",
@@ -154,6 +157,14 @@ SUMMARY_FIELDS = (
     "availability",
     "stage_plan",
     "checkpoint_policy",
+    "pooler_type",
+    "pooler_output_mode",
+    "k_queries",
+    "token_readout_type",
+    "representation_core_type",
+    "readout_trainable_params",
+    "readout_weight_summary",
+    "diagnostics_availability",
     "pretrained_source",
     "freeze_policy",
     "teacher_variant",
@@ -174,6 +185,9 @@ SUMMARY_FIELDS = (
     "claim_eligible",
     "claim_gate_reason",
 )
+
+READOUT_BASELINE_VARIANTS = ("pooler_gps_query_k2_frame", "pooler_mean")
+READOUT_GATE_THRESHOLD = 0.005
 
 ALLOWED_STAGE_PLANS = {
     "supervised_only",
@@ -548,8 +562,11 @@ def generate_summary(
         "pareto_csv": summary_dir / "pareto.csv",
         "checkpoint_selection_csv": summary_dir / "checkpoint_selection.csv",
         "seed_aggregation_csv": summary_dir / "seed_aggregation.csv",
+        "readout_gate_json": summary_dir / "readout_gate.json",
+        "readout_gate_csv": summary_dir / "readout_gate.csv",
         "eval_summary_md": summary_dir / "eval_summary.md",
     }
+    readout_gate = _readout_gate_rows(full_rows)
     outputs["full_results_json"].write_text(json.dumps(full_rows, indent=2, sort_keys=True), encoding="utf-8")
     _write_csv(outputs["full_results_csv"], full_rows, SUMMARY_FIELDS)
     _write_csv(outputs["strict_ranking_csv"], _rank_rows(strict_rows), SUMMARY_FIELDS)
@@ -557,6 +574,8 @@ def generate_summary(
     _write_csv(outputs["pareto_csv"], pareto_rows, SUMMARY_FIELDS)
     _write_csv(outputs["checkpoint_selection_csv"], checkpoint_rows, None)
     _write_csv(outputs["seed_aggregation_csv"], seed_rows, None)
+    outputs["readout_gate_json"].write_text(json.dumps(readout_gate, indent=2, sort_keys=True), encoding="utf-8")
+    _write_csv(outputs["readout_gate_csv"], readout_gate, None)
     outputs["eval_summary_md"].write_text(
         _markdown_summary(full_rows, strict_rows, family_best, pareto_rows, seed_rows),
         encoding="utf-8",
@@ -926,6 +945,12 @@ def _base_candidate(
         "visual_encoder": dict(visual_encoder),
         "token_source": dict(visual_encoder),
         "pooler": dict(pooler),
+        "pooler_type": str(pooler.get("type", "")),
+        "pooler_output_mode": str(pooler.get("output_mode", "frame")),
+        "k_queries": int(pooler.get("k_queries", 1) or 1),
+        "token_readout_type": _token_readout_type(pooler, extra.get("representation_core")),
+        "representation_core_type": _representation_core_type(extra.get("representation_core")),
+        "readout_trainable_params": _readout_trainable_params(pooler, extra.get("representation_core")),
         "token_metadata": dict(token_metadata),
         "params_metadata": dict(params_metadata),
         "strict_comparable": availability == "available",
@@ -939,6 +964,27 @@ def _base_candidate(
     for field, value in strict.items():
         candidate[field] = value
     return candidate
+
+
+def _representation_core_type(core: Any) -> str:
+    return str(core.get("type", "")) if isinstance(core, Mapping) else ""
+
+
+def _token_readout_type(pooler: Mapping[str, Any], core: Any) -> str:
+    if str(pooler.get("output_mode", "frame")) != "tokens":
+        return "frame_feature"
+    core_type = _representation_core_type(core)
+    if core_type in {"query_weighted_token_readout", "gps_query_weighted_token_readout"}:
+        return "learned_query_weighted"
+    if core_type in {"token_aware_transformer", "token_transformer"}:
+        return "legacy_uniform_mean"
+    return "tokens_unread"
+
+
+def _readout_trainable_params(pooler: Mapping[str, Any], core: Any) -> int:
+    if _token_readout_type(pooler, core) != "learned_query_weighted":
+        return 0
+    return int(pooler.get("k_queries", 1) or 1) + 1
 
 
 def _validate_base_candidates(candidates: list[dict[str, Any]]) -> None:
@@ -1386,6 +1432,24 @@ def _summary_row(record: Mapping[str, Any], statuses: Mapping[str, Mapping[str, 
     row["visual_context_encoder_params"] = parameters.get("visual_context_encoder_params")
     row["parameter_count_source"] = parameters.get("parameter_count_source")
     row["compute_proxy"] = comparability.get("compute_proxy")
+    pooler = _mapping(record.get("pooler", {}))
+    diagnostics = _mapping(metrics.get("diagnostics", {}))
+    readout_diag = _mapping(metrics.get("token_readout_diagnostics", diagnostics.get("token_readout", {})))
+    row["pooler_type"] = record.get("pooler_type", pooler.get("type"))
+    row["pooler_output_mode"] = record.get("pooler_output_mode", pooler.get("output_mode", "frame"))
+    row["k_queries"] = record.get("k_queries", pooler.get("k_queries"))
+    row["token_readout_type"] = record.get("token_readout_type", "none")
+    row["representation_core_type"] = record.get("representation_core_type", "")
+    row["readout_trainable_params"] = record.get("readout_trainable_params", 0)
+    row["readout_weight_summary"] = readout_diag.get("readout_weight_mean") or readout_diag.get("readout_weight_summary")
+    row["diagnostics_availability"] = diagnostics.get("status", metrics.get("diagnostics_status", "missing"))
+    for key in (
+        "attention_entropy",
+        "effective_patch_count",
+        "query_diversity",
+        "attended_latent_similarity",
+    ):
+        row[key] = metrics.get(key, diagnostics.get(key))
     eligible, reason = _claim_gate_reason(row)
     row["claim_eligible"] = eligible
     row["claim_gate_reason"] = reason
@@ -1474,6 +1538,82 @@ def _seed_aggregation_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def _readout_gate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keyed: dict[tuple[Any, ...], dict[str, dict[str, Any]]] = defaultdict(dict)
+    for row in rows:
+        key = (
+            row.get("seed"),
+            row.get("checkpoint_selection"),
+            row.get("eval_scene_group", ""),
+            row.get("split"),
+            json.dumps(row.get("scene_set"), sort_keys=True),
+            row.get("metric_profile"),
+            row.get("difficulty_digest"),
+        )
+        keyed[key][str(row.get("variant_id"))] = row
+    result: list[dict[str, Any]] = []
+    for variants in keyed.values():
+        for row in variants.values():
+            if str(row.get("token_readout_type")) != "learned_query_weighted":
+                continue
+            frame = variants.get("pooler_gps_query_k2_frame")
+            mean_row = variants.get("pooler_mean")
+            missing = [name for name, item in (("pooler_gps_query_k2_frame", frame), ("pooler_mean", mean_row)) if not item]
+            dba = _read_metrics_value(row.get("dba"))
+            frame_dba = _read_metrics_value((frame or {}).get("dba"))
+            mean_dba = _read_metrics_value((mean_row or {}).get("dba"))
+            if frame is not None and frame_dba is None:
+                missing.append("pooler_gps_query_k2_frame.dba")
+            if mean_row is not None and mean_dba is None:
+                missing.append("pooler_mean.dba")
+            delta_frame = None if dba is None or frame_dba is None else dba - frame_dba
+            delta_mean = None if dba is None or mean_dba is None else dba - mean_dba
+            status = "missing_evidence" if missing or dba is None else "pass" if delta_frame is not None and delta_frame >= READOUT_GATE_THRESHOLD else "fail"
+            result.append(
+                {
+                    "variant_id": row.get("variant_id"),
+                    "run_id": row.get("run_id"),
+                    "seed": row.get("seed"),
+                    "checkpoint_selection": row.get("checkpoint_selection"),
+                    "eval_scene_group": row.get("eval_scene_group", ""),
+                    "threshold": READOUT_GATE_THRESHOLD,
+                    "status": status,
+                    "pass": status == "pass",
+                    "dba": dba,
+                    "delta_dba_vs_pooler_gps_query_k2_frame": delta_frame,
+                    "delta_dba_vs_pooler_mean": delta_mean,
+                    "delta_top1_vs_pooler_gps_query_k2_frame": _metric_delta(row, frame, "top1"),
+                    "delta_top1_vs_pooler_mean": _metric_delta(row, mean_row, "top1"),
+                    "clean_p0_delta": _metric_delta(row, frame, "clean_p0_dba", "p0_dba", "overall_clean"),
+                    "p1_p5_mean_delta": _metric_delta(row, frame, "p1_p5_mean", "overall_p0_p5_mean"),
+                    "scene31_delta": _metric_delta(row, frame, "scene31_dba"),
+                    "s31_s34_delta": _metric_delta(row, frame, "s31_s34_dba"),
+                    "s32_s34_delta": _metric_delta(row, frame, "s32_s34_dba"),
+                    "p3_delta": _metric_delta(row, frame, "p3_dba", "P3"),
+                    "p4_delta": _metric_delta(row, frame, "p4_dba", "P4"),
+                    "missing_evidence": ",".join(missing),
+                    "caveats": "incomplete_seed_confirm" if row.get("seed") not in {17, 23, 42} else "",
+                    "query_diversity": row.get("query_diversity", "missing"),
+                    "attention_entropy": row.get("attention_entropy", "missing"),
+                    "effective_patch_count": row.get("effective_patch_count", "missing"),
+                    "readout_weight_summary": row.get("readout_weight_summary", "missing"),
+                    "diagnostics_availability": row.get("diagnostics_availability", "missing"),
+                }
+            )
+    return result
+
+
+def _metric_delta(row: Mapping[str, Any], baseline: Mapping[str, Any] | None, *keys: str) -> float | None:
+    if baseline is None:
+        return None
+    for key in keys:
+        left = _read_metrics_value(row.get(key))
+        right = _read_metrics_value(baseline.get(key))
+        if left is not None and right is not None:
+            return left - right
+    return None
 
 
 def _checkpoint_selection_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2210,6 +2350,26 @@ def _compute_control_visual(control: str) -> dict[str, Any]:
 def _pooler_variant(variant: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if variant == "mean":
         return {"type": "mean", "output_mode": "frame"}, None
+    if variant == "gps_query_k2_tokens_weighted_readout":
+        return _gps_query_pooler(2, output_mode="tokens"), {
+            "type": "query_weighted_token_readout",
+            "d_model": 64,
+            "dropout": 0.0,
+        }
+    if variant == "learned_query_k2_tokens":
+        return _learned_query_pooler(2, output_mode="tokens"), {
+            "type": "token_aware_transformer",
+            "d_model": 64,
+            "num_heads": 4,
+            "num_layers": 1,
+        }
+    if variant == "self_attention_k2_tokens":
+        return _self_attention_pooler(2, output_mode="tokens"), {
+            "type": "token_aware_transformer",
+            "d_model": 64,
+            "num_heads": 4,
+            "num_layers": 1,
+        }
     if variant.startswith("gps_query_k"):
         pieces = variant.split("_")
         k_value = int(pieces[2][1:])
@@ -2242,6 +2402,30 @@ def _gps_query_pooler(k_queries: int, *, output_mode: str = "frame") -> dict[str
         "dropout": 0.0,
         "condition_source": "projected_gps",
         "return_attention": False,
+        "output_mode": output_mode,
+    }
+
+
+def _learned_query_pooler(k_queries: int, *, output_mode: str = "frame") -> dict[str, Any]:
+    return {
+        "type": "learned_query_attention",
+        "k_queries": int(k_queries),
+        "num_heads": 4,
+        "latent_dim": 64,
+        "dropout": 0.0,
+        "return_attention": False,
+        "output_mode": output_mode,
+    }
+
+
+def _self_attention_pooler(k_tokens: int, *, output_mode: str = "frame") -> dict[str, Any]:
+    return {
+        "type": "self_attention",
+        "k_tokens": int(k_tokens),
+        "num_heads": 4,
+        "num_layers": 1,
+        "latent_dim": 64,
+        "dropout": 0.0,
         "output_mode": output_mode,
     }
 
@@ -2458,10 +2642,15 @@ def _numeric(value: Any) -> float:
 
 
 def _aggregate_seed_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    seeds = sorted({int(row.get("seed", 0)) for row in rows})
+    missing = [seed for seed in (17, 23, 42) if seed not in seeds]
     values = [_numeric(row.get("top1")) for row in rows if row.get("top1") is not None]
     dbas = [_numeric(row.get("dba")) for row in rows if row.get("dba") is not None]
     return {
-        "seed_count": len({int(row.get("seed", 0)) for row in rows}),
+        "seed_count": len(seeds),
+        "seeds_available": ",".join(str(seed) for seed in seeds),
+        "missing_seeds": ",".join(str(seed) for seed in missing),
+        "seed_confirm_status": "complete" if not missing else "incomplete",
         "seed_top1_mean": mean(values) if values else None,
         "seed_top1_std": pstdev(values) if len(values) > 1 else 0.0 if values else None,
         "seed_dba_mean": mean(dbas) if dbas else None,

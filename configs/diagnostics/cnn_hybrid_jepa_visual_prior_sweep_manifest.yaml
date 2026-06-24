@@ -173,6 +173,9 @@ families:
       - gps_query_k2_frame
       - gps_query_k4_frame
       - gps_query_k2_tokens
+      - gps_query_k2_tokens_weighted_readout
+      - learned_query_k2_tokens
+      - self_attention_k2_tokens
       - gps_query_k4_tokens
       - hybrid_residual_query
       - token_aware_core

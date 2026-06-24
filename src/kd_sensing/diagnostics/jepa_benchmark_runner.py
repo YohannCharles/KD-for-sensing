@@ -74,6 +74,7 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     PREDICTIVE_OUTPUT_FILES,
     PREDICTIVE_REQUIRED_MODEL_GROUPS,
     PREDICTIVE_SUITE_TYPES,
+    REUSED_WEIGHT_FUSION_DIAGNOSTIC_OUTPUT_FILES,
     RUNNER_VERSION,
     SCENARIO_C_CANONICAL_CONDITIONS,
     SCENARIO_C_SUITE_TYPE,
@@ -150,6 +151,9 @@ from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage_metrics import (
     aggregate_gps_query_advantage_margins,
     build_predictive_claim_gate,
     build_predictive_diagnostics_bundle_manifest,
+    fusion_diagnostic_condition_rows,
+    fusion_diagnostic_paired_margins,
+    fusion_diagnostic_summary,
 )
 from kd_sensing.diagnostics.jepa_benchmark_scenario_c import (
     _add_scenario_c_accuracy_ratios,
@@ -236,6 +240,9 @@ def run_jepa_gps_shortcut_benchmark(
     predictive_advantage_margin_path: Path | None = None
     predictive_claim_gate_path: Path | None = None
     predictive_diagnostics_bundle_path: Path | None = None
+    fusion_diagnostic_condition_path: Path | None = None
+    fusion_diagnostic_margin_path: Path | None = None
+    fusion_diagnostic_summary_path: Path | None = None
     predictive_summary: list[dict[str, Any]] = []
     if _manifest_has_predictive_jepa(manifest):
         predictive_rows = [
@@ -320,6 +327,19 @@ def run_jepa_gps_shortcut_benchmark(
         )
         predictive_diagnostics_bundle_path.write_text(
             json.dumps(_json_ready(predictive_diagnostics_bundle), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    fusion_condition_rows = fusion_diagnostic_condition_rows(metrics_rows, manifest)
+    if fusion_condition_rows:
+        fusion_margin_rows = fusion_diagnostic_paired_margins(fusion_condition_rows, manifest)
+        fusion_summary = fusion_diagnostic_summary(fusion_condition_rows, fusion_margin_rows, manifest)
+        fusion_diagnostic_condition_path = results_dir / "fusion_diagnostic_metrics.csv"
+        fusion_diagnostic_margin_path = results_dir / "paired_margin_by_condition.csv"
+        fusion_diagnostic_summary_path = results_dir / "fusion_diagnostic_summary.json"
+        _write_csv(fusion_diagnostic_condition_path, fusion_condition_rows)
+        _write_csv(fusion_diagnostic_margin_path, fusion_margin_rows)
+        fusion_diagnostic_summary_path.write_text(
+            json.dumps(_json_ready(fusion_summary), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     scenario_d_rows: list[dict[str, Any]] = []
@@ -411,6 +431,9 @@ def run_jepa_gps_shortcut_benchmark(
         "predictive_gps_query_advantage_margins": str(predictive_advantage_margin_path) if predictive_advantage_margin_path else "",
         "predictive_claim_gate": str(predictive_claim_gate_path) if predictive_claim_gate_path else "",
         "predictive_diagnostics_bundle_manifest": str(predictive_diagnostics_bundle_path) if predictive_diagnostics_bundle_path else "",
+        "fusion_diagnostic_condition_metrics": str(fusion_diagnostic_condition_path) if fusion_diagnostic_condition_path else "",
+        "fusion_diagnostic_paired_margins": str(fusion_diagnostic_margin_path) if fusion_diagnostic_margin_path else "",
+        "fusion_diagnostic_summary": str(fusion_diagnostic_summary_path) if fusion_diagnostic_summary_path else "",
         "scenario_d_results": str(scenario_d_results_path) if scenario_d_results_path else "",
         "scenario_d_heatmap": str(heatmap_path) if heatmap_path else "",
         "geometry_prior_quality": str(geometry_prior_paths.get("prior_quality", "")),
@@ -528,6 +551,7 @@ def _build_runner_manifest(
             "failure_mode_decomposition": "results/failure_mode_decomposition.csv",
             **GEOMETRY_PRIOR_OUTPUT_FILES,
             **PREDICTIVE_OUTPUT_FILES,
+            **REUSED_WEIGHT_FUSION_DIAGNOSTIC_OUTPUT_FILES,
             "cxd_accuracy_heatmap": "plots/cxd_accuracy_heatmap.png",
             "resnet_jepa_crossover_curve": "plots/resnet_jepa_crossover_curve.png",
             "modality_dominance_heatmap": "plots/modality_dominance_heatmap.png",
@@ -656,8 +680,17 @@ def _metrics_rows_for_model(
         suite_type = str(suite.get("type"))
         if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
             for seed in manifest.get("seeds", [42]):
-                for gps_condition in suite.get("scenario_c_conditions", []):
-                    for image_condition in suite.get("scenario_d_conditions", []):
+                cxd_pairs = suite.get("cxd_pairs")
+                if not cxd_pairs:
+                    cxd_pairs = [
+                        {"gps_condition": gps_condition, "image_condition": image_condition}
+                        for gps_condition in suite.get("scenario_c_conditions", [])
+                        for image_condition in suite.get("scenario_d_conditions", [])
+                    ]
+                for pair in cxd_pairs:
+                    if isinstance(pair, Mapping):
+                        gps_condition = pair.get("gps_condition", {})
+                        image_condition = pair.get("image_condition", {})
                         rows.append(
                             _scenario_cxd_metric_row(
                                 model_name,
@@ -675,6 +708,22 @@ def _metrics_rows_for_model(
                                 dry_run=dry_run,
                             )
                         )
+                if bool(suite.get("reused_weight_fusion_diagnostic", False)):
+                    rows.extend(
+                        _predictive_gps_query_advantage_metric_rows(
+                            model_name,
+                            model_spec,
+                            source,
+                            suite,
+                            seed=int(seed),
+                            split=split,
+                            sample_count=sample_count,
+                            primary_name=primary_name,
+                            clean_primary=clean_primary,
+                            comparability_status=comparability_status,
+                            dry_run=dry_run,
+                        )
+                    )
             continue
         if suite_type == PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE:
             for seed in manifest.get("seeds", [42]):
@@ -1199,6 +1248,7 @@ def _real_forward_advantage_spec(
 ) -> dict[str, Any]:
     params = condition.get("operator_params", {}) if isinstance(condition.get("operator_params"), Mapping) else {}
     severity = float(condition.get("severity", 0.0) or 0.0)
+    predictive_suite = {**dict(suite), "type": PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE, "preset": "canonical"}
     return {
         "suite": f"{suite.get('id', PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE)}:gps_query_advantage",
         "suite_type": GPS_QUERY_ADVANTAGE_SLICE_TYPE,
@@ -1206,7 +1256,7 @@ def _real_forward_advantage_spec(
         "severity": severity,
         "severity_unit": "gps_query_advantage_level",
         "seed": seed,
-        "perturbations": [(suite, severity)],
+        "perturbations": [(predictive_suite, severity)],
         "operator_params": params,
         "difficulty_digest": _condition_digest(
             {
@@ -1303,48 +1353,65 @@ def _real_forward_advantage_cxd_spec(
 
 def _real_forward_cxd_specs(suite: Mapping[str, Any], *, seed: int) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
-    for gps_condition in suite.get("scenario_c_conditions", []):
-        if not isinstance(gps_condition, Mapping):
+    cxd_pairs = suite.get("cxd_pairs")
+    if not cxd_pairs:
+        cxd_pairs = [
+            {"gps_condition": gps_condition, "image_condition": image_condition}
+            for gps_condition in suite.get("scenario_c_conditions", [])
+            for image_condition in suite.get("scenario_d_conditions", [])
+        ]
+    for pair in cxd_pairs:
+        if not isinstance(pair, Mapping):
             continue
-        for image_condition in suite.get("scenario_d_conditions", []):
-            if not isinstance(image_condition, Mapping):
-                continue
-            c_suite = {"id": f"{suite.get('id')}:scenario_c", "type": SCENARIO_C_SUITE_TYPE, "conditions": [gps_condition]}
-            d_suite = {"id": f"{suite.get('id')}:scenario_d", "type": SCENARIO_D_SUITE_TYPE, "conditions": [image_condition]}
-            condition_id = f"{gps_condition.get('id')}+{image_condition.get('id')}"
-            specs.append(
-                {
-                    "suite": suite.get("id", SCENARIO_C_X_D_SUITE_TYPE),
-                    "suite_type": SCENARIO_C_X_D_SUITE_TYPE,
-                    "condition": condition_id,
-                    "severity": float(image_condition.get("severity", 0.0) or 0.0),
-                    "severity_unit": "scenario_c_x_d_level",
-                    "seed": seed,
-                    "perturbations": [
-                        (c_suite, float(gps_condition.get("severity", 0.0) or 0.0)),
-                        (d_suite, float(image_condition.get("severity", 0.0) or 0.0)),
-                    ],
-                    "operator_params": {
-                        "gps_condition": gps_condition,
-                        "image_operator_params": image_condition.get("operator_params", {}),
-                    },
-                    "difficulty_digest": _condition_digest(
-                        {
-                            "suite": suite.get("id"),
-                            "gps_condition": gps_condition.get("id"),
-                            "image_condition": image_condition.get("id"),
-                            "seed": seed,
-                        }
-                    ),
-                    "claim_scope": "primary",
-                    "extra": {
-                        "gps_condition": gps_condition.get("id", ""),
-                        "image_condition": image_condition.get("id", ""),
-                        "c_severity": float(gps_condition.get("severity", 0.0) or 0.0),
-                        "d_severity": float(image_condition.get("severity", 0.0) or 0.0),
-                    },
-                }
-            )
+        gps_condition = pair.get("gps_condition", {})
+        image_condition = pair.get("image_condition", {})
+        if not isinstance(gps_condition, Mapping) or not isinstance(image_condition, Mapping):
+            continue
+        c_suite = {"id": f"{suite.get('id')}:scenario_c", "type": SCENARIO_C_SUITE_TYPE, "conditions": [gps_condition]}
+        d_suite = {"id": f"{suite.get('id')}:scenario_d", "type": SCENARIO_D_SUITE_TYPE, "conditions": [image_condition]}
+        condition_id = f"{gps_condition.get('id')}+{image_condition.get('id')}"
+        specs.append(
+            {
+                "suite": suite.get("id", SCENARIO_C_X_D_SUITE_TYPE),
+                "suite_type": SCENARIO_C_X_D_SUITE_TYPE,
+                "condition": condition_id,
+                "severity": float(image_condition.get("severity", 0.0) or 0.0),
+                "severity_unit": "scenario_c_x_d_level",
+                "seed": seed,
+                "perturbations": [
+                    (c_suite, float(gps_condition.get("severity", 0.0) or 0.0)),
+                    (d_suite, float(image_condition.get("severity", 0.0) or 0.0)),
+                ],
+                "operator_params": {
+                    "gps_condition": gps_condition,
+                    "image_operator_params": image_condition.get("operator_params", {}),
+                },
+                "difficulty_digest": _condition_digest(
+                    {
+                        "suite": suite.get("id"),
+                        "gps_condition": gps_condition.get("id"),
+                        "image_condition": image_condition.get("id"),
+                        "seed": seed,
+                    }
+                ),
+                "claim_scope": "mechanism_diagnostic" if bool(suite.get("reused_weight_fusion_diagnostic", False)) else "primary",
+                "extra": {
+                    "gps_condition": gps_condition.get("id", ""),
+                    "image_condition": image_condition.get("id", ""),
+                    "c_severity": float(gps_condition.get("severity", 0.0) or 0.0),
+                    "d_severity": float(image_condition.get("severity", 0.0) or 0.0),
+                },
+            }
+        )
+    if bool(suite.get("reused_weight_fusion_diagnostic", False)):
+        advantage = suite.get("gps_query_advantage_slice", {})
+        if isinstance(advantage, Mapping) and bool(advantage.get("enabled", False)):
+            for condition in advantage.get("conditions", []):
+                if isinstance(condition, Mapping):
+                    specs.append(_real_forward_advantage_spec(suite, condition, seed=seed))
+            for condition in advantage.get("combined_conditions", []):
+                if isinstance(condition, Mapping):
+                    specs.append(_real_forward_advantage_cxd_spec(suite, condition, seed=seed))
     return specs
 
 

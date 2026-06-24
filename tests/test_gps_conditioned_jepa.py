@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -22,12 +23,14 @@ from kd_sensing.models.jepa import (  # noqa: E402
 from kd_sensing.models.jepa_downstream import (  # noqa: E402
     HybridResidualQueryPool,
     IdentityJepaAdapter,
+    LearnedQueryPool,
     MeanPatchPooler,
     PredictiveGPSQueryPool,
+    SelfAttentionPool,
     build_jepa_downstream_adapter,
     build_jepa_downstream_pooler,
 )
-from kd_sensing.registries import MODELS, RegistryError, import_default_components  # noqa: E402
+from kd_sensing.registries import ENCODERS, MODELS, RegistryError, import_default_components  # noqa: E402
 
 GPS_QUERY_DOWNSTREAM_CONFIGS = {
     "fair_gps_query_pooling": ROOT
@@ -45,6 +48,18 @@ PREDICTIVE_GPS_QUERY_PLUS_PLUS_CONFIG = (
     / "configs/fusion/experiments/jepa_image_gps/"
     "image_gps_jepa_predictive_gps_query_plus_plus_2604_s32_s34_lowmem.yaml"
 )
+
+
+@ENCODERS.register("gps_query_readout_test_identity", force=True)
+class GpsQueryReadoutTestIdentityEncoder(nn.Module):
+    def __init__(self, output_dim: int = 8, **_: object) -> None:
+        super().__init__()
+        self.output_dim = int(output_dim)
+
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+        if batch.ndim not in {3, 4}:
+            raise ValueError(f"gps_query_readout_test_identity expects [B,T,D] or [B,T,K,D], got {tuple(batch.shape)}.")
+        return batch[..., : self.output_dim]
 
 
 def _model_cfg() -> dict:
@@ -305,11 +320,104 @@ def test_gps_query_pool_shape_attention_map_and_dimension_validation():
     assert pooled.shape == (2, 4, 8)
     assert attention.shape == (2, 4, 3, 6)
     assert attention.requires_grad is False
+    assert pool.last_diagnostics["attention_head_aggregation"] == "averaged"
+    assert pool.last_diagnostics["attention_return_shape"] == [2, 4, 3, 6]
+    assert pool.last_diagnostics["query_count"] == 3
+    assert pool.last_diagnostics["token_count"] == 6
     torch.testing.assert_close(attention.sum(dim=-1), torch.ones(2, 4, 3), atol=1e-6, rtol=1e-6)
     with pytest.raises(ValueError, match="patch tokens shape .*condition feature shape"):
         pool(patch_tokens, torch.randn(2, 3, 5))
     with pytest.raises(ValueError, match="expected condition feature dim 5"):
         pool(patch_tokens, torch.randn(2, 4, 4))
+
+
+def test_gps_query_pool_per_head_attention_keeps_return_shape() -> None:
+    pool = GPSQueryPool(
+        latent_dim=8,
+        condition_dim=5,
+        k_queries=3,
+        num_heads=2,
+        dropout=0.0,
+        per_head_attention=True,
+    )
+    patch_tokens = torch.randn(2, 4, 6, 8)
+    condition = torch.randn(2, 4, 5)
+
+    pooled, attention = pool(patch_tokens, condition, return_attention=True)
+
+    assert pooled.shape == (2, 4, 8)
+    assert attention.shape == (2, 4, 3, 6)
+    assert pool.last_attention_heads is not None
+    assert pool.last_attention_heads.shape == (2, 4, 2, 3, 6)
+    assert pool.last_diagnostics["attention_head_aggregation"] == "per_head"
+    assert pool.last_diagnostics["attention_per_head_shape"] == [2, 4, 2, 3, 6]
+    assert pool.last_diagnostics["head_aggregation_method"] == "mean_heads_for_last_attention_map"
+
+
+def test_gps_query_pool_tokens_output_attention_and_metadata():
+    frame_pool = GPSQueryPool(latent_dim=8, condition_dim=5, k_queries=3, num_heads=2, dropout=0.0)
+    token_pool = GPSQueryPool(latent_dim=8, condition_dim=5, k_queries=3, num_heads=2, dropout=0.0, output_mode="tokens")
+    patch_tokens = torch.randn(2, 4, 6, 8)
+    condition = torch.randn(2, 4, 5)
+
+    frame = frame_pool(patch_tokens, condition)
+    tokens, attention = token_pool(patch_tokens, condition, return_attention=True)
+
+    assert frame.shape == (2, 4, 8)
+    assert tokens.shape == (2, 4, 3, 8)
+    assert attention.shape == (2, 4, 3, 6)
+    assert attention.requires_grad is False
+    assert token_pool.last_diagnostics["k_queries"] == 3
+    assert token_pool.last_diagnostics["k_tokens"] == 3
+    assert token_pool.last_diagnostics["effective_patch_count"] > 0
+    assert "query_diversity" in token_pool.last_diagnostics
+    assert "attended_latent_similarity" in token_pool.last_diagnostics
+
+
+def test_learned_query_pool_tokens_do_not_require_gps_condition():
+    pool = build_jepa_downstream_pooler(
+        {
+            "type": "learned_query_attention",
+            "latent_dim": 8,
+            "k_queries": 2,
+            "num_heads": 2,
+            "dropout": 0.0,
+            "output_mode": "tokens",
+        }
+    )
+    patch_tokens = torch.randn(2, 4, 6, 8)
+
+    tokens, attention = pool(patch_tokens, return_attention=True)
+
+    assert isinstance(pool, LearnedQueryPool)
+    assert pool.required_context_modalities == ()
+    assert pool.context_feature_source == "none"
+    assert tokens.shape == (2, 4, 2, 8)
+    assert attention.shape == (2, 4, 2, 6)
+    assert pool.last_diagnostics["condition_feature_source"] == "none"
+
+
+def test_self_attention_pool_tokens_do_not_require_gps_condition():
+    pool = build_jepa_downstream_pooler(
+        {
+            "type": "self_attention",
+            "latent_dim": 8,
+            "k_tokens": 2,
+            "num_heads": 2,
+            "num_layers": 1,
+            "dropout": 0.0,
+            "output_mode": "tokens",
+        }
+    )
+    patch_tokens = torch.randn(2, 4, 6, 8)
+
+    tokens = pool(patch_tokens)
+
+    assert isinstance(pool, SelfAttentionPool)
+    assert pool.required_context_modalities == ()
+    assert pool.context_feature_source == "none"
+    assert tokens.shape == (2, 4, 2, 8)
+    assert pool.last_diagnostics["condition_feature_source"] == "none"
 
 
 def test_jepa_downstream_poolers_build_and_identity_adapter_is_noop():
@@ -359,6 +467,7 @@ def test_jepa_downstream_poolers_build_and_identity_adapter_is_noop():
     assert hybrid_pooler.last_attention_maps["content"].shape == (2, 3, 2, 5)
     assert hybrid_pooler.last_attention_maps["gps"].shape == (2, 3, 2, 5)
     assert hybrid_pooler.last_diagnostics["residual_alpha_init"] == pytest.approx(0.05)
+    assert hybrid_pooler.last_diagnostics["branch_attention"]["gps"]["exposed_as_last_attention_map"] is True
 
     predictive_pooler = build_jepa_downstream_pooler(
         {
@@ -382,6 +491,8 @@ def test_jepa_downstream_poolers_build_and_identity_adapter_is_noop():
     assert predictive_pooler.last_attention_maps["content"].shape == (2, 3, 2, 5)
     assert predictive_pooler.last_attention_maps["gps"].shape == (2, 3, 2, 5)
     assert predictive_pooler.last_diagnostics["condition_id_consumed"] is False
+    assert predictive_pooler.last_diagnostics["branch_attention"]["content"]["available"] is True
+    assert predictive_pooler.last_diagnostics["branch_attention"]["gps"]["exposed_as_last_attention_map"] is True
 
     adapter = build_jepa_downstream_adapter({"type": "identity", "latent_dim": 8})
     assert isinstance(adapter, IdentityJepaAdapter)
@@ -406,6 +517,83 @@ def test_gps_query_pool_averages_k_query_tokens_after_attention():
     expected = pool.output_norm(queries).mean(dim=2)
     torch.testing.assert_close(pooled, expected)
     assert attention.shape == (1, 2, 2, 5)
+
+
+def test_modular_sequence_token_features_and_readout_metadata():
+    import_default_components()
+    model = MODELS.build(
+        {
+            "type": "modular_sequence",
+            "modalities": ["image", "gps"],
+            "feature_size": 8,
+            "d_model": 8,
+            "num_classes": 4,
+            "num_pred": 2,
+            "encoders": {
+                "image": {"type": "gps_query_readout_test_identity", "output_dim": 8},
+                "gps": {"type": "gps_query_readout_test_identity", "output_dim": 8},
+            },
+            "projectors": {
+                "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+                "gps": {"type": "identity", "input_dim": 8, "d_model": 8},
+            },
+            "representation_core": {
+                "type": "token_aware_transformer",
+                "d_model": 8,
+                "modality_count": 3,
+                "num_heads": 2,
+                "num_layers": 1,
+            },
+        }
+    )
+    output = model(image_batch=torch.randn(2, 3, 2, 8), gps_batch=torch.randn(2, 3, 8))
+    metadata = model.training_strategy_metadata()
+
+    assert output["token_features"].shape == (2, 3, 3, 8)
+    assert output["logits"].shape == (2, 3, 4)
+    assert metadata["token_readout_type"] == "legacy_uniform_mean"
+    assert metadata["readout_trainable_params"] == 0
+    assert metadata["k_tokens"] == 3
+
+
+def test_query_weighted_token_readout_shape_metadata_oracle_block_and_backward():
+    import_default_components()
+    model = MODELS.build(
+        {
+            "type": "modular_sequence",
+            "modalities": ["image", "gps"],
+            "feature_size": 8,
+            "d_model": 8,
+            "num_classes": 4,
+            "num_pred": 2,
+            "encoders": {
+                "image": {"type": "gps_query_readout_test_identity", "output_dim": 8},
+                "gps": {"type": "gps_query_readout_test_identity", "output_dim": 8},
+            },
+            "projectors": {
+                "image": {"type": "identity", "input_dim": 8, "d_model": 8},
+                "gps": {"type": "identity", "input_dim": 8, "d_model": 8},
+            },
+            "representation_core": {"type": "query_weighted_token_readout", "d_model": 8, "modality_count": 3},
+        }
+    )
+    output = model(
+        image_batch=torch.randn(2, 3, 2, 8),
+        gps_batch=torch.randn(2, 3, 8),
+        benchmark_condition_metadata={"target_beam": 3, "c_idx": 4},
+    )
+    loss = output["logits"].sum()
+    loss.backward()
+    metadata = model.training_strategy_metadata()
+    diagnostics = output["token_readout_diagnostics"]
+
+    assert output["output_features"].shape == (2, 3, 8)
+    assert metadata["token_readout_type"] == "learned_query_weighted"
+    assert metadata["readout_trainable_params"] == 3
+    assert diagnostics["output_shape"] == [2, 3, 8]
+    assert diagnostics["condition_id_consumed"] is False
+    assert {"target_beam", "c_idx"} <= set(diagnostics["blocked_condition_fields"])
+    assert model.representation_core.readout_logits.grad is not None
 
 
 def test_hybrid_residual_query_pooler_optional_and_required_gps_paths():

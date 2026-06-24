@@ -40,6 +40,16 @@ DEFAULT_GPS_QUERY_EVIDENCE_CONFIG = {
         "aggregation": "mean_time_query",
         "max_cases": 32,
     },
+    "attention_faithfulness": {
+        "enabled": False,
+        "patch_ratio": 0.1,
+        "patch_count": None,
+        "selection_groups": ["top_attention", "low_attention", "random"],
+        "occlusion_strategy": "zero",
+        "random_seed": 42,
+        "max_cases": 32,
+        "metric_target": "dba_contribution",
+    },
 }
 
 
@@ -58,6 +68,7 @@ def write_gps_query_evidence_package(
     warnings: list[str],
     formats: tuple[str, ...],
     dpi: int,
+    attention_faithfulness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     evidence_cfg = _evidence_cfg(cfg)
     out = Path(str(evidence_cfg.get("output_dir") or output_dir))
@@ -74,7 +85,8 @@ def write_gps_query_evidence_package(
     paired_delta_rows = _paired_delta_rows(metric_rows, pairs)
     anchor_rows = _anchor_rows(metric_rows, anchors, pairs)
     case_rows = _evidence_case_rows(comparison_rows, cfg, evidence_cfg)
-    claim_rows = _claim_gate_rows(paired_delta_rows, pairs, case_rows, analyses, evidence_cfg)
+    faithfulness_context = dict(attention_faithfulness or {})
+    claim_rows = _claim_gate_rows(paired_delta_rows, pairs, case_rows, analyses, evidence_cfg, faithfulness_context)
 
     generated: list[Path] = []
     generated.append(_write_csv(tables_dir / "gps_query_metric_rows_long.csv", metric_rows))
@@ -88,7 +100,7 @@ def write_gps_query_evidence_package(
     generated.extend(_write_case_payloads_and_panels(cases_dir, figures_dir, case_rows, analyses, formats, dpi, local_warnings))
 
     warnings.extend(local_warnings)
-    report_lines = _evidence_report_lines(claim_rows, paired_delta_rows, case_rows, local_warnings)
+    report_lines = _evidence_report_lines(claim_rows, paired_delta_rows, case_rows, local_warnings, faithfulness_context)
     manifest = {
         "version": EVIDENCE_VERSION,
         "command": list(command or []),
@@ -104,6 +116,8 @@ def write_gps_query_evidence_package(
         "paired_delta_rows": len(paired_delta_rows),
         "case_rows": len(case_rows),
         "claim_gate": claim_rows,
+        "attention_provenance": _attention_provenance(analyses),
+        "faithfulness_summary": faithfulness_context,
         "warnings": sorted(set(str(item) for item in local_warnings)),
         "outputs": [_output_record(path, out) for path in generated],
         "caveat": "Attention hotspot 是解释性证据，不是因果证明。",
@@ -521,6 +535,7 @@ def _claim_gate_rows(
     case_rows: list[dict[str, Any]],
     analyses: Mapping[str, Any],
     evidence_cfg: Mapping[str, Any],
+    faithfulness_context: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     gate = evidence_cfg.get("claim_gate", {}) if isinstance(evidence_cfg.get("claim_gate"), Mapping) else {}
     metric = str(gate.get("metric", "dba")).lower()
@@ -564,14 +579,32 @@ def _claim_gate_rows(
                 "evidence_paths": "tables/paired_delta_by_condition.csv",
             }
         )
+    paired_supported = any(row.get("claim") == "gps_query_paired_effectiveness" and row.get("status") == "supported" for row in rows)
     attention_count = sum(len(getattr(analysis, "attention_rows", []) or []) for analysis in analyses.values())
+    faithfulness = dict(faithfulness_context or {})
+    faith_status = str(faithfulness.get("status", "disabled" if not faithfulness.get("enabled") else "insufficient"))
+    if not attention_count:
+        attention_status = "insufficient"
+        attention_reason = "attention_rows=0"
+    elif not paired_supported:
+        attention_status = "exploratory"
+        attention_reason = "paired evidence not supported; attention cannot upgrade claim"
+    elif faithfulness.get("enabled") and faith_status == "passed":
+        attention_status = "supported"
+        attention_reason = "paired evidence supported and attention faithfulness passed"
+    elif faithfulness.get("enabled"):
+        attention_status = "insufficient"
+        attention_reason = f"attention faithfulness {faith_status}"
+    else:
+        attention_status = "exploratory"
+        attention_reason = f"attention_rows={attention_count}; faithfulness disabled"
     rows.append(
         {
             "claim": "attention_hotspot_interpretation",
             "model_pair": "",
-            "status": "exploratory" if attention_count else "insufficient",
-            "reason": f"attention_rows={attention_count}; attention is not causal proof",
-            "evidence_paths": "tables/attention_summary.csv;figures/evidence_attention/",
+            "status": attention_status,
+            "reason": attention_reason,
+            "evidence_paths": "tables/attention_summary.csv;tables/attention_faithfulness.csv;figures/evidence_attention/",
         }
     )
     groups = {str(row.get("group", row.get("case_group", ""))) for row in case_rows}
@@ -740,6 +773,30 @@ def _attention_title(model: str, sample_id: str, row: Mapping[str, Any], aggrega
     )
 
 
+def _attention_provenance(analyses: Mapping[str, Any]) -> dict[str, Any]:
+    models: dict[str, Any] = {}
+    for name, analysis in analyses.items():
+        rows = list(getattr(analysis, "attention_rows", []) or [])
+        first = rows[0] if rows else {}
+        models[name] = {
+            "available": bool(rows),
+            "map_semantics": "token_read_map",
+            "causal_claim": False,
+            "attention_source": first.get("attention_source", "gps_query_pooler" if rows else ""),
+            "attention_tensor_shape": first.get("attention_tensor_shape", ""),
+            "token_grid": [first.get("token_grid_height", ""), first.get("token_grid_width", "")] if rows else [],
+            "aggregation_method": first.get("aggregation_method", "mean_time_query" if rows else ""),
+            "normalization_scope": first.get("normalization_scope", "per_sample_shared_minmax" if rows else ""),
+            "overlay_image_source": first.get("overlay_image_source", "raw_image_or_model_input_tensor" if rows else ""),
+            "cross_sample_comparability": False,
+        }
+    return {
+        "map_semantics": "token_read_map",
+        "causal_claim": False,
+        "models": models,
+    }
+
+
 def _write_case_payloads_and_panels(
     cases_dir: Path,
     figures_dir: Path,
@@ -847,15 +904,24 @@ def _evidence_report_lines(
     paired_delta_rows: list[dict[str, Any]],
     case_rows: list[dict[str, Any]],
     warnings: list[str],
+    faithfulness_context: Mapping[str, Any] | None = None,
 ) -> list[str]:
     statuses = ", ".join(f"{row['claim']}={row['status']}" for row in claim_rows)
+    faithfulness = dict(faithfulness_context or {})
+    faith_line = (
+        f"- attention_faithfulness.csv: status={faithfulness.get('status')}, "
+        f"passed={faithfulness.get('passed_sample_count', 0)}, failed={faithfulness.get('failed_sample_count', 0)}。"
+        if faithfulness.get("enabled")
+        else "- attention faithfulness 未启用；attention 解释项保持 exploratory。"
+    )
     return [
         "",
         "## GPS-query 证据门控",
         f"- claim_gate_summary.csv: {statuses or 'no claims'}。",
         f"- paired_delta_by_condition.csv 记录 {len(paired_delta_rows)} 行同 split/seed/metric/condition delta；anchor_comparisons.csv 只作外部参考。",
         f"- case_selection.csv 与 cases/*.json 覆盖 {len(case_rows)} 个 deterministic case，包含 gain、regression、near-miss/failure 时才适合展示。",
-        "- Attention hotspot 只作为解释性证据，不是因果证明。",
+        "- Attention hotspot 语义为 token-read map，只作为解释性证据，不是因果证明。",
+        faith_line,
         *( [f"- Evidence warnings: {', '.join(sorted(set(warnings)))}。"] if warnings else [] ),
     ]
 
@@ -989,5 +1055,3 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
-
-

@@ -366,6 +366,9 @@ SCENARIO_C_X_D_SUITE_TYPE = "scenario_c_x_d_image_observability"
 GPS_QUERY_ADVANTAGE_SLICE_TYPE = "gps_query_advantage_slice"
 
 
+REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE = "reused_weight_fusion_diagnostic"
+
+
 SUPPORTED_MODEL_GROUPS = {
     "gps_only",
     "gps_neural",
@@ -434,6 +437,9 @@ SUITE_ALIASES = {
     "scenario_d_image_observability": SCENARIO_D_SUITE_TYPE,
     "scenario_c_x_d": SCENARIO_C_X_D_SUITE_TYPE,
     "scenario_c_x_d_image_observability": SCENARIO_C_X_D_SUITE_TYPE,
+    "fusion_diagnostic": SCENARIO_C_X_D_SUITE_TYPE,
+    "reused_weight_fusion_diagnostic": SCENARIO_C_X_D_SUITE_TYPE,
+    "reused-weight-fusion-diagnostic": SCENARIO_C_X_D_SUITE_TYPE,
     "predictive": PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
     "predictive_jepa": PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
     "predictive_jepa_robustness": PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
@@ -631,6 +637,25 @@ PREDICTIVE_OUTPUT_FILES = {
     "predictive_claim_gate": "results/predictive_claim_gate.json",
     "predictive_diagnostics_bundle_manifest": "results/predictive_diagnostics_bundle_manifest.json",
 }
+
+
+REUSED_WEIGHT_FUSION_DIAGNOSTIC_OUTPUT_FILES = {
+    "fusion_diagnostic_condition_metrics": "results/fusion_diagnostic_metrics.csv",
+    "fusion_diagnostic_paired_margins": "results/paired_margin_by_condition.csv",
+    "fusion_diagnostic_summary": "results/fusion_diagnostic_summary.json",
+}
+
+
+REUSED_WEIGHT_FUSION_DIAGNOSTIC_CXD_PAIRS = (
+    ("C0_sync", "D0_full_image"),
+    ("C0_sync", "D4_partial_occlusion"),
+    ("C0_sync", "D6_burst_missing"),
+    ("C3_random_async", "D0_full_image"),
+    ("C4_severe_async", "D0_full_image"),
+    ("C3_random_async", "D4_partial_occlusion"),
+    ("C4_severe_async", "D6_burst_missing"),
+    ("C4_severe_async", "D7_joint_worst_case"),
+)
 
 
 GPS_QUERY_ADVANTAGE_CXD_GPS_CONDITION_IDS = ("C3_random_async", "C4_severe_async")
@@ -885,6 +910,9 @@ __all__ = [
     "PREDICTIVE_OUTPUT_FILES",
     "PREDICTIVE_REQUIRED_MODEL_GROUPS",
     "PREDICTIVE_SUITE_TYPES",
+    "REUSED_WEIGHT_FUSION_DIAGNOSTIC_CXD_PAIRS",
+    "REUSED_WEIGHT_FUSION_DIAGNOSTIC_OUTPUT_FILES",
+    "REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE",
     "RUNNER_VERSION",
     "SCENARIO_C_CANONICAL_CONDITIONS",
     "SCENARIO_C_SUITE_TYPE",

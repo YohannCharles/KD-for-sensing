@@ -43,6 +43,8 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     PREDICTIVE_OUTPUT_FILES,
     PREDICTIVE_REQUIRED_MODEL_GROUPS,
     PREDICTIVE_SUITE_TYPES,
+    REUSED_WEIGHT_FUSION_DIAGNOSTIC_CXD_PAIRS,
+    REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE,
     RUNNER_VERSION,
     SCENARIO_C_CANONICAL_CONDITIONS,
     SCENARIO_C_SUITE_TYPE,
@@ -352,16 +354,78 @@ def _normalize_scenario_cxd_suite(suite: Mapping[str, Any], *, suite_id: str, su
         suite_id=f"{suite_id}_scenario_d",
         suite_type=SCENARIO_D_SUITE_TYPE,
     )
+    pair_specs = _normalize_cxd_pair_specs(suite, scenario_c["scenario_c_conditions"], scenario_d["scenario_d_conditions"], suite_id=suite_id)
+    profile = str(suite.get("profile", suite.get("preset", suite.get("diagnostic_profile", "")))).strip()
+    if str(suite.get("type", "")) in {"fusion_diagnostic", REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE}:
+        profile = REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE
     return {
         **dict(suite),
         "id": suite_id,
         "type": suite_type,
         "condition": str(suite.get("condition", SCENARIO_C_X_D_SUITE_TYPE)),
+        "profile": profile,
+        "reused_weight_fusion_diagnostic": profile == REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE,
         "severity_unit": "scenario_c_x_d_level",
         "severities": [0.0],
         "scenario_c_conditions": scenario_c["scenario_c_conditions"],
         "scenario_d_conditions": scenario_d["scenario_d_conditions"],
+        "cxd_pairs": pair_specs,
     }
+
+
+def _normalize_cxd_pair_specs(
+    suite: Mapping[str, Any],
+    scenario_c_conditions: Iterable[Mapping[str, Any]],
+    scenario_d_conditions: Iterable[Mapping[str, Any]],
+    *,
+    suite_id: str,
+) -> list[dict[str, Any]]:
+    raw_pairs = suite.get("cxd_pairs", suite.get("condition_pairs", suite.get("pairs")))
+    profile = str(suite.get("profile", suite.get("preset", suite.get("diagnostic_profile", "")))).strip()
+    if raw_pairs is None and (
+        profile in {"default", REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE}
+        or str(suite.get("type", "")) in {"fusion_diagnostic", REUSED_WEIGHT_FUSION_DIAGNOSTIC_PROFILE}
+    ):
+        raw_pairs = REUSED_WEIGHT_FUSION_DIAGNOSTIC_CXD_PAIRS
+    if raw_pairs is None:
+        return []
+    if not isinstance(raw_pairs, (list, tuple)):
+        raise BenchmarkManifestError(f"Scenario CxD suite '{suite_id}' cxd_pairs must be a list.")
+    c_by_id = {str(item.get("id")): dict(item) for item in scenario_c_conditions if isinstance(item, Mapping)}
+    d_by_id = {str(item.get("id")): dict(item) for item in scenario_d_conditions if isinstance(item, Mapping)}
+    pairs: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_pairs):
+        gps_id, image_id = _parse_cxd_pair(raw, suite_id=suite_id, index=index)
+        if gps_id not in c_by_id or image_id not in d_by_id:
+            raise BenchmarkManifestError(f"Scenario CxD suite '{suite_id}' unknown pair: {gps_id}+{image_id}.")
+        pairs.append(
+            {
+                "id": f"{gps_id}+{image_id}",
+                "gps_condition": c_by_id[gps_id],
+                "image_condition": d_by_id[image_id],
+            }
+        )
+    return pairs
+
+
+def _parse_cxd_pair(raw: Any, *, suite_id: str, index: int) -> tuple[str, str]:
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.replace(" x ", "+").replace("*", "+").split("+") if part.strip()]
+        if len(parts) != 2:
+            raise BenchmarkManifestError(f"Scenario CxD suite '{suite_id}' pair {index} must look like 'C0_sync+D0_full_image'.")
+        return parts[0], normalize_scenario_d_condition_id(parts[1])
+    if isinstance(raw, (list, tuple)) and len(raw) == 2:
+        return str(raw[0]), normalize_scenario_d_condition_id(raw[1])
+    if isinstance(raw, Mapping):
+        gps_id = raw.get("gps_condition", raw.get("scenario_c_condition", raw.get("c")))
+        image_id = raw.get("image_condition", raw.get("scenario_d_condition", raw.get("d")))
+        if isinstance(gps_id, Mapping):
+            gps_id = gps_id.get("id", gps_id.get("condition"))
+        if isinstance(image_id, Mapping):
+            image_id = image_id.get("id", image_id.get("condition"))
+        if gps_id and image_id:
+            return str(gps_id), normalize_scenario_d_condition_id(image_id)
+    raise BenchmarkManifestError(f"Scenario CxD suite '{suite_id}' pair {index} must define GPS and image conditions.")
 
 
 # Scenario D and CxD metric rows
