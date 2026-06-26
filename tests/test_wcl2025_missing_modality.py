@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-from kd_sensing.baselines.wcl2025_missing_modality import (
+from kd_sensing.baselines.rmbp_mm import (
     LOCAL_SUBSTITUTE_CONFIG,
     apply_missing_modality_condition,
     build_condition_summary,
@@ -110,12 +110,13 @@ def test_local_substitute_config_loads_and_declares_wcl_metadata():
     assert primary["type"] == "modular_sequence"
     assert primary["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
     assert primary["representation_core"]["type"] == "token_transformer"
-    assert primary["paper_metadata"]["model_group"] == "wcl_style_missing_modality_baseline"
+    assert primary["paper_metadata"]["model_group"] == "RMBP-MM"
     assert primary["paper_metadata"]["baseline_scope"] == "local_experimental_baseline"
+    assert "not paper-specific imputation/channel attention" in primary["paper_metadata"]["notes"][-1]
     assert profile["operators"][0]["type"] == "modality_dropout"
     assert profile["operators"][0]["params"]["rates"]["mmwave"] == 0.3
     assert cfg["comparability"]["official_reproduction_status"] == "not_applicable"
-    assert cfg["output"]["dir"].startswith("outputs/analysis/local_baselines/wcl_style_missing_modality")
+    assert cfg["output"]["dir"].startswith("outputs/analysis/local_baselines/rmbp_mm")
 
 
 def test_wcl_style_modality_dropout_supports_mmwave_inputs():
@@ -178,6 +179,7 @@ def test_local_substitute_model_config_builds_and_handles_missing_condition():
     adapted = adapt_model_output(output)
     metadata = model.training_strategy_metadata()
     assert adapted.logits.shape == (2, 1, 5)
-    assert metadata["model_group"] == "wcl2025_missing_modality_local_substitute"
+    assert metadata["model_group"] == "RMBP-MM"
     assert metadata["missing_modality_strategy"] == "zero_imputation_with_modality_dropout_training"
     assert metadata["fusion_type"] == "token_transformer"
+    assert "does not implement the paper-specific imputation and channel-attention modules" in metadata["deviation"]

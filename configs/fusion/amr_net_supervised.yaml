@@ -1,0 +1,78 @@
+experiment:
+  name: amr_net_supervised
+  task: fusion
+  objective: beam
+  seed: 0
+  device: auto
+data:
+  dataset:
+    type: deepsense6g
+    scene: 31
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 1
+    num_pred: 1
+    portion: 1.0
+    image_profile: rgb_imagenet
+    image_size:
+    - 224
+    - 224
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_lidar: true
+  dataloader:
+    train_batch_size: 16
+    test_batch_size: 16
+    num_workers: 4
+    prefetch_factor: 1
+model:
+  modalities:
+  - image
+  - lidar
+  - gps
+  num_classes: 64
+  num_pred: 1
+  seq_length: 1
+  downsample_ratio: 1
+  primary:
+    type: amr_net
+    modalities:
+    - image
+    - lidar
+    - gps
+    image_channels: 3
+    image_feature_dim: 128
+    lidar_input_features: 2
+    lidar_feature_dim: 512
+    gps_input_size: 2
+    gps_feature_dim: 512
+    latent_dim: 128
+    num_classes: 64
+    num_pred: 1
+    deterministic_inference: true
+    paper_approximation: true
+loss:
+  type: focal_loss
+  alpha: 1
+  gamma: 2
+  amr:
+    enabled: true
+    weight: 1.0
+    alpha: 0.01
+    beta: 1.0
+    pre_enabled: true
+    temperature: 0.1
+training:
+  epochs: 100
+  lr: 0.00075
+  weight_decay: 0.0001
+  grad_clip: 10.0
+  patience: 20
+  use_early_stopping: true
+  early_stopping_metric: val_adba
+  early_stopping_mode: max
+  min_delta: 0.0001
+output:
+  dir: outputs
+  run_name: amr_net_supervised

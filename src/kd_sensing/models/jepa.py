@@ -928,6 +928,35 @@ class JepaMaskSampler(nn.Module):
         device = device or gps_batch.device
         grid_size = _metadata_token_grid(token_metadata, grid_size)
         num_tokens = _metadata_token_count(token_metadata, num_tokens)
+        if num_tokens <= 0:
+            raise ValueError("JEPA mask sampler requires at least one visual token.")
+        if num_tokens == 1:
+            indices = torch.zeros(batch_size, seq_len, 1, dtype=torch.long, device=device)
+            mask = torch.ones(batch_size, seq_len, 1, dtype=torch.bool, device=device)
+            diagnostics = {
+                "jepa/mask_mode": self.mode,
+                "jepa/mask_context_ratio": 1.0,
+                "jepa/mask_target_ratio": 1.0,
+                "jepa/target_tokens": 1.0,
+                "jepa/token_count": 1.0,
+                "jepa/token_grid_h": float(grid_size[0]),
+                "jepa/token_grid_w": float(grid_size[1]),
+                "jepa/degenerate_single_token_mask": 1.0,
+            }
+            metadata_payload = _metadata_dict(token_metadata)
+            if metadata_payload:
+                diagnostics["jepa/visual_encoder_type"] = str(
+                    metadata_payload.get("visual_encoder_type") or metadata_payload.get("visual_encoder.type") or ""
+                )
+                diagnostics["jepa/checkpoint_policy"] = str(metadata_payload.get("checkpoint_policy") or "")
+            return JepaMaskSample(
+                context_mask=mask,
+                target_mask=mask,
+                loss_mask=mask,
+                context_indices=indices,
+                target_indices=indices,
+                diagnostics=diagnostics,
+            )
         n_context = min(max(1, int(round(num_tokens * self.context_ratio))), max(num_tokens - 1, 1))
         n_target = min(max(1, int(round(num_tokens * self.target_ratio))), max(num_tokens - n_context, 1))
         context_indices = torch.empty(batch_size, seq_len, n_context, dtype=torch.long, device=device)

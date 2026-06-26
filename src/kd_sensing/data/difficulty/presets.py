@@ -86,57 +86,196 @@ PROBABILITY_FIELDS = (
     "image_lowlight_severity",
 )
 
+PREDICTIVE_JEPA_DEFAULT_STRESS_SEVERITIES = (0.25, 0.5, 0.75, 1.0)
+PREDICTIVE_JEPA_PRIMARY_STRESS_SUITES = ("image_missing", "image_noise", "gps_noise")
+PREDICTIVE_JEPA_STRESS_SUITE_IDS = ("clean_anchor",) + PREDICTIVE_JEPA_PRIMARY_STRESS_SUITES + ("joint_stress",)
+
 PREDICTIVE_JEPA_CANONICAL_CONDITIONS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "clean_anchor",
+        "severity": 0.0,
+        "severity_unit": "clean_anchor",
+        "stress_suite": "clean_anchor",
+        "condition_family": "stress_curve",
+        "claim_scope": "primary",
+        "description": "clean image and GPS anchor for predictive stress curves",
+        "params": {
+            "stress_suite": "clean_anchor",
+            "severity_unit": "clean_anchor",
+            "condition_family": "stress_curve",
+            "claim_scope": "primary",
+        },
+    },
+    *(
+        {
+            "id": f"image_missing_s{str(value).replace('.', 'p')}",
+            "severity": float(value),
+            "severity_unit": "missing_tail_fraction",
+            "stress_suite": "image_missing",
+            "condition_family": "stress_curve",
+            "claim_scope": "primary",
+            "description": f"tail image frames missing at fraction {value}",
+            "params": {
+                "stress_suite": "image_missing",
+                "missing_tail_fraction": float(value),
+                "missing_expression": "zero_fill",
+                "history_window": 4,
+                "severity_unit": "missing_tail_fraction",
+                "condition_family": "stress_curve",
+                "claim_scope": "primary",
+            },
+        }
+        for value in PREDICTIVE_JEPA_DEFAULT_STRESS_SEVERITIES
+    ),
+    *(
+        {
+            "id": f"image_noise_s{str(value).replace('.', 'p')}",
+            "severity": float(value),
+            "severity_unit": "occlusion_ratio",
+            "stress_suite": "image_noise",
+            "condition_family": "stress_curve",
+            "claim_scope": "primary",
+            "description": f"single-axis image occlusion noise at ratio {value}",
+            "params": {
+                "stress_suite": "image_noise",
+                "image_noise_type": "occlusion",
+                "image_noise_severity": float(value),
+                "image_noise_occlusion_ratio": float(value),
+                "history_window": 4,
+                "severity_unit": "occlusion_ratio",
+                "condition_family": "stress_curve",
+                "claim_scope": "primary",
+            },
+        }
+        for value in PREDICTIVE_JEPA_DEFAULT_STRESS_SEVERITIES
+    ),
+    *(
+        {
+            "id": f"gps_noise_s{str(value).replace('.', 'p')}",
+            "severity": float(value),
+            "severity_unit": "gps_jitter_std",
+            "stress_suite": "gps_noise",
+            "condition_family": "stress_curve",
+            "claim_scope": "primary",
+            "description": f"single-axis GPS jitter at std {value}",
+            "params": {
+                "stress_suite": "gps_noise",
+                "gps_noise_mode": "jitter",
+                "gps_jitter_std": float(value),
+                "history_window": 4,
+                "severity_unit": "gps_jitter_std",
+                "condition_family": "stress_curve",
+                "claim_scope": "primary",
+            },
+        }
+        for value in PREDICTIVE_JEPA_DEFAULT_STRESS_SEVERITIES
+    ),
+)
+
+PREDICTIVE_JEPA_LEGACY_P_LEVEL_CONDITIONS: tuple[dict[str, Any], ...] = (
     {
         "id": "P0_clean_current",
         "severity": 0.0,
+        "severity_unit": "predictive_p_level",
+        "condition_family": "legacy_p_level",
+        "claim_scope": "legacy",
+        "deprecated": True,
         "description": "clean current image and GPS",
-        "params": {},
+        "params": {"condition_family": "legacy_p_level", "claim_scope": "legacy", "deprecated": True},
     },
     {
         "id": "P1_current_frame_missing_history_available",
         "severity": 1.0,
+        "severity_unit": "predictive_p_level",
+        "condition_family": "legacy_p_level",
+        "claim_scope": "legacy",
+        "deprecated": True,
         "description": "current image frame missing while history remains available",
-        "params": {"current_frame_missing": True, "history_window": 4, "missing_expression": "zero_fill"},
+        "params": {
+            "current_frame_missing": True,
+            "history_window": 4,
+            "missing_expression": "zero_fill",
+            "condition_family": "legacy_p_level",
+            "claim_scope": "legacy",
+            "deprecated": True,
+        },
     },
     {
         "id": "P2_semantic_occlusion_history_available",
         "severity": 2.0,
+        "severity_unit": "predictive_p_level",
+        "condition_family": "legacy_p_level",
+        "claim_scope": "legacy",
+        "deprecated": True,
         "description": "deterministic beam-relevant proxy semantic occlusion with usable history",
-        "params": {"semantic_occlusion": True, "occlusion_ratio": 0.35, "history_window": 4},
+        "params": {
+            "semantic_occlusion": True,
+            "occlusion_ratio": 0.35,
+            "history_window": 4,
+            "condition_family": "legacy_p_level",
+            "claim_scope": "legacy",
+            "deprecated": True,
+        },
     },
     {
         "id": "P3_plausible_wrong_gps_current_image",
         "severity": 3.0,
+        "severity_unit": "predictive_p_level",
+        "condition_family": "legacy_p_level",
+        "claim_scope": "legacy",
+        "deprecated": True,
         "description": "current image available but GPS is replaced by a plausible wrong batch peer",
-        "params": {"plausible_wrong_gps": True, "history_window": 4},
+        "params": {
+            "plausible_wrong_gps": True,
+            "history_window": 4,
+            "condition_family": "legacy_p_level",
+            "claim_scope": "legacy",
+            "deprecated": True,
+        },
     },
     {
         "id": "P4_joint_predictive_recovery",
         "severity": 4.0,
-        "description": "joint current-image missing or occluded plus plausible wrong GPS",
+        "severity_unit": "predictive_p_level",
+        "condition_family": "legacy_p_level",
+        "claim_scope": "legacy",
+        "deprecated": True,
+        "description": "legacy joint current-image missing plus plausible wrong GPS",
         "params": {
             "current_frame_missing": True,
-            "semantic_occlusion": True,
-            "occlusion_ratio": 0.4,
             "plausible_wrong_gps": True,
             "history_window": 4,
             "missing_expression": "zero_fill",
+            "condition_family": "legacy_p_level",
+            "claim_scope": "legacy",
+            "deprecated": True,
         },
     },
     {
         "id": "P5_novel_weather_history_available",
         "severity": 5.0,
+        "severity_unit": "predictive_p_level",
+        "condition_family": "legacy_p_level",
+        "claim_scope": "legacy",
+        "deprecated": True,
         "description": "novel weather/domain shift on current frame with usable history",
-        "params": {"novel_weather": True, "weather_severity": 0.65, "history_window": 4},
+        "params": {
+            "novel_weather": True,
+            "weather_severity": 0.65,
+            "history_window": 4,
+            "condition_family": "legacy_p_level",
+            "claim_scope": "legacy",
+            "deprecated": True,
+        },
     },
 )
-PREDICTIVE_JEPA_CONDITION_IDS = tuple(item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS)
+PREDICTIVE_JEPA_ALL_CONDITIONS = PREDICTIVE_JEPA_CANONICAL_CONDITIONS + PREDICTIVE_JEPA_LEGACY_P_LEVEL_CONDITIONS
+PREDICTIVE_JEPA_CONDITION_IDS = tuple(item["id"] for item in PREDICTIVE_JEPA_ALL_CONDITIONS)
 PREDICTIVE_JEPA_ALIASES = {
-    item["id"].lower(): item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS
+    item["id"].lower(): item["id"] for item in PREDICTIVE_JEPA_ALL_CONDITIONS
 } | {
-    item["id"].split("_", 1)[0].lower(): item["id"] for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS
-}
+    item["id"].split("_", 1)[0].lower(): item["id"] for item in PREDICTIVE_JEPA_LEGACY_P_LEVEL_CONDITIONS
+} | {"clean": "clean_anchor", "clean_anchor": "clean_anchor"}
 
 GPS_QUERY_ADVANTAGE_CANONICAL_CONDITIONS: tuple[dict[str, Any], ...] = (
     {
@@ -253,7 +392,7 @@ def scenario_d_condition(condition_id: Any) -> dict[str, Any]:
 
 def predictive_jepa_condition(condition_id: Any) -> dict[str, Any]:
     normalized = normalize_predictive_jepa_condition_id(condition_id)
-    for item in PREDICTIVE_JEPA_CANONICAL_CONDITIONS:
+    for item in PREDICTIVE_JEPA_ALL_CONDITIONS:
         if item["id"] == normalized:
             return {
                 **item,
@@ -346,6 +485,21 @@ def normalize_predictive_jepa_operator_params(
         condition_payload = predictive_jepa_condition(raw_condition)
     elif is_gps_query_advantage_condition(raw_condition):
         condition_payload = gps_query_advantage_condition(raw_condition)
+    elif str(raw_params.get("stress_suite", "")).strip() in PREDICTIVE_JEPA_STRESS_SUITE_IDS:
+        condition_payload = {
+            "id": str(raw_condition),
+            "severity": _finite_float(
+                raw_params.get("predictive_severity", raw_params.get("severity", 0.0)),
+                field="predictive_severity",
+                profile_id=profile_id,
+                operator_type=operator_type,
+            ),
+            "params": {},
+            "stress_suite": str(raw_params.get("stress_suite")),
+            "severity_unit": str(raw_params.get("severity_unit", "stress_severity")),
+            "condition_family": str(raw_params.get("condition_family", "stress_curve")),
+            "claim_scope": str(raw_params.get("claim_scope", "primary")),
+        }
     else:
         raise ValueError(_unknown_predictive_jepa_message(raw_condition))
     merged = dict(condition_payload.get("params", {}))
@@ -353,6 +507,9 @@ def normalize_predictive_jepa_operator_params(
     merged["predictive_condition"] = str(condition_payload["id"])
     merged["condition"] = str(condition_payload["id"])
     merged["predictive_severity"] = float(condition_payload["severity"])
+    for key in ("stress_suite", "severity_unit", "condition_family", "claim_scope", "deprecated"):
+        if key in condition_payload:
+            merged.setdefault(key, condition_payload[key])
     merged.setdefault("history_window", 4)
     merged.setdefault("target_time_index", -1)
     merged.setdefault("gps_counterfactual_fallback", "deterministic_jitter")
@@ -365,8 +522,9 @@ def _validate_predictive_jepa_params(params: Mapping[str, Any], *, profile_id: s
     condition = str(params.get("predictive_condition", params.get("condition", "")))
     if condition:
         if not (is_predictive_jepa_condition(condition) or is_gps_query_advantage_condition(condition)):
-            raise ValueError(_unknown_predictive_jepa_message(condition))
-    for field in ("occlusion_ratio", "weather_severity"):
+            if str(params.get("stress_suite", "")).strip() not in PREDICTIVE_JEPA_STRESS_SUITE_IDS:
+                raise ValueError(_unknown_predictive_jepa_message(condition))
+    for field in ("occlusion_ratio", "weather_severity", "missing_tail_fraction", "image_noise_severity", "image_noise_occlusion_ratio"):
         if field not in params or params[field] in (None, ""):
             continue
         value = _finite_float(params[field], field=field, profile_id=profile_id, operator_type=operator_type)
@@ -374,6 +532,12 @@ def _validate_predictive_jepa_params(params: Mapping[str, Any], *, profile_id: s
             raise ValueError(
                 f"difficulty profile '{profile_id}' operator '{operator_type}' has illegal {field}={value}; "
                 "Predictive JEPA probabilities/severities must be in [0, 1]."
+            )
+    if "gps_jitter_std" in params and params["gps_jitter_std"] not in (None, ""):
+        value = _finite_float(params["gps_jitter_std"], field="gps_jitter_std", profile_id=profile_id, operator_type=operator_type)
+        if value < 0.0:
+            raise ValueError(
+                f"difficulty profile '{profile_id}' operator '{operator_type}' gps_jitter_std must be non-negative, got {value}."
             )
     for field in ("history_window",):
         try:
@@ -443,7 +607,7 @@ def _unknown_scenario_d_message(value: Any) -> str:
 
 def _unknown_predictive_jepa_message(value: Any) -> str:
     available = ", ".join(PREDICTIVE_JEPA_CONDITION_IDS)
-    return f"Unknown Predictive JEPA robustness condition '{value}'. Available P-levels: {available}."
+    return f"Unknown Predictive JEPA robustness condition '{value}'. Available conditions: {available}."
 
 
 def _unknown_gps_query_advantage_message(value: Any) -> str:

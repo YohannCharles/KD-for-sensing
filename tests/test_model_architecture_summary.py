@@ -250,6 +250,17 @@ def test_migrated_modular_configs_generate_architecture_summary(
     assert summary["model"]["metadata"]["representation_core_type"] == core_type
 
 
+def test_amr_net_config_generates_whole_model_summary():
+    summary = summarize_model_config(ROOT / "configs/fusion/amr_net_supervised.yaml", build=True)
+
+    assert summary["source"]["kind"] == "instance"
+    assert summary["model"]["registry_type"] == "amr_net"
+    assert summary["model"]["architecture_category"] == "whole_model_exception"
+    assert summary["model"]["enabled_modalities"] == ["image", "lidar", "gps"]
+    assert summary["parameters"]["total_params"] > 0
+    assert summary["model"]["metadata"]["paper_approximation"] is True
+
+
 def test_removed_registry_names_are_absent_from_current_architecture_surface():
     import_default_components()
     assert {

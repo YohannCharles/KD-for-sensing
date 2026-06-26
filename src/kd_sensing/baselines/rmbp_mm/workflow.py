@@ -224,14 +224,15 @@ def build_local_substitute_model_config(
             }
         },
         "paper_metadata": {
-            "model_group": "wcl2025_missing_modality_local_substitute",
+            "model_group": "RMBP-MM",
             "paper_alignment": "paper_aligned_local_substitute",
             "missing_modality_strategy": "zero_imputation_with_modality_dropout_training",
             "fusion_type": str(fusion_type),
             "enabled_modalities": enabled,
             "deviation": [
                 "official implementation unavailable",
-                "uses modular_sequence encoders and token fusion",
+                "uses modular_sequence encoders and token_transformer fusion",
+                "does not implement the paper-specific imputation and channel-attention modules",
             ],
         },
     }

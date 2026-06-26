@@ -1,5 +1,5 @@
 experiment:
-  name: wcl_style_missing_modality_baseline
+  name: rmbp_mm
   task: fusion
   objective: beam
   seed: 17
@@ -84,7 +84,7 @@ model:
         num_classes: 64
         dropout: 0.1
     paper_metadata:
-      model_group: wcl_style_missing_modality_baseline
+      model_group: RMBP-MM
       baseline_scope: local_experimental_baseline
       missing_modality_strategy: zero_imputation_with_difficulty_modality_dropout
       fusion_type: token_transformer
@@ -92,6 +92,7 @@ model:
       notes:
         - local trainable baseline for project experiments
         - does not claim official WCL 2025 metrics
+        - local substitute uses token_transformer fusion, not paper-specific imputation/channel attention
 loss:
   type: focal_loss
   alpha: 1
@@ -147,5 +148,5 @@ comparability:
   claim_status: local_experimental_baseline
   official_reproduction_status: not_applicable
 output:
-  dir: outputs/analysis/local_baselines/wcl_style_missing_modality
-  run_name: wcl_style_missing_modality_baseline
+  dir: outputs/analysis/local_baselines/rmbp_mm
+  run_name: rmbp_mm

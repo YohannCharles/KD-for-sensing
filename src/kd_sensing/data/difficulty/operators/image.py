@@ -446,7 +446,9 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
                 history_available[:, step] = True
         source_ranges = _history_source_ranges(steps, history_window=int(params.get("history_window", 4)))
         current_missing_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        missing_tail_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
         semantic_frame_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        image_noise_frame_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
         corruption_types: list[str] = []
         counts: dict[str, int] = {}
         visual_ambiguous_metadata: dict[str, Any] = {}
@@ -461,6 +463,33 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
                 seed=seed,
             )
             batch["visual_ambiguous_hard_negative_metadata"] = visual_ambiguous_metadata
+
+        missing_tail_fraction = _prob(params.get("missing_tail_fraction", 0.0), name="missing_tail_fraction")
+        if missing_tail_fraction > 0.0:
+            tail_count = min(steps, max(1, int(math.ceil(float(steps) * missing_tail_fraction))))
+            missing_tail_mask[:, steps - tail_count :] = True
+            value = torch.where(_expand_temporal_mask(missing_tail_mask, value), torch.zeros_like(value), value)
+            valid_mask = torch.where(missing_tail_mask, torch.zeros_like(valid_mask), valid_mask)
+            score = torch.where(missing_tail_mask, torch.zeros_like(score), score)
+            corruption_types.append("image_missing_tail")
+            counts["missing_tail_frames"] = int(missing_tail_mask.sum().item())
+
+        image_noise_severity = _prob(params.get("image_noise_severity", 0.0), name="image_noise_severity")
+        if image_noise_severity > 0.0:
+            ratio = _prob(params.get("image_noise_occlusion_ratio", image_noise_severity), name="image_noise_occlusion_ratio")
+            pixel_mask = torch.zeros_like(value, dtype=torch.bool)
+            for batch_index in range(batch_size):
+                _occlude_single_frame(
+                    value[batch_index, current_step],
+                    pixel_mask[batch_index, current_step],
+                    ratio=ratio,
+                    generator=generator,
+                )
+            image_noise_frame_mask[:, current_step] = True
+            score[:, current_step] = (score[:, current_step] - 0.45 * ratio).clamp(0.0, 1.0)
+            batch["image_noise_mask"] = pixel_mask.to(device=device)
+            corruption_types.append(str(params.get("image_noise_type", "occlusion")))
+            counts["image_noise_frames"] = int(batch_size)
 
         if bool(params.get("semantic_occlusion", False)):
             ratio = _prob(params.get("occlusion_ratio", 0.35), name="occlusion_ratio")
@@ -504,14 +533,22 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
         batch["image_source_index"] = source_index
         batch["image_history_available_mask"] = history_available
         batch["image_current_missing_mask"] = current_missing_mask
+        batch["image_missing_tail_mask"] = missing_tail_mask
         batch["image_semantic_frame_mask"] = semantic_frame_mask
+        batch["image_noise_frame_mask"] = image_noise_frame_mask
         metadata = {
             "operator": "predictive_jepa_robustness",
             "condition": condition,
             "available_conditions": list(PREDICTIVE_JEPA_CONDITION_IDS),
             "seed": seed,
+            "replay_seed": seed,
+            "stress_suite": str(params.get("stress_suite", "legacy_p_level")),
+            "stress_severity": float(params.get("predictive_severity", params.get("missing_tail_fraction", image_noise_severity) or 0.0)),
+            "severity_unit": str(params.get("severity_unit", "")),
+            "degradation_type": str(params.get("image_noise_type", "none" if image_noise_severity == 0.0 else "occlusion")),
             "input_space": "normalized_image_tensor",
             "frame_range": _frame_range(image),
+            "affected_frame_range": [current_step, current_step] if image_noise_severity > 0.0 else [steps - int(missing_tail_mask.any(dim=0).sum().item()), steps - 1] if bool(missing_tail_mask.any()) else [],
             "target_time_index": current_step,
             "history_window": int(params.get("history_window", 4)),
             "history_source_range": source_ranges,
@@ -520,7 +557,9 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
             "observability_score": "image_observability_score",
             "source_index": "image_source_index",
             "current_frame_missing_mask": "image_current_missing_mask",
+            "missing_tail_mask": "image_missing_tail_mask",
             "semantic_frame_mask": "image_semantic_frame_mask",
+            "image_noise_frame_mask": "image_noise_frame_mask",
             "corruption_types": corruption_types or ["clean"],
             "corruption_counts": counts,
             "missing_expression": str(params.get("missing_expression", "zero_fill")),
@@ -539,6 +578,12 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
                     "scene_constraint",
                     "novel_weather",
                     "weather_severity",
+                    "missing_tail_fraction",
+                    "image_noise_type",
+                    "image_noise_severity",
+                    "image_noise_occlusion_ratio",
+                    "stress_suite",
+                    "severity_unit",
                     "history_window",
                     "target_time_index",
                     "missing_expression",
@@ -579,6 +624,7 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
         source_index = torch.arange(steps, dtype=torch.long, device=device).reshape(1, steps).expand(batch_size, steps).clone()
         source_sample_index = torch.arange(batch_size, dtype=torch.long, device=device).reshape(batch_size, 1).expand(batch_size, steps).clone()
         counterfactual_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
+        gps_noise_mask = torch.zeros((batch_size, steps), dtype=torch.bool, device=device)
         status = ""
         fallback = "none"
         fallback_reason = ""
@@ -588,6 +634,21 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
         peer_sample_ids: list[str | None] = [None for _ in range(batch_size)]
         selection_pool_sizes: list[int] = [0 for _ in range(batch_size)]
         fallback_reasons: list[str] = ["" for _ in range(batch_size)]
+
+        gps_noise_mode = str(params.get("gps_noise_mode", "")).strip().lower()
+        gps_jitter_std = float(params.get("gps_jitter_std", 0.0) or 0.0)
+        if gps_noise_mode in {"jitter", "gaussian_jitter"} and gps_jitter_std > 0.0:
+            if value.ndim >= 3:
+                noise = torch.randn(value[:, current_step, :].shape, generator=generator, dtype=torch.float32).to(device)
+                value[:, current_step, :] = value[:, current_step, :] + noise.to(dtype=value.dtype) * gps_jitter_std
+                distance = noise.reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt() * gps_jitter_std
+            else:
+                noise = torch.randn(value.shape, generator=generator, dtype=torch.float32).to(device)
+                value = value + noise.to(dtype=value.dtype) * gps_jitter_std
+                distance = noise.reshape(batch_size, -1).pow(2).sum(dim=-1).sqrt() * gps_jitter_std
+            gps_noise_mask[:, current_step] = True
+            counterfactual_mask[:, current_step] = True
+            status = "gps_jitter"
 
         if bool(params.get("plausible_wrong_gps", False)):
             min_offset = _beam_offset_threshold(params)
@@ -677,16 +738,24 @@ class PredictiveJepaRobustnessOperator(_BaseImageOperator):
         batch["gps_source_index"] = source_index
         batch["gps_source_sample_index"] = source_sample_index
         batch["gps_counterfactual_mask"] = counterfactual_mask
+        batch["gps_noise_mask"] = gps_noise_mask
         metadata = {
             "operator": "predictive_jepa_robustness",
             "condition": condition,
             "seed": seed,
+            "replay_seed": seed,
+            "stress_suite": str(params.get("stress_suite", "legacy_p_level")),
+            "stress_severity": float(params.get("predictive_severity", gps_jitter_std) or 0.0),
+            "severity_unit": str(params.get("severity_unit", "")),
             "input_space": "gps_tensor",
             "target_time_index": current_step,
             "valid_mask": "gps_valid_mask",
             "source_index": "gps_source_index",
             "source_sample_index": "gps_source_sample_index",
             "counterfactual_mask": "gps_counterfactual_mask",
+            "gps_noise_mask": "gps_noise_mask",
+            "perturbation_mode": gps_noise_mode or ("wrong_peer" if bool(params.get("plausible_wrong_gps", False)) else "none"),
+            "gps_jitter_std": gps_jitter_std,
             "counterfactual_status": status,
             "scene_constraint": str(params.get("scene_constraint", "same_split_or_batch")),
             "min_beam_offset": _beam_offset_threshold(params),

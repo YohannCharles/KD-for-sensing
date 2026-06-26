@@ -1,10 +1,10 @@
 # local-missing-modality-baselines Specification
 
 ## Purpose
-约束 AMBER-lite、WCL-style 和 TII-VLRG-style 缺失模态 baseline 在本仓库实验场景中的本地训练、验证、配置、metadata 和 claim 边界。
+约束 AMBER-lite、RMBP-MM 和 TII-VLRG-style 缺失模态 baseline 在本仓库实验场景中的本地训练、验证、配置、metadata 和 claim 边界。
 ## Requirements
 ### Requirement: 本地可训练 baseline 入口
-系统 MUST 为 AMBER-lite、WCL-style 和 TII-VLRG-style baseline 提供本仓库内可训练配置。默认训练入口 MUST 使用 `kd-sensing-train --config`，且 MUST NOT 依赖官方源码、外部 checkpoint 或自动下载权重。
+系统 MUST 为 AMBER-lite、RMBP-MM 和 TII-VLRG-style baseline 提供本仓库内可训练配置。默认训练入口 MUST 使用 `kd-sensing-train --config`，且 MUST NOT 依赖官方源码、外部 checkpoint 或自动下载权重。
 
 #### Scenario: 使用本地配置训练
 - **WHEN** 用户选择任一 local missing-modality baseline 配置
@@ -28,6 +28,6 @@
 系统 MUST 将这些条目标记为 local experimental baseline。文档、metadata 和 summary MUST NOT 声称 official reproduction 或论文数值复现。
 
 #### Scenario: 输出和文档标记为 local baseline
-- **WHEN** baseline 配置、文档或 summary 描述 AMBER-lite、WCL-style 或 TII-VLRG-style 条目
+- **WHEN** baseline 配置、文档或 summary 描述 AMBER-lite、RMBP-MM 或 TII-VLRG-style 条目
 - **THEN** 它们 MUST 标记为 local experimental baseline
 - **AND** official/external/audit wrapper MUST 仅作为可选参考路径出现

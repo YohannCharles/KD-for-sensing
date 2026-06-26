@@ -1190,6 +1190,28 @@ def test_jepa_mask_sampler_random_and_gps_biased_are_reproducible_and_non_overla
     assert multiscale.diagnostics["jepa/multiscale_token_count"] == pytest.approx(20.0)
 
 
+def test_jepa_mask_sampler_allows_single_token_encoder():
+    sample = JepaMaskSampler(mode="random", context_ratio=0.6, target_ratio=0.2, seed=3).sample(
+        batch_size=2,
+        seq_len=3,
+        num_tokens=1,
+        grid_size=(1, 1),
+        gps_batch=torch.zeros(2, 3, 3),
+        token_metadata={
+            "visual_encoder_type": "tinyvit_frame",
+            "checkpoint_policy": "supervised_only_anchor",
+            "token_grid": [1, 1],
+            "token_count": 1,
+        },
+    )
+
+    assert sample.context_indices.shape == (2, 3, 1)
+    assert sample.target_indices.shape == (2, 3, 1)
+    assert torch.all(sample.context_mask)
+    assert torch.all(sample.target_mask)
+    assert sample.diagnostics["jepa/degenerate_single_token_mask"] == pytest.approx(1.0)
+
+
 def test_jepa_latent_loss_masks_and_empty_mask_protection():
     predicted = torch.tensor([[[[1.0, 0.0], [2.0, 2.0]]]])
     target = torch.tensor([[[[0.0, 0.0], [0.0, 0.0]]]])

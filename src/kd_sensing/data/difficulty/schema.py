@@ -478,7 +478,13 @@ def _standardize_predictive_jepa_operators(
             profile_id=profile_id,
             operator_type=operator.type,
         )
-        affected = ("image", "gps")
+        stress_suite = str(params.get("stress_suite", "legacy_p_level"))
+        if stress_suite == "image_missing" or stress_suite == "image_noise":
+            affected = ("image",)
+        elif stress_suite == "gps_noise":
+            affected = ("gps",)
+        else:
+            affected = ("image", "gps")
         payload = {
             "type": operator.type,
             "modality": "image",

@@ -197,15 +197,12 @@ perturbation_suites:
     type: predictive_jepa_robustness
     preset: canonical
     history_window: 5
+    split: test
+    stress_suites: [image_missing, image_noise, gps_noise]
+    severity_values: [0.25, 0.5, 0.75, 1.0]
+    severity_unit: stress_severity
     gps_query_advantage_slice:
       enabled: true
-    conditions:
-      - P0_clean_current
-      - P1_current_frame_missing_history_available
-      - P2_semantic_occlusion_history_available
-      - P3_plausible_wrong_gps_current_image
-      - P4_joint_predictive_recovery
-      - P5_novel_weather_history_available
 metrics:
   primary: dba
   topk: [1, 3, 5]

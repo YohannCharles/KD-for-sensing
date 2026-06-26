@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from kd_sensing.baselines.wcl2025_missing_modality import DEFAULT_OUTPUT_ROOT, run_source_audit_dry_run
+from kd_sensing.baselines.rmbp_mm import DEFAULT_OUTPUT_ROOT, run_source_audit_dry_run
 
 
 def build_parser() -> argparse.ArgumentParser:

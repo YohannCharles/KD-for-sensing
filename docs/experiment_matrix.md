@@ -30,7 +30,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 - Image+GPS JEPA 2604-style：`configs/fusion/experiments/jepa_image_gps/*2604_s32_s34_lowmem.yaml`
 - Arnold22 Camera AE+GPS Direct：`configs/fusion/beambench_image_ae_gps_direct.yaml` + 专用 Table III runner
 - TII-VLRG-style Transformer baseline：`configs/fusion/tii_vlrg_transformer_baseline.yaml`
-- WCL-style missing-modality baseline：`configs/fusion/experiments/wcl2025_missing_modality/local_substitute.yaml`
+- RMBP-MM missing-modality baseline：`configs/fusion/experiments/wcl2025_missing_modality/local_substitute.yaml`
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
 - AMBER-lite missing-modality：`configs/fusion/amber_lite_missing_modality.yaml`
 - MMW GPS v2：`configs/mmw_town_gps_adapter_v2.yaml`
@@ -102,7 +102,7 @@ conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer \
 
 确认外部 repo、checkpoint 和 prediction/metrics 输出路径后才使用 `--execute`；stdout/stderr、manifest、prediction、metrics 和 logs 仍限定在 ignored output root。
 
-WCL-style missing-modality baseline 默认作为本地五模态可训练 baseline 运行，使用 image/radar/GPS/LiDAR/mmWave `modular_sequence`、token fusion 和训练期 `modality_dropout` difficulty profile：
+RMBP-MM missing-modality baseline 默认作为本地五模态可训练 baseline 运行，使用 image/radar/GPS/LiDAR/mmWave `modular_sequence`、token fusion 和训练期 `modality_dropout` difficulty profile：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-train \
@@ -142,13 +142,13 @@ MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NU
 
 GPS-query pooling configs must be paired against the matching GPS-biased mean-pooling baseline from the same family. Do not mix BeamBench-fair and 2604-style checkpoints, label spaces, split protocols or schedules.
 
-Predictive hybrid 是独立的 BeamBench-fair 派生线，不等同 GPS-query pooling baseline。训练入口启用 `hybrid_residual_query`、temporal auxiliary branch、`feature_consistency_gate` 和 `seq_len=4` / `history_window=3`，训练 difficulty profile 默认使用 `P4_joint_predictive_recovery`。单个 `P4_joint_predictive_recovery` train/curriculum profile 不等价于完整 P0-P5 predictive benchmark，也不产生真实数值 claim：
+Predictive hybrid 是独立的 BeamBench-fair 派生线，不等同 GPS-query pooling baseline。训练入口启用 `hybrid_residual_query`、temporal auxiliary branch、`feature_consistency_gate` 和 `seq_len=4` / `history_window=3`，训练 difficulty profile 默认使用 legacy `P4_joint_predictive_recovery`。单个 `P4_joint_predictive_recovery` train/curriculum profile 不等价于完整 clean + `image_missing` / `image_noise` / `gps_noise` stress-curve benchmark，也不产生真实数值 claim：
 
 ```bash
 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 NUMEXPR_NUM_THREADS=8 conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/jepa_image_gps/image_gps_jepa_predictive_hybrid_beambench_fair_lowmem.yaml
 ```
 
-Predictive robustness smoke 只验证 P0-P5 schema、strict comparability、margin-vs-ResNet 和输出 manifest，不产生真实性能 claim：
+Predictive robustness smoke 只验证 stress-curve schema、strict comparability、margin-vs-ResNet 和输出 manifest，不产生真实性能 claim：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
@@ -157,7 +157,7 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --force
 ```
 
-真实 train-then-evaluate 需要先训练并登记本地 checkpoint provenance，再用本地派生 manifest 替换 smoke manifest 中的 `synthetic_metrics`、mock weights 和 `allow_missing_artifacts`，并提供 P0-P5 condition-level metrics、strict comparability fields、difficulty digest、seed、split、sample_count 和 Image ResNet+GPS baseline。真实运行产物仍写入 ignored `outputs/analysis/predictive_jepa_robustness/`：
+真实 train-then-evaluate 需要先训练并登记本地 checkpoint provenance，再用本地派生 manifest 替换 smoke manifest 中的 `synthetic_metrics`、mock weights 和 `allow_missing_artifacts`，并提供 clean anchor、默认 stress curves condition-level metrics、strict comparability fields、difficulty digest、seed、split、sample_count 和 Image ResNet+GPS baseline。真实运行产物仍写入 ignored `outputs/analysis/predictive_jepa_robustness/`：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \

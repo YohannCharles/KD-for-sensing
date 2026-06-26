@@ -295,10 +295,17 @@ def run_jepa_gps_shortcut_benchmark(
                                     "model",
                                     "group",
                                     "predictive_dba",
+                                    "clean_anchor_primary",
+                                    "S@drop<=0.02",
+                                    "S@drop<=0.05",
+                                    "AUC_retention",
+                                    "collapse_s",
+                                    "weakest_axis",
                                     "resnet_predictive_dba",
                                     "margin_vs_resnet_dba",
                                     "claim_pass_5pt",
                                     "claim_status",
+                                    "stress_summary_status",
                                     "overall_cxd_dba",
                                     "overall_cxd_delta_vs_resnet",
                                 )
@@ -521,6 +528,12 @@ def _build_runner_manifest(
         "models": model_records,
         "protocol": manifest.get("protocol", {}),
         "evaluation": manifest.get("evaluation", {}),
+        "perturbation_cache": (
+            manifest.get("evaluation", {}).get("real_forward", {}).get("perturbation_cache", {})
+            if isinstance(manifest.get("evaluation", {}), Mapping)
+            and isinstance(manifest.get("evaluation", {}).get("real_forward", {}), Mapping)
+            else {}
+        ),
         "perturbation_suites": manifest.get("perturbation_suites", []),
         "scenario_d_model_groups": manifest.get("scenario_d_model_groups", {}),
         "predictive_model_groups": manifest.get("predictive_model_groups", {}),
@@ -970,8 +983,6 @@ def _summary_from_real_forward(
     device = build_device(cfg)
     weights_path = _resolve_optional_checkpoint(model_name, model_spec, settings, warnings)
     checkpoint_metadata = load_checkpoint_metadata(weights_path) if weights_path is not None else None
-    dataset_kwargs = load_normalization_artifacts(checkpoint_metadata)
-    dataloader = _build_real_forward_dataloader(cfg, split, dataset_kwargs)
     model = build_model(cfg["model"]["primary"]).to(device)
     checkpoint_load = None
     if weights_path is not None:
@@ -988,14 +999,17 @@ def _summary_from_real_forward(
     cache_root = output_dir / "cache" / str(settings.get("cache_subdir", "real_forward"))
     cache_root.mkdir(parents=True, exist_ok=True)
     primary_name = str(primary)
+    sample_limit = int(settings.get("sample_count", model_spec.get("sample_count", 0)) or 0)
     dba_delta = float(manifest.get("metrics", {}).get("dba_delta", model_spec.get("dba_delta", 5)))
     distance_mode = str(manifest.get("metrics", {}).get("distance_mode", model_spec.get("distance_mode", "circular")))
     topk_values = tuple(int(k) for k in manifest.get("metrics", {}).get("topk", [1, 3, 5]))
     setup = _real_forward_prediction_setup(cfg)
     condition_specs = _real_forward_condition_specs(manifest)
+    perturbation_cache = _perturbation_cache_config(settings, output_dir)
     rows: list[dict[str, Any]] = []
     shard_matrix: list[dict[str, Any]] = []
     clean_by_seed: dict[int, dict[str, Any]] = {}
+    dataloader = None
 
     try:
         for condition in condition_specs:
@@ -1022,20 +1036,35 @@ def _summary_from_real_forward(
                             severity=float(condition.get("severity", 0.0) or 0.0),
                         ).to_dict()
                     )
+                cache_key = _perturbation_cache_key(condition, split=split, sample_limit=sample_limit)
+                perturbation_index_path = _perturbation_cache_index_path(perturbation_cache, cache_key)
+                perturbation_index = (
+                    _load_perturbation_cache_index(perturbation_index_path, key=cache_key, cache_cfg=perturbation_cache)
+                    if str(perturbation_cache.get("mode")) in {"read", "read_write"}
+                    else None
+                )
+                if perturbation_index is None and str(perturbation_cache.get("mode")) != "read":
+                    if dataloader is None:
+                        dataset_kwargs = load_normalization_artifacts(checkpoint_metadata)
+                        dataloader = _build_real_forward_dataloader(cfg, split, dataset_kwargs)
                 summary = _compute_real_forward_condition(
                     model,
                     dataloader,
                     cfg,
                     condition,
+                    split=split,
                     device=device,
                     setup=setup,
-                    sample_limit=int(settings.get("sample_count", model_spec.get("sample_count", 0)) or 0),
+                    sample_limit=sample_limit,
                     topk_values=topk_values,
                     dba_delta=dba_delta,
                     distance_mode=distance_mode,
                     primary=primary_name,
                     cache_path=cache_path,
                     fingerprint=fingerprint,
+                    perturbation_cache=perturbation_cache,
+                    perturbation_index=perturbation_index,
+                    perturbation_index_path=perturbation_index_path,
                     checkpoint_load=checkpoint_load,
                     checkpoint_metadata=checkpoint_metadata,
                     weights_path=weights_path,
@@ -1054,7 +1083,8 @@ def _summary_from_real_forward(
             if str(condition.get("condition")) == "clean":
                 clean_by_seed[condition_seed] = row
     finally:
-        shutdown_dataloader_workers(dataloader)
+        if dataloader is not None:
+            shutdown_dataloader_workers(dataloader)
 
     for row in rows:
         seed_value = int(row.get("seed", 0) or 0)
@@ -1116,6 +1146,112 @@ def _real_forward_settings(manifest: Mapping[str, Any], model_spec: Mapping[str,
     if "sample_count" not in settings and "sample_count" in model_spec:
         settings["sample_count"] = model_spec["sample_count"]
     return settings
+
+
+PERTURBATION_CACHE_SCHEMA_VERSION = "benchmark_perturbation_batch_v1"
+
+
+def _perturbation_cache_config(settings: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+    raw = settings.get("perturbation_cache", settings.get("perturbed_data_cache", {}))
+    if not raw:
+        return {"mode": "off", "dir": str(output_dir / "cache" / "perturbations")}
+    if isinstance(raw, str):
+        raw = {"mode": raw}
+    if raw is True:
+        raw = {"mode": "read_write"}
+    if not isinstance(raw, Mapping):
+        raise BenchmarkManifestError("evaluation.real_forward.perturbation_cache must be a mapping, string, or boolean.")
+    mode = str(raw.get("mode", "read_write")).strip().lower().replace("-", "_")
+    if mode not in {"off", "write", "read", "read_write"}:
+        raise BenchmarkManifestError("perturbation_cache.mode must be one of off, write, read, or read_write.")
+    cache_dir = Path(str(raw.get("dir", raw.get("cache_dir", output_dir / "cache" / "perturbations"))))
+    if not cache_dir.is_absolute():
+        cache_dir = output_dir / cache_dir
+    return {"mode": mode, "dir": str(cache_dir)}
+
+
+def _perturbation_cache_key(condition: Mapping[str, Any], *, split: str, sample_limit: int) -> str:
+    payload = {
+        "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
+        "split": split,
+        "sample_limit": int(sample_limit),
+        "condition": _json_ready(condition),
+    }
+    return _sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))[:24]
+
+
+def _perturbation_cache_index_path(cache_cfg: Mapping[str, Any], key: str) -> Path:
+    return Path(str(cache_cfg["dir"])) / key / "index.json"
+
+
+def _load_perturbation_cache_index(path: Path, *, key: str, cache_cfg: Mapping[str, Any]) -> dict[str, Any] | None:
+    if not path.exists():
+        if str(cache_cfg.get("mode")) == "read":
+            raise BenchmarkManifestError(f"Perturbation cache missing for key {key}: {path}")
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != PERTURBATION_CACHE_SCHEMA_VERSION or payload.get("key") != key:
+        raise BenchmarkManifestError(f"Perturbation cache mismatch for key {key}: {path}")
+    return payload
+
+
+def _iter_perturbation_cache(index: Mapping[str, Any]) -> Iterable[tuple[dict[str, Any], list[str], list[dict[str, Any]]]]:
+    root = Path(str(index["root"]))
+    for shard in index.get("shards", []):
+        if not isinstance(shard, Mapping):
+            continue
+        path = root / str(shard["file"])
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        if payload.get("schema") != PERTURBATION_CACHE_SCHEMA_VERSION:
+            raise BenchmarkManifestError(f"Perturbation cache shard schema mismatch: {path}")
+        yield dict(payload["batch"]), [str(item) for item in payload.get("sample_ids", [])], list(payload.get("warnings", []))
+
+
+def _write_perturbation_cache_shard(
+    index_path: Path,
+    *,
+    shard_index: int,
+    key: str,
+    condition: Mapping[str, Any],
+    batch: Mapping[str, Any],
+    sample_ids: list[str],
+    warnings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    root = index_path.parent
+    root.mkdir(parents=True, exist_ok=True)
+    name = f"batch_{shard_index:06d}.pt"
+    payload = {
+        "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
+        "key": key,
+        "condition": _json_ready(condition),
+        "sample_ids": list(sample_ids),
+        "warnings": _json_ready(warnings),
+        "batch": dict(batch),
+    }
+    torch.save(payload, root / name)
+    return {"file": name, "sample_count": len(sample_ids)}
+
+
+def _write_perturbation_cache_index(
+    index_path: Path,
+    *,
+    key: str,
+    condition: Mapping[str, Any],
+    split: str,
+    sample_limit: int,
+    shards: list[dict[str, Any]],
+) -> None:
+    payload = {
+        "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
+        "key": key,
+        "root": str(index_path.parent),
+        "condition": _json_ready(condition),
+        "split": split,
+        "sample_limit": int(sample_limit),
+        "sample_count": int(sum(int(item.get("sample_count", 0)) for item in shards)),
+        "shards": shards,
+    }
+    index_path.write_text(json.dumps(_json_ready(payload), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _resolve_optional_checkpoint(
@@ -1203,27 +1339,32 @@ def _real_forward_predictive_specs(suite: Mapping[str, Any], *, seed: int) -> li
                 "suite_type": PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE,
                 "condition": condition.get("id", ""),
                 "severity": float(condition.get("severity", 0.0) or 0.0),
-                "severity_unit": "predictive_p_level",
+                "severity_unit": condition.get("severity_unit", suite.get("severity_unit", "stress_severity")),
                 "seed": seed,
                 "perturbations": [(suite, float(condition.get("severity", 0.0) or 0.0))],
                 "operator_params": params,
                 "difficulty_digest": _condition_digest(
                     {
                         "suite": suite.get("id"),
+                        "stress_suite": condition.get("stress_suite", params.get("stress_suite", "")),
                         "predictive_condition": condition.get("id"),
                         "history_window": suite.get("history_window"),
                         "seed": seed,
                         "params": params,
                     }
                 ),
-                "claim_scope": "primary",
+                "claim_scope": condition.get("claim_scope", params.get("claim_scope", "primary")),
                 "extra": {
                     "predictive_condition": condition.get("id", ""),
                     "p_severity": float(condition.get("severity", 0.0) or 0.0),
+                    "stress_suite": condition.get("stress_suite", params.get("stress_suite", "")),
                     "history_window": int(suite.get("history_window", params.get("history_window", 4)) or 4),
                     "current_frame_missing": bool(params.get("current_frame_missing", False)),
+                    "missing_tail_fraction": params.get("missing_tail_fraction", ""),
                     "semantic_occlusion": bool(params.get("semantic_occlusion", False)),
                     "plausible_wrong_gps": bool(params.get("plausible_wrong_gps", False)),
+                    "gps_noise_mode": params.get("gps_noise_mode", ""),
+                    "gps_jitter_std": params.get("gps_jitter_std", ""),
                     "novel_weather": bool(params.get("novel_weather", False)),
                     "counterfactual_input_intervention": bool(params.get("plausible_wrong_gps", False)),
                 },
@@ -1544,6 +1685,7 @@ def _compute_real_forward_condition(
     cfg: Mapping[str, Any],
     condition: Mapping[str, Any],
     *,
+    split: str,
     device: torch.device,
     setup: Mapping[str, Any],
     sample_limit: int,
@@ -1553,6 +1695,9 @@ def _compute_real_forward_condition(
     primary: str,
     cache_path: Path,
     fingerprint: str,
+    perturbation_cache: Mapping[str, Any],
+    perturbation_index: Mapping[str, Any] | None,
+    perturbation_index_path: Path,
     checkpoint_load: Mapping[str, Any] | None,
     checkpoint_metadata: Mapping[str, Any] | None,
     weights_path: Path | None,
@@ -1564,27 +1709,58 @@ def _compute_real_forward_condition(
     label_parts: list[np.ndarray] = []
     sample_ids: list[str] = []
     perturbation_warnings: list[dict[str, Any]] = []
+    perturbation_cache_status = "off"
+    perturbation_cache_shards: list[dict[str, Any]] = []
     diagnostics = _RealForwardDiagnostics()
     seen = 0
     with torch.no_grad():
-        for batch in dataloader:
+        if perturbation_index is not None:
+            batch_iter = _iter_perturbation_cache(perturbation_index)
+            perturbation_cache_status = "hit"
+        else:
+            if dataloader is None:
+                raise BenchmarkManifestError(f"Perturbation cache missing for condition {condition.get('condition')}.")
+            batch_iter = ((batch, _batch_sample_ids(batch, offset=seen), []) for batch in dataloader)
+            if str(perturbation_cache.get("mode")) in {"write", "read_write"}:
+                perturbation_cache_status = "written"
+            elif str(perturbation_cache.get("mode")) == "read":
+                perturbation_cache_status = "miss"
+        for batch, ids, cached_warnings in batch_iter:
             batch_size = _batch_size(batch) or 0
             if sample_limit > 0 and seen >= sample_limit:
                 break
             if sample_limit > 0 and batch_size > max(sample_limit - seen, 0):
                 batch = _slice_batch(batch, sample_limit - seen)
                 batch_size = _batch_size(batch) or 0
-            ids = _batch_sample_ids(batch, offset=seen)
-            perturbed = batch
-            for suite, severity in condition.get("perturbations", []):
-                perturbed, suite_warnings = apply_benchmark_perturbation(
-                    perturbed,
-                    suite,
-                    severity=float(severity),
-                    seed=int(condition.get("seed", 0)),
-                    sample_ids=ids,
-                )
-                perturbation_warnings.extend(suite_warnings)
+                ids = ids[:batch_size]
+            if perturbation_index is not None:
+                perturbed = batch
+                perturbation_warnings.extend(cached_warnings)
+            else:
+                perturbed = batch
+                batch_warnings: list[dict[str, Any]] = []
+                for suite, severity in condition.get("perturbations", []):
+                    perturbed, suite_warnings = apply_benchmark_perturbation(
+                        perturbed,
+                        suite,
+                        severity=float(severity),
+                        seed=int(condition.get("seed", 0)),
+                        sample_ids=ids,
+                    )
+                    batch_warnings.extend(suite_warnings)
+                perturbation_warnings.extend(batch_warnings)
+                if str(perturbation_cache.get("mode")) in {"write", "read_write"}:
+                    perturbation_cache_shards.append(
+                        _write_perturbation_cache_shard(
+                            perturbation_index_path,
+                            shard_index=len(perturbation_cache_shards),
+                            key=_perturbation_cache_key(condition, split=split, sample_limit=sample_limit),
+                            condition=condition,
+                            batch=perturbed,
+                            sample_ids=ids,
+                            warnings=batch_warnings,
+                        )
+                    )
             result = run_model_step(
                 model,
                 str(setup.get("task", cfg.get("experiment", {}).get("task", "image"))),
@@ -1608,6 +1784,15 @@ def _compute_real_forward_condition(
 
     if not logits_parts or not label_parts:
         raise BenchmarkManifestError("Real-forward benchmark produced no samples.")
+    if perturbation_cache_shards:
+        _write_perturbation_cache_index(
+            perturbation_index_path,
+            key=_perturbation_cache_key(condition, split=split, sample_limit=sample_limit),
+            condition=condition,
+            split=split,
+            sample_limit=sample_limit,
+            shards=perturbation_cache_shards,
+        )
     logits_np = np.concatenate(logits_parts, axis=0)
     labels_np = np.concatenate(label_parts, axis=0)
     metadata = {
@@ -1625,6 +1810,15 @@ def _compute_real_forward_condition(
         "checkpoint_metadata_digest": _condition_digest(checkpoint_metadata or {}),
         "perturbation_warning_count": len(perturbation_warnings),
         "perturbation_warnings": perturbation_warnings[:50],
+        "perturbation_cache": {
+            "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
+            "mode": perturbation_cache.get("mode", "off"),
+            "status": perturbation_cache_status,
+            "index": str(perturbation_index_path) if str(perturbation_cache.get("mode")) != "off" else "",
+            "shards": len(perturbation_cache_shards)
+            if perturbation_cache_shards
+            else len(perturbation_index.get("shards", [])) if isinstance(perturbation_index, Mapping) else 0,
+        },
         "diagnostics": diagnostics.summary(),
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1813,6 +2007,11 @@ def _real_forward_summary_from_arrays(
         **top_values,
     }
     summary["primary_metric"] = float(summary.get(primary, summary["dba"]))
+    perturbation_cache = metadata.get("perturbation_cache", {}) if isinstance(metadata.get("perturbation_cache"), Mapping) else {}
+    if perturbation_cache:
+        summary["perturbation_cache_status"] = perturbation_cache.get("status", "")
+        summary["perturbation_cache_index"] = perturbation_cache.get("index", "")
+        summary["perturbation_cache_shards"] = perturbation_cache.get("shards", "")
     diagnostics = metadata.get("diagnostics", {}) if isinstance(metadata.get("diagnostics"), Mapping) else {}
     summary.update({key: value for key, value in diagnostics.items() if key not in {"selected_source_counts", "source_names"}})
     selected_source_counts = diagnostics.get("selected_source_counts") if isinstance(diagnostics, Mapping) else None
@@ -1878,6 +2077,7 @@ def _real_forward_metric_row(
         "status": "real_forward",
         "evidence_scope": "real_forward",
         "cache_status": summary.get("cache_status", ""),
+        "perturbation_cache_status": summary.get("perturbation_cache_status", ""),
         "claim_scope": condition.get("claim_scope", "primary"),
         "condition_id_consumed": bool(summary.get("condition_id_consumed", False)),
         "target_leakage_guard": not bool(summary.get("condition_id_consumed", False)),
@@ -1919,6 +2119,8 @@ def _real_forward_shard_record(
         "seed": condition.get("seed", ""),
         "cache_path": str(cache_path),
         "cache_status": summary.get("cache_status", ""),
+        "perturbation_cache_status": summary.get("perturbation_cache_status", ""),
+        "perturbation_cache_index": summary.get("perturbation_cache_index", ""),
         "evidence_scope": "real_forward",
         "sample_count": int(summary.get("sample_count", 0) or 0),
         "dba": summary.get("dba", ""),
@@ -1935,7 +2137,7 @@ def aggregate_robustness_summary(
     rows = [dict(row) for row in metrics_rows]
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
-        if str(row.get("condition")) == "clean":
+        if str(row.get("condition")) in {"clean", "clean_anchor"} or str(row.get("suite")) == "clean_anchor":
             continue
         grouped.setdefault((str(row.get("model")), str(row.get("suite"))), []).append(row)
     summaries: list[dict[str, Any]] = []

@@ -129,6 +129,17 @@ def test_legacy_model_registry_surface_root_configs_are_modular():
     assert primary["heads"]["beam"]["type"] == "beam_head"
 
 
+def test_amr_net_current_config_loads_without_retired_token():
+    cfg = load_config(ROOT / "configs/fusion/amr_net_supervised.yaml")
+    primary = cfg["model"]["primary"]
+    serialized = repr(cfg)
+
+    assert primary["type"] == "amr_net"
+    assert cfg["model"]["modalities"] == ["image", "gps", "lidar"]
+    assert cfg["loss"]["amr"]["enabled"] is True
+    assert "amr_net_gps_image" not in serialized
+
+
 def test_geometry_prior_beam_fusion_configs_and_strict_manifest_load():
     fusion = load_config(
         ROOT

@@ -251,13 +251,10 @@ def _predictive_manifest_dict(config: Path, weights: Path) -> dict:
                 "type": "predictive_jepa_robustness",
                 "preset": "canonical",
                 "history_window": 2,
+                "stress_suites": ["image_missing", "image_noise", "gps_noise"],
+                "severity_values": [0.25, 0.5],
+                "severity_unit": "stress_severity",
                 "gps_query_advantage_slice": {"enabled": True},
-                "conditions": [
-                    "P0_clean_current",
-                    "P1_current_frame_missing_history_available",
-                    "P3_plausible_wrong_gps_current_image",
-                    "P4_joint_predictive_recovery",
-                ],
             }
         ],
         "metrics": {"primary": "dba", "topk": [1, 3]},
@@ -445,13 +442,18 @@ def test_predictive_manifest_preset_required_groups_and_comparability(tmp_path: 
 
     assert predictive["type"] == "predictive_jepa_robustness"
     assert [condition["id"] for condition in predictive["predictive_conditions"]] == [
-        "P0_clean_current",
-        "P1_current_frame_missing_history_available",
-        "P3_plausible_wrong_gps_current_image",
-        "P4_joint_predictive_recovery",
+        "clean_anchor",
+        "image_missing_s0p25",
+        "image_missing_s0p5",
+        "image_noise_s0p25",
+        "image_noise_s0p5",
+        "gps_noise_s0p25",
+        "gps_noise_s0p5",
     ]
+    assert predictive["stress_suites"] == ["clean_anchor", "gps_noise", "image_missing", "image_noise"]
     assert predictive["history_window"] == 2
-    assert predictive["predictive_conditions"][-1]["operator_params"]["plausible_wrong_gps"] is True
+    gps_noise = next(condition for condition in predictive["predictive_conditions"] if condition["stress_suite"] == "gps_noise")
+    assert gps_noise["operator_params"]["gps_noise_mode"] == "jitter"
     advantage = predictive["gps_query_advantage_slice"]
     assert advantage["enabled"] is True
     assert [condition["id"] for condition in advantage["conditions"]] == [
@@ -670,7 +672,7 @@ def test_predictive_advantage_perturbation_records_beam_offset_replay() -> None:
     suite = {
         "id": "predictive",
         "type": "predictive_jepa_robustness",
-        "conditions": ["P0_clean_current"],
+        "conditions": ["clean_anchor"],
         "history_window": 2,
         "gps_query_advantage_slice": {"enabled": True},
     }
@@ -916,6 +918,75 @@ def test_runner_real_forward_mode_writes_reusable_logits_cache(tmp_path: Path) -
     assert all(item["evidence_scope"] == "real_forward" for item in shard_matrix)
 
 
+def test_runner_real_forward_reads_perturbed_batch_cache_without_source_dataloader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "real_forward_config.yaml"
+    manifest_path = tmp_path / "real_forward_manifest.yaml"
+    cache_dir = tmp_path / "perturbed_batches"
+    _write_real_forward_config(config)
+    raw = {
+        "version": bench.BENCHMARK_VERSION,
+        "models": {
+            "gps_real_forward": {
+                "group": "gps_only",
+                "config": str(config),
+                "allow_missing_artifacts": True,
+                "real_forward": {"allow_untrained": True},
+                "modalities": ["gps"],
+                "split": "test",
+                "sample_count": 4,
+                "label_space": "beam8",
+                "metric_profile": "beambench_dba_topk",
+                "normalization_artifact": "synthetic",
+                "checkpoint_provenance": "unit_untrained",
+            }
+        },
+        "protocol": {"mode": "evaluation_only", "split": "test"},
+        "evaluation": {
+            "mode": "real_forward",
+            "real_forward": {
+                "sample_count": 4,
+                "cache_subdir": "real_forward",
+                "perturbation_cache": {"mode": "write", "dir": str(cache_dir)},
+            },
+        },
+        "perturbation_suites": [{"id": "gps_missing", "type": "gps_missing", "severities": [0.5]}],
+        "metrics": {"primary": "dba", "topk": [1, 3, 5], "dba_delta": 5, "distance_mode": "linear"},
+        "figures": {"enabled": False, "formats": ["png"]},
+        "seeds": [7],
+        "outputs": {"output_dir": str(tmp_path / "real_forward_out")},
+        "comparability": {"mode": "mark", "keys": ["split", "sample_count", "label_space", "metric_profile"]},
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    first = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "real_forward_out",
+        force=True,
+        command=["test"],
+    )
+    first_rows = list(csv.DictReader(Path(first["metrics_by_condition"]).open("r", encoding="utf-8", newline="")))
+    assert {row["perturbation_cache_status"] for row in first_rows} == {"written"}
+    assert list(cache_dir.glob("*/index.json"))
+
+    raw["evaluation"]["real_forward"]["perturbation_cache"]["mode"] = "read"
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def _no_source_dataloader(*args, **kwargs):
+        raise AssertionError("source dataloader should not be used when perturbation cache is read")
+
+    monkeypatch.setattr(runner, "_build_real_forward_dataloader", _no_source_dataloader)
+    second = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "real_forward_read_out",
+        force=True,
+        command=["test"],
+    )
+    second_rows = list(csv.DictReader(Path(second["metrics_by_condition"]).open("r", encoding="utf-8", newline="")))
+    assert {row["perturbation_cache_status"] for row in second_rows} == {"hit"}
+
+
 def test_real_forward_dataloader_falls_back_to_train_scaler(monkeypatch) -> None:
     calls: list[tuple[str, dict]] = []
 
@@ -1041,14 +1112,11 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
     assert claim_gate_path.exists()
     assert diagnostics_bundle_path.exists()
     rows = list(csv.DictReader(condition_path.open("r", encoding="utf-8", newline="")))
-    assert {row["predictive_condition"] for row in rows} >= {
-        "P0_clean_current",
-        "P1_current_frame_missing_history_available",
-        "P3_plausible_wrong_gps_current_image",
-        "P4_joint_predictive_recovery",
-    }
+    assert {row["stress_suite"] for row in rows} >= {"clean_anchor", "image_missing", "image_noise", "gps_noise"}
+    assert {row["predictive_condition"] for row in rows} >= {"clean_anchor", "image_missing_s0p25", "gps_noise_s0p5"}
     assert all(row["suite_type"] == "predictive_jepa_robustness" for row in rows)
-    assert any(row["counterfactual_input_intervention"] == "True" for row in rows)
+    assert any(row["retention"] != "" for row in rows)
+    assert any(row["gps_noise_mode"] == "jitter" for row in rows)
     advantage_rows = list(csv.DictReader(advantage_path.open("r", encoding="utf-8", newline="")))
     assert {row["advantage_condition"] for row in advantage_rows} >= {
         "A0_visual_ambiguous_peer",
@@ -1062,6 +1130,8 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))["summary"]
     predictive = next(row for row in summary if row["group"] == "jepa_predictive_hybrid")
     assert predictive["predictive_dba"] > predictive["resnet_predictive_dba"]
+    assert predictive["AUC_retention"] != ""
+    assert predictive["weakest_axis"] in {"image_missing", "image_noise", "gps_noise"}
     assert predictive["margin_vs_resnet_dba"] >= 0.05
     assert predictive["claim_pass_5pt"] is False
     assert predictive["claim_status"] == "mock/smoke"

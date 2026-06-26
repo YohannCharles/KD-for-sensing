@@ -243,7 +243,7 @@ def test_scenario_d_profile_normalizes_canonical_conditions_and_rejects_bad_conf
         )
 
 
-def test_predictive_jepa_profile_normalizes_p_levels_and_rejects_unknown_condition() -> None:
+def test_predictive_jepa_profile_normalizes_stress_curves_and_legacy_p_levels() -> None:
     profiles = normalize_difficulty_profiles(
         [
             {
@@ -252,22 +252,44 @@ def test_predictive_jepa_profile_normalizes_p_levels_and_rejects_unknown_conditi
                 "condition": condition,
                 "operators": [{"type": "predictive_jepa_robustness"}],
             }
-            for index, condition in enumerate(PREDICTIVE_JEPA_CONDITION_IDS)
+            for index, condition in enumerate(
+                ["clean_anchor", "image_missing_s0p5", "image_noise_s0p5", "gps_noise_s0p5"]
+            )
         ],
         default_stage="benchmark",
     )
 
-    assert [profile.condition for profile in profiles] == list(PREDICTIVE_JEPA_CONDITION_IDS)
-    p4 = profiles[4]
-    assert p4.severity == 4.0
-    assert p4.operators[0].type == "predictive_jepa_robustness"
-    assert p4.operators[0].modality == "image"
-    assert p4.operators[0].affected_modalities == ("image", "gps")
-    assert p4.operators[0].params["current_frame_missing"] is True
-    assert p4.operators[0].params["semantic_occlusion"] is True
-    assert p4.operators[0].params["plausible_wrong_gps"] is True
+    assert [profile.condition for profile in profiles] == [
+        "clean_anchor",
+        "image_missing_s0p5",
+        "image_noise_s0p5",
+        "gps_noise_s0p5",
+    ]
+    assert profiles[1].severity == 0.5
+    assert profiles[1].operators[0].affected_modalities == ("image",)
+    assert profiles[1].operators[0].params["stress_suite"] == "image_missing"
+    assert profiles[2].operators[0].params["image_noise_type"] == "occlusion"
+    assert profiles[3].operators[0].affected_modalities == ("gps",)
+    assert profiles[3].operators[0].params["gps_noise_mode"] == "jitter"
 
-    with pytest.raises(ValueError, match="Unknown Predictive JEPA robustness condition 'P9_magic'.*Available P-levels"):
+    legacy = normalize_difficulty_profiles(
+        [
+            {
+                "id": "legacy_p4",
+                "stage": "benchmark",
+                "condition": "P4_joint_predictive_recovery",
+                "operators": [{"type": "predictive_jepa_robustness"}],
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    assert "P4_joint_predictive_recovery" in PREDICTIVE_JEPA_CONDITION_IDS
+    assert legacy.operators[0].params["deprecated"] is True
+    assert legacy.operators[0].params["current_frame_missing"] is True
+    assert legacy.operators[0].params["plausible_wrong_gps"] is True
+    assert not legacy.operators[0].params.get("semantic_occlusion", False)
+
+    with pytest.raises(ValueError, match="Unknown Predictive JEPA robustness condition 'P9_magic'.*Available conditions"):
         normalize_difficulty_profiles(
             [{"id": "bad", "condition": "P9_magic", "operator": "predictive_jepa_robustness"}],
             default_stage="benchmark",
@@ -303,14 +325,8 @@ def test_gps_query_advantage_profile_normalizes_without_expanding_p_suite() -> N
         "A1_beam_offset_wrong_gps",
         "A2_visual_ambiguous_wrong_gps",
     )
-    assert list(PREDICTIVE_JEPA_CONDITION_IDS) == [
-        "P0_clean_current",
-        "P1_current_frame_missing_history_available",
-        "P2_semantic_occlusion_history_available",
-        "P3_plausible_wrong_gps_current_image",
-        "P4_joint_predictive_recovery",
-        "P5_novel_weather_history_available",
-    ]
+    assert "clean_anchor" in PREDICTIVE_JEPA_CONDITION_IDS
+    assert "P0_clean_current" in PREDICTIVE_JEPA_CONDITION_IDS
     assert profile.condition == "A2_visual_ambiguous_wrong_gps"
     assert profile.severity == 12.0
     assert profile.operators[0].params["visual_ambiguous_peer"] is True
@@ -445,6 +461,71 @@ def test_predictive_jepa_pipeline_is_deterministic_no_label_shift_and_no_future_
     assert replay["condition"] == "P4_joint_predictive_recovery"
     assert replay["image"]["history_source_range"][current_step] == [0, 1]
     assert replay["gps"]["source_sample_index"] == "gps_source_sample_index"
+
+
+def test_predictive_stress_axes_are_deterministic_and_preserve_metadata() -> None:
+    context = DifficultyContext(stage="benchmark", split="test", seed=29, sample_ids=("a", "b"))
+    before = _batch()
+
+    missing = normalize_difficulty_profiles(
+        [
+            {
+                "id": "missing",
+                "stage": "benchmark",
+                "condition": "image_missing_s0p5",
+                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    first_missing = apply_difficulty_pipeline(_batch(), missing, context)
+    second_missing = apply_difficulty_pipeline(_batch(), missing, context)
+    assert first_missing.batch["image"].shape == before["image"].shape
+    assert torch.equal(first_missing.batch["image"], second_missing.batch["image"])
+    assert first_missing.batch["image_valid_mask"].tolist() == [[True, False, False], [True, False, False]]
+    assert first_missing.batch["image_observability_score"][:, -1].tolist() == [0.0, 0.0]
+    assert torch.equal(first_missing.batch["gps"], before["gps"])
+    assert torch.equal(first_missing.batch["target_beam"], before["target_beam"])
+    assert first_missing.batch["metadata"]["sample_id"] == before["metadata"]["sample_id"]
+
+    noise = normalize_difficulty_profiles(
+        [
+            {
+                "id": "noise",
+                "stage": "benchmark",
+                "condition": "image_noise_s0p5",
+                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    noise_result = apply_difficulty_pipeline(_batch(), noise, context)
+    assert bool(noise_result.batch["image_valid_mask"].all())
+    assert noise_result.batch["image_noise_frame_mask"][:, -1].tolist() == [True, True]
+    assert noise_result.batch["image_degradation_metadata"]["degradation_type"] == "occlusion"
+    assert isinstance(noise_result.batch["image_degradation_metadata"]["replay_seed"], int)
+    assert torch.equal(noise_result.batch["gps"], before["gps"])
+
+    gps_noise = normalize_difficulty_profiles(
+        [
+            {
+                "id": "gps_noise",
+                "stage": "benchmark",
+                "condition": "gps_noise_s0p5",
+                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
+            }
+        ],
+        default_stage="benchmark",
+    )[0]
+    first_gps = apply_difficulty_pipeline(_batch(), gps_noise, context)
+    second_gps = apply_difficulty_pipeline(_batch(), gps_noise, context)
+    assert torch.equal(first_gps.batch["gps"], second_gps.batch["gps"])
+    assert not torch.equal(first_gps.batch["gps"][:, -1], before["gps"][:, -1])
+    assert torch.equal(first_gps.batch["image"], before["image"])
+    assert first_gps.batch["gps_noise_mask"][:, -1].tolist() == [True, True]
+    assert first_gps.batch["gps_counterfactual_metadata"]["perturbation_mode"] == "jitter"
+    assert first_gps.batch["predictive_jepa_replay_metadata"]["gps"]["replay_seed"] == second_gps.batch["predictive_jepa_replay_metadata"]["gps"]["replay_seed"]
+    assert torch.equal(first_gps.batch["beam_power"], before["beam_power"])
 
 
 def test_predictive_jepa_conditions_cover_image_variants_and_gps_fallback() -> None:

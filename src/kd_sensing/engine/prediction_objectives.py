@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import kd_sensing.engine.objectives.metadata as _objective_metadata
 from kd_sensing.engine.auxiliary import compute_auxiliary_multitask_loss
 from kd_sensing.engine.model_output import ModelOutput
+from kd_sensing.losses.amr_net import amr_net_loss_from_output
 
 
 @dataclass(frozen=True)
@@ -174,13 +175,15 @@ def compute_prediction_loss(
             cfg,
             zero,
         )
-        total = beam_component + auxiliary_loss.total + predictive_latent_loss + rerank_loss
+        amr_loss, amr_diagnostics = amr_net_loss_from_output(model_output, targets.labels, cfg)
+        total = beam_component + auxiliary_loss.total + predictive_latent_loss + rerank_loss + amr_loss
         auxiliary_diagnostics = dict(auxiliary_loss.diagnostics)
         if "loss/occlusion" not in auxiliary_diagnostics and "loss/position" not in auxiliary_diagnostics:
             auxiliary_diagnostics.pop("loss/multitask_total", None)
         diagnostics.update(auxiliary_diagnostics)
         diagnostics.update(predictive_latent_diagnostics)
         diagnostics.update(rerank_diagnostics)
+        diagnostics.update(amr_diagnostics)
         diagnostics["loss/beam"] = float(beam_primary.detach().cpu().item())
         diagnostics["loss/primary"] = float(beam_primary.detach().cpu().item())
         return PredictionLossBundle(

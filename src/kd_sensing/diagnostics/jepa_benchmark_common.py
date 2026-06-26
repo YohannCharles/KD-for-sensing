@@ -870,7 +870,7 @@ def _default_severity_unit(suite_type: str) -> str:
     if suite_type == SCENARIO_C_X_D_SUITE_TYPE:
         return "scenario_c_x_d_level"
     if suite_type == PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE:
-        return "predictive_p_level"
+        return "stress_severity"
     return "frames" if suite_type in TEMPORAL_SUITE_TYPES else "normalized"
 
 

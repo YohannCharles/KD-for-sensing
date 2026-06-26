@@ -137,17 +137,22 @@ Benchmark MUST 支持 evaluation-only、train-then-evaluate 和 reuse-existing-r
 - **AND** 所有协议 MUST 保持相同 train/val/test split、label space 和 corruption seed 可追踪
 
 ### Requirement: Benchmark 指标和论文图产物
-Benchmark MUST 输出结构化指标和论文图产物。指标 MUST 至少包含 clean 指标、每个扰动条件下的 Top-K、DBA 或当前 objective 正式指标、相对下降、collapse slope、area-under-robustness-curve 和可比较性 metadata。
+Benchmark MUST 输出结构化指标和论文图产物。指标 MUST 至少包含 clean 指标、每个扰动条件下的 Top-K、DBA 或当前 objective 正式指标、相对下降、retention、collapse severity、area-under-robustness-curve 和可比较性 metadata。
 
 #### Scenario: 写出鲁棒性汇总表
 - **WHEN** benchmark 完成至少一个模型和一个扰动 suite
 - **THEN** 输出目录 MUST 包含 `metrics_by_condition.csv` 或等价表格
 - **AND** 输出目录 MUST 包含 `robustness_summary.csv` 或等价汇总
-- **AND** 每行 MUST 记录 model、suite、condition、severity、seed、split、sample_count、primary metric 和 clean delta
+- **AND** 每行 MUST 记录 model、suite、condition、severity、seed、split、sample_count、primary metric、clean delta 和 retention
+
+#### Scenario: 写出 stress 上限指标
+- **WHEN** benchmark 完成 predictive stress curve suite
+- **THEN** `robustness_summary.csv` 或等价汇总 MUST 包含 `S@drop<=0.02`、`S@drop<=0.05`、`AUC_retention`、`collapse_s` 和 `weakest_axis`
+- **AND** 缺少 clean anchor 或 strict comparable rows 时，对应字段 MUST 标记为 unavailable 或 not-comparable
 
 #### Scenario: 导出论文曲线
 - **WHEN** benchmark 启用 figure export
-- **THEN** 系统 MUST 导出 GPS noise/dropout 曲线、image degradation 曲线或 temporal delay 曲线中已配置的图表
+- **THEN** 系统 MUST 导出 GPS noise/dropout 曲线、image missing 曲线、image degradation 曲线或 temporal delay 曲线中已配置的图表
 - **AND** 图表 MUST 标注模型名、split、样本数、metric、severity 单位和 seed 或 digest
 
 ### Requirement: Modality reliance 与反事实诊断
@@ -512,3 +517,63 @@ Benchmark MUST 能聚合模型输出中的 branch diagnostics，同时允许普�
 - **WHEN** Image ResNet+GPS 或其它 baseline 不输出 rerank diagnostics
 - **THEN** benchmark MUST 继续计算 metrics
 - **AND** diagnostics 表中该模型对应字段 MUST 为 `unavailable`
+
+### Requirement: Predictive stress curve suite
+Benchmark MUST support a predictive stress curve suite that evaluates clean anchor plus single-axis severity sweeps for image missing, image noise/degradation and GPS noise/unreliability. Each stress curve MUST isolate one perturbation axis and MUST reuse the shared difficulty pipeline.
+
+#### Scenario: 默认 stress preset
+- **WHEN** manifest 声明 predictive stress canonical preset
+- **THEN** runner MUST expand it into clean anchor plus `image_missing`、`image_noise` and `gps_noise` suites
+- **AND** each expanded suite MUST include severity values, severity unit, seed, split, operator params and difficulty digest
+
+#### Scenario: image missing sweep
+- **WHEN** runner evaluates `image_missing`
+- **THEN** image tensor shape MUST remain unchanged
+- **AND** missing frames MUST be expressed through zero-fill or configured sentinel plus `image_valid_mask=false` and `image_observability_score=0`
+- **AND** GPS input, beam target, sample id and split metadata MUST remain unchanged
+
+#### Scenario: image noise sweep
+- **WHEN** runner evaluates `image_noise`
+- **THEN** image input MUST be perturbed by one configured visual degradation axis only
+- **AND** GPS input, beam target, sample id and split metadata MUST remain unchanged
+- **AND** output metadata MUST record degradation type, severity, affected frame range and replay seed
+
+#### Scenario: gps noise sweep
+- **WHEN** runner evaluates `gps_noise`
+- **THEN** GPS input MUST be perturbed by one configured GPS unreliability axis only
+- **AND** image input, beam target, sample id and split metadata MUST remain unchanged
+- **AND** output metadata MUST record GPS perturbation mode, severity, mask/delay/counterfactual fields and replay seed
+
+#### Scenario: optional joint stress
+- **WHEN** manifest explicitly enables `joint_stress`
+- **THEN** runner MAY combine image missing and GPS noise at matched severity values
+- **AND** output MUST label joint rows as diagnostic rather than primary claim rows
+
+### Requirement: Benchmark perturbation cache
+JEPA GPS shortcut benchmark MUST support an opt-in perturbation cache for deterministic difficulty suites. The cache MUST be keyed by suite id/type, condition, severity, split, seed, sample ids and difficulty digest, and MUST store perturbed input batches without modifying source dataset files, checkpoints or labels.
+
+#### Scenario: 写出扰动 batch cache
+- **WHEN** benchmark manifest enables perturbation cache mode `write` or `read_write`
+- **THEN** runner MUST apply the shared difficulty pipeline once for each evaluated batch/condition
+- **AND** runner MUST write the perturbed batch, warnings and replay metadata to an ignored local cache directory
+- **AND** target labels、beam power、sample id and split metadata MUST remain unchanged
+
+#### Scenario: 从缓存读取扰动 batch
+- **WHEN** benchmark manifest enables perturbation cache mode `read`
+- **THEN** runner MUST load the matching perturbed batch cache instead of reapplying difficulty operators
+- **AND** missing or mismatched cache entries MUST fail with a clear cache key/path error
+- **AND** metric rows MUST still record the original difficulty provenance and sample count
+
+#### Scenario: 默认不改变现有评估
+- **WHEN** benchmark manifest omits perturbation cache settings
+- **THEN** runner MUST preserve existing online perturbation behavior
+- **AND** no cache directory MUST be required
+
+### Requirement: Cached benchmark comparability
+Cached perturbation reuse MUST NOT weaken benchmark comparability checks. Rows produced from cached inputs MUST remain comparable only when split, label space, sample ids, metric profile, difficulty digest and seed match the requested suite.
+
+#### Scenario: cache provenance 进入输出 manifest
+- **WHEN** benchmark uses perturbation cache
+- **THEN** benchmark manifest or equivalent output MUST record cache mode, cache directory, cache schema version, cache hits, cache misses and cache writes
+- **AND** model config/checkpoint provenance MUST remain separate from cache provenance
+

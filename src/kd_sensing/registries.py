@@ -169,6 +169,7 @@ def import_default_components() -> None:
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.evaluation.metrics  # noqa: F401
     import kd_sensing.losses.beam  # noqa: F401
+    import kd_sensing.models.amr_net  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.bev_fusion_2604  # noqa: F401
     import kd_sensing.models.csi_encoder  # noqa: F401

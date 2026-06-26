@@ -26,7 +26,7 @@ CURRENT_PATHS = (
     "src/kd_sensing/engine/objectives/metadata.py",
     "src/kd_sensing/baselines/beambench/image_ae_gps_training.py",
     "src/kd_sensing/baselines/beambench/image_ae_gps_paper_split.py",
-    "src/kd_sensing/baselines/wcl2025_missing_modality/workflow.py",
+    "src/kd_sensing/baselines/rmbp_mm/workflow.py",
     "src/kd_sensing/cli/wcl2025_missing_modality.py",
     "src/kd_sensing/baselines/tii_vlrg_transformer.py",
     "src/kd_sensing/cli/tii_vlrg_transformer.py",

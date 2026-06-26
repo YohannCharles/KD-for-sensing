@@ -1,6 +1,6 @@
-"""WCL 2025 missing-modality reproduction helpers."""
+"""RMBP-MM missing-modality reproduction helpers."""
 
-from kd_sensing.baselines.wcl2025_missing_modality.workflow import (
+from kd_sensing.baselines.rmbp_mm.workflow import (
     CLAIM_STATUSES,
     DEFAULT_OUTPUT_ROOT,
     LOCAL_SUBSTITUTE_CONFIG,
