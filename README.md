@@ -95,6 +95,18 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/gps/lightweight.yaml \
   -o training.epoch_subsampling.num_samples=256
 ```
 
+MMW physics-informed baseline 使用现有训练入口和包内 inspection，不新增根目录脚本：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --config configs/fusion/physics_informed_mmw_debug.yaml --max-samples 1
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/physics_informed_mmw_debug.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/physics_informed_mmw_paper_debug.yaml
+```
+
+为了避免标签泄漏，本文默认不将当前完整 CSI 作为输入，而是将其作为物理监督信号。模型需要根据多模态感知信息和受限 CSI 推断当前传播路径、重构当前信道，并预测最优波束。
+
+CSI 在该 baseline 中分为 `csi_target` 和 `csi_input`：`csi_target` 是当前窄带阵列信道，只用于 CSI reconstruction loss、beam label/beam gain 监督和评估；`csi_input` 只能是历史、部分、sparse pilot、噪声、压缩等受限观测。`physics_informed_mmw_paper_debug.yaml` 和 `physics_informed_mmw_sparse_pilot_multimodal.yaml` 使用 paper-style JEPA image tokenizer + sparse pilot CSI；`physics_informed_mmw_oracle_full_csi.yaml` 必须显式启用 `allow_oracle_full_csi_input: true`，只作为 upper-bound baseline。
+
 `configs/<image|radar|gps|lidar|mmwave>/{strong,lightweight,supervised}.yaml` 保留熟悉的文件名和 run name，但普通 baseline 的主模型已经统一为 `model.primary.type: modular_sequence`；旧 `*_strong` / `*_lightweight` registry 名只保留 removed guard 和迁移提示。
 
 `fraction` 和 `num_samples` 二选一；`seed` 为空时默认使用 `experiment.seed`。默认 `rotate_each_epoch=true`，会按绝对 epoch 轮换无放回抽样，resume 后同一 epoch 的样本选择仍可复现；设置 `rotate_each_epoch=false` 可固定同一小子集用于排障。运行产物会在 `train_log.json`、`final_config.yaml` 的 runtime metadata 中记录完整 train 样本数、每 epoch 有效样本数、seed、轮换设置和是否退化为完整 epoch。更完整的吞吐和 cache 说明见 [docs/training_throughput.md](docs/training_throughput.md)。

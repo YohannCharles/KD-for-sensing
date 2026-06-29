@@ -1,0 +1,30 @@
+_base_: physics_informed_mmw_sparse_pilot_multimodal.yaml
+experiment:
+  name: physics_informed_mmw_paper_debug
+data:
+  dataset:
+    portion: 0.02
+model:
+  primary:
+    frontend:
+      type: paper_modal_tokenizers
+      num_layers: 1
+      num_heads: 4
+      dropout: 0.0
+      formal_experiment_eligible: false
+      encoders:
+        image:
+          type: jepa_context_image
+          latent_dim: 64
+          checkpoint_path: ""
+          checkpoint: ""
+          freeze_encoder: false
+          pooling: mean
+        csi:
+          type: pilot_dual_view_csi
+          view_fusion: freq_only
+          use_internal_gru: false
+training:
+  epochs: 1
+output:
+  run_name: physics_informed_mmw_paper_debug

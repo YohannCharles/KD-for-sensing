@@ -1,0 +1,14 @@
+_base_: physics_informed_mmw_debug.yaml
+experiment:
+  name: physics_informed_mmw_hybrid
+data:
+  dataset:
+    portion: 1.0
+model:
+  primary:
+    physics_beta: 0.5
+training:
+  epochs: 80
+  use_early_stopping: true
+output:
+  run_name: physics_informed_mmw_hybrid

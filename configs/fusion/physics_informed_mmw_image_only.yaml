@@ -1,0 +1,28 @@
+_base_: physics_informed_mmw_hybrid.yaml
+experiment:
+  name: physics_informed_mmw_image_only
+data:
+  use_csi_input: false
+  csi_input_mode: none
+  allow_oracle_full_csi_input: false
+  dataset:
+    enabled_modalities:
+    - image
+    use_csi: false
+    physics_supervision:
+      use_csi_input: false
+      csi_input_mode: none
+      allow_oracle_full_csi_input: false
+model:
+  modalities:
+  - image
+  primary:
+    modalities:
+    - image
+loss:
+  physics:
+    csi_reconstruction:
+      enabled: false
+      weight: 0.0
+output:
+  run_name: physics_informed_mmw_image_only

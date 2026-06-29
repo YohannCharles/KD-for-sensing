@@ -51,6 +51,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
 | `jepa_context_image` | 0.099M | 0.099M | `kd_sensing.models.jepa.JepaContextImageEncoder` | JEPA visual/context image encoder；支持 visual token metadata、pooler/adapter、GPS-query 和 temporal/predictive metadata。 |
 | `gps_conditioned_jepa` | 0.249M | 0.149M | `kd_sensing.models.jepa.GPSConditionedJEPA` | GPS-conditioned JEPA 预训练整模型。 |
 | `amr_net` | 配置相关 | 配置相关 | `kd_sensing.models.amr_net.AMRNet` | AMR-Net paper-inspired 三模态概率嵌入与 CUAF 融合 whole-model exception；current architecture baseline，不是旧 source-audit runner。 |
+| `pinn_multimodal_beam` | 配置相关 | 配置相关 | `kd_sensing.models.pinn_multimodal_beam.PINNMultimodalBeamModel` | MMW physics-informed whole-model exception；内部耦合 path head、ULA channel synthesizer、physics logits、hybrid logits 和 diagnostics，不能干净拆成普通 head。 |
 | `bev_fusion_2604` | 14.768M | 14.768M | `kd_sensing.models.bev_fusion_2604.BEVFusion2604Net` | arXiv:2604.05668 BEV-Fusion 本体复现实验。 |
 | `vision_position_late_fusion` | 11.227M | 0.050M | `kd_sensing.models.vision_position.VisionPositionLateFusionNet` | Vision-Position late fusion baseline。 |
 | `vision_position_transformer_fusion` | 配置相关 | 配置相关 | `kd_sensing.models.vision_position.VisionPositionTransformerFusionNet` | Vision-Position Transformer fusion baseline。 |

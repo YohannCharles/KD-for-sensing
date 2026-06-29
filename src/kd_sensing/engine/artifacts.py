@@ -87,7 +87,74 @@ def final_config_with_runtime(
     jepa_metadata = jepa_downstream_metadata(cfg, model=runtime_model, optimizer_groups=optimizer_groups)
     if jepa_metadata:
         runtime["jepa_downstream"] = jepa_metadata
+    physics_metadata = physics_informed_runtime_metadata(cfg, model=runtime_model)
+    if physics_metadata:
+        runtime["physics_informed"] = physics_metadata
     return final_cfg
+
+
+def physics_informed_runtime_metadata(cfg: dict, model: Any | None = None) -> dict[str, Any]:
+    primary_cfg = cfg.get("model", {}).get("primary", {}) if isinstance(cfg.get("model"), dict) else {}
+    loss_cfg = cfg.get("loss", {}) if isinstance(cfg.get("loss"), dict) else {}
+    physics_cfg = loss_cfg.get("physics", {}) if isinstance(loss_cfg.get("physics"), dict) else {}
+    if primary_cfg.get("type") != "pinn_multimodal_beam" and not physics_cfg:
+        return {}
+    model_metadata = {}
+    if model is not None and hasattr(model, "training_strategy_metadata"):
+        raw = model.training_strategy_metadata()
+        model_metadata = raw if isinstance(raw, dict) else {}
+    modalities = list(primary_cfg.get("modalities") or cfg.get("model", {}).get("modalities") or model_metadata.get("enabled_modalities", []))
+    data_cfg = cfg.get("data", {}) if isinstance(cfg.get("data"), dict) else {}
+    dataset_cfg = data_cfg.get("dataset", {}) if isinstance(data_cfg.get("dataset"), dict) else {}
+    csi_input_mode = str(data_cfg.get("csi_input_mode", dataset_cfg.get("csi_input_mode", "none")))
+    used_csi = "csi" in modalities and csi_input_mode != "none"
+    weights = {
+        key: value.get("weight", 0.0)
+        for key, value in physics_cfg.items()
+        if isinstance(value, dict) and "weight" in value
+    }
+    used_path = bool(weights.get("path_consistency", 0.0))
+    used_beam_power = bool(weights.get("beam_power_distribution", 0.0))
+    frontend_cfg = primary_cfg.get("frontend", {}) if isinstance(primary_cfg.get("frontend"), dict) else {}
+    channel_scope = model_metadata.get("channel_target_scope")
+    if not channel_scope:
+        channel_scope = "narrowband_array_channel" if int(primary_cfg.get("num_subcarriers", 0) or 0) == 1 else "array_channel"
+    formal_eligible = bool(
+        model_metadata.get("formal_experiment_eligible", frontend_cfg.get("formal_experiment_eligible", True))
+    ) and csi_input_mode != "oracle_full"
+    sensitive = {
+        "used_csi_as_input": bool(used_csi),
+        "used_current_full_csi_as_input": csi_input_mode == "oracle_full",
+        "used_path_label_for_training": used_path,
+        "used_beam_power_for_training": used_beam_power,
+        "used_target_physical_oracle": bool(physics_cfg.get("used_target_physical_oracle", False)),
+    }
+    eligible = not any(sensitive.values())
+    return {
+        "enabled": bool(physics_cfg.get("enabled", primary_cfg.get("type") == "pinn_multimodal_beam")),
+        "enabled_modalities": modalities,
+        "csi_input_mode": csi_input_mode,
+        "oracle_upper_bound": csi_input_mode == "oracle_full",
+        "physics_loss_weights": weights,
+        "array_type": primary_cfg.get("array_type", model_metadata.get("array_type", "ula")),
+        "codebook_source": primary_cfg.get("codebook_source", model_metadata.get("codebook_source", "ula_dft_fallback")),
+        "num_subcarriers": int(primary_cfg.get("num_subcarriers", 0) or 0),
+        "num_antennas": int(primary_cfg.get("num_antennas", 0) or 0),
+        "num_paths": int(primary_cfg.get("num_paths", 0) or 0),
+        "frontend_type": model_metadata.get("frontend_type", frontend_cfg.get("type", "stats")),
+        "tokenizers": model_metadata.get("tokenizers", {}),
+        "shared_transformer_layers": model_metadata.get("shared_transformer_layers", 0),
+        "hidden_dim": model_metadata.get("hidden_dim", primary_cfg.get("hidden_dim")),
+        "formal_experiment_eligible": formal_eligible,
+        "channel_target_scope": channel_scope,
+        "main_conclusion_eligible": eligible and formal_eligible,
+        "eligibility_reason": (
+            ""
+            if eligible and formal_eligible
+            else "debug_or_physics_oracle_or_sensitive_supervision_enabled"
+        ),
+        **sensitive,
+    }
 
 
 class ArtifactWriter:

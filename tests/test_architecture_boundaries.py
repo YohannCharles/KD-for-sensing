@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 CURRENT_CONFIG_GLOBS = (
+    "configs/fusion/physics_informed_mmw*.yaml",
     "configs/fusion/experiments/jepa_image_gps/*.yaml",
     "configs/fusion/experiments/wcl2025_missing_modality/*.yaml",
     "configs/csi/hardening_matrix/*.yaml",

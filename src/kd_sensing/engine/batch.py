@@ -928,9 +928,14 @@ def prepare_csi_inputs(
     profile: str | None = None,
     non_blocking: bool = False,
 ) -> torch.Tensor:
-    if "csi" not in batch:
-        raise ValueError("CSI input is required but batch does not contain a 'csi' field.")
-    csi = batch["csi"].to(device, non_blocking=non_blocking)
+    if torch.is_tensor(batch.get("csi_input")):
+        csi = batch["csi_input"].to(device, non_blocking=non_blocking)
+    elif "csi_target" in batch:
+        raise ValueError("CSI model input must come from 'csi_input'; refusing to pass 'csi_target' to model forward.")
+    elif "csi" in batch:
+        csi = batch["csi"].to(device, non_blocking=non_blocking)
+    else:
+        raise ValueError("CSI input is required but batch does not contain a 'csi_input' field.")
     if csi.ndim == 4:
         csi = csi.unsqueeze(0)
     if csi.ndim not in {5, 6}:

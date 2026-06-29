@@ -45,6 +45,7 @@ FUSION_MODEL_TYPES = {
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
     "bev_fusion_2604",
+    "pinn_multimodal_beam",
 }
 AUXILIARY_HEAD_MODEL_TYPES = {
     "cls_token_transformer_fusion",
@@ -58,6 +59,7 @@ D_MODEL_ROLE_TYPES = {
     "vision_position_late_fusion",
     "vision_position_transformer_fusion",
     "bev_fusion_2604",
+    "pinn_multimodal_beam",
 }
 
 

@@ -34,6 +34,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
 - AMBER-lite missing-modality：`configs/fusion/amber_lite_missing_modality.yaml`
 - MMW GPS v2：`configs/mmw_town_gps_adapter_v2.yaml`
+- Physics-informed MMW baseline：`configs/fusion/physics_informed_mmw_debug.yaml`、`configs/fusion/physics_informed_mmw_paper_debug.yaml`、`configs/fusion/physics_informed_mmw_sparse_pilot_multimodal.yaml`
 - CSI hardening：`configs/csi/hardening_matrix/` 和 `configs/fusion/csi_hardening_matrix/`
 - JEPA shortcut benchmark / visual analysis：`configs/diagnostics/*.yaml`
 
@@ -204,6 +205,18 @@ conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --config configs/mmw_town_gps
 conda run -n kd_mm_beam kd-sensing-plot-mmw-town-gps-v2 --results-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
 conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 --previous-dir outputs/analysis/mmw_town_label_distribution --new-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
 ```
+
+Physics-informed MMW baseline uses the same training entry and a package inspection command:
+
+```bash
+conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --config configs/fusion/physics_informed_mmw_debug.yaml --max-samples 1
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/physics_informed_mmw_vision_only.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/physics_informed_mmw_sparse_pilot_multimodal.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/physics_informed_mmw_partial_csi_multimodal.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/physics_informed_mmw_history_csi_multimodal.yaml
+```
+
+Use `physics_informed_mmw_no_physics.yaml`、`physics_informed_mmw_no_csi_reconstruction.yaml`、`physics_informed_mmw_no_path_loss.yaml`、`physics_informed_mmw_no_array_consistency.yaml`、`physics_informed_mmw_no_physics_head.yaml`、`physics_informed_mmw_csi_only.yaml`、`physics_informed_mmw_image_only.yaml`、`physics_informed_mmw_image_csi.yaml`、`physics_informed_mmw_full_multimodal.yaml` 和 `physics_informed_mmw_oracle_full_csi.yaml` for ablations/upper-bound checks. Current local result summary: sparse CSI provides the main multimodal gain, task-aligned PINN gives modest Top-1 improvement, array consistency is the strongest useful physics term, and raw CSI reconstruction is negative transfer. Current full CSI is `csi_target` and is not a default model input; only `sparse_pilot`/`history`/`partial`/`noisy`/`compressed` are leakage-safe `csi_input` modes. The `oracle_full` config is explicitly upper-bound only and stays outside MMW sensor-assisted main claims.
 
 CSI hardening:
 

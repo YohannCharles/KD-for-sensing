@@ -1,0 +1,9 @@
+_base_: physics_informed_mmw_hybrid.yaml
+experiment:
+  name: physics_informed_mmw_no_physics_head
+model:
+  primary:
+    use_physics_head: false
+    physics_beta: 0.0
+output:
+  run_name: physics_informed_mmw_no_physics_head

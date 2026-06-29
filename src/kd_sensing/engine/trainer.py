@@ -151,6 +151,11 @@ def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
         from kd_sensing.engine.jepa import JepaTrainingExtension
 
         return [JepaTrainingExtension()]
+    physics_cfg = cfg.get("loss", {}).get("physics", {}) if isinstance(cfg.get("loss"), dict) else {}
+    if isinstance(physics_cfg, dict) and bool(physics_cfg.get("enabled", False)):
+        from kd_sensing.engine.physics_informed_extension import PhysicsInformedTrainingExtension
+
+        return [PhysicsInformedTrainingExtension()]
     teacher_cfg = cfg.get("loss", {}).get("teacher_guidance", {}) if isinstance(cfg.get("loss"), dict) else {}
     teacher_enabled = teacher_cfg is True or (isinstance(teacher_cfg, dict) and bool(teacher_cfg.get("enabled", False)))
     if teacher_enabled:

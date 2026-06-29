@@ -84,3 +84,37 @@ MMW Town10 数据准备或后处理路径在启用 CSI 导出时 MUST 能从已�
 - **WHEN** channel 文件无法转换为 `[Nsc, Nant]` 或 `[Nsc, Nant, 2]` CSI
 - **THEN** 准备流程 MUST 跳过对应样本或失败
 - **AND** sanity report MUST 记录失败路径和失败原因
+
+### Requirement: CSI reconstruction supervision for physics baseline
+系统 MUST 允许 physics-informed baseline 将当前完整 clean CSI 作为 `csi_target` reconstruction target。该 target MUST 沿用 `[T, Nsc, Nant, 2]` real/imag 末维契约，MUST 不作为默认 sensing input，并且在目标缺失时 MUST 通过 mask 跳过 CSI reconstruction loss。
+
+#### Scenario: clean CSI 作为 reconstruction target
+- **WHEN** 配置启用 physics supervision 和 `physics.loss.csi_reconstruction.enabled=true`
+- **THEN** dataset/batch adapter MUST 提供 clean `csi_target` 或显式 unavailable mask
+- **AND** reconstruction loss MUST 使用 clean CSI target 计算 NMSE/MSE
+- **AND** metadata MUST 记录 CSI target 来源和是否使用 degradation
+
+#### Scenario: 受限 CSI 才能作为模型输入
+- **WHEN** 配置启用 `data.use_csi_input=true`
+- **THEN** dataset/batch adapter MUST 根据 `data.csi_input_mode` 提供 `csi_input`
+- **AND** `history`、`partial`、`noisy`、`compressed` 模式 MUST 不直接暴露当前完整 CSI
+- **AND** 只有 `oracle_full` 模式在显式 `allow_oracle_full_csi_input=true` 时 MAY 将当前完整 CSI 作为模型输入
+
+#### Scenario: CSI shape 对齐失败可诊断
+- **WHEN** `h_hat` 和 clean CSI target 的 subcarrier、antenna 或 time/horizon 维度无法按配置对齐
+- **THEN** physics loss MUST 抛出包含 `h_hat` shape、CSI shape、num_subcarriers 和 antenna 维度的错误
+- **AND** 系统 MUST 不静默 broadcast 或截断到错误维度
+
+#### Scenario: 未启用 CSI 不要求 CSI 列
+- **WHEN** physics-informed 配置关闭 CSI 输入和 CSI reconstruction loss
+- **THEN** dataset MUST 不要求 `csi*` 列
+- **AND** loss diagnostics MUST 标记 CSI reconstruction disabled 而不是 unavailable error
+
+### Requirement: Sparse pilot CSI observation mask
+受限 CSI 输入 MAY 包含 `csi_observation_mask`，用于标记 sparse pilot 观测位置。mask MUST 与 `csi_input` 的 time/subcarrier/antenna 维度对齐，且未观测位置不得携带真实 CSI 值。
+
+#### Scenario: mask 与 csi_input 对齐
+- **WHEN** dataset/batch adapter 生成 sparse pilot CSI 输入
+- **THEN** `csi_observation_mask` MUST 覆盖 `[T, Nsc, Nant]` 或 batch 后 `[B, T, Nsc, Nant]`
+- **AND** `csi_input[..., ~mask, :]` 的 real/imag 值 MUST 为 0 或等价 missing sentinel
+- **AND** 完整 clean CSI MUST 只保留在 `csi_target`

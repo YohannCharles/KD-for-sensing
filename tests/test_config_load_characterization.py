@@ -226,6 +226,39 @@ def test_base_overlay_configs_preserve_key_load_semantics():
         assert overlay["config_resolution"]["overlay_id"] == overlay_id
 
 
+def test_physics_informed_mmw_configs_load_and_preserve_boundaries():
+    debug = load_config(ROOT / "configs/fusion/physics_informed_mmw_debug.yaml")
+    no_physics = load_config(ROOT / "configs/fusion/physics_informed_mmw_no_physics.yaml")
+    full = load_config(ROOT / "configs/fusion/physics_informed_mmw_full_multimodal.yaml")
+    vision = load_config(ROOT / "configs/fusion/physics_informed_mmw_vision_only.yaml")
+    partial = load_config(ROOT / "configs/fusion/physics_informed_mmw_partial_csi_multimodal.yaml")
+    history = load_config(ROOT / "configs/fusion/physics_informed_mmw_history_csi_multimodal.yaml")
+    paper_debug = load_config(ROOT / "configs/fusion/physics_informed_mmw_paper_debug.yaml")
+    oracle = load_config(ROOT / "configs/fusion/physics_informed_mmw_oracle_full_csi.yaml")
+
+    assert debug["data"]["dataset"]["type"] == "mmw"
+    assert debug["model"]["primary"]["type"] == "pinn_multimodal_beam"
+    assert debug["loss"]["type"] == "cross_entropy"
+    assert debug["loss"]["physics"]["enabled"] is True
+    assert debug["data"]["use_csi_input"] is False
+    assert debug["data"]["csi_input_mode"] == "none"
+    assert no_physics["loss"]["physics"]["enabled"] is False
+    assert full["model"]["primary"]["modalities"] == ["image", "gps", "lidar", "mmwave"]
+    assert vision["model"]["primary"]["modalities"] == ["image"]
+    assert vision["data"]["csi_input_mode"] == "none"
+    assert partial["model"]["primary"]["modalities"] == ["image", "csi"]
+    assert partial["data"]["csi_input_mode"] == "partial"
+    assert history["model"]["primary"]["modalities"] == ["image", "csi"]
+    assert history["data"]["csi_input_mode"] == "history"
+    assert paper_debug["model"]["primary"]["frontend"]["type"] == "paper_modal_tokenizers"
+    assert paper_debug["model"]["primary"]["frontend"]["formal_experiment_eligible"] is False
+    assert not paper_debug["model"]["primary"]["frontend"]["encoders"]["image"].get("checkpoint_path")
+    assert oracle["model"]["primary"]["modalities"] == ["csi"]
+    assert oracle["data"]["csi_input_mode"] == "oracle_full"
+    assert oracle["data"]["allow_oracle_full_csi_input"] is True
+    assert "scripts/inspect_dataset.py" not in repr(debug)
+
+
 def _config_signature(cfg: dict) -> dict:
     dataset = cfg["data"]["dataset"]
     model = cfg["model"]

@@ -51,6 +51,7 @@ from kd_sensing.data.mmw.physical_labels import (
 )
 from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder
 from kd_sensing.data.transform_ops.io import joined_resource
+from kd_sensing.data.datasets.mmw_physics_adapter import build_mmw_physics_targets
 from kd_sensing.registries import DATASETS
 
 
@@ -75,6 +76,7 @@ class MMWDataset(DeepSense6GDataset):
         path_semantic: bool | dict[str, Any] | None = None,
         physical_label: bool | dict[str, Any] | None = None,
         beam_label_calibration: bool | dict[str, Any] | None = None,
+        physics_supervision: bool | dict[str, Any] | None = None,
         field_map: dict[str, Any] | None = None,
         return_beam_power: bool | None = None,
         **kwargs: Any,
@@ -88,7 +90,19 @@ class MMWDataset(DeepSense6GDataset):
         layout = mmw_condition_layout(condition)
         root = data_root or layout.root
         prepared_prefix = Path("Prepared") / scenario / "splits"
-        csi_enabled = bool(kwargs.get("use_csi", False)) or "csi" in set(kwargs.get("enabled_modalities") or ())
+        physics_supervision_cfg = physics_supervision or kwargs.get("physics_supervision")
+        csi_target_enabled = bool(physics_supervision_cfg)
+        if csi_target_enabled:
+            raw_modalities = kwargs.get("enabled_modalities")
+            if raw_modalities is None:
+                kwargs["use_csi"] = True
+            elif "csi" not in {str(item) for item in raw_modalities}:
+                kwargs["enabled_modalities"] = [*raw_modalities, "csi"]
+        csi_enabled = (
+            bool(kwargs.get("use_csi", False))
+            or "csi" in set(kwargs.get("enabled_modalities") or ())
+            or csi_target_enabled
+        )
         gps_enabled = bool(kwargs.get("use_gps", False)) or "gps" in set(kwargs.get("enabled_modalities") or ())
         radar_enabled = "radar" in set(kwargs.get("enabled_modalities") or ())
         if radar_enabled:
@@ -146,6 +160,17 @@ class MMWDataset(DeepSense6GDataset):
         self.path_semantic_enabled = bool(self.path_semantic_config.get("enabled", False))
         self.physical_label_config = resolve_physical_label_config(physical_label or kwargs.get("physical_label"))
         self.physical_label_enabled = bool(self.physical_label_config.enabled)
+        self.physics_supervision_config = physics_supervision_cfg
+        self.physics_supervision_enabled = bool(self.physics_supervision_config)
+        if isinstance(self.physics_supervision_config, dict):
+            self.physics_supervision_config.setdefault("num_pred", int(self.num_pred))
+            if self.physics_supervision_config.get("csi_input_mode") == "oracle_full":
+                if not bool(self.physics_supervision_config.get("allow_oracle_full_csi_input", False)):
+                    raise RuntimeError("csi_input_mode='oracle_full' requires allow_oracle_full_csi_input=true.")
+                print(
+                    "WARNING: Current full CSI is used as model input. This setting is only for oracle upper-bound baseline and may cause label leakage.",
+                    flush=True,
+                )
         self.return_beam_power = bool(
             return_beam_power
             if return_beam_power is not None
@@ -253,6 +278,12 @@ class MMWDataset(DeepSense6GDataset):
                 }
             )
         )
+        if self.physics_supervision_enabled:
+            metadata = dict(sample.get("metadata", {})) if isinstance(sample.get("metadata"), dict) else {}
+            metadata.setdefault("data_root", str(self.data_root))
+            sample["metadata"] = _collate_safe_value(metadata)
+            sample["physics_targets"] = build_mmw_physics_targets(sample, self.physics_supervision_config)
+            _apply_physics_sample_fields(sample)
         return sample
 
     def _target_raw_beam_label_for_index(self, idx: int, horizon: int, beam_path: str) -> int:
@@ -653,6 +684,34 @@ class MMWDataset(DeepSense6GDataset):
         payload["beam_label_space"] = self.beam_label_mapping.label_space
         payload["beam_label_mapping_fingerprint"] = self.beam_label_mapping.fingerprint
         return payload
+
+
+def _apply_physics_sample_fields(sample: dict[str, Any]) -> None:
+    physics = sample.get("physics_targets")
+    if not isinstance(physics, dict):
+        return
+    if "image" in sample:
+        sample.setdefault("rgb", sample["image"])
+    if torch.is_tensor(sample.get("target_beam")):
+        sample["beam_label"] = sample["target_beam"]
+    if torch.is_tensor(physics.get("csi_target")):
+        sample["csi_target"] = physics["csi_target"]
+    if torch.is_tensor(physics.get("csi_input")):
+        sample["csi_input"] = physics["csi_input"]
+    if torch.is_tensor(physics.get("csi_observation_mask")):
+        sample["csi_observation_mask"] = physics["csi_observation_mask"]
+    if torch.is_tensor(physics.get("beamspace_power")):
+        sample.setdefault("beam_power", physics["beamspace_power"])
+    path = physics.get("path_params")
+    if torch.is_tensor(path):
+        sample["path_params"] = {
+            "aod": path[..., 0],
+            "aoa": path[..., 1],
+            "delay": path[..., 2],
+            "gain_real": path[..., 3],
+            "gain_imag": path[..., 4],
+            "path_mask": physics.get("path_mask"),
+        }
 
 
 __all__ = ["MMWDataset"]

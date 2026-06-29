@@ -187,6 +187,7 @@ def annotate_internal_subset(subset: Subset, *, role: str, source_dataset: Any, 
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     import_default_components()
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
+    _apply_top_level_csi_input_config(dataset_cfg, cfg.get("data", {}))
     normalize_deepsense_dataset_config(dataset_cfg)
     dataset_type = dataset_cfg.get("type")
     descriptor = _optional_dataset_descriptor(dataset_type)
@@ -208,6 +209,35 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
         _validate_snapshot_csv_exists(cfg, dataset_cfg, csv_name)
     dataset_cfg.update(extra_dataset_kwargs)
     return DATASETS.build(dataset_cfg)
+
+
+def _apply_top_level_csi_input_config(dataset_cfg: dict[str, Any], data_cfg: dict[str, Any]) -> None:
+    if not isinstance(data_cfg, dict):
+        return
+    keys = (
+        "use_csi_input",
+        "csi_input_mode",
+        "history_len",
+        "partial_subcarrier_ratio",
+        "partial_antenna_ratio",
+        "csi_noise_snr_db",
+        "allow_oracle_full_csi_input",
+    )
+    present = [key for key in keys if key in data_cfg]
+    if not present:
+        return
+    physics = dataset_cfg.get("physics_supervision")
+    if isinstance(physics, bool):
+        physics = {} if physics else None
+    if physics is None:
+        physics = {}
+    if not isinstance(physics, dict):
+        physics = {}
+    dataset_cfg["physics_supervision"] = physics
+    for key in keys:
+        if key in data_cfg:
+            dataset_cfg.setdefault(key, data_cfg[key])
+            physics.setdefault(key, data_cfg[key])
 
 
 def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:

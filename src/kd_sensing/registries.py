@@ -169,6 +169,7 @@ def import_default_components() -> None:
     import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.evaluation.metrics  # noqa: F401
     import kd_sensing.losses.beam  # noqa: F401
+    import kd_sensing.losses.physics_informed  # noqa: F401
     import kd_sensing.models.amr_net  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.bev_fusion_2604  # noqa: F401
@@ -182,6 +183,7 @@ def import_default_components() -> None:
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
     import kd_sensing.models.mmwave  # noqa: F401
+    import kd_sensing.models.pinn_multimodal_beam  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
     import kd_sensing.models.tinyvit  # noqa: F401
     import kd_sensing.models.vision_position  # noqa: F401

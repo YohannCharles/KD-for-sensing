@@ -251,6 +251,9 @@ def annotate_protocol_subset(
 def retarget_cfg_for_scene(cfg: dict[str, Any], scene: Any) -> dict[str, Any]:
     scene_cfg = deepcopy(cfg)
     dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
+    if str(dataset_cfg.get("type", "deepsense6g")).strip().lower() == "mmw":
+        dataset_cfg["scene"] = str(scene)
+        return scene_cfg
     if not is_deepsense_dataset_type(dataset_cfg.get("type", "deepsense6g")):
         raise ValueError("data.dataset.train_scenes/test_scenes are currently supported only for DeepSense6G.")
     retarget_deepsense_dataset_config(dataset_cfg, scene)

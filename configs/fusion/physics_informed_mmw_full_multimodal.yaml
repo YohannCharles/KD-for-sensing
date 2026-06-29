@@ -1,0 +1,27 @@
+_base_: physics_informed_mmw_hybrid.yaml
+experiment:
+  name: physics_informed_mmw_full_multimodal
+data:
+  dataset:
+    enabled_modalities:
+    - image
+    - gps
+    - lidar
+    - mmwave
+    use_gps: true
+    use_lidar: true
+    use_mmwave: true
+model:
+  modalities:
+  - image
+  - gps
+  - lidar
+  - mmwave
+  primary:
+    modalities:
+    - image
+    - gps
+    - lidar
+    - mmwave
+output:
+  run_name: physics_informed_mmw_full_multimodal
