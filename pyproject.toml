@@ -28,6 +28,9 @@ dev = [
 hdf5 = [
     "h5py",
 ]
+lmdb = [
+    "lmdb",
+]
 
 [project.scripts]
 kd-sensing-train = "kd_sensing.cli.train:main"
@@ -42,6 +45,7 @@ kd-sensing-predictive-gps-query-visualizations = "kd_sensing.cli.predictive_gps_
 kd-sensing-target-shot-split = "kd_sensing.cli.target_shot_split:main"
 kd-sensing-distribution-shift = "kd_sensing.cli.distribution_shift:main"
 kd-sensing-wcl2025-missing-modality-audit = "kd_sensing.cli.wcl2025_missing_modality:main"
+kd-sensing-eval-u-mask-matrix = "kd_sensing.cli.eval_u_mask_beam_jepa_matrix:main"
 kd-sensing-mmw-town-gps-v2 = "kd_sensing.cli.mmw_town_gps_v2:main"
 kd-sensing-plot-mmw-town-gps-v2 = "kd_sensing.cli.plot_mmw_town_gps_v2:main"
 kd-sensing-compare-mmw-town-gps-v2 = "kd_sensing.cli.compare_mmw_town_gps_v2:main"

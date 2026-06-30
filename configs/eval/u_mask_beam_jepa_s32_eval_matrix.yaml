@@ -1,0 +1,13 @@
+_base_: ../fusion/u_mask_beam_jepa_s32.yaml
+base_config: configs/fusion/u_mask_beam_jepa_s32.yaml
+
+eval_matrix:
+  split: val
+  prediction_index: last
+  patterns: default
+  random_missing:
+    - 0.25
+    - 0.5
+    - 0.75
+  output_dir: outputs/eval/u_mask_beam_jepa_s32_matrix
+  max_batches: null

@@ -147,6 +147,11 @@ def _scene_grouped_output_base(cfg: dict) -> Path:
 
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
+    u_mask_cfg = cfg.get("loss", {}).get("u_mask_beam_jepa", {}) if isinstance(cfg.get("loss"), dict) else {}
+    if u_mask_cfg is True or (isinstance(u_mask_cfg, dict) and bool(u_mask_cfg.get("enabled", False))):
+        from kd_sensing.losses.u_mask_beam_jepa import UMaskBeamJEPATrainingExtension
+
+        return [UMaskBeamJEPATrainingExtension()]
     if resolve_prediction_objective(cfg) == "gps_conditioned_jepa":
         from kd_sensing.engine.jepa import JepaTrainingExtension
 

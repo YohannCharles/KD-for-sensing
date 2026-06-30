@@ -1,0 +1,34 @@
+_base_: _base_no_jepa_rbma.yaml
+experiment:
+  name: rbma_missing_amber_style_mask_baseline
+model:
+  modalities: [image, radar, lidar, gps]
+  primary:
+    modalities: [image, radar, lidar, gps]
+    fusion_type: weighted_sum
+    use_jepa_loss: false
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+    mask_sampler: pattern_balanced
+loss:
+  u_mask_beam_jepa:
+    enabled: true
+    use_jepa_loss: false
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+training:
+  mask_sampler: pattern_balanced
+  pattern_probs:
+    full: 0.2
+    missing_gps: 0.15
+    non_gps_only: 0.15
+    only_gps: 0.1
+    missing_one_random: 0.1
+    only_one_random: 0.1
+    random_0.25: 0.1
+    random_0.5: 0.05
+    random_0.75: 0.05
+output:
+  run_name: rbma_missing_amber_style_mask_baseline

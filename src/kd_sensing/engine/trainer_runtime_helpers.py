@@ -3,6 +3,7 @@ from typing import Any
 
 from tqdm.auto import tqdm
 
+from kd_sensing.engine.checkpointing import CheckpointUpdate
 from kd_sensing.engine.checkpointing import checkpoint_strict as _checkpoint_strict
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
 from kd_sensing.engine.debug_diagnostics import consume_csi_debug_records
@@ -53,6 +54,8 @@ def run_training_epoch_loop(
         unit="epoch",
         disable=not progress_enabled,
     )
+    validation_interval = _validation_interval_epochs(training_cfg)
+    last_val_metrics: dict[str, Any] | None = None
     for epoch in epoch_progress:
         _set_epoch_recursive(primary_model, epoch)
         set_train_sampler_epoch(dataloaders["train"], epoch)
@@ -93,17 +96,22 @@ def run_training_epoch_loop(
 
         if scheduler is not None:
             scheduler.step()
-        try:
-            val_metrics = validate_fn(
-                primary_model,
-                validation_loader,
-                cfg,
-                task_criterion,
-                device,
-                output_dir=run_dir,
-            )
-        finally:
-            shutdown_dataloader_workers(validation_loader)
+        validation_ran = _should_validate_epoch(epoch, total_epochs, validation_interval) or last_val_metrics is None
+        if validation_ran:
+            try:
+                val_metrics = validate_fn(
+                    primary_model,
+                    validation_loader,
+                    cfg,
+                    task_criterion,
+                    device,
+                    output_dir=run_dir,
+                )
+            finally:
+                shutdown_dataloader_workers(validation_loader)
+            last_val_metrics = val_metrics
+        else:
+            val_metrics = dict(last_val_metrics)
         csi_debug_records.extend(consume_csi_debug_records(primary_model))
         _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
         extension_metrics = {}
@@ -124,16 +132,25 @@ def run_training_epoch_loop(
             health_metrics=health_metrics,
             extension_metrics=extension_metrics,
         )
-        checkpoint_update = checkpoint_manager.update_best_checkpoints(
-            state=state,
-            epoch=epoch,
-            epoch_log=epoch_log,
-            val_loss=val_loss,
-            val_acc=val_acc,
-            train_dataset=train_dataset,
-        )
+        if validation_ran:
+            checkpoint_update = checkpoint_manager.update_best_checkpoints(
+                state=state,
+                epoch=epoch,
+                epoch_log=epoch_log,
+                val_loss=val_loss,
+                val_acc=val_acc,
+                train_dataset=train_dataset,
+            )
+        else:
+            checkpoint_update = CheckpointUpdate(
+                early_stopping_value=float(epoch_log["val_primary_metric"]),
+                improved=False,
+                top1_improved=False,
+            )
         epoch_log.update(
             {
+                "validation_ran": bool(validation_ran),
+                "validation_interval_epochs": int(validation_interval),
                 "early_stopping_metric": early_stopping_metric,
                 "early_stopping_mode": early_stopping_mode,
                 "early_stopping_value": checkpoint_update.early_stopping_value,
@@ -162,11 +179,28 @@ def run_training_epoch_loop(
         checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
         if (
             not checkpoint_update.improved
+            and validation_ran
             and training_cfg.get("use_early_stopping", True)
             and epoch + 1 >= early_stopping_min_epoch
             and state.epochs_without_improvement >= training_cfg.get("patience", 20)
         ):
             break
+
+
+def _validation_interval_epochs(training_cfg: dict[str, Any]) -> int:
+    validation_cfg = training_cfg.get("validation")
+    if isinstance(validation_cfg, dict):
+        raw = validation_cfg.get("interval_epochs", 1)
+    else:
+        raw = training_cfg.get("validation_interval_epochs", 1)
+    return max(1, int(raw or 1))
+
+
+def _should_validate_epoch(epoch: int, total_epochs: int, interval_epochs: int) -> bool:
+    if int(interval_epochs) <= 1:
+        return True
+    epoch_number = int(epoch) + 1
+    return epoch_number == 1 or epoch_number == int(total_epochs) or epoch_number % int(interval_epochs) == 0
 
 
 def _evaluate_final_test_split(
@@ -239,6 +273,8 @@ __all__ = [
     "_apply_csi_rms_to_model_config",
     "_evaluate_final_test_split",
     "_set_epoch_recursive",
+    "_should_validate_epoch",
+    "_validation_interval_epochs",
     "run_training_epoch_loop",
     "shutdown_all_dataloaders",
 ]

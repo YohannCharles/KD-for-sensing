@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
             "sequence_csv",
             "lidar_bev_cache",
             "image_derived_cache",
+            "deepsense6g_sample_lmdb_cache",
             "mmw_radar_maps",
         ],
         help="Preprocessor name. Defaults to preprocessing.type from the config.",

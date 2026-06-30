@@ -1,0 +1,8 @@
+_base_: u_mask_beam_jepa_smoke.yaml
+experiment:
+  name: u_mask_beam_jepa_weighted_sum
+model:
+  primary:
+    fusion_type: weighted_sum
+output:
+  run_name: u_mask_beam_jepa_weighted_sum

@@ -1,0 +1,8 @@
+_base_: u_mask_beam_jepa_smoke.yaml
+experiment:
+  name: u_mask_beam_jepa_concat_mlp
+model:
+  primary:
+    fusion_type: concat_mlp
+output:
+  run_name: u_mask_beam_jepa_concat_mlp

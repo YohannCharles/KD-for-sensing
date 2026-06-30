@@ -12,6 +12,7 @@ from kd_sensing.modalities import (
     validate_image_encoder_profile,
 )
 from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
+import kd_sensing.models.amber_full  # noqa: F401
 from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder
 import kd_sensing.models.geometry_prior  # noqa: F401
 from kd_sensing.models.gps import GpsFeatureExtractor
@@ -1270,6 +1271,12 @@ class ModularSequenceModel(nn.Module):
         token_readout_diagnostics = getattr(self.representation_core, "last_token_readout_diagnostics", None)
         if isinstance(token_readout_diagnostics, dict):
             output["token_readout_diagnostics"] = token_readout_diagnostics
+        amber_full_auxiliary = getattr(self.representation_core, "last_amber_full_auxiliary", None)
+        if isinstance(amber_full_auxiliary, dict):
+            output["amber_full_auxiliary"] = amber_full_auxiliary
+        amber_full_attention_mask = getattr(self.representation_core, "last_amber_full_attention_mask", None)
+        if torch.is_tensor(amber_full_attention_mask):
+            output["amber_full_attention_key_padding_mask"] = amber_full_attention_mask
         output.update(self.auxiliary_heads(output_features))
         return output
 
@@ -1567,6 +1574,7 @@ def _optional_component_config(
 
 def _core_consumes_tokens(cfg: Mapping[str, Any]) -> bool:
     return str(cfg.get("type", "")).lower() in {
+        "amber_full_adaptive_mask_transformer",
         "token_aware_transformer",
         "token_transformer",
         "query_weighted_token_readout",

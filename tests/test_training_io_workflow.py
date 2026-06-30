@@ -1993,6 +1993,51 @@ def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, mon
     assert result["split_metadata"]["validation"]["selection_split_source"] == "train"
 
 
+def test_training_validation_interval_skips_intermediate_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cfg = load_config(
+        ROOT / "configs/gps/lightweight.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=5",
+            "training.use_early_stopping=false",
+            "training.validation.interval_epochs=3",
+            "scheduler.type=none",
+            "output.run_name=validation_interval",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+    calls = 0
+
+    def constant_validation_metrics(*_args, **_kwargs) -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "loss": float(calls),
+            "topk": {"1": [0.0], "3": [0.0], "5": [0.0]},
+            "total": [1],
+            "dba": [0.0],
+            "available_metrics": ["val_loss", "val_acc", "val_adba"],
+            "objective": {"name": "beam"},
+        }
+
+    monkeypatch.setattr("kd_sensing.engine.trainer.validate", constant_validation_metrics)
+
+    result = train(cfg)
+
+    assert calls == 3
+    assert [log["validation_ran"] for log in result["epoch_logs"]] == [True, False, True, False, True]
+    assert [log["val_loss"] for log in result["epoch_logs"]] == [1.0, 1.0, 2.0, 2.0, 3.0]
+
+
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
     cfg = load_config(
         ROOT / "configs/gps/lightweight.yaml",

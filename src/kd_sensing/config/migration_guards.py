@@ -13,6 +13,11 @@ REMOVED_KD_OVERRIDE_KEYS = {
     "kd.alpha",
     "teacher_model_name",
 }
+CURRENT_KD_GUIDANCE = (
+    "Use current U-MaskBeamJEPA full-to-partial stabilization "
+    "(loss.u_mask_beam_jepa.use_full_to_partial_kd with kd_teacher_mode=online_full) "
+    "or current supervised/adaptation entries."
+)
 RETIRED_HIST_MODEL_NAMES = {
     "hist_beam_fusion",
 }
@@ -104,7 +109,7 @@ def reject_removed_override_key(key: str) -> None:
     if lowered == "distillation" or lowered.startswith("distillation."):
         raise ValueError(
             f"KD support has been removed; override '{normalized}' is no longer supported. "
-            "Use supervised, strong, lightweight, or adaptation configuration entries."
+            f"{CURRENT_KD_GUIDANCE}"
         )
     if lowered == "hist_beam" or lowered.startswith("hist_beam."):
         raise ValueError(
@@ -126,7 +131,7 @@ def reject_removed_override_key(key: str) -> None:
     if lowered in REMOVED_KD_OVERRIDE_KEYS:
         raise ValueError(
             f"KD support has been removed; override '{normalized}' is no longer supported. "
-            "Use supervised/adaptation configuration entries."
+            f"{CURRENT_KD_GUIDANCE}"
         )
 
 
@@ -134,7 +139,7 @@ def reject_removed_kd_config(cfg: dict[str, Any]) -> None:
     if "distillation" in cfg:
         raise ValueError(
             "KD support has been removed; config key 'distillation' is no longer supported. "
-            "Use supervised/adaptation loss settings under 'loss'."
+            f"{CURRENT_KD_GUIDANCE}"
         )
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
@@ -417,5 +422,4 @@ def _is_retired_viewer_config_path(path: Path) -> bool:
 def _is_retired_priority_workflow_config_path(path: Path) -> bool:
     rel_parts = _config_rel_parts(path)
     return bool(rel_parts and rel_parts[0] == "configs" and path.stem in RETIRED_PRIORITY_CONFIG_STEMS)
-
 

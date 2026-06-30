@@ -33,6 +33,8 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 - RMBP-MM missing-modality baseline：`configs/fusion/experiments/wcl2025_missing_modality/local_substitute.yaml`
 - BEV-Fusion 2604：`configs/fusion/experiments/bev_fusion_2604/`
 - AMBER-lite missing-modality：`configs/fusion/amber_lite_missing_modality.yaml`
+- AMBER full architecture reproduction：`configs/fusion/amber_full_architecture.yaml`
+- RBMA missing-modality ablation：`configs/fusion/experiments/rbma_missing_workflow/`
 - MMW GPS v2：`configs/mmw_town_gps_adapter_v2.yaml`
 - Physics-informed MMW baseline：`configs/fusion/physics_informed_mmw_debug.yaml`、`configs/fusion/physics_informed_mmw_paper_debug.yaml`、`configs/fusion/physics_informed_mmw_sparse_pilot_multimodal.yaml`
 - CSI hardening：`configs/csi/hardening_matrix/` 和 `configs/fusion/csi_hardening_matrix/`
@@ -118,6 +120,34 @@ conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit \
 ```
 
 这些本地 baseline 的 condition-level summary 仍应记录 split、sample_count、label_space、metric_profile、difficulty_digest 和 seed；字段缺失时不要升级为正式结果 claim。
+
+AMBER full architecture reproduction 默认使用同一个训练入口，不新增专用 runner：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train \
+  --config configs/fusion/amber_full_architecture.yaml
+```
+
+该配置只声明本地 architecture reproduction；缺真实 strict comparable metrics、官方源码/权重或完整评估证据时，claim 保持 `pending` / `unverified`。
+
+RBMA missing-modality ablation 是 U-MaskBeamJEPA 的 current/local opt-in workflow，不是 AMBER official reproduction。首轮推荐按以下四个配置顺序跑，均走现有训练入口：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/amber_style_mask_baseline.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma_proto.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma_proto_kd.yaml
+```
+
+`jepa_small_lambda_rbma_proto_kd.yaml` 是后续 JEPA 小权重对照，不是首轮必跑项。pattern evaluation 复用包内 eval matrix：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix \
+  --config configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml \
+  --checkpoint outputs/.../checkpoints/best.pth \
+  --output-dir outputs/eval/rbma_missing_workflow \
+  --patterns full missing_gps non_gps_only only_gps random_0.5
+```
 
 ## Retired AMR-Net_gps_image Tombstone
 

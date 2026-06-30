@@ -1,0 +1,29 @@
+_base_: _base_no_jepa_rbma.yaml
+experiment:
+  name: no_jepa_rbma_proto_kd
+model:
+  primary:
+    ablation_id: no_jepa_rbma_proto_kd
+    use_beam_prototype_alignment: true
+    use_full_to_partial_kd: true
+    kd_teacher_mode: online_full
+loss:
+  u_mask_beam_jepa:
+    use_beam_prototype_alignment: true
+    use_full_to_partial_kd: true
+    kd_teacher_mode: online_full
+training:
+  use_beam_prototype_alignment: true
+  use_full_to_partial_kd: true
+  kd_teacher_mode: online_full
+  lambda_proto: 0.2
+  lambda_modality_proto: 0.1
+  lambda_supcon: 0.0
+  lambda_full_to_partial_kd: 0.5
+  lambda_feature_kd: 0.1
+  lambda_prototype_kd: 0.05
+  beam_proto_temperature: 0.2
+  beam_label_sigma: 1.0
+output:
+  run_name: no_jepa_rbma_proto_kd
+

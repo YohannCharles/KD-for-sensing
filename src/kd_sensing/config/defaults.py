@@ -70,6 +70,13 @@ DEFAULT_CONFIG = {
             "lidar_augment": False,
             "lidar_point_dropout": 0.0,
             "lidar_jitter_std": 0.0,
+            "sample_cache": {
+                "enabled": False,
+                "backend": "lmdb",
+                "path": None,
+                "write_on_miss": False,
+                "map_size_gb": 64.0,
+            },
         },
         "dataloader": {
             "train_batch_size": 32,
@@ -181,6 +188,9 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "drop_prob": 0.0,
             "min_keep": 1,
+        },
+        "validation": {
+            "interval_epochs": 1,
         },
     },
     "scheduler": {

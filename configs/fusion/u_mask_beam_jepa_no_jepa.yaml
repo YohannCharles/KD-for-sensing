@@ -1,0 +1,12 @@
+_base_: u_mask_beam_jepa_smoke.yaml
+experiment:
+  name: u_mask_beam_jepa_no_jepa
+model:
+  primary:
+    use_jepa_loss: false
+loss:
+  u_mask_beam_jepa:
+    use_jepa_loss: false
+    lambda_jepa: 0.0
+output:
+  run_name: u_mask_beam_jepa_no_jepa

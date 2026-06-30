@@ -14,6 +14,7 @@ def test_config_load_pipeline_characterization_covers_sources_and_overrides():
     entity = load_config(ROOT / "configs/gps/lightweight.yaml")
     virtual_fusion = load_config(ROOT / "configs/fusion/gps_mmwave_lightweight.yaml")
     snapshot = load_config(ROOT / "configs/fusion/all_modalities_snapshot_next_frame_supervised.yaml")
+    u_mask_jepa = load_config(ROOT / "configs/fusion/u_mask_beam_jepa_smoke.yaml")
     overridden = load_config(
         ROOT / "configs/fusion/gps_mmwave_lightweight.yaml",
         [
@@ -31,9 +32,43 @@ def test_config_load_pipeline_characterization_covers_sources_and_overrides():
     assert "distillation" not in virtual_fusion
     assert snapshot["experiment"]["variant"] == "snapshot_next_frame"
     assert snapshot["experiment"]["uses_history_window"] is False
+    assert u_mask_jepa["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar"]
     assert overridden["data"]["dataset"]["scene_slug"] == "scene32"
     assert overridden["training"]["early_stopping_metric"] == "val_loss"
     assert overridden["training"]["early_stopping_mode"] == "min"
+
+
+def test_rbma_missing_workflow_configs_load_without_retired_kd_or_vision():
+    base = ROOT / "configs/fusion/experiments/rbma_missing_workflow"
+    main = load_config(base / "no_jepa_rbma_proto_kd.yaml")
+    baseline = load_config(base / "amber_style_mask_baseline.yaml")
+
+    assert main["model"]["primary"]["fusion_type"] == "reliability_biased_missing_attention"
+    assert main["model"]["primary"]["use_jepa_loss"] is False
+    assert main["training"]["mask_sampler"] == "pattern_balanced"
+    assert main["training"]["use_beam_prototype_alignment"] is True
+    assert main["training"]["use_full_to_partial_kd"] is True
+    assert main["training"]["kd_teacher_mode"] == "online_full"
+    assert main["training"]["epochs"] == 40
+    assert main["training"]["patience"] == 20
+    assert main["training"]["validation"]["interval_epochs"] == 10
+    assert main["data"]["dataset"]["portion"] == 1.0
+    assert main["data"]["dataset"]["sample_cache"]["enabled"] is True
+    assert main["data"]["dataset"]["sample_cache"]["backend"] == "lmdb"
+    assert main["data"]["dataset"]["sample_cache"]["readahead"] is False
+    assert main["data"]["dataloader"]["train_batch_size"] == 128
+    assert main["data"]["dataloader"]["train_num_workers"] == 0
+    assert main["data"]["dataloader"]["train_persistent_workers"] is False
+    assert main["training"]["cpu_threads"] == {"intra_op": 12, "inter_op": 1}
+    assert main["output"]["progress"]["enabled"] is True
+    assert baseline["model"]["primary"]["fusion_type"] == "weighted_sum"
+    assert baseline["training"].get("use_beam_prototype_alignment", False) is False
+    assert baseline["training"].get("use_full_to_partial_kd", False) is False
+
+    text = "\n".join(path.read_text(encoding="utf-8") for path in base.glob("*.yaml"))
+    assert "vision" not in text
+    assert "logits_kd" not in text
+    assert "rkd" not in text
 
 
 def test_predictive_jepa_hybrid_config_loads_and_preserves_existing_jepa_baselines(tmp_path: Path):

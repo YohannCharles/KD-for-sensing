@@ -1,0 +1,70 @@
+_base_: ../../u_mask_beam_jepa_no_jepa.yaml
+experiment:
+  task: fusion
+model:
+  modalities: [image, radar, lidar, gps]
+  primary:
+    modalities: [image, radar, lidar, gps]
+    fusion_type: reliability_biased_missing_attention
+    use_jepa_loss: false
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+    mask_sampler: pattern_balanced
+data:
+  dataset:
+    portion: 1.0
+    sample_cache:
+      enabled: true
+      backend: lmdb
+      path: dataset/DeepSense6G/scenario31/sample_lmdb_cache/u_mask_beam_jepa_seq2_pred1_{split}.lmdb
+      write_on_miss: false
+      readahead: false
+  dataloader:
+    train_batch_size: 128
+    test_batch_size: 128
+    num_workers: 0
+    train_num_workers: 0
+    test_num_workers: 0
+    pin_memory: true
+    persistent_workers: false
+    train_persistent_workers: false
+    test_persistent_workers: false
+loss:
+  u_mask_beam_jepa:
+    enabled: true
+    use_jepa_loss: false
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+training:
+  epochs: 40
+  use_early_stopping: true
+  patience: 20
+  validation:
+    interval_epochs: 10
+  transfer:
+    non_blocking: true
+  amp:
+    enabled: true
+    dtype: float16
+    grad_scaler: true
+  cpu_threads:
+    intra_op: 12
+    inter_op: 1
+  allow_tf32: true
+  cudnn_benchmark: true
+  mask_sampler: pattern_balanced
+  pattern_probs:
+    full: 0.2
+    missing_gps: 0.15
+    non_gps_only: 0.15
+    only_gps: 0.1
+    missing_one_random: 0.1
+    only_one_random: 0.1
+    random_0.25: 0.1
+    random_0.5: 0.05
+    random_0.75: 0.05
+output:
+  progress:
+    enabled: true

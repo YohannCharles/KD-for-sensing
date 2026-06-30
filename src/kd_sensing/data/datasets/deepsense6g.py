@@ -10,6 +10,7 @@ from tqdm.auto import tqdm
 
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.scenes import resolve_deepsense_scene
+from kd_sensing.data.sample_cache import LmdbSampleCache, sample_cache_path_for_split
 from kd_sensing.data.beam_soft_targets import (
     SoftBeamLabelConfig,
     read_beam_power_vector,
@@ -173,6 +174,7 @@ class DeepSense6GDataset(Dataset):
         portion_seed: int = 42,
         beam_label_mapping: BeamLabelMapping | None = None,
         beam_target_source: str = "future",
+        sample_cache: dict[str, Any] | bool | None = None,
         **extra: object,
     ):
         removed_keys = sorted(key for key in extra if str(key).startswith(REMOVED_IMAGE_OPTION_PREFIX))
@@ -223,6 +225,7 @@ class DeepSense6GDataset(Dataset):
         )
         self.return_metadata = bool(return_metadata)
         self.beam_target_source = normalize_beam_target_source(beam_target_source)
+        self.sample_cache, self.sample_cache_write_on_miss = self._build_sample_cache(sample_cache)
         validate_beam_target_source_contract(self.beam_target_source, num_pred=num_pred, seq_len=seq_len)
         self.beam_label_mapping = beam_label_mapping or resolve_beam_label_mapping(None, scene=self.scene_slug)
         self.beam_label_cache_mode = resolve_beam_label_cache_mode(beam_label_cache)
@@ -348,12 +351,45 @@ class DeepSense6GDataset(Dataset):
         self.target_provider.position_target_scaler = value
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        if self.sample_cache is not None:
+            key = self._sample_cache_key(idx)
+            cached = self.sample_cache.get(key)
+            if cached is not None:
+                return cached
         sample, _ = self._getitem_with_timing(idx, collect_timing=False)
+        if self.sample_cache is not None and self.sample_cache_write_on_miss:
+            self.sample_cache.put(self._sample_cache_key(idx), sample)
         return sample
 
     def profile_getitem_components(self, idx: int) -> dict[str, float]:
         _, timings = self._getitem_with_timing(idx, collect_timing=True)
         return timings
+
+    def _sample_cache_key(self, idx: int) -> str:
+        return f"{self.split}:{int(idx)}"
+
+    def _build_sample_cache(self, cfg: dict[str, Any] | bool | None) -> tuple[LmdbSampleCache | None, bool]:
+        if not cfg:
+            return None, False
+        if cfg is True:
+            raise ValueError("data.dataset.sample_cache=true requires sample_cache.path.")
+        if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
+            return None, False
+        if str(cfg.get("backend", "lmdb")) != "lmdb":
+            raise ValueError("data.dataset.sample_cache.backend currently supports only 'lmdb'.")
+        raw_path = cfg.get("path")
+        if not raw_path:
+            raise ValueError("data.dataset.sample_cache.path is required when sample cache is enabled.")
+        path = sample_cache_path_for_split(raw_path, self.split)
+        return (
+            LmdbSampleCache(
+                path,
+                readonly=not bool(cfg.get("write_on_miss", False)),
+                map_size_gb=float(cfg.get("map_size_gb", 64.0)),
+                readahead=bool(cfg.get("readahead", True)),
+            ),
+            bool(cfg.get("write_on_miss", False)),
+        )
 
     def _getitem_with_timing(self, idx: int, *, collect_timing: bool) -> tuple[dict[str, Any], dict[str, float]]:
         timings = {

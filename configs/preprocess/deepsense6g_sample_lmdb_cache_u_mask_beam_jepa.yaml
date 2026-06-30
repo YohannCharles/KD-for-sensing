@@ -1,0 +1,25 @@
+preprocessing:
+  type: deepsense6g_sample_lmdb_cache
+  path: dataset/DeepSense6G/scenario31/sample_lmdb_cache/u_mask_beam_jepa_seq2_pred1_{split}.lmdb
+  splits: [train, test]
+  map_size_gb: 64
+  overwrite: false
+  progress: true
+  dataset:
+    type: deepsense6g
+    scene: 31
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 2
+    num_pred: 1
+    portion: 1.0
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+    image_use_cache: true
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_lidar: true
+    lidar_bev_size: [224, 224]
+    lidar_use_cache: true
+    lidar_normalize: false
