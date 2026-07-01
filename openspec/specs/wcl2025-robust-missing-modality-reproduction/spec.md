@@ -1,7 +1,7 @@
 # wcl2025-robust-missing-modality-reproduction Specification
 
 ## Purpose
-TBD - created by archiving change reproduce-wcl2025-robust-missing-modality-baseline. Update Purpose after archive.
+定义 IEEE WCL 2025 missing-modality baseline 的 source-audit、official/local-substitute 分支、condition-level evaluation、claim status 和 ignored runtime output 边界。
 ## Requirements
 ### Requirement: WCL 2025 source audit
 系统 MUST 为 IEEE WCL 2025 missing-modality baseline 生成 source-audit manifest。manifest MUST 记录论文、代码、权重、数据集、模态、split、metric 和训练 recipe 的可用性。
@@ -68,4 +68,3 @@ WCL 2025 reproduction 的外部源码、checkpoint、cache、prediction、metric
 - **WHEN** focused tests 验证 WCL 2025 source audit、branch selection、模型或 summary adapter
 - **THEN** tests MUST 使用 synthetic manifest、synthetic tensors 或 fixture metrics
 - **AND** tests MUST NOT 读取真实 `dataset/`、下载外部 repo 或加载 checkpoint
-

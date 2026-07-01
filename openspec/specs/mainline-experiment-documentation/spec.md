@@ -2,9 +2,7 @@
 
 ## Purpose
 定义当前主线模型目录、实验协议表、结果/claim 账本、baseline 报告分层和跨文档索引规则，使维护者能区分当前可引用事实、local substitute、blocked official、upper-bound、mock/smoke 和 historical ablation。
-
 ## Requirements
-
 ### Requirement: 主线模型目录
 项目 MUST 维护当前主线模型目录，用于集中说明每条当前主线、baseline/control 和诊断 workflow 的研究问题、模型边界、配置入口、数据口径、指标口径、运行状态和结果引用。该目录 MUST 位于 `docs/mainline_model_catalog.md` 或等价 current 文档中，并 MUST 不把 retired、historical、supporting 或 mock-only workflow 描述为当前推荐入口。
 
@@ -104,3 +102,22 @@ README、实验矩阵和协议表 MUST 只推荐仍维护的 current package CLI
 - **WHEN** AMBER full 只有 synthetic tests、dry-run 或未完成训练
 - **THEN** `docs/result_claims_registry.md` MUST NOT 填入真实性能数值
 - **AND** 它 MUST 只记录 pending/unverified 状态、输出路径边界和升级条件
+
+### Requirement: RBMA ablation documentation
+主线实验文档 MUST 记录 RBMA/prototype/KD missing-modality ablation 的 local/pending status、配置入口、推荐运行顺序、比较口径和 claim caveat。文档 MUST 不把未验证本地实验描述为 official reproduction 或已达成数值 claim。
+
+#### Scenario: 文档记录推荐四配置
+- **WHEN** RBMA ablation configs 加入仓库
+- **THEN** `docs/experiment_matrix.md` 或等价 current 文档 MUST 记录首轮推荐运行 `amber_style_mask_baseline`、`no_jepa_rbma`、`no_jepa_rbma_proto` 和 `no_jepa_rbma_proto_kd`
+- **AND** 文档 MUST 说明 `jepa_small_lambda_rbma_proto_kd` 是后续对照而非首轮必跑项
+
+#### Scenario: claim registry 保持 pending/local
+- **WHEN** 文档记录 RBMA workflow 结果入口或实验计划
+- **THEN** `docs/result_claims_registry.md` 或等价 claim 账本 MUST 将其标记为 local/pending，直到真实评估结果和 provenance 完整
+- **AND** 文档 MUST 不声称 AMBER official 数值复现已完成
+
+#### Scenario: 实验协议记录 pattern 口径
+- **WHEN** 文档描述 missing pattern evaluation
+- **THEN** `docs/experiment_protocols.md` 或等价协议文档 MUST 记录 canonical 模态顺序、pattern definitions、pattern probabilities、hard-label metrics 和输出边界
+- **AND** 文档 MUST 明确内部使用 `image` 而不是 `vision` 作为 canonical 模态名
+

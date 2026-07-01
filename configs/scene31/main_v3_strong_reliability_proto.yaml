@@ -1,0 +1,21 @@
+_base_: ../fusion/experiments/rbma_missing_workflow_strong_encoders/weighted_sum_reliability_beam_proto.yaml
+experiment:
+  name: main_v3_strong_reliability_proto
+model:
+  primary:
+    ablation_id: main_v3
+    fusion_type: weighted_sum
+    use_jepa_loss: false
+    use_beam_prototype_alignment: true
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+training:
+  epochs: 40
+  use_full_aux_loss: false
+  use_hard_pattern_weight: false
+loss:
+  u_mask_beam_jepa:
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+output:
+  run_name: main_v3_strong_reliability_proto

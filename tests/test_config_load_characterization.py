@@ -57,7 +57,8 @@ def test_rbma_missing_workflow_configs_load_without_retired_kd_or_vision():
     assert main["data"]["dataset"]["sample_cache"]["backend"] == "lmdb"
     assert main["data"]["dataset"]["sample_cache"]["readahead"] is False
     assert main["data"]["dataloader"]["train_batch_size"] == 128
-    assert main["data"]["dataloader"]["train_num_workers"] == 0
+    assert main["data"]["dataloader"]["train_num_workers"] == 2
+    assert main["data"]["dataloader"]["train_prefetch_factor"] == 2
     assert main["data"]["dataloader"]["train_persistent_workers"] is False
     assert main["training"]["cpu_threads"] == {"intra_op": 12, "inter_op": 1}
     assert main["output"]["progress"]["enabled"] is True

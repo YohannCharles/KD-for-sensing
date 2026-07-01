@@ -1,0 +1,15 @@
+_base_: _base_strong_encoders.yaml
+experiment:
+  name: strong_weighted_sum_mask
+model:
+  primary:
+    ablation_id: strong_weighted_sum_mask
+    fusion_type: weighted_sum
+    use_modality_uncertainty: false
+loss:
+  u_mask_beam_jepa:
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+output:
+  run_name: strong_weighted_sum_mask

@@ -1,0 +1,12 @@
+_base_: main_v3_strong_reliability_proto.yaml
+experiment:
+  name: main_v3_strong_reliability_proto_hardgps
+training:
+  use_hard_pattern_weight: true
+  hard_patterns:
+    - missing_gps
+    - non_gps_only
+  hard_pattern_weight: 1.5
+  hard_pattern_weight_apply_to_proto: false
+output:
+  run_name: main_v3_strong_reliability_proto_hardgps

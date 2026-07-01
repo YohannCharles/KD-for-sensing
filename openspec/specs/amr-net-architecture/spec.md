@@ -1,7 +1,7 @@
 # amr-net-architecture Specification
 
 ## Purpose
-TBD - created by archiving change add-amr-net-architecture. Update Purpose after archive.
+定义 current `amr_net` whole-model exception 的模型注册、snapshot 输入、概率嵌入、CUAF 融合、训练损失、metadata、配置可见性和旧 AMR runner 隔离边界。
 ## Requirements
 ### Requirement: AMR-Net 模型注册与边界
 系统 MUST 提供 current `amr_net` 模型注册名，作为 OpenSpec 记录的 whole-model exception。该模型 MUST 复用现有 batch/runtime、配置加载、评估和 `ModelOutput` 适配路径，不得恢复旧 `amr_net_gps_image` runner、旧 console script、根目录训练脚本或专用训练循环。
@@ -122,4 +122,3 @@ AMR-Net MUST 提供 `training_strategy_metadata()`，至少记录模型注册名
 - **WHEN** 运行现有 `modular_sequence` 或 image/GPS baseline focused tests
 - **THEN** 新 AMR-Net loss、diagnostics 和 metadata 字段 MUST 不成为普通 baseline 的必需输入
 - **AND** 现有 baseline MUST 继续通过 `adapt_model_output` 和默认 beam loss
-

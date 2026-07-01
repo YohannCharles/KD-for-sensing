@@ -1,7 +1,7 @@
 # reused-weight-fusion-diagnostic-metrics Specification
 
 ## Purpose
-TBD - created by archiving change add-reused-weight-fusion-diagnostic-metrics. Update Purpose after archive.
+定义复用既有 checkpoint 的融合诊断评估契约，用于在 clean、图像/GPS degraded、CxD 和 hard-negative 条件下输出可比性受控的 condition metrics、paired margins 和诊断 bundle。
 ## Requirements
 ### Requirement: 复用权重诊断输入契约
 系统 MUST 支持一个复用现有模型权重的融合诊断评估 profile。该 profile MUST 接收已有模型的 config 路径、weights 路径、model group、split、seed、label space、metric profile 和 checkpoint provenance，并 MUST 不触发训练、微调或 checkpoint 改写。
@@ -55,4 +55,3 @@ TBD - created by archiving change add-reused-weight-fusion-diagnostic-metrics. U
 - **WHEN** 开发者实施或验证该 change
 - **THEN** 新生成的 `outputs/`、cache、日志、checkpoint、PNG、SVG 或 HTML MUST 不纳入源码变更
 - **AND** 可复现入口 MUST 通过配置、manifest 或文档命令记录
-

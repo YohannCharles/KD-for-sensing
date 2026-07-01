@@ -29,7 +29,7 @@ IMAGE_MODEL_TYPES = {
     "modular_sequence",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence"}
-ENCODER_CONFIG_MODEL_TYPES = set(MODULAR_MODEL_TYPES)
+ENCODER_CONFIG_MODEL_TYPES = {*MODULAR_MODEL_TYPES, "u_mask_beam_jepa"}
 MODULAR_ROLE_ONLY_KEYS = {
     "encoders",
     "projectors",

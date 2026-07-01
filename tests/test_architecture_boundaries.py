@@ -1,4 +1,5 @@
 import ast
+import re
 import subprocess
 import sys
 import tomllib
@@ -7,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+INVENTORY = ROOT / "docs/project_surface_inventory.md"
 
 CURRENT_CONFIG_GLOBS = (
     "configs/fusion/physics_informed_mmw*.yaml",
@@ -186,13 +188,84 @@ def test_retired_route_mentions_are_contextualized():
 def test_tracked_runtime_artifacts_are_not_in_source_control():
     tracked = set(_git_ls_files())
     forbidden_prefixes = ("outputs/", "logs/", "cache/", "outputs/cache/", ".pytest_cache/")
-    violations = [path for path in tracked if path.startswith(forbidden_prefixes) or "__pycache__/" in path or path.endswith(".pyc")]
+    codegraph_violations = [path for path in tracked if path.startswith(".codegraph/") and path != ".codegraph/.gitignore"]
+    violations = [
+        path
+        for path in tracked
+        if path.startswith(forbidden_prefixes) or "__pycache__/" in path or path.endswith(".pyc")
+    ]
     dataset_violations = [path for path in tracked if path.startswith("dataset/") and path != "dataset/.gitkeep"]
     all_models_violations = [path for path in tracked if path.startswith("All_models/")]
 
+    assert not codegraph_violations
     assert not violations
     assert not dataset_violations
     assert not all_models_violations
+
+
+def test_current_openspec_specs_have_real_purpose():
+    violations: list[str] = []
+    placeholders = ("tbd", "created by archiving", "update purpose", "todo")
+    for path in sorted((ROOT / "openspec/specs").glob("*/spec.md")):
+        purpose = _purpose_section(path)
+        lowered = purpose.lower()
+        if not purpose or len(purpose) < 10 or any(marker in lowered for marker in placeholders):
+            violations.append(_rel(path))
+    assert not violations
+
+
+def test_fusion_root_yaml_matches_inventory_classification():
+    actual = sorted(path.name for path in (ROOT / "configs/fusion").glob("*.yaml"))
+    inventory = _inventory_section("`configs/fusion/` 根目录保留分类如下：", "已迁移到")
+    listed = sorted(set(re.findall(r"`([^`]+\.yaml)`", inventory)))
+    assert actual == listed
+
+
+def test_scripts_are_classified_in_inventory():
+    scripts = sorted(
+        _rel(path)
+        for path in (ROOT / "scripts").rglob("*")
+        if path.is_file() and path.suffix in {".py", ".sh"} and "__pycache__" not in path.parts
+    )
+    inventory = INVENTORY.read_text(encoding="utf-8")
+    missing = [script for script in scripts if f"`{script}`" not in inventory]
+    assert not missing
+
+
+def test_root_temp_runbooks_do_not_return():
+    assert not (ROOT / "test.md").exists()
+
+
+def test_internal_sources_do_not_import_public_facade_helpers():
+    restricted_dirs = ("diagnostics", "engine", "data", "models", "losses", "evaluation")
+    allowed = {
+        ROOT / "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py",
+        ROOT / "src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py",
+    }
+    fragments = (
+        "from kd_sensing.diagnostics.jepa_gps_shortcut_benchmark import",
+        "import kd_sensing.diagnostics.jepa_gps_shortcut_benchmark",
+    )
+    violations: list[str] = []
+    for package in restricted_dirs:
+        for path in (ROOT / "src/kd_sensing" / package).rglob("*.py"):
+            if path in allowed:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for fragment in fragments:
+                if fragment in text:
+                    violations.append(f"{_rel(path)}: {fragment}")
+    assert not violations
+
+
+def test_plain_pytest_files_do_not_duplicate_src_bootstrap():
+    violations: list[str] = []
+    for path in sorted((ROOT / "tests").glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if _is_sys_path_insert_expr(node):
+                violations.append(_rel(path))
+    assert not violations
 
 
 def test_retired_console_scripts_are_absent():
@@ -242,3 +315,31 @@ def _git_ls_files() -> list[str]:
 
 def _rel(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
+
+
+def _purpose_section(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r"^## Purpose\s*(?P<body>.*?)(?=^## |\Z)", text, flags=re.MULTILINE | re.DOTALL)
+    return "" if match is None else match.group("body").strip()
+
+
+def _inventory_section(start: str, end: str) -> str:
+    text = INVENTORY.read_text(encoding="utf-8")
+    start_index = text.index(start)
+    end_index = text.index(end, start_index)
+    return text[start_index:end_index]
+
+
+def _is_sys_path_insert_expr(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    call = node.value
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "insert"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "path"
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == "sys"
+    )

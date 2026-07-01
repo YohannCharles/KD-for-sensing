@@ -23,9 +23,11 @@ data:
   dataloader:
     train_batch_size: 128
     test_batch_size: 128
-    num_workers: 0
-    train_num_workers: 0
-    test_num_workers: 0
+    num_workers: 2
+    train_num_workers: 2
+    test_num_workers: 2
+    train_prefetch_factor: 2
+    test_prefetch_factor: 2
     pin_memory: true
     persistent_workers: false
     train_persistent_workers: false
@@ -43,6 +45,10 @@ training:
   patience: 20
   validation:
     interval_epochs: 10
+  timing:
+    enabled: true
+    log_interval: 10
+    slow_batch_seconds: 20
   transfer:
     non_blocking: true
   amp:
@@ -68,3 +74,18 @@ training:
 output:
   progress:
     enabled: true
+evaluation:
+  missing_patterns:
+    enabled: true
+    patterns:
+      - full
+      - missing_gps
+      - missing_image
+      - missing_radar
+      - missing_lidar
+      - non_gps_only
+      - only_gps
+      - only_image
+      - only_radar
+      - only_lidar
+    prediction_index: last

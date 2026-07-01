@@ -7,9 +7,14 @@ DEFAULT_COLUMNS = [
     "pattern",
     "mask",
     "num_samples",
+    "sample_count",
+    "count",
     "loss",
     "top1",
+    "top3",
     "top5",
+    "adba",
+    "mae",
     "mean_confidence",
     "mean_global_reliability",
     "mean_global_reliability_correct",
@@ -49,7 +54,10 @@ def format_results_markdown(results: list[dict]) -> str:
         "pattern",
         "mask",
         "top1",
+        "top3",
         "top5",
+        "adba",
+        "mae",
         "mean_confidence",
         "mean_global_reliability",
         "mean_available_modality_reliability",
@@ -73,4 +81,3 @@ def _format_cell(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
     return str(value)
-

@@ -24,12 +24,12 @@ from kd_sensing.diagnostics.gps_query_evidence import (
     gps_query_evidence_enabled,
     write_gps_query_evidence_package,
 )
-from kd_sensing.diagnostics.jepa_gps_shortcut_benchmark import (
+from kd_sensing.diagnostics.jepa_benchmark_common import (
     GPS_SUITE_TYPES,
     IMAGE_SUITE_TYPES,
     TEMPORAL_SUITE_TYPES,
-    read_benchmark_analysis_bundle,
 )
+from kd_sensing.diagnostics.jepa_benchmark_runner import read_benchmark_analysis_bundle
 from kd_sensing.engine.data_factory import (
     build_dataloader_kwargs,
     build_protocol_split_datasets,

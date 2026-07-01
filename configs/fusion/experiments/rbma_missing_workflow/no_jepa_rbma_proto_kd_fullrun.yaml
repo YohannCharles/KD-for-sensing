@@ -1,0 +1,5 @@
+_base_: no_jepa_rbma_proto_kd.yaml
+experiment:
+  name: no_jepa_rbma_proto_kd_fullrun
+output:
+  run_name: no_jepa_rbma_proto_kd_fullrun

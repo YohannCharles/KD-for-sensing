@@ -5,12 +5,21 @@
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite-*
+
+# Daemon runtime state
+*.pid
+*.sock
+*.socket
 
 # Cache
 cache/
+tmp/
 
 # Logs
 *.log
+logs/
 
 # Hook markers
 .dirty

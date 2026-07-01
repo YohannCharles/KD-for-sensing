@@ -1,0 +1,21 @@
+_base_: _base_strong_encoders.yaml
+experiment:
+  name: strong_amber_style_mask_baseline_fullrun
+model:
+  primary:
+    ablation_id: strong_amber_style_mask_baseline_fullrun
+    fusion_type: weighted_sum
+    use_jepa_loss: false
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+    mask_sampler: pattern_balanced
+loss:
+  u_mask_beam_jepa:
+    enabled: true
+    use_jepa_loss: false
+    use_beam_prototype_alignment: false
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+output:
+  run_name: strong_amber_style_mask_baseline_fullrun

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from kd_sensing.config.io import load_config
@@ -21,10 +22,22 @@ from kd_sensing.losses.beam_prototype_alignment import (
 )
 from kd_sensing.losses.u_mask_beam_jepa import u_mask_beam_jepa_config, u_mask_beam_jepa_loss
 from kd_sensing.models.architecture_summary import summarize_model_architecture
-from kd_sensing.registries import MODELS, RegistryError, import_default_components
+from kd_sensing.registries import ENCODERS, MODELS, RegistryError, import_default_components
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@ENCODERS.register("u_mask_test_encoder", force=True)
+class UMaskTestEncoder(nn.Module):
+    def __init__(self, output_dim: int = 16, **_: object) -> None:
+        super().__init__()
+        self.output_dim = int(output_dim)
+
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len = batch.shape[:2]
+        pooled = batch.float().reshape(batch_size, seq_len, -1).mean(dim=-1, keepdim=True)
+        return pooled.expand(batch_size, seq_len, self.output_dim)
 
 
 def _cfg(**overrides):
@@ -37,6 +50,12 @@ def _cfg(**overrides):
         "num_heads": 4,
         "num_layers": 1,
         "dropout": 0.0,
+        "encoders": {
+            "image": {"type": "u_mask_test_encoder", "output_dim": 16},
+            "radar": {"type": "u_mask_test_encoder", "output_dim": 16},
+            "lidar": {"type": "u_mask_test_encoder", "output_dim": 16},
+            "gps": {"type": "u_mask_test_encoder", "output_dim": 16},
+        },
     }
     cfg.update(overrides)
     return cfg
@@ -85,6 +104,39 @@ def test_registry_forward_adapter_metadata_and_zero_mask_rejection():
     assert torch.all(adapted.diagnostics["modality_reliability"][~mask] == 0)
     with pytest.raises(ValueError, match="no available modalities"):
         model(**_batch(), missing_mask=torch.zeros(2, 4, dtype=torch.bool))
+
+
+def test_registry_encoder_warm_start_forward(tmp_path):
+    import_default_components()
+    source = MODELS.build(
+        _cfg(
+            modalities=["gps"],
+            d_model=8,
+            num_heads=4,
+            fusion_type="weighted_sum",
+            use_jepa_loss=False,
+            encoders={"gps": {"type": "gps_mlp", "output_dim": 8, "hidden_size": 8}},
+        )
+    )
+    checkpoint = tmp_path / "gps_encoder.pth"
+    torch.save({"state_dict": {f"encoders.gps.{k}": v for k, v in source.encoders["gps"].state_dict().items()}}, checkpoint)
+
+    model = MODELS.build(
+        _cfg(
+            modalities=["gps"],
+            d_model=8,
+            num_heads=4,
+            fusion_type="weighted_sum",
+            use_jepa_loss=False,
+            encoders={"gps": {"type": "gps_mlp", "output_dim": 8, "hidden_size": 8}},
+            encoder_checkpoint_paths={"gps": str(checkpoint)},
+        )
+    )
+    output = model(gps_batch=torch.randn(2, 3, 3), missing_mask=torch.ones(2, 1, dtype=torch.bool))
+
+    assert output["logits"].shape == (2, 1, 8)
+    assert model.training_strategy_metadata()["use_registry_encoders"] is True
+    assert model.training_strategy_metadata()["encoder_checkpoint_loads"]["gps"]["loaded_keys"] > 0
 
 
 @pytest.mark.parametrize(
@@ -352,6 +404,9 @@ def test_config_overlays_training_extension_and_architecture_summary():
     assert metadata["use_full_to_partial_kd"] is True
     assert metadata["kd_teacher_mode"] == "online_full"
     assert metadata["consumes_reliability_metadata"] is True
+    strong = load_config(ROOT / "configs/fusion/experiments/rbma_missing_workflow_strong_encoders/weighted_sum_mask.yaml")
+    assert strong["model"]["primary"]["encoders"]["gps"]["type"] == "gps_mlp"
+    assert "gps" in strong["model"]["primary"]["encoder_checkpoint_paths"]
 
 
 def test_rbma_ablation_configs_load_and_set_current_flags():

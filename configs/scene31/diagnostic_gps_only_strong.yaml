@@ -1,0 +1,7 @@
+_base_: ../fusion/experiments/m2beam_single_modal_scene31/gps.yaml
+experiment:
+  name: diagnostic_gps_only_strong
+training:
+  epochs: 40
+output:
+  run_name: diagnostic_gps_only_strong

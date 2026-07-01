@@ -1,0 +1,22 @@
+_base_: _base.yaml
+experiment:
+  name: m2beam_scene31_gps_only
+data:
+  dataset:
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+model:
+  modalities: [gps]
+  primary:
+    modalities: [gps]
+    gps_input_size: 3
+    encoders:
+      gps:
+        type: gps_mlp
+        output_dim: 64
+        gps_input_size: 3
+        hidden_size: 64
+        dropout: 0.1
+output:
+  run_name: m2beam_scene31_gps_only

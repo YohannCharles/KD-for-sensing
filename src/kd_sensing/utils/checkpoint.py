@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,13 @@ def save_checkpoint(state: dict[str, Any], save_path: str | Path, filename: str 
     directory = Path(save_path)
     directory.mkdir(parents=True, exist_ok=True)
     filepath = directory / filename
-    torch.save(state, filepath)
+    tmp_path = filepath.with_name(f".{filepath.name}.tmp-{os.getpid()}")
+    try:
+        torch.save(state, tmp_path)
+        tmp_path.replace(filepath)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
     return filepath
 
 

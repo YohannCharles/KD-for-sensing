@@ -1,8 +1,10 @@
+import random
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_dataset_config
@@ -56,13 +58,18 @@ def resolve_dataloader_split_config(loader_cfg: dict[str, Any], *, split: str) -
     fallback_split = "test" if normalized_split == "validation" else normalized_split
     num_workers = int(_split_loader_value(loader_cfg, normalized_split, "num_workers", 0, fallback_split=fallback_split) or 0)
     prefetch_factor = _split_loader_value(loader_cfg, normalized_split, "prefetch_factor", None, fallback_split=fallback_split)
+    persistent_workers = bool(
+        _split_loader_value(loader_cfg, normalized_split, "persistent_workers", False, fallback_split=fallback_split)
+    )
+    if num_workers <= 0:
+        persistent_workers = False
     return {
         "batch_size": int(_split_loader_value(loader_cfg, normalized_split, "batch_size", 3, fallback_split=fallback_split) or 3),
         "shuffle": normalized_split == "train",
         "num_workers": num_workers,
         "pin_memory": bool(_split_loader_value(loader_cfg, normalized_split, "pin_memory", False, fallback_split=fallback_split)),
         "drop_last": bool(_split_loader_value(loader_cfg, normalized_split, "drop_last", False, fallback_split=fallback_split)),
-        "persistent_workers": bool(_split_loader_value(loader_cfg, normalized_split, "persistent_workers", False, fallback_split=fallback_split)),
+        "persistent_workers": persistent_workers,
         "prefetch_factor": int(prefetch_factor) if prefetch_factor is not None else None,
     }
 
@@ -269,10 +276,20 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
             epoch_subsampling_cfg=training_cfg.get("epoch_subsampling"),
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
         ),
-        "test": build_dataloader(test_dataset, loader_cfg, split="test"),
+        "test": build_dataloader(
+            test_dataset,
+            loader_cfg,
+            split="test",
+            experiment_seed=cfg.get("experiment", {}).get("seed", 0),
+        ),
     }
     if validation_dataset is not None:
-        dataloaders["validation"] = build_dataloader(validation_dataset, loader_cfg, split="validation")
+        dataloaders["validation"] = build_dataloader(
+            validation_dataset,
+            loader_cfg,
+            split="validation",
+            experiment_seed=cfg.get("experiment", {}).get("seed", 0),
+        )
     return dataloaders
 
 
@@ -312,6 +329,11 @@ def build_dataloader(
     experiment_seed: int | None = None,
 ) -> DataLoader:
     kwargs = build_dataloader_kwargs(loader_cfg, split=split)
+    if experiment_seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(int(experiment_seed))
+        kwargs["generator"] = generator
+        kwargs["worker_init_fn"] = _seed_dataloader_worker
     if split == "train":
         sampler = build_epoch_subsample_sampler(
             dataset,
@@ -322,6 +344,13 @@ def build_dataloader(
             kwargs["shuffle"] = False
             kwargs["sampler"] = sampler
     return DataLoader(dataset, **kwargs)
+
+
+def _seed_dataloader_worker(_worker_id: int) -> None:
+    seed = torch.initial_seed() % (2**32)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def _dataset_csv_for_split(dataset_cfg: dict[str, Any], split: str) -> tuple[str | None, str]:

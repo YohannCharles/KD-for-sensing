@@ -1,0 +1,24 @@
+_base_: _base.yaml
+experiment:
+  name: m2beam_scene31_image_only
+data:
+  dataset:
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+model:
+  modalities: [image]
+  primary:
+    modalities: [image]
+    image_profile: rgb_imagenet
+    image_channels: 3
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        output_dim: 64
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        unfreeze_stages: [layer4]
+        dropout: 0.1
+output:
+  run_name: m2beam_scene31_image_only

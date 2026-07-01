@@ -1,0 +1,20 @@
+_base_: weighted_sum_reliability.yaml
+experiment:
+  name: strong_weighted_sum_reliability_beam_proto
+model:
+  primary:
+    ablation_id: strong_weighted_sum_reliability_beam_proto
+    use_beam_prototype_alignment: true
+loss:
+  u_mask_beam_jepa:
+    use_beam_prototype_alignment: true
+training:
+  use_beam_prototype_alignment: true
+  lambda_proto: 0.2
+  lambda_modality_proto: 0.1
+  lambda_supcon: 0.0
+  beam_proto_temperature: 0.1
+  beam_label_sigma: 2.0
+  beam_label_circular: true
+output:
+  run_name: strong_weighted_sum_reliability_beam_proto

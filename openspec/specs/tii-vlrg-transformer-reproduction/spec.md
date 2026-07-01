@@ -1,7 +1,7 @@
 # tii-vlrg-transformer-reproduction Specification
 
 ## Purpose
-TBD - created by archiving change reproduce-tii-vlrg-transformer-baseline. Update Purpose after archive.
+定义 TII VLRG Transformer 外部 baseline reproduction 的 manifest、dry-run/execute 边界、指标适配和 claim gate；该能力记录可审计外部参考，不复制通用训练循环或提交外部运行产物。
 ## Requirements
 ### Requirement: TII baseline manifest
 系统 MUST 提供 TII VLRG Transformer baseline reproduction manifest，用于声明外部源码、checkpoint、输入模态、数据协议、metric 口径、输出路径和复现状态。
@@ -60,4 +60,3 @@ TII baseline reproduction 的外部源码副本、下载 checkpoint、预处理 
 - **WHEN** focused tests 验证 TII baseline reproduction
 - **THEN** tests MUST 使用 synthetic manifest、dry-run command 或 small fixture metrics
 - **AND** tests MUST NOT 读取真实 `dataset/`、外部 checkpoint 或下载 repo
-

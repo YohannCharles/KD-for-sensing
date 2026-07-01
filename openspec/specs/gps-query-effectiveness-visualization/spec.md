@@ -1,7 +1,7 @@
 # gps-query-effectiveness-visualization Specification
 
 ## Purpose
-TBD - created by archiving change add-gps-query-attention-evidence-visuals. Update Purpose after archive.
+定义 GPS-query 有效性离线证据包的输入 manifest、paired ablation 指标、attention token-read 可视化、case study、claim gate 和产物边界，避免用单张 attention 图升级因果或性能 claim。
 ## Requirements
 ### Requirement: GPS-query 有效性证据包输入
 系统 MUST 提供离线 GPS-query 有效性证据包输入契约，用于声明模型、paired baseline、指标表、可选 benchmark manifest、可选逐样本 forward cache、输出目录和 claim gate 配置。输入契约 MUST 记录 split、scene set、seed、checkpoint selection、label space、metric profile、difficulty/condition 和模型 config/weights provenance。
@@ -156,4 +156,3 @@ GPS-query 有效性 claim gate MUST 将 attention faithfulness 结果作为解�
 - **WHEN** faithfulness 诊断通过但 paired ablation 不可比、样本不足或 clean/P0 delta 不支持
 - **THEN** claim gate MUST 不将 GPS-query 有效性 claim 标记为 `supported`
 - **AND** attention faithfulness 结果 MUST 仅作为 caveat 或 exploratory diagnostic 输出
-

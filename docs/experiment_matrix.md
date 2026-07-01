@@ -130,16 +130,24 @@ conda run -n kd_mm_beam kd-sensing-train \
 
 该配置只声明本地 architecture reproduction；缺真实 strict comparable metrics、官方源码/权重或完整评估证据时，claim 保持 `pending` / `unverified`。
 
-RBMA missing-modality ablation 是 U-MaskBeamJEPA 的 current/local opt-in workflow，不是 AMBER official reproduction。首轮推荐按以下四个配置顺序跑，均走现有训练入口：
+RBMA missing-modality workflow 现在默认先跑 weighted_sum / AMBER-style mask 主线，RBMA 仅保留对照；所有配置都走现有训练入口，默认单任务运行：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/amber_style_mask_baseline.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma_proto.yaml
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma_proto_kd.yaml
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/amber_style_mask_baseline_fullrun.yaml --auto-resume
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/weighted_sum_mask.yaml --auto-resume
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/weighted_sum_reliability.yaml --auto-resume
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/weighted_sum_reliability_beam_proto.yaml --auto-resume
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/weighted_sum_reliability_beam_proto_kd.yaml --auto-resume
+conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbma_missing_workflow/no_jepa_rbma_proto_kd_fullrun.yaml --auto-resume
 ```
 
-`jepa_small_lambda_rbma_proto_kd.yaml` 是后续 JEPA 小权重对照，不是首轮必跑项。pattern evaluation 复用包内 eval matrix：
+批量运行时使用顺序 runner，默认 `--max-parallel 1`：
+
+```bash
+conda run -n kd_mm_beam python scripts/run_rbma_missing_workflow.py --auto-resume --num-workers 2
+```
+
+pattern evaluation 会随训练结束写入 `outputs/scene31/eval/*_missing_patterns.csv/json`；也可手动复用包内 eval matrix：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix \

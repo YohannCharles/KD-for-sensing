@@ -74,6 +74,7 @@ from kd_sensing.utils.artifact_registry import (  # noqa: E402
     resolve_evaluation_checkpoint,
     write_sidecar,
 )
+from kd_sensing.utils.checkpoint import save_checkpoint  # noqa: E402
 
 _PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", ROOT / "scripts/profile_training_io.py")
 profile_training_io = importlib.util.module_from_spec(_PROFILE_SPEC)
@@ -132,6 +133,16 @@ def test_deepsense_scene_defaults_and_aliases():
     assert scene32_cfg["data"]["dataset"]["scene_id"] == 32
     assert scene32_cfg["data"]["dataset"]["scene_slug"] == "scene32"
     assert scene32_cfg["data"]["dataset"]["data_root"] == "dataset/DeepSense6G/scenario32"
+
+
+def test_save_checkpoint_replaces_existing_file_without_temp_leftover(tmp_path: Path):
+    checkpoint_dir = tmp_path / "checkpoints"
+
+    save_checkpoint({"epoch": 1}, checkpoint_dir, "last.pth")
+    save_checkpoint({"epoch": 2}, checkpoint_dir, "last.pth")
+
+    assert torch.load(checkpoint_dir / "last.pth", map_location="cpu", weights_only=False)["epoch"] == 2
+    assert not list(checkpoint_dir.glob(".last.pth.tmp-*"))
 
 
 def test_dataset_layout_helpers_define_supported_roots():
@@ -1021,6 +1032,19 @@ def test_epoch_subsampling_dataloader_only_affects_train_split():
     assert len(drop_last_loader) == 2
     assert not isinstance(test_loader.sampler, EpochSubsampleSampler)
     assert len(test_loader) == 5
+
+
+def test_dataloader_uses_experiment_seed_for_generator_and_workers():
+    dataset = torch.utils.data.TensorDataset(torch.arange(4))
+    loader = build_dataloader(
+        dataset,
+        {"train_batch_size": 2, "num_workers": 0},
+        split="train",
+        experiment_seed=7,
+    )
+
+    assert loader.generator.initial_seed() == 7
+    assert loader.worker_init_fn is not None
 
 
 def test_shutdown_dataloader_workers_clears_persistent_iterator():

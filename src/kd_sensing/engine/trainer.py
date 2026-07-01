@@ -106,7 +106,7 @@ def _should_make_unique_run_dir(cfg: dict, path: Path) -> bool:
     output_cfg = cfg.get("output", {})
     if output_cfg.get("overwrite", False):
         return False
-    if cfg.get("training", {}).get("resume") is True:
+    if cfg.get("training", {}).get("resume"):
         return False
     return True
 

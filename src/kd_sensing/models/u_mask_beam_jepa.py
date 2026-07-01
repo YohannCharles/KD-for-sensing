@@ -1,4 +1,5 @@
 from typing import Any
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -7,7 +8,7 @@ import torch.nn.functional as F
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
 from kd_sensing.modalities import MODALITY_ORDER
 from kd_sensing.models.reliability_biased_missing_attention import ReliabilityBiasedMissingAwareAttention
-from kd_sensing.registries import MODELS
+from kd_sensing.registries import ENCODERS, MODELS
 
 
 DEFAULT_MODALITIES = ("image", "radar", "lidar", "gps")
@@ -166,6 +167,8 @@ class UMaskBeamJEPA(nn.Module):
         kd_teacher_mode: str = "disabled",
         mask_sampler: str | None = None,
         ablation_id: str | None = None,
+        encoders: dict[str, Any] | None = None,
+        encoder_checkpoint_paths: dict[str, str] | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -199,10 +202,32 @@ class UMaskBeamJEPA(nn.Module):
         if self.d_model <= 0 or self.num_classes <= 0 or self.num_pred <= 0:
             raise ValueError("d_model, num_classes, and num_pred must be positive.")
 
-        input_dims = {"image": image_channels, "radar": radar_channels, "lidar": lidar_channels, "gps": gps_input_size}
-        self.input_projections = nn.ModuleDict(
-            {name: nn.Linear(int(input_dims[name]), self.d_model) for name in self.modalities}
-        )
+        self.encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.modalities}
+        missing_encoder_cfg = [name for name in self.modalities if not self.encoder_configs[name]]
+        if missing_encoder_cfg:
+            raise ValueError(f"u_mask_beam_jepa requires model.primary.encoders for modalities {missing_encoder_cfg}.")
+        self.use_registry_encoders = True
+        self.encoders = nn.ModuleDict()
+        self.encoder_projections = nn.ModuleDict()
+        for name in self.modalities:
+            cfg = dict(self.encoder_configs[name])
+            cfg.setdefault("output_dim", self.d_model)
+            if name == "image":
+                cfg.setdefault("image_channels", image_channels)
+            elif name == "radar":
+                cfg.setdefault("radar_channels", radar_channels)
+            elif name == "lidar":
+                cfg.setdefault("lidar_channels", lidar_channels)
+            elif name == "gps":
+                cfg.setdefault("gps_input_size", gps_input_size)
+            encoder = ENCODERS.build(cfg)
+            self.encoders[name] = encoder
+            output_dim = int(getattr(encoder, "output_dim", cfg.get("output_dim", self.d_model)))
+            self.encoder_projections[name] = (
+                nn.Identity() if output_dim == self.d_model else nn.Linear(output_dim, self.d_model)
+            )
+            self.encoder_configs[name] = cfg
+        self.encoder_checkpoint_loads = self._load_encoder_checkpoints(encoder_checkpoint_paths or {})
         self.modality_embedding = nn.Parameter(torch.zeros(len(self.modalities), self.d_model))
         self.reliability_heads = nn.ModuleDict(
             {name: ModalityReliabilityHead(self.d_model) for name in self.modalities}
@@ -243,7 +268,7 @@ class UMaskBeamJEPA(nn.Module):
         mask = self._resolve_mask(
             missing_mask if missing_mask is not None else force_modality_mask,
             latent,
-            allow_all_missing=self.fusion_type == "reliability_biased_missing_attention",
+            allow_all_missing=self.fusion_type in {"reliability_biased_missing_attention", "weighted_sum"},
         )
         reliability, modality_mu_b, modality_logvar_b = self._modality_reliability(latent, mask)
         u_star, teacher_logits = self.teacher(latent, self.modality_embedding)
@@ -301,28 +326,56 @@ class UMaskBeamJEPA(nn.Module):
             "use_global_uncertainty": self.use_global_uncertainty,
             "fusion_type": self.fusion_type,
             "context_type": self.context_type,
+            "use_registry_encoders": self.use_registry_encoders,
+            "encoder_configs": self.encoder_configs,
+            "encoder_checkpoint_loads": self.encoder_checkpoint_loads,
         }
 
     def _encode(self, modality: str, value: torch.Tensor | None) -> torch.Tensor:
         if value is None:
             raise ValueError(f"u_mask_beam_jepa requires {modality}_batch for enabled modalities {list(self.modalities)}.")
-        features = value.to(dtype=torch.float32)
-        if modality in {"image", "radar"}:
-            if features.ndim != 5:
-                raise ValueError(f"{modality}_batch must have shape [B,T,C,H,W], got {tuple(features.shape)}.")
-            features = features.mean(dim=(-1, -2)).mean(dim=1)
-        elif modality == "lidar":
-            if features.ndim == 5:
-                features = features.mean(dim=(-1, -2)).mean(dim=1)
-            elif features.ndim == 4:
-                features = features.mean(dim=2).mean(dim=1)
-            else:
-                raise ValueError(f"lidar_batch must have shape [B,T,C,H,W] or [B,T,P,3], got {tuple(features.shape)}.")
-        elif modality == "gps":
-            if features.ndim != 3:
-                raise ValueError(f"gps_batch must have shape [B,T,F], got {tuple(features.shape)}.")
+        features = self.encoders[modality](value)
+        if features.ndim == 3:
             features = features.mean(dim=1)
-        return self.input_projections[modality](features)
+        elif features.ndim != 2:
+            raise ValueError(f"{modality} encoder must return [B,T,D] or [B,D], got {tuple(features.shape)}.")
+        return self.encoder_projections[modality](features)
+
+    def _load_encoder_checkpoints(self, paths: dict[str, str]) -> dict[str, Any]:
+        if not paths:
+            return {}
+        loads: dict[str, Any] = {}
+        for modality, raw_path in paths.items():
+            if modality not in self.encoders:
+                raise ValueError(f"encoder checkpoint configured for disabled modality '{modality}'.")
+            checkpoint_path = Path(str(raw_path))
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+            if not isinstance(state_dict, dict):
+                raise ValueError(f"Encoder checkpoint {checkpoint_path} does not contain a state dict.")
+            prefix = f"encoders.{modality}."
+            target = self.encoders[modality].state_dict()
+            matched = {}
+            skipped = []
+            for key, tensor in state_dict.items():
+                if not key.startswith(prefix):
+                    continue
+                local_key = key[len(prefix):]
+                if local_key in target and tuple(target[local_key].shape) == tuple(tensor.shape):
+                    matched[local_key] = tensor
+                else:
+                    skipped.append(local_key)
+            if not matched:
+                raise ValueError(f"No matching encoder weights for '{modality}' in {checkpoint_path}.")
+            incompatible = self.encoders[modality].load_state_dict(matched, strict=False)
+            loads[modality] = {
+                "path": str(checkpoint_path),
+                "loaded_keys": len(matched),
+                "missing_keys": sorted(incompatible.missing_keys),
+                "unexpected_keys": sorted(incompatible.unexpected_keys),
+                "skipped_keys": sorted(skipped),
+            }
+        return loads
 
     def _resolve_mask(
         self,
@@ -386,8 +439,10 @@ class UMaskBeamJEPA(nn.Module):
         if self.fusion_type == "reliability_gated_cross_attention":
             return self.cross_attention_fusion(latent, mu_b, reliability, global_reliability), {}
         weights = reliability.squeeze(-1)
-        weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        weight_sum = weights.sum(dim=1, keepdim=True)
+        weights = weights / weight_sum.clamp_min(1e-6)
         pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
+        pooled = torch.where(weight_sum.gt(0), pooled, mu_b)
         if self.fusion_type == "weighted_sum":
             return 0.5 * (pooled + mu_b), {}
         return self.concat_fusion(torch.cat([pooled, mu_b], dim=-1)), {}

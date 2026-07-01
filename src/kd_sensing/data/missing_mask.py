@@ -126,6 +126,29 @@ def pattern_mask(
     return mask.to(dtype=dtype)
 
 
+def get_missing_pattern_name(
+    available_mask: torch.Tensor | list[Any] | tuple[Any, ...],
+    modality_names: list[str] | tuple[str, ...] = CANONICAL_MODALITIES,
+) -> str:
+    names = _validate_modalities(modality_names)
+    mask = torch.as_tensor(available_mask, dtype=torch.bool).flatten()
+    if int(mask.numel()) != len(names):
+        raise ValueError(f"available_mask must have {len(names)} values, got {int(mask.numel())}.")
+    available = [name for name, keep in zip(names, mask.tolist()) if bool(keep)]
+    if len(available) == len(names):
+        return "full"
+    if available == ["gps"]:
+        return "gps_only"
+    if len(available) == 1:
+        return f"{available[0]}_only"
+    missing = [name for name, keep in zip(names, mask.tolist()) if not bool(keep)]
+    if missing == ["gps"]:
+        return "missing_gps"
+    if len(missing) == 1:
+        return f"missing_{missing[0]}"
+    return "custom_" + "".join("1" if bool(item) else "0" for item in mask.tolist())
+
+
 def sample_pattern_balanced_mask(
     batch_size: int,
     modalities: list[str] | tuple[str, ...] = CANONICAL_MODALITIES,
@@ -248,3 +271,14 @@ def _dropout_tensor(value: Any, cfg: Any) -> Any:
         return value
     keep = torch.rand(value.shape[:1], device=value.device).ge(prob).view(-1, *([1] * (value.ndim - 1)))
     return torch.where(keep, value, torch.zeros_like(value))
+
+
+__all__ = [
+    "CANONICAL_MODALITIES",
+    "apply_modality_corruption",
+    "get_missing_pattern_name",
+    "make_pattern_mask",
+    "pattern_mask",
+    "sample_missing_mask",
+    "sample_pattern_balanced_mask",
+]

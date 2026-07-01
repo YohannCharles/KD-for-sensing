@@ -4,7 +4,12 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from kd_sensing.data.missing_mask import make_pattern_mask, sample_missing_mask, sample_pattern_balanced_mask
+from kd_sensing.data.missing_mask import (
+    get_missing_pattern_name,
+    make_pattern_mask,
+    sample_missing_mask,
+    sample_pattern_balanced_mask,
+)
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, ForwardControls, TrainingExtension
 from kd_sensing.losses.beam_prototype_alignment import prototype_alignment_loss, supervised_contrastive_loss
 
@@ -35,6 +40,7 @@ def u_mask_beam_jepa_loss(
     lambda_feature_kd: float = 0.0,
     lambda_prototype_kd: float = 0.0,
     kd_temperature: float = 1.0,
+    sample_weights: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     if lambda_jepa_global is None:
         lambda_jepa_global = 1.0 if lambda_jepa is None else float(lambda_jepa)
@@ -44,7 +50,7 @@ def u_mask_beam_jepa_loss(
         logits = logits.unsqueeze(1)
     if labels.ndim == 1:
         labels = labels.unsqueeze(1)
-    loss_beam = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels[:, : logits.shape[1]].reshape(-1))
+    loss_beam = _sample_weighted_ce(logits, labels[:, : logits.shape[1]], sample_weights)
     zero = logits.sum() * 0.0
     teacher_logits = output.get("teacher_logits")
     if use_teacher and torch.is_tensor(teacher_logits):
@@ -183,6 +189,25 @@ def _modality_uncertainty_loss(
     return (nll * available).sum() / (available.sum().clamp_min(1.0) * int(mu.shape[-1]))
 
 
+def _sample_weighted_ce(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    sample_weights: torch.Tensor | None,
+) -> torch.Tensor:
+    if sample_weights is None:
+        return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1))
+    weights = sample_weights.to(device=logits.device, dtype=logits.dtype).reshape(-1)
+    if int(weights.numel()) != int(logits.shape[0]):
+        raise ValueError(f"sample_weights must have shape [B], got {tuple(sample_weights.shape)} for B={logits.shape[0]}.")
+    per_token = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1), reduction="none").view(
+        logits.shape[0], -1
+    )
+    valid = labels.reshape(logits.shape[0], -1).ne(-100)
+    per_sample = (per_token * valid.to(dtype=per_token.dtype)).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+    active = valid.any(dim=1).to(dtype=weights.dtype)
+    return (per_sample * weights * active).sum() / (weights * active).sum().clamp_min(1e-6)
+
+
 class UMaskBeamJEPATrainingExtension(TrainingExtension):
     name = "u_mask_beam_jepa"
 
@@ -279,10 +304,29 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             lambda_feature_kd=float(cfg.get("lambda_feature_kd", 0.0)),
             lambda_prototype_kd=float(cfg.get("lambda_prototype_kd", 0.0)),
             kd_temperature=float(cfg.get("kd_temperature", 1.0)),
+            sample_weights=_hard_pattern_weights(
+                cfg,
+                state.get("pattern_names"),
+                batch_state.controls.model_kwargs.get("missing_mask"),
+                getattr(context.primary_model, "modalities", ()),
+            ),
         )
         loss = result["loss"]
+        full_aux_ce = loss.sum() * 0.0
+        if bool(cfg.get("use_full_aux_loss", False)):
+            full_aux_ce = _full_aux_ce(context, batch_state)
+            loss = loss + float(cfg.get("lambda_full_aux", 0.0)) * full_aux_ce
         auxiliary = loss - result["loss_beam"]
         diagnostics = dict(result["diagnostics"])
+        diagnostics.update(
+            {
+                "ce_loss": float(result["loss_beam"].detach().cpu().item()),
+                "partial_ce": float(result["loss_beam"].detach().cpu().item()),
+                "proto_loss": float(diagnostics.get("loss/prototype_alignment", 0.0)),
+                "full_aux_ce": float(full_aux_ce.detach().cpu().item()),
+                "total_loss": float(loss.detach().cpu().item()),
+            }
+        )
         diagnostics.update(_pattern_diagnostics(state.get("pattern_names")))
         return BaseLossResult(
             total_loss=loss,
@@ -328,6 +372,13 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "lambda_feature_kd": training_cfg.get("lambda_feature_kd", 0.0),
         "lambda_prototype_kd": training_cfg.get("lambda_prototype_kd", 0.0),
         "kd_temperature": training_cfg.get("kd_temperature", 1.0),
+        "use_full_aux_loss": training_cfg.get("use_full_aux_loss", False),
+        "lambda_full_aux": training_cfg.get("lambda_full_aux", 0.0),
+        "full_aux_proto": training_cfg.get("full_aux_proto", False),
+        "use_hard_pattern_weight": training_cfg.get("use_hard_pattern_weight", False),
+        "hard_patterns": training_cfg.get("hard_patterns", ()),
+        "hard_pattern_weight": training_cfg.get("hard_pattern_weight", 1.0),
+        "hard_pattern_weight_apply_to_proto": training_cfg.get("hard_pattern_weight_apply_to_proto", False),
     }.items():
         resolved.setdefault(key, default)
     resolved["missing_mask"] = _resolve_missing_mask_config(resolved)
@@ -432,6 +483,55 @@ def _online_full_teacher(
         "logits": step.logits.detach(),
         "output_features": step.model_output.output_features.detach(),
     }
+
+
+def _full_aux_ce(context: ExtensionContext, batch_state: BatchState) -> torch.Tensor:
+    from kd_sensing.engine.runtime import run_model_step
+
+    mask = batch_state.controls.model_kwargs.get("missing_mask")
+    labels = batch_state.labels
+    if torch.is_tensor(mask) and bool(mask.to(dtype=torch.bool).all().item()):
+        logits = batch_state.primary_logits
+    else:
+        batch_size = int(labels.shape[0])
+        modalities = tuple(getattr(context.primary_model, "modalities", context.model_cfg.get("primary", {}).get("modalities", ())))
+        full_mask = torch.ones(batch_size, len(modalities), dtype=torch.bool, device=context.device)
+        step = run_model_step(
+            context.primary_model,
+            context.task,
+            batch_state.batch,
+            model_cfg=context.model_cfg["primary"],
+            seq_length=context.seq_length,
+            num_pred=context.num_pred,
+            device=context.device,
+            non_blocking=context.non_blocking,
+            extra_model_kwargs={"missing_mask": full_mask},
+        )
+        logits = step.logits
+    return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels[:, : logits.shape[1]].reshape(-1))
+
+
+def _hard_pattern_weights(
+    cfg: dict[str, Any],
+    pattern_names: list[str] | None,
+    mask: torch.Tensor | None,
+    modalities: tuple[str, ...],
+) -> torch.Tensor | None:
+    if not bool(cfg.get("use_hard_pattern_weight", False)):
+        return None
+    hard_patterns = {str(item) for item in cfg.get("hard_patterns", ())}
+    if not hard_patterns:
+        return None
+    if pattern_names is None and torch.is_tensor(mask):
+        pattern_names = [
+            get_missing_pattern_name(row.detach().cpu(), modalities)
+            for row in mask.to(dtype=torch.bool)
+        ]
+    if not pattern_names:
+        return None
+    value = float(cfg.get("hard_pattern_weight", 1.0))
+    weights = [value if name in hard_patterns else 1.0 for name in pattern_names]
+    return torch.tensor(weights, device=mask.device if torch.is_tensor(mask) else None)
 
 
 def _logit_kd_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *, temperature: float) -> torch.Tensor:

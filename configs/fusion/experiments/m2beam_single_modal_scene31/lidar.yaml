@@ -1,0 +1,26 @@
+_base_: _base.yaml
+experiment:
+  name: m2beam_scene31_lidar_only
+data:
+  dataset:
+    use_lidar: true
+    lidar_bev_size: [224, 224]
+    lidar_roi: [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]
+    lidar_fov_degrees: null
+    lidar_cache_dir: null
+    lidar_normalize: false
+    lidar_normalization:
+      enabled: false
+      mode: none
+model:
+  modalities: [lidar]
+  primary:
+    modalities: [lidar]
+    lidar_channels: 3
+    encoders:
+      lidar:
+        type: lidar_cnn
+        output_dim: 64
+        lidar_channels: 3
+output:
+  run_name: m2beam_scene31_lidar_only

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from kd_sensing.engine.model_output import adapt_model_output
 from kd_sensing.engine.runtime import prepare_task_batch, run_model_step
 from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats, topk_accuracy
+from kd_sensing.evaluation.metrics import beam_classification_circular_summary
 from kd_sensing.eval.missing_patterns import (
     get_default_missing_patterns,
     make_fixed_missing_mask,
@@ -60,6 +61,10 @@ def evaluate_missing_matrix(
                     cfg=cfg,
                 )
             )
+    if "avg_missing" not in {row.get("pattern") for row in results}:
+        avg = _average_missing_results(results)
+        if avg is not None:
+            results.append(avg)
     return results
 
 
@@ -97,7 +102,8 @@ def _evaluate_pattern(
         )
         metrics = {
             "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
-            **topk_accuracy(logits, target),
+            **topk_accuracy(logits, target, topk=(1, 3, 5)),
+            **_beam_error_metrics(logits, target, cfg),
             **reliability_error_stats(
                 logits,
                 target,
@@ -112,6 +118,8 @@ def _evaluate_pattern(
         "pattern": pattern_name,
         "mask": mask_label,
         "num_samples": accumulator.num_samples,
+        "sample_count": accumulator.num_samples,
+        "count": accumulator.num_samples,
         **accumulator.mean(),
     }
 
@@ -236,7 +244,10 @@ class _Accumulator:
         keys = [
             "loss",
             "top1",
+            "top3",
             "top5",
+            "adba",
+            "mae",
             "mean_confidence",
             "mean_global_reliability",
             "mean_global_reliability_correct",
@@ -249,3 +260,73 @@ class _Accumulator:
             key: (self.sums[key] / self.num_samples if self.num_samples and key in self.sums else math.nan)
             for key in keys
         }
+
+
+def _beam_error_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any] | None) -> dict[str, float]:
+    eval_cfg = (cfg or {}).get("evaluation", {}) if isinstance(cfg, dict) else {}
+    summary = beam_classification_circular_summary(
+        logits,
+        target,
+        num_beams=int(logits.shape[-1]),
+        dba_delta=float(eval_cfg.get("dba_delta", 5)),
+    )
+    return {
+        "adba": float(summary.get("DBA", math.nan)),
+        "mae": float(summary.get("mean_circular_error", math.nan)),
+    }
+
+
+def _average_missing_results(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    rows = [
+        row
+        for row in results
+        if str(row.get("pattern", "")) != "full"
+        and (
+            str(row.get("pattern", "")).startswith("missing_")
+            or str(row.get("pattern", "")).startswith("only_")
+            or str(row.get("pattern", "")) == "non_gps_only"
+        )
+    ]
+    total = sum(int(row.get("num_samples", row.get("sample_count", 0)) or 0) for row in rows)
+    if not rows or total <= 0:
+        return None
+    sample_count = max(int(row.get("num_samples", row.get("sample_count", 0)) or 0) for row in rows)
+    averaged = {
+        "pattern": "avg_missing",
+        "mask": "aggregate",
+        "num_samples": sample_count,
+        "sample_count": sample_count,
+        "count": sample_count,
+    }
+    for key in (
+        "loss",
+        "top1",
+        "top3",
+        "top5",
+        "adba",
+        "mae",
+        "mean_confidence",
+        "mean_global_reliability",
+        "mean_global_reliability_correct",
+        "mean_global_reliability_wrong",
+        "mean_modality_reliability",
+        "mean_available_modality_reliability",
+        "ece",
+    ):
+        value = _weighted_mean(rows, key)
+        if value is not None:
+            averaged[key] = value
+    return averaged
+
+
+def _weighted_mean(rows: list[dict[str, Any]], key: str) -> float | None:
+    numerator = 0.0
+    denominator = 0
+    for row in rows:
+        value = row.get(key)
+        count = int(row.get("num_samples", row.get("sample_count", 0)) or 0)
+        if count <= 0 or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            continue
+        numerator += float(value) * count
+        denominator += count
+    return numerator / denominator if denominator else None

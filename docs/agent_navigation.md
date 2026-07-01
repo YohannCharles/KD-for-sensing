@@ -6,12 +6,12 @@
 
 1. 先读用户当前请求和本轮对话中的限制；它们只约束本次工作，不自动改写长期契约。
 2. 读 `AGENTS.md`，确认命令环境、OpenSpec、文档边界和本地产物边界；所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
-3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 仍可能影响当前工作树解释。
-4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、验证命令等最小结构化事实，不维护完整源码目录清单、入口 allowlist 或 prose 镜像。
+3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 应先归档或记录 deferral，否则不要把它当成仍在实施的需求。
+4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、root fusion YAML、experiment config family、脚本 lifecycle、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、验证命令等最小结构化事实，不维护完整源码目录清单、入口 allowlist 或 prose 镜像。
 5. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
 6. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
 7. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
-8. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动和 ignored runtime artifacts 没有被误当作源码需求。
+8. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动、未分类 `scripts/`/root runbook 和 ignored runtime artifacts 没有被误当作源码需求；`.codegraph/daemon.pid`、socket、db、cache 和 log 只能作为本地工具状态处理。
 
 ## 权威来源优先级
 

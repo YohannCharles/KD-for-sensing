@@ -1,7 +1,7 @@
 # amber-lite-missing-modality-reproduction Specification
 
 ## Purpose
-TBD - created by archiving change reproduce-amber-lite-missing-modality-baseline. Update Purpose after archive.
+定义 AMBER-lite local missing-modality baseline 的模型、dropout/evaluation 条件、claim caveat 和运行产物边界；该能力用于当前本地对照，不声明完整 AMBER 官方复现。
 ## Requirements
 ### Requirement: AMBER-lite baseline model
 系统 MUST 提供 AMBER-lite missing-modality baseline，用于融合 image、LiDAR、radar 和 GPS 模态并在模态缺失时使用 mask token 或等价缺失表征。

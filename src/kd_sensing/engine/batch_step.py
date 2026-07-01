@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 from typing import Any
 
 import torch
@@ -39,6 +40,7 @@ class BatchStepResult:
     extra_loss_values: dict[str, torch.Tensor]
     scalar_diagnostics: dict[str, float]
     accuracy: float
+    timings: dict[str, float]
 
 
 class BatchStepRunner:
@@ -114,6 +116,7 @@ class BatchStepRunner:
             cfg=self.cfg,
         )
         self.optimizer.zero_grad()
+        timings: dict[str, float] = {}
         with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
             controls = ForwardControls()
             for extension, state in zip(self.extensions, self.extension_states):
@@ -127,6 +130,7 @@ class BatchStepRunner:
                     )
                 )
             set_csi_debug_batch_source(context.primary_model, "train")
+            forward_start = time.perf_counter()
             primary_step = run_model_step(
                 context.primary_model,
                 self.task,
@@ -139,6 +143,8 @@ class BatchStepRunner:
                 force_modality_mask=controls.force_modality_mask,
                 extra_model_kwargs=controls.model_kwargs,
             )
+            timings["forward_time"] = time.perf_counter() - forward_start
+            loss_start = time.perf_counter()
             primary_model_output = primary_step.model_output
             primary_outputs = primary_step.logits
             batch_state = BatchState(
@@ -196,8 +202,9 @@ class BatchStepRunner:
             batch_state.total_loss = total_loss
             batch_state.task_loss = task_loss
             batch_state.auxiliary_loss = auxiliary_loss
+            timings["loss_time"] = time.perf_counter() - loss_start
 
-        self._backward_and_step(total_loss, batch_state)
+        timings.update(self._backward_and_step(total_loss, batch_state))
         prediction = torch.argmax(primary_outputs, dim=-1)
         valid = torch.sum(labels != -100).item()
         accuracy = (prediction == labels).sum().item() / max(valid, 1)
@@ -212,6 +219,7 @@ class BatchStepRunner:
             extra_loss_values=extra_loss_values,
             scalar_diagnostics=scalar_diagnostics,
             accuracy=float(accuracy),
+            timings=timings,
         )
 
     def _run_jepa(self, raw_batch, *, epoch: int, step: int) -> BatchStepResult:
@@ -223,6 +231,7 @@ class BatchStepRunner:
             DifficultyContext(stage="train", split="train", seed=self.difficulty_seed, epoch=epoch, step=step),
         ).batch
         self.optimizer.zero_grad()
+        timings: dict[str, float] = {}
         with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
             labels = _jepa_dummy_labels(batch, context)
             controls = ForwardControls()
@@ -237,6 +246,7 @@ class BatchStepRunner:
                     )
                 )
             set_csi_debug_batch_source(context.primary_model, "train")
+            forward_start = time.perf_counter()
             primary_step = run_model_step(
                 context.primary_model,
                 self.task,
@@ -253,6 +263,8 @@ class BatchStepRunner:
                     "jepa_step": int(step),
                 },
             )
+            timings["forward_time"] = time.perf_counter() - forward_start
+            loss_start = time.perf_counter()
             primary_model_output = primary_step.model_output
             primary_outputs = primary_step.logits
             batch_state = BatchState(
@@ -294,8 +306,9 @@ class BatchStepRunner:
             batch_state.task_loss = task_loss
             batch_state.auxiliary_loss = auxiliary_loss
             prediction_loss = _jepa_prediction_loss_bundle(total_loss, primary_outputs)
+            timings["loss_time"] = time.perf_counter() - loss_start
 
-        self._backward_and_step(total_loss, batch_state)
+        timings.update(self._backward_and_step(total_loss, batch_state))
         return BatchStepResult(
             batch=batch,
             labels=labels,
@@ -307,6 +320,7 @@ class BatchStepRunner:
             extra_loss_values=extra_loss_values,
             scalar_diagnostics=scalar_diagnostics,
             accuracy=0.0,
+            timings=timings,
         )
 
     def _compute_base_loss(
@@ -363,8 +377,9 @@ class BatchStepRunner:
             diagnostics=diagnostics,
         )
 
-    def _backward_and_step(self, total_loss: torch.Tensor, batch_state: BatchState) -> None:
+    def _backward_and_step(self, total_loss: torch.Tensor, batch_state: BatchState) -> dict[str, float]:
         grad_clip = self.training_cfg.get("grad_clip", None)
+        backward_start = time.perf_counter()
         if self.grad_scaler.is_enabled():
             self.grad_scaler.scale(total_loss).backward()
             if grad_clip or batch_state.active_modalities is not None or self.health_tracker is not None:
@@ -375,11 +390,13 @@ class BatchStepRunner:
                 torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
             if self.health_tracker is not None:
                 self.health_tracker.observe_gradients()
+            backward_time = time.perf_counter() - backward_start
+            step_start = time.perf_counter()
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
             for extension, state in zip(self.extensions, self.extension_states):
                 extension.after_optimizer_step(self.context, state, batch_state)
-            return
+            return {"backward_time": backward_time, "optimizer_step_time": time.perf_counter() - step_start}
         total_loss.backward()
         for extension, state in zip(self.extensions, self.extension_states):
             extension.after_backward(self.context, state, batch_state)
@@ -387,9 +404,12 @@ class BatchStepRunner:
             torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
         if self.health_tracker is not None:
             self.health_tracker.observe_gradients()
+        backward_time = time.perf_counter() - backward_start
+        step_start = time.perf_counter()
         self.optimizer.step()
         for extension, state in zip(self.extensions, self.extension_states):
             extension.after_optimizer_step(self.context, state, batch_state)
+        return {"backward_time": backward_time, "optimizer_step_time": time.perf_counter() - step_start}
 
 def _jepa_dummy_labels(batch: dict[str, torch.Tensor], context: ExtensionContext) -> torch.Tensor:
     missing = [key for key in ("image", "gps") if key not in batch]

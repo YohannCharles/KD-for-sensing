@@ -81,9 +81,9 @@ DEFAULT_CONFIG = {
         "dataloader": {
             "train_batch_size": 32,
             "test_batch_size": 32,
-            "num_workers": 4,
+            "num_workers": 2,
             "pin_memory": True,
-            "persistent_workers": True,
+            "persistent_workers": False,
             "prefetch_factor": 1,
             "train_drop_last": False,
             "test_drop_last": False,

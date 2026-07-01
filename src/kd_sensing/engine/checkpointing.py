@@ -10,7 +10,7 @@ from kd_sensing.engine.training_state import (
     early_stopping_improved,
     early_stopping_metric_value,
 )
-from kd_sensing.utils.artifact_registry import archive_best_checkpoint, write_sidecar
+from kd_sensing.utils.artifact_registry import archive_best_checkpoint, load_checkpoint_metadata, write_sidecar
 from kd_sensing.utils.checkpoint import load_checkpoint, save_checkpoint
 from kd_sensing.utils.paths import resolve_path
 
@@ -34,6 +34,8 @@ def resolve_resume_checkpoint(cfg: dict, run_dir: Path) -> Path | None:
         if not cfg.get("output", {}).get("run_name"):
             raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
         checkpoint_path = run_dir / "checkpoints" / "last.pth"
+        if not checkpoint_path.exists():
+            return None
     elif isinstance(resume, str):
         checkpoint_path = resolve_path(resume)
     else:
@@ -82,6 +84,7 @@ class CheckpointManager:
             role="resume",
             map_location=device,
         )
+        _apply_sidecar_resume_metadata(checkpoint, resume_path)
         state.checkpoint_loads.append(checkpoint.get("_load_info"))
         self.early_stopping_metric, self.early_stopping_mode = state.apply_resume_checkpoint(
             checkpoint,
@@ -115,7 +118,7 @@ class CheckpointManager:
             state.best_early_stopping_epoch = epoch + 1
             state.epochs_without_improvement = 0
             best_objective_path = self.run_dir / "checkpoints" / "best.pth"
-            torch.save(self.primary_model.state_dict(), best_objective_path)
+            torch.save(self._checkpoint_payload(state=state, epoch=epoch, val_loss=val_loss), best_objective_path)
             write_sidecar(
                 best_objective_path,
                 self._checkpoint_sidecar(
@@ -137,7 +140,7 @@ class CheckpointManager:
             state.best_val_top1 = val_acc
             state.best_top1_epoch = epoch + 1
             best_top1_path = self.run_dir / "checkpoints" / "best_top1.pth"
-            torch.save(self.primary_model.state_dict(), best_top1_path)
+            torch.save(self._checkpoint_payload(state=state, epoch=epoch, val_loss=val_loss), best_top1_path)
             state.registry_checkpoint = archive_best_checkpoint(
                 self.cfg,
                 source_checkpoint=best_top1_path,
@@ -177,27 +180,30 @@ class CheckpointManager:
 
     def save_last_checkpoint(self, *, state: TrainingState, epoch: int, val_loss: float) -> None:
         save_checkpoint(
-            {
-                "epoch": epoch + 1,
-                "state_dict": self.primary_model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
-                "test_loss": val_loss,
-                "best_val_loss": state.best_val_loss,
-                "best_val_top1": state.best_val_top1,
-                "best_top1_epoch": state.best_top1_epoch,
-                "early_stopping_metric": self.early_stopping_metric,
-                "early_stopping_mode": self.early_stopping_mode,
-                "best_early_stopping_value": state.best_early_stopping_value,
-                "best_early_stopping_epoch": state.best_early_stopping_epoch,
-                "epochs_without_improvement": state.epochs_without_improvement,
-                "normalization_artifacts": self.normalization_artifacts,
-                "checkpoint_registry": state.registry_checkpoint,
-                "prediction_objective": self.objective_metadata,
-            },
+            self._checkpoint_payload(state=state, epoch=epoch, val_loss=val_loss),
             self.run_dir / "checkpoints",
             "last.pth",
         )
+
+    def _checkpoint_payload(self, *, state: TrainingState, epoch: int, val_loss: float) -> dict[str, Any]:
+        return {
+            "epoch": epoch + 1,
+            "state_dict": self.primary_model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "test_loss": val_loss,
+            "best_val_loss": state.best_val_loss,
+            "best_val_top1": state.best_val_top1,
+            "best_top1_epoch": state.best_top1_epoch,
+            "early_stopping_metric": self.early_stopping_metric,
+            "early_stopping_mode": self.early_stopping_mode,
+            "best_early_stopping_value": state.best_early_stopping_value,
+            "best_early_stopping_epoch": state.best_early_stopping_epoch,
+            "epochs_without_improvement": state.epochs_without_improvement,
+            "normalization_artifacts": self.normalization_artifacts,
+            "checkpoint_registry": state.registry_checkpoint,
+            "prediction_objective": self.objective_metadata,
+        }
 
     def _checkpoint_sidecar(
         self,
@@ -230,3 +236,26 @@ class CheckpointManager:
             "task": self.cfg.get("experiment", {}).get("task"),
             "enabled_modalities": list(getattr(train_dataset, "enabled_modalities", [])),
         }
+
+
+def _apply_sidecar_resume_metadata(checkpoint: dict[str, Any], resume_path: Path) -> None:
+    if "epoch" in checkpoint:
+        return
+    metadata = load_checkpoint_metadata(resume_path)
+    if not isinstance(metadata, dict):
+        return
+    if "selected_epoch" in metadata:
+        checkpoint["epoch"] = int(metadata["selected_epoch"])
+    objective_metric = metadata.get("objective_metric")
+    if isinstance(objective_metric, dict):
+        if "name" in objective_metric:
+            checkpoint.setdefault("early_stopping_metric", objective_metric["name"])
+        if "mode" in objective_metric:
+            checkpoint.setdefault("early_stopping_mode", objective_metric["mode"])
+        if "value" in objective_metric:
+            checkpoint.setdefault("best_early_stopping_value", objective_metric["value"])
+            checkpoint.setdefault("best_early_stopping_epoch", metadata.get("selected_epoch", 0))
+    task_metrics = metadata.get("task_metrics")
+    if isinstance(task_metrics, dict):
+        checkpoint.setdefault("best_val_top1", task_metrics.get("val_acc", metadata.get("metric_value", float("-inf"))))
+        checkpoint.setdefault("best_val_loss", task_metrics.get("val_loss", checkpoint.get("best_val_loss", float("inf"))))
