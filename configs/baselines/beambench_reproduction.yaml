@@ -13,7 +13,7 @@ data:
   beam_shift: 1
   scenes: [31, 32, 33, 34]
   checker:
-    module: kd_sensing.cli.beambench_check_dataset
+    module: kd_sensing.baselines.beambench.dataset_check
     read_only: true
 
 baselines:

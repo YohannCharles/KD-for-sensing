@@ -14,7 +14,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
 
 ```bash
 conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
-  --sweep-manifest configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml \
+  --sweep-manifest configs/diagnostics/jepa_visual_architecture_sweep_manifest.yaml \
   --variant-id patch14_stage1_gps_query \
   --format csv
 ```

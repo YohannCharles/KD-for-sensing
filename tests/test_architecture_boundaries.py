@@ -55,6 +55,11 @@ DELETED_SURFACE_PATHS = (
     "src/kd_sensing/models/fusion/networks.py",
     "src/kd_sensing/cli/beambench_check_dataset.py",
     "src/kd_sensing/baselines/beambench/image_ae_gps.py",
+    "src/kd_sensing/diagnostics/cnn_hybrid_jepa_visual_prior_sweep.py",
+    "src/kd_sensing/engine/loso_data.py",
+    "configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml",
+    "scripts/run_m2beam_single_modal_scene31_queue.sh",
+    "scripts/run_rbma_strong_encoder_4gpu_queue.sh",
     "scripts/analyze_csi_hardening_sweep.py",
 )
 
@@ -69,6 +74,10 @@ FORBIDDEN_IMPORTS = (
     "from kd_sensing.data.transform_ops.normalization import",
     "from kd_sensing.baselines.beambench.image_ae_gps import",
     "import kd_sensing.baselines.beambench.image_ae_gps",
+    "from kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep import",
+    "import kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep",
+    "from kd_sensing.engine.loso_data import",
+    "import kd_sensing.engine.loso_data",
     "from kd_sensing.diagnostics.jepa_benchmark_common import *",
     "from kd_sensing.models.fusion import",
 )
@@ -127,6 +136,35 @@ def test_current_paths_and_config_globs_are_real():
 def test_deleted_facades_and_one_shot_script_do_not_return():
     for rel_path in DELETED_SURFACE_PATHS:
         assert not (ROOT / rel_path).exists(), rel_path
+
+
+def test_deleted_current_references_do_not_return():
+    stale = (
+        "kd_sensing.cli.beambench_check_dataset",
+        "configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml",
+    )
+    allowed_context = ("已删除", "不要求", "退役", "历史", "deleted", "retired", "historical")
+    current_paths = [
+        ROOT / "README.md",
+        ROOT / "configs/baselines/beambench_reproduction.yaml",
+        ROOT / "docs/model_architecture_inventory.md",
+        ROOT / "docs/extension_guide.md",
+        *sorted((ROOT / "openspec/specs").glob("*/spec.md")),
+    ]
+    violations: list[str] = []
+    for path in current_paths:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        text = "\n".join(lines)
+        for fragment in stale:
+            if fragment not in text:
+                continue
+            for index, line in enumerate(lines):
+                if fragment not in line:
+                    continue
+                window = "\n".join(lines[max(0, index - 2) : index + 3]).lower()
+                if not any(marker.lower() in window for marker in allowed_context):
+                    violations.append(f"{_rel(path)}:{index + 1}: {fragment}")
+    assert not violations
 
 
 def test_internal_code_uses_owner_modules_not_retired_facades():

@@ -48,6 +48,13 @@ candidates:
     family: patch_granularity
     visual_encoder: {type: patch_vit, patch_size: 14, max_tokens: 256}
     pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+    token_metadata: {token_count: 256}
+    params_metadata:
+      total_params: 197000
+      trainable_params: 197000
+      image_encoder_params: 117000
+      visual_context_encoder_params: 88000
+      token_count: 256
     checkpoint_policy: fresh_stage1_required
     run_tier: smoke
     evidence_scope: smoke
@@ -88,6 +95,13 @@ candidates:
     family: cnn_tokens
     visual_encoder: {type: cnn_feature_map, backbone: resnet18, stage: layer4, pretrained: false, token_count: 49}
     pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+    token_metadata: {token_count: 49}
+    params_metadata:
+      total_params: 11320000
+      trainable_params: 11320000
+      image_encoder_params: 11240000
+      visual_context_encoder_params: 11210000
+      token_count: 49
     checkpoint_policy: supervised_only_anchor
     run_tier: smoke
     evidence_scope: smoke
@@ -96,6 +110,11 @@ candidates:
     family: multi_scale_tokens
     visual_encoder: {type: multi_scale_cnn, backbone: resnet18, stages: [layer3, layer4], pretrained: false}
     pooler: {type: gps_query_attention, k_queries: 2, output_mode: frame}
+    params_metadata:
+      total_params: 14130000
+      trainable_params: 14130000
+      image_encoder_params: 14050000
+      visual_context_encoder_params: 14020000
     checkpoint_policy: supervised_only_anchor
     run_tier: lowmem
     evidence_scope: lowmem

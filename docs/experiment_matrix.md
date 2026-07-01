@@ -147,6 +147,8 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/experiments/rbm
 conda run -n kd_mm_beam python scripts/run_rbma_missing_workflow.py --auto-resume --num-workers 2
 ```
 
+Strong-encoder RBMA 和 M2Beam single-modal Scene31 overlay 只保留为 local/manual checkpoint-placeholder 输入；如需人工复跑，直接重复传入 `--config <yaml>` 或运行对应 `kd-sensing-train --config <yaml>`，不再维护固定四 GPU queue shell。
+
 pattern evaluation 会随训练结束写入 `outputs/scene31/eval/*_missing_patterns.csv/json`；也可手动复用包内 eval matrix：
 
 ```bash

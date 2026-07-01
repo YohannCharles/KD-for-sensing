@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--config", type=Path, help="Training/evaluation config path to summarize.")
     source.add_argument("--model-config-json", help="Inline JSON object for model.primary config.")
-    source.add_argument("--sweep-manifest", type=Path, help="CNN/hybrid JEPA visual-prior sweep manifest path.")
+    source.add_argument("--sweep-manifest", type=Path, help="JEPA visual architecture sweep manifest path.")
     source.add_argument("--startup-summary", type=Path, help="Existing startup_summary.json artifact to read.")
     parser.add_argument("-o", "--override", action="append", default=[], help="Config override using load_config dotted syntax.")
     parser.add_argument("--variant-id", default="", help="Sweep variant id to render, or 'all'.")
@@ -76,10 +76,10 @@ def _summaries_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def _summaries_from_sweep_manifest(path: Path, *, variant_id: str) -> list[dict[str, Any]]:
-    from kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep import load_full_sweep_manifest
+    from kd_sensing.diagnostics.jepa_visual_architecture_sweep import load_sweep_manifest
 
-    manifest = load_full_sweep_manifest(path)
-    candidates = list(manifest["base_candidates"])
+    manifest = load_sweep_manifest(path)
+    candidates = list(manifest["candidates"])
     if variant_id and variant_id != "all":
         candidates = [candidate for candidate in candidates if str(candidate.get("variant_id")) == variant_id]
         if not candidates:

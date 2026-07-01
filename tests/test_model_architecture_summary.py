@@ -8,7 +8,7 @@ import torch.nn as nn
 import kd_sensing.models.image_encoders as image_encoders
 import kd_sensing.models.tinyvit as tinyvit
 from kd_sensing.cli.model_architecture_summary import build_parser, main as model_summary_main
-from kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep import load_full_sweep_manifest
+from kd_sensing.diagnostics.jepa_visual_architecture_sweep import load_sweep_manifest
 from kd_sensing.engine.debug_diagnostics import build_startup_summary, module_trainability_report
 from kd_sensing.models.architecture_summary import (
     ACTUAL_PARAMETER_SOURCE,
@@ -24,7 +24,7 @@ from kd_sensing.registries import ENCODERS, HEADS, MODELS, REPRESENTATION_CORES,
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SWEEP_MANIFEST = ROOT / "configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml"
+SWEEP_MANIFEST = ROOT / "configs/diagnostics/jepa_visual_architecture_sweep_manifest.yaml"
 
 
 class _SyntheticSummaryModule(nn.Module):
@@ -358,8 +358,8 @@ def test_tinyvit_22k_preflight_blocks_potential_download():
 
 
 def test_sweep_candidate_parameter_fixtures():
-    manifest = load_full_sweep_manifest(SWEEP_MANIFEST)
-    candidates = {candidate["variant_id"]: candidate for candidate in manifest["base_candidates"]}
+    manifest = load_sweep_manifest(SWEEP_MANIFEST)
+    candidates = {candidate["variant_id"]: candidate for candidate in manifest["candidates"]}
 
     patch = summarize_sweep_candidate(candidates["patch14_stage1_gps_query"])
     layer4 = summarize_sweep_candidate(candidates["resnet18_layer4_tokens"])
