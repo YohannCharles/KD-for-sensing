@@ -97,3 +97,62 @@ LiDAR legacy whole-model 注册名和 feature extractor `MODELS` 注册名 MUST 
 - **THEN** 最终配置的 `model.primary.type` MUST 为 `modular_sequence`
 - **AND** `model.primary.encoders.lidar.type` MUST 为 `lidar_cnn`
 
+### Requirement: LiDAR 注册错误可诊断
+LiDAR 相关注册错误 MUST 使用现有注册表错误风格，并在未知名称、重复名称或缺失必需参数时提供清晰错误信息。
+
+#### Scenario: 请求未知 LiDAR 组件
+- **WHEN** 配置中引用未注册的 LiDAR 模型或预处理器名称
+- **THEN** 系统 MUST 抛出明确异常
+- **AND** 错误信息 MUST 包含请求的组件名称、注册表名称和可用组件列表
+
+#### Scenario: LiDAR 构建参数缺失
+- **WHEN** 配置中引用已注册 LiDAR 组件但缺少必需构造参数
+- **THEN** 系统 MUST 抛出明确异常
+- **AND** 错误信息 MUST 包含缺失字段或原始构建错误
+
+### Requirement: LiDAR 配置驱动实验
+项目 MUST 支持通过配置文件启动 LiDAR-only 训练和评估。LiDAR-only 配置 MUST 使用当前 LiDAR dataset、preprocessing/cache contract、`model.primary`、统一训练/验证/评估、loss、optimizer、scheduler、checkpoint 和指标流程运行。
+
+#### Scenario: 使用配置启动 LiDAR-only 训练
+- **WHEN** 用户通过当前 CLI 传入 LiDAR-only 训练配置
+- **THEN** 系统 MUST 构建包含 LiDAR 输入的 dataset、配置指定的 LiDAR primary model、loss、optimizer 和 scheduler，并进入训练流程
+- **AND** 训练流程 MUST 不要求 image、radar、GPS、teacher checkpoint 或 distiller
+- **AND** LiDAR 输入 MUST 使用当前配置声明的 BEV、streaming stats 或 raw point cloud profile
+
+#### Scenario: 使用配置启动 LiDAR-only 评估
+- **WHEN** 用户通过当前 CLI 传入 LiDAR-only 评估配置和 LiDAR 模型权重
+- **THEN** 系统 MUST 构建配置指定的 LiDAR primary model 并只使用 LiDAR 输入完成评估
+- **AND** 系统 MUST 保存当前 metric profile 声明的 Top-K、DBA、loss 或诊断指标
+
+### Requirement: LiDAR fusion 配置驱动实验
+项目 MUST 支持通过 fusion `modalities` 配置启用 LiDAR。包含 LiDAR 的 fusion 配置 MUST 复用统一 fusion 训练和评估流程，并 MUST 构建单个 fusion primary model。
+
+#### Scenario: 使用配置启动 image+radar+gps+lidar fusion 训练
+- **WHEN** 用户通过训练入口传入 `modalities: ["image", "radar", "gps", "lidar"]` 的 fusion 配置
+- **THEN** 系统 MUST 构建四个模态输入所需的 dataset 字段和 fusion primary model
+- **AND** 系统 MUST 在 batch 准备阶段构造 image、radar、gps 和 lidar 输入
+
+#### Scenario: 使用配置启动 LiDAR 参与的双模态 fusion 训练
+- **WHEN** 用户通过训练入口传入包含 `lidar` 的任意合法双模态 fusion 配置
+- **THEN** 系统 MUST 只准备 `modalities` 中列出的模态输入
+- **AND** 未启用的模态字段 MUST 不影响训练启动
+
+### Requirement: LiDAR 默认实验配置
+项目 MUST 提供 LiDAR-only strong、lightweight、supervised 和包含 LiDAR 的 fusion 示例配置。所有默认 LiDAR primary 配置 MUST 使用当前 modular BEV encoder 默认参数。
+
+#### Scenario: LiDAR 默认配置可构建
+- **WHEN** 开发者加载 `configs/lidar/*.yaml`
+- **THEN** 系统 MUST 能构建对应 dataset、model、loss、optimizer 和 scheduler
+- **AND** 配置 MUST 使用 `model.primary`
+
+#### Scenario: LiDAR fusion 示例配置可构建
+- **WHEN** 开发者加载包含 LiDAR 的 `configs/fusion/*.yaml`
+- **THEN** 系统 MUST 能构建对应 fusion primary model
+- **AND** fusion `modalities` MUST 只包含合法模态名称
+
+### Requirement: LiDAR dry-run 训练
+项目 MUST 提供可在小数据或 fixture 上运行的 LiDAR smoke test 路径，用于验证 LiDAR forward、loss、backward、validation 和 checkpoint 保存。
+
+#### Scenario: LiDAR dry-run 训练
+- **WHEN** 开发者使用 synthetic、fixture 或小比例数据运行一次 LiDAR 短训练 smoke test
+- **THEN** 训练流程 MUST 完成 forward、loss、backward、optimizer step、validation 和 checkpoint 保存的核心路径

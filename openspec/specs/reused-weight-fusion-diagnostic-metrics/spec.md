@@ -55,3 +55,29 @@
 - **WHEN** 开发者实施或验证该 change
 - **THEN** 新生成的 `outputs/`、cache、日志、checkpoint、PNG、SVG 或 HTML MUST 不纳入源码变更
 - **AND** 可复现入口 MUST 通过配置、manifest 或文档命令记录
+
+### Requirement: Benchmark output matrix completeness
+Real-forward benchmark MUST 输出 planned/completed/missing matrix。矩阵 MUST 覆盖 model、group、condition、seed、split、sample_count 和 evidence scope。
+
+#### Scenario: 缺失 shard
+- **WHEN** 某个 model-condition shard 未运行或失败
+- **THEN** runner MUST 在 matrix 中标记 missing/failed
+- **AND** claim gate MUST 返回 pending，除非 manifest 显式声明该 shard 不属于 claim scope
+
+#### Scenario: 完整 strict matrix
+- **WHEN** 所有 claim-scope shards 完成且 cache fingerprint 一致
+- **THEN** benchmark summary MUST 标记 real-forward matrix complete
+- **AND** strict comparison table MUST 可追溯每个模型的 checkpoint/config/difficulty provenance
+
+### Requirement: Branch diagnostics aggregation
+Benchmark MUST 能聚合模型输出中的 branch diagnostics，同时允许普通 baseline 缺失这些字段。
+
+#### Scenario: opt-in 模型输出 diagnostics
+- **WHEN** model output 包含 anchor logits、prior logits、rerank logits、candidate ids、branch weights 或 fallback reason
+- **THEN** runner MUST 将这些字段写入 diagnostics cache 或 aggregate CSV/JSON
+- **AND** 缺失字段 MUST 标记 `unavailable`
+
+#### Scenario: 普通 baseline 缺失 diagnostics
+- **WHEN** Image ResNet+GPS 或其它 baseline 不输出 rerank diagnostics
+- **THEN** benchmark MUST 继续计算 metrics
+- **AND** diagnostics 表中该模型对应字段 MUST 为 `unavailable`

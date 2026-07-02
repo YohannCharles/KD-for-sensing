@@ -269,3 +269,216 @@ RBMA workflow MUST 写出可审计训练策略 metadata，覆盖 fusion type、m
 - **THEN** metadata MUST 记录 teacher mode、teacher checkpoint provenance 或 pending reason
 - **AND** checkpoint teacher 未实现时 MUST 不被记录为已启用成功
 
+### Requirement: 训练方法扩展点边界
+训练引擎 MUST 将后续仍被 OpenSpec 批准的方法所需的 teacher runtime、额外 loss、梯度后处理和 epoch diagnostics 接入点保持在明确模块边界内。`kd_sensing.engine.trainer` MUST 保持训练生命周期编排职责，不得作为方法特有 loss、teacher ensemble、counterfactual 或 subset-training 逻辑的主要实现位置。已退役的 G2D、CRAF 和 MARF 扩展模块 MUST 从 active code path 中删除。
+
+#### Scenario: 新增训练方法不扩写主循环
+- **WHEN** 开发者新增一个需要额外 loss 或 diagnostics 的训练方法
+- **THEN** 主要实现 MUST 位于方法扩展模块及其测试中
+- **AND** `kd_sensing.engine.trainer` 中的 epoch/batch 主循环 MUST 仅通过通用扩展点调用该方法
+
+#### Scenario: 退役方法扩展模块删除
+- **WHEN** 开发者查看训练期接入逻辑
+- **THEN** 系统 MUST 不再保留 G2D、CRAF 或 MARF 的 teacher runtime、extra loss、subset/counterfactual forward 和 scalar diagnostics 作为 active 方法模块
+- **AND** `trainer.py` MUST 不包含这些退役方法的大段私有 helper 实现
+
+### Requirement: 共享任务 forward runtime
+训练、验证、诊断预测和当前保留的 teacher runtime MUST 复用同一组任务 forward helper 来完成 batch 标准化、输入准备、model forward、输出适配和 future slot 选择。新增或修改模态输入准备、task forward 参数或强制模态 mask 行为时，变更 MUST 不要求在 trainer、validator 和当前诊断预测路径中重复修改分支逻辑。已退役 G2D teacher runtime 和 viewer prediction export 不再属于复用对象。
+
+#### Scenario: 修改 fusion 输入准备只改 runtime helper
+- **WHEN** 开发者调整 fusion task 的 `modalities` 输入准备或 force mask 透传逻辑
+- **THEN** 主要变更 MUST 限定在共享 forward runtime 模块和测试
+- **AND** 不需要分别修改 trainer、validator 和 viewer prediction 的 task 分支
+
+#### Scenario: 验证路径复用训练输入契约
+- **WHEN** 训练和验证使用同一个 fusion 配置运行
+- **THEN** 两条路径 MUST 使用一致的 batch key、sequence padding、future slot 选择和 model output 适配语义
+- **AND** validation metrics MUST 不依赖独立复制的 task forward 分支
+
+### Requirement: 训练编排层保持窄职责
+训练主循环 MUST 只协调 epoch、checkpoint、optimizer、scheduler、extension hook、validation 调用和运行产物写出。objective metric alias、available metric 计算、TensorBoard objective 字段、validation forward/loss/collect 和 canonical overlay 生成 MUST 位于对应窄模块。
+
+#### Scenario: 新增 objective 不修改 trainer 主循环
+- **WHEN** 开发者新增一个 prediction objective 并完成 objective metadata、loss 和 metrics 实现
+- **THEN** 不得要求修改 trainer 主循环中的 early stopping alias 表、history 字段表或 TensorBoard objective 字段表
+- **AND** trainer MUST 通过 objective metadata 自动记录该 objective 的 primary metric 和日志字段
+
+#### Scenario: 修改 validation 指标不修改 trainer 主循环
+- **WHEN** 开发者修复 validation pass 中某个 objective 指标的聚合方式
+- **THEN** 变更 MUST 限定在 evaluation pass、objective metrics 或 evaluation metrics 模块
+- **AND** 不需要编辑 trainer 主循环
+
+### Requirement: 训练运行时编排职责拆分
+训练引擎 MUST 将训练运行时状态、单 batch step、epoch metrics/history、checkpoint/sidecar、TensorBoard 和最终 artifact 写出拆到职责明确的窄模块或 helper。`kd_sensing.engine.trainer.train` MAY 保留为公开入口和顶层生命周期编排器，但 MUST 不继续直接承载这些细节的主要实现。
+
+#### Scenario: batch step 逻辑位于窄模块
+- **WHEN** 开发者查看训练中单 batch 的 prepare、forward、loss、backward 和 optimizer step 编排
+- **THEN** 主要实现 MUST 位于 batch step runner 或等价窄模块
+- **AND** `trainer.py` MUST 只负责调用该 runner 并消费其返回的 loss、diagnostics 和状态更新
+
+#### Scenario: checkpoint 写出位于 checkpoint manager
+- **WHEN** 开发者调整 `best.pth`、`best_top1.pth`、`last.pth`、sidecar 或 checkpoint registry archive 的写出逻辑
+- **THEN** 主要变更 MUST 限定在 checkpoint manager 或等价窄模块
+- **AND** 不需要编辑训练 batch 主循环
+
+#### Scenario: 训练 artifact 写出位于 artifact writer
+- **WHEN** 开发者调整 `train_log.json`、`training_outputs.npz`、`final_config.yaml`、训练曲线或 debug artifact 的写出逻辑
+- **THEN** 主要变更 MUST 限定在 artifact writer、history recorder 或等价窄模块
+- **AND** 不需要编辑模型 forward、KD loss 或 optimizer step 逻辑
+
+### Requirement: 当前源码热点必须收敛为薄 facade
+项目 MUST 优先防止当前仍保留的大型 workflow 或公开 orchestration 入口重新聚合职责。`src/kd_sensing/data/mmw/preparation.py`、evaluation pass、batch preparation、diagnostics benchmark owner 和训练主循环等当前热点 MUST 在 inventory 中记录拆分方向和预算；已退役的 Hist LOSO executor、viewer manifest 和 BGAM workflow MUST 不再作为当前热点或兼容 facade 要求。
+
+#### Scenario: Hist executor 不作为当前 facade
+- **WHEN** 开发者运行架构边界测试或审阅热点 inventory
+- **THEN** 检查 MUST 不要求 `hist_beam_loso_execution.py` 存在
+- **AND** 文档 MUST 不把 Hist executor 作为当前待拆热点、公开入口或兼容 facade
+
+#### Scenario: MMW preparation facade 收敛
+- **WHEN** 开发者查看或修改 MMW Town10 preparation 的配置解析、zip/input 审计、sensor/channel indexing、sequence split、beam power 派生、manifest 写出、report 或 proxy geometry 逻辑
+- **THEN** 主要实现 MUST 位于 `preparation_config.py`、`preparation_audit.py`、`preparation_index.py`、`preparation_splits.py`、`preparation_beam_power.py`、`preparation_writers.py`、`preparation_geometry.py` 或等价窄模块
+- **AND** `data/mmw/preparation.py` MUST 只承担公开 orchestration、现有公开 helper 的兼容导出和顶层参数编排
+- **AND** 架构边界测试 MUST 拒绝把上述窄职责的大段 helper 重新实现到 `data/mmw/preparation.py`
+
+### Requirement: 热点模块拆分边界
+项目 MUST 为高变更频率的大型模块提供职责拆分路径。拆分后的窄模块 MUST 按 schema/constants、pure helper、reader、writer、orchestration 或 domain-specific adapter 组织，公开 facade MAY 保留兼容导出，但新内部代码 MUST 优先依赖窄模块。
+
+#### Scenario: 新内部代码使用窄模块
+- **WHEN** 开发者在训练、评估、预处理、诊断或 viewer 相关实现中新增代码
+- **THEN** 新代码 MUST 优先从职责明确的窄模块 import
+- **AND** 不得新增对仅用于兼容 re-export 的二级聚合模块的内部依赖
+
+#### Scenario: 公开入口兼容
+- **WHEN** 现有用户从公开 facade import 旧符号
+- **THEN** 导入 MUST 继续成功，除非对应 change 明确声明 breaking change
+- **AND** facade MUST 不触发比旧路径更重的 eager import
+
+### Requirement: 拆分后轻量导入保持
+热点模块拆分 MUST 不破坏现有轻量导入边界。schema、constants、objective metadata 查询、dataset descriptor 查询和 path helper 查询 MUST 不因为拆分而导入训练循环、dataset 实例、模型、大型可视化依赖或真实数据读取逻辑。
+
+#### Scenario: objective schema 轻量导入
+- **WHEN** 开发者导入 objective metadata 的 schema/registry 子模块
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不导入训练器、dataset、模型或 matplotlib
+
+#### Scenario: dataset runtime schema 轻量导入
+- **WHEN** 开发者查询 dataset descriptor 或 runtime schema helper
+- **THEN** 查询 MUST 不打开 HDF5、CSV、image、LiDAR 或 checkpoint 文件
+- **AND** 查询 MUST 不导入训练循环
+
+### Requirement: 热点拆分必须保持公开行为兼容
+热点模块拆分 MUST 保持现有公开 CLI、公开 import、manifest schema、run metadata、summary CSV/JSON、preparation artifact 命名、样本契约和默认路径策略兼容。拆分只允许改变内部模块组织，不得改变模型数值语义、数据 split 语义、beam label 语义或本地产物边界。
+
+#### Scenario: 退役 Hist 产物只读保留
+- **WHEN** 历史 HiST-Beam LOSO run metadata、summary JSON、checkpoint reuse metadata 或本地输出仍在 `outputs/` 中
+- **THEN** 当前源码热点拆分 MUST 不要求这些 Hist artifact 可由当前 runner 继续生成
+- **AND** cleanup/index 工具 MAY 将其作为历史或退役产物只读审计
+
+#### Scenario: MMW preparation 产物兼容
+- **WHEN** MMW preparation 拆分完成后运行 focused characterization tests
+- **THEN** 现有 frame manifest、sequence split CSV、split metadata、beam power artifact、data availability report 和 report JSON 的关键字段 MUST 保持兼容
+- **AND** 测试 MUST 覆盖公开 `prepare_town10_skybridge` 工作流和仍保留的公开 helper import
+
+#### Scenario: 本地产物边界不随拆分改变
+- **WHEN** 开发者实施热点拆分、运行 focused tests 或执行 CLI smoke
+- **THEN** 变更 MUST 不包含对 `dataset/`、`outputs/`、`logs/`、cache、checkpoint、下载压缩包或真实本地运行产物的删除、移动、压缩或重写
+- **AND** 生成的临时验证产物 MUST 位于忽略规则覆盖范围内或测试临时目录中
+
+### Requirement: JEPA downstream 扩展实现边界
+项目 MUST 将 JEPA Stage 1 预训练主模型、JEPA downstream pooler/adapter、模块化 conditioned encoder、optimizer 参数组和 runtime metadata 维护在职责清晰的窄模块中。新增 JEPA downstream pooler 或 adapter MUST 不要求修改 dataset、训练主循环、checkpoint schema 或旧兼容入口。
+
+#### Scenario: 新增 JEPA pooler 不修改训练主循环
+- **WHEN** 开发者新增一个 JEPA downstream pooler
+- **THEN** 变更 MUST 限定在 JEPA downstream pooler/adapter 模块、注册代码、配置和测试
+- **AND** 不需要修改 `engine.trainer` 主循环或 supervised beam loss/metric 流程
+
+#### Scenario: 新增 JEPA adapter 不修改 dataset
+- **WHEN** 开发者新增一个 JEPA downstream adapter
+- **THEN** 变更 MUST 不要求修改 DeepSense6G dataset、GPS transform、image preprocessing 或 DataLoader 构建逻辑
+- **AND** adapter MUST 通过模型配置和 registry 接入
+
+#### Scenario: 不恢复退役入口
+- **WHEN** JEPA downstream extensibility change 落地
+- **THEN** 系统 MUST 不新增 KD/distillation、HiST/Hist、Top8 selector、GPS residual、camera residual 或 legacy fusion 兼容入口
+- **AND** 新能力 MUST 通过当前 `src/kd_sensing` 包结构和 registry 边界接入
+
+### Requirement: optimizer 参数组构建位于 optim 模块
+训练引擎 MUST 将参数组解析、模块名 pattern 匹配、重复匹配检测、未匹配参数处理和参数组 summary 维护在 `kd_sensing.engine.optim` 或等价窄模块中。训练主循环 MUST 只消费构建好的 optimizer 和 summary。
+
+#### Scenario: 修改 JEPA 参数组不触碰 trainer
+- **WHEN** 开发者调整 JEPA context encoder、GPS encoder、pooler、core 或 head 的参数组匹配规则
+- **THEN** 主要变更 MUST 限定在 optimizer 构建模块及其测试
+- **AND** 不需要编辑 `engine.trainer` 的 epoch 或 batch 编排逻辑
+
+#### Scenario: 参数组 summary 写入现有日志路径
+- **WHEN** 训练使用多个 optimizer 参数组
+- **THEN** 现有训练日志和 TensorBoard scalar 映射 MUST 能记录每组 learning rate 和参数数量
+- **AND** 未声明参数组时 MUST 保持现有单 `main` 组日志字段
+
+### Requirement: runtime metadata 收集位于 run metadata 模块
+JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer 或等价窄模块收集。模型和子模块 MAY 暴露只读 metadata 方法；训练主循环 MUST 不手写 JEPA downstream 专属字段。
+
+#### Scenario: 模型声明 metadata 被聚合
+- **WHEN** `model.primary` 或其子模块提供 JEPA downstream training strategy metadata
+- **THEN** runtime metadata 收集模块 MUST 将其写入 `final_config.yaml` 或等价运行 metadata
+- **AND** metadata MUST 包含 pooler、adapter、checkpoint、freeze 和参数组摘要中的正式字段
+
+#### Scenario: config fallback 兼容历史配置
+- **WHEN** metadata 在模型构建前需要从配置生成
+- **THEN** run metadata 模块 MAY 使用配置解析作为 fallback
+- **AND** fallback MUST 与模型声明 metadata 的核心字段保持一致
+
+### Requirement: 通用 baseline 与 workflow baseline 分层
+项目 MUST 区分通用可训练 baseline 和 workflow/paper reproduction baseline。通用 baseline MUST 复用配置驱动训练、共享 batch/runtime 和模型 registry；workflow baseline MUST 只在需要官方协议、多阶段训练、特殊 metric 或报告产物时保留专用 orchestration，并 MUST 放在包内职责清晰的位置并记录生命周期、产物边界和 claim caveat。
+
+#### Scenario: 通用 baseline 不修改训练循环
+- **WHEN** 开发者新增普通 supervised/adaptation baseline
+- **THEN** 变更 MUST 限定在配置、模型子组件、registry/default component 和 focused tests
+- **AND** 不得为了该 baseline 修改 dataset 解析、训练主循环或公共 CLI 入口
+
+#### Scenario: 论文复现 workflow 有边界
+- **WHEN** 开发者新增包含官方协议、多阶段训练、特殊 metrics 或报告产物的 workflow baseline
+- **THEN** 代码 MUST 位于 `src/kd_sensing/baselines/<family>/`、包内 CLI 或 package console script
+- **AND** 文档 MUST 标记其不是普通 `modular_sequence` baseline，并说明输出只写入 ignored runtime artifact root
+
+### Requirement: 新模型不得扩大入口表面
+新增模型架构能力 MUST 不新增 root-level 旧脚本、兼容聚合层、退役研究线实体配置或绕过 `src/kd_sensing` 包结构的运行方式。若需要新增 CLI，MUST 是package console script 或包内 CLI，并同步 pyproject、README/docs、inventory 和架构边界测试。
+
+#### Scenario: 新模型需要命令入口
+- **WHEN** whole-model exception 或 workflow baseline 需要新的用户命令
+- **THEN** 入口 MUST 通过 package console script 或包内 CLI 暴露
+- **AND** 系统 MUST 不新增仓库根长期训练脚本或未登记脚本入口
+
+### Requirement: 大 owner 保留必须有 accepted rationale 和验证命令
+项目 MAY 保留较大的 owner 模块，但该 owner MUST 在维护索引或 inventory 中登记 `right-size-accepted` 或等价状态、accepted rationale、保留职责、验证命令和未来拆分触发条件。没有 accepted rationale 的超预算 owner MUST 被登记为 `split-next`、`monitor` 或 `defer-with-rationale`。
+
+#### Scenario: 审计型 diagnostics owner 保留
+- **WHEN** JEPA benchmark、visual analysis、run index 或 cleanup owner 因输出 schema 审计需要保持较大文件
+- **THEN** 维护索引或 inventory MUST 记录该 owner 的职责边界、保留理由和 focused tests
+- **AND** 新增实现 MUST NOT 回流到公开 facade 或轻量导入路径
+
+#### Scenario: accepted owner 继续增长
+- **WHEN** `right-size-accepted` owner 新增职责、超过既有 rationale 或触碰新的 public schema
+- **THEN** 开发者 MUST 更新 accepted rationale 或将 owner 改为 split/monitor 状态
+- **AND** 对应 focused tests MUST 覆盖新增职责
+
+### Requirement: 新整模型注册受治理
+组件注册系统 MUST 继续支持 `MODELS` 注册整模型，但新增整模型注册 MUST 被视为架构例外并纳入 OpenSpec、文档和测试护栏。新增普通 baseline MUST 优先注册 encoder/projector/representation core/head 子组件，而不是注册新的整模型。
+
+#### Scenario: 子组件注册优先
+- **WHEN** 新增模型能力可以表达为 encoder、projector、representation core 或 head
+- **THEN** 实现 MUST 使用对应子组件 registry
+- **AND** 不得仅为组合这些子组件而新增新的 `MODELS` 注册名
+
+#### Scenario: 整模型注册需要例外说明
+- **WHEN** 新增源码包含新的 `@MODELS.register(...)` 或等价模型注册
+- **THEN** 对应 change MUST 提供 whole-model exception 理由
+- **AND** focused tests MUST 覆盖 registry build、forward 输出、metadata 和轻量导入边界
+
+### Requirement: 扩展文档区分默认和例外注册
+组件发现和扩展文档 MUST 将新增 baseline 的默认路径描述为模块化配置或子组件注册。直接注册 `MODELS` 的示例 MUST 位于 whole-model exception 小节，并说明需要 OpenSpec 设计理由和 focused tests。
+
+#### Scenario: 文档默认示例使用模块化组件
+- **WHEN** 开发者阅读 Add a Model 或新增 baseline 指南
+- **THEN** 首个示例 MUST 展示 `modular_sequence` 配置或子组件 registry
+- **AND** 文档 MUST 不把直接 `@MODELS.register` 整模型作为普通 baseline 的默认建议

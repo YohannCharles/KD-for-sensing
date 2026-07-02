@@ -185,3 +185,23 @@
 - **WHEN** 用户运行 BEV-Fusion 2604 训练、评估、report 或 cache workflow
 - **THEN** 新生成的 checkpoint、cache、metrics、TensorBoard、report 和日志 MUST 位于忽略规则覆盖的本地产物路径
 - **AND** 源码变更 MUST NOT 要求提交这些本地产物
+
+### Requirement: 2604.05668 对齐 supervised 下游验证
+项目 MUST 提供 image+GPS supervised 2604 对齐配置族，用于与 arXiv:2604.05668 的 S32/S33/S34 主表口径比较。该配置族 MUST 合并 DeepSense6G scenes 32、33、34 的官方 train/test labeled CSV，MUST 在每个 scene 内按 beam label 做固定 seed 的 80/10/10 stratified train/validation/test split，MUST 使用 `seq_len: 5` 和 `num_pred: 1`，并 MUST 记录 split protocol 与每个 split 的样本数。
+
+#### Scenario: 2604 配置使用合并后 stratified split
+- **WHEN** 用户加载 2604 对齐 supervised 配置
+- **THEN** `data.dataset.split_protocol` MUST 为 `stratified_80_10_10`
+- **AND** `data.dataset.train_scenes`、`validation_scenes` 和 `test_scenes` MUST 包含 32、33 和 34
+- **AND** train/validation/test MUST 来源于每个 scene 的 `train_seqs_RA_GPS_LIDAR.csv` 与 `test_seqs_RA_GPS_LIDAR.csv` 合并集合
+
+#### Scenario: 2604 配置匹配历史窗口
+- **WHEN** 2604 对齐 supervised 配置被加载
+- **THEN** `data.dataset.seq_len` 和 `model.seq_length` MUST 为 5
+- **AND** `data.dataset.num_pred` 和 `model.num_pred` MUST 为 1
+
+#### Scenario: 2604 split 使用 train-only normalization
+- **WHEN** 2604 split protocol 构建 image+GPS dataloader
+- **THEN** GPS scaler MUST 只从 stratified train 子集拟合
+- **AND** validation/test MUST 复用该 scaler
+- **AND** runtime metadata MUST 记录 scaler 来源与 split protocol

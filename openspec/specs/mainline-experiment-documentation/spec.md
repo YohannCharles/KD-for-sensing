@@ -121,3 +121,93 @@ README、实验矩阵和协议表 MUST 只推荐仍维护的 current package CLI
 - **THEN** `docs/experiment_protocols.md` 或等价协议文档 MUST 记录 canonical 模态顺序、pattern definitions、pattern probabilities、hard-label metrics 和输出边界
 - **AND** 文档 MUST 明确内部使用 `image` 而不是 `vision` 作为 canonical 模态名
 
+### Requirement: 推荐实验文档保持精简入口
+实验工作流文档 MUST 将 README 作为入口地图，而不是完整实验手册。README MUST 指向 canonical config、docs 和 OpenSpec；详细实验矩阵、分析流程和调参说明 MUST 放在 `docs/` 或对应 specs 中。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 内容 MUST 从 README 推荐入口和实验矩阵中删除。
+
+#### Scenario: README 提供最短可运行路径
+- **WHEN** 新用户阅读 README
+- **THEN** 用户 MUST 能找到安装命令、快速健康检查、训练/评估/预处理/manifest 导出入口和数据产物边界
+- **AND** 用户 MUST 能通过链接进入当前保留能力的详细实验矩阵或 viewer 文档
+
+#### Scenario: 长实验说明迁移到 docs
+- **WHEN** README 中的某段内容主要描述当前保留的 CSI hardening、MMW、JEPA 或诊断 benchmark 详细实验流程
+- **THEN** 该内容 MUST 迁移到对应 `docs/` 文件或 OpenSpec spec
+- **AND** README MUST 保留简短摘要和链接
+
+#### Scenario: 退役研究线文档删除
+- **WHEN** README、docs 或实验矩阵提到 G2D、CRAF、MARF 或 Multimodal-NF 推荐运行命令
+- **THEN** 这些段落 MUST 被删除或改为明确说明该入口已退役
+- **AND** 文档 MUST 不再推荐运行对应配置、测试或日志分析流程
+
+### Requirement: 默认实验入口去 KD-first 化
+项目默认 quickstart、README 推荐入口、当前主线 quick validation 和新 canonical mainline 配置 MUST 以 supervised/adaptation、JEPA、CSI hardening、baseline/control 或当前诊断工作流为默认。旧 KD、BGAM 和 viewer manifest 配置不得作为当前主线默认实验入口。
+
+#### Scenario: README quickstart 使用当前主线
+- **WHEN** 开发者阅读 README 或当前主线运行说明
+- **THEN** 推荐的首个训练、评估或诊断命令 MUST 使用当前 supervised/adaptation、JEPA、CSI、baseline/control 或当前诊断配置
+- **AND** 文档 MUST 不把 `logits_kd`、`rkd`、Hist/HiST、standalone Top8 selector、GPS residual 或 camera residual 作为当前主线 quickstart
+
+#### Scenario: canonical mainline 配置不要求 teacher checkpoint
+- **WHEN** 用户加载当前推荐的 mainline 配置
+- **THEN** 配置 MUST 能在没有 teacher checkpoint 的情况下完成解析和 dry-run/smoke 构建
+- **AND** 输出 metadata MUST 不记录 KD-enabled lineage
+
+### Requirement: 项目描述反映当前主线
+项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和诊断，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first、BGAM-first、viewer-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual、BGAM、viewer manifest 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
+
+#### Scenario: pyproject 描述不再 KD Hist 或退役路线 first
+- **WHEN** 开发者查看 `pyproject.toml` 的项目 description
+- **THEN** description MUST 不把 knowledge distillation、HiST-Beam、Top8 selector、residual 或 GPS coarse anchor 描述为当前唯一或首要工作流
+- **AND** 若提到这些路线，MUST 表达其为 legacy、historical 或 retired
+
+#### Scenario: 文档保留历史说明
+- **WHEN** README 或 docs 提到历史 KD、Hist、Top8 selector、residual、camera residual 或 GPS coarse anchor 代码
+- **THEN** 文档 MUST 说明对应能力已从当前 active mainline 退役
+- **AND** 文档 MUST 不提供当前推荐运行命令
+
+### Requirement: 当前推荐 workflow 聚焦少样本跨场景主线
+README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和当前诊断。KD baseline、HiST-Beam/Hist、Raymobtime s008、Top8 selector standalone workflow、GPS coarse anchor、residual fusion、camera residual、BGAM、viewer manifest、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、supporting、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
+
+#### Scenario: quickstart 不推荐退役脚本
+- **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
+- **THEN** 文档 MUST 不推荐运行 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*`、Raymobtime s008、retired Top8 selector/residual/GPS coarse anchor 命令或已退役的独立模态诊断脚本
+- **AND** 若需要当前主线实验，文档 MUST 指向仍存在的配置化 CLI 或包内 workflow
+
+#### Scenario: optional workflow 与主线区分
+- **WHEN** 文档提到 legacy KD、HiST-Beam、Top8 selector、residual、camera residual、GPS coarse anchor、snapshot next-frame、occlusion、position 或 multitask objective
+- **THEN** 文档 MUST 明确它们不是当前主结论的默认步骤
+- **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/JEPA/CSI 主线
+
+#### Scenario: 当前 workflow 文档声明运行状态
+- **WHEN** 文档列出当前实验配置、benchmark manifest 或诊断配置
+- **THEN** 文档 MUST 标明该条目是 formal、lowmem、smoke、debug、evaluation-only、upper-bound、historical ablation 还是 mock
+- **AND** upper-bound、mock、smoke 或 historical ablation MUST 不得被写成正式结论
+
+### Requirement: 健康检查反映保留入口
+快速健康检查 MUST 覆盖当前仍支持的架构边界、包内 CLI、JEPA visual analysis、GPS shortcut benchmark、文档健康和当前主线 focused tests。健康检查 MUST 不要求 Raymobtime s008、已退役的模态失衡诊断脚本、fusion KD virtual alias、BGAM、viewer manifest 或 HiST-Beam/Hist CLI 可用。
+
+#### Scenario: focused validation 不依赖退役入口
+- **WHEN** 开发者执行本 change 的 focused 验证
+- **THEN** 验证命令 MUST 使用 `conda run -n kd_mm_beam`
+- **AND** 命令 MUST 不包含已退役的 Hist CLI、Hist configs 或独立模态诊断脚本
+- **AND** 验证 MUST 覆盖配置加载失败、架构边界、registry 和保留 evaluation subset 能力
+
+### Requirement: 当前支持面收敛到 Image+GPS JEPA query-pool
+项目 MUST 将当前推荐训练、评估、诊断和实验配置支持面收敛到 Image+GPS JEPA query-pool 主线及其必要对照。保留面 MUST 包含 `jepa_context_image + GPSQueryPool` JEPA downstream、`fair_gps_biased` paired baseline、supervised/random-best 控制组、vision-position baseline suite 和 `jepa_visual_analysis` 论文图/诊断出口。退役路线 MUST 不再作为 README 推荐入口、pyproject console script、架构 allowlist 或当前配置矩阵出现。
+
+#### Scenario: README 展示当前主线
+- **WHEN** 开发者阅读 README 的项目定位、主要入口和配置矩阵
+- **THEN** 文档 MUST 把 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite 和 JEPA visual analysis 描述为当前主线
+- **AND** 文档 MUST 不把 GPS window、DeepVerse/DT31、旧静态 modality visualization 或仓库级 Gradio viewer support 描述为当前入口
+- **AND** 文档 MAY 继续保留 BeamBench/Arnold22 Camera AE+GPS Direct 当前入口和复现辅助说明
+
+#### Scenario: 架构测试拒绝退役入口回流
+- **WHEN** 开发者运行架构边界测试
+- **THEN** 测试 MUST 拒绝退役的 viewer support、viewer manifest、BGAM、GPS window baseline、DeepVerse/DT31 workflow、Top8 selector dataset 和旧静态 modality visualization 文件重新出现在当前 allowlist 中
+- **AND** 测试 MUST 继续允许 JEPA query-pool、paired control、vision-position baseline、BeamBench/Arnold22 Camera AE+GPS Direct 和 JEPA visual analysis 相关入口
+
+#### Scenario: 配置矩阵只保留必要 JEPA 对照
+- **WHEN** 开发者查看 `configs/fusion/experiments/jepa_image_gps/` 和实验矩阵文档
+- **THEN** 当前配置 MUST 保留 query-pool、GPS-biased baseline、supervised baseline 和 random-best 控制组
+- **AND** scene31-only、非 BeamBench 的 last-checkpoint 和 next-beam downstream ablation 配置 MUST 不再作为当前配置文件维护
+- **AND** `beambench_fair` 相关配置 MAY 继续保留用于 Arnold22/BeamBench 口径对照

@@ -78,6 +78,14 @@ FORBIDDEN_IMPORTS = (
     "import kd_sensing.diagnostics.cnn_hybrid_jepa_visual_prior_sweep",
     "from kd_sensing.engine.loso_data import",
     "import kd_sensing.engine.loso_data",
+    "from kd_sensing.losses import",
+    "from kd_sensing.baselines.rmbp_mm import",
+    "from kd_sensing.data.mmw import",
+    "from kd_sensing.engine import",
+    "from kd_sensing.utils import",
+    "from kd_sensing.preprocessing import",
+    "from kd_sensing.evaluation import",
+    "from kd_sensing.models.physics import",
     "from kd_sensing.diagnostics.jepa_benchmark_common import *",
     "from kd_sensing.models.fusion import",
 )
@@ -180,10 +188,18 @@ def test_internal_code_uses_owner_modules_not_retired_facades():
 def test_lightweight_package_markers_do_not_grow_eager_barrel_exports():
     package_markers = (
         "src/kd_sensing/data/__init__.py",
+        "src/kd_sensing/data/mmw/__init__.py",
         "src/kd_sensing/data/transform_ops/__init__.py",
         "src/kd_sensing/diagnostics/__init__.py",
         "src/kd_sensing/baselines/beambench/__init__.py",
+        "src/kd_sensing/baselines/rmbp_mm/__init__.py",
+        "src/kd_sensing/engine/__init__.py",
+        "src/kd_sensing/evaluation/__init__.py",
+        "src/kd_sensing/losses/__init__.py",
         "src/kd_sensing/models/__init__.py",
+        "src/kd_sensing/models/physics/__init__.py",
+        "src/kd_sensing/preprocessing/__init__.py",
+        "src/kd_sensing/utils/__init__.py",
     )
     forbidden_fragments = (
         "from kd_sensing.",
@@ -202,6 +218,13 @@ def test_lightweight_package_markers_do_not_grow_eager_barrel_exports():
             if fragment in text:
                 violations.append(f"{rel_path}: {fragment}")
     assert not violations
+
+
+def test_legacy_registry_fixture_stays_small():
+    text = (ROOT / "tests/fixtures/legacy_model_registry_retirement.yaml").read_text(encoding="utf-8")
+    assert text.count("\n  - name:") <= 16
+    assert "migration_target:" not in text
+    assert "error_hint:" not in text
 
 
 def test_retired_route_mentions_are_contextualized():
@@ -241,6 +264,18 @@ def test_tracked_runtime_artifacts_are_not_in_source_control():
     assert not all_models_violations
 
 
+def test_ponytail_followup_artifacts_are_not_tracked():
+    tracked = {path for path in _git_ls_files() if (ROOT / path).exists()}
+    forbidden = {
+        "legacy_knowledge_decoupling_cleanup_manifest.json",
+        "scripts/run_priority_v3_budget.sh",
+    }
+    metadata = [path for path in tracked if path.startswith("src/") and ".egg-info/" in path]
+
+    assert forbidden.isdisjoint(tracked)
+    assert not metadata
+
+
 def test_current_openspec_specs_have_real_purpose():
     violations: list[str] = []
     placeholders = ("tbd", "created by archiving", "update purpose", "todo")
@@ -252,6 +287,22 @@ def test_current_openspec_specs_have_real_purpose():
     assert not violations
 
 
+def test_openspec_specs_match_lifecycle_inventory():
+    spec_root = ROOT / "openspec/specs"
+    spec_dirs = {path.parent.name for path in spec_root.glob("*/spec.md")}
+    all_dirs = {path.name for path in spec_root.iterdir() if path.is_dir()}
+    rows = re.findall(
+        r"^\| `([^`]+)` \| `(current|supporting|retired-tombstone)` \|",
+        INVENTORY.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    capabilities = [capability for capability, _lifecycle in rows]
+
+    assert all_dirs == spec_dirs
+    assert len(capabilities) == len(set(capabilities))
+    assert set(capabilities) == spec_dirs
+
+
 def test_fusion_root_yaml_matches_inventory_classification():
     actual = sorted(path.name for path in (ROOT / "configs/fusion").glob("*.yaml"))
     inventory = _inventory_section("`configs/fusion/` 根目录保留分类如下：", "已迁移到")
@@ -261,9 +312,11 @@ def test_fusion_root_yaml_matches_inventory_classification():
 
 def test_scripts_are_classified_in_inventory():
     scripts = sorted(
-        _rel(path)
-        for path in (ROOT / "scripts").rglob("*")
-        if path.is_file() and path.suffix in {".py", ".sh"} and "__pycache__" not in path.parts
+        path
+        for path in _git_ls_files()
+        if path.startswith("scripts/")
+        and Path(path).suffix in {".py", ".sh"}
+        and "__pycache__" not in Path(path).parts
     )
     inventory = INVENTORY.read_text(encoding="utf-8")
     missing = [script for script in scripts if f"`{script}`" not in inventory]

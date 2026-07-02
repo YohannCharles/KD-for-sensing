@@ -118,3 +118,25 @@ MMW Town10 数据准备或后处理路径在启用 CSI 导出时 MUST 能从已�
 - **THEN** `csi_observation_mask` MUST 覆盖 `[T, Nsc, Nant]` 或 batch 后 `[B, T, Nsc, Nant]`
 - **AND** `csi_input[..., ~mask, :]` 的 real/imag 值 MUST 为 0 或等价 missing sentinel
 - **AND** 完整 clean CSI MUST 只保留在 `csi_target`
+
+### Requirement: CSI 按模态选择加载样本
+DeepSense6G/MMW dataset MUST 根据启用模态决定是否加载 CSI。未启用 CSI 时，CSI 路径列或文件缺失不得阻止当前任务运行；启用 CSI 时，dataset MUST 返回 `csi` 字段并保持其它未启用模态不读取。
+
+#### Scenario: CSI-only 不读取其它输入模态文件
+- **WHEN** 用户运行 `experiment.task: csi` 的训练或评估配置
+- **THEN** dataset MUST 只读取 CSI、`input_beam` 和 `target_beam` 所需文件
+- **AND** dataset MUST 不调用 image、radar map、GPS、LiDAR 或 mmWave 加载逻辑
+- **AND** 返回样本 MUST 包含 `csi`
+
+#### Scenario: fusion 按 modalities 读取 CSI
+- **WHEN** 用户运行 `experiment.task: fusion` 且配置 `modalities: ["gps", "csi"]`
+- **THEN** dataset MUST 只读取 GPS、CSI、`input_beam` 和 `target_beam` 所需文件
+- **AND** 返回样本 MUST 只包含启用模态对应输入字段和标签字段
+
+### Requirement: CSI normalizer artifact 复用
+数据构建流程 MUST 将训练集 CSI RMS normalizer 从 train dataset 传递给 test dataset，并允许训练/评估 metadata 记录该统计。
+
+#### Scenario: dataloader 复用 CSI RMS
+- **WHEN** `build_dataloaders` 构建启用 CSI 的 train 和 test dataset
+- **THEN** train dataset MUST 先准备 CSI RMS normalizer
+- **AND** test dataset MUST 接收同一个 CSI RMS normalizer 或等价数值

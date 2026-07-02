@@ -26,3 +26,18 @@ Top8 selector/BGAM-only 支撑退役 MUST NOT 删除普通 Top-K accuracy、cand
 - **WHEN** 当前训练、评估、CSI ranking 或 GPS v2 诊断计算 Top-K/circular 指标
 - **THEN** 实现 MUST 使用当前通用 metric helper 或当前 owner module
 - **AND** 实现 MUST NOT 导入旧 Top8 selector、TopK candidate manifest 或 BGAM-only loss module
+
+### Requirement: Retired TopK/BGAM candidate loaders do not return as data-loading contracts
+DeepSense6G TopK candidate dataset helper、BGAM-only candidate manifest loader、BGAM normalization helper 和 GPS+LiDAR BGAM dataset 不再属于当前数据加载契约。系统 MUST 删除这些旧 module path 或让其不可导入，并 MUST NOT 通过兼容 facade、virtual config 或新的 data-loading alias 恢复旧 Top8 selector/BGAM workflow。
+
+#### Scenario: 旧 candidate loader 不存在
+- **WHEN** 开发者检查 source tree 和 import surface
+- **THEN** 项目 MUST 不保留 `kd_sensing.data.deepsense6g_topk_candidate_manifest`
+- **AND** 项目 MUST 不保留 `kd_sensing.data.mmw_town_topk_candidate_manifest`
+- **AND** 项目 MUST 不保留 `kd_sensing.data.deepsense6g_gps_lidar_bgam_dataset`
+
+#### Scenario: 当前数据加载仍按需读取模态
+- **WHEN** 当前 supervised/adaptation、GPS v2、CSI、JEPA 或保留诊断 workflow 构建 dataset
+- **THEN** dataset MUST 只读取当前任务启用的模态和字段
+- **AND** 未启用的 image、camera AE、LiDAR、radar、mmWave 或 CSI 输入 MUST 不触发 path 解析、cache 初始化或文件读取
+- **AND** 实现 MUST NOT 通过旧 TopK candidate 或 BGAM manifest 字段恢复退役 workflow

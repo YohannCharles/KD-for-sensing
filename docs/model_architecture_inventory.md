@@ -61,7 +61,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
 
 ## 旧 registry 名称迁移表
 
-下列名称已从 current registry discovery 中移除，并登记为 removed guard。Python 类可继续作为窄导入用于历史 checkpoint 检查或 focused tests，但配置和新实验必须走迁移目标。
+下列名称已从 current registry discovery 中移除；只有仍有当前迁移价值的少数名称保留 removed guard，其它低价值历史名回落为普通 unknown-name 诊断。Python 类可继续作为窄导入用于历史 checkpoint 检查或 focused tests，但配置和新实验必须走迁移目标。
 
 JEPA-MSAC 的 `jepa_msac` whole-model exception 已退役删除，不再保留 class/module 导入或 removed wrapper；旧配置应迁移到 GPS-conditioned JEPA、JEPA visual analysis、GPS shortcut benchmark 或 `modular_sequence`。
 

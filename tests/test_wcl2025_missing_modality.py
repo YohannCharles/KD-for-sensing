@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-from kd_sensing.baselines.rmbp_mm import (
+from kd_sensing.baselines.rmbp_mm.workflow import (
     LOCAL_SUBSTITUTE_CONFIG,
     apply_missing_modality_condition,
     build_condition_summary,

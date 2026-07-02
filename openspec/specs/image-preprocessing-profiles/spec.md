@@ -43,3 +43,30 @@
 - **WHEN** 用户配置已删除的旧 image encoder 名称
 - **THEN** 系统 MUST 拒绝该配置
 - **AND** 错误信息 MUST 指向 `resnet18_imagenet_rgb` 和 `rgb_imagenet` 迁移路径
+
+### Requirement: Fusion 支持 RGB image profile
+包含 image modality 的 fusion 配置 MUST 显式或隐式携带 image profile。默认 image profile MUST 为 `rgb_imagenet`；模块化 fusion 或 ResNet-18 fusion 配置 MUST 默认使用 `rgb_imagenet`，并让 dataset、batch 准备和 image encoder 使用同一个 profile。
+
+#### Scenario: 模块化 fusion 使用 RGB image
+- **WHEN** 用户运行模块化 fusion 配置且默认或设置 `image_profile: rgb_imagenet`
+- **THEN** dataset MUST 返回 RGB/ImageNet 标准化 image tensor
+- **AND** image encoder MUST 接收 3 通道 RGB 输入
+- **AND** 其它启用模态的输入准备语义 MUST 保持不变
+
+### Requirement: Fusion image encoder 与 profile 校验
+Fusion 模型构建 MUST 校验启用 image modality 时的 image encoder 和 image profile 是否匹配。该校验 MUST 覆盖当前保留的 fusion、token transformer fusion 和模块化 fusion 入口，或在不支持某配置的入口处给出明确错误。
+
+#### Scenario: fusion 使用 RGB profile
+- **WHEN** 用户为 `fusion_teacher`、`fusion_student` 或 token transformer fusion 配置 `image_profile: rgb_imagenet`
+- **THEN** 系统 MUST 构建或要求 3 通道 image branch
+- **AND** 错误信息 MUST 在通道数不匹配时说明期望和实际通道数
+
+#### Scenario: ResNet-18 fusion 使用 RGB profile
+- **WHEN** 用户在 fusion 中选择 ResNet-18 image encoder 且 image profile 为 `rgb_imagenet`
+- **THEN** 系统 MUST 构建或运行该配置
+- **AND** image batch MUST 具有 3 通道 RGB/ImageNet 输入
+
+#### Scenario: 已退役 fusion 方法不参与 profile 校验
+- **WHEN** 配置请求 CRAF 或 MARF 风格 fusion
+- **THEN** 系统 MUST 在 profile 校验前拒绝该模型类型
+- **AND** 系统 MUST 不进入 CRAF/MARF 专属 image branch 构建逻辑

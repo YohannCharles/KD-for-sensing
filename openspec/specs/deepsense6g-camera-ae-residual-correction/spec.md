@@ -11,3 +11,15 @@ DeepSense6G camera-assisted residual correction 不再属于当前支持能力�
 - **THEN** 项目 MUST 不声明 `kd-sensing-run-deepsense6g-camera-residual`、plot、compare 或 manifest 入口
 - **AND** 项目 MUST 不保留 `configs/deepsense6g_camera_residual.yaml` 作为当前配置
 
+### Requirement: Camera residual manifest data loading 已退役
+Camera residual manifest Dataset/DataLoader 路线已退役，不属于当前数据加载支持面。项目 MUST 不再要求从 camera residual manifest 构建训练或评估 DataLoader；旧 manifest 字段只能作为历史说明、migration guard 或本地产物审计背景出现。
+
+#### Scenario: camera residual loader 不作为当前入口
+- **WHEN** 用户引用 camera residual 配置、manifest loader 或旧 residual ablation
+- **THEN** 系统 MUST 不把该路径作为当前训练或评估入口
+- **AND** 错误信息、文档或 guardrail MUST 明确 camera residual 已退役
+
+#### Scenario: 历史 camera residual 产物只读
+- **WHEN** cleanup、run index 或历史报告扫描到 camera residual manifest、AE feature 或 summary
+- **THEN** 这些文件 MAY 被只读展示或列为清理候选
+- **AND** 系统 MUST 不因此恢复 camera residual Dataset/DataLoader

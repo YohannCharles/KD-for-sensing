@@ -11,6 +11,11 @@ LOSO workflow 的 supporting 契约 MUST 保留 fold planning、target adapt/tes
 - **THEN** 本 change MAY 删除或退役该模块
 - **AND** `kd_sensing.data.loso` 中的数据集无关 fold/few-shot 规划语义 MUST 保持可用
 
+#### Scenario: 外部兼容风险需要 stub
+- **WHEN** 删除前发现 current 文档或用户确认仍有外部脚本 import `kd_sensing.engine.loso_data`
+- **THEN** 本 change MUST 保留薄 deprecation stub 或记录后续退役 change
+- **AND** stub MUST 不新增训练 runner、adapter loop 或默认 LOSO 执行矩阵
+
 #### Scenario: 未来 LOSO runner 显式建模
 - **WHEN** 未来 workflow 需要可运行 LOSO training/adaptation runner
 - **THEN** 该 workflow MUST 通过新的 OpenSpec change 声明 CLI、配置矩阵、输出目录和防泄漏验证
@@ -229,3 +234,34 @@ LOSO summary and quick validation conclusion MUST compare coarse prototype and r
 - **WHEN** 未来非 Hist workflow 需要 leave-one-scene-out fold
 - **THEN** 新 workflow MUST 显式声明自己的 runner、配置矩阵和输出契约
 - **AND** 系统 MUST 不复用已退役 Hist run plan 作为隐式默认
+
+### Requirement: HiST-Beam LOSO executor 退役边界
+HiST-Beam/Hist 专用 LOSO executor 已从当前支持面退役。项目 MUST 不再把 `hist_beam_loso_execution.py`、`kd-sensing-hist-beam-loso` 或 Hist 专用 run plan 描述为当前热点、当前推荐入口或待拆分 facade；通用 LOSO/few-shot split helper 如保留，只能作为 supporting 能力并由新的 current workflow 显式消费。
+
+#### Scenario: Hist LOSO 入口不回流
+- **WHEN** 开发者检查 CLI、pyproject、scripts allowlist 或包内 engine
+- **THEN** 项目 MUST 不声明 Hist LOSO runner、Hist executor facade 或 Hist 默认矩阵
+- **AND** 若文档提到 Hist LOSO，MUST 明确其 retired-tombstone 或 migration guard 语义
+
+#### Scenario: 非 Hist LOSO 未来能力需要新契约
+- **WHEN** 未来 workflow 需要 leave-one-scene-out、few-shot target split 或跨场景 summary
+- **THEN** 新 workflow MUST 通过 current capability 明确定义 CLI、配置、输出和防泄漏边界
+- **AND** 系统 MUST 不复用退役 Hist run plan 作为隐式默认
+
+#### Scenario: 通用 helper 保留为 supporting
+- **WHEN** 当前 workflow 复用通用 fold planning、target adapt/test split、few-shot sampling 或 claim guard helper
+- **THEN** 文档 MUST 将这些 helper 标记为 supporting
+- **AND** 文档 MUST 不把 Hist executor、Hist config 或 Hist output artifact 恢复为当前入口
+
+### Requirement: LOSO stage dataset 构建边界
+LOSO 数据构建流程 MUST 支持按 stage 构建当前阶段所需的数据集和 DataLoader，避免 source training 阶段提前构建 target adapt/test dataset。
+
+#### Scenario: source_train 只构建 source loader
+- **WHEN** LOSO executor 进入 `source_train` stage
+- **THEN** 系统 MUST 只构建 source train dataset 和 loader
+- **AND** 系统 MUST 不构建 target adapt 或 target test dataset
+
+#### Scenario: target stage 延迟构建 target loader
+- **WHEN** LOSO executor 进入 target adaptation 或 target test evaluation stage
+- **THEN** 系统 MUST 在该 stage 内构建所需 target dataset 和 loader
+- **AND** source stage 的 DataLoader worker MUST 已关闭或不再持有

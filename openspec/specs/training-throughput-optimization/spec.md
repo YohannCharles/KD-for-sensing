@@ -204,3 +204,16 @@ Scenario 9 dataset MUST 避免对重复 beam label 文本执行重复 `np.loadtx
 - **WHEN** 推荐器收到包含 image modality、`seq_len=8` 和多个并行 run 的 MMW 配置
 - **THEN** 推荐结果 MUST 包含 memory risk 或 image-heavy risk 诊断
 - **AND** 推荐覆盖参数 MUST 优先限制 worker、batch size 或并行度，而不是只启用 AMP
+
+### Requirement: 吞吐优化配置与日志
+训练配置 MUST 暴露吞吐相关开关，包括 DataLoader worker/prefetch 参数、non-blocking transfer、AMP 和预处理 cache 读取/写入策略。训练日志、最终配置或 profile 输出 MUST 记录这些实际生效的吞吐参数，便于比较不同实验设置。
+
+#### Scenario: 记录吞吐参数
+- **WHEN** 一次训练或 profile 运行启动
+- **THEN** 输出配置或日志 MUST 记录 `num_workers`、`pin_memory`、`persistent_workers`、`prefetch_factor`、non-blocking transfer、AMP enabled/dtype 和启用的 cache 目录
+- **AND** 对启用 image 或 LiDAR 的配置 MUST 记录对应 cache 参数 hash 目录
+
+#### Scenario: 并行实验默认不过度放大 worker
+- **WHEN** 用户使用 canonical 单模态或 fusion YAML 运行实验
+- **THEN** 配置 SHOULD 使用适合并行实验的保守 `num_workers` 和 `prefetch_factor`
+- **AND** 用户 MUST 能通过命令行覆盖这些参数以寻找单实验最高吞吐

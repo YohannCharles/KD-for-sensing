@@ -4,21 +4,6 @@ import torch
 import torch.nn.functional as F
 
 
-def topk_accuracy(logits: torch.Tensor, target: torch.Tensor, topk=(1, 5)) -> dict[str, float]:
-    if logits.ndim != 2:
-        raise ValueError(f"logits must have shape [B, K], got {tuple(logits.shape)}.")
-    target = target.reshape(-1).to(device=logits.device, dtype=torch.long)
-    if target.numel() != logits.shape[0]:
-        raise ValueError("target must contain one label per logits row.")
-    result: dict[str, float] = {}
-    for k in topk:
-        actual_k = min(int(k), int(logits.shape[1]))
-        pred = logits.topk(actual_k, dim=1).indices
-        correct = pred.eq(target.unsqueeze(1)).any(dim=1).float().mean()
-        result[f"top{int(k)}"] = float(correct.detach().cpu().item())
-    return result
-
-
 def reliability_error_stats(
     logits: torch.Tensor,
     target: torch.Tensor,
@@ -88,4 +73,3 @@ def _mean(value: torch.Tensor) -> float:
     if finite.numel() == 0:
         return math.nan
     return float(finite.mean().cpu().item())
-

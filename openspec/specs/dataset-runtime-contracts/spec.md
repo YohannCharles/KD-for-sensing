@@ -323,3 +323,37 @@ Dataset descriptor 或等价查询机制 MUST 优先复用中心化 `modalities.
 - **THEN** 本 change MAY 删除该文件或把类型迁入实际 owner
 - **AND** dataset runtime metadata 和 target-shot split tests MUST 继续通过
 
+### Requirement: descriptor 驱动 dataset 构建
+数据构建流程 MUST 根据当前保留 dataset descriptor 决定 split 解析、默认路径、storage kind、enabled modalities、input profiles 和 target schema。非 CSV 数据集 MUST 不被强制套用 DeepSense6G 的 train/test CSV 规则。已退役的 `multimodal_nf` descriptor、HDF5 index 和 cache index MUST 不再作为支持构建路径。
+
+#### Scenario: Multimodal-NF dataset 构建失败
+- **WHEN** 用户配置 `data.dataset.type: multimodal_nf`
+- **THEN** data factory MUST 拒绝该 dataset type
+- **AND** 系统 MUST 不解析 `dataset/MultimodalNF`、HDF5 index 或 cache index
+
+#### Scenario: 构建 DeepSense6G CSV dataset
+- **WHEN** 用户配置 `data.dataset.type: deepsense6g`
+- **THEN** data factory MUST 继续使用 DeepSense6G scene 和 split CSV 规则
+- **AND** 现有 `train_csv_name`、`val_csv_name`、`test_csv_name` 覆盖行为 MUST 保持兼容
+
+### Requirement: enabled modalities 与 profile 一起传递
+数据构建流程 MUST 从实验任务、fusion 模态和当前保留 dataset descriptor 推导启用模态，并将标准化后的 input profiles 传递给 dataset、batch 准备和 run metadata。系统 MUST 不再解析或传递 Multimodal-NF 专属 profiles。
+
+#### Scenario: 保留 fusion profile 传递
+- **WHEN** 用户运行当前保留 fusion 配置并启用多个模态
+- **THEN** data factory MUST 设置 `enabled_modalities`
+- **AND** data factory MUST 传递每个保留模态的 resolved profile
+- **AND** run metadata MUST 记录实际启用模态和 profile
+
+#### Scenario: Multimodal-NF profile 拒绝
+- **WHEN** 用户为退役 Multimodal-NF 配置 `image`、`lidar`、`gps` 或 `csi` profile
+- **THEN** 系统 MUST 拒绝该 dataset type 或 profile
+- **AND** 错误信息 MUST 指出 Multimodal-NF 已退役
+
+### Requirement: 模态数据加载不依赖蒸馏配置
+Dataset、batch preparation 和 label 对齐 MUST 由 experiment task、enabled modalities、prediction objective 和 supervised/adaptation workflow 决定。数据加载层 MUST 不读取 `distillation` 配置来决定 batch 字段或 label 语义。
+
+#### Scenario: batch 构建忽略 distillation 字段
+- **WHEN** 用户运行任一 supported supervised/adaptation 配置
+- **THEN** batch preparation MUST 只根据 task 和 enabled modalities 构造输入
+- **AND** 配置中若出现 `distillation` 字段 MUST 在配置解析阶段失败

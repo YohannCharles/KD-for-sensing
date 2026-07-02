@@ -72,3 +72,26 @@
 #### Scenario: 发现模块未训练
 - **WHEN** 任一关键模块的 grad norm 或 param delta 持续为 0
 - **THEN** debug 输出 MUST 标记该模块可能被冻结、未加入 optimizer、被梯度屏蔽或未连接到 loss
+
+### Requirement: CSI hardening sweep validity gate
+CSI hardening sweep 的分析流程 MUST 在候选排序和设计结论前执行有效性 gate。有效性 gate MUST 至少检查 A0 clone parity、pilot 噪声量级、C1/C2 单变量健康状态和必需 diagnostics 是否存在。未通过 gate 的 sweep MUST 标记为 invalid 或 pending-debug，不得被解释为 hardening 设计失败。
+
+#### Scenario: A0 parity 未通过
+- **WHEN** `A0_clone_generated` 未通过与 `A0_original` 的关键配置 diff 或短跑曲线 parity
+- **THEN** 分析输出 MUST 将 full sweep 状态标记为 pending-debug 或 invalid
+- **AND** 系统 MUST 不输出 slow-high-ceiling 候选结论
+
+#### Scenario: pilot 噪声量级失真
+- **WHEN** 一个标记为 mild pilot estimation 的 run 的 `noise_power_signal_ratio` 明显高于其配置 SNR 对应范围
+- **THEN** 分析输出 MUST 将该 run 标记为 `invalid_due_to_pilot_noise_scale` 或等价原因
+- **AND** 该 run MUST 不参与 slow-high-ceiling 候选排序
+
+#### Scenario: C1 或 C2 单变量异常
+- **WHEN** A0 clone 正常学习但 C1 view gate warmup only 或 C2 no internal GRU only 掉到接近随机水平
+- **THEN** 分析输出 MUST 将问题归因到对应 encoder 单变量路径
+- **AND** 系统 MUST 阻止把 B/D hardening 组合结果解释为 hardening 强度问题
+
+#### Scenario: 旧 sweep 缺少必需 diagnostics
+- **WHEN** 分析脚本处理旧 full sweep 目录且该目录缺少 A0 parity、pilot noise ratio 或 debug decision artifacts
+- **THEN** 分析输出 MUST 明确标记该 sweep 需要重跑或人工确认
+- **AND** 默认候选排序 MUST 排除这些 invalid/pending run

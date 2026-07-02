@@ -54,3 +54,16 @@ Real-forward evaluation MUST 保持 target labels、beam power oracle、future f
 - **WHEN** batch metadata 包含 condition、suite、c_idx、d_idx 或 advantage label
 - **THEN** 这些字段 MUST 只用于输出文件名、groupby 和 report
 - **AND** model/reranker/gate input tensor MUST 不消费 condition id
+
+### Requirement: Benchmark real-forward mode
+JEPA GPS shortcut benchmark MUST 支持 real-forward mode，用于真实执行 P0-P5、Scenario C/D、CxD 和 GPS advantage slice 的 model forward。
+
+#### Scenario: real-forward manifest
+- **WHEN** manifest 声明 real-forward mode
+- **THEN** runner MUST 要求每个模型具备 config、weights 或 logits cache
+- **AND** 对无 cache 的模型 MUST 真实执行 evaluation forward，而不是仅生成 planned/degraded metrics
+
+#### Scenario: deterministic degradation evidence scope
+- **WHEN** runner 使用 deterministic degradation model 生成 perturbation rows
+- **THEN** 输出 MUST 标记 evidence scope 为 `diagnostic_estimate`
+- **AND** predictive 或 geometry primary claim gate MUST 不允许该 evidence 升级 primary claim

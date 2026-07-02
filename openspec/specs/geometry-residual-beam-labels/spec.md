@@ -11,3 +11,15 @@
 - **THEN** dataset sample MUST 不要求 geometry residual 字段
 - **AND** 项目 MUST 不保留专门服务 residual/delta 路线的 target provider 文档或测试
 
+### Requirement: Geometry-residual label 字段按需加载
+数据加载流程 MUST 在 `label_space.type: geometry_residual` 时按需加载或派生 geometry-residual label 字段。未启用 geometry-residual label_space 时，dataset MUST 不要求 position/geometry 字段，也不得改变现有 absolute beam label sample keys。
+
+#### Scenario: geometry_residual 启用时返回新增标签字段
+- **WHEN** 用户运行启用 `label_space.type: geometry_residual` 的配置
+- **THEN** dataset 或 target provider MUST 返回 absolute beam label、geometry coarse beam 和 residual label 可用字段
+- **AND** batch preparation MUST 保持这些字段 shape 可默认 collate
+
+#### Scenario: 默认 absolute 配置不读取 geometry
+- **WHEN** 用户运行现有 absolute beam classifier 配置
+- **THEN** dataset MUST 继续按启用模态读取 sensing input 和 absolute beam label
+- **AND** 缺少 GPS/pose/relative geometry 不得阻止 dataset 构建

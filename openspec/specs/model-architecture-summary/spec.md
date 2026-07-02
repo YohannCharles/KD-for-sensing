@@ -106,3 +106,40 @@
 - **WHEN** 训练流程启用或默认写入新架构摘要
 - **THEN** `startup_summary.json` MUST 包含 `architecture_summary` 或等价新增字段
 - **AND** 新字段 MUST 使用统一模型架构摘要 schema
+
+### Requirement: 默认实验记录 encoder 和 preprocessing profile
+训练、验证和评估流程 MUST 在运行产物中记录 camera encoder 与 LiDAR preprocessing profile，使不同单模态 baseline 的结果可以横向比较。
+
+#### Scenario: 记录 image encoder profile
+- **WHEN** 一次 image-only 或包含 image 的 fusion 训练启动
+- **THEN** final_config 或运行 metadata MUST 记录 image profile、image encoder 类型、是否使用预训练权重、权重名称、freeze 策略和实际可训练 stage
+
+#### Scenario: 记录 LiDAR preprocessing profile
+- **WHEN** 一次 LiDAR-only 或包含 LiDAR 的 fusion 训练启动
+- **THEN** final_config 或运行 metadata MUST 记录 LiDAR normalization、cache、ROI、FoV、ground/background filter 和安全增强配置
+
+### Requirement: Module trainability startup report
+The training workflow MUST report trainable parameter counts by major module for debug runs. The report MUST distinguish CSI encoder, representation core, beam head and fusion modules when those modules exist.
+
+#### Scenario: 打印模块参数统计
+- **WHEN** a debug run builds the model
+- **THEN** startup logs MUST include total parameter count and total trainable parameter count
+- **AND** startup logs MUST include trainable parameter counts by CSI encoder, representation core, beam head and fusion module where present
+
+#### Scenario: 发现模块无可训练参数
+- **WHEN** a required trainable module has zero trainable parameters
+- **THEN** startup logs MUST mark the module as suspicious
+- **AND** the warning MUST include the module name and resolved model path
+
+### Requirement: Resolved config artifact and startup summary
+Every debug run MUST save the fully resolved configuration and print a startup summary of the fields needed to compare experiment variants. The summary MUST be generated after defaults, aliases and command-line overrides are applied.
+
+#### Scenario: 保存 resolved config
+- **WHEN** a debug run starts
+- **THEN** the run output directory MUST contain `resolved_config.yaml` or an equivalent fully resolved config artifact
+- **AND** the artifact MUST reflect defaults, generated config values, aliases and command-line overrides
+
+#### Scenario: 打印关键配置摘要
+- **WHEN** a debug run starts
+- **THEN** startup logs MUST include modalities, dataset path, train/val split paths, `seq_len`, `num_pred`, `num_classes`, batch size, optimizer, learning rate, scheduler and max epochs
+- **AND** startup logs MUST include model type, CSI encoder type, `d_model`, `delay_taps`, `view_fusion`, `use_internal_gru`, pilot estimator enabled/mode/SNR, `csi_hardening.enabled` and `csi_degradation.enabled`

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from kd_sensing.engine.model_output import adapt_model_output
 from kd_sensing.engine.runtime import prepare_task_batch, run_model_step
-from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats, topk_accuracy
+from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats
 from kd_sensing.evaluation.metrics import beam_classification_circular_summary
 from kd_sensing.eval.missing_patterns import (
     get_default_missing_patterns,
@@ -102,8 +102,7 @@ def _evaluate_pattern(
         )
         metrics = {
             "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
-            **topk_accuracy(logits, target, topk=(1, 3, 5)),
-            **_beam_error_metrics(logits, target, cfg),
+            **_beam_classification_metrics(logits, target, cfg),
             **reliability_error_stats(
                 logits,
                 target,
@@ -262,7 +261,7 @@ class _Accumulator:
         }
 
 
-def _beam_error_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any] | None) -> dict[str, float]:
+def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any] | None) -> dict[str, float]:
     eval_cfg = (cfg or {}).get("evaluation", {}) if isinstance(cfg, dict) else {}
     summary = beam_classification_circular_summary(
         logits,
@@ -271,6 +270,9 @@ def _beam_error_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[st
         dba_delta=float(eval_cfg.get("dba_delta", 5)),
     )
     return {
+        "top1": float(summary.get("top1", math.nan)),
+        "top3": float(summary.get("top3", math.nan)),
+        "top5": float(summary.get("top5", math.nan)),
         "adba": float(summary.get("DBA", math.nan)),
         "mae": float(summary.get("mean_circular_error", math.nan)),
     }

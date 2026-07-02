@@ -68,3 +68,93 @@
 - **WHEN** batch 来自 `target_labeled` 且 `target_label_fraction > 0`
 - **THEN** supervised beam 或 residual loss MAY 读取该 batch 的 beam/residual label
 - **AND** metadata MUST 记录该监督只来自 target_labeled subset
+
+### Requirement: 实验输出记录 split 协议
+训练和评估流程 MUST 在运行产物中记录足够的 split 协议信息，用于判断不同实验是否使用同一数据协议并可横向比较。记录 MUST 包含实际 CSV 路径、样本数和 split metadata 路径或核心字段。对于 MMW Town10 或其它滑窗 sequence 数据，记录还 MUST 包含 `split_strategy`、`split_protocol_version`、`strict_validation_eligible`、`eligibility_reasons` 和可用的 leakage diagnostics 摘要，避免把 unknown 或高重叠 split 误当成 strict validation 结果。
+
+#### Scenario: 训练输出包含 split metadata 引用
+- **WHEN** 训练入口构建 train/test dataset
+- **THEN** `final_config.yaml`、`train_log.json` 或等价运行产物 MUST 记录 split metadata 路径或核心字段
+- **AND** 记录 MUST 包含 split 策略、seed、train/test `seq_index` 数量和 train/test 样本数
+- **AND** 当 split metadata 包含 strict eligibility 或 leakage diagnostics 时，运行产物 MUST 记录这些字段
+
+#### Scenario: 评估输出包含 split 协议
+- **WHEN** 评估入口构建 test dataset
+- **THEN** 评估报告 MUST 记录实际使用的 test CSV 和可用的 split 协议信息
+- **AND** 当当前 CSV 缺少 split metadata 时，系统 MUST 给出清晰错误或显式警告，避免把未知 split 协议误当成新协议结果
+- **AND** 当 split metadata 标记 `strict_validation_eligible=false` 时，评估报告 MUST 保留指标但标记其不适合作为 strict 主结论
+
+#### Scenario: 跨模态 split 可比较
+- **WHEN** 用户使用同一组 train/test CSV 运行 image、radar、GPS、LiDAR、mmWave 或 fusion 实验
+- **THEN** 各运行产物中的 split 协议信息 MUST 能显示它们使用相同 CSV 和相同 split metadata
+- **AND** 如果 CSV 路径、split metadata、split strategy 或 strict eligibility 不同，用户 MUST 能从运行产物中看出这些结果不应直接作为同一 split 协议比较
+
+### Requirement: 主结论过滤 split eligibility
+实验 summary、quick conclusion 和横向比较工具 MUST 消费 split eligibility metadata。任何使用 unknown 或 leakage diagnostics 失败的 split 的 run MUST 不被用于 strict validation 主结论，除非用户显式请求 debug/sanity 汇总。
+
+#### Scenario: strict split run 可进入主结论
+- **WHEN** run metadata 记录 `strict_validation_eligible=true`
+- **THEN** summary MAY 将该 run 纳入 strict validation 横向比较
+- **AND** summary MUST 保留 split strategy、split metadata 路径和样本数，便于复核可比性
+
+#### Scenario: strict-ineligible split run 被排除
+- **WHEN** run metadata 记录 `strict_validation_eligible=false`
+- **THEN** summary MUST 将该 run 排除出 strict 主结论
+- **AND** summary MUST 记录 exclusion reason 和 split metadata 路径
+- **AND** 用户仍 MAY 在 debug/sanity 视图中查看该 run 的原始指标
+
+#### Scenario: split metadata 缺失时保守处理
+- **WHEN** summary 读取到没有 split metadata 的 MMW Town10 run
+- **THEN** summary MUST 标记该 run 的 split eligibility 为 unknown
+- **AND** strict 主结论 MUST 默认排除该 run
+- **AND** 输出 MUST 给出生成或引用 strict split metadata 的修复提示
+
+### Requirement: 序列 CSV 使用 balanced_seq split 协议
+DeepSense6G 序列 CSV 生成流程 MUST 使用单一的 `balanced_seq` train/test split 协议。split MUST 以完整 `seq_index` 为最小单位，MUST 不把同一 `seq_index` 的滑动窗口同时分配到 train 和 test，且 MUST 保持每个窗口仍只在单个 `seq_index` 内生成。
+
+#### Scenario: split 可复现
+- **WHEN** 用户使用相同原始 CSV、`training_set_pct`、`split_seed` 和 seq 数量控制配置
+- **THEN** 序列生成流程 MUST 在重复运行时产生相同的 train/test `seq_index` 集合
+- **AND** 系统 MUST 允许不同 `split_seed` 产生不同集合
+
+#### Scenario: 标签分布感知选择 test seq
+- **WHEN** 用户运行序列 CSV 预处理
+- **THEN** 序列生成流程 MUST 基于生成后的窗口标签统计选择完整 test seq
+- **AND** test 窗口数量 MUST 尽量接近配置的目标测试比例或显式 test seq 数
+- **AND** test label 分布 MUST 尽量接近全量窗口 label 分布
+
+#### Scenario: 小 seq 数场景的最少验证 seq
+- **WHEN** 用户配置 `min_test_sequences` 且可用 `seq_index` 数量足以满足该约束
+- **THEN** 序列生成流程 MUST 至少选择该数量的 test seq
+- **AND** 如果该约束与显式 `test_sequence_count` 冲突，系统 MUST 抛出清晰错误或按文档定义的优先级处理
+
+### Requirement: 序列 split metadata 可追踪
+序列 CSV 预处理 MUST 为生成的 train/test split 记录可机器读取的 metadata。metadata MUST 足以解释当前 split 的策略、seed、seq 分配、窗口数和主要 label 分布。
+
+#### Scenario: 写出 split metadata
+- **WHEN** 用户运行序列 CSV 预处理
+- **THEN** 系统 MUST 写出 split metadata sidecar
+- **AND** metadata MUST 包含 `split_protocol: balanced_seq`、`split_seed`、`training_set_pct`、train/test `seq_index` 列表、train/test 窗口数和输出 CSV 路径
+
+#### Scenario: 记录标签分布摘要
+- **WHEN** 序列 CSV 中包含 beam 标签路径
+- **THEN** split metadata MUST 记录 train/test 的 label 分布摘要
+- **AND** 摘要 MUST 至少覆盖当前时隙标签或所有训练目标时隙中的一种明确口径
+
+#### Scenario: 新统一 split 必须有 metadata
+- **WHEN** 用户使用新预处理配置生成默认统一 split CSV
+- **THEN** train/test CSV 旁 MUST 存在 split metadata sidecar
+- **AND** metadata 中的 train/test 窗口数 MUST 与输出 CSV 行数一致
+
+### Requirement: target-shot split 字段隔离
+数据加载流程 MUST 根据 split artifact 中的 subset 标记构建 source、target_labeled、target_unlabeled 和 target_test dataloader。target_unlabeled loader MUST 能提供 sensing input 和非监督 metadata，但训练 payload MUST 不暴露可作为监督的 target labels。
+
+#### Scenario: target_unlabeled loader 隔离监督字段
+- **WHEN** 构建 target_unlabeled adaptation loader
+- **THEN** batch metadata MUST 标记 subset 为 `target_unlabeled`
+- **AND** training payload MUST 不允许 loss 访问 beam/residual supervision 字段
+
+#### Scenario: target_test loader 只用于评估
+- **WHEN** 构建 target_test loader
+- **THEN** batch MAY 包含 evaluation metrics 所需 label
+- **AND** run metadata MUST 标记 target_test labels 只可在 evaluation scope 使用

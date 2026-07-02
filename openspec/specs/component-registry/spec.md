@@ -68,32 +68,6 @@ Define the lightweight registry contract for models, datasets, losses, metrics, 
 - **WHEN** 开发者按照 README 或扩展指南新增并注册一个 metric
 - **THEN** 该 metric MUST 能被评估配置引用，并出现在评估结果输出中
 
-### Requirement: LiDAR 注册错误可诊断
-LiDAR 相关注册错误 MUST 使用现有注册表错误风格，并在未知名称、重复名称或缺失必需参数时提供清晰错误信息。
-
-#### Scenario: 请求未知 LiDAR 组件
-- **WHEN** 配置中引用未注册的 LiDAR 模型或预处理器名称
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含请求的组件名称、注册表名称和可用组件列表
-
-#### Scenario: LiDAR 构建参数缺失
-- **WHEN** 配置中引用已注册 LiDAR 组件但缺少必需构造参数
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含缺失字段或原始构建错误
-
-### Requirement: mmWave 注册错误可诊断
-mmWave 相关注册错误 MUST 使用现有注册表错误风格，并在未知名称、重复名称或缺失必需参数时提供清晰错误信息。
-
-#### Scenario: 请求未知 mmWave 组件
-- **WHEN** 配置中引用未注册的 mmWave 模型或预处理器名称
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含请求的组件名称、注册表名称和可用组件列表
-
-#### Scenario: mmWave 构建参数缺失
-- **WHEN** 配置中引用已注册 mmWave 组件但缺少必需构造参数
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含缺失字段或原始构建错误
-
 ### Requirement: 默认组件延迟导入
 组件注册系统 MUST 保持注册表本身轻量可导入。导入 `kd_sensing.registries` MUST 不自动导入默认 dataset、model、preprocessor、diagnostics 或训练模块；默认组件注册 MUST 由显式注册导入函数或构建流程触发。
 
@@ -207,201 +181,6 @@ mmWave 相关注册错误 MUST 使用现有注册表错误风格，并在未知�
 - **THEN** 导入 MUST 失败或触发清晰迁移错误
 - **AND** 错误信息 MUST 指向当前公开类名或 canonical 模型注册名
 
-### Requirement: 默认组件导入不依赖兼容模块
-默认组件导入流程 MUST 注册 canonical 内置组件，同时保持 registry 本身轻量可导入。默认组件导入 MUST 不通过 `scenario9.py`、`engine.builders`、`data.transforms` 或 `_legacy` 兼容模块完成。
-
-#### Scenario: 导入默认 dataset 组件
-- **WHEN** 构建流程调用默认组件导入函数后再构建 DeepSense6G dataset
-- **THEN** 默认导入 MUST 加载场景中立 dataset 模块
-- **AND** 系统 MUST 不导入 `kd_sensing.data.datasets.scenario9`
-
-#### Scenario: registry 轻量导入
-- **WHEN** 开发者执行 `import kd_sensing.registries`
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不导入 dataset、model、training、checkpoint 或兼容 facade 模块
-
-### Requirement: 已删除组件错误可诊断
-当用户引用已删除的兼容组件名称或退役研究线组件名称时，注册表错误 MUST 至少包含请求名称、registry 名称或可用名称上下文。对于仍有当前迁移价值的名称，错误 MUST 区分“未知名称”和“已删除名称”并给出迁移方向；对于完全退役且不再承诺兼容的历史名称，系统 MUST 允许使用普通 unknown-name 错误、配置 migration guard 或集中退役说明替代长期 removed guard table。registry 实现 MUST 不为了历史说明长期维护没有 current migration value 的 removed-name 表项。
-
-#### Scenario: 已删除 dataset type
-- **WHEN** 用户请求构建 `scenario9` dataset 且项目仍保留该迁移说明
-- **THEN** 系统 MUST 抛出包含 `scenario9` 的错误
-- **AND** 错误信息 MUST 说明该名称已删除并给出 `deepsense6g + scene` 配置示例
-
-#### Scenario: 已删除模型 alias
-- **WHEN** 用户请求旧 fusion 类名 alias 或已删除 image encoder alias，且该名称仍在 current migration table 中
-- **THEN** 系统 MUST 抛出包含请求名称的错误
-- **AND** 错误信息 MUST 列出当前支持的 canonical 注册名
-
-#### Scenario: 已退役研究线组件
-- **WHEN** 用户请求 `craf_fusion`、`marf_fusion`、`g2d` distiller 或 `multimodal_nf` dataset
-- **THEN** 系统 MUST 拒绝构建
-- **AND** 系统 MUST 不通过 deprecated alias、overlay 或兼容 facade 重定向到其它实现
-
-#### Scenario: 完全退役名称不要求 removed table
-- **WHEN** 某个历史组件名称已经由 retired-tombstone spec、配置 migration guard 或文档生命周期边界覆盖，且没有当前迁移路径
-- **THEN** registry MUST 允许不在 removed-name table 中保留该名称
-- **AND** unknown-name 错误 MUST 仍列出 registry 名称、请求名称或可用 canonical 名称上下文
-
-### Requirement: CLS-token Transformer fusion 组件注册
-项目 MUST 通过现有组件注册表暴露 CLS-token Transformer fusion 模型。新增模型 MUST 能通过 `MODELS` 注册表构建，并 MUST 复用现有 fusion 训练、验证和评估入口。
-
-#### Scenario: 按名称构建 CLS-token Transformer fusion
-- **WHEN** 配置指定 `type: cls_token_transformer_fusion`
-- **THEN** 系统 MUST 通过 `MODELS` 注册表返回 CLS-token Transformer fusion 模型实例
-- **AND** 构建参数 MUST 来自配置字段
-- **AND** 模型 MUST 支持现有 fusion forward 输入键
-
-#### Scenario: 注册错误可诊断
-- **WHEN** 用户引用不存在或拼写错误的 CLS-token Transformer fusion 注册名
-- **THEN** 系统 MUST 使用现有 registry 错误风格抛出异常
-- **AND** 错误信息 MUST 包含请求名称和可用模型注册名
-
-### Requirement: 默认组件导入包含 CLS-token Transformer fusion
-默认组件导入流程 MUST 注册 CLS-token Transformer fusion 内置模型，同时保持 registry 本身轻量可导入。导入 `kd_sensing.registries` MUST 不急切导入 dataset、trainer、checkpoint 或重依赖运行模块。
-
-#### Scenario: 构建流程导入默认组件
-- **WHEN** 构建流程调用 `import_default_components()` 后再查询 `MODELS`
-- **THEN** `MODELS` 注册表 MUST 包含 `cls_token_transformer_fusion`
-- **AND** 系统 MUST 能通过配置构建该模型
-
-#### Scenario: 轻量导入 registry
-- **WHEN** 开发者仅执行 `import kd_sensing.registries`
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不 eager import CLS-token Transformer fusion 模型依赖
-
-#### Scenario: 内置组件列表可发现
-- **WHEN** 开发者按扩展文档触发默认模型模块导入后查看 `MODELS.list()`
-- **THEN** 输出 MUST 包含 `cls_token_transformer_fusion`
-- **AND** 输出 MUST 继续包含现有 canonical fusion 模型注册名
-
-### Requirement: CSI 组件注册
-项目 MUST 通过现有组件注册表注册 CSI encoder 和可选 CSI 模型入口，使用户能通过配置构建 pilot dual-view CSI encoder，并复用现有 `modular_sequence` 训练流程。
-
-#### Scenario: 按名称构建 CSI encoder
-- **WHEN** 配置中指定 `type: pilot_dual_view_csi` 及其初始化参数
-- **THEN** 系统 MUST 通过 `ENCODERS` 注册表返回 CSI encoder 实例
-- **AND** 构建参数 MUST 支持 `output_dim`、`d_model`、pilot estimation、dual-view、tokenizer、temporal 和 dropout 相关字段
-
-#### Scenario: 默认组件导入包含 CSI 模块
-- **WHEN** 构建流程调用默认组件导入函数后再构建 `pilot_dual_view_csi`
-- **THEN** `ENCODERS` 注册表 MUST 包含 `pilot_dual_view_csi`
-- **AND** 注册表轻量导入边界 MUST 与现有 registry 语义一致
-
-### Requirement: CSI 注册错误可诊断
-CSI 相关注册错误 MUST 使用现有注册表错误风格，并在未知名称、重复名称或缺失必需参数时提供清晰错误信息。
-
-#### Scenario: 请求未知 CSI encoder
-- **WHEN** 配置中引用未注册的 CSI encoder 名称
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含请求的组件名称、注册表名称和可用组件列表
-
-#### Scenario: CSI 构建参数非法
-- **WHEN** 配置中引用 `pilot_dual_view_csi` 但提供非法 `view_fusion` 或非正数 `pilot_len`
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含非法字段或原始构建错误
-
-### Requirement: Hist 组件注册已退役
-组件注册表 MUST 不再注册 HiST-Beam/Hist 专用模型、loss、adapter、prototype 或 workflow 组件。旧注册名 MUST 被识别为已删除或未知名称，并给出当前支持范围。
-
-#### Scenario: hist_beam_fusion 构建失败
-- **WHEN** 用户请求构建 `hist_beam_fusion`
-- **THEN** registry 或配置构建 MUST 拒绝该名称
-- **AND** 错误信息 MUST 说明 Hist/HiST-Beam 研究线已退役
-
-#### Scenario: Hist variants 不作为模型注册名
-- **WHEN** 默认组件导入完成后开发者查看 `MODELS` 注册名
-- **THEN** 注册名 MUST 不包含 HiST-Beam variants、P3/radio prototype variants、image-only Hist probe variants 或 history-anchor Hist variants
-- **AND** 当前主线模型注册名 MUST 继续可用
-
-### Requirement: 已删除组件错误包含 Hist 迁移方向
-当用户引用 Hist 旧组件名且该名称仍由当前迁移 guard 覆盖时，错误信息 MUST 区分退役研究线与普通拼写错误，并指向当前推荐 workflow 或说明无兼容迁移。若本 change 删除对应 guard table，Hist 旧组件名 MAY 回落为普通未知名称，但仍 MUST 不注册为 current 可构建组件。
-
-#### Scenario: Hist 旧模型名错误可诊断
-- **WHEN** 用户配置 `model.primary.type: hist_beam_fusion`
-- **THEN** 系统 MUST 拒绝构建并包含请求名称
-- **AND** 若 Hist guard 被保留，错误信息 MUST 提示使用当前 supervised、adapter、GPS candidate、residual fusion 或其它保留 workflow；若 guard 已删除，系统 MAY 使用普通 unknown-name 错误
-
-### Requirement: JEPA downstream pooler 和 adapter 注册
-项目 MUST 通过轻量组件构建边界暴露 JEPA downstream pooler。内置 mean pooler 和 GPS-query attention pooler MUST 能通过配置名称构建；identity adapter MAY 作为默认 no-op 路径内联，而不是必须注册为独立 adapter。未知 pooler 名称 MUST 使用现有 registry 错误风格报告；未知 adapter 名称只有在非 identity adapter 配置面被保留时才需要注册表式错误。
-
-#### Scenario: 按名称构建 mean pooler
-- **WHEN** `jepa_context_image` 配置声明 downstream pooler 为 `mean`
-- **THEN** 系统 MUST 构建 mean pooler
-- **AND** 该 pooler MUST 接收 patch tokens `[B,T,N,D]` 并输出 `[B,T,D]`
-
-#### Scenario: 按名称构建 GPS-query pooler
-- **WHEN** `jepa_context_image` 配置声明 downstream pooler 为 `gps_query_attention`
-- **THEN** 系统 MUST 构建 GPS-query attention pooler
-- **AND** 构建参数 MUST 支持 `k_queries`、`num_heads`、`condition_dim`、`latent_dim`、dropout 和 condition source
-
-#### Scenario: identity adapter 内联为 no-op
-- **WHEN** `jepa_context_image` 配置未声明 adapter 或声明 adapter 为 `identity`
-- **THEN** 系统 MUST 使用不改变输入 shape 的无操作路径
-- **AND** 现有配置 MUST 无需新增 adapter 字段即可运行
-
-#### Scenario: 未知 JEPA downstream 组件可诊断
-- **WHEN** 用户配置不存在的 JEPA downstream pooler 名称
-- **THEN** 系统 MUST 拒绝构建
-- **AND** 错误信息 MUST 包含请求名称、组件类别和可用 pooler 名称
-
-### Requirement: JEPA downstream 注册保持轻量导入
-JEPA downstream pooler 的注册 MUST 不破坏 registry 轻量导入边界。导入 `kd_sensing.registries` MUST 不 eager import torch model implementation、dataset、diagnostics、训练器或 checkpoint 文件；默认组件导入流程 MUST 显式注册内置 JEPA downstream pooler。identity adapter 若内联为 no-op，则不需要默认注册流程。
-
-#### Scenario: 轻量导入 registry 不触发 JEPA model
-- **WHEN** 开发者仅执行 `import kd_sensing.registries`
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不 eager import `kd_sensing.models.jepa` 或 JEPA downstream 实现模块
-
-#### Scenario: 默认组件导入后可构建 JEPA downstream pooler
-- **WHEN** 构建流程调用默认组件导入函数
-- **THEN** 内置 JEPA downstream pooler MUST 完成注册
-- **AND** 用户配置中的内置 pooler 名称 MUST 可解析
-
-### Requirement: Difficulty operator 注册表
-项目 MUST 提供 difficulty operator 注册边界，用于按字符串名称注册、查询和构建 GPS、image 和未来模态输入难度 operator。该注册边界 MAY 复用现有 `Registry` 实现或新增窄 registry，但 MUST 保持轻量导入，不得在导入 registry 时 eager import dataset、model、diagnostics renderer、training loop 或大型视觉依赖。
-
-#### Scenario: 按名称构建 GPS delay operator
-- **WHEN** 配置指定 difficulty operator `gps_temporal_delay` 及其参数
-- **THEN** 系统 MUST 通过 difficulty operator registry 构建该 operator
-- **AND** 训练、评估和 benchmark MUST 能复用同一注册名
-
-#### Scenario: 轻量导入 difficulty registry
-- **WHEN** 开发者执行 `import kd_sensing.registries` 或导入 difficulty registry 窄模块
-- **THEN** 导入 MUST 成功
-- **AND** 系统 MUST 不导入默认 dataset、model、diagnostics renderer、torchvision 权重接口或训练循环
-
-#### Scenario: 未知 difficulty operator 错误可诊断
-- **WHEN** 配置引用未注册 difficulty operator
-- **THEN** 系统 MUST 抛出明确异常
-- **AND** 错误信息 MUST 包含 registry 名称、请求 operator 和可用 operator 列表
-
-### Requirement: 默认 difficulty operator 显式注册
-内置 difficulty operators MUST 通过显式默认组件导入或 difficulty 专用默认注册函数完成注册。构建流程在解析或应用 difficulty profile 前 MUST 触发该注册动作；仅导入 registry 对象 MUST 不自动注册所有重依赖 operator。
-
-#### Scenario: 构建前导入默认 difficulty operators
-- **WHEN** 配置加载或 benchmark runner 需要解析内置 GPS/image difficulty profile
-- **THEN** 构建流程 MUST 先触发默认 difficulty operator 注册
-- **AND** registry MUST 包含 GPS noise、GPS async、image degradation 等内置注册名
-
-#### Scenario: 自定义 difficulty operator 可插拔
-- **WHEN** 开发者在自定义模块中注册新的 image difficulty operator 并在配置中引用
-- **THEN** 系统 MUST 能在该模块被显式导入后解析并构建该 operator
-- **AND** 训练和 benchmark 主循环 MUST 不需要为该 operator 增加专用分支
-
-### Requirement: 新整模型注册受治理
-组件注册系统 MUST 继续支持 `MODELS` 注册整模型，但新增整模型注册 MUST 被视为架构例外并纳入 OpenSpec、文档和测试护栏。新增普通 baseline MUST 优先注册 encoder/projector/representation core/head 子组件，而不是注册新的整模型。
-
-#### Scenario: 子组件注册优先
-- **WHEN** 新增模型能力可以表达为 encoder、projector、representation core 或 head
-- **THEN** 实现 MUST 使用对应子组件 registry
-- **AND** 不得仅为组合这些子组件而新增新的 `MODELS` 注册名
-
-#### Scenario: 整模型注册需要例外说明
-- **WHEN** 新增源码包含新的 `@MODELS.register(...)` 或等价模型注册
-- **THEN** 对应 change MUST 提供 whole-model exception 理由
-- **AND** focused tests MUST 覆盖 registry build、forward 输出、metadata 和轻量导入边界
-
 ### Requirement: 默认组件导入登记新增模型组件
 新增内置模型子组件或整模型例外 MUST 被默认组件导入流程显式登记，同时保持 `kd_sensing.registries` 轻量可导入。默认组件导入 MUST 不通过兼容 facade、仓库扫描或旧聚合模块发现组件。
 
@@ -410,97 +189,77 @@ JEPA downstream pooler 的注册 MUST 不破坏 registry 轻量导入边界。�
 - **THEN** 新增内置 encoder/projector/core/head 或例外模型注册名 MUST 出现在 registry 列表中
 - **AND** 仅导入 `kd_sensing.registries` MUST 不 eager import dataset、trainer、torchvision 权重接口或 checkpoint 文件
 
-### Requirement: 扩展文档区分默认和例外注册
-组件发现和扩展文档 MUST 将新增 baseline 的默认路径描述为模块化配置或子组件注册。直接注册 `MODELS` 的示例 MUST 位于 whole-model exception 小节，并说明需要 OpenSpec 设计理由和 focused tests。
+### Requirement: 轻量导入边界
+项目 MUST 区分轻量基础模块和重依赖运行模块。导入配置加载、路径解析、场景元数据和模态契约时，系统 MUST 不导入 dataset、model、diagnostics、训练循环或需要 pandas、scipy、skimage、matplotlib 的模块。
 
-#### Scenario: 文档默认示例使用模块化组件
-- **WHEN** 开发者阅读 Add a Model 或新增 baseline 指南
-- **THEN** 首个示例 MUST 展示 `modular_sequence` 配置或子组件 registry
-- **AND** 文档 MUST 不把直接 `@MODELS.register` 整模型作为普通 baseline 的默认建议
+#### Scenario: 缺少数据依赖时加载配置模块
+- **WHEN** Python 环境可导入 `kd_sensing` 但缺少 pandas、scipy、skimage 或 matplotlib 中任一数据/可视化依赖
+- **THEN** `import kd_sensing.config` MUST 成功
+- **AND** 该导入 MUST 不触发 dataset 类、模型类或诊断渲染模块导入
 
-### Requirement: Legacy model registry names are retired with migration guards
-项目 MUST 将已退役的 legacy model、encoder、core 和 head 注册名排除在 current 可构建组件之外。对仍有当前迁移价值的旧名称，项目 MAY 保留 removed guard 并给出明确迁移目标；对完全退役且不再承诺兼容的旧名称，项目 MAY 删除 guard table 并让 registry 使用普通 unknown-name 错误。
+#### Scenario: 只导入路径工具
+- **WHEN** 开发者执行 `from kd_sensing.utils.paths import resolve_path`
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不导入 checkpoint registry、dataset 或模型模块
 
-#### Scenario: 旧整模型注册名被拒绝
-- **WHEN** 用户通过 `MODELS.build()` 请求 `radar_strong`、`gps_lightweight`、`mmwave_strong`、`fusion_lightweight` 或其它本 change 退役的旧整模型注册名
-- **THEN** 系统 MUST 拒绝构建该名称
-- **AND** 若 removed guard 被保留，错误信息 MUST 包含请求名称、registry 名称和 `modular_sequence` 迁移目标；若 guard 已删除，系统 MAY 使用普通 unknown-name 错误
+#### Scenario: 组件构建时才导入默认组件
+- **WHEN** 训练或评估构建 dataset、model、loss、metric 或 preprocessor
+- **THEN** 系统 MUST 显式导入默认组件以完成注册
+- **AND** 该默认组件导入边界 MUST 不影响轻量配置加载路径
 
-#### Scenario: 旧别名被拒绝
-- **WHEN** 用户请求 `modular_sequence_model`、`gps_only_neural_baseline`、`jepa_token_transformer` 或 `safe_residual_reranker`
-- **THEN** 系统 MUST 不把这些名称注册为 current 可构建组件
-- **AND** 若别名仍在 current migration table 中，错误信息 MUST 指向对应 canonical 名称或配置路径
+### Requirement: 包级导入不得牵出重依赖
+项目 MUST 保持包级公共 API 兼容，同时避免 `__init__.py` eager import 触发重依赖运行模块。导入某个具体子模块时，系统 MUST 不因为父包初始化而额外导入训练器、dataset、诊断渲染或大型第三方依赖。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 子模块 MUST 不再作为轻量导入 smoke 的保留对象。
 
-#### Scenario: feature extractor 不作为完整模型列出
-- **WHEN** 默认组件导入完成后开发者查看 `MODELS.list()`
-- **THEN** 输出 MUST NOT 包含 `radar_feature_extractor`、`lidar_feature_extractor` 或 `mmwave_feature_extractor`
-- **AND** 对应 feature extractor 类 MAY 继续通过窄模块导入或由 encoder 组件内部复用
+#### Scenario: 导入 engine 轻量子模块
+- **WHEN** 开发者执行 `import kd_sensing.engine.model_output`
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不导入 `kd_sensing.engine._builders_impl`
+- **AND** 系统 MUST 不导入 `kd_sensing.data.transform_ops._legacy`
+- **AND** 系统 MUST 不导入 `pandas` 或 `scipy`
 
-#### Scenario: current registry discovery 只列当前入口
-- **WHEN** 文档、架构摘要或架构边界测试检查 current registry surface
-- **THEN** current model/encoder/core/head 清单 MUST 不把 removed guard 名称展示为可推荐入口
-- **AND** removed 名称 MAY 出现在退役边界、migration table 或普通错误路径中
+#### Scenario: 导入 diagnostics 轻量子模块
+- **WHEN** 开发者导入当前保留的 diagnostics 轻量 helper
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不导入 `kd_sensing.diagnostics.visualization.core`
+- **AND** 系统 MUST 不导入 `matplotlib`
+- **AND** 系统 MUST 不要求 `kd_sensing.diagnostics.g2d_diagnostics` 存在
 
-### Requirement: Registry helper surface 必须最小化
-组件注册表 MUST 只暴露构建、查询、注册和错误诊断所需 API。无当前调用方、无 CLI、无 docs current 消费、无测试必要性的自检 helper MUST 删除，而不是作为 public API 长期保留。
+#### Scenario: distillation 子包不再作为 smoke 对象
+- **WHEN** 开发者运行轻量导入 smoke
+- **THEN** 检查 MUST 不导入 `kd_sensing.distillation`
+- **AND** 系统 MUST 不要求 `kd_sensing.distillation.g2d_smp` 存在
 
-#### Scenario: 删除 registry self check
-- **WHEN** `registry_self_check` 没有项目内调用方且 registry 行为已由 focused tests 覆盖
-- **THEN** 本 change MUST 删除该 helper 和 `__all__` 导出
-- **AND** component registry tests MUST 继续覆盖 build、unknown name、duplicate name 和 missing required parameter 错误
+#### Scenario: 旧 viewer 公共符号不可访问
+- **WHEN** 现有代码执行 `from kd_sensing.diagnostics import export_viewer_manifest`
+- **THEN** 导入 MUST 失败
+- **AND** 错误信息或架构测试 MUST 指向当前 JEPA visual analysis、GPS shortcut benchmark 或其它非 viewer 诊断入口
 
-#### Scenario: 不新增替代 smoke helper
-- **WHEN** registry self check 被删除
-- **THEN** 项目 MUST 不新增等价的长期 smoke function 或 CLI
-- **AND** 必要验证 MUST 留在 pytest focused tests 中
+### Requirement: models 包级轻量导入
+`kd_sensing.models` MUST 保持轻量可导入，但不再 MUST 维持所有历史 package-level 模型符号兼容。该包 MAY 只暴露明确保留的当前公共符号、package metadata 或轻量 helper；当前内部代码、文档和测试 MUST 优先从真实 owner 模块、registry/config 名称或 package CLI 访问模型能力。删除的历史别名和便利导出 MAY 直接产生普通 `ImportError` 或 `AttributeError`，除非本 change 明确保留某个迁移 guard。
 
-### Requirement: Removed guard 表只保留当前迁移价值
-注册表和配置 guard MAY 为仍常见或仍有当前迁移路径的旧名称提供专属 removed error。完全退役且已由 OpenSpec tombstone、inventory 和 README retired wording 覆盖的历史路线 MUST 不要求每个 registry 或 facade 继续维护专属 removed guard。
+#### Scenario: 轻量导入 models 包
+- **WHEN** 开发者执行 `import kd_sensing.models`
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不导入各模型实现模块、训练 runtime、dataset reader 或重依赖视觉/科学计算模块
 
-#### Scenario: 保留高频迁移 guard
-- **WHEN** 用户请求 `scenario31` dataset alias、KD loss token、removed image profile 或 removed image encoder
-- **THEN** 系统 SHOULD 继续给出清晰迁移错误
-- **AND** 错误 MUST 指向当前 canonical dataset、loss 或 image profile 入口
+#### Scenario: 当前模型符号使用 owner 路径
+- **WHEN** 当前源码、README、docs 或 tests 需要引用模型实现类
+- **THEN** 引用 MUST 使用真实 owner 模块、canonical registry 名称或配置构建路径
+- **AND** 不得要求 `kd_sensing.models.__all__` 继续列出历史便利导出
 
-#### Scenario: 低价值 retired 名称回落 unknown
-- **WHEN** 用户请求完全退役且不再有当前迁移目标的旧研究线 registry 名称
-- **THEN** 系统 MAY 返回普通 unknown-name registry 错误
-- **AND** 系统 MUST 不通过 deprecated alias、facade 或 virtual config 重定向到当前实现
+#### Scenario: removed alias 不再强制兼容
+- **WHEN** 现有外部代码访问已移除的模型别名或历史 package-level 导出
+- **THEN** 系统 MAY 抛出普通导入或属性错误
+- **AND** 只有仍被当前迁移文档明确覆盖的别名才需要清晰替代符号提示
 
-### Requirement: Registry 公开导出不得镜像非 API 细节
-`__all__` MUST 只包含真实 public API。删除 helper、removed alias 或内部 registry 表时，`__all__` MUST 同步收缩；项目 MUST 不为了保持旧导出而保留空 wrapper。
+### Requirement: import 治理必须保护轻量导入边界
+项目 MUST 将 import 治理重点放在 eager import、公开 facade 回流、跨领域依赖和重依赖泄漏上。轻量配置、路径、registry、package init、public facade 和 thin CLI MUST 不因架构整理额外导入 dataset reader、model implementation、training runtime、matplotlib、pandas、scipy、skimage、checkpoint 或权重文件。
 
-#### Scenario: 删除导出后 import 失败
-- **WHEN** 非推荐外部代码从 registry 模块导入已删除 helper
-- **THEN** 导入 MAY 失败
-- **AND** 当前构建流程和 focused tests MUST 不依赖该 helper
+#### Scenario: 轻量模块导入
+- **WHEN** 开发者导入 `kd_sensing.config`、`kd_sensing.registries`、路径工具、包级公共 API 或已登记轻量 helper
+- **THEN** 导入 MUST 成功且不触发训练、数据读取、模型权重加载或重型可视化依赖
 
-### Requirement: Registry 不保活退役整模型类
-组件 registry MUST 只保留当前 canonical 构建所需的 dataset、model、encoder、projector、core、head、loss、metric 和 preprocessor 名称。已经退役且不再注册的整模型类和旧 alias MUST 不通过直接导入测试或 facade 继续作为 current API。
-
-#### Scenario: 退役模型 registry 构建失败
-- **WHEN** 用户通过 `MODELS.build()` 请求已退役的 strong/lightweight/teacher/student 旧整模型名称
-- **THEN** registry MUST 拒绝该名称
-- **AND** 错误 MUST 使用现有 unknown-name 或保留的 removed-name 风格列出当前可用名称
-
-#### Scenario: 当前组件仍可注册和构建
-- **WHEN** 构建流程调用默认组件导入后构建 `modular_sequence`、当前 encoder、current fusion whole-model exception 或当前 loss/metric
-- **THEN** registry MUST 保持变更前的构建行为
-- **AND** 删除退役类 MUST 不影响这些当前注册名
-
-### Requirement: Removed guard 只保留有迁移价值的名称
-`register_removed()` 或等价 removed-name guard MUST 只用于仍可能从当前迁移路径触发、且普通 unknown-name 错误不足以防止误用的名称。完全退役、已有 OpenSpec tombstone 或只由测试 fixture 引用的名称 MUST 回落为 unknown-name，除非设计说明记录保留理由。
-
-#### Scenario: 低价值 removed-name guard 被删除
-- **WHEN** 某个 removed-name guard 只服务历史 fixture 或已退役研究线文案
-- **THEN** 本 change MAY 删除该 guard
-- **AND** 对应测试 MUST 改为验证 current registry 不注册该名称，而不是要求专属迁移文案
-
-### Requirement: Registry helper 不新增自检抽象
-Registry 的最小契约 MUST 由 focused tests 覆盖。项目 MUST 不保留或新增只包装测试逻辑的 registry self-check helper 作为 runtime API。
-
-#### Scenario: 删除 registry self-check helper
-- **WHEN** registry build、duplicate、unknown 和 missing parameter 行为已由 tests 覆盖
-- **THEN** 本 change MUST 删除只服务这些检查的 runtime self-check helper
-- **AND** 删除 MUST 不影响 registry 构建当前组件
-
+#### Scenario: facade 内部回流
+- **WHEN** 内部源码新增对公开 facade 中已迁移 helper 的 import 或调用
+- **THEN** 架构边界测试 MUST 失败
+- **AND** 失败信息 MUST 指向对应窄模块或 owner 模块作为迁移路径

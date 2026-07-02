@@ -222,3 +222,84 @@ MMW Town10 preparation MUST preserve raw channel-derived beam label provenance a
 - **THEN** split metadata MAY include calibrated label histograms in addition to raw label histograms
 - **AND** each histogram MUST declare its label space and mapping fingerprint
 
+### Requirement: MMW prepared manifests are loadable by modality-aware datasets
+数据构建流程 MUST 能识别 MMW 准备流程生成的 manifest/CSV，并在配置选择 `data.dataset.type: mmw` 与 `data.dataset.scene: town10_skybridge_seed24` 时构建对应 dataset。启用模态推导、按需读取、beam 历史标签和 future beam 目标标签的语义 MUST 与现有 beam 预测流程保持一致。
+
+#### Scenario: MMW mmWave-only 按需读取
+- **WHEN** 用户使用 MMW manifest 运行 `experiment.task: mmwave`
+- **THEN** dataset MUST 只读取历史 `mmwave*` power vector、`beam*` 和 `future_beam*` 标签文件
+- **AND** dataset MUST 不读取 image、LiDAR、GPS 或 RSU radar 文件
+- **AND** 返回样本 MUST 包含 `mmwave`、`input_beam` 和 `target_beam`
+
+#### Scenario: MMW image+mmWave fusion 按需读取
+- **WHEN** 用户使用 MMW manifest 运行 fusion 配置且启用 `["image", "mmwave"]`
+- **THEN** dataset MUST 读取历史前向 RGB image、历史 mmWave power vector、历史 beam 和 future beam 标签
+- **AND** dataset MUST 不要求未启用的 LiDAR、GPS 或 RSU radar 文件存在
+- **AND** 返回样本 MUST 只包含启用模态对应输入字段和标签字段
+
+### Requirement: MMW dataset returns stable beam and modality tensors
+MMW dataset MUST 返回与现有训练流程兼容的 `input_beam` 和 `target_beam` 张量。启用 MMW 派生 mmWave 输入时，`mmwave` MUST 为 `[seq_len, 64]` 的 `torch.float32` 张量；启用 image、LiDAR 或 GPS 时，对应字段 MUST 使用现有 batch 准备流程可消费的稳定 shape 和 dtype。
+
+#### Scenario: MMW beam 标签 shape 稳定
+- **WHEN** MMW dataset 配置 `seq_len=8` 且 `num_pred=3`
+- **THEN** 单样本 `input_beam` MUST 为长度 8 的整数张量
+- **AND** 单样本 `target_beam` MUST 为长度 3 的整数张量
+- **AND** batch 后 `target_beam` MUST 保持 `[batch_size, 3]`
+
+#### Scenario: MMW mmWave 张量 shape 稳定
+- **WHEN** MMW dataset 启用 mmWave modality
+- **THEN** 单样本 `mmwave` MUST 为 `torch.float32`
+- **AND** `mmwave` shape MUST 为 `[seq_len, 64]`
+- **AND** 每个时隙 MUST 与同一行 CSV 的 `beam*` 历史标签时隙对齐
+
+### Requirement: MMW dataset 初始化内存有界
+MMW dataset 初始化 MUST 避免为了 normalizer、CSV 派生列或 metadata 准备而无界持有所有样本的大数组。GPS、mmWave 和 CSI 等模态的 normalizer 拟合 MUST 使用 streaming 或可释放的临时统计，并 MUST 在拟合完成后避免把 per-sample sequence cache 常驻到 DataLoader worker。
+
+#### Scenario: GPS/mmWave scaler 拟合不保留全量样本缓存
+- **WHEN** MMW train dataset 启用 GPS 或 mmWave normalization
+- **THEN** scaler 拟合 MUST 能通过 streaming 或临时数组完成
+- **AND** 拟合完成后 dataset MUST 不保留所有样本的 GPS/mmWave sequence 大数组缓存
+- **AND** runtime metadata MUST 记录 scaler 来源、样本数和是否使用 streaming 拟合
+
+#### Scenario: DataLoader worker 不复制初始化大缓存
+- **WHEN** MMW dataset 使用多 worker DataLoader
+- **THEN** worker 进程 MUST 不因 dataset 初始化阶段的 per-sample feature cache 而复制全量样本大数组
+- **AND** profile 或 metadata MUST 能报告 worker 内存风险相关配置
+
+### Requirement: MMW image 序列按需加载与缓存等价
+MMW image modality MUST 按 enabled modalities 和 seq_len 读取 RGB/ImageNet image 序列。启用 image-derived cache 时，dataset MUST 保持与原始 image 读取路径一致的样本字段、shape、dtype 和 label 语义。
+
+#### Scenario: image-derived cache 保持 batch 契约
+- **WHEN** MMW fusion 配置启用 image modality、`seq_len=8` 和 image-derived cache
+- **THEN** 单样本 `image` tensor MUST 保持 `[seq_len, 3, H, W]`
+- **AND** batch 后 image 输入 MUST 与未启用 cache 时的 shape 和 dtype 一致
+- **AND** `input_beam`、`target_beam`、GPS 和 mmWave 字段 MUST 不因 image cache 改变
+
+#### Scenario: 未启用 image 不读取 image 路径
+- **WHEN** MMW fusion 配置的 modalities 为 `["gps", "mmwave"]`
+- **THEN** dataset MUST 不读取 camera 列对应文件
+- **AND** dataset MUST 不初始化 image transform 或 image-derived cache
+
+### Requirement: MMW calibrated hard label loading
+MMW dataset MUST support returning calibrated hard beam labels when `data.dataset.beam_label_calibration.enabled=true`. Calibration MUST apply to historical `input_beam` and future `target_beam` while preserving existing tensor shapes and modality-aware loading behavior.
+
+#### Scenario: calibrated input 和 target beam shape 稳定
+- **WHEN** MMW dataset 配置 `seq_len=8`、`num_pred=3` 且启用 beam label calibration
+- **THEN** 单样本 `input_beam` MUST 仍为长度 8 的整数张量
+- **AND** 单样本 `target_beam` MUST 仍为长度 3 的整数张量
+- **AND** 所有合法 label MUST 位于 `[0, num_classes)` 的 calibrated label space
+
+#### Scenario: 显式 future_beam_label 字段被映射
+- **WHEN** MMW split CSV 包含 `future_beam_label1` 或等价显式 raw label 字段
+- **THEN** dataset MUST 在启用 calibration 时将该 raw label 映射为 calibrated `target_beam`
+- **AND** metadata MUST preserve the original raw label value for audit
+
+#### Scenario: beam label cache 区分 mapping
+- **WHEN** beam label cache 为 eager 或 lazy 且 calibration 配置发生变化
+- **THEN** dataset MUST NOT reuse cached calibrated labels from a different mapping fingerprint
+- **AND** cache diagnostics MUST record the active mapping fingerprint
+
+#### Scenario: 未启用模态仍不读取
+- **WHEN** MMW fusion 配置启用 `["gps", "mmwave"]` 且启用 beam label calibration
+- **THEN** dataset MUST only read GPS、mmWave、beam labels and enabled targets
+- **AND** calibration MUST NOT cause image、LiDAR、radar、CSI、channel 或 path 文件被额外读取 as sensing inputs

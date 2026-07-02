@@ -163,6 +163,7 @@ class UMaskBeamJEPA(nn.Module):
         eps: float = 1e-6,
         use_beam_prototype_alignment: bool = False,
         beam_proto_temperature: float = 0.2,
+        tau_proto: float | None = None,
         use_full_to_partial_kd: bool = False,
         kd_teacher_mode: str = "disabled",
         mask_sampler: str | None = None,
@@ -249,7 +250,7 @@ class UMaskBeamJEPA(nn.Module):
         self.prototype_bank = BeamPrototypeBank(
             self.d_model,
             self.num_classes,
-            temperature=beam_proto_temperature,
+            temperature=beam_proto_temperature if tau_proto is None else float(tau_proto),
         )
 
     def forward(

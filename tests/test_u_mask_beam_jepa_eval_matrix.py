@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from kd_sensing.eval.export import save_results_csv, save_results_json, save_results_markdown
-from kd_sensing.eval.metrics import reliability_error_stats, topk_accuracy
+from kd_sensing.eval.metrics import reliability_error_stats
 from kd_sensing.eval.missing_patterns import (
     get_default_missing_patterns,
     make_fixed_missing_mask,
@@ -56,16 +56,6 @@ def test_random_missing_mask_keeps_at_least_one_modality_available():
 
     assert mask.shape == (64, 4)
     assert torch.all(mask.sum(dim=1) >= 1)
-
-
-def test_topk_accuracy_simple_logits():
-    logits = torch.tensor([[5.0, 1.0, 0.0], [0.0, 2.0, 3.0]])
-    target = torch.tensor([0, 1])
-
-    metrics = topk_accuracy(logits, target)
-
-    assert metrics["top1"] == pytest.approx(0.5)
-    assert metrics["top5"] == pytest.approx(1.0)
 
 
 def test_reliability_error_stats_correct_wrong_reliability():

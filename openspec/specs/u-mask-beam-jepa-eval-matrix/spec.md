@@ -46,3 +46,16 @@
 #### Scenario: 评估入口不影响训练
 - **WHEN** 新增 evaluation matrix 工具、CLI、配置和测试
 - **THEN** 系统 MUST NOT 修改 U-MaskBeamJEPA 模型主干、训练 loss、encoder、训练 extension 随机 mask 行为或既有训练入口
+
+### Requirement: Missing pattern evaluation workflow
+项目 MUST 支持按 missing pattern 运行 evaluation，并将 pattern 名称、mask、样本数和指标写入报告。该 workflow MUST 复用当前 eval matrix 或包内 CLI 边界。
+
+#### Scenario: 指定 eval patterns
+- **WHEN** 用户指定 `full missing_image missing_radar missing_lidar missing_gps non_gps_only only_gps random_0.25 random_0.5 random_0.75`
+- **THEN** evaluation MUST 为每个 pattern 构造确定性或配置声明的 mask
+- **AND** report MUST 按 pattern 输出 top1、top5、loss 和样本数
+
+#### Scenario: pattern eval 不修改原 batch
+- **WHEN** evaluation 构造某个 missing pattern
+- **THEN** 系统 MUST 只把 missing mask 传给模型或 runtime
+- **AND** 原 batch 中的模态 tensor MUST 不被原地修改

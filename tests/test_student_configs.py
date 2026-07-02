@@ -108,7 +108,11 @@ def _minimal_registry_config(model_type: str) -> dict:
     ],
 )
 def test_strong_and_lightweight_registry_names_are_removed(model_type: str):
-    with pytest.raises(RegistryError, match="Removed component"):
+    if model_type.startswith("fusion_"):
+        with pytest.raises(RegistryError, match="Removed component"):
+            MODELS.build(_minimal_registry_config(model_type))
+        return
+    with pytest.raises(RegistryError, match="Unknown component"):
         MODELS.build(_minimal_registry_config(model_type))
 
 
@@ -130,7 +134,7 @@ def test_strong_and_lightweight_registry_names_are_removed(model_type: str):
     ],
 )
 def test_removed_teacher_student_registry_names_fail_fast(removed_type: str):
-    with pytest.raises(RegistryError, match="Removed component"):
+    with pytest.raises(RegistryError, match="Unknown component"):
         MODELS.build({"type": removed_type})
 
 
@@ -191,7 +195,12 @@ def test_run_lineage_metadata_uses_distillation_free_fields():
 def test_fusion_registry_removed_aliases_fail_and_current_owner_exports_remain():
     assert CLSTokenTransformerFusionNet is not None
     assert "__all__" not in vars(kd_sensing.models)
-    for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet", "fusion_strong", "fusion_lightweight"]:
+    for alias in ["Fusion" + "ModalityNet", "Student" + "ModalityNet"]:
+        with pytest.raises(AttributeError, match=alias):
+            getattr(kd_sensing.models, alias)
+        with pytest.raises(RegistryError, match="Unknown component"):
+            MODELS.build({"type": alias})
+    for alias in ["fusion_strong", "fusion_lightweight"]:
         with pytest.raises(AttributeError, match=alias):
             getattr(kd_sensing.models, alias)
         with pytest.raises(RegistryError, match="Removed component"):

@@ -1,0 +1,33 @@
+_base_: main_v3_strong_reliability_proto.yaml
+experiment:
+  name: main_v3_strong_reliability_btapa
+model:
+  primary:
+    ablation_id: main_v3_btapa
+    use_beam_topology_proto: true
+    tau_proto: 0.1
+    beam_proto_temperature: 0.1
+training:
+  use_beam_prototype_alignment: true
+  use_beam_topology_proto: true
+  proto_target_type: beam_soft
+  lambda_proto: 0.2
+  lambda_modality_proto: 0.5
+  tau_proto: 0.1
+  beam_proto_temperature: 0.1
+  tau_beam: 2.0
+  circular_beam_distance: false
+  btapa_include_fusion: true
+  btapa_include_modalities: true
+  btapa_fusion_weight: 1.0
+  btapa_modality_weight: 0.5
+  use_adba_aware_proto: false
+  lambda_adba_proto: 0.05
+  adba_margin: 3
+  use_full_aux_loss: false
+loss:
+  u_mask_beam_jepa:
+    use_beam_topology_proto: true
+    proto_target_type: beam_soft
+output:
+  run_name: main_v3_strong_reliability_btapa

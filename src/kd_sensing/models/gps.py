@@ -34,14 +34,3 @@ class GpsFeatureExtractor(nn.Module):
             )
         features = self.net(gps_batch.reshape(batch_size * seq_len, feature_dim))
         return features.view(batch_size, seq_len, -1)
-
-MODELS.register_removed(
-    "gps_strong",
-    "Use model.primary.type='modular_sequence' with encoders.gps.type='gps_mlp', representation_core.type='single_gru', and heads.beam.type='beam_head'.",
-)
-MODELS.register_removed(
-    "gps_lightweight",
-    "Use configs/gps/lightweight.yaml with model.primary.type='modular_sequence' and encoders.gps.type='gps_mlp'.",
-)
-MODELS.register_removed("gps_teacher", "Use configs/gps/strong.yaml with model.primary.type='modular_sequence'.")
-MODELS.register_removed("gps_student", "Use configs/gps/lightweight.yaml with model.primary.type='modular_sequence'.")

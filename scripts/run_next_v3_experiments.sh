@@ -41,6 +41,11 @@ run_one() {
   local idx="$2"
   local name
   name="$(basename "$cfg" .yaml)"
+  if completed_run "$name"; then
+    echo "[skip] $(date -Is) already complete cfg=$cfg" | tee "$log_dir/$name.log"
+    echo "0" >"$log_dir/$name.exit"
+    return 0
+  fi
   local cmd=(
     conda run --no-capture-output -n kd_mm_beam kd-sensing-train
     --config "$cfg" --auto-resume --num-workers "$num_workers" --no-pin-memory
@@ -67,6 +72,31 @@ run_one() {
   echo "$status" >"$log_dir/$name.exit"
   echo "[done] $(date -Is) status=$status cfg=$cfg" >>"$log_dir/$name.log"
   return "$status"
+}
+
+completed_run() {
+  local name="$1"
+  local run_dir="outputs/scene31/$name"
+  if [[ -f "$run_dir/run_status.json" ]] && grep -q '"state": "complete"' "$run_dir/run_status.json"; then
+    return 0
+  fi
+  local metrics="$run_dir/metrics.csv"
+  [[ -f "$metrics" ]] || return 1
+  awk -F, '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "epoch") epoch_col = i
+        if ($i == "total_epochs") total_col = i
+      }
+    }
+    NR > 1 && epoch_col && total_col {
+      epoch = $epoch_col
+      total = $total_col
+    }
+    END {
+      exit !(epoch != "" && total != "" && epoch + 0 >= total + 0)
+    }
+  ' "$metrics"
 }
 
 failures=0

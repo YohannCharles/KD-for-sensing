@@ -289,57 +289,6 @@
 - **THEN** runtime metadata MUST 记录启用 targets、主 metric、metric mode、每个 target 的 output/head 名称和关键 loss 字段
 - **AND** metrics output MUST 能追溯 beam、LOS 和 link 三类指标
 
-### Requirement: GPS-conditioned JEPA 自监督 objective
-系统 MUST 支持 `experiment.objective: gps_conditioned_jepa`，用于 GPS 条件化 JEPA latent prediction 预训练。该 objective MUST 使用 image 和 GPS 输入构造自监督 latent target，MUST 不要求 beam label、occlusion label、position target、LOS label 或 link quality target，并 MUST 不计算 beam Top-K、DBA、occlusion、position、LOS 或 link 指标。
-
-#### Scenario: 解析 JEPA objective
-- **WHEN** 用户加载 `experiment.objective: gps_conditioned_jepa` 的配置
-- **THEN** objective metadata MUST 将主 loss 解析为 `jepa`
-- **AND** 默认 early stopping metric MUST 为 `val_jepa_loss`
-- **AND** 默认 early stopping mode MUST 为 `min`
-
-#### Scenario: JEPA objective 不要求 beam target
-- **WHEN** JEPA 训练 batch 包含 image 和 GPS 但不包含 `target_beam`
-- **THEN** 训练流程 MUST 能准备自监督 JEPA target
-- **AND** 系统 MUST 不调用 beam label 准备、beam CE/Focal loss 或 beam Top-K 指标
-
-#### Scenario: JEPA objective 要求 image 和 GPS
-- **WHEN** JEPA objective 的 batch 缺少 image 或 GPS 字段
-- **THEN** 系统 MUST 拒绝训练或验证该 batch
-- **AND** 错误信息 MUST 包含缺失字段和 `gps_conditioned_jepa` objective 名称
-
-### Requirement: JEPA objective 指标和日志契约
-系统 MUST 为 `gps_conditioned_jepa` objective 提供独立的 available metrics、history fields、TensorBoard scalar 映射和 runtime metadata。该 objective 的公开验证指标 MUST 至少包含 `val_loss` 和 `val_jepa_loss`，且 `val_jepa_loss` MUST 是默认主指标。
-
-#### Scenario: JEPA validation metrics
-- **WHEN** 验证或评估 `gps_conditioned_jepa` objective
-- **THEN** validation metrics MUST 包含 `val_jepa_loss` 和 `val_loss`
-- **AND** `available_metrics` MUST 只暴露 JEPA objective 可用指标和通用 loss 指标
-- **AND** validation metrics MUST NOT 暴露 `val_adba`、`val_acc`、`val_beam_top1`、`val_occlusion_blocked_f1`、`val_position_rmse`、`val_los_f1` 或 `val_link_mae`
-
-#### Scenario: JEPA TensorBoard scalar 隔离
-- **WHEN** 当前 objective 为 `gps_conditioned_jepa`
-- **THEN** TensorBoard scalar MUST 包含 JEPA train/validation loss、mask ratio 和 EMA decay 中已产生的正式字段
-- **AND** TensorBoard scalar MUST NOT 包含 beam Top-K、DBA、occlusion、position、LOS 或 link quality tag
-
-#### Scenario: JEPA runtime metadata
-- **WHEN** JEPA 训练创建或完成运行产物
-- **THEN** `final_config.yaml` 或运行 metadata MUST 记录 `objective: gps_conditioned_jepa`
-- **AND** metadata MUST 记录主 loss、主 metric、metric mode、启用 targets、启用 model outputs 和 pretraining kind
-
-### Requirement: JEPA objective early stopping 校验
-系统 MUST 根据 `gps_conditioned_jepa` objective 的 available metrics 校验 early stopping metric。用户显式配置 beam、occlusion、position、LOS 或 link metric 作为 JEPA early stopping metric 时，系统 MUST 拒绝继续训练并报告 JEPA objective 可用指标。
-
-#### Scenario: 拒绝 beam early stopping metric
-- **WHEN** 配置设置 `experiment.objective: gps_conditioned_jepa` 且 `training.early_stopping_metric: val_adba`
-- **THEN** early stopping metric 校验 MUST 失败
-- **AND** 错误信息 MUST 包含 `gps_conditioned_jepa` 和可用指标列表
-
-#### Scenario: 接受 JEPA early stopping metric
-- **WHEN** 配置设置 `experiment.objective: gps_conditioned_jepa` 且 `training.early_stopping_metric: val_jepa_loss`
-- **THEN** early stopping metric 校验 MUST 通过
-- **AND** checkpoint metadata MUST 记录 primary metric 为 `val_jepa_loss` 且 mode 为 `min`
-
 ### Requirement: Objective metadata 可合并但行为不可变
 预测目标的默认 metric、metric mode、available metrics、alias、history fields、TensorBoard scalars 和 runtime metadata MAY 合并到单一 owner 表或 helper。合并 MUST 保持每个 objective 的公开字段名和校验行为不变。
 
@@ -361,3 +310,107 @@ Objective metadata 合并 MUST 不新增 registry、factory、adapter 或多文�
 - **THEN** 调用方 MUST 继续通过 objective metadata owner 查询
 - **AND** trainer、validator 和 tensorboard logging MUST 不维护独立重复表
 
+### Requirement: 未来标签时隙对齐
+训练、验证、评估、诊断预测导出和 KD 相关 loss MUST 使用 `num_pred` 个未来标签时隙。`num_pred=3` 时，系统 MUST 将 label 和预测 slot 解释为 `[t+1, t+2, t+3]`，不得包含当前或历史最后一个 beam。
+
+#### Scenario: 训练 loss 使用未来标签
+- **WHEN** 训练流程准备 batch 且 `num_pred: 3`
+- **THEN** loss 输入 logits MUST 与 `[t+1, t+2, t+3]` 三个标签时隙对齐
+- **AND** flatten 后的 logits 数量 MUST 等于 flatten 后的 labels 数量
+
+#### Scenario: 输出 slot 选择使用 future horizon
+- **WHEN** 模型输出 logits 的时间维长度大于或等于 `num_pred`
+- **THEN** 统一 slot 选择 helper MUST 返回最后 `num_pred` 个 slot
+- **AND** 返回结果 MUST 与 `prepare_labels()` 输出的 future labels 同长
+- **AND** 该 helper 的语义 MUST 表示长时序输出对齐，不得作为方法专属额外 prediction slot 的兼容承诺
+
+#### Scenario: 输出 slot 不足时报错
+- **WHEN** 模型输出 logits 的时间维长度小于 `num_pred`
+- **THEN** 训练、验证或评估流程 MUST 报出清晰错误
+- **AND** 系统 MUST 不通过重复、padding 或拼接历史 beam 自动补齐 prediction slots
+
+#### Scenario: 诊断预测导出保留 t+1
+- **WHEN** viewer prediction export 写出 `confidence_curves` 或 `beam_distribution`
+- **THEN** 导出的第一个 horizon MUST 表示 `t+1`
+- **AND** 导出逻辑 MUST 不把第一个预测 slot 当作 current beam 丢弃
+
+### Requirement: Future horizon flat metrics
+验证和评估输出 MUST 在现有 nested top-k 数组之外，增加 future horizon 扁平指标字段。字段 MUST 使用 `t1/t2/t3/avg` 命名，并 MUST 不输出历史 current beam 或 h0 指标。
+
+#### Scenario: 保存三步 Top-K 扁平字段
+- **WHEN** 验证阶段产出 logits `[B,3,64]` 和 labels `[B,3]`
+- **THEN** `metrics.json` MUST 包含 `val_top1_t1`、`val_top1_t2`、`val_top1_t3` 和 `val_top1_avg`
+- **AND** `metrics.json` MUST 包含 `val_top3_avg` 和 `val_top5_avg`
+- **AND** 这些 avg 字段 MUST 对有效 future horizon 求平均
+
+#### Scenario: 不输出旧 h0 指标
+- **WHEN** 普通 future-only 评估写出 metrics
+- **THEN** metrics MUST 不包含 `top1_h0`
+- **AND** metrics MUST 不包含 `top1_future_avg`
+- **AND** metrics MUST 不包含 `beam8_acc`
+
+### Requirement: Metric horizon aggregation consistency
+训练验证、force-mask subset 验证和 standalone evaluate MUST 对 beam Top-K、ADBA/DBA 和公开 top-level scalar 使用同一套 selected metric horizons。配置或 runtime 解析出的 `metric_horizons` MUST 被记录在 metrics metadata 中，subset top-level scalar MUST NOT 回退到 first valid slot 口径。
+
+#### Scenario: subset top1 使用 selected horizons
+- **WHEN** 配置选择 `metric_horizons=[2,4,6]` 或等价 horizon 集合
+- **THEN** 普通 validation 的 top-level Top-1 MUST 基于这些 selected horizons 聚合
+- **AND** force-mask subset validation 的 top-level `top1` 或等价 scalar MUST 使用同一 selected horizon 聚合
+- **AND** subset validation MUST NOT 使用 first valid slot 作为 top-level `top1`
+
+#### Scenario: standalone evaluate 记录同一口径
+- **WHEN** 用户通过 standalone evaluate 运行同一配置
+- **THEN** evaluate metrics/report MUST 记录实际使用的 `metric_horizons`
+- **AND** Top-K 与 DBA/ADBA top-level scalar MUST 与训练验证使用同一 horizon 选择规则
+- **AND** 若输出逐 horizon 诊断，诊断字段 MUST 与 top-level 聚合字段可区分
+
+#### Scenario: 未配置 horizons 使用统一默认
+- **WHEN** 配置没有显式设置 `metric_horizons`
+- **THEN** validation、subset validation 和 evaluate MUST 使用同一个默认 horizon 集合
+- **AND** metrics metadata MUST 记录默认来源或等价说明
+
+### Requirement: Objective metrics 可用性语义
+训练、验证和评估流程 MUST 区分 active objective metrics 与 inactive metrics。未启用、缺少 head、缺少 target 或未实际计算的任务指标 MUST 不被写成 `0.0` 真实性能；系统 MUST 用缺失、`null`、`NaN` 或显式 availability metadata 表示不可用状态。
+
+#### Scenario: beam-only 训练不写 position 零曲线
+- **WHEN** 用户运行 `experiment.objective: beam` 且未启用 position target/head 的训练
+- **THEN** TensorBoard MUST 不写入 `position/rmse` 或 `position/mae` 标量曲线
+- **AND** epoch log MUST 不把 `val_position_rmse` 或 `val_position_mae` 记录为真实 `0.0`
+
+#### Scenario: occlusion-only 训练不写 position 零曲线
+- **WHEN** 用户运行 `experiment.objective: occlusion` 且未启用 position target/head 的训练
+- **THEN** TensorBoard MUST 不写入 `position/rmse` 或 `position/mae` 标量曲线
+- **AND** `training_outputs.npz` 若保留 position metric 数组 key，inactive slot MUST 使用 `NaN` 或等价不可用表示
+
+#### Scenario: position-only 训练不写 occlusion 零曲线
+- **WHEN** 用户运行 `experiment.objective: position` 且未启用 occlusion target/head 的训练
+- **THEN** TensorBoard MUST 不写入 `occlusion/accuracy` 或 `occlusion/blocked_f1` 标量曲线
+- **AND** epoch log MUST 不把 `val_occlusion_accuracy` 或 `val_occlusion_blocked_f1` 记录为真实 `0.0`
+
+#### Scenario: multitask 训练写入全部 active metrics
+- **WHEN** 用户运行 `experiment.objective: multitask` 且 beam、occlusion 和 position metrics 均可计算
+- **THEN** TensorBoard MUST 写入 beam、occlusion 和 position 对应的 active scalar 曲线
+- **AND** `train_log.json` MUST 记录三个任务的验证指标和 multitask 加权总 loss
+
+#### Scenario: early stopping 不接受 inactive metric
+- **WHEN** 用户配置的 early stopping metric 对当前 objective 不可用
+- **THEN** 训练流程 MUST 在保存 misleading checkpoint 前抛出清晰错误
+- **AND** 错误信息 MUST 指出缺失的 metric，并提示用户选择当前 objective 可用的 metric
+
+### Requirement: Objective-aware validation 输出
+验证和评估输出 MUST 只把真实计算的 auxiliary metrics 提升为 top-level metric，并 MUST 提供足够 metadata 说明哪些 objective targets 和 heads 已启用。inactive metric 不得通过默认零值绕过下游 early stopping 和图表解释。
+
+#### Scenario: metrics JSON 省略 inactive auxiliary metric
+- **WHEN** 验证 `experiment.objective: beam` 且未计算 position metric
+- **THEN** `metrics.json` MUST 不把 top-level `val_position_rmse` 写成 `0.0`
+- **AND** 输出 MUST 能通过 objective metadata 表明 position 不是本次 enabled head/target
+
+#### Scenario: metrics JSON 包含 active position metric
+- **WHEN** 验证 `experiment.objective: position` 且 position output、target 和 valid mask 均可用
+- **THEN** `metrics.json` MUST 包含真实计算的 `val_position_rmse`
+- **AND** 该值 MUST 用 position target scaler 反归一化后的尺度计算
+
+#### Scenario: metrics JSON 包含 active occlusion metric
+- **WHEN** 验证 `experiment.objective: occlusion` 且 occlusion logits、label 和 valid mask 均可用
+- **THEN** `metrics.json` MUST 包含真实计算的 `val_occlusion_blocked_f1`
+- **AND** 该值 MUST 可作为 `val_occlusion_blocked_f1/max` early stopping 来源

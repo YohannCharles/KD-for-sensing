@@ -120,3 +120,29 @@
 - **WHEN** 使用 synthetic batch 同时启用 RBMA、prototype alignment 和 online full-to-partial KD
 - **THEN** total loss MUST 为有限 tensor
 - **AND** 调用 `loss.backward()` MUST 成功
+
+### Requirement: Prototype target type switch
+现有 beam prototype alignment MUST 保留旧逻辑，并 MUST 通过配置选择 onehot、旧 soft target 或 BTAPA beam-soft target。默认旧 V3 配置 MUST 不被新 BTAPA 配置覆盖。
+
+#### Scenario: 旧 V3 prototype 配置保持不变
+- **WHEN** 用户加载 `configs/scene31/main_v3_strong_reliability_proto.yaml`
+- **THEN** 配置 MUST 继续使用 strong encoder、weighted_sum reliability fusion、missing modality mask 和旧 beam prototype alignment
+- **AND** 配置 MUST 不启用 RBMA、JEPA、KD 或 full auxiliary loss
+
+#### Scenario: BTAPA 配置启用新 target
+- **WHEN** 用户加载 BTAPA Scene31 配置
+- **THEN** 配置 MUST 设置 `use_beam_topology_proto=true` 和 `proto_target_type=beam_soft`
+- **AND** 输出 run name MUST 与旧 V3 baseline 区分
+
+### Requirement: RBMA missing-modality ablation workflow
+项目 MUST 提供配置驱动的 RBMA missing-modality ablation workflow。该 workflow MUST 通过当前训练/评估入口运行，不得新增根目录训练脚本、重复 trainer 或绕过配置解析 guard。
+
+#### Scenario: 使用当前训练入口运行主配置
+- **WHEN** 用户运行 RBMA prototype KD 主配置
+- **THEN** 系统 MUST 通过 `conda run -n kd_mm_beam kd-sensing-train --config <config>` 或等价当前训练入口执行
+- **AND** 系统 MUST 不要求用户运行根目录 `train.py`
+
+#### Scenario: 配置覆盖不恢复 retired KD
+- **WHEN** 用户通过 CLI 或 config override 尝试启用 `logits_kd`、`rkd`、`distillation.*` 或旧 teacher/student runtime
+- **THEN** 配置加载 MUST 继续失败
+- **AND** 错误信息 MUST 指向当前 U-MaskBeamJEPA full-to-partial stabilization 或当前 supervised/adaptation 入口

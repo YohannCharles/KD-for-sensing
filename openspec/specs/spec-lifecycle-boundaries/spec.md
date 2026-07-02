@@ -165,3 +165,15 @@ retired-tombstone spec MAY 被归档或折叠到集中 retired summary，但只�
 - **THEN** lifecycle inventory MAY 将其标记为 current
 - **AND** mainline catalog、experiment protocols 和 result claims registry MUST 明确标注 claim caveat
 
+### Requirement: 当前架构规格遵循 lifecycle 分类
+`project-architecture` spec MUST 与 OpenSpec capability lifecycle inventory 保持一致。已经标记为 `retired-tombstone` 的能力 MUST 只作为退役边界、禁止回流、migration guard 或历史背景出现；标记为 `supporting` 的能力 MUST 不被描述为 standalone 当前推荐入口。
+
+#### Scenario: 退役能力不作为当前热点
+- **WHEN** `project-architecture` 提到 HiST/Hist、Raymobtime s008、Top8 selector、GPS residual、camera residual、CRAF/MARF/G2D、Multimodal-NF 或旧 KD
+- **THEN** 对应段落 MUST 明确其 retired/supporting 语义
+- **AND** 文档 MUST 不要求恢复旧 CLI、旧配置、旧 facade 或旧 root script
+
+#### Scenario: 支撑能力指向当前 workflow
+- **WHEN** `project-architecture` 提到仍被当前 workflow 复用的支撑代码
+- **THEN** 文档 MUST 指向实际 current workflow
+- **AND** 文档 MUST 不把支撑代码所属的旧研究路线描述为当前入口

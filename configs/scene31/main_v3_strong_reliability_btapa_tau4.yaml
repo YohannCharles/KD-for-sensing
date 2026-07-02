@@ -1,0 +1,7 @@
+_base_: main_v3_strong_reliability_btapa.yaml
+experiment:
+  name: main_v3_strong_reliability_btapa_tau4
+training:
+  tau_beam: 4.0
+output:
+  run_name: main_v3_strong_reliability_btapa_tau4

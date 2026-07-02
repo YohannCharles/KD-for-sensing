@@ -337,3 +337,37 @@ BeamBench Image AE+GPS Direct workflow MUST 保持 package CLI、训练 runner�
 - **WHEN** 新增 BeamBench helper 或 report writer
 - **THEN** 实现 MUST 放入现有具体 owner 模块或新窄模块
 - **AND** `__init__.py` MUST 不新增只为便利导入的长期 re-export
+
+### Requirement: BeamBench 对齐 supervised 下游验证
+项目 MUST 提供 image+GPS supervised fair low-memory 配置族，用于比较 supervised baseline 与 JEPA context encoder 初始化的下游 beam prediction。该配置族 MUST 使用 DeepSense6G scenes 32、33、34 的训练 split 作为训练来源，MUST 使用训练 split 内部划分的 validation 子集做 checkpoint selection，MUST 在训练完成后单独评估 scenes 31、32、33、34 的 test split，并 MUST 将 final test metrics 写入运行 metadata。保留 `beambench_fair` 文件名的配置 MUST 表示 BeamBench Table III 的输入、split、target 和 metric 口径对齐，不得继续使用旧的 8 帧 relative-polar fair 口径。
+
+#### Scenario: fair 配置使用独立选模 split
+- **WHEN** 用户加载 BeamBench-fair supervised 下游配置
+- **THEN** `data.validation_from_train.enabled` MUST 为 true
+- **AND** 训练循环 MUST 优先使用 `validation` dataloader 计算 early stopping metric
+- **AND** `test` dataloader MUST 不用于 early stopping/checkpoint selection
+
+#### Scenario: fair 配置训练后执行 final test
+- **WHEN** fair supervised 训练结束且运行目录存在 `checkpoints/best.pth`
+- **THEN** 系统 MUST 重新加载该 checkpoint
+- **AND** 系统 MUST 在 `test` dataloader 上计算 final test metrics
+- **AND** runtime metadata MUST 记录 `final_test_metrics.evaluation_split: test`
+- **AND** runtime metadata MUST 记录 `final_test_metrics.model_selection_split`
+
+#### Scenario: fair 配置使用 BeamBench DBA 口径
+- **WHEN** fair supervised 配置计算 DBA 或 ADBA
+- **THEN** `evaluation.dba_distance_mode` MUST 支持并设置为 `linear`
+- **AND** linear 模式 MUST 使用非环形 beam index 距离
+- **AND** 未显式设置该字段的现有配置 MUST 继续使用 circular DBA 默认行为
+
+#### Scenario: fair 配置固定 BeamBench 输入和预测窗口
+- **WHEN** fair supervised 配置被加载
+- **THEN** `data.dataset.num_pred` 和 `model.num_pred` MUST 为 1
+- **AND** `data.dataset.seq_len` 和 `model.seq_length` MUST 为 1
+- **AND** GPS 输入 MUST 使用 `paper_distance_angle` 二维 Direct 特征
+- **AND** beam target MUST 设置为 `beam_target_source: current`
+- **AND** `model.primary.gps_input_size` MUST 为 2
+- **AND** scene paper calibration angle MUST 通过 `gps_angle_offset_source: paper_scene_default` 或等价运行 metadata 记录
+- **AND** `evaluation.k_values` MUST 为 `[1, 3, 5]`
+- **AND** scheduler MUST 设置为 `none`
+- **AND** Table III Camera AE+GPS Direct 数值复现 MUST 使用专用 BeamBench runner，不得把通用 Image+GPS/JEPA fair 配置伪装成 Table III row 模型

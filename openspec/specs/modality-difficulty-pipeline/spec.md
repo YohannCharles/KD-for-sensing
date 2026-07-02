@@ -265,3 +265,107 @@ The difficulty pipeline MAY be materialized into local cache artifacts for bench
 - **THEN** loader MUST reject the payload
 - **AND** error message MUST include the mismatched cache path or key
 
+### Requirement: Benchmark 复用统一 difficulty pipeline
+JEPA GPS shortcut benchmark MUST 使用统一 modality difficulty pipeline 解析和应用 perturbation suites。现有 manifest 中的 GPS jitter、drift、missing/dropout、distractor、image degradation、temporal delay、sampling-rate mismatch 和 Scenario C suite type MUST 继续可解析，但 runner 内部 MUST 委托 shared difficulty operator，而不是维护独立实现分支。
+
+#### Scenario: 旧 perturbation suite 映射到 difficulty operator
+- **WHEN** benchmark manifest 使用现有 `gps_gaussian_jitter`、`image_occlusion` 或 `temporal_delay` suite type
+- **THEN** runner MUST 将 suite 标准化为对应 difficulty profile/operator
+- **AND** 输出 `metrics_by_condition.csv`、`robustness_summary.csv` 和 benchmark manifest 的核心列 MUST 保持兼容
+
+#### Scenario: Scenario C preset 使用 shared GPS async operator
+- **WHEN** benchmark manifest 引用 canonical Scenario C preset
+- **THEN** runner MUST 通过 shared GPS async operator 构造 `C0_sync` 到 `C4_severe_async`
+- **AND** metadata MUST 继续记录 max delay、GPS stride、dropout probability、fallback、source index 或等价 replay 字段
+
+#### Scenario: benchmark 和 evaluation 使用相同扰动
+- **WHEN** benchmark 与 evaluation 配置使用相同 profile id、operator、condition、severity、seed、split 和 sample id
+- **THEN** 二者应用到同一 synthetic batch 时 MUST 产生一致的扰动输入、mask 和 warnings
+
+### Requirement: Benchmark 输出 difficulty provenance
+Benchmark 输出 MUST 记录 shared difficulty pipeline provenance，包括 profile id、operator registry name、resolved operator parameters、profile digest、seed 派生字段、stage、split 和 replay metadata。该 provenance MUST 与模型 comparability metadata 分开记录，避免把输入难度误当成模型结构差异。
+
+#### Scenario: manifest 记录 difficulty provenance
+- **WHEN** benchmark 完成一个 difficulty suite
+- **THEN** `benchmark_manifest.json` 或等价输出 MUST 包含 difficulty profile digest、operator 列表、condition/severity、seed 和 warnings
+- **AND** 模型 config、checkpoint provenance、split metadata 与 difficulty provenance MUST 分字段记录
+
+#### Scenario: strict comparability 允许同一 difficulty profile
+- **WHEN** 多个模型在同一 split、label space 和同一 difficulty profile digest 下评估
+- **THEN** comparability 校验 MUST 不因共享 difficulty metadata 而失败
+- **AND** 若模型使用不同 difficulty profile digest，系统 MUST 拒绝写入同一严格可比较汇总或标记为不可比较
+
+### Requirement: Difficulty operator 注册表
+项目 MUST 提供 difficulty operator 注册边界，用于按字符串名称注册、查询和构建 GPS、image 和未来模态输入难度 operator。该注册边界 MAY 复用现有 `Registry` 实现或新增窄 registry，但 MUST 保持轻量导入，不得在导入 registry 时 eager import dataset、model、diagnostics renderer、training loop 或大型视觉依赖。
+
+#### Scenario: 按名称构建 GPS delay operator
+- **WHEN** 配置指定 difficulty operator `gps_temporal_delay` 及其参数
+- **THEN** 系统 MUST 通过 difficulty operator registry 构建该 operator
+- **AND** 训练、评估和 benchmark MUST 能复用同一注册名
+
+#### Scenario: 轻量导入 difficulty registry
+- **WHEN** 开发者执行 `import kd_sensing.registries` 或导入 difficulty registry 窄模块
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不导入默认 dataset、model、diagnostics renderer、torchvision 权重接口或训练循环
+
+#### Scenario: 未知 difficulty operator 错误可诊断
+- **WHEN** 配置引用未注册 difficulty operator
+- **THEN** 系统 MUST 抛出明确异常
+- **AND** 错误信息 MUST 包含 registry 名称、请求 operator 和可用 operator 列表
+
+### Requirement: 默认 difficulty operator 显式注册
+内置 difficulty operators MUST 通过显式默认组件导入或 difficulty 专用默认注册函数完成注册。构建流程在解析或应用 difficulty profile 前 MUST 触发该注册动作；仅导入 registry 对象 MUST 不自动注册所有重依赖 operator。
+
+#### Scenario: 构建前导入默认 difficulty operators
+- **WHEN** 配置加载或 benchmark runner 需要解析内置 GPS/image difficulty profile
+- **THEN** 构建流程 MUST 先触发默认 difficulty operator 注册
+- **AND** registry MUST 包含 GPS noise、GPS async、image degradation 等内置注册名
+
+#### Scenario: 自定义 difficulty operator 可插拔
+- **WHEN** 开发者在自定义模块中注册新的 image difficulty operator 并在配置中引用
+- **THEN** 系统 MUST 能在该模块被显式导入后解析并构建该 operator
+- **AND** 训练和 benchmark 主循环 MUST 不需要为该 operator 增加专用分支
+
+### Requirement: Difficulty 配置解析与校验
+配置加载流程 MUST 支持解析 top-level 或等价位置的 difficulty profiles，并在实体 YAML、virtual canonical 配置和命令行覆盖之后执行标准化与校验。解析结果 MUST 包含 profile id、operator list、stage/split selector、condition、severity、seed、affected modalities、fallback 和 digest。未知 operator、未知模态、非法 stage/split、非法 severity 或 target-shift 配置 MUST 被拒绝。
+
+#### Scenario: 实体配置解析 difficulty profiles
+- **WHEN** 用户加载包含 difficulty profiles 的实体 YAML
+- **THEN** 配置加载流程 MUST 在 defaults、overlay 和命令行覆盖后标准化 difficulty 配置
+- **AND** `final_config.yaml` 或 resolved config MUST 记录标准化后的 profile 和 digest
+
+#### Scenario: 命令行覆盖 difficulty severity
+- **WHEN** 用户通过命令行覆盖某个 difficulty profile 的 severity
+- **THEN** 覆盖 MUST 在 difficulty validation 前生效
+- **AND** resolved profile digest MUST 反映覆盖后的参数
+
+#### Scenario: 非法 stage 被拒绝
+- **WHEN** 配置声明 difficulty stage `preprocess_dataset_files`
+- **THEN** 系统 MUST 拒绝配置
+- **AND** 错误信息 MUST 列出允许的 stage，例如 train、validation、test、evaluation 和 benchmark
+
+### Requirement: Difficulty overlay recipe
+canonical/virtual config recipe MAY 生成当前支持的 difficulty overlay，例如 clean、GPS mild async、GPS severe async、GPS/image dropout training、image hard degradation 和 benchmark sweep。recipe 生成的 difficulty 配置 MUST 与实体 YAML 使用同一标准化、validation 和 digest 流程。已退役的旧 KD、G2D、CRAF、MARF 或 image motion profile MUST 不得通过 difficulty overlay 恢复。
+
+#### Scenario: 生成 mild async training overlay
+- **WHEN** 用户加载声明支持的 mild async training overlay 配置
+- **THEN** 系统 MUST 生成 train-stage GPS async difficulty profile
+- **AND** 其它 supervised/fusion 配置语义 MUST 继续由当前 canonical recipe 决定
+
+#### Scenario: difficulty overlay 不恢复 image motion profile
+- **WHEN** 用户加载 image degradation difficulty overlay
+- **THEN** image modality input profile MUST 仍解析为当前 RGB/ImageNet profile
+- **AND** 系统 MUST 不生成或接受已删除的 `motion_mask` image profile、image motion cache 或 motion encoder
+
+### Requirement: Difficulty 解析产物可比较
+系统 MUST 为 difficulty profiles 生成稳定 digest，用于 run metadata、benchmark comparability 和论文图表分组。digest MUST 基于标准化后的 operator、condition、severity、stage/split、seed 和 fallback，而不是用户 YAML 字段顺序。
+
+#### Scenario: 字段顺序不同 digest 相同
+- **WHEN** 两个配置声明语义相同但 YAML 字段顺序不同的 difficulty profile
+- **THEN** 标准化后的 digest MUST 相同
+- **AND** benchmark comparability MAY 将它们视为同一 difficulty condition
+
+#### Scenario: severity 改变 digest 改变
+- **WHEN** 两个 profile 仅 severity 不同
+- **THEN** digest MUST 不同
+- **AND** 输出指标 MUST 能按不同 severity 分组

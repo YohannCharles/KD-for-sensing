@@ -1,0 +1,9 @@
+_base_: main_v3_strong_reliability_btapa.yaml
+experiment:
+  name: main_v3_strong_reliability_btapa_adba
+training:
+  use_adba_aware_proto: true
+  lambda_adba_proto: 0.05
+  adba_margin: 3
+output:
+  run_name: main_v3_strong_reliability_btapa_adba

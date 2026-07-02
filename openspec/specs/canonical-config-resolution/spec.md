@@ -130,50 +130,6 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **THEN** 测试 MUST 能验证 source、overlay、normalization 和 validation 的执行顺序
 - **AND** 命令行覆盖 MUST 继续在配置生成后生效，并在必要的 runtime requirement 校验前被考虑
 
-### Requirement: Snapshot canonical 配置解析
-配置加载流程 MUST 能识别并生成 snapshot next-frame baseline 配置。可生成路径 MUST 包含单模态 `configs/<modality>/snapshot_next_frame_no_kd.yaml` 和 fusion `configs/fusion/<slug>_snapshot_next_frame_no_kd.yaml`。
-
-#### Scenario: 生成单模态 snapshot 配置
-- **WHEN** 用户加载缺失但合法的 `configs/gps/snapshot_next_frame_no_kd.yaml`
-- **THEN** 系统 MUST 生成可用于训练和评估的 GPS snapshot 配置
-- **AND** 最终配置 MUST 设置 `experiment.task: gps`
-- **AND** 最终配置 MUST 设置 `data.dataset.seq_len: 1` 和 `data.dataset.num_pred: 1`
-- **AND** 最终配置 MUST 设置 `data.dataset.train_csv_name: train_seqs_SNAPSHOT_NEXT_FRAME.csv`
-- **AND** 最终配置 MUST 设置 `data.dataset.val_csv_name: val_seqs_SNAPSHOT_NEXT_FRAME.csv` 或等价 validation CSV 字段
-- **AND** 最终配置 MUST 构建 `snapshot_frame` core
-
-#### Scenario: 生成 fusion snapshot 配置
-- **WHEN** 用户加载缺失但合法的 `configs/fusion/gps_mmwave_snapshot_next_frame_no_kd.yaml`
-- **THEN** 系统 MUST 生成可用于训练和评估的 fusion snapshot 配置
-- **AND** 最终配置 MUST 设置启用模态为 `["gps", "mmwave"]`
-- **AND** 最终配置 MUST 设置 `experiment.task: fusion`
-- **AND** 最终配置 MUST 构建无时序 snapshot fusion 模型
-
-#### Scenario: 拒绝非法 snapshot slug
-- **WHEN** 用户加载应被拒绝的非法路径 `configs/fusion/mmwave_gps_snapshot_next_frame_no_kd.yaml`
-- **THEN** 系统 MUST 拒绝该路径
-- **AND** 错误信息 MUST 提示 canonical slug 为 `gps_mmwave`
-
-### Requirement: Snapshot 配置生成语义
-生成的 snapshot 配置 MUST 明确覆盖历史窗口默认值，并保持实体 YAML 优先、命令行覆盖后应用和 schema 校验流程一致。
-
-#### Scenario: 覆盖历史窗口默认值
-- **WHEN** 系统生成任一 snapshot 配置
-- **THEN** 生成配置 MUST 覆盖默认 `seq_len=8` 和 `num_pred=3`
-- **AND** 生成配置 MUST 覆盖默认 GRU representation core
-- **AND** 生成配置 MUST 覆盖默认历史窗口 CSV 为 snapshot 专用 train/validation CSV
-- **AND** 生成配置 MUST 设置 `output.run_name` 包含 `snapshot_next_frame_no_kd`
-
-#### Scenario: 实体 snapshot 配置优先
-- **WHEN** 用户加载磁盘上存在的 snapshot YAML
-- **THEN** 配置加载流程 MUST 使用实体 YAML 内容
-- **AND** virtual snapshot 规则 MUST 不覆盖同名实体配置
-
-#### Scenario: 命令行覆盖仍生效
-- **WHEN** 用户加载 snapshot virtual 配置并传入覆盖项 `training.epochs=1`
-- **THEN** 最终配置 MUST 使用 `training.epochs: 1`
-- **AND** snapshot 必需字段 MUST 继续满足 `seq_len=1`、`num_pred=1` 和无时序 core 契约，除非用户显式退出 snapshot 变体并通过校验
-
 ### Requirement: 高级配置矩阵优先使用 recipe
 高级 fusion、objective 和当前保留的 ablation 配置矩阵 MUST 优先由 canonical recipe 或 overlay recipe 生成。实体 YAML MUST 只保留无法由 recipe 无损表达、需要人工编辑作为 base/example、或仍处于明确迁移窗口的配置。已退役的 G2D、CRAF 和 MARF 配置路径 MUST 不由 recipe 或 virtual alias 接管。
 
@@ -209,19 +165,6 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **WHEN** 开发者运行配置表面积回归检查
 - **THEN** 检查 MUST 拒绝新增与已支持 recipe 等价的实体 YAML
 - **AND** 如需新增实体 YAML，必须在 OpenSpec 中说明不能由 recipe 表达的字段
-
-### Requirement: 高级配置二次瘦身必须有候选分类
-项目 MUST 在删除仍保留的高级实体 YAML 前维护候选分类。每个候选配置 MUST 被归入可由 recipe 无损生成、可由 recipe 生成但存在显式差异、或需要作为人工样例继续保留三类之一。
-
-#### Scenario: 生成配置瘦身候选清单
-- **WHEN** 开发者准备收敛 `configs/fusion/`、`configs/csi/hardening_matrix/` 或其它高级实验配置矩阵
-- **THEN** 清单 MUST 记录每个候选实体 YAML 的分类、保留或删除理由和对应 recipe/overlay 名称
-- **AND** 未分类的实体 YAML MUST 不得被删除
-
-#### Scenario: 有差异的实体配置先记录差异
-- **WHEN** 某个实体 YAML 与候选 recipe 在模型、loss、training schedule、dataset 字段或 checkpoint 来源上存在差异
-- **THEN** 该差异 MUST 先记录为允许差异、overlay option 或保留理由
-- **AND** 不得把该实体 YAML 当作无损可生成配置直接删除
 
 ### Requirement: 高级实体 YAML 删除前必须通过等价检查
 删除高级实体 YAML 前，项目 MUST 提供 focused test 或脚本比较实体配置和替代 virtual/overlay 配置的关键语义。关键语义 MUST 至少覆盖 experiment name、task、dataset type、enabled modalities、model type、loss type、training schedule、output run name 和 checkpoint 来源。
@@ -266,63 +209,6 @@ canonical fusion 配置和 advanced overlay 生成 MUST 由可审查的 recipe/t
 - **WHEN** 项目保留一个不能删除的高级实体 YAML
 - **THEN** inventory MUST 记录它作为 base、example、迁移窗口或不可 recipe 化实验的用途
 - **AND** 后续删除或 recipe 化该文件 MUST 更新对应记录
-
-### Requirement: Difficulty 配置解析与校验
-配置加载流程 MUST 支持解析 top-level 或等价位置的 difficulty profiles，并在实体 YAML、virtual canonical 配置和命令行覆盖之后执行标准化与校验。解析结果 MUST 包含 profile id、operator list、stage/split selector、condition、severity、seed、affected modalities、fallback 和 digest。未知 operator、未知模态、非法 stage/split、非法 severity 或 target-shift 配置 MUST 被拒绝。
-
-#### Scenario: 实体配置解析 difficulty profiles
-- **WHEN** 用户加载包含 difficulty profiles 的实体 YAML
-- **THEN** 配置加载流程 MUST 在 defaults、overlay 和命令行覆盖后标准化 difficulty 配置
-- **AND** `final_config.yaml` 或 resolved config MUST 记录标准化后的 profile 和 digest
-
-#### Scenario: 命令行覆盖 difficulty severity
-- **WHEN** 用户通过命令行覆盖某个 difficulty profile 的 severity
-- **THEN** 覆盖 MUST 在 difficulty validation 前生效
-- **AND** resolved profile digest MUST 反映覆盖后的参数
-
-#### Scenario: 非法 stage 被拒绝
-- **WHEN** 配置声明 difficulty stage `preprocess_dataset_files`
-- **THEN** 系统 MUST 拒绝配置
-- **AND** 错误信息 MUST 列出允许的 stage，例如 train、validation、test、evaluation 和 benchmark
-
-### Requirement: Difficulty overlay recipe
-canonical/virtual config recipe MAY 生成当前支持的 difficulty overlay，例如 clean、GPS mild async、GPS severe async、GPS/image dropout training、image hard degradation 和 benchmark sweep。recipe 生成的 difficulty 配置 MUST 与实体 YAML 使用同一标准化、validation 和 digest 流程。已退役的旧 KD、G2D、CRAF、MARF 或 image motion profile MUST 不得通过 difficulty overlay 恢复。
-
-#### Scenario: 生成 mild async training overlay
-- **WHEN** 用户加载声明支持的 mild async training overlay 配置
-- **THEN** 系统 MUST 生成 train-stage GPS async difficulty profile
-- **AND** 其它 supervised/fusion 配置语义 MUST 继续由当前 canonical recipe 决定
-
-#### Scenario: difficulty overlay 不恢复 image motion profile
-- **WHEN** 用户加载 image degradation difficulty overlay
-- **THEN** image modality input profile MUST 仍解析为当前 RGB/ImageNet profile
-- **AND** 系统 MUST 不生成或接受已删除的 `motion_mask` image profile、image motion cache 或 motion encoder
-
-### Requirement: Difficulty 解析产物可比较
-系统 MUST 为 difficulty profiles 生成稳定 digest，用于 run metadata、benchmark comparability 和论文图表分组。digest MUST 基于标准化后的 operator、condition、severity、stage/split、seed 和 fallback，而不是用户 YAML 字段顺序。
-
-#### Scenario: 字段顺序不同 digest 相同
-- **WHEN** 两个配置声明语义相同但 YAML 字段顺序不同的 difficulty profile
-- **THEN** 标准化后的 digest MUST 相同
-- **AND** benchmark comparability MAY 将它们视为同一 difficulty condition
-
-#### Scenario: severity 改变 digest 改变
-- **WHEN** 两个 profile 仅 severity 不同
-- **THEN** digest MUST 不同
-- **AND** 输出指标 MUST 能按不同 severity 分组
-
-### Requirement: 高级实体配置删除必须先分类
-删除或迁移高级实体 YAML 前，项目 MUST 维护候选分类。每个候选配置 MUST 被归入 canonical/root 保留、recipe 可无损生成、recipe 可生成但有显式差异、人工样例、debug/smoke、diagnostics manifest、历史归档或删除。未分类配置 MUST 不得删除。
-
-#### Scenario: JEPA image GPS 配置矩阵分类
-- **WHEN** 开发者准备收敛 `configs/fusion/experiments/jepa_image_gps/*.yaml`
-- **THEN** 每个实体 YAML MUST 有分类、保留/删除理由和替代 recipe、overlay、manifest 或文档路径
-- **AND** 删除后的 README、docs、tests、scripts 和 OpenSpec current specs MUST 不引用不存在的 current 配置路径
-
-#### Scenario: diagnostics manifest 保留
-- **WHEN** 某个 YAML 是手工维护的 diagnostics manifest 且包含 checkpoint 占位、suite 定义或比较矩阵
-- **THEN** 本 change MUST 保留该实体 YAML 或提供等价 manifest generator
-- **AND** 删除前 MUST 有 focused test 验证 manifest 解析和输出 schema
 
 ### Requirement: 可生成配置必须有等价验证
 实体 YAML 被 recipe、overlay 或 manifest generator 替代前，项目 MUST 用 focused test 或脚本验证关键解析语义。关键语义 MUST 至少覆盖 experiment name、task/objective、dataset type、enabled modalities、model type、loss type、training defaults、output run name 和 checkpoint/artifact policy。
@@ -379,3 +265,171 @@ canonical/virtual config recipe MAY 生成当前支持的 difficulty overlay，�
 - **THEN** 实现 MUST 不新增与 recipe 等价的实体 YAML 来弥补删除
 - **AND** final/resolved config MUST 继续保存完整解析结果
 
+### Requirement: 虚拟 canonical 配置工作流
+训练、评估和测试工作流 MUST 接受由配置加载器生成的虚拟 canonical fusion 配置。虚拟配置 MUST 在进入训练、评估、dry-run、override 合并、验证和 artifact 写出之前被解析为完整配置字典。
+
+#### Scenario: 训练入口使用虚拟 canonical 配置
+- **WHEN** 用户运行 `kd-sensing-train --config configs/fusion/gps_mmwave_lightweight.yaml`
+- **THEN** 系统 MUST 解析该 canonical path 并启动 fusion lightweight 训练流程
+- **AND** 训练流程 MUST 不要求 `configs/fusion/gps_mmwave_lightweight.yaml` 在磁盘上存在
+
+#### Scenario: 评估入口使用虚拟 canonical 配置
+- **WHEN** 用户运行 `kd-sensing-evaluate --config configs/fusion/gps_mmwave_lightweight.yaml --weights <path>`
+- **THEN** 系统 MUST 解析该 canonical path 并构建对应 fusion primary 模型
+- **AND** 评估流程 MUST 只准备该配置启用的模态输入
+
+#### Scenario: dry-run 使用虚拟 canonical 配置
+- **WHEN** 用户运行 `kd-sensing-train --config configs/fusion/gps_mmwave_lightweight.yaml --dry-run`
+- **THEN** 系统 MUST 先生成 canonical 配置，再应用 dry-run 覆盖
+- **AND** dry-run MUST 使用 synthetic dataset、单 epoch 和关闭 worker 的现有行为
+
+#### Scenario: 保存完整 final config
+- **WHEN** 使用虚拟 canonical 配置完成训练
+- **THEN** 系统 MUST 在运行目录保存完整解析后的 `final_config.yaml`
+- **AND** `final_config.yaml` MUST 包含训练复现所需的全部字段，而不是只保存虚拟路径或生成规则
+
+#### Scenario: CLI override 覆盖虚拟配置
+- **WHEN** 用户通过 `--override` 或点式未知参数覆盖虚拟 canonical 配置字段
+- **THEN** 系统 MUST 在生成 canonical 配置之后应用这些覆盖
+- **AND** 覆盖优先级 MUST 与实体 YAML 配置保持一致
+
+### Requirement: 删除实体配置后 workflow 必须可复现
+当当前保留的实体 YAML 被 recipe/overlay 替代后，训练和评估 workflow MUST 继续保存足够的 resolved/final 配置、运行元数据和 checkpoint 来源信息，保证不恢复被删除 YAML 也能理解实际运行参数。已退役的 CRAF、MARF、G2D 和 Multimodal-NF 实体 YAML 删除后 MUST 不提供同名 recipe/overlay 兼容。
+
+#### Scenario: virtual 配置训练记录完整
+- **WHEN** 用户使用当前保留的 virtual/overlay 配置完成训练或 dry-run artifact 写出
+- **THEN** 运行目录 MUST 包含完整 `final_config.yaml`、`resolved_config.yaml`、训练元数据和 checkpoint 来源信息
+- **AND** 这些 artifact MUST 能说明实际模型、数据、loss、训练参数和输出 run name
+
+#### Scenario: 删除 YAML 不影响评估入口
+- **WHEN** 某个当前保留的实体 YAML 被删除但对应 virtual/overlay 配置仍被声明支持
+- **THEN** `kd-sensing-evaluate --config <deleted-yaml-path>` MUST 通过配置加载器解析等价最终配置
+- **AND** 如果该路径未被声明支持，系统 MUST 抛出清晰缺失配置错误
+
+#### Scenario: 退役 YAML 不支持 virtual fallback
+- **WHEN** 被删除 YAML 属于 CRAF、MARF、G2D 或 Multimodal-NF
+- **THEN** 系统 MUST 将其视为不支持路径
+- **AND** 系统 MUST 不为其提供 virtual fallback
+
+### Requirement: Baseline clone config diff artifact
+The experiment workflow MUST support comparing a generated baseline clone against a reference baseline resolved config. The diff MUST separate allowed run identity differences from key behavior differences.
+
+#### Scenario: 生成 A0 clone diff
+- **WHEN** both `A0_original` and `A0_clone_generated` resolved configs are available
+- **THEN** the workflow MUST produce a diff artifact comparing them
+- **AND** the diff MUST ignore only allowlisted run identity fields such as run name, output directory, timestamp and seed when configured
+
+#### Scenario: 关键字段差异失败
+- **WHEN** the diff finds a difference in optimizer, scheduler, loss, dataset split, normalization, train RMS path, `seq_len`, `num_pred`, `num_classes`, model type, CSI encoder, representation core or beam head
+- **THEN** the workflow MUST mark the parity check as failed
+- **AND** the failure message MUST list the differing config paths
+
+### Requirement: config/io 不承载业务规则实现
+`kd_sensing.config.io` MUST 保持配置入口协调职责，负责加载实体 YAML 或 virtual config、应用命令行覆盖、调用 normalization pipeline 和调用 validation pipeline。objective 默认补全、模态推导、dataset-specific rules、迁移拒绝和 schema validation 的主要实现 MUST 位于独立 helper。
+
+#### Scenario: Raymobtime 退役规则不写在 io 入口
+- **WHEN** 开发者调整 Raymobtime s008 退役配置、旧 dataset 名称或旧 preprocessor 名称的拒绝规则
+- **THEN** 主要实现 MUST 位于 migration guard、config validation helper 或 registry 拒绝 helper
+- **AND** `config/io.py` MUST 只调用该 helper，不得恢复 Raymobtime dataset/preprocessor 运行路径
+
+#### Scenario: removed image motion guard 不写在 io 入口
+- **WHEN** 开发者调整已删除 image motion profile、cache 或 encoder 的拒绝逻辑
+- **THEN** 主要实现 MUST 位于 migration guard 或 image profile validation helper
+- **AND** `config/io.py` MUST 不直接维护该迁移规则的完整实现
+
+#### Scenario: objective 默认值不写在 io 入口
+- **WHEN** 开发者新增或调整 prediction objective 的默认 early stopping metric、loss weights 或 required target/head
+- **THEN** 主要实现 MUST 位于 objective metadata、normalization helper 或 validation helper
+- **AND** `config/io.py` MUST 不维护 objective 专属分支表
+
+### Requirement: Fusion canonical 多模态配置矩阵
+项目 MUST 为 `image`、`radar`、`gps`、`lidar`、`mmwave` 的所有必要多模态组合提供 canonical fusion supervised 配置矩阵。多模态组合 MUST 覆盖全部 10 个双模态组合、10 个三模态组合、5 个四模态组合和 1 个五模态组合。每个组合 MUST 提供可加载的 strong 和 lightweight canonical 配置路径；这些 canonical 配置 MAY 由 loader 生成，不要求每个路径都有实体 YAML 文件。
+
+#### Scenario: 双模态 fusion 组合完整
+- **WHEN** 开发者加载 `configs/fusion/<slug>_<mode>.yaml`
+- **THEN** 系统 MUST 为所有合法双模态 slug 提供 `<slug>_strong.yaml` 和 `<slug>_lightweight.yaml`
+- **AND** 系统 MUST 不要求提供 `<slug>_logits_kd.yaml` 或 `<slug>_rkd.yaml`
+
+#### Scenario: 五模态 fusion 组合完整
+- **WHEN** 开发者加载五模态 fusion canonical 配置
+- **THEN** 系统 MUST 提供可加载的 `image_radar_gps_lidar_mmwave_strong.yaml` 和 `image_radar_gps_lidar_mmwave_lightweight.yaml`
+- **AND** 系统 MUST 拒绝同 slug 的 KD 配置路径
+
+### Requirement: Fusion canonical 配置语义
+每个 canonical fusion 配置 MUST 使用固定模态顺序 `image`、`radar`、`gps`、`lidar`、`mmwave` 生成 slug。推荐/default fusion lightweight 路线 MUST 使用 `cls_token_transformer_fusion` 或当前 active fusion model。canonical 配置语义 MUST 不依赖实体 YAML 文件是否存在，且 MUST 不包含 distillation 或 frozen teacher runtime。
+
+#### Scenario: fusion strong 配置
+- **WHEN** 开发者加载 `configs/fusion/<slug>_strong.yaml`
+- **THEN** 配置 MUST 设置 `experiment.task: fusion`
+- **AND** 配置 MUST 将 `model.primary` 配置为 strong fusion baseline
+- **AND** primary model modalities MUST 等于 slug 表示的模态集合
+
+#### Scenario: fusion lightweight 默认配置
+- **WHEN** 开发者加载 `configs/fusion/<slug>_lightweight.yaml`
+- **THEN** 配置 MUST 设置 `experiment.task: fusion`
+- **AND** 配置 MUST 将 `model.primary` 配置为 `cls_token_transformer_fusion` 或当前推荐 lightweight fusion 模型
+- **AND** 配置 MUST 不构建 frozen teacher
+
+### Requirement: 当前高级 fusion overlay 边界
+当前保留的高级 fusion overlay MUST 只覆盖已批准的 objective-aware 或调试入口。已退役的 CRAF、MARF、G2D 和相关 ablation 配置 MUST 不再由 overlay recipe 或 virtual alias 生成。
+
+#### Scenario: 保留实体 YAML 优先
+- **WHEN** 用户加载一个仍存在的 `configs/fusion/*.yaml` 文件
+- **THEN** 系统 MUST 使用该实体 YAML 的内容
+- **AND** 不得用 virtual overlay 规则覆盖实体 YAML 中显式配置的字段
+
+#### Scenario: 退役实体 YAML 不被 virtual 接管
+- **WHEN** 被删除 YAML 属于 CRAF、MARF 或 G2D
+- **THEN** 系统 MUST 将其视为不支持路径
+- **AND** 系统 MUST 不为其提供 virtual fallback
+
+#### Scenario: 配置矩阵测试覆盖 overlay
+- **WHEN** 开发者运行 fusion 配置矩阵测试
+- **THEN** 测试 MUST 覆盖当前保留 overlay 入口的可加载性和关键字段
+- **AND** 测试 MUST 验证仍保留的实体 YAML 按兼容语义加载
+
+### Requirement: 单模态 canonical 配置矩阵
+项目 MUST 为每个受支持单模态 `image`、`radar`、`gps`、`lidar` 和 `mmwave` 提供统一命名的 canonical 配置矩阵。每个单模态目录 MUST 包含 `strong.yaml`、`lightweight.yaml` 和 `supervised.yaml`。canonical 配置 MUST 使用 `model.primary`、统一训练、验证、评估、loss、optimizer、scheduler、checkpoint 和输出目录语义。
+
+#### Scenario: 单模态 strong 配置
+- **WHEN** 开发者加载 `configs/<modality>/strong.yaml`
+- **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
+- **AND** 配置 MUST 不包含 `distillation`
+- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_strong`
+- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_strong`
+
+#### Scenario: 单模态 lightweight 配置
+- **WHEN** 开发者加载 `configs/<modality>/lightweight.yaml`
+- **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
+- **AND** 配置 MUST 不包含 `distillation`
+- **AND** 配置 MUST 将被训练主模型配置为对应 `<modality>_lightweight`
+- **AND** 配置的 `experiment.name` 和 `output.run_name` MUST 使用 `<modality>_lightweight`
+
+#### Scenario: 单模态 supervised 配置
+- **WHEN** 开发者加载 `configs/<modality>/supervised.yaml`
+- **THEN** 配置 MUST 使用该模态对应的 `experiment.task`
+- **AND** 配置 MUST 不包含 `distillation`
+- **AND** 配置 MUST 将被训练主模型配置为明确的 supervised baseline
+
+#### Scenario: 旧单模态 KD 配置被拒绝
+- **WHEN** 开发者加载 `configs/<modality>/logits_kd.yaml` 或 `configs/<modality>/rkd.yaml`
+- **THEN** 配置加载 MUST 失败
+- **AND** 错误信息 MUST 指向 strong、lightweight 或 supervised 入口
+
+### Requirement: canonical 配置命名与输出目录一致
+canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUST 便于用户按 strong/lightweight/supervised 或当前 workflow 顺序运行实验，并 MUST 支持命令行覆盖。
+
+#### Scenario: canonical run name 与文件语义一致
+- **WHEN** 开发者加载任意 canonical 配置
+- **THEN** `experiment.name` MUST 与不含 `.yaml` 的文件 stem 一致
+- **AND** `output.run_name` MUST 与 `experiment.name` 一致
+
+#### Scenario: canonical 配置不解析 teacher checkpoint
+- **WHEN** 用户加载当前 canonical 配置
+- **THEN** 系统 MUST 不解析 teacher checkpoint
+- **AND** 训练流程 MUST 只构建 primary model
+
+#### Scenario: canonical KD checkpoint override 被拒绝
+- **WHEN** 用户通过命令行覆盖 `distillation.teacher_model_name`
+- **THEN** 配置加载 MUST 失败
+- **AND** 错误信息 MUST 指向当前配置入口

@@ -145,20 +145,8 @@ def test_legacy_model_registry_retirement_fixture_names_are_not_current_entries(
         "representation_cores": registries.REPRESENTATION_CORES,
         "heads": registries.HEADS,
     }
-    hint_markers = (
-        "modular_sequence",
-        "radar_cnn",
-        "gps_mlp",
-        "lidar_cnn",
-        "mmwave_mlp",
-        "gps_sequence_baseline",
-        "token_transformer",
-        "token_aware_transformer",
-        "safe_residual_beam_reranker",
-        "cls_token_transformer_fusion",
-    )
 
-    for entry in payload["retired"]:
+    for entry in payload["retained_removed_guards"]:
         registry = registry_map[entry["registry"]]
         assert entry["name"] not in registry.list()
         with pytest.raises(registries.RegistryError) as exc_info:
@@ -166,10 +154,16 @@ def test_legacy_model_registry_retirement_fixture_names_are_not_current_entries(
         message = str(exc_info.value)
         assert entry["name"] in message
         assert f"registry '{registry.name}'" in message
-        if "Removed component" in message:
-            assert any(marker in message for marker in hint_markers), message
+        assert "Removed component" in message
+        assert entry["hint"] in message
 
-    for entry in payload["deferred"]:
+    for entry in payload["unknown_names"]:
+        registry = registry_map[entry["registry"]]
+        assert entry["name"] not in registry.list()
+        with pytest.raises(registries.RegistryError, match="Unknown component"):
+            registry.build({"type": entry["name"]})
+
+    for entry in payload["current_entries"]:
         assert entry["name"] in registry_map[entry["registry"]].list()
 
 

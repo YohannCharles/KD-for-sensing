@@ -301,3 +301,51 @@ JEPA downstream GPS-query 类 pooler MUST 支持 opt-in per-head attention diagn
 - **THEN** 系统 MUST 只为受 `max_attention_cases` 或等价配置限制的样本保留 per-head 明细
 - **AND** manifest MUST 记录被截断的样本数或 skipped reason
 
+### Requirement: 现有 supervised/adaptation workflow 不变
+新增 JEPA 预训练 workflow MUST 不改变现有 beam、occlusion、position、multitask、GPS v2、CSI hardening 或 supervised fusion workflow 的默认配置和指标。Raymobtime s008、legacy KD、standalone Top8 selector、residual、BGAM 和 viewer 路线仍只作为退役或 supporting guard 语义保留，不属于当前默认 workflow。
+
+#### Scenario: 默认 beam 配置行为不变
+- **WHEN** 用户加载未设置 `experiment.objective` 的现有 supervised beam 配置
+- **THEN** 系统 MUST 继续默认使用 `beam` objective
+- **AND** 系统 MUST 继续计算 beam loss、Top-K、DBA 和 `val_adba`
+
+#### Scenario: 旧 KD 入口仍被拒绝
+- **WHEN** 用户请求旧 `logits_kd`、`rkd`、`teacher_no_kd` 或 retired fusion KD 配置
+- **THEN** 系统 MUST 继续拒绝该配置
+- **AND** 错误信息 MUST 继续指向当前 supervised/adaptation 或 JEPA 预训练入口，而不是恢复旧 KD workflow
+
+### Requirement: JEPA downstream pooler 和 adapter 注册
+项目 MUST 通过轻量组件构建边界暴露 JEPA downstream pooler。内置 mean pooler 和 GPS-query attention pooler MUST 能通过配置名称构建；identity adapter MAY 作为默认 no-op 路径内联，而不是必须注册为独立 adapter。未知 pooler 名称 MUST 使用现有 registry 错误风格报告；未知 adapter 名称只有在非 identity adapter 配置面被保留时才需要注册表式错误。
+
+#### Scenario: 按名称构建 mean pooler
+- **WHEN** `jepa_context_image` 配置声明 downstream pooler 为 `mean`
+- **THEN** 系统 MUST 构建 mean pooler
+- **AND** 该 pooler MUST 接收 patch tokens `[B,T,N,D]` 并输出 `[B,T,D]`
+
+#### Scenario: 按名称构建 GPS-query pooler
+- **WHEN** `jepa_context_image` 配置声明 downstream pooler 为 `gps_query_attention`
+- **THEN** 系统 MUST 构建 GPS-query attention pooler
+- **AND** 构建参数 MUST 支持 `k_queries`、`num_heads`、`condition_dim`、`latent_dim`、dropout 和 condition source
+
+#### Scenario: identity adapter 内联为 no-op
+- **WHEN** `jepa_context_image` 配置未声明 adapter 或声明 adapter 为 `identity`
+- **THEN** 系统 MUST 使用不改变输入 shape 的无操作路径
+- **AND** 现有配置 MUST 无需新增 adapter 字段即可运行
+
+#### Scenario: 未知 JEPA downstream 组件可诊断
+- **WHEN** 用户配置不存在的 JEPA downstream pooler 名称
+- **THEN** 系统 MUST 拒绝构建
+- **AND** 错误信息 MUST 包含请求名称、组件类别和可用 pooler 名称
+
+### Requirement: JEPA downstream 注册保持轻量导入
+JEPA downstream pooler 的注册 MUST 不破坏 registry 轻量导入边界。导入 `kd_sensing.registries` MUST 不 eager import torch model implementation、dataset、diagnostics、训练器或 checkpoint 文件；默认组件导入流程 MUST 显式注册内置 JEPA downstream pooler。identity adapter 若内联为 no-op，则不需要默认注册流程。
+
+#### Scenario: 轻量导入 registry 不触发 JEPA model
+- **WHEN** 开发者仅执行 `import kd_sensing.registries`
+- **THEN** 导入 MUST 成功
+- **AND** 系统 MUST 不 eager import `kd_sensing.models.jepa` 或 JEPA downstream 实现模块
+
+#### Scenario: 默认组件导入后可构建 JEPA downstream pooler
+- **WHEN** 构建流程调用默认组件导入函数
+- **THEN** 内置 JEPA downstream pooler MUST 完成注册
+- **AND** 用户配置中的内置 pooler 名称 MUST 可解析

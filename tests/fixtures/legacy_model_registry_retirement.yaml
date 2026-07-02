@@ -1,206 +1,38 @@
-schema_version: 1
-change: retire-legacy-model-registry-surface
-retired:
+schema_version: 2
+change: prune-ponytail-audit-followups
+retained_removed_guards:
   - name: modular_sequence_model
     registry: models
-    batch: alias-cleanup
-    migration_target: "model.primary.type: modular_sequence"
-    error_hint: "Use 'modular_sequence'."
+    hint: modular_sequence
   - name: gps_only_neural_baseline
     registry: models
-    batch: alias-cleanup
-    migration_target: "gps_sequence_baseline"
-    error_hint: "Use 'gps_sequence_baseline' for the retained AMR-Net GPS-only baseline."
-  - name: radar_feature_extractor
-    registry: models
-    batch: feature-extractor-surface
-    migration_target: "model.primary.type: modular_sequence + encoders.radar.type: radar_cnn"
-    error_hint: "Use 'radar_cnn' in the ENCODERS registry or import RadarFeatureExtractor directly."
-  - name: lidar_feature_extractor
-    registry: models
-    batch: feature-extractor-surface
-    migration_target: "model.primary.type: modular_sequence + encoders.lidar.type: lidar_cnn"
-    error_hint: "Use 'lidar_cnn' in the ENCODERS registry or import LidarFeatureExtractor directly."
-  - name: mmwave_feature_extractor
-    registry: models
-    batch: feature-extractor-surface
-    migration_target: "model.primary.type: modular_sequence + encoders.mmwave.type: mmwave_mlp"
-    error_hint: "Use 'mmwave_mlp' in the ENCODERS registry or import MmWaveFeatureExtractor directly."
-  - name: image_strong
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/image/strong.yaml -> modular_sequence + resnet18_imagenet_rgb + single_gru"
-    error_hint: "Use 'modular_sequence' with encoders.image.type: resnet18_imagenet_rgb."
-  - name: image_lightweight
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/image/lightweight.yaml -> modular_sequence + resnet18_imagenet_rgb + single_gru"
-    error_hint: "Use 'modular_sequence' with encoders.image.type: resnet18_imagenet_rgb and lightweight config parameters."
-  - name: radar_strong
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/radar/strong.yaml -> modular_sequence + radar_cnn + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.radar.type: radar_cnn, representation_core.type: single_gru, heads.beam.type: beam_head."
-  - name: radar_lightweight
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/radar/lightweight.yaml -> modular_sequence + radar_cnn + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.radar.type: radar_cnn and lightweight config parameters."
-  - name: gps_strong
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/gps/strong.yaml -> modular_sequence + gps_mlp + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.gps.type: gps_mlp, representation_core.type: single_gru, heads.beam.type: beam_head."
-  - name: gps_lightweight
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/gps/lightweight.yaml -> modular_sequence + gps_mlp + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.gps.type: gps_mlp and lightweight config parameters."
-  - name: lidar_strong
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/lidar/strong.yaml -> modular_sequence + lidar_cnn + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.lidar.type: lidar_cnn, representation_core.type: single_gru, heads.beam.type: beam_head."
-  - name: lidar_lightweight
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/lidar/lightweight.yaml -> modular_sequence + lidar_cnn + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.lidar.type: lidar_cnn and lightweight config parameters."
-  - name: mmwave_strong
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/mmwave/strong.yaml -> modular_sequence + mmwave_mlp + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.mmwave.type: mmwave_mlp, representation_core.type: single_gru, heads.beam.type: beam_head."
-  - name: mmwave_lightweight
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/mmwave/lightweight.yaml -> modular_sequence + mmwave_mlp + single_gru + beam_head"
-    error_hint: "Use 'modular_sequence' with encoders.mmwave.type: mmwave_mlp and lightweight config parameters."
-  - name: fusion_lightweight
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "configs/fusion/radar_gps_supervised.yaml -> modular_sequence + radar_cnn + gps_mlp + early_concat_gru + beam_head"
-    error_hint: "Use 'modular_sequence' fusion with encoders, projectors, early_concat_gru, and beam_head."
-  - name: fusion_strong
-    registry: models
-    batch: whole-model-baseline
-    migration_target: "virtual strong fusion configs -> modular_sequence + modality encoders + early_concat_gru + beam_head"
-    error_hint: "Use 'modular_sequence' fusion with current modality encoders and early_concat_gru."
-  - name: image_teacher
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/image/strong.yaml -> modular_sequence + resnet18_imagenet_rgb"
-    error_hint: "Use 'modular_sequence' image configs."
-  - name: image_student
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/image/lightweight.yaml -> modular_sequence + resnet18_imagenet_rgb"
-    error_hint: "Use 'modular_sequence' image configs."
-  - name: radar_teacher
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/radar/strong.yaml -> modular_sequence + radar_cnn + single_gru"
-    error_hint: "Use 'modular_sequence' radar configs."
-  - name: radar_student
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/radar/lightweight.yaml -> modular_sequence + radar_cnn + single_gru"
-    error_hint: "Use 'modular_sequence' radar configs."
-  - name: gps_teacher
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/gps/strong.yaml -> modular_sequence + gps_mlp + single_gru"
-    error_hint: "Use 'modular_sequence' GPS configs."
-  - name: gps_student
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/gps/lightweight.yaml -> modular_sequence + gps_mlp + single_gru"
-    error_hint: "Use 'modular_sequence' GPS configs."
-  - name: lidar_teacher
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/lidar/strong.yaml -> modular_sequence + lidar_cnn + single_gru"
-    error_hint: "Use 'modular_sequence' LiDAR configs."
-  - name: lidar_student
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/lidar/lightweight.yaml -> modular_sequence + lidar_cnn + single_gru"
-    error_hint: "Use 'modular_sequence' LiDAR configs."
-  - name: mmwave_teacher
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/mmwave/strong.yaml -> modular_sequence + mmwave_mlp + single_gru"
-    error_hint: "Use 'modular_sequence' mmWave configs."
-  - name: mmwave_student
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "configs/mmwave/lightweight.yaml -> modular_sequence + mmwave_mlp + single_gru"
-    error_hint: "Use 'modular_sequence' mmWave configs."
-  - name: fusion_teacher
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "modular_sequence fusion configs"
-    error_hint: "Use 'modular_sequence' fusion configs."
-  - name: fusion_student
-    registry: models
-    batch: existing-teacher-student-guard
-    migration_target: "cls_token_transformer_fusion or modular_sequence fusion configs"
-    error_hint: "Use 'cls_token_transformer_fusion' for current lightweight fusion or 'modular_sequence' fusion configs."
+    hint: gps_sequence_baseline
   - name: point_cloud_mlp
     registry: encoders
-    batch: alias-cleanup
-    migration_target: "lidar_cnn for current LiDAR BEV configs"
-    error_hint: "Use 'lidar_cnn' for current LiDAR BEV configs; point cloud input is not a current registry surface."
+    hint: lidar_cnn
   - name: jepa_token_transformer
     registry: representation_cores
-    batch: alias-cleanup
-    migration_target: "token_transformer or token_aware_transformer"
-    error_hint: "Use 'token_transformer' or 'token_aware_transformer'."
+    hint: token_transformer
   - name: safe_residual_reranker
     registry: heads
-    batch: alias-cleanup
-    migration_target: "safe_residual_beam_reranker"
-    error_hint: "Use 'safe_residual_beam_reranker'."
-deferred:
+    hint: safe_residual_beam_reranker
+unknown_names:
+  - name: image_strong
+    registry: models
+  - name: radar_feature_extractor
+    registry: models
+  - name: image_teacher
+    registry: models
+  - name: fusion_teacher
+    registry: models
+current_entries:
   - name: cls_token_transformer_fusion
     registry: models
-    reason: "Current configurable fusion specs and canonical lightweight fusion configs still use this whole-model exception."
   - name: token_transformer_fusion
     registry: models
-    reason: "Entity configs and focused tests still cover this token-transformer whole-model route; migrating it requires a separate change."
   - name: vision_position_late_fusion
     registry: models
-    reason: "AMR-Net GPS+image baseline configs and tests use this current workflow/paper reproduction route."
   - name: vision_position_transformer_fusion
     registry: models
-    reason: "Vision-position transformer baseline remains covered by focused tests and run metadata."
   - name: gps_sequence_baseline
     registry: models
-    reason: "AMR-Net GPS-only baseline preset and focused tests retain this current workflow exception; only gps_only_neural_baseline alias is retired."
-audit:
-  first_batch_config_dependencies: []
-  second_batch_entity_config_dependencies:
-    radar_strong:
-      - configs/radar/strong.yaml
-      - configs/radar/supervised.yaml
-    radar_lightweight:
-      - configs/radar/lightweight.yaml
-    gps_strong:
-      - configs/gps/strong.yaml
-      - configs/gps/supervised.yaml
-      - configs/gps/ablation_relative_polar.yaml
-    gps_lightweight:
-      - configs/gps/lightweight.yaml
-    mmwave_strong:
-      - configs/mmwave/strong.yaml
-      - configs/mmwave/supervised.yaml
-    mmwave_lightweight:
-      - configs/mmwave/lightweight.yaml
-    fusion_lightweight:
-      - configs/fusion/radar_gps_supervised.yaml
-  second_batch_no_entity_config_dependencies:
-    - image_strong
-    - image_lightweight
-    - lidar_strong
-    - lidar_lightweight
-    - fusion_strong

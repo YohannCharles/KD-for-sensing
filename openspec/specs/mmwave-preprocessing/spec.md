@@ -102,3 +102,15 @@ mmWave 预处理 MUST 支持从 MMW channel `_paths.npy` 或 `_paths.npz` 文件
 - **THEN** metadata MUST 记录该 power vector 使用的 `num_beams`
 - **AND** metadata MUST 记录 codebook 类型和算法版本
 - **AND** metadata MUST 记录输入 channel 文件与输出 power 文件的相对路径映射
+
+### Requirement: mmWave 预处理入口
+预处理入口 MUST 支持通过配置生成带 mmWave 输入列的 Scenario 9 sequence CSV。该入口 MUST 允许配置 mmWave 源列和 fallback 列，并保持未启用 mmWave 的序列生成行为兼容。
+
+#### Scenario: 运行带 mmWave 列的序列生成
+- **WHEN** 用户通过预处理入口启用 `include_mmwave: true`
+- **THEN** 系统 MUST 在训练和测试序列 CSV 中写入历史 `mmwave1..mmwaveN` 路径列
+- **AND** 输出 CSV MUST 可被启用 mmWave 的 Scenario 9 dataset 直接读取
+
+#### Scenario: mmWave 源列缺失
+- **WHEN** 用户启用 mmWave 序列列输出但原始 CSV 不包含配置的 mmWave 源列或 fallback 列
+- **THEN** 系统 MUST 抛出包含源列名、fallback 列名和 CSV 路径的清晰错误

@@ -35,6 +35,16 @@ def u_mask_beam_jepa_loss(
     lambda_teacher_proto: float = 0.0,
     beam_label_sigma: float = 1.0,
     beam_label_circular: bool = True,
+    proto_target_type: str = "gaussian",
+    tau_beam: float = 2.0,
+    circular_beam_distance: bool | None = None,
+    btapa_include_fusion: bool = True,
+    btapa_include_modalities: bool = True,
+    btapa_fusion_weight: float = 1.0,
+    btapa_modality_weight: float | None = None,
+    use_adba_aware_proto: bool = False,
+    lambda_adba_proto: float = 0.0,
+    adba_margin: int = 3,
     use_full_to_partial_kd: bool = False,
     lambda_full_to_partial_kd: float = 0.0,
     lambda_feature_kd: float = 0.0,
@@ -92,9 +102,19 @@ def u_mask_beam_jepa_loss(
             teacher_features=(teacher_output or {}).get("output_features"),
             beam_label_sigma=beam_label_sigma,
             beam_label_circular=beam_label_circular,
+            proto_target_type=proto_target_type,
+            tau_beam=tau_beam,
+            circular_beam_distance=circular_beam_distance,
             lambda_proto=lambda_proto,
             lambda_modality_proto=lambda_modality_proto,
             lambda_teacher_proto=lambda_teacher_proto,
+            btapa_include_fusion=btapa_include_fusion,
+            btapa_include_modalities=btapa_include_modalities,
+            btapa_fusion_weight=btapa_fusion_weight,
+            btapa_modality_weight=btapa_modality_weight,
+            use_adba_aware_proto=use_adba_aware_proto,
+            lambda_adba_proto=lambda_adba_proto,
+            adba_margin=adba_margin,
         )
         loss = loss + proto_loss
         diagnostics_extra.update(proto_diag)
@@ -299,6 +319,16 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             lambda_teacher_proto=float(cfg.get("lambda_teacher_proto", 0.0)),
             beam_label_sigma=float(cfg.get("beam_label_sigma", 1.0)),
             beam_label_circular=bool(cfg.get("beam_label_circular", True)),
+            proto_target_type=str(cfg.get("proto_target_type", "gaussian")),
+            tau_beam=float(cfg.get("tau_beam", 2.0)),
+            circular_beam_distance=bool(cfg.get("circular_beam_distance", cfg.get("beam_label_circular", True))),
+            btapa_include_fusion=bool(cfg.get("btapa_include_fusion", True)),
+            btapa_include_modalities=bool(cfg.get("btapa_include_modalities", True)),
+            btapa_fusion_weight=float(cfg.get("btapa_fusion_weight", 1.0)),
+            btapa_modality_weight=float(cfg.get("btapa_modality_weight", cfg.get("lambda_modality_proto", 0.0))),
+            use_adba_aware_proto=bool(cfg.get("use_adba_aware_proto", False)),
+            lambda_adba_proto=float(cfg.get("lambda_adba_proto", 0.0)),
+            adba_margin=int(cfg.get("adba_margin", 3)),
             use_full_to_partial_kd=bool(cfg.get("use_full_to_partial_kd", False)),
             lambda_full_to_partial_kd=float(cfg.get("lambda_full_to_partial_kd", cfg.get("lambda_kd", 0.0))),
             lambda_feature_kd=float(cfg.get("lambda_feature_kd", 0.0)),
@@ -321,8 +351,12 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         diagnostics.update(
             {
                 "ce_loss": float(result["loss_beam"].detach().cpu().item()),
+                "beam_ce_loss": float(result["loss_beam"].detach().cpu().item()),
                 "partial_ce": float(result["loss_beam"].detach().cpu().item()),
-                "proto_loss": float(diagnostics.get("loss/prototype_alignment", 0.0)),
+                "proto_loss": float(diagnostics.get("loss/prototype_total", 0.0)),
+                "btapa_fusion_loss": float(diagnostics.get("loss/btapa_fusion", 0.0)),
+                "btapa_modality_loss": float(diagnostics.get("loss/btapa_modality", 0.0)),
+                "adba_proto_loss": float(diagnostics.get("loss/adba_proto", 0.0)),
                 "full_aux_ce": float(full_aux_ce.detach().cpu().item()),
                 "total_loss": float(loss.detach().cpu().item()),
             }
@@ -362,6 +396,19 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "lambda_supcon": training_cfg.get("lambda_supcon", 0.0),
         "lambda_teacher_proto": training_cfg.get("lambda_teacher_proto", 0.0),
         "beam_proto_temperature": training_cfg.get("beam_proto_temperature", primary_cfg.get("beam_proto_temperature", 0.2)),
+        "use_beam_topology_proto": training_cfg.get(
+            "use_beam_topology_proto", primary_cfg.get("use_beam_topology_proto", False)
+        ),
+        "proto_target_type": training_cfg.get("proto_target_type"),
+        "tau_beam": training_cfg.get("tau_beam", 2.0),
+        "circular_beam_distance": training_cfg.get("circular_beam_distance", training_cfg.get("circular_distance")),
+        "btapa_include_fusion": training_cfg.get("btapa_include_fusion", True),
+        "btapa_include_modalities": training_cfg.get("btapa_include_modalities", True),
+        "btapa_fusion_weight": training_cfg.get("btapa_fusion_weight", 1.0),
+        "btapa_modality_weight": training_cfg.get("btapa_modality_weight"),
+        "use_adba_aware_proto": training_cfg.get("use_adba_aware_proto", False),
+        "lambda_adba_proto": training_cfg.get("lambda_adba_proto", 0.0),
+        "adba_margin": training_cfg.get("adba_margin", 3),
         "beam_label_sigma": training_cfg.get("beam_label_sigma", 1.0),
         "beam_label_circular": training_cfg.get("beam_label_circular", True),
         "use_full_to_partial_kd": training_cfg.get(
@@ -381,6 +428,12 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "hard_pattern_weight_apply_to_proto": training_cfg.get("hard_pattern_weight_apply_to_proto", False),
     }.items():
         resolved.setdefault(key, default)
+    if resolved.get("proto_target_type") is None:
+        resolved["proto_target_type"] = "beam_soft" if bool(resolved.get("use_beam_topology_proto", False)) else "gaussian"
+    if resolved.get("circular_beam_distance") is None:
+        resolved["circular_beam_distance"] = bool(resolved.get("beam_label_circular", True))
+    if resolved.get("btapa_modality_weight") is None:
+        resolved["btapa_modality_weight"] = resolved.get("lambda_modality_proto", 0.0)
     resolved["missing_mask"] = _resolve_missing_mask_config(resolved)
     return resolved
 

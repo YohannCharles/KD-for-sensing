@@ -30,7 +30,7 @@ from kd_sensing.data.layouts import (  # noqa: E402
 )
 from kd_sensing.data.samples import create_samples  # noqa: E402
 from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E402
-from kd_sensing.losses import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
+from kd_sensing.losses.beam import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets  # noqa: E402
 from kd_sensing.engine.batch_step import BatchStepRunner  # noqa: E402
 from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402

@@ -51,18 +51,3 @@ class RadarFeatureExtractor(nn.Module):
         frame_features = self.flatten(frame_features)
         frame_features = self.fc_layer(frame_features)
         return frame_features.view(batch_size, seq_length, -1)
-
-MODELS.register_removed(
-    "radar_feature_extractor",
-    "Use encoders.radar.type='radar_cnn' in model.primary.type='modular_sequence', or import RadarFeatureExtractor directly.",
-)
-MODELS.register_removed(
-    "radar_strong",
-    "Use model.primary.type='modular_sequence' with encoders.radar.type='radar_cnn', representation_core.type='single_gru', and heads.beam.type='beam_head'.",
-)
-MODELS.register_removed(
-    "radar_lightweight",
-    "Use configs/radar/lightweight.yaml with model.primary.type='modular_sequence' and encoders.radar.type='radar_cnn'.",
-)
-MODELS.register_removed("radar_teacher", "Use configs/radar/strong.yaml with model.primary.type='modular_sequence'.")
-MODELS.register_removed("radar_student", "Use configs/radar/lightweight.yaml with model.primary.type='modular_sequence'.")

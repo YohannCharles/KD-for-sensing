@@ -191,3 +191,109 @@ checkpoint 保留策略 MUST 区分当前主线复现必需 artifact 和已退�
 - **THEN** manifest MUST 默认将其标记为 protected
 - **AND** 删除阶段 MUST 跳过这些 protected checkpoint
 
+### Requirement: 稳定实验工件输出记录
+训练和评估流程 MUST 在最终配置、训练日志或测试报告中记录 checkpoint 解析与归档信息。记录内容 MUST 包含实际加载 checkpoint 路径、加载来源、registry 目录、归档 checkpoint 路径、验证 Top-1 accuracy、归一化工件路径和实际 split 样本数。
+
+#### Scenario: 训练日志记录归档结果
+- **WHEN** 一次训练完成并启用最佳 checkpoint 归档
+- **THEN** `train_log.json` 或等价训练日志 MUST 记录 registry 目录和归档 checkpoint 路径
+- **AND** 日志 MUST 记录用于归档命名的验证 Top-1 accuracy
+- **AND** 日志 MUST 继续记录 train/test CSV 路径和样本数
+
+#### Scenario: 评估报告记录权重来源
+- **WHEN** 一次评估加载 checkpoint
+- **THEN** `test_report.json` MUST 记录最终 checkpoint 路径
+- **AND** 报告 MUST 记录 checkpoint 来源是显式路径、registry 还是旧路径回退
+
+### Requirement: 默认实验 checkpoint 可被时间戳输出目录解耦
+默认评估工作流 MUST 不依赖固定 `outputs/<run_name>/checkpoints/best.pth` 作为唯一权重来源。当固定 `run_name` 已存在导致新训练输出目录追加时间戳时，后续评估 MAY 通过 registry 找到对应配置的最高验证 Top-1 checkpoint。
+
+#### Scenario: 时间戳输出被评估复用
+- **WHEN** 训练因为目标运行目录已存在而写入带时间戳后缀的新运行目录
+- **THEN** 训练完成后 registry MAY 保存该运行的最高验证 Top-1 checkpoint
+- **AND** 后续评估 MUST 能显式指定或从 registry 解析该 checkpoint
+
+#### Scenario: 旧 KD 权重路径不再作为训练 fallback
+- **WHEN** 用户已有旧式 `paths.weights_dir / teacher_model_name` checkpoint 且 registry 没有匹配候选
+- **THEN** 当前训练流程 MUST 不使用该路径加载 teacher
+- **AND** 评估入口仍可通过 `--weights` 显式指定待评估 checkpoint
+
+### Requirement: 表面积收敛保持实验 artifact 兼容
+删除冗余配置、入口或文档后，当前保留的训练和评估 workflow MUST 继续保存完整运行 artifact。使用保留的 virtual/overlay 配置时，运行目录 MUST 记录足够信息用于复现，不得要求用户恢复已删除的实体 YAML。已退役的 CRAF、MARF、G2D 和 Multimodal-NF 配置不得由 virtual alias 接管。
+
+#### Scenario: virtual 配置训练 artifact 完整
+- **WHEN** 用户使用当前保留的 virtual/overlay 配置启动训练并完成 artifact 写出
+- **THEN** 运行目录 MUST 包含完整 `final_config.yaml`、`resolved_config.yaml`、`train_log.json`、checkpoint metadata 和 split/runtime metadata
+- **AND** 这些 artifact MUST 足以说明实际模型、数据、loss、训练参数和 checkpoint 来源
+
+#### Scenario: 删除 fallback 入口不影响 console script
+- **WHEN** 重复脚本 wrapper 被删除
+- **THEN** 对应 console script 或 `python -m kd_sensing.cli.*` 入口 MUST 继续通过 `--help` 检查
+- **AND** README 推荐命令 MUST 使用仍存在的入口
+
+#### Scenario: 研究脚本不进入核心 workflow 兼容承诺
+- **WHEN** 保留的研究脚本未声明为包内 CLI
+- **THEN** 核心训练、评估、预处理和 manifest 导出 workflow MUST 不依赖该脚本
+- **AND** 该脚本的输出产物 MUST 继续位于 `.gitignore` 覆盖路径或显式本地输出目录
+
+#### Scenario: 退役配置不被兼容接管
+- **WHEN** 用户引用已删除的 CRAF、MARF、G2D 或 Multimodal-NF 配置路径
+- **THEN** 配置加载器 MUST 给出清晰缺失或退役错误
+- **AND** 系统 MUST 不生成同名 virtual 配置
+
+### Requirement: Artifact schema 拆分兼容
+训练和评估相关模块拆分后，用户可见 artifact schema MUST 保持兼容。`final_config.yaml`、`resolved_config.yaml`、`train_log.json`、`training_outputs.npz`、`metrics.json`、checkpoint sidecar、teacher metrics 和 TensorBoard tag 的关键字段、路径和含义 MUST 不因内部模块移动而改变。
+
+#### Scenario: 训练 artifact 字段保持
+- **WHEN** 训练流程内部 writer、objective metadata 或 runtime metadata helper 被拆分
+- **THEN** `final_config.yaml`、`train_log.json` 和 `metrics.json` 中既有公开字段 MUST 保持可用
+- **AND** focused tests MUST 覆盖关键字段 presence
+
+#### Scenario: objective metadata 拆分后兼容
+- **WHEN** objective metadata 表、alias、history fields 或 TensorBoard schema 被迁移到窄模块
+- **THEN** 训练、验证和评估 MUST 继续解析同一组 objective、metric alias、metric mode 和 history fields
+- **AND** 现有 objective tests MUST 保持通过
+
+### Requirement: 运行状态产物
+训练和评估入口 MUST 尽量写出机器可读运行状态产物，使 run index 能判断启动、正常完成和 Python 异常失败。状态产物 MUST 保持轻量，并且 MUST 不改变现有 `final_config.yaml`、`resolved_config.yaml`、`metrics.json`、`train_log.json`、checkpoint 或 TensorBoard 语义。
+
+#### Scenario: 训练启动写出状态
+- **WHEN** 训练入口创建 run_dir 并完成初始配置解析
+- **THEN** 系统 MUST 写出 `run_status.json` 或等价 runtime status 字段
+- **AND** 状态 MUST 至少包含 `state: running`、run_dir、config path、start time、pid、experiment name、task、objective 和 enabled modalities
+
+#### Scenario: 训练正常完成更新状态
+- **WHEN** 训练完成并写出最终 metrics、train log 和 checkpoint metadata
+- **THEN** 系统 MUST 将运行状态更新为 `complete`
+- **AND** 状态 MUST 记录 end time、duration、primary metric、best checkpoint 和 metrics path
+
+#### Scenario: Python 异常失败更新状态
+- **WHEN** 训练或评估入口捕获到未处理 Python exception 并准备退出
+- **THEN** 系统 SHOULD 将运行状态更新为 `failed`
+- **AND** 状态 SHOULD 记录异常类型、异常消息和可查看的日志路径
+
+#### Scenario: SIGKILL 无法捕获
+- **WHEN** 训练进程被系统或用户以不可捕获方式终止
+- **THEN** 系统 MAY 无法更新运行状态产物
+- **AND** run index MUST 仍能通过日志和 partial artifacts 推断 killed、stale 或 partial 状态
+
+### Requirement: Debug metrics logging
+The training workflow MUST persist debug diagnostics in machine-readable run logs when debug mode is enabled. The diagnostics MUST be scoped so normal runs are unaffected when debug mode is disabled.
+
+#### Scenario: 持久化首 batch 诊断
+- **WHEN** CSI first-batch debug diagnostics are produced
+- **THEN** the workflow MUST write them to the run log, metadata artifact or TensorBoard text/scalar stream
+- **AND** the stored record MUST distinguish train and validation batch sources
+
+#### Scenario: 持久化 epoch 训练健康指标
+- **WHEN** epoch-level grad norm and param delta diagnostics are produced
+- **THEN** the workflow MUST append them to the epoch metrics log
+- **AND** normal training metrics arrays MUST remain backward compatible for existing analysis scripts
+
+### Requirement: 入口输出边界显式
+每个长期保留 CLI 或脚本入口 SHALL 有明确输出边界。入口 MUST 将训练、诊断、cache、checkpoint 和报告输出限定在 ignored 本地产物目录或显式用户指定目录，不得写入源码目录。
+
+#### Scenario: 新诊断入口声明输出边界
+- **WHEN** 新增 research diagnostic 或 benchmark CLI
+- **THEN** maintainer context index 或 inventory MUST 记录默认输出目录和是否只读
+- **AND** 输出 MUST 位于 `outputs/`、`logs/`、dataset preparation target 或显式本地路径边界内

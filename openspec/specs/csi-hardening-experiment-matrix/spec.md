@@ -75,3 +75,25 @@ CSI hardening matrix MUST 保持 A/B/C/D/E 组逻辑配置 ID 可加载和可审
 - **THEN** 测试 MUST 验证配置 ID、关键 resolved 字段、控制变量和 destructive/hardening 边界
 - **AND** 测试 MUST 不要求每个配置 ID 都对应一份完整实体 YAML
 
+### Requirement: CSI hardening sweep rerun workflow
+项目 MUST 提供修复后的 CSI-only A/B/C/D sweep 运行入口或命令说明。该 workflow MUST 先运行短 debug gate，再运行完整 CSI-only sweep，并在输出中记录所使用的配置版本、pilot estimation 模式、noise ratio diagnostics 和旧结果隔离状态。
+
+#### Scenario: 生成修复后的 A1 配置
+- **WHEN** 开发者生成或加载修复后的 A1 mild pilot estimation 配置
+- **THEN** 配置 MUST 使用 estimation-SNR 模式
+- **AND** resolved config MUST 记录固定 SNR 或训练 SNR 采样区间
+
+#### Scenario: 生成修复后的 B/C/D 配置
+- **WHEN** 开发者生成或加载修复后的 B、C 或 D 组配置
+- **THEN** 每个配置 MUST 显式关闭 pilot estimation noise
+- **AND** 每个配置 MUST 保留自身声明的 hardening 或 encoder 变量
+
+#### Scenario: 重跑前执行 debug gate
+- **WHEN** 开发者请求完整 CSI hardening sweep
+- **THEN** workflow MUST 先确认 A0 original、A0 clone、pilot disabled、C1 only 和 C2 only 的 debug gate 通过
+- **AND** 如果 gate 未通过，workflow MUST 停止或将完整 sweep 输出标记为 pending-debug
+
+#### Scenario: 输出新旧结果隔离状态
+- **WHEN** 修复后的 sweep analysis 完成
+- **THEN** summary artifact MUST 记录当前 sweep 是否基于修复后的 pilot scaling 配置
+- **AND** 如果同一项目中存在旧 invalid sweep，summary artifact MUST 不把旧 sweep 的候选结果混入当前 ranking

@@ -65,18 +65,3 @@ class LidarFeatureExtractor(nn.Module):
         )
         features = self.fc_layer(pooled)
         return features.view(batch_size, seq_len, -1)
-
-MODELS.register_removed(
-    "lidar_feature_extractor",
-    "Use encoders.lidar.type='lidar_cnn' in model.primary.type='modular_sequence', or import LidarFeatureExtractor directly.",
-)
-MODELS.register_removed(
-    "lidar_strong",
-    "Use model.primary.type='modular_sequence' with encoders.lidar.type='lidar_cnn', representation_core.type='single_gru', and heads.beam.type='beam_head'.",
-)
-MODELS.register_removed(
-    "lidar_lightweight",
-    "Use configs/lidar/lightweight.yaml with model.primary.type='modular_sequence' and encoders.lidar.type='lidar_cnn'.",
-)
-MODELS.register_removed("lidar_teacher", "Use configs/lidar/strong.yaml with model.primary.type='modular_sequence'.")
-MODELS.register_removed("lidar_student", "Use configs/lidar/lightweight.yaml with model.primary.type='modular_sequence'.")

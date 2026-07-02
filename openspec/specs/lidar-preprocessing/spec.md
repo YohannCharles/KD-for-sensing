@@ -317,3 +317,14 @@ LiDAR BEV cache MUST 记录足以复现当前 LiDAR baseline、diagnostic 和 fu
 - **WHEN** LiDAR 质量摘要显示大量全零帧、近常量通道或 cache 参数异常
 - **THEN** 系统 MUST 在 run metadata 或 report 中标记 `lidar_input_degradation_risk`
 - **AND** report MUST 给出相关参数和受影响样本数
+
+### Requirement: LiDAR 预处理入口
+预处理 CLI MUST 支持生成带 LiDAR 路径列的序列 CSV，并支持按配置离线生成 LiDAR BEV 缓存。
+
+#### Scenario: 生成 LiDAR 序列 CSV
+- **WHEN** 用户运行预处理入口并选择 sequence CSV 生成且启用 LiDAR
+- **THEN** 系统 MUST 输出包含 `lidar1..lidarN` 的 train/test 序列 CSV
+
+#### Scenario: 生成 LiDAR BEV 缓存
+- **WHEN** 用户运行预处理入口并选择 LiDAR BEV 缓存生成
+- **THEN** 系统 MUST 根据配置读取点云、应用裁剪和 BEV 构造，并写出可被 dataset 读取的 `.npy` 缓存

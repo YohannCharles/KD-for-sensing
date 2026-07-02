@@ -49,3 +49,35 @@ GPS shortcut benchmark MUST 继续作为当前诊断入口，用于比较 JEPA �
 - **WHEN** 用户运行 GPS shortcut benchmark
 - **THEN** 输出 MUST 写入 `outputs/analysis/` 或配置指定的 ignored analysis 目录
 - **AND** benchmark metadata MUST 记录输入来源、mock/smoke/canonical 状态和验证口径
+
+### Requirement: 诊断入口不再包含 viewer manifest
+诊断入口 MUST 收敛为 JEPA visual analysis、GPS shortcut benchmark 和其它明确登记的非 viewer 诊断。仓库级 Gradio viewer、viewer manifest 导出、viewer prediction export、`kd-sensing-visualize-modalities` alias、`tools/visualization/` wrapper 和 `diagnostics.visualization` virtual config MUST 已退役并从当前支持面删除。
+
+#### Scenario: viewer manifest 入口退役
+- **WHEN** 开发者检查 pyproject、包内 CLI、tools wrapper 和 diagnostics exports
+- **THEN** 项目 MUST 不声明 `kd-sensing-export-viewer-manifest` 或 `kd-sensing-visualize-modalities`
+- **AND** 项目 MUST 不保留 `kd_sensing.cli.export_viewer_manifest`
+- **AND** 项目 MUST 不保留仓库级 `tools/visualization` viewer support helper
+
+#### Scenario: 旧 visualization 配置被拒绝
+- **WHEN** 用户传入已退役的 `configs/diagnostics/modality_visualization.yaml` 或 `diagnostics.visualization`
+- **THEN** 配置加载 MUST 早失败
+- **AND** 错误信息 MUST 说明 viewer manifest 和仓库级 Gradio viewer 已退役
+
+#### Scenario: JEPA visual analysis 作为论文图出口
+- **WHEN** 开发者执行 `conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help`
+- **THEN** 命令 MUST 正常退出
+- **AND** 该入口 MUST 使用 `kd_sensing.diagnostics.jepa_visual_analysis` 生成本地分析 manifest、图表、表格和 report
+
+### Requirement: Viewer manifest helper import surface 已退役
+Viewer manifest 内部 helper、配置解析、采样选择、processed asset 写出和模型预测导出模块已退役。项目 MUST 不再要求这些 helper 可导入，并 MUST 通过架构边界检查防止其以轻量 facade 名义回流。
+
+#### Scenario: viewer manifest helper 不可导入
+- **WHEN** 开发者执行 `import kd_sensing.diagnostics.viewer_manifest_config`
+- **THEN** 导入 MUST 失败
+- **AND** 项目 MUST 不保留同名兼容 stub
+
+#### Scenario: viewer sampling helper 不回流
+- **WHEN** 开发者导入 `kd_sensing.diagnostics.viewer_manifest_sampling`
+- **THEN** 导入 MUST 失败
+- **AND** 当前 JEPA visual analysis 或 GPS shortcut benchmark MUST 使用自身 owner module 的采样/写出 helper
