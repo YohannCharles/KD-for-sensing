@@ -6,7 +6,7 @@
 
 ## 项目健康护栏基线
 
-`prune-ponytail-audit-findings` 收口时重新扫描：当前 `src/kd_sensing` 约有 255 个 Python 文件，`tests/` 约有 64 个 Python 文件，`scripts/` 有 21 个 Python/shell 文件，`configs/` 有 215 个 YAML；仓库根目录有 9 个 Markdown，`docs/` 有 14 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
+`prune-ponytail-audit-findings` 收口时重新扫描：当前 `src/kd_sensing` 约有 255 个 Python 文件，`tests/` 约有 64 个 Python 文件，`scripts/` 有 21 个 Python/shell 文件，`configs/` 有 215 个 YAML；仓库根目录有 9 个 Markdown，`docs/` 有 15 个 Markdown。本基线只读扫描源码、测试、配置和文档，不读取真实 `dataset/` 数据，不写入 `outputs/`、`logs/`、cache、checkpoint 或本地训练产物。
 
 `right-size-project-architecture` 于 2026-06-19 记录新的 source architecture sizing baseline：CodeGraph 索引为 644 个文件、359 个 Python 文件、3,420 个 function 节点和 2,503 个 import 节点；AST 复核范围为 `src/`、`tests/` 和 `scripts/`，共 359 个 Python 文件、4,232 个 function 定义和 2,971 条 import 语句，其中 `src/` 278 个 Python 文件、3,249 个 function、2,195 条 import，`tests/` 58/749/584，`scripts/` 23/234/192。主要复杂度中心是 `src/kd_sensing/data`、`diagnostics`、`engine`、`models`、`baselines`、`config` 和 `cli`。这些数字只是架构审计和趋势定位信号，不能单独作为拆分或合并 KPI；真正的判定来自 owner 职责、公开 surface、导入边界、复用关系、热点预算和 focused validation。`dataset/`、`outputs/`、`outputs/cache/`、`logs/`、legacy `cache/`、`.pytest_cache/`、`__pycache__/`、`.pyc`、checkpoint 和权重文件不属于源码架构审计范围。
 
@@ -243,7 +243,7 @@ JEPA benchmark owner 模块完整路径：`src/kd_sensing/diagnostics/jepa_bench
 - current agent/maintainer navigation：`docs/agent_navigation.md`；它只提供修改前权威来源、当前状态、任务路由、误读边界和验证选择导航，不替代 README、AGENTS 或 OpenSpec specs，也不维护完整项目表面积审计。
 - current architecture/health inventory：`docs/project_surface_inventory.md`；记录 capability lifecycle、文档生命周期和源码/配置/入口表面积，不承担实验参数横向比较。
 - current model/workflow facts：`docs/model_architecture_inventory.md` 维护当前 registry-backed model、encoder、projector、representation core 和 head 目录；`docs/mainline_model_catalog.md` 维护当前主线模型、baseline/control、诊断和 benchmark 目录；`docs/experiment_protocols.md` 维护 formal/lowmem/smoke/debug/upper-bound/historical ablation 参数口径；`docs/result_claims_registry.md` 维护可引用结果、blocked official、本地 substitute、upper-bound、mock/smoke 和 historical ablation 的 claim provenance。
-- current workflow quickstart：`docs/experiment_matrix.md`、`docs/extension_guide.md`、`docs/training_throughput.md`；`docs/experiment_matrix.md` 只保留推荐顺序、入口命令和关键 caveat，并指向三份 current mainline 文档。
+- current workflow quickstart：`docs/experiment_matrix.md`、`docs/extension_guide.md`、`docs/training_throughput.md`、`docs/server_migration_github_codex.md`；`docs/experiment_matrix.md` 只保留推荐顺序、入口命令和关键 caveat，并指向三份 current mainline 文档；`docs/server_migration_github_codex.md` 只记录 GitHub 源码迁移、Codex 项目配置恢复和本地产物边界。
 - dataset/diagnostic focused notes：`docs/research_notes.md`。
 - historical analysis：`docs/p3_v7_multisource_crossroad_analysis.md`，只保留研究背景，不作为当前长期入口。
 

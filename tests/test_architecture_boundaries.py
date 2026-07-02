@@ -316,6 +316,7 @@ def test_scripts_are_classified_in_inventory():
         for path in _git_ls_files()
         if path.startswith("scripts/")
         and Path(path).suffix in {".py", ".sh"}
+        and (ROOT / path).exists()
         and "__pycache__" not in Path(path).parts
     )
     inventory = INVENTORY.read_text(encoding="utf-8")

@@ -328,6 +328,7 @@ conda run -n kd_mm_beam kd-sensing-preprocess \
 - 实验矩阵 quickstart 和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
 - 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)
+- GitHub 迁移和 Codex 新服务器配置：[docs/server_migration_github_codex.md](docs/server_migration_github_codex.md)
 - 新组件扩展指南：[docs/extension_guide.md](docs/extension_guide.md)
 - 项目表面积 inventory：[docs/project_surface_inventory.md](docs/project_surface_inventory.md)
 - 架构与需求契约：`openspec/specs/`
