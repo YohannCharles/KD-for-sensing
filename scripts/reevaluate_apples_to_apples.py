@@ -36,7 +36,7 @@ DEFAULT_PATTERNS = (
     "missing_radar",
     "missing_lidar",
 )
-METRICS = ("top1", "top3", "top5", "adba", "mae", "loss")
+METRICS = ("top1", "top3", "top5", "within_3", "adba", "mae", "loss")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -266,6 +266,7 @@ def _metrics_row(
         "top1": _value(source, "top1"),
         "top3": _value(source, "top3"),
         "top5": _value(source, "top5"),
+        "within_3": _value(source, "within_3"),
         "adba": _value(source, "adba"),
         "mae": _value(source, "mae"),
         "loss": _value(source, "loss"),
@@ -338,7 +339,7 @@ def _delta_rows(rows: list[dict[str, Any]], baseline: str) -> list[dict[str, Any
 
 def _write_markdown(path: Path, rows: list[dict[str, Any]], baseline: str) -> None:
     lines = ["# Apples-to-Apples Metrics", "", f"Baseline: `{baseline}`", ""]
-    columns = ["run_name", "pattern", "top1", "top3", "top5", "adba", "mae", "loss", "count", "status"]
+    columns = ["run_name", "pattern", "top1", "top3", "top5", "within_3", "adba", "mae", "loss", "count", "status"]
     lines.append("| " + " | ".join(columns) + " |")
     lines.append("| " + " | ".join("---" for _ in columns) + " |")
     for row in rows:

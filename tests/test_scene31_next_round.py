@@ -1,6 +1,7 @@
 import argparse
 import csv
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,42 @@ EXPECTED_P1 = {
     "proto_curriculum_easy2hard_es40_seed3",
     "proto_maskadapter_d16_condbtapa_weaksingle_es40_seed3",
 }
+EXPECTED_BC_P0 = {
+    "proto_sampler_adaptive_gap_a05_t1_es40_seed1",
+    "proto_sampler_adaptive_gap_a05_t1_es40_seed2",
+    "proto_sampler_adaptive_gap_a05_t1_es40_seed3",
+    "proto_sampler_uniform_beamsoft_s15_mix05_es40_seed1",
+    "proto_sampler_uniform_beamsoft_s15_mix05_es40_seed2",
+    "proto_sampler_uniform_beamsoft_s15_mix05_es40_seed3",
+    "proto_sampler_uniform_labelsmooth005_es40_seed1",
+    "proto_sampler_uniform_labelsmooth005_es40_seed2",
+    "proto_sampler_uniform_labelsmooth005_es40_seed3",
+    "proto_sampler_adaptive_gap_a05_t1_beamsoft_s15_mix05_es40_seed1",
+    "proto_sampler_adaptive_gap_a05_t1_beamsoft_s15_mix05_es40_seed2",
+    "proto_sampler_adaptive_gap_a05_t1_beamsoft_s15_mix05_es40_seed3",
+}
+EXPECTED_BC_P1 = {
+    "proto_sampler_adaptive_loss_a05_t1_es40_seed1",
+    "proto_sampler_adaptive_loss_a05_t1_es40_seed2",
+    "proto_sampler_adaptive_loss_a05_t1_es40_seed3",
+    "proto_sampler_adaptive_gap_a03_t1_es40_seed1",
+    "proto_sampler_adaptive_gap_a03_t1_es40_seed2",
+    "proto_sampler_adaptive_gap_a03_t1_es40_seed3",
+    "proto_sampler_uniform_beamsoft_s10_mix05_es40_seed1",
+    "proto_sampler_uniform_beamsoft_s10_mix05_es40_seed2",
+    "proto_sampler_uniform_beamsoft_s10_mix05_es40_seed3",
+    "proto_sampler_uniform_beamsoft_s20_mix05_es40_seed1",
+    "proto_sampler_uniform_beamsoft_s20_mix05_es40_seed2",
+    "proto_sampler_uniform_beamsoft_s20_mix05_es40_seed3",
+}
+EXPECTED_BEAMSOFT_WEAK = {
+    "proto_sampler_uniform_beamsoft_s10_mix025_es40_seed1",
+    "proto_sampler_uniform_beamsoft_s10_mix025_es40_seed2",
+    "proto_sampler_uniform_beamsoft_s10_mix025_es40_seed3",
+    "proto_sampler_uniform_beamsoft_s15_mix025_es40_seed1",
+    "proto_sampler_uniform_beamsoft_s15_mix025_es40_seed2",
+    "proto_sampler_uniform_beamsoft_s15_mix025_es40_seed3",
+}
 EXPECTED_PATTERNS = [
     "full",
     "missing_gps",
@@ -54,6 +91,9 @@ def test_scene31_next_round_manifest_and_configs_are_consistent(tmp_path: Path):
 
     assert EXPECTED_P0 <= set(by_name)
     assert EXPECTED_P1 <= set(by_name)
+    assert EXPECTED_BC_P0 <= set(by_name)
+    assert EXPECTED_BC_P1 <= set(by_name)
+    assert EXPECTED_BEAMSOFT_WEAK <= set(by_name)
 
     for row in rows:
         run_name = row["run_name"]
@@ -71,6 +111,7 @@ def test_scene31_next_round_manifest_and_configs_are_consistent(tmp_path: Path):
         assert cfg["experiment"]["seed"] == int(run_name.rsplit("_seed", 1)[1])
         assert cfg["output"]["run_name"] == run_name
         assert cfg["output"]["dir"] == "outputs/scene31_next_round"
+        assert cfg["evaluation"]["beam_distance_circular"] is True
         assert cfg["evaluation"]["missing_patterns"]["patterns"] == EXPECTED_PATTERNS
         assert raw["model"]["primary"]["ablation_id"] == run_name
 
@@ -80,6 +121,46 @@ def test_scene31_next_round_manifest_and_configs_are_consistent(tmp_path: Path):
         elif "sampler_uniform" in run_name:
             assert training["missing_pattern_sampler"] == "uniform"
             assert loss_cfg["missing_pattern_sampler"] == "uniform"
+
+        if "sampler_adaptive" in run_name:
+            assert training["missing_pattern_sampler"] == "adaptive_pattern"
+            assert loss_cfg["missing_pattern_sampler"] == "adaptive_pattern"
+            assert training["adaptive_temperature"] == pytest.approx(1.0)
+            assert loss_cfg["adaptive_temperature"] == pytest.approx(1.0)
+            assert training["adaptive_warmup_epochs"] == 3
+            assert training["use_pattern_conditional_btapa"] is False
+            assert loss_cfg["use_pattern_conditional_btapa"] is False
+            assert training["use_weak_pattern_kd"] is False
+            if "adaptive_gap" in run_name:
+                assert training["adaptive_score_mode"] == "gap_to_full"
+            if "adaptive_loss" in run_name:
+                assert training["adaptive_score_mode"] == "loss"
+            if "_a05_" in run_name:
+                assert training["adaptive_alpha"] == pytest.approx(0.5)
+            if "_a03_" in run_name:
+                assert training["adaptive_alpha"] == pytest.approx(0.3)
+
+        if "beamsoft" in run_name:
+            assert cfg["loss"]["type"] == "beam_neighborhood_ce"
+            if "mix025" in run_name:
+                assert cfg["loss"]["mix_ce"] == pytest.approx(0.25)
+                assert training["missing_pattern_sampler"] == "uniform"
+                assert not training.get("use_pattern_conditional_btapa", False)
+                assert not training.get("use_weak_pattern_kd", False)
+                assert not cfg["model"]["primary"].get("use_mask_adapter", False)
+            else:
+                assert cfg["loss"]["mix_ce"] == pytest.approx(0.5)
+            assert cfg["loss"]["circular"] is True
+            if "_s10_" in run_name:
+                assert cfg["loss"]["sigma"] == pytest.approx(1.0)
+            if "_s15_" in run_name:
+                assert cfg["loss"]["sigma"] == pytest.approx(1.5)
+            if "_s20_" in run_name:
+                assert cfg["loss"]["sigma"] == pytest.approx(2.0)
+
+        if "labelsmooth005" in run_name:
+            assert cfg["loss"]["type"] == "label_smoothing_ce"
+            assert cfg["loss"]["smoothing"] == pytest.approx(0.05)
 
         expected_lambda = _lambda_from_name(run_name)
         if expected_lambda is not None:
@@ -191,7 +272,7 @@ def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
             )
     _write_csv(metrics, ["run_name", "group", "seed", "pattern", "top1", "status"], metric_rows)
 
-    assert summary.main(["--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
+    assert summary.main(["--root", str(tmp_path / "empty_root"), "--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
 
     per_run = _read_csv(out_dir / "scene31_next_round_per_run.csv")
     methods = _read_csv(out_dir / "scene31_next_round_method_mean_std.csv")
@@ -262,7 +343,7 @@ def test_scene31_p0_fresh_summary_uses_avg_missing_primary_sort(tmp_path):
             )
     _write_csv(metrics, ["run_name", "pattern", "top1", "status", "checkpoint_path", "max_batches"], metric_rows)
 
-    assert summary.main(["--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
+    assert summary.main(["--root", str(tmp_path / "empty_root"), "--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
 
     per_run = _read_csv(out_dir / "p0_per_run.csv")
     methods = _read_csv(out_dir / "p0_method_mean_std.csv")
@@ -281,6 +362,137 @@ def test_scene31_p0_fresh_summary_uses_avg_missing_primary_sort(tmp_path):
     assert "radar_only" not in filtered[0]["unmet_conditions"]
     assert "lidar_only" not in filtered[0]["unmet_conditions"]
     assert "| proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40 |" in rank
+
+
+def test_scene31_bc_summary_outputs_uniform_delta_and_optional_metrics(tmp_path):
+    summary = _load_script("summarize_scene31_bc_next", ROOT / "scripts/summarize_scene31_bc_next.py")
+    metrics = tmp_path / "bc_metrics.csv"
+    manifest = tmp_path / "manifest.csv"
+    out_dir = tmp_path / "bc_summary"
+    _write_csv(
+        manifest,
+        ["run_name", "group", "config_path", "seed", "method_tags", "expected_epochs", "priority"],
+        [
+            {
+                "run_name": "proto_sampler_adaptive_gap_a05_t1_es40_seed1",
+                "group": "b_p0",
+                "config_path": "adaptive1.yaml",
+                "seed": "1",
+                "method_tags": "sampler,adaptive",
+                "expected_epochs": "40",
+                "priority": "high",
+            },
+            {
+                "run_name": "proto_sampler_adaptive_gap_a05_t1_es40_seed2",
+                "group": "b_p0",
+                "config_path": "adaptive2.yaml",
+                "seed": "2",
+                "method_tags": "sampler,adaptive",
+                "expected_epochs": "40",
+                "priority": "high",
+            },
+        ],
+    )
+    metric_rows = []
+    for run_name, bump in (("proto_sampler_adaptive_gap_a05_t1_es40_seed1", 0.0), ("proto_sampler_adaptive_gap_a05_t1_es40_seed2", 0.01)):
+        for pattern, value in {
+            "full": 0.4200 + bump,
+            "missing_gps": 0.3100 + bump,
+            "missing_radar": 0.3300 + bump,
+            "radar_only": 0.2200 + bump,
+            "lidar_only": 0.1200 + bump,
+        }.items():
+            metric_rows.append(
+                {
+                    "run_name": run_name,
+                    "pattern": pattern,
+                    "top1": str(value),
+                    "top3": str(value + 0.2),
+                    "top5": str(value + 0.3),
+                    "within_3": str(value + 0.1),
+                    "mae": str(4.0 - bump),
+                    "status": "ok",
+                }
+            )
+    _write_csv(metrics, ["run_name", "pattern", "top1", "top3", "top5", "within_3", "mae", "status"], metric_rows)
+
+    assert summary.main(["--root", str(tmp_path / "empty_root"), "--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
+
+    per_run = _read_csv(out_dir / "bc_per_run.csv")
+    methods = _read_csv(out_dir / "bc_method_mean_std.csv")
+    delta = _read_csv(out_dir / "bc_delta_vs_uniform.csv")
+    markdown = (out_dir / "bc_rank_by_avg_missing.md").read_text(encoding="utf-8")
+    proximity = (out_dir / "bc_rank_by_beam_proximity.md").read_text(encoding="utf-8")
+    conclusion = (out_dir / "bc_conservative_conclusion.md").read_text(encoding="utf-8")
+
+    assert per_run[0]["method"] == "proto_sampler_adaptive_gap_a05_t1_es40"
+    assert "delta_vs_uniform_avg_missing" in per_run[0]
+    assert "avg_missing_top1" in per_run[0]
+    assert "avg_missing_top3" in per_run[0]
+    assert "overall_mean_top3" in per_run[0]
+    assert "avg_missing_within_3" in per_run[0]
+    assert "avg_missing_mae" in per_run[0]
+    assert methods[0]["method"] == "proto_sampler_adaptive_gap_a05_t1_es40"
+    assert "avg_missing_top1_mean" in methods[0]
+    assert "overall_mean_within_3_mean" in methods[0]
+    assert "delta_vs_uniform_overall_mean_mean" in methods[0]
+    assert delta[0]["method"] == "proto_sampler_adaptive_gap_a05_t1_es40"
+    assert "delta_vs_uniform_avg_missing_within_3" in delta[0]
+    assert "delta_vs_uniform_avg_missing" in markdown
+    assert "avg_missing_within_3" in proximity
+    assert "Current exact-Top1 winner:" in conclusion
+
+
+def test_scene31_beamsoft_weak_summary_wrapper_writes_standard_names(tmp_path):
+    summary = _load_script("summarize_scene31_beamsoft_weak", ROOT / "scripts/summarize_scene31_beamsoft_weak.py")
+    metrics = tmp_path / "metrics.csv"
+    out_dir = tmp_path / "summary"
+    rows = []
+    for run_name, base in (
+        ("proto_sampler_uniform_es40_seed3", 0.30),
+        ("proto_sampler_uniform_beamsoft_s10_mix025_es40_seed1", 0.31),
+    ):
+        for pattern, value in {
+            "full": base + 0.10,
+            "missing_gps": base,
+            "missing_radar": base + 0.01,
+            "radar_only": base - 0.02,
+            "lidar_only": base - 0.03,
+        }.items():
+            rows.append(
+                {
+                    "run_name": run_name,
+                    "pattern": pattern,
+                    "top1": str(value),
+                    "top3": str(value + 0.2),
+                    "top5": str(value + 0.3),
+                    "within_3": str(value + 0.1),
+                    "mae": str(4.0 - value),
+                    "status": "ok",
+                }
+            )
+    _write_csv(metrics, ["run_name", "pattern", "top1", "top3", "top5", "within_3", "mae", "status"], rows)
+
+    assert summary.main(["--metrics", str(metrics), "--bc-root", str(tmp_path / "empty_bc"), "--weak-root", str(tmp_path / "empty_weak"), "--uniform-root", str(tmp_path / "empty_uniform"), "--out", str(out_dir)]) == 0
+
+    assert (out_dir / "per_run.csv").exists()
+    assert (out_dir / "method_mean_std.csv").exists()
+    assert (out_dir / "delta_vs_uniform.csv").exists()
+    assert (out_dir / "rank_by_avg_missing_top1.md").exists()
+    conclusion = (out_dir / "conservative_conclusion.md").read_text(encoding="utf-8")
+    assert "Uniform vs proto_sampler_uniform_beamsoft_s10_mix025_es40:" in conclusion
+
+
+def test_scene31_bc_launcher_help_and_syntax():
+    scripts = [
+        (ROOT / "scripts/run_scene31_bc_next.sh", "baselines"),
+        (ROOT / "scripts/run_scene31_beamsoft_weak.sh", "s10_mix025"),
+        (ROOT / "scripts/run_scene31_bc_apples_eval.sh", "uniform-root"),
+    ]
+    for script, marker in scripts:
+        subprocess.run(["bash", "-n", str(script)], check=True)
+        help_result = subprocess.run(["bash", str(script), "--help"], check=True, text=True, capture_output=True)
+        assert marker in help_result.stdout
 
 
 def test_scene31_next_round_balanced_formula_matches_existing_analyzer():

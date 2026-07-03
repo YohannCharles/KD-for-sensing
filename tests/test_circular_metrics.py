@@ -47,9 +47,25 @@ def test_topk_min_distance_and_circular_summary_fields():
     assert summary["valid_label_count"] == 3
     assert summary["DBA_zero_ratio"] == 0.0
     assert summary["pm2_acc"] == 1.0
+    assert summary["within_3"] == 1.0
+    assert summary["mean_error"] == summary["mean_circular_error"]
     assert summary["top3"] == 1.0
     assert "mean_circular_error" in summary
     assert "median_circular_error" in summary
+
+
+def test_beam_summary_can_use_linear_distance_for_mae_and_within3():
+    logits = torch.full((1, 64), -10.0)
+    logits[0, 63] = 8.0
+    labels = torch.tensor([0])
+
+    circular = beam_classification_circular_summary(logits, labels, num_beams=64, distance_mode="circular")
+    linear = beam_classification_circular_summary(logits, labels, num_beams=64, distance_mode="linear")
+
+    assert circular["mean_error"] == 1.0
+    assert circular["within_3"] == 1.0
+    assert linear["mean_error"] == 63.0
+    assert linear["within_3"] == 0.0
 
 
 def test_dba_score_supports_beambench_linear_distance_mode():

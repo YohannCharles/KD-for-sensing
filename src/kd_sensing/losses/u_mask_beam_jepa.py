@@ -73,6 +73,7 @@ def u_mask_beam_jepa_loss(
     lambda_latent_pred: float = 0.0,
     latent_pred_loss: str = "cosine",
     prototype_distribution_target: torch.Tensor | None = None,
+    beam_criterion: Any | None = None,
 ) -> dict[str, Any]:
     if lambda_jepa_global is None:
         lambda_jepa_global = 1.0 if lambda_jepa is None else float(lambda_jepa)
@@ -82,8 +83,8 @@ def u_mask_beam_jepa_loss(
         logits = logits.unsqueeze(1)
     if labels.ndim == 1:
         labels = labels.unsqueeze(1)
-    unweighted_loss_beam = _sample_weighted_ce(logits, labels[:, : logits.shape[1]], None)
-    loss_beam = _sample_weighted_ce(logits, labels[:, : logits.shape[1]], sample_weights)
+    unweighted_loss_beam = _beam_supervised_loss(logits, labels[:, : logits.shape[1]], None, beam_criterion)
+    loss_beam = _beam_supervised_loss(logits, labels[:, : logits.shape[1]], sample_weights, beam_criterion)
     zero = logits.sum() * 0.0
     teacher_logits = output.get("teacher_logits")
     if use_teacher and torch.is_tensor(teacher_logits):
@@ -297,6 +298,17 @@ def _modality_uncertainty_loss(
     return (nll * available).sum() / (available.sum().clamp_min(1.0) * int(mu.shape[-1]))
 
 
+def _beam_supervised_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    sample_weights: torch.Tensor | None,
+    beam_criterion: Any | None,
+) -> torch.Tensor:
+    if beam_criterion is not None and sample_weights is None:
+        return beam_criterion(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1))
+    return _sample_weighted_ce(logits, labels, sample_weights)
+
+
 def _sample_weighted_ce(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -326,7 +338,7 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
                 "loss.u_mask_beam_jepa.kd_teacher_mode=checkpoint is pending; use online_full or disable "
                 "full-to-partial stabilization."
             )
-        return {"config": cfg}
+        return {"config": cfg, "adaptive_sampler": _new_adaptive_sampler_state()}
 
     def before_forward(
         self,
@@ -344,8 +356,9 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         mask_cfg = cfg.get("missing_mask", {})
         pattern = cfg.get("pattern") or cfg.get("missing_pattern")
         sampler = str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default")
-        pattern_probs = _pattern_probs_for_sampler(cfg, modalities, epoch=epoch)
+        pattern_probs = _pattern_probs_for_sampler(cfg, modalities, epoch=epoch, state=state)
         if sampler in {
+            "adaptive_pattern",
             "pattern_balanced",
             "uniform",
             "weak_single_oversample",
@@ -468,6 +481,13 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             latent_pred_apply_patterns=cfg.get("latent_pred_apply_patterns", ()),
             lambda_latent_pred=float(cfg.get("lambda_latent_pred", 0.0)),
             latent_pred_loss=str(cfg.get("latent_pred_loss", "cosine")),
+            beam_criterion=_u_mask_beam_criterion(context),
+        )
+        _adaptive_sampler_update(
+            cfg,
+            state,
+            state.get("pattern_names"),
+            result["unweighted_loss_beam"],
         )
         loss = result["loss"]
         full_aux_ce = loss.sum() * 0.0
@@ -492,6 +512,7 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             }
         )
         diagnostics.update(_pattern_diagnostics(state.get("pattern_names")))
+        diagnostics.update(_adaptive_sampler_diagnostics(state))
         return BaseLossResult(
             total_loss=loss,
             task_loss=result["loss_beam"],
@@ -500,22 +521,26 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         )
 
     def before_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> None:
-        del context, epoch
         if isinstance(state, dict):
             state["pattern_epoch_counts"] = Counter()
+            _prepare_adaptive_sampler_epoch(context, state, epoch=epoch)
 
     def after_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> dict[str, Any]:
         if not isinstance(state, dict):
             return {}
         cfg = state.get("config", {})
         counts = state.get("pattern_epoch_counts")
-        if not isinstance(cfg, dict) or not isinstance(counts, Counter) or not counts:
+        if not isinstance(cfg, dict):
             return {}
         sampler = str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default")
-        if sampler in {"default", "random_missing"}:
-            return {}
-        path = _write_pattern_counts(context.cfg, counts, epoch=epoch)
-        return {"pattern_sampling": {"path": str(path), "sampler": sampler}}
+        metrics: dict[str, Any] = {}
+        if isinstance(counts, Counter) and counts and sampler not in {"default", "random_missing", "adaptive_pattern"}:
+            path = _write_pattern_counts(context.cfg, counts, epoch=epoch)
+            metrics["pattern_sampling"] = {"path": str(path), "sampler": sampler}
+        if sampler == "adaptive_pattern":
+            path = _write_adaptive_sampler_log(context, state, epoch=epoch)
+            metrics["adaptive_sampler"] = {"path": str(path)}
+        return metrics
 
 
 def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -572,6 +597,14 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "full_aux_proto": training_cfg.get("full_aux_proto", False),
         "missing_pattern_sampler": training_cfg.get("missing_pattern_sampler", training_cfg.get("mask_sampler", "default")),
         "pattern_sampling_weights": training_cfg.get("pattern_sampling_weights", {}),
+        "adaptive_alpha": training_cfg.get("adaptive_alpha", 0.5),
+        "adaptive_temperature": training_cfg.get("adaptive_temperature", 1.0),
+        "adaptive_ema_beta": training_cfg.get("adaptive_ema_beta", 0.9),
+        "adaptive_score_mode": training_cfg.get("adaptive_score_mode", "gap_to_full"),
+        "adaptive_min_prob": training_cfg.get("adaptive_min_prob", 0.05),
+        "adaptive_max_prob": training_cfg.get("adaptive_max_prob", 0.40),
+        "adaptive_update_freq": training_cfg.get("adaptive_update_freq", "step"),
+        "adaptive_warmup_epochs": training_cfg.get("adaptive_warmup_epochs", 3),
         "curriculum_schedule": training_cfg.get("curriculum_schedule", {}),
         "use_pattern_conditional_btapa": training_cfg.get("use_pattern_conditional_btapa", False),
         "btapa_apply_patterns": training_cfg.get("btapa_apply_patterns", ()),
@@ -773,6 +806,14 @@ def _avg_sample_weight(sample_weights: torch.Tensor | None) -> float:
     return float(sample_weights.detach().float().mean().cpu().item())
 
 
+def _u_mask_beam_criterion(context: ExtensionContext):
+    loss_cfg = context.cfg.get("loss", {}) if isinstance(context.cfg.get("loss"), dict) else {}
+    loss_type = str(loss_cfg.get("type", "cross_entropy"))
+    if loss_type in {"beam_neighborhood_ce", "label_smoothing_ce"}:
+        return context.task_criterion
+    return None
+
+
 def _logit_kd_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *, temperature: float) -> torch.Tensor:
     if student_logits.ndim == 3:
         student_logits = student_logits.reshape(-1, student_logits.shape[-1])
@@ -823,10 +864,33 @@ def _pattern_diagnostics(pattern_names: list[str] | None) -> dict[str, float]:
     return diagnostics
 
 
-def _pattern_probs_for_sampler(cfg: dict[str, Any], modalities: tuple[str, ...], *, epoch: int) -> dict[str, float] | list[str] | tuple[str, ...] | None:
+def _new_adaptive_sampler_state() -> dict[str, Any]:
+    return {
+        "ema_loss": {},
+        "ema_acc": {},
+        "num_samples": Counter(),
+        "last_probs": {},
+        "last_scores": {},
+        "warnings": set(),
+    }
+
+
+def _pattern_probs_for_sampler(
+    cfg: dict[str, Any],
+    modalities: tuple[str, ...],
+    *,
+    epoch: int,
+    state: Any | None = None,
+) -> dict[str, float] | list[str] | tuple[str, ...] | None:
     sampler = str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default")
     if sampler == "pattern_balanced":
         return cfg.get("pattern_probs")
+    if sampler == "adaptive_pattern":
+        if isinstance(state, dict) and isinstance(state.get("adaptive_current_probs"), dict):
+            return state["adaptive_current_probs"]
+        if isinstance(state, dict):
+            return _adaptive_pattern_probs(cfg, state, modalities, epoch=epoch)
+        return _uniform_pattern_probs(modalities)
     if sampler in {"default", "random_missing"}:
         return None
     if sampler in {"curriculum_easy_to_hard", "curriculum_hard_to_easy"}:
@@ -838,6 +902,194 @@ def _pattern_probs_for_sampler(cfg: dict[str, Any], modalities: tuple[str, ...],
         if canonical in weights:
             weights[canonical] = float(value)
     return weights
+
+
+def _prepare_adaptive_sampler_epoch(context: ExtensionContext, state: dict[str, Any], *, epoch: int) -> None:
+    cfg = state.get("config", {})
+    if str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default") != "adaptive_pattern":
+        return
+    modalities = tuple(getattr(context.primary_model, "modalities", context.model_cfg.get("primary", {}).get("modalities", ())))
+    state["adaptive_current_probs"] = _adaptive_pattern_probs(cfg, state, modalities, epoch=epoch)
+
+
+def _adaptive_pattern_probs(
+    cfg: dict[str, Any],
+    state: dict[str, Any],
+    modalities: tuple[str, ...],
+    *,
+    epoch: int,
+) -> dict[str, float]:
+    adaptive = _adaptive_state(state)
+    patterns = _core_pattern_names(modalities)
+    uniform = _uniform_pattern_probs(modalities)
+    scores = {pattern: 0.0 for pattern in patterns}
+    if not patterns:
+        _adaptive_warn(adaptive, "no core missing patterns are available; using uniform probabilities.")
+        return uniform
+    sampler_cfg = _adaptive_cfg(cfg)
+    if int(epoch) < int(sampler_cfg["warmup_epochs"]):
+        adaptive["last_scores"] = scores
+        adaptive["last_probs"] = uniform
+        return uniform
+    score_mode = str(sampler_cfg["score_mode"]).lower()
+    if score_mode == "acc_gap":
+        _adaptive_warn(adaptive, "score_mode=acc_gap is configured but pattern-wise training accuracy is unavailable; using uniform probabilities.")
+        adaptive["last_scores"] = scores
+        adaptive["last_probs"] = uniform
+        return uniform
+    ema_loss = adaptive.get("ema_loss", {})
+    missing = [pattern for pattern in patterns if pattern not in ema_loss]
+    if missing:
+        _adaptive_warn(adaptive, f"missing EMA loss for patterns {missing}; using uniform probabilities.")
+        adaptive["last_scores"] = scores
+        adaptive["last_probs"] = uniform
+        return uniform
+    if score_mode == "gap_to_full":
+        if "full" not in ema_loss:
+            _adaptive_warn(adaptive, "missing full EMA loss for gap_to_full; using uniform probabilities.")
+            adaptive["last_scores"] = scores
+            adaptive["last_probs"] = uniform
+            return uniform
+        full_loss = float(ema_loss["full"])
+        scores = {pattern: max(0.0, float(ema_loss[pattern]) - full_loss) for pattern in patterns}
+    elif score_mode == "loss":
+        scores = {pattern: float(ema_loss[pattern]) for pattern in patterns}
+    else:
+        _adaptive_warn(adaptive, f"unknown score_mode={score_mode!r}; using uniform probabilities.")
+        adaptive["last_scores"] = scores
+        adaptive["last_probs"] = uniform
+        return uniform
+    score_values = torch.tensor([scores[pattern] for pattern in patterns], dtype=torch.float32)
+    hard = torch.softmax(score_values / float(sampler_cfg["temperature"]), dim=0)
+    alpha = float(sampler_cfg["alpha"])
+    raw = torch.tensor([uniform[pattern] for pattern in patterns], dtype=torch.float32) * (1.0 - alpha) + hard * alpha
+    clipped = raw.clamp(float(sampler_cfg["min_prob"]), float(sampler_cfg["max_prob"]))
+    normalized = clipped / clipped.sum().clamp_min(1e-12)
+    probs = {pattern: float(value) for pattern, value in zip(patterns, normalized.tolist())}
+    adaptive["last_scores"] = scores
+    adaptive["last_probs"] = probs
+    return probs
+
+
+def _adaptive_sampler_update(
+    cfg: dict[str, Any],
+    state: Any,
+    pattern_names: list[str] | None,
+    loss: torch.Tensor,
+) -> None:
+    if not isinstance(state, dict) or not pattern_names:
+        return
+    if str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default") != "adaptive_pattern":
+        return
+    if str(cfg.get("adaptive_update_freq", "step")) != "step":
+        return
+    adaptive = _adaptive_state(state)
+    value = float(loss.detach().float().cpu().item())
+    beta = float(_adaptive_cfg(cfg)["ema_beta"])
+    counts = Counter(canonical_missing_pattern_name(name) for name in pattern_names)
+    for pattern, count in counts.items():
+        previous = adaptive["ema_loss"].get(pattern)
+        adaptive["ema_loss"][pattern] = value if previous is None else beta * float(previous) + (1.0 - beta) * value
+        adaptive["num_samples"][pattern] += int(count)
+
+
+def _write_adaptive_sampler_log(context: ExtensionContext, state: dict[str, Any], *, epoch: int) -> Path:
+    adaptive = _adaptive_state(state)
+    modalities = tuple(getattr(context.primary_model, "modalities", context.model_cfg.get("primary", {}).get("modalities", ())))
+    patterns = _core_pattern_names(modalities)
+    probs = dict(adaptive.get("last_probs") or state.get("adaptive_current_probs") or _uniform_pattern_probs(modalities))
+    scores = dict(adaptive.get("last_scores") or {pattern: 0.0 for pattern in patterns})
+    counts = state.get("pattern_epoch_counts")
+    if not isinstance(counts, Counter):
+        counts = Counter()
+    path = context.run_dir / "adaptive_sampler_log.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["epoch", "pattern", "ema_loss", "ema_acc", "score", "sampling_prob", "num_samples"],
+        )
+        if write_header:
+            writer.writeheader()
+        for pattern in patterns:
+            writer.writerow(
+                {
+                    "epoch": int(epoch) + 1,
+                    "pattern": pattern,
+                    "ema_loss": _csv_float(adaptive["ema_loss"].get(pattern)),
+                    "ema_acc": _csv_float(adaptive["ema_acc"].get(pattern)),
+                    "score": _csv_float(scores.get(pattern, 0.0)),
+                    "sampling_prob": _csv_float(probs.get(pattern, 0.0)),
+                    "num_samples": int(counts.get(pattern, 0)),
+                }
+            )
+    summary = " ".join(f"{pattern}={probs.get(pattern, 0.0):.3f}" for pattern in patterns)
+    print(f"[AdaptiveSampler] epoch={int(epoch) + 1} probs: {summary}")
+    return path
+
+
+def _adaptive_sampler_diagnostics(state: Any) -> dict[str, float]:
+    if not isinstance(state, dict):
+        return {}
+    adaptive = state.get("adaptive_sampler")
+    if not isinstance(adaptive, dict):
+        return {}
+    diagnostics = {}
+    for pattern, prob in dict(adaptive.get("last_probs") or {}).items():
+        diagnostics[f"adaptive_sampler/prob/{pattern}"] = float(prob)
+    return diagnostics
+
+
+def _adaptive_state(state: dict[str, Any]) -> dict[str, Any]:
+    adaptive = state.setdefault("adaptive_sampler", _new_adaptive_sampler_state())
+    adaptive.setdefault("ema_loss", {})
+    adaptive.setdefault("ema_acc", {})
+    adaptive.setdefault("num_samples", Counter())
+    adaptive.setdefault("last_probs", {})
+    adaptive.setdefault("last_scores", {})
+    adaptive.setdefault("warnings", set())
+    return adaptive
+
+
+def _adaptive_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    nested = cfg.get("adaptive_sampler", {})
+    if not isinstance(nested, dict):
+        nested = {}
+
+    def value(name: str, default: Any) -> Any:
+        return cfg.get(f"adaptive_{name}", nested.get(name, default))
+
+    temperature = max(float(value("temperature", 1.0)), 1e-6)
+    return {
+        "alpha": min(max(float(value("alpha", 0.5)), 0.0), 1.0),
+        "temperature": temperature,
+        "ema_beta": min(max(float(value("ema_beta", 0.9)), 0.0), 0.9999),
+        "score_mode": str(value("score_mode", "gap_to_full")),
+        "min_prob": max(float(value("min_prob", 0.05)), 0.0),
+        "max_prob": min(max(float(value("max_prob", 0.40)), 0.0), 1.0),
+        "warmup_epochs": max(int(value("warmup_epochs", 3)), 0),
+    }
+
+
+def _uniform_pattern_probs(modalities: tuple[str, ...]) -> dict[str, float]:
+    patterns = _core_pattern_names(modalities)
+    if not patterns:
+        return {}
+    prob = 1.0 / len(patterns)
+    return {pattern: prob for pattern in patterns}
+
+
+def _adaptive_warn(adaptive: dict[str, Any], message: str) -> None:
+    warnings_seen = adaptive.setdefault("warnings", set())
+    if message in warnings_seen:
+        return
+    warnings.warn(f"[AdaptiveSampler] {message}", UserWarning, stacklevel=3)
+    warnings_seen.add(message)
+
+
+def _csv_float(value: Any) -> str:
+    return "" if value is None else f"{float(value):.8g}"
 
 
 def _core_pattern_names(modalities: tuple[str, ...]) -> list[str]:

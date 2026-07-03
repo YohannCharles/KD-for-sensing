@@ -1,0 +1,34 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_sampler_uniform_curriculum_easy2hard_es40_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_sampler_uniform_curriculum_easy2hard_es40_seed1
+training:
+  epochs: 40
+  max_epochs: 40
+  missing_pattern_sampler: curriculum_easy_to_hard
+  curriculum_schedule: &id001
+    epochs_1_5:
+    - full
+    - missing_image
+    - missing_radar
+    - missing_lidar
+    epochs_6_10:
+    - missing_gps
+    - non_gps_only
+    epochs_11_40:
+    - gps_only
+    - image_only
+    - radar_only
+    - lidar_only
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    missing_pattern_sampler: curriculum_easy_to_hard
+    curriculum_schedule: *id001
+output:
+  run_name: proto_sampler_uniform_curriculum_easy2hard_es40_seed1
+  dir: outputs/scene31_next_round

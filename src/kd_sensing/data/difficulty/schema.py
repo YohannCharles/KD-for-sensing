@@ -7,8 +7,10 @@ from typing import Any, Iterable, Mapping
 from kd_sensing.data.difficulty.presets import (
     PREDICTIVE_JEPA_OPERATOR_TYPES,
     SCENARIO_D_OPERATOR_TYPES,
+    expand_missing_modality_stress_profile,
     gps_query_advantage_severity,
     is_gps_query_advantage_condition,
+    is_missing_modality_stress_profile,
     is_predictive_jepa_condition,
     is_scenario_d_condition,
     normalize_gps_query_advantage_condition_id,
@@ -308,6 +310,11 @@ def _normalize_profile(
 ) -> DifficultyProfile:
     if not isinstance(raw, Mapping):
         raise ValueError(f"difficulty profile {index} must be a mapping.")
+    if is_missing_modality_stress_profile(raw):
+        raw = expand_missing_modality_stress_profile(
+            raw,
+            profile_id=str(raw.get("id", raw.get("name", f"profile_{index}"))).strip() or f"profile_{index}",
+        )
     _reject_target_shift(raw, path=f"difficulty.profiles[{index}]")
     profile_id = str(raw.get("id", raw.get("name", f"profile_{index}"))).strip()
     if not profile_id:

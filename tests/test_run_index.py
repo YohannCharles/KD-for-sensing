@@ -73,9 +73,12 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     assert run["runtime_layout"]["canonical_partition"] == "scene"
     assert run["runtime_layout"]["scope_slug"] == "scene31"
     assert run["config"]["dataset_family"] == "deepsense6g"
+    assert run["config"]["config_digest"]
     assert run["config"]["modalities"] == ["image", "lidar"]
     assert run["metrics"]["primary"] == {"name": "val_adba", "value": 0.42}
     assert run["checkpoints"]["best_checkpoint"].endswith("checkpoints/best.pth")
+    assert run["claim_harvester"]["config_digest"] == run["config"]["config_digest"]
+    assert run["claim_harvester"]["checkpoint_provenance"]["sidecar_path"].endswith("checkpoints/best.pth.json")
     assert run["size_bytes"] > 0
     assert run["checkpoints"]["count"] == 2
     assert run["checkpoints"]["total_size_bytes"] >= len(b"weights") + len(b"recoverable")
@@ -86,6 +89,27 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     assert retention["last.pth"]["registry_default_candidate"] is True
     assert run["tensorboard"]["event_count"] == 1
     assert run["cleanup"]["protected"] is False
+
+
+def test_run_index_discovers_metrics_csv_and_eval_artifact_refs(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    run_dir = _write_started_run(outputs / "scene31", "csv_run")
+    (run_dir / "metrics.csv").write_text("epoch,val_adba\n1,0.33\n2,0.44\n", encoding="utf-8")
+    (run_dir / "train_log.json").write_text(json.dumps({"epoch_logs": [{"epoch": 2}]}), encoding="utf-8")
+    (run_dir / "training_outputs.npz").write_bytes(b"placeholder")
+    (run_dir / "csv_run_missing_patterns.csv").write_text(
+        "run_name,method,seed,pattern,split,sample_count,label_space,metric_profile,target_source,difficulty_digest,top1\n"
+        "csv_run,proto,7,missing_gps,test,16,beam64,scene31_missing,current,digest-a,0.5\n",
+        encoding="utf-8",
+    )
+
+    index = build_run_index(outputs=outputs, logs=None, include_resources=False, now=NOW)
+    run = index["runs"][0]
+
+    assert run["state"] == "complete"
+    assert run["metrics"]["path"].endswith("metrics.csv")
+    assert run["metrics"]["primary"] == {"name": "val_adba", "value": 0.44}
+    assert run["claim_harvester"]["eval_artifacts"][0]["path"].endswith("csv_run_missing_patterns.csv")
 
 
 def test_run_index_skips_non_run_partitions_by_default_but_allows_explicit_scan(tmp_path: Path):

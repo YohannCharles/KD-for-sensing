@@ -45,6 +45,7 @@ def _register_defaults() -> None:
         "predictive_jepa_robustness": PredictiveJepaRobustnessOperator,
         "modality_missing": ModalityMissingOperator,
         "modality_dropout": ModalityMissingOperator,
+        "modality_unavailable": ModalityMissingOperator,
         "amber_lite_modality_dropout": ModalityMissingOperator,
     }.items():
         DIFFICULTY_OPERATORS.register(name, force=True)(component)

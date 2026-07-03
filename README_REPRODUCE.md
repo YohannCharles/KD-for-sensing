@@ -14,45 +14,40 @@ conda run -n kd_mm_beam python -c "import sys, torch; import torchvision; print(
 
 ## 2. 数据检查
 
-真实 BeamBench/DeepSense6G 数据到位后，先运行只读 checker：
+真实 BeamBench/DeepSense6G 数据到位后，先运行只读 dataset/reproducibility audit：
 
 ```bash
-conda run -n kd_mm_beam python scripts/check_dataset.py \
+conda run -n kd_mm_beam kd-sensing-dataset-audit \
+  --dataset-family beambench \
   --data-root dataset/DeepSense6G/raw_data/test \
   --csv ml_challenge_test_multi_modal.csv \
   --scene 31-34 \
   --num-beams 64 \
   --beam-shift 1 \
-  --output outputs/beambench_baseline/real_data_check.json
+  --output-dir outputs/analysis/dataset_audit/beambench_official
 ```
 
-checker 会报告 CSV 字段、camera/LiDAR/radar/GPS 路径引用、label 范围、scene/sample/sequence/timestamp 标识和缺失比例，不移动、不删除、不生成真实数据。
+audit 会报告 CSV 字段、camera/LiDAR/radar/GPS 路径引用、label 范围、scene/sample/sequence/timestamp 标识、split leakage metadata、official blocked reason 和 local substitute readiness；它只读，不移动、不删除、不生成真实数据，也不表示官方复现已经完成。
 
 ## 3. mock smoke
 
-真实数据或官方权重不可用时，只能运行显式 `MOCK` smoke：
+真实数据或官方权重不可用时，只能运行显式 `MOCK` smoke。当前保留的 smoke 是 focused test，会在临时目录创建 synthetic mock dataset，不写入源码数据目录：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train_baseline.py \
-  --mock \
-  --epochs 2 \
-  --num-beams 64 \
-  --data-root outputs/beambench_baseline/mock_dataset \
-  --csv ml_challenge_mock_multi_modal.csv \
-  --output-dir outputs/beambench_baseline/mock_smoke \
-  --device cpu
+conda run -n kd_mm_beam pytest tests/test_beambench_mock_pipeline.py -q
 ```
 
 单独检查 mock dataset：
 
 ```bash
-conda run -n kd_mm_beam python scripts/check_dataset.py \
+conda run -n kd_mm_beam kd-sensing-dataset-audit \
+  --dataset-family beambench \
   --data-root outputs/beambench_baseline/mock_dataset \
   --csv ml_challenge_mock_multi_modal.csv \
   --scene MOCK \
   --num-beams 64 \
   --beam-shift 0 \
-  --output outputs/beambench_baseline/mock_dataset/check_report.json
+  --output-dir outputs/analysis/dataset_audit/beambench_mock
 ```
 
 mock 输出包含 `mock_data: true`，不得用于论文结果、leaderboard 或真实 BeamBench baseline 对比。
@@ -75,7 +70,7 @@ configs/fusion/beambench_image_ae_gps_direct.yaml
 推荐直接运行论文 row 专用入口。该入口会先训练或加载本仓库 Camera AE checkpoint，然后冻结 AE encoder 训练 GPS direct fusion classifier：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py \
+conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps \
   --config configs/fusion/beambench_image_ae_gps_direct.yaml
 ```
 
@@ -110,7 +105,7 @@ conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps \
 其它场景使用 override：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py \
+conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps \
   --config configs/fusion/beambench_image_ae_gps_direct.yaml \
   --scene 34
 ```
@@ -118,7 +113,7 @@ conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py \
 快速 smoke：
 
 ```bash
-conda run -n kd_mm_beam python scripts/train_beambench_image_ae_gps.py \
+conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps \
   --config configs/fusion/beambench_image_ae_gps_direct.yaml \
   --dry-run \
   --output-dir outputs/beambench_image_ae_gps_direct/dry_run_scene31
@@ -171,28 +166,21 @@ conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii \
 /tmp/beambench-official
 ```
 
-生成官方评估计划并记录 blocked reason：
+官方评估 wrapper 旧命令 `scripts/eval_baseline.py` 已退役且当前不可用，不再作为推荐入口。需要记录 official blocked reason 时，使用只读 audit：
 
 ```bash
-conda run -n kd_mm_beam python scripts/eval_baseline.py \
-  --official-root /tmp/beambench-official \
+conda run -n kd_mm_beam kd-sensing-dataset-audit \
+  --dataset-family beambench \
   --data-root dataset/DeepSense6G/raw_data/test \
   --csv ml_challenge_test_multi_modal.csv \
-  --type-list radar_dense_camera_ae_gps \
-  --output-dir outputs/beambench_baseline/eval
+  --scene 31-34 \
+  --num-beams 64 \
+  --beam-shift 1 \
+  --official-source /tmp/beambench-official \
+  --output-dir outputs/analysis/dataset_audit/beambench_official
 ```
 
-只有在官方数据、权重、源码/配置和兼容环境齐备时，才显式增加 `--execute` 运行 `challenge.py`：
-
-```bash
-conda run -n kd_mm_beam python scripts/eval_baseline.py \
-  --official-root /tmp/beambench-official \
-  --data-root /path/to/raw_data/test \
-  --csv ml_challenge_test_multi_modal.csv \
-  --type-list radar_dense_camera_ae_gps \
-  --output-dir outputs/beambench_baseline/eval \
-  --execute
-```
+只有在官方数据、权重、源码/配置和兼容环境齐备时，才在官方 BeamBench 仓库内按官方 README 手动运行 `challenge.py`；本仓库不恢复旧 wrapper，也不在官方条件缺失时填入伪造 official reproduction 数值。
 
 ## 6. 报告
 

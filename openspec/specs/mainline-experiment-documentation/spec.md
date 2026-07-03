@@ -211,3 +211,48 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supe
 - **THEN** 当前配置 MUST 保留 query-pool、GPS-biased baseline、supervised baseline 和 random-best 控制组
 - **AND** scene31-only、非 BeamBench 的 last-checkpoint 和 next-beam downstream ablation 配置 MUST 不再作为当前配置文件维护
 - **AND** `beambench_fair` 相关配置 MAY 继续保留用于 Arnold22/BeamBench 口径对照
+
+### Requirement: Statistical and stress claim governance
+主线实验文档 MUST 记录统计显著性和 stress suite 对 claim 升级的要求。单 seed、smoke、mock、not-comparable 或缺少 stress provenance 的结果 MUST 不写成正式论文结论。
+
+#### Scenario: claim registry 记录统计证据
+- **WHEN** 某缺失模态结果升级为 local strict-validation 或 local experimental claim
+- **THEN** claim registry MUST 记录 seed_count、baseline、primary metric、mean/std 或 CI、comparability status、stress suite status 和 caveat
+- **AND** 缺少任一必要证据时 claim status MUST 保持 pending、unverified、not_comparable 或 mock/smoke
+
+#### Scenario: 实验矩阵区分 smoke 和 formal stress
+- **WHEN** `docs/experiment_matrix.md` 或协议表列出 missing-modality stress suite
+- **THEN** 文档 MUST 标明该 manifest 是 smoke、quick、formal、diagnostic-only 还是 evaluation-only
+- **AND** 文档 MUST 指向 ignored 输出目录，不要求提交真实 stress metrics 或图表
+
+### Requirement: Paper export and literature documentation
+主线实验文档 MUST 索引 paper artifact export、dataset audit 和 literature matrix，并说明它们的 claim 状态边界。
+
+#### Scenario: 文档索引 paper export
+- **WHEN** README 或 `docs/experiment_matrix.md` 新增 paper export 说明
+- **THEN** 文档 MUST 说明 export 消费已审阅 claim、ledger 或 summary
+- **AND** 文档 MUST 说明 pending/mock/historical rows 默认不进入 main table
+
+#### Scenario: 文档索引 dataset audit
+- **WHEN** README_REPRODUCE 或主线文档给出数据审计入口
+- **THEN** 文档 MUST 使用当前存在的 audit entrypoint
+- **AND** 文档 MUST 说明 audit 只读、不移动数据、不代表 official reproduction 已完成
+
+#### Scenario: inventory 记录 literature matrix
+- **WHEN** 新增 `docs/literature_matrix.md` 或 `paper/references.bib`
+- **THEN** `docs/project_surface_inventory.md` MUST 记录其文档生命周期和职责
+- **AND** 文档 MUST 不把本地 PDF 或外部论文下载物纳入源码产物要求
+
+### Requirement: Harvested claim draft governance
+主线实验文档 MUST 区分 harvested claim draft 和正式 claim registry。自动生成的 candidate、dashboard summary 或 ledger record MUST 不被描述为已审阅结论。
+
+#### Scenario: candidate 不自动进入 claim registry
+- **WHEN** harvester 输出 claim candidate
+- **THEN** `docs/result_claims_registry.md` MUST 只有在人工审阅后才新增或更新对应 claim 行
+- **AND** candidate 输出 MUST 保留 `draft`、`candidate_only` 或等价状态标记
+
+#### Scenario: README 和实验矩阵引用 dashboard
+- **WHEN** 文档新增 research dashboard 或 harvester 入口说明
+- **THEN** README 或 `docs/experiment_matrix.md` MAY 指向该入口作为本地研究辅助工具
+- **AND** 文档 MUST 说明它不生成正式论文结论、不移动产物、不替代 claim registry
+

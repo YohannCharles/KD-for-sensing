@@ -881,6 +881,60 @@ def test_pipeline_is_deterministic_shape_safe_and_blocks_target_mutation() -> No
         apply_difficulty_pipeline(_batch(), bad_profile, context)
 
 
+def test_missing_modality_stress_preset_handles_unavailable_sensing_modalities() -> None:
+    profile = normalize_difficulty_profiles(
+        [
+            {
+                "id": "stress_lidar_unavailable",
+                "preset": "missing_modality_stress",
+                "stage": "evaluation",
+                "split": "test",
+                "condition": "unavailable_lidar",
+                "modalities": ["image", "radar", "gps", "lidar", "mmwave"],
+                "seed": 11,
+            }
+        ]
+    )[0]
+    batch = {
+        "lidar_batch": torch.ones(2, 3, 4),
+        "mmwave_batch": torch.ones(2, 3, 64),
+        "target_beam": torch.tensor([[1, 2], [3, 4]]),
+        "beam_power": torch.randn(2, 2, 6),
+        "sample_id": ["a", "b"],
+        "split_metadata": {"split": "test"},
+    }
+
+    result = apply_difficulty_pipeline(
+        batch,
+        profile,
+        DifficultyContext(stage="evaluation", split="test", seed=11, sample_ids=("a", "b")),
+    )
+
+    assert profile.condition == "unavailable_lidar"
+    assert profile.operators[0].type == "modality_unavailable"
+    assert torch.count_nonzero(result.batch["lidar_batch"]).item() == 0
+    assert result.batch["lidar_valid_mask"].shape == (2, 3)
+    assert torch.equal(result.batch["target_beam"], batch["target_beam"])
+    assert torch.equal(result.batch["beam_power"], batch["beam_power"])
+    assert result.batch["sample_id"] == batch["sample_id"]
+    assert result.metadata["condition"] == "unavailable_lidar"
+    assert result.batch["missing_modality_metadata"]["fallback_count"] == 0
+
+
+def test_missing_modality_stress_preset_rejects_unknown_condition() -> None:
+    with pytest.raises(ValueError, match="Available conditions"):
+        normalize_difficulty_profiles(
+            [
+                {
+                    "id": "bad_missing_stress",
+                    "preset": "missing_modality_stress",
+                    "condition": "missing_thermal_camera",
+                    "modalities": ["image", "gps"],
+                }
+            ]
+        )
+
+
 def test_load_config_normalizes_difficulty_after_overrides(tmp_path: Path) -> None:
     config_path = tmp_path / "difficulty.yaml"
     config_path.write_text(

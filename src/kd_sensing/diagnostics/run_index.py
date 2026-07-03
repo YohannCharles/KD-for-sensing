@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import csv
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,7 @@ RUN_ARTIFACT_NAMES = {
     "resolved_config": "resolved_config.yaml",
     "startup_summary": "startup_summary.json",
     "metrics": "metrics.json",
+    "metrics_csv": "metrics.csv",
     "train_log": "train_log.json",
     "training_outputs": "training_outputs.npz",
     "test_report": "test_report.json",
@@ -225,6 +227,14 @@ def summarize_run_dir(
         "resources": _run_resource_summary(process),
         "timestamps": timestamps,
         "cleanup": cleanup,
+        "claim_harvester": summarize_claim_harvester_fields(
+            path,
+            config=config,
+            artifacts=artifacts,
+            metrics=metrics,
+            checkpoints=checkpoints,
+            process=process,
+        ),
     }
 
 
@@ -247,10 +257,19 @@ def summarize_artifacts(run_dir: Path) -> dict[str, Any]:
         for path in (run_dir / "checkpoints").glob("*.json")
         if path.is_file()
     )
+    eval_artifact_paths = sorted(
+        path
+        for path in run_dir.rglob("*_missing_patterns.*")
+        if path.is_file() and path.suffix.lower() in {".csv", ".json"}
+    )
+    eval_artifacts = [_artifact_ref(path, artifact_type="missing_patterns") for path in eval_artifact_paths]
     tensorboard_events = [str(path) for path in _tensorboard_event_paths(run_dir)]
     items["checkpoints"] = {"present": bool(checkpoint_files), "paths": checkpoint_files}
     items["checkpoint_sidecars"] = {"present": bool(checkpoint_sidecars), "paths": checkpoint_sidecars}
+    items["eval_artifacts"] = {"present": bool(eval_artifacts), "items": eval_artifacts}
     items["tensorboard_events"] = {"present": bool(tensorboard_events), "paths": tensorboard_events}
+    if items.get("metrics_csv", {}).get("present") and "metrics.json" in missing:
+        missing.remove("metrics.json")
     items["missing"] = missing
     return items
 
@@ -285,6 +304,7 @@ def summarize_config(run_dir: Path, *, artifacts: dict[str, Any], warnings: list
         modalities = [experiment["task"]]
     return {
         "config_path": str(config_path) if config_path is not None else None,
+        "config_digest": _file_digest(config_path),
         "dataset_family": _dataset_family(dataset_cfg, run_dir),
         "experiment_name": experiment.get("name"),
         "task": experiment.get("task"),
@@ -294,17 +314,44 @@ def summarize_config(run_dir: Path, *, artifacts: dict[str, Any], warnings: list
         "output_run_name": _nested_dict(cfg, "output").get("run_name"),
         "scene": runtime.get("scene"),
         "scene_scope": runtime.get("scene_scope") or runtime.get("output_scope"),
+        "split": _first_value(runtime, dataset_cfg, cfg.get("data", {}) if isinstance(cfg.get("data"), dict) else {}, keys=("split",)),
+        "sample_count": _first_value(
+            runtime,
+            dataset_cfg,
+            cfg.get("data", {}) if isinstance(cfg.get("data"), dict) else {},
+            keys=("sample_count", "num_samples", "effective_num_samples"),
+        ),
+        "label_space": _first_value(runtime, dataset_cfg, objective_meta, keys=("label_space", "target_label_space")),
+        "metric_profile": _first_value(
+            runtime,
+            objective_meta,
+            cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {},
+            keys=("metric_profile", "metrics_profile", "primary_metric"),
+        ),
+        "target_source": _first_value(
+            runtime,
+            dataset_cfg,
+            objective_meta,
+            keys=("target_source", "beam_target_source", "target_beam_source"),
+        ),
+        "difficulty_digest": _first_value(runtime, dataset_cfg, objective_meta, keys=("difficulty_digest",)),
     }
 
 
 def summarize_metrics(run_dir: Path, *, artifacts: dict[str, Any], warnings: list[str] | None = None) -> dict[str, Any]:
     metrics_path = Path(artifacts["metrics"]["path"]) if artifacts.get("metrics", {}).get("path") else None
+    metrics_csv_path = (
+        Path(artifacts["metrics_csv"]["path"]) if artifacts.get("metrics_csv", {}).get("path") else None
+    )
     report_path = Path(artifacts["test_report"]["path"]) if artifacts.get("test_report", {}).get("path") else None
     raw: dict[str, Any] = {}
     source = None
     if metrics_path is not None:
         raw = _read_json(metrics_path, warnings=warnings) or {}
         source = metrics_path
+    elif metrics_csv_path is not None:
+        raw = _read_metrics_csv(metrics_csv_path, warnings=warnings)
+        source = metrics_csv_path
     elif report_path is not None:
         report = _read_json(report_path, warnings=warnings) or {}
         raw = report.get("metrics", report)
@@ -317,6 +364,56 @@ def summarize_metrics(run_dir: Path, *, artifacts: dict[str, Any], warnings: lis
         "available": bool(raw),
         "primary": {"name": primary_name, "value": primary_value},
         "scalars": scalar_metrics,
+    }
+
+
+def summarize_claim_harvester_fields(
+    run_dir: Path,
+    *,
+    config: dict[str, Any],
+    artifacts: dict[str, Any],
+    metrics: dict[str, Any],
+    checkpoints: dict[str, Any],
+    process: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expose stable read-only fields consumed by the research claim harvester."""
+
+    artifact_paths = {
+        key: value.get("path")
+        for key, value in artifacts.items()
+        if isinstance(value, dict) and value.get("path")
+    }
+    artifact_paths["checkpoints"] = list(checkpoints.get("paths", []))
+    checkpoint_items = checkpoints.get("items", [])
+    primary_checkpoint = checkpoints.get("primary_checkpoint")
+    primary_sidecar = next(
+        (item for item in checkpoint_items if item.get("path") == primary_checkpoint and item.get("sidecar_path")),
+        None,
+    )
+    return {
+        "run_id": _stable_digest(str(run_dir)),
+        "run_name": run_dir.name,
+        "run_dir": str(run_dir),
+        "config_path": config.get("config_path"),
+        "config_digest": config.get("config_digest"),
+        "seed": config.get("seed"),
+        "scene_scope": config.get("scene_scope") or config.get("scene"),
+        "dataset_family": config.get("dataset_family"),
+        "split": config.get("split"),
+        "sample_count": config.get("sample_count"),
+        "label_space": config.get("label_space"),
+        "metric_profile": config.get("metric_profile") or metrics.get("primary", {}).get("name"),
+        "target_source": config.get("target_source"),
+        "difficulty_digest": config.get("difficulty_digest"),
+        "artifact_paths": artifact_paths,
+        "eval_artifacts": list(artifacts.get("eval_artifacts", {}).get("items", [])),
+        "checkpoint_provenance": {
+            "checkpoint_path": primary_checkpoint,
+            "sidecar_path": primary_sidecar.get("sidecar_path") if primary_sidecar else None,
+            "selection_metric": (primary_sidecar or {}).get("selection_metadata", {}).get("values", {}).get("selection_metric"),
+            "source": "run_local_checkpoint" if primary_checkpoint else "unavailable",
+        },
+        "active_process": _public_process(process),
     }
 
 
@@ -745,8 +842,9 @@ def match_run_process(
 
 
 def _complete_artifacts_present(artifacts: dict[str, Any]) -> bool:
-    required = ("metrics", "train_log", "training_outputs", "final_config", "resolved_config")
-    return all(artifacts.get(key, {}).get("present") for key in required)
+    required = ("train_log", "training_outputs", "final_config", "resolved_config")
+    has_metrics = artifacts.get("metrics", {}).get("present") or artifacts.get("metrics_csv", {}).get("present")
+    return bool(has_metrics) and all(artifacts.get(key, {}).get("present") for key in required)
 
 
 def _started_without_metrics(artifacts: dict[str, Any]) -> bool:
@@ -755,6 +853,7 @@ def _started_without_metrics(artifacts: dict[str, Any]) -> bool:
         and artifacts.get("final_config", {}).get("present")
         and artifacts.get("resolved_config", {}).get("present")
         and not artifacts.get("metrics", {}).get("present")
+        and not artifacts.get("metrics_csv", {}).get("present")
     )
 
 
@@ -942,6 +1041,24 @@ def _read_json(path: Path | None, *, warnings: list[str] | None = None) -> dict[
     return data if isinstance(data, dict) else None
 
 
+def _read_metrics_csv(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            rows = list(csv.DictReader(f))
+    except OSError as exc:
+        if warnings is not None:
+            warnings.append(f"failed to read CSV {path}: {exc}")
+        return {}
+    if not rows:
+        return {}
+    row = rows[-1]
+    return {
+        key: _coerce_scalar(value)
+        for key, value in row.items()
+        if key is not None and value not in (None, "")
+    }
+
+
 def _read_text_tail(path: Path, *, warnings: list[str] | None = None) -> str:
     try:
         with path.open("rb") as f:
@@ -965,6 +1082,17 @@ def _nested_dict(data: dict[str, Any], *keys: str) -> dict[str, Any]:
     return cursor if isinstance(cursor, dict) else {}
 
 
+def _first_value(*dicts: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for data in dicts:
+        if not isinstance(data, dict):
+            continue
+        for key in keys:
+            value = data.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
 def _dataset_family(dataset_cfg: dict[str, Any], run_dir: Path) -> str | None:
     raw = dataset_cfg.get("type") or dataset_cfg.get("family")
     if raw:
@@ -986,6 +1114,23 @@ def _scalar_metrics(metrics: dict[str, Any]) -> dict[str, float | int]:
                 if isinstance(top_value, (int, float)) and not isinstance(top_value, bool):
                     result[f"top{top_key}"] = top_value
     return result
+
+
+def _coerce_scalar(value: Any) -> Any:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    try:
+        number = float(text)
+    except ValueError:
+        return value
+    if number.is_integer() and not any(marker in text.lower() for marker in (".", "e")):
+        return int(number)
+    return number
 
 
 def _primary_metric_name(metrics: dict[str, Any]) -> str | None:
@@ -1173,6 +1318,42 @@ def _path_size_bytes(path: Path) -> int:
     except OSError:
         return 0
     return 0
+
+
+def _artifact_ref(path: Path, *, artifact_type: str) -> dict[str, Any]:
+    return {
+        "type": artifact_type,
+        "path": str(path),
+        "mtime": _format_dt(_mtime(path)),
+        "size_bytes": _path_size_bytes(path),
+    }
+
+
+def _file_digest(path: Path | None) -> str | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _stable_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _public_process(process: dict[str, Any] | None) -> dict[str, Any] | None:
+    if process is None:
+        return None
+    return {
+        "pid": process.get("pid"),
+        "config_path": process.get("config_path"),
+        "run_name": process.get("run_name"),
+        "gpu_indices": list(process.get("gpu_indices", [])),
+        "kind": process.get("kind"),
+        "cmdline": process.get("cmdline"),
+    }
 
 
 def _looks_like_kd_process(cmdline: str) -> bool:

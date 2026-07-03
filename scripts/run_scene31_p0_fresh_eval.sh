@@ -95,7 +95,7 @@ if [[ -f "$MANIFEST" ]]; then
   while IFS= read -r run_name; do
     [[ -n "$run_name" ]] && RUNS+=("$run_name")
   done < <(
-    python - "$MANIFEST" <<'PY'
+    conda run -n kd_mm_beam python -c '
 import csv
 import sys
 
@@ -103,7 +103,7 @@ with open(sys.argv[1], newline="", encoding="utf-8") as handle:
     for row in csv.DictReader(handle):
         if row.get("group") == "p0":
             print(row.get("run_name", ""))
-PY
+' "$MANIFEST"
   )
 fi
 if [[ ${#RUNS[@]} -eq 0 ]]; then
@@ -117,7 +117,7 @@ if [[ ${#EXTRA_RUNS[@]} -gt 0 ]]; then
 fi
 
 is_complete() {
-  python - "$1" <<'PY'
+  conda run -n kd_mm_beam python -c '
 import csv
 import json
 import math
@@ -139,18 +139,19 @@ for pattern in required:
     row = by_pattern[pattern]
     if row.get("status") not in ("", "ok"):
         raise SystemExit(1)
-    try:
-        value = float(row.get("top1", "nan"))
-    except ValueError:
-        value = math.nan
-    if not math.isfinite(value):
-        raise SystemExit(1)
+    for metric in ("top1", "top3", "top5", "within_3", "mae"):
+        try:
+            value = float(row.get(metric, "nan"))
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
+            raise SystemExit(1)
 if manifest.exists():
     data = json.loads(manifest.read_text(encoding="utf-8"))
     if data.get("max_batches") not in (None, ""):
         raise SystemExit(1)
 raise SystemExit(0)
-PY
+' "$1"
 }
 
 COMPLETED=()

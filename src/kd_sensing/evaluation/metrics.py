@@ -217,8 +217,9 @@ def beam_classification_circular_summary(
     dba_delta: float = 5.0,
     topk: tuple[int, ...] = (1, 3, 5),
     ignore_index: int = -100,
+    distance_mode: str = "circular",
 ) -> dict[str, float | int]:
-    """Single-horizon hard-label summary using circular beam error."""
+    """Single-horizon hard-label summary using beam-index distance."""
     if torch.is_tensor(outputs):
         scores = outputs.detach().cpu()
     else:
@@ -236,6 +237,7 @@ def beam_classification_circular_summary(
     if target.ndim != 1 or int(target.shape[0]) != int(scores.shape[0]):
         raise ValueError(f"labels must have shape [N] or [N, 1], got {tuple(target.shape)}.")
     beams = int(num_beams or scores.shape[-1])
+    mode = _normalize_distance_mode(distance_mode)
     valid = target.ne(int(ignore_index)) & target.ge(0) & target.lt(beams)
     valid_count = int(valid.sum().item())
     result: dict[str, float | int] = {
@@ -247,8 +249,10 @@ def beam_classification_circular_summary(
             {
                 "DBA": 0.0,
                 "DBA_zero_ratio": 0.0,
+                "mean_error": 0.0,
                 "mean_circular_error": 0.0,
                 "median_circular_error": 0.0,
+                "within_3": 0.0,
                 "exact_acc": 0.0,
                 "pm1_acc": 0.0,
                 "pm2_acc": 0.0,
@@ -262,13 +266,22 @@ def beam_classification_circular_summary(
     scores_v = scores[valid]
     target_v = target[valid]
     pred = scores_v.argmax(dim=-1)
-    distances = circular_beam_distance(pred, target_v, num_beams=beams).numpy()
+    distances_tensor = (
+        circular_beam_distance(pred, target_v, num_beams=beams)
+        if mode == "circular"
+        else torch.abs(pred.to(dtype=torch.long) - target_v.to(dtype=torch.long))
+    )
+    distances = distances_tensor.numpy()
+    mean_error = float(np.mean(distances))
+    median_error = float(np.median(distances))
     result.update(
         {
             "DBA": dba_from_circular_distances(distances, delta=dba_delta),
             "DBA_zero_ratio": dba_zero_ratio(distances),
-            "mean_circular_error": float(np.mean(distances)),
-            "median_circular_error": float(np.median(distances)),
+            "mean_error": mean_error,
+            "mean_circular_error": mean_error,
+            "median_circular_error": median_error,
+            "within_3": float(np.mean(distances <= 3)),
             "exact_acc": float(np.mean(distances == 0)),
             "pm1_acc": float(np.mean(distances <= 1)),
             "pm2_acc": float(np.mean(distances <= 2)),
@@ -282,6 +295,15 @@ def beam_classification_circular_summary(
     for key in ("top1", "top3", "top5"):
         result.setdefault(key, 0.0)
     return result
+
+
+def _normalize_distance_mode(mode: str) -> str:
+    normalized = str(mode or "circular").strip().lower().replace("-", "_")
+    if normalized in {"circular", "wrap", "wrapped"}:
+        return "circular"
+    if normalized in {"linear", "official", "beambench", "non_circular", "noncircular"}:
+        return "linear"
+    raise ValueError("distance_mode must be one of 'circular' or 'linear'.")
 
 
 def calculate_topk_accuracy(

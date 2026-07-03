@@ -12,11 +12,11 @@ from kd_sensing.data.difficulty.schema import (
 
 
 MODALITY_BATCH_KEYS = {
-    "image": ("image", "images"),
-    "radar": ("radar", "radar_ra", "radar_da"),
-    "gps": ("gps",),
-    "lidar": ("lidar",),
-    "mmwave": ("mmwave",),
+    "image": ("image", "images", "image_batch"),
+    "radar": ("radar", "radar_ra", "radar_da", "radar_batch"),
+    "gps": ("gps", "gps_batch"),
+    "lidar": ("lidar", "lidar_batch"),
+    "mmwave": ("mmwave", "mmwave_batch"),
 }
 
 

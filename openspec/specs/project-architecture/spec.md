@@ -276,3 +276,17 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 #### Scenario: 已完成 active change 不被误用
 - **WHEN** active change 显示 status 为 complete
 - **THEN** 本 change MUST 先归档该 change，或在 Wave 0 中说明暂不归档的原因、风险和与本 change 的隔离方式
+
+### Requirement: Surface pruning preserves current user behavior
+项目 MAY 大规模删除旧入口、本地脚本、隐藏 CLI、重复 tombstone 和可生成配置，但 MUST 保持 current package CLI、current canonical config、dataset split、beam label/label-space、metric schema、checkpoint schema、run metadata 和默认本地产物分区兼容。
+
+#### Scenario: Current public behavior unchanged
+- **WHEN** 本 change 删除或合并 internal surface
+- **THEN** README、pyproject console scripts、current specs 和 inventory 登记的 current workflow MUST 继续可用
+- **AND** 删除 MUST 不要求用户改用未记录的新命令
+
+#### Scenario: Internal breaking import allowed
+- **WHEN** 一个 import path 未登记为 public surface
+- **THEN** 它 MAY 被删除或移动
+- **AND** 项目 MUST 不新增旧路径 compatibility wrapper
+

@@ -25,6 +25,8 @@ conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
 conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
 conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit --help
+conda run -n kd_mm_beam kd-sensing-paper-export --help
+conda run -n kd_mm_beam kd-sensing-dataset-audit --help
 ```
 
 等价包内 CLI 入口形如：
@@ -134,6 +136,35 @@ conda run -n kd_mm_beam kd-sensing-runs --outputs outputs --logs logs --format j
 `kd-sensing-runs` 只读扫描本地 `outputs/`、`logs/`、当前 Python 进程和可用资源快照，不删除、不移动、不重写训练产物、日志、checkpoint、cache 或 TensorBoard 文件。状态分类包括 `running`、`complete`、`started_no_metrics`、`partial`、`failed`、`killed`、`waiting`、`stale` 和 `unknown`；JSON 输出稳定包含 `generated_at`、`roots`、`runs`、`resources` 和 `warnings`。
 默认扫描 `outputs/` 时会跳过 `outputs/cache/`、`outputs/archive/` 和 `outputs/cleanup_manifests/` 等非当前 run 分区；如需审计这些目录，可显式传入 `--outputs outputs/cache` 或 `--outputs outputs/archive`。
 
+研究 claim dashboard：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-research-dashboard --outputs outputs --logs logs
+conda run -n kd_mm_beam kd-sensing-research-dashboard --outputs outputs --logs logs \
+  --json --output-json outputs/analysis/research_dashboard/dashboard.json \
+  --write-ledger
+```
+
+`kd-sensing-research-dashboard` 只读聚合 run index、Scene31 missing-pattern 结果、训练 run metrics、checkpoint sidecar、OpenSpec active change 和 GPU/进程快照。输出的 claim candidate 保持 `candidate_only=true` / `claim_status=draft`，默认 JSONL ledger 写入 ignored `outputs/analysis/research_ledger/`；它不启动训练、不清理产物、不移动 checkpoint，也不会自动修改 [docs/result_claims_registry.md](docs/result_claims_registry.md)。
+
+论文表格与数据审计：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-paper-export \
+  --input docs/result_claims_registry.md \
+  --output-dir outputs/paper_artifacts/current
+conda run -n kd_mm_beam kd-sensing-dataset-audit \
+  --dataset-family beambench \
+  --data-root dataset/DeepSense6G/raw_data/test \
+  --csv ml_challenge_test_multi_modal.csv \
+  --scene 31-34 \
+  --num-beams 64 \
+  --beam-shift 1 \
+  --output-dir outputs/analysis/dataset_audit/beambench_official
+```
+
+`kd-sensing-paper-export` 只消费已审阅 claim、ledger 或 summary，生成 Markdown/CSV/LaTeX 表格草稿和 stress/pattern figure-data；`pending`、`mock/smoke`、`historical`、`upper-bound`、`blocked` 等状态默认不进入 main table。`kd-sensing-dataset-audit` 只读检查 layout、CSV 字段、模态引用、label range、split leakage metadata、official blocked reason 和 local substitute readiness；它不移动数据，也不代表 official reproduction 已完成。
+
 本地产物清理 manifest：
 
 ```bash
@@ -212,7 +243,7 @@ configs/fusion/<canonical_slug>_<strong|lightweight>.yaml
 
 很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 strong/lightweight canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线和 fusion KD alias 的旧配置路径不会被 virtual alias 接管。
 
-当前主线横向说明分三层维护：模型目录见 [docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)，参数协议见 [docs/experiment_protocols.md](docs/experiment_protocols.md)，可引用结果和 blocked 状态见 [docs/result_claims_registry.md](docs/result_claims_registry.md)。[docs/experiment_matrix.md](docs/experiment_matrix.md) 只保留 quickstart 顺序和关键 caveat；CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序从这里跳转。
+当前主线横向说明分三层维护：模型目录见 [docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)，参数协议见 [docs/experiment_protocols.md](docs/experiment_protocols.md)，可引用结果和 blocked 状态见 [docs/result_claims_registry.md](docs/result_claims_registry.md)。纵向改进历史、实验决策和创新线索见 [docs/mainline_experiment_history.md](docs/mainline_experiment_history.md)，相关工作矩阵见 [docs/literature_matrix.md](docs/literature_matrix.md)。[docs/experiment_matrix.md](docs/experiment_matrix.md) 只保留 quickstart 顺序和关键 caveat；CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序从这里跳转。
 
 Scene31 night-grid / next-round 配置族只在源码中保留 manifest、base config、generator 和 local/manual fresh-eval/summary helper。需要复跑时先用 `scripts/generate_experiment_grid.py` 或 `scripts/generate_scene31_next_round.py --out_dir <local-config-dir>` 重建 YAML，再使用 `kd-sensing-train --config <generated-yaml>`；P0 fresh eval 使用 `bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`，汇总使用 `conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py --root outputs/scene31_next_round --out outputs/scene31_next_round/p0_fresh_summary`。日志和结果只写 ignored 的 `logs/`、`outputs/scene31/` 或 `outputs/scene31_next_round/`。
 
@@ -325,8 +356,10 @@ conda run -n kd_mm_beam kd-sensing-preprocess \
 - AI/维护者修改前导航：[docs/agent_navigation.md](docs/agent_navigation.md)
 - 最小结构化事实清单：[docs/maintainer_context_index.yaml](docs/maintainer_context_index.yaml)
 - 当前主线模型目录：[docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)
+- 主线实验演进记录：[docs/mainline_experiment_history.md](docs/mainline_experiment_history.md)
 - 实验协议和参数口径：[docs/experiment_protocols.md](docs/experiment_protocols.md)
 - 结果和 claim 账本：[docs/result_claims_registry.md](docs/result_claims_registry.md)
+- 相关工作矩阵：[docs/literature_matrix.md](docs/literature_matrix.md)
 - 实验矩阵 quickstart 和推荐运行顺序：[docs/experiment_matrix.md](docs/experiment_matrix.md)
 - 研究结论和历史方案收束：[docs/research_notes.md](docs/research_notes.md)
 - 训练吞吐、cache 和并行建议：[docs/training_throughput.md](docs/training_throughput.md)

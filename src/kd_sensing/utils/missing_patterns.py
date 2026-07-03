@@ -20,10 +20,13 @@ MODALITY_ALIASES = {
     "radar_da": "radar",
     "lidar": "lidar",
     "laser": "lidar",
+    "mmwave": "mmwave",
+    "mmw": "mmwave",
+    "millimeter_wave": "mmwave",
 }
-SINGLE_MODALITY_PATTERNS = ["gps_only", "image_only", "radar_only", "lidar_only"]
-WEAK_SINGLE_MODALITY_PATTERNS = ["radar_only", "lidar_only"]
-SENSING_ONLY_PATTERNS = ["image_only", "radar_only", "lidar_only", "missing_gps", "non_gps_only"]
+SINGLE_MODALITY_PATTERNS = ["gps_only", "image_only", "radar_only", "lidar_only", "mmwave_only"]
+WEAK_SINGLE_MODALITY_PATTERNS = ["radar_only", "lidar_only", "mmwave_only"]
+SENSING_ONLY_PATTERNS = ["image_only", "radar_only", "lidar_only", "mmwave_only", "missing_gps", "non_gps_only"]
 
 
 def get_default_missing_patterns(modalities: list[str]) -> dict[str, list[int]]:

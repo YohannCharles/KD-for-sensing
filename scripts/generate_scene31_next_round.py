@@ -90,6 +90,7 @@ def _next_round_specs() -> list[dict[str, Any]]:
         tags: list[str],
         training: dict[str, Any] | None = None,
         model: dict[str, Any] | None = None,
+        loss: dict[str, Any] | None = None,
         priority: str = "medium",
     ) -> None:
         specs.append(
@@ -100,6 +101,7 @@ def _next_round_specs() -> list[dict[str, Any]]:
                 "tags": tags,
                 "training": {**es40, **(training or {})},
                 "model": model or {},
+                "loss": loss or {},
                 "priority": priority,
             }
         )
@@ -112,6 +114,8 @@ def _next_round_specs() -> list[dict[str, Any]]:
             seed,
             ["condbtapa", "weak_single", "lambda_0.05", "es40"],
             {**cond_base, "btapa_lambda": 0.05},
+            None,
+            None,
             priority="high",
         )
 
@@ -127,7 +131,102 @@ def _next_round_specs() -> list[dict[str, Any]]:
                 seed,
                 ["sampler", "uniform", "condbtapa", "weak_single", f"lambda_{lam_value:g}", "es40"],
                 {**uniform, **cond_base, "btapa_lambda": lam_value},
+                None,
+                None,
                 priority=priority,
+            )
+
+    adaptive_gap = {
+        "missing_pattern_sampler": "adaptive_pattern",
+        "adaptive_score_mode": "gap_to_full",
+        "adaptive_alpha": 0.5,
+        "adaptive_temperature": 1.0,
+        "adaptive_ema_beta": 0.9,
+        "adaptive_warmup_epochs": 3,
+        "adaptive_min_prob": 0.05,
+        "adaptive_max_prob": 0.40,
+        "adaptive_update_freq": "step",
+        "use_pattern_conditional_btapa": False,
+        "use_weak_pattern_kd": False,
+        "lambda_kd": 0.0,
+    }
+    beamsoft_s15 = {"type": "beam_neighborhood_ce", "sigma": 1.5, "mix_ce": 0.5, "circular": True}
+    beamsoft_weak = {
+        "s10": {"type": "beam_neighborhood_ce", "sigma": 1.0, "mix_ce": 0.25, "circular": True},
+        "s15": {"type": "beam_neighborhood_ce", "sigma": 1.5, "mix_ce": 0.25, "circular": True},
+    }
+    labelsmooth = {"type": "label_smoothing_ce", "smoothing": 0.05}
+    for seed in (1, 2, 3):
+        add(
+            "b_p0",
+            "proto_sampler_adaptive_gap_a05_t1_es40",
+            seed,
+            ["sampler", "adaptive", "gap_to_full", "a0.5", "t1.0", "es40"],
+            adaptive_gap,
+            priority="high",
+        )
+        add(
+            "c_p0",
+            "proto_sampler_uniform_beamsoft_s15_mix05_es40",
+            seed,
+            ["sampler", "uniform", "beamsoft", "sigma_1.5", "mix_0.5", "es40"],
+            uniform,
+            loss=beamsoft_s15,
+            priority="high",
+        )
+        add(
+            "c_p0",
+            "proto_sampler_uniform_labelsmooth005_es40",
+            seed,
+            ["sampler", "uniform", "label_smoothing", "smoothing_0.05", "es40"],
+            uniform,
+            loss=labelsmooth,
+            priority="high",
+        )
+        add(
+            "bc_p0",
+            "proto_sampler_adaptive_gap_a05_t1_beamsoft_s15_mix05_es40",
+            seed,
+            ["sampler", "adaptive", "gap_to_full", "a0.5", "t1.0", "beamsoft", "sigma_1.5", "mix_0.5", "es40"],
+            adaptive_gap,
+            loss=beamsoft_s15,
+            priority="high",
+        )
+        add(
+            "b_p1",
+            "proto_sampler_adaptive_loss_a05_t1_es40",
+            seed,
+            ["sampler", "adaptive", "loss", "a0.5", "t1.0", "es40"],
+            {**adaptive_gap, "adaptive_score_mode": "loss"},
+            priority="medium",
+        )
+        add(
+            "b_p1",
+            "proto_sampler_adaptive_gap_a03_t1_es40",
+            seed,
+            ["sampler", "adaptive", "gap_to_full", "a0.3", "t1.0", "es40"],
+            {**adaptive_gap, "adaptive_alpha": 0.3},
+            priority="optional",
+        )
+        for sigma_name, sigma in (("s10", 1.0), ("s20", 2.0)):
+            add(
+                "c_p1",
+                f"proto_sampler_uniform_beamsoft_{sigma_name}_mix05_es40",
+                seed,
+                ["sampler", "uniform", "beamsoft", f"sigma_{sigma:g}", "mix_0.5", "es40"],
+                uniform,
+                loss={"type": "beam_neighborhood_ce", "sigma": sigma, "mix_ce": 0.5, "circular": True},
+                priority="medium",
+            )
+        for sigma_name, loss_cfg in beamsoft_weak.items():
+            add(
+                "beamsoft_weak_p0",
+                f"proto_sampler_uniform_beamsoft_{sigma_name}_mix025_es40",
+                seed,
+                ["sampler", "uniform", "beamsoft", f"sigma_{loss_cfg['sigma']:g}", "mix_0.25", "es40"],
+                uniform,
+                loss=loss_cfg,
+                priority="high",
             )
 
     add(
@@ -152,6 +251,7 @@ def _next_round_specs() -> list[dict[str, Any]]:
         ["mask_adapter", "d16", "condbtapa", "weak_single", "es40"],
         cond_base,
         {"use_mask_adapter": True, "mask_adapter_dim": 16},
+        None,
         priority="medium",
     )
 
@@ -169,6 +269,8 @@ def _next_round_specs() -> list[dict[str, Any]]:
                     "epochs_11_40": ["gps_only", "image_only", "radar_only", "lidar_only"],
                 },
             },
+            None,
+            None,
             priority="optional",
         )
         add(
@@ -178,6 +280,7 @@ def _next_round_specs() -> list[dict[str, Any]]:
             ["sampler", "uniform", "mask_adapter", "d16", "es40"],
             uniform,
             {"use_mask_adapter": True, "mask_adapter_dim": 16},
+            None,
             priority="optional",
         )
 

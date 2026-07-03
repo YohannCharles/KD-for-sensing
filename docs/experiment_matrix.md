@@ -3,10 +3,37 @@
 本文件只保留推荐顺序、入口命令和关键 caveat。完整横向表格已经转移到：
 
 - 当前主线模型目录：[docs/mainline_model_catalog.md](mainline_model_catalog.md)
+- 主线实验演进记录：[docs/mainline_experiment_history.md](mainline_experiment_history.md)
 - 实验协议和参数口径：[docs/experiment_protocols.md](experiment_protocols.md)
 - 结果和 claim 账本：[docs/result_claims_registry.md](result_claims_registry.md)
+- 相关工作矩阵：[docs/literature_matrix.md](literature_matrix.md)
 
 命令默认使用 `kd_mm_beam` 环境；训练、评估和预处理优先使用 console script。所有真实训练、metrics、figures、checkpoint、feature cache 和日志都写入 ignored 的 `outputs/`、`outputs/cache/` 或 `logs/`，不进入源码变更。
+
+## 论文交付层
+
+论文表格和图数据草稿从已审阅 claim、ledger 或 summary 导出，不从 pending/mock/historical/upper-bound 行自动生成正式主表：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-paper-export \
+  --input docs/result_claims_registry.md \
+  --output-dir outputs/paper_artifacts/current
+```
+
+数据和复现口径先用只读 audit 检查；official blocked / local substitute readiness 只能作为状态证据，不等同 official reproduction：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-dataset-audit \
+  --dataset-family beambench \
+  --data-root dataset/DeepSense6G/raw_data/test \
+  --csv ml_challenge_test_multi_modal.csv \
+  --scene 31-34 \
+  --num-beams 64 \
+  --beam-shift 1 \
+  --output-dir outputs/analysis/dataset_audit/beambench_official
+```
+
+相关工作、BibTeX key、官方 artifact 状态和本仓库对照关系维护在 [docs/literature_matrix.md](literature_matrix.md)。生成的表格、figure-data、audit report、PNG/PDF 或 notebook output 只写入 ignored output root 或用户显式路径，不进入源码变更。
 
 ## 推荐顺序
 
@@ -172,6 +199,19 @@ conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix \
   --output-dir outputs/eval/rbma_missing_workflow \
   --patterns full missing_gps non_gps_only only_gps random_0.5
 ```
+
+缺失模态统计/stress gate 读取上述 eval matrix、fresh-eval summary 或本地 stress manifest，输出 mean/std/CI、paired delta、win/loss/tie、strict comparability status、stress suite status 和 warnings。smoke/quick/formal manifest 分别只代表 schema smoke、快速本地筛选或正式多 seed 评估；真实 stress metrics、figures、cache 和 checkpoint 仍只写 ignored `outputs/analysis/missing_modality_stress/` 或显式本地目录，不能提交到源码。
+
+本地 claim 收割和每日研究面板使用只读 dashboard：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-research-dashboard \
+  --outputs outputs \
+  --logs logs \
+  --write-ledger
+```
+
+dashboard 会读取 run index、Scene31 missing-pattern CSV/JSON、训练 metrics/config/status 和 checkpoint sidecar，生成 candidate/draft 与 JSONL ledger。它不生成正式论文结论、不移动或清理运行产物，也不替代 [result_claims_registry.md](result_claims_registry.md) 的人工审核。
 
 ## Retired AMR-Net_gps_image Tombstone
 

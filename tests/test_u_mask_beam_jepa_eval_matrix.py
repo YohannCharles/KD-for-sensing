@@ -16,7 +16,7 @@ from kd_sensing.eval.missing_patterns import (
     resolve_missing_patterns,
     sample_eval_random_missing_mask,
 )
-from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix, pattern_group_metadata
 from kd_sensing.cli.eval_u_mask_beam_jepa_matrix import _resolve_split
 
 
@@ -124,6 +124,17 @@ def test_eval_matrix_runner_with_fake_model_and_dataloader():
     assert {"full", "missing_image", "gps_only", "non_gps_only", "random_0.5"} <= names
     assert all(row["num_samples"] == 3 for row in results)
     assert all("top1" in row and "mean_available_modality_reliability" in row for row in results)
+    full = next(row for row in results if row["pattern"] == "full")
+    random = next(row for row in results if row["pattern"] == "random_0.5")
+    assert full["pattern_name"] == "full"
+    assert full["pattern_group"] == "full"
+    assert full["modalities"] == "image|radar|lidar|gps"
+    assert full["comparability_status"] == "incomplete"
+    assert "run_name" in full["comparability_missing_fields"]
+    assert random["pattern_group"] == "random_missing"
+    groups = pattern_group_metadata(["image", "radar", "lidar", "gps"], results)
+    assert "missing_image" in groups["members"]["single_missing"]
+    assert "avg_missing" in groups["members"]["aggregate"]
 
 
 def test_cli_val_split_falls_back_to_test_when_validation_is_absent():

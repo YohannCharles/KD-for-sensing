@@ -1,3 +1,5 @@
+import hashlib
+import json
 import math
 from typing import Any
 
@@ -9,9 +11,24 @@ from kd_sensing.engine.runtime import prepare_task_batch, run_model_step
 from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats
 from kd_sensing.evaluation.metrics import beam_classification_circular_summary
 from kd_sensing.eval.missing_patterns import (
+    canonical_missing_pattern_name,
     get_default_missing_patterns,
     make_fixed_missing_mask,
     sample_eval_random_missing_mask,
+)
+
+COMPARABILITY_FIELDS = (
+    "run_name",
+    "method",
+    "seed",
+    "split",
+    "sample_count",
+    "label_space",
+    "metric_profile",
+    "target_source",
+    "modalities",
+    "pattern_name",
+    "difficulty_digest",
 )
 
 
@@ -65,7 +82,38 @@ def evaluate_missing_matrix(
         avg = _average_missing_results(results)
         if avg is not None:
             results.append(avg)
+    _attach_comparability_metadata(results, modalities, cfg)
     return results
+
+
+def pattern_group_metadata(modalities: list[str], results: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    rows = results or []
+    groups: dict[str, list[str]] = {
+        "full": [],
+        "single_missing": [],
+        "multi_missing": [],
+        "only_modality": [],
+        "non_gps_only": [],
+        "random_missing": [],
+        "aggregate": [],
+    }
+    for row in rows:
+        pattern = str(row.get("pattern_name", row.get("pattern", "")))
+        group = _pattern_group(pattern)
+        groups.setdefault(group, []).append(pattern)
+    return {
+        "modalities": list(modalities),
+        "definitions": {
+            "full": "all modalities available",
+            "single_missing": "exactly one modality missing",
+            "multi_missing": "two or more modalities missing while at least one remains",
+            "only_modality": "exactly one modality available",
+            "non_gps_only": "GPS missing and all non-GPS modalities available",
+            "random_missing": "per-sample random missing mask",
+            "aggregate": "derived group metric",
+        },
+        "members": {key: sorted(set(value)) for key, value in groups.items()},
+    }
 
 
 def _evaluate_pattern(
@@ -255,6 +303,7 @@ class _Accumulator:
             "top1",
             "top3",
             "top5",
+            "within_3",
             "adba",
             "mae",
             "mean_confidence",
@@ -273,18 +322,22 @@ class _Accumulator:
 
 def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any] | None) -> dict[str, float]:
     eval_cfg = (cfg or {}).get("evaluation", {}) if isinstance(cfg, dict) else {}
+    legacy_eval_cfg = (cfg or {}).get("eval", {}) if isinstance(cfg, dict) else {}
+    circular = bool(legacy_eval_cfg.get("beam_distance_circular", eval_cfg.get("beam_distance_circular", True)))
     summary = beam_classification_circular_summary(
         logits,
         target,
         num_beams=int(logits.shape[-1]),
         dba_delta=float(eval_cfg.get("dba_delta", 5)),
+        distance_mode="circular" if circular else "linear",
     )
     return {
         "top1": float(summary.get("top1", math.nan)),
         "top3": float(summary.get("top3", math.nan)),
         "top5": float(summary.get("top5", math.nan)),
+        "within_3": float(summary.get("within_3", math.nan)),
         "adba": float(summary.get("DBA", math.nan)),
-        "mae": float(summary.get("mean_circular_error", math.nan)),
+        "mae": float(summary.get("mean_error", summary.get("mean_circular_error", math.nan))),
     }
 
 
@@ -316,6 +369,7 @@ def _average_missing_results(results: list[dict[str, Any]]) -> dict[str, Any] | 
         "top1",
         "top3",
         "top5",
+        "within_3",
         "adba",
         "mae",
         "mean_confidence",
@@ -343,3 +397,132 @@ def _weighted_mean(rows: list[dict[str, Any]], key: str) -> float | None:
         numerator += float(value) * count
         denominator += count
     return numerator / denominator if denominator else None
+
+
+def _attach_comparability_metadata(
+    results: list[dict[str, Any]],
+    modalities: list[str],
+    cfg: dict[str, Any] | None,
+) -> None:
+    base = _base_comparability_metadata(cfg, modalities)
+    for row in results:
+        pattern = str(row.get("pattern", ""))
+        row["pattern_name"] = pattern
+        row["condition_id"] = pattern
+        row["pattern_group"] = _pattern_group(pattern)
+        row["is_aggregate"] = str(row["pattern_group"] == "aggregate").lower()
+        row["modalities"] = "|".join(modalities)
+        available, missing = _availability_from_mask(row.get("mask"), modalities)
+        row["available_modalities"] = "|".join(available)
+        row["missing_modalities"] = "|".join(missing)
+        for key, value in base.items():
+            row.setdefault(key, value)
+        row["difficulty_digest"] = row.get("difficulty_digest") or _stable_digest(
+            {
+                "pattern": pattern,
+                "mask": row.get("mask"),
+                "modalities": modalities,
+                "difficulty": base.get("difficulty_digest", ""),
+            }
+        )
+        missing_fields = [field for field in COMPARABILITY_FIELDS if row.get(field) in (None, "", [], {})]
+        row["comparability_status"] = "strict" if not missing_fields else "incomplete"
+        row["comparability_missing_fields"] = ";".join(missing_fields)
+        if missing_fields:
+            warning = "missing_comparability_fields:" + ",".join(missing_fields)
+            row["warnings"] = ";".join(item for item in (str(row.get("warnings") or ""), warning) if item)
+
+
+def _base_comparability_metadata(cfg: dict[str, Any] | None, modalities: list[str]) -> dict[str, Any]:
+    if not isinstance(cfg, dict):
+        return {
+            "run_name": "",
+            "method": "",
+            "seed": "",
+            "split": "",
+            "label_space": "",
+            "metric_profile": "u_mask_beam_jepa_eval_matrix_topk_dba",
+            "target_source": "",
+            "difficulty_digest": "",
+        }
+    experiment = cfg.get("experiment", {}) if isinstance(cfg.get("experiment"), dict) else {}
+    output = cfg.get("output", {}) if isinstance(cfg.get("output"), dict) else {}
+    evaluation = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
+    data = cfg.get("data", {}) if isinstance(cfg.get("data"), dict) else {}
+    dataset = data.get("dataset", {}) if isinstance(data.get("dataset"), dict) else {}
+    model = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    primary = model.get("primary", {}) if isinstance(model.get("primary"), dict) else {}
+    paper_metadata = primary.get("paper_metadata", {}) if isinstance(primary.get("paper_metadata"), dict) else {}
+    comparability = cfg.get("comparability", {}) if isinstance(cfg.get("comparability"), dict) else {}
+    run_name = str(
+        comparability.get("run_name")
+        or experiment.get("run_name")
+        or experiment.get("name")
+        or output.get("run_name")
+        or ""
+    )
+    method = str(comparability.get("method") or paper_metadata.get("model_group") or paper_metadata.get("method") or run_name)
+    num_classes = primary.get("num_classes", model.get("num_classes"))
+    label_space = str(comparability.get("label_space") or (f"beam{int(num_classes)}" if num_classes not in (None, "") else ""))
+    difficulty = cfg.get("difficulty", {}) if isinstance(cfg.get("difficulty"), dict) else {}
+    difficulty_digest = "|".join(
+        str(profile.get("digest"))
+        for profile in difficulty.get("profiles", [])
+        if isinstance(profile, dict) and profile.get("digest")
+    )
+    return {
+        "run_name": run_name,
+        "method": method,
+        "seed": experiment.get("seed", comparability.get("seed", "")),
+        "split": str(comparability.get("split") or evaluation.get("split") or dataset.get("split") or ""),
+        "label_space": label_space,
+        "metric_profile": str(
+            comparability.get("metric_profile")
+            or evaluation.get("metric_profile")
+            or "u_mask_beam_jepa_eval_matrix_topk_dba"
+        ),
+        "target_source": str(
+            comparability.get("target_source")
+            or dataset.get("beam_target_source")
+            or data.get("beam_target_source")
+            or ""
+        ),
+        "difficulty_digest": str(comparability.get("difficulty_digest") or difficulty_digest),
+    }
+
+
+def _pattern_group(pattern: str) -> str:
+    try:
+        name = canonical_missing_pattern_name(pattern) if pattern else ""
+    except ValueError:
+        name = str(pattern)
+    if name == "full":
+        return "full"
+    if name in {"avg_missing", "overall_mean", "balanced"}:
+        return "aggregate"
+    if name == "non_gps_only":
+        return "non_gps_only"
+    if name.startswith("random_"):
+        return "random_missing"
+    if name.endswith("_only"):
+        return "only_modality"
+    if name.startswith("missing_"):
+        missing = [item for item in name.removeprefix("missing_").split("_") if item]
+        return "single_missing" if len(missing) == 1 else "multi_missing"
+    return "custom"
+
+
+def _availability_from_mask(mask: Any, modalities: list[str]) -> tuple[list[str], list[str]]:
+    if not isinstance(mask, str) or mask in {"", "aggregate"} or mask.startswith("random_"):
+        return ([], [])
+    values = [item.strip() for item in mask.split(",") if item.strip() != ""]
+    if len(values) != len(modalities):
+        return ([], [])
+    available = [modality for modality, keep in zip(modalities, values) if keep == "1"]
+    missing = [modality for modality, keep in zip(modalities, values) if keep == "0"]
+    return available, missing
+
+
+def _stable_digest(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]

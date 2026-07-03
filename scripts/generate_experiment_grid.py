@@ -150,10 +150,14 @@ def _config_payload(base_config: Path, config_path: Path, run_name: str, seed: i
         "model": {"primary": {"ablation_id": run_name}},
         "training": dict(spec.get("training", {})),
         "loss": {"u_mask_beam_jepa": {}},
+        "evaluation": {"beam_distance_circular": True},
         "output": {"run_name": run_name},
     }
     if spec.get("model"):
         payload["model"]["primary"].update(spec["model"])
+    if spec.get("loss"):
+        payload["loss"].update(spec["loss"])
+    payload["loss"].setdefault("u_mask_beam_jepa", {})
     payload["loss"]["u_mask_beam_jepa"].update(payload["training"])
     return payload
 

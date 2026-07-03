@@ -1,4 +1,7 @@
+import csv
 from pathlib import Path
+from collections import Counter
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -20,7 +23,14 @@ from kd_sensing.losses.beam_prototype_alignment import (
     prototype_alignment_loss,
     supervised_contrastive_loss,
 )
-from kd_sensing.losses.u_mask_beam_jepa import u_mask_beam_jepa_config, u_mask_beam_jepa_loss
+from kd_sensing.losses.u_mask_beam_jepa import (
+    UMaskBeamJEPATrainingExtension,
+    _adaptive_sampler_update,
+    _core_pattern_names,
+    _new_adaptive_sampler_state,
+    u_mask_beam_jepa_config,
+    u_mask_beam_jepa_loss,
+)
 from kd_sensing.models.architecture_summary import summarize_model_architecture
 from kd_sensing.registries import ENCODERS, MODELS, RegistryError, import_default_components
 
@@ -351,6 +361,76 @@ def test_pattern_balanced_sampler_distribution_and_canonical_names():
     assert set(standard_names) <= {"gps_only", "radar_only"}
     with pytest.raises(ValueError, match="canonical"):
         sample_pattern_balanced_mask(1, ["vision", "radar", "lidar", "gps"], {"full": 1.0})
+
+
+def test_adaptive_pattern_sampler_warmup_gap_probs_and_epoch_log(tmp_path: Path):
+    modalities = ("image", "radar", "lidar", "gps")
+    cfg = {
+        "enabled": True,
+        "missing_pattern_sampler": "adaptive_pattern",
+        "adaptive_warmup_epochs": 1,
+        "adaptive_score_mode": "gap_to_full",
+        "adaptive_alpha": 0.5,
+        "adaptive_temperature": 1.0,
+        "adaptive_ema_beta": 0.0,
+        "adaptive_min_prob": 0.05,
+        "adaptive_max_prob": 0.40,
+    }
+    context = SimpleNamespace(
+        primary_model=SimpleNamespace(modalities=modalities),
+        model_cfg={"primary": {"modalities": list(modalities)}},
+        run_dir=tmp_path,
+    )
+    state = {"config": cfg, "adaptive_sampler": _new_adaptive_sampler_state()}
+    extension = UMaskBeamJEPATrainingExtension()
+
+    extension.before_epoch(context, state, epoch=0)
+    warmup_probs = state["adaptive_current_probs"]
+    assert set(warmup_probs) == set(_core_pattern_names(modalities))
+    assert set(round(value, 8) for value in warmup_probs.values()) == {round(1 / len(warmup_probs), 8)}
+
+    for index, pattern in enumerate(_core_pattern_names(modalities)):
+        loss = torch.tensor(0.1 if pattern == "full" else 0.2 + 0.1 * index)
+        _adaptive_sampler_update(cfg, state, [pattern, pattern], loss)
+
+    extension.before_epoch(context, state, epoch=1)
+    probs = state["adaptive_current_probs"]
+    assert sum(probs.values()) == pytest.approx(1.0)
+    assert min(probs.values()) >= 0.05 - 1e-6
+    assert max(probs.values()) <= 0.40 + 1e-6
+    assert probs["lidar_only"] > probs["full"]
+
+    state["pattern_epoch_counts"] = Counter({"full": 2, "lidar_only": 5})
+    metrics = extension.after_epoch(context, state, epoch=1)
+    log_path = tmp_path / "adaptive_sampler_log.csv"
+    assert metrics["adaptive_sampler"]["path"] == str(log_path)
+    with log_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["pattern"] for row in rows} == set(_core_pattern_names(modalities))
+    assert any(row["pattern"] == "lidar_only" and row["num_samples"] == "5" for row in rows)
+
+
+def test_adaptive_pattern_sampler_fallbacks_to_uniform_when_ema_missing():
+    modalities = ("image", "radar", "lidar", "gps")
+    cfg = {
+        "enabled": True,
+        "missing_pattern_sampler": "adaptive_pattern",
+        "adaptive_warmup_epochs": 0,
+        "adaptive_score_mode": "gap_to_full",
+    }
+    context = SimpleNamespace(
+        primary_model=SimpleNamespace(modalities=modalities),
+        model_cfg={"primary": {"modalities": list(modalities)}},
+        run_dir=Path("."),
+    )
+    state = {"config": cfg, "adaptive_sampler": _new_adaptive_sampler_state()}
+    extension = UMaskBeamJEPATrainingExtension()
+
+    with pytest.warns(UserWarning, match="missing EMA loss"):
+        extension.before_epoch(context, state, epoch=5)
+
+    probs = state["adaptive_current_probs"]
+    assert set(round(value, 8) for value in probs.values()) == {round(1 / len(probs), 8)}
 
 
 def test_beam_prototype_alignment_forward_backward_and_safety():
