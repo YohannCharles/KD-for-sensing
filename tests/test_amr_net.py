@@ -1,5 +1,9 @@
+from pathlib import Path
+
+import pytest
 import torch
 
+from kd_sensing.config import load_config
 from kd_sensing.engine.model_output import adapt_model_output
 from kd_sensing.engine.prediction_objectives import (
     compute_prediction_loss,
@@ -8,6 +12,9 @@ from kd_sensing.engine.prediction_objectives import (
 from kd_sensing.losses.amr_net import amr_net_loss_from_output
 from kd_sensing.models.architecture_summary import summarize_model_architecture
 from kd_sensing.registries import MODELS, RegistryError, import_default_components
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _model_cfg(**overrides):
@@ -24,16 +31,18 @@ def _model_cfg(**overrides):
         "gps_feature_dim": 16,
         "latent_dim": 8,
         "dropout": 0.0,
+        "cuaf": {"top_t": 5},
+        "loss": {"pre_samples": 2},
     }
     cfg.update(overrides)
     return cfg
 
 
-def _batch(batch_size=4):
+def _batch(batch_size=4, seq_len=2):
     return {
-        "image_batch": torch.randn(batch_size, 1, 1, 224, 224),
-        "lidar_batch": torch.randn(batch_size, 1, 216, 2),
-        "gps_batch": torch.randn(batch_size, 1, 2),
+        "image_batch": torch.randn(batch_size, seq_len, 1, 224, 224),
+        "lidar_batch": torch.randn(batch_size, seq_len, 216, 2),
+        "gps_batch": torch.randn(batch_size, seq_len, 2),
     }
 
 
@@ -54,8 +63,12 @@ def test_amr_net_registry_forward_adapt_cuaf_and_metadata():
     assert weights.shape == (4, 1, 3)
     assert torch.allclose(weights.sum(dim=-1), torch.ones(4, 1), atol=1e-5)
     assert torch.isfinite(first.diagnostics["cuaf_entropy"]).all()
+    assert torch.isfinite(first.diagnostics["cuaf_entropy_score"]).all()
     assert torch.isfinite(first.diagnostics["cuaf_kl_consistency"]).all()
+    assert torch.isfinite(first.diagnostics["cuaf_pairwise_kl_score"]).all()
     assert torch.isfinite(first.diagnostics["cuaf_topk_margin"]).all()
+    assert torch.isfinite(first.diagnostics["cuaf_top_t_margin_score"]).all()
+    assert set(first.diagnostics["cuaf_criterion_weights"]) == {"entropy", "pairwise_kl", "top_t_margin"}
     assert torch.allclose(first.logits, second.logits, atol=0.0) is False
 
     metadata = model.training_strategy_metadata()
@@ -66,6 +79,8 @@ def test_amr_net_registry_forward_adapt_cuaf_and_metadata():
     assert metadata["cuaf_enabled"] is True
     assert metadata["consumes_reliability_metadata"] is False
     assert metadata["paper_approximation"] is True
+    assert metadata["supports_variable_input_length"] is True
+    assert metadata["temporal_pooling"] == "mean"
 
 
 def test_amr_net_eval_is_deterministic_for_same_input():
@@ -80,19 +95,25 @@ def test_amr_net_eval_is_deterministic_for_same_input():
     assert torch.allclose(first, second)
 
 
-def test_amr_net_rejects_non_snapshot_time_dimension():
+def test_amr_net_accepts_variable_sequence_lengths_and_temporal_masks():
     import_default_components()
     model = MODELS.build(_model_cfg())
-    batch = _batch()
-    batch["gps_batch"] = torch.randn(4, 2, 2)
+    batch = _batch(seq_len=3)
+    gps_available = torch.tensor(
+        [
+            [False, False, False],
+            [True, False, False],
+            [False, True, False],
+            [True, True, True],
+        ]
+    )
 
-    try:
-        model(**batch)
-    except ValueError as exc:
-        assert "gps" in str(exc)
-        assert "snapshot T=1" in str(exc)
-    else:
-        raise AssertionError("expected AMR-Net to reject T != 1")
+    output = adapt_model_output(model(**batch, modality_availability={"gps": gps_available}))
+
+    assert output.logits.shape == (4, 1, 8)
+    assert output.diagnostics["cuaf_available"].shape == (4, 1, 3)
+    assert output.diagnostics["cuaf_available"][0, 0, 2].item() is False
+    assert output.diagnostics["cuaf_available"][1, 0, 2].item() is True
 
 
 def test_amr_net_loss_helper_and_prediction_objective_opt_in():
@@ -116,8 +137,33 @@ def test_amr_net_loss_helper_and_prediction_objective_opt_in():
 
     assert torch.isfinite(loss)
     assert diagnostics["loss/amr_total"] > 0.0
+    assert diagnostics["amr/pre_samples"] == 2.0
     assert "loss/amr_total" in bundle.diagnostics
     assert torch.isfinite(bundle.total)
+
+
+def test_amr_net_paper_objective_only_uses_amr_loss_without_fused_focal():
+    import_default_components()
+    model = MODELS.build(_model_cfg())
+    model.train()
+    output = adapt_model_output(model(**_batch()))
+    labels = torch.tensor([[0], [0], [1], [1]])
+    cfg = {"loss": {"amr": {"enabled": True, "paper_objective_only": True, "pre_samples": 2}}}
+    targets = prepare_prediction_targets(labels=labels, auxiliary_targets={}, cfg=cfg)
+    beam = output.logits.sum() * 0.0 + 7.0
+
+    bundle = compute_prediction_loss(
+        output,
+        targets,
+        cfg,
+        reference=output.logits,
+        beam_total_loss=beam,
+        beam_task_loss=beam,
+    )
+
+    assert bundle.total.item() == pytest.approx(bundle.diagnostics["loss/amr_total"])
+    assert bundle.diagnostics["loss/beam"] == 0.0
+    assert bundle.diagnostics["objective/amr_paper_objective_only"] == 1.0
 
 
 def test_amr_net_pre_loss_skips_no_positive_batch_without_nan():
@@ -126,7 +172,7 @@ def test_amr_net_pre_loss_skips_no_positive_batch_without_nan():
     output = adapt_model_output(model(**_batch()))
     labels = torch.tensor([[0], [1], [2], [3]])
 
-    loss, diagnostics = amr_net_loss_from_output(output, labels, {"loss": {"amr": {"enabled": True}}})
+    loss, diagnostics = amr_net_loss_from_output(output, labels, {"loss": {"amr": {"enabled": True, "pre_samples": 1}}})
 
     assert torch.isfinite(loss)
     assert diagnostics["loss/amr_pre"] == 0.0
@@ -150,3 +196,18 @@ def test_amr_net_architecture_summary_and_old_name_guard():
         assert "amr_net" in str(exc)
     else:
         raise AssertionError("old AMR-Net registry token should not build")
+
+
+def test_amr_net_config_uses_paper_aligned_scene31_contract():
+    cfg = load_config(ROOT / "configs/fusion/amr_net_supervised.yaml")
+    primary = cfg["model"]["primary"]
+
+    assert cfg["data"]["dataset"]["scene"] == 31
+    assert cfg["data"]["dataset"]["seq_len"] == 2
+    assert cfg["model"]["seq_length"] == 2
+    assert primary["type"] == "amr_net"
+    assert primary["image_channels"] == 1
+    assert primary["lidar_input_features"] == 2
+    assert primary["gps_input_size"] == 2
+    assert cfg["loss"]["amr"]["paper_objective_only"] is True
+    assert cfg["loss"]["amr"]["pre_samples"] == 2

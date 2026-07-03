@@ -223,3 +223,111 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **WHEN** 用户运行包含 image、radar、gps、lidar、mmwave 或 csi 的合法 fusion 配置
 - **THEN** 系统 MUST 构建配置声明的启用模态输入和 fusion primary model
 - **AND** 系统 MUST 使用统一训练、验证和评估流程输出指标
+
+### Requirement: BTAPA tau1 seed 与 es20 配置族
+项目 MUST 提供不覆盖原始 tau1 的 BTAPA tau1 seed2/seed3 配置和 es20 配置族。除 seed、输出路径和 es20 early stopping 字段外，配置 MUST 与 `main_v3_strong_reliability_btapa_tau1.yaml` 保持一致，并 MUST 不启用 RBMA、JEPA、KD、fullaux 或 ADBA-aware proto。
+
+#### Scenario: seed 配置不覆盖原始 run
+- **WHEN** 用户运行 `main_v3_strong_reliability_btapa_tau1_seed2.yaml` 或 `main_v3_strong_reliability_btapa_tau1_seed3.yaml`
+- **THEN** 输出路径或 run name MUST 包含 `btapa_tau1_seed2` 或 `btapa_tau1_seed3`
+- **AND** 配置 MUST 支持 `--auto_resume`
+
+#### Scenario: es20 配置启用短训练早停
+- **WHEN** 用户运行任一 `main_v3_strong_reliability_btapa_tau1_es20*.yaml`
+- **THEN** 配置 MUST 设置 `max_epochs: 20` 或项目等价字段
+- **AND** 配置 MUST 启用以 `val_top1` 或项目等价字段为指标的 early stopping、patience 5 和 best checkpoint 选择
+
+### Requirement: 关键 BTAPA tau1 验证 launcher
+项目 MUST 提供只运行关键 BTAPA tau1 验证任务的串行 launcher。launcher 默认 MUST 不并发训练，MUST 支持 dry run、num_workers、max_parallel、gpu_ids、skip_train、skip_eval 和 skip_analysis，并 MUST 不运行 tau4、ADBA、modw1、fusiononly、RBMA、JEPA、KD 或 fullaux。
+
+#### Scenario: dry run 只打印命令
+- **WHEN** 用户运行 `bash scripts/run_btapa_tau1_validation.sh --dry_run --num_workers 4 --max_parallel 1`
+- **THEN** launcher MUST 只打印 apples-to-apples、tau1 seed/es20 训练、seed 分析和 summary 命令
+- **AND** 训练命令 MUST 包含 `--auto_resume`
+
+#### Scenario: 默认串行执行
+- **WHEN** 用户不传 `--max_parallel`
+- **THEN** launcher MUST 使用 `max_parallel=1`
+- **AND** 每个训练任务 MUST 写入独立日志
+
+### Requirement: proto vs BTAPA 8GPU launcher
+项目 MUST 提供 `scripts/run_proto_vs_btapa_8gpu.sh`，默认调度 ordinary proto 三 seed 与 BTAPA tau1 三 seed。launcher MUST 默认 `max_parallel=8`、每个训练进程只通过 `CUDA_VISIBLE_DEVICES=<gpu_id>` 看到单张 GPU、默认 `num_workers=4`，并支持 dry-run、skip/only、skip-completed、auto-resume、stagger start 和训练后 fresh eval。
+
+#### Scenario: dry run only-proto
+- **WHEN** 用户运行 8GPU launcher 并传入 `--dry_run --only_proto --num_workers 4 --max_parallel 8 --gpu_ids 0,1,2,3,4,5,6,7 --auto_resume --skip_completed`
+- **THEN** launcher MUST 只打印 proto 三 seed 的训练命令
+- **AND** 每条训练命令 MUST 绑定单个 `CUDA_VISIBLE_DEVICES`
+
+#### Scenario: eval after train
+- **WHEN** 用户传入 `--eval_after_train` 或 `--run_eval`
+- **THEN** launcher MUST 在训练子进程结束后调用 `scripts/reevaluate_apples_to_apples.py`
+- **AND** 缺失 checkpoint 的 run MUST warning 但不阻断其它 run 复评
+
+### Requirement: proto vs BTAPA seed mean±std 分析
+项目 MUST 提供 `scripts/analyze_proto_vs_btapa_seeds.py`，读取 fresh apples-to-apples eval 输出，生成 seed metrics、mean±std、delta 和 paper-ready observation。报告 MUST 重点列出 full、avg_missing、missing_gps、radar_only、lidar_only 的 Top-1 和 avg_missing ADBA，并在 delta 小于 std 时提示谨慎报告。
+
+#### Scenario: 输出 mean std 与 delta
+- **WHEN** 用户传入 proto 三 seed、BTAPA tau1 三 seed 和 fresh eval 目录
+- **THEN** 脚本 MUST 输出 seed metrics、mean±std、delta mean 和 Markdown 报告
+- **AND** Markdown MUST 包含保守 paper-ready observation 与 seed 方差提示
+
+### Requirement: Scene31 night grid config generation
+项目 MUST 提供 `scripts/generate_experiment_grid.py`，从 `configs/scene31/templates/main_v3_proto_es20_base.yaml` 生成 A-F 共 58 个 run 配置，并在 manifest 中加入 6 个 proto/BTAPA reference run，总计 64 个 run。默认 MUST 不覆盖已有配置。
+
+#### Scenario: 生成 manifest
+- **WHEN** 用户运行生成脚本并指定 out_dir
+- **THEN** 系统 MUST 写出 `experiment_manifest.csv` 和 `experiment_manifest.json`
+- **AND** manifest MUST 包含 `run_name,group,config_path,seed,method_tags,expected_epochs,priority`
+
+#### Scenario: 输出路径唯一
+- **WHEN** 生成任一 night grid 配置
+- **THEN** 配置中的 run name、exp name 或 output_dir MUST 与其它 run 唯一区分
+
+### Requirement: 8 GPU night grid launcher
+项目 MUST 提供 `scripts/run_night_grid_8gpu.sh` 从 manifest 调度训练。launcher MUST 默认 `max_parallel=8`、`num_workers=4`，每个训练进程 MUST 只通过 `CUDA_VISIBLE_DEVICES=<gpu_id>` 看到一张 GPU，不默认启用 DDP。
+
+#### Scenario: dry run 只打印命令
+- **WHEN** 用户传入 `--dry_run`
+- **THEN** launcher MUST 只打印训练命令
+- **AND** 每条命令 MUST 包含单个 `CUDA_VISIBLE_DEVICES`
+
+#### Scenario: 失败任务记录
+- **WHEN** 任一训练任务返回非零 exit code
+- **THEN** run name MUST 写入 `outputs/scene31/analysis/night_grid/failed_runs.txt`
+- **AND** 完成任务 MUST 写入 `completed_runs.txt`
+
+### Requirement: night grid fresh eval
+项目 MUST 提供 `scripts/eval_night_grid.py` 对 manifest 中已完成 run 做 fresh apples-to-apples eval。该脚本 MUST 使用统一 checkpoint resolver 和统一 missing pattern helper，缺失 checkpoint MUST warning 但不中断。
+
+#### Scenario: 输出 pattern metrics
+- **WHEN** eval 脚本找到某 run checkpoint
+- **THEN** 输出 `night_grid_metrics.csv`、`night_grid_metrics.md` 和 `checkpoint_manifest.json`
+- **AND** CSV 行 MUST 包含 run、group、seed、pattern、Top-K、ADBA、MAE、loss、count、checkpoint path 和 checkpoint epoch
+
+### Requirement: night grid analysis
+项目 MUST 提供 `scripts/analyze_night_grid.py`，从 fresh eval 指标计算 by-run、by-group、mean/std、delta-vs-proto、top candidates 和 paper observations。排序 MUST 支持 balanced_score，并惩罚相对 proto 损伤 missing_gps、missing_radar 和 full top1 的候选。
+
+#### Scenario: top candidates 输出
+- **WHEN** analysis 脚本运行成功
+- **THEN** `night_grid_top_candidates.md` MUST 列出 best avg_missing、best radar_only、best lidar_only、best balanced_score、best without hurting missing_gps、best without hurting missing_radar 和 seed3/40 epoch follow-up top3
+- **AND** 若提升小于 seed std，报告 MUST 提示谨慎
+
+### Requirement: summary 兼容 night grid
+`scripts/summarize_missing_runs.py` MUST 支持 manifest 输入并识别 night grid run 状态。状态 MUST 至少包括 completed、completed_early_stopped、incomplete_has_checkpoint、killed_or_failed 和 missing。
+
+#### Scenario: manifest summary 字段
+- **WHEN** 用户传入 night grid manifest 和 expected epochs
+- **THEN** summary 输出 MUST 至少包含 `run_name,group,status,best_epoch,final_epoch,best_val_acc,best_val_adba,best_checkpoint,log_path,exit_code`
+
+### Requirement: Scene31 next-round local follow-up workflow
+项目 MUST 将 Scene31 next-round follow-up 作为 local/manual experiment workflow 处理。该 workflow MUST 复用现有 `kd-sensing-train`、missing-pattern fresh eval 和本地输出边界，不得改变已有 Scene31 es20 night-grid 配置或 baseline 行为。
+
+#### Scenario: next-round fresh eval 查找配置
+- **WHEN** fresh eval 需要评估 next-round manifest 中的 run
+- **THEN** 配置查找 MUST 支持 `configs/scene31/next_round/<run>.yaml`
+- **AND** 仍 MUST 继续支持已有 `configs/scene31/night_grid/<run>.yaml` 与 `configs/scene31/<run>.yaml`
+
+#### Scenario: local/manual 输出边界
+- **WHEN** 用户运行 Scene31 next-round launcher 或汇总脚本
+- **THEN** 训练、评估和汇总产物 MUST 写入 ignored 的 `outputs/` 或 `logs/` 下
+- **AND** 系统 MUST 不提交 checkpoint、日志、fresh eval CSV 或训练输出

@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 
+from kd_sensing.eval.missing_patterns import canonical_missing_pattern_name
+
 
 MODALITIES = ("gps", "image", "radar", "lidar")
 
@@ -77,10 +79,7 @@ def _fusion_rows(path: Path) -> dict[str, dict]:
     rows = _read_csv(path)
     out = {}
     for row in rows:
-        pattern = str(row.get("pattern", ""))
-        if pattern.startswith("only_"):
-            pattern = f"{pattern.removeprefix('only_')}_only"
-        out[pattern] = row
+        out[canonical_missing_pattern_name(row.get("pattern", ""))] = row
     return out
 
 

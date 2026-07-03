@@ -1,0 +1,12 @@
+_base_: main_v3_strong_reliability_btapa_tau1.yaml
+experiment:
+  name: main_v3_strong_reliability_btapa_tau1_es20
+training:
+  epochs: 20
+  use_early_stopping: true
+  early_stopping_metric: val_top1
+  early_stopping_mode: max
+  patience: 5
+  save_best_metric: val_top1
+output:
+  run_name: main_v3_strong_reliability_btapa_tau1_es20

@@ -242,6 +242,19 @@ New fusion extensions should default to the supervised/adaptation mainline and m
 When adding a modality, update `kd_sensing.modalities` first, then add dataset
 columns/readers, batch preparation, model registration, diagnostic rendering, and focused tests.
 
+### Baseline 放置位置
+
+| Baseline 类型 | 实现位置 | 配置位置 |
+| --- | --- | --- |
+| 普通 supervised/adaptation baseline | `src/kd_sensing/models/` 组件或仅配置 `modular_sequence` | `configs/fusion/` 或 current experiment config family |
+| Whole-model exception | `src/kd_sensing/models/`，并有 OpenSpec 理由和 focused tests | `configs/fusion/` 或 current workflow config family |
+| Paper/workflow reproduction | `src/kd_sensing/baselines/<family>/`、package CLI 或 console script | 通常是带 workflow 专用段落的 `configs/fusion/` 训练配置 |
+| 外部源码审计或官方 artifact manifest | `src/kd_sensing/baselines/<family>/` 或窄 CLI dry-run owner | `configs/baselines/` |
+
+`src/kd_sensing/baselines/` 不是所有 baseline 模型的统一容器。不要从该 package 注册
+`MODELS`、`ENCODERS`、`PROJECTORS`、`REPRESENTATION_CORES` 或 `HEADS`；可复用模型能力应放在
+`src/kd_sensing/models/`。
+
 ### Whole-model Exceptions
 
 Direct `@MODELS.register(...)` should be used only for a whole-model exception, not as the default

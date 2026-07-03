@@ -1,0 +1,21 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_sampler_sensingonly_over_es20_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_sampler_sensingonly_over_es20_seed1
+training:
+  missing_pattern_sampler: sensing_only_oversample
+  pattern_sampling_weights: &id001
+    missing_gps: 1.5
+    non_gps_only: 1.5
+    image_only: 1.5
+    radar_only: 2.0
+    lidar_only: 2.0
+loss:
+  u_mask_beam_jepa:
+    missing_pattern_sampler: sensing_only_oversample
+    pattern_sampling_weights: *id001
+output:
+  run_name: proto_sampler_sensingonly_over_es20_seed1

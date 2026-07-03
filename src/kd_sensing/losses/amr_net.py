@@ -23,7 +23,6 @@ def amr_net_loss_from_output(
     modality_logits = _mapping(amr.get("modality_logits"))
     mu = _mapping(amr.get("mu"))
     logvar = _mapping(amr.get("logvar"))
-    z = _mapping(amr.get("z"))
     modalities = [str(item) for item in amr.get("modalities", modality_logits.keys())]
     targets = _match_time(labels.to(device=output.logits.device, dtype=torch.long), int(output.logits.shape[1]))
     valid = targets.ge(0) & targets.lt(int(output.logits.shape[-1]))
@@ -46,7 +45,7 @@ def amr_net_loss_from_output(
         diagnostics[f"loss/amr_{name}_ce"] = float(ce.detach().cpu().item())
         diagnostics[f"loss/amr_{name}_kl"] = float(kl.detach().cpu().item())
 
-    pre, skipped = _pre_loss(z, labels, modalities, zero, cfg)
+    pre, skipped = _pre_loss(mu, logvar, labels, modalities, zero, cfg)
     alpha = float(cfg.get("alpha", 0.01))
     beta = float(cfg.get("beta", 1.0))
     weight = float(cfg.get("weight", 1.0))
@@ -58,6 +57,7 @@ def amr_net_loss_from_output(
             "loss/amr_pre": float(pre.detach().cpu().item()),
             "loss/amr_total": float(total.detach().cpu().item()),
             "amr/pre_skipped_anchors": float(skipped),
+            "amr/pre_samples": float(max(int(cfg.get("pre_samples", 2)), 1)),
             "amr/loss_weight": float(weight),
             "amr/alpha": float(alpha),
             "amr/beta": float(beta),
@@ -75,11 +75,13 @@ def _loss_cfg(cfg: Mapping[str, Any] | None) -> dict[str, Any]:
 def _gaussian_kl(mu: Any, logvar: Any, zero: torch.Tensor) -> torch.Tensor:
     if not torch.is_tensor(mu) or not torch.is_tensor(logvar):
         return zero
-    return (-0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1)).mean()
+    latent_dim = max(int(mu.shape[-1]), 1)
+    return (-0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1) / float(latent_dim)).mean()
 
 
 def _pre_loss(
-    z: Mapping[str, Any],
+    mu: Mapping[str, Any],
+    logvar: Mapping[str, Any],
     labels: torch.Tensor,
     modalities: list[str],
     zero: torch.Tensor,
@@ -87,34 +89,43 @@ def _pre_loss(
 ) -> tuple[torch.Tensor, int]:
     if not bool(cfg.get("pre_enabled", cfg.get("pre", True))):
         return zero, 0
-    latents = [z[name] for name in modalities if torch.is_tensor(z.get(name))]
-    if len(latents) < 2:
-        return zero, 0
-    features = F.normalize(torch.stack(latents, dim=1), dim=-1)
-    targets = labels[:, -1].to(device=features.device, dtype=torch.long)
-    valid = targets.ge(0)
+    targets = labels[:, -1].to(device=zero.device, dtype=torch.long)
     temperature = max(float(cfg.get("temperature", 0.1)), 1e-6)
+    samples = max(int(cfg.get("pre_samples", 2)), 1)
     losses: list[torch.Tensor] = []
     skipped = 0
-    batch, modality_count, _ = features.shape
-    flat = features.reshape(batch * modality_count, -1)
-    flat_labels = targets.repeat_interleave(modality_count)
-    flat_valid = valid.repeat_interleave(modality_count)
-    flat_sample_ids = torch.arange(batch, device=features.device).repeat_interleave(modality_count)
-    for index in range(flat.shape[0]):
-        if not bool(flat_valid[index]):
-            skipped += 1
+    for name in modalities:
+        modality_mu = mu.get(name)
+        modality_logvar = logvar.get(name)
+        if not torch.is_tensor(modality_mu) or not torch.is_tensor(modality_logvar):
             continue
-        positives = flat_labels.eq(flat_labels[index]) & flat_valid & flat_sample_ids.ne(flat_sample_ids[index])
-        positives[index] = False
-        if not bool(positives.any().detach().cpu().item()):
-            skipped += 1
-            continue
-        candidates = flat_valid.clone()
-        candidates[index] = False
-        logits = flat[index].matmul(flat[candidates].T) / temperature
-        local_positive = positives[candidates]
-        losses.append(-(logits.log_softmax(dim=0)[local_positive]).mean())
+        modality_mu = modality_mu.to(device=zero.device)
+        modality_logvar = modality_logvar.to(device=zero.device, dtype=modality_mu.dtype)
+        noise = torch.randn(
+            int(modality_mu.shape[0]),
+            samples,
+            int(modality_mu.shape[-1]),
+            dtype=modality_mu.dtype,
+            device=modality_mu.device,
+        )
+        sampled = modality_mu.unsqueeze(1) + noise * torch.exp(0.5 * modality_logvar).unsqueeze(1)
+        features = F.normalize(sampled.reshape(int(modality_mu.shape[0]) * samples, -1), dim=-1)
+        flat_labels = targets.repeat_interleave(samples)
+        flat_valid = flat_labels.ge(0)
+        for index in range(features.shape[0]):
+            if not bool(flat_valid[index]):
+                skipped += 1
+                continue
+            positives = flat_labels.eq(flat_labels[index]) & flat_valid
+            positives[index] = False
+            if not bool(positives.any().detach().cpu().item()):
+                skipped += 1
+                continue
+            candidates = flat_valid.clone()
+            candidates[index] = False
+            logits = features[index].matmul(features[candidates].T) / temperature
+            local_positive = positives[candidates]
+            losses.append(-(logits.log_softmax(dim=0)[local_positive]).mean())
     if not losses:
         return zero, skipped
     return torch.stack(losses).mean(), skipped

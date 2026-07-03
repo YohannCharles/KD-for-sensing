@@ -1,0 +1,56 @@
+_base_: ../main_v3_strong_reliability_proto.yaml
+experiment:
+  name: main_v3_proto_es20_base
+model:
+  primary:
+    ablation_id: main_v3_proto_es20_base
+    fusion_type: weighted_sum
+    use_jepa_loss: false
+    use_beam_prototype_alignment: true
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+training:
+  epochs: 20
+  max_epochs: 20
+  use_early_stopping: true
+  early_stopping_metric: val_top1
+  early_stopping_mode: max
+  patience: 5
+  early_stopping_patience: 5
+  save_best_metric: val_top1
+  validation:
+    interval_epochs: 1
+  use_beam_prototype_alignment: true
+  lambda_proto: 0.2
+  lambda_modality_proto: 0.1
+  use_beam_topology_proto: false
+  proto_target_type: gaussian
+  use_full_aux_loss: false
+  use_full_to_partial_kd: false
+  kd_teacher_mode: disabled
+  use_pattern_loss_weight: false
+  apply_pattern_weight_to_ce: true
+  apply_pattern_weight_to_proto: false
+  missing_pattern_sampler: default
+data:
+  dataloader:
+    num_workers: 4
+    train_num_workers: 4
+    test_num_workers: 4
+evaluation:
+  missing_patterns:
+    enabled: true
+    patterns:
+      - full
+      - missing_gps
+      - missing_image
+      - missing_radar
+      - missing_lidar
+      - non_gps_only
+      - gps_only
+      - image_only
+      - radar_only
+      - lidar_only
+    prediction_index: last
+output:
+  run_name: main_v3_proto_es20_base

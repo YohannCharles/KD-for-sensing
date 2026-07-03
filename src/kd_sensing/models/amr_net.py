@@ -119,6 +119,7 @@ class AMRNet(nn.Module):
         }
         if self.num_classes <= 0 or self.num_pred <= 0 or self.latent_dim <= 0:
             raise ValueError("amr_net num_classes, num_pred and latent_dim must be positive.")
+        self.image_channels = int(image_channels)
 
         encoder_dims = {
             "image": int(image_feature_dim),
@@ -128,7 +129,7 @@ class AMRNet(nn.Module):
         self.encoder_dims = encoder_dims
         encoders: dict[str, nn.Module] = {}
         if "image" in self.modalities:
-            encoders["image"] = _ImageEncoder(in_channels=int(image_channels), output_dim=encoder_dims["image"], dropout=float(dropout))
+            encoders["image"] = _ImageEncoder(in_channels=self.image_channels, output_dim=encoder_dims["image"], dropout=float(dropout))
         if "lidar" in self.modalities:
             encoders["lidar"] = _LidarEncoder(
                 input_features=int(lidar_input_features),
@@ -179,8 +180,12 @@ class AMRNet(nn.Module):
             "features": features,
             "cuaf_weights": fused["weights"],
             "cuaf_entropy": fused["entropy"],
+            "cuaf_entropy_score": fused["entropy_score"],
             "cuaf_kl_consistency": fused["kl_consistency"],
+            "cuaf_pairwise_kl_score": fused["pairwise_kl_score"],
             "cuaf_topk_margin": fused["topk_margin"],
+            "cuaf_top_t_margin_score": fused["top_t_margin_score"],
+            "cuaf_criterion_weights": fused["criterion_weights"],
             "cuaf_available": fused["available"],
             "amr": {
                 "modality_logits": modality_logits,
@@ -199,9 +204,13 @@ class AMRNet(nn.Module):
         expected_rank = 5 if name == "image" else 4 if name == "lidar" else 3
         if value.ndim != expected_rank:
             raise ValueError(f"amr_net expects {name}_batch rank {expected_rank}, got shape {tuple(value.shape)}.")
-        if int(value.shape[1]) != 1:
-            raise ValueError(f"amr_net initial version requires snapshot T=1 for {name}, got shape {tuple(value.shape)}.")
-        return value[:, 0].to(dtype=torch.float32)
+        if int(value.shape[1]) <= 0:
+            raise ValueError(f"amr_net requires {name}_batch to contain at least one time step, got shape {tuple(value.shape)}.")
+        snapshot = value.to(dtype=torch.float32).mean(dim=1)
+        if name == "image" and self.image_channels == 1 and int(snapshot.shape[1]) == 3:
+            weights = torch.tensor((0.2989, 0.5870, 0.1140), dtype=snapshot.dtype, device=snapshot.device).view(1, 3, 1, 1)
+            return (snapshot * weights).sum(dim=1, keepdim=True)
+        return snapshot
 
     def _sample(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         if not self.training and (self.deterministic_inference and not self.stochastic_eval):
@@ -220,26 +229,36 @@ class AMRNet(nn.Module):
         probs = torch.softmax(logits, dim=-1)
         eps = float(self.cuaf_cfg.get("eps", 1e-8))
         class_count = max(int(logits.shape[-1]), 2)
-        entropy = -(probs * probs.clamp_min(eps).log()).sum(dim=-1) / torch.log(
-            torch.as_tensor(float(class_count), dtype=probs.dtype, device=probs.device)
-        )
-        mean_prob = probs.mean(dim=2, keepdim=True).clamp_min(eps)
-        kl_consistency = (probs * (probs.clamp_min(eps).log() - mean_prob.log())).sum(dim=-1)
-        top2 = torch.topk(probs, k=min(2, class_count), dim=-1).values
-        margin = top2[..., 0] - (top2[..., 1] if top2.shape[-1] > 1 else 0.0)
-        scores = (1.0 - entropy).clamp_min(0.0) + margin.clamp_min(0.0) + (1.0 / (1.0 + kl_consistency.clamp_min(0.0)))
-        available = torch.ones_like(scores, dtype=torch.bool)
+        available = torch.ones_like(probs[..., 0], dtype=torch.bool)
         if modality_availability:
             for index, name in enumerate(names):
                 mask = modality_availability.get(name)
                 if torch.is_tensor(mask):
-                    available[:, :, index] = mask.to(device=available.device, dtype=torch.bool).view_as(available[:, :, index])
+                    available[:, :, index] = _prediction_mask(mask, available[:, :, index], name=name)
         if force_modality_mask is not None:
-            mask = force_modality_mask.to(device=available.device, dtype=torch.bool)
-            if mask.ndim == 2:
-                mask = mask.unsqueeze(1)
-            available = available & mask[:, :, : len(names)]
-        scores = scores.masked_fill(~available, 0.0)
+            available = available & _force_mask_for_cuaf(force_modality_mask, available)
+
+        entropy = -(probs * probs.clamp_min(eps).log()).sum(dim=-1)
+        entropy_score = 1.0 / entropy.clamp_min(eps)
+        log_probs = probs.clamp_min(eps).log()
+        pairwise_kl = (probs.unsqueeze(3) * (log_probs.unsqueeze(3) - log_probs.unsqueeze(2))).sum(dim=-1)
+        peer_mask = available.unsqueeze(2) & available.unsqueeze(3)
+        eye = torch.eye(len(names), dtype=torch.bool, device=available.device).view(1, 1, len(names), len(names))
+        peer_mask = peer_mask & ~eye
+        peer_count = peer_mask.to(dtype=probs.dtype).sum(dim=3).clamp_min(1.0)
+        avg_kl = pairwise_kl.masked_fill(~peer_mask, 0.0).sum(dim=3) / peer_count
+        kl_score = 1.0 / avg_kl.clamp_min(eps)
+        top_t = max(int(self.cuaf_cfg.get("top_t", self.cuaf_cfg.get("top_k_margin", 5))), 1)
+        top_values = torch.topk(probs, k=min(top_t + 1, int(class_count)), dim=-1).values
+        if top_values.shape[-1] > 1:
+            margin = top_values[..., 0] - top_values[..., 1:].mean(dim=-1)
+        else:
+            margin = top_values[..., 0]
+
+        entropy_weight = _masked_modality_softmax(entropy_score, available)
+        kl_weight = _masked_modality_softmax(kl_score, available)
+        margin_weight = _masked_modality_softmax(margin, available)
+        scores = (entropy_weight + kl_weight + margin_weight).masked_fill(~available, 0.0)
         denom = scores.sum(dim=2, keepdim=True)
         fallback = available.to(dtype=scores.dtype) / available.to(dtype=scores.dtype).sum(dim=2, keepdim=True).clamp_min(1.0)
         weights = torch.where(denom > 0.0, scores / denom.clamp_min(eps), fallback)
@@ -250,8 +269,16 @@ class AMRNet(nn.Module):
             "probabilities": fused_prob,
             "weights": weights,
             "entropy": entropy,
-            "kl_consistency": kl_consistency,
+            "entropy_score": entropy_score,
+            "kl_consistency": kl_score,
+            "pairwise_kl_score": kl_score,
             "topk_margin": margin,
+            "top_t_margin_score": margin,
+            "criterion_weights": {
+                "entropy": entropy_weight,
+                "pairwise_kl": kl_weight,
+                "top_t_margin": margin_weight,
+            },
             "available": available,
             "finite": torch.isfinite(fused_prob).all(dim=-1) & torch.isfinite(weights).all(dim=-1),
         }
@@ -264,11 +291,15 @@ class AMRNet(nn.Module):
             "enabled_modalities": list(self.modalities),
             "modalities": list(self.modalities),
             "encoder_dims": dict(self.encoder_dims),
+            "image_channels": self.image_channels,
             "latent_dim": self.latent_dim,
             "num_classes": self.num_classes,
             "num_pred": self.num_pred,
             "cuaf_enabled": bool(self.cuaf_cfg.get("enabled", True)),
             "cuaf": dict(self.cuaf_cfg),
+            "cuaf_formula": "entropy_pairwise_kl_top_t_margin",
+            "supports_variable_input_length": True,
+            "temporal_pooling": "mean",
             "loss": dict(self.loss_cfg),
             "deterministic_inference": self.deterministic_inference,
             "consumes_reliability_metadata": self.consumes_reliability_metadata,
@@ -276,6 +307,48 @@ class AMRNet(nn.Module):
             "freeze_policy": "none",
             "paper_approximation": self.paper_approximation,
         }
+
+
+def _masked_modality_softmax(scores: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
+    masked = scores.masked_fill(~available, torch.finfo(scores.dtype).min)
+    weights = torch.softmax(masked, dim=2)
+    return weights.masked_fill(~available, 0.0)
+
+
+def _prediction_mask(mask: torch.Tensor, target: torch.Tensor, *, name: str) -> torch.Tensor:
+    value = mask.to(device=target.device, dtype=torch.bool)
+    batch_size, pred_steps = target.shape
+    if value.ndim == 0 or int(value.shape[0]) != batch_size:
+        raise ValueError(
+            f"amr_net modality availability for {name} must start with batch size {batch_size}, got shape {tuple(value.shape)}."
+        )
+    if value.ndim == 1:
+        return value.view(batch_size, 1).expand(-1, pred_steps)
+    if tuple(value.shape) == tuple(target.shape):
+        return value
+    return value.reshape(batch_size, -1).any(dim=1, keepdim=True).expand(-1, pred_steps)
+
+
+def _force_mask_for_cuaf(mask: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    value = mask.to(device=target.device, dtype=torch.bool)
+    batch_size, pred_steps, modality_count = target.shape
+    if value.ndim == 1:
+        if int(value.shape[0]) != modality_count:
+            raise ValueError(f"force_modality_mask shape must end with K={modality_count}, got {tuple(value.shape)}.")
+        return value.view(1, 1, modality_count).expand(batch_size, pred_steps, -1)
+    if value.ndim == 2:
+        if tuple(value.shape) == (batch_size, modality_count):
+            return value.view(batch_size, 1, modality_count).expand(-1, pred_steps, -1)
+        if tuple(value.shape) == (pred_steps, modality_count):
+            return value.view(1, pred_steps, modality_count).expand(batch_size, -1, -1)
+    if value.ndim >= 3 and int(value.shape[0]) == batch_size and int(value.shape[-1]) >= modality_count:
+        trimmed = value[..., :modality_count]
+        if trimmed.ndim == 3 and int(trimmed.shape[1]) == pred_steps:
+            return trimmed
+        return trimmed.reshape(batch_size, -1, modality_count).any(dim=1, keepdim=True).expand(-1, pred_steps, -1)
+    raise ValueError(
+        f"force_modality_mask shape must be [K], [B,K], [P,K] or [B,T,K], got {tuple(value.shape)}."
+    )
 
 
 __all__ = ["AMRNet"]

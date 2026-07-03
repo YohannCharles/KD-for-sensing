@@ -1,4 +1,7 @@
 import warnings
+import csv
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -12,6 +15,7 @@ from kd_sensing.data.missing_mask import (
 )
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, ForwardControls, TrainingExtension
 from kd_sensing.losses.beam_prototype_alignment import prototype_alignment_loss, supervised_contrastive_loss
+from kd_sensing.utils.missing_patterns import canonical_missing_pattern_name, list_standard_missing_patterns
 
 
 def u_mask_beam_jepa_loss(
@@ -51,6 +55,24 @@ def u_mask_beam_jepa_loss(
     lambda_prototype_kd: float = 0.0,
     kd_temperature: float = 1.0,
     sample_weights: torch.Tensor | None = None,
+    proto_sample_weights: torch.Tensor | None = None,
+    pattern_names: list[str] | None = None,
+    use_pattern_conditional_btapa: bool = False,
+    btapa_apply_patterns: list[str] | tuple[str, ...] | None = None,
+    btapa_disable_on_patterns: list[str] | tuple[str, ...] | None = None,
+    btapa_fallback_to_ordinary_proto: bool = True,
+    ordinary_proto_target_type: str = "gaussian",
+    apply_pattern_weight_to_proto: bool = False,
+    use_weak_pattern_kd: bool = False,
+    kd_apply_patterns: list[str] | tuple[str, ...] | None = None,
+    lambda_weak_pattern_kd: float = 0.0,
+    latent_predictor: torch.nn.Module | None = None,
+    use_light_latent_pred: bool = False,
+    latent_pred_target: str = "full_fused",
+    latent_pred_apply_patterns: list[str] | tuple[str, ...] | None = None,
+    lambda_latent_pred: float = 0.0,
+    latent_pred_loss: str = "cosine",
+    prototype_distribution_target: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     if lambda_jepa_global is None:
         lambda_jepa_global = 1.0 if lambda_jepa is None else float(lambda_jepa)
@@ -60,6 +82,7 @@ def u_mask_beam_jepa_loss(
         logits = logits.unsqueeze(1)
     if labels.ndim == 1:
         labels = labels.unsqueeze(1)
+    unweighted_loss_beam = _sample_weighted_ce(logits, labels[:, : logits.shape[1]], None)
     loss_beam = _sample_weighted_ce(logits, labels[:, : logits.shape[1]], sample_weights)
     zero = logits.sum() * 0.0
     teacher_logits = output.get("teacher_logits")
@@ -115,6 +138,13 @@ def u_mask_beam_jepa_loss(
             use_adba_aware_proto=use_adba_aware_proto,
             lambda_adba_proto=lambda_adba_proto,
             adba_margin=adba_margin,
+            use_pattern_conditional_btapa=use_pattern_conditional_btapa,
+            pattern_names=pattern_names,
+            btapa_apply_patterns=btapa_apply_patterns,
+            btapa_disable_on_patterns=btapa_disable_on_patterns,
+            btapa_fallback_to_ordinary_proto=btapa_fallback_to_ordinary_proto,
+            ordinary_proto_target_type=ordinary_proto_target_type,
+            sample_weights=proto_sample_weights if apply_pattern_weight_to_proto else None,
         )
         loss = loss + proto_loss
         diagnostics_extra.update(proto_diag)
@@ -122,6 +152,23 @@ def u_mask_beam_jepa_loss(
             supcon, supcon_diag = supervised_contrastive_loss(output["output_features"], labels[:, 0], temperature=kd_temperature)
             loss = loss + float(lambda_supcon) * supcon
             diagnostics_extra.update(supcon_diag)
+    kd_loss = zero
+    kd_active_ratio = 0.0
+    if use_weak_pattern_kd:
+        active = _active_pattern_mask(pattern_names, kd_apply_patterns, logits.device)
+        kd_active_ratio = _active_ratio(active)
+        if teacher_output is not None and active is not None and bool(active.any().item()):
+            teacher_logits = teacher_output["logits"].detach()
+            kd_per_sample = _logit_kd_loss_per_sample(logits, teacher_logits, temperature=kd_temperature)
+            kd_loss = kd_per_sample[active].mean()
+            loss = loss + float(lambda_weak_pattern_kd) * kd_loss
+        diagnostics_extra.update(
+            {
+                "kd_loss": float(kd_loss.detach().cpu().item()),
+                "kd_active_ratio": kd_active_ratio,
+                "loss/weak_pattern_kd": float(kd_loss.detach().cpu().item()),
+            }
+        )
     if use_full_to_partial_kd and teacher_output is not None:
         teacher_logits = teacher_output["logits"].detach()
         logit_kd = _logit_kd_loss(logits, teacher_logits, temperature=kd_temperature)
@@ -151,11 +198,51 @@ def u_mask_beam_jepa_loss(
                 "kd_gap": float((teacher_logits.detach() - logits.detach()).abs().mean().cpu().item()),
             }
         )
+    latent_loss = zero
+    latent_active_ratio = 0.0
+    if use_light_latent_pred:
+        active = _active_pattern_mask(pattern_names, latent_pred_apply_patterns, logits.device)
+        latent_active_ratio = _active_ratio(active)
+        if latent_predictor is None:
+            raise ValueError("use_light_latent_pred=true requires model.primary.use_light_latent_pred=true.")
+        if teacher_output is not None and active is not None and bool(active.any().item()):
+            student_feature = output["output_features"]
+            if str(latent_pred_target) == "prototype_distribution":
+                pred_logits = latent_predictor(student_feature)
+                if prototype_distribution_target is not None:
+                    target_prob = prototype_distribution_target.to(device=pred_logits.device, dtype=pred_logits.dtype)
+                elif prototype_bank is not None:
+                    target_prob = torch.softmax(prototype_bank(teacher_output["output_features"].detach()), dim=-1)
+                else:
+                    target_prob = torch.softmax(teacher_output["logits"].detach().reshape(pred_logits.shape[0], -1, pred_logits.shape[-1])[:, 0], dim=-1)
+                latent_loss = F.kl_div(
+                    F.log_softmax(pred_logits[active], dim=-1),
+                    target_prob[active],
+                    reduction="batchmean",
+                )
+            else:
+                pred_feature = latent_predictor(student_feature)
+                target_feature = teacher_output["output_features"].detach()
+                loss_name = str(latent_pred_loss).lower()
+                if loss_name == "mse":
+                    per_sample = F.mse_loss(pred_feature, target_feature, reduction="none").mean(dim=-1)
+                else:
+                    per_sample = 1.0 - F.cosine_similarity(pred_feature, target_feature, dim=-1)
+                latent_loss = per_sample[active].mean()
+            loss = loss + float(lambda_latent_pred) * latent_loss
+        diagnostics_extra.update(
+            {
+                "latent_pred_loss": float(latent_loss.detach().cpu().item()),
+                "latent_pred_active_ratio": latent_active_ratio,
+                "loss/latent_pred": float(latent_loss.detach().cpu().item()),
+            }
+        )
     diagnostics = _loss_diagnostics(
         logits,
         labels,
         output,
         loss_beam=loss_beam,
+        unweighted_loss_beam=unweighted_loss_beam,
         loss_teacher=loss_teacher,
         loss_jepa_global=loss_jepa_global,
         loss_modality_nll=loss_modality_nll,
@@ -166,6 +253,7 @@ def u_mask_beam_jepa_loss(
     return {
         "loss": loss,
         "loss_beam": loss_beam,
+        "unweighted_loss_beam": unweighted_loss_beam,
         "loss_teacher": loss_teacher,
         "loss_jepa_global": loss_jepa_global,
         "loss_modality_nll": loss_modality_nll,
@@ -249,18 +337,27 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         *,
         epoch: int,
     ) -> ForwardControls:
-        del epoch
         cfg = state.get("config", {}) if isinstance(state, dict) else {}
         if not cfg.get("enabled", False):
             return ForwardControls()
         modalities = tuple(getattr(context.primary_model, "modalities", context.model_cfg.get("primary", {}).get("modalities", ())))
         mask_cfg = cfg.get("missing_mask", {})
         pattern = cfg.get("pattern") or cfg.get("missing_pattern")
-        if cfg.get("mask_sampler") == "pattern_balanced":
+        sampler = str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default")
+        pattern_probs = _pattern_probs_for_sampler(cfg, modalities, epoch=epoch)
+        if sampler in {
+            "pattern_balanced",
+            "uniform",
+            "weak_single_oversample",
+            "sensing_only_oversample",
+            "missing_gps_oversample",
+            "curriculum_easy_to_hard",
+            "curriculum_hard_to_easy",
+        }:
             mask, pattern_names, pattern_ids = sample_pattern_balanced_mask(
                 int(labels.shape[0]),
                 modalities,
-                cfg.get("pattern_probs"),
+                pattern_probs,
                 device=context.device,
             )
             state["pattern_names"] = pattern_names
@@ -282,9 +379,20 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
                 ensure_at_least_one=bool(mask_cfg.get("ensure_at_least_one", True)),
                 device=context.device,
             )
-            state["pattern_names"] = None
+            state["pattern_names"] = [
+                get_missing_pattern_name(row.detach().cpu(), modalities)
+                for row in mask.to(dtype=torch.bool)
+            ]
             state["pattern_ids"] = None
-        if cfg.get("use_full_to_partial_kd", False) and cfg.get("kd_teacher_mode") == "online_full":
+        _update_pattern_counts(state, state.get("pattern_names"))
+        weak_kd_active = _has_active_patterns(state.get("pattern_names"), cfg.get("kd_apply_patterns", ()))
+        latent_active = _has_active_patterns(state.get("pattern_names"), cfg.get("latent_pred_apply_patterns", ()))
+        needs_teacher = (
+            (cfg.get("use_full_to_partial_kd", False) and cfg.get("kd_teacher_mode") == "online_full")
+            or (cfg.get("use_weak_pattern_kd", False) and weak_kd_active)
+            or (cfg.get("use_light_latent_pred", False) and latent_active)
+        )
+        if needs_teacher:
             state["online_teacher"] = _online_full_teacher(context, batch, modalities, labels, cfg)
         else:
             state["online_teacher"] = None
@@ -300,6 +408,14 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             "input_features": batch_state.primary_output.input_features,
             **batch_state.primary_output.diagnostics,
         }
+        pattern_weights = _hard_pattern_weights(
+            cfg,
+            state.get("pattern_names"),
+            batch_state.controls.model_kwargs.get("missing_mask"),
+            getattr(context.primary_model, "modalities", ()),
+        )
+        ce_weights = pattern_weights if bool(cfg.get("apply_pattern_weight_to_ce", True)) else None
+        proto_weights = pattern_weights if bool(cfg.get("apply_pattern_weight_to_proto", False)) else None
         result = u_mask_beam_jepa_loss(
             output,
             batch_state.labels,
@@ -334,12 +450,24 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             lambda_feature_kd=float(cfg.get("lambda_feature_kd", 0.0)),
             lambda_prototype_kd=float(cfg.get("lambda_prototype_kd", 0.0)),
             kd_temperature=float(cfg.get("kd_temperature", 1.0)),
-            sample_weights=_hard_pattern_weights(
-                cfg,
-                state.get("pattern_names"),
-                batch_state.controls.model_kwargs.get("missing_mask"),
-                getattr(context.primary_model, "modalities", ()),
-            ),
+            sample_weights=ce_weights,
+            proto_sample_weights=proto_weights,
+            pattern_names=state.get("pattern_names"),
+            use_pattern_conditional_btapa=bool(cfg.get("use_pattern_conditional_btapa", False)),
+            btapa_apply_patterns=cfg.get("btapa_apply_patterns", ()),
+            btapa_disable_on_patterns=cfg.get("btapa_disable_on_patterns", ()),
+            btapa_fallback_to_ordinary_proto=bool(cfg.get("btapa_fallback_to_ordinary_proto", True)),
+            ordinary_proto_target_type=str(cfg.get("ordinary_proto_target_type", "gaussian")),
+            apply_pattern_weight_to_proto=bool(cfg.get("apply_pattern_weight_to_proto", False)),
+            use_weak_pattern_kd=bool(cfg.get("use_weak_pattern_kd", False)),
+            kd_apply_patterns=cfg.get("kd_apply_patterns", ()),
+            lambda_weak_pattern_kd=float(cfg.get("lambda_kd", cfg.get("lambda_weak_pattern_kd", 0.0))),
+            latent_predictor=getattr(context.primary_model, "latent_predictor", None),
+            use_light_latent_pred=bool(cfg.get("use_light_latent_pred", False)),
+            latent_pred_target=str(cfg.get("latent_pred_target", "full_fused")),
+            latent_pred_apply_patterns=cfg.get("latent_pred_apply_patterns", ()),
+            lambda_latent_pred=float(cfg.get("lambda_latent_pred", 0.0)),
+            latent_pred_loss=str(cfg.get("latent_pred_loss", "cosine")),
         )
         loss = result["loss"]
         full_aux_ce = loss.sum() * 0.0
@@ -350,9 +478,11 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         diagnostics = dict(result["diagnostics"])
         diagnostics.update(
             {
-                "ce_loss": float(result["loss_beam"].detach().cpu().item()),
-                "beam_ce_loss": float(result["loss_beam"].detach().cpu().item()),
-                "partial_ce": float(result["loss_beam"].detach().cpu().item()),
+                "ce_loss": float(result["unweighted_loss_beam"].detach().cpu().item()),
+                "beam_ce_loss": float(result["unweighted_loss_beam"].detach().cpu().item()),
+                "partial_ce": float(result["unweighted_loss_beam"].detach().cpu().item()),
+                "weighted_ce_loss": float(result["loss_beam"].detach().cpu().item()),
+                "avg_sample_weight": _avg_sample_weight(pattern_weights),
                 "proto_loss": float(diagnostics.get("loss/prototype_total", 0.0)),
                 "btapa_fusion_loss": float(diagnostics.get("loss/btapa_fusion", 0.0)),
                 "btapa_modality_loss": float(diagnostics.get("loss/btapa_modality", 0.0)),
@@ -368,6 +498,24 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             auxiliary_loss=auxiliary,
             diagnostics=diagnostics,
         )
+
+    def before_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> None:
+        del context, epoch
+        if isinstance(state, dict):
+            state["pattern_epoch_counts"] = Counter()
+
+    def after_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> dict[str, Any]:
+        if not isinstance(state, dict):
+            return {}
+        cfg = state.get("config", {})
+        counts = state.get("pattern_epoch_counts")
+        if not isinstance(cfg, dict) or not isinstance(counts, Counter) or not counts:
+            return {}
+        sampler = str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default")
+        if sampler in {"default", "random_missing"}:
+            return {}
+        path = _write_pattern_counts(context.cfg, counts, epoch=epoch)
+        return {"pattern_sampling": {"path": str(path), "sampler": sampler}}
 
 
 def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -389,18 +537,18 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "mask_sampler": training_cfg.get("mask_sampler", "random_missing"),
         "pattern_probs": training_cfg.get("pattern_probs"),
         "use_beam_prototype_alignment": training_cfg.get(
-            "use_beam_prototype_alignment", primary_cfg.get("use_beam_prototype_alignment", False)
+            "use_beam_prototype_alignment", training_cfg.get("use_btapa", primary_cfg.get("use_beam_prototype_alignment", False))
         ),
-        "lambda_proto": training_cfg.get("lambda_proto", 0.0),
+        "lambda_proto": training_cfg.get("lambda_proto", training_cfg.get("btapa_lambda", 0.0)),
         "lambda_modality_proto": training_cfg.get("lambda_modality_proto", 0.0),
         "lambda_supcon": training_cfg.get("lambda_supcon", 0.0),
         "lambda_teacher_proto": training_cfg.get("lambda_teacher_proto", 0.0),
         "beam_proto_temperature": training_cfg.get("beam_proto_temperature", primary_cfg.get("beam_proto_temperature", 0.2)),
         "use_beam_topology_proto": training_cfg.get(
-            "use_beam_topology_proto", primary_cfg.get("use_beam_topology_proto", False)
+            "use_beam_topology_proto", training_cfg.get("use_btapa", primary_cfg.get("use_beam_topology_proto", False))
         ),
         "proto_target_type": training_cfg.get("proto_target_type"),
-        "tau_beam": training_cfg.get("tau_beam", 2.0),
+        "tau_beam": training_cfg.get("btapa_tau_beam", training_cfg.get("tau_beam", 2.0)),
         "circular_beam_distance": training_cfg.get("circular_beam_distance", training_cfg.get("circular_distance")),
         "btapa_include_fusion": training_cfg.get("btapa_include_fusion", True),
         "btapa_include_modalities": training_cfg.get("btapa_include_modalities", True),
@@ -422,10 +570,32 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "use_full_aux_loss": training_cfg.get("use_full_aux_loss", False),
         "lambda_full_aux": training_cfg.get("lambda_full_aux", 0.0),
         "full_aux_proto": training_cfg.get("full_aux_proto", False),
-        "use_hard_pattern_weight": training_cfg.get("use_hard_pattern_weight", False),
+        "missing_pattern_sampler": training_cfg.get("missing_pattern_sampler", training_cfg.get("mask_sampler", "default")),
+        "pattern_sampling_weights": training_cfg.get("pattern_sampling_weights", {}),
+        "curriculum_schedule": training_cfg.get("curriculum_schedule", {}),
+        "use_pattern_conditional_btapa": training_cfg.get("use_pattern_conditional_btapa", False),
+        "btapa_apply_patterns": training_cfg.get("btapa_apply_patterns", ()),
+        "btapa_disable_on_patterns": training_cfg.get("btapa_disable_on_patterns", ()),
+        "btapa_fallback_to_ordinary_proto": training_cfg.get("btapa_fallback_to_ordinary_proto", True),
+        "ordinary_proto_target_type": training_cfg.get("ordinary_proto_target_type", "gaussian"),
+        "use_hard_pattern_weight": training_cfg.get(
+            "use_pattern_loss_weight", training_cfg.get("use_hard_pattern_weight", False)
+        ),
+        "pattern_loss_weights": training_cfg.get("pattern_loss_weights", {}),
         "hard_patterns": training_cfg.get("hard_patterns", ()),
         "hard_pattern_weight": training_cfg.get("hard_pattern_weight", 1.0),
-        "hard_pattern_weight_apply_to_proto": training_cfg.get("hard_pattern_weight_apply_to_proto", False),
+        "apply_pattern_weight_to_ce": training_cfg.get("apply_pattern_weight_to_ce", True),
+        "apply_pattern_weight_to_proto": training_cfg.get(
+            "apply_pattern_weight_to_proto", training_cfg.get("hard_pattern_weight_apply_to_proto", False)
+        ),
+        "use_weak_pattern_kd": training_cfg.get("use_weak_pattern_kd", False),
+        "kd_apply_patterns": training_cfg.get("kd_apply_patterns", ()),
+        "lambda_kd": training_cfg.get("lambda_kd", 0.0),
+        "use_light_latent_pred": training_cfg.get("use_light_latent_pred", False),
+        "latent_pred_target": training_cfg.get("latent_pred_target", "full_fused"),
+        "latent_pred_apply_patterns": training_cfg.get("latent_pred_apply_patterns", ()),
+        "lambda_latent_pred": training_cfg.get("lambda_latent_pred", 0.0),
+        "latent_pred_loss": training_cfg.get("latent_pred_loss", "cosine"),
     }.items():
         resolved.setdefault(key, default)
     if resolved.get("proto_target_type") is None:
@@ -466,6 +636,7 @@ def _loss_diagnostics(
     output: dict[str, torch.Tensor],
     *,
     loss_beam: torch.Tensor,
+    unweighted_loss_beam: torch.Tensor,
     loss_teacher: torch.Tensor,
     loss_jepa_global: torch.Tensor,
     loss_modality_nll: torch.Tensor,
@@ -479,6 +650,8 @@ def _loss_diagnostics(
     top5 = flat_logits.topk(k, dim=-1).indices.eq(flat_labels.unsqueeze(-1)).any(dim=-1).float().mean()
     diagnostics = {
         "loss_beam": float(loss_beam.detach().cpu().item()),
+        "ce_loss": float(unweighted_loss_beam.detach().cpu().item()),
+        "weighted_ce_loss": float(loss_beam.detach().cpu().item()),
         "loss_teacher": float(loss_teacher.detach().cpu().item()),
         "loss_jepa_global": float(loss_jepa_global.detach().cpu().item()),
         "loss_modality_nll": float(loss_modality_nll.detach().cpu().item()),
@@ -572,8 +745,12 @@ def _hard_pattern_weights(
 ) -> torch.Tensor | None:
     if not bool(cfg.get("use_hard_pattern_weight", False)):
         return None
-    hard_patterns = {str(item) for item in cfg.get("hard_patterns", ())}
-    if not hard_patterns:
+    pattern_weights = {
+        canonical_missing_pattern_name(key): float(value)
+        for key, value in dict(cfg.get("pattern_loss_weights", {}) or {}).items()
+    }
+    hard_patterns = {canonical_missing_pattern_name(item) for item in cfg.get("hard_patterns", ())}
+    if not pattern_weights and not hard_patterns:
         return None
     if pattern_names is None and torch.is_tensor(mask):
         pattern_names = [
@@ -583,8 +760,17 @@ def _hard_pattern_weights(
     if not pattern_names:
         return None
     value = float(cfg.get("hard_pattern_weight", 1.0))
-    weights = [value if name in hard_patterns else 1.0 for name in pattern_names]
+    weights = []
+    for name in pattern_names:
+        canonical = canonical_missing_pattern_name(name)
+        weights.append(pattern_weights.get(canonical, value if canonical in hard_patterns else 1.0))
     return torch.tensor(weights, device=mask.device if torch.is_tensor(mask) else None)
+
+
+def _avg_sample_weight(sample_weights: torch.Tensor | None) -> float:
+    if sample_weights is None:
+        return 1.0
+    return float(sample_weights.detach().float().mean().cpu().item())
 
 
 def _logit_kd_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *, temperature: float) -> torch.Tensor:
@@ -598,6 +784,25 @@ def _logit_kd_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *
         F.softmax(teacher_logits / temperature, dim=-1),
         reduction="batchmean",
     ) * (temperature**2)
+
+
+def _logit_kd_loss_per_sample(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *, temperature: float) -> torch.Tensor:
+    if student_logits.ndim == 2:
+        student_logits = student_logits.unsqueeze(1)
+    if teacher_logits.ndim == 2:
+        teacher_logits = teacher_logits.unsqueeze(1)
+    if tuple(student_logits.shape) != tuple(teacher_logits.shape):
+        raise ValueError(
+            "student and teacher logits must have matching shape for weak-pattern KD, "
+            f"got {tuple(student_logits.shape)} and {tuple(teacher_logits.shape)}."
+        )
+    temperature = float(temperature)
+    per_slot = F.kl_div(
+        F.log_softmax(student_logits / temperature, dim=-1),
+        F.softmax(teacher_logits / temperature, dim=-1),
+        reduction="none",
+    ).sum(dim=-1)
+    return per_slot.mean(dim=1) * (temperature**2)
 
 
 def _top1(logits: torch.Tensor, labels: torch.Tensor) -> float:
@@ -616,6 +821,115 @@ def _pattern_diagnostics(pattern_names: list[str] | None) -> dict[str, float]:
     for name in sorted(set(pattern_names)):
         diagnostics[f"u_mask/pattern/{name}"] = float(pattern_names.count(name) / total)
     return diagnostics
+
+
+def _pattern_probs_for_sampler(cfg: dict[str, Any], modalities: tuple[str, ...], *, epoch: int) -> dict[str, float] | list[str] | tuple[str, ...] | None:
+    sampler = str(cfg.get("missing_pattern_sampler", cfg.get("mask_sampler", "default")) or "default")
+    if sampler == "pattern_balanced":
+        return cfg.get("pattern_probs")
+    if sampler in {"default", "random_missing"}:
+        return None
+    if sampler in {"curriculum_easy_to_hard", "curriculum_hard_to_easy"}:
+        scheduled = _scheduled_patterns(cfg.get("curriculum_schedule", {}), epoch=epoch)
+        return scheduled or _core_pattern_names(modalities)
+    weights = {name: 1.0 for name in _core_pattern_names(modalities)}
+    for name, value in dict(cfg.get("pattern_sampling_weights", {}) or {}).items():
+        canonical = canonical_missing_pattern_name(name)
+        if canonical in weights:
+            weights[canonical] = float(value)
+    return weights
+
+
+def _core_pattern_names(modalities: tuple[str, ...]) -> list[str]:
+    standard = list_standard_missing_patterns(modalities, include_avg=False)
+    preferred = [
+        "full",
+        "missing_gps",
+        "missing_image",
+        "missing_radar",
+        "missing_lidar",
+        "non_gps_only",
+        "gps_only",
+        "image_only",
+        "radar_only",
+        "lidar_only",
+    ]
+    return [name for name in preferred if name in standard]
+
+
+def _scheduled_patterns(schedule: Any, *, epoch: int) -> list[str]:
+    if not isinstance(schedule, dict):
+        return []
+    epoch_number = int(epoch) + 1
+    for key, raw_patterns in schedule.items():
+        text = str(key)
+        if not text.startswith("epochs_"):
+            continue
+        bounds = text.removeprefix("epochs_").split("_")
+        if len(bounds) != 2:
+            continue
+        start, end = int(bounds[0]), int(bounds[1])
+        if start <= epoch_number <= end:
+            return [canonical_missing_pattern_name(item) for item in raw_patterns]
+    return []
+
+
+def _update_pattern_counts(state: Any, pattern_names: list[str] | None) -> None:
+    if not isinstance(state, dict) or not pattern_names:
+        return
+    counts = state.setdefault("pattern_epoch_counts", Counter())
+    if isinstance(counts, Counter):
+        counts.update(pattern_names)
+
+
+def _write_pattern_counts(cfg: dict[str, Any], counts: Counter, *, epoch: int) -> Path:
+    run_name = str(cfg.get("output", {}).get("run_name") or cfg.get("experiment", {}).get("name") or "run")
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in run_name)
+    out_dir = Path("outputs/scene31/analysis/pattern_sampling_logs")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{safe}_pattern_counts.csv"
+    write_header = not path.exists()
+    total = sum(int(value) for value in counts.values())
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["epoch", "pattern", "count", "ratio"])
+        if write_header:
+            writer.writeheader()
+        for pattern, count in sorted(counts.items()):
+            writer.writerow(
+                {
+                    "epoch": int(epoch) + 1,
+                    "pattern": pattern,
+                    "count": int(count),
+                    "ratio": float(count / max(total, 1)),
+                }
+            )
+    return path
+
+
+def _active_pattern_mask(
+    pattern_names: list[str] | None,
+    apply_patterns: list[str] | tuple[str, ...] | None,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if not pattern_names:
+        return None
+    apply = {canonical_missing_pattern_name(item) for item in (apply_patterns or ())}
+    if not apply:
+        return torch.zeros(len(pattern_names), dtype=torch.bool, device=device)
+    return torch.tensor([canonical_missing_pattern_name(name) in apply for name in pattern_names], dtype=torch.bool, device=device)
+
+
+def _active_ratio(active: torch.Tensor | None) -> float:
+    if active is None or int(active.numel()) == 0:
+        return 0.0
+    return float(active.float().mean().detach().cpu().item())
+
+
+def _has_active_patterns(pattern_names: list[str] | None, apply_patterns: list[str] | tuple[str, ...] | None) -> bool:
+    if not pattern_names:
+        return False
+    apply = {canonical_missing_pattern_name(item) for item in (apply_patterns or ())}
+    return bool(apply) and any(canonical_missing_pattern_name(name) in apply for name in pattern_names)
 
 
 __all__ = ["UMaskBeamJEPATrainingExtension", "u_mask_beam_jepa_config", "u_mask_beam_jepa_loss"]

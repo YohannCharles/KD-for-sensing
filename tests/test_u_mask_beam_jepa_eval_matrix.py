@@ -7,6 +7,11 @@ from kd_sensing.eval.export import save_results_csv, save_results_json, save_res
 from kd_sensing.eval.metrics import reliability_error_stats
 from kd_sensing.eval.missing_patterns import (
     get_default_missing_patterns,
+    get_missing_pattern_mask,
+    is_sensing_only_pattern,
+    is_single_modality_pattern,
+    is_weak_single_modality_pattern,
+    list_standard_missing_patterns,
     make_fixed_missing_mask,
     resolve_missing_patterns,
     sample_eval_random_missing_mask,
@@ -24,10 +29,10 @@ def test_default_missing_patterns_for_four_modalities():
         "missing_radar": [1, 0, 1, 1],
         "missing_lidar": [1, 1, 0, 1],
         "missing_gps": [1, 1, 1, 0],
-        "only_image": [1, 0, 0, 0],
-        "only_radar": [0, 1, 0, 0],
-        "only_lidar": [0, 0, 1, 0],
-        "only_gps": [0, 0, 0, 1],
+        "image_only": [1, 0, 0, 0],
+        "radar_only": [0, 1, 0, 0],
+        "lidar_only": [0, 0, 1, 0],
+        "gps_only": [0, 0, 0, 1],
         "missing_image_radar": [0, 0, 1, 1],
         "missing_image_lidar": [0, 1, 0, 1],
         "missing_image_gps": [0, 1, 1, 0],
@@ -38,10 +43,25 @@ def test_default_missing_patterns_for_four_modalities():
     }
 
 
+def test_standard_missing_pattern_default_order_and_aliases():
+    assert get_missing_pattern_mask("radar_only") == [0, 0, 1, 0]
+    assert get_missing_pattern_mask("only_RAD", ["GPS", "RGB", "rad", "LiDAR"]) == [0, 0, 1, 0]
+    assert get_missing_pattern_mask("non_gps_only") == [0, 1, 1, 1]
+    assert list_standard_missing_patterns(include_avg=True)["avg_missing"] is None
+    assert is_single_modality_pattern("gps_only")
+    assert is_weak_single_modality_pattern("radar_only")
+    assert is_weak_single_modality_pattern("lidar_only")
+    assert not is_weak_single_modality_pattern("image_only")
+    assert is_sensing_only_pattern("non_gps_only")
+
+
 def test_resolve_missing_patterns_accepts_argparse_default_list():
     assert resolve_missing_patterns(["default"], ["image", "radar", "gps", "lidar"]) == get_default_missing_patterns(
         ["image", "radar", "gps", "lidar"]
     )
+    assert resolve_missing_patterns(["only_gps", "avg_missing"], ["image", "radar", "gps", "lidar"]) == {
+        "gps_only": [0, 0, 1, 0]
+    }
 
 
 def test_make_fixed_missing_mask_shape_and_contents():
@@ -101,7 +121,7 @@ def test_eval_matrix_runner_with_fake_model_and_dataloader():
     )
 
     names = {row["pattern"] for row in results}
-    assert {"full", "missing_image", "only_gps", "non_gps_only", "random_0.5"} <= names
+    assert {"full", "missing_image", "gps_only", "non_gps_only", "random_0.5"} <= names
     assert all(row["num_samples"] == 3 for row in results)
     assert all("top1" in row and "mean_available_modality_reliability" in row for row in results)
 

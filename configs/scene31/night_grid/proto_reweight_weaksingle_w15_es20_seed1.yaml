@@ -1,0 +1,22 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_reweight_weaksingle_w15_es20_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_reweight_weaksingle_w15_es20_seed1
+training:
+  use_pattern_loss_weight: true
+  apply_pattern_weight_to_ce: true
+  apply_pattern_weight_to_proto: false
+  pattern_loss_weights: &id001
+    radar_only: 1.5
+    lidar_only: 1.5
+loss:
+  u_mask_beam_jepa:
+    use_pattern_loss_weight: true
+    apply_pattern_weight_to_ce: true
+    apply_pattern_weight_to_proto: false
+    pattern_loss_weights: *id001
+output:
+  run_name: proto_reweight_weaksingle_w15_es20_seed1

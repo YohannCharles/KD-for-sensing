@@ -178,6 +178,24 @@ def compute_prediction_loss(
         )
         amr_loss, amr_diagnostics = amr_net_loss_from_output(model_output, targets.labels, cfg)
         amber_loss, amber_diagnostics = amber_full_auxiliary_loss_from_output(model_output, cfg, zero)
+        if _amr_paper_objective_only(cfg) and amr_diagnostics:
+            diagnostics.update(amr_diagnostics)
+            diagnostics["loss/beam"] = 0.0
+            diagnostics["loss/primary"] = float(amr_loss.detach().cpu().item())
+            diagnostics["objective/amr_paper_objective_only"] = 1.0
+            return PredictionLossBundle(
+                total=amr_loss,
+                primary=amr_loss,
+                beam=zero,
+                occlusion=zero,
+                position=zero,
+                multitask_total=amr_loss,
+                diagnostics=diagnostics,
+                los=zero,
+                link_quality=zero,
+                selection_multitask_total=zero,
+                jepa=zero,
+            )
         total = beam_component + auxiliary_loss.total + predictive_latent_loss + rerank_loss + amr_loss + amber_loss
         auxiliary_diagnostics = dict(auxiliary_loss.diagnostics)
         if "loss/occlusion" not in auxiliary_diagnostics and "loss/position" not in auxiliary_diagnostics:
@@ -275,7 +293,13 @@ def compute_prediction_loss(
         los=zero,
         link_quality=zero,
         selection_multitask_total=zero,
-    )
+        )
+
+
+def _amr_paper_objective_only(cfg: dict[str, Any]) -> bool:
+    loss_cfg = cfg.get("loss", {}) if isinstance(cfg.get("loss"), dict) else {}
+    amr_cfg = loss_cfg.get("amr", loss_cfg.get("amr_net", {})) if isinstance(loss_cfg, dict) else {}
+    return isinstance(amr_cfg, dict) and bool(amr_cfg.get("paper_objective_only", False))
 
 
 def dba_aware_loss_config(cfg: dict[str, Any]) -> dict[str, Any]:

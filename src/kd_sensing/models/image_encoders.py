@@ -116,6 +116,107 @@ class ResNet18ImageEncoder(nn.Module):
         return tuple(stage for stage in RESNET18_STAGES if stage in requested)
 
 
+@ENCODERS.register("resnet18_spatial_tokens")
+class ResNet18SpatialTokenEncoder(nn.Module):
+    input_size: tuple[int, int] | None = None
+
+    def __init__(
+        self,
+        output_dim: int | None = None,
+        *,
+        feature_size: int | None = None,
+        d_model: int | None = None,
+        dropout: float = 0.0,
+        pretrained: bool = True,
+        weights: str | None = "DEFAULT",
+        freeze_backbone: bool = True,
+        unfreeze_stages: list[str] | tuple[str, ...] | None = None,
+        unfreeze_last_n_stages: int = 0,
+        in_channels: int | None = None,
+        image_channels: int | None = None,
+        radar_channels: int | None = None,
+        lidar_channels: int | None = None,
+        image_size: list[int] | tuple[int, int] | None = None,
+        token_pool_size: list[int] | tuple[int, int] | int | None = None,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.output_dim = _resolve_output_dim(output_dim, feature_size, d_model)
+        self.in_channels = int(in_channels or image_channels or radar_channels or lidar_channels or 3)
+        self.pretrained = bool(pretrained)
+        self.weights = weights
+        self.freeze_backbone = bool(freeze_backbone)
+        self.requested_unfreeze_stages = tuple(str(stage) for stage in (unfreeze_stages or ()))
+        self.unfreeze_last_n_stages = int(unfreeze_last_n_stages)
+        self.input_size = tuple(int(value) for value in image_size) if image_size is not None else None
+        self.token_pool_size = _normalize_token_pool_size(token_pool_size)
+
+        self.backbone, backbone_dim = _build_resnet18_backbone(pretrained=self.pretrained, weights=weights)
+        _adapt_resnet18_input_channels(self.backbone, self.in_channels)
+        self.projection = nn.Sequential(
+            nn.LayerNorm(backbone_dim),
+            nn.Dropout(float(dropout)),
+            nn.Linear(backbone_dim, self.output_dim),
+        )
+        self.trainable_stages = self._configure_trainable_backbone()
+
+    def forward(self, image_batch: torch.Tensor) -> torch.Tensor:
+        if image_batch.ndim != 5:
+            raise ValueError(
+                "ResNet-18 spatial token encoder input must have shape [B, T, C, H, W], "
+                f"got {tuple(image_batch.shape)}."
+            )
+        batch_size, seq_len, channels, height, width = image_batch.shape
+        if int(channels) != self.in_channels:
+            raise ValueError(
+                f"ResNet-18 spatial token encoder expected {self.in_channels} channels, got {int(channels)}."
+            )
+        if self.input_size is not None and (int(height), int(width)) != self.input_size:
+            raise ValueError(
+                "ResNet-18 spatial token encoder expected spatial size "
+                f"{self.input_size[0]}x{self.input_size[1]}, got {int(height)}x{int(width)}."
+            )
+        frames = image_batch.reshape(batch_size * seq_len, channels, height, width).to(dtype=torch.float32)
+        feature_map = _resnet18_feature_map(self.backbone, frames)
+        if self.token_pool_size is not None:
+            feature_map = nn.functional.adaptive_avg_pool2d(feature_map, self.token_pool_size)
+        tokens = feature_map.flatten(2).transpose(1, 2).contiguous()
+        projected = self.projection(tokens)
+        return projected.view(batch_size, seq_len, int(projected.shape[1]), self.output_dim)
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "encoder": "resnet18_spatial_tokens",
+            "pretrained": self.pretrained,
+            "weights": self.weights,
+            "freeze_backbone": self.freeze_backbone,
+            "trainable_stages": list(self.trainable_stages),
+            "unfreeze_last_n_stages": self.unfreeze_last_n_stages,
+            "output_mode": "spatial_tokens",
+            "token_pool_size": list(self.token_pool_size) if self.token_pool_size is not None else None,
+        }
+
+    def _configure_trainable_backbone(self) -> tuple[str, ...]:
+        if not self.freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            return RESNET18_STAGES
+
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        requested = set(self.requested_unfreeze_stages)
+        if self.unfreeze_last_n_stages > 0:
+            requested.update(RESNET18_STAGES[-self.unfreeze_last_n_stages :])
+        invalid = sorted(requested - set(RESNET18_STAGES))
+        if invalid:
+            raise ValueError(f"Unknown ResNet-18 stages {invalid}. Available stages: {list(RESNET18_STAGES)}.")
+        for stage in requested:
+            module = getattr(self.backbone, stage)
+            for param in module.parameters():
+                param.requires_grad = True
+        return tuple(stage for stage in RESNET18_STAGES if stage in requested)
+
+
 def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[nn.Module, int]:
     try:
         import torchvision.models as tv_models
@@ -150,6 +251,49 @@ def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[
     feature_dim = int(model.fc.in_features)
     model.fc = nn.Identity()
     return model, feature_dim
+
+
+def _resnet18_feature_map(backbone: nn.Module, frames: torch.Tensor) -> torch.Tensor:
+    x = backbone.conv1(frames)
+    x = backbone.bn1(x)
+    x = backbone.relu(x)
+    x = backbone.maxpool(x)
+    x = backbone.layer1(x)
+    x = backbone.layer2(x)
+    x = backbone.layer3(x)
+    return backbone.layer4(x)
+
+
+def _adapt_resnet18_input_channels(backbone: nn.Module, in_channels: int) -> None:
+    if int(in_channels) == int(backbone.conv1.in_channels):
+        return
+    old = backbone.conv1
+    new = nn.Conv2d(
+        int(in_channels),
+        old.out_channels,
+        kernel_size=old.kernel_size,
+        stride=old.stride,
+        padding=old.padding,
+        bias=old.bias is not None,
+    )
+    with torch.no_grad():
+        base = old.weight.mean(dim=1, keepdim=True).expand(-1, int(in_channels), -1, -1)
+        new.weight.copy_(base)
+        if old.bias is not None and new.bias is not None:
+            new.bias.copy_(old.bias)
+    backbone.conv1 = new
+
+
+def _normalize_token_pool_size(value: list[int] | tuple[int, int] | int | None) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        size = (int(value), int(value))
+    else:
+        size = tuple(int(item) for item in value)
+    if len(size) != 2 or min(size) <= 0:
+        raise ValueError(f"token_pool_size must be a positive int or pair, got {value!r}.")
+    return size
 
 
 @ENCODERS.register("camera_ae_frozen")
@@ -253,4 +397,5 @@ __all__ = [
     "CameraAEImageEncoder",
     "RESNET18_STAGES",
     "ResNet18ImageEncoder",
+    "ResNet18SpatialTokenEncoder",
 ]

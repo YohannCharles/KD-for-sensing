@@ -2,7 +2,6 @@
 
 ## Purpose
 定义 BTAPA beam-neighborhood prototype alignment 的 soft target、prototype loss、ADBA-aware auxiliary loss、smoke validation 和本地分析边界，使 Scene31 缺失模态实验能显式利用 beam 拓扑邻接而不恢复旧 KD/runtime 入口。
-
 ## Requirements
 ### Requirement: Beam topology soft prototype target
 系统 MUST 支持 BTAPA beam-neighborhood soft target。该 target MUST 基于 hard beam label、`num_beams`、`tau_beam` 和可配置 circular distance 生成 `[B, num_beams]` 概率分布，且每行概率和 MUST 在数值容差内等于 1。
@@ -71,3 +70,46 @@
 - **WHEN** 用户运行任一 BTAPA 配置
 - **THEN** 输出 run name MUST 包含 `btapa`
 - **AND** 系统 MUST 不覆盖旧 `main_v3_strong_reliability_proto` 输出
+
+### Requirement: BTAPA tau1 主候选验证分析
+BTAPA 本地分析 MUST 能将 `main_v3_strong_reliability_btapa_tau1` 标记为 candidate main，并基于读取到的指标生成保守的整体结论和 paper-ready observation。结论 MUST 使用 CSV 中真实数值，不得声称未验证的显著性或最终主模型地位。
+
+#### Scenario: candidate main 输出
+- **WHEN** 用户运行 `scripts/analyze_btapa_runs.py --candidate main_v3_strong_reliability_btapa_tau1`
+- **THEN** 输出 Markdown MUST 标记 candidate main
+- **AND** 报告 MUST 比较 tau1、tau4、ADBA-aware、fusiononly 和 modw1 的相对表现
+
+#### Scenario: paper-ready observation 保守生成
+- **WHEN** 分析脚本能读取 proto baseline 和 BTAPA tau1 指标
+- **THEN** 报告 MUST 生成一段可用于论文草稿的 observation
+- **AND** observation MUST 基于读取到的 full、avg_missing 或 radar_only 数字，避免夸大
+
+### Requirement: BTAPA tau1 多 seed mean±std
+系统 MUST 提供 BTAPA tau1 多 seed 只读分析脚本，读取原始 tau1、seed2、seed3 和可选 proto/旧 V3 seed，输出 seed metrics、mean±std、Markdown 和 delta-vs-proto mean。部分 seed 尚未跑完时，脚本 MUST 继续基于已有 seed 计算并记录 n。
+
+#### Scenario: seed 未完成仍输出
+- **WHEN** seed2 或 seed3 的 metrics/checkpoint 尚不存在
+- **THEN** 脚本 MUST 打印 warning 并继续
+- **AND** mean±std 输出 MUST 记录实际 n，并在 Markdown 中列出 missing runs
+
+#### Scenario: 输出核心结论
+- **WHEN** 脚本生成 BTAPA tau1 与 proto baseline 的 mean±std 表
+- **THEN** 末尾 MUST 打印 avg_missing Top-1、radar_only Top-1、delta mean、是否超过 proto mean 以及差异是否小于 std 的谨慎提示
+
+### Requirement: pattern-conditional BTAPA prototype loss
+系统 MUST 支持 pattern-conditional BTAPA。启用 `use_pattern_conditional_btapa=true` 时，batch 内每个 sample MUST 根据 available mask 解析 pattern name；在 `btapa_apply_patterns` 中的样本 MUST 使用 BTAPA soft beam target，其它样本 MUST 在 `btapa_fallback_to_ordinary_proto=true` 时使用 ordinary prototype target。
+
+#### Scenario: sample-wise 混合 target
+- **WHEN** 同一 batch 同时包含 `radar_only` 和 `missing_gps`
+- **THEN** `radar_only` 样本 MUST 使用 BTAPA soft beam target
+- **AND** `missing_gps` 样本 MUST 使用 ordinary prototype target
+
+#### Scenario: 缺失模态不参与 modality proto loss
+- **WHEN** 某样本的 available mask 中 `radar=0`
+- **THEN** radar modality feature MUST 不参与 modality prototype loss
+- **AND** fusion feature MUST 继续参与 prototype loss
+
+#### Scenario: diagnostics 记录 active ratio
+- **WHEN** pattern-conditional BTAPA 启用
+- **THEN** 训练 metrics MUST 记录 `ordinary_proto_loss`、`btapa_loss`、`btapa_active_ratio` 和 `total_proto_loss`
+

@@ -1121,16 +1121,35 @@ class ModularSequenceModel(nn.Module):
         ordered = [projected[modality] for modality in self.modalities]
         has_token_features = any(features.ndim == 4 for features in ordered)
         if has_token_features:
-            token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
-            token_features = torch.cat(token_pieces, dim=2)
-            core_input = token_features.permute(0, 2, 1, 3).contiguous()
-            availability_mask = _core_input_availability_mask(
-                projected,
-                self.modalities,
-                valid_masks=modality_valid_inputs,
-                dropout_masks=modality_dropout_inputs,
-                token_features=True,
-            )
+            if bool(getattr(self.representation_core, "supports_spatial_modality_tokens", False)):
+                token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
+                max_tokens = max(int(features.shape[2]) for features in token_pieces)
+                padded_tokens: list[torch.Tensor] = []
+                padded_masks: list[torch.Tensor] = []
+                for modality, features in zip(self.modalities, token_pieces):
+                    token_count = int(features.shape[2])
+                    padded_tokens.append(_pad_modality_tokens(features, max_tokens=max_tokens))
+                    mask = _modality_availability_from_inputs(
+                        modality,
+                        projected[modality],
+                        valid_mask=modality_valid_inputs.get(modality),
+                        dropout_mask=modality_dropout_inputs.get(modality),
+                    )
+                    token_mask = mask.unsqueeze(2).expand(-1, -1, token_count)
+                    padded_masks.append(_pad_modality_token_mask(token_mask, max_tokens=max_tokens))
+                core_input = torch.stack(padded_tokens, dim=1).contiguous()
+                availability_mask = torch.stack(padded_masks, dim=1).contiguous()
+            else:
+                token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
+                token_features = torch.cat(token_pieces, dim=2)
+                core_input = token_features.permute(0, 2, 1, 3).contiguous()
+                availability_mask = _core_input_availability_mask(
+                    projected,
+                    self.modalities,
+                    valid_masks=modality_valid_inputs,
+                    dropout_masks=modality_dropout_inputs,
+                    token_features=True,
+                )
             input_features = torch.cat(
                 [features.mean(dim=2) if features.ndim == 4 else features for features in ordered],
                 dim=-1,
@@ -1829,6 +1848,24 @@ def _core_input_availability_mask(
     return torch.stack(pieces, dim=1)
 
 
+def _pad_modality_tokens(features: torch.Tensor, *, max_tokens: int) -> torch.Tensor:
+    token_count = int(features.shape[2])
+    if token_count == int(max_tokens):
+        return features
+    pad_shape = (*tuple(features.shape[:2]), int(max_tokens) - token_count, int(features.shape[-1]))
+    pad = torch.zeros(pad_shape, dtype=features.dtype, device=features.device)
+    return torch.cat([features, pad], dim=2)
+
+
+def _pad_modality_token_mask(mask: torch.Tensor, *, max_tokens: int) -> torch.Tensor:
+    token_count = int(mask.shape[2])
+    if token_count == int(max_tokens):
+        return mask
+    pad_shape = (*tuple(mask.shape[:2]), int(max_tokens) - token_count)
+    pad = torch.zeros(pad_shape, dtype=torch.bool, device=mask.device)
+    return torch.cat([mask, pad], dim=2)
+
+
 def _modality_availability_from_inputs(
     modality: str,
     features: torch.Tensor,
@@ -1900,7 +1937,10 @@ def _missing_modality_output_metadata(
 ) -> dict[str, Any]:
     if availability_mask is None:
         return {"available": True, "modalities": list(modalities), "missing_counts": {}}
-    missing = ~availability_mask.detach()
+    available = availability_mask.detach()
+    if available.ndim == 4:
+        available = available.any(dim=3)
+    missing = ~available
     counts: dict[str, int] = {}
     for index, modality in enumerate(modalities):
         if index >= int(missing.shape[1]):

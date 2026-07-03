@@ -10,7 +10,7 @@ data:
     scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
-    seq_len: 1
+    seq_len: 2
     num_pred: 1
     portion: 1.0
     image_profile: rgb_imagenet
@@ -33,7 +33,7 @@ model:
   - gps
   num_classes: 64
   num_pred: 1
-  seq_length: 1
+  seq_length: 2
   downsample_ratio: 1
   primary:
     type: amr_net
@@ -41,7 +41,7 @@ model:
     - image
     - lidar
     - gps
-    image_channels: 3
+    image_channels: 1
     image_feature_dim: 128
     lidar_input_features: 2
     lidar_feature_dim: 512
@@ -52,6 +52,10 @@ model:
     num_pred: 1
     deterministic_inference: true
     paper_approximation: true
+    cuaf:
+      top_t: 5
+    loss:
+      pre_samples: 2
 loss:
   type: focal_loss
   alpha: 1
@@ -62,7 +66,9 @@ loss:
     alpha: 0.01
     beta: 1.0
     pre_enabled: true
+    pre_samples: 2
     temperature: 0.1
+    paper_objective_only: true
 training:
   epochs: 100
   lr: 0.00075

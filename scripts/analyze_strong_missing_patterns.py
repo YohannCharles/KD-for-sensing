@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 
+from kd_sensing.eval.missing_patterns import canonical_missing_pattern_name
+
 
 EXPERIMENTS = {
     "V0": "strong_amber_style_mask_baseline_fullrun",
@@ -85,10 +87,7 @@ def _metric(row: dict, key: str) -> str:
 
 
 def _canonical_pattern(value: str) -> str:
-    text = str(value)
-    if text.startswith("only_"):
-        return f"{text.removeprefix('only_')}_only"
-    return text
+    return canonical_missing_pattern_name(value)
 
 
 def _delta_vs_v3(rows: list[dict]) -> list[dict]:

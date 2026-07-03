@@ -77,7 +77,6 @@ cache/
 *.h5
 *.hdf5
 *.mat
-
 # Build and packaging artifacts
 build/
 dist/

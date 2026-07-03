@@ -1,0 +1,210 @@
+import argparse
+import csv
+import importlib.util
+from pathlib import Path
+
+import pytest
+import yaml
+
+from kd_sensing.config.io import load_config
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MANIFEST = ROOT / "configs/scene31/next_round/experiment_manifest.csv"
+EXPECTED_P0 = {
+    "proto_sampler_uniform_es40_seed3",
+    "proto_sampler_uniform_es40_seed4",
+    "proto_sampler_uniform_es40_seed5",
+    "proto_condbtapa_weaksingle_lam005_es40_seed3",
+    "proto_condbtapa_weaksingle_lam005_es40_seed4",
+    "proto_condbtapa_weaksingle_lam005_es40_seed5",
+    "proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed1",
+    "proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed2",
+    "proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed3",
+    "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed1",
+    "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed2",
+    "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed3",
+}
+EXPECTED_P1 = {
+    "proto_curriculum_easy2hard_es40_seed3",
+    "proto_maskadapter_d16_condbtapa_weaksingle_es40_seed3",
+}
+EXPECTED_PATTERNS = [
+    "full",
+    "missing_gps",
+    "missing_image",
+    "missing_radar",
+    "missing_lidar",
+    "non_gps_only",
+    "gps_only",
+    "image_only",
+    "radar_only",
+    "lidar_only",
+]
+
+
+def test_scene31_next_round_manifest_and_configs_are_consistent():
+    rows = _read_csv(MANIFEST)
+    by_name = {row["run_name"]: row for row in rows}
+
+    assert EXPECTED_P0 <= set(by_name)
+    assert EXPECTED_P1 <= set(by_name)
+
+    for row in rows:
+        run_name = row["run_name"]
+        config_path = ROOT / row["config_path"]
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        cfg = load_config(config_path)
+        training = cfg["training"]
+        loss_cfg = cfg["loss"]["u_mask_beam_jepa"]
+
+        assert config_path.exists()
+        assert int(row["expected_epochs"]) == 40
+        assert training["epochs"] == 40
+        assert training["max_epochs"] == 40
+        assert cfg["experiment"]["seed"] == int(row["seed"])
+        assert cfg["experiment"]["seed"] == int(run_name.rsplit("_seed", 1)[1])
+        assert cfg["output"]["run_name"] == run_name
+        assert cfg["output"]["dir"] == "outputs/scene31_next_round"
+        assert cfg["evaluation"]["missing_patterns"]["patterns"] == EXPECTED_PATTERNS
+        assert raw["model"]["primary"]["ablation_id"] == run_name
+
+        if "sampler_uniform_curriculum" in run_name:
+            assert training["missing_pattern_sampler"] == "curriculum_easy_to_hard"
+            assert "epochs_11_40" in training["curriculum_schedule"]
+        elif "sampler_uniform" in run_name:
+            assert training["missing_pattern_sampler"] == "uniform"
+            assert loss_cfg["missing_pattern_sampler"] == "uniform"
+
+        expected_lambda = _lambda_from_name(run_name)
+        if expected_lambda is not None:
+            assert training["btapa_lambda"] == pytest.approx(expected_lambda)
+            assert loss_cfg["btapa_lambda"] == pytest.approx(expected_lambda)
+
+        if "condbtapa_weaksingle" in run_name:
+            assert training["use_pattern_conditional_btapa"] is True
+            assert loss_cfg["use_pattern_conditional_btapa"] is True
+            assert training["btapa_apply_patterns"] == ["radar_only", "lidar_only"]
+            assert loss_cfg["btapa_apply_patterns"] == ["radar_only", "lidar_only"]
+            assert "gps_only" not in training["btapa_apply_patterns"]
+
+
+def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
+    summary = _load_script("summarize_scene31_next_round", ROOT / "scripts/summarize_scene31_next_round.py")
+    metrics = tmp_path / "night_grid_metrics.csv"
+    manifest = tmp_path / "manifest.csv"
+    out_dir = tmp_path / "summary"
+    _write_csv(
+        manifest,
+        ["run_name", "group", "config_path", "seed", "method_tags", "expected_epochs", "priority"],
+        [
+            {
+                "run_name": "candidate_seed1",
+                "group": "p0",
+                "config_path": "candidate.yaml",
+                "seed": "1",
+                "method_tags": "candidate",
+                "expected_epochs": "40",
+                "priority": "high",
+            },
+            {
+                "run_name": "candidate_seed2",
+                "group": "p0",
+                "config_path": "candidate.yaml",
+                "seed": "2",
+                "method_tags": "candidate",
+                "expected_epochs": "40",
+                "priority": "high",
+            },
+        ],
+    )
+    metric_rows = []
+    for run_name, bump in (("candidate_seed1", 0.0), ("candidate_seed2", 0.01)):
+        for pattern, value in {
+            "full": 0.41 + bump,
+            "avg_missing": 0.30 + bump,
+            "missing_gps": 0.31 + bump,
+            "missing_radar": 0.34 + bump,
+            "radar_only": 0.21 + bump,
+            "lidar_only": 0.12 + bump,
+        }.items():
+            metric_rows.append(
+                {
+                    "run_name": run_name,
+                    "group": "p0",
+                    "seed": run_name[-1],
+                    "pattern": pattern,
+                    "top1": str(value),
+                    "status": "ok",
+                }
+            )
+    _write_csv(metrics, ["run_name", "group", "seed", "pattern", "top1", "status"], metric_rows)
+
+    assert summary.main(["--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
+
+    per_run = _read_csv(out_dir / "scene31_next_round_per_run.csv")
+    methods = _read_csv(out_dir / "scene31_next_round_method_mean_std.csv")
+    filtered = _read_csv(out_dir / "scene31_next_round_filtered.csv")
+    markdown = (out_dir / "scene31_next_round_summary.md").read_text(encoding="utf-8")
+
+    assert "Δbalanced" in per_run[0]
+    assert methods[0]["method"] == "candidate"
+    assert methods[0]["balanced_mean"]
+    assert filtered[0]["method"] == "candidate"
+    assert "BTAPA" not in markdown
+    assert "btapa_tau1" in markdown
+
+
+def test_scene31_next_round_balanced_formula_matches_existing_analyzer():
+    summary = _load_script("summarize_scene31_next_round", ROOT / "scripts/summarize_scene31_next_round.py")
+    analyzer = _load_script("analyze_night_grid", ROOT / "scripts/analyze_night_grid.py")
+    row = {
+        "full": 0.4100,
+        "avg_missing": 0.3000,
+        "missing_gps": 0.3100,
+        "missing_radar": 0.3200,
+        "radar_only": 0.2100,
+        "lidar_only": 0.1200,
+    }
+    proto = dict(summary.PROTO_REFERENCE)
+    analyzer_row = {f"{key}_top1": value for key, value in row.items()}
+    analyzer_proto = {f"{key}_top1": value for key, value in proto.items()}
+    args = argparse.Namespace(
+        radar_weight=0.25,
+        lidar_weight=0.25,
+        missing_gps_penalty=0.5,
+        missing_radar_penalty=0.5,
+        full_penalty=0.25,
+    )
+
+    assert summary._balanced(row, proto) == pytest.approx(analyzer._balanced_score(analyzer_row, analyzer_proto, args))
+
+
+def _lambda_from_name(run_name: str) -> float | None:
+    if "lam0025" in run_name:
+        return 0.025
+    if "lam005" in run_name:
+        return 0.05
+    if "lam001" in run_name:
+        return 0.01
+    return None
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _load_script(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module

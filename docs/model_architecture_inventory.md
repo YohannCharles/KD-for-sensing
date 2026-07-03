@@ -27,6 +27,15 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
 - 下列表格的 `总参数` / `可训练参数` 是典型默认口径；除特别说明外按 `output_dim=d_model=num_classes=64` 估算，多模态 core 以 `K=2` 示例，实际 YAML 可能因模态、层数、冻结策略或 checkpoint 配置不同而变化。
 - 图像主线输入默认是 `rgb_imagenet`：`[B, T, 3, 224, 224]`，ImageNet normalization，不在 encoder 内做 resize。
 
+## Baseline 放置规则
+
+| 类型 | 源码位置 | 配置位置 | 说明 |
+| --- | --- | --- | --- |
+| 普通可训练 baseline/control | `src/kd_sensing/models/` 中的 `modular_sequence`、encoder、projector、core 或 head | `configs/fusion/` 或 current experiment config family | 复用 `kd-sensing-train`、共享 batch/runtime 和模型架构摘要。 |
+| Whole-model exception | `src/kd_sensing/models/` | `configs/fusion/` 或对应 current config family | 仅限 OpenSpec 或 inventory 已说明不能组件化的模型，例如 AMR-Net、PINN、U-MaskBeamJEPA。 |
+| Workflow/paper reproduction | `src/kd_sensing/baselines/<family>/`、包内 CLI 或 package console script | 通常由 `configs/fusion/` 训练配置和 workflow 专用段落驱动 | 用于多阶段训练、feature cache、官方 Table 报告或特殊 runner；不新增 registry 组件。 |
+| 外部复现/源码审计 manifest | `src/kd_sensing/baselines/<family>/` 或 CLI dry-run owner | `configs/baselines/` | 记录外部 repo、checkpoint、prediction、blocked official 或 source-audit 状态。 |
+
 ## 推荐主路径
 
 | 使用场景 | 首选模型/组件 | 说明 |

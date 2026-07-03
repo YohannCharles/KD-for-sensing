@@ -87,15 +87,16 @@ def _evaluate_pattern(
         if max_batches is not None and batch_index >= int(max_batches):
             break
         batch_size = _batch_size(raw_batch)
-        missing_mask = (
+        metric_missing_mask = (
             make_fixed_missing_mask(batch_size, pattern, device=device)
             if pattern is not None
             else sample_eval_random_missing_mask(batch_size, int(num_modalities), float(random_p), device=device)
         )
+        forward_missing_mask = None if cfg is not None and _is_full_pattern(pattern) else metric_missing_mask
         logits, target, diagnostics = _forward_batch(
             model,
             raw_batch,
-            missing_mask,
+            forward_missing_mask,
             device,
             prediction_index=prediction_index,
             cfg=cfg,
@@ -108,7 +109,7 @@ def _evaluate_pattern(
                 target,
                 global_reliability=_diagnostic_tensor(diagnostics, "global_reliability"),
                 modality_reliability=_diagnostic_tensor(diagnostics, "modality_reliability"),
-                missing_mask=missing_mask,
+                missing_mask=metric_missing_mask,
             ),
             "ece": expected_calibration_error(logits, target),
         }
@@ -126,7 +127,7 @@ def _evaluate_pattern(
 def _forward_batch(
     model,
     raw_batch,
-    missing_mask: torch.Tensor,
+    missing_mask: torch.Tensor | None,
     device: torch.device,
     *,
     prediction_index: int | str,
@@ -144,7 +145,7 @@ def _forward_batch(
             num_pred=num_pred,
             downsample_ratio=int(model_cfg.get("downsample_ratio", cfg.get("model", {}).get("downsample_ratio", 1))),
             device=device,
-            extra_model_kwargs={"missing_mask": missing_mask},
+            extra_model_kwargs={"missing_mask": missing_mask} if missing_mask is not None else {},
         )
         return (
             _select_prediction(step.logits, prediction_index),
@@ -162,11 +163,20 @@ def _forward_batch(
     )
 
 
-def _direct_model_call(model, batch: dict[str, Any], missing_mask: torch.Tensor):
+def _direct_model_call(model, batch: dict[str, Any], missing_mask: torch.Tensor | None):
+    if missing_mask is None:
+        try:
+            return model(batch)
+        except TypeError:
+            return model(**batch)
     try:
         return model(batch, missing_mask=missing_mask)
     except TypeError:
         return model(missing_mask=missing_mask, **batch)
+
+
+def _is_full_pattern(pattern: list[int] | None) -> bool:
+    return pattern is not None and all(int(value) == 1 for value in pattern)
 
 
 def _select_prediction(logits: torch.Tensor, prediction_index: int | str) -> torch.Tensor:
@@ -286,6 +296,7 @@ def _average_missing_results(results: list[dict[str, Any]]) -> dict[str, Any] | 
         and (
             str(row.get("pattern", "")).startswith("missing_")
             or str(row.get("pattern", "")).startswith("only_")
+            or str(row.get("pattern", "")).endswith("_only")
             or str(row.get("pattern", "")) == "non_gps_only"
         )
     ]

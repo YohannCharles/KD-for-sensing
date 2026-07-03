@@ -215,6 +215,19 @@ def run_training_epoch_loop(
             and epoch + 1 >= early_stopping_min_epoch
             and state.epochs_without_improvement >= training_cfg.get("patience", 20)
         ):
+            early_stop_payload = {
+                "early_stopped": True,
+                "early_stop_epoch": epoch + 1,
+                "early_stop_metric": early_stopping_metric,
+            }
+            epoch_log.update(early_stop_payload)
+            if state.epoch_logs:
+                state.epoch_logs[-1].update(early_stop_payload)
+            _write_epoch_metrics_snapshot(run_dir, state.epoch_logs)
+            tqdm.write(
+                f"Early stopping triggered at epoch {epoch + 1}: "
+                f"{early_stopping_metric} did not improve for {state.epochs_without_improvement} epochs."
+            )
             break
 
 
@@ -415,10 +428,10 @@ def _write_missing_pattern_eval(model, dataloader, cfg: dict, device, *, run_dir
         "missing_radar",
         "missing_lidar",
         "non_gps_only",
-        "only_gps",
-        "only_image",
-        "only_radar",
-        "only_lidar",
+        "gps_only",
+        "image_only",
+        "radar_only",
+        "lidar_only",
     ]
     patterns = resolve_missing_patterns(pattern_names, modalities)
     results = evaluate_missing_matrix(

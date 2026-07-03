@@ -185,6 +185,39 @@ def test_internal_code_uses_owner_modules_not_retired_facades():
     assert not violations
 
 
+def test_baseline_workflows_do_not_register_model_components():
+    registry_fragments = (
+        "@MODELS.register",
+        "@ENCODERS.register",
+        "@PROJECTORS.register",
+        "@REPRESENTATION_CORES.register",
+        "@HEADS.register",
+    )
+    violations: list[str] = []
+    for path in sorted((SRC / "kd_sensing/baselines").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for fragment in registry_fragments:
+            if fragment in text:
+                violations.append(f"{_rel(path)}: {fragment}")
+    assert not violations
+
+
+def test_model_owners_do_not_depend_on_baseline_workflows():
+    forbidden_fragments = (
+        "from kd_sensing.baselines",
+        "import kd_sensing.baselines",
+        "from ..baselines",
+        "from .baselines",
+    )
+    violations: list[str] = []
+    for path in sorted((SRC / "kd_sensing/models").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for fragment in forbidden_fragments:
+            if fragment in text:
+                violations.append(f"{_rel(path)}: {fragment}")
+    assert not violations
+
+
 def test_lightweight_package_markers_do_not_grow_eager_barrel_exports():
     package_markers = (
         "src/kd_sensing/data/__init__.py",

@@ -106,6 +106,17 @@ def test_registry_forward_adapter_metadata_and_zero_mask_rejection():
         model(**_batch(), missing_mask=torch.zeros(2, 4, dtype=torch.bool))
 
 
+def test_mask_conditioned_adapter_is_opt_in_and_reports_param_count():
+    import_default_components()
+    model = MODELS.build(_cfg(use_mask_adapter=True, mask_adapter_dim=8, fusion_type="weighted_sum"))
+    output = model(**_batch(), missing_mask=torch.ones(2, 4, dtype=torch.bool))
+    metadata = model.training_strategy_metadata()
+
+    assert output["mask_adapter_param_count"] > 0
+    assert metadata["use_mask_adapter"] is True
+    assert metadata["mask_adapter_param_count"] == output["mask_adapter_param_count"]
+
+
 def test_registry_encoder_warm_start_forward(tmp_path):
     import_default_components()
     source = MODELS.build(
@@ -330,6 +341,14 @@ def test_pattern_balanced_sampler_distribution_and_canonical_names():
     non_gps = mask[names.index("non_gps_only")]
     assert missing_gps.tolist() == [True, True, True, False]
     assert non_gps.tolist() == [True, True, True, False]
+    standard, standard_names, _ = sample_pattern_balanced_mask(
+        2,
+        ["image", "radar", "lidar", "gps"],
+        ["gps_only", "radar_only"],
+        generator=torch.Generator().manual_seed(1),
+    )
+    assert standard.shape == (2, 4)
+    assert set(standard_names) <= {"gps_only", "radar_only"}
     with pytest.raises(ValueError, match="canonical"):
         sample_pattern_balanced_mask(1, ["vision", "radar", "lidar", "gps"], {"full": 1.0})
 
@@ -364,6 +383,31 @@ def test_beam_prototype_alignment_forward_backward_and_safety():
     assert diagnostics["prototype/top5"] >= 0.0
     assert diagnostics["prototype/modality_sample_count"] == pytest.approx(float(mask.sum()))
     assert supcon_diag["prototype/supcon_anchor_count"] == 0.0
+
+
+def test_pattern_conditional_btapa_uses_samplewise_active_ratio():
+    bank = BeamPrototypeBank(6, 4, temperature=0.5)
+    features = torch.randn(3, 6, requires_grad=True)
+    modality_features = torch.randn(3, 4, 6, requires_grad=True)
+    mask = torch.tensor([[0, 1, 0, 0], [0, 0, 1, 0], [1, 1, 1, 0]], dtype=torch.bool)
+    loss, diagnostics = prototype_alignment_loss(
+        bank,
+        torch.tensor([1, 2, 3]),
+        fused_features=features,
+        modality_features=modality_features,
+        mask=mask,
+        lambda_proto=0.2,
+        lambda_modality_proto=0.1,
+        use_pattern_conditional_btapa=True,
+        pattern_names=["radar_only", "lidar_only", "missing_gps"],
+        btapa_apply_patterns=["radar_only", "lidar_only"],
+        tau_beam=1.0,
+    )
+    loss.backward()
+
+    assert diagnostics["btapa_active_ratio"] == pytest.approx(2 / 3)
+    assert diagnostics["btapa_loss"] > 0
+    assert diagnostics["ordinary_proto_loss"] > 0
 
 
 def test_config_overlays_training_extension_and_architecture_summary():
@@ -514,3 +558,44 @@ def test_no_jepa_online_kd_loss_detaches_teacher_and_checkpoint_guard():
                 },
             )()
         )
+
+
+def test_weak_pattern_kd_and_latent_probe_are_pattern_gated():
+    batch_size, d_model, num_classes = 3, 5, 7
+    student_feature = torch.randn(batch_size, d_model, requires_grad=True)
+    output = {
+        "logits": torch.randn(batch_size, 1, num_classes, requires_grad=True),
+        "output_features": student_feature,
+        "input_features": torch.randn(batch_size, 4, d_model),
+        "u_star": torch.randn(batch_size, d_model),
+        "mu_B": torch.randn(batch_size, d_model, requires_grad=True),
+        "logvar_B": torch.randn(batch_size, d_model, requires_grad=True),
+        "modality_mu_B": torch.randn(batch_size, 4, d_model, requires_grad=True),
+        "modality_logvar_B": torch.randn(batch_size, 4, d_model, requires_grad=True),
+        "missing_mask": torch.ones(batch_size, 4, dtype=torch.bool),
+    }
+    teacher = {
+        "logits": torch.randn(batch_size, 1, num_classes),
+        "output_features": torch.randn(batch_size, d_model),
+    }
+    result = u_mask_beam_jepa_loss(
+        output,
+        torch.tensor([[1], [2], [3]]),
+        use_teacher=False,
+        use_jepa_loss=False,
+        teacher_output=teacher,
+        pattern_names=["radar_only", "missing_gps", "lidar_only"],
+        use_weak_pattern_kd=True,
+        kd_apply_patterns=["radar_only", "lidar_only"],
+        lambda_weak_pattern_kd=0.1,
+        latent_predictor=nn.Linear(d_model, d_model),
+        use_light_latent_pred=True,
+        latent_pred_apply_patterns=["radar_only", "lidar_only"],
+        lambda_latent_pred=0.01,
+    )
+    result["loss"].backward()
+
+    assert result["diagnostics"]["kd_active_ratio"] == pytest.approx(2 / 3)
+    assert result["diagnostics"]["latent_pred_active_ratio"] == pytest.approx(2 / 3)
+    assert result["diagnostics"]["kd_loss"] > 0
+    assert result["diagnostics"]["latent_pred_loss"] >= 0

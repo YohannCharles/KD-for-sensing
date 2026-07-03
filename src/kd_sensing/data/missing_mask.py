@@ -2,6 +2,12 @@ from typing import Any
 
 import torch
 
+from kd_sensing.utils.missing_patterns import (
+    canonical_missing_pattern_name,
+    get_missing_pattern_mask,
+    get_missing_pattern_name as canonical_missing_pattern_name_for_mask,
+)
+
 
 CANONICAL_MODALITIES = ("image", "radar", "lidar", "gps")
 
@@ -87,21 +93,9 @@ def pattern_mask(
         )[0]
     if isinstance(pattern, (list, tuple)):
         return make_pattern_mask(1, names, pattern_mask=pattern, device=device, dtype=dtype)[0]
-    name = str(pattern)
+    name = canonical_missing_pattern_name(str(pattern))
     count = len(names)
-    if name == "full":
-        mask = torch.ones(count, dtype=torch.bool, device=device)
-    elif name == "missing_gps" or name == "non_gps_only":
-        mask = torch.tensor([item != "gps" for item in names], dtype=torch.bool, device=device)
-    elif name == "only_gps":
-        mask = torch.tensor([item == "gps" for item in names], dtype=torch.bool, device=device)
-    elif name.startswith("missing_") and name.removeprefix("missing_") in names:
-        missing = name.removeprefix("missing_")
-        mask = torch.tensor([item != missing for item in names], dtype=torch.bool, device=device)
-    elif name.startswith("only_") and name.removeprefix("only_") in names:
-        only = name.removeprefix("only_")
-        mask = torch.tensor([item == only for item in names], dtype=torch.bool, device=device)
-    elif name == "missing_one_random":
+    if name == "missing_one_random":
         index = int(torch.randint(count, (1,), device=device, generator=generator).item())
         mask = torch.ones(count, dtype=torch.bool, device=device)
         mask[index] = False
@@ -120,7 +114,7 @@ def pattern_mask(
             generator=generator,
         )[0]
     else:
-        raise ValueError(f"Unknown missing pattern '{name}' for modalities {list(names)}.")
+        mask = torch.tensor(get_missing_pattern_mask(name, names), dtype=torch.bool, device=device)
     if not bool(mask.any().item()):
         raise ValueError(f"missing pattern '{name}' keeps no modalities available.")
     return mask.to(dtype=dtype)
@@ -130,23 +124,7 @@ def get_missing_pattern_name(
     available_mask: torch.Tensor | list[Any] | tuple[Any, ...],
     modality_names: list[str] | tuple[str, ...] = CANONICAL_MODALITIES,
 ) -> str:
-    names = _validate_modalities(modality_names)
-    mask = torch.as_tensor(available_mask, dtype=torch.bool).flatten()
-    if int(mask.numel()) != len(names):
-        raise ValueError(f"available_mask must have {len(names)} values, got {int(mask.numel())}.")
-    available = [name for name, keep in zip(names, mask.tolist()) if bool(keep)]
-    if len(available) == len(names):
-        return "full"
-    if available == ["gps"]:
-        return "gps_only"
-    if len(available) == 1:
-        return f"{available[0]}_only"
-    missing = [name for name, keep in zip(names, mask.tolist()) if not bool(keep)]
-    if missing == ["gps"]:
-        return "missing_gps"
-    if len(missing) == 1:
-        return f"missing_{missing[0]}"
-    return "custom_" + "".join("1" if bool(item) else "0" for item in mask.tolist())
+    return canonical_missing_pattern_name_for_mask(available_mask, _validate_modalities(modality_names))
 
 
 def sample_pattern_balanced_mask(

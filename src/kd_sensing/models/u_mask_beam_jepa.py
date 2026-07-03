@@ -131,6 +131,37 @@ class BeamPredictionHead(nn.Module):
         return self.net(features)
 
 
+class MaskConditionedAdapter(nn.Module):
+    def __init__(self, num_modalities: int, d_model: int, hidden_dim: int = 16, residual_scale: float = 1.0, dropout: float = 0.0):
+        super().__init__()
+        self.residual_scale = float(residual_scale)
+        self.net = nn.Sequential(
+            nn.Linear(int(num_modalities), int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), int(d_model) * 2),
+        )
+
+    def forward(self, features: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        gamma, beta = self.net(mask.to(device=features.device, dtype=features.dtype)).chunk(2, dim=-1)
+        scale = self.residual_scale
+        return features * (1.0 + scale * gamma) + scale * beta
+
+
+class LatentPredictionProbe(nn.Module):
+    def __init__(self, d_model: int, output_dim: int, hidden_dim: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(int(d_model)),
+            nn.Linear(int(d_model), int(hidden_dim)),
+            nn.GELU(),
+            nn.Linear(int(hidden_dim), int(output_dim)),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.net(features)
+
+
 @MODELS.register("u_mask_beam_jepa")
 class UMaskBeamJEPA(nn.Module):
     supports_modality_kwargs = True
@@ -167,6 +198,14 @@ class UMaskBeamJEPA(nn.Module):
         use_full_to_partial_kd: bool = False,
         kd_teacher_mode: str = "disabled",
         mask_sampler: str | None = None,
+        use_mask_adapter: bool = False,
+        mask_adapter_dim: int = 16,
+        mask_adapter_apply: str = "after_fusion",
+        mask_adapter_residual_scale: float = 1.0,
+        mask_adapter_dropout: float = 0.0,
+        use_light_latent_pred: bool = False,
+        latent_pred_target: str = "full_fused",
+        latent_pred_hidden_dim: int = 256,
         ablation_id: str | None = None,
         encoders: dict[str, Any] | None = None,
         encoder_checkpoint_paths: dict[str, str] | None = None,
@@ -187,6 +226,10 @@ class UMaskBeamJEPA(nn.Module):
         self.use_full_to_partial_kd = bool(use_full_to_partial_kd)
         self.kd_teacher_mode = str(kd_teacher_mode)
         self.mask_sampler = mask_sampler
+        self.use_mask_adapter = bool(use_mask_adapter)
+        self.mask_adapter_apply = str(mask_adapter_apply)
+        self.use_light_latent_pred = bool(use_light_latent_pred)
+        self.latent_pred_target = str(latent_pred_target)
         self.ablation_id = ablation_id
         self.eval_missing_pattern = dict(eval_missing_pattern or {})
         _validate_context_type(self.context_type)
@@ -246,11 +289,30 @@ class UMaskBeamJEPA(nn.Module):
             dropout=dropout,
         )
         self.concat_fusion = nn.Sequential(nn.LayerNorm(self.d_model * 2), nn.Linear(self.d_model * 2, self.d_model), nn.GELU())
+        if self.use_mask_adapter and self.mask_adapter_apply != "after_fusion":
+            raise ValueError("mask_adapter_apply currently supports only 'after_fusion'.")
+        self.mask_adapter = (
+            MaskConditionedAdapter(
+                len(self.modalities),
+                self.d_model,
+                hidden_dim=int(mask_adapter_dim),
+                residual_scale=float(mask_adapter_residual_scale),
+                dropout=float(mask_adapter_dropout),
+            )
+            if self.use_mask_adapter
+            else None
+        )
         self.beam_head = BeamPredictionHead(self.d_model, self.num_classes, dropout=dropout)
         self.prototype_bank = BeamPrototypeBank(
             self.d_model,
             self.num_classes,
             temperature=beam_proto_temperature if tau_proto is None else float(tau_proto),
+        )
+        latent_output_dim = self.num_classes if self.latent_pred_target == "prototype_distribution" else self.d_model
+        self.latent_predictor = (
+            LatentPredictionProbe(self.d_model, latent_output_dim, hidden_dim=int(latent_pred_hidden_dim))
+            if self.use_light_latent_pred
+            else None
         )
 
     def forward(
@@ -279,6 +341,9 @@ class UMaskBeamJEPA(nn.Module):
             torch.exp(-F.softplus(logvar_b).mean(dim=-1)) if self.use_global_uncertainty else torch.ones_like(mu_b[:, 0])
         )
         fused, fusion_diagnostics = self._fuse(latent, mask, reliability, mu_b, global_reliability)
+        if self.mask_adapter is not None:
+            fused = self.mask_adapter(fused, mask)
+            fusion_diagnostics["mask_adapter_param_count"] = sum(param.numel() for param in self.mask_adapter.parameters())
         logits = self.beam_head(fused).unsqueeze(1).expand(-1, self.num_pred, -1)
         teacher_logits = teacher_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         return {
@@ -322,6 +387,11 @@ class UMaskBeamJEPA(nn.Module):
             if self.kd_teacher_mode == "checkpoint"
             else None,
             "mask_sampler": self.mask_sampler,
+            "use_mask_adapter": self.use_mask_adapter,
+            "mask_adapter_apply": self.mask_adapter_apply,
+            "mask_adapter_param_count": sum(param.numel() for param in self.mask_adapter.parameters()) if self.mask_adapter is not None else 0,
+            "use_light_latent_pred": self.use_light_latent_pred,
+            "latent_pred_target": self.latent_pred_target,
             "ablation_id": self.ablation_id,
             "use_modality_uncertainty": self.use_modality_uncertainty,
             "use_global_uncertainty": self.use_global_uncertainty,

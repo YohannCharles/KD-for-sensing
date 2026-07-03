@@ -1,0 +1,191 @@
+[
+  {
+    "run_name": "proto_sampler_uniform_es40_seed3",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "sampler,uniform,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_condbtapa_weaksingle_lam005_es40_seed3",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_condbtapa_weaksingle_lam005_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "condbtapa,weak_single,lambda_0.05,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_es40_seed4",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_es40_seed4.yaml",
+    "seed": 4,
+    "method_tags": "sampler,uniform,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_condbtapa_weaksingle_lam005_es40_seed4",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_condbtapa_weaksingle_lam005_es40_seed4.yaml",
+    "seed": 4,
+    "method_tags": "condbtapa,weak_single,lambda_0.05,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_es40_seed5",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_es40_seed5.yaml",
+    "seed": 5,
+    "method_tags": "sampler,uniform,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_condbtapa_weaksingle_lam005_es40_seed5",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_condbtapa_weaksingle_lam005_es40_seed5.yaml",
+    "seed": 5,
+    "method_tags": "condbtapa,weak_single,lambda_0.05,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed1",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.05,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed2",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.05,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed3",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam005_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.05,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed1",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.025,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed2",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.025,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed3",
+    "group": "p0",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.025,es40",
+    "expected_epochs": 40,
+    "priority": "high"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam001_es40_seed1",
+    "group": "p0_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam001_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.01,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam001_es40_seed2",
+    "group": "p0_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam001_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.01,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  },
+  {
+    "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam001_es40_seed3",
+    "group": "p0_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_condbtapa_weaksingle_lam001_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.01,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  },
+  {
+    "run_name": "proto_curriculum_easy2hard_es40_seed3",
+    "group": "p1",
+    "config_path": "configs/scene31/next_round/proto_curriculum_easy2hard_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "sampler,curriculum_easy_to_hard,es40",
+    "expected_epochs": 40,
+    "priority": "medium"
+  },
+  {
+    "run_name": "proto_maskadapter_d16_condbtapa_weaksingle_es40_seed3",
+    "group": "p1",
+    "config_path": "configs/scene31/next_round/proto_maskadapter_d16_condbtapa_weaksingle_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "mask_adapter,d16,condbtapa,weak_single,es40",
+    "expected_epochs": 40,
+    "priority": "medium"
+  },
+  {
+    "run_name": "proto_sampler_uniform_curriculum_easy2hard_es40_seed1",
+    "group": "p1_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_curriculum_easy2hard_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "sampler,uniform_schedule,curriculum_easy_to_hard,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  },
+  {
+    "run_name": "proto_sampler_uniform_maskadapter_d16_es40_seed1",
+    "group": "p1_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_maskadapter_d16_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "sampler,uniform,mask_adapter,d16,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  },
+  {
+    "run_name": "proto_sampler_uniform_curriculum_easy2hard_es40_seed2",
+    "group": "p1_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_curriculum_easy2hard_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "sampler,uniform_schedule,curriculum_easy_to_hard,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  },
+  {
+    "run_name": "proto_sampler_uniform_maskadapter_d16_es40_seed2",
+    "group": "p1_optional",
+    "config_path": "configs/scene31/next_round/proto_sampler_uniform_maskadapter_d16_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "sampler,uniform,mask_adapter,d16,es40",
+    "expected_epochs": 40,
+    "priority": "optional"
+  }
+]

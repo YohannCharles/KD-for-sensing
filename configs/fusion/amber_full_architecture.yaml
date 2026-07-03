@@ -9,7 +9,7 @@ data:
     scene: 31
     train_csv_name: train_seqs_RA_GPS_LIDAR.csv
     test_csv_name: test_seqs_RA_GPS_LIDAR.csv
-    seq_len: 5
+    seq_len: 2
     num_pred: 1
     portion: 1.0
     use_gps: true
@@ -29,7 +29,7 @@ model:
   num_classes: 64
   num_pred: 1
   downsample_ratio: 1
-  seq_length: 5
+  seq_length: 2
   primary:
     type: modular_sequence
     modalities: [image, radar, gps, lidar]
@@ -52,16 +52,30 @@ model:
       baseline_family: amber_full_architecture
     encoders:
       image:
-        type: resnet18_imagenet_rgb
-        pretrained: false
-        weights: null
+        type: resnet18_spatial_tokens
+        pretrained: true
+        weights: DEFAULT
         freeze_backbone: true
+        image_size: [224, 224]
+        token_pool_size: [2, 2]
       radar:
-        type: radar_cnn
+        type: resnet18_spatial_tokens
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        in_channels: 2
+        image_size: [128, 64]
+        token_pool_size: [2, 2]
       gps:
         type: gps_mlp
       lidar:
-        type: lidar_cnn
+        type: resnet18_spatial_tokens
+        pretrained: true
+        weights: DEFAULT
+        freeze_backbone: true
+        in_channels: 3
+        image_size: [224, 224]
+        token_pool_size: [2, 2]
     representation_core:
       type: amber_full_adaptive_mask_transformer
       d_model: 64
@@ -70,7 +84,7 @@ model:
       fusion_layers: 2
       dropout: 0.1
       max_seq_len: 8
-      include_history_beam: true
+      max_spatial_tokens: 4
       num_cma_queries: 4
       cma_dim: 64
       cma_temperature: 0.2

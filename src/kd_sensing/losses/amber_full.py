@@ -63,9 +63,15 @@ def _alignment_l2(payload: dict[str, Any], zero: torch.Tensor) -> torch.Tensor:
 
 def _cma_contrastive(payload: dict[str, Any], zero: torch.Tensor) -> torch.Tensor:
     logits = _tensor(payload, "cma_logits")
+    fusion_query = _tensor(payload, "cma_fusion_query_embeddings").to(device=logits.device, dtype=logits.dtype)
+    modality_query = _tensor(payload, "cma_modality_query_embeddings").to(device=logits.device, dtype=logits.dtype)
     availability = _tensor(payload, "availability_mask").to(device=logits.device, dtype=torch.bool)
     if availability.ndim != 3:
         raise ValueError(f"AMBER full availability_mask must be [B,K,T], got {tuple(availability.shape)}.")
+    if fusion_query.ndim != 3:
+        raise ValueError(f"AMBER full cma_fusion_query_embeddings must be [B,T,D], got {tuple(fusion_query.shape)}.")
+    if modality_query.ndim != 4:
+        raise ValueError(f"AMBER full cma_modality_query_embeddings must be [B,K,T,D], got {tuple(modality_query.shape)}.")
     positive = availability.permute(0, 2, 1).contiguous()
     if positive.shape != logits.shape:
         raise ValueError(f"AMBER full cma_logits shape {tuple(logits.shape)} does not match availability {tuple(positive.shape)}.")
