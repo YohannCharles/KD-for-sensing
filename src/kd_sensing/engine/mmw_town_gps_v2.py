@@ -150,6 +150,42 @@ class AdapterFit:
         return payload
 
 
+@dataclass
+class MMWTownGpsV2RunContext:
+    cfg_dict: dict[str, Any]
+    data_cfg: dict[str, Any]
+    adapt_cfg: dict[str, Any]
+    metrics_cfg: dict[str, Any]
+    output_cfg: dict[str, Any]
+    selected_label_space: str
+    scenes: list[SceneSpec]
+    all_scenes_for_sources: list[SceneSpec]
+    scene_mappings: dict[str, BeamLabelMapping]
+    all_scene_mappings: dict[str, BeamLabelMapping]
+    dataset_type: str
+    data_root: Path
+    split_tag: str
+    train_split: str
+    test_split: str
+    out_dir: Path
+    num_beams: int
+    protocols: tuple[str, ...]
+    ablations: list[str]
+    loaded: dict[str, dict[str, list[MMWTownGpsV2Sample]]]
+    branch_metadata: dict[str, Any]
+    export_logits: bool
+    export_probs: bool
+    prediction_rows: list[dict[str, Any]] = field(default_factory=list)
+    summary_rows: list[dict[str, Any]] = field(default_factory=list)
+    support_rows: list[dict[str, Any]] = field(default_factory=list)
+    theta_rows: list[dict[str, Any]] = field(default_factory=list)
+    branch_rows: list[dict[str, Any]] = field(default_factory=list)
+    gps_logits_rows: list[np.ndarray] = field(default_factory=list)
+    gps_logits_index_rows: list[dict[str, Any]] = field(default_factory=list)
+    run_notes: list[dict[str, Any]] = field(default_factory=list)
+    loss_metadata: dict[str, Any] = field(default_factory=dict)
+
+
 def run_mmw_town_gps_v2(
     cfg: Mapping[str, Any],
     *,
@@ -162,6 +198,40 @@ def run_mmw_town_gps_v2(
     save_logits: bool | None = None,
     save_prior_probs: bool | None = None,
 ) -> dict[str, Any]:
+    context = _prepare_mmw_town_gps_v2_run_context(
+        cfg,
+        label_space=label_space,
+        target_scene=target_scene,
+        support_ratio=support_ratio,
+        support_num=support_num,
+        support_mode=support_mode,
+        output_dir=output_dir,
+        save_logits=save_logits,
+        save_prior_probs=save_prior_probs,
+    )
+    _run_mmw_town_gps_v2_protocols(context)
+    metadata = _write_mmw_town_gps_v2_artifacts(context)
+    return {
+        "output_dir": str(context.out_dir),
+        "label_space": context.selected_label_space,
+        "summary_by_scene_rows": len(context.summary_rows),
+        "prediction_rows": len(context.prediction_rows),
+        "standard_artifacts": metadata["standard_artifacts"],
+    }
+
+
+def _prepare_mmw_town_gps_v2_run_context(
+    cfg: Mapping[str, Any],
+    *,
+    label_space: str | None,
+    target_scene: str | None,
+    support_ratio: float | None,
+    support_num: int | None,
+    support_mode: str | None,
+    output_dir: str | Path | None,
+    save_logits: bool | None,
+    save_prior_probs: bool | None,
+) -> MMWTownGpsV2RunContext:
     cfg_dict = _json_ready(dict(cfg))
     data_cfg = _mapping(cfg_dict.get("data"))
     selected_label_space = str(label_space or data_cfg.get("label_space", "mapping_enabled"))
@@ -230,41 +300,54 @@ def run_mmw_town_gps_v2(
     output_cfg = _mapping(cfg_dict.get("output"))
     export_logits = bool(output_cfg.get("save_logits", False) if save_logits is None else save_logits)
     export_probs = bool(output_cfg.get("save_prior_probs", False) if save_prior_probs is None else save_prior_probs)
-    for protocol in protocols:
+    return MMWTownGpsV2RunContext(
+        cfg_dict=cfg_dict,
+        data_cfg=data_cfg,
+        adapt_cfg=adapt_cfg,
+        metrics_cfg=metrics_cfg,
+        output_cfg=output_cfg,
+        selected_label_space=selected_label_space,
+        scenes=scenes,
+        all_scenes_for_sources=all_scenes_for_sources,
+        scene_mappings=scene_mappings,
+        all_scene_mappings=all_scene_mappings,
+        dataset_type=dataset_type,
+        data_root=data_root,
+        split_tag=split_tag,
+        train_split=train_split,
+        test_split=test_split,
+        out_dir=out_dir,
+        num_beams=num_beams,
+        protocols=protocols,
+        ablations=[str(item) for item in ablations],
+        loaded=loaded,
+        branch_metadata=branch_metadata,
+        export_logits=export_logits,
+        export_probs=export_probs,
+    )
+
+
+def _run_mmw_town_gps_v2_protocols(context: MMWTownGpsV2RunContext) -> None:
+    for protocol in context.protocols:
         if protocol not in PROTOCOLS:
             raise ValueError(f"protocol must be one of {PROTOCOLS}, got {protocol}.")
-        for target in scenes:
-            train_target = loaded[target.slug][train_split]
-            test_target = loaded[target.slug][test_split]
-            source_train = [
-                sample
-                for source in all_scenes_for_sources
-                if source.slug != target.slug
-                for sample in loaded[source.slug][train_split]
-            ]
-            if protocol == "within_scene_train":
-                fit_samples = list(train_target)
-                support_samples = list(train_target)
-                query_samples: list[MMWTownGpsV2Sample] = []
-                protocol_note = "sanity_upper_bound"
-                support_info = {"selection_mode": "all_train", "support_count": len(support_samples), "query_count": 0}
-            elif protocol == "target_adapt_beambench":
-                fit_samples = list(source_train)
-                support_samples, query_samples, support_info = select_support_samples(train_target, adapt_cfg)
-                protocol_note = "few_shot_target_adapter"
-            else:
-                fit_samples = list(source_train)
-                support_samples = []
-                query_samples = []
-                protocol_note = "source_other_three_target_labels_eval_only"
-                support_info = {"selection_mode": "none", "support_count": 0, "query_count": 0}
-            support_rows.extend(
+        for target in context.scenes:
+            train_target = context.loaded[target.slug][context.train_split]
+            test_target = context.loaded[target.slug][context.test_split]
+            (
+                fit_samples,
+                support_samples,
+                query_samples,
+                protocol_note,
+                support_info,
+            ) = _mmw_town_protocol_sample_sets(context, protocol=protocol, target=target)
+            context.support_rows.extend(
                 _support_manifest_rows(
                     support_samples,
                     query_samples,
                     protocol=protocol,
                     target_scene=target.slug,
-                    label_space=selected_label_space,
+                    label_space=context.selected_label_space,
                     support_info=support_info,
                 )
             )
@@ -278,42 +361,42 @@ def run_mmw_town_gps_v2(
                 adapter_fit_split = "source" if protocol == "source_other_three" else "train"
             if not adapter_fit_pool:
                 adapter_fit_pool = fit_samples or train_target
-            for ablation in ablations:
-                weighted = str(ablation).endswith("_weighted")
-                class_weight_mode = "effective_num" if weighted else str(_mapping(cfg_dict.get("loss")).get("class_weight", "none"))
+            for ablation in context.ablations:
+                weighted = ablation.endswith("_weighted")
+                class_weight_mode = "effective_num" if weighted else str(_mapping(context.cfg_dict.get("loss")).get("class_weight", "none"))
                 if weighted or class_weight_mode != "none":
                     weights, meta = class_balanced_weights(
                         [sample.label for sample in fit_samples or adapter_fit_pool],
-                        num_classes=num_beams,
+                        num_classes=context.num_beams,
                         mode=class_weight_mode,
-                        beta=float(_mapping(cfg_dict.get("loss")).get("effective_num_beta", 0.999)),
+                        beta=float(_mapping(context.cfg_dict.get("loss")).get("effective_num_beta", 0.999)),
                     )
-                    loss_metadata[f"{protocol}:{target.slug}:{ablation}"] = meta
+                    context.loss_metadata[f"{protocol}:{target.slug}:{ablation}"] = meta
                     class_prior = np.asarray(weights.tolist(), dtype=np.float64)
                 else:
                     class_prior = None
                 fit = fit_adapter(
                     adapter_fit_pool,
-                    ablation=str(ablation),
-                    cfg=cfg_dict,
-                    num_beams=num_beams,
+                    ablation=ablation,
+                    cfg=context.cfg_dict,
+                    num_beams=context.num_beams,
                     class_prior=class_prior,
                 )
-                if export_logits and protocol == "target_adapt_beambench" and support_samples:
+                if context.export_logits and protocol == "target_adapt_beambench" and support_samples:
                     score_samples(
                         support_samples,
                         fit_samples=fit_samples or adapter_fit_pool,
                         adapter_fit=fit,
                         scaler=scaler,
-                        ablation=str(ablation),
+                        ablation=ablation,
                         protocol=protocol,
                         target=target,
-                        label_space=selected_label_space,
-                        mapping=scene_mappings[target.slug],
-                        num_beams=num_beams,
-                        dba_delta=float(metrics_cfg.get("dba_delta", 5.0)),
-                        logits_sink=gps_logits_rows,
-                        logits_index_sink=gps_logits_index_rows,
+                        label_space=context.selected_label_space,
+                        mapping=context.scene_mappings[target.slug],
+                        num_beams=context.num_beams,
+                        dba_delta=float(context.metrics_cfg.get("dba_delta", 5.0)),
+                        logits_sink=context.gps_logits_rows,
+                        logits_index_sink=context.gps_logits_index_rows,
                         support_query_role="support",
                     )
                 rows = score_samples(
@@ -321,84 +404,111 @@ def run_mmw_town_gps_v2(
                     fit_samples=fit_samples or adapter_fit_pool,
                     adapter_fit=fit,
                     scaler=scaler,
-                    ablation=str(ablation),
+                    ablation=ablation,
                     protocol=protocol,
                     target=target,
-                    label_space=selected_label_space,
-                    mapping=scene_mappings[target.slug],
-                    num_beams=num_beams,
-                    dba_delta=float(metrics_cfg.get("dba_delta", 5.0)),
-                    logits_sink=gps_logits_rows if export_logits else None,
-                    logits_index_sink=gps_logits_index_rows if export_logits else None,
+                    label_space=context.selected_label_space,
+                    mapping=context.scene_mappings[target.slug],
+                    num_beams=context.num_beams,
+                    dba_delta=float(context.metrics_cfg.get("dba_delta", 5.0)),
+                    logits_sink=context.gps_logits_rows if context.export_logits else None,
+                    logits_index_sink=context.gps_logits_index_rows if context.export_logits else None,
                 )
-                prediction_rows.extend(rows)
+                context.prediction_rows.extend(rows)
                 summary = _summary_from_prediction_rows(
                     rows,
                     protocol=protocol,
-                    ablation=str(ablation),
+                    ablation=ablation,
                     target=target,
-                    source_scenes=[scene.slug for scene in all_scenes_for_sources if scene.slug != target.slug],
-                    label_space=selected_label_space,
-                    mapping=scene_mappings[target.slug],
+                    source_scenes=[scene.slug for scene in context.all_scenes_for_sources if scene.slug != target.slug],
+                    label_space=context.selected_label_space,
+                    mapping=context.scene_mappings[target.slug],
                     protocol_note=protocol_note,
                     support_info=support_info,
                     scaler_metadata=scaler.metadata,
                     adapter_fit=fit,
-                    dba_delta=float(metrics_cfg.get("dba_delta", 5.0)),
-                    num_beams=num_beams,
+                    dba_delta=float(context.metrics_cfg.get("dba_delta", 5.0)),
+                    num_beams=context.num_beams,
                 )
-                summary_rows.append(summary)
-                theta_rows.extend(_residual_by_theta_rows(rows, bins=int(metrics_cfg.get("theta_bins", 12))))
-                branch_rows.extend(_residual_by_branch_rows(rows))
-                run_notes.append(
+                context.summary_rows.append(summary)
+                context.theta_rows.extend(_residual_by_theta_rows(rows, bins=int(context.metrics_cfg.get("theta_bins", 12))))
+                context.branch_rows.extend(_residual_by_branch_rows(rows))
+                context.run_notes.append(
                     {
                         "protocol": protocol,
                         "target_scene": target.slug,
-                        "ablation": str(ablation),
+                        "ablation": ablation,
                         "adapter_fit_split": adapter_fit_split,
                         "scaler_fit_split": scaler.metadata["fit_split"],
                         "support": support_info,
                     }
                 )
-    overall_rows = _overall_rows(summary_rows)
-    _write_csv(out_dir / "predictions.csv", prediction_rows)
-    _write_csv(out_dir / "summary_by_scene.csv", summary_rows)
-    _write_csv(out_dir / "summary_overall.csv", overall_rows)
-    _write_csv(out_dir / "residual_by_theta_bin.csv", theta_rows)
-    _write_csv(out_dir / "residual_by_branch.csv", branch_rows)
-    _write_csv(out_dir / "support_manifest.csv", support_rows)
-    if export_logits:
+
+
+def _mmw_town_protocol_sample_sets(
+    context: MMWTownGpsV2RunContext,
+    *,
+    protocol: str,
+    target: SceneSpec,
+) -> tuple[list[MMWTownGpsV2Sample], list[MMWTownGpsV2Sample], list[MMWTownGpsV2Sample], str, dict[str, Any]]:
+    train_target = context.loaded[target.slug][context.train_split]
+    source_train = [
+        sample
+        for source in context.all_scenes_for_sources
+        if source.slug != target.slug
+        for sample in context.loaded[source.slug][context.train_split]
+    ]
+    if protocol == "within_scene_train":
+        support_samples = list(train_target)
+        support_info = {"selection_mode": "all_train", "support_count": len(support_samples), "query_count": 0}
+        return list(train_target), support_samples, [], "sanity_upper_bound", support_info
+    if protocol == "target_adapt_beambench":
+        support_samples, query_samples, support_info = select_support_samples(train_target, context.adapt_cfg)
+        return list(source_train), support_samples, query_samples, "few_shot_target_adapter", support_info
+    support_info = {"selection_mode": "none", "support_count": 0, "query_count": 0}
+    return list(source_train), [], [], "source_other_three_target_labels_eval_only", support_info
+
+
+def _write_mmw_town_gps_v2_artifacts(context: MMWTownGpsV2RunContext) -> dict[str, Any]:
+    overall_rows = _overall_rows(context.summary_rows)
+    _write_csv(context.out_dir / "predictions.csv", context.prediction_rows)
+    _write_csv(context.out_dir / "summary_by_scene.csv", context.summary_rows)
+    _write_csv(context.out_dir / "summary_overall.csv", overall_rows)
+    _write_csv(context.out_dir / "residual_by_theta_bin.csv", context.theta_rows)
+    _write_csv(context.out_dir / "residual_by_branch.csv", context.branch_rows)
+    _write_csv(context.out_dir / "support_manifest.csv", context.support_rows)
+    if context.export_logits:
         logits_array = (
-            np.stack(gps_logits_rows, axis=0).astype(np.float32)
-            if gps_logits_rows
-            else np.empty((0, num_beams), dtype=np.float32)
+            np.stack(context.gps_logits_rows, axis=0).astype(np.float32)
+            if context.gps_logits_rows
+            else np.empty((0, context.num_beams), dtype=np.float32)
         )
-        np.save(out_dir / "gps_logits.npy", logits_array)
-        _write_csv(out_dir / "gps_logits_index.csv", gps_logits_index_rows)
-        if export_probs:
+        np.save(context.out_dir / "gps_logits.npy", logits_array)
+        _write_csv(context.out_dir / "gps_logits_index.csv", context.gps_logits_index_rows)
+        if context.export_probs:
             probs = np.exp(logits_array - logits_array.max(axis=-1, keepdims=True)) if logits_array.size else logits_array
             if probs.size:
                 probs = probs / probs.sum(axis=-1, keepdims=True).clip(min=1e-12)
-            np.save(out_dir / "gps_prior_probs.npy", probs.astype(np.float32))
-    if bool(output_cfg.get("write_config_snapshot", True)):
-        dump_config(cfg_dict, out_dir / "resolved_config.yaml")
+            np.save(context.out_dir / "gps_prior_probs.npy", probs.astype(np.float32))
+    if bool(context.output_cfg.get("write_config_snapshot", True)):
+        dump_config(context.cfg_dict, context.out_dir / "resolved_config.yaml")
     metadata = {
         "workflow": "mmw_town_gps_adapter_v2",
-        "dataset_type": dataset_type,
-        "label_space": selected_label_space,
-        "beam_label_space": _dominant_value(mapping.label_space for mapping in scene_mappings.values()),
+        "dataset_type": context.dataset_type,
+        "label_space": context.selected_label_space,
+        "beam_label_space": _dominant_value(mapping.label_space for mapping in context.scene_mappings.values()),
         "beam_label_mapping_fingerprints": {
-            scene: mapping.fingerprint for scene, mapping in scene_mappings.items()
+            scene: mapping.fingerprint for scene, mapping in context.scene_mappings.items()
         },
-        "output_dir": str(out_dir),
-        "num_beams": num_beams,
-        "scenes": [asdict(scene) for scene in scenes],
-        "protocols": list(protocols),
-        "ablations": ablations,
-        "mapping": {scene: mapping.metadata() for scene, mapping in scene_mappings.items()},
-        "branch_metadata": branch_metadata,
-        "loss_metadata": loss_metadata,
-        "run_notes": run_notes,
+        "output_dir": str(context.out_dir),
+        "num_beams": context.num_beams,
+        "scenes": [asdict(scene) for scene in context.scenes],
+        "protocols": list(context.protocols),
+        "ablations": context.ablations,
+        "mapping": {scene: mapping.metadata() for scene, mapping in context.scene_mappings.items()},
+        "branch_metadata": context.branch_metadata,
+        "loss_metadata": context.loss_metadata,
+        "run_notes": context.run_notes,
         "standard_artifacts": [
             "summary_overall.csv",
             "summary_by_scene.csv",
@@ -409,24 +519,18 @@ def run_mmw_town_gps_v2(
             "resolved_config.yaml",
         ],
         "gps_prior_export": {
-            "save_logits": export_logits,
-            "save_prior_probs": export_probs,
-            "logits_path": str(out_dir / "gps_logits.npy") if export_logits else "",
-            "logits_index_path": str(out_dir / "gps_logits_index.csv") if export_logits else "",
+            "save_logits": context.export_logits,
+            "save_prior_probs": context.export_probs,
+            "logits_path": str(context.out_dir / "gps_logits.npy") if context.export_logits else "",
+            "logits_index_path": str(context.out_dir / "gps_logits_index.csv") if context.export_logits else "",
         },
     }
-    if export_logits:
+    if context.export_logits:
         metadata["standard_artifacts"].extend(["gps_logits.npy", "gps_logits_index.csv"])
-        if export_probs:
+        if context.export_probs:
             metadata["standard_artifacts"].append("gps_prior_probs.npy")
-    _write_json(out_dir / "run_metadata.json", metadata)
-    return {
-        "output_dir": str(out_dir),
-        "label_space": selected_label_space,
-        "summary_by_scene_rows": len(summary_rows),
-        "prediction_rows": len(prediction_rows),
-        "standard_artifacts": metadata["standard_artifacts"],
-    }
+    _write_json(context.out_dir / "run_metadata.json", metadata)
+    return metadata
 
 
 def select_support_samples(

@@ -43,7 +43,7 @@ GPS 模型系统 MUST 支持显式 opt-in 的 coarse anchor export profile。启
 #### Scenario: 启用 GPS coarse anchor export
 - **WHEN** 用户配置 GPS 模型 `coarse_anchor.enabled=true`
 - **THEN** 模型或训练 wrapper MUST 输出 `coarse_logits`、`center_beam`、`confidence` 和可选 `beam_scores`
-- **AND** 输出形状 MUST 满足 `gps-coarse-anchor-prediction` 能力定义的 anchor 契约
+- **AND** 输出形状 MUST 满足当前 GPS owner 中的 anchor metadata 契约
 - **AND** run metadata MUST 记录 anchor source 为 `gps_neural_coarse` 或等价配置值
 
 #### Scenario: GPS coarse head 参数可配置
@@ -100,4 +100,3 @@ GPS legacy whole-model 注册名 MUST 被 removed guard 拒绝。该规则覆盖
 - **WHEN** 用户请求构建退役 GPS 注册名
 - **THEN** registry MUST 抛出 removed component 错误
 - **AND** 错误信息 MUST 建议使用 `modular_sequence + gps_mlp + single_gru`
-

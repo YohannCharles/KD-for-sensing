@@ -304,12 +304,12 @@ CodeGraph 索引、daemon pid、socket、WAL、cache、log 和 hook marker MUST 
 - **AND** 测试和 OpenSpec 校验 MUST 能在不修改这些本地产物的情况下完成
 
 ### Requirement: 语义化本地输出目录
-项目 MUST 避免新脚本或默认配置继续向语义不清的兜底目录写入实验产物。长期保留的 shell orchestration、诊断脚本和 CLI 默认输出目录 MUST 包含实验族、数据集或能力名称；`outputs/other/` MAY 作为历史清理候选被扫描，但 MUST 不再作为新实验脚本的默认输出根。
+项目 MUST 避免新脚本或默认配置继续向语义不清的兜底目录写入实验产物。长期保留的诊断脚本、local/manual helper 和 CLI 默认输出目录 MUST 包含实验族、数据集或能力名称；`outputs/other/` MAY 作为历史清理候选被扫描，但 MUST 不再作为新实验脚本的默认输出根。
 
-#### Scenario: MMW modal15 默认输出目录可识别
-- **WHEN** 用户直接运行 MMW modal15 shell orchestration 且未设置 `OUTPUT_ROOT`
-- **THEN** 脚本 MUST 默认写入包含 `mmw_sunny_modal15` 或等价实验族名称的 `outputs/` 子目录
-- **AND** 帮助文本 MUST 展示该语义化默认路径
+#### Scenario: MMW modal15 历史输出目录可识别
+- **WHEN** cleanup 或 run index 扫描到 MMW modal15 历史输出
+- **THEN** 产物 root SHOULD 包含 `mmw_sunny_modal15` 或等价实验族名称
+- **AND** 当前源码 MUST 不要求保留 MMW modal15 shell wrapper
 
 #### Scenario: outputs other 不作为新默认值
 - **WHEN** 架构边界测试扫描长期保留脚本和配置

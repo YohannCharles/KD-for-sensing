@@ -4,10 +4,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from generate_experiment_grid import ROOT, _config_payload, _rel, _truthy
 
@@ -18,13 +23,13 @@ DEFAULT_BASE_CONFIG = "configs/scene31/templates/main_v3_proto_es20_base.yaml"
 DEFAULT_OUTPUT_DIR = "outputs/scene31_next_round"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate Scene31 next-round es40 configs and manifest.")
     parser.add_argument("--base_config", default=DEFAULT_BASE_CONFIG)
     parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR)
     parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--overwrite", default="false")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     base_config = Path(args.base_config)
     out_dir = Path(args.out_dir)
@@ -58,6 +63,7 @@ def main() -> None:
         writer.writerows(rows)
     (out_dir / "experiment_manifest.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {len(rows)} next-round manifest rows to {out_dir}.")
+    return 0
 
 
 def _next_round_specs() -> list[dict[str, Any]]:
@@ -179,4 +185,4 @@ def _next_round_specs() -> list[dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

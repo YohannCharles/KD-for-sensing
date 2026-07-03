@@ -141,7 +141,7 @@ Use the package architecture summary entry to inspect parameter counts and compo
 training or reading a real dataset:
 
 ```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+conda run -n kd_mm_beam kd-sensing-model-architecture-summary \
   --config configs/image/supervised.yaml \
   --format json
 ```
@@ -153,7 +153,7 @@ TinyViT override preflight is useful before launching a run, especially when reu
 options:
 
 ```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+conda run -n kd_mm_beam kd-sensing-model-architecture-summary \
   --config configs/image/supervised.yaml \
   -o model.primary.encoders.image.type=tinyvit_5m_scratch_rgb \
   -o model.primary.encoders.image.unfreeze_stages='[layer4]' \
@@ -164,7 +164,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
 JEPA visual sweep candidates can be rendered with the same fields used by startup summaries:
 
 ```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+conda run -n kd_mm_beam kd-sensing-model-architecture-summary \
   --sweep-manifest configs/diagnostics/jepa_visual_architecture_sweep_manifest.yaml \
   --variant-id patch14_stage1_gps_query \
   --format csv

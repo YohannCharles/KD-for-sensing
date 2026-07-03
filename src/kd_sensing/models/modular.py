@@ -1011,44 +1011,113 @@ class ModularSequenceModel(nn.Module):
         missing_modality_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         del image_degradation_metadata, missing_modality_metadata
+        raw_inputs, reliability_inputs, modality_valid_inputs, modality_dropout_inputs = self._collect_forward_inputs(
+            image_batch=image_batch,
+            radar_batch=radar_batch,
+            gps_batch=gps_batch,
+            lidar_batch=lidar_batch,
+            mmwave_batch=mmwave_batch,
+            csi_batch=csi_batch,
+            image_valid_mask=image_valid_mask,
+            radar_valid_mask=radar_valid_mask,
+            image_observability_score=image_observability_score,
+            gps_valid_mask=gps_valid_mask,
+            lidar_valid_mask=lidar_valid_mask,
+            gps_delay_steps=gps_delay_steps,
+            image_dropout_mask=image_dropout_mask,
+            radar_dropout_mask=radar_dropout_mask,
+            gps_dropout_mask=gps_dropout_mask,
+            lidar_dropout_mask=lidar_dropout_mask,
+            gps_counterfactual_mask=gps_counterfactual_mask,
+            benchmark_condition_metadata=benchmark_condition_metadata,
+        )
+        encoded, projected, encoder_auxiliary_features, encoder_runtime_metadata = self._run_encoder_projector_stage(
+            raw_inputs,
+            reliability_inputs,
+        )
+        core_input, availability_mask, input_features, has_token_features = self._assemble_core_input_stage(
+            projected,
+            modality_valid_inputs=modality_valid_inputs,
+            modality_dropout_inputs=modality_dropout_inputs,
+        )
+        output_features, image_logits = self._run_core_head_stage(core_input, availability_mask)
+        logits, geometry_prior_payload, geometry_fusion_payload, rerank_payload = self._post_process_logits_stage(
+            image_logits,
+            gps_batch=gps_batch,
+            image_valid_mask=image_valid_mask,
+            image_observability_score=image_observability_score,
+            gps_valid_mask=gps_valid_mask,
+            gps_delay_steps=gps_delay_steps,
+            gps_counterfactual_mask=gps_counterfactual_mask,
+        )
+        return self._assemble_forward_output_stage(
+            logits=logits,
+            image_logits=image_logits,
+            input_features=input_features,
+            output_features=output_features,
+            core_input=core_input,
+            availability_mask=availability_mask,
+            has_token_features=has_token_features,
+            encoded=encoded,
+            projected=projected,
+            encoder_auxiliary_features=encoder_auxiliary_features,
+            encoder_runtime_metadata=encoder_runtime_metadata,
+            geometry_prior_payload=geometry_prior_payload,
+            geometry_fusion_payload=geometry_fusion_payload,
+            rerank_payload=rerank_payload,
+        )
+
+    def _collect_forward_inputs(self, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
         raw_inputs = {
-            "image": image_batch,
-            "radar": radar_batch,
-            "gps": gps_batch,
-            "lidar": lidar_batch,
-            "mmwave": mmwave_batch,
-            "csi": csi_batch,
+            "image": kwargs["image_batch"],
+            "radar": kwargs["radar_batch"],
+            "gps": kwargs["gps_batch"],
+            "lidar": kwargs["lidar_batch"],
+            "mmwave": kwargs["mmwave_batch"],
+            "csi": kwargs["csi_batch"],
         }
         reliability_inputs = {
-            "image_valid_mask": image_valid_mask,
-            "radar_valid_mask": radar_valid_mask,
-            "image_observability_score": image_observability_score,
-            "gps_valid_mask": gps_valid_mask,
-            "lidar_valid_mask": lidar_valid_mask,
-            "gps_delay_steps": gps_delay_steps,
-            "image_dropout_mask": image_dropout_mask,
-            "radar_dropout_mask": radar_dropout_mask,
-            "gps_dropout_mask": gps_dropout_mask,
-            "lidar_dropout_mask": lidar_dropout_mask,
-            "gps_counterfactual_mask": gps_counterfactual_mask,
-            "benchmark_condition_metadata": benchmark_condition_metadata,
+            "image_valid_mask": kwargs["image_valid_mask"],
+            "radar_valid_mask": kwargs["radar_valid_mask"],
+            "image_observability_score": kwargs["image_observability_score"],
+            "gps_valid_mask": kwargs["gps_valid_mask"],
+            "lidar_valid_mask": kwargs["lidar_valid_mask"],
+            "gps_delay_steps": kwargs["gps_delay_steps"],
+            "image_dropout_mask": kwargs["image_dropout_mask"],
+            "radar_dropout_mask": kwargs["radar_dropout_mask"],
+            "gps_dropout_mask": kwargs["gps_dropout_mask"],
+            "lidar_dropout_mask": kwargs["lidar_dropout_mask"],
+            "gps_counterfactual_mask": kwargs["gps_counterfactual_mask"],
+            "benchmark_condition_metadata": kwargs["benchmark_condition_metadata"],
         }
         modality_valid_inputs = {
-            "image": image_valid_mask,
-            "radar": radar_valid_mask,
-            "gps": gps_valid_mask,
-            "lidar": lidar_valid_mask,
+            "image": kwargs["image_valid_mask"],
+            "radar": kwargs["radar_valid_mask"],
+            "gps": kwargs["gps_valid_mask"],
+            "lidar": kwargs["lidar_valid_mask"],
             "mmwave": None,
             "csi": None,
         }
         modality_dropout_inputs = {
-            "image": image_dropout_mask,
-            "radar": radar_dropout_mask,
-            "gps": gps_dropout_mask,
-            "lidar": lidar_dropout_mask,
+            "image": kwargs["image_dropout_mask"],
+            "radar": kwargs["radar_dropout_mask"],
+            "gps": kwargs["gps_dropout_mask"],
+            "lidar": kwargs["lidar_dropout_mask"],
             "mmwave": None,
             "csi": None,
         }
+        return raw_inputs, reliability_inputs, modality_valid_inputs, modality_dropout_inputs
+
+    def _run_encoder_projector_stage(
+        self,
+        raw_inputs: dict[str, torch.Tensor | None],
+        reliability_inputs: dict[str, Any],
+    ) -> tuple[
+        dict[str, torch.Tensor],
+        dict[str, torch.Tensor],
+        dict[str, dict[str, torch.Tensor]],
+        dict[str, Any],
+    ]:
         encoded: dict[str, torch.Tensor] = {}
         projected: dict[str, torch.Tensor] = {}
         encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]] = {}
@@ -1076,26 +1145,20 @@ class ModularSequenceModel(nn.Module):
                     encoded=encoded,
                     projected=projected,
                 )
-                context_kwargs.update(_encoder_reliability_kwargs(encoder, modality=modality, reliability_inputs=reliability_inputs))
+                context_kwargs.update(
+                    _encoder_reliability_kwargs(
+                        encoder,
+                        modality=modality,
+                        reliability_inputs=reliability_inputs,
+                    )
+                )
                 features = encoder(tensor, **context_kwargs) if context_kwargs else encoder(tensor)
-                temporal_aux_metadata = getattr(encoder, "last_temporal_auxiliary_metadata", None)
-                if isinstance(temporal_aux_metadata, dict) and bool(temporal_aux_metadata.get("enabled", False)):
-                    current_latent = getattr(encoder, "last_current_latent", None)
-                    predicted_latent = getattr(encoder, "last_temporal_predicted_latent", None)
-                    if isinstance(current_latent, torch.Tensor) and isinstance(predicted_latent, torch.Tensor):
-                        encoder_auxiliary_features[modality] = {
-                            "current_latent": current_latent,
-                            "temporal_predicted_latent": predicted_latent,
-                        }
-                    encoder_runtime_metadata[modality] = {
-                        "temporal_auxiliary": temporal_aux_metadata,
-                    }
-                predictive_diagnostics = getattr(encoder, "last_predictive_gps_query_diagnostics", None)
-                if isinstance(predictive_diagnostics, dict):
-                    encoder_runtime_metadata.setdefault(modality, {})["predictive_gps_query"] = predictive_diagnostics
-                visual_token_diagnostics = getattr(encoder, "last_visual_token_diagnostics", None)
-                if isinstance(visual_token_diagnostics, dict) and visual_token_diagnostics:
-                    encoder_runtime_metadata.setdefault(modality, {})["visual_tokens"] = visual_token_diagnostics
+                self._collect_encoder_runtime_metadata(
+                    encoder,
+                    modality=modality,
+                    encoder_auxiliary_features=encoder_auxiliary_features,
+                    encoder_runtime_metadata=encoder_runtime_metadata,
+                )
                 batch_size, seq_len = _check_temporal_features(features, modality, batch_size, seq_len)
                 encoded[modality] = features
                 projected_features = self.projectors[modality](features)
@@ -1118,43 +1181,47 @@ class ModularSequenceModel(nn.Module):
                     f"pending modalities={pending}, unmet dependencies={unmet}. "
                     "Check for missing condition modalities or circular dependencies."
                 )
+        return encoded, projected, encoder_auxiliary_features, encoder_runtime_metadata
+
+    @staticmethod
+    def _collect_encoder_runtime_metadata(
+        encoder: nn.Module,
+        *,
+        modality: str,
+        encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]],
+        encoder_runtime_metadata: dict[str, Any],
+    ) -> None:
+        temporal_aux_metadata = getattr(encoder, "last_temporal_auxiliary_metadata", None)
+        if isinstance(temporal_aux_metadata, dict) and bool(temporal_aux_metadata.get("enabled", False)):
+            current_latent = getattr(encoder, "last_current_latent", None)
+            predicted_latent = getattr(encoder, "last_temporal_predicted_latent", None)
+            if isinstance(current_latent, torch.Tensor) and isinstance(predicted_latent, torch.Tensor):
+                encoder_auxiliary_features[modality] = {
+                    "current_latent": current_latent,
+                    "temporal_predicted_latent": predicted_latent,
+                }
+            encoder_runtime_metadata[modality] = {
+                "temporal_auxiliary": temporal_aux_metadata,
+            }
+        predictive_diagnostics = getattr(encoder, "last_predictive_gps_query_diagnostics", None)
+        if isinstance(predictive_diagnostics, dict):
+            encoder_runtime_metadata.setdefault(modality, {})["predictive_gps_query"] = predictive_diagnostics
+        visual_token_diagnostics = getattr(encoder, "last_visual_token_diagnostics", None)
+        if isinstance(visual_token_diagnostics, dict) and visual_token_diagnostics:
+            encoder_runtime_metadata.setdefault(modality, {})["visual_tokens"] = visual_token_diagnostics
+
+    def _assemble_core_input_stage(
+        self,
+        projected: dict[str, torch.Tensor],
+        *,
+        modality_valid_inputs: dict[str, torch.Tensor | None],
+        modality_dropout_inputs: dict[str, torch.Tensor | None],
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, bool]:
         ordered = [projected[modality] for modality in self.modalities]
         has_token_features = any(features.ndim == 4 for features in ordered)
         if has_token_features:
-            if bool(getattr(self.representation_core, "supports_spatial_modality_tokens", False)):
-                token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
-                max_tokens = max(int(features.shape[2]) for features in token_pieces)
-                padded_tokens: list[torch.Tensor] = []
-                padded_masks: list[torch.Tensor] = []
-                for modality, features in zip(self.modalities, token_pieces):
-                    token_count = int(features.shape[2])
-                    padded_tokens.append(_pad_modality_tokens(features, max_tokens=max_tokens))
-                    mask = _modality_availability_from_inputs(
-                        modality,
-                        projected[modality],
-                        valid_mask=modality_valid_inputs.get(modality),
-                        dropout_mask=modality_dropout_inputs.get(modality),
-                    )
-                    token_mask = mask.unsqueeze(2).expand(-1, -1, token_count)
-                    padded_masks.append(_pad_modality_token_mask(token_mask, max_tokens=max_tokens))
-                core_input = torch.stack(padded_tokens, dim=1).contiguous()
-                availability_mask = torch.stack(padded_masks, dim=1).contiguous()
-            else:
-                token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
-                token_features = torch.cat(token_pieces, dim=2)
-                core_input = token_features.permute(0, 2, 1, 3).contiguous()
-                availability_mask = _core_input_availability_mask(
-                    projected,
-                    self.modalities,
-                    valid_masks=modality_valid_inputs,
-                    dropout_masks=modality_dropout_inputs,
-                    token_features=True,
-                )
-            input_features = torch.cat(
-                [features.mean(dim=2) if features.ndim == 4 else features for features in ordered],
-                dim=-1,
-            )
-        elif len(ordered) == 1:
+            return self._assemble_token_core_input(projected, ordered, modality_valid_inputs, modality_dropout_inputs)
+        if len(ordered) == 1:
             core_input = ordered[0]
             availability_mask = _core_input_availability_mask(
                 projected,
@@ -1163,25 +1230,82 @@ class ModularSequenceModel(nn.Module):
                 dropout_masks=modality_dropout_inputs,
                 token_features=False,
             )
-            input_features = core_input
+            return core_input, availability_mask, core_input, False
+        core_input = torch.stack(ordered, dim=1)
+        availability_mask = _core_input_availability_mask(
+            projected,
+            self.modalities,
+            valid_masks=modality_valid_inputs,
+            dropout_masks=modality_dropout_inputs,
+            token_features=False,
+        )
+        return core_input, availability_mask, torch.cat(ordered, dim=-1), False
+
+    def _assemble_token_core_input(
+        self,
+        projected: dict[str, torch.Tensor],
+        ordered: list[torch.Tensor],
+        modality_valid_inputs: dict[str, torch.Tensor | None],
+        modality_dropout_inputs: dict[str, torch.Tensor | None],
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, bool]:
+        token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
+        if bool(getattr(self.representation_core, "supports_spatial_modality_tokens", False)):
+            max_tokens = max(int(features.shape[2]) for features in token_pieces)
+            padded_tokens: list[torch.Tensor] = []
+            padded_masks: list[torch.Tensor] = []
+            for modality, features in zip(self.modalities, token_pieces):
+                token_count = int(features.shape[2])
+                padded_tokens.append(_pad_modality_tokens(features, max_tokens=max_tokens))
+                mask = _modality_availability_from_inputs(
+                    modality,
+                    projected[modality],
+                    valid_mask=modality_valid_inputs.get(modality),
+                    dropout_mask=modality_dropout_inputs.get(modality),
+                )
+                token_mask = mask.unsqueeze(2).expand(-1, -1, token_count)
+                padded_masks.append(_pad_modality_token_mask(token_mask, max_tokens=max_tokens))
+            core_input = torch.stack(padded_tokens, dim=1).contiguous()
+            availability_mask = torch.stack(padded_masks, dim=1).contiguous()
         else:
-            stacked = torch.stack(ordered, dim=1)
-            core_input = stacked
+            token_features = torch.cat(token_pieces, dim=2)
+            core_input = token_features.permute(0, 2, 1, 3).contiguous()
             availability_mask = _core_input_availability_mask(
                 projected,
                 self.modalities,
                 valid_masks=modality_valid_inputs,
                 dropout_masks=modality_dropout_inputs,
-                token_features=False,
+                token_features=True,
             )
-            input_features = torch.cat(ordered, dim=-1)
+        input_features = torch.cat(
+            [features.mean(dim=2) if features.ndim == 4 else features for features in ordered],
+            dim=-1,
+        )
+        return core_input, availability_mask, input_features, True
+
+    def _run_core_head_stage(
+        self,
+        core_input: torch.Tensor,
+        availability_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if bool(getattr(self.representation_core, "supports_missing_modality_metadata", False)):
             if core_input.ndim == 3:
                 core_input = core_input.unsqueeze(1)
             output_features = self.representation_core(core_input, modality_available=availability_mask)
         else:
             output_features = self.representation_core(core_input)
-        image_logits = self.heads["beam"](output_features)
+        return output_features, self.heads["beam"](output_features)
+
+    def _post_process_logits_stage(
+        self,
+        image_logits: torch.Tensor,
+        *,
+        gps_batch: torch.Tensor | None,
+        image_valid_mask: torch.Tensor | None,
+        image_observability_score: torch.Tensor | None,
+        gps_valid_mask: torch.Tensor | None,
+        gps_delay_steps: torch.Tensor | None,
+        gps_counterfactual_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
         logits = image_logits
         geometry_prior_payload: dict[str, Any] | None = None
         geometry_fusion_payload: dict[str, Any] | None = None
@@ -1216,6 +1340,26 @@ class ModularSequenceModel(nn.Module):
                 gps_counterfactual_mask=gps_counterfactual_mask,
             )
             logits = rerank_payload["logits"]
+        return logits, geometry_prior_payload, geometry_fusion_payload, rerank_payload
+
+    def _assemble_forward_output_stage(
+        self,
+        *,
+        logits: torch.Tensor,
+        image_logits: torch.Tensor,
+        input_features: torch.Tensor,
+        output_features: torch.Tensor,
+        core_input: torch.Tensor,
+        availability_mask: torch.Tensor | None,
+        has_token_features: bool,
+        encoded: dict[str, torch.Tensor],
+        projected: dict[str, torch.Tensor],
+        encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]],
+        encoder_runtime_metadata: dict[str, Any],
+        geometry_prior_payload: dict[str, Any] | None,
+        geometry_fusion_payload: dict[str, Any] | None,
+        rerank_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         output = {
             "logits": logits,
             "input_features": input_features,
@@ -1232,6 +1376,19 @@ class ModularSequenceModel(nn.Module):
             )
         if has_token_features:
             output["token_features"] = core_input
+        self._attach_geometry_outputs(output, image_logits, geometry_prior_payload, geometry_fusion_payload, rerank_payload)
+        self._attach_runtime_outputs(output, encoder_auxiliary_features, encoder_runtime_metadata)
+        self._attach_auxiliary_outputs(output, output_features)
+        return output
+
+    def _attach_geometry_outputs(
+        self,
+        output: dict[str, Any],
+        image_logits: torch.Tensor,
+        geometry_prior_payload: dict[str, Any] | None,
+        geometry_fusion_payload: dict[str, Any] | None,
+        rerank_payload: dict[str, Any] | None,
+    ) -> None:
         if geometry_prior_payload is not None and geometry_fusion_payload is not None:
             fusion_diagnostics = dict(geometry_fusion_payload.get("diagnostics", {}))
             output.update(
@@ -1273,6 +1430,13 @@ class ModularSequenceModel(nn.Module):
                     "condition_id_consumed": False,
                 }
             )
+
+    def _attach_runtime_outputs(
+        self,
+        output: dict[str, Any],
+        encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]],
+        encoder_runtime_metadata: dict[str, Any],
+    ) -> None:
         if encoder_auxiliary_features:
             output["encoder_auxiliary_features"] = encoder_auxiliary_features
         if encoder_runtime_metadata:
@@ -1284,6 +1448,8 @@ class ModularSequenceModel(nn.Module):
             }
             if predictive_runtime:
                 output["predictive_gps_query_diagnostics"] = predictive_runtime
+
+    def _attach_auxiliary_outputs(self, output: dict[str, Any], output_features: torch.Tensor) -> None:
         feature_consistency_diagnostics = getattr(self.representation_core, "last_feature_consistency_diagnostics", None)
         if isinstance(feature_consistency_diagnostics, dict):
             output["feature_consistency_diagnostics"] = feature_consistency_diagnostics
@@ -1297,7 +1463,6 @@ class ModularSequenceModel(nn.Module):
         if torch.is_tensor(amber_full_attention_mask):
             output["amber_full_attention_key_padding_mask"] = amber_full_attention_mask
         output.update(self.auxiliary_heads(output_features))
-        return output
 
     def training_strategy_metadata(self) -> dict[str, Any]:
         encoders: dict[str, Any] = {}

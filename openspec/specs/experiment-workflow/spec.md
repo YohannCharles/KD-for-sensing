@@ -237,30 +237,17 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **THEN** 配置 MUST 设置 `max_epochs: 20` 或项目等价字段
 - **AND** 配置 MUST 启用以 `val_top1` 或项目等价字段为指标的 early stopping、patience 5 和 best checkpoint 选择
 
-### Requirement: 关键 BTAPA tau1 验证 launcher
-项目 MUST 提供只运行关键 BTAPA tau1 验证任务的串行 launcher。launcher 默认 MUST 不并发训练，MUST 支持 dry run、num_workers、max_parallel、gpu_ids、skip_train、skip_eval 和 skip_analysis，并 MUST 不运行 tau4、ADBA、modw1、fusiononly、RBMA、JEPA、KD 或 fullaux。
+### Requirement: 固定 GPU shell launcher 已收敛为直接命令
+项目 MUST 不再要求固定 GPU queue shell 来运行 BTAPA tau1、proto-vs-BTAPA 或 night-grid 训练。保留的契约是配置、manifest、`kd-sensing-train --config <yaml>`、fresh eval helper 和只读分析脚本；并发、GPU 绑定和日志策略属于用户本地任务系统或 shell 临时命令，不进入源码长期表面。
 
-#### Scenario: dry run 只打印命令
-- **WHEN** 用户运行 `bash scripts/run_btapa_tau1_validation.sh --dry_run --num_workers 4 --max_parallel 1`
-- **THEN** launcher MUST 只打印 apples-to-apples、tau1 seed/es20 训练、seed 分析和 summary 命令
-- **AND** 训练命令 MUST 包含 `--auto_resume`
+#### Scenario: BTAPA tau1 直接训练
+- **WHEN** 用户需要复跑 BTAPA tau1 seed/es20 配置
+- **THEN** 用户 MUST 使用 `kd-sensing-train --config configs/scene31/<btapa-yaml> --auto_resume` 或等价当前训练入口
+- **AND** 项目 MUST 不要求 `scripts/run_btapa_tau1_validation.sh` 或 `scripts/run_proto_vs_btapa_8gpu.sh` 存在
 
-#### Scenario: 默认串行执行
-- **WHEN** 用户不传 `--max_parallel`
-- **THEN** launcher MUST 使用 `max_parallel=1`
-- **AND** 每个训练任务 MUST 写入独立日志
-
-### Requirement: proto vs BTAPA 8GPU launcher
-项目 MUST 提供 `scripts/run_proto_vs_btapa_8gpu.sh`，默认调度 ordinary proto 三 seed 与 BTAPA tau1 三 seed。launcher MUST 默认 `max_parallel=8`、每个训练进程只通过 `CUDA_VISIBLE_DEVICES=<gpu_id>` 看到单张 GPU、默认 `num_workers=4`，并支持 dry-run、skip/only、skip-completed、auto-resume、stagger start 和训练后 fresh eval。
-
-#### Scenario: dry run only-proto
-- **WHEN** 用户运行 8GPU launcher 并传入 `--dry_run --only_proto --num_workers 4 --max_parallel 8 --gpu_ids 0,1,2,3,4,5,6,7 --auto_resume --skip_completed`
-- **THEN** launcher MUST 只打印 proto 三 seed 的训练命令
-- **AND** 每条训练命令 MUST 绑定单个 `CUDA_VISIBLE_DEVICES`
-
-#### Scenario: eval after train
-- **WHEN** 用户传入 `--eval_after_train` 或 `--run_eval`
-- **THEN** launcher MUST 在训练子进程结束后调用 `scripts/reevaluate_apples_to_apples.py`
+#### Scenario: fresh eval 仍可组合
+- **WHEN** 用户需要训练后 apples-to-apples 复评
+- **THEN** 用户 MAY 运行 `scripts/reevaluate_apples_to_apples.py`、`scripts/eval_night_grid.py` 或对应 analysis helper
 - **AND** 缺失 checkpoint 的 run MUST warning 但不阻断其它 run 复评
 
 ### Requirement: proto vs BTAPA seed mean±std 分析
@@ -283,18 +270,13 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **WHEN** 生成任一 night grid 配置
 - **THEN** 配置中的 run name、exp name 或 output_dir MUST 与其它 run 唯一区分
 
-### Requirement: 8 GPU night grid launcher
-项目 MUST 提供 `scripts/run_night_grid_8gpu.sh` 从 manifest 调度训练。launcher MUST 默认 `max_parallel=8`、`num_workers=4`，每个训练进程 MUST 只通过 `CUDA_VISIBLE_DEVICES=<gpu_id>` 看到一张 GPU，不默认启用 DDP。
+### Requirement: night grid generated configs are local artifacts
+项目 MUST 保留 night-grid manifest/base/generator 和 generator sanity test，但 MUST 不要求把生成的 58 个 run YAML 长期提交到源码。需要训练时，用户先在本地输出目录或显式 config 目录生成 YAML，再使用当前 `kd-sensing-train` 入口运行。
 
-#### Scenario: dry run 只打印命令
-- **WHEN** 用户传入 `--dry_run`
-- **THEN** launcher MUST 只打印训练命令
-- **AND** 每条命令 MUST 包含单个 `CUDA_VISIBLE_DEVICES`
-
-#### Scenario: 失败任务记录
-- **WHEN** 任一训练任务返回非零 exit code
-- **THEN** run name MUST 写入 `outputs/scene31/analysis/night_grid/failed_runs.txt`
-- **AND** 完成任务 MUST 写入 `completed_runs.txt`
+#### Scenario: 生成后训练
+- **WHEN** 用户运行 `scripts/generate_experiment_grid.py --out_dir <local-config-dir>`
+- **THEN** generator MUST 写出 manifest 和实体 YAML 到指定目录
+- **AND** 源码长期表面 MAY 只保留 manifest/base/generator
 
 ### Requirement: night grid fresh eval
 项目 MUST 提供 `scripts/eval_night_grid.py` 对 manifest 中已完成 run 做 fresh apples-to-apples eval。该脚本 MUST 使用统一 checkpoint resolver 和统一 missing pattern helper，缺失 checkpoint MUST warning 但不中断。
@@ -324,8 +306,8 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 
 #### Scenario: next-round fresh eval 查找配置
 - **WHEN** fresh eval 需要评估 next-round manifest 中的 run
-- **THEN** 配置查找 MUST 支持 `configs/scene31/next_round/<run>.yaml`
-- **AND** 仍 MUST 继续支持已有 `configs/scene31/night_grid/<run>.yaml` 与 `configs/scene31/<run>.yaml`
+- **THEN** 配置查找 MUST 优先使用 run 目录下的 `final_config.yaml` 或 `resolved_config.yaml`
+- **AND** 手写 `configs/scene31/<run>.yaml` MAY 作为 legacy/local fallback
 
 #### Scenario: local/manual 输出边界
 - **WHEN** 用户运行 Scene31 next-round launcher 或汇总脚本

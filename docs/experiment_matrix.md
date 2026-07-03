@@ -35,6 +35,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 - AMBER-lite missing-modality：`configs/fusion/amber_lite_missing_modality.yaml`
 - AMBER full architecture reproduction：`configs/fusion/amber_full_architecture.yaml`
 - RBMA missing-modality ablation：`configs/fusion/experiments/rbma_missing_workflow/`
+- Scene31 next-round / night-grid local manifests：`configs/scene31/next_round/experiment_manifest.*`、`configs/scene31/night_grid/experiment_manifest.*`
 - MMW GPS v2：`configs/mmw_town_gps_adapter_v2.yaml`
 - Physics-informed MMW baseline：`configs/fusion/physics_informed_mmw_debug.yaml`、`configs/fusion/physics_informed_mmw_paper_debug.yaml`、`configs/fusion/physics_informed_mmw_sparse_pilot_multimodal.yaml`
 - CSI hardening：`configs/csi/hardening_matrix/` 和 `configs/fusion/csi_hardening_matrix/`
@@ -149,6 +150,19 @@ conda run -n kd_mm_beam python scripts/run_rbma_missing_workflow.py --auto-resum
 
 Strong-encoder RBMA 和 M2Beam single-modal Scene31 overlay 只保留为 local/manual checkpoint-placeholder 输入；如需人工复跑，直接重复传入 `--config <yaml>` 或运行对应 `kd-sensing-train --config <yaml>`，不再维护固定四 GPU queue shell。
 
+Scene31 night-grid / next-round 是 manifest-backed local/manual 队列，不是长期 package CLI。源码维护 `configs/scene31/night_grid/experiment_manifest.*`、`configs/scene31/next_round/experiment_manifest.*`、base config、generator、P0 fresh eval runner 和 summary helper；实体 YAML 需要本地生成后再用 `kd-sensing-train --config <generated-yaml>` 运行，analysis 输出限定在 ignored `outputs/scene31/analysis/` 和 `outputs/scene31_next_round/`。
+
+P0 训练完成后，完整 fresh eval 与新主指标汇总使用：
+
+```bash
+bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus 4,5,6,7
+conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py \
+  --root outputs/scene31_next_round \
+  --out outputs/scene31_next_round/p0_fresh_summary
+```
+
+`scripts/run_scene31_p0_fresh_eval.sh --include-baselines` 会额外尝试 `amr_net_supervised` 和 `amber_full_architecture` local baseline；只有对应 checkpoint 已在指定 root 下可解析时才适合作为同批 fresh eval 输入。P0 winner selection 以 `avg_missing -> full -> overall_mean -> balanced` 为默认排序，`balanced` 只作为辅助表。
+
 pattern evaluation 会随训练结束写入 `outputs/scene31/eval/*_missing_patterns.csv/json`；也可手动复用包内 eval matrix：
 
 ```bash
@@ -261,7 +275,7 @@ Use `physics_informed_mmw_no_physics.yaml`、`physics_informed_mmw_no_csi_recons
 CSI hardening:
 
 ```bash
-NEW_RUN=1 conda run -n kd_mm_beam bash scripts/run_csi_hardening_matrix.sh debug
+conda run -n kd_mm_beam kd-sensing-train --config configs/csi/hardening_matrix/debug/A0_original.yaml
 conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_csi_hardening_matrix_configs_load_and_preserve_contracts -q
 conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_gps_csi_validation_matrix_configs_load -q
 ```
@@ -296,4 +310,4 @@ Difficulty profiles under `configs/difficulty/` are training/evaluation reliabil
 
 ## 已退役边界
 
-HiST-Beam、history-anchored Hist、Raymobtime s008、standalone Top8 selector、GPS coarse anchor、GPS residual、camera residual、BGAM、viewer manifest、Gradio viewer、AMR-Net_gps_image、JEPA-MSAC、非 CSI shell orchestration、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*`、CRAF/MARF/G2D、Multimodal-NF 和旧 KD/Fusion KD 路线不再作为当前入口维护。旧配置、CLI、registry 名称或 historical output 只能作为退役、历史或 migration guard 说明出现。
+HiST-Beam、history-anchored Hist、Raymobtime s008、standalone Top8 selector、GPS coarse anchor、GPS residual、camera residual、BGAM、viewer manifest、Gradio viewer、AMR-Net_gps_image、JEPA-MSAC、固定 shell orchestration、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*`、CRAF/MARF/G2D、Multimodal-NF 和旧 KD/Fusion KD 路线不再作为当前入口维护。旧配置、CLI、registry 名称或 historical output 只能作为退役、历史或 migration guard 说明出现。

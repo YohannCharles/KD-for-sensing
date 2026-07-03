@@ -59,12 +59,12 @@
 - **AND** 输出 comparison、delta-vs-baseline 和文本结论
 
 ### Requirement: Scene31 BTAPA local ablation workflow
-项目 MUST 提供 Scene31 BTAPA local/manual ablation 配置、串行 launcher 和只读分析脚本。该 workflow MUST 使用当前 `kd-sensing-train` CLI，不得新增旧 root 训练入口。
+项目 MUST 提供 Scene31 BTAPA local/manual ablation 配置和只读分析脚本。该 workflow MUST 使用当前 `kd-sensing-train` CLI，不得新增旧 root 训练入口或长期 shell launcher。
 
-#### Scenario: BTAPA launcher dry-run
-- **WHEN** 用户运行 `conda run -n kd_mm_beam bash scripts/run_btapa_experiments.sh --dry_run --num_workers 4 --max_parallel 1`
-- **THEN** launcher MUST 只打印每个 BTAPA 实验的训练命令
-- **AND** 默认 `max_parallel` MUST 为 1
+#### Scenario: BTAPA 直接训练
+- **WHEN** 用户需要运行某个 BTAPA 实验
+- **THEN** 用户 MUST 使用 `conda run -n kd_mm_beam kd-sensing-train --config configs/scene31/<btapa-yaml> --auto_resume`
+- **AND** 项目 MUST 不要求 `scripts/run_btapa_experiments.sh` 存在
 
 #### Scenario: BTAPA 输出隔离
 - **WHEN** 用户运行任一 BTAPA 配置
@@ -112,4 +112,3 @@ BTAPA 本地分析 MUST 能将 `main_v3_strong_reliability_btapa_tau1` 标记为
 #### Scenario: diagnostics 记录 active ratio
 - **WHEN** pattern-conditional BTAPA 启用
 - **THEN** 训练 metrics MUST 记录 `ordinary_proto_loss`、`btapa_loss`、`btapa_active_ratio` 和 `total_proto_loss`
-

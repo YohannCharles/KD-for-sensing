@@ -1,7 +1,7 @@
 # scene31-next-round-experiment-workflow Specification
 
 ## Purpose
-定义 Scene31 next-round local/manual 实验配置矩阵、launcher、fresh eval 汇总与 sanity check 边界。
+定义 Scene31 next-round/night-grid local/manual 实验配置矩阵、launcher、fresh eval 汇总与 sanity check 边界。该能力是 manifest-backed 本地实验 surface，不是长期 package CLI。
 
 ## Requirements
 ### Requirement: Scene31 next-round 配置矩阵
@@ -19,29 +19,42 @@
 - **AND** `btapa_apply_patterns` MUST 只包含 `radar_only` 与 `lidar_only`
 - **AND** 配置 MUST 不启用 naive all-pattern BTAPA
 
-### Requirement: Scene31 next-round launcher
-项目 MUST 提供本地 shell launcher 调度 next-round manifest。launcher MUST 支持 P0/P1/all 分组、GPU id、dry-run、skip completed、overwrite、训练后 fresh eval 和失败列表输出。
+#### Scenario: 配置族 lifecycle 可审计
+- **WHEN** 开发者审阅 `configs/scene31/night_grid/` 或 `configs/scene31/next_round/`
+- **THEN** project surface inventory MUST 将这些路径标记为 Scene31 local/manual manifest family
+- **AND** generator、manifest 和 analysis 脚本 MUST 记录 owner、输出边界和不升级为 package CLI 的 caveat
+- **AND** 真实训练命令 MUST 使用本地生成的 YAML：`kd-sensing-train --config <generated-yaml>`
 
-#### Scenario: P0 dry-run
-- **WHEN** 用户运行 `bash scripts/run_scene31_next_round.sh --group p0 --gpu 0 --dry-run`
-- **THEN** launcher MUST 只打印 P0 训练命令
-- **AND** 命令 MUST 使用 `conda run -n kd_mm_beam kd-sensing-train`
+### Requirement: Scene31 P0 fresh eval runner
+项目 MUST 提供 local/manual P0 fresh eval runner，用于对已完成训练的 12 个 P0 run 逐个加载 best checkpoint 并执行完整 missing-pattern fresh eval。该 runner MUST 复用现有 apples-to-apples evaluation helper，不复制模型加载、DataLoader 或指标计算逻辑；它仍不是 package CLI。
 
-#### Scenario: 失败继续
-- **WHEN** 某个 next-round run 训练失败
-- **THEN** launcher MUST 记录该 run 名称并继续后续 run
-- **AND** 结束时 MUST 打印失败列表
+#### Scenario: 执行 P0 fresh eval
+- **WHEN** 用户运行 `scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`
+- **THEN** runner MUST 从 next-round manifest 的 `group=p0` 自动发现 run，manifest 不存在时 MAY 回退到固定 12 个 P0 run 名
+- **AND** runner MUST 使用 `best_val_top1` checkpoint policy，不传入 `--max-batches`
+- **AND** 每个 run 的输出 MUST 写入独立 fresh eval 目录，每个 run 的日志 MUST 单独保存
+- **AND** 已有完整 fresh eval 结果时默认跳过，`--overwrite` MUST 允许重跑
+- **AND** 单个 run 失败 MUST 不终止后续 run，最终 MUST 写出 failed run list 并打印 completed/skipped/failed 数量
+- **AND** runner MAY 通过显式选项追加 `amr_net_supervised` 与 `amber_full_architecture` local baseline，但不得因默认缺少这些 checkpoint 影响 P0 12-run 统计
 
 ### Requirement: Scene31 next-round 汇总
 项目 MUST 提供只读汇总脚本，基于 fresh eval 输出生成 per-run CSV、method mean±std CSV、Markdown 表、相对 proto baseline delta 和 filtered/top10 表。
 
 #### Scenario: 汇总核心指标
 - **WHEN** 用户运行 next-round 汇总脚本并传入 output root 或 run dirs
-- **THEN** 输出 MUST 包含 `full`、`avg_missing`、`missing_gps`、`missing_radar`、`radar_only`、`lidar_only` 和 `balanced`
+- **THEN** 输出 MUST 包含 `full`、`avg_missing`、`missing_gps`、`missing_radar`、`radar_only`、`lidar_only`、`overall_mean` 和 `balanced`
 - **AND** 输出 MUST 包含每个核心指标相对 proto baseline 的 delta
-- **AND** method 表 MUST 按 `balanced` 降序排序
+- **AND** `overall_mean` MUST 定义为 `mean(full, missing_gps, missing_radar, radar_only, lidar_only)`，不得擅自混入其它 missing pattern
+- **AND** method 表和默认 winner selection MUST 按 `avg_missing`、`full`、`overall_mean`、`balanced` 降序排序
+- **AND** `balanced` MUST 只作为辅助排序和参考表，不得作为默认 winner 排序第一指标
+- **AND** 输出 MUST 写入 ignored `outputs/scene31_next_round/`、`outputs/scene31/analysis/` 或显式本地路径
 
 #### Scenario: filtered 表兜底
 - **WHEN** 没有方法同时满足 configured threshold
 - **THEN** 汇总脚本 MUST 输出最接近的 top10
 - **AND** 每行 MUST 标注未达标条件
+
+#### Scenario: sanity check
+- **WHEN** 汇总脚本读取 P0 fresh eval 结果
+- **THEN** 脚本 MUST 检查 best checkpoint、完整 fresh eval metrics、非 `--max-batches`、核心 pattern、`avg_missing`、`overall_mean`、method seed 归并和 `lam0025`/`lam005` tag 口径
+- **AND** 发现问题 MUST 在 summary 产物中写出 warning，不得 silent fail

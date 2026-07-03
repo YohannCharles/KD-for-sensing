@@ -59,6 +59,7 @@ from kd_sensing.engine.trainer_runtime_helpers import (
     run_training_epoch_loop,
     shutdown_all_dataloaders,
 )
+from kd_sensing.engine.training_run_context import TrainingRunContext
 from kd_sensing.engine.training_extensions import (
     ExtensionContext,
     NoOpTrainingExtension,
@@ -186,6 +187,14 @@ def train(cfg: dict) -> dict:
 
 
 def _train_inner(cfg: dict) -> dict:
+    context = _prepare_training_run_context(cfg)
+    _build_training_resources(context)
+    _restore_training_state(context)
+    _run_training_loop_phase(context)
+    return _finalize_training_run(context)
+
+
+def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     objective = resolve_prediction_objective(cfg)
@@ -221,195 +230,240 @@ def _train_inner(cfg: dict) -> dict:
     num_pred = model_cfg.get("num_pred", 3)
     num_classes = model_cfg.get("num_classes", 64)
     seq_length = model_cfg.get("seq_length", 8)
-
-    primary_model = build_model(model_cfg["primary"]).to(device)
-    state = TrainingState(
-        start_epoch=training_cfg.get("start_epoch", 0),
-        best_early_stopping_value=_initial_early_stopping_value(early_stopping_mode),
-    )
-
-    task_criterion = build_task_criterion(cfg)
-    optimizer = build_optimizer(cfg, primary_model)
-    scheduler = build_scheduler(cfg, optimizer)
-    optimizer_groups = optimizer_param_group_summary(optimizer)
-    configure_csi_debug(primary_model, cfg)
-    startup_summary = build_startup_summary(cfg, primary_model, optimizer, scheduler, device=device)
-    write_startup_summary(run_dir, startup_summary)
-    print_startup_summary(startup_summary)
-    health_tracker = ModuleHealthTracker(primary_model) if training_health_debug_enabled(cfg) else None
-    csi_debug_records: list[dict] = []
-    grad_scaler = make_grad_scaler(cfg, amp_enabled)
-    extension_context = ExtensionContext(
+    return TrainingRunContext(
         cfg=cfg,
+        objective=objective,
+        objective_metadata=objective_metadata,
+        training_cfg=training_cfg,
+        early_stopping_metric=early_stopping_metric,
+        early_stopping_mode=early_stopping_mode,
+        run_dir=run_dir,
+        artifact_writer=artifact_writer,
+        dataloaders=dataloaders,
+        split_metadata=split_metadata,
+        normalization_artifacts=normalization_artifacts,
+        device=device,
+        throughput_metadata=throughput_metadata,
+        resolved_cfg=resolved_cfg,
+        config_diff=config_diff,
+        non_blocking=non_blocking,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
         task=task,
         model_cfg=model_cfg,
-        training_cfg=training_cfg,
-        primary_model=primary_model,
-        task_criterion=task_criterion,
-        run_dir=run_dir,
-        device=device,
         num_pred=num_pred,
         num_classes=num_classes,
         seq_length=seq_length,
-        non_blocking=non_blocking,
     )
-    extensions = _build_training_extensions(cfg)
-    extension_states = [extension.setup(extension_context) for extension in extensions]
-    for extension, extension_state in zip(extensions, extension_states):
-        state.checkpoint_loads.extend(extension.checkpoint_loads(extension_state))
 
-    recorder = EpochMetricsRecorder(
-        objective=objective,
-        objective_metadata=objective_metadata,
-        early_stopping_metric=early_stopping_metric,
-        early_stopping_mode=early_stopping_mode,
+
+def _build_training_resources(context: TrainingRunContext) -> None:
+    cfg = context.cfg
+    training_cfg = context.training_cfg
+    context.primary_model = build_model(context.model_cfg["primary"]).to(context.device)
+    context.state = TrainingState(
+        start_epoch=training_cfg.get("start_epoch", 0),
+        best_early_stopping_value=_initial_early_stopping_value(context.early_stopping_mode),
     )
-    state.history = recorder.history
-    state.epoch_logs = recorder.epoch_logs
-    checkpoint_manager = CheckpointManager(
+    context.task_criterion = build_task_criterion(cfg)
+    context.optimizer = build_optimizer(cfg, context.primary_model)
+    context.scheduler = build_scheduler(cfg, context.optimizer)
+    context.optimizer_groups = optimizer_param_group_summary(context.optimizer)
+    configure_csi_debug(context.primary_model, cfg)
+    context.startup_summary = build_startup_summary(
+        cfg,
+        context.primary_model,
+        context.optimizer,
+        context.scheduler,
+        device=context.device,
+    )
+    write_startup_summary(context.run_dir, context.startup_summary)
+    print_startup_summary(context.startup_summary)
+    context.health_tracker = ModuleHealthTracker(context.primary_model) if training_health_debug_enabled(cfg) else None
+    context.grad_scaler = make_grad_scaler(cfg, context.amp_enabled)
+    context.extension_context = ExtensionContext(
         cfg=cfg,
-        run_dir=run_dir,
-        primary_model=primary_model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        split_metadata=split_metadata,
-        normalization_artifacts=normalization_artifacts,
-        objective_metadata=objective_metadata,
-        early_stopping_metric=early_stopping_metric,
-        early_stopping_mode=early_stopping_mode,
-    )
-    early_stopping_metric, early_stopping_mode = checkpoint_manager.restore_if_needed(
-        state,
-        objective=objective,
-        device=device,
-    )
-    training_cfg["early_stopping_metric"] = early_stopping_metric
-    training_cfg["early_stopping_mode"] = early_stopping_mode
-    recorder.update_early_stopping(metric=early_stopping_metric, mode=early_stopping_mode)
-    batch_runner = BatchStepRunner(
-        cfg=cfg,
-        task=task,
-        model_cfg=model_cfg,
+        task=context.task,
+        model_cfg=context.model_cfg,
         training_cfg=training_cfg,
-        optimizer=optimizer,
-        grad_scaler=grad_scaler,
-        amp_enabled=amp_enabled,
-        amp_dtype=amp_dtype,
-        extension_context=extension_context,
-        extensions=extensions,
-        extension_states=extension_states,
-        health_tracker=health_tracker,
+        primary_model=context.primary_model,
+        task_criterion=context.task_criterion,
+        run_dir=context.run_dir,
+        device=context.device,
+        num_pred=context.num_pred,
+        num_classes=context.num_classes,
+        seq_length=context.seq_length,
+        non_blocking=context.non_blocking,
+    )
+    context.extensions = _build_training_extensions(cfg)
+    context.extension_states = [
+        extension.setup(context.extension_context)
+        for extension in context.extensions
+    ]
+    for extension, extension_state in zip(context.extensions, context.extension_states):
+        context.state.checkpoint_loads.extend(extension.checkpoint_loads(extension_state))
+    context.recorder = EpochMetricsRecorder(
+        objective=context.objective,
+        objective_metadata=context.objective_metadata,
+        early_stopping_metric=context.early_stopping_metric,
+        early_stopping_mode=context.early_stopping_mode,
+    )
+    context.state.history = context.recorder.history
+    context.state.epoch_logs = context.recorder.epoch_logs
+    context.checkpoint_manager = CheckpointManager(
+        cfg=cfg,
+        run_dir=context.run_dir,
+        primary_model=context.primary_model,
+        optimizer=context.optimizer,
+        scheduler=context.scheduler,
+        split_metadata=context.split_metadata,
+        normalization_artifacts=context.normalization_artifacts,
+        objective_metadata=context.objective_metadata,
+        early_stopping_metric=context.early_stopping_metric,
+        early_stopping_mode=context.early_stopping_mode,
     )
 
-    tensorboard_writer = _create_tensorboard_writer(cfg, run_dir)
-    _write_tensorboard_startup_scalars(tensorboard_writer, startup_summary)
-    progress_enabled = _progress_enabled(cfg)
-    total_epochs = training_cfg.get("epochs", 100)
-    early_stopping_min_epoch = _early_stopping_min_epoch(total_epochs)
-    validation_loader = dataloaders.get("validation", dataloaders["test"])
-    validation_split_name = "validation" if "validation" in dataloaders else "test"
+
+def _restore_training_state(context: TrainingRunContext) -> None:
+    context.early_stopping_metric, context.early_stopping_mode = context.checkpoint_manager.restore_if_needed(
+        context.state,
+        objective=context.objective,
+        device=context.device,
+    )
+    context.training_cfg["early_stopping_metric"] = context.early_stopping_metric
+    context.training_cfg["early_stopping_mode"] = context.early_stopping_mode
+    context.recorder.update_early_stopping(
+        metric=context.early_stopping_metric,
+        mode=context.early_stopping_mode,
+    )
+    context.batch_runner = BatchStepRunner(
+        cfg=context.cfg,
+        task=context.task,
+        model_cfg=context.model_cfg,
+        training_cfg=context.training_cfg,
+        optimizer=context.optimizer,
+        grad_scaler=context.grad_scaler,
+        amp_enabled=context.amp_enabled,
+        amp_dtype=context.amp_dtype,
+        extension_context=context.extension_context,
+        extensions=context.extensions,
+        extension_states=context.extension_states,
+        health_tracker=context.health_tracker,
+    )
+    context.tensorboard_writer = _create_tensorboard_writer(context.cfg, context.run_dir)
+    _write_tensorboard_startup_scalars(context.tensorboard_writer, context.startup_summary)
+    context.progress_enabled = _progress_enabled(context.cfg)
+    context.total_epochs = context.training_cfg.get("epochs", 100)
+    context.early_stopping_min_epoch = _early_stopping_min_epoch(context.total_epochs)
+    context.validation_loader = context.dataloaders.get("validation", context.dataloaders["test"])
+    context.validation_split_name = "validation" if "validation" in context.dataloaders else "test"
+
+
+def _run_training_loop_phase(context: TrainingRunContext) -> None:
     try:
         run_training_epoch_loop(
-            cfg=cfg,
-            dataloaders=dataloaders,
-            primary_model=primary_model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            batch_runner=batch_runner,
-            recorder=recorder,
-            checkpoint_manager=checkpoint_manager,
-            state=state,
-            extensions=extensions,
-            extension_states=extension_states,
-            extension_context=extension_context,
-            health_tracker=health_tracker,
-            csi_debug_records=csi_debug_records,
-            tensorboard_writer=tensorboard_writer,
-            objective=objective,
-            task_criterion=task_criterion,
-            device=device,
-            run_dir=run_dir,
-            training_cfg=training_cfg,
-            early_stopping_metric=early_stopping_metric,
-            early_stopping_mode=early_stopping_mode,
-            optimizer_groups=optimizer_groups,
-            progress_enabled=progress_enabled,
-            total_epochs=total_epochs,
-            early_stopping_min_epoch=early_stopping_min_epoch,
-            validation_loader=validation_loader,
+            cfg=context.cfg,
+            dataloaders=context.dataloaders,
+            primary_model=context.primary_model,
+            optimizer=context.optimizer,
+            scheduler=context.scheduler,
+            batch_runner=context.batch_runner,
+            recorder=context.recorder,
+            checkpoint_manager=context.checkpoint_manager,
+            state=context.state,
+            extensions=context.extensions,
+            extension_states=context.extension_states,
+            extension_context=context.extension_context,
+            health_tracker=context.health_tracker,
+            csi_debug_records=context.csi_debug_records,
+            tensorboard_writer=context.tensorboard_writer,
+            objective=context.objective,
+            task_criterion=context.task_criterion,
+            device=context.device,
+            run_dir=context.run_dir,
+            training_cfg=context.training_cfg,
+            early_stopping_metric=context.early_stopping_metric,
+            early_stopping_mode=context.early_stopping_mode,
+            optimizer_groups=context.optimizer_groups,
+            progress_enabled=context.progress_enabled,
+            total_epochs=context.total_epochs,
+            early_stopping_min_epoch=context.early_stopping_min_epoch,
+            validation_loader=context.validation_loader,
             validate_fn=validate,
         )
     finally:
-        shutdown_all_dataloaders(dataloaders)
-        _close_tensorboard_writer(tensorboard_writer)
+        shutdown_all_dataloaders(context.dataloaders)
+        _close_tensorboard_writer(context.tensorboard_writer)
 
-    final_test_metrics, final_test_checkpoint_load = _evaluate_final_test_split(
-        primary_model,
-        dataloaders["test"],
-        cfg,
-        task_criterion,
-        device,
-        run_dir=run_dir,
-        validation_split_name=validation_split_name,
+
+def _finalize_training_run(context: TrainingRunContext) -> dict:
+    context.final_test_metrics, context.final_test_checkpoint_load = _evaluate_final_test_split(
+        context.primary_model,
+        context.dataloaders["test"],
+        context.cfg,
+        context.task_criterion,
+        context.device,
+        run_dir=context.run_dir,
+        validation_split_name=context.validation_split_name,
     )
-    if final_test_checkpoint_load is not None:
-        state.checkpoint_loads.append(final_test_checkpoint_load)
+    if context.final_test_checkpoint_load is not None:
+        context.state.checkpoint_loads.append(context.final_test_checkpoint_load)
 
-    final_artifacts = artifact_writer.write_final_artifacts(
-        history=state.history,
-        epoch_logs=state.epoch_logs,
-        objective_metadata=objective_metadata,
-        early_stopping_metric=early_stopping_metric,
-        early_stopping_mode=early_stopping_mode,
-        best_early_stopping_value=state.best_early_stopping_value,
-        best_early_stopping_epoch=state.best_early_stopping_epoch,
-        epochs_without_improvement=state.epochs_without_improvement,
-        checkpoint_loads=state.checkpoint_loads,
-        optimizer_groups=optimizer_groups,
-        normalization_artifacts=normalization_artifacts,
-        checkpoint_registry=state.registry_checkpoint,
-        throughput_metadata=throughput_metadata,
-        split_metadata=split_metadata,
-        startup_summary=startup_summary,
-        config_diff=config_diff,
-        csi_debug_records=csi_debug_records,
-        best_top1_epoch=state.best_top1_epoch,
-        final_test_metrics=final_test_metrics,
-        primary_model=primary_model,
+    context.final_artifacts = context.artifact_writer.write_final_artifacts(
+        history=context.state.history,
+        epoch_logs=context.state.epoch_logs,
+        objective_metadata=context.objective_metadata,
+        early_stopping_metric=context.early_stopping_metric,
+        early_stopping_mode=context.early_stopping_mode,
+        best_early_stopping_value=context.state.best_early_stopping_value,
+        best_early_stopping_epoch=context.state.best_early_stopping_epoch,
+        epochs_without_improvement=context.state.epochs_without_improvement,
+        checkpoint_loads=context.state.checkpoint_loads,
+        optimizer_groups=context.optimizer_groups,
+        normalization_artifacts=context.normalization_artifacts,
+        checkpoint_registry=context.state.registry_checkpoint,
+        throughput_metadata=context.throughput_metadata,
+        split_metadata=context.split_metadata,
+        startup_summary=context.startup_summary,
+        config_diff=context.config_diff,
+        csi_debug_records=context.csi_debug_records,
+        best_top1_epoch=context.state.best_top1_epoch,
+        final_test_metrics=context.final_test_metrics,
+        primary_model=context.primary_model,
     )
     write_complete_status(
-        run_dir,
-        cfg,
+        context.run_dir,
+        context.cfg,
         kind="training",
         primary_metric={
-            "name": early_stopping_metric,
-            "mode": early_stopping_mode,
-            "value": float(state.best_early_stopping_value),
-            "epoch": int(state.best_early_stopping_epoch),
+            "name": context.early_stopping_metric,
+            "mode": context.early_stopping_mode,
+            "value": float(context.state.best_early_stopping_value),
+            "epoch": int(context.state.best_early_stopping_epoch),
         },
-        metrics_path=run_dir / "metrics.json",
-        best_checkpoint=_best_checkpoint_for_status(run_dir, state.registry_checkpoint),
+        metrics_path=context.run_dir / "metrics.json",
+        best_checkpoint=_best_checkpoint_for_status(context.run_dir, context.state.registry_checkpoint),
     )
     return {
-        "run_dir": str(run_dir),
-        "history": state.history,
-        "epoch_logs": state.epoch_logs,
-        "best_val_loss": state.best_val_loss,
-        "best_val_top1": state.best_val_top1,
-        "early_stopping": final_artifacts["early_stopping"],
-        "best_early_stopping_value": state.best_early_stopping_value,
-        "best_early_stopping_epoch": state.best_early_stopping_epoch,
-        "checkpoint_registry": state.registry_checkpoint,
-        "normalization_artifacts": normalization_artifacts,
-        "checkpoint_loads": state.checkpoint_loads,
-        "final_test_metrics": final_test_metrics,
-        "optimizer_param_groups": optimizer_groups,
-        "split_metadata": split_metadata,
-        "throughput": throughput_metadata,
-        "prediction_objective": objective_metadata,
-        "startup_summary": startup_summary,
-        "config_diff": config_diff,
-        "csi_first_batch_diagnostics": csi_debug_records,
+        "run_dir": str(context.run_dir),
+        "history": context.state.history,
+        "epoch_logs": context.state.epoch_logs,
+        "best_val_loss": context.state.best_val_loss,
+        "best_val_top1": context.state.best_val_top1,
+        "early_stopping": context.final_artifacts["early_stopping"],
+        "best_early_stopping_value": context.state.best_early_stopping_value,
+        "best_early_stopping_epoch": context.state.best_early_stopping_epoch,
+        "checkpoint_registry": context.state.registry_checkpoint,
+        "normalization_artifacts": context.normalization_artifacts,
+        "checkpoint_loads": context.state.checkpoint_loads,
+        "final_test_metrics": context.final_test_metrics,
+        "optimizer_param_groups": context.optimizer_groups,
+        "split_metadata": context.split_metadata,
+        "throughput": context.throughput_metadata,
+        "prediction_objective": context.objective_metadata,
+        "startup_summary": context.startup_summary,
+        "config_diff": context.config_diff,
+        "csi_first_batch_diagnostics": context.csi_debug_records,
     }
 
 

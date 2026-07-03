@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
         "script_version": SCRIPT_VERSION,
         "root": str(root),
         "checkpoint_policy": args.checkpoint_policy,
+        "split": args.split,
+        "max_batches": args.max_batches,
         "runs": {},
     }
     for run_name in args.runs:
@@ -120,15 +122,17 @@ def _evaluate_run(
         "checkpoint_resolution": resolution.as_dict(),
         "warnings": [*config_warnings, *resolution.warnings],
         "script_version": SCRIPT_VERSION,
+        "split_requested": split,
+        "max_batches": max_batches,
     }
     if cfg is None:
         print(f"[WARN] {run_name}: missing config")
         manifest["status"] = "missing_config"
-        return _missing_rows(run_name, requested_patterns, status="missing_config"), manifest
+        return _missing_rows(run_name, requested_patterns, status="missing_config", max_batches=max_batches), manifest
     if ckpt_path is None:
         print(f"[WARN] {run_name}: missing checkpoint for policy {checkpoint_policy}")
         manifest["status"] = "missing_checkpoint"
-        return _missing_rows(run_name, requested_patterns, status="missing_checkpoint"), manifest
+        return _missing_rows(run_name, requested_patterns, status="missing_checkpoint", max_batches=max_batches), manifest
 
     cfg.setdefault("output", {})["run_name"] = run_name
     if device_override:
@@ -174,9 +178,11 @@ def _evaluate_run(
                 config_hash=manifest["config_hash"],
                 status="ok",
                 model_modalities=modalities,
+                max_batches=max_batches,
             )
             for pattern in requested_patterns
         ]
+        _fill_avg_missing(rows, by_pattern)
         manifest.update(
             {
                 "status": "ok",
@@ -191,15 +197,19 @@ def _evaluate_run(
         print(f"[WARN] {run_name}: evaluation failed: {exc}")
         manifest["status"] = "eval_failed"
         manifest["warnings"].append(str(exc))
-        return _missing_rows(run_name, requested_patterns, status="eval_failed", checkpoint_path=ckpt_path), manifest
+        return _missing_rows(
+            run_name,
+            requested_patterns,
+            status="eval_failed",
+            checkpoint_path=ckpt_path,
+            max_batches=max_batches,
+        ), manifest
 
 
 def _load_run_config(root: Path, run_name: str) -> tuple[dict[str, Any] | None, Path | None, list[str]]:
     candidates = [
         root / run_name / "final_config.yaml",
         root / run_name / "resolved_config.yaml",
-        Path("configs/scene31/next_round") / f"{run_name}.yaml",
-        Path("configs/scene31/night_grid") / f"{run_name}.yaml",
         Path("configs/scene31") / f"{run_name}.yaml",
     ]
     warnings: list[str] = []
@@ -237,6 +247,7 @@ def _metrics_row(
     config_hash: str = "",
     status: str,
     model_modalities: list[str] | tuple[str, ...] | None = None,
+    max_batches: int | None = None,
 ) -> dict[str, Any]:
     standard_mask = _mask_text(pattern)
     model_mask = _mask_text(pattern, model_modalities) if model_modalities else ""
@@ -248,6 +259,7 @@ def _metrics_row(
         "eval_script_version": SCRIPT_VERSION,
         "config_hash": config_hash,
         "status": status,
+        "max_batches": "" if max_batches is None else max_batches,
         "pattern": pattern,
         "standard_mask": standard_mask,
         "model_mask": model_mask,
@@ -267,6 +279,7 @@ def _missing_rows(
     *,
     status: str,
     checkpoint_path: Path | str | None = None,
+    max_batches: int | None = None,
 ) -> list[dict[str, Any]]:
     return [
         _metrics_row(
@@ -275,9 +288,23 @@ def _missing_rows(
             {},
             checkpoint_path=checkpoint_path,
             status=status,
+            max_batches=max_batches,
         )
         for pattern in requested_patterns
     ]
+
+
+def _fill_avg_missing(rows: list[dict[str, Any]], by_pattern: dict[str, dict[str, Any]]) -> None:
+    avg_row = next((row for row in rows if row.get("pattern") == "avg_missing"), None)
+    if avg_row is None:
+        return
+    source = [row for name, row in by_pattern.items() if name not in {"full", "avg_missing"}]
+    for metric in METRICS:
+        values = [_float(row.get(metric)) for row in source if _isnum(_float(row.get(metric)))]
+        avg_row[metric] = _format(sum(values) / len(values)) if values else ""
+    counts = [_float(row.get("count") or row.get("sample_count") or row.get("num_samples")) for row in source]
+    counts = [value for value in counts if _isnum(value)]
+    avg_row["count"] = int(sum(counts)) if counts else ""
 
 
 def _delta_rows(rows: list[dict[str, Any]], baseline: str) -> list[dict[str, Any]]:

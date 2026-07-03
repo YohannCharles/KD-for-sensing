@@ -12,6 +12,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 from kd_sensing.data.datasets.mmw import MMWDataset  # noqa: E402
+from kd_sensing.data.datasets.mmw_family_adapter import MMWFamilyAdapter  # noqa: E402
 from kd_sensing.data.mmw.preparation import (  # noqa: E402
     ChannelFile,
     GROUP_SAFE_TIME_BLOCK,
@@ -393,6 +394,7 @@ def test_mmw_dataset_loads_mmwave_only_and_image_fusion_lazily(tmp_path: Path):
     )
     sample = mmwave_only[0]
 
+    assert isinstance(mmwave_only.family_adapter, MMWFamilyAdapter)
     assert {"input_beam", "target_beam", "mmwave", "sample_id", "domain_metadata"} <= set(sample)
     assert sample["input_beam"].shape == (8,)
     assert sample["target_beam"].shape == (3,)

@@ -30,6 +30,7 @@ SRC = ROOT / "src"
         ("kd-sensing-run-beambench-image-ae-gps-tableiii", "--output-root"),
         ("kd-sensing-tii-vlrg-transformer", "--execute"),
         ("kd-sensing-inspect-mmw-physics", "--max-samples"),
+        ("kd-sensing-model-architecture-summary", "--config"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):

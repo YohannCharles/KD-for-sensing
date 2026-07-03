@@ -34,7 +34,6 @@ CURRENT_PATHS = (
     "src/kd_sensing/baselines/tii_vlrg_transformer.py",
     "src/kd_sensing/cli/tii_vlrg_transformer.py",
     "configs/baselines/tii_vlrg_transformer_reproduction.yaml",
-    "scripts/run_csi_hardening_matrix.sh",
     "docs/project_surface_inventory.md",
     "docs/maintainer_context_index.yaml",
 )
@@ -60,6 +59,13 @@ DELETED_SURFACE_PATHS = (
     "configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml",
     "scripts/run_m2beam_single_modal_scene31_queue.sh",
     "scripts/run_rbma_strong_encoder_4gpu_queue.sh",
+    "scripts/run_btapa_experiments.sh",
+    "scripts/run_btapa_tau1_validation.sh",
+    "scripts/run_csi_hardening_matrix.sh",
+    "scripts/run_next_v3_experiments.sh",
+    "scripts/run_night_grid_8gpu.sh",
+    "scripts/run_proto_vs_btapa_8gpu.sh",
+    "scripts/run_scene31_next_round.sh",
     "scripts/analyze_csi_hardening_sweep.py",
 )
 
@@ -130,6 +136,24 @@ def test_pyproject_console_scripts_point_to_existing_functions():
         assert module_path.exists(), f"{command} points to missing module {module_name}"
         names = _top_level_names(module_path)
         assert function_name in names, f"{command} points to missing function {function_name}"
+
+
+def test_cli_modules_are_console_scripts_or_shared_helpers():
+    scripts = _pyproject()["project"]["scripts"]
+    console_modules = {target.split(":", 1)[0] for target in scripts.values()}
+    shared_helpers = {"kd_sensing.cli.common"}
+    violations: list[str] = []
+
+    for path in sorted((SRC / "kd_sensing/cli").glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        module_name = ".".join(path.with_suffix("").relative_to(SRC).parts)
+        names = _top_level_names(path)
+        has_runnable = "main" in names or "console_main" in names or "build_parser" in names
+        if has_runnable and module_name not in console_modules and module_name not in shared_helpers:
+            violations.append(f"{module_name} ({_rel(path)})")
+
+    assert not violations
 
 
 def test_current_paths_and_config_globs_are_real():
@@ -355,6 +379,19 @@ def test_scripts_are_classified_in_inventory():
     inventory = INVENTORY.read_text(encoding="utf-8")
     missing = [script for script in scripts if f"`{script}`" not in inventory]
     assert not missing
+
+
+def test_scene31_generated_yaml_is_not_tracked_surface():
+    generated_roots = (
+        ROOT / "configs/scene31/night_grid",
+        ROOT / "configs/scene31/next_round",
+    )
+    existing = [
+        _rel(path)
+        for root in generated_roots
+        for path in sorted(root.glob("*.yaml"))
+    ]
+    assert not existing
 
 
 def test_root_temp_runbooks_do_not_return():

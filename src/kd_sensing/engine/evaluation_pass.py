@@ -88,6 +88,21 @@ class _EvaluationPassState:
     saw_lidar: bool = False
 
 
+@dataclass(frozen=True)
+class _EvaluationBatchTargets:
+    labels: torch.Tensor
+    auxiliary_targets: dict[str, torch.Tensor]
+    prediction_targets: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _EvaluationBatchStep:
+    outputs: torch.Tensor
+    diagnostics: Mapping[str, Any]
+    prediction_loss: Any
+    loss: torch.Tensor
+
+
 def run_evaluation_pass(
     model,
     dataloader,
@@ -131,60 +146,47 @@ def run_evaluation_pass(
 
     with torch.no_grad():
         for step_index, batch in enumerate(dataloader):
-            batch = _apply_evaluation_difficulty(prepare_task_batch(batch), cfg, split_name, difficulty_seed, step_index)
-            _record_evaluation_batch_metadata(state, batch)
-            labels = prepare_task_labels(
+            batch = _prepare_evaluation_batch(
                 batch,
+                cfg=cfg,
+                split_name=split_name,
+                difficulty_seed=difficulty_seed,
+                step_index=step_index,
+            )
+            _record_evaluation_batch_metadata(state, batch)
+            targets = _prepare_evaluation_targets(
+                batch,
+                cfg=cfg,
                 num_pred=num_pred,
                 downsample_ratio=downsample_ratio,
                 device=device,
                 non_blocking=non_blocking,
             )
-            auxiliary_targets = prepare_task_auxiliary_targets(
-                batch,
-                num_pred=num_pred,
-                device=device,
-                non_blocking=non_blocking,
-            )
-            if "los_label" in auxiliary_targets:
-                state.los_bucket_labels.append(auxiliary_targets["los_label"].detach().cpu())
-            prediction_targets = prepare_prediction_targets(
-                labels=labels,
-                auxiliary_targets=auxiliary_targets,
-                cfg=cfg,
-            )
+            if "los_label" in targets.auxiliary_targets:
+                state.los_bucket_labels.append(targets.auxiliary_targets["los_label"].detach().cpu())
             with autocast_context(amp_enabled, device, amp_dtype):
-                set_csi_debug_batch_source(model, "val")
-                step = run_model_step(
+                step = _run_supervised_evaluation_step(
                     model,
-                    task,
                     batch,
-                    model_cfg=cfg["model"]["primary"],
+                    targets,
+                    cfg=cfg,
+                    criterion=criterion,
+                    task=task,
                     seq_length=seq_length,
                     num_pred=num_pred,
+                    num_classes=num_classes,
                     device=device,
                     non_blocking=non_blocking,
                     force_modality_mask=force_modality_mask,
                 )
-                outputs = step.logits
-                beam_loss = criterion(outputs.reshape(-1, num_classes), labels.flatten())
-                prediction_loss = compute_prediction_loss(
-                    step.model_output,
-                    prediction_targets,
-                    cfg,
-                    reference=outputs,
-                    beam_total_loss=beam_loss,
-                    beam_task_loss=beam_loss,
-                )
-                loss = prediction_loss.total
             _record_evaluation_batch_outputs(
                 state,
-                outputs=outputs,
-                labels=labels,
-                diagnostics=step.model_output.diagnostics,
-                auxiliary_targets=auxiliary_targets,
-                prediction_loss=prediction_loss,
-                loss=loss,
+                outputs=step.outputs,
+                labels=targets.labels,
+                diagnostics=step.diagnostics,
+                auxiliary_targets=targets.auxiliary_targets,
+                prediction_loss=step.prediction_loss,
+                loss=step.loss,
             )
     return _finalize_supervised_evaluation_result(
         state,
@@ -195,6 +197,97 @@ def run_evaluation_pass(
         enabled_modalities=enabled_modalities,
         num_classes=num_classes,
         downsample_ratio=downsample_ratio,
+    )
+
+
+def _prepare_evaluation_batch(
+    batch: Mapping[str, Any],
+    *,
+    cfg: dict[str, Any],
+    split_name: str,
+    difficulty_seed: int,
+    step_index: int,
+) -> dict[str, Any]:
+    prepared = prepare_task_batch(batch)
+    return _apply_evaluation_difficulty(prepared, cfg, split_name, difficulty_seed, step_index)
+
+
+def _prepare_evaluation_targets(
+    batch: Mapping[str, Any],
+    *,
+    cfg: dict[str, Any],
+    num_pred: int,
+    downsample_ratio: int,
+    device: torch.device,
+    non_blocking: bool,
+) -> _EvaluationBatchTargets:
+    labels = prepare_task_labels(
+        batch,
+        num_pred=num_pred,
+        downsample_ratio=downsample_ratio,
+        device=device,
+        non_blocking=non_blocking,
+    )
+    auxiliary_targets = prepare_task_auxiliary_targets(
+        batch,
+        num_pred=num_pred,
+        device=device,
+        non_blocking=non_blocking,
+    )
+    prediction_targets = prepare_prediction_targets(
+        labels=labels,
+        auxiliary_targets=auxiliary_targets,
+        cfg=cfg,
+    )
+    return _EvaluationBatchTargets(
+        labels=labels,
+        auxiliary_targets=auxiliary_targets,
+        prediction_targets=prediction_targets,
+    )
+
+
+def _run_supervised_evaluation_step(
+    model,
+    batch: Mapping[str, Any],
+    targets: _EvaluationBatchTargets,
+    *,
+    cfg: dict[str, Any],
+    criterion,
+    task: str,
+    seq_length: int,
+    num_pred: int,
+    num_classes: int,
+    device: torch.device,
+    non_blocking: bool,
+    force_modality_mask: torch.Tensor | None,
+) -> _EvaluationBatchStep:
+    set_csi_debug_batch_source(model, "val")
+    step = run_model_step(
+        model,
+        task,
+        batch,
+        model_cfg=cfg["model"]["primary"],
+        seq_length=seq_length,
+        num_pred=num_pred,
+        device=device,
+        non_blocking=non_blocking,
+        force_modality_mask=force_modality_mask,
+    )
+    outputs = step.logits
+    beam_loss = criterion(outputs.reshape(-1, num_classes), targets.labels.flatten())
+    prediction_loss = compute_prediction_loss(
+        step.model_output,
+        targets.prediction_targets,
+        cfg,
+        reference=outputs,
+        beam_total_loss=beam_loss,
+        beam_task_loss=beam_loss,
+    )
+    return _EvaluationBatchStep(
+        outputs=outputs,
+        diagnostics=step.model_output.diagnostics,
+        prediction_loss=prediction_loss,
+        loss=prediction_loss.total,
     )
 
 

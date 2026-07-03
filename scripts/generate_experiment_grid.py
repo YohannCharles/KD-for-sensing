@@ -14,13 +14,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate Scene31 night-grid experiment configs and manifest.")
     parser.add_argument("--base_config", default="configs/scene31/templates/main_v3_proto_es20_base.yaml")
     parser.add_argument("--out_dir", default="configs/scene31/night_grid")
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2])
     parser.add_argument("--overwrite", default="false")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     base_config = Path(args.base_config)
     out_dir = Path(args.out_dir)
@@ -58,6 +58,7 @@ def main() -> None:
         writer.writerows(rows)
     json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {len(rows)} manifest rows to {csv_path} and {json_path}.")
+    return 0
 
 
 def _grid_specs() -> list[dict[str, Any]]:
@@ -170,4 +171,4 @@ def _truthy(value: Any) -> bool:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -5,7 +5,7 @@
 快速查看某个配置的真实参数量和组件摘要：
 
 ```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+conda run -n kd_mm_beam kd-sensing-model-architecture-summary \
   --config configs/image/supervised.yaml \
   --format markdown
 ```
@@ -13,7 +13,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
 查看 JEPA visual sweep 候选的声明参数口径：
 
 ```bash
-conda run -n kd_mm_beam python -m kd_sensing.cli.model_architecture_summary \
+conda run -n kd_mm_beam kd-sensing-model-architecture-summary \
   --sweep-manifest configs/diagnostics/jepa_visual_architecture_sweep_manifest.yaml \
   --variant-id patch14_stage1_gps_query \
   --format csv

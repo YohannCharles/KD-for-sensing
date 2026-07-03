@@ -30,7 +30,7 @@
 - **AND** 索引 MUST 提醒不得恢复 retired route、旧兼容 wrapper 或退役实体 YAML
 
 ### Requirement: 索引覆盖机器可读治理表
-维护上下文索引 SHALL 保存可被测试消费的治理表。首批治理表 MUST 至少覆盖 Python 脚本入口 allowlist、shell orchestration allowlist、root fusion config allowlist、模型注册 allowlist、batch/runtime 分支 allowlist、热点 symbol/file budgets、快速健康检查命令和退役路线 token。
+维护上下文索引 SHALL 保存可被测试消费的治理表。首批治理表 MUST 至少覆盖 Python 脚本入口事实、root fusion config allowlist、模型注册 allowlist、batch/runtime 分支 allowlist、热点 symbol/file budgets、快速健康检查命令和退役路线 token。固定 shell orchestration 不再作为 current allowlist 维护。
 
 #### Scenario: 测试读取入口 allowlist
 - **WHEN** 架构边界测试检查 `scripts/`、`tools/analysis/` 或 package CLI 入口
@@ -82,7 +82,7 @@
 - **AND** 检查 MUST 只读取已跟踪源码、配置、文档、OpenSpec artifact、pyproject 和测试文件
 
 ### Requirement: Entrypoint owner metadata
-维护上下文索引 SHALL 为长期保留 entrypoint 记录 owner metadata。每个 package CLI、research diagnostic、dataset preparation 和 shell orchestration entry MUST 记录 owner module 或 owner script、responsibility、output boundary 和 lifecycle；Python thin alias 不再属于当前 entrypoint lifecycle。
+维护上下文索引 SHALL 为长期保留 entrypoint 记录 owner metadata。每个 package CLI、research diagnostic、dataset preparation、config generator 和 local/manual helper entry MUST 记录 owner module 或 owner script、responsibility、output boundary 和 lifecycle；Python thin alias 与固定 GPU shell 不再属于当前 entrypoint lifecycle。
 
 #### Scenario: entrypoint metadata 完整
 - **WHEN** entrypoint 出现在维护上下文索引

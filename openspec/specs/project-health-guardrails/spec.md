@@ -158,9 +158,14 @@
 - **AND** 测试 MUST 继续限制根目录无限增长
 
 #### Scenario: 脚本 allowlist 更新
-- **WHEN** shell orchestration、thin CLI alias 或 research diagnostic 脚本引用的配置路径变化
+- **WHEN** local/manual runner、thin CLI alias 或 research diagnostic 脚本引用的配置路径变化
 - **THEN** 脚本、inventory 和测试 allowlist MUST 同步更新
 - **AND** 当前脚本 MUST 不引用不存在的配置文件作为默认入口
+
+#### Scenario: 脚本生命周期来自 inventory
+- **WHEN** `scripts/` 下存在 tracked Python 或 shell 文件
+- **THEN** 架构边界检查 MUST 从 project surface inventory、current docs 或 OpenSpec lifecycle 读取其分类事实
+- **AND** 测试 MUST 不维护与 inventory 重复的完整脚本 allowlist，也不得通过放宽检查掩盖未分类脚本
 
 ### Requirement: 大规模表面清理必须有快速验收
 项目 MUST 为大规模表面清理提供快速验收命令，覆盖 OpenSpec 校验、架构边界、CLI help 和被修改入口的引用一致性。所有项目相关 Python 验收 MUST 使用 `kd_mm_beam` 环境。
@@ -172,7 +177,7 @@
 - **AND** 开发者 MUST 运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
 
 #### Scenario: 修改 CLI 或脚本入口后验收
-- **WHEN** 清理实现修改 console script、shell orchestration 或可视化入口
+- **WHEN** 清理实现修改 console script、local/manual runner 或可视化入口
 - **THEN** 开发者 MUST 运行对应 `--help` 或无副作用 smoke 检查
 - **AND** 检查 MUST 不读取真实 dataset、不启动训练、不写入新的源码内产物
 
@@ -220,3 +225,36 @@
 - **THEN** 文档 MUST 将 `baselines/` 描述为 workflow/paper reproduction owner
 - **AND** 文档 MUST 不将 `baselines/` 描述为所有 baseline 模型的统一容器
 
+### Requirement: Architecture boundary tests remain right-sized during streamlining
+架构边界测试 MUST 在本 change 中继续验证结构事实和高风险回归，但不得复制完整源码目录清单、完整 OpenSpec prose、完整 scripts allowlist、完整 config 数据库或完整 hotspot budget 表。大型事实以 inventory、current specs、pyproject、真实 tracked paths 和 focused tests 为权威。
+
+#### Scenario: 保留结构性失败
+- **WHEN** current docs/specs 引用不存在的 config、console script、module path、public owner 或 lifecycle 分类
+- **THEN** architecture boundary tests MUST 失败并指向修正文档、恢复文件或更新 lifecycle 分类
+- **AND** 测试 MUST 不通过扩大阈值掩盖真实漂移
+
+#### Scenario: 删除重复治理镜像
+- **WHEN** 架构边界测试维护与 inventory、pyproject 或 OpenSpec 重复的大型 allowlist
+- **THEN** 本 change MUST 删除该镜像或改为从权威来源直接推导
+- **AND** 测试 MUST 仍覆盖旧入口回流、tracked runtime artifact、重依赖 barrel、facade 回流和 current path 引用失效
+
+### Requirement: Streamlining waves have layered validation
+每个 streamlining wave MUST 有分层验证：OpenSpec strict、architecture boundaries、目标领域 focused tests、公开 CLI/help smoke 或 import smoke。所有项目相关 Python 验证 MUST 使用 `conda run -n kd_mm_beam ...`。
+
+#### Scenario: Wave focused validation
+- **WHEN** wave 触碰 dataset、trainer/evaluation、model forward、diagnostics、config/scripts/import surface 或 docs/specs guardrail
+- **THEN** tasks MUST 列出对应 focused test 命令
+- **AND** wave 完成说明 MUST 记录实际运行结果、未运行原因和剩余风险
+
+#### Scenario: Final regression
+- **WHEN** 所有 waves 完成
+- **THEN** 开发者 MUST 运行 `openspec validate streamline-project-architecture-waves --strict`、`openspec validate --all --strict` 和 `conda run -n kd_mm_beam pytest -q`
+- **AND** 若全量 pytest 因环境或本地数据缺失无法完成，最终说明 MUST 列出替代 focused 验证
+
+### Requirement: Guardrails reject mixed runtime artifacts
+本 change 的健康护栏 MUST 继续拒绝 tracked runtime artifacts，并 MUST 允许 ignored cache 噪声不影响常规测试。实施不得把 `dataset/` 真实数据、`outputs/`、`logs/`、cache、checkpoint、TensorBoard event、`.pytest_cache` 或 `__pycache__` 纳入源码变更。
+
+#### Scenario: Tracked artifact failure
+- **WHEN** git tracked files 包含 `__pycache__`、`.pyc`、`.pytest_cache`、`outputs/`、`logs/`、cache、checkpoint、TensorBoard event 或非允许权重文件
+- **THEN** architecture boundary 或 surface guard MUST 失败
+- **AND** 未跟踪/ignored 的同类本地产物 MUST 不驱动常规架构边界测试失败

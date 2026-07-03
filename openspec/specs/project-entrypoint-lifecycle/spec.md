@@ -2,9 +2,7 @@
 
 ## Purpose
 定义项目 CLI、脚本、研究入口、本地手工入口和退役入口的生命周期边界，避免临时 wrapper、旧 workflow 或本地队列脚本重新变成当前推荐入口。
-
 ## Requirements
-
 ### Requirement: 一次性研究脚本不得长期占据 current surface
 只服务已完成调试结论、历史 sweep 汇总或人工复盘的一次性脚本 MUST 从当前支持面删除、归档为历史文档，或明确标为 local/manual research artifact。保留脚本时 MUST 记录 owner、输入输出边界和仍需运行的 focused 验证；删除脚本时 MUST 保留必要结论和 caveat 到 docs 或报告。
 
@@ -89,12 +87,12 @@ Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper �
 - **AND** 文档 MUST 不把该脚本描述为训练、评估、预处理或 manifest 导出的唯一推荐入口
 
 ### Requirement: MMW 入口生命周期 inventory 必须同步
-新增或保留的 MMW Python 脚本、shell orchestration 和研究支持入口 MUST 具有可审计生命周期。项目表面积 inventory 与架构边界测试 allowlist MUST 同步记录入口类别、保留原因、推荐入口关系、输出产物边界和删除或收敛条件。
+新增或保留的 MMW Python 脚本、数据准备脚本和研究支持入口 MUST 具有可审计生命周期。固定 shell orchestration 已退役；项目表面积 inventory 与架构边界测试 MUST 同步记录入口类别、保留原因、推荐入口关系、输出产物边界和删除或收敛条件。
 
 #### Scenario: 新增 MMW 脚本入口需要 inventory
 - **WHEN** 开发者新增 `scripts/`、`scripts/mmw/` 或 `tools/analysis/` 下的 MMW Python 或 shell 入口
 - **THEN** 架构边界检查 MUST 要求该入口出现在项目表面积 inventory 或等价生命周期文档中
-- **AND** inventory MUST 说明该入口属于 package CLI、研究诊断脚本、数据准备脚本或 shell orchestration 中的哪一类
+- **AND** inventory MUST 说明该入口属于 package CLI、研究诊断脚本、数据准备脚本、config generator 或 local/manual helper 中的哪一类
 - **AND** 对应测试 allowlist MUST 与 inventory 保持一致
 
 #### Scenario: 未登记入口导致表面积检查失败
@@ -104,10 +102,10 @@ Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper �
 - **AND** 失败信息 MUST 指向更新 inventory、删除重复入口或改为包内 CLI 的修复路径
 
 #### Scenario: 重复 MMW orchestration 不成为推荐入口
-- **WHEN** 多个 shell orchestration 覆盖同一 MMW quick validation 工作流
+- **WHEN** 多个本地脚本或 shell wrapper 覆盖同一 MMW quick validation 工作流
 - **THEN** inventory MUST 标记推荐入口和补充 profile 的关系
-- **AND** README 或 docs MUST 不把重复 shell wrapper 描述为唯一 canonical 入口
-- **AND** 若已有包内 CLI 覆盖同一工作流，重复 shell wrapper MUST 标记为短期研究脚本或删除
+- **AND** README 或 docs MUST 不把重复 wrapper 描述为唯一 canonical 入口
+- **AND** 若已有包内 CLI 覆盖同一工作流，重复 wrapper MUST 删除或降级为一次性本地命令
 
 ### Requirement: 退役旧模态诊断脚本入口
 项目 MUST 不再把模态失衡时期的独立模态子集和模态扰动研究脚本作为长期维护入口。通用模态 subset、mask 或 perturbation 调试能力如需保留，MUST 通过包内 CLI、配置化 evaluation pass、JEPA benchmark、CSI 当前 workflow 或明确的内部 helper 承载，并 MUST 在脚本 allowlist 和项目表面积 inventory 中体现当前边界。viewer manifest 和 BGAM 已退役，MUST NOT 作为当前承载入口。
@@ -205,7 +203,7 @@ Top8 selector 训练/plot/compare、GPS coarse anchor、GPS prior residual/delta
 
 #### Scenario: 旧脚本路径不回流
 - **WHEN** 开发者运行架构边界测试
-- **THEN** 测试 MUST 验证被退役的 MMW 旁支诊断脚本和非 CSI shell orchestration 脚本未重新出现在源码树 current allowlist 中
+- **THEN** 测试 MUST 验证被退役的 MMW 旁支诊断脚本和固定 shell orchestration 脚本未重新出现在源码树 current allowlist 中
 - **AND** 测试 MUST 指向当前 package CLI、MMW GPS v2 plotter/comparison、JEPA visual analysis、GPS shortcut benchmark 或 CSI hardening runner 作为迁移方向
 
 ### Requirement: 当前推荐 workflow 排除 Top8 residual coarse 路线
@@ -222,13 +220,13 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 - **AND** 检查 MAY 断言这些入口已不存在
 
 ### Requirement: 优先退役 workflow 不得作为当前实验入口
-当前实验 workflow MUST 不再推荐、声明或验证 AMR-Net_gps_image mock/source-audit runner、JEPA-MSAC mock/paper-aligned runner、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*` 脚本，或非 CSI 的本地 shell orchestration 脚本。历史背景 MAY 保留，但 MUST 不提供 current 运行命令。
+当前实验 workflow MUST 不再推荐、声明或验证 AMR-Net_gps_image mock/source-audit runner、JEPA-MSAC mock/paper-aligned runner、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*` 脚本，或固定 GPU/local shell orchestration 脚本。历史背景 MAY 保留，但 MUST 不提供 current 运行命令。
 
 #### Scenario: 实验矩阵不推荐退役 workflow
 - **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
 - **THEN** 文档 MUST 不推荐运行 `kd-sensing-run-amr-net-gps-image`
 - **AND** 文档 MUST 不推荐运行 `kd-sensing-run-jepa-msac`
-- **AND** 文档 MUST 不推荐运行被退役的 MMW 旁支诊断脚本或非 CSI shell orchestration 脚本
+- **AND** 文档 MUST 不推荐运行被退役的 MMW 旁支诊断脚本或固定 shell orchestration 脚本
 
 #### Scenario: 配置加载拒绝退役配置
 - **WHEN** 用户加载 `configs/baselines/amr_net_gps_image.yaml`、`configs/pretraining/jepa_msac_s32_smoke.yaml` 或 `configs/pretraining/jepa_msac_s32_paper.yaml`
@@ -251,10 +249,10 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 ### Requirement: Local/manual 实验面必须可收敛
 本地 Scene31、RBMA missing-modality、strong encoder checkpoint 复用和 M2Beam 单模态训练 overlay MUST 被分类为 local/manual experiment surface。它们 MAY 保留为人工运行材料，但 MUST 有 owner、输出边界、删除触发条件和不升级为 package CLI 的说明。
 
-#### Scenario: 固定 GPU queue shell 分类
-- **WHEN** `scripts/run_next_v3_experiments.sh`、`scripts/run_rbma_strong_encoder_4gpu_queue.sh` 或 `scripts/run_m2beam_single_modal_scene31_queue.sh` 被保留
-- **THEN** inventory MUST 将其分类为 local/manual shell orchestration
-- **AND** 文档 MUST 说明输出仅允许进入 ignored `logs/` 和 `outputs/scene31/`
+#### Scenario: 固定 GPU queue shell 删除
+- **WHEN** `scripts/run_next_v3_experiments.sh`、`scripts/run_rbma_strong_encoder_4gpu_queue.sh`、`scripts/run_m2beam_single_modal_scene31_queue.sh` 或其它固定 GPU queue shell 出现在源码树
+- **THEN** inventory 和架构边界检查 MUST 将其视为退役回流
+- **AND** 文档 MUST 指向 `kd-sensing-train --config <yaml>`、manifest generator 或 Python diagnostic helper
 
 #### Scenario: 统一 runner 覆盖后删除 shell
 - **WHEN** 一个 local/manual runner 或文档命令已经覆盖同等配置列表、dry-run、并发和 resume 需求
@@ -288,7 +286,7 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 - **AND** 缺少登记时架构边界测试 MUST 失败
 
 #### Scenario: 脚本入口包含训练循环 marker
-- **WHEN** 保留的 `scripts/` research diagnostic、dataset preparation 或 shell orchestration 包含大段训练循环、模型 forward、optimizer step 或重复 package CLI 主逻辑
+- **WHEN** 保留的 `scripts/` research diagnostic、dataset preparation、config generator 或 local/manual helper 包含大段训练循环、模型 forward、optimizer step 或重复 package CLI 主逻辑
 - **THEN** 健康检查 MUST 失败或要求重新分类为 owner module
 - **AND** 修复路径 MUST 是委托包内实现或创建正式 package module
 
@@ -314,8 +312,8 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 - **AND** 未登记脚本 MUST 不作为 current surface 静默通过
 
 #### Scenario: 固定 GPU shell 不作为 package workflow
-- **WHEN** 保留脚本只固定 GPU 映射、日志目录和一组本地 YAML
-- **THEN** 健康护栏 MUST 要求其分类为 local/manual shell orchestration
+- **WHEN** 新增脚本只固定 GPU 映射、日志目录和一组本地 YAML
+- **THEN** 健康护栏 MUST 要求删除该脚本或改为一次性本地命令
 - **AND** README quickstart MUST 不把它升级为 package CLI 或长期 workflow
 
 ### Requirement: 旧实验 facade 不得回流实现
@@ -330,3 +328,32 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 - **WHEN** package CLI 只解析参数并调用当前 owner module
 - **THEN** 健康护栏 MUST 允许该引用
 - **AND** 允许范围 MUST 不扩展到内部 runtime 模块从 facade 导入 helper
+
+### Requirement: Scripts are classified before retention
+`scripts/` 和 `tools/analysis/` 中保留或新增的入口 MUST 明确分类为数据准备、研究诊断、config generator、figure helper、local/manual experiment helper 或 package CLI 缺口补充。重复 package CLI 的 Python thin alias 和固定 GPU queue shell MUST 删除；local/manual helper MUST 不被 README、AGENTS、docs 或 OpenSpec 写成长期推荐入口。
+
+#### Scenario: 新脚本有 lifecycle
+- **WHEN** 本 change 保留、新增或修改 `scripts/*.py`、`scripts/**/*.py` 或本地运行入口
+- **THEN** inventory 或 tasks MUST 记录该脚本 owner、lifecycle、是否 local/manual、输出边界和替代 package CLI
+- **AND** 架构边界测试 MUST 拒绝未分类长期脚本入口
+
+#### Scenario: Thin alias 被删除
+- **WHEN** 脚本只解析参数后调用已有 package CLI 或包内 CLI 的同名 main
+- **THEN** pyproject console script 或包内 CLI MUST 成为推荐入口
+- **AND** 该 thin alias MUST 删除或被明确标注为短期 local/manual helper 并登记删除条件
+
+### Requirement: Local experiment orchestration cannot become hidden public API
+本地批量实验、night-grid、next-round、seed sweep、fresh eval 汇总或类似脚本 MAY 保留为 local/manual workflow，但必须声明不作为稳定 public API。它们 MUST 写入 ignored outputs/logs，且不得提交 checkpoint、metrics、fresh eval 结果或真实运行产物。
+
+#### Scenario: Local manual runner
+- **WHEN** local/manual runner 生成或消费 Scene31、RBMA、BTAPA、night-grid 或 next-round 配置
+- **THEN** 脚本 MUST 支持 dry-run 或无副作用 sanity path
+- **AND** 文档 MUST 指向输出边界并说明真实训练产物不提交
+
+### Requirement: CLI glue stays thin
+Package CLI 文件 MUST 只承担参数解析、配置覆盖、轻量 IO、调用 owner module 和 user-facing exit code。真实 workflow、training loop、evaluation loop、dataset preparation、benchmark suite 或 report builder MUST 位于 owner module。
+
+#### Scenario: 修改 package CLI
+- **WHEN** 本 change 修改 `src/kd_sensing/cli/` 下入口
+- **THEN** CLI 文件 MUST 不复制训练、评估、dataset parsing 或 benchmark aggregation 主逻辑
+- **AND** 对应 `kd-sensing-* --help` 或包内 CLI smoke MUST 继续可运行

@@ -5,13 +5,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
-from kd_sensing.data.datasets.mmw_columns import (
-    _ensure_bs_gps_columns,
-    _ensure_csi_columns,
-    _ensure_radar_columns,
-    _norm_path,
-)
+from kd_sensing.data.datasets.mmw_columns import _norm_path
+from kd_sensing.data.datasets.mmw_family_adapter import MMWFamilyAdapter, prepare_mmw_family_init
 from kd_sensing.data.datasets.mmw_geometry import (
     _availability_json_from_row,
     _empty_geometry,
@@ -23,17 +18,11 @@ from kd_sensing.data.datasets.mmw_geometry import (
 from kd_sensing.data.datasets.mmw_radio_semantic import (
     _beam_power_for_horizon,
     _collate_safe_value,
-    _json_scalar,
     _optional_row_int,
-    _path_semantic_config,
     _radio_label_for_horizon,
-    _radio_semantic_config,
 )
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
-from kd_sensing.data.layouts import mmw_condition_layout
 from kd_sensing.data.mmw.path_semantics import (
-    PathFeatureBuilder,
-    PathSemanticLabelBuilder,
     load_path_payload,
     map_path_fields,
 )
@@ -47,11 +36,8 @@ from kd_sensing.data.mmw.physical_labels import (
     metadata_matches,
     physical_cache_path,
     physical_label_stats,
-    resolve_physical_label_config,
 )
-from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder
 from kd_sensing.data.transform_ops.io import joined_resource
-from kd_sensing.data.datasets.mmw_physics_adapter import build_mmw_physics_targets
 from kd_sensing.registries import DATASETS
 
 
@@ -81,210 +67,47 @@ class MMWDataset(DeepSense6GDataset):
         return_beam_power: bool | None = None,
         **kwargs: Any,
     ) -> None:
-        scenario = str(scene or scene_slug or scene_id or "town10_skybridge_seed24")
-        beam_label_mapping = resolve_beam_label_mapping(
-            beam_label_calibration or kwargs.pop("beam_label_calibration", None),
-            scene=scenario,
-            default_num_classes=int(kwargs.get("num_classes", 64)),
-        )
-        layout = mmw_condition_layout(condition)
-        root = data_root or layout.root
-        prepared_prefix = Path("Prepared") / scenario / "splits"
-        physics_supervision_cfg = physics_supervision or kwargs.get("physics_supervision")
-        csi_target_enabled = bool(physics_supervision_cfg)
-        if csi_target_enabled:
-            raw_modalities = kwargs.get("enabled_modalities")
-            if raw_modalities is None:
-                kwargs["use_csi"] = True
-            elif "csi" not in {str(item) for item in raw_modalities}:
-                kwargs["enabled_modalities"] = [*raw_modalities, "csi"]
-        csi_enabled = (
-            bool(kwargs.get("use_csi", False))
-            or "csi" in set(kwargs.get("enabled_modalities") or ())
-            or csi_target_enabled
-        )
-        gps_enabled = bool(kwargs.get("use_gps", False)) or "gps" in set(kwargs.get("enabled_modalities") or ())
-        radar_enabled = "radar" in set(kwargs.get("enabled_modalities") or ())
-        if radar_enabled:
-            if kwargs.get("csv_name"):
-                kwargs["csv_name"] = _ensure_radar_columns(root, str(kwargs["csv_name"]), scenario)
-            if kwargs.get("root_csv"):
-                kwargs["root_csv"] = _ensure_radar_columns(root, str(kwargs["root_csv"]), scenario)
-            train_csv_name = _ensure_radar_columns(root, train_csv_name or str(prepared_prefix / "train.csv"), scenario)
-            test_csv_name = _ensure_radar_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
-            if val_csv_name:
-                val_csv_name = _ensure_radar_columns(root, val_csv_name, scenario)
-        if csi_enabled:
-            if kwargs.get("csv_name"):
-                kwargs["csv_name"] = _ensure_csi_columns(root, str(kwargs["csv_name"]), scenario)
-            if kwargs.get("root_csv"):
-                kwargs["root_csv"] = _ensure_csi_columns(root, str(kwargs["root_csv"]), scenario)
-            train_csv_name = _ensure_csi_columns(root, train_csv_name or str(prepared_prefix / "train.csv"), scenario)
-            test_csv_name = _ensure_csi_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
-            if val_csv_name:
-                val_csv_name = _ensure_csi_columns(root, val_csv_name, scenario)
-        if gps_enabled:
-            if kwargs.get("csv_name"):
-                kwargs["csv_name"] = _ensure_bs_gps_columns(root, str(kwargs["csv_name"]), scenario)
-            if kwargs.get("root_csv"):
-                kwargs["root_csv"] = _ensure_bs_gps_columns(root, str(kwargs["root_csv"]), scenario)
-            train_csv_name = _ensure_bs_gps_columns(root, train_csv_name or str(prepared_prefix / "train.csv"), scenario)
-            test_csv_name = _ensure_bs_gps_columns(root, test_csv_name or str(prepared_prefix / "test.csv"), scenario)
-            if val_csv_name:
-                val_csv_name = _ensure_bs_gps_columns(root, val_csv_name, scenario)
-        if kwargs.get("image_cache_dir") is None:
-            kwargs["image_cache_dir"] = layout.image_cache_root
-        if kwargs.get("lidar_cache_dir") is None and (
-            bool(kwargs.get("use_lidar", False)) or "lidar" in set(kwargs.get("enabled_modalities") or ())
-        ):
-            kwargs["lidar_cache_dir"] = layout.lidar_bev_cache_root
-        super().__init__(
-            data_root=root,
-            train_csv_name=train_csv_name or str(prepared_prefix / "train.csv"),
-            test_csv_name=test_csv_name or str(prepared_prefix / "test.csv"),
+        init = prepare_mmw_family_init(
+            condition=condition,
+            scene=scene,
+            scene_id=scene_id,
+            scene_slug=scene_slug,
+            data_root=data_root,
+            train_csv_name=train_csv_name,
+            test_csv_name=test_csv_name,
             val_csv_name=val_csv_name,
+            beam_label_calibration=beam_label_calibration,
+            physics_supervision=physics_supervision,
+            kwargs=kwargs,
+        )
+        super().__init__(
+            data_root=init.root,
+            train_csv_name=init.train_csv_name,
+            test_csv_name=init.test_csv_name,
+            val_csv_name=init.val_csv_name,
             scene=31,
-            beam_label_mapping=beam_label_mapping,
-            **kwargs,
+            beam_label_mapping=init.beam_label_mapping,
+            **init.kwargs,
         )
-        self.condition = str(condition).strip().lower()
-        self.scene_slug = scenario
-        self.scene_id = scenario
-        self.return_geometry = bool(return_geometry or kwargs.get("geometry_aware", False))
-        self.radio_semantic_config = _radio_semantic_config(radio_semantic or kwargs.get("radio_semantic"))
-        self.radio_semantic_enabled = bool(self.radio_semantic_config.get("enabled", False))
-        self.path_semantic_config = _path_semantic_config(
-            path_semantic or kwargs.get("path_semantic"),
-            field_map=field_map or kwargs.get("field_map"),
+        self.family_adapter = MMWFamilyAdapter(
+            self,
+            condition=init.condition,
+            scenario=init.scenario,
+            return_geometry=return_geometry,
+            geometry_fields=geometry_fields,
+            return_modality_availability=return_modality_availability,
+            radio_semantic=radio_semantic,
+            path_semantic=path_semantic,
+            physical_label=physical_label,
+            physics_supervision_config=init.physics_supervision_config,
+            field_map=field_map,
+            return_beam_power=return_beam_power,
+            kwargs=init.kwargs,
         )
-        self.path_semantic_enabled = bool(self.path_semantic_config.get("enabled", False))
-        self.physical_label_config = resolve_physical_label_config(physical_label or kwargs.get("physical_label"))
-        self.physical_label_enabled = bool(self.physical_label_config.enabled)
-        self.physics_supervision_config = physics_supervision_cfg
-        self.physics_supervision_enabled = bool(self.physics_supervision_config)
-        if isinstance(self.physics_supervision_config, dict):
-            self.physics_supervision_config.setdefault("num_pred", int(self.num_pred))
-            if self.physics_supervision_config.get("csi_input_mode") == "oracle_full":
-                if not bool(self.physics_supervision_config.get("allow_oracle_full_csi_input", False)):
-                    raise RuntimeError("csi_input_mode='oracle_full' requires allow_oracle_full_csi_input=true.")
-                print(
-                    "WARNING: Current full CSI is used as model input. This setting is only for oracle upper-bound baseline and may cause label leakage.",
-                    flush=True,
-                )
-        self.return_beam_power = bool(
-            return_beam_power
-            if return_beam_power is not None
-            else self.radio_semantic_config.get(
-                "return_beam_power",
-                self.radio_semantic_enabled
-                or (self.path_semantic_enabled and self.path_semantic_config.get("fallback_if_missing") == "radio_power"),
-            )
-        )
-        self.radio_label_builder = RadioSemanticLabelBuilder.from_config(
-            self.radio_semantic_config,
-            num_beams=int(self.radio_semantic_config.get("num_beams", kwargs.get("num_classes", 64))),
-            group_size=int(self.radio_semantic_config.get("group_size", kwargs.get("group_size", 8))),
-        )
-        self.path_feature_builder = PathFeatureBuilder.from_config(self.path_semantic_config)
-        self.path_label_builder = PathSemanticLabelBuilder.from_config(
-            self.path_semantic_config,
-            group_size=int(self.path_semantic_config.get("group_size", kwargs.get("group_size", 8))),
-        )
-        self.return_path_params = bool(self.path_semantic_config.get("return_path_params", False))
-        self.return_raw_path_params = bool(self.path_semantic_config.get("return_raw_path_params", False))
-        self.geometry_fields = tuple(
-            geometry_fields
-            or kwargs.get("geometry_fields")
-            or (
-                "relative_range",
-                "relative_azimuth",
-                "relative_elevation",
-                "heading_difference",
-                "relative_velocity",
-                "local_x",
-                "local_y",
-                "local_z",
-            )
-        )
-        self.return_modality_availability = bool(return_modality_availability)
-        self._mmw_rows = pd.read_csv(self.root_csv, na_values="").fillna("") if self.root_csv.exists() else pd.DataFrame()
-        self._beam_to_channel_path = self._load_beam_to_channel_map()
-        self._physical_label_cache: dict[str, Any] | None = self._load_or_build_physical_label_cache() if self.physical_label_enabled else None
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         sample = super().__getitem__(idx)
-        if self.return_geometry:
-            geometry, mask = self._geometry_for_index(idx)
-            sample["geometry"] = geometry
-            sample["geometry_mask"] = mask
-            sample["geometry_fields"] = list(self.geometry_fields)
-        if self.return_modality_availability:
-            sample["modality_availability"] = self._availability_for_index(idx)
-        if self.radio_semantic_enabled or self.return_beam_power:
-            radio_payload = self._radio_semantic_for_index(idx, sample)
-            sample.update(radio_payload)
-        if self.path_semantic_enabled:
-            sample.update(self._path_semantic_for_index(idx, sample))
-        if self.physical_label_enabled:
-            sample.update(self._physical_label_for_index(idx, sample))
-        if self.return_metadata and idx < len(self._mmw_rows):
-            row = self._mmw_rows.iloc[idx]
-            metadata = dict(sample.get("metadata", {}))
-            for key in (
-                "condition",
-                "town",
-                "sensor_scenario",
-                "channel_scenario",
-                "sample_id",
-                "target_sample_id",
-                "coarse_sector",
-                "relative_azimuth_bin",
-            ):
-                if key in row:
-                    metadata[key] = _json_scalar(row[key])
-            metadata.setdefault("dataset_family", "MMW")
-            metadata.update(self.beam_label_mapping.metadata())
-            if self.radio_semantic_enabled:
-                metadata.setdefault("radio_semantic_mode", self.radio_label_builder.mode)
-                metadata.setdefault("radio_semantic_config_version", self.radio_label_builder.config_version)
-                metadata.setdefault("radio_semantic_available", bool(sample.get("radio_semantic_available", torch.tensor(False)).any().item()))
-            if self.path_semantic_enabled:
-                metadata.setdefault("path_semantic_mode", self.path_label_builder.mode)
-                metadata.setdefault("path_semantic_available", bool(sample.get("path_valid", torch.tensor(False)).any().item()))
-                metadata.setdefault("path_descriptor_dim", int(sample.get("path_descriptor", torch.empty(0)).shape[-1]))
-            if self.physical_label_enabled:
-                metadata.setdefault("beamspace_power_available", bool(sample.get("beamspace_power_available", torch.tensor(False)).any().item()))
-                metadata.setdefault("beamspace_power_source", sample.get("beamspace_power_source", []))
-                metadata.setdefault("beamspace_power_unavailable_reason", sample.get("beamspace_power_unavailable_reason", []))
-                if isinstance(self._physical_label_cache, dict):
-                    metadata.setdefault("physical_label_stats", self._physical_label_cache.get("metadata", {}).get("stats", {}))
-            if "modality_availability" in sample:
-                metadata.setdefault("modality_availability", sample["modality_availability"])
-            metadata.setdefault("scenario", self.scene_slug)
-            sample["metadata"] = _collate_safe_value(metadata)
-        metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
-        sample.setdefault("sample_id", str(metadata.get("sample_id", f"{self.scene_slug}:{idx}")))
-        sample.setdefault(
-            "domain_metadata",
-            _collate_safe_value(
-                {
-                    "dataset_family": "MMW",
-                    "condition": self.condition,
-                    "town": metadata.get("town", ""),
-                    "scenario": self.scene_slug,
-                    "scene_slug": self.scene_slug,
-                    "beam_label_space": self.beam_label_mapping.label_space,
-                    "beam_label_mapping_fingerprint": self.beam_label_mapping.fingerprint,
-                }
-            )
-        )
-        if self.physics_supervision_enabled:
-            metadata = dict(sample.get("metadata", {})) if isinstance(sample.get("metadata"), dict) else {}
-            metadata.setdefault("data_root", str(self.data_root))
-            sample["metadata"] = _collate_safe_value(metadata)
-            sample["physics_targets"] = build_mmw_physics_targets(sample, self.physics_supervision_config)
-            _apply_physics_sample_fields(sample)
-        return sample
+        return self.family_adapter.augment_sample(idx, sample)
 
     def _target_raw_beam_label_for_index(self, idx: int, horizon: int, beam_path: str) -> int:
         explicit = self._explicit_target_raw_label(idx, horizon)
@@ -684,34 +507,6 @@ class MMWDataset(DeepSense6GDataset):
         payload["beam_label_space"] = self.beam_label_mapping.label_space
         payload["beam_label_mapping_fingerprint"] = self.beam_label_mapping.fingerprint
         return payload
-
-
-def _apply_physics_sample_fields(sample: dict[str, Any]) -> None:
-    physics = sample.get("physics_targets")
-    if not isinstance(physics, dict):
-        return
-    if "image" in sample:
-        sample.setdefault("rgb", sample["image"])
-    if torch.is_tensor(sample.get("target_beam")):
-        sample["beam_label"] = sample["target_beam"]
-    if torch.is_tensor(physics.get("csi_target")):
-        sample["csi_target"] = physics["csi_target"]
-    if torch.is_tensor(physics.get("csi_input")):
-        sample["csi_input"] = physics["csi_input"]
-    if torch.is_tensor(physics.get("csi_observation_mask")):
-        sample["csi_observation_mask"] = physics["csi_observation_mask"]
-    if torch.is_tensor(physics.get("beamspace_power")):
-        sample.setdefault("beam_power", physics["beamspace_power"])
-    path = physics.get("path_params")
-    if torch.is_tensor(path):
-        sample["path_params"] = {
-            "aod": path[..., 0],
-            "aoa": path[..., 1],
-            "delay": path[..., 2],
-            "gain_real": path[..., 3],
-            "gain_imag": path[..., 4],
-            "path_mask": physics.get("path_mask"),
-        }
 
 
 __all__ = ["MMWDataset"]

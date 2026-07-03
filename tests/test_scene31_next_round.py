@@ -43,8 +43,13 @@ EXPECTED_PATTERNS = [
 ]
 
 
-def test_scene31_next_round_manifest_and_configs_are_consistent():
-    rows = _read_csv(MANIFEST)
+def test_scene31_next_round_manifest_and_configs_are_consistent(tmp_path: Path):
+    generator = _load_script("generate_scene31_next_round", ROOT / "scripts/generate_scene31_next_round.py")
+    out_dir = tmp_path / "next_round"
+
+    assert generator.main(["--out_dir", str(out_dir), "--overwrite", "true"]) == 0
+
+    rows = _read_csv(out_dir / "experiment_manifest.csv")
     by_name = {row["run_name"]: row for row in rows}
 
     assert EXPECTED_P0 <= set(by_name)
@@ -52,7 +57,7 @@ def test_scene31_next_round_manifest_and_configs_are_consistent():
 
     for row in rows:
         run_name = row["run_name"]
-        config_path = ROOT / row["config_path"]
+        config_path = _manifest_path(row["config_path"])
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         cfg = load_config(config_path)
         training = cfg["training"]
@@ -87,6 +92,52 @@ def test_scene31_next_round_manifest_and_configs_are_consistent():
             assert training["btapa_apply_patterns"] == ["radar_only", "lidar_only"]
             assert loss_cfg["btapa_apply_patterns"] == ["radar_only", "lidar_only"]
             assert "gps_only" not in training["btapa_apply_patterns"]
+
+
+def test_scene31_night_grid_generator_sanity(tmp_path: Path):
+    generator = _load_script("generate_experiment_grid", ROOT / "scripts/generate_experiment_grid.py")
+    out_dir = tmp_path / "night_grid"
+
+    assert generator.main(["--out_dir", str(out_dir), "--seeds", "1", "2", "--overwrite", "true"]) == 0
+
+    rows = _read_csv(out_dir / "experiment_manifest.csv")
+    generated_rows = [row for row in rows if row["group"] != "baseline"]
+    by_name = {row["run_name"]: row for row in generated_rows}
+
+    assert len(rows) == 64
+    assert "proto_sampler_uniform_es20_seed1" in by_name
+    assert "proto_condbtapa_weaksingle_lam005_es20_seed2" in by_name
+    assert "proto_maskadapter_d16_condbtapa_weaksingle_es20_seed1" in by_name
+
+    for run_name in (
+        "proto_sampler_uniform_es20_seed1",
+        "proto_condbtapa_weaksingle_lam005_es20_seed2",
+        "proto_maskadapter_d16_condbtapa_weaksingle_es20_seed1",
+    ):
+        row = by_name[run_name]
+        config_path = _manifest_path(row["config_path"])
+        raw_text = config_path.read_text(encoding="utf-8")
+        cfg = load_config(config_path)
+        loss_cfg = cfg["loss"]["u_mask_beam_jepa"]
+
+        assert not any(
+            token in raw_text
+            for token in ("hist_beam", "bgam", "jepa_msac", "amr_net_gps_image", "logits_kd", "rkd", "raymobtime")
+        )
+        assert int(row["expected_epochs"]) == 20
+        assert cfg["experiment"]["seed"] == int(run_name.rsplit("_seed", 1)[1])
+        assert cfg["output"]["run_name"] == run_name
+        assert cfg["model"]["primary"]["ablation_id"] == run_name
+
+        if "sampler_uniform" in run_name:
+            assert cfg["training"]["missing_pattern_sampler"] == "uniform"
+            assert loss_cfg["missing_pattern_sampler"] == "uniform"
+        if "lam005" in run_name:
+            assert cfg["training"]["btapa_lambda"] == pytest.approx(0.05)
+            assert loss_cfg["btapa_lambda"] == pytest.approx(0.05)
+        if "maskadapter_d16" in run_name:
+            assert cfg["model"]["primary"]["use_mask_adapter"] is True
+            assert cfg["model"]["primary"]["mask_adapter_dim"] == 16
 
 
 def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
@@ -155,6 +206,83 @@ def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
     assert "btapa_tau1" in markdown
 
 
+def test_scene31_p0_fresh_summary_uses_avg_missing_primary_sort(tmp_path):
+    summary = _load_script("summarize_scene31_p0_fresh_eval", ROOT / "scripts/summarize_scene31_p0_fresh_eval.py")
+    metrics = tmp_path / "p0_metrics.csv"
+    manifest = tmp_path / "manifest.csv"
+    out_dir = tmp_path / "p0_summary"
+    uniform_ckpt = tmp_path / "uniform_best.pth"
+    lam_ckpt = tmp_path / "lam_best.pth"
+    uniform_ckpt.write_text("stub", encoding="utf-8")
+    lam_ckpt.write_text("stub", encoding="utf-8")
+    _write_csv(
+        manifest,
+        ["run_name", "group", "config_path", "seed", "method_tags", "expected_epochs", "priority"],
+        [
+            {
+                "run_name": "proto_sampler_uniform_es40_seed3",
+                "group": "p0",
+                "config_path": "uniform.yaml",
+                "seed": "3",
+                "method_tags": "sampler,uniform,es40",
+                "expected_epochs": "40",
+                "priority": "high",
+            },
+            {
+                "run_name": "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed1",
+                "group": "p0",
+                "config_path": "lam.yaml",
+                "seed": "1",
+                "method_tags": "sampler,uniform,condbtapa,weak_single,lambda_0.025,es40",
+                "expected_epochs": "40",
+                "priority": "high",
+            },
+        ],
+    )
+    metric_rows = []
+    runs = {
+        "proto_sampler_uniform_es40_seed3": (uniform_ckpt, {"full": 0.4200, "missing_gps": 0.3000, "missing_radar": 0.3200, "radar_only": 0.1000, "lidar_only": 0.0900}),
+        "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40_seed1": (
+            lam_ckpt,
+            {"full": 0.4100, "missing_gps": 0.3300, "missing_radar": 0.3400, "radar_only": 0.2300, "lidar_only": 0.1300},
+        ),
+    }
+    for run_name, (checkpoint, values) in runs.items():
+        avg_missing = sum(value for key, value in values.items() if key != "full") / 4
+        for pattern, value in {**values, "avg_missing": avg_missing}.items():
+            metric_rows.append(
+                {
+                    "run_name": run_name,
+                    "pattern": pattern,
+                    "top1": str(value),
+                    "status": "ok",
+                    "checkpoint_path": str(checkpoint),
+                    "max_batches": "",
+                }
+            )
+    _write_csv(metrics, ["run_name", "pattern", "top1", "status", "checkpoint_path", "max_batches"], metric_rows)
+
+    assert summary.main(["--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
+
+    per_run = _read_csv(out_dir / "p0_per_run.csv")
+    methods = _read_csv(out_dir / "p0_method_mean_std.csv")
+    delta = _read_csv(out_dir / "p0_delta_vs_proto.csv")
+    filtered = _read_csv(out_dir / "p0_filtered.csv")
+    rank = (out_dir / "p0_rank_by_avg_missing.md").read_text(encoding="utf-8")
+
+    assert {row["method"] for row in per_run} == {
+        "proto_sampler_uniform_es40",
+        "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40",
+    }
+    assert "overall_mean" in per_run[0]
+    assert methods[0]["method"] == "proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40"
+    assert "overall_mean_mean" in methods[0]
+    assert "delta_overall_mean" in delta[0]
+    assert "radar_only" not in filtered[0]["unmet_conditions"]
+    assert "lidar_only" not in filtered[0]["unmet_conditions"]
+    assert "| proto_sampler_uniform_condbtapa_weaksingle_lam0025_es40 |" in rank
+
+
 def test_scene31_next_round_balanced_formula_matches_existing_analyzer():
     summary = _load_script("summarize_scene31_next_round", ROOT / "scripts/summarize_scene31_next_round.py")
     analyzer = _load_script("analyze_night_grid", ROOT / "scripts/analyze_night_grid.py")
@@ -193,6 +321,11 @@ def _lambda_from_name(run_name: str) -> float | None:
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _manifest_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:

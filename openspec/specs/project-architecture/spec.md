@@ -147,7 +147,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** objective 元数据 MUST 来自同一轻量契约，避免配置路径和 runtime 路径维护两套表
 
 ### Requirement: 入口生命周期必须可审计
-项目 MUST 为 `scripts/` 和 `tools/analysis/` 中保留的入口维护生命周期分类。新增或保留入口 MUST 属于 package CLI、研究诊断脚本、数据准备脚本或 shell orchestration 中的一类，并在架构检查 allowlist 或 inventory 中记录原因。仓库级 `tools/visualization/` viewer support 已退役，MUST 不再作为当前入口分类回流。
+项目 MUST 为 `scripts/` 和 `tools/analysis/` 中保留的入口维护生命周期分类。新增或保留入口 MUST 属于 package CLI、研究诊断脚本、数据准备脚本、config generator、figure helper 或 local/manual validation/runner 中的一类，并在架构检查 allowlist 或 inventory 中记录原因。固定 GPU queue shell 已退役；仓库级 `tools/visualization/` viewer support 也 MUST 不再作为当前入口分类回流。
 
 #### Scenario: 新增脚本入口需要分类
 - **WHEN** 开发者新增 `scripts/` 或 `tools/analysis/` 下的 Python 或 shell 入口
@@ -178,7 +178,7 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **AND** 不需要修改 sensor frame indexing、channel file indexing 或 scenario root 搜索实现
 
 ### Requirement: CLI 与实现模块职责分离
-项目 SHALL 保持 CLI/脚本入口与真实 workflow 实现的职责分离。Package CLI、保留的研究诊断脚本、数据准备脚本和 shell orchestration MUST 只承担参数解析、配置覆盖、轻量 IO、调用包内实现和 user-facing exit code；训练、评估、benchmark、dataset preparation 或诊断主逻辑 MUST 位于对应职责模块。
+项目 SHALL 保持 CLI/脚本入口与真实 workflow 实现的职责分离。Package CLI、保留的研究诊断脚本、数据准备脚本、config generator 和 local/manual helper MUST 只承担参数解析、配置覆盖、轻量 IO、调用包内实现和 user-facing exit code；训练、评估、benchmark、dataset preparation 或诊断主逻辑 MUST 位于对应职责模块。
 
 #### Scenario: package CLI 调用 owner module
 - **WHEN** 新增或修改 package console script
@@ -229,6 +229,11 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **THEN** 包内公开 import、CLI 入口和 console script MUST 继续指向同一 public surface
 - **AND** focused tests MUST 覆盖该 workflow 的关键 schema、summary、metadata 或 metric 输出
 
+#### Scenario: streamlining wave 后 owner 边界稳定
+- **WHEN** 开发者继续修改 dataset family、training runtime、evaluation pass、modular model forward、diagnostics runner 或 MMW GPS v2 workflow
+- **THEN** 变更 MUST 优先落在已登记的窄 owner、run context、family adapter、stage helper 或 artifact writer 中
+- **AND** 不得把 condition layout、checkpoint restore、batch evaluation、forward diagnostics、protocol dispatch 或 artifact schema 写回公开 facade 或单个巨型入口函数
+
 #### Scenario: 拆分不触碰本地产物
 - **WHEN** 开发者实施热点拆分或运行对应验证
 - **THEN** 变更 MUST NOT 删除、移动、重写或提交 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 或历史本地产物
@@ -246,3 +251,28 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **WHEN** helper 文件被合并或删除
 - **THEN** 系统 MUST NOT 新增只转发旧 helper 路径的兼容 wrapper
 - **AND** 内部代码 MUST NOT 从公开 facade 回流导入 suite-specific helper
+
+### Requirement: Architecture streamlining campaign preserves public behavior
+项目 MUST 允许按 wave 执行全仓架构收敛，但该收敛 MUST 只改变内部模块组织和未登记 public surface 的 import 路径，不得隐式改变当前 package CLI 名称、current canonical config 语义、dataset split 语义、beam label / label-space 口径、metric schema、checkpoint schema、run metadata 字段、默认输出分区或本地产物边界。
+
+#### Scenario: 用户可见入口保持稳定
+- **WHEN** architecture streamlining wave 修改 `data`、`engine`、`models`、`diagnostics`、`config`、`scripts` 或 `configs`
+- **THEN** 当前 README、pyproject console scripts、current OpenSpec specs 和 inventory 登记的 package CLI MUST 继续可用
+- **AND** 已登记 current workflow 的用户可见输入/输出契约 MUST 保持兼容
+
+#### Scenario: 内部结构可以 breaking 收缩
+- **WHEN** 某个 import path 未被 README、pyproject console script、current spec、inventory public surface 或 focused test 明确登记为 public owner
+- **THEN** 该 path MAY 在本 change 中被删除、合并或迁到真实 owner
+- **AND** 内部调用方 MUST 改为导入职责明确的 owner module，不得新增兼容 wrapper 维持旧路径
+
+### Requirement: Architecture streamlining starts from a clean or documented baseline
+项目 MUST 在实施任何源码 wave 前记录工作树、active change 和验证 baseline。若工作树存在无关实验改动、未跟踪配置/脚本、本地 cache 噪声或已完成但未归档的 active change，实施说明 MUST 先归档、提交、隔离，或明确记录 deferral 和影响范围。
+
+#### Scenario: Wave 0 captures baseline state
+- **WHEN** 本 change 进入 implementation
+- **THEN** tasks 或实现说明 MUST 记录 `openspec list --json`、`git status --short`、已知未跟踪实验表面、产物边界占位文件状态和 baseline validation 命令结果
+- **AND** 后续源码 wave MUST 不把无关实验变更或本地运行产物混入架构重构 diff
+
+#### Scenario: 已完成 active change 不被误用
+- **WHEN** active change 显示 status 为 complete
+- **THEN** 本 change MUST 先归档该 change，或在 Wave 0 中说明暂不归档的原因、风险和与本 change 的隔离方式

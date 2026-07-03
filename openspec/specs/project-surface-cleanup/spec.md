@@ -74,7 +74,7 @@
 
 #### Scenario: 新增脚本被分类
 - **WHEN** `scripts/` 或 `tools/analysis/` 下存在新增 Python/shell 脚本
-- **THEN** inventory MUST 将其分类为 package_cli、research_diagnostic、dataset_preparation、figure_helper、shell_orchestration 或 local/manual artifact
+- **THEN** inventory MUST 将其分类为 package_cli、research_diagnostic、dataset_preparation、figure_helper、config_generator 或 local/manual artifact
 - **AND** 未分类脚本 MUST 不得被 README、docs 或 OpenSpec 描述为当前推荐入口
 
 #### Scenario: 临时配置不进入 root canonical surface

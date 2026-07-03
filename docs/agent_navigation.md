@@ -47,6 +47,8 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 
 新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该 workflow 有明确名称或专用入口，还应在 inventory 或 focused 架构测试中登记 owner module/script、responsibility、output boundary 和必要 retired route guard。
 
+Scene31 night-grid / next-round 属于 manifest-backed local/manual workflow：修改前先查 `scene31-next-round-experiment-workflow` spec 和 inventory 的 config/script 分类；源码只保留 manifest、base config 和 generator，实体 YAML 需本地生成后再走 `kd-sensing-train --config <generated-yaml>`，fresh eval/analysis 产物只写 ignored output/log roots。
+
 ## 热点右尺寸化决策矩阵
 
 修改已登记 hotspot、接近预算的 workflow、dataset、diagnostic module 或 facade 前，先读取 inventory 中的 architecture sizing baseline、hotspot rationale 和当前 focused tests。不要把 Python 文件数、function 数或 import 数机械解释成“所有大文件都要拆”：这些只是趋势信号；每次变更先判断动作属于 `split`、`consolidate`、`monitor`、`accepted-size`、`hard-budget`、源码窄修复或 `keep-and-test`。

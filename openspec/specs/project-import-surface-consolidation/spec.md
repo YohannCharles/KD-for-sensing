@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 package import 面、低价值 facade、re-export、`__all__` 和内部 owner 路径的收敛规则，使源码边界保持轻量且不依赖兼容聚合层。
-
 ## Requirements
-
 ### Requirement: 审计确认的低价值源码表面必须收敛
 项目 MUST 对已审计确认无当前调用方、无公开入口、无 registry、无 current 文档/OpenSpec 消费且仅由自身测试覆盖的源码表面执行删除或合并。删除 MUST 同步移除只服务该表面的测试、维护索引条目和 inventory current 分类；合并 MUST 不新增兼容 wrapper 或二级聚合层。
 
@@ -115,6 +113,11 @@
 - **WHEN** 代码需要 `DeepSense6GDataset`、`MMWDataset`、`SyntheticSequenceDataset`、sample helper 或 target-shot helper
 - **THEN** 代码 MUST 从具体 owner 模块导入
 - **AND** `kd_sensing.data` 或 `kd_sensing.data.datasets` MUST 不新增 lazy re-export 来保留旧路径
+
+#### Scenario: package marker 保持轻量
+- **WHEN** 后续 change 修改 package `__init__.py`、子包 marker 或 registry import path
+- **THEN** 该文件 MUST 保持轻量 public marker 或明确 public shim
+- **AND** 不得为了减少调用方 import 行数而 eager re-export dataset family adapter、training context、diagnostics runner helper、model stage helper 或其它内部 owner 符号
 
 #### Scenario: fusion 旧类名 alias 不再作为迁移层
 - **WHEN** 用户或测试导入已退役 fusion 旧类名 alias
@@ -261,3 +264,33 @@ Registry 的最小契约 MUST 由 focused tests 覆盖。项目 MUST 不保留�
 - **WHEN** registry build、duplicate、unknown 和 missing parameter 行为已由 tests 覆盖
 - **THEN** 本 change MUST 删除只服务这些检查的 runtime self-check helper
 - **AND** 删除 MUST 不影响 registry 构建当前组件
+
+### Requirement: Undocumented internal import paths may be removed
+项目 MUST 将 public surface 限定为 README/current docs 推荐入口、pyproject console scripts、current OpenSpec 明确 public owner、inventory 登记的 public facade、registry/config 构建入口和 focused tests 明确保护的路径。未登记为 public surface 的内部 import path MAY 被删除、移动或合并。
+
+#### Scenario: 内部 facade 被删除
+- **WHEN** 一个 facade 只 re-export owner 符号、没有独立 behavior、没有 current public import 契约且内部调用方可迁移
+- **THEN** 本 change MAY 删除该 facade
+- **AND** 内部源码和测试 MUST 改为导入真实 owner module
+
+#### Scenario: 删除后不保留 wrapper
+- **WHEN** 内部 import path 被删除或 helper 被合并
+- **THEN** 项目 MUST 不新增等价 compatibility wrapper、lazy export 或 package-level barrel 来维持旧路径
+- **AND** breaking change MUST 在实现说明中标记为 internal import surface 收缩
+
+### Requirement: Internal __all__ mirrors are not maintained
+内部模块 MUST 不维护大型 `__all__` 只为镜像所有可见符号。`__all__` 只允许用于稳定 public facade、明确 plugin/export 边界或避免 wildcard import 的必要模块。
+
+#### Scenario: 删除无 public 契约的 __all__
+- **WHEN** 某模块不是 public facade，也没有 docs 推荐 wildcard import
+- **THEN** 本 change MAY 删除其 `__all__`
+- **AND** 显式 import 调用方 MUST 继续从真实 owner symbol 导入
+
+### Requirement: Reusable helpers stay domain-local
+重复 CSV/JSON/path/slug/float 小工具 MUST 优先复用已有 domain owner helper 或建立领域窄 helper。项目 MUST 不新建跨领域大 `utils` 杂物间来容纳少量无 owner 的小函数。
+
+#### Scenario: 重复 helper 收敛
+- **WHEN** 两个以上 current owner 需要同一 schema 或 artifact helper
+- **THEN** helper MAY 提取到最窄共同领域 owner，例如 diagnostics artifact、runtime output、config parsing 或 dataset contract
+- **AND** helper 所在模块 MUST 不引入训练、dataset、模型或重型可视化依赖，除非该领域 owner 已明确需要
+

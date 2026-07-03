@@ -40,7 +40,7 @@ conda run -n kd_mm_beam python -m kd_sensing.cli.jepa_visual_analysis --help
 configs/          # 训练、评估和预处理配置；高级 fusion 优先由 canonical/overlay recipe 生成
 docs/             # 主线模型目录、协议表、结果账本、实验矩阵、扩展指南和性能调优说明
 openspec/specs/   # 当前需求和架构契约
-scripts/          # 保留的研究诊断、数据准备和 shell orchestration 脚本
+scripts/          # 保留的研究诊断、数据准备、config generator 和本地验证脚本
 src/kd_sensing/   # 包内 CLI、config、data、engine、models、diagnostics 等实现
 tests/            # 架构边界、配置加载、训练/诊断单元测试
 tools/analysis/   # 研究分析脚本
@@ -213,6 +213,8 @@ configs/fusion/<canonical_slug>_<strong|lightweight>.yaml
 很多 fusion 路径是 virtual config：磁盘上没有实体 YAML 时，配置加载器会按 strong/lightweight canonical、snapshot、objective-aware 或当前保留的 overlay recipe 生成完整配置；实体 YAML 仍优先于生成规则。训练产物中的 `final_config.yaml` 和 `resolved_config.yaml` 保存完整解析结果。已退役研究线和 fusion KD alias 的旧配置路径不会被 virtual alias 接管。
 
 当前主线横向说明分三层维护：模型目录见 [docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)，参数协议见 [docs/experiment_protocols.md](docs/experiment_protocols.md)，可引用结果和 blocked 状态见 [docs/result_claims_registry.md](docs/result_claims_registry.md)。[docs/experiment_matrix.md](docs/experiment_matrix.md) 只保留 quickstart 顺序和关键 caveat；CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序从这里跳转。
+
+Scene31 night-grid / next-round 配置族只在源码中保留 manifest、base config、generator 和 local/manual fresh-eval/summary helper。需要复跑时先用 `scripts/generate_experiment_grid.py` 或 `scripts/generate_scene31_next_round.py --out_dir <local-config-dir>` 重建 YAML，再使用 `kd-sensing-train --config <generated-yaml>`；P0 fresh eval 使用 `bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`，汇总使用 `conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py --root outputs/scene31_next_round --out outputs/scene31_next_round/p0_fresh_summary`。日志和结果只写 ignored 的 `logs/`、`outputs/scene31/` 或 `outputs/scene31_next_round/`。
 
 ## 数据和产物边界
 
