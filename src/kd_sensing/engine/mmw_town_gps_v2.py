@@ -12,13 +12,24 @@ import torch.nn.functional as F
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
 from kd_sensing.data.beam_soft_targets import read_beam_power_vector
-from kd_sensing.data.mmw.support_selection import angle_coverage_indices
 from kd_sensing.data.transform_ops.gps import latlon_to_utm_xy, read_gps_latlon
 from kd_sensing.data.transform_ops.io import joined_resource
+from kd_sensing.engine.mmw_town_gps_v2_artifacts import write_csv as _artifact_write_csv
+from kd_sensing.engine.mmw_town_gps_v2_artifacts import write_json as _artifact_write_json
+from kd_sensing.engine.mmw_town_gps_v2_label_space import resolve_label_space_config
+from kd_sensing.engine.mmw_town_gps_v2_summary import metrics_from_prediction_rows as _summary_metrics_from_prediction_rows
+from kd_sensing.engine.mmw_town_gps_v2_summary import overall_rows as _summary_overall_rows
+from kd_sensing.engine.mmw_town_gps_v2_summary import residual_by_branch_rows as _summary_residual_by_branch_rows
+from kd_sensing.engine.mmw_town_gps_v2_summary import residual_by_theta_rows as _summary_residual_by_theta_rows
+from kd_sensing.engine.mmw_town_gps_v2_summary import summary_from_prediction_rows as _summary_from_rows
+from kd_sensing.engine.mmw_town_gps_v2_summary import support_manifest_rows as _summary_support_manifest_rows
+from kd_sensing.engine.mmw_town_gps_v2_support import select_support_samples as _support_select_samples
+from kd_sensing.engine.mmw_town_gps_v2_support import support_count as _support_count_for_samples
+from kd_sensing.engine.mmw_town_gps_v2_support import theta_angle_degrees as _support_theta_angle_degrees
+from kd_sensing.engine.mmw_town_gps_v2_support import theta_range as _support_theta_range
 from kd_sensing.evaluation.metrics import (
     circular_beam_distance,
     dba_from_circular_distances,
-    dba_zero_ratio,
     signed_circular_beam_residual,
 )
 from kd_sensing.losses.circular import class_balanced_weights
@@ -242,7 +253,7 @@ def _prepare_mmw_town_gps_v2_run_context(
         if not scenes:
             raise ValueError(f"--target-scene did not match any configured scene: {target_scene}")
     num_beams = int(data_cfg.get("num_beams", 64))
-    mapping_cfg = _resolve_label_space_config(data_cfg, selected_label_space)
+    mapping_cfg = resolve_label_space_config(data_cfg, selected_label_space)
     scene_mappings = {
         scene.slug: resolve_beam_label_mapping(mapping_cfg, scene=scene.slug, default_num_classes=num_beams)
         for scene in scenes
@@ -537,62 +548,16 @@ def select_support_samples(
     samples: list[MMWTownGpsV2Sample],
     adapt_cfg: Mapping[str, Any],
 ) -> tuple[list[MMWTownGpsV2Sample], list[MMWTownGpsV2Sample], dict[str, Any]]:
-    mode = str(adapt_cfg.get("support_mode", "temporal_first"))
-    count = _support_count(samples, support_ratio=adapt_cfg.get("support_ratio"), support_num=adapt_cfg.get("support_num"))
-    if count <= 0:
-        return [], list(samples), {"selection_mode": mode, "support_count": 0, "query_count": len(samples)}
-    if mode == "random":
-        rng = np.random.default_rng(int(adapt_cfg.get("seed", 42)))
-        indices = sorted(rng.choice(len(samples), size=count, replace=False).tolist())
-        support_set = set(indices)
-    elif mode == "trajectory":
-        ordered_groups: dict[str, list[int]] = {}
-        for idx, sample in enumerate(samples):
-            key = sample.branch_key or sample.metadata.get("contiguous_segment_id") or sample.sample_id
-            ordered_groups.setdefault(str(key), []).append(idx)
-        selected: list[int] = []
-        for indices in ordered_groups.values():
-            selected.extend(indices)
-            if len(selected) >= count:
-                break
-        support_set = set(sorted(selected)[:count])
-    elif mode == "temporal_first":
-        ordered = sorted(range(len(samples)), key=lambda idx: (samples[idx].order_key, samples[idx].sample_id))
-        support_set = set(ordered[:count])
-    elif mode == "angle_coverage":
-        support_set = angle_coverage_indices(
-            samples,
-            count,
-            angle_getter=_theta_angle_degrees,
-            include_extrema=True,
-        )
-    else:
-        raise ValueError("adapt.support_mode must be one of temporal_first, angle_coverage, random, or trajectory.")
-    support = [sample for idx, sample in enumerate(samples) if idx in support_set]
-    query = [sample for idx, sample in enumerate(samples) if idx not in support_set]
-    return support, query, {
-        "selection_mode": mode,
-        "seed": int(adapt_cfg.get("seed", 42)),
-        "support_count": len(support),
-        "query_count": len(query),
-        "support_ratio": adapt_cfg.get("support_ratio"),
-        "support_num": adapt_cfg.get("support_num"),
-        "support_num_overrides_ratio": adapt_cfg.get("support_num") not in {None, ""},
-        "support_angle_range_degrees": _theta_range(support),
-        "query_angle_range_degrees": _theta_range(query),
-    }
+    support, query, info = _support_select_samples(samples, adapt_cfg)
+    return support, query, info
 
 
 def _theta_angle_degrees(sample: MMWTownGpsV2Sample) -> float | None:
-    value = float(sample.theta_degrees)
-    return value if math.isfinite(value) else None
+    return _support_theta_angle_degrees(sample)
 
 
 def _theta_range(samples: list[MMWTownGpsV2Sample]) -> list[float] | None:
-    values = [float(sample.theta_degrees) for sample in samples if math.isfinite(float(sample.theta_degrees))]
-    if not values:
-        return None
-    return [float(min(values)), float(max(values))]
+    return _support_theta_range(samples)
 
 
 def fit_adapter(
@@ -1274,27 +1239,21 @@ def _summary_from_prediction_rows(
     dba_delta: float,
     num_beams: int,
 ) -> dict[str, Any]:
-    metrics = _metrics_from_prediction_rows(rows, num_beams=num_beams, dba_delta=dba_delta)
-    return {
-        "protocol": protocol,
-        "ablation": ablation,
-        "scene": target.slug,
-        "scene_name": target.name,
-        "target_scene": target.slug,
-        "source_scenes": json.dumps(source_scenes),
-        "label_space": label_space,
-        "beam_label_space": mapping.label_space,
-        "beam_label_mapping_fingerprint": mapping.fingerprint,
-        "protocol_note": protocol_note,
-        "support_count": int(support_info.get("support_count", 0)),
-        "query_count": int(support_info.get("query_count", 0)),
-        "support_mode": support_info.get("selection_mode", "none"),
-        "strict_eligibility": protocol != "within_scene_train",
-        "upper_bound_protocol": protocol == "within_scene_train",
-        "adapter_fit": json.dumps(adapter_fit.to_dict()),
-        "scaler_metadata": json.dumps(dict(scaler_metadata)),
-        **metrics,
-    }
+    return _summary_from_rows(
+        rows,
+        protocol=protocol,
+        ablation=ablation,
+        target=target,
+        source_scenes=source_scenes,
+        label_space=label_space,
+        mapping=mapping,
+        protocol_note=protocol_note,
+        support_info=support_info,
+        scaler_metadata=scaler_metadata,
+        adapter_fit=adapter_fit,
+        dba_delta=dba_delta,
+        num_beams=num_beams,
+    )
 
 
 def _metrics_from_prediction_rows(
@@ -1303,126 +1262,19 @@ def _metrics_from_prediction_rows(
     num_beams: int,
     dba_delta: float,
 ) -> dict[str, float | int]:
-    sample_count = len(rows)
-    distances = np.asarray([float(row.get("circular_error", 0.0)) for row in rows], dtype=np.float64)
-    if distances.size == 0:
-        return {
-            "sample_count": 0,
-            "valid_label_count": 0,
-            "DBA": 0.0,
-            "DBA_zero_ratio": 0.0,
-            "mean_circular_error": 0.0,
-            "median_circular_error": 0.0,
-            "exact_acc": 0.0,
-            "pm1_acc": 0.0,
-            "pm2_acc": 0.0,
-            "pm4_acc": 0.0,
-            "top1": 0.0,
-            "top3": 0.0,
-            "top5": 0.0,
-        }
-    target = [int(row["true_beam"]) for row in rows]
-    topk = [_json_list_int(row.get("topk_predictions")) for row in rows]
-    def top_hit(k: int) -> float:
-        hits = 0
-        for truth, preds in zip(target, topk):
-            if int(truth) in [int(item) % int(num_beams) for item in preds[:k]]:
-                hits += 1
-        return float(hits / max(len(target), 1))
-
-    return {
-        "sample_count": sample_count,
-        "valid_label_count": sample_count,
-        "DBA": dba_from_circular_distances(distances, delta=dba_delta),
-        "DBA_zero_ratio": dba_zero_ratio(distances),
-        "mean_circular_error": float(np.mean(distances)),
-        "median_circular_error": float(np.median(distances)),
-        "exact_acc": float(np.mean(distances == 0)),
-        "pm1_acc": float(np.mean(distances <= 1)),
-        "pm2_acc": float(np.mean(distances <= 2)),
-        "pm4_acc": float(np.mean(distances <= 4)),
-        "top1": top_hit(1),
-        "top3": top_hit(3),
-        "top5": top_hit(5),
-    }
+    return _summary_metrics_from_prediction_rows(rows, num_beams=num_beams, dba_delta=dba_delta)
 
 
 def _overall_rows(summary_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    for row in summary_rows:
-        grouped.setdefault((str(row["protocol"]), str(row["ablation"]), str(row["label_space"])), []).append(row)
-    result = []
-    metric_keys = [
-        "DBA",
-        "DBA_zero_ratio",
-        "mean_circular_error",
-        "median_circular_error",
-        "exact_acc",
-        "pm1_acc",
-        "pm2_acc",
-        "pm4_acc",
-        "top1",
-        "top3",
-        "top5",
-    ]
-    for (protocol, ablation, label_space), rows in sorted(grouped.items()):
-        payload: dict[str, Any] = {
-            "protocol": protocol,
-            "ablation": ablation,
-            "label_space": label_space,
-            "scene_count": len(rows),
-            "valid_label_count": sum(int(row.get("valid_label_count", 0)) for row in rows),
-        }
-        for key in metric_keys:
-            payload[key] = float(np.mean([float(row.get(key, 0.0)) for row in rows])) if rows else 0.0
-        result.append(payload)
-    return result
+    return _summary_overall_rows(summary_rows)
 
 
 def _residual_by_theta_rows(rows: list[dict[str, Any]], *, bins: int) -> list[dict[str, Any]]:
-    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    for row in rows:
-        bin_id = int(math.floor((float(row["theta_degrees"]) % 360.0) / 360.0 * int(bins))) % int(bins)
-        key = (row["protocol"], row["ablation"], row["scene"], row["label_space"], bin_id)
-        grouped.setdefault(key, []).append(row)
-    result = []
-    for key, values in sorted(grouped.items()):
-        result.append(
-            {
-                "protocol": key[0],
-                "ablation": key[1],
-                "scene": key[2],
-                "label_space": key[3],
-                "theta_bin": key[4],
-                "count": len(values),
-                "mean_circular_error": float(np.mean([float(row["circular_error"]) for row in values])),
-                "mean_signed_residual": float(np.mean([float(row["signed_residual"]) for row in values])),
-            }
-        )
-    return result
+    return _summary_residual_by_theta_rows(rows, bins=bins)
 
 
 def _residual_by_branch_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    for row in rows:
-        key = (row["protocol"], row["ablation"], row["scene"], row["label_space"], row["branch_id"])
-        grouped.setdefault(key, []).append(row)
-    result = []
-    for key, values in sorted(grouped.items()):
-        result.append(
-            {
-                "protocol": key[0],
-                "ablation": key[1],
-                "scene": key[2],
-                "label_space": key[3],
-                "branch_id": key[4],
-                "count": len(values),
-                "mean_circular_error": float(np.mean([float(row["circular_error"]) for row in values])),
-                "mean_signed_residual": float(np.mean([float(row["signed_residual"]) for row in values])),
-                "branch_source": values[0].get("branch_source", ""),
-            }
-        )
-    return result
+    return _summary_residual_by_branch_rows(rows)
 
 
 def _support_manifest_rows(
@@ -1434,27 +1286,14 @@ def _support_manifest_rows(
     label_space: str,
     support_info: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    rows = []
-    for role, samples in (("support", support), ("query", query)):
-        for sample in samples:
-            rows.append(
-                {
-                    "protocol": protocol,
-                    "target_scene": target_scene,
-                    "label_space": label_space,
-                    "beam_label_space": sample.metadata.get("beam_label_space", ""),
-                    "beam_label_mapping_fingerprint": sample.mapping_fingerprint,
-                    "role": role,
-                    "sample_id": sample.sample_id,
-                    "scene": sample.scene,
-                    "split": sample.split,
-                    "target_label": sample.label,
-                    "order_key": sample.order_key,
-                    "selection_mode": support_info.get("selection_mode", "none"),
-                    "seed": support_info.get("seed", ""),
-                }
-            )
-    return rows
+    return _summary_support_manifest_rows(
+        support,
+        query,
+        protocol=protocol,
+        target_scene=target_scene,
+        label_space=label_space,
+        support_info=support_info,
+    )
 
 
 def _scene_specs(data_cfg: Mapping[str, Any]) -> list[SceneSpec]:
@@ -1468,25 +1307,7 @@ def _scene_specs(data_cfg: Mapping[str, Any]) -> list[SceneSpec]:
 
 
 def _resolve_label_space_config(data_cfg: Mapping[str, Any], label_space: str) -> dict[str, Any]:
-    label_spaces = _mapping(data_cfg.get("label_spaces"))
-    if label_space not in label_spaces:
-        if label_space == "mapping_disabled":
-            return {"enabled": False, "label_space": "raw", "num_classes": int(data_cfg.get("num_beams", 64))}
-        raise ValueError(f"data.label_space must be one of {sorted(label_spaces)}, got {label_space}.")
-    spec = _mapping(label_spaces[label_space])
-    if not bool(spec.get("enabled", False)):
-        return {"enabled": False, "label_space": "raw", "num_classes": int(data_cfg.get("num_beams", 64))}
-    for key in ("mapping_file", "fallback_mapping_file"):
-        path = spec.get(key)
-        if path and Path(str(path)).exists():
-            payload = json.loads(Path(str(path)).read_text(encoding="utf-8"))
-            payload["enabled"] = True
-            payload.setdefault("fit_source", str(path))
-            return payload
-    raise FileNotFoundError(
-        "mapping_enabled requires an existing mapping_file or fallback_mapping_file. "
-        f"Checked: {spec.get('mapping_file')}, {spec.get('fallback_mapping_file')}"
-    )
+    return resolve_label_space_config(data_cfg, label_space)
 
 
 def _last_geometry(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1508,33 +1329,15 @@ def _last_geometry(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _write_csv(path: Path, rows: list[Mapping[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    fieldnames = list(rows[0].keys())
-    for row in rows:
-        for key in row.keys():
-            if key not in fieldnames:
-                fieldnames.append(key)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows([{key: row.get(key, "") for key in fieldnames} for row in rows])
+    _artifact_write_csv(path, rows)
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_ready(payload), indent=2, sort_keys=True), encoding="utf-8")
+    _artifact_write_json(path, payload)
 
 
 def _support_count(samples: list[Any], *, support_ratio: Any, support_num: Any) -> int:
-    total = len(samples)
-    explicit = _optional_int(support_num)
-    if explicit is not None:
-        return max(0, min(explicit, total))
-    ratio = 0.0 if support_ratio in {None, ""} else float(support_ratio)
-    return max(0, min(int(math.ceil(total * ratio)), total))
+    return _support_count_for_samples(samples, support_ratio=support_ratio, support_num=support_num)
 
 
 def _json_dict(value: Any) -> dict[str, Any]:

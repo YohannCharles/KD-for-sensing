@@ -1,7 +1,7 @@
 # research-claim-harvester Specification
 
 ## Purpose
-TBD - created by archiving change add-research-claim-harvester-dashboard. Update Purpose after archive.
+定义只读 research claim harvester、strict comparability gate、experiment ledger 和 dashboard 输出，用于把本地运行产物整理为 candidate-only 研究证据。
 ## Requirements
 ### Requirement: Research claim harvesting
 系统 MUST 提供只读 research claim harvester，用于从本地训练、评估和诊断产物中生成 claim candidate。Harvester MUST 不移动、删除、重写或压缩任何 `outputs/`、`logs/`、checkpoint、cache 或真实数据。
@@ -61,4 +61,3 @@ Harvester MUST 对 claim candidate 执行 strict comparability gate。Gate MUST 
 - **WHEN** 某个 method 缺少 seed、fresh eval、strict field 或 checkpoint provenance
 - **THEN** dashboard SHOULD 输出 next-action hint
 - **AND** hint MUST 不自动启动训练、评估、清理或文档修改
-

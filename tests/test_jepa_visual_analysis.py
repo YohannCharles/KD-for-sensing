@@ -174,14 +174,56 @@ def test_cached_analysis_writes_manifest_outputs_and_degrades(monkeypatch: pytes
         command=["test"],
     )
     manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    output_rows = {item["path"]: item for item in manifest["outputs"]}
 
     assert manifest["version"] == jva.ANALYSIS_VERSION
     assert manifest["models"]["gps_query_pool"]["metrics"]["sample_count"] == 3
+    assert manifest["command"] == ["test"]
+    assert output_rows["report.md"]["kind"] == "report"
+    assert output_rows["report.md"]["status"] == "generated"
+    assert output_rows["analysis_manifest.json"]["kind"] == "manifest"
+    assert output_rows["tables/model_metrics.csv"]["kind"] == "table"
+    assert output_rows["tables/model_metrics.csv"]["status"] == "generated"
     assert any(item["path"] == "tables/sample_predictions_gps_query_pool.csv" for item in manifest["outputs"])
     assert any(item["path"] == "tables/comparison_samples.csv" for item in manifest["outputs"])
+    assert any(item["kind"] == "figure" and item["status"] in {"generated", "skipped"} for item in manifest["outputs"])
+    assert any(item["status"] == "skipped" and item.get("reason") for item in manifest["outputs"])
     assert (tmp_path / "out" / "cache" / "embeddings_gps_query_pool.npz").exists()
     assert any("attention_unavailable:gps_query_pool" in warning for warning in manifest["warnings"])
     assert any("embedding_reducer_fallback:umap_unavailable" in warning for warning in manifest["warnings"])
+
+
+def test_optional_model_failure_is_recorded_in_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "analysis.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "models:",
+                "  optional_model:",
+                "    optional: true",
+                "split:",
+                "  evaluation_split: test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_analysis(*args, **kwargs):
+        raise RuntimeError("checkpoint unavailable")
+
+    monkeypatch.setattr(jva, "_analyze_model", fail_analysis)
+
+    result = jva.run_jepa_visual_analysis(analysis_config=config, output_dir=tmp_path / "out", force=True)
+    manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+
+    assert manifest["model_failures"] == {"optional_model": "checkpoint unavailable"}
+    assert "model_failed:optional_model:checkpoint unavailable" in manifest["warnings"]
+    skipped = {item["path"]: item for item in manifest["outputs"] if item["status"] == "skipped"}
+    assert skipped["tables/model_metrics.csv"]["reason"] == "no_completed_models"
+    assert skipped["tables/comparison_samples.csv"]["kind"] == "table"
 
 
 def test_gps_query_evidence_package_uses_synthetic_metrics_attention_and_cases(tmp_path: Path) -> None:

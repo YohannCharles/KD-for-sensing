@@ -1,7 +1,7 @@
 # dataset-reproducibility-audit Specification
 
 ## Purpose
-TBD - created by archiving change add-paper-export-dataset-audit-literature. Update Purpose after archive.
+定义只读 dataset reproducibility audit 的字段检查、文件引用检查、blocked/local substitute 状态和输出边界，用于支撑复现实验、claim registry 与 paper export，而不修改真实数据。
 ## Requirements
 ### Requirement: Dataset reproducibility audit
 系统 MUST 提供只读 dataset reproducibility audit，用于检查本地数据目录、CSV 字段、模态文件引用、label range、split metadata、official/local reproduction status 和 blocked reasons。Audit MUST 不移动、删除、复制或重写真实数据。
@@ -46,4 +46,3 @@ Dataset audit MUST 输出机器可读 JSON，并 MAY 输出 Markdown/CSV 摘要�
 - **WHEN** audit 完成
 - **THEN** 输出 MUST 包含 dataset family、data root、CSV path、scene scope、field summary、file reference summary、label summary、split summary、blocked status 和 warnings
 - **AND** 输出 MUST 不包含真实数据内容的大段复制
-

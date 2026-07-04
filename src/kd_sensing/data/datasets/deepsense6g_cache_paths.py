@@ -1,9 +1,10 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from kd_sensing.data.layouts import deepsense6g_image_cache_root, deepsense6g_lidar_bev_cache_root
+from kd_sensing.data.sample_cache import LmdbSampleCache, sample_cache_path_for_split
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -94,7 +95,37 @@ def lidar_cache_config_hash(
     return f"bev_{digest}"
 
 
+def build_deepsense6g_sample_cache(
+    cfg: dict[str, Any] | bool | None,
+    *,
+    split: str,
+) -> tuple[LmdbSampleCache | None, bool]:
+    if not cfg:
+        return None, False
+    if cfg is True:
+        raise ValueError("data.dataset.sample_cache=true requires sample_cache.path.")
+    if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
+        return None, False
+    if str(cfg.get("backend", "lmdb")) != "lmdb":
+        raise ValueError("data.dataset.sample_cache.backend currently supports only 'lmdb'.")
+    raw_path = cfg.get("path")
+    if not raw_path:
+        raise ValueError("data.dataset.sample_cache.path is required when sample cache is enabled.")
+    path = sample_cache_path_for_split(raw_path, split)
+    write_on_miss = bool(cfg.get("write_on_miss", False))
+    return (
+        LmdbSampleCache(
+            path,
+            readonly=not write_on_miss,
+            map_size_gb=float(cfg.get("map_size_gb", 64.0)),
+            readahead=bool(cfg.get("readahead", True)),
+        ),
+        write_on_miss,
+    )
+
+
 __all__ = [
+    "build_deepsense6g_sample_cache",
     "resolve_dataset_cache_base",
     "resolve_image_cache_dir",
     "resolve_lidar_cache_dir",

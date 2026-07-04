@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -412,12 +411,3 @@ def _dim(value: Any, index: int) -> int | None:
         return int(value.shape[index])
     except IndexError:
         return None
-
-
-__all__ = [
-    "PATH_FIELD_ALIASES",
-    "PhysicsAdapterConfig",
-    "build_mmw_physics_targets",
-    "physics_shape_summary",
-    "sort_paths_by_gain_magnitude",
-]

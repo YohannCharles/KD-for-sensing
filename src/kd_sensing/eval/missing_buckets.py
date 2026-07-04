@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -130,14 +129,3 @@ def _is_finite(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return number == number and number not in (float("inf"), float("-inf"))
-
-
-__all__ = [
-    "BUCKET_COUNTS",
-    "COMMON_MISSING_BUCKET_PATTERNS",
-    "bucket_metric_mean",
-    "missing_bucket_mapping",
-    "missing_bucket_mapping_from_rows",
-    "parse_mask_text",
-    "write_missing_bucket_mapping",
-]

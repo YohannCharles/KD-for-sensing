@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from typing import Any, Mapping
 
@@ -349,6 +348,3 @@ def _force_mask_for_cuaf(mask: torch.Tensor, target: torch.Tensor) -> torch.Tens
     raise ValueError(
         f"force_modality_mask shape must be [K], [B,K], [P,K] or [B,T,K], got {tuple(value.shape)}."
     )
-
-
-__all__ = ["AMRNet"]

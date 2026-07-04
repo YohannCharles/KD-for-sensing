@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from typing import Any, Mapping
 
@@ -143,6 +142,3 @@ def _match_time(value: torch.Tensor, target_steps: int) -> torch.Tensor:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-__all__ = ["amr_net_loss_from_output"]

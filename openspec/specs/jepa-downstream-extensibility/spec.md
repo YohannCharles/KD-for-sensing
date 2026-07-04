@@ -349,3 +349,12 @@ JEPA downstream pooler 的注册 MUST 不破坏 registry 轻量导入边界。�
 - **WHEN** 构建流程调用默认组件导入函数
 - **THEN** 内置 JEPA downstream pooler MUST 完成注册
 - **AND** 用户配置中的内置 pooler 名称 MUST 可解析
+
+### Requirement: JEPA downstream query/pooling helper 必须可独立演进
+JEPA downstream model 重构 MUST 在不改变 current config 行为的前提下拆分 query construction、token pooling、GPS-query compatibility、head construction 和 diagnostics metadata。
+
+#### Scenario: downstream config 兼容
+- **WHEN** downstream helper modules are introduced
+- **THEN** 既有 JEPA downstream configs MUST 加载并构建相同 model surface
+- **AND** GPS-query/pooler diagnostics fields MUST remain available to visual analysis and benchmark workflows
+

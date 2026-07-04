@@ -42,13 +42,35 @@ from kd_sensing.utils.paths import resolve_path
 from kd_sensing.diagnostics.jepa_benchmark_artifacts import (
     OutputRegistry,
     _git_status_short,
-    _load_mapping_text,
     _prepare_output_dir,
-    _read_csv,
-    _resolve_artifact_path,
     _resolve_existing_user_path,
     _resolve_output_dir,
     _write_csv,
+)
+from kd_sensing.diagnostics.jepa_benchmark_aggregation import (
+    aggregate_robustness_summary,
+    aggregate_shortcut_reliance,
+    read_benchmark_analysis_bundle,
+    robustness_matrix_rows,
+    select_benchmark_case_studies,
+)
+from kd_sensing.diagnostics.jepa_benchmark_sources import (
+    collect_model_metric_rows,
+    evaluate_comparability_or_warn,
+)
+from kd_sensing.diagnostics.jepa_benchmark_suite_dispatch import write_core_benchmark_tables
+from kd_sensing.diagnostics.jepa_benchmark_predictive_artifacts import write_predictive_and_fusion_artifacts
+from kd_sensing.diagnostics.jepa_benchmark_real_forward import (
+    PERTURBATION_CACHE_SCHEMA_VERSION,
+    iter_perturbation_cache as _iter_perturbation_cache,
+    load_perturbation_cache_index as _load_perturbation_cache_index,
+    perturbation_cache_config as _perturbation_cache_config,
+    perturbation_cache_index_path as _perturbation_cache_index_path,
+    perturbation_cache_key as _perturbation_cache_key,
+    real_forward_requested as _real_forward_requested,
+    real_forward_settings as _real_forward_settings,
+    write_perturbation_cache_index as _write_perturbation_cache_index,
+    write_perturbation_cache_shard as _write_perturbation_cache_shard,
 )
 from kd_sensing.diagnostics.jepa_benchmark_common import (
     BENCHMARK_VERSION,
@@ -126,9 +148,7 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     _topk_value,
 )
 from kd_sensing.diagnostics.jepa_benchmark_manifest import (
-    evaluate_model_comparability,
     load_benchmark_manifest,
-    _manifest_has_predictive_jepa,
     _manifest_has_scenario_d,
 )
 from kd_sensing.diagnostics.geometry_prior_beam_fusion import (
@@ -142,18 +162,9 @@ from kd_sensing.diagnostics.jepa_benchmark_perturbations import (
     apply_benchmark_perturbation,
 )
 from kd_sensing.diagnostics.jepa_benchmark_plots import _write_benchmark_figures, _write_scenario_d_figures
-from kd_sensing.diagnostics.jepa_benchmark_predictive import (
-    _predictive_jepa_metric_row,
-    aggregate_predictive_robustness_summary,
-)
+from kd_sensing.diagnostics.jepa_benchmark_predictive import _predictive_jepa_metric_row
 from kd_sensing.diagnostics.jepa_benchmark_predictive_advantage_metrics import (
     _predictive_gps_query_advantage_metric_rows,
-    aggregate_gps_query_advantage_margins,
-    build_predictive_claim_gate,
-    build_predictive_diagnostics_bundle_manifest,
-    fusion_diagnostic_condition_rows,
-    fusion_diagnostic_paired_margins,
-    fusion_diagnostic_summary,
 )
 from kd_sensing.diagnostics.jepa_benchmark_scenario_c import (
     _add_scenario_c_accuracy_ratios,
@@ -192,163 +203,24 @@ def run_jepa_gps_shortcut_benchmark(
     registry = OutputRegistry(out)
     warnings: list[dict[str, Any]] = []
 
-    comparability = evaluate_model_comparability(manifest)
-    if comparability["status"] == "failed" and str(manifest.get("comparability", {}).get("mode")) == "strict":
-        fields = ", ".join(str(item["field"]) for item in comparability["inconsistent_fields"])
-        raise BenchmarkManifestError(f"Benchmark models are not comparable under strict mode: {fields}")
-    if comparability["status"] != "passed":
-        warnings.append(
-            WarningRecord(
-                code="comparability_marked_unavailable",
-                message="One or more declared comparability fields differ across models.",
-            ).to_dict()
-        )
-
-    model_summaries: dict[str, dict[str, Any]] = {}
-    metrics_rows: list[dict[str, Any]] = []
-    for model_name, model_spec in manifest["models"].items():
-        source = _model_metric_source(
-            model_name,
-            model_spec,
-            manifest,
-            output_dir=out,
-            dry_run=dry_run,
-            warnings=warnings,
-        )
-        model_summaries[model_name] = source
-        metrics_rows.extend(
-            _metrics_rows_for_model(
-                model_name,
-                model_spec,
-                source,
-                manifest,
-                comparability_status=comparability["status"],
-                dry_run=dry_run,
-            )
-        )
-
-    robustness_rows = aggregate_robustness_summary(metrics_rows, primary_metric=str(manifest["metrics"]["primary"]))
-    shortcut_rows = aggregate_shortcut_reliance(metrics_rows, robustness_rows, manifest)
-    _write_csv(tables_dir / "metrics_by_condition.csv", metrics_rows)
-    _write_csv(tables_dir / "robustness_summary.csv", robustness_rows)
-    _write_csv(tables_dir / "shortcut_reliance_summary.csv", shortcut_rows)
-    predictive_condition_path: Path | None = None
-    predictive_summary_path: Path | None = None
-    predictive_margin_path: Path | None = None
-    predictive_warnings_path: Path | None = None
-    predictive_advantage_path: Path | None = None
-    predictive_advantage_margin_path: Path | None = None
-    predictive_claim_gate_path: Path | None = None
-    predictive_diagnostics_bundle_path: Path | None = None
-    fusion_diagnostic_condition_path: Path | None = None
-    fusion_diagnostic_margin_path: Path | None = None
-    fusion_diagnostic_summary_path: Path | None = None
-    predictive_summary: list[dict[str, Any]] = []
-    if _manifest_has_predictive_jepa(manifest):
-        predictive_rows = [
-            row for row in metrics_rows if str(row.get("suite_type")) == PREDICTIVE_JEPA_ROBUSTNESS_SUITE_TYPE
-        ]
-        predictive_advantage_rows = [
-            row for row in metrics_rows if str(row.get("suite_type")) == GPS_QUERY_ADVANTAGE_SLICE_TYPE
-        ]
-        predictive_summary = aggregate_predictive_robustness_summary(
-            metrics_rows,
-            manifest,
-            primary_metric=str(manifest["metrics"]["primary"]),
-        )
-        predictive_advantage_margins = aggregate_gps_query_advantage_margins(
-            metrics_rows,
-            manifest,
-            primary_metric=str(manifest["metrics"]["primary"]),
-        )
-        predictive_claim_gate = build_predictive_claim_gate(
-            predictive_summary,
-            predictive_advantage_margins,
-            manifest,
-        )
-        predictive_diagnostics_bundle = build_predictive_diagnostics_bundle_manifest(
-            manifest,
-            advantage_margins=predictive_advantage_margins,
-        )
-        predictive_condition_path = results_dir / "predictive_condition_metrics.csv"
-        predictive_summary_path = results_dir / "predictive_regional_summary.json"
-        predictive_margin_path = results_dir / "predictive_margin_vs_resnet.json"
-        predictive_warnings_path = results_dir / "predictive_warnings.json"
-        predictive_advantage_path = results_dir / "predictive_gps_query_advantage_metrics.csv"
-        predictive_advantage_margin_path = results_dir / "predictive_gps_query_advantage_margins.json"
-        predictive_claim_gate_path = results_dir / "predictive_claim_gate.json"
-        predictive_diagnostics_bundle_path = results_dir / "predictive_diagnostics_bundle_manifest.json"
-        _write_csv(predictive_condition_path, predictive_rows)
-        _write_csv(predictive_advantage_path, predictive_advantage_rows)
-        predictive_summary_path.write_text(
-            json.dumps(_json_ready({"summary": predictive_summary}), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        predictive_margin_path.write_text(
-            json.dumps(
-                _json_ready(
-                    {
-                        "margins": [
-                            {
-                                key: row.get(key)
-                                for key in (
-                                    "model",
-                                    "group",
-                                    "predictive_dba",
-                                    "clean_anchor_primary",
-                                    "S@drop<=0.02",
-                                    "S@drop<=0.05",
-                                    "AUC_retention",
-                                    "collapse_s",
-                                    "weakest_axis",
-                                    "resnet_predictive_dba",
-                                    "margin_vs_resnet_dba",
-                                    "claim_pass_5pt",
-                                    "claim_status",
-                                    "stress_summary_status",
-                                    "overall_cxd_dba",
-                                    "overall_cxd_delta_vs_resnet",
-                                )
-                            }
-                            for row in predictive_summary
-                        ]
-                    }
-                ),
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        predictive_warnings_path.write_text(
-            json.dumps(_json_ready({"warnings": warnings}), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        predictive_advantage_margin_path.write_text(
-            json.dumps(_json_ready({"margins": predictive_advantage_margins}), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        predictive_claim_gate_path.write_text(
-            json.dumps(_json_ready({"claim_gate": predictive_claim_gate}), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        predictive_diagnostics_bundle_path.write_text(
-            json.dumps(_json_ready(predictive_diagnostics_bundle), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    fusion_condition_rows = fusion_diagnostic_condition_rows(metrics_rows, manifest)
-    if fusion_condition_rows:
-        fusion_margin_rows = fusion_diagnostic_paired_margins(fusion_condition_rows, manifest)
-        fusion_summary = fusion_diagnostic_summary(fusion_condition_rows, fusion_margin_rows, manifest)
-        fusion_diagnostic_condition_path = results_dir / "fusion_diagnostic_metrics.csv"
-        fusion_diagnostic_margin_path = results_dir / "paired_margin_by_condition.csv"
-        fusion_diagnostic_summary_path = results_dir / "fusion_diagnostic_summary.json"
-        _write_csv(fusion_diagnostic_condition_path, fusion_condition_rows)
-        _write_csv(fusion_diagnostic_margin_path, fusion_margin_rows)
-        fusion_diagnostic_summary_path.write_text(
-            json.dumps(_json_ready(fusion_summary), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+    comparability = evaluate_comparability_or_warn(manifest, warnings=warnings)
+    model_summaries, metrics_rows = collect_model_metric_rows(
+        manifest,
+        output_dir=out,
+        dry_run=dry_run,
+        warnings=warnings,
+        comparability_status=str(comparability["status"]),
+        metric_source_loader=_model_metric_source,
+        metric_rows_builder=_metrics_rows_for_model,
+    )
+    write_core_benchmark_tables(metrics_rows, manifest, tables_dir=tables_dir)
+    predictive_artifacts = write_predictive_and_fusion_artifacts(
+        metrics_rows,
+        manifest,
+        results_dir=results_dir,
+        warnings=warnings,
+    )
+    artifact_paths = predictive_artifacts.paths
     scenario_d_rows: list[dict[str, Any]] = []
     heatmap_path: Path | None = None
     scenario_d_results_path: Path | None = None
@@ -430,17 +302,17 @@ def run_jepa_gps_shortcut_benchmark(
         "metrics_by_condition": str(tables_dir / "metrics_by_condition.csv"),
         "robustness_summary": str(tables_dir / "robustness_summary.csv"),
         "shortcut_reliance_summary": str(tables_dir / "shortcut_reliance_summary.csv"),
-        "predictive_condition_metrics": str(predictive_condition_path) if predictive_condition_path else "",
-        "predictive_regional_summary": str(predictive_summary_path) if predictive_summary_path else "",
-        "predictive_margin_vs_resnet": str(predictive_margin_path) if predictive_margin_path else "",
-        "predictive_warnings": str(predictive_warnings_path) if predictive_warnings_path else "",
-        "predictive_gps_query_advantage_metrics": str(predictive_advantage_path) if predictive_advantage_path else "",
-        "predictive_gps_query_advantage_margins": str(predictive_advantage_margin_path) if predictive_advantage_margin_path else "",
-        "predictive_claim_gate": str(predictive_claim_gate_path) if predictive_claim_gate_path else "",
-        "predictive_diagnostics_bundle_manifest": str(predictive_diagnostics_bundle_path) if predictive_diagnostics_bundle_path else "",
-        "fusion_diagnostic_condition_metrics": str(fusion_diagnostic_condition_path) if fusion_diagnostic_condition_path else "",
-        "fusion_diagnostic_paired_margins": str(fusion_diagnostic_margin_path) if fusion_diagnostic_margin_path else "",
-        "fusion_diagnostic_summary": str(fusion_diagnostic_summary_path) if fusion_diagnostic_summary_path else "",
+        "predictive_condition_metrics": str(artifact_paths.get("predictive_condition_metrics") or ""),
+        "predictive_regional_summary": str(artifact_paths.get("predictive_regional_summary") or ""),
+        "predictive_margin_vs_resnet": str(artifact_paths.get("predictive_margin_vs_resnet") or ""),
+        "predictive_warnings": str(artifact_paths.get("predictive_warnings") or ""),
+        "predictive_gps_query_advantage_metrics": str(artifact_paths.get("predictive_gps_query_advantage_metrics") or ""),
+        "predictive_gps_query_advantage_margins": str(artifact_paths.get("predictive_gps_query_advantage_margins") or ""),
+        "predictive_claim_gate": str(artifact_paths.get("predictive_claim_gate") or ""),
+        "predictive_diagnostics_bundle_manifest": str(artifact_paths.get("predictive_diagnostics_bundle_manifest") or ""),
+        "fusion_diagnostic_condition_metrics": str(artifact_paths.get("fusion_diagnostic_condition_metrics") or ""),
+        "fusion_diagnostic_paired_margins": str(artifact_paths.get("fusion_diagnostic_paired_margins") or ""),
+        "fusion_diagnostic_summary": str(artifact_paths.get("fusion_diagnostic_summary") or ""),
         "scenario_d_results": str(scenario_d_results_path) if scenario_d_results_path else "",
         "scenario_d_heatmap": str(heatmap_path) if heatmap_path else "",
         "geometry_prior_quality": str(geometry_prior_paths.get("prior_quality", "")),
@@ -945,14 +817,6 @@ def _summary_from_delegated_evaluate(
     return summary
 
 
-def _real_forward_requested(manifest: Mapping[str, Any], model_spec: Mapping[str, Any]) -> bool:
-    model_cfg = model_spec.get("real_forward")
-    if isinstance(model_cfg, Mapping) and "enabled" in model_cfg:
-        return bool(model_cfg.get("enabled"))
-    evaluation = manifest.get("evaluation", {}) if isinstance(manifest.get("evaluation"), Mapping) else {}
-    return str(evaluation.get("mode", "")).strip().lower().replace("-", "_") == "real_forward"
-
-
 def _summary_from_real_forward(
     model_name: str,
     model_spec: Mapping[str, Any],
@@ -1133,125 +997,6 @@ def _build_real_forward_dataloader(cfg: dict[str, Any], split: str, dataset_kwar
         resolved_kwargs = {**normalization_kwargs(train_dataset), **dataset_kwargs}
         dataset = build_split_dataset(cfg, split, **resolved_kwargs)
     return build_dataloader(dataset, cfg["data"]["dataloader"], split=split)
-
-
-def _real_forward_settings(manifest: Mapping[str, Any], model_spec: Mapping[str, Any]) -> dict[str, Any]:
-    evaluation = manifest.get("evaluation", {}) if isinstance(manifest.get("evaluation"), Mapping) else {}
-    base = evaluation.get("real_forward", {}) if isinstance(evaluation.get("real_forward"), Mapping) else {}
-    model_rf = model_spec.get("real_forward", {}) if isinstance(model_spec.get("real_forward"), Mapping) else {}
-    settings = {**dict(base), **dict(model_rf)}
-    settings.setdefault("enabled", True)
-    settings.setdefault("resume", True)
-    settings.setdefault("cache_subdir", "real_forward")
-    if "sample_count" not in settings and "sample_count" in model_spec:
-        settings["sample_count"] = model_spec["sample_count"]
-    return settings
-
-
-PERTURBATION_CACHE_SCHEMA_VERSION = "benchmark_perturbation_batch_v1"
-
-
-def _perturbation_cache_config(settings: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
-    raw = settings.get("perturbation_cache", settings.get("perturbed_data_cache", {}))
-    if not raw:
-        return {"mode": "off", "dir": str(output_dir / "cache" / "perturbations")}
-    if isinstance(raw, str):
-        raw = {"mode": raw}
-    if raw is True:
-        raw = {"mode": "read_write"}
-    if not isinstance(raw, Mapping):
-        raise BenchmarkManifestError("evaluation.real_forward.perturbation_cache must be a mapping, string, or boolean.")
-    mode = str(raw.get("mode", "read_write")).strip().lower().replace("-", "_")
-    if mode not in {"off", "write", "read", "read_write"}:
-        raise BenchmarkManifestError("perturbation_cache.mode must be one of off, write, read, or read_write.")
-    cache_dir = Path(str(raw.get("dir", raw.get("cache_dir", output_dir / "cache" / "perturbations"))))
-    if not cache_dir.is_absolute():
-        cache_dir = output_dir / cache_dir
-    return {"mode": mode, "dir": str(cache_dir)}
-
-
-def _perturbation_cache_key(condition: Mapping[str, Any], *, split: str, sample_limit: int) -> str:
-    payload = {
-        "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
-        "split": split,
-        "sample_limit": int(sample_limit),
-        "condition": _json_ready(condition),
-    }
-    return _sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))[:24]
-
-
-def _perturbation_cache_index_path(cache_cfg: Mapping[str, Any], key: str) -> Path:
-    return Path(str(cache_cfg["dir"])) / key / "index.json"
-
-
-def _load_perturbation_cache_index(path: Path, *, key: str, cache_cfg: Mapping[str, Any]) -> dict[str, Any] | None:
-    if not path.exists():
-        if str(cache_cfg.get("mode")) == "read":
-            raise BenchmarkManifestError(f"Perturbation cache missing for key {key}: {path}")
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != PERTURBATION_CACHE_SCHEMA_VERSION or payload.get("key") != key:
-        raise BenchmarkManifestError(f"Perturbation cache mismatch for key {key}: {path}")
-    return payload
-
-
-def _iter_perturbation_cache(index: Mapping[str, Any]) -> Iterable[tuple[dict[str, Any], list[str], list[dict[str, Any]]]]:
-    root = Path(str(index["root"]))
-    for shard in index.get("shards", []):
-        if not isinstance(shard, Mapping):
-            continue
-        path = root / str(shard["file"])
-        payload = torch.load(path, map_location="cpu", weights_only=False)
-        if payload.get("schema") != PERTURBATION_CACHE_SCHEMA_VERSION:
-            raise BenchmarkManifestError(f"Perturbation cache shard schema mismatch: {path}")
-        yield dict(payload["batch"]), [str(item) for item in payload.get("sample_ids", [])], list(payload.get("warnings", []))
-
-
-def _write_perturbation_cache_shard(
-    index_path: Path,
-    *,
-    shard_index: int,
-    key: str,
-    condition: Mapping[str, Any],
-    batch: Mapping[str, Any],
-    sample_ids: list[str],
-    warnings: list[dict[str, Any]],
-) -> dict[str, Any]:
-    root = index_path.parent
-    root.mkdir(parents=True, exist_ok=True)
-    name = f"batch_{shard_index:06d}.pt"
-    payload = {
-        "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
-        "key": key,
-        "condition": _json_ready(condition),
-        "sample_ids": list(sample_ids),
-        "warnings": _json_ready(warnings),
-        "batch": dict(batch),
-    }
-    torch.save(payload, root / name)
-    return {"file": name, "sample_count": len(sample_ids)}
-
-
-def _write_perturbation_cache_index(
-    index_path: Path,
-    *,
-    key: str,
-    condition: Mapping[str, Any],
-    split: str,
-    sample_limit: int,
-    shards: list[dict[str, Any]],
-) -> None:
-    payload = {
-        "schema": PERTURBATION_CACHE_SCHEMA_VERSION,
-        "key": key,
-        "root": str(index_path.parent),
-        "condition": _json_ready(condition),
-        "split": split,
-        "sample_limit": int(sample_limit),
-        "sample_count": int(sum(int(item.get("sample_count", 0)) for item in shards)),
-        "shards": shards,
-    }
-    index_path.write_text(json.dumps(_json_ready(payload), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _resolve_optional_checkpoint(
@@ -2126,232 +1871,6 @@ def _real_forward_shard_record(
         "dba": summary.get("dba", ""),
         "top1": summary.get("top1", ""),
     }
-
-
-# Runner robustness summaries and analysis bundle helpers
-def aggregate_robustness_summary(
-    metrics_rows: Iterable[Mapping[str, Any]],
-    *,
-    primary_metric: str = DEFAULT_PRIMARY_METRIC,
-) -> list[dict[str, Any]]:
-    rows = [dict(row) for row in metrics_rows]
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in rows:
-        if str(row.get("condition")) in {"clean", "clean_anchor"} or str(row.get("suite")) == "clean_anchor":
-            continue
-        grouped.setdefault((str(row.get("model")), str(row.get("suite"))), []).append(row)
-    summaries: list[dict[str, Any]] = []
-    for (model, suite), items in grouped.items():
-        items.sort(key=lambda item: (float(item.get("severity") or 0.0), int(item.get("seed") or 0)))
-        metric_values = [_float_or_none(item.get("primary_metric")) for item in items]
-        severities = [float(item.get("severity") or 0.0) for item in items]
-        clean = _float_or_none(items[0].get("clean_primary_metric")) if items else None
-        valid_pairs = [(x, y) for x, y in zip(severities, metric_values) if y is not None]
-        slope = _collapse_slope(valid_pairs)
-        aurc = _area_under_curve(valid_pairs)
-        relative_drops = [
-            _relative_drop(clean, value)
-            for value in metric_values
-            if value is not None and clean is not None
-        ]
-        summaries.append(
-            {
-                "model": model,
-                "suite": suite,
-                "suite_type": items[0].get("suite_type", "") if items else "",
-                "condition": items[0].get("condition", "") if items else "",
-                "split": items[0].get("split", "") if items else "",
-                "seed_count": len({str(item.get("seed")) for item in items}),
-                "sample_count": items[0].get("sample_count", "") if items else "",
-                "primary_metric_name": primary_metric,
-                "clean_primary_metric": clean if clean is not None else "",
-                "worst_primary_metric": min((value for value in metric_values if value is not None), default=""),
-                "max_relative_drop": max(relative_drops, default=0.0),
-                "mean_relative_drop": float(np.mean(relative_drops)) if relative_drops else 0.0,
-                "collapse_slope": slope,
-                "area_under_robustness_curve": aurc,
-                "comparability_status": items[0].get("comparability_status", "") if items else "",
-                "status": "generated" if items else "empty",
-            }
-        )
-    summaries.sort(key=lambda item: (str(item["model"]), str(item["suite"])))
-    return summaries
-
-def aggregate_shortcut_reliance(
-    metrics_rows: Iterable[Mapping[str, Any]],
-    robustness_rows: Iterable[Mapping[str, Any]],
-    manifest: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    rows = [dict(row) for row in metrics_rows]
-    robustness = [dict(row) for row in robustness_rows]
-    by_model: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        by_model.setdefault(str(row.get("model")), []).append(row)
-    output: list[dict[str, Any]] = []
-    for model, model_rows in by_model.items():
-        clean = next((row for row in model_rows if str(row.get("condition")) == "clean"), None)
-        clean_metric = _float_or_none(clean.get("primary_metric")) if clean else None
-        drop_gps = _max_drop(model_rows, condition_names={"drop_gps", "gps_missing"})
-        drop_image = _max_drop(model_rows, condition_names={"drop_image", "image_occlusion", "image_fog_rain", "image_night"})
-        misleading = _max_drop(model_rows, condition_names={"misleading_gps", "gps_distractor"})
-        gps_slopes = [
-            _float_or_none(row.get("collapse_slope"))
-            for row in robustness
-            if str(row.get("model")) == model and str(row.get("suite_type")) in GPS_SUITE_TYPES
-        ]
-        output.append(
-            {
-                "model": model,
-                "group": manifest.get("models", {}).get(model, {}).get("group", ""),
-                "clean_primary_metric": clean_metric if clean_metric is not None else "",
-                "drop_gps_magnitude": drop_gps,
-                "drop_image_magnitude": drop_image,
-                "misleading_gps_magnitude": misleading,
-                "gps_only_collapse_slope": min((item for item in gps_slopes if item is not None), default=0.0),
-                "missing_expression": "zero_fill_with_metadata_warning",
-                "counterfactual_intervention": bool(misleading > 0.0),
-                "diagnostic_scope": "performance_counterfactual_not_attention_causality",
-                "status": "generated",
-            }
-        )
-    output.sort(key=lambda item: str(item["model"]))
-    return output
-
-def read_benchmark_analysis_bundle(
-    manifest_path: str | Path | None,
-    *,
-    metrics_by_condition: str | Path | None = None,
-    robustness_summary: str | Path | None = None,
-) -> dict[str, Any]:
-    warnings: list[str] = []
-    manifest: dict[str, Any] = {}
-    manifest_digest = None
-    manifest_file: Path | None = None
-    if manifest_path:
-        manifest_file = _resolve_existing_user_path(manifest_path)
-        text = manifest_file.read_text(encoding="utf-8")
-        manifest = _load_mapping_text(text, path=manifest_file)
-        manifest_digest = _sha256_text(text)
-    metrics_path = _resolve_artifact_path(
-        explicit=metrics_by_condition,
-        manifest=manifest,
-        manifest_file=manifest_file,
-        filename="metrics_by_condition.csv",
-        output_key="metrics_by_condition",
-    )
-    robustness_path = _resolve_artifact_path(
-        explicit=robustness_summary,
-        manifest=manifest,
-        manifest_file=manifest_file,
-        filename="robustness_summary.csv",
-        output_key="robustness_summary",
-    )
-    metrics_rows = _read_csv(metrics_path) if metrics_path and metrics_path.exists() else []
-    if not metrics_rows:
-        warnings.append("benchmark_metrics_unavailable")
-    robustness_rows = _read_csv(robustness_path) if robustness_path and robustness_path.exists() else []
-    if metrics_rows and not robustness_rows:
-        robustness_rows = aggregate_robustness_summary(
-            metrics_rows,
-            primary_metric=str(manifest.get("metrics", {}).get("primary", DEFAULT_PRIMARY_METRIC)),
-        )
-    matrix_rows = robustness_matrix_rows(metrics_rows)
-    case_rows = select_benchmark_case_studies(metrics_rows)
-    return {
-        "manifest": manifest,
-        "manifest_path": str(manifest_file) if manifest_file is not None else None,
-        "manifest_digest": manifest_digest,
-        "metrics_path": str(metrics_path) if metrics_path is not None else None,
-        "robustness_path": str(robustness_path) if robustness_path is not None else None,
-        "metrics_rows": metrics_rows,
-        "robustness_rows": robustness_rows,
-        "matrix_rows": matrix_rows,
-        "case_rows": case_rows,
-        "warnings": warnings,
-    }
-
-def robustness_matrix_rows(metrics_rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    rows = [dict(row) for row in metrics_rows]
-    clean_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for row in rows:
-        if str(row.get("condition")) == "clean":
-            clean_by_key[(str(row.get("model")), str(row.get("split")), str(row.get("seed")))] = row
-    matrix: list[dict[str, Any]] = []
-    for row in rows:
-        if str(row.get("condition")) == "clean":
-            continue
-        clean = clean_by_key.get((str(row.get("model")), str(row.get("split")), str(row.get("seed"))), {})
-        clean_metric = _float_or_none(clean.get("primary_metric"))
-        perturbed = _float_or_none(row.get("primary_metric"))
-        delta = "" if clean_metric is None or perturbed is None else perturbed - clean_metric
-        matrix.append(
-            {
-                "model": row.get("model", ""),
-                "suite": row.get("suite", ""),
-                "condition": row.get("condition", ""),
-                "severity": row.get("severity", ""),
-                "seed": row.get("seed", ""),
-                "split": row.get("split", ""),
-                "sample_count": row.get("sample_count", ""),
-                "clean_metric": clean_metric if clean_metric is not None else row.get("clean_primary_metric", ""),
-                "perturbed_metric": perturbed if perturbed is not None else "",
-                "delta": delta,
-                "relative_drop": row.get("relative_drop", ""),
-                "suite_type": row.get("suite_type", ""),
-                "metric": row.get("primary_metric_name", DEFAULT_PRIMARY_METRIC),
-                "top1": row.get("top1", ""),
-                "top3": row.get("top3", ""),
-                "top5": row.get("top5", ""),
-                "mean_beam_index_error": row.get("mean_beam_index_error", ""),
-                "max_delay_steps": row.get("max_delay_steps", ""),
-                "gps_stride": row.get("gps_stride", ""),
-                "gps_dropout_prob": row.get("gps_dropout_prob", ""),
-                "accuracy_c0_ratio": row.get("accuracy_c0_ratio", ""),
-                "image_only_missing_gps_slice": row.get("image_only_missing_gps_slice", ""),
-            }
-        )
-    matrix.sort(key=lambda item: (str(item["suite"]), str(item["severity"]), str(item["model"])))
-    return matrix
-
-def select_benchmark_case_studies(metrics_rows: Iterable[Mapping[str, Any]], *, seed: int = 42) -> list[dict[str, Any]]:
-    rows = [dict(row) for row in metrics_rows if str(row.get("condition")) != "clean"]
-    if not rows:
-        return []
-    rng = np.random.default_rng(int(seed))
-    jepa_rows = [row for row in rows if "jepa" in str(row.get("model", "")).lower()]
-    gps_rows = [row for row in rows if "gps" in str(row.get("model", "")).lower() and "jepa" not in str(row.get("model", "")).lower()]
-    output: list[dict[str, Any]] = []
-    if jepa_rows and gps_rows:
-        gps_lookup = {
-            (str(row.get("suite")), str(row.get("severity")), str(row.get("seed"))): row
-            for row in gps_rows
-        }
-        candidates = []
-        for row in jepa_rows:
-            other = gps_lookup.get((str(row.get("suite")), str(row.get("severity")), str(row.get("seed"))))
-            if other is None:
-                continue
-            if _float(row.get("relative_drop")) < _float(other.get("relative_drop")):
-                candidates.append((row, other))
-        if candidates:
-            row, other = candidates[int(rng.integers(0, len(candidates)))]
-            output.append(_case_row("jepa_recovery", row, other))
-    misleading = [row for row in gps_rows if str(row.get("condition")) in {"misleading_gps", "gps_distractor"} or "distractor" in str(row.get("suite_type"))]
-    if misleading:
-        row = max(misleading, key=lambda item: _float(item.get("relative_drop")))
-        output.append(_case_row("gps_shortcut_failure", row, None))
-    by_condition: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    for row in rows:
-        by_condition.setdefault((str(row.get("suite")), str(row.get("severity")), str(row.get("seed"))), []).append(row)
-    shared = [
-        items
-        for items in by_condition.values()
-        if len(items) >= 2 and all(_float(item.get("relative_drop")) >= 0.25 for item in items)
-    ]
-    if shared:
-        items = shared[int(rng.integers(0, len(shared)))]
-        output.append(_case_row("shared_failure", max(items, key=lambda item: _float(item.get("relative_drop"))), None))
-    return output
 
 
 __all__ = [

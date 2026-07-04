@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from typing import Any
 
@@ -29,6 +28,3 @@ class PhysicsInformedTrainingExtension(TrainingExtension):
             components=components,
             diagnostics=dict(result["diagnostics"]),
         )
-
-
-__all__ = ["PhysicsInformedTrainingExtension"]

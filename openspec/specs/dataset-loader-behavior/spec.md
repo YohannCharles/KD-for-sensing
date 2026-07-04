@@ -2,9 +2,7 @@
 
 ## Purpose
 定义通用 DataLoader、样本窗口、portion 采样、标签 shape、按需加载和轻量缓存行为，承接跨数据集但不属于 descriptor/schema 本身的运行时加载契约。
-
 ## Requirements
-
 ### Requirement: Scenario 9 按模态选择加载样本
 DeepSense6G dataset MUST 根据训练或评估配置中的启用模态加载样本字段。未启用模态的文件 MUST 不被读取，未启用模态的输入字段 MUST 不出现在样本字典中，且未启用模态的路径列或文件缺失不得阻止当前任务运行。dataset MUST 始终加载 beam 历史标签和 future beam 目标标签。Scenario 9 MUST 通过 `data.dataset.type: deepsense6g` 和 `data.dataset.scene: 9` 选择，不得通过 `scene-specific dataset class alias` 或 `the scene-9 dataset-type spelling` 选择。
 
@@ -229,3 +227,12 @@ HDF5 或 cache-backed dataset 如果属于当前保留数据集，MUST 在初始
 #### Scenario: Multimodal-NF metadata 删除
 - **WHEN** 训练或评估构建 dataloaders
 - **THEN** run metadata MUST 不要求包含 Multimodal-NF split protocol、city 列表、input profiles、target schema 或 codebook metadata
+
+### Requirement: Dataset hotspot 拆分必须保持 loader 行为
+Dataset 重构 MUST 保持 lazy loading、enabled modality resolution、sample cache behavior、scaler fitting、no-future-leak target construction 和 run metadata。
+
+#### Scenario: 拆分后样本契约兼容
+- **WHEN** DeepSense6GDataset or MMWDataset helper boundaries change
+- **THEN** existing sample keys, target tensors, auxiliary target metadata, cache metadata and warning behavior MUST remain compatible
+- **AND** focused tests MUST 不要求真实数据文件
+

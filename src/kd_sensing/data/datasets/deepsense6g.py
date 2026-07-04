@@ -10,11 +10,8 @@ from tqdm.auto import tqdm
 
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.scenes import resolve_deepsense_scene
-from kd_sensing.data.sample_cache import LmdbSampleCache, sample_cache_path_for_split
 from kd_sensing.data.beam_soft_targets import (
     SoftBeamLabelConfig,
-    read_beam_power_vector,
-    soft_distribution_from_power_or_label,
 )
 from kd_sensing.data.beam_label_calibration import BeamLabelMapping, resolve_beam_label_mapping
 from kd_sensing.data.transform_ops.gps import (
@@ -39,7 +36,6 @@ from kd_sensing.data.transform_ops.image_cache import (
     ImageDerivedCache,
     ImageDerivedCacheConfig,
 )
-from kd_sensing.data.transform_ops.io import joined_resource
 from kd_sensing.data.transform_ops.lidar import (
     DEFAULT_LIDAR_BEV_SIZE,
     DEFAULT_LIDAR_ROI,
@@ -55,6 +51,14 @@ from kd_sensing.data.transform_ops.mmwave import (
 )
 from kd_sensing.data.transform_ops.radar import load_radar_maps
 from kd_sensing.data.datasets.deepsense6g_loaders import configure_deepsense6g_resource_readers
+from kd_sensing.data.datasets.deepsense6g_label_adapters import (
+    build_deepsense6g_soft_beam_targets,
+    deepsense6g_soft_beam_distribution,
+    deepsense6g_soft_beam_label_domain,
+    deepsense6g_soft_beam_num_classes,
+    prepare_deepsense6g_beam_label_cache,
+    read_deepsense6g_beam_label,
+)
 from kd_sensing.data.datasets.deepsense6g_targets import (
     configure_deepsense6g_target_state,
     coerce_occlusion_stats,
@@ -87,6 +91,7 @@ from kd_sensing.data.datasets.deepsense6g_scalers import (
     configure_deepsense6g_scaler_state,
     prepare_deepsense6g_scalers_and_normalizers,
 )
+from kd_sensing.data.datasets.deepsense6g_cache_paths import build_deepsense6g_sample_cache
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, resolve_image_profile
 from kd_sensing.registries import DATASETS
 from kd_sensing.utils.paths import resolve_path
@@ -368,28 +373,8 @@ class DeepSense6GDataset(Dataset):
     def _sample_cache_key(self, idx: int) -> str:
         return f"{self.split}:{int(idx)}"
 
-    def _build_sample_cache(self, cfg: dict[str, Any] | bool | None) -> tuple[LmdbSampleCache | None, bool]:
-        if not cfg:
-            return None, False
-        if cfg is True:
-            raise ValueError("data.dataset.sample_cache=true requires sample_cache.path.")
-        if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
-            return None, False
-        if str(cfg.get("backend", "lmdb")) != "lmdb":
-            raise ValueError("data.dataset.sample_cache.backend currently supports only 'lmdb'.")
-        raw_path = cfg.get("path")
-        if not raw_path:
-            raise ValueError("data.dataset.sample_cache.path is required when sample cache is enabled.")
-        path = sample_cache_path_for_split(raw_path, self.split)
-        return (
-            LmdbSampleCache(
-                path,
-                readonly=not bool(cfg.get("write_on_miss", False)),
-                map_size_gb=float(cfg.get("map_size_gb", 64.0)),
-                readahead=bool(cfg.get("readahead", True)),
-            ),
-            bool(cfg.get("write_on_miss", False)),
-        )
+    def _build_sample_cache(self, cfg: dict[str, Any] | bool | None):
+        return build_deepsense6g_sample_cache(cfg, split=self.split)
 
     def _getitem_with_timing(self, idx: int, *, collect_timing: bool) -> tuple[dict[str, Any], dict[str, float]]:
         timings = {
@@ -609,14 +594,7 @@ class DeepSense6GDataset(Dataset):
         return self.target_provider.auxiliary_target_metadata()
 
     def _prepare_beam_label_cache(self) -> None:
-        unique_paths = {
-            str(path)
-            for paths in [*self.samples.input_beam_paths, *self.samples.future_beam_paths]
-            for path in paths
-            if str(path).strip() and str(path).strip() != "-99"
-        }
-        for beam_path in sorted(unique_paths):
-            self._beam_label_cache[beam_path] = self._read_beam_label(beam_path)
+        prepare_deepsense6g_beam_label_cache(self)
 
     def _beam_label(self, beam_path: str) -> int:
         return self._map_beam_label(self._raw_beam_label(beam_path))
@@ -672,43 +650,14 @@ class DeepSense6GDataset(Dataset):
         ]
 
     def _read_beam_label(self, beam_path: str) -> int:
-        path = joined_resource(self.data_root, beam_path)
-        try:
-            values = np.loadtxt(path)
-        except Exception as exc:
-            raise ValueError(f"Failed to read beam label file {path}: {exc}") from exc
-        values = np.asarray(values)
-        if values.size == 0:
-            raise ValueError(f"Beam label file {path} is empty.")
-        return int(np.argmax(values))
+        return read_deepsense6g_beam_label(self.data_root, beam_path)
 
     def _soft_beam_targets_for_paths(
         self,
         future_beam_paths: list[str],
         hard_labels: list[int],
     ) -> tuple[np.ndarray, np.ndarray]:
-        cfg = self.soft_beam_label_config
-        num_classes = self._soft_beam_num_classes(hard_labels)
-        distributions: list[np.ndarray] = []
-        masks: list[bool] = []
-        for horizon, rel_path in enumerate(future_beam_paths[: self.num_pred]):
-            label = hard_labels[horizon] if horizon < len(hard_labels) else -100
-            if label < 0:
-                distributions.append(np.zeros(num_classes, dtype=np.float32))
-                masks.append(False)
-                continue
-            distribution, power_available = self._soft_beam_distribution_for_path(
-                rel_path,
-                label,
-                cfg=cfg,
-                num_classes=num_classes,
-            )
-            distributions.append(distribution)
-            masks.append(True)
-        while len(distributions) < int(self.num_pred):
-            distributions.append(np.zeros(num_classes, dtype=np.float32))
-            masks.append(False)
-        return np.stack(distributions, axis=0), np.asarray(masks, dtype=bool)
+        return build_deepsense6g_soft_beam_targets(self, future_beam_paths, hard_labels)
 
     def _soft_beam_distribution_for_path(
         self,
@@ -718,64 +667,26 @@ class DeepSense6GDataset(Dataset):
         cfg: SoftBeamLabelConfig,
         num_classes: int,
     ) -> tuple[np.ndarray, bool]:
-        key = str(rel_path or "").strip()
-        domain = self._soft_beam_label_domain(cfg)
-        source = cfg.source if domain == "source" else cfg.target_source
-        circular = True if domain == "target" else cfg.circular
-        if domain == "target" and source != "gaussian":
-            raise ValueError("target-domain soft beam labels must use circular Gaussian targets.")
-        cache_key = (
-            f"{domain}|{key}|{label}|{num_classes}|{source}|{cfg.sigma}|{circular}|{cfg.temperature}|"
-            f"{self.beam_label_mapping.fingerprint}"
-        )
-        if cfg.cache and cache_key in self._soft_beam_distribution_cache:
-            return self._soft_beam_distribution_cache[cache_key]
-        power = None
-        # Target adaptation must not use target-side power/RSS oracle profiles; use only hard labels plus
-        # codebook adjacency through circular Gaussian smoothing.
-        if (
-            domain == "source"
-            and source in {"power", "rss", "power_or_gaussian", "rss_or_gaussian"}
-            and key
-            and key != "-99"
-        ):
-            power = read_beam_power_vector(joined_resource(self.data_root, key), num_classes=num_classes)
-        result = soft_distribution_from_power_or_label(
-            power,
-            int(label),
+        return deepsense6g_soft_beam_distribution(
+            data_root=self.data_root,
+            rel_path=rel_path,
+            label=label,
+            cfg=cfg,
             num_classes=num_classes,
-            source=source,
-            sigma=cfg.sigma,
-            circular=circular,
-            temperature=cfg.temperature,
-            epsilon=cfg.epsilon,
+            split=self.split,
+            cache=self._soft_beam_distribution_cache,
+            beam_label_mapping=self.beam_label_mapping,
         )
-        if result[1] and self.beam_label_mapping.enabled:
-            result = (
-                self.beam_label_mapping.reorder_distribution(result[0], axis=-1).astype(np.float32),
-                result[1],
-            )
-        if cfg.cache:
-            self._soft_beam_distribution_cache[cache_key] = result
-        return result
 
     def _soft_beam_label_domain(self, cfg: SoftBeamLabelConfig) -> str:
-        if cfg.domain in {"source", "target"}:
-            return cfg.domain
-        split_text = str(self.split or "").strip().lower()
-        if split_text.startswith("target") or split_text in {"test", "val", "validation"}:
-            return "target"
-        return "source"
+        return deepsense6g_soft_beam_label_domain(self.split, cfg)
 
     def _soft_beam_num_classes(self, hard_labels: list[int]) -> int:
-        configured = self.soft_beam_label_config.num_classes
-        if configured is not None:
-            return int(configured)
-        if self.beam_label_mapping.enabled:
-            return int(self.beam_label_mapping.num_classes)
-        if hard_labels:
-            return max(64, max(int(value) for value in hard_labels) + 1)
-        return 64
+        return deepsense6g_soft_beam_num_classes(
+            hard_labels,
+            configured=self.soft_beam_label_config.num_classes,
+            beam_label_mapping=self.beam_label_mapping,
+        )
 
     def _prepare_gps_scaler(self) -> None:
         if not self.gps_normalize:

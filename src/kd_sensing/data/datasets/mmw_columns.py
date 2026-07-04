@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -38,6 +37,7 @@ def _ensure_csi_columns(data_root: str | Path, csv_name: str, scenario: str) -> 
         if str(row.get("beam_power_path", "")).strip() and str(row.get("channel_path", "")).strip()
     }
     missing: list[str] = []
+    derived_columns: dict[str, list[str]] = {}
     for idx, beam_col in enumerate(beam_cols, start=1):
         csi_values = []
         for value in frame[beam_col].tolist():
@@ -47,12 +47,13 @@ def _ensure_csi_columns(data_root: str | Path, csv_name: str, scenario: str) -> 
                 missing.append(str(value))
                 channel_path = "-99"
             csi_values.append(channel_path)
-        frame[f"csi{idx}"] = csi_values
+        derived_columns[f"csi{idx}"] = csi_values
     if missing:
         examples = ", ".join(missing[:3])
         raise ValueError(
             f"Could not derive CSI paths for {len(missing)} beam paths in {csv_path}; examples: {examples}."
         )
+    frame = _append_columns(frame, derived_columns)
     _write_csv_atomic(frame, output_path)
     return str(output_path.resolve())
 
@@ -72,12 +73,14 @@ def _ensure_bs_gps_columns(data_root: str | Path, csv_name: str, scenario: str) 
     output_path = csv_path.with_name(f"{csv_path.stem}_with_bs_gps{csv_path.suffix}")
     if _derived_csv_is_complete(output_path, prefix="bs_gps", expected_rows=len(frame), expected_count=len(gps_cols)):
         return str(output_path.resolve())
+    derived_columns: dict[str, list[str]] = {}
     for gps_col in gps_cols:
         suffix = gps_col[len("gps") :]
-        frame[f"bs_gps{suffix}"] = [
+        derived_columns[f"bs_gps{suffix}"] = [
             _rsu_gps_path_for_value(value, scenario)
             for value in frame[gps_col].tolist()
         ]
+    frame = _append_columns(frame, derived_columns)
     _write_csv_atomic(frame, output_path)
     return str(output_path.resolve())
 
@@ -98,6 +101,7 @@ def _ensure_radar_columns(data_root: str | Path, csv_name: str, scenario: str) -
     if _derived_csv_is_complete(output_path, prefix="radar", expected_rows=len(frame), expected_count=len(beam_cols)):
         return str(output_path.resolve())
     missing: list[str] = []
+    derived_columns: dict[str, list[str]] = {}
     for beam_col in beam_cols:
         suffix = beam_col[len("beam") :]
         values = []
@@ -106,7 +110,7 @@ def _ensure_radar_columns(data_root: str | Path, csv_name: str, scenario: str) -
             if not (root / rel_path).exists():
                 missing.append(rel_path)
             values.append(rel_path)
-        frame[f"radar{suffix}"] = values
+        derived_columns[f"radar{suffix}"] = values
     if missing:
         examples = ", ".join(missing[:3])
         raise ValueError(
@@ -114,6 +118,7 @@ def _ensure_radar_columns(data_root: str | Path, csv_name: str, scenario: str) -
             "Generate MMW radar maps first with: conda run -n kd_mm_beam kd-sensing-preprocess "
             "--config configs/preprocess/mmw_radar_maps.yaml"
         )
+    frame = _append_columns(frame, derived_columns)
     _write_csv_atomic(frame, output_path)
     return str(output_path.resolve())
 
@@ -131,6 +136,11 @@ def _write_csv_atomic(frame: pd.DataFrame, path: Path) -> None:
     temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     frame.to_csv(temp_path, index=False)
     temp_path.replace(path)
+
+def _append_columns(frame: pd.DataFrame, columns: dict[str, list[str]]) -> pd.DataFrame:
+    if not columns:
+        return frame
+    return pd.concat([frame, pd.DataFrame(columns, index=frame.index)], axis=1)
 
 def _numbered_columns(columns, prefix: str) -> list[str]:
     selected = []

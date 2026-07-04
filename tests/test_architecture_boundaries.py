@@ -125,6 +125,62 @@ RETIREMENT_CONTEXT = (
     "tombstone",
 )
 
+SCENE31_MANIFEST_BACKED_CONFIG_ROOTS = (
+    "configs/scene31/night_grid",
+    "configs/scene31/next_round",
+    "configs/scene31/funnel",
+    "configs/scene31/magic_overnight",
+)
+
+SCENE31_RETAINED_YAML = {
+    "configs/scene31/diagnostic_gps_only_strong.yaml",
+    "configs/scene31/diagnostic_image_only_strong.yaml",
+    "configs/scene31/diagnostic_lidar_only_strong.yaml",
+    "configs/scene31/diagnostic_radar_only_strong.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_adba.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_fusiononly.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_modw1.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_es20.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_es20_seed2.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_es20_seed3.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_seed2.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_seed3.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau4.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_fullaux.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_fullaux_l05.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_hardgps.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_seed2.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_seed3.yaml",
+    "configs/scene31/templates/main_v3_proto_es20_base.yaml",
+    "configs/scene31/v4_weakkd_l01_t2.yaml",
+    "configs/scene31/v4_weakkd_l02_t2.yaml",
+    "configs/scene31/v4_weakkd_l03_t15.yaml",
+}
+
+SCENE31_LOCAL_MANUAL_RUNNERS = {
+    "scripts/run_scene31_bc_apples_eval.sh",
+    "scripts/run_scene31_bc_next.sh",
+    "scripts/run_scene31_beamsoft_weak.sh",
+    "scripts/run_scene31_funnel.sh",
+    "scripts/run_scene31_magic_overnight.sh",
+    "scripts/run_scene31_p0_fresh_eval.sh",
+}
+
+SCENE31_GENERATORS_AND_SUMMARIES = {
+    "scripts/generate_scene31_funnel.py",
+    "scripts/generate_scene31_magic_overnight.py",
+    "scripts/generate_scene31_next_round.py",
+    "scripts/summarize_scene31_bc_next.py",
+    "scripts/summarize_scene31_beamsoft_weak.py",
+    "scripts/summarize_scene31_funnel.py",
+    "scripts/summarize_scene31_next_round.py",
+    "scripts/summarize_scene31_p0_fresh_eval.py",
+    "scripts/select_missing_aware_checkpoint.py",
+}
+
 
 def test_pyproject_console_scripts_point_to_existing_functions():
     scripts = _pyproject()["project"]["scripts"]
@@ -168,6 +224,22 @@ def test_current_paths_and_config_globs_are_real():
 def test_deleted_facades_and_one_shot_script_do_not_return():
     for rel_path in DELETED_SURFACE_PATHS:
         assert not (ROOT / rel_path).exists(), rel_path
+
+
+def test_runtime_sources_do_not_use_future_annotations_or_star_imports():
+    violations: list[str] = []
+    for root in (SRC, ROOT / "scripts", ROOT / "tests"):
+        for path in sorted(root.rglob("*.py")):
+            rel = _rel(path)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                    if any(alias.name == "annotations" for alias in node.names):
+                        violations.append(f"{rel}:{node.lineno} future annotations import")
+                if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+                    violations.append(f"{rel}:{node.lineno} runtime star import")
+
+    assert not violations
 
 
 def test_deleted_current_references_do_not_return():
@@ -360,6 +432,42 @@ def test_openspec_specs_match_lifecycle_inventory():
     assert set(capabilities) == spec_dirs
 
 
+def test_current_validation_commands_reference_existing_openspec_targets():
+    active_changes = _active_openspec_change_names()
+    current_specs = {path.parent.name for path in (ROOT / "openspec/specs").glob("*/spec.md")}
+    valid_targets = active_changes | current_specs
+    command_pattern = re.compile(r"openspec validate\s+(?!--all\b)(?P<target>[A-Za-z0-9_.<>{}-]+)\s+--strict")
+    violations: list[str] = []
+
+    for path in _current_validation_command_paths():
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in command_pattern.finditer(line):
+                target = match.group("target")
+                if "<" in target or ">" in target:
+                    continue
+                if target not in valid_targets:
+                    violations.append(f"{_rel(path)}:{line_number}: {match.group(0)}")
+
+    index_text = (ROOT / "docs/maintainer_context_index.yaml").read_text(encoding="utf-8")
+    assert "openspec validate --all --strict" in index_text
+    assert not violations, "Use openspec validate --all --strict or a current spec/active change target."
+
+
+def test_project_surface_inventory_sizing_baseline_declares_scan_method():
+    section = _inventory_section("## 项目健康护栏基线", "当前 AST 热点清单如下")
+    required_markers = {
+        "统计口径": ("on-disk", "tracked-only", "扫描口径"),
+        "扫描范围": ("src/kd_sensing", "tests/", "scripts/", "configs/"),
+        "排除项": ("dataset/", "outputs/", "logs/", "cache", "checkpoint"),
+        "非硬 KPI": ("趋势信号", "非硬 KPI"),
+    }
+    missing: list[str] = []
+    for label, markers in required_markers.items():
+        if not all(marker in section for marker in markers):
+            missing.append(label)
+    assert not missing, f"Inventory sizing baseline is missing: {', '.join(missing)}"
+
+
 def test_fusion_root_yaml_matches_inventory_classification():
     actual = sorted(path.name for path in (ROOT / "configs/fusion").glob("*.yaml"))
     inventory = _inventory_section("`configs/fusion/` 根目录保留分类如下：", "已迁移到")
@@ -382,16 +490,45 @@ def test_scripts_are_classified_in_inventory():
 
 
 def test_scene31_generated_yaml_is_not_tracked_surface():
-    generated_roots = (
-        ROOT / "configs/scene31/night_grid",
-        ROOT / "configs/scene31/next_round",
-    )
     existing = [
         _rel(path)
-        for root in generated_roots
+        for root in (ROOT / rel_path for rel_path in SCENE31_MANIFEST_BACKED_CONFIG_ROOTS)
         for path in sorted(root.glob("*.yaml"))
     ]
     assert not existing
+
+
+def test_scene31_retained_yaml_surface_is_explicitly_registered():
+    actual = {
+        _rel(path)
+        for path in (ROOT / "configs/scene31").rglob("*.yaml")
+        if path.is_file()
+    }
+    assert actual == SCENE31_RETAINED_YAML
+    inventory = INVENTORY.read_text(encoding="utf-8")
+    for rel_path in sorted(SCENE31_RETAINED_YAML):
+        if rel_path.startswith("configs/scene31/templates/"):
+            continue
+        assert rel_path.split("/")[-1].split("_", 1)[0] in inventory or rel_path in inventory
+
+
+def test_scene31_local_manual_scripts_are_explicitly_registered():
+    tracked = {path for path in _git_ls_files() if (ROOT / path).exists()}
+    actual_runners = {path for path in tracked if path.startswith("scripts/run_scene31_") and path.endswith(".sh")}
+    actual_tools = {
+        path
+        for path in tracked
+        if (
+            path.startswith("scripts/generate_scene31_")
+            or path.startswith("scripts/summarize_scene31_")
+            or path == "scripts/select_missing_aware_checkpoint.py"
+        )
+    }
+    inventory = INVENTORY.read_text(encoding="utf-8")
+    assert actual_runners == SCENE31_LOCAL_MANUAL_RUNNERS
+    assert actual_tools == SCENE31_GENERATORS_AND_SUMMARIES
+    for rel_path in sorted(actual_runners | actual_tools):
+        assert f"`{rel_path}`" in inventory
 
 
 def test_root_temp_runbooks_do_not_return():
@@ -420,14 +557,39 @@ def test_internal_sources_do_not_import_public_facade_helpers():
     assert not violations
 
 
-def test_plain_pytest_files_do_not_duplicate_src_bootstrap():
+def test_plain_pytest_files_do_not_insert_tests_path_bootstrap():
     violations: list[str] = []
     for path in sorted((ROOT / "tests").glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if _is_sys_path_insert_expr(node):
-                violations.append(_rel(path))
-    assert not violations
+        for line_number in _module_level_sys_path_insert_lines(tree):
+            violations.append(f"{_rel(path)}:{line_number}")
+    assert not violations, "Ordinary tests should use tests.<helper> imports or shared pytest bootstrap."
+
+
+def test_deleted_active_openspec_changes_have_matching_archive_status():
+    status_lines = _git_status_short()
+    deleted_active_changes: set[str] = set()
+    archive_changes: set[str] = set()
+
+    for line in status_lines:
+        status = line[:2]
+        path = line[3:]
+        if path.startswith("openspec/changes/archive/"):
+            match = re.match(r"openspec/changes/archive/\d{4}-\d{2}-\d{2}-(?P<change>[^/]+)/", path)
+            if match:
+                archive_changes.add(match.group("change"))
+            continue
+        if not path.startswith("openspec/changes/") or "D" not in status:
+            continue
+        parts = path.split("/")
+        if len(parts) >= 3:
+            deleted_active_changes.add(parts[2])
+
+    missing_archives = sorted(change for change in deleted_active_changes if change not in archive_changes)
+    assert not missing_archives, (
+        "Deleted OpenSpec active change directories must be paired with "
+        f"openspec/changes/archive/<date>-<change>/ status entries: {missing_archives}"
+    )
 
 
 def test_retired_console_scripts_are_absent():
@@ -475,6 +637,32 @@ def _git_ls_files() -> list[str]:
     return result.stdout.splitlines()
 
 
+def _git_status_short() -> list[str]:
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.splitlines()
+
+
+def _active_openspec_change_names() -> set[str]:
+    changes_root = ROOT / "openspec/changes"
+    return {path.name for path in changes_root.iterdir() if path.is_dir() and path.name != "archive"}
+
+
+def _current_validation_command_paths() -> list[Path]:
+    return [
+        ROOT / "README.md",
+        ROOT / "docs/agent_navigation.md",
+        ROOT / "docs/maintainer_context_index.yaml",
+        ROOT / "docs/project_surface_inventory.md",
+        *sorted((ROOT / "openspec/specs").glob("*/spec.md")),
+    ]
+
+
 def _rel(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
 
@@ -505,3 +693,16 @@ def _is_sys_path_insert_expr(node: ast.AST) -> bool:
         and isinstance(func.value.value, ast.Name)
         and func.value.value.id == "sys"
     )
+
+
+def _module_level_sys_path_insert_lines(tree: ast.Module) -> list[int]:
+    line_numbers: list[int] = []
+    for node in tree.body:
+        candidates = [node]
+        if isinstance(node, ast.If):
+            candidates.extend(node.body)
+            candidates.extend(node.orelse)
+        for candidate in candidates:
+            if _is_sys_path_insert_expr(candidate):
+                line_numbers.append(candidate.lineno)
+    return line_numbers

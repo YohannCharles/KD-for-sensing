@@ -1,7 +1,7 @@
 # research-literature-matrix Specification
 
 ## Purpose
-TBD - created by archiving change add-paper-export-dataset-audit-literature. Update Purpose after archive.
+定义研究 literature matrix 与可选 BibTeX 关联规则，用于追踪当前多模态/缺失模态 beam prediction 主线的论文、artifact 可用性、repo 关系和 claim 使用边界。
 ## Requirements
 ### Requirement: Literature matrix
 项目 MUST 维护研究相关 literature matrix，用于记录与当前多模态/缺失模态 beam prediction 主线有关的论文、方法、数据集、模态、缺失协议、指标、开源状态和本仓库对照关系。
@@ -28,4 +28,3 @@ TBD - created by archiving change add-paper-export-dataset-audit-literature. Upd
 - **WHEN** 更新 literature matrix 或 BibTeX
 - **THEN** 系统 MUST 不自动下载 PDF、官方代码、数据或 checkpoint
 - **AND** 本地 `paper/*.pdf` 只作为用户已有资料处理
-

@@ -197,34 +197,25 @@ def _train_inner(cfg: dict) -> dict:
 def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
-    objective = resolve_prediction_objective(cfg)
-    cfg.setdefault("experiment", {})["objective"] = objective
-    objective_metadata = objective_runtime_metadata(cfg)
-    training_cfg = cfg.setdefault("training", {})
-    early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg, objective=objective)
-    if cfg.get("training", {}).get("resume") is True and not cfg.get("output", {}).get("run_name"):
-        raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
+    objective, objective_metadata, training_cfg, early_stopping_metric, early_stopping_mode = (
+        _prepare_training_objective_context(cfg)
+    )
 
     run_dir = create_run_dir(cfg)
     write_running_status(run_dir, cfg, kind="training")
-    artifact_writer = ArtifactWriter(cfg=cfg, run_dir=run_dir)
-    dataloaders = build_dataloaders(cfg)
-    _apply_csi_rms_to_model_config(cfg, dataloaders)
-    split_metadata = dataloaders_run_metadata(dataloaders)
-    normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
-    device = build_device(cfg)
-    cuda_performance = configure_cuda_performance_settings(cfg, device)
-    throughput_metadata = throughput_run_metadata(cfg, dataloaders, device)
-    if cuda_performance:
-        throughput_metadata["cuda_performance"] = cuda_performance
-    resolved_cfg = artifact_writer.write_initial_configs(
+    artifact_writer, dataloaders, split_metadata, normalization_artifacts = _prepare_training_data_context(cfg, run_dir)
+    device, throughput_metadata, non_blocking, amp_enabled, amp_dtype = _prepare_training_device_context(
+        cfg,
+        dataloaders,
+    )
+    resolved_cfg, config_diff = _write_initial_training_context_artifacts(
+        artifact_writer,
+        cfg=cfg,
+        run_dir=run_dir,
         split_metadata=split_metadata,
         normalization_artifacts=normalization_artifacts,
         throughput_metadata=throughput_metadata,
     )
-    config_diff = write_config_diff_artifact(cfg, resolved_cfg, run_dir)
-    non_blocking = transfer_non_blocking(cfg)
-    amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
     task = cfg["experiment"].get("task", "image")
     model_cfg = cfg["model"]
     num_pred = model_cfg.get("num_pred", 3)
@@ -255,6 +246,55 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
         num_classes=num_classes,
         seq_length=seq_length,
     )
+
+
+def _prepare_training_objective_context(cfg: dict) -> tuple[str, dict, dict, str, str]:
+    objective = resolve_prediction_objective(cfg)
+    cfg.setdefault("experiment", {})["objective"] = objective
+    objective_metadata = objective_runtime_metadata(cfg)
+    training_cfg = cfg.setdefault("training", {})
+    early_stopping_metric, early_stopping_mode = _configure_early_stopping(training_cfg, objective=objective)
+    if cfg.get("training", {}).get("resume") is True and not cfg.get("output", {}).get("run_name"):
+        raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
+    return objective, objective_metadata, training_cfg, early_stopping_metric, early_stopping_mode
+
+
+def _prepare_training_data_context(cfg: dict, run_dir: Path) -> tuple[ArtifactWriter, dict, dict, dict]:
+    artifact_writer = ArtifactWriter(cfg=cfg, run_dir=run_dir)
+    dataloaders = build_dataloaders(cfg)
+    _apply_csi_rms_to_model_config(cfg, dataloaders)
+    split_metadata = dataloaders_run_metadata(dataloaders)
+    normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
+    return artifact_writer, dataloaders, split_metadata, normalization_artifacts
+
+
+def _prepare_training_device_context(cfg: dict, dataloaders: dict) -> tuple[torch.device, dict, bool, bool, torch.dtype]:
+    device = build_device(cfg)
+    cuda_performance = configure_cuda_performance_settings(cfg, device)
+    throughput_metadata = throughput_run_metadata(cfg, dataloaders, device)
+    if cuda_performance:
+        throughput_metadata["cuda_performance"] = cuda_performance
+    non_blocking = transfer_non_blocking(cfg)
+    amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
+    return device, throughput_metadata, non_blocking, amp_enabled, amp_dtype
+
+
+def _write_initial_training_context_artifacts(
+    artifact_writer: ArtifactWriter,
+    *,
+    cfg: dict,
+    run_dir: Path,
+    split_metadata: dict,
+    normalization_artifacts: dict,
+    throughput_metadata: dict,
+) -> tuple[dict, dict]:
+    resolved_cfg = artifact_writer.write_initial_configs(
+        split_metadata=split_metadata,
+        normalization_artifacts=normalization_artifacts,
+        throughput_metadata=throughput_metadata,
+    )
+    config_diff = write_config_diff_artifact(cfg, resolved_cfg, run_dir)
+    return resolved_cfg, config_diff
 
 
 def _build_training_resources(context: TrainingRunContext) -> None:

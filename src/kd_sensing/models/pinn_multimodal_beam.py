@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from typing import Any
 
@@ -343,6 +342,3 @@ def _normalize_path_hat(path_hat: torch.Tensor) -> torch.Tensor:
     delay = torch.nn.functional.softplus(path_hat[..., 2:3]) * 1e-9
     gain = path_hat[..., 3:5]
     return torch.cat((angles, delay, gain), dim=-1)
-
-
-__all__ = ["PINNMultimodalBeamModel"]

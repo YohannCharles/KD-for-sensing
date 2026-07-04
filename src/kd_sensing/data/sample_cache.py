@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import pickle
 from pathlib import Path
@@ -87,6 +86,3 @@ class LmdbSampleCache:
 
 def sample_cache_path_for_split(path: str | Path, split: str) -> Path:
     return resolve_path(str(path).format(split=str(split)))
-
-
-__all__ = ["LmdbSampleCache", "SampleCacheDependencyError", "sample_cache_path_for_split"]

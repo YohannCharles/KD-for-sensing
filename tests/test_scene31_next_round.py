@@ -130,6 +130,33 @@ EXPECTED_PATTERNS = [
     "radar_only",
     "lidar_only",
 ]
+EXPECTED_RETAINED_SCENE31_YAML = {
+    "configs/scene31/diagnostic_gps_only_strong.yaml",
+    "configs/scene31/diagnostic_image_only_strong.yaml",
+    "configs/scene31/diagnostic_lidar_only_strong.yaml",
+    "configs/scene31/diagnostic_radar_only_strong.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_adba.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_fusiononly.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_modw1.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_es20.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_es20_seed2.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_es20_seed3.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_seed2.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau1_seed3.yaml",
+    "configs/scene31/main_v3_strong_reliability_btapa_tau4.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_fullaux.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_fullaux_l05.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_hardgps.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_seed2.yaml",
+    "configs/scene31/main_v3_strong_reliability_proto_seed3.yaml",
+    "configs/scene31/templates/main_v3_proto_es20_base.yaml",
+    "configs/scene31/v4_weakkd_l01_t2.yaml",
+    "configs/scene31/v4_weakkd_l02_t2.yaml",
+    "configs/scene31/v4_weakkd_l03_t15.yaml",
+}
 
 
 def test_scene31_next_round_manifest_and_configs_are_consistent(tmp_path: Path):
@@ -347,6 +374,57 @@ def test_scene31_funnel_generator_sanity(tmp_path: Path):
 
     film_cfg = load_config(_manifest_path(by_name["proto_sampler_uniform_pattern_film_d8_es40_seed1"]["config_path"]))
     assert film_cfg["model"]["primary"]["pattern_film"]["init_identity"] is True
+
+
+def test_scene31_source_yaml_surface_is_manifest_backed_or_retained():
+    retained = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "configs/scene31").rglob("*.yaml")
+    }
+    generated_yaml = [
+        path.relative_to(ROOT).as_posix()
+        for root in ("night_grid", "next_round", "funnel", "magic_overnight")
+        for path in (ROOT / "configs/scene31" / root).glob("*.yaml")
+    ]
+
+    assert retained == EXPECTED_RETAINED_SCENE31_YAML
+    assert not generated_yaml
+    for manifest_root in ("night_grid", "next_round", "funnel", "magic_overnight"):
+        assert (ROOT / "configs/scene31" / manifest_root / "experiment_manifest.csv").exists()
+        assert (ROOT / "configs/scene31" / manifest_root / "experiment_manifest.json").exists()
+
+
+def test_scene31_runner_common_checks_manifest_train_and_eval(tmp_path):
+    runner = _load_script("scene31_runner_common", ROOT / "scripts/scene31_runner_common.py")
+    manifest = tmp_path / "manifest.csv"
+    run_name = "proto_sampler_uniform_es40_seed1"
+    _write_csv(
+        manifest,
+        ["run_name", "config_path", "group"],
+        [{"run_name": run_name, "config_path": "configs/scene31/generated.yaml", "group": "p0"}],
+    )
+
+    assert runner.main(["manifest-value", str(manifest), run_name, "config_path"]) == 0
+    assert runner.main(["manifest-value", str(manifest), "missing", "config_path"]) == 1
+
+    root = tmp_path / "runs"
+    checkpoint_dir = root / run_name / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "best.pth").write_text("stub", encoding="utf-8")
+    assert runner.main(["train-complete", str(root), run_name]) == 0
+    assert runner.main(["train-complete", str(root), run_name, "--strict-status-checkpoint"]) == 1
+    (root / run_name / "run_status.json").write_text(json.dumps({"state": "complete"}), encoding="utf-8")
+    assert runner.main(["train-complete", str(root), run_name, "--strict-status-checkpoint"]) == 0
+    assert runner.main(["train-complete", str(root), "missing"]) == 1
+
+    eval_dir = tmp_path / "fresh_eval" / run_name
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "checkpoint_manifest.json").write_text(json.dumps({"max_batches": ""}), encoding="utf-8")
+    _write_complete_eval_metrics(eval_dir / "apples_to_apples_metrics.csv")
+    assert runner.main(["eval-complete", str(eval_dir), "--require-manifest"]) == 0
+
+    (eval_dir / "checkpoint_manifest.json").write_text(json.dumps({"max_batches": 1}), encoding="utf-8")
+    assert runner.main(["eval-complete", str(eval_dir), "--require-manifest"]) == 1
 
 
 def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
@@ -746,7 +824,9 @@ def test_scene31_bc_launcher_help_and_syntax():
         (ROOT / "scripts/run_scene31_beamsoft_weak.sh", "s10_mix025"),
         (ROOT / "scripts/run_scene31_bc_apples_eval.sh", "uniform-root"),
         (ROOT / "scripts/run_scene31_funnel.sh", "mild_mpdro"),
+        (ROOT / "scripts/run_scene31_magic_overnight.sh", "overnight_core"),
     ]
+    subprocess.run(["bash", "-n", str(ROOT / "scripts/scene31_runner_common.sh")], check=True)
     for script, marker in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)
         help_result = subprocess.run(["bash", str(script), "--help"], check=True, text=True, capture_output=True)
@@ -803,6 +883,23 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) ->
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_complete_eval_metrics(path: Path) -> None:
+    rows = []
+    for pattern in ("full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"):
+        rows.append(
+            {
+                "pattern": pattern,
+                "top1": "0.3",
+                "top3": "0.5",
+                "top5": "0.6",
+                "within_3": "0.4",
+                "mae": "4.0",
+                "status": "ok",
+            }
+        )
+    _write_csv(path, ["pattern", "top1", "top3", "top5", "within_3", "mae", "status"], rows)
 
 
 def _load_script(name: str, path: Path):

@@ -1,10 +1,13 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from kd_sensing.data.beam_soft_targets import SoftBeamLabelConfig
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
 from kd_sensing.data.datasets.deepsense6g_cache_paths import (
+    build_deepsense6g_sample_cache,
     resolve_dataset_cache_base,
     resolve_image_cache_dir,
     resolve_lidar_cache_dir,
@@ -14,6 +17,12 @@ from kd_sensing.data.datasets.deepsense6g_contract import (
     normalize_beam_target_source,
     resolve_target_beam_paths,
     validate_beam_target_source_contract,
+)
+from kd_sensing.data.datasets.deepsense6g_label_adapters import (
+    deepsense6g_soft_beam_distribution,
+    deepsense6g_soft_beam_label_domain,
+    deepsense6g_soft_beam_num_classes,
+    read_deepsense6g_beam_label,
 )
 from kd_sensing.data.datasets.deepsense6g_gps_contract import (
     PAPER_SCENE_CENTER_ANGLES_RAD,
@@ -140,6 +149,41 @@ def test_cache_path_helpers_match_existing_layout(tmp_path: Path) -> None:
         )
         == expected_lidar
     )
+
+
+def test_sample_cache_and_soft_label_helpers_are_synthetic_contracts(tmp_path: Path) -> None:
+    assert build_deepsense6g_sample_cache(None, split="train") == (None, False)
+    assert build_deepsense6g_sample_cache({"enabled": False}, split="train") == (None, False)
+    with pytest.raises(ValueError, match="requires sample_cache.path"):
+        build_deepsense6g_sample_cache(True, split="train")
+    with pytest.raises(ValueError, match="supports only 'lmdb'"):
+        build_deepsense6g_sample_cache({"enabled": True, "backend": "sqlite", "path": "cache"}, split="train")
+
+    cfg = SoftBeamLabelConfig(enabled=True, domain="auto", source="gaussian", num_classes=8, cache=True)
+    assert deepsense6g_soft_beam_label_domain("train", cfg) == "source"
+    assert deepsense6g_soft_beam_label_domain("test", cfg) == "target"
+    mapping = SimpleNamespace(enabled=True, num_classes=8, fingerprint="synthetic", reorder_distribution=lambda x, axis=-1: x)
+    assert deepsense6g_soft_beam_num_classes([3, 4], configured=None, beam_label_mapping=mapping) == 8
+
+    beam_file = tmp_path / "beam.txt"
+    values = np.zeros((8,), dtype=np.float32)
+    values[3] = 1.0
+    np.savetxt(beam_file, values)
+    assert read_deepsense6g_beam_label(tmp_path, "beam.txt") == 3
+    dist, from_power = deepsense6g_soft_beam_distribution(
+        data_root=tmp_path,
+        rel_path="beam.txt",
+        label=3,
+        cfg=cfg,
+        num_classes=8,
+        split="train",
+        cache={},
+        beam_label_mapping=mapping,
+    )
+    assert from_power is False
+    assert dist.shape == (8,)
+    assert int(np.argmax(dist)) == 3
+    assert float(dist.sum()) == pytest.approx(1.0)
 
 
 def test_dataset_uses_current_beam_target_without_changing_sample_contract(tmp_path: Path) -> None:

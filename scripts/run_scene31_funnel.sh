@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/scene31_runner_common.sh"
+
 ROOT="outputs/scene31_funnel_lmdb"
 MANIFEST="configs/scene31/funnel/experiment_manifest.csv"
 LMDB_PATH="dataset/DeepSense6G/scenario31/sample_lmdb_cache/u_mask_beam_jepa_seq2_pred1_{split}.lmdb"
@@ -93,6 +96,20 @@ ensure_configs() {
   if [[ ! -f "$MANIFEST" ]]; then
     conda run -n kd_mm_beam python scripts/generate_scene31_funnel.py --overwrite false --output_dir "$ROOT"
   fi
+  local missing=0
+  local run_name mode cfg
+  for run_name in "${RUNS[@]}"; do
+    mode=$(manifest_value "$run_name" execution_mode || true)
+    [[ "$mode" == "selection" ]] && continue
+    cfg=$(manifest_value "$run_name" config_path || true)
+    if [[ -z "$cfg" || ! -f "$cfg" ]]; then
+      missing=1
+      break
+    fi
+  done
+  if [[ "$missing" -eq 1 ]]; then
+    conda run -n kd_mm_beam python scripts/generate_scene31_funnel.py --overwrite false --output_dir "$ROOT"
+  fi
 }
 
 runs_for_group() {
@@ -116,58 +133,23 @@ for row in rows:
 }
 
 manifest_value() {
-  python3 -c 'import csv, sys
-manifest, run, key = sys.argv[1:4]
-for row in csv.DictReader(open(manifest, newline="", encoding="utf-8")):
-    if row.get("run_name") == run:
-        print(row.get(key, ""))
-        raise SystemExit(0)
-raise SystemExit(1)' "$MANIFEST" "$1" "$2"
+  scene31_manifest_value "$MANIFEST" "$1" "$2"
 }
 
 train_complete() {
-  local run_name="$1"
-  local run_dir
-  for run_dir in "${ROOT%/}/${run_name}" "${ROOT%/}/scene31/${run_name}"; do
-    if [[ -f "${run_dir}/run_status.json" ]] \
-      && grep -q '"state": "complete"' "${run_dir}/run_status.json" \
-      && find "${run_dir}/checkpoints" -maxdepth 1 \( -name '*.pth' -o -name '*.pt' -o -name '*.ckpt' \) -print -quit 2>/dev/null | grep -q .; then
-      return 0
-    fi
-  done
-  return 1
+  scene31_train_complete_strict "$ROOT" "$1"
 }
 
 eval_complete() {
-  [[ -f "$1/apples_to_apples_metrics.csv" ]] || return 1
-  python3 -c 'import csv, sys
-required = {"full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"}
-rows = list(csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8")))
-seen = {row.get("pattern") for row in rows if row.get("status") in ("", "ok")}
-if not required <= seen:
-    raise SystemExit(1)
-for row in rows:
-    if row.get("pattern") in required:
-        float(row.get("top1") or "nan")' "$1/apples_to_apples_metrics.csv" >/dev/null 2>&1
+  scene31_eval_complete "$1"
 }
 
 next_run() {
-  local line
-  exec 9>"${ROOT%/}/funnel_queue.lock"
-  flock 9
-  if [[ ! -s "${ROOT%/}/funnel_queue.txt" ]]; then
-    flock -u 9
-    return 1
-  fi
-  line=$(head -n 1 "${ROOT%/}/funnel_queue.txt")
-  tail -n +2 "${ROOT%/}/funnel_queue.txt" >"${ROOT%/}/funnel_queue.tmp"
-  mv "${ROOT%/}/funnel_queue.tmp" "${ROOT%/}/funnel_queue.txt"
-  flock -u 9
-  printf '%s\n' "$line"
+  scene31_next_run "$ROOT" funnel_queue.txt funnel_queue.lock
 }
 
 write_status() {
-  printf '%s\n' "$2" >"${ROOT%/}/worker_status/${1}.status"
+  scene31_write_status "$ROOT" "$1" "$2"
 }
 
 run_selection() {
@@ -256,8 +238,8 @@ worker() {
   echo "[GPU $gpu] worker done"
 }
 
-ensure_configs
 mapfile -t RUNS < <(runs_for_group)
+ensure_configs
 printf "%s\n" "${RUNS[@]}" >"${ROOT%/}/funnel_queue.txt"
 rm -f "${ROOT%/}/worker_status/"*.status
 
@@ -294,7 +276,7 @@ printf "%s\n" "${failed[@]}" "${eval_failed[@]}" >"${ROOT%/}/funnel_failed_runs.
 printf "%s\n" "${eval_failed[@]}" >"${ROOT%/}/funnel_eval_failed_runs.txt"
 
 if [[ "$TRAIN_ONLY" -eq 0 && "$AUTO_EVAL" -eq 1 ]]; then
-  conda run -n kd_mm_beam python scripts/summarize_scene31_funnel.py --root "$ROOT" --out "${ROOT%/}/summary" >"${ROOT%/}/logs/summary.log" 2>&1 || true
+  scene31_try_summary "${ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python scripts/summarize_scene31_funnel.py --root "$ROOT" --out "${ROOT%/}/summary"
 fi
 
 echo "completed=${#completed[@]} skipped=${#skipped[@]} failed=${#failed[@]} eval_failed=${#eval_failed[@]} worker_failures=$FAILED_WORKERS"

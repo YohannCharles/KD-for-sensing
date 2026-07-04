@@ -1,6 +1,5 @@
 """TII VLRG Transformer external reproduction adapter."""
 
-from __future__ import annotations
 
 import csv
 import hashlib

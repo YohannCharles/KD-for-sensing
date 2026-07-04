@@ -1,7 +1,7 @@
 # adaptive-pattern-balanced-sampler Specification
 
 ## Purpose
-TBD - created by archiving change add-scene31-adaptive-sampler-beamsoft-loss. Update Purpose after archive.
+定义当前 opt-in adaptive pattern-balanced sampler、beam-neighborhood soft label loss 和 label smoothing 的训练契约，服务 Scene31 missing-modality 本地实验，同时保证默认 sampler 行为不变。
 ## Requirements
 ### Requirement: Adaptive pattern-balanced sampler
 系统 MUST 提供 opt-in adaptive pattern-balanced sampler，用于训练时按 missing pattern 困难度动态调整 sampling probability。默认未启用时 MUST 保持现有 sampler 行为不变。
@@ -48,4 +48,3 @@ TBD - created by archiving change add-scene31-adaptive-sampler-beamsoft-loss. Up
 - **THEN** sampler MUST 使用 uniform probability
 - **AND** sampler MUST 记录 warning
 - **AND** 训练 MUST 继续运行
-

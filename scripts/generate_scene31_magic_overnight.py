@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 import argparse
-import csv
-import json
 import sys
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from generate_experiment_grid import _config_payload, _rel, _truthy
+from scene31_generator_common import DEFAULT_BASE_CONFIG, truthy, write_scene31_manifest_configs
 
 
 EXPECTED_EPOCHS = 40
 DEFAULT_OUT_DIR = "configs/scene31/magic_overnight"
-DEFAULT_BASE_CONFIG = "configs/scene31/templates/main_v3_proto_es20_base.yaml"
 DEFAULT_OUTPUT_DIR = "outputs/scene31_magic_overnight_lmdb"
 
 
@@ -33,35 +27,14 @@ def main(argv: list[str] | None = None) -> int:
 
     base_config = Path(args.base_config)
     out_dir = Path(args.out_dir)
-    overwrite = _truthy(args.overwrite)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    rows: list[dict[str, Any]] = []
-    for spec in _magic_specs():
-        run_name = f"{spec['name']}_seed{spec['seed']}"
-        config_path = out_dir / f"{run_name}.yaml"
-        if overwrite or not config_path.exists():
-            payload = _config_payload(base_config, config_path, run_name, int(spec["seed"]), spec)
-            payload.setdefault("output", {})["dir"] = str(args.output_dir)
-            config_path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
-        rows.append(
-            {
-                "run_name": run_name,
-                "group": spec["group"],
-                "config_path": _rel(config_path),
-                "seed": spec["seed"],
-                "method_tags": ",".join(spec["tags"]),
-                "expected_epochs": EXPECTED_EPOCHS,
-                "priority": spec.get("priority", "medium"),
-            }
-        )
-
-    fieldnames = ["run_name", "group", "config_path", "seed", "method_tags", "expected_epochs", "priority"]
-    with (out_dir / "experiment_manifest.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    (out_dir / "experiment_manifest.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    rows = write_scene31_manifest_configs(
+        specs=_magic_specs(),
+        base_config=base_config,
+        out_dir=out_dir,
+        output_dir=str(args.output_dir),
+        overwrite=truthy(args.overwrite),
+        expected_epochs=EXPECTED_EPOCHS,
+    )
     print(f"Wrote {len(rows)} magic overnight manifest rows to {out_dir}.")
     return 0
 

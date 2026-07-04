@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from typing import Any, Mapping
 
@@ -155,6 +154,3 @@ def _weight(config: Mapping[str, Any] | None) -> float:
     if config.get("enabled", True) is False:
         return 0.0
     return float(config.get("weight", 0.0))
-
-
-__all__ = ["PhysicsInformedBeamLoss"]

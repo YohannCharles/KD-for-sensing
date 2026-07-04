@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/scene31_runner_common.sh"
+
 ROOT="outputs/scene31_magic_overnight_lmdb"
 MANIFEST="configs/scene31/magic_overnight/experiment_manifest.csv"
 GROUP="overnight_all"
@@ -108,7 +111,7 @@ fi
 mkdir -p "$ROOT/logs/train" "$ROOT/logs/eval" "$ROOT/logs/worker" "$ROOT/fresh_eval" "$ROOT/worker_status"
 
 config_for_run() {
-  awk -F, -v run="$1" 'NR > 1 && $1 == run {print $3; found = 1; exit} END {exit found ? 0 : 1}' "$MANIFEST"
+  scene31_manifest_value "$MANIFEST" "$1" config_path
 }
 
 ensure_configs() {
@@ -131,76 +134,23 @@ ensure_configs() {
 }
 
 train_complete() {
-  local run_name="$1"
-  local run_dir
-  for run_dir in "${ROOT%/}/${run_name}" "${ROOT%/}/scene31/${run_name}"; do
-    if [[ -f "${run_dir}/run_status.json" ]] \
-      && grep -q '"state": "complete"' "${run_dir}/run_status.json" \
-      && find "${run_dir}/checkpoints" -maxdepth 1 -name '*.pth' -print -quit 2>/dev/null | grep -q .; then
-      return 0
-    fi
-  done
-  return 1
+  scene31_train_complete_strict "$ROOT" "$1"
 }
 
 eval_complete() {
-  conda run -n kd_mm_beam python -c '
-import csv
-import math
-import sys
-from pathlib import Path
-
-metrics = Path(sys.argv[1]) / "apples_to_apples_metrics.csv"
-required = {"full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"}
-if not metrics.exists():
-    raise SystemExit(1)
-with metrics.open(newline="", encoding="utf-8") as handle:
-    rows = list(csv.DictReader(handle))
-by_pattern = {row.get("pattern"): row for row in rows}
-if not required <= set(by_pattern):
-    raise SystemExit(1)
-for pattern in required:
-    row = by_pattern[pattern]
-    if row.get("status") not in ("", "ok"):
-        raise SystemExit(1)
-    for metric in ("top1", "top3", "top5", "within_3", "mae"):
-        try:
-            value = float(row.get(metric, "nan"))
-        except ValueError:
-            value = math.nan
-        if not math.isfinite(value):
-            raise SystemExit(1)
-raise SystemExit(0)
-' "$1" >/dev/null 2>&1
+  scene31_eval_complete "$1"
 }
 
 eval_source_root() {
-  if [[ -d "${ROOT%/}/scene31" ]]; then
-    echo "${ROOT%/}/scene31"
-  else
-    echo "$ROOT"
-  fi
+  scene31_eval_source_root "$ROOT"
 }
 
 next_run() {
-  local line
-  exec 9>"${ROOT%/}/overnight_queue.lock"
-  flock 9
-  if [[ ! -s "${ROOT%/}/overnight_queue.txt" ]]; then
-    flock -u 9
-    return 1
-  fi
-  line=$(head -n 1 "${ROOT%/}/overnight_queue.txt")
-  tail -n +2 "${ROOT%/}/overnight_queue.txt" >"${ROOT%/}/overnight_queue.tmp"
-  mv "${ROOT%/}/overnight_queue.tmp" "${ROOT%/}/overnight_queue.txt"
-  flock -u 9
-  printf '%s\n' "$line"
+  scene31_next_run "$ROOT" overnight_queue.txt overnight_queue.lock
 }
 
 write_status() {
-  local run_name="$1"
-  local status="$2"
-  printf '%s\n' "$status" >"${ROOT%/}/worker_status/${run_name}.status"
+  scene31_write_status "$ROOT" "$1" "$2"
 }
 
 run_one() {
@@ -336,11 +286,11 @@ printf "%s\n" "${failed[@]}" "${eval_failed[@]}" >"${ROOT%/}/overnight_failed_ru
 printf "%s\n" "${eval_failed[@]}" >"${ROOT%/}/overnight_eval_failed_runs.txt"
 
 if [[ "$TRAIN_ONLY" -eq 0 && "$AUTO_EVAL" -eq 1 ]]; then
-  conda run -n kd_mm_beam python scripts/summarize_scene31_bc_next.py \
+  scene31_try_summary "${ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python scripts/summarize_scene31_bc_next.py \
     --root "$ROOT" \
     --manifest "$MANIFEST" \
     --out "${ROOT%/}/summary" \
-    --name-prefix magic >"${ROOT%/}/logs/summary.log" 2>&1 || true
+    --name-prefix magic
 fi
 
 echo "completed=${#completed[@]} skipped=${#skipped[@]} failed=${#failed[@]} eval_failed=${#eval_failed[@]} worker_failures=$FAILED_WORKERS"

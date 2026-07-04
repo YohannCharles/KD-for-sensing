@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 import argparse
-import csv
-import json
 import sys
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from generate_experiment_grid import _config_payload, _rel, _truthy
+from scene31_generator_common import DEFAULT_BASE_CONFIG, truthy, write_scene31_manifest_configs
 
 EXPECTED_EPOCHS = 40
 DEFAULT_OUT_DIR = "configs/scene31/funnel"
-DEFAULT_BASE_CONFIG = "configs/scene31/templates/main_v3_proto_es20_base.yaml"
 DEFAULT_OUTPUT_DIR = "outputs/scene31_funnel_lmdb"
 
 
@@ -32,32 +26,6 @@ def main(argv: list[str] | None = None) -> int:
 
     base_config = Path(args.base_config)
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    overwrite = _truthy(args.overwrite)
-
-    rows: list[dict[str, Any]] = []
-    for spec in _funnel_specs():
-        run_name = spec["name"] if spec.get("seed") is None else f"{spec['name']}_seed{spec['seed']}"
-        config_path = out_dir / f"{run_name}.yaml"
-        if spec.get("execution_mode") != "selection" and (overwrite or not config_path.exists()):
-            payload = _config_payload(base_config, config_path, run_name, int(spec.get("seed") or 1), spec)
-            payload.setdefault("output", {})["dir"] = str(args.output_dir)
-            for key, value in spec.get("extra", {}).items():
-                payload[key] = value
-            config_path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
-        rows.append(
-            {
-                "run_name": run_name,
-                "group": spec["group"],
-                "config_path": "" if spec.get("execution_mode") == "selection" else _rel(config_path),
-                "seed": "" if spec.get("seed") is None else spec["seed"],
-                "method_tags": ",".join(spec["tags"]),
-                "expected_epochs": spec.get("expected_epochs", EXPECTED_EPOCHS),
-                "priority": spec.get("priority", "medium"),
-                "execution_mode": spec.get("execution_mode", "train"),
-            }
-        )
-
     fieldnames = [
         "run_name",
         "group",
@@ -68,11 +36,16 @@ def main(argv: list[str] | None = None) -> int:
         "priority",
         "execution_mode",
     ]
-    with (out_dir / "experiment_manifest.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    (out_dir / "experiment_manifest.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    rows = write_scene31_manifest_configs(
+        specs=_funnel_specs(),
+        base_config=base_config,
+        out_dir=out_dir,
+        output_dir=str(args.output_dir),
+        overwrite=truthy(args.overwrite),
+        expected_epochs=EXPECTED_EPOCHS,
+        fieldnames=fieldnames,
+        skip_config_modes={"selection"},
+    )
     print(f"Wrote {len(rows)} funnel manifest rows to {out_dir}.")
     return 0
 

@@ -280,3 +280,11 @@ JEPA 预训练 workflow MUST 在验证阶段计算 `val_jepa_loss`，并 MUST �
 - **WHEN** 配置设置 `experiment.objective: gps_conditioned_jepa` 且 `training.early_stopping_metric: val_jepa_loss`
 - **THEN** early stopping metric 校验 MUST 通过
 - **AND** checkpoint metadata MUST 记录 primary metric 为 `val_jepa_loss` 且 mode 为 `min`
+
+### Requirement: JEPA pretraining helper 拆分必须保持 checkpoint 与 token 语义
+GPS-conditioned JEPA pretraining 重构 MUST 在移动 helper 到窄模块时保持 tokenizer、context/target encoder、GPS conditioning、checkpoint reuse 和 training metadata 语义。
+
+#### Scenario: checkpoint reuse 兼容
+- **WHEN** JEPA checkpoint loading or encoder extraction helper is moved
+- **THEN** missing/unexpected key reporting, strictness behavior and runtime metadata MUST remain compatible
+

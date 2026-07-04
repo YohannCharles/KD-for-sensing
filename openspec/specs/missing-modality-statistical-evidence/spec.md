@@ -1,7 +1,7 @@
 # missing-modality-statistical-evidence Specification
 
 ## Purpose
-TBD - created by archiving change add-missing-modality-statistics-stress-suite. Update Purpose after archive.
+定义缺失模态实验的多 seed 统计、paired comparison 和 claim-oriented evidence gate，用于判断本地结果是否具备进入 claim draft 的统计证据。
 ## Requirements
 ### Requirement: Multi-seed statistical summary
 系统 MUST 支持对缺失模态实验结果进行多 seed 统计汇总。汇总 MUST 按 method、seed、pattern、metric 和可选 family 分组，并输出 mean、std、count、delta 和置信区间。
@@ -46,4 +46,3 @@ TBD - created by archiving change add-missing-modality-statistics-stress-suite. 
 - **WHEN** seed_count 不足、CI 跨阈值、paired evidence unavailable 或 comparability 不是 strict
 - **THEN** 系统 MUST 标记 `statistical_claim_ready=false`
 - **AND** 输出 MUST 给出 next action，例如补 seed、补 fresh eval 或修复 comparability field
-

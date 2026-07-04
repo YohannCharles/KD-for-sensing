@@ -1,1 +1,18 @@
-from kd_sensing.utils.missing_patterns import *  # noqa: F403
+from kd_sensing.utils.missing_patterns import (
+    DEFAULT_MODALITIES,
+    MODALITY_ALIASES,
+    SENSING_ONLY_PATTERNS,
+    SINGLE_MODALITY_PATTERNS,
+    WEAK_SINGLE_MODALITY_PATTERNS,
+    canonical_missing_pattern_name,
+    get_default_missing_patterns,
+    get_missing_pattern_mask,
+    get_missing_pattern_name,
+    is_sensing_only_pattern,
+    is_single_modality_pattern,
+    is_weak_single_modality_pattern,
+    list_standard_missing_patterns,
+    make_fixed_missing_mask,
+    resolve_missing_patterns,
+    sample_eval_random_missing_mask,
+)

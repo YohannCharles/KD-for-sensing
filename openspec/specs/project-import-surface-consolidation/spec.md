@@ -310,3 +310,31 @@ Registry 的最小契约 MUST 由 focused tests 覆盖。项目 MUST 不保留�
 - **THEN** 该测试 MUST 合并到集中 retired-route guard
 - **AND** 合并后 MUST 继续覆盖旧名称不会出现在 current registry、config virtual path 或 pyproject scripts 中
 
+### Requirement: 模型配置拆分不得新增 barrel 或兼容 wrapper
+Model/config/loss 重构 MUST 使用具体 owner import，并 MUST NOT 引入 package-level barrel、compatibility wrapper module、old registry alias facade 或跨领域 `utils` 模块来隐藏已移动 helper。
+
+#### Scenario: helper 移动后调用方直连 owner
+- **WHEN** helper code is moved out of a large model, loss or config module
+- **THEN** internal callers MUST import the concrete owner module
+- **AND** no new wrapper may exist solely to preserve an old private helper path
+
+### Requirement: JEPA diagnostics 内部导入必须直连 owner
+Internal diagnostics code MUST 从具体 owner 模块导入 JEPA benchmark 和 visual analysis helper。Public facades MAY 只供 CLI glue 和已文档化 public import path 使用。
+
+#### Scenario: 内部 facade 回流被拒绝
+- **WHEN** diagnostics, engine, data, models, losses or ordinary tests import private benchmark helpers from `kd_sensing.diagnostics.jepa_gps_shortcut_benchmark`
+- **THEN** architecture boundary checks MUST 失败
+- **AND** the failure MUST point to the corresponding `jepa_benchmark_*` owner module
+
+### Requirement: 低风险 import/export 噪音必须可机械清理
+当 obsolete future annotations imports、runtime star imports 和 internal-only `__all__` mirrors 没有 current public contract 价值时，项目 MUST 允许删除它们。
+
+#### Scenario: 星号导入被替换
+- **WHEN** runtime source uses `from <module> import *` outside a documented public facade
+- **THEN** 实现 MUST 将其替换为显式 import，或删除对应 compatibility module
+- **AND** architecture tests MUST 继续拒绝新的 runtime star import
+
+#### Scenario: 内部 `__all__` 有理由才保留
+- **WHEN** an internal owner module has `__all__`
+- **THEN** 它 MUST 代表 current public/export boundary，否则必须在 cleanup 中删除
+

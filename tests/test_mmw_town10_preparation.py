@@ -395,6 +395,8 @@ def test_mmw_dataset_loads_mmwave_only_and_image_fusion_lazily(tmp_path: Path):
     sample = mmwave_only[0]
 
     assert isinstance(mmwave_only.family_adapter, MMWFamilyAdapter)
+    assert callable(mmwave_only.family_adapter.load_beam_power)
+    assert callable(mmwave_only.family_adapter.geometry_for_index)
     assert {"input_beam", "target_beam", "mmwave", "sample_id", "domain_metadata"} <= set(sample)
     assert sample["input_beam"].shape == (8,)
     assert sample["target_beam"].shape == (3,)

@@ -1,7 +1,7 @@
 # paper-artifact-export Specification
 
 ## Purpose
-TBD - created by archiving change add-paper-export-dataset-audit-literature. Update Purpose after archive.
+定义从已审阅 claim、ledger 或 summary 导出论文表格草稿、figure-data 和 export manifest 的边界，保证 provenance、claim status 和 ignored output root 可追踪。
 ## Requirements
 ### Requirement: Paper artifact export
 系统 MUST 提供 paper artifact export 能力，用于从已审阅 claim、ledger 或 summary 中生成论文表格/图草稿。Export MUST 保留每行 claim status 和 provenance，并 MUST 不提交真实生成图表或最终论文产物到源码。
@@ -41,4 +41,3 @@ Paper export 生成的 tables、figure data、plots 和 manifest MUST 默认写�
 - **WHEN** 用户未显式指定输出目录
 - **THEN** paper export MUST 写入 `outputs/paper_artifacts/`
 - **AND** 源码变更 MUST 不包含生成的真实表格、图、PDF、PNG、SVG 或 notebook output
-

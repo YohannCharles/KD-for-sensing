@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/scene31_runner_common.sh"
+
 BC_ROOT="outputs/scene31_bc_next_lmdb"
 UNIFORM_ROOT="outputs/scene31_next_round"
 OUT_DIR=""
@@ -63,40 +66,7 @@ source_root_from_uniform_root() {
 }
 
 eval_complete() {
-  conda run -n kd_mm_beam python -c '
-import csv
-import json
-import math
-import sys
-from pathlib import Path
-
-run_dir = Path(sys.argv[1])
-metrics = run_dir / "apples_to_apples_metrics.csv"
-manifest = run_dir / "checkpoint_manifest.json"
-required = {"full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"}
-if not metrics.exists() or not manifest.exists():
-    raise SystemExit(1)
-data = json.loads(manifest.read_text(encoding="utf-8"))
-if data.get("max_batches") not in (None, ""):
-    raise SystemExit(1)
-with metrics.open(newline="", encoding="utf-8") as handle:
-    rows = list(csv.DictReader(handle))
-by_pattern = {row.get("pattern"): row for row in rows}
-if not required <= set(by_pattern):
-    raise SystemExit(1)
-for pattern in required:
-    row = by_pattern[pattern]
-    if row.get("status") not in ("", "ok"):
-        raise SystemExit(1)
-    for metric in ("top1", "top3", "top5", "within_3", "mae"):
-        try:
-            value = float(row.get(metric, "nan"))
-        except ValueError:
-            value = math.nan
-        if not math.isfinite(value):
-            raise SystemExit(1)
-raise SystemExit(0)
-' "$1" >/dev/null 2>&1
+  scene31_eval_complete_with_manifest "$1"
 }
 
 preflight() {
@@ -147,11 +117,7 @@ raise SystemExit(1)
 }
 
 run_cmd() {
-  if [[ -n "$GPUS" ]]; then
-    CUDA_VISIBLE_DEVICES="$GPUS" "$@"
-  else
-    "$@"
-  fi
+  scene31_run_with_devices "$GPUS" "$@"
 }
 
 ROOTS=()

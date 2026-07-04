@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any, Iterable, Mapping
@@ -40,6 +39,3 @@ def grouped_report(rows: Iterable[Mapping[str, Any]], group_keys: tuple[str, ...
         key = "|".join(str(row.get(item, "unknown") or "unknown") for item in group_keys)
         buckets[key].append(float(metric))
     return {key: {"mean": sum(values) / len(values), "count": float(len(values))} for key, values in buckets.items()}
-
-
-__all__ = ["csi_nmse", "gain_nmse", "grouped_report", "normalized_beamforming_gain", "path_mae"]

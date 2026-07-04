@@ -15,8 +15,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from torch.utils.data._utils.collate import default_collate
 
-from kd_sensing.config.io import deep_merge, load_config, parse_overrides
-from kd_sensing.config.parsing import safe_load_yaml
+from kd_sensing.config.io import load_config
 from kd_sensing.data.transform_ops.image import IMAGENET_RGB_MEAN, IMAGENET_RGB_STD, read_image_array
 from kd_sensing.diagnostics.jepa_benchmark_artifacts import OutputRegistry
 from kd_sensing.diagnostics.gps_query_evidence import (
@@ -30,6 +29,23 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     TEMPORAL_SUITE_TYPES,
 )
 from kd_sensing.diagnostics.jepa_benchmark_runner import read_benchmark_analysis_bundle
+from kd_sensing.diagnostics.jepa_visual_config import (
+    ANALYSIS_VERSION,
+    DEFAULT_ATTENTION_FAITHFULNESS_CONFIG,
+    DEFAULT_CASE_GROUPS,
+    DEFAULT_FIGURES,
+    DEFAULT_OUTPUT_FORMATS,
+    _attention_faithfulness_cfg,
+    _default_analysis_config,
+    _validate_analysis_config,
+    load_analysis_config,
+)
+from kd_sensing.diagnostics.jepa_visual_manifest import write_visual_report_and_manifest
+from kd_sensing.diagnostics.jepa_visual_model_loop import run_model_analysis_loop
+from kd_sensing.diagnostics.jepa_visual_outputs import (
+    write_benchmark_analysis_artifacts,
+    write_model_analysis_artifacts,
+)
 from kd_sensing.engine.data_factory import (
     build_dataloader_kwargs,
     build_protocol_split_datasets,
@@ -69,28 +85,8 @@ from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_stat
 from kd_sensing.utils.seed import set_seed
 
 
-ANALYSIS_VERSION = "jepa_visual_analysis_suite_v1"
-DEFAULT_CASE_GROUPS = ("query_gain", "query_regression", "shared_near_miss", "shared_failure")
 ATTENTION_OVERLAY_NORMALIZATION = "per_sample_shared_minmax"
 ATTENTION_OVERLAY_STYLE = "paper_overlay"
-DEFAULT_FIGURES = {
-    "embedding": True,
-    "error_anatomy": True,
-    "attention": True,
-    "case_studies": True,
-    "robustness": True,
-}
-DEFAULT_OUTPUT_FORMATS = ("png", "svg")
-DEFAULT_ATTENTION_FAITHFULNESS_CONFIG = {
-    "enabled": False,
-    "patch_ratio": 0.1,
-    "patch_count": None,
-    "selection_groups": ["top_attention", "low_attention", "random"],
-    "occlusion_strategy": "zero",
-    "random_seed": 42,
-    "max_cases": 32,
-    "metric_target": "dba_contribution",
-}
 
 
 @dataclass
@@ -116,27 +112,6 @@ class ModelAnalysis:
     warnings: list[str] = field(default_factory=list)
 
 
-def load_analysis_config(
-    analysis_config: str | Path,
-    *,
-    output_dir: str | Path | None = None,
-    overrides: Iterable[str] | None = None,
-) -> dict[str, Any]:
-    path = Path(analysis_config)
-    raw = safe_load_yaml(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"JEPA visual analysis config must be a mapping: {path}")
-    cfg = deep_merge(_default_analysis_config(), raw)
-    if overrides:
-        cfg = deep_merge(cfg, parse_overrides(overrides))
-    if output_dir is not None:
-        cfg.setdefault("outputs", {})["output_dir"] = str(output_dir)
-    _validate_analysis_config(cfg, path=path)
-    cfg["_analysis_config_path"] = str(path)
-    cfg["_analysis_config_digest"] = _sha1_text(path.read_text(encoding="utf-8"))
-    return cfg
-
-
 def run_jepa_visual_analysis(
     *,
     analysis_config: str | Path,
@@ -158,94 +133,36 @@ def run_jepa_visual_analysis(
 
     warnings: list[str] = []
     registry = OutputRegistry(out)
-    benchmark_context = _write_benchmark_analysis_outputs(cfg, tables_dir, figures_dir, payload_dir, registry, warnings)
+    benchmark_context = write_benchmark_analysis_artifacts(
+        cfg,
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        payload_dir=payload_dir,
+        registry=registry,
+        warnings=warnings,
+    )
     model_specs = dict(cfg.get("models", {}) or {})
-    analyses: dict[str, ModelAnalysis] = {}
-    model_failures: dict[str, str] = {}
-
-    if not dry_run:
-        for model_name, model_spec in model_specs.items():
-            try:
-                analysis = _analyze_model(
-                    model_name,
-                    model_spec,
-                    cfg,
-                    tables_dir=tables_dir,
-                    cache_dir=cache_dir,
-                    warnings=warnings,
-                )
-            except Exception as exc:
-                if not bool(model_spec.get("optional", False)):
-                    raise
-                message = f"model_failed:{model_name}:{exc}"
-                warnings.append(message)
-                model_failures[model_name] = str(exc)
-                continue
-            analyses[model_name] = analysis
-            warnings.extend(analysis.warnings)
-    else:
-        warnings.append("dry_run:no_model_forward_executed")
-
-    comparison_rows: list[dict[str, Any]] = []
-    case_rows: list[dict[str, Any]] = []
-    robustness_rows: list[dict[str, Any]] = []
-    embedding_neighbor_rows: list[dict[str, Any]] = []
-    attention_faithfulness_context: dict[str, Any] = {"enabled": False}
-
-    if analyses:
-        _write_model_metrics(tables_dir / "model_metrics.csv", analyses)
-        if bool(cfg.get("figures", {}).get("error_anatomy", True)):
-            _write_error_anatomy_outputs(figures_dir, tables_dir, analyses, cfg, registry, warnings)
-        comparison_rows = _write_comparison_outputs(tables_dir, analyses, cfg, warnings)
-        embedding_neighbor_rows = _write_embedding_outputs(figures_dir, tables_dir, analyses, cfg, registry, warnings)
-        _write_attention_outputs(figures_dir, tables_dir, analyses, cfg, registry, warnings)
-        attention_faithfulness_context = _write_attention_faithfulness_outputs(
-            figures_dir,
-            tables_dir,
-            analyses,
-            cfg,
-            registry,
-            warnings,
-        )
-        if bool(cfg.get("figures", {}).get("case_studies", True)):
-            case_rows = _write_case_study_outputs(
-                figures_dir,
-                payload_dir,
-                tables_dir,
-                comparison_rows,
-                analyses,
-                cfg,
-                registry,
-                warnings,
-            )
-        if bool(cfg.get("figures", {}).get("robustness", True)):
-            robustness_rows = _write_robustness_outputs(
-                figures_dir,
-                tables_dir,
-                analyses,
-                cfg,
-                registry,
-                warnings,
-            )
-    else:
-        registry.skipped_output(tables_dir / "model_metrics.csv", reason="no_completed_models", kind="table")
-        registry.skipped_output(tables_dir / "comparison_samples.csv", reason="no_completed_models", kind="table")
-
-    evidence_context: dict[str, Any] = {"enabled": False}
-    if gps_query_evidence_enabled(cfg):
-        evidence_context = write_gps_query_evidence_package(
-            cfg,
-            output_dir=out,
-            analyses=analyses,
-            comparison_rows=comparison_rows,
-            command=command,
-            warnings=warnings,
-            formats=_output_formats(cfg),
-            dpi=int(cfg.get("outputs", {}).get("dpi", 180)),
-            attention_faithfulness=attention_faithfulness_context,
-        )
-
-    manifest = _build_manifest(
+    analyses, model_failures = run_model_analysis_loop(
+        model_specs,
+        cfg,
+        tables_dir=tables_dir,
+        cache_dir=cache_dir,
+        warnings=warnings,
+        dry_run=dry_run,
+        analyzer=_analyze_model,
+    )
+    artifact_results = write_model_analysis_artifacts(
+        cfg,
+        output_dir=out,
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        payload_dir=payload_dir,
+        analyses=analyses,
+        registry=registry,
+        warnings=warnings,
+        command=command,
+    )
+    report_path, manifest_path = write_visual_report_and_manifest(
         cfg,
         output_dir=out,
         command=command,
@@ -255,43 +172,13 @@ def run_jepa_visual_analysis(
         dry_run=dry_run,
         registry=registry,
         benchmark_context=benchmark_context,
-        evidence_context=evidence_context,
-        attention_faithfulness=attention_faithfulness_context,
+        evidence_context=artifact_results.evidence_context,
+        attention_faithfulness=artifact_results.attention_faithfulness_context,
+        comparison_rows=artifact_results.comparison_rows,
+        embedding_neighbor_rows=artifact_results.embedding_neighbor_rows,
+        case_rows=artifact_results.case_rows,
+        robustness_rows=artifact_results.robustness_rows,
     )
-    report = _build_report(
-        cfg,
-        analyses=analyses,
-        comparison_rows=comparison_rows,
-        embedding_neighbor_rows=embedding_neighbor_rows,
-        case_rows=case_rows,
-        robustness_rows=robustness_rows,
-        benchmark_context=benchmark_context,
-        evidence_context=evidence_context,
-        attention_faithfulness=attention_faithfulness_context,
-        warnings=warnings,
-    )
-    report_path = out / "report.md"
-    report_path.write_text(report, encoding="utf-8")
-    manifest["outputs"] = registry.list_outputs()
-    manifest["outputs"].append(
-        {
-            "path": "report.md",
-            "kind": "report",
-            "status": "generated",
-            "size_bytes": int(report_path.stat().st_size),
-        }
-    )
-    manifest_path = out / "analysis_manifest.json"
-    manifest_path.write_text(json.dumps(_json_ready(manifest), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    manifest["outputs"].append(
-        {
-            "path": "analysis_manifest.json",
-            "kind": "manifest",
-            "status": "generated",
-            "size_bytes": int(manifest_path.stat().st_size),
-        }
-    )
-    manifest_path.write_text(json.dumps(_json_ready(manifest), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {
         "output_dir": str(out),
         "manifest": str(manifest_path),
@@ -433,71 +320,6 @@ def sanitize_metadata(value: Any) -> Any:
 
 def safe_metadata_collate(batch: list[Any]) -> Any:
     return default_collate([sanitize_metadata(item) for item in batch])
-
-
-def _default_analysis_config() -> dict[str, Any]:
-    return {
-        "models": {},
-        "split": {
-            "evaluation_split": "test",
-            "scenes": None,
-            "horizon_index": 0,
-        },
-        "sampling": {
-            "seed": 42,
-            "max_samples": None,
-            "max_embedding_samples": 3000,
-            "max_attention_cases": 256,
-            "case_groups": list(DEFAULT_CASE_GROUPS),
-            "cases_per_group": 3,
-            "near_distance_threshold": 2,
-            "far_distance_threshold": 5,
-        },
-        "figures": dict(DEFAULT_FIGURES),
-        "attention_faithfulness": deepcopy(DEFAULT_ATTENTION_FAITHFULNESS_CONFIG),
-        "embeddings": {
-            "layers": ["output_features"],
-            "method": "umap",
-            "neighbors": 10,
-        },
-        "robustness": {
-            "drop_modalities": True,
-            "gps_noise": {"enabled": False, "std": []},
-            "image_masking": {"enabled": False, "ratios": [], "mode": "random"},
-            "seed": 42,
-        },
-        "benchmark": {
-            "manifest": None,
-            "runner_manifest": None,
-            "metrics_by_condition": None,
-            "robustness_summary": None,
-            "case_studies": ["jepa_recovery", "gps_shortcut_failure", "shared_failure"],
-        },
-        "outputs": {
-            "output_dir": "outputs/visual_analysis/jepa",
-            "formats": list(DEFAULT_OUTPUT_FORMATS),
-            "dpi": 180,
-        },
-        "evidence": deepcopy(DEFAULT_GPS_QUERY_EVIDENCE_CONFIG),
-    }
-
-
-def _validate_analysis_config(cfg: dict[str, Any], *, path: Path) -> None:
-    models = cfg.get("models")
-    if not isinstance(models, dict):
-        raise ValueError(f"models must be a mapping in {path}.")
-    for name, spec in models.items():
-        if not isinstance(spec, dict):
-            raise ValueError(f"models.{name} must be a mapping.")
-    for section in ("split", "sampling", "figures", "attention_faithfulness", "robustness", "benchmark", "outputs", "evidence"):
-        if not isinstance(cfg.get(section), dict):
-            raise ValueError(f"{section} must be a mapping in {path}.")
-    cfg["attention_faithfulness"] = _attention_faithfulness_cfg(cfg)
-    formats = cfg.get("outputs", {}).get("formats", DEFAULT_OUTPUT_FORMATS)
-    if isinstance(formats, str):
-        formats = [formats]
-    if "png" not in {str(item).lower() for item in formats}:
-        cfg.setdefault("outputs", {})["formats"] = ["png", *list(formats)]
 
 
 def _prepare_output_dir(output_dir: Path, *, force: bool) -> None:
@@ -1398,20 +1220,6 @@ def _write_attention_faithfulness_outputs(
     if not valid_rows:
         warnings.append("attention_faithfulness_unavailable:" + ",".join(sorted(set(skipped))[:3]))
     return context
-
-
-def _attention_faithfulness_cfg(cfg: Mapping[str, Any]) -> dict[str, Any]:
-    merged = deepcopy(DEFAULT_ATTENTION_FAITHFULNESS_CONFIG)
-    evidence = cfg.get("evidence", {}) if isinstance(cfg.get("evidence"), Mapping) else {}
-    if isinstance(evidence.get("attention_faithfulness"), Mapping):
-        merged.update(dict(evidence["attention_faithfulness"]))
-    if isinstance(cfg.get("attention_faithfulness"), Mapping):
-        merged.update(dict(cfg["attention_faithfulness"]))
-    if isinstance(merged.get("selection_groups"), str):
-        merged["selection_groups"] = [merged["selection_groups"]]
-    if not merged.get("selection_groups"):
-        merged["selection_groups"] = ["top_attention", "low_attention", "random"]
-    return merged
 
 
 def _attention_patch_count(token_count: int, cfg: Mapping[str, Any]) -> int:
@@ -2342,6 +2150,7 @@ def _build_manifest(
         "output_dir": str(output_dir),
         "seed": cfg.get("sampling", {}).get("seed"),
         "models": model_records,
+        "model_failures": dict(model_failures),
         "split_metadata": split_metadata,
         "figures": cfg.get("figures", {}),
         "attention_overlays": _attention_overlay_manifest(analyses),

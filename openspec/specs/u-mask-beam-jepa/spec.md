@@ -199,8 +199,8 @@ U-MaskBeamJEPA MUST 将每个启用模态编码到统一 `d_model` latent，并�
 - **AND** 测试 MUST 不写 tracked checkpoint、cache、logs 或 outputs
 
 #### Scenario: OpenSpec 校验通过
-- **WHEN** 运行 `openspec validate add-u-mask-beam-jepa --strict`
-- **THEN** change artifacts MUST 通过严格校验
+- **WHEN** 运行 `openspec validate u-mask-beam-jepa --strict` 或 `openspec validate --all --strict`
+- **THEN** 当前 spec MUST 通过严格校验
 
 ### Requirement: RBMA fusion type
 U-MaskBeamJEPA MUST 支持 `fusion_type: reliability_biased_missing_attention`。启用该 fusion 时，模型 MUST 将 canonical 模态 latent、missing mask、modality reliability 和可选 JEPA/global token 传入 RBMA attention，并 MUST 保留现有 `concat_mlp`、`weighted_sum` 和 `reliability_gated_cross_attention` 行为。
@@ -242,3 +242,10 @@ U-MaskBeamJEPA training 和 evaluation MUST 能记录 pattern-balanced missing m
 - **THEN** 输出报告 MUST 按 pattern 汇总 top1、top5、loss 和样本数
 - **AND** 汇总 MUST 不把 `missing_gps` 与 `non_gps_only` 的 pattern name 合并
 
+### Requirement: U-MaskBeamJEPA loss extension 必须按训练职责拆分
+U-MaskBeamJEPA training extension MUST 将 missing-pattern DRO、BTAPA/prototype target construction、loss config normalization、missing-mask metadata 和 epoch logging 拆分到窄 helper，并保持 hook 行为。
+
+#### Scenario: MP-DRO 日志兼容
+- **WHEN** MP-DRO helper is moved or refactored
+- **THEN** `mpdro_group_log.csv`, epoch metadata, pattern weights and warning behavior MUST remain compatible
+- **AND** tests MUST 覆盖 enabled 和 disabled extension 路径

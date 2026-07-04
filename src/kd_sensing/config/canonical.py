@@ -10,7 +10,13 @@ from kd_sensing.modalities import (
     dataset_flags_for_modalities,
     model_defaults_for_modalities,
 )
-from kd_sensing.utils.paths import project_root
+from kd_sensing.config.canonical_virtual import (
+    VirtualConfigBuilders,
+    VirtualConfigRoutes,
+    build_virtual_config_for_path,
+    ensure_not_retired_fusion_kd_config,
+    parse_single_snapshot_config_path as parse_virtual_single_snapshot_config_path,
+)
 
 CANONICAL_DEEPSENSE_MODALITIES = tuple(MODALITY_ORDER)
 CANONICAL_FUSION_MODALITIES = tuple(modality for modality in CANONICAL_DEEPSENSE_MODALITIES if modality != "csi")
@@ -33,13 +39,7 @@ CANONICAL_OBJECTIVE_SUBSET_ALIASES = {
     "strong_only": ["gps", "mmwave"],
     "weak_only": ["image", "radar", "lidar"],
 }
-REMOVED_FUSION_CONFIG_STEMS = {
-    "no_kd": "image_radar_lightweight.yaml",
-}
-RETIRED_FUSION_KD_MODES = ("logits_kd", "rkd", "teacher_no_kd", "student_no_kd")
-
 _FUSION_MODE_SUFFIXES = tuple((f"_{mode}", mode) for mode in CANONICAL_FUSION_MODES)
-_RETIRED_FUSION_KD_SUFFIXES = tuple((f"_{mode}", mode) for mode in RETIRED_FUSION_KD_MODES)
 _MODALITY_INDEX = {name: index for index, name in enumerate(CANONICAL_FUSION_MODALITIES)}
 _CANONICAL_ORDER_TEXT = " > ".join(CANONICAL_FUSION_MODALITIES)
 _IMAGE_RADAR_TRAINING = {
@@ -130,20 +130,19 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 def build_virtual_config(config_path: Path) -> dict[str, Any] | None:
     """Build a virtual config override for missing canonical config paths."""
 
-    if _is_vision_position_baseline_config_path(config_path):
-        return build_vision_position_baseline_config(config_path.stem)
-    if _is_fusion_config_path(config_path):
-        if config_path.stem in REMOVED_FUSION_CONFIG_STEMS:
-            replacement = REMOVED_FUSION_CONFIG_STEMS[config_path.stem]
-            raise ValueError(
-                f"Removed fusion config alias '{config_path.name}'. "
-                f"Use 'configs/fusion/{replacement}' instead."
-            )
-        return build_virtual_fusion_config(config_path.stem)
-    single = parse_single_snapshot_config_path(config_path)
-    if single is not None:
-        return build_snapshot_single_config(single)
-    return None
+    return build_virtual_config_for_path(
+        config_path,
+        builders=VirtualConfigBuilders(
+            fusion=build_virtual_fusion_config,
+            snapshot_single=build_snapshot_single_config,
+            vision_position_baseline=build_vision_position_baseline_config,
+        ),
+        routes=VirtualConfigRoutes(
+            snapshot_mode=SNAPSHOT_MODE,
+            single_modalities=CANONICAL_SINGLE_MODALITIES,
+            vision_position_presets=VISION_POSITION_BASELINE_PRESETS,
+        ),
+    )
 
 
 def build_vision_position_baseline_config(preset: str) -> dict[str, Any]:
@@ -387,12 +386,7 @@ def _vision_position_primary_model(
 
 
 def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
-    retired_kd_mode = retired_fusion_kd_mode(stem)
-    if retired_kd_mode is not None:
-        raise ValueError(
-            f"KD support has been removed for legacy fusion config '{stem}.yaml' "
-            f"({retired_kd_mode}). Use '<slug>_strong.yaml' or '<slug>_lightweight.yaml'."
-        )
+    ensure_not_retired_fusion_kd_config(stem)
 
     advanced = build_advanced_fusion_overlay_config(stem)
     if advanced is not None:
@@ -432,15 +426,6 @@ def build_virtual_fusion_config(stem: str) -> dict[str, Any]:
         },
     }
     return cfg
-
-
-def retired_fusion_kd_mode(stem: str) -> str | None:
-    if stem in RETIRED_FUSION_KD_MODES:
-        return stem
-    for suffix, mode in _RETIRED_FUSION_KD_SUFFIXES:
-        if stem.endswith(suffix):
-            return mode
-    return None
 
 
 def build_snapshot_single_config(modality: str) -> dict[str, Any]:
@@ -789,42 +774,11 @@ def parse_objective_fusion_config_stem(stem: str) -> tuple[str, list[str], str] 
 
 
 def parse_single_snapshot_config_path(path: Path) -> str | None:
-    if path.suffix not in {".yaml", ".yml"} or path.stem != SNAPSHOT_MODE:
-        return None
-    parts = _config_path_parts(path)
-    if len(parts) != 3 or parts[0] != "configs":
-        return None
-    modality = parts[1]
-    if modality == "fusion":
-        return None
-    if modality not in CANONICAL_SINGLE_MODALITIES:
-        return None
-    return modality
-
-
-def _is_fusion_config_path(path: Path) -> bool:
-    if path.suffix not in {".yaml", ".yml"}:
-        return False
-    parts = _config_path_parts(path)
-    return len(parts) == 3 and parts[:2] == ("configs", "fusion")
-
-
-def _is_vision_position_baseline_config_path(path: Path) -> bool:
-    if path.suffix not in {".yaml", ".yml"} or path.stem not in VISION_POSITION_BASELINE_PRESETS:
-        return False
-    parts = _config_path_parts(path)
-    return len(parts) == 3 and parts[0] == "configs" and parts[1] in {"fusion", "gps"}
-
-
-def _config_path_parts(path: Path) -> tuple[str, ...]:
-    try:
-        relative = path.resolve().relative_to(project_root())
-        return tuple(relative.parts)
-    except ValueError:
-        parts = path.parts
-        if len(parts) >= 3 and parts[-3] == "configs":
-            return tuple(parts[-3:])
-        return tuple(parts)
+    return parse_virtual_single_snapshot_config_path(
+        path,
+        snapshot_mode=SNAPSHOT_MODE,
+        single_modalities=CANONICAL_SINGLE_MODALITIES,
+    )
 
 
 def _dataset_overrides(modalities: list[str]) -> dict[str, Any]:

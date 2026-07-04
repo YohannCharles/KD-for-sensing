@@ -179,7 +179,7 @@
 
 #### Scenario: 快速架构与 OpenSpec 校验
 - **WHEN** 热点拆分任务完成
-- **THEN** 开发者 MUST 运行 `openspec validate modularize-hotspot-modules --strict`
+- **THEN** 开发者 MUST 运行 `openspec validate project-hotspot-governance --strict` 或 `openspec validate --all --strict`
 - **AND** 开发者 MUST 运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
 
 #### Scenario: 领域 focused tests 校验
@@ -369,3 +369,38 @@ JEPA GPS shortcut benchmark MAY 删除内部聚合、排序、标量转换和 ro
 - **THEN** 回滚操作 MUST 不重新引入 HiST/Hist、KD、BGAM、viewer manifest、Raymobtime、AMR-Net_gps_image、JEPA-MSAC 或其它 retired route 的 current entry
 - **AND** 若临时保留 compatibility shim，必须在 tasks 中记录删除条件和最短保留范围
 
+### Requirement: Data/training runtime wave 必须分层验证
+Hotspot governance MUST 要求 data/training runtime 重构在 full regression 前运行 focused dataset、evaluation、objective 和 architecture tests。
+
+#### Scenario: wave 验证命令记录
+- **WHEN** a data/training runtime refactor wave completes
+- **THEN** tasks or final implementation notes MUST list focused commands using `conda run -n kd_mm_beam`
+- **AND** skipped commands MUST include reason and residual risk
+
+### Requirement: JEPA diagnostics 热点预算必须随拆分更新
+Project hotspot governance MUST record the post-refactor JEPA visual analysis and benchmark owner modules, facade budgets, accepted temporary hotspots and focused validation commands.
+
+#### Scenario: JEPA owner 清单更新
+- **WHEN** JEPA diagnostics modules are split or renamed
+- **THEN** project surface inventory MUST list the new owner modules and describe which public facade remains
+- **AND** architecture tests MUST 继续拒绝 suite-specific helper logic 的 facade 回流
+
+### Requirement: 低风险瘦身必须与行为重构隔离
+机械 import 清理、内部 export 清理和测试文件拆分 MUST 与 training/model/data 行为变更分开规划。
+
+#### Scenario: mechanical cleanup 独立验证
+- **WHEN** future imports, star imports or internal `__all__` entries are removed
+- **THEN** tasks MUST run architecture/import focused checks
+- **AND** implementation notes MUST state that no runtime behavior change was intended
+
+### Requirement: Scene31 表面积漂移必须纳入热点治理
+项目 MUST 将 Scene31 local/manual YAML、generator、runner、summary 和 checkpoint selection 工具纳入热点 inventory，并记录当前 tracked 数量、owner、生命周期、输出边界和收敛条件。
+
+#### Scenario: inventory 记录当前 Scene31 表面积
+- **WHEN** 开发者审阅项目表面积 inventory
+- **THEN** inventory MUST 记录 `configs/scene31/` 中 tracked YAML、manifest、template、generator、shell runner 和 summary 脚本的当前分类
+- **AND** inventory MUST 区分长期保留样例、manifest-backed local/manual 输入和应本地生成的 YAML
+
+#### Scenario: 未登记 Scene31 表面积扩张被拒绝
+- **WHEN** 新增 Scene31 YAML、shell runner 或 summary/generator 脚本
+- **THEN** 架构边界检查 MUST 要求更新 inventory、删除重复入口或登记 local/manual 保留理由

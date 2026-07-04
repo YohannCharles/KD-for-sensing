@@ -1,6 +1,5 @@
 import warnings
 import csv
-import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -15,8 +14,17 @@ from kd_sensing.data.missing_mask import (
     sample_pattern_balanced_mask,
 )
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, ForwardControls, TrainingExtension
-from kd_sensing.losses.beam_prototype_alignment import prototype_alignment_loss, supervised_contrastive_loss
-from kd_sensing.utils.missing_patterns import canonical_missing_pattern_name, list_standard_missing_patterns
+from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
+from kd_sensing.losses.u_mask_beam_jepa_mpdro import (
+    core_pattern_names as _core_pattern_names,
+    csv_float as _csv_float,
+    mpdro_enabled as _mpdro_enabled,
+    mpdro_sample_weights as _mpdro_sample_weights,
+    new_mpdro_state as _new_mpdro_state,
+    write_mpdro_group_log as _write_mpdro_group_log,
+)
+from kd_sensing.losses.u_mask_beam_jepa_prototype import add_prototype_alignment_losses
+from kd_sensing.utils.missing_patterns import canonical_missing_pattern_name
 
 
 def u_mask_beam_jepa_loss(
@@ -117,43 +125,39 @@ def u_mask_beam_jepa_loss(
         + float(lambda_modality_nll) * loss_modality_nll
     )
     diagnostics_extra: dict[str, float] = {}
-    if use_beam_prototype_alignment and prototype_bank is not None:
-        proto_loss, proto_diag = prototype_alignment_loss(
-            prototype_bank,
-            labels,
-            fused_features=output["output_features"],
-            modality_features=output.get("modality_features"),
-            mask=output.get("missing_mask"),
-            teacher_features=(teacher_output or {}).get("output_features"),
-            beam_label_sigma=beam_label_sigma,
-            beam_label_circular=beam_label_circular,
-            proto_target_type=proto_target_type,
-            tau_beam=tau_beam,
-            circular_beam_distance=circular_beam_distance,
-            lambda_proto=lambda_proto,
-            lambda_modality_proto=lambda_modality_proto,
-            lambda_teacher_proto=lambda_teacher_proto,
-            btapa_include_fusion=btapa_include_fusion,
-            btapa_include_modalities=btapa_include_modalities,
-            btapa_fusion_weight=btapa_fusion_weight,
-            btapa_modality_weight=btapa_modality_weight,
-            use_adba_aware_proto=use_adba_aware_proto,
-            lambda_adba_proto=lambda_adba_proto,
-            adba_margin=adba_margin,
-            use_pattern_conditional_btapa=use_pattern_conditional_btapa,
-            pattern_names=pattern_names,
-            btapa_apply_patterns=btapa_apply_patterns,
-            btapa_disable_on_patterns=btapa_disable_on_patterns,
-            btapa_fallback_to_ordinary_proto=btapa_fallback_to_ordinary_proto,
-            ordinary_proto_target_type=ordinary_proto_target_type,
-            sample_weights=proto_sample_weights if apply_pattern_weight_to_proto else None,
-        )
-        loss = loss + proto_loss
-        diagnostics_extra.update(proto_diag)
-        if float(lambda_supcon) != 0.0:
-            supcon, supcon_diag = supervised_contrastive_loss(output["output_features"], labels[:, 0], temperature=kd_temperature)
-            loss = loss + float(lambda_supcon) * supcon
-            diagnostics_extra.update(supcon_diag)
+    loss, proto_diag = add_prototype_alignment_losses(
+        loss,
+        output,
+        labels,
+        teacher_output=teacher_output,
+        prototype_bank=prototype_bank,
+        use_beam_prototype_alignment=use_beam_prototype_alignment,
+        lambda_proto=lambda_proto,
+        lambda_modality_proto=lambda_modality_proto,
+        lambda_supcon=lambda_supcon,
+        lambda_teacher_proto=lambda_teacher_proto,
+        beam_label_sigma=beam_label_sigma,
+        beam_label_circular=beam_label_circular,
+        proto_target_type=proto_target_type,
+        tau_beam=tau_beam,
+        circular_beam_distance=circular_beam_distance,
+        btapa_include_fusion=btapa_include_fusion,
+        btapa_include_modalities=btapa_include_modalities,
+        btapa_fusion_weight=btapa_fusion_weight,
+        btapa_modality_weight=btapa_modality_weight,
+        use_adba_aware_proto=use_adba_aware_proto,
+        lambda_adba_proto=lambda_adba_proto,
+        adba_margin=adba_margin,
+        use_pattern_conditional_btapa=use_pattern_conditional_btapa,
+        pattern_names=pattern_names,
+        btapa_apply_patterns=btapa_apply_patterns,
+        btapa_disable_on_patterns=btapa_disable_on_patterns,
+        btapa_fallback_to_ordinary_proto=btapa_fallback_to_ordinary_proto,
+        ordinary_proto_target_type=ordinary_proto_target_type,
+        proto_sample_weights=proto_sample_weights if apply_pattern_weight_to_proto else None,
+        kd_temperature=kd_temperature,
+    )
+    diagnostics_extra.update(proto_diag)
     kd_loss = zero
     kd_active_ratio = 0.0
     if use_weak_pattern_kd:
@@ -561,127 +565,6 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         return metrics
 
 
-def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    raw = cfg.get("loss", {}).get("u_mask_beam_jepa", {}) if isinstance(cfg.get("loss"), dict) else {}
-    if raw is True:
-        raw = {"enabled": True}
-    if not isinstance(raw, dict):
-        raw = {}
-    resolved = dict(raw)
-    resolved.setdefault("enabled", False)
-    resolved.setdefault("lambda_teacher", 0.5)
-    resolved.setdefault("lambda_jepa_global", resolved.get("lambda_jepa", 1.0))
-    resolved.setdefault("lambda_modality_nll", 1.0)
-    resolved.setdefault("use_teacher", cfg.get("model", {}).get("primary", {}).get("use_teacher", True))
-    resolved.setdefault("use_jepa_loss", cfg.get("model", {}).get("primary", {}).get("use_jepa_loss", True))
-    training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
-    primary_cfg = cfg.get("model", {}).get("primary", {}) if isinstance(cfg.get("model"), dict) else {}
-    for key, default in {
-        "mask_sampler": training_cfg.get("mask_sampler", "random_missing"),
-        "pattern_probs": training_cfg.get("pattern_probs"),
-        "use_beam_prototype_alignment": training_cfg.get(
-            "use_beam_prototype_alignment", training_cfg.get("use_btapa", primary_cfg.get("use_beam_prototype_alignment", False))
-        ),
-        "lambda_proto": training_cfg.get("lambda_proto", training_cfg.get("btapa_lambda", 0.0)),
-        "lambda_modality_proto": training_cfg.get("lambda_modality_proto", 0.0),
-        "lambda_supcon": training_cfg.get("lambda_supcon", 0.0),
-        "lambda_teacher_proto": training_cfg.get("lambda_teacher_proto", 0.0),
-        "beam_proto_temperature": training_cfg.get("beam_proto_temperature", primary_cfg.get("beam_proto_temperature", 0.2)),
-        "use_beam_topology_proto": training_cfg.get(
-            "use_beam_topology_proto", training_cfg.get("use_btapa", primary_cfg.get("use_beam_topology_proto", False))
-        ),
-        "proto_target_type": training_cfg.get("proto_target_type"),
-        "tau_beam": training_cfg.get("btapa_tau_beam", training_cfg.get("tau_beam", 2.0)),
-        "circular_beam_distance": training_cfg.get("circular_beam_distance", training_cfg.get("circular_distance")),
-        "btapa_include_fusion": training_cfg.get("btapa_include_fusion", True),
-        "btapa_include_modalities": training_cfg.get("btapa_include_modalities", True),
-        "btapa_fusion_weight": training_cfg.get("btapa_fusion_weight", 1.0),
-        "btapa_modality_weight": training_cfg.get("btapa_modality_weight"),
-        "use_adba_aware_proto": training_cfg.get("use_adba_aware_proto", False),
-        "lambda_adba_proto": training_cfg.get("lambda_adba_proto", 0.0),
-        "adba_margin": training_cfg.get("adba_margin", 3),
-        "beam_label_sigma": training_cfg.get("beam_label_sigma", 1.0),
-        "beam_label_circular": training_cfg.get("beam_label_circular", True),
-        "use_full_to_partial_kd": training_cfg.get(
-            "use_full_to_partial_kd", primary_cfg.get("use_full_to_partial_kd", False)
-        ),
-        "kd_teacher_mode": training_cfg.get("kd_teacher_mode", primary_cfg.get("kd_teacher_mode", "disabled")),
-        "lambda_full_to_partial_kd": training_cfg.get("lambda_full_to_partial_kd", 0.0),
-        "lambda_feature_kd": training_cfg.get("lambda_feature_kd", 0.0),
-        "lambda_prototype_kd": training_cfg.get("lambda_prototype_kd", 0.0),
-        "kd_temperature": training_cfg.get("kd_temperature", 1.0),
-        "use_full_aux_loss": training_cfg.get("use_full_aux_loss", False),
-        "lambda_full_aux": training_cfg.get("lambda_full_aux", 0.0),
-        "full_aux_proto": training_cfg.get("full_aux_proto", False),
-        "missing_pattern_sampler": training_cfg.get("missing_pattern_sampler", training_cfg.get("mask_sampler", "default")),
-        "pattern_sampling_weights": training_cfg.get("pattern_sampling_weights", {}),
-        "adaptive_alpha": training_cfg.get("adaptive_alpha", 0.5),
-        "adaptive_temperature": training_cfg.get("adaptive_temperature", 1.0),
-        "adaptive_ema_beta": training_cfg.get("adaptive_ema_beta", 0.9),
-        "adaptive_score_mode": training_cfg.get("adaptive_score_mode", "gap_to_full"),
-        "adaptive_min_prob": training_cfg.get("adaptive_min_prob", 0.05),
-        "adaptive_max_prob": training_cfg.get("adaptive_max_prob", 0.40),
-        "adaptive_update_freq": training_cfg.get("adaptive_update_freq", "step"),
-        "adaptive_warmup_epochs": training_cfg.get("adaptive_warmup_epochs", 3),
-        "curriculum_schedule": training_cfg.get("curriculum_schedule", {}),
-        "use_pattern_conditional_btapa": training_cfg.get("use_pattern_conditional_btapa", False),
-        "btapa_apply_patterns": training_cfg.get("btapa_apply_patterns", ()),
-        "btapa_disable_on_patterns": training_cfg.get("btapa_disable_on_patterns", ()),
-        "btapa_fallback_to_ordinary_proto": training_cfg.get("btapa_fallback_to_ordinary_proto", True),
-        "ordinary_proto_target_type": training_cfg.get("ordinary_proto_target_type", "gaussian"),
-        "use_hard_pattern_weight": training_cfg.get(
-            "use_pattern_loss_weight", training_cfg.get("use_hard_pattern_weight", False)
-        ),
-        "pattern_loss_weights": training_cfg.get("pattern_loss_weights", {}),
-        "hard_patterns": training_cfg.get("hard_patterns", ()),
-        "hard_pattern_weight": training_cfg.get("hard_pattern_weight", 1.0),
-        "apply_pattern_weight_to_ce": training_cfg.get("apply_pattern_weight_to_ce", True),
-        "apply_pattern_weight_to_proto": training_cfg.get(
-            "apply_pattern_weight_to_proto", training_cfg.get("hard_pattern_weight_apply_to_proto", False)
-        ),
-        "use_weak_pattern_kd": training_cfg.get("use_weak_pattern_kd", False),
-        "kd_apply_patterns": training_cfg.get("kd_apply_patterns", ()),
-        "lambda_kd": training_cfg.get("lambda_kd", 0.0),
-        "use_light_latent_pred": training_cfg.get("use_light_latent_pred", False),
-        "latent_pred_target": training_cfg.get("latent_pred_target", "full_fused"),
-        "latent_pred_apply_patterns": training_cfg.get("latent_pred_apply_patterns", ()),
-        "lambda_latent_pred": training_cfg.get("lambda_latent_pred", 0.0),
-        "latent_pred_loss": training_cfg.get("latent_pred_loss", "cosine"),
-        "mpdro": training_cfg.get("mpdro", {}),
-    }.items():
-        resolved.setdefault(key, default)
-    if resolved.get("proto_target_type") is None:
-        resolved["proto_target_type"] = "beam_soft" if bool(resolved.get("use_beam_topology_proto", False)) else "gaussian"
-    if resolved.get("circular_beam_distance") is None:
-        resolved["circular_beam_distance"] = bool(resolved.get("beam_label_circular", True))
-    if resolved.get("btapa_modality_weight") is None:
-        resolved["btapa_modality_weight"] = resolved.get("lambda_modality_proto", 0.0)
-    resolved["missing_mask"] = _resolve_missing_mask_config(resolved)
-    return resolved
-
-
-def _resolve_missing_mask_config(raw: dict[str, Any]) -> dict[str, Any]:
-    has_missing_mask = "missing_mask" in raw
-    has_missing = "missing" in raw
-    if has_missing_mask and has_missing:
-        warnings.warn(
-            "loss.u_mask_beam_jepa.missing is ignored because missing_mask is set; "
-            "use missing_mask for U-MaskBeamJEPA missing-mask config.",
-            UserWarning,
-            stacklevel=3,
-        )
-    elif has_missing:
-        warnings.warn(
-            "loss.u_mask_beam_jepa.missing is deprecated; please rename it to missing_mask.",
-            UserWarning,
-            stacklevel=3,
-        )
-        return dict(raw["missing"])
-    if has_missing_mask:
-        return dict(raw["missing_mask"])
-    return {"p_missing": 0.25, "ensure_at_least_one": True}
-
-
 def _loss_diagnostics(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -1060,228 +943,6 @@ def _adaptive_sampler_diagnostics(state: Any) -> dict[str, float]:
     return diagnostics
 
 
-def _mpdro_enabled(cfg: dict[str, Any]) -> bool:
-    raw = cfg.get("mpdro", {})
-    return isinstance(raw, dict) and bool(raw.get("enabled", False))
-
-
-def _mpdro_cfg(cfg: dict[str, Any], modalities: tuple[str, ...] | None = None) -> dict[str, Any]:
-    raw = cfg.get("mpdro", {})
-    raw = raw if isinstance(raw, dict) else {}
-    patterns = raw.get("patterns")
-    if patterns is None:
-        patterns = ["full", "missing_gps", "missing_radar", "radar_only", "lidar_only"]
-    if modalities:
-        valid = set(_core_pattern_names(modalities))
-        patterns = [canonical_missing_pattern_name(item) for item in patterns if canonical_missing_pattern_name(item) in valid]
-    else:
-        patterns = [canonical_missing_pattern_name(item) for item in patterns]
-    tau = max(float(raw.get("tau", 1.0)), 1e-6)
-    beta = min(max(float(raw.get("ema_beta", 0.9)), 0.0), 0.9999)
-    return {
-        "patterns": list(dict.fromkeys(patterns)),
-        "tau": tau,
-        "lambda_dro": min(max(float(raw.get("lambda_dro", 1.0)), 0.0), 1.0),
-        "ema_beta": beta,
-        "warmup_epochs": max(int(raw.get("warmup_epochs", 3)), 0),
-        "detach_weights": bool(raw.get("detach_weights", True)),
-        "full_protection": bool(raw.get("full_protection", False)),
-        "min_full_weight": min(max(float(raw.get("min_full_weight", 0.10)), 0.0), 1.0),
-    }
-
-
-def _new_mpdro_state() -> dict[str, Any]:
-    return {
-        "ema_loss": {},
-        "num_batches": Counter(),
-        "last_weights": {},
-        "last_raw_weights": {},
-        "last_protected_weights": {},
-        "last_batch_loss": {},
-    }
-
-
-def _mpdro_state(state: dict[str, Any]) -> dict[str, Any]:
-    mpdro = state.setdefault("mpdro", _new_mpdro_state())
-    mpdro.setdefault("ema_loss", {})
-    mpdro.setdefault("num_batches", Counter())
-    mpdro.setdefault("last_weights", {})
-    mpdro.setdefault("last_raw_weights", {})
-    mpdro.setdefault("last_protected_weights", {})
-    mpdro.setdefault("last_batch_loss", {})
-    return mpdro
-
-
-def _mpdro_sample_weights(
-    cfg: dict[str, Any],
-    state: Any,
-    pattern_names: list[str] | None,
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    *,
-    epoch: int,
-) -> tuple[torch.Tensor | None, dict[str, float]]:
-    if not _mpdro_enabled(cfg) or not isinstance(state, dict) or not pattern_names:
-        return None, {}
-    canonical_names = [canonical_missing_pattern_name(name) for name in pattern_names]
-    mpdro_cfg = _mpdro_cfg(cfg)
-    patterns = mpdro_cfg["patterns"] or sorted(set(canonical_names))
-    if not patterns:
-        return None, {}
-    mpdro = _mpdro_state(state)
-    weights = _mpdro_group_weights(mpdro, patterns, cfg=mpdro_cfg, epoch=epoch)
-    per_sample = _per_sample_beam_ce(logits, labels).detach()
-    counts = Counter(canonical_names)
-    sample_weights = []
-    for name in canonical_names:
-        sample_weights.append(float(weights.get(name, 0.0)) / max(int(counts.get(name, 0)), 1))
-    tensor = torch.tensor(sample_weights, device=logits.device, dtype=logits.dtype)
-    if mpdro_cfg["detach_weights"]:
-        tensor = tensor.detach()
-
-    beta = float(mpdro_cfg["ema_beta"])
-    epoch_batches = state.setdefault("mpdro_epoch_batches", Counter())
-    for pattern in sorted(set(canonical_names)):
-        mask = torch.tensor([name == pattern for name in canonical_names], dtype=torch.bool, device=logits.device)
-        if not bool(mask.any().item()):
-            continue
-        current = float(per_sample[mask].mean().detach().cpu().item())
-        previous = mpdro["ema_loss"].get(pattern)
-        mpdro["ema_loss"][pattern] = current if previous is None else beta * float(previous) + (1.0 - beta) * current
-        mpdro["num_batches"][pattern] += 1
-        epoch_batches[pattern] += 1
-        mpdro["last_batch_loss"][pattern] = current
-    mpdro["last_weights"] = weights
-
-    diagnostics: dict[str, float] = {}
-    for pattern in patterns:
-        diagnostics[f"mpdro/weight/{pattern}"] = float(weights.get(pattern, 0.0))
-        if pattern in mpdro["ema_loss"]:
-            diagnostics[f"mpdro/ema_loss/{pattern}"] = float(mpdro["ema_loss"][pattern])
-    return tensor, diagnostics
-
-
-def _mpdro_group_weights(
-    mpdro: dict[str, Any],
-    patterns: list[str],
-    *,
-    cfg: dict[str, Any],
-    epoch: int,
-) -> dict[str, float]:
-    uniform = _uniform_weights(patterns)
-    if int(epoch) < int(cfg["warmup_epochs"]):
-        raw = uniform
-    else:
-        ema = mpdro.get("ema_loss", {})
-        if any(pattern not in ema for pattern in patterns):
-            raw = uniform
-        else:
-            values = torch.tensor([float(ema[pattern]) for pattern in patterns], dtype=torch.float32)
-            weights = torch.softmax(values / float(cfg["tau"]), dim=0)
-            raw = {pattern: float(value) for pattern, value in zip(patterns, weights.tolist())}
-    protected = _mpdro_full_protected_weights(raw, cfg)
-    lam = float(cfg.get("lambda_dro", 1.0))
-    mixed = {pattern: (1.0 - lam) * uniform.get(pattern, 0.0) + lam * protected.get(pattern, 0.0) for pattern in patterns}
-    mixed = _renormalize_weights(mixed)
-    mpdro["last_raw_weights"] = raw
-    mpdro["last_protected_weights"] = protected
-    return mixed
-
-
-def _mpdro_full_protected_weights(weights: dict[str, float], cfg: dict[str, Any]) -> dict[str, float]:
-    protected = _renormalize_weights(dict(weights))
-    if not bool(cfg.get("full_protection", False)) or "full" not in protected:
-        return protected
-    minimum = float(cfg.get("min_full_weight", 0.10))
-    if protected.get("full", 0.0) >= minimum:
-        return protected
-    others = [pattern for pattern in protected if pattern != "full"]
-    other_total = sum(protected[pattern] for pattern in others)
-    protected["full"] = minimum
-    if other_total <= 0.0:
-        even = (1.0 - minimum) / max(len(others), 1)
-        for pattern in others:
-            protected[pattern] = even
-        return protected
-    scale = (1.0 - minimum) / other_total
-    for pattern in others:
-        protected[pattern] *= scale
-    return _renormalize_weights(protected)
-
-
-def _renormalize_weights(weights: dict[str, float]) -> dict[str, float]:
-    clean = {pattern: max(float(value), 0.0) for pattern, value in weights.items()}
-    total = sum(clean.values())
-    if not math.isfinite(total) or total <= 0.0:
-        return _uniform_weights(list(clean))
-    return {pattern: value / total for pattern, value in clean.items()}
-
-
-def _uniform_weights(patterns: list[str]) -> dict[str, float]:
-    if not patterns:
-        return {}
-    value = 1.0 / len(patterns)
-    return {pattern: value for pattern in patterns}
-
-
-def _per_sample_beam_ce(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    if logits.ndim == 2:
-        logits = logits.unsqueeze(1)
-    labels = labels.to(device=logits.device, dtype=torch.long)
-    if labels.ndim == 1:
-        labels = labels.unsqueeze(1)
-    labels = labels[:, : logits.shape[1]]
-    per_token = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1), reduction="none").view(
-        logits.shape[0], -1
-    )
-    valid = labels.ne(-100)
-    return (per_token * valid.to(dtype=per_token.dtype)).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
-
-
-def _write_mpdro_group_log(context: ExtensionContext, state: dict[str, Any], *, epoch: int) -> Path:
-    cfg = state.get("config", {})
-    modalities = tuple(getattr(context.primary_model, "modalities", context.model_cfg.get("primary", {}).get("modalities", ())))
-    mpdro_cfg = _mpdro_cfg(cfg, modalities)
-    patterns = mpdro_cfg["patterns"]
-    mpdro = _mpdro_state(state)
-    weights = dict(mpdro.get("last_weights") or _uniform_weights(patterns))
-    raw_weights = dict(mpdro.get("last_raw_weights") or weights)
-    protected_weights = dict(mpdro.get("last_protected_weights") or weights)
-    counts = state.get("mpdro_epoch_batches")
-    if not isinstance(counts, Counter):
-        counts = Counter()
-    rows = [
-        {
-            "epoch": int(epoch) + 1,
-            "pattern": pattern,
-            "ema_loss": _csv_float(mpdro["ema_loss"].get(pattern)),
-            "raw_weight": _csv_float(raw_weights.get(pattern, 0.0)),
-            "protected_weight": _csv_float(protected_weights.get(pattern, 0.0)),
-            "weight": _csv_float(weights.get(pattern, 0.0)),
-            "num_batches": int(counts.get(pattern, 0)),
-        }
-        for pattern in patterns
-    ]
-    path = context.run_dir / "mpdro_mild_group_log.csv"
-    _append_mpdro_rows(path, rows)
-    _append_mpdro_rows(context.run_dir / "mpdro_group_log.csv", rows)
-    summary = " ".join(f"{pattern}={weights.get(pattern, 0.0):.3f}" for pattern in patterns)
-    print(f"[MPDRO] epoch={int(epoch) + 1} weights: {summary}")
-    return path
-
-
-def _append_mpdro_rows(path: Path, rows: list[dict[str, Any]]) -> None:
-    write_header = not path.exists()
-    with path.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["epoch", "pattern", "ema_loss", "raw_weight", "protected_weight", "weight", "num_batches"],
-        )
-        if write_header:
-            writer.writeheader()
-        writer.writerows(rows)
-
-
 def _adaptive_state(state: dict[str, Any]) -> dict[str, Any]:
     adaptive = state.setdefault("adaptive_sampler", _new_adaptive_sampler_state())
     adaptive.setdefault("ema_loss", {})
@@ -1327,27 +988,6 @@ def _adaptive_warn(adaptive: dict[str, Any], message: str) -> None:
         return
     warnings.warn(f"[AdaptiveSampler] {message}", UserWarning, stacklevel=3)
     warnings_seen.add(message)
-
-
-def _csv_float(value: Any) -> str:
-    return "" if value is None else f"{float(value):.8g}"
-
-
-def _core_pattern_names(modalities: tuple[str, ...]) -> list[str]:
-    standard = list_standard_missing_patterns(modalities, include_avg=False)
-    preferred = [
-        "full",
-        "missing_gps",
-        "missing_image",
-        "missing_radar",
-        "missing_lidar",
-        "non_gps_only",
-        "gps_only",
-        "image_only",
-        "radar_only",
-        "lidar_only",
-    ]
-    return [name for name in preferred if name in standard]
 
 
 def _scheduled_patterns(schedule: Any, *, epoch: int) -> list[str]:

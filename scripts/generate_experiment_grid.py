@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 import argparse
 import csv
-import json
-import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 
-ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from scene31_generator_common import ROOT, config_payload, rel, truthy, write_manifest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,15 +51,9 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
 
-    csv_path = out_dir / "experiment_manifest.csv"
-    json_path = out_dir / "experiment_manifest.json"
     fieldnames = ["run_name", "group", "config_path", "seed", "method_tags", "expected_epochs", "priority"]
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Wrote {len(rows)} manifest rows to {csv_path} and {json_path}.")
+    write_manifest(out_dir, rows, fieldnames)
+    print(f"Wrote {len(rows)} manifest rows to {out_dir / 'experiment_manifest.csv'} and {out_dir / 'experiment_manifest.json'}.")
     return 0
 
 
@@ -143,35 +139,15 @@ def _baseline(run_name: str, config_path: str, seed: int, tag: str) -> dict[str,
 
 
 def _config_payload(base_config: Path, config_path: Path, run_name: str, seed: int, spec: dict[str, Any]) -> dict[str, Any]:
-    base_text = os.path.relpath((ROOT / base_config).resolve(), (ROOT / config_path.parent).resolve())
-    payload: dict[str, Any] = {
-        "_base_": base_text,
-        "experiment": {"name": run_name, "seed": int(seed)},
-        "model": {"primary": {"ablation_id": run_name}},
-        "training": dict(spec.get("training", {})),
-        "loss": {"u_mask_beam_jepa": {}},
-        "evaluation": {"beam_distance_circular": True},
-        "output": {"run_name": run_name},
-    }
-    if spec.get("model"):
-        payload["model"]["primary"].update(spec["model"])
-    if spec.get("loss"):
-        payload["loss"].update(spec["loss"])
-    payload["loss"].setdefault("u_mask_beam_jepa", {})
-    payload["loss"]["u_mask_beam_jepa"].update(payload["training"])
-    return payload
+    return config_payload(base_config, config_path, run_name, seed, spec)
 
 
 def _rel(path: Path) -> str:
-    path = Path(path)
-    try:
-        return str(path.resolve().relative_to(ROOT))
-    except Exception:
-        return str(path)
+    return rel(path)
 
 
 def _truthy(value: Any) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+    return truthy(value)
 
 
 if __name__ == "__main__":

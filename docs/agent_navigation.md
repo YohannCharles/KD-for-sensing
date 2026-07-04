@@ -6,7 +6,7 @@
 
 1. 先读用户当前请求和本轮对话中的限制；它们只约束本次工作，不自动改写长期契约。
 2. 读 `AGENTS.md`，确认命令环境、OpenSpec、文档边界和本地产物边界；所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
-3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 应先归档或记录 deferral，否则不要把它当成仍在实施的需求。
+3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 应先归档或记录 deferral，否则不要把它当成仍在实施的需求。归档后的快速 OpenSpec 验证优先复制 `openspec validate --all --strict` 或 current spec validation，不复制 archive change 名。
 4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、root fusion YAML、experiment config family、脚本 lifecycle、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、验证命令等最小结构化事实，不维护完整源码目录清单、入口 allowlist 或 prose 镜像。
 5. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
 6. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
@@ -47,7 +47,7 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 
 新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该实验改变主线取舍、形成复盘结论或暴露新创新线索，还应补 `docs/mainline_experiment_history.md`。若该 workflow 有明确名称或专用入口，还应在 inventory 或 focused 架构测试中登记 owner module/script、responsibility、output boundary 和必要 retired route guard。
 
-Scene31 night-grid / next-round 属于 manifest-backed local/manual workflow：修改前先查 `scene31-next-round-experiment-workflow` spec 和 inventory 的 config/script 分类；源码只保留 manifest、base config 和 generator，实体 YAML 需本地生成后再走 `kd-sensing-train --config <generated-yaml>`，fresh eval/analysis 产物只写 ignored output/log roots。
+Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 属于 manifest-backed local/manual workflow：修改 `configs/scene31/` 或 `scripts/run_scene31_*.sh` 前，先查 active/archived OpenSpec 状态、`scene31-next-round-experiment-workflow` spec、inventory 的 config/script 分类、真实 tracked YAML/runner 清单和 `tests/test_scene31_next_round.py` / `tests/test_architecture_boundaries.py`。源码只保留 manifest、base config、generator、必要保留的 local/manual overlay 和薄 runner/helper；generator-backed 实体 YAML 需本地生成后再走 `kd-sensing-train --config <generated-yaml>`，fresh eval/analysis 产物只写 ignored output/log roots。不要把 generated YAML、ignored outputs 或 completed archive change 误当作 current source requirement。
 
 ## 热点右尺寸化决策矩阵
 
@@ -85,7 +85,7 @@ Scene31 night-grid / next-round 属于 manifest-backed local/manual workflow：�
 - ignored runtime artifacts：`outputs/`、`outputs/cache/`、`logs/`、legacy 根 `cache/`、`.pytest_cache`、`__pycache__`、`.pyc`、TensorBoard 文件和 checkpoint 是本地运行产物，不能自动纳入源码变更，也不能作为当前支持入口证据。
 - pytest cache：`.pytest_cache/v/cache/lastfailed` 只记录本地上一次 pytest 状态，可能已经过期；真实红点以当前测试文件和实际 `pytest` 命令结果为准。
 - 本地数据：`dataset/` 是本地输入，默认只允许源码里保留 `dataset/.gitkeep`；测试和文档改动不得读取真实数据来证明契约。
-- OpenSpec archive：`openspec/changes/archive/` 是历史记录，只能解释演进过程；未跟踪 archive 目录、已归档但未提交的 change 或 archive 中的新 spec 不能当作 active change。当前需求以 active change、lifecycle inventory 和当前 `openspec/specs/` 为准。
+- OpenSpec archive：`openspec/changes/archive/` 是历史记录，只能解释演进过程；未跟踪 archive 目录、已归档但未提交的 change 或 archive 中的新 spec 不能当作 active change。若 `git status --short` 同时显示 active change 删除和同名 dated archive 新增，需要把二者作为成对提交状态审计或记录 deferral。当前需求以 active change、lifecycle inventory 和当前 `openspec/specs/` 为准。
 - retired research lines：旧 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、BGAM、viewer manifest、仓库级 Gradio viewer、Raymobtime s008、CRAF/MARF/G2D/Multimodal-NF 等只能作为历史或 migration guard 说明出现，不得用兼容 wrapper、旧 CLI 或实体 YAML 恢复为当前入口。
 - virtual configs：部分 `configs/fusion/*.yaml` 路径可能由配置加载器生成，没有实体 YAML；先查 README、inventory 和 config specs。不得让 virtual config 接管退役 `logits_kd` / `rkd` / old residual 路径。
 - active change 状态：目录存在不等于正在实施，任务全勾选也不等于已经归档；同时看 `openspec list --json`、`openspec status --change <change>`、tasks 和工作树状态。

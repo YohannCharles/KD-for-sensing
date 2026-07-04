@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/scene31_runner_common.sh"
+
 ROOT="outputs/scene31_bc_next"
 MANIFEST="configs/scene31/next_round/experiment_manifest.csv"
 GROUP="all_p0"
@@ -160,92 +163,23 @@ config_for_run() {
       return 0
       ;;
   esac
-  conda run -n kd_mm_beam python -c '
-import csv
-import sys
-
-manifest, run_name = sys.argv[1], sys.argv[2]
-with open(manifest, newline="", encoding="utf-8") as handle:
-    for row in csv.DictReader(handle):
-        if row.get("run_name") == run_name:
-            print(row.get("config_path", ""))
-            raise SystemExit(0)
-raise SystemExit(1)
-' "$MANIFEST" "$run_name"
+  scene31_manifest_value "$MANIFEST" "$run_name" config_path
 }
 
 train_complete() {
-  conda run -n kd_mm_beam python -c '
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-run_name = sys.argv[2]
-for run_dir in (root / run_name, root / "scene31" / run_name):
-    status_path = run_dir / "run_status.json"
-    if status_path.exists():
-        try:
-            data = json.loads(status_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = {}
-        if data.get("state") == "complete":
-            raise SystemExit(0)
-    checkpoint_dir = run_dir / "checkpoints"
-    if checkpoint_dir.exists() and any(checkpoint_dir.glob("*.pth")):
-        raise SystemExit(0)
-    if (run_dir / "best.pth").exists() or (run_dir / "best_top1.pth").exists():
-        raise SystemExit(0)
-raise SystemExit(1)
-' "$ROOT" "$1" >/dev/null 2>&1
+  scene31_train_complete "$ROOT" "$1"
 }
 
 eval_complete() {
-  conda run -n kd_mm_beam python -c '
-import csv
-import math
-import sys
-from pathlib import Path
-
-run_dir = Path(sys.argv[1])
-metrics = run_dir / "apples_to_apples_metrics.csv"
-required = {"full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"}
-if not metrics.exists():
-    raise SystemExit(1)
-with metrics.open(newline="", encoding="utf-8") as handle:
-    rows = list(csv.DictReader(handle))
-by_pattern = {row.get("pattern"): row for row in rows}
-if not required <= set(by_pattern):
-    raise SystemExit(1)
-for pattern in required:
-    row = by_pattern[pattern]
-    if row.get("status") not in ("", "ok"):
-        raise SystemExit(1)
-    for metric in ("top1", "top3", "top5", "within_3", "mae"):
-        try:
-            value = float(row.get(metric, "nan"))
-        except ValueError:
-            value = math.nan
-        if not math.isfinite(value):
-            raise SystemExit(1)
-raise SystemExit(0)
-' "$1" >/dev/null 2>&1
+  scene31_eval_complete "$1"
 }
 
 eval_source_root() {
-  if [[ -d "${ROOT%/}/scene31" ]]; then
-    echo "${ROOT%/}/scene31"
-  else
-    echo "$ROOT"
-  fi
+  scene31_eval_source_root "$ROOT"
 }
 
 run_cmd() {
-  if [[ -n "$GPU" ]]; then
-    CUDA_VISIBLE_DEVICES="$GPU" "$@"
-  else
-    "$@"
-  fi
+  scene31_run_with_devices "$GPU" "$@"
 }
 
 ensure_scene31_configs

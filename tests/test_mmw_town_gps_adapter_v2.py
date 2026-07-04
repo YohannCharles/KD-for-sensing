@@ -1,6 +1,7 @@
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -14,6 +15,10 @@ from kd_sensing.engine.mmw_town_gps_v2 import (
     run_mmw_town_gps_v2,
     select_support_samples,
 )
+from kd_sensing.engine.mmw_town_gps_v2_artifacts import write_csv
+from kd_sensing.engine.mmw_town_gps_v2_label_space import resolve_label_space_config
+from kd_sensing.engine.mmw_town_gps_v2_summary import metrics_from_prediction_rows, overall_rows
+from kd_sensing.engine.mmw_town_gps_v2_support import select_support_samples as select_support_samples_helper
 from kd_sensing.models.mmw_town_gps_v2 import MMWTownGpsV2Model, SceneAdapterV2, SceneAdapterV2Config
 
 
@@ -62,6 +67,48 @@ def test_data_loader_label_space_features_support_and_branch_fallback(tmp_path: 
     metadata = json.loads((out_dir / "run_metadata.json").read_text(encoding="utf-8"))
     assert metadata["branch_metadata"]["target_scene"]["source"] == "pseudo"
     assert (out_dir / "support_manifest.csv").exists()
+
+
+def test_helper_modules_resolve_label_space_support_summary_and_artifacts(tmp_path: Path):
+    mapping_file = tmp_path / "mapping.json"
+    mapping_file.write_text(json.dumps({"enabled": True, "label_space": "mapped", "num_classes": 8}), encoding="utf-8")
+    cfg = {
+        "num_beams": 8,
+        "label_spaces": {
+            "mapping_enabled": {"enabled": True, "mapping_file": str(mapping_file)},
+            "mapping_disabled": {"enabled": False},
+        },
+    }
+
+    enabled = resolve_label_space_config(cfg, "mapping_enabled")
+    disabled = resolve_label_space_config(cfg, "mapping_disabled")
+
+    assert enabled["enabled"] is True
+    assert enabled["fit_source"] == str(mapping_file)
+    assert disabled == {"enabled": False, "label_space": "raw", "num_classes": 8}
+
+    samples = [
+        _sample(sample_id="s0", order_key=2, theta=90.0),
+        _sample(sample_id="s1", order_key=1, theta=0.0),
+        _sample(sample_id="s2", order_key=3, theta=180.0),
+    ]
+    support, query, info = select_support_samples_helper(samples, {"support_mode": "temporal_first", "support_num": 1})
+    assert [item.sample_id for item in support] == ["s1"]
+    assert [item.sample_id for item in query] == ["s0", "s2"]
+    assert info["support_num_overrides_ratio"] is True
+
+    metrics = metrics_from_prediction_rows(
+        [{"true_beam": 1, "circular_error": 0, "topk_predictions": "[1, 2, 3]"}],
+        num_beams=8,
+        dba_delta=5.0,
+    )
+    assert metrics["top1"] == 1.0
+    assert overall_rows([{"protocol": "p", "ablation": "a", "label_space": "ls", **metrics}])[0]["scene_count"] == 1
+
+    csv_path = tmp_path / "rows.csv"
+    write_csv(csv_path, [{"a": 1}, {"a": 2, "b": 3}])
+    rows = _read_csv(csv_path)
+    assert rows[1]["b"] == "3"
 
 
 def test_runner_writes_all_protocol_artifacts_and_summary_schema(tmp_path: Path):
@@ -248,6 +295,16 @@ def _tiny_config(data_root: Path, mapping_file: Path, output_root: Path) -> dict
         },
         "output": {"write_config_snapshot": True},
     }
+
+
+def _sample(*, sample_id: str, order_key: float, theta: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        sample_id=sample_id,
+        order_key=order_key,
+        theta_degrees=theta,
+        branch_key="",
+        metadata={},
+    )
 
 
 def _write_tiny_mmw_dataset(tmp_path: Path) -> tuple[Path, Path]:

@@ -1,7 +1,7 @@
 # missing-modality-stress-suite Specification
 
 ## Purpose
-TBD - created by archiving change add-missing-modality-statistics-stress-suite. Update Purpose after archive.
+定义缺失模态 stress suite manifest、canonical condition taxonomy、输入退化条件和输出边界，用于以 strict comparability 方式审计 robustness，而不生成未经审阅的真实 claim。
 ## Requirements
 ### Requirement: Missing-modality stress suite manifest
 系统 MUST 支持缺失模态 stress suite manifest，用于声明 model groups、conditions、severity sweep、difficulty profiles、strict comparability fields 和输出边界。Manifest MUST 支持 smoke、quick 和 formal 三类运行状态。
@@ -59,4 +59,3 @@ Stress suite MUST 输出机器可读 condition-level metrics、stress summary、
 - **WHEN** stress suite 写出 tables、figures、cache 或 debug payload
 - **THEN** 产物 MUST 位于 ignored `outputs/analysis/missing_modality_stress/` 或用户显式指定目录
 - **AND** 源码变更 MUST 不提交真实 stress metrics、figures、checkpoint 或 cache
-

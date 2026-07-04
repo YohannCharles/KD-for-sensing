@@ -55,7 +55,7 @@ tools/analysis/   # 研究分析脚本
 窄改动优先运行相关测试。涉及 OpenSpec、架构、导入边界、CLI 或公共 workflow 时，按层运行：
 
 ```bash
-openspec validate strengthen-project-health-guardrails --strict
+openspec validate --all --strict
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
 ```
@@ -245,7 +245,7 @@ configs/fusion/<canonical_slug>_<strong|lightweight>.yaml
 
 当前主线横向说明分三层维护：模型目录见 [docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)，参数协议见 [docs/experiment_protocols.md](docs/experiment_protocols.md)，可引用结果和 blocked 状态见 [docs/result_claims_registry.md](docs/result_claims_registry.md)。纵向改进历史、实验决策和创新线索见 [docs/mainline_experiment_history.md](docs/mainline_experiment_history.md)，相关工作矩阵见 [docs/literature_matrix.md](docs/literature_matrix.md)。[docs/experiment_matrix.md](docs/experiment_matrix.md) 只保留 quickstart 顺序和关键 caveat；CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序从这里跳转。
 
-Scene31 night-grid / next-round 配置族只在源码中保留 manifest、base config、generator 和 local/manual fresh-eval/summary helper。需要复跑时先用 `scripts/generate_experiment_grid.py` 或 `scripts/generate_scene31_next_round.py --out_dir <local-config-dir>` 重建 YAML，再使用 `kd-sensing-train --config <generated-yaml>`；P0 fresh eval 使用 `bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`，汇总使用 `conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py --root outputs/scene31_next_round --out outputs/scene31_next_round/p0_fresh_summary`。日志和结果只写 ignored 的 `logs/`、`outputs/scene31/` 或 `outputs/scene31_next_round/`。
+Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 配置族只在源码中保留 manifest、base config、generator 和 local/manual runner/fresh-eval/summary helper。需要复跑时先用 `scripts/generate_experiment_grid.py`、`scripts/generate_scene31_next_round.py --out_dir <local-config-dir>`、`scripts/generate_scene31_funnel.py --out_dir <local-config-dir>` 或 `scripts/generate_scene31_magic_overnight.py --out_dir <local-config-dir>` 重建 YAML，再使用 `kd-sensing-train --config <generated-yaml>`；P0 fresh eval 使用 `bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`，汇总使用 `conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py --root outputs/scene31_next_round --out outputs/scene31_next_round/p0_fresh_summary`。日志和结果只写 ignored 的 `logs/`、`outputs/scene31/`、`outputs/scene31_next_round/` 或对应 `outputs/scene31_*` 本地 root。
 
 ## 数据和产物边界
 
