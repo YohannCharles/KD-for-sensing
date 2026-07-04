@@ -1,0 +1,44 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_uniform_mpdro_tau2_lam025_es40_seed3
+  seed: 3
+model:
+  primary:
+    ablation_id: proto_uniform_mpdro_tau2_lam025_es40_seed3
+training:
+  epochs: 40
+  max_epochs: 40
+  missing_pattern_sampler: pattern_balanced
+  pattern_probs: &id001
+    full: 1.0
+    missing_gps: 1.0
+    missing_radar: 1.0
+    radar_only: 1.0
+    lidar_only: 1.0
+  mpdro: &id002
+    enabled: true
+    tau: 2.0
+    lambda_dro: 0.25
+    patterns:
+    - full
+    - missing_gps
+    - missing_radar
+    - radar_only
+    - lidar_only
+    warmup_epochs: 3
+    ema_beta: 0.9
+    detach_weights: true
+    full_protection: true
+    min_full_weight: 0.1
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    missing_pattern_sampler: pattern_balanced
+    pattern_probs: *id001
+    mpdro: *id002
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_uniform_mpdro_tau2_lam025_es40_seed3
+  dir: outputs/scene31_funnel_lmdb

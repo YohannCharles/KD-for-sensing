@@ -1,0 +1,32 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_sampler_uniform_modbias_entropy_lam001_es40_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_sampler_uniform_modbias_entropy_lam001_es40_seed1
+training:
+  epochs: 40
+  max_epochs: 40
+  missing_pattern_sampler: uniform
+  modality_bias: &id001
+    enabled: true
+    type: entropy_balance
+    lambda_bias: 0.01
+    patterns:
+    - full
+    - missing_gps
+    - missing_radar
+    - radar_only
+    - lidar_only
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    missing_pattern_sampler: uniform
+    modality_bias: *id001
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_sampler_uniform_modbias_entropy_lam001_es40_seed1
+  dir: outputs/scene31_funnel_lmdb

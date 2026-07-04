@@ -1,6 +1,7 @@
 import argparse
 import csv
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -65,6 +66,57 @@ EXPECTED_BEAMSOFT_WEAK = {
     "proto_sampler_uniform_beamsoft_s15_mix025_es40_seed1",
     "proto_sampler_uniform_beamsoft_s15_mix025_es40_seed2",
     "proto_sampler_uniform_beamsoft_s15_mix025_es40_seed3",
+}
+EXPECTED_MAGIC_CORE = {
+    "proto_sampler_uniform_es40_seed1",
+    "proto_sampler_uniform_es40_seed2",
+    "proto_sampler_uniform_mpfr_es40_seed1",
+    "proto_sampler_uniform_mpfr_es40_seed2",
+    "proto_sampler_uniform_mpfr_es40_seed3",
+    "proto_uniform_pattern_proto_recenter_es40_seed1",
+    "proto_uniform_pattern_proto_recenter_es40_seed2",
+    "proto_uniform_pattern_proto_recenter_es40_seed3",
+    "proto_uniform_mpdro_tau1_es40_seed1",
+    "proto_uniform_mpdro_tau1_es40_seed2",
+    "proto_uniform_mpdro_tau1_es40_seed3",
+}
+EXPECTED_MAGIC_BASELINES = {
+    "proto_sampler_uniform_jtt_sample_replay_es40_seed1",
+    "proto_sampler_uniform_jtt_sample_replay_es40_seed2",
+    "proto_uniform_lastlayer_retrain_es40_seed1",
+    "proto_uniform_lastlayer_retrain_es40_seed2",
+    "proto_uniform_groupdro_vanilla_es40_seed1",
+    "proto_uniform_groupdro_vanilla_es40_seed2",
+}
+EXPECTED_FUNNEL_MAIN = {
+    "checkpoint_selection_uniform_all_available",
+    "checkpoint_selection_jtt_all_available",
+    "checkpoint_selection_mpdro_all_available",
+    "proto_sampler_uniform_jtt_sample_replay_es40_seed3",
+    "proto_sampler_uniform_jtt_sample_replay_es40_seed4",
+    "proto_sampler_uniform_jtt_sample_replay_es40_seed5",
+    "proto_sampler_uniform_mvfr_score_es40_seed1",
+    "proto_sampler_uniform_mvfr_score_es40_seed2",
+    "proto_sampler_uniform_mvfr_score_es40_seed3",
+    "proto_uniform_mpdro_tau2_lam025_es40_seed1",
+    "proto_uniform_mpdro_tau2_lam025_es40_seed2",
+    "proto_uniform_mpdro_tau2_lam025_es40_seed3",
+    "proto_uniform_mpdro_tau4_lam025_es40_seed1",
+    "proto_uniform_mpdro_tau4_lam025_es40_seed2",
+    "proto_uniform_mpdro_tau4_lam025_es40_seed3",
+}
+EXPECTED_FUNNEL_QUICK = {
+    "proto_uniform_pattern_logit_bias_seed1",
+    "proto_sampler_uniform_modbias_entropy_lam001_es40_seed1",
+    "proto_sampler_uniform_pattern_film_d8_es40_seed1",
+    "proto_sampler_uniform_pattern_film_d16_es40_seed1",
+    "proto_uniform_tta_entropy_bn_seed1",
+    "proto_uniform_pbpr_fixed_seed1",
+}
+EXPECTED_FUNNEL_P1 = {
+    "proto_uniform_mpdro_tau2_lam05_es40_seed1",
+    "proto_uniform_mpdro_tau2_lam05_es40_seed2",
+    "proto_uniform_mpdro_tau2_lam05_es40_seed3",
 }
 EXPECTED_PATTERNS = [
     "full",
@@ -219,6 +271,82 @@ def test_scene31_night_grid_generator_sanity(tmp_path: Path):
         if "maskadapter_d16" in run_name:
             assert cfg["model"]["primary"]["use_mask_adapter"] is True
             assert cfg["model"]["primary"]["mask_adapter_dim"] == 16
+
+
+def test_scene31_magic_overnight_generator_sanity(tmp_path: Path):
+    generator = _load_script("generate_scene31_magic_overnight", ROOT / "scripts/generate_scene31_magic_overnight.py")
+    out_dir = tmp_path / "magic_overnight"
+    output_dir = tmp_path / "magic_outputs"
+
+    assert generator.main(["--out_dir", str(out_dir), "--output_dir", str(output_dir), "--overwrite", "true"]) == 0
+
+    rows = _read_csv(out_dir / "experiment_manifest.csv")
+    by_name = {row["run_name"]: row for row in rows}
+
+    assert len(rows) == 17
+    assert EXPECTED_MAGIC_CORE <= set(by_name)
+    assert EXPECTED_MAGIC_BASELINES <= set(by_name)
+
+    for row in rows:
+        run_name = row["run_name"]
+        config_path = _manifest_path(row["config_path"])
+        cfg = load_config(config_path)
+        training = cfg["training"]
+        loss_cfg = cfg["loss"]["u_mask_beam_jepa"]
+
+        assert config_path.exists()
+        assert int(row["expected_epochs"]) == 40
+        assert training["epochs"] == 40
+        assert training["max_epochs"] == 40
+        assert cfg["experiment"]["seed"] == int(run_name.rsplit("_seed", 1)[1])
+        assert cfg["output"]["run_name"] == run_name
+        assert cfg["output"]["dir"] == str(output_dir)
+        assert cfg["model"]["primary"]["ablation_id"] == run_name
+
+        if run_name.startswith("proto_sampler_uniform_es40"):
+            assert training["missing_pattern_sampler"] == "uniform"
+        if "mpfr" in run_name:
+            assert training["missing_pattern_sampler"] == "pattern_balanced"
+            assert training["failure_replay"]["mode"] == "missing_pattern_proxy"
+            assert "overnight_proxy" in row["method_tags"]
+        if "pattern_proto_recenter" in run_name:
+            assert training["prototype_recenter"]["mode"] == "shared_balanced_training_proxy"
+            assert training["lambda_proto"] == pytest.approx(0.35)
+            assert training["apply_pattern_weight_to_proto"] is True
+        if "mpdro_tau1" in run_name:
+            assert training["mpdro"]["enabled"] is True
+            assert training["mpdro"]["tau"] == pytest.approx(1.0)
+            assert loss_cfg["mpdro"]["enabled"] is True
+            assert training["missing_pattern_sampler"] == "pattern_balanced"
+
+
+def test_scene31_funnel_generator_sanity(tmp_path: Path):
+    generator = _load_script("generate_scene31_funnel", ROOT / "scripts/generate_scene31_funnel.py")
+    out_dir = tmp_path / "funnel"
+    output_dir = tmp_path / "funnel_outputs"
+
+    assert generator.main(["--out_dir", str(out_dir), "--output_dir", str(output_dir), "--overwrite", "true"]) == 0
+
+    rows = _read_csv(out_dir / "experiment_manifest.csv")
+    by_name = {row["run_name"]: row for row in rows}
+    assert EXPECTED_FUNNEL_MAIN <= set(by_name)
+    assert EXPECTED_FUNNEL_QUICK <= set(by_name)
+    assert EXPECTED_FUNNEL_P1 <= set(by_name)
+    assert by_name["checkpoint_selection_uniform_all_available"]["execution_mode"] == "selection"
+    assert by_name["proto_uniform_pattern_logit_bias_seed1"]["execution_mode"] == "posthoc"
+
+    mpdro_cfg = load_config(_manifest_path(by_name["proto_uniform_mpdro_tau2_lam025_es40_seed1"]["config_path"]))
+    assert mpdro_cfg["output"]["dir"] == str(output_dir)
+    assert mpdro_cfg["training"]["mpdro"]["tau"] == pytest.approx(2.0)
+    assert mpdro_cfg["training"]["mpdro"]["lambda_dro"] == pytest.approx(0.25)
+    assert mpdro_cfg["training"]["mpdro"]["full_protection"] is True
+
+    mvfr_cfg = load_config(_manifest_path(by_name["proto_sampler_uniform_mvfr_score_es40_seed1"]["config_path"]))
+    assert mvfr_cfg["training"]["mvfr"]["enabled"] is True
+    assert mvfr_cfg["training"]["mvfr"]["score_patterns"] == "missing_only"
+
+    film_cfg = load_config(_manifest_path(by_name["proto_sampler_uniform_pattern_film_d8_es40_seed1"]["config_path"]))
+    assert film_cfg["model"]["primary"]["pattern_film"]["init_identity"] is True
 
 
 def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
@@ -399,6 +527,7 @@ def test_scene31_bc_summary_outputs_uniform_delta_and_optional_metrics(tmp_path)
             "full": 0.4200 + bump,
             "missing_gps": 0.3100 + bump,
             "missing_radar": 0.3300 + bump,
+            "missing_gps_radar": 0.2500 + bump,
             "radar_only": 0.2200 + bump,
             "lidar_only": 0.1200 + bump,
         }.items():
@@ -428,6 +557,11 @@ def test_scene31_bc_summary_outputs_uniform_delta_and_optional_metrics(tmp_path)
     assert per_run[0]["method"] == "proto_sampler_adaptive_gap_a05_t1_es40"
     assert "delta_vs_uniform_avg_missing" in per_run[0]
     assert "avg_missing_top1" in per_run[0]
+    assert "miss1_top1" in per_run[0]
+    assert "miss2_top1" in per_run[0]
+    assert "miss3_top1" in per_run[0]
+    assert "miss1_within_3" in per_run[0]
+    assert "miss2_mae" in per_run[0]
     assert "avg_missing_top3" in per_run[0]
     assert "overall_mean_top3" in per_run[0]
     assert "avg_missing_within_3" in per_run[0]
@@ -441,6 +575,129 @@ def test_scene31_bc_summary_outputs_uniform_delta_and_optional_metrics(tmp_path)
     assert "delta_vs_uniform_avg_missing" in markdown
     assert "avg_missing_within_3" in proximity
     assert "Current exact-Top1 winner:" in conclusion
+    mapping = json.loads((out_dir / "missing_bucket_mapping.json").read_text(encoding="utf-8"))
+    assert mapping["full"]["missing_count"] == 0
+    assert mapping["missing_gps"]["missing_count"] == 1
+    assert mapping["missing_gps_radar"]["missing_count"] == 2
+    assert mapping["radar_only"]["missing_count"] == 3
+    assert (out_dir / "bc_rank_by_miss1_top1.md").exists()
+    assert (out_dir / "bc_rank_by_miss2_top1.md").exists()
+    assert (out_dir / "bc_rank_by_miss3_top1.md").exists()
+
+
+def test_scene31_bc_summary_warns_for_empty_missing_bucket(tmp_path):
+    summary = _load_script("summarize_scene31_bc_next", ROOT / "scripts/summarize_scene31_bc_next.py")
+    metrics = tmp_path / "metrics.csv"
+    out_dir = tmp_path / "summary"
+    _write_csv(
+        metrics,
+        ["run_name", "pattern", "top1", "status"],
+        [
+            {"run_name": "tiny_seed1", "pattern": "full", "top1": "0.4", "status": "ok"},
+            {"run_name": "tiny_seed1", "pattern": "missing_gps", "top1": "0.3", "status": "ok"},
+        ],
+    )
+
+    assert summary.main(["--metrics", str(metrics), "--root", str(tmp_path / "empty"), "--out", str(out_dir)]) == 0
+
+    sanity = (out_dir / "bc_sanity_check.md").read_text(encoding="utf-8")
+    assert "miss2" in sanity
+    assert "miss3" in sanity
+
+
+def test_scene31_missing_aware_checkpoint_selection_outputs_links_and_scores(tmp_path):
+    selector = _load_script("select_missing_aware_checkpoint", ROOT / "scripts/select_missing_aware_checkpoint.py")
+    root = tmp_path / "runs"
+    run = "proto_sampler_uniform_es40_seed1"
+    ckpt_dir = root / run / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    for epoch in (1, 2):
+        ckpt = ckpt_dir / f"epoch_{epoch}.pth"
+        ckpt.write_text(f"checkpoint {epoch}", encoding="utf-8")
+        (ckpt_dir / f"epoch_{epoch}.pth.json").write_text(json.dumps({"epoch": epoch}), encoding="utf-8")
+    metrics = tmp_path / "selection_metrics.csv"
+    rows = []
+    values = {
+        1: {"full": 0.50, "missing_gps": 0.20, "missing_gps_radar": 0.18, "radar_only": 0.10},
+        2: {"full": 0.45, "missing_gps": 0.30, "missing_gps_radar": 0.28, "radar_only": 0.22},
+    }
+    for epoch, by_pattern in values.items():
+        for pattern, top1 in by_pattern.items():
+            rows.append(
+                {
+                    "run_name": run,
+                    "checkpoint_epoch": str(epoch),
+                    "pattern": pattern,
+                    "top1": str(top1),
+                    "status": "ok",
+                }
+            )
+    _write_csv(metrics, ["run_name", "checkpoint_epoch", "pattern", "top1", "status"], rows)
+    out_dir = tmp_path / "selection"
+
+    assert selector.main(["--root", str(root), "--runs", run, "--metrics", str(metrics), "--out", str(out_dir)]) == 0
+
+    summary_rows = _read_csv(out_dir / "checkpoint_selection_summary.csv")
+    by_rule = {row["rule"]: row for row in summary_rows}
+    assert by_rule["best_full_val"]["selected_epoch"] == "1"
+    assert by_rule["best_avg_missing_val"]["selected_epoch"] == "2"
+    assert by_rule["best_bucket_balanced_val"]["selected_epoch"] == "2"
+    assert (out_dir / run / "selected_checkpoints" / "best_avg_missing_val" / "best.ckpt").exists()
+
+
+def test_scene31_funnel_summary_writes_required_outputs_and_promotion_labels(tmp_path):
+    summary = _load_script("summarize_scene31_funnel", ROOT / "scripts/summarize_scene31_funnel.py")
+    root = tmp_path / "funnel_root"
+    out_dir = tmp_path / "summary"
+    metrics = tmp_path / "metrics.csv"
+    manifest = tmp_path / "manifest.csv"
+    selection_dir = root / "checkpoint_selection" / "checkpoint_selection_uniform_all_available"
+    selection_dir.mkdir(parents=True)
+    _write_csv(
+        selection_dir / "checkpoint_selection_summary.csv",
+        ["run", "rule", "selected_epoch", "score"],
+        [{"run": "proto_sampler_uniform_es40_seed1", "rule": "best_avg_missing_val", "selected_epoch": "2", "score": "0.3"}],
+    )
+    _write_csv(
+        manifest,
+        ["run_name", "group", "config_path", "seed", "method_tags", "expected_epochs", "priority", "execution_mode"],
+        [
+            {"run_name": "proto_sampler_uniform_es40_seed1", "group": "main", "config_path": "", "seed": "1", "method_tags": "uniform", "expected_epochs": "40", "priority": "high", "execution_mode": "train"},
+            {"run_name": "proto_uniform_pattern_logit_bias_seed1", "group": "quick", "config_path": "", "seed": "1", "method_tags": "quick", "expected_epochs": "40", "priority": "medium", "execution_mode": "posthoc"},
+        ],
+    )
+    rows = []
+    values = {
+        "proto_sampler_uniform_es40_seed1": {"full": 0.4216, "missing_gps": 0.28, "missing_gps_radar": 0.25, "radar_only": 0.18},
+        "proto_uniform_pattern_logit_bias_seed1": {"full": 0.4220, "missing_gps": 0.32, "missing_gps_radar": 0.30, "radar_only": 0.26},
+    }
+    for run_name, by_pattern in values.items():
+        for pattern, top1 in by_pattern.items():
+            rows.append(
+                {
+                    "run_name": run_name,
+                    "pattern": pattern,
+                    "top1": str(top1),
+                    "within_3": str(top1 + 0.3),
+                    "mae": str(5.0 - top1),
+                    "status": "ok",
+                }
+            )
+    _write_csv(metrics, ["run_name", "pattern", "top1", "within_3", "mae", "status"], rows)
+
+    assert summary.main(["--root", str(root), "--metrics", str(metrics), "--manifest", str(manifest), "--out", str(out_dir)]) == 0
+
+    methods = _read_csv(out_dir / "funnel_method_mean_std.csv")
+    quick = next(row for row in methods if row["method"] == "proto_uniform_pattern_logit_bias")
+    assert "promote_to_full_seeds" in quick["main_read"]
+    assert (out_dir / "funnel_per_run.csv").exists()
+    assert (out_dir / "funnel_delta_vs_uniform.csv").exists()
+    assert (out_dir / "rank_by_avg_missing_top1.md").exists()
+    assert (out_dir / "rank_by_miss2_top1.md").exists()
+    assert _read_csv(out_dir / "checkpoint_selection_summary.csv")[0]["selected_epoch"] == "2"
+    conclusion = (out_dir / "funnel_conclusion.txt").read_text(encoding="utf-8")
+    assert "Quick screens promoted to full seeds:" in conclusion
+    assert "proto_uniform_pattern_logit_bias" in conclusion
 
 
 def test_scene31_beamsoft_weak_summary_wrapper_writes_standard_names(tmp_path):
@@ -488,6 +745,7 @@ def test_scene31_bc_launcher_help_and_syntax():
         (ROOT / "scripts/run_scene31_bc_next.sh", "baselines"),
         (ROOT / "scripts/run_scene31_beamsoft_weak.sh", "s10_mix025"),
         (ROOT / "scripts/run_scene31_bc_apples_eval.sh", "uniform-root"),
+        (ROOT / "scripts/run_scene31_funnel.sh", "mild_mpdro"),
     ]
     for script, marker in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)

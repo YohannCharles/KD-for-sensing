@@ -11,6 +11,12 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
+from kd_sensing.eval.missing_buckets import (
+    BUCKET_COUNTS,
+    bucket_metric_mean,
+    missing_bucket_mapping_from_rows,
+    write_missing_bucket_mapping,
+)
 from kd_sensing.eval.missing_patterns import canonical_missing_pattern_name
 
 
@@ -39,7 +45,7 @@ UNIFORM_REFERENCE = {
     "overall_mean": 0.2784,
     "balanced": 0.3560,
 }
-PRIMARY_SORT = ("avg_missing", "full", "overall_mean", "balanced")
+PRIMARY_SORT = ("avg_missing_top1", "miss2_top1", "miss3_top1", "full_top1")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -48,10 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest(Path(args.manifest)) if args.manifest else {}
     metric_rows = _load_metric_rows(args)
-    per_run = _per_run_rows(metric_rows, manifest)
+    bucket_mapping, bucket_warnings = missing_bucket_mapping_from_rows(metric_rows)
+    write_missing_bucket_mapping(out_dir / "missing_bucket_mapping.json", bucket_mapping)
+    per_run = _per_run_rows(metric_rows, manifest, bucket_mapping)
     method_rows = _method_rows(per_run)
     delta_rows = _delta_rows(method_rows)
-    warnings = _sanity_warnings(per_run)
+    warnings = sorted(dict.fromkeys([*bucket_warnings, *_sanity_warnings(per_run)]))
     conclusion = _conclusion_lines(method_rows)
 
     prefix = str(args.name_prefix or "")
@@ -59,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     _write_csv(out_dir / _named(prefix, "method_mean_std.csv"), method_rows, _method_fields(method_rows))
     _write_csv(out_dir / _named(prefix, "delta_vs_uniform.csv"), delta_rows, _delta_fields(method_rows))
     _write_rank_by_avg_missing(out_dir / _named(prefix, "rank_by_avg_missing_top1.md"), method_rows, warnings)
+    for count in BUCKET_COUNTS:
+        _write_rank_by_bucket(out_dir / _named(prefix, f"rank_by_miss{count}_top1.md"), method_rows, count, warnings)
     _write_rank_by_beam_proximity(out_dir / _named(prefix, "rank_by_beam_proximity.md"), method_rows, warnings)
     _write_sanity_markdown(out_dir / _named(prefix, "sanity_check.md"), warnings)
     _write_text(out_dir / _named(prefix, "conservative_conclusion.md"), conclusion)
@@ -136,7 +146,11 @@ def _sibling_checkpoint_manifest(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _per_run_rows(rows: list[dict[str, Any]], manifest: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+def _per_run_rows(
+    rows: list[dict[str, Any]],
+    manifest: dict[str, dict[str, str]],
+    bucket_mapping: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, dict[str, list[float]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     meta: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -170,12 +184,15 @@ def _per_run_rows(rows: list[dict[str, Any]], manifest: dict[str, dict[str, str]
             value = _derived_top1(metric, top1)
             row[metric] = value
             row[f"{metric}_top1"] = value
+        _add_bucket_metric(row, grouped[run_name], bucket_mapping or {}, "top1")
         for metric in TOP1_METRICS:
             row[f"delta_{metric}"] = _delta(row.get(metric), PROTO_REFERENCE.get(metric))
         for metric in UNIFORM_REFERENCE:
             row[f"delta_vs_uniform_{metric}"] = _delta(row.get(metric), UNIFORM_REFERENCE.get(metric))
         for optional in OPTIONAL_INPUT_METRICS:
             _add_optional_metric(row, grouped[run_name], optional)
+            if optional in {"within_3", "mae"}:
+                _add_bucket_metric(row, grouped[run_name], bucket_mapping or {}, optional)
         out.append(row)
     return sorted(out, key=lambda item: _run_rank_key(item), reverse=True)
 
@@ -223,6 +240,25 @@ def _add_optional_metric(row: dict[str, Any], pattern_values: dict[str, dict[str
         avg_source = values.get("avg_missing", float("nan"))
         row[f"avg_missing_{metric}"] = avg_source if _isnum(avg_source) else _avg_missing(values)
         row[f"overall_mean_{metric}"] = _overall_mean(values)
+        if metric == "within_3":
+            row["full_within@3"] = row[f"full_{metric}"]
+            row["avg_missing_within@3"] = row[f"avg_missing_{metric}"]
+            row["overall_mean_within@3"] = row[f"overall_mean_{metric}"]
+
+
+def _add_bucket_metric(
+    row: dict[str, Any],
+    pattern_values: dict[str, dict[str, list[float]]],
+    bucket_mapping: dict[str, dict[str, Any]],
+    metric: str,
+) -> None:
+    values = {pattern: _mean(items.get(metric, [])) for pattern, items in pattern_values.items()}
+    suffix = "top1" if metric == "top1" else metric
+    for count in BUCKET_COUNTS:
+        value = bucket_metric_mean(values, bucket_mapping, count)
+        row[f"miss{count}_{suffix}"] = value
+        if metric == "within_3":
+            row[f"miss{count}_within@3"] = value
 
 
 def _derived_top1(metric: str, values: dict[str, float]) -> float:
@@ -262,19 +298,55 @@ def _balanced(row: dict[str, Any]) -> float:
 
 def _write_rank_by_avg_missing(path: Path, rows: list[dict[str, Any]], warnings: list[str]) -> None:
     lines = ["# Scene31 Rank By Avg Missing Top1", ""]
-    columns = ["method", "n", "full_top1", "avg_missing_top1", "overall_mean_top1", "balanced", "delta_vs_uniform_avg_missing"]
+    columns = [
+        "method",
+        "n",
+        "full_top1",
+        "miss1_top1",
+        "miss2_top1",
+        "miss3_top1",
+        "avg_missing_top1",
+        "overall_mean_top1",
+        "balanced",
+        "delta_vs_uniform_avg_missing",
+    ]
     lines.append("| " + " | ".join(columns) + " |")
     lines.append("| " + " | ".join("---" for _ in columns) + " |")
     for row in sorted(rows, key=lambda item: _method_rank_key(item), reverse=True):
         lines.append(
-            "| {method} | {n} | {full} | {avg} | {overall} | {balanced} | {delta} |".format(
+            "| {method} | {n} | {full} | {miss1} | {miss2} | {miss3} | {avg} | {overall} | {balanced} | {delta} |".format(
                 method=row["method"],
                 n=row.get("n", ""),
                 full=_mean_std(row, "full_top1"),
+                miss1=_mean_std(row, "miss1_top1"),
+                miss2=_mean_std(row, "miss2_top1"),
+                miss3=_mean_std(row, "miss3_top1"),
                 avg=_mean_std(row, "avg_missing_top1"),
                 overall=_mean_std(row, "overall_mean_top1"),
                 balanced=_mean_std(row, "balanced"),
                 delta=_fmt(row.get("delta_vs_uniform_avg_missing_mean")),
+            )
+        )
+    _append_warnings(lines, warnings)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_rank_by_bucket(path: Path, rows: list[dict[str, Any]], count: int, warnings: list[str]) -> None:
+    metric = f"miss{count}_top1"
+    lines = [f"# Scene31 Rank By Miss{count} Top1", ""]
+    columns = ["method", "n", metric, "avg_missing_top1", "miss2_top1", "miss3_top1", "full_top1"]
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("| " + " | ".join("---" for _ in columns) + " |")
+    for row in sorted(rows, key=lambda item: (_zero_nan(item.get(f"{metric}_mean")), *_method_rank_key(item)), reverse=True):
+        lines.append(
+            "| {method} | {n} | {bucket} | {avg} | {miss2} | {miss3} | {full} |".format(
+                method=row["method"],
+                n=row.get("n", ""),
+                bucket=_mean_std(row, metric),
+                avg=_mean_std(row, "avg_missing_top1"),
+                miss2=_mean_std(row, "miss2_top1"),
+                miss3=_mean_std(row, "miss3_top1"),
+                full=_mean_std(row, "full_top1"),
             )
         )
     _append_warnings(lines, warnings)
@@ -377,6 +449,15 @@ def _comparison_metrics(rows: list[dict[str, Any]]) -> list[str]:
         "avg_missing",
         "overall_mean",
         "balanced",
+        "miss1_top1",
+        "miss2_top1",
+        "miss3_top1",
+        "miss1_within_3",
+        "miss2_within_3",
+        "miss3_within_3",
+        "miss1_mae",
+        "miss2_mae",
+        "miss3_mae",
         *[f"{scope}_{metric}" for metric in BEAM_METRICS for scope in ("full", "avg_missing", "overall_mean")],
     ]
     out: list[str] = []
@@ -419,7 +500,8 @@ def _sanity_warnings(per_run: list[dict[str, Any]]) -> list[str]:
         run_name = str(row.get("run_name", ""))
         if not run_name:
             continue
-        if str(row.get("max_batches", "")).strip():
+        max_batches = str(row.get("max_batches", "")).strip()
+        if max_batches and max_batches.lower() not in {"none", "null"}:
             warnings.append(f"{run_name}: max_batches is recorded as {row.get('max_batches')}")
         for pattern in required_patterns:
             if _isnum(row.get(pattern)):
@@ -442,6 +524,9 @@ def _sanity_warnings(per_run: list[dict[str, Any]]) -> list[str]:
         missing = required_patterns - patterns
         if missing:
             warnings.append(f"{run_name}: missing required patterns {','.join(sorted(missing))}")
+    for count in BUCKET_COUNTS:
+        if per_run and not any(_isnum(row.get(f"miss{count}_top1")) for row in per_run):
+            warnings.append(f"miss{count} bucket has no usable top1 values")
     return sorted(dict.fromkeys(warnings))
 
 

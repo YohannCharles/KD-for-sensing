@@ -1,0 +1,242 @@
+[
+  {
+    "run_name": "checkpoint_selection_uniform_all_available",
+    "group": "selection",
+    "config_path": "",
+    "seed": "",
+    "method_tags": "checkpoint_selection",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "selection"
+  },
+  {
+    "run_name": "checkpoint_selection_jtt_all_available",
+    "group": "selection",
+    "config_path": "",
+    "seed": "",
+    "method_tags": "checkpoint_selection",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "selection"
+  },
+  {
+    "run_name": "checkpoint_selection_mpdro_all_available",
+    "group": "selection",
+    "config_path": "",
+    "seed": "",
+    "method_tags": "checkpoint_selection",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "selection"
+  },
+  {
+    "run_name": "proto_sampler_uniform_jtt_sample_replay_es40_seed3",
+    "group": "jtt",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_jtt_sample_replay_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "jtt_sample_replay,sample_level_baseline,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_jtt_sample_replay_es40_seed4",
+    "group": "jtt",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_jtt_sample_replay_es40_seed4.yaml",
+    "seed": 4,
+    "method_tags": "jtt_sample_replay,sample_level_baseline,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_jtt_sample_replay_es40_seed5",
+    "group": "jtt",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_jtt_sample_replay_es40_seed5.yaml",
+    "seed": 5,
+    "method_tags": "jtt_sample_replay,sample_level_baseline,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_mvfr_score_es40_seed1",
+    "group": "mvfr",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_mvfr_score_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "mvfr,missing_view_failure_replay,quick_strict_pending,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_mvfr_score_es40_seed2",
+    "group": "mvfr",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_mvfr_score_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "mvfr,missing_view_failure_replay,quick_strict_pending,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_mvfr_score_es40_seed3",
+    "group": "mvfr",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_mvfr_score_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "mvfr,missing_view_failure_replay,quick_strict_pending,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau2_lam025_es40_seed1",
+    "group": "mild_mpdro_p0",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau2_lam025_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "mpdro,tau_2,lambda_0.25,mild,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau2_lam025_es40_seed2",
+    "group": "mild_mpdro_p0",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau2_lam025_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "mpdro,tau_2,lambda_0.25,mild,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau2_lam025_es40_seed3",
+    "group": "mild_mpdro_p0",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau2_lam025_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "mpdro,tau_2,lambda_0.25,mild,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau4_lam025_es40_seed1",
+    "group": "mild_mpdro_p0",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau4_lam025_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "mpdro,tau_4,lambda_0.25,mild,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau4_lam025_es40_seed2",
+    "group": "mild_mpdro_p0",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau4_lam025_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "mpdro,tau_4,lambda_0.25,mild,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau4_lam025_es40_seed3",
+    "group": "mild_mpdro_p0",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau4_lam025_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "mpdro,tau_4,lambda_0.25,mild,es40",
+    "expected_epochs": 40,
+    "priority": "high",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau2_lam05_es40_seed1",
+    "group": "mild_mpdro_p1",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau2_lam05_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "mpdro,tau_2,lambda_0.5,mild,es40",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau2_lam05_es40_seed2",
+    "group": "mild_mpdro_p1",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau2_lam05_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "mpdro,tau_2,lambda_0.5,mild,es40",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_mpdro_tau2_lam05_es40_seed3",
+    "group": "mild_mpdro_p1",
+    "config_path": "configs/scene31/funnel/proto_uniform_mpdro_tau2_lam05_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "mpdro,tau_2,lambda_0.5,mild,es40",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_pattern_logit_bias_seed1",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_uniform_pattern_logit_bias_seed1.yaml",
+    "seed": 1,
+    "method_tags": "quick_screen,pattern_logit_bias,posthoc",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "posthoc"
+  },
+  {
+    "run_name": "proto_sampler_uniform_modbias_entropy_lam001_es40_seed1",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_modbias_entropy_lam001_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "quick_screen,modality_bias,entropy_balance,lambda_0.01",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_pattern_film_d8_es40_seed1",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d8_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "quick_screen,pattern_film,d8",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_pattern_film_d16_es40_seed1",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d16_es40_seed1.yaml",
+    "seed": 1,
+    "method_tags": "quick_screen,pattern_film,d16",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_uniform_tta_entropy_bn_seed1",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_uniform_tta_entropy_bn_seed1.yaml",
+    "seed": 1,
+    "method_tags": "quick_screen,tta,entropy_bn",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "eval"
+  },
+  {
+    "run_name": "proto_uniform_pbpr_fixed_seed1",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_uniform_pbpr_fixed_seed1.yaml",
+    "seed": 1,
+    "method_tags": "quick_screen,pbpr_fixed,sanity_fixed",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "posthoc"
+  }
+]

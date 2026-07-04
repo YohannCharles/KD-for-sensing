@@ -12,6 +12,7 @@ from kd_sensing.config.io import load_config
 from kd_sensing.config.parsing import safe_load_yaml
 from kd_sensing.engine.data_factory import build_dataloaders
 from kd_sensing.engine.optim import build_device, build_model
+from kd_sensing.eval.missing_buckets import missing_bucket_mapping_from_rows, write_missing_bucket_mapping
 from kd_sensing.eval.missing_patterns import (
     canonical_missing_pattern_name,
     get_missing_pattern_mask,
@@ -71,9 +72,13 @@ def main(argv: list[str] | None = None) -> int:
         manifest["runs"][run_name] = run_manifest
 
     delta_rows = _delta_rows(rows, args.baseline_name)
+    bucket_mapping, bucket_warnings = missing_bucket_mapping_from_rows(rows)
+    if bucket_warnings:
+        manifest["warnings"] = bucket_warnings
     _write_csv(out_dir / "apples_to_apples_metrics.csv", rows)
     _write_markdown(out_dir / "apples_to_apples_metrics.md", rows, args.baseline_name)
     _write_csv(out_dir / "apples_to_apples_delta.csv", delta_rows)
+    write_missing_bucket_mapping(out_dir / "missing_bucket_mapping.json", bucket_mapping)
     (out_dir / "checkpoint_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     _print_conclusions(rows, baseline=args.baseline_name)
     return 0

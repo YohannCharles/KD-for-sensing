@@ -1,0 +1,32 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_sampler_uniform_mvfr_score_es40_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_sampler_uniform_mvfr_score_es40_seed1
+training:
+  epochs: 40
+  max_epochs: 40
+  missing_pattern_sampler: uniform
+  mvfr: &id001
+    enabled: true
+    stage1_source: uniform_checkpoint_or_stage1
+    score_patterns: missing_only
+    replay_ratio: 0.5
+    score_threshold: 0.0
+    score_power: 1.0
+    stage2_epochs: 20
+    normalize_scores: true
+    freeze_encoder: false
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    missing_pattern_sampler: uniform
+    mvfr: *id001
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_sampler_uniform_mvfr_score_es40_seed1
+  dir: outputs/scene31_funnel_lmdb

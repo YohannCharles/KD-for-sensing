@@ -27,7 +27,10 @@ from kd_sensing.losses.u_mask_beam_jepa import (
     UMaskBeamJEPATrainingExtension,
     _adaptive_sampler_update,
     _core_pattern_names,
+    _mpdro_sample_weights,
     _new_adaptive_sampler_state,
+    _new_mpdro_state,
+    _write_mpdro_group_log,
     u_mask_beam_jepa_config,
     u_mask_beam_jepa_loss,
 )
@@ -431,6 +434,57 @@ def test_adaptive_pattern_sampler_fallbacks_to_uniform_when_ema_missing():
 
     probs = state["adaptive_current_probs"]
     assert set(round(value, 8) for value in probs.values()) == {round(1 / len(probs), 8)}
+
+
+def test_mpdro_updates_ema_weights_and_writes_epoch_log(tmp_path: Path):
+    modalities = ("image", "radar", "lidar", "gps")
+    cfg = {
+        "mpdro": {
+            "enabled": True,
+            "patterns": ["full", "radar_only"],
+            "tau": 1.0,
+            "lambda_dro": 0.5,
+            "ema_beta": 0.0,
+            "warmup_epochs": 0,
+            "full_protection": True,
+            "min_full_weight": 0.4,
+        }
+    }
+    state = {"config": cfg, "mpdro": _new_mpdro_state(), "mpdro_epoch_batches": Counter()}
+    labels = torch.tensor([[0], [1], [2], [0]])
+    logits = torch.tensor(
+        [
+            [[5.0, 0.0, 0.0]],
+            [[0.0, 0.0, 5.0]],
+            [[0.0, 5.0, 0.0]],
+            [[5.0, 0.0, 0.0]],
+        ]
+    )
+    patterns = ["full", "radar_only", "radar_only", "full"]
+
+    warmup_weights, _ = _mpdro_sample_weights(cfg, state, patterns, logits, labels, epoch=0)
+    assert warmup_weights is not None
+    assert state["mpdro"]["ema_loss"]["radar_only"] > state["mpdro"]["ema_loss"]["full"]
+
+    updated_weights, diagnostics = _mpdro_sample_weights(cfg, state, patterns, logits, labels, epoch=1)
+    assert updated_weights is not None
+    assert updated_weights[1] > updated_weights[0]
+    assert diagnostics["mpdro/weight/radar_only"] > diagnostics["mpdro/weight/full"]
+    assert state["mpdro"]["last_protected_weights"]["full"] >= 0.4
+    assert sum(state["mpdro"]["last_weights"].values()) == pytest.approx(1.0)
+
+    context = SimpleNamespace(
+        primary_model=SimpleNamespace(modalities=modalities),
+        model_cfg={"primary": {"modalities": list(modalities)}},
+        run_dir=tmp_path,
+    )
+    metrics_path = _write_mpdro_group_log(context, state, epoch=1)
+    with metrics_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["pattern"] for row in rows} == {"full", "radar_only"}
+    assert {"raw_weight", "protected_weight", "weight"} <= set(rows[0])
+    assert any(row["pattern"] == "radar_only" and row["num_batches"] == "2" for row in rows)
+    assert (tmp_path / "mpdro_group_log.csv").exists()
 
 
 def test_beam_prototype_alignment_forward_backward_and_safety():

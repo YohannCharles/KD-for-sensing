@@ -1,0 +1,43 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_uniform_groupdro_vanilla_es40_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_uniform_groupdro_vanilla_es40_seed1
+training:
+  epochs: 40
+  max_epochs: 40
+  missing_pattern_sampler: pattern_balanced
+  pattern_probs: &id001
+    full: 1.0
+    missing_gps: 1.0
+    missing_radar: 1.0
+    radar_only: 1.0
+    lidar_only: 1.0
+  use_pattern_loss_weight: true
+  apply_pattern_weight_to_ce: true
+  pattern_loss_weights: &id002
+    full: 1.0
+    missing_gps: 1.0
+    missing_radar: 1.0
+    radar_only: 1.0
+    lidar_only: 1.0
+  groupdro: &id003
+    enabled: true
+    mode: vanilla_uniform_proxy
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    missing_pattern_sampler: pattern_balanced
+    pattern_probs: *id001
+    use_pattern_loss_weight: true
+    apply_pattern_weight_to_ce: true
+    pattern_loss_weights: *id002
+    groupdro: *id003
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_uniform_groupdro_vanilla_es40_seed1
+  dir: outputs/scene31_magic_overnight_lmdb

@@ -1,0 +1,27 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_uniform_tta_entropy_bn_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: proto_uniform_tta_entropy_bn_seed1
+training:
+  epochs: 40
+  max_epochs: 40
+  missing_pattern_sampler: uniform
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    missing_pattern_sampler: uniform
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_uniform_tta_entropy_bn_seed1
+  dir: outputs/scene31_funnel_lmdb
+tta:
+  enabled: true
+  mode: entropy_bn
+  steps: 1
+  lr: 0.0001
+  update_bn_only: true
