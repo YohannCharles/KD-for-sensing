@@ -6,10 +6,12 @@ from pathlib import Path
 from kd_sensing.config.io import dump_config
 from kd_sensing.diagnostics.run_index import (
     RunIndexFilters,
+    build_run_card,
     build_run_index,
     parse_failure_patterns,
     render_run_csv,
     render_run_table,
+    write_run_card,
 )
 from kd_sensing.engine.run_status import (
     write_complete_status,
@@ -264,3 +266,27 @@ def test_run_status_sidecar_records_running_complete_and_failed(tmp_path: Path):
     assert failed is not None
     assert failed["state"] == "failed"
     assert failed["exception"]["type"] == "RuntimeError"
+
+
+def test_run_card_writes_json_and_markdown_without_checkpoint_contents(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    run_dir = _write_started_run(outputs / "scene31", "card_run")
+    (run_dir / "metrics.json").write_text(json.dumps({"val_adba": 0.42}), encoding="utf-8")
+    (run_dir / "train_log.json").write_text(json.dumps({"epoch_logs": [{"epoch": 1}]}), encoding="utf-8")
+    (run_dir / "training_outputs.npz").write_bytes(b"placeholder")
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pth").write_bytes(b"secret checkpoint bytes")
+    (checkpoint_dir / "best.pth.json").write_text(json.dumps({"selection_metric": "val_adba", "selected_epoch": 1}), encoding="utf-8")
+
+    index = build_run_index(outputs=outputs, logs=None, include_resources=False, now=NOW)
+    card = build_run_card(index["runs"][0], project_root=tmp_path, now=NOW)
+    paths = write_run_card(card, output_dir=tmp_path / "cards")
+
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    markdown = Path(paths["markdown"]).read_text(encoding="utf-8")
+    assert payload["schema_version"] == 1
+    assert payload["checkpoint"]["path"].endswith("checkpoints/best.pth")
+    assert payload["checkpoint"]["selection_metric"] == "val_adba"
+    assert "secret checkpoint bytes" not in json.dumps(payload)
+    assert "secret checkpoint bytes" not in markdown

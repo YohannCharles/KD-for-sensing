@@ -104,8 +104,11 @@ FINAL_METHOD_FIELDS = [
     "mae_at_75_std",
     "mask_suspect_count",
     "official_ranking_included",
+    "claim_status",
+    "caveat",
     "main_read",
 ]
+EVIDENCE_CHECKLIST_FIELDS = ["item", "status", "required", "observed", "caveat", "next_action"]
 PER_SCENE_RUN_FIELDS = [
     "scene",
     "run_name",
@@ -232,6 +235,13 @@ def summarize(
     curve = _missing_count_curve(curve_by_run, warnings)
     curve_by_scene = _missing_count_curve_by_scene(prediction_rows, warnings)
     final_method_rows = _final_method_rows(per_run, curve_by_run=curve_by_run)
+    evidence_checklist = _final_evidence_checklist(
+        final_method_rows,
+        per_run=per_run,
+        per_scene_run=per_scene_run,
+        curve=curve,
+        out_dir=out_dir,
+    )
     delta_rows = _delta_rows(method_rows)
     final_delta_rows = _delta_rows(final_method_rows)
     classifier_rows = _baseline_rows(final_method_rows, [
@@ -265,6 +275,8 @@ def summarize(
     _write_csv(out_dir / "final_external_baselines.csv", external_rows, FINAL_METHOD_FIELDS)
     _write_csv(out_dir / "final_classifier_baselines.csv", classifier_rows, FINAL_METHOD_FIELDS)
     _write_csv(out_dir / "final_delta_vs_proto_subset.csv", final_delta_rows, DELTA_FIELDS)
+    _write_csv(out_dir / "final_evidence_checklist.csv", evidence_checklist, EVIDENCE_CHECKLIST_FIELDS)
+    _write_checklist_md(out_dir / "final_evidence_checklist.md", evidence_checklist)
     _write_rank(out_dir / "rank_by_avg_missing_top1.md", method_rows)
     _write_stability_rank(out_dir / "rank_by_scene_stability.md", mean_over_scenes)
     (out_dir / "scenes31_34_main_conclusion.txt").write_text("\n".join(conclusion) + "\n", encoding="utf-8")
@@ -280,6 +292,7 @@ def summarize(
         "mean_over_scenes": mean_over_scenes,
         "missing_count_curve": curve,
         "missing_count_curve_by_scene": curve_by_scene,
+        "final_evidence_checklist": evidence_checklist,
         "delta_rows": delta_rows,
         "warnings": warnings,
     }
@@ -579,7 +592,12 @@ def _final_method_rows(per_run: list[dict[str, Any]], curve_by_run: list[dict[st
         aggregate["family"] = _family(method)
         aggregate["mask_suspect_count"] = len({row.get("run_name") for row in items if _truthy(row.get("mask_suspect"))})
         aggregate["official_ranking_included"] = str(bool(official_items)).lower()
+        claim_status, caveat = _final_claim_status(method, items, official_items)
+        aggregate["claim_status"] = claim_status
+        aggregate["caveat"] = caveat
         aggregate["main_read"] = _main_read(method, bool(official_items), visible=bool(items))
+        if caveat:
+            aggregate["main_read"] = f"{aggregate['main_read']}; {caveat}"
         aggregate.update(_drop_summary(curve_grouped.get(method, [])))
         rows.append(aggregate)
     return sorted(rows, key=lambda row: _method_rank(str(row.get("method") or "")))
@@ -630,10 +648,181 @@ def _empty_final_row(method: str) -> dict[str, Any]:
             "mae_at_75_std": math.nan,
             "mask_suspect_count": 0,
             "official_ranking_included": "false",
+            "claim_status": "pending",
+            "caveat": "not run",
             "main_read": "not run",
         }
     )
     return row
+
+
+def _final_claim_status(
+    method: str,
+    items: list[dict[str, Any]],
+    official_items: list[dict[str, Any]],
+) -> tuple[str, str]:
+    required = _required_seed_count(method)
+    visible = bool(items)
+    official_n = len({str(row.get("seed") or row.get("run_name")) for row in official_items})
+    if not visible:
+        return "pending", f"not run; needs n>={required}"
+    if not official_items:
+        if any(_truthy(row.get("mask_suspect")) for row in items):
+            return "incomplete", "mask_suspect external row excluded from official ranking"
+        return "pending", "no official eligible row"
+    if official_n < required:
+        return "pending", f"needs n>={required}; current n={official_n}"
+    return "complete", ""
+
+
+def _required_seed_count(method: str) -> int:
+    if method in CORE_METHODS:
+        return 5
+    if method in CLASSIFIER_METHODS:
+        return 3
+    if method in EXTERNAL_METHODS:
+        return 1
+    return 1
+
+
+def _final_evidence_checklist(
+    final_method_rows: list[dict[str, Any]],
+    *,
+    per_run: list[dict[str, Any]],
+    per_scene_run: list[dict[str, Any]],
+    curve: list[dict[str, Any]],
+    out_dir: Path,
+) -> list[dict[str, str]]:
+    by_method = {str(row.get("method") or ""): row for row in final_method_rows}
+    rows: list[dict[str, str]] = []
+    rows.append(
+        _checklist_row(
+            "core proto n=5",
+            all(_int(by_method.get(method, {}).get("n")) >= 5 and _truthy(by_method.get(method, {}).get("official_ranking_included")) for method in CORE_METHODS),
+            required="all core methods n>=5",
+            observed=", ".join(f"{method}:n={_int(by_method.get(method, {}).get('n'))}" for method in CORE_METHODS),
+            caveat="core proto claim remains pending until every core method reaches n=5",
+            next_action="run core_seed23/core_seed45/core_all_missing then summarize_final_all",
+        )
+    )
+    rows.append(
+        _checklist_row(
+            "ordinary classifier baseline",
+            all(_int(by_method.get(method, {}).get("n")) >= 3 and _truthy(by_method.get(method, {}).get("official_ranking_included")) for method in CLASSIFIER_METHODS),
+            required="classifier natural/subset n>=3",
+            observed=", ".join(f"{method}:n={_int(by_method.get(method, {}).get('n'))}" for method in CLASSIFIER_METHODS),
+            caveat="prototype-vs-classifier conclusion is incomplete until classifier rows exist",
+            next_action="run classifier_seed123 and eval_all_baselines",
+        )
+    )
+    external_complete = all(
+        _int(by_method.get(method, {}).get("n")) >= 1 and _truthy(by_method.get(method, {}).get("official_ranking_included"))
+        for method in EXTERNAL_METHODS
+    )
+    external_suspect = any(_int(by_method.get(method, {}).get("mask_suspect_count")) > 0 for method in EXTERNAL_METHODS)
+    rows.append(
+        _checklist_row(
+            "AMR/AMBER-lite external maskfix",
+            external_complete,
+            required="all AMR/AMBER-lite rows n>=1 and mask_suspect=false",
+            observed=", ".join(
+                f"{method}:n={_int(by_method.get(method, {}).get('n'))},suspect={_int(by_method.get(method, {}).get('mask_suspect_count'))}"
+                for method in EXTERNAL_METHODS
+            ),
+            caveat="mask_suspect rows are excluded" if external_suspect else "external-lite rows remain optional but incomplete when absent",
+            next_action="run external_lite_seed1 or external_lite_seed123 with maskfix eval",
+            forced_status="incomplete" if external_suspect and not external_complete else None,
+        )
+    )
+    rows.append(
+        _checklist_row(
+            "fresh eval",
+            bool(per_run),
+            required="fresh eval rows with best checkpoint and no max_batches",
+            observed=f"{len(per_run)} visible per-run rows",
+            caveat="summary is pending if fresh eval rows are absent",
+            next_action="run eval_core_all/eval_all_baselines",
+        )
+    )
+    curve_methods = {str(row.get("method")) for row in curve}
+    curve_counts = {
+        method: sorted({_int(row.get("missing_count")) for row in curve if row.get("method") == method and _isnum(row.get("top1_mean"))})
+        for method in curve_methods
+    }
+    rows.append(
+        _checklist_row(
+            "missing-count degradation curve",
+            all(curve_counts.get(method) == [0, 1, 2, 3] for method in CORE_METHODS),
+            required="missing_count 0/1/2/3 for each core method",
+            observed=", ".join(f"{method}:{curve_counts.get(method, [])}" for method in CORE_METHODS),
+            caveat="paper curve is incomplete if any bucket is missing",
+            next_action="rerun fresh eval with predictions_by_pattern/pattern_metrics",
+        )
+    )
+    scenes = sorted({str(row.get("scene") or "") for row in per_scene_run if row.get("scene")}, key=_scene_rank)
+    rows.append(
+        _checklist_row(
+            "per-scene stability",
+            set(SCENES) <= set(scenes),
+            required="Scene31, Scene32, Scene33 and Scene34 visible",
+            observed=",".join(scenes) if scenes else "none",
+            caveat="scene stability ranking is incomplete if any scene is absent",
+            next_action="run fresh eval with scene metadata",
+        )
+    )
+    profile_path = out_dir.parent / "profile" / "method_profile_summary.csv"
+    rows.append(
+        _checklist_row(
+            "compute profile",
+            profile_path.exists(),
+            required=str(profile_path),
+            observed="present" if profile_path.exists() else "missing",
+            caveat="paper table must mark compute cost pending until profile exists",
+            next_action="run profile_scenes31_34_methods.py",
+        )
+    )
+    paper_table_path = Path("outputs/paper_tables/scenes31_34_main/table_scenes31_34_main.md")
+    rows.append(
+        _checklist_row(
+            "paper tables",
+            paper_table_path.exists(),
+            required=str(paper_table_path),
+            observed="present" if paper_table_path.exists() else "missing",
+            caveat="paper export is pending until table export has been run",
+            next_action="run export_scenes31_34_main_paper_tables.py",
+        )
+    )
+    rows.append(
+        _checklist_row(
+            "final conclusion artifact",
+            True,
+            required=str(out_dir / "scenes31_34_main_conclusion.txt"),
+            observed="written by this summary run",
+            caveat="final_main_conclusion.txt should be regenerated after paper tables/profile update",
+            next_action="run write_scenes31_34_main_conclusion.py",
+        )
+    )
+    return rows
+
+
+def _checklist_row(
+    item: str,
+    complete: bool,
+    *,
+    required: str,
+    observed: str,
+    caveat: str,
+    next_action: str,
+    forced_status: str | None = None,
+) -> dict[str, str]:
+    return {
+        "item": item,
+        "status": forced_status or ("complete" if complete else "pending"),
+        "required": required,
+        "observed": observed,
+        "caveat": "" if complete and forced_status is None else caveat,
+        "next_action": "" if complete and forced_status is None else next_action,
+    }
 
 
 def _mean_over_scenes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -856,6 +1045,14 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) ->
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _csv_value(row.get(key, "")) for key in fieldnames})
+
+
+def _write_checklist_md(path: Path, rows: list[dict[str, Any]]) -> None:
+    columns = EVIDENCE_CHECKLIST_FIELDS
+    lines = ["# Scene31-34 Final Evidence Checklist", "", "| " + " | ".join(columns) + " |", "| " + " | ".join("---" for _ in columns) + " |"]
+    for row in rows:
+        lines.append("| " + " | ".join(str(row.get(column, "")) for column in columns) + " |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

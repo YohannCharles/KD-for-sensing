@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     rows = _read_csv(summary_root / "final_method_mean_std.csv") or _read_csv(summary_root / "method_mean_std.csv")
+    checklist = _read_csv(summary_root / "final_evidence_checklist.csv")
     cost_rows = _read_csv(profile_root / "method_profile_summary.csv")
     by_method = {row.get("method"): row for row in rows}
     winner = _winner(rows)
@@ -73,13 +74,16 @@ def main(argv: list[str] | None = None) -> int:
         "External baseline conclusion",
         *_external_lines(external, best_external, external_gap),
         "",
+        "Evidence checklist caveat",
+        *_evidence_lines(checklist, rows),
+        "",
         "Compute cost conclusion",
         *_cost_lines(cost_rows),
         "",
         "Decision",
         f"- Random subset remains final main method: {'yes' if subset_final else 'pending_or_no'}.",
         f"- Need AMR/AMBER seed2/3: {_need_external_seeds(external_gap, best_external)}.",
-        "- Extra experiments still needed: classifier/external rows with n=0 or not run should be launched before paper freeze; core proto does not need retraining.",
+        "- Extra experiments still needed: any pending or incomplete checklist item should be finished before paper freeze; core proto does not need retraining once n=5 summary remains stable.",
         "",
         f"Summary root: {summary_root}",
         f"Paper table root: {paper_root}",
@@ -131,6 +135,24 @@ def _cost_lines(rows: list[dict[str, str]]) -> list[str]:
         "- Random subset exposure introduces no extra inference-time parameters or latency relative to the same proto model; it is a training exposure strategy.",
         f"- Profile status: {line}.",
     ]
+
+
+def _evidence_lines(checklist: list[dict[str, str]], rows: list[dict[str, str]]) -> list[str]:
+    pending = [
+        f"{row.get('item')}: {row.get('status')} ({row.get('caveat') or row.get('next_action')})"
+        for row in checklist
+        if str(row.get("status", "")).lower() not in {"", "complete"}
+    ]
+    if pending:
+        return ["- Final evidence is not yet complete:", *[f"  - {item}" for item in pending]]
+    method_caveats = [
+        f"{METHOD_LABELS.get(str(row.get('method') or ''), str(row.get('method') or 'method'))}: {row.get('claim_status')} ({row.get('caveat')})"
+        for row in rows
+        if str(row.get("claim_status", "")).strip() not in {"", "complete"}
+    ]
+    if method_caveats:
+        return ["- Method-level caveats remain:", *[f"  - {item}" for item in method_caveats]]
+    return ["- Final evidence checklist is complete in the available summary artifacts."]
 
 
 def _need_external_seeds(gap: float, best_external: str) -> str:

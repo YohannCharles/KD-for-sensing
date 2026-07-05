@@ -382,6 +382,9 @@ def _build_runner_manifest(
             "modalities": spec.get("modalities", spec.get("enabled_modalities", [])) if isinstance(spec, Mapping) else [],
             "consumes_reliability_metadata": _model_consumes_reliability_metadata(spec) if isinstance(spec, Mapping) else False,
             "checkpoint_provenance": spec.get("checkpoint_provenance", weights) if isinstance(spec, Mapping) else weights,
+            "real_benchmark_gate": spec.get("real_benchmark_gate", {}) if isinstance(spec, Mapping) else {},
+            "real_benchmark_status": spec.get("real_benchmark_status", "") if isinstance(spec, Mapping) else "",
+            "real_benchmark_missing_fields": spec.get("real_benchmark_missing_fields", []) if isinstance(spec, Mapping) else [],
             "checkpoint_metadata": checkpoint_metadata,
             "training": spec.get("training") if isinstance(spec, Mapping) else None,
             "summary": model_summaries.get(name),
@@ -465,35 +468,59 @@ def _model_metric_source(
         return _summary_from_metric_mapping(model_name, synthetic, primary=primary, split=split, status="dry_run")
     logits_cache = model_spec.get("logits_cache") or model_spec.get("cache")
     if logits_cache:
-        return _summary_from_logits_cache(
-            model_name,
-            _resolve_existing_user_path(logits_cache),
-            primary=primary,
-            split=split,
-            num_beams=int(model_spec.get("num_beams", 64)),
-            dba_delta=float(manifest.get("metrics", {}).get("dba_delta", model_spec.get("dba_delta", 5))),
-            distance_mode=str(manifest.get("metrics", {}).get("distance_mode", model_spec.get("distance_mode", "circular"))),
-        )
-    if _real_forward_requested(manifest, model_spec):
-        return _summary_from_real_forward(
+        return _with_real_gate_status(
             model_name,
             model_spec,
-            manifest,
-            output_dir=output_dir,
-            primary=primary,
-            split=split,
+            _summary_from_logits_cache(
+                model_name,
+                _resolve_existing_user_path(logits_cache),
+                primary=primary,
+                split=split,
+                num_beams=int(model_spec.get("num_beams", 64)),
+                dba_delta=float(manifest.get("metrics", {}).get("dba_delta", model_spec.get("dba_delta", 5))),
+                distance_mode=str(manifest.get("metrics", {}).get("distance_mode", model_spec.get("distance_mode", "circular"))),
+            ),
+            warnings=warnings,
+        )
+    if _real_forward_requested(manifest, model_spec):
+        return _with_real_gate_status(
+            model_name,
+            model_spec,
+            _summary_from_real_forward(
+                model_name,
+                model_spec,
+                manifest,
+                output_dir=output_dir,
+                primary=primary,
+                split=split,
+                warnings=warnings,
+            ),
             warnings=warnings,
         )
     synthetic_metrics = model_spec.get("synthetic_metrics")
     if isinstance(synthetic_metrics, Mapping):
         return _summary_from_metric_mapping(model_name, synthetic_metrics, primary=primary, split=split, status="synthetic")
+    gate_status = str(model_spec.get("real_benchmark_status") or "")
+    if gate_status in {"unavailable", "not_comparable"}:
+        warnings.append(
+            WarningRecord(
+                code=f"real_benchmark_{gate_status}",
+                message=f"{model_name} marked {gate_status}: {model_spec.get('real_benchmark_gate', {}).get('reason', '')}",
+            ).to_dict()
+        )
+        return _summary_from_metric_mapping(model_name, {}, primary=primary, split=split, status=gate_status)
     if bool(model_spec.get("delegate_evaluate", False)):
-        return _summary_from_delegated_evaluate(
+        return _with_real_gate_status(
             model_name,
             model_spec,
-            output_dir=output_dir,
-            primary=primary,
-            split=split,
+            _summary_from_delegated_evaluate(
+                model_name,
+                model_spec,
+                output_dir=output_dir,
+                primary=primary,
+                split=split,
+                warnings=warnings,
+            ),
             warnings=warnings,
         )
     if manifest.get("protocol", {}).get("mode") == "train_then_evaluate":
@@ -507,6 +534,25 @@ def _model_metric_source(
     raise BenchmarkManifestError(
         f"models.{model_name} needs logits_cache, synthetic_metrics, or delegate_evaluate=true for runner execution."
     )
+
+
+def _with_real_gate_status(
+    model_name: str,
+    model_spec: Mapping[str, Any],
+    summary: dict[str, Any],
+    *,
+    warnings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    gate_status = str(model_spec.get("real_benchmark_status") or "")
+    if gate_status in {"unavailable", "not_comparable"}:
+        summary["status"] = gate_status
+        warnings.append(
+            WarningRecord(
+                code=f"real_benchmark_{gate_status}",
+                message=f"{model_name} marked {gate_status}: {model_spec.get('real_benchmark_gate', {}).get('reason', '')}",
+            ).to_dict()
+        )
+    return summary
 
 def _metrics_rows_for_model(
     model_name: str,

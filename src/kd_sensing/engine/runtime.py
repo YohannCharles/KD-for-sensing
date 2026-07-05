@@ -181,6 +181,7 @@ def prepare_task_inputs(
     device: torch.device,
     non_blocking: bool = False,
 ) -> dict[str, torch.Tensor]:
+    input_profiles = (model_cfg or {}).get("input_profiles") or {}
     if task == "fusion":
         return prepare_fusion_inputs(
             batch,
@@ -203,7 +204,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
-                profile=(model_cfg or {}).get("input_profiles", {}).get("gps"),
+                profile=input_profiles.get("radar"),
                 non_blocking=non_blocking,
             )
         }
@@ -215,7 +216,7 @@ def prepare_task_inputs(
                 input_seq_length=_gps_input_seq_len(model_cfg),
                 num_pred=num_pred,
                 device=device,
-                profile=(model_cfg or {}).get("input_profiles", {}).get("lidar"),
+                profile=input_profiles.get("gps"),
                 non_blocking=non_blocking,
             )
         }
@@ -226,7 +227,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
-                profile=(model_cfg or {}).get("input_profiles", {}).get("lidar"),
+                profile=input_profiles.get("lidar"),
                 non_blocking=non_blocking,
             )
         }
@@ -237,6 +238,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
+                profile=input_profiles.get("mmwave"),
                 non_blocking=non_blocking,
             )
         }
@@ -247,6 +249,7 @@ def prepare_task_inputs(
                 seq_length=seq_length,
                 num_pred=num_pred,
                 device=device,
+                profile=input_profiles.get("csi"),
                 non_blocking=non_blocking,
             )
         }

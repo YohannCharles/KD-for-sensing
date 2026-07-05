@@ -21,6 +21,17 @@ STRICT_FIELDS = (
     "seed",
     "run_family",
 )
+DOCTOR_REQUIRED_FIELDS = (
+    "seed",
+    "split",
+    "metric_profile",
+    "label_space",
+    "checkpoint_provenance",
+    "difficulty_digest",
+    "stress_provenance",
+    "paired_baseline",
+    "statistical_evidence",
+)
 CONSISTENCY_FIELDS = (
     "split",
     "sample_count",
@@ -130,6 +141,7 @@ class DashboardSummary:
     run_state_counts: dict[str, int]
     resources: dict[str, Any]
     claim_counts: dict[str, int]
+    paper_readiness: dict[str, Any]
     candidates: list[dict[str, Any]]
     upgradable_candidates: list[dict[str, Any]]
     next_action_hints: list[str]

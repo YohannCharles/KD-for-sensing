@@ -27,6 +27,7 @@ conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
 conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit --help
 conda run -n kd_mm_beam kd-sensing-paper-export --help
 conda run -n kd_mm_beam kd-sensing-dataset-audit --help
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --help
 ```
 
 等价包内 CLI 入口形如：
@@ -52,10 +53,19 @@ tools/analysis/   # 研究分析脚本
 
 ## 快速健康检查
 
-窄改动优先运行相关测试。涉及 OpenSpec、架构、导入边界、CLI 或公共 workflow 时，按层运行：
+窄改动优先运行相关测试。涉及 OpenSpec、架构、导入边界、CLI 或公共 workflow 时，优先使用 tracked verify 入口：
+
+```bash
+make verify-quick
+make verify-cli-config
+make verify-compile
+```
+
+这些 target 只聚合 OpenSpec、focused pytest 和 Python compile 检查，不启动真实训练、不读取 `dataset/` 真实数据、不写入 checkpoint 或训练输出。底层命令如下：
 
 ```bash
 openspec validate --all --strict
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope scripts --scope configs --scope hotspots
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
 ```
@@ -66,9 +76,10 @@ conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_cha
 conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py tests/test_jepa_visual_analysis.py -q
 ```
 
-这些检查不启动真实训练、不读取 `dataset/` 真实数据、不写入 checkpoint 或训练输出。最终回归：
+最终回归：
 
 ```bash
+make verify-full
 conda run -n kd_mm_beam pytest -q
 ```
 
@@ -146,6 +157,15 @@ conda run -n kd_mm_beam kd-sensing-research-dashboard --outputs outputs --logs l
 ```
 
 `kd-sensing-research-dashboard` 只读聚合 run index、Scene31 missing-pattern 结果、训练 run metrics、checkpoint sidecar、OpenSpec active change 和 GPU/进程快照。输出的 claim candidate 保持 `candidate_only=true` / `claim_status=draft`，默认 JSONL ledger 写入 ignored `outputs/analysis/research_ledger/`；它不启动训练、不清理产物、不移动 checkpoint，也不会自动修改 [docs/result_claims_registry.md](docs/result_claims_registry.md)。
+
+项目表面积 doctor：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --format markdown
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope configs --format json --fail-on none
+```
+
+`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/` 和 inventory 中登记的热点 owner，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate 和 hotspot next-touch 建议。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。
 
 论文表格与数据审计：
 
@@ -355,6 +375,8 @@ conda run -n kd_mm_beam kd-sensing-preprocess \
 
 - AI/维护者修改前导航：[docs/agent_navigation.md](docs/agent_navigation.md)
 - 最小结构化事实清单：[docs/maintainer_context_index.yaml](docs/maintainer_context_index.yaml)
+- 按任务加载的 agent context：[docs/agent_context/README.md](docs/agent_context/README.md)
+- Spec/config/claim agent atlas：[docs/agent_context/atlas.md](docs/agent_context/atlas.md)
 - 当前主线模型目录：[docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)
 - 主线实验演进记录：[docs/mainline_experiment_history.md](docs/mainline_experiment_history.md)
 - 实验协议和参数口径：[docs/experiment_protocols.md](docs/experiment_protocols.md)

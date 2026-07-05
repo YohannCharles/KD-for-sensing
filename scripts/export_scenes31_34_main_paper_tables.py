@@ -122,7 +122,7 @@ def _best_external_row(rows: list[dict[str, str]], token: str, label: str) -> di
     candidates = [row for row in rows if token in str(row.get("method") or "") and _truthy(row.get("official_ranking_included"))]
     if not candidates:
         visible = [row for row in rows if token in str(row.get("method") or "") and _int(row.get("mask_suspect_count")) > 0]
-        return _status_row(label, "external_lite", "excluded" if visible else "not run")
+        return _status_row(label, "external_lite", "incomplete: mask_suspect excluded" if visible else "pending: not run")
     best = max(candidates, key=lambda row: _float(row.get("avg_missing_top1_mean")))
     item = _table_row(best)
     item["Method"] = label
@@ -136,7 +136,8 @@ def _table_row(row: dict[str, str]) -> dict[str, str]:
         return _status_row("not run", "", "not run")
     status = _row_status(row)
     if status != "ok":
-        return _status_row(METHOD_LABELS.get(method, method), row.get("family", ""), status)
+        caveat = row.get("caveat", "")
+        return _status_row(METHOD_LABELS.get(method, method), row.get("family", ""), f"{status}; {caveat}" if caveat else status)
     return {
         "Method": METHOD_LABELS.get(method, method),
         "Family": row.get("family", ""),
@@ -230,12 +231,15 @@ def _write_notes(path: Path, fig_root: Path, rows: list[dict[str, str]], cost_ro
         "Uniform is an ablation, not the final reference.",
         "Reliability fusion and PatternFiLM are not promoted; JTT/MVFR/MPDRO/beamsoft/condBTAPA/weakKD are excluded from this main table.",
         "Classifier baselines test whether beam-centered prototype prediction adds value over an ordinary CE classifier.",
-        "AMR/AMBER-lite rows enter official ranking only when mask_suspect=false; missing rows are reported as not run.",
+        "AMR/AMBER-lite rows enter official ranking only when mask_suspect=false; missing rows are reported as pending and mask_suspect rows as incomplete/excluded.",
         "Random subset exposure introduces no extra inference-time parameters or latency relative to the same proto model; it is a training exposure strategy.",
         "The missing-count degradation curve reports missing_count=0/1/2/3, corresponding to 0%/25%/50%/75% missing ratio.",
         f"Figure root: {fig_root}",
         f"Compute rows visible: {len(cost_rows)}",
     ]
+    caveats = _method_caveats(rows)
+    if caveats:
+        lines.extend(["", "Pending / incomplete caveats:", *[f"- {item}" for item in caveats]])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -246,11 +250,22 @@ def _method_row(rows: list[dict[str, str]], method: str) -> dict[str, str]:
 def _row_status(row: dict[str, str]) -> str:
     if _int(row.get("n")) <= 0:
         if _int(row.get("mask_suspect_count")) > 0 or row.get("main_read") == "excluded":
-            return "excluded"
-        return "not run"
+            return "incomplete"
+        return "pending"
     if not _truthy(row.get("official_ranking_included")):
-        return "excluded"
+        return "incomplete"
     return "ok"
+
+
+def _method_caveats(rows: list[dict[str, str]]) -> list[str]:
+    caveats = []
+    for row in rows:
+        status = str(row.get("claim_status") or "").strip()
+        caveat = str(row.get("caveat") or "").strip()
+        if status and status != "complete":
+            label = METHOD_LABELS.get(str(row.get("method") or ""), str(row.get("method") or "method"))
+            caveats.append(f"{label}: {status}" + (f" ({caveat})" if caveat else ""))
+    return caveats
 
 
 def _winner(rows: list[dict[str, str]]) -> str:

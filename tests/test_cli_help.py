@@ -34,6 +34,7 @@ SRC = ROOT / "src"
         ("kd-sensing-tii-vlrg-transformer", "--execute"),
         ("kd-sensing-inspect-mmw-physics", "--max-samples"),
         ("kd-sensing-model-architecture-summary", "--config"),
+        ("kd-sensing-project-surface-doctor", "--scope"),
     ],
 )
 def test_console_script_help_is_available(command: str, expected: str):

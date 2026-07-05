@@ -506,6 +506,72 @@ def test_current_validation_commands_reference_existing_openspec_targets():
     assert not violations, "Use openspec validate --all --strict or a current spec/active change target."
 
 
+def test_agent_context_and_project_skills_are_registered_and_resolvable():
+    context_paths = (
+        "docs/agent_context/README.md",
+        "docs/agent_context/models.md",
+        "docs/agent_context/data.md",
+        "docs/agent_context/configs.md",
+        "docs/agent_context/cli.md",
+        "docs/agent_context/diagnostics.md",
+        "docs/agent_context/openspec.md",
+        "docs/agent_context/documentation.md",
+        "docs/agent_context/claims.md",
+        "docs/agent_context/atlas.md",
+    )
+    route_context = {
+        "model": "docs/agent_context/models.md",
+        "data": "docs/agent_context/data.md",
+        "config": "docs/agent_context/configs.md",
+        "cli": "docs/agent_context/cli.md",
+        "diagnostics": "docs/agent_context/diagnostics.md",
+        "openspec": "docs/agent_context/openspec.md",
+        "documentation": "docs/agent_context/documentation.md",
+        "claims": "docs/agent_context/claims.md",
+    }
+    skill_paths = (
+        ".codex/skills/kd-add-model/SKILL.md",
+        ".codex/skills/kd-add-config/SKILL.md",
+        ".codex/skills/kd-update-claim/SKILL.md",
+        ".codex/skills/kd-diagnose-run/SKILL.md",
+        ".codex/skills/kd-archive-change/SKILL.md",
+    )
+    reference_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "AGENTS.md",
+            ROOT / "README.md",
+            ROOT / "docs/agent_navigation.md",
+            ROOT / "docs/maintainer_context_index.yaml",
+            INVENTORY,
+        )
+    )
+    index_text = (ROOT / "docs/maintainer_context_index.yaml").read_text(encoding="utf-8")
+
+    missing_files = [rel_path for rel_path in (*context_paths, *skill_paths) if not (ROOT / rel_path).exists()]
+    missing_registration = [rel_path for rel_path in (*context_paths, *skill_paths) if rel_path not in reference_text]
+    missing_routes = [
+        route_id
+        for route_id, rel_path in route_context.items()
+        if f"id: {route_id}" not in index_text or f"context_path: {rel_path}" not in index_text
+    ]
+
+    skill_violations: list[str] = []
+    for rel_path in skill_paths:
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        for marker in ("OpenSpec", "kd_mm_beam", "outputs/", "logs/", "dataset/"):
+            if marker not in text:
+                skill_violations.append(f"{rel_path}: missing {marker}")
+
+    broken_references = _missing_agent_context_references((*context_paths, *skill_paths))
+
+    assert not missing_files
+    assert not missing_registration
+    assert not missing_routes
+    assert not skill_violations
+    assert not broken_references
+
+
 def test_project_surface_inventory_sizing_baseline_declares_scan_method():
     section = _inventory_section("## 项目健康护栏基线", "当前 AST 热点清单如下")
     required_markers = {
@@ -733,6 +799,27 @@ def _inventory_section(start: str, end: str) -> str:
     start_index = text.index(start)
     end_index = text.index(end, start_index)
     return text[start_index:end_index]
+
+
+def _missing_agent_context_references(rel_paths: tuple[str, ...]) -> list[str]:
+    path_pattern = re.compile(
+        r"`(?P<path>"
+        r"AGENTS\.md|README\.md|pyproject\.toml|Makefile|"
+        r"docs/[^`]+|openspec/specs/[^`]+|configs/[^`]+|"
+        r"src/[^`]+|tests/[^`]+|scripts/[^`]+|\.codex/skills/[^`]+"
+        r")`"
+    )
+    broken: list[str] = []
+    for rel_path in rel_paths:
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for match in path_pattern.finditer(line):
+                ref = match.group("path")
+                if any(marker in ref for marker in ("<", ">", "{", "}", "*", "|")):
+                    continue
+                if not (ROOT / ref).exists():
+                    broken.append(f"{rel_path}:{line_number}: {ref}")
+    return broken
 
 
 def _is_sys_path_insert_expr(node: ast.AST) -> bool:

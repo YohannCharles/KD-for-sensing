@@ -484,6 +484,107 @@ def test_reused_weight_fusion_diagnostic_marks_not_comparable(tmp_path: Path) ->
     assert {row["claim_status"] for row in rows} == {"not_comparable"}
 
 
+def test_predictive_missing_checkpoint_marks_unavailable(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    missing_weights = tmp_path / "missing_predictive.pth"
+    manifest_path = tmp_path / "predictive_missing_checkpoint.yaml"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    raw = _predictive_manifest_dict(config, weights)
+    raw["models"]["jepa_predictive"]["weights"] = str(missing_weights)
+    raw["models"]["jepa_predictive"]["allow_missing_artifacts"] = True
+    raw["models"]["jepa_predictive"].pop("synthetic_metrics")
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "predictive_missing_checkpoint_out",
+        force=True,
+    )
+
+    summary = json.loads(Path(result["predictive_regional_summary"]).read_text(encoding="utf-8"))["summary"]
+    predictive = next(row for row in summary if row["group"] == "jepa_predictive_hybrid")
+    assert predictive["claim_status"] == "unavailable"
+    gate = json.loads(Path(result["predictive_claim_gate"]).read_text(encoding="utf-8"))["claim_gate"]
+    assert gate["claim_status"] == "unavailable"
+    manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    assert manifest_out["models"]["jepa_predictive"]["real_benchmark_status"] == "unavailable"
+
+
+def test_predictive_metric_mismatch_marks_not_comparable(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    manifest_path = tmp_path / "predictive_metric_mismatch.yaml"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    raw = _predictive_manifest_dict(config, weights)
+    raw["comparability"]["mode"] = "mark"
+    raw["models"]["jepa_predictive"]["metric_profile"] = "other_metric_profile"
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "predictive_metric_mismatch_out",
+        force=True,
+    )
+
+    summary = json.loads(Path(result["predictive_regional_summary"]).read_text(encoding="utf-8"))["summary"]
+    predictive = next(row for row in summary if row["group"] == "jepa_predictive_hybrid")
+    assert predictive["claim_status"] == "not_comparable"
+    gate = json.loads(Path(result["predictive_claim_gate"]).read_text(encoding="utf-8"))["claim_gate"]
+    assert gate["claim_status"] == "not_comparable"
+
+
+def test_predictive_real_candidate_gate_uses_required_fields(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    weights = tmp_path / "weights.pth"
+    manifest_path = tmp_path / "predictive_real_candidate.yaml"
+    resnet_cache = tmp_path / "resnet_logits.npz"
+    query_cache = tmp_path / "query_logits.npz"
+    predictive_cache = tmp_path / "predictive_logits.npz"
+    _write_minimal_config(config)
+    weights.write_bytes(b"checkpoint")
+    _write_logits_cache(resnet_cache, correct=1)
+    _write_logits_cache(query_cache, correct=2)
+    _write_logits_cache(predictive_cache, correct=4)
+    raw = _predictive_manifest_dict(config, weights)
+    caches = {
+        "resnet_image_gps": resnet_cache,
+        "jepa_query": query_cache,
+        "jepa_predictive": predictive_cache,
+    }
+    for name, model in raw["models"].items():
+        model.pop("synthetic_metrics")
+        model["logits_cache"] = str(caches[name])
+        model["seed"] = 3
+        model["allow_missing_artifacts"] = False
+    raw["comparability"]["keys"] = [
+        "split",
+        "sample_count",
+        "label_space",
+        "metric_profile",
+        "normalization_artifact",
+        "difficulty_digest",
+        "seed",
+    ]
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = bench.run_jepa_gps_shortcut_benchmark(
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "predictive_real_candidate_out",
+        force=True,
+    )
+
+    manifest_out = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    assert {model["real_benchmark_status"] for model in manifest_out["models"].values()} == {"candidate"}
+    gate = json.loads(Path(result["predictive_claim_gate"]).read_text(encoding="utf-8"))["claim_gate"]
+    assert gate["claim_status"] != "mock/smoke"
+    summary = json.loads(Path(result["predictive_regional_summary"]).read_text(encoding="utf-8"))["summary"]
+    predictive = next(row for row in summary if row["group"] == "jepa_predictive_hybrid")
+    assert predictive["claim_status"] in {"pass", "pending"}
+
+
 def test_visual_analysis_ingests_benchmark_runner_outputs(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     weights = tmp_path / "weights.pth"
@@ -525,6 +626,16 @@ def test_visual_analysis_ingests_benchmark_runner_outputs(tmp_path: Path) -> Non
     assert (tmp_path / "analysis_out" / "tables" / "benchmark_case_selection.csv").exists()
     assert manifest["benchmark"]["enabled"] is True
     assert "GPS shortcut reliance" in report
+
+
+def _write_logits_cache(path: Path, *, correct: int) -> None:
+    labels = np.asarray([0, 1, 2, 3], dtype=np.int64)
+    logits = np.zeros((4, 8), dtype=np.float32)
+    for index, label in enumerate(labels):
+        logits[index, int(label)] = 10.0 if index < correct else -10.0
+        if index >= correct:
+            logits[index, int((label + 4) % 8)] = 10.0
+    np.savez(path, logits=logits, labels=labels)
 
 
 def test_benchmark_cli_help_and_main(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

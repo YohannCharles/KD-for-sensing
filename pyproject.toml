@@ -57,6 +57,7 @@ kd-sensing-run-beambench-image-ae-gps-tableiii = "kd_sensing.cli.run_beambench_i
 kd-sensing-tii-vlrg-transformer = "kd_sensing.cli.tii_vlrg_transformer:main"
 kd-sensing-inspect-mmw-physics = "kd_sensing.cli.inspect_mmw_physics:main"
 kd-sensing-model-architecture-summary = "kd_sensing.cli.model_architecture_summary:main"
+kd-sensing-project-surface-doctor = "kd_sensing.cli.project_surface_doctor:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,6 +1,7 @@
 from kd_sensing.diagnostics.research_claim_harvester_base import (
     CONSISTENCY_FIELDS,
     DEFAULT_LEDGER_DIR,
+    DOCTOR_REQUIRED_FIELDS,
     IDENTITY_FIELDS,
     SCHEMA_VERSION,
     STRICT_FIELDS,
@@ -10,6 +11,7 @@ from kd_sensing.diagnostics.research_claim_harvester_base import (
     LedgerRecord,
 )
 from kd_sensing.diagnostics.research_claim_harvester_collectors import (
+    build_claim_doctor_report,
     harvest_research_claims,
     read_scene31_missing_pattern_artifact,
     read_training_run_artifact,

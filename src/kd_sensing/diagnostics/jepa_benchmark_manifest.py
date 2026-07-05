@@ -70,6 +70,7 @@ from kd_sensing.diagnostics.jepa_benchmark_common import (
     PREDICTIVE_OUTPUT_FILES,
     PREDICTIVE_REQUIRED_MODEL_GROUPS,
     PREDICTIVE_SUITE_TYPES,
+    REAL_BENCHMARK_REQUIRED_MODEL_FIELDS,
     RUNNER_VERSION,
     SCENARIO_C_CANONICAL_CONDITIONS,
     SCENARIO_C_SUITE_TYPE,
@@ -215,9 +216,15 @@ def validate_benchmark_manifest(
         weights = model.get("weights")
         has_synthetic = isinstance(model.get("synthetic_metrics"), Mapping)
         if mode in {"evaluation_only", "reuse_existing_runs"} and not weights and not logits_cache and not has_synthetic and not real_forward_mode:
-            raise BenchmarkManifestError(
-                f"models.{name}.weights is required for protocol={mode} unless logits_cache or synthetic_metrics is provided."
-            )
+            if allow_missing:
+                model["unavailable_reason"] = (
+                    f"models.{name}.weights/logits_cache/synthetic_metrics missing; "
+                    "model will be marked unavailable."
+                )
+            else:
+                raise BenchmarkManifestError(
+                    f"models.{name}.weights is required for protocol={mode} unless logits_cache or synthetic_metrics is provided."
+                )
         if real_forward_mode and not weights and not bool(model.get("allow_missing_artifacts", False)):
             model_rf_cfg = model.get("real_forward", {})
             if not isinstance(model_rf_cfg, Mapping) or not bool(model_rf_cfg.get("allow_untrained", False)):
@@ -246,6 +253,7 @@ def validate_benchmark_manifest(
                     raise BenchmarkManifestError(
                         f"models.{name}.training.{field} must use 'conda run -n kd_mm_beam ...'."
                     )
+        _attach_real_benchmark_gate(model, model_name=str(name), validate_paths=validate_paths)
         models[name] = model
 
     normalized_suites = []
@@ -318,6 +326,70 @@ def _normalize_evaluation_config(
         rf["sample_count"] = cfg["sample_count"]
     cfg["real_forward"] = rf
     return cfg
+
+
+def _attach_real_benchmark_gate(
+    model: dict[str, Any],
+    *,
+    model_name: str,
+    validate_paths: bool,
+) -> None:
+    missing = [
+        field
+        for field in REAL_BENCHMARK_REQUIRED_MODEL_FIELDS
+        if _real_required_value(model, field) in (None, "", [], {})
+    ]
+    checkpoint_state = _checkpoint_state(model, validate_paths=validate_paths)
+    if checkpoint_state == "missing" and "weights" not in missing:
+        missing.append("weights")
+    has_synthetic = isinstance(model.get("synthetic_metrics"), Mapping)
+    allow_missing = bool(model.get("allow_missing_artifacts", False))
+    if has_synthetic or allow_missing:
+        status = "mock/smoke" if has_synthetic else ("unavailable" if "weights" in missing else "not_comparable")
+    elif "weights" in missing:
+        status = "unavailable"
+    elif missing:
+        status = "not_comparable"
+    else:
+        status = "candidate"
+    gate = {
+        "required_fields": list(REAL_BENCHMARK_REQUIRED_MODEL_FIELDS),
+        "missing_fields": sorted(set(missing), key=list(REAL_BENCHMARK_REQUIRED_MODEL_FIELDS).index),
+        "checkpoint_status": checkpoint_state,
+        "status": status,
+        "reason": _real_gate_reason(model_name, status, missing, checkpoint_state),
+    }
+    model["real_benchmark_gate"] = gate
+    model["real_benchmark_status"] = status
+    model["real_benchmark_missing_fields"] = gate["missing_fields"]
+
+
+def _real_required_value(model: Mapping[str, Any], field: str) -> Any:
+    if field == "weights":
+        return model.get("weights", model.get("checkpoint"))
+    if field == "normalization_artifact":
+        return model.get("normalization_artifact", model.get("normalization_fingerprint"))
+    return model.get(field)
+
+
+def _checkpoint_state(model: Mapping[str, Any], *, validate_paths: bool) -> str:
+    weights = _real_required_value(model, "weights")
+    if weights in (None, "", [], {}):
+        return "missing"
+    if not validate_paths:
+        return "declared"
+    resolved = resolve_path(str(weights))
+    return "available" if resolved is not None and resolved.exists() else "missing"
+
+
+def _real_gate_reason(model_name: str, status: str, missing: list[str], checkpoint_state: str) -> str:
+    if status == "candidate":
+        return "real benchmark required fields are complete"
+    if status == "mock/smoke":
+        return "synthetic metrics or allow_missing_artifacts prevent promotion to a real claim"
+    if status == "unavailable":
+        return f"{model_name} checkpoint is {checkpoint_state}"
+    return f"{model_name} missing real benchmark fields: {','.join(sorted(set(missing)))}"
 
 
 def normalize_suite_config(suite: Mapping[str, Any], *, index: int = 0) -> dict[str, Any]:
@@ -669,9 +741,13 @@ def evaluate_model_comparability(manifest: Mapping[str, Any]) -> dict[str, Any]:
     inconsistent: list[dict[str, Any]] = []
     for key in keys:
         values = {name: _comparable_scalar(record.get(key)) for name, record in model_records.items()}
+        missing_models = [name for name, value in values.items() if value in {"", "[]", "{}"}]
         unique = sorted(set(values.values()))
-        if len(unique) > 1:
-            inconsistent.append({"field": key, "values": values})
+        if len(unique) > 1 or missing_models:
+            item = {"field": key, "values": values}
+            if missing_models:
+                item["missing_models"] = missing_models
+            inconsistent.append(item)
     return {
         "status": "passed" if not inconsistent else "failed",
         "mode": manifest.get("comparability", {}).get("mode", "mark"),

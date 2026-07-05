@@ -316,11 +316,18 @@ def aggregate_gps_query_advantage_margins(
             margin_resnet = "" if value is None or resnet_value is None else value - resnet_value
             margin_query = "" if value is None or gps_query_value is None else value - gps_query_value
             status = "mechanism_evidence"
-            if item.get("comparability_status") != "passed" or not strict:
-                status = "not_comparable"
-            if resnet_value is None or gps_query_value is None or value is None:
+            row_statuses = {str(row_status) for row_status in item.get("row_statuses", [])}
+            if "unavailable" in row_statuses:
                 status = "unavailable"
-            if any(row_status in {"synthetic", "dry_run"} or "mock" in row_status for row_status in item.get("row_statuses", [])):
+            elif "not_comparable" in row_statuses:
+                status = "not_comparable"
+            elif item.get("comparability_status") != "passed" or not strict:
+                status = "not_comparable"
+            if status == "mechanism_evidence" and (resnet_value is None or gps_query_value is None or value is None):
+                status = "unavailable"
+            if status == "mechanism_evidence" and any(
+                row_status in {"synthetic", "dry_run"} or "mock" in row_status for row_status in row_statuses
+            ):
                 status = "mock/smoke"
             output.append(
                 {
@@ -361,10 +368,12 @@ def build_predictive_claim_gate(
     advantage_available = bool(model_advantage)
     statuses = {str(row.get("claim_status", "")) for row in model_advantage if row.get("claim_status", "")}
     predictive_status = str(model.get("claim_status", "unavailable"))
-    if "mock/smoke" in statuses or predictive_status == "mock/smoke":
-        gate_status = "mock/smoke"
-    elif predictive_status == "not_comparable" or "not_comparable" in statuses:
+    if predictive_status == "not_comparable" or "not_comparable" in statuses:
         gate_status = "not_comparable"
+    elif predictive_status == "unavailable" or "unavailable" in statuses:
+        gate_status = "unavailable"
+    elif "mock/smoke" in statuses or predictive_status == "mock/smoke":
+        gate_status = "mock/smoke"
     elif not model or not advantage_available:
         gate_status = "unavailable"
     elif p_pass and advantage_vs_resnet and advantage_vs_query:

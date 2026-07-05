@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 
 from kd_sensing.diagnostics.run_index import (
+    DEFAULT_RUN_CARD_DIR,
     RUN_STATES,
     RunIndexFilters,
+    build_run_card,
     build_run_index,
     render_run_csv,
     render_run_table,
+    write_run_card,
     write_run_index_output,
 )
 
@@ -40,6 +43,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by run state. Can be repeated or comma-separated.",
     )
     parser.add_argument("--output", "-o", help="Optional path to write the rendered run index.")
+    parser.add_argument(
+        "--run-card",
+        action="append",
+        default=[],
+        help="Run directory or run name to write a provenance run card for. Can be repeated.",
+    )
+    parser.add_argument(
+        "--run-card-output-dir",
+        type=Path,
+        default=DEFAULT_RUN_CARD_DIR,
+        help="Ignored output directory for run card JSON/Markdown artifacts.",
+    )
     parser.add_argument("--dataset-family", help="Filter by dataset family.")
     parser.add_argument("--objective", help="Filter by experiment objective.")
     parser.add_argument("--run-name", help="Filter by run name substring.")
@@ -87,6 +102,10 @@ def main(argv: list[str] | None = None) -> dict:
         print(render_run_csv(index), end="")
     else:
         print(render_run_table(index))
+    for target in args.run_card:
+        run = _resolve_run_card_target(index, target)
+        outputs = write_run_card(build_run_card(run), output_dir=args.run_card_output_dir)
+        print(f"Wrote run card: {outputs['json']}")
     return index
 
 
@@ -114,6 +133,13 @@ def _parse_iso_datetime(value: str | None) -> dt.datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.astimezone(dt.timezone.utc)
+
+
+def _resolve_run_card_target(index: dict, value: str) -> dict | Path:
+    for run in index.get("runs", []):
+        if value in {str(run.get("run_name")), str(run.get("run_dir"))}:
+            return run
+    return Path(value)
 
 
 if __name__ == "__main__":

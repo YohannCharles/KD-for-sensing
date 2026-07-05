@@ -555,6 +555,15 @@ def aggregate_predictive_robustness_summary(
     for summary in summaries:
         value = _float_or_none(summary.get("predictive_dba"))
         clean = _float_or_none(summary.get("clean_anchor_primary"))
+        row_statuses = {str(status) for status in summary.get("row_statuses", [])}
+        if "unavailable" in row_statuses:
+            summary["claim_status"] = "unavailable"
+            summary["stress_summary_status"] = "unavailable"
+            continue
+        if "not_comparable" in row_statuses:
+            summary["claim_status"] = "not_comparable"
+            summary["stress_summary_status"] = "not-comparable"
+            continue
         if clean is None or value is None:
             summary["claim_status"] = "unavailable"
             summary["stress_summary_status"] = "unavailable"

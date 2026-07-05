@@ -396,3 +396,29 @@ Scene31 next-round、BC、beamsoft weak、funnel 和 magic overnight 的 runner�
 - **THEN** `pyproject.toml` MUST 不新增对应 `kd-sensing-*` console script
 - **AND** README quickstart MUST 不把该 local/manual runner 写成长期 package 入口
 
+### Requirement: Scene31/Scene31-34 报告脚本必须分类为本地研究报告表面
+Scene31 和 Scene31-34 的论文表格、per-scene summary、final conclusion 等报告脚本 MAY 保留为 research diagnostic 或 local/manual reporting surface，但 MUST 在 inventory 或 current 文档中登记 lifecycle、职责和输出边界。它们 MUST 不作为 package CLI、README quickstart 或长期 public API 推荐入口。
+
+#### Scenario: 报告脚本有输出边界
+- **WHEN** 项目保留 Scene31 或 Scene31-34 报告脚本
+- **THEN** inventory MUST 说明脚本读取本地 summary、fresh-eval 或 paper table 输入
+- **AND** 输出边界 MUST 限定在 ignored `outputs/`、`logs/` 或显式用户路径，不得提交生成表格、结论、checkpoint 或 metrics
+
+#### Scenario: 报告脚本不升级为 package CLI
+- **WHEN** README、AGENTS、OpenSpec 或 docs 描述当前推荐入口
+- **THEN** 这些报告脚本 MUST 不被描述为训练、评估、预处理或诊断 package CLI 的替代入口
+- **AND** 若需要长期稳定 CLI，后续 change MUST 将可复用逻辑迁入包内 owner 并补 focused tests
+
+### Requirement: Scripts lifecycle doctor
+项目 MUST 提供 scripts lifecycle doctor，检查 tracked `scripts/` 和 `tools/analysis/` 文件是否具有明确 lifecycle 分类、owner、默认配置引用和输出边界。重复 package CLI 的 Python thin wrapper MUST 被标记为错误或高风险，除非 current spec 明确允许。
+
+#### Scenario: 未分类脚本被发现
+- **WHEN** tracked `scripts/` 下新增 Python 或 shell 文件，但 inventory、README/docs 或 OpenSpec 未登记其 lifecycle
+- **THEN** scripts doctor MUST 报告未分类入口
+- **AND** 报告 MUST 提示补充 lifecycle、输出边界和验证命令，或删除重复入口
+
+#### Scenario: 脚本默认配置不存在
+- **WHEN** local/manual runner 引用的默认 config path 不存在
+- **THEN** scripts doctor MUST 报告失效引用
+- **AND** 报告 MUST 不自动生成或恢复退役 config
+

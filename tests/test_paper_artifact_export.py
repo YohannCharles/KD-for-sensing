@@ -26,7 +26,34 @@ def test_paper_export_filters_main_rows_and_writes_manifest(tmp_path: Path):
     assert {row["claim_id"] for row in appendix_rows} == {"C2", "C3"}
     assert Path(manifest["outputs"]["main_markdown"]).exists()
     assert Path(manifest["outputs"]["main_latex"]).exists()
+    assert Path(manifest["outputs"]["excluded_report_csv"]).exists()
     assert Path(manifest["manifest_path"]).exists()
+
+
+def test_paper_export_hard_excludes_unverified_and_candidate_only_rows(tmp_path: Path):
+    claims = tmp_path / "claims.csv"
+    claims.write_text(
+        "claim_id,method,dataset_split,metric,value,claim_status,candidate_only,provenance,caveat\n"
+        "C1,Reviewed,split-a,DBA,0.88,local strict-validation,false,run-a,reviewed\n"
+        "C2,Unverified,split-a,DBA,0.70,unverified,false,run-b,needs audit\n"
+        "C3,Draft,split-a,DBA,0.71,local strict-validation,true,run-c,draft only\n",
+        encoding="utf-8",
+    )
+
+    manifest = export_paper_artifacts(
+        [claims],
+        output_dir=tmp_path / "paper",
+        include_statuses=["unverified"],
+    )
+
+    main_rows = list(csv.DictReader(Path(manifest["outputs"]["main_csv"]).open(encoding="utf-8")))
+    excluded_rows = list(csv.DictReader(Path(manifest["outputs"]["excluded_report_csv"]).open(encoding="utf-8")))
+
+    assert [row["claim_id"] for row in main_rows] == ["C1"]
+    assert {row["claim_id"] for row in excluded_rows} == {"C2", "C3"}
+    assert any("unverified" in row["exclusion_reason"] for row in excluded_rows if row["claim_id"] == "C2")
+    assert any("candidate_only=true" in row["exclusion_reason"] for row in excluded_rows if row["claim_id"] == "C3")
+    assert Path(manifest["outputs"]["diagnostic_rows_csv"]).exists()
 
 
 def test_paper_export_writes_stress_and_pattern_figure_data(tmp_path: Path):

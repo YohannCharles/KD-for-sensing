@@ -5,6 +5,139 @@ purpose:
     Minimal structured facts that are hard to infer directly from pyproject,
     OpenSpec, source paths, or project_surface_inventory. This is not a source
     tree mirror, entrypoint database, hotspot budget table, or runtime config.
+agent_context:
+  root: docs/agent_context/README.md
+  atlas: docs/agent_context/atlas.md
+  source: manual curation from README, docs/project_surface_inventory.md, OpenSpec specs, and claim docs
+  note: Scoped context files route agents to authority paths and focused validation without copying requirements.
+task_routes:
+  - id: model
+    context_path: docs/agent_context/models.md
+    authority_paths:
+      - openspec/specs/model-architecture-extension-contract/spec.md
+      - openspec/specs/modular-sequence-model/spec.md
+      - docs/project_surface_inventory.md
+    owner_modules:
+      - src/kd_sensing/models/
+      - src/kd_sensing/registries.py
+    focused_validation:
+      - conda run -n kd_mm_beam pytest tests/test_component_registry.py -q
+      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    retired_route_guard: retired_routes
+    caveat: classify config-only, component baseline, whole-model exception, or workflow reproduction first
+  - id: data
+    context_path: docs/agent_context/data.md
+    authority_paths:
+      - openspec/specs/dataset-runtime-contracts/spec.md
+      - openspec/specs/modality-contracts/spec.md
+      - docs/project_surface_inventory.md
+    owner_modules:
+      - src/kd_sensing/data/
+      - src/kd_sensing/engine/batch.py
+    focused_validation:
+      - conda run -n kd_mm_beam pytest tests/test_prediction_objectives.py tests/test_evaluation_pass.py -q
+      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    retired_route_guard: retired_routes
+    caveat: tests should use synthetic data or fixtures instead of real dataset/ contents
+  - id: config
+    context_path: docs/agent_context/configs.md
+    authority_paths:
+      - openspec/specs/canonical-config-resolution/spec.md
+      - docs/project_surface_inventory.md
+      - README.md
+    owner_modules:
+      - src/kd_sensing/config/
+      - configs/
+    focused_validation:
+      - conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q
+      - make verify-cli-config
+    retired_route_guard: retired_routes
+    caveat: virtual configs must not take over retired KD, Hist, residual, BGAM, or viewer routes
+  - id: cli
+    context_path: docs/agent_context/cli.md
+    authority_paths:
+      - openspec/specs/project-entrypoint-lifecycle/spec.md
+      - pyproject.toml
+      - docs/project_surface_inventory.md
+    owner_modules:
+      - src/kd_sensing/cli/
+      - scripts/
+    focused_validation:
+      - conda run -n kd_mm_beam pytest tests/test_cli_help.py -q
+      - conda run -n kd_mm_beam python scripts/verify_compile.py
+    retired_route_guard: retired_routes
+    caveat: CLI modules stay thin and delegate workflow logic to owner modules
+  - id: diagnostics
+    context_path: docs/agent_context/diagnostics.md
+    authority_paths:
+      - openspec/specs/jepa-visual-analysis-suite/spec.md
+      - openspec/specs/jepa-gps-shortcut-benchmark/spec.md
+      - docs/project_surface_inventory.md
+    owner_modules:
+      - src/kd_sensing/diagnostics/
+      - src/kd_sensing/cli/
+    focused_validation:
+      - conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q
+      - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py -q
+    retired_route_guard: retired_routes
+    caveat: diagnostics write generated artifacts only to ignored outputs/ or logs/
+  - id: openspec
+    context_path: docs/agent_context/openspec.md
+    authority_paths:
+      - openspec/specs/
+      - docs/project_surface_inventory.md
+      - AGENTS.md
+    owner_modules:
+      - openspec/
+    focused_validation:
+      - openspec validate --all --strict
+    retired_route_guard: retired_routes
+    caveat: complete active changes are archive or closeout items unless the user asks to continue them
+  - id: documentation
+    context_path: docs/agent_context/documentation.md
+    authority_paths:
+      - openspec/specs/ai-maintainer-navigation/spec.md
+      - openspec/specs/maintainer-context-index/spec.md
+      - openspec/specs/openspec-document-health/spec.md
+    owner_modules:
+      - AGENTS.md
+      - README.md
+      - docs/
+    focused_validation:
+      - openspec validate --all --strict
+      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    retired_route_guard: retired_routes
+    caveat: docs describe authority boundaries and must not become generated metadata mirrors
+  - id: claims
+    context_path: docs/agent_context/claims.md
+    authority_paths:
+      - docs/result_claims_registry.md
+      - docs/experiment_protocols.md
+      - openspec/specs/research-claim-harvester/spec.md
+    owner_modules:
+      - docs/result_claims_registry.md
+      - src/kd_sensing/diagnostics/paper_artifact_export.py
+    focused_validation:
+      - conda run -n kd_mm_beam kd-sensing-paper-export --input docs/result_claims_registry.md --output-dir outputs/paper_artifacts/current
+      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
+    retired_route_guard: retired_routes
+    caveat: candidate, mock, smoke, historical, blocked, and upper-bound rows do not become reviewed claims automatically
+project_skills:
+  - id: kd-add-model
+    path: .codex/skills/kd-add-model/SKILL.md
+    route: model
+  - id: kd-add-config
+    path: .codex/skills/kd-add-config/SKILL.md
+    route: config
+  - id: kd-update-claim
+    path: .codex/skills/kd-update-claim/SKILL.md
+    route: claims
+  - id: kd-diagnose-run
+    path: .codex/skills/kd-diagnose-run/SKILL.md
+    route: diagnostics
+  - id: kd-archive-change
+    path: .codex/skills/kd-archive-change/SKILL.md
+    route: openspec
 retired_routes:
   summary_spec: retired-route-summary
   config_tokens:
@@ -50,6 +183,9 @@ retired_routes:
     - run_mmw_sunny_modal15
 validation:
   focused:
+    - make verify-quick
+    - make verify-cli-config
+    - make verify-compile
     - openspec validate --all --strict
     - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py tests/test_config_load_characterization.py tests/test_component_registry.py tests/test_cli_help.py -q
     - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py tests/test_tinyvit_image_encoder.py tests/test_prediction_objectives.py -q

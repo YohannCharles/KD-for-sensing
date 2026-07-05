@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-status",
         action="append",
         default=[],
-        help="Status marker to force into the main table. Can be repeated or comma-separated.",
+        help="Status marker to also write into explicit diagnostic appendix outputs. Can be repeated or comma-separated.",
     )
     parser.add_argument("--json", action="store_true", help="Print the full export manifest JSON.")
     return parser

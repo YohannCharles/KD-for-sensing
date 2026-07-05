@@ -5,6 +5,7 @@ from pathlib import Path
 from kd_sensing.config.io import dump_config
 from kd_sensing.diagnostics.research_claim_harvester import (
     apply_strict_comparability_gate,
+    build_claim_doctor_report,
     build_dashboard_summary,
     harvest_research_claims,
     ledger_records_from_candidates,
@@ -185,3 +186,40 @@ def test_dashboard_aggregates_active_change_resources_and_next_actions(tmp_path:
     assert summary["resources"]["gpu_count"] == 1
     assert summary["claim_counts"] == {"strict": 1}
     assert summary["candidates"][0]["candidate_only"] is True
+    assert summary["paper_readiness"]["candidate_only_count"] == 1
+    assert "stress_provenance" in summary["paper_readiness"]["missing_field_counts"]
+
+
+def test_claim_doctor_reports_missing_fields_and_upgradable_candidates():
+    missing = {
+        "candidate_id": "candidate-missing",
+        "run_id": "run-a",
+        "run_name": "proto_seed1",
+        "method": "proto",
+        "claim_status": "pending",
+        "candidate_only": True,
+        "comparability_status": "strict",
+        "seed": 1,
+        "split": "test",
+        "metric_profile": "scene31_missing",
+        "label_space": "beam64",
+        "difficulty_digest": "difficulty-a",
+    }
+    complete = {
+        **missing,
+        "candidate_id": "candidate-complete",
+        "run_id": "run-b",
+        "checkpoint_provenance": {"checkpoint_path": "outputs/run/checkpoints/best.pth"},
+        "stress_provenance": "formal-stress-v1",
+        "paired_baseline": "uniform_seed1",
+        "statistical_evidence": "n=3 mean/std",
+    }
+
+    report = build_claim_doctor_report(candidates=[missing, complete], now=NOW)
+
+    by_id = {item["claim_id"]: item for item in report["diagnostics"]}
+    assert "checkpoint_provenance" in by_id["candidate-missing"]["missing_fields"]
+    assert "stress_provenance" in by_id["candidate-missing"]["missing_fields"]
+    assert by_id["candidate-complete"]["missing_fields"] == []
+    assert [item["claim_id"] for item in report["upgradable_candidates"]] == ["candidate-complete"]
+    assert report["metadata"]["does_not_update_claim_registry"] is True

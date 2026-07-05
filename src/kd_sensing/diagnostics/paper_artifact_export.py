@@ -25,9 +25,14 @@ DEFAULT_EXCLUDED_STATUS_MARKERS = (
     "upper-bound",
     "upper_bound",
     "not_comparable",
+    "unverified",
     "blocked",
+    "blocked official reproduction",
+    "candidate-only",
+    "candidate_only",
     "diagnostic-only",
 )
+EXCLUDED_REPORT_COLUMNS = ("claim_id", "claim_status", "candidate_only", "caveat", "exclusion_reason")
 STRESS_COLUMNS = ("condition", "severity", "method", "metric", "mean", "std", "ci", "claim_status", "caveat")
 HEATMAP_COLUMNS = (
     "pattern",
@@ -73,6 +78,18 @@ def export_paper_artifacts(
     outputs["main_latex"] = str(write_latex_table(table_dir / f"{table_name}.tex", main_rows, MAIN_TABLE_COLUMNS))
     outputs["appendix_csv"] = str(write_csv(table_dir / "appendix_rows.csv", appendix_rows, MAIN_TABLE_COLUMNS))
     outputs["appendix_markdown"] = str(write_markdown_table(table_dir / "appendix_rows.md", appendix_rows, MAIN_TABLE_COLUMNS))
+    excluded_report = excluded_report_rows(appendix_rows)
+    outputs["excluded_report_csv"] = str(write_csv(table_dir / "excluded_report.csv", excluded_report, EXCLUDED_REPORT_COLUMNS))
+    outputs["excluded_report_json"] = str(write_json(table_dir / "excluded_report.json", excluded_report))
+    outputs["excluded_report_markdown"] = str(
+        write_markdown_table(table_dir / "excluded_report.md", excluded_report, EXCLUDED_REPORT_COLUMNS)
+    )
+    diagnostic_rows = [row for row in appendix_rows if row.get("_explicit_appendix")]
+    if diagnostic_rows:
+        outputs["diagnostic_rows_csv"] = str(write_csv(table_dir / "diagnostic_rows.csv", diagnostic_rows, MAIN_TABLE_COLUMNS))
+        outputs["diagnostic_rows_markdown"] = str(
+            write_markdown_table(table_dir / "diagnostic_rows.md", diagnostic_rows, MAIN_TABLE_COLUMNS)
+        )
 
     stress_rows = normalize_stress_rows(raw_rows)
     if stress_rows:
@@ -94,6 +111,8 @@ def export_paper_artifacts(
             "include_statuses": list(include_statuses),
             "main_row_count": len(main_rows),
             "appendix_row_count": len(appendix_rows),
+            "excluded_row_count": len(excluded_report),
+            "diagnostic_row_count": len(diagnostic_rows),
         },
         "outputs": outputs,
         "warnings": warnings,
@@ -128,6 +147,7 @@ def normalize_claim_row(row: dict[str, Any]) -> dict[str, str]:
         ),
         "value": _string(_pick(row, "value", "value summary", "result", "score", "mean")),
         "claim_status": _string(_pick(row, "claim_status", "claim status", "status")),
+        "candidate_only": _string(_pick(row, "candidate_only", "candidate only")),
         "provenance": _string(_pick(row, "provenance", "checkpoint provenance", "config / runner", "_source_file")),
         "caveat": _string(_pick(row, "caveat", "note", "notes", "warning", "warnings")),
     }
@@ -144,12 +164,34 @@ def filter_main_rows(
     for row in rows:
         status = row.get("claim_status", "").lower()
         explicit_include = bool(include_markers and any(marker in status for marker in include_markers))
-        excluded = any(marker in status for marker in DEFAULT_EXCLUDED_STATUS_MARKERS)
-        if excluded and not explicit_include:
-            appendix_rows.append(row)
+        exclusion_reason = _exclusion_reason(row)
+        if exclusion_reason:
+            appendix_rows.append({**row, "exclusion_reason": exclusion_reason, "_explicit_appendix": explicit_include})
         else:
             main_rows.append(row)
     return main_rows, appendix_rows
+
+def excluded_report_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {
+            "claim_id": row.get("claim_id", ""),
+            "claim_status": row.get("claim_status", ""),
+            "candidate_only": row.get("candidate_only", ""),
+            "caveat": row.get("caveat", ""),
+            "exclusion_reason": row.get("exclusion_reason", ""),
+        }
+        for row in rows
+    ]
+
+def _exclusion_reason(row: dict[str, str]) -> str:
+    reasons: list[str] = []
+    status = row.get("claim_status", "").lower()
+    if _truthy(row.get("candidate_only")):
+        reasons.append("candidate_only=true")
+    for marker in DEFAULT_EXCLUDED_STATUS_MARKERS:
+        if marker in status:
+            reasons.append(f"status contains {marker}")
+    return "; ".join(dict.fromkeys(reasons))
 
 
 def normalize_stress_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -310,6 +352,14 @@ def _latex_cell(value: str) -> str:
     for old, new in replacements.items():
         text = text.replace(old, new)
     return text
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
 def _git_commit() -> str:

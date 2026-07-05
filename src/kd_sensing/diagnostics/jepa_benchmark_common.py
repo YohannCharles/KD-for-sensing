@@ -546,6 +546,20 @@ DEFAULT_COMPARABILITY_KEYS = (
 )
 
 
+REAL_BENCHMARK_REQUIRED_MODEL_FIELDS = (
+    "weights",
+    "config",
+    "split",
+    "sample_count",
+    "label_space",
+    "metric_profile",
+    "difficulty_digest",
+    "normalization_artifact",
+    "checkpoint_provenance",
+    "seed",
+)
+
+
 SCENARIO_D_REQUIRED_MODEL_GROUPS = (
     "gps_only",
     "resnet_image_gps",

@@ -274,3 +274,24 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supe
 - **THEN** 文档 MUST mention classifier baselines、AMR/AMBER-lite maskfix external baselines、compute profile table and final all-baseline paper tables as local/manual outputs
 - **AND** generated metrics、profile CSV、paper tables and conclusions MUST remain ignored runtime artifacts under `outputs/`
 
+### Requirement: Research dashboard 汇总 paper readiness
+主线实验文档治理 MUST 支持只读 dashboard 或 readiness report，汇总 active OpenSpec change、run states、pending/unverified claim 计数、upgradable candidates、paper export exclusions 和下一步证据缺口。Dashboard 输出 MUST 写入 ignored output root 或用户显式路径，不得自动修改 current docs。
+
+#### Scenario: dashboard 生成 readiness report
+- **WHEN** 用户运行 research dashboard readiness 输出
+- **THEN** report MUST 包含 pending claim 数、可升级候选、缺失字段类别和 paper export gate 状态
+- **AND** report MUST 标记 candidate-only 内容，不得声明正式论文结论
+
+### Requirement: 主实验证据收敛记录
+主线实验文档 MUST 在主实验进入证据收敛阶段时记录 final checklist、缺失 evidence、claim status 和下一步最小动作。文档 MUST 区分“继续补证据”和“新增方法搜索”，并在主方法冻结时说明冻结边界。
+
+#### Scenario: Scene31-34 evidence 更新
+- **WHEN** Scene31-34 final summary、paper tables 或 claim status 发生变化
+- **THEN** `docs/mainline_experiment_history.md`、`docs/mainline_model_catalog.md`、`docs/experiment_protocols.md` 或 `docs/result_claims_registry.md` 中的对应 current fact MUST 同步更新
+- **AND** 真实 metrics、figures、logs 和 checkpoint MUST 继续留在 ignored output root
+
+#### Scenario: JEPA benchmark 从 smoke 转 real
+- **WHEN** JEPA shortcut 或 predictive robustness benchmark 从 smoke manifest 转为 real manifest
+- **THEN** 文档 MUST 更新 claim status、manifest provenance 和 caveat
+- **AND** synthetic smoke 结果 MUST 继续标记为 mock/smoke
+

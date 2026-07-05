@@ -297,6 +297,8 @@ bash scripts/run_scenes31_34_main.sh \
   --external-root outputs/scenes31_34_external_lite_lmdb
 ```
 
+`summarize_final_all` 会写出 `final_evidence_checklist.csv/md`，覆盖 core proto n=5、classifier、external-lite、fresh eval、missing-count、per-scene stability、compute profile、paper tables 和 final conclusion。任何 `pending` 或 `incomplete` checklist item 都必须进入 paper tables/conclusion caveat，不得被 summary 默默升级成 final claim。
+
 AMR/AMBER-lite 多场景 maskfix baseline 只作为外部 baseline；mask_suspect=true 或缺 checkpoint 时不进入 official ranking，也不阻塞 prototype 主实验、missing-count degradation curve、compute profile 或 paper tables。
 
 pattern evaluation 会随训练结束写入 `outputs/scene31/eval/*_missing_patterns.csv/json`；也可手动复用包内 eval matrix：
@@ -361,7 +363,7 @@ conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --force
 ```
 
-真实 train-then-evaluate 需要先训练并登记本地 checkpoint provenance，再用本地派生 manifest 替换 smoke manifest 中的 `synthetic_metrics`、mock weights 和 `allow_missing_artifacts`，并提供 clean anchor、默认 stress curves condition-level metrics、strict comparability fields、difficulty digest、seed、split、sample_count 和 Image ResNet+GPS baseline。真实运行产物仍写入 ignored `outputs/analysis/predictive_jepa_robustness/`：
+真实 train-then-evaluate 需要先训练并登记本地 checkpoint provenance，再用本地派生 manifest 替换 smoke manifest 中的 `synthetic_metrics`、mock weights 和 `allow_missing_artifacts`，并提供 clean anchor、默认 stress curves condition-level metrics、Image ResNet+GPS baseline，以及每个模型的 weights/config/split/sample_count/label_space/metric_profile/difficulty_digest/normalization_artifact/checkpoint_provenance/seed。缺 checkpoint 的 real row 标 `unavailable`；strict 字段缺失或不一致标 `not_comparable`。真实运行产物仍写入 ignored `outputs/analysis/predictive_jepa_robustness/`：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
@@ -430,6 +432,8 @@ conda run -n kd_mm_beam pytest tests/test_student_configs.py::test_gps_csi_valid
 ```
 
 JEPA shortcut benchmark and visual analysis:
+
+真实 shortcut / predictive benchmark manifest 必须提供 weights/config/split/sample_count/label_space/metric_profile/difficulty_digest/normalization_artifact/checkpoint_provenance/seed；缺 checkpoint 会保留 schema 输出但标 `unavailable`，strict 字段缺失或不一致标 `not_comparable`，synthetic/smoke 仍只用于 schema 验证。
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \

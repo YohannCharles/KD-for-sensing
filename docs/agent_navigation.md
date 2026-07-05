@@ -2,16 +2,27 @@
 
 本文件是 AI agent 和维护者在非平凡改动前的薄导航层，用来判断权威来源、当前状态、任务路由、常见误读和验证命令。它不替代 README 的 quickstart、AGENTS 的操作规则、OpenSpec specs 的需求契约，也不维护完整源码目录清单。
 
+## 当前一屏摘要
+
+- 当前主线：多模态少样本跨场景 beam prediction，重点围绕 Image+GPS JEPA query-pool、缺失模态本地实验、MMW/CSI 诊断和当前保留的 baseline/reproduction workflow。
+- 推荐入口：训练、评估、预处理和诊断优先使用 `pyproject.toml` 声明的 `kd-sensing-*` console scripts；Scene31/Scene31-34 队列、表格和结论脚本只作为 local/manual 或 research diagnostic surface。
+- 渐进加载入口：任务细节优先按 `docs/agent_context/README.md` 选择 scoped context；spec/config/claim 快速扫视用 `docs/agent_context/atlas.md`，不要把 atlas 当成需求契约。
+- 绝对退役边界：旧 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、BGAM、viewer manifest、Raymobtime s008、AMR-Net_gps_image 和 JEPA-MSAC 不得通过兼容 wrapper、旧 CLI、实体 YAML 或 package facade 恢复。
+- 必读入口：`AGENTS.md`、本文件、`docs/project_surface_inventory.md`、`docs/maintainer_context_index.yaml`、README 和目标 OpenSpec spec；有 active change 时先读对应 proposal/design/tasks/specs。
+- 快速验证：常规无数据入口用 `make verify-quick`；CLI/config 变更追加 `make verify-cli-config`；脚本/CLI 语法检查用 `make verify-compile`。底层命令仍是 `openspec validate --all --strict`、`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` 和 CLI/config focused tests。
+- 判断口径：优先看 tracked/source 和 current lifecycle，不要从 generated metadata、ignored outputs、pytest cache、当前打开文件或历史 archive 反推当前支持面。
+
 ## 当前状态检查顺序
 
 1. 先读用户当前请求和本轮对话中的限制；它们只约束本次工作，不自动改写长期契约。
 2. 读 `AGENTS.md`，确认命令环境、OpenSpec、文档边界和本地产物边界；所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
 3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 应先归档或记录 deferral，否则不要把它当成仍在实施的需求。归档后的快速 OpenSpec 验证优先复制 `openspec validate --all --strict` 或 current spec validation，不复制 archive change 名。
-4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、root fusion YAML、experiment config family、脚本 lifecycle、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、验证命令等最小结构化事实，不维护完整源码目录清单、入口 allowlist 或 prose 镜像。
-5. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
-6. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
-7. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
-8. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动、未分类 `scripts/`/root runbook 和 ignored runtime artifacts 没有被误当作源码需求；`.codegraph/daemon.pid`、socket、db、cache 和 log 只能作为本地工具状态处理。
+4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、root fusion YAML、experiment config family、脚本 lifecycle、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、task route、验证命令等最小结构化事实，不维护完整源码目录清单、入口 allowlist 或 prose 镜像。
+5. 按任务读取 `docs/agent_context/` 中的 scoped context；只在需要扫视 spec/config/claim owner、lifecycle、focused tests 和 caveat 时读取 `docs/agent_context/atlas.md`。
+6. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
+7. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
+8. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
+9. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动、未分类 `scripts/`/root runbook 和 ignored runtime artifacts 没有被误当作源码需求；`.codegraph/daemon.pid`、socket、db、cache 和 log 只能作为本地工具状态处理。
 
 ## 权威来源优先级
 
@@ -31,6 +42,20 @@ OpenSpec archive、历史报告和本地产物不能覆盖当前 specs。Capabil
 `docs/maintainer_context_index.yaml` 和 `docs/project_surface_inventory.md` 职责不同：前者只是最小结构化事实清单；后者保留解释性审计、历史上下文、caveat 和暂缓原因。架构边界测试应验证 pyproject、真实路径、tracked files、current config glob、retired token 语境和禁止 import 这些结构事实，不逐字复制文档段落。二者或 README、导航文档、OpenSpec specs 之间出现看似冲突时，先视为治理漂移，通过 OpenSpec change 同步 inventory、最小索引和对应 specs，不要任选一处作为事实。
 
 ## 任务路由表
+
+Scoped context 优先作为按需入口，详细 rationale 仍回到 inventory、README 和 OpenSpec specs。
+
+| Route id | Scoped context | 常见触发 |
+| --- | --- | --- |
+| `model` | `docs/agent_context/models.md` | 模型、forward、registry、baseline、组件扩展 |
+| `data` | `docs/agent_context/data.md` | dataset、batch contract、modality profile、split |
+| `config` | `docs/agent_context/configs.md` | YAML、virtual config、canonical recipe、migration guard |
+| `cli` | `docs/agent_context/cli.md` | console scripts、包内 CLI、`scripts/` 入口 |
+| `diagnostics` | `docs/agent_context/diagnostics.md` | run index、JEPA/GPS benchmark、doctor、paper export |
+| `openspec` | `docs/agent_context/openspec.md` | proposal/spec/tasks/archive、complete active change 收口 |
+| `documentation` | `docs/agent_context/documentation.md` | README、AGENTS、inventory、导航、文档健康 |
+| `claims` | `docs/agent_context/claims.md` | result claim registry、论文表格、provenance |
+| `atlas` | `docs/agent_context/atlas.md` | spec/config/claim owner、lifecycle、focused tests 快速扫视 |
 
 | 改动类型 | 先读什么 | 主要修改区域 | 常用验证 |
 | --- | --- | --- | --- |
@@ -106,10 +131,13 @@ Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 
 
 | 触碰范围 | 推荐命令 |
 | --- | --- |
+| 常规无数据 quick verify | `make verify-quick` |
 | OpenSpec change | `openspec validate <change> --strict` |
 | 架构、文档生命周期、入口 allowlist、本地产物边界 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` |
 | CLI 或 console script | `conda run -n kd_mm_beam pytest tests/test_cli_help.py -q`，并按需运行对应 `--help` |
 | 配置解析、virtual config、migration guard | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
+| CLI/config 聚合 smoke | `make verify-cli-config` |
+| tracked scripts/package CLI Python 语法 | `make verify-compile` |
 | 诊断、JEPA visual analysis、GPS shortcut benchmark | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` |
 | 训练、数据、模型 forward 或 shared runtime | 先跑对应 focused tests；高风险改动再考虑 `conda run -n kd_mm_beam pytest -q` |
 | reliability-aware / observability-aware 模型 metadata | 对应模型 focused tests、difficulty/batch tests；同时覆盖普通 baseline 忽略 metadata 和 opt-in 模型接收 metadata |

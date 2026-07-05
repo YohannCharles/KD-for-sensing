@@ -326,3 +326,79 @@ Architecture 和 focused tests MAY 拆分为更小文件，但 MUST 继续覆盖
 - **WHEN** 实现修改 MMW helper 的 DataFrame 列构造方式以消除 fragmentation warning
 - **THEN** 开发者 MUST 运行 MMW focused tests 验证 sample fields、metadata、label 和 preparation contract 不变
 - **AND** 实现 MUST 不读取真实 `dataset/`、不写入 `outputs/`、不改变 sensor-assisted input/target 边界
+
+### Requirement: 架构边界检查的脚本分类红点必须通过 inventory 修复
+项目健康护栏 MUST 继续拒绝未分类 tracked `scripts/` Python 或 shell 文件。发现未分类脚本时，修复 MUST 更新 project surface inventory、删除脚本或迁移为正式 owner 入口，不得通过放宽测试或新增重复 allowlist 掩盖漂移。
+
+#### Scenario: 未分类脚本失败
+- **WHEN** `scripts/` 下存在 tracked `.py` 或 `.sh` 文件
+- **THEN** 架构边界测试 MUST 能发现未在 project surface inventory 或等价 current 文档中登记的脚本
+- **AND** 失败信息 MUST 指向缺失登记的相对路径
+
+#### Scenario: 登记后检查恢复
+- **WHEN** 未分类脚本被登记为 research diagnostic、dataset preparation、config generator、figure helper 或 local/manual helper
+- **THEN** 架构边界测试 MUST 在不读取真实 `dataset/`、不启动训练、不写入 runtime artifacts 的情况下通过该分类检查
+
+### Requirement: Shared runtime profile routing focused test
+项目健康护栏 MUST 覆盖 shared runtime 的单模态 input profile routing。新增或修改 `prepare_task_inputs`、`prepare_fusion_inputs` 或单模态 input preparation helper 时，focused tests MUST 验证 profile key 与 modality 一致，并且测试 MUST 不读取真实 `dataset/`、不启动训练、不写入 checkpoint。
+
+#### Scenario: 单模态 profile 路由回归被测试发现
+- **WHEN** 开发者运行 runtime profile routing focused test
+- **THEN** 测试 MUST 覆盖 radar、gps 和 lidar 的 profile 透传
+- **AND** 如果任一单模态任务读取其它 modality 的 profile，测试 MUST 失败并指出任务名和错误 profile key
+
+#### Scenario: runtime 改动后的最小验证
+- **WHEN** 变更触碰 shared runtime input preparation
+- **THEN** tasks 或最终说明 MUST 至少列出对应 runtime focused test
+- **AND** Python 验证命令 MUST 使用 `conda run -n kd_mm_beam`
+
+### Requirement: 可复制 verify 入口
+项目 MUST 提供或记录一个可复制的最小 verify 入口，用于聚合 OpenSpec strict、架构边界、CLI help、配置 characterization 和无数据 synthetic smoke。该入口 MUST 不启动真实训练、不读取真实 `dataset/`、不加载真实 checkpoint、不写入训练产物。
+
+#### Scenario: 运行 quick verify
+- **WHEN** 开发者运行项目记录的 quick verify 命令
+- **THEN** 命令 MUST 覆盖 `openspec validate --all --strict`
+- **AND** 命令 MUST 覆盖 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+- **AND** 命令 MUST 不读取真实本地数据或写入 checkpoint
+
+#### Scenario: CLI/config verify 分层
+- **WHEN** 变更触碰 console script、CLI parser、config loader 或 virtual config
+- **THEN** 项目 MUST 记录可复制的 CLI/config verify 命令
+- **AND** 该命令 MUST 使用 `conda run -n kd_mm_beam`
+
+### Requirement: 最小环境声明
+项目 MUST 提供 tracked 的最小环境声明或环境生成说明，用于重建无数据 smoke 验证环境。环境声明 MUST 区分 smoke/dev 依赖与 GPU 训练依赖，并 MUST 不包含本地数据路径、密码、token 或 checkpoint。
+
+#### Scenario: 新机器重建 smoke 环境
+- **WHEN** 维护者在新机器上准备运行无数据健康检查
+- **THEN** 文档或环境文件 MUST 给出安装项目和运行 quick verify 的最小步骤
+- **AND** 步骤 MUST 不要求真实 `dataset/`、`outputs/` 或 `All_models/` 可用
+
+### Requirement: 轻量 lint 和脚本编译检查
+项目 MUST 提供轻量 lint 或 compile 检查，用于在全量 pytest 前发现 Python 语法错误、脚本入口错误和明显文档引用漂移。该检查 MUST 不替代 focused tests。
+
+#### Scenario: 脚本语法错误快速暴露
+- **WHEN** tracked `scripts/` 或 package CLI 文件存在 Python 语法错误
+- **THEN** 轻量检查 MUST 在真实训练前失败
+- **AND** 失败信息 MUST 指向具体文件
+
+### Requirement: 项目表面积 doctor
+项目 MUST 提供只读表面积 doctor，用于检查 scripts、configs、hotspots 和文档引用的高风险漂移。Doctor MUST 不删除、不移动、不重写源码、配置、本地数据、输出、日志、cache 或 checkpoint。
+
+#### Scenario: Doctor 只读运行
+- **WHEN** 开发者运行项目表面积 doctor
+- **THEN** doctor MUST 只读取 tracked 源码、配置、文档、OpenSpec 和必要的 git 文件清单
+- **AND** doctor MUST 不修改 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 或配置文件
+
+#### Scenario: Doctor 输出可定位问题
+- **WHEN** doctor 发现未分类脚本、失效 config 引用或热点超出登记边界
+- **THEN** 输出 MUST 包含文件路径、问题类型、引用的权威来源和建议验证命令
+
+### Requirement: Doctor 可纳入 quick verify
+高风险表面积 doctor MUST 可作为 quick verify 的一部分运行，或至少在文档中记录为非平凡脚本/config/hotspot 改动前的推荐检查。
+
+#### Scenario: 入口改动前运行 doctor
+- **WHEN** 变更新增或修改 `scripts/`、`tools/analysis/`、`configs/` 或热点 owner
+- **THEN** tasks MUST 列出对应 doctor 命令
+- **AND** Python 命令 MUST 使用 `conda run -n kd_mm_beam`
+

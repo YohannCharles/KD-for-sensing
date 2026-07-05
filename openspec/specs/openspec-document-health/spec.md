@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 OpenSpec current specs、lifecycle inventory、Purpose hygiene、退役 wording 和文档健康检查边界，防止归档脚手架、未分类 capability 或旧 active wording 漂移进入当前规范。
-
 ## Requirements
-
 ### Requirement: 当前支持面漂移必须收敛
 项目 MUST 维护当前支持面的脚本、配置、文档、测试和 OpenSpec 声明之间的一致性。发现当前入口引用不存在文件、inventory 统计与真实仓库不一致、或当前 spec 留有脚手架占位时，本次清理 MUST 修复漂移，而不是只放宽测试阈值。
 
@@ -305,3 +303,30 @@ README、docs 和 OpenSpec MUST 按职责维护当前行为，不得长期保留
 - **WHEN** 一个 change 被归档并生成或修改 `openspec/specs/` 下的当前 spec
 - **THEN** 归档后的 spec MUST 通过 OpenSpec 校验和项目架构 hygiene 检查
 - **AND** 若归档工具留下占位 Purpose，开发者 MUST 在同一清理批次修复
+
+### Requirement: Inventory 规模基线必须与真实仓库口径同步
+项目表面积 inventory SHALL 记录当前源码、测试、脚本、配置和 OpenSpec 规模基线时说明统计口径，并在发现明显漂移时同步更新。规模数字 MUST 作为趋势和审计上下文，不得被解释为机械拆分、删除或放宽测试的唯一依据。
+
+#### Scenario: 规模数字漂移被修复
+- **WHEN** 维护者发现 inventory 中的 Python 文件数、配置数量、OpenSpec spec 数量或扫描日期明显落后于当前 tracked 文件系统
+- **THEN** 本次文档健康修复 MUST 更新 inventory 的基线说明或改为更准确的可复核口径
+- **AND** 更新 MUST 继续排除 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 和 ignored runtime artifacts
+
+#### Scenario: 数字不替代右尺寸化判断
+- **WHEN** inventory 记录某个源码、配置或 OpenSpec 数量
+- **THEN** 文档 MUST 说明这些数字只是趋势信号
+- **AND** 后续拆分、合并、保留或删除判断 MUST 继续依据 owner 职责、public surface、生命周期分类、调用边界和 focused validation
+
+### Requirement: Agent context 文件纳入文档健康
+项目文档健康检查 MUST 覆盖 agent context、atlas 或项目 skills 的引用一致性。新增 scoped context 或技能时，必须能从 AGENTS、agent navigation、inventory 或技能清单中定位其用途和适用范围。
+
+#### Scenario: scoped context 引用失效
+- **WHEN** scoped agent context 文件引用不存在的 spec、config、owner module 或验证命令
+- **THEN** 文档健康或架构边界检查 MUST 失败
+- **AND** 失败信息 MUST 指向失效引用
+
+#### Scenario: 技能说明绕过 OpenSpec
+- **WHEN** 项目级技能描述要求直接修改非平凡功能但不提 OpenSpec
+- **THEN** 文档健康检查 MUST 要求补充 OpenSpec change 边界
+- **AND** 技能 MUST 不把自己描述为需求契约权威
+

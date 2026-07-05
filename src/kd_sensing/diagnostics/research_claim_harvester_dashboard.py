@@ -6,6 +6,7 @@ import subprocess
 from typing import Any, Iterable
 
 from kd_sensing.diagnostics.run_index import build_run_index
+from kd_sensing.diagnostics.paper_artifact_export import DEFAULT_EXCLUDED_STATUS_MARKERS
 from kd_sensing.diagnostics.research_claim_harvester_base import (
     SCHEMA_VERSION,
     DashboardSummary,
@@ -13,7 +14,10 @@ from kd_sensing.diagnostics.research_claim_harvester_base import (
     _format_dt,
     _utc_now,
 )
-from kd_sensing.diagnostics.research_claim_harvester_collectors import harvest_research_claims
+from kd_sensing.diagnostics.research_claim_harvester_collectors import (
+    build_claim_doctor_report,
+    harvest_research_claims,
+)
 
 
 def build_dashboard_summary(
@@ -41,6 +45,7 @@ def build_dashboard_summary(
     state_counts = Counter(str(run.get("state") or "unknown") for run in index.get("runs", []))
     claim_counts = Counter(str(candidate.get("comparability_status") or "needs_review") for candidate in candidates)
     changes = active_changes if active_changes is not None else collect_active_openspec_changes(project_root)
+    doctor = build_claim_doctor_report(candidates=candidates, now=now)
     upgradable = [
         _candidate_brief(candidate)
         for candidate in candidates
@@ -60,6 +65,7 @@ def build_dashboard_summary(
         run_state_counts=dict(sorted(state_counts.items())),
         resources=_resource_summary(index.get("resources", {})),
         claim_counts=dict(sorted(claim_counts.items())),
+        paper_readiness=_paper_readiness(candidates=candidates, doctor=doctor),
         candidates=candidates,
         upgradable_candidates=upgradable,
         next_action_hints=hints,
@@ -80,6 +86,7 @@ def render_dashboard_summary(summary: dict[str, Any]) -> str:
         f"runs: {run_counts}",
         f"resources: gpus={resources.get('gpu_count', 0)} processes={resources.get('process_count', 0)}",
         f"claim_candidates: {claim_counts}",
+        f"paper_readiness: {summary.get('paper_readiness', {}).get('status', 'unknown')}",
         f"upgradable_candidates: {len(summary.get('upgradable_candidates', []))}",
         "candidate_only: true",
     ]
@@ -159,4 +166,29 @@ def _resource_summary(resources: dict[str, Any]) -> dict[str, Any]:
         "gpu_count": len(gpus.get("devices", []) or []),
         "process_count": len(resources.get("processes", []) or []),
         "memory": resources.get("memory", {}),
+    }
+
+def _paper_readiness(*, candidates: list[dict[str, Any]], doctor: dict[str, Any]) -> dict[str, Any]:
+    status_counts = Counter(str(candidate.get("claim_status") or "draft").lower() for candidate in candidates)
+    review_count = sum(
+        count
+        for status, count in status_counts.items()
+        if any(marker in status for marker in ("pending", "unverified", "not_comparable", "draft"))
+    )
+    candidate_only_count = sum(1 for candidate in candidates if candidate.get("candidate_only", True))
+    missing_counts = dict(doctor.get("missing_field_counts", {}))
+    upgradable = list(doctor.get("upgradable_candidates", []))
+    blocked = bool(review_count or candidate_only_count or missing_counts)
+    return {
+        "status": "blocked" if blocked else "ready_for_manual_review",
+        "pending_or_unverified_count": review_count,
+        "candidate_only_count": candidate_only_count,
+        "missing_field_counts": missing_counts,
+        "upgradable_candidate_count": len(upgradable),
+        "upgradable_candidates": upgradable[:10],
+        "paper_export_gate": {
+            "main_table_hard_exclude_status_markers": list(DEFAULT_EXCLUDED_STATUS_MARKERS),
+            "candidate_only_excluded": True,
+        },
+        "next_action_hints": list(doctor.get("next_action_hints", [])),
     }
