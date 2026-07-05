@@ -179,3 +179,44 @@ Reranker-aware observability diagnostics MUST 区分 anchor branch、geometry pr
 - **THEN** gate MUST 能降低 prior/rerank residual 权重或 fallback anchor
 - **AND** diagnostics MUST 记录该 reliability signal
 
+### Requirement: Proto-compatible reliability mask weighted fusion
+The system MUST support a lightweight reliability mask weighted fusion option that is compatible with prototype prediction and randomdrop subset training. Missing modalities MUST receive zero weight and available modality weights MUST be normalized over available modalities only.
+
+#### Scenario: missing modality receives zero weight
+- **WHEN** reliability fusion receives modality features and an availability mask
+- **THEN** every unavailable modality MUST have weight zero within numerical tolerance
+- **AND** unavailable modality features MUST NOT contribute to the fused representation
+
+#### Scenario: available weights normalize
+- **WHEN** at least one modality is available for a sample
+- **THEN** reliability weights over available modalities MUST sum to one within numerical tolerance
+- **AND** the fused representation MUST be equivalent to a weighted sum over available modality features
+
+#### Scenario: lightweight implementation boundary
+- **WHEN** reliability fusion is enabled for Scene31 subset candidates
+- **THEN** the implementation MUST use a small scorer such as pooled feature plus availability or learned modality reliability embeddings
+- **AND** it MUST NOT introduce a complex transformer, imputation module or external dependency
+
+#### Scenario: epoch-level reliability log
+- **WHEN** training with reliability fusion completes an epoch
+- **THEN** the run directory MUST contain or support writing `reliability_weights_epoch.csv`
+- **AND** rows MUST include epoch, pattern, modality, mean_weight, std_weight and available_rate
+
+### Requirement: Reliability fusion Scene31 seed extension guard
+Proto-compatible reliability mask weighted fusion MUST only be expanded from seed3 to seed4/5 when the Scene31 summary gate remains positive against `proto_randomdrop_subset_es40`.
+
+#### Scenario: seed config equivalence
+- **WHEN** reliability fusion seed3, seed4 or seed5 configs are generated
+- **THEN** they MUST match seed1/2 on exposure, proto model family, reliability fusion enabled state, mode `mask_weighted` and max epoch 40
+- **AND** only the seed and run name MAY differ
+
+#### Scenario: unrelated methods remain disabled
+- **WHEN** reliability fusion continuation configs are generated or run
+- **THEN** condBTAPA, weakKD, MPDRO, beamsoft, PatternFiLM, AMR and AMBER MUST be disabled
+- **AND** no new transformer, imputation module or external dependency MAY be introduced for this continuation
+
+#### Scenario: expand decision is summary-driven
+- **WHEN** seed3 summary status is not `candidate_continue_to_seed5`
+- **THEN** seed4/5 MUST remain a prepared explicit group only
+- **AND** the default runner group MUST NOT run seed4/5 automatically
+

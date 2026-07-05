@@ -132,7 +132,15 @@ class BeamPredictionHead(nn.Module):
 
 
 class MaskConditionedAdapter(nn.Module):
-    def __init__(self, num_modalities: int, d_model: int, hidden_dim: int = 16, residual_scale: float = 1.0, dropout: float = 0.0):
+    def __init__(
+        self,
+        num_modalities: int,
+        d_model: int,
+        hidden_dim: int = 16,
+        residual_scale: float = 1.0,
+        dropout: float = 0.0,
+        init_identity: bool = False,
+    ):
         super().__init__()
         self.residual_scale = float(residual_scale)
         self.net = nn.Sequential(
@@ -141,6 +149,11 @@ class MaskConditionedAdapter(nn.Module):
             nn.Dropout(float(dropout)),
             nn.Linear(int(hidden_dim), int(d_model) * 2),
         )
+        if init_identity:
+            last = self.net[-1]
+            if isinstance(last, nn.Linear):
+                nn.init.zeros_(last.weight)
+                nn.init.zeros_(last.bias)
 
     def forward(self, features: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         gamma, beta = self.net(mask.to(device=features.device, dtype=features.dtype)).chunk(2, dim=-1)
@@ -203,6 +216,7 @@ class UMaskBeamJEPA(nn.Module):
         mask_adapter_apply: str = "after_fusion",
         mask_adapter_residual_scale: float = 1.0,
         mask_adapter_dropout: float = 0.0,
+        pattern_film: dict[str, Any] | bool | None = None,
         use_light_latent_pred: bool = False,
         latent_pred_target: str = "full_fused",
         latent_pred_hidden_dim: int = 256,
@@ -228,6 +242,7 @@ class UMaskBeamJEPA(nn.Module):
         self.mask_sampler = mask_sampler
         self.use_mask_adapter = bool(use_mask_adapter)
         self.mask_adapter_apply = str(mask_adapter_apply)
+        self.pattern_film_config = _pattern_film_config(pattern_film)
         self.use_light_latent_pred = bool(use_light_latent_pred)
         self.latent_pred_target = str(latent_pred_target)
         self.ablation_id = ablation_id
@@ -302,6 +317,18 @@ class UMaskBeamJEPA(nn.Module):
             if self.use_mask_adapter
             else None
         )
+        self.pattern_film = (
+            MaskConditionedAdapter(
+                len(self.modalities),
+                self.d_model,
+                hidden_dim=int(self.pattern_film_config["dim"]),
+                residual_scale=1.0,
+                dropout=float(self.pattern_film_config.get("dropout", 0.0)),
+                init_identity=bool(self.pattern_film_config.get("init_identity", True)),
+            )
+            if self.pattern_film_config
+            else None
+        )
         self.beam_head = BeamPredictionHead(self.d_model, self.num_classes, dropout=dropout)
         self.prototype_bank = BeamPrototypeBank(
             self.d_model,
@@ -344,6 +371,11 @@ class UMaskBeamJEPA(nn.Module):
         if self.mask_adapter is not None:
             fused = self.mask_adapter(fused, mask)
             fusion_diagnostics["mask_adapter_param_count"] = sum(param.numel() for param in self.mask_adapter.parameters())
+        if self.pattern_film is not None:
+            fused = self.pattern_film(fused, mask)
+            fusion_diagnostics["pattern_film_param_count"] = sum(param.numel() for param in self.pattern_film.parameters())
+            fusion_diagnostics["pattern_film_dim"] = int(self.pattern_film_config.get("dim", 0))
+            fusion_diagnostics["pattern_film_apply_at"] = str(self.pattern_film_config.get("apply_at", "pre_head"))
         logits = self.beam_head(fused).unsqueeze(1).expand(-1, self.num_pred, -1)
         teacher_logits = teacher_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         return {
@@ -390,6 +422,8 @@ class UMaskBeamJEPA(nn.Module):
             "use_mask_adapter": self.use_mask_adapter,
             "mask_adapter_apply": self.mask_adapter_apply,
             "mask_adapter_param_count": sum(param.numel() for param in self.mask_adapter.parameters()) if self.mask_adapter is not None else 0,
+            "pattern_film": self.pattern_film_config or {"enabled": False},
+            "pattern_film_param_count": sum(param.numel() for param in self.pattern_film.parameters()) if self.pattern_film is not None else 0,
             "use_light_latent_pred": self.use_light_latent_pred,
             "latent_pred_target": self.latent_pred_target,
             "ablation_id": self.ablation_id,
@@ -514,9 +548,15 @@ class UMaskBeamJEPA(nn.Module):
         weights = weights / weight_sum.clamp_min(1e-6)
         pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
         pooled = torch.where(weight_sum.gt(0), pooled, mu_b)
+        diagnostics = {
+            "reliability_fusion_mode": self.fusion_type,
+            "reliability_fusion_weights": weights.detach(),
+            "reliability_fusion_available_mask": mask.detach(),
+            "reliability_fusion_weight_sum": weights.detach().sum(dim=1),
+        }
         if self.fusion_type == "weighted_sum":
-            return 0.5 * (pooled + mu_b), {}
-        return self.concat_fusion(torch.cat([pooled, mu_b], dim=-1)), {}
+            return 0.5 * (pooled + mu_b), diagnostics
+        return self.concat_fusion(torch.cat([pooled, mu_b], dim=-1)), diagnostics
 
 
 def _validate_modalities(modalities: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -532,6 +572,26 @@ def _validate_modalities(modalities: list[str] | tuple[str, ...]) -> tuple[str, 
             f"project canonical order={list(MODALITY_ORDER)}."
         )
     return values
+
+
+def _pattern_film_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:
+    if raw in (None, False, "", "none"):
+        return {}
+    if raw is True:
+        raw = {"enabled": True}
+    if not isinstance(raw, dict):
+        raise ValueError(f"pattern_film must be a mapping, bool, or null, got {type(raw).__name__}.")
+    cfg = dict(raw)
+    if not bool(cfg.get("enabled", False)):
+        return {}
+    cfg.setdefault("dim", 8)
+    cfg.setdefault("init_identity", True)
+    cfg.setdefault("apply_at", "pre_head")
+    if int(cfg["dim"]) <= 0:
+        raise ValueError(f"pattern_film.dim must be positive, got {cfg['dim']}.")
+    if str(cfg["apply_at"]) != "pre_head":
+        raise ValueError("pattern_film.apply_at currently supports only 'pre_head'.")
+    return cfg
 
 
 def _validate_context_type(value: str) -> None:

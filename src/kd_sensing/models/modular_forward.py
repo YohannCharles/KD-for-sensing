@@ -193,6 +193,7 @@ def assemble_core_input_stage(
     *,
     modality_valid_inputs: dict[str, torch.Tensor | None],
     modality_dropout_inputs: dict[str, torch.Tensor | None],
+    modality_availability_overrides: dict[str, torch.Tensor | None] | None = None,
 ) -> CoreInputStage:
     ordered = [projected[modality] for modality in model.modalities]
     has_token_features = any(features.ndim == 4 for features in ordered)
@@ -203,6 +204,7 @@ def assemble_core_input_stage(
             ordered,
             modality_valid_inputs,
             modality_dropout_inputs,
+            modality_availability_overrides or {},
         )
     if len(ordered) == 1:
         core_input = ordered[0]
@@ -211,8 +213,11 @@ def assemble_core_input_stage(
             model.modalities,
             valid_masks=modality_valid_inputs,
             dropout_masks=modality_dropout_inputs,
+            availability_overrides=modality_availability_overrides or {},
             token_features=False,
         )
+        if availability_mask is not None:
+            core_input = core_input * availability_mask[:, 0, :].unsqueeze(-1).to(dtype=core_input.dtype)
         return CoreInputStage(core_input, availability_mask, core_input, False)
     core_input = torch.stack(ordered, dim=1)
     availability_mask = core_input_availability_mask(
@@ -220,9 +225,13 @@ def assemble_core_input_stage(
         model.modalities,
         valid_masks=modality_valid_inputs,
         dropout_masks=modality_dropout_inputs,
+        availability_overrides=modality_availability_overrides or {},
         token_features=False,
     )
-    return CoreInputStage(core_input, availability_mask, torch.cat(ordered, dim=-1), False)
+    if availability_mask is not None:
+        core_input = core_input * availability_mask.unsqueeze(-1).to(dtype=core_input.dtype)
+    input_features = torch.cat([core_input[:, index, :, :] for index in range(int(core_input.shape[1]))], dim=-1)
+    return CoreInputStage(core_input, availability_mask, input_features, False)
 
 
 def assemble_token_core_input(
@@ -231,21 +240,30 @@ def assemble_token_core_input(
     ordered: list[torch.Tensor],
     modality_valid_inputs: dict[str, torch.Tensor | None],
     modality_dropout_inputs: dict[str, torch.Tensor | None],
+    modality_availability_overrides: dict[str, torch.Tensor | None],
 ) -> CoreInputStage:
     token_pieces = [features if features.ndim == 4 else features.unsqueeze(2) for features in ordered]
+    modality_masks = [
+        modality_availability_from_inputs(
+            modality,
+            projected[modality],
+            valid_mask=modality_valid_inputs.get(modality),
+            dropout_mask=modality_dropout_inputs.get(modality),
+            availability_override=modality_availability_overrides.get(modality),
+        )
+        for modality in model.modalities
+    ]
+    masked_for_input = [
+        features * mask.unsqueeze(2).unsqueeze(-1).to(dtype=features.dtype)
+        for features, mask in zip(token_pieces, modality_masks)
+    ]
     if bool(getattr(model.representation_core, "supports_spatial_modality_tokens", False)):
         max_tokens = max(int(features.shape[2]) for features in token_pieces)
         padded_tokens: list[torch.Tensor] = []
         padded_masks: list[torch.Tensor] = []
-        for modality, features in zip(model.modalities, token_pieces):
+        for features, mask in zip(masked_for_input, modality_masks):
             token_count = int(features.shape[2])
             padded_tokens.append(pad_modality_tokens(features, max_tokens=max_tokens))
-            mask = modality_availability_from_inputs(
-                modality,
-                projected[modality],
-                valid_mask=modality_valid_inputs.get(modality),
-                dropout_mask=modality_dropout_inputs.get(modality),
-            )
             token_mask = mask.unsqueeze(2).expand(-1, -1, token_count)
             padded_masks.append(pad_modality_token_mask(token_mask, max_tokens=max_tokens))
         core_input = torch.stack(padded_tokens, dim=1).contiguous()
@@ -258,10 +276,16 @@ def assemble_token_core_input(
             model.modalities,
             valid_masks=modality_valid_inputs,
             dropout_masks=modality_dropout_inputs,
+            availability_overrides=modality_availability_overrides,
             token_features=True,
         )
+        if availability_mask is not None:
+            core_input = core_input * availability_mask.unsqueeze(-1).to(dtype=core_input.dtype)
     input_features = torch.cat(
-        [features.mean(dim=2) if features.ndim == 4 else features for features in ordered],
+        [
+            features.mean(dim=2)
+            for features in masked_for_input
+        ],
         dim=-1,
     )
     return CoreInputStage(core_input, availability_mask, input_features, True)
@@ -346,6 +370,7 @@ def assemble_model_output_stage(
     geometry_prior_payload: dict[str, Any] | None,
     geometry_fusion_payload: dict[str, Any] | None,
     rerank_payload: dict[str, Any] | None,
+    missing_modality_metadata_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output = {
         "logits": logits,
@@ -356,11 +381,14 @@ def assemble_model_output_stage(
         "encoder_features": encoded,
         "image_profile": model.image_profile,
     }
-    if bool(getattr(model.representation_core, "supports_missing_modality_metadata", False)):
-        output["missing_modality_metadata"] = missing_modality_output_metadata(
+    if availability_mask is not None or bool(getattr(model.representation_core, "supports_missing_modality_metadata", False)):
+        output_metadata = missing_modality_output_metadata(
             availability_mask,
             modalities=model.modalities,
         )
+        if isinstance(missing_modality_metadata_input, dict):
+            output_metadata["input_metadata"] = dict(missing_modality_metadata_input)
+        output["missing_modality_metadata"] = output_metadata
     if has_token_features:
         output["token_features"] = core_input
     attach_geometry_outputs(output, image_logits, geometry_prior_payload, geometry_fusion_payload, rerank_payload)
@@ -450,6 +478,9 @@ def attach_auxiliary_outputs(model: Any, output: dict[str, Any], output_features
     amber_full_attention_mask = getattr(model.representation_core, "last_amber_full_attention_mask", None)
     if torch.is_tensor(amber_full_attention_mask):
         output["amber_full_attention_key_padding_mask"] = amber_full_attention_mask
+    amr_lite_gate_stats = getattr(model.representation_core, "last_amr_lite_gate_stats", None)
+    if isinstance(amr_lite_gate_stats, list):
+        output["amr_lite_gate_stats"] = amr_lite_gate_stats
     output.update(model.auxiliary_heads(output_features))
 
 
@@ -657,6 +688,7 @@ def core_input_availability_mask(
     *,
     valid_masks: dict[str, torch.Tensor | None],
     dropout_masks: dict[str, torch.Tensor | None],
+    availability_overrides: dict[str, torch.Tensor | None],
     token_features: bool,
 ) -> torch.Tensor | None:
     pieces: list[torch.Tensor] = []
@@ -667,6 +699,7 @@ def core_input_availability_mask(
             features,
             valid_mask=valid_masks.get(modality),
             dropout_mask=dropout_masks.get(modality),
+            availability_override=availability_overrides.get(modality),
         )
         if token_features:
             token_count = int(features.shape[2]) if features.ndim == 4 else 1
@@ -703,6 +736,7 @@ def modality_availability_from_inputs(
     *,
     valid_mask: torch.Tensor | None,
     dropout_mask: torch.Tensor | None,
+    availability_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     batch_size, seq_len = int(features.shape[0]), int(features.shape[1])
     if valid_mask is not None:
@@ -723,6 +757,15 @@ def modality_availability_from_inputs(
         )
     else:
         mask = torch.ones((batch_size, seq_len), dtype=torch.bool, device=features.device)
+    if availability_override is not None:
+        override = coerce_temporal_mask(
+            availability_override,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=features.device,
+            name=f"{modality}_availability_override",
+        )
+        mask = mask & override
     return mask
 
 

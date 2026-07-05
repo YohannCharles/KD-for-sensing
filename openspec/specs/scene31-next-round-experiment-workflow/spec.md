@@ -258,3 +258,164 @@ Scene31 next-round、BC、beamsoft weak、funnel 和 magic overnight workflow MU
 - **THEN** runner MUST 调用 `conda run -n kd_mm_beam kd-sensing-train` 或现有 apples-to-apples helper
 - **AND** runner MUST 不复制 DataLoader、模型加载、指标计算或 checkpoint selection 的业务逻辑
 
+### Requirement: Scene31 PatternFiLM d8 follow-up workflow
+Scene31 funnel local/manual workflow MUST support a focused PatternFiLM d8 follow-up covering seed1-5, fresh eval with miss1/miss2/miss3 buckets, and conservative comparison against uniform reference. This workflow MUST NOT enable condBTAPA, weakKD, MP-DRO, beamsoft, AMBER, transformer or imputation paths.
+
+#### Scenario: PatternFiLM d8 seed matrix
+- **WHEN** 开发者生成 Scene31 funnel 配置矩阵
+- **THEN** manifest MUST include `proto_sampler_uniform_pattern_film_d8_es40_seed1/2/3/4/5`
+- **AND** 每个 d8 配置 MUST set `training.missing_pattern_sampler=uniform`
+- **AND** 每个 d8 配置 MUST set `model.primary.pattern_film.enabled=true`, `dim=8`, `init_identity=true` and `apply_at=pre_head`
+- **AND** 每个 d8 配置 MUST set `training.epochs=40` or `training.max_epochs=40`
+- **AND** 每个 d8 配置的 `experiment.seed` MUST match the seed suffix in the run name
+
+#### Scenario: Fresh eval includes missing-two patterns
+- **WHEN** PatternFiLM d8 或 uniform reference run is fresh-evaluated
+- **THEN** pattern-wise CSV MUST include all supported miss2 patterns derived from the configured model modalities
+- **AND** for four modalities `gps`, `image`, `radar`, `lidar`, miss2 patterns MUST include `missing_gps_image`, `missing_gps_radar`, `missing_gps_lidar`, `missing_image_radar`, `missing_image_lidar` and `missing_radar_lidar`
+- **AND** unsupported modality combinations MUST be skipped with a warning rather than crashing
+- **AND** fresh eval MUST use the best checkpoint policy and MUST NOT use `--max-batches`
+
+#### Scenario: Missing bucket mapping records modality semantics
+- **WHEN** fresh eval or summary writes `missing_bucket_mapping.json`
+- **THEN** every observed pattern MUST include `available_modalities`, `missing_modalities` and `missing_count`
+- **AND** `full` MUST have `missing_count=0`
+- **AND** missing-one patterns MUST have `missing_count=1`
+- **AND** missing-two patterns MUST have `missing_count=2`
+- **AND** single-modality-only patterns MUST have `missing_count=3` when the modality count is four
+
+#### Scenario: PatternFiLM d8 summary conclusion
+- **WHEN** PatternFiLM d8 summary is generated
+- **THEN** outputs MUST include per-run CSV, method mean/std CSV, delta vs uniform CSV, rank markdown files, `missing_bucket_mapping.json` and `patternfilm_conclusion.txt`
+- **AND** method rows MUST include full, miss1, miss2, miss3, avg_missing, within@3, MAE, overall and balanced mean/std fields
+- **AND** PatternFiLM d8 MUST be marked `promote_to_main_candidate` only when `n>=3`, `avg_missing_top1_mean` exceeds uniform, `overall_mean_top1_mean` exceeds uniform and `full_top1_mean>=0.4078`
+- **AND** seed1-only gains MUST be marked conservatively rather than promoted
+
+### Requirement: Scene31 subset reference summary
+Scene31 missing-modality summaries MUST use `proto_randomdrop_subset_es40` as the default trusted proto reference. `proto_sampler_uniform_es40` MUST remain visible as an ablation but MUST NOT be used as the default delta or winner reference.
+
+#### Scenario: subset reference selection
+- **WHEN** subset reference summary reads baseline pack results
+- **THEN** it MUST prefer actual fresh eval rows for `proto_randomdrop_subset_es40` when at least three ok runs are available
+- **AND** if fewer than three ok runs are available it MUST use the documented fixed fallback values with a warning
+
+#### Scenario: delta columns use subset reference
+- **WHEN** summary writes per-run or method-level delta columns
+- **THEN** delta columns MUST be relative to `proto_randomdrop_subset_es40`
+- **AND** uniform sampler rows MUST be labeled as ablation rather than current reference
+
+#### Scenario: official ranking excludes suspect rows
+- **WHEN** ranking markdown or conclusion files are generated
+- **THEN** rows with `mask_suspect=true` MUST NOT participate in official winner ranking
+- **AND** suspect modular results MAY be listed separately with the exclusion reason
+
+### Requirement: Scene31 subset reliability and PatternFiLM workflow
+Scene31 local/manual workflow MUST provide a focused subset-reliability runner for maskfix eval, reliability fusion candidates, and randomdrop subset + PatternFiLM d8 candidates. The workflow MUST remain manifest/config driven and MUST NOT enable unrelated methods.
+
+#### Scenario: maskfix eval group
+- **WHEN** user runs `scripts/run_scene31_subset_reliability.sh --group eval_modular_lite_maskfix`
+- **THEN** the runner MUST only re-evaluate AMR-lite and AMBER-lite complete runs with best checkpoints
+- **AND** it MUST report completed, skipped, failed, eval_failed, missing_checkpoint and mask_suspect lists
+
+#### Scenario: reliability group
+- **WHEN** user runs the `reliability` group
+- **THEN** selected configs MUST include `proto_randomdrop_subset_reliability_fusion_es40_seed1/2/3`
+- **AND** configs MUST use proto framework, randomdrop subset exposure, max epoch 40, best checkpoint and reliability fusion
+- **AND** configs MUST NOT enable condBTAPA, weakKD, MPDRO, beamsoft or AMBER
+
+#### Scenario: subset PatternFiLM group
+- **WHEN** user runs the `subset_film` group
+- **THEN** selected configs MUST include `proto_randomdrop_subset_pattern_film_d8_es40_seed1/2/3`
+- **AND** configs MUST use randomdrop subset exposure, `pattern_film.dim=8`, `init_identity=true`, `apply_at=pre_head` and max epoch 40
+- **AND** configs MUST NOT enable reliability fusion unless a separate explicit combination is selected
+
+#### Scenario: local runner safety
+- **WHEN** the subset reliability runner trains or evaluates candidates on multiple GPUs
+- **THEN** each GPU worker MUST run at most one train/eval process at a time
+- **AND** complete training and ok eval outputs MUST be skipped by default unless overwrite flags are set
+- **AND** per-run train/eval logs and failed lists MUST be written under the selected ignored output root
+
+### Requirement: Scene31 subset combined summary
+Scene31 subset combined summary MUST read baseline pack proto results, maskfix modular eval results, reliability fusion results and subset PatternFiLM d8 results, then produce conservative rankings and promotion decisions against `proto_randomdrop_subset_es40`.
+
+#### Scenario: combined summary outputs
+- **WHEN** `scripts/summarize_scene31_subset_reliability.py` is run
+- **THEN** it MUST write per-run CSV, method mean/std CSV, delta vs randomdrop subset CSV, rank markdown files, suspect modular results and combined conclusion
+- **AND** method rows MUST include n, full, miss1, miss2, miss3, avg_missing, overall, within@3, MAE, balanced, mask_suspect_count and main_read fields
+
+#### Scenario: promotion criteria
+- **WHEN** a method is considered for promotion
+- **THEN** it MUST have at least three non-suspect runs
+- **AND** avg_missing_top1_mean MUST exceed the subset reference
+- **AND** overall_mean_top1_mean MUST be at least the subset reference
+- **AND** full_top1_mean MUST be no more than 0.005 below the subset reference
+- **AND** avg_missing_MAE_mean MUST be no worse than the subset reference
+
+#### Scenario: auxiliary-only outcomes
+- **WHEN** a method improves only one bucket or beam proximity without meeting the full promotion criteria
+- **THEN** summary MUST label it `auxiliary_candidate_only`
+- **AND** it MUST NOT be promoted to main candidate
+
+### Requirement: Scene31 subset summary prefers modular maskfix results
+Scene31 subset reliability summary MUST prefer `fresh_eval_maskfix/` for AMR-lite and AMBER-lite runs and MUST exclude modular-lite rows without valid maskfix evidence from official winner ranking.
+
+#### Scenario: maskfix result is preferred
+- **WHEN** summary reads an AMR-lite or AMBER-lite run with both `fresh_eval_maskfix/` and `fresh_eval/`
+- **THEN** it MUST read metrics and mask status from `fresh_eval_maskfix/`
+- **AND** output rows MUST include `maskfix_eval`, `mask_suspect`, `excluded_from_official_ranking` and `mask_suspect_reason`
+
+#### Scenario: old eval fallback is excluded
+- **WHEN** summary reads an AMR-lite or AMBER-lite run without `fresh_eval_maskfix/`
+- **THEN** it MAY fallback to old `fresh_eval/` for visibility
+- **AND** it MUST set `mask_suspect=true`, `mask_suspect_reason=no_fresh_eval_maskfix` and `excluded_from_official_ranking=true`
+
+#### Scenario: suspect rows do not rank
+- **WHEN** summary generates official ranking, promotion labels or winner conclusions
+- **THEN** rows with `mask_suspect=true` or `excluded_from_official_ranking=true` MUST be omitted from the official ranking candidate set
+- **AND** they MAY be listed separately as excluded external baselines
+
+#### Scenario: mask status is printed
+- **WHEN** summary completes
+- **THEN** console output and `combined_conclusion.txt` MUST include AMR/AMBER-lite mask status, whether `fresh_eval_maskfix/` exists, suspect state and ranking inclusion state
+
+### Requirement: Scene31 reliability seed continuation runner
+Scene31 subset reliability runner MUST provide focused groups for reliability fusion seed3 and explicitly gated seed4/5 without enabling unrelated methods.
+
+#### Scenario: seed3 group
+- **WHEN** the user runs `scripts/run_scene31_subset_reliability.sh --group reliability_seed3 --auto-eval`
+- **THEN** the runner MUST select only `proto_randomdrop_subset_reliability_fusion_es40_seed3`
+- **AND** the config MUST match seed1/2 except for `seed=3`
+- **AND** condBTAPA, weakKD, MPDRO, beamsoft, PatternFiLM, AMR and AMBER MUST remain disabled
+
+#### Scenario: failed seed3 can be overwritten
+- **WHEN** seed3 has a failed run directory and the user passes `--overwrite-failed`
+- **THEN** the runner MAY replace the failed attempt
+- **AND** complete run directories MUST still be skipped unless an explicit overwrite flag is provided
+
+#### Scenario: seed3 auto eval
+- **WHEN** seed3 training completes and `--auto-eval` is set
+- **THEN** the runner MUST run full fresh eval with the best checkpoint
+- **AND** it MUST NOT pass `--max-batches`
+
+#### Scenario: seed4 and seed5 are explicit only
+- **WHEN** the user runs `scripts/run_scene31_subset_reliability.sh --group reliability_seed45 --auto-eval`
+- **THEN** the runner MUST select seed4 and seed5 reliability fusion configs
+- **AND** default `all_new` MUST NOT include seed4 or seed5
+
+### Requirement: Scene31 reliability promotion status
+Scene31 combined summary MUST compute reliability fusion status against `proto_randomdrop_subset_es40` after seed3 completes.
+
+#### Scenario: candidate continue gate
+- **WHEN** reliability fusion has at least three non-suspect successful seeds
+- **THEN** summary MUST compare avg_missing_top1, overall_mean_top1, full_top1 and avg_missing_MAE against `proto_randomdrop_subset_es40`
+- **AND** it MUST label the method `candidate_continue_to_seed5` only if avg_missing improves, overall is at least reference, full is within 0.005 below reference and MAE is no worse
+
+#### Scenario: conservative failure label
+- **WHEN** the seed3-expanded mean does not satisfy the continue gate
+- **THEN** summary MUST label reliability fusion `do_not_expand_now`
+- **AND** if miss3 remains lower it MUST mention that caveat in the conclusion
+
+#### Scenario: final combined conclusion fields
+- **WHEN** `combined_conclusion.txt` is written
+- **THEN** it MUST state the trusted current reference, reliability fusion n and status, PatternFiLM do-not-promote status, AMR/AMBER-lite official ranking status and next-step recommendations
+

@@ -109,6 +109,10 @@ EXPECTED_FUNNEL_QUICK = {
     "proto_uniform_pattern_logit_bias_seed1",
     "proto_sampler_uniform_modbias_entropy_lam001_es40_seed1",
     "proto_sampler_uniform_pattern_film_d8_es40_seed1",
+    "proto_sampler_uniform_pattern_film_d8_es40_seed2",
+    "proto_sampler_uniform_pattern_film_d8_es40_seed3",
+    "proto_sampler_uniform_pattern_film_d8_es40_seed4",
+    "proto_sampler_uniform_pattern_film_d8_es40_seed5",
     "proto_sampler_uniform_pattern_film_d16_es40_seed1",
     "proto_uniform_tta_entropy_bn_seed1",
     "proto_uniform_pbpr_fixed_seed1",
@@ -131,6 +135,30 @@ EXPECTED_PATTERNS = [
     "lidar_only",
 ]
 EXPECTED_RETAINED_SCENE31_YAML = {
+    "configs/scene31/baseline_pack/amber_lite_natural_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amber_lite_natural_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amber_lite_natural_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/amber_lite_uniform_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amber_lite_uniform_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amber_lite_uniform_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/amr_lite_natural_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amr_lite_natural_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amr_lite_natural_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/amr_lite_uniform_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amr_lite_uniform_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amr_lite_uniform_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/featuremod_lite_uniform_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/featuremod_lite_uniform_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/featuremod_lite_uniform_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/proto_natural_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/proto_natural_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/proto_natural_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_bernoulli_k075_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_bernoulli_k075_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_bernoulli_k075_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_subset_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_subset_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_subset_es40_seed3.yaml",
     "configs/scene31/diagnostic_gps_only_strong.yaml",
     "configs/scene31/diagnostic_image_only_strong.yaml",
     "configs/scene31/diagnostic_lidar_only_strong.yaml",
@@ -152,6 +180,23 @@ EXPECTED_RETAINED_SCENE31_YAML = {
     "configs/scene31/main_v3_strong_reliability_proto_hardgps.yaml",
     "configs/scene31/main_v3_strong_reliability_proto_seed2.yaml",
     "configs/scene31/main_v3_strong_reliability_proto_seed3.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_pattern_film_d8_es40_seed1.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_pattern_film_d8_es40_seed2.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_pattern_film_d8_es40_seed3.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed1.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed2.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed3.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed4.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed5.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_pattern_film_d8_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_natural_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_es40_seed2.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_es40_seed3.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_reliability_fusion_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_reliability_fusion_es40_seed2.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_reliability_fusion_es40_seed3.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_sampler_uniform_es40_seed1.yaml",
     "configs/scene31/templates/main_v3_proto_es20_base.yaml",
     "configs/scene31/v4_weakkd_l01_t2.yaml",
     "configs/scene31/v4_weakkd_l02_t2.yaml",
@@ -373,7 +418,15 @@ def test_scene31_funnel_generator_sanity(tmp_path: Path):
     assert mvfr_cfg["training"]["mvfr"]["score_patterns"] == "missing_only"
 
     film_cfg = load_config(_manifest_path(by_name["proto_sampler_uniform_pattern_film_d8_es40_seed1"]["config_path"]))
+    film2_cfg = load_config(_manifest_path(by_name["proto_sampler_uniform_pattern_film_d8_es40_seed2"]["config_path"]))
+    assert film_cfg["training"]["missing_pattern_sampler"] == "uniform"
+    assert film_cfg["training"]["epochs"] == 40
+    assert film_cfg["training"]["max_epochs"] == 40
+    assert film_cfg["model"]["primary"]["pattern_film"]["dim"] == 8
     assert film_cfg["model"]["primary"]["pattern_film"]["init_identity"] is True
+    assert film_cfg["model"]["primary"]["pattern_film"]["apply_at"] == "pre_head"
+    assert film2_cfg["model"]["primary"]["pattern_film"] == film_cfg["model"]["primary"]["pattern_film"]
+    assert film2_cfg["experiment"]["seed"] == 2
 
 
 def test_scene31_source_yaml_surface_is_manifest_backed_or_retained():
@@ -425,6 +478,45 @@ def test_scene31_runner_common_checks_manifest_train_and_eval(tmp_path):
 
     (eval_dir / "checkpoint_manifest.json").write_text(json.dumps({"max_batches": 1}), encoding="utf-8")
     assert runner.main(["eval-complete", str(eval_dir), "--require-manifest"]) == 1
+
+
+def test_scene31_apples_eval_expands_avg_missing_to_miss2_rows():
+    reevaluate = _load_script("reevaluate_apples_to_apples", ROOT / "scripts/reevaluate_apples_to_apples.py")
+    requested = ["full", "avg_missing"]
+    names = reevaluate._evaluation_pattern_names(requested, ["image", "radar", "lidar", "gps"])
+    output_names = reevaluate._output_pattern_names(requested, names)
+
+    assert "missing_gps_radar" in names
+    assert "missing_image_lidar" in names
+    assert "missing_radar_lidar" in names
+    assert "avg_missing" in output_names
+    assert set(reevaluate._output_pattern_names(requested, names)) >= {
+        "missing_gps_image",
+        "missing_gps_radar",
+        "missing_gps_lidar",
+        "missing_image_radar",
+        "missing_image_lidar",
+        "missing_radar_lidar",
+    }
+
+
+def test_scene31_missing_bucket_mapping_records_missing_modalities():
+    buckets = _load_script("missing_buckets", ROOT / "src/kd_sensing/eval/missing_buckets.py")
+    mapping, warnings = buckets.missing_bucket_mapping_from_rows(
+        [
+            {"pattern": "full", "model_mask": "1,1,1,1"},
+            {"pattern": "missing_gps", "model_mask": "0,1,1,1"},
+            {"pattern": "missing_gps_radar", "model_mask": "0,1,0,1"},
+            {"pattern": "radar_only", "model_mask": "0,0,1,0"},
+        ],
+        modalities=["gps", "image", "radar", "lidar"],
+    )
+
+    assert warnings == []
+    assert mapping["missing_gps_radar"]["missing_count"] == 2
+    assert mapping["missing_gps_radar"]["available_modalities"] == ["image", "lidar"]
+    assert mapping["missing_gps_radar"]["missing_modalities"] == ["gps", "radar"]
+    assert mapping["radar_only"]["missing_count"] == 3
 
 
 def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
@@ -825,6 +917,7 @@ def test_scene31_bc_launcher_help_and_syntax():
         (ROOT / "scripts/run_scene31_bc_apples_eval.sh", "uniform-root"),
         (ROOT / "scripts/run_scene31_funnel.sh", "mild_mpdro"),
         (ROOT / "scripts/run_scene31_magic_overnight.sh", "overnight_core"),
+        (ROOT / "scripts/run_scene31_patternfilm_d8.sh", "eval_d8_all"),
     ]
     subprocess.run(["bash", "-n", str(ROOT / "scripts/scene31_runner_common.sh")], check=True)
     for script, marker in scripts:
@@ -887,7 +980,20 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) ->
 
 def _write_complete_eval_metrics(path: Path) -> None:
     rows = []
-    for pattern in ("full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"):
+    for pattern in (
+        "full",
+        "avg_missing",
+        "missing_gps",
+        "missing_radar",
+        "radar_only",
+        "lidar_only",
+        "missing_gps_image",
+        "missing_gps_radar",
+        "missing_gps_lidar",
+        "missing_image_radar",
+        "missing_image_lidar",
+        "missing_radar_lidar",
+    ):
         rows.append(
             {
                 "pattern": pattern,

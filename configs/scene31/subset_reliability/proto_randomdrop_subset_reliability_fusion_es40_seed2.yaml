@@ -1,0 +1,43 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_randomdrop_subset_reliability_fusion_es40_seed2
+  seed: 2
+model:
+  primary:
+    ablation_id: proto_randomdrop_subset_reliability_fusion_es40_seed2
+    fusion_type: weighted_sum
+    use_jepa_loss: false
+    use_beam_prototype_alignment: true
+    use_full_to_partial_kd: false
+    kd_teacher_mode: disabled
+    use_mask_adapter: false
+    reliability_fusion:
+      enabled: true
+      mode: mask_weighted
+      hidden_dim: 16
+      normalize_available_only: true
+      missing_weight_zero: true
+      log_weights: true
+training:
+  epochs: 40
+  max_epochs: 40
+  random_modality_dropout: &id001
+    enabled: true
+    mode: random_nonempty_subset
+    modalities:
+    - image
+    - radar
+    - gps
+    - lidar
+    ensure_at_least_one_modality: true
+loss:
+  u_mask_beam_jepa:
+    enabled: false
+    epochs: 40
+    max_epochs: 40
+    random_modality_dropout: *id001
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_randomdrop_subset_reliability_fusion_es40_seed2
+  dir: outputs/scene31_subset_reliability_lmdb

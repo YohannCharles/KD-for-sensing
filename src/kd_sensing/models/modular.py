@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 import torch
@@ -486,6 +487,171 @@ class QueryWeightedTokenReadoutCore(nn.Module):
         }
 
 
+@REPRESENTATION_CORES.register("amr_lite")
+@REPRESENTATION_CORES.register("amr_lite_masked_gate")
+class AmrLiteMaskedGateCore(nn.Module):
+    supports_missing_modality_metadata = True
+
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        hidden_dim: int | None = None,
+        output_dim: int | None = None,
+        dropout: float = 0.0,
+        imputation_type: str = "learnable_token",
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = int(modality_count)
+        self.hidden_dim = int(hidden_dim or max(self.d_model, 32))
+        self.output_dim = int(output_dim or d_model)
+        self.imputation_type = str(imputation_type)
+        if self.d_model <= 0 or self.modality_count <= 0 or self.output_dim <= 0:
+            raise ValueError("amr_lite dimensions must be positive.")
+        if self.imputation_type not in {"zero", "mean_feature", "learnable_token"}:
+            raise ValueError("amr_lite imputation_type must be zero, mean_feature, or learnable_token.")
+        self.imputation_tokens = nn.Parameter(torch.zeros(self.modality_count, self.d_model))
+        self.gate = nn.Sequential(
+            nn.LayerNorm(self.d_model + 1),
+            nn.Linear(self.d_model + 1, self.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        self.output_projection = (
+            nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
+        )
+        self.last_amr_lite_gate_stats: list[dict[str, Any]] = []
+        nn.init.trunc_normal_(self.imputation_tokens, std=0.02)
+
+    def forward(self, features: torch.Tensor, *, modality_available: torch.Tensor | None = None) -> torch.Tensor:
+        if features.ndim != 4:
+            raise ValueError(f"amr_lite core expects [B, K, T, D], got {tuple(features.shape)}.")
+        batch_size, modality_count, seq_len, d_model = features.shape
+        if int(modality_count) != self.modality_count or int(d_model) != self.d_model:
+            raise ValueError(
+                "amr_lite received incompatible features: "
+                f"expected K={self.modality_count}, D={self.d_model}, got {tuple(features.shape)}."
+            )
+        availability = _coerce_core_availability_mask(
+            modality_available,
+            features=features,
+            core_name="amr_lite",
+        ) if modality_available is not None else torch.ones(
+            batch_size,
+            self.modality_count,
+            seq_len,
+            dtype=torch.bool,
+            device=features.device,
+        )
+        imputed = self._impute(features, availability)
+        gate_input = torch.cat([imputed, availability.to(dtype=imputed.dtype).unsqueeze(-1)], dim=-1)
+        weights = torch.softmax(self.gate(gate_input).squeeze(-1), dim=1)
+        fused = (weights.unsqueeze(-1) * imputed).sum(dim=1)
+        self.last_amr_lite_gate_stats = _gate_stats_by_missing_count(weights, availability)
+        return self.output_projection(fused)
+
+    def _impute(self, features: torch.Tensor, availability: torch.Tensor) -> torch.Tensor:
+        if self.imputation_type == "zero":
+            replacement = torch.zeros_like(features)
+        elif self.imputation_type == "learnable_token":
+            replacement = self.imputation_tokens.to(device=features.device, dtype=features.dtype).view(
+                1,
+                self.modality_count,
+                1,
+                self.d_model,
+            )
+        else:
+            visible = availability.to(dtype=features.dtype).unsqueeze(-1)
+            denom = visible.sum(dim=1, keepdim=True).clamp_min(1.0)
+            replacement = (features * visible).sum(dim=1, keepdim=True) / denom
+        return torch.where(availability.unsqueeze(-1), features, replacement)
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "amr_lite",
+            "d_model": self.d_model,
+            "output_dim": self.output_dim,
+            "modality_count": self.modality_count,
+            "hidden_dim": self.hidden_dim,
+            "imputation_type": self.imputation_type,
+            "consumes_missing_modality_metadata": True,
+            "gate": "mask_aware_softmax_modality_gate",
+        }
+
+
+@REPRESENTATION_CORES.register("featuremod_lite")
+class FeatureModLiteCore(nn.Module):
+    supports_missing_modality_metadata = True
+
+    def __init__(
+        self,
+        d_model: int,
+        modality_count: int,
+        adapter_dim: int = 16,
+        output_dim: int | None = None,
+        condition: str = "missing_modalities",
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.d_model = int(d_model)
+        self.modality_count = int(modality_count)
+        self.adapter_dim = int(adapter_dim)
+        self.output_dim = int(output_dim or d_model)
+        self.condition = str(condition)
+        if self.condition != "missing_modalities":
+            raise ValueError("featuremod_lite only supports condition='missing_modalities'.")
+        self.condition_adapter = nn.Sequential(
+            nn.LayerNorm(self.modality_count),
+            nn.Linear(self.modality_count, self.adapter_dim),
+            nn.GELU(),
+            nn.Linear(self.adapter_dim, self.d_model * 2),
+        )
+        self.output_projection = (
+            nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
+        )
+
+    def forward(self, features: torch.Tensor, *, modality_available: torch.Tensor | None = None) -> torch.Tensor:
+        if features.ndim != 4:
+            raise ValueError(f"featuremod_lite core expects [B, K, T, D], got {tuple(features.shape)}.")
+        batch_size, modality_count, seq_len, d_model = features.shape
+        if int(modality_count) != self.modality_count or int(d_model) != self.d_model:
+            raise ValueError(
+                "featuremod_lite received incompatible features: "
+                f"expected K={self.modality_count}, D={self.d_model}, got {tuple(features.shape)}."
+            )
+        availability = _coerce_core_availability_mask(
+            modality_available,
+            features=features,
+            core_name="featuremod_lite",
+        ) if modality_available is not None else torch.ones(
+            batch_size,
+            self.modality_count,
+            seq_len,
+            dtype=torch.bool,
+            device=features.device,
+        )
+        visible = availability.to(dtype=features.dtype).unsqueeze(-1)
+        fused = (features * visible).sum(dim=1) / visible.sum(dim=1).clamp_min(1.0)
+        condition = (~availability).to(dtype=features.dtype).permute(0, 2, 1).contiguous()
+        gamma, beta = self.condition_adapter(condition).chunk(2, dim=-1)
+        adapted = fused * (1.0 + torch.tanh(gamma)) + beta
+        return self.output_projection(adapted)
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "type": "featuremod_lite",
+            "d_model": self.d_model,
+            "output_dim": self.output_dim,
+            "modality_count": self.modality_count,
+            "adapter_dim": self.adapter_dim,
+            "condition": self.condition,
+            "consumes_missing_modality_metadata": True,
+        }
+
+
 @REPRESENTATION_CORES.register("amber_lite_missing_modality_transformer")
 class AmberLiteMissingModalityTransformerCore(nn.Module):
     supports_missing_modality_metadata = True
@@ -885,6 +1051,92 @@ class BeamClassificationHead(nn.Module):
         return self.net(features)
 
 
+def _modular_missing_availability_overrides(
+    modalities: tuple[str, ...],
+    *,
+    missing_mask: torch.Tensor | None,
+    modality_mask: torch.Tensor | None,
+    available_modalities: list[str] | tuple[str, ...] | None,
+) -> dict[str, torch.Tensor | None]:
+    overrides: dict[str, torch.Tensor | None] = {}
+    for mask, name in ((missing_mask, "missing_mask"), (modality_mask, "modality_mask")):
+        if mask is None:
+            continue
+        for modality, values in _availability_map_from_tensor(mask, modalities, name=name).items():
+            overrides[modality] = _merge_availability_mask(overrides.get(modality), values)
+    if available_modalities is not None:
+        for modality, values in _availability_map_from_names(available_modalities, modalities).items():
+            overrides[modality] = _merge_availability_mask(overrides.get(modality), values)
+    return overrides
+
+
+def _merge_availability_mask(current: torch.Tensor | None, values: torch.Tensor) -> torch.Tensor:
+    if current is None:
+        return values
+    base = torch.as_tensor(current, dtype=torch.bool)
+    other = values.to(device=base.device, dtype=torch.bool)
+    return base & other
+
+
+def _availability_map_from_tensor(
+    mask: torch.Tensor,
+    modalities: tuple[str, ...],
+    *,
+    name: str,
+) -> dict[str, torch.Tensor]:
+    value = torch.as_tensor(mask, dtype=torch.bool)
+    if value.ndim == 1:
+        if int(value.numel()) != len(modalities):
+            raise ValueError(f"{name} length must match model modalities {list(modalities)}, got {int(value.numel())}.")
+        value = value.unsqueeze(0)
+    elif value.ndim == 2:
+        if int(value.shape[1]) != len(modalities):
+            raise ValueError(f"{name} shape must be [B,{len(modalities)}], got {tuple(value.shape)}.")
+    else:
+        raise ValueError(f"{name} must have shape [K] or [B,K], got {tuple(value.shape)}.")
+    if not bool(value.any(dim=1).all().item()):
+        empty = (~value.any(dim=1)).nonzero(as_tuple=False).flatten().detach().cpu().tolist()
+        raise ValueError(f"{name} leaves no available modalities for sample indices {empty}.")
+    return {modality: value[:, index] for index, modality in enumerate(modalities)}
+
+
+def _availability_map_from_names(
+    available_modalities: list[str] | tuple[str, ...],
+    modalities: tuple[str, ...],
+) -> dict[str, torch.Tensor]:
+    available = {str(item) for item in available_modalities}
+    unknown = sorted(available - set(modalities))
+    if unknown:
+        raise ValueError(f"available_modalities contains unknown modalities {unknown}; model modalities={list(modalities)}.")
+    if not available:
+        raise ValueError("available_modalities must keep at least one modality.")
+    row = torch.tensor([modality in available for modality in modalities], dtype=torch.bool)
+    return {modality: row[index : index + 1] for index, modality in enumerate(modalities)}
+
+
+def _maybe_log_missing_mask_debug(
+    model: nn.Module,
+    modalities: tuple[str, ...],
+    overrides: dict[str, torch.Tensor | None],
+    *,
+    metadata: dict[str, Any] | None,
+) -> None:
+    if not overrides:
+        return
+    metadata = metadata if isinstance(metadata, dict) else {}
+    debug_requested = bool(metadata.get("debug_missing_mask") or metadata.get("debug") or os.environ.get("KD_SENSING_DEBUG_MISSING_MASK"))
+    if not debug_requested or bool(getattr(model, "_missing_mask_debug_logged", False)):
+        return
+    applied = [modality for modality in modalities if overrides.get(modality) is not None]
+    mask = torch.stack([torch.as_tensor(overrides[modality], dtype=torch.bool).flatten()[0] for modality in modalities])
+    available = [modality for modality, keep in zip(modalities, mask.tolist()) if bool(keep)]
+    missing = [modality for modality, keep in zip(modalities, mask.tolist()) if not bool(keep)]
+    pattern = str(metadata.get("pattern") or metadata.get("pattern_name") or "samplewise")
+    print(f"[MissingMask] pattern={pattern} available={available} missing={missing}")
+    print(f"[MissingMask] applied_modalities={applied}")
+    setattr(model, "_missing_mask_debug_logged", True)
+
+
 @MODELS.register("modular_sequence")
 class ModularSequenceModel(nn.Module):
     def __init__(
@@ -1017,6 +1269,7 @@ class ModularSequenceModel(nn.Module):
             auxiliary_heads=auxiliary_heads,
             dropout=float(beam_cfg.get("dropout", 0.0)),
         )
+        self._missing_mask_debug_logged = False
 
     def forward(
         self,
@@ -1039,9 +1292,12 @@ class ModularSequenceModel(nn.Module):
         gps_counterfactual_mask: torch.Tensor | None = None,
         benchmark_condition_metadata: dict[str, Any] | None = None,
         image_degradation_metadata: dict[str, Any] | None = None,
+        missing_mask: torch.Tensor | None = None,
         missing_modality_metadata: dict[str, Any] | None = None,
+        available_modalities: list[str] | tuple[str, ...] | None = None,
+        modality_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
-        del image_degradation_metadata, missing_modality_metadata
+        del image_degradation_metadata
         inputs = collect_forward_inputs(
             image_batch=image_batch,
             radar_batch=radar_batch,
@@ -1062,6 +1318,18 @@ class ModularSequenceModel(nn.Module):
             gps_counterfactual_mask=gps_counterfactual_mask,
             benchmark_condition_metadata=benchmark_condition_metadata,
         )
+        modality_availability_overrides = _modular_missing_availability_overrides(
+            self.modalities,
+            missing_mask=missing_mask,
+            modality_mask=modality_mask,
+            available_modalities=available_modalities,
+        )
+        _maybe_log_missing_mask_debug(
+            self,
+            self.modalities,
+            modality_availability_overrides,
+            metadata=missing_modality_metadata,
+        )
         encoder_stage = run_encoder_projector_stage(
             self,
             inputs.raw_inputs,
@@ -1072,6 +1340,7 @@ class ModularSequenceModel(nn.Module):
             encoder_stage.projected,
             modality_valid_inputs=inputs.modality_valid_inputs,
             modality_dropout_inputs=inputs.modality_dropout_inputs,
+            modality_availability_overrides=modality_availability_overrides,
         )
         output_features, image_logits = run_core_head_stage(self, core_stage.core_input, core_stage.availability_mask)
         logit_stage = post_process_logits_stage(
@@ -1100,6 +1369,7 @@ class ModularSequenceModel(nn.Module):
             geometry_prior_payload=logit_stage.geometry_prior_payload,
             geometry_fusion_payload=logit_stage.geometry_fusion_payload,
             rerank_payload=logit_stage.rerank_payload,
+            missing_modality_metadata_input=missing_modality_metadata,
         )
 
     def training_strategy_metadata(self) -> dict[str, Any]:
@@ -1280,6 +1550,26 @@ def _snapshot_activation(name: str) -> nn.Module:
     return nn.GELU()
 
 
+def _gate_stats_by_missing_count(weights: torch.Tensor, availability: torch.Tensor) -> list[dict[str, Any]]:
+    missing_counts = (~availability).sum(dim=1)
+    rows: list[dict[str, Any]] = []
+    for count in sorted(int(value) for value in torch.unique(missing_counts).detach().cpu().tolist()):
+        selected = missing_counts == count
+        if not selected.any():
+            continue
+        for modality_index in range(int(weights.shape[1])):
+            values = weights[:, modality_index, :][selected]
+            rows.append(
+                {
+                    "pattern": f"missing_count_{count}",
+                    "modality": f"modality_{modality_index}",
+                    "mean_gate": float(values.detach().mean().cpu().item()),
+                    "std_gate": float(values.detach().std(unbiased=False).cpu().item()),
+                }
+            )
+    return rows
+
+
 MODELS.register_removed("modular_sequence_model", "Use 'modular_sequence'.")
 ENCODERS.register_removed(
     "point_cloud_mlp",
@@ -1294,7 +1584,9 @@ REPRESENTATION_CORES.register_removed(
 __all__ = [
     "BeamClassificationHead",
     "AmberLiteMissingModalityTransformerCore",
+    "AmrLiteMaskedGateCore",
     "EarlyConcatGRUCore",
+    "FeatureModLiteCore",
     "GpsMLPEncoder",
     "IdentityProjector",
     "LidarCNNEncoder",

@@ -133,6 +133,30 @@ SCENE31_MANIFEST_BACKED_CONFIG_ROOTS = (
 )
 
 SCENE31_RETAINED_YAML = {
+    "configs/scene31/baseline_pack/amber_lite_natural_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amber_lite_natural_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amber_lite_natural_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/amber_lite_uniform_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amber_lite_uniform_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amber_lite_uniform_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/amr_lite_natural_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amr_lite_natural_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amr_lite_natural_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/amr_lite_uniform_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/amr_lite_uniform_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/amr_lite_uniform_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/featuremod_lite_uniform_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/featuremod_lite_uniform_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/featuremod_lite_uniform_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/proto_natural_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/proto_natural_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/proto_natural_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_bernoulli_k075_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_bernoulli_k075_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_bernoulli_k075_es40_seed3.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_subset_es40_seed1.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_subset_es40_seed2.yaml",
+    "configs/scene31/baseline_pack/proto_randomdrop_subset_es40_seed3.yaml",
     "configs/scene31/diagnostic_gps_only_strong.yaml",
     "configs/scene31/diagnostic_image_only_strong.yaml",
     "configs/scene31/diagnostic_lidar_only_strong.yaml",
@@ -154,6 +178,23 @@ SCENE31_RETAINED_YAML = {
     "configs/scene31/main_v3_strong_reliability_proto_hardgps.yaml",
     "configs/scene31/main_v3_strong_reliability_proto_seed2.yaml",
     "configs/scene31/main_v3_strong_reliability_proto_seed3.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_pattern_film_d8_es40_seed1.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_pattern_film_d8_es40_seed2.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_pattern_film_d8_es40_seed3.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed1.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed2.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed3.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed4.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_es40_seed5.yaml",
+    "configs/scene31/subset_reliability/proto_randomdrop_subset_reliability_fusion_pattern_film_d8_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_natural_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_es40_seed2.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_es40_seed3.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_reliability_fusion_es40_seed1.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_reliability_fusion_es40_seed2.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_randomdrop_subset_reliability_fusion_es40_seed3.yaml",
+    "configs/scene31/scenes31_34_subset_reliability/scenes31_34_proto_sampler_uniform_es40_seed1.yaml",
     "configs/scene31/templates/main_v3_proto_es20_base.yaml",
     "configs/scene31/v4_weakkd_l01_t2.yaml",
     "configs/scene31/v4_weakkd_l02_t2.yaml",
@@ -161,23 +202,35 @@ SCENE31_RETAINED_YAML = {
 }
 
 SCENE31_LOCAL_MANUAL_RUNNERS = {
+    "scripts/run_scene31_baseline_pack.sh",
+    "scripts/run_scene31_baseline_pack_maskfix_eval.sh",
     "scripts/run_scene31_bc_apples_eval.sh",
     "scripts/run_scene31_bc_next.sh",
     "scripts/run_scene31_beamsoft_weak.sh",
     "scripts/run_scene31_funnel.sh",
+    "scripts/run_scene31_funnel_fresh_eval.sh",
     "scripts/run_scene31_magic_overnight.sh",
+    "scripts/run_scene31_modular_maskfix_eval.sh",
+    "scripts/run_scene31_patternfilm_d8.sh",
     "scripts/run_scene31_p0_fresh_eval.sh",
+    "scripts/run_scene31_subset_reliability.sh",
 }
 
 SCENE31_GENERATORS_AND_SUMMARIES = {
+    "scripts/generate_scene31_baseline_pack.py",
     "scripts/generate_scene31_funnel.py",
     "scripts/generate_scene31_magic_overnight.py",
     "scripts/generate_scene31_next_round.py",
+    "scripts/generate_scene31_subset_reliability.py",
+    "scripts/summarize_scene31_baseline_pack.py",
     "scripts/summarize_scene31_bc_next.py",
     "scripts/summarize_scene31_beamsoft_weak.py",
     "scripts/summarize_scene31_funnel.py",
     "scripts/summarize_scene31_next_round.py",
+    "scripts/summarize_scene31_patternfilm_d8.py",
     "scripts/summarize_scene31_p0_fresh_eval.py",
+    "scripts/summarize_scene31_subset_reference.py",
+    "scripts/summarize_scene31_subset_reliability.py",
     "scripts/select_missing_aware_checkpoint.py",
 }
 
@@ -513,17 +566,19 @@ def test_scene31_retained_yaml_surface_is_explicitly_registered():
 
 
 def test_scene31_local_manual_scripts_are_explicitly_registered():
-    tracked = {path for path in _git_ls_files() if (ROOT / path).exists()}
-    actual_runners = {path for path in tracked if path.startswith("scripts/run_scene31_") and path.endswith(".sh")}
-    actual_tools = {
-        path
-        for path in tracked
-        if (
-            path.startswith("scripts/generate_scene31_")
-            or path.startswith("scripts/summarize_scene31_")
-            or path == "scripts/select_missing_aware_checkpoint.py"
-        )
+    actual_runners = {
+        _rel(path)
+        for path in (ROOT / "scripts").glob("run_scene31_*.sh")
+        if path.is_file()
     }
+    actual_tools = {
+        _rel(path)
+        for pattern in ("generate_scene31_*.py", "summarize_scene31_*.py")
+        for path in (ROOT / "scripts").glob(pattern)
+        if path.is_file()
+    }
+    if (ROOT / "scripts/select_missing_aware_checkpoint.py").exists():
+        actual_tools.add("scripts/select_missing_aware_checkpoint.py")
     inventory = INVENTORY.read_text(encoding="utf-8")
     assert actual_runners == SCENE31_LOCAL_MANUAL_RUNNERS
     assert actual_tools == SCENE31_GENERATORS_AND_SUMMARIES

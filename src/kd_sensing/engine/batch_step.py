@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+from pathlib import Path
+import csv
 import time
 from typing import Any
 
 import torch
 
 from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
+from kd_sensing.data.missing_mask import get_missing_pattern_name
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
 from kd_sensing.engine.prediction_objectives import (
@@ -74,6 +77,9 @@ class BatchStepRunner:
         self.health_tracker = health_tracker
         self.objective = resolve_prediction_objective(cfg)
         self.difficulty_seed = int(cfg.get("experiment", {}).get("seed", 0))
+        self._random_dropout_counts: dict[int, dict[tuple[str, int], int]] = {}
+        self._amr_gate_rows: dict[int, list[dict[str, Any]]] = {}
+        self._reliability_weight_rows: dict[int, list[dict[str, Any]]] = {}
 
     def run(self, raw_batch, *, epoch: int, step: int, current_alpha: float) -> BatchStepResult:
         if self.objective == "gps_conditioned_jepa":
@@ -83,11 +89,13 @@ class BatchStepRunner:
     def _run_supervised(self, raw_batch, *, epoch: int, step: int, current_alpha: float) -> BatchStepResult:
         context = self.context
         batch = prepare_task_batch(raw_batch)
-        batch = apply_configured_difficulty(
+        difficulty_result = apply_configured_difficulty(
             batch,
             self.cfg,
             DifficultyContext(stage="train", split="train", seed=self.difficulty_seed, epoch=epoch, step=step),
-        ).batch
+        )
+        batch = difficulty_result.batch
+        self._collect_random_dropout_stats(batch, epoch=epoch)
         labels = prepare_task_labels(
             batch,
             num_pred=context.num_pred,
@@ -146,6 +154,8 @@ class BatchStepRunner:
             timings["forward_time"] = time.perf_counter() - forward_start
             loss_start = time.perf_counter()
             primary_model_output = primary_step.model_output
+            self._collect_amr_gate_stats(primary_model_output.diagnostics, epoch=epoch)
+            self._collect_reliability_weight_stats(primary_model_output.diagnostics, epoch=epoch)
             primary_outputs = primary_step.logits
             batch_state = BatchState(
                 epoch=epoch,
@@ -225,11 +235,13 @@ class BatchStepRunner:
     def _run_jepa(self, raw_batch, *, epoch: int, step: int) -> BatchStepResult:
         context = self.context
         batch = prepare_task_batch(raw_batch)
-        batch = apply_configured_difficulty(
+        difficulty_result = apply_configured_difficulty(
             batch,
             self.cfg,
             DifficultyContext(stage="train", split="train", seed=self.difficulty_seed, epoch=epoch, step=step),
-        ).batch
+        )
+        batch = difficulty_result.batch
+        self._collect_random_dropout_stats(batch, epoch=epoch)
         self.optimizer.zero_grad()
         timings: dict[str, float] = {}
         with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
@@ -266,6 +278,8 @@ class BatchStepRunner:
             timings["forward_time"] = time.perf_counter() - forward_start
             loss_start = time.perf_counter()
             primary_model_output = primary_step.model_output
+            self._collect_amr_gate_stats(primary_model_output.diagnostics, epoch=epoch)
+            self._collect_reliability_weight_stats(primary_model_output.diagnostics, epoch=epoch)
             primary_outputs = primary_step.logits
             batch_state = BatchState(
                 epoch=epoch,
@@ -322,6 +336,103 @@ class BatchStepRunner:
             accuracy=0.0,
             timings=timings,
         )
+
+    def flush_epoch_artifacts(self, run_dir: str | Path, epoch: int) -> None:
+        self._flush_random_dropout_stats(Path(run_dir), epoch)
+        self._flush_amr_gate_stats(Path(run_dir), epoch)
+        self._flush_reliability_weight_stats(Path(run_dir), epoch)
+
+    def _collect_random_dropout_stats(self, batch: dict[str, Any], *, epoch: int) -> None:
+        rows = batch.get("random_dropout_pattern_stats")
+        if not isinstance(rows, list):
+            return
+        bucket = self._random_dropout_counts.setdefault(int(epoch), {})
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("pattern_or_available_set", "")).strip()
+            if not name:
+                continue
+            missing_count = int(row.get("missing_count", 0) or 0)
+            count = int(row.get("num_samples", 0) or 0)
+            bucket[(name, missing_count)] = bucket.get((name, missing_count), 0) + count
+
+    def _collect_amr_gate_stats(self, diagnostics: dict[str, Any], *, epoch: int) -> None:
+        rows = diagnostics.get("amr_lite_gate_stats") if isinstance(diagnostics, dict) else None
+        if not isinstance(rows, list):
+            return
+        target = self._amr_gate_rows.setdefault(int(epoch), [])
+        for row in rows:
+            if isinstance(row, dict):
+                target.append({**row, "epoch": int(epoch)})
+
+    def _collect_reliability_weight_stats(self, diagnostics: dict[str, Any], *, epoch: int) -> None:
+        if not isinstance(diagnostics, dict):
+            return
+        weights = diagnostics.get("reliability_fusion_weights")
+        mask = diagnostics.get("reliability_fusion_available_mask")
+        if mask is None:
+            mask = diagnostics.get("missing_mask")
+        if not torch.is_tensor(weights) or not torch.is_tensor(mask):
+            return
+        weights_cpu = weights.detach().cpu().to(dtype=torch.float32)
+        mask_cpu = mask.detach().cpu().to(dtype=torch.bool)
+        if weights_cpu.ndim == 3 and weights_cpu.shape[-1] == 1:
+            weights_cpu = weights_cpu.squeeze(-1)
+        if weights_cpu.ndim != 2 or mask_cpu.ndim != 2 or tuple(weights_cpu.shape) != tuple(mask_cpu.shape):
+            return
+        metadata = diagnostics.get("metadata") if isinstance(diagnostics.get("metadata"), dict) else {}
+        modalities = list(metadata.get("modalities") or metadata.get("enabled_modalities") or [])
+        if len(modalities) != int(weights_cpu.shape[1]):
+            modalities = [f"modality_{index}" for index in range(int(weights_cpu.shape[1]))]
+        target = self._reliability_weight_rows.setdefault(int(epoch), [])
+        for row_mask in torch.unique(mask_cpu, dim=0):
+            selected = (mask_cpu == row_mask).all(dim=1)
+            if not bool(selected.any().item()):
+                continue
+            pattern = _safe_pattern_name(row_mask, modalities)
+            selected_weights = weights_cpu[selected]
+            selected_mask = mask_cpu[selected]
+            for index, modality in enumerate(modalities):
+                values = selected_weights[:, index]
+                available = selected_mask[:, index].to(dtype=torch.float32)
+                target.append(
+                    {
+                        "epoch": int(epoch),
+                        "pattern": pattern,
+                        "modality": modality,
+                        "mean_weight": float(values.mean().item()),
+                        "std_weight": float(values.std(unbiased=False).item()) if int(values.numel()) > 1 else 0.0,
+                        "available_rate": float(available.mean().item()),
+                    }
+                )
+
+    def _flush_random_dropout_stats(self, run_dir: Path, epoch: int) -> None:
+        bucket = self._random_dropout_counts.pop(int(epoch), None)
+        if not bucket:
+            return
+        total = sum(bucket.values()) or 1
+        rows = [
+            {
+                "epoch": int(epoch),
+                "pattern_or_available_set": name,
+                "num_samples": count,
+                "fraction": float(count / total),
+                "missing_count": missing_count,
+            }
+            for (name, missing_count), count in sorted(bucket.items())
+        ]
+        _append_csv(run_dir / "random_dropout_pattern_stats.csv", rows)
+
+    def _flush_amr_gate_stats(self, run_dir: Path, epoch: int) -> None:
+        rows = self._amr_gate_rows.pop(int(epoch), None)
+        if rows:
+            _append_csv(run_dir / "amr_lite_gate_stats.csv", rows)
+
+    def _flush_reliability_weight_stats(self, run_dir: Path, epoch: int) -> None:
+        rows = self._reliability_weight_rows.pop(int(epoch), None)
+        if rows:
+            _append_csv(run_dir / "reliability_weights_epoch.csv", rows)
 
     def _compute_base_loss(
         self,
@@ -440,3 +551,28 @@ def _jepa_prediction_loss_bundle(total_loss: torch.Tensor, reference: torch.Tens
         selection_multitask_total=zero,
         jepa=total_loss,
     )
+
+
+def _safe_pattern_name(mask: torch.Tensor, modalities: list[str]) -> str:
+    try:
+        return get_missing_pattern_name(mask, modalities)
+    except Exception:
+        bits = "".join("1" if bool(value) else "0" for value in mask.flatten().tolist())
+        return f"mask_{bits}"
+
+
+def _append_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)

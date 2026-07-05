@@ -210,6 +210,46 @@
     "execution_mode": "train"
   },
   {
+    "run_name": "proto_sampler_uniform_pattern_film_d8_es40_seed2",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d8_es40_seed2.yaml",
+    "seed": 2,
+    "method_tags": "quick_screen,pattern_film,d8",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_pattern_film_d8_es40_seed3",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d8_es40_seed3.yaml",
+    "seed": 3,
+    "method_tags": "quick_screen,pattern_film,d8",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_pattern_film_d8_es40_seed4",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d8_es40_seed4.yaml",
+    "seed": 4,
+    "method_tags": "quick_screen,pattern_film,d8",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
+    "run_name": "proto_sampler_uniform_pattern_film_d8_es40_seed5",
+    "group": "quick",
+    "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d8_es40_seed5.yaml",
+    "seed": 5,
+    "method_tags": "quick_screen,pattern_film,d8",
+    "expected_epochs": 40,
+    "priority": "medium",
+    "execution_mode": "train"
+  },
+  {
     "run_name": "proto_sampler_uniform_pattern_film_d16_es40_seed1",
     "group": "quick",
     "config_path": "configs/scene31/funnel/proto_sampler_uniform_pattern_film_d16_es40_seed1.yaml",

@@ -190,6 +190,115 @@ conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py \
 
 `scripts/run_scene31_p0_fresh_eval.sh --include-baselines` 会额外尝试 `amr_net_supervised` 和 `amber_full_architecture` local baseline；只有对应 checkpoint 已在指定 root 下可解析时才适合作为同批 fresh eval 输入。P0 winner selection 以 `avg_missing -> full -> overall_mean -> balanced` 为默认排序，`balanced` 只作为辅助表。
 
+Scene31 baseline pack 之后的当前缺失模态 reference 是 `proto_randomdrop_subset_es40`；`proto_sampler_uniform_es40` 只保留为 ablation。AMR/AMBER-lite maskfix 只重评已有 best checkpoint，不重训旧 run：
+
+```bash
+conda run -n kd_mm_beam python scripts/diagnose_modular_missing_mask.py \
+  --root outputs/scene31_baseline_pack_lmdb \
+  --runs amr_lite_natural_es40,amber_lite_natural_es40
+
+bash scripts/run_scene31_baseline_pack_maskfix_eval.sh \
+  --root outputs/scene31_baseline_pack_lmdb \
+  --gpus 5,6,7 \
+  --max-parallel 6
+
+conda run -n kd_mm_beam python scripts/summarize_scene31_subset_reference.py \
+  --baseline-root outputs/scene31_baseline_pack_lmdb \
+  --out outputs/scene31_baseline_pack_lmdb/subset_reference_summary
+```
+
+Subset reliability 与 randomdrop subset + PatternFiLM d8 是新的 local/manual follow-up，输出独立落在 ignored `outputs/scene31_subset_reliability_lmdb/`：
+
+```bash
+conda run -n kd_mm_beam python scripts/generate_scene31_subset_reliability.py --overwrite true
+
+bash scripts/run_scene31_subset_reliability.sh \
+  --group reliability \
+  --root outputs/scene31_subset_reliability_lmdb \
+  --baseline-root outputs/scene31_baseline_pack_lmdb \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --auto-eval
+
+bash scripts/run_scene31_subset_reliability.sh \
+  --group subset_film \
+  --root outputs/scene31_subset_reliability_lmdb \
+  --baseline-root outputs/scene31_baseline_pack_lmdb \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --auto-eval
+
+conda run -n kd_mm_beam python scripts/summarize_scene31_subset_reliability.py \
+  --baseline-root outputs/scene31_baseline_pack_lmdb \
+  --new-root outputs/scene31_subset_reliability_lmdb \
+  --out outputs/scene31_subset_reliability_lmdb/summary
+```
+
+Scene31-34 现在是缺失模态论文主实验设定。主方法候选冻结为 prototype + random subset exposure；Uniform 只作 ablation，reliability fusion 和 PatternFiLM 不晋升。core proto 目标 n=5，classifier baseline 目标 n=3，AMR/AMBER-lite 先跑 maskfix seed1。GPU5/6/7 可用 `--max-parallel 6 --slots-per-gpu 2`，runner 会限制每卡最多两个 worker：
+
+```bash
+bash scripts/run_scenes31_34_main.sh \
+  --group core_seed23 \
+  --root outputs/scenes31_34_main_lmdb \
+  --old-root outputs/scenes31_34_subset_reliability_lmdb \
+  --scenes 31,32,33,34 \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --slots-per-gpu 2 \
+  --auto-eval
+
+bash scripts/run_scenes31_34_main.sh \
+  --group core_seed45 \
+  --root outputs/scenes31_34_main_lmdb \
+  --old-root outputs/scenes31_34_subset_reliability_lmdb \
+  --scenes 31,32,33,34 \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --slots-per-gpu 2 \
+  --auto-eval
+
+bash scripts/run_scenes31_34_main.sh \
+  --group eval_core_all \
+  --root outputs/scenes31_34_main_lmdb \
+  --old-root outputs/scenes31_34_subset_reliability_lmdb \
+  --scenes 31,32,33,34 \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --slots-per-gpu 2 \
+  --overwrite-eval
+
+bash scripts/run_scenes31_34_main.sh \
+  --group classifier_seed123 \
+  --root outputs/scenes31_34_main_lmdb \
+  --classifier-root outputs/scenes31_34_classifier_lmdb \
+  --old-root outputs/scenes31_34_subset_reliability_lmdb \
+  --scenes 31,32,33,34 \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --slots-per-gpu 2 \
+  --auto-eval
+
+bash scripts/run_scenes31_34_main.sh \
+  --group external_lite_seed1 \
+  --root outputs/scenes31_34_main_lmdb \
+  --external-root outputs/scenes31_34_external_lite_lmdb \
+  --old-root outputs/scenes31_34_subset_reliability_lmdb \
+  --scenes 31,32,33,34 \
+  --gpus 5,6,7 \
+  --max-parallel 6 \
+  --slots-per-gpu 2 \
+  --auto-eval
+
+bash scripts/run_scenes31_34_main.sh \
+  --group summarize_final_all \
+  --root outputs/scenes31_34_main_lmdb \
+  --old-root outputs/scenes31_34_subset_reliability_lmdb \
+  --classifier-root outputs/scenes31_34_classifier_lmdb \
+  --external-root outputs/scenes31_34_external_lite_lmdb
+```
+
+AMR/AMBER-lite 多场景 maskfix baseline 只作为外部 baseline；mask_suspect=true 或缺 checkpoint 时不进入 official ranking，也不阻塞 prototype 主实验、missing-count degradation curve、compute profile 或 paper tables。
+
 pattern evaluation 会随训练结束写入 `outputs/scene31/eval/*_missing_patterns.csv/json`；也可手动复用包内 eval matrix：
 
 ```bash

@@ -130,6 +130,40 @@ def test_mask_conditioned_adapter_is_opt_in_and_reports_param_count():
     assert metadata["mask_adapter_param_count"] == output["mask_adapter_param_count"]
 
 
+def test_pattern_film_identity_init_is_pre_head_and_metadata_only():
+    import_default_components()
+    torch.manual_seed(7)
+    base = MODELS.build(_cfg(fusion_type="weighted_sum"))
+    film = MODELS.build(
+        _cfg(
+            fusion_type="weighted_sum",
+            pattern_film={"enabled": True, "dim": 8, "init_identity": True, "apply_at": "pre_head"},
+        )
+    )
+    film.load_state_dict(base.state_dict(), strict=False)
+    batch = _batch()
+    mask = torch.tensor([[1, 0, 1, 1], [0, 1, 0, 1]], dtype=torch.bool)
+
+    base_out = base(**batch, missing_mask=mask)
+    film_out = film(**batch, missing_mask=mask)
+    metadata = film.training_strategy_metadata()
+
+    assert torch.allclose(film_out["logits"], base_out["logits"], atol=1e-6)
+    assert torch.allclose(film_out["output_features"], base_out["output_features"], atol=1e-6)
+    assert film_out["pattern_film_param_count"] > 0
+    assert film_out["pattern_film_dim"] == 8
+    assert film_out["pattern_film_apply_at"] == "pre_head"
+    assert metadata["pattern_film"]["enabled"] is True
+    assert metadata["pattern_film"]["dim"] == 8
+    assert metadata["pattern_film_param_count"] == film_out["pattern_film_param_count"]
+
+
+def test_pattern_film_rejects_unsupported_apply_at():
+    import_default_components()
+    with pytest.raises((ValueError, RegistryError), match="pattern_film.apply_at"):
+        MODELS.build(_cfg(pattern_film={"enabled": True, "apply_at": "after_head"}))
+
+
 def test_registry_encoder_warm_start_forward(tmp_path):
     import_default_components()
     source = MODELS.build(

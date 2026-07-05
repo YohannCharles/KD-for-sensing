@@ -1,0 +1,29 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_randomdrop_subset_es40_seed2
+  seed: 2
+model:
+  primary:
+    ablation_id: proto_randomdrop_subset_es40_seed2
+training:
+  epochs: 40
+  max_epochs: 40
+  random_modality_dropout: &id001
+    enabled: true
+    mode: random_nonempty_subset
+    modalities:
+    - image
+    - radar
+    - gps
+    - lidar
+    ensure_at_least_one_modality: true
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+    random_modality_dropout: *id001
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_randomdrop_subset_es40_seed2
+  dir: outputs/scene31_baseline_pack_lmdb

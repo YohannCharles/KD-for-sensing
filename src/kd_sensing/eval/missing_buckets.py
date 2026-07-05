@@ -66,9 +66,11 @@ def missing_bucket_mapping(
             continue
         local_names = names if len(mask) == len(names) else [f"modality_{idx}" for idx in range(len(mask))]
         available = [name for name, keep in zip(local_names, mask) if int(keep) == 1]
+        missing = [name for name, keep in zip(local_names, mask) if int(keep) == 0]
         mapping[pattern] = {
             "missing_count": int(len(mask) - len(available)),
             "available_modalities": available,
+            "missing_modalities": missing,
         }
     for count in BUCKET_COUNTS:
         if not any(item["missing_count"] == count for item in mapping.values()):

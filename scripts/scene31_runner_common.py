@@ -7,7 +7,20 @@ import math
 from pathlib import Path
 
 
-REQUIRED_EVAL_PATTERNS = {"full", "avg_missing", "missing_gps", "missing_radar", "radar_only", "lidar_only"}
+REQUIRED_EVAL_PATTERNS = {
+    "full",
+    "avg_missing",
+    "missing_gps",
+    "missing_radar",
+    "radar_only",
+    "lidar_only",
+    "missing_gps_image",
+    "missing_gps_radar",
+    "missing_gps_lidar",
+    "missing_image_radar",
+    "missing_image_lidar",
+    "missing_radar_lidar",
+}
 REQUIRED_EVAL_METRICS = ("top1", "top3", "top5", "within_3", "mae")
 
 
@@ -52,7 +65,9 @@ def manifest_value(manifest: Path, run_name: str, key: str) -> str | None:
 
 
 def train_complete(root: Path, run_name: str, *, strict_status_checkpoint: bool = False) -> bool:
-    for run_dir in (root / run_name, root / "scene31" / run_name):
+    run_dirs = [root / run_name, root / "scene31" / run_name]
+    run_dirs.extend(sorted(root.glob(f"scenegroup_*/{run_name}")))
+    for run_dir in run_dirs:
         status_complete = False
         status_path = run_dir / "run_status.json"
         if status_path.exists():

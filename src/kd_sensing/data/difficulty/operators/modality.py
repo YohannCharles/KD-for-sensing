@@ -1,7 +1,9 @@
+from collections import Counter
 from typing import Any
 
 import torch
 
+from kd_sensing.data.missing_mask import sample_pattern_balanced_mask
 from kd_sensing.data.difficulty.schema import (
     DifficultyContext,
     DifficultyOperatorConfig,
@@ -106,6 +108,93 @@ class ModalityMissingOperator:
         )
 
 
+class RandomModalityDropoutOperator:
+    def __init__(self, **params: Any) -> None:
+        self.params = dict(params)
+
+    def __call__(
+        self,
+        batch: dict[str, Any],
+        *,
+        config: DifficultyOperatorConfig,
+        profile: DifficultyProfile,
+        context: DifficultyContext,
+    ) -> DifficultyOperatorOutcome:
+        modalities = tuple(config.affected_modalities)
+        available = [modality for modality in modalities if _tensor_keys(batch, modality)]
+        if not available:
+            return DifficultyOperatorOutcome(
+                metadata={"mode": self.params.get("mode", "random_nonempty_subset"), "fallback_count": len(modalities)}
+            )
+        reference = batch[_tensor_keys(batch, available[0])[0]]
+        batch_size = int(reference.shape[0])
+        seq_len = int(reference.shape[1]) if reference.ndim >= 3 else None
+        seed = int(context.derived_seed(profile, config))
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+        mode = str(self.params.get("mode", "random_nonempty_subset")).strip().lower()
+        if mode == "pattern_balanced":
+            keep, sampled_names, _ = sample_pattern_balanced_mask(
+                batch_size,
+                available,
+                self.params.get("pattern_probs", self.params.get("patterns")),
+                ensure_at_least_one=bool(self.params.get("ensure_at_least_one_modality", True)),
+                generator=generator,
+            )
+        else:
+            keep = _random_keep_matrix(
+                batch_size,
+                len(available),
+                mode=mode,
+                keep_prob=float(self.params.get("keep_prob", 0.75)),
+                ensure_at_least_one=bool(self.params.get("ensure_at_least_one_modality", True)),
+                generator=generator,
+            )
+            sampled_names = None
+        stats = _pattern_stats(available, keep, epoch=context.epoch, sampled_names=sampled_names)
+        affected: dict[str, int] = {}
+        for index, modality in enumerate(available):
+            sample_missing = ~keep[:, index]
+            mask = sample_missing
+            if seq_len is not None:
+                mask = sample_missing.unsqueeze(1).expand(batch_size, seq_len)
+            keys = _tensor_keys(batch, modality)
+            tensor = batch[keys[0]]
+            for key in keys:
+                batch[key] = _zero_fill(batch[key], mask.to(device=batch[key].device))
+            valid = _merge_valid_mask(batch.get(f"{modality}_valid_mask"), ~mask, device=tensor.device)
+            batch[f"{modality}_dropout_mask"] = mask.to(device=tensor.device)
+            batch[f"{modality}_missing_mask"] = mask.to(device=tensor.device)
+            batch[f"{modality}_valid_mask"] = valid
+            affected[modality] = int(mask.sum().item())
+        batch["random_dropout_pattern_stats"] = stats
+        batch["missing_modality_metadata"] = {
+            "operator": config.type,
+            "mode": mode,
+            "condition": profile.condition,
+            "affected_modalities": list(available),
+            "seed": seed,
+            "profile_digest": profile.digest,
+            "operator_digest": config.digest,
+            "fallback": str(self.params.get("fallback", profile.fallback or "zero_fill")),
+            "fallback_count": len(modalities) - len(available),
+            "affected_count": affected,
+            "mask_fields": {modality: f"{modality}_valid_mask" for modality in available},
+            "pattern_stats": stats,
+        }
+        return DifficultyOperatorOutcome(
+            metadata={
+                "mode": mode,
+                "keep_prob": float(self.params.get("keep_prob", 0.75)),
+                "ensure_at_least_one_modality": bool(self.params.get("ensure_at_least_one_modality", True)),
+                "seed": seed,
+                "fallback_count": len(modalities) - len(available),
+                "affected_count": affected,
+                "pattern_stats": stats,
+            }
+        )
+
+
 def _dropout_rate(params: dict[str, Any], modality: str, severity: float) -> float:
     rates = params.get("rates")
     if isinstance(rates, dict) and modality in rates:
@@ -116,6 +205,63 @@ def _dropout_rate(params: dict[str, Any], modality: str, severity: float) -> flo
             params.get(f"{modality}_dropout_prob", params.get("dropout_rate", params.get("dropout_prob", severity))),
         )
     return max(0.0, min(float(raw), 1.0))
+
+
+def _tensor_keys(batch: dict[str, Any], modality: str) -> list[str]:
+    return [key for key in MODALITY_BATCH_KEYS.get(modality, (modality,)) if torch.is_tensor(batch.get(key))]
+
+
+def _random_keep_matrix(
+    batch_size: int,
+    modality_count: int,
+    *,
+    mode: str,
+    keep_prob: float,
+    ensure_at_least_one: bool,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    if mode == "bernoulli":
+        keep = torch.rand((batch_size, modality_count), generator=generator) < max(0.0, min(float(keep_prob), 1.0))
+    elif mode == "random_nonempty_subset":
+        choices = torch.randint(1, 2**modality_count, (batch_size,), generator=generator)
+        bits = 2 ** torch.arange(modality_count)
+        keep = (choices.unsqueeze(1) & bits.unsqueeze(0)).bool()
+    else:
+        raise ValueError(
+            "random_modality_dropout mode must be 'bernoulli', 'random_nonempty_subset', or 'pattern_balanced'."
+        )
+    if ensure_at_least_one:
+        empty = ~keep.any(dim=1)
+        if empty.any():
+            replacement = torch.randint(0, modality_count, (int(empty.sum().item()),), generator=generator)
+            keep[empty] = False
+            keep[empty, replacement] = True
+    return keep
+
+
+def _pattern_stats(
+    modalities: list[str],
+    keep: torch.Tensor,
+    *,
+    epoch: int | None,
+    sampled_names: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    counts: Counter[tuple[str, int]] = Counter()
+    for index, row in enumerate(keep):
+        available = [modality for modality, visible in zip(modalities, row.tolist()) if bool(visible)]
+        name = sampled_names[index] if sampled_names is not None else "available:" + "+".join(available)
+        counts[(name, len(modalities) - len(available))] += 1
+    total = max(int(keep.shape[0]), 1)
+    return [
+        {
+            "epoch": "" if epoch is None else int(epoch),
+            "pattern_or_available_set": name,
+            "num_samples": count,
+            "fraction": float(count / total),
+            "missing_count": missing_count,
+        }
+        for (name, missing_count), count in sorted(counts.items())
+    ]
 
 
 def _dropout_mask(tensor: torch.Tensor, *, rate: float, generator: torch.Generator) -> torch.Tensor:

@@ -1,0 +1,65 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: amber_lite_natural_es40_seed1
+  seed: 1
+model:
+  primary:
+    ablation_id: amber_lite_natural_es40_seed1
+    type: modular_sequence
+    modalities:
+    - image
+    - radar
+    - gps
+    - lidar
+    image_profile: rgb_imagenet
+    image_channels: 3
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 1
+    consume_missing_modality_metadata: true
+    paper_metadata:
+      baseline_scope: local_experimental_baseline
+      baseline_family: amber_lite
+    encoders:
+      image:
+        type: resnet18_imagenet_rgb
+        pretrained: false
+        weights: null
+        freeze_backbone: true
+      radar:
+        type: radar_cnn
+      gps:
+        type: gps_mlp
+      lidar:
+        type: lidar_cnn
+    representation_core:
+      type: amber_lite_missing_modality_transformer
+      d_model: 64
+      num_heads: 4
+      num_layers: 1
+      dropout: 0.1
+      max_seq_len: 8
+      mask_token_strategy: learned_per_modality
+    heads:
+      beam:
+        type: beam_head
+training:
+  epochs: 40
+  max_epochs: 40
+loss:
+  u_mask_beam_jepa:
+    enabled: false
+    epochs: 40
+    max_epochs: 40
+  type: focal_loss
+  alpha: 1
+  gamma: 2
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: amber_lite_natural_es40_seed1
+  dir: outputs/scene31_baseline_pack_lmdb

@@ -202,13 +202,12 @@ def difficulty_runtime_metadata(cfg: Mapping[str, Any]) -> dict[str, Any] | None
 
 
 def profiles_from_resolved_config(cfg: Mapping[str, Any]) -> list[DifficultyProfile]:
-    difficulty = cfg.get("difficulty") if isinstance(cfg, Mapping) else None
-    if not isinstance(difficulty, Mapping) or not bool(difficulty.get("enabled", bool(difficulty.get("profiles")))):
+    if not isinstance(cfg, Mapping):
         return []
-    profiles = difficulty.get("profiles")
-    if not profiles:
+    raw = _raw_profiles_from_config(cfg)
+    if not raw:
         return []
-    return normalize_difficulty_profiles(profiles, default_seed=cfg.get("experiment", {}).get("seed", 0) if isinstance(cfg, Mapping) else 0)
+    return normalize_difficulty_profiles(raw, default_seed=cfg.get("experiment", {}).get("seed", 0))
 
 
 def normalize_difficulty_profiles(
@@ -263,6 +262,9 @@ def _raw_profiles_from_config(cfg: Mapping[str, Any]) -> list[Any]:
     difficulty = cfg.get("difficulty")
     if difficulty not in (None, False):
         raw.extend(_profiles_from_container(difficulty, default_stage=None))
+    random_dropout = _random_modality_dropout_profile(cfg)
+    if random_dropout is not None:
+        raw.append(random_dropout)
     data_difficulty = cfg.get("data", {}).get("difficulty") if isinstance(cfg.get("data"), Mapping) else None
     if data_difficulty not in (None, False):
         raw.extend(_profiles_from_container(data_difficulty, default_stage="train"))
@@ -270,6 +272,41 @@ def _raw_profiles_from_config(cfg: Mapping[str, Any]) -> list[Any]:
     if evaluation_difficulty not in (None, False):
         raw.extend(_profiles_from_container(evaluation_difficulty, default_stage="evaluation"))
     return raw
+
+
+def _random_modality_dropout_profile(cfg: Mapping[str, Any]) -> dict[str, Any] | None:
+    training = cfg.get("training") if isinstance(cfg.get("training"), Mapping) else {}
+    raw = training.get("random_modality_dropout") if isinstance(training, Mapping) else None
+    if raw in (None, False):
+        raw = cfg.get("random_modality_dropout")
+    if not isinstance(raw, Mapping) or raw.get("enabled") is not True:
+        return None
+    modalities = raw.get("modalities", raw.get("affected_modalities", ["image", "radar", "gps", "lidar"]))
+    return {
+        "id": str(raw.get("id", "random_modality_dropout_train")),
+        "stage": "train",
+        "split": "train",
+        "condition": str(raw.get("condition", "random_modality_dropout")),
+        "severity": 1.0,
+        "seed": raw.get("seed", cfg.get("experiment", {}).get("seed", 0)),
+        "fallback": raw.get("fallback", "zero_fill"),
+        "affected_modalities": modalities,
+        "metadata": {
+            "source": "training.random_modality_dropout",
+            "mode": raw.get("mode", "random_nonempty_subset"),
+        },
+        "operators": [
+            {
+                "type": "random_modality_dropout",
+                "modality": str(_as_list(modalities)[0]),
+                "affected_modalities": modalities,
+                "mode": raw.get("mode", "random_nonempty_subset"),
+                "keep_prob": raw.get("keep_prob", 0.75),
+                "pattern_probs": raw.get("pattern_probs", raw.get("patterns")),
+                "ensure_at_least_one_modality": raw.get("ensure_at_least_one_modality", True),
+            }
+        ],
+    }
 
 
 def _profiles_from_container(container: Any, *, default_stage: str | None) -> list[Any]:

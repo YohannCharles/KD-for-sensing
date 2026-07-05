@@ -1,0 +1,19 @@
+_base_: ../templates/main_v3_proto_es20_base.yaml
+experiment:
+  name: proto_natural_es40_seed2
+  seed: 2
+model:
+  primary:
+    ablation_id: proto_natural_es40_seed2
+training:
+  epochs: 40
+  max_epochs: 40
+loss:
+  u_mask_beam_jepa:
+    epochs: 40
+    max_epochs: 40
+evaluation:
+  beam_distance_circular: true
+output:
+  run_name: proto_natural_es40_seed2
+  dir: outputs/scene31_baseline_pack_lmdb

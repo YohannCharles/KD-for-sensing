@@ -124,6 +124,9 @@ def run_training_epoch_loop(
                 )
             data_wait_start = time.perf_counter()
 
+        if hasattr(batch_runner, "flush_epoch_artifacts"):
+            batch_runner.flush_epoch_artifacts(run_dir, epoch)
+
         if scheduler is not None:
             scheduler.step()
         validation_ran = _should_validate_epoch(epoch, total_epochs, validation_interval) or last_val_metrics is None

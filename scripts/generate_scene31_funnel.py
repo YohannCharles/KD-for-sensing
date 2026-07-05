@@ -181,15 +181,23 @@ def _funnel_specs() -> list[dict[str, Any]]:
             },
         },
     )
-    for dim in (8, 16):
+    for seed in (1, 2, 3, 4, 5):
         add(
             "quick",
-            f"proto_sampler_uniform_pattern_film_d{dim}_es40",
-            1,
-            ["quick_screen", "pattern_film", f"d{dim}"],
+            "proto_sampler_uniform_pattern_film_d8_es40",
+            seed,
+            ["quick_screen", "pattern_film", "d8"],
             uniform,
-            model={"pattern_film": {"enabled": True, "dim": dim, "init_identity": True, "apply_at": "pre_head"}},
+            model={"pattern_film": {"enabled": True, "dim": 8, "init_identity": True, "apply_at": "pre_head"}},
         )
+    add(
+        "quick",
+        "proto_sampler_uniform_pattern_film_d16_es40",
+        1,
+        ["quick_screen", "pattern_film", "d16"],
+        uniform,
+        model={"pattern_film": {"enabled": True, "dim": 16, "init_identity": True, "apply_at": "pre_head"}},
+    )
     add(
         "quick",
         "proto_uniform_tta_entropy_bn",
