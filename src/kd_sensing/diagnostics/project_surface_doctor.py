@@ -253,6 +253,7 @@ def _doctor_scripts(
         for rel in tracked
         if rel.startswith(TRACKED_SCRIPT_ROOTS)
         and Path(rel).suffix in {".py", ".sh"}
+        and (root / rel).exists()
         and not rel.startswith(("dataset/", "outputs/", "logs/"))
     ]
     entries = []
@@ -1032,6 +1033,27 @@ def _classify_config(rel_path: str, authority: dict[str, str]) -> dict[str, Any]
     validation = "conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q"
     if re.match(r"configs/(image|radar|gps|lidar|mmwave|csi)/(strong|lightweight|supervised)\.ya?ml$", rel_path):
         family, lifecycle, run_class = "canonical root", "current", "formal"
+    elif rel_path == "configs/gps/ablation_relative_polar.yaml":
+        family, lifecycle, run_class = "GPS ablation", "current", "local/manual"
+    elif rel_path == "configs/image/resnet18_strong.yaml":
+        family, lifecycle, run_class = "canonical root", "current", "formal"
+    elif rel_path == "configs/csi/medium_degraded_supervised.yaml":
+        family, lifecycle, run_class = "CSI degraded supervised", "current", "formal"
+    elif rel_path.startswith("configs/difficulty/"):
+        family, lifecycle, run_class = "difficulty profile", "current", "diagnostic/local"
+        output_boundary = "outputs/"
+    elif rel_path.startswith("configs/eval/"):
+        family, lifecycle, run_class = "evaluation matrix", "local/manual", "evaluation-only"
+        output_boundary = "outputs/eval/"
+    elif rel_path.startswith("configs/fusion/experiments/jepa_image_gps/"):
+        family, lifecycle, run_class = "JEPA Image+GPS experiment", "local/manual", "paper/workflow reproduction"
+        output_boundary = "outputs/ or outputs/analysis/"
+    elif rel_path.startswith("configs/fusion/experiments/rbma_missing_workflow_strong_encoders/"):
+        family, lifecycle, run_class = "RBMA strong-encoder overlay", "local/manual", "checkpoint-placeholder"
+        output_boundary = "outputs/scene31/"
+    elif rel_path.startswith("configs/fusion/experiments/rbma_missing_workflow/"):
+        family, lifecycle, run_class = "RBMA missing workflow", "local/manual", "claim-evidence pending"
+        output_boundary = "outputs/scene31/"
     elif rel_path.startswith("configs/fusion/experiments/"):
         family, lifecycle, run_class = "experiment reproduction", "local/manual", "local/manual"
     elif rel_path.startswith("configs/fusion/"):
@@ -1045,8 +1067,12 @@ def _classify_config(rel_path: str, authority: dict[str, str]) -> dict[str, Any]
         output_boundary = "dataset/ or outputs/cache/"
     elif rel_path.startswith("configs/baselines/") or rel_path.startswith("configs/pretraining/"):
         family, lifecycle, run_class = "baseline reproduction", "current", "local/manual"
+    elif rel_path.startswith("configs/scene31/templates/"):
+        family, lifecycle, run_class = "scene31 generator base", "generated/recipe-backed", "base config"
+        output_boundary = "ignored local generated config roots"
     elif rel_path.startswith("configs/scene31/"):
         family, lifecycle, run_class = "scene31 local/manual", "local/manual", "local/manual"
+        output_boundary = "outputs/scene31/"
     elif "hardening_matrix" in rel_path:
         family, lifecycle, run_class = "CSI experiment matrix", "current", "smoke/local"
     elif rel_path in {"configs/deepsense6g_gps_adapter_v2.yaml", "configs/mmw_town_gps_adapter_v2.yaml"}:

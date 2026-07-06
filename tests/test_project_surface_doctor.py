@@ -44,6 +44,28 @@ def test_project_surface_doctor_json_and_markdown_rendering():
     assert "## Configs" in markdown
 
 
+def test_project_surface_doctor_classifies_shrunk_experiment_config_families():
+    report = build_project_surface_report(ROOT, scopes=("configs",), fail_on="none")
+    configs = report["sections"]["configs"]
+    entries = {entry["path"]: entry for entry in configs["entries"]}
+
+    assert entries[
+        "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml"
+    ]["family"] == "JEPA Image+GPS experiment"
+    assert entries[
+        "configs/fusion/experiments/rbma_missing_workflow/weighted_sum_reliability_beam_proto_kd.yaml"
+    ]["run_class"] == "claim-evidence pending"
+    assert entries[
+        "configs/fusion/experiments/rbma_missing_workflow_strong_encoders/weighted_sum_mask.yaml"
+    ]["run_class"] == "checkpoint-placeholder"
+    assert entries["configs/scene31/templates/main_v3_proto_es20_base.yaml"]["lifecycle"] == "generated/recipe-backed"
+    assert configs["recipe_migration_candidates"]
+    assert any(
+        "configs/fusion/experiments/rbma_missing_workflow/weighted_sum_mask.yaml" in candidate["paths"]
+        for candidate in configs["recipe_migration_candidates"]
+    )
+
+
 def test_project_surface_doctor_security_scope_flags_guardrail_risks(monkeypatch):
     original_git_ls_files = doctor._git_ls_files
     original_read_text = doctor._read_text

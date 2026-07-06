@@ -20,10 +20,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from scene31_generator_common import rel, truthy  # noqa: E402
 
 
-DEFAULT_OUT_DIR = "outputs/scenes31_34_patchvit_lmdb/generated_configs"
-DEFAULT_OUTPUT_DIR = "outputs/scenes31_34_patchvit_lmdb"
 DEFAULT_SCENES = [31, 32, 33, 34]
-DEFAULT_ENCODER = "lightweight_patchvit_frame"
 PRETRAIN_EPOCHS = 100
 DOWNSTREAM_EPOCHS = 40
 IMAGE_PRETRAIN_BASE = ROOT / "configs/fusion/experiments/m2beam_single_modal_scene31/image.yaml"
@@ -31,28 +28,50 @@ LIDAR_PRETRAIN_BASE = ROOT / "configs/fusion/experiments/m2beam_single_modal_sce
 DOWNSTREAM_BASE = ROOT / "configs/scene31/templates/main_v3_proto_es20_base.yaml"
 MODALITIES = ["image", "radar", "gps", "lidar"]
 
+FAMILY_DEFAULTS = {
+    "tinyvit": {
+        "label": "TinyViT",
+        "out_dir": "outputs/scenes31_34_tinyvit_lmdb/generated_configs",
+        "output_dir": "outputs/scenes31_34_tinyvit_lmdb",
+        "encoder": "tinyvit_5m_scratch_rgb",
+    },
+    "patchvit": {
+        "label": "PatchViT",
+        "out_dir": "outputs/scenes31_34_patchvit_lmdb/generated_configs",
+        "output_dir": "outputs/scenes31_34_patchvit_lmdb",
+        "encoder": "lightweight_patchvit_frame",
+    },
+}
+
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate Scene31-34 lightweight PatchViT encoder ablation configs.")
-    parser.add_argument("--out-dir", "--out_dir", default=DEFAULT_OUT_DIR)
-    parser.add_argument("--output-dir", "--output_dir", default=DEFAULT_OUTPUT_DIR)
+    parser = argparse.ArgumentParser(description="Generate Scene31-34 encoder ablation configs.")
+    parser.add_argument("--family", choices=sorted(FAMILY_DEFAULTS), default="tinyvit")
+    parser.add_argument("--out-dir", "--out_dir")
+    parser.add_argument("--output-dir", "--output_dir")
     parser.add_argument("--scenes", default="31,32,33,34")
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--encoder", default=DEFAULT_ENCODER)
+    parser.add_argument("--encoder")
     parser.add_argument("--pretrain-epochs", type=int, default=PRETRAIN_EPOCHS)
     parser.add_argument("--downstream-epochs", type=int, default=DOWNSTREAM_EPOCHS)
     parser.add_argument("--overwrite", default="false")
     args = parser.parse_args(argv)
 
+    family = _normalize_family(args.family)
+    defaults = FAMILY_DEFAULTS[family]
     scenes = _parse_scenes(args.scenes)
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir or str(defaults["out_dir"]))
+    output_dir = str(args.output_dir or str(defaults["output_dir"]))
+    encoder = str(args.encoder or str(defaults["encoder"]))
     out_dir.mkdir(parents=True, exist_ok=True)
+
     rows = _build_rows(
         out_dir=out_dir,
-        output_dir=str(args.output_dir),
+        output_dir=output_dir,
         scenes=scenes,
         seed=int(args.seed),
-        encoder=str(args.encoder),
+        family=family,
+        encoder=encoder,
         pretrain_epochs=int(args.pretrain_epochs),
         downstream_epochs=int(args.downstream_epochs),
     )
@@ -60,14 +79,25 @@ def main(argv: list[str] | None = None) -> int:
     _write_manifest(out_dir, rows)
     _write_budget_manifest(
         out_dir,
-        output_dir=str(args.output_dir),
+        output_dir=output_dir,
         scenes=scenes,
         rows=rows,
+        family=family,
         pretrain_epochs=int(args.pretrain_epochs),
         downstream_epochs=int(args.downstream_epochs),
     )
-    print(f"Wrote {len(rows)} Scene31-34 PatchViT ablation manifest rows to {out_dir}.")
+    print(f"Wrote {len(rows)} Scene31-34 {defaults['label']} ablation manifest rows to {out_dir}.")
     return 0
+
+
+def _normalize_family(value: str) -> str:
+    family = str(value).strip().lower().replace("_", "-")
+    family = family.replace("-", "")
+    if family == "tinyvit":
+        return "tinyvit"
+    if family == "patchvit":
+        return "patchvit"
+    raise ValueError(f"Unknown encoder family {value!r}. Available families: {', '.join(sorted(FAMILY_DEFAULTS))}.")
 
 
 def _parse_scenes(value: str) -> list[int]:
@@ -83,26 +113,28 @@ def _build_rows(
     output_dir: str,
     scenes: list[int],
     seed: int,
+    family: str,
     encoder: str,
     pretrain_epochs: int,
     downstream_epochs: int,
 ) -> list[dict[str, Any]]:
-    image_run = f"scenes31_34_patchvit_image_pretrain_seed{seed}"
-    lidar_run = f"scenes31_34_patchvit_lidar_pretrain_seed{seed}"
-    plain_run = f"scenes31_34_proto_randomdrop_subset_patchvit_es40_seed{seed}"
-    jepa_run = f"scenes31_34_proto_randomdrop_subset_patchvit_jepa_es40_seed{seed}"
+    image_run = f"scenes31_34_{family}_image_pretrain_seed{seed}"
+    lidar_run = f"scenes31_34_{family}_lidar_pretrain_seed{seed}"
+    plain_run = f"scenes31_34_proto_randomdrop_subset_{family}_es40_seed{seed}"
+    jepa_run = f"scenes31_34_proto_randomdrop_subset_{family}_jepa_es40_seed{seed}"
     image_checkpoint = _checkpoint_path(output_dir, scenes, image_run)
     lidar_checkpoint = _checkpoint_path(output_dir, scenes, lidar_run)
     specs = [
         {
             "run_name": image_run,
-            "group": "patchvit_pretrain",
+            "group": f"{family}_pretrain",
             "stage": "pretrain",
             "seed": seed,
-            "method_tags": "scenes31_34,patchvit,image_pretrain,single_modal",
+            "method_tags": f"scenes31_34,{family},image_pretrain,single_modal",
             "expected_epochs": pretrain_epochs,
             "priority": "high",
             "execution_mode": "train",
+            "requires": "",
             "config": _pretrain_config(
                 base_path=IMAGE_PRETRAIN_BASE,
                 run_name=image_run,
@@ -110,19 +142,21 @@ def _build_rows(
                 scenes=scenes,
                 seed=seed,
                 modality="image",
+                family=family,
                 encoder=encoder,
                 epochs=pretrain_epochs,
             ),
         },
         {
             "run_name": lidar_run,
-            "group": "patchvit_pretrain",
+            "group": f"{family}_pretrain",
             "stage": "pretrain",
             "seed": seed,
-            "method_tags": "scenes31_34,patchvit,lidar_pretrain,single_modal",
+            "method_tags": f"scenes31_34,{family},lidar_pretrain,single_modal",
             "expected_epochs": pretrain_epochs,
             "priority": "high",
             "execution_mode": "train",
+            "requires": "",
             "config": _pretrain_config(
                 base_path=LIDAR_PRETRAIN_BASE,
                 run_name=lidar_run,
@@ -130,16 +164,17 @@ def _build_rows(
                 scenes=scenes,
                 seed=seed,
                 modality="lidar",
+                family=family,
                 encoder=encoder,
                 epochs=pretrain_epochs,
             ),
         },
         {
             "run_name": plain_run,
-            "group": "patchvit_downstream",
+            "group": f"{family}_downstream",
             "stage": "downstream",
             "seed": seed,
-            "method_tags": "scenes31_34,proto,randomdrop_subset,patchvit,es40",
+            "method_tags": f"scenes31_34,proto,randomdrop_subset,{family},es40",
             "expected_epochs": downstream_epochs,
             "priority": "high",
             "execution_mode": "train",
@@ -149,6 +184,7 @@ def _build_rows(
                 output_dir=output_dir,
                 scenes=scenes,
                 seed=seed,
+                family=family,
                 encoder=encoder,
                 image_checkpoint=image_checkpoint,
                 lidar_checkpoint=lidar_checkpoint,
@@ -158,10 +194,10 @@ def _build_rows(
         },
         {
             "run_name": jepa_run,
-            "group": "patchvit_downstream_jepa",
+            "group": f"{family}_downstream_jepa",
             "stage": "downstream",
             "seed": seed,
-            "method_tags": "scenes31_34,proto,randomdrop_subset,patchvit,jepa,es40",
+            "method_tags": f"scenes31_34,proto,randomdrop_subset,{family},jepa,es40",
             "expected_epochs": downstream_epochs,
             "priority": "high",
             "execution_mode": "train",
@@ -171,6 +207,7 @@ def _build_rows(
                 output_dir=output_dir,
                 scenes=scenes,
                 seed=seed,
+                family=family,
                 encoder=encoder,
                 image_checkpoint=image_checkpoint,
                 lidar_checkpoint=lidar_checkpoint,
@@ -179,7 +216,7 @@ def _build_rows(
             ),
         },
     ]
-    rows = []
+    rows: list[dict[str, Any]] = []
     for spec in specs:
         config_path = out_dir / f"{spec['run_name']}.yaml"
         rows.append({**spec, "config_path": rel(config_path), "path": config_path})
@@ -194,6 +231,7 @@ def _pretrain_config(
     scenes: list[int],
     seed: int,
     modality: str,
+    family: str,
     encoder: str,
     epochs: int,
 ) -> dict[str, Any]:
@@ -202,7 +240,7 @@ def _pretrain_config(
     cfg["experiment"]["seed"] = int(seed)
     cfg["model"]["modalities"] = [modality]
     cfg["model"]["primary"]["modalities"] = [modality]
-    cfg["model"]["primary"]["encoders"] = {modality: _patchvit_encoder_cfg(encoder)}
+    cfg["model"]["primary"]["encoders"] = {modality: _encoder_cfg(family, encoder)}
     cfg["training"].update(
         {
             "epochs": int(epochs),
@@ -236,6 +274,7 @@ def _downstream_config(
     output_dir: str,
     scenes: list[int],
     seed: int,
+    family: str,
     encoder: str,
     image_checkpoint: str,
     lidar_checkpoint: str,
@@ -259,8 +298,8 @@ def _downstream_config(
     primary["use_beam_prototype_alignment"] = True
     primary["use_full_to_partial_kd"] = False
     primary["kd_teacher_mode"] = "disabled"
-    primary["encoders"]["image"] = _patchvit_encoder_cfg(encoder)
-    primary["encoders"]["lidar"] = _patchvit_encoder_cfg(encoder)
+    primary["encoders"]["image"] = _encoder_cfg(family, encoder)
+    primary["encoders"]["lidar"] = _encoder_cfg(family, encoder)
     primary.setdefault("encoder_checkpoint_paths", {})
     primary["encoder_checkpoint_paths"].update({"image": image_checkpoint, "lidar": lidar_checkpoint})
     training.update(
@@ -308,19 +347,31 @@ def _downstream_config(
     return cfg
 
 
-def _patchvit_encoder_cfg(name: str) -> dict[str, Any]:
-    return {
-        "type": name,
-        "output_dim": 64,
-        "latent_dim": 64,
-        "patch_size": 16,
-        "depth": 1,
-        "num_heads": 4,
-        "mlp_ratio": 2.0,
-        "dropout": 0.1,
-        "max_tokens": 256,
-        "pooling": "mean",
-    }
+def _encoder_cfg(family: str, name: str) -> dict[str, Any]:
+    if family == "tinyvit":
+        return {
+            "type": name,
+            "output_dim": 64,
+            "pretrained": False,
+            "freeze_backbone": False,
+            "unfreeze_stages": [],
+            "unfreeze_last_n_stages": 0,
+            "dropout": 0.1,
+        }
+    if family == "patchvit":
+        return {
+            "type": name,
+            "output_dim": 64,
+            "latent_dim": 64,
+            "patch_size": 16,
+            "depth": 1,
+            "num_heads": 4,
+            "mlp_ratio": 2.0,
+            "dropout": 0.1,
+            "max_tokens": 256,
+            "pooling": "mean",
+        }
+    raise ValueError(f"Unsupported encoder family: {family}")
 
 
 def _scene_dataset_cfg(scenes: list[int], *, seq_len: int, num_pred: int, cache_enabled: bool) -> dict[str, Any]:
@@ -406,20 +457,23 @@ def _write_budget_manifest(
     output_dir: str,
     scenes: list[int],
     rows: list[dict[str, Any]],
+    family: str,
     pretrain_epochs: int,
     downstream_epochs: int,
 ) -> None:
     payload = {
-        "workflow": "scenes31_34_patchvit_encoder_ablation",
-        "change_id": "fix-scenes31-34-patchvit-encoder-ablation",
+        "workflow": "scenes31_34_encoder_ablation",
+        "change_id": "prune-missing-modality-mainline-surface",
+        "family": family,
         "config_manifest": rel(out_dir / "experiment_manifest.csv"),
         "dataset_family": "DeepSense6G",
         "scenes": list(scenes),
         "reads_real_dataset": True,
-        "gpu_plan": "GPU1/2: 2 parallel pretrain workers, then 2 parallel downstream workers",
+        "gpu_plan": "family/manifest runner uses user-supplied GPU ids; no fixed GPU id is encoded",
         "outputs_root": str(output_dir),
         "checkpoint_plan": "writes pretrain and downstream checkpoints under ignored outputs root",
         "cache_plan": "sample_cache disabled in generated configs; dataloader may read existing source data only",
+        "stop_condition": "runner exits after both stages finish or a stage reports failed/missing_checkpoint",
         "artifact_boundary": "outputs/logs/cache/checkpoints are local runtime artifacts and must not be committed",
         "epochs": {"pretrain": int(pretrain_epochs), "downstream": int(downstream_epochs)},
         "runs": [

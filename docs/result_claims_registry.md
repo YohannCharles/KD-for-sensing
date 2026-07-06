@@ -15,6 +15,8 @@ Claim status：
 - `historical ablation`：旧口径记录，不能覆盖 current summary。
 - `unverified`：文档保留计划或入口，但当前未登记可引用数值。
 
+配置收缩规则：JEPA Image+GPS 与 RBMA claim rows 只指向保留的 entity YAML、diagnostic manifest 或明确 local/manual runner；Scene31/Scene31-34 generated queues 通过 generator + manifest 复跑，生成 YAML 和训练输出仍留在 ignored local roots。配置删除或生成化不会把 `pending`、`unverified`、`mock/smoke` 或 `historical ablation` 自动升级为 promoted claim。
+
 | claim_id | model line | config / runner | run date / commit | dataset / split | target / metric field | value summary | checkpoint provenance | claim status | caveat |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `CLAIM-BB-OFFICIAL-BLOCKED` | Arnold22 official Table III | official BeamBench `challenge.py` plan via package CLI module | 2026-06-07, local audit commit `00b693b9...` | official raw test CSV unavailable locally | official DBA | no official metric reported | official AE/fusion weights missing; official exact packaging incomplete | `blocked official reproduction` | Do not fill paper or leaderboard numbers until official data, weights, source/config and environment are available. |

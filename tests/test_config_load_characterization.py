@@ -1,3 +1,4 @@
+import ast
 import sys
 from pathlib import Path
 
@@ -8,6 +9,91 @@ SRC = ROOT / "src"
 from kd_sensing.config import load_config  # noqa: E402
 from kd_sensing.diagnostics.jepa_benchmark_manifest import load_benchmark_manifest  # noqa: E402
 from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
+
+RBMA_MISSING_WORKFLOW_YAML = {
+    "_base_no_jepa_rbma.yaml",
+    "amber_style_mask_baseline.yaml",
+    "amber_style_mask_baseline_fullrun.yaml",
+    "jepa_small_lambda_rbma_proto_kd.yaml",
+    "no_jepa_rbma.yaml",
+    "no_jepa_rbma_kd.yaml",
+    "no_jepa_rbma_proto.yaml",
+    "no_jepa_rbma_proto_kd.yaml",
+    "no_jepa_rbma_proto_kd_fullrun.yaml",
+    "proto_only_baseline.yaml",
+    "weighted_sum_mask.yaml",
+    "weighted_sum_reliability.yaml",
+    "weighted_sum_reliability_beam_proto.yaml",
+    "weighted_sum_reliability_beam_proto_kd.yaml",
+}
+
+RBMA_STRONG_ENCODER_YAML = {
+    "_base_strong_encoders.yaml",
+    "amber_style_mask_baseline_fullrun.yaml",
+    "no_jepa_rbma_proto_kd_fullrun.yaml",
+    "weighted_sum_mask.yaml",
+    "weighted_sum_reliability.yaml",
+    "weighted_sum_reliability_beam_proto.yaml",
+    "weighted_sum_reliability_beam_proto_kd.yaml",
+}
+
+JEPA_IMAGE_GPS_YAML = {
+    "architecture_sweep_lowmem.yaml",
+    "architecture_sweep_smoke.yaml",
+    "architecture_sweep_strict.yaml",
+    "geometry_prior_dba_aware_loss_2604_s32_s34_lowmem.yaml",
+    "geometry_prior_image_only_control_2604_s32_s34_lowmem.yaml",
+    "geometry_prior_logit_fusion_2604_s32_s34_lowmem.yaml",
+    "geometry_prior_mixed_curriculum_2604_s32_s34_lowmem.yaml",
+    "geometry_prior_prior_only_2604_s32_s34_lowmem.yaml",
+    "geometry_prior_teacher_guided_2604_s32_s34_lowmem.yaml",
+    "image_gps_jepa_gps_biased_best_2604_s32_s34_lowmem.yaml",
+    "image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml",
+    "image_gps_jepa_gps_biased_pooler_param_groups_beambench_fair_lowmem.yaml",
+    "image_gps_jepa_gps_query_pool_best_2604_s32_s34_fasttrain.yaml",
+    "image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml",
+    "image_gps_jepa_gps_query_pool_best_beambench_fair_lowmem.yaml",
+    "image_gps_jepa_gps_query_pool_k4_2604_s32_s34_lowmem.yaml",
+    "image_gps_jepa_k_token_pooler_smoke.yaml",
+    "image_gps_jepa_predictive_gps_query_plus_plus_2604_s32_s34_lowmem.yaml",
+    "image_gps_jepa_predictive_hybrid_beambench_fair_lowmem.yaml",
+    "image_gps_jepa_random_best_2604_s32_s34_lowmem.yaml",
+    "image_gps_jepa_random_best_beambench_fair_lowmem.yaml",
+    "image_gps_jepa_random_last_beambench_fair_lowmem.yaml",
+    "image_gps_supervised_2604_s32_s34_lowmem.yaml",
+    "image_gps_supervised_beambench_fair_lowmem.yaml",
+    "image_only_supervised_beambench_fair_lowmem.yaml",
+    "safe_residual_rerank_anchor_only_control_2604_s32_s34_lowmem.yaml",
+    "safe_residual_rerank_clean_smoke_2604_s32_s34_lowmem.yaml",
+    "safe_residual_rerank_no_regret_ablation_2604_s32_s34_lowmem.yaml",
+    "safe_residual_rerank_prior_candidates_2604_s32_s34_lowmem.yaml",
+    "safe_residual_rerank_strict_candidate_2604_s32_s34_lowmem.yaml",
+    "safe_residual_rerank_teacher_anchor_2604_s32_s34_lowmem.yaml",
+}
+
+RETIRED_EXPERIMENT_CONFIG_TOKENS = (
+    "hist_beam",
+    "bgam",
+    "viewer_manifest",
+    "amr_net_gps_image",
+    "jepa_msac",
+    "logits_kd",
+    "raymobtime",
+)
+
+
+def _yaml_names(rel_root: str) -> set[str]:
+    return {path.name for path in (ROOT / rel_root).glob("*.yaml")}
+
+
+def _literal_assignment(path: Path, name: str):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {path}")
 
 
 def test_config_load_pipeline_characterization_covers_sources_and_overrides():
@@ -70,6 +156,74 @@ def test_rbma_missing_workflow_configs_load_without_retired_kd_or_vision():
     assert "vision" not in text
     assert "logits_kd" not in text
     assert "rkd" not in text
+
+
+def test_shrunk_experiment_config_families_have_explicit_surfaces_and_boundaries():
+    rbma_root = "configs/fusion/experiments/rbma_missing_workflow"
+    strong_root = "configs/fusion/experiments/rbma_missing_workflow_strong_encoders"
+    jepa_root = "configs/fusion/experiments/jepa_image_gps"
+
+    assert _yaml_names(rbma_root) == RBMA_MISSING_WORKFLOW_YAML
+    assert _yaml_names(strong_root) == RBMA_STRONG_ENCODER_YAML
+    assert _yaml_names(jepa_root) == JEPA_IMAGE_GPS_YAML
+
+    raw_text = "\n".join(
+        path.read_text(encoding="utf-8").lower()
+        for rel_root in (rbma_root, strong_root, jepa_root)
+        for path in (ROOT / rel_root).glob("*.yaml")
+    )
+    for token in RETIRED_EXPERIMENT_CONFIG_TOKENS:
+        assert token not in raw_text
+
+    default_configs = _literal_assignment(ROOT / "scripts/run_rbma_missing_workflow.py", "DEFAULT_CONFIGS")
+    assert default_configs == [
+        f"{rbma_root}/amber_style_mask_baseline_fullrun.yaml",
+        f"{rbma_root}/weighted_sum_mask.yaml",
+        f"{rbma_root}/weighted_sum_reliability.yaml",
+        f"{rbma_root}/weighted_sum_reliability_beam_proto.yaml",
+        f"{rbma_root}/weighted_sum_reliability_beam_proto_kd.yaml",
+        f"{rbma_root}/no_jepa_rbma_proto_kd_fullrun.yaml",
+    ]
+
+    rbma = load_config(ROOT / rbma_root / "weighted_sum_reliability_beam_proto_kd.yaml")
+    strong = load_config(ROOT / strong_root / "weighted_sum_mask.yaml")
+    bbfair = load_config(ROOT / jepa_root / "image_gps_supervised_beambench_fair_lowmem.yaml")
+    query_2604 = load_config(ROOT / jepa_root / "image_gps_jepa_gps_query_pool_best_2604_s32_s34_lowmem.yaml")
+    predictive = load_config(ROOT / jepa_root / "image_gps_jepa_predictive_gps_query_plus_plus_2604_s32_s34_lowmem.yaml")
+
+    assert rbma["experiment"]["seed"] == 11
+    assert rbma["training"]["epochs"] == 40
+    assert rbma["training"]["mask_sampler"] == "pattern_balanced"
+    assert rbma["training"]["use_full_to_partial_kd"] is True
+    assert rbma["loss"]["u_mask_beam_jepa"]["kd_teacher_mode"] == "online_full"
+    assert rbma["evaluation"]["missing_patterns"]["patterns"][:2] == ["full", "missing_gps"]
+    assert rbma["data"]["dataset"]["sample_cache"]["backend"] == "lmdb"
+    assert rbma["output"]["dir"].startswith("outputs")
+
+    checkpoint_paths = strong["model"]["primary"]["encoder_checkpoint_paths"]
+    assert sorted(checkpoint_paths) == ["gps", "image", "lidar", "radar"]
+    assert all(str(path).startswith("outputs/scene31/best_checkpoints/") for path in checkpoint_paths.values())
+
+    bbfair_dataset = bbfair["data"]["dataset"]
+    assert bbfair_dataset["seq_len"] == 1
+    assert bbfair_dataset["num_pred"] == 1
+    assert bbfair_dataset["train_scenes"] == [32, 33, 34]
+    assert bbfair_dataset["test_scenes"] == [31, 32, 33, 34]
+    assert bbfair_dataset["beam_target_source"] == "current"
+    assert bbfair_dataset["gps_feature_mode"] == "paper_distance_angle"
+    assert bbfair["model"]["primary"]["type"] == "modular_sequence"
+
+    query_dataset = query_2604["data"]["dataset"]
+    assert query_dataset["seq_len"] == 5
+    assert query_dataset["num_pred"] == 1
+    assert query_dataset["train_scenes"] == [32, 33, 34]
+    assert query_dataset["gps_feature_mode"] == "relative_polar"
+    assert query_2604["model"]["primary"]["encoders"]["image"]["pooling"] == "gps_query_attention"
+
+    assert predictive["experiment"]["seed"] == 17
+    assert predictive["output"]["dir"].startswith("outputs/analysis/")
+    assert predictive["model"]["primary"]["encoders"]["image"]["pooling"] == "predictive_gps_query"
+    assert predictive["model"]["primary"]["representation_core"]["type"] == "feature_consistency_gate"
 
 
 def test_predictive_jepa_hybrid_config_loads_and_preserves_existing_jepa_baselines(tmp_path: Path):

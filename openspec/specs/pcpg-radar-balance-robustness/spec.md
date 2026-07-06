@@ -1,7 +1,7 @@
 # pcpg-radar-balance-robustness Specification
 
 ## Purpose
-TBD - created by archiving change add-pcpg-radar-balance-robustness. Update Purpose after archive.
+定义 PCPG（Pattern-Conditioned Prototype Gate）和 radar-protected branch-balanced 训练的 opt-in 缺失模态鲁棒实验边界，覆盖 hard subset weighting、checkpoint selection、oracle upper-bound 与本地 launcher/summary 产物边界，避免其成为默认训练语义或 package CLI。
 ## Requirements
 ### Requirement: PCPG opt-in fusion
 系统 MUST 提供显式 opt-in 的 Pattern-Conditioned Prototype Gate（PCPG）融合能力，用于缺失模态鲁棒实验。PCPG MUST 根据 available mask、missing pattern、每模态 logits/prototype score 的可靠性统计和可扩展 per-modality features 生成 gate；不可用模态权重 MUST 为 0，可用模态权重 MUST 归一化且不得产生 NaN。默认训练和评估 MUST 不启用 PCPG。
@@ -78,4 +78,3 @@ TBD - created by archiving change add-pcpg-radar-balance-robustness. Update Purp
 - **WHEN** summary helper 扫描 `outputs/pcpg_radar_balance_v1`
 - **THEN** `summary.csv` MUST 至少包含 experiment、seed、full、avg_missing、image_only、lidar_only、radar_only、missing_image、miss1、miss2、miss3、within3、MAE、selection_metric、best_epoch、full-minus-avg_missing gap 和相对 baseline delta 字段
 - **AND** `summary.md` MUST 包含 mean/std、delta、gate diagnostics 简述和目标达成判断
-

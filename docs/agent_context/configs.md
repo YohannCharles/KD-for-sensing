@@ -22,6 +22,7 @@
 
 - 实体 YAML 优先；virtual config 只服务 current recipe，不接管 retired KD、HiST、residual、BGAM 或 viewer route。
 - `configs/scene31/` 的 generated YAML 默认不提交；源码长期保留 manifest、base config、generator 和必要 local/manual overlay。
+- `configs/difficulty/`、`configs/eval/`、`configs/image/resnet18_strong.yaml` 和 `configs/csi/medium_degraded_supervised.yaml` 是已登记 current/local 配置族；删除前先提供等价 recipe、manifest 或 claim/provenance 更新。
 - 新 config family 改变训练流程、数据契约或公共入口时，应先走 OpenSpec change。
 - 配置路径可保留熟悉文件名，但语义必须由当前 `model.primary` 和 canonical recipe 表达。
 

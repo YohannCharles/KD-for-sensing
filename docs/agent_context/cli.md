@@ -21,6 +21,7 @@
 - CLI 文件应保持 thin parser/IO glue；核心逻辑放回 owner module。
 - 不新增旧顶层脚本、退役 console script、package facade 或绕过 `src/kd_sensing` 的入口。
 - `scripts/` 中的本地 runner 必须在 inventory 中说明 lifecycle、输出边界和删除条件。
+- Scene31-34 encoder ablation 使用 `scripts/generate_scenes31_34_encoder_ablation.py --family tinyvit|patchvit` 和唯一 family/manifest runner；不要新增 PatchViT 专用 shell。
 - 所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
 
 ## 验证

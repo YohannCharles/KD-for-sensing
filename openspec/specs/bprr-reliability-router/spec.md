@@ -1,7 +1,7 @@
 # bprr-reliability-router Specification
 
 ## Purpose
-TBD - created by archiving change add-bprr-reliability-router. Update Purpose after archive.
+定义 BPRR（Beam-Prototype Reliability Router）缺失模态融合、校准、gate 正则、oracle upper-bound 和本地实验脚本边界，确保该路线显式 opt-in、不改变默认 U-MaskBeamJEPA 语义，并把 outputs/logs 保持为本地产物。
 ## Requirements
 ### Requirement: Raw confidence gate opt-in baseline
 系统 MUST 提供显式 opt-in 的 `raw_conf_gate` 融合 baseline，用于评估普通 confidence gate 是否偏向强模态。该 gate MUST 只基于可用模态的 logits-derived confidence 特征和 available mask 生成权重，默认训练和评估 MUST 不启用。
@@ -91,4 +91,3 @@ TBD - created by archiving change add-bprr-reliability-router. Update Purpose af
 - **WHEN** summary helper 扫描 `outputs/bprr_reliability_router_v1`
 - **THEN** `summary.csv` MUST 至少包含 experiment、seed、full、drop1、drop2、drop3、drop1_3_mean、avg_missing、image_only、lidar_only、radar_only、missing_image、within3、MAE、selection_metric、best_epoch、gate_entropy、mean_gate_image、mean_gate_lidar、mean_gate_radar 和 radar gate pattern fields
 - **AND** `summary.md` MUST 包含相对 e5 baseline、相对 e6 robustness-first、raw gate vs BPRR、BPRR vs oracle、hard subset / JEPA ablation 和 gate collapse 判断
-

@@ -11,6 +11,10 @@
 - `local substitute`：本仓库本地替代实验，不等同 official reproduction。
 - `local experimental baseline`：本仓库实验场景中的可训练 baseline，不声明论文官方复现。
 
+Scene31-34 final polish、presentation 和 historical table helper 只作为 local/manual post-processing 保留；当前主实验事实仍以 `scripts/run_scenes31_34_main.sh`、summary、paper table 和 conclusion owner 为准，不把 presentation/polish shell 写成 quickstart 或 package CLI。
+
+配置收缩后，JEPA Image+GPS 与 RBMA rows 仍指向保留的 entity YAML；Scene31 night-grid/next-round/funnel/magic 和 Scene31-34 main/encoder-ablation rows 通过 generator、manifest 和 ignored local config root 复跑，不把生成 YAML 纳入 current source surface。
+
 | line_id | 研究问题 / 用途 | 当前模型或入口 | config / manifest | 数据与场景 | split / target | metric profile | 状态 | 对照 / 结果账本 | caveat |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `jepa-gps-biased-bbfair` | Image+GPS JEPA checkpoint reuse 是否优于 supervised/random control | `model.primary` Image+GPS downstream，JEPA GPS-biased context encoder | `configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml` | DeepSense6G S32-S34 train，S31-S34 test | `seq_len=1`，`num_pred=1`，`beam_target_source=current`，train-split validation | BeamBench linear Top-1/3/5 DBA | `lowmem formal` | `CLAIM-JEPA-BBFAIR-PENDING` | BeamBench-fair 对齐的是输入/split/target/metric，不是 Arnold22 Camera AE+GPS Direct 模型。 |

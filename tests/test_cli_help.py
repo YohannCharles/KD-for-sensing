@@ -7,6 +7,8 @@ import tomllib
 
 import pytest
 
+from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_SURFACE
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -14,29 +16,7 @@ SRC = ROOT / "src"
 
 @pytest.mark.parametrize(
     ("command", "expected"),
-    [
-        ("kd-sensing-train", "--config"),
-        ("kd-sensing-evaluate", "--weights"),
-        ("kd-sensing-preprocess", "--action"),
-        ("kd-sensing-runs", "--outputs"),
-        ("kd-sensing-research-dashboard", "--output-html"),
-        ("kd-sensing-research-preview", "--qa-html"),
-        ("kd-sensing-clean-runtime-artifacts", "--manifest"),
-        ("kd-sensing-jepa-visual-analysis", "--analysis-config"),
-        ("kd-sensing-jepa-gps-shortcut-benchmark", "--manifest"),
-        ("kd-sensing-wcl2025-missing-modality-audit", "--output-root"),
-        ("kd-sensing-paper-export", "--input"),
-        ("kd-sensing-dataset-audit", "--dataset-family"),
-        ("kd-sensing-mmw-town-gps-v2", "--config"),
-        ("kd-sensing-plot-mmw-town-gps-v2", "--results-dir"),
-        ("kd-sensing-compare-mmw-town-gps-v2", "--previous-dir"),
-        ("kd-sensing-train-beambench-image-ae-gps", "--scene"),
-        ("kd-sensing-run-beambench-image-ae-gps-tableiii", "--output-root"),
-        ("kd-sensing-tii-vlrg-transformer", "--execute"),
-        ("kd-sensing-inspect-mmw-physics", "--max-samples"),
-        ("kd-sensing-model-architecture-summary", "--config"),
-        ("kd-sensing-project-surface-doctor", "--scope"),
-    ],
+    list(PUBLIC_CLI_HELP_SMOKE),
 )
 def test_console_script_help_is_available(command: str, expected: str):
     result = subprocess.run(
@@ -49,6 +29,14 @@ def test_console_script_help_is_available(command: str, expected: str):
 
     assert result.returncode == 0, result.stderr
     assert expected in result.stdout
+
+
+def test_public_cli_help_smoke_covers_pyproject_console_scripts():
+    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+    public_commands = {name for name in scripts if name.startswith("kd-sensing-")}
+
+    assert set(PUBLIC_CLI_SURFACE) == public_commands
+    assert {name for name, _expected in PUBLIC_CLI_HELP_SMOKE} == public_commands
 
 
 def test_retired_top8_residual_cli_scripts_are_not_declared():

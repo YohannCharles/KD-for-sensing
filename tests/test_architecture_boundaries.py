@@ -5,6 +5,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_LIFECYCLES, PUBLIC_CLI_SURFACE
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -67,6 +69,9 @@ DELETED_SURFACE_PATHS = (
     "scripts/run_proto_vs_btapa_8gpu.sh",
     "scripts/run_scene31_next_round.sh",
     "scripts/analyze_csi_hardening_sweep.py",
+    "scripts/generate_scenes31_34_tinyvit_ablation.py",
+    "scripts/generate_scenes31_34_patchvit_ablation.py",
+    "scripts/run_scenes31_34_patchvit_ablation.sh",
 )
 
 FORBIDDEN_IMPORTS = (
@@ -261,6 +266,31 @@ def test_cli_modules_are_console_scripts_or_shared_helpers():
         has_runnable = "main" in names or "console_main" in names or "build_parser" in names
         if has_runnable and module_name not in console_modules and module_name not in shared_helpers:
             violations.append(f"{module_name} ({_rel(path)})")
+
+    assert not violations
+
+
+def test_public_console_scripts_have_lifecycle_smoke_and_inventory_anchor():
+    scripts = {
+        name: target
+        for name, target in _pyproject()["project"]["scripts"].items()
+        if name.startswith("kd-sensing-")
+    }
+    smoke_commands = {name for name, _expected in PUBLIC_CLI_HELP_SMOKE}
+    inventory = INVENTORY.read_text(encoding="utf-8")
+
+    assert set(PUBLIC_CLI_SURFACE) == set(scripts)
+    assert smoke_commands == set(scripts)
+
+    violations: list[str] = []
+    for command, spec in PUBLIC_CLI_SURFACE.items():
+        if spec.target != scripts[command]:
+            violations.append(f"{command}: target {scripts[command]} != {spec.target}")
+        if spec.lifecycle not in PUBLIC_CLI_LIFECYCLES:
+            violations.append(f"{command}: invalid lifecycle {spec.lifecycle}")
+        for marker in (f"`{command}`", f"`{spec.lifecycle}`", spec.owner, spec.output_boundary):
+            if marker not in inventory:
+                violations.append(f"{command}: missing inventory marker {marker}")
 
     assert not violations
 
@@ -745,6 +775,44 @@ def test_scene31_retained_yaml_surface_is_explicitly_registered():
         assert rel_path.split("/")[-1].split("_", 1)[0] in inventory or rel_path in inventory
 
 
+def test_current_target_experiment_config_references_resolve():
+    scan_paths = [
+        ROOT / rel_path
+        for rel_path in (
+            "README.md",
+            "configs/README.md",
+            "docs/experiment_matrix.md",
+            "docs/experiment_protocols.md",
+            "docs/mainline_model_catalog.md",
+            "docs/project_surface_inventory.md",
+            "docs/result_claims_registry.md",
+            "scripts/run_rbma_missing_workflow.py",
+        )
+    ]
+    scan_paths.extend(sorted((ROOT / "configs/diagnostics").glob("*.yaml")))
+    scan_paths.extend(sorted((ROOT / "openspec/specs").glob("*/spec.md")))
+    path_pattern = re.compile(
+        r"configs/(?:scene31|fusion/experiments/(?:jepa_image_gps|rbma_missing_workflow|"
+        r"rbma_missing_workflow_strong_encoders))/[A-Za-z0-9_./{}*-]+\.ya?ml"
+    )
+    historical_markers = ("retired", "historical", "已删除", "退役", "历史")
+    broken: list[str] = []
+
+    for path in scan_paths:
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in path_pattern.finditer(line):
+                ref = match.group(0)
+                if any(marker in ref for marker in ("*", "{", "}")):
+                    continue
+                if (ROOT / ref).exists():
+                    continue
+                if any(marker in line.lower() for marker in historical_markers):
+                    continue
+                broken.append(f"{_rel(path)}:{line_number}: {ref}")
+
+    assert not broken
+
+
 def test_scene31_local_manual_scripts_are_explicitly_registered():
     actual_runners = {
         _rel(path)
@@ -764,6 +832,19 @@ def test_scene31_local_manual_scripts_are_explicitly_registered():
     assert actual_tools == SCENE31_GENERATORS_AND_SUMMARIES
     for rel_path in sorted(actual_runners | actual_tools):
         assert f"`{rel_path}`" in inventory
+
+
+def test_scene31_34_encoder_ablation_surface_is_unified():
+    generator = ROOT / "scripts/generate_scenes31_34_encoder_ablation.py"
+    runner = ROOT / "scripts/run_scenes31_34_tinyvit_ablation.sh"
+    runner_text = runner.read_text(encoding="utf-8")
+
+    assert generator.exists()
+    assert "--family" in generator.read_text(encoding="utf-8")
+    assert "generate_scenes31_34_encoder_ablation.py" in runner_text
+    assert 'GPUS=""' in runner_text
+    assert "CUDA_VISIBLE_DEVICES=1" not in runner_text
+    assert not (ROOT / "scripts/run_scenes31_34_patchvit_ablation.sh").exists()
 
 
 def test_root_temp_runbooks_do_not_return():

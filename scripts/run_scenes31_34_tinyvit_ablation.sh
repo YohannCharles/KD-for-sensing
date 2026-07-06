@@ -4,7 +4,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/scene31_runner_common.sh"
 
-ROOT="outputs/scenes31_34_tinyvit_lmdb"
+FAMILY="tinyvit"
+ROOT=""
+ROOT_PROVIDED=0
 MANIFEST=""
 MANIFEST_PROVIDED=0
 SCENES="31,32,33,34"
@@ -18,10 +20,10 @@ TRAIN_ONLY=0
 EVAL_ONLY=0
 AUTO_EVAL=0
 
-IMAGE_PRETRAIN="scenes31_34_tinyvit_image_pretrain_seed1"
-LIDAR_PRETRAIN="scenes31_34_tinyvit_lidar_pretrain_seed1"
-TINYVIT_DOWNSTREAM="scenes31_34_proto_randomdrop_subset_tinyvit_es40_seed1"
-TINYVIT_JEPA_DOWNSTREAM="scenes31_34_proto_randomdrop_subset_tinyvit_jepa_es40_seed1"
+IMAGE_PRETRAIN=""
+LIDAR_PRETRAIN=""
+ENCODER_DOWNSTREAM=""
+ENCODER_JEPA_DOWNSTREAM=""
 
 OVERRIDES=(
   "data.cache.policy=read_only"
@@ -50,18 +52,19 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/run_scenes31_34_tinyvit_ablation.sh \
-    --root outputs/scenes31_34_tinyvit_lmdb \
+    --family tinyvit \
     --scenes 31,32,33,34 \
-    --gpus 1,2,3,4 \
+    --gpus <ids> \
     --max-parallel 4 \
     --auto-eval
 
 The runner has four total jobs, but downstream jobs depend on pretrain checkpoints:
-  stage 1: image/lidar TinyViT pretrain in parallel
-  stage 2: TinyViT downstream and TinyViT+JEPA downstream in parallel
+  stage 1: image/lidar encoder pretrain in parallel
+  stage 2: encoder downstream and encoder+JEPA downstream in parallel
 
 Options:
-  --root PATH              Output root.
+  --family NAME            Encoder family: tinyvit or patchvit. Default: tinyvit.
+  --root PATH              Output root. Default: outputs/scenes31_34_<family>_lmdb.
   --scenes IDS             Comma-separated DeepSense6G scenes.
   --manifest PATH          Generated manifest CSV. Default: <root>/generated_configs/experiment_manifest.csv.
   --gpu/--gpus IDS         Comma-separated GPU ids.
@@ -79,7 +82,8 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --root) ROOT="$2"; shift 2 ;;
+    --family) FAMILY="$2"; shift 2 ;;
+    --root) ROOT="$2"; ROOT_PROVIDED=1; shift 2 ;;
     --scenes) SCENES="$2"; shift 2 ;;
     --manifest) MANIFEST="$2"; MANIFEST_PROVIDED=1; shift 2 ;;
     --gpu|--gpus) GPUS="$2"; shift 2 ;;
@@ -95,6 +99,18 @@ while [[ $# -gt 0 ]]; do
     *) echo "[ERROR] unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+case "$FAMILY" in
+  tinyvit|patchvit) ;;
+  *) echo "[ERROR] --family must be tinyvit or patchvit" >&2; usage >&2; exit 2 ;;
+esac
+if [[ "$ROOT_PROVIDED" -eq 0 ]]; then
+  ROOT="outputs/scenes31_34_${FAMILY}_lmdb"
+fi
+IMAGE_PRETRAIN="scenes31_34_${FAMILY}_image_pretrain_seed1"
+LIDAR_PRETRAIN="scenes31_34_${FAMILY}_lidar_pretrain_seed1"
+ENCODER_DOWNSTREAM="scenes31_34_proto_randomdrop_subset_${FAMILY}_es40_seed1"
+ENCODER_JEPA_DOWNSTREAM="scenes31_34_proto_randomdrop_subset_${FAMILY}_jepa_es40_seed1"
 
 if [[ "$TRAIN_ONLY" -eq 1 && "$EVAL_ONLY" -eq 1 ]]; then
   echo "[ERROR] --train-only and --eval-only are mutually exclusive" >&2
@@ -143,7 +159,8 @@ mkdir -p "$ROOT/logs/train" "$ROOT/logs/eval" "$ROOT/logs/worker" "$ROOT/worker_
 
 ensure_configs() {
   if [[ "$MANIFEST_PROVIDED" -eq 0 || ! -f "$MANIFEST" ]]; then
-    conda run -n kd_mm_beam python scripts/generate_scenes31_34_tinyvit_ablation.py \
+    conda run -n kd_mm_beam python scripts/generate_scenes31_34_encoder_ablation.py \
+      --family "$FAMILY" \
       --out-dir "$(dirname "$MANIFEST")" \
       --output-dir "$ROOT" \
       --scenes "$SCENES" \
@@ -189,7 +206,7 @@ train_complete_at() {
 
 previous_failed() {
   local run_name="$1"
-  for file in "${ROOT%/}/failed_runs.txt" "${ROOT%/}/tinyvit_ablation_failed_runs.txt"; do
+  for file in "${ROOT%/}/failed_runs.txt" "${ROOT%/}/${FAMILY}_ablation_failed_runs.txt" "${ROOT%/}/encoder_ablation_failed_runs.txt"; do
     [[ -f "$file" ]] && grep -Fxq "$run_name" "$file" && return 0
   done
   return 1
@@ -312,7 +329,7 @@ run_one() {
     return
   fi
   case "$run_name" in
-    "$TINYVIT_DOWNSTREAM"|"$TINYVIT_JEPA_DOWNSTREAM")
+    "$ENCODER_DOWNSTREAM"|"$ENCODER_JEPA_DOWNSTREAM")
       run_eval "$gpu" "$run_name"
       ;;
   esac
@@ -365,7 +382,7 @@ run_stage() {
   local run_name gpu
   for run_name in "${runs[@]}"; do
     gpu="${GPU_LIST[$((slot % ${#GPU_LIST[@]}))]}"
-    run_one "$gpu" "$run_name" >"${ROOT%/}/logs/worker/tinyvit_${stage}_${run_name}.log" 2>&1 &
+    run_one "$gpu" "$run_name" >"${ROOT%/}/logs/worker/${FAMILY}_${stage}_${run_name}.log" 2>&1 &
     pids+=("$!")
     slot=$((slot + 1))
     if [[ "${#pids[@]}" -ge "$stage_parallel" ]]; then
@@ -413,7 +430,7 @@ json_array() {
 }
 
 summarize_status() {
-  local runs=("$IMAGE_PRETRAIN" "$LIDAR_PRETRAIN" "$TINYVIT_DOWNSTREAM" "$TINYVIT_JEPA_DOWNSTREAM")
+  local runs=("$IMAGE_PRETRAIN" "$LIDAR_PRETRAIN" "$ENCODER_DOWNSTREAM" "$ENCODER_JEPA_DOWNSTREAM")
   completed=()
   skipped=()
   failed=()
@@ -457,10 +474,12 @@ summarize_status() {
   write_list "${ROOT%/}/eval_failed_runs.txt" "${eval_failed[@]}"
   write_list "${ROOT%/}/missing_config_runs.txt" "${missing_config[@]}"
   write_list "${ROOT%/}/missing_checkpoint_runs.txt" "${missing_checkpoint[@]}"
-  cp "${ROOT%/}/failed_runs.txt" "${ROOT%/}/tinyvit_ablation_failed_runs.txt"
+  cp "${ROOT%/}/failed_runs.txt" "${ROOT%/}/${FAMILY}_ablation_failed_runs.txt"
+  cp "${ROOT%/}/failed_runs.txt" "${ROOT%/}/encoder_ablation_failed_runs.txt"
   {
     echo "{"
-    echo "  \"workflow\": \"scenes31_34_tinyvit_encoder_ablation\","
+    echo "  \"workflow\": \"scenes31_34_encoder_ablation\","
+    echo "  \"family\": \"${FAMILY}\","
     echo "  \"root\": \"${ROOT}\","
     echo "  \"scenes\": \"${SCENES}\","
     echo "  \"gpus\": \"${GPUS}\","
@@ -483,16 +502,16 @@ rm -f "${ROOT%/}/worker_status/"*.status
 rm -f "${ROOT%/}/worker_status/.status"
 
 if [[ "$EVAL_ONLY" -eq 0 ]]; then
-  run_stage pretrain "$IMAGE_PRETRAIN" "$LIDAR_PRETRAIN"
+    run_stage pretrain "$IMAGE_PRETRAIN" "$LIDAR_PRETRAIN"
   if ! check_downstream_dependencies; then
-    write_train_status "$TINYVIT_DOWNSTREAM" missing_checkpoint
-    write_train_status "$TINYVIT_JEPA_DOWNSTREAM" missing_checkpoint
+    write_train_status "$ENCODER_DOWNSTREAM" missing_checkpoint
+    write_train_status "$ENCODER_JEPA_DOWNSTREAM" missing_checkpoint
     summarize_status
     exit 1
   fi
 fi
 
-run_stage downstream "$TINYVIT_DOWNSTREAM" "$TINYVIT_JEPA_DOWNSTREAM"
+run_stage downstream "$ENCODER_DOWNSTREAM" "$ENCODER_JEPA_DOWNSTREAM"
 summarize_status
 if [[ -s "${ROOT%/}/failed_runs.txt" || -s "${ROOT%/}/eval_failed_runs.txt" ]]; then
   echo "non-ok runs written to ${ROOT%/}/failed_runs.txt and ${ROOT%/}/eval_failed_runs.txt" >&2

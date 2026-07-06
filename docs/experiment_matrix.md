@@ -99,6 +99,8 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_gps_super
 - CSI hardening：`configs/csi/hardening_matrix/` 和 `configs/fusion/csi_hardening_matrix/`
 - JEPA shortcut benchmark / visual analysis：`configs/diagnostics/*.yaml`
 
+配置收缩状态：JEPA/RBMA 上述路径是保留的 current/local entity YAML；Scene31 next-round/night-grid/funnel/magic 与 Scene31-34 main/encoder-ablation 使用 generator + manifest 重建本地 YAML，生成产物默认写入 ignored local config/output roots。
+
 ## 单模态和基础 Fusion
 
 单模态 canonical 矩阵使用 strong、lightweight 和 supervised 三类入口。所有入口都构建单个 `model.primary` 主模型。
