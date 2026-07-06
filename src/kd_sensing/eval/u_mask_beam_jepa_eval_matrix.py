@@ -1,6 +1,7 @@
 import hashlib
 import json
 import math
+from collections import Counter
 from typing import Any
 
 import torch
@@ -60,6 +61,7 @@ def evaluate_missing_matrix(
                     prediction_index=prediction_index,
                     max_batches=max_batches,
                     cfg=cfg,
+                    modalities=modalities,
                 )
             )
         for p_missing in random_missing or []:
@@ -76,6 +78,7 @@ def evaluate_missing_matrix(
                     prediction_index=prediction_index,
                     max_batches=max_batches,
                     cfg=cfg,
+                    modalities=modalities,
                 )
             )
     if "avg_missing" not in {row.get("pattern") for row in results}:
@@ -83,6 +86,66 @@ def evaluate_missing_matrix(
         if avg is not None:
             results.append(avg)
     _attach_comparability_metadata(results, modalities, cfg)
+    return results
+
+
+def evaluate_oracle_gate_matrix(
+    model,
+    dataloader,
+    device,
+    modalities: list[str],
+    patterns: dict[str, list[int]] | None = None,
+    random_missing: list[float] | None = None,
+    prediction_index: int | str = "last",
+    max_batches: int | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> list[dict]:
+    device = torch.device(device)
+    model.to(device)
+    model.eval()
+    fixed_patterns = patterns or get_default_missing_patterns(modalities)
+    results = []
+    with torch.no_grad():
+        for name, pattern in fixed_patterns.items():
+            results.append(
+                _evaluate_pattern(
+                    model,
+                    dataloader,
+                    device,
+                    pattern_name=name,
+                    pattern=pattern,
+                    prediction_index=prediction_index,
+                    max_batches=max_batches,
+                    cfg=cfg,
+                    modalities=modalities,
+                    oracle_gate=True,
+                )
+            )
+        for p_missing in random_missing or []:
+            results.append(
+                _evaluate_pattern(
+                    model,
+                    dataloader,
+                    device,
+                    pattern_name=f"random_{float(p_missing):g}",
+                    pattern=None,
+                    num_modalities=len(modalities),
+                    random_p=float(p_missing),
+                    prediction_index=prediction_index,
+                    max_batches=max_batches,
+                    cfg=cfg,
+                    modalities=modalities,
+                    oracle_gate=True,
+                )
+            )
+    if "avg_missing" not in {row.get("pattern") for row in results}:
+        avg = _average_missing_results(results)
+        if avg is not None:
+            avg["oracle_chosen_modality_distribution"] = ""
+            results.append(avg)
+    _attach_comparability_metadata(results, modalities, cfg)
+    for row in results:
+        row["oracle_gate"] = "true"
     return results
 
 
@@ -128,8 +191,11 @@ def _evaluate_pattern(
     cfg: dict[str, Any] | None,
     num_modalities: int | None = None,
     random_p: float | None = None,
+    modalities: list[str] | None = None,
+    oracle_gate: bool = False,
 ) -> dict[str, Any]:
     accumulator = _Accumulator()
+    oracle_counts: Counter[str] = Counter()
     mask_label = ",".join(str(int(value)) for value in pattern) if pattern is not None else f"random_{random_p:g}"
     for batch_index, raw_batch in enumerate(dataloader):
         if max_batches is not None and batch_index >= int(max_batches):
@@ -149,6 +215,9 @@ def _evaluate_pattern(
             prediction_index=prediction_index,
             cfg=cfg,
         )
+        if oracle_gate:
+            logits, chosen = _oracle_logits_from_diagnostics(diagnostics, logits, target, metric_missing_mask, modalities)
+            oracle_counts.update(chosen)
         metrics = {
             "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
             **_beam_classification_metrics(logits, target, cfg),
@@ -169,6 +238,7 @@ def _evaluate_pattern(
         "sample_count": accumulator.num_samples,
         "count": accumulator.num_samples,
         **accumulator.mean(),
+        **({"oracle_chosen_modality_distribution": _counter_payload(oracle_counts)} if oracle_gate else {}),
     }
 
 
@@ -257,6 +327,40 @@ def _prediction_index(value: int | str, length: int) -> int:
     if index < 0 or index >= length:
         raise ValueError(f"prediction_index {value!r} out of range for {length} predictions.")
     return index
+
+
+def _oracle_logits_from_diagnostics(
+    diagnostics: dict[str, Any],
+    fallback_logits: torch.Tensor,
+    target: torch.Tensor,
+    available_mask: torch.Tensor,
+    modalities: list[str] | None,
+) -> tuple[torch.Tensor, list[str]]:
+    logits = diagnostics.get("pcpg_unimodal_logits")
+    if not torch.is_tensor(logits):
+        logits = diagnostics.get("unimodal_logits")
+    if not torch.is_tensor(logits) or logits.ndim != 3:
+        return fallback_logits, ["fused"] * int(fallback_logits.shape[0])
+    mask = available_mask.to(device=logits.device, dtype=torch.bool)
+    if mask.shape != logits.shape[:2]:
+        diag_mask = diagnostics.get("pcpg_available_mask", diagnostics.get("missing_mask"))
+        mask = diag_mask.to(device=logits.device, dtype=torch.bool) if torch.is_tensor(diag_mask) else torch.ones(logits.shape[:2], device=logits.device, dtype=torch.bool)
+    predictions = logits.argmax(dim=-1)
+    target = target.to(device=logits.device, dtype=torch.long).view(-1, 1)
+    distance = (predictions - target).abs()
+    distance = torch.minimum(distance, logits.shape[-1] - distance)
+    distance = distance.masked_fill(~mask, torch.iinfo(distance.dtype).max)
+    chosen = distance.argmin(dim=1)
+    oracle_logits = logits[torch.arange(logits.shape[0], device=logits.device), chosen, :]
+    names = list(modalities or [f"modality_{index}" for index in range(logits.shape[1])])
+    return oracle_logits, [names[int(index)] if int(index) < len(names) else f"modality_{int(index)}" for index in chosen.detach().cpu()]
+
+
+def _counter_payload(counter: Counter[str]) -> str:
+    total = sum(counter.values())
+    if total <= 0:
+        return ""
+    return json.dumps({key: count / total for key, count in sorted(counter.items())}, sort_keys=True)
 
 
 def _extract_target(batch: dict[str, Any]) -> torch.Tensor:

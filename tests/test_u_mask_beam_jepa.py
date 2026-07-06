@@ -164,6 +164,38 @@ def test_pattern_film_rejects_unsupported_apply_at():
         MODELS.build(_cfg(pattern_film={"enabled": True, "apply_at": "after_head"}))
 
 
+def test_pcpg_fusion_outputs_masked_gate_diagnostics():
+    import_default_components()
+    model = MODELS.build(_cfg(fusion_type="pcpg", use_jepa_loss=False, dropout=0.0))
+    mask = torch.tensor([[1, 0, 1, 1], [0, 1, 0, 1]], dtype=torch.bool)
+
+    output = model(**_batch(), missing_mask=mask)
+
+    assert output["logits"].shape == (2, 1, 8)
+    assert output["pcpg_gate_weights"].shape == (2, 4)
+    assert torch.all(output["pcpg_gate_weights"][~mask] == 0)
+    assert torch.allclose(output["pcpg_gate_weights"].sum(dim=1), torch.ones(2))
+    assert output["pcpg_unimodal_logits"].shape == (2, 4, 8)
+    assert output["pcpg_unimodal_prototype_scores"].shape == (2, 4, 8)
+    assert output["reliability_fusion_mode"] == "pcpg"
+
+
+def test_force_modality_mask_vector_broadcasts_to_batch():
+    import_default_components()
+    model = MODELS.build(_cfg(fusion_type="pcpg", use_jepa_loss=False, dropout=0.0))
+
+    output = model(**_batch(), force_modality_mask=torch.tensor([1, 0, 1, 1], dtype=torch.bool))
+
+    assert output["missing_mask"].shape == (2, 4)
+    assert torch.equal(output["missing_mask"], torch.tensor([[1, 0, 1, 1], [1, 0, 1, 1]], dtype=torch.bool))
+
+
+def test_pcpg_rejects_feature_level_claim():
+    import_default_components()
+    with pytest.raises((ValueError, RegistryError), match="pcpg_fuse_level='logits'"):
+        MODELS.build(_cfg(fusion_type="pcpg", pcpg_fuse_level="features"))
+
+
 def test_registry_encoder_warm_start_forward(tmp_path):
     import_default_components()
     source = MODELS.build(

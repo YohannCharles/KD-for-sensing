@@ -82,7 +82,7 @@ openspec status --change <change>
 - README 保留安装、快速上手、简短目录结构和主要工作流说明。
 - OpenSpec 记录需求、架构约束、设计决策和变更历史。
 - 本文件记录 agent 操作规则，不重复维护完整项目结构。
-- 不要使用 hook 自动重写 README、OpenSpec 或本文件；如需防漂移，优先添加检查型脚本或测试，由人决定文档如何更新。
+- 不要使用 hook 自动重写 README、OpenSpec、本文件或正式 claim 文档；如需防漂移，优先添加检查型脚本或测试，由人决定文档如何更新。
 
 ## 产物边界
 

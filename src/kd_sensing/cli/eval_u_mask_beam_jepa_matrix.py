@@ -11,7 +11,7 @@ from kd_sensing.eval.export import (
     save_results_markdown,
 )
 from kd_sensing.eval.missing_patterns import resolve_missing_patterns
-from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix, evaluate_oracle_gate_matrix
 from kd_sensing.utils.checkpoint import load_model_state
 
 
@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-missing", nargs="*", type=float, default=None)
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--prediction-index", default=None)
+    parser.add_argument("--eval-oracle-gate", "--eval_oracle_gate", action="store_true")
     parser.add_argument("--device", default=None, help="Override experiment.device, e.g. cuda or cpu.")
     parser.add_argument("--override", "-o", action="append", default=[])
     return parser
@@ -74,6 +75,21 @@ def run(argv: list[str] | None = None) -> list[dict]:
     save_results_csv(results, output_dir / "eval_matrix.csv")
     save_results_json(results, output_dir / "eval_matrix.json")
     save_results_markdown(results, output_dir / "eval_matrix.md")
+    if args.eval_oracle_gate:
+        oracle_results = evaluate_oracle_gate_matrix(
+            model,
+            dataloaders[split_key],
+            device,
+            modalities,
+            patterns=fixed_patterns,
+            random_missing=random_missing,
+            prediction_index=prediction_index,
+            max_batches=max_batches,
+            cfg=cfg,
+        )
+        save_results_csv(oracle_results, output_dir / "oracle_eval_matrix.csv")
+        save_results_json(oracle_results, output_dir / "oracle_eval_matrix.json")
+        save_results_markdown(oracle_results, output_dir / "oracle_eval_matrix.md")
     print(format_results_markdown(results))
     return results
 

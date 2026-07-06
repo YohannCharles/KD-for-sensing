@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from kd_sensing.diagnostics.project_surface_doctor import (
+    AVAILABLE_SCOPES,
     DEFAULT_SCOPES,
     build_project_surface_report,
     doctor_should_fail,
@@ -18,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scope",
         action="append",
-        choices=DEFAULT_SCOPES,
+        choices=AVAILABLE_SCOPES,
         help="Doctor scope to run. Can be repeated. Defaults to scripts, configs, and hotspots.",
     )
     parser.add_argument(

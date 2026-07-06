@@ -385,6 +385,12 @@ class BatchStepRunner:
         modalities = list(metadata.get("modalities") or metadata.get("enabled_modalities") or [])
         if len(modalities) != int(weights_cpu.shape[1]):
             modalities = [f"modality_{index}" for index in range(int(weights_cpu.shape[1]))]
+        temperatures = diagnostics.get("bprr_modality_temperatures")
+        temperatures_cpu = None
+        if torch.is_tensor(temperatures) and int(temperatures.numel()) == int(weights_cpu.shape[1]):
+            temperatures_cpu = temperatures.detach().cpu().to(dtype=torch.float32).flatten()
+        gate_entropy = diagnostics.get("gate_entropy")
+        gate_entropy_cpu = gate_entropy.detach().cpu().to(dtype=torch.float32).flatten() if torch.is_tensor(gate_entropy) else None
         target = self._reliability_weight_rows.setdefault(int(epoch), [])
         for row_mask in torch.unique(mask_cpu, dim=0):
             selected = (mask_cpu == row_mask).all(dim=1)
@@ -393,6 +399,7 @@ class BatchStepRunner:
             pattern = _safe_pattern_name(row_mask, modalities)
             selected_weights = weights_cpu[selected]
             selected_mask = mask_cpu[selected]
+            selected_entropy = gate_entropy_cpu[selected] if gate_entropy_cpu is not None and int(gate_entropy_cpu.numel()) == int(mask_cpu.shape[0]) else None
             for index, modality in enumerate(modalities):
                 values = selected_weights[:, index]
                 available = selected_mask[:, index].to(dtype=torch.float32)
@@ -404,6 +411,8 @@ class BatchStepRunner:
                         "mean_weight": float(values.mean().item()),
                         "std_weight": float(values.std(unbiased=False).item()) if int(values.numel()) > 1 else 0.0,
                         "available_rate": float(available.mean().item()),
+                        "temperature": float(temperatures_cpu[index].item()) if temperatures_cpu is not None else "",
+                        "gate_entropy": float(selected_entropy.mean().item()) if selected_entropy is not None else "",
                     }
                 )
 

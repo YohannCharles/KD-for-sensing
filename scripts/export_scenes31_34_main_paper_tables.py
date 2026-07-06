@@ -248,9 +248,9 @@ def _method_row(rows: list[dict[str, str]], method: str) -> dict[str, str]:
 
 
 def _row_status(row: dict[str, str]) -> str:
+    if _int(row.get("mask_suspect_count")) > 0 or row.get("main_read") == "excluded":
+        return "incomplete: mask_suspect excluded"
     if _int(row.get("n")) <= 0:
-        if _int(row.get("mask_suspect_count")) > 0 or row.get("main_read") == "excluded":
-            return "incomplete"
         return "pending"
     if not _truthy(row.get("official_ranking_included")):
         return "incomplete"

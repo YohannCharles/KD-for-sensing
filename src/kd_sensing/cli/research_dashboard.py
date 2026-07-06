@@ -3,12 +3,14 @@ import argparse
 import datetime as dt
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from kd_sensing.diagnostics.research_claim_harvester import (
     DEFAULT_LEDGER_DIR,
     build_dashboard_summary,
     ledger_records_from_candidates,
+    render_dashboard_html,
     render_dashboard_summary,
     write_jsonl_ledger,
     write_ledger_csv,
@@ -38,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-root", default=".", help="Project root used for OpenSpec status.")
     parser.add_argument("--json", action="store_true", help="Print dashboard JSON instead of the text summary.")
     parser.add_argument("--output-json", type=Path, help="Optional path to write dashboard JSON.")
+    parser.add_argument("--output-html", type=Path, help="Optional path to write a static HTML evidence dashboard.")
     parser.add_argument("--write-ledger", action="store_true", help="Write a JSONL experiment ledger.")
     parser.add_argument("--ledger-dir", type=Path, default=DEFAULT_LEDGER_DIR, help="JSONL ledger directory.")
     parser.add_argument("--ledger-csv", type=Path, help="Optional CSV ledger export path.")
@@ -69,6 +72,7 @@ def run(argv: list[str] | None = None) -> dict[str, Any]:
     )
     ledger_path = None
     ledger_csv_path = None
+    dashboard_html_path = None
     records = ledger_records_from_candidates(summary.get("candidates", []))
     if args.write_ledger:
         ledger_path = write_jsonl_ledger(records, ledger_dir=args.ledger_dir, now=dt.datetime.now(dt.timezone.utc))
@@ -76,11 +80,18 @@ def run(argv: list[str] | None = None) -> dict[str, Any]:
     if args.ledger_csv:
         ledger_csv_path = write_ledger_csv(records, output_path=args.ledger_csv)
         summary.setdefault("metadata", {})["ledger_csv_path"] = str(ledger_csv_path)
+    if args.output_html:
+        dashboard_html_path = args.output_html.expanduser()
+        dashboard_html_path.parent.mkdir(parents=True, exist_ok=True)
+        summary.setdefault("metadata", {})["dashboard_html_path"] = str(dashboard_html_path)
+        dashboard_html_path.write_text(render_dashboard_html(summary), encoding="utf-8")
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
+        if dashboard_html_path:
+            print(f"dashboard_html: {dashboard_html_path}", file=sys.stderr)
     else:
         print(render_dashboard_summary(summary))
         if ledger_path:
@@ -89,6 +100,8 @@ def run(argv: list[str] | None = None) -> dict[str, Any]:
             print(f"ledger_csv: {ledger_csv_path}")
         if args.output_json:
             print(f"dashboard_json: {args.output_json}")
+        if dashboard_html_path:
+            print(f"dashboard_html: {dashboard_html_path}")
     return summary
 
 

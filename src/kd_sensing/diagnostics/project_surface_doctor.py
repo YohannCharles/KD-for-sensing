@@ -6,7 +6,7 @@ import re
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import yaml
 
@@ -19,6 +19,7 @@ from kd_sensing.config.io import load_config_source
 from kd_sensing.utils.paths import project_root as resolve_project_root
 
 DEFAULT_SCOPES = ("scripts", "configs", "hotspots")
+AVAILABLE_SCOPES = (*DEFAULT_SCOPES, "security", "closeout")
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
 DOC_AUTHORITY_PATHS = (
     "README.md",
@@ -29,6 +30,36 @@ DOC_AUTHORITY_PATHS = (
 )
 TRACKED_SCRIPT_ROOTS = ("scripts/", "tools/analysis/")
 RUNTIME_OUTPUT_MARKERS = ("outputs/", "logs/", "outputs", "logs")
+PROTECTED_RUNTIME_ROOTS = ("outputs/", "logs/", "cache/")
+ALLOWED_DATASET_TRACKED_FILES = {"dataset/.gitkeep"}
+HISTORICAL_WEIGHT_ROOTS = ("All_models/",)
+CHECKPOINT_SUFFIXES = (".pth", ".pt", ".ckpt")
+TEXT_SCAN_ROOTS = ("src/", "tests/", "scripts/", "tools/", "configs/", "docs/", "openspec/", ".github/")
+TEXT_SCAN_FILES = {"AGENTS.md", "README.md", "Makefile", "pyproject.toml"}
+TEXT_SCAN_SUFFIXES = {".md", ".py", ".sh", ".yaml", ".yml", ".toml", ".txt", ".json"}
+PROTECTED_SYSTEM_PATHS = (
+    "/root/.container_env",
+    "/etc/profile",
+    "/etc/environment",
+    "~/.ssh",
+    "/root/.ssh",
+)
+SECRET_PATTERNS = (
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
+    ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b")),
+    ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
+    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{24,}\b")),
+    ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    (
+        "credential_assignment",
+        re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*['\"][^'\"\n]{16,}['\"]"),
+    ),
+)
+SYSTEM_CONFIG_MUTATION_RE = re.compile(r"(?:>>|>\s*|tee\s+-a?|sed\s+-i|write_text\(|open\([^)]*['\"]w|cat\s*>)")
+CREDENTIAL_POLLUTION_RE = re.compile(
+    r"(?i)\b(?:USERNAME|USER|PASSWD|PASSWORD|TOKEN|SECRET)\s*=\s*.*"
+    r"(?:kd-sensing-train|CUDA_VISIBLE_DEVICES|nohup|tmux|cd\s+)"
+)
 HIGH_RISK_CONFIG_TOKENS = {
     "hist_beam",
     "top8",
@@ -60,7 +91,7 @@ def build_project_surface_report(
 ) -> dict[str, Any]:
     root = resolve_project_root(Path(project_root).expanduser())
     selected_scopes = tuple(scopes or DEFAULT_SCOPES)
-    invalid = sorted(set(selected_scopes) - set(DEFAULT_SCOPES))
+    invalid = sorted(set(selected_scopes) - set(AVAILABLE_SCOPES))
     if invalid:
         raise ValueError(f"Unknown doctor scope(s): {', '.join(invalid)}")
     if fail_on not in {"none", *SEVERITY_ORDER}:
@@ -77,6 +108,10 @@ def build_project_surface_report(
         sections["configs"] = _doctor_configs(root, tracked, authority, issues)
     if "hotspots" in selected_scopes:
         sections["hotspots"] = _doctor_hotspots(root, tracked, authority, issues)
+    if "security" in selected_scopes:
+        sections["security"] = _doctor_security(root, tracked, authority, issues)
+    if "closeout" in selected_scopes:
+        sections["closeout"] = _doctor_closeout(root, tracked, authority, issues)
 
     summary = _summarize_issues(issues, fail_on=fail_on)
     return {
@@ -89,6 +124,7 @@ def build_project_surface_report(
             "scan_policy": {
                 "tracked_files_only_for_surfaces": True,
                 "excluded_roots": ["dataset/", "outputs/", "logs/", "cache/", "outputs/cache/"],
+                "security_scan_roots": list(TEXT_SCAN_ROOTS),
                 "default_failure_level": fail_on,
             },
         },
@@ -143,6 +179,38 @@ def render_project_surface_report(report: dict[str, Any], *, format: str = "mark
         lines.extend(["## Hotspots", "", f"- registered entries: {hotspots['registered_count']}"])
         for action, count in sorted(action_counts.items()):
             lines.append(f"- {action}: {count}")
+        lines.append("")
+    if "security" in sections:
+        security = sections["security"]
+        lines.extend(
+            [
+                "## Security",
+                "",
+                f"- scanned text files: {security['scanned_text_files']}",
+                f"- runtime artifact hits: {len(security['runtime_artifact_hits'])}",
+                f"- secret hits: {len(security['secret_hits'])}",
+                f"- system config hits: {len(security['system_config_hits'])}",
+                f"- shell runner hits: {len(security['shell_runner_hits'])}",
+                f"- dependency audit: {security['dependency_audit']['mode']}",
+                "",
+            ]
+        )
+    if "closeout" in sections:
+        closeout = sections["closeout"]
+        worktree = closeout["worktree"]
+        openspec = closeout["openspec"]
+        lines.extend(
+            [
+                "## Closeout",
+                "",
+                f"- active changes: {len(openspec.get('active_changes', []))}",
+                f"- complete unarchived changes: {len(openspec.get('complete_unarchived', []))}",
+                f"- dirty files: {worktree['dirty_count']}",
+                f"- untracked files: {worktree['untracked_count']}",
+            ]
+        )
+        for category, count in sorted(worktree.get("category_counts", {}).items()):
+            lines.append(f"- {category}: {count}")
         lines.append("")
     if report.get("issues"):
         lines.extend(
@@ -420,6 +488,210 @@ def _doctor_hotspots(
     }
 
 
+def _doctor_security(
+    root: Path,
+    tracked: list[str],
+    authority: dict[str, str],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    del authority
+    runtime_hits: list[dict[str, str]] = []
+    secret_hits: list[dict[str, str]] = []
+    system_config_hits: list[dict[str, str]] = []
+    shell_runner_hits: list[dict[str, str]] = []
+    scanned_text_files = 0
+
+    for rel in sorted(tracked):
+        artifact_reason = _runtime_artifact_reason(rel)
+        if artifact_reason is not None:
+            hit = {"path": rel, "reason": artifact_reason}
+            runtime_hits.append(hit)
+            issues.append(
+                _issue(
+                    scope="security",
+                    severity="error",
+                    kind="runtime_artifact_tracked",
+                    path=rel,
+                    message=f"Tracked file looks like local runtime artifact: {artifact_reason}.",
+                    source="git ls-files",
+                    recommendation="Keep dataset, outputs, logs, cache, TensorBoard events, and new checkpoints in ignored local paths.",
+                    validation="conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --fail-on error",
+                )
+            )
+
+        if not _should_scan_text(rel):
+            continue
+        text = _read_text_if_available(root / rel)
+        if text is None:
+            continue
+        scanned_text_files += 1
+
+        for hit in _secret_hits(rel, text):
+            secret_hits.append(hit)
+            issues.append(
+                _issue(
+                    scope="security",
+                    severity="error",
+                    kind="secret_literal",
+                    path=rel,
+                    message=f"Potential {hit['kind']} secret literal found near line {hit['line']}.",
+                    source="tracked text scan",
+                    recommendation="Remove the secret, rotate it if it was real, and keep credentials out of source-controlled files.",
+                    validation="conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --fail-on error",
+                )
+            )
+
+        for hit in _system_config_hits(rel, text):
+            system_config_hits.append(hit)
+            issues.append(
+                _issue(
+                    scope="security",
+                    severity="error",
+                    kind="protected_system_config_mutation",
+                    path=rel,
+                    message=f"System config or credential pollution risk near line {hit['line']}: {hit['reason']}.",
+                    source="AGENTS.md",
+                    recommendation="Follow AGENTS system configuration safety: do not write training commands or credentials into container/system startup files.",
+                    validation="conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --fail-on error",
+                )
+            )
+
+        if rel.startswith(TRACKED_SCRIPT_ROOTS) and Path(rel).suffix in {".py", ".sh"}:
+            for hit in _shell_runner_hits(rel, text):
+                shell_runner_hits.append(hit)
+                issues.append(
+                    _issue(
+                        scope="security",
+                        severity="warning",
+                        kind="dangerous_shell_runner_command",
+                        path=rel,
+                        message=f"Runner command risk near line {hit['line']}: {hit['reason']}.",
+                        source="scripts runner scan",
+                        recommendation="Use manifest-backed cleanup with explicit confirmation and run project Python commands through conda run -n kd_mm_beam.",
+                        validation="conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --fail-on warning",
+                    )
+                )
+
+    return {
+        "scanned_text_files": scanned_text_files,
+        "runtime_artifact_hits": runtime_hits,
+        "secret_hits": secret_hits,
+        "system_config_hits": system_config_hits,
+        "shell_runner_hits": shell_runner_hits,
+        "protected_paths": list(PROTECTED_SYSTEM_PATHS),
+        "dependency_audit": {
+            "mode": "manual-warning",
+            "blocking": False,
+            "source": "pyproject.toml",
+            "recommendation": "Run a dedicated dependency audit in a managed environment before making it required.",
+        },
+        "policy": {
+            "tracked_text_only": True,
+            "allows_manifest_cleanup_confirmation": True,
+            "does_not_read_real_dataset": True,
+            "does_not_load_checkpoints": True,
+        },
+    }
+
+
+def _doctor_closeout(
+    root: Path,
+    tracked: list[str],
+    authority: dict[str, str],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    del tracked, authority
+    status_lines = _git_status_short(root)
+    entries = [_parse_status_line(line) for line in status_lines]
+    entries = [entry for entry in entries if entry is not None]
+    category_counts = Counter(entry["category"] for entry in entries)
+    openspec_state = _openspec_list(root)
+    active_changes = openspec_state.get("changes", [])
+    complete_changes = [change for change in active_changes if _change_is_complete(change)]
+    for change in complete_changes:
+        name = str(change.get("name", ""))
+        issues.append(
+            _issue(
+                scope="closeout",
+                severity="warning",
+                kind="complete_change_unarchived",
+                path=f"openspec/changes/{name}",
+                message=f"Active change {name} appears complete but not archived.",
+                source="openspec list --json",
+                recommendation="Archive the change after validation or record an explicit deferral before treating it as historical context.",
+                validation=f"openspec status --change {name}",
+            )
+        )
+
+    untracked_archives = [
+        entry for entry in entries if entry["status"] == "??" and entry["path"].startswith("openspec/changes/archive/")
+    ]
+    for entry in untracked_archives:
+        issues.append(
+            _issue(
+                scope="closeout",
+                severity="warning",
+                kind="untracked_archive_change",
+                path=entry["path"],
+                message="Untracked archive directory can be mistaken for current OpenSpec state.",
+                source="git status --short",
+                recommendation="Commit the archive with its active-change deletion, or record deferral before using archive context.",
+                validation="openspec validate --all --strict",
+            )
+        )
+
+    deleted_active = {
+        Path(entry["path"]).parts[2]
+        for entry in entries
+        if "D" in entry["status"]
+        and entry["path"].startswith("openspec/changes/")
+        and not entry["path"].startswith("openspec/changes/archive/")
+        and len(Path(entry["path"]).parts) >= 3
+    }
+    archive_names = {_archive_change_name(entry["path"]) for entry in untracked_archives}
+    for name in sorted(deleted_active & archive_names):
+        issues.append(
+            _issue(
+                scope="closeout",
+                severity="warning",
+                kind="active_delete_archive_pair",
+                path=f"openspec/changes/{name}",
+                message="Deleted active change and new dated archive appear together.",
+                source="git status --short",
+                recommendation="Treat the pair as one closeout state; do not read the archive as a still-active requirement.",
+                validation="openspec validate --all --strict",
+            )
+        )
+
+    return {
+        "openspec": {
+            "available": openspec_state.get("available", False),
+            "error": openspec_state.get("error"),
+            "active_changes": active_changes,
+            "complete_unarchived": complete_changes,
+        },
+        "worktree": {
+            "dirty_count": len(entries),
+            "tracked_dirty_count": sum(1 for entry in entries if entry["status"] != "??"),
+            "untracked_count": sum(1 for entry in entries if entry["status"] == "??"),
+            "category_counts": dict(category_counts),
+            "entries": entries[:300],
+        },
+        "policy": {
+            "read_only": True,
+            "does_not_archive": True,
+            "does_not_reset": True,
+            "does_not_delete": True,
+            "does_not_move_outputs": True,
+        },
+        "recommendations": [
+            "archive completed changes only after validation",
+            "record deferral for intentionally open complete changes",
+            "ignore unrelated user changes unless they block the current task",
+        ],
+    }
+
+
 def _issue(
     *,
     scope: str,
@@ -484,6 +756,177 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _read_text_if_available(path: Path) -> str | None:
+    try:
+        return _read_text(path)
+    except OSError:
+        return None
+
+
+def _runtime_artifact_reason(rel_path: str) -> str | None:
+    path = rel_path.replace("\\", "/")
+    if path.startswith("dataset/") and path not in ALLOWED_DATASET_TRACKED_FILES:
+        return "dataset real content"
+    if path.startswith(PROTECTED_RUNTIME_ROOTS):
+        return "runtime output/log/cache path"
+    if "events.out.tfevents" in Path(path).name:
+        return "TensorBoard event file"
+    if path.endswith(CHECKPOINT_SUFFIXES) and not path.startswith(HISTORICAL_WEIGHT_ROOTS):
+        return "new checkpoint or model weight"
+    return None
+
+
+def _should_scan_text(rel_path: str) -> bool:
+    path = rel_path.replace("\\", "/")
+    if path in TEXT_SCAN_FILES:
+        return True
+    if not path.startswith(TEXT_SCAN_ROOTS):
+        return False
+    return Path(path).suffix in TEXT_SCAN_SUFFIXES
+
+
+def _secret_hits(rel_path: str, text: str) -> list[dict[str, str]]:
+    hits: list[dict[str, str]] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if _line_is_placeholder_secret(line):
+            continue
+        for kind, pattern in SECRET_PATTERNS:
+            if pattern.search(line):
+                hits.append({"path": rel_path, "line": str(line_no), "kind": kind})
+    return hits
+
+
+def _line_is_placeholder_secret(line: str) -> bool:
+    lowered = line.lower()
+    placeholders = ("placeholder", "example", "redacted", "dummy", "your_", "<", "xxxx", "changeme")
+    return any(marker in lowered for marker in placeholders)
+
+
+def _system_config_hits(rel_path: str, text: str) -> list[dict[str, str]]:
+    hits: list[dict[str, str]] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        mentions_protected_path = any(path in stripped for path in PROTECTED_SYSTEM_PATHS)
+        if mentions_protected_path and SYSTEM_CONFIG_MUTATION_RE.search(stripped):
+            hits.append({"path": rel_path, "line": str(line_no), "reason": "mutates protected system/startup path"})
+        if CREDENTIAL_POLLUTION_RE.search(stripped):
+            hits.append({"path": rel_path, "line": str(line_no), "reason": "credential field contains runtime command"})
+    return hits
+
+
+def _shell_runner_hits(rel_path: str, text: str) -> list[dict[str, str]]:
+    if _is_manifest_cleanup_exception(rel_path, text):
+        return []
+    hits: list[dict[str, str]] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "rm -rf" in stripped and "confirm" not in stripped.lower():
+            hits.append({"path": rel_path, "line": str(line_no), "reason": "bare rm -rf without explicit confirmation"})
+        if "shutil.rmtree" in stripped and "confirm" not in stripped.lower():
+            hits.append({"path": rel_path, "line": str(line_no), "reason": "tree deletion without explicit confirmation"})
+        if "kd-sensing-" in stripped and "conda run -n kd_mm_beam" not in stripped and "conda\", \"run" not in stripped:
+            hits.append({"path": rel_path, "line": str(line_no), "reason": "project CLI command bypasses kd_mm_beam conda wrapper"})
+        if any(path in stripped for path in PROTECTED_SYSTEM_PATHS) and ("nohup" in stripped or "tmux" in stripped):
+            hits.append({"path": rel_path, "line": str(line_no), "reason": "background runner targets protected system config"})
+    return hits
+
+
+def _is_manifest_cleanup_exception(rel_path: str, text: str) -> bool:
+    cleanup_markers = ("--confirm-delete", "--confirm-organize", "runtime_artifact_cleanup", "organize_runtime_outputs")
+    return "manifest" in text and any(marker in text for marker in cleanup_markers) and rel_path.startswith("src/")
+
+
+def _git_status_short(root: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return [f"!! git-status-unavailable {result.stderr.strip()}"]
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _openspec_list(root: Path) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            ["openspec", "list", "--json"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except Exception as exc:  # pragma: no cover - unavailable executable is environment-dependent.
+        return {"available": False, "error": str(exc), "changes": []}
+    if result.returncode != 0:
+        return {"available": False, "error": result.stderr.strip(), "changes": []}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {"available": False, "error": str(exc), "changes": []}
+    changes = payload.get("changes", [])
+    return {"available": True, "changes": changes if isinstance(changes, list) else []}
+
+
+def _change_is_complete(change: Mapping[str, Any]) -> bool:
+    status = str(change.get("status", "")).lower()
+    if status in {"complete", "completed", "done"}:
+        return True
+    completed = change.get("completedTasks")
+    total = change.get("totalTasks")
+    return isinstance(completed, int) and isinstance(total, int) and total > 0 and completed >= total
+
+
+def _parse_status_line(line: str) -> dict[str, Any] | None:
+    if not line:
+        return None
+    status = line[:2].strip() or line[:2]
+    path = line[3:] if len(line) > 3 else ""
+    if " -> " in path:
+        path = path.rsplit(" -> ", 1)[1]
+    path = path.strip()
+    if not path:
+        return None
+    return {
+        "status": status,
+        "path": path,
+        "category": _worktree_category(path),
+    }
+
+
+def _worktree_category(path: str) -> str:
+    if _runtime_artifact_reason(path) is not None:
+        return "runtime_artifact"
+    if path.startswith("src/"):
+        return "source"
+    if path.startswith("tests/"):
+        return "tests"
+    if path.startswith(("scripts/", "tools/")):
+        return "scripts"
+    if path.startswith("configs/"):
+        return "configs"
+    if path.startswith("openspec/"):
+        return "openspec"
+    if path.startswith("docs/") or path in {"README.md", "AGENTS.md", "ENVIRONMENT.md", "DATASET_STRUCTURE.md"}:
+        return "docs"
+    if path.startswith(".github/"):
+        return "github"
+    return "other"
+
+
+def _archive_change_name(path: str) -> str:
+    name = Path(path).parts[-1] if Path(path).parts else path
+    match = re.match(r"\d{4}-\d{2}-\d{2}-(.+)", name)
+    return match.group(1) if match else name
 
 
 def _source_for_fragment(authority: dict[str, str], fragment: str) -> str | None:

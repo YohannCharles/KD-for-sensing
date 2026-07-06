@@ -148,27 +148,32 @@ def _scene_grouped_output_base(cfg: dict) -> Path:
 
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
+    extensions: list[TrainingExtension] = []
     u_mask_cfg = cfg.get("loss", {}).get("u_mask_beam_jepa", {}) if isinstance(cfg.get("loss"), dict) else {}
     if u_mask_cfg is True or (isinstance(u_mask_cfg, dict) and bool(u_mask_cfg.get("enabled", False))):
         from kd_sensing.losses.u_mask_beam_jepa import UMaskBeamJEPATrainingExtension
 
-        return [UMaskBeamJEPATrainingExtension()]
-    if resolve_prediction_objective(cfg) == "gps_conditioned_jepa":
+        extensions.append(UMaskBeamJEPATrainingExtension())
+    elif resolve_prediction_objective(cfg) == "gps_conditioned_jepa":
         from kd_sensing.engine.jepa import JepaTrainingExtension
 
-        return [JepaTrainingExtension()]
+        extensions.append(JepaTrainingExtension())
     physics_cfg = cfg.get("loss", {}).get("physics", {}) if isinstance(cfg.get("loss"), dict) else {}
-    if isinstance(physics_cfg, dict) and bool(physics_cfg.get("enabled", False)):
+    if not extensions and isinstance(physics_cfg, dict) and bool(physics_cfg.get("enabled", False)):
         from kd_sensing.engine.physics_informed_extension import PhysicsInformedTrainingExtension
 
-        return [PhysicsInformedTrainingExtension()]
+        extensions.append(PhysicsInformedTrainingExtension())
     teacher_cfg = cfg.get("loss", {}).get("teacher_guidance", {}) if isinstance(cfg.get("loss"), dict) else {}
     teacher_enabled = teacher_cfg is True or (isinstance(teacher_cfg, dict) and bool(teacher_cfg.get("enabled", False)))
-    if teacher_enabled:
+    if not extensions and teacher_enabled:
         from kd_sensing.engine.teacher_guidance import TeacherGuidanceTrainingExtension
 
-        return [TeacherGuidanceTrainingExtension()]
-    return [NoOpTrainingExtension()]
+        extensions.append(TeacherGuidanceTrainingExtension())
+    from kd_sensing.engine.pcpg_radar_balance import pcpg_radar_balance_config, PCPGRadarBalanceTrainingExtension
+
+    if pcpg_radar_balance_config(cfg).get("enabled", False):
+        extensions.append(PCPGRadarBalanceTrainingExtension())
+    return extensions or [NoOpTrainingExtension()]
 
 
 def _progress_enabled(cfg: dict) -> bool:

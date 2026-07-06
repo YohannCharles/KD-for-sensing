@@ -23,6 +23,7 @@ conda run -n kd_mm_beam kd-sensing-runs --help
 conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --help
 conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
+conda run -n kd_mm_beam kd-sensing-research-preview --help
 conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
 conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit --help
 conda run -n kd_mm_beam kd-sensing-paper-export --help
@@ -153,19 +154,33 @@ conda run -n kd_mm_beam kd-sensing-runs --outputs outputs --logs logs --format j
 conda run -n kd_mm_beam kd-sensing-research-dashboard --outputs outputs --logs logs
 conda run -n kd_mm_beam kd-sensing-research-dashboard --outputs outputs --logs logs \
   --json --output-json outputs/analysis/research_dashboard/dashboard.json \
+  --output-html outputs/analysis/research_dashboard/dashboard.html \
   --write-ledger
 ```
 
-`kd-sensing-research-dashboard` 只读聚合 run index、Scene31 missing-pattern 结果、训练 run metrics、checkpoint sidecar、OpenSpec active change 和 GPU/进程快照。输出的 claim candidate 保持 `candidate_only=true` / `claim_status=draft`，默认 JSONL ledger 写入 ignored `outputs/analysis/research_ledger/`；它不启动训练、不清理产物、不移动 checkpoint，也不会自动修改 [docs/result_claims_registry.md](docs/result_claims_registry.md)。
+`kd-sensing-research-dashboard` 只读聚合 run index、Scene31 missing-pattern 结果、训练 run metrics、checkpoint sidecar、OpenSpec active change 和 GPU/进程快照。输出的 claim candidate 保持 `candidate_only=true` / `claim_status=draft`，JSON、HTML dashboard 和默认 JSONL ledger 都写入 ignored `outputs/analysis/` 下的本地路径或用户显式路径；它不启动训练、不清理产物、不移动 checkpoint，也不会自动修改 [docs/result_claims_registry.md](docs/result_claims_registry.md)。
+
+研究运行预览闭环：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-research-preview --no-resources
+conda run -n kd_mm_beam kd-sensing-research-preview \
+  --qa-html outputs/analysis/research_dashboard/dashboard.html \
+  --qa-table outputs/paper_tables/scenes31_34_main/table_main.csv \
+  --output-dir outputs/analysis/research_preview/current
+```
+
+`kd-sensing-research-preview` 是默认无训练的 happy path：复用 research dashboard summary/HTML renderer，生成 `preview_manifest.json`、`dashboard.html`、`dashboard_summary.json`、静态 evidence QA 和 budget manifest。默认只记录 OpenSpec、architecture quick check、surface doctor、run index、research dashboard 和 paper export 的无副作用检查计划；只有显式 `--run-checks` 才执行这些检查。它不调用 `kd-sensing-train`，不读取真实 `dataset/`，不加载 checkpoint，不写训练产物；真实长跑或多 seed sweep 前可用 `--long-run`、`--config`/`--manifest`、`--reads-real-dataset`、`--gpu`、`--checkpoint-plan` 和 `--stop-condition` 输出预算缺字段报告。真实 manifest 实例、QA 报告和预览 HTML 仍写入 ignored `outputs/analysis/` 或用户显式路径，不提交源码；console script 不可用时可用 `conda run -n kd_mm_beam python -m kd_sensing.cli.research_preview --help` 诊断安装路径。
 
 项目表面积 doctor：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --format markdown
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope configs --format json --fail-on none
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error
 ```
 
-`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/` 和 inventory 中登记的热点 owner，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate 和 hotspot next-touch 建议。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。
+`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/`、inventory 中登记的热点 owner、可选安全/产物扫描和 OpenSpec closeout 状态，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate、hotspot next-touch、secret/system-config/runtime-artifact 风险以及 dirty worktree 分类。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。doctor 和 CI guardrail 默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint、不写 outputs/logs/cache，也不 archive、reset、删除或移动本地产物。
 
 论文表格与数据审计：
 
@@ -376,6 +391,10 @@ conda run -n kd_mm_beam kd-sensing-preprocess \
 - AI/维护者修改前导航：[docs/agent_navigation.md](docs/agent_navigation.md)
 - 最小结构化事实清单：[docs/maintainer_context_index.yaml](docs/maintainer_context_index.yaml)
 - 按任务加载的 agent context：[docs/agent_context/README.md](docs/agent_context/README.md)
+- 跨工具 agent 适配和 Project Knowledge 模板：[docs/agent_project_knowledge.md](docs/agent_project_knowledge.md)
+- 当前研究简报：[docs/current_research_brief.md](docs/current_research_brief.md)，只做快速 orientation，不替代 claim registry 或 experiment protocols
+- Agent 错误复盘候选：[docs/agent_memory_ledger.md](docs/agent_memory_ledger.md)，由人工确认后再沉淀到长期规则
+- 只读角色说明：[docs/readonly_agent_roles.md](docs/readonly_agent_roles.md)
 - Spec/config/claim agent atlas：[docs/agent_context/atlas.md](docs/agent_context/atlas.md)
 - 当前主线模型目录：[docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)
 - 主线实验演进记录：[docs/mainline_experiment_history.md](docs/mainline_experiment_history.md)

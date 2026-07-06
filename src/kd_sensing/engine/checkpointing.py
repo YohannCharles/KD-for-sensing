@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from kd_sensing.engine.training_metrics import checkpoint_task_metrics
+from kd_sensing.engine.checkpoint_selection import checkpoint_selection_score, resolve_checkpoint_selection_metric
 from kd_sensing.engine.training_state import (
     TrainingState,
     early_stopping_improved,
@@ -20,6 +21,7 @@ class CheckpointUpdate:
     early_stopping_value: float
     improved: bool
     top1_improved: bool
+    selection_value: float | None = None
 
 
 def checkpoint_strict(cfg: dict) -> bool:
@@ -70,6 +72,7 @@ class CheckpointManager:
         self.objective_metadata = objective_metadata
         self.early_stopping_metric = early_stopping_metric
         self.early_stopping_mode = early_stopping_mode
+        self.selection_metric = resolve_checkpoint_selection_metric(cfg)
 
     def restore_if_needed(self, state: TrainingState, *, objective: str, device: torch.device) -> tuple[str, str]:
         resume_path = resolve_resume_checkpoint(self.cfg, self.run_dir)
@@ -105,6 +108,11 @@ class CheckpointManager:
         train_dataset,
     ) -> CheckpointUpdate:
         early_stopping_value = early_stopping_metric_value(epoch_log, self.early_stopping_metric)
+        selection_value = None
+        if self.objective_metadata.get("name") != "gps_conditioned_jepa":
+            selection_value = checkpoint_selection_score(epoch_log, self.selection_metric, val_acc=val_acc)
+            epoch_log["checkpoint_selection_metric"] = self.selection_metric
+            epoch_log["checkpoint_selection_value"] = float(selection_value)
         if float(val_loss) < state.best_val_loss:
             state.best_val_loss = float(val_loss)
         improved = early_stopping_improved(
@@ -127,6 +135,7 @@ class CheckpointManager:
                     selection_metric=self.early_stopping_metric,
                     selection_mode="early_stopping",
                     selected_epoch=state.best_early_stopping_epoch,
+                    selection_value=early_stopping_value,
                     early_stopping_value=early_stopping_value,
                     epoch_log=epoch_log,
                     train_dataset=train_dataset,
@@ -167,6 +176,30 @@ class CheckpointManager:
                     selection_metric="val_acc_top1",
                     selection_mode="top1-selection",
                     selected_epoch=state.best_top1_epoch,
+                    selection_value=val_acc,
+                    early_stopping_value=early_stopping_value,
+                    epoch_log=epoch_log,
+                    train_dataset=train_dataset,
+                ),
+            )
+        if (
+            self.selection_metric != "val_acc"
+            and selection_value is not None
+            and selection_value > state.best_selection_value
+        ):
+            state.best_selection_value = float(selection_value)
+            state.best_selection_epoch = epoch + 1
+            best_selection_path = self.run_dir / "checkpoints" / f"best_{self.selection_metric}.pth"
+            torch.save(self._checkpoint_payload(state=state, epoch=epoch, val_loss=val_loss), best_selection_path)
+            write_sidecar(
+                best_selection_path,
+                self._checkpoint_sidecar(
+                    best_selection_path,
+                    checkpoint_source="selection-checkpoint",
+                    selection_metric=self.selection_metric,
+                    selection_mode="checkpoint-selection",
+                    selected_epoch=state.best_selection_epoch,
+                    selection_value=selection_value,
                     early_stopping_value=early_stopping_value,
                     epoch_log=epoch_log,
                     train_dataset=train_dataset,
@@ -176,6 +209,7 @@ class CheckpointManager:
             early_stopping_value=float(early_stopping_value),
             improved=bool(improved),
             top1_improved=bool(top1_improved),
+            selection_value=float(selection_value) if selection_value is not None else None,
         )
 
     def save_last_checkpoint(self, *, state: TrainingState, epoch: int, val_loss: float) -> None:
@@ -199,6 +233,9 @@ class CheckpointManager:
             "early_stopping_mode": self.early_stopping_mode,
             "best_early_stopping_value": state.best_early_stopping_value,
             "best_early_stopping_epoch": state.best_early_stopping_epoch,
+            "selection_metric": self.selection_metric,
+            "best_selection_value": state.best_selection_value,
+            "best_selection_epoch": state.best_selection_epoch,
             "epochs_without_improvement": state.epochs_without_improvement,
             "normalization_artifacts": self.normalization_artifacts,
             "checkpoint_registry": state.registry_checkpoint,
@@ -213,6 +250,7 @@ class CheckpointManager:
         selection_metric: str,
         selection_mode: str,
         selected_epoch: int,
+        selection_value: float | None,
         early_stopping_value: float,
         epoch_log: dict,
         train_dataset,
@@ -224,6 +262,7 @@ class CheckpointManager:
             "run_dir": str(self.run_dir),
             "selection_metric": selection_metric,
             "selection_mode": selection_mode,
+            "selection_value": float(selection_value) if selection_value is not None else None,
             "selected_epoch": int(selected_epoch),
             "objective_metric": {
                 "name": self.early_stopping_metric,

@@ -708,6 +708,83 @@ class MultiScaleCNNTokenEncoder(CNNFeatureMapTokenEncoder):
         )
 
 
+@ENCODERS.register("patchvit_frame")
+@ENCODERS.register("lightweight_patchvit_frame")
+class LightweightPatchViTFrameEncoder(nn.Module):
+    """Frame-level wrapper around the existing lightweight patch ViT tokenizer."""
+
+    expected_image_profile = "rgb_imagenet"
+
+    def __init__(
+        self,
+        *,
+        output_dim: int | None = None,
+        latent_dim: int = 64,
+        image_channels: int | None = None,
+        lidar_channels: int | None = None,
+        in_channels: int | None = None,
+        image_profile: str | None = "rgb_imagenet",
+        visual_encoder: dict[str, Any] | None = None,
+        patch_size: int = 16,
+        depth: int = 1,
+        num_heads: int = 4,
+        mlp_ratio: float = 2.0,
+        dropout: float = 0.0,
+        max_tokens: int = 256,
+        pooling: str = "mean",
+        variant_id: str | None = None,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.output_dim = int(output_dim if output_dim is not None else latent_dim)
+        self.latent_dim = int(latent_dim)
+        self.input_channels = int(in_channels or image_channels or lidar_channels or 3)
+        self.pooling = str(pooling or "mean").strip().lower()
+        if self.pooling != "mean":
+            raise ValueError("lightweight_patchvit_frame currently supports pooling='mean' only.")
+        encoder_cfg = dict(visual_encoder or {})
+        encoder_cfg.setdefault("type", "patch_vit")
+        encoder_cfg.setdefault("image_channels", self.input_channels)
+        encoder_cfg.setdefault("latent_dim", self.latent_dim)
+        encoder_cfg.setdefault("image_profile", image_profile)
+        encoder_cfg.setdefault("patch_size", int(patch_size))
+        encoder_cfg.setdefault("depth", int(depth))
+        encoder_cfg.setdefault("num_heads", int(num_heads))
+        encoder_cfg.setdefault("mlp_ratio", float(mlp_ratio))
+        encoder_cfg.setdefault("dropout", float(dropout))
+        encoder_cfg.setdefault("max_tokens", int(max_tokens))
+        if variant_id is not None:
+            encoder_cfg.setdefault("variant_id", str(variant_id))
+        self.visual_encoder_config = normalize_visual_token_encoder_config(encoder_cfg)
+        self.context_encoder = build_visual_token_encoder(self.visual_encoder_config)
+        self.dropout = nn.Dropout(float(dropout))
+        self.adapter = nn.Identity() if self.output_dim == self.latent_dim else nn.Linear(self.latent_dim, self.output_dim)
+        self.last_visual_token_metadata: dict[str, Any] = {}
+
+    def forward(self, frame_batch: torch.Tensor) -> torch.Tensor:
+        tokens, token_info = self.context_encoder(frame_batch)
+        metadata = visual_token_metadata_from_encoder(self.context_encoder, token_info, tokens)
+        self.last_visual_token_metadata = metadata
+        pooled = tokens.mean(dim=2)
+        return self.adapter(self.dropout(pooled))
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        visual_metadata = (
+            self.context_encoder.visual_token_metadata()
+            if hasattr(self.context_encoder, "visual_token_metadata")
+            else dict(self.last_visual_token_metadata)
+        )
+        return {
+            "encoder": "lightweight_patchvit_frame",
+            "visual_token_encoder": dict(visual_metadata),
+            "visual_token_metadata": dict(visual_metadata),
+            "pooling": self.pooling,
+            "input_channels": self.input_channels,
+            "latent_dim": self.latent_dim,
+            "output_dim": self.output_dim,
+        }
+
+
 class JepaMaskSampler(nn.Module):
     def __init__(
         self,
@@ -1419,6 +1496,7 @@ __all__ = [
     "JepaContextImageEncoder",
     "JepaMaskSample",
     "JepaMaskSampler",
+    "LightweightPatchViTFrameEncoder",
     "OverlapPatchTokenEncoder",
     "TargetLatentPredictor",
     "TinyViTFrameTokenEncoder",

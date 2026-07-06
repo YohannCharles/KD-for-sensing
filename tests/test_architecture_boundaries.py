@@ -572,6 +572,120 @@ def test_agent_context_and_project_skills_are_registered_and_resolvable():
     assert not broken_references
 
 
+def test_agent_context_portability_documents_are_thin_and_bounded():
+    adapter_paths = (
+        "CLAUDE.md",
+        ".github/copilot-instructions.md",
+        ".cursor/rules/kd-sensing-context.mdc",
+        ".kiro/steering/agent-context.md",
+        "docs/agent_project_knowledge.md",
+    )
+    required_adapter_refs = (
+        "AGENTS.md",
+        "docs/agent_navigation.md",
+        "docs/agent_context/README.md",
+        "OpenSpec",
+        "kd_mm_beam",
+        "dataset/",
+        "outputs/",
+        "logs/",
+    )
+    forbidden_copies = (
+        "## Requirements",
+        "### Requirement:",
+        "#### Scenario:",
+        "| Route id |",
+        "| claim_id |",
+    )
+    role_doc = ROOT / "docs/readonly_agent_roles.md"
+    research_brief = ROOT / "docs/current_research_brief.md"
+    memory_ledger = ROOT / "docs/agent_memory_ledger.md"
+
+    portability_docs = (*adapter_paths, _rel(role_doc), _rel(research_brief), _rel(memory_ledger))
+    missing_files = [rel_path for rel_path in portability_docs if not (ROOT / rel_path).exists()]
+    adapter_violations: list[str] = []
+    retired_mentions: list[str] = []
+    copied_governance: list[str] = []
+    for rel_path in adapter_paths:
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        for marker in required_adapter_refs:
+            if marker not in text:
+                adapter_violations.append(f"{rel_path}: missing {marker}")
+        for marker in RETIRED_TEXT_MARKERS:
+            if marker in text:
+                retired_mentions.append(f"{rel_path}: {marker}")
+        for marker in forbidden_copies:
+            if marker in text:
+                copied_governance.append(f"{rel_path}: {marker}")
+
+    role_text = role_doc.read_text(encoding="utf-8")
+    role_required = (
+        "claim-auditor",
+        "experiment-triage",
+        "surface-doctor-reviewer",
+        "literature-scout",
+        "只读",
+        "不直接写",
+        "不启动训练",
+        "不清理",
+        "conda run -n kd_mm_beam",
+        "OpenSpec",
+    )
+    role_violations = [marker for marker in role_required if marker not in role_text]
+
+    brief_text = research_brief.read_text(encoding="utf-8")
+    brief_required = (
+        "当前主线",
+        "冻结方法",
+        "不要追",
+        "Claim 升级条件",
+        "下一步高价值实验",
+        "docs/result_claims_registry.md",
+        "docs/experiment_protocols.md",
+        "mock/smoke",
+        "pending",
+    )
+    brief_violations = [marker for marker in brief_required if marker not in brief_text]
+
+    ledger_text = memory_ledger.read_text(encoding="utf-8")
+    ledger_required = (
+        "错误模式",
+        "触发场景",
+        "正确规则",
+        "建议沉淀位置",
+        "验证命令",
+        "人工确认状态",
+        "不得自动重写",
+        "docs/result_claims_registry.md",
+        "conda run -n kd_mm_beam",
+    )
+    ledger_violations = [marker for marker in ledger_required if marker not in ledger_text]
+
+    reference_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "README.md",
+            ROOT / "docs/agent_navigation.md",
+            INVENTORY,
+            ROOT / "docs/agent_context/documentation.md",
+        )
+    )
+    missing_registration = [
+        rel_path
+        for rel_path in portability_docs
+        if rel_path not in reference_text
+    ]
+
+    assert not missing_files
+    assert not adapter_violations
+    assert not retired_mentions
+    assert not copied_governance
+    assert not role_violations
+    assert not brief_violations
+    assert not ledger_violations
+    assert not missing_registration
+
+
 def test_project_surface_inventory_sizing_baseline_declares_scan_method():
     section = _inventory_section("## 项目健康护栏基线", "当前 AST 热点清单如下")
     required_markers = {

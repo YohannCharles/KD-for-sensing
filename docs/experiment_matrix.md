@@ -10,6 +10,37 @@
 
 命令默认使用 `kd_mm_beam` 环境；训练、评估和预处理优先使用 console script。所有真实训练、metrics、figures、checkpoint、feature cache 和日志都写入 ignored 的 `outputs/`、`outputs/cache/` 或 `logs/`，不进入源码变更。
 
+## 研究运行预览闭环
+
+长跑或手动拼表前，先用无训练预览闭环检查当前证据、预算和静态产物：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-research-preview --no-resources
+conda run -n kd_mm_beam kd-sensing-research-preview \
+  --qa-html outputs/analysis/research_dashboard/dashboard.html \
+  --qa-table outputs/paper_tables/scenes31_34_main/table_main.csv \
+  --qa-checklist outputs/scenes31_34_main_lmdb/final_evidence_checklist.csv \
+  --qa-conclusion outputs/scenes31_34_main_lmdb/final_conclusion.md \
+  --output-dir outputs/analysis/research_preview/current
+```
+
+该入口默认不启动真实训练、不读取真实 `dataset/`、不加载 checkpoint、不写训练产物；它复用 research dashboard 的 summary/HTML renderer，并对 HTML、CSV/table、figure data、checklist 和 conclusion draft 做结构字段、candidate/pending caveat、远程依赖和空数据检查。多 seed 或 GPU 长跑前，用同一入口追加预算字段：
+
+```bash
+conda run -n kd_mm_beam kd-sensing-research-preview \
+  --long-run \
+  --manifest outputs/scenes31_34_main_lmdb/generated_configs/experiment_manifest.csv \
+  --dataset-family deepsense6g \
+  --reads-real-dataset \
+  --gpu "GPU5,6,7; max_parallel=6" \
+  --output-root outputs/scenes31_34_main_lmdb \
+  --checkpoint-plan "write best/last checkpoints under ignored output root" \
+  --cache-plan "read LMDB/cache only; no rebuild unless explicit" \
+  --stop-condition "stop on repeated killed/OOM or missing scene availability"
+```
+
+真实 preview manifest、budget manifest、QA 报告、HTML、CSV 或 figure draft 都写入 ignored `outputs/analysis/`、对应 workflow output root 或用户显式路径，不提交源码。console script 失效时使用 `conda run -n kd_mm_beam python -m kd_sensing.cli.research_preview --help` 诊断 editable install/PATH 问题；该 fallback 只用于排障，不是替代长期入口。
+
 ## 论文交付层
 
 论文表格和图数据草稿从已审阅 claim、ledger 或 summary 导出，不从 pending/mock/historical/upper-bound 行自动生成正式主表：

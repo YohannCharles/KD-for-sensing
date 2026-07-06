@@ -21,6 +21,8 @@ from kd_sensing.diagnostics.research_claim_harvester_collectors import (
 from kd_sensing.diagnostics.research_claim_harvester_dashboard import (
     build_dashboard_summary,
     collect_active_openspec_changes,
+    escape_dashboard_html,
+    render_dashboard_html,
     render_dashboard_summary,
 )
 from kd_sensing.diagnostics.research_claim_harvester_gate import apply_strict_comparability_gate

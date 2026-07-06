@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from kd_sensing.engine import runtime
+import kd_sensing.engine.runtime as runtime
 
 
 SINGLE_MODALITY_CASES = (

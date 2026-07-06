@@ -18,6 +18,8 @@ class TrainingState:
     best_top1_epoch: int = 0
     best_early_stopping_value: float = float("-inf")
     best_early_stopping_epoch: int = 0
+    best_selection_value: float = float("-inf")
+    best_selection_epoch: int = 0
     registry_checkpoint: dict[str, Any] | None = None
     epochs_without_improvement: int = 0
     checkpoint_loads: list[dict[str, Any] | None] = field(default_factory=list)
@@ -36,6 +38,8 @@ class TrainingState:
         self.best_val_loss = float(checkpoint.get("best_val_loss", checkpoint.get("test_loss", self.best_val_loss)))
         self.best_val_top1 = float(checkpoint.get("best_val_top1", self.best_val_top1))
         self.best_top1_epoch = int(checkpoint.get("best_top1_epoch", self.best_top1_epoch))
+        self.best_selection_value = float(checkpoint.get("best_selection_value", self.best_selection_value))
+        self.best_selection_epoch = int(checkpoint.get("best_selection_epoch", self.best_selection_epoch))
         if "early_stopping_metric" in checkpoint:
             early_stopping_metric = normalize_early_stopping_metric(
                 checkpoint["early_stopping_metric"],

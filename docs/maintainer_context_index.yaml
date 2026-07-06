@@ -79,6 +79,7 @@ task_routes:
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q
       - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py -q
+      - conda run -n kd_mm_beam pytest tests/test_research_run_preview.py -q
     retired_route_guard: retired_routes
     caveat: diagnostics write generated artifacts only to ignored outputs/ or logs/
   - id: openspec

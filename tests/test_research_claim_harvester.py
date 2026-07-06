@@ -10,6 +10,7 @@ from kd_sensing.diagnostics.research_claim_harvester import (
     harvest_research_claims,
     ledger_records_from_candidates,
     read_training_run_artifact,
+    render_dashboard_html,
     training_run_claim_candidate,
     write_jsonl_ledger,
     write_ledger_csv,
@@ -188,6 +189,153 @@ def test_dashboard_aggregates_active_change_resources_and_next_actions(tmp_path:
     assert summary["candidates"][0]["candidate_only"] is True
     assert summary["paper_readiness"]["candidate_only_count"] == 1
     assert "stress_provenance" in summary["paper_readiness"]["missing_field_counts"]
+
+
+def test_dashboard_html_renders_sections_caveat_empty_state_and_escapes():
+    summary = {
+        "metadata": {
+            "schema_version": 1,
+            "generated_at": "2026-06-01T09:00:00Z",
+            "project_root": "/tmp/project <root>",
+            "candidate_only": True,
+            "read_only": True,
+            "does_not_update_claim_registry": True,
+        },
+        "active_changes": [{"name": "add-html <script>alert('x')</script>", "status": "active"}],
+        "run_state_counts": {"running": 1},
+        "resources": {"gpu_available": True, "gpu_count": 1, "process_count": 2, "memory": {"total_mb": 1024}},
+        "claim_counts": {"strict": 1},
+        "paper_readiness": {
+            "status": "blocked",
+            "pending_or_unverified_count": 1,
+            "candidate_only_count": 1,
+            "missing_field_counts": {"checkpoint_provenance": 1},
+            "upgradable_candidate_count": 1,
+            "paper_export_gate": {
+                "candidate_only_excluded": True,
+                "main_table_hard_exclude_status_markers": ["pending", "unverified"],
+            },
+            "next_action_hints": ["review <evidence> & provenance"],
+        },
+        "candidates": [
+            {
+                "candidate_id": "claim-<unsafe>",
+                "run_name": "proto_seed7",
+                "method": "proto",
+                "seed": 7,
+                "comparability_status": "strict",
+                "claim_status": "draft",
+                "candidate_only": True,
+                "artifact_paths": {"source": "outputs/run <script>.json"},
+                "next_action_hints": ["inspect \"checkpoint\""],
+            }
+        ],
+        "upgradable_candidates": [
+            {
+                "candidate_id": "claim-<unsafe>",
+                "run_name": "proto_seed7",
+                "method": "proto",
+                "comparability_status": "strict",
+                "claim_status": "draft",
+                "candidate_only": True,
+            }
+        ],
+        "next_action_hints": ["inspect \"checkpoint\""],
+        "warnings": ["warning <b>bad</b>"],
+    }
+
+    html = render_dashboard_html(summary)
+    empty_html = render_dashboard_html({})
+
+    assert "<!doctype html>" in html
+    for section in ("Metadata", "Run States", "Active Changes", "Resources", "Claim Readiness", "Paper Readiness", "Warnings", "Next Actions"):
+        assert section in html
+    assert "candidate-only readiness signals" in html
+    assert "claim-&lt;unsafe&gt;" in html
+    assert "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;" in html
+    assert "outputs/run &lt;script&gt;.json" in html
+    assert "<script>alert" not in html
+    assert "<b>bad</b>" not in html
+    assert "No active OpenSpec changes." in empty_html
+    assert "generated_at: unknown" in empty_html
+
+
+def test_research_dashboard_cli_writes_html_and_json_from_one_summary(tmp_path: Path, monkeypatch, capsys):
+    from kd_sensing.cli import research_dashboard
+
+    calls = 0
+
+    def _fake_summary(**kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "metadata": {
+                "schema_version": 1,
+                "generated_at": "2026-06-01T09:00:00Z",
+                "project_root": str(tmp_path),
+                "candidate_only": True,
+                "read_only": True,
+                "does_not_update_claim_registry": True,
+            },
+            "active_changes": [{"name": "add-html-evidence-dashboard", "status": "active"}],
+            "run_state_counts": {"running": 1},
+            "resources": {"gpu_available": False, "gpu_count": 0, "process_count": 0, "memory": {}},
+            "claim_counts": {"strict": 1},
+            "paper_readiness": {
+                "status": "blocked",
+                "pending_or_unverified_count": 1,
+                "candidate_only_count": 1,
+                "missing_field_counts": {},
+                "upgradable_candidate_count": 1,
+                "paper_export_gate": {"candidate_only_excluded": True},
+                "next_action_hints": ["manual review only"],
+            },
+            "candidates": [
+                {
+                    "candidate_id": "candidate-one",
+                    "run_id": "run-one",
+                    "run_name": "proto_seed7",
+                    "method": "proto",
+                    "comparability_status": "strict",
+                    "claim_status": "draft",
+                    "candidate_only": True,
+                    "metrics": {"top1": 0.5},
+                    "artifact_paths": {"source": str(tmp_path / "summary.json")},
+                }
+            ],
+            "upgradable_candidates": [{"candidate_id": "candidate-one", "run_name": "proto_seed7"}],
+            "next_action_hints": ["manual review only"],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(research_dashboard, "build_dashboard_summary", _fake_summary)
+    json_path = tmp_path / "nested" / "dashboard.json"
+    html_path = tmp_path / "nested" / "dashboard.html"
+
+    summary = research_dashboard.run(
+        [
+            "--outputs",
+            str(tmp_path / "outputs"),
+            "--logs",
+            str(tmp_path / "logs"),
+            "--output-json",
+            str(json_path),
+            "--output-html",
+            str(html_path),
+        ]
+    )
+    stdout = capsys.readouterr().out
+    json_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    html_text = html_path.read_text(encoding="utf-8")
+
+    assert calls == 1
+    assert summary["metadata"]["generated_at"] == "2026-06-01T09:00:00Z"
+    assert json_payload["metadata"]["generated_at"] == "2026-06-01T09:00:00Z"
+    assert "generated_at: 2026-06-01T09:00:00Z" in stdout
+    assert "2026-06-01T09:00:00Z" in html_text
+    assert "candidate-one" in html_text
+    assert f"dashboard_json: {json_path}" in stdout
+    assert f"dashboard_html: {html_path}" in stdout
 
 
 def test_claim_doctor_reports_missing_fields_and_upgradable_candidates():

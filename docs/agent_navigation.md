@@ -6,7 +6,9 @@
 
 - 当前主线：多模态少样本跨场景 beam prediction，重点围绕 Image+GPS JEPA query-pool、缺失模态本地实验、MMW/CSI 诊断和当前保留的 baseline/reproduction workflow。
 - 推荐入口：训练、评估、预处理和诊断优先使用 `pyproject.toml` 声明的 `kd-sensing-*` console scripts；Scene31/Scene31-34 队列、表格和结论脚本只作为 local/manual 或 research diagnostic surface。
+- 研究预览闭环：长跑、手动拼表或 claim 更新前可先运行 `conda run -n kd_mm_beam kd-sensing-research-preview --no-resources`；它默认只生成 preview manifest、dashboard HTML、静态 evidence QA 和 budget manifest，不启动训练、不读取真实 `dataset/`、不加载 checkpoint。
 - 渐进加载入口：任务细节优先按 `docs/agent_context/README.md` 选择 scoped context；spec/config/claim 快速扫视用 `docs/agent_context/atlas.md`，不要把 atlas 当成需求契约。
+- 跨工具 agent 入口：Claude、Copilot、Cursor、Kiro 和 Project Knowledge 适配文件只做薄引用；`docs/current_research_brief.md` 是研究方向简报，不替代 `docs/result_claims_registry.md` 或 `docs/experiment_protocols.md`。
 - 绝对退役边界：旧 KD、HiST/Hist、Top8 selector、GPS residual、camera residual、BGAM、viewer manifest、Raymobtime s008、AMR-Net_gps_image 和 JEPA-MSAC 不得通过兼容 wrapper、旧 CLI、实体 YAML 或 package facade 恢复。
 - 必读入口：`AGENTS.md`、本文件、`docs/project_surface_inventory.md`、`docs/maintainer_context_index.yaml`、README 和目标 OpenSpec spec；有 active change 时先读对应 proposal/design/tasks/specs。
 - 快速验证：常规无数据入口用 `make verify-quick`；CLI/config 变更追加 `make verify-cli-config`；脚本/CLI 语法检查用 `make verify-compile`。底层命令仍是 `openspec validate --all --strict`、`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` 和 CLI/config focused tests。
@@ -17,12 +19,15 @@
 1. 先读用户当前请求和本轮对话中的限制；它们只约束本次工作，不自动改写长期契约。
 2. 读 `AGENTS.md`，确认命令环境、OpenSpec、文档边界和本地产物边界；所有项目 Python 命令使用 `conda run -n kd_mm_beam ...`。
 3. 检查 active change 状态：运行 `openspec list --json`，再对目标 change 运行 `openspec status --change <change>`；已完成但未归档的 change 应先归档或记录 deferral，否则不要把它当成仍在实施的需求。归档后的快速 OpenSpec 验证优先复制 `openspec validate --all --strict` 或 current spec validation，不复制 archive change 名。
+   - 收口前可运行只读 preflight：`conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope closeout --format markdown --fail-on none`。它只报告 active/complete/archive/untracked change 和 dirty worktree 分类，不会 archive、reset、删除或移动任何文件。
+   - 若同时看到 active change 删除和 `openspec/changes/archive/<date>-<name>/` 新增，把它当作同一个 closeout 状态处理；先确认验证和提交边界，不要把新 archive 当成当前需求。
 4. 读 `docs/project_surface_inventory.md`，用 inventory 定位 lifecycle、入口分类、root fusion YAML、experiment config family、脚本 lifecycle、热点说明和历史 caveat；`docs/maintainer_context_index.yaml` 只保留退役 token、task route、验证命令等最小结构化事实，不维护完整源码目录清单、入口 allowlist 或 prose 镜像。
 5. 按任务读取 `docs/agent_context/` 中的 scoped context；只在需要扫视 spec/config/claim owner、lifecycle、focused tests 和 caveat 时读取 `docs/agent_context/atlas.md`。
-6. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
-7. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
-8. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
-9. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动、未分类 `scripts/`/root runbook 和 ignored runtime artifacts 没有被误当作源码需求；`.codegraph/daemon.pid`、socket、db、cache 和 log 只能作为本地工具状态处理。
+6. 需要快速判断研究主线时可读 `docs/current_research_brief.md`；它只给方向和 gate，不替代 claim registry、experiment protocols、mainline catalog、experiment matrix 或 OpenSpec。
+7. 读 active change 的 `proposal.md`、`design.md`、`tasks.md` 和 `specs/**/*.md`；没有 active change 时，先看 inventory 的 OpenSpec capability lifecycle 分类，再读 `openspec/specs/` 中对应 specs。
+8. 对每个 capability 先判定 lifecycle：`current` 才能作为当前需求契约或推荐入口；`supporting` 只能理解为当前 workflow 消费的 helper、metric、manifest、cleanup 或 migration guard；`retired-tombstone` 只解释为退役边界、防回流或 migration guard，不代表当前运行入口。
+9. 读 README 和 `docs/` 中对应 workflow 文档，确认当前推荐入口、退役说明和验证建议。
+10. 最后看源码、测试和 `git status --short`，确认实际实现、未提交改动、未分类 `scripts/`/root runbook 和 ignored runtime artifacts 没有被误当作源码需求；`.codegraph/daemon.pid`、socket、db、cache 和 log 只能作为本地工具状态处理。
 
 ## 权威来源优先级
 
@@ -65,10 +70,13 @@ Scoped context 优先作为按需入口，详细 rationale 仍回到 inventory�
 | CLI / scripts 入口 | README 主要入口、`pyproject.toml` console scripts、inventory 脚本入口分类 | `src/kd_sensing/cli/`、`scripts/`、`pyproject.toml`；真实 workflow 逻辑应位于 owner module/script | CLI help smoke、`tests/test_cli_help.py`、架构边界测试 |
 | 输出产物 / cache / cleanup | README 数据和产物边界、inventory 本地产物分类、cleanup manifest workflow | `src/kd_sensing/utils/runtime_output_layout.py`、diagnostic / cleanup CLI；默认输出在 ignored `outputs/` | 不写入 `outputs/` 或 `logs/` 的单元测试；必要时只生成 dry-run manifest |
 | 诊断 / visual analysis / benchmark | 诊断 specs、JEPA visual analysis、GPS shortcut benchmark、inventory 诊断热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/jepa_visual_analysis.py`、`src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` 和 CLI help |
+| research preview / evidence QA / budget manifest | `research-run-preview-loop` active/current spec、diagnostics 和 claims scoped context、inventory package CLI 分类 | `src/kd_sensing/diagnostics/research_run_preview.py`、`src/kd_sensing/cli/research_preview.py`、README/experiment matrix | `conda run -n kd_mm_beam pytest tests/test_research_run_preview.py tests/test_cli_help.py -q` |
 | OpenSpec artifact | active change 的 proposal/design/spec/tasks、inventory lifecycle、当前 specs、`openspec status` | `openspec/changes/<change>/` 或 `openspec/specs/` | `openspec validate <change> --strict`，必要时 `openspec status --change <change>` |
 | 文档生命周期 | 索引的 `documentation_lifecycle` 路由、AGENTS 文档边界、README 文档索引、OpenSpec capability lifecycle、inventory 文档生命周期分类 | README、`AGENTS.md`、`docs/*.md`、OpenSpec 文档 | 架构边界测试；检查不把历史、supporting 或退役墓碑路线写成当前推荐入口 |
 
 内部源码和测试默认导入真实 owner 模块：例如 objective metadata 使用 `kd_sensing.engine.objectives.metadata`，BeamBench Image AE+GPS 使用 `image_ae_gps_training.py` / `image_ae_gps_paper_split.py` 等具体 owner，fusion 测试使用 `fusion.cls_token_transformer` 或 `fusion.token_transformer`。不要为了省 import 行恢复 package-level re-export、lazy export 或旧聚合 facade。
+
+跨工具 agent 适配文件（例如 `CLAUDE.md`、`.github/copilot-instructions.md`、`.cursor/rules/*.mdc`、`.kiro/steering/*.md` 和 Project Knowledge 模板）只允许保留短引用、工具加载差异和必要边界提醒；不得复制完整任务路由、完整 OpenSpec requirement、完整退役清单或完整 claim 表。重复 agent 错误先记录到 `docs/agent_memory_ledger.md` 的候选清单，人工确认或后续 OpenSpec change 后再沉淀到长期文档。只读角色见 `docs/readonly_agent_roles.md`，它们只能输出建议，不直接写文件、不启动训练、不清理本地产物。
 
 新增 current mainline、paper reproduction、benchmark 或诊断 workflow 时，必须同步四层文档：`docs/mainline_model_catalog.md` 记录当前事实行，`docs/experiment_protocols.md` 记录参数口径，`docs/result_claims_registry.md` 记录 claim/provenance，`docs/experiment_matrix.md` 记录 quickstart 命令和关键 caveat。若该实验改变主线取舍、形成复盘结论或暴露新创新线索，还应补 `docs/mainline_experiment_history.md`。若该 workflow 有明确名称或专用入口，还应在 inventory 或 focused 架构测试中登记 owner module/script、responsibility、output boundary 和必要 retired route guard。
 
@@ -139,6 +147,7 @@ Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 
 | CLI/config 聚合 smoke | `make verify-cli-config` |
 | tracked scripts/package CLI Python 语法 | `make verify-compile` |
 | 诊断、JEPA visual analysis、GPS shortcut benchmark | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` |
+| research preview、静态 evidence QA、budget manifest | `conda run -n kd_mm_beam pytest tests/test_research_run_preview.py -q` |
 | 训练、数据、模型 forward 或 shared runtime | 先跑对应 focused tests；高风险改动再考虑 `conda run -n kd_mm_beam pytest -q` |
 | reliability-aware / observability-aware 模型 metadata | 对应模型 focused tests、difficulty/batch tests；同时覆盖普通 baseline 忽略 metadata 和 opt-in 模型接收 metadata |
 

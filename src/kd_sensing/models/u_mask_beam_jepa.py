@@ -1,4 +1,5 @@
 from typing import Any
+import math
 from pathlib import Path
 
 import torch
@@ -131,6 +132,124 @@ class BeamPredictionHead(nn.Module):
         return self.net(features)
 
 
+class PatternConditionedPrototypeGate(nn.Module):
+    def __init__(self, num_modalities: int, reliability_dim: int, pattern_dim: int, hidden_dim: int = 64) -> None:
+        super().__init__()
+        self.num_modalities = int(num_modalities)
+        self.net = nn.Sequential(
+            nn.LayerNorm(int(reliability_dim) + int(pattern_dim) + self.num_modalities),
+            nn.Linear(int(reliability_dim) + int(pattern_dim) + self.num_modalities, int(hidden_dim)),
+            nn.GELU(),
+            nn.Linear(int(hidden_dim), 1),
+        )
+
+    def forward(
+        self,
+        reliability_features: torch.Tensor,
+        pattern_features: torch.Tensor,
+        available_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if reliability_features.ndim != 3:
+            raise ValueError("pcpg reliability_features must have shape [B, M, F].")
+        batch_size, num_modalities, _ = reliability_features.shape
+        if num_modalities != self.num_modalities:
+            raise ValueError(f"pcpg expected {self.num_modalities} modalities, got {num_modalities}.")
+        if pattern_features.ndim != 2 or pattern_features.shape[0] != batch_size:
+            raise ValueError("pcpg pattern_features must have shape [B, P].")
+        modality_eye = torch.eye(
+            num_modalities,
+            device=reliability_features.device,
+            dtype=reliability_features.dtype,
+        ).unsqueeze(0).expand(batch_size, -1, -1)
+        pattern = pattern_features.to(device=reliability_features.device, dtype=reliability_features.dtype)
+        pattern = pattern.unsqueeze(1).expand(-1, num_modalities, -1)
+        logits = self.net(torch.cat([reliability_features, pattern, modality_eye], dim=-1)).squeeze(-1)
+        return masked_pcpg_softmax(logits, available_mask)
+
+
+class BeamPrototypeReliabilityRouter(nn.Module):
+    def __init__(
+        self,
+        num_modalities: int,
+        feature_dim: int,
+        pattern_dim: int,
+        hidden_dim: int = 64,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.num_modalities = int(num_modalities)
+        self.feature_dim = int(feature_dim)
+        self.pattern_dim = int(pattern_dim)
+        router_dim = self.feature_dim + self.num_modalities
+        self.net = nn.Sequential(
+            nn.LayerNorm(router_dim),
+            nn.Linear(router_dim, int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), 1),
+        )
+        self.pattern_bias = nn.Linear(self.pattern_dim, self.num_modalities, bias=False)
+
+    def forward(
+        self,
+        reliability_features: torch.Tensor,
+        available_mask: torch.Tensor,
+        pattern_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if reliability_features.ndim != 3:
+            raise ValueError("bprr reliability_features must have shape [B, M, F].")
+        batch_size, num_modalities, feature_dim = reliability_features.shape
+        if num_modalities != self.num_modalities or feature_dim != self.feature_dim:
+            raise ValueError(
+                "bprr expected reliability_features shape "
+                f"[B, {self.num_modalities}, {self.feature_dim}], got {tuple(reliability_features.shape)}."
+            )
+        modality_eye = torch.eye(
+            num_modalities,
+            device=reliability_features.device,
+            dtype=reliability_features.dtype,
+        ).unsqueeze(0).expand(batch_size, -1, -1)
+        logits = self.net(torch.cat([reliability_features, modality_eye], dim=-1)).squeeze(-1)
+        if pattern_features is not None:
+            if pattern_features.ndim != 2 or tuple(pattern_features.shape) != (batch_size, self.pattern_dim):
+                raise ValueError(
+                    f"bprr pattern_features must have shape {(batch_size, self.pattern_dim)}, "
+                    f"got {tuple(pattern_features.shape)}."
+                )
+            logits = logits + self.pattern_bias(pattern_features.to(device=logits.device, dtype=logits.dtype))
+        return masked_pcpg_softmax(logits, available_mask)
+
+
+class BPRRTemperatureCalibration(nn.Module):
+    def __init__(self, num_modalities: int, init_temperature: float = 1.0, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = float(eps)
+        init = max(float(init_temperature) - self.eps, self.eps)
+        raw = math.log(math.expm1(init))
+        self.raw_temperature = nn.Parameter(torch.full((int(num_modalities),), float(raw)))
+
+    def temperatures(self) -> torch.Tensor:
+        return F.softplus(self.raw_temperature) + self.eps
+
+    def forward(self, logits: torch.Tensor) -> torch.Tensor:
+        if logits.ndim != 3 or int(logits.shape[1]) != int(self.raw_temperature.numel()):
+            raise ValueError(
+                "bprr temperature calibration expects logits [B, M, C] with "
+                f"M={int(self.raw_temperature.numel())}, got {tuple(logits.shape)}."
+            )
+        return logits / self.temperatures().to(device=logits.device, dtype=logits.dtype).view(1, -1, 1)
+
+
+def masked_pcpg_softmax(logits: torch.Tensor, available_mask: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    available = available_mask.to(device=logits.device, dtype=torch.bool)
+    if logits.shape != available.shape:
+        raise ValueError(f"pcpg gate logits shape {tuple(logits.shape)} must match mask {tuple(available.shape)}.")
+    masked = logits.masked_fill(~available, torch.finfo(logits.dtype).min)
+    weights = torch.softmax(masked, dim=-1) * available.to(dtype=logits.dtype)
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(float(eps))
+    return torch.where(available.any(dim=-1, keepdim=True), weights, torch.zeros_like(weights))
+
+
 class MaskConditionedAdapter(nn.Module):
     def __init__(
         self,
@@ -217,6 +336,14 @@ class UMaskBeamJEPA(nn.Module):
         mask_adapter_residual_scale: float = 1.0,
         mask_adapter_dropout: float = 0.0,
         pattern_film: dict[str, Any] | bool | None = None,
+        pcpg_fuse_level: str = "logits",
+        pcpg_hidden_dim: int = 64,
+        raw_conf_temperature: float = 1.0,
+        bprr_fuse_level: str = "logits",
+        bprr_calibration: str = "none",
+        bprr_init_temperature: float = 1.0,
+        bprr_hidden_dim: int = 64,
+        bprr_dropout: float = 0.1,
         use_light_latent_pred: bool = False,
         latent_pred_target: str = "full_fused",
         latent_pred_hidden_dim: int = 256,
@@ -243,6 +370,11 @@ class UMaskBeamJEPA(nn.Module):
         self.use_mask_adapter = bool(use_mask_adapter)
         self.mask_adapter_apply = str(mask_adapter_apply)
         self.pattern_film_config = _pattern_film_config(pattern_film)
+        self.pcpg_fuse_level = str(pcpg_fuse_level)
+        self.raw_conf_temperature = max(float(raw_conf_temperature), 1e-6)
+        self.bprr_fuse_level = str(bprr_fuse_level)
+        self.bprr_calibration = str(bprr_calibration or "none").strip().lower()
+        self.bprr_init_temperature = float(bprr_init_temperature)
         self.use_light_latent_pred = bool(use_light_latent_pred)
         self.latent_pred_target = str(latent_pred_target)
         self.ablation_id = ablation_id
@@ -253,11 +385,20 @@ class UMaskBeamJEPA(nn.Module):
             "reliability_biased_missing_attention",
             "concat_mlp",
             "weighted_sum",
+            "pcpg",
+            "raw_conf_gate",
+            "bprr",
         }:
             raise ValueError(
                 "fusion_type must be reliability_gated_cross_attention, reliability_biased_missing_attention, "
-                "concat_mlp, or weighted_sum."
+                "concat_mlp, weighted_sum, pcpg, raw_conf_gate, or bprr."
             )
+        if self.fusion_type == "pcpg" and self.pcpg_fuse_level != "logits":
+            raise ValueError("fusion_type='pcpg' currently supports pcpg_fuse_level='logits' only.")
+        if self.fusion_type == "bprr" and self.bprr_fuse_level != "logits":
+            raise ValueError("fusion_type='bprr' currently supports bprr_fuse_level='logits' only.")
+        if self.bprr_calibration not in {"none", "temperature"}:
+            raise ValueError("bprr_calibration currently supports 'none' or 'temperature'.")
         if self.d_model <= 0 or self.num_classes <= 0 or self.num_pred <= 0:
             raise ValueError("d_model, num_classes, and num_pred must be positive.")
 
@@ -335,6 +476,35 @@ class UMaskBeamJEPA(nn.Module):
             self.num_classes,
             temperature=beam_proto_temperature if tau_proto is None else float(tau_proto),
         )
+        self.pcpg_gate = (
+            PatternConditionedPrototypeGate(
+                len(self.modalities),
+                reliability_dim=6,
+                pattern_dim=len(self.modalities) + 2,
+                hidden_dim=int(pcpg_hidden_dim),
+            )
+            if self.fusion_type == "pcpg"
+            else None
+        )
+        self.bprr_router = (
+            BeamPrototypeReliabilityRouter(
+                len(self.modalities),
+                feature_dim=8,
+                pattern_dim=len(self.modalities) + 2,
+                hidden_dim=int(bprr_hidden_dim),
+                dropout=float(bprr_dropout),
+            )
+            if self.fusion_type == "bprr"
+            else None
+        )
+        self.bprr_temperature = (
+            BPRRTemperatureCalibration(
+                len(self.modalities),
+                init_temperature=self.bprr_init_temperature,
+            )
+            if self.fusion_type == "bprr" and self.bprr_calibration == "temperature"
+            else None
+        )
         latent_output_dim = self.num_classes if self.latent_pred_target == "prototype_distribution" else self.d_model
         self.latent_predictor = (
             LatentPredictionProbe(self.d_model, latent_output_dim, hidden_dim=int(latent_pred_hidden_dim))
@@ -376,7 +546,10 @@ class UMaskBeamJEPA(nn.Module):
             fusion_diagnostics["pattern_film_param_count"] = sum(param.numel() for param in self.pattern_film.parameters())
             fusion_diagnostics["pattern_film_dim"] = int(self.pattern_film_config.get("dim", 0))
             fusion_diagnostics["pattern_film_apply_at"] = str(self.pattern_film_config.get("apply_at", "pre_head"))
-        logits = self.beam_head(fused).unsqueeze(1).expand(-1, self.num_pred, -1)
+        base_logits = fusion_diagnostics.get("fused_logits", fusion_diagnostics.get("pcpg_fused_logits"))
+        if not torch.is_tensor(base_logits):
+            base_logits = self.beam_head(fused)
+        logits = base_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         teacher_logits = teacher_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         return {
             "logits": logits,
@@ -405,9 +578,9 @@ class UMaskBeamJEPA(nn.Module):
             "modalities": list(self.modalities),
             "consumes_missing_mask": True,
             "consumes_missing_modality_metadata": False,
-            "consumes_reliability_metadata": self.fusion_type == "reliability_biased_missing_attention",
+            "consumes_reliability_metadata": self.fusion_type in {"reliability_biased_missing_attention", "bprr"},
             "reliability_metadata_consumption": "internal_modality_uncertainty"
-            if self.fusion_type == "reliability_biased_missing_attention"
+            if self.fusion_type in {"reliability_biased_missing_attention", "bprr"}
             else "none",
             "same_model_full_modal_teacher_auxiliary": True,
             "use_teacher": self.use_teacher,
@@ -430,6 +603,10 @@ class UMaskBeamJEPA(nn.Module):
             "use_modality_uncertainty": self.use_modality_uncertainty,
             "use_global_uncertainty": self.use_global_uncertainty,
             "fusion_type": self.fusion_type,
+            "pcpg_fuse_level": self.pcpg_fuse_level if self.fusion_type == "pcpg" else None,
+            "bprr_fuse_level": self.bprr_fuse_level if self.fusion_type == "bprr" else None,
+            "bprr_calibration": self.bprr_calibration if self.fusion_type == "bprr" else None,
+            "bprr_temperature_count": len(self.modalities) if self.bprr_temperature is not None else 0,
             "context_type": self.context_type,
             "use_registry_encoders": self.use_registry_encoders,
             "encoder_configs": self.encoder_configs,
@@ -504,6 +681,8 @@ class UMaskBeamJEPA(nn.Module):
         else:
             mask = missing_mask.to(device=latent.device, dtype=torch.bool)
         expected = (int(latent.shape[0]), len(self.modalities))
+        if tuple(mask.shape) == (len(self.modalities),):
+            mask = mask.unsqueeze(0).expand(expected)
         if tuple(mask.shape) != expected:
             raise ValueError(f"missing_mask must have shape {expected}, got {tuple(mask.shape)}.")
         empty = (~mask.any(dim=1)).nonzero(as_tuple=False).flatten()
@@ -543,6 +722,12 @@ class UMaskBeamJEPA(nn.Module):
             return result["fused"], diagnostics
         if self.fusion_type == "reliability_gated_cross_attention":
             return self.cross_attention_fusion(latent, mu_b, reliability, global_reliability), {}
+        if self.fusion_type == "pcpg":
+            return self._pcpg_fuse(latent, mask, reliability, mu_b)
+        if self.fusion_type == "raw_conf_gate":
+            return self._raw_conf_gate_fuse(latent, mask, reliability, mu_b)
+        if self.fusion_type == "bprr":
+            return self._bprr_fuse(latent, mask, reliability, mu_b)
         weights = reliability.squeeze(-1)
         weight_sum = weights.sum(dim=1, keepdim=True)
         weights = weights / weight_sum.clamp_min(1e-6)
@@ -558,6 +743,220 @@ class UMaskBeamJEPA(nn.Module):
             return 0.5 * (pooled + mu_b), diagnostics
         return self.concat_fusion(torch.cat([pooled, mu_b], dim=-1)), diagnostics
 
+    def _pcpg_fuse(
+        self,
+        latent: torch.Tensor,
+        mask: torch.Tensor,
+        reliability: torch.Tensor,
+        mu_b: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if self.pcpg_gate is None:
+            raise RuntimeError("pcpg fusion requested without a pcpg gate.")
+        stats = self._unimodal_branch_stats(latent)
+        unimodal_logits = stats["unimodal_logits"]
+        prototype_scores = stats["prototype_scores"]
+        available = mask.to(device=latent.device, dtype=latent.dtype)
+        reliability_features = torch.stack(
+            [
+                reliability.squeeze(-1),
+                available,
+                stats["entropy"],
+                stats["margin"],
+                stats["confidence"],
+                stats["prototype_confidence"],
+            ],
+            dim=-1,
+        )
+        pattern_features = _pattern_features(available)
+        weights = self.pcpg_gate(reliability_features, pattern_features, mask)
+        pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
+        weighted_logits = (unimodal_logits * weights.unsqueeze(-1)).sum(dim=1)
+        weighted_prototypes = (prototype_scores * weights.unsqueeze(-1)).sum(dim=1)
+        diagnostics = {
+            "reliability_fusion_mode": "pcpg",
+            "reliability_fusion_weights": weights.detach(),
+            "reliability_fusion_available_mask": mask.detach(),
+            "reliability_fusion_weight_sum": weights.detach().sum(dim=1),
+            "pcpg_gate_weights": weights.detach(),
+            "pcpg_available_mask": mask.detach(),
+            "pcpg_pattern_features": pattern_features.detach(),
+            "pcpg_unimodal_logits": unimodal_logits,
+            "unimodal_logits": unimodal_logits,
+            "pcpg_unimodal_prototype_scores": prototype_scores,
+            "unimodal_prototype_scores": prototype_scores,
+            "pcpg_unimodal_entropy": stats["entropy"].detach(),
+            "pcpg_unimodal_margin": stats["margin"].detach(),
+            "pcpg_gate_mean": weights.detach().mean(dim=0),
+            "pcpg_fused_logits": 0.5 * (weighted_logits + weighted_prototypes),
+            "fused_logits": 0.5 * (weighted_logits + weighted_prototypes),
+        }
+        return 0.5 * (pooled + mu_b), diagnostics
+
+    def _raw_conf_gate_fuse(
+        self,
+        latent: torch.Tensor,
+        mask: torch.Tensor,
+        reliability: torch.Tensor,
+        mu_b: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        stats = self._unimodal_branch_stats(latent)
+        weights = masked_pcpg_softmax(stats["margin"] / self.raw_conf_temperature, mask)
+        pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
+        weighted_logits = (stats["unimodal_logits"] * weights.unsqueeze(-1)).sum(dim=1)
+        diagnostics = self._router_diagnostics(
+            mode="raw_conf_gate",
+            weights=weights,
+            mask=mask,
+            stats=stats,
+            reliability=reliability,
+            fused_logits=weighted_logits,
+            pattern_features=_pattern_features(mask.to(device=latent.device, dtype=latent.dtype)),
+        )
+        diagnostics["raw_conf_temperature"] = float(self.raw_conf_temperature)
+        diagnostics["raw_conf_gate_scores"] = (stats["margin"] / self.raw_conf_temperature).detach()
+        diagnostics["raw_conf_gate_weights"] = weights.detach()
+        return 0.5 * (pooled + mu_b), diagnostics
+
+    def _bprr_fuse(
+        self,
+        latent: torch.Tensor,
+        mask: torch.Tensor,
+        reliability: torch.Tensor,
+        mu_b: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if self.bprr_router is None:
+            raise RuntimeError("bprr fusion requested without a BPRR router.")
+        stats = self._unimodal_branch_stats(latent)
+        feature_logits = stats["unimodal_logits"]
+        if self.bprr_temperature is not None:
+            # The first BPRR implementation calibrates logits only for router reliability
+            # features; final fused logits stay on the model's original classification scale.
+            feature_logits = self.bprr_temperature(feature_logits)
+            feature_stats = self._logit_reliability_stats(feature_logits, stats["prototype_scores"])
+        else:
+            feature_stats = stats
+        available = mask.to(device=latent.device, dtype=latent.dtype)
+        zero_proto_distance = torch.zeros_like(feature_stats["margin"])
+        reliability_features = torch.stack(
+            [
+                available,
+                feature_stats["entropy"],
+                feature_stats["margin"],
+                feature_stats["confidence"],
+                feature_stats["logit_norm"],
+                zero_proto_distance,
+                feature_stats["prototype_margin"],
+                reliability.squeeze(-1),
+            ],
+            dim=-1,
+        )
+        pattern_features = _pattern_features(available)
+        weights = self.bprr_router(reliability_features, mask, pattern_features)
+        pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
+        weighted_logits = (stats["unimodal_logits"] * weights.unsqueeze(-1)).sum(dim=1)
+        diagnostics = self._router_diagnostics(
+            mode="bprr",
+            weights=weights,
+            mask=mask,
+            stats=stats,
+            reliability=reliability,
+            fused_logits=weighted_logits,
+            pattern_features=pattern_features,
+        )
+        diagnostics.update(
+            {
+                "bprr_reliability_features": reliability_features.detach(),
+                "bprr_feature_names": (
+                    "availability",
+                    "entropy",
+                    "top1_top2_margin",
+                    "max_prob",
+                    "logit_norm",
+                    "prototype_min_distance",
+                    "prototype_margin",
+                    "modality_reliability",
+                ),
+                "bprr_prototype_distance_available": 0.0,
+                "bprr_prototype_distance_todo": "prototype_min_distance falls back to zero until per-modality distances are exposed",
+                "bprr_calibration": self.bprr_calibration,
+                "bprr_calibration_applies_to": "router_reliability_features",
+            }
+        )
+        if self.bprr_temperature is not None:
+            temperatures = self.bprr_temperature.temperatures().to(device=latent.device, dtype=latent.dtype)
+            diagnostics["bprr_modality_temperatures"] = temperatures.detach()
+            for index, modality in enumerate(self.modalities):
+                diagnostics[f"bprr_temperature_{modality}"] = float(temperatures[index].detach().cpu().item())
+        return 0.5 * (pooled + mu_b), diagnostics
+
+    def _unimodal_branch_stats(self, latent: torch.Tensor) -> dict[str, torch.Tensor]:
+        batch_size, num_modalities, feature_dim = latent.shape
+        flat = latent.reshape(batch_size * num_modalities, feature_dim)
+        unimodal_logits = self.beam_head(flat).view(batch_size, num_modalities, self.num_classes)
+        prototype_scores = self.prototype_bank(flat).view(batch_size, num_modalities, self.num_classes)
+        return {
+            **self._logit_reliability_stats(unimodal_logits, prototype_scores),
+            "unimodal_logits": unimodal_logits,
+            "prototype_scores": prototype_scores,
+        }
+
+    def _logit_reliability_stats(
+        self,
+        unimodal_logits: torch.Tensor,
+        prototype_scores: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        probabilities = torch.softmax(unimodal_logits, dim=-1)
+        entropy_scale = max(math.log(max(self.num_classes, 2)), 1e-6)
+        entropy = -(probabilities * probabilities.clamp_min(1e-8).log()).sum(dim=-1) / entropy_scale
+        topk = probabilities.topk(min(2, self.num_classes), dim=-1).values
+        margin = topk[..., 0] - (topk[..., 1] if topk.shape[-1] > 1 else 0.0)
+        confidence = topk[..., 0]
+        prototype_probs = torch.softmax(prototype_scores, dim=-1)
+        proto_topk = prototype_probs.topk(min(2, self.num_classes), dim=-1).values
+        prototype_margin = proto_topk[..., 0] - (proto_topk[..., 1] if proto_topk.shape[-1] > 1 else 0.0)
+        return {
+            "entropy": entropy,
+            "margin": margin,
+            "confidence": confidence,
+            "logit_norm": unimodal_logits.norm(dim=-1),
+            "prototype_confidence": prototype_probs.amax(dim=-1),
+            "prototype_margin": prototype_margin,
+        }
+
+    def _router_diagnostics(
+        self,
+        *,
+        mode: str,
+        weights: torch.Tensor,
+        mask: torch.Tensor,
+        stats: dict[str, torch.Tensor],
+        reliability: torch.Tensor,
+        fused_logits: torch.Tensor,
+        pattern_features: torch.Tensor,
+    ) -> dict[str, Any]:
+        gate_entropy = -(weights * weights.clamp_min(1e-8).log()).sum(dim=-1)
+        return {
+            "reliability_fusion_mode": mode,
+            "reliability_fusion_weights": weights.detach(),
+            "reliability_fusion_available_mask": mask.detach(),
+            "reliability_fusion_weight_sum": weights.detach().sum(dim=1),
+            "unimodal_logits": stats["unimodal_logits"],
+            "unimodal_prototype_scores": stats["prototype_scores"],
+            f"{mode}_gate_weights": weights.detach(),
+            f"{mode}_available_mask": mask.detach(),
+            f"{mode}_unimodal_entropy": stats["entropy"].detach(),
+            f"{mode}_unimodal_margin": stats["margin"].detach(),
+            f"{mode}_max_prob": stats["confidence"].detach(),
+            f"{mode}_logit_norm": stats["logit_norm"].detach(),
+            f"{mode}_prototype_margin": stats["prototype_margin"].detach(),
+            f"{mode}_pattern_features": pattern_features.detach(),
+            f"{mode}_gate_mean": weights.detach().mean(dim=0),
+            f"{mode}_gate_entropy": gate_entropy.detach(),
+            "gate_entropy": gate_entropy.detach(),
+            "modality_reliability": reliability.detach(),
+            "fused_logits": fused_logits,
+        }
+
 
 def _validate_modalities(modalities: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     values = tuple(str(item) for item in modalities)
@@ -572,6 +971,14 @@ def _validate_modalities(modalities: list[str] | tuple[str, ...]) -> tuple[str, 
             f"project canonical order={list(MODALITY_ORDER)}."
         )
     return values
+
+
+def _pattern_features(available: torch.Tensor) -> torch.Tensor:
+    if available.ndim != 2:
+        raise ValueError(f"pattern features expect available mask [B, M], got {tuple(available.shape)}.")
+    values = available.to(dtype=torch.float32)
+    available_fraction = values.mean(dim=1, keepdim=True)
+    return torch.cat([values, available_fraction, 1.0 - available_fraction], dim=-1)
 
 
 def _pattern_film_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:

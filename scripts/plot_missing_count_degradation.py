@@ -40,30 +40,33 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     curve = _read_csv(summary_root / "missing_count_curve.csv")
     scene_curve = _read_csv(summary_root / "missing_count_curve_by_scene.csv")
-    _plot_metric(
-        curve,
-        out / "fig_top1_vs_missing_count",
-        metric="top1",
-        ylabel="Top-1 accuracy (%)",
-        title="Top-1 Accuracy vs. Missing Modality Ratio on Scenes31-34",
-        percentage=True,
-    )
-    _plot_metric(
-        curve,
-        out / "fig_within3_vs_missing_count",
-        metric="within3",
-        ylabel="Within-3 accuracy (%)",
-        title="Within-3 Accuracy vs. Missing Modality Ratio on Scenes31-34",
-        percentage=True,
-    )
-    _plot_metric(
-        curve,
-        out / "fig_mae_vs_missing_count",
-        metric="mae",
-        ylabel="Beam index MAE",
-        title="Beam MAE vs. Missing Modality Ratio on Scenes31-34",
-        percentage=False,
-    )
+    for stem in ("fig_top1_vs_missing_count", "fig_top1_vs_missing_count_paper"):
+        _plot_metric(
+            curve,
+            out / stem,
+            metric="top1",
+            ylabel="Top-1 accuracy (%)",
+            title="Top-1 Accuracy vs. Missing Modality Ratio on Scenes31-34",
+            percentage=True,
+        )
+    for stem in ("fig_within3_vs_missing_count", "fig_within3_vs_missing_count_paper"):
+        _plot_metric(
+            curve,
+            out / stem,
+            metric="within3",
+            ylabel="Within-3 accuracy (%)",
+            title="Within-3 Accuracy vs. Missing Modality Ratio on Scenes31-34",
+            percentage=True,
+        )
+    for stem in ("fig_mae_vs_missing_count", "fig_mae_vs_missing_count_paper"):
+        _plot_metric(
+            curve,
+            out / stem,
+            metric="mae",
+            ylabel="Beam index MAE",
+            title="Beam MAE vs. Missing Modality Ratio on Scenes31-34",
+            percentage=False,
+        )
     _plot_scene_top1(scene_curve, out / "fig_top1_vs_missing_ratio_by_scene")
     print(f"Wrote missing-count degradation figures to {out}.")
     return 0

@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     paper_root = Path(args.paper_table_root)
     figure_root = Path(args.figure_root)
     profile_root = Path(args.profile_root)
+    statistics_root = Path(args.statistics_root)
+    pattern_root = Path(args.pattern_root)
+    cdf_root = Path(args.cdf_root)
+    sampling_root = Path(args.sampling_root)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -51,44 +55,66 @@ def main(argv: list[str] | None = None) -> int:
     best_external = _winner(external)
     external_gap = _delta(subset.get("avg_missing_top1_mean"), by_method.get(best_external, {}).get("avg_missing_top1_mean"))
     subset_final = winner == REFERENCE_METHOD and _int(subset.get("n")) >= 5
+    significance = _read_csv(statistics_root / "significance_summary.csv")
+    wins = _read_csv(pattern_root / "pattern_win_count_summary.csv")
+    cdf_rows = _read_csv(cdf_root / "abs_error_cdf_data.csv")
+    sampling_summary = sampling_root / "sampling_distribution_summary.md"
 
     lines = [
         "Scene31-34 final main conclusion",
         "",
-        "Main method",
+        "1. Main winner",
         f"- Final trusted method: {'prototype + random non-empty subset exposure' if subset_final else METHOD_LABELS.get(winner, winner or 'unavailable')}.",
         f"- Current official Avg-Missing winner: {METHOD_LABELS.get(winner, winner or 'unavailable')}.",
         f"- Proto random subset n={_int(subset.get('n'))}, Avg-Missing={_pct(subset.get('avg_missing_top1_mean'))}, Miss3={_pct(subset.get('miss3_top1_mean'))}, MAE={_raw(subset.get('avg_missing_MAE_mean'))}.",
+        "- Interpretation is conservative: proto natural and classifier natural are close, so the claim is the prototype + subset combination, not prototype alone.",
         "",
-        "Prototype baseline conclusion",
+        "2. Statistical evidence",
+        *_significance_lines(significance),
+        "",
+        "3. Pattern-level evidence",
+        *_pattern_lines(wins),
+        "",
+        "4. Error CDF evidence",
+        *_cdf_lines(cdf_rows),
+        "",
+        "5. Sampling distribution explanation",
+        *_sampling_lines(sampling_summary),
+        "",
+        "6. Compute cost evidence",
+        *_cost_lines(cost_rows),
+        "",
+        "7. External baseline result",
+        *_external_lines(external, best_external, external_gap),
+        "",
+        "Supporting classifier/prototype comparisons",
         f"- Proto subset vs classifier subset: {_comparison(subset, classifier_subset, higher_metric='avg_missing_top1_mean')}",
         f"- Proto natural vs classifier natural: {_comparison(proto_natural, classifier_natural, higher_metric='avg_missing_top1_mean')}",
         f"- Classifier subset vs classifier natural: {_comparison(classifier_subset, classifier_natural, higher_metric='avg_missing_top1_mean')}",
         "",
-        "Exposure conclusion",
+        "Exposure comparison snapshot",
         f"- Random subset exposure vs Bernoulli Avg-Missing: {_signed_pp(_delta(subset.get('avg_missing_top1_mean'), bernoulli.get('avg_missing_top1_mean')))}.",
         f"- Random subset exposure vs Bernoulli Miss3: {_signed_pp(_delta(subset.get('miss3_top1_mean'), bernoulli.get('miss3_top1_mean')))}.",
-        f"- Random subset exposure vs Bernoulli MAE: {_signed_raw(_delta(subset.get('avg_missing_MAE_mean'), bernoulli.get('avg_missing_MAE_mean')))}.",
-        f"- Random subset exposure vs Bernoulli Top1 drop 0%->75%: {_signed_pp(_delta(subset.get('top1_drop_0_to_75_mean'), bernoulli.get('top1_drop_0_to_75_mean')))}.",
+        f"- Random subset exposure vs Bernoulli MAE improvement: {_signed_raw(_delta(bernoulli.get('avg_missing_MAE_mean'), subset.get('avg_missing_MAE_mean')))}.",
+        f"- Random subset exposure vs Bernoulli Top1 drop reduction: {_signed_pp(_delta(bernoulli.get('top1_drop_0_to_75_mean'), subset.get('top1_drop_0_to_75_mean')))}.",
         "",
-        "External baseline conclusion",
-        *_external_lines(external, best_external, external_gap),
-        "",
-        "Evidence checklist caveat",
+        "8. Evidence checklist caveat",
         *_evidence_lines(checklist, rows),
         "",
-        "Compute cost conclusion",
-        *_cost_lines(cost_rows),
-        "",
-        "Decision",
+        "9. Whether any further experiments are needed",
         f"- Random subset remains final main method: {'yes' if subset_final else 'pending_or_no'}.",
         f"- Need AMR/AMBER seed2/3: {_need_external_seeds(external_gap, best_external)}.",
-        "- Extra experiments still needed: any pending or incomplete checklist item should be finished before paper freeze; core proto does not need retraining once n=5 summary remains stable.",
+        "- Extra experiments still needed: no new module search is needed for the paper claim; only missing analysis artifacts should be regenerated if their files are absent.",
+        "- Do not continue reliability fusion, PatternFiLM, JTT, MVFR, MPDRO, beamsoft, condBTAPA, weakKD, or AMR/AMBER seed2/3 for this final main claim.",
         "",
         f"Summary root: {summary_root}",
         f"Paper table root: {paper_root}",
         f"Figure root: {figure_root}",
         f"Profile root: {profile_root}",
+        f"Statistics root: {statistics_root}",
+        f"Pattern root: {pattern_root}",
+        f"Error CDF root: {cdf_root}",
+        f"Sampling root: {sampling_root}",
     ]
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Wrote final Scene31-34 main conclusion to {out}.")
@@ -101,6 +127,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--paper-table-root", default="outputs/paper_tables/scenes31_34_main")
     parser.add_argument("--figure-root", default="outputs/scenes31_34_main_lmdb/figures")
     parser.add_argument("--profile-root", default="outputs/scenes31_34_main_lmdb/profile")
+    parser.add_argument("--statistics-root", default="outputs/scenes31_34_main_lmdb/statistics")
+    parser.add_argument("--pattern-root", default="outputs/scenes31_34_main_lmdb/pattern_analysis")
+    parser.add_argument("--cdf-root", default="outputs/scenes31_34_main_lmdb/error_cdf")
+    parser.add_argument("--sampling-root", default="outputs/scenes31_34_main_lmdb/sampling_analysis")
     parser.add_argument("--out", default="outputs/scenes31_34_main_lmdb/summary/final_main_conclusion.txt")
     return parser
 
@@ -155,6 +185,62 @@ def _evidence_lines(checklist: list[dict[str, str]], rows: list[dict[str, str]])
     return ["- Final evidence checklist is complete in the available summary artifacts."]
 
 
+def _significance_lines(rows: list[dict[str, str]]) -> list[str]:
+    if not rows:
+        return ["- Significance analysis artifact not found; rerun scripts/significance_tests.py for final paper numbers."]
+    wanted = {
+        ("Proto random subset vs Proto Bernoulli randomdrop", "avg_missing_top1"),
+        ("Proto random subset vs Proto Bernoulli randomdrop", "miss3_top1"),
+        ("Proto random subset vs Proto Bernoulli randomdrop", "avg_missing_MAE"),
+        ("Proto random subset vs Classifier random subset", "avg_missing_top1"),
+        ("Proto random subset vs AMBER-lite best external", "avg_missing_top1"),
+    }
+    out = []
+    for row in rows:
+        key = (row.get("comparison", ""), row.get("metric", ""))
+        if key in wanted:
+            out.append(
+                f"- {row.get('comparison')} / {row.get('metric')}: seed delta={_sig_delta(row, 'seed')}, "
+                f"bootstrap mean={_sig_delta(row, 'bootstrap')}, "
+                f"bootstrap CI={_sig_ci(row)}, "
+                f"P(delta>0)={_raw(row.get('prob_delta_positive'))}, conclusion={row.get('conclusion')}."
+            )
+    return out or ["- Significance CSV was present but did not include the expected final comparisons."]
+
+
+def _pattern_lines(rows: list[dict[str, str]]) -> list[str]:
+    if not rows:
+        return ["- Pattern heatmap/win-count artifact not found; rerun scripts/export_pattern_heatmap.py."]
+    subset_rows = [row for row in rows if row.get("method") == "Proto random subset exposure"]
+    if not subset_rows:
+        return ["- Pattern win-count table was present, but proto random subset row was unavailable."]
+    return [
+        f"- {row.get('metric')}: best on {row.get('num_patterns_best')}/{row.get('num_patterns_total')} patterns, "
+        f"beats Bernoulli on {row.get('num_patterns_beats_bernoulli')} and classifier subset on {row.get('num_patterns_beats_classifier_subset')} patterns."
+        for row in subset_rows
+    ]
+
+
+def _cdf_lines(rows: list[dict[str, str]]) -> list[str]:
+    if not rows:
+        return ["- Error CDF artifact not found; rerun scripts/plot_error_cdf.py."]
+    subset = [row for row in rows if row.get("method") == REFERENCE_METHOD and row.get("abs_error_threshold") == "3"]
+    if not subset:
+        return ["- Error CDF data was present, but Within@3 threshold rows were unavailable."]
+    by_condition = {row.get("condition"): row for row in subset}
+    return [
+        f"- {condition}: proto random subset CDF at |error|<=3 is {_pct(row.get('cdf'))} over n={row.get('num_samples')} prediction rows."
+        for condition, row in sorted(by_condition.items())
+    ]
+
+
+def _sampling_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return ["- Sampling distribution artifact not found; rerun scripts/summarize_sampling_distribution.py."]
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+    return lines[:6] if lines else ["- Sampling summary file was present but empty."]
+
+
 def _need_external_seeds(gap: float, best_external: str) -> str:
     if not best_external:
         return "no, first run seed1"
@@ -205,6 +291,22 @@ def _signed_raw(value: float) -> str:
         return "unavailable"
     sign = "+" if value >= 0 else ""
     return f"{sign}{value:.3f}"
+
+
+def _sig_delta(row: dict[str, str], kind: str) -> str:
+    metric = row.get("metric", "")
+    if metric in {"avg_missing_MAE", "mae_at_75"}:
+        key = "seed_mean_delta" if kind == "seed" else "bootstrap_mean_delta"
+        return _signed_raw(_float(row.get(key)))
+    key = "seed_mean_delta_pp" if kind == "seed" else "bootstrap_mean_delta_pp"
+    return _signed_pp(_float(row.get(key)))
+
+
+def _sig_ci(row: dict[str, str]) -> str:
+    metric = row.get("metric", "")
+    if metric in {"avg_missing_MAE", "mae_at_75"}:
+        return f"[{_raw(row.get('bootstrap_ci_low'))}, {_raw(row.get('bootstrap_ci_high'))}]"
+    return f"[{_signed_pp(_float(row.get('bootstrap_ci_low_pp')))}, {_signed_pp(_float(row.get('bootstrap_ci_high_pp')))}]"
 
 
 def _int(value: Any) -> int:

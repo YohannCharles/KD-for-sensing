@@ -2,6 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import kd_sensing.diagnostics.project_surface_doctor as doctor
 from kd_sensing.diagnostics.project_surface_doctor import (
     build_project_surface_report,
     doctor_should_fail,
@@ -41,6 +42,89 @@ def test_project_surface_doctor_json_and_markdown_rendering():
     assert parsed["sections"]["configs"]["tracked_count"] == report["sections"]["configs"]["tracked_count"]
     assert "# Project Surface Doctor" in markdown
     assert "## Configs" in markdown
+
+
+def test_project_surface_doctor_security_scope_flags_guardrail_risks(monkeypatch):
+    original_git_ls_files = doctor._git_ls_files
+    original_read_text = doctor._read_text
+    protected_env = "/root/" + ".container_env"
+    fake_cli = "kd-sensing-" + "train"
+    fake_token = "ghp_" + "123456789012345678901234567890123456"
+    credential_field = "PASS" + "WD"
+    fake_text = {
+        "scripts/bad_runner.sh": "\n".join(
+            [
+                f'echo "{credential_field}={fake_cli} --config configs/image/strong.yaml" >> {protected_env}',
+                "rm -rf outputs/bad-run",
+                f"{fake_cli} --config configs/image/strong.yaml",
+            ]
+        ),
+        "configs/leaked.yaml": f'token: "{fake_token}"',
+    }
+    fake_artifacts = [
+        "dataset/raw/sample.bin",
+        "outputs/run/checkpoints/best.ckpt",
+        "logs/train.log",
+        "cache/tmp.pkl",
+    ]
+
+    def fake_git_ls_files(root: Path) -> list[str]:
+        return [*original_git_ls_files(root), *fake_text, *fake_artifacts]
+
+    def fake_read_text(path: Path) -> str:
+        rel_path = path.relative_to(ROOT).as_posix()
+        if rel_path in fake_text:
+            return fake_text[rel_path]
+        return original_read_text(path)
+
+    monkeypatch.setattr(doctor, "_git_ls_files", fake_git_ls_files)
+    monkeypatch.setattr(doctor, "_read_text", fake_read_text)
+
+    report = build_project_surface_report(ROOT, scopes=("security",), fail_on="none")
+    kinds = {issue["kind"] for issue in report["issues"]}
+    artifact_paths = {item["path"] for item in report["sections"]["security"]["runtime_artifact_hits"]}
+
+    assert "runtime_artifact_tracked" in kinds
+    assert "secret_literal" in kinds
+    assert "protected_system_config_mutation" in kinds
+    assert "dangerous_shell_runner_command" in kinds
+    assert "dataset/raw/sample.bin" in artifact_paths
+    assert "outputs/run/checkpoints/best.ckpt" in artifact_paths
+    assert report["sections"]["security"]["policy"]["allows_manifest_cleanup_confirmation"] is True
+
+
+def test_project_surface_doctor_closeout_scope_classifies_dirty_state(monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "_git_status_short",
+        lambda root: [
+            " M README.md",
+            "?? docs/local_note.md",
+            "?? outputs/tmp/report.json",
+            " D openspec/changes/old-change/tasks.md",
+            "?? openspec/changes/archive/2026-07-05-old-change/",
+        ],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_openspec_list",
+        lambda root: {
+            "available": True,
+            "changes": [{"name": "old-change", "completedTasks": 2, "totalTasks": 2, "status": "in-progress"}],
+        },
+    )
+
+    report = build_project_surface_report(ROOT, scopes=("closeout",), fail_on="none")
+    closeout = report["sections"]["closeout"]
+    kinds = {issue["kind"] for issue in report["issues"]}
+
+    assert "complete_change_unarchived" in kinds
+    assert "untracked_archive_change" in kinds
+    assert "active_delete_archive_pair" in kinds
+    assert closeout["worktree"]["category_counts"]["runtime_artifact"] == 1
+    assert closeout["worktree"]["category_counts"]["openspec"] == 2
+    assert closeout["policy"]["does_not_reset"] is True
+    assert closeout["policy"]["does_not_archive"] is True
 
 
 def _git_status_short() -> list[str]:
