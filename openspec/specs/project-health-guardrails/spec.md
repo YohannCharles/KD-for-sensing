@@ -167,6 +167,24 @@
 - **THEN** 架构边界检查 MUST 从 project surface inventory、current docs 或 OpenSpec lifecycle 读取其分类事实
 - **AND** 测试 MUST 不维护与 inventory 重复的完整脚本 allowlist，也不得通过放宽检查掩盖未分类脚本
 
+### Requirement: Console script surface guardrail
+项目健康护栏 MUST 检查 `pyproject.toml` console scripts、public CLI lifecycle 清单、CLI help smoke、project surface inventory 和 current docs/OpenSpec 的一致性。新增、删除或降级 public CLI 时，guardrail MUST 能发现缺少 lifecycle 分类、缺少 smoke、docs stale 引用或已删除命令回流。
+
+#### Scenario: pyproject 与 help smoke 一致
+- **WHEN** 开发者运行 CLI/architecture 健康检查
+- **THEN** 检查 MUST 比对 `pyproject.toml` 中的 `kd-sensing-*` entry points 和保留 public CLI 的 help smoke 覆盖
+- **AND** 缺少 smoke 的 public CLI MUST 被报告，除非 OpenSpec 明确将其标记为不需要 help smoke 的例外
+
+#### Scenario: docs 不引用已删除 public CLI
+- **WHEN** public console script 被删除或降级为 internal-only
+- **THEN** README、docs、OpenSpec current specs 和 tests MUST 不再把旧命令描述为 current public entrypoint
+- **AND** `kd-sensing-project-surface-doctor --scope cli-surface` MUST 能发现 current 文档中的 stale command reference
+
+#### Scenario: 新 public CLI 需要生命周期锚点
+- **WHEN** 后续 change 新增 `kd-sensing-*` console script
+- **THEN** architecture/surface 检查 MUST 要求同步 owner module、inventory/docs 引用、help smoke 和输出边界
+- **AND** 缺少这些锚点时检查 MUST 失败或在 doctor 中报告 error
+
 ### Requirement: 大规模表面清理必须有快速验收
 项目 MUST 为大规模表面清理提供快速验收命令，覆盖 OpenSpec 校验、架构边界、CLI help 和被修改入口的引用一致性。所有项目相关 Python 验收 MUST 使用 `kd_mm_beam` 环境。
 
@@ -401,4 +419,3 @@ Architecture 和 focused tests MAY 拆分为更小文件，但 MUST 继续覆盖
 - **WHEN** 变更新增或修改 `scripts/`、`tools/analysis/`、`configs/` 或热点 owner
 - **THEN** tasks MUST 列出对应 doctor 命令
 - **AND** Python 命令 MUST 使用 `conda run -n kd_mm_beam`
-

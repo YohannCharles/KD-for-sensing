@@ -67,7 +67,7 @@ Scoped context 优先作为按需入口，详细 rationale 仍回到 inventory�
 | 模型 / forward / registry 暴露 | `model-architecture-extension-contract`、`modular-sequence-model`、`component-registry`、README 当前模型说明、inventory 热点和退役边界 | `src/kd_sensing/models/`、`src/kd_sensing/registries.py`、默认组件、`engine.batch` / `engine.runtime` forward 输出消费处 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`，再追加模型/forward focused tests |
 | 数据与 batch contract | 索引的 `data_batch_contract` 路由、dataset/modality contract specs、README 数据边界、inventory 中 `engine.batch` 热点 | `src/kd_sensing/data/`、`src/kd_sensing/engine/batch.py`、shared runtime、相关 dataset tests | 相关 dataset/batch focused tests；避免读取真实 `dataset/` |
 | 配置和 virtual config | 配置生命周期 specs、README 配置章节、inventory 配置生命周期分类 | `src/kd_sensing/config/`、`configs/`、`canonical.py` 中的 canonical recipe / virtual config 生成规则 | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` 和架构边界测试 |
-| CLI / scripts 入口 | README 主要入口、`pyproject.toml` console scripts、inventory 脚本入口分类 | `src/kd_sensing/cli/`、`scripts/`、`pyproject.toml`；真实 workflow 逻辑应位于 owner module/script | CLI help smoke、`tests/test_cli_help.py`、架构边界测试 |
+| CLI / scripts 入口 | README 主要入口、`pyproject.toml` console scripts、`src/kd_sensing/diagnostics/cli_surface.py`、inventory 脚本入口分类 | `src/kd_sensing/cli/`、`scripts/`、`pyproject.toml`；真实 workflow 逻辑应位于 owner module/script | CLI help smoke、`tests/test_cli_help.py`、架构边界测试、`kd-sensing-project-surface-doctor --scope cli-surface` |
 | 输出产物 / cache / cleanup | README 数据和产物边界、inventory 本地产物分类、cleanup manifest workflow | `src/kd_sensing/utils/runtime_output_layout.py`、diagnostic / cleanup CLI；默认输出在 ignored `outputs/` | 不写入 `outputs/` 或 `logs/` 的单元测试；必要时只生成 dry-run manifest |
 | 诊断 / visual analysis / benchmark | 诊断 specs、JEPA visual analysis、GPS shortcut benchmark、inventory 诊断热点 | `src/kd_sensing/diagnostics/`、`src/kd_sensing/cli/jepa_visual_analysis.py`、`src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py`、诊断配置 | `conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q` 和 CLI help |
 | research preview / evidence QA / budget manifest | `research-run-preview-loop` active/current spec、diagnostics 和 claims scoped context、inventory package CLI 分类 | `src/kd_sensing/diagnostics/research_run_preview.py`、`src/kd_sensing/cli/research_preview.py`、README/experiment matrix | `conda run -n kd_mm_beam pytest tests/test_research_run_preview.py tests/test_cli_help.py -q` |
@@ -142,7 +142,7 @@ Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 
 | 常规无数据 quick verify | `make verify-quick` |
 | OpenSpec change | `openspec validate <change> --strict` |
 | 架构、文档生命周期、入口 allowlist、本地产物边界 | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` |
-| CLI 或 console script | `conda run -n kd_mm_beam pytest tests/test_cli_help.py -q`，并按需运行对应 `--help` |
+| CLI 或 console script | `conda run -n kd_mm_beam pytest tests/test_cli_help.py -q`，`conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope cli-surface --format markdown --fail-on error`，并按需运行对应 `--help` |
 | 配置解析、virtual config、migration guard | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
 | CLI/config 聚合 smoke | `make verify-cli-config` |
 | tracked scripts/package CLI Python 语法 | `make verify-compile` |

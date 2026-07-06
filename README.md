@@ -20,14 +20,27 @@ conda run -n kd_mm_beam kd-sensing-train --help
 conda run -n kd_mm_beam kd-sensing-evaluate --help
 conda run -n kd_mm_beam kd-sensing-preprocess --help
 conda run -n kd_mm_beam kd-sensing-runs --help
+conda run -n kd_mm_beam kd-sensing-research-dashboard --help
+conda run -n kd_mm_beam kd-sensing-research-preview --help
 conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --help
+conda run -n kd_mm_beam kd-sensing-organize-runtime-outputs --help
 conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
-conda run -n kd_mm_beam kd-sensing-research-preview --help
-conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
+conda run -n kd_mm_beam kd-sensing-predictive-gps-query-visualizations --help
+conda run -n kd_mm_beam kd-sensing-target-shot-split --help
+conda run -n kd_mm_beam kd-sensing-distribution-shift --help
 conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit --help
 conda run -n kd_mm_beam kd-sensing-paper-export --help
 conda run -n kd_mm_beam kd-sensing-dataset-audit --help
+conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --help
+conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
+conda run -n kd_mm_beam kd-sensing-plot-mmw-town-gps-v2 --help
+conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 --help
+conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps --help
+conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii --help
+conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
+conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --help
+conda run -n kd_mm_beam kd-sensing-model-architecture-summary --help
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --help
 ```
 
@@ -176,11 +189,12 @@ conda run -n kd_mm_beam kd-sensing-research-preview \
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --format markdown
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope cli-surface --format markdown --fail-on error
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope configs --format json --fail-on none
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error
 ```
 
-`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/`、inventory 中登记的热点 owner、可选安全/产物扫描和 OpenSpec closeout 状态，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate、hotspot next-touch、secret/system-config/runtime-artifact 风险以及 dirty worktree 分类。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。doctor 和 CI guardrail 默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint、不写 outputs/logs/cache，也不 archive、reset、删除或移动本地产物。
+`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/`、inventory 中登记的热点 owner、可选 public CLI surface、安全/产物扫描和 OpenSpec closeout 状态，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate、hotspot next-touch、console script lifecycle/smoke/docs 漂移、secret/system-config/runtime-artifact 风险以及 dirty worktree 分类。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。doctor 和 CI guardrail 默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint、不写 outputs/logs/cache，也不 archive、reset、删除或移动本地产物。
 
 论文表格与数据审计：
 

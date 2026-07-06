@@ -8,10 +8,12 @@
 - `openspec/specs/project-entrypoint-lifecycle/spec.md`
 - `openspec/specs/project-architecture/spec.md`
 - `docs/project_surface_inventory.md` 的入口生命周期和 scripts 分类
+- `src/kd_sensing/diagnostics/cli_surface.py` 的 public console script lifecycle 清单
 
 ## Owner
 
 - Console scripts：`pyproject.toml`
+- Console script lifecycle guardrail：`src/kd_sensing/diagnostics/cli_surface.py`
 - 包内 CLI：`src/kd_sensing/cli/`
 - 真实 workflow owner：对应 `src/kd_sensing/diagnostics/`、`src/kd_sensing/baselines/`、`src/kd_sensing/data/` 或 `src/kd_sensing/engine/`
 - 本地/manual runner：`scripts/`
@@ -28,5 +30,6 @@
 
 - `conda run -n kd_mm_beam pytest tests/test_cli_help.py -q`
 - `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+- `conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope cli-surface --format markdown --fail-on error`
 - `conda run -n kd_mm_beam python scripts/verify_compile.py`
 - 聚合入口：`make verify-cli-config`、`make verify-compile`

@@ -66,6 +66,17 @@ def test_project_surface_doctor_classifies_shrunk_experiment_config_families():
     )
 
 
+def test_project_surface_doctor_cli_surface_scope_checks_public_entrypoints():
+    report = build_project_surface_report(ROOT, scopes=("cli-surface",), fail_on="none")
+    cli_surface = report["sections"]["cli_surface"]
+
+    assert cli_surface["public_count"] == cli_surface["classified_count"]
+    assert cli_surface["public_count"] == cli_surface["help_smoke_count"]
+    assert cli_surface["stale_references"] == []
+    assert not doctor_should_fail(report)
+    assert all(entry["help_smoke"] for entry in cli_surface["entries"])
+
+
 def test_project_surface_doctor_security_scope_flags_guardrail_risks(monkeypatch):
     original_git_ls_files = doctor._git_ls_files
     original_read_text = doctor._read_text

@@ -4,12 +4,14 @@ import ast
 import json
 import re
 import subprocess
+import tomllib
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import yaml
 
+from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_SURFACE
 from kd_sensing.config.canonical import (
     CANONICAL_SINGLE_MODALITIES,
     SNAPSHOT_MODE,
@@ -19,7 +21,7 @@ from kd_sensing.config.io import load_config_source
 from kd_sensing.utils.paths import project_root as resolve_project_root
 
 DEFAULT_SCOPES = ("scripts", "configs", "hotspots")
-AVAILABLE_SCOPES = (*DEFAULT_SCOPES, "security", "closeout")
+AVAILABLE_SCOPES = (*DEFAULT_SCOPES, "cli-surface", "security", "closeout")
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
 DOC_AUTHORITY_PATHS = (
     "README.md",
@@ -108,6 +110,8 @@ def build_project_surface_report(
         sections["configs"] = _doctor_configs(root, tracked, authority, issues)
     if "hotspots" in selected_scopes:
         sections["hotspots"] = _doctor_hotspots(root, tracked, authority, issues)
+    if "cli-surface" in selected_scopes:
+        sections["cli_surface"] = _doctor_cli_surface(root, authority, issues)
     if "security" in selected_scopes:
         sections["security"] = _doctor_security(root, tracked, authority, issues)
     if "closeout" in selected_scopes:
@@ -179,6 +183,15 @@ def render_project_surface_report(report: dict[str, Any], *, format: str = "mark
         lines.extend(["## Hotspots", "", f"- registered entries: {hotspots['registered_count']}"])
         for action, count in sorted(action_counts.items()):
             lines.append(f"- {action}: {count}")
+        lines.append("")
+    if "cli_surface" in sections:
+        cli_surface = sections["cli_surface"]
+        lifecycle_counts = Counter(item.get("lifecycle", "unknown") for item in cli_surface.get("entries", []))
+        lines.extend(["## CLI Surface", "", f"- public console scripts: {cli_surface['public_count']}"])
+        for lifecycle, count in sorted(lifecycle_counts.items()):
+            lines.append(f"- {lifecycle}: {count}")
+        if cli_surface.get("stale_references"):
+            lines.append(f"- stale command references: {len(cli_surface['stale_references'])}")
         lines.append("")
     if "security" in sections:
         security = sections["security"]
@@ -489,6 +502,131 @@ def _doctor_hotspots(
     }
 
 
+def _doctor_cli_surface(
+    root: Path,
+    authority: dict[str, str],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    scripts = _pyproject_console_scripts(root)
+    public_scripts = {name: target for name, target in scripts.items() if name.startswith("kd-sensing-")}
+    expected = PUBLIC_CLI_SURFACE
+    smoke_commands = {name for name, _expected in PUBLIC_CLI_HELP_SMOKE}
+    inventory = authority.get("docs/project_surface_inventory.md", "")
+
+    for command in sorted(set(public_scripts) - set(expected)):
+        issues.append(
+            _issue(
+                scope="cli-surface",
+                severity="error",
+                kind="unclassified_console_script",
+                path="pyproject.toml",
+                message=f"Public console script {command} is missing lifecycle metadata.",
+                source="src/kd_sensing/diagnostics/cli_surface.py",
+                recommendation="Classify the command with lifecycle, owner, output boundary and help smoke, or remove it.",
+                validation="conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q",
+            )
+        )
+    for command in sorted(set(expected) - set(public_scripts)):
+        issues.append(
+            _issue(
+                scope="cli-surface",
+                severity="error",
+                kind="missing_console_script",
+                path="pyproject.toml",
+                message=f"Classified public console script {command} is not declared in pyproject.toml.",
+                source="src/kd_sensing/diagnostics/cli_surface.py",
+                recommendation="Restore the pyproject entry or remove the public lifecycle classification.",
+                validation="conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q",
+            )
+        )
+
+    entries = []
+    for command, spec in expected.items():
+        declared_target = public_scripts.get(command)
+        if declared_target is not None and declared_target != spec.target:
+            issues.append(
+                _issue(
+                    scope="cli-surface",
+                    severity="error",
+                    kind="console_script_target_drift",
+                    path="pyproject.toml",
+                    message=f"{command} points to {declared_target}, expected {spec.target}.",
+                    source="src/kd_sensing/diagnostics/cli_surface.py",
+                    recommendation="Update pyproject and lifecycle metadata together.",
+                    validation="conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q",
+                )
+            )
+        if command not in smoke_commands:
+            issues.append(
+                _issue(
+                    scope="cli-surface",
+                    severity="error",
+                    kind="missing_help_smoke",
+                    path="tests/test_cli_help.py",
+                    message=f"{command} is public but is not covered by help smoke metadata.",
+                    source="src/kd_sensing/diagnostics/cli_surface.py",
+                    recommendation="Add a no-side-effect help smoke marker or downgrade/remove the command.",
+                    validation="conda run -n kd_mm_beam pytest tests/test_cli_help.py -q",
+                )
+            )
+        if f"`{command}`" not in inventory or spec.owner not in inventory or spec.output_boundary not in inventory:
+            issues.append(
+                _issue(
+                    scope="cli-surface",
+                    severity="error",
+                    kind="missing_inventory_anchor",
+                    path="docs/project_surface_inventory.md",
+                    message=f"{command} lacks command, owner, or output-boundary inventory anchors.",
+                    source="src/kd_sensing/diagnostics/cli_surface.py",
+                    recommendation="Document lifecycle, owner, responsibility, output boundary and focused validation.",
+                    validation="conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q",
+                )
+            )
+        entries.append(
+            {
+                "command": command,
+                "target": spec.target,
+                "declared_target": declared_target,
+                "lifecycle": spec.lifecycle,
+                "owner": spec.owner,
+                "responsibility": spec.responsibility,
+                "output_boundary": spec.output_boundary,
+                "focused_validation": spec.focused_validation,
+                "help_expected": spec.help_expected,
+                "help_smoke": command in smoke_commands,
+            }
+        )
+
+    stale_references = _stale_console_script_references(authority, set(public_scripts))
+    for reference in stale_references:
+        issues.append(
+            _issue(
+                scope="cli-surface",
+                severity="error",
+                kind="stale_console_script_reference",
+                path=reference["path"],
+                message=f"Current docs mention undeclared console script {reference['command']} without retirement context.",
+                source="pyproject.toml",
+                recommendation="Remove the stale current command or mark it as retired/historical.",
+                validation="conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope cli-surface --fail-on error",
+            )
+        )
+
+    return {
+        "public_count": len(public_scripts),
+        "classified_count": len(expected),
+        "help_smoke_count": len(smoke_commands),
+        "entries": entries,
+        "stale_references": stale_references,
+        "policy": {
+            "requires_pyproject_entry": True,
+            "requires_help_smoke": True,
+            "requires_inventory_anchor": True,
+            "does_not_add_wrappers": True,
+        },
+    }
+
+
 def _doctor_security(
     root: Path,
     tracked: list[str],
@@ -750,6 +888,51 @@ def _load_authority_sources(root: Path) -> dict[str, str]:
             rel = path.relative_to(root).as_posix()
             sources[rel] = _read_text(path)
     return sources
+
+
+def _pyproject_console_scripts(root: Path) -> dict[str, str]:
+    payload = tomllib.loads(_read_text(root / "pyproject.toml"))
+    scripts = payload.get("project", {}).get("scripts", {})
+    return {str(name): str(target) for name, target in scripts.items()}
+
+
+def _stale_console_script_references(authority: dict[str, str], public_commands: set[str]) -> list[dict[str, str]]:
+    allowed_context = (
+        "退役",
+        "历史",
+        "已删除",
+        "不再",
+        "不得",
+        "拒绝",
+        "墓碑",
+        "retired",
+        "historical",
+        "removed",
+        "deleted",
+        "no longer",
+        "must not",
+        "not require",
+        "tombstone",
+        "retired_routes",
+        "text_markers",
+        "不声明",
+        "不要求",
+        "不可用",
+        "不作为",
+        "旧",
+    )
+    stale: list[dict[str, str]] = []
+    for source, text in authority.items():
+        if source == "pyproject.toml":
+            continue
+        lines = text.splitlines()
+        for line_no, line in enumerate(lines, start=1):
+            for command in sorted(set(re.findall(r"\bkd-sensing-[A-Za-z0-9-]+\b", line)) - public_commands):
+                window = "\n".join(lines[max(0, line_no - 20) : line_no + 3]).lower()
+                if any(marker.lower() in window for marker in allowed_context):
+                    continue
+                stale.append({"path": source, "line": str(line_no), "command": command})
+    return stale
 
 
 def _read_text(path: Path) -> str:

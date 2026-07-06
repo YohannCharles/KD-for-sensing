@@ -358,6 +358,24 @@ Package CLI 文件 MUST 只承担参数解析、配置覆盖、轻量 IO、调�
 - **THEN** CLI 文件 MUST 不复制训练、评估、dataset parsing 或 benchmark aggregation 主逻辑
 - **AND** 对应 `kd-sensing-* --help` 或包内 CLI smoke MUST 继续可运行
 
+### Requirement: Package console scripts 必须有生命周期锚点
+`pyproject.toml` 中保留的 `kd-sensing-*` console script MUST 在机器可读 surface 清单和 inventory 中记录 lifecycle、owner、职责、输出边界和 focused validation。保留 public CLI MUST 同时具备 pyproject entry point、help smoke 或等价无副作用 smoke、inventory/docs/OpenSpec current 引用，以及 owner/output-boundary 说明。删除或降级 public CLI 时，项目 MUST 不新增同名 alias、compat wrapper、deprecation trampoline 或旧命令 fallback。
+
+#### Scenario: public CLI 分类完整
+- **WHEN** 开发者修改 `[project.scripts]`
+- **THEN** 每个 `kd-sensing-*` entry point MUST 出现在 `src/kd_sensing/diagnostics/cli_surface.py`
+- **AND** `docs/project_surface_inventory.md` MUST 为该命令记录 lifecycle、owner、职责、输出边界和 focused validation
+
+#### Scenario: public help smoke 覆盖完整
+- **WHEN** 开发者运行 CLI help smoke
+- **THEN** `tests/test_cli_help.py` MUST 覆盖所有保留的 public console scripts
+- **AND** `--help` MUST 不读取真实 `dataset/`、不加载 checkpoint、不启动训练、不写 runtime outputs
+
+#### Scenario: 删除 public CLI 不留 wrapper
+- **WHEN** 一个 `kd-sensing-*` console script 被删除或降级为 internal-only
+- **THEN** current docs MUST 不再把旧命令描述为当前 public entrypoint
+- **AND** 项目 MUST 不提供等价旧命令 wrapper 或 alias
+
 ### Requirement: Module-only CLI must be public or deleted
 `src/kd_sensing/cli/*.py` 中可直接运行的 module-only CLI MUST 要么在 `pyproject.toml` 声明为 `kd-sensing-*` console script 并出现在 README/current docs 或 current spec 中，要么从当前支持面删除。Shared helper 例如 `cli/common.py` MAY 保留，但 MUST 不提供独立 `main()` 入口或用户可见 workflow。
 
