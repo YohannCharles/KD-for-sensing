@@ -194,7 +194,7 @@ conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope configs --form
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error
 ```
 
-`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/`、inventory 中登记的热点 owner、可选 public CLI surface、安全/产物扫描和 OpenSpec closeout 状态，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate、hotspot next-touch、console script lifecycle/smoke/docs 漂移、secret/system-config/runtime-artifact 风险以及 dirty worktree 分类。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。doctor 和 CI guardrail 默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint、不写 outputs/logs/cache，也不 archive、reset、删除或移动本地产物。
+`kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/`、inventory 中登记的热点 owner、可选 public CLI surface、安全/产物扫描和 OpenSpec closeout 状态，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate、hotspot next-touch、console script lifecycle/smoke/docs 漂移、secret/system-config/runtime-artifact 风险以及 dirty worktree 分类。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。doctor 默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint、不写 outputs/logs/cache，也不 archive、reset、删除或移动本地产物。
 
 论文表格与数据审计：
 

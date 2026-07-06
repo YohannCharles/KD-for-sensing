@@ -114,7 +114,7 @@ JEPA benchmark owner 模块完整路径：`src/kd_sensing/diagnostics/jepa_bench
 | --- | --- | --- |
 | `adaptive-pattern-balanced-sampler` | `current` | 当前 adaptive pattern-balanced sampler、beamsoft loss 和 label smoothing opt-in 训练能力。 |
 | `agent-context-portability` | `current` | 当前跨 agent 工具薄适配、研究简报、记忆候选和只读角色边界能力。 |
-| `agentic-collaboration-guardrails` | `current` | 当前 PR/Issue、分层 CI、安全扫描、closeout preflight 和 AI review 协作护栏能力。 |
+| `agentic-collaboration-guardrails` | `current` | 当前 PR/Issue、本地/手动验证、安全扫描、closeout preflight 和 AI review 协作护栏能力。 |
 | `ai-maintainer-navigation` | `current` | 当前 agent/maintainer 导航契约。 |
 | `amber-full-architecture-reproduction` | `current` | 当前 AMBER full architecture 本地复现能力。 |
 | `amber-lite-missing-modality-reproduction` | `current` | 当前 AMBER-lite local missing-modality baseline。 |
@@ -243,7 +243,7 @@ JEPA benchmark owner 模块完整路径：`src/kd_sensing/diagnostics/jepa_bench
 
 模型架构摘要是只读观测层，owner helper 位于 `src/kd_sensing/models/architecture_summary.py`，package 入口为 `kd-sensing-model-architecture-summary`，人类可读组件目录维护在 `docs/model_architecture_inventory.md`。它复用已解析配置、真实 `nn.Module`、startup summary artifact 或 JEPA visual sweep manifest 生成 JSON/Markdown/CSV 参数摘要；它不新增 registry、不改变 `model.primary` 构建语义、不读取真实 `dataset/`，也不写训练产物。显式 `--output` 应指向 ignored `outputs/analysis/model_architecture_summary/` 或用户指定路径。
 
-项目表面积 doctor 是只读治理层，owner helper 位于 `src/kd_sensing/diagnostics/project_surface_doctor.py`，package 入口为 `kd-sensing-project-surface-doctor`。默认 scopes 仍是 `scripts`、`configs` 和 `hotspots`；可选 `security` scope 只读扫描 tracked text、git tracked path 和 runner 命令，报告 secret、系统配置污染、runtime artifact、checkpoint、dataset 真实内容和危险 shell runner 风险；可选 `closeout` scope 只读报告 active/complete/archive/untracked change 和 dirty worktree 分类。它只读取 tracked scripts/configs/source、README、docs、pyproject、OpenSpec specs、`.github` 模板/workflow 和必要的 git metadata，输出 Markdown/JSON 到 stdout；它不读取真实 `dataset/`，不启动训练，不加载 checkpoint，不写 `outputs/`、`logs/`、cache、checkpoint、配置文件或 OpenSpec artifact，不 archive、不 reset、不删除、不移动本地产物。非平凡 `scripts/`、`tools/analysis/`、`configs/` 或热点 owner 改动前推荐运行 `conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope scripts --scope configs --scope hotspots`；协作收口或 CI guardrail 可运行 `conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error`；需要只看 config list 时使用 `--scope configs --format json --fail-on none`。
+项目表面积 doctor 是只读治理层，owner helper 位于 `src/kd_sensing/diagnostics/project_surface_doctor.py`，package 入口为 `kd-sensing-project-surface-doctor`。默认 scopes 仍是 `scripts`、`configs` 和 `hotspots`；可选 `security` scope 只读扫描 tracked text、git tracked path 和 runner 命令，报告 secret、系统配置污染、runtime artifact、checkpoint、dataset 真实内容和危险 shell runner 风险；可选 `closeout` scope 只读报告 active/complete/archive/untracked change 和 dirty worktree 分类。它只读取 tracked scripts/configs/source、README、docs、pyproject、OpenSpec specs、`.github` 模板和必要的 git metadata，输出 Markdown/JSON 到 stdout；它不读取真实 `dataset/`，不启动训练，不加载 checkpoint，不写 `outputs/`、`logs/`、cache、checkpoint、配置文件或 OpenSpec artifact，不 archive、不 reset、不删除、不移动本地产物。非平凡 `scripts/`、`tools/analysis/`、`configs/` 或热点 owner 改动前推荐运行 `conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope scripts --scope configs --scope hotspots`；协作收口或本地 guardrail 可运行 `conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error`；需要只看 config list 时使用 `--scope configs --format json --fail-on none`。
 
 ## 文档生命周期分类
 

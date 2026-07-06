@@ -1,7 +1,7 @@
 # agentic-collaboration-guardrails Specification
 
 ## Purpose
-定义多人和多 agent 协作中的 PR/Issue 模板、分层 CI、安全/产物扫描、脏工作树收口 preflight 与 AI review 边界；这些护栏只帮助审查和报告，不自动 merge、升级 claim、清理产物或覆盖用户改动。
+定义多人和多 agent 协作中的 PR/Issue 模板、本地/手动验证、安全/产物扫描、脏工作树收口 preflight 与 AI review 边界；这些护栏只帮助审查和报告，不自动 merge、升级 claim、清理产物或覆盖用户改动。
 ## Requirements
 ### Requirement: Agentic PR/Issue 协作模板
 项目 MUST 提供或记录 PR/Issue 协作模板，用于结构化说明 OpenSpec change、改动范围、验证命令、产物边界、claim 状态和回滚/停止条件。模板 MUST 帮助 agent 和人类 reviewer 判断改动是否可审查，而不是替代 OpenSpec 或 tests。
@@ -16,16 +16,16 @@
 - **THEN** issue SHOULD 包含目标、非目标、相关 OpenSpec/docs、允许读取的本地产物、预期验证和禁止触碰路径
 - **AND** issue MUST 不要求 agent 提交真实 dataset、outputs、logs、cache 或 checkpoint
 
-### Requirement: 分层 CI 和 scheduled checks
-项目 MUST 提供或记录分层 CI 策略。默认 PR/push CI MUST 保持无真实数据、无训练、无 checkpoint；更重的 doctor、CLI/config、compile、安全扫描和漂移检查 MAY 作为 manual、scheduled、nightly 或 path-filtered workflow。
+### Requirement: 本地/手动验证和调度友好检查
+项目 MUST 提供或记录本地/手动验证策略。默认 quick verify MUST 保持无真实数据、无训练、无 checkpoint；更重的 doctor、CLI/config、compile、安全扫描和漂移检查 MAY 由人工或外部任务系统按需运行。
 
-#### Scenario: quick CI 无训练
-- **WHEN** PR 或 main push 触发 quick CI
-- **THEN** CI MUST 运行 OpenSpec strict 和架构边界或等价 quick verify
-- **AND** CI MUST 不启动真实 `kd-sensing-train` 长跑、不读取真实 `dataset/`、不加载 checkpoint
+#### Scenario: quick verify 无训练
+- **WHEN** 开发者或 agent 运行 quick verify
+- **THEN** 检查 MUST 运行 OpenSpec strict 和架构边界或等价 quick verify
+- **AND** 检查 MUST 不启动真实 `kd-sensing-train` 长跑、不读取真实 `dataset/`、不加载 checkpoint
 
-#### Scenario: scheduled doctor 报告漂移
-- **WHEN** scheduled 或 manual workflow 运行 doctor/security/compile 检查
+#### Scenario: doctor 报告漂移
+- **WHEN** 人工或外部任务系统运行 doctor/security/compile 检查
 - **THEN** 检查 SHOULD 报告未分类 config/script/hotspot、退役 route 回流、文档/入口漂移和本地产物误提交风险
 - **AND** 输出 MUST 不修改源码、OpenSpec、README、outputs、logs 或 checkpoint
 
