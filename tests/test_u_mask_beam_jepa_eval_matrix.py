@@ -3,7 +3,6 @@ import json
 import pytest
 import torch
 
-from kd_sensing.eval.export import save_results_csv, save_results_json, save_results_markdown
 from kd_sensing.eval.metrics import reliability_error_stats
 from kd_sensing.eval.missing_patterns import (
     get_default_missing_patterns,
@@ -16,7 +15,13 @@ from kd_sensing.eval.missing_patterns import (
     resolve_missing_patterns,
     sample_eval_random_missing_mask,
 )
-from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix, pattern_group_metadata
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
+    evaluate_missing_matrix,
+    pattern_group_metadata,
+    save_results_csv,
+    save_results_json,
+    save_results_markdown,
+)
 from kd_sensing.cli.eval_u_mask_beam_jepa_matrix import _resolve_split
 
 

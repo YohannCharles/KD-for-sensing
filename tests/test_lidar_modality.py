@@ -1,4 +1,3 @@
-import sys
 from itertools import combinations
 from pathlib import Path
 
@@ -9,10 +8,9 @@ import torch.nn as nn
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.data.transform_ops.lidar import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.data.transform_ops.lidar import (
     LidarBEVNormalizer,
     LidarBEVStreamingStats,
     build_lidar_bev,
@@ -20,19 +18,19 @@ from kd_sensing.data.transform_ops.lidar import (  # noqa: E402
     lidar_points_to_bev,
     read_lidar_point_cloud,
 )
-from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_lidar_inputs  # noqa: E402
-from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
-from kd_sensing.evaluation.lidar_diagnostics import (  # noqa: E402
+from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_lidar_inputs
+from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
+from kd_sensing.evaluation.lidar_diagnostics import (
     LidarQualityAccumulator,
     degradation_baselines_from_labels,
     lidar_degradation_report,
 )
-from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.lidar import LidarFeatureExtractor  # noqa: E402
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.registries import MODELS  # noqa: E402
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet
+from kd_sensing.models.lidar import LidarFeatureExtractor
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.registries import MODELS
 
-import kd_sensing.models  # noqa: E402,F401
+import kd_sensing.models  # noqa: F401
 
 
 class _TinyBackbone(nn.Module):

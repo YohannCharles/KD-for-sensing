@@ -2,11 +2,10 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.registries import MODELS, RegistryError
 
-import kd_sensing.models  # noqa: E402,F401
+import kd_sensing.models  # noqa: F401
 
 
 def _retired_prefix() -> str:

@@ -4,14 +4,15 @@ from pathlib import Path
 from kd_sensing.cli.common import load_cli_config
 from kd_sensing.engine.data_factory import build_dataloaders
 from kd_sensing.engine.optim import build_device, build_model
-from kd_sensing.eval.export import (
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
+    evaluate_missing_matrix,
+    evaluate_oracle_gate_matrix,
     format_results_markdown,
     save_results_csv,
     save_results_json,
     save_results_markdown,
 )
 from kd_sensing.eval.missing_patterns import resolve_missing_patterns
-from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix, evaluate_oracle_gate_matrix
 from kd_sensing.utils.checkpoint import load_model_state
 
 

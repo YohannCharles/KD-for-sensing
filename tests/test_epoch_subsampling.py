@@ -1,9 +1,4 @@
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler  # noqa: E402
+from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler
 
 
 def test_locality_order_keeps_random_subset_and_is_reproducible():

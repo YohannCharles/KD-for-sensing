@@ -195,7 +195,8 @@ def _rows_for_epoch(rows: list[dict[str, Any]], run: str, epoch: int | None) -> 
 def _evaluate_checkpoint(root: Path, run: str, checkpoint: Path, out_dir: Path, args: argparse.Namespace) -> list[dict[str, Any]]:
     cmd = [
         sys.executable,
-        str(Path(__file__).resolve().parent / "reevaluate_apples_to_apples.py"),
+        "-m",
+        "kd_sensing.diagnostics.apples_to_apples_evaluation",
         "--root",
         str(root),
         "--runs",

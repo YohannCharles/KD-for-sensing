@@ -138,9 +138,15 @@ def build_project_surface_report(
     }
 
 
-def render_project_surface_report(report: dict[str, Any], *, format: str = "markdown") -> str:
+def render_project_surface_report(
+    report: dict[str, Any],
+    *,
+    format: str = "markdown",
+    dump_inventory: bool = False,
+) -> str:
     if format == "json":
-        return json.dumps(report, indent=2, sort_keys=True)
+        payload = _full_inventory_report(report) if dump_inventory else _issue_only_report(report)
+        return json.dumps(payload, indent=2, sort_keys=True)
     if format != "markdown":
         raise ValueError("format must be 'markdown' or 'json'")
     summary = report["summary"]
@@ -154,7 +160,77 @@ def render_project_surface_report(report: dict[str, Any], *, format: str = "mark
         f"- infos: {summary['infos']}",
         "",
     ]
+    if dump_inventory:
+        lines.extend(_render_inventory_sections(report))
+    else:
+        lines.extend(
+            [
+                "## Inventory",
+                "",
+                "Pass inventory omitted. Use `--dump-inventory` for section counts and machine-readable entries.",
+                "",
+            ]
+        )
+    if report.get("issues"):
+        lines.extend(
+            [
+                "## Issues",
+                "",
+                "| severity | scope | kind | path | source | recommendation |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for issue in report["issues"]:
+            lines.append(
+                "| {severity} | {scope} | {kind} | `{path}` | {source} | {recommendation} |".format(
+                    severity=issue["severity"],
+                    scope=issue["scope"],
+                    kind=issue["kind"],
+                    path=issue.get("path", ""),
+                    source=_markdown_cell(issue.get("source", "unavailable")),
+                    recommendation=_markdown_cell(issue.get("recommendation", "")),
+                )
+            )
+        lines.append("")
+    else:
+        lines.extend(["## Issues", "", "No issues at the selected failure/reporting levels.", ""])
+    lines.extend(["## Next Action", ""])
+    lines.extend(f"- {item}" for item in _project_surface_next_actions(report))
+    lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _issue_only_report(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "metadata": report.get("metadata", {}),
+        "summary": report.get("summary", {}),
+        "issues": report.get("issues", []),
+        "inventory_omitted": True,
+        "next_actions": _project_surface_next_actions(report),
+    }
+
+
+def _full_inventory_report(report: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(report)
+    payload["inventory_omitted"] = False
+    payload["next_actions"] = _project_surface_next_actions(report)
+    return payload
+
+
+def _project_surface_next_actions(report: Mapping[str, Any]) -> list[str]:
+    summary = report.get("summary", {})
+    if str(summary.get("status")) == "fail":
+        return ["Fix the listed issues at or above the selected fail-on level, then rerun the same scope."]
+    if report.get("issues"):
+        return ["Review the listed lower-severity issues, or raise --fail-on when they should gate closeout."]
+    return ["No action needed for the selected scopes."]
+
+
+def _render_inventory_sections(report: Mapping[str, Any]) -> list[str]:
+    lines: list[str] = []
     sections = report.get("sections", {})
+    if not isinstance(sections, Mapping):
+        return lines
     if "scripts" in sections:
         scripts = sections["scripts"]
         lines.extend(
@@ -225,30 +301,7 @@ def render_project_surface_report(report: dict[str, Any], *, format: str = "mark
         for category, count in sorted(worktree.get("category_counts", {}).items()):
             lines.append(f"- {category}: {count}")
         lines.append("")
-    if report.get("issues"):
-        lines.extend(
-            [
-                "## Issues",
-                "",
-                "| severity | scope | kind | path | source | recommendation |",
-                "| --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for issue in report["issues"]:
-            lines.append(
-                "| {severity} | {scope} | {kind} | `{path}` | {source} | {recommendation} |".format(
-                    severity=issue["severity"],
-                    scope=issue["scope"],
-                    kind=issue["kind"],
-                    path=issue.get("path", ""),
-                    source=_markdown_cell(issue.get("source", "unavailable")),
-                    recommendation=_markdown_cell(issue.get("recommendation", "")),
-                )
-            )
-        lines.append("")
-    else:
-        lines.extend(["## Issues", "", "No issues at the selected failure/reporting levels.", ""])
-    return "\n".join(lines).rstrip() + "\n"
+    return lines
 
 
 def doctor_should_fail(report: dict[str, Any]) -> bool:

@@ -171,27 +171,27 @@ run_summarize_all() {
       failed=$((failed + 1))
     fi
   }
-  run_summary_step summary conda run -n kd_mm_beam python scripts/summarize_scenes31_34_main.py \
+  run_summary_step summary conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_34_final_analysis --artifact summary \
     --root "$ROOT" \
     --old-root "$OLD_ROOT" \
     --classifier-root "$CLASSIFIER_ROOT" \
     --external-root "$EXTERNAL_ROOT" \
     --out "${ROOT%/}/summary"
-  run_summary_step figures conda run -n kd_mm_beam python scripts/plot_missing_count_degradation.py \
+  run_summary_step figures conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_34_final_analysis --artifact missing-count \
     --summary-root "${ROOT%/}/summary" \
     --out "${ROOT%/}/figures"
-  run_summary_step profile conda run -n kd_mm_beam python scripts/profile_scenes31_34_methods.py \
+  run_summary_step profile conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_34_final_analysis --artifact profile \
     --root "$ROOT" \
     --old-root "$OLD_ROOT" \
     --classifier-root "$CLASSIFIER_ROOT" \
     --external-root "$EXTERNAL_ROOT" \
     --out "${ROOT%/}/profile"
-  run_summary_step paper_tables conda run -n kd_mm_beam python scripts/export_scenes31_34_main_paper_tables.py \
+  run_summary_step paper_tables conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_34_final_analysis --artifact paper-tables \
     --summary-root "${ROOT%/}/summary" \
     --fig-root "${ROOT%/}/figures" \
     --profile-root "${ROOT%/}/profile" \
     --out outputs/paper_tables/scenes31_34_main
-  run_summary_step final_conclusion conda run -n kd_mm_beam python scripts/write_scenes31_34_main_conclusion.py \
+  run_summary_step final_conclusion conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_34_final_analysis --artifact conclusion \
     --summary-root "${ROOT%/}/summary" \
     --paper-table-root outputs/paper_tables/scenes31_34_main \
     --figure-root "${ROOT%/}/figures" \
@@ -489,7 +489,7 @@ run_eval() {
   fi
   echo "[GPU $gpu] [EVAL] $run_name from $source_root"
   eval_cmd=(
-    conda run -n kd_mm_beam python scripts/reevaluate_apples_to_apples.py
+    conda run -n kd_mm_beam python -m kd_sensing.diagnostics.apples_to_apples_evaluation
     --root "$source_root"
     --runs "$run_name"
     --checkpoint-policy best_val_top1
@@ -716,7 +716,7 @@ cp "${RUN_ROOT%/}/missing_checkpoint_runs.txt" "${RUN_ROOT%/}/scenes31_34_missin
 } >"${RUN_ROOT%/}/runner_status.json"
 
 if [[ "$TRAIN_ONLY" -eq 0 && "$AUTO_EVAL" -eq 1 ]]; then
-  scene31_try_summary "${RUN_ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python scripts/summarize_scenes31_34_main.py \
+  scene31_try_summary "${RUN_ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_34_final_analysis --artifact summary \
     --root "$ROOT" \
     --old-root "$OLD_ROOT" \
     --classifier-root "$CLASSIFIER_ROOT" \

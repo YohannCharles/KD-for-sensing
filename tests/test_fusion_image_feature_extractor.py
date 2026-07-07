@@ -1,15 +1,13 @@
-import sys
 from pathlib import Path
 
 import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.image import ImageFeatureExtractor  # noqa: E402
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state  # noqa: E402
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet
+from kd_sensing.models.image import ImageFeatureExtractor
+from kd_sensing.config import load_config
+from kd_sensing.utils.checkpoint import CheckpointLoadError, load_model_state
 
 
 def test_cls_token_fusion_image_branch_uses_shared_image_feature_extractor():

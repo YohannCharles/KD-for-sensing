@@ -1,16 +1,13 @@
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.data.transform_ops.lidar import read_lidar_point_cloud  # noqa: E402
-from kd_sensing.preprocessing.csv import process_radar_and_create_new_csv  # noqa: E402
-from kd_sensing.preprocessing.sequences import (  # noqa: E402
+from kd_sensing.data.transform_ops.lidar import read_lidar_point_cloud
+from kd_sensing.preprocessing.csv import process_radar_and_create_new_csv
+from kd_sensing.preprocessing.sequences import (
     generate_sequence_data,
     select_balanced_sequence_split,
 )

@@ -5,17 +5,12 @@ import csv
 import json
 import math
 import re
-import sys
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-import summarize_scene31_bc_next as bc
+from kd_sensing.diagnostics.scene31_summary import bc_next as bc
 from kd_sensing.eval.missing_buckets import missing_bucket_mapping_from_rows
 from kd_sensing.eval.missing_patterns import canonical_missing_pattern_name
 

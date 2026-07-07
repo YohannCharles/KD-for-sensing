@@ -1,20 +1,17 @@
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.data.beam_label_calibration import (  # noqa: E402
+from kd_sensing.data.beam_label_calibration import (
     BeamLabelCalibrationError,
     resolve_beam_label_mapping,
 )
-from kd_sensing.data.datasets.mmw import MMWDataset  # noqa: E402
-from kd_sensing.data.mmw.physical_labels import resolve_physical_label_config  # noqa: E402
-from kd_sensing.data.mmw.preparation_splits import split_sequence_rows  # noqa: E402
-from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata  # noqa: E402
+from kd_sensing.data.datasets.mmw import MMWDataset
+from kd_sensing.data.mmw.physical_labels import resolve_physical_label_config
+from kd_sensing.data.mmw.preparation_splits import split_sequence_rows
+from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata
 
 
 def test_default_mapping_keeps_raw_label_space_and_identity_distribution():

@@ -1,5 +1,4 @@
 import json
-import importlib.util
 from copy import deepcopy
 from pathlib import Path
 
@@ -51,6 +50,7 @@ from kd_sensing.engine.throughput_recommendations import (
     lidar_cache_coverage,
     recommend_parallel_training,
 )
+import kd_sensing.engine.training_io_profile as profile_training_io
 from kd_sensing.engine.trainer import (
     _configure_early_stopping,
     _early_stopping_improved,
@@ -88,10 +88,6 @@ from tests.training_io_helpers import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-_PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", ROOT / "scripts/profile_training_io.py")
-profile_training_io = importlib.util.module_from_spec(_PROFILE_SPEC)
-assert _PROFILE_SPEC.loader is not None
-_PROFILE_SPEC.loader.exec_module(profile_training_io)
 
 def test_dataset_run_metadata_records_balanced_split_sidecar(tmp_path: Path):
     csv_path = tmp_path / "train_seqs_RA_GPS_LIDAR.csv"

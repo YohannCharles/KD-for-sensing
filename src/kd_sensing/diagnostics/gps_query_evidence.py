@@ -1,6 +1,7 @@
 import csv
 import json
 import math
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -140,7 +141,7 @@ def write_gps_query_evidence_package(
 
 def _evidence_cfg(cfg: Mapping[str, Any]) -> dict[str, Any]:
     raw = cfg.get("evidence", {}) if isinstance(cfg.get("evidence"), Mapping) else {}
-    merged = json.loads(json.dumps(DEFAULT_GPS_QUERY_EVIDENCE_CONFIG))
+    merged = deepcopy(DEFAULT_GPS_QUERY_EVIDENCE_CONFIG)
     return _deep_merge(merged, dict(raw))
 
 

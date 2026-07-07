@@ -13,7 +13,8 @@ from kd_sensing.baselines.rmbp_mm.workflow import (
     write_condition_summary,
 )
 from kd_sensing.config import load_config
-from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
+from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
+from kd_sensing.data.difficulty.schema import DifficultyContext
 from kd_sensing.engine.model_output import adapt_model_output
 from kd_sensing.registries import MODELS, import_default_components
 

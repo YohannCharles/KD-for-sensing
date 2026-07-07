@@ -1,4 +1,3 @@
-import sys
 from itertools import combinations
 from pathlib import Path
 
@@ -7,25 +6,24 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.data.transform_ops.gps import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.data.transform_ops.gps import (
     GPSStandardScaler,
     PAPER_SCENE_CENTER_ANGLES_RAD,
     build_gps_features,
     read_gps_latlon,
 )
-from kd_sensing.engine.batch import prepare_fusion_inputs  # noqa: E402
-from kd_sensing.engine.evaluator import evaluate  # noqa: E402
-from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
-from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.gps import GpsFeatureExtractor  # noqa: E402
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.registries import MODELS  # noqa: E402
-from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
+from kd_sensing.engine.batch import prepare_fusion_inputs
+from kd_sensing.engine.evaluator import evaluate
+from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet
+from kd_sensing.models.gps import GpsFeatureExtractor
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.registries import MODELS
+from kd_sensing.utils.artifact_registry import archive_best_checkpoint
 
-import kd_sensing.models  # noqa: E402,F401
+import kd_sensing.models  # noqa: F401
 
 
 GPS_CANONICAL_FUSION_CONFIGS = [

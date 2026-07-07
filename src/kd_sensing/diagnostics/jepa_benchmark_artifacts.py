@@ -15,9 +15,9 @@ import torch
 
 from kd_sensing.config.io import load_config
 from kd_sensing.config.parsing import safe_load_yaml
-from kd_sensing.data.difficulty import (
+from kd_sensing.data.difficulty.pipeline import apply_difficulty_pipeline
+from kd_sensing.data.difficulty.schema import (
     DifficultyContext,
-    apply_difficulty_pipeline,
     normalize_difficulty_profiles,
 )
 from kd_sensing.data.difficulty.presets import (

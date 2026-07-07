@@ -4,11 +4,10 @@ import pytest
 import torch
 
 from kd_sensing.config.io import load_config
-from kd_sensing.data.difficulty import (
+from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty, apply_difficulty_pipeline
+from kd_sensing.data.difficulty.schema import (
     DifficultyContext,
     DifficultyOperatorOutcome,
-    apply_configured_difficulty,
-    apply_difficulty_pipeline,
     normalize_config_difficulty,
     normalize_difficulty_profiles,
 )

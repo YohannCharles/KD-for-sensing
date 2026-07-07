@@ -750,7 +750,7 @@ def build_sequence_splits_from_manifest(
                 "metadata": str(metadata_path),
             },
             "repair_command": (
-                "conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.py "
+                "conda run -n kd_mm_beam kd-sensing-preprocess --action mmw_sequence_splits_from_manifest "
                 f"--data-root {root} --scene {scene} --seq-len {int(seq_len)} --pred-len {int(pred_len)} "
                 f"--split-tag {safe_tag or 'default'} --split-seed {int(split_seed)} --train-ratio {float(train_ratio)} "
                 f"--split-strategy {split['split_strategy']}"

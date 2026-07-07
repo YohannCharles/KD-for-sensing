@@ -218,7 +218,7 @@ run_one() {
   echo "[GPU $gpu] [EVAL] $run_name"
   eval_root="$(eval_source_root)"
   eval_cmd=(
-    conda run -n kd_mm_beam python scripts/reevaluate_apples_to_apples.py
+    conda run -n kd_mm_beam python -m kd_sensing.diagnostics.apples_to_apples_evaluation
     --root "$eval_root"
     --runs "$run_name"
     --checkpoint-policy best_val_top1
@@ -286,7 +286,7 @@ printf "%s\n" "${failed[@]}" "${eval_failed[@]}" >"${ROOT%/}/overnight_failed_ru
 printf "%s\n" "${eval_failed[@]}" >"${ROOT%/}/overnight_eval_failed_runs.txt"
 
 if [[ "$TRAIN_ONLY" -eq 0 && "$AUTO_EVAL" -eq 1 ]]; then
-  scene31_try_summary "${ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python scripts/summarize_scene31_bc_next.py \
+  scene31_try_summary "${ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_summary --profile bc-next \
     --root "$ROOT" \
     --manifest "$MANIFEST" \
     --out "${ROOT%/}/summary" \

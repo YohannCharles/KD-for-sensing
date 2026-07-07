@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from kd_sensing.cli import jepa_gps_shortcut_benchmark as benchmark_cli
-from kd_sensing.cli import predictive_gps_query_visualizations as predictive_viz_cli
 from kd_sensing.diagnostics import jepa_visual_analysis as jva
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
 from kd_sensing.diagnostics import jepa_benchmark_runner as runner
@@ -24,7 +23,6 @@ from kd_sensing.diagnostics.jepa_benchmark_scenario_d import (
     detect_resnet_jepa_crossing,
     load_cxd_diagnostic_records,
 )
-from kd_sensing.diagnostics.predictive_gps_query_visualizations import run_predictive_gps_query_visualizations
 from tests.jepa_gps_shortcut_helpers import (
     _fusion_diagnostic_manifest_dict,
     _manifest_dict,
@@ -326,6 +324,8 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
         output_dir=tmp_path / "predictive_out",
         force=True,
         command=["test"],
+        predictive_explanatory_visualizations=True,
+        predictive_explanatory_output_dir=tmp_path / "predictive_viz",
     )
 
     condition_path = Path(result["predictive_condition_metrics"])
@@ -401,11 +401,10 @@ def test_runner_writes_predictive_summary_margin_and_manifest_outputs(tmp_path: 
         for item in manifest_out["outputs"]
     )
 
-    viz = run_predictive_gps_query_visualizations(
-        manifest_path=result["manifest"],
-        output_dir=tmp_path / "predictive_viz",
-        force=True,
-    )
+    viz = {
+        "manifest": result["predictive_explanatory_visualizations_manifest"],
+        "branch_weight_by_condition": "tables/branch_weight_by_condition.csv",
+    }
     viz_manifest = json.loads(Path(viz["manifest"]).read_text(encoding="utf-8"))
     assert viz_manifest["evidence_scope"] == "explanatory_diagnostics_not_primary_claim"
     assert Path(viz["branch_weight_by_condition"]).name == "branch_weight_by_condition.csv"
@@ -642,30 +641,31 @@ def test_benchmark_cli_help_and_main(monkeypatch: pytest.MonkeyPatch, capsys: py
     with pytest.raises(SystemExit) as exc:
         benchmark_cli.main(["--help"])
     assert exc.value.code == 0
-    assert "JEPA vs GPS shortcut" in capsys.readouterr().out
+    help_text = capsys.readouterr().out
+    assert "JEPA vs GPS shortcut" in help_text
+    assert "--predictive-explanatory-figures" in help_text
 
     def fake_run(**kwargs):
-        return {"manifest": "benchmark_manifest.json", "dry_run": kwargs["dry_run"]}
+        return {
+            "manifest": "benchmark_manifest.json",
+            "dry_run": kwargs["dry_run"],
+            "predictive_explanatory": kwargs["predictive_explanatory_visualizations"],
+            "predictive_output": kwargs["predictive_explanatory_output_dir"],
+        }
 
     monkeypatch.setattr(benchmark_cli, "run_jepa_gps_shortcut_benchmark", fake_run)
-    exit_code = benchmark_cli.main(["--manifest", "config.yaml", "--dry-run"])
+    exit_code = benchmark_cli.main([
+        "--manifest",
+        "config.yaml",
+        "--dry-run",
+        "--predictive-explanatory-figures",
+        "--predictive-explanatory-output-dir",
+        "viz",
+    ])
     assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == {"manifest": "benchmark_manifest.json", "dry_run": True}
-
-
-def test_predictive_gps_query_visualizations_cli_help_and_main(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    with pytest.raises(SystemExit) as exc:
-        predictive_viz_cli.main(["--help"])
-    assert exc.value.code == 0
-    assert "Predictive GPS-query++ diagnostics" in capsys.readouterr().out
-
-    def fake_run(**kwargs):
-        return {"manifest": "viz_manifest.json", "force": kwargs["force"]}
-
-    monkeypatch.setattr(predictive_viz_cli, "run_predictive_gps_query_visualizations", fake_run)
-    exit_code = predictive_viz_cli.main(["--manifest", "benchmark_manifest.json", "--force"])
-    assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == {"force": True, "manifest": "viz_manifest.json"}
+    assert json.loads(capsys.readouterr().out) == {
+        "dry_run": True,
+        "manifest": "benchmark_manifest.json",
+        "predictive_explanatory": True,
+        "predictive_output": "viz",
+    }

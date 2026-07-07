@@ -5,7 +5,6 @@ import pytest
 import torch
 
 from kd_sensing.cli import jepa_gps_shortcut_benchmark as benchmark_cli
-from kd_sensing.cli import predictive_gps_query_visualizations as predictive_viz_cli
 from kd_sensing.diagnostics import jepa_visual_analysis as jva
 from kd_sensing.diagnostics import jepa_gps_shortcut_benchmark as bench
 from kd_sensing.diagnostics import jepa_benchmark_runner as runner
@@ -22,7 +21,6 @@ from kd_sensing.diagnostics.jepa_benchmark_scenario_d import (
     detect_resnet_jepa_crossing,
     load_cxd_diagnostic_records,
 )
-from kd_sensing.diagnostics.predictive_gps_query_visualizations import run_predictive_gps_query_visualizations
 from tests.jepa_gps_shortcut_helpers import (
     _fusion_diagnostic_manifest_dict,
     _manifest_dict,

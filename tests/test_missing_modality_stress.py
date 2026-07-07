@@ -1,10 +1,14 @@
 import csv
-import importlib.util
 import py_compile
 from pathlib import Path
 
 import pytest
 
+from kd_sensing.diagnostics.scene31_34_final_analysis import conclusion as conclusion_mod
+from kd_sensing.diagnostics.scene31_34_final_analysis import main_paper_tables as export_mod
+from kd_sensing.diagnostics.scene31_34_final_analysis import main_summary as summary_mod
+from kd_sensing.diagnostics.scene31_34_final_analysis import missing_count_degradation
+from kd_sensing.diagnostics.scene31_34_final_analysis import profile
 from kd_sensing.diagnostics.missing_modality_stress import (
     baseline_stress_comparability_metadata,
     canonical_missing_modality_conditions,
@@ -13,12 +17,12 @@ from kd_sensing.diagnostics.missing_modality_stress import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCENE31_34_FINAL_SCRIPTS = (
-    "summarize_scenes31_34_main.py",
-    "plot_missing_count_degradation.py",
-    "profile_scenes31_34_methods.py",
-    "export_scenes31_34_main_paper_tables.py",
-    "write_scenes31_34_main_conclusion.py",
+SCENE31_34_FINAL_MODULES = (
+    summary_mod,
+    missing_count_degradation,
+    profile,
+    export_mod,
+    conclusion_mod,
 )
 
 
@@ -94,12 +98,8 @@ def test_canonical_conditions_cover_mmwave_without_reading_dataset():
 
 
 def test_scene31_34_final_scripts_compile_and_emit_pending_caveats(tmp_path: Path):
-    for script in SCENE31_34_FINAL_SCRIPTS:
-        py_compile.compile(str(ROOT / "scripts" / script), doraise=True)
-
-    summary_mod = _load_script("summarize_scenes31_34_main", ROOT / "scripts" / "summarize_scenes31_34_main.py")
-    export_mod = _load_script("export_scenes31_34_main_paper_tables", ROOT / "scripts" / "export_scenes31_34_main_paper_tables.py")
-    conclusion_mod = _load_script("write_scenes31_34_main_conclusion", ROOT / "scripts" / "write_scenes31_34_main_conclusion.py")
+    for module in SCENE31_34_FINAL_MODULES:
+        py_compile.compile(str(module.__file__), doraise=True)
 
     summary_root = tmp_path / "summary"
     paper_root = tmp_path / "paper_tables"
@@ -125,10 +125,3 @@ def test_scene31_34_final_scripts_compile_and_emit_pending_caveats(tmp_path: Pat
     conclusion = conclusion_path.read_text(encoding="utf-8")
     assert "Final evidence is not yet complete" in conclusion
 
-
-def _load_script(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
-    return module

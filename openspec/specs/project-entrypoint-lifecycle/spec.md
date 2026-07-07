@@ -238,7 +238,7 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 
 #### Scenario: MMW 诊断迁移到 package CLI
 - **WHEN** 文档说明 MMW GPS v2 图表或对比
-- **THEN** 文档 MUST 指向 `kd-sensing-plot-mmw-town-gps-v2` 和 `kd-sensing-compare-mmw-town-gps-v2`
+- **THEN** 文档 MUST 指向 `kd-sensing-mmw-town-gps-v2 --mode plot` 和 `kd-sensing-mmw-town-gps-v2 --mode compare`
 - **AND** 文档 MUST 不要求用户直接运行退役的 `scripts/mmw/visualize_gps_*` 脚本
 
 #### Scenario: shell runner 迁移到当前入口
@@ -351,11 +351,11 @@ README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再�
 - **AND** 文档 MUST 指向输出边界并说明真实训练产物不提交
 
 ### Requirement: CLI glue stays thin
-Package CLI 文件 MUST 只承担参数解析、配置覆盖、轻量 IO、调用 owner module 和 user-facing exit code。真实 workflow、training loop、evaluation loop、dataset preparation、benchmark suite 或 report builder MUST 位于 owner module。
+Package CLI 文件 MUST 只承担参数解析、配置覆盖、轻量 IO、调用 owner module 和 user-facing exit code。真实 workflow、training loop、evaluation loop、dataset preparation、benchmark suite、report builder 或 paper table 生成主逻辑 MUST 位于 owner module。
 
 #### Scenario: 修改 package CLI
 - **WHEN** 本 change 修改 `src/kd_sensing/cli/` 下入口
-- **THEN** CLI 文件 MUST 不复制训练、评估、dataset parsing 或 benchmark aggregation 主逻辑
+- **THEN** CLI 文件 MUST 不复制训练、评估、dataset parsing、benchmark aggregation、report aggregation 或 paper table 生成主逻辑
 - **AND** 对应 `kd-sensing-* --help` 或包内 CLI smoke MUST 继续可运行
 
 ### Requirement: Package console scripts 必须有生命周期锚点
@@ -510,3 +510,72 @@ Scene31/Scene31-34 paper table、per-scene summary、final conclusion 和一次�
 - **WHEN** 后续 change 新增固定 GPU、固定 seed 队列或单一 family shell orchestration
 - **THEN** architecture/surface 检查 MUST 要求删除、合并到 manifest runner，或登记为短期 local/manual 并写明删除触发条件
 - **AND** 该 shell MUST 不出现在 current README quickstart 或 package CLI smoke list 中
+
+### Requirement: Scene31 重复 wrapper 必须收敛到 canonical command
+项目 MUST 删除本轮审计确认的 Scene31 thin wrapper，并将 docs、tests、inventory 和推荐命令指向已有 canonical script。删除旧 wrapper 时 MUST 不新增 alias、compat wrapper、deprecation trampoline 或同职责 shell 包装。
+
+#### Scenario: beamsoft weak summary wrapper 删除
+- **WHEN** 协作者需要汇总 Scene31 beamsoft weak 结果
+- **THEN** 当前推荐入口 MUST 是 `python -m kd_sensing.diagnostics.scene31_summary --profile bc-next --root ...` 或等价 canonical owner 命令
+- **AND** 项目 MUST 不保留 `scripts/summarize_scene31_beamsoft_weak.py` 作为只设置默认参数的 wrapper
+
+#### Scenario: maskfix eval shell wrapper 删除
+- **WHEN** 协作者需要运行 Scene31 maskfix reliability 评估
+- **THEN** 当前推荐入口 MUST 是 `scripts/run_scene31_subset_reliability.sh --group eval_modular_lite_maskfix`
+- **AND** 项目 MUST 不保留 `scripts/run_scene31_modular_maskfix_eval.sh` 或 `scripts/run_scene31_baseline_pack_maskfix_eval.sh` 作为只转发 group 的 wrapper
+
+#### Scenario: 删除 wrapper 后文档不推荐旧路径
+- **WHEN** README、docs、OpenSpec current specs、tests 或 `docs/project_surface_inventory.md` 提到 Scene31 maskfix 或 beamsoft weak 汇总
+- **THEN** 它们 MUST 指向 canonical command 或将旧 path 标记为 retired/historical
+- **AND** current surface guardrail MUST 不要求已删除 wrapper 存在
+
+### Requirement: Wrapper 删除需要 focused guardrail
+删除 Scene31 wrapper 后，项目 MUST 通过脚本 inventory、architecture boundary 或 focused tests 防止同职责 wrapper 回流。保留的 Scene31 脚本 MUST 有明确 owner、推荐关系、输入输出边界和 focused validation。
+
+#### Scenario: scripts surface 检查拒绝 wrapper 回流
+- **WHEN** 开发者运行 scripts surface doctor 或 architecture boundary check
+- **THEN** 检查 MUST 不把已删除 Scene31 wrapper 列为 current allowlist
+- **AND** 若同名文件或等价 forwarding wrapper 回流，检查 MUST 报告需要删除或登记新的 OpenSpec reason
+
+### Requirement: 本地报告脚本必须在结论沉淀后退出 current surface
+项目 MUST 将一次性研究分析、论文表格排版、展示材料导出和局部结论脚本视为有生命周期的本地报告面。若其结论、输入来源和关键输出已经沉淀到 docs、claim notes、paper tables 或 retained artifact 说明，implementation MUST 删除脚本或合并到明确 owner，而不是继续把单次脚本保留为 current entrypoint。
+
+#### Scenario: 一次性 analysis 脚本删除
+- **WHEN** `scripts/analysis/` 中的脚本只复现已经沉淀的分析结论
+- **THEN** 项目 MUST 删除该脚本或将其标记为非 current retained artifact source
+- **AND** docs、OpenSpec current specs、tests 和 inventory MUST 不再要求该脚本路径存在
+
+#### Scenario: 报告脚本合并不新增 wrapper
+- **WHEN** 多个报告脚本只有输入 glob、标签或输出格式不同
+- **THEN** 项目 MUST 收敛到一个 owner command 或 owner module helper，并通过显式参数表达差异
+- **AND** 项目 MUST 不新增 alias、compat wrapper、deprecation trampoline 或同职责转发脚本
+
+### Requirement: 删除本地报告脚本必须保留证据链
+删除报告脚本前，implementation MUST 保留足够证据说明该脚本产生的结论仍可追溯。证据 MAY 是正式 docs、paper table、claim note、retained artifact manifest、或 canonical command 的输出契约。
+
+#### Scenario: 删除前记录替代 owner
+- **WHEN** 一个本地报告脚本从 current surface 删除
+- **THEN** `docs/project_surface_inventory.md` 或相关 docs MUST 记录替代 owner、历史用途或 retained-with-reason
+- **AND** 若输出支撑正式 claim，字段名、排序、筛选条件或 artifact 路径模式 MUST 可在替代 owner 中验证
+
+### Requirement: 薄诊断 wrapper 必须收敛到领域 owner
+项目 MUST 不长期保留只调用同一领域 owner 的 plot、compare、visualize、recommend 或 prepare wrapper。若 wrapper 没有独立输入契约、输出 schema 或 claim gate，它 MUST 合并为领域 owner CLI 的 subcommand、mode flag 或 documented command recipe。
+
+#### Scenario: wrapper 只有转发职责
+- **WHEN** 一个 CLI 或 script 只解析少量参数并调用同一 owner function
+- **THEN** implementation MUST 将该行为迁到 owner CLI 或 owner module mode
+- **AND** 删除旧 wrapper 时 MUST 不新增 alias、compat wrapper 或 fallback console script
+
+#### Scenario: consolidated help 替代旧入口
+- **WHEN** 旧 wrapper 被删除
+- **THEN** `--help`、README、docs、OpenSpec current specs 和 inventory MUST 指向 consolidated owner command
+- **AND** CLI help tests MUST 覆盖用户需要的新 mode 或 subcommand
+
+### Requirement: 薄 wrapper 保留必须有 retained-with-reason
+若某个诊断 wrapper 不能合并，项目 MUST 在 inventory 或 current spec 中记录保留理由、独立契约和删除触发条件。
+
+#### Scenario: wrapper 仍承载独立契约
+- **WHEN** wrapper 拥有独立输出 schema、claim evidence role、外部复现实验契约或不同 failure semantics
+- **THEN** implementation MAY 保留该 wrapper
+- **AND** retained-with-reason MUST 指明为什么 owner CLI mode 不足以替代它
+

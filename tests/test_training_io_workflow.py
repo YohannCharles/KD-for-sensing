@@ -1,6 +1,4 @@
 import json
-import importlib.util
-import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -11,30 +9,29 @@ import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.config.io import dump_config, safe_load_yaml  # noqa: E402
-from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess  # noqa: E402
-from kd_sensing.data.beam_soft_targets import beam_power_to_distribution, gaussian_beam_distribution  # noqa: E402
-import kd_sensing.data.datasets.deepsense6g as deepsense6g_module  # noqa: E402
-import kd_sensing.data.datasets.deepsense6g_targets as deepsense6g_targets  # noqa: E402
-import kd_sensing.data.transform_ops.io as io_transforms  # noqa: E402
-import kd_sensing.data.transform_ops.lidar as lidar_transforms  # noqa: E402
-import kd_sensing.preprocessing.lidar as lidar_preprocessing  # noqa: E402
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.data.layouts import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.config.io import dump_config, safe_load_yaml
+from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preprocess
+from kd_sensing.data.beam_soft_targets import beam_power_to_distribution, gaussian_beam_distribution
+import kd_sensing.data.datasets.deepsense6g as deepsense6g_module
+import kd_sensing.data.datasets.deepsense6g_targets as deepsense6g_targets
+import kd_sensing.data.transform_ops.io as io_transforms
+import kd_sensing.data.transform_ops.lidar as lidar_transforms
+import kd_sensing.preprocessing.lidar as lidar_preprocessing
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.data.layouts import (
     deepsense6g_scene_layout,
     mmw_condition_layout,
     physical_labels_cache_root,
     runtime_cache_root,
 )
-from kd_sensing.data.samples import create_samples  # noqa: E402
-from kd_sensing.data.scenes import retarget_deepsense_dataset_config  # noqa: E402
-from kd_sensing.losses.beam import FocalLoss, SoftTargetCrossEntropyLoss  # noqa: E402
-from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets  # noqa: E402
-from kd_sensing.engine.batch_step import BatchStepRunner  # noqa: E402
-from kd_sensing.engine.cache_policy import apply_cache_policy  # noqa: E402
-from kd_sensing.engine.data_factory import (  # noqa: E402
+from kd_sensing.data.samples import create_samples
+from kd_sensing.data.scenes import retarget_deepsense_dataset_config
+from kd_sensing.losses.beam import FocalLoss, SoftTargetCrossEntropyLoss
+from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets
+from kd_sensing.engine.batch_step import BatchStepRunner
+from kd_sensing.engine.cache_policy import apply_cache_policy
+from kd_sensing.engine.data_factory import (
     build_dataloader,
     build_dataloaders,
     build_dataset,
@@ -42,19 +39,20 @@ from kd_sensing.engine.data_factory import (  # noqa: E402
     build_protocol_split_datasets,
     shutdown_dataloader_workers,
 )
-from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler  # noqa: E402
-from kd_sensing.engine.modality_resolution import resolve_enabled_modalities  # noqa: E402
-from kd_sensing.engine.training_extensions import ExtensionContext, NoOpTrainingExtension  # noqa: E402
-from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
-from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking  # noqa: E402
-from kd_sensing.engine.evaluator import _evaluation_split_protocol_report  # noqa: E402
-from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata  # noqa: E402
-from kd_sensing.engine.training_metrics import training_outputs_payload  # noqa: E402
-from kd_sensing.engine.throughput_recommendations import (  # noqa: E402
+from kd_sensing.engine.epoch_subsampling import EpochSubsampleSampler
+from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.engine.training_extensions import ExtensionContext, NoOpTrainingExtension
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
+from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking
+from kd_sensing.engine.evaluator import _evaluation_split_protocol_report
+from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
+from kd_sensing.engine.training_metrics import training_outputs_payload
+from kd_sensing.engine.throughput_recommendations import (
     lidar_cache_coverage,
     recommend_parallel_training,
 )
-from kd_sensing.engine.trainer import (  # noqa: E402
+import kd_sensing.engine.training_io_profile as profile_training_io
+from kd_sensing.engine.trainer import (
     _configure_early_stopping,
     _early_stopping_improved,
     _early_stopping_min_epoch,
@@ -66,21 +64,15 @@ from kd_sensing.engine.trainer import (  # noqa: E402
     create_run_dir,
     train,
 )
-from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E402
-from kd_sensing.utils.artifact_registry import (  # noqa: E402
+from kd_sensing.preprocessing.sequences import generate_sequence_data
+from kd_sensing.utils.artifact_registry import (
     archive_best_checkpoint,
     find_registry_checkpoint,
     load_checkpoint_metadata,
     resolve_evaluation_checkpoint,
     write_sidecar,
 )
-from kd_sensing.utils.checkpoint import save_checkpoint  # noqa: E402
-
-_PROFILE_SPEC = importlib.util.spec_from_file_location("profile_training_io", ROOT / "scripts/profile_training_io.py")
-profile_training_io = importlib.util.module_from_spec(_PROFILE_SPEC)
-assert _PROFILE_SPEC.loader is not None
-_PROFILE_SPEC.loader.exec_module(profile_training_io)
-
+from kd_sensing.utils.checkpoint import save_checkpoint
 
 def test_save_checkpoint_replaces_existing_file_without_temp_leftover(tmp_path: Path):
     checkpoint_dir = tmp_path / "checkpoints"

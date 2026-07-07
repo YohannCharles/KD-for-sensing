@@ -221,7 +221,7 @@ run_one() {
     return
   fi
   echo "[GPU $gpu] [EVAL] $run_name"
-  eval_cmd=(conda run -n kd_mm_beam python scripts/reevaluate_apples_to_apples.py --root "$ROOT" --runs "$run_name" --checkpoint-policy best_val_top1 --out-dir "$eval_out" --split test)
+  eval_cmd=(conda run -n kd_mm_beam python -m kd_sensing.diagnostics.apples_to_apples_evaluation --root "$ROOT" --runs "$run_name" --checkpoint-policy best_val_top1 --out-dir "$eval_out" --split test)
   if CUDA_VISIBLE_DEVICES="$gpu" "${eval_cmd[@]}" >"$eval_log" 2>&1 && eval_complete "$eval_out"; then
     write_status "$run_name" completed
   else
@@ -276,7 +276,7 @@ printf "%s\n" "${failed[@]}" "${eval_failed[@]}" >"${ROOT%/}/funnel_failed_runs.
 printf "%s\n" "${eval_failed[@]}" >"${ROOT%/}/funnel_eval_failed_runs.txt"
 
 if [[ "$TRAIN_ONLY" -eq 0 && "$AUTO_EVAL" -eq 1 ]]; then
-  scene31_try_summary "${ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python scripts/summarize_scene31_funnel.py --root "$ROOT" --out "${ROOT%/}/summary"
+  scene31_try_summary "${ROOT%/}/logs/summary.log" conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_summary --profile funnel --root "$ROOT" --out "${ROOT%/}/summary"
 fi
 
 echo "completed=${#completed[@]} skipped=${#skipped[@]} failed=${#failed[@]} eval_failed=${#eval_failed[@]} worker_failures=$FAILED_WORKERS"

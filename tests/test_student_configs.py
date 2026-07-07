@@ -6,21 +6,20 @@ import torch
 import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.config.canonical import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.config.canonical import (
     CANONICAL_FUSION_MODALITIES,
     build_virtual_fusion_config,
     training_overrides,
 )
-from kd_sensing.engine.run_lineage import is_historical_kd_metadata, run_lineage_metadata  # noqa: E402
-from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
-from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.models.radar import RadarFeatureExtractor  # noqa: E402
-from kd_sensing.registries import MODELS, RegistryError  # noqa: E402
+from kd_sensing.engine.run_lineage import is_historical_kd_metadata, run_lineage_metadata
+from kd_sensing.engine.model_output import adapt_model_output
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.models.radar import RadarFeatureExtractor
+from kd_sensing.registries import MODELS, RegistryError
 
-import kd_sensing.models  # noqa: E402,F401
+import kd_sensing.models  # noqa: F401
 
 
 class _TinyBackbone(nn.Module):

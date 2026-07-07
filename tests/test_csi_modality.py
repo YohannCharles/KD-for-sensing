@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -8,11 +7,10 @@ import torch
 import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.data.mmw.preparation import build_sequence_rows  # noqa: E402
-from kd_sensing.data.transform_ops.csi import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.data.mmw.preparation import build_sequence_rows
+from kd_sensing.data.transform_ops.csi import (
     CSIDegradationConfig,
     CSIRMSNormalizer,
     degrade_csi_payload,
@@ -20,13 +18,13 @@ from kd_sensing.data.transform_ops.csi import (  # noqa: E402
     read_csi_tensor,
     resolve_csi_degradation_config,
 )
-from kd_sensing.engine.batch import forward_model, prepare_csi_inputs, prepare_fusion_inputs, prepare_labels  # noqa: E402
-from kd_sensing.engine.debug_diagnostics import evaluate_pilot_noise_validity  # noqa: E402
-from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder  # noqa: E402
-from kd_sensing.models.csi_estimation import PilotCSIChannelEstimator  # noqa: E402
-from kd_sensing.models.csi_hardening import CSIHardening  # noqa: E402
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.registries import ENCODERS, import_default_components  # noqa: E402
+from kd_sensing.engine.batch import forward_model, prepare_csi_inputs, prepare_fusion_inputs, prepare_labels
+from kd_sensing.engine.debug_diagnostics import evaluate_pilot_noise_validity
+from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder
+from kd_sensing.models.csi_estimation import PilotCSIChannelEstimator
+from kd_sensing.models.csi_hardening import CSIHardening
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.registries import ENCODERS, import_default_components
 
 
 def test_csi_loader_accepts_complex_and_real_imag_and_rejects_bad_values(tmp_path: Path):

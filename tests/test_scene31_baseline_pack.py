@@ -6,14 +6,15 @@ import torch
 import torch.nn as nn
 import yaml
 
-from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
+from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
+from kd_sensing.data.difficulty.schema import DifficultyContext
+from kd_sensing.diagnostics.scene31_summary import baseline_pack as summarize_baseline_pack
+from kd_sensing.diagnostics.scene31_summary import subset_reference as summarize_subset_reference
 from kd_sensing.models.modular import AmrLiteMaskedGateCore, FeatureModLiteCore, ModularSequenceModel
 from kd_sensing.registries import ENCODERS
 
 import scripts.generate_scene31_baseline_pack as generate_baseline_pack
 import scripts.generate_scene31_subset_reliability as generate_subset_reliability
-import scripts.summarize_scene31_baseline_pack as summarize_baseline_pack
-import scripts.summarize_scene31_subset_reference as summarize_subset_reference
 
 
 @ENCODERS.register("baseline_pack_identity", force=True)

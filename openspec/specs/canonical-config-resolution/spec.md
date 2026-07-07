@@ -435,7 +435,7 @@ canonical 配置 MUST 使用可预测的实验名和 run name。默认路径 MUS
 - **AND** 错误信息 MUST 指向当前配置入口
 
 ### Requirement: Config surface distinguishes canonical, recipe, generated, and local/manual
-配置生命周期 MUST 区分 canonical/current entity YAML、virtual config、recipe/generated config、experiment reproduction/local manual overlay、diagnostics manifest 和 retired config。可生成或本地队列型配置 SHOULD 通过 recipe/manifest/generator 表达；tracked entity YAML MUST 有 current 入口、复现实验、diagnostics manifest 或 local/manual 登记理由。
+配置生命周期 MUST 区分 canonical/current entity YAML、virtual config、recipe/generated config、experiment reproduction/local manual overlay、claim/evidence input、diagnostics manifest、focused test fixture 和 retired config。可生成或本地队列型配置 SHOULD 通过 recipe/manifest/generator 表达；tracked entity YAML MUST 有 current 入口、复现实验、claim/evidence 输入、diagnostics manifest、focused test fixture 或 local/manual 登记理由。
 
 #### Scenario: 生成型配置不无限实体化
 - **WHEN** 新增 Scene31 seed sweep、night-grid、next-round、ablation matrix 或其它规则化配置族
@@ -464,7 +464,7 @@ Recipe/generated config MUST 生成与等价实体 YAML 相同的 resolved confi
 - **AND** 配置加载器 MUST 继续拒绝 retired config path，不能把旧路径静默映射到新 recipe
 
 ### Requirement: Generated experiment config families do not require entity YAML
-规则化实验矩阵、seed sweep、night-grid、next-round queue 或本地 GPU 队列配置 MUST 优先由 base config、manifest 和 generator 表达。若实体 YAML 可由 generator 无损重建且不属于 canonical/current、paper/workflow reproduction 或 diagnostics manifest，它 MUST 从长期源码表面删除。
+规则化实验矩阵、seed sweep、night-grid、next-round queue 或本地 GPU 队列配置 MUST 优先由 base config、manifest 和 generator 表达。若实体 YAML 可由 generator 无损重建且不属于 canonical/current、paper/workflow reproduction、claim/evidence input、diagnostics manifest 或 focused test fixture，它 MUST 从长期源码表面删除。
 
 #### Scenario: Removable generated YAML
 - **WHEN** generator 能重建实体 YAML 的 run name、seed、epoch、sampler、loss weights、missing pattern、dataset split、output boundary 和 critical overrides
@@ -504,4 +504,3 @@ Canonical config 重构 MUST 将 virtual recipe generation、overlay resolution�
 - **WHEN** config doctor 发现多个实体 YAML 可由同一 recipe 无损生成
 - **THEN** doctor MUST 将其标记为 recipe migration candidate
 - **AND** 只有在保留 experiment name、objective、dataset split、model/loss/training/output/checkpoint 语义和 focused tests 后，后续 change 才能删除实体 YAML
-

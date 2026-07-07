@@ -1,9 +1,4 @@
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.evaluation.subset_specs import (  # noqa: E402
+from kd_sensing.evaluation.subset_specs import (
     generic_modality_subset_specs,
     resolve_named_modality_subset,
     subset_mask,

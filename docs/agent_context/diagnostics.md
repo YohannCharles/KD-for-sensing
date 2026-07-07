@@ -15,7 +15,7 @@
 
 - Diagnostics package：`src/kd_sensing/diagnostics/`
 - CLI glue：`src/kd_sensing/cli/`
-- 本地分析脚本：`scripts/analysis/`、`scripts/mmw/`
+- 本地分析脚本：保留的 `scripts/`/`scripts/mmw/` research diagnostics；旧 `scripts/analysis/*.py` 一次性报告入口已删除，必要时使用 package diagnostics 或显式本地分析。
 - Paper/claim artifacts：`docs/result_claims_registry.md`、`outputs/paper_artifacts/`
 
 ## 边界

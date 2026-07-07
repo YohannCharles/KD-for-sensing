@@ -90,7 +90,7 @@ def materialize_mmw_radar_split_csv(
     if not source.exists():
         raise FileNotFoundError(
             f"MMW split CSV is missing: {source}. Prepare sequence splits with "
-            "conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.py."
+            "conda run -n kd_mm_beam kd-sensing-preprocess --action mmw_sequence_splits_from_manifest."
         )
     target = Path(output_path) if output_path is not None else source.with_name(f"{source.stem}_with_radar{source.suffix}")
     if not target.is_absolute():

@@ -6,10 +6,13 @@ from typing import Any
 from kd_sensing.config.io import deep_merge, parse_overrides
 from kd_sensing.config.parsing import safe_load_yaml
 from kd_sensing.engine.mmw_town_gps_v2 import run_mmw_town_gps_v2
+from kd_sensing.cli.compare_mmw_town_gps_v2 import compare_results
+from kd_sensing.cli.plot_mmw_town_gps_v2 import plot_results
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run MMW Town GPS-only v2 circular scene adapter experiments.")
+    parser.add_argument("--mode", choices=("run", "plot", "compare"), default="run")
     parser.add_argument("--config", "-c", default="configs/mmw_town_gps_adapter_v2.yaml")
     parser.add_argument("--label-space", choices=("mapping_enabled", "mapping_disabled"), default=None)
     parser.add_argument("--target-scene", default=None, help="Scene name or slug; comma-separated values are accepted.")
@@ -19,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--save-logits", action="store_true", help="Write gps_logits.npy and gps_logits_index.csv.")
     parser.add_argument("--save-prior-probs", action="store_true", help="Also write gps_prior_probs.npy when logits are saved.")
+    parser.add_argument("--results-dir", help="Result directory for --mode plot.")
+    parser.add_argument("--previous-dir", help="Previous diagnostics directory for --mode compare.")
+    parser.add_argument("--new-dir", help="New MMW Town GPS v2 result directory for --mode compare.")
     parser.add_argument(
         "--override",
         "-o",
@@ -38,6 +44,14 @@ def main(argv: list[str] | None = None) -> int:
 def run_main(argv: list[str] | None = None) -> dict[str, Any]:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
+    if args.mode == "plot":
+        if not args.results_dir:
+            parser.error("--mode plot requires --results-dir.")
+        return plot_results(Path(args.results_dir), output_dir=args.output_dir)
+    if args.mode == "compare":
+        if not args.previous_dir or not args.new_dir:
+            parser.error("--mode compare requires --previous-dir and --new-dir.")
+        return compare_results(Path(args.previous_dir), Path(args.new_dir), output_dir=args.output_dir)
     overrides = list(args.override or []) + [item for item in unknown if "=" in item]
     cfg = _load_config(args.config, overrides)
     return run_mmw_town_gps_v2(

@@ -11,7 +11,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from reevaluate_apples_to_apples import DEFAULT_PATTERNS, _canonical_patterns, _evaluate_run
+from kd_sensing.diagnostics.apples_to_apples_evaluation import DEFAULT_PATTERNS, _canonical_patterns, _evaluate_run
 
 
 def main() -> int:

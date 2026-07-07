@@ -1,4 +1,3 @@
-import sys
 from itertools import combinations
 from pathlib import Path
 
@@ -7,10 +6,9 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.data.transform_ops.mmwave import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.data.transform_ops.mmwave import (
     MmWaveStandardScaler,
     build_mmwave_db_features,
     fit_occlusion_threshold_from_paths,
@@ -18,19 +16,19 @@ from kd_sensing.data.transform_ops.mmwave import (  # noqa: E402
     max_mmwave_power,
     read_mmwave_power_vector,
 )
-from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_mmwave_inputs  # noqa: E402
-from kd_sensing.engine.evaluator import evaluate  # noqa: E402
-from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts  # noqa: E402
-from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.models.mmwave import (  # noqa: E402
+from kd_sensing.engine.batch import forward_model, prepare_fusion_inputs, prepare_mmwave_inputs
+from kd_sensing.engine.evaluator import evaluate
+from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
+from kd_sensing.engine.trainer import train
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet
+from kd_sensing.models.mmwave import (
     MmWaveFeatureExtractor,
 )
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.registries import MODELS  # noqa: E402
-from kd_sensing.utils.artifact_registry import archive_best_checkpoint  # noqa: E402
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.registries import MODELS
+from kd_sensing.utils.artifact_registry import archive_best_checkpoint
 
-import kd_sensing.models  # noqa: E402,F401
+import kd_sensing.models  # noqa: F401
 
 
 MMWAVE_CONFIGS = [

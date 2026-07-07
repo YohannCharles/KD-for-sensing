@@ -1,13 +1,13 @@
 import csv
 from pathlib import Path
 
-import scripts.export_pattern_heatmap as heatmap
-import scripts.plot_error_cdf as error_cdf
-import scripts.export_scene31_34_presentation_artifacts as presentation
-import scripts.profile_scenes31_34_methods as profile
-import scripts.significance_tests as significance
-import scripts.summarize_sampling_distribution as sampling
-import scripts.update_final_paper_tables as final_tables
+from kd_sensing.diagnostics.scene31_34_final_analysis import error_cdf
+from kd_sensing.diagnostics.scene31_34_final_analysis import final_paper_tables as final_tables
+from kd_sensing.diagnostics.scene31_34_final_analysis import pattern_heatmap as heatmap
+from kd_sensing.diagnostics.scene31_34_final_analysis import presentation_artifacts as presentation
+from kd_sensing.diagnostics.scene31_34_final_analysis import profile
+from kd_sensing.diagnostics.scene31_34_final_analysis import sampling_distribution as sampling
+from kd_sensing.diagnostics.scene31_34_final_analysis import significance
 
 
 SUBSET = "scenes31_34_proto_randomdrop_subset_es40"

@@ -1,23 +1,7 @@
-import argparse
 import csv
 import json
 from pathlib import Path
 from typing import Any
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Compare MMW Town GPS-only v2 results with previous diagnostics.")
-    parser.add_argument("--previous-dir", required=True, help="Previous diagnostics or GPS coarse anchor result directory.")
-    parser.add_argument("--new-dir", required=True, help="New v2 results directory.")
-    parser.add_argument("--output-dir", default=None, help="Output directory; defaults to <new-dir>.")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    result = compare_results(Path(args.previous_dir), Path(args.new_dir), output_dir=args.output_dir)
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
 
 
 def compare_results(previous_dir: Path, new_dir: Path, *, output_dir: str | Path | None = None) -> dict[str, Any]:
@@ -173,7 +157,3 @@ def _format_delta(value: Any) -> str:
         return f"{float(value):.4f}"
     except (TypeError, ValueError):
         return "unavailable"
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

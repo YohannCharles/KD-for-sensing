@@ -20,9 +20,14 @@ from kd_sensing.engine.training_state import (
     validate_early_stopping_source_available as _validate_early_stopping_source_available,
 )
 from kd_sensing.engine.validator import validate
-from kd_sensing.eval.export import format_results_markdown, save_results_csv, save_results_json, save_results_markdown
 from kd_sensing.eval.missing_patterns import resolve_missing_patterns
-from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
+    evaluate_missing_matrix,
+    format_results_markdown,
+    save_results_csv,
+    save_results_json,
+    save_results_markdown,
+)
 from kd_sensing.evaluation.lidar_diagnostics import LidarQualityAccumulator
 from kd_sensing.utils.artifact_registry import sanitize_slug
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state

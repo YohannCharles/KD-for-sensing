@@ -15,9 +15,9 @@ import torch
 
 from kd_sensing.config.io import load_config
 from kd_sensing.config.parsing import safe_load_yaml
-from kd_sensing.data.difficulty import (
+from kd_sensing.data.difficulty.pipeline import apply_difficulty_pipeline
+from kd_sensing.data.difficulty.schema import (
     DifficultyContext,
-    apply_difficulty_pipeline,
     normalize_difficulty_profiles,
 )
 from kd_sensing.data.difficulty.presets import (
@@ -60,6 +60,7 @@ from kd_sensing.diagnostics.jepa_benchmark_sources import (
 )
 from kd_sensing.diagnostics.jepa_benchmark_suite_dispatch import write_core_benchmark_tables
 from kd_sensing.diagnostics.jepa_benchmark_predictive_artifacts import write_predictive_and_fusion_artifacts
+from kd_sensing.diagnostics.predictive_gps_query_visualizations import run_predictive_gps_query_visualizations
 from kd_sensing.diagnostics.jepa_benchmark_real_forward import (
     PERTURBATION_CACHE_SCHEMA_VERSION,
     iter_perturbation_cache as _iter_perturbation_cache,
@@ -189,6 +190,8 @@ def run_jepa_gps_shortcut_benchmark(
     force: bool = False,
     dry_run: bool = False,
     command: list[str] | None = None,
+    predictive_explanatory_visualizations: bool = False,
+    predictive_explanatory_output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     manifest = load_benchmark_manifest(manifest_path, validate_paths=not dry_run)
     out = _resolve_output_dir(output_dir or manifest.get("outputs", {}).get("output_dir") or DEFAULT_OUTPUT_DIR)
@@ -296,6 +299,13 @@ def run_jepa_gps_shortcut_benchmark(
         json.dumps(_json_ready(resolved_manifest), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    explanatory_visualizations: dict[str, Any] = {}
+    if predictive_explanatory_visualizations:
+        explanatory_visualizations = run_predictive_gps_query_visualizations(
+            manifest_path=manifest_path_out,
+            output_dir=predictive_explanatory_output_dir or (out / "predictive_explanatory_visualizations"),
+            force=force,
+        )
     return {
         "output_dir": str(out),
         "manifest": str(manifest_path_out),
@@ -320,6 +330,8 @@ def run_jepa_gps_shortcut_benchmark(
         "geometry_prior_strict_comparison": str(geometry_prior_paths.get("strict_comparison", "")),
         "geometry_prior_claim_gate": str(geometry_prior_paths.get("claim_gate", "")),
         "geometry_prior_diagnostics_bundle_manifest": str(geometry_prior_paths.get("diagnostics_bundle", "")),
+        "predictive_explanatory_visualizations_manifest": str(explanatory_visualizations.get("manifest", "")),
+        "predictive_explanatory_visualizations_output_dir": str(explanatory_visualizations.get("output_dir", "")),
         **cxd_artifacts,
         "models": sorted(manifest["models"]),
         "warnings": warnings,

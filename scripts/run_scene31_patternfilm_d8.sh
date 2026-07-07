@@ -251,7 +251,7 @@ run_eval() {
   fi
   echo "[GPU ${gpu:-none}] [EVAL] $run_name from $source_root"
   eval_cmd=(
-    conda run -n kd_mm_beam python scripts/reevaluate_apples_to_apples.py
+    conda run -n kd_mm_beam python -m kd_sensing.diagnostics.apples_to_apples_evaluation
     --root "$source_root"
     --runs "$run_name"
     --checkpoint-policy best_val_top1

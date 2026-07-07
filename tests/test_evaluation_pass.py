@@ -1,13 +1,8 @@
-import sys
-from pathlib import Path
-
 import pytest
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.engine.evaluation_pass import run_evaluation_pass  # noqa: E402
-from kd_sensing.engine.validator import validate  # noqa: E402
+from kd_sensing.engine.evaluation_pass import run_evaluation_pass
+from kd_sensing.engine.validator import validate
 
 
 class _MaskAwareFusionModel(torch.nn.Module):

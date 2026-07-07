@@ -2,7 +2,8 @@ from typing import Any, Mapping
 
 import torch
 
-from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
+from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
+from kd_sensing.data.difficulty.schema import DifficultyContext
 from kd_sensing.engine.runtime import prepare_task_batch
 
 

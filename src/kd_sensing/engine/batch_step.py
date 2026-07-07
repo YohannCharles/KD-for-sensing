@@ -6,7 +6,8 @@ from typing import Any
 
 import torch
 
-from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
+from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
+from kd_sensing.data.difficulty.schema import DifficultyContext
 from kd_sensing.data.missing_mask import get_missing_pattern_name
 from kd_sensing.engine.debug_diagnostics import set_csi_debug_batch_source
 from kd_sensing.engine.objectives.metadata import resolve_prediction_objective

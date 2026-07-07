@@ -1,17 +1,12 @@
-import sys
-from pathlib import Path
-
 import pytest
 import torch
 import torch.nn as nn
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.models.geometry_prior import GpsGeometryPriorBranch, SafeResidualBeamReranker  # noqa: E402
-from kd_sensing.models.modular import FeatureConsistencyGateCore, ModularSequenceModel, NextBeamQueryTransformerCore  # noqa: E402
-from kd_sensing.modalities import MODALITY_ORDER  # noqa: E402
-from kd_sensing.engine.model_output import adapt_model_output  # noqa: E402
-from kd_sensing.registries import ENCODERS, HEADS, PROJECTORS, REPRESENTATION_CORES  # noqa: E402
+from kd_sensing.models.geometry_prior import GpsGeometryPriorBranch, SafeResidualBeamReranker
+from kd_sensing.models.modular import FeatureConsistencyGateCore, ModularSequenceModel, NextBeamQueryTransformerCore
+from kd_sensing.modalities import MODALITY_ORDER
+from kd_sensing.engine.model_output import adapt_model_output
+from kd_sensing.registries import ENCODERS, HEADS, PROJECTORS, REPRESENTATION_CORES
 
 
 @ENCODERS.register("next_query_test_identity", force=True)

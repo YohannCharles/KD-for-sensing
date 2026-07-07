@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 import kd_sensing.diagnostics.project_surface_doctor as doctor
+from kd_sensing.cli.project_surface_doctor import build_parser as build_project_surface_doctor_parser
 from kd_sensing.diagnostics.project_surface_doctor import (
     build_project_surface_report,
     doctor_should_fail,
@@ -38,10 +39,26 @@ def test_project_surface_doctor_json_and_markdown_rendering():
 
     parsed = json.loads(render_project_surface_report(report, format="json"))
     markdown = render_project_surface_report(report, format="markdown")
+    full_json = json.loads(render_project_surface_report(report, format="json", dump_inventory=True))
+    full_markdown = render_project_surface_report(report, format="markdown", dump_inventory=True)
 
-    assert parsed["sections"]["configs"]["tracked_count"] == report["sections"]["configs"]["tracked_count"]
+    assert "sections" not in parsed
+    assert parsed["inventory_omitted"] is True
     assert "# Project Surface Doctor" in markdown
-    assert "## Configs" in markdown
+    assert "## Configs" not in markdown
+    assert "## Next Action" in markdown
+    assert full_json["sections"]["configs"]["tracked_count"] == report["sections"]["configs"]["tracked_count"]
+    assert full_json["inventory_omitted"] is False
+    assert "## Configs" in full_markdown
+
+
+def test_project_surface_doctor_cli_requires_explicit_inventory_dump():
+    parser = build_project_surface_doctor_parser()
+    default_args = parser.parse_args([])
+    dump_args = parser.parse_args(["--dump-inventory"])
+
+    assert default_args.dump_inventory is False
+    assert dump_args.dump_inventory is True
 
 
 def test_project_surface_doctor_classifies_shrunk_experiment_config_families():

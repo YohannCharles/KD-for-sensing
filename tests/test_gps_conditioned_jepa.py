@@ -1,5 +1,4 @@
 import copy
-import sys
 from pathlib import Path
 
 import pytest
@@ -7,20 +6,19 @@ import torch
 import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
-from kd_sensing.engine.data_factory import build_dataloaders  # noqa: E402
-from kd_sensing.engine.trainer import train  # noqa: E402
-from kd_sensing.engine.validator import validate  # noqa: E402
-from kd_sensing.losses.jepa import jepa_latent_prediction_loss  # noqa: E402
-from kd_sensing.models.jepa import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.engine.artifacts import final_config_with_runtime
+from kd_sensing.engine.data_factory import build_dataloaders
+from kd_sensing.engine.trainer import train
+from kd_sensing.engine.validator import validate
+from kd_sensing.losses.jepa import jepa_latent_prediction_loss
+from kd_sensing.models.jepa import (
     GPSQueryPool,
     JepaContextImageEncoder,
     JepaMaskSampler,
     build_visual_token_encoder,
 )
-from kd_sensing.models.jepa_downstream import (  # noqa: E402
+from kd_sensing.models.jepa_downstream import (
     HybridResidualQueryPool,
     IdentityJepaAdapter,
     LearnedQueryPool,
@@ -30,7 +28,7 @@ from kd_sensing.models.jepa_downstream import (  # noqa: E402
     build_jepa_downstream_adapter,
     build_jepa_downstream_pooler,
 )
-from kd_sensing.registries import ENCODERS, MODELS, RegistryError, import_default_components  # noqa: E402
+from kd_sensing.registries import ENCODERS, MODELS, RegistryError, import_default_components
 
 GPS_QUERY_DOWNSTREAM_CONFIGS = {
     "fair_gps_query_pooling": ROOT

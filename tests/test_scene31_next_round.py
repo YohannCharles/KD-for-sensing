@@ -9,6 +9,11 @@ import pytest
 import yaml
 
 from kd_sensing.config.io import load_config
+from kd_sensing.diagnostics import apples_to_apples_evaluation as reevaluate
+from kd_sensing.diagnostics.scene31_summary import bc_next as summarize_bc_next
+from kd_sensing.diagnostics.scene31_summary import funnel as summarize_funnel
+from kd_sensing.diagnostics.scene31_summary import next_round as summarize_next_round
+from kd_sensing.diagnostics.scene31_summary import p0_fresh_eval as summarize_p0_fresh_eval
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -481,7 +486,6 @@ def test_scene31_runner_common_checks_manifest_train_and_eval(tmp_path):
 
 
 def test_scene31_apples_eval_expands_avg_missing_to_miss2_rows():
-    reevaluate = _load_script("reevaluate_apples_to_apples", ROOT / "scripts/reevaluate_apples_to_apples.py")
     requested = ["full", "avg_missing"]
     names = reevaluate._evaluation_pattern_names(requested, ["image", "radar", "lidar", "gps"])
     output_names = reevaluate._output_pattern_names(requested, names)
@@ -520,7 +524,7 @@ def test_scene31_missing_bucket_mapping_records_missing_modalities():
 
 
 def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
-    summary = _load_script("summarize_scene31_next_round", ROOT / "scripts/summarize_scene31_next_round.py")
+    summary = summarize_next_round
     metrics = tmp_path / "night_grid_metrics.csv"
     manifest = tmp_path / "manifest.csv"
     out_dir = tmp_path / "summary"
@@ -586,7 +590,7 @@ def test_scene31_next_round_summary_outputs_delta_and_filtered_tables(tmp_path):
 
 
 def test_scene31_p0_fresh_summary_uses_avg_missing_primary_sort(tmp_path):
-    summary = _load_script("summarize_scene31_p0_fresh_eval", ROOT / "scripts/summarize_scene31_p0_fresh_eval.py")
+    summary = summarize_p0_fresh_eval
     metrics = tmp_path / "p0_metrics.csv"
     manifest = tmp_path / "manifest.csv"
     out_dir = tmp_path / "p0_summary"
@@ -663,7 +667,7 @@ def test_scene31_p0_fresh_summary_uses_avg_missing_primary_sort(tmp_path):
 
 
 def test_scene31_bc_summary_outputs_uniform_delta_and_optional_metrics(tmp_path):
-    summary = _load_script("summarize_scene31_bc_next", ROOT / "scripts/summarize_scene31_bc_next.py")
+    summary = summarize_bc_next
     metrics = tmp_path / "bc_metrics.csv"
     manifest = tmp_path / "manifest.csv"
     out_dir = tmp_path / "bc_summary"
@@ -756,7 +760,7 @@ def test_scene31_bc_summary_outputs_uniform_delta_and_optional_metrics(tmp_path)
 
 
 def test_scene31_bc_summary_warns_for_empty_missing_bucket(tmp_path):
-    summary = _load_script("summarize_scene31_bc_next", ROOT / "scripts/summarize_scene31_bc_next.py")
+    summary = summarize_bc_next
     metrics = tmp_path / "metrics.csv"
     out_dir = tmp_path / "summary"
     _write_csv(
@@ -816,7 +820,7 @@ def test_scene31_missing_aware_checkpoint_selection_outputs_links_and_scores(tmp
 
 
 def test_scene31_funnel_summary_writes_required_outputs_and_promotion_labels(tmp_path):
-    summary = _load_script("summarize_scene31_funnel", ROOT / "scripts/summarize_scene31_funnel.py")
+    summary = summarize_funnel
     root = tmp_path / "funnel_root"
     out_dir = tmp_path / "summary"
     metrics = tmp_path / "metrics.csv"
@@ -870,8 +874,8 @@ def test_scene31_funnel_summary_writes_required_outputs_and_promotion_labels(tmp
     assert "proto_uniform_pattern_logit_bias" in conclusion
 
 
-def test_scene31_beamsoft_weak_summary_wrapper_writes_standard_names(tmp_path):
-    summary = _load_script("summarize_scene31_beamsoft_weak", ROOT / "scripts/summarize_scene31_beamsoft_weak.py")
+def test_scene31_beamsoft_weak_summary_uses_canonical_bc_summary(tmp_path):
+    summary = summarize_bc_next
     metrics = tmp_path / "metrics.csv"
     out_dir = tmp_path / "summary"
     rows = []
@@ -900,7 +904,25 @@ def test_scene31_beamsoft_weak_summary_wrapper_writes_standard_names(tmp_path):
             )
     _write_csv(metrics, ["run_name", "pattern", "top1", "top3", "top5", "within_3", "mae", "status"], rows)
 
-    assert summary.main(["--metrics", str(metrics), "--bc-root", str(tmp_path / "empty_bc"), "--weak-root", str(tmp_path / "empty_weak"), "--uniform-root", str(tmp_path / "empty_uniform"), "--out", str(out_dir)]) == 0
+    assert (
+        summary.main(
+            [
+                "--metrics",
+                str(metrics),
+                "--root",
+                str(tmp_path / "empty_bc"),
+                "--root",
+                str(tmp_path / "empty_weak"),
+                "--root",
+                str(tmp_path / "empty_uniform"),
+                "--name-prefix",
+                "",
+                "--out",
+                str(out_dir),
+            ]
+        )
+        == 0
+    )
 
     assert (out_dir / "per_run.csv").exists()
     assert (out_dir / "method_mean_std.csv").exists()
@@ -927,7 +949,7 @@ def test_scene31_bc_launcher_help_and_syntax():
 
 
 def test_scene31_next_round_balanced_formula_matches_existing_analyzer():
-    summary = _load_script("summarize_scene31_next_round", ROOT / "scripts/summarize_scene31_next_round.py")
+    summary = summarize_next_round
     analyzer = _load_script("analyze_night_grid", ROOT / "scripts/analyze_night_grid.py")
     row = {
         "full": 0.4100,

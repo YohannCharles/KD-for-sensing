@@ -1,9 +1,7 @@
-import sys
-from pathlib import Path
+import json
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.engine.throughput_recommendations import recommend_parallel_training  # noqa: E402
+from kd_sensing.cli import training_throughput as throughput_cli
+from kd_sensing.engine.throughput_recommendations import recommend_parallel_training
 
 
 def test_lidar_parallel_recommendation_uses_generic_cache_policy():
@@ -63,3 +61,76 @@ def test_mmw_image_heavy_recommendation_is_memory_aware():
     assert "training.amp.enabled=true" in result["optional_overrides"]
     assert "AMP does not reduce PNG decode" in mmw["amp_limit"]
     assert "cap_train_num_workers" in mmw["actions"]
+
+
+def test_training_throughput_cli_routes_profile_and_recommend_modes(tmp_path, monkeypatch):
+    profile_calls = {}
+    recommend_calls = {}
+
+    def fake_profile_training_io(**kwargs):
+        profile_calls.update(kwargs)
+        return {"mode": "profile", "config": str(kwargs["config_path"])}
+
+    def fake_load_config(path, overrides):
+        return {"path": str(path), "overrides": list(overrides)}
+
+    def fake_recommend_parallel_training(cfg, **kwargs):
+        recommend_calls["cfg"] = cfg
+        recommend_calls.update(kwargs)
+        return {"mode": "recommend", "overrides": ["output.progress.enabled=false"]}
+
+    monkeypatch.setattr(throughput_cli, "profile_training_io", fake_profile_training_io)
+    monkeypatch.setattr(throughput_cli, "load_config", fake_load_config)
+    monkeypatch.setattr(throughput_cli, "recommend_parallel_training", fake_recommend_parallel_training)
+
+    profile = throughput_cli.run(
+        [
+            "--mode",
+            "profile",
+            "--config",
+            "configs/image/lightweight.yaml",
+            "--split",
+            "test",
+            "--samples",
+            "2",
+            "--warmup",
+            "0",
+            "--device",
+            "cpu",
+            "--csv-output",
+            str(tmp_path / "profile.csv"),
+            "-o",
+            "data.dataset.length=1",
+        ]
+    )
+    profile_json = tmp_path / "profile.json"
+    profile_json.write_text(json.dumps({"io_risk": {"loader_wait_dominates_step": True}}), encoding="utf-8")
+    output_json = tmp_path / "recommend.json"
+    recommend = throughput_cli.run(
+        [
+            "--mode",
+            "recommend",
+            "--config",
+            "configs/fusion/image_gps_supervised.yaml",
+            "--parallel-runs",
+            "2",
+            "--cpu-count",
+            "8",
+            "--profile-json",
+            str(profile_json),
+            "--output",
+            str(output_json),
+            "-o",
+            "data.cache.policy=auto",
+        ]
+    )
+
+    assert profile == {"mode": "profile", "config": "configs/image/lightweight.yaml"}
+    assert profile_calls["split"] == "test"
+    assert profile_calls["device_override"] == "cpu"
+    assert profile_calls["overrides"] == ["data.dataset.length=1"]
+    assert recommend == {"mode": "recommend", "overrides": ["output.progress.enabled=false"]}
+    assert recommend_calls["cfg"]["overrides"] == ["data.cache.policy=auto"]
+    assert recommend_calls["parallel_runs"] == 2
+    assert recommend_calls["profile"]["io_risk"]["loader_wait_dominates_step"] is True
+    assert json.loads(output_json.read_text(encoding="utf-8"))["mode"] == "recommend"

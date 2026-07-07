@@ -216,7 +216,7 @@ P0 训练完成后，完整 fresh eval 与新主指标汇总使用：
 
 ```bash
 bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus 4,5,6,7
-conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py \
+conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_summary --profile p0-fresh-eval \
   --root outputs/scene31_next_round \
   --out outputs/scene31_next_round/p0_fresh_summary
 ```
@@ -230,12 +230,13 @@ conda run -n kd_mm_beam python scripts/diagnose_modular_missing_mask.py \
   --root outputs/scene31_baseline_pack_lmdb \
   --runs amr_lite_natural_es40,amber_lite_natural_es40
 
-bash scripts/run_scene31_baseline_pack_maskfix_eval.sh \
-  --root outputs/scene31_baseline_pack_lmdb \
+bash scripts/run_scene31_subset_reliability.sh \
+  --group eval_modular_lite_maskfix \
+  --baseline-root outputs/scene31_baseline_pack_lmdb \
   --gpus 5,6,7 \
   --max-parallel 6
 
-conda run -n kd_mm_beam python scripts/summarize_scene31_subset_reference.py \
+conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_summary --profile subset-reference \
   --baseline-root outputs/scene31_baseline_pack_lmdb \
   --out outputs/scene31_baseline_pack_lmdb/subset_reference_summary
 ```
@@ -261,7 +262,7 @@ bash scripts/run_scene31_subset_reliability.sh \
   --max-parallel 6 \
   --auto-eval
 
-conda run -n kd_mm_beam python scripts/summarize_scene31_subset_reliability.py \
+conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_summary --profile subset-reliability \
   --baseline-root outputs/scene31_baseline_pack_lmdb \
   --new-root outputs/scene31_subset_reliability_lmdb \
   --out outputs/scene31_subset_reliability_lmdb/summary
@@ -440,8 +441,8 @@ MMW GPS v2:
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --config configs/mmw_town_gps_adapter_v2.yaml --label-space mapping_enabled --save-logits --save-prior-probs
-conda run -n kd_mm_beam kd-sensing-plot-mmw-town-gps-v2 --results-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
-conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 --previous-dir outputs/analysis/mmw_town_label_distribution --new-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
+conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --mode plot --results-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
+conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --mode compare --previous-dir outputs/analysis/mmw_town_label_distribution --new-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
 ```
 
 Physics-informed MMW baseline uses the same training entry and a package inspection command:

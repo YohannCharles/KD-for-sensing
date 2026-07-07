@@ -1,12 +1,10 @@
-import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.engine.objectives.metadata import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.engine.objectives.metadata import (
     normalize_objective_metric,
     objective_available_metrics,
     objective_runtime_metadata,

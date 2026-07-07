@@ -1,14 +1,9 @@
-import sys
-from pathlib import Path
-
 import pytest
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
-from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet  # noqa: E402
-from kd_sensing.registries import MODELS  # noqa: E402
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
+from kd_sensing.models.fusion.cls_token_transformer import CLSTokenTransformerFusionNet
+from kd_sensing.registries import MODELS
 
 
 def test_cls_token_transformer_five_modality_forward_shapes_and_diagnostics():

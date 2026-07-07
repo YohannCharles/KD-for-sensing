@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 import pytest
@@ -6,10 +5,9 @@ import torch
 import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.engine.model_output import ModelOutput  # noqa: E402
-from kd_sensing.engine.prediction_objectives import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.engine.model_output import ModelOutput
+from kd_sensing.engine.prediction_objectives import (
     PredictionTargets,
     build_dba_aware_soft_targets,
     compute_prediction_loss,
@@ -23,9 +21,9 @@ from kd_sensing.engine.prediction_objectives import (  # noqa: E402
     objective_tensorboard_scalars,
     resolve_prediction_objective,
 )
-from kd_sensing.engine.teacher_guidance import TeacherGuidanceTrainingExtension  # noqa: E402
-from kd_sensing.engine.training_extensions import BatchState, ExtensionContext, ForwardControls  # noqa: E402
-from kd_sensing.engine.trainer import train  # noqa: E402
+from kd_sensing.engine.teacher_guidance import TeacherGuidanceTrainingExtension
+from kd_sensing.engine.training_extensions import BatchState, ExtensionContext, ForwardControls
+from kd_sensing.engine.trainer import train
 
 
 def test_objective_config_defaults_validation_and_primary_model_autoconfiguration():

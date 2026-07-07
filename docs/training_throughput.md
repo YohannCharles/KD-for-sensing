@@ -7,27 +7,27 @@
 所有命令都使用 `kd_mm_beam` 环境。建议先用小样本 profile，确认瓶颈在哪个阶段，再决定是否调 worker、cache 或 batch size。
 
 ```bash
-conda run -n kd_mm_beam python scripts/profile_training_io.py \
+conda run -n kd_mm_beam kd-sensing-training-throughput --mode profile \
   --config configs/image/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/image_io.json
 
-conda run -n kd_mm_beam python scripts/profile_training_io.py \
+conda run -n kd_mm_beam kd-sensing-training-throughput --mode profile \
   --config configs/radar/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/radar_io.json
 
-conda run -n kd_mm_beam python scripts/profile_training_io.py \
+conda run -n kd_mm_beam kd-sensing-training-throughput --mode profile \
   --config configs/gps/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/gps_io.json
 
-conda run -n kd_mm_beam python scripts/profile_training_io.py \
+conda run -n kd_mm_beam kd-sensing-training-throughput --mode profile \
   --config configs/lidar/lightweight.yaml \
   --samples 32 \
   --output outputs/profile/lidar_io.json
 
-conda run -n kd_mm_beam python scripts/profile_training_io.py \
+conda run -n kd_mm_beam kd-sensing-training-throughput --mode profile \
   --config configs/fusion/image_radar_gps_lidar_lightweight.yaml \
   --samples 32 \
   --output outputs/profile/fusion_all_io.json \
@@ -77,7 +77,7 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/image_radar_gps
 四任务并行时不要让每个训练进程同时写同一批 LiDAR BEV cache。先用推荐器检查覆盖率：
 
 ```bash
-conda run -n kd_mm_beam python scripts/recommend_parallel_training.py \
+conda run -n kd_mm_beam kd-sensing-training-throughput --mode recommend \
   --config configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml \
   --parallel-runs 4 \
   --cpu-count 32
@@ -169,7 +169,7 @@ seed、轮换设置以及是否退化为完整 epoch。
 
 ## GPU 低利用率排查顺序
 
-1. 先跑 `scripts/profile_training_io.py`，看 `wait_vs_gpu_step.p95_spikes` 和 `phase_ratios.wait`。
+1. 先跑 `kd-sensing-training-throughput --mode profile`，看 `wait_vs_gpu_step.p95_spikes` 和 `phase_ratios.wait`。
 2. 如果 wait 明显高于 forward/backward，检查 `getitem_component_seconds` 中最重的模态。
 3. LiDAR 重时先看推荐器的 cache 覆盖率，必要时预热 cache，再复测。
 4. 四实验并行时先限制 train/test worker 和 prefetch，并关闭 batch progress。

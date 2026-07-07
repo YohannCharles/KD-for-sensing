@@ -237,7 +237,7 @@
 系统 MUST 提供只读 apples-to-apples 复评入口，用同一个 checkpoint 加载、missing pattern 构造、evaluation pass 和指标计算逻辑复评指定 run。复评入口 MUST 支持 `best_val_top1`、`latest`、`best_avg_missing_top1` 和 `manual_path` checkpoint 选择策略，并 MUST 输出 metrics CSV、Markdown、delta CSV 和 checkpoint manifest。
 
 #### Scenario: 复评指定 runs
-- **WHEN** 用户运行 `scripts/reevaluate_apples_to_apples.py` 并传入 root、runs、eval patterns、checkpoint policy 和 out_dir
+- **WHEN** 用户运行 `python -m kd_sensing.diagnostics.apples_to_apples_evaluation` 并传入 root、runs、eval patterns、checkpoint policy 和 out_dir
 - **THEN** 系统 MUST 为每个找到 checkpoint 的 run 重新 load checkpoint 并执行评估
 - **AND** 输出 metrics 行 MUST 至少包含 run name、checkpoint path、checkpoint epoch、pattern、Top-1/Top-3/Top-5、ADBA、MAE、loss 和 count
 

@@ -7,7 +7,7 @@ import numpy as np
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
-from kd_sensing.data.difficulty import runtime_difficulty_metadata
+from kd_sensing.data.difficulty.pipeline import runtime_difficulty_metadata
 from kd_sensing.data.scenes import scene_metadata_from_config
 from kd_sensing.engine.debug_diagnostics import (
     evaluate_pilot_noise_validity,

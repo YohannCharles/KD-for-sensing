@@ -26,7 +26,7 @@ conda run -n kd_mm_beam kd-sensing-clean-runtime-artifacts --help
 conda run -n kd_mm_beam kd-sensing-organize-runtime-outputs --help
 conda run -n kd_mm_beam kd-sensing-jepa-visual-analysis --help
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark --help
-conda run -n kd_mm_beam kd-sensing-predictive-gps-query-visualizations --help
+conda run -n kd_mm_beam kd-sensing-training-throughput --help
 conda run -n kd_mm_beam kd-sensing-target-shot-split --help
 conda run -n kd_mm_beam kd-sensing-distribution-shift --help
 conda run -n kd_mm_beam kd-sensing-wcl2025-missing-modality-audit --help
@@ -34,8 +34,6 @@ conda run -n kd_mm_beam kd-sensing-paper-export --help
 conda run -n kd_mm_beam kd-sensing-dataset-audit --help
 conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --help
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
-conda run -n kd_mm_beam kd-sensing-plot-mmw-town-gps-v2 --help
-conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 --help
 conda run -n kd_mm_beam kd-sensing-train-beambench-image-ae-gps --help
 conda run -n kd_mm_beam kd-sensing-run-beambench-image-ae-gps-tableiii --help
 conda run -n kd_mm_beam kd-sensing-tii-vlrg-transformer --help
@@ -190,11 +188,12 @@ conda run -n kd_mm_beam kd-sensing-research-preview \
 ```bash
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --format markdown
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope cli-surface --format markdown --fail-on error
-conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope configs --format json --fail-on none
+conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope configs --format json --dump-inventory --fail-on none
 conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error
 ```
 
 `kd-sensing-project-surface-doctor` 只读检查 tracked `scripts/`、`tools/analysis/`、`configs/`、inventory 中登记的热点 owner、可选 public CLI surface、安全/产物扫描和 OpenSpec closeout 状态，报告未分类入口、失效 config 引用、退役 token 回流、recipe migration candidate、hotspot next-touch、console script lifecycle/smoke/docs 漂移、secret/system-config/runtime-artifact 风险以及 dirty worktree 分类。默认只把 `error` 级 issue 作为非零退出；需要严格 gating 可用 `--fail-on warning`。doctor 默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint、不写 outputs/logs/cache，也不 archive、reset、删除或移动本地产物。
+默认 Markdown/JSON 输出只包含摘要、issues 和 next action；需要完整 pass inventory、section counts 或 machine-readable entries 时显式加 `--dump-inventory`。
 
 论文表格与数据审计：
 
@@ -263,10 +262,11 @@ JEPA vs GPS shortcut benchmark：
 conda run -n kd_mm_beam kd-sensing-jepa-gps-shortcut-benchmark \
   --manifest configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml \
   --output-dir outputs/analysis/jepa_gps_shortcut_benchmark/smoke \
+  --predictive-explanatory-figures \
   --force
 ```
 
-Benchmark 产物写入 ignored 的 `outputs/analysis/...`，包括 `benchmark_manifest.json`、`tables/metrics_by_condition.csv`、`tables/robustness_summary.csv`、`tables/shortcut_reliance_summary.csv` 和可选曲线图。Predictive robustness 主评估使用 clean anchor + `image_missing`、`image_noise`、`gps_noise` stress curves；旧 P0-P5 只作为 explicit `legacy_p0_p5`/deprecated 兼容输入。Scenario D / CxD smoke 使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml`，在保留 `results/scenario_d_image_observability.csv`、`results/heatmap_cx_dy.npy` 的同时写出 `results/cxd_phase_diagram.csv`、`results/cxd_phase_heatmap.npy`、`results/modality_dominance.csv`、`results/crossing_region_Cx_Dy.json`、`results/failure_mode_decomposition.csv` 和对应 PNG；synthetic dominance 行只标记 mock/unavailable，不冒充真实解释证据。真实 BeamBench-fair 矩阵使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml`，其中 checkpoint 路径是本地占位，需要替换为实际 run；不要提交真实 checkpoint、metrics、figures、cache 或 reports。`kd-sensing-jepa-visual-analysis` 可通过 `benchmark.runner_manifest=<path>` 只读消费 runner manifest，生成 `benchmark_robustness_matrix.csv`、GPS collapse/image degradation/temporal delay 曲线和 GPS shortcut reliance 报告段落。
+Benchmark 产物写入 ignored 的 `outputs/analysis/...`，包括 `benchmark_manifest.json`、`tables/metrics_by_condition.csv`、`tables/robustness_summary.csv`、`tables/shortcut_reliance_summary.csv` 和可选曲线图。`--predictive-explanatory-figures` 只生成附属解释性表/图/manifest，不是独立 claim gate。Predictive robustness 主评估使用 clean anchor + `image_missing`、`image_noise`、`gps_noise` stress curves；旧 P0-P5 只作为 explicit `legacy_p0_p5`/deprecated 兼容输入。Scenario D / CxD smoke 使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_scenario_d_smoke.yaml`，在保留 `results/scenario_d_image_observability.csv`、`results/heatmap_cx_dy.npy` 的同时写出 `results/cxd_phase_diagram.csv`、`results/cxd_phase_heatmap.npy`、`results/modality_dominance.csv`、`results/crossing_region_Cx_Dy.json`、`results/failure_mode_decomposition.csv` 和对应 PNG；synthetic dominance 行只标记 mock/unavailable，不冒充真实解释证据。真实 BeamBench-fair 矩阵使用 `configs/diagnostics/jepa_gps_shortcut_benchmark_beambench_fair.yaml`，其中 checkpoint 路径是本地占位，需要替换为实际 run；不要提交真实 checkpoint、metrics、figures、cache 或 reports。`kd-sensing-jepa-visual-analysis` 可通过 `benchmark.runner_manifest=<path>` 只读消费 runner manifest，生成 `benchmark_robustness_matrix.csv`、GPS collapse/image degradation/temporal delay 曲线和 GPS shortcut reliance 报告段落。
 
 JEPA-MSAC Scenario 32 workflow 已退役为 tombstone，不再提供 current CLI、config、model、loss 或 objective。历史背景只说明它曾用于 arXiv:2603.29796 两阶段 workflow 审计；当前 JEPA 相关工作请使用 GPS-conditioned JEPA、JEPA visual analysis 或 GPS shortcut benchmark。
 
@@ -294,7 +294,7 @@ configs/fusion/<canonical_slug>_<strong|lightweight>.yaml
 
 当前主线横向说明分三层维护：模型目录见 [docs/mainline_model_catalog.md](docs/mainline_model_catalog.md)，参数协议见 [docs/experiment_protocols.md](docs/experiment_protocols.md)，可引用结果和 blocked 状态见 [docs/result_claims_registry.md](docs/result_claims_registry.md)。纵向改进历史、实验决策和创新线索见 [docs/mainline_experiment_history.md](docs/mainline_experiment_history.md)，相关工作矩阵见 [docs/literature_matrix.md](docs/literature_matrix.md)。[docs/experiment_matrix.md](docs/experiment_matrix.md) 只保留 quickstart 顺序和关键 caveat；CSI hardening、snapshot next-frame、objective-aware fusion、MMW 和推荐实验顺序从这里跳转。
 
-Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 配置族只在源码中保留 manifest、base config、generator 和 local/manual runner/fresh-eval/summary helper。需要复跑时先用 `scripts/generate_experiment_grid.py`、`scripts/generate_scene31_next_round.py --out_dir <local-config-dir>`、`scripts/generate_scene31_funnel.py --out_dir <local-config-dir>` 或 `scripts/generate_scene31_magic_overnight.py --out_dir <local-config-dir>` 重建 YAML，再使用 `kd-sensing-train --config <generated-yaml>`；P0 fresh eval 使用 `bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`，汇总使用 `conda run -n kd_mm_beam python scripts/summarize_scene31_p0_fresh_eval.py --root outputs/scene31_next_round --out outputs/scene31_next_round/p0_fresh_summary`。日志和结果只写 ignored 的 `logs/`、`outputs/scene31/`、`outputs/scene31_next_round/` 或对应 `outputs/scene31_*` 本地 root。
+Scene31 night-grid / next-round / BC / beamsoft weak / funnel / magic overnight 配置族只在源码中保留 manifest、base config、generator 和 local/manual runner/fresh-eval/summary helper。需要复跑时先用 `scripts/generate_experiment_grid.py`、`scripts/generate_scene31_next_round.py --out_dir <local-config-dir>`、`scripts/generate_scene31_funnel.py --out_dir <local-config-dir>` 或 `scripts/generate_scene31_magic_overnight.py --out_dir <local-config-dir>` 重建 YAML，再使用 `kd-sensing-train --config <generated-yaml>`；P0 fresh eval 使用 `bash scripts/run_scene31_p0_fresh_eval.sh --root outputs/scene31_next_round --gpus <ids>`，汇总使用 `conda run -n kd_mm_beam python -m kd_sensing.diagnostics.scene31_summary --profile p0-fresh-eval --root outputs/scene31_next_round --out outputs/scene31_next_round/p0_fresh_summary`。日志和结果只写 ignored 的 `logs/`、`outputs/scene31/`、`outputs/scene31_next_round/` 或对应 `outputs/scene31_*` 本地 root。
 
 ## 数据和产物边界
 
@@ -329,7 +329,8 @@ DeepSense6G/MMW GPS+LiDAR BGAM、GPS pseudo-history BGAM、BGAM-only TopK candid
 MMW Town10 本地 zip 默认放在 `dataset/_downloads/MMW/<condition>/Sensor_Data` 和 `dataset/_downloads/MMW/<condition>/Channel_Data`，prepared 产物写入 `dataset/MMW/<condition>/Prepared/<scenario>`。准备流程只解压必要的 sensor zip 和共用的 `Town10.zip` channel 包，不移动或删除下载文件；已下载但暂不处理的场景会在 availability 中保持 `pending` 或 `downloaded_unprepared`。
 
 ```bash
-conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
+conda run -n kd_mm_beam kd-sensing-preprocess \
+  --action mmw_town10_skybridge \
   --config configs/preprocess/mmw_town10_skybridge.yaml
 ```
 
@@ -350,9 +351,11 @@ conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 \
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 \
   --config configs/mmw_town_gps_adapter_v2.yaml \
   --label-space mapping_disabled
-conda run -n kd_mm_beam kd-sensing-plot-mmw-town-gps-v2 \
+conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 \
+  --mode plot \
   --results-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
-conda run -n kd_mm_beam kd-sensing-compare-mmw-town-gps-v2 \
+conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 \
+  --mode compare \
   --previous-dir outputs/analysis/mmw_town_label_distribution \
   --new-dir outputs/analysis/mmw_town_gps_adapter_v2/mapping_enabled
 ```
@@ -366,7 +369,8 @@ DeepSense6G GPS residual fusion、camera residual、GPS coarse anchor、Top8 sel
 可用 override 增量处理其它 sunny 场景：
 
 ```bash
-conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
+conda run -n kd_mm_beam kd-sensing-preprocess \
+  --action mmw_town10_skybridge \
   --config configs/preprocess/mmw_town10_skybridge.yaml \
   -o mmw.sensor_zip=dataset/_downloads/MMW/sunny/Sensor_Data/Town10_crossroad_seed24.zip \
   -o mmw.channel_zip=dataset/_downloads/MMW/sunny/Channel_Data/Town10.zip \
@@ -376,7 +380,8 @@ conda run -n kd_mm_beam python scripts/mmw/prepare_town10_skybridge.py \
 已有 frame manifest 时，可用公开 split builder 生成独立 strict split tag，避免复用旧 `l5p6` random-window CSV：
 
 ```bash
-conda run -n kd_mm_beam python scripts/mmw/build_sequence_splits_from_manifest.py \
+conda run -n kd_mm_beam kd-sensing-preprocess \
+  --action mmw_sequence_splits_from_manifest \
   --data-root dataset/MMW/sunny \
   --scene Town10_crossroad_seed24 \
   --seq-len 5 \

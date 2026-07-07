@@ -6,7 +6,8 @@ import torch.nn as nn
 from kd_sensing.baselines.amber_lite import amber_lite_summary_row, normalize_missing_modality_suite
 from kd_sensing.config import load_config
 from kd_sensing.config.parsing import safe_load_yaml
-from kd_sensing.data.difficulty import DifficultyContext, apply_configured_difficulty
+from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
+from kd_sensing.data.difficulty.schema import DifficultyContext
 from kd_sensing.models.modular import AmberLiteMissingModalityTransformerCore, ModularSequenceModel
 from kd_sensing.registries import ENCODERS
 

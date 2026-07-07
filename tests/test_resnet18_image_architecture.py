@@ -1,5 +1,4 @@
 import builtins
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -9,18 +8,17 @@ import torch.nn as nn
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.transform_ops.image import (  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.data.transform_ops.image import (
     IMAGENET_RGB_MEAN,
     IMAGENET_RGB_STD,
     load_rgb_imagenet_frames,
 )
-from kd_sensing.engine.batch import prepare_image_inputs  # noqa: E402
-from kd_sensing.modalities import image_profile_metadata, resolve_image_profile  # noqa: E402
-from kd_sensing.models.image_encoders import ResNet18ImageEncoder  # noqa: E402
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.registries import ENCODERS, MODELS, import_default_components  # noqa: E402
+from kd_sensing.engine.batch import prepare_image_inputs
+from kd_sensing.modalities import image_profile_metadata, resolve_image_profile
+from kd_sensing.models.image_encoders import ResNet18ImageEncoder
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.registries import ENCODERS, MODELS, import_default_components
 
 
 def _removed_image_profile() -> str:

@@ -1,21 +1,6 @@
-import argparse
 import csv
 from pathlib import Path
 from typing import Any
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Plot MMW Town GPS-only v2 result diagnostics.")
-    parser.add_argument("--results-dir", required=True, help="Directory containing v2 predictions.csv and summaries.")
-    parser.add_argument("--output-dir", default=None, help="Figure directory; defaults to <results-dir>/figures.")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    result = plot_results(Path(args.results_dir), output_dir=args.output_dir)
-    print(result)
-    return 0
 
 
 def plot_results(results_dir: Path, *, output_dir: str | Path | None = None) -> dict[str, Any]:
@@ -159,7 +144,3 @@ def _float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

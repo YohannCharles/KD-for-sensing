@@ -26,7 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=("markdown", "json"),
         default="markdown",
-        help="Report format printed to stdout.",
+        help="Report format printed to stdout. Defaults to issue-only summaries unless --dump-inventory is set.",
+    )
+    parser.add_argument(
+        "--dump-inventory",
+        action="store_true",
+        help="Include full pass inventory sections and machine-readable entries for audit workflows.",
     )
     parser.add_argument(
         "--fail-on",
@@ -44,7 +49,7 @@ def run(argv: list[str] | None = None) -> dict:
         scopes=args.scope,
         fail_on=args.fail_on,
     )
-    rendered = render_project_surface_report(report, format=args.format)
+    rendered = render_project_surface_report(report, format=args.format, dump_inventory=args.dump_inventory)
     sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
     return report
 

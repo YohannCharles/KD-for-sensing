@@ -2,7 +2,6 @@
 
 ## Purpose
 记录 Scene31 baseline pack 的本地手工训练、fresh eval、random modality dropout、AMR/AMBER-lite/FeatureMod-lite 对照与 summary 口径，确保 baseline pack 与后续 missing-modality 主线结果可复现、可隔离且不覆盖其它 Scene31 输出根。
-
 ## Requirements
 ### Requirement: Scene31 baseline pack run matrix
 项目 MUST 提供 Scene31 baseline pack local/manual run matrix。矩阵 MUST 至少覆盖 proto natural、proto random dropout、AMR-lite natural 或 randomdrop、AMR-lite pattern-balanced、AMBER-lite natural 或 randomdrop、AMBER-lite pattern-balanced，并 MAY 覆盖 FeatureMod-lite pattern-balanced。
@@ -71,7 +70,7 @@ baseline pack 的正式评估 MUST 复用现有 apples-to-apples fresh eval 和 
 - **AND** sanity check MUST 验证 miss1/miss2/miss3 非空、full 存在、top3 >= top1、top5 >= top3、within@3 in `[0,1]` 且 MAE >= 0
 
 ### Requirement: Baseline pack summary
-项目 MUST 提供 `scripts/summarize_scene31_baseline_pack.py`，用于读取本轮 baseline pack、旧 uniform reference 和可用 proto baseline 结果，并输出 per-run、method-level、delta、rank、参数和保守结论。
+项目 MUST 提供 `python -m kd_sensing.diagnostics.scene31_summary --profile baseline-pack`，用于读取本轮 baseline pack、旧 uniform reference 和可用 proto baseline 结果，并输出 per-run、method-level、delta、rank、参数和保守结论。
 
 #### Scenario: summary 输出文件
 - **WHEN** 用户运行 baseline pack summary 脚本
@@ -90,3 +89,17 @@ baseline pack 的正式评估 MUST 复用现有 apples-to-apples fresh eval 和 
 - **WHEN** summary 写出 `baseline_conclusion.txt`
 - **THEN** 结论 MUST 报告 fresh eval status、best method、best lightweight method、random dropout 是否匹配 uniform、pattern-balanced exposure 是否跨 backbone 泛化、复杂 baseline 是否超过 proto+uniform、参数效率和每个 baseline 的 promote/do_not_promote 建议
 - **AND** 单 seed quick screen MUST 被明确标记，不得当作最终结论
+
+### Requirement: Scene31 baseline pack 汇总可接入共享 summary owner
+Scene31 baseline pack 的 summary 和 paper-facing export MAY 由共享 Scene31 summary owner 生成。迁移 MUST 保持 baseline pack 的输入发现、输出字段、方法标签和 artifact 命名契约，除非 current spec 同步修改。
+
+#### Scenario: baseline pack summary owner 替代专用脚本
+- **WHEN** baseline pack summary 专用脚本只复制共享读取、聚合或输出逻辑
+- **THEN** implementation MAY 删除该专用脚本并改用共享 Scene31 summary owner
+- **AND** baseline pack docs/tests MUST 指向共享 owner 的明确 profile 或 group
+
+#### Scenario: baseline pack 输出保持 claim 可用
+- **WHEN** baseline pack summary 迁移到共享 owner
+- **THEN** paper table、claim note 或 reliability summary 所需字段 MUST 继续存在
+- **AND** 迁移验证 MUST 覆盖至少一个 baseline pack artifact fixture 或 dry-run fixture
+

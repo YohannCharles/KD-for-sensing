@@ -1,14 +1,12 @@
 import ast
-import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.diagnostics.jepa_benchmark_manifest import load_benchmark_manifest  # noqa: E402
-from kd_sensing.engine.artifacts import final_config_with_runtime  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.diagnostics.jepa_benchmark_manifest import load_benchmark_manifest
+from kd_sensing.engine.artifacts import final_config_with_runtime
 
 RBMA_MISSING_WORKFLOW_YAML = {
     "_base_no_jepa_rbma.yaml",

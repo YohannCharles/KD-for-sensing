@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,16 +9,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.config import load_config  # noqa: E402
-from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset  # noqa: E402
-from kd_sensing.engine.batch import prepare_labels  # noqa: E402
-from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots  # noqa: E402
-from kd_sensing.engine.normalization_artifacts import validate_normalization_artifact_fingerprint  # noqa: E402
-from kd_sensing.engine.prediction_objectives import PredictionTargets, compute_prediction_loss  # noqa: E402
-from kd_sensing.models.modular import ModularSequenceModel  # noqa: E402
-from kd_sensing.preprocessing.sequences import generate_sequence_data  # noqa: E402
-from kd_sensing.registries import ENCODERS  # noqa: E402
+from kd_sensing.config import load_config
+from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
+from kd_sensing.engine.batch import prepare_labels
+from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
+from kd_sensing.engine.normalization_artifacts import validate_normalization_artifact_fingerprint
+from kd_sensing.engine.prediction_objectives import PredictionTargets, compute_prediction_loss
+from kd_sensing.models.modular import ModularSequenceModel
+from kd_sensing.preprocessing.sequences import generate_sequence_data
+from kd_sensing.registries import ENCODERS
 
 
 @ENCODERS.register("snapshot_test_identity", force=True)

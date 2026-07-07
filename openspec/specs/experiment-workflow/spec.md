@@ -247,7 +247,7 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 
 #### Scenario: fresh eval 仍可组合
 - **WHEN** 用户需要训练后 apples-to-apples 复评
-- **THEN** 用户 MAY 运行 `scripts/reevaluate_apples_to_apples.py`、`scripts/eval_night_grid.py` 或对应 analysis helper
+- **THEN** 用户 MAY 运行 `python -m kd_sensing.diagnostics.apples_to_apples_evaluation`、`scripts/eval_night_grid.py` 或对应 analysis helper
 - **AND** 缺失 checkpoint 的 run MUST warning 但不阻断其它 run 复评
 
 ### Requirement: proto vs BTAPA seed mean±std 分析

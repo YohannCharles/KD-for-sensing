@@ -1,5 +1,4 @@
 import json
-import sys
 import zipfile
 from pathlib import Path
 
@@ -9,11 +8,10 @@ import pytest
 import torch
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-from kd_sensing.data.datasets.mmw import MMWDataset  # noqa: E402
-from kd_sensing.data.datasets.mmw_family_adapter import MMWFamilyAdapter  # noqa: E402
-from kd_sensing.data.mmw.preparation import (  # noqa: E402
+from kd_sensing.cli import preprocess as preprocess_cli
+from kd_sensing.data.datasets.mmw import MMWDataset
+from kd_sensing.data.datasets.mmw_family_adapter import MMWFamilyAdapter
+from kd_sensing.data.mmw.preparation import (
     ChannelFile,
     GROUP_SAFE_TIME_BLOCK,
     MMWPreparationConfig,
@@ -28,9 +26,9 @@ from kd_sensing.data.mmw.preparation import (  # noqa: E402
     split_sequence_rows,
     validate_zip_inputs,
 )
-from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder  # noqa: E402
-from kd_sensing.engine.data_factory import build_dataset  # noqa: E402
-from kd_sensing.preprocessing.mmw_radar import generate_mmw_radar_maps  # noqa: E402
+from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder
+from kd_sensing.engine.data_factory import build_dataset
+from kd_sensing.preprocessing.mmw_radar import generate_mmw_radar_maps
 
 
 def test_radio_semantic_label_builder_peak_spread_fallback_and_invalid():
@@ -689,6 +687,62 @@ def test_mmw_preparation_config_overrides_download_paths(tmp_path: Path):
     assert config.channel_zip == channel_zip
     result = prepare_town10_skybridge(config, dry_run=True)
     assert result["status"] == "dry_run"
+
+
+def test_preprocess_cli_routes_mmw_preparation_and_split_actions(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    sensor_zip, channel_zip = _write_mmw_zip_pair(tmp_path, frames=12)
+    config_path = tmp_path / "mmw.yaml"
+    config_path.write_text(
+        "mmw:\n"
+        "  sensor_zip: missing_sensor.zip\n"
+        "  channel_zip: missing_channel.zip\n"
+        f"  output_root: {tmp_path / 'dataset'}\n",
+        encoding="utf-8",
+    )
+
+    preprocess_cli.main(
+        [
+            "--action",
+            "mmw_town10_skybridge",
+            "--config",
+            str(config_path),
+            "--dry-run",
+            "-o",
+            f"mmw.sensor_zip={sensor_zip}",
+            "-o",
+            f"mmw.channel_zip={channel_zip}",
+        ]
+    )
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "dry_run"
+
+    config = MMWPreparationConfig(
+        sensor_zip=sensor_zip,
+        channel_zip=channel_zip,
+        output_root=tmp_path / "dataset",
+        seq_len=8,
+        pred_len=3,
+    )
+    prepare_town10_skybridge(config)
+    preprocess_cli.main(
+        [
+            "--action",
+            "mmw_sequence_splits_from_manifest",
+            "--data-root",
+            str(config.condition_root),
+            "--scene",
+            config.scenario,
+            "--seq-len",
+            "5",
+            "--pred-len",
+            "6",
+            "--split-tag",
+            "l5p6_cli",
+        ]
+    )
+    split = json.loads(capsys.readouterr().out)
+    assert split["scenes"][0]["outputs"]["train_csv"].endswith("splits/l5p6_cli/train.csv")
+    assert (config.prepared_root / "splits" / "l5p6_cli" / "split_metadata.json").exists()
 
 
 def _write_mmw_zip_pair(

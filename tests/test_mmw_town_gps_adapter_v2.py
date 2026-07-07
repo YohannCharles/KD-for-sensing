@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from kd_sensing.cli.plot_mmw_town_gps_v2 import plot_results
+from kd_sensing.cli.mmw_town_gps_v2 import plot_results, run_main
 from kd_sensing.data.beam_label_calibration import resolve_beam_label_mapping
 from kd_sensing.engine.mmw_town_gps_v2 import (
     FeatureScaler,
@@ -243,6 +243,68 @@ def test_package_plotter_writes_current_structural_figures_and_unavailable_note(
     unavailable = plot_results(empty_dir)
     assert unavailable["figure_count"] == 0
     assert (empty_dir / "figures" / "plot_unavailable.txt").exists()
+
+
+def test_owner_cli_modes_route_plot_and_compare_helpers(tmp_path: Path):
+    results_dir = tmp_path / "results"
+    previous_dir = tmp_path / "previous"
+    results_dir.mkdir()
+    previous_dir.mkdir()
+    predictions = [
+        {
+            "scene": "crossroad",
+            "E": idx,
+            "N": idx * 0.5,
+            "true_beam": idx % 8,
+            "pred_beam": (idx + 1) % 8,
+            "circular_error": 1,
+            "theta_degrees": idx * 20.0,
+            "signed_residual": 1,
+            "branch_id": idx % 2,
+        }
+        for idx in range(4)
+    ]
+    summary = [
+        {
+            "scene": "crossroad",
+            "protocol": "target_adapt_beambench",
+            "ablation": "geo_plus_backbone",
+            "label_space": "mapping_enabled",
+            "DBA": 0.6,
+            "mean_circular_error": 1.2,
+            "DBA_zero_ratio": 0.25,
+        }
+    ]
+    with (results_dir / "predictions.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(predictions[0]))
+        writer.writeheader()
+        writer.writerows(predictions)
+    with (results_dir / "summary_by_scene.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(summary[0]))
+        writer.writeheader()
+        writer.writerows(summary)
+    (previous_dir / "metrics.json").write_text(
+        json.dumps({"scene": "crossroad", "metrics": {"DBA": 0.4}}),
+        encoding="utf-8",
+    )
+
+    plot = run_main(["--mode", "plot", "--results-dir", str(results_dir), "--output-dir", str(tmp_path / "figures")])
+    compare = run_main(
+        [
+            "--mode",
+            "compare",
+            "--previous-dir",
+            str(previous_dir),
+            "--new-dir",
+            str(results_dir),
+            "--output-dir",
+            str(tmp_path / "compare"),
+        ]
+    )
+
+    assert plot["figure_count"] >= 6
+    assert Path(compare["comparison_csv"]).exists()
+    assert "crossroad" in Path(compare["comparison_report"]).read_text(encoding="utf-8")
 
 
 def _tiny_config(data_root: Path, mapping_file: Path, output_root: Path) -> dict:

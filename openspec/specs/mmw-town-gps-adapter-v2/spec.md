@@ -107,13 +107,13 @@
 MMW Town GPS-only v2 MUST 将当前运行、绘图和旧诊断对比入口收敛到包内 CLI。项目 MUST 不要求用户通过 `scripts/mmw/visualize_gps_angle_beam_correspondence.py`、`scripts/mmw/visualize_gps_prediction_trajectory.py` 或 `scripts/mmw/visualize_prediction_error_label_distribution.py` 生成 current v2 诊断图。
 
 #### Scenario: package plotter 覆盖 current 图表需求
-- **WHEN** 用户运行 `kd-sensing-plot-mmw-town-gps-v2 --results-dir <dir>`
+- **WHEN** 用户运行 `kd-sensing-mmw-town-gps-v2 --mode plot --results-dir <dir>`
 - **THEN** 系统 MUST 生成当前 spec 要求的结构残差图或不可用说明
 - **AND** 用户 MUST NOT need to run retired `scripts/mmw/visualize_gps_*` scripts for current documentation or validation
 
 #### Scenario: 旁支脚本退役
 - **WHEN** 开发者检查 MMW GPS v2 当前入口、README 和 maintainer index
-- **THEN** 文档 MUST 指向 `kd-sensing-mmw-town-gps-v2`、`kd-sensing-plot-mmw-town-gps-v2` 和 `kd-sensing-compare-mmw-town-gps-v2`
+- **THEN** 文档 MUST 指向 `kd-sensing-mmw-town-gps-v2 --mode run|plot|compare`
 - **AND** `scripts/mmw/visualize_gps_angle_beam_correspondence.py`、`scripts/mmw/visualize_gps_prediction_trajectory.py` 和 `scripts/mmw/visualize_prediction_error_label_distribution.py` MUST 不作为 current research diagnostic 入口保留
 
 ### Requirement: MMW Town GPS v2 CLI workflow
@@ -124,10 +124,10 @@ MMW Town GPS-only v2 MUST 将当前运行、绘图和旧诊断对比入口收敛
 - **THEN** 命令 MUST 正常退出
 - **AND** 帮助信息 MUST 包含 `--config`、`--label-space`、`--target-scene`、`--support-ratio`、`--support-num` 和 `--support-mode`
 
-#### Scenario: plotter 和 comparison help 可用
-- **WHEN** 用户执行 v2 plotter 或 comparison console script 的 `--help`
+#### Scenario: plotter 和 comparison mode help 可用
+- **WHEN** 用户执行 `conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help`
 - **THEN** 命令 MUST 正常退出
-- **AND** 帮助信息 MUST 包含 results dir、previous dir 或 new dir 等必要参数
+- **AND** 帮助信息 MUST 包含 `--mode`、`--results-dir`、`--previous-dir` 和 `--new-dir`
 
 ### Requirement: MMW Town GPS v2 default configuration
 项目 MUST 提供 `configs/mmw_town_gps_adapter_v2.yaml` 或等价 v2 配置。配置 MUST 声明数据根、已有分析目录、label space、四个 scene、num_beams、split、model、loss、train、adapt、metrics 和 ablation 矩阵。
@@ -153,4 +153,25 @@ MMW Town GPS v2 workflow MUST 将运行上下文准备、label-space 解析、�
 - **WHEN** MMW GPS v2 workflow is refactored
 - **THEN** prediction rows, summary rows, support rows, theta rows, branch rows, logits exports and metadata keys MUST remain compatible
 - **AND** 默认输出目录语义 MUST 不改变
+
+### Requirement: MMW Town GPS v2 run/plot/compare 可由单一 owner CLI 覆盖
+MMW Town GPS v2 的 runner、plotter 和 comparator MAY 收敛为单一 package CLI 或单一 owner module 下的 modes。迁移 MUST 保持旧 plot/compare 行为的输入 artifact、输出文件、metric 字段、排序和 help 语义，除非 current spec 同步修改。
+
+#### Scenario: plot mode 替代旧 plot CLI
+- **WHEN** 协作者需要绘制 MMW Town GPS v2 结果
+- **THEN** 推荐入口 MAY 是 MMW Town GPS v2 owner CLI 的 `plot` mode 或等价 flag
+- **AND** 项目 SHOULD 不保留只转发到 plot helper 的独立 plot console script
+
+#### Scenario: compare mode 替代旧 compare CLI
+- **WHEN** 协作者需要比较 MMW Town GPS v2 runs
+- **THEN** 推荐入口 MAY 是 MMW Town GPS v2 owner CLI 的 `compare` mode 或等价 flag
+- **AND** compare 输出的 metric names、method labels 和排序 MUST 保持可对照
+
+### Requirement: MMW Town wrapper 删除必须更新 console scripts
+删除 MMW Town GPS v2 plot/compare wrapper 时，`pyproject.toml` console scripts、CLI help tests、docs 和 inventory MUST 同步迁移到 owner CLI。
+
+#### Scenario: console script 不保留旧别名
+- **WHEN** plot/compare 独立入口被 consolidated owner 覆盖
+- **THEN** 旧 console script name MUST 从 current package entrypoints 中移除
+- **AND** 项目 MUST 不新增等价 legacy alias
 
