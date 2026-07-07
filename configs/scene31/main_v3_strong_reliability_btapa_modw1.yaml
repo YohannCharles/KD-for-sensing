@@ -1,8 +1,0 @@
-_base_: main_v3_strong_reliability_btapa.yaml
-experiment:
-  name: main_v3_strong_reliability_btapa_modw1
-training:
-  lambda_modality_proto: 1.0
-  btapa_modality_weight: 1.0
-output:
-  run_name: main_v3_strong_reliability_btapa_modw1

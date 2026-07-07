@@ -1,9 +1,0 @@
-_base_: _base_no_jepa_rbma.yaml
-experiment:
-  name: no_jepa_rbma
-model:
-  primary:
-    ablation_id: no_jepa_rbma
-output:
-  run_name: no_jepa_rbma
-

@@ -1,7 +1,0 @@
-_base_: main_v3_strong_reliability_btapa.yaml
-experiment:
-  name: main_v3_strong_reliability_btapa_tau1
-training:
-  tau_beam: 1.0
-output:
-  run_name: main_v3_strong_reliability_btapa_tau1

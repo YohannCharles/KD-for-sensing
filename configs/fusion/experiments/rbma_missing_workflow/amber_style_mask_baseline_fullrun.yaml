@@ -1,5 +1,0 @@
-_base_: amber_style_mask_baseline.yaml
-experiment:
-  name: amber_style_mask_baseline_fullrun
-output:
-  run_name: amber_style_mask_baseline_fullrun

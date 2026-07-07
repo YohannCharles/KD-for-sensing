@@ -1,7 +1,0 @@
-_base_: main_v3_strong_reliability_proto_fullaux.yaml
-experiment:
-  name: main_v3_strong_reliability_proto_fullaux_l05
-training:
-  lambda_full_aux: 0.5
-output:
-  run_name: main_v3_strong_reliability_proto_fullaux_l05

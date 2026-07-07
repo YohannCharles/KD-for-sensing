@@ -1,9 +1,0 @@
-_base_: weighted_sum_mask.yaml
-experiment:
-  name: weighted_sum_reliability
-model:
-  primary:
-    ablation_id: weighted_sum_reliability
-    use_modality_uncertainty: true
-output:
-  run_name: weighted_sum_reliability

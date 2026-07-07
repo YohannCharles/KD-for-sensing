@@ -1,6 +1,0 @@
-_base_: main_v3_strong_reliability_btapa_tau1.yaml
-experiment:
-  name: main_v3_strong_reliability_btapa_tau1_seed3
-  seed: 3
-output:
-  run_name: main_v3_strong_reliability_btapa_tau1_seed3

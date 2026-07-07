@@ -1,7 +1,0 @@
-_base_: ../fusion/experiments/m2beam_single_modal_scene31/radar.yaml
-experiment:
-  name: diagnostic_radar_only_strong
-training:
-  epochs: 40
-output:
-  run_name: diagnostic_radar_only_strong

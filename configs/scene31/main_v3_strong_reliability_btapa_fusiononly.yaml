@@ -1,8 +1,0 @@
-_base_: main_v3_strong_reliability_btapa.yaml
-experiment:
-  name: main_v3_strong_reliability_btapa_fusiononly
-training:
-  btapa_include_fusion: true
-  btapa_include_modalities: false
-output:
-  run_name: main_v3_strong_reliability_btapa_fusiononly
