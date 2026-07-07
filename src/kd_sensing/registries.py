@@ -147,6 +147,22 @@ MODELS.register_removed(
     "fusion_lightweight",
     "Use model.primary.type='modular_sequence' fusion or the current 'cls_token_transformer_fusion' lightweight route.",
 )
+MODELS.register_removed(
+    "bev_fusion_2604",
+    "BEV-Fusion 2604 reproduction was retired after final C2. Use U-MaskBeamJEPA or current MMW/CSI workflows.",
+)
+MODELS.register_removed(
+    "vision_position_late_fusion",
+    "Vision-Position baselines were retired after final C2. Use U-MaskBeamJEPA or current MMW/CSI workflows.",
+)
+MODELS.register_removed(
+    "vision_position_transformer_fusion",
+    "Vision-Position baselines were retired after final C2. Use U-MaskBeamJEPA or current MMW/CSI workflows.",
+)
+MODELS.register_removed(
+    "gps_sequence_baseline",
+    "Vision-Position GPS-only baseline was retired after final C2. Use current GPS encoders inside modular_sequence or MMW/CSI workflows.",
+)
 LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervised or adaptation losses.")
 LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
 
@@ -163,7 +179,6 @@ def import_default_components() -> None:
     import kd_sensing.losses.u_mask_beam_jepa  # noqa: F401
     import kd_sensing.models.amr_net  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
-    import kd_sensing.models.bev_fusion_2604  # noqa: F401
     import kd_sensing.models.csi_encoder  # noqa: F401
     import kd_sensing.models.geometry_prior  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
@@ -178,7 +193,6 @@ def import_default_components() -> None:
     import kd_sensing.models.radar  # noqa: F401
     import kd_sensing.models.tinyvit  # noqa: F401
     import kd_sensing.models.u_mask_beam_jepa  # noqa: F401
-    import kd_sensing.models.vision_position  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.image_cache  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401

@@ -70,14 +70,15 @@ task_routes:
   - id: diagnostics
     context_path: docs/agent_context/diagnostics.md
     authority_paths:
-      - openspec/specs/jepa-visual-analysis-suite/spec.md
-      - openspec/specs/jepa-gps-shortcut-benchmark/spec.md
+      - openspec/specs/u-mask-beam-jepa-eval-matrix/spec.md
+      - openspec/specs/mmw-town-gps-adapter-v2/spec.md
+      - openspec/specs/project-health-guardrails/spec.md
       - docs/project_surface_inventory.md
     owner_modules:
       - src/kd_sensing/diagnostics/
       - src/kd_sensing/cli/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_jepa_visual_analysis.py -q
+      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa_eval_matrix.py -q
       - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py -q
       - conda run -n kd_mm_beam pytest tests/test_research_run_preview.py -q
     retired_route_guard: retired_routes
@@ -163,6 +164,10 @@ retired_routes:
     - run_jepa_msac
     - gps_circular_soft_label
     - mmw_sunny_modal15
+    - bev_fusion_2604
+    - vision_position_late_fusion
+    - vision_position_transformer_fusion
+    - gps_sequence_baseline
   text_markers:
     - HiST-Beam
     - Top8 selector
@@ -182,6 +187,8 @@ retired_routes:
     - scripts/mmw/visualize_gps_
     - gps_circular_soft_label
     - run_mmw_sunny_modal15
+    - BEV-Fusion 2604
+    - Vision-Position
 validation:
   focused:
     - make verify-quick
@@ -190,4 +197,4 @@ validation:
     - openspec validate --all --strict
     - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py tests/test_config_load_characterization.py tests/test_component_registry.py tests/test_cli_help.py -q
     - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py tests/test_tinyvit_image_encoder.py tests/test_prediction_objectives.py -q
-    - conda run -n kd_mm_beam pytest tests/test_scene31_next_round.py -q
+    - conda run -n kd_mm_beam pytest tests/test_missing_modality_stress.py tests/test_u_mask_beam_jepa_eval_matrix.py -q

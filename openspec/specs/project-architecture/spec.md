@@ -107,7 +107,7 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 
 #### Scenario: 安装元数据刷新后入口齐全
 - **WHEN** 开发者在 `kd_mm_beam` 中执行 `python -m pip install -e .`
-- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-jepa-visual-analysis` 和 `kd-sensing-jepa-gps-shortcut-benchmark`
+- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-eval-u-mask-matrix`、`kd-sensing-mmw-town-gps-v2`、`kd-sensing-inspect-mmw-physics` 和 `kd-sensing-project-surface-doctor`
 - **AND** 安装生成的 entry points MUST 不要求包含 `kd-sensing-raymobtime-analysis`、`kd-sensing-gps-window-baseline`、viewer manifest 或仓库级 Gradio viewer support 入口
 
 ### Requirement: 内部代码不得新增二级兼容聚合层依赖
@@ -289,4 +289,3 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **WHEN** 一个 import path 未登记为 public surface
 - **THEN** 它 MAY 被删除或移动
 - **AND** 项目 MUST 不新增旧路径 compatibility wrapper
-

@@ -1,22 +1,14 @@
-# Config protocol index
+# Config Surface
 
-This file points configuration families to the current protocol and claim documents. It is an index only; do not copy full result tables here.
+当前配置面只保留主线、MMW/CSI、通用 supervised/preprocess 和治理 smoke。
 
-- Mainline model catalog: `docs/mainline_model_catalog.md`
-- Experiment protocols: `docs/experiment_protocols.md`
-- Result and claim registry: `docs/result_claims_registry.md`
-
-| family | configs | status in protocol table |
+| Family | Paths | Lifecycle |
 | --- | --- | --- |
-| MMW Town GPS v2 | `configs/mmw_town_gps_adapter_v2.yaml` | formal diagnostic; `within_scene_train` is sanity/upper-bound style evidence |
-| BEV-Fusion 2604 | `configs/fusion/experiments/bev_fusion_2604/` | formal, lowmem, smoke and ablation variants are separated |
-| JEPA Image+GPS | `configs/fusion/experiments/jepa_image_gps/` | 31 retained entity YAML; BeamBench-fair, 2604-style, predictive, geometry-prior and safe-rerank families must not be mixed |
-| RBMA missing workflow | `configs/fusion/experiments/rbma_missing_workflow/`, `configs/fusion/experiments/rbma_missing_workflow_strong_encoders/` | local/manual pending evidence; strong-encoder overlays require local checkpoint placeholders |
-| Scene31 generated/local overlays | `configs/scene31/` | generated queues keep manifests/base/generators; retained entity YAML are local/manual or pending evidence inputs |
-| CSI hardening | `configs/csi/hardening_matrix/`, `configs/fusion/csi_hardening_matrix/` | formal matrix plus debug matrix |
-| Difficulty profiles | `configs/difficulty/` | diagnostic/training profiles, not new modalities |
-| Diagnostics / benchmark manifests | `configs/diagnostics/` | smoke, benchmark or diagnostic-only as declared by manifest |
+| U-MaskBeamJEPA / final C2 | `configs/fusion/u_mask_beam_jepa_*.yaml`, `configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml` | current mainline |
+| MMW / physics-informed MMW | `configs/mmw_town_gps_adapter_v2.yaml`, `configs/fusion/physics_informed_mmw*.yaml`, `configs/preprocess/mmw_*.yaml` | protected MMW workflow |
+| CSI hardening | `configs/csi/`, `configs/fusion/csi_hardening_matrix/` | protected CSI workflow |
+| canonical supervised | `configs/{image,radar,gps,lidar,mmwave,csi}/`, `configs/fusion/*.yaml` | current reusable baselines |
+| preprocessing | `configs/preprocess/*.yaml` | current dataset/cache preparation |
+| diagnostics | `configs/diagnostics/amber_lite_missing_modality_eval.yaml` | current smoke/evaluation diagnostic |
 
-Retired BGAM configs and the legacy viewer manifest config are intentionally absent; old paths fail fast instead of being regenerated as virtual configs.
-
-All runtime outputs remain local ignored artifacts under `outputs/`, `outputs/cache/`, `logs/` or explicit manifest output roots.
+历史 BEV-Fusion 2604、Image+GPS JEPA、BeamBench、Vision-Position、RBMA/KD/BTAPA/weakKD sweep 实体配置已退役或删除；不要恢复为 current YAML 或 virtual config。

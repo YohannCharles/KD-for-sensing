@@ -66,19 +66,13 @@ def test_project_surface_doctor_classifies_shrunk_experiment_config_families():
     configs = report["sections"]["configs"]
     entries = {entry["path"]: entry for entry in configs["entries"]}
 
-    assert entries[
-        "configs/fusion/experiments/jepa_image_gps/image_gps_jepa_gps_biased_best_beambench_fair_lowmem.yaml"
-    ]["family"] == "JEPA Image+GPS experiment"
-    assert entries[
-        "configs/fusion/experiments/rbma_missing_workflow/weighted_sum_reliability_beam_proto_kd.yaml"
-    ]["run_class"] == "claim-evidence pending"
-    assert entries[
-        "configs/fusion/experiments/rbma_missing_workflow_strong_encoders/weighted_sum_mask.yaml"
-    ]["run_class"] == "checkpoint-placeholder"
+    assert entries["configs/fusion/u_mask_beam_jepa_smoke.yaml"]["family"] == "canonical fusion"
+    assert entries["configs/fusion/physics_informed_mmw_debug.yaml"]["lifecycle"] == "current"
+    assert entries["configs/fusion/csi_hardening_matrix/E1_gps_clean_csi_joint.yaml"]["lifecycle"] == "current"
     assert entries["configs/scene31/templates/main_v3_proto_es20_base.yaml"]["lifecycle"] == "generated/recipe-backed"
     assert configs["recipe_migration_candidates"]
     assert any(
-        "configs/fusion/experiments/rbma_missing_workflow/weighted_sum_mask.yaml" in candidate["paths"]
+        "configs/fusion/csi_hardening_matrix/E1_gps_clean_csi_joint.yaml" in candidate["paths"]
         for candidate in configs["recipe_migration_candidates"]
     )
 

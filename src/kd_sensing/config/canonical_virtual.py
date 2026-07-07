@@ -18,14 +18,12 @@ _RETIRED_FUSION_KD_SUFFIXES = tuple((f"_{mode}", mode) for mode in RETIRED_FUSIO
 class VirtualConfigBuilders:
     fusion: Callable[[str], dict[str, Any]]
     snapshot_single: Callable[[str], dict[str, Any]]
-    vision_position_baseline: Callable[[str], dict[str, Any]]
 
 
 @dataclass(frozen=True)
 class VirtualConfigRoutes:
     snapshot_mode: str
     single_modalities: Sequence[str]
-    vision_position_presets: Sequence[str]
     removed_fusion_config_stems: Mapping[str, str] = field(default_factory=lambda: dict(REMOVED_FUSION_CONFIG_STEMS))
 
 
@@ -37,8 +35,6 @@ def build_virtual_config_for_path(
 ) -> dict[str, Any] | None:
     """Build a virtual canonical config override for a missing config path."""
 
-    if is_vision_position_baseline_config_path(config_path, presets=routes.vision_position_presets):
-        return builders.vision_position_baseline(config_path.stem)
     if is_fusion_config_path(config_path):
         replacement = routes.removed_fusion_config_stems.get(config_path.stem)
         if replacement is not None:
@@ -99,13 +95,6 @@ def is_fusion_config_path(path: Path) -> bool:
         return False
     parts = config_path_parts(path)
     return len(parts) == 3 and parts[:2] == ("configs", "fusion")
-
-
-def is_vision_position_baseline_config_path(path: Path, *, presets: Sequence[str]) -> bool:
-    if path.suffix not in {".yaml", ".yml"} or path.stem not in set(presets):
-        return False
-    parts = config_path_parts(path)
-    return len(parts) == 3 and parts[0] == "configs" and parts[1] in {"fusion", "gps"}
 
 
 def config_path_parts(path: Path) -> tuple[str, ...]:

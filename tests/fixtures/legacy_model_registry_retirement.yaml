@@ -16,6 +16,18 @@ retained_removed_guards:
   - name: safe_residual_reranker
     registry: heads
     hint: safe_residual_beam_reranker
+  - name: bev_fusion_2604
+    registry: models
+    hint: U-MaskBeamJEPA
+  - name: vision_position_late_fusion
+    registry: models
+    hint: U-MaskBeamJEPA
+  - name: vision_position_transformer_fusion
+    registry: models
+    hint: U-MaskBeamJEPA
+  - name: gps_sequence_baseline
+    registry: models
+    hint: modular_sequence
 unknown_names:
   - name: image_strong
     registry: models
@@ -29,10 +41,4 @@ current_entries:
   - name: cls_token_transformer_fusion
     registry: models
   - name: token_transformer_fusion
-    registry: models
-  - name: vision_position_late_fusion
-    registry: models
-  - name: vision_position_transformer_fusion
-    registry: models
-  - name: gps_sequence_baseline
     registry: models

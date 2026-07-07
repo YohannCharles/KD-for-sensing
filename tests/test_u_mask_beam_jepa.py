@@ -648,38 +648,31 @@ def test_config_overlays_training_extension_and_architecture_summary():
     assert metadata["use_full_to_partial_kd"] is True
     assert metadata["kd_teacher_mode"] == "online_full"
     assert metadata["consumes_reliability_metadata"] is True
-    strong = load_config(ROOT / "configs/fusion/experiments/rbma_missing_workflow_strong_encoders/weighted_sum_mask.yaml")
-    assert strong["model"]["primary"]["encoders"]["gps"]["type"] == "gps_mlp"
-    assert "gps" in strong["model"]["primary"]["encoder_checkpoint_paths"]
+    weighted_sum = load_config(ROOT / "configs/fusion/u_mask_beam_jepa_weighted_sum.yaml")
+    assert weighted_sum["model"]["primary"]["fusion_type"] == "weighted_sum"
+    concat_mlp = load_config(ROOT / "configs/fusion/u_mask_beam_jepa_concat_mlp.yaml")
+    assert concat_mlp["model"]["primary"]["fusion_type"] == "concat_mlp"
 
 
-def test_rbma_ablation_configs_load_and_set_current_flags():
-    base = ROOT / "configs/fusion/experiments/rbma_missing_workflow"
-    main = load_config(base / "no_jepa_rbma_proto_kd.yaml")
+def test_u_mask_root_ablation_configs_load_and_set_current_flags():
+    main = load_config(ROOT / "configs/fusion/u_mask_beam_jepa_no_jepa.yaml")
     primary = main["model"]["primary"]
     assert set(primary["modalities"]) == {"image", "radar", "lidar", "gps"}
-    assert primary["fusion_type"] == "reliability_biased_missing_attention"
+    assert primary["fusion_type"] == "reliability_gated_cross_attention"
     assert primary["use_jepa_loss"] is False
-    assert main["training"]["mask_sampler"] == "pattern_balanced"
-    assert main["training"]["use_beam_prototype_alignment"] is True
-    assert main["training"]["use_full_to_partial_kd"] is True
-    assert main["training"]["kd_teacher_mode"] == "online_full"
+    assert main["loss"]["u_mask_beam_jepa"]["lambda_jepa"] == 0.0
 
-    baseline = load_config(base / "amber_style_mask_baseline.yaml")
-    assert baseline["model"]["primary"]["fusion_type"] == "weighted_sum"
-    assert baseline["training"].get("use_beam_prototype_alignment", False) is False
-    assert baseline["training"].get("use_full_to_partial_kd", False) is False
+    weighted_sum = load_config(ROOT / "configs/fusion/u_mask_beam_jepa_weighted_sum.yaml")
+    assert weighted_sum["model"]["primary"]["fusion_type"] == "weighted_sum"
 
     for name in (
-        "no_jepa_rbma.yaml",
-        "no_jepa_rbma_proto.yaml",
-        "no_jepa_rbma_kd.yaml",
-        "jepa_small_lambda_rbma_proto_kd.yaml",
-        "proto_only_baseline.yaml",
+        "u_mask_beam_jepa_no_uncertainty.yaml",
+        "u_mask_beam_jepa_concat_mlp.yaml",
+        "u_mask_beam_jepa_s32.yaml",
     ):
-        cfg = load_config(base / name)
+        cfg = load_config(ROOT / "configs/fusion" / name)
         assert set(cfg["model"]["primary"]["modalities"]) == {"image", "radar", "lidar", "gps"}
-        assert "vision" not in (base / name).read_text(encoding="utf-8")
+        assert "vision" not in (ROOT / "configs/fusion" / name).read_text(encoding="utf-8")
 
 
 def test_u_mask_beam_jepa_missing_alias_warns_and_missing_mask_wins():

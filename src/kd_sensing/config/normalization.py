@@ -23,9 +23,6 @@ IMAGE_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
-    "vision_position_late_fusion",
-    "vision_position_transformer_fusion",
-    "bev_fusion_2604",
     "modular_sequence",
 }
 MODULAR_MODEL_TYPES = {"modular_sequence"}
@@ -41,10 +38,6 @@ FUSION_MODEL_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     "gps_conditioned_jepa",
-    "gps_sequence_baseline",
-    "vision_position_late_fusion",
-    "vision_position_transformer_fusion",
-    "bev_fusion_2604",
     "pinn_multimodal_beam",
     "u_mask_beam_jepa",
 }
@@ -56,10 +49,6 @@ D_MODEL_ROLE_TYPES = {
     "cls_token_transformer_fusion",
     "token_transformer_fusion",
     *MODULAR_MODEL_TYPES,
-    "gps_sequence_baseline",
-    "vision_position_late_fusion",
-    "vision_position_transformer_fusion",
-    "bev_fusion_2604",
     "pinn_multimodal_beam",
 }
 

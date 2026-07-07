@@ -16,7 +16,7 @@
 - Config loader 和 migration guard：`src/kd_sensing/config/`
 - Current tracked YAML：`configs/`
 - Console script 暴露：`pyproject.toml`
-- Scene31 local/manual 生成：`scripts/generate_scene31_next_round.py`、`scripts/generate_experiment_grid.py`
+- Scene31/Scene31-34 local/manual 生成：`scripts/generate_scenes31_34_main.py`、`scripts/generate_scenes31_34_encoder_ablation.py`
 
 ## 边界
 

@@ -23,8 +23,8 @@ from scene31_generator_common import rel, truthy  # noqa: E402
 DEFAULT_SCENES = [31, 32, 33, 34]
 PRETRAIN_EPOCHS = 100
 DOWNSTREAM_EPOCHS = 40
-IMAGE_PRETRAIN_BASE = ROOT / "configs/fusion/experiments/m2beam_single_modal_scene31/image.yaml"
-LIDAR_PRETRAIN_BASE = ROOT / "configs/fusion/experiments/m2beam_single_modal_scene31/lidar.yaml"
+IMAGE_PRETRAIN_BASE = ROOT / "configs/image/supervised.yaml"
+LIDAR_PRETRAIN_BASE = ROOT / "configs/lidar/supervised.yaml"
 DOWNSTREAM_BASE = ROOT / "configs/scene31/templates/main_v3_proto_es20_base.yaml"
 MODALITIES = ["image", "radar", "gps", "lidar"]
 

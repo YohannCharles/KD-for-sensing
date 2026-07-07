@@ -1,4 +1,4 @@
-_base_: ../main_v3_strong_reliability_proto.yaml
+_base_: ../../fusion/u_mask_beam_jepa_weighted_sum.yaml
 experiment:
   name: main_v3_proto_es20_base
 model:

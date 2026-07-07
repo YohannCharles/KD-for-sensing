@@ -72,7 +72,7 @@
 - **AND** 训练循环 MUST 不需要为旧整模型名称新增专用 forward 分支
 
 #### Scenario: 保留 whole-model exception 独立构建
-- **WHEN** 用户配置 current whole-model exception，例如 `bev_fusion_2604`、`gps_conditioned_jepa` 或其它仍在 current spec 中保留的注册名
+- **WHEN** 用户配置 current whole-model exception，例如 `gps_conditioned_jepa`、`u_mask_beam_jepa` 或其它仍在 current spec 中保留的注册名
 - **THEN** 系统 MUST 继续通过 `MODELS` 构建该模型
 - **AND** 该模型 MUST 保持其 documented forward/output/metadata 契约
 

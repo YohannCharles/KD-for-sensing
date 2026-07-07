@@ -1,7 +1,7 @@
 # final-c2-ablation-v1 Specification
 
 ## Purpose
-TBD - created by archiving change final-c2-ablation-v1. Update Purpose after archive.
+记录 final C2 / U-MaskBeamJEPA 缺失模态消融矩阵、launcher、summary 和 focused regression 边界，作为 post-C2 主线证据的当前契约。
 ## Requirements
 ### Requirement: final c2 消融矩阵
 系统 MUST 提供本地手工 `final_c2_ablation_v1` 实验矩阵，覆盖主方法、最强非 router 对照、negative/trade-off、router、prototype、fusion baseline 和 pattern weighting 消融。矩阵默认 MUST 生成 67 个 job：A 组 19 个、B 组 15 个、C 组 12 个、D 组 12 个、E 组 9 个。
@@ -58,4 +58,3 @@ TBD - created by archiving change final-c2-ablation-v1. Update Purpose after arc
 #### Scenario: focused pytest 可运行
 - **WHEN** 运行 `conda run -n kd_mm_beam pytest -q tests/test_final_c2_ablation_v1.py`
 - **THEN** 测试 MUST 在不读取真实 dataset、不加载 checkpoint、不启动长训的情况下验证 final c2 ablation owner 行为
-

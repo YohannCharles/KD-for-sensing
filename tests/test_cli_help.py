@@ -52,6 +52,17 @@ def test_retired_top8_residual_cli_scripts_are_not_declared():
         "visualize-modalities",
         "run-amr-net-gps-image",
         "run-jepa-msac",
+        "jepa-visual-analysis",
+        "jepa-gps-shortcut-benchmark",
+        "training-throughput",
+        "target-shot-split",
+        "distribution-shift",
+        "wcl2025-missing-modality-audit",
+        "dataset-audit",
+        "train-beambench-image-ae-gps",
+        "run-beambench-image-ae-gps-tableiii",
+        "tii-vlrg-transformer",
+        "model-architecture-summary",
     ]
     violations = [fragment for fragment in retired_fragments if fragment in text]
 

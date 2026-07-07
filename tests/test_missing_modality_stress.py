@@ -80,8 +80,8 @@ def test_baseline_comparability_metadata_marks_strict_and_missing_fields():
         difficulty_digest="digest",
     )
     missing = baseline_stress_comparability_metadata(
-        model_group="RMBP-MM",
-        config_path="configs/fusion/experiments/wcl2025_missing_modality/local_substitute.yaml",
+        model_group="U-MaskBeamJEPA",
+        config_path="configs/fusion/u_mask_beam_jepa_smoke.yaml",
     )
 
     assert strict["strict_comparability"]["status"] == "strict"
@@ -124,4 +124,3 @@ def test_scene31_34_final_scripts_compile_and_emit_pending_caveats(tmp_path: Pat
     assert "pending" in (paper_root / "table_scenes31_34_classifier_baseline.md").read_text(encoding="utf-8")
     conclusion = conclusion_path.read_text(encoding="utf-8")
     assert "Final evidence is not yet complete" in conclusion
-

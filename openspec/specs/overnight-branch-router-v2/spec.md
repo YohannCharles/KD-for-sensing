@@ -1,7 +1,7 @@
 # overnight-branch-router-v2 Specification
 
 ## Purpose
-TBD - created by archiving change overnight-branch-router-v2. Update Purpose after archive.
+记录 overnight branch-router v2 的 soft hard-subset weighting、supervised router、launcher、summary 和 focused regression 边界，作为 post-C2 历史/支撑实验上下文。
 ## Requirements
 ### Requirement: Soft hard-subset weighting
 系统 MUST 支持显式 opt-in 的 `soft_static` hard subset weighting。该模式 MUST 按缺失 pattern 名称或 drop-count alias 返回固定权重：`full=0.75`、`drop1/miss1=1.0`、`drop2/miss2=1.15`、`drop3/miss3=1.35`、`radar_only=1.50`、`missing_image=1.35`，其它已知或未知 pattern 默认 `1.0`，且不得产生 NaN。
@@ -72,4 +72,3 @@ supervised router run MUST 保存真实 router gate 诊断、oracle target distr
 - **WHEN** 开发者运行 `conda run -n kd_mm_beam pytest -q tests/test_overnight_branch_router_v2.py`
 - **THEN** 测试 MUST 覆盖新增 helper、launcher dry-run 和 summary parser
 - **AND** 测试产物 MUST 写入 pytest 临时目录或 ignored output root
-

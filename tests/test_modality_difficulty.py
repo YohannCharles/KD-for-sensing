@@ -12,12 +12,6 @@ from kd_sensing.data.difficulty.schema import (
     normalize_difficulty_profiles,
 )
 from kd_sensing.data.difficulty.presets import GPS_QUERY_ADVANTAGE_CONDITION_IDS, PREDICTIVE_JEPA_CONDITION_IDS
-from kd_sensing.diagnostics.jepa_benchmark_manifest import normalize_suite_config
-from kd_sensing.diagnostics.jepa_benchmark_perturbations import (
-    _benchmark_difficulty_provenance,
-    _difficulty_profile_from_cxd_pair,
-    apply_benchmark_perturbation,
-)
 from kd_sensing.engine.batch import forward_model
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
@@ -643,49 +637,6 @@ def test_gps_query_advantage_difficulty_is_deterministic_and_beam_offset_constra
     assert changed_seed.batch["predictive_jepa_replay_metadata"]["gps"]["selection_pool_size"] == gps_metadata["selection_pool_size"]
 
 
-def test_cxd_difficulty_profile_preserves_labels_soft_targets_and_split_metadata() -> None:
-    suite = normalize_suite_config({"id": "scenario_cxd", "type": "scenario_c_x_d_image_observability"})
-    gps_condition = next(item for item in suite["scenario_c_conditions"] if item["id"] == "C4_severe_async")
-    image_condition = next(item for item in suite["scenario_d_conditions"] if item["id"] == "D7_joint_worst_case")
-    profile = _difficulty_profile_from_cxd_pair(
-        suite,
-        gps_condition=gps_condition,
-        image_condition=image_condition,
-        seed=19,
-    )
-    batch = _batch()
-    batch["soft_target"] = torch.eye(4, dtype=torch.float32)[[0, 2]].unsqueeze(1)
-    batch["split_metadata"] = {"fold": "unit", "rows": [1, 2]}
-    batch["metadata"] = {
-        **batch["metadata"],
-        "split_metadata": {"fold": "unit", "rows": [1, 2]},
-    }
-    before = {
-        "target_beam": batch["target_beam"].clone(),
-        "beam_power": batch["beam_power"].clone(),
-        "soft_target": batch["soft_target"].clone(),
-        "sample_id": list(batch["metadata"]["sample_id"]),
-        "split": list(batch["metadata"]["split"]),
-        "split_metadata": dict(batch["metadata"]["split_metadata"]),
-    }
-
-    result = apply_difficulty_pipeline(
-        batch,
-        profile,
-        DifficultyContext(stage="benchmark", split="test", seed=19, sample_ids=("a", "b")),
-    )
-
-    assert torch.equal(result.batch["target_beam"], before["target_beam"])
-    assert torch.equal(result.batch["beam_power"], before["beam_power"])
-    assert torch.equal(result.batch["soft_target"], before["soft_target"])
-    assert result.batch["metadata"]["sample_id"] == before["sample_id"]
-    assert result.batch["metadata"]["split"] == before["split"]
-    assert result.batch["metadata"]["split_metadata"] == before["split_metadata"]
-    assert result.batch["difficulty"]["condition"] == "C4_severe_async+D7_joint_worst_case"
-    assert result.batch["metadata"]["difficulty_profiles"][0]["profile"]["metadata"]["gps_condition"] == "C4_severe_async"
-    assert result.batch["metadata"]["difficulty_profiles"][0]["profile"]["metadata"]["image_condition"] == "D7_joint_worst_case"
-
-
 def test_image_observability_metadata_fields_are_queryable() -> None:
     fields = difficulty_metadata_fields("image")
 
@@ -1021,29 +972,6 @@ def test_train_and_evaluation_hooks_are_stage_scoped() -> None:
     assert train_model.last_gps_batch is not None
     assert train_model.last_gps_batch[0, :, 0].tolist() == [0.0, 0.0, 1.0]
     assert torch.equal(batch_result.batch["target_beam"], _batch()["target_beam"])
-
-
-def test_benchmark_wrapper_uses_shared_difficulty_pipeline_and_records_provenance() -> None:
-    batch = {
-        "gps": torch.arange(5, dtype=torch.float32).reshape(1, 5, 1),
-        "target_beam": torch.tensor([[3]]),
-        "metadata": {"sample_id": ["toy"]},
-    }
-    suite = {
-        "id": "delay",
-        "type": "temporal_delay",
-        "modality": "gps",
-        "severities": [2],
-        "fallback": "zero_fill",
-    }
-
-    result, warnings = apply_benchmark_perturbation(batch, suite, severity=2, seed=17)
-
-    assert warnings == []
-    assert result["gps"].flatten().tolist() == [0.0, 0.0, 0.0, 1.0, 2.0]
-    assert result["metadata"]["benchmark_perturbation"]["difficulty_profile_digest"] == result["difficulty"]["profile_digest"]
-    provenance = _benchmark_difficulty_provenance({"perturbation_suites": [normalize_suite_config(suite)], "seeds": [17]})
-    assert provenance[0]["profile"]["digest"] == result["difficulty"]["profile_digest"]
 
 
 def test_apply_configured_difficulty_noop_path_preserves_batch_object_semantics() -> None:

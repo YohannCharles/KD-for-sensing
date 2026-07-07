@@ -12,11 +12,7 @@ from typing import Any, Iterable, Mapping
 import yaml
 
 from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_SURFACE
-from kd_sensing.config.canonical import (
-    CANONICAL_SINGLE_MODALITIES,
-    SNAPSHOT_MODE,
-    VISION_POSITION_BASELINE_PRESETS,
-)
+from kd_sensing.config.canonical import CANONICAL_SINGLE_MODALITIES, SNAPSHOT_MODE
 from kd_sensing.config.io import load_config_source
 from kd_sensing.utils.paths import project_root as resolve_project_root
 
@@ -1281,15 +1277,6 @@ def _classify_config(rel_path: str, authority: dict[str, str]) -> dict[str, Any]
     elif rel_path.startswith("configs/eval/"):
         family, lifecycle, run_class = "evaluation matrix", "local/manual", "evaluation-only"
         output_boundary = "outputs/eval/"
-    elif rel_path.startswith("configs/fusion/experiments/jepa_image_gps/"):
-        family, lifecycle, run_class = "JEPA Image+GPS experiment", "local/manual", "paper/workflow reproduction"
-        output_boundary = "outputs/ or outputs/analysis/"
-    elif rel_path.startswith("configs/fusion/experiments/rbma_missing_workflow_strong_encoders/"):
-        family, lifecycle, run_class = "RBMA strong-encoder overlay", "local/manual", "checkpoint-placeholder"
-        output_boundary = "outputs/scene31/"
-    elif rel_path.startswith("configs/fusion/experiments/rbma_missing_workflow/"):
-        family, lifecycle, run_class = "RBMA missing workflow", "local/manual", "claim-evidence pending"
-        output_boundary = "outputs/scene31/"
     elif rel_path.startswith("configs/fusion/experiments/"):
         family, lifecycle, run_class = "experiment reproduction", "local/manual", "local/manual"
     elif rel_path.startswith("configs/fusion/"):
@@ -1405,14 +1392,6 @@ def _virtual_config_routes() -> list[dict[str, Any]]:
             "source": "src/kd_sensing/config/canonical.py",
         }
         for modality in CANONICAL_SINGLE_MODALITIES
-    )
-    routes.extend(
-        {
-            "path": f"configs/fusion/{preset}.yaml",
-            "lifecycle": "current",
-            "source": "src/kd_sensing/config/canonical.py",
-        }
-        for preset in VISION_POSITION_BASELINE_PRESETS
     )
     return routes
 

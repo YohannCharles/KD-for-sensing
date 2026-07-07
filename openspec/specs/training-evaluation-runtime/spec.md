@@ -165,7 +165,7 @@
 
 #### Scenario: CLI help characterization
 - **WHEN** 开发者运行 CLI help focused tests
-- **THEN** `kd-sensing-train --help`、`kd-sensing-evaluate --help`、`kd-sensing-preprocess --help`、`kd-sensing-jepa-visual-analysis --help` 和 `kd-sensing-jepa-gps-shortcut-benchmark --help` MUST 正常退出
+- **THEN** `kd-sensing-train --help`、`kd-sensing-evaluate --help`、`kd-sensing-preprocess --help`、`kd-sensing-eval-u-mask-matrix --help` 和 `kd-sensing-project-surface-doctor --help` MUST 正常退出
 - **AND** 检查 MUST 不读取真实数据集、不加载 checkpoint、不启动训练
 
 ### Requirement: Beam TensorBoard 指标命名空间
@@ -393,4 +393,3 @@ Training 和 evaluation runtime 重构 MUST 保持 context preparation、resourc
 - **WHEN** 单模态 runtime 准备 batch 且 `model_cfg.input_profiles` 缺少对应 modality
 - **THEN** runtime MUST 将缺省 profile 交给对应 modality helper 处理
 - **AND** 系统 MUST 不因其它 modality profile 存在而改变该任务的默认 profile
-

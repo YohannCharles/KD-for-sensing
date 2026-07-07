@@ -68,19 +68,19 @@ def reject_removed_config_path(config_path: str | Path | None) -> None:
         raise ValueError(
             f"HiST-Beam/Hist research line has been retired; legacy config path "
             f"'{path.as_posix()}' is no longer supported. Use current supervised, adapter, "
-            "MMW GPS v2, CSI, JEPA visual analysis, or current benchmark workflows."
+            "U-MaskBeamJEPA, MMW GPS v2, CSI, or retained governance workflows."
         )
     if _is_retired_bgam_config_path(path):
         raise ValueError(
             f"GPS+LiDAR BGAM has been retired; legacy config path '{path.as_posix()}' "
             "is no longer supported and no compatibility migration is provided. "
-            "Use current supervised/adaptation, JEPA, MMW GPS v2, CSI, or retained diagnostics."
+            "Use current supervised/adaptation, U-MaskBeamJEPA, MMW GPS v2, CSI, or retained diagnostics."
         )
     if _is_retired_viewer_config_path(path):
         raise ValueError(
             f"Viewer manifest and repository Gradio viewer support have been retired; "
             f"legacy config path '{path.as_posix()}' is no longer supported. "
-            "Use kd-sensing-jepa-visual-analysis or kd-sensing-jepa-gps-shortcut-benchmark."
+            "Use kd-sensing-eval-u-mask-matrix, kd-sensing-mmw-town-gps-v2, or kd-sensing-project-surface-doctor."
         )
     if _is_retired_raymobtime_config_path(path):
         raise ValueError(
@@ -91,8 +91,7 @@ def reject_removed_config_path(config_path: str | Path | None) -> None:
         raise ValueError(
             f"AMR-Net_gps_image and JEPA-MSAC priority legacy workflows have been retired; "
             f"legacy config path '{path.as_posix()}' is no longer supported. "
-            "Use current Vision-Position/BeamBench baselines, GPS-conditioned JEPA, "
-            "JEPA visual analysis, GPS shortcut benchmark, or MMW GPS v2 package CLIs."
+            "Use current U-MaskBeamJEPA, MMW GPS v2, CSI, or project surface doctor CLIs."
         )
     suggestion = _replacement_config_path(path)
     if suggestion is None:
@@ -184,7 +183,7 @@ def reject_retired_bgam_viewer_config(cfg: dict[str, Any]) -> None:
             raise ValueError(
                 "Viewer manifest and repository Gradio viewer support have been retired; "
                 "diagnostics.visualization is no longer a current config surface. "
-                "Use kd-sensing-jepa-visual-analysis or kd-sensing-jepa-gps-shortcut-benchmark."
+                "Use kd-sensing-eval-u-mask-matrix, kd-sensing-mmw-town-gps-v2, or kd-sensing-project-surface-doctor."
             )
 
     for location, model_cfg in iter_model_configs(cfg):
@@ -422,4 +421,3 @@ def _is_retired_viewer_config_path(path: Path) -> bool:
 def _is_retired_priority_workflow_config_path(path: Path) -> bool:
     rel_parts = _config_rel_parts(path)
     return bool(rel_parts and rel_parts[0] == "configs" and path.stem in RETIRED_PRIORITY_CONFIG_STEMS)
-
