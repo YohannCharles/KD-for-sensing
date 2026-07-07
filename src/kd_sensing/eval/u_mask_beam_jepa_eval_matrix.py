@@ -19,6 +19,10 @@ from kd_sensing.eval.missing_patterns import (
     make_fixed_missing_mask,
     sample_eval_random_missing_mask,
 )
+from kd_sensing.engine.pcpg_radar_balance import (
+    missing_count_from_pattern_name,
+    supervised_router_oracle_targets,
+)
 
 COMPARABILITY_FIELDS = (
     "run_name",
@@ -311,6 +315,7 @@ def _evaluate_pattern(
             ),
             "ece": expected_calibration_error(logits, target),
         }
+        metrics.update(_supervised_router_diagnostic_metrics(diagnostics, target, metric_missing_mask, modalities, pattern_name))
         accumulator.update(metrics, int(target.numel()))
     return {
         "pattern": pattern_name,
@@ -437,6 +442,49 @@ def _oracle_logits_from_diagnostics(
     return oracle_logits, [names[int(index)] if int(index) < len(names) else f"modality_{int(index)}" for index in chosen.detach().cpu()]
 
 
+def _supervised_router_diagnostic_metrics(
+    diagnostics: dict[str, Any],
+    target: torch.Tensor,
+    available_mask: torch.Tensor,
+    modalities: list[str] | None,
+    pattern_name: str,
+) -> dict[str, float]:
+    if diagnostics.get("reliability_fusion_mode") != "supervised_router":
+        return {}
+    weights = diagnostics.get("reliability_fusion_weights")
+    logits = diagnostics.get("unimodal_logits")
+    if not torch.is_tensor(weights) or weights.ndim != 2:
+        return {}
+    names = list(modalities or [f"modality_{index}" for index in range(weights.shape[1])])
+    out: dict[str, float] = {}
+    for modality in ("image", "lidar", "radar", "gps"):
+        if modality in names:
+            out[f"mean_gate_{modality}"] = float(weights[:, names.index(modality)].detach().mean().cpu().item())
+    entropy = -(weights * weights.clamp_min(1e-8).log()).sum(dim=-1)
+    out["gate_entropy"] = float(entropy.detach().mean().cpu().item())
+    if torch.is_tensor(logits) and logits.ndim == 3:
+        targets = supervised_router_oracle_targets(logits, target, available_mask)
+        predicted = weights.argmax(dim=1)
+        correct = predicted.eq(targets).to(dtype=torch.float32)
+        out["router_oracle_acc"] = float(correct.detach().mean().cpu().item())
+        for modality in ("image", "lidar", "radar", "gps"):
+            if modality in names:
+                out[f"oracle_target_{modality}_rate"] = float(
+                    targets.eq(names.index(modality)).to(dtype=torch.float32).detach().mean().cpu().item()
+                )
+        if str(pattern_name) == "missing_image":
+            out["router_oracle_acc_missing_image"] = out["router_oracle_acc"]
+        if missing_count_from_pattern_name(str(pattern_name)) == 2:
+            out["router_oracle_acc_drop2"] = out["router_oracle_acc"]
+    if "radar" in names:
+        radar_gate = float(weights[:, names.index("radar")].detach().mean().cpu().item())
+        if str(pattern_name) == "missing_image":
+            out["radar_gate_missing_image"] = radar_gate
+        if missing_count_from_pattern_name(str(pattern_name)) == 2:
+            out["radar_gate_drop2"] = radar_gate
+    return out
+
+
 def _counter_payload(counter: Counter[str]) -> str:
     total = sum(counter.values())
     if total <= 0:
@@ -498,6 +546,20 @@ class _Accumulator:
             "mean_modality_reliability",
             "mean_available_modality_reliability",
             "ece",
+            "mean_gate_image",
+            "mean_gate_lidar",
+            "mean_gate_radar",
+            "mean_gate_gps",
+            "gate_entropy",
+            "router_oracle_acc",
+            "router_oracle_acc_missing_image",
+            "router_oracle_acc_drop2",
+            "oracle_target_image_rate",
+            "oracle_target_lidar_rate",
+            "oracle_target_radar_rate",
+            "oracle_target_gps_rate",
+            "radar_gate_missing_image",
+            "radar_gate_drop2",
         ]
         return {
             key: (self.sums[key] / self.num_samples if self.num_samples and key in self.sums else math.nan)

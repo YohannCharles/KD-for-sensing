@@ -6,7 +6,32 @@ import torch.nn.functional as F
 from kd_sensing.engine.training_extensions import BatchState, ExtensionContext, LossBundle, TrainingExtension
 
 
-SUPPORTED_HARD_PATTERNS = {"image_only", "lidar_only", "radar_only", "missing_image", "miss3"}
+SUPPORTED_HARD_PATTERNS = {
+    "full",
+    "drop1",
+    "drop2",
+    "drop3",
+    "miss1",
+    "miss2",
+    "miss3",
+    "image_only",
+    "lidar_only",
+    "radar_only",
+    "gps_only",
+    "missing_image",
+    "missing_lidar",
+    "missing_radar",
+    "missing_gps",
+}
+SOFT_STATIC_HARD_SUBSET_WEIGHTS = {
+    "full": 0.75,
+    "miss1": 1.0,
+    "miss2": 1.15,
+    "miss3": 1.35,
+    "radar_only": 1.50,
+    "missing_image": 1.35,
+}
+ROUTER_MODALITY_ORDER = ("image", "lidar", "radar", "gps")
 
 
 class PCPGRadarBalanceTrainingExtension(TrainingExtension):
@@ -44,6 +69,10 @@ class PCPGRadarBalanceTrainingExtension(TrainingExtension):
         total = total + bprr_total
         diagnostics.update(bprr_diag)
 
+        router_total, router_diag = _supervised_router_extra(context, cfg, batch_state, zero)
+        total = total + router_total
+        diagnostics.update(router_diag)
+
         return LossBundle(total=total, components={"unimodal": branch_total}, diagnostics=diagnostics)
 
 
@@ -59,7 +88,8 @@ def pcpg_radar_balance_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
     base["branch_aux_loss"] = _enabled(branch)
     base["radar_protect_loss"] = _enabled(radar)
-    base["hard_subset_weighting"] = hard if isinstance(hard, dict) else {"enabled": bool(hard)}
+    base["hard_subset_weighting"] = _hard_subset_weighting_config(hard)
+    base["hard_subset_weighting_type"] = str(base["hard_subset_weighting"].get("mode", "none"))
     base["use_jepa"] = bool(use_jepa)
     base["unimodal_aux_weight"] = float(
         loss_cfg.get("unimodal_aux_weight", base.get("unimodal_aux_weight", _weight(branch, 0.0)))
@@ -85,6 +115,45 @@ def pcpg_radar_balance_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "bprr_radar_gate_reg_patterns",
         base.get("bprr_radar_gate_reg_patterns", ["radar_only", "missing_image", "miss3"]),
     )
+    model_cfg = cfg.get("model", {}).get("primary", {}) if isinstance(cfg.get("model"), dict) else {}
+    base["router_supervision"] = str(
+        loss_cfg.get(
+            "router_supervision",
+            base.get("router_supervision", model_cfg.get("router_supervision", "none")),
+        )
+    ).strip().lower()
+    base["router_distill_weight"] = float(
+        loss_cfg.get(
+            "router_distill_weight",
+            base.get("router_distill_weight", model_cfg.get("router_distill_weight", 0.0)),
+        )
+    )
+    base["router_distill_temperature"] = float(
+        loss_cfg.get(
+            "router_distill_temperature",
+            base.get("router_distill_temperature", model_cfg.get("router_distill_temperature", 1.0)),
+        )
+    )
+    base["router_focus_patterns"] = loss_cfg.get(
+        "router_focus_patterns",
+        base.get("router_focus_patterns", model_cfg.get("router_focus_patterns", ["missing_image", "miss2", "drop2"])),
+    )
+    base["router_fuse_level"] = str(
+        loss_cfg.get("router_fuse_level", base.get("router_fuse_level", model_cfg.get("router_fuse_level", "logits")))
+    ).strip().lower()
+    for key in (
+        "router_use_pattern_features",
+        "router_use_reliability_features",
+        "router_use_prototype_margin",
+        "router_use_entropy",
+        "router_use_confidence",
+        "router_use_logit_norm",
+    ):
+        base[key] = _bool_value(loss_cfg.get(key, base.get(key, model_cfg.get(key, True))))
+    if base["router_supervision"] not in {"oracle", "pattern_best", "none"}:
+        raise ValueError("router_supervision must be one of oracle, pattern_best, or none.")
+    if base["router_fuse_level"] != "logits":
+        raise ValueError("supervised_router currently supports router_fuse_level='logits' only.")
     base["enabled"] = bool(
         base.get("enabled", False)
         or base["branch_aux_loss"]
@@ -93,8 +162,46 @@ def pcpg_radar_balance_config(cfg: dict[str, Any]) -> dict[str, Any]:
         or (base["use_jepa"] and base["jepa_weight"] > 0.0)
         or base["bprr_gate_balance_weight"] > 0.0
         or base["bprr_radar_gate_reg_weight"] > 0.0
+        or (base["router_supervision"] != "none" and base["router_distill_weight"] > 0.0)
     )
     return base
+
+
+def hard_subset_sample_weight(
+    pattern_name: str,
+    *,
+    mode: str = "static",
+    alpha: float = 1.5,
+    full_weight: float = 0.5,
+    unknown_weight: float = 1.0,
+    focus: list[str] | tuple[str, ...] | str | None = None,
+) -> float:
+    mode_name = str(mode or "none").strip().lower()
+    if mode_name in {"none", "false", "off", "0"}:
+        return 1.0
+    if mode_name == "soft_static":
+        return soft_static_hard_subset_weight(pattern_name, unknown_weight=unknown_weight)
+    return static_hard_subset_weight(
+        pattern_name,
+        alpha=alpha,
+        full_weight=full_weight,
+        unknown_weight=unknown_weight,
+        focus=focus,
+    )
+
+
+def soft_static_hard_subset_weight(pattern_name: str, *, unknown_weight: float = 1.0) -> float:
+    pattern = _canonical_pattern_alias(pattern_name)
+    if pattern in SOFT_STATIC_HARD_SUBSET_WEIGHTS:
+        return float(SOFT_STATIC_HARD_SUBSET_WEIGHTS[pattern])
+    missing_count = missing_count_from_pattern_name(pattern_name)
+    if missing_count == 1:
+        return float(SOFT_STATIC_HARD_SUBSET_WEIGHTS["miss1"])
+    if missing_count == 2:
+        return float(SOFT_STATIC_HARD_SUBSET_WEIGHTS["miss2"])
+    if missing_count == 3:
+        return float(SOFT_STATIC_HARD_SUBSET_WEIGHTS["miss3"])
+    return float(unknown_weight)
 
 
 def static_hard_subset_weight(
@@ -118,6 +225,19 @@ def static_hard_subset_weight(
     if pattern.startswith("missing_") and len([item for item in pattern.removeprefix("missing_").split("_") if item]) >= 3:
         return float(alpha)
     return float(unknown_weight)
+
+
+def missing_count_from_pattern_name(pattern_name: str) -> int | None:
+    pattern = _canonical_pattern_alias(pattern_name)
+    if pattern == "full":
+        return 0
+    if pattern in {"miss1", "miss2", "miss3"}:
+        return int(pattern[-1])
+    if pattern.endswith("_only"):
+        return 3
+    if pattern.startswith("missing_"):
+        return len([item for item in pattern.removeprefix("missing_").split("_") if item])
+    return None
 
 
 def pattern_name_from_available_mask(mask: torch.Tensor, modalities: list[str] | tuple[str, ...]) -> str:
@@ -144,6 +264,8 @@ def _branch_aux_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     diagnostics = batch_state.primary_output.diagnostics
     unimodal_logits = diagnostics.get("pcpg_unimodal_logits")
+    if not torch.is_tensor(unimodal_logits):
+        unimodal_logits = diagnostics.get("unimodal_logits")
     if not torch.is_tensor(unimodal_logits):
         if bool(cfg.get("radar_protect_loss", False)) and float(cfg.get("radar_aux_weight", 0.0)) != 0.0:
             labels = batch_state.labels[:, 0] if batch_state.labels.ndim > 1 else batch_state.labels.reshape(-1)
@@ -206,8 +328,9 @@ def _hard_subset_extra(
     names = [pattern_name_from_available_mask(row, modalities) for row in mask]
     weights = torch.tensor(
         [
-            static_hard_subset_weight(
+            hard_subset_sample_weight(
                 name,
+                mode=str(hard_cfg.get("mode", cfg.get("hard_subset_weighting_type", "static"))),
                 alpha=float(cfg.get("hard_subset_alpha", 1.5)),
                 full_weight=float(hard_cfg.get("full_weight", 0.5)),
                 unknown_weight=float(hard_cfg.get("unknown_weight", 1.0)),
@@ -276,6 +399,212 @@ def _bprr_gate_extra(
         "loss/bprr_gate_regularization": float(total.detach().cpu().item()),
         "bprr/gate_regularization_available": 1.0,
     }
+
+
+def _supervised_router_extra(
+    context: ExtensionContext,
+    cfg: dict[str, Any],
+    batch_state: BatchState,
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    diagnostics = batch_state.primary_output.diagnostics
+    gate = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
+    if not torch.is_tensor(gate):
+        return zero, {}
+    mask = _available_mask(diagnostics, batch_state, gate)
+    modalities = list(getattr(context.primary_model, "modalities", ())) or [f"modality_{i}" for i in range(gate.shape[1])]
+    return supervised_router_distill_extra(cfg, diagnostics, batch_state.labels, mask, modalities, zero)
+
+
+def supervised_router_distill_extra(
+    cfg: dict[str, Any],
+    diagnostics: dict[str, Any],
+    labels: torch.Tensor,
+    available_mask: torch.Tensor,
+    modalities: list[str] | tuple[str, ...],
+    zero: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    supervision = str(cfg.get("router_supervision", "none")).strip().lower()
+    weight = float(cfg.get("router_distill_weight", 0.0))
+    if supervision == "none" or weight == 0.0:
+        return zero, {}
+    if diagnostics.get("reliability_fusion_mode") != "supervised_router":
+        return zero, {"router/supervision_available": 0.0}
+    gate_logits = diagnostics.get("supervised_router_gate_logits", diagnostics.get("router_gate_logits"))
+    gate_weights = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
+    unimodal_logits = diagnostics.get("unimodal_logits", diagnostics.get("pcpg_unimodal_logits"))
+    if not torch.is_tensor(gate_logits) or not torch.is_tensor(gate_weights):
+        return zero, {"router/supervision_available": 0.0}
+    labels_flat = labels[:, 0] if labels.ndim > 1 else labels.reshape(-1)
+    available = available_mask.to(device=gate_logits.device, dtype=torch.bool)
+    patterns = [pattern_name_from_available_mask(row, modalities) for row in available]
+    focus = router_focus_mask(patterns, cfg.get("router_focus_patterns"), device=gate_logits.device)
+    valid = labels_flat.to(device=gate_logits.device).ne(-100) & focus & (available.sum(dim=1) > 1)
+    if not bool(valid.any().item()):
+        return zero, {"router/supervision_available": 1.0, "router/distill_active_rate": 0.0}
+    if supervision == "oracle" and torch.is_tensor(unimodal_logits):
+        targets = supervised_router_oracle_targets(unimodal_logits, labels_flat, available)
+    else:
+        targets = pattern_best_router_targets(patterns, available, modalities)
+    temperature = max(float(cfg.get("router_distill_temperature", 1.0)), 1e-6)
+    masked_logits = gate_logits.to(dtype=torch.float32).masked_fill(~available, torch.finfo(torch.float32).min)
+    loss = F.cross_entropy(masked_logits[valid] / temperature, targets.to(device=gate_logits.device)[valid])
+    predicted = gate_weights.argmax(dim=1)
+    active_targets = targets.to(device=gate_logits.device)[valid]
+    active_predicted = predicted[valid]
+    total = weight * loss
+    diagnostics_out = router_diagnostics_from_targets(
+        gate_weights,
+        active_predicted,
+        active_targets,
+        patterns,
+        valid,
+        modalities,
+    )
+    diagnostics_out.update(
+        {
+            "loss/router_distill": float(loss.detach().cpu().item()),
+            "router/supervision_available": 1.0,
+            "router/distill_active_rate": float(valid.to(dtype=torch.float32).mean().detach().cpu().item()),
+        }
+    )
+    return total, diagnostics_out
+
+
+def supervised_router_oracle_targets(
+    unimodal_logits: torch.Tensor,
+    labels: torch.Tensor,
+    available_mask: torch.Tensor,
+) -> torch.Tensor:
+    if unimodal_logits.ndim != 3:
+        raise ValueError(f"unimodal_logits must have shape [B, M, C], got {tuple(unimodal_logits.shape)}.")
+    available = available_mask.to(device=unimodal_logits.device, dtype=torch.bool)
+    if available.shape != unimodal_logits.shape[:2]:
+        raise ValueError(f"available_mask shape {tuple(available.shape)} must match logits {tuple(unimodal_logits.shape[:2])}.")
+    labels_flat = labels.to(device=unimodal_logits.device, dtype=torch.long).reshape(-1)
+    safe_labels = labels_flat.clamp_min(0)
+    predictions = unimodal_logits.argmax(dim=-1)
+    distance = (predictions - safe_labels.view(-1, 1)).abs()
+    distance = torch.minimum(distance, unimodal_logits.shape[-1] - distance)
+    ce = F.cross_entropy(
+        unimodal_logits.reshape(-1, unimodal_logits.shape[-1]),
+        safe_labels.repeat_interleave(unimodal_logits.shape[1]),
+        reduction="none",
+    ).view(unimodal_logits.shape[:2])
+    confidence = torch.softmax(unimodal_logits, dim=-1).amax(dim=-1)
+    order = torch.arange(unimodal_logits.shape[1], device=unimodal_logits.device, dtype=torch.float32).view(1, -1)
+    score = distance.to(torch.float32) * 1_000_000.0 + ce * 1_000.0 - confidence * 0.001 + order * 1e-6
+    score = score.masked_fill(~available, torch.finfo(score.dtype).max)
+    target = score.argmin(dim=1)
+    first_available = available.to(dtype=torch.int64).argmax(dim=1)
+    return torch.where(available.any(dim=1), target, first_available)
+
+
+def supervised_router_masked_softmax(logits: torch.Tensor, available_mask: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    available = available_mask.to(device=logits.device, dtype=torch.bool)
+    if logits.shape != available.shape:
+        raise ValueError(f"router logits shape {tuple(logits.shape)} must match mask {tuple(available.shape)}.")
+    masked = logits.masked_fill(~available, torch.finfo(logits.dtype).min)
+    weights = torch.softmax(masked, dim=-1) * available.to(dtype=logits.dtype)
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(float(eps))
+    return torch.where(available.any(dim=-1, keepdim=True), weights, torch.zeros_like(weights))
+
+
+def router_focus_mask(
+    pattern_names: list[str] | tuple[str, ...],
+    focus_patterns: list[str] | tuple[str, ...] | str | None,
+    *,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    focus = _pattern_set(focus_patterns or ("missing_image", "miss2", "drop2"))
+    values = [router_focus_pattern_enabled(pattern, focus) for pattern in pattern_names]
+    return torch.tensor(values, device=device, dtype=torch.bool)
+
+
+def router_focus_pattern_enabled(pattern_name: str, focus_patterns: set[str] | list[str] | tuple[str, ...] | str | None) -> bool:
+    pattern = _canonical_pattern_alias(pattern_name)
+    focus = focus_patterns if isinstance(focus_patterns, set) else _pattern_set(focus_patterns)
+    aliases = {pattern}
+    count = missing_count_from_pattern_name(pattern)
+    if "all_multimodal" in focus:
+        return count is not None and count <= 2
+    if count is not None:
+        aliases.update({f"miss{count}", f"drop{count}"})
+    return bool(aliases & set(focus))
+
+
+def pattern_best_router_targets(
+    pattern_names: list[str] | tuple[str, ...],
+    available_mask: torch.Tensor,
+    modalities: list[str] | tuple[str, ...],
+) -> torch.Tensor:
+    names = [str(item) for item in modalities]
+    priorities = {
+        "missing_image": ("radar", "lidar", "gps", "image"),
+        "miss2": ("radar", "lidar", "gps", "image"),
+        "drop2": ("radar", "lidar", "gps", "image"),
+    }
+    targets: list[int] = []
+    available = available_mask.detach().cpu().to(dtype=torch.bool)
+    for row, pattern in zip(available, pattern_names):
+        canonical = _canonical_pattern_alias(pattern)
+        priority = priorities.get(canonical)
+        count = missing_count_from_pattern_name(canonical)
+        if priority is None and count == 2:
+            priority = priorities["miss2"]
+        selected = None
+        for name in priority or names:
+            if name in names:
+                index = names.index(name)
+                if bool(row[index].item()):
+                    selected = index
+                    break
+        if selected is None:
+            selected = int(row.to(dtype=torch.int64).argmax().item())
+        targets.append(selected)
+    return torch.tensor(targets, device=available_mask.device, dtype=torch.long)
+
+
+def router_diagnostics_from_targets(
+    gate_weights: torch.Tensor,
+    active_predicted: torch.Tensor,
+    active_targets: torch.Tensor,
+    pattern_names: list[str],
+    valid_mask: torch.Tensor,
+    modalities: list[str] | tuple[str, ...],
+) -> dict[str, float]:
+    out: dict[str, float] = {}
+    if active_targets.numel() == 0:
+        return out
+    weights = gate_weights.detach()
+    active = valid_mask.to(device=weights.device, dtype=torch.bool)
+    names = [str(item) for item in modalities]
+    correct = active_predicted.eq(active_targets).to(dtype=torch.float32)
+    out["router/oracle_acc"] = float(correct.mean().detach().cpu().item())
+    out["router_oracle_acc"] = out["router/oracle_acc"]
+    for modality in ROUTER_MODALITY_ORDER:
+        if modality in names:
+            index = names.index(modality)
+            out[f"oracle_target_{modality}_rate"] = float(active_targets.eq(index).to(dtype=torch.float32).mean().detach().cpu().item())
+            out[f"mean_gate_{modality}"] = float(weights[active, index].mean().detach().cpu().item())
+    pattern_tensor = {
+        "missing_image": router_focus_mask(pattern_names, ["missing_image"], device=weights.device),
+        "drop2": router_focus_mask(pattern_names, ["miss2", "drop2"], device=weights.device),
+    }
+    for key, mask in pattern_tensor.items():
+        selected = active & mask
+        if bool(selected.any().item()):
+            pred = gate_weights.argmax(dim=1)[selected]
+            valid_indices = selected.nonzero(as_tuple=False).flatten()
+            active_indices = active.nonzero(as_tuple=False).flatten()
+            positions = torch.searchsorted(active_indices, valid_indices)
+            actual_targets = active_targets[positions]
+            out[f"router_oracle_acc_{key}"] = float(pred.eq(actual_targets).to(dtype=torch.float32).mean().detach().cpu().item())
+            if "radar" in names:
+                out[f"radar_gate_{key}"] = float(weights[selected, names.index("radar")].mean().detach().cpu().item())
+    gate_entropy = -(weights[active] * weights[active].clamp_min(1e-8).log()).sum(dim=-1)
+    out["gate_entropy"] = float(gate_entropy.mean().detach().cpu().item()) if gate_entropy.numel() else 0.0
+    return out
 
 
 def bprr_gate_regularization(
@@ -349,7 +678,38 @@ def _weight(value: Any, default: float) -> float:
     return default
 
 
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "none", ""}
+    return bool(value)
+
+
+def _hard_subset_weighting_config(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        cfg = dict(value)
+        mode = str(cfg.get("mode", "static" if bool(cfg.get("enabled", False)) else "none")).strip().lower()
+        if mode in {"false", "off", "0"}:
+            mode = "none"
+        cfg["mode"] = mode
+        cfg["enabled"] = bool(cfg.get("enabled", mode != "none"))
+        return cfg
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in {"", "none", "false", "off", "0"}:
+            return {"enabled": False, "mode": "none"}
+        if mode not in {"static", "soft_static", "dynamic"}:
+            raise ValueError("hard_subset_weighting must be one of none, static, soft_static, or dynamic.")
+        return {"enabled": True, "mode": mode}
+    return {"enabled": bool(value), "mode": "static" if bool(value) else "none"}
+
+
+def _canonical_pattern_alias(pattern_name: str) -> str:
+    pattern = str(pattern_name or "unknown").strip().lower()
+    aliases = {"drop1": "miss1", "drop2": "miss2", "drop3": "miss3"}
+    return aliases.get(pattern, pattern)
+
+
 def _pattern_set(value: list[str] | tuple[str, ...] | str | None) -> set[str]:
     if isinstance(value, str):
-        return {item.strip().lower() for item in value.split(",") if item.strip()}
-    return {str(item).strip().lower() for item in (value or []) if str(item).strip()}
+        return {_canonical_pattern_alias(item) for item in value.split(",") if item.strip()}
+    return {_canonical_pattern_alias(str(item)) for item in (value or []) if str(item).strip()}

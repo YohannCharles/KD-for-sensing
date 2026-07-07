@@ -190,7 +190,7 @@ class BeamPrototypeReliabilityRouter(nn.Module):
         )
         self.pattern_bias = nn.Linear(self.pattern_dim, self.num_modalities, bias=False)
 
-    def forward(
+    def forward_logits(
         self,
         reliability_features: torch.Tensor,
         available_mask: torch.Tensor,
@@ -217,6 +217,15 @@ class BeamPrototypeReliabilityRouter(nn.Module):
                     f"got {tuple(pattern_features.shape)}."
                 )
             logits = logits + self.pattern_bias(pattern_features.to(device=logits.device, dtype=logits.dtype))
+        return logits
+
+    def forward(
+        self,
+        reliability_features: torch.Tensor,
+        available_mask: torch.Tensor,
+        pattern_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        logits = self.forward_logits(reliability_features, available_mask, pattern_features)
         return masked_pcpg_softmax(logits, available_mask)
 
 
@@ -344,6 +353,18 @@ class UMaskBeamJEPA(nn.Module):
         bprr_init_temperature: float = 1.0,
         bprr_hidden_dim: int = 64,
         bprr_dropout: float = 0.1,
+        router_supervision: str = "none",
+        router_distill_weight: float = 0.0,
+        router_distill_temperature: float = 1.0,
+        router_focus_patterns: list[str] | tuple[str, ...] | str | None = None,
+        router_fuse_level: str = "logits",
+        router_use_pattern_features: bool = True,
+        router_use_reliability_features: bool = True,
+        router_use_prototype_margin: bool = True,
+        router_use_entropy: bool = True,
+        router_use_confidence: bool = True,
+        router_use_logit_norm: bool = True,
+        head_type: str = "legacy",
         use_light_latent_pred: bool = False,
         latent_pred_target: str = "full_fused",
         latent_pred_hidden_dim: int = 256,
@@ -375,6 +396,18 @@ class UMaskBeamJEPA(nn.Module):
         self.bprr_fuse_level = str(bprr_fuse_level)
         self.bprr_calibration = str(bprr_calibration or "none").strip().lower()
         self.bprr_init_temperature = float(bprr_init_temperature)
+        self.router_supervision = str(router_supervision or "none").strip().lower()
+        self.router_distill_weight = float(router_distill_weight)
+        self.router_distill_temperature = float(router_distill_temperature)
+        self.router_focus_patterns = router_focus_patterns
+        self.router_fuse_level = str(router_fuse_level or "logits").strip().lower()
+        self.router_use_pattern_features = _bool(router_use_pattern_features)
+        self.router_use_reliability_features = _bool(router_use_reliability_features)
+        self.router_use_prototype_margin = _bool(router_use_prototype_margin)
+        self.router_use_entropy = _bool(router_use_entropy)
+        self.router_use_confidence = _bool(router_use_confidence)
+        self.router_use_logit_norm = _bool(router_use_logit_norm)
+        self.head_type = str(head_type or "legacy").strip().lower()
         self.use_light_latent_pred = bool(use_light_latent_pred)
         self.latent_pred_target = str(latent_pred_target)
         self.ablation_id = ablation_id
@@ -385,18 +418,26 @@ class UMaskBeamJEPA(nn.Module):
             "reliability_biased_missing_attention",
             "concat_mlp",
             "weighted_sum",
+            "average",
             "pcpg",
             "raw_conf_gate",
             "bprr",
+            "supervised_router",
         }:
             raise ValueError(
                 "fusion_type must be reliability_gated_cross_attention, reliability_biased_missing_attention, "
-                "concat_mlp, weighted_sum, pcpg, raw_conf_gate, or bprr."
+                "concat_mlp, weighted_sum, average, pcpg, raw_conf_gate, bprr, or supervised_router."
             )
         if self.fusion_type == "pcpg" and self.pcpg_fuse_level != "logits":
             raise ValueError("fusion_type='pcpg' currently supports pcpg_fuse_level='logits' only.")
         if self.fusion_type == "bprr" and self.bprr_fuse_level != "logits":
             raise ValueError("fusion_type='bprr' currently supports bprr_fuse_level='logits' only.")
+        if self.fusion_type == "supervised_router" and self.router_fuse_level != "logits":
+            raise ValueError("fusion_type='supervised_router' currently supports router_fuse_level='logits' only.")
+        if self.router_supervision not in {"oracle", "pattern_best", "none"}:
+            raise ValueError("router_supervision must be one of oracle, pattern_best, or none.")
+        if self.head_type not in {"legacy", "prototype", "classifier"}:
+            raise ValueError("head_type must be one of legacy, prototype, or classifier.")
         if self.bprr_calibration not in {"none", "temperature"}:
             raise ValueError("bprr_calibration currently supports 'none' or 'temperature'.")
         if self.d_model <= 0 or self.num_classes <= 0 or self.num_pred <= 0:
@@ -494,7 +535,7 @@ class UMaskBeamJEPA(nn.Module):
                 hidden_dim=int(bprr_hidden_dim),
                 dropout=float(bprr_dropout),
             )
-            if self.fusion_type == "bprr"
+            if self.fusion_type in {"bprr", "supervised_router"}
             else None
         )
         self.bprr_temperature = (
@@ -502,7 +543,7 @@ class UMaskBeamJEPA(nn.Module):
                 len(self.modalities),
                 init_temperature=self.bprr_init_temperature,
             )
-            if self.fusion_type == "bprr" and self.bprr_calibration == "temperature"
+            if self.fusion_type in {"bprr", "supervised_router"} and self.bprr_calibration == "temperature"
             else None
         )
         latent_output_dim = self.num_classes if self.latent_pred_target == "prototype_distribution" else self.d_model
@@ -548,7 +589,7 @@ class UMaskBeamJEPA(nn.Module):
             fusion_diagnostics["pattern_film_apply_at"] = str(self.pattern_film_config.get("apply_at", "pre_head"))
         base_logits = fusion_diagnostics.get("fused_logits", fusion_diagnostics.get("pcpg_fused_logits"))
         if not torch.is_tensor(base_logits):
-            base_logits = self.beam_head(fused)
+            base_logits = self._head_logits(fused)
         logits = base_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         teacher_logits = teacher_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         return {
@@ -578,9 +619,9 @@ class UMaskBeamJEPA(nn.Module):
             "modalities": list(self.modalities),
             "consumes_missing_mask": True,
             "consumes_missing_modality_metadata": False,
-            "consumes_reliability_metadata": self.fusion_type in {"reliability_biased_missing_attention", "bprr"},
+            "consumes_reliability_metadata": self.fusion_type in {"reliability_biased_missing_attention", "bprr", "supervised_router"},
             "reliability_metadata_consumption": "internal_modality_uncertainty"
-            if self.fusion_type in {"reliability_biased_missing_attention", "bprr"}
+            if self.fusion_type in {"reliability_biased_missing_attention", "bprr", "supervised_router"}
             else "none",
             "same_model_full_modal_teacher_auxiliary": True,
             "use_teacher": self.use_teacher,
@@ -603,10 +644,29 @@ class UMaskBeamJEPA(nn.Module):
             "use_modality_uncertainty": self.use_modality_uncertainty,
             "use_global_uncertainty": self.use_global_uncertainty,
             "fusion_type": self.fusion_type,
+            "head_type": self.head_type,
+            "prototype_margin_enabled": self._prototype_margin_enabled(),
+            "router_use_pattern_features": self.router_use_pattern_features
+            if self.fusion_type == "supervised_router"
+            else None,
+            "router_use_reliability_features": self.router_use_reliability_features
+            if self.fusion_type == "supervised_router"
+            else None,
+            "router_use_prototype_margin": self.router_use_prototype_margin
+            if self.fusion_type == "supervised_router"
+            else None,
+            "router_use_entropy": self.router_use_entropy if self.fusion_type == "supervised_router" else None,
+            "router_use_confidence": self.router_use_confidence if self.fusion_type == "supervised_router" else None,
+            "router_use_logit_norm": self.router_use_logit_norm if self.fusion_type == "supervised_router" else None,
             "pcpg_fuse_level": self.pcpg_fuse_level if self.fusion_type == "pcpg" else None,
             "bprr_fuse_level": self.bprr_fuse_level if self.fusion_type == "bprr" else None,
             "bprr_calibration": self.bprr_calibration if self.fusion_type == "bprr" else None,
             "bprr_temperature_count": len(self.modalities) if self.bprr_temperature is not None else 0,
+            "router_supervision": self.router_supervision if self.fusion_type == "supervised_router" else None,
+            "router_distill_weight": self.router_distill_weight if self.fusion_type == "supervised_router" else None,
+            "router_distill_temperature": self.router_distill_temperature if self.fusion_type == "supervised_router" else None,
+            "router_focus_patterns": self.router_focus_patterns if self.fusion_type == "supervised_router" else None,
+            "router_fuse_level": self.router_fuse_level if self.fusion_type == "supervised_router" else None,
             "context_type": self.context_type,
             "use_registry_encoders": self.use_registry_encoders,
             "encoder_configs": self.encoder_configs,
@@ -724,10 +784,14 @@ class UMaskBeamJEPA(nn.Module):
             return self.cross_attention_fusion(latent, mu_b, reliability, global_reliability), {}
         if self.fusion_type == "pcpg":
             return self._pcpg_fuse(latent, mask, reliability, mu_b)
+        if self.fusion_type == "average":
+            return self._average_fuse(latent, mask, reliability)
         if self.fusion_type == "raw_conf_gate":
             return self._raw_conf_gate_fuse(latent, mask, reliability, mu_b)
         if self.fusion_type == "bprr":
             return self._bprr_fuse(latent, mask, reliability, mu_b)
+        if self.fusion_type == "supervised_router":
+            return self._supervised_router_fuse(latent, mask, reliability, mu_b)
         weights = reliability.squeeze(-1)
         weight_sum = weights.sum(dim=1, keepdim=True)
         weights = weights / weight_sum.clamp_min(1e-6)
@@ -742,6 +806,30 @@ class UMaskBeamJEPA(nn.Module):
         if self.fusion_type == "weighted_sum":
             return 0.5 * (pooled + mu_b), diagnostics
         return self.concat_fusion(torch.cat([pooled, mu_b], dim=-1)), diagnostics
+
+    def _average_fuse(
+        self,
+        latent: torch.Tensor,
+        mask: torch.Tensor,
+        reliability: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        stats = self._unimodal_branch_stats(latent)
+        available = mask.to(device=latent.device, dtype=latent.dtype)
+        counts = available.sum(dim=1, keepdim=True).clamp_min(1.0)
+        weights = available / counts
+        pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
+        fused_logits = (stats["unimodal_logits"] * weights.unsqueeze(-1)).sum(dim=1)
+        diagnostics = self._router_diagnostics(
+            mode="average",
+            weights=weights,
+            mask=mask,
+            stats=stats,
+            reliability=reliability,
+            fused_logits=fused_logits,
+            pattern_features=_pattern_features(available),
+        )
+        diagnostics["average_fusion"] = 1.0
+        return pooled, diagnostics
 
     def _pcpg_fuse(
         self,
@@ -772,6 +860,7 @@ class UMaskBeamJEPA(nn.Module):
         pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
         weighted_logits = (unimodal_logits * weights.unsqueeze(-1)).sum(dim=1)
         weighted_prototypes = (prototype_scores * weights.unsqueeze(-1)).sum(dim=1)
+        fused_logits = self._combine_decision_and_prototype(weighted_logits, weighted_prototypes)
         diagnostics = {
             "reliability_fusion_mode": "pcpg",
             "reliability_fusion_weights": weights.detach(),
@@ -787,9 +876,73 @@ class UMaskBeamJEPA(nn.Module):
             "pcpg_unimodal_entropy": stats["entropy"].detach(),
             "pcpg_unimodal_margin": stats["margin"].detach(),
             "pcpg_gate_mean": weights.detach().mean(dim=0),
-            "pcpg_fused_logits": 0.5 * (weighted_logits + weighted_prototypes),
-            "fused_logits": 0.5 * (weighted_logits + weighted_prototypes),
+            "pcpg_fused_logits": fused_logits,
+            "fused_logits": fused_logits,
+            "head_type": self.head_type,
+            "prototype_margin_enabled": self._prototype_margin_enabled(),
         }
+        return 0.5 * (pooled + mu_b), diagnostics
+
+    def _supervised_router_fuse(
+        self,
+        latent: torch.Tensor,
+        mask: torch.Tensor,
+        reliability: torch.Tensor,
+        mu_b: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if self.bprr_router is None:
+            raise RuntimeError("supervised_router fusion requested without a router.")
+        stats = self._unimodal_branch_stats(latent)
+        feature_logits = stats["unimodal_logits"]
+        if self.bprr_temperature is not None:
+            feature_logits = self.bprr_temperature(feature_logits)
+            feature_stats = self._logit_reliability_stats(feature_logits, stats["prototype_scores"])
+        else:
+            feature_stats = stats
+        available = mask.to(device=latent.device, dtype=latent.dtype)
+        reliability_features = self._router_reliability_features(feature_stats, available, reliability)
+        pattern_features = _pattern_features(available) if self.router_use_pattern_features else None
+        gate_logits = self.bprr_router.forward_logits(reliability_features, mask, pattern_features)
+        weights = masked_pcpg_softmax(gate_logits, mask)
+        pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
+        weighted_logits = (stats["unimodal_logits"] * weights.unsqueeze(-1)).sum(dim=1)
+        diagnostics = self._router_diagnostics(
+            mode="supervised_router",
+            weights=weights,
+            mask=mask,
+            stats=stats,
+            reliability=reliability,
+            fused_logits=weighted_logits,
+            pattern_features=pattern_features
+            if pattern_features is not None
+            else torch.zeros(available.shape[0], available.shape[1] + 2, device=latent.device, dtype=latent.dtype),
+        )
+        diagnostics.update(
+            {
+                "supervised_router_gate_logits": gate_logits,
+                "router_gate_logits": gate_logits,
+                "supervised_router_reliability_features": reliability_features.detach(),
+                "supervised_router_feature_names": self._router_feature_names(),
+                "router_use_pattern_features": self.router_use_pattern_features,
+                "router_use_reliability_features": self.router_use_reliability_features,
+                "router_use_prototype_margin": self.router_use_prototype_margin,
+                "router_use_entropy": self.router_use_entropy,
+                "router_use_confidence": self.router_use_confidence,
+                "router_use_logit_norm": self.router_use_logit_norm,
+                "router_pattern_feature_fallback": 0.0 if self.router_use_pattern_features else 1.0,
+                "prototype_margin_enabled": self._prototype_margin_enabled(),
+                "prototype_margin_fallback": 0.0 if self._prototype_margin_enabled() else 1.0,
+                "head_type": self.head_type,
+                "router_supervision": self.router_supervision,
+                "router_distill_weight": float(self.router_distill_weight),
+                "router_distill_temperature": float(self.router_distill_temperature),
+                "router_focus_patterns": self.router_focus_patterns,
+                "router_fuse_level": self.router_fuse_level,
+            }
+        )
+        if self.bprr_temperature is not None:
+            temperatures = self.bprr_temperature.temperatures().to(device=latent.device, dtype=latent.dtype)
+            diagnostics["supervised_router_modality_temperatures"] = temperatures.detach()
         return 0.5 * (pooled + mu_b), diagnostics
 
     def _raw_conf_gate_fuse(
@@ -889,14 +1042,71 @@ class UMaskBeamJEPA(nn.Module):
                 diagnostics[f"bprr_temperature_{modality}"] = float(temperatures[index].detach().cpu().item())
         return 0.5 * (pooled + mu_b), diagnostics
 
+    def _head_logits(self, features: torch.Tensor) -> torch.Tensor:
+        if self.head_type == "prototype":
+            return self.prototype_bank(features)
+        return self.beam_head(features)
+
+    def _prototype_scores(self, features: torch.Tensor) -> torch.Tensor:
+        if self.head_type == "classifier":
+            return self.beam_head(features).detach().new_zeros(features.shape[0], self.num_classes)
+        return self.prototype_bank(features)
+
+    def _combine_decision_and_prototype(self, logits: torch.Tensor, prototype_scores: torch.Tensor) -> torch.Tensor:
+        if self.head_type == "legacy":
+            return 0.5 * (logits + prototype_scores)
+        return logits
+
+    def _prototype_margin_enabled(self) -> bool:
+        return self.head_type != "classifier"
+
+    def _router_reliability_features(
+        self,
+        feature_stats: dict[str, torch.Tensor],
+        available: torch.Tensor,
+        reliability: torch.Tensor,
+    ) -> torch.Tensor:
+        zero = torch.zeros_like(feature_stats["margin"])
+        use_rel = self.router_use_reliability_features
+        use_proto_margin = use_rel and self.router_use_prototype_margin and self._prototype_margin_enabled()
+        return torch.stack(
+            [
+                available if self.router_use_pattern_features else zero,
+                feature_stats["entropy"] if use_rel and self.router_use_entropy else zero,
+                feature_stats["margin"] if use_rel and self.router_use_confidence else zero,
+                feature_stats["confidence"] if use_rel and self.router_use_confidence else zero,
+                feature_stats["logit_norm"] if use_rel and self.router_use_logit_norm else zero,
+                zero,
+                feature_stats["prototype_margin"] if use_proto_margin else zero,
+                reliability.squeeze(-1) if use_rel else zero,
+            ],
+            dim=-1,
+        )
+
+    def _router_feature_names(self) -> tuple[str, ...]:
+        return (
+            "availability" if self.router_use_pattern_features else "availability_disabled",
+            "entropy" if self.router_use_reliability_features and self.router_use_entropy else "entropy_disabled",
+            "top1_top2_margin" if self.router_use_reliability_features and self.router_use_confidence else "top1_top2_margin_disabled",
+            "max_prob" if self.router_use_reliability_features and self.router_use_confidence else "max_prob_disabled",
+            "logit_norm" if self.router_use_reliability_features and self.router_use_logit_norm else "logit_norm_disabled",
+            "prototype_min_distance_disabled",
+            "prototype_margin"
+            if self.router_use_reliability_features and self.router_use_prototype_margin and self._prototype_margin_enabled()
+            else "prototype_margin_disabled",
+            "modality_reliability" if self.router_use_reliability_features else "modality_reliability_disabled",
+        )
+
     def _unimodal_branch_stats(self, latent: torch.Tensor) -> dict[str, torch.Tensor]:
         batch_size, num_modalities, feature_dim = latent.shape
         flat = latent.reshape(batch_size * num_modalities, feature_dim)
-        unimodal_logits = self.beam_head(flat).view(batch_size, num_modalities, self.num_classes)
-        prototype_scores = self.prototype_bank(flat).view(batch_size, num_modalities, self.num_classes)
+        classifier_logits = self.beam_head(flat).view(batch_size, num_modalities, self.num_classes)
+        prototype_scores = self._prototype_scores(flat).view(batch_size, num_modalities, self.num_classes)
+        unimodal_logits = prototype_scores if self.head_type == "prototype" else classifier_logits
         return {
             **self._logit_reliability_stats(unimodal_logits, prototype_scores),
             "unimodal_logits": unimodal_logits,
+            "classifier_logits": classifier_logits,
             "prototype_scores": prototype_scores,
         }
 
@@ -911,15 +1121,20 @@ class UMaskBeamJEPA(nn.Module):
         topk = probabilities.topk(min(2, self.num_classes), dim=-1).values
         margin = topk[..., 0] - (topk[..., 1] if topk.shape[-1] > 1 else 0.0)
         confidence = topk[..., 0]
-        prototype_probs = torch.softmax(prototype_scores, dim=-1)
-        proto_topk = prototype_probs.topk(min(2, self.num_classes), dim=-1).values
-        prototype_margin = proto_topk[..., 0] - (proto_topk[..., 1] if proto_topk.shape[-1] > 1 else 0.0)
+        if self._prototype_margin_enabled():
+            prototype_probs = torch.softmax(prototype_scores, dim=-1)
+            proto_topk = prototype_probs.topk(min(2, self.num_classes), dim=-1).values
+            prototype_confidence = prototype_probs.amax(dim=-1)
+            prototype_margin = proto_topk[..., 0] - (proto_topk[..., 1] if proto_topk.shape[-1] > 1 else 0.0)
+        else:
+            prototype_confidence = torch.zeros_like(confidence)
+            prototype_margin = torch.zeros_like(margin)
         return {
             "entropy": entropy,
             "margin": margin,
             "confidence": confidence,
             "logit_norm": unimodal_logits.norm(dim=-1),
-            "prototype_confidence": prototype_probs.amax(dim=-1),
+            "prototype_confidence": prototype_confidence,
             "prototype_margin": prototype_margin,
         }
 
@@ -979,6 +1194,12 @@ def _pattern_features(available: torch.Tensor) -> torch.Tensor:
     values = available.to(dtype=torch.float32)
     available_fraction = values.mean(dim=1, keepdim=True)
     return torch.cat([values, available_fraction, 1.0 - available_fraction], dim=-1)
+
+
+def _bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "none", ""}
+    return bool(value)
 
 
 def _pattern_film_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:

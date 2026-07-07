@@ -27,6 +27,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run one synthetic epoch by overriding dataset, epochs, workers, and output settings.",
     )
+    parser.add_argument("--fusion", choices=("weighted_sum", "average", "raw_conf_gate", "bprr", "pcpg", "supervised_router"))
+    parser.add_argument("--router_supervision", "--router-supervision", choices=("oracle", "none", "pattern_best"))
+    parser.add_argument("--router_distill_weight", "--router-distill-weight", type=float)
+    parser.add_argument("--router_focus_patterns", "--router-focus-patterns")
+    parser.add_argument("--router_fuse_level", "--router-fuse-level", default=None)
+    for name in (
+        "router_use_pattern_features",
+        "router_use_reliability_features",
+        "router_use_prototype_margin",
+        "router_use_entropy",
+        "router_use_confidence",
+        "router_use_logit_norm",
+        "use_beam_prototype_alignment",
+        "use_modality_prototype_loss",
+        "use_circular_soft_targets",
+        "use_gaussian_beam_targets",
+        "use_jepa",
+        "branch_aux_loss",
+        "radar_protect_loss",
+    ):
+        parser.add_argument(f"--{name}", f"--{name.replace('_', '-')}", type=_bool_arg, default=None)
+    parser.add_argument("--beam_proto_align_weight", "--beam-proto-align-weight", type=float)
+    parser.add_argument("--modality_proto_weight", "--modality-proto-weight", type=float)
+    parser.add_argument("--head_type", "--head-type", choices=("prototype", "classifier"))
+    parser.add_argument("--hard_subset_weighting", "--hard-subset-weighting", choices=("none", "static", "soft_static"))
+    parser.add_argument("--jepa_weight", "--jepa-weight", type=float)
+    parser.add_argument("--unimodal_aux_weight", "--unimodal-aux-weight", type=float)
+    parser.add_argument("--radar_aux_weight", "--radar-aux-weight", type=float)
+    parser.add_argument("--bprr_calibration", "--bprr-calibration", choices=("none", "temperature"))
     return parser
 
 
@@ -83,6 +112,76 @@ def _apply_training_cli_shortcuts(cfg: dict, args: argparse.Namespace) -> None:
         loader["pin_memory"] = value
         loader["train_pin_memory"] = value
         loader["test_pin_memory"] = value
+    _apply_final_ablation_cli_flags(cfg, args)
+
+
+def _apply_final_ablation_cli_flags(cfg: dict, args: argparse.Namespace) -> None:
+    primary = cfg.setdefault("model", {}).setdefault("primary", {})
+    loss = cfg.setdefault("loss", {})
+    training = cfg.setdefault("training", {})
+    if args.fusion is not None:
+        primary["fusion_type"] = args.fusion
+    if args.bprr_calibration is not None:
+        primary["bprr_calibration"] = args.bprr_calibration
+    for key in (
+        "router_supervision",
+        "router_distill_weight",
+        "router_focus_patterns",
+        "router_fuse_level",
+        "router_use_pattern_features",
+        "router_use_reliability_features",
+        "router_use_prototype_margin",
+        "router_use_entropy",
+        "router_use_confidence",
+        "router_use_logit_norm",
+    ):
+        value = getattr(args, key, None)
+        if value is not None:
+            primary[key] = value
+            loss[key] = value
+    if args.head_type is not None:
+        primary["head_type"] = args.head_type
+    for key in (
+        "use_beam_prototype_alignment",
+        "use_modality_prototype_loss",
+        "use_circular_soft_targets",
+        "use_gaussian_beam_targets",
+    ):
+        value = getattr(args, key, None)
+        if value is not None:
+            primary[key] = value
+            training[key] = value
+    if args.beam_proto_align_weight is not None:
+        training["beam_proto_align_weight"] = float(args.beam_proto_align_weight)
+        training["lambda_proto"] = float(args.beam_proto_align_weight)
+    if args.modality_proto_weight is not None:
+        training["modality_proto_weight"] = float(args.modality_proto_weight)
+        training["lambda_modality_proto"] = float(args.modality_proto_weight)
+    if args.hard_subset_weighting is not None:
+        mode = str(args.hard_subset_weighting)
+        loss["hard_subset_weighting"] = {"enabled": mode != "none", "mode": mode}
+        loss.setdefault("pcpg_radar_balance", {})["enabled"] = mode != "none" or bool(loss.get("pcpg_radar_balance", {}).get("enabled", False))
+    for key in ("use_jepa", "branch_aux_loss", "radar_protect_loss"):
+        value = getattr(args, key, None)
+        if value is not None:
+            loss[key] = value
+            if key == "use_jepa":
+                primary["use_jepa_loss"] = value
+    for key in ("jepa_weight", "unimodal_aux_weight", "radar_aux_weight"):
+        value = getattr(args, key, None)
+        if value is not None:
+            loss[key] = float(value)
+    if any(getattr(args, key, None) is not None for key in ("branch_aux_loss", "radar_protect_loss", "unimodal_aux_weight", "radar_aux_weight", "jepa_weight")):
+        loss.setdefault("pcpg_radar_balance", {})["enabled"] = True
+
+
+def _bool_arg(value: str) -> bool:
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected true/false, got {value!r}.")
 
 
 def main(argv: list[str] | None = None) -> int:

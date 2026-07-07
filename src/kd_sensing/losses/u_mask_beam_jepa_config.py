@@ -17,14 +17,23 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
     resolved.setdefault("use_jepa_loss", cfg.get("model", {}).get("primary", {}).get("use_jepa_loss", True))
     training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
     primary_cfg = cfg.get("model", {}).get("primary", {}) if isinstance(cfg.get("model"), dict) else {}
+    head_type = str(primary_cfg.get("head_type", training_cfg.get("head_type", "legacy")) or "legacy").strip().lower()
+    use_modality_proto = training_cfg.get("use_modality_prototype_loss", primary_cfg.get("use_modality_prototype_loss", True))
+    modality_proto_weight = training_cfg.get("modality_proto_weight", primary_cfg.get("modality_proto_weight"))
+    beam_proto_weight = training_cfg.get("beam_proto_align_weight", primary_cfg.get("beam_proto_align_weight"))
     for key, default in {
         "mask_sampler": training_cfg.get("mask_sampler", "random_missing"),
         "pattern_probs": training_cfg.get("pattern_probs"),
         "use_beam_prototype_alignment": training_cfg.get(
             "use_beam_prototype_alignment", training_cfg.get("use_btapa", primary_cfg.get("use_beam_prototype_alignment", False))
         ),
-        "lambda_proto": training_cfg.get("lambda_proto", training_cfg.get("btapa_lambda", 0.0)),
-        "lambda_modality_proto": training_cfg.get("lambda_modality_proto", 0.0),
+        "lambda_proto": training_cfg.get("lambda_proto", training_cfg.get("btapa_lambda", 0.0))
+        if beam_proto_weight is None
+        else beam_proto_weight,
+        "lambda_modality_proto": training_cfg.get(
+            "lambda_modality_proto",
+            0.0 if _is_false(use_modality_proto) else (0.0 if modality_proto_weight is None else modality_proto_weight),
+        ),
         "lambda_supcon": training_cfg.get("lambda_supcon", 0.0),
         "lambda_teacher_proto": training_cfg.get("lambda_teacher_proto", 0.0),
         "beam_proto_temperature": training_cfg.get("beam_proto_temperature", primary_cfg.get("beam_proto_temperature", 0.2)),
@@ -42,7 +51,10 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "lambda_adba_proto": training_cfg.get("lambda_adba_proto", 0.0),
         "adba_margin": training_cfg.get("adba_margin", 3),
         "beam_label_sigma": training_cfg.get("beam_label_sigma", 1.0),
-        "beam_label_circular": training_cfg.get("beam_label_circular", True),
+        "beam_label_circular": training_cfg.get(
+            "beam_label_circular",
+            training_cfg.get("use_circular_soft_targets", primary_cfg.get("use_circular_soft_targets", True)),
+        ),
         "use_full_to_partial_kd": training_cfg.get(
             "use_full_to_partial_kd", primary_cfg.get("use_full_to_partial_kd", False)
         ),
@@ -91,6 +103,26 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "mpdro": training_cfg.get("mpdro", {}),
     }.items():
         resolved.setdefault(key, default)
+    if _is_false(use_modality_proto):
+        resolved["lambda_modality_proto"] = 0.0
+        resolved["btapa_modality_weight"] = 0.0
+    if beam_proto_weight is not None:
+        resolved["lambda_proto"] = float(beam_proto_weight)
+    if head_type == "classifier":
+        resolved["use_beam_prototype_alignment"] = False
+        resolved["lambda_proto"] = 0.0
+        resolved["lambda_modality_proto"] = 0.0
+        resolved["btapa_modality_weight"] = 0.0
+    if training_cfg.get("use_beam_prototype_alignment") is False or primary_cfg.get("use_beam_prototype_alignment") is False:
+        resolved["use_beam_prototype_alignment"] = False
+    if "beam_proto_align_weight" in training_cfg or "beam_proto_align_weight" in primary_cfg:
+        resolved["lambda_proto"] = float(beam_proto_weight or 0.0)
+    use_gaussian = training_cfg.get("use_gaussian_beam_targets", primary_cfg.get("use_gaussian_beam_targets"))
+    use_circular = training_cfg.get("use_circular_soft_targets", primary_cfg.get("use_circular_soft_targets"))
+    if _is_false(use_gaussian) and _is_false(use_circular):
+        resolved["proto_target_type"] = "onehot"
+        resolved["beam_label_circular"] = False
+        resolved["circular_beam_distance"] = False
     if resolved.get("proto_target_type") is None:
         resolved["proto_target_type"] = "beam_soft" if bool(resolved.get("use_beam_topology_proto", False)) else "gaussian"
     if resolved.get("circular_beam_distance") is None:
@@ -99,6 +131,14 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         resolved["btapa_modality_weight"] = resolved.get("lambda_modality_proto", 0.0)
     resolved["missing_mask"] = _resolve_missing_mask_config(resolved)
     return resolved
+
+
+def _is_false(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"0", "false", "no", "off", "none", ""}
+    return value is False
 
 
 def _resolve_missing_mask_config(raw: dict[str, Any]) -> dict[str, Any]:
