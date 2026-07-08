@@ -29,6 +29,7 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         num_cma_queries: int = 4,
         cma_dim: int | None = None,
         cma_temperature: float = 0.2,
+        modality_indicator_temperature: float = 1.0,
         enable_auxiliary: bool = True,
         auxiliary_loss_weights: dict[str, float] | None = None,
         **_: Any,
@@ -46,6 +47,7 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         self.num_cma_queries = max(int(num_cma_queries), self.modality_count)
         self.cma_dim = int(cma_dim or d_model)
         self.cma_temperature = float(cma_temperature)
+        self.modality_indicator_temperature = max(float(modality_indicator_temperature), 1e-6)
         self.enable_auxiliary = bool(enable_auxiliary)
         self.auxiliary_loss_weights = dict(auxiliary_loss_weights or {})
         if min(self.d_model, self.modality_count, self.output_dim, self.max_seq_len, self.max_spatial_tokens, self.cma_dim) <= 0:
@@ -60,6 +62,7 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         self.modality_embedding = nn.Embedding(self.modality_count, self.d_model)
         self.time_embedding = nn.Embedding(self.max_seq_len, self.d_model)
         self.spatial_embedding = nn.Embedding(self.max_spatial_tokens, self.d_model)
+        self.modality_indicator_logits = nn.Parameter(torch.zeros(self.modality_count))
         self.fusion_token = nn.Parameter(torch.zeros(1, 1, self.d_model))
         self.input_norm = nn.LayerNorm(self.d_model)
         self.input_dropout = nn.Dropout(float(dropout))
@@ -121,7 +124,9 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
             raise ValueError(f"AMBER full spatial token count {int(spatial_tokens)} exceeds max_spatial_tokens={self.max_spatial_tokens}.")
 
         availability = self._availability(modality_available, features)
+        indicator = self._modality_indicator(features.device, features.dtype)
         masked = torch.where(availability.unsqueeze(-1), features, self._mask_tokens(features.device, features.dtype))
+        masked = masked * indicator.view(1, self.modality_count, 1, 1, 1)
         tokens = self._add_position(masked)
         modality_features = torch.stack(
             [
@@ -152,7 +157,7 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         memory = memory.view(batch_size, int(seq_len), self._tokens_per_step(int(spatial_tokens)), self.d_model)
         fusion = self.output_norm(memory[:, :, 0])
         self.last_amber_full_attention_mask = key_padding.detach()
-        self.last_amber_full_auxiliary = self._auxiliary_payload(fusion, modality_features, availability)
+        self.last_amber_full_auxiliary = self._auxiliary_payload(fusion, modality_features, availability, indicator)
         return self.output_projection(fusion)
 
     def training_strategy_metadata(self) -> dict[str, Any]:
@@ -172,6 +177,9 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
             "cma_enabled": self.num_cma_queries > 0,
             "cma_type": "class_query_cross_attention",
             "cma_temperature": self.cma_temperature,
+            "modality_indicator_enabled": True,
+            "modality_indicator_temperature": self.modality_indicator_temperature,
+            "l2_regularization_source": "modality_indicator",
             "auxiliary_loss_weights": self.auxiliary_loss_weights,
             "consumes_missing_modality_metadata": True,
             "consumes_reliability_metadata": True,
@@ -195,15 +203,20 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         fusion: torch.Tensor,
         modality_features: torch.Tensor,
         availability: torch.Tensor,
+        indicator: torch.Tensor,
     ) -> dict[str, Any] | None:
         if not (self.training and self.enable_auxiliary):
             return None
         modality_bt = modality_features.mean(dim=3).permute(0, 2, 1, 3).contiguous()
+        modality_available = availability.any(dim=3)
+        indicator_l2 = (
+            indicator.view(1, self.modality_count, 1).pow(2)
+            * modality_available.to(dtype=indicator.dtype)
+        ).sum(dim=1).mean()
         token_embeddings = F.normalize(self.cma_projection(modality_features), dim=-1)
         fusion_embeddings = F.normalize(self.cma_projection(fusion) + self.cma_fusion_query.view(1, 1, -1), dim=-1)
         modality_query_embeddings = self._class_query_embeddings(token_embeddings, availability)
         cma_logits = torch.einsum("btd,bktd->btk", fusion_embeddings, modality_query_embeddings) / max(self.cma_temperature, 1e-6)
-        modality_available = availability.any(dim=3)
         return {
             "modality_specific_features": modality_bt,
             "fusion_features": fusion,
@@ -215,9 +228,12 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
             "cma_modality_query_embeddings": modality_query_embeddings,
             "cma_query_embeddings": F.normalize(self.cma_modality_queries, dim=-1),
             "cma_logits": cma_logits,
+            "modality_indicator_weights": indicator,
+            "modality_l2_regularization": indicator_l2,
             "availability_mask": modality_available,
             "token_availability_mask": availability,
             "mask_provenance": "input_valid_or_dropout_masks",
+            "l2_regularization_source": "modality_indicator",
         }
 
     def _availability(self, modality_available: torch.Tensor | None, features: torch.Tensor) -> torch.Tensor:
@@ -255,6 +271,10 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         if self.mask_token_strategy == "learned_shared":
             tokens = tokens.expand(self.modality_count, -1)
         return tokens.to(device=device, dtype=dtype).view(1, self.modality_count, 1, 1, self.d_model)
+
+    def _modality_indicator(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        logits = self.modality_indicator_logits.to(device=device, dtype=dtype)
+        return torch.softmax(logits / self.modality_indicator_temperature, dim=0)
 
     def _class_query_embeddings(self, token_embeddings: torch.Tensor, availability: torch.Tensor) -> torch.Tensor:
         queries = F.normalize(self.cma_modality_queries, dim=-1).to(

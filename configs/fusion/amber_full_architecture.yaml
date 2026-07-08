@@ -52,7 +52,7 @@ model:
       baseline_family: amber_full_architecture
     encoders:
       image:
-        type: resnet18_spatial_tokens
+        type: resnet34_spatial_tokens
         pretrained: true
         weights: DEFAULT
         freeze_backbone: true

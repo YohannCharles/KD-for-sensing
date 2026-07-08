@@ -222,13 +222,19 @@ def _random_keep_matrix(
 ) -> torch.Tensor:
     if mode == "bernoulli":
         keep = torch.rand((batch_size, modality_count), generator=generator) < max(0.0, min(float(keep_prob), 1.0))
+    elif mode in {"drop_one_available", "mask_one_available", "random_single_missing"}:
+        keep = torch.ones((batch_size, modality_count), dtype=torch.bool)
+        if modality_count > 1:
+            missing = torch.randint(0, modality_count, (batch_size,), generator=generator)
+            keep[torch.arange(batch_size), missing] = False
     elif mode == "random_nonempty_subset":
         choices = torch.randint(1, 2**modality_count, (batch_size,), generator=generator)
         bits = 2 ** torch.arange(modality_count)
         keep = (choices.unsqueeze(1) & bits.unsqueeze(0)).bool()
     else:
         raise ValueError(
-            "random_modality_dropout mode must be 'bernoulli', 'random_nonempty_subset', or 'pattern_balanced'."
+            "random_modality_dropout mode must be 'bernoulli', 'drop_one_available', "
+            "'random_nonempty_subset', or 'pattern_balanced'."
         )
     if ensure_at_least_one:
         empty = ~keep.any(dim=1)

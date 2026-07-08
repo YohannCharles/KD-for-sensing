@@ -10,6 +10,7 @@ from kd_sensing.registries import ENCODERS, MODELS
 
 
 RESNET18_STAGES = ("conv1", "bn1", "layer1", "layer2", "layer3", "layer4")
+RESNET34_STAGES = RESNET18_STAGES
 
 
 def _resolve_output_dim(
@@ -152,7 +153,7 @@ class ResNet18SpatialTokenEncoder(nn.Module):
         self.token_pool_size = _normalize_token_pool_size(token_pool_size)
 
         self.backbone, backbone_dim = _build_resnet18_backbone(pretrained=self.pretrained, weights=weights)
-        _adapt_resnet18_input_channels(self.backbone, self.in_channels)
+        _adapt_resnet_input_channels(self.backbone, self.in_channels)
         self.projection = nn.Sequential(
             nn.LayerNorm(backbone_dim),
             nn.Dropout(float(dropout)),
@@ -177,7 +178,7 @@ class ResNet18SpatialTokenEncoder(nn.Module):
                 f"{self.input_size[0]}x{self.input_size[1]}, got {int(height)}x{int(width)}."
             )
         frames = image_batch.reshape(batch_size * seq_len, channels, height, width).to(dtype=torch.float32)
-        feature_map = _resnet18_feature_map(self.backbone, frames)
+        feature_map = _resnet_feature_map(self.backbone, frames)
         if self.token_pool_size is not None:
             feature_map = nn.functional.adaptive_avg_pool2d(feature_map, self.token_pool_size)
         tokens = feature_map.flatten(2).transpose(1, 2).contiguous()
@@ -217,6 +218,108 @@ class ResNet18SpatialTokenEncoder(nn.Module):
         return tuple(stage for stage in RESNET18_STAGES if stage in requested)
 
 
+@ENCODERS.register("resnet34_spatial_tokens")
+class ResNet34SpatialTokenEncoder(nn.Module):
+    input_size: tuple[int, int] | None = None
+
+    def __init__(
+        self,
+        output_dim: int | None = None,
+        *,
+        feature_size: int | None = None,
+        d_model: int | None = None,
+        dropout: float = 0.0,
+        pretrained: bool = True,
+        weights: str | None = "DEFAULT",
+        freeze_backbone: bool = True,
+        unfreeze_stages: list[str] | tuple[str, ...] | None = None,
+        unfreeze_last_n_stages: int = 0,
+        in_channels: int | None = None,
+        image_channels: int | None = None,
+        radar_channels: int | None = None,
+        lidar_channels: int | None = None,
+        image_size: list[int] | tuple[int, int] | None = None,
+        token_pool_size: list[int] | tuple[int, int] | int | None = None,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.output_dim = _resolve_output_dim(output_dim, feature_size, d_model)
+        self.in_channels = int(in_channels or image_channels or radar_channels or lidar_channels or 3)
+        self.pretrained = bool(pretrained)
+        self.weights = weights
+        self.freeze_backbone = bool(freeze_backbone)
+        self.requested_unfreeze_stages = tuple(str(stage) for stage in (unfreeze_stages or ()))
+        self.unfreeze_last_n_stages = int(unfreeze_last_n_stages)
+        self.input_size = tuple(int(value) for value in image_size) if image_size is not None else None
+        self.token_pool_size = _normalize_token_pool_size(token_pool_size)
+
+        self.backbone, backbone_dim = _build_resnet34_backbone(pretrained=self.pretrained, weights=weights)
+        _adapt_resnet_input_channels(self.backbone, self.in_channels)
+        self.projection = nn.Sequential(
+            nn.LayerNorm(backbone_dim),
+            nn.Dropout(float(dropout)),
+            nn.Linear(backbone_dim, self.output_dim),
+        )
+        self.trainable_stages = self._configure_trainable_backbone()
+
+    def forward(self, image_batch: torch.Tensor) -> torch.Tensor:
+        if image_batch.ndim != 5:
+            raise ValueError(
+                "ResNet-34 spatial token encoder input must have shape [B, T, C, H, W], "
+                f"got {tuple(image_batch.shape)}."
+            )
+        batch_size, seq_len, channels, height, width = image_batch.shape
+        if int(channels) != self.in_channels:
+            raise ValueError(
+                f"ResNet-34 spatial token encoder expected {self.in_channels} channels, got {int(channels)}."
+            )
+        if self.input_size is not None and (int(height), int(width)) != self.input_size:
+            raise ValueError(
+                "ResNet-34 spatial token encoder expected spatial size "
+                f"{self.input_size[0]}x{self.input_size[1]}, got {int(height)}x{int(width)}."
+            )
+        frames = image_batch.reshape(batch_size * seq_len, channels, height, width).to(dtype=torch.float32)
+        feature_map = _resnet_feature_map(self.backbone, frames)
+        if self.token_pool_size is not None:
+            feature_map = nn.functional.adaptive_avg_pool2d(feature_map, self.token_pool_size)
+        tokens = feature_map.flatten(2).transpose(1, 2).contiguous()
+        projected = self.projection(tokens)
+        return projected.view(batch_size, seq_len, int(projected.shape[1]), self.output_dim)
+
+    def training_strategy_metadata(self) -> dict[str, Any]:
+        return {
+            "encoder": "resnet34_spatial_tokens",
+            "backbone": "resnet34",
+            "pretrained": self.pretrained,
+            "weights": self.weights,
+            "freeze_backbone": self.freeze_backbone,
+            "trainable_stages": list(self.trainable_stages),
+            "unfreeze_last_n_stages": self.unfreeze_last_n_stages,
+            "output_mode": "spatial_tokens",
+            "token_pool_size": list(self.token_pool_size) if self.token_pool_size is not None else None,
+        }
+
+    def _configure_trainable_backbone(self) -> tuple[str, ...]:
+        if not self.freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            return RESNET34_STAGES
+
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        requested = set(self.requested_unfreeze_stages)
+        if self.unfreeze_last_n_stages > 0:
+            requested.update(RESNET34_STAGES[-self.unfreeze_last_n_stages :])
+        invalid = sorted(requested - set(RESNET34_STAGES))
+        if invalid:
+            raise ValueError(f"Unknown ResNet-34 stages {invalid}. Available stages: {list(RESNET34_STAGES)}.")
+        for stage in requested:
+            module = getattr(self.backbone, stage)
+            for param in module.parameters():
+                param.requires_grad = True
+        return tuple(stage for stage in RESNET34_STAGES if stage in requested)
+
+
 def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[nn.Module, int]:
     try:
         import torchvision.models as tv_models
@@ -253,7 +356,43 @@ def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[
     return model, feature_dim
 
 
-def _resnet18_feature_map(backbone: nn.Module, frames: torch.Tensor) -> torch.Tensor:
+def _build_resnet34_backbone(*, pretrained: bool, weights: str | None) -> tuple[nn.Module, int]:
+    try:
+        import torchvision.models as tv_models
+    except Exception as exc:  # pragma: no cover - environment-dependent.
+        raise RuntimeError(
+            "ResNet-34 ImageNet encoder requires torchvision in the kd_mm_beam environment. "
+            "Install or repair torchvision before using resnet34_spatial_tokens."
+        ) from exc
+
+    weights_obj = None
+    if pretrained:
+        try:
+            enum = tv_models.ResNet34_Weights
+        except AttributeError:
+            model = tv_models.resnet34(pretrained=True)
+            feature_dim = int(model.fc.in_features)
+            model.fc = nn.Identity()
+            return model, feature_dim
+        if weights in (None, "", "none", "None"):
+            weights_obj = None
+        elif weights in ("DEFAULT", "default"):
+            weights_obj = enum.DEFAULT
+        else:
+            try:
+                weights_obj = getattr(enum, str(weights))
+            except AttributeError as exc:
+                available = [name for name in dir(enum) if name.isupper()]
+                raise RuntimeError(
+                    f"Unknown torchvision ResNet34 weights '{weights}'. Available weights: {available}."
+                ) from exc
+    model = tv_models.resnet34(weights=weights_obj)
+    feature_dim = int(model.fc.in_features)
+    model.fc = nn.Identity()
+    return model, feature_dim
+
+
+def _resnet_feature_map(backbone: nn.Module, frames: torch.Tensor) -> torch.Tensor:
     x = backbone.conv1(frames)
     x = backbone.bn1(x)
     x = backbone.relu(x)
@@ -264,7 +403,11 @@ def _resnet18_feature_map(backbone: nn.Module, frames: torch.Tensor) -> torch.Te
     return backbone.layer4(x)
 
 
-def _adapt_resnet18_input_channels(backbone: nn.Module, in_channels: int) -> None:
+def _resnet18_feature_map(backbone: nn.Module, frames: torch.Tensor) -> torch.Tensor:
+    return _resnet_feature_map(backbone, frames)
+
+
+def _adapt_resnet_input_channels(backbone: nn.Module, in_channels: int) -> None:
     if int(in_channels) == int(backbone.conv1.in_channels):
         return
     old = backbone.conv1
@@ -282,6 +425,10 @@ def _adapt_resnet18_input_channels(backbone: nn.Module, in_channels: int) -> Non
         if old.bias is not None and new.bias is not None:
             new.bias.copy_(old.bias)
     backbone.conv1 = new
+
+
+def _adapt_resnet18_input_channels(backbone: nn.Module, in_channels: int) -> None:
+    _adapt_resnet_input_channels(backbone, in_channels)
 
 
 def _normalize_token_pool_size(value: list[int] | tuple[int, int] | int | None) -> tuple[int, int] | None:
@@ -396,6 +543,8 @@ class CameraAEImageEncoder(nn.Module):
 __all__ = [
     "CameraAEImageEncoder",
     "RESNET18_STAGES",
+    "RESNET34_STAGES",
     "ResNet18ImageEncoder",
     "ResNet18SpatialTokenEncoder",
+    "ResNet34SpatialTokenEncoder",
 ]

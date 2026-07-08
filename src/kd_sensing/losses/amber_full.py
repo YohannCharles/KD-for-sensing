@@ -51,6 +51,9 @@ def _amber_full_loss_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _alignment_l2(payload: dict[str, Any], zero: torch.Tensor) -> torch.Tensor:
+    indicator_l2 = payload.get("modality_l2_regularization")
+    if torch.is_tensor(indicator_l2):
+        return indicator_l2.to(device=zero.device, dtype=zero.dtype)
     fusion = _tensor(payload, "fusion_features")
     target = _tensor(payload, "alignment_target").to(device=fusion.device, dtype=fusion.dtype)
     if target.shape != fusion.shape:

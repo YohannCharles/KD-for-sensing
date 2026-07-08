@@ -478,11 +478,10 @@ Post-C2 清理验收 MUST 只读取 tracked source、configs、docs、OpenSpec�
 
 #### Scenario: 快速验收命令
 - **WHEN** implementation 完成一个删除 wave
-- **THEN** 验收 MUST 至少考虑 `openspec validate prune-post-c2-nonmainline-surface --strict`、`openspec validate --all --strict`、`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+- **THEN** 验收 MUST 至少考虑 `openspec validate --all --strict`、`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
 - **AND** 触碰 CLI/config/script 时 MUST 追加 `make verify-cli-config`、`make verify-compile` 或对应 focused tests
 
 #### Scenario: MMW 周边触碰追加 focused tests
 - **WHEN** implementation 虽然保留 MMW 但修改了 MMW docs、configs、CLI lifecycle 或 guardrail
 - **THEN** tasks 或最终说明 MUST 追加 MMW/CSI focused validation
 - **AND** 验证 MUST 不要求真实 MMW dataset 内容进入源码变更
-

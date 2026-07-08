@@ -148,7 +148,7 @@ def sample_id_for(condition: str, town: str, scenario: str, agent: str, frame_id
 def _frame_id_from_path(path: Path) -> str | None:
     for token in [path.stem, *reversed(path.parts)]:
         for part in str(token).replace("-", "_").split("_"):
-            if part.isdigit() and len(part) == 6:
+            if part.isdigit() and len(part) >= 6:
                 return part
     return None
 

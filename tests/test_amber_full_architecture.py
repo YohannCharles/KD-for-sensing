@@ -43,6 +43,9 @@ def test_amber_full_forward_auxiliary_eval_and_adapt_model_output() -> None:
     assert train_output["amber_full_auxiliary"]["fusion_features"].shape == (2, 2, 8)
     assert train_output["amber_full_auxiliary"]["cma_logits"].shape == (2, 2, 4)
     assert train_output["amber_full_auxiliary"]["cma_modality_query_embeddings"].shape == (2, 4, 2, 8)
+    assert train_output["amber_full_auxiliary"]["modality_indicator_weights"].shape == (4,)
+    assert torch.isfinite(train_output["amber_full_auxiliary"]["modality_l2_regularization"])
+    assert train_output["amber_full_auxiliary"]["l2_regularization_source"] == "modality_indicator"
     assert train_output["token_features"].shape == (2, 4, 2, 2, 8)
     assert train_output["missing_modality_metadata"]["missing_counts"]["image"] == 1
     assert adapt_model_output(model(**_synthetic_modalities(seq_len=3))).logits.shape == (2, 3, 6)
@@ -151,8 +154,11 @@ def test_amber_full_config_metadata_and_architecture_summary() -> None:
     assert primary["representation_core"]["max_spatial_tokens"] == 4
     assert cfg["data"]["dataset"]["seq_len"] == 2
     assert cfg["model"]["seq_length"] == 2
+    assert primary["modalities"] == ["image", "radar", "gps", "lidar"]
+    assert primary["encoders"]["image"]["type"] == "resnet34_spatial_tokens"
+    assert primary["encoders"]["radar"]["type"] == "resnet18_spatial_tokens"
+    assert primary["encoders"]["lidar"]["type"] == "resnet18_spatial_tokens"
     for modality in ("image", "radar", "lidar"):
-        assert primary["encoders"][modality]["type"] == "resnet18_spatial_tokens"
         assert primary["encoders"][modality]["pretrained"] is True
         assert primary["encoders"][modality]["weights"] == "DEFAULT"
     assert isinstance(configured_model.representation_core, AmberFullAdaptiveMaskTransformerCore)
@@ -162,6 +168,7 @@ def test_amber_full_config_metadata_and_architecture_summary() -> None:
     assert metadata["representation_core"]["component_role"] == "representation_core"
     assert metadata["representation_core"]["history_beam_usage"] == "disabled"
     assert metadata["representation_core"]["cma_type"] == "class_query_cross_attention"
+    assert metadata["representation_core"]["l2_regularization_source"] == "modality_indicator"
     assert metadata["consumes_missing_modality_metadata"] is True
     assert summary["components"]["representation_core"]["semantic_role"] == "representation_core"
     assert summary["components"]["representation_core"]["total_params"] > 0

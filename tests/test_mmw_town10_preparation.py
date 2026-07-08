@@ -21,6 +21,8 @@ from kd_sensing.data.mmw.preparation import (
     build_sequence_splits_from_manifest,
     compute_split_leakage_diagnostics,
     derive_beam_power_from_file,
+    index_channel_files,
+    index_sensor_frames,
     load_preparation_config,
     prepare_town10_skybridge,
     split_sequence_rows,
@@ -124,6 +126,31 @@ def test_mmw_zip_validation_reports_absolute_missing_paths(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError, match=str((tmp_path / "missing_sensor.zip").resolve())):
         validate_zip_inputs(config)
+
+
+def test_mmw_index_accepts_seven_digit_town03_frame_ids(tmp_path: Path):
+    sensor = tmp_path / "Sensor_Data" / "Town03_crossroad_wiz_slope_seed42" / "cav_1"
+    sensor.mkdir(parents=True)
+    for suffix in (".yaml", ".pcd", "_camera0.png"):
+        (sensor / f"1029942{suffix}").write_text("", encoding="utf-8")
+    channel = tmp_path / "Channel_Data" / "Town03" / "Town03_crossroad" / "cav_1"
+    channel.mkdir(parents=True)
+    (channel / "1029942_paths.npz").write_bytes(b"")
+
+    sensor_index = index_sensor_frames(
+        tmp_path / "Sensor_Data",
+        town="Town03",
+        scenario="Town03_crossroad_wiz_slope_seed42",
+    )
+    channel_index = index_channel_files(
+        tmp_path / "Channel_Data",
+        town="Town03",
+        scenario="Town03_crossroad_wiz_slope_seed42",
+        channel_scenario="Town03_crossroad",
+    )
+
+    assert "1029942" in sensor_index["cav_1"]
+    assert channel_index[("cav_1", "1029942")].path.name == "1029942_paths.npz"
 
 
 def test_mmw_prepare_split_tag_writes_isolated_sequence_splits(tmp_path: Path):

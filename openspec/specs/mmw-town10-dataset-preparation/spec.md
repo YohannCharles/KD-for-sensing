@@ -18,10 +18,10 @@
 - **AND** 系统 MUST 不创建不完整的 manifest 或 split CSV
 
 ### Requirement: MMW sensor and channel frames are indexed by agent and frame
-系统 MUST 参考 MMW V2I 文件层级，按 `Town10/Town10_skybridge_seed24/<agent>/<six_digit_frame>` 索引 CAV、RSU 和信道文件。系统 MUST 将 CAV 的 `.yaml`、`.pcd`、`_camera0.png` 到 `_camera3.png`、channel `_paths` 文件，以及 RSU 的 `.yaml`、`.pcd`、camera/depth/radar 文件纳入索引；缺失的启用模态 MUST 以可机器读取的 skip reason 记录。
+系统 MUST 参考 MMW V2I 文件层级，按 `Town10/Town10_skybridge_seed24/<agent>/<frame_id>` 索引 CAV、RSU 和信道文件，其中 `frame_id` MUST 支持至少六位的数字帧号。系统 MUST 将 CAV 的 `.yaml`、`.pcd`、`_camera0.png` 到 `_camera3.png`、channel `_paths` 文件，以及 RSU 的 `.yaml`、`.pcd`、camera/depth/radar 文件纳入索引；缺失的启用模态 MUST 以可机器读取的 skip reason 记录。
 
 #### Scenario: CAV 帧包含同步模态
-- **WHEN** 某个 CAV agent 的同一六位帧号同时存在 yaml、LiDAR pcd、四路 RGB camera 和 channel paths 文件
+- **WHEN** 某个 CAV agent 的同一数字帧号同时存在 yaml、LiDAR pcd、四路 RGB camera 和 channel paths 文件
 - **THEN** 系统 MUST 将该帧标记为可用于生成样本
 - **AND** frame manifest MUST 记录 agent id、frame id、CAV 模态相对路径、匹配到的 RSU frame 路径和 channel paths 相对路径
 
