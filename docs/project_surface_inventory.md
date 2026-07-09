@@ -81,6 +81,8 @@
 | `scripts/inspect_dataset.py` | local/manual dataset inspection | stdout only unless user writes local output |
 | `scripts/launch_bprr_reliability_router_v1.py` | local/manual mainline follow-up launcher | ignored outputs/bprr_reliability_router_v1/ |
 | `scripts/launch_final_c2_ablation_v1.py` | local/manual final C2 launcher | ignored outputs/final_c2_ablation_v1/ |
+| `scripts/launch_h5_p1_temporal_models_v1.py` | local/manual H5/P1 temporal matrix launcher | ignored outputs/h5_p1_temporal_models_v1/ or explicit output root |
+| `scripts/launch_temporal_router_s1_s4_v1.py` | local/manual S1-S4 temporal router launcher | ignored outputs/temporal_router_s1_s4_v1/ or explicit output root |
 | `scripts/launch_overnight_branch_router_v2.py` | local/manual historical/supporting launcher | ignored outputs/overnight_branch_router_v2/ |
 | `scripts/launch_pcpg_radar_balance_v1.py` | local/manual mainline follow-up launcher | ignored outputs/pcpg_radar_balance_v1/ |
 | `scripts/mmw/visualize_town_label_distribution.py` | research_diagnostic protected MMW helper | ignored outputs/analysis/mmw/ or explicit output |
@@ -90,10 +92,17 @@
 | `scripts/scene31_generator_common.py` | supporting generator helper | no direct output unless caller writes generated configs |
 | `scripts/scene31_runner_common.py` | supporting runner helper | no direct output unless caller writes outputs/ |
 | `scripts/scene31_runner_common.sh` | supporting shell helper | ignored outputs/ and logs/ via caller |
+| `scripts/check_temporal_window_missing.py` | local/manual temporal missing validation helper | stdout only |
+| `scripts/eval_h5_p1_temporal_matrix_v1.py` | research_diagnostic H5/P1 temporal matrix eval | ignored outputs/h5_p1_temporal_models_v1/eval_matrix/ and outputs/temporal_eval_masks_v1/ |
+| `scripts/eval_temporal_router_s1_s4_matrix_v1.py` | research_diagnostic S1-S4 temporal router matrix eval | ignored outputs/temporal_router_s1_s4_v1/eval_matrix/ and outputs/temporal_eval_masks_s1_s4_v1/ |
+| `scripts/launch_temporal_missing_v1.py` | local/manual temporal missing launcher | ignored outputs/temporal_missing_v1/ or explicit output root |
 | `scripts/summarize_bprr_reliability_router_v1.py` | research_diagnostic summary | ignored outputs/analysis/ |
 | `scripts/summarize_final_c2_ablation_v1.py` | research_diagnostic final C2 summary | ignored outputs/analysis/ |
+| `scripts/summarize_h5_p1_temporal_matrix_v1.py` | research_diagnostic H5/P1 temporal matrix summary | ignored outputs/h5_p1_temporal_models_v1/final_summary/ |
+| `scripts/summarize_temporal_router_s1_s4_v1.py` | research_diagnostic S1-S4 temporal router summary | ignored outputs/temporal_router_s1_s4_v1/final_summary/ |
 | `scripts/summarize_overnight_branch_router_v2.py` | research_diagnostic historical/supporting summary | ignored outputs/analysis/ |
 | `scripts/summarize_pcpg_radar_balance_v1.py` | research_diagnostic summary | ignored outputs/analysis/ |
+| `scripts/summarize_temporal_missing_v1.py` | research_diagnostic temporal missing summary | ignored outputs/temporal_missing_v1/summary.* |
 | `scripts/verify_compile.py` | governance validation helper | stdout only |
 
 ## Config Lifecycle

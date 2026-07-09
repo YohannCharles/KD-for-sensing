@@ -1056,7 +1056,7 @@ def _modular_missing_availability_overrides(
     *,
     missing_mask: torch.Tensor | None,
     modality_mask: torch.Tensor | None,
-    available_modalities: list[str] | tuple[str, ...] | None,
+    available_modalities: list[str] | tuple[str, ...] | torch.Tensor | None,
 ) -> dict[str, torch.Tensor | None]:
     overrides: dict[str, torch.Tensor | None] = {}
     for mask, name in ((missing_mask, "missing_mask"), (modality_mask, "modality_mask")):
@@ -1064,7 +1064,14 @@ def _modular_missing_availability_overrides(
             continue
         for modality, values in _availability_map_from_tensor(mask, modalities, name=name).items():
             overrides[modality] = _merge_availability_mask(overrides.get(modality), values)
-    if available_modalities is not None:
+    if torch.is_tensor(available_modalities):
+        for modality, values in _availability_map_from_tensor(
+            available_modalities,
+            modalities,
+            name="available_modalities",
+        ).items():
+            overrides[modality] = _merge_availability_mask(overrides.get(modality), values)
+    elif available_modalities is not None:
         for modality, values in _availability_map_from_names(available_modalities, modalities).items():
             overrides[modality] = _merge_availability_mask(overrides.get(modality), values)
     return overrides
@@ -1284,20 +1291,26 @@ class ModularSequenceModel(nn.Module):
         image_observability_score: torch.Tensor | None = None,
         gps_valid_mask: torch.Tensor | None = None,
         lidar_valid_mask: torch.Tensor | None = None,
+        mmwave_valid_mask: torch.Tensor | None = None,
+        csi_valid_mask: torch.Tensor | None = None,
         gps_delay_steps: torch.Tensor | None = None,
         image_dropout_mask: torch.Tensor | None = None,
         radar_dropout_mask: torch.Tensor | None = None,
         gps_dropout_mask: torch.Tensor | None = None,
         lidar_dropout_mask: torch.Tensor | None = None,
+        mmwave_dropout_mask: torch.Tensor | None = None,
+        csi_dropout_mask: torch.Tensor | None = None,
         gps_counterfactual_mask: torch.Tensor | None = None,
+        temporal_mask: torch.Tensor | None = None,
+        modality_temporal_mask: torch.Tensor | None = None,
         benchmark_condition_metadata: dict[str, Any] | None = None,
         image_degradation_metadata: dict[str, Any] | None = None,
         missing_mask: torch.Tensor | None = None,
         missing_modality_metadata: dict[str, Any] | None = None,
-        available_modalities: list[str] | tuple[str, ...] | None = None,
+        available_modalities: list[str] | tuple[str, ...] | torch.Tensor | None = None,
         modality_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
-        del image_degradation_metadata
+        del image_degradation_metadata, temporal_mask, modality_temporal_mask
         inputs = collect_forward_inputs(
             image_batch=image_batch,
             radar_batch=radar_batch,
@@ -1310,11 +1323,15 @@ class ModularSequenceModel(nn.Module):
             image_observability_score=image_observability_score,
             gps_valid_mask=gps_valid_mask,
             lidar_valid_mask=lidar_valid_mask,
+            mmwave_valid_mask=mmwave_valid_mask,
+            csi_valid_mask=csi_valid_mask,
             gps_delay_steps=gps_delay_steps,
             image_dropout_mask=image_dropout_mask,
             radar_dropout_mask=radar_dropout_mask,
             gps_dropout_mask=gps_dropout_mask,
             lidar_dropout_mask=lidar_dropout_mask,
+            mmwave_dropout_mask=mmwave_dropout_mask,
+            csi_dropout_mask=csi_dropout_mask,
             gps_counterfactual_mask=gps_counterfactual_mask,
             benchmark_condition_metadata=benchmark_condition_metadata,
         )

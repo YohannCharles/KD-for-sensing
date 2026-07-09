@@ -52,11 +52,15 @@ def collect_forward_inputs(**kwargs: Any) -> ModularForwardInputs:
         "image_observability_score": kwargs["image_observability_score"],
         "gps_valid_mask": kwargs["gps_valid_mask"],
         "lidar_valid_mask": kwargs["lidar_valid_mask"],
+        "mmwave_valid_mask": kwargs["mmwave_valid_mask"],
+        "csi_valid_mask": kwargs["csi_valid_mask"],
         "gps_delay_steps": kwargs["gps_delay_steps"],
         "image_dropout_mask": kwargs["image_dropout_mask"],
         "radar_dropout_mask": kwargs["radar_dropout_mask"],
         "gps_dropout_mask": kwargs["gps_dropout_mask"],
         "lidar_dropout_mask": kwargs["lidar_dropout_mask"],
+        "mmwave_dropout_mask": kwargs["mmwave_dropout_mask"],
+        "csi_dropout_mask": kwargs["csi_dropout_mask"],
         "gps_counterfactual_mask": kwargs["gps_counterfactual_mask"],
         "benchmark_condition_metadata": kwargs["benchmark_condition_metadata"],
     }
@@ -65,16 +69,16 @@ def collect_forward_inputs(**kwargs: Any) -> ModularForwardInputs:
         "radar": kwargs["radar_valid_mask"],
         "gps": kwargs["gps_valid_mask"],
         "lidar": kwargs["lidar_valid_mask"],
-        "mmwave": None,
-        "csi": None,
+        "mmwave": kwargs["mmwave_valid_mask"],
+        "csi": kwargs["csi_valid_mask"],
     }
     modality_dropout_inputs = {
         "image": kwargs["image_dropout_mask"],
         "radar": kwargs["radar_dropout_mask"],
         "gps": kwargs["gps_dropout_mask"],
         "lidar": kwargs["lidar_dropout_mask"],
-        "mmwave": None,
-        "csi": None,
+        "mmwave": kwargs["mmwave_dropout_mask"],
+        "csi": kwargs["csi_dropout_mask"],
     }
     return ModularForwardInputs(
         raw_inputs=raw_inputs,

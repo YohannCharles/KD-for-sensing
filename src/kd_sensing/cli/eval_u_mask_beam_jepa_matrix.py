@@ -1,7 +1,11 @@
 import argparse
 from pathlib import Path
 
-from kd_sensing.cli.common import load_cli_config
+from kd_sensing.cli.common import (
+    add_temporal_window_missing_args,
+    apply_temporal_window_missing_cli_args,
+    load_cli_config,
+)
 from kd_sensing.engine.data_factory import build_dataloaders
 from kd_sensing.engine.optim import build_device, build_model
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
@@ -29,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-oracle-gate", "--eval_oracle_gate", action="store_true")
     parser.add_argument("--device", default=None, help="Override experiment.device, e.g. cuda or cpu.")
     parser.add_argument("--override", "-o", action="append", default=[])
+    add_temporal_window_missing_args(parser)
     return parser
 
 
@@ -36,6 +41,7 @@ def run(argv: list[str] | None = None) -> list[dict]:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
+    apply_temporal_window_missing_cli_args(cfg, args)
     eval_cfg = cfg.get("eval_matrix", {}) if isinstance(cfg.get("eval_matrix"), dict) else {}
     if args.device:
         cfg.setdefault("experiment", {})["device"] = args.device

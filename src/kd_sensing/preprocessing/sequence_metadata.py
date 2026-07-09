@@ -31,6 +31,7 @@ def write_split_metadata(
     out_len: int | None = None,
     enabled_columns: list[str] | None = None,
     include_position_targets: bool = False,
+    window_generation_stats: dict[str, Any] | None = None,
 ) -> Path:
     metadata_path = Path(metadata_path)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +68,7 @@ def write_split_metadata(
             "train": int(len(train_frame)),
             eval_name: int(len(test_frame)),
         },
+        "window_generation_stats": json_ready(window_generation_stats or {}),
         "seq_index": {
             "train": json_ready(split.train_seq_index),
             eval_name: json_ready(split.test_seq_index),

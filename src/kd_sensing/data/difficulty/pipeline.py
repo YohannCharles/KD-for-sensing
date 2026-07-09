@@ -33,6 +33,10 @@ PROTECTED_BATCH_KEYS = (
     "link_quality",
     "sample_id",
     "sample_ids",
+    "history_indices",
+    "history_timestamps",
+    "target_index",
+    "target_timestamp",
     "split",
     "split_metadata",
 )

@@ -211,6 +211,9 @@ def prepare_reliability_metadata_inputs(
         for modality in selected:
             specs.setdefault(f"{modality}_valid_mask", (f"{modality}_valid_mask", torch.bool, False))
             specs.setdefault(f"{modality}_dropout_mask", (f"{modality}_dropout_mask", torch.bool, False))
+        for key in ("temporal_mask", "modality_temporal_mask", "available_modalities"):
+            if key in batch:
+                inputs[key] = torch.as_tensor(batch[key], device=device, dtype=torch.bool)
     for key, (output_key, dtype, required) in specs.items():
         if key not in batch:
             if strict and required:

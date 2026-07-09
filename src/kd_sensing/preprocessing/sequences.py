@@ -183,6 +183,38 @@ def build_sequence_windows(
     )
 
 
+def sequence_window_generation_stats(all_data: pd.DataFrame, *, in_len: int, out_len: int) -> dict:
+    raw_sample_count = int(len(all_data))
+    generated_window_count = 0
+    skipped_history_insufficient = 0
+    skipped_future_label_insufficient = 0
+    per_seq = {}
+    for seq_idx, seq in all_data.groupby("seq_index", sort=False):
+        length = int(len(seq))
+        generated = max(length - int(in_len) - int(out_len) + 1, 0)
+        history_skipped = min(length, max(int(in_len) - 1, 0))
+        history_ready_positions = max(length - history_skipped, 0)
+        future_skipped = max(history_ready_positions - generated, 0)
+        generated_window_count += generated
+        skipped_history_insufficient += history_skipped
+        skipped_future_label_insufficient += future_skipped
+        per_seq[str(seq_idx)] = {
+            "raw_sample_count": length,
+            "generated_window_count": generated,
+            "skipped_history_insufficient": history_skipped,
+            "skipped_future_label_insufficient": future_skipped,
+            "skipped_cross_sequence": 0,
+        }
+    return {
+        "raw_sample_count": raw_sample_count,
+        "generated_window_count": int(generated_window_count),
+        "skipped_history_insufficient": int(skipped_history_insufficient),
+        "skipped_future_label_insufficient": int(skipped_future_label_insufficient),
+        "skipped_cross_sequence": 0,
+        "per_seq": per_seq,
+    }
+
+
 def sequence_window_columns(
     in_len: int,
     out_len: int,
@@ -265,6 +297,7 @@ def generate_sequence_data(
         include_mmwave=include_mmwave,
         include_position_targets=include_position_targets,
     )
+    generation_stats = sequence_window_generation_stats(all_data, in_len=in_len, out_len=out_len)
     split = select_balanced_sequence_split(
         all_seqs,
         training_set_pct=training_set_pct,
@@ -306,6 +339,7 @@ def generate_sequence_data(
             include_position_targets=include_position_targets,
         ),
         include_position_targets=include_position_targets,
+        window_generation_stats=generation_stats,
         training_set_pct=training_set_pct,
         split_seed=split_seed,
         min_test_sequences=min_test_sequences,
@@ -335,5 +369,6 @@ __all__ = [
     "resolve_sequence_column_plan",
     "select_balanced_sequence_split",
     "sequence_window_columns",
+    "sequence_window_generation_stats",
     "write_split_metadata",
 ]

@@ -83,6 +83,9 @@ def u_mask_beam_jepa_loss(
     latent_pred_loss: str = "cosine",
     prototype_distribution_target: torch.Tensor | None = None,
     beam_criterion: Any | None = None,
+    router_supervision: str = "none",
+    router_distill_weight: float = 0.0,
+    temporal_router_distill_weight: float = 0.0,
 ) -> dict[str, Any]:
     if lambda_jepa_global is None:
         lambda_jepa_global = 1.0 if lambda_jepa is None else float(lambda_jepa)
@@ -204,6 +207,16 @@ def u_mask_beam_jepa_loss(
                 "kd_gap": float((teacher_logits.detach() - logits.detach()).abs().mean().cpu().item()),
             }
         )
+    router_loss, router_diag = _hard_router_oracle_losses(
+        output,
+        labels,
+        router_supervision=router_supervision,
+        router_distill_weight=router_distill_weight,
+        temporal_router_distill_weight=temporal_router_distill_weight,
+    )
+    if torch.is_tensor(router_loss):
+        loss = loss + router_loss
+        diagnostics_extra.update(router_diag)
     latent_loss = zero
     latent_active_ratio = 0.0
     if use_light_latent_pred:
@@ -499,6 +512,9 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             lambda_latent_pred=float(cfg.get("lambda_latent_pred", 0.0)),
             latent_pred_loss=str(cfg.get("latent_pred_loss", "cosine")),
             beam_criterion=_u_mask_beam_criterion(context),
+            router_supervision=str(cfg.get("router_supervision", "none")),
+            router_distill_weight=float(cfg.get("router_distill_weight", 0.0)),
+            temporal_router_distill_weight=float(cfg.get("temporal_router_distill_weight", cfg.get("router_distill_weight", 0.0))),
         )
         _adaptive_sampler_update(
             cfg,
@@ -754,6 +770,196 @@ def _top1(logits: torch.Tensor, labels: torch.Tensor) -> float:
     if labels.ndim > 1:
         labels = labels[:, 0]
     return float(logits.argmax(dim=-1).eq(labels.to(device=logits.device)).float().mean().detach().cpu().item())
+
+
+def _hard_router_oracle_losses(
+    output: dict[str, Any],
+    labels: torch.Tensor,
+    *,
+    router_supervision: str,
+    router_distill_weight: float,
+    temporal_router_distill_weight: float,
+) -> tuple[torch.Tensor | None, dict[str, float]]:
+    if str(router_supervision).strip().lower() != "oracle":
+        return None, {}
+    terms: list[torch.Tensor] = []
+    diagnostics: dict[str, float] = {}
+    modality_weight = float(router_distill_weight)
+    temporal_weight = float(temporal_router_distill_weight)
+    if (
+        modality_weight != 0.0
+        and not torch.is_tensor(output.get("temporal_router_modality_gate_logits"))
+        and torch.is_tensor(output.get("router_gate_logits"))
+        and torch.is_tensor(output.get("unimodal_logits"))
+    ):
+        loss, diag = _modality_oracle_ce(
+            output["router_gate_logits"],
+            output["unimodal_logits"],
+            labels,
+            output.get("missing_mask"),
+            prefix="router",
+        )
+        terms.append(modality_weight * loss)
+        diagnostics.update(diag)
+    if modality_weight != 0.0 and torch.is_tensor(output.get("temporal_router_modality_gate_logits")):
+        loss, diag = _per_time_modality_oracle_ce(
+            output["temporal_router_modality_gate_logits"],
+            output["temporal_router_unimodal_logits"],
+            labels,
+            output.get("modality_temporal_mask"),
+        )
+        terms.append(modality_weight * loss)
+        diagnostics.update(diag)
+    if temporal_weight != 0.0 and torch.is_tensor(output.get("temporal_gate_logits")):
+        loss, diag = _temporal_oracle_ce(
+            output["temporal_gate_logits"],
+            output["temporal_router_per_time_logits"],
+            labels,
+            output.get("temporal_mask"),
+        )
+        terms.append(temporal_weight * loss)
+        diagnostics.update(diag)
+    if temporal_weight != 0.0 and torch.is_tensor(output.get("global_gate_logits")):
+        loss, diag = _global_oracle_ce(
+            output["global_gate_logits"],
+            output["global_unimodal_logits"],
+            labels,
+            output.get("modality_temporal_mask"),
+        )
+        terms.append(temporal_weight * loss)
+        diagnostics.update(diag)
+    if not terms:
+        return None, {}
+    total = sum(terms)
+    diagnostics["loss/router_oracle_total"] = float(total.detach().cpu().item())
+    diagnostics["router_oracle_hard_target_fallback"] = 1.0
+    return total, diagnostics
+
+
+def _modality_oracle_ce(
+    gate_logits: torch.Tensor,
+    unimodal_logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor | None,
+    *,
+    prefix: str,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if mask is None:
+        mask = torch.ones(gate_logits.shape, dtype=torch.bool, device=gate_logits.device)
+    mask = mask.to(device=gate_logits.device, dtype=torch.bool)
+    targets = _oracle_argmin(unimodal_logits, labels, mask)
+    active = targets.ne(-100) & mask.sum(dim=-1).gt(1)
+    if not bool(active.any().item()):
+        zero = gate_logits.sum() * 0.0
+        return zero, {f"loss/{prefix}_oracle": 0.0, f"{prefix}_oracle_active_ratio": 0.0}
+    masked_gate = gate_logits.masked_fill(~mask, torch.finfo(gate_logits.dtype).min)
+    loss = F.cross_entropy(masked_gate[active], targets[active])
+    pred = masked_gate.argmax(dim=-1)
+    acc = pred[active].eq(targets[active]).float().mean()
+    return loss, {
+        f"loss/{prefix}_oracle": float(loss.detach().cpu().item()),
+        f"{prefix}_oracle_acc": float(acc.detach().cpu().item()),
+        f"{prefix}_oracle_active_ratio": float(active.float().mean().detach().cpu().item()),
+    }
+
+
+def _per_time_modality_oracle_ce(
+    gate_logits: torch.Tensor,
+    unimodal_logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if mask is None:
+        mask = torch.ones(gate_logits.shape, dtype=torch.bool, device=gate_logits.device)
+    if gate_logits.ndim == 2:
+        if mask.ndim == 3:
+            mask = mask.any(dim=1)
+        if unimodal_logits.ndim == 4:
+            unimodal_logits = unimodal_logits.mean(dim=1)
+        return _modality_oracle_ce(
+            gate_logits,
+            unimodal_logits,
+            labels,
+            mask,
+            prefix="router_oracle_modality",
+        )
+    batch_size, steps, modalities = gate_logits.shape
+    flat_labels = labels.reshape(batch_size, -1)[:, :1].expand(-1, steps).reshape(-1)
+    return _modality_oracle_ce(
+        gate_logits.reshape(batch_size * steps, modalities),
+        unimodal_logits.reshape(batch_size * steps, modalities, unimodal_logits.shape[-1]),
+        flat_labels,
+        mask.reshape(batch_size * steps, modalities),
+        prefix="router_oracle_modality",
+    )
+
+
+def _temporal_oracle_ce(
+    gate_logits: torch.Tensor,
+    per_time_logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if mask is None:
+        mask = torch.ones(gate_logits.shape, dtype=torch.bool, device=gate_logits.device)
+    mask = mask.to(device=gate_logits.device, dtype=torch.bool)
+    targets = _oracle_argmin(per_time_logits, labels, mask)
+    active = targets.ne(-100) & mask.sum(dim=-1).gt(1)
+    if not bool(active.any().item()):
+        zero = gate_logits.sum() * 0.0
+        return zero, {"loss/router_oracle_temporal": 0.0, "router_oracle_temporal_active_ratio": 0.0}
+    masked_gate = gate_logits.masked_fill(~mask, torch.finfo(gate_logits.dtype).min)
+    loss = F.cross_entropy(masked_gate[active], targets[active])
+    pred = masked_gate.argmax(dim=-1)
+    acc = pred[active].eq(targets[active]).float().mean()
+    return loss, {
+        "loss/router_oracle_temporal": float(loss.detach().cpu().item()),
+        "router_oracle_acc_temporal": float(acc.detach().cpu().item()),
+        "router_oracle_temporal_active_ratio": float(active.float().mean().detach().cpu().item()),
+    }
+
+
+def _global_oracle_ce(
+    gate_logits: torch.Tensor,
+    cell_logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if mask is None:
+        mask = torch.ones(gate_logits.shape, dtype=torch.bool, device=gate_logits.device)
+    batch_size, steps, modalities = gate_logits.shape
+    flat_gate = gate_logits.reshape(batch_size, steps * modalities)
+    flat_mask = mask.to(device=gate_logits.device, dtype=torch.bool).reshape(batch_size, steps * modalities)
+    flat_logits = cell_logits.reshape(batch_size, steps * modalities, cell_logits.shape[-1])
+    targets = _oracle_argmin(flat_logits, labels, flat_mask)
+    active = targets.ne(-100) & flat_mask.sum(dim=-1).gt(1)
+    if not bool(active.any().item()):
+        zero = flat_gate.sum() * 0.0
+        return zero, {"loss/router_oracle_global": 0.0, "router_oracle_global_active_ratio": 0.0}
+    masked_gate = flat_gate.masked_fill(~flat_mask, torch.finfo(flat_gate.dtype).min)
+    loss = F.cross_entropy(masked_gate[active], targets[active])
+    pred = masked_gate.argmax(dim=-1)
+    acc = pred[active].eq(targets[active]).float().mean()
+    return loss, {
+        "loss/router_oracle_global": float(loss.detach().cpu().item()),
+        "router_oracle_acc_global": float(acc.detach().cpu().item()),
+        "router_oracle_global_active_ratio": float(active.float().mean().detach().cpu().item()),
+    }
+
+
+def _oracle_argmin(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    target = labels.to(device=logits.device, dtype=torch.long)
+    if target.ndim > 1:
+        target = target[:, 0]
+    pred = logits.argmax(dim=-1)
+    while target.ndim < pred.ndim:
+        target = target.unsqueeze(-1)
+    diff = (pred - target).abs()
+    errors = torch.minimum(diff, int(logits.shape[-1]) - diff).to(dtype=logits.dtype)
+    available = mask.to(device=logits.device, dtype=torch.bool)
+    masked = errors.masked_fill(~available, torch.finfo(errors.dtype).max)
+    oracle = masked.argmin(dim=-1)
+    return torch.where(available.any(dim=-1), oracle, torch.full_like(oracle, -100))
 
 
 def _pattern_diagnostics(pattern_names: list[str] | None) -> dict[str, float]:

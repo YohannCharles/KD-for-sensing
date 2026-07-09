@@ -4,6 +4,7 @@ from typing import Any
 from kd_sensing.config.canonical import SNAPSHOT_TRAIN_CSV, SNAPSHOT_VAL_CSV, SNAPSHOT_VARIANT
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
 from kd_sensing.data.scenes import normalize_deepsense_config
+from kd_sensing.data.temporal_missing import normalize_temporal_aggregation, normalize_temporal_missing_mode
 from kd_sensing.engine.objectives.metadata import (
     configure_objective_defaults,
     objective_requires_occlusion,
@@ -69,12 +70,83 @@ def normalize_loaded_config(
     apply_objective_runtime_requirements(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
     normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
+    normalize_temporal_window_missing_config(cfg)
     normalize_csi_hardening_alias(cfg)
     canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_model_role_defaults(cfg)
     normalize_deepsense_config(cfg)
     normalize_image_profile_config(cfg)
     apply_snapshot_runtime_requirements(cfg)
+
+
+def normalize_temporal_window_missing_config(cfg: dict[str, Any]) -> None:
+    temporal_cfg = cfg.setdefault("temporal_missing", {})
+    if not isinstance(temporal_cfg, dict):
+        raise ValueError("temporal_missing must be a mapping when configured.")
+    dataset_cfg = cfg.setdefault("data", {}).setdefault("dataset", {})
+    model_cfg = cfg.setdefault("model", {})
+    primary_cfg = model_cfg.setdefault("primary", {})
+
+    history = _first_config_value(
+        temporal_cfg.get("history_window"),
+        dataset_cfg.get("history_window"),
+        model_cfg.get("history_window"),
+        dataset_cfg.get("seq_len"),
+        model_cfg.get("seq_length"),
+    )
+    prediction = _first_config_value(
+        temporal_cfg.get("prediction_window"),
+        dataset_cfg.get("prediction_window"),
+        model_cfg.get("prediction_window"),
+        dataset_cfg.get("num_pred"),
+        model_cfg.get("num_pred"),
+    )
+    history = int(history)
+    prediction = int(prediction)
+    if history <= 0:
+        raise ValueError(f"history_window must be positive, got {history}.")
+    if prediction <= 0:
+        raise ValueError(f"prediction_window must be positive, got {prediction}.")
+    temporal_cfg["history_window"] = history
+    temporal_cfg["prediction_window"] = prediction
+    temporal_cfg["temporal_aggregation"] = normalize_temporal_aggregation(temporal_cfg.get("temporal_aggregation"))
+    temporal_cfg["mode"] = normalize_temporal_missing_mode(
+        temporal_cfg.get("mode", temporal_cfg.get("temporal_missing_mode", "none"))
+    )
+    temporal_cfg["prob"] = float(temporal_cfg.get("prob", temporal_cfg.get("temporal_missing_prob", 0.0)) or 0.0)
+    temporal_cfg["block_len"] = int(
+        temporal_cfg.get("block_len", temporal_cfg.get("temporal_missing_block_len", 1)) or 1
+    )
+    temporal_cfg["apply"] = str(temporal_cfg.get("apply", temporal_cfg.get("temporal_missing_apply", "train"))).lower()
+    if temporal_cfg["apply"] not in {"train", "eval", "both"}:
+        raise ValueError("temporal_missing.apply must be one of train, eval, both.")
+    temporal_cfg["seed"] = int(temporal_cfg.get("seed", temporal_cfg.get("temporal_missing_seed", 0)) or 0)
+    temporal_cfg["ensure_at_least_one_frame"] = bool(temporal_cfg.get("ensure_at_least_one_frame", True))
+    temporal_cfg["ensure_at_least_one_modality_per_frame"] = bool(
+        temporal_cfg.get("ensure_at_least_one_modality_per_frame", False)
+    )
+    temporal_cfg["enabled"] = bool(temporal_cfg.get("enabled", False)) or temporal_cfg["mode"] != "none" or temporal_cfg["prob"] > 0.0
+
+    dataset_cfg["history_window"] = history
+    dataset_cfg["prediction_window"] = prediction
+    dataset_cfg["seq_len"] = history
+    dataset_cfg["num_pred"] = prediction
+    model_cfg["history_window"] = history
+    model_cfg["prediction_window"] = prediction
+    model_cfg["seq_length"] = history
+    model_cfg["num_pred"] = prediction
+    primary_cfg["history_window"] = history
+    primary_cfg["prediction_window"] = prediction
+    primary_cfg["seq_length"] = history
+    primary_cfg["num_pred"] = prediction
+    primary_cfg.setdefault("temporal_aggregation", temporal_cfg["temporal_aggregation"])
+
+
+def _first_config_value(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    raise ValueError("Expected at least one non-empty config value.")
 
 
 def normalize_dataloader_batch_size_alias(

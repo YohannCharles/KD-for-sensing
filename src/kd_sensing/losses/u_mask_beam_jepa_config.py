@@ -101,6 +101,12 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "lambda_latent_pred": training_cfg.get("lambda_latent_pred", 0.0),
         "latent_pred_loss": training_cfg.get("latent_pred_loss", "cosine"),
         "mpdro": training_cfg.get("mpdro", {}),
+        "router_supervision": training_cfg.get("router_supervision", primary_cfg.get("router_supervision", "none")),
+        "router_distill_weight": training_cfg.get("router_distill_weight", primary_cfg.get("router_distill_weight", 0.0)),
+        "temporal_router_distill_weight": training_cfg.get(
+            "temporal_router_distill_weight",
+            primary_cfg.get("temporal_router_distill_weight", primary_cfg.get("router_distill_weight", 0.0)),
+        ),
     }.items():
         resolved.setdefault(key, default)
     if _is_false(use_modality_proto):

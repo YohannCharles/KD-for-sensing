@@ -265,6 +265,9 @@ def _raw_profiles_from_config(cfg: Mapping[str, Any]) -> list[Any]:
     random_dropout = _random_modality_dropout_profile(cfg)
     if random_dropout is not None:
         raw.append(random_dropout)
+    temporal_missing = _temporal_missing_profile(cfg)
+    if temporal_missing is not None:
+        raw.append(temporal_missing)
     data_difficulty = cfg.get("data", {}).get("difficulty") if isinstance(cfg.get("data"), Mapping) else None
     if data_difficulty not in (None, False):
         raw.extend(_profiles_from_container(data_difficulty, default_stage="train"))
@@ -272,6 +275,71 @@ def _raw_profiles_from_config(cfg: Mapping[str, Any]) -> list[Any]:
     if evaluation_difficulty not in (None, False):
         raw.extend(_profiles_from_container(evaluation_difficulty, default_stage="evaluation"))
     return raw
+
+
+def _temporal_missing_profile(cfg: Mapping[str, Any]) -> dict[str, Any] | None:
+    temporal = cfg.get("temporal_missing") if isinstance(cfg, Mapping) else None
+    if not isinstance(temporal, Mapping):
+        return None
+    mode = str(temporal.get("mode", temporal.get("temporal_missing_mode", "none"))).strip().lower()
+    if str(temporal.get("mask_sampler", "")).strip().lower() == "stratified_modality_temporal":
+        mode = "stratified_modality_temporal"
+    prob = float(temporal.get("prob", temporal.get("temporal_missing_prob", 0.0)) or 0.0)
+    if not (bool(temporal.get("enabled", False)) or mode != "none" or prob > 0.0) or mode == "none":
+        return None
+    apply = str(temporal.get("apply", temporal.get("temporal_missing_apply", "train"))).strip().lower()
+    if apply == "train":
+        stages = ["train"]
+    elif apply == "eval":
+        stages = ["evaluation", "benchmark"]
+    elif apply == "both":
+        stages = ["train", "evaluation", "benchmark"]
+    else:
+        raise ValueError("temporal_missing.apply must be one of train, eval, both.")
+    model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), Mapping) else {}
+    primary = model_cfg.get("primary", {}) if isinstance(model_cfg.get("primary"), Mapping) else {}
+    modalities = temporal.get(
+        "modalities",
+        primary.get("modalities", model_cfg.get("modalities", ["image", "radar", "gps", "lidar"])),
+    )
+    return {
+        "id": str(temporal.get("id", "temporal_missing")),
+        "stage": stages,
+        "split": temporal.get("split", ["train", "validation", "test"]),
+        "condition": str(temporal.get("condition", f"temporal_missing_{mode}")),
+        "severity": prob,
+        "seed": temporal.get("seed", temporal.get("temporal_missing_seed", cfg.get("experiment", {}).get("seed", 0))),
+        "fallback": temporal.get("fallback", "zero_fill"),
+        "affected_modalities": modalities,
+        "metadata": {
+            "source": "temporal_missing",
+            "history_window": temporal.get("history_window"),
+            "prediction_window": temporal.get("prediction_window"),
+        },
+        "operators": [
+            {
+                "type": "temporal_missing",
+                "modality": str(_as_list(modalities)[0]),
+                "affected_modalities": modalities,
+                "mode": mode,
+                "prob": prob,
+                "block_len": temporal.get("block_len", temporal.get("temporal_missing_block_len", 1)),
+                "ensure_at_least_one_frame": temporal.get("ensure_at_least_one_frame", True),
+                "ensure_at_least_one_cell": temporal.get("ensure_at_least_one_cell", True),
+                "ensure_at_least_one_modality": temporal.get("ensure_at_least_one_modality", True),
+                "train_missing_drop_counts": temporal.get("train_missing_drop_counts", "0,1,2,3"),
+                "train_temporal_missing_rates": temporal.get("train_temporal_missing_rates", "0.0,0.2,0.4,0.6,0.8"),
+                "train_temporal_missing_types": temporal.get(
+                    "train_temporal_missing_types",
+                    "modality_level,frame_level,modality_frame,block",
+                ),
+                "ensure_at_least_one_modality_per_frame": temporal.get(
+                    "ensure_at_least_one_modality_per_frame",
+                    False,
+                ),
+            }
+        ],
+    }
 
 
 def _random_modality_dropout_profile(cfg: Mapping[str, Any]) -> dict[str, Any] | None:

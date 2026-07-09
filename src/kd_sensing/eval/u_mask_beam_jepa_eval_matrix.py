@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from kd_sensing.engine.model_output import adapt_model_output
+from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
 from kd_sensing.engine.runtime import prepare_task_batch, run_model_step
 from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats
 from kd_sensing.evaluation.metrics import beam_classification_circular_summary
@@ -299,6 +300,7 @@ def _evaluate_pattern(
             device,
             prediction_index=prediction_index,
             cfg=cfg,
+            step_index=batch_index,
         )
         if oracle_gate:
             logits, chosen = _oracle_logits_from_diagnostics(diagnostics, logits, target, metric_missing_mask, modalities)
@@ -336,8 +338,16 @@ def _forward_batch(
     *,
     prediction_index: int | str,
     cfg: dict[str, Any] | None,
+    step_index: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
     if cfg is not None:
+        raw_batch = prepare_evaluation_batch(
+            raw_batch,
+            cfg=cfg,
+            split_name=str(cfg.get("evaluation", {}).get("split", "validation")),
+            difficulty_seed=int(cfg.get("experiment", {}).get("seed", 0)),
+            step_index=step_index,
+        )
         model_cfg = cfg["model"]["primary"]
         num_pred = int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1)))
         step = run_model_step(

@@ -1,6 +1,11 @@
 import argparse
 
-from kd_sensing.cli.common import load_cli_config, print_result
+from kd_sensing.cli.common import (
+    add_temporal_window_missing_args,
+    apply_temporal_window_missing_cli_args,
+    load_cli_config,
+    print_result,
+)
 from kd_sensing.engine.trainer import train
 
 
@@ -56,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unimodal_aux_weight", "--unimodal-aux-weight", type=float)
     parser.add_argument("--radar_aux_weight", "--radar-aux-weight", type=float)
     parser.add_argument("--bprr_calibration", "--bprr-calibration", choices=("none", "temperature"))
+    add_temporal_window_missing_args(parser)
     return parser
 
 
@@ -64,6 +70,7 @@ def run(argv: list[str] | None = None) -> dict:
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
     _apply_training_cli_shortcuts(cfg, args)
+    apply_temporal_window_missing_cli_args(cfg, args)
     cfg.setdefault("runtime", {})["cli_config_path"] = args.config
     if args.dry_run:
         cfg["data"]["dataset"]["type"] = "synthetic"

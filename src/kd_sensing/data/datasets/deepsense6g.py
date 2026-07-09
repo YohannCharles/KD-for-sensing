@@ -399,6 +399,8 @@ class DeepSense6GDataset(Dataset):
             "targets",
             lambda: build_beam_target_tensors(self, idx, beam_paths, target_beam_paths),
         )
+        sample["history_indices"] = torch.arange(len(beam_paths), dtype=torch.long)
+        sample["target_index"] = torch.tensor(len(beam_paths), dtype=torch.long)
         input_beam = beam_metadata["input_beam"]
         target_beam = beam_metadata["target_beam"]
         raw_input_beam = beam_metadata["raw_input_beam"]
@@ -475,6 +477,8 @@ class DeepSense6GDataset(Dataset):
             "root_csv": str(self.root_csv),
             "beam_target_source": self.beam_target_source,
             "seq_len": int(self.seq_len),
+            "history_window": int(self.seq_len),
+            "prediction_window": int(self.num_pred),
             "gps_seq_len": int(self.gps_source_seq_len),
             "gps_source_seq_len": int(self.gps_source_seq_len),
             "input_beam_path": last_beam_path,

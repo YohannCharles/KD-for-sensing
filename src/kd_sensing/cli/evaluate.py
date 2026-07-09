@@ -1,6 +1,11 @@
 import argparse
 
-from kd_sensing.cli.common import load_cli_config, print_result
+from kd_sensing.cli.common import (
+    add_temporal_window_missing_args,
+    apply_temporal_window_missing_cli_args,
+    load_cli_config,
+    print_result,
+)
 from kd_sensing.engine.evaluator import evaluate
 
 
@@ -9,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", required=True, help="Path to a YAML config file.")
     parser.add_argument("--weights", help="Model weights or checkpoint path to evaluate.")
     parser.add_argument("--output-dir", help="Directory for metrics and report outputs.")
+    add_temporal_window_missing_args(parser)
     parser.add_argument(
         "--override",
         "-o",
@@ -23,6 +29,7 @@ def run(argv: list[str] | None = None) -> dict:
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     cfg = load_cli_config(args, unknown)
+    apply_temporal_window_missing_cli_args(cfg, args)
     cfg.setdefault("runtime", {})["cli_config_path"] = args.config
     result = evaluate(cfg, weights=args.weights, output_dir=args.output_dir)
     print_result(result)

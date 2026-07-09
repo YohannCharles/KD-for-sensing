@@ -191,6 +191,7 @@ def import_default_components() -> None:
     import kd_sensing.models.mmwave  # noqa: F401
     import kd_sensing.models.pinn_multimodal_beam  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
+    import kd_sensing.models.rmbp_mm  # noqa: F401
     import kd_sensing.models.tinyvit  # noqa: F401
     import kd_sensing.models.u_mask_beam_jepa  # noqa: F401
     import kd_sensing.preprocessing.csv  # noqa: F401

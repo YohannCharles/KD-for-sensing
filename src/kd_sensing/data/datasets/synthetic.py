@@ -89,6 +89,8 @@ class SyntheticSequenceDataset(Dataset):
             "radar_da": radar_da.float(),
             "input_beam": input_beam.long(),
             "target_beam": target_beam.long(),
+            "history_indices": torch.arange(self.seq_len, dtype=torch.long),
+            "target_index": torch.tensor(self.seq_len, dtype=torch.long),
         }
         if self.use_gps:
             sample["gps"] = torch.rand((self.seq_len, self.gps_input_size), generator=self.generator)

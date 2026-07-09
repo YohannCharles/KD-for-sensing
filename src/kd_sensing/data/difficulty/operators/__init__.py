@@ -17,6 +17,7 @@ from kd_sensing.data.difficulty.operators.image import (
     PredictiveJepaRobustnessOperator,
 )
 from kd_sensing.data.difficulty.operators.modality import ModalityMissingOperator, RandomModalityDropoutOperator
+from kd_sensing.data.difficulty.operators.temporal import TemporalMissingOperator
 from kd_sensing.registries import DIFFICULTY_OPERATORS
 
 
@@ -48,6 +49,7 @@ def _register_defaults() -> None:
         "modality_unavailable": ModalityMissingOperator,
         "amber_lite_modality_dropout": ModalityMissingOperator,
         "random_modality_dropout": RandomModalityDropoutOperator,
+        "temporal_missing": TemporalMissingOperator,
     }.items():
         DIFFICULTY_OPERATORS.register(name, force=True)(component)
 
@@ -69,6 +71,7 @@ __all__ = [
     "ImageObservabilityTransform",
     "ModalityMissingOperator",
     "RandomModalityDropoutOperator",
+    "TemporalMissingOperator",
     "ImageOcclusionOperator",
     "PredictiveJepaRobustnessOperator",
     "ScenarioCAsyncPositionFeedbackOperator",

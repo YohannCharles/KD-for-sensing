@@ -19,6 +19,7 @@ MODALITY_BATCH_KEYS = {
     "gps": ("gps", "gps_batch"),
     "lidar": ("lidar", "lidar_batch"),
     "mmwave": ("mmwave", "mmwave_batch"),
+    "csi": ("csi", "csi_batch"),
 }
 
 

@@ -216,6 +216,15 @@ def prediction_setup_metadata(
         "uses_temporal_core": uses_temporal_core,
         "seq_len": seq_len,
         "num_pred": num_pred,
+        "history_window": int(dataset_cfg.get("history_window", model_cfg.get("history_window", seq_len)) or seq_len),
+        "prediction_window": int(
+            dataset_cfg.get("prediction_window", model_cfg.get("prediction_window", num_pred)) or num_pred
+        ),
+        "temporal_aggregation": cfg.get("temporal_missing", {}).get(
+            "temporal_aggregation",
+            cfg.get("model", {}).get("primary", {}).get("temporal_aggregation"),
+        ),
+        "temporal_missing": _temporal_missing_metadata_from_config(cfg),
         "enabled_modalities": list(resolve_enabled_modalities(cfg)),
         "objective": cfg.get("experiment", {}).get("objective", "beam"),
         "task": cfg.get("experiment", {}).get("task"),
@@ -273,6 +282,24 @@ def prediction_setup_metadata(
     if jepa_metadata:
         metadata["jepa_downstream"] = jepa_metadata
     return metadata
+
+
+def _temporal_missing_metadata_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    temporal = cfg.get("temporal_missing", {})
+    if not isinstance(temporal, dict):
+        return {"enabled": False, "mode": "none", "prob": 0.0}
+    return {
+        "enabled": bool(temporal.get("enabled", False)),
+        "mode": str(temporal.get("mode", "none")),
+        "prob": float(temporal.get("prob", 0.0) or 0.0),
+        "block_len": int(temporal.get("block_len", 1) or 1),
+        "apply": str(temporal.get("apply", "train")),
+        "seed": int(temporal.get("seed", 0) or 0),
+        "ensure_at_least_one_frame": bool(temporal.get("ensure_at_least_one_frame", True)),
+        "ensure_at_least_one_modality_per_frame": bool(
+            temporal.get("ensure_at_least_one_modality_per_frame", False)
+        ),
+    }
 
 
 def jepa_downstream_metadata(
