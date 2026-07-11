@@ -4,23 +4,23 @@
 定义 OpenSpec capability lifecycle 分类，避免当前能力、支撑能力和退役墓碑能力在读取、归档或健康检查时被混淆。
 ## Requirements
 ### Requirement: OpenSpec capability lifecycle 分类
-项目 MUST 维护 OpenSpec capability lifecycle 分类，用于区分当前能力、支撑能力和退役墓碑能力。分类 MUST 至少包含 `current`、`supporting` 和 `retired-tombstone`，并 MUST 覆盖 `openspec/specs/` 下仍作为 current spec 文件保留的每个 capability。已经归档或折叠到集中历史清单的退役路线 MAY 不再拥有 current spec 文件，但 MUST 在 archive、project surface inventory 或 retired route summary 中保留历史边界。
+项目 MUST 维护 OpenSpec capability lifecycle 分类，用于区分当前能力、支撑能力和集中退役边界。`openspec/specs/` 下保留的 capability MUST 分类为 `current` 或 `supporting`；无独立 guard 价值的 retired capability MUST 从 current specs 删除并由 `retired-route-summary`、inventory historical row 或 archive 记录。`retired-tombstone` MAY 只用于确有独立运行时拒绝或外部迁移价值的例外。
 
-#### Scenario: 每个保留 current spec 被分类
-- **WHEN** 开发者或架构边界测试枚举 `openspec/specs/*/spec.md`
-- **THEN** 每个仍保留在 current specs 下的 capability MUST 在 lifecycle inventory 中有且仅有一个 lifecycle 分类
+#### Scenario: 每个保留 spec 被分类
+- **WHEN** 架构边界测试枚举 `openspec/specs/*/spec.md`
+- **THEN** 每个保留 capability MUST 在 lifecycle inventory 中有且仅有一个分类
 - **AND** 未分类 capability MUST 被视为文档生命周期漂移
+
+#### Scenario: 无独立 guard 的墓碑不占 current spec
+- **WHEN** retired capability 只重复“已退役/不得回流”且无独立 config、registry、CLI、docs 或测试 guard
+- **THEN** 该 spec MUST 折叠到集中 retired summary 或 archive
+- **AND** lifecycle inventory MUST 不再要求该目录存在
 
 #### Scenario: lifecycle 分类含义稳定
 - **WHEN** 开发者阅读 lifecycle inventory
-- **THEN** `current` MUST 表示当前需求契约、可推荐入口或当前运行能力
-- **AND** `supporting` MUST 表示被当前 workflow 消费但不作为 standalone 推荐入口的支撑能力
-- **AND** `retired-tombstone` MUST 表示只保留退役、拒绝、迁移边界和防回流说明的墓碑能力
-
-#### Scenario: 已归档退役能力不要求 current spec
-- **WHEN** 某个退役研究线不再需要当前运行时 guard、配置拒绝边界或专用迁移说明
-- **THEN** 项目 MAY 将该 tombstone spec 归档或折叠到集中历史清单
-- **AND** 架构健康检查 MUST 不要求 `openspec/specs/` 下继续存在该 retired capability 文件
+- **THEN** `current` MUST 表示当前需求契约或运行能力
+- **AND** `supporting` MUST 表示被 current workflow 消费但不作为 standalone 推荐入口的能力
+- **AND** 集中 retired summary MUST 表示旧路线只保留历史和拒绝边界
 
 ### Requirement: 退役墓碑 spec 一眼可辨
 仍保留在 `openspec/specs/` 下的 `retired-tombstone` capability MUST 在 Purpose 或首个 requirement 中明确说明能力已退役、不属于当前支持面或只作为 migration guard/防回流墓碑保留。退役墓碑 spec MUST NOT 在未加退役限定的上下文中使用当前推荐入口、active mainline、默认 workflow、可运行训练路线等 wording。若墓碑只剩历史说明且无当前 guard 价值，项目 MAY 将其归档或合并到集中历史清单。
@@ -139,19 +139,6 @@ OpenSpec change 归档后，维护者 MUST 以 `openspec list --json`、current 
 - **THEN** 维护者 MUST 将其视为当前上下文
 - **AND** 新的清理 change MUST 避免覆盖该 active change 范围内的用户工作
 
-### Requirement: 退役 tombstone 折叠必须保留 guard 价值
-retired-tombstone spec MAY 被归档或折叠到集中 retired summary，但只有在该 spec 不再提供 current registry/config/CLI/documentation migration guard、外部迁移说明或 wording 防回流价值时才允许。保留的 tombstone MUST 明确记录其 guard 价值；折叠后的 summary MUST 继续说明旧路线不属于当前支持面。
-
-#### Scenario: tombstone 仍有 guard 价值
-- **WHEN** retired spec 仍对应 registry removed guard、配置拒绝路径、CLI 退役错误或当前文档防回流说明
-- **THEN** 该 spec MUST 保留在 current specs 或被等价 guard summary 覆盖
-- **AND** 折叠不得导致旧入口被误判为 unknown current capability
-
-#### Scenario: tombstone 只剩历史叙述
-- **WHEN** retired spec 没有 current guard、没有当前文档引用、没有配置/registry/CLI 拒绝边界，也没有迁移说明价值
-- **THEN** 项目 MAY 将其归档或集中到 retired summary
-- **AND** archive 或 summary MUST 明确该路线不再作为 current workflow、配置、模型或 CLI 维护
-
 ### Requirement: 归档脚手架不得进入 current lifecycle
 归档 change 生成或修改 current spec 后，维护者 MUST 清理 `TBD` Purpose、模板说明和不完整 lifecycle 分类。current lifecycle 只表示能力契约仍属于当前支持面，不表示 pending/mock/unverified 数值 claim 已经成立。
 
@@ -178,27 +165,6 @@ retired-tombstone spec MAY 被归档或折叠到集中 retired summary，但只�
 - **THEN** 文档 MUST 指向实际 current workflow
 - **AND** 文档 MUST 不把支撑代码所属的旧研究路线描述为当前入口
 
-### Requirement: Retired tombstones require guard-value audit before retention
-仍保留在 `openspec/specs/` 下的 retired-tombstone capability MUST 在本 change 中复核 guard 价值。Guard 价值包括 registry removed guard、config path/override 拒绝、CLI retired error、current docs wording 防回流、外部迁移说明或 focused tests 防回归。无 guard 价值的 tombstone MAY 归档或折叠到集中 retired summary。
-
-#### Scenario: Tombstone 保留有理由
-- **WHEN** retired-tombstone spec 继续保留在 current specs 下
-- **THEN** inventory 或 spec 开头 MUST 能说明它提供的 guard 价值
-- **AND** 文档 MUST 不把该能力描述为 current workflow、current config 或 current CLI
-
-#### Scenario: Tombstone 可折叠
-- **WHEN** retired spec 没有 current registry/config/CLI/docs/tests guard，也没有迁移说明价值
-- **THEN** 本 change MAY 将其归档或折叠到集中 retired summary
-- **AND** summary MUST 继续说明旧路线不属于当前支持面，且不得恢复旧入口
-
-### Requirement: Completed active changes are resolved before surface cleanup
-当 `openspec list --json` 显示 active change 的 artifacts/tasks 已完成时，本 change 的 Wave 0 MUST 先归档该 change，或记录明确 deferral。后续 docs、inventory 和 specs 不得把已完成但未归档的 change 误读为仍在实施的需求。
-
-#### Scenario: Complete change deferred
-- **WHEN** 已完成 active change 因用户工作树、审查或提交节奏暂不归档
-- **THEN** Wave 0 MUST 记录 change name、暂缓原因、与本 change 的重叠范围和后续归档触发条件
-- **AND** 后续 wave MUST 避免覆盖该 change 范围内未收口的用户工作
-
 ### Requirement: Lifecycle cleanup cannot weaken retired-route guards
 折叠 OpenSpec tombstone、删除历史 wording 或收缩 migration guard 时，项目 MUST 保持 retired route 的实际拒绝边界。若删除某个专属 guard，必须证明普通 unknown-name 错误、集中 retired summary 或其它 guard 仍足以防止旧入口被误判为 current。
 
@@ -208,17 +174,22 @@ retired-tombstone spec MAY 被归档或折叠到集中 retired summary，但只�
 - **AND** 删除理由 MUST 说明迁移路径或 unknown-name fallback 是否可接受
 
 ### Requirement: Retired tombstones are folded unless they provide active guard value
-Retired-tombstone specs MUST 只在提供独立 guard 价值时保留。Guard 价值包括 registry removed-name guard、config path/override 拒绝、CLI retired error、current docs wording 防回流、外部迁移说明或 focused tests 防回归。只重复“已退役/不得回流”的 tombstone MUST 折叠到集中 retired-route summary 或归档。
+Retired capability MUST 只在提供独立 registry/config/CLI/docs/tests guard 或外部迁移价值时保留专属 current spec。只重复退役事实的 capability MUST 从 `openspec/specs/` 删除并由集中 summary 覆盖；本轮 27 个 inventory tombstone 中，24 个 MUST 折叠，三个存在 current consumer 的误分类 owner MUST 改为 supporting。
 
 #### Scenario: Tombstone without unique guard
-- **WHEN** 一个 retired-tombstone spec 没有独立 registry/config/CLI/docs/tests guard 价值
-- **THEN** 它 MUST 从 current specs 中移除或折叠
-- **AND** 集中 retired-route summary MUST 保留旧路线不属于 current support surface 的事实
+- **WHEN** retired spec 没有独立 guard 或迁移价值
+- **THEN** 它 MUST 从 current specs 中移除
+- **AND** 集中 retired summary MUST 保留旧名称和非 current 事实
 
 #### Scenario: Retired summary preserves rejection
 - **WHEN** 多个 retired specs 被折叠
-- **THEN** 项目 MUST 保留旧名称、拒绝点和迁移方向的集中记录
+- **THEN** 项目 MUST 保留代表性旧 CLI/config/module token 与普通 unknown-name 或集中 guard 语义
 - **AND** 防回流测试 MUST 继续验证旧入口不会恢复
+
+#### Scenario: Tombstone 分类被 consumer 证据纠正
+- **WHEN** source audit 证明 capability 被 current MMW、training startup、U-Mask/AMR/AMBER 或 Scene31-34 workflow 消费
+- **THEN** lifecycle inventory MUST 将该 capability 改为 `supporting` 而不是删除
+- **AND** supporting spec MUST 只保留真实消费契约，不得借此恢复 standalone CLI 或历史 sweep
 
 ### Requirement: 归档后版本控制状态必须成对审计
 OpenSpec change 归档后，版本控制状态 MUST 能审计 active change 目录删除与 archive 目录新增是否成对提交。若 `git status --short` 同时显示 `openspec/changes/<change>/` 下文件被删除，并显示 `openspec/changes/archive/<date>-<change>/` 为未跟踪或新增，则实现任务、架构边界测试或最终说明 MUST 要求二者作为同一收口状态处理，或记录明确 deferral 原因。

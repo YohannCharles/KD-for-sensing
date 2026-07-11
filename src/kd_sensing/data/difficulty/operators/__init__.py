@@ -14,7 +14,6 @@ from kd_sensing.data.difficulty.operators.image import (
     ImageNightOperator,
     ImageObservabilityTransform,
     ImageOcclusionOperator,
-    PredictiveJepaRobustnessOperator,
 )
 from kd_sensing.data.difficulty.operators.modality import ModalityMissingOperator, RandomModalityDropoutOperator
 from kd_sensing.data.difficulty.operators.temporal import TemporalMissingOperator
@@ -38,12 +37,10 @@ def _register_defaults() -> None:
         "scenario_c_async_position_feedback": ScenarioCAsyncPositionFeedbackOperator,
         "image_clean": ImageCleanOperator,
         "image_observability": ImageObservabilityTransform,
-        "scenario_d_image_observability": ImageObservabilityTransform,
         "image_fog_rain": ImageFogRainOperator,
         "image_night": ImageNightOperator,
         "image_occlusion": ImageOcclusionOperator,
         "image_motion_blur": ImageMotionBlurOperator,
-        "predictive_jepa_robustness": PredictiveJepaRobustnessOperator,
         "modality_missing": ModalityMissingOperator,
         "modality_dropout": ModalityMissingOperator,
         "modality_unavailable": ModalityMissingOperator,
@@ -73,6 +70,5 @@ __all__ = [
     "RandomModalityDropoutOperator",
     "TemporalMissingOperator",
     "ImageOcclusionOperator",
-    "PredictiveJepaRobustnessOperator",
     "ScenarioCAsyncPositionFeedbackOperator",
 ]

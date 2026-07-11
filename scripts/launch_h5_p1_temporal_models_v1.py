@@ -175,6 +175,8 @@ def plan_jobs(args: argparse.Namespace) -> list[dict[str, Any]]:
             config_path = Path(args.output_root) / "generated_configs" / f"{method}_seed{seed}.yaml"
             log_path = Path(args.output_root) / "logs" / f"{method}_seed{seed}.log"
             command = ["conda", "run", "-n", "kd_mm_beam", "kd-sensing-train", "--config", str(config_path)]
+            if bool(getattr(args, "auto_resume", False)):
+                command.append("--auto-resume")
             jobs.append({
                 "method": method,
                 "seed": seed,
@@ -347,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--method_config_overrides", "--method-config-overrides", default="")
     parser.add_argument("--dry_run", "--dry-run", action="store_true")
     parser.add_argument("--skip_completed", "--skip-completed", action="store_true")
+    parser.add_argument("--auto_resume", "--auto-resume", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
     jobs = plan_jobs(args)

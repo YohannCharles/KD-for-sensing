@@ -17,17 +17,17 @@
 - **AND** issue MUST 不要求 agent 提交真实 dataset、outputs、logs、cache 或 checkpoint
 
 ### Requirement: 本地/手动验证和调度友好检查
-项目 MUST 提供或记录本地/手动验证策略。默认 quick verify MUST 保持无真实数据、无训练、无 checkpoint；更重的 doctor、CLI/config、compile、安全扫描和漂移检查 MAY 由人工或外部任务系统按需运行。
+项目 MUST 提供本地/手动验证策略。默认 quick verify MUST 保持无真实数据、无训练、无 checkpoint；OpenSpec、architecture、CLI/config、compile 和小型安全扫描 MAY 由人工或任务系统组合运行。项目 MUST 不要求 surface doctor 或 research preview 作为验证编排层。
 
-#### Scenario: quick verify 无训练
+#### Scenario: Quick verify 无训练
 - **WHEN** 开发者或 agent 运行 quick verify
-- **THEN** 检查 MUST 运行 OpenSpec strict 和架构边界或等价 quick verify
-- **AND** 检查 MUST 不启动真实 `kd-sensing-train` 长跑、不读取真实 `dataset/`、不加载 checkpoint
+- **THEN** 检查 MUST 运行 OpenSpec strict 和架构边界或等价 quick checks
+- **AND** MUST 不启动真实训练、不读取 dataset、不加载 checkpoint
 
-#### Scenario: doctor 报告漂移
-- **WHEN** 人工或外部任务系统运行 doctor/security/compile 检查
-- **THEN** 检查 SHOULD 报告未分类 config/script/hotspot、退役 route 回流、文档/入口漂移和本地产物误提交风险
-- **AND** 输出 MUST 不修改源码、OpenSpec、README、outputs、logs 或 checkpoint
+#### Scenario: Focused checks 直接报告漂移
+- **WHEN** 人工运行 security、CLI/config 或 compile check
+- **THEN** 原生命令 MUST 报告路径和失败原因
+- **AND** 输出 MUST 不修改源码、OpenSpec、本地产物或用户改动
 
 ### Requirement: 安全、依赖和产物扫描
 项目 MUST 提供或记录安全与产物扫描，用于发现 secrets、系统启动/认证配置污染、tracked runtime artifacts、危险 shell runner 和依赖风险。扫描 MUST 只读取 tracked source/docs/config/spec/tests/scripts 和必要 git metadata。
@@ -48,17 +48,17 @@
 - **AND** 检查 MUST 允许现有 manifest-backed cleanup 的显式确认流程
 
 ### Requirement: 脏工作树和 OpenSpec 收口 preflight
-项目 MUST 提供或记录只读 preflight，用于报告当前 active OpenSpec change、complete 未归档 change、untracked archive、dirty tracked files、untracked source/docs/specs/scripts 和 ignored runtime artifacts。Preflight MUST 不自动 archive、不删除、不 reset、不覆盖用户改动。
+协作流程 MUST 通过 `git status --short`、`openspec list --json` 和必要 status/validate 命令报告 active change、complete 未归档 change、dirty tracked files 和 runtime artifact 边界。Preflight MUST 不依赖 project surface doctor/research preview，不自动 archive、不删除、不 reset、不覆盖用户改动。
 
-#### Scenario: active/archived change 状态清晰
-- **WHEN** preflight 发现 active change complete、archive 目录未跟踪、或同名 active 删除与 dated archive 新增并存
-- **THEN** 报告 MUST 将其标记为 closeout/deferral 风险
-- **AND** 报告 MUST 建议 archive、记录 deferral 或先提交收口，而不是把 archive 当作当前 active requirement
+#### Scenario: Active/complete change 状态清晰
+- **WHEN** preflight 发现 complete 未归档或重叠 active change
+- **THEN** implementation MUST 记录 archive、abandon、scope correction 或 deferral 决策
+- **AND** MUST 不把其过时 artifact 当作 current implementation 事实
 
-#### Scenario: dirty worktree 不被自动清理
-- **WHEN** preflight 发现 modified 或 untracked 文件
-- **THEN** 报告 MUST 分类显示 source/docs/specs/tests/scripts/configs 与 runtime artifact
-- **AND** 工具 MUST NOT 自动执行 `git reset --hard`、`git checkout --`、删除文件、移动 outputs 或 archive change
+#### Scenario: Dirty worktree 不被自动清理
+- **WHEN** git status 显示用户改动
+- **THEN** implementation MUST 记录并避开该 diff
+- **AND** MUST NOT reset、checkout、删除或覆盖文件
 
 ### Requirement: AI review 作为附加信号
 项目 MAY 集成 Codex、GitHub Copilot 或其它 AI review 信号，用于发现 regression、missing tests、安全问题、claim caveat 缺失和 OpenSpec drift。AI review MUST 不替代 human review、OpenSpec validate 和 focused tests。

@@ -60,7 +60,7 @@
 - **AND** 原 batch 中的模态 tensor MUST 不被原地修改
 
 ### Requirement: Eval matrix aggregation fields
-U-MaskBeamJEPA eval matrix MUST 输出 seed aggregation 和 strict comparability 所需字段。新增字段 MUST 不改变既有模型 forward、训练行为或默认 fixed/random pattern 语义。
+U-MaskBeamJEPA eval matrix MUST 输出 seed aggregation 和 strict comparability 所需字段。新增字段 MUST 不改变既有模型 forward、训练行为或默认 fixed/random pattern 语义；group metadata MUST 供 current statistics、stress、人工 claim review 和 paper export 使用，不依赖 research claim harvester。
 
 #### Scenario: eval row 包含 comparability fields
 - **WHEN** eval matrix 写出 pattern-level CSV/JSON
@@ -70,7 +70,7 @@ U-MaskBeamJEPA eval matrix MUST 输出 seed aggregation 和 strict comparability
 #### Scenario: pattern group summary
 - **WHEN** eval matrix 完成多个 missing pattern
 - **THEN** 系统 SHOULD 输出或支持派生 full、avg_missing、overall_mean、balanced、only_gps 和 non_gps_only 等 group metrics
-- **AND** group 定义 MUST 写入 JSON metadata，供统计模块和 claim harvester 复用
+- **AND** group 定义 MUST 写入 JSON metadata，供 current statistics/stress/claim review 复用
 
 #### Scenario: stress suite 复用 eval matrix
 - **WHEN** missing-modality stress suite 调用 eval matrix

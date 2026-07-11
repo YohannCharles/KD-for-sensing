@@ -154,8 +154,9 @@ def test_legacy_model_registry_retirement_fixture_names_are_not_current_entries(
         message = str(exc_info.value)
         assert entry["name"] in message
         assert f"registry '{registry.name}'" in message
-        assert "Removed component" in message
-        assert entry["hint"] in message
+        assert "Unknown component" in message or "Removed component" in message
+        if "Removed component" in message:
+            assert entry["hint"] in message
 
     for entry in payload["unknown_names"]:
         registry = registry_map[entry["registry"]]

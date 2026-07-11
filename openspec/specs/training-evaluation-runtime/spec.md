@@ -151,22 +151,22 @@
 - **AND** 用户显式启用 legacy accuracy tags 时，历史 `accuracy/*` 和 `dba/val_adba` tag MUST 继续可选写入
 
 ### Requirement: 训练配置重构提供 characterization 检查
-项目 MUST 为训练编排和配置加载重构提供快速 characterization 检查，覆盖关键输出契约、config load 顺序、CLI help 和架构边界。检查 MUST 使用 `kd_mm_beam` 环境，并 MUST 不依赖真实数据、长时间训练或新生成 checkpoint 纳入源码。
+项目 MUST 为训练编排和配置加载重构提供快速 characterization 检查，覆盖关键输出契约、config load 顺序、十个 retained CLI help 和架构边界。检查 MUST 使用 `kd_mm_beam` 环境，并 MUST 不依赖真实数据、长时间训练或把新 checkpoint 纳入源码。
 
 #### Scenario: 训练短流程 characterization
-- **WHEN** 开发者运行本变更记录的训练短流程测试
+- **WHEN** 开发者运行训练短流程测试
 - **THEN** 测试 MUST 完成 forward、loss、backward、validation、checkpoint 和 artifact 写出
-- **AND** 测试 MUST 验证重构后的关键输出字段与兼容契约一致
+- **AND** 关键输出字段 MUST 保持兼容
 
-#### Scenario: config load characterization
+#### Scenario: Config load characterization
 - **WHEN** 开发者运行 config loading focused tests
-- **THEN** 测试 MUST 覆盖实体 YAML、virtual canonical 配置、snapshot 配置、Raymobtime migration guard 和命令行覆盖
-- **AND** 测试 MUST 验证 normalization 与 validation 结果保持兼容
+- **THEN** 测试 MUST 覆盖实体 YAML、virtual canonical config、migration guard 和命令行覆盖
+- **AND** normalization 与 validation MUST 保持兼容
 
 #### Scenario: CLI help characterization
 - **WHEN** 开发者运行 CLI help focused tests
-- **THEN** `kd-sensing-train --help`、`kd-sensing-evaluate --help`、`kd-sensing-preprocess --help`、`kd-sensing-eval-u-mask-matrix --help` 和 `kd-sensing-project-surface-doctor --help` MUST 正常退出
-- **AND** 检查 MUST 不读取真实数据集、不加载 checkpoint、不启动训练
+- **THEN** 测试 MUST 覆盖 pyproject 声明的十个 retained commands
+- **AND** MUST 不要求 project surface doctor、research dashboard 或 research preview
 
 ### Requirement: Beam TensorBoard 指标命名空间
 训练流程 MUST 为 beam 预测写入 objective-specific TensorBoard 标量命名空间。`beam/*` 标量 MUST 只表示 active beam objective 或 multitask 中的 active beam 分任务，不得包含 occlusion-only 或 position-only 训练中的诊断性 beam accuracy。默认 TensorBoard 输出 MUST 不再依赖通用 `accuracy/*` 分组作为 beam 指标入口；历史通用 tag 只能作为显式兼容路径写入。
@@ -233,23 +233,6 @@
 - **THEN** 评估报告 MUST 记录启用模态为 `["gps", "mmwave"]`
 - **AND** 该模态集合 MUST 由统一模态解析逻辑产生
 
-### Requirement: apples-to-apples checkpoint 复评
-系统 MUST 提供只读 apples-to-apples 复评入口，用同一个 checkpoint 加载、missing pattern 构造、evaluation pass 和指标计算逻辑复评指定 run。复评入口 MUST 支持 `best_val_top1`、`latest`、`best_avg_missing_top1` 和 `manual_path` checkpoint 选择策略，并 MUST 输出 metrics CSV、Markdown、delta CSV 和 checkpoint manifest。
-
-#### Scenario: 复评指定 runs
-- **WHEN** 用户运行 `python -m kd_sensing.diagnostics.apples_to_apples_evaluation` 并传入 root、runs、eval patterns、checkpoint policy 和 out_dir
-- **THEN** 系统 MUST 为每个找到 checkpoint 的 run 重新 load checkpoint 并执行评估
-- **AND** 输出 metrics 行 MUST 至少包含 run name、checkpoint path、checkpoint epoch、pattern、Top-1/Top-3/Top-5、ADBA、MAE、loss 和 count
-
-#### Scenario: checkpoint 缺失
-- **WHEN** 指定 run 找不到符合策略的 checkpoint
-- **THEN** 系统 MUST 打印 warning
-- **AND** checkpoint manifest 与 metrics 表 MUST 标记 `missing_checkpoint`
-
-#### Scenario: radar_only 口径差异告警
-- **WHEN** old V3 与 current proto baseline 的 `radar_only` Top-1 差异超过 5 个百分点
-- **THEN** 系统 MUST 打印 `[WARN] radar_only metric mismatch is large; check pattern construction or checkpoint selection`
-
 ### Requirement: early-stopped run 状态识别
 summary 和训练产物 MUST 能区分跑满完成、early stopping 正常退出、有 checkpoint 但未完成、以及失败或被 kill 的 run。early stopping 判据 MUST 支持 metrics、训练日志或 run metadata 中的显式标记。
 
@@ -262,27 +245,6 @@ summary 和训练产物 MUST 能区分跑满完成、early stopping 正常退出
 - **WHEN** run 存在 checkpoint 但 final epoch 小于 expected epochs 且没有 early stop 标记
 - **THEN** summary MUST 标记为 `incomplete_has_checkpoint`
 - **AND** 不得把该状态与 `killed_or_failed` 混淆
-
-### Requirement: 统一 checkpoint resolver
-系统 MUST 提供统一 checkpoint resolver，供复评、分析和 summary 脚本选择 checkpoint。resolver MUST 支持 `manual_path`、`best_val_top1`、`latest` 和 `best_epoch_from_metrics` 策略，manual path 优先级最高；无法解析时 MUST 返回清晰 warning，不得静默选择其它 run 的 checkpoint。
-
-#### Scenario: seed run 不被前缀误导
-- **WHEN** 同时存在 `main_v3_strong_reliability_btapa_tau1` 与 `main_v3_strong_reliability_btapa_tau1_seed2` checkpoint
-- **THEN** resolver MUST 只选择 sidecar、run_dir 或 config_slug 属于目标 run 的 checkpoint
-- **AND** `best_val_top1` MAY 从 metrics、sidecar metric 或文件名 `_primary_acc_*.pth` 解析数值，但不得只靠 glob 顺序
-
-#### Scenario: manual path 优先
-- **WHEN** 调用方传入 `manual_path`
-- **THEN** resolver MUST 返回该路径和可解析 epoch
-- **AND** 若路径不存在 MUST 返回 warning 并保持 path 为空
-
-### Requirement: eval consistency debug 报告
-系统 MUST 提供 `scripts/debug_eval_consistency.py`，按 root、run、checkpoint、patterns 和 out_dir 执行 fresh eval，并输出 JSON/Markdown 报告。报告 MUST 包含 checkpoint path/epoch、config path、eval dataset path/split、metrics.csv val_acc、full/avg_missing fresh top1、标准 pattern mask、每个 pattern 样本数，以及 `abs(val_acc - full_top1) > 0.03` 的 warning。
-
-#### Scenario: full top1 与 val_acc 不一致
-- **WHEN** fresh full-pattern top1 与 metrics.csv 选中 checkpoint epoch 的 val_acc 差值超过 0.03
-- **THEN** 报告 MUST 写入 warning
-- **AND** 报告 MUST 同时记录 evaluation split 与训练 validation split 线索，帮助判断是否 split 不一致
 
 ### Requirement: hard pattern CE reweight
 训练 runtime MUST 支持 sample-wise hard pattern loss weight。启用 `use_pattern_loss_weight=true` 时，系统 MUST 根据 `pattern_loss_weights` 对 CE loss 加权，默认 `apply_pattern_weight_to_ce=true` 且 `apply_pattern_weight_to_proto=false`。

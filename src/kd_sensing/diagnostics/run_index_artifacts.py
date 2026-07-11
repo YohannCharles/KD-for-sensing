@@ -85,7 +85,7 @@ def summarize_run_dir(
         "resources": _run_resource_summary(process),
         "timestamps": timestamps,
         "cleanup": cleanup,
-        "claim_harvester": summarize_claim_harvester_fields(
+        "provenance": summarize_run_provenance(
             path,
             config=config,
             artifacts=artifacts,
@@ -220,7 +220,7 @@ def summarize_metrics(run_dir: Path, *, artifacts: dict[str, Any], warnings: lis
         "scalars": scalar_metrics,
     }
 
-def summarize_claim_harvester_fields(
+def summarize_run_provenance(
     run_dir: Path,
     *,
     config: dict[str, Any],
@@ -229,7 +229,7 @@ def summarize_claim_harvester_fields(
     checkpoints: dict[str, Any],
     process: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Expose stable read-only fields consumed by the research claim harvester."""
+    """Expose stable, consumer-neutral run provenance fields."""
 
     artifact_paths = {
         key: value.get("path")

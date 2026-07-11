@@ -97,38 +97,27 @@ JEPA 预训练运行 MUST 保存完整训练产物，并 MUST 显式记录可复
 - **AND** metadata MUST 指明该 checkpoint 来源为 `gps_conditioned_jepa`
 
 ### Requirement: JEPA context encoder 下游复用
-系统 MUST 提供 supervised fusion 可配置使用的 JEPA context image encoder 初始化入口。该入口 MUST 从 JEPA checkpoint 中抽取 `context_encoder` 权重，MUST 同时兼容仅包含 state dict 的 objective checkpoint 和包含 `state_dict` 的恢复 checkpoint。默认模式 MUST 输出现有 fusion representation core 可消费的帧级 image 特征 `[B,T,D]`，并保持 patch-token mean pooling 兼容；显式配置 downstream pooler/adapter 时，MUST 通过可配置 pooler/adapter 复用 context encoder patch tokens，同时 MUST 不要求重训 JEPA Stage 1、target encoder EMA 或 latent prediction loss。
+系统 MUST 提供 supervised fusion 可配置使用的 JEPA context image encoder 初始化入口。该入口 MUST 从 JEPA checkpoint 中抽取 `context_encoder` 权重，MUST 兼容 objective checkpoint 和恢复 checkpoint。Current downstream 只承诺 patch-token mean pooling 输出帧级 `[B,T,D]` 特征；系统 MUST 不要求 GPS-query、content-query、hybrid、predictive、K-token 或 attention-diagnostics pooler 存在。
 
-#### Scenario: 从 JEPA best checkpoint 初始化 supervised image encoder
+#### Scenario: 从 JEPA best checkpoint 初始化 mean image encoder
 - **WHEN** supervised fusion 配置将 image encoder 设置为 `jepa_context_image` 且 checkpoint 指向 JEPA `best.pth`
-- **THEN** 系统 MUST 加载 checkpoint 中的 `context_encoder.*` 权重
-- **AND** image encoder forward MUST 将 `[B, T, 3, H, W]` 输入转换为 `[B, T, D]` 特征
-- **AND** 未显式声明 downstream pooler 时 MUST 使用 mean pooling 以保持既有配置兼容
+- **THEN** 系统 MUST 加载 `context_encoder.*` 权重
+- **AND** forward MUST 将 `[B,T,3,H,W]` 转为 `[B,T,D]` mean-pooled 特征
 
-#### Scenario: 从 JEPA last checkpoint 初始化 supervised image encoder
-- **WHEN** supervised fusion 配置将 image encoder 设置为 `jepa_context_image` 且 checkpoint 指向 JEPA `last.pth`
-- **THEN** 系统 MUST 从 checkpoint payload 的 `state_dict` 字段抽取 `context_encoder.*` 权重
-- **AND** 输出特征维度 MUST 与 fusion 配置的 image encoder `output_dim` 一致
+#### Scenario: 从 JEPA last checkpoint 初始化 mean image encoder
+- **WHEN** checkpoint payload 通过 `state_dict` 保存恢复状态
+- **THEN** 系统 MUST 抽取 `context_encoder.*` 权重
+- **AND** 输出维度 MUST 与配置 `output_dim` 一致
 
-#### Scenario: 通过 pooler 复用 JEPA patch tokens
-- **WHEN** supervised fusion 配置将 image encoder 设置为 `jepa_context_image` 并显式声明 downstream pooler
-- **THEN** 系统 MUST 继续只加载 checkpoint 中的 `context_encoder.*` 权重作为 JEPA 视觉 backbone
-- **AND** 系统 MUST 将 context encoder 产生的 patch tokens `[B,T,N,D]` 传给配置的 pooler
-- **AND** pooler 默认输出 MUST 保持 `[B,T,D]`
-- **AND** 系统 MUST NOT 要求 JEPA target encoder、EMA 更新、JEPA latent loss、distiller 或外部 frozen teacher
+#### Scenario: 退役 pooler 被拒绝
+- **WHEN** 配置请求 GPS-query、predictive、hybrid、query-weighted 或 K-token downstream pooler
+- **THEN** 配置/组件构建 MUST 失败并列出 current mean 路径
+- **AND** 系统 MUST 不静默映射到 mean pooling
 
-#### Scenario: GPS-query pooler 缺少条件特征
-- **WHEN** supervised fusion 配置启用需要 GPS 条件特征的 JEPA downstream pooler，但 image encoder forward 未收到 GPS 条件特征
-- **THEN** 系统 MUST 抛出清晰错误
-- **AND** 错误信息 MUST 指出 `jepa_context_image` 的该 pooler 需要 GPS condition feature
-
-#### Scenario: fair 下游配置复用多场景 JEPA checkpoint
-- **WHEN** supervised BeamBench-fair JEPA 复用配置被加载
-- **THEN** random-mask JEPA 配置 MUST 指向 `outputs/deepsense6g_gps_conditioned_jepa_full_s32_s34_lowmem/checkpoints/best.pth` 或 `last.pth`
-- **AND** GPS-biased JEPA 配置 MUST 指向 `outputs/deepsense6g_gps_conditioned_jepa_gps_biased_s32_s34_lowmem/checkpoints/best.pth`
-- **AND** 配置 MUST NOT 默认引用 scene31-only JEPA checkpoint
-- **AND** JEPA downstream 派生配置 MUST 继承与 baseline 匹配的多场景 checkpoint 口径
-- **AND** BeamBench-fair downstream 配置 MUST 继承 `seq_len=1`、`num_pred=1`、GPS `paper_distance_angle`、scene paper calibration angle 和 linear DBA 口径
+#### Scenario: MMW mean reuse 保持可用
+- **WHEN** current MMW/JEPA config 使用 `jepa_context_image` 和 `pooling: mean`
+- **THEN** 配置加载和 model construction MUST 成功
+- **AND** 不得要求 retired GPS-query helper、evidence 或 diagnostics
 
 ### Requirement: JEPA visual token encoder variants
 GPS-conditioned JEPA 主模型 MUST 支持可配置 visual token encoder variants。默认 variant MUST 保持现有 patch16 `VisualPatchTokenEncoder` 行为兼容；opt-in variants MAY 包含 overlap patch tokenizer、conv stem tokenizer、local token mixing、CvT-style convolutional projection、CNN feature-map tokens 或多尺度 tokens。所有 variants MUST 输出可供 JEPA predictor 和 mask sampler 消费的 `[B,T,N,D]` tokens。

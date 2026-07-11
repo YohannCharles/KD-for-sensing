@@ -43,9 +43,6 @@ def build_task_criterion(cfg: dict[str, Any]):
         "hard_subset_focus",
         "use_jepa",
         "jepa_weight",
-        "rerank",
-        "safe_rerank",
-        "safe_residual_rerank",
     ):
         loss_cfg.pop(auxiliary_key, None)
     if loss_cfg.get("type") == "cross_entropy":

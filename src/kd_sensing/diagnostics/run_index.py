@@ -11,7 +11,6 @@ from kd_sensing.diagnostics.run_index_artifacts import (
     infer_run_state,
     summarize_artifacts,
     summarize_checkpoints,
-    summarize_claim_harvester_fields,
     summarize_cleanup_context,
     summarize_config,
     summarize_metrics,
@@ -62,7 +61,7 @@ RUN_CARD_JSON_SCHEMA = {
         "dataset_split",
         "checkpoint",
         "metrics",
-        "claim_candidate",
+        "provenance",
         "caveat",
         "warnings",
     ],
@@ -145,7 +144,7 @@ def build_run_card(
     summary = dict(run) if isinstance(run, dict) else summarize_run_dir(run, logs=[], processes=[], now=now, warnings=warnings)
     status = _read_json_file(summary.get("artifacts", {}).get("run_status", {}).get("path"))
     config = dict(summary.get("config", {}))
-    claim = dict(summary.get("claim_harvester", {}))
+    provenance = dict(summary.get("provenance", {}))
     checkpoint = _run_card_checkpoint(summary)
     if not checkpoint.get("path"):
         warnings.append("checkpoint provenance is unavailable")
@@ -158,7 +157,7 @@ def build_run_card(
         "json_schema": RUN_CARD_JSON_SCHEMA,
         "generated_at": generated_at,
         "run": {
-            "run_id": claim.get("run_id"),
+            "run_id": provenance.get("run_id"),
             "run_name": summary.get("run_name"),
             "run_dir": summary.get("run_dir"),
             "state": summary.get("state"),
@@ -192,11 +191,10 @@ def build_run_card(
             "primary": summary.get("metrics", {}).get("primary", {}),
             "scalar_count": len(summary.get("metrics", {}).get("scalars", {}) or {}),
         },
-        "claim_candidate": {
-            "candidate_only": True,
-            "run_id": claim.get("run_id"),
-            "metric_profile": claim.get("metric_profile"),
-            "artifact_paths": claim.get("artifact_paths", {}),
+        "provenance": {
+            "run_id": provenance.get("run_id"),
+            "metric_profile": provenance.get("metric_profile"),
+            "artifact_paths": provenance.get("artifact_paths", {}),
         },
         "caveat": "run card is a local provenance artifact; it is not a reviewed paper claim",
         "warnings": warnings,

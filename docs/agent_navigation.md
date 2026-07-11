@@ -6,7 +6,7 @@
 
 - 当前主线：final C2 / U-MaskBeamJEPA 缺失模态 beam prediction。
 - 保留支线：MMW/CSI future/current supporting workflow，包括 MMW Town GPS v2、physics-informed MMW 和 CSI hardening。
-- 推荐入口：`kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-eval-u-mask-matrix`、`kd-sensing-mmw-town-gps-v2`、`kd-sensing-inspect-mmw-physics`、`kd-sensing-project-surface-doctor`。
+- 推荐入口：`kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、runtime cleanup/organize、`kd-sensing-paper-export`、`kd-sensing-eval-u-mask-matrix`、`kd-sensing-mmw-town-gps-v2` 和 `kd-sensing-inspect-mmw-physics`。
 - 已退役历史面：Image+GPS JEPA、BeamBench、BEV-Fusion 2604、Vision-Position、旧 RBMA/KD/BTAPA/weakKD sweep、HiST-Beam、Top8 selector、GPS residual、camera residual、Raymobtime s008、BGAM、viewer manifest、Gradio viewer、CRAF、MARF、Multimodal-NF。它们只可作为退役/历史/防回流语境，不可恢复为 current wrapper、CLI 或 YAML。
 - 判断口径：tracked/source/current lifecycle 优先；不要从 archive、generated metadata、ignored `outputs/`、`logs/`、cache、checkpoint 或本地数据反推当前支持面。
 
@@ -26,7 +26,7 @@
 | `data` | `docs/agent_context/data.md` | dataset、batch contract、modality profile、split |
 | `config` | `docs/agent_context/configs.md` | YAML、virtual config、canonical recipe、migration guard |
 | `cli` | `docs/agent_context/cli.md` | console scripts、package CLI、`scripts/` |
-| `diagnostics` | `docs/agent_context/diagnostics.md` | U-Mask eval matrix、run index、doctor、paper export、MMW/CSI diagnostics |
+| `diagnostics` | `docs/agent_context/diagnostics.md` | U-Mask eval matrix、run index、runtime cleanup、paper export、MMW/CSI diagnostics |
 | `openspec` | `docs/agent_context/openspec.md` | proposal/spec/tasks/archive |
 | `documentation` | `docs/agent_context/documentation.md` | README、inventory、导航、文档健康 |
 | `claims` | `docs/agent_context/claims.md` | claim registry、paper tables、provenance |

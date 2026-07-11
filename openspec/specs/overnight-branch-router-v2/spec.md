@@ -41,34 +41,19 @@ supervised router run MUST 保存真实 router gate 诊断、oracle target distr
 - **THEN** output dir 中 MUST 存在可被 summary 解析的 router diagnostics
 - **AND** oracle eval 或 oracle target 诊断 MUST 不混入真实方法 ranking
 
-### Requirement: Overnight launcher matrix
-系统 MUST 提供 `scripts/launch_overnight_branch_router_v2.py`，默认生成 A/B/C 三组 40 个 job：A 组 `a1/a2` 使用 anchor seeds `1,2,3,4,5`，B/C 组使用 explore seeds `1,2,3`。launcher MUST 默认只使用 GPU `1,2`，每张 GPU 最多 2 个进程，总并发最多 4 个。
-
-#### Scenario: dry-run manifest
-- **WHEN** 用户以默认 seed 与 `--dry_run` 运行 launcher
-- **THEN** launcher MUST 写出 `job_manifest.csv`
-- **AND** manifest MUST 包含 40 个 job
-- **AND** job 只能分配到 GPU 1 或 GPU 2
-- **AND** 每张 GPU 并发计划不得超过 2，总并发不得超过 4
-
-#### Scenario: job 失败不杀其它 job
-- **WHEN** 某个已启动 job 返回非零
-- **THEN** launcher MUST 继续等待其它已启动 job 完成
-- **AND** 所有 job 结束后 MUST 写出 `failed_jobs.csv`
-- **AND** 存在失败 job 时 launcher MUST 返回非零 exit code
-
 ### Requirement: Overnight summary outputs
-系统 MUST 提供 `scripts/summarize_overnight_branch_router_v2.py`，能读取当前 overnight root 和 baseline roots，写出 `summary.csv`、`summary.md`、`drop_count_summary.csv`、`pattern_metrics.csv` 和 `router_diagnostics.csv`。
+项目 MUST 保留 `scripts/summarize_overnight_branch_router_v2.py` 作为 final C2 summary 直接消费的 read-only supporting parser。该 parser MUST 能读取既有 overnight root 和 baseline roots，并继续提供 final C2 所需的 summary、drop-count、pattern 和 router diagnostics 数据；它 MUST 不重新启动训练或要求历史 launcher 存在。
 
-#### Scenario: 生成自动结论
-- **WHEN** summary 脚本读取完成的 run metrics
-- **THEN** `summary.md` MUST 包含 mean/std 主表、delta 表、e6 来源拆解、supervised router 诊断和推荐结论
-- **AND** 缺失指标 MUST 保持为空或明确标记 unavailable，不得伪造结果
+#### Scenario: Final C2 复用历史 summary parser
+- **WHEN** `scripts/summarize_final_c2_ablation_v1.py` 读取 overnight branch-router 结果
+- **THEN** retained parser MUST 提供 final C2 当前使用的解析函数和缺失值语义
+- **AND** parser MUST 只读取显式输入并将生成内容写入 ignored output root
+- **AND** current docs MUST 将其标记为 supporting/historical parser，而不是推荐训练入口
 
 ### Requirement: Focused regression coverage
-本 change MUST 提供 focused tests 覆盖 soft static weighting、oracle router target、masked softmax、focus pattern alias、launcher dry-run 和 summary parser。测试 MUST 使用合成或 fake artifact，不得读取真实 `dataset/` 或写入受保护 runtime 产物。
+项目 MUST 保留 focused regression 覆盖 soft static weighting、oracle router target、masked softmax、focus pattern alias 和 retained summary parser。测试 MUST 使用合成或 fake artifact，不得读取真实 `dataset/`、依赖已删除 launcher 或写入受保护 runtime 产物。
 
-#### Scenario: focused pytest
-- **WHEN** 开发者运行 `conda run -n kd_mm_beam pytest -q tests/test_overnight_branch_router_v2.py`
-- **THEN** 测试 MUST 覆盖新增 helper、launcher dry-run 和 summary parser
+#### Scenario: Retained parser focused pytest
+- **WHEN** 开发者运行 `conda run -n kd_mm_beam pytest -q tests/test_overnight_branch_router_v2.py tests/test_final_c2_ablation_v1.py`
+- **THEN** 测试 MUST 覆盖保留的 router helper、summary parser 和 final C2 消费路径
 - **AND** 测试产物 MUST 写入 pytest 临时目录或 ignored output root

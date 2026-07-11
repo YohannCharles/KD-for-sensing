@@ -9,18 +9,12 @@ import torch.nn as nn
 
 from kd_sensing.modalities import image_profile_spec, validate_image_encoder_profile
 from kd_sensing.models.jepa_downstream import (
-    GPSQueryPool,
-    PredictiveGPSQueryPool,
-    build_jepa_downstream_adapter,
     build_jepa_downstream_pooler,
-    normalize_jepa_downstream_adapter_config,
     normalize_jepa_downstream_pooler_config,
 )
 from kd_sensing.models.jepa_helpers import (
     CHECKPOINT_POLICIES,
     VisualTokenMetadata,
-    _apply_temporal_context_fallback,
-    _compute_temporal_auxiliary_prediction,
     _conv_grid,
     _image_size_pair,
     _load_context_encoder_state,
@@ -28,8 +22,6 @@ from kd_sensing.models.jepa_helpers import (
     _metadata_token_count,
     _metadata_token_grid,
     _normalize_checkpoint_policy,
-    _normalize_temporal_auxiliary_config,
-    _normalize_temporal_fallback_config,
     _normalize_visual_encoder_type,
     _positive_int,
     _token_budget_error,
@@ -38,6 +30,7 @@ from kd_sensing.models.jepa_helpers import (
     visual_token_metadata_from_encoder,
 )
 from kd_sensing.registries import ENCODERS, JEPA_VISUAL_TOKEN_ENCODERS, MODELS
+
 
 
 @dataclass(frozen=True)
@@ -1030,64 +1023,27 @@ class JepaContextImageEncoder(nn.Module):
         self.freeze_encoder = bool(freeze_encoder)
         self.strict = bool(strict)
         self.state_dict_prefix = str(state_dict_prefix).strip().rstrip(".") or "context_encoder"
+        if adapter is not None:
+            raise ValueError("JEPA downstream adapters have been retired; current mean path uses context features directly.")
+        if temporal_fallback is not None:
+            raise ValueError("JEPA downstream temporal fallback has been retired; current mean path uses the input sequence.")
+        if temporal_auxiliary is not None:
+            raise ValueError("JEPA downstream temporal auxiliary has been retired; use the JEPA pretraining latent objective.")
         self.pooler_config = normalize_jepa_downstream_pooler_config(
             pooler=pooler,
             pooling=pooling,
             gps_query_pool=gps_query_pool,
             latent_dim=self.latent_dim,
         )
-        self.adapter_config = normalize_jepa_downstream_adapter_config(
-            adapter=adapter,
-            latent_dim=self.latent_dim,
-            output_dim=self.output_dim,
-        )
-        self.pooling = str(self.pooler_config.get("type", "mean")).strip().lower()
-        self.temporal_fallback_config = _normalize_temporal_fallback_config(temporal_fallback)
-        self.temporal_fallback_enabled = bool(self.temporal_fallback_config.get("enabled", False))
-        self.temporal_auxiliary_config = _normalize_temporal_auxiliary_config(temporal_auxiliary)
-        self.temporal_auxiliary_enabled = bool(self.temporal_auxiliary_config.get("enabled", False))
-        self.supports_observability_metadata = self.temporal_fallback_enabled or self.temporal_auxiliary_enabled
-        self.last_temporal_fallback_metadata: dict[str, Any] = {"enabled": self.temporal_fallback_enabled, "affected_count": 0}
-        self.last_current_latent: torch.Tensor | None = None
-        self.last_temporal_predicted_latent: torch.Tensor | None = None
-        self.last_temporal_auxiliary_metadata: dict[str, Any] = {
-            "enabled": self.temporal_auxiliary_enabled,
-            "available": False,
-            "insufficient_history_count": 0,
-        }
-        self.last_predictive_gps_query_diagnostics: dict[str, Any] | None = None
+        self.pooling = "mean"
         if self.output_dim != self.latent_dim:
             raise ValueError(
                 "jepa_context_image requires output_dim to equal latent_dim because it reuses the JEPA "
                 f"context encoder projection directly; got output_dim={self.output_dim}, latent_dim={self.latent_dim}."
             )
         self.pooler = build_jepa_downstream_pooler(self.pooler_config)
-        self.adapter = build_jepa_downstream_adapter(self.adapter_config)
-        self.supports_observability_metadata = self.supports_observability_metadata or isinstance(
-            self.pooler,
-            PredictiveGPSQueryPool,
-        )
-        self.required_context_modalities = tuple(getattr(self.pooler, "required_context_modalities", ()))
-        self.context_feature_source = str(getattr(self.pooler, "context_feature_source", "none"))
-        raw_kwargs = getattr(self.pooler, "context_feature_kwargs", {})
-        self.context_feature_kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
-        self.gps_query_pool_config: dict[str, Any] = {}
-        object.__setattr__(
-            self,
-            "gps_query_pool",
-            self.pooler if isinstance(self.pooler, GPSQueryPool) else None,
-        )
-        self.last_attention_map: torch.Tensor | None = None
-        if self.pooling == "gps_query_attention":
-            self.gps_query_pool_config = {
-                "latent_dim": getattr(self.pooler, "latent_dim", self.latent_dim),
-                "condition_dim": getattr(self.pooler, "condition_dim", self.latent_dim),
-                "k_queries": getattr(self.pooler, "k_queries", None),
-                "num_heads": getattr(self.pooler, "num_heads", None),
-                "dropout": self.pooler_config.get("dropout", 0.0),
-                "return_attention": getattr(self.pooler, "return_attention", False),
-                "condition_source": getattr(self.pooler, "condition_source", "projected_gps"),
-            }
+        self.required_context_modalities: tuple[str, ...] = ()
+        self.context_feature_source = "none"
         encoder_cfg = dict(visual_encoder or {})
         encoder_cfg.setdefault("image_channels", image_channels)
         encoder_cfg.setdefault("latent_dim", self.latent_dim)
@@ -1112,244 +1068,39 @@ class JepaContextImageEncoder(nn.Module):
             for param in self.context_encoder.parameters():
                 param.requires_grad_(False)
 
-    def forward(
-        self,
-        image_batch: torch.Tensor,
-        gps_condition_features: torch.Tensor | None = None,
-        *,
-        image_valid_mask: torch.Tensor | None = None,
-        image_observability_score: torch.Tensor | None = None,
-        gps_valid_mask: torch.Tensor | None = None,
-        gps_counterfactual_mask: torch.Tensor | None = None,
-        benchmark_condition_metadata: dict[str, Any] | None = None,
-        **_: Any,
-    ) -> torch.Tensor:
+    def forward(self, image_batch: torch.Tensor, **_: Any) -> torch.Tensor:
         tokens, token_info = self.context_encoder(image_batch)
         token_metadata = visual_token_metadata_from_encoder(self.context_encoder, token_info, tokens)
         self.last_visual_token_metadata = token_metadata
-        if self.required_context_modalities and gps_condition_features is None:
-            if self.pooling == "gps_query_attention":
-                raise ValueError("jepa_context_image GPS-query pooling requires GPS condition feature.")
-            if self.pooling == "hybrid_residual_query":
-                raise ValueError("jepa_context_image hybrid residual query pooling requires GPS condition feature.")
-            if self.pooling == "predictive_gps_query":
-                raise ValueError("jepa_context_image Predictive GPS-query++ pooling requires GPS condition feature.")
-            raise ValueError(f"jepa_context_image pooler {self.pooling!r} requires condition features.")
-        if self.pooling == "predictive_gps_query":
-            result = self.pooler(
-                tokens,
-                condition_features=gps_condition_features,
-                image_valid_mask=image_valid_mask,
-                image_observability_score=image_observability_score,
-                gps_valid_mask=gps_valid_mask,
-                gps_counterfactual_mask=gps_counterfactual_mask,
-                benchmark_condition_metadata=benchmark_condition_metadata,
-                token_metadata=token_metadata,
-            )
-            self.last_predictive_gps_query_diagnostics = getattr(self.pooler, "last_diagnostics", None)
-        else:
-            result = self.pooler(tokens, condition_features=gps_condition_features, token_metadata=token_metadata)
-            self.last_predictive_gps_query_diagnostics = None
-        if isinstance(result, tuple):
-            pooled, attention_map = result
-            self.last_attention_map = attention_map
-        else:
-            self.last_attention_map = getattr(self.pooler, "last_attention_map", None)
-            pooled = result
-        features = self.adapter(pooled)
+        features = self.pooler(tokens)
         self.last_visual_token_diagnostics = _visual_token_diagnostics(
             token_metadata=token_metadata,
             pooler=self.pooler,
-            attention_map=self.last_attention_map,
+            attention_map=None,
         )
-        if features.ndim != 3:
-            if self.temporal_auxiliary_enabled or self.temporal_fallback_enabled:
-                raise ValueError(
-                    "jepa_context_image token output mode is incompatible with temporal auxiliary or fallback; "
-                    "disable temporal options or use frame output mode."
-                )
-            self.last_temporal_auxiliary_metadata = {
-                "enabled": False,
-                "available": False,
-                "insufficient_history_count": 0,
-            }
-            self.last_temporal_fallback_metadata = {"enabled": False, "affected_count": 0}
-            return features
-        self._update_temporal_auxiliary(features)
-        if self.pooling == "predictive_gps_query":
-            self._update_predictive_gps_query_auxiliary()
-        return self._maybe_apply_temporal_fallback(
-            features,
-            image_valid_mask=image_valid_mask,
-            image_observability_score=image_observability_score,
-            benchmark_condition_metadata=benchmark_condition_metadata,
-        )
-
-    def _update_temporal_auxiliary(self, features: torch.Tensor) -> None:
-        if not self.temporal_auxiliary_enabled:
-            self.last_current_latent = None
-            self.last_temporal_predicted_latent = None
-            self.last_temporal_auxiliary_metadata = {
-                "enabled": False,
-                "available": False,
-                "insufficient_history_count": 0,
-            }
-            return
-        predicted, metadata = _compute_temporal_auxiliary_prediction(features, self.temporal_auxiliary_config)
-        self.last_current_latent = features
-        self.last_temporal_predicted_latent = predicted
-        self.last_temporal_auxiliary_metadata = metadata
-
-    def _update_predictive_gps_query_auxiliary(self) -> None:
-        diagnostics = self.last_predictive_gps_query_diagnostics or {}
-        current = getattr(self.pooler, "last_current_latent", None)
-        predicted = getattr(self.pooler, "last_temporal_predicted_latent", None)
-        self.last_current_latent = current if torch.is_tensor(current) else None
-        self.last_temporal_predicted_latent = predicted if torch.is_tensor(predicted) else None
-        self.last_temporal_auxiliary_metadata = {
-            "enabled": True,
-            "objective": "predictive_gps_query_temporal_latent",
-            "available": bool(diagnostics.get("branch_availability", {}).get("temporal_predicted", False)),
-            "history_window": diagnostics.get("pooler", {}).get("history_window", None)
-            or diagnostics.get("history_window", None),
-            "source_history_range": diagnostics.get("temporal_source_history_range", []),
-            "availability_mask": diagnostics.get("temporal_availability_mask", []),
-            "insufficient_history_count": int(diagnostics.get("insufficient_history_count", 0) or 0),
-            "fallback_strategy": diagnostics.get("fallback_strategy", "zero"),
-        }
-
-    def _maybe_apply_temporal_fallback(
-        self,
-        features: torch.Tensor,
-        *,
-        image_valid_mask: torch.Tensor | None,
-        image_observability_score: torch.Tensor | None,
-        benchmark_condition_metadata: dict[str, Any] | None,
-    ) -> torch.Tensor:
-        if not self.temporal_fallback_enabled:
-            self.last_temporal_fallback_metadata = {"enabled": False, "affected_count": 0}
-            return features
-        output, metadata = _apply_temporal_context_fallback(
-            features,
-            image_valid_mask=image_valid_mask,
-            image_observability_score=image_observability_score,
-            benchmark_condition_metadata=benchmark_condition_metadata,
-            config=self.temporal_fallback_config,
-        )
-        self.last_temporal_fallback_metadata = metadata
-        return output
-
-    def _load_from_state_dict(
-        self,
-        state_dict: dict[str, Any],
-        prefix: str,
-        local_metadata: dict[str, Any],
-        strict: bool,
-        missing_keys: list[str],
-        unexpected_keys: list[str],
-        error_msgs: list[str],
-    ) -> None:
-        legacy_prefix = f"{prefix}gps_query_pool."
-        pooler_prefix = f"{prefix}pooler."
-        if self.pooling == "predictive_gps_query" and any(key.startswith(legacy_prefix) for key in state_dict):
-            message = (
-                "Cannot silently load legacy gps_query_attention checkpoint keys into predictive_gps_query; "
-                "use strict=False only for an explicit non-strict transfer."
-            )
-            if strict:
-                error_msgs.append(message)
-                return
-        if any(key.startswith(legacy_prefix) for key in state_dict) and not any(
-            key.startswith(pooler_prefix) for key in state_dict
-        ):
-            for key, value in list(state_dict.items()):
-                if key.startswith(legacy_prefix):
-                    state_dict[f"{pooler_prefix}{key[len(legacy_prefix):]}"] = value
-                    state_dict.pop(key)
-        super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )
+        return features
 
     def training_strategy_metadata(self) -> dict[str, Any]:
-        metadata: dict[str, Any] = {
-            "encoder": "jepa_context_image",
-            "checkpoint_path": self.checkpoint_path,
-            "state_dict_prefix": self.state_dict_prefix,
-            "freeze_encoder": self.freeze_encoder,
-            "pooling": self.pooling,
-            "pooler_type": self.pooling,
-            "adapter_type": str(self.adapter_config.get("type", "identity")),
-            "condition_source": self.gps_query_pool_config.get("condition_source"),
-            "attention_diagnostics": bool(self.gps_query_pool_config.get("return_attention", False)),
-            "latent_dim": self.latent_dim,
-            "temporal_fallback": dict(self.temporal_fallback_config),
-            "temporal_auxiliary": dict(self.temporal_auxiliary_config),
-            "temporal_auxiliary_enabled": self.temporal_auxiliary_enabled,
-        }
         visual_metadata = (
             self.context_encoder.visual_token_metadata()
             if hasattr(self.context_encoder, "visual_token_metadata")
             else dict(self.last_visual_token_metadata)
         )
-        metadata["visual_token_encoder"] = dict(visual_metadata)
-        metadata["visual_token_metadata"] = dict(visual_metadata)
-        metadata["checkpoint_policy"] = visual_metadata.get("checkpoint_policy")
-        metadata["token_source"] = visual_metadata.get("token_source")
-        metadata["token_count"] = visual_metadata.get("token_count")
-        metadata["token_grid"] = visual_metadata.get("token_grid")
-        metadata["pooler_output_mode"] = getattr(self.pooler, "output_mode", "frame")
-        pooler_metadata = (
-            self.pooler.training_strategy_metadata()
-            if hasattr(self.pooler, "training_strategy_metadata")
-            else {"type": self.pooling}
-        )
-        adapter_metadata = (
-            self.adapter.training_strategy_metadata()
-            if hasattr(self.adapter, "training_strategy_metadata")
-            else {"type": self.adapter_config.get("type", "identity")}
-        )
-        metadata["pooler"] = pooler_metadata
-        metadata["adapter"] = adapter_metadata
-        if self.pooling == "gps_query_attention":
-            metadata["gps_query_pooling_enabled"] = True
-            metadata["gps_query_pool"] = dict(self.gps_query_pool_config)
-            metadata["required_context_modalities"] = list(self.required_context_modalities)
-            metadata["context_feature_source"] = self.context_feature_source
-        else:
-            metadata["gps_query_pooling_enabled"] = False
-        if self.pooling == "hybrid_residual_query":
-            metadata["hybrid_residual_query_enabled"] = True
-            metadata["required_context_modalities"] = list(self.required_context_modalities)
-            metadata["context_feature_source"] = self.context_feature_source
-        else:
-            metadata["hybrid_residual_query_enabled"] = False
-        if self.pooling == "predictive_gps_query":
-            metadata["predictive_gps_query_enabled"] = True
-            metadata["gps_query_plus_plus_enabled"] = True
-            metadata["required_context_modalities"] = list(self.required_context_modalities)
-            metadata["context_feature_source"] = self.context_feature_source
-            metadata["condition_source"] = pooler_metadata.get("condition_source")
-            metadata["content_query_count"] = pooler_metadata.get("content_queries")
-            metadata["gps_query_count"] = pooler_metadata.get("gps_queries")
-            metadata["temporal_predictor_type"] = pooler_metadata.get("temporal_predictor_type")
-            metadata["reliability_gate_type"] = pooler_metadata.get("reliability_gate_type")
-            metadata["residual_scale"] = pooler_metadata.get("residual_scale")
-            metadata["auxiliary_losses"] = {
-                "temporal_auxiliary_enabled": self.temporal_auxiliary_enabled,
-                "temporal_auxiliary": dict(self.temporal_auxiliary_config),
-            }
-            metadata["jepa_checkpoint_path"] = self.checkpoint_path
-            metadata["context_encoder_frozen"] = self.freeze_encoder
-        else:
-            metadata["predictive_gps_query_enabled"] = False
-            metadata["gps_query_plus_plus_enabled"] = False
-        return metadata
+        return {
+            "encoder": "jepa_context_image",
+            "checkpoint_path": self.checkpoint_path,
+            "state_dict_prefix": self.state_dict_prefix,
+            "freeze_encoder": self.freeze_encoder,
+            "pooling": "mean",
+            "latent_dim": self.latent_dim,
+            "visual_token_encoder": dict(visual_metadata),
+            "visual_token_metadata": dict(visual_metadata),
+            "checkpoint_policy": visual_metadata.get("checkpoint_policy"),
+            "token_source": visual_metadata.get("token_source"),
+            "token_count": visual_metadata.get("token_count"),
+            "token_grid": visual_metadata.get("token_grid"),
+            "pooler": self.pooler.training_strategy_metadata(),
+        }
 
 
 @MODELS.register("gps_conditioned_jepa")
@@ -1491,7 +1242,6 @@ def _gather_tokens(tokens: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
 
 __all__ = [
     "GPSConditionedJEPA",
-    "GPSQueryPool",
     "GpsConditioner",
     "JepaContextImageEncoder",
     "JepaMaskSample",

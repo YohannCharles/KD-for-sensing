@@ -1,10 +1,13 @@
 import datetime as dt
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+import kd_sensing.diagnostics.run_index as run_index_module
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.diagnostics.runtime_artifact_cleanup import (
@@ -80,6 +83,36 @@ def test_cleanup_manifest_records_outputs_other_and_checkpoint_retention(tmp_pat
     assert run_candidate["run_summary"]["checkpoint_total_size_bytes"] > 0
     assert manifest["summary"]["candidate_count"] >= 2
     assert manifest["summary"]["candidate_total_size_bytes"] > 0
+
+
+def test_cleanup_manifest_protects_old_run_with_matching_live_process(tmp_path: Path, monkeypatch):
+    outputs = tmp_path / "outputs"
+    run_dir = _write_started_run(outputs / "other", "live_old_run")
+    old = (NOW - dt.timedelta(days=3)).timestamp()
+    for path in [run_dir, *run_dir.rglob("*")]:
+        os.utime(path, (old, old))
+    processes = [
+        {
+            "pid": 1234,
+            "cmdline": f"python -m kd_sensing.cli.train output.run_name={run_dir.name}",
+            "rss_mb": 256.0,
+            "run_name": run_dir.name,
+            "gpu_indices": [0],
+        }
+    ]
+    monkeypatch.setattr(run_index_module, "collect_python_processes", lambda: processes)
+    monkeypatch.setattr(run_index_module, "collect_resource_snapshot", lambda records: {"processes": list(records)})
+
+    manifest = build_cleanup_manifest(
+        project_root=tmp_path,
+        scan_roots=[outputs],
+        include_resources=True,
+        now=NOW,
+    )
+
+    record = next(item for item in manifest["protected"] if Path(item["path"]) == run_dir)
+    assert record["run_summary"]["state"] == "running"
+    assert "run_state_running" in record["protection_reasons"]
 
 
 def test_cleanup_manifest_protects_tracked_files_and_protected_roots(tmp_path: Path):

@@ -135,30 +135,6 @@ def prepare_fusion_inputs(
             profile=(input_profiles or {}).get(modality),
             non_blocking=non_blocking,
         )
-    if "geometry" in batch:
-        inputs["geometry_batch"] = prepare_geometry_inputs(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
-    if "geometry_mask" in batch:
-        inputs["geometry_mask"] = prepare_geometry_mask(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
-    if "gps_bev_xy" in batch:
-        inputs["gps_bev_xy_batch"] = prepare_gps_bev_xy_inputs(
-            batch,
-            seq_length=seq_length,
-            num_pred=num_pred,
-            device=device,
-            non_blocking=non_blocking,
-        )
     if include_reliability_metadata:
         inputs.update(
             prepare_reliability_metadata_inputs(
@@ -204,7 +180,6 @@ def prepare_reliability_metadata_inputs(
                 "gps_valid_mask": ("gps_valid_mask", torch.bool, True),
                 "gps_delay_steps": ("gps_delay_steps", torch.float32, True),
                 "gps_dropout_mask": ("gps_dropout_mask", torch.bool, False),
-                "gps_counterfactual_mask": ("gps_counterfactual_mask", torch.bool, False),
             }
         )
     if include_missing_modality_metadata:
@@ -232,11 +207,6 @@ def prepare_reliability_metadata_inputs(
             pad_value=_metadata_pad_value(key),
             non_blocking=non_blocking,
         )
-    condition = _benchmark_condition_metadata(batch)
-    if condition:
-        inputs["benchmark_condition_metadata"] = condition
-    if "image_degradation_metadata" in batch:
-        inputs["image_degradation_metadata"] = batch["image_degradation_metadata"]
     return inputs
 
 
@@ -247,12 +217,6 @@ def model_cfg_consumes_reliability_metadata(model_cfg: Mapping[str, Any] | None)
         if bool(model_cfg.get(key, False)):
             return True
     if model_cfg_consumes_missing_modality_metadata(model_cfg):
-        return True
-    if _model_cfg_has_predictive_gps_query_pooler(model_cfg):
-        return True
-    if _model_cfg_has_geometry_prior(model_cfg):
-        return True
-    if _model_cfg_has_safe_reranker(model_cfg):
         return True
     fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
     if isinstance(fusion, Mapping):
@@ -274,12 +238,6 @@ def reliability_metadata_strict(model_cfg: Mapping[str, Any] | None) -> bool:
     fusion = model_cfg.get("observability_aware_fusion", model_cfg.get("reliability_metadata"))
     if isinstance(fusion, Mapping):
         return bool(fusion.get("strict", fusion.get("require_fields", True)))
-    if _model_cfg_has_predictive_gps_query_pooler(model_cfg):
-        return bool(model_cfg.get("strict_reliability_metadata", False))
-    if _model_cfg_has_geometry_prior(model_cfg):
-        return bool(model_cfg.get("strict_reliability_metadata", False))
-    if _model_cfg_has_safe_reranker(model_cfg):
-        return bool(model_cfg.get("strict_reliability_metadata", False))
     return bool(model_cfg.get("strict_reliability_metadata", True))
 
 
@@ -297,43 +255,6 @@ def model_cfg_consumes_missing_modality_metadata(model_cfg: Mapping[str, Any] | 
     core = model_cfg.get("representation_core")
     core_type = str(core.get("type", "")) if isinstance(core, Mapping) else str(core or "")
     return core_type == "amber_lite_missing_modality_transformer"
-
-
-def _model_cfg_has_predictive_gps_query_pooler(model_cfg: Mapping[str, Any]) -> bool:
-    encoders = model_cfg.get("encoders")
-    if not isinstance(encoders, Mapping):
-        return False
-    for encoder in encoders.values():
-        if not isinstance(encoder, Mapping):
-            continue
-        pooler = encoder.get("pooler")
-        pooler_type = str(pooler.get("type", "")) if isinstance(pooler, Mapping) else str(encoder.get("pooling", ""))
-        if pooler_type.strip().lower() in {
-            "predictive_gps_query",
-            "predictive_gps_query++",
-            "predictive_gps_query_plus_plus",
-            "gps_query_plus_plus",
-        }:
-            return True
-    return False
-
-
-def _model_cfg_has_geometry_prior(model_cfg: Mapping[str, Any]) -> bool:
-    raw = model_cfg.get("geometry_prior")
-    if raw is True:
-        return True
-    if isinstance(raw, Mapping):
-        return bool(raw.get("enabled", True))
-    return False
-
-
-def _model_cfg_has_safe_reranker(model_cfg: Mapping[str, Any]) -> bool:
-    raw = model_cfg.get("reranker")
-    if raw is True:
-        return True
-    if isinstance(raw, Mapping):
-        return bool(raw.get("enabled", True))
-    return False
 
 
 def _prepare_temporal_metadata_input(
@@ -384,46 +305,6 @@ def _metadata_pad_value(key: str) -> bool | float:
     if key == "gps_delay_steps":
         return 0.0
     return 0.0
-
-
-def _benchmark_condition_metadata(batch: Mapping[str, Any]) -> dict[str, Any]:
-    if isinstance(batch.get("benchmark_condition_metadata"), Mapping):
-        return dict(batch["benchmark_condition_metadata"])
-    metadata = batch.get("metadata")
-    if isinstance(metadata, Mapping):
-        perturbation = metadata.get("benchmark_perturbation")
-        if isinstance(perturbation, Mapping):
-            return dict(perturbation)
-    difficulty = batch.get("difficulty")
-    if isinstance(difficulty, Mapping):
-        return {
-            "difficulty_condition": difficulty.get("condition"),
-            "difficulty_profile_digest": difficulty.get("profile_digest"),
-        }
-    return {}
-
-
-def prepare_gps_bev_xy_inputs(
-    batch: dict[str, torch.Tensor],
-    *,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    non_blocking: bool = False,
-) -> torch.Tensor:
-    if "gps_bev_xy" not in batch:
-        raise ValueError("GPS BEV XY input is required but batch does not contain a 'gps_bev_xy' field.")
-    xy = batch["gps_bev_xy"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
-    if xy.ndim == 2:
-        xy = xy.unsqueeze(0)
-    if xy.ndim != 3 or int(xy.shape[-1]) != 2:
-        raise ValueError(f"gps_bev_xy must have shape [B, T, 2], got {tuple(xy.shape)}.")
-    xy = xy[:, -seq_length:, :]
-    xy = _left_pad_temporal_sequence(xy, seq_length)
-    batch_size, _, feature_dim = xy.shape
-    pad_steps = max(num_pred - 1, 0)
-    zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=xy.dtype, device=device)
-    return torch.cat([xy, zeros], dim=1)
 
 
 def prepare_gps_inputs(
@@ -640,71 +521,6 @@ def prepare_csi_inputs(
     return torch.cat([csi, zeros], dim=1)
 
 
-def prepare_geometry_inputs(
-    batch: dict[str, torch.Tensor],
-    *,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    non_blocking: bool = False,
-) -> torch.Tensor:
-    return _prepare_snapshot_vector_input(
-        batch,
-        sample_key="geometry",
-        display_name="geometry",
-        seq_length=seq_length,
-        num_pred=num_pred,
-        device=device,
-        non_blocking=non_blocking,
-    )
-
-
-def prepare_geometry_mask(
-    batch: dict[str, torch.Tensor],
-    *,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    non_blocking: bool = False,
-) -> torch.Tensor:
-    if "geometry_mask" not in batch:
-        raise ValueError("geometry_mask input is required but batch does not contain a 'geometry_mask' field.")
-    mask = batch["geometry_mask"].to(device=device, dtype=torch.bool, non_blocking=non_blocking)
-    if mask.ndim == 2:
-        mask = mask.unsqueeze(0)
-    if mask.ndim != 3:
-        raise ValueError(f"geometry_mask must have shape [B, T, F], got {tuple(mask.shape)}.")
-    mask = mask[:, -seq_length:, :]
-    batch_size, _, feature_dim = mask.shape
-    pad_steps = max(num_pred - 1, 0)
-    zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=torch.bool, device=device)
-    return torch.cat([mask, zeros], dim=1)
-
-
-def _prepare_snapshot_vector_input(
-    batch: dict[str, torch.Tensor],
-    *,
-    sample_key: str,
-    display_name: str,
-    seq_length: int,
-    num_pred: int,
-    device: torch.device,
-    non_blocking: bool,
-) -> torch.Tensor:
-    if sample_key not in batch:
-        raise ValueError(f"{display_name} input is required but batch does not contain a '{sample_key}' field.")
-    value = batch[sample_key].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
-    if value.ndim == 2:
-        value = value.unsqueeze(1)
-    if value.ndim != 3:
-        raise ValueError(f"{display_name} input must have shape [B, T, F], got {tuple(value.shape)}.")
-    value = value[:, -seq_length:, :]
-    batch_size, _, feature_dim = value.shape
-    pad_steps = max(num_pred - 1, 0)
-    zeros = torch.zeros(batch_size, pad_steps, feature_dim, dtype=value.dtype, device=device)
-    return torch.cat([value, zeros], dim=1)
-
-
 def forward_model(
     model,
     task: str,
@@ -714,9 +530,6 @@ def forward_model(
     lidar_batch: torch.Tensor | None = None,
     mmwave_batch: torch.Tensor | None = None,
     csi_batch: torch.Tensor | None = None,
-    geometry_batch: torch.Tensor | None = None,
-    geometry_mask: torch.Tensor | None = None,
-    gps_bev_xy_batch: torch.Tensor | None = None,
     force_modality_mask: torch.Tensor | None = None,
     **extra_model_kwargs,
 ):
@@ -728,9 +541,6 @@ def forward_model(
             "lidar_batch": lidar_batch,
             "mmwave_batch": mmwave_batch,
             "csi_batch": csi_batch,
-            "geometry_batch": geometry_batch,
-            "geometry_mask": geometry_mask,
-            "gps_bev_xy_batch": gps_bev_xy_batch,
         }
         kwargs = {key: value for key, value in kwargs.items() if value is not None}
         if force_modality_mask is not None:
@@ -775,6 +585,7 @@ def forward_model(
     if getattr(model, "supports_modality_kwargs", False):
         return model(image_batch=image_batch)
     return model(image_batch)
+
 
 
 def _filter_supported_model_kwargs(model, kwargs: Mapping[str, Any]) -> dict[str, Any]:

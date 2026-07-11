@@ -97,24 +97,7 @@ def core_consumes_tokens(cfg: Mapping[str, Any]) -> bool:
         "amber_full_adaptive_mask_transformer",
         "token_aware_transformer",
         "token_transformer",
-        "query_weighted_token_readout",
-        "gps_query_weighted_token_readout",
     }
-
-
-def core_token_count(
-    modalities: tuple[str, ...],
-    encoder_configs: Mapping[str, Mapping[str, Any]],
-) -> int:
-    count = 0
-    for modality in modalities:
-        cfg = encoder_configs.get(modality, {})
-        pooler = cfg.get("pooler") if isinstance(cfg.get("pooler"), dict) else cfg.get("gps_query_pool", {})
-        if isinstance(pooler, dict) and str(pooler.get("output_mode", "frame")) == "tokens":
-            count += int(pooler.get("k_queries", 1) or 1)
-        else:
-            count += 1
-    return count
 
 
 def normalize_core_config(
@@ -130,7 +113,7 @@ def normalize_core_config(
     cfg.setdefault("d_model", d_model)
     cfg.setdefault(
         "modality_count",
-        core_token_count(modalities, encoder_configs) if core_consumes_tokens(cfg) else len(modalities),
+        len(modalities),
     )
     return cfg
 

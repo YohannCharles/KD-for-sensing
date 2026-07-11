@@ -9,7 +9,6 @@ from kd_sensing.engine.batch import prepare_csi_inputs
 from kd_sensing.engine.model_output import adapt_model_output
 from kd_sensing.engine.artifacts import final_config_with_runtime
 from kd_sensing.engine.optim import build_model
-from kd_sensing.evaluation.physics_metrics import grouped_report, normalized_beamforming_gain
 from kd_sensing.losses.physics_informed import PhysicsInformedBeamLoss
 from kd_sensing.models.physics.beam_scoring import beam_logits_from_channel
 from kd_sensing.models.physics.channel_synthesizer import synthesize_ula_channel
@@ -298,11 +297,6 @@ def test_physics_loss_backward_missing_targets_metrics_and_config_load():
         labels,
     )
     assert missing["diagnostics"]["loss/csi_available_count"] == 0.0
-
-    gain = normalized_beamforming_gain(torch.tensor([[1]]), torch.tensor([[[0.1, 0.5, 0.2]]]))
-    report = grouped_report([{"condition": "sunny", "town": "Town10", "scene": "s", "value": float(gain.item())}])
-    assert report["sunny|Town10|s"]["count"] == 1.0
-
 
 def test_physics_ablation_configs_load_and_toggle_expected_fields():
     no_physics = load_config(ROOT / "configs/fusion/physics_informed_mmw_no_physics.yaml")

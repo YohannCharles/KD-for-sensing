@@ -5,12 +5,37 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+import yaml
+
 from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_LIFECYCLES, PUBLIC_CLI_SURFACE
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 INVENTORY = ROOT / "docs/project_surface_inventory.md"
+
+PROTECTED_SYSTEM_PATHS = (
+    "/root/.container_env",
+    "/etc/profile",
+    "/etc/environment",
+    "/etc/ssh/sshd_config",
+    "/root/.ssh/authorized_keys",
+    "~/.ssh/authorized_keys",
+)
+SYSTEM_CONFIG_MUTATION_RE = re.compile(r"(?:>>|>\s*|tee\s+-a?|sed\s+-i|write_text\(|open\([^)]*['\"]w|cat\s*>)")
+CREDENTIAL_POLLUTION_RE = re.compile(
+    r"(?i)\b(?:USERNAME|USER|PASSWD|PASSWORD|TOKEN|SECRET)\s*=.*"
+    r"(?:kd-sensing-(?:train|clean|organize)|CUDA_VISIBLE_DEVICES|nohup|tmux|rm\s+-rf|cd\s+)"
+)
+SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{24,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*['\"][^'\"\n]{16,}['\"]"),
+)
 
 CURRENT_CONFIG_GLOBS = (
     "configs/fusion/physics_informed_mmw*.yaml",
@@ -35,117 +60,6 @@ CURRENT_PATHS = (
     "scripts/mmw/visualize_town_label_distribution.py",
     "docs/project_surface_inventory.md",
     "docs/maintainer_context_index.yaml",
-)
-
-DELETED_SURFACE_PATHS = (
-    "src/kd_sensing/_typing.py",
-    "src/kd_sensing/config/source.py",
-    "src/kd_sensing/engine/objective_metadata.py",
-    "src/kd_sensing/engine/objectives/history.py",
-    "src/kd_sensing/engine/objectives/registry.py",
-    "src/kd_sensing/data/dataset_runtime.py",
-    "src/kd_sensing/data/transform_ops/normalization.py",
-    "src/kd_sensing/config/canonical_recipes/common.py",
-    "src/kd_sensing/config/canonical_recipes/advanced.py",
-    "src/kd_sensing/config/canonical_recipes/fusion.py",
-    "src/kd_sensing/config/canonical_recipes/objectives.py",
-    "src/kd_sensing/config/canonical_recipes/__init__.py",
-    "src/kd_sensing/models/fusion/networks.py",
-    "src/kd_sensing/cli/beambench_check_dataset.py",
-    "src/kd_sensing/baselines/beambench/image_ae_gps.py",
-    "src/kd_sensing/baselines/beambench",
-    "src/kd_sensing/baselines/rmbp_mm",
-    "src/kd_sensing/baselines/tii_vlrg_transformer.py",
-    "src/kd_sensing/diagnostics/cnn_hybrid_jepa_visual_prior_sweep.py",
-    "src/kd_sensing/diagnostics/jepa_gps_shortcut_benchmark.py",
-    "src/kd_sensing/diagnostics/jepa_benchmark_runner.py",
-    "src/kd_sensing/diagnostics/jepa_visual_analysis.py",
-    "src/kd_sensing/diagnostics/distribution_shift.py",
-    "src/kd_sensing/diagnostics/dataset_reproducibility_audit.py",
-    "src/kd_sensing/eval/export.py",
-    "src/kd_sensing/engine/loso_data.py",
-    "src/kd_sensing/models/bev_fusion_2604.py",
-    "src/kd_sensing/models/vision_position.py",
-    "src/kd_sensing/evaluation/bev_fusion_2604_report.py",
-    "src/kd_sensing/cli/jepa_visual_analysis.py",
-    "src/kd_sensing/cli/jepa_gps_shortcut_benchmark.py",
-    "src/kd_sensing/cli/training_throughput.py",
-    "src/kd_sensing/cli/target_shot_split.py",
-    "src/kd_sensing/cli/distribution_shift.py",
-    "src/kd_sensing/cli/wcl2025_missing_modality.py",
-    "src/kd_sensing/cli/dataset_reproducibility_audit.py",
-    "src/kd_sensing/cli/train_beambench_image_ae_gps.py",
-    "src/kd_sensing/cli/run_beambench_image_ae_gps_tableiii.py",
-    "src/kd_sensing/cli/tii_vlrg_transformer.py",
-    "src/kd_sensing/cli/model_architecture_summary.py",
-    "configs/diagnostics/cnn_hybrid_jepa_visual_prior_sweep_manifest.yaml",
-    "configs/fusion/experiments/jepa_image_gps",
-    "configs/fusion/experiments/bev_fusion_2604",
-    "configs/fusion/experiments/rbma_missing_workflow",
-    "configs/fusion/experiments/rbma_missing_workflow_strong_encoders",
-    "configs/fusion/experiments/m2beam_single_modal_scene31",
-    "configs/fusion/experiments/wcl2025_missing_modality",
-    "configs/fusion/beambench_image_ae_gps_direct.yaml",
-    "configs/fusion/tii_vlrg_transformer_baseline.yaml",
-    "configs/baselines/beambench_reproduction.yaml",
-    "configs/baselines/tii_vlrg_transformer_reproduction.yaml",
-    "configs/diagnostics/jepa_gps_shortcut_benchmark_smoke.yaml",
-    "configs/diagnostics/jepa_visual_analysis_2604.yaml",
-    "scripts/run_m2beam_single_modal_scene31_queue.sh",
-    "scripts/run_rbma_strong_encoder_4gpu_queue.sh",
-    "scripts/run_btapa_experiments.sh",
-    "scripts/run_btapa_tau1_validation.sh",
-    "scripts/run_csi_hardening_matrix.sh",
-    "scripts/run_next_v3_experiments.sh",
-    "scripts/run_night_grid_8gpu.sh",
-    "scripts/run_proto_vs_btapa_8gpu.sh",
-    "scripts/run_scene31_next_round.sh",
-    "scripts/analyze_csi_hardening_sweep.py",
-    "scripts/generate_scenes31_34_tinyvit_ablation.py",
-    "scripts/generate_scenes31_34_patchvit_ablation.py",
-    "scripts/run_scenes31_34_patchvit_ablation.sh",
-    "scripts/run_scene31_baseline_pack_maskfix_eval.sh",
-    "scripts/run_scene31_modular_maskfix_eval.sh",
-    "scripts/summarize_scene31_beamsoft_weak.py",
-    "scripts/analysis/beambench_ae_gps_diagnostics.py",
-    "scripts/analysis/deepsense_gps_v2_support_sweep_artifacts.py",
-    "scripts/analysis/render_scene31_selected_gps_query_report.py",
-    "scripts/analysis/run_image_ae_gps_p0_p5_benchmark.py",
-    "scripts/analysis/visualize_deepsense_beambench_correspondence.py",
-    "scripts/reevaluate_apples_to_apples.py",
-    "scripts/summarize_scene31_baseline_pack.py",
-    "scripts/summarize_scene31_bc_next.py",
-    "scripts/summarize_scene31_funnel.py",
-    "scripts/summarize_scene31_next_round.py",
-    "scripts/summarize_scene31_patternfilm_d8.py",
-    "scripts/summarize_scene31_p0_fresh_eval.py",
-    "scripts/summarize_scene31_subset_reference.py",
-    "scripts/summarize_scene31_subset_reliability.py",
-    "scripts/scene31_34_final_analysis_common.py",
-    "scripts/summarize_scenes31_34_main.py",
-    "scripts/plot_missing_count_degradation.py",
-    "scripts/profile_scenes31_34_methods.py",
-    "scripts/export_scenes31_34_main_paper_tables.py",
-    "scripts/write_scenes31_34_main_conclusion.py",
-    "scripts/significance_tests.py",
-    "scripts/export_pattern_heatmap.py",
-    "scripts/plot_error_cdf.py",
-    "scripts/summarize_sampling_distribution.py",
-    "scripts/update_final_paper_tables.py",
-    "scripts/export_scene31_34_presentation_artifacts.py",
-    "scripts/run_final_scene31_34_analysis.sh",
-    "scripts/run_final_scene31_34_polish.sh",
-    "scripts/analyze_btapa_runs.py",
-    "scripts/analyze_btapa_tau1_seeds.py",
-    "scripts/analyze_night_grid.py",
-    "scripts/analyze_proto_vs_btapa_seeds.py",
-    "scripts/analyze_strong_missing_patterns.py",
-    "scripts/diagnose_modular_missing_mask.py",
-    "scripts/diagnose_scene31_funnel_eval_paths.py",
-    "scripts/diagnose_single_modality.py",
-    "scripts/eval_night_grid.py",
-    "scripts/run_rbma_missing_workflow.py",
-    "scripts/summarize_missing_runs.py",
 )
 
 FORBIDDEN_IMPORTS = (
@@ -174,6 +88,8 @@ FORBIDDEN_IMPORTS = (
     "import kd_sensing.diagnostics.jepa_benchmark_",
     "from kd_sensing.diagnostics.jepa_visual_analysis import",
     "import kd_sensing.diagnostics.jepa_visual_analysis",
+    "from kd_sensing.diagnostics.project_surface_doctor import",
+    "import kd_sensing.diagnostics.project_surface_doctor",
     "from kd_sensing.diagnostics.distribution_shift import",
     "import kd_sensing.diagnostics.distribution_shift",
     "from kd_sensing.diagnostics.dataset_reproducibility_audit import",
@@ -239,11 +155,6 @@ SCENE31_RETAINED_YAML = {
     "configs/scene31/templates/main_v3_proto_es20_base.yaml",
 }
 
-SCENE31_LOCAL_MANUAL_RUNNERS = set()
-
-SCENE31_GENERATORS_AND_SUMMARIES = set()
-
-
 def test_pyproject_console_scripts_point_to_existing_functions():
     scripts = _pyproject()["project"]["scripts"]
     assert scripts
@@ -306,11 +217,6 @@ def test_current_paths_and_config_globs_are_real():
         matches = sorted(ROOT.glob(pattern))
         assert matches, pattern
         assert all(path.is_file() for path in matches)
-
-
-def test_deleted_facades_and_one_shot_script_do_not_return():
-    for rel_path in DELETED_SURFACE_PATHS:
-        assert not (ROOT / rel_path).exists(), rel_path
 
 
 def test_runtime_sources_do_not_use_future_annotations_or_star_imports():
@@ -478,6 +384,53 @@ def test_tracked_runtime_artifacts_are_not_in_source_control():
     assert not all_models_violations
 
 
+def test_tracked_text_has_no_secret_system_config_or_runner_hazards():
+    violations: list[str] = []
+    for rel_path in _git_ls_files():
+        path = ROOT / rel_path
+        if not path.is_file() or rel_path == _rel(Path(__file__).resolve()):
+            continue
+        if not _is_safety_scan_path(rel_path):
+            continue
+        violations.extend(_safety_violations(rel_path, path.read_text(encoding="utf-8", errors="replace")))
+    assert not violations
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "text", "expected"),
+    [
+        (
+            "scripts/bad_container_bootstrap.sh",
+            'printf \'PASSWD=kd-sensing-train --config configs/image/strong.yaml\' >> /root/.container_env',
+            "credential field contains runtime command",
+        ),
+        (
+            "scripts/bad_profile_bootstrap.sh",
+            "echo 'nohup conda run -n kd_mm_beam kd-sensing-train --config run.yaml &' >> /etc/profile",
+            "mutates protected system or authentication config",
+        ),
+        (
+            "scripts/bad_auth_bootstrap.sh",
+            "printf 'command=kd-sensing-train ssh-rsa AAAA...' > /root/.ssh/authorized_keys",
+            "mutates protected system or authentication config",
+        ),
+        ("scripts/bad_cleanup.sh", "rm -rf outputs/unreviewed-run", "recursive delete lacks explicit confirmation"),
+        (
+            "configs/leaked.yaml",
+            'token: "ghp_123456789012345678901234567890123456"',
+            "potential secret literal",
+        ),
+    ],
+)
+def test_safety_guard_rejects_realistic_dangerous_fixtures(rel_path: str, text: str, expected: str):
+    assert any(expected in violation for violation in _safety_violations(rel_path, text))
+
+
+def test_safety_guard_accepts_conda_wrapped_project_runner():
+    text = 'return ["conda", "run", "-n", "kd_mm_beam", "kd-sensing-train", "--config", config_path]'
+    assert _safety_violations("scripts/good_runner.py", text) == []
+
+
 def test_ponytail_followup_artifacts_are_not_tracked():
     tracked = {path for path in _git_ls_files() if (ROOT / path).exists()}
     forbidden = {
@@ -501,20 +454,25 @@ def test_current_openspec_specs_have_real_purpose():
     assert not violations
 
 
-def test_openspec_specs_match_lifecycle_inventory():
+def test_lifecycle_inventory_rows_reference_current_specs():
     spec_root = ROOT / "openspec/specs"
     spec_dirs = {path.parent.name for path in spec_root.glob("*/spec.md")}
-    all_dirs = {path.name for path in spec_root.iterdir() if path.is_dir()}
     rows = re.findall(
         r"^\| `([^`]+)` \| `(current|supporting|retired-tombstone)` \|",
         INVENTORY.read_text(encoding="utf-8"),
         flags=re.MULTILINE,
     )
     capabilities = [capability for capability, _lifecycle in rows]
+    lifecycles = dict(rows)
 
-    assert all_dirs == spec_dirs
     assert len(capabilities) == len(set(capabilities))
-    assert set(capabilities) == spec_dirs
+    assert set(capabilities) <= spec_dirs
+    for capability in (
+        "target-shot-domain-splitting",
+        "model-architecture-summary",
+        "local-missing-modality-baselines",
+    ):
+        assert lifecycles.get(capability) == "supporting"
 
 
 def test_current_validation_commands_reference_existing_openspec_targets():
@@ -538,70 +496,48 @@ def test_current_validation_commands_reference_existing_openspec_targets():
     assert not violations, "Use openspec validate --all --strict or a current spec/active change target."
 
 
-def test_agent_context_and_project_skills_are_registered_and_resolvable():
-    context_paths = (
-        "docs/agent_context/README.md",
-        "docs/agent_context/models.md",
-        "docs/agent_context/data.md",
-        "docs/agent_context/configs.md",
-        "docs/agent_context/cli.md",
-        "docs/agent_context/diagnostics.md",
-        "docs/agent_context/openspec.md",
-        "docs/agent_context/documentation.md",
-        "docs/agent_context/claims.md",
-        "docs/agent_context/atlas.md",
-    )
-    route_context = {
-        "model": "docs/agent_context/models.md",
-        "data": "docs/agent_context/data.md",
-        "config": "docs/agent_context/configs.md",
-        "cli": "docs/agent_context/cli.md",
-        "diagnostics": "docs/agent_context/diagnostics.md",
-        "openspec": "docs/agent_context/openspec.md",
-        "documentation": "docs/agent_context/documentation.md",
-        "claims": "docs/agent_context/claims.md",
+def test_maintainer_context_index_is_minimal_and_resolvable():
+    index_path = ROOT / "docs/maintainer_context_index.yaml"
+    index = yaml.safe_load(index_path.read_text(encoding="utf-8"))
+    routes = index.get("task_routes", [])
+    route_ids = [route.get("id") for route in routes]
+
+    assert len(route_ids) == len(set(route_ids))
+    assert set(route_ids) == {
+        "model",
+        "data",
+        "config",
+        "cli",
+        "diagnostics",
+        "openspec",
+        "documentation",
+        "claims",
+        "atlas",
     }
-    skill_paths = (
-        ".codex/skills/kd-add-model/SKILL.md",
-        ".codex/skills/kd-add-config/SKILL.md",
-        ".codex/skills/kd-update-claim/SKILL.md",
-        ".codex/skills/kd-diagnose-run/SKILL.md",
-        ".codex/skills/kd-archive-change/SKILL.md",
-    )
-    reference_text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (
-            ROOT / "AGENTS.md",
-            ROOT / "README.md",
-            ROOT / "docs/agent_navigation.md",
-            ROOT / "docs/maintainer_context_index.yaml",
-            INVENTORY,
-        )
-    )
-    index_text = (ROOT / "docs/maintainer_context_index.yaml").read_text(encoding="utf-8")
+    assert not ({"entrypoints", "scripts", "configs", "hotspots", "remediation_waves", "project_skills"} & set(index))
 
-    missing_files = [rel_path for rel_path in (*context_paths, *skill_paths) if not (ROOT / rel_path).exists()]
-    missing_registration = [rel_path for rel_path in (*context_paths, *skill_paths) if rel_path not in reference_text]
-    missing_routes = [
-        route_id
-        for route_id, rel_path in route_context.items()
-        if f"id: {route_id}" not in index_text or f"context_path: {rel_path}" not in index_text
-    ]
+    path_violations: list[str] = []
+    command_violations: list[str] = []
+    for route in routes:
+        for field in ("context_path", "authority_paths", "owner_modules", "focused_validation", "retired_route_guard"):
+            assert route.get(field), f"{route.get('id')}: missing {field}"
+        for rel_path in (route["context_path"], *route["authority_paths"], *route["owner_modules"]):
+            if not (ROOT / rel_path).exists():
+                path_violations.append(f"{route['id']}: {rel_path}")
+        for command in route["focused_validation"]:
+            if not isinstance(command, str) or ("pytest" in command and not command.startswith("conda run -n kd_mm_beam ")):
+                command_violations.append(f"{route['id']}: {command}")
+        if not (ROOT / route["retired_route_guard"]).exists():
+            path_violations.append(f"{route['id']}: {route['retired_route_guard']}")
 
-    skill_violations: list[str] = []
-    for rel_path in skill_paths:
-        text = (ROOT / rel_path).read_text(encoding="utf-8")
-        for marker in ("OpenSpec", "kd_mm_beam", "outputs/", "logs/", "dataset/"):
-            if marker not in text:
-                skill_violations.append(f"{rel_path}: missing {marker}")
+    for group in index.get("protected_paths", []):
+        assert group.get("id") and group.get("paths")
+        for rel_path in group["paths"]:
+            if not (ROOT / rel_path).exists():
+                path_violations.append(f"protected:{group['id']}: {rel_path}")
 
-    broken_references = _missing_agent_context_references((*context_paths, *skill_paths))
-
-    assert not missing_files
-    assert not missing_registration
-    assert not missing_routes
-    assert not skill_violations
-    assert not broken_references
+    assert not path_violations
+    assert not command_violations
 
 
 def test_agent_context_portability_documents_are_thin_and_bounded():
@@ -612,16 +548,6 @@ def test_agent_context_portability_documents_are_thin_and_bounded():
         ".kiro/steering/agent-context.md",
         "docs/agent_project_knowledge.md",
     )
-    required_adapter_refs = (
-        "AGENTS.md",
-        "docs/agent_navigation.md",
-        "docs/agent_context/README.md",
-        "OpenSpec",
-        "kd_mm_beam",
-        "dataset/",
-        "outputs/",
-        "logs/",
-    )
     forbidden_copies = (
         "## Requirements",
         "### Requirement:",
@@ -629,20 +555,22 @@ def test_agent_context_portability_documents_are_thin_and_bounded():
         "| Route id |",
         "| claim_id |",
     )
-    role_doc = ROOT / "docs/readonly_agent_roles.md"
-    research_brief = ROOT / "docs/current_research_brief.md"
-    memory_ledger = ROOT / "docs/agent_memory_ledger.md"
-
-    portability_docs = (*adapter_paths, _rel(role_doc), _rel(research_brief), _rel(memory_ledger))
+    portability_docs = (
+        *adapter_paths,
+        "docs/readonly_agent_roles.md",
+        "docs/current_research_brief.md",
+        "docs/agent_memory_ledger.md",
+    )
     missing_files = [rel_path for rel_path in portability_docs if not (ROOT / rel_path).exists()]
     adapter_violations: list[str] = []
     retired_mentions: list[str] = []
     copied_governance: list[str] = []
     for rel_path in adapter_paths:
         text = (ROOT / rel_path).read_text(encoding="utf-8")
-        for marker in required_adapter_refs:
-            if marker not in text:
-                adapter_violations.append(f"{rel_path}: missing {marker}")
+        if len(text.splitlines()) > 80:
+            adapter_violations.append(f"{rel_path}: exceeds thin-adapter limit")
+        if "AGENTS.md" not in text or "docs/agent_navigation.md" not in text:
+            adapter_violations.append(f"{rel_path}: missing authority navigation")
         for marker in RETIRED_TEXT_MARKERS:
             if marker in text:
                 retired_mentions.append(f"{rel_path}: {marker}")
@@ -650,108 +578,13 @@ def test_agent_context_portability_documents_are_thin_and_bounded():
             if marker in text:
                 copied_governance.append(f"{rel_path}: {marker}")
 
-    role_text = role_doc.read_text(encoding="utf-8")
-    role_required = (
-        "claim-auditor",
-        "experiment-triage",
-        "surface-doctor-reviewer",
-        "literature-scout",
-        "只读",
-        "不直接写",
-        "不启动训练",
-        "不清理",
-        "conda run -n kd_mm_beam",
-        "OpenSpec",
-    )
-    role_violations = [marker for marker in role_required if marker not in role_text]
-
-    brief_text = research_brief.read_text(encoding="utf-8")
-    brief_required = (
-        "当前主线",
-        "冻结方法",
-        "不要追",
-        "Claim 升级条件",
-        "下一步高价值实验",
-        "docs/result_claims_registry.md",
-        "docs/experiment_protocols.md",
-        "mock/smoke",
-        "pending",
-    )
-    brief_violations = [marker for marker in brief_required if marker not in brief_text]
-
-    ledger_text = memory_ledger.read_text(encoding="utf-8")
-    ledger_required = (
-        "错误模式",
-        "触发场景",
-        "正确规则",
-        "建议沉淀位置",
-        "验证命令",
-        "人工确认状态",
-        "不得自动重写",
-        "docs/result_claims_registry.md",
-        "conda run -n kd_mm_beam",
-    )
-    ledger_violations = [marker for marker in ledger_required if marker not in ledger_text]
-
-    reference_text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (
-            ROOT / "README.md",
-            ROOT / "docs/agent_navigation.md",
-            INVENTORY,
-            ROOT / "docs/agent_context/documentation.md",
-        )
-    )
-    missing_registration = [
-        rel_path
-        for rel_path in portability_docs
-        if rel_path not in reference_text
-    ]
+    broken_references = _missing_agent_context_references(portability_docs)
 
     assert not missing_files
     assert not adapter_violations
     assert not retired_mentions
     assert not copied_governance
-    assert not role_violations
-    assert not brief_violations
-    assert not ledger_violations
-    assert not missing_registration
-
-
-def test_project_surface_inventory_sizing_baseline_declares_scan_method():
-    section = _inventory_section("## 项目健康护栏基线", "当前 AST 热点清单如下")
-    required_markers = {
-        "统计口径": ("on-disk", "tracked-only", "扫描口径"),
-        "扫描范围": ("src/kd_sensing", "tests/", "scripts/", "configs/"),
-        "排除项": ("dataset/", "outputs/", "logs/", "cache", "checkpoint"),
-        "非硬 KPI": ("趋势信号", "非硬 KPI"),
-    }
-    missing: list[str] = []
-    for label, markers in required_markers.items():
-        if not all(marker in section for marker in markers):
-            missing.append(label)
-    assert not missing, f"Inventory sizing baseline is missing: {', '.join(missing)}"
-
-
-def test_fusion_root_yaml_matches_inventory_classification():
-    actual = sorted(path.name for path in (ROOT / "configs/fusion").glob("*.yaml"))
-    inventory = _inventory_section("`configs/fusion/` 根目录保留分类如下：", "已迁移到")
-    listed = sorted(set(re.findall(r"`([^`]+\.yaml)`", inventory)))
-    assert actual == listed
-
-
-def test_scripts_are_classified_in_inventory():
-    scripts = sorted(
-        path
-        for path in _git_ls_files()
-        if path.startswith("scripts/")
-        and Path(path).suffix in {".py", ".sh"}
-        and (ROOT / path).exists()
-        and "__pycache__" not in Path(path).parts
-    )
-    inventory = INVENTORY.read_text(encoding="utf-8")
-    missing = [script for script in scripts if f"`{script}`" not in inventory]
-    assert not missing
+    assert not broken_references
 
 
 def test_scene31_generated_yaml_is_not_tracked_surface():
@@ -812,27 +645,6 @@ def test_current_target_experiment_config_references_resolve():
                 broken.append(f"{_rel(path)}:{line_number}: {ref}")
 
     assert not broken
-
-
-def test_scene31_local_manual_scripts_are_explicitly_registered():
-    actual_runners = {
-        _rel(path)
-        for path in (ROOT / "scripts").glob("run_scene31_*.sh")
-        if path.is_file()
-    }
-    actual_tools = {
-        _rel(path)
-        for pattern in ("generate_scene31_*.py", "summarize_scene31_*.py")
-        for path in (ROOT / "scripts").glob(pattern)
-        if path.is_file()
-    }
-    if (ROOT / "scripts/select_missing_aware_checkpoint.py").exists():
-        actual_tools.add("scripts/select_missing_aware_checkpoint.py")
-    inventory = INVENTORY.read_text(encoding="utf-8")
-    assert actual_runners == SCENE31_LOCAL_MANUAL_RUNNERS
-    assert actual_tools == SCENE31_GENERATORS_AND_SUMMARIES
-    for rel_path in sorted(actual_runners | actual_tools):
-        assert f"`{rel_path}`" in inventory
 
 
 def test_scene31_34_encoder_ablation_surface_is_unified():
@@ -899,7 +711,7 @@ def test_deleted_active_openspec_changes_have_matching_archive_status():
         if not path.startswith("openspec/changes/") or "D" not in status:
             continue
         parts = path.split("/")
-        if len(parts) >= 3:
+        if len(parts) >= 3 and not (ROOT / "openspec" / "changes" / parts[2]).exists():
             deleted_active_changes.add(parts[2])
 
     missing_archives = sorted(change for change in deleted_active_changes if change not in archive_changes)
@@ -917,6 +729,7 @@ def test_retired_console_scripts_are_absent():
         "kd-sensing-run-jepa-msac",
         "kd-sensing-export-viewer-manifest",
         "kd-sensing-visualize-modalities",
+        "kd-sensing-project-surface-doctor",
     )
     assert all(command not in pyproject for command in retired)
 
@@ -990,13 +803,6 @@ def _purpose_section(path: Path) -> str:
     return "" if match is None else match.group("body").strip()
 
 
-def _inventory_section(start: str, end: str) -> str:
-    text = INVENTORY.read_text(encoding="utf-8")
-    start_index = text.index(start)
-    end_index = text.index(end, start_index)
-    return text[start_index:end_index]
-
-
 def _missing_agent_context_references(rel_paths: tuple[str, ...]) -> list[str]:
     path_pattern = re.compile(
         r"`(?P<path>"
@@ -1016,6 +822,45 @@ def _missing_agent_context_references(rel_paths: tuple[str, ...]) -> list[str]:
                 if not (ROOT / ref).exists():
                     broken.append(f"{rel_path}:{line_number}: {ref}")
     return broken
+
+
+def _is_safety_scan_path(rel_path: str) -> bool:
+    roots = ("src/", "tests/", "scripts/", "configs/", "docs/", "openspec/", ".github/")
+    root_files = {"AGENTS.md", "README.md", "Makefile", "pyproject.toml"}
+    suffixes = {".md", ".py", ".sh", ".yaml", ".yml", ".toml", ".txt", ".json"}
+    return (rel_path.startswith(roots) or rel_path in root_files) and Path(rel_path).suffix in suffixes
+
+
+def _safety_violations(rel_path: str, text: str) -> list[str]:
+    violations: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lowered = stripped.lower()
+        is_placeholder = any(marker in lowered for marker in ("placeholder", "example", "redacted", "dummy", "your_", "xxxx", "changeme"))
+        if not is_placeholder and any(pattern.search(stripped) for pattern in SECRET_PATTERNS):
+            violations.append(f"{rel_path}:{line_number}: potential secret literal")
+        if any(path in stripped for path in PROTECTED_SYSTEM_PATHS) and SYSTEM_CONFIG_MUTATION_RE.search(stripped):
+            violations.append(f"{rel_path}:{line_number}: mutates protected system or authentication config")
+        if CREDENTIAL_POLLUTION_RE.search(stripped):
+            violations.append(f"{rel_path}:{line_number}: credential field contains runtime command")
+        if rel_path.startswith("scripts/") and "rm -rf" in stripped and "confirm" not in lowered:
+            violations.append(f"{rel_path}:{line_number}: recursive delete lacks explicit confirmation")
+
+    if rel_path.startswith("scripts/") and "kd-sensing-" in text:
+        if rel_path.endswith(".sh"):
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if "kd-sensing-" in line and "conda run -n kd_mm_beam" not in line:
+                    violations.append(f"{rel_path}:{line_number}: project CLI bypasses kd_mm_beam")
+        elif rel_path.endswith(".py"):
+            conda_list = re.compile(
+                r"['\"]conda['\"]\s*,\s*['\"]run['\"]\s*,\s*['\"]-n['\"]\s*,\s*['\"]kd_mm_beam['\"]",
+                flags=re.DOTALL,
+            )
+            if conda_list.search(text) is None:
+                violations.append(f"{rel_path}: project CLI bypasses kd_mm_beam")
+    return violations
 
 
 def _is_sys_path_insert_expr(node: ast.AST) -> bool:

@@ -46,11 +46,6 @@ from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blockin
 from kd_sensing.engine.evaluator import _evaluation_split_protocol_report
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
-from kd_sensing.engine.throughput_recommendations import (
-    lidar_cache_coverage,
-    recommend_parallel_training,
-)
-import kd_sensing.engine.training_io_profile as profile_training_io
 from kd_sensing.engine.trainer import (
     _configure_early_stopping,
     _early_stopping_improved,

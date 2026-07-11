@@ -70,7 +70,7 @@ def normalize_loaded_config(
     apply_objective_runtime_requirements(cfg)
     apply_fusion_modality_selection(cfg, override_cfg=override_cfg)
     normalize_dataloader_batch_size_alias(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
-    normalize_temporal_window_missing_config(cfg)
+    normalize_temporal_window_missing_config(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_csi_hardening_alias(cfg)
     canonicalize_lidar_normalization_config(cfg, file_cfg=file_cfg, override_cfg=override_cfg)
     normalize_model_role_defaults(cfg)
@@ -79,7 +79,12 @@ def normalize_loaded_config(
     apply_snapshot_runtime_requirements(cfg)
 
 
-def normalize_temporal_window_missing_config(cfg: dict[str, Any]) -> None:
+def normalize_temporal_window_missing_config(
+    cfg: dict[str, Any],
+    *,
+    file_cfg: dict[str, Any] | None = None,
+    override_cfg: dict[str, Any] | None = None,
+) -> None:
     temporal_cfg = cfg.setdefault("temporal_missing", {})
     if not isinstance(temporal_cfg, dict):
         raise ValueError("temporal_missing must be a mapping when configured.")
@@ -88,6 +93,8 @@ def normalize_temporal_window_missing_config(cfg: dict[str, Any]) -> None:
     primary_cfg = model_cfg.setdefault("primary", {})
 
     history = _first_config_value(
+        _explicit_window_value(override_cfg, "history"),
+        _explicit_window_value(file_cfg, "history"),
         temporal_cfg.get("history_window"),
         dataset_cfg.get("history_window"),
         model_cfg.get("history_window"),
@@ -95,6 +102,8 @@ def normalize_temporal_window_missing_config(cfg: dict[str, Any]) -> None:
         model_cfg.get("seq_length"),
     )
     prediction = _first_config_value(
+        _explicit_window_value(override_cfg, "prediction"),
+        _explicit_window_value(file_cfg, "prediction"),
         temporal_cfg.get("prediction_window"),
         dataset_cfg.get("prediction_window"),
         model_cfg.get("prediction_window"),
@@ -147,6 +156,34 @@ def _first_config_value(*values: Any) -> Any:
         if value not in (None, ""):
             return value
     raise ValueError("Expected at least one non-empty config value.")
+
+
+def _explicit_window_value(source: dict[str, Any] | None, kind: str) -> Any:
+    if not isinstance(source, dict):
+        return None
+    temporal = source.get("temporal_missing") if isinstance(source.get("temporal_missing"), dict) else {}
+    data = source.get("data") if isinstance(source.get("data"), dict) else {}
+    dataset = data.get("dataset") if isinstance(data.get("dataset"), dict) else {}
+    model = source.get("model") if isinstance(source.get("model"), dict) else {}
+    if kind == "history":
+        return _first_optional_value(
+            temporal.get("history_window"),
+            dataset.get("history_window"),
+            model.get("history_window"),
+            dataset.get("seq_len"),
+            model.get("seq_length"),
+        )
+    return _first_optional_value(
+        temporal.get("prediction_window"),
+        dataset.get("prediction_window"),
+        model.get("prediction_window"),
+        dataset.get("num_pred"),
+        model.get("num_pred"),
+    )
+
+
+def _first_optional_value(*values: Any) -> Any:
+    return next((value for value in values if value not in (None, "")), None)
 
 
 def normalize_dataloader_batch_size_alias(

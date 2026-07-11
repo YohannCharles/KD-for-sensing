@@ -115,7 +115,6 @@ DATASETS = Registry("datasets")
 LOSSES = Registry("losses")
 METRICS = Registry("metrics")
 PREPROCESSORS = Registry("preprocessors")
-JEPA_DOWNSTREAM_POOLERS = Registry("jepa_downstream_poolers")
 JEPA_VISUAL_TOKEN_ENCODERS = Registry("jepa_visual_token_encoders")
 DIFFICULTY_OPERATORS = Registry("difficulty_operators")
 
@@ -180,11 +179,9 @@ def import_default_components() -> None:
     import kd_sensing.models.amr_net  # noqa: F401
     import kd_sensing.models.fusion  # noqa: F401
     import kd_sensing.models.csi_encoder  # noqa: F401
-    import kd_sensing.models.geometry_prior  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
     import kd_sensing.models.image  # noqa: F401
     import kd_sensing.models.image_encoders  # noqa: F401
-    import kd_sensing.models.jepa_downstream  # noqa: F401
     import kd_sensing.models.jepa  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
@@ -219,7 +216,6 @@ __all__ = [
     "LOSSES",
     "METRICS",
     "PREPROCESSORS",
-    "JEPA_DOWNSTREAM_POOLERS",
     "JEPA_VISUAL_TOKEN_ENCODERS",
     "DIFFICULTY_OPERATORS",
     "import_default_components",

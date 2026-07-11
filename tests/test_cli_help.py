@@ -63,6 +63,7 @@ def test_retired_top8_residual_cli_scripts_are_not_declared():
         "run-beambench-image-ae-gps-tableiii",
         "tii-vlrg-transformer",
         "model-architecture-summary",
+        "project-surface-doctor",
     ]
     violations = [fragment for fragment in retired_fragments if fragment in text]
 

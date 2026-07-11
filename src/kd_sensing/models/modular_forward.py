@@ -17,7 +17,6 @@ class ModularForwardInputs:
 class EncoderProjectorStage:
     encoded: dict[str, torch.Tensor]
     projected: dict[str, torch.Tensor]
-    encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]]
     encoder_runtime_metadata: dict[str, Any]
 
 
@@ -27,14 +26,6 @@ class CoreInputStage:
     availability_mask: torch.Tensor | None
     input_features: torch.Tensor
     has_token_features: bool
-
-
-@dataclass(frozen=True)
-class LogitPostProcessStage:
-    logits: torch.Tensor
-    geometry_prior_payload: dict[str, Any] | None
-    geometry_fusion_payload: dict[str, Any] | None
-    rerank_payload: dict[str, Any] | None
 
 
 def collect_forward_inputs(**kwargs: Any) -> ModularForwardInputs:
@@ -61,8 +52,6 @@ def collect_forward_inputs(**kwargs: Any) -> ModularForwardInputs:
         "lidar_dropout_mask": kwargs["lidar_dropout_mask"],
         "mmwave_dropout_mask": kwargs["mmwave_dropout_mask"],
         "csi_dropout_mask": kwargs["csi_dropout_mask"],
-        "gps_counterfactual_mask": kwargs["gps_counterfactual_mask"],
-        "benchmark_condition_metadata": kwargs["benchmark_condition_metadata"],
     }
     modality_valid_inputs = {
         "image": kwargs["image_valid_mask"],
@@ -95,7 +84,6 @@ def run_encoder_projector_stage(
 ) -> EncoderProjectorStage:
     encoded: dict[str, torch.Tensor] = {}
     projected: dict[str, torch.Tensor] = {}
-    encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]] = {}
     encoder_runtime_metadata: dict[str, Any] = {}
     batch_size = None
     seq_len = None
@@ -131,7 +119,6 @@ def run_encoder_projector_stage(
             collect_encoder_runtime_metadata(
                 encoder,
                 modality=modality,
-                encoder_auxiliary_features=encoder_auxiliary_features,
                 encoder_runtime_metadata=encoder_runtime_metadata,
             )
             batch_size, seq_len = check_temporal_features(features, modality, batch_size, seq_len)
@@ -159,7 +146,6 @@ def run_encoder_projector_stage(
     return EncoderProjectorStage(
         encoded=encoded,
         projected=projected,
-        encoder_auxiliary_features=encoder_auxiliary_features,
         encoder_runtime_metadata=encoder_runtime_metadata,
     )
 
@@ -168,24 +154,8 @@ def collect_encoder_runtime_metadata(
     encoder: nn.Module,
     *,
     modality: str,
-    encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]],
     encoder_runtime_metadata: dict[str, Any],
 ) -> None:
-    temporal_aux_metadata = getattr(encoder, "last_temporal_auxiliary_metadata", None)
-    if isinstance(temporal_aux_metadata, dict) and bool(temporal_aux_metadata.get("enabled", False)):
-        current_latent = getattr(encoder, "last_current_latent", None)
-        predicted_latent = getattr(encoder, "last_temporal_predicted_latent", None)
-        if isinstance(current_latent, torch.Tensor) and isinstance(predicted_latent, torch.Tensor):
-            encoder_auxiliary_features[modality] = {
-                "current_latent": current_latent,
-                "temporal_predicted_latent": predicted_latent,
-            }
-        encoder_runtime_metadata[modality] = {
-            "temporal_auxiliary": temporal_aux_metadata,
-        }
-    predictive_diagnostics = getattr(encoder, "last_predictive_gps_query_diagnostics", None)
-    if isinstance(predictive_diagnostics, dict):
-        encoder_runtime_metadata.setdefault(modality, {})["predictive_gps_query"] = predictive_diagnostics
     visual_token_diagnostics = getattr(encoder, "last_visual_token_diagnostics", None)
     if isinstance(visual_token_diagnostics, dict) and visual_token_diagnostics:
         encoder_runtime_metadata.setdefault(modality, {})["visual_tokens"] = visual_token_diagnostics
@@ -309,59 +279,10 @@ def run_core_head_stage(
     return output_features, model.heads["beam"](output_features)
 
 
-def post_process_logits_stage(
-    model: Any,
-    image_logits: torch.Tensor,
-    *,
-    gps_batch: torch.Tensor | None,
-    image_valid_mask: torch.Tensor | None,
-    image_observability_score: torch.Tensor | None,
-    gps_valid_mask: torch.Tensor | None,
-    gps_delay_steps: torch.Tensor | None,
-    gps_counterfactual_mask: torch.Tensor | None,
-) -> LogitPostProcessStage:
-    logits = image_logits
-    geometry_prior_payload: dict[str, Any] | None = None
-    geometry_fusion_payload: dict[str, Any] | None = None
-    rerank_payload: dict[str, Any] | None = None
-    if model.geometry_prior is not None and model.geometry_prior_fusion is not None:
-        geometry_prior_payload = model.geometry_prior(
-            gps_batch,
-            target_time=int(image_logits.shape[1]),
-            gps_valid_mask=gps_valid_mask,
-            gps_delay_steps=gps_delay_steps,
-            gps_counterfactual_mask=gps_counterfactual_mask,
-        )
-        geometry_fusion_payload = model.geometry_prior_fusion(
-            image_logits=image_logits,
-            prior_logits=geometry_prior_payload["logits"],
-            prior_distribution=geometry_prior_payload.get("distribution"),
-            prior_availability_mask=geometry_prior_payload.get("availability_mask"),
-            image_valid_mask=image_valid_mask,
-            image_observability_score=image_observability_score,
-            gps_valid_mask=gps_valid_mask,
-            gps_delay_steps=gps_delay_steps,
-            gps_counterfactual_mask=gps_counterfactual_mask,
-        )
-        logits = geometry_fusion_payload["logits"]
-    if model.reranker is not None:
-        rerank_payload = model.reranker(
-            anchor_logits=image_logits,
-            geometry_prior_logits=geometry_prior_payload["logits"] if geometry_prior_payload is not None else None,
-            image_observability_score=image_observability_score,
-            gps_valid_mask=gps_valid_mask,
-            gps_delay_steps=gps_delay_steps,
-            gps_counterfactual_mask=gps_counterfactual_mask,
-        )
-        logits = rerank_payload["logits"]
-    return LogitPostProcessStage(logits, geometry_prior_payload, geometry_fusion_payload, rerank_payload)
-
-
 def assemble_model_output_stage(
     model: Any,
     *,
     logits: torch.Tensor,
-    image_logits: torch.Tensor,
     input_features: torch.Tensor,
     output_features: torch.Tensor,
     core_input: torch.Tensor,
@@ -369,11 +290,7 @@ def assemble_model_output_stage(
     has_token_features: bool,
     encoded: dict[str, torch.Tensor],
     projected: dict[str, torch.Tensor],
-    encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]],
     encoder_runtime_metadata: dict[str, Any],
-    geometry_prior_payload: dict[str, Any] | None,
-    geometry_fusion_payload: dict[str, Any] | None,
-    rerank_payload: dict[str, Any] | None,
     missing_modality_metadata_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output = {
@@ -395,78 +312,17 @@ def assemble_model_output_stage(
         output["missing_modality_metadata"] = output_metadata
     if has_token_features:
         output["token_features"] = core_input
-    attach_geometry_outputs(output, image_logits, geometry_prior_payload, geometry_fusion_payload, rerank_payload)
-    attach_runtime_outputs(output, encoder_auxiliary_features, encoder_runtime_metadata)
+    attach_runtime_outputs(output, encoder_runtime_metadata)
     attach_auxiliary_outputs(model, output, output_features)
     return output
 
 
-def attach_geometry_outputs(
-    output: dict[str, Any],
-    image_logits: torch.Tensor,
-    geometry_prior_payload: dict[str, Any] | None,
-    geometry_fusion_payload: dict[str, Any] | None,
-    rerank_payload: dict[str, Any] | None,
-) -> None:
-    if geometry_prior_payload is not None and geometry_fusion_payload is not None:
-        fusion_diagnostics = dict(geometry_fusion_payload.get("diagnostics", {}))
-        output.update(
-            {
-                "anchor_logits": image_logits,
-                "image_logits": image_logits,
-                "geometry_prior_logits": geometry_prior_payload["logits"],
-                "geometry_prior_distribution": geometry_prior_payload["distribution"],
-                "geometry_prior_entropy": geometry_prior_payload["entropy"],
-                "geometry_prior_topk_indices": geometry_prior_payload["topk_indices"],
-                "geometry_prior_topk_probabilities": geometry_prior_payload["topk_probabilities"],
-                "geometry_prior_availability_mask": geometry_prior_payload["availability_mask"],
-                "geometry_prior_unavailable_reason": geometry_prior_payload["unavailable_reason"],
-                "geometry_prior_diagnostics": {
-                    "entropy": geometry_prior_payload["entropy"],
-                    "topk_indices": geometry_prior_payload["topk_indices"],
-                    "availability_mask": geometry_prior_payload["availability_mask"],
-                    "unavailable_reason": geometry_prior_payload["unavailable_reason"],
-                    "metadata": geometry_prior_payload["metadata"],
-                },
-                "geometry_prior_fusion_diagnostics": fusion_diagnostics,
-                "branch_weights": fusion_diagnostics.get("branch_weights"),
-            }
-        )
-    elif rerank_payload is not None:
-        output["anchor_logits"] = image_logits
-    if rerank_payload is not None:
-        rerank_diagnostics = dict(rerank_payload.get("diagnostics", {}))
-        output.update(
-            {
-                "rerank_logits": rerank_diagnostics.get("rerank_logits", rerank_payload["logits"]),
-                "safe_rerank_diagnostics": rerank_diagnostics,
-                "candidate_ids": rerank_diagnostics.get("candidate_ids"),
-                "candidate_source_mask": rerank_diagnostics.get("candidate_source_mask"),
-                "selected_source": rerank_diagnostics.get("selected_source"),
-                "target_rank_delta": rerank_diagnostics.get("target_rank_delta"),
-                "fallback_reason": rerank_diagnostics.get("fallback_reason_code"),
-                "gate_confidence": rerank_diagnostics.get("gate_confidence"),
-                "condition_id_consumed": False,
-            }
-        )
-
-
 def attach_runtime_outputs(
     output: dict[str, Any],
-    encoder_auxiliary_features: dict[str, dict[str, torch.Tensor]],
     encoder_runtime_metadata: dict[str, Any],
 ) -> None:
-    if encoder_auxiliary_features:
-        output["encoder_auxiliary_features"] = encoder_auxiliary_features
     if encoder_runtime_metadata:
-        output["runtime_metadata"] = {"encoder_temporal_auxiliary": encoder_runtime_metadata}
-        predictive_runtime = {
-            modality: metadata["predictive_gps_query"]
-            for modality, metadata in encoder_runtime_metadata.items()
-            if isinstance(metadata, dict) and isinstance(metadata.get("predictive_gps_query"), dict)
-        }
-        if predictive_runtime:
-            output["predictive_gps_query_diagnostics"] = predictive_runtime
+        output["runtime_metadata"] = {"encoder_runtime": encoder_runtime_metadata}
 
 
 def attach_auxiliary_outputs(model: Any, output: dict[str, Any], output_features: torch.Tensor) -> None:
@@ -547,9 +403,6 @@ def component_consumes_reliability_metadata(component: nn.Module, metadata: dict
     ):
         if key in metadata:
             return bool(metadata.get(key))
-    temporal_fallback = metadata.get("temporal_fallback")
-    if isinstance(temporal_fallback, dict) and bool(temporal_fallback.get("enabled", False)):
-        return True
     return bool(
         getattr(component, "consumes_reliability_metadata", False)
         or getattr(component, "supports_reliability_metadata", False)

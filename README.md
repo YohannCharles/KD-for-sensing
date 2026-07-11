@@ -13,7 +13,6 @@ conda run -n kd_mm_beam kd-sensing-preprocess --help
 conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --help
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
 conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --help
-conda run -n kd_mm_beam kd-sensing-project-surface-doctor --help
 ```
 
 常用主线 smoke：

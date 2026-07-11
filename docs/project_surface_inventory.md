@@ -21,14 +21,12 @@
 | `src/kd_sensing/data/datasets/deepsense6g.py` | `monitor` dataset orchestration | `conda run -n kd_mm_beam pytest tests/test_deepsense6g_contract_helpers.py -q` |
 | `src/kd_sensing/data/difficulty/operators/image.py` | `keep-and-test` difficulty operators | `conda run -n kd_mm_beam pytest tests/test_modality_difficulty.py -q` |
 | `src/kd_sensing/diagnostics/apples_to_apples_evaluation.py` | `accepted-size` read-only diagnostic owner | `conda run -n kd_mm_beam pytest tests/test_missing_modality_stress.py -q` |
-| `src/kd_sensing/diagnostics/gps_query_evidence.py` | `accepted-size` evidence helper, no public CLI | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` |
-| `src/kd_sensing/diagnostics/project_surface_doctor.py` | `right-size-accepted` governance doctor | `conda run -n kd_mm_beam pytest tests/test_project_surface_doctor.py -q` |
 | `src/kd_sensing/diagnostics/scene31_34_final_analysis/main_summary.py` | `accepted-size` final evidence summary owner | `conda run -n kd_mm_beam pytest tests/test_missing_modality_stress.py -q` |
 | `src/kd_sensing/engine/mmw_town_gps_v2.py` | `accepted-size` protected MMW workflow | `conda run -n kd_mm_beam pytest tests/test_mmw_town_gps_adapter_v2.py -q` |
 | `src/kd_sensing/engine/objectives/metadata.py` | `keep-and-test` objective metadata owner | `conda run -n kd_mm_beam pytest tests/test_prediction_objectives.py -q` |
 | `src/kd_sensing/engine/run_metadata.py` | `monitor` metadata writer | `conda run -n kd_mm_beam pytest tests/test_training_io_workflow.py -q` |
 | `src/kd_sensing/losses/u_mask_beam_jepa.py` | `keep-and-test` mainline loss branch owner | `conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py -q` |
-| `src/kd_sensing/models/architecture_summary.py` | `accepted-size` internal renderer; public CLI retired | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` |
+| `src/kd_sensing/models/architecture_summary.py` | `keep-and-test` instance/startup summary schema; public CLI retired | `conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_amr_net.py tests/test_amber_full_architecture.py -q` |
 | `src/kd_sensing/models/jepa.py` | `keep-and-test` retained JEPA component support | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
 | `src/kd_sensing/models/jepa_downstream.py` | `keep-and-test` retained JEPA downstream support | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
 | `src/kd_sensing/models/modular.py` | `accepted-size` shared modular model | `conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q` |
@@ -62,15 +60,12 @@
 | `kd-sensing-evaluate` | `core_workflow` | `kd_sensing.engine.evaluation_pass` | checkpoint evaluation entrypoint | ignored evaluation/output roots or user path | `conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q` |
 | `kd-sensing-preprocess` | `core_workflow` | `kd_sensing.preprocessing` | config-driven preprocessing entrypoint | dataset preparation targets or ignored cache/output roots | `conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q` |
 | `kd-sensing-runs` | `core_workflow` | `kd_sensing.diagnostics.run_index` | read-only local run index | stdout or explicit ignored analysis path | `conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_runtime_artifact_cleanup.py -q` |
-| `kd-sensing-research-dashboard` | `current_diagnostic` | `kd_sensing.diagnostics.research_claim_harvester` | read-only claim candidate dashboard | ignored outputs/analysis/ or explicit local path | `conda run -n kd_mm_beam pytest tests/test_research_claim_harvester.py tests/test_cli_help.py -q` |
-| `kd-sensing-research-preview` | `current_diagnostic` | `kd_sensing.diagnostics.research_run_preview` | no-training research preview and budget manifest | ignored outputs/analysis/research_preview/ or explicit local path | `conda run -n kd_mm_beam pytest tests/test_research_run_preview.py tests/test_cli_help.py -q` |
 | `kd-sensing-clean-runtime-artifacts` | `current_diagnostic` | `kd_sensing.diagnostics.runtime_artifact_cleanup` | runtime artifact cleanup manifest workflow | ignored outputs/cleanup_manifests/ or explicit manifest/report path | `conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_cli_help.py -q` |
 | `kd-sensing-organize-runtime-outputs` | `current_diagnostic` | `kd_sensing.diagnostics.runtime_artifact_cleanup` | runtime output organize manifest workflow | ignored outputs/cleanup_manifests/ or explicit manifest/report path | `conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_cli_help.py -q` |
 | `kd-sensing-paper-export` | `paper_export` | `kd_sensing.diagnostics.paper_artifact_export` | reviewed claim table and figure-data export | ignored outputs/paper_artifacts/ or explicit output dir | `conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q` |
 | `kd-sensing-eval-u-mask-matrix` | `current_diagnostic` | `kd_sensing.eval.u_mask_beam_jepa_eval_matrix` | U-MaskBeamJEPA missing-modality evaluation matrix | ignored outputs/eval/ or explicit output dir | `conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa_eval_matrix.py tests/test_cli_help.py -q` |
 | `kd-sensing-mmw-town-gps-v2` | `current_diagnostic` | `kd_sensing.engine.mmw_town_gps_v2` | MMW Town GPS-only v2 run, plot and compare workflow | ignored outputs/analysis/mmw_town_gps_adapter_v2/ or explicit output dir | `conda run -n kd_mm_beam pytest tests/test_mmw_town_gps_adapter_v2.py tests/test_cli_help.py -q` |
 | `kd-sensing-inspect-mmw-physics` | `current_diagnostic` | `kd_sensing.models.physics` | physics-informed MMW sample inspection | stdout only unless explicit output path is added by caller | `conda run -n kd_mm_beam pytest tests/test_physics_informed_mmw.py tests/test_cli_help.py -q` |
-| `kd-sensing-project-surface-doctor` | `current_diagnostic` | `kd_sensing.diagnostics.project_surface_doctor` | read-only project surface governance doctor | stdout only | `conda run -n kd_mm_beam pytest tests/test_project_surface_doctor.py tests/test_cli_help.py -q` |
 
 ## Script Lifecycle
 
@@ -82,8 +77,6 @@
 | `scripts/launch_bprr_reliability_router_v1.py` | local/manual mainline follow-up launcher | ignored outputs/bprr_reliability_router_v1/ |
 | `scripts/launch_final_c2_ablation_v1.py` | local/manual final C2 launcher | ignored outputs/final_c2_ablation_v1/ |
 | `scripts/launch_h5_p1_temporal_models_v1.py` | local/manual H5/P1 temporal matrix launcher | ignored outputs/h5_p1_temporal_models_v1/ or explicit output root |
-| `scripts/launch_temporal_router_s1_s4_v1.py` | local/manual S1-S4 temporal router launcher | ignored outputs/temporal_router_s1_s4_v1/ or explicit output root |
-| `scripts/launch_overnight_branch_router_v2.py` | local/manual historical/supporting launcher | ignored outputs/overnight_branch_router_v2/ |
 | `scripts/launch_pcpg_radar_balance_v1.py` | local/manual mainline follow-up launcher | ignored outputs/pcpg_radar_balance_v1/ |
 | `scripts/mmw/visualize_town_label_distribution.py` | research_diagnostic protected MMW helper | ignored outputs/analysis/mmw/ or explicit output |
 | `scripts/run_scenes31_34_main.sh` | local/manual protected mainline runner | ignored outputs/scenes31_34_main_lmdb/ and logs/ |
@@ -92,17 +85,12 @@
 | `scripts/scene31_generator_common.py` | supporting generator helper | no direct output unless caller writes generated configs |
 | `scripts/scene31_runner_common.py` | supporting runner helper | no direct output unless caller writes outputs/ |
 | `scripts/scene31_runner_common.sh` | supporting shell helper | ignored outputs/ and logs/ via caller |
-| `scripts/check_temporal_window_missing.py` | local/manual temporal missing validation helper | stdout only |
 | `scripts/eval_h5_p1_temporal_matrix_v1.py` | research_diagnostic H5/P1 temporal matrix eval | ignored outputs/h5_p1_temporal_models_v1/eval_matrix/ and outputs/temporal_eval_masks_v1/ |
-| `scripts/eval_temporal_router_s1_s4_matrix_v1.py` | research_diagnostic S1-S4 temporal router matrix eval | ignored outputs/temporal_router_s1_s4_v1/eval_matrix/ and outputs/temporal_eval_masks_s1_s4_v1/ |
-| `scripts/launch_temporal_missing_v1.py` | local/manual temporal missing launcher | ignored outputs/temporal_missing_v1/ or explicit output root |
 | `scripts/summarize_bprr_reliability_router_v1.py` | research_diagnostic summary | ignored outputs/analysis/ |
 | `scripts/summarize_final_c2_ablation_v1.py` | research_diagnostic final C2 summary | ignored outputs/analysis/ |
 | `scripts/summarize_h5_p1_temporal_matrix_v1.py` | research_diagnostic H5/P1 temporal matrix summary | ignored outputs/h5_p1_temporal_models_v1/final_summary/ |
-| `scripts/summarize_temporal_router_s1_s4_v1.py` | research_diagnostic S1-S4 temporal router summary | ignored outputs/temporal_router_s1_s4_v1/final_summary/ |
 | `scripts/summarize_overnight_branch_router_v2.py` | research_diagnostic historical/supporting summary | ignored outputs/analysis/ |
 | `scripts/summarize_pcpg_radar_balance_v1.py` | research_diagnostic summary | ignored outputs/analysis/ |
-| `scripts/summarize_temporal_missing_v1.py` | research_diagnostic temporal missing summary | ignored outputs/temporal_missing_v1/summary.* |
 | `scripts/verify_compile.py` | governance validation helper | stdout only |
 
 ## Config Lifecycle
@@ -153,6 +141,8 @@
 
 ## OpenSpec Capability Lifecycle
 
+2026-07-11 完成三个 active change 的同步归档后，`openspec/specs/` 保留 82 个物理 current/supporting capability；30 个无独立 guard 价值的 retired capability 已折叠到 `retired-route-summary` 和 dated archive，不再保留 `retired-tombstone` 行。
+
 | Capability | Lifecycle | Note |
 | --- | --- | --- |
 | `adaptive-pattern-balanced-sampler` | `current` | post-C2 保留/主线契约。 |
@@ -163,25 +153,19 @@
 | `amber-lite-missing-modality-reproduction` | `current` | post-C2 保留/主线契约。 |
 | `amr-net-architecture` | `current` | post-C2 保留/主线契约。 |
 | `automated-cache-policy` | `current` | post-C2 保留/主线契约。 |
-| `beam-distribution-shift-diagnostics` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `beam-topology-prototype-alignment` | `current` | post-C2 保留/主线契约。 |
-| `beambench-baseline-reproduction` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `beamspace-physical-labels` | `current` | post-C2 保留/主线契约。 |
-| `bev-fusion-2604-reproduction` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `bprr-reliability-router` | `current` | post-C2 保留/主线契约。 |
 | `canonical-config-resolution` | `current` | post-C2 保留/主线契约。 |
 | `cls-token-transformer-fusion` | `current` | post-C2 保留/主线契约。 |
 | `component-registry` | `current` | post-C2 保留/主线契约。 |
-| `cross-scene-loso-workflow` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `csi-channel-data` | `current` | post-C2 保留/主线契约。 |
 | `csi-channel-degradation` | `current` | post-C2 保留/主线契约。 |
 | `csi-hardening-debug-validation` | `current` | post-C2 保留/主线契约。 |
 | `csi-hardening-experiment-matrix` | `current` | post-C2 保留/主线契约。 |
 | `csi-modality-model` | `current` | post-C2 保留/主线契约。 |
-| `cxd-phase-transition-analysis` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `dataset-directory-layout` | `current` | post-C2 保留/主线契约。 |
 | `dataset-loader-behavior` | `current` | post-C2 保留/主线契约。 |
-| `dataset-reproducibility-audit` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `dataset-runtime-contracts` | `current` | post-C2 保留/主线契约。 |
 | `deepsense6g-scene-selection` | `current` | post-C2 保留/主线契约。 |
 | `distillation-free-project-surface` | `current` | post-C2 保留/主线契约。 |
@@ -190,21 +174,13 @@
 | `experiment-workflow` | `current` | post-C2 保留/主线契约。 |
 | `final-c2-ablation-v1` | `current` | post-C2 保留/主线契约。 |
 | `first-class-prediction-tasks` | `current` | post-C2 保留/主线契约。 |
-| `geometry-prior-beam-fusion` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `gps-conditioned-jepa-pretraining` | `current` | post-C2 保留/主线契约。 |
 | `gps-modality-model` | `current` | post-C2 保留/主线契约。 |
 | `gps-preprocessing` | `current` | post-C2 保留/主线契约。 |
-| `gps-query-effectiveness-visualization` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `gps-query-jepa-pooling` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `html-evidence-dashboard` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `image-preprocessing-profiles` | `current` | post-C2 保留/主线契约。 |
-| `jepa-downstream-extensibility` | `current` | post-C2 保留/主线契约。 |
-| `jepa-gps-shortcut-benchmark` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `jepa-visual-analysis-suite` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `jepa-visual-architecture-sweep` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `lidar-modality-model` | `current` | post-C2 保留/主线契约。 |
 | `lidar-preprocessing` | `current` | post-C2 保留/主线契约。 |
-| `local-missing-modality-baselines` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
+| `local-missing-modality-baselines` | `supporting` | 只保留 Scene31-34 generator/runner 消费的 AMR-lite mask/gate contract；不恢复 FeatureMod 或旧 baseline pack。 |
 | `mainline-experiment-documentation` | `current` | post-C2 保留/主线契约。 |
 | `maintainer-context-index` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `missing-modality-statistical-evidence` | `current` | post-C2 保留/主线契约。 |
@@ -218,9 +194,8 @@
 | `mmwave-preprocessing` | `current` | post-C2 保留/主线契约。 |
 | `modality-contracts` | `current` | post-C2 保留/主线契约。 |
 | `modality-difficulty-pipeline` | `current` | post-C2 保留/主线契约。 |
-| `modality-visual-diagnostics` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `model-architecture-extension-contract` | `current` | post-C2 保留/主线契约。 |
-| `model-architecture-summary` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
+| `model-architecture-summary` | `supporting` | 只保留实例参数、组件、可训练性与 startup artifact 内嵌 schema；独立 CLI 和 renderer 已退役。 |
 | `modular-sequence-model` | `current` | post-C2 保留/主线契约。 |
 | `multi-task-occlusion-position-learning` | `current` | post-C2 保留/主线契约。 |
 | `observability-aware-fusion` | `current` | post-C2 保留/主线契约。 |
@@ -230,7 +205,6 @@
 | `paper-artifact-export` | `current` | post-C2 保留/主线契约。 |
 | `pcpg-radar-balance-robustness` | `current` | post-C2 保留/主线契约。 |
 | `physics-informed-mmw-beam-baseline` | `current` | post-C2 保留/主线契约。 |
-| `predictive-jepa-robustness` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `project-architecture` | `current` | post-C2 保留/主线契约。 |
 | `project-entrypoint-lifecycle` | `current` | post-C2 保留/主线契约。 |
 | `project-health-guardrails` | `current` | post-C2 保留/主线契约。 |
@@ -239,33 +213,20 @@
 | `project-surface-cleanup` | `current` | post-C2 保留/主线契约。 |
 | `radar-student-model` | `current` | post-C2 保留/主线契约。 |
 | `radar-teacher-model` | `current` | post-C2 保留/主线契约。 |
-| `rbma-prototype-kd-missing-workflow` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `real-perturbation-forward-evaluation` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `research-claim-harvester` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `research-literature-matrix` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
-| `research-run-preview-loop` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `resnet18-image-encoder` | `current` | post-C2 保留/主线契约。 |
 | `retired-route-summary` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
-| `reused-weight-fusion-diagnostic-metrics` | `current` | post-C2 保留/主线契约。 |
 | `runtime-artifact-cleanup` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
-| `safe-residual-beam-rerank-fusion` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `scenario-d-image-observability-benchmark` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `scene31-baseline-pack` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `scene31-next-round-experiment-workflow` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `scenes31-34-main-missing-modality-workflow` | `current` | post-C2 保留/主线契约。 |
-| `scenes31-34-subset-reliability-validation` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `snapshot-next-frame-baselines` | `current` | post-C2 保留/主线契约。 |
 | `soft-beam-label-training` | `current` | post-C2 保留/主线契约。 |
 | `spec-lifecycle-boundaries` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
-| `target-shot-domain-splitting` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `tii-vlrg-transformer-reproduction` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
+| `target-shot-domain-splitting` | `supporting` | 由 `data/target_shot_splits.py` 为 MMW protocol 提供 split provenance 与防泄漏支撑；无独立 CLI。 |
+| `temporal-window-missing` | `current` | 显式窗口、temporal missing mask 和 H5/P1 matrix 契约。 |
 | `tinyvit-image-encoder` | `current` | post-C2 保留/主线契约。 |
 | `training-evaluation-runtime` | `current` | post-C2 保留/主线契约。 |
-| `training-throughput-optimization` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 | `u-mask-beam-jepa` | `current` | post-C2 保留/主线契约。 |
 | `u-mask-beam-jepa-eval-matrix` | `current` | post-C2 保留/主线契约。 |
-| `vision-position-baseline-suite` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
-| `wcl2025-robust-missing-modality-reproduction` | `retired-tombstone` | post-C2 已退役墓碑，只保留防回流语境。 |
 
 ## Agent Context Registration
 

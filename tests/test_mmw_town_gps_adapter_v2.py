@@ -19,7 +19,6 @@ from kd_sensing.engine.mmw_town_gps_v2_artifacts import write_csv
 from kd_sensing.engine.mmw_town_gps_v2_label_space import resolve_label_space_config
 from kd_sensing.engine.mmw_town_gps_v2_summary import metrics_from_prediction_rows, overall_rows
 from kd_sensing.engine.mmw_town_gps_v2_support import select_support_samples as select_support_samples_helper
-from kd_sensing.models.mmw_town_gps_v2 import MMWTownGpsV2Model, SceneAdapterV2, SceneAdapterV2Config
 
 
 def test_data_loader_label_space_features_support_and_branch_fallback(tmp_path: Path):
@@ -161,51 +160,6 @@ def test_runner_mapping_disabled_uses_raw_label_space(tmp_path: Path):
 
     assert all(row["label_space"] == "mapping_disabled" for row in predictions)
     assert all(row["true_beam"] == row["true_beam_raw"] for row in predictions)
-
-
-def test_model_forward_variants_shape_spline_branch_and_validation():
-    cfg = SceneAdapterV2Config(
-        adapter_type="branch_mixture_circular",
-        num_scenes=2,
-        num_beams=8,
-        num_bins=4,
-        max_branches=2,
-        min_branch_support=2,
-        scene_names=("s0", "s1"),
-    )
-    adapter = SceneAdapterV2(cfg)
-    adapter.branch_support_counts[0, 0] = 10
-    adapter.branch_support_counts[0, 1] = 1
-    out = adapter(torch.tensor([0.0, 359.0]), torch.tensor([0, 0]), branch_id=torch.tensor([0, 1]))
-    assert out["geo_logits"].shape == (2, 8)
-    assert torch.allclose(out["geo_logits"].exp().sum(dim=-1), torch.ones(2), atol=1e-5)
-    assert out["adapter_diagnostics"]["branch_fallback_count"] == 1
-    assert torch.isfinite(adapter.smoothness_regularization())
-
-    model = MMWTownGpsV2Model(
-        input_dim=8,
-        hidden_dim=16,
-        dropout=0.0,
-        num_beams=8,
-        adapter_cfg=cfg,
-        ablation="geo_plus_backbone",
-        residual_scale_init=0.1,
-    )
-    result = model(
-        torch.randn(3, 8),
-        theta_degrees=torch.tensor([0.0, 45.0, 90.0]),
-        scene_id=torch.tensor([0, 0, 1]),
-        branch_id=torch.tensor([0, 1, 0]),
-    )
-    assert result["logits"].shape == (3, 8)
-    assert result["residual_logits"].shape == (3, 8)
-    assert result["geo_logits"].shape == (3, 8)
-    assert abs(float(model.residual_scale.item()) - 0.1) < 1e-6
-
-    with pytest.raises(ValueError, match="model.input_dim"):
-        model(torch.randn(1, 7), theta_degrees=torch.tensor([0.0]), scene_id=torch.tensor([0]))
-    with pytest.raises(ValueError, match="scene_id"):
-        adapter(torch.tensor([0.0]), torch.tensor([9]))
 
 
 def test_package_plotter_writes_current_structural_figures_and_unavailable_note(tmp_path: Path):

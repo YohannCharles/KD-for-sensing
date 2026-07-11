@@ -78,63 +78,6 @@ def test_router_distill_focus_pattern_aliases():
     assert not router_focus_pattern_enabled("radar_only", focus)
 
 
-def test_overnight_launcher_dry_run_gpu_plan_and_manifest(tmp_path: Path):
-    launcher = load_script("launch_overnight_branch_router_v2.py")
-    jobs = launcher.plan_jobs(
-        experiments=list(launcher.ANCHOR_EXPERIMENTS + launcher.EXPLORE_EXPERIMENTS),
-        anchor_seeds=[1, 2, 3, 4, 5],
-        explore_seeds=[1, 2, 3],
-        gpus=["1", "2"],
-        per_gpu=2,
-        output_root=str(tmp_path),
-        baseline_root=str(tmp_path / "baseline"),
-        base_config="missing_seed{seed}.yaml",
-    )
-    launcher.write_generated_configs(jobs, dry_run=True)
-    manifest = launcher.write_manifest(jobs, str(tmp_path))
-
-    assert len(jobs) == 40
-    assert {job["gpu"] for job in jobs} <= {"1", "2"}
-    assert [job["seed"] for job in jobs if job["experiment"].startswith("a1_")] == [1, 2, 3, 4, 5]
-    assert [job["seed"] for job in jobs if job["experiment"].startswith("b3_")] == [1, 2, 3]
-    for start in range(0, len(jobs), 4):
-        wave = jobs[start : start + 4]
-        per_gpu = Counter(job["gpu"] for job in wave)
-        assert len(wave) <= 4
-        assert max(per_gpu.values()) <= 2
-    rows = list(csv.DictReader(manifest.open("r", encoding="utf-8", newline="")))
-    assert len(rows) == 40
-    assert {"experiment", "seed", "gpu", "cmd", "status", "log_path", "output_dir"} <= set(rows[0])
-
-
-def test_overnight_launcher_reuses_seed1_base_config_when_seed_specific_missing(tmp_path: Path, monkeypatch):
-    launcher = load_script("launch_overnight_branch_router_v2.py")
-    monkeypatch.setattr(launcher, "ROOT", tmp_path)
-    (tmp_path / "base_seed1.yaml").write_text(
-        "experiment:\n  seed: 99\ntraining:\n  epochs: 40\n",
-        encoding="utf-8",
-    )
-    jobs = launcher.plan_jobs(
-        experiments=["a1"],
-        anchor_seeds=[2],
-        explore_seeds=[2],
-        gpus=["4"],
-        per_gpu=1,
-        output_root=str(tmp_path / "out"),
-        baseline_root=str(tmp_path / "baseline"),
-        base_config="base_seed{seed}.yaml",
-    )
-
-    launcher.write_generated_configs(jobs, dry_run=False)
-
-    generated = (tmp_path / "out" / "generated_configs" / "a1_e5_low_encoder_lr_anchor_seed2.yaml").read_text(
-        encoding="utf-8"
-    )
-    assert jobs[0]["base_config_resolved"] == "base_seed1.yaml"
-    assert "seed: 2" in generated
-    assert "epochs: 40" in generated
-
-
 def test_overnight_summary_parser_reads_fake_metrics_and_baselines(tmp_path: Path):
     summary = load_script("summarize_overnight_branch_router_v2.py")
     root = tmp_path / "overnight"

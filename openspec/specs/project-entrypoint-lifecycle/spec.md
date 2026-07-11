@@ -43,17 +43,12 @@
 - **AND** 项目 MUST 不再保留 `tools/visualization/export_viewer_manifest.py` fallback wrapper
 
 ### Requirement: Viewer manifest 聚合模块已退役
-Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper 和 `kd_sensing.diagnostics.viewer_manifest` 公开编排模块已退役。项目 MUST 不保留这些模块作为当前聚合边界，并 MUST 通过架构测试防止同名 helper、compat facade 或 tools wrapper 回流。
+Viewer manifest 相关模块与 wrapper MUST 继续退役。该 guard MUST 不再把 JEPA visual analysis 或 GPS shortcut benchmark 作为 current migration owner；current diagnostics/evaluation 只指向 U-Mask matrix、MMW/CSI、Scene31-34 final analysis 和其它明确 retained owner。
 
-#### Scenario: viewer manifest helper 不存在
-- **WHEN** 开发者检查 `src/kd_sensing/diagnostics`
-- **THEN** 项目 MUST 不保留 `viewer_manifest.py` 或 `viewer_manifest_*` helper
-- **AND** 项目 MUST 不保留 `viewer_predictions.py`
-
-#### Scenario: 当前诊断 owner 保持清晰
-- **WHEN** 开发者修改 JEPA visual analysis 或 GPS shortcut benchmark
-- **THEN** 主要实现 MUST 位于对应当前 diagnostics owner module
-- **AND** 实现 MUST NOT 通过 viewer manifest facade 复用旧职责
+#### Scenario: Viewer helper 不存在
+- **WHEN** diagnostics/CLI surface 被检查
+- **THEN** viewer manifest helpers/prediction exporter MUST 不存在
+- **AND** 不得迁移到已退役 JEPA diagnostics
 
 ### Requirement: 兼容冗余入口已删除
 项目 MUST 删除已经迁移到 canonical 模块的兼容入口。源码、测试、文档和推荐命令 MUST 不再依赖 `the builder facade module`、`the transform facade module`、`the transform aggregate module`、场景专用 dataset 兼容模块或复制旧实现的可视化脚本入口。明确保留的 console-script 入口 MUST 指向当前包内主实现。
@@ -108,17 +103,17 @@ Viewer manifest 导出、viewer prediction export、`viewer_manifest_*` helper �
 - **AND** 若已有包内 CLI 覆盖同一工作流，重复 wrapper MUST 删除或降级为一次性本地命令
 
 ### Requirement: 退役旧模态诊断脚本入口
-项目 MUST 不再把模态失衡时期的独立模态子集和模态扰动研究脚本作为长期维护入口。通用模态 subset、mask 或 perturbation 调试能力如需保留，MUST 通过包内 CLI、配置化 evaluation pass、JEPA benchmark、CSI 当前 workflow 或明确的内部 helper 承载，并 MUST 在脚本 allowlist 和项目表面积 inventory 中体现当前边界。viewer manifest 和 BGAM 已退役，MUST NOT 作为当前承载入口。
+旧 modality subset/perturbation scripts MUST 不作为长期入口。通用 subset/mask/difficulty 行为 MUST 由 shared evaluation、U-Mask matrix、missing-stress、MMW/CSI 或内部 helper 承载；JEPA visual/shortcut MUST 不在 allowlist。
 
-#### Scenario: 脚本入口清单不包含旧诊断脚本
-- **WHEN** 开发者运行架构边界测试检查 `scripts/` 与 `tools/` 入口清单
-- **THEN** `scripts/eval_modality_subsets.py` 和 `scripts/eval_modality_perturbation.py` MUST 不再作为允许的长期入口存在
-- **AND** 测试 MUST 继续允许当前保留的 thin CLI alias、dataset preparation、MMW current workflow、CSI hardening、JEPA visual analysis、GPS shortcut benchmark 和研究诊断入口
+#### Scenario: Script allowlist 使用 current owners
+- **WHEN** architecture test 枚举 scripts/tools
+- **THEN** 旧 modality scripts 和 JEPA visual/shortcut wrappers MUST 不存在
+- **AND** retained dataset preparation、MMW/CSI、U-Mask 和 Scene31-34 entries MAY 保留
 
-#### Scenario: 通用 subset 能力不被误删
-- **WHEN** evaluation 配置启用 `evaluation.modality_subsets`
-- **THEN** 系统 MUST 继续能在共享 evaluation pass 中计算配置化 subset metrics
-- **AND** 该能力 MUST 不依赖被退役的独立研究脚本
+#### Scenario: 通用 subset 能力保留
+- **WHEN** current evaluation 配置启用 modality subset/mask
+- **THEN** shared evaluation MUST 继续工作
+- **AND** 不依赖 retired scripts
 
 ### Requirement: GPS+LiDAR BGAM 包内入口已退役
 GPS+LiDAR BGAM reranker 的包内入口、manifest enrich、dataset、model、loss、engine、evaluation、debug plot 和 CLI 已退役。项目 MUST 删除这些专属模块和 console scripts，并 MUST NOT 新增长期维护的顶层 `train_gps_lidar_bgam.py`、`eval_gps_lidar_bgam.py`、`datasets/gps_lidar_dataset.py`、`models/gps_lidar_bgam.py` 或包内兼容入口。
@@ -194,30 +189,25 @@ Top8 selector 训练/plot/compare、GPS coarse anchor、GPS prior residual/delta
 - **AND** current 入口 MUST 不包含 `scripts/run_deepsense_gps_circular_soft_label.sh`、`scripts/run_mmw_gps_circular_soft_label_ablation.sh`、`scripts/run_mmw_sunny_modal15_l5p3_h123.sh` 或 `scripts/run_mmw_sunny_modal15_l5p6_h246.sh`
 
 ### Requirement: 退役入口回流必须被架构边界测试拒绝
-项目 MUST 通过架构边界测试防止优先退役入口以同名文件、等价 wrapper、thin alias、compat facade、virtual config 或 console script 形式回流。保留的历史说明 MUST 不要求对应模块可导入或命令可运行。
+架构边界测试 MUST 拒绝 retired CLI/module/script/config/wrapper 回流，并 MUST 将迁移方向指向 final C2/U-Mask、retained package CLI、MMW/CSI、Scene31-34 或普通 unknown-name behavior；不得指向 JEPA visual/shortcut 等本轮删除 owner。
 
-#### Scenario: 旧模块路径不可导入
-- **WHEN** 开发者运行架构边界测试
-- **THEN** 测试 MUST 验证 `kd_sensing.cli.run_amr_net_gps_image` 和 `kd_sensing.cli.run_jepa_msac` 不作为 current CLI 模块存在
-- **AND** 测试 MUST 验证 `kd_sensing.baselines.amr_net_gps_image` 和 `kd_sensing.baselines.jepa_msac` 不作为 current workflow package 存在
-
-#### Scenario: 旧脚本路径不回流
-- **WHEN** 开发者运行架构边界测试
-- **THEN** 测试 MUST 验证被退役的 MMW 旁支诊断脚本和固定 shell orchestration 脚本未重新出现在源码树 current allowlist 中
-- **AND** 测试 MUST 指向当前 package CLI、MMW GPS v2 plotter/comparison、JEPA visual analysis、GPS shortcut benchmark 或 CSI hardening runner 作为迁移方向
+#### Scenario: 旧模块与脚本不回流
+- **WHEN** structure guard 运行
+- **THEN** retired module/script/config tokens MUST 不作为 current surface存在
+- **AND** historical docs MAY 保留明确 retired wording
 
 ### Requirement: 当前推荐 workflow 排除 Top8 residual coarse 路线
-README、实验矩阵、quickstart、docs inventory 和健康检查 MUST 不再把 Top8 selector、standalone Top8 candidate manifest、GPS coarse anchor、GPS prior residual correction、camera residual、BGAM 或 viewer manifest 描述为当前可运行或推荐 workflow。当前推荐面 MUST 聚焦仍保留的 supervised/adaptation、Image+GPS JEPA、GPS v2/adapter、MMW GPS v2、CSI hardening、Vision-Position baseline、Arnold22 Camera AE+GPS Direct、预处理和当前诊断。
+README、quickstart、experiment matrix 和 inventory MUST 将 current workflow 聚焦 final C2/U-Mask、retained train/evaluate/preprocess、MMW/CSI、AMR/AMBER controls、Scene31-34 evidence 和必要 supporting owners。Top8/residual/BGAM/viewer、Image+GPS query、Vision-Position、JEPA visual/shortcut 和 geometry MUST 不作为 current 推荐面。
 
-#### Scenario: quickstart 不展示退役命令
-- **WHEN** 开发者阅读 README、README_REPRODUCE 或 `docs/experiment_matrix.md`
-- **THEN** 文档 MUST 不提供退役 Top8 selector/residual/GPS coarse anchor 命令作为当前运行步骤
-- **AND** 文档 MUST 指向仍存在的配置化 CLI 和保留 workflow
+#### Scenario: Quickstart 使用 retained workflow
+- **WHEN** current docs 被检查
+- **THEN** 推荐命令 MUST 来自十个 package CLI 或 protected local/manual owner
+- **AND** retired command/config MUST 只在 historical context出现
 
-#### Scenario: 健康检查不要求退役入口
-- **WHEN** 开发者执行快速健康检查或架构边界测试
-- **THEN** 检查 MUST 不要求退役 console scripts、配置、CLI、engine、model 或 loss 可导入
-- **AND** 检查 MAY 断言这些入口已不存在
+#### Scenario: Guard 不要求 retired imports
+- **WHEN** quick health check 运行
+- **THEN** 它 MUST 不导入 retired route
+- **AND** MAY 断言 retired route不存在
 
 ### Requirement: 优先退役 workflow 不得作为当前实验入口
 当前实验 workflow MUST 不再推荐、声明或验证 AMR-Net_gps_image mock/source-audit runner、JEPA-MSAC mock/paper-aligned runner、MMW GPS v2 旁支 `scripts/mmw/visualize_gps_*` 脚本，或固定 GPU/local shell orchestration 脚本。历史背景 MAY 保留，但 MUST 不提供 current 运行命令。
@@ -402,57 +392,18 @@ Package CLI 文件 MUST 只承担参数解析、配置覆盖、轻量 IO、调�
 - **THEN** 该脚本 MUST 删除
 - **AND** 用户文档 MUST 指向 package console script
 
-### Requirement: Scene31 local/manual 入口必须统一生命周期
-Scene31 next-round、BC、beamsoft weak、funnel 和 magic overnight 的 runner、generator、summary 工具 MUST 被分类为 local/manual surface，并 MUST 不升级为 package CLI，除非新的 OpenSpec change 明确声明公开入口、输出边界和验证命令。
-
-#### Scenario: runner 分类清晰
-- **WHEN** 开发者检查 Scene31 shell 或 Python runner
-- **THEN** 每个 runner MUST 在 inventory 或等价 lifecycle 文档中标注 owner、输入 manifest、默认输出 root、失败列表位置和删除/收敛条件
-
-#### Scenario: package CLI 不被隐式新增
-- **WHEN** Scene31 local/manual workflow 新增 runner 或 summary 能力
-- **THEN** `pyproject.toml` MUST 不新增对应 `kd-sensing-*` console script
-- **AND** README quickstart MUST 不把该 local/manual runner 写成长期 package 入口
-
 ### Requirement: Scene31/Scene31-34 报告脚本必须分类为本地研究报告表面
-Scene31 和 Scene31-34 的论文表格、per-scene summary、final conclusion 等报告脚本 MAY 保留为 research diagnostic 或 local/manual reporting surface，但 MUST 在 inventory 或 current 文档中登记 lifecycle、职责和输出边界。它们 MUST 不作为 package CLI、README quickstart 或长期 public API 推荐入口。
+Scene31-34 final analysis 的论文表格、per-scene summary、profile 和 final conclusion MAY 保留为 research diagnostic 或 local/manual reporting surface，并 MUST 在 inventory 或 current 文档中登记 lifecycle、职责和输出边界。旧 Scene31 baseline-pack/next-round/shared summary 已退役，MUST 不再作为 current report surface。
 
-#### Scenario: 报告脚本有输出边界
-- **WHEN** 项目保留 Scene31 或 Scene31-34 报告脚本
-- **THEN** inventory MUST 说明脚本读取本地 summary、fresh-eval 或 paper table 输入
-- **AND** 输出边界 MUST 限定在 ignored `outputs/`、`logs/` 或显式用户路径，不得提交生成表格、结论、checkpoint 或 metrics
+#### Scenario: Scene31-34 报告 owner 有输出边界
+- **WHEN** 项目保留 Scene31-34 final analysis owner
+- **THEN** inventory MUST 说明其读取本地 summary、fresh-eval 或 paper table 输入
+- **AND** 输出边界 MUST 限定在 ignored `outputs/`、`logs/` 或显式用户路径
 
-#### Scenario: 报告脚本不升级为 package CLI
+#### Scenario: 旧 Scene31 report 不升级为 package CLI
 - **WHEN** README、AGENTS、OpenSpec 或 docs 描述当前推荐入口
-- **THEN** 这些报告脚本 MUST 不被描述为训练、评估、预处理或诊断 package CLI 的替代入口
-- **AND** 若需要长期稳定 CLI，后续 change MUST 将可复用逻辑迁入包内 owner 并补 focused tests
-
-### Requirement: Scripts lifecycle doctor
-项目 MUST 提供 scripts lifecycle doctor，检查 tracked `scripts/` 和 `tools/analysis/` 文件是否具有明确 lifecycle 分类、owner、默认配置引用和输出边界。重复 package CLI 的 Python thin wrapper MUST 被标记为错误或高风险，除非 current spec 明确允许。
-
-#### Scenario: 未分类脚本被发现
-- **WHEN** tracked `scripts/` 下新增 Python 或 shell 文件，但 inventory、README/docs 或 OpenSpec 未登记其 lifecycle
-- **THEN** scripts doctor MUST 报告未分类入口
-- **AND** 报告 MUST 提示补充 lifecycle、输出边界和验证命令，或删除重复入口
-
-#### Scenario: 脚本默认配置不存在
-- **WHEN** local/manual runner 引用的默认 config path 不存在
-- **THEN** scripts doctor MUST 报告失效引用
-- **AND** 报告 MUST 不自动生成或恢复退役 config
-
-### Requirement: HTML dashboard 入口保持只读诊断
-HTML evidence dashboard MUST 通过现有 research dashboard CLI 或等价包内 CLI 暴露，并保持只读诊断入口。项目 MUST 不为该 HTML 输出新增重复 wrapper、长期本地 shell 入口、Web 服务入口或绕过 `src/kd_sensing` 包结构的脚本。
-
-#### Scenario: CLI 入口不膨胀
-- **WHEN** 实现 HTML dashboard 输出
-- **THEN** 项目 MUST 优先扩展 `kd-sensing-research-dashboard` 或其包内 owner
-- **AND** `pyproject.toml` MUST 不新增与同一功能重复的 console script
-- **AND** README MUST 不把本地 shell wrapper 描述为推荐入口
-
-#### Scenario: HTML dashboard 不启动服务
-- **WHEN** 用户请求生成 HTML dashboard
-- **THEN** 命令 MUST 生成静态文件并退出
-- **AND** 命令 MUST 不启动常驻 Web server、训练队列、清理任务或后台进程
+- **THEN** 它们 MUST 不推荐旧 Scene31 baseline-pack/next-round/shared summary
+- **AND** protected Scene31-34 local/manual owner MUST 不被描述为 package CLI
 
 ### Requirement: Scene31-34 encoder ablation 入口必须合并
 Scene31-34 encoder ablation MUST 使用一个参数化 generator 和一个 family/manifest 驱动 runner 承担 TinyViT、PatchViT 或后续 strong encoder ablation。项目 MUST 不按 encoder family 复制同构 Python generator、shell runner 或 fixed-GPU orchestration。保留入口 MUST 被登记为 local/manual experiment surface，且不得成为 package CLI 或 current quickstart 唯一入口。
@@ -511,31 +462,13 @@ Scene31/Scene31-34 paper table、per-scene summary、final conclusion 和一次�
 - **THEN** architecture/surface 检查 MUST 要求删除、合并到 manifest runner，或登记为短期 local/manual 并写明删除触发条件
 - **AND** 该 shell MUST 不出现在 current README quickstart 或 package CLI smoke list 中
 
-### Requirement: Scene31 重复 wrapper 必须收敛到 canonical command
-项目 MUST 删除本轮审计确认的 Scene31 thin wrapper，并将 docs、tests、inventory 和推荐命令指向已有 canonical script。删除旧 wrapper 时 MUST 不新增 alias、compat wrapper、deprecation trampoline 或同职责 shell 包装。
-
-#### Scenario: beamsoft weak summary wrapper 删除
-- **WHEN** 协作者需要汇总 Scene31 beamsoft weak 结果
-- **THEN** 当前推荐入口 MUST 是 `python -m kd_sensing.diagnostics.scene31_summary --profile bc-next --root ...` 或等价 canonical owner 命令
-- **AND** 项目 MUST 不保留 `scripts/summarize_scene31_beamsoft_weak.py` 作为只设置默认参数的 wrapper
-
-#### Scenario: maskfix eval shell wrapper 删除
-- **WHEN** 协作者需要运行 Scene31 maskfix reliability 评估
-- **THEN** 当前推荐入口 MUST 是 `scripts/run_scene31_subset_reliability.sh --group eval_modular_lite_maskfix`
-- **AND** 项目 MUST 不保留 `scripts/run_scene31_modular_maskfix_eval.sh` 或 `scripts/run_scene31_baseline_pack_maskfix_eval.sh` 作为只转发 group 的 wrapper
-
-#### Scenario: 删除 wrapper 后文档不推荐旧路径
-- **WHEN** README、docs、OpenSpec current specs、tests 或 `docs/project_surface_inventory.md` 提到 Scene31 maskfix 或 beamsoft weak 汇总
-- **THEN** 它们 MUST 指向 canonical command 或将旧 path 标记为 retired/historical
-- **AND** current surface guardrail MUST 不要求已删除 wrapper 存在
-
 ### Requirement: Wrapper 删除需要 focused guardrail
-删除 Scene31 wrapper 后，项目 MUST 通过脚本 inventory、architecture boundary 或 focused tests 防止同职责 wrapper 回流。保留的 Scene31 脚本 MUST 有明确 owner、推荐关系、输入输出边界和 focused validation。
+删除 wrapper 后，项目 MUST 通过轻量 architecture boundary 或 focused tests 防止同职责 wrapper 回流。保留的 scripts MUST 有明确 owner、输入输出边界和删除条件，且 package CLI MUST 不依赖 local/manual script。
 
-#### Scenario: scripts surface 检查拒绝 wrapper 回流
-- **WHEN** 开发者运行 scripts surface doctor 或 architecture boundary check
-- **THEN** 检查 MUST 不把已删除 Scene31 wrapper 列为 current allowlist
-- **AND** 若同名文件或等价 forwarding wrapper 回流，检查 MUST 报告需要删除或登记新的 OpenSpec reason
+#### Scenario: 结构检查拒绝 wrapper 回流
+- **WHEN** 开发者运行 architecture boundary 或 compile check
+- **THEN** 检查 MUST 拒绝 `sys.path` script-to-script import、模块全局 monkeypatch 和只转发默认参数的 wrapper
+- **AND** 检查 MUST 不要求 scripts lifecycle doctor 存在
 
 ### Requirement: 本地报告脚本必须在结论沉淀后退出 current surface
 项目 MUST 将一次性研究分析、论文表格排版、展示材料导出和局部结论脚本视为有生命周期的本地报告面。若其结论、输入来源和关键输出已经沉淀到 docs、claim notes、paper tables 或 retained artifact 说明，implementation MUST 删除脚本或合并到明确 owner，而不是继续把单次脚本保留为 current entrypoint。
@@ -580,17 +513,17 @@ Scene31/Scene31-34 paper table、per-scene summary、final conclusion 和一次�
 - **AND** retained-with-reason MUST 指明为什么 owner CLI mode 不足以替代它
 
 ### Requirement: Post-C2 public CLI 必须收敛到主线、MMW 和治理入口
-项目在 post-C2 清理后 MUST 只把仍维护的主线训练/评估/预处理、final C2 或缺失模态评估、MMW/CSI workflow、以及必要治理/claim 入口声明为 public console script。非主线 dashboard、preview、architecture summary、training throughput、dataset audit、source-audit 或历史复现 CLI MUST 删除、降级为 internal-only，或在 lifecycle 文档中明确保留理由。
+项目在 post-C2 清理后 MUST 只声明十个 public console scripts：train、evaluate、preprocess、runs、runtime cleanup、runtime organize、paper export、U-Mask eval matrix、MMW GPS v2 和 MMW physics inspect。Research dashboard/preview、project surface doctor、architecture summary、training throughput、dataset/source audit 和历史复现 CLI MUST 不再作为 public console script。
 
-#### Scenario: 非主线 CLI 删除前同步引用
-- **WHEN** implementation 从 `pyproject.toml` 删除某个 `kd-sensing-*` console script
-- **THEN** README、docs、OpenSpec current specs、CLI help smoke 和 project surface inventory MUST 不再把该命令描述为 current public entrypoint
+#### Scenario: 删除 CLI 同步所有 current references
+- **WHEN** implementation 从 pyproject 删除 dashboard、preview 或 surface doctor
+- **THEN** README、docs、current specs、CLI help smoke 和 inventory MUST 同步删除 current command reference
 - **AND** 删除后项目 MUST 不提供同名 console script、module alias 或 thin wrapper
 
 #### Scenario: 保留 CLI 有生命周期锚点
-- **WHEN** post-C2 清理后某个 `kd-sensing-*` console script 仍保留
-- **THEN** 它 MUST 在 inventory 或 current docs 中有 owner module、run class、输出边界和 focused validation
-- **AND** 它 MUST 不依赖已删除的非主线 script 或 historical config
+- **WHEN** post-C2 清理完成
+- **THEN** 十个保留命令 MUST 在 pyproject 与 inventory 中有 owner、输出边界和 focused validation
+- **AND** 它们 MUST 不依赖已删除 script、dashboard 或 historical config
 
 ### Requirement: MMW 入口必须继续可发现
 MMW 相关 package CLI、数据准备入口和必要 local/manual helper MUST 在 post-C2 清理中保留生命周期说明。删除其它非主线入口时 MUST 不让 MMW users 失去当前推荐运行、plot、compare、inspect 或 preparation 路径。
@@ -617,4 +550,17 @@ MMW 相关 package CLI、数据准备入口和必要 local/manual helper MUST �
 - **WHEN** `scripts/` 中的 launcher、summary 或 helper 被 final C2、当前缺失模态主线或 protected YAML/manifest 消费
 - **THEN** implementation MUST 保留该脚本或先提供等价 owner
 - **AND** 删除候选 MUST 标记为 protected-mainline，而不是 historical one-shot
+
+### Requirement: Temporal 和历史 launcher 不得派生平行 script suite
+H5/P1 temporal matrix 已覆盖的 check/launch/eval/summary 行为 MUST 通过现有参数化脚本使用。项目 MUST 不保留通过 `sys.path` 注入、脚本私有函数导入或模块全局变量改写派生的 S1-S4 parallel wrappers；历史 overnight launcher 在结果冻结后 MUST 退出 current script surface。
+
+#### Scenario: S1-S4 wrapper 删除
+- **WHEN** temporal router S1-S4 tasks 被 defer
+- **THEN** 三个 S1-S4 wrapper 和专属 tests MUST 删除
+- **AND** H5/P1 launcher 的用户改动 MUST 保留
+
+#### Scenario: 历史 launcher 退出但 summary 保留
+- **WHEN** overnight training matrix 只剩历史结果复盘价值
+- **THEN** launcher MUST 删除
+- **AND** 仍被 final C2 summary 消费的 read-only summary helper MAY 保留
 

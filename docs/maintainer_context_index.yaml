@@ -1,58 +1,47 @@
-schema_version: 2
+schema_version: 3
 kind: maintainer_context_index
 purpose:
   summary: >
-    Minimal structured facts that are hard to infer directly from pyproject,
-    OpenSpec, source paths, or project_surface_inventory. This is not a source
-    tree mirror, entrypoint database, hotspot budget table, or runtime config.
+    Minimal task routing facts that cannot be inferred from pyproject, current
+    OpenSpec, source paths, or project_surface_inventory. This is not a runtime
+    config, entrypoint database, source-tree mirror, or hotspot budget table.
 agent_context:
   root: docs/agent_context/README.md
   atlas: docs/agent_context/atlas.md
-  source: manual curation from README, docs/project_surface_inventory.md, OpenSpec specs, and claim docs
-  note: Scoped context files route agents to authority paths and focused validation without copying requirements.
 task_routes:
   - id: model
     context_path: docs/agent_context/models.md
     authority_paths:
       - openspec/specs/model-architecture-extension-contract/spec.md
       - openspec/specs/modular-sequence-model/spec.md
-      - docs/project_surface_inventory.md
     owner_modules:
       - src/kd_sensing/models/
       - src/kd_sensing/registries.py
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_component_registry.py -q
-      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-    retired_route_guard: retired_routes
-    caveat: classify config-only, component baseline, whole-model exception, or workflow reproduction first
+      - conda run -n kd_mm_beam pytest tests/test_component_registry.py tests/test_architecture_boundaries.py -q
+    retired_route_guard: tests/test_retired_routes.py
   - id: data
     context_path: docs/agent_context/data.md
     authority_paths:
       - openspec/specs/dataset-runtime-contracts/spec.md
       - openspec/specs/modality-contracts/spec.md
-      - docs/project_surface_inventory.md
     owner_modules:
       - src/kd_sensing/data/
       - src/kd_sensing/engine/batch.py
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_prediction_objectives.py tests/test_evaluation_pass.py -q
-      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-    retired_route_guard: retired_routes
-    caveat: tests should use synthetic data or fixtures instead of real dataset/ contents
+    retired_route_guard: tests/test_retired_routes.py
   - id: config
     context_path: docs/agent_context/configs.md
     authority_paths:
       - openspec/specs/canonical-config-resolution/spec.md
       - docs/project_surface_inventory.md
-      - README.md
     owner_modules:
       - src/kd_sensing/config/
       - configs/
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q
-      - make verify-cli-config
-    retired_route_guard: retired_routes
-    caveat: virtual configs must not take over retired KD, Hist, residual, BGAM, or viewer routes
+    retired_route_guard: tests/test_retired_routes.py
   - id: cli
     context_path: docs/agent_context/cli.md
     authority_paths:
@@ -63,38 +52,30 @@ task_routes:
       - src/kd_sensing/cli/
       - scripts/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_cli_help.py -q
-      - conda run -n kd_mm_beam python scripts/verify_compile.py
-    retired_route_guard: retired_routes
-    caveat: CLI modules stay thin and delegate workflow logic to owner modules
+      - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q
+    retired_route_guard: tests/test_retired_routes.py
   - id: diagnostics
     context_path: docs/agent_context/diagnostics.md
     authority_paths:
       - openspec/specs/u-mask-beam-jepa-eval-matrix/spec.md
       - openspec/specs/mmw-town-gps-adapter-v2/spec.md
       - openspec/specs/project-health-guardrails/spec.md
-      - docs/project_surface_inventory.md
     owner_modules:
       - src/kd_sensing/diagnostics/
-      - src/kd_sensing/cli/
+      - src/kd_sensing/eval/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa_eval_matrix.py -q
-      - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py -q
-      - conda run -n kd_mm_beam pytest tests/test_research_run_preview.py -q
-    retired_route_guard: retired_routes
-    caveat: diagnostics write generated artifacts only to ignored outputs/ or logs/
+      - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py tests/test_u_mask_beam_jepa_eval_matrix.py -q
+    retired_route_guard: tests/test_retired_routes.py
   - id: openspec
     context_path: docs/agent_context/openspec.md
     authority_paths:
       - openspec/specs/
-      - docs/project_surface_inventory.md
       - AGENTS.md
     owner_modules:
       - openspec/
     focused_validation:
       - openspec validate --all --strict
-    retired_route_guard: retired_routes
-    caveat: complete active changes are archive or closeout items unless the user asks to continue them
+    retired_route_guard: tests/test_retired_routes.py
   - id: documentation
     context_path: docs/agent_context/documentation.md
     authority_paths:
@@ -102,99 +83,68 @@ task_routes:
       - openspec/specs/maintainer-context-index/spec.md
       - openspec/specs/openspec-document-health/spec.md
     owner_modules:
-      - AGENTS.md
-      - README.md
       - docs/
+      - README.md
     focused_validation:
-      - openspec validate --all --strict
       - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-    retired_route_guard: retired_routes
-    caveat: docs describe authority boundaries and must not become generated metadata mirrors
+    retired_route_guard: tests/test_retired_routes.py
   - id: claims
     context_path: docs/agent_context/claims.md
     authority_paths:
       - docs/result_claims_registry.md
       - docs/experiment_protocols.md
-      - openspec/specs/research-claim-harvester/spec.md
+      - openspec/specs/paper-artifact-export/spec.md
     owner_modules:
       - docs/result_claims_registry.md
       - src/kd_sensing/diagnostics/paper_artifact_export.py
     focused_validation:
-      - conda run -n kd_mm_beam kd-sensing-paper-export --input docs/result_claims_registry.md --output-dir outputs/paper_artifacts/current
+      - conda run -n kd_mm_beam pytest tests/test_paper_artifact_export.py -q
+    retired_route_guard: tests/test_retired_routes.py
+  - id: atlas
+    context_path: docs/agent_context/atlas.md
+    authority_paths:
+      - docs/project_surface_inventory.md
+      - openspec/specs/project-architecture/spec.md
+    owner_modules:
+      - docs/
+      - openspec/specs/
+    focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-    retired_route_guard: retired_routes
-    caveat: candidate, mock, smoke, historical, blocked, and upper-bound rows do not become reviewed claims automatically
-project_skills:
-  - id: kd-add-model
-    path: .codex/skills/kd-add-model/SKILL.md
-    route: model
-  - id: kd-add-config
-    path: .codex/skills/kd-add-config/SKILL.md
-    route: config
-  - id: kd-update-claim
-    path: .codex/skills/kd-update-claim/SKILL.md
-    route: claims
-  - id: kd-diagnose-run
-    path: .codex/skills/kd-diagnose-run/SKILL.md
-    route: diagnostics
-  - id: kd-archive-change
-    path: .codex/skills/kd-archive-change/SKILL.md
-    route: openspec
-retired_routes:
-  summary_spec: retired-route-summary
-  config_tokens:
-    - hist_beam
-    - top8
-    - residual
-    - camera_residual
-    - logits_kd
-    - rkd
-    - craf
-    - marf
-    - g2d
-    - multimodal_nf
-    - raymobtime
-    - raymobtime_s008
-    - bgam
-    - gps_lidar_bgam
-    - viewer_manifest
-    - amr_net_gps_image
-    - jepa_msac
-    - run_amr_net_gps_image
-    - run_jepa_msac
-    - gps_circular_soft_label
-    - mmw_sunny_modal15
-    - bev_fusion_2604
-    - vision_position_late_fusion
-    - vision_position_transformer_fusion
-    - gps_sequence_baseline
-  text_markers:
-    - HiST-Beam
-    - Top8 selector
-    - GPS residual
-    - camera residual
-    - logits_kd
-    - rkd
-    - Raymobtime s008
-    - raymobtime_s008
-    - BGAM
-    - viewer manifest
-    - Gradio viewer
-    - AMR-Net_gps_image
-    - JEPA-MSAC
-    - kd-sensing-run-amr-net-gps-image
-    - kd-sensing-run-jepa-msac
-    - scripts/mmw/visualize_gps_
-    - gps_circular_soft_label
-    - run_mmw_sunny_modal15
-    - BEV-Fusion 2604
-    - Vision-Position
-validation:
-  focused:
-    - make verify-quick
-    - make verify-cli-config
-    - make verify-compile
-    - openspec validate --all --strict
-    - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py tests/test_config_load_characterization.py tests/test_component_registry.py tests/test_cli_help.py -q
-    - conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_run_index.py tests/test_tinyvit_image_encoder.py tests/test_prediction_objectives.py -q
-    - conda run -n kd_mm_beam pytest tests/test_missing_modality_stress.py tests/test_u_mask_beam_jepa_eval_matrix.py -q
+    retired_route_guard: tests/test_retired_routes.py
+protected_paths:
+  - id: final-c2-u-mask
+    paths:
+      - src/kd_sensing/models/u_mask_beam_jepa.py
+      - src/kd_sensing/models/reliability_biased_missing_attention.py
+      - src/kd_sensing/losses/u_mask_beam_jepa.py
+      - configs/fusion/u_mask_beam_jepa_smoke.yaml
+      - configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml
+  - id: mmw-csi-physics
+    paths:
+      - src/kd_sensing/data/mmw/
+      - src/kd_sensing/engine/mmw_town_gps_v2.py
+      - src/kd_sensing/models/physics/
+      - configs/csi/
+  - id: scene31-34-evidence
+    paths:
+      - src/kd_sensing/diagnostics/scene31_34_final_analysis/
+      - scripts/generate_scenes31_34_main.py
+      - scripts/run_scenes31_34_main.sh
+  - id: runtime-safety
+    paths:
+      - src/kd_sensing/diagnostics/run_index_resources.py
+      - src/kd_sensing/diagnostics/runtime_artifact_cleanup.py
+      - tests/test_runtime_artifact_cleanup.py
+  - id: temporal-supporting
+    paths:
+      - src/kd_sensing/models/rmbp_mm.py
+      - scripts/launch_h5_p1_temporal_models_v1.py
+      - scripts/eval_h5_p1_temporal_matrix_v1.py
+      - scripts/summarize_h5_p1_temporal_matrix_v1.py
+  - id: split-summary-supporting
+    paths:
+      - src/kd_sensing/data/target_shot_splits.py
+      - src/kd_sensing/models/architecture_summary.py
+retired_route_guard:
+  authority: openspec/specs/retired-route-summary/spec.md
+  validation: tests/test_retired_routes.py

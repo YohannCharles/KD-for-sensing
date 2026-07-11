@@ -13,7 +13,7 @@
 - 允许读取的本地产物：默认无；如需读 `outputs/analysis/...`、`logs/...` 或 checkpoint sidecar，写明只读路径和用途。
 - 禁止触碰路径：`dataset/`、`outputs/`、`logs/`、cache、checkpoint、`/root/.container_env`、`/etc/profile`、`/etc/environment`、SSH 配置和系统凭证。
 - 禁止操作：不要自动 archive、reset、delete、move outputs、启动真实训练、提交本地数据或恢复退役入口。
-- 预期验证：至少列出对应 OpenSpec validate、focused pytest、doctor 或 CLI smoke；不能运行时要求说明原因。
+- 预期验证：至少列出对应 OpenSpec validate、focused pytest、架构/安全 guard 或 CLI smoke；不能运行时要求说明原因。
 - 停止条件：范围漂移、设计冲突、验证红点、需要真实数据/GPU、涉及系统配置或会覆盖用户改动时暂停。
 
 ## AI Review Prompt
@@ -35,6 +35,6 @@ AI review 只能作为附加信号。PR 仍必须通过项目要求的 OpenSpec 
 - 架构/入口/产物边界：`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
 - CLI/config：`make verify-cli-config`
 - compile：`make verify-compile`
-- 协作护栏：`conda run -n kd_mm_beam kd-sensing-project-surface-doctor --scope security --scope closeout --format markdown --fail-on error`
+- 协作护栏：`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py tests/test_retired_routes.py -q`
 
 这些检查默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint，也不写入 `outputs/`、`logs/` 或 cache。

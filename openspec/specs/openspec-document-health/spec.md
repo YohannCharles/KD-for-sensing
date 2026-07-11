@@ -165,17 +165,22 @@
 - **AND** 失败信息 MUST 指向对应 spec 文件
 
 ### Requirement: current JEPA 合法语境不被旧路线 guard 误判
-项目健康护栏 MUST 继续拒绝退役路线 active wording，但 MUST 允许 current JEPA specs 和 diagnostics 中对现有 GPS-query baseline compatibility、condition-id 禁用字段和 forbidden-field diagnostics 的合法描述。
+项目健康护栏 MUST 允许 current JEPA pretraining、MMW mean-context reuse、checkpoint extraction 和禁用 condition-id 的安全诊断语境，同时 MUST 将 GPS-query/predictive/visual-shortcut 作为 retired wording。历史说明或 removed delta 中出现旧名称时不得误报为回流。
 
-#### Scenario: GPS-query compatibility wording 被允许
-- **WHEN** current JEPA spec 描述 `GPS-query` 或 `gps_query_pool` 作为现有 baseline compatibility、对照模型或默认行为兼容性
-- **THEN** retired-route wording guard MUST 不把该行判定为退役路线回流
-- **AND** 文档 MUST 不把该 baseline 写成旧 KD、HiST、Top8 selector standalone、GPS residual 或 camera residual 路线
+#### Scenario: Current mean JEPA wording 被允许
+- **WHEN** current spec 描述 `gps_conditioned_jepa` pretraining、`jepa_context_image` 或 `pooling: mean`
+- **THEN** retired-route guard MUST 不误报
+- **AND** current wording MUST 不要求 GPS-query/predictive pooler
+
+#### Scenario: GPS-query active wording 被拒绝
+- **WHEN** current docs/specs 将 GPS-query、predictive JEPA 或 shortcut benchmark 描述为 current config、baseline 或推荐入口
+- **THEN** wording guard MUST 失败
+- **AND** historical/removed migration context MAY 保留
 
 #### Scenario: forbidden condition 字段诊断被允许
-- **WHEN** current source 或 spec 记录 `condition_id_consumed=false`、`blocked_condition_fields`、`forbidden_condition_fields`、`gps_condition` 或 `image_condition`
-- **THEN** 健康护栏 MUST 将其解释为防止 condition-aware router 的诊断或安全边界
-- **AND** 只有在同一上下文把这些字段描述为模型直接输入或当前 router 入口时才应失败
+- **WHEN** current source 或 spec 记录 `condition_id_consumed=false`、`blocked_condition_fields` 或 `forbidden_condition_fields`
+- **THEN** 健康护栏 MUST 将其解释为安全边界
+- **AND** 只有把 condition id 描述为模型输入/current router 时才应失败
 
 ### Requirement: 架构边界测试验证结构化事实而非 prose mirror
 项目健康护栏 MUST 验证长期稳定事实，例如入口路径、console script、lifecycle、配置引用、轻量导入边界、退役 token 和本地产物边界。事实来源 MAY 是 OpenSpec requirements、project surface inventory、pyproject、AST/path/import 扫描或小型测试常量；架构边界测试 MUST 不逐字镜像 README、docs 或 OpenSpec 的自然语言段落，也不 MUST 通过大型维护上下文索引间接验证可直接读取的事实。

@@ -10,7 +10,6 @@
 - `docs/mainline_experiment_history.md`
 - `docs/experiment_matrix.md`
 - `openspec/specs/mainline-experiment-documentation/spec.md`
-- `openspec/specs/research-claim-harvester/spec.md`
 - `openspec/specs/paper-artifact-export/spec.md`
 
 ## Owner
@@ -19,14 +18,14 @@
 - 参数口径：`docs/experiment_protocols.md`
 - 模型和 workflow 目录：`docs/mainline_model_catalog.md`
 - 运行顺序和 caveat：`docs/experiment_matrix.md`
-- Draft ledger、JSON summary 和 HTML readiness dashboard：ignored `outputs/analysis/`
+- 本地 draft 表格和 paper export 草稿：ignored `outputs/analysis/`
 
 ## 边界
 
 - 只把有 provenance、status、metric definition、split/protocol、seed/checkpoint 或 blocked reason 的结果写入 claim registry。
 - `candidate_only=true`、mock、smoke、historical、upper-bound、blocked 或 pending 结果不能冒充 reviewed main claim。
-- 本地 JSONL ledger、JSON/HTML dashboard、figure-data、CSV/LaTeX 草稿默认写入 ignored `outputs/`，不提交。
-- HTML dashboard 只是 `candidate_only` / readiness 视图，不替代 `docs/result_claims_registry.md`，也不能把 pending、unverified 或 not_comparable candidate 写成 reviewed claim。
+- 本地 figure-data、CSV/LaTeX 草稿默认写入 ignored `outputs/`，不提交。
+- Run index provenance 不替代 `docs/result_claims_registry.md`，也不能把 pending、unverified 或 not_comparable evidence 写成 reviewed claim。
 - claim 文档不改变训练 runtime；若 claim 需要新 workflow 或数据契约，先走 OpenSpec change。
 
 ## 验证

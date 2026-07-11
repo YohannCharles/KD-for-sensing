@@ -37,15 +37,12 @@ kd-sensing-train = "kd_sensing.cli.train:main"
 kd-sensing-evaluate = "kd_sensing.cli.evaluate:main"
 kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
 kd-sensing-runs = "kd_sensing.cli.runs:console_main"
-kd-sensing-research-dashboard = "kd_sensing.cli.research_dashboard:main"
-kd-sensing-research-preview = "kd_sensing.cli.research_preview:main"
 kd-sensing-clean-runtime-artifacts = "kd_sensing.cli.cleanup_runtime_artifacts:main"
 kd-sensing-organize-runtime-outputs = "kd_sensing.cli.organize_runtime_outputs:main"
 kd-sensing-paper-export = "kd_sensing.cli.paper_artifact_export:main"
 kd-sensing-eval-u-mask-matrix = "kd_sensing.cli.eval_u_mask_beam_jepa_matrix:main"
 kd-sensing-mmw-town-gps-v2 = "kd_sensing.cli.mmw_town_gps_v2:main"
 kd-sensing-inspect-mmw-physics = "kd_sensing.cli.inspect_mmw_physics:main"
-kd-sensing-project-surface-doctor = "kd_sensing.cli.project_surface_doctor:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -222,7 +222,14 @@ def test_dataset_uses_current_beam_target_without_changing_sample_contract(tmp_p
     current_sample = current_dataset[0]
     future_sample = future_dataset[0]
 
-    assert set(current_sample) == {"input_beam", "target_beam", "gps", "metadata"}
+    assert set(current_sample) == {
+        "input_beam",
+        "target_beam",
+        "gps",
+        "metadata",
+        "history_indices",
+        "target_index",
+    }
     assert int(current_sample["target_beam"][0]) == 7
     assert int(future_sample["target_beam"][0]) == 22
     assert current_sample["metadata"]["beam_target_source"] == "current"

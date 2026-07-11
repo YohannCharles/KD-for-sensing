@@ -81,45 +81,6 @@
 - **THEN** 新增 reliability metadata MUST 不成为必需 forward 输入
 - **AND** 模型可比性 metadata MUST 能区分其未消费 reliability metadata
 
-### Requirement: Geometry-prior route classification
-Geometry-prior beam fusion MUST 默认归类为 component baseline。实现 MUST 优先通过现有 `modular_sequence`、encoder/projector/core/head 或窄 fusion component 表达。
-
-#### Scenario: 使用 component baseline 路径
-- **WHEN** 开发者实现 GPS geometry prior、logit fusion 或 DBA-aware head
-- **THEN** 实现 MUST 落在可注册的窄组件、loss/objective helper 或 diagnostics helper 中
-- **AND** 系统 MUST 不新增完整 `MODELS.register(...)` 例外，除非 design 另行记录不可组合原因
-
-#### Scenario: whole-model exception 需要明确理由
-- **WHEN** geometry-prior 实现需要新增完整模型注册名
-- **THEN** OpenSpec design 或 spec MUST 说明为什么不能使用 component baseline
-- **AND** tasks MUST 包含 registry build、synthetic forward、ModelOutput adaptation、metadata 和 architecture boundary tests
-
-### Requirement: BEV-Fusion reproduction boundary
-完整 BEV-Fusion 论文复现 MUST 作为 workflow/paper reproduction 处理，而不是混入当前 geometry-prior component baseline。
-
-#### Scenario: BEV-lite component 允许
-- **WHEN** 实现只加入 GPS prior map、angle prior 或轻量 spatial prior token
-- **THEN** 系统 MAY 将其作为 component baseline 实现
-- **AND** metadata MUST 标记为 geometry-prior 或 BEV-lite，而不是完整 BEV-Fusion reproduction
-
-#### Scenario: 完整论文复现走 workflow 路径
-- **WHEN** 实现包含 camera-to-BEV、LiDAR/radar/GPS BEV、多阶段 preprocessing、论文 Table 复现或专用 feature cache
-- **THEN** 系统 MUST 将其归类为 workflow/paper reproduction
-- **AND** 入口 MUST 位于包内 CLI 或 `src/kd_sensing/baselines/<family>/`，不得新增旧式根脚本
-
-### Requirement: Geometry-prior training metadata
-Geometry-prior baseline MUST 写出可审计训练策略 metadata，覆盖 geometry prior、fusion、loss、teacher guidance 和 curriculum。
-
-#### Scenario: metadata 最小字段
-- **WHEN** geometry-prior model 构建或训练完成
-- **THEN** metadata MUST 包含 model_group、architecture category、enabled modalities、geometry prior mode、fusion mode、loss mode、teacher guidance mode、curriculum mode 和 reliability metadata consumption
-- **AND** 缺少这些字段 MUST 被 focused tests 或 architecture boundary tests 捕获
-
-#### Scenario: baseline comparability metadata
-- **WHEN** geometry-prior candidate 与 Image ResNet+GPS 或 JEPA GPS-query baseline 聚合比较
-- **THEN** metadata MUST 声明 split、sample_count、metric_profile、normalization artifact、difficulty digest、history window、GPS source window、prediction horizon、scene set、seed、distance metric 和 beam label space
-- **AND** 任一 strict 字段 mismatch MUST 阻止 claim upgrade
-
 ### Requirement: 模型扩展可被架构摘要审计
 新增 baseline、组件 baseline、whole-model exception 和 workflow/paper reproduction MUST 能被模型架构摘要能力审计。审计信息 MUST 覆盖模型注册名或候选 ID、架构类别、启用模态、组件组合、参数量、checkpoint/freeze 策略、reliability metadata 消费和比较口径来源。
 
@@ -244,30 +205,24 @@ AMBER full architecture reproduction MUST 默认通过 `modular_sequence` 及其
 - **AND** tasks MUST 包含 registry build、synthetic forward、`adapt_model_output`、metadata、architecture summary 和 architecture boundary tests
 
 ### Requirement: RBMA workflow extension path
-RBMA、beam prototype alignment、full-to-partial teacher stabilization 和 pattern-balanced mask MUST 作为 U-MaskBeamJEPA opt-in 增强实现。除非后续 design 证明现有 whole-model exception 无法承载，系统 MUST 不新增第二个完整模型注册名来表达同一 workflow。
+U-MaskBeamJEPA MUST 继续以内嵌 opt-in component 形式支持 `reliability_biased_missing_attention`、beam prototype alignment、full-to-partial teacher stabilization 和 pattern-balanced mask。系统 MUST 不恢复旧独立 RBMA/prototype-KD sweep owner，也 MUST 不新增第二个完整模型注册名表达同一行为。
 
-#### Scenario: 不新增重复 whole-model
-- **WHEN** 实现 RBMA prototype KD workflow
-- **THEN** 系统 MUST 复用 `u_mask_beam_jepa` 或现有 current owner
-- **AND** 系统 MUST 不新增与 U-MaskBeamJEPA 语义重复的完整 `MODELS.register(...)` 名称
+#### Scenario: Current U-Mask RBMA branch 保留
+- **WHEN** `u_mask_beam_jepa` 配置启用 current RBMA/prototype/teacher option
+- **THEN** 系统 MUST 复用现有 U-Mask owner 与 training extension
+- **AND** 普通 baseline MUST 不要求这些 diagnostics 或 metadata
 
-#### Scenario: 普通 baseline 不消费新增 metadata
-- **WHEN** 普通 supervised、AMBER full local 或非 U-MaskBeamJEPA baseline 运行
-- **THEN** reliability、prototype、full-to-partial teacher 和 pattern diagnostics MUST 不是必需 forward 输入
-- **AND** 这些 baseline 的 metadata MUST 能声明未消费该 workflow metadata
+#### Scenario: 独立 RBMA workflow 不恢复
+- **WHEN** 用户请求旧 RBMA sweep config、runbook 或独立 model owner
+- **THEN** current surface MUST 拒绝或标记 retired
 
 ### Requirement: RBMA workflow metadata
-RBMA workflow MUST 写出可审计训练策略 metadata，覆盖 fusion type、mask sampler、prototype alignment、teacher stabilization、JEPA loss 状态、reliability metadata consumption 和 ablation id。
+U-Mask 内嵌 RBMA/prototype/teacher option MUST 写出可审计 training metadata，覆盖 fusion type、mask sampler、prototype alignment、teacher stabilization、JEPA loss 状态、reliability metadata consumption 和 ablation id。旧独立 workflow metadata schema MUST 不作为额外 owner保留。
 
-#### Scenario: metadata 最小字段
-- **WHEN** RBMA workflow 模型或训练 run 被构建
-- **THEN** metadata MUST 包含 model type、enabled modalities、fusion type、mask sampler、use_jepa_loss、use_beam_prototype_alignment、use_full_to_partial_kd 和 reliability metadata consumption
-- **AND** 缺少这些字段 MUST 被 focused tests 或 architecture summary tests 捕获
-
-#### Scenario: checkpoint teacher 状态可审计
-- **WHEN** config 声明 `kd_teacher_mode`
-- **THEN** metadata MUST 记录 teacher mode、teacher checkpoint provenance 或 pending reason
-- **AND** checkpoint teacher 未实现时 MUST 不被记录为已启用成功
+#### Scenario: Current metadata 最小字段
+- **WHEN** U-Mask current RBMA/prototype/teacher option 被构建
+- **THEN** metadata MUST 记录 `fusion_type`、`mask_sampler`、`use_jepa_loss`、`use_beam_prototype_alignment`、`use_full_to_partial_kd` 和 reliability consumption
+- **AND** checkpoint teacher 未实现时 MUST 记录 pending/disabled，而不是成功启用
 
 ### Requirement: 训练方法扩展点边界
 训练引擎 MUST 将后续仍被 OpenSpec 批准的方法所需的 teacher runtime、额外 loss、梯度后处理和 epoch diagnostics 接入点保持在明确模块边界内。`kd_sensing.engine.trainer` MUST 保持训练生命周期编排职责，不得作为方法特有 loss、teacher ensemble、counterfactual 或 subset-training 逻辑的主要实现位置。已退役的 G2D、CRAF 和 MARF 扩展模块 MUST 从 active code path 中删除。
@@ -384,49 +339,31 @@ RBMA workflow MUST 写出可审计训练策略 metadata，覆盖 fusion type、m
 - **THEN** 变更 MUST 不包含对 `dataset/`、`outputs/`、`logs/`、cache、checkpoint、下载压缩包或真实本地运行产物的删除、移动、压缩或重写
 - **AND** 生成的临时验证产物 MUST 位于忽略规则覆盖范围内或测试临时目录中
 
-### Requirement: JEPA downstream 扩展实现边界
-项目 MUST 将 JEPA Stage 1 预训练主模型、JEPA downstream pooler/adapter、模块化 conditioned encoder、optimizer 参数组和 runtime metadata 维护在职责清晰的窄模块中。新增 JEPA downstream pooler 或 adapter MUST 不要求修改 dataset、训练主循环、checkpoint schema 或旧兼容入口。
-
-#### Scenario: 新增 JEPA pooler 不修改训练主循环
-- **WHEN** 开发者新增一个 JEPA downstream pooler
-- **THEN** 变更 MUST 限定在 JEPA downstream pooler/adapter 模块、注册代码、配置和测试
-- **AND** 不需要修改 `engine.trainer` 主循环或 supervised beam loss/metric 流程
-
-#### Scenario: 新增 JEPA adapter 不修改 dataset
-- **WHEN** 开发者新增一个 JEPA downstream adapter
-- **THEN** 变更 MUST 不要求修改 DeepSense6G dataset、GPS transform、image preprocessing 或 DataLoader 构建逻辑
-- **AND** adapter MUST 通过模型配置和 registry 接入
-
-#### Scenario: 不恢复退役入口
-- **WHEN** JEPA downstream extensibility change 落地
-- **THEN** 系统 MUST 不新增 KD/distillation、HiST/Hist、Top8 selector、GPS residual、camera residual 或 legacy fusion 兼容入口
-- **AND** 新能力 MUST 通过当前 `src/kd_sensing` 包结构和 registry 边界接入
-
 ### Requirement: optimizer 参数组构建位于 optim 模块
-训练引擎 MUST 将参数组解析、模块名 pattern 匹配、重复匹配检测、未匹配参数处理和参数组 summary 维护在 `kd_sensing.engine.optim` 或等价窄模块中。训练主循环 MUST 只消费构建好的 optimizer 和 summary。
+训练引擎 MUST 将 current encoder/core/head 参数组解析、pattern 匹配、重复检测、未匹配处理和 summary 维护在 `kd_sensing.engine.optim` 或等价窄模块中。训练主循环 MUST 只消费构建好的 optimizer 和 summary；它 MUST 不保留 retired JEPA query pooler/adapter 专属组。
 
-#### Scenario: 修改 JEPA 参数组不触碰 trainer
-- **WHEN** 开发者调整 JEPA context encoder、GPS encoder、pooler、core 或 head 的参数组匹配规则
-- **THEN** 主要变更 MUST 限定在 optimizer 构建模块及其测试
-- **AND** 不需要编辑 `engine.trainer` 的 epoch 或 batch 编排逻辑
+#### Scenario: Current 参数组不触碰 trainer
+- **WHEN** 开发者调整 current JEPA mean-context、U-Mask、MMW/CSI encoder/core/head 参数组
+- **THEN** 主要变更 MUST 限定在 optimizer owner及测试
+- **AND** 不需要编辑 trainer epoch/batch loop
 
-#### Scenario: 参数组 summary 写入现有日志路径
-- **WHEN** 训练使用多个 optimizer 参数组
-- **THEN** 现有训练日志和 TensorBoard scalar 映射 MUST 能记录每组 learning rate 和参数数量
-- **AND** 未声明参数组时 MUST 保持现有单 `main` 组日志字段
+#### Scenario: 参数组 summary 保持
+- **WHEN** current training 使用多个参数组
+- **THEN** logs/TensorBoard MUST 能记录 learning rate 与参数数
+- **AND** 未声明时保留单 main group
 
 ### Requirement: runtime metadata 收集位于 run metadata 模块
-JEPA downstream 结构 metadata MUST 由 `engine.run_metadata`、artifact writer 或等价窄模块收集。模型和子模块 MAY 暴露只读 metadata 方法；训练主循环 MUST 不手写 JEPA downstream 专属字段。
+Current model/runtime structure metadata MUST 由 `engine.run_metadata`、artifact writer 或等价窄模块收集。JEPA mean-context reuse MAY 记录 checkpoint、freeze、pooling mean 和参数组；系统 MUST 不要求 query pooler、adapter、attention 或 predictive metadata。
 
-#### Scenario: 模型声明 metadata 被聚合
-- **WHEN** `model.primary` 或其子模块提供 JEPA downstream training strategy metadata
-- **THEN** runtime metadata 收集模块 MUST 将其写入 `final_config.yaml` 或等价运行 metadata
-- **AND** metadata MUST 包含 pooler、adapter、checkpoint、freeze 和参数组摘要中的正式字段
+#### Scenario: Current model metadata 被聚合
+- **WHEN** current model/submodule 提供只读 training metadata
+- **THEN** run metadata owner MUST 写入正式 artifact
+- **AND** mean-context metadata MUST 不包含 retired query fields
 
-#### Scenario: config fallback 兼容历史配置
-- **WHEN** metadata 在模型构建前需要从配置生成
-- **THEN** run metadata 模块 MAY 使用配置解析作为 fallback
-- **AND** fallback MUST 与模型声明 metadata 的核心字段保持一致
+#### Scenario: Config fallback 只处理 current fields
+- **WHEN** 构建前从 config 生成 metadata
+- **THEN** fallback MUST 只解析 current model/config fields
+- **AND** 不恢复 retired pooler/adapter schema
 
 ### Requirement: 通用 baseline 与 workflow baseline 分层
 项目 MUST 区分通用可训练 baseline 和 workflow/paper reproduction baseline。通用 baseline MUST 复用配置驱动训练、共享 batch/runtime 和模型 registry；workflow baseline MUST 只在需要官方协议、多阶段训练、特殊 metric 或报告产物时保留专用 orchestration，并 MUST 放在包内职责清晰的位置并记录生命周期、产物边界和 claim caveat。

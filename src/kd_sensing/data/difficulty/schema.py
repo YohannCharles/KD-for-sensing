@@ -5,20 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from kd_sensing.data.difficulty.presets import (
-    PREDICTIVE_JEPA_OPERATOR_TYPES,
-    SCENARIO_D_OPERATOR_TYPES,
     expand_missing_modality_stress_profile,
-    gps_query_advantage_severity,
-    is_gps_query_advantage_condition,
     is_missing_modality_stress_profile,
-    is_predictive_jepa_condition,
-    is_scenario_d_condition,
-    normalize_gps_query_advantage_condition_id,
-    normalize_predictive_jepa_condition_id,
-    normalize_predictive_jepa_operator_params,
-    normalize_scenario_d_operator_params,
-    predictive_jepa_severity,
-    scenario_d_severity,
 )
 from kd_sensing.modalities import normalize_modalities
 from kd_sensing.registries import DIFFICULTY_OPERATORS, import_default_difficulty_operators
@@ -430,24 +418,7 @@ def _normalize_profile(
     splits = tuple(_normalize_split(item) for item in _as_list(raw.get("splits", raw.get("split", default_split or ())))
                    if str(item).strip() not in {"", "*", "all"})
     condition = str(raw.get("condition", profile_id)).strip() or profile_id
-    scenario_d_condition = _scenario_d_condition_from_profile(raw, condition)
-    predictive_jepa_condition = _predictive_jepa_condition_from_profile(raw, condition)
-    if predictive_jepa_condition is not None:
-        condition = (
-            normalize_predictive_jepa_condition_id(predictive_jepa_condition)
-            if is_predictive_jepa_condition(predictive_jepa_condition)
-            else normalize_gps_query_advantage_condition_id(predictive_jepa_condition)
-        )
-    severity_default = (
-        predictive_jepa_severity(predictive_jepa_condition)
-        if predictive_jepa_condition is not None and is_predictive_jepa_condition(predictive_jepa_condition)
-        else gps_query_advantage_severity(predictive_jepa_condition)
-        if predictive_jepa_condition is not None and is_gps_query_advantage_condition(predictive_jepa_condition)
-        else scenario_d_severity(scenario_d_condition)
-        if scenario_d_condition is not None
-        else 0.0
-    )
-    severity = _severity(raw.get("severity", raw.get("severities", severity_default)), profile_id=profile_id)
+    severity = _severity(raw.get("severity", raw.get("severities", 0.0)), profile_id=profile_id)
     seed = int(raw.get("seed", default_seed or 0))
     fallback = str(raw.get("fallback", "identity")).strip() or "identity"
     operators_raw = raw.get("operators", raw.get("operator"))
@@ -457,8 +428,6 @@ def _normalize_profile(
     if not operators_raw:
         raise ValueError(f"difficulty profile '{profile_id}' must define a non-empty operators list.")
     operators = tuple(_normalize_operator(item, profile_id=profile_id, index=i) for i, item in enumerate(operators_raw))
-    operators = _standardize_scenario_d_operators(operators, condition=condition, profile_id=profile_id)
-    operators = _standardize_predictive_jepa_operators(operators, condition=condition, profile_id=profile_id)
     profile_modalities = raw.get("affected_modalities", raw.get("modalities"))
     affected = (
         _normalize_affected_modalities(profile_modalities, path=f"difficulty profile '{profile_id}'")
@@ -537,112 +506,6 @@ def _normalize_operator(raw: Any, *, profile_id: str, index: int) -> DifficultyO
     )
 
 
-def _standardize_scenario_d_operators(
-    operators: tuple[DifficultyOperatorConfig, ...],
-    *,
-    condition: str,
-    profile_id: str,
-) -> tuple[DifficultyOperatorConfig, ...]:
-    standardized: list[DifficultyOperatorConfig] = []
-    for operator in operators:
-        if operator.type not in SCENARIO_D_OPERATOR_TYPES:
-            standardized.append(operator)
-            continue
-        params = normalize_scenario_d_operator_params(
-            condition=condition,
-            params=operator.params,
-            profile_id=profile_id,
-            operator_type=operator.type,
-        )
-        affected = ("image",)
-        payload = {
-            "type": operator.type,
-            "modality": "image",
-            "affected_modalities": list(affected),
-            "params": _json_safe(params),
-        }
-        standardized.append(
-            DifficultyOperatorConfig(
-                type=operator.type,
-                modality="image",
-                affected_modalities=affected,
-                params=params,
-                digest=stable_digest(payload),
-            )
-        )
-    return tuple(standardized)
-
-
-def _standardize_predictive_jepa_operators(
-    operators: tuple[DifficultyOperatorConfig, ...],
-    *,
-    condition: str,
-    profile_id: str,
-) -> tuple[DifficultyOperatorConfig, ...]:
-    standardized: list[DifficultyOperatorConfig] = []
-    for operator in operators:
-        if operator.type not in PREDICTIVE_JEPA_OPERATOR_TYPES:
-            standardized.append(operator)
-            continue
-        params = normalize_predictive_jepa_operator_params(
-            condition=condition,
-            params=operator.params,
-            profile_id=profile_id,
-            operator_type=operator.type,
-        )
-        stress_suite = str(params.get("stress_suite", "legacy_p_level"))
-        if stress_suite == "image_missing" or stress_suite == "image_noise":
-            affected = ("image",)
-        elif stress_suite == "gps_noise":
-            affected = ("gps",)
-        else:
-            affected = ("image", "gps")
-        payload = {
-            "type": operator.type,
-            "modality": "image",
-            "affected_modalities": list(affected),
-            "params": _json_safe(params),
-        }
-        standardized.append(
-            DifficultyOperatorConfig(
-                type=operator.type,
-                modality="image",
-                affected_modalities=affected,
-                params=params,
-                digest=stable_digest(payload),
-            )
-        )
-    return tuple(standardized)
-
-
-def _looks_like_scenario_d_profile(raw: Mapping[str, Any], condition: str) -> bool:
-    return _scenario_d_condition_from_profile(raw, condition) is not None
-
-
-def _scenario_d_condition_from_profile(raw: Mapping[str, Any], condition: str) -> str | None:
-    if is_scenario_d_condition(condition):
-        return condition
-    raw_operator = raw.get("operators", raw.get("operator"))
-    for item in _as_list(raw_operator):
-        if isinstance(item, Mapping) and str(item.get("type", item.get("name", ""))).strip() in SCENARIO_D_OPERATOR_TYPES:
-            for key in ("scenario_d_condition", "image_condition", "d_level", "condition"):
-                if key in item and is_scenario_d_condition(item[key]):
-                    return str(item[key])
-    return None
-
-
-def _predictive_jepa_condition_from_profile(raw: Mapping[str, Any], condition: str) -> str | None:
-    if is_predictive_jepa_condition(condition) or is_gps_query_advantage_condition(condition):
-        return condition
-    raw_operator = raw.get("operators", raw.get("operator"))
-    for item in _as_list(raw_operator):
-        if isinstance(item, Mapping) and str(item.get("type", item.get("name", ""))).strip() in PREDICTIVE_JEPA_OPERATOR_TYPES:
-            for key in ("predictive_condition", "p_level", "condition"):
-                if key in item and (is_predictive_jepa_condition(item[key]) or is_gps_query_advantage_condition(item[key])):
-                    return str(item[key])
-    return None
-
-
 def _infer_operator_modality(operator_type: str, item: Mapping[str, Any]) -> str:
     raw = item.get("modality")
     if raw is None:
@@ -655,8 +518,6 @@ def _infer_operator_modality(operator_type: str, item: Mapping[str, Any]) -> str
             "scenario_c_async_position_feedback",
         }:
             raw = "gps"
-        elif operator_type in PREDICTIVE_JEPA_OPERATOR_TYPES:
-            raw = "image"
         else:
             raw = item.get("affected_modality", "gps")
     modalities = _normalize_affected_modalities(raw, path=f"difficulty operator '{operator_type}'.modality")

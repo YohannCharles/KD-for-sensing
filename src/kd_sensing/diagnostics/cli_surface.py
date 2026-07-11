@@ -50,24 +50,6 @@ PUBLIC_CLI_SURFACE: dict[str, PublicCli] = {
         "conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_runtime_artifact_cleanup.py -q",
         "--outputs",
     ),
-    "kd-sensing-research-dashboard": PublicCli(
-        "kd_sensing.cli.research_dashboard:main",
-        "current_diagnostic",
-        "kd_sensing.diagnostics.research_claim_harvester",
-        "read-only claim candidate dashboard",
-        "ignored outputs/analysis/ or explicit local path",
-        "conda run -n kd_mm_beam pytest tests/test_research_claim_harvester.py tests/test_cli_help.py -q",
-        "--output-html",
-    ),
-    "kd-sensing-research-preview": PublicCli(
-        "kd_sensing.cli.research_preview:main",
-        "current_diagnostic",
-        "kd_sensing.diagnostics.research_run_preview",
-        "no-training research preview and budget manifest",
-        "ignored outputs/analysis/research_preview/ or explicit local path",
-        "conda run -n kd_mm_beam pytest tests/test_research_run_preview.py tests/test_cli_help.py -q",
-        "--qa-html",
-    ),
     "kd-sensing-clean-runtime-artifacts": PublicCli(
         "kd_sensing.cli.cleanup_runtime_artifacts:main",
         "current_diagnostic",
@@ -121,15 +103,6 @@ PUBLIC_CLI_SURFACE: dict[str, PublicCli] = {
         "stdout only unless explicit output path is added by caller",
         "conda run -n kd_mm_beam pytest tests/test_physics_informed_mmw.py tests/test_cli_help.py -q",
         "--max-samples",
-    ),
-    "kd-sensing-project-surface-doctor": PublicCli(
-        "kd_sensing.cli.project_surface_doctor:main",
-        "current_diagnostic",
-        "kd_sensing.diagnostics.project_surface_doctor",
-        "read-only project surface governance doctor",
-        "stdout only",
-        "conda run -n kd_mm_beam pytest tests/test_project_surface_doctor.py tests/test_cli_help.py -q",
-        "--scope",
     ),
 }
 

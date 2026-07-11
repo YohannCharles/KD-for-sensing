@@ -156,6 +156,38 @@ def test_eval_mask_cache_cli_inputs(tmp_path: Path) -> None:
     assert payload["num_modalities"] == 4
 
 
+def test_eval_mask_is_reordered_from_cache_to_model_modalities() -> None:
+    eval_script = _load_script("eval_h5_p1_temporal_matrix_v1.py")
+    model = type("Model", (), {"modalities": ("image", "radar", "gps", "lidar")})()
+    mask_item = {
+        "modality_temporal_mask": [
+            [1, 1, 1, 0],
+            [1, 1, 0, 1],
+        ]
+    }
+
+    mask, modalities = eval_script._mask_in_model_order(
+        model,
+        mask_item,
+        ("image", "radar", "lidar", "gps"),
+    )
+
+    assert modalities == ("image", "radar", "gps", "lidar")
+    assert mask.tolist() == [[True, True, False, True], [True, True, True, False]]
+    batch = {
+        "image": torch.ones(1, 2, 1),
+        "radar_ra": torch.ones(1, 2, 1),
+        "radar_da": torch.ones(1, 2, 1),
+        "gps": torch.ones(1, 2, 1),
+        "lidar": torch.ones(1, 2, 1),
+    }
+    out = apply_modality_temporal_mask_to_batch(batch, mask, modalities=modalities)
+    assert out["gps"][0, 0].item() == 0.0
+    assert out["gps"][0, 1].item() == 1.0
+    assert out["lidar"][0, 0].item() == 1.0
+    assert out["lidar"][0, 1].item() == 0.0
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return [dict(row) for row in csv.DictReader(handle)]

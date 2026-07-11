@@ -76,7 +76,7 @@ class EpochMetricsRecorder:
             updates["link_quality_loss"] = prediction_loss.link_quality.item()
         if prediction_loss.selection_multitask_total is not None:
             updates["selection_multitask_loss"] = prediction_loss.selection_multitask_total.item()
-        if getattr(prediction_loss, "jepa", None) is not None:
+        if prediction_loss.jepa is not None:
             updates["jepa_loss"] = prediction_loss.jepa.item()
         for key, value in updates.items():
             self.running[key] = (float(value) + step * self.running[key]) / (step + 1)

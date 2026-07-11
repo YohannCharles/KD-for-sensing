@@ -3,9 +3,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from kd_sensing.baselines.amber_lite import amber_lite_summary_row, normalize_missing_modality_suite
 from kd_sensing.config import load_config
-from kd_sensing.config.parsing import safe_load_yaml
 from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
 from kd_sensing.data.difficulty.schema import DifficultyContext
 from kd_sensing.models.modular import AmberLiteMissingModalityTransformerCore, ModularSequenceModel
@@ -99,39 +97,6 @@ def test_modality_dropout_policy_is_deterministic_and_preserves_targets() -> Non
         assert first[f"{modality}_valid_mask"].any().item() is False
     assert first["missing_modality_metadata"]["fallback_count"] == 0
     assert set(first["missing_modality_metadata"]["rates"]) == {"image", "radar", "gps", "lidar"}
-
-
-def test_amber_lite_suite_and_summary_keep_claim_boundary() -> None:
-    manifest = safe_load_yaml((ROOT / "configs/diagnostics/amber_lite_missing_modality_eval.yaml").read_text())
-    suite = normalize_missing_modality_suite(manifest)
-
-    ids = {condition["id"] for condition in suite["conditions"]}
-    assert {"clean", "missing_image", "missing_lidar", "missing_radar", "missing_gps", "poor_image", "wrong_gps", "async_gps"} <= ids
-    assert suite["reproduction_scope"] == "amber_lite_local"
-    assert suite["conditions"][0]["expected_availability_mask"] == {
-        "image": True,
-        "radar": True,
-        "gps": True,
-        "lidar": True,
-    }
-
-    row = amber_lite_summary_row(
-        model="amber_lite",
-        source="fixture",
-        metrics_by_condition={
-            "clean": {"top1": 0.1, "top3": 0.2, "top5": 0.3, "dba": 0.4, "beam_distance": 2.0},
-            "missing_gps": {"status": "pending"},
-        },
-        comparability={"split": "test", "sample_count": 2},
-        real_metrics=False,
-        lidar_artifact_available=False,
-        radar_artifact_available=False,
-    )
-
-    assert row["reproduction_scope"] == "amber_lite_local"
-    assert row["status"] == "pending"
-    assert row["strict_ranking_eligible"] is False
-    assert row["condition_metrics"][0]["dba"] == 0.4
 
 
 def test_amber_lite_config_loads_and_records_dropout_digest() -> None:

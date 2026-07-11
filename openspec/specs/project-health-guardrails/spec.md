@@ -168,42 +168,40 @@
 - **AND** 测试 MUST 不维护与 inventory 重复的完整脚本 allowlist，也不得通过放宽检查掩盖未分类脚本
 
 ### Requirement: Console script surface guardrail
-项目健康护栏 MUST 检查 `pyproject.toml` console scripts、public CLI lifecycle 清单、CLI help smoke、project surface inventory 和 current docs/OpenSpec 的一致性。新增、删除或降级 public CLI 时，guardrail MUST 能发现缺少 lifecycle 分类、缺少 smoke、docs stale 引用或已删除命令回流。
+项目健康护栏 MUST 直接比对 `pyproject.toml` console scripts、CLI help smoke、inventory 和 current docs/OpenSpec。新增、删除或降级 CLI 时，guardrail MUST 报告 lifecycle/smoke/stale-reference 漂移；该检查 MUST 不依赖 project surface doctor CLI。
 
 #### Scenario: pyproject 与 help smoke 一致
-- **WHEN** 开发者运行 CLI/architecture 健康检查
-- **THEN** 检查 MUST 比对 `pyproject.toml` 中的 `kd-sensing-*` entry points 和保留 public CLI 的 help smoke 覆盖
-- **AND** 缺少 smoke 的 public CLI MUST 被报告，除非 OpenSpec 明确将其标记为不需要 help smoke 的例外
+- **WHEN** 开发者运行 CLI/architecture focused checks
+- **THEN** 十个 public entry points MUST 与 help smoke 集合一致
+- **AND** 缺少或多余命令 MUST 直接由测试报告
 
-#### Scenario: docs 不引用已删除 public CLI
-- **WHEN** public console script 被删除或降级为 internal-only
-- **THEN** README、docs、OpenSpec current specs 和 tests MUST 不再把旧命令描述为 current public entrypoint
-- **AND** `kd-sensing-project-surface-doctor --scope cli-surface` MUST 能发现 current 文档中的 stale command reference
+#### Scenario: docs 不引用已删除 CLI
+- **WHEN** dashboard、preview 或 doctor command 被删除
+- **THEN** static current-doc reference check MUST 发现残留 current 命令
+- **AND** 检查 MUST 不调用已删除 doctor
 
-#### Scenario: 新 public CLI 需要生命周期锚点
-- **WHEN** 后续 change 新增 `kd-sensing-*` console script
-- **THEN** architecture/surface 检查 MUST 要求同步 owner module、inventory/docs 引用、help smoke 和输出边界
-- **AND** 缺少这些锚点时检查 MUST 失败或在 doctor 中报告 error
+#### Scenario: 新 public CLI 需要锚点
+- **WHEN** 后续 change 新增 console script
+- **THEN** test MUST 要求 owner、inventory/docs、help smoke 和 output boundary
+- **AND** 缺少锚点时 MUST 失败
 
 ### Requirement: 大规模表面清理必须有快速验收
-项目 MUST 为大规模表面清理提供快速验收命令，覆盖 OpenSpec 校验、架构边界、CLI help 和被修改入口的引用一致性。所有项目相关 Python 验收 MUST 使用 `kd_mm_beam` 环境。
+项目 MUST 为大规模表面清理提供直接组合 OpenSpec、architecture、CLI help、config characterization 和 compile 的快速验收。所有 Python 命令 MUST 使用 `kd_mm_beam`，并 MUST 不依赖 surface doctor 或其它替代产品面。
 
-#### Scenario: 清理实现后的快速验收
-- **WHEN** 支持面清理实现完成
-- **THEN** 开发者 MUST 运行 `openspec validate project-health-guardrails --strict`
-- **AND** 开发者 MUST 运行 `openspec validate --all --strict`
-- **AND** 开发者 MUST 运行 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+#### Scenario: 清理 wave 快速验收
+- **WHEN** 一个删除 wave 完成
+- **THEN** 对应 OpenSpec 与 focused pytest/compile checks MUST 运行
+- **AND** 上一 wave 未通过时 MUST 停止
 
-#### Scenario: 修改 CLI 或脚本入口后验收
-- **WHEN** 清理实现修改 console script、local/manual runner 或可视化入口
-- **THEN** 开发者 MUST 运行对应 `--help` 或无副作用 smoke 检查
-- **AND** 检查 MUST 不读取真实 dataset、不启动训练、不写入新的源码内产物
+#### Scenario: CLI 或 script 变更验收
+- **WHEN** pyproject、CLI 或 local/manual script surface 改变
+- **THEN** CLI help、architecture 和 stale-reference focused tests MUST 运行
+- **AND** 检查 MUST 不读取真实 dataset 或启动训练
 
-#### Scenario: 公共入口瘦身验收
-- **WHEN** implementation 修改 pyproject、package CLI、CLI module、inventory 或 current docs 中的 public entrypoint surface
-- **THEN** 开发者 MUST 运行 `openspec validate --all --strict`
-- **AND** 开发者 MUST 运行 `conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q`
-- **AND** project surface doctor 的 CLI surface、scripts/configs/hotspots 或等价 scope MUST 能报告 stale public command reference、缺少 smoke 或生命周期锚点漂移
+#### Scenario: Public surface 最终验收
+- **WHEN** consolidation 完成
+- **THEN** `openspec validate --all --strict` 与 CLI/architecture focused tests MUST 通过
+- **AND** 不要求 project surface doctor scope
 
 ### Requirement: 项目健康护栏纳入架构边界
 项目 MUST 将健康护栏纳入架构边界测试，使包结构、轻量导入、入口 allowlist、热点 inventory、测试 bootstrap 和分层验证命令保持一致。架构边界测试 MUST 能在全量 pytest 之前暴露项目支持面或维护性边界漂移。
@@ -406,66 +404,25 @@ Architecture 和 focused tests MAY 拆分为更小文件，但 MUST 继续覆盖
 - **THEN** 轻量检查 MUST 在真实训练前失败
 - **AND** 失败信息 MUST 指向具体文件
 
-### Requirement: 项目表面积 doctor
-项目 MUST 提供只读表面积 doctor，用于检查 scripts、configs、hotspots 和文档引用的高风险漂移。Doctor MUST 不删除、不移动、不重写源码、配置、本地数据、输出、日志、cache 或 checkpoint。
-
-#### Scenario: Doctor 只读运行
-- **WHEN** 开发者运行项目表面积 doctor
-- **THEN** doctor MUST 只读取 tracked 源码、配置、文档、OpenSpec 和必要的 git 文件清单
-- **AND** doctor MUST 不修改 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 或配置文件
-
-#### Scenario: Doctor 输出可定位问题
-- **WHEN** doctor 发现未分类脚本、失效 config 引用或热点超出登记边界
-- **THEN** 输出 MUST 包含文件路径、问题类型、引用的权威来源和建议验证命令
-
-### Requirement: Doctor 可纳入 quick verify
-高风险表面积 doctor MUST 可作为 quick verify 的一部分运行，或至少在文档中记录为非平凡脚本/config/hotspot 改动前的推荐检查。
-
-#### Scenario: 入口改动前运行 doctor
-- **WHEN** 变更新增或修改 `scripts/`、`tools/analysis/`、`configs/` 或热点 owner
-- **THEN** tasks MUST 列出对应 doctor 命令
-- **AND** Python 命令 MUST 使用 `conda run -n kd_mm_beam`
-
-### Requirement: Surface doctor 默认输出必须 issue-only
-Project surface doctor 的默认输出 MUST 以问题、摘要和可执行 next action 为主。完整 pass inventory、allowlist dump、machine-readable governance table 或大段无问题清单 MUST 通过显式 opt-in flag 请求。
-
-#### Scenario: 无问题时输出短摘要
-- **WHEN** project surface doctor 运行且没有发现问题
-- **THEN** 默认输出 MUST 是短摘要，说明检查 scope 和无问题状态
-- **AND** MUST 不默认打印完整 pass inventory JSON 或大段逐项清单
-
-#### Scenario: 完整清单显式 opt-in
-- **WHEN** 协作者需要完整 inventory、allowlist 或 machine-readable dump
-- **THEN** MUST 使用 `--dump-inventory` 或等价显式 flag
-- **AND** 输出格式 MUST 在 help text 中说明适合审计/机器处理，而不是默认人读路径
-
-### Requirement: Surface doctor 瘦身不得降低失败可诊断性
-默认输出变短后，任何失败或 warning MUST 仍包含 scope、问题路径、原因和建议 next action。
-
-#### Scenario: 有问题时保留 actionable detail
-- **WHEN** surface doctor 检查发现 missing、stale、orphan、complete-unarchived 或 wrapper 回流问题
-- **THEN** 默认输出 MUST 包含足够定位和修复的信息
-- **AND** full dump flag MAY 提供额外上下文但不能成为理解失败的必要条件
-
 ### Requirement: Post-C2 guardrail 必须检查保护范围
-项目健康护栏 MUST 在 post-C2 表面积清理中检查 protected inventory，防止 MMW/CSI、主线 YAML/manifest、final C2/U-MaskBeamJEPA 主线和 U-Mask fusion 分支被误删或被文档降级为 retired。
+项目健康护栏 MUST 检查 protected inventory，防止 MMW/CSI、主线 YAML/manifest、final C2/U-MaskBeamJEPA 主线和 U-Mask fusion 分支被误删或被文档降级为 retired。检查 MUST 从明确的 protected paths、current configs 和 owner imports 读取事实，不依赖 surface doctor 输出。
 
 #### Scenario: protected path 缺失被发现
-- **WHEN** 开发者运行架构边界测试或 project surface doctor 的清理验收 scope
-- **THEN** 检查 MUST 验证 protected inventory 中的 MMW/CSI、主线 YAML/manifest、final C2/U-Mask owner 和 U-Mask fusion branch owner 仍存在或有明确替代记录
+- **WHEN** 开发者运行架构边界测试
+- **THEN** 检查 MUST 验证 protected MMW/CSI、主线 YAML/manifest、final C2/U-Mask owner 和 U-Mask branch markers 仍存在或有明确替代记录
 - **AND** 缺失且无替代记录 MUST 报告 error
 
 #### Scenario: protected docs 不被标成 retired
-- **WHEN** README、docs 或 OpenSpec current specs 描述 MMW、final C2、U-MaskBeamJEPA 或 protected mainline config
+- **WHEN** README、docs 或 current specs 描述 MMW、final C2、U-MaskBeamJEPA 或 protected mainline config
 - **THEN** 健康检查 MUST 不允许这些 protected surface 被描述为 retired、historical-only 或 delete-candidate
 - **AND** 若文档只描述后续审计候选，MUST 明确其不属于本 change 删除范围
 
 ### Requirement: Stale reference 检查必须覆盖删除波次
-Post-C2 清理后，健康护栏 MUST 检查 current README、docs、OpenSpec specs、tests、pyproject 和 scripts 默认路径中是否仍引用已删除入口、已删除 config 或已删除 module。历史 archive 中的引用 MAY 保留，但 MUST 不被 current docs 当作推荐入口。
+Post-C2 清理后，健康护栏 MUST 检查 current README、docs、OpenSpec specs、tests、pyproject 和 scripts 默认路径中是否仍引用已删除入口、config 或 module。历史 archive 中的引用 MAY 保留，但 MUST 不被 current docs 当作推荐入口。
 
 #### Scenario: 删除 CLI 后 docs stale reference
 - **WHEN** public console script 被删除
-- **THEN** `kd-sensing-project-surface-doctor --scope cli-surface` 或等价检查 MUST 报告 current docs/specs 中的 stale command reference
+- **THEN** pyproject/current-doc reference check MUST 报告 stale command
 - **AND** CLI help smoke MUST 不再要求已删除命令存在
 
 #### Scenario: 删除 config 后 current reference
@@ -485,3 +442,16 @@ Post-C2 清理验收 MUST 只读取 tracked source、configs、docs、OpenSpec�
 - **WHEN** implementation 虽然保留 MMW 但修改了 MMW docs、configs、CLI lifecycle 或 guardrail
 - **THEN** tasks 或最终说明 MUST 追加 MMW/CSI focused validation
 - **AND** 验证 MUST 不要求真实 MMW dataset 内容进入源码变更
+
+### Requirement: 安全边界使用小型静态 guard
+项目 MUST 使用小型参数化测试检查 tracked secret、系统配置污染和危险 shell runner，不得为该检查维护通用 surface doctor、inventory renderer 或 JSON report schema。
+
+#### Scenario: 系统配置污染被拒绝
+- **WHEN** tracked 文本尝试把训练、清理、GPU queue 或启动命令写入凭证/系统配置语境
+- **THEN** 安全 guard MUST 失败并指出文件与规则
+- **AND** 检查 MUST 不读取真实系统凭证或修改文件
+
+#### Scenario: 普通源码不触发安全 guard
+- **WHEN** 训练命令只存在于正常 CLI、脚本、文档示例或测试 fixture
+- **THEN** guard MUST 不把它误报为系统配置污染
+- **AND** fixture MUST 覆盖危险与允许样例

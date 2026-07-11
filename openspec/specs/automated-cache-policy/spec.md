@@ -54,7 +54,7 @@
 - **AND** 缺失 image/LiDAR 原始文件或旧 image cache MUST 不阻止该任务运行
 
 ### Requirement: cache policy 生效信息可追踪
-训练、评估和 profile 运行 MUST 在最终配置或运行报告中记录实际生效的 cache policy、启用模态、受支持 cache 目录和每个相关 cache 的读写状态。系统 MUST 不再记录 `image_motion_*` cache 字段。
+训练、评估和预热运行 MUST 在最终配置或运行报告中记录实际生效的 cache policy、启用模态、受支持 cache 目录和每个相关 cache 的读写状态。系统 MUST 不再记录 `image_motion_*` cache 字段，也 MUST 不要求 standalone training-I/O profile 产物。
 
 #### Scenario: 训练记录 cache policy
 - **WHEN** 一次训练运行构建 train/test dataset
@@ -88,10 +88,10 @@
 - **AND** 错误信息 MUST 说明应使用 RGB/ImageNet image-derived cache 或关闭 image cache
 
 ### Requirement: image-derived cache 可追踪
-训练、评估、profile 和预热入口 MUST 记录 image-derived cache 的生效策略、cache 目录、transform version、coverage、命中/缺失统计和生成行为。未启用 image modality 时不得访问 image-derived cache。
+训练、评估和预热入口 MUST 记录 image-derived cache 的生效策略、cache 目录、transform version、coverage、命中/缺失统计和生成行为。未启用 image modality 时不得访问 image-derived cache；standalone training-I/O profile 不再是 required consumer。
 
 #### Scenario: 运行产物记录 image cache 状态
-- **WHEN** 一次训练或 profile 构建启用 image modality 的 dataset
+- **WHEN** 一次训练或评估构建启用 image modality 的 dataset
 - **THEN** 运行 metadata MUST 记录 image cache policy、cache dir、transform version、hit/miss 或 coverage 摘要
 - **AND** metadata MUST 不包含旧 image motion cache 字段
 
@@ -114,7 +114,7 @@
 - **AND** focused tests MUST 覆盖该等价性
 
 ### Requirement: 实验入口自动解析 cache policy
-训练、评估和 profile 入口 MUST 在构建 dataset 前解析 cache policy，并将解析后的实际 cache 读写开关传递给 dataset。解析过程 MUST 使用配置中的启用模态，不得要求用户为每个单模态或 fusion 组合手动设置低层 cache 读写字段。系统 MUST 不再解析或传递 `image_motion_*` 低层开关。
+训练、评估和预热入口 MUST 在构建 dataset 前解析 cache policy，并将解析后的实际 cache 读写开关传递给 dataset。解析过程 MUST 使用配置中的启用模态，不得要求用户为每个单模态或 fusion 组合手动设置低层 cache 读写字段。系统 MUST 不再解析或传递 `image_motion_*` 低层开关，也 MUST 不维持 standalone training-I/O profile 入口。
 
 #### Scenario: 单模态 image 训练不解析 image motion cache
 - **WHEN** 用户运行 image-only 训练配置
@@ -127,37 +127,3 @@
 - **THEN** 训练入口 MUST 只为该组合包含的受支持 cache 模态解析 cache 行为
 - **AND** 不包含 LiDAR 的组合 MUST 不需要相关 cache 参数才能启动
 - **AND** 包含 image 的组合 MUST 不需要且不得接受 image motion cache 参数
-
-#### Scenario: profile 使用相同 policy
-- **WHEN** 用户运行训练 I/O profile 入口
-- **THEN** profile MUST 使用与训练入口一致的 cache policy 解析逻辑
-- **AND** profile 输出 MUST 记录实际 cache policy 和受支持 cache 目录
-- **AND** profile 输出 MUST 不记录 image motion cache 目录或读写开关
-
-### Requirement: Benchmark perturbation cache
-JEPA GPS shortcut benchmark MUST support an opt-in perturbation cache for deterministic difficulty suites. The cache MUST be keyed by suite id/type, condition, severity, split, seed, sample ids and difficulty digest, and MUST store perturbed input batches without modifying source dataset files, checkpoints or labels.
-
-#### Scenario: 写出扰动 batch cache
-- **WHEN** benchmark manifest enables perturbation cache mode `write` or `read_write`
-- **THEN** runner MUST apply the shared difficulty pipeline once for each evaluated batch/condition
-- **AND** runner MUST write the perturbed batch, warnings and replay metadata to an ignored local cache directory
-- **AND** target labels、beam power、sample id and split metadata MUST remain unchanged
-
-#### Scenario: 从缓存读取扰动 batch
-- **WHEN** benchmark manifest enables perturbation cache mode `read`
-- **THEN** runner MUST load the matching perturbed batch cache instead of reapplying difficulty operators
-- **AND** missing or mismatched cache entries MUST fail with a clear cache key/path error
-- **AND** metric rows MUST still record the original difficulty provenance and sample count
-
-#### Scenario: 默认不改变现有评估
-- **WHEN** benchmark manifest omits perturbation cache settings
-- **THEN** runner MUST preserve existing online perturbation behavior
-- **AND** no cache directory MUST be required
-
-### Requirement: Cached benchmark comparability
-Cached perturbation reuse MUST NOT weaken benchmark comparability checks. Rows produced from cached inputs MUST remain comparable only when split, label space, sample ids, metric profile, difficulty digest and seed match the requested suite.
-
-#### Scenario: cache provenance 进入输出 manifest
-- **WHEN** benchmark uses perturbation cache
-- **THEN** benchmark manifest or equivalent output MUST record cache mode, cache directory, cache schema version, cache hits, cache misses and cache writes
-- **AND** model config/checkpoint provenance MUST remain separate from cache provenance

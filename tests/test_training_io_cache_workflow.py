@@ -46,11 +46,6 @@ from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blockin
 from kd_sensing.engine.evaluator import _evaluation_split_protocol_report
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
-from kd_sensing.engine.throughput_recommendations import (
-    lidar_cache_coverage,
-    recommend_parallel_training,
-)
-import kd_sensing.engine.training_io_profile as profile_training_io
 from kd_sensing.engine.trainer import (
     _configure_early_stopping,
     _early_stopping_improved,
@@ -133,51 +128,6 @@ def test_load_config_accepts_rgb_image_cache_policy_and_rejects_motion_cache():
             ROOT / "configs/fusion/image_gps_supervised.yaml",
             ["data.cache.image_motion_policy=auto"],
         )
-
-def test_parallel_training_recommendation_outputs_background_overrides():
-    cfg = load_config(ROOT / "configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml")
-
-    result = recommend_parallel_training(
-        cfg,
-        config_path="configs/fusion/image_radar_gps_lidar_mmwave_beam_supervised.yaml",
-        parallel_runs=4,
-        cpu_count=32,
-        check_cache=False,
-    )
-
-    assert result["modalities"] == ["image", "radar", "gps", "lidar", "mmwave"]
-    assert "output.progress.enabled=false" in result["overrides"]
-    assert "data.dataloader.test_persistent_workers=false" in result["overrides"]
-    assert "data.cache.policy=auto" in result["overrides"]
-    assert result["recommendations"]["prefetch_factor"] == 1
-    assert "training.amp.enabled=true" in result["optional_overrides"]
-    assert result["commands"]["train"].startswith("conda run -n kd_mm_beam kd-sensing-train")
-
-def test_parallel_training_recommendation_warns_when_lidar_cache_is_cold(tmp_path: Path):
-    train_csv = tmp_path / "train.csv"
-    test_csv = tmp_path / "test.csv"
-    _write_minimal_csv(train_csv, camera=False, radar=False, gps=False, lidar=True)
-    _write_minimal_csv(test_csv, camera=False, radar=False, gps=False, lidar=True)
-    cfg = load_config(
-        ROOT / "configs/lidar/lightweight.yaml",
-        [
-            f"data.dataset.data_root={tmp_path}",
-            f"data.dataset.train_csv_name={train_csv.name}",
-            f"data.dataset.test_csv_name={test_csv.name}",
-            "data.dataset.seq_len=1",
-            "data.dataset.num_pred=1",
-            "data.dataset.lidar_cache_dir=lidar_cache",
-        ],
-    )
-
-    coverage = lidar_cache_coverage(cfg)
-    result = recommend_parallel_training(cfg, parallel_runs=4, cpu_count=32)
-
-    assert coverage["coverage"] == 0.0
-    assert coverage["missing"] == 1
-    assert "data.cache.policy=auto" in result["overrides"]
-    assert result["cache"]["lidar"]["status"] == "cold"
-    assert result["cache"]["prewarm_command"] is not None
 
 def test_cache_policy_non_relevant_modalities_are_disabled():
     dataset_cfg = {
@@ -378,29 +328,6 @@ def test_throughput_metadata_includes_cache_policy():
     assert metadata["dataloader_splits"]["train"]["batch_size"] == 3
     assert metadata["dataloader_splits"]["test"]["persistent_workers"] is False
     assert metadata["progress"]["enabled"] is True
-
-def test_mmw_profile_helpers_mark_image_heavy_loader_wait():
-    cfg = {
-        "experiment": {"task": "fusion"},
-        "data": {
-            "dataset": {"type": "mmw", "seq_len": 8, "image_profile": "rgb_imagenet"},
-            "dataloader": {"batch_size": 4, "num_workers": 2, "prefetch_factor": 2, "persistent_workers": True},
-            "cache": {"policy": "off", "image": {"policy": "auto"}},
-        },
-        "model": {"primary": {"modalities": ["image", "gps", "mmwave"]}},
-        "training": {"transfer": {}, "amp": {}},
-    }
-    runtime = throughput_run_metadata(cfg)
-    mmw = profile_training_io._mmw_sensor_profile_summary(cfg, runtime)
-    risk = profile_training_io._io_risk_summary(
-        wait_breakdown={"p95_spikes": {"wait_gt_gpu_step": True}},
-        mmw_sensor_profile=mmw,
-    )
-
-    assert mmw["image_heavy"] is True
-    assert mmw["worker_memory_risk"] is True
-    assert risk["loader_wait_dominates_step"] is True
-    assert "enable_or_prewarm_image_derived_cache" in risk["primary_actions"]
 
 def test_lidar_cache_hit_miss_write_and_parameter_isolation(monkeypatch, tmp_path: Path):
     csv_path = tmp_path / "seq.csv"

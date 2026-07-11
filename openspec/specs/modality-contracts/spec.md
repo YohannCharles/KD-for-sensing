@@ -198,7 +198,7 @@ Difficulty profile MUST 使用中心化模态契约中的 canonical modality nam
 - **AND** image input profile MUST 仍保持 `rgb_imagenet` 或配置解析后的当前 profile
 
 ### Requirement: Image observability metadata 字段
-模态契约或等价中心化 helper MUST 定义 image observability 相关 difficulty metadata 字段语义。字段至少 MUST 覆盖 `image_valid_mask`、`image_observability_score`、`image_dropout_mask`、`image_burst_dropout_mask`、`image_degradation_metadata`、corruption type、severity、seed 和 frame range。
+模态契约或等价中心化 helper MUST 定义通用 image observability difficulty metadata 字段语义。字段至少 MUST 覆盖 `image_valid_mask`、`image_observability_score`、`image_dropout_mask`、`image_burst_dropout_mask`、`image_degradation_metadata`、corruption type、severity、seed 和 frame range；字段 MUST 不依赖已退役 Scenario-D condition id。
 
 #### Scenario: 查询 image observability metadata
 - **WHEN** 开发者查询 image modality 的 difficulty metadata fields
@@ -206,22 +206,22 @@ Difficulty profile MUST 使用中心化模态契约中的 canonical modality nam
 - **AND** 这些字段 MUST 被标记为输入 reliability metadata，而不是 target supervision 或辅助标签
 
 #### Scenario: metadata 字段不创建伪模态
-- **WHEN** 配置启用 Scenario D image observability difficulty
+- **WHEN** 配置启用通用 image degradation 或 missing difficulty
 - **THEN** affected modality MUST 仍标准化为 canonical `image`
 - **AND** 系统 MUST 拒绝 `image_hard`、`missing_image_modality` 或其它伪模态名称
 
 ### Requirement: Reliability metadata 进入 batch 输入映射
-训练、评估和 benchmark batch 输入映射 MUST 能将 image/GPS reliability metadata 传递给显式支持的模型，同时保持不支持该 metadata 的模型兼容。metadata 传递 MUST 不要求每个 difficulty condition 新增专用模型输入分支。
+训练和评估 batch 输入映射 MUST 能将通用 image/GPS reliability metadata 传递给显式支持的 current 模型，同时保持不支持该 metadata 的模型兼容。metadata 传递 MUST 不要求每个 difficulty condition 新增专用模型输入分支，也 MUST 不保留 Scenario-D/GPS-query benchmark 专属条件映射。
 
 #### Scenario: observability-aware 模型接收 metadata
-- **WHEN** 模型配置声明需要 observability-aware fusion
-- **THEN** batch 准备 MUST 向模型 forward 提供 image observability 和 GPS reliability metadata
+- **WHEN** current 模型配置声明需要 observability-aware fusion
+- **THEN** batch 准备 MUST 向模型 forward 提供其声明的 image observability 和 GPS reliability metadata
 - **AND** 缺少字段时 MUST 抛出清晰错误或记录配置声明的 fallback warning
 
-#### Scenario: legacy-compatible baseline 忽略 metadata
-- **WHEN** standard Image ResNet+GPS 或 Image-AE+GPS baseline 不声明 reliability metadata 输入
-- **THEN** batch 准备 MUST 允许其忽略 Scenario D metadata
-- **AND** benchmark comparability metadata MUST 记录该模型未消费 reliability metadata
+#### Scenario: 普通 baseline 忽略 metadata
+- **WHEN** standard Image ResNet+GPS 或其它 baseline 不声明 reliability metadata 输入
+- **THEN** batch 准备 MUST 允许其忽略通用 reliability metadata
+- **AND** run comparability metadata MUST 记录该模型是否消费 reliability metadata
 
 ### Requirement: 模态数据转换职责拆分
 数据转换模块 MUST 按 image、radar、lidar、gps、mmwave 和通用 IO/cache/normalization 职责组织。新增或修改某个模态的数据读取、特征构造或 cache key 时，变更 MUST 不要求编辑其它模态的转换实现。项目 MUST 不再保留 `the transform facade module` 或 `the transform aggregate module` 作为兼容聚合入口。

@@ -13,7 +13,6 @@ from kd_sensing.modalities import (
 from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
 import kd_sensing.models.amber_full  # noqa: F401
 from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder
-import kd_sensing.models.geometry_prior  # noqa: F401
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image_encoders import ResNet18ImageEncoder
 from kd_sensing.models.lidar import LidarFeatureExtractor
@@ -23,7 +22,6 @@ from kd_sensing.models.modular_config import (
     normalize_core_config,
     normalize_encoder_config,
     normalize_projector_config,
-    optional_component_config as _optional_component_config,
     validate_encoder_context_dependencies,
     validate_modality_encoder_profile,
 )
@@ -36,7 +34,6 @@ from kd_sensing.models.modular_forward import (
     component_training_strategy_metadata as _component_training_strategy_metadata,
     encoder_context_dependencies as _encoder_context_dependencies,
     encoder_context_source as _encoder_context_source,
-    post_process_logits_stage,
     run_core_head_stage,
     run_encoder_projector_stage,
 )
@@ -420,72 +417,6 @@ class TokenTransformerCore(nn.Module):
         }
 
 
-@REPRESENTATION_CORES.register("gps_query_weighted_token_readout")
-@REPRESENTATION_CORES.register("query_weighted_token_readout")
-class QueryWeightedTokenReadoutCore(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        modality_count: int,
-        dropout: float = 0.0,
-        **_: Any,
-    ) -> None:
-        super().__init__()
-        self.d_model = int(d_model)
-        self.modality_count = int(modality_count)
-        if self.d_model <= 0 or self.modality_count <= 0:
-            raise ValueError("query_weighted_token_readout dimensions must be positive.")
-        self.readout_logits = nn.Parameter(torch.zeros(self.modality_count))
-        self.dropout = nn.Dropout(float(dropout))
-        self.output_dim = self.d_model
-        self.last_token_readout_diagnostics: dict[str, Any] | None = None
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        if features.ndim != 4:
-            raise ValueError(f"query_weighted_token_readout expects [B, K, T, D], got {tuple(features.shape)}.")
-        batch_size, modality_count, seq_len, d_model = features.shape
-        if int(modality_count) != self.modality_count or int(d_model) != self.d_model:
-            raise ValueError(
-                "query_weighted_token_readout received incompatible features: "
-                f"expected K={self.modality_count}, D={self.d_model}, got {tuple(features.shape)}."
-            )
-        weights = torch.softmax(self.readout_logits, dim=0).to(device=features.device, dtype=features.dtype)
-        output = (self.dropout(features) * weights.view(1, self.modality_count, 1, 1)).sum(dim=1)
-        self.last_token_readout_diagnostics = {
-            "token_readout_type": "learned_query_weighted",
-            "k_tokens": self.modality_count,
-            "readout_weight_mean": weights.detach().cpu().tolist(),
-            "readout_weight_min": float(weights.detach().min().cpu().item()),
-            "readout_weight_max": float(weights.detach().max().cpu().item()),
-            "readout_trainable_params": int(self.readout_logits.numel()),
-            "output_shape": [int(batch_size), int(seq_len), int(d_model)],
-            "condition_id_consumed": False,
-            "blocked_condition_fields": [
-                "target_beam",
-                "beam_power",
-                "sample_label",
-                "predictive_condition_id",
-                "gps_condition",
-                "image_condition",
-                "c_idx",
-                "d_idx",
-            ],
-        }
-        return output
-
-    def training_strategy_metadata(self) -> dict[str, Any]:
-        return {
-            "type": "query_weighted_token_readout",
-            "d_model": self.d_model,
-            "modality_count": self.modality_count,
-            "token_readout_type": "learned_query_weighted",
-            "token_readout_trainable": True,
-            "readout_trainable_params": int(self.readout_logits.numel()),
-            "k_tokens": self.modality_count,
-            "output_shape": "[B,T,D]",
-            "condition_id_consumed": False,
-        }
-
 
 @REPRESENTATION_CORES.register("amr_lite")
 @REPRESENTATION_CORES.register("amr_lite_masked_gate")
@@ -579,76 +510,6 @@ class AmrLiteMaskedGateCore(nn.Module):
             "imputation_type": self.imputation_type,
             "consumes_missing_modality_metadata": True,
             "gate": "mask_aware_softmax_modality_gate",
-        }
-
-
-@REPRESENTATION_CORES.register("featuremod_lite")
-class FeatureModLiteCore(nn.Module):
-    supports_missing_modality_metadata = True
-
-    def __init__(
-        self,
-        d_model: int,
-        modality_count: int,
-        adapter_dim: int = 16,
-        output_dim: int | None = None,
-        condition: str = "missing_modalities",
-        **_: Any,
-    ) -> None:
-        super().__init__()
-        self.d_model = int(d_model)
-        self.modality_count = int(modality_count)
-        self.adapter_dim = int(adapter_dim)
-        self.output_dim = int(output_dim or d_model)
-        self.condition = str(condition)
-        if self.condition != "missing_modalities":
-            raise ValueError("featuremod_lite only supports condition='missing_modalities'.")
-        self.condition_adapter = nn.Sequential(
-            nn.LayerNorm(self.modality_count),
-            nn.Linear(self.modality_count, self.adapter_dim),
-            nn.GELU(),
-            nn.Linear(self.adapter_dim, self.d_model * 2),
-        )
-        self.output_projection = (
-            nn.Identity() if self.output_dim == self.d_model else nn.Linear(self.d_model, self.output_dim)
-        )
-
-    def forward(self, features: torch.Tensor, *, modality_available: torch.Tensor | None = None) -> torch.Tensor:
-        if features.ndim != 4:
-            raise ValueError(f"featuremod_lite core expects [B, K, T, D], got {tuple(features.shape)}.")
-        batch_size, modality_count, seq_len, d_model = features.shape
-        if int(modality_count) != self.modality_count or int(d_model) != self.d_model:
-            raise ValueError(
-                "featuremod_lite received incompatible features: "
-                f"expected K={self.modality_count}, D={self.d_model}, got {tuple(features.shape)}."
-            )
-        availability = _coerce_core_availability_mask(
-            modality_available,
-            features=features,
-            core_name="featuremod_lite",
-        ) if modality_available is not None else torch.ones(
-            batch_size,
-            self.modality_count,
-            seq_len,
-            dtype=torch.bool,
-            device=features.device,
-        )
-        visible = availability.to(dtype=features.dtype).unsqueeze(-1)
-        fused = (features * visible).sum(dim=1) / visible.sum(dim=1).clamp_min(1.0)
-        condition = (~availability).to(dtype=features.dtype).permute(0, 2, 1).contiguous()
-        gamma, beta = self.condition_adapter(condition).chunk(2, dim=-1)
-        adapted = fused * (1.0 + torch.tanh(gamma)) + beta
-        return self.output_projection(adapted)
-
-    def training_strategy_metadata(self) -> dict[str, Any]:
-        return {
-            "type": "featuremod_lite",
-            "d_model": self.d_model,
-            "output_dim": self.output_dim,
-            "modality_count": self.modality_count,
-            "adapter_dim": self.adapter_dim,
-            "condition": self.condition,
-            "consumes_missing_modality_metadata": True,
         }
 
 
@@ -1167,13 +1028,14 @@ class ModularSequenceModel(nn.Module):
         csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
         paper_metadata: dict[str, Any] | None = None,
-        geometry_prior: bool | dict[str, Any] | None = None,
-        logit_fusion: dict[str, Any] | None = None,
-        geometry_prior_fusion: dict[str, Any] | None = None,
-        reranker: bool | dict[str, Any] | None = None,
-        **_: Any,
+        **extra: Any,
     ):
         super().__init__()
+        retired_options = sorted(
+            key for key in extra if key in {"geometry_prior", "logit_fusion", "geometry_prior_fusion", "reranker"}
+        )
+        if retired_options:
+            raise ValueError(f"Unsupported modular_sequence options: {retired_options}.")
         self.supports_modality_kwargs = True
         self.modalities = normalize_modalities(tuple(modalities or ("image",)), context="modular sequence modalities")
         self.feature_size = int(feature_size)
@@ -1234,42 +1096,6 @@ class ModularSequenceModel(nn.Module):
         beam_cfg = normalize_beam_head_config(head_cfgs, core_output_dim=core_output_dim, num_classes=self.num_classes)
         self.head_configs = {"beam": dict(beam_cfg)}
         self.heads = nn.ModuleDict({"beam": HEADS.build(beam_cfg)})
-        self.geometry_prior_config: dict[str, Any] = _optional_component_config(
-            geometry_prior,
-            default_type="gps_geometry_prior",
-        )
-        self.geometry_prior: nn.Module | None = None
-        self.geometry_prior_fusion_config: dict[str, Any] = {}
-        self.geometry_prior_fusion: nn.Module | None = None
-        if self.geometry_prior_config:
-            if "gps" not in self.modalities:
-                raise ValueError("model.primary.geometry_prior.enabled=true requires 'gps' in model.primary.modalities.")
-            prior_cfg = dict(self.geometry_prior_config)
-            prior_cfg.setdefault("num_classes", self.num_classes)
-            prior_cfg.setdefault("num_pred", self.num_pred)
-            prior_cfg.setdefault("history_window", self.num_pred)
-            prior_cfg.setdefault("gps_source_window", self.num_pred)
-            self.geometry_prior_config = prior_cfg
-            self.geometry_prior = HEADS.build(prior_cfg)
-            fusion_cfg = _optional_component_config(
-                logit_fusion or geometry_prior_fusion or prior_cfg.get("fusion"),
-                default_type="geometry_prior_logit_fusion",
-                default_enabled=True,
-            )
-            fusion_cfg.setdefault("num_classes", self.num_classes)
-            fusion_cfg.setdefault("mode", prior_cfg.get("mode", "assistive"))
-            self.geometry_prior_fusion_config = fusion_cfg
-            self.geometry_prior_fusion = HEADS.build(fusion_cfg)
-        self.reranker_config: dict[str, Any] = _optional_component_config(
-            reranker,
-            default_type="safe_residual_beam_reranker",
-        )
-        self.reranker: nn.Module | None = None
-        if self.reranker_config:
-            rerank_cfg = dict(self.reranker_config)
-            rerank_cfg.setdefault("num_classes", self.num_classes)
-            self.reranker_config = rerank_cfg
-            self.reranker = HEADS.build(rerank_cfg)
         self.auxiliary_heads = TemporalAuxiliaryHeads(
             core_output_dim,
             num_pred=self.num_pred,
@@ -1300,17 +1126,14 @@ class ModularSequenceModel(nn.Module):
         lidar_dropout_mask: torch.Tensor | None = None,
         mmwave_dropout_mask: torch.Tensor | None = None,
         csi_dropout_mask: torch.Tensor | None = None,
-        gps_counterfactual_mask: torch.Tensor | None = None,
         temporal_mask: torch.Tensor | None = None,
         modality_temporal_mask: torch.Tensor | None = None,
-        benchmark_condition_metadata: dict[str, Any] | None = None,
-        image_degradation_metadata: dict[str, Any] | None = None,
         missing_mask: torch.Tensor | None = None,
         missing_modality_metadata: dict[str, Any] | None = None,
         available_modalities: list[str] | tuple[str, ...] | torch.Tensor | None = None,
         modality_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
-        del image_degradation_metadata, temporal_mask, modality_temporal_mask
+        del temporal_mask, modality_temporal_mask
         inputs = collect_forward_inputs(
             image_batch=image_batch,
             radar_batch=radar_batch,
@@ -1332,8 +1155,6 @@ class ModularSequenceModel(nn.Module):
             lidar_dropout_mask=lidar_dropout_mask,
             mmwave_dropout_mask=mmwave_dropout_mask,
             csi_dropout_mask=csi_dropout_mask,
-            gps_counterfactual_mask=gps_counterfactual_mask,
-            benchmark_condition_metadata=benchmark_condition_metadata,
         )
         modality_availability_overrides = _modular_missing_availability_overrides(
             self.modalities,
@@ -1360,20 +1181,9 @@ class ModularSequenceModel(nn.Module):
             modality_availability_overrides=modality_availability_overrides,
         )
         output_features, image_logits = run_core_head_stage(self, core_stage.core_input, core_stage.availability_mask)
-        logit_stage = post_process_logits_stage(
-            self,
-            image_logits,
-            gps_batch=gps_batch,
-            image_valid_mask=image_valid_mask,
-            image_observability_score=image_observability_score,
-            gps_valid_mask=gps_valid_mask,
-            gps_delay_steps=gps_delay_steps,
-            gps_counterfactual_mask=gps_counterfactual_mask,
-        )
         return assemble_model_output_stage(
             self,
-            logits=logit_stage.logits,
-            image_logits=image_logits,
+            logits=image_logits,
             input_features=core_stage.input_features,
             output_features=output_features,
             core_input=core_stage.core_input,
@@ -1381,11 +1191,7 @@ class ModularSequenceModel(nn.Module):
             has_token_features=core_stage.has_token_features,
             encoded=encoder_stage.encoded,
             projected=encoder_stage.projected,
-            encoder_auxiliary_features=encoder_stage.encoder_auxiliary_features,
             encoder_runtime_metadata=encoder_stage.encoder_runtime_metadata,
-            geometry_prior_payload=logit_stage.geometry_prior_payload,
-            geometry_fusion_payload=logit_stage.geometry_fusion_payload,
-            rerank_payload=logit_stage.rerank_payload,
             missing_modality_metadata_input=missing_modality_metadata,
         )
 
@@ -1447,43 +1253,12 @@ class ModularSequenceModel(nn.Module):
         for name, metadata in heads.items():
             if _component_consumes_reliability_metadata(self.heads[name], metadata):
                 reliability_consumers.append(f"heads.{name}")
-        geometry_prior_metadata: dict[str, Any] | None = None
-        if self.geometry_prior is not None:
-            geometry_prior_metadata = _component_training_strategy_metadata(
-                self.geometry_prior,
-                self.geometry_prior_config,
-                role="geometry_prior",
-            )
-            if _component_consumes_reliability_metadata(self.geometry_prior, geometry_prior_metadata):
-                reliability_consumers.append("geometry_prior")
-        geometry_fusion_metadata: dict[str, Any] | None = None
-        if self.geometry_prior_fusion is not None:
-            geometry_fusion_metadata = _component_training_strategy_metadata(
-                self.geometry_prior_fusion,
-                self.geometry_prior_fusion_config,
-                role="logit_fusion",
-            )
-            if _component_consumes_reliability_metadata(self.geometry_prior_fusion, geometry_fusion_metadata):
-                reliability_consumers.append("geometry_prior_logit_fusion")
-        reranker_metadata: dict[str, Any] | None = None
-        if self.reranker is not None:
-            reranker_metadata = _component_training_strategy_metadata(
-                self.reranker,
-                self.reranker_config,
-                role="safe_residual_reranker",
-            )
-            if _component_consumes_reliability_metadata(self.reranker, reranker_metadata):
-                reliability_consumers.append("safe_residual_reranker")
         core_type = str(self.representation_core_config.get("type", self.representation_core.__class__.__name__))
         token_readout_type = str(core_metadata.get("token_readout_type", "frame_feature"))
         metadata = {
             "type": "modular_sequence",
             "architecture_category": "component_baseline",
-            "model_group": "safe_residual_beam_rerank_fusion"
-            if reranker_metadata
-            else "geometry_prior_beam_fusion"
-            if geometry_prior_metadata
-            else "modular_sequence",
+            "model_group": "modular_sequence",
             "modalities": list(self.modalities),
             "enabled_modalities": list(self.modalities),
             "d_model": self.d_model,
@@ -1498,24 +1273,6 @@ class ModularSequenceModel(nn.Module):
             "readout_trainable_params": int(core_metadata.get("readout_trainable_params", 0) or 0),
             "k_tokens": core_metadata.get("k_tokens"),
             "heads": heads,
-            "geometry_prior": geometry_prior_metadata
-            or {
-                "enabled": False,
-                "mode": "disabled",
-            },
-            "geometry_prior_mode": (geometry_prior_metadata or {}).get("prior_mode", "disabled"),
-            "fusion_mode": (geometry_fusion_metadata or {}).get("fusion_mode", core_type),
-            "logit_fusion": geometry_fusion_metadata or {"enabled": False, "mode": "disabled"},
-            "safe_residual_reranker": reranker_metadata
-            or {
-                "enabled": False,
-                "mode": "disabled",
-            },
-            "reranker": reranker_metadata
-            or {
-                "enabled": False,
-                "mode": "disabled",
-            },
             "loss_mode": "config_resolved",
             "teacher_guidance_mode": "config_resolved",
             "curriculum_mode": "config_resolved",
@@ -1529,8 +1286,6 @@ class ModularSequenceModel(nn.Module):
                     "image_observability_score",
                     "gps_valid_mask",
                     "gps_delay_steps",
-                    "gps_counterfactual_mask",
-                    "benchmark_condition_metadata",
                 ],
             },
             "consumes_missing_modality_metadata": bool(missing_metadata_consumers),
@@ -1603,7 +1358,6 @@ __all__ = [
     "AmberLiteMissingModalityTransformerCore",
     "AmrLiteMaskedGateCore",
     "EarlyConcatGRUCore",
-    "FeatureModLiteCore",
     "GpsMLPEncoder",
     "IdentityProjector",
     "LidarCNNEncoder",

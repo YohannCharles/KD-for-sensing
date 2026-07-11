@@ -127,17 +127,17 @@
 - **AND** 历史引用 MUST 明确标记为 historical、retired 或 local/manual
 
 ### Requirement: 源码表面积优化必须保持核心 workflow 兼容
-删除冗余配置、拆分源码模块或收敛入口后，训练、评估、预处理和当前研究诊断的公开工作流 MUST 保持现有用户可见语义。实现 MAY 调整内部模块位置，但 MUST 不要求用户改用未记录的新命令。已退役的 viewer manifest 导出不属于该兼容承诺。
+删除冗余配置、源码模块或入口后，本 change 明确保留的十个 package CLI、final C2/U-Mask、Scene31-34 final analysis、MMW/CSI 和必要 evidence workflow MUST 保持用户可见语义。已登记删除的 dashboard/preview/doctor/query/旧 Scene31 surface 不属于兼容承诺。
 
-#### Scenario: 核心 CLI help 继续可用
-- **WHEN** 本 change 完成后开发者运行核心入口 help 检查
-- **THEN** `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-eval-u-mask-matrix`、`kd-sensing-mmw-town-gps-v2`、`kd-sensing-inspect-mmw-physics` 和 `kd-sensing-project-surface-doctor` MUST 正常退出
-- **AND** 对应包内 CLI 模块 MUST 继续可通过 `python -m kd_sensing.cli.<name> --help` 调用
+#### Scenario: 十个核心 CLI help 继续可用
+- **WHEN** cleanup 完成后运行 CLI help characterization
+- **THEN** pyproject 中十个 retained console scripts MUST 正常退出
+- **AND** tests MUST 不要求 research dashboard/preview 或 project surface doctor
 
-#### Scenario: 拆分模块不改变公共返回结构
-- **WHEN** 用户通过既有公开函数或 CLI 运行训练、评估、预处理或当前研究诊断
-- **THEN** 返回 payload、日志字段、诊断字段和主要输出路径语义 MUST 与拆分前兼容
-- **AND** 内部模块重命名 MUST 不要求用户修改配置文件中的公共字段
+#### Scenario: 保留 workflow 返回结构稳定
+- **WHEN** 用户运行 retained training/evaluation/preprocess/U-Mask/MMW/CSI workflow
+- **THEN** public config、payload、metric、checkpoint 和 output boundary MUST 保持
+- **AND** 内部删除 MUST 不要求未记录的新命令
 
 ### Requirement: 入口收敛不得让研究脚本成为核心依赖
 保留的 `scripts/` 和 `tools/analysis/` 研究或支持脚本 MUST 不成为核心训练、评估、预处理或 manifest 导出 workflow 的必需依赖。仓库级 `tools/visualization/` viewer support 已退役，核心 workflow MUST 通过包内模块或 package console script 完成。
@@ -153,23 +153,17 @@
 - **AND** 仓库级 Gradio viewer entrypoint MUST 不再作为当前支持脚本保留
 
 ### Requirement: Active mainline 与 legacy KD 模块边界
-项目 MUST 区分当前主线方法模块、supporting helper 和 legacy/retired 模块。当前主线包括 supervised beam prediction、Image+GPS JEPA query-pool downstream、paired baseline/control、Vision-Position baseline suite、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、soft-label supervised training 和通用训练/评估能力。HiST/Hist、GPS residual、camera residual、standalone Top8 selector、Raymobtime s008、BGAM、viewer manifest、CRAF/MARF/G2D、Multimodal-NF 和旧 KD MUST 不作为 active mainline 描述；若仍有通用 helper 被保留，MUST 标记为 supporting 或迁移边界。
+项目 MUST 将 final C2/U-MaskBeamJEPA missing-modality beam prediction 作为 active mainline，将 MMW/CSI、JEPA pretraining/mean-context、AMR/AMBER controls 与 current evidence owners作为 supporting/current surface。Image+GPS GPS-query、Vision-Position、JEPA visual/shortcut、geometry 和旧独立 RBMA/KD sweep MUST 标记 retired；U-Mask 内嵌 RBMA/prototype/full-to-partial teacher 分支明确受保护。
 
-#### Scenario: mainline 导入不触发 KD runtime
-- **WHEN** 开发者导入当前主线的训练、评估、JEPA downstream、CSI hardening、诊断或 soft-label helper
-- **THEN** 导入 MUST 不构建 frozen teacher runtime
-- **AND** 导入 MUST 不解析 teacher checkpoint registry
-- **AND** 导入 MUST 不要求 legacy KD baseline 模块可用
+#### Scenario: Mainline 导入不触发 retired runtime
+- **WHEN** 开发者导入 retained training/model/evaluation owners
+- **THEN** import MUST 不要求 GPS-query/visual-shortcut/geometry/legacy KD runtime
+- **AND** current U-Mask opt-in branches MUST 继续可构建
 
-#### Scenario: 退役 Hist 不属于 active mainline
-- **WHEN** 文档或测试列举 active mainline 方法
-- **THEN** 列表 MUST 不包含 HiST-Beam/Hist 专用 CLI、engine、model、evaluation、LOSO executor 或 history-anchor Hist workflow
-- **AND** 如提到 Hist 名称，MUST 明确为 retired-tombstone 或禁止回流边界
-
-#### Scenario: 架构测试拒绝 KD 和退役路线回流
-- **WHEN** 内部源码新增 active mainline 到 legacy KD runtime 聚合入口或退役路线专属模块的依赖
-- **THEN** 架构边界测试 MUST 失败
-- **AND** 失败信息 MUST 指向 no-KD objective、current workflow、supporting helper 或 migration guard 作为修复路径
+#### Scenario: Retired route 不属于 active mainline
+- **WHEN** docs/tests 列举 active mainline
+- **THEN** 列表 MUST 不包含旧 query/visual/shortcut/geometry/independent RBMA sweep
+- **AND** MMW/CSI/U-Mask owners MUST 不被误标 retired
 
 ### Requirement: 新主线方法不得包含 distillation 配置段
 新 current mainline 配置和运行时 MUST 用 `model.primary` 与 supervised/adaptation loss 表达训练。任何 `distillation.*`、`teacher_model_name`、`logits_kd`、`rkd` 或旧 `*_no_kd` 路径 MUST 在配置解析阶段失败并给出迁移建议。
@@ -185,17 +179,17 @@
 - **AND** 系统 MUST 不把该 run 作为可运行 baseline
 
 ### Requirement: 表面积 inventory 跟随当前主线
-项目 surface inventory MUST 将当前推荐入口描述为 Image+GPS JEPA query-pool 主线、paired baseline/control、Vision-Position baseline suite、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark 和通用训练评估能力。已退役的模态失衡诊断脚本、KD virtual alias、HiST/Hist、Raymobtime s008、standalone Top8 selector、GPS residual、camera residual、BGAM、viewer manifest、CRAF/MARF/G2D 和 Multimodal-NF MUST 不作为新入口或健康检查要求出现。
+项目 surface inventory MUST 将 final C2/U-Mask、十个 package CLI、Scene31-34 final analysis、MMW/CSI、AMR/AMBER controls 和有真实 consumer 的 supporting owners 作为 current/supporting 表面。GPS-query、JEPA visual/shortcut、Vision-Position、geometry、旧 Scene31 和删除 CLI MUST 只在 retired/historical 行出现。
 
-#### Scenario: inventory 删除旧研究入口
+#### Scenario: Inventory 只列真实 current surface
 - **WHEN** 开发者阅读 `docs/project_surface_inventory.md`
-- **THEN** 文档 MUST 不再把旧模态子集/扰动诊断脚本或退役研究线列为长期维护 research diagnostic/current entry
-- **AND** 文档 MUST 保留本地产物边界说明，不要求删除或迁移历史 `outputs/`、`logs/` 或 `dataset/`
+- **THEN** current/recommended rows MUST 对应真实 pyproject/config/source owner
+- **AND** retired rows MUST 不提供 current command
 
-#### Scenario: inventory 标注 supporting 能力
-- **WHEN** 某个支撑代码仍被 benchmark、metrics、CSI、GPS v2 或 migration guard 消费，但其 standalone workflow 已退役
-- **THEN** inventory MUST 将其描述为 supporting 或支撑代码
-- **AND** inventory MUST 不为该旧 workflow 新增 root config、console script 或 quickstart 命令
+#### Scenario: Supporting 能力有 consumer 证据
+- **WHEN** target-shot、architecture summary、AMR-lite、JEPA mean 或 run-index resources 标记 supporting
+- **THEN** inventory MUST 记录 current consumer 和 focused validation
+- **AND** 不得因此恢复 standalone CLI
 
 ### Requirement: Generated Scene31 YAML 必须可清理或有理由保留
 Scene31 generated YAML MUST 不静默扩大源码表面。需要长期跟踪的实体 YAML MUST 有 current/local/manual 保留理由；可由 generator 和 manifest 无损重建的 YAML MUST 改为本地生成产物或登记删除计划。
@@ -212,13 +206,13 @@ Scene31 generated YAML MUST 不静默扩大源码表面。需要长期跟踪的�
 ### Requirement: 缺失模态主线清理必须先分类再删除
 项目在围绕缺失模态鲁棒性主线清理源码、脚本或配置前，MUST 将候选项分类为 current、secondary/supporting、local/manual、historical、retired、delete-candidate 或 merge-candidate。分类记录 MUST 包含 owner、当前调用方或引用、公开入口风险、替代入口、验证命令和回滚方式。未分类候选 MUST 不得被 README、docs、OpenSpec current specs 或 package CLI 描述为当前推荐入口。
 
-#### Scenario: doctor 候选被分类
-- **WHEN** `project_surface_doctor` 报告未分类 scripts、configs 或 hotspots
-- **THEN** implementation MUST 删除该候选、合并到现有 owner，或在 inventory/等价生命周期文档中登记分类
+#### Scenario: 候选通过 tracked authority 分类
+- **WHEN** tracked source、pyproject、configs、current specs、inventory 或 focused tests 发现未分类 scripts、configs 或 owner
+- **THEN** implementation MUST 删除该候选、合并到现有 owner，或在 inventory 中登记 retained-with-evidence
 - **AND** 最终状态 MUST 不把未分类候选留在 current supported surface
 
 #### Scenario: 当前主线证据链被保护
-- **WHEN** 候选项属于 U-MaskBeamJEPA 模型、U-Mask loss、run metadata、migration guard、retired-route guard test、当前 Scene31-34 主线 runner/summary/export 或明确 claim 证据输入
+- **WHEN** 候选项属于 U-MaskBeamJEPA 模型、U-Mask loss、run metadata、migration guard、集中 retired-route guard、当前 Scene31-34 主线 analysis/export 或明确 claim 证据输入
 - **THEN** implementation MUST 不直接删除该候选
 - **AND** 若仍需缩小，MUST 先记录替代 owner、保持公共语义的验证命令和单独删除触发条件
 
@@ -246,17 +240,17 @@ Scene31、Scene31-34、RBMA missing-modality、KD/BTAPA/weakKD/tau/seed/PatternF
 - **AND** 删除前 MUST 更新对应 claim provenance 和验证命令
 
 ### Requirement: 清理后 current surface 不得留下未分类漂移
-缺失模态主线清理完成后，scripts、configs 和 hotspots 的治理检查 MUST 能发现未分类漂移，并 MUST 对重复入口、已退役路线回流和不存在路径引用给出失败或 warning。实现 MAY 保留 local/manual 研究入口，但 MUST 明确其不是 package CLI、quickstart 唯一入口或长期 canonical config。
+缺失模态主线清理完成后，轻量架构检查 MUST 发现未分类漂移，并 MUST 对重复入口、已退役路线回流和不存在路径引用失败。实现 MAY 保留 local/manual 研究入口，但 MUST 明确其不是 package CLI、quickstart 唯一入口或长期 canonical config。
 
-#### Scenario: surface doctor 作为验收门
+#### Scenario: 结构检查作为验收门
 - **WHEN** implementation 完成缺失模态主线表面清理
-- **THEN** `project_surface_doctor` MUST 能在 scripts、configs 和 hotspots scope 中通过该 change 设定的 fail-on 门槛
-- **AND** 输出 MUST 不再列出本 change 范围内的未分类 Scene31/Scene31-34 helper、未分类实验 YAML 或未登记大 owner
+- **THEN** architecture、CLI/config 和 compile focused checks MUST 通过
+- **AND** 检查 MUST 不要求 project surface doctor 或新的 inventory dump 工具存在
 
 #### Scenario: 删除不创建兼容 wrapper
 - **WHEN** implementation 删除或合并 local/manual 历史入口
 - **THEN** 项目 MUST 不新增同名 thin wrapper、legacy alias、virtual config、二级聚合层或兼容 fallback
-- **AND** 文档 MUST 指向当前主线入口、local/manual 登记项、普通 unknown-name 失败或 retired tombstone
+- **AND** 文档 MUST 指向当前主线入口、local/manual 登记项、普通 unknown-name 失败或集中 retired-route summary
 
 ### Requirement: Post-C2 清理必须保护主线与 MMW
 项目在 post-C2 表面积清理中 MUST 先建立 protected inventory，再删除源码、配置、脚本、测试或文档入口。protected inventory MUST 至少覆盖 final C2 / U-MaskBeamJEPA 缺失模态主线、当前 claim/evidence 输入、MMW/CSI 数据集与 workflow、主线 YAML/manifest、以及 U-MaskBeamJEPA 已存在 fusion 分支实现。
@@ -304,4 +298,17 @@ Post-C2 清理 MUST 分波次实施，每波只处理一个稳定边界：保护
 - **WHEN** 某个非主线入口被删除
 - **THEN** 项目 MUST 不新增同名 wrapper、stub CLI、virtual config、package facade 或 compatibility alias
 - **AND** 文档 MUST 指向保留主线入口、MMW 入口、historical note、普通 unknown-name 错误或 retired tombstone
+
+### Requirement: Post-C2 删除候选必须退出真实维护面
+满足 retired 或 zero-consumer 删除条件的候选 MUST 从源码、测试、public entrypoint、current docs 和独立 current spec 中一起移除。实现 MUST 不以移动目录、增加 wrapper、登记永久例外或新建治理工具代替删除。
+
+#### Scenario: 高置信候选被完整删除
+- **WHEN** 候选没有 current config、package CLI、源码调用方、claim provenance 或 protected inventory 引用
+- **THEN** implementation MUST 删除实现和只服务该实现的测试、脚本与 current wording
+- **AND** Git/OpenSpec archive MAY 保留历史，不得新建 `legacy` package
+
+#### Scenario: 候选因真实消费者保留
+- **WHEN** 引用审计发现候选仍被 current workflow 消费
+- **THEN** deletion ledger MUST 记录调用路径、owner、focused validation 和删除触发条件
+- **AND** “未来可能使用” MUST NOT 作为 retained-with-evidence 理由
 

@@ -4,42 +4,17 @@
 定义配置驱动训练、评估、预处理、诊断、运行产物保存、README 入口边界以及 virtual/overlay 配置复现实验的工作流要求。
 ## Requirements
 ### Requirement: 配置驱动实验
-项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、CSV 文件名、模态类型、`model.primary` 主模型、supervised/adaptation/JEPA/CSI 或诊断目标、训练超参数、优化器、调度器、输出目录、随机种子、GPS 特征模式和 fusion 模态选择。当前支持的训练配置 MUST 不覆盖 KD 模式或 teacher checkpoint；旧 KD、teacher/student no-KD、Hist、Top8 standalone、residual、camera residual、BGAM 和 viewer manifest 路径 MUST 在配置解析或 registry 层被拒绝。
+项目 MUST 提供配置文件驱动的训练、评估和预处理入口。配置 MUST 覆盖数据路径、模态、`model.primary`、current supervised/adaptation/JEPA/CSI/U-Mask/MMW 目标、训练参数和输出边界；当前 workflow MUST 不要求 GPS-query、JEPA visual/shortcut、旧 Scene31 BTAPA/night-grid/next-round 或 retired KD 路线。
 
-#### Scenario: 使用配置启动 image-only 训练
-- **WHEN** 用户通过当前 CLI 传入 image-only 训练配置
-- **THEN** 系统 MUST 构建 image-only dataset、`model.primary`、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** 系统 MUST 不构建 frozen teacher 或 distiller
+#### Scenario: 使用配置启动 current 训练评估
+- **WHEN** 用户通过 retained CLI 传入 current single-modality、fusion、U-Mask、JEPA pretraining、MMW 或 CSI 配置
+- **THEN** 系统 MUST 构建配置声明的数据、model、loss、optimizer/evaluation owner
+- **AND** 未启用模态、retired teacher/distiller 或 deleted diagnostic MUST 不成为依赖
 
-#### Scenario: 使用配置启动 fusion 训练
-- **WHEN** 用户通过当前 CLI 传入 fusion 训练配置
-- **THEN** 系统 MUST 构建同时包含启用模态输入的 dataset、fusion `model.primary`、loss、optimizer 和 scheduler
-- **AND** 系统 MUST 不要求 teacher checkpoint
-
-#### Scenario: 使用配置启动 radar-only 训练
-- **WHEN** 用户通过当前 CLI 传入 radar-only 训练配置
-- **THEN** 系统 MUST 构建包含 radar 输入的 dataset、配置指定的 radar primary model、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** 训练流程 MUST 不要求 image 输入、teacher checkpoint 或 distiller
-
-#### Scenario: 使用配置启动 GPS-only 训练
-- **WHEN** 用户通过当前 CLI 传入 GPS-only 训练配置
-- **THEN** 系统 MUST 构建包含 GPS 输入的 dataset、配置指定的 GPS primary model、loss、optimizer 和 scheduler，并进入训练流程
-- **AND** GPS 输入 MUST 使用配置声明的当前 GPS feature mode 和 train-split normalization
-
-#### Scenario: 使用配置启动单模态评估
-- **WHEN** 用户通过当前 CLI 传入 image、radar、GPS、LiDAR、mmWave 或 CSI 单模态评估配置和模型权重
-- **THEN** 系统 MUST 构建配置指定的 primary model 并只使用启用模态完成评估
-- **AND** 系统 MUST 保存当前 objective 支持的 Top-K、DBA、loss 或诊断指标
-
-#### Scenario: 使用配置启动可选模态 fusion 训练
-- **WHEN** 用户通过当前 CLI 传入带 `modalities` 的 fusion 配置
-- **THEN** 系统 MUST 只准备并融合 `modalities` 中列出的当前支持模态
-- **AND** 未启用模态的文件缺失 MUST 不阻止当前任务启动
-
-#### Scenario: 使用当前 JEPA、GPS、CSI 和诊断 workflow
-- **WHEN** 用户运行当前 JEPA pretraining/downstream、GPS-query pooling、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark 或其它 current benchmark 配置
-- **THEN** 系统 MUST 使用对应 current workflow 的 `model.primary`、runner manifest 或诊断 schema
-- **AND** 系统 MUST 不恢复 legacy KD、Hist、standalone Top8 selector、GPS residual、camera residual、BGAM 或 viewer manifest runtime
+#### Scenario: 使用 current supporting workflow
+- **WHEN** 用户运行 JEPA pretraining/mean reuse、MMW GPS/physics、CSI hardening 或 U-Mask eval matrix
+- **THEN** 系统 MUST 使用对应 current package owner 和 config contract
+- **AND** 系统 MUST 不恢复 GPS-query pooling、JEPA visual/shortcut、legacy KD/Hist/BGAM/viewer 或旧 Scene31 workflow
 
 ### Requirement: 命令行覆盖配置
 实验入口 MUST 支持在命令行覆盖配置值。当前 CLI MUST 支持显式传入配置文件和关键参数覆盖；旧脚本 argparse 参数不得作为兼容入口保留，只能作为迁移默认值参考。命令行覆盖 MUST 不能绕过当前配置解析 guard 来重新启用 KD、teacher checkpoint、retired config alias 或旧研究路线。
@@ -223,96 +198,6 @@ CSV 处理和序列生成 MUST 通过新预处理脚本或包内 CLI 作为独�
 - **WHEN** 用户运行包含 image、radar、gps、lidar、mmwave 或 csi 的合法 fusion 配置
 - **THEN** 系统 MUST 构建配置声明的启用模态输入和 fusion primary model
 - **AND** 系统 MUST 使用统一训练、验证和评估流程输出指标
-
-### Requirement: BTAPA tau1 seed 与 es20 配置族
-项目 MUST 提供不覆盖原始 tau1 的 BTAPA tau1 seed2/seed3 配置和 es20 配置族。除 seed、输出路径和 es20 early stopping 字段外，配置 MUST 与 `main_v3_strong_reliability_btapa_tau1.yaml` 保持一致，并 MUST 不启用 RBMA、JEPA、KD、fullaux 或 ADBA-aware proto。
-
-#### Scenario: seed 配置不覆盖原始 run
-- **WHEN** 用户运行 `main_v3_strong_reliability_btapa_tau1_seed2.yaml` 或 `main_v3_strong_reliability_btapa_tau1_seed3.yaml`
-- **THEN** 输出路径或 run name MUST 包含 `btapa_tau1_seed2` 或 `btapa_tau1_seed3`
-- **AND** 配置 MUST 支持 `--auto_resume`
-
-#### Scenario: es20 配置启用短训练早停
-- **WHEN** 用户运行任一 `main_v3_strong_reliability_btapa_tau1_es20*.yaml`
-- **THEN** 配置 MUST 设置 `max_epochs: 20` 或项目等价字段
-- **AND** 配置 MUST 启用以 `val_top1` 或项目等价字段为指标的 early stopping、patience 5 和 best checkpoint 选择
-
-### Requirement: 固定 GPU shell launcher 已收敛为直接命令
-项目 MUST 不再要求固定 GPU queue shell 来运行 BTAPA tau1、proto-vs-BTAPA 或 night-grid 训练。保留的契约是配置、manifest、`kd-sensing-train --config <yaml>`、fresh eval helper 和只读分析脚本；并发、GPU 绑定和日志策略属于用户本地任务系统或 shell 临时命令，不进入源码长期表面。
-
-#### Scenario: BTAPA tau1 直接训练
-- **WHEN** 用户需要复跑 BTAPA tau1 seed/es20 配置
-- **THEN** 用户 MUST 使用 `kd-sensing-train --config configs/scene31/<btapa-yaml> --auto_resume` 或等价当前训练入口
-- **AND** 项目 MUST 不要求 `scripts/run_btapa_tau1_validation.sh` 或 `scripts/run_proto_vs_btapa_8gpu.sh` 存在
-
-#### Scenario: fresh eval 仍可组合
-- **WHEN** 用户需要训练后 apples-to-apples 复评
-- **THEN** 用户 MAY 运行 `python -m kd_sensing.diagnostics.apples_to_apples_evaluation`、`scripts/eval_night_grid.py` 或对应 analysis helper
-- **AND** 缺失 checkpoint 的 run MUST warning 但不阻断其它 run 复评
-
-### Requirement: proto vs BTAPA seed mean±std 分析
-项目 MUST 提供 `scripts/analyze_proto_vs_btapa_seeds.py`，读取 fresh apples-to-apples eval 输出，生成 seed metrics、mean±std、delta 和 paper-ready observation。报告 MUST 重点列出 full、avg_missing、missing_gps、radar_only、lidar_only 的 Top-1 和 avg_missing ADBA，并在 delta 小于 std 时提示谨慎报告。
-
-#### Scenario: 输出 mean std 与 delta
-- **WHEN** 用户传入 proto 三 seed、BTAPA tau1 三 seed 和 fresh eval 目录
-- **THEN** 脚本 MUST 输出 seed metrics、mean±std、delta mean 和 Markdown 报告
-- **AND** Markdown MUST 包含保守 paper-ready observation 与 seed 方差提示
-
-### Requirement: Scene31 night grid config generation
-项目 MUST 提供 `scripts/generate_experiment_grid.py`，从 `configs/scene31/templates/main_v3_proto_es20_base.yaml` 生成 A-F 共 58 个 run 配置，并在 manifest 中加入 6 个 proto/BTAPA reference run，总计 64 个 run。默认 MUST 不覆盖已有配置。
-
-#### Scenario: 生成 manifest
-- **WHEN** 用户运行生成脚本并指定 out_dir
-- **THEN** 系统 MUST 写出 `experiment_manifest.csv` 和 `experiment_manifest.json`
-- **AND** manifest MUST 包含 `run_name,group,config_path,seed,method_tags,expected_epochs,priority`
-
-#### Scenario: 输出路径唯一
-- **WHEN** 生成任一 night grid 配置
-- **THEN** 配置中的 run name、exp name 或 output_dir MUST 与其它 run 唯一区分
-
-### Requirement: night grid generated configs are local artifacts
-项目 MUST 保留 night-grid manifest/base/generator 和 generator sanity test，但 MUST 不要求把生成的 58 个 run YAML 长期提交到源码。需要训练时，用户先在本地输出目录或显式 config 目录生成 YAML，再使用当前 `kd-sensing-train` 入口运行。
-
-#### Scenario: 生成后训练
-- **WHEN** 用户运行 `scripts/generate_experiment_grid.py --out_dir <local-config-dir>`
-- **THEN** generator MUST 写出 manifest 和实体 YAML 到指定目录
-- **AND** 源码长期表面 MAY 只保留 manifest/base/generator
-
-### Requirement: night grid fresh eval
-项目 MUST 提供 `scripts/eval_night_grid.py` 对 manifest 中已完成 run 做 fresh apples-to-apples eval。该脚本 MUST 使用统一 checkpoint resolver 和统一 missing pattern helper，缺失 checkpoint MUST warning 但不中断。
-
-#### Scenario: 输出 pattern metrics
-- **WHEN** eval 脚本找到某 run checkpoint
-- **THEN** 输出 `night_grid_metrics.csv`、`night_grid_metrics.md` 和 `checkpoint_manifest.json`
-- **AND** CSV 行 MUST 包含 run、group、seed、pattern、Top-K、ADBA、MAE、loss、count、checkpoint path 和 checkpoint epoch
-
-### Requirement: night grid analysis
-项目 MUST 提供 `scripts/analyze_night_grid.py`，从 fresh eval 指标计算 by-run、by-group、mean/std、delta-vs-proto、top candidates 和 paper observations。排序 MUST 支持 balanced_score，并惩罚相对 proto 损伤 missing_gps、missing_radar 和 full top1 的候选。
-
-#### Scenario: top candidates 输出
-- **WHEN** analysis 脚本运行成功
-- **THEN** `night_grid_top_candidates.md` MUST 列出 best avg_missing、best radar_only、best lidar_only、best balanced_score、best without hurting missing_gps、best without hurting missing_radar 和 seed3/40 epoch follow-up top3
-- **AND** 若提升小于 seed std，报告 MUST 提示谨慎
-
-### Requirement: summary 兼容 night grid
-`scripts/summarize_missing_runs.py` MUST 支持 manifest 输入并识别 night grid run 状态。状态 MUST 至少包括 completed、completed_early_stopped、incomplete_has_checkpoint、killed_or_failed 和 missing。
-
-#### Scenario: manifest summary 字段
-- **WHEN** 用户传入 night grid manifest 和 expected epochs
-- **THEN** summary 输出 MUST 至少包含 `run_name,group,status,best_epoch,final_epoch,best_val_acc,best_val_adba,best_checkpoint,log_path,exit_code`
-
-### Requirement: Scene31 next-round local follow-up workflow
-项目 MUST 将 Scene31 next-round follow-up 作为 local/manual experiment workflow 处理。该 workflow MUST 复用现有 `kd-sensing-train`、missing-pattern fresh eval 和本地输出边界，不得改变已有 Scene31 es20 night-grid 配置或 baseline 行为。
-
-#### Scenario: next-round fresh eval 查找配置
-- **WHEN** fresh eval 需要评估 next-round manifest 中的 run
-- **THEN** 配置查找 MUST 优先使用 run 目录下的 `final_config.yaml` 或 `resolved_config.yaml`
-- **AND** 手写 `configs/scene31/<run>.yaml` MAY 作为 legacy/local fallback
-
-#### Scenario: local/manual 输出边界
-- **WHEN** 用户运行 Scene31 next-round launcher 或汇总脚本
-- **THEN** 训练、评估和汇总产物 MUST 写入 ignored 的 `outputs/` 或 `logs/` 下
-- **AND** 系统 MUST 不提交 checkpoint、日志、fresh eval CSV 或训练输出
 
 ### Requirement: Verify workflow 不等同训练 workflow
 项目的 verify、CI、lint 和 smoke workflow MUST 与真实训练/评估 workflow 保持边界清晰。Verify workflow 只能检查源码、配置、OpenSpec、CLI help、synthetic forward 或 mock schema；真实训练、长时间评估、feature cache 生成和 checkpoint 写入仍 MUST 通过显式训练/评估入口触发。

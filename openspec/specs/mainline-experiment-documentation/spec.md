@@ -4,17 +4,17 @@
 定义当前主线模型目录、实验协议表、结果/claim 账本、baseline 报告分层和跨文档索引规则，使维护者能区分当前可引用事实、local substitute、blocked official、upper-bound、mock/smoke 和 historical ablation。
 ## Requirements
 ### Requirement: 主线模型目录
-项目 MUST 维护当前主线模型目录，用于集中说明每条当前主线、baseline/control 和诊断 workflow 的研究问题、模型边界、配置入口、数据口径、指标口径、运行状态和结果引用。该目录 MUST 位于 `docs/mainline_model_catalog.md` 或等价 current 文档中，并 MUST 不把 retired、historical、supporting 或 mock-only workflow 描述为当前推荐入口。
+项目 MUST 维护当前主线模型目录，用于集中说明 final C2 / U-MaskBeamJEPA、必要 baseline/control、MMW/CSI supporting workflow 和当前证据 owner 的研究问题、配置入口、数据口径、指标口径、运行状态与结果引用。目录 MUST 位于 `docs/mainline_model_catalog.md` 或等价 current 文档中，并 MUST 不把 retired、historical、supporting-only 或 mock-only workflow 描述为当前推荐入口。
 
 #### Scenario: 主线模型目录覆盖当前支持面
 - **WHEN** 开发者阅读主线模型目录
-- **THEN** 文档 MUST 至少覆盖 Image+GPS JEPA GPS-biased reuse、GPS-query pooling、supervised/random controls、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct 本地 substitute、BEV-Fusion 2604、MMW GPS v2、CSI hardening、JEPA visual analysis 和 GPS shortcut benchmark
-- **AND** 每行 MUST 标明对应 config、入口命令或诊断入口、数据集/场景、split/target、metric profile、运行状态和主要 caveat
+- **THEN** 文档 MUST 覆盖 final C2 / U-MaskBeamJEPA、U-Mask eval matrix、仍用于对照的 AMR/AMBER、MMW GPS v2、physics-informed MMW、CSI hardening 和 current paper evidence owner
+- **AND** 每行 MUST 标明 config/入口、数据集/场景、split/target、metric profile、运行状态和 caveat
 
 #### Scenario: 退役路线不得进入 current 主线表
-- **WHEN** 主线模型目录提到 KD、HiST/Hist、Raymobtime s008、standalone Top8 selector、GPS residual、camera residual、CRAF/MARF/G2D 或 Multimodal-NF
-- **THEN** 对应行 MUST 标记为 retired、historical 或 migration guard
-- **AND** 文档 MUST 不提供这些路线的当前推荐训练命令
+- **WHEN** 主线模型目录提到 Image+GPS JEPA query-pool、Vision-Position、BeamBench、BEV-Fusion、KD、Hist、geometry prior 或旧 Scene31 workflow
+- **THEN** 对应行 MUST 标记为 retired、historical 或 compatibility context
+- **AND** 文档 MUST 不提供这些路线的 current 推荐训练命令
 
 ### Requirement: 实验协议和参数表
 项目 MUST 维护实验协议和参数表，用于将主要配置族的正式口径、smoke/debug/lowmem 口径、upper-bound 口径和历史 ablation 口径分开。该表 MUST 位于 `docs/experiment_protocols.md` 或等价 current 文档中，并 MUST 能让读者不打开多个 YAML 也能判断实验是否可横向比较。
@@ -129,24 +129,6 @@ README、实验矩阵和协议表 MUST 只推荐仍维护的 current package CLI
 - **THEN** `docs/result_claims_registry.md` MUST NOT 填入真实性能数值
 - **AND** 它 MUST 只记录 pending/unverified 状态、输出路径边界和升级条件
 
-### Requirement: RBMA ablation documentation
-主线实验文档 MUST 记录 RBMA/prototype/KD missing-modality ablation 的 local/pending status、配置入口、推荐运行顺序、比较口径和 claim caveat。文档 MUST 不把未验证本地实验描述为 official reproduction 或已达成数值 claim。
-
-#### Scenario: 文档记录推荐四配置
-- **WHEN** RBMA ablation configs 加入仓库
-- **THEN** `docs/experiment_matrix.md` 或等价 current 文档 MUST 记录首轮推荐运行 `amber_style_mask_baseline`、`no_jepa_rbma`、`no_jepa_rbma_proto` 和 `no_jepa_rbma_proto_kd`
-- **AND** 文档 MUST 说明 `jepa_small_lambda_rbma_proto_kd` 是后续对照而非首轮必跑项
-
-#### Scenario: claim registry 保持 pending/local
-- **WHEN** 文档记录 RBMA workflow 结果入口或实验计划
-- **THEN** `docs/result_claims_registry.md` 或等价 claim 账本 MUST 将其标记为 local/pending，直到真实评估结果和 provenance 完整
-- **AND** 文档 MUST 不声称 AMBER official 数值复现已完成
-
-#### Scenario: 实验协议记录 pattern 口径
-- **WHEN** 文档描述 missing pattern evaluation
-- **THEN** `docs/experiment_protocols.md` 或等价协议文档 MUST 记录 canonical 模态顺序、pattern definitions、pattern probabilities、hard-label metrics 和输出边界
-- **AND** 文档 MUST 明确内部使用 `image` 而不是 `vision` 作为 canonical 模态名
-
 ### Requirement: 推荐实验文档保持精简入口
 实验工作流文档 MUST 将 README 作为入口地图，而不是完整实验手册。README MUST 指向 canonical config、docs 和 OpenSpec；详细实验矩阵、分析流程和调参说明 MUST 放在 `docs/` 或对应 specs 中。已退役的 G2D、CRAF、MARF 和 Multimodal-NF 内容 MUST 从 README 推荐入口和实验矩阵中删除。
 
@@ -177,66 +159,6 @@ README、实验矩阵和协议表 MUST 只推荐仍维护的 current package CLI
 - **WHEN** 用户加载当前推荐的 mainline 配置
 - **THEN** 配置 MUST 能在没有 teacher checkpoint 的情况下完成解析和 dry-run/smoke 构建
 - **AND** 输出 metadata MUST 不记录 KD-enabled lineage
-
-### Requirement: 项目描述反映当前主线
-项目元数据、README 和高层文档 MUST 将当前项目主线描述为多模态 beam prediction、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、GPS v2/adapter、MMW Town GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和诊断，而不是 KD-first、HiST-Beam-first、Raymobtime-first、Top8/residual-first、BGAM-first、viewer-first 或 GPS coarse-anchor-first 工作流。历史 KD、Hist、Raymobtime、Top8 selector、residual、camera residual、BGAM、viewer manifest 或 GPS coarse anchor 背景可以保留在 archive 或历史说明中，但必须标记为已退役或历史记录。
-
-#### Scenario: pyproject 描述不再 KD Hist 或退役路线 first
-- **WHEN** 开发者查看 `pyproject.toml` 的项目 description
-- **THEN** description MUST 不把 knowledge distillation、HiST-Beam、Top8 selector、residual 或 GPS coarse anchor 描述为当前唯一或首要工作流
-- **AND** 若提到这些路线，MUST 表达其为 legacy、historical 或 retired
-
-#### Scenario: 文档保留历史说明
-- **WHEN** README 或 docs 提到历史 KD、Hist、Top8 selector、residual、camera residual 或 GPS coarse anchor 代码
-- **THEN** 文档 MUST 说明对应能力已从当前 active mainline 退役
-- **AND** 文档 MUST 不提供当前推荐运行命令
-
-### Requirement: 当前推荐 workflow 聚焦少样本跨场景主线
-README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supervised/adaptation baseline、Image+GPS JEPA query-pool、paired baseline/control、Vision-Position baseline suite、Arnold22 Camera AE+GPS Direct、MMW GPS v2、CSI hardening、JEPA visual analysis、GPS shortcut benchmark、预处理和当前诊断。KD baseline、HiST-Beam/Hist、Raymobtime s008、Top8 selector standalone workflow、GPS coarse anchor、residual fusion、camera residual、BGAM、viewer manifest、模态失衡诊断脚本、objective-aware auxiliary tasks 和 snapshot next-frame MUST 作为 optional、supporting、historical 或 retired workflow 描述，不得作为 few-shot cross-scene 默认主线步骤。
-
-#### Scenario: quickstart 不推荐退役脚本
-- **WHEN** 开发者阅读 README 或 `docs/experiment_matrix.md`
-- **THEN** 文档 MUST 不推荐运行 `kd-sensing-hist-beam-loso`、`configs/hist_beam/*`、Raymobtime s008、retired Top8 selector/residual/GPS coarse anchor 命令或已退役的独立模态诊断脚本
-- **AND** 若需要当前主线实验，文档 MUST 指向仍存在的配置化 CLI 或包内 workflow
-
-#### Scenario: optional workflow 与主线区分
-- **WHEN** 文档提到 legacy KD、HiST-Beam、Top8 selector、residual、camera residual、GPS coarse anchor、snapshot next-frame、occlusion、position 或 multitask objective
-- **THEN** 文档 MUST 明确它们不是当前主结论的默认步骤
-- **AND** 文档 MUST 不要求先运行这些支线才能执行当前 DeepSense6G/MMW/JEPA/CSI 主线
-
-#### Scenario: 当前 workflow 文档声明运行状态
-- **WHEN** 文档列出当前实验配置、benchmark manifest 或诊断配置
-- **THEN** 文档 MUST 标明该条目是 formal、lowmem、smoke、debug、evaluation-only、upper-bound、historical ablation 还是 mock
-- **AND** upper-bound、mock、smoke 或 historical ablation MUST 不得被写成正式结论
-
-### Requirement: 健康检查反映保留入口
-快速健康检查 MUST 覆盖当前仍支持的架构边界、包内 CLI、JEPA visual analysis、GPS shortcut benchmark、文档健康和当前主线 focused tests。健康检查 MUST 不要求 Raymobtime s008、已退役的模态失衡诊断脚本、fusion KD virtual alias、BGAM、viewer manifest 或 HiST-Beam/Hist CLI 可用。
-
-#### Scenario: focused validation 不依赖退役入口
-- **WHEN** 开发者执行本 change 的 focused 验证
-- **THEN** 验证命令 MUST 使用 `conda run -n kd_mm_beam`
-- **AND** 命令 MUST 不包含已退役的 Hist CLI、Hist configs 或独立模态诊断脚本
-- **AND** 验证 MUST 覆盖配置加载失败、架构边界、registry 和保留 evaluation subset 能力
-
-### Requirement: 当前支持面收敛到 Image+GPS JEPA query-pool
-项目 MUST 将当前推荐训练、评估、诊断和实验配置支持面收敛到 Image+GPS JEPA query-pool 主线及其必要对照。保留面 MUST 包含 `jepa_context_image + GPSQueryPool` JEPA downstream、`fair_gps_biased` paired baseline、supervised/random-best 控制组、vision-position baseline suite 和 `jepa_visual_analysis` 论文图/诊断出口。退役路线 MUST 不再作为 README 推荐入口、pyproject console script、架构 allowlist 或当前配置矩阵出现。
-
-#### Scenario: README 展示当前主线
-- **WHEN** 开发者阅读 README 的项目定位、主要入口和配置矩阵
-- **THEN** 文档 MUST 把 Image+GPS JEPA query-pool、paired baseline/control、vision-position baseline suite 和 JEPA visual analysis 描述为当前主线
-- **AND** 文档 MUST 不把 GPS window、DeepVerse/DT31、旧静态 modality visualization 或仓库级 Gradio viewer support 描述为当前入口
-- **AND** 文档 MAY 继续保留 BeamBench/Arnold22 Camera AE+GPS Direct 当前入口和复现辅助说明
-
-#### Scenario: 架构测试拒绝退役入口回流
-- **WHEN** 开发者运行架构边界测试
-- **THEN** 测试 MUST 拒绝退役的 viewer support、viewer manifest、BGAM、GPS window baseline、DeepVerse/DT31 workflow、Top8 selector dataset 和旧静态 modality visualization 文件重新出现在当前 allowlist 中
-- **AND** 测试 MUST 继续允许 JEPA query-pool、paired control、vision-position baseline、BeamBench/Arnold22 Camera AE+GPS Direct 和 JEPA visual analysis 相关入口
-
-#### Scenario: 配置矩阵只保留必要 JEPA 对照
-- **WHEN** 开发者查看 post-C2 主线配置和实验矩阵文档
-- **THEN** 当前配置 MUST 保留 query-pool、GPS-biased baseline、supervised baseline 和 random-best 控制组
-- **AND** scene31-only、非 BeamBench 的 last-checkpoint 和 next-beam downstream ablation 配置 MUST 不再作为当前配置文件维护
-- **AND** `beambench_fair` 相关配置 MAY 继续保留用于 Arnold22/BeamBench 口径对照
 
 ### Requirement: Statistical and stress claim governance
 主线实验文档 MUST 记录统计显著性和 stress suite 对 claim 升级的要求。单 seed、smoke、mock、not-comparable 或缺少 stress provenance 的结果 MUST 不写成正式论文结论。
@@ -269,19 +191,6 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supe
 - **THEN** `docs/project_surface_inventory.md` MUST 记录其文档生命周期和职责
 - **AND** 文档 MUST 不把本地 PDF 或外部论文下载物纳入源码产物要求
 
-### Requirement: Harvested claim draft governance
-主线实验文档 MUST 区分 harvested claim draft 和正式 claim registry。自动生成的 candidate、dashboard summary 或 ledger record MUST 不被描述为已审阅结论。
-
-#### Scenario: candidate 不自动进入 claim registry
-- **WHEN** harvester 输出 claim candidate
-- **THEN** `docs/result_claims_registry.md` MUST 只有在人工审阅后才新增或更新对应 claim 行
-- **AND** candidate 输出 MUST 保留 `draft`、`candidate_only` 或等价状态标记
-
-#### Scenario: README 和实验矩阵引用 dashboard
-- **WHEN** 文档新增 research dashboard 或 harvester 入口说明
-- **THEN** README 或 `docs/experiment_matrix.md` MAY 指向该入口作为本地研究辅助工具
-- **AND** 文档 MUST 说明它不生成正式论文结论、不移动产物、不替代 claim registry
-
 ### Requirement: Scene31-34 missing-modality mainline documentation
 主线实验文档 MUST 记录 Scene31-34 pooled multi-scene 缺失模态主实验的当前地位、运行入口、指标口径、输出边界和 claim 状态。文档 MUST 明确 `prototype + random subset exposure` 是冻结主方法候选，Uniform 是 ablation，reliability fusion 与 PatternFiLM 不晋升。
 
@@ -300,44 +209,31 @@ README、实验矩阵和 quickstart MUST 将当前推荐 workflow 聚焦于 supe
 - **THEN** 文档 MUST mention classifier baselines、AMR/AMBER-lite maskfix external baselines、compute profile table and final all-baseline paper tables as local/manual outputs
 - **AND** generated metrics、profile CSV、paper tables and conclusions MUST remain ignored runtime artifacts under `outputs/`
 
-### Requirement: Research dashboard 汇总 paper readiness
-主线实验文档治理 MUST 支持只读 dashboard 或 readiness report，汇总 active OpenSpec change、run states、pending/unverified claim 计数、upgradable candidates、paper export exclusions 和下一步证据缺口。Dashboard MUST 能输出文本、JSON 或静态 HTML report。Dashboard 输出 MUST 写入 ignored output root 或用户显式路径，不得自动修改 current docs。
-
-#### Scenario: dashboard 生成 readiness report
-- **WHEN** 用户运行 research dashboard readiness 输出
-- **THEN** report MUST 包含 pending claim 数、可升级候选、缺失字段类别和 paper export gate 状态
-- **AND** report MUST 标记 candidate-only 内容，不得声明正式论文结论
-
-#### Scenario: HTML report 不替代正式文档
-- **WHEN** dashboard 生成 HTML paper readiness report
-- **THEN** HTML MUST 显示 candidate-only、pending、unverified 或 not_comparable caveat
-- **AND** HTML MUST 不自动更新 `docs/result_claims_registry.md`、`docs/experiment_matrix.md`、`docs/mainline_model_catalog.md` 或 README
-
 ### Requirement: 主实验证据收敛记录
-主线实验文档 MUST 在主实验进入证据收敛阶段时记录 final checklist、缺失 evidence、claim status 和下一步最小动作。文档 MUST 区分“继续补证据”和“新增方法搜索”，并在主方法冻结时说明冻结边界。
+主线实验文档 MUST 在 final C2 / U-MaskBeamJEPA 进入证据收敛阶段时记录 final checklist、缺失 evidence、claim status 和下一步最小动作。文档 MUST 区分继续补证据与新增方法搜索，并在主方法冻结时说明冻结边界。
 
 #### Scenario: Scene31-34 evidence 更新
 - **WHEN** Scene31-34 final summary、paper tables 或 claim status 发生变化
-- **THEN** `docs/mainline_experiment_history.md`、`docs/mainline_model_catalog.md`、`docs/experiment_protocols.md` 或 `docs/result_claims_registry.md` 中的对应 current fact MUST 同步更新
+- **THEN** mainline history、model catalog、experiment protocols 或 result claims registry 中的对应 current fact MUST 同步更新
 - **AND** 真实 metrics、figures、logs 和 checkpoint MUST 继续留在 ignored output root
 
-#### Scenario: JEPA benchmark 从 smoke 转 real
-- **WHEN** JEPA shortcut 或 predictive robustness benchmark 从 smoke manifest 转为 real manifest
-- **THEN** 文档 MUST 更新 claim status、manifest provenance 和 caveat
+#### Scenario: Temporal evidence 更新
+- **WHEN** H5/P1 temporal matrix 或 final C2 missing-modality evidence 从 smoke 转为可比较结果
+- **THEN** 文档 MUST 更新 claim status、config/manifest provenance 和 caveat
 - **AND** synthetic smoke 结果 MUST 继续标记为 mock/smoke
 
 ### Requirement: 主线文档必须反映 post-C2 边界
-主线文档 MUST 将当前默认研究主线描述为 final C2 / U-MaskBeamJEPA 缺失模态波束预测，并明确 MMW/CSI 作为保留的 future/current supporting dataset workflow。非主线历史复现、一次性诊断和删除候选 MUST 不再出现在 current recommended workflow 表中。
+主线文档 MUST 将当前默认研究主线描述为 final C2 / U-MaskBeamJEPA 缺失模态波束预测，并明确 MMW/CSI 为保留的 current supporting dataset workflow。非主线历史复现、一次性诊断、research dashboard/preview 和已删除 CLI MUST 不再出现在 current recommended workflow 表中。
 
 #### Scenario: current mainline 表述
-- **WHEN** 开发者阅读 README、`docs/current_research_brief.md`、`docs/mainline_model_catalog.md` 或 `docs/experiment_matrix.md`
-- **THEN** 文档 MUST 将 final C2 / U-MaskBeamJEPA 缺失模态主线、缺失模态 eval matrix、claim/evidence gate 和保留 MMW workflow 描述为当前重点
-- **AND** 文档 MUST 不把已删除或待删除的 Image+GPS JEPA、BeamBench、BEV-Fusion 2604、Vision-Position 或旧 RBMA/KD sweep 描述为当前默认主线
+- **WHEN** 开发者阅读 README、current research brief、mainline model catalog 或 experiment matrix
+- **THEN** 文档 MUST 将 final C2 / U-MaskBeamJEPA、U-Mask eval matrix、claim/evidence gate 和保留 MMW/CSI workflow 描述为当前重点
+- **AND** 文档 MUST 不把 Image+GPS JEPA、BeamBench、BEV-Fusion 2604、Vision-Position、geometry prior 或旧 RBMA/KD sweep 描述为当前默认主线
 
 #### Scenario: MMW 保留状态清楚
 - **WHEN** 文档列出 MMW/CSI 相关入口
-- **THEN** 文档 MUST 标明其保留原因、数据集用途、入口命令、输出边界和 focused validation
-- **AND** 文档 MUST 不把 MMW 支线列为 post-C2 删除候选
+- **THEN** 文档 MUST 标明保留原因、数据集用途、入口命令、输出边界和 focused validation
+- **AND** 文档 MUST 不把 MMW/CSI 列为 post-C2 删除候选
 
 ### Requirement: 删除候选文档必须迁移或降级
 被 post-C2 清理删除的历史报告、runbook、README 段落或实验矩阵行 MUST 被迁移为 concise historical note，或从 current docs 删除。保留的历史说明 MUST 不提供当前推荐运行命令。

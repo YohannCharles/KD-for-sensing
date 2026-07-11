@@ -46,11 +46,6 @@ from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blockin
 from kd_sensing.engine.evaluator import _evaluation_split_protocol_report
 from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
-from kd_sensing.engine.throughput_recommendations import (
-    lidar_cache_coverage,
-    recommend_parallel_training,
-)
-import kd_sensing.engine.training_io_profile as profile_training_io
 from kd_sensing.engine.trainer import (
     _configure_early_stopping,
     _early_stopping_improved,
@@ -260,7 +255,7 @@ def test_deepsense_scene9_loads_only_enabled_modalities(
     timings = dataset.profile_getitem_components(0)
 
     assert calls == expected_calls
-    assert set(sample) == expected_fields | {"input_beam", "target_beam"}
+    assert set(sample) == expected_fields | {"input_beam", "target_beam", "history_indices", "target_index"}
     for key in ("image", "radar", "gps", "lidar", "mmwave", "auxiliary_targets"):
         assert key in timings
         assert timings[key] >= 0.0
@@ -294,7 +289,7 @@ def test_deepsense_target_provider_skips_disabled_target_resources(monkeypatch, 
     assert dataset.target_provider.occlusion_target_stats is None
     assert "occlusion_label" not in sample
     assert "position_target" not in sample
-    assert set(sample) == {"input_beam", "target_beam", "gps"}
+    assert set(sample) == {"input_beam", "target_beam", "gps", "history_indices", "target_index"}
 
 def test_deepsense_target_provider_outputs_target_shapes_and_dtypes(tmp_path: Path):
     csv_path = tmp_path / "train_aux.csv"

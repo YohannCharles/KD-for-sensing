@@ -165,17 +165,6 @@ def compute_prediction_loss(
             cfg,
             reference=reference,
         )
-        predictive_latent_loss, predictive_latent_diagnostics = _predictive_latent_auxiliary_loss(
-            model_output,
-            cfg,
-            zero,
-        )
-        rerank_loss, rerank_diagnostics = _safe_rerank_auxiliary_loss(
-            model_output,
-            targets,
-            cfg,
-            zero,
-        )
         amr_loss, amr_diagnostics = amr_net_loss_from_output(model_output, targets.labels, cfg)
         amber_loss, amber_diagnostics = amber_full_auxiliary_loss_from_output(model_output, cfg, zero)
         if _amr_paper_objective_only(cfg) and amr_diagnostics:
@@ -194,15 +183,12 @@ def compute_prediction_loss(
                 los=zero,
                 link_quality=zero,
                 selection_multitask_total=zero,
-                jepa=zero,
             )
-        total = beam_component + auxiliary_loss.total + predictive_latent_loss + rerank_loss + amr_loss + amber_loss
+        total = beam_component + auxiliary_loss.total + amr_loss + amber_loss
         auxiliary_diagnostics = dict(auxiliary_loss.diagnostics)
         if "loss/occlusion" not in auxiliary_diagnostics and "loss/position" not in auxiliary_diagnostics:
             auxiliary_diagnostics.pop("loss/multitask_total", None)
         diagnostics.update(auxiliary_diagnostics)
-        diagnostics.update(predictive_latent_diagnostics)
-        diagnostics.update(rerank_diagnostics)
         diagnostics.update(amr_diagnostics)
         diagnostics.update(amber_diagnostics)
         diagnostics["loss/beam"] = float(beam_primary.detach().cpu().item())
@@ -213,12 +199,11 @@ def compute_prediction_loss(
             beam=beam_primary,
             occlusion=auxiliary_loss.occlusion,
             position=auxiliary_loss.position,
-            multitask_total=auxiliary_loss.total + predictive_latent_loss + rerank_loss + amber_loss,
+            multitask_total=auxiliary_loss.total + amber_loss,
             diagnostics=diagnostics,
             los=zero,
             link_quality=zero,
             selection_multitask_total=zero,
-            jepa=predictive_latent_loss,
         )
 
     if objective in {"occlusion", "multitask"}:
@@ -499,189 +484,6 @@ def _objective_loss_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
     }
 
 
-def _predictive_latent_auxiliary_loss(
-    model_output: ModelOutput,
-    cfg: dict[str, Any],
-    zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    loss_cfg = cfg.get("loss", {}) if isinstance(cfg.get("loss"), dict) else {}
-    auxiliary_cfg = _mapping(loss_cfg.get("auxiliary"))
-    objective_cfg = _mapping(loss_cfg.get("objective"))
-    aux_cfg = {
-        **_mapping(auxiliary_cfg.get("predictive_latent")),
-        **_mapping(auxiliary_cfg.get("predictive_latent_auxiliary")),
-        **_mapping(loss_cfg.get("predictive_latent_auxiliary")),
-        **_mapping(objective_cfg.get("predictive_latent_auxiliary")),
-    }
-    enabled = bool(aux_cfg.get("enabled", False))
-    weight = float(aux_cfg.get("weight", aux_cfg.get("lambda", 0.0)) or 0.0)
-    if not enabled or weight <= 0.0:
-        return zero, {}
-    features = model_output.diagnostics.get("encoder_auxiliary_features")
-    if not isinstance(features, dict) or not features:
-        if bool(aux_cfg.get("allow_missing", False)):
-            return zero, {"loss/predictive_latent_auxiliary": 0.0, "predictive_latent_auxiliary/sample_count": 0.0}
-        raise ValueError("Predictive latent auxiliary loss requires encoder_auxiliary_features in model output.")
-    modality = str(aux_cfg.get("modality", "image"))
-    if modality not in features:
-        if len(features) == 1 and bool(aux_cfg.get("allow_single_available_modality", True)):
-            modality = next(iter(features))
-        else:
-            raise ValueError(f"Predictive latent auxiliary loss requires modality '{modality}' auxiliary features.")
-    payload = features.get(modality)
-    if not isinstance(payload, dict):
-        raise ValueError(f"Predictive latent auxiliary features for modality '{modality}' must be a mapping.")
-    prediction_key = str(aux_cfg.get("prediction_key", "temporal_predicted_latent"))
-    target_key = str(aux_cfg.get("target_key", "current_latent"))
-    predicted = payload.get(prediction_key)
-    target = payload.get(target_key)
-    if not torch.is_tensor(predicted) or not torch.is_tensor(target):
-        raise ValueError(
-            "Predictive latent auxiliary loss requires tensor features "
-            f"'{prediction_key}' and '{target_key}' for modality '{modality}'."
-        )
-    if predicted.shape != target.shape:
-        raise ValueError(
-            "Predictive latent auxiliary predicted/target shapes must match, "
-            f"got {tuple(predicted.shape)} and {tuple(target.shape)}."
-        )
-    detach_target = bool(aux_cfg.get("detach_target", True))
-    target_for_loss = target.detach() if detach_target else target
-    pred_for_loss = predicted
-    if bool(aux_cfg.get("normalize_latent", aux_cfg.get("latent_normalize", False))):
-        pred_for_loss = F.normalize(pred_for_loss, dim=-1)
-        target_for_loss = F.normalize(target_for_loss, dim=-1)
-    finite = torch.isfinite(pred_for_loss).all(dim=-1) & torch.isfinite(target_for_loss).all(dim=-1)
-    sample_count = int(finite.sum().detach().cpu().item())
-    if sample_count <= 0:
-        if bool(aux_cfg.get("allow_empty", False)):
-            return zero, {"loss/predictive_latent_auxiliary": 0.0, "predictive_latent_auxiliary/sample_count": 0.0}
-        raise ValueError("Predictive latent auxiliary loss has no finite samples.")
-    loss_type = str(aux_cfg.get("type", "mse")).strip().lower()
-    if loss_type in {"smooth_l1", "huber"}:
-        per_dim = F.smooth_l1_loss(
-            pred_for_loss,
-            target_for_loss,
-            reduction="none",
-            beta=float(aux_cfg.get("beta", 1.0)),
-        )
-    elif loss_type == "mse":
-        per_dim = (pred_for_loss - target_for_loss).pow(2)
-    else:
-        raise ValueError("Predictive latent auxiliary loss type must be mse, smooth_l1, or huber.")
-    loss = per_dim.mean(dim=-1)[finite].mean() * weight
-    return loss, {
-        "loss/predictive_latent_auxiliary": float(loss.detach().cpu().item()),
-        "predictive_latent_auxiliary/weight": float(weight),
-        "predictive_latent_auxiliary/sample_count": float(sample_count),
-        "predictive_latent_auxiliary/target_detached": float(detach_target),
-    }
-
-
-def _safe_rerank_auxiliary_loss(
-    model_output: ModelOutput,
-    targets: PredictionTargets,
-    cfg: dict[str, Any],
-    zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    loss_cfg = cfg.get("loss", {}) if isinstance(cfg.get("loss"), dict) else {}
-    objective_cfg = _mapping(loss_cfg.get("objective"))
-    raw = {
-        **_mapping(loss_cfg.get("rerank")),
-        **_mapping(loss_cfg.get("safe_rerank")),
-        **_mapping(loss_cfg.get("safe_residual_rerank")),
-        **_mapping(objective_cfg.get("rerank")),
-        **_mapping(objective_cfg.get("safe_rerank")),
-    }
-    enabled = bool(raw.get("enabled", False))
-    total_weight = float(raw.get("weight", raw.get("lambda", 0.0)) or 0.0)
-    if not enabled or total_weight <= 0.0:
-        return zero, {}
-    diagnostics = model_output.diagnostics
-    candidate_ids = diagnostics.get("candidate_ids")
-    rerank_logits = diagnostics.get("rerank_logits", model_output.logits)
-    anchor_logits = diagnostics.get("anchor_logits")
-    if not torch.is_tensor(candidate_ids) or not torch.is_tensor(rerank_logits) or not torch.is_tensor(anchor_logits):
-        if bool(raw.get("allow_missing", False)):
-            return zero, {"loss/rerank_total": 0.0, "rerank_loss/skipped_samples": 0.0}
-        raise ValueError("Safe rerank loss requires candidate_ids, rerank_logits and anchor_logits diagnostics.")
-    labels = targets.labels.to(device=rerank_logits.device, dtype=torch.long)
-    labels = _match_time(labels, int(rerank_logits.shape[1]))
-    candidate_ids = _match_time(candidate_ids.to(device=rerank_logits.device, dtype=torch.long), int(rerank_logits.shape[1]))
-    anchor_logits = _match_time(anchor_logits.to(device=rerank_logits.device), int(rerank_logits.shape[1]))
-    valid_candidates = candidate_ids.ge(0)
-    safe_ids = candidate_ids.clamp_min(0)
-    candidate_logits = torch.gather(rerank_logits, 2, safe_ids).float()
-    candidate_logits = candidate_logits.masked_fill(~valid_candidates, -1e9)
-    valid_labels = labels.ge(0) & labels.lt(int(rerank_logits.shape[-1]))
-    safe_labels = labels.clamp(0, int(rerank_logits.shape[-1]) - 1)
-    target_in_candidates = candidate_ids.eq(labels.unsqueeze(-1)) & valid_candidates & valid_labels.unsqueeze(-1)
-    covered = target_in_candidates.any(dim=-1) & valid_labels
-    sample_count = int(valid_labels.sum().detach().cpu().item())
-    coverage_count = int(covered.sum().detach().cpu().item())
-    skipped = sample_count - coverage_count
-
-    candidate_ce = zero
-    if coverage_count > 0:
-        local_targets = target_in_candidates.to(dtype=torch.long).argmax(dim=-1)
-        candidate_ce = F.cross_entropy(candidate_logits[covered], local_targets[covered])
-
-    pairwise_margin = zero
-    pair_weight = float(raw.get("pairwise_margin_weight", raw.get("margin_weight", 0.0)) or 0.0)
-    margin = float(raw.get("margin", 0.1))
-    if pair_weight > 0.0 and sample_count > 0:
-        target_score = torch.gather(rerank_logits, 2, safe_labels.unsqueeze(-1)).squeeze(-1)
-        anchor_top = anchor_logits.argmax(dim=-1)
-        anchor_score = torch.gather(rerank_logits, 2, anchor_top.unsqueeze(-1)).squeeze(-1)
-        pairwise_margin = F.relu(margin - (target_score - anchor_score))[valid_labels].mean()
-
-    no_regret = zero
-    no_regret_weight = float(raw.get("no_regret_weight", raw.get("consistency_weight", 0.0)) or 0.0)
-    anchor_top = anchor_logits.argmax(dim=-1)
-    if no_regret_weight > 0.0:
-        protect = anchor_top.eq(labels) & valid_labels
-        dba_threshold = raw.get("anchor_dba_threshold")
-        if dba_threshold is not None:
-            protect = protect | (
-                _circular_distance(anchor_top, safe_labels, int(rerank_logits.shape[-1])).le(float(dba_threshold))
-                & valid_labels
-            )
-        if bool(protect.any().detach().cpu().item()):
-            no_regret = F.cross_entropy(rerank_logits[protect], anchor_top[protect])
-
-    ce_weight = float(raw.get("candidate_ce_weight", raw.get("ce_weight", 1.0)) or 0.0)
-    loss = total_weight * (ce_weight * candidate_ce + pair_weight * pairwise_margin + no_regret_weight * no_regret)
-    residual_scale = diagnostics.get("residual_scale")
-    residual_scale_mean = float(residual_scale.detach().float().mean().cpu().item()) if torch.is_tensor(residual_scale) else 0.0
-    return loss, {
-        "loss/rerank_total": float(loss.detach().cpu().item()),
-        "loss/rerank_candidate_ce": float((candidate_ce * ce_weight * total_weight).detach().cpu().item()),
-        "loss/rerank_pairwise_margin": float((pairwise_margin * pair_weight * total_weight).detach().cpu().item()),
-        "loss/no_regret_consistency": float((no_regret * no_regret_weight * total_weight).detach().cpu().item()),
-        "rerank_loss/candidate_coverage": float(coverage_count / max(sample_count, 1)),
-        "rerank_loss/skipped_samples": float(skipped),
-        "rerank_loss/anchor_correct_count": float((anchor_top.eq(labels) & valid_labels).sum().detach().cpu().item()),
-        "rerank_loss/residual_scale_mean": residual_scale_mean,
-        "rerank_loss/weight": float(total_weight),
-    }
-
-
-def _match_time(value: torch.Tensor, target_steps: int) -> torch.Tensor:
-    if value.ndim < 2:
-        return value
-    if int(value.shape[1]) == int(target_steps):
-        return value
-    if int(value.shape[1]) > int(target_steps):
-        return value[:, -int(target_steps) :, ...]
-    pad_shape = (int(value.shape[0]), int(target_steps) - int(value.shape[1]), *tuple(value.shape[2:]))
-    pad_value = -1 if value.dtype in (torch.long, torch.int64, torch.int32, torch.int16, torch.int8) else 0
-    pad = torch.full(pad_shape, pad_value, dtype=value.dtype, device=value.device)
-    return torch.cat([pad, value], dim=1)
-
-
-def _circular_distance(prediction: torch.Tensor, target: torch.Tensor, num_classes: int) -> torch.Tensor:
-    absolute = (prediction.to(dtype=torch.long) - target.to(dtype=torch.long)).abs()
-    return torch.minimum(absolute, torch.as_tensor(num_classes, dtype=absolute.dtype, device=absolute.device) - absolute)
 
 
 def _diagnostic_tensor(model_output: ModelOutput, key: str, source: str) -> torch.Tensor:

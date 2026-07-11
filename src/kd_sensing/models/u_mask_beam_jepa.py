@@ -229,24 +229,6 @@ class BeamPrototypeReliabilityRouter(nn.Module):
         return masked_pcpg_softmax(logits, available_mask)
 
 
-class TemporalScalarRouter(nn.Module):
-    def __init__(self, feature_dim: int = 8, hidden_dim: int = 64, dropout: float = 0.1) -> None:
-        super().__init__()
-        self.feature_dim = int(feature_dim)
-        self.net = nn.Sequential(
-            nn.LayerNorm(self.feature_dim),
-            nn.Linear(self.feature_dim, int(hidden_dim)),
-            nn.GELU(),
-            nn.Dropout(float(dropout)),
-            nn.Linear(int(hidden_dim), 1),
-        )
-
-    def forward_logits(self, features: torch.Tensor) -> torch.Tensor:
-        if features.shape[-1] != self.feature_dim:
-            raise ValueError(f"temporal scalar router expected feature_dim={self.feature_dim}, got {tuple(features.shape)}.")
-        return self.net(features).squeeze(-1)
-
-
 class BPRRTemperatureCalibration(nn.Module):
     def __init__(self, num_modalities: int, init_temperature: float = 1.0, eps: float = 1e-6) -> None:
         super().__init__()
@@ -382,9 +364,6 @@ class UMaskBeamJEPA(nn.Module):
         router_use_entropy: bool = True,
         router_use_confidence: bool = True,
         router_use_logit_norm: bool = True,
-        temporal_router_type: str = "none",
-        temporal_router_distill_weight: float = 0.0,
-        temporal_aggregation: str = "masked_mean",
         head_type: str = "legacy",
         use_light_latent_pred: bool = False,
         latent_pred_target: str = "full_fused",
@@ -428,9 +407,6 @@ class UMaskBeamJEPA(nn.Module):
         self.router_use_entropy = _bool(router_use_entropy)
         self.router_use_confidence = _bool(router_use_confidence)
         self.router_use_logit_norm = _bool(router_use_logit_norm)
-        self.temporal_router_type = str(temporal_router_type or "none").strip().lower()
-        self.temporal_router_distill_weight = float(temporal_router_distill_weight)
-        self.temporal_aggregation = str(temporal_aggregation or "masked_mean").strip().lower()
         self.head_type = str(head_type or "legacy").strip().lower()
         self.use_light_latent_pred = bool(use_light_latent_pred)
         self.latent_pred_target = str(latent_pred_target)
@@ -460,19 +436,6 @@ class UMaskBeamJEPA(nn.Module):
             raise ValueError("fusion_type='supervised_router' currently supports router_fuse_level='logits' only.")
         if self.router_supervision not in {"oracle", "pattern_best", "none"}:
             raise ValueError("router_supervision must be one of oracle, pattern_best, or none.")
-        if self.temporal_router_type not in {
-            "none",
-            "s1_temporalagg_modality",
-            "s2_pertime_modality",
-            "s3_two_level",
-            "s4_global",
-        }:
-            raise ValueError(
-                "temporal_router_type must be none, s1_temporalagg_modality, "
-                "s2_pertime_modality, s3_two_level, or s4_global."
-            )
-        if self.temporal_aggregation not in {"masked_mean", "attention"}:
-            raise ValueError("temporal_aggregation must be masked_mean or attention.")
         if self.head_type not in {"legacy", "prototype", "classifier"}:
             raise ValueError("head_type must be one of legacy, prototype, or classifier.")
         if self.bprr_calibration not in {"none", "temperature"}:
@@ -583,16 +546,6 @@ class UMaskBeamJEPA(nn.Module):
             if self.fusion_type in {"bprr", "supervised_router"} and self.bprr_calibration == "temperature"
             else None
         )
-        self.temporal_router = (
-            TemporalScalarRouter(feature_dim=8, hidden_dim=int(bprr_hidden_dim), dropout=float(bprr_dropout))
-            if self.temporal_router_type == "s3_two_level"
-            else None
-        )
-        self.global_temporal_router = (
-            TemporalScalarRouter(feature_dim=8, hidden_dim=int(bprr_hidden_dim), dropout=float(bprr_dropout))
-            if self.temporal_router_type == "s4_global"
-            else None
-        )
         latent_output_dim = self.num_classes if self.latent_pred_target == "prototype_distribution" else self.d_model
         self.latent_predictor = (
             LatentPredictionProbe(self.d_model, latent_output_dim, hidden_dim=int(latent_pred_hidden_dim))
@@ -609,20 +562,9 @@ class UMaskBeamJEPA(nn.Module):
         gps_batch: torch.Tensor | None = None,
         missing_mask: torch.Tensor | None = None,
         force_modality_mask: torch.Tensor | None = None,
-        temporal_mask: torch.Tensor | None = None,
-        modality_temporal_mask: torch.Tensor | None = None,
-        available_modalities: torch.Tensor | None = None,
         **_: Any,
     ) -> dict[str, Any]:
         inputs = {"image": image_batch, "radar": radar_batch, "lidar": lidar_batch, "gps": gps_batch}
-        if self.temporal_router_type != "none":
-            return self._temporal_router_forward(
-                inputs,
-                missing_mask=missing_mask if missing_mask is not None else force_modality_mask,
-                temporal_mask=temporal_mask,
-                modality_temporal_mask=modality_temporal_mask,
-                available_modalities=available_modalities,
-            )
         latent = torch.stack([self._encode(name, inputs[name]) for name in self.modalities], dim=1)
         mask = self._resolve_mask(
             missing_mask if missing_mask is not None else force_modality_mask,
@@ -702,11 +644,6 @@ class UMaskBeamJEPA(nn.Module):
             "use_modality_uncertainty": self.use_modality_uncertainty,
             "use_global_uncertainty": self.use_global_uncertainty,
             "fusion_type": self.fusion_type,
-            "temporal_router_type": self.temporal_router_type,
-            "temporal_aggregation": self.temporal_aggregation if self.temporal_router_type != "none" else None,
-            "temporal_router_distill_weight": self.temporal_router_distill_weight
-            if self.temporal_router_type != "none"
-            else None,
             "head_type": self.head_type,
             "prototype_margin_enabled": self._prototype_margin_enabled(),
             "router_use_pattern_features": self.router_use_pattern_features
@@ -755,307 +692,6 @@ class UMaskBeamJEPA(nn.Module):
         elif features.ndim != 3:
             raise ValueError(f"{modality} encoder must return [B,T,D] or [B,D], got {tuple(features.shape)}.")
         return self.encoder_projections[modality](features)
-
-    def _temporal_router_forward(
-        self,
-        inputs: dict[str, torch.Tensor | None],
-        *,
-        missing_mask: torch.Tensor | None,
-        temporal_mask: torch.Tensor | None,
-        modality_temporal_mask: torch.Tensor | None,
-        available_modalities: torch.Tensor | None,
-    ) -> dict[str, Any]:
-        latent_seq = torch.stack([self._encode_sequence(name, inputs[name]) for name in self.modalities], dim=2)
-        # latent_seq: [B, T, M, D]
-        mt_mask = self._resolve_modality_temporal_mask(
-            latent_seq,
-            missing_mask=missing_mask,
-            temporal_mask=temporal_mask,
-            modality_temporal_mask=modality_temporal_mask,
-            available_modalities=available_modalities,
-        )
-        if self.temporal_router_type == "s1_temporalagg_modality":
-            logits, fused, diagnostics = self._s1_temporalagg_modality(latent_seq, mt_mask)
-        elif self.temporal_router_type == "s2_pertime_modality":
-            logits, fused, diagnostics = self._s2_pertime_modality(latent_seq, mt_mask)
-        elif self.temporal_router_type == "s3_two_level":
-            logits, fused, diagnostics = self._s3_two_level(latent_seq, mt_mask)
-        else:
-            logits, fused, diagnostics = self._s4_global(latent_seq, mt_mask)
-        modality_features = self._masked_modality_temporal_mean(latent_seq, mt_mask)
-        modality_mask = mt_mask.any(dim=1)
-        teacher_logits = self._head_logits(fused).unsqueeze(1).expand(-1, self.num_pred, -1)
-        logits = logits.unsqueeze(1).expand(-1, self.num_pred, -1)
-        zero_logvar = torch.zeros_like(modality_features)
-        return {
-            "logits": logits,
-            "input_features": modality_features,
-            "output_features": fused,
-            "teacher_logits": teacher_logits,
-            "u_star": fused.detach(),
-            "mu_B": fused,
-            "logvar_B": torch.zeros_like(fused),
-            "modality_mu_B": modality_features,
-            "modality_logvar_B": zero_logvar,
-            "modality_reliability": modality_mask.unsqueeze(-1).to(dtype=fused.dtype),
-            "global_reliability": torch.ones(fused.shape[0], device=fused.device, dtype=fused.dtype),
-            "missing_mask": modality_mask,
-            "modality_temporal_mask": mt_mask,
-            "temporal_mask": mt_mask.any(dim=2),
-            "modality_mask": modality_mask,
-            "available_modalities": modality_mask,
-            "modality_features": modality_features,
-            "student_feature": fused,
-            **diagnostics,
-            "metadata": self.training_strategy_metadata(),
-        }
-
-    def _resolve_modality_temporal_mask(
-        self,
-        latent_seq: torch.Tensor,
-        *,
-        missing_mask: torch.Tensor | None,
-        temporal_mask: torch.Tensor | None,
-        modality_temporal_mask: torch.Tensor | None,
-        available_modalities: torch.Tensor | None,
-    ) -> torch.Tensor:
-        batch_size, steps, num_modalities, _ = latent_seq.shape
-        if modality_temporal_mask is None:
-            mask = torch.ones(batch_size, steps, num_modalities, dtype=torch.bool, device=latent_seq.device)
-        else:
-            mask = torch.as_tensor(modality_temporal_mask, device=latent_seq.device, dtype=torch.bool)
-            if mask.ndim == 2:
-                mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
-            if tuple(mask.shape) != (batch_size, steps, num_modalities):
-                raise ValueError(
-                    "modality_temporal_mask must have shape "
-                    f"{(batch_size, steps, num_modalities)}, got {tuple(mask.shape)}."
-                )
-        modality_level = missing_mask if missing_mask is not None else available_modalities
-        if modality_level is not None:
-            mod_mask = torch.as_tensor(modality_level, device=latent_seq.device, dtype=torch.bool)
-            if mod_mask.ndim == 1:
-                mod_mask = mod_mask.unsqueeze(0).expand(batch_size, -1)
-            if tuple(mod_mask.shape) != (batch_size, num_modalities):
-                raise ValueError(f"missing/available modality mask must have shape {(batch_size, num_modalities)}, got {tuple(mod_mask.shape)}.")
-            mask = mask & mod_mask.unsqueeze(1)
-        if temporal_mask is not None:
-            time_mask = torch.as_tensor(temporal_mask, device=latent_seq.device, dtype=torch.bool)
-            if time_mask.ndim == 1:
-                time_mask = time_mask.unsqueeze(0).expand(batch_size, -1)
-            if tuple(time_mask.shape) != (batch_size, steps):
-                raise ValueError(f"temporal_mask must have shape {(batch_size, steps)}, got {tuple(time_mask.shape)}.")
-            mask = mask & time_mask.unsqueeze(-1)
-        empty = (~mask.any(dim=(1, 2))).nonzero(as_tuple=False).flatten()
-        if int(empty.numel()) > 0:
-            raise ValueError(f"modality_temporal_mask has no available cells for sample indices {empty.detach().cpu().tolist()}.")
-        return mask
-
-    def _masked_modality_temporal_mean(self, latent_seq: torch.Tensor, mt_mask: torch.Tensor) -> torch.Tensor:
-        weights = mt_mask.to(device=latent_seq.device, dtype=latent_seq.dtype).unsqueeze(-1)
-        return (latent_seq * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
-
-    def _masked_time_mean(self, values: torch.Tensor, temporal_mask: torch.Tensor) -> torch.Tensor:
-        weights = temporal_mask.to(device=values.device, dtype=values.dtype).view(
-            values.shape[0],
-            values.shape[1],
-            *([1] * (values.ndim - 2)),
-        )
-        return (values * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
-
-    def _s1_temporalagg_modality(
-        self,
-        latent_seq: torch.Tensor,
-        mt_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        latent = self._masked_modality_temporal_mean(latent_seq, mt_mask)
-        mask = mt_mask.any(dim=1)
-        reliability, _, _ = self._modality_reliability(latent, mask)
-        mu_b = self._masked_time_mean(latent_seq.mean(dim=2), mt_mask.any(dim=2))
-        fused, diagnostics = self._supervised_router_fuse(latent, mask, reliability, mu_b)
-        logits = diagnostics["fused_logits"]
-        weights = diagnostics["supervised_router_gate_weights"]
-        diagnostics.update(self._temporal_common_diagnostics(mt_mask, "s1_temporalagg_modality"))
-        diagnostics.update(_modality_gate_diagnostics(weights, self.modalities))
-        diagnostics["temporal_router_modality_gate"] = weights.detach()
-        diagnostics["temporal_router_modality_gate_logits"] = diagnostics["router_gate_logits"]
-        diagnostics["temporal_router_unimodal_logits"] = diagnostics["unimodal_logits"]
-        diagnostics["temporal_router_oracle_kind"] = "hard_modality"
-        return logits, fused, diagnostics
-
-    def _per_time_modality_route(self, latent_seq: torch.Tensor, mt_mask: torch.Tensor) -> dict[str, torch.Tensor]:
-        batch_size, steps, num_modalities, feature_dim = latent_seq.shape
-        flat_latent = latent_seq.reshape(batch_size * steps, num_modalities, feature_dim)
-        flat_mask = mt_mask.reshape(batch_size * steps, num_modalities)
-        reliability, _, _ = self._modality_reliability(flat_latent, flat_mask)
-        mu_b = flat_latent.mean(dim=1)
-        _, diagnostics = self._supervised_router_fuse(flat_latent, flat_mask, reliability, mu_b)
-        return {
-            "features": (flat_latent * diagnostics["supervised_router_gate_weights"].unsqueeze(-1)).sum(dim=1).view(batch_size, steps, feature_dim),
-            "logits": diagnostics["fused_logits"].view(batch_size, steps, self.num_classes),
-            "gate": diagnostics["supervised_router_gate_weights"].view(batch_size, steps, num_modalities),
-            "gate_logits": diagnostics["router_gate_logits"].view(batch_size, steps, num_modalities),
-            "unimodal_logits": diagnostics["unimodal_logits"].view(batch_size, steps, num_modalities, self.num_classes),
-            "unimodal_entropy": diagnostics["supervised_router_unimodal_entropy"].view(batch_size, steps, num_modalities),
-            "unimodal_margin": diagnostics["supervised_router_unimodal_margin"].view(batch_size, steps, num_modalities),
-            "max_prob": diagnostics["supervised_router_max_prob"].view(batch_size, steps, num_modalities),
-            "logit_norm": diagnostics["supervised_router_logit_norm"].view(batch_size, steps, num_modalities),
-            "prototype_margin": diagnostics["supervised_router_prototype_margin"].view(batch_size, steps, num_modalities),
-        }
-
-    def _s2_pertime_modality(
-        self,
-        latent_seq: torch.Tensor,
-        mt_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        routed = self._per_time_modality_route(latent_seq, mt_mask)
-        temporal = mt_mask.any(dim=2)
-        logits = self._masked_time_mean(routed["logits"], temporal)
-        fused = self._masked_time_mean(routed["features"], temporal)
-        diagnostics = self._temporal_common_diagnostics(mt_mask, "s2_pertime_modality")
-        diagnostics.update(
-            {
-                "temporal_router_modality_gate": routed["gate"].detach(),
-                "temporal_router_modality_gate_logits": routed["gate_logits"],
-                "temporal_router_unimodal_logits": routed["unimodal_logits"],
-                "temporal_router_per_time_logits": routed["logits"],
-                "temporal_aggregation_fallback": 1.0 if self.temporal_aggregation == "attention" else 0.0,
-                "temporal_router_oracle_kind": "hard_per_time_modality",
-            }
-        )
-        diagnostics["gate_entropy_modality"] = _gate_entropy(routed["gate"]).detach()
-        for index, modality in enumerate(self.modalities):
-            diagnostics[f"mean_gate_{modality}"] = float(routed["gate"][..., index].detach().mean().cpu().item())
-        return logits, fused, diagnostics
-
-    def _s3_two_level(
-        self,
-        latent_seq: torch.Tensor,
-        mt_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        if self.temporal_router is None:
-            raise RuntimeError("s3_two_level requested without temporal router.")
-        routed = self._per_time_modality_route(latent_seq, mt_mask)
-        temporal = mt_mask.any(dim=2)
-        temporal_features = self._temporal_reliability_features(routed, mt_mask, temporal)
-        temporal_gate_logits = self.temporal_router.forward_logits(temporal_features)
-        temporal_gate = masked_pcpg_softmax(temporal_gate_logits, temporal)
-        logits = (routed["logits"] * temporal_gate.unsqueeze(-1)).sum(dim=1)
-        fused = (routed["features"] * temporal_gate.unsqueeze(-1)).sum(dim=1)
-        diagnostics = self._temporal_common_diagnostics(mt_mask, "s3_two_level")
-        diagnostics.update(
-            {
-                "temporal_router_modality_gate": routed["gate"].detach(),
-                "temporal_router_modality_gate_logits": routed["gate_logits"],
-                "temporal_router_unimodal_logits": routed["unimodal_logits"],
-                "temporal_router_per_time_logits": routed["logits"],
-                "temporal_gate": temporal_gate.detach(),
-                "temporal_gate_logits": temporal_gate_logits,
-                "temporal_router_temporal_features": temporal_features.detach(),
-                "gate_entropy_modality": _gate_entropy(routed["gate"]).detach(),
-                "gate_entropy_temporal": _gate_entropy(temporal_gate).detach(),
-                "temporal_router_oracle_kind": "hard_temporal",
-                "temporal_router_soft_target_fallback": 1.0,
-            }
-        )
-        for index, modality in enumerate(self.modalities):
-            diagnostics[f"mean_gate_{modality}"] = float(routed["gate"][..., index].detach().mean().cpu().item())
-        for step in range(int(temporal_gate.shape[1])):
-            diagnostics[f"mean_temporal_gate_t{step}"] = float(temporal_gate[:, step].detach().mean().cpu().item())
-        return logits, fused, diagnostics
-
-    def _s4_global(
-        self,
-        latent_seq: torch.Tensor,
-        mt_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        if self.global_temporal_router is None:
-            raise RuntimeError("s4_global requested without global router.")
-        batch_size, steps, num_modalities, feature_dim = latent_seq.shape
-        flat = latent_seq.reshape(batch_size * steps * num_modalities, feature_dim)
-        cell_logits = self._head_logits(flat).view(batch_size, steps, num_modalities, self.num_classes)
-        cell_stats = self._logit_reliability_stats(cell_logits, cell_logits)
-        cell_features = self._global_cell_features(cell_stats, mt_mask)
-        gate_logits = self.global_temporal_router.forward_logits(cell_features.reshape(batch_size, steps * num_modalities, -1))
-        flat_mask = mt_mask.reshape(batch_size, steps * num_modalities)
-        gate = masked_pcpg_softmax(gate_logits, flat_mask).view(batch_size, steps, num_modalities)
-        logits = (cell_logits * gate.unsqueeze(-1)).sum(dim=(1, 2))
-        fused = (latent_seq * gate.unsqueeze(-1)).sum(dim=(1, 2))
-        diagnostics = self._temporal_common_diagnostics(mt_mask, "s4_global")
-        diagnostics.update(
-            {
-                "global_gate": gate.detach(),
-                "global_gate_logits": gate_logits.view(batch_size, steps, num_modalities),
-                "global_unimodal_logits": cell_logits,
-                "global_gate_entropy": _gate_entropy(gate.reshape(batch_size, steps * num_modalities)).detach(),
-                "temporal_router_oracle_kind": "hard_global_cell",
-                "temporal_router_soft_target_fallback": 1.0,
-            }
-        )
-        for index, modality in enumerate(self.modalities):
-            diagnostics[f"mean_gate_{modality}"] = float(gate[..., index].detach().mean().cpu().item())
-        return logits, fused, diagnostics
-
-    def _temporal_reliability_features(
-        self,
-        routed: dict[str, torch.Tensor],
-        mt_mask: torch.Tensor,
-        temporal: torch.Tensor,
-    ) -> torch.Tensor:
-        probs = torch.softmax(routed["logits"], dim=-1)
-        topk = probs.topk(min(2, self.num_classes), dim=-1).values
-        entropy = -(probs * probs.clamp_min(1e-8).log()).sum(dim=-1) / max(math.log(max(self.num_classes, 2)), 1e-6)
-        margin = topk[..., 0] - (topk[..., 1] if topk.shape[-1] > 1 else 0.0)
-        count = mt_mask.to(dtype=routed["logits"].dtype).sum(dim=2) / max(len(self.modalities), 1)
-        time_pos = torch.linspace(0.0, 1.0, steps=mt_mask.shape[1], device=mt_mask.device, dtype=routed["logits"].dtype)
-        time_pos = time_pos.view(1, -1).expand(mt_mask.shape[0], -1)
-        return torch.stack(
-            [
-                temporal.to(dtype=routed["logits"].dtype),
-                count,
-                entropy,
-                probs.amax(dim=-1),
-                margin,
-                routed["logits"].norm(dim=-1),
-                routed["prototype_margin"].amax(dim=-1),
-                time_pos,
-            ],
-            dim=-1,
-        )
-
-    def _global_cell_features(self, stats: dict[str, torch.Tensor], mt_mask: torch.Tensor) -> torch.Tensor:
-        batch_size, steps, num_modalities = mt_mask.shape
-        dtype = stats["entropy"].dtype
-        device = mt_mask.device
-        time_pos = torch.linspace(0.0, 1.0, steps=steps, device=device, dtype=dtype).view(1, steps, 1).expand(batch_size, -1, num_modalities)
-        modality_pos = torch.linspace(0.0, 1.0, steps=num_modalities, device=device, dtype=dtype).view(1, 1, num_modalities).expand(batch_size, steps, -1)
-        return torch.stack(
-            [
-                mt_mask.to(dtype=dtype),
-                stats["entropy"],
-                stats["margin"],
-                stats["confidence"],
-                stats["logit_norm"],
-                stats["prototype_margin"],
-                time_pos,
-                modality_pos,
-            ],
-            dim=-1,
-        )
-
-    def _temporal_common_diagnostics(self, mt_mask: torch.Tensor, router_type: str) -> dict[str, Any]:
-        return {
-            "temporal_router_type": router_type,
-            "temporal_aggregation": self.temporal_aggregation,
-            "modality_temporal_mask": mt_mask.detach(),
-            "temporal_mask": mt_mask.any(dim=2).detach(),
-            "modality_mask": mt_mask.any(dim=1).detach(),
-            "temporal_router_distill_weight": float(self.temporal_router_distill_weight),
-            "router_supervision": self.router_supervision,
-            "router_distill_weight": float(self.router_distill_weight),
-            "prototype_margin_enabled": self._prototype_margin_enabled(),
-            "prototype_margin_fallback": 0.0 if self._prototype_margin_enabled() else 1.0,
-        }
 
     def _load_encoder_checkpoints(self, paths: dict[str, str]) -> dict[str, Any]:
         if not paths:
@@ -1579,56 +1215,6 @@ def _modality_gate_diagnostics(weights: torch.Tensor, modalities: tuple[str, ...
         f"mean_gate_{modality}": float(weights[:, index].detach().mean().cpu().item())
         for index, modality in enumerate(modalities)
     }
-
-
-def circular_beam_error_from_logits(logits: torch.Tensor, labels: torch.Tensor, num_classes: int) -> torch.Tensor:
-    target = labels.to(device=logits.device, dtype=torch.long)
-    if target.ndim > 1:
-        target = target[:, 0]
-    pred = logits.argmax(dim=-1)
-    while target.ndim < pred.ndim:
-        target = target.unsqueeze(-1)
-    diff = (pred - target).abs()
-    return torch.minimum(diff, int(num_classes) - diff).to(dtype=logits.dtype)
-
-
-def modality_oracle_targets(unimodal_logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    errors = circular_beam_error_from_logits(unimodal_logits, labels, int(unimodal_logits.shape[-1]))
-    return _masked_argmin(errors, mask)
-
-
-def per_time_modality_oracle_targets(
-    unimodal_logits: torch.Tensor,
-    labels: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    batch_size, steps, _, _ = unimodal_logits.shape
-    flat = modality_oracle_targets(
-        unimodal_logits.reshape(batch_size * steps, unimodal_logits.shape[2], unimodal_logits.shape[3]),
-        labels.reshape(batch_size, -1)[:, :1].expand(-1, steps).reshape(-1),
-        mask.reshape(batch_size * steps, mask.shape[2]),
-    )
-    return flat.view(batch_size, steps)
-
-
-def temporal_oracle_targets(per_time_logits: torch.Tensor, labels: torch.Tensor, temporal_mask: torch.Tensor) -> torch.Tensor:
-    errors = circular_beam_error_from_logits(per_time_logits, labels, int(per_time_logits.shape[-1]))
-    return _masked_argmin(errors, temporal_mask)
-
-
-def global_oracle_targets(cell_logits: torch.Tensor, labels: torch.Tensor, cell_mask: torch.Tensor) -> torch.Tensor:
-    batch_size, steps, modalities, classes = cell_logits.shape
-    flat_logits = cell_logits.reshape(batch_size, steps * modalities, classes)
-    flat_mask = cell_mask.reshape(batch_size, steps * modalities)
-    errors = circular_beam_error_from_logits(flat_logits, labels, int(classes))
-    return _masked_argmin(errors, flat_mask)
-
-
-def _masked_argmin(errors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    available = mask.to(device=errors.device, dtype=torch.bool)
-    masked_errors = errors.masked_fill(~available, torch.finfo(errors.dtype).max)
-    target = masked_errors.argmin(dim=-1)
-    return torch.where(available.any(dim=-1), target, torch.full_like(target, -100))
 
 
 def _bool(value: Any) -> bool:

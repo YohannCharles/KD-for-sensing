@@ -1,10 +1,7 @@
 import pytest
 import torch
 
-from kd_sensing.models.observability_aware_fusion import (
-    ObservabilityAwareFusion,
-    is_jepa_advantage_condition,
-)
+from kd_sensing.models.observability_aware_fusion import ObservabilityAwareFusion
 
 
 def _metadata(batch_size: int = 2, steps: int = 3) -> dict[str, torch.Tensor]:
@@ -36,43 +33,6 @@ def test_reliability_weights_downweight_gps_async_and_image_missing() -> None:
     assert output["diagnostics"]["latent_source"] == "temporal_jepa"
     assert output["diagnostics"]["gps_downweight_reason"] == "invalid_or_delayed"
     assert output["diagnostics"]["image_downweight_reason"] == "missing_or_low_observability"
-
-
-def test_advantage_condition_triggers_fallback_but_clean_condition_does_not() -> None:
-    module = ObservabilityAwareFusion(image_dim=4, gps_dim=4, fused_dim=4, image_observability_threshold=0.35)
-    z_img = torch.ones(1, 2, 4)
-    z_gps = torch.zeros(1, 2, 4)
-    meta = _metadata(batch_size=1, steps=2)
-    meta["image_observability_score"] = torch.full((1, 2), 0.45)
-    predicted = torch.full_like(z_img, 3.0)
-
-    advantage = module(
-        z_img,
-        z_gps,
-        jepa_predicted_latent=predicted,
-        benchmark_condition_metadata={
-            "gps_condition": "C4_severe_async",
-            "image_condition": "D6_burst_missing",
-        },
-        **meta,
-    )
-    assert advantage["diagnostics"]["jepa_advantage_condition"] is True
-    assert bool(advantage["diagnostics"]["jepa_fallback_triggered"].all())
-
-    clean = module(
-        z_img,
-        z_gps,
-        jepa_predicted_latent=predicted,
-        benchmark_condition_metadata={
-            "gps_condition": "C0_sync",
-            "image_condition": "D0_full_image",
-        },
-        **_metadata(batch_size=1, steps=2),
-    )
-    assert clean["diagnostics"]["jepa_advantage_condition"] is False
-    assert not bool(clean["diagnostics"]["jepa_fallback_triggered"].any())
-
-    assert is_jepa_advantage_condition({"condition": "C3_random_async + D4_partial_occlusion"})
 
 
 def test_fusion_validates_required_metadata_and_latent_shapes() -> None:

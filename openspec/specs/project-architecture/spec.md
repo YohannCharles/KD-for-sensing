@@ -97,18 +97,17 @@ Define the package-level architecture, lightweight import boundaries, responsibi
 - **AND** 测试 MUST 验证构建流程仍能通过窄模块完成
 
 ### Requirement: 安装入口与 pyproject 声明一致
-项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的包内 CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的 console script MUST 是 parser/config glue，不得复制长期维护的 parser 或主实现。项目 MUST 不再要求安装 `kd-sensing-raymobtime-analysis`、GPS window baseline、viewer manifest 或仓库级 Gradio viewer support 入口。BeamBench 相关 console scripts MAY 保持当前声明。
+项目 MUST 确保 editable install 后的 console scripts 与 `pyproject.toml` 的 `[project.scripts]` 声明一致。README 或工具文档中推荐的 package CLI MUST 可在 `kd_mm_beam` 环境中直接调用。保留的 console script MUST 是 parser/config glue，不得复制长期维护的 parser 或主实现。
 
-#### Scenario: 退役 viewer scripts 不声明
+#### Scenario: 退役和低价值 scripts 不声明
 - **WHEN** 开发者检查 `pyproject.toml` entry points
-- **THEN** 项目 MUST 不声明 `kd-sensing-export-viewer-manifest`
-- **AND** 项目 MUST 不声明 `kd-sensing-visualize-modalities`
-- **AND** 项目 MUST 不声明仓库级 Gradio viewer support 入口
+- **THEN** 项目 MUST 不声明 viewer、research dashboard/preview、project surface doctor、training throughput、dataset audit 或其它已退役入口
+- **AND** 项目 MUST 不通过 module alias 或 script wrapper 恢复这些命令
 
 #### Scenario: 安装元数据刷新后入口齐全
 - **WHEN** 开发者在 `kd_mm_beam` 中执行 `python -m pip install -e .`
-- **THEN** 安装生成的 entry points MUST 包含 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、`kd-sensing-eval-u-mask-matrix`、`kd-sensing-mmw-town-gps-v2`、`kd-sensing-inspect-mmw-physics` 和 `kd-sensing-project-surface-doctor`
-- **AND** 安装生成的 entry points MUST 不要求包含 `kd-sensing-raymobtime-analysis`、`kd-sensing-gps-window-baseline`、viewer manifest 或仓库级 Gradio viewer support 入口
+- **THEN** entry points MUST 包含 train、evaluate、preprocess、runs、runtime cleanup/organize、paper export、U-Mask eval matrix、MMW GPS v2 和 MMW physics inspect 共十个 current 命令
+- **AND** CLI help smoke MUST 从同一 pyproject current surface 验证这些入口
 
 ### Requirement: 内部代码不得新增二级兼容聚合层依赖
 项目 MUST 区分公开兼容 facade 和私有二级兼容聚合层。新内部代码 MUST 不再引用 `kd_sensing.engine._builders_impl` 或 `kd_sensing.data.transform_ops._legacy`；需要 builder 或 transform 功能时 MUST 使用窄模块或公开 facade。二级兼容聚合层若继续存在，MUST 只服务历史私有 import 过渡。
@@ -239,31 +238,18 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **THEN** 变更 MUST NOT 删除、移动、重写或提交 `dataset/`、`outputs/`、`logs/`、cache、checkpoint 或历史本地产物
 - **AND** 新增临时验证产物 MUST 位于测试临时目录或已忽略的本地产物路径
 
-### Requirement: 同 owner 低价值 helper 可以合并但不得恢复兼容聚合层
-项目 MUST 允许将同一 owner 下单调用点、只服务 re-export、无独立 public contract、无复用价值或仅为降低行数而产生的 helper 合并回清晰 owner 模块。合并 MUST 不新增旧入口、跨领域 `helpers.py`、兼容聚合层、仓库根运行方式或退役研究线入口。
-
-#### Scenario: 合并内部 helper
-- **WHEN** 开发者合并一个只被同一 owner 使用的内部 helper 文件
-- **THEN** 调用方 MUST 继续使用 owner 的公开 import 或已登记窄模块
-- **AND** 架构边界测试或治理索引 MUST 更新为合并后的模块布局
-
-#### Scenario: 禁止用兼容 wrapper 降低迁移成本
-- **WHEN** helper 文件被合并或删除
-- **THEN** 系统 MUST NOT 新增只转发旧 helper 路径的兼容 wrapper
-- **AND** 内部代码 MUST NOT 从公开 facade 回流导入 suite-specific helper
-
 ### Requirement: Architecture streamlining campaign preserves public behavior
-项目 MUST 允许按 wave 执行全仓架构收敛，但该收敛 MUST 只改变内部模块组织和未登记 public surface 的 import 路径，不得隐式改变当前 package CLI 名称、current canonical config 语义、dataset split 语义、beam label / label-space 口径、metric schema、checkpoint schema、run metadata 字段、默认输出分区或本地产物边界。
+项目 MUST 允许按 wave 删除明确登记的 public surface 和 internal surface。删除 MUST 在 change spec、pyproject、README、inventory 和 tests 中同步声明；未列入删除范围的 current canonical config、dataset split、beam label/label-space、metric schema、checkpoint schema、run metadata 和默认输出分区 MUST 保持兼容。
 
-#### Scenario: 用户可见入口保持稳定
-- **WHEN** architecture streamlining wave 修改 `data`、`engine`、`models`、`diagnostics`、`config`、`scripts` 或 `configs`
-- **THEN** 当前 README、pyproject console scripts、current OpenSpec specs 和 inventory 登记的 package CLI MUST 继续可用
-- **AND** 已登记 current workflow 的用户可见输入/输出契约 MUST 保持兼容
+#### Scenario: 保留用户可见入口稳定
+- **WHEN** architecture streamlining wave 修改 data、engine、models、diagnostics、config、scripts 或 configs
+- **THEN** 本 change 明确保留的十个 package CLI 和 protected current workflow MUST 继续可用
+- **AND** focused tests MUST 验证其用户可见输入输出契约
 
-#### Scenario: 内部结构可以 breaking 收缩
-- **WHEN** 某个 import path 未被 README、pyproject console script、current spec、inventory public surface 或 focused test 明确登记为 public owner
-- **THEN** 该 path MAY 在本 change 中被删除、合并或迁到真实 owner
-- **AND** 内部调用方 MUST 改为导入职责明确的 owner module，不得新增兼容 wrapper 维持旧路径
+#### Scenario: 登记的 breaking surface 可删除
+- **WHEN** command、module-only CLI、script path 或 internal import 已在 active change 中标记为 removed
+- **THEN** implementation MAY 删除该 path 并同步所有 current references
+- **AND** implementation MUST 不新增兼容 wrapper 维持旧路径
 
 ### Requirement: Architecture streamlining starts from a clean or documented baseline
 项目 MUST 在实施任何源码 wave 前记录工作树、active change 和验证 baseline。若工作树存在无关实验改动、未跟踪配置/脚本、本地 cache 噪声或已完成但未归档的 active change，实施说明 MUST 先归档、提交、隔离，或明确记录 deferral 和影响范围。
@@ -277,15 +263,15 @@ MMW preparation 拆分后的窄模块 MUST 按配置、输入审计、索引、s
 - **WHEN** active change 显示 status 为 complete
 - **THEN** 本 change MUST 先归档该 change，或在 Wave 0 中说明暂不归档的原因、风险和与本 change 的隔离方式
 
-### Requirement: Surface pruning preserves current user behavior
-项目 MAY 大规模删除旧入口、本地脚本、隐藏 CLI、重复 tombstone 和可生成配置，但 MUST 保持 current package CLI、current canonical config、dataset split、beam label/label-space、metric schema、checkpoint schema、run metadata 和默认本地产物分区兼容。
+### Requirement: Current runtime 保持最小依赖流
+当前运行架构 MUST 以 package CLI、config、data/difficulty、engine、models/losses 和 ignored runtime artifacts 构成最小依赖流。只服务 retired workflow、展示产品或治理镜像且没有 current consumer 的模块 MUST 不保留在 `src/kd_sensing`。
 
-#### Scenario: Current public behavior unchanged
-- **WHEN** 本 change 删除或合并 internal surface
-- **THEN** README、pyproject console scripts、current specs 和 inventory 登记的 current workflow MUST 继续可用
-- **AND** 删除 MUST 不要求用户改用未记录的新命令
+#### Scenario: 零消费者 owner 退出源码
+- **WHEN** tracked import、config、CLI、script、current spec 和 claim provenance 审计均未发现某 owner 的 current consumer
+- **THEN** implementation MUST 删除该 owner 和专属测试
+- **AND** implementation MUST 不把 owner 合并进其它大文件来规避删除
 
-#### Scenario: Internal breaking import allowed
-- **WHEN** 一个 import path 未登记为 public surface
-- **THEN** 它 MAY 被删除或移动
-- **AND** 项目 MUST 不新增旧路径 compatibility wrapper
+#### Scenario: supporting owner 有真实下游
+- **WHEN** run index 被 runtime cleanup 消费，或 JEPA mean pooling 被 current MMW config 消费
+- **THEN** 对应 owner MUST 保留其最小 consumer contract
+- **AND** 只服务 retired branch 的 sibling 实现 MUST 可独立删除

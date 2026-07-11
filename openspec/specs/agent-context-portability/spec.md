@@ -17,17 +17,17 @@
 - **AND** 它 MUST NOT 维护完整源码目录清单、完整 retired token 清单、完整 OpenSpec requirement 或完整 claim 表
 
 ### Requirement: 当前研究简报
-项目 MUST 提供或记录一份短研究简报，用于帮助 agent 快速理解当前论文/实验主线、冻结方法、不要追的路线、claim 升级条件和下一步证据缺口。该简报 MUST 不替代主线模型目录、实验协议表、claim registry、experiment matrix 或 OpenSpec specs。
+项目 MUST 提供短研究简报，帮助 agent 定位当前主线、冻结方法、退役路线、claim 升级条件和下一步证据缺口。简报 MUST 不依赖 research dashboard/harvester，也 MUST 不替代主线目录、协议表、人工 claim registry、experiment matrix 或 OpenSpec specs。
 
 #### Scenario: 研究简报覆盖当前主线
 - **WHEN** AI agent 读取研究简报
-- **THEN** 文档 MUST 标明当前主线、主要 baseline/control、当前冻结方法、pending evidence 和下一步高价值实验
-- **AND** 文档 MUST 明确退役路线不得恢复为当前 CLI、config、registry 或 package facade
+- **THEN** 文档 MUST 标明 final C2/U-Mask 主线、主要 controls、MMW/CSI supporting、pending evidence 和不要恢复的路线
+- **AND** 文档 MUST 指向人工 claim/protocol owner
 
 #### Scenario: 研究简报不冒充正式 claim
-- **WHEN** 简报提到本地结果、dashboard candidate、mock/smoke 或 pending evidence
+- **WHEN** 简报提到本地结果、mock/smoke 或 pending evidence
 - **THEN** 文档 MUST 标明 claim status 或指向 `docs/result_claims_registry.md`
-- **AND** 文档 MUST NOT 把未审阅、candidate-only、pending、mock/smoke 或 not-comparable 数值写成正式论文结论
+- **AND** 文档 MUST 不依赖 dashboard candidate 作为正式证据
 
 ### Requirement: Agent 复盘和记忆候选
 项目 MUST 为重复 AI 失误提供可审查的复盘或记忆候选机制。该机制 MUST 记录错误模式、正确规则、建议沉淀位置和验证命令；正式长期文档更新仍 MUST 由人工确认或 OpenSpec change 完成。
@@ -43,17 +43,17 @@
 - **AND** 正式沉淀 MUST 通过人工确认、focused documentation change 或 OpenSpec change 完成
 
 ### Requirement: 只读角色 agent 和 skills
-项目 MAY 定义只读角色 agent 或 skills，用于 claim audit、experiment triage、surface doctor review、literature scouting 或其它高噪声分析任务。只读角色 MUST 不修改源码、OpenSpec、README、claim registry、配置、运行产物或 checkpoint。
+项目 MAY 定义只读角色 agent 或 skills，用于 claim audit、experiment triage、surface audit、literature scouting 或其它高噪声分析任务。只读角色 MUST 不修改源码、OpenSpec、README、claim registry、配置、运行产物或 checkpoint，也 MUST 不要求 project surface doctor 产品存在。
 
 #### Scenario: 只读角色返回建议
-- **WHEN** 用户或主 agent 调用 claim auditor、experiment triage、surface doctor reviewer 或等价角色
+- **WHEN** 用户或主 agent 调用 claim auditor、experiment triage、surface auditor 或等价角色
 - **THEN** 该角色 MUST 只读取允许的 tracked docs/source 或用户明确指定的本地产物
 - **AND** 输出 MUST 是建议、风险、缺口或候选任务，不得直接修改文件
 
 #### Scenario: 角色不得绕过项目边界
 - **WHEN** 角色 agent 需要运行 Python 检查或引用项目命令
 - **THEN** 命令 MUST 使用 `conda run -n kd_mm_beam ...`
-- **AND** 角色 MUST 不启动真实训练、清理本地产物、提交 checkpoint、恢复退役入口或绕过 `src/kd_sensing` 包结构
+- **AND** 角色 MUST 不启动真实训练、清理本地产物、提交 checkpoint、恢复退役入口或绕过 `src/kd_sensing`
 
 ### Requirement: Agent context portability 验证
 项目健康检查或文档检查 MUST 能验证 agent context portability 的关键边界。检查 MUST 不读取真实 `dataset/`、不加载 checkpoint、不启动训练、不写入 ignored runtime artifacts。

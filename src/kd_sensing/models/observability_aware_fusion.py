@@ -1,16 +1,7 @@
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 import torch.nn as nn
-
-
-JEPA_ADVANTAGE_GPS_CONDITIONS = {"C3_random_async", "C4_severe_async"}
-JEPA_ADVANTAGE_IMAGE_CONDITIONS = {
-    "D3_motion_blur",
-    "D4_partial_occlusion",
-    "D6_burst_missing",
-    "D7_joint_worst_case",
-}
 
 
 class ObservabilityAwareFusion(nn.Module):
@@ -59,10 +50,7 @@ class ObservabilityAwareFusion(nn.Module):
         gps_delay_steps: torch.Tensor | None = None,
         jepa_predicted_latent: torch.Tensor | None = None,
         temporal_jepa_latent: torch.Tensor | None = None,
-        benchmark_condition_metadata: Mapping[str, Any] | None = None,
-        image_degradation_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del image_degradation_metadata
         img = z_img if z_img is not None else image_latent
         gps = z_gps if z_gps is not None else gps_latent
         if img is None or gps is None:
@@ -123,20 +111,13 @@ class ObservabilityAwareFusion(nn.Module):
                 )
 
         low_image = (~image_valid) | image_score.lt(self.image_observability_threshold)
-        advantage = is_jepa_advantage_condition(benchmark_condition_metadata)
         fallback_mask = torch.zeros_like(low_image)
         warnings: list[str] = []
         if self.enable_jepa_fallback:
-            advantage_request = (
-                image_score.lt(max(self.image_observability_threshold, 0.5))
-                if advantage
-                else torch.zeros_like(low_image)
-            )
-            requested = low_image | advantage_request
             if predicted_3d is not None:
-                fallback_mask = requested
+                fallback_mask = low_image
                 img_3d = torch.where(fallback_mask.unsqueeze(-1), predicted_3d.to(dtype=img_3d.dtype, device=img_3d.device), img_3d)
-            elif bool(requested.any()):
+            elif bool(low_image.any()):
                 warnings.append(f"temporal_jepa_latent_unavailable:{self.fallback_unavailable}")
 
         projected_img = self.image_projection(img_3d)
@@ -180,7 +161,6 @@ class ObservabilityAwareFusion(nn.Module):
             "gps_delay_steps": delay.squeeze(1) if squeezed else delay,
             "image_missing_or_low_observability": low_image.squeeze(1) if squeezed else low_image,
             "jepa_fallback_triggered": fallback_out,
-            "jepa_advantage_condition": bool(advantage),
             "latent_source": "temporal_jepa" if bool(fallback_mask.any()) else "current_image",
             "warnings": warnings,
             "gps_downweight_reason": "invalid_or_delayed" if (bool((~gps_valid).any()) or bool(delay.gt(0).any())) else "",
@@ -202,34 +182,6 @@ class ObservabilityAwareFusion(nn.Module):
             "gps_delay_scale": self.gps_delay_scale,
             "enable_jepa_fallback": self.enable_jepa_fallback,
         }
-
-
-def is_jepa_advantage_condition(metadata: Mapping[str, Any] | None) -> bool:
-    if not isinstance(metadata, Mapping):
-        return False
-    gps_condition = _condition_value(metadata, ("gps_condition", "scenario_c_condition", "gps_async_condition"))
-    image_condition = _condition_value(metadata, ("image_condition", "scenario_d_condition"))
-    condition = _condition_value(metadata, ("condition", "difficulty_condition"))
-    if not gps_condition and condition:
-        gps_condition = _find_condition_token(condition, JEPA_ADVANTAGE_GPS_CONDITIONS)
-    if not image_condition and condition:
-        image_condition = _find_condition_token(condition, JEPA_ADVANTAGE_IMAGE_CONDITIONS)
-    return gps_condition in JEPA_ADVANTAGE_GPS_CONDITIONS and image_condition in JEPA_ADVANTAGE_IMAGE_CONDITIONS
-
-
-def _condition_value(metadata: Mapping[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = metadata.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return ""
-
-
-def _find_condition_token(text: str, candidates: set[str]) -> str:
-    for candidate in candidates:
-        if candidate in str(text):
-            return candidate
-    return ""
 
 
 def _as_temporal_latent(value: torch.Tensor, *, name: str) -> tuple[torch.Tensor, bool]:
@@ -294,8 +246,5 @@ def _align_bt(value: torch.Tensor, *, name: str, batch_size: int, steps: int) ->
 
 
 __all__ = [
-    "JEPA_ADVANTAGE_GPS_CONDITIONS",
-    "JEPA_ADVANTAGE_IMAGE_CONDITIONS",
     "ObservabilityAwareFusion",
-    "is_jepa_advantage_condition",
 ]

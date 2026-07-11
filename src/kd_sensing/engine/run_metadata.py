@@ -318,12 +318,14 @@ def jepa_downstream_metadata(
         image_encoder_cfg = {"type": image_encoder_cfg}
     if not isinstance(image_encoder_cfg, dict) or str(image_encoder_cfg.get("type", "")) != "jepa_context_image":
         return {}
+
     core_cfg = primary_cfg.get("representation_core", {})
     if isinstance(core_cfg, str):
         core_cfg = {"type": core_cfg}
     if not isinstance(core_cfg, dict):
         core_cfg = {}
     core_type = str(core_cfg.get("type", ""))
+    is_next_query = core_type == "next_beam_query_transformer"
     experiment_cfg = cfg.get("experiment", {})
     ablation = str(
         experiment_cfg.get("ablation")
@@ -332,75 +334,9 @@ def jepa_downstream_metadata(
         or cfg.get("output", {}).get("run_name")
         or ""
     )
-    is_next_query = core_type == "next_beam_query_transformer"
     checkpoint_path = image_encoder_cfg.get("checkpoint_path") or image_encoder_cfg.get("checkpoint") or ""
     freeze_encoder = bool(image_encoder_cfg.get("freeze_encoder", False))
-    pooler_cfg = image_encoder_cfg.get("pooler")
-    pooler_type = _component_type(pooler_cfg)
-    if pooler_type is None:
-        pooler_type = str(image_encoder_cfg.get("pooling", "mean"))
-    pooling = str(pooler_type)
-    gps_query_pool = image_encoder_cfg.get("gps_query_pool", {})
-    if pooling == "gps_query_attention" and isinstance(pooler_cfg, dict):
-        gps_query_pool = {**gps_query_pool, **pooler_cfg} if isinstance(gps_query_pool, dict) else dict(pooler_cfg)
-    if not isinstance(gps_query_pool, dict):
-        gps_query_pool = {}
-    hybrid_pooler = pooler_cfg if pooling == "hybrid_residual_query" and isinstance(pooler_cfg, dict) else {}
-    predictive_pooler = pooler_cfg if pooling == "predictive_gps_query" and isinstance(pooler_cfg, dict) else {}
-    output_mode = "frame"
-    if isinstance(pooler_cfg, dict):
-        output_mode = str(pooler_cfg.get("output_mode", output_mode))
-    if pooling == "gps_query_attention" and isinstance(gps_query_pool, dict):
-        output_mode = str(gps_query_pool.get("output_mode", output_mode))
     visual_token_metadata = _jepa_visual_token_metadata_from_config(image_encoder_cfg)
-    temporal_auxiliary = image_encoder_cfg.get("temporal_auxiliary", {})
-    if not isinstance(temporal_auxiliary, dict):
-        temporal_auxiliary = {}
-    adapter_type = _component_type(image_encoder_cfg.get("adapter")) or "identity"
-    gps_query_enabled = pooling == "gps_query_attention"
-    hybrid_enabled = pooling == "hybrid_residual_query"
-    predictive_enabled = pooling == "predictive_gps_query"
-    gps_query_metadata = {
-        "enabled": gps_query_enabled,
-        "k_queries": gps_query_pool.get("k_queries"),
-        "num_heads": gps_query_pool.get("num_heads"),
-        "condition_dim": gps_query_pool.get("condition_dim"),
-        "condition_source": gps_query_pool.get("condition_source", "projected_gps" if gps_query_enabled else None),
-        "return_attention": bool(gps_query_pool.get("return_attention", False)),
-    }
-    hybrid_metadata = {
-        "enabled": hybrid_enabled,
-        "content_queries": hybrid_pooler.get("content_queries"),
-        "gps_queries": hybrid_pooler.get("gps_queries", hybrid_pooler.get("k_queries")),
-        "num_heads": hybrid_pooler.get("num_heads"),
-        "condition_dim": hybrid_pooler.get("condition_dim"),
-        "condition_source": hybrid_pooler.get("condition_source", "projected_gps" if hybrid_enabled else None),
-        "residual_alpha_init": hybrid_pooler.get("residual_alpha_init"),
-        "require_condition": bool(hybrid_pooler.get("require_condition", True)) if hybrid_enabled else False,
-        "return_attention": bool(hybrid_pooler.get("return_attention", False)),
-    }
-    temporal_predictor = predictive_pooler.get("temporal_predictor", {})
-    if not isinstance(temporal_predictor, dict):
-        temporal_predictor = {"type": temporal_predictor}
-    reliability_gate = predictive_pooler.get("reliability_gate", {})
-    if not isinstance(reliability_gate, dict):
-        reliability_gate = {"type": reliability_gate}
-    predictive_metadata = {
-        "enabled": predictive_enabled,
-        "content_queries": predictive_pooler.get("content_queries"),
-        "gps_queries": predictive_pooler.get("gps_queries", predictive_pooler.get("k_queries")),
-        "num_heads": predictive_pooler.get("num_heads"),
-        "condition_dim": predictive_pooler.get("condition_dim"),
-        "condition_source": predictive_pooler.get("condition_source", "projected_gps" if predictive_enabled else None),
-        "residual_scale_init": predictive_pooler.get(
-            "residual_scale_init",
-            predictive_pooler.get("residual_alpha_init"),
-        ),
-        "temporal_predictor_type": temporal_predictor.get("type"),
-        "history_window": temporal_predictor.get("history_window"),
-        "reliability_gate_type": reliability_gate.get("type"),
-        "return_attention": bool(predictive_pooler.get("return_attention", False)),
-    }
     metadata = {
         "source": "config",
         "ablation": ablation,
@@ -408,42 +344,15 @@ def jepa_downstream_metadata(
         "jepa_checkpoint_path": checkpoint_path,
         "state_dict_prefix": image_encoder_cfg.get("state_dict_prefix", "context_encoder"),
         "freeze_image_encoder": freeze_encoder,
-        "pooling": pooling,
-        "pooler_type": pooling,
-        "pooler_output_mode": output_mode,
+        "pooling": "mean",
+        "pooler_type": "mean",
         "visual_token_encoder": visual_token_metadata,
         "visual_token_metadata": visual_token_metadata,
         "checkpoint_policy": visual_token_metadata.get("checkpoint_policy"),
         "token_source": visual_token_metadata.get("token_source"),
         "token_count": visual_token_metadata.get("token_count"),
         "token_grid": visual_token_metadata.get("token_grid"),
-        "adapter_type": adapter_type,
-        "condition_source": gps_query_metadata["condition_source"]
-        or hybrid_metadata["condition_source"]
-        or predictive_metadata["condition_source"],
-        "attention_diagnostics": bool(
-            gps_query_metadata["return_attention"]
-            or hybrid_metadata["return_attention"]
-            or predictive_metadata["return_attention"]
-        ),
-        "gps_query_pooling_enabled": gps_query_enabled,
-        "gps_query_k_queries": gps_query_metadata["k_queries"],
-        "gps_query_num_heads": gps_query_metadata["num_heads"],
-        "gps_query_condition_source": gps_query_metadata["condition_source"],
-        "hybrid_residual_query_enabled": hybrid_enabled,
-        "hybrid_content_queries": hybrid_metadata["content_queries"],
-        "hybrid_gps_queries": hybrid_metadata["gps_queries"],
-        "hybrid_residual_alpha_init": hybrid_metadata["residual_alpha_init"],
-        "hybrid_condition_source": hybrid_metadata["condition_source"],
-        "predictive_gps_query_enabled": predictive_enabled,
-        "gps_query_plus_plus_enabled": predictive_enabled,
-        "content_query_count": predictive_metadata["content_queries"],
-        "gps_query_count": predictive_metadata["gps_queries"],
-        "temporal_predictor_type": predictive_metadata["temporal_predictor_type"],
-        "reliability_gate_type": predictive_metadata["reliability_gate_type"],
-        "residual_scale": predictive_metadata["residual_scale_init"],
         "context_encoder_frozen": freeze_encoder,
-        "temporal_auxiliary_enabled": bool(temporal_auxiliary.get("enabled", False)),
         "time_embedding_enabled": _metadata_flag_enabled(
             core_cfg.get("time_embedding"),
             default=is_next_query,
@@ -462,14 +371,7 @@ def jepa_downstream_metadata(
             "checkpoint_path": checkpoint_path,
             "freeze_encoder": freeze_encoder,
             "state_dict_prefix": image_encoder_cfg.get("state_dict_prefix", "context_encoder"),
-            "pooling": pooling,
-            "pooler_type": pooling,
-            "pooler_output_mode": output_mode,
-            "adapter_type": adapter_type,
-            "gps_query_pool": gps_query_metadata,
-            "hybrid_residual_query": hybrid_metadata,
-            "predictive_gps_query": predictive_metadata,
-            "temporal_auxiliary": dict(temporal_auxiliary),
+            "pooling": "mean",
             "latent_dim": image_encoder_cfg.get("latent_dim"),
             "visual_token_encoder": visual_token_metadata,
         },
@@ -482,14 +384,6 @@ def jepa_downstream_metadata(
     if optimizer_groups is not None:
         metadata["optimizer_param_groups"] = list(optimizer_groups)
     return metadata
-
-
-def _component_type(raw: Any) -> str | None:
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, dict):
-        return str(raw.get("type", "")) or None
-    return None
 
 
 def _nested_int(raw: Any, key: str, fallback: Any = None) -> int | None:
@@ -621,13 +515,6 @@ def _jepa_metadata_from_model(model_metadata: dict[str, Any]) -> dict[str, Any]:
     image_encoder = encoders.get("image")
     if not isinstance(image_encoder, dict) or image_encoder.get("encoder") != "jepa_context_image":
         return {}
-    pooler = image_encoder.get("pooler") if isinstance(image_encoder.get("pooler"), dict) else {}
-    adapter = image_encoder.get("adapter") if isinstance(image_encoder.get("adapter"), dict) else {}
-    gps_query_pool = image_encoder.get("gps_query_pool") if isinstance(image_encoder.get("gps_query_pool"), dict) else {}
-    hybrid_pooler = pooler if pooler.get("type") == "hybrid_residual_query" else {}
-    predictive_pooler = pooler if pooler.get("type") == "predictive_gps_query" else {}
-    pooler_type = image_encoder.get("pooler_type") or pooler.get("type")
-    adapter_type = image_encoder.get("adapter_type") or adapter.get("type")
     visual_metadata = (
         image_encoder.get("visual_token_metadata")
         if isinstance(image_encoder.get("visual_token_metadata"), dict)
@@ -637,48 +524,20 @@ def _jepa_metadata_from_model(model_metadata: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "image_encoder": image_encoder,
-        "pooling": image_encoder.get("pooling") or pooler_type,
-        "pooler_type": pooler_type,
-        "pooler_output_mode": image_encoder.get("pooler_output_mode") or pooler.get("output_mode"),
+        "pooling": "mean",
+        "pooler_type": "mean",
         "visual_token_encoder": visual_metadata,
         "visual_token_metadata": visual_metadata,
         "checkpoint_policy": image_encoder.get("checkpoint_policy") or visual_metadata.get("checkpoint_policy"),
         "token_source": image_encoder.get("token_source") or visual_metadata.get("token_source"),
         "token_count": image_encoder.get("token_count") or visual_metadata.get("token_count"),
         "token_grid": image_encoder.get("token_grid") or visual_metadata.get("token_grid"),
-        "adapter_type": adapter_type,
         "jepa_checkpoint_path": image_encoder.get("checkpoint_path"),
         "state_dict_prefix": image_encoder.get("state_dict_prefix"),
         "freeze_image_encoder": image_encoder.get("freeze_encoder"),
-        "gps_query_pooling_enabled": bool(image_encoder.get("gps_query_pooling_enabled", False)),
-        "gps_query_k_queries": gps_query_pool.get("k_queries") or pooler.get("k_queries"),
-        "gps_query_num_heads": gps_query_pool.get("num_heads") or pooler.get("num_heads"),
-        "gps_query_condition_source": gps_query_pool.get("condition_source") or pooler.get("condition_source"),
-        "condition_source": gps_query_pool.get("condition_source") or pooler.get("condition_source"),
-        "attention_diagnostics": image_encoder.get("attention_diagnostics"),
-        "hybrid_residual_query_enabled": bool(image_encoder.get("hybrid_residual_query_enabled", False)),
-        "hybrid_content_queries": hybrid_pooler.get("content_queries"),
-        "hybrid_gps_queries": hybrid_pooler.get("gps_queries") or hybrid_pooler.get("k_queries"),
-        "hybrid_residual_alpha_init": hybrid_pooler.get("residual_alpha_init"),
-        "hybrid_condition_source": hybrid_pooler.get("condition_source"),
-        "predictive_gps_query_enabled": bool(image_encoder.get("predictive_gps_query_enabled", False)),
-        "gps_query_plus_plus_enabled": bool(image_encoder.get("gps_query_plus_plus_enabled", False)),
-        "content_query_count": image_encoder.get("content_query_count", predictive_pooler.get("content_queries")),
-        "gps_query_count": image_encoder.get("gps_query_count", predictive_pooler.get("gps_queries")),
-        "temporal_predictor_type": image_encoder.get(
-            "temporal_predictor_type",
-            predictive_pooler.get("temporal_predictor_type"),
-        ),
-        "reliability_gate_type": image_encoder.get(
-            "reliability_gate_type",
-            predictive_pooler.get("reliability_gate_type"),
-        ),
-        "residual_scale": image_encoder.get("residual_scale", predictive_pooler.get("residual_scale")),
-        "context_encoder_frozen": image_encoder.get("context_encoder_frozen", image_encoder.get("freeze_encoder")),
-        "temporal_auxiliary_enabled": bool(image_encoder.get("temporal_auxiliary_enabled", False)),
+        "context_encoder_frozen": image_encoder.get("freeze_encoder"),
         "conditioned_encoders": model_metadata.get("conditioned_encoders", {}),
     }
-
 
 def _representation_core_metadata(core_cfg: dict[str, Any]) -> dict[str, Any]:
     fields = (

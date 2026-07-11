@@ -80,7 +80,7 @@ def reject_removed_config_path(config_path: str | Path | None) -> None:
         raise ValueError(
             f"Viewer manifest and repository Gradio viewer support have been retired; "
             f"legacy config path '{path.as_posix()}' is no longer supported. "
-            "Use kd-sensing-eval-u-mask-matrix, kd-sensing-mmw-town-gps-v2, or kd-sensing-project-surface-doctor."
+            "Use kd-sensing-eval-u-mask-matrix or kd-sensing-mmw-town-gps-v2."
         )
     if _is_retired_raymobtime_config_path(path):
         raise ValueError(
@@ -91,7 +91,7 @@ def reject_removed_config_path(config_path: str | Path | None) -> None:
         raise ValueError(
             f"AMR-Net_gps_image and JEPA-MSAC priority legacy workflows have been retired; "
             f"legacy config path '{path.as_posix()}' is no longer supported. "
-            "Use current U-MaskBeamJEPA, MMW GPS v2, CSI, or project surface doctor CLIs."
+            "Use current U-MaskBeamJEPA, MMW GPS v2, or CSI workflows."
         )
     suggestion = _replacement_config_path(path)
     if suggestion is None:
@@ -183,7 +183,7 @@ def reject_retired_bgam_viewer_config(cfg: dict[str, Any]) -> None:
             raise ValueError(
                 "Viewer manifest and repository Gradio viewer support have been retired; "
                 "diagnostics.visualization is no longer a current config surface. "
-                "Use kd-sensing-eval-u-mask-matrix, kd-sensing-mmw-town-gps-v2, or kd-sensing-project-surface-doctor."
+                "Use kd-sensing-eval-u-mask-matrix or kd-sensing-mmw-town-gps-v2."
             )
 
     for location, model_cfg in iter_model_configs(cfg):

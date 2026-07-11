@@ -11,7 +11,6 @@ from kd_sensing.data.difficulty.schema import (
     normalize_config_difficulty,
     normalize_difficulty_profiles,
 )
-from kd_sensing.data.difficulty.presets import GPS_QUERY_ADVANTAGE_CONDITION_IDS, PREDICTIVE_JEPA_CONDITION_IDS
 from kd_sensing.engine.batch import forward_model
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.evaluation_pass import run_evaluation_pass
@@ -65,24 +64,6 @@ def _batch() -> dict:
         "metadata": {"sample_id": ["a", "b"], "split": ["train", "train"]},
     }
 
-
-def _advantage_batch() -> dict:
-    image = torch.zeros(4, 3, 1, 4, 4, dtype=torch.float32)
-    image[0] = 0.10
-    image[1] = 0.12
-    image[2] = 0.80
-    image[3] = 0.82
-    return {
-        "gps": torch.arange(24, dtype=torch.float32).reshape(4, 3, 2),
-        "image": image,
-        "target_beam": torch.tensor([[0], [4], [8], [12]]),
-        "beam_power": torch.arange(16, dtype=torch.float32).reshape(4, 1, 4),
-        "metadata": {
-            "sample_id": ["s0", "s1", "s2", "s3"],
-            "split": ["test", "test", "test", "test"],
-            "scene": ["scene32", "scene32", "scene32", "scene32"],
-        },
-    }
 
 
 def _delay_profile(stage: str = "train", *, severity: float = 1.0, seed: int = 3):
@@ -156,485 +137,35 @@ def test_profile_digest_is_stable_and_validation_rejects_bad_profiles() -> None:
         normalize_difficulty_profiles([{"id": "stage", "stage": "preprocess_dataset_files", "operator": "gps_clean"}])
 
 
-def test_scenario_d_profile_normalizes_canonical_conditions_and_rejects_bad_config() -> None:
-    profiles = normalize_difficulty_profiles(
-        [
-            {
-                "id": f"profile_{index}",
-                "stage": "benchmark",
-                "condition": condition,
-                "operators": [{"type": "scenario_d_image_observability"}],
-            }
-            for index, condition in enumerate(
-                [
-                    "D0_full_image",
-                    "D1_weather",
-                    "D2_low_light",
-                    "D3_motion_blur",
-                    "D4_partial_occlusion",
-                    "D5_frame_dropout",
-                    "D6_burst_missing",
-                    "D7_joint_worst_case",
-                ]
-            )
-        ],
-        default_stage="benchmark",
-    )
-
-    assert [profile.condition for profile in profiles] == [
-        "D0_full_image",
-        "D1_weather",
-        "D2_low_light",
-        "D3_motion_blur",
-        "D4_partial_occlusion",
-        "D5_frame_dropout",
-        "D6_burst_missing",
-        "D7_joint_worst_case",
-    ]
-    d7 = profiles[-1]
-    assert d7.severity == 7.0
-    assert d7.operators[0].modality == "image"
-    assert d7.operators[0].affected_modalities == ("image",)
-    assert d7.operators[0].params["image_occlusion_prob"] == 0.5
-    assert d7.operators[0].params["image_burst_dropout_prob"] == 0.5
-    assert d7.operators[0].params["max_burst_len"] == 3
-
-    with pytest.raises(ValueError, match="Unknown Scenario D image observability condition 'D9_magic'.*Available D-levels"):
-        normalize_difficulty_profiles(
-            [{"id": "bad", "condition": "D9_magic", "operator": "scenario_d_image_observability"}],
-            default_stage="benchmark",
-        )
-    with pytest.raises(ValueError, match="image_dropout_prob=.*must be in \\[0, 1\\]"):
-        normalize_difficulty_profiles(
-            [
-                {
-                    "id": "bad_prob",
-                    "condition": "D5_frame_dropout",
-                    "operator": {"type": "scenario_d_image_observability", "image_dropout_prob": 1.5},
-                }
-            ]
-        )
-    with pytest.raises(ValueError, match="max_burst_len must be positive"):
-        normalize_difficulty_profiles(
-            [
-                {
-                    "id": "bad_burst",
-                    "condition": "D6_burst_missing",
-                    "operator": {"type": "scenario_d_image_observability", "max_burst_len": 0},
-                }
-            ]
-        )
-    with pytest.raises(ValueError, match="pseudo modality 'missing_image_modality'.*canonical modality 'image'"):
-        normalize_difficulty_profiles(
-            [
-                {
-                    "id": "pseudo_image",
-                    "condition": "D0_full_image",
-                    "operator": {"type": "scenario_d_image_observability", "modality": "missing_image_modality"},
-                }
-            ]
-        )
-
-
-def test_predictive_jepa_profile_normalizes_stress_curves_and_legacy_p_levels() -> None:
-    profiles = normalize_difficulty_profiles(
-        [
-            {
-                "id": f"predictive_{index}",
-                "stage": "benchmark",
-                "condition": condition,
-                "operators": [{"type": "predictive_jepa_robustness"}],
-            }
-            for index, condition in enumerate(
-                ["clean_anchor", "image_missing_s0p5", "image_noise_s0p5", "gps_noise_s0p5"]
-            )
-        ],
-        default_stage="benchmark",
-    )
-
-    assert [profile.condition for profile in profiles] == [
-        "clean_anchor",
-        "image_missing_s0p5",
-        "image_noise_s0p5",
-        "gps_noise_s0p5",
-    ]
-    assert profiles[1].severity == 0.5
-    assert profiles[1].operators[0].affected_modalities == ("image",)
-    assert profiles[1].operators[0].params["stress_suite"] == "image_missing"
-    assert profiles[2].operators[0].params["image_noise_type"] == "occlusion"
-    assert profiles[3].operators[0].affected_modalities == ("gps",)
-    assert profiles[3].operators[0].params["gps_noise_mode"] == "jitter"
-
-    legacy = normalize_difficulty_profiles(
-        [
-            {
-                "id": "legacy_p4",
-                "stage": "benchmark",
-                "condition": "P4_joint_predictive_recovery",
-                "operators": [{"type": "predictive_jepa_robustness"}],
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    assert "P4_joint_predictive_recovery" in PREDICTIVE_JEPA_CONDITION_IDS
-    assert legacy.operators[0].params["deprecated"] is True
-    assert legacy.operators[0].params["current_frame_missing"] is True
-    assert legacy.operators[0].params["plausible_wrong_gps"] is True
-    assert not legacy.operators[0].params.get("semantic_occlusion", False)
-
-    with pytest.raises(ValueError, match="Unknown Predictive JEPA robustness condition 'P9_magic'.*Available conditions"):
-        normalize_difficulty_profiles(
-            [{"id": "bad", "condition": "P9_magic", "operator": "predictive_jepa_robustness"}],
-            default_stage="benchmark",
-        )
-    with pytest.raises(ValueError, match="history_window must be positive"):
-        normalize_difficulty_profiles(
-            [
-                {
-                    "id": "bad_history",
-                    "condition": "P1_current_frame_missing_history_available",
-                    "operator": {"type": "predictive_jepa_robustness", "history_window": 0},
-                }
-            ],
-            default_stage="benchmark",
-        )
-
-
-def test_gps_query_advantage_profile_normalizes_without_expanding_p_suite() -> None:
-    profile = normalize_difficulty_profiles(
-        [
-            {
-                "id": "advantage_a2",
-                "stage": "benchmark",
-                "condition": "A2_visual_ambiguous_wrong_gps",
-                "operator": {"type": "predictive_jepa_robustness", "min_beam_offset": 4},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-
-    assert GPS_QUERY_ADVANTAGE_CONDITION_IDS == (
-        "A0_visual_ambiguous_peer",
-        "A1_beam_offset_wrong_gps",
-        "A2_visual_ambiguous_wrong_gps",
-    )
-    assert "clean_anchor" in PREDICTIVE_JEPA_CONDITION_IDS
-    assert "P0_clean_current" in PREDICTIVE_JEPA_CONDITION_IDS
-    assert profile.condition == "A2_visual_ambiguous_wrong_gps"
-    assert profile.severity == 12.0
-    assert profile.operators[0].params["visual_ambiguous_peer"] is True
-    assert profile.operators[0].params["beam_offset_constrained_wrong_gps"] is True
-    assert profile.operators[0].params["min_beam_offset"] == 4
-
 
 def test_image_observability_transform_is_deterministic_and_preserves_targets() -> None:
-    context = DifficultyContext(stage="benchmark", split="test", seed=11, sample_ids=("a", "b"))
-    clean_profile = normalize_difficulty_profiles(
-        [
-            {
-                "id": "clean_d0",
-                "stage": "benchmark",
-                "condition": "D0_full_image",
-                "operator": "scenario_d_image_observability",
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    clean = apply_difficulty_pipeline(_batch(), clean_profile, context)
-    assert torch.equal(clean.batch["image"], _batch()["image"])
-    assert clean.batch["image_valid_mask"].tolist() == [[True, True, True], [True, True, True]]
-    assert torch.allclose(clean.batch["image_observability_score"], torch.ones(2, 3))
-
-    physical_profile = normalize_difficulty_profiles(
-        [
-            {
-                "id": "physical_d4",
-                "stage": "benchmark",
-                "condition": "D4_partial_occlusion",
-                "operators": [
-                    {
-                        "type": "scenario_d_image_observability",
-                        "image_occlusion_prob": 1.0,
-                        "image_occlusion_ratio": 0.5,
-                    }
-                ],
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    physical = apply_difficulty_pipeline(_batch(), physical_profile, context)
-    assert physical.batch["image"].shape == _batch()["image"].shape
-    assert physical.batch["image"].dtype == _batch()["image"].dtype
-    assert bool(physical.batch["image_valid_mask"].all())
-    assert physical.batch["image_observability_score"].max().item() < 1.0
-    assert torch.equal(physical.batch["target_beam"], _batch()["target_beam"])
-    assert physical.batch["metadata"]["sample_id"] == ["a", "b"]
-
-    d7_profile = normalize_difficulty_profiles(
-        [
-            {
-                "id": "joint_d7",
-                "stage": "benchmark",
-                "condition": "D7_joint_worst_case",
-                "operators": [
-                    {
-                        "type": "scenario_d_image_observability",
-                        "image_occlusion_prob": 1.0,
-                        "image_occlusion_ratio": 0.5,
-                        "image_burst_dropout_prob": 1.0,
-                        "max_burst_len": 2,
-                    }
-                ],
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    first = apply_difficulty_pipeline(_batch(), d7_profile, context)
-    second = apply_difficulty_pipeline(_batch(), d7_profile, context)
-
-    assert torch.equal(first.batch["image"], second.batch["image"])
-    assert torch.equal(first.batch["image_valid_mask"], second.batch["image_valid_mask"])
-    assert torch.equal(first.batch["image_burst_dropout_mask"], second.batch["image_burst_dropout_mask"])
-    assert torch.equal(first.batch["image_observability_score"], second.batch["image_observability_score"])
-    assert not bool(first.batch["image_valid_mask"].all())
-    assert bool(first.batch["image_burst_dropout_mask"].any())
-    assert first.batch["image_observability_score"].min().item() == 0.0
-    assert "partial_occlusion" in first.batch["image_degradation_metadata"]["corruption_types"]
-    assert "burst_missing" in first.batch["image_degradation_metadata"]["corruption_types"]
-    assert first.batch["image_degradation_metadata"]["physical_corruption_keeps_valid"] is True
-    assert first.batch["image_degradation_metadata"]["missing_invalidates_frame"] is True
-    assert first.batch["image_observability_replay"]["condition"] == "D7_joint_worst_case"
-    assert torch.equal(first.batch["target_beam"], _batch()["target_beam"])
-    assert torch.equal(first.batch["beam_power"], _batch()["beam_power"])
-
-
-def test_predictive_jepa_pipeline_is_deterministic_no_label_shift_and_no_future_leak() -> None:
-    context = DifficultyContext(stage="benchmark", split="test", seed=23, sample_ids=("a", "b"))
     profile = normalize_difficulty_profiles(
         [
             {
-                "id": "predictive_p4",
+                "id": "degraded_image",
                 "stage": "benchmark",
-                "condition": "P4_joint_predictive_recovery",
-                "operators": [{"type": "predictive_jepa_robustness", "history_window": 2}],
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-
-    first = apply_difficulty_pipeline(_batch(), profile, context)
-    second = apply_difficulty_pipeline(_batch(), profile, context)
-
-    assert torch.equal(first.batch["image"], second.batch["image"])
-    assert torch.equal(first.batch["gps"], second.batch["gps"])
-    assert torch.equal(first.batch["image_valid_mask"], second.batch["image_valid_mask"])
-    assert torch.equal(first.batch["gps_source_sample_index"], second.batch["gps_source_sample_index"])
-    assert torch.equal(first.batch["target_beam"], _batch()["target_beam"])
-    assert torch.equal(first.batch["beam_power"], _batch()["beam_power"])
-    assert first.batch["metadata"]["sample_id"] == ["a", "b"]
-    assert first.batch["difficulty"]["condition"] == "P4_joint_predictive_recovery"
-
-    current_step = 2
-    assert first.batch["image_valid_mask"].tolist() == [[True, True, False], [True, True, False]]
-    assert first.batch["image_current_missing_mask"][:, current_step].tolist() == [True, True]
-    assert first.batch["image_observability_score"][:, current_step].tolist() == [0.0, 0.0]
-    assert torch.equal(first.batch["image"][:, :2], _batch()["image"][:, :2])
-    ranges = first.batch["image_degradation_metadata"]["history_source_range"]
-    assert ranges[current_step] == [0, 1]
-    assert all(item is None or item[1] < index for index, item in enumerate(ranges))
-
-    assert first.batch["gps_counterfactual_mask"][:, current_step].tolist() == [True, True]
-    assert not torch.equal(first.batch["gps"][:, current_step], _batch()["gps"][:, current_step])
-    gps_metadata = first.batch["gps_counterfactual_metadata"]
-    assert gps_metadata["counterfactual_input_intervention"] is True
-    assert gps_metadata["counterfactual_status"] == "counterfactual_peer_replacement"
-    assert gps_metadata["scene_constraint"] == "same_split_or_batch"
-    assert "mean_l2" in gps_metadata["distance_criteria"]
-    replay = first.batch["predictive_jepa_replay_metadata"]
-    assert replay["condition"] == "P4_joint_predictive_recovery"
-    assert replay["image"]["history_source_range"][current_step] == [0, 1]
-    assert replay["gps"]["source_sample_index"] == "gps_source_sample_index"
-
-
-def test_predictive_stress_axes_are_deterministic_and_preserve_metadata() -> None:
-    context = DifficultyContext(stage="benchmark", split="test", seed=29, sample_ids=("a", "b"))
-    before = _batch()
-
-    missing = normalize_difficulty_profiles(
-        [
-            {
-                "id": "missing",
-                "stage": "benchmark",
-                "condition": "image_missing_s0p5",
-                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    first_missing = apply_difficulty_pipeline(_batch(), missing, context)
-    second_missing = apply_difficulty_pipeline(_batch(), missing, context)
-    assert first_missing.batch["image"].shape == before["image"].shape
-    assert torch.equal(first_missing.batch["image"], second_missing.batch["image"])
-    assert first_missing.batch["image_valid_mask"].tolist() == [[True, False, False], [True, False, False]]
-    assert first_missing.batch["image_observability_score"][:, -1].tolist() == [0.0, 0.0]
-    assert torch.equal(first_missing.batch["gps"], before["gps"])
-    assert torch.equal(first_missing.batch["target_beam"], before["target_beam"])
-    assert first_missing.batch["metadata"]["sample_id"] == before["metadata"]["sample_id"]
-
-    noise = normalize_difficulty_profiles(
-        [
-            {
-                "id": "noise",
-                "stage": "benchmark",
-                "condition": "image_noise_s0p5",
-                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    noise_result = apply_difficulty_pipeline(_batch(), noise, context)
-    assert bool(noise_result.batch["image_valid_mask"].all())
-    assert noise_result.batch["image_noise_frame_mask"][:, -1].tolist() == [True, True]
-    assert noise_result.batch["image_degradation_metadata"]["degradation_type"] == "occlusion"
-    assert isinstance(noise_result.batch["image_degradation_metadata"]["replay_seed"], int)
-    assert torch.equal(noise_result.batch["gps"], before["gps"])
-
-    gps_noise = normalize_difficulty_profiles(
-        [
-            {
-                "id": "gps_noise",
-                "stage": "benchmark",
-                "condition": "gps_noise_s0p5",
-                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    first_gps = apply_difficulty_pipeline(_batch(), gps_noise, context)
-    second_gps = apply_difficulty_pipeline(_batch(), gps_noise, context)
-    assert torch.equal(first_gps.batch["gps"], second_gps.batch["gps"])
-    assert not torch.equal(first_gps.batch["gps"][:, -1], before["gps"][:, -1])
-    assert torch.equal(first_gps.batch["image"], before["image"])
-    assert first_gps.batch["gps_noise_mask"][:, -1].tolist() == [True, True]
-    assert first_gps.batch["gps_counterfactual_metadata"]["perturbation_mode"] == "jitter"
-    assert first_gps.batch["predictive_jepa_replay_metadata"]["gps"]["replay_seed"] == second_gps.batch["predictive_jepa_replay_metadata"]["gps"]["replay_seed"]
-    assert torch.equal(first_gps.batch["beam_power"], before["beam_power"])
-
-
-def test_predictive_jepa_conditions_cover_image_variants_and_gps_fallback() -> None:
-    context = DifficultyContext(stage="benchmark", split="test", seed=31, sample_ids=("solo",))
-    p2 = normalize_difficulty_profiles(
-        [
-            {
-                "id": "predictive_p2",
-                "stage": "benchmark",
-                "condition": "P2_semantic_occlusion_history_available",
-                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    p5 = normalize_difficulty_profiles(
-        [
-            {
-                "id": "predictive_p5",
-                "stage": "benchmark",
-                "condition": "P5_novel_weather_history_available",
-                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-    p3 = normalize_difficulty_profiles(
-        [
-            {
-                "id": "predictive_p3",
-                "stage": "benchmark",
-                "condition": "P3_plausible_wrong_gps_current_image",
-                "operator": {"type": "predictive_jepa_robustness", "history_window": 2},
-            }
-        ],
-        default_stage="benchmark",
-    )[0]
-
-    p2_result = apply_difficulty_pipeline(_batch(), p2, DifficultyContext(stage="benchmark", split="test", seed=31, sample_ids=("a", "b")))
-    assert p2_result.batch["image_valid_mask"].all()
-    assert "semantic_occlusion_proxy" in p2_result.batch["image_degradation_metadata"]["corruption_types"]
-    assert p2_result.batch["image_semantic_frame_mask"][:, -1].tolist() == [True, True]
-
-    p5_result = apply_difficulty_pipeline(_batch(), p5, DifficultyContext(stage="benchmark", split="test", seed=31, sample_ids=("a", "b")))
-    assert p5_result.batch["image_valid_mask"].all()
-    assert "novel_weather" in p5_result.batch["image_degradation_metadata"]["corruption_types"]
-    assert p5_result.batch["image_observability_score"][:, -1].max().item() < 1.0
-
-    solo_batch = _batch()
-    solo_batch["gps"] = solo_batch["gps"][:1]
-    solo_batch["image"] = solo_batch["image"][:1]
-    solo_batch["target_beam"] = solo_batch["target_beam"][:1]
-    solo_batch["beam_power"] = solo_batch["beam_power"][:1]
-    solo_batch["metadata"] = {"sample_id": ["solo"], "split": ["test"]}
-    fallback = apply_difficulty_pipeline(solo_batch, p3, context)
-    assert fallback.batch["gps_counterfactual_metadata"]["counterfactual_status"] == "counterfactual_fallback_jitter"
-    assert fallback.batch["gps_counterfactual_metadata"]["fallback_reason"] == "insufficient_batch_peer_pool"
-    assert [warning.code for warning in fallback.warnings] == ["predictive_jepa_plausible_wrong_gps_fallback"]
-
-
-def test_gps_query_advantage_difficulty_is_deterministic_and_beam_offset_constrained() -> None:
-    profile = normalize_difficulty_profiles(
-        [
-            {
-                "id": "advantage_a2",
-                "stage": "benchmark",
-                "condition": "A2_visual_ambiguous_wrong_gps",
+                "condition": "degraded_image",
+                "severity": 0.5,
+                "seed": 13,
                 "operator": {
-                    "type": "predictive_jepa_robustness",
-                    "history_window": 2,
-                    "min_beam_offset": 4,
-                    "scene_constraint": "same_split_or_batch",
-                    "visual_ambiguous_top_k": 2,
+                    "type": "image_observability",
+                    "modality": "image",
+                    "image_dropout_prob": 0.5,
+                    "image_occlusion_prob": 0.5,
+                    "image_occlusion_ratio": 0.25,
                 },
             }
-        ],
-        default_stage="benchmark",
+        ]
     )[0]
-    context = DifficultyContext(stage="benchmark", split="test", seed=41, sample_ids=("s0", "s1", "s2", "s3"))
-
-    first = apply_difficulty_pipeline(_advantage_batch(), profile, context)
-    second = apply_difficulty_pipeline(_advantage_batch(), profile, context)
-    changed_seed = apply_difficulty_pipeline(
-        _advantage_batch(),
-        profile,
-        DifficultyContext(stage="benchmark", split="test", seed=42, sample_ids=("s0", "s1", "s2", "s3")),
-    )
+    original = _batch()
+    first = apply_difficulty_pipeline(_batch(), profile, DifficultyContext(stage="benchmark", split="test", seed=13))
+    second = apply_difficulty_pipeline(_batch(), profile, DifficultyContext(stage="benchmark", split="test", seed=13))
 
     assert torch.equal(first.batch["image"], second.batch["image"])
-    assert torch.equal(first.batch["gps"], second.batch["gps"])
-    assert torch.equal(first.batch["gps_source_sample_index"], second.batch["gps_source_sample_index"])
-    assert first.batch["predictive_jepa_replay_metadata"] == second.batch["predictive_jepa_replay_metadata"]
-    assert torch.equal(first.batch["target_beam"], _advantage_batch()["target_beam"])
-    assert torch.equal(first.batch["beam_power"], _advantage_batch()["beam_power"])
-    assert first.batch["metadata"]["sample_id"] == ["s0", "s1", "s2", "s3"]
-
-    visual = first.batch["visual_ambiguous_hard_negative_metadata"]
-    assert visual["fallback_count"] == 0
-    assert all(offset is not None and offset >= 4 for offset in visual["beam_offset"])
-    assert all(peer_id in {"s0", "s1", "s2", "s3"} for peer_id in visual["peer_sample_id"])
-    assert first.batch["predictive_jepa_replay_metadata"]["image"]["visual_ambiguous_peer"]["min_beam_offset"] == 4.0
-
-    gps_metadata = first.batch["gps_counterfactual_metadata"]
-    assert gps_metadata["counterfactual_status"] == "counterfactual_peer_replacement"
-    assert gps_metadata["fallback_count"] == 0
-    assert all(offset >= 4 for offset in gps_metadata["beam_offset_criteria"]["offsets"])
-    assert all(size >= 1 for size in gps_metadata["selection_pool_size"])
-    assert gps_metadata["peer_sample_id"] == [
-        first.batch["metadata"]["sample_id"][int(index)]
-        for index in first.batch["gps_source_sample_index"][:, -1].tolist()
-    ]
-    assert not torch.equal(first.batch["gps"][:, -1], _advantage_batch()["gps"][:, -1])
-
-    changed_offsets = changed_seed.batch["gps_counterfactual_metadata"]["beam_offset_criteria"]["offsets"]
-    assert all(offset >= 4 for offset in changed_offsets)
-    assert changed_seed.batch["predictive_jepa_replay_metadata"]["gps"]["selection_pool_size"] == gps_metadata["selection_pool_size"]
+    assert torch.equal(first.batch["image_valid_mask"], second.batch["image_valid_mask"])
+    assert torch.equal(first.batch["target_beam"], original["target_beam"])
+    assert torch.equal(first.batch["beam_power"], original["beam_power"])
+    assert first.batch["image_degradation_metadata"]["condition"] == "degraded_image"
 
 
 def test_image_observability_metadata_fields_are_queryable() -> None:
@@ -666,7 +197,7 @@ def test_batch_mapping_passes_reliability_metadata_only_for_opt_in_models() -> N
                 "split": ["test", "test"],
                 "benchmark_perturbation": {
                     "gps_condition": "C4_severe_async",
-                    "image_condition": "D6_burst_missing",
+                    "image_condition": "burst_missing",
                 },
             },
         }
@@ -706,24 +237,7 @@ def test_batch_mapping_passes_reliability_metadata_only_for_opt_in_models() -> N
         aware_inputs["gps_delay_steps"],
         torch.tensor([[1.0, 4.0, 0.0], [2.0, 3.0, 0.0]]),
     )
-    assert aware_inputs["benchmark_condition_metadata"]["gps_condition"] == "C4_severe_async"
-    assert aware_inputs["benchmark_condition_metadata"]["image_condition"] == "D6_burst_missing"
-
-    geometry_inputs = prepare_task_inputs(
-        batch,
-        "fusion",
-        model_cfg={
-            "modalities": ["image", "gps"],
-            "image_profile": "rgb_imagenet",
-            "geometry_prior": {"enabled": True},
-        },
-        seq_length=2,
-        num_pred=2,
-        device=torch.device("cpu"),
-    )
-    assert "gps_valid_mask" in geometry_inputs
-    assert "gps_delay_steps" in geometry_inputs
-    assert geometry_inputs["benchmark_condition_metadata"]["gps_condition"] == "C4_severe_async"
+    assert "benchmark_condition_metadata" not in aware_inputs
 
     missing = dict(batch)
     missing.pop("image_observability_score")
@@ -740,20 +254,6 @@ def test_batch_mapping_passes_reliability_metadata_only_for_opt_in_models() -> N
             num_pred=1,
             device=torch.device("cpu"),
         )
-    geometry_missing = prepare_task_inputs(
-        missing,
-        "fusion",
-        model_cfg={
-            "modalities": ["image", "gps"],
-            "image_profile": "rgb_imagenet",
-            "geometry_prior": {"enabled": True},
-        },
-        seq_length=2,
-        num_pred=1,
-        device=torch.device("cpu"),
-    )
-    assert "image_observability_score" not in geometry_missing
-    assert "gps_valid_mask" in geometry_missing
 
 
 def test_forward_model_filters_unaccepted_reliability_metadata() -> None:
@@ -913,7 +413,6 @@ difficulty:
     assert base["difficulty"]["profiles"][0]["id"] == "gps_async"
     assert base["difficulty"]["profiles"][0]["digest"] != overridden["difficulty"]["profiles"][0]["digest"]
     assert overridden["difficulty"]["profiles"][0]["severity"] == 2.0
-    assert "difficulty" not in load_config(ROOT / "configs/gps/lightweight.yaml")
 
 
 def test_train_and_evaluation_hooks_are_stage_scoped() -> None:

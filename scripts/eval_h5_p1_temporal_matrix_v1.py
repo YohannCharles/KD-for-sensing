@@ -111,7 +111,15 @@ def evaluate_method_seed(method: str, seed: int, args: argparse.Namespace, cache
             payload = cache[(rate, drop_count)]
             cell_rows = []
             for mask_item in payload["masks"]:
-                metrics = _evaluate_one_mask(model, dataloaders[split_key], cfg, device, mask_item, args.max_batches)
+                metrics = _evaluate_one_mask(
+                    model,
+                    dataloaders[split_key],
+                    cfg,
+                    device,
+                    mask_item,
+                    args.max_batches,
+                    mask_modalities=payload.get("modalities"),
+                )
                 cell_rows.append(metrics)
                 pattern_rows.append({
                     "method": method,
@@ -151,16 +159,24 @@ def evaluate_method_seed(method: str, seed: int, args: argparse.Namespace, cache
     _write_csv(out_dir / "mask_stats.csv", mask_stat_rows, _columns(mask_stat_rows))
 
 
-def _evaluate_one_mask(model, dataloader, cfg: dict[str, Any], device: torch.device, mask_item: dict[str, Any], max_batches: int | None) -> dict[str, float]:
+def _evaluate_one_mask(
+    model,
+    dataloader,
+    cfg: dict[str, Any],
+    device: torch.device,
+    mask_item: dict[str, Any],
+    max_batches: int | None,
+    mask_modalities: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, float]:
     sums: dict[str, float] = {}
     count = 0
-    mask = torch.tensor(mask_item["modality_temporal_mask"], dtype=torch.bool)
+    mask, model_modalities = _mask_in_model_order(model, mask_item, mask_modalities)
     with torch.no_grad():
         for batch_index, raw_batch in enumerate(dataloader):
             if max_batches is not None and batch_index >= int(max_batches):
                 break
             batch = prepare_evaluation_batch(raw_batch, cfg=cfg, split_name="validation", difficulty_seed=int(cfg.get("experiment", {}).get("seed", 0)), step_index=batch_index)
-            apply_modality_temporal_mask_to_batch(batch, mask, modalities=DEFAULT_TEMPORAL_MODALITIES)
+            apply_modality_temporal_mask_to_batch(batch, mask, modalities=model_modalities)
             modality_mask = batch["modality_mask"].to(device=device, dtype=torch.bool)
             model_cfg = cfg["model"]["primary"]
             step = run_model_step(
@@ -184,6 +200,27 @@ def _evaluate_one_mask(model, dataloader, cfg: dict[str, Any], device: torch.dev
                 if isinstance(value, float) and math.isfinite(value):
                     sums[key] = sums.get(key, 0.0) + value * batch_count
     return {key: (value / count if count else math.nan) for key, value in sums.items()}
+
+
+def _mask_in_model_order(
+    model,
+    mask_item: dict[str, Any],
+    mask_modalities: list[str] | tuple[str, ...] | None = None,
+) -> tuple[torch.Tensor, tuple[str, ...]]:
+    source = tuple(str(item) for item in (mask_modalities or mask_item.get("modalities") or DEFAULT_TEMPORAL_MODALITIES))
+    target = tuple(str(item) for item in getattr(model, "modalities", source))
+    if len(set(source)) != len(source) or len(set(target)) != len(target):
+        raise ValueError(f"Modality order contains duplicates: cache={list(source)}, model={list(target)}.")
+    unknown = [name for name in target if name not in source]
+    if unknown:
+        raise ValueError(f"Eval mask cache is missing model modalities {unknown}; cache modalities={list(source)}.")
+    mask = torch.as_tensor(mask_item["modality_temporal_mask"], dtype=torch.bool)
+    if mask.ndim not in {2, 3} or int(mask.shape[-1]) != len(source):
+        raise ValueError(
+            f"Cached modality_temporal_mask must end with {len(source)} modality columns, got {tuple(mask.shape)}."
+        )
+    indices = torch.tensor([source.index(name) for name in target], dtype=torch.long, device=mask.device)
+    return mask.index_select(-1, indices), target
 
 
 def _router_metrics(diagnostics: dict[str, Any]) -> dict[str, float]:
