@@ -1,9 +1,25 @@
+import pytest
 import torch
 
+import kd_sensing.data.temporal_missing as temporal_runtime
+import kd_sensing.data.temporal_missing_contract as temporal_contract
 from kd_sensing.config import load_config
 from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
 from kd_sensing.data.difficulty.schema import DifficultyContext, normalize_config_difficulty
 from kd_sensing.data.temporal_missing import masked_temporal_mean
+
+
+def test_temporal_config_contract_is_the_runtime_single_source() -> None:
+    assert temporal_runtime.TEMPORAL_MISSING_MODES is temporal_contract.TEMPORAL_MISSING_MODES
+    assert temporal_runtime.TEMPORAL_AGGREGATION_MODES is temporal_contract.TEMPORAL_AGGREGATION_MODES
+    assert temporal_runtime.normalize_temporal_missing_mode is temporal_contract.normalize_temporal_missing_mode
+    assert temporal_runtime.normalize_temporal_aggregation is temporal_contract.normalize_temporal_aggregation
+    assert temporal_contract.normalize_temporal_missing_mode(" BLOCK ") == "block"
+    assert temporal_contract.normalize_temporal_aggregation(None) == "masked_mean"
+    with pytest.raises(ValueError, match="temporal_missing_mode must be one of"):
+        temporal_contract.normalize_temporal_missing_mode("invalid")
+    with pytest.raises(ValueError, match="temporal_aggregation must be one of"):
+        temporal_contract.normalize_temporal_aggregation("invalid")
 
 
 def _cfg(mode: str, *, prob: float = 1.0, block_len: int = 1, ensure_frame: bool = True) -> dict:

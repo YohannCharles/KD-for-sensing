@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
             "sequence_csv",
             "lidar_bev_cache",
             "image_derived_cache",
+            "sample_lmdb_cache",
             "deepsense6g_sample_lmdb_cache",
             "mmw_radar_maps",
             "mmw_town10_skybridge",

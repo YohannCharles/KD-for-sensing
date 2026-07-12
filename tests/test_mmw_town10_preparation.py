@@ -108,6 +108,10 @@ def test_mmw_zip_prepare_manifest_sequences_split_and_reports(tmp_path: Path):
     assert all_sequences.loc[1, "future_beam1"].endswith("000009.txt")
     assert set(train["seq_index"]).isdisjoint(set(test["seq_index"]))
     assert split_metadata["train_window_count"] == len(train)
+    assert split_metadata["condition"] == "sunny"
+    assert split_metadata["scenario"] == "Town10_skybridge_seed24"
+    assert split_metadata["seq_len"] == 8
+    assert split_metadata["num_pred"] == 3
     assert metadata["channel_to_beam"]["num_beams"] == 64
     assert metadata["channel_to_beam"]["mappings"][0]["algorithm_version"]
     assert metadata["radio_semantic"]["radio_semantic_mode"] == "peak_spread"

@@ -1,0 +1,16 @@
+preprocessing:
+  type: image_derived_cache
+  csv_paths:
+    - dataset/MMW/foggy/Prepared/Town03_5wayroad_seed28/splits/h5p1/all_sequences.csv
+    - dataset/MMW/foggy/Prepared/Town03_Tjunction_wiz_slope_seed42/splits/h5p1/all_sequences.csv
+    - dataset/MMW/foggy/Prepared/Town03_crossroad_wiz_slope_seed42/splits/h5p1/all_sequences.csv
+    - dataset/MMW/foggy/Prepared/Town03_gastation_seed40/splits/h5p1/all_sequences.csv
+    - dataset/MMW/foggy/Prepared/Town03_roundabout_seed42/splits/h5p1/all_sequences.csv
+  data_root: dataset/MMW/foggy
+  cache_dir: outputs/cache/MMW/foggy/image_derived
+  image_prefix: camera
+  image_size: [224, 224]
+  image_profile: rgb_imagenet
+  policy: auto
+  overwrite: false
+  progress: true

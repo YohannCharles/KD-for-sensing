@@ -4,7 +4,7 @@ from typing import Any
 from kd_sensing.config.canonical import SNAPSHOT_TRAIN_CSV, SNAPSHOT_VAL_CSV, SNAPSHOT_VARIANT
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_normalization_config
 from kd_sensing.data.scenes import normalize_deepsense_config
-from kd_sensing.data.temporal_missing import normalize_temporal_aggregation, normalize_temporal_missing_mode
+from kd_sensing.data.temporal_missing_contract import normalize_temporal_aggregation, normalize_temporal_missing_mode
 from kd_sensing.engine.objectives.metadata import (
     configure_objective_defaults,
     objective_requires_occlusion,

@@ -4,10 +4,6 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
-from kd_sensing.data.difficulty.presets import (
-    expand_missing_modality_stress_profile,
-    is_missing_modality_stress_profile,
-)
 from kd_sensing.modalities import normalize_modalities
 from kd_sensing.registries import DIFFICULTY_OPERATORS, import_default_difficulty_operators
 
@@ -403,6 +399,11 @@ def _normalize_profile(
 ) -> DifficultyProfile:
     if not isinstance(raw, Mapping):
         raise ValueError(f"difficulty profile {index} must be a mapping.")
+    from kd_sensing.data.difficulty.presets import (
+        expand_missing_modality_stress_profile,
+        is_missing_modality_stress_profile,
+    )
+
     if is_missing_modality_stress_profile(raw):
         raw = expand_missing_modality_stress_profile(
             raw,

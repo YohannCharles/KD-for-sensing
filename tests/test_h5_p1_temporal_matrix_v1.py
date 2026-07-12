@@ -109,6 +109,22 @@ def test_h5_p1_launcher_dry_run_writes_manifest(tmp_path: Path) -> None:
     assert amber_encoders["lidar"]["freeze_backbone"] is False
     rmbp_cfg = launcher.yaml.safe_load((tmp_path / "generated_configs" / "rmbp_mm_seed1.yaml").read_text())
     assert rmbp_cfg["model"]["primary"]["encoders"]["image"]["freeze_backbone"] is False
+    ours_cfg = launcher.yaml.safe_load((tmp_path / "generated_configs" / "ours_c2_main_seed1.yaml").read_text())
+    split_keys = (
+        "scenes",
+        "train_scenes",
+        "validation_scenes",
+        "test_scenes",
+        "split_protocol",
+        "split_strategy",
+        "split_seed",
+        "split_source_splits",
+        "split_fractions",
+    )
+    expected_split = {key: ours_cfg["data"]["dataset"][key] for key in split_keys}
+    assert expected_split["scenes"] == [31, 32, 33, 34]
+    assert {key: amber_cfg["data"]["dataset"][key] for key in split_keys} == expected_split
+    assert {key: rmbp_cfg["data"]["dataset"][key] for key in split_keys} == expected_split
 
 
 def test_rmbp_channel_attention_core_is_registered() -> None:
@@ -186,6 +202,17 @@ def test_eval_mask_is_reordered_from_cache_to_model_modalities() -> None:
     assert out["gps"][0, 1].item() == 1.0
     assert out["lidar"][0, 0].item() == 1.0
     assert out["lidar"][0, 1].item() == 0.0
+
+
+def test_eval_batch_size_override_updates_split_loaders() -> None:
+    eval_script = _load_script("eval_h5_p1_temporal_matrix_v1.py")
+    cfg = {"data": {"dataloader": {"test_batch_size": 128, "validation": {"batch_size": 64}}}}
+
+    eval_script._override_eval_batch_size(cfg, 8)
+
+    assert cfg["data"]["dataloader"]["test_batch_size"] == 8
+    assert cfg["data"]["dataloader"]["validation_batch_size"] == 8
+    assert cfg["data"]["dataloader"]["validation"]["batch_size"] == 8
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

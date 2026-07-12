@@ -250,6 +250,16 @@ def _write_artifacts(
     _write_rows(Path(paths["train_csv"]), split["train_rows"], fieldnames=sequence_fieldnames)
     _write_rows(Path(paths["test_csv"]), split["test_rows"], fieldnames=sequence_fieldnames)
     split_metadata = {key: value for key, value in split.items() if not key.endswith("_rows")}
+    split_metadata.update(
+        {
+            "condition": config.condition,
+            "scenario": config.scenario,
+            "seq_len": int(config.seq_len),
+            "num_pred": int(config.pred_len),
+            "pred_len": int(config.pred_len),
+            "split_tag": _safe_split_tag(config.split_tag),
+        }
+    )
     Path(paths["split_metadata"]).parent.mkdir(parents=True, exist_ok=True)
     Path(paths["split_metadata"]).write_text(json.dumps(split_metadata, indent=2), encoding="utf-8")
     Path(paths["metadata"]).write_text(json.dumps(metadata, indent=2), encoding="utf-8")

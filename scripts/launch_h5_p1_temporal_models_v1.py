@@ -21,6 +21,18 @@ DEFAULT_E5_CONFIG = "outputs/pcpg_radar_balance_v1/generated_configs/e5_pcpg_low
 DEFAULT_AMBER_CONFIG = "configs/fusion/amber_full_architecture.yaml"
 DEFAULT_RMBP_CONFIG = "outputs/analysis/local_baselines/rmbp_mm/scene31/rmbp_mm/final_config.yaml"
 MODALITIES = ["image", "radar", "gps", "lidar"]
+COMMON_SCENES = [31, 32, 33, 34]
+COMMON_DATASET_SPLIT = {
+    "scenes": COMMON_SCENES,
+    "train_scenes": COMMON_SCENES,
+    "validation_scenes": COMMON_SCENES,
+    "test_scenes": COMMON_SCENES,
+    "split_protocol": "stratified_80_10_10",
+    "split_strategy": "stratified_by_target_beam_per_scene",
+    "split_seed": 42,
+    "split_source_splits": ["train", "test"],
+    "split_fractions": {"train": 0.8, "validation": 0.1, "test": 0.1},
+}
 BASELINE_METHODS = {"amber_full", "rmbp_mm"}
 THREAD_ENV_DEFAULTS = {
     "OMP_NUM_THREADS": "1",
@@ -174,7 +186,7 @@ def plan_jobs(args: argparse.Namespace) -> list[dict[str, Any]]:
             output_dir = Path(args.output_root) / method / f"seed{seed}"
             config_path = Path(args.output_root) / "generated_configs" / f"{method}_seed{seed}.yaml"
             log_path = Path(args.output_root) / "logs" / f"{method}_seed{seed}.log"
-            command = ["conda", "run", "-n", "kd_mm_beam", "kd-sensing-train", "--config", str(config_path)]
+            command = ["conda", "run", "--no-capture-output", "-n", "kd_mm_beam", "kd-sensing-train", "--config", str(config_path)]
             if bool(getattr(args, "auto_resume", False)):
                 command.append("--auto-resume")
             jobs.append({
@@ -230,7 +242,11 @@ def write_generated_configs(jobs: list[dict[str, Any]], args: argparse.Namespace
                     "progress": {"enabled": False},
                 },
                 "data": {
-                    "dataset": {"seq_len": int(args.history_window), "num_pred": int(args.prediction_window)},
+                    "dataset": {
+                        **COMMON_DATASET_SPLIT,
+                        "seq_len": int(args.history_window),
+                        "num_pred": int(args.prediction_window),
+                    },
                     "dataloader": {
                         "train_batch_size": batch_size,
                         "test_batch_size": batch_size,

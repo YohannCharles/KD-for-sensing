@@ -79,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_fixed_mask_cache", "--eval-fixed-mask-cache", default="outputs/temporal_eval_masks_v1")
     parser.add_argument("--output_dir", "--output-dir", default="outputs/h5_p1_temporal_models_v1/eval_matrix")
     parser.add_argument("--max_batches", "--max-batches", type=int, default=None)
+    parser.add_argument("--batch_size", "--batch-size", type=int, default=None)
     parser.add_argument("--allow_missing_checkpoints", "--allow-missing-checkpoints", action="store_true")
     return parser
 
@@ -93,6 +94,7 @@ def evaluate_method_seed(method: str, seed: int, args: argparse.Namespace, cache
     cfg.setdefault("temporal_missing", {})["mode"] = "none"
     cfg.setdefault("temporal_missing", {})["enabled"] = False
     cfg.setdefault("experiment", {})["seed"] = int(seed)
+    _override_eval_batch_size(cfg, args.batch_size)
     device = build_device(cfg)
     dataloaders = build_dataloaders(cfg)
     split_key = "validation" if "validation" in dataloaders else "val" if "val" in dataloaders else "test"
@@ -157,6 +159,19 @@ def evaluate_method_seed(method: str, seed: int, args: argparse.Namespace, cache
     _write_csv(out_dir / "pattern_metrics.csv", pattern_rows, _columns(pattern_rows))
     _write_csv(out_dir / "router_diagnostics.csv", router_rows, _columns(router_rows))
     _write_csv(out_dir / "mask_stats.csv", mask_stat_rows, _columns(mask_stat_rows))
+
+
+def _override_eval_batch_size(cfg: dict[str, Any], batch_size: int | None) -> None:
+    if batch_size is None:
+        return
+    if int(batch_size) <= 0:
+        raise ValueError("batch_size must be positive.")
+    loader_cfg = cfg.setdefault("data", {}).setdefault("dataloader", {})
+    loader_cfg["test_batch_size"] = int(batch_size)
+    loader_cfg["validation_batch_size"] = int(batch_size)
+    for split in ("test", "validation"):
+        if isinstance(loader_cfg.get(split), dict):
+            loader_cfg[split]["batch_size"] = int(batch_size)
 
 
 def _evaluate_one_mask(

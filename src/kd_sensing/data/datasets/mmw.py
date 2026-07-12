@@ -73,8 +73,15 @@ class MMWDataset(DeepSense6GDataset):
         )
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        sample = super().__getitem__(idx)
-        return self.family_adapter.augment_sample(idx, sample)
+        if self.sample_cache is not None:
+            cached = self.sample_cache.get(self._sample_cache_key(idx))
+            if cached is not None:
+                return cached
+        sample, _ = self._getitem_with_timing(idx, collect_timing=False)
+        sample = self.family_adapter.augment_sample(idx, sample)
+        if self.sample_cache is not None and self.sample_cache_write_on_miss:
+            self.sample_cache.put(self._sample_cache_key(idx), sample)
+        return sample
 
     def _target_raw_beam_label_for_index(self, idx: int, horizon: int, beam_path: str) -> int:
         return self.family_adapter.target_raw_beam_label_for_index(idx, horizon, beam_path)

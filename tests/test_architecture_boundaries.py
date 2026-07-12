@@ -37,6 +37,40 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*['\"][^'\"\n]{16,}['\"]"),
 )
 
+
+def test_config_import_stays_outside_tensor_and_training_runtime():
+    probe = """
+import sys
+
+import kd_sensing.config
+
+loaded = set(sys.modules)
+forbidden_exact = {
+    "torch",
+    "kd_sensing.data.temporal_missing",
+    "kd_sensing.diagnostics.run_index_render",
+    "kd_sensing.engine.trainer",
+}
+forbidden_prefixes = (
+    "kd_sensing.data.datasets.",
+    "kd_sensing.models.",
+)
+violations = sorted(
+    name
+    for name in loaded
+    if name in forbidden_exact or any(name.startswith(prefix) for prefix in forbidden_prefixes)
+)
+if violations:
+    raise SystemExit(f"config import loaded runtime modules: {violations}")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+
 CURRENT_CONFIG_GLOBS = (
     "configs/fusion/physics_informed_mmw*.yaml",
     "configs/csi/hardening_matrix/*.yaml",
