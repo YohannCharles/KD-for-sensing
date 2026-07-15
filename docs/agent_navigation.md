@@ -5,7 +5,7 @@
 ## 当前一屏摘要
 
 - 当前主线：final C2 / U-MaskBeamJEPA 缺失模态 beam prediction。
-- 保留支线：MMW/CSI future/current supporting workflow，包括 MMW Town GPS v2、physics-informed MMW 和 CSI hardening。
+- 保留支线：MMW/CSI current supporting dataset workflow，包括 MMW Town GPS v2、physics-informed MMW 和 CSI hardening；MMW campaign 不替代默认主线。
 - 推荐入口：`kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`、`kd-sensing-runs`、runtime cleanup/organize、`kd-sensing-paper-export`、`kd-sensing-eval-u-mask-matrix`、`kd-sensing-mmw-town-gps-v2` 和 `kd-sensing-inspect-mmw-physics`。
 - 已退役历史面：Image+GPS JEPA、BeamBench、BEV-Fusion 2604、Vision-Position、旧 RBMA/KD/BTAPA/weakKD sweep、HiST-Beam、Top8 selector、GPS residual、camera residual、Raymobtime s008、BGAM、viewer manifest、Gradio viewer、CRAF、MARF、Multimodal-NF。它们只可作为退役/历史/防回流语境，不可恢复为 current wrapper、CLI 或 YAML。
 - 判断口径：tracked/source/current lifecycle 优先；不要从 archive、generated metadata、ignored `outputs/`、`logs/`、cache、checkpoint 或本地数据反推当前支持面。

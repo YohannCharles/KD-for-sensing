@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,45 @@ class TrainingState:
     checkpoint_loads: list[dict[str, Any] | None] = field(default_factory=list)
     history: dict[str, list] = field(default_factory=dict)
     epoch_logs: list[dict[str, Any]] = field(default_factory=list)
+    selection_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "start_epoch": int(self.start_epoch),
+            "best_val_loss": float(self.best_val_loss),
+            "best_val_top1": float(self.best_val_top1),
+            "best_top1_epoch": int(self.best_top1_epoch),
+            "best_early_stopping_value": float(self.best_early_stopping_value),
+            "best_early_stopping_epoch": int(self.best_early_stopping_epoch),
+            "best_selection_value": float(self.best_selection_value),
+            "best_selection_epoch": int(self.best_selection_epoch),
+            "registry_checkpoint": copy.deepcopy(self.registry_checkpoint),
+            "epochs_without_improvement": int(self.epochs_without_improvement),
+            "checkpoint_loads": copy.deepcopy(self.checkpoint_loads),
+            "history": copy.deepcopy(self.history),
+            "epoch_logs": copy.deepcopy(self.epoch_logs),
+            "selection_catalog": copy.deepcopy(self.selection_catalog),
+        }
+
+    def load_state_dict(self, payload: dict[str, Any]) -> None:
+        for field_name in (
+            "start_epoch",
+            "best_val_loss",
+            "best_val_top1",
+            "best_top1_epoch",
+            "best_early_stopping_value",
+            "best_early_stopping_epoch",
+            "best_selection_value",
+            "best_selection_epoch",
+            "registry_checkpoint",
+            "epochs_without_improvement",
+            "checkpoint_loads",
+            "history",
+            "epoch_logs",
+            "selection_catalog",
+        ):
+            if field_name in payload:
+                setattr(self, field_name, copy.deepcopy(payload[field_name]))
 
     def apply_resume_checkpoint(
         self,
@@ -35,7 +75,8 @@ class TrainingState:
         objective: str,
     ) -> tuple[str, str]:
         self.start_epoch = int(checkpoint.get("epoch", self.start_epoch))
-        self.best_val_loss = float(checkpoint.get("best_val_loss", checkpoint.get("test_loss", self.best_val_loss)))
+        legacy_test_loss = checkpoint.get("test_loss", self.best_val_loss) if "checkpoint_schema_version" not in checkpoint else self.best_val_loss
+        self.best_val_loss = float(checkpoint.get("best_val_loss", legacy_test_loss))
         self.best_val_top1 = float(checkpoint.get("best_val_top1", self.best_val_top1))
         self.best_top1_epoch = int(checkpoint.get("best_top1_epoch", self.best_top1_epoch))
         self.best_selection_value = float(checkpoint.get("best_selection_value", self.best_selection_value))
@@ -72,6 +113,9 @@ class TrainingState:
         )
         self.registry_checkpoint = checkpoint.get("checkpoint_registry", self.registry_checkpoint)
         self.epochs_without_improvement = int(checkpoint.get("epochs_without_improvement", 0))
+        catalog = checkpoint.get("selection_catalog")
+        if isinstance(catalog, dict):
+            self.selection_catalog = copy.deepcopy(catalog)
         return early_stopping_metric, early_stopping_mode
 
 

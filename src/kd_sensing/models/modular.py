@@ -12,11 +12,9 @@ from kd_sensing.modalities import (
 )
 from kd_sensing.models.auxiliary_heads import TemporalAuxiliaryHeads
 import kd_sensing.models.amber_full  # noqa: F401
-from kd_sensing.models.csi_encoder import PilotDualViewCSIEncoder
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.image_encoders import ResNet18ImageEncoder
 from kd_sensing.models.lidar import LidarFeatureExtractor
-from kd_sensing.models.mmwave import MMWAVE_INPUT_SIZE, MmWaveFeatureExtractor
 from kd_sensing.models.modular_config import (
     normalize_beam_head_config,
     normalize_core_config,
@@ -98,71 +96,6 @@ class LidarCNNEncoder(LidarFeatureExtractor):
     ):
         self.output_dim = _resolve_dim(output_dim, feature_size, d_model)
         super().__init__(self.output_dim, in_channels=int(in_channels or lidar_channels))
-
-
-class PointCloudMLPEncoder(nn.Module):
-    def __init__(
-        self,
-        output_dim: int | None = None,
-        *,
-        feature_size: int | None = None,
-        d_model: int | None = None,
-        input_profile: str | None = None,
-        hidden_size: int = 64,
-        dropout: float = 0.1,
-        **_: Any,
-    ) -> None:
-        super().__init__()
-        self.output_dim = _resolve_dim(output_dim, feature_size, d_model)
-        self.input_profile = input_profile
-        hidden = int(hidden_size)
-        self.point_mlp = nn.Sequential(
-            nn.LayerNorm(3),
-            nn.Linear(3, hidden),
-            nn.GELU(),
-            nn.Dropout(float(dropout)),
-            nn.Linear(hidden, self.output_dim),
-            nn.GELU(),
-        )
-        self.projection = nn.Sequential(
-            nn.LayerNorm(self.output_dim * 2),
-            nn.Linear(self.output_dim * 2, self.output_dim),
-        )
-
-    def forward(self, lidar_batch: torch.Tensor) -> torch.Tensor:
-        if lidar_batch.ndim != 4 or int(lidar_batch.shape[-1]) != 3:
-            raise ValueError(
-                "point_cloud_mlp expects LiDAR point cloud input [B, T, P, 3], "
-                f"got {tuple(lidar_batch.shape)}."
-            )
-        points = lidar_batch.to(dtype=torch.float32)
-        encoded = self.point_mlp(points)
-        mean = encoded.mean(dim=2)
-        max_values = encoded.max(dim=2).values
-        return self.projection(torch.cat([mean, max_values], dim=-1))
-
-
-@ENCODERS.register("mmwave_mlp")
-class MmWaveMLPEncoder(MmWaveFeatureExtractor):
-    def __init__(
-        self,
-        output_dim: int | None = None,
-        *,
-        feature_size: int | None = None,
-        d_model: int | None = None,
-        mmwave_input_size: int = MMWAVE_INPUT_SIZE,
-        csi_train_rms: float = 1.0,
-        hidden_size: int = 128,
-        dropout: float = 0.1,
-        **_: Any,
-    ):
-        self.output_dim = _resolve_dim(output_dim, feature_size, d_model)
-        super().__init__(
-            feature_size=self.output_dim,
-            mmwave_input_size=mmwave_input_size,
-            hidden_size=hidden_size,
-            dropout=dropout,
-        )
 
 
 @PROJECTORS.register("linear")
@@ -1024,8 +957,6 @@ class ModularSequenceModel(nn.Module):
         radar_channels: int = 2,
         gps_input_size: int = 3,
         lidar_channels: int = 3,
-        mmwave_input_size: int = MMWAVE_INPUT_SIZE,
-        csi_train_rms: float = 1.0,
         auxiliary_heads: bool | dict[str, Any] | None = None,
         paper_metadata: dict[str, Any] | None = None,
         **extra: Any,
@@ -1064,8 +995,6 @@ class ModularSequenceModel(nn.Module):
                 radar_channels=radar_channels,
                 gps_input_size=gps_input_size,
                 lidar_channels=lidar_channels,
-                mmwave_input_size=mmwave_input_size,
-                csi_train_rms=csi_train_rms,
             )
             validate_modality_encoder_profile(
                 modality,
@@ -1110,22 +1039,16 @@ class ModularSequenceModel(nn.Module):
         radar_batch: torch.Tensor | None = None,
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
-        mmwave_batch: torch.Tensor | None = None,
-        csi_batch: torch.Tensor | None = None,
         image_valid_mask: torch.Tensor | None = None,
         radar_valid_mask: torch.Tensor | None = None,
         image_observability_score: torch.Tensor | None = None,
         gps_valid_mask: torch.Tensor | None = None,
         lidar_valid_mask: torch.Tensor | None = None,
-        mmwave_valid_mask: torch.Tensor | None = None,
-        csi_valid_mask: torch.Tensor | None = None,
         gps_delay_steps: torch.Tensor | None = None,
         image_dropout_mask: torch.Tensor | None = None,
         radar_dropout_mask: torch.Tensor | None = None,
         gps_dropout_mask: torch.Tensor | None = None,
         lidar_dropout_mask: torch.Tensor | None = None,
-        mmwave_dropout_mask: torch.Tensor | None = None,
-        csi_dropout_mask: torch.Tensor | None = None,
         temporal_mask: torch.Tensor | None = None,
         modality_temporal_mask: torch.Tensor | None = None,
         missing_mask: torch.Tensor | None = None,
@@ -1139,22 +1062,16 @@ class ModularSequenceModel(nn.Module):
             radar_batch=radar_batch,
             gps_batch=gps_batch,
             lidar_batch=lidar_batch,
-            mmwave_batch=mmwave_batch,
-            csi_batch=csi_batch,
             image_valid_mask=image_valid_mask,
             radar_valid_mask=radar_valid_mask,
             image_observability_score=image_observability_score,
             gps_valid_mask=gps_valid_mask,
             lidar_valid_mask=lidar_valid_mask,
-            mmwave_valid_mask=mmwave_valid_mask,
-            csi_valid_mask=csi_valid_mask,
             gps_delay_steps=gps_delay_steps,
             image_dropout_mask=image_dropout_mask,
             radar_dropout_mask=radar_dropout_mask,
             gps_dropout_mask=gps_dropout_mask,
             lidar_dropout_mask=lidar_dropout_mask,
-            mmwave_dropout_mask=mmwave_dropout_mask,
-            csi_dropout_mask=csi_dropout_mask,
         )
         modality_availability_overrides = _modular_missing_availability_overrides(
             self.modalities,
@@ -1274,7 +1191,6 @@ class ModularSequenceModel(nn.Module):
             "k_tokens": core_metadata.get("k_tokens"),
             "heads": heads,
             "loss_mode": "config_resolved",
-            "teacher_guidance_mode": "config_resolved",
             "curriculum_mode": "config_resolved",
             "consumes_reliability_metadata": bool(reliability_consumers),
             "reliability_metadata_consumers": reliability_consumers,
@@ -1342,17 +1258,6 @@ def _gate_stats_by_missing_count(weights: torch.Tensor, availability: torch.Tens
     return rows
 
 
-MODELS.register_removed("modular_sequence_model", "Use 'modular_sequence'.")
-ENCODERS.register_removed(
-    "point_cloud_mlp",
-    "Use 'lidar_cnn' for current LiDAR BEV configs; point cloud input is not a current registry surface.",
-)
-REPRESENTATION_CORES.register_removed(
-    "jepa_token_transformer",
-    "Use 'token_transformer' or 'token_aware_transformer'.",
-)
-
-
 __all__ = [
     "BeamClassificationHead",
     "AmberLiteMissingModalityTransformerCore",
@@ -1362,11 +1267,8 @@ __all__ = [
     "IdentityProjector",
     "LidarCNNEncoder",
     "LinearProjector",
-    "MmWaveMLPEncoder",
     "ModularSequenceModel",
     "NextBeamQueryTransformerCore",
-    "PilotDualViewCSIEncoder",
-    "PointCloudMLPEncoder",
     "RadarCNNEncoder",
     "ResNet18ImageEncoder",
     "SingleGRUCore",

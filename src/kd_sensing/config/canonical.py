@@ -59,13 +59,19 @@ _BASE_OBJECTIVE_LOSS = {
 }
 
 
-def training_overrides(mode: str, image_radar: bool) -> dict[str, float | str]:
+def training_overrides(mode: str, image_radar: bool) -> dict[str, float | str | bool]:
     try:
         training = _IMAGE_RADAR_TRAINING[mode] if image_radar else {"lr": 0.00075, "weight_decay": 0.0001}
     except KeyError as exc:
         supported = ", ".join(sorted(_IMAGE_RADAR_TRAINING))
         raise ValueError(f"Unknown canonical fusion mode '{mode}'. Available modes: {supported}.") from exc
-    return {"early_stopping_metric": "val_adba", "early_stopping_mode": "max", **training}
+    return {
+        "use_early_stopping": False,
+        "model_selection": False,
+        "early_stopping_metric": "val_adba",
+        "early_stopping_mode": "max",
+        **training,
+    }
 
 
 def _objective_loss(*, position_weight: float) -> dict[str, Any]:
@@ -204,6 +210,8 @@ def build_snapshot_single_config(modality: str) -> dict[str, Any]:
             "primary": model_cfg,
         },
         "training": {
+            "use_early_stopping": False,
+            "model_selection": False,
             "early_stopping_metric": "val_adba",
             "early_stopping_mode": "max",
             "lr": 0.00075,
@@ -238,6 +246,8 @@ def build_snapshot_fusion_config(name_slug: str, modalities: list[str]) -> dict[
             "primary": model_cfg,
         },
         "training": {
+            "use_early_stopping": False,
+            "model_selection": False,
             "early_stopping_metric": "val_adba",
             "early_stopping_mode": "max",
             "lr": 0.00075,
@@ -276,6 +286,8 @@ def build_objective_fusion_config(slug: str, modalities: list[str], objective: s
         },
         "loss": deepcopy(recipe["loss"]),
         "training": {
+            "use_early_stopping": False,
+            "model_selection": False,
             "early_stopping_metric": recipe["early_stopping_metric"],
             "early_stopping_mode": recipe["early_stopping_mode"],
             "lr": 0.00075,
@@ -351,7 +363,8 @@ def _advanced_fusion_base(name: str) -> dict[str, Any]:
             "weight_decay": 0.0001,
             "grad_clip": 10.0,
             "patience": 20,
-            "use_early_stopping": True,
+            "use_early_stopping": False,
+            "model_selection": False,
             "early_stopping_metric": "val_adba",
             "early_stopping_mode": "max",
             "min_delta": 0.0001,

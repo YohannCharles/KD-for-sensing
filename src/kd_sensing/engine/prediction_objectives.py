@@ -42,7 +42,7 @@ class PredictionLossBundle:
     occlusion: torch.Tensor
     position: torch.Tensor
     multitask_total: torch.Tensor
-    diagnostics: dict[str, float]
+    diagnostics: dict[str, Any]
     los: torch.Tensor | None = None
     link_quality: torch.Tensor | None = None
     selection_multitask_total: torch.Tensor | None = None
@@ -81,6 +81,52 @@ def prepare_prediction_targets(
     return targets
 
 
+def prediction_observation_counts(
+    targets: PredictionTargets,
+    cfg: dict[str, Any],
+    *,
+    reference: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    device = reference.device
+    zero = torch.zeros((), dtype=torch.float32, device=device)
+    beam = targets.labels.ne(-100).sum().to(device=device, dtype=torch.float32)
+    occlusion = (
+        targets.occlusion_valid.to(device=device, dtype=torch.bool).sum().to(dtype=torch.float32)
+        if targets.occlusion_valid is not None
+        else zero
+    )
+    position = (
+        targets.position_valid.to(device=device, dtype=torch.bool).sum().to(dtype=torch.float32)
+        if targets.position_valid is not None
+        else zero
+    )
+    los = (
+        torch.tensor(float(targets.los_label.numel()), device=device)
+        if targets.los_label is not None
+        else zero
+    )
+    link_quality = (
+        torch.tensor(float(targets.link_quality.numel()), device=device)
+        if targets.link_quality is not None
+        else zero
+    )
+    objective = resolve_prediction_objective(cfg)
+    primary = {
+        "occlusion": occlusion,
+        "position": position,
+        "current_los_classification": los,
+        "current_link_quality": link_quality,
+    }.get(objective, beam)
+    return {
+        "primary": primary,
+        "beam": beam,
+        "occlusion": occlusion,
+        "position": position,
+        "los": los,
+        "link_quality": link_quality,
+    }
+
+
 def compute_prediction_loss(
     model_output: ModelOutput,
     targets: PredictionTargets,
@@ -100,12 +146,12 @@ def compute_prediction_loss(
     los_loss = zero
     link_quality_loss = zero
     selection_multitask_total = zero
-    diagnostics = {"loss/beam": float(beam_primary.detach().cpu().item())}
+    diagnostics = {"loss/beam": beam_primary.detach()}
 
     if objective == "current_beam_selection":
         diagnostics = {
-            "loss/beam_selection": float(beam_primary.detach().cpu().item()),
-            "loss/primary": float(beam_primary.detach().cpu().item()),
+            "loss/beam_selection": beam_primary.detach(),
+            "loss/primary": beam_primary.detach(),
         }
         return PredictionLossBundle(
             total=beam_component,
@@ -123,8 +169,8 @@ def compute_prediction_loss(
     if objective == "current_los_classification":
         los_loss = _los_loss(model_output, targets, cfg)
         diagnostics = {
-            "loss/los": float(los_loss.detach().cpu().item()),
-            "loss/primary": float(los_loss.detach().cpu().item()),
+            "loss/los": los_loss.detach(),
+            "loss/primary": los_loss.detach(),
         }
         return PredictionLossBundle(
             total=los_loss,
@@ -142,8 +188,8 @@ def compute_prediction_loss(
     if objective == "current_link_quality":
         link_quality_loss = _link_quality_loss(model_output, targets, cfg)
         diagnostics = {
-            "loss/link_quality": float(link_quality_loss.detach().cpu().item()),
-            "loss/primary": float(link_quality_loss.detach().cpu().item()),
+            "loss/link_quality": link_quality_loss.detach(),
+            "loss/primary": link_quality_loss.detach(),
         }
         return PredictionLossBundle(
             total=link_quality_loss,
@@ -170,7 +216,7 @@ def compute_prediction_loss(
         if _amr_paper_objective_only(cfg) and amr_diagnostics:
             diagnostics.update(amr_diagnostics)
             diagnostics["loss/beam"] = 0.0
-            diagnostics["loss/primary"] = float(amr_loss.detach().cpu().item())
+            diagnostics["loss/primary"] = amr_loss.detach()
             diagnostics["objective/amr_paper_objective_only"] = 1.0
             return PredictionLossBundle(
                 total=amr_loss,
@@ -191,8 +237,8 @@ def compute_prediction_loss(
         diagnostics.update(auxiliary_diagnostics)
         diagnostics.update(amr_diagnostics)
         diagnostics.update(amber_diagnostics)
-        diagnostics["loss/beam"] = float(beam_primary.detach().cpu().item())
-        diagnostics["loss/primary"] = float(beam_primary.detach().cpu().item())
+        diagnostics["loss/beam"] = beam_primary.detach()
+        diagnostics["loss/primary"] = beam_primary.detach()
         return PredictionLossBundle(
             total=total,
             primary=beam_primary,
@@ -208,11 +254,11 @@ def compute_prediction_loss(
 
     if objective in {"occlusion", "multitask"}:
         occlusion_loss = _occlusion_loss(model_output, targets, cfg, zero)
-        diagnostics["loss/occlusion"] = float(occlusion_loss.detach().cpu().item())
+        diagnostics["loss/occlusion"] = occlusion_loss.detach()
 
     if objective in {"position", "multitask"}:
         position_loss = _position_loss(model_output, targets, cfg, zero)
-        diagnostics["loss/position"] = float(position_loss.detach().cpu().item())
+        diagnostics["loss/position"] = position_loss.detach()
 
     if objective == "selection_multitask":
         los_loss = _los_loss(model_output, targets, cfg)
@@ -224,11 +270,11 @@ def compute_prediction_loss(
             + weights["link_quality"] * link_quality_loss
         )
         diagnostics = {
-            "loss/beam_selection": float(beam_primary.detach().cpu().item()),
-            "loss/los": float(los_loss.detach().cpu().item()),
-            "loss/link_quality": float(link_quality_loss.detach().cpu().item()),
-            "loss/selection_multitask_total": float(selection_multitask_total.detach().cpu().item()),
-            "loss/primary": float(selection_multitask_total.detach().cpu().item()),
+            "loss/beam_selection": beam_primary.detach(),
+            "loss/los": los_loss.detach(),
+            "loss/link_quality": link_quality_loss.detach(),
+            "loss/selection_multitask_total": selection_multitask_total.detach(),
+            "loss/primary": selection_multitask_total.detach(),
             "objective/weight_beam_selection": float(weights["beam_selection"]),
             "objective/weight_los": float(weights["los"]),
             "objective/weight_link_quality": float(weights["link_quality"]),
@@ -261,12 +307,12 @@ def compute_prediction_loss(
         )
         primary = multitask_total
         total = multitask_total
-        diagnostics["loss/multitask_total"] = float(multitask_total.detach().cpu().item())
+        diagnostics["loss/multitask_total"] = multitask_total.detach()
         diagnostics["objective/weight_beam"] = float(weights["beam"])
         diagnostics["objective/weight_occlusion"] = float(weights["occlusion"])
         diagnostics["objective/weight_position"] = float(weights["position"])
 
-    diagnostics["loss/primary"] = float(primary.detach().cpu().item())
+    diagnostics["loss/primary"] = primary.detach()
     return PredictionLossBundle(
         total=total,
         primary=primary,
@@ -344,12 +390,12 @@ def build_dba_aware_soft_targets(
         raise ValueError("loss.dba_aware.mode must be circular_gaussian or distance_aware_ce.")
     targets = torch.softmax(logits, dim=-1)
     targets = torch.where(valid.unsqueeze(-1), targets, torch.zeros_like(targets))
-    sample_count = int(valid.sum().detach().cpu().item())
+    sample_count = valid.sum().detach().to(dtype=torch.float32)
     diagnostics = {
         "loss/beam_dba_aware_enabled": 1.0,
         "loss/beam_dba_aware_sigma": sigma,
         "loss/beam_dba_aware_temperature": temperature,
-        "loss/beam_dba_aware_sample_count": float(sample_count),
+        "loss/beam_dba_aware_sample_count": sample_count,
     }
     return targets, diagnostics
 
@@ -502,8 +548,6 @@ def _require_tensor(value: torch.Tensor | None, key: str, objective: str) -> tor
 def _masked_mean(values: torch.Tensor, valid: torch.Tensor, zero: torch.Tensor) -> torch.Tensor:
     valid_f = valid.to(device=values.device, dtype=values.dtype)
     denom = valid_f.sum()
-    if denom.item() <= 0:
-        return zero
     return (values * valid_f).sum() / denom.clamp_min(1.0)
 
 
@@ -514,9 +558,12 @@ def _resolve_pos_weight(spec: Any, labels: torch.Tensor, valid: torch.Tensor) ->
         valid_labels = labels[valid]
         positives = valid_labels.sum()
         negatives = valid_labels.numel() - positives
-        if positives.item() <= 0:
-            return torch.ones((), dtype=labels.dtype, device=labels.device)
-        return (negatives / positives.clamp_min(1.0)).to(dtype=labels.dtype, device=labels.device)
+        ratio = negatives / positives.clamp_min(1.0)
+        return torch.where(
+            positives.gt(0),
+            ratio,
+            torch.ones((), dtype=labels.dtype, device=labels.device),
+        ).to(dtype=labels.dtype, device=labels.device)
     return torch.tensor(float(spec), dtype=labels.dtype, device=labels.device)
 
 
@@ -543,6 +590,7 @@ __all__ = [
     "objective_history_fields",
     "objective_metric_mode",
     "objective_optional_history_fields",
+    "prediction_observation_counts",
     "objective_requires_occlusion",
     "objective_requires_position",
     "objective_runtime_metadata",

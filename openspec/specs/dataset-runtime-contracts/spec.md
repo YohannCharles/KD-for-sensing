@@ -400,3 +400,68 @@ Dataset 重构 MUST 保持 batch sample key、target tensor、metadata、domain 
 - **THEN** 实现 MUST 位于对应 dataset contract/helper 模块
 - **AND** synthetic focused tests MUST 覆盖该规则且不读取真实 `dataset/`
 
+### Requirement: Explicit MMW domain list dataset construction
+数据运行时 MUST 支持通过 `data.dataset.domains` 显式声明多个 MMW condition/scenario domain。每个 domain MUST 作为独立 MMWDataset 构建后再组成 pooled dataset，且 MUST 保留自己的 data root、split CSV、condition、scenario 和 runtime metadata。
+
+#### Scenario: 构建跨天气 pooled train dataset
+- **WHEN** 配置包含 sunny、rainy、foggy 共 15 个有效 MMW domain
+- **THEN** train dataset MUST 是 15 个 leaf MMWDataset 的组合
+- **AND** 每个 leaf MUST 使用该 domain 声明的 train CSV 与 condition root
+- **AND** runtime metadata MUST 输出 domain id、condition、scenario、split path 和 sample count
+
+#### Scenario: domain 声明不完整
+- **WHEN** 某个 domain 缺少 id、condition、scene、data root 或当前 split CSV
+- **THEN** dataset construction MUST 在 DataLoader worker 启动前失败
+- **AND** 错误 MUST 标出具体 domain 与缺失字段
+
+### Requirement: Optional domain-balanced train sampler
+当配置启用 `data.domain_balanced_sampling.enabled=true` 时，训练 DataLoader MUST 对 pooled domain 使用可复现的等 domain 权重 sampler；validation/test DataLoader MUST 保持确定性全量遍历，不得应用 replacement sampling。
+
+#### Scenario: train sampler 可复现
+- **WHEN** 两次运行使用相同 experiment seed、domain inventory 和 sample counts
+- **THEN** domain-balanced sampler MUST 产生相同的抽样序列
+- **AND** run metadata MUST 记录 sampler type、replacement、num samples 和 seed
+
+### Requirement: GPS 坐标系 runtime metadata
+启用 GPS 的训练和评估 runtime MUST 记录实际 `gps_feature_mode`；当模式为 `rsu_local_relative_polar` 时，还 MUST 记录 RSU yaw 来源、输入序列是否逐帧具有有限 yaw，以及 train/validation/test mode 一致性。该 metadata MUST 可用于阻止不同坐标系的 scaler、sample cache 或 checkpoint 评估配置静默混用。
+
+#### Scenario: MMW 局部 GPS metadata 完整
+- **WHEN** MMW dataloader 使用 `rsu_local_relative_polar`
+- **THEN** runtime metadata MUST 记录 `gps_feature_mode=rsu_local_relative_polar`
+- **AND** metadata MUST 记录 `gps_angle_frame=rsu_local` 和 `gps_yaw_source=bs_yaml:sensors.rsu_pose.rotation.yaw`
+- **AND** metadata MUST 记录当前 split 的 yaw validation 状态
+
+#### Scenario: 保持世界坐标 GPS metadata
+- **WHEN** dataloader 使用既有 `relative_polar`
+- **THEN** runtime metadata MUST 记录 `gps_feature_mode=relative_polar`
+- **AND** 系统 MUST 不要求读取或记录 RSU yaw 才能构建旧模式
+
+#### Scenario: 坐标系相关 cache 不匹配
+- **WHEN** resolved config 请求的 GPS feature mode 与 sample cache 或 scaler metadata 中的 mode 不一致
+- **THEN** runtime MUST 拒绝该 artifact 或重新生成 mode 隔离的 artifact
+- **AND** runtime MUST 不把世界坐标 GPS tensor 当作 RSU 局部 GPS tensor 使用
+
+### Requirement: 数据拟合统计量仅来自实际训练子集
+所有依赖数据拟合的 normalization、scaler、streaming statistics 或校准 artifact MUST 只消费 resolved train dataset 的实际 leaf 和 effective train indices。validation/test MUST 只读复用训练 artifact，MUST NOT 自行拟合或从未过滤的父 dataset 获取统计量。
+
+#### Scenario: 内部 train/validation split
+- **WHEN** 单个父 dataset 被拆成 train 与 validation `Subset`
+- **THEN** GPS、LiDAR、mmWave、CSI、position、occlusion 和其它已启用统计量 MUST 只从 train indices 拟合
+- **AND** validation MUST 复用完全相同的已拟合 artifact
+
+#### Scenario: Pooled dataset normalization
+- **WHEN** train dataset 由多个 domain 或 scene leaf 组成
+- **THEN** shared normalization MUST 从全部训练 leaf 的 effective indices 联合拟合
+- **AND** per-domain normalization MUST 为每个 domain 保存明确映射和 provenance
+- **AND** runtime MUST NOT 静默只取第一个 leaf 的统计量
+
+#### Scenario: Validation 或 test 尝试拟合
+- **WHEN** validation/test dataset 缺少训练期 artifact 或其 fingerprint、feature mode、domain policy 不兼容
+- **THEN** runtime MUST 在评估前失败或要求显式重新生成训练 artifact
+- **AND** runtime MUST NOT 从 validation/test 数据补拟合
+
+#### Scenario: Artifact provenance 完整
+- **WHEN** normalization artifact 被写出或复用
+- **THEN** metadata MUST 记录模态、fit split、effective sample count、domain policy、feature mode 和稳定 fingerprint
+- **AND** fit split MUST 为 train
+

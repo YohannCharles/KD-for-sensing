@@ -13,6 +13,7 @@ from kd_sensing.engine.pcpg_radar_balance import (
     supervised_router_masked_softmax,
     supervised_router_oracle_targets,
 )
+from kd_sensing.losses.u_mask_beam_jepa import _oracle_argmin
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,24 @@ def test_supervised_router_oracle_target_available_min_error_and_tie():
     assert targets.tolist() == [2, 1, 0, 0]
     assert torch.all(mask[torch.arange(mask.shape[0]), targets])
     assert Counter(targets.tolist())[0] == 2
+
+
+def test_router_oracle_distance_distinguishes_linear_endpoints_in_both_loss_paths():
+    logits = torch.full((1, 2, 64), -20.0)
+    logits[0, 0, 63] = 20.0
+    logits[0, 1, 4] = 20.0
+    labels = torch.tensor([0])
+    mask = torch.ones((1, 2), dtype=torch.bool)
+
+    assert supervised_router_oracle_targets(logits, labels, mask).item() == 0
+    assert supervised_router_oracle_targets(
+        logits,
+        labels,
+        mask,
+        circular_beam_distance=False,
+    ).item() == 1
+    assert _oracle_argmin(logits, labels, mask).item() == 0
+    assert _oracle_argmin(logits, labels, mask, circular_beam_distance=False).item() == 1
 
 
 def test_supervised_router_masked_softmax_single_multi_no_nan():

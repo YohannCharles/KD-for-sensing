@@ -145,6 +145,7 @@ def test_train_early_stopping_waits_until_half_target_epochs(tmp_path: Path, mon
             "training.epochs=5",
             "training.patience=1",
             "training.use_early_stopping=true",
+            "training.model_selection=true",
             "training.early_stopping_metric=val_loss",
             "training.early_stopping_mode=min",
             "scheduler.type=none",
@@ -185,11 +186,14 @@ def test_training_validation_interval_skips_intermediate_validation(tmp_path: Pa
             "experiment.device=cpu",
             "data.dataset.type=synthetic",
             "data.dataset.length=2",
+            "data.validation_from_train.enabled=true",
+            "data.validation_from_train.fraction=0.5",
             "data.dataloader.train_batch_size=1",
             "data.dataloader.test_batch_size=1",
             "data.dataloader.num_workers=0",
             "training.epochs=5",
             "training.use_early_stopping=false",
+            "training.model_selection=true",
             "training.validation.interval_epochs=3",
             "scheduler.type=none",
             "output.run_name=validation_interval",
@@ -220,7 +224,128 @@ def test_training_validation_interval_skips_intermediate_validation(tmp_path: Pa
 
     assert calls == 3
     assert [log["validation_ran"] for log in result["epoch_logs"]] == [True, False, True, False, True]
-    assert [log["val_loss"] for log in result["epoch_logs"]] == [1.0, 1.0, 2.0, 2.0, 3.0]
+    assert [log["val_loss"] for log in result["epoch_logs"]] == [1.0, None, 2.0, None, 3.0]
+    assert result["epoch_logs"][1]["validation_metrics"] is None
+    assert result["epoch_logs"][1]["val_acc"] is None
+    assert result["epoch_logs"][1]["val_primary_metric"] is None
+    assert result["epoch_logs"][1]["last_observed_validation"] == {"epoch": 1, "source": "validation"}
+    assert result["epoch_logs"][3]["last_observed_validation"] == {"epoch": 3, "source": "validation"}
+    assert [log["epochs_without_improvement"] for log in result["epoch_logs"]] == [0, 0, 1, 1, 2]
+
+
+def test_validation_loader_is_only_shutdown_during_run_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = load_config(
+        ROOT / "configs/gps/lightweight.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=4",
+            "data.validation_from_train.enabled=true",
+            "data.validation_from_train.fraction=0.5",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=3",
+            "training.use_early_stopping=false",
+            "training.model_selection=true",
+            "scheduler.type=none",
+            "output.run_name=validation_worker_lifecycle",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+    import kd_sensing.engine.trainer_runtime_helpers as helpers
+
+    original = helpers.shutdown_dataloader_workers
+    shutdown_splits: list[str | None] = []
+
+    def track_shutdown(loader):
+        shutdown_splits.append(getattr(getattr(loader, "dataset", None), "split", None))
+        original(loader)
+
+    monkeypatch.setattr(helpers, "shutdown_dataloader_workers", track_shutdown)
+
+    train(cfg)
+
+    assert shutdown_splits.count("validation") == 1
+
+
+def test_fixed_epoch_no_selection_skips_epoch_validation_and_uses_last_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = load_config(
+        ROOT / "configs/gps/lightweight.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataloader.train_batch_size=1",
+            "data.dataloader.test_batch_size=1",
+            "data.dataloader.num_workers=0",
+            "training.epochs=1",
+            "training.use_early_stopping=false",
+            "training.model_selection=false",
+            "scheduler.type=none",
+            "output.run_name=fixed_epoch_no_selection",
+            "output.progress.enabled=false",
+            "output.tensorboard.enabled=false",
+            f"output.dir={tmp_path}",
+            "output.overwrite=true",
+            "checkpoint.registry.enabled=false",
+        ],
+    )
+    epoch_validation_calls = 0
+
+    def fail_if_epoch_validation_runs(*_args, **_kwargs):
+        nonlocal epoch_validation_calls
+        epoch_validation_calls += 1
+        raise AssertionError("fixed-epoch/no-selection must not run epoch validation")
+
+    monkeypatch.setattr("kd_sensing.engine.trainer.validate", fail_if_epoch_validation_runs)
+
+    result = train(cfg)
+    run_dir = Path(result["run_dir"])
+
+    assert epoch_validation_calls == 0
+    assert result["epoch_logs"][0]["validation_ran"] is False
+    assert result["epoch_logs"][0]["validation_metrics"] is None
+    assert not (run_dir / "checkpoints" / "best.pth").exists()
+    assert (run_dir / "checkpoints" / "last.pth").exists()
+    assert result["final_test_metrics"]["model_selection_split"] == "none"
+    assert result["final_test_metrics"]["checkpoint_for_test"] == str(run_dir / "checkpoints" / "last.pth")
+
+
+def test_runtime_rejects_selection_without_validation_before_optimizer_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = load_config(
+        ROOT / "configs/gps/lightweight.yaml",
+        [
+            "experiment.device=cpu",
+            "data.dataset.type=synthetic",
+            "data.dataset.length=2",
+            "data.dataloader.num_workers=0",
+            f"output.dir={tmp_path}",
+            "output.run_name=missing_validation",
+            "output.overwrite=true",
+        ],
+    )
+    cfg["training"]["model_selection"] = True
+    monkeypatch.setattr(
+        "kd_sensing.engine.trainer.build_optimizer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer must not be built")),
+    )
+
+    with pytest.raises(ValueError, match="no independent validation loader"):
+        train(cfg)
 
 
 def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path: Path):
@@ -231,10 +356,13 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
             "data.dataset.type=synthetic",
             "data.dataset.length=2",
             "data.dataset.seed=13",
+            "data.validation_from_train.enabled=true",
+            "data.validation_from_train.fraction=0.5",
             "data.dataloader.train_batch_size=1",
             "data.dataloader.test_batch_size=1",
             "data.dataloader.num_workers=0",
             "training.epochs=1",
+            "training.model_selection=true",
             "scheduler.type=none",
             "output.run_name=trainer_characterization",
             "output.progress.enabled=false",
@@ -322,7 +450,7 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "state_dict",
         "optimizer",
         "scheduler",
-        "test_loss",
+            "validation_loss",
         "best_val_loss",
         "best_val_top1",
         "best_top1_epoch",
@@ -333,7 +461,8 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
         "epochs_without_improvement",
         "normalization_artifacts",
         "checkpoint_registry",
-    } <= set(checkpoint)
+        } <= set(checkpoint)
+    assert "test_loss" not in checkpoint
     assert checkpoint["early_stopping_metric"] == "val_adba"
     assert checkpoint["early_stopping_mode"] == "max"
     assert checkpoint["best_early_stopping_epoch"] == 1
@@ -342,7 +471,7 @@ def test_train_io_characterization_history_checkpoint_and_final_config(tmp_path:
     assert final_cfg["runtime"]["run_dir"] == str(run_dir)
     assert final_cfg["runtime"]["output_overwrite"] is True
     assert result["final_test_metrics"]["evaluation_split"] == "test"
-    assert result["final_test_metrics"]["model_selection_split"] == "test"
+    assert result["final_test_metrics"]["model_selection_split"] == "validation"
     assert final_cfg["runtime"]["final_test_metrics"]["evaluation_split"] == "test"
     assert train_log["final_test_metrics"]["evaluation_split"] == "test"
     assert final_cfg["training"]["early_stopping_metric"] == "val_adba"
@@ -487,7 +616,8 @@ def test_csi_debug_training_writes_resolved_diff_startup_and_health_artifacts(tm
     assert train_log["startup_summary"]["parameters"]["total_params"] == startup["parameters"]["total_params"]
     assert train_log["pilot_noise_validity"]["valid"] is True
     assert train_log["pilot_noise_validity"]["reason"] == "pilot_noise_disabled"
-    assert {record["source"] for record in csi_records} == {"train", "val"}
+    assert {record["source"] for record in csi_records} == {"train"}
+    assert epoch_log["validation_ran"] is False
     assert csi_records[0]["complex"]["before_hardening"]["shape"] == [1, 10, 8, 4]
     assert epoch_log["grad_norm_csi_encoder"] > 0.0
     assert epoch_log["grad_norm_representation_core"] > 0.0

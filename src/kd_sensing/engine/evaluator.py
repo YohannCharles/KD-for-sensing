@@ -36,7 +36,10 @@ from kd_sensing.engine.run_status import (
 from kd_sensing.engine.runtime import configure_torch_runtime_threads
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
-from kd_sensing.utils.artifact_registry import resolve_evaluation_checkpoint
+from kd_sensing.utils.artifact_registry import (
+    resolve_evaluation_checkpoint,
+    validate_evaluation_gps_checkpoint_provenance,
+)
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.seed import set_seed
 
@@ -65,6 +68,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             "Run evaluation with --weights or set evaluation.weights to an absolute checkpoint path. "
             f"Resolution: {checkpoint_resolution.to_dict()}"
         )
+    validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_resolution.metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_resolution.metadata)
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}

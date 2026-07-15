@@ -37,8 +37,8 @@ class JepaTrainingExtension(TrainingExtension):
             updater()
 
 
-def _scalar_jepa_diagnostics(diagnostics: dict[str, Any]) -> dict[str, float]:
-    result: dict[str, float] = {}
+def _scalar_jepa_diagnostics(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for key in (
         "jepa/mask_context_ratio",
         "jepa/mask_target_ratio",
@@ -50,7 +50,7 @@ def _scalar_jepa_diagnostics(diagnostics: dict[str, Any]) -> dict[str, float]:
         if isinstance(value, (int, float)):
             result[key] = float(value)
         elif torch.is_tensor(value) and value.numel() == 1:
-            result[key] = float(value.detach().cpu().item())
+            result[key] = value.detach()
     return result
 
 

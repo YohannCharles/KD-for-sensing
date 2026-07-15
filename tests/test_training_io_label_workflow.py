@@ -277,7 +277,10 @@ def test_soft_focal_and_supervised_ce_loss_consume_soft_targets():
     assert soft_ce == pytest.approx(expected_soft_ce.item())
     assert not torch.isclose(soft_ce, torch.nn.functional.cross_entropy(logits, hard_targets))
 
-def test_supervised_batch_step_uses_beam_soft_target_without_distillation_runtime(tmp_path: Path):
+def test_supervised_batch_step_uses_beam_soft_target_without_distillation_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     cfg = {
         "experiment": {"task": "image", "objective": "beam"},
         "model": {
@@ -334,6 +337,10 @@ def test_supervised_batch_step_uses_beam_soft_target_without_distillation_runtim
         "target_beam_distribution_mask": torch.tensor([[True], [True]]),
     }
 
+    monkeypatch.setattr(
+        "kd_sensing.engine.batch_step.time.perf_counter",
+        lambda: (_ for _ in ()).throw(AssertionError("default batch path must not probe timing")),
+    )
     result = runner.run(raw_batch, epoch=0, step=0, current_alpha=0.0)
 
     hard_loss = torch.nn.functional.cross_entropy(
@@ -345,11 +352,14 @@ def test_supervised_batch_step_uses_beam_soft_target_without_distillation_runtim
     assert "loss/distillation" not in result.scalar_diagnostics
     assert result.extra_loss_values["beam_soft"].item() == pytest.approx(result.task_loss.item())
     assert not torch.isclose(result.task_loss.detach(), hard_loss.detach())
+    assert result.timings == {}
 
 def test_multitask_supervised_training_logs_auxiliary_losses_and_metrics(tmp_path: Path):
     train_csv = tmp_path / "train_aux.csv"
+    val_csv = tmp_path / "val_aux.csv"
     test_csv = tmp_path / "test_aux.csv"
     _write_aux_training_csv(tmp_path, train_csv, prefix="train", future_max=[1.0, 5.0])
+    _write_aux_training_csv(tmp_path, val_csv, prefix="val", future_max=[0.75, 6.0])
     _write_aux_training_csv(tmp_path, test_csv, prefix="test", future_max=[0.5, 8.0])
     cfg = {
         "experiment": {"name": "aux_smoke", "task": "fusion", "seed": 3, "device": "cpu"},
@@ -359,6 +369,7 @@ def test_multitask_supervised_training_logs_auxiliary_losses_and_metrics(tmp_pat
                 "scene": 31,
                 "data_root": str(tmp_path),
                 "train_csv_name": train_csv.name,
+                "val_csv_name": val_csv.name,
                 "test_csv_name": test_csv.name,
                 "seq_len": 2,
                 "num_pred": 2,
@@ -411,6 +422,7 @@ def test_multitask_supervised_training_logs_auxiliary_losses_and_metrics(tmp_pat
             "grad_clip": None,
             "patience": 2,
             "use_early_stopping": False,
+            "model_selection": True,
             "early_stopping_metric": "val_adba",
             "early_stopping_mode": "max",
             "min_delta": 0.0,

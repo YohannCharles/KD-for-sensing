@@ -111,6 +111,8 @@ def _gps_profile_from_feature_mode(mode: Any) -> str | None:
         return "paper_distance_angle_direct"
     if normalized == "paper_calibrated_relative_polar":
         return "paper_calibrated_relative_polar_history"
+    if normalized == "rsu_local_relative_polar":
+        return "rsu_local_relative_polar_history"
     return None
 
 
@@ -121,7 +123,11 @@ def descriptor_metadata(dataset_type: str | None) -> dict[str, Any]:
 _DEEPSENSE_PROFILES = {
     "image": ("rgb_imagenet",),
     "radar": ("ra_da_maps",),
-    "gps": ("relative_polar_history", "paper_calibrated_relative_polar_history", "paper_distance_angle_direct"),
+    "gps": (
+        "relative_polar_history",
+        "paper_calibrated_relative_polar_history",
+        "paper_distance_angle_direct",
+    ),
     "lidar": ("bev_projection",),
     "mmwave": ("power_history",),
     "csi": ("pilot_dual_view",),
@@ -147,6 +153,7 @@ DATASET_DESCRIPTORS: dict[str, DatasetDescriptor] = {
         split_semantics="prepared_sequence_csv_train_validation_test",
         supported_profiles={
             **_DEEPSENSE_PROFILES,
+            "gps": (*_DEEPSENSE_PROFILES["gps"], "rsu_local_relative_polar_history"),
             "mmwave": ("mmw_power_history",),
             "csi": ("mmw_channel_history", "pilot_dual_view"),
         },

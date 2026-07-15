@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import torch
 import torch.nn as nn
 
-from kd_sensing.utils.checkpoint import CheckpointLoadError
+from kd_sensing.utils.checkpoint import CheckpointLoadError, load_torch_payload
 
 
 CHECKPOINT_POLICIES = {
@@ -241,7 +241,7 @@ def _visual_token_diagnostics(
 
 
 def _load_context_encoder_state(path: Path, encoder: nn.Module, *, prefix: str, strict: bool) -> None:
-    checkpoint = torch.load(path, map_location="cpu")
+    checkpoint = load_torch_payload(path, map_location="cpu")
     state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
     if not isinstance(state_dict, dict):
         raise CheckpointLoadError(f"JEPA checkpoint payload must be a state dict, got {type(state_dict).__name__}.")

@@ -47,6 +47,7 @@ def write_complete_status(
     kind: str,
     primary_metric: dict[str, Any] | None = None,
     metrics_path: str | Path | None = None,
+    final_test_metrics_path: str | Path | None = None,
     best_checkpoint: str | Path | None = None,
     completed_at: dt.datetime | None = None,
 ) -> dict[str, Any]:
@@ -64,6 +65,9 @@ def write_complete_status(
             "duration_seconds": round((now - start_time).total_seconds(), 3) if start_time is not None else None,
             "primary_metric": primary_metric,
             "metrics_path": str(metrics_path) if metrics_path is not None else None,
+            "final_test_metrics_path": (
+                str(final_test_metrics_path) if final_test_metrics_path is not None else None
+            ),
             "best_checkpoint": str(best_checkpoint) if best_checkpoint is not None else None,
             "config_path": config_path,
         }

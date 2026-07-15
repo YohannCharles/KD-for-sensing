@@ -451,9 +451,9 @@ def _param_stats(run_dir: Path, path: Path | None) -> dict[str, float]:
         return {"num_params": startup["num_params"], "trainable_params": startup["trainable_params"], "model_size_mb": math.nan}
     size_mb = path.stat().st_size / (1024 * 1024)
     try:
-        import torch
+        from kd_sensing.utils.checkpoint import load_torch_payload
 
-        payload = torch.load(path, map_location="cpu")
+        payload = load_torch_payload(path, map_location="cpu")
         state = payload.get("state_dict") if isinstance(payload, dict) else payload
         if isinstance(state, dict):
             num_params = sum(int(value.numel()) for value in state.values() if hasattr(value, "numel"))

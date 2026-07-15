@@ -9,6 +9,7 @@ model:
     physics_beta: 0.5
 training:
   epochs: 80
-  use_early_stopping: true
+  use_early_stopping: false
+  model_selection: false
 output:
   run_name: physics_informed_mmw_hybrid

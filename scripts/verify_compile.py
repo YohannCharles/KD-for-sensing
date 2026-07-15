@@ -1,39 +1,54 @@
 #!/usr/bin/env python3
-"""Compile tracked CLI and script entry files without importing them."""
+"""Compile on-disk CLI and script entry files without importing them."""
 
-import py_compile
-import subprocess
+import argparse
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+OWNER_ROOTS = (Path("scripts"), Path("src/kd_sensing/cli"))
+EXCLUDED_DIRECTORY_NAMES = frozenset(
+    {"dataset", "outputs", "logs", "cache", "checkpoint", "checkpoints", "__pycache__"}
+)
 
 
-def _tracked_python_files() -> list[Path]:
-    result = subprocess.run(
-        ["git", "ls-files", "scripts", "src/kd_sensing/cli"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    paths = []
-    for line in result.stdout.splitlines():
-        path = ROOT / line
-        if path.suffix == ".py" and path.exists():
-            paths.append(path)
+def _python_files(root: Path) -> list[Path]:
+    paths: set[Path] = set()
+    for owner_root in OWNER_ROOTS:
+        directory = root / owner_root
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*.py"):
+            relative_path = path.relative_to(root)
+            if path.is_file() and not path.is_symlink() and not (
+                EXCLUDED_DIRECTORY_NAMES & set(relative_path.parts)
+            ):
+                paths.add(path)
     return sorted(paths)
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT,
+        help="Repository root to scan (defaults to the current project root).",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
+    root = _parse_args().root.resolve()
+    paths = _python_files(root)
     failures: list[str] = []
-    for path in _tracked_python_files():
+    for path in paths:
         try:
-            py_compile.compile(str(path), doraise=True)
-        except py_compile.PyCompileError as exc:
-            rel_path = path.relative_to(ROOT)
-            failures.append(f"{rel_path}: {exc.msg}")
+            compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
+        except (OSError, SyntaxError) as exc:
+            rel_path = path.relative_to(root)
+            failures.append(f"{rel_path}: {exc}")
 
     if failures:
         print("Python compile check failed:", file=sys.stderr)
@@ -41,7 +56,7 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    print(f"Compiled {len(_tracked_python_files())} tracked CLI/script Python files.")
+    print(f"Compiled {len(paths)} on-disk CLI/script Python files.")
     return 0
 
 

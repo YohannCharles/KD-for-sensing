@@ -14,6 +14,7 @@ from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
 from kd_sensing.engine.prediction_objectives import (
     build_dba_aware_soft_targets,
     compute_prediction_loss,
+    prediction_observation_counts,
     prepare_prediction_targets,
 )
 from kd_sensing.engine.runtime import (
@@ -30,6 +31,7 @@ from kd_sensing.engine.training_extensions import (
     ExtensionContext,
     ForwardControls,
 )
+from kd_sensing.engine.scalar_metrics import materialize_batch_scalars, mean_metric_term
 
 
 @dataclass(frozen=True)
@@ -42,8 +44,11 @@ class BatchStepResult:
     auxiliary_loss: torch.Tensor
     prediction_loss: Any
     extra_loss_values: dict[str, torch.Tensor]
-    scalar_diagnostics: dict[str, float]
+    scalar_diagnostics: dict[str, Any]
     accuracy: float
+    metric_terms: dict[str, tuple[torch.Tensor, torch.Tensor]]
+    metric_numerators: dict[str, float]
+    metric_denominators: dict[str, float]
     timings: dict[str, float]
 
 
@@ -78,6 +83,7 @@ class BatchStepRunner:
         self.health_tracker = health_tracker
         self.objective = resolve_prediction_objective(cfg)
         self.difficulty_seed = int(cfg.get("experiment", {}).get("seed", 0))
+        self._timing_enabled = _batch_timing_enabled(training_cfg)
         self._random_dropout_counts: dict[int, dict[tuple[str, int], int]] = {}
         self._amr_gate_rows: dict[int, list[dict[str, Any]]] = {}
         self._reliability_weight_rows: dict[int, list[dict[str, Any]]] = {}
@@ -124,6 +130,15 @@ class BatchStepRunner:
             auxiliary_targets=auxiliary_targets,
             cfg=self.cfg,
         )
+        observation_counts = prediction_observation_counts(
+            prediction_targets,
+            self.cfg,
+            reference=labels,
+        )
+        _require_positive_observations(
+            observation_counts["primary"],
+            f"Training objective '{self.objective}' has zero effective observations.",
+        )
         self.optimizer.zero_grad()
         timings: dict[str, float] = {}
         with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
@@ -139,7 +154,7 @@ class BatchStepRunner:
                     )
                 )
             set_csi_debug_batch_source(context.primary_model, "train")
-            forward_start = time.perf_counter()
+            forward_start = time.perf_counter() if self._timing_enabled else None
             primary_step = run_model_step(
                 context.primary_model,
                 self.task,
@@ -152,8 +167,9 @@ class BatchStepRunner:
                 force_modality_mask=controls.force_modality_mask,
                 extra_model_kwargs=controls.model_kwargs,
             )
-            timings["forward_time"] = time.perf_counter() - forward_start
-            loss_start = time.perf_counter()
+            if forward_start is not None:
+                timings["forward_time"] = time.perf_counter() - forward_start
+            loss_start = time.perf_counter() if self._timing_enabled else None
             primary_model_output = primary_step.model_output
             self._collect_amr_gate_stats(primary_model_output.diagnostics, epoch=epoch)
             self._collect_reliability_weight_stats(primary_model_output.diagnostics, epoch=epoch)
@@ -213,12 +229,25 @@ class BatchStepRunner:
             batch_state.total_loss = total_loss
             batch_state.task_loss = task_loss
             batch_state.auxiliary_loss = auxiliary_loss
-            timings["loss_time"] = time.perf_counter() - loss_start
+            if loss_start is not None:
+                timings["loss_time"] = time.perf_counter() - loss_start
 
-        timings.update(self._backward_and_step(total_loss, batch_state))
-        prediction = torch.argmax(primary_outputs, dim=-1)
-        valid = torch.sum(labels != -100).item()
-        accuracy = (prediction == labels).sum().item() / max(valid, 1)
+        timings.update(self._backward_and_step(total_loss, batch_state, measure_timing=self._timing_enabled))
+        metric_terms = _supervised_metric_terms(
+            total_loss=total_loss,
+            task_loss=task_loss,
+            auxiliary_loss=auxiliary_loss,
+            prediction_loss=prediction_loss,
+            extra_loss_values=extra_loss_values,
+            primary_outputs=primary_outputs,
+            labels=labels,
+            observation_counts=observation_counts,
+        )
+        metric_numerators, metric_denominators, scalar_diagnostics = materialize_batch_scalars(
+            metric_terms,
+            scalar_diagnostics,
+        )
+        accuracy = metric_numerators["acc"] / max(metric_denominators["acc"], 1.0)
         return BatchStepResult(
             batch=batch,
             labels=labels,
@@ -230,6 +259,9 @@ class BatchStepRunner:
             extra_loss_values=extra_loss_values,
             scalar_diagnostics=scalar_diagnostics,
             accuracy=float(accuracy),
+            metric_terms=metric_terms,
+            metric_numerators=metric_numerators,
+            metric_denominators=metric_denominators,
             timings=timings,
         )
 
@@ -259,7 +291,7 @@ class BatchStepRunner:
                     )
                 )
             set_csi_debug_batch_source(context.primary_model, "train")
-            forward_start = time.perf_counter()
+            forward_start = time.perf_counter() if self._timing_enabled else None
             primary_step = run_model_step(
                 context.primary_model,
                 self.task,
@@ -276,8 +308,9 @@ class BatchStepRunner:
                     "jepa_step": int(step),
                 },
             )
-            timings["forward_time"] = time.perf_counter() - forward_start
-            loss_start = time.perf_counter()
+            if forward_start is not None:
+                timings["forward_time"] = time.perf_counter() - forward_start
+            loss_start = time.perf_counter() if self._timing_enabled else None
             primary_model_output = primary_step.model_output
             self._collect_amr_gate_stats(primary_model_output.diagnostics, epoch=epoch)
             self._collect_reliability_weight_stats(primary_model_output.diagnostics, epoch=epoch)
@@ -321,9 +354,37 @@ class BatchStepRunner:
             batch_state.task_loss = task_loss
             batch_state.auxiliary_loss = auxiliary_loss
             prediction_loss = _jepa_prediction_loss_bundle(total_loss, primary_outputs)
-            timings["loss_time"] = time.perf_counter() - loss_start
+            if loss_start is not None:
+                timings["loss_time"] = time.perf_counter() - loss_start
 
-        timings.update(self._backward_and_step(total_loss, batch_state))
+        timings.update(self._backward_and_step(total_loss, batch_state, measure_timing=self._timing_enabled))
+        valid_tokens = torch.as_tensor(
+            scalar_diagnostics.get("jepa/valid_target_tokens", 0.0),
+            dtype=torch.float32,
+            device=total_loss.device,
+        ).reshape(())
+        _require_positive_observations(valid_tokens, "JEPA training produced zero effective observations.")
+        zero_count = torch.zeros((), dtype=torch.float32, device=total_loss.device)
+        metric_terms = {
+            "loss": mean_metric_term(total_loss, valid_tokens),
+            "task_loss": mean_metric_term(task_loss, valid_tokens),
+            "auxiliary_loss": mean_metric_term(auxiliary_loss, valid_tokens),
+            "beam_loss": mean_metric_term(prediction_loss.beam, zero_count),
+            "beam_soft_loss": mean_metric_term(extra_loss_values["beam_soft"], zero_count),
+            "unimodal_loss": mean_metric_term(extra_loss_values["unimodal"], zero_count),
+            "occlusion_loss": mean_metric_term(prediction_loss.occlusion, zero_count),
+            "position_loss": mean_metric_term(prediction_loss.position, zero_count),
+            "multitask_loss": mean_metric_term(prediction_loss.multitask_total, zero_count),
+            "los_loss": mean_metric_term(prediction_loss.los, zero_count),
+            "link_quality_loss": mean_metric_term(prediction_loss.link_quality, zero_count),
+            "selection_multitask_loss": mean_metric_term(prediction_loss.selection_multitask_total, zero_count),
+            "jepa_loss": mean_metric_term(total_loss, valid_tokens),
+            "acc": (zero_count, zero_count),
+        }
+        metric_numerators, metric_denominators, scalar_diagnostics = materialize_batch_scalars(
+            metric_terms,
+            scalar_diagnostics,
+        )
         return BatchStepResult(
             batch=batch,
             labels=labels,
@@ -335,6 +396,9 @@ class BatchStepRunner:
             extra_loss_values=extra_loss_values,
             scalar_diagnostics=scalar_diagnostics,
             accuracy=0.0,
+            metric_terms=metric_terms,
+            metric_numerators=metric_numerators,
+            metric_denominators=metric_denominators,
             timings=timings,
         )
 
@@ -473,7 +537,7 @@ class BatchStepRunner:
             if batch_state.soft_beam_targets is not None
             else None
         )
-        dba_diagnostics: dict[str, float] = {}
+        dba_diagnostics: dict[str, Any] = {}
         if soft_targets is None:
             dba_targets, dba_diagnostics = build_dba_aware_soft_targets(
                 labels,
@@ -487,10 +551,10 @@ class BatchStepRunner:
         diagnostics = dict(dba_diagnostics)
         if soft_targets is not None:
             if dba_diagnostics:
-                diagnostics["loss/beam_circular_soft_ce"] = float(task_loss.detach().cpu().item())
-                diagnostics["loss/beam_dba_aware"] = float(task_loss.detach().cpu().item())
+                diagnostics["loss/beam_circular_soft_ce"] = task_loss.detach()
+                diagnostics["loss/beam_dba_aware"] = task_loss.detach()
             else:
-                diagnostics["loss/beam_soft_target"] = float(task_loss.detach().cpu().item())
+                diagnostics["loss/beam_soft_target"] = task_loss.detach()
         return BaseLossResult(
             total_loss=task_loss,
             task_loss=task_loss,
@@ -498,9 +562,15 @@ class BatchStepRunner:
             diagnostics=diagnostics,
         )
 
-    def _backward_and_step(self, total_loss: torch.Tensor, batch_state: BatchState) -> dict[str, float]:
+    def _backward_and_step(
+        self,
+        total_loss: torch.Tensor,
+        batch_state: BatchState,
+        *,
+        measure_timing: bool,
+    ) -> dict[str, float]:
         grad_clip = self.training_cfg.get("grad_clip", None)
-        backward_start = time.perf_counter()
+        backward_start = time.perf_counter() if measure_timing else None
         if self.grad_scaler.is_enabled():
             self.grad_scaler.scale(total_loss).backward()
             if grad_clip or batch_state.active_modalities is not None or self.health_tracker is not None:
@@ -511,12 +581,14 @@ class BatchStepRunner:
                 torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
             if self.health_tracker is not None:
                 self.health_tracker.observe_gradients()
-            backward_time = time.perf_counter() - backward_start
-            step_start = time.perf_counter()
+            backward_time = time.perf_counter() - backward_start if backward_start is not None else None
+            step_start = time.perf_counter() if measure_timing else None
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
             for extension, state in zip(self.extensions, self.extension_states):
                 extension.after_optimizer_step(self.context, state, batch_state)
+            if step_start is None or backward_time is None:
+                return {}
             return {"backward_time": backward_time, "optimizer_step_time": time.perf_counter() - step_start}
         total_loss.backward()
         for extension, state in zip(self.extensions, self.extension_states):
@@ -525,12 +597,55 @@ class BatchStepRunner:
             torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
         if self.health_tracker is not None:
             self.health_tracker.observe_gradients()
-        backward_time = time.perf_counter() - backward_start
-        step_start = time.perf_counter()
+        backward_time = time.perf_counter() - backward_start if backward_start is not None else None
+        step_start = time.perf_counter() if measure_timing else None
         self.optimizer.step()
         for extension, state in zip(self.extensions, self.extension_states):
             extension.after_optimizer_step(self.context, state, batch_state)
+        if step_start is None or backward_time is None:
+            return {}
         return {"backward_time": backward_time, "optimizer_step_time": time.perf_counter() - step_start}
+
+
+def _supervised_metric_terms(
+    *,
+    total_loss: torch.Tensor,
+    task_loss: torch.Tensor,
+    auxiliary_loss: torch.Tensor,
+    prediction_loss,
+    extra_loss_values: dict[str, torch.Tensor],
+    primary_outputs: torch.Tensor,
+    labels: torch.Tensor,
+    observation_counts: dict[str, torch.Tensor],
+) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    primary_count = observation_counts["primary"]
+    beam_count = observation_counts["beam"]
+    zero = total_loss.detach() * 0.0
+    prediction = primary_outputs.argmax(dim=-1)
+    valid = labels.ne(-100)
+    correct = prediction.eq(labels).logical_and(valid).sum().to(dtype=torch.float32).detach()
+
+    def term(value, count: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        tensor = value if torch.is_tensor(value) else zero
+        return mean_metric_term(tensor, count)
+
+    return {
+        "loss": term(total_loss, primary_count),
+        "task_loss": term(task_loss, primary_count),
+        "auxiliary_loss": term(auxiliary_loss, primary_count),
+        "beam_loss": term(prediction_loss.beam, beam_count),
+        "beam_soft_loss": term(extra_loss_values.get("beam_soft"), beam_count),
+        "unimodal_loss": term(extra_loss_values.get("unimodal"), beam_count),
+        "occlusion_loss": term(prediction_loss.occlusion, observation_counts["occlusion"]),
+        "position_loss": term(prediction_loss.position, observation_counts["position"]),
+        "multitask_loss": term(prediction_loss.multitask_total, primary_count),
+        "los_loss": term(prediction_loss.los, observation_counts["los"]),
+        "link_quality_loss": term(prediction_loss.link_quality, observation_counts["link_quality"]),
+        "selection_multitask_loss": term(prediction_loss.selection_multitask_total, primary_count),
+        "jepa_loss": term(prediction_loss.jepa, primary_count),
+        "acc": (correct, beam_count.detach()),
+    }
+
 
 def _jepa_dummy_labels(batch: dict[str, torch.Tensor], context: ExtensionContext) -> torch.Tensor:
     missing = [key for key in ("image", "gps") if key not in batch]
@@ -547,7 +662,6 @@ def _jepa_prediction_loss_bundle(total_loss: torch.Tensor, reference: torch.Tens
     from kd_sensing.engine.prediction_objectives import PredictionLossBundle
 
     zero = reference.sum() * 0.0
-    loss_value = float(total_loss.detach().cpu().item())
     return PredictionLossBundle(
         total=total_loss,
         primary=total_loss,
@@ -555,7 +669,7 @@ def _jepa_prediction_loss_bundle(total_loss: torch.Tensor, reference: torch.Tens
         occlusion=zero,
         position=zero,
         multitask_total=zero,
-        diagnostics={"loss/jepa": loss_value, "loss/primary": loss_value},
+        diagnostics={"loss/jepa": total_loss.detach(), "loss/primary": total_loss.detach()},
         los=zero,
         link_quality=zero,
         selection_multitask_total=zero,
@@ -568,7 +682,22 @@ def _safe_pattern_name(mask: torch.Tensor, modalities: list[str]) -> str:
         return get_missing_pattern_name(mask, modalities)
     except Exception:
         bits = "".join("1" if bool(value) else "0" for value in mask.flatten().tolist())
-        return f"mask_{bits}"
+    return f"mask_{bits}"
+
+
+def _batch_timing_enabled(training_cfg: dict[str, Any]) -> bool:
+    timing_cfg = training_cfg.get("timing", {}) if isinstance(training_cfg, dict) else {}
+    if not isinstance(timing_cfg, dict) or not bool(timing_cfg.get("enabled", False)):
+        return False
+    profile = str(timing_cfg.get("profile", "")).strip().lower()
+    return profile in {"host", "cuda_event"}
+
+
+def _require_positive_observations(observations: torch.Tensor, message: str) -> None:
+    # This is an error-path guard, not metric materialization.  Metrics below
+    # remain device-side until the one packed host transfer at batch end.
+    if not torch.is_nonzero(observations.detach().gt(0)):
+        raise ValueError(message)
 
 
 def _append_csv(path: Path, rows: list[dict[str, Any]]) -> None:

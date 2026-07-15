@@ -45,6 +45,7 @@ def _tiny_train_cfg(tmp_path: Path) -> dict:
     return {
         "experiment": {"name": "jepa_smoke", "task": "fusion", "objective": "gps_conditioned_jepa", "seed": 11, "device": "cpu"},
         "data": {
+            "validation_from_train": {"enabled": True, "fraction": 0.5, "seed": 3},
             "dataset": {
                 "type": "synthetic",
                 "length": 2,
@@ -74,6 +75,7 @@ def _tiny_train_cfg(tmp_path: Path) -> dict:
             "weight_decay": 0.0,
             "grad_clip": 1.0,
             "use_early_stopping": False,
+            "model_selection": True,
             "early_stopping_metric": "val_jepa_loss",
             "early_stopping_mode": "min",
             "transfer": {"non_blocking": False},

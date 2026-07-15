@@ -56,6 +56,8 @@ model:
       beam:
         type: beam_head
 training:
+  use_early_stopping: false
+  model_selection: false
   epochs: 20
   lr: 0.0005
   weight_decay: 0.0001

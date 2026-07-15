@@ -1,9 +1,11 @@
+import builtins
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 from kd_sensing.config import load_config
+from kd_sensing.config.validation import validate_deepsense_label_space_artifacts
 
 
 def test_config_load_pipeline_characterization_covers_sources_and_overrides():
@@ -32,6 +34,46 @@ def test_config_load_pipeline_characterization_covers_sources_and_overrides():
     assert overridden["data"]["dataset"]["scene_slug"] == "scene32"
     assert overridden["training"]["early_stopping_metric"] == "val_loss"
     assert overridden["training"]["early_stopping_mode"] == "min"
+
+
+def test_model_selection_requires_independent_validation_and_fixed_epoch_is_explicit():
+    fixed_epoch = load_config(ROOT / "configs/gps/lightweight.yaml")
+
+    assert fixed_epoch["training"]["model_selection"] is False
+    assert fixed_epoch["training"]["use_early_stopping"] is False
+    with pytest.raises(ValueError, match="independent validation split"):
+        load_config(
+            ROOT / "configs/gps/lightweight.yaml",
+            ["training.model_selection=true", "training.use_early_stopping=false"],
+        )
+
+    selected = load_config(
+        ROOT / "configs/gps/lightweight.yaml",
+        [
+            "data.validation_from_train.enabled=true",
+            "training.model_selection=true",
+            "training.use_early_stopping=true",
+        ],
+    )
+    assert selected["training"]["model_selection"] is True
+
+
+def test_label_space_validation_import_errors_fail_closed(monkeypatch: pytest.MonkeyPatch):
+    real_import = builtins.__import__
+
+    def fail_label_space_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "kd_sensing.data.beam_label_space":
+            raise RuntimeError("synthetic label-space import failure")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fail_label_space_import)
+    cfg = {
+        "experiment": {"name": "deepsense6g_gps_adapter_v2"},
+        "data": {"label_space": "mapping_disabled", "num_beams": 64},
+    }
+
+    with pytest.raises(RuntimeError, match="synthetic label-space import failure"):
+        validate_deepsense_label_space_artifacts(cfg)
 
 
 def test_tinyvit_image_encoder_override_is_opt_in_and_default_stays_resnet18():

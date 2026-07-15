@@ -11,26 +11,57 @@ MAIN_TABLE_COLUMNS = (
     "claim_id",
     "method",
     "dataset_split",
+    "target_source",
     "metric",
     "value",
     "claim_status",
+    "seed_count",
+    "baseline",
+    "statistics",
+    "comparability",
+    "stress_status",
     "provenance",
     "caveat",
 )
-DEFAULT_EXCLUDED_STATUS_MARKERS = (
-    "pending",
-    "mock",
-    "smoke",
-    "historical",
-    "upper-bound",
-    "upper_bound",
-    "not_comparable",
-    "unverified",
-    "blocked",
-    "blocked official reproduction",
-    "candidate-only",
+REVIEWED_MAIN_STATUSES = (
+    "official-reproduction",
+    "local-strict-validation",
+    "local-experimental",
+)
+REVIEWED_REQUIRED_FIELDS = (
+    "claim_id",
+    "method",
+    "dataset_split",
+    "target_source",
+    "metric",
+    "value",
+    "seed_count",
+    "baseline",
+    "statistics",
+    "comparability",
+    "stress_status",
+    "provenance",
+    "caveat",
+)
+CLAIM_REGISTRY_COLUMNS = (
+    "claim_id",
+    "model_line",
+    "dataset_split",
+    "target_source",
+    "metric",
+    "value",
+    "claim_status",
+    "run_date_commit",
+    "config_provenance",
+    "checkpoint_provenance",
+    "caveat",
+    "seed_count",
+    "baseline",
+    "statistics",
+    "comparability",
+    "stress_status",
     "candidate_only",
-    "diagnostic-only",
+    "upgrade_gate",
 )
 EXCLUDED_REPORT_COLUMNS = ("claim_id", "claim_status", "candidate_only", "caveat", "exclusion_reason")
 STRESS_COLUMNS = ("condition", "severity", "method", "metric", "mean", "std", "ci", "claim_status", "caveat")
@@ -107,7 +138,8 @@ def export_paper_artifacts(
         "input_files": [str(Path(path)) for path in input_paths],
         "input_claim_ids": [row["claim_id"] for row in normalized if row.get("claim_id")],
         "filter": {
-            "default_excluded_status_markers": list(DEFAULT_EXCLUDED_STATUS_MARKERS),
+            "reviewed_main_statuses": list(REVIEWED_MAIN_STATUSES),
+            "reviewed_required_fields": list(REVIEWED_REQUIRED_FIELDS),
             "include_statuses": list(include_statuses),
             "main_row_count": len(main_rows),
             "appendix_row_count": len(appendix_rows),
@@ -138,17 +170,28 @@ def load_input_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def normalize_claim_row(row: dict[str, Any]) -> dict[str, str]:
+    provenance_parts = [
+        _string(_pick(row, "provenance", "config_provenance", "config / runner", "_source_file")),
+        _string(_pick(row, "run_date_commit", "run date or commit", "commit")),
+        _string(_pick(row, "checkpoint_provenance", "checkpoint provenance")),
+    ]
     return {
         "claim_id": _string(_pick(row, "claim_id", "claim id", "id", "claim")),
-        "method": _string(_pick(row, "method", "model line", "model_line", "model", "line", "method_name")),
+        "method": _string(_pick(row, "method", "model line", "model_line", "model", "line", "method_name", "subject")),
         "dataset_split": _string(_pick(row, "dataset / split", "dataset_split", "dataset", "split")),
+        "target_source": _string(_pick(row, "target_source", "target source", "label source")),
         "metric": _string(
             _pick(row, "metric", "target / metric field", "target_metric", "metric_field", "metric_profile")
         ),
         "value": _string(_pick(row, "value", "value summary", "result", "score", "mean")),
         "claim_status": _string(_pick(row, "claim_status", "claim status", "status")),
         "candidate_only": _string(_pick(row, "candidate_only", "candidate only")),
-        "provenance": _string(_pick(row, "provenance", "checkpoint provenance", "config / runner", "_source_file")),
+        "seed_count": _string(_pick(row, "seed_count", "seed count", "seeds")),
+        "baseline": _string(_pick(row, "baseline", "comparison baseline")),
+        "statistics": _string(_pick(row, "statistics", "mean/std", "mean_std", "ci", "confidence_interval")),
+        "comparability": _string(_pick(row, "comparability", "comparability status")),
+        "stress_status": _string(_pick(row, "stress_status", "stress status", "stress suite status")),
+        "provenance": "; ".join(part for part in provenance_parts if part),
         "caveat": _string(_pick(row, "caveat", "note", "notes", "warning", "warnings")),
     }
 
@@ -185,13 +228,20 @@ def excluded_report_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _exclusion_reason(row: dict[str, str]) -> str:
     reasons: list[str] = []
-    status = row.get("claim_status", "").lower()
+    status = _canonical_status(row.get("claim_status", ""))
     if _truthy(row.get("candidate_only")):
         reasons.append("candidate_only=true")
-    for marker in DEFAULT_EXCLUDED_STATUS_MARKERS:
-        if marker in status:
-            reasons.append(f"status contains {marker}")
+    if status not in REVIEWED_MAIN_STATUSES:
+        reasons.append(f"status_not_reviewed:{status or 'empty'}")
+    else:
+        missing = [field for field in REVIEWED_REQUIRED_FIELDS if not str(row.get(field, "")).strip()]
+        if missing:
+            reasons.append("missing_required_fields:" + ",".join(missing))
     return "; ".join(dict.fromkeys(reasons))
+
+
+def _canonical_status(value: Any) -> str:
+    return "-".join(str(value or "").strip().lower().replace("_", "-").split())
 
 
 def normalize_stress_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:

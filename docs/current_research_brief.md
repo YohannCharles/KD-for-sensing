@@ -2,7 +2,7 @@
 
 ## 当前主线
 
-当前主线是 final C2 / U-MaskBeamJEPA 缺失模态波束预测：围绕 `configs/fusion/u_mask_beam_jepa_smoke.yaml`、`configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml`、final C2 launcher/summary 和 `kd-sensing-eval-u-mask-matrix` 收敛证据链。MMW/CSI 保留为 future/current supporting dataset workflow，不进入 post-C2 删除候选。
+当前主线是 final C2 / U-MaskBeamJEPA 缺失模态波束预测：围绕 `configs/fusion/u_mask_beam_jepa_smoke.yaml`、`configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml`、final C2 launcher/summary 和 `kd-sensing-eval-u-mask-matrix` 收敛证据链。MMW/CSI 保留为 current supporting dataset workflow；MMW 可作为当前数据实验 campaign，但不替代默认主线。
 
 ## 冻结方法
 

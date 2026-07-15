@@ -163,7 +163,11 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
     def training_strategy_metadata(self) -> dict[str, Any]:
         return {
             "type": "amber_full_adaptive_mask_transformer",
-            "reproduction_scope": "amber_full_local",
+            "reproduction_scope": "amber_full_local_adaptation",
+            "paper_equivalent": False,
+            "omitted_paper_inputs": ["historical_beam_index"],
+            "position_encoding_scope": "learned_1d_local_approximation",
+            "auxiliary_loss_scope": "local_cma_and_l2_approximation",
             "d_model": self.d_model,
             "output_dim": self.output_dim,
             "modality_count": self.modality_count,

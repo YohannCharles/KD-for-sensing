@@ -76,8 +76,10 @@ def resolve_sequence_csv_path(
             default_csv = getattr(scene, "default_train_csv_name")
             configured_csv = train_csv_name
         elif split in {"val", "validation"}:
-            default_csv = val_csv_name or test_csv_name or getattr(scene, "default_test_csv_name")
-            configured_csv = val_csv_name or test_csv_name
+            if not val_csv_name:
+                raise ValueError("val_csv_name is required for an independent validation split.")
+            default_csv = val_csv_name
+            configured_csv = val_csv_name
         else:
             default_csv = getattr(scene, "default_test_csv_name")
             configured_csv = test_csv_name

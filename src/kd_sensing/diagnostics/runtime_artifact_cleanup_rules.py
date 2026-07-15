@@ -16,6 +16,7 @@ from kd_sensing.diagnostics.runtime_artifact_cleanup_base import (
     _aggregate_by,
     _format_dt,
     _ensure_utc,
+    _filesystem_type,
     _is_current_mainline_output_path,
     _is_git_tracked,
     _matches_current_mainline_output_partition,
@@ -295,7 +296,7 @@ def _materialize_record(
     tracked_paths: set[str],
     active_run_dirs: Iterable[Path],
 ) -> CleanupRecord:
-    path = Path(match["path"]).resolve()
+    path = Path(match["path"])
     decision = evaluate_protection(path, project_root=project_root, tracked_paths=tracked_paths, active_run_dirs=active_run_dirs)
     forced_reasons = tuple(match.get("protection_reasons", ()))
     protection_reasons = tuple(dict.fromkeys((*decision.reasons, *forced_reasons)))
@@ -304,6 +305,7 @@ def _materialize_record(
         path=str(path),
         relative_path=_relative_path(path, project_root),
         artifact_type=str(match["artifact_type"]),
+        filesystem_type=_filesystem_type(path),
         size_bytes=_path_size_bytes(path),
         mtime=_format_dt(_path_mtime(path)),
         rule_id=str(match["rule_id"]),
@@ -331,7 +333,7 @@ def _add_match(
     run_summary: dict[str, Any] | None = None,
     checkpoint_summary: dict[str, Any] | None = None,
 ) -> None:
-    key = path.expanduser().resolve()
+    key = Path(os.path.abspath(path.expanduser()))
     existing = matches.get(key)
     if existing is None:
         matches[key] = {

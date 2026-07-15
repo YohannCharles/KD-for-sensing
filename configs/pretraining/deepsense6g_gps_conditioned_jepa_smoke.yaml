@@ -80,6 +80,7 @@ training:
   grad_clip: 5.0
   patience: 5
   use_early_stopping: false
+  model_selection: false
   early_stopping_metric: val_jepa_loss
   early_stopping_mode: min
   transfer:

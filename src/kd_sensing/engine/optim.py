@@ -31,7 +31,6 @@ def build_task_criterion(cfg: dict[str, Any]):
         "link_quality",
         "dba_aware",
         "beam_topology_smoothing",
-        "teacher_guidance",
         "pcpg_radar_balance",
         "branch_aux_loss",
         "radar_protect_loss",

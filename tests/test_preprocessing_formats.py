@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import kd_sensing.preprocessing.csv as csv_preprocessing
 from kd_sensing.data.transform_ops.lidar import read_lidar_point_cloud
 from kd_sensing.preprocessing.csv import process_radar_and_create_new_csv
 from kd_sensing.preprocessing.sequences import (
@@ -27,6 +28,110 @@ def test_radar_fft_csv_reads_npy_inputs(tmp_path: Path):
     assert output_path.exists()
     assert np.load(output_path).shape == (8, 4)
     assert frame.loc[0, "unit1_radar"] == "/unit1/radar_data_RA/radar_data_1_RA.npy"
+
+
+def test_radar_fft_csv_distinguishes_same_basename_resources(tmp_path: Path):
+    raw = (np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5) / 100.0).astype(np.complex64)
+    for folder in ("first", "second"):
+        radar_dir = tmp_path / "unit1" / folder
+        radar_dir.mkdir(parents=True)
+        np.save(radar_dir / "same.npy", raw)
+    csv_path = tmp_path / "scenario.csv"
+    csv_path.write_text(
+        "index,unit1_radar,seq_index\n"
+        "1,./unit1/first/same.npy,1\n"
+        "2,./unit1/second/same.npy,2\n",
+        encoding="utf-8",
+    )
+
+    frame = process_radar_and_create_new_csv(csv_path, tmp_path, output_suffix="RA", fft_tuple=(4, 8, 6))
+
+    outputs = frame["unit1_radar"].tolist()
+    assert outputs[0] != outputs[1]
+    assert all((tmp_path / value.lstrip("/")).exists() for value in outputs)
+
+
+def test_radar_fft_csv_failure_preserves_existing_outputs(tmp_path: Path):
+    radar_dir = tmp_path / "unit1" / "radar_data"
+    radar_dir.mkdir(parents=True)
+    raw = (np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5) / 100.0).astype(np.complex64)
+    np.save(radar_dir / "valid.npy", raw)
+    csv_path = tmp_path / "scenario.csv"
+    csv_path.write_text(
+        "index,unit1_radar,seq_index\n"
+        "1,./unit1/radar_data/valid.npy,1\n"
+        "2,./unit1/radar_data/missing.npy,2\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "unit1" / "radar_data_RA"
+    output_dir.mkdir()
+    (output_dir / "sentinel.txt").write_text("old-output", encoding="utf-8")
+    output_csv = tmp_path / "result.csv"
+    output_csv.write_text("old-csv\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="exceeded max_failure_rate"):
+        process_radar_and_create_new_csv(
+            csv_path,
+            tmp_path,
+            output_csv_path=output_csv,
+            output_suffix="RA",
+            fft_tuple=(4, 8, 6),
+        )
+
+    assert output_csv.read_text(encoding="utf-8") == "old-csv\n"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["sentinel.txt"]
+
+
+def test_radar_fft_csv_rejects_input_output_overlap(tmp_path: Path):
+    csv_path = tmp_path / "scenario.csv"
+    csv_path.write_text("index,unit1_radar,seq_index\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be disjoint"):
+        process_radar_and_create_new_csv(csv_path, tmp_path, output_csv_path=csv_path)
+    with pytest.raises(ValueError, match="output_suffix"):
+        process_radar_and_create_new_csv(csv_path, tmp_path, output_suffix="../escape")
+
+    assert csv_path.read_text(encoding="utf-8") == "index,unit1_radar,seq_index\n"
+
+
+def test_radar_fft_csv_publish_failure_rolls_back_all_targets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    radar_dir = tmp_path / "unit1" / "radar_data"
+    radar_dir.mkdir(parents=True)
+    raw = (np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5) / 100.0).astype(np.complex64)
+    np.save(radar_dir / "valid.npy", raw)
+    csv_path = tmp_path / "scenario.csv"
+    csv_path.write_text(
+        "index,unit1_radar,seq_index\n1,./unit1/radar_data/valid.npy,1\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "unit1" / "radar_data_RA"
+    output_dir.mkdir()
+    (output_dir / "sentinel.txt").write_text("old-output", encoding="utf-8")
+    output_csv = tmp_path / "result.csv"
+    output_csv.write_text("old-csv\n", encoding="utf-8")
+    real_replace = csv_preprocessing.os.replace
+    injected = False
+
+    def fail_csv_publish(source, target):
+        nonlocal injected
+        if not injected and Path(target) == output_csv and ".stage-" in Path(source).parent.name:
+            injected = True
+            raise OSError("injected publish failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(csv_preprocessing.os, "replace", fail_csv_publish)
+
+    with pytest.raises(OSError, match="injected publish failure"):
+        process_radar_and_create_new_csv(
+            csv_path,
+            tmp_path,
+            output_csv_path=output_csv,
+            output_suffix="RA",
+            fft_tuple=(4, 8, 6),
+        )
+
+    assert output_csv.read_text(encoding="utf-8") == "old-csv\n"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["sentinel.txt"]
 
 
 def test_lidar_reader_reads_ascii_ply(tmp_path: Path):

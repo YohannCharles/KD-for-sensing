@@ -20,6 +20,9 @@ from kd_sensing.data.temporal_missing import (
 from kd_sensing.modalities import normalize_modalities
 
 
+TEMPORAL_SUPERSET_PAYLOAD_KEY = "temporal_superset_payload"
+
+
 class TemporalMissingOperator:
     def __init__(self, **params: Any) -> None:
         self.params = dict(params)
@@ -44,6 +47,18 @@ class TemporalMissingOperator:
             valid = _existing_valid_mask(batch, modality, batch_size=batch_size, steps=steps)
             if valid is not None:
                 base[:, :, index] &= valid.cpu()
+        preserve_superset = bool(self.params.get("preserve_unmasked_for_superset", False))
+        if preserve_superset and not bool(base.any(dim=(1, 2)).all().item()):
+            raise ValueError("Temporal superset preservation requires at least one valid history cell per sample.")
+        original_inputs = (
+            {
+                key: batch[key]
+                for modality in modalities
+                for key in _tensor_keys(batch, modality)
+            }
+            if preserve_superset
+            else None
+        )
 
         generator = torch.Generator(device="cpu")
         seed = int(context.derived_seed(profile, config))
@@ -101,6 +116,12 @@ class TemporalMissingOperator:
         batch["modality_temporal_mask"] = combined
         batch["available_modalities"] = available_modalities
         batch["temporal_missing_modalities"] = list(modalities)
+        if original_inputs is not None:
+            batch[TEMPORAL_SUPERSET_PAYLOAD_KEY] = {
+                "inputs": original_inputs,
+                "base_mask": base,
+                "modalities": modalities,
+            }
         metadata = {
             "operator": config.type,
             "mode": mode,
@@ -113,6 +134,7 @@ class TemporalMissingOperator:
             "num_all_missing_fixed": fixed.num_all_missing_fixed,
             "num_empty_frame_fixed": fixed.num_empty_frame_fixed,
             "affected_count": affected,
+            "preserve_unmasked_for_superset": preserve_superset,
         }
         metadata.update(stratified_stats)
         batch["temporal_missing_metadata"] = metadata
@@ -303,4 +325,4 @@ def _coerce_mask(value: torch.Tensor, *, batch_size: int, steps: int) -> torch.T
     return mask
 
 
-__all__ = ["TemporalMissingOperator"]
+__all__ = ["TEMPORAL_SUPERSET_PAYLOAD_KEY", "TemporalMissingOperator"]

@@ -25,6 +25,8 @@ model:
           view_fusion: freq_only
           use_internal_gru: false
 training:
+  use_early_stopping: false
+  model_selection: false
   epochs: 1
 output:
   run_name: physics_informed_mmw_paper_debug

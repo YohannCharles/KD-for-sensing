@@ -13,6 +13,7 @@ from kd_sensing.diagnostics.run_index import (
     render_run_table,
     write_run_card,
 )
+from kd_sensing.diagnostics.run_index_resources import collect_resource_snapshot, redact_command
 from kd_sensing.engine.run_status import (
     write_complete_status,
     write_failed_status_for_active_run,
@@ -58,6 +59,16 @@ def test_run_index_classifies_complete_run_and_extracts_summary(tmp_path: Path):
     )
     (run_dir / "train_log.json").write_text(json.dumps({"epoch_logs": [{"epoch": 1}]}), encoding="utf-8")
     (run_dir / "training_outputs.npz").write_bytes(b"placeholder")
+    (run_dir / "final_test_metrics.json").write_text(
+        json.dumps(
+            {
+                "evaluation_split": "test",
+                "top1": 0.51,
+                "selected_checkpoint": {"path": "checkpoints/last.pth", "checkpoint_role": "last"},
+            }
+        ),
+        encoding="utf-8",
+    )
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir()
     (checkpoint_dir / "best.pth").write_bytes(b"weights")
@@ -99,6 +110,16 @@ def test_run_index_discovers_metrics_csv_and_eval_artifact_refs(tmp_path: Path):
     (run_dir / "metrics.csv").write_text("epoch,val_adba\n1,0.33\n2,0.44\n", encoding="utf-8")
     (run_dir / "train_log.json").write_text(json.dumps({"epoch_logs": [{"epoch": 2}]}), encoding="utf-8")
     (run_dir / "training_outputs.npz").write_bytes(b"placeholder")
+    (run_dir / "final_test_metrics.json").write_text(
+        json.dumps(
+            {
+                "evaluation_split": "test",
+                "top1": 0.51,
+                "selected_checkpoint": {"path": "checkpoints/last.pth", "checkpoint_role": "last"},
+            }
+        ),
+        encoding="utf-8",
+    )
     (run_dir / "csv_run_missing_patterns.csv").write_text(
         "run_name,method,seed,pattern,split,sample_count,label_space,metric_profile,target_source,difficulty_digest,top1\n"
         "csv_run,proto,7,missing_gps,test,16,beam64,scene31_missing,current,digest-a,0.5\n",
@@ -111,6 +132,8 @@ def test_run_index_discovers_metrics_csv_and_eval_artifact_refs(tmp_path: Path):
     assert run["state"] == "complete"
     assert run["metrics"]["path"].endswith("metrics.csv")
     assert run["metrics"]["primary"] == {"name": "val_adba", "value": 0.44}
+    assert run["metrics"]["final_test"]["evaluation_split"] == "test"
+    assert run["metrics"]["final_test"]["primary"] == {"name": "top1", "value": 0.51}
     assert run["provenance"]["eval_artifacts"][0]["path"].endswith("csv_run_missing_patterns.csv")
 
 
@@ -221,6 +244,87 @@ def test_run_index_marks_matching_process_as_running(tmp_path: Path):
     assert "run_state_running" in run["cleanup"]["protection_reasons"]
 
 
+def test_run_index_public_process_redacts_secrets_and_preserves_argv_boundaries(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    run_dir = _write_started_run(outputs / "scene31", "private_run")
+    processes = [
+        {
+            "pid": 1234,
+            "argv": [
+                "python",
+                "-m",
+                "kd_sensing.cli.train",
+                "--config",
+                "configs/path with spaces.yaml",
+                "--token",
+                "top-secret",
+                "service.password=hunter2",
+                "--endpoint=https://user:pass@example.com/api",
+                f"output.run_name={run_dir.name}",
+            ],
+            "rss_mb": 1.0,
+            "run_name": run_dir.name,
+            "gpu_indices": [],
+        }
+    ]
+
+    index = build_run_index(outputs=outputs, logs=None, include_resources=False, processes=processes, now=NOW)
+    payload = json.dumps(index)
+    public = index["runs"][0]["process"]
+
+    assert "top-secret" not in payload
+    assert "hunter2" not in payload
+    assert "user:pass" not in payload
+    assert public["argv"][4] == "configs/path with spaces.yaml"
+    assert public["argv"][6] == "<redacted>"
+    assert "service.password=<redacted>" in public["argv"]
+
+
+def test_resource_snapshot_and_command_redaction_never_publish_raw_cmdline(monkeypatch):
+    monkeypatch.setattr(
+        "kd_sensing.diagnostics.run_index_resources.collect_gpu_snapshot",
+        lambda: {"available": False, "devices": [], "processes": []},
+    )
+    monkeypatch.setattr(
+        "kd_sensing.diagnostics.run_index_resources.collect_memory_snapshot",
+        lambda: {"available": True},
+    )
+    snapshot = collect_resource_snapshot(
+        [{"pid": 9, "cmdline": "python kd-sensing-train --api-key abc123 --config 'path with spaces.yaml'"}]
+    )
+
+    payload = json.dumps(snapshot)
+    assert "abc123" not in payload
+    assert snapshot["processes"][0]["argv"][-1] == "path with spaces.yaml"
+    assert redact_command(["python", "--password", "secret"]) == "python --password '<redacted>'"
+
+
+def test_supplied_resource_snapshot_is_resanitized_before_publication(tmp_path: Path):
+    outputs = tmp_path / "outputs"
+    run_dir = _write_started_run(outputs / "scene31", "private_resource_run")
+    resources = {
+        "memory": {"available": True},
+        "gpus": {"available": False, "devices": [], "processes": []},
+        "processes": [
+            {
+                "pid": 99,
+                "argv": ["python", "kd-sensing-train", "--token", "raw-token", f"output.run_name={run_dir.name}"],
+                "config_path": "https://user:pass@example.com/config.yaml",
+                "run_name": run_dir.name,
+                "credential": "must-not-survive",
+            }
+        ],
+    }
+
+    index = build_run_index(outputs=outputs, logs=None, resources=resources, now=NOW)
+    payload = json.dumps(index)
+
+    assert "raw-token" not in payload
+    assert "user:pass" not in payload
+    assert "must-not-survive" not in payload
+    assert index["resources"]["processes"][0]["argv"][3] == "<redacted>"
+
+
 def test_run_index_renderers_include_expected_fields(tmp_path: Path):
     outputs = tmp_path / "outputs"
     _write_started_run(outputs / "scene31", "render_run")
@@ -247,6 +351,7 @@ def test_run_status_sidecar_records_running_complete_and_failed(tmp_path: Path):
         kind="training",
         primary_metric={"name": "val_adba", "value": 0.5},
         metrics_path=run_dir / "metrics.json",
+        final_test_metrics_path=run_dir / "final_test_metrics.json",
         best_checkpoint=run_dir / "checkpoints" / "best.pth",
         completed_at=NOW + dt.timedelta(seconds=10),
     )
@@ -254,6 +359,7 @@ def test_run_status_sidecar_records_running_complete_and_failed(tmp_path: Path):
     assert running["state"] == "running"
     assert complete["state"] == "complete"
     assert complete["duration_seconds"] == 10.0
+    assert complete["final_test_metrics_path"].endswith("final_test_metrics.json")
     assert json.loads((run_dir / "run_status.json").read_text(encoding="utf-8"))["primary_metric"]["value"] == 0.5
 
     failed_dir = tmp_path / "failed_run"

@@ -13,7 +13,7 @@ from kd_sensing.config import load_config
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
 from kd_sensing.engine.batch import prepare_labels
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
-from kd_sensing.engine.normalization_artifacts import validate_normalization_artifact_fingerprint
+from kd_sensing.engine.normalization_artifacts import _fingerprint, validate_normalization_artifact_fingerprint
 from kd_sensing.engine.prediction_objectives import PredictionTargets, compute_prediction_loss
 from kd_sensing.models.modular import ModularSequenceModel
 from kd_sensing.preprocessing.sequences import generate_sequence_data
@@ -199,6 +199,17 @@ def test_snapshot_labels_use_future_beam_not_current_input(tmp_path: Path):
 
 def test_snapshot_artifact_fingerprint_rejects_history_window_split():
     cfg = load_config(ROOT / "configs/mmwave/snapshot_next_frame_supervised.yaml")
+    artifact_metadata = {
+        "fit_split": "train",
+        "effective_sample_count": 10,
+        "domain_policy": "shared",
+        "normalization_modalities": ["mmwave"],
+        "feature_mode": None,
+        "split_protocol": "balanced_seq",
+        "seq_len": 8,
+        "num_pred": 3,
+    }
+    artifact_metadata["normalization_fingerprint"] = _fingerprint(artifact_metadata)
 
     with pytest.raises(ValueError, match="non-snapshot split"):
         validate_normalization_artifact_fingerprint(
@@ -206,12 +217,7 @@ def test_snapshot_artifact_fingerprint_rejects_history_window_split():
             {
                 "normalization_artifacts": {
                     "mmwave_scaler": "/tmp/mmwave_scaler.npz",
-                    "metadata": {
-                        "split_protocol": "balanced_seq",
-                        "seq_len": 8,
-                        "num_pred": 3,
-                        "split_fingerprint": "history",
-                    },
+                    "metadata": artifact_metadata,
                 }
             },
         )

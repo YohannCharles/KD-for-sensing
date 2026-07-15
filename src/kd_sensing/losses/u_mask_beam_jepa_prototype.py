@@ -19,6 +19,7 @@ def add_prototype_alignment_losses(
     lambda_teacher_proto: float,
     beam_label_sigma: float,
     beam_label_circular: bool,
+    prototype_target_circular: bool | None,
     proto_target_type: str,
     tau_beam: float,
     circular_beam_distance: bool | None,
@@ -49,7 +50,9 @@ def add_prototype_alignment_losses(
         mask=output.get("missing_mask"),
         teacher_features=(teacher_output or {}).get("output_features"),
         beam_label_sigma=beam_label_sigma,
-        beam_label_circular=beam_label_circular,
+        beam_label_circular=(
+            beam_label_circular if prototype_target_circular is None else bool(prototype_target_circular)
+        ),
         proto_target_type=proto_target_type,
         tau_beam=tau_beam,
         circular_beam_distance=circular_beam_distance,

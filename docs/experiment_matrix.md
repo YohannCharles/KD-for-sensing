@@ -16,3 +16,5 @@
 ## Historical / Retired
 
 Image+GPS JEPA, BeamBench, BEV-Fusion 2604, Vision-Position, WCL/TII source-audit and old RBMA/KD/BTAPA/weakKD sweep entries are historical or deleted. They must not appear as current recommended commands, and old missing YAML references are only valid in lines marked historical/retired.
+
+H5/P1 Scene31-34 temporal matrix runs produced before group-safe split enforcement are `not_comparable`, not current evidence. They must not be rerun through the legacy per-sample split or promoted until the identity, validation/test and normalization gates in `docs/experiment_protocols.md` pass.

@@ -15,6 +15,7 @@ from kd_sensing.data.datasets.deepsense6g_cache_paths import (
 from kd_sensing.data.datasets.deepsense6g_columns import validate_required_columns
 from kd_sensing.data.datasets.deepsense6g_contract import (
     normalize_beam_target_source,
+    resolve_sequence_csv_path,
     resolve_target_beam_paths,
     validate_beam_target_source_contract,
 )
@@ -89,6 +90,22 @@ def test_target_source_contract_preserves_tableiii_current_semantics() -> None:
         validate_beam_target_source_contract("current", num_pred=2, seq_len=1)
     with pytest.raises(ValueError, match="beam_target_source"):
         normalize_beam_target_source("previous")
+
+
+def test_validation_csv_never_falls_back_to_test(tmp_path: Path) -> None:
+    scene = SimpleNamespace(default_train_csv_name="train.csv", default_test_csv_name="test.csv")
+
+    with pytest.raises(ValueError, match="independent validation split"):
+        resolve_sequence_csv_path(
+            tmp_path,
+            scene,
+            root_csv=None,
+            csv_name=None,
+            split="validation",
+            train_csv_name="train.csv",
+            val_csv_name=None,
+            test_csv_name="test.csv",
+        )
 
 
 def test_column_contract_reports_missing_required_columns() -> None:

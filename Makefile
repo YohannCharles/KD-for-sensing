@@ -21,3 +21,4 @@ verify-compile:
 	$(PYTHON) scripts/verify_compile.py
 
 verify-full: verify-quick verify-cli-config verify-compile
+	$(PYTEST) -q

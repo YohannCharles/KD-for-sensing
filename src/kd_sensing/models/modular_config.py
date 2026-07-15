@@ -13,8 +13,6 @@ def default_encoder_type(modality: str, image_profile: str) -> str:
         "radar": "radar_cnn",
         "gps": "gps_mlp",
         "lidar": "lidar_cnn",
-        "mmwave": "mmwave_mlp",
-        "csi": "pilot_dual_view_csi",
     }[modality]
 
 
@@ -52,8 +50,6 @@ def normalize_encoder_config(
     radar_channels: int,
     gps_input_size: int,
     lidar_channels: int,
-    mmwave_input_size: int,
-    csi_train_rms: float,
 ) -> dict[str, Any]:
     if raw_cfg is None:
         raw_cfg = {"type": default_encoder_type(modality, image_profile)}
@@ -72,10 +68,6 @@ def normalize_encoder_config(
         cfg.setdefault("gps_input_size", gps_input_size)
     elif modality == "lidar":
         cfg.setdefault("lidar_channels", lidar_channels)
-    elif modality == "mmwave":
-        cfg.setdefault("mmwave_input_size", mmwave_input_size)
-    elif modality == "csi":
-        cfg.setdefault("train_rms", csi_train_rms)
     return cfg
 
 

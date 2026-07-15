@@ -10,9 +10,90 @@ from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
 from kd_sensing.modalities import MODALITY_ORDER
 from kd_sensing.models.reliability_biased_missing_attention import ReliabilityBiasedMissingAwareAttention
 from kd_sensing.registries import ENCODERS, MODELS
+from kd_sensing.utils.checkpoint import load_torch_payload
 
 
 DEFAULT_MODALITIES = ("image", "radar", "lidar", "gps")
+TEMPORAL_MASK_STATISTIC_NAMES = (
+    "coverage",
+    "last_age",
+    "longest_gap",
+    "trailing_gap",
+    "missing_block_count",
+)
+TEMPORAL_SCORER_STATISTIC_NAMES = TEMPORAL_MASK_STATISTIC_NAMES + (
+    "relative_age",
+    "distance_since_previous_valid",
+)
+
+
+def temporal_mask_statistics(modality_temporal_mask: torch.Tensor) -> torch.Tensor:
+    """Return normalized [coverage, recency, gap, trailing-gap, block-count] per modality."""
+    mask = torch.as_tensor(modality_temporal_mask, dtype=torch.bool)
+    if mask.ndim != 3 or int(mask.shape[1]) <= 0:
+        raise ValueError(
+            "modality_temporal_mask must have shape [B,T,M] with T > 0, "
+            f"got {tuple(mask.shape)}."
+        )
+    batch_size, steps, num_modalities = mask.shape
+    values = mask.to(dtype=torch.float32)
+    coverage = values.mean(dim=1)
+
+    positions = torch.arange(steps, device=mask.device).view(1, steps, 1)
+    last_valid = torch.where(mask, positions, torch.full_like(positions, -1)).amax(dim=1)
+    last_age = (steps - 1 - last_valid).to(dtype=torch.float32) / max(steps - 1, 1)
+    last_age = torch.where(last_valid >= 0, last_age, torch.ones_like(last_age))
+
+    missing = ~mask
+    run = torch.zeros(batch_size, num_modalities, dtype=torch.long, device=mask.device)
+    longest = torch.zeros_like(run)
+    for step in range(steps):
+        run = torch.where(missing[:, step], run + 1, torch.zeros_like(run))
+        longest = torch.maximum(longest, run)
+    trailing = run
+    block_starts = missing & torch.cat(
+        [torch.ones(batch_size, 1, num_modalities, dtype=torch.bool, device=mask.device), mask[:, :-1]],
+        dim=1,
+    )
+    blocks = block_starts.sum(dim=1)
+    return torch.stack(
+        [
+            coverage,
+            last_age,
+            longest.to(dtype=torch.float32) / steps,
+            trailing.to(dtype=torch.float32) / steps,
+            blocks.to(dtype=torch.float32) / max(math.ceil(steps / 2), 1),
+        ],
+        dim=-1,
+    )
+
+
+def _temporal_scorer_statistics(mask: torch.Tensor, statistics: torch.Tensor) -> torch.Tensor:
+    batch_size, steps, num_modalities = mask.shape
+    denominator = max(steps - 1, 1)
+    relative_age = torch.arange(
+        steps - 1,
+        -1,
+        -1,
+        device=mask.device,
+        dtype=statistics.dtype,
+    ).view(1, steps, 1) / denominator
+    relative_age = relative_age.expand(batch_size, -1, num_modalities)
+    previous = torch.full((batch_size, num_modalities), -1, dtype=torch.long, device=mask.device)
+    distances = torch.zeros(batch_size, steps, num_modalities, dtype=statistics.dtype, device=mask.device)
+    for step in range(steps):
+        valid = mask[:, step]
+        gap = (step - previous - 1).clamp_min(0).to(dtype=statistics.dtype) / denominator
+        distances[:, step] = torch.where(valid & previous.ge(0), gap, torch.zeros_like(gap))
+        previous = torch.where(valid, torch.full_like(previous, step), previous)
+    return torch.cat(
+        [
+            statistics.unsqueeze(1).expand(-1, steps, -1, -1),
+            relative_age.unsqueeze(-1),
+            distances.unsqueeze(-1),
+        ],
+        dim=-1,
+    )
 
 
 class ModalityReliabilityHead(nn.Module):
@@ -259,6 +340,16 @@ def masked_pcpg_softmax(logits: torch.Tensor, available_mask: torch.Tensor, eps:
     return torch.where(available.any(dim=-1, keepdim=True), weights, torch.zeros_like(weights))
 
 
+def _masked_temporal_softmax(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    available = mask.to(device=scores.device, dtype=torch.bool)
+    if scores.shape != available.shape:
+        raise ValueError(f"temporal scores shape {tuple(scores.shape)} must match mask {tuple(available.shape)}.")
+    masked = scores.masked_fill(~available, torch.finfo(scores.dtype).min)
+    weights = torch.softmax(masked, dim=1) * available.to(dtype=scores.dtype)
+    weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(torch.finfo(scores.dtype).tiny)
+    return torch.where(available.any(dim=1, keepdim=True), weights, torch.zeros_like(weights))
+
+
 class MaskConditionedAdapter(nn.Module):
     def __init__(
         self,
@@ -287,20 +378,6 @@ class MaskConditionedAdapter(nn.Module):
         gamma, beta = self.net(mask.to(device=features.device, dtype=features.dtype)).chunk(2, dim=-1)
         scale = self.residual_scale
         return features * (1.0 + scale * gamma) + scale * beta
-
-
-class LatentPredictionProbe(nn.Module):
-    def __init__(self, d_model: int, output_dim: int, hidden_dim: int = 256):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(int(d_model)),
-            nn.Linear(int(d_model), int(hidden_dim)),
-            nn.GELU(),
-            nn.Linear(int(hidden_dim), int(output_dim)),
-        )
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return self.net(features)
 
 
 @MODELS.register("u_mask_beam_jepa")
@@ -336,8 +413,6 @@ class UMaskBeamJEPA(nn.Module):
         use_beam_prototype_alignment: bool = False,
         beam_proto_temperature: float = 0.2,
         tau_proto: float | None = None,
-        use_full_to_partial_kd: bool = False,
-        kd_teacher_mode: str = "disabled",
         mask_sampler: str | None = None,
         use_mask_adapter: bool = False,
         mask_adapter_dim: int = 16,
@@ -364,16 +439,22 @@ class UMaskBeamJEPA(nn.Module):
         router_use_entropy: bool = True,
         router_use_confidence: bool = True,
         router_use_logit_norm: bool = True,
+        temporal_pooling: dict[str, Any] | bool | None = None,
+        use_mask_statistics: bool = False,
+        coverage_shrinkage: dict[str, Any] | bool | None = None,
         head_type: str = "legacy",
-        use_light_latent_pred: bool = False,
-        latent_pred_target: str = "full_fused",
-        latent_pred_hidden_dim: int = 256,
         ablation_id: str | None = None,
         encoders: dict[str, Any] | None = None,
         encoder_checkpoint_paths: dict[str, str] | None = None,
-        **_: Any,
+        **extra: Any,
     ) -> None:
         super().__init__()
+        retired_temporal_router = str(extra.get("temporal_router_type") or "none").strip().lower()
+        if retired_temporal_router != "none":
+            raise ValueError(
+                "temporal_router_type is retired and is not mapped to the current model; "
+                "use the explicit model.primary.temporal_pooling mapping."
+            )
         self.modalities = _validate_modalities(DEFAULT_MODALITIES if modalities is None else modalities)
         self.d_model = int(d_model)
         self.num_classes = int(num_classes)
@@ -385,8 +466,6 @@ class UMaskBeamJEPA(nn.Module):
         self.use_modality_uncertainty = bool(use_modality_uncertainty)
         self.use_global_uncertainty = bool(use_global_uncertainty)
         self.use_beam_prototype_alignment = bool(use_beam_prototype_alignment)
-        self.use_full_to_partial_kd = bool(use_full_to_partial_kd)
-        self.kd_teacher_mode = str(kd_teacher_mode)
         self.mask_sampler = mask_sampler
         self.use_mask_adapter = bool(use_mask_adapter)
         self.mask_adapter_apply = str(mask_adapter_apply)
@@ -407,9 +486,13 @@ class UMaskBeamJEPA(nn.Module):
         self.router_use_entropy = _bool(router_use_entropy)
         self.router_use_confidence = _bool(router_use_confidence)
         self.router_use_logit_norm = _bool(router_use_logit_norm)
+        self.temporal_pooling_config = _temporal_pooling_config(temporal_pooling)
+        self.temporal_pooling_enabled = bool(self.temporal_pooling_config["enabled"])
+        self.temporal_pooling_type = str(self.temporal_pooling_config["type"])
+        self.use_mask_statistics = _bool(use_mask_statistics)
+        self.coverage_shrinkage_config = _coverage_shrinkage_config(coverage_shrinkage)
+        self.coverage_shrinkage_enabled = bool(self.coverage_shrinkage_config["enabled"])
         self.head_type = str(head_type or "legacy").strip().lower()
-        self.use_light_latent_pred = bool(use_light_latent_pred)
-        self.latent_pred_target = str(latent_pred_target)
         self.ablation_id = ablation_id
         self.eval_missing_pattern = dict(eval_missing_pattern or {})
         _validate_context_type(self.context_type)
@@ -434,6 +517,12 @@ class UMaskBeamJEPA(nn.Module):
             raise ValueError("fusion_type='bprr' currently supports bprr_fuse_level='logits' only.")
         if self.fusion_type == "supervised_router" and self.router_fuse_level != "logits":
             raise ValueError("fusion_type='supervised_router' currently supports router_fuse_level='logits' only.")
+        if self.temporal_pooling_enabled and self.fusion_type != "supervised_router":
+            raise ValueError("temporal_pooling.enabled=true requires fusion_type='supervised_router'.")
+        if self.use_mask_statistics and not self.temporal_pooling_enabled:
+            raise ValueError("use_mask_statistics=true requires temporal_pooling.enabled=true.")
+        if self.coverage_shrinkage_enabled and not self.temporal_pooling_enabled:
+            raise ValueError("coverage_shrinkage.enabled=true requires temporal_pooling.enabled=true.")
         if self.router_supervision not in {"oracle", "pattern_best", "none"}:
             raise ValueError("router_supervision must be one of oracle, pattern_best, or none.")
         if self.head_type not in {"legacy", "prototype", "classifier"}:
@@ -517,6 +606,27 @@ class UMaskBeamJEPA(nn.Module):
             self.num_classes,
             temperature=beam_proto_temperature if tau_proto is None else float(tau_proto),
         )
+        gap_hidden_dim = int(self.temporal_pooling_config["hidden_dim"])
+        self.temporal_content_projection = (
+            nn.Linear(self.d_model, gap_hidden_dim, bias=False)
+            if self.temporal_pooling_enabled and self.temporal_pooling_type == "gap_aware_residual"
+            else None
+        )
+        self.temporal_statistics_projection = (
+            nn.Linear(len(TEMPORAL_SCORER_STATISTIC_NAMES), gap_hidden_dim)
+            if self.temporal_pooling_enabled and self.temporal_pooling_type == "gap_aware_residual"
+            else None
+        )
+        self.temporal_score_projection = (
+            nn.Linear(gap_hidden_dim, 1, bias=False)
+            if self.temporal_pooling_enabled and self.temporal_pooling_type == "gap_aware_residual"
+            else None
+        )
+        self.temporal_residual_gate = (
+            nn.Parameter(torch.zeros(len(self.modalities)))
+            if self.temporal_pooling_enabled and self.temporal_pooling_type == "gap_aware_residual"
+            else None
+        )
         self.pcpg_gate = (
             PatternConditionedPrototypeGate(
                 len(self.modalities),
@@ -530,12 +640,22 @@ class UMaskBeamJEPA(nn.Module):
         self.bprr_router = (
             BeamPrototypeReliabilityRouter(
                 len(self.modalities),
-                feature_dim=8,
+                feature_dim=8 + (len(TEMPORAL_MASK_STATISTIC_NAMES) if self.use_mask_statistics else 0),
                 pattern_dim=len(self.modalities) + 2,
                 hidden_dim=int(bprr_hidden_dim),
                 dropout=float(bprr_dropout),
             )
             if self.fusion_type in {"bprr", "supervised_router"}
+            else None
+        )
+        shrinkage_hidden_dim = int(self.coverage_shrinkage_config["hidden_dim"])
+        self.coverage_shrinkage_net = (
+            nn.Sequential(
+                nn.Linear(3, shrinkage_hidden_dim),
+                nn.GELU(),
+                nn.Linear(shrinkage_hidden_dim, 1),
+            )
+            if self.coverage_shrinkage_enabled
             else None
         )
         self.bprr_temperature = (
@@ -546,12 +666,8 @@ class UMaskBeamJEPA(nn.Module):
             if self.fusion_type in {"bprr", "supervised_router"} and self.bprr_calibration == "temperature"
             else None
         )
-        latent_output_dim = self.num_classes if self.latent_pred_target == "prototype_distribution" else self.d_model
-        self.latent_predictor = (
-            LatentPredictionProbe(self.d_model, latent_output_dim, hidden_dim=int(latent_pred_hidden_dim))
-            if self.use_light_latent_pred
-            else None
-        )
+        self._total_param_count = sum(param.numel() for param in self.parameters())
+        self._trainable_param_count = sum(param.numel() for param in self.parameters() if param.requires_grad)
 
     def forward(
         self,
@@ -562,23 +678,78 @@ class UMaskBeamJEPA(nn.Module):
         gps_batch: torch.Tensor | None = None,
         missing_mask: torch.Tensor | None = None,
         force_modality_mask: torch.Tensor | None = None,
+        temporal_mask: torch.Tensor | None = None,
+        modality_temporal_mask: torch.Tensor | None = None,
+        available_modalities: torch.Tensor | None = None,
         **_: Any,
     ) -> dict[str, Any]:
         inputs = {"image": image_batch, "radar": radar_batch, "lidar": lidar_batch, "gps": gps_batch}
-        latent = torch.stack([self._encode(name, inputs[name]) for name in self.modalities], dim=1)
-        mask = self._resolve_mask(
-            missing_mask if missing_mask is not None else force_modality_mask,
-            latent,
-            allow_all_missing=self.fusion_type in {"reliability_biased_missing_attention", "weighted_sum"},
-        )
+        temporal_diagnostics: dict[str, Any] = {}
+        mask_statistics = None
+        if self.temporal_pooling_enabled:
+            latent_sequence = torch.stack(
+                [self._encode_sequence(name, inputs[name]) for name in self.modalities],
+                dim=2,
+            )
+            modality_level_mask = missing_mask if missing_mask is not None else force_modality_mask
+            if modality_level_mask is None:
+                modality_level_mask = available_modalities
+            modality_level_mask = self._resolve_mask(modality_level_mask, latent_sequence[:, 0])
+            resolved_temporal_mask = self._resolve_modality_temporal_mask(
+                latent_sequence,
+                modality_mask=modality_level_mask,
+                temporal_mask=temporal_mask,
+                modality_temporal_mask=modality_temporal_mask,
+            )
+            mask_statistics = temporal_mask_statistics(resolved_temporal_mask).to(
+                device=latent_sequence.device,
+                dtype=latent_sequence.dtype,
+            )
+            latent, temporal_weights = self._pool_temporal_sequence(
+                latent_sequence,
+                resolved_temporal_mask,
+                mask_statistics,
+            )
+            mask = resolved_temporal_mask.any(dim=1)
+            temporal_diagnostics = self._temporal_pooling_diagnostics(
+                resolved_temporal_mask,
+                mask_statistics,
+                temporal_weights,
+            )
+        else:
+            latent = torch.stack([self._encode(name, inputs[name]) for name in self.modalities], dim=1)
+            mask = self._resolve_mask(
+                missing_mask if missing_mask is not None else force_modality_mask,
+                latent,
+                allow_all_missing=self.fusion_type in {"reliability_biased_missing_attention", "weighted_sum"},
+            )
         reliability, modality_mu_b, modality_logvar_b = self._modality_reliability(latent, mask)
-        u_star, teacher_logits = self.teacher(latent, self.modality_embedding)
-        c_a = self.context_encoder(latent, mask, reliability, self.modality_embedding)
-        mu_b, logvar_b = self.predictor(c_a)
-        global_reliability = (
-            torch.exp(-F.softplus(logvar_b).mean(dim=-1)) if self.use_global_uncertainty else torch.ones_like(mu_b[:, 0])
+        if self.temporal_pooling_enabled:
+            time_weights = resolved_temporal_mask.any(dim=2).to(dtype=latent_sequence.dtype).unsqueeze(-1)
+            mu_b = (latent_sequence.mean(dim=2) * time_weights).sum(dim=1) / time_weights.sum(
+                dim=1
+            ).clamp_min(1.0)
+            logvar_b = torch.zeros_like(mu_b)
+            modality_mu_b = latent
+            modality_logvar_b = torch.zeros_like(latent)
+            global_reliability = torch.ones(mu_b.shape[0], device=mu_b.device, dtype=mu_b.dtype)
+        else:
+            u_star, teacher_logits = self.teacher(latent, self.modality_embedding)
+            c_a = self.context_encoder(latent, mask, reliability, self.modality_embedding)
+            mu_b, logvar_b = self.predictor(c_a)
+            global_reliability = (
+                torch.exp(-F.softplus(logvar_b).mean(dim=-1))
+                if self.use_global_uncertainty
+                else torch.ones_like(mu_b[:, 0])
+            )
+        fused, fusion_diagnostics = self._fuse(
+            latent,
+            mask,
+            reliability,
+            mu_b,
+            global_reliability,
+            mask_statistics=mask_statistics,
         )
-        fused, fusion_diagnostics = self._fuse(latent, mask, reliability, mu_b, global_reliability)
         if self.mask_adapter is not None:
             fused = self.mask_adapter(fused, mask)
             fusion_diagnostics["mask_adapter_param_count"] = sum(param.numel() for param in self.mask_adapter.parameters())
@@ -590,6 +761,11 @@ class UMaskBeamJEPA(nn.Module):
         base_logits = fusion_diagnostics.get("fused_logits", fusion_diagnostics.get("pcpg_fused_logits"))
         if not torch.is_tensor(base_logits):
             base_logits = self._head_logits(fused)
+        if self.temporal_pooling_enabled:
+            u_star = fused.detach()
+            mu_b = fused
+            logvar_b = torch.zeros_like(fused)
+            teacher_logits = self._head_logits(fused)
         logits = base_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         teacher_logits = teacher_logits.unsqueeze(1).expand(-1, self.num_pred, -1)
         return {
@@ -607,6 +783,7 @@ class UMaskBeamJEPA(nn.Module):
             "missing_mask": mask,
             "modality_features": latent,
             "student_feature": fused,
+            **temporal_diagnostics,
             **fusion_diagnostics,
             "metadata": self.training_strategy_metadata(),
         }
@@ -618,7 +795,7 @@ class UMaskBeamJEPA(nn.Module):
             "enabled_modalities": list(self.modalities),
             "modalities": list(self.modalities),
             "consumes_missing_mask": True,
-            "consumes_missing_modality_metadata": False,
+            "consumes_missing_modality_metadata": self.temporal_pooling_enabled,
             "consumes_reliability_metadata": self.fusion_type in {"reliability_biased_missing_attention", "bprr", "supervised_router"},
             "reliability_metadata_consumption": "internal_modality_uncertainty"
             if self.fusion_type in {"reliability_biased_missing_attention", "bprr", "supervised_router"}
@@ -627,19 +804,12 @@ class UMaskBeamJEPA(nn.Module):
             "use_teacher": self.use_teacher,
             "use_jepa_loss": self.use_jepa_loss,
             "use_beam_prototype_alignment": self.use_beam_prototype_alignment,
-            "use_full_to_partial_kd": self.use_full_to_partial_kd,
-            "kd_teacher_mode": self.kd_teacher_mode,
-            "teacher_checkpoint_pending_reason": "checkpoint teacher is not implemented"
-            if self.kd_teacher_mode == "checkpoint"
-            else None,
             "mask_sampler": self.mask_sampler,
             "use_mask_adapter": self.use_mask_adapter,
             "mask_adapter_apply": self.mask_adapter_apply,
             "mask_adapter_param_count": sum(param.numel() for param in self.mask_adapter.parameters()) if self.mask_adapter is not None else 0,
             "pattern_film": self.pattern_film_config or {"enabled": False},
             "pattern_film_param_count": sum(param.numel() for param in self.pattern_film.parameters()) if self.pattern_film is not None else 0,
-            "use_light_latent_pred": self.use_light_latent_pred,
-            "latent_pred_target": self.latent_pred_target,
             "ablation_id": self.ablation_id,
             "use_modality_uncertainty": self.use_modality_uncertainty,
             "use_global_uncertainty": self.use_global_uncertainty,
@@ -667,6 +837,33 @@ class UMaskBeamJEPA(nn.Module):
             "router_distill_temperature": self.router_distill_temperature if self.fusion_type == "supervised_router" else None,
             "router_focus_patterns": self.router_focus_patterns if self.fusion_type == "supervised_router" else None,
             "router_fuse_level": self.router_fuse_level if self.fusion_type == "supervised_router" else None,
+            "temporal_pooling": dict(self.temporal_pooling_config),
+            "temporal_pooling_type": self.temporal_pooling_type if self.temporal_pooling_enabled else None,
+            "temporal_pooling_param_count": self._temporal_pooling_parameter_count(),
+            "temporal_pooling_scorer_features": list(TEMPORAL_SCORER_STATISTIC_NAMES)
+            if self.temporal_pooling_type == "gap_aware_residual" and self.temporal_pooling_enabled
+            else [],
+            "temporal_pooling_residual_gate": "tanh_per_modality_zero_initialized"
+            if self.temporal_residual_gate is not None
+            else None,
+            "temporal_pooling_recency_decay": self.temporal_pooling_config["recency_decay"]
+            if self.temporal_pooling_type == "fixed_recency" and self.temporal_pooling_enabled
+            else None,
+            "use_mask_statistics": self.use_mask_statistics,
+            "router_mask_statistic_features": list(TEMPORAL_MASK_STATISTIC_NAMES)
+            if self.use_mask_statistics
+            else [],
+            "coverage_shrinkage": dict(self.coverage_shrinkage_config),
+            "coverage_shrinkage_param_count": sum(
+                param.numel() for param in self.coverage_shrinkage_net.parameters()
+            )
+            if self.coverage_shrinkage_net is not None
+            else 0,
+            "coverage_shrinkage_rho_max": self.coverage_shrinkage_config["rho_max"]
+            if self.coverage_shrinkage_enabled
+            else None,
+            "total_params": self._total_param_count,
+            "trainable_params": self._trainable_param_count,
             "context_type": self.context_type,
             "use_registry_encoders": self.use_registry_encoders,
             "encoder_configs": self.encoder_configs,
@@ -693,6 +890,121 @@ class UMaskBeamJEPA(nn.Module):
             raise ValueError(f"{modality} encoder must return [B,T,D] or [B,D], got {tuple(features.shape)}.")
         return self.encoder_projections[modality](features)
 
+    def _resolve_modality_temporal_mask(
+        self,
+        latent_sequence: torch.Tensor,
+        *,
+        modality_mask: torch.Tensor,
+        temporal_mask: torch.Tensor | None,
+        modality_temporal_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        batch_size, steps, num_modalities, _ = latent_sequence.shape
+        expected = (batch_size, steps, num_modalities)
+        if modality_temporal_mask is None:
+            mask = torch.ones(expected, dtype=torch.bool, device=latent_sequence.device)
+        else:
+            mask = torch.as_tensor(modality_temporal_mask, device=latent_sequence.device, dtype=torch.bool)
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
+            if tuple(mask.shape) != expected:
+                raise ValueError(f"modality_temporal_mask must have shape {expected}, got {tuple(mask.shape)}.")
+        mask = mask & modality_mask.unsqueeze(1)
+        if temporal_mask is not None:
+            time_mask = torch.as_tensor(temporal_mask, device=latent_sequence.device, dtype=torch.bool)
+            if time_mask.ndim == 1:
+                time_mask = time_mask.unsqueeze(0).expand(batch_size, -1)
+            if tuple(time_mask.shape) != (batch_size, steps):
+                raise ValueError(f"temporal_mask must have shape {(batch_size, steps)}, got {tuple(time_mask.shape)}.")
+            mask = mask & time_mask.unsqueeze(-1)
+        empty = (~mask.any(dim=(1, 2))).nonzero(as_tuple=False).flatten()
+        if int(empty.numel()) > 0:
+            raise ValueError(
+                "modality_temporal_mask has no available cells for sample indices "
+                f"{empty.detach().cpu().tolist()}."
+            )
+        return mask
+
+    def _pool_temporal_sequence(
+        self,
+        latent_sequence: torch.Tensor,
+        mask: torch.Tensor,
+        statistics: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        valid = mask.to(device=latent_sequence.device, dtype=latent_sequence.dtype)
+        if self.temporal_pooling_type == "fixed_recency":
+            age = torch.arange(
+                int(latent_sequence.shape[1]) - 1,
+                -1,
+                -1,
+                device=latent_sequence.device,
+                dtype=latent_sequence.dtype,
+            )
+            scores = -float(self.temporal_pooling_config["recency_decay"]) * age.view(1, -1, 1)
+            weights = _masked_temporal_softmax(scores.expand_as(valid), mask)
+        else:
+            weights = valid
+            weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+        mean = (latent_sequence * weights.unsqueeze(-1)).sum(dim=1)
+        if self.temporal_pooling_type != "gap_aware_residual":
+            return mean, weights
+        if (
+            self.temporal_content_projection is None
+            or self.temporal_statistics_projection is None
+            or self.temporal_score_projection is None
+            or self.temporal_residual_gate is None
+        ):
+            raise RuntimeError("gap_aware_residual pooling requested without scorer parameters.")
+        scores = self.temporal_score_projection(
+            torch.tanh(
+                self.temporal_content_projection(latent_sequence)
+                + self.temporal_statistics_projection(_temporal_scorer_statistics(mask, statistics))
+            )
+        ).squeeze(-1)
+        temporal_weights = _masked_temporal_softmax(scores, mask)
+        residual = (temporal_weights.unsqueeze(-1) * (latent_sequence - mean.unsqueeze(1))).sum(dim=1)
+        gate = torch.tanh(self.temporal_residual_gate).view(1, -1, 1)
+        return mean + gate * residual, temporal_weights
+
+    def _temporal_pooling_diagnostics(
+        self,
+        mask: torch.Tensor,
+        statistics: torch.Tensor,
+        weights: torch.Tensor,
+    ) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {
+            "temporal_pooling_type": self.temporal_pooling_type,
+            "temporal_pooling_weights": weights.detach(),
+            "temporal_pooling_param_count": self._temporal_pooling_parameter_count(),
+            "modality_temporal_mask": mask.detach(),
+            "temporal_mask": mask.any(dim=2).detach(),
+            "modality_mask": mask.any(dim=1).detach(),
+            "available_modalities": mask.any(dim=1).detach(),
+            "temporal_mask_statistics": statistics.detach(),
+            "temporal_mask_statistic_names": TEMPORAL_MASK_STATISTIC_NAMES,
+            "temporal_scorer_statistic_names": TEMPORAL_SCORER_STATISTIC_NAMES,
+            "temporal_coverage": statistics[..., 0].detach(),
+            "temporal_last_age": statistics[..., 1].detach(),
+            "temporal_longest_gap": statistics[..., 2].detach(),
+            "temporal_trailing_gap": statistics[..., 3].detach(),
+            "temporal_missing_block_count": statistics[..., 4].detach(),
+        }
+        if self.temporal_pooling_type == "fixed_recency":
+            diagnostics["temporal_recency_decay"] = float(self.temporal_pooling_config["recency_decay"])
+        if self.temporal_residual_gate is not None:
+            diagnostics["temporal_residual_gate"] = torch.tanh(self.temporal_residual_gate).detach()
+        return diagnostics
+
+    def _temporal_pooling_parameter_count(self) -> int:
+        modules = (
+            self.temporal_content_projection,
+            self.temporal_statistics_projection,
+            self.temporal_score_projection,
+        )
+        count = sum(param.numel() for module in modules if module is not None for param in module.parameters())
+        if self.temporal_residual_gate is not None:
+            count += int(self.temporal_residual_gate.numel())
+        return count
+
     def _load_encoder_checkpoints(self, paths: dict[str, str]) -> dict[str, Any]:
         if not paths:
             return {}
@@ -701,7 +1013,7 @@ class UMaskBeamJEPA(nn.Module):
             if modality not in self.encoders:
                 raise ValueError(f"encoder checkpoint configured for disabled modality '{modality}'.")
             checkpoint_path = Path(str(raw_path))
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            checkpoint = load_torch_payload(checkpoint_path, map_location="cpu")
             state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
             if not isinstance(state_dict, dict):
                 raise ValueError(f"Encoder checkpoint {checkpoint_path} does not contain a state dict.")
@@ -777,6 +1089,8 @@ class UMaskBeamJEPA(nn.Module):
         reliability: torch.Tensor,
         mu_b: torch.Tensor,
         global_reliability: torch.Tensor,
+        *,
+        mask_statistics: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         if self.fusion_type == "reliability_biased_missing_attention":
             result = self.rbma_fusion(
@@ -801,7 +1115,13 @@ class UMaskBeamJEPA(nn.Module):
         if self.fusion_type == "bprr":
             return self._bprr_fuse(latent, mask, reliability, mu_b)
         if self.fusion_type == "supervised_router":
-            return self._supervised_router_fuse(latent, mask, reliability, mu_b)
+            return self._supervised_router_fuse(
+                latent,
+                mask,
+                reliability,
+                mu_b,
+                mask_statistics=mask_statistics,
+            )
         weights = reliability.squeeze(-1)
         weight_sum = weights.sum(dim=1, keepdim=True)
         weights = weights / weight_sum.clamp_min(1e-6)
@@ -899,6 +1219,8 @@ class UMaskBeamJEPA(nn.Module):
         mask: torch.Tensor,
         reliability: torch.Tensor,
         mu_b: torch.Tensor,
+        *,
+        mask_statistics: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         if self.bprr_router is None:
             raise RuntimeError("supervised_router fusion requested without a router.")
@@ -910,10 +1232,20 @@ class UMaskBeamJEPA(nn.Module):
         else:
             feature_stats = stats
         available = mask.to(device=latent.device, dtype=latent.dtype)
-        reliability_features = self._router_reliability_features(feature_stats, available, reliability)
+        reliability_features = self._router_reliability_features(
+            feature_stats,
+            available,
+            reliability,
+            mask_statistics=mask_statistics,
+        )
         pattern_features = _pattern_features(available) if self.router_use_pattern_features else None
         gate_logits = self.bprr_router.forward_logits(reliability_features, mask, pattern_features)
-        weights = masked_pcpg_softmax(gate_logits, mask)
+        pre_shrinkage_weights = masked_pcpg_softmax(gate_logits, mask)
+        weights, shrinkage_diagnostics = self._apply_coverage_shrinkage(
+            pre_shrinkage_weights,
+            mask,
+            mask_statistics,
+        )
         pooled = (latent * weights.unsqueeze(-1)).sum(dim=1)
         weighted_logits = (stats["unimodal_logits"] * weights.unsqueeze(-1)).sum(dim=1)
         diagnostics = self._router_diagnostics(
@@ -948,6 +1280,7 @@ class UMaskBeamJEPA(nn.Module):
                 "router_distill_temperature": float(self.router_distill_temperature),
                 "router_focus_patterns": self.router_focus_patterns,
                 "router_fuse_level": self.router_fuse_level,
+                **shrinkage_diagnostics,
             }
         )
         if self.bprr_temperature is not None:
@@ -1075,11 +1408,13 @@ class UMaskBeamJEPA(nn.Module):
         feature_stats: dict[str, torch.Tensor],
         available: torch.Tensor,
         reliability: torch.Tensor,
+        *,
+        mask_statistics: torch.Tensor | None = None,
     ) -> torch.Tensor:
         zero = torch.zeros_like(feature_stats["margin"])
         use_rel = self.router_use_reliability_features
         use_proto_margin = use_rel and self.router_use_prototype_margin and self._prototype_margin_enabled()
-        return torch.stack(
+        features = torch.stack(
             [
                 available if self.router_use_pattern_features else zero,
                 feature_stats["entropy"] if use_rel and self.router_use_entropy else zero,
@@ -1092,9 +1427,14 @@ class UMaskBeamJEPA(nn.Module):
             ],
             dim=-1,
         )
+        if not self.use_mask_statistics:
+            return features
+        if mask_statistics is None:
+            raise ValueError("use_mask_statistics=true requires modality temporal mask statistics.")
+        return torch.cat([features, mask_statistics.to(device=features.device, dtype=features.dtype)], dim=-1)
 
     def _router_feature_names(self) -> tuple[str, ...]:
-        return (
+        names = (
             "availability" if self.router_use_pattern_features else "availability_disabled",
             "entropy" if self.router_use_reliability_features and self.router_use_entropy else "entropy_disabled",
             "top1_top2_margin" if self.router_use_reliability_features and self.router_use_confidence else "top1_top2_margin_disabled",
@@ -1106,6 +1446,45 @@ class UMaskBeamJEPA(nn.Module):
             else "prototype_margin_disabled",
             "modality_reliability" if self.router_use_reliability_features else "modality_reliability_disabled",
         )
+        if not self.use_mask_statistics:
+            return names
+        return names + tuple(f"temporal_{name}" for name in TEMPORAL_MASK_STATISTIC_NAMES)
+
+    def _apply_coverage_shrinkage(
+        self,
+        weights: torch.Tensor,
+        mask: torch.Tensor,
+        mask_statistics: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if not self.coverage_shrinkage_enabled:
+            return weights, {"coverage_shrinkage_enabled": False}
+        if self.coverage_shrinkage_net is None or mask_statistics is None:
+            raise ValueError("coverage_shrinkage.enabled=true requires temporal mask statistics.")
+        mean_coverage = mask_statistics[..., 0].mean(dim=1)
+        gate_entropy = _gate_entropy(weights)
+        topk = weights.topk(min(2, int(weights.shape[1])), dim=1).values
+        gate_margin = topk[:, 0] - (topk[:, 1] if int(topk.shape[1]) > 1 else 0.0)
+        shrinkage_features = torch.stack([mean_coverage, gate_entropy, gate_margin], dim=-1)
+        rho = (
+            float(self.coverage_shrinkage_config["rho_max"])
+            * (1.0 - mean_coverage)
+            * torch.sigmoid(self.coverage_shrinkage_net(shrinkage_features).squeeze(-1))
+        )
+        available = mask.to(device=weights.device, dtype=weights.dtype)
+        uniform = available / available.sum(dim=1, keepdim=True).clamp_min(1.0)
+        shrunk = (1.0 - rho.unsqueeze(-1)) * weights + rho.unsqueeze(-1) * uniform
+        single = mask.sum(dim=1, keepdim=True) == 1
+        shrunk = torch.where(single, weights, shrunk)
+        return shrunk, {
+            "coverage_shrinkage_enabled": True,
+            "coverage_shrinkage_rho": rho.detach(),
+            "coverage_shrinkage_rho_max": float(self.coverage_shrinkage_config["rho_max"]),
+            "coverage_shrinkage_mean_coverage": mean_coverage.detach(),
+            "coverage_shrinkage_gate_entropy": gate_entropy.detach(),
+            "coverage_shrinkage_gate_margin": gate_margin.detach(),
+            "coverage_shrinkage_pre_weights": weights.detach(),
+            "coverage_shrinkage_uniform_weights": uniform.detach(),
+        }
 
     def _unimodal_branch_stats(self, latent: torch.Tensor) -> dict[str, torch.Tensor]:
         batch_size, num_modalities, feature_dim = latent.shape
@@ -1221,6 +1600,43 @@ def _bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off", "none", ""}
     return bool(value)
+
+
+def _temporal_pooling_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:
+    if raw in (None, False, "", "none"):
+        return {"enabled": False, "type": "masked_mean", "recency_decay": 1.0, "hidden_dim": 32}
+    if not isinstance(raw, dict):
+        raise ValueError(f"temporal_pooling must be a mapping or false/null, got {type(raw).__name__}.")
+    cfg = {
+        "enabled": _bool(raw.get("enabled", False)),
+        "type": str(raw.get("type", "masked_mean")).strip().lower(),
+        "recency_decay": float(raw.get("recency_decay", 1.0)),
+        "hidden_dim": int(raw.get("hidden_dim", 32)),
+    }
+    if cfg["type"] not in {"masked_mean", "fixed_recency", "gap_aware_residual"}:
+        raise ValueError("temporal_pooling.type must be masked_mean, fixed_recency, or gap_aware_residual.")
+    if not math.isfinite(cfg["recency_decay"]) or cfg["recency_decay"] < 0:
+        raise ValueError("temporal_pooling.recency_decay must be finite and non-negative.")
+    if cfg["hidden_dim"] <= 0:
+        raise ValueError("temporal_pooling.hidden_dim must be positive.")
+    return cfg
+
+
+def _coverage_shrinkage_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:
+    if raw in (None, False, "", "none"):
+        return {"enabled": False, "rho_max": 0.5, "hidden_dim": 16}
+    if not isinstance(raw, dict):
+        raise ValueError(f"coverage_shrinkage must be a mapping or false/null, got {type(raw).__name__}.")
+    cfg = {
+        "enabled": _bool(raw.get("enabled", False)),
+        "rho_max": float(raw.get("rho_max", 0.5)),
+        "hidden_dim": int(raw.get("hidden_dim", 16)),
+    }
+    if not math.isfinite(cfg["rho_max"]) or not 0.0 <= cfg["rho_max"] <= 1.0:
+        raise ValueError("coverage_shrinkage.rho_max must be finite and within [0, 1].")
+    if cfg["hidden_dim"] <= 0:
+        raise ValueError("coverage_shrinkage.hidden_dim must be positive.")
+    return cfg
 
 
 def _pattern_film_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:

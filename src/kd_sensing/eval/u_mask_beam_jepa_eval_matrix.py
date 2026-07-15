@@ -303,7 +303,14 @@ def _evaluate_pattern(
             step_index=batch_index,
         )
         if oracle_gate:
-            logits, chosen = _oracle_logits_from_diagnostics(diagnostics, logits, target, metric_missing_mask, modalities)
+            logits, chosen = _oracle_logits_from_diagnostics(
+                diagnostics,
+                logits,
+                target,
+                metric_missing_mask,
+                modalities,
+                circular_beam_distance=_training_beam_distance_circular(cfg),
+            )
             oracle_counts.update(chosen)
         metrics = {
             "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
@@ -317,7 +324,16 @@ def _evaluate_pattern(
             ),
             "ece": expected_calibration_error(logits, target),
         }
-        metrics.update(_supervised_router_diagnostic_metrics(diagnostics, target, metric_missing_mask, modalities, pattern_name))
+        metrics.update(
+            _supervised_router_diagnostic_metrics(
+                diagnostics,
+                target,
+                metric_missing_mask,
+                modalities,
+                pattern_name,
+                circular_beam_distance=_training_beam_distance_circular(cfg),
+            )
+        )
         accumulator.update(metrics, int(target.numel()))
     return {
         "pattern": pattern_name,
@@ -431,6 +447,8 @@ def _oracle_logits_from_diagnostics(
     target: torch.Tensor,
     available_mask: torch.Tensor,
     modalities: list[str] | None,
+    *,
+    circular_beam_distance: bool = True,
 ) -> tuple[torch.Tensor, list[str]]:
     logits = diagnostics.get("pcpg_unimodal_logits")
     if not torch.is_tensor(logits):
@@ -444,7 +462,8 @@ def _oracle_logits_from_diagnostics(
     predictions = logits.argmax(dim=-1)
     target = target.to(device=logits.device, dtype=torch.long).view(-1, 1)
     distance = (predictions - target).abs()
-    distance = torch.minimum(distance, logits.shape[-1] - distance)
+    if circular_beam_distance:
+        distance = torch.minimum(distance, logits.shape[-1] - distance)
     distance = distance.masked_fill(~mask, torch.iinfo(distance.dtype).max)
     chosen = distance.argmin(dim=1)
     oracle_logits = logits[torch.arange(logits.shape[0], device=logits.device), chosen, :]
@@ -458,6 +477,8 @@ def _supervised_router_diagnostic_metrics(
     available_mask: torch.Tensor,
     modalities: list[str] | None,
     pattern_name: str,
+    *,
+    circular_beam_distance: bool = True,
 ) -> dict[str, float]:
     if diagnostics.get("reliability_fusion_mode") != "supervised_router":
         return {}
@@ -473,7 +494,12 @@ def _supervised_router_diagnostic_metrics(
     entropy = -(weights * weights.clamp_min(1e-8).log()).sum(dim=-1)
     out["gate_entropy"] = float(entropy.detach().mean().cpu().item())
     if torch.is_tensor(logits) and logits.ndim == 3:
-        targets = supervised_router_oracle_targets(logits, target, available_mask)
+        targets = supervised_router_oracle_targets(
+            logits,
+            target,
+            available_mask,
+            circular_beam_distance=circular_beam_distance,
+        )
         predicted = weights.argmax(dim=1)
         correct = predicted.eq(targets).to(dtype=torch.float32)
         out["router_oracle_acc"] = float(correct.detach().mean().cpu().item())
@@ -596,6 +622,13 @@ def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg
         "adba": float(summary.get("DBA", math.nan)),
         "mae": float(summary.get("mean_error", summary.get("mean_circular_error", math.nan))),
     }
+
+
+def _training_beam_distance_circular(cfg: dict[str, Any] | None) -> bool:
+    training_cfg = (cfg or {}).get("training", {}) if isinstance(cfg, dict) else {}
+    if "circular_beam_distance" in training_cfg:
+        return bool(training_cfg["circular_beam_distance"])
+    return bool(training_cfg.get("beam_label_circular", True))
 
 
 def _average_missing_results(results: list[dict[str, Any]]) -> dict[str, Any] | None:

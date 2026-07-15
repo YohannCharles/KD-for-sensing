@@ -1,6 +1,8 @@
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -15,6 +17,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_pilot_noise_validity_artifact,
 )
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
+from kd_sensing.engine.checkpoint_selection import model_selection_enabled
 from kd_sensing.engine.run_metadata import (
     jepa_downstream_metadata,
     prediction_setup_metadata,
@@ -24,6 +27,17 @@ from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.training_state import early_stopping_state
 from kd_sensing.utils.runtime_output_layout import output_layout_summary, runtime_scope_metadata_from_config
 from kd_sensing.utils.plotting import plot_training_curves
+
+
+def write_final_test_metrics(run_dir: str | Path, metrics: dict[str, Any]) -> Path:
+    if metrics.get("evaluation_split") != "test":
+        raise ValueError("final_test_metrics must declare evaluation_split='test' before publication.")
+    selected = metrics.get("selected_checkpoint")
+    if not isinstance(selected, dict) or not selected.get("path") or not selected.get("checkpoint_role"):
+        raise ValueError("final_test_metrics requires selected checkpoint path and role provenance.")
+    target = Path(run_dir) / "final_test_metrics.json"
+    _write_json_atomic(target, metrics)
+    return target
 
 
 def final_config_with_runtime(
@@ -204,13 +218,27 @@ class ArtifactWriter:
             self.run_dir / "training_outputs.npz",
             **training_outputs_payload(history, objective_metadata, early_stopping_metric, early_stopping_mode),
         )
-        early_stopping_metadata = early_stopping_state(
-            metric=early_stopping_metric,
-            mode=early_stopping_mode,
-            best_value=best_early_stopping_value,
-            best_epoch=best_early_stopping_epoch,
-            epochs_without_improvement=epochs_without_improvement,
+        selection_enabled = model_selection_enabled(self.cfg)
+        if selection_enabled:
+            early_stopping_metadata = early_stopping_state(
+                metric=early_stopping_metric,
+                mode=early_stopping_mode,
+                best_value=best_early_stopping_value,
+                best_epoch=best_early_stopping_epoch,
+                epochs_without_improvement=epochs_without_improvement,
+            )
+        else:
+            early_stopping_metadata = {
+                "metric": None,
+                "mode": None,
+                "best_value": None,
+                "best_epoch": None,
+                "epochs_without_improvement": None,
+            }
+        early_stopping_metadata["enabled"] = bool(
+            selection_enabled and self.cfg.get("training", {}).get("use_early_stopping", False)
         )
+        early_stopping_metadata["model_selection_enabled"] = selection_enabled
         lineage = run_lineage_metadata(self.cfg)
         write_csi_debug_records(self.run_dir, csi_debug_records)
         pilot_noise_validity = evaluate_pilot_noise_validity(self.cfg, csi_debug_records)
@@ -258,8 +286,7 @@ class ArtifactWriter:
                 "difficulty": runtime_difficulty_metadata(self.cfg),
             },
         }
-        with (self.run_dir / "train_log.json").open("w", encoding="utf-8") as f:
-            json.dump(train_log, f, indent=2)
+        _write_json_atomic(self.run_dir / "train_log.json", train_log)
         plot_training_curves(history, self.run_dir)
         dump_config(
             final_config_with_runtime(
@@ -281,3 +308,18 @@ class ArtifactWriter:
             "early_stopping": early_stopping_metadata,
             "pilot_noise_validity": pilot_noise_validity,
         }
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)

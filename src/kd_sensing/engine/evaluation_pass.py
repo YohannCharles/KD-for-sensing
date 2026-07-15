@@ -59,12 +59,19 @@ class EvaluationPassResult:
 @dataclass
 class _EvaluationPassState:
     loss: float = 0.0
+    loss_observations: int = 0
     occlusion_loss: float = 0.0
+    occlusion_loss_observations: int = 0
     position_loss: float = 0.0
+    position_loss_observations: int = 0
     multitask_loss: float = 0.0
+    multitask_loss_observations: int = 0
     los_loss: float = 0.0
+    los_loss_observations: int = 0
     link_quality_loss: float = 0.0
+    link_quality_loss_observations: int = 0
     selection_multitask_loss: float = 0.0
+    selection_multitask_loss_observations: int = 0
     outputs: list[torch.Tensor] = field(default_factory=list)
     labels: list[torch.Tensor] = field(default_factory=list)
     input_beams: list[torch.Tensor] = field(default_factory=list)
@@ -183,6 +190,7 @@ def run_evaluation_pass(
                 auxiliary_targets=targets.auxiliary_targets,
                 prediction_loss=step.prediction_loss,
                 loss=step.loss,
+                objective=objective,
             )
     return _finalize_supervised_evaluation_result(
         state,
@@ -310,17 +318,36 @@ def _record_evaluation_batch_outputs(
     auxiliary_targets: Mapping[str, torch.Tensor],
     prediction_loss,
     loss: torch.Tensor,
+    objective: str,
 ) -> None:
-    state.loss += loss.item()
-    state.occlusion_loss += prediction_loss.occlusion.item()
-    state.position_loss += prediction_loss.position.item()
-    state.multitask_loss += prediction_loss.multitask_total.item()
+    observations = _effective_loss_observations(objective, labels, auxiliary_targets)
+    if observations <= 0:
+        raise ValueError(
+            f"Evaluation objective '{objective}' has zero valid loss observations in a batch; "
+            "refusing to report an unavailable validation loss."
+        )
+    state.loss += loss.item() * observations
+    state.loss_observations += observations
+    occlusion_observations = _valid_mask_count(auxiliary_targets.get("occlusion_valid"))
+    position_observations = _valid_mask_count(auxiliary_targets.get("position_valid"))
+    state.occlusion_loss += prediction_loss.occlusion.item() * occlusion_observations
+    state.occlusion_loss_observations += occlusion_observations
+    state.position_loss += prediction_loss.position.item() * position_observations
+    state.position_loss_observations += position_observations
+    if objective == "multitask":
+        state.multitask_loss += prediction_loss.multitask_total.item() * observations
+        state.multitask_loss_observations += observations
     if prediction_loss.los is not None:
-        state.los_loss += prediction_loss.los.item()
+        los_observations = _target_count(auxiliary_targets.get("los_label"))
+        state.los_loss += prediction_loss.los.item() * los_observations
+        state.los_loss_observations += los_observations
     if prediction_loss.link_quality is not None:
-        state.link_quality_loss += prediction_loss.link_quality.item()
+        link_observations = _target_count(auxiliary_targets.get("link_quality"))
+        state.link_quality_loss += prediction_loss.link_quality.item() * link_observations
+        state.link_quality_loss_observations += link_observations
     if prediction_loss.selection_multitask_total is not None:
-        state.selection_multitask_loss += prediction_loss.selection_multitask_total.item()
+        state.selection_multitask_loss += prediction_loss.selection_multitask_total.item() * observations
+        state.selection_multitask_loss_observations += observations
 
     state.outputs.append(outputs.detach().cpu())
     state.labels.append(labels.detach().cpu())
@@ -338,6 +365,38 @@ def _record_evaluation_batch_outputs(
     if "link_quality" in diagnostics and "link_quality" in auxiliary_targets:
         state.link_outputs.append(diagnostics["link_quality"].detach().cpu())
         state.link_targets.append(auxiliary_targets["link_quality"].detach().cpu())
+
+
+def _effective_loss_observations(
+    objective: str,
+    labels: torch.Tensor,
+    auxiliary_targets: Mapping[str, torch.Tensor],
+) -> int:
+    if objective == "occlusion":
+        valid = auxiliary_targets.get("occlusion_valid")
+        return int(valid.to(torch.bool).sum().item()) if valid is not None else 0
+    if objective == "position":
+        valid = auxiliary_targets.get("position_valid")
+        return int(valid.to(torch.bool).sum().item()) if valid is not None else 0
+    if objective == "current_los_classification":
+        target = auxiliary_targets.get("los_label")
+        return int(target.numel()) if target is not None else 0
+    if objective == "current_link_quality":
+        target = auxiliary_targets.get("link_quality")
+        return int(target.numel()) if target is not None else 0
+    return int(labels.ne(-100).sum().item())
+
+
+def _valid_mask_count(value: torch.Tensor | None) -> int:
+    return int(value.to(torch.bool).sum().item()) if value is not None else 0
+
+
+def _target_count(value: torch.Tensor | None) -> int:
+    return int(value.numel()) if value is not None else 0
+
+
+def _weighted_loss_mean(total: float, observations: int) -> float:
+    return float(total / observations) if observations > 0 else 0.0
 
 
 def _cat_or_none(values: list[torch.Tensor]) -> torch.Tensor | None:
@@ -370,7 +429,16 @@ def _finalize_supervised_evaluation_result(
         link_outputs=_cat_or_none(state.link_outputs),
         link_targets=_cat_or_none(state.link_targets),
     )
-    metrics = metrics_from_outputs(state.loss / max(len(dataloader), 1), outputs_t, labels_t, cfg, objective=objective)
+    if state.loss_observations <= 0:
+        raise ValueError("Evaluation pass has zero valid loss observations.")
+    metrics = metrics_from_outputs(
+        state.loss / state.loss_observations,
+        outputs_t,
+        labels_t,
+        cfg,
+        objective=objective,
+    )
+    metrics["loss_observation_count"] = int(state.loss_observations)
     input_beams_t = _cat_or_none(state.input_beams)
     if objective in {"current_beam_selection", "selection_multitask"} and state.los_bucket_labels:
         metrics["los_buckets"] = beam_metrics_by_los_bucket(
@@ -383,13 +451,15 @@ def _finalize_supervised_evaluation_result(
         metrics,
         auxiliary_metrics,
         objective=objective,
-        dataloader_len=len(dataloader),
-        val_occlusion_loss=state.occlusion_loss,
-        val_position_loss=state.position_loss,
-        val_multitask_loss=state.multitask_loss,
-        val_los_loss=state.los_loss,
-        val_link_quality_loss=state.link_quality_loss,
-        val_selection_multitask_loss=state.selection_multitask_loss,
+        val_occlusion_loss=_weighted_loss_mean(state.occlusion_loss, state.occlusion_loss_observations),
+        val_position_loss=_weighted_loss_mean(state.position_loss, state.position_loss_observations),
+        val_multitask_loss=_weighted_loss_mean(state.multitask_loss, state.multitask_loss_observations),
+        val_los_loss=_weighted_loss_mean(state.los_loss, state.los_loss_observations),
+        val_link_quality_loss=_weighted_loss_mean(state.link_quality_loss, state.link_quality_loss_observations),
+        val_selection_multitask_loss=_weighted_loss_mean(
+            state.selection_multitask_loss,
+            state.selection_multitask_loss_observations,
+        ),
     )
     metrics["objective"] = objective_metadata
     metrics["available_metrics"] = available_metrics(objective, metrics)
@@ -440,7 +510,8 @@ def _run_jepa_evaluation_pass(
     objective_metadata: dict[str, Any],
     enabled_modalities: tuple[str, ...],
 ) -> EvaluationPassResult:
-    val_loss = 0.0
+    val_loss_sum = 0.0
+    val_loss_observations = 0
     all_outputs: list[torch.Tensor] = []
     all_labels: list[torch.Tensor] = []
     all_metadata: list[dict[str, Any]] = []
@@ -483,14 +554,19 @@ def _run_jepa_evaluation_pass(
                 )
                 result = jepa_loss_from_output(step.model_output, cfg)
             loss_value = float(result.loss.detach().cpu().item())
-            val_loss += loss_value
+            observations = int(result.diagnostics.get("jepa/valid_target_tokens", 0))
+            if observations <= 0:
+                raise ValueError("JEPA evaluation produced zero valid target tokens.")
+            val_loss_sum += loss_value * observations
+            val_loss_observations += observations
             _accumulate_scalar_diagnostics(diagnostic_sums, diagnostic_counts, result.diagnostics)
             _accumulate_scalar_diagnostics(diagnostic_sums, diagnostic_counts, step.model_output.diagnostics)
             all_outputs.append(step.logits.detach().cpu())
             all_labels.append(torch.zeros(step.logits.shape[0], num_pred, dtype=torch.long))
 
-    batches = max(len(dataloader), 1)
-    loss = float(val_loss / batches)
+    if val_loss_observations <= 0:
+        raise ValueError("JEPA evaluation pass has zero valid target tokens.")
+    loss = float(val_loss_sum / val_loss_observations)
     averaged = {
         key: float(value / max(diagnostic_counts.get(key, 0), 1))
         for key, value in diagnostic_sums.items()
@@ -507,6 +583,7 @@ def _run_jepa_evaluation_pass(
         "metric_horizon_source": metric_horizon_source_from_config(cfg),
         "objective": objective_metadata,
         "enabled_modalities": list(enabled_modalities),
+        "loss_observation_count": int(val_loss_observations),
     }
     if "jepa/mask_target_ratio" in averaged:
         metrics["val_jepa_mask_target_ratio"] = averaged["jepa/mask_target_ratio"]
@@ -606,7 +683,6 @@ def _attach_objective_metrics(
     auxiliary_metrics: dict[str, float],
     *,
     objective: str,
-    dataloader_len: int,
     val_occlusion_loss: float,
     val_position_loss: float,
     val_multitask_loss: float,
@@ -618,7 +694,6 @@ def _attach_objective_metrics(
         metrics,
         auxiliary_metrics,
         objective=objective,
-        dataloader_len=dataloader_len,
         val_occlusion_loss=val_occlusion_loss,
         val_position_loss=val_position_loss,
         val_multitask_loss=val_multitask_loss,

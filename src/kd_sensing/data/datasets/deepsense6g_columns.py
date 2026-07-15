@@ -106,10 +106,10 @@ def ensure_gps_columns(
             "Regenerate sequence CSVs with include_gps: true."
         )
     if gps_feature_mode not in supported_modes:
+        supported = ", ".join(repr(item) for item in sorted(supported_modes))
         raise ValueError(
             f"Unsupported gps_feature_mode '{gps_feature_mode}'. "
-            "This change only supports 'relative_polar', "
-            "'paper_calibrated_relative_polar', or 'paper_distance_angle'."
+            f"Supported modes: {supported}."
         )
     if bs_gps_paths is None:
         raise ValueError(

@@ -14,7 +14,9 @@ from kd_sensing.data.datasets.deepsense6g_gps_contract import (
     PAPER_CALIBRATED_GPS_MODE,
     PAPER_DISTANCE_ANGLE_FEATURE_VERSION,
     PAPER_SCENE_CENTER_ANGLES_RAD,
+    RSU_LOCAL_GPS_FEATURE_MODE,
     SUPPORTED_GPS_FEATURE_MODE,
+    normalize_gps_feature_mode,
 )
 
 
@@ -35,12 +37,7 @@ def read_gps_latlon(data_root: str | Path, rel_path: str) -> np.ndarray:
 
 
 def _read_gps_yaml_xy(path: Path) -> np.ndarray:
-    if yaml is None:
-        raise ModuleNotFoundError("PyYAML is required to read MMW GPS YAML files.")
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception as exc:
-        raise ValueError(f"Failed to read GPS YAML file {path}: {exc}") from exc
+    payload = _read_gps_yaml_payload(path)
     location = (
         payload.get("sensors", {})
         .get("GPS", {})
@@ -61,9 +58,48 @@ def _read_gps_yaml_xy(path: Path) -> np.ndarray:
     if not isinstance(location, dict):
         raise ValueError(f"GPS YAML file {path} does not contain sensors.GPS.location.")
     try:
-        return np.asarray([float(location["x"]), float(location["y"])], dtype=np.float64)
-    except KeyError as exc:
-        raise ValueError(f"GPS YAML file {path} must contain location.x and location.y.") from exc
+        coordinates = np.asarray([float(location["x"]), float(location["y"])], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"GPS YAML file {path} must contain finite location.x and location.y.") from exc
+    if not np.isfinite(coordinates).all():
+        raise ValueError(f"GPS YAML file {path} must contain finite location.x and location.y.")
+    return coordinates
+
+
+def _read_gps_yaml_payload(path: Path) -> dict:
+    if yaml is None:
+        raise ModuleNotFoundError("PyYAML is required to read MMW GPS YAML files.")
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        raise ValueError(f"Failed to read GPS YAML file {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"GPS YAML file {path} must contain a mapping payload.")
+    return payload
+
+
+def _read_mmw_rsu_yaw_rad(data_root: str | Path, rel_path: str) -> float:
+    path = joined_resource(data_root, rel_path)
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        raise ValueError(
+            f"gps_feature_mode '{RSU_LOCAL_GPS_FEATURE_MODE}' requires MMW YAML BS paths; got {path}."
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"BS GPS YAML file not found: {path}")
+    payload = _read_gps_yaml_payload(path)
+    rotation = payload.get("sensors", {}).get("rsu_pose", {}).get("rotation")
+    if not isinstance(rotation, dict) or "yaw" not in rotation:
+        raise ValueError(
+            f"BS GPS YAML file {path} does not contain sensors.rsu_pose.rotation.yaw required by "
+            f"gps_feature_mode '{RSU_LOCAL_GPS_FEATURE_MODE}'."
+        )
+    try:
+        yaw_deg = float(rotation["yaw"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"BS GPS YAML file {path} contains a non-numeric RSU yaw: {rotation['yaw']!r}.") from exc
+    if not np.isfinite(yaw_deg):
+        raise ValueError(f"BS GPS YAML file {path} contains a non-finite RSU yaw: {yaw_deg!r}.")
+    return float(np.deg2rad(yaw_deg))
 
 
 def latlon_to_utm_xy(lat: float, lon: float) -> tuple[float, float]:
@@ -125,11 +161,16 @@ def build_gps_features(
     mode: str = SUPPORTED_GPS_FEATURE_MODE,
     angle_offset_rad: float | None = None,
 ) -> np.ndarray:
-    normalized_mode = str(mode or SUPPORTED_GPS_FEATURE_MODE).strip().lower()
-    if normalized_mode not in GPS_FEATURE_DIMS:
+    try:
+        normalized_mode = normalize_gps_feature_mode(mode)
+    except ValueError as exc:
         raise ValueError(
-            f"Unsupported gps_feature_mode '{mode}'. This change only supports 'relative_polar' "
-            f"'paper_calibrated_relative_polar', or 'paper_distance_angle'."
+            f"Unsupported gps_feature_mode '{mode}'. This change only supports 'relative_polar', "
+            "'rsu_local_relative_polar', 'paper_calibrated_relative_polar', or 'paper_distance_angle'."
+        ) from exc
+    if normalized_mode == RSU_LOCAL_GPS_FEATURE_MODE:
+        raise ValueError(
+            f"gps_feature_mode '{RSU_LOCAL_GPS_FEATURE_MODE}' requires MMW YAML sequences so RSU yaw can be read."
         )
     ue_latlon = np.asarray(ue_latlon, dtype=np.float64)
     if ue_latlon.ndim != 2 or ue_latlon.shape[1] < 2:
@@ -161,6 +202,7 @@ def load_gps_feature_sequence(
     angle_offset_rad: float | None = None,
     frame_feature_cache: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
+    normalized_mode = normalize_gps_feature_mode(mode)
     selected_gps = gps_paths[-seq_len:]
     ue_latlon = np.asarray(
         [_read_cached_gps_latlon(data_root, path, frame_feature_cache) for path in selected_gps],
@@ -173,7 +215,26 @@ def load_gps_feature_sequence(
         [_read_cached_gps_latlon(data_root, path, frame_feature_cache) for path in selected_bs],
         dtype=np.float64,
     )
-    normalized_mode = str(mode or SUPPORTED_GPS_FEATURE_MODE).strip().lower()
+    if normalized_mode == RSU_LOCAL_GPS_FEATURE_MODE:
+        if not (_all_yaml_paths(selected_gps) and _all_yaml_paths(selected_bs)):
+            raise ValueError(
+                f"gps_feature_mode '{RSU_LOCAL_GPS_FEATURE_MODE}' requires UE and BS MMW YAML paths."
+            )
+        yaw_offsets = np.asarray(
+            [_read_cached_mmw_rsu_yaw_rad(data_root, path, frame_feature_cache) for path in selected_bs],
+            dtype=np.float64,
+        )
+        circular_delta = np.abs((yaw_offsets - yaw_offsets[0] + np.pi) % (2.0 * np.pi) - np.pi)
+        if np.any(circular_delta > 1e-6):
+            values = [float(np.rad2deg(value)) for value in yaw_offsets]
+            raise ValueError(
+                f"gps_feature_mode '{RSU_LOCAL_GPS_FEATURE_MODE}' requires a static RSU yaw within each window; "
+                f"got yaw_degrees={values} for BS paths={selected_bs}."
+            )
+        return _relative_polar_features(
+            ue_latlon[:, :2] - bs_latlon[:, :2],
+            angle_offset_rad=yaw_offsets,
+        ).astype(np.float32)
     if _all_yaml_paths(selected_gps) and _all_yaml_paths(selected_bs):
         offset = float(angle_offset_rad or 0.0) if normalized_mode in CALIBRATED_GPS_FEATURE_MODES else 0.0
         if normalized_mode == "paper_distance_angle":
@@ -193,6 +254,19 @@ def _read_cached_gps_latlon(
     if cache_key not in frame_feature_cache:
         frame_feature_cache[cache_key] = read_gps_latlon(data_root, rel_path)
     return frame_feature_cache[cache_key]
+
+
+def _read_cached_mmw_rsu_yaw_rad(
+    data_root: str | Path,
+    rel_path: str,
+    frame_feature_cache: dict[str, np.ndarray] | None,
+) -> float:
+    if frame_feature_cache is None:
+        return _read_mmw_rsu_yaw_rad(data_root, rel_path)
+    cache_key = f"__rsu_yaw_rad__:{rel_path}"
+    if cache_key not in frame_feature_cache:
+        frame_feature_cache[cache_key] = np.asarray(_read_mmw_rsu_yaw_rad(data_root, rel_path), dtype=np.float64)
+    return float(np.asarray(frame_feature_cache[cache_key]).item())
 
 
 def _all_yaml_paths(paths: list[str]) -> bool:
@@ -267,11 +341,20 @@ def load_relative_xy_target_sequence(
     return build_relative_xy_targets(ue_latlon, bs_latlon)
 
 
-def _relative_polar_features(rel_xy: np.ndarray, *, angle_offset_rad: float = 0.0) -> np.ndarray:
+def _relative_polar_features(
+    rel_xy: np.ndarray,
+    *,
+    angle_offset_rad: float | np.ndarray = 0.0,
+) -> np.ndarray:
     x = rel_xy[:, 0]
     y = rel_xy[:, 1]
     dist = np.sqrt(x * x + y * y)
-    theta = np.arctan2(y, x) - float(angle_offset_rad)
+    offset = np.asarray(angle_offset_rad, dtype=np.float64)
+    if offset.ndim > 1 or (offset.ndim == 1 and offset.shape[0] != rel_xy.shape[0]):
+        raise ValueError(
+            f"GPS angle offset must be scalar or have one value per frame; got {offset.shape} for {rel_xy.shape[0]} frames."
+        )
+    theta = np.arctan2(y, x) - offset
     return np.stack([dist, np.sin(theta), np.cos(theta)], axis=1)
 
 
@@ -291,6 +374,7 @@ def _paper_distance_angle_features(rel_xy: np.ndarray, *, angle_offset_rad: floa
 class GPSStandardScaler:
     mean_: np.ndarray | None = None
     scale_: np.ndarray | None = None
+    feature_mode_: str | None = None
 
     def fit(self, features: np.ndarray) -> "GPSStandardScaler":
         features = np.asarray(features, dtype=np.float64)
@@ -319,6 +403,7 @@ class GPSStandardScaler:
             mean=np.asarray(self.mean_, dtype=np.float32),
             scale=np.asarray(self.scale_, dtype=np.float32),
             std=np.asarray(self.scale_, dtype=np.float32),
+            feature_mode=np.asarray(self.feature_mode_ or ""),
         )
 
     @classmethod
@@ -327,13 +412,15 @@ class GPSStandardScaler:
             mean = np.asarray(payload["mean"], dtype=np.float32)
             scale_key = "scale" if "scale" in payload else "std"
             scale = np.asarray(payload[scale_key], dtype=np.float32)
-        return cls(mean_=mean, scale_=scale)
+            feature_mode = str(np.asarray(payload["feature_mode"]).item()) if "feature_mode" in payload else ""
+        return cls(mean_=mean, scale_=scale, feature_mode_=feature_mode or None)
 
 
 @dataclass
 class GPSMinMaxScaler:
     min_: np.ndarray | None = None
     max_: np.ndarray | None = None
+    feature_mode_: str | None = None
 
     def fit(self, features: np.ndarray) -> "GPSMinMaxScaler":
         features = np.asarray(features, dtype=np.float64)
@@ -363,23 +450,28 @@ class GPSMinMaxScaler:
             kind=np.asarray("minmax"),
             min=np.asarray(self.min_, dtype=np.float32),
             max=np.asarray(self.max_, dtype=np.float32),
+            feature_mode=np.asarray(self.feature_mode_ or ""),
         )
 
     @classmethod
     def load(cls, path: str | Path) -> "GPSMinMaxScaler":
         with np.load(Path(path)) as payload:
+            feature_mode = str(np.asarray(payload["feature_mode"]).item()) if "feature_mode" in payload else ""
             return cls(
                 min_=np.asarray(payload["min"], dtype=np.float32),
                 max_=np.asarray(payload["max"], dtype=np.float32),
+                feature_mode_=feature_mode or None,
             )
 
 
 def load_gps_scaler(path: str | Path) -> GPSStandardScaler | GPSMinMaxScaler:
     with np.load(Path(path)) as payload:
         if "min" in payload and "max" in payload:
+            feature_mode = str(np.asarray(payload["feature_mode"]).item()) if "feature_mode" in payload else ""
             return GPSMinMaxScaler(
                 min_=np.asarray(payload["min"], dtype=np.float32),
                 max_=np.asarray(payload["max"], dtype=np.float32),
+                feature_mode_=feature_mode or None,
             )
     return GPSStandardScaler.load(path)
 

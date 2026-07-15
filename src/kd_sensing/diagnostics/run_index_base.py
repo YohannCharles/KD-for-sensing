@@ -24,6 +24,7 @@ RUN_ARTIFACT_NAMES = {
     "startup_summary": "startup_summary.json",
     "metrics": "metrics.json",
     "metrics_csv": "metrics.csv",
+    "final_test_metrics": "final_test_metrics.json",
     "train_log": "train_log.json",
     "training_outputs": "training_outputs.npz",
     "test_report": "test_report.json",

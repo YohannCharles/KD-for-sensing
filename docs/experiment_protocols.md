@@ -10,3 +10,11 @@
 | paper export | `kd-sensing-paper-export --input <reviewed-ledger>` | reviewed claim/evidence only | Markdown/CSV/LaTeX draft tables | ignored `outputs/paper_artifacts/` or explicit output dir | `conda run -n kd_mm_beam pytest tests/test_cli_help.py -q` |
 
 Historical/pending protocols for Image+GPS JEPA, BeamBench, BEV-Fusion 2604, Vision-Position, WCL/TII audits and old RBMA/KD/BTAPA/weakKD sweep have been retired or deleted from current provenance. If a future paper needs one, open a new OpenSpec change and reintroduce only the protected evidence path needed.
+
+## Invalidated Protocols
+
+| Protocol | Status | Invalidated boundary | Required rerun gate |
+| --- | --- | --- | --- |
+| H5/P1 Scene31-34 temporal matrix before group-safe split enforcement | `not_comparable` | overlapping temporal windows were split per sample; all audited sequence groups crossed split boundaries, and history/target frame identities overlapped | group-safe sequence split artifact; pairwise-disjoint sample/history/target identities; independent validation and final test; train-only normalization fingerprint; complete seed/checkpoint/metric provenance |
+
+修复前 H5/P1 数值只能用于定位协议问题，不得用于方法排序、统计结论或 paper main table。

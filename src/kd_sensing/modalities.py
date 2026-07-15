@@ -75,7 +75,7 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             fusion_input_key="radar_batch",
             semantics="DeepSense6G radar range-angle and doppler-angle map sequence",
             shape="[T, 2, 128, 64]",
-            metadata={"default_dataset": "deepsense6g"},
+            metadata={"default_dataset": "deepsense6g", "gps_feature_mode": "relative_polar"},
         ),
     },
     "gps": {
@@ -87,6 +87,15 @@ INPUT_PROFILE_SPECS: dict[str, dict[str, InputProfileSpec]] = {
             semantics="DeepSense6G historical relative polar GPS features",
             shape="[T, 3]",
             metadata={"default_dataset": "deepsense6g"},
+        ),
+        "rsu_local_relative_polar_history": InputProfileSpec(
+            modality="gps",
+            name="rsu_local_relative_polar_history",
+            sample_key="gps",
+            fusion_input_key="gps_batch",
+            semantics="MMW historical relative polar GPS features in the RSU-local coordinate frame",
+            shape="[T, 3]",
+            metadata={"default_dataset": "mmw", "gps_feature_mode": "rsu_local_relative_polar"},
         ),
         "paper_calibrated_relative_polar_history": InputProfileSpec(
             modality="gps",

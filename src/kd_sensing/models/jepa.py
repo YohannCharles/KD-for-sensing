@@ -500,7 +500,7 @@ class TinyViTFrameTokenEncoder(nn.Module):
         max_tokens: int = 1,
         checkpoint_policy: str | None = None,
         freeze_backbone: bool = False,
-        allow_download: bool = True,
+        allow_download: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__()

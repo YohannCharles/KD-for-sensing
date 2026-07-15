@@ -331,6 +331,25 @@ def test_evaluation_run_dir_defaults_to_unique_directory(tmp_path: Path):
     assert first.name.startswith("evaluation_fixed")
     assert second.name.startswith("evaluation_fixed")
 
+
+def test_prediction_setup_does_not_report_test_as_validation_source():
+    cfg = load_config(ROOT / "configs/gps/lightweight.yaml")
+    cfg["data"].pop("validation_from_train", None)
+    cfg["data"]["dataset"].pop("val_csv_name", None)
+    cfg["data"]["dataset"]["test_csv_name"] = "test-only.csv"
+
+    metadata = prediction_setup_metadata(
+        cfg,
+        split_metadata={
+            "train": {"num_samples": 8},
+            "test": {"num_samples": 2},
+        },
+    )
+
+    assert metadata["validation_csv_name"] is None
+    assert metadata["validation_num_samples"] is None
+    assert metadata["test_csv_name"] == "test-only.csv"
+
 def test_scene_grouped_eval_dir_and_explicit_eval_output(tmp_path: Path):
     cfg = {
         "experiment": {"name": "eval"},

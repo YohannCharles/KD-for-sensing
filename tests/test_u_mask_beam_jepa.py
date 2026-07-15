@@ -633,8 +633,6 @@ def test_config_overlays_training_extension_and_architecture_summary():
         _cfg(
             fusion_type="reliability_biased_missing_attention",
             use_beam_prototype_alignment=True,
-            use_full_to_partial_kd=True,
-            kd_teacher_mode="online_full",
             mask_sampler="pattern_balanced",
         )
     )
@@ -645,8 +643,6 @@ def test_config_overlays_training_extension_and_architecture_summary():
     assert metadata["fusion_type"] == "reliability_biased_missing_attention"
     assert metadata["mask_sampler"] == "pattern_balanced"
     assert metadata["use_beam_prototype_alignment"] is True
-    assert metadata["use_full_to_partial_kd"] is True
-    assert metadata["kd_teacher_mode"] == "online_full"
     assert metadata["consumes_reliability_metadata"] is True
     weighted_sum = load_config(ROOT / "configs/fusion/u_mask_beam_jepa_weighted_sum.yaml")
     assert weighted_sum["model"]["primary"]["fusion_type"] == "weighted_sum"
@@ -702,93 +698,3 @@ def test_unknown_context_or_fusion_type_errors_are_clear():
     with pytest.raises((ValueError, RegistryError), match="fusion_type"):
         MODELS.build(_cfg(fusion_type="mystery"))
 
-
-def test_no_jepa_online_kd_loss_detaches_teacher_and_checkpoint_guard():
-    import_default_components()
-    model = MODELS.build(
-        _cfg(
-            fusion_type="reliability_biased_missing_attention",
-            use_jepa_loss=False,
-            use_beam_prototype_alignment=True,
-            use_full_to_partial_kd=True,
-            kd_teacher_mode="online_full",
-        )
-    )
-    student = model(**_batch(), missing_mask=torch.tensor([[1, 0, 1, 0], [0, 1, 0, 1]], dtype=torch.bool))
-    with torch.no_grad():
-        teacher = model(**_batch(), missing_mask=torch.ones(2, 4, dtype=torch.bool))
-    result = u_mask_beam_jepa_loss(
-        student,
-        torch.tensor([[1], [3]]),
-        use_teacher=False,
-        use_jepa_loss=False,
-        teacher_output={"logits": teacher["logits"].detach(), "output_features": teacher["output_features"].detach()},
-        prototype_bank=model.prototype_bank,
-        use_beam_prototype_alignment=True,
-        lambda_proto=0.1,
-        lambda_modality_proto=0.1,
-        use_full_to_partial_kd=True,
-        lambda_full_to_partial_kd=0.5,
-        lambda_feature_kd=0.1,
-    )
-    result["loss"].backward()
-
-    assert model.beam_head.net[-1].weight.grad is not None
-    assert "loss/full_to_partial_kd" in result["diagnostics"]
-    assert "teacher_top1" in result["diagnostics"]
-    cfg = {
-        "model": {"primary": {"use_jepa_loss": False}},
-        "training": {"kd_teacher_mode": "checkpoint", "use_full_to_partial_kd": True},
-        "loss": {"u_mask_beam_jepa": {"enabled": True}},
-    }
-    with pytest.raises(NotImplementedError, match="checkpoint"):
-        _build_training_extensions(cfg)[0].setup(
-            type(
-                "Context",
-                (),
-                {
-                    "cfg": cfg,
-                },
-            )()
-        )
-
-
-def test_weak_pattern_kd_and_latent_probe_are_pattern_gated():
-    batch_size, d_model, num_classes = 3, 5, 7
-    student_feature = torch.randn(batch_size, d_model, requires_grad=True)
-    output = {
-        "logits": torch.randn(batch_size, 1, num_classes, requires_grad=True),
-        "output_features": student_feature,
-        "input_features": torch.randn(batch_size, 4, d_model),
-        "u_star": torch.randn(batch_size, d_model),
-        "mu_B": torch.randn(batch_size, d_model, requires_grad=True),
-        "logvar_B": torch.randn(batch_size, d_model, requires_grad=True),
-        "modality_mu_B": torch.randn(batch_size, 4, d_model, requires_grad=True),
-        "modality_logvar_B": torch.randn(batch_size, 4, d_model, requires_grad=True),
-        "missing_mask": torch.ones(batch_size, 4, dtype=torch.bool),
-    }
-    teacher = {
-        "logits": torch.randn(batch_size, 1, num_classes),
-        "output_features": torch.randn(batch_size, d_model),
-    }
-    result = u_mask_beam_jepa_loss(
-        output,
-        torch.tensor([[1], [2], [3]]),
-        use_teacher=False,
-        use_jepa_loss=False,
-        teacher_output=teacher,
-        pattern_names=["radar_only", "missing_gps", "lidar_only"],
-        use_weak_pattern_kd=True,
-        kd_apply_patterns=["radar_only", "lidar_only"],
-        lambda_weak_pattern_kd=0.1,
-        latent_predictor=nn.Linear(d_model, d_model),
-        use_light_latent_pred=True,
-        latent_pred_apply_patterns=["radar_only", "lidar_only"],
-        lambda_latent_pred=0.01,
-    )
-    result["loss"].backward()
-
-    assert result["diagnostics"]["kd_active_ratio"] == pytest.approx(2 / 3)
-    assert result["diagnostics"]["latent_pred_active_ratio"] == pytest.approx(2 / 3)
-    assert result["diagnostics"]["kd_loss"] > 0
-    assert result["diagnostics"]["latent_pred_loss"] >= 0

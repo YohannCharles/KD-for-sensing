@@ -13,7 +13,7 @@ class AuxiliaryLossResult:
     total: torch.Tensor
     occlusion: torch.Tensor
     position: torch.Tensor
-    diagnostics: dict[str, float]
+    diagnostics: dict[str, Any]
 
 
 def auxiliary_tasks_enabled(cfg: dict[str, Any]) -> bool:
@@ -32,7 +32,7 @@ def compute_auxiliary_multitask_loss(
     zero = reference.sum() * 0.0
     occlusion_loss = zero
     position_loss = zero
-    diagnostics: dict[str, float] = {}
+    diagnostics: dict[str, Any] = {}
 
     if task_cfg.occlusion_enabled:
         logits = _diagnostic_tensor(model_output, "occlusion_logits", "model auxiliary output")
@@ -48,8 +48,8 @@ def compute_auxiliary_multitask_loss(
             pos_weight=_resolve_pos_weight(task_cfg.pos_weight, labels, valid),
         )
         occlusion_loss = _masked_mean(element_loss, valid, zero)
-        diagnostics["loss/occlusion"] = float(occlusion_loss.detach().cpu().item())
-        diagnostics["auxiliary/occlusion_valid"] = float(valid.sum().detach().cpu().item())
+        diagnostics["loss/occlusion"] = occlusion_loss.detach()
+        diagnostics["auxiliary/occlusion_valid"] = valid.sum().detach().to(dtype=torch.float32)
 
     if task_cfg.position_enabled:
         prediction = _diagnostic_tensor(model_output, "position", "model auxiliary output")
@@ -60,11 +60,11 @@ def compute_auxiliary_multitask_loss(
         prediction, target, valid = _align_position(prediction, target, valid)
         per_slot = (prediction - target).pow(2).mean(dim=-1)
         position_loss = _masked_mean(per_slot, valid, zero)
-        diagnostics["loss/position"] = float(position_loss.detach().cpu().item())
-        diagnostics["auxiliary/position_valid"] = float(valid.sum().detach().cpu().item())
+        diagnostics["loss/position"] = position_loss.detach()
+        diagnostics["auxiliary/position_valid"] = valid.sum().detach().to(dtype=torch.float32)
 
     total = task_cfg.occlusion_weight * occlusion_loss + task_cfg.position_weight * position_loss
-    diagnostics["loss/multitask_total"] = float(total.detach().cpu().item())
+    diagnostics["loss/multitask_total"] = total.detach()
     return AuxiliaryLossResult(
         total=total,
         occlusion=occlusion_loss,
@@ -122,8 +122,8 @@ def _align_position(
 def _masked_mean(values: torch.Tensor, valid: torch.Tensor, zero: torch.Tensor) -> torch.Tensor:
     valid_f = valid.to(device=values.device, dtype=values.dtype)
     denom = valid_f.sum()
-    if denom.item() <= 0:
-        return zero
+    # The masked numerator is zero for an empty mask, so clamp preserves the
+    # existing zero-loss behavior without a host-side scalar synchronization.
     return (values * valid_f).sum() / denom.clamp_min(1.0)
 
 
@@ -134,9 +134,12 @@ def _resolve_pos_weight(spec: str | float | None, labels: torch.Tensor, valid: t
         valid_labels = labels[valid]
         positives = valid_labels.sum()
         negatives = valid_labels.numel() - positives
-        if positives.item() <= 0:
-            return torch.ones((), dtype=labels.dtype, device=labels.device)
-        return (negatives / positives.clamp_min(1.0)).to(dtype=labels.dtype, device=labels.device)
+        ratio = negatives / positives.clamp_min(1.0)
+        return torch.where(
+            positives.gt(0),
+            ratio,
+            torch.ones((), dtype=labels.dtype, device=labels.device),
+        ).to(dtype=labels.dtype, device=labels.device)
     return torch.tensor(float(spec), dtype=labels.dtype, device=labels.device)
 
 

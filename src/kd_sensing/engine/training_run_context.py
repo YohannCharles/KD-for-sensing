@@ -48,8 +48,9 @@ class TrainingRunContext:
     progress_enabled: bool = True
     total_epochs: int = 0
     early_stopping_min_epoch: int = 0
+    model_selection_enabled: bool = False
     validation_loader: Any = None
-    validation_split_name: str = "test"
+    validation_split_name: str = "none"
     final_test_metrics: dict[str, Any] | None = None
     final_test_checkpoint_load: dict[str, Any] | None = None
     final_artifacts: dict[str, Any] | None = None

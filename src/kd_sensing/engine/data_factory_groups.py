@@ -1,11 +1,38 @@
 import csv
+import hashlib
+import os
 from bisect import bisect_right
 from collections import Counter, defaultdict
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from torch.utils.data import ConcatDataset, Subset
+
+
+TEMPORAL_SPLIT_IDENTITY_SCHEMA_VERSION = 1
+TEMPORAL_SPLIT_IDENTITY_KINDS = (
+    "sequence_group",
+    "sample",
+    "history_frame",
+    "target_frame",
+    "referenced_frame",
+)
+_HISTORY_RESOURCE_FIELDS = (
+    ("beam", "input_beam_paths", "seq_len"),
+    ("image", "rgb_paths", "seq_len"),
+    ("radar", "radar_paths", "seq_len"),
+    ("gps", "gps_paths", "gps_source_seq_len"),
+    ("bs_gps", "bs_gps_paths", "gps_source_seq_len"),
+    ("lidar", "lidar_paths", "seq_len"),
+    ("mmwave", "mmwave_paths", "seq_len"),
+    ("csi", "csi_paths", "seq_len"),
+)
+_TARGET_RESOURCE_FIELDS = (
+    ("gps", "future_gps_paths"),
+    ("bs_gps", "future_bs_gps_paths"),
+)
 
 
 def target_labels_for_dataset(dataset: Any) -> list[int]:
@@ -197,6 +224,199 @@ def sequence_group_keys_for_dataset(dataset: Any) -> list[str]:
     return group_keys
 
 
+def audit_temporal_split_identities(
+    dataset: Any,
+    index_splits: dict[str, list[int]],
+    *,
+    max_conflict_examples: int = 5,
+) -> dict[str, Any]:
+    role_by_index: dict[int, str] = {}
+    for role in ("train", "validation", "test"):
+        indices = [int(index) for index in index_splits.get(role, [])]
+        if len(indices) != len(set(indices)):
+            raise ValueError(f"Temporal split identity audit found duplicate indices inside {role}.")
+        if any(index < 0 or index >= len(dataset) for index in indices):
+            raise ValueError(f"Temporal split identity audit found an out-of-range index inside {role}.")
+        for index in indices:
+            previous = role_by_index.setdefault(index, role)
+            if previous != role:
+                raise ValueError(
+                    f"Temporal split identity audit found sample index {index} in both {previous} and {role}."
+                )
+    if len(role_by_index) != len(dataset):
+        raise ValueError(
+            "Temporal split identity audit requires train/validation/test to partition the full dataset; "
+            f"covered {len(role_by_index)} of {len(dataset)} samples."
+        )
+    return audit_temporal_split_datasets(
+        {
+            role: Subset(dataset, [int(index) for index in index_splits.get(role, [])])
+            for role in ("train", "validation", "test")
+        },
+        max_conflict_examples=max_conflict_examples,
+    )
+
+
+def audit_temporal_split_datasets(
+    split_datasets: dict[str, Any],
+    *,
+    max_conflict_examples: int = 5,
+) -> dict[str, Any]:
+    missing_roles = [role for role in ("train", "validation", "test") if role not in split_datasets]
+    if missing_roles:
+        raise ValueError(f"Temporal split identity audit is missing split datasets: {missing_roles}.")
+    role_sets = {
+        role: _temporal_identity_sets_for_dataset(split_datasets[role])
+        for role in ("train", "validation", "test")
+    }
+
+    pairwise = []
+    conflicts = []
+    example_limit = max(1, int(max_conflict_examples))
+    for left, right in combinations(("train", "validation", "test"), 2):
+        overlap_counts = {}
+        for kind in TEMPORAL_SPLIT_IDENTITY_KINDS:
+            overlap = sorted(role_sets[left][kind] & role_sets[right][kind])
+            overlap_counts[kind] = len(overlap)
+            if overlap:
+                conflicts.append(
+                    {
+                        "left": left,
+                        "right": right,
+                        "identity_type": kind,
+                        "count": len(overlap),
+                        "examples": overlap[:example_limit],
+                    }
+                )
+        pairwise.append({"left": left, "right": right, "overlap_counts": overlap_counts})
+
+    if conflicts:
+        details = "; ".join(
+            f"{item['left']}/{item['right']} {item['identity_type']} "
+            f"count={item['count']} examples={item['examples']}"
+            for item in conflicts
+        )
+        raise ValueError(
+            "Temporal split identity audit failed before training. "
+            f"Use the group-safe sequence strategy and non-overlapping resources; {details}"
+        )
+
+    return {
+        "schema_version": TEMPORAL_SPLIT_IDENTITY_SCHEMA_VERSION,
+        "status": "passed",
+        "identity_policy": "scene_seq_index_and_scene_resolved_resource_path",
+        "digest_algorithm": "sha256",
+        "max_conflict_examples": example_limit,
+        "roles": {
+            role: {
+                "sample_count": len(split_datasets[role]),
+                "identities": {
+                    kind: {
+                        "count": len(values),
+                        "digest": _identity_set_digest(values),
+                    }
+                    for kind, values in role_sets[role].items()
+                },
+            }
+            for role in ("train", "validation", "test")
+        },
+        "pairwise": pairwise,
+    }
+
+
+def _temporal_identity_sets_for_dataset(dataset: Any) -> dict[str, set[str]]:
+    identity_sets = {kind: set() for kind in TEMPORAL_SPLIT_IDENTITY_KINDS}
+
+    group_keys = sequence_group_keys_for_dataset(dataset)
+    if len(group_keys) != len(dataset):
+        raise ValueError(
+            "Temporal split identity audit could not align sequence groups with dataset samples; "
+            f"got {len(group_keys)} groups for {len(dataset)} samples."
+        )
+    global_index = 0
+    for leaf, indices in leaf_datasets_with_indices(dataset):
+        for raw_index in indices:
+            history = tuple(_history_resource_identities(leaf, int(raw_index)))
+            target = tuple(_target_resource_identities(leaf, int(raw_index)))
+            if not history or not target:
+                raise ValueError(
+                    "Temporal split identity audit requires at least one history and target resource per sample."
+                )
+            identity_sets["sequence_group"].add(group_keys[global_index])
+            identity_sets["sample"].add(
+                hashlib.sha256("\n".join((*history, "--target--", *target)).encode("utf-8")).hexdigest()
+            )
+            identity_sets["history_frame"].update(history)
+            identity_sets["target_frame"].update(target)
+            identity_sets["referenced_frame"].update(history)
+            identity_sets["referenced_frame"].update(target)
+            global_index += 1
+    if global_index != len(dataset):
+        raise ValueError(
+            "Temporal split identity audit could not traverse the full dataset; "
+            f"visited {global_index} of {len(dataset)} samples."
+        )
+    return identity_sets
+
+
+def _history_resource_identities(dataset: Any, index: int) -> list[str]:
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        raise ValueError("Temporal split identity audit requires dataset.samples.")
+    result = []
+    for resource_kind, field, length_field in _HISTORY_RESOURCE_FIELDS:
+        rows = getattr(samples, field, None)
+        if rows is None or index >= len(rows):
+            continue
+        length = max(1, int(getattr(dataset, length_field, getattr(dataset, "seq_len", 1))))
+        result.extend(
+            identity
+            for value in list(rows[index])[-length:]
+            if (identity := _resource_identity(dataset, resource_kind, value)) is not None
+        )
+    return result
+
+
+def _target_resource_identities(dataset: Any, index: int) -> list[str]:
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        raise ValueError("Temporal split identity audit requires dataset.samples.")
+    num_pred = max(1, int(getattr(dataset, "num_pred", 1)))
+    input_paths = list(samples.input_beam_paths[index])
+    future_paths = list(samples.future_beam_paths[index])
+    resolver = getattr(dataset, "_target_beam_paths", None)
+    beam_paths = resolver(input_paths, future_paths) if callable(resolver) else future_paths[:num_pred]
+    result = [
+        identity
+        for value in list(beam_paths)[:num_pred]
+        if (identity := _resource_identity(dataset, "beam", value)) is not None
+    ]
+    for resource_kind, field in _TARGET_RESOURCE_FIELDS:
+        rows = getattr(samples, field, None)
+        if rows is None or index >= len(rows):
+            continue
+        result.extend(
+            identity
+            for value in list(rows[index])[:num_pred]
+            if (identity := _resource_identity(dataset, resource_kind, value)) is not None
+        )
+    return result
+
+
+def _resource_identity(dataset: Any, resource_kind: str, value: Any) -> str | None:
+    text = str(value).strip().replace("\\", "/")
+    if text.lower() in {"", "-99", "-99.0", "nan", "none"}:
+        return None
+    data_root = Path(getattr(dataset, "data_root", "."))
+    path = Path(os.path.normpath(data_root / text.lstrip("/")))
+    scene = getattr(dataset, "scene_id", getattr(dataset, "scene_slug", ""))
+    return f"{scene}:{resource_kind}:{path.as_posix()}"
+
+
+def _identity_set_digest(values: set[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(values)).encode("utf-8")).hexdigest()
+
+
 def csv_column_values(path: str | Path, column: str) -> list[str] | None:
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -206,46 +426,55 @@ def csv_column_values(path: str | Path, column: str) -> list[str] | None:
 
 
 def leaf_datasets_with_indices(dataset: Any) -> list[tuple[Any, list[int]]]:
-    if isinstance(dataset, ConcatDataset):
-        result: list[tuple[Any, list[int]]] = []
-        for component in dataset.datasets:
-            result.extend(leaf_datasets_with_indices(component))
-        return result
+    return _leaf_datasets_with_indices(dataset, None)
+
+
+def _leaf_datasets_with_indices(
+    dataset: Any,
+    effective_indices: list[int] | None,
+) -> list[tuple[Any, list[int]]]:
     if isinstance(dataset, Subset):
-        if isinstance(dataset.dataset, Subset):
-            base_pairs = leaf_datasets_with_indices(dataset.dataset)
-            if len(base_pairs) != 1:
-                return base_pairs
-            base_dataset, base_indices = base_pairs[0]
-            mapped = [base_indices[int(index)] for index in dataset.indices]
-            return [(base_dataset, mapped)]
-        if isinstance(dataset.dataset, ConcatDataset):
-            grouped: dict[int, list[int]] = defaultdict(list)
-            cumulative_sizes = list(dataset.dataset.cumulative_sizes)
-            for raw_index in dataset.indices:
-                global_index = int(raw_index)
-                component_idx = bisect_right(cumulative_sizes, global_index)
-                previous = cumulative_sizes[component_idx - 1] if component_idx > 0 else 0
-                grouped[component_idx].append(global_index - previous)
+        selected = range(len(dataset)) if effective_indices is None else effective_indices
+        parent_indices = [int(dataset.indices[int(index)]) for index in selected]
+        return _leaf_datasets_with_indices(dataset.dataset, parent_indices)
+    if isinstance(dataset, ConcatDataset):
+        if effective_indices is None:
             result: list[tuple[Any, list[int]]] = []
-            for component_idx, local_indices in sorted(grouped.items()):
-                component = dataset.dataset.datasets[component_idx]
-                if isinstance(component, Subset):
-                    base_pairs = leaf_datasets_with_indices(component)
-                    if len(base_pairs) == 1:
-                        base_dataset, base_indices = base_pairs[0]
-                        mapped = [base_indices[int(index)] for index in local_indices]
-                        result.append((base_dataset, mapped))
-                    else:
-                        result.extend(base_pairs)
-                else:
-                    result.append((component, [int(index) for index in local_indices]))
+            for component in dataset.datasets:
+                result.extend(_leaf_datasets_with_indices(component, None))
             return result
-        return [(dataset.dataset, [int(index) for index in dataset.indices])]
-    return [(dataset, list(range(len(dataset))))]
+        grouped: dict[int, list[int]] = defaultdict(list)
+        cumulative_sizes = list(dataset.cumulative_sizes)
+        for raw_index in effective_indices:
+            global_index = int(raw_index)
+            if global_index < 0:
+                global_index += len(dataset)
+            if not 0 <= global_index < len(dataset):
+                raise IndexError(f"Dataset index {raw_index} is out of range for length {len(dataset)}.")
+            component_idx = bisect_right(cumulative_sizes, global_index)
+            previous = cumulative_sizes[component_idx - 1] if component_idx > 0 else 0
+            grouped[component_idx].append(global_index - previous)
+        result = []
+        for component_idx, local_indices in sorted(grouped.items()):
+            result.extend(_leaf_datasets_with_indices(dataset.datasets[component_idx], local_indices))
+        return result
+    indices = list(range(len(dataset))) if effective_indices is None else []
+    if effective_indices is not None:
+        for raw_index in effective_indices:
+            index = int(raw_index)
+            if index < 0:
+                index += len(dataset)
+            if not 0 <= index < len(dataset):
+                raise IndexError(f"Dataset index {raw_index} is out of range for length {len(dataset)}.")
+            indices.append(index)
+    return [(dataset, indices)]
 
 
 __all__ = [
+    "TEMPORAL_SPLIT_IDENTITY_KINDS",
+    "TEMPORAL_SPLIT_IDENTITY_SCHEMA_VERSION",
+    "audit_temporal_split_datasets",
+    "audit_temporal_split_identities",
     "csv_column_values",
     "holdout_group_count",
     "leaf_datasets_with_indices",

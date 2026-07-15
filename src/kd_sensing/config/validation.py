@@ -5,6 +5,10 @@ from typing import Any
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
 from kd_sensing.data.difficulty.schema import normalize_config_difficulty
 from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
+from kd_sensing.engine.checkpoint_selection import (
+    config_declares_independent_validation,
+    model_selection_enabled,
+)
 from kd_sensing.config.normalization import (
     IMAGE_MODEL_TYPES,
     auxiliary_head_enabled,
@@ -23,6 +27,7 @@ from kd_sensing.engine.objectives.metadata import (
 from kd_sensing.modalities import (
     REMOVED_IMAGE_ENCODERS,
     image_profile_spec,
+    modality_profile_spec,
     resolve_image_profile,
     validate_image_encoder_profile,
     validate_image_profile_size,
@@ -36,6 +41,7 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     from kd_sensing.engine.epoch_subsampling import validate_epoch_subsampling_config
 
     validate_epoch_subsampling_config(cfg)
+    validate_training_selection_config(cfg)
     validate_dataset_input_profiles(cfg)
     validate_deepsense_label_space_artifacts(cfg)
     normalize_config_difficulty(cfg)
@@ -77,6 +83,23 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     validate_multitask_config(cfg)
 
 
+def validate_training_selection_config(cfg: dict[str, Any]) -> None:
+    training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
+    selection_enabled = model_selection_enabled(cfg)
+    early_stopping_enabled = bool(training_cfg.get("use_early_stopping", False))
+    if early_stopping_enabled and not selection_enabled:
+        raise ValueError(
+            "training.use_early_stopping=true requires training.model_selection=true. "
+            "Enable both with an independent validation split, or disable both for explicit fixed-epoch/no-selection."
+        )
+    if selection_enabled and not config_declares_independent_validation(cfg):
+        raise ValueError(
+            "Model selection requires an independent validation split. Configure data.validation_from_train, "
+            "a validation CSV distinct from test, or a three-way split protocol; otherwise set "
+            "training.model_selection=false and training.use_early_stopping=false for fixed-epoch/no-selection."
+        )
+
+
 def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
     experiment = str(cfg.get("experiment", {}).get("name") or "")
     if experiment not in {
@@ -89,10 +112,7 @@ def validate_deepsense_label_space_artifacts(cfg: dict[str, Any]) -> None:
         return
     selected_label_space = str(data_cfg.get("label_space", "mapping_disabled"))
     num_beams = int(data_cfg.get("num_beams", 64))
-    try:
-        from kd_sensing.data.beam_label_space import label_space_metadata, validate_label_space_rows
-    except Exception:
-        return
+    from kd_sensing.data.beam_label_space import label_space_metadata, validate_label_space_rows
     scene_values = _scene_values(data_cfg)
     expected = label_space_metadata(data_cfg, selected_label_space, num_beams=num_beams)
     expected_by_scene = {
@@ -231,6 +251,14 @@ def validate_dataset_input_profiles(cfg: dict[str, Any]) -> None:
     dataset_cfg["input_profiles"] = profiles
     for modality, profile in profiles.items():
         descriptor.profile_for(modality, profile)
+    if "gps" in profiles:
+        profile_mode = modality_profile_spec("gps", profiles["gps"]).metadata.get("gps_feature_mode")
+        feature_mode = str(dataset_cfg.get("gps_feature_mode", "relative_polar")).strip().lower()
+        if profile_mode is not None and str(profile_mode) != feature_mode:
+            raise ValueError(
+                f"GPS input profile {profiles['gps']!r} requires gps_feature_mode={profile_mode!r}, "
+                f"got {feature_mode!r}."
+            )
 
 
 def _profile_modalities_from_config(cfg: dict[str, Any]) -> tuple[str, ...]:

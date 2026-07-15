@@ -1,5 +1,6 @@
 import warnings
 import csv
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -7,13 +8,16 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from kd_sensing.data.difficulty.operators.temporal import TEMPORAL_SUPERSET_PAYLOAD_KEY
 from kd_sensing.data.missing_mask import (
     get_missing_pattern_name,
     make_pattern_mask,
     sample_missing_mask,
     sample_pattern_balanced_mask,
 )
+from kd_sensing.engine.evaluation_pass_runtime import sample_ids_from_batch
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, ForwardControls, TrainingExtension
+from kd_sensing.losses.modality_alignment_contrastive import amber_cma_analogue_loss
 from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
 from kd_sensing.losses.u_mask_beam_jepa_mpdro import (
     core_pattern_names as _core_pattern_names,
@@ -45,9 +49,14 @@ def u_mask_beam_jepa_loss(
     lambda_proto: float = 0.0,
     lambda_modality_proto: float = 0.0,
     lambda_supcon: float = 0.0,
+    use_amber_cma_analogue: bool = False,
+    lambda_amber_cma: float = 0.2,
+    amber_cma_temperature: float = 0.2,
+    sample_ids: list[str] | tuple[str, ...] | None = None,
     lambda_teacher_proto: float = 0.0,
     beam_label_sigma: float = 1.0,
     beam_label_circular: bool = True,
+    prototype_target_circular: bool | None = None,
     proto_target_type: str = "gaussian",
     tau_beam: float = 2.0,
     circular_beam_distance: bool | None = None,
@@ -58,11 +67,12 @@ def u_mask_beam_jepa_loss(
     use_adba_aware_proto: bool = False,
     lambda_adba_proto: float = 0.0,
     adba_margin: int = 3,
-    use_full_to_partial_kd: bool = False,
-    lambda_full_to_partial_kd: float = 0.0,
-    lambda_feature_kd: float = 0.0,
-    lambda_prototype_kd: float = 0.0,
-    kd_temperature: float = 1.0,
+    use_superset_confidence_gated_kl: bool = False,
+    lambda_superset_consistency: float = 0.0,
+    superset_temperature: float = 2.0,
+    use_beam_monotonic_rank: bool = False,
+    lambda_beam_monotonic_rank: float = 0.0,
+    beam_monotonic_tolerance: float = 0.0,
     sample_weights: torch.Tensor | None = None,
     proto_sample_weights: torch.Tensor | None = None,
     pattern_names: list[str] | None = None,
@@ -72,22 +82,19 @@ def u_mask_beam_jepa_loss(
     btapa_fallback_to_ordinary_proto: bool = True,
     ordinary_proto_target_type: str = "gaussian",
     apply_pattern_weight_to_proto: bool = False,
-    use_weak_pattern_kd: bool = False,
-    kd_apply_patterns: list[str] | tuple[str, ...] | None = None,
-    lambda_weak_pattern_kd: float = 0.0,
-    latent_predictor: torch.nn.Module | None = None,
-    use_light_latent_pred: bool = False,
-    latent_pred_target: str = "full_fused",
-    latent_pred_apply_patterns: list[str] | tuple[str, ...] | None = None,
-    lambda_latent_pred: float = 0.0,
-    latent_pred_loss: str = "cosine",
-    prototype_distribution_target: torch.Tensor | None = None,
     beam_criterion: Any | None = None,
     router_supervision: str = "none",
     router_distill_weight: float = 0.0,
 ) -> dict[str, Any]:
     if lambda_jepa_global is None:
         lambda_jepa_global = 1.0 if lambda_jepa is None else float(lambda_jepa)
+    if use_beam_prototype_alignment and use_amber_cma_analogue:
+        raise ValueError(
+            "use_beam_prototype_alignment and use_amber_cma_analogue are mutually exclusive; "
+            "disable BPA when replacing it with the AMBER CMA analogue."
+        )
+    if use_amber_cma_analogue and float(lambda_amber_cma) < 0.0:
+        raise ValueError("lambda_amber_cma must be non-negative.")
     logits = output["logits"]
     labels = labels.to(device=logits.device, dtype=torch.long)
     if logits.ndim == 2:
@@ -140,6 +147,7 @@ def u_mask_beam_jepa_loss(
         lambda_teacher_proto=lambda_teacher_proto,
         beam_label_sigma=beam_label_sigma,
         beam_label_circular=beam_label_circular,
+        prototype_target_circular=prototype_target_circular,
         proto_target_type=proto_target_type,
         tau_beam=tau_beam,
         circular_beam_distance=circular_beam_distance,
@@ -157,103 +165,81 @@ def u_mask_beam_jepa_loss(
         btapa_fallback_to_ordinary_proto=btapa_fallback_to_ordinary_proto,
         ordinary_proto_target_type=ordinary_proto_target_type,
         proto_sample_weights=proto_sample_weights if apply_pattern_weight_to_proto else None,
-        kd_temperature=kd_temperature,
+        kd_temperature=1.0,
     )
     diagnostics_extra.update(proto_diag)
-    kd_loss = zero
-    kd_active_ratio = 0.0
-    if use_weak_pattern_kd:
-        active = _active_pattern_mask(pattern_names, kd_apply_patterns, logits.device)
-        kd_active_ratio = _active_ratio(active)
-        if teacher_output is not None and active is not None and bool(active.any().item()):
-            teacher_logits = teacher_output["logits"].detach()
-            kd_per_sample = _logit_kd_loss_per_sample(logits, teacher_logits, temperature=kd_temperature)
-            kd_loss = kd_per_sample[active].mean()
-            loss = loss + float(lambda_weak_pattern_kd) * kd_loss
-        diagnostics_extra.update(
-            {
-                "kd_loss": float(kd_loss.detach().cpu().item()),
-                "kd_active_ratio": kd_active_ratio,
-                "loss/weak_pattern_kd": float(kd_loss.detach().cpu().item()),
-            }
+    loss_amber_cma = zero
+    if use_amber_cma_analogue:
+        loss_amber_cma, cma_diag = amber_cma_analogue_loss(
+            output["output_features"],
+            output["modality_features"],
+            output["missing_mask"],
+            sample_ids,
+            temperature=amber_cma_temperature,
         )
-    if use_full_to_partial_kd and teacher_output is not None:
-        teacher_logits = teacher_output["logits"].detach()
-        logit_kd = _logit_kd_loss(logits, teacher_logits, temperature=kd_temperature)
-        student_feature = output["output_features"]
-        teacher_feature = teacher_output["output_features"].detach()
-        feature_kd = F.mse_loss(student_feature, teacher_feature)
-        prototype_kd = logits.sum() * 0.0
-        if prototype_bank is not None and float(lambda_prototype_kd) != 0.0:
-            prototype_kd = _logit_kd_loss(
-                prototype_bank(student_feature),
-                prototype_bank(teacher_feature).detach(),
-                temperature=kd_temperature,
+        weighted_cma = float(lambda_amber_cma) * loss_amber_cma
+        loss = loss + weighted_cma
+        diagnostics_extra.update(cma_diag)
+        diagnostics_extra["loss/amber_cma_weighted"] = float(weighted_cma.detach().cpu().item())
+    if use_superset_confidence_gated_kl or use_beam_monotonic_rank:
+        if teacher_output is None or not torch.is_tensor(teacher_output.get("logits")):
+            raise ValueError("Enabled superset consistency requires an online same-model superset output.")
+        superset_logits = teacher_output["logits"].detach()
+        if use_superset_confidence_gated_kl:
+            weighted_kl, raw_kl, gate = _confidence_gated_temperature_kl(
+                logits,
+                superset_logits,
+                labels,
+                temperature=superset_temperature,
             )
-        loss = (
-            loss
-            + float(lambda_full_to_partial_kd) * logit_kd
-            + float(lambda_feature_kd) * feature_kd
-            + float(lambda_prototype_kd) * prototype_kd
-        )
-        diagnostics_extra.update(
-            {
-                "loss/full_to_partial_kd": float(logit_kd.detach().cpu().item()),
-                "loss/feature_kd": float(feature_kd.detach().cpu().item()),
-                "loss/prototype_kd": float(prototype_kd.detach().cpu().item()),
-                "teacher_top1": _top1(teacher_logits, labels),
-                "student_top1": _top1(logits, labels),
-                "kd_gap": float((teacher_logits.detach() - logits.detach()).abs().mean().cpu().item()),
-            }
-        )
+            loss = loss + float(lambda_superset_consistency) * weighted_kl
+            diagnostics_extra.update(
+                {
+                    "loss/superset_consistency": float(weighted_kl.detach().cpu().item()),
+                    "superset_consistency/raw_kl": float(raw_kl.detach().cpu().item()),
+                    "superset_consistency/weighted_kl": float(weighted_kl.detach().cpu().item()),
+                    "superset_consistency/gate_mean": float(gate.mean().cpu().item()),
+                    "superset_consistency/gate_active_ratio": float(gate.gt(0).float().mean().cpu().item()),
+                    "superset_consistency/teacher_top1": _top1(superset_logits, labels),
+                    "superset_consistency/student_top1": _top1(logits, labels),
+                    "superset_consistency/feature_l2_weight": 0.0,
+                }
+            )
+        if use_beam_monotonic_rank:
+            rank_loss, teacher_risk, student_risk, partial_excess, superset_worse = _beam_monotonic_ranking_loss(
+                logits,
+                superset_logits,
+                labels,
+                tolerance=beam_monotonic_tolerance,
+            )
+            loss = loss + float(lambda_beam_monotonic_rank) * rank_loss
+            risk_gap = student_risk - teacher_risk
+            diagnostics_extra.update(
+                {
+                    "loss/beam_monotonic_rank": float(rank_loss.detach().cpu().item()),
+                    "beam_monotonic_rank/teacher_risk": float(teacher_risk.mean().cpu().item()),
+                    "beam_monotonic_rank/student_risk": float(student_risk.mean().detach().cpu().item()),
+                    "beam_monotonic_rank/risk_gap": float(risk_gap.mean().detach().cpu().item()),
+                    "beam_monotonic_rank/partial_excess_violation_rate": float(
+                        partial_excess.float().mean().cpu().item()
+                    ),
+                    "beam_monotonic_rank/superset_worse_rate": float(
+                        superset_worse.float().mean().cpu().item()
+                    ),
+                }
+            )
     router_loss, router_diag = _hard_router_oracle_losses(
         output,
         labels,
         router_supervision=router_supervision,
         router_distill_weight=router_distill_weight,
+        circular_beam_distance=(
+            bool(beam_label_circular) if circular_beam_distance is None else bool(circular_beam_distance)
+        ),
     )
     if torch.is_tensor(router_loss):
         loss = loss + router_loss
         diagnostics_extra.update(router_diag)
-    latent_loss = zero
-    latent_active_ratio = 0.0
-    if use_light_latent_pred:
-        active = _active_pattern_mask(pattern_names, latent_pred_apply_patterns, logits.device)
-        latent_active_ratio = _active_ratio(active)
-        if latent_predictor is None:
-            raise ValueError("use_light_latent_pred=true requires model.primary.use_light_latent_pred=true.")
-        if teacher_output is not None and active is not None and bool(active.any().item()):
-            student_feature = output["output_features"]
-            if str(latent_pred_target) == "prototype_distribution":
-                pred_logits = latent_predictor(student_feature)
-                if prototype_distribution_target is not None:
-                    target_prob = prototype_distribution_target.to(device=pred_logits.device, dtype=pred_logits.dtype)
-                elif prototype_bank is not None:
-                    target_prob = torch.softmax(prototype_bank(teacher_output["output_features"].detach()), dim=-1)
-                else:
-                    target_prob = torch.softmax(teacher_output["logits"].detach().reshape(pred_logits.shape[0], -1, pred_logits.shape[-1])[:, 0], dim=-1)
-                latent_loss = F.kl_div(
-                    F.log_softmax(pred_logits[active], dim=-1),
-                    target_prob[active],
-                    reduction="batchmean",
-                )
-            else:
-                pred_feature = latent_predictor(student_feature)
-                target_feature = teacher_output["output_features"].detach()
-                loss_name = str(latent_pred_loss).lower()
-                if loss_name == "mse":
-                    per_sample = F.mse_loss(pred_feature, target_feature, reduction="none").mean(dim=-1)
-                else:
-                    per_sample = 1.0 - F.cosine_similarity(pred_feature, target_feature, dim=-1)
-                latent_loss = per_sample[active].mean()
-            loss = loss + float(lambda_latent_pred) * latent_loss
-        diagnostics_extra.update(
-            {
-                "latent_pred_loss": float(latent_loss.detach().cpu().item()),
-                "latent_pred_active_ratio": latent_active_ratio,
-                "loss/latent_pred": float(latent_loss.detach().cpu().item()),
-            }
-        )
     diagnostics = _loss_diagnostics(
         logits,
         labels,
@@ -274,6 +260,7 @@ def u_mask_beam_jepa_loss(
         "loss_teacher": loss_teacher,
         "loss_jepa_global": loss_jepa_global,
         "loss_modality_nll": loss_modality_nll,
+        "loss_amber_cma": loss_amber_cma,
         "loss_jepa": loss_jepa_global + loss_modality_nll,
         "diagnostics": diagnostics,
     }
@@ -349,11 +336,6 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
 
     def setup(self, context: ExtensionContext) -> dict[str, Any]:
         cfg = u_mask_beam_jepa_config(context.cfg)
-        if cfg.get("kd_teacher_mode") == "checkpoint":
-            raise NotImplementedError(
-                "loss.u_mask_beam_jepa.kd_teacher_mode=checkpoint is pending; use online_full or disable "
-                "full-to-partial stabilization."
-            )
         return {"config": cfg, "adaptive_sampler": _new_adaptive_sampler_state(), "mpdro": _new_mpdro_state()}
 
     def before_forward(
@@ -414,15 +396,21 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             ]
             state["pattern_ids"] = None
         _update_pattern_counts(state, state.get("pattern_names"))
-        weak_kd_active = _has_active_patterns(state.get("pattern_names"), cfg.get("kd_apply_patterns", ()))
-        latent_active = _has_active_patterns(state.get("pattern_names"), cfg.get("latent_pred_apply_patterns", ()))
-        needs_teacher = (
-            (cfg.get("use_full_to_partial_kd", False) and cfg.get("kd_teacher_mode") == "online_full")
-            or (cfg.get("use_weak_pattern_kd", False) and weak_kd_active)
-            or (cfg.get("use_light_latent_pred", False) and latent_active)
+        superset_cfg = cfg.get("superset_consistency", {})
+        superset_active = bool(
+            isinstance(superset_cfg, dict)
+            and superset_cfg.get("enabled", False)
+            and (superset_cfg.get("confidence_gated_kl", False) or superset_cfg.get("beam_monotonic_rank", False))
         )
-        if needs_teacher:
-            state["online_teacher"] = _online_full_teacher(context, batch, modalities, labels, cfg)
+        if superset_active:
+            state["online_teacher"] = _online_full_teacher(
+                context,
+                batch,
+                modalities,
+                labels,
+                cfg,
+                use_temporal_superset=superset_active,
+            )
         else:
             state["online_teacher"] = None
         return ForwardControls(model_kwargs={"missing_mask": mask})
@@ -457,6 +445,8 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         elif mpdro_weights is not None:
             ce_weights = mpdro_weights
         proto_weights = pattern_weights if bool(cfg.get("apply_pattern_weight_to_proto", False)) else None
+        superset_cfg = cfg.get("superset_consistency", {})
+        superset_enabled = bool(isinstance(superset_cfg, dict) and superset_cfg.get("enabled", False))
         result = u_mask_beam_jepa_loss(
             output,
             batch_state.labels,
@@ -473,9 +463,20 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             lambda_proto=float(cfg.get("lambda_proto", 0.0)),
             lambda_modality_proto=float(cfg.get("lambda_modality_proto", 0.0)),
             lambda_supcon=float(cfg.get("lambda_supcon", 0.0)),
+            use_amber_cma_analogue=bool(cfg.get("use_amber_cma_analogue", False)),
+            lambda_amber_cma=float(cfg.get("lambda_amber_cma", 0.2)),
+            amber_cma_temperature=float(cfg.get("amber_cma_temperature", 0.2)),
+            sample_ids=(
+                sample_ids_from_batch(batch_state.batch)
+                if bool(cfg.get("use_amber_cma_analogue", False))
+                else None
+            ),
             lambda_teacher_proto=float(cfg.get("lambda_teacher_proto", 0.0)),
             beam_label_sigma=float(cfg.get("beam_label_sigma", 1.0)),
             beam_label_circular=bool(cfg.get("beam_label_circular", True)),
+            prototype_target_circular=bool(
+                cfg.get("prototype_target_circular", cfg.get("beam_label_circular", True))
+            ),
             proto_target_type=str(cfg.get("proto_target_type", "gaussian")),
             tau_beam=float(cfg.get("tau_beam", 2.0)),
             circular_beam_distance=bool(cfg.get("circular_beam_distance", cfg.get("beam_label_circular", True))),
@@ -486,11 +487,16 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             use_adba_aware_proto=bool(cfg.get("use_adba_aware_proto", False)),
             lambda_adba_proto=float(cfg.get("lambda_adba_proto", 0.0)),
             adba_margin=int(cfg.get("adba_margin", 3)),
-            use_full_to_partial_kd=bool(cfg.get("use_full_to_partial_kd", False)),
-            lambda_full_to_partial_kd=float(cfg.get("lambda_full_to_partial_kd", cfg.get("lambda_kd", 0.0))),
-            lambda_feature_kd=float(cfg.get("lambda_feature_kd", 0.0)),
-            lambda_prototype_kd=float(cfg.get("lambda_prototype_kd", 0.0)),
-            kd_temperature=float(cfg.get("kd_temperature", 1.0)),
+            use_superset_confidence_gated_kl=bool(
+                superset_enabled and superset_cfg.get("confidence_gated_kl", False)
+            ),
+            lambda_superset_consistency=float(superset_cfg.get("kl_weight", 0.0)),
+            superset_temperature=float(superset_cfg.get("temperature", 2.0)),
+            use_beam_monotonic_rank=bool(
+                superset_enabled and superset_cfg.get("beam_monotonic_rank", False)
+            ),
+            lambda_beam_monotonic_rank=float(superset_cfg.get("rank_weight", 0.0)),
+            beam_monotonic_tolerance=float(superset_cfg.get("rank_tolerance", 0.0)),
             sample_weights=ce_weights,
             proto_sample_weights=proto_weights,
             pattern_names=state.get("pattern_names"),
@@ -500,15 +506,6 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             btapa_fallback_to_ordinary_proto=bool(cfg.get("btapa_fallback_to_ordinary_proto", True)),
             ordinary_proto_target_type=str(cfg.get("ordinary_proto_target_type", "gaussian")),
             apply_pattern_weight_to_proto=bool(cfg.get("apply_pattern_weight_to_proto", False)),
-            use_weak_pattern_kd=bool(cfg.get("use_weak_pattern_kd", False)),
-            kd_apply_patterns=cfg.get("kd_apply_patterns", ()),
-            lambda_weak_pattern_kd=float(cfg.get("lambda_kd", cfg.get("lambda_weak_pattern_kd", 0.0))),
-            latent_predictor=getattr(context.primary_model, "latent_predictor", None),
-            use_light_latent_pred=bool(cfg.get("use_light_latent_pred", False)),
-            latent_pred_target=str(cfg.get("latent_pred_target", "full_fused")),
-            latent_pred_apply_patterns=cfg.get("latent_pred_apply_patterns", ()),
-            lambda_latent_pred=float(cfg.get("lambda_latent_pred", 0.0)),
-            latent_pred_loss=str(cfg.get("latent_pred_loss", "cosine")),
             beam_criterion=_u_mask_beam_criterion(context),
             router_supervision=str(cfg.get("router_supervision", "none")),
             router_distill_weight=float(cfg.get("router_distill_weight", 0.0)),
@@ -550,7 +547,6 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             auxiliary_loss=auxiliary,
             diagnostics=diagnostics,
         )
-
     def before_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> None:
         if isinstance(state, dict):
             state["pattern_epoch_counts"] = Counter()
@@ -576,8 +572,6 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             path = _write_mpdro_group_log(context, state, epoch=epoch)
             metrics["mpdro"] = {"path": str(path)}
         return metrics
-
-
 def _loss_diagnostics(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -635,28 +629,81 @@ def _online_full_teacher(
     modalities: tuple[str, ...],
     labels: torch.Tensor,
     cfg: dict[str, Any],
+    *,
+    use_temporal_superset: bool = False,
 ) -> dict[str, torch.Tensor]:
     del labels, cfg
     from kd_sensing.engine.runtime import run_model_step
 
-    batch_size = next(int(value.shape[0]) for value in batch.values() if torch.is_tensor(value) and value.ndim > 0)
-    full_mask = torch.ones(batch_size, len(modalities), dtype=torch.bool, device=context.device)
-    with torch.no_grad():
-        step = run_model_step(
-            context.primary_model,
-            context.task,
-            batch,
-            model_cfg=context.model_cfg["primary"],
-            seq_length=context.seq_length,
-            num_pred=context.num_pred,
-            device=context.device,
-            non_blocking=context.non_blocking,
-            extra_model_kwargs={"missing_mask": full_mask},
+    teacher_batch = batch
+    if use_temporal_superset:
+        teacher_batch, teacher_mask = _restore_temporal_superset(batch, modalities, context.device)
+    else:
+        batch_size = next(int(value.shape[0]) for value in batch.values() if torch.is_tensor(value) and value.ndim > 0)
+        teacher_mask = torch.ones(batch_size, len(modalities), dtype=torch.bool, device=context.device)
+    module_states = [(module, module.training) for module in context.primary_model.modules()]
+    try:
+        context.primary_model.eval()
+        with torch.no_grad():
+            step = run_model_step(
+                context.primary_model,
+                context.task,
+                teacher_batch,
+                model_cfg=context.model_cfg["primary"],
+                seq_length=context.seq_length,
+                num_pred=context.num_pred,
+                device=context.device,
+                non_blocking=context.non_blocking,
+                extra_model_kwargs={"missing_mask": teacher_mask},
+            )
+    finally:
+        for module, training in module_states:
+            module.training = training
+    result = {"logits": step.logits.detach()}
+    if torch.is_tensor(step.model_output.output_features):
+        result["output_features"] = step.model_output.output_features.detach()
+    return result
+
+
+def _restore_temporal_superset(
+    batch: dict[str, Any],
+    modalities: tuple[str, ...],
+    device: torch.device,
+) -> tuple[dict[str, Any], torch.Tensor]:
+    payload = batch.get(TEMPORAL_SUPERSET_PAYLOAD_KEY)
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "Temporal superset consistency requires temporal_missing.preserve_unmasked_for_superset=true."
         )
-    return {
-        "logits": step.logits.detach(),
-        "output_features": step.model_output.output_features.detach(),
-    }
+    inputs = payload.get("inputs")
+    base_mask = payload.get("base_mask")
+    payload_modalities = tuple(payload.get("modalities", ()))
+    if not isinstance(inputs, dict) or not torch.is_tensor(base_mask):
+        raise ValueError("Temporal superset payload must contain input tensor references and a base mask.")
+    if payload_modalities != modalities:
+        raise ValueError(
+            f"Temporal superset modalities {payload_modalities} do not match model modalities {modalities}."
+        )
+    base_mask = base_mask.to(dtype=torch.bool)
+    student_mask = batch.get("modality_temporal_mask")
+    if not torch.is_tensor(student_mask) or tuple(student_mask.shape) != tuple(base_mask.shape):
+        raise ValueError("Temporal superset and student masks must have matching [B,T,M] shapes.")
+    student_mask = student_mask.to(device=base_mask.device, dtype=torch.bool)
+    if bool((student_mask & ~base_mask).any().item()):
+        raise ValueError("Temporal student mask must be a subset of the preserved superset mask.")
+    if not bool(student_mask.any(dim=(1, 2)).all().item()) or not bool(base_mask.any(dim=(1, 2)).all().item()):
+        raise ValueError("Temporal student and superset masks must retain at least one history cell per sample.")
+    teacher_batch = dict(batch)
+    teacher_batch.update(inputs)
+    teacher_batch["modality_temporal_mask"] = base_mask
+    teacher_batch["temporal_mask"] = base_mask.any(dim=2)
+    teacher_batch["available_modalities"] = base_mask.any(dim=1)
+    for index, modality in enumerate(modalities):
+        valid = base_mask[:, :, index]
+        teacher_batch[f"{modality}_valid_mask"] = valid
+        teacher_batch[f"{modality}_dropout_mask"] = ~valid
+        teacher_batch[f"{modality}_missing_mask"] = ~valid
+    return teacher_batch, base_mask.any(dim=1).to(device=device)
 
 
 def _full_aux_ce(context: ExtensionContext, batch_state: BatchState) -> torch.Tensor:
@@ -729,19 +776,6 @@ def _u_mask_beam_criterion(context: ExtensionContext):
     return None
 
 
-def _logit_kd_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *, temperature: float) -> torch.Tensor:
-    if student_logits.ndim == 3:
-        student_logits = student_logits.reshape(-1, student_logits.shape[-1])
-    if teacher_logits.ndim == 3:
-        teacher_logits = teacher_logits.reshape(-1, teacher_logits.shape[-1])
-    temperature = float(temperature)
-    return F.kl_div(
-        F.log_softmax(student_logits / temperature, dim=-1),
-        F.softmax(teacher_logits / temperature, dim=-1),
-        reduction="batchmean",
-    ) * (temperature**2)
-
-
 def _logit_kd_loss_per_sample(student_logits: torch.Tensor, teacher_logits: torch.Tensor, *, temperature: float) -> torch.Tensor:
     if student_logits.ndim == 2:
         student_logits = student_logits.unsqueeze(1)
@@ -749,7 +783,7 @@ def _logit_kd_loss_per_sample(student_logits: torch.Tensor, teacher_logits: torc
         teacher_logits = teacher_logits.unsqueeze(1)
     if tuple(student_logits.shape) != tuple(teacher_logits.shape):
         raise ValueError(
-            "student and teacher logits must have matching shape for weak-pattern KD, "
+            "student and teacher logits must have matching shape for superset consistency, "
             f"got {tuple(student_logits.shape)} and {tuple(teacher_logits.shape)}."
         )
     temperature = float(temperature)
@@ -759,6 +793,78 @@ def _logit_kd_loss_per_sample(student_logits: torch.Tensor, teacher_logits: torc
         reduction="none",
     ).sum(dim=-1)
     return per_slot.mean(dim=1) * (temperature**2)
+
+
+def _confidence_gated_temperature_kl(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    temperature: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    temperature = float(temperature)
+    if temperature <= 0.0:
+        raise ValueError("Superset consistency temperature must be positive.")
+    per_sample = _logit_kd_loss_per_sample(student_logits, teacher_logits, temperature=temperature)
+    if teacher_logits.ndim == 2:
+        teacher_logits = teacher_logits.unsqueeze(1)
+    targets = labels.unsqueeze(1) if labels.ndim == 1 else labels
+    targets = targets[:, : teacher_logits.shape[1]].to(device=teacher_logits.device, dtype=torch.long)
+    if tuple(targets.shape) != tuple(teacher_logits.shape[:2]):
+        raise ValueError("Superset teacher logits and labels must have matching batch/prediction dimensions.")
+    valid = targets.ne(-100)
+    safe_targets = targets.masked_fill(~valid, 0)
+    teacher_prob = F.softmax(teacher_logits.detach() / temperature, dim=-1)
+    entropy = -(teacher_prob * teacher_prob.clamp_min(torch.finfo(teacher_prob.dtype).tiny).log()).sum(dim=-1)
+    if int(teacher_logits.shape[-1]) <= 1:
+        raise ValueError("Superset consistency requires at least two beam classes.")
+    normalized_entropy = entropy / math.log(int(teacher_logits.shape[-1]))
+    mean_entropy = (normalized_entropy * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+    correct = ((teacher_logits.detach().argmax(dim=-1) == safe_targets) | ~valid).all(dim=1) & valid.any(dim=1)
+    gate = (correct.to(dtype=teacher_prob.dtype) * (1.0 - mean_entropy).clamp(0.0, 1.0)).detach()
+    weighted = (per_sample * gate).sum() / gate.sum().clamp_min(torch.finfo(per_sample.dtype).eps)
+    return weighted, per_sample.mean(), gate
+
+
+def _circular_beam_risk(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    if logits.ndim == 2:
+        logits = logits.unsqueeze(1)
+    if logits.ndim != 3:
+        raise ValueError(f"Beam logits must have shape [B,P,C], got {tuple(logits.shape)}.")
+    targets = labels.unsqueeze(1) if labels.ndim == 1 else labels
+    targets = targets[:, : logits.shape[1]].to(device=logits.device, dtype=torch.long)
+    if tuple(targets.shape) != tuple(logits.shape[:2]):
+        raise ValueError("Beam logits and labels must have matching batch/prediction dimensions.")
+    valid = targets.ne(-100)
+    safe_targets = targets.masked_fill(~valid, 0)
+    classes = int(logits.shape[-1])
+    beam_ids = torch.arange(classes, device=logits.device).view(1, 1, classes)
+    distance = (beam_ids - safe_targets.unsqueeze(-1)).abs()
+    circular_distance = torch.minimum(distance, classes - distance).to(dtype=logits.dtype)
+    per_slot = (F.softmax(logits, dim=-1) * circular_distance).sum(dim=-1)
+    return (per_slot * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+
+
+def _beam_monotonic_ranking_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    tolerance: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if tuple(student_logits.shape) != tuple(teacher_logits.shape):
+        raise ValueError("Student and superset logits must have matching shapes for beam monotonic ranking.")
+    teacher_risk = _circular_beam_risk(teacher_logits.detach(), labels).detach()
+    student_risk = _circular_beam_risk(student_logits, labels)
+    partial_excess = student_risk - teacher_risk - float(tolerance)
+    superset_worse = teacher_risk > student_risk
+    return (
+        F.relu(partial_excess).mean(),
+        teacher_risk,
+        student_risk,
+        partial_excess.detach().gt(0),
+        superset_worse.detach(),
+    )
 
 
 def _top1(logits: torch.Tensor, labels: torch.Tensor) -> float:
@@ -775,6 +881,7 @@ def _hard_router_oracle_losses(
     *,
     router_supervision: str,
     router_distill_weight: float,
+    circular_beam_distance: bool = True,
 ) -> tuple[torch.Tensor | None, dict[str, float]]:
     if str(router_supervision).strip().lower() != "oracle":
         return None, {}
@@ -792,6 +899,7 @@ def _hard_router_oracle_losses(
             labels,
             output.get("missing_mask"),
             prefix="router",
+            circular_beam_distance=circular_beam_distance,
         )
         terms.append(modality_weight * loss)
         diagnostics.update(diag)
@@ -810,11 +918,17 @@ def _modality_oracle_ce(
     mask: torch.Tensor | None,
     *,
     prefix: str,
+    circular_beam_distance: bool = True,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     if mask is None:
         mask = torch.ones(gate_logits.shape, dtype=torch.bool, device=gate_logits.device)
     mask = mask.to(device=gate_logits.device, dtype=torch.bool)
-    targets = _oracle_argmin(unimodal_logits, labels, mask)
+    targets = _oracle_argmin(
+        unimodal_logits,
+        labels,
+        mask,
+        circular_beam_distance=circular_beam_distance,
+    )
     active = targets.ne(-100) & mask.sum(dim=-1).gt(1)
     if not bool(active.any().item()):
         zero = gate_logits.sum() * 0.0
@@ -830,7 +944,13 @@ def _modality_oracle_ce(
     }
 
 
-def _oracle_argmin(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def _oracle_argmin(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    circular_beam_distance: bool = True,
+) -> torch.Tensor:
     target = labels.to(device=logits.device, dtype=torch.long)
     if target.ndim > 1:
         target = target[:, 0]
@@ -838,7 +958,9 @@ def _oracle_argmin(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tenso
     while target.ndim < pred.ndim:
         target = target.unsqueeze(-1)
     diff = (pred - target).abs()
-    errors = torch.minimum(diff, int(logits.shape[-1]) - diff).to(dtype=logits.dtype)
+    if circular_beam_distance:
+        diff = torch.minimum(diff, int(logits.shape[-1]) - diff)
+    errors = diff.to(dtype=logits.dtype)
     available = mask.to(device=logits.device, dtype=torch.bool)
     masked = errors.masked_fill(~available, torch.finfo(errors.dtype).max)
     oracle = masked.argmin(dim=-1)
@@ -1126,32 +1248,6 @@ def _write_pattern_counts(cfg: dict[str, Any], counts: Counter, *, epoch: int) -
                 }
             )
     return path
-
-
-def _active_pattern_mask(
-    pattern_names: list[str] | None,
-    apply_patterns: list[str] | tuple[str, ...] | None,
-    device: torch.device,
-) -> torch.Tensor | None:
-    if not pattern_names:
-        return None
-    apply = {canonical_missing_pattern_name(item) for item in (apply_patterns or ())}
-    if not apply:
-        return torch.zeros(len(pattern_names), dtype=torch.bool, device=device)
-    return torch.tensor([canonical_missing_pattern_name(name) in apply for name in pattern_names], dtype=torch.bool, device=device)
-
-
-def _active_ratio(active: torch.Tensor | None) -> float:
-    if active is None or int(active.numel()) == 0:
-        return 0.0
-    return float(active.float().mean().detach().cpu().item())
-
-
-def _has_active_patterns(pattern_names: list[str] | None, apply_patterns: list[str] | tuple[str, ...] | None) -> bool:
-    if not pattern_names:
-        return False
-    apply = {canonical_missing_pattern_name(item) for item in (apply_patterns or ())}
-    return bool(apply) and any(canonical_missing_pattern_name(name) in apply for name in pattern_names)
 
 
 __all__ = ["UMaskBeamJEPATrainingExtension", "u_mask_beam_jepa_config", "u_mask_beam_jepa_loss"]

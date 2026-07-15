@@ -9,8 +9,13 @@ Licensed under the MIT License.
 
 import itertools
 from dataclasses import dataclass
+import hashlib
+import os
 from pathlib import Path
+import re
+import tempfile
 from typing import Any
+from urllib.parse import urlparse
 
 import torch
 import torch.nn as nn
@@ -19,6 +24,7 @@ import torch.nn.functional as F
 from kd_sensing.modalities import validate_image_encoder_profile
 from kd_sensing.models.image_encoders import _resolve_output_dim
 from kd_sensing.registries import ENCODERS
+from kd_sensing.utils.checkpoint import load_torch_payload
 
 
 TINYVIT_IMAGE_SIZE = (224, 224)
@@ -577,36 +583,88 @@ def _filter_tinyvit_state_dict(
     return filtered, filtered_keys
 
 
-def _load_checkpoint_payload(path: str | Path | None, url: str, *, allow_download: bool) -> tuple[Any, dict[str, Any]]:
+def _load_checkpoint_payload(
+    path: str | Path | None,
+    url: str,
+    *,
+    allow_download: bool,
+    expected_sha256: str | None,
+) -> tuple[Any, dict[str, Any]]:
     if path:
         checkpoint_path = Path(path).expanduser()
         if not checkpoint_path.exists():
             raise RuntimeError(f"TinyViT checkpoint_path does not exist: {checkpoint_path}")
-        payload = torch.load(checkpoint_path, map_location="cpu")
+        digest = _sha256_file(checkpoint_path)
+        if expected_sha256 and digest != _validated_sha256(expected_sha256):
+            raise RuntimeError(f"TinyViT local checkpoint SHA256 mismatch: {checkpoint_path}")
+        payload = load_torch_payload(checkpoint_path, map_location="cpu")
         return payload, {
             "checkpoint_source": "local",
             "checkpoint_path": str(checkpoint_path),
             "checkpoint_url": None,
             "checkpoint_downloaded": False,
+            "checkpoint_sha256": digest,
+            "checkpoint_load_mode": "weights_only",
         }
     if not allow_download:
         raise RuntimeError(
             "TinyViT ImageNet-22k checkpoint requires checkpoint_path when allow_download=false. "
-            "Provide a local checkpoint_path or enable allow_download."
+            "Provide a local checkpoint_path or explicitly enable a SHA256-pinned download."
         )
+    digest = _validated_sha256(expected_sha256)
+    if urlparse(url).scheme.lower() != "https":
+        raise RuntimeError("TinyViT checkpoint_url must use HTTPS.")
+    cache_dir = Path(torch.hub.get_dir()) / "checkpoints"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    filename = Path(urlparse(url).path).name or "tinyvit_checkpoint.pth"
+    checkpoint_path = cache_dir / f"{digest[:12]}-{filename}"
+    downloaded = False
+    if checkpoint_path.exists() and _sha256_file(checkpoint_path) != digest:
+        checkpoint_path.unlink()
+    if not checkpoint_path.exists():
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".tinyvit-", suffix=".pth", dir=cache_dir, delete=False) as handle:
+                temporary = Path(handle.name)
+            torch.hub.download_url_to_file(url, str(temporary), progress=False)
+            if _sha256_file(temporary) != digest:
+                raise RuntimeError("TinyViT downloaded checkpoint SHA256 mismatch.")
+            os.replace(temporary, checkpoint_path)
+            temporary = None
+            downloaded = True
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
     try:
-        payload = torch.hub.load_state_dict_from_url(url, map_location="cpu", check_hash=False)
-    except Exception as exc:  # pragma: no cover - network/cache dependent.
+        payload = load_torch_payload(checkpoint_path, map_location="cpu")
+    except Exception as exc:  # pragma: no cover - cache contents are environment dependent.
         raise RuntimeError(
-            "Failed to load TinyViT ImageNet-22k checkpoint from URL/cache. "
+            "Failed to safely load TinyViT ImageNet-22k checkpoint from verified URL/cache. "
             f"URL: {url}. Provide a local checkpoint_path for offline runs."
         ) from exc
     return payload, {
         "checkpoint_source": "url",
-        "checkpoint_path": None,
+        "checkpoint_path": str(checkpoint_path),
         "checkpoint_url": url,
-        "checkpoint_downloaded": True,
+        "checkpoint_downloaded": downloaded,
+        "checkpoint_sha256": digest,
+        "checkpoint_load_mode": "weights_only",
     }
+
+
+def _validated_sha256(value: str | None) -> str:
+    digest = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise RuntimeError("TinyViT remote checkpoint download requires a full 64-character SHA256.")
+    return digest
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class TinyViTImageEncoder(nn.Module):
@@ -625,7 +683,9 @@ class TinyViTImageEncoder(nn.Module):
         pretrained_source: str | None = None,
         checkpoint_path: str | None = None,
         checkpoint: str | None = None,
-        allow_download: bool = True,
+        allow_download: bool = False,
+        checkpoint_url: str | None = None,
+        checkpoint_sha256: str | None = None,
         freeze_backbone: bool = True,
         unfreeze_stages: list[str] | tuple[str, ...] | None = None,
         unfreeze_last_n_stages: int = 0,
@@ -654,7 +714,8 @@ class TinyViTImageEncoder(nn.Module):
         self.unfreeze_last_n_stages = int(unfreeze_last_n_stages)
         self.allow_download = bool(allow_download)
         self.checkpoint_path = checkpoint_path or checkpoint
-        self.checkpoint_url = _checkpoint_url(self.variant)
+        self.checkpoint_url = str(checkpoint_url or _checkpoint_url(self.variant))
+        self.checkpoint_sha256 = checkpoint_sha256
 
         self.backbone, self.backbone_dim = _build_tinyvit_backbone(self.variant, in_chans=3)
         self.projection = nn.Sequential(
@@ -666,6 +727,8 @@ class TinyViTImageEncoder(nn.Module):
             "checkpoint_path": None,
             "checkpoint_url": None,
             "checkpoint_downloaded": False,
+            "checkpoint_sha256": None,
+            "checkpoint_load_mode": None,
             "checkpoint_schema": None,
             "checkpoint_filtered_keys": [],
             "checkpoint_missing_keys": [],
@@ -701,6 +764,8 @@ class TinyViTImageEncoder(nn.Module):
             "checkpoint_path": self.checkpoint_metadata["checkpoint_path"],
             "checkpoint_url": self.checkpoint_metadata["checkpoint_url"],
             "checkpoint_downloaded": self.checkpoint_metadata["checkpoint_downloaded"],
+            "checkpoint_sha256": self.checkpoint_metadata["checkpoint_sha256"],
+            "checkpoint_load_mode": self.checkpoint_metadata["checkpoint_load_mode"],
             "checkpoint_schema": self.checkpoint_metadata["checkpoint_schema"],
             "checkpoint_filtered_keys": list(self.checkpoint_metadata["checkpoint_filtered_keys"]),
             "checkpoint_missing_keys": list(self.checkpoint_metadata["checkpoint_missing_keys"]),
@@ -727,6 +792,7 @@ class TinyViTImageEncoder(nn.Module):
             self.checkpoint_path,
             self.checkpoint_url,
             allow_download=self.allow_download,
+            expected_sha256=self.checkpoint_sha256,
         )
         raw_state, schema = _state_dict_from_payload(payload)
         reference = self.backbone.state_dict()

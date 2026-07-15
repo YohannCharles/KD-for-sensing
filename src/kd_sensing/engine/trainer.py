@@ -8,6 +8,10 @@ from kd_sensing.engine.batch_step import (
     BatchStepRunner,
 )
 from kd_sensing.engine.checkpointing import CheckpointManager
+from kd_sensing.engine.checkpoint_selection import (
+    config_declares_independent_validation,
+    model_selection_enabled,
+)
 from kd_sensing.engine.data_factory import build_dataloaders
 from kd_sensing.engine.debug_diagnostics import (
     ModuleHealthTracker,
@@ -163,12 +167,6 @@ def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
         from kd_sensing.engine.physics_informed_extension import PhysicsInformedTrainingExtension
 
         extensions.append(PhysicsInformedTrainingExtension())
-    teacher_cfg = cfg.get("loss", {}).get("teacher_guidance", {}) if isinstance(cfg.get("loss"), dict) else {}
-    teacher_enabled = teacher_cfg is True or (isinstance(teacher_cfg, dict) and bool(teacher_cfg.get("enabled", False)))
-    if not extensions and teacher_enabled:
-        from kd_sensing.engine.teacher_guidance import TeacherGuidanceTrainingExtension
-
-        extensions.append(TeacherGuidanceTrainingExtension())
     from kd_sensing.engine.pcpg_radar_balance import pcpg_radar_balance_config, PCPGRadarBalanceTrainingExtension
 
     if pcpg_radar_balance_config(cfg).get("enabled", False):
@@ -209,6 +207,16 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     run_dir = create_run_dir(cfg)
     write_running_status(run_dir, cfg, kind="training")
     artifact_writer, dataloaders, split_metadata, normalization_artifacts = _prepare_training_data_context(cfg, run_dir)
+    selection_enabled = model_selection_enabled(cfg)
+    validation_loader = dataloaders.get("validation")
+    if selection_enabled and (
+        validation_loader is None or not config_declares_independent_validation(cfg)
+    ):
+        raise ValueError(
+            "Model selection is enabled, but no independent validation loader/source is available. "
+            "Provide an independent validation split or set training.model_selection=false and "
+            "training.use_early_stopping=false for fixed-epoch/no-selection."
+        )
     device, throughput_metadata, non_blocking, amp_enabled, amp_dtype = _prepare_training_device_context(
         cfg,
         dataloaders,
@@ -250,6 +258,9 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
         num_pred=num_pred,
         num_classes=num_classes,
         seq_length=seq_length,
+        model_selection_enabled=selection_enabled,
+        validation_loader=validation_loader,
+        validation_split_name="validation" if validation_loader is not None else "none",
     )
 
 
@@ -400,8 +411,6 @@ def _restore_training_state(context: TrainingRunContext) -> None:
     context.progress_enabled = _progress_enabled(context.cfg)
     context.total_epochs = context.training_cfg.get("epochs", 100)
     context.early_stopping_min_epoch = _early_stopping_min_epoch(context.total_epochs)
-    context.validation_loader = context.dataloaders.get("validation", context.dataloaders["test"])
-    context.validation_split_name = "validation" if "validation" in context.dataloaders else "test"
 
 
 def _run_training_loop_phase(context: TrainingRunContext) -> None:
@@ -433,6 +442,7 @@ def _run_training_loop_phase(context: TrainingRunContext) -> None:
             progress_enabled=context.progress_enabled,
             total_epochs=context.total_epochs,
             early_stopping_min_epoch=context.early_stopping_min_epoch,
+            model_selection_enabled=context.model_selection_enabled,
             validation_loader=context.validation_loader,
             validate_fn=validate,
         )
@@ -450,6 +460,7 @@ def _finalize_training_run(context: TrainingRunContext) -> dict:
         context.device,
         run_dir=context.run_dir,
         validation_split_name=context.validation_split_name,
+        model_selection_enabled=context.model_selection_enabled,
     )
     if context.final_test_checkpoint_load is not None:
         context.state.checkpoint_loads.append(context.final_test_checkpoint_load)
@@ -480,24 +491,36 @@ def _finalize_training_run(context: TrainingRunContext) -> dict:
         context.run_dir,
         context.cfg,
         kind="training",
-        primary_metric={
-            "name": context.early_stopping_metric,
-            "mode": context.early_stopping_mode,
-            "value": float(context.state.best_early_stopping_value),
-            "epoch": int(context.state.best_early_stopping_epoch),
-        },
+        primary_metric=(
+            {
+                "name": context.early_stopping_metric,
+                "mode": context.early_stopping_mode,
+                "value": float(context.state.best_early_stopping_value),
+                "epoch": int(context.state.best_early_stopping_epoch),
+            }
+            if context.model_selection_enabled
+            else None
+        ),
         metrics_path=context.run_dir / "metrics.json",
-        best_checkpoint=_best_checkpoint_for_status(context.run_dir, context.state.registry_checkpoint),
+        best_checkpoint=(
+            _best_checkpoint_for_status(context.run_dir, context.state.registry_checkpoint)
+            if context.model_selection_enabled
+            else context.run_dir / "checkpoints" / "last.pth"
+        ),
     )
     return {
         "run_dir": str(context.run_dir),
         "history": context.state.history,
         "epoch_logs": context.state.epoch_logs,
-        "best_val_loss": context.state.best_val_loss,
-        "best_val_top1": context.state.best_val_top1,
+        "best_val_loss": context.state.best_val_loss if context.model_selection_enabled else None,
+        "best_val_top1": context.state.best_val_top1 if context.model_selection_enabled else None,
         "early_stopping": context.final_artifacts["early_stopping"],
-        "best_early_stopping_value": context.state.best_early_stopping_value,
-        "best_early_stopping_epoch": context.state.best_early_stopping_epoch,
+        "best_early_stopping_value": (
+            context.state.best_early_stopping_value if context.model_selection_enabled else None
+        ),
+        "best_early_stopping_epoch": (
+            context.state.best_early_stopping_epoch if context.model_selection_enabled else None
+        ),
         "checkpoint_registry": context.state.registry_checkpoint,
         "normalization_artifacts": context.normalization_artifacts,
         "checkpoint_loads": context.state.checkpoint_loads,
@@ -509,6 +532,7 @@ def _finalize_training_run(context: TrainingRunContext) -> dict:
         "startup_summary": context.startup_summary,
         "config_diff": context.config_diff,
         "csi_first_batch_diagnostics": context.csi_debug_records,
+        "model_selection_enabled": context.model_selection_enabled,
     }
 
 

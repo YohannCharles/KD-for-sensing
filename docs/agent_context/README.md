@@ -17,7 +17,7 @@
 | `data` | `docs/agent_context/data.md` | dataset、batch contract、modality profile、split 或本地数据边界 |
 | `config` | `docs/agent_context/configs.md` | YAML、virtual config、canonical recipe、迁移 guard 或配置解析 |
 | `cli` | `docs/agent_context/cli.md` | console scripts、包内 CLI、`scripts/` 本地 runner 或 help smoke |
-| `diagnostics` | `docs/agent_context/diagnostics.md` | run index、JEPA visual analysis、GPS shortcut benchmark、paper export 或 doctor |
+| `diagnostics` | `docs/agent_context/diagnostics.md` | run index、U-Mask eval matrix、runtime cleanup、paper export 或 MMW diagnostics |
 | `openspec` | `docs/agent_context/openspec.md` | proposal、spec、tasks、archive、complete active change 收口 |
 | `documentation` | `docs/agent_context/documentation.md` | README、AGENTS、docs lifecycle、inventory、导航和文档健康 |
 | `claims` | `docs/agent_context/claims.md` | result claim registry、论文表格、provenance、claim gate 或本地结果入账 |

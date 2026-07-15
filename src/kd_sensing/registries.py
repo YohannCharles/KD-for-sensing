@@ -14,10 +14,6 @@ class Registry:
     def __init__(self, name: str):
         self.name = name
         self._items: Dict[str, Callable[..., Any]] = {}
-        self._removed: Dict[str, str] = {}
-
-    def register_removed(self, name: str, message: str) -> None:
-        self._removed[name] = message
 
     def register(self, name: Optional[str] = None, *, force: bool = False):
         """Register a component under ``name``.
@@ -39,12 +35,6 @@ class Registry:
         return decorator
 
     def get(self, name: str) -> Callable[..., Any]:
-        if name in self._removed:
-            available = ", ".join(self.list()) or "<empty>"
-            raise RegistryError(
-                f"Removed component '{name}' in registry '{self.name}'. "
-                f"{self._removed[name]} Available names: {available}"
-            )
         try:
             return self._items[name]
         except KeyError as exc:
@@ -118,82 +108,24 @@ PREPROCESSORS = Registry("preprocessors")
 JEPA_VISUAL_TOKEN_ENCODERS = Registry("jepa_visual_token_encoders")
 DIFFICULTY_OPERATORS = Registry("difficulty_operators")
 
-DATASETS.register_removed(
-    "scenario9",
-    "Use {'type': 'deepsense6g', 'scene': 9}.",
-)
-DATASETS.register_removed(
-    "scenario31",
-    "Use {'type': 'deepsense6g', 'scene': 31}.",
-)
-DATASETS.register_removed(
-    "scenario32",
-    "Use {'type': 'deepsense6g', 'scene': 32}.",
-)
-DATASETS.register_removed(
-    "scenario33",
-    "Use {'type': 'deepsense6g', 'scene': 33}.",
-)
-DATASETS.register_removed(
-    "scenario34",
-    "Use {'type': 'deepsense6g', 'scene': 34}.",
-)
-MODELS.register_removed(
-    "fusion_strong",
-    "Use model.primary.type='modular_sequence' fusion with current modality encoders, projectors, early_concat_gru, and beam_head.",
-)
-MODELS.register_removed(
-    "fusion_lightweight",
-    "Use model.primary.type='modular_sequence' fusion or the current 'cls_token_transformer_fusion' lightweight route.",
-)
-MODELS.register_removed(
-    "bev_fusion_2604",
-    "BEV-Fusion 2604 reproduction was retired after final C2. Use U-MaskBeamJEPA or current MMW/CSI workflows.",
-)
-MODELS.register_removed(
-    "vision_position_late_fusion",
-    "Vision-Position baselines were retired after final C2. Use U-MaskBeamJEPA or current MMW/CSI workflows.",
-)
-MODELS.register_removed(
-    "vision_position_transformer_fusion",
-    "Vision-Position baselines were retired after final C2. Use U-MaskBeamJEPA or current MMW/CSI workflows.",
-)
-MODELS.register_removed(
-    "gps_sequence_baseline",
-    "Vision-Position GPS-only baseline was retired after final C2. Use current GPS encoders inside modular_sequence or MMW/CSI workflows.",
-)
-LOSSES.register_removed("logits_kd", "KD support has been removed. Use supervised or adaptation losses.")
-LOSSES.register_removed("rkd", "KD support has been removed. Use supervised or adaptation losses.")
-
-
 def import_default_components() -> None:
     """Import modules that register built-in components."""
 
-    import kd_sensing.data.datasets.deepsense6g  # noqa: F401
     import kd_sensing.data.datasets.mmw  # noqa: F401
-    import kd_sensing.data.datasets.synthetic  # noqa: F401
     import kd_sensing.evaluation.metrics  # noqa: F401
     import kd_sensing.losses.beam  # noqa: F401
-    import kd_sensing.losses.physics_informed  # noqa: F401
     import kd_sensing.losses.u_mask_beam_jepa  # noqa: F401
-    import kd_sensing.models.amr_net  # noqa: F401
-    import kd_sensing.models.fusion  # noqa: F401
-    import kd_sensing.models.csi_encoder  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
-    import kd_sensing.models.image  # noqa: F401
     import kd_sensing.models.image_encoders  # noqa: F401
-    import kd_sensing.models.jepa  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
-    import kd_sensing.models.mmwave  # noqa: F401
-    import kd_sensing.models.pinn_multimodal_beam  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
     import kd_sensing.models.rmbp_mm  # noqa: F401
     import kd_sensing.models.tinyvit  # noqa: F401
     import kd_sensing.models.u_mask_beam_jepa  # noqa: F401
-    import kd_sensing.preprocessing.csv  # noqa: F401
     import kd_sensing.preprocessing.image_cache  # noqa: F401
     import kd_sensing.preprocessing.lidar  # noqa: F401
+    import kd_sensing.preprocessing.mmw_radar  # noqa: F401
     import kd_sensing.preprocessing.sample_cache  # noqa: F401
     import kd_sensing.preprocessing.sequences  # noqa: F401
 

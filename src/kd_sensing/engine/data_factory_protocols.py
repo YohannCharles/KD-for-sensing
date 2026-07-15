@@ -8,12 +8,16 @@ from kd_sensing.data.scenes import (
     retarget_deepsense_dataset_config,
 )
 from kd_sensing.engine.data_factory_groups import (
+    audit_temporal_split_datasets,
     sequence_group_keys_for_dataset,
     stratified_indices_by_label,
     stratified_indices_by_label_and_sequence_group,
     target_labels_for_dataset,
 )
-from kd_sensing.engine.data_factory_scalers import fit_or_apply_protocol_gps_scaler
+from kd_sensing.engine.data_factory_scalers import (
+    fit_or_apply_protocol_normalizers,
+    normalization_fit_placeholders,
+)
 
 
 STRATIFIED_2604_PROTOCOLS = {
@@ -31,6 +35,9 @@ STRATIFIED_SEQUENCE_GROUP_STRATEGIES = {
     "sequence_group_stratified_by_target_beam_per_scene",
     "group_safe_stratified_by_target_beam_per_scene",
 }
+DEFAULT_SAMPLE_STRATEGY = "stratified_by_target_beam_per_scene"
+DEFAULT_SEQUENCE_GROUP_STRATEGY = "stratified_by_target_beam_per_scene_sequence_group"
+SEQUENCE_GROUP_IDENTITY_POLICY = "scene_id:seq_index"
 
 
 def build_protocol_split_datasets(
@@ -55,9 +62,14 @@ def build_protocol_split_datasets(
     if not all_scenes:
         raise ValueError("stratified_80_10_10 split requires at least one DeepSense6G scene.")
     source_splits = tuple(str(item) for item in split_cfg.get("source_splits", ("train", "test")))
+    build_kwargs = normalization_fit_placeholders(cfg)
+    build_kwargs.update(extra_dataset_kwargs)
     scene_subsets: dict[str, dict[Any, Any]] = {"train": {}, "validation": {}, "test": {}}
+    scene_sources: dict[Any, Any] = {}
+    scene_labels: dict[Any, list[int]] = {}
+    scene_indices: dict[Any, dict[str, list[int]]] = {}
     for scene_offset, scene in enumerate(all_scenes):
-        full_scene = build_protocol_union_dataset(cfg, scene, source_splits, extra_dataset_kwargs, dataset_builder)
+        full_scene = build_protocol_union_dataset(cfg, scene, source_splits, build_kwargs, dataset_builder)
         labels = target_labels_for_dataset(full_scene)
         index_splits = protocol_indices_by_strategy(
             full_scene,
@@ -67,27 +79,34 @@ def build_protocol_split_datasets(
             validation_fraction=float(split_cfg["validation_fraction"]),
             test_fraction=float(split_cfg["test_fraction"]),
         )
+        scene_sources[scene] = full_scene
+        scene_labels[scene] = labels
+        scene_indices[scene] = index_splits
         for role, indices in index_splits.items():
-            subset = Subset(full_scene, indices)
-            annotate_protocol_subset(
-                subset,
-                role=role,
-                source_dataset=full_scene,
-                scene=scene,
-                split_cfg=split_cfg,
-                source_splits=source_splits,
-                labels=[labels[int(index)] for index in indices],
-            )
-            scene_subsets[role][scene] = subset
+            scene_subsets[role][scene] = Subset(full_scene, indices)
     result: dict[str, Any] = {}
     for role, scenes in role_scenes.items():
         parts = [scene_subsets[role][scene] for scene in scenes]
         result[role] = parts[0] if len(parts) == 1 else ConcatDataset(parts)
-    fit_or_apply_protocol_gps_scaler(
+    identity_audit = audit_temporal_split_datasets(result)
+    for role, scenes in role_scenes.items():
+        for scene in scenes:
+            subset = scene_subsets[role][scene]
+            annotate_protocol_subset(
+                subset,
+                role=role,
+                source_dataset=scene_sources[scene],
+                scene=scene,
+                split_cfg=split_cfg,
+                source_splits=source_splits,
+                labels=[scene_labels[scene][int(index)] for index in scene_indices[scene][role]],
+                identity_audit=identity_audit,
+            )
+    fit_or_apply_protocol_normalizers(
         result["train"],
         result.get("validation"),
         result["test"],
-        gps_scaler=extra_dataset_kwargs.get("gps_scaler"),
+        provided=extra_dataset_kwargs,
     )
     return result
 
@@ -124,9 +143,28 @@ def stratified_2604_split_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     test_fraction = float(fractions.get("test", 0.1))
     if validation_fraction <= 0.0 or test_fraction <= 0.0 or validation_fraction + test_fraction >= 1.0:
         raise ValueError("data.dataset.split_fractions must define positive validation/test fractions with train > 0.")
+    history_window = int(dataset_cfg.get("seq_len", cfg.get("model", {}).get("seq_length", 1)) or 1)
+    default_strategy = DEFAULT_SEQUENCE_GROUP_STRATEGY if history_window > 1 else DEFAULT_SAMPLE_STRATEGY
+    strategy = str(dataset_cfg.get("split_strategy") or default_strategy).strip().lower()
+    if history_window > 1 and strategy in STRATIFIED_SAMPLE_STRATEGIES:
+        raise ValueError(
+            "Overlapping temporal windows cannot use a sample-level label-stratified split. "
+            f"Use the group-safe sequence strategy '{DEFAULT_SEQUENCE_GROUP_STRATEGY}'."
+        )
+    group_identity_policy = str(
+        dataset_cfg.get("split_group_identity_policy")
+        or (SEQUENCE_GROUP_IDENTITY_POLICY if strategy in STRATIFIED_SEQUENCE_GROUP_STRATEGIES else "not_applicable")
+    ).strip()
+    if strategy in STRATIFIED_SEQUENCE_GROUP_STRATEGIES and group_identity_policy != SEQUENCE_GROUP_IDENTITY_POLICY:
+        raise ValueError(
+            "Sequence-group split requires split_group_identity_policy "
+            f"'{SEQUENCE_GROUP_IDENTITY_POLICY}'."
+        )
     return {
         "protocol": str(dataset_cfg.get("split_protocol")),
-        "strategy": str(dataset_cfg.get("split_strategy") or "stratified_by_target_beam_per_scene"),
+        "strategy": strategy,
+        "group_identity_policy": group_identity_policy,
+        "history_window": history_window,
         "seed": int(dataset_cfg.get("split_seed", cfg.get("experiment", {}).get("seed", 0))),
         "train_fraction": float(1.0 - validation_fraction - test_fraction),
         "validation_fraction": validation_fraction,
@@ -147,6 +185,11 @@ def protocol_indices_by_strategy(
 ) -> dict[str, list[int]]:
     strategy = str(split_cfg.get("strategy") or "stratified_by_target_beam_per_scene").strip().lower()
     if strategy in STRATIFIED_SAMPLE_STRATEGIES:
+        if int(split_cfg.get("history_window", 1) or 1) > 1:
+            raise ValueError(
+                "Overlapping temporal windows cannot use a sample-level label-stratified split. "
+                f"Use the group-safe sequence strategy '{DEFAULT_SEQUENCE_GROUP_STRATEGY}'."
+            )
         return stratified_indices_by_label(
             labels,
             seed=seed,
@@ -210,9 +253,6 @@ def build_protocol_union_dataset(
     parts = []
     for source_split in source_splits:
         scene_cfg = retarget_cfg_for_scene(cfg, scene)
-        dataset_cfg = scene_cfg.setdefault("data", {}).setdefault("dataset", {})
-        if "gps_scaler" not in extra_dataset_kwargs:
-            dataset_cfg["gps_normalize"] = False
         parts.append(dataset_builder(scene_cfg, source_split, **extra_dataset_kwargs))
     return parts[0] if len(parts) == 1 else ConcatDataset(parts)
 
@@ -226,6 +266,7 @@ def annotate_protocol_subset(
     split_cfg: dict[str, Any],
     source_splits: tuple[str, ...],
     labels: list[int],
+    identity_audit: dict[str, Any],
 ) -> None:
     subset.split = role  # type: ignore[attr-defined]
     label_counts = {str(label): int(labels.count(label)) for label in sorted(set(labels))}
@@ -233,6 +274,7 @@ def annotate_protocol_subset(
         "enabled": True,
         "protocol": split_cfg["protocol"],
         "strategy": split_cfg["strategy"],
+        "group_identity_policy": split_cfg["group_identity_policy"],
         "source_split": "train+test",
         "source_splits": list(source_splits),
         "role": role,
@@ -245,6 +287,7 @@ def annotate_protocol_subset(
         "parent_num_samples": int(len(source_dataset)),
         "label_count": len(label_counts),
         "label_distribution": label_counts,
+        "identity_audit": identity_audit,
     }
 
 

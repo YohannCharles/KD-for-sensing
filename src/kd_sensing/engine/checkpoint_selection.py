@@ -4,6 +4,48 @@ from typing import Any
 SUPPORTED_SELECTION_METRICS = {"val_acc", "avg_missing_top1", "worst_pattern_top1"}
 
 
+def model_selection_enabled(cfg: dict[str, Any]) -> bool:
+    training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
+    raw = training_cfg.get("model_selection")
+    if isinstance(raw, dict):
+        return bool(raw.get("enabled", True))
+    if raw is None:
+        return bool(training_cfg.get("use_early_stopping", True))
+    return bool(raw)
+
+
+def config_declares_independent_validation(cfg: dict[str, Any]) -> bool:
+    data_cfg = cfg.get("data", {}) if isinstance(cfg.get("data"), dict) else {}
+    internal = data_cfg.get("validation_from_train")
+    if isinstance(internal, dict):
+        if bool(internal.get("enabled", False)):
+            return True
+    elif bool(internal):
+        return True
+
+    dataset_cfg = data_cfg.get("dataset", {}) if isinstance(data_cfg.get("dataset"), dict) else {}
+    protocol = str(dataset_cfg.get("split_protocol") or "").strip().lower()
+    if protocol in {
+        "stratified_80_10_10",
+        "deepsense6g_2604_stratified_80_10_10",
+        "2604_stratified_80_10_10",
+    }:
+        return True
+
+    domains = dataset_cfg.get("domains")
+    if isinstance(domains, list) and domains:
+        return all(isinstance(domain, dict) and _has_distinct_validation_csv(domain) for domain in domains)
+    return _has_distinct_validation_csv(dataset_cfg)
+
+
+def _has_distinct_validation_csv(dataset_cfg: dict[str, Any]) -> bool:
+    validation_csv = dataset_cfg.get("val_csv_name") or dataset_cfg.get("validation_csv_name")
+    if not validation_csv:
+        return False
+    test_csv = dataset_cfg.get("test_csv_name")
+    return not test_csv or str(validation_csv) != str(test_csv)
+
+
 def resolve_checkpoint_selection_metric(cfg: dict[str, Any]) -> str:
     checkpoint_cfg = cfg.get("checkpoint", {}) if isinstance(cfg.get("checkpoint"), dict) else {}
     training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}

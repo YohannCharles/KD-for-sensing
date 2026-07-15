@@ -39,6 +39,8 @@ from kd_sensing.diagnostics.run_index_resources import (
     _empty_resources,
     collect_python_processes,
     collect_resource_snapshot,
+    redact_command,
+    sanitize_process_records,
 )
 from kd_sensing.diagnostics.run_index_scanner import (
     collect_log_records,
@@ -95,7 +97,8 @@ def build_run_index(
     else:
         resource_snapshot = dict(resource_snapshot)
         resource_snapshot.setdefault("processes", process_records)
-    process_records = list(resource_snapshot.get("processes", process_records))
+    process_records = sanitize_process_records(list(resource_snapshot.get("processes", process_records)))
+    resource_snapshot["processes"] = process_records
 
     warnings: list[str] = []
     log_records = collect_log_records(log_roots, warnings=warnings)
@@ -287,12 +290,7 @@ def _read_json_file(path: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 def _redact_command(command: Any) -> str | None:
-    if command in (None, ""):
-        return None
-    text = " ".join(str(item) for item in command) if isinstance(command, (list, tuple)) else str(command)
-    text = re.sub(r"(?i)(password|passwd|token|secret|credential|api[_-]?key)=\S+", r"\1=<redacted>", text)
-    text = re.sub(r"(?i)(--(?:password|passwd|token|secret|credential|api-key|api_key)\s+)\S+", r"\1<redacted>", text)
-    return text
+    return redact_command(command)
 
 def _safe_stem(value: Any) -> str:
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")

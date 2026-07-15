@@ -143,8 +143,6 @@ def _split_sequence_rows_group_safe(
     if train_rows and test_rows:
         if int(diagnostics.get("train_test_frame_overlap_count", 0)) > 0:
             reasons.append("train_test_frame_overlap")
-        if float(diagnostics.get("future_label_sequence_reuse_ratio", 0.0)) > 0.0:
-            reasons.append("future_label_sequence_reuse")
         if float(diagnostics.get("adjacent_window_cross_split_ratio", 0.0)) > 0.0:
             reasons.append("adjacent_window_cross_split")
         if int(diagnostics.get("guard_band_violations", 0)) > 0:
@@ -228,8 +226,8 @@ def _base_split_metadata(
         "leakage_diagnostics": diagnostics,
         "diagnostics_version": "mmw_split_leakage_v1",
         "fix_hint": (
-            "Regenerate MMW splits with split_strategy=group_safe_time_block and a fresh strict split tag "
-            "such as l5p6_group_safe."
+            "Resolve structural frame/window/adjacency/guard-band overlap, then regenerate MMW splits "
+            "with split_strategy=group_safe_time_block and a fresh strict split tag."
         ),
     }
     metadata.update(mapping.metadata())
@@ -441,6 +439,7 @@ def compute_split_leakage_diagnostics(
         "adjacent_window_cross_split_ratio": float(adjacent_cross / adjacent_pairs) if adjacent_pairs else 0.0,
         "future_label_sequence_reuse_count": int(reused),
         "future_label_sequence_reuse_ratio": float(reused / len(test_rows)) if test_rows else 0.0,
+        "future_label_sequence_reuse_role": "label_distribution_diagnostic_only",
         "guard_band_violations": int(guard_violations),
     }
 

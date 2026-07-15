@@ -311,6 +311,7 @@ def _temporal_missing_profile(cfg: Mapping[str, Any]) -> dict[str, Any] | None:
                 "ensure_at_least_one_frame": temporal.get("ensure_at_least_one_frame", True),
                 "ensure_at_least_one_cell": temporal.get("ensure_at_least_one_cell", True),
                 "ensure_at_least_one_modality": temporal.get("ensure_at_least_one_modality", True),
+                "preserve_unmasked_for_superset": temporal.get("preserve_unmasked_for_superset", False),
                 "train_missing_drop_counts": temporal.get("train_missing_drop_counts", "0,1,2,3"),
                 "train_temporal_missing_rates": temporal.get("train_temporal_missing_rates", "0.0,0.2,0.4,0.6,0.8"),
                 "train_temporal_missing_types": temporal.get(

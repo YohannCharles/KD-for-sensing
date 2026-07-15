@@ -201,6 +201,73 @@ def test_pyproject_console_scripts_point_to_existing_functions():
         assert function_name in names, f"{command} points to missing function {function_name}"
 
 
+def test_verify_compile_scans_untracked_owner_files_and_excludes_runtime_roots(tmp_path):
+    scripts_root = tmp_path / "scripts"
+    cli_root = tmp_path / "src/kd_sensing/cli"
+    scripts_root.mkdir(parents=True)
+    cli_root.mkdir(parents=True)
+    (scripts_root / "valid.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (cli_root / "valid.py").write_text("VALUE = 2\n", encoding="utf-8")
+    for excluded in ("dataset", "outputs", "logs", "cache", "checkpoint", "checkpoints"):
+        excluded_root = scripts_root / excluded
+        excluded_root.mkdir()
+        (excluded_root / "ignored_bad.py").write_text("def broken(:\n", encoding="utf-8")
+
+    command = [sys.executable, str(ROOT / "scripts/verify_compile.py"), "--root", str(tmp_path)]
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+    untracked_bad = scripts_root / "untracked_bad.py"
+    untracked_bad.write_text("def broken(:\n", encoding="utf-8")
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+
+    assert result.returncode == 1
+    assert "scripts/untracked_bad.py" in result.stderr
+
+
+def test_verify_full_composes_all_layers_and_respects_command_overrides():
+    result = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "--dry-run",
+            "verify-full",
+            "OPENSPEC=openspec-stub",
+            "PYTHON=python-stub",
+            "PYTEST=pytest-stub",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.stdout.splitlines() == [
+        "openspec-stub validate --all --strict",
+        "pytest-stub tests/test_architecture_boundaries.py -q",
+        "pytest-stub tests/test_cli_help.py tests/test_config_load_characterization.py -q",
+        "python-stub scripts/verify_compile.py",
+        "pytest-stub -q",
+    ]
+
+
+def test_ci_reuses_verify_full_without_copying_validation_commands():
+    workflow_path = ROOT / ".github/workflows/verify.yml"
+    workflow_paths = sorted((ROOT / ".github/workflows").glob("*.y*ml"))
+    workflow = workflow_path.read_text(encoding="utf-8")
+    environment = (ROOT / "envs/smoke-dev.yml").read_text(encoding="utf-8")
+
+    assert workflow_paths == [workflow_path]
+    assert "make verify-full" in workflow
+    assert "environment-file: envs/smoke-dev.yml" in workflow
+    assert "- -e .[dev]" in environment
+    assert "make verify-quick" not in workflow
+    assert "make verify-cli-config" not in workflow
+    assert "make verify-compile" not in workflow
+    assert "openspec validate" not in workflow
+    assert "pytest -q" not in workflow
+
+
 def test_cli_modules_are_console_scripts_or_shared_helpers():
     scripts = _pyproject()["project"]["scripts"]
     console_modules = {target.split(":", 1)[0] for target in scripts.values()}
@@ -488,25 +555,112 @@ def test_current_openspec_specs_have_real_purpose():
     assert not violations
 
 
-def test_lifecycle_inventory_rows_reference_current_specs():
+def test_lifecycle_inventory_matches_current_specs():
     spec_root = ROOT / "openspec/specs"
     spec_dirs = {path.parent.name for path in spec_root.glob("*/spec.md")}
-    rows = re.findall(
-        r"^\| `([^`]+)` \| `(current|supporting|retired-tombstone)` \|",
-        INVENTORY.read_text(encoding="utf-8"),
-        flags=re.MULTILINE,
-    )
-    capabilities = [capability for capability, _lifecycle in rows]
-    lifecycles = dict(rows)
-
-    assert len(capabilities) == len(set(capabilities))
-    assert set(capabilities) <= spec_dirs
+    header, rows = _inventory_table("OpenSpec Capability Lifecycle")
+    assert header == ["Capability", "Lifecycle", "Note"]
+    capabilities = [_unquote(row[0]) for row in rows]
+    lifecycle_rows = [(capability, _unquote(row[1])) for capability, row in zip(capabilities, rows)]
+    lifecycles = dict(lifecycle_rows)
+    allowed = {"current", "supporting", "retired-tombstone"}
+    problems = {
+        "missing": sorted(spec_dirs - set(capabilities)),
+        "extra": sorted(set(capabilities) - spec_dirs),
+        "duplicate": _duplicates(capabilities),
+        "invalid_lifecycle": sorted(
+            f"{capability}={lifecycle}"
+            for capability, lifecycle in lifecycle_rows
+            if lifecycle not in allowed
+        ),
+    }
+    assert not any(problems.values()), problems
     for capability in (
         "target-shot-domain-splitting",
         "model-architecture-summary",
         "local-missing-modality-baselines",
     ):
         assert lifecycles.get(capability) == "supporting"
+
+
+def test_on_disk_scripts_have_complete_lifecycle_rows():
+    header, rows = _inventory_table("Script Lifecycle")
+    assert header == [
+        "Script",
+        "Lifecycle",
+        "Owner",
+        "Retained reason",
+        "Public/recommended relation",
+        "Output boundary",
+        "Focused validation",
+        "Delete when",
+    ]
+    actual = {
+        _rel(path)
+        for path in (ROOT / "scripts").rglob("*")
+        if path.is_file() and not path.is_symlink() and path.suffix in {".py", ".sh"}
+    }
+    declared = [_unquote(row[0]) for row in rows]
+    allowed = {"local/manual", "research_diagnostic", "supporting", "governance"}
+    problems = {
+        "missing": sorted(actual - set(declared)),
+        "extra": sorted(set(declared) - actual),
+        "duplicate": _duplicates(declared),
+        "invalid_lifecycle": sorted(
+            f"{path}={_unquote(row[1])}"
+            for path, row in zip(declared, rows)
+            if _unquote(row[1]) not in allowed
+        ),
+        "incomplete": sorted(
+            path for path, row in zip(declared, rows) if len(row) != len(header) or not all(row)
+        ),
+    }
+    assert not any(problems.values()), problems
+
+
+def test_root_and_agent_context_documents_have_lifecycle_and_current_commands():
+    header, rows = _inventory_table("Document Lifecycle")
+    assert header == ["Document", "Lifecycle", "Owner", "Purpose"]
+    declared = [_unquote(row[0]) for row in rows]
+    lifecycles = {_unquote(row[0]): _unquote(row[1]) for row in rows}
+    root_documents = {_rel(path) for path in ROOT.glob("*.md") if path.is_file()}
+    context_documents = {
+        _rel(path) for path in (ROOT / "docs/agent_context").glob("*.md") if path.is_file()
+    }
+    top_level_documents = {_rel(path) for path in (ROOT / "docs").glob("*.md") if path.is_file()}
+    declared_root = {path for path in declared if "/" not in path}
+    declared_context = {path for path in declared if path.startswith("docs/agent_context/")}
+    declared_top_level = {
+        path
+        for path in declared
+        if Path(path).parent.as_posix() == "docs" and Path(path).suffix == ".md"
+    }
+    allowed = {"current", "historical", "adapter", "scoped-context"}
+    problems = {
+        "missing_root": sorted(root_documents - declared_root),
+        "extra_root": sorted(declared_root - root_documents),
+        "missing_agent_context": sorted(context_documents - declared_context),
+        "extra_agent_context": sorted(declared_context - context_documents),
+        "missing_current_document": sorted(top_level_documents - declared_top_level),
+        "extra_current_document": sorted(declared_top_level - top_level_documents),
+        "duplicate": _duplicates(declared),
+        "missing_document": sorted(path for path in declared if not (ROOT / path).is_file()),
+        "invalid_lifecycle": sorted(
+            f"{path}={lifecycle}" for path, lifecycle in lifecycles.items() if lifecycle not in allowed
+        ),
+    }
+    assert not any(problems.values()), problems
+
+    public_commands = set(_pyproject()["project"]["scripts"])
+    command_pattern = re.compile(r"conda run -n kd_mm_beam\s+(kd-sensing-[a-z0-9-]+)")
+    current_contexts = [ROOT / "AGENTS.md", *sorted((ROOT / "docs/agent_context").glob("*.md"))]
+    stale_commands = [
+        f"{_rel(path)}:{command}"
+        for path in current_contexts
+        for command in command_pattern.findall(path.read_text(encoding="utf-8"))
+        if command not in public_commands
+    ]
+    assert not stale_commands
 
 
 def test_current_validation_commands_reference_existing_openspec_targets():
@@ -835,6 +989,28 @@ def _purpose_section(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
     match = re.search(r"^## Purpose\s*(?P<body>.*?)(?=^## |\Z)", text, flags=re.MULTILINE | re.DOTALL)
     return "" if match is None else match.group("body").strip()
+
+
+def _inventory_table(section: str) -> tuple[list[str], list[list[str]]]:
+    text = INVENTORY.read_text(encoding="utf-8")
+    match = re.search(
+        rf"^## {re.escape(section)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"Missing inventory section: {section}"
+    table_lines = [line for line in match.group("body").splitlines() if line.startswith("|")]
+    assert len(table_lines) >= 2, f"Missing inventory table: {section}"
+    parsed = [[cell.strip() for cell in line.strip("|").split("|")] for line in table_lines]
+    return parsed[0], parsed[2:]
+
+
+def _unquote(value: str) -> str:
+    return value.strip().strip("`")
+
+
+def _duplicates(values: list[str]) -> list[str]:
+    return sorted({value for value in values if values.count(value) > 1})
 
 
 def _missing_agent_context_references(rel_paths: tuple[str, ...]) -> list[str]:

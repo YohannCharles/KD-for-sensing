@@ -1,4 +1,6 @@
+import hashlib
 from pathlib import Path
+import shutil
 
 import pytest
 import torch
@@ -111,6 +113,7 @@ def test_tinyvit_jepa_frame_token_encoder_builds_single_token(fake_tinyvit_backb
     assert metadata["visual_encoder_type"] == "tinyvit_frame"
     assert metadata["token_count"] == 1
     assert metadata["backbone"] == "tinyvit_5m_scratch_rgb"
+    assert encoder.encoder.allow_download is False
 
 
 def test_tinyvit_rejects_wrong_profile_channels_and_shapes(fake_tinyvit_backbone):
@@ -149,23 +152,69 @@ def test_tinyvit_22k_checkpoint_path_filters_head_and_attention(fake_tinyvit_bac
     assert "layers.0.attention_bias_idxs" in metadata["checkpoint_filtered_keys"]
 
 
-def test_tinyvit_22k_url_loader_records_provenance(fake_tinyvit_backbone, monkeypatch):
+def test_tinyvit_22k_url_loader_records_provenance(fake_tinyvit_backbone, tmp_path: Path, monkeypatch):
     calls: list[str] = []
     payload = _payload_from_backbone(_FakeTinyViTBackbone(8))
+    source = tmp_path / "source.pth"
+    torch.save(payload, source)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    hub_dir = tmp_path / "torch-hub"
 
-    def fake_download(url: str, **kwargs):
+    def fake_download(url: str, destination: str, **kwargs):
         del kwargs
         calls.append(url)
-        return payload
+        shutil.copyfile(source, destination)
 
-    monkeypatch.setattr(tinyvit.torch.hub, "load_state_dict_from_url", fake_download)
-    encoder = TinyViTImageEncoder(variant="11m", output_dim=8, pretrained=True)
+    monkeypatch.setattr(tinyvit.torch.hub, "get_dir", lambda: str(hub_dir))
+    monkeypatch.setattr(tinyvit.torch.hub, "download_url_to_file", fake_download)
+    encoder = TinyViTImageEncoder(
+        variant="11m",
+        output_dim=8,
+        pretrained=True,
+        allow_download=True,
+        checkpoint_sha256=digest,
+    )
 
     metadata = encoder.training_strategy_metadata()
     assert calls == [metadata["checkpoint_url"]]
     assert "tiny_vit_11m_22k_distill.pth" in metadata["checkpoint_url"]
     assert metadata["checkpoint_source"] == "url"
     assert metadata["checkpoint_downloaded"] is True
+    assert metadata["checkpoint_sha256"] == digest
+    assert metadata["checkpoint_load_mode"] == "weights_only"
+
+
+def test_tinyvit_remote_download_requires_full_sha256(fake_tinyvit_backbone, monkeypatch):
+    monkeypatch.setattr(
+        tinyvit.torch.hub,
+        "download_url_to_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("download must not start")),
+    )
+
+    with pytest.raises(RuntimeError, match="full 64-character SHA256"):
+        TinyViTImageEncoder(variant="5m", output_dim=8, pretrained=True, allow_download=True)
+
+
+def test_tinyvit_remote_hash_mismatch_is_not_published(fake_tinyvit_backbone, tmp_path: Path, monkeypatch):
+    hub_dir = tmp_path / "torch-hub"
+    monkeypatch.setattr(tinyvit.torch.hub, "get_dir", lambda: str(hub_dir))
+
+    def fake_download(url: str, destination: str, **kwargs):
+        del url, kwargs
+        Path(destination).write_bytes(b"wrong")
+
+    monkeypatch.setattr(tinyvit.torch.hub, "download_url_to_file", fake_download)
+    with pytest.raises(RuntimeError, match="SHA256 mismatch"):
+        TinyViTImageEncoder(
+            variant="5m",
+            output_dim=8,
+            pretrained=True,
+            allow_download=True,
+            checkpoint_sha256="0" * 64,
+        )
+
+    cache_dir = hub_dir / "checkpoints"
+    assert not list(cache_dir.glob("*.pth"))
 
 
 def test_tinyvit_checkpoint_rejects_unexpected_key_and_shape_mismatch(fake_tinyvit_backbone, tmp_path: Path):

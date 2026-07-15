@@ -1,3 +1,4 @@
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -94,12 +95,39 @@ class EpochDiagnosticsAccumulator:
 
 class TrainingExtension:
     name = "base"
+    state_schema_version = 1
+    stateless = False
 
     def setup(self, context: ExtensionContext) -> Any:
         return None
 
     def checkpoint_loads(self, state: Any) -> list[dict[str, Any]]:
         return []
+
+    def state_dict(self, state: Any) -> dict[str, Any]:
+        """Return the minimal mutable extension state needed for exact resume."""
+        if state is None:
+            return {}
+        if isinstance(state, Mapping):
+            return dict(state)
+        raise TypeError(
+            f"Training extension {self.name!r} must implement state_dict/load_state_dict "
+            "or explicitly declare stateless=True."
+        )
+
+    def load_state_dict(self, state: Any, payload: Mapping[str, Any]) -> None:
+        if state is None:
+            if payload:
+                raise TypeError(f"Training extension {self.name!r} cannot restore state into None.")
+            return
+        if isinstance(state, MutableMapping):
+            state.clear()
+            state.update(dict(payload))
+            return
+        raise TypeError(
+            f"Training extension {self.name!r} must implement load_state_dict "
+            "or explicitly declare stateless=True."
+        )
 
     def before_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> None:
         return None
@@ -159,3 +187,4 @@ class TrainingExtension:
 
 class NoOpTrainingExtension(TrainingExtension):
     name = "noop"
+    stateless = True

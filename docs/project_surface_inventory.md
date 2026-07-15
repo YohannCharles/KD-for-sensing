@@ -69,29 +69,84 @@
 
 ## Script Lifecycle
 
-| Script | Lifecycle | Output boundary |
-| --- | --- | --- |
-| `scripts/generate_scenes31_34_encoder_ablation.py` | local/manual protected mainline helper | ignored generated configs and outputs/ |
-| `scripts/generate_scenes31_34_main.py` | local/manual protected mainline helper | ignored generated configs and outputs/ |
-| `scripts/inspect_dataset.py` | local/manual dataset inspection | stdout only unless user writes local output |
-| `scripts/launch_bprr_reliability_router_v1.py` | local/manual mainline follow-up launcher | ignored outputs/bprr_reliability_router_v1/ |
-| `scripts/launch_final_c2_ablation_v1.py` | local/manual final C2 launcher | ignored outputs/final_c2_ablation_v1/ |
-| `scripts/launch_h5_p1_temporal_models_v1.py` | local/manual H5/P1 temporal matrix launcher | ignored outputs/h5_p1_temporal_models_v1/ or explicit output root |
-| `scripts/launch_pcpg_radar_balance_v1.py` | local/manual mainline follow-up launcher | ignored outputs/pcpg_radar_balance_v1/ |
-| `scripts/mmw/visualize_town_label_distribution.py` | research_diagnostic protected MMW helper | ignored outputs/analysis/mmw/ or explicit output |
-| `scripts/run_scenes31_34_main.sh` | local/manual protected mainline runner | ignored outputs/scenes31_34_main_lmdb/ and logs/ |
-| `scripts/run_scenes31_34_tinyvit_ablation.sh` | local/manual encoder ablation runner | ignored outputs/scenes31_34_tinyvit_lmdb/ and logs/ |
-| `scripts/scene31_eval_resolution.py` | local/manual resolution helper | stdout/ignored outputs only |
-| `scripts/scene31_generator_common.py` | supporting generator helper | no direct output unless caller writes generated configs |
-| `scripts/scene31_runner_common.py` | supporting runner helper | no direct output unless caller writes outputs/ |
-| `scripts/scene31_runner_common.sh` | supporting shell helper | ignored outputs/ and logs/ via caller |
-| `scripts/eval_h5_p1_temporal_matrix_v1.py` | research_diagnostic H5/P1 temporal matrix eval | ignored outputs/h5_p1_temporal_models_v1/eval_matrix/ and outputs/temporal_eval_masks_v1/ |
-| `scripts/summarize_bprr_reliability_router_v1.py` | research_diagnostic summary | ignored outputs/analysis/ |
-| `scripts/summarize_final_c2_ablation_v1.py` | research_diagnostic final C2 summary | ignored outputs/analysis/ |
-| `scripts/summarize_h5_p1_temporal_matrix_v1.py` | research_diagnostic H5/P1 temporal matrix summary | ignored outputs/h5_p1_temporal_models_v1/final_summary/ |
-| `scripts/summarize_overnight_branch_router_v2.py` | research_diagnostic historical/supporting summary | ignored outputs/analysis/ |
-| `scripts/summarize_pcpg_radar_balance_v1.py` | research_diagnostic summary | ignored outputs/analysis/ |
-| `scripts/verify_compile.py` | governance validation helper | stdout only |
+| Script | Lifecycle | Owner | Retained reason | Public/recommended relation | Output boundary | Focused validation | Delete when |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `scripts/analyze_mmw_fused_feature_geometry.py` | `local/manual` | MMW T2 evidence | active BPA/CMA feature evidence | not public; active change helper | ignored `outputs/analysis/` | `conda run -n kd_mm_beam pytest tests/test_mmw_fused_feature_geometry.py -q` | BPA/CMA change is archived and evidence is migrated |
+| `scripts/eval_h5_p1_temporal_matrix_v1.py` | `research_diagnostic` | H5/P1 temporal | group-safe final test matrix | not public; launcher companion | ignored `outputs/h5_p1_temporal_models_v1/` | `conda run -n kd_mm_beam pytest tests/test_h5_p1_temporal_matrix_v1.py -q` | temporal matrix capability is retired |
+| `scripts/eval_mmw_all_weather_matrix.py` | `local/manual` | MMW all-weather | current all-weather evaluation | not public; campaign evaluator | ignored `outputs/mmw_all_weather_h5p1_seed1_v2/` | `conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py -q` | all-weather capability is retired and claims are migrated |
+| `scripts/generate_scenes31_34_encoder_ablation.py` | `local/manual` | Scene31-34 | tracked template generator | not public; documented helper | ignored generated configs and `outputs/` | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` | encoder ablation workflow is retired |
+| `scripts/generate_scenes31_34_main.py` | `local/manual` | Scene31-34 | mainline config generator | not public; documented helper | ignored generated configs and `outputs/` | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` | Scene31-34 workflow has a package owner |
+| `scripts/inspect_dataset.py` | `local/manual` | dataset diagnostics | read-only local inspection | not public; optional diagnostic | stdout unless caller selects local output | `conda run -n kd_mm_beam python scripts/inspect_dataset.py --help` | package preprocessing exposes equivalent read-only audit |
+| `scripts/launch_bprr_reliability_router_v1.py` | `local/manual` | BPRR | current follow-up launcher | not public; research launcher | ignored `outputs/bprr_reliability_router_v1/` | `conda run -n kd_mm_beam python scripts/launch_bprr_reliability_router_v1.py --help` | BPRR capability is retired and claims are migrated |
+| `scripts/launch_final_c2_ablation_v1.py` | `local/manual` | final C2 | default mainline ablation launcher | not public; research launcher | ignored `outputs/final_c2_ablation_v1/` | `conda run -n kd_mm_beam python scripts/launch_final_c2_ablation_v1.py --help` | final C2 workflow has a replacement owner |
+| `scripts/launch_h5_p1_temporal_models_v1.py` | `local/manual` | H5/P1 temporal | group-safe temporal launcher | not public; research launcher | ignored `outputs/h5_p1_temporal_models_v1/` | `conda run -n kd_mm_beam pytest tests/test_h5_p1_temporal_matrix_v1.py -q` | temporal matrix capability is retired |
+| `scripts/launch_mmw_all_weather_matrix.py` | `local/manual` | MMW all-weather | current campaign launcher | not public; campaign launcher | ignored `outputs/mmw_all_weather_h5p1_seed1_v2/` | `conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py -q` | all-weather capability is retired and claims are migrated |
+| `scripts/launch_mmw_t2_hyperparameter_screening.py` | `local/manual` | MMW T2 development | active hyperparameter screening launcher | not public; active change helper | ignored `outputs/mmw_t2_hyperparameter_screening_v1/` | `conda run -n kd_mm_beam pytest tests/test_mmw_t2_hyperparameter_screening.py -q` | hyperparameter screening change is archived and evidence is migrated |
+| `scripts/launch_pcpg_radar_balance_v1.py` | `local/manual` | PCPG | current follow-up launcher | not public; research launcher | ignored `outputs/pcpg_radar_balance_v1/` | `conda run -n kd_mm_beam python scripts/launch_pcpg_radar_balance_v1.py --help` | PCPG capability is retired and claims are migrated |
+| `scripts/mmw/visualize_town_label_distribution.py` | `research_diagnostic` | MMW labels | protected label audit | not public; optional diagnostic | ignored `outputs/analysis/mmw/` or explicit output | `conda run -n kd_mm_beam python scripts/mmw/visualize_town_label_distribution.py --help` | package MMW audit provides equivalent evidence |
+| `scripts/run_mmw_all_weather_eval_after_training.py` | `local/manual` | MMW all-weather | post-training shard orchestration | not public; campaign orchestrator | ignored MMW status, logs and summaries | `conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py -q` | all-weather capability is retired and claims are migrated |
+| `scripts/run_mmw_t2_bpa_cma_ablation_after_training.py` | `local/manual` | MMW T2 evidence | active BPA/CMA orchestration | not public; active change helper | ignored task status, logs and summaries | `conda run -n kd_mm_beam pytest tests/test_mmw_t2_bpa_cma_after_training.py -q` | BPA/CMA change is archived and evidence is migrated |
+| `scripts/run_scenes31_34_main.sh` | `local/manual` | Scene31-34 | protected mainline runner | not public; documented runner | ignored `outputs/scenes31_34_main_lmdb/` and `logs/` | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` | Scene31-34 workflow has a replacement owner |
+| `scripts/run_scenes31_34_tinyvit_ablation.sh` | `local/manual` | Scene31-34 | encoder ablation runner | not public; documented runner | ignored `outputs/scenes31_34_tinyvit_lmdb/` and `logs/` | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` | TinyViT ablation is retired |
+| `scripts/scene31_eval_resolution.py` | `supporting` | Scene31-34 | shared evaluation resolution | helper only; not direct | stdout or caller-owned ignored output | `conda run -n kd_mm_beam python scripts/verify_compile.py` | no retained caller imports it |
+| `scripts/scene31_generator_common.py` | `supporting` | Scene31-34 | shared generator logic | helper only; not direct | caller-owned generated configs | `conda run -n kd_mm_beam python scripts/verify_compile.py` | no retained generator imports it |
+| `scripts/scene31_runner_common.py` | `supporting` | Scene31-34 | shared Python runner logic | helper only; not direct | caller-owned ignored outputs | `conda run -n kd_mm_beam python scripts/verify_compile.py` | no retained runner imports it |
+| `scripts/scene31_runner_common.sh` | `supporting` | Scene31-34 | shared shell runner logic | helper only; not direct | caller-owned ignored outputs and logs | `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q` | no retained shell runner sources it |
+| `scripts/summarize_bprr_reliability_router_v1.py` | `research_diagnostic` | BPRR | claim-gated summary | not public; launcher companion | ignored `outputs/analysis/` | `conda run -n kd_mm_beam python scripts/summarize_bprr_reliability_router_v1.py --help` | BPRR claims are migrated and workflow retired |
+| `scripts/summarize_final_c2_ablation_v1.py` | `research_diagnostic` | final C2 | mainline evidence summary | not public; launcher companion | ignored `outputs/analysis/` | `conda run -n kd_mm_beam python scripts/summarize_final_c2_ablation_v1.py --help` | final C2 has a replacement evidence owner |
+| `scripts/summarize_h5_p1_temporal_matrix_v1.py` | `research_diagnostic` | H5/P1 temporal | group-safe matrix summary | not public; evaluator companion | ignored temporal final summary | `conda run -n kd_mm_beam pytest tests/test_h5_p1_temporal_matrix_v1.py -q` | temporal matrix capability is retired |
+| `scripts/summarize_mmw_all_weather_matrix.py` | `research_diagnostic` | MMW all-weather | current campaign summary | not public; evaluator companion | ignored MMW final summary | `conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py -q` | all-weather claims are migrated and workflow retired |
+| `scripts/summarize_mmw_multiseed_baselines.py` | `research_diagnostic` | MMW baselines | current multiseed evidence gate | not public; campaign summary | explicit ignored analysis output | `conda run -n kd_mm_beam pytest tests/test_summarize_mmw_multiseed_baselines.py -q` | multiseed capability is retired and claims are migrated |
+| `scripts/summarize_mmw_t2_bpa_cma_ablation.py` | `research_diagnostic` | MMW T2 evidence | active paired ablation summary | not public; active change helper | explicit ignored analysis output | `conda run -n kd_mm_beam pytest tests/test_summarize_mmw_t2_bpa_cma_ablation.py -q` | BPA/CMA change is archived and evidence is migrated |
+| `scripts/summarize_mmw_task_output_robustness.py` | `research_diagnostic` | MMW T2 evidence | paired task-output robustness | not public; active change helper | explicit ignored analysis output | `conda run -n kd_mm_beam pytest tests/test_mmw_task_output_robustness.py -q` | no active MMW evidence workflow consumes it |
+| `scripts/summarize_overnight_branch_router_v2.py` | `research_diagnostic` | overnight router | retained historical summary parser | not public; historical helper | ignored `outputs/analysis/` | `conda run -n kd_mm_beam pytest tests/test_overnight_branch_router_v2.py -q` | historical claim no longer needs reproduction |
+| `scripts/summarize_pcpg_radar_balance_v1.py` | `research_diagnostic` | PCPG | claim-gated summary | not public; launcher companion | ignored `outputs/analysis/` | `conda run -n kd_mm_beam python scripts/summarize_pcpg_radar_balance_v1.py --help` | PCPG claims are migrated and workflow retired |
+| `scripts/verify_compile.py` | `governance` | project health | on-disk syntax guard | recommended through `make verify-compile` | stdout only | `conda run -n kd_mm_beam python scripts/verify_compile.py` | an equivalent repository-native guard replaces it |
+
+## Document Lifecycle
+
+| Document | Lifecycle | Owner | Purpose |
+| --- | --- | --- | --- |
+| `AGENTS.md` | `current` | repository governance | agent rules and command boundary |
+| `CLAUDE.md` | `adapter` | repository governance | thin cross-tool navigation adapter |
+| `ENVIRONMENT.md` | `historical` | repository governance | dated, non-authoritative environment capture |
+| `README.md` | `current` | repository documentation | install, quickstart, boundaries and short index |
+| `docs/agent_navigation.md` | `current` | repository governance | task navigation and authority routing |
+| `docs/maintainer_context_index.yaml` | `current` | repository governance | minimal machine-readable task routing |
+| `docs/agent_project_knowledge.md` | `adapter` | repository governance | thin cross-tool project context adapter |
+| `docs/agentic_collaboration_guardrails.md` | `current` | repository governance | agent collaboration and review boundary |
+| `docs/project_surface_inventory.md` | `current` | repository governance | lifecycle and retained-surface decisions |
+| `docs/current_research_brief.md` | `current` | research documentation | short current research orientation |
+| `docs/extension_guide.md` | `current` | repository documentation | supported extension workflow |
+| `docs/mainline_model_catalog.md` | `current` | research documentation | model-line catalog and claim references |
+| `docs/experiment_protocols.md` | `current` | research documentation | current protocol and evidence gates |
+| `docs/experiment_matrix.md` | `current` | research documentation | current experiment entry map |
+| `docs/literature_matrix.md` | `current` | research documentation | literature scope and evidence classification |
+| `docs/model_architecture_inventory.md` | `current` | model governance | model owner and architecture inventory |
+| `docs/result_claims_registry.md` | `current` | claim governance | structured claim ledger |
+| `docs/mainline_experiment_history.md` | `historical` | claim governance | migrated caveats and retired evidence |
+| `docs/p3_v7_multisource_crossroad_analysis.md` | `historical` | research documentation | dated P3/V7 local analysis; not a current claim |
+| `docs/progress_report_ppt_revision_and_t2_plan.md` | `historical` | research documentation | archived T2 report feedback and cancelled execution boundary |
+| `docs/research_notes.md` | `historical` | research documentation | retained historical research judgments |
+| `docs/server_migration_github_codex.md` | `current` | repository operations | source and artifact-safe server migration guide |
+| `docs/training_throughput.md` | `current` | runtime documentation | supported throughput controls and measurement boundary |
+| `docs/u_mask_beam_jepa_current_scope.md` | `current` | research documentation | final C2 method scope |
+| `docs/u_mask_beam_jepa_eval_matrix.md` | `current` | research documentation | U-Mask evaluation matrix contract and usage |
+| `docs/readonly_agent_roles.md` | `current` | repository governance | read-only analysis role boundary |
+| `docs/agent_memory_ledger.md` | `current` | repository governance | manually reviewed recurring-error ledger |
+| `paper/references.bib` | `current` | research documentation | source-controlled literature references only |
+| `docs/agent_context/README.md` | `scoped-context` | repository governance | context routing index |
+| `docs/agent_context/atlas.md` | `scoped-context` | repository governance | cross-surface atlas |
+| `docs/agent_context/claims.md` | `scoped-context` | repository governance | claim task context |
+| `docs/agent_context/cli.md` | `scoped-context` | repository governance | CLI task context |
+| `docs/agent_context/configs.md` | `scoped-context` | repository governance | config task context |
+| `docs/agent_context/data.md` | `scoped-context` | repository governance | data task context |
+| `docs/agent_context/diagnostics.md` | `scoped-context` | repository governance | diagnostics task context |
+| `docs/agent_context/documentation.md` | `scoped-context` | repository governance | documentation task context |
+| `docs/agent_context/models.md` | `scoped-context` | repository governance | model task context |
+| `docs/agent_context/openspec.md` | `scoped-context` | repository governance | OpenSpec task context |
+
+已删除的 `README_REPRODUCE.md`、`BASELINE_REPORT.md`、`DATASET_STRUCTURE.md`、`PATCH_NOTES.md`、`TODO_FOR_ATTENTION_MODULE.md` 和 `results/reproduce_baseline.md` 属于退役 BeamBench 表面；唯一有效 caveat 已迁入 `docs/mainline_experiment_history.md`，不得恢复为 current 命令文档。
 
 ## Config Lifecycle
 
@@ -141,7 +196,7 @@
 
 ## OpenSpec Capability Lifecycle
 
-2026-07-11 完成三个 active change 的同步归档后，`openspec/specs/` 保留 82 个物理 current/supporting capability；30 个无独立 guard 价值的 retired capability 已折叠到 `retired-route-summary` 和 dated archive，不再保留 `retired-tombstone` 行。
+截至 2026-07-15，`openspec/specs/` 保留 86 个物理 current/supporting capability；无独立 guard 价值的 retired capability 已折叠到 `retired-route-summary` 和 dated archive，不再保留独立墓碑行。
 
 | Capability | Lifecycle | Note |
 | --- | --- | --- |
@@ -185,6 +240,8 @@
 | `maintainer-context-index` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `missing-modality-statistical-evidence` | `current` | post-C2 保留/主线契约。 |
 | `missing-modality-stress-suite` | `current` | post-C2 保留/主线契约。 |
+| `mmw-all-weather-missing-modality-matrix` | `current` | MMW current supporting dataset campaign。 |
+| `mmw-baseline-multiseed-robustness-evidence` | `current` | MMW current supporting dataset campaign。 |
 | `mmw-beam-label-calibration` | `current` | post-C2 保留/主线契约。 |
 | `mmw-cross-scene-adaptation-protocol` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `mmw-sensor-assisted-beam-prediction` | `current` | post-C2 保留/主线契约。 |
@@ -217,11 +274,13 @@
 | `resnet18-image-encoder` | `current` | post-C2 保留/主线契约。 |
 | `retired-route-summary` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `runtime-artifact-cleanup` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
+| `s1-lightweight-temporal-robustness` | `current` | S1/T2 temporal supporting evidence contract。 |
 | `scenes31-34-main-missing-modality-workflow` | `current` | post-C2 保留/主线契约。 |
 | `snapshot-next-frame-baselines` | `current` | post-C2 保留/主线契约。 |
 | `soft-beam-label-training` | `current` | post-C2 保留/主线契约。 |
 | `spec-lifecycle-boundaries` | `supporting` | 支撑治理或只读辅助，不是独立主线入口。 |
 | `target-shot-domain-splitting` | `supporting` | 由 `data/target_shot_splits.py` 为 MMW protocol 提供 split provenance 与防泄漏支撑；无独立 CLI。 |
+| `t2-beam-geometry-head-validation` | `supporting` | 已取消的 DeepSense geometry/head 实验契约与防误报证据，不是默认主线。 |
 | `temporal-window-missing` | `current` | 显式窗口、temporal missing mask 和 H5/P1 matrix 契约。 |
 | `tinyvit-image-encoder` | `current` | post-C2 保留/主线契约。 |
 | `training-evaluation-runtime` | `current` | post-C2 保留/主线契约。 |

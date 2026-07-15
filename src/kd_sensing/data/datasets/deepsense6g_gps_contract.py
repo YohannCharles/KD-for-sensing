@@ -3,10 +3,12 @@ import math
 
 GPS_FEATURE_DIMS = {
     "relative_polar": 3,
+    "rsu_local_relative_polar": 3,
     "paper_calibrated_relative_polar": 3,
     "paper_distance_angle": 2,
 }
 SUPPORTED_GPS_FEATURE_MODE = "relative_polar"
+RSU_LOCAL_GPS_FEATURE_MODE = "rsu_local_relative_polar"
 CALIBRATED_GPS_FEATURE_MODES = {"paper_calibrated_relative_polar", "paper_distance_angle"}
 PAPER_CALIBRATED_GPS_MODE = "paper_distance_angle"
 PAPER_SCENE_CENTER_ANGLES_RAD = {
@@ -81,6 +83,7 @@ __all__ = [
     "PAPER_CALIBRATED_GPS_MODE",
     "PAPER_DISTANCE_ANGLE_FEATURE_VERSION",
     "PAPER_SCENE_CENTER_ANGLES_RAD",
+    "RSU_LOCAL_GPS_FEATURE_MODE",
     "SUPPORTED_GPS_BEV_XY_SOURCES",
     "SUPPORTED_GPS_FEATURE_MODE",
     "normalize_gps_bev_xy_source",

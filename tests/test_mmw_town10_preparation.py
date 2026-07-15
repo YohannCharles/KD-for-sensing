@@ -9,6 +9,7 @@ import torch
 from PIL import Image
 
 from kd_sensing.cli import preprocess as preprocess_cli
+import kd_sensing.preprocessing.mmw_radar as mmw_radar_module
 from kd_sensing.data.datasets.mmw import MMWDataset
 from kd_sensing.data.datasets.mmw_family_adapter import MMWFamilyAdapter
 from kd_sensing.data.mmw.preparation import (
@@ -27,10 +28,12 @@ from kd_sensing.data.mmw.preparation import (
     prepare_town10_skybridge,
     split_sequence_rows,
     validate_zip_inputs,
+    write_data_availability,
 )
+from kd_sensing.data.mmw.preparation_audit import _extract_zip
 from kd_sensing.data.mmw.radio_semantic import RadioSemanticLabelBuilder
 from kd_sensing.engine.data_factory import build_dataset
-from kd_sensing.preprocessing.mmw_radar import generate_mmw_radar_maps
+from kd_sensing.preprocessing.mmw_radar import generate_mmw_radar_maps, materialize_mmw_radar_split_csv
 
 
 def test_radio_semantic_label_builder_peak_spread_fallback_and_invalid():
@@ -130,6 +133,109 @@ def test_mmw_zip_validation_reports_absolute_missing_paths(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError, match=str((tmp_path / "missing_sensor.zip").resolve())):
         validate_zip_inputs(config)
+
+
+def test_mmw_zip_extraction_rejects_traversal_before_touching_target(tmp_path: Path):
+    archive_path = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../outside.txt", "unsafe")
+    target = tmp_path / "target"
+    target.mkdir()
+    sentinel = target / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsafe MMW archive member path"):
+        _extract_zip(archive_path, target, force=True)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not (tmp_path / "outside.txt").exists()
+
+
+def test_mmw_zip_extraction_enforces_resource_limits(tmp_path: Path, monkeypatch):
+    archive_path = tmp_path / "too_many.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Town10/scene/a.txt", "a")
+        archive.writestr("Town10/scene/b.txt", "b")
+    monkeypatch.setattr("kd_sensing.data.mmw.preparation_audit.MAX_ZIP_MEMBERS", 1)
+
+    with pytest.raises(ValueError, match="member count exceeds limit"):
+        _extract_zip(archive_path, tmp_path / "target", force=False)
+
+    assert not (tmp_path / "target").exists()
+
+
+def test_mmw_zip_extraction_rebuilds_stale_digest_and_removes_old_owned_root(tmp_path: Path):
+    archive_path = tmp_path / "scenario.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Town10/scene/old.txt", "old")
+    target = tmp_path / "target"
+    _extract_zip(archive_path, target, force=False)
+    assert (target / "Town10" / "scene" / "old.txt").exists()
+
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Town10/scene/new.txt", "new-content")
+    _extract_zip(archive_path, target, force=False)
+
+    assert not (target / "Town10" / "scene" / "old.txt").exists()
+    assert (target / "Town10" / "scene" / "new.txt").read_text(encoding="utf-8") == "new-content"
+    marker = next(target.glob(".mmw_extract_complete_*.json"))
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert len(payload["sha256"]) == 64
+
+
+def test_mmw_zip_extraction_rebuilds_target_inventory_drift(tmp_path: Path):
+    archive_path = tmp_path / "scenario.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Town10/scene/data.txt", "original")
+    target = tmp_path / "target"
+    _extract_zip(archive_path, target, force=False)
+    owned = target / "Town10" / "scene"
+    (owned / "data.txt").write_text("modified-size", encoding="utf-8")
+    (owned / "unexpected.txt").write_text("unexpected", encoding="utf-8")
+
+    _extract_zip(archive_path, target, force=False)
+
+    assert (owned / "data.txt").read_text(encoding="utf-8") == "original"
+    assert not (owned / "unexpected.txt").exists()
+
+
+def test_mmw_zip_extraction_failure_preserves_existing_owned_root(tmp_path: Path, monkeypatch):
+    archive_path = tmp_path / "scenario.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Town10/scene/new.txt", "new")
+    target = tmp_path / "target"
+    existing = target / "Town10" / "scene"
+    existing.mkdir(parents=True)
+    sentinel = existing / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "kd_sensing.data.mmw.preparation_audit._extract_validated_members",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("simulated extraction failure")),
+    )
+    with pytest.raises(OSError, match="simulated extraction failure"):
+        _extract_zip(archive_path, target, force=True)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_mmw_zip_extraction_rejects_publish_symlink_escape(tmp_path: Path):
+    archive_path = tmp_path / "scenario.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Town10/scene/new.txt", "new")
+    target = tmp_path / "target"
+    outside = tmp_path / "outside"
+    target.mkdir()
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    (target / "Town10").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="publish symlink"):
+        _extract_zip(archive_path, target, force=True)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not (outside / "scene").exists()
 
 
 def test_mmw_index_accepts_seven_digit_town03_frame_ids(tmp_path: Path):
@@ -262,6 +368,107 @@ def test_mmw_group_safe_split_metadata_has_no_frame_overlap_or_guard_violations(
     ]
 
 
+def test_mmw_p1_repeated_labels_remain_strict_when_structure_is_disjoint():
+    rows = _overlapping_window_rows(96, seq_len=5, pred_len=1)
+
+    split = split_sequence_rows(
+        rows,
+        seed=7,
+        train_ratio=0.8,
+        seq_len=5,
+        pred_len=1,
+    )
+
+    diagnostics = split["leakage_diagnostics"]
+    assert diagnostics["future_label_sequence_reuse_ratio"] > 0.0
+    assert diagnostics["future_label_sequence_reuse_role"] == "label_distribution_diagnostic_only"
+    assert diagnostics["train_test_frame_overlap_count"] == 0
+    assert diagnostics["adjacent_window_cross_split_ratio"] == 0.0
+    assert diagnostics["guard_band_violations"] == 0
+    assert split["strict_validation_eligible"] is True
+    assert "future_label_sequence_reuse" not in split["eligibility_reasons"]
+
+
+def test_mmw_tagged_readiness_requires_strict_split_metadata(tmp_path: Path):
+    root = tmp_path / "MMW" / "rainy"
+    scenario = "Town03_fixture_seed0"
+    prepared = root / "Prepared" / scenario
+    split_root = prepared / "splits" / "h5p1"
+    manifest = prepared / "manifests" / "frame_manifest.csv"
+    split_root.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("sample_id\nfixture\n", encoding="utf-8")
+    (split_root / "train.csv").write_text("sample_id\ntrain\n", encoding="utf-8")
+    (split_root / "test.csv").write_text("sample_id\ntest\n", encoding="utf-8")
+    split_metadata_path = split_root / "split_metadata.json"
+    split_metadata_path.write_text(
+        json.dumps(
+            {
+                "strict_validation_eligible": True,
+                "eligibility_reasons": [],
+                "train_window_count": 1,
+                "test_window_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (prepared / "metadata_h5p1.json").write_text(
+        json.dumps(
+            {
+                "condition": "rainy",
+                "town": "Town03",
+                "scenario": scenario,
+                "split_tag": "h5p1",
+                "zip_inputs": {"sensor_zip": {"path": "fixture"}, "channel_zip": {"path": "fixture"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (prepared / "sanity_report_h5p1.json").write_text(
+        json.dumps(
+            {
+                "valid_frame_count": 2,
+                "window_count": 2,
+                "artifacts": {
+                    "frame_manifest": str(manifest),
+                    "train_csv": str(split_root / "train.csv"),
+                    "test_csv": str(split_root / "test.csv"),
+                    "split_metadata": str(split_metadata_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ready = write_data_availability(root)["payload"]
+
+    assert ready["ready_scenario_count"] == 1
+    entry = ready["entries"][0]
+    assert entry["status"] == "single_scene_ready"
+    assert entry["split_tag"] == "h5p1"
+    assert entry["metadata_path"].endswith("metadata_h5p1.json")
+    assert entry["strict_validation_eligible"] is True
+
+    split_metadata_path.write_text(
+        json.dumps(
+            {
+                "strict_validation_eligible": False,
+                "eligibility_reasons": ["train_test_frame_overlap"],
+                "train_window_count": 1,
+                "test_window_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    blocked = write_data_availability(root)["payload"]
+
+    assert blocked["ready_scenario_count"] == 0
+    assert blocked["entries"][0]["status"] == "downloaded_unprepared"
+    assert blocked["entries"][0]["preparation_protocols"][0]["eligibility_reasons"] == [
+        "train_test_frame_overlap"
+    ]
+
+
 def test_mmw_sequence_split_rejects_unsupported_strategy():
     rows = _overlapping_window_rows(12, seq_len=3, pred_len=2)
 
@@ -355,7 +562,7 @@ def test_mmw_radar_maps_preprocessor_materializes_radar_and_gps_columns(tmp_path
     root = tmp_path / "MMW" / "sunny"
     scene = "Town10_test_seed0"
     prepared = root / "Prepared" / scene
-    splits = prepared / "splits"
+    splits = prepared / "splits" / "h5p1_strict_v2"
     manifests = prepared / "manifests"
     radar_root = root / "Sensor_Data" / scene / "rsu_1"
     radar_root.mkdir(parents=True)
@@ -397,6 +604,115 @@ def test_mmw_radar_maps_preprocessor_materializes_radar_and_gps_columns(tmp_path
     assert float(ra.max()) > 0.0
     assert train_with_columns.loc[0, "radar1"].endswith("000001_RA.npy")
     assert train_with_columns.loc[0, "bs_gps1"] == f"Sensor_Data/{scene}/rsu_1/000001.yaml"
+
+
+def test_mmw_radar_maps_failure_preserves_existing_scene_outputs(tmp_path: Path):
+    root = tmp_path / "MMW" / "sunny"
+    scene = "Town10_test_seed0"
+    prepared = root / "Prepared" / scene
+    manifests = prepared / "manifests"
+    radar_root = root / "Sensor_Data" / scene / "rsu_1"
+    manifests.mkdir(parents=True)
+    radar_root.mkdir(parents=True)
+    (radar_root / "000001.json").write_text(
+        json.dumps([{"depth": 10.0, "azimuth": 0.0, "velocity": 0.0}]),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {"frame_id": "000001", "radar": f"Sensor_Data/{scene}/rsu_1/000001.json"},
+            {"frame_id": "000002", "radar": f"Sensor_Data/{scene}/rsu_1/missing.json"},
+        ]
+    ).to_csv(manifests / "frame_manifest.csv", index=False)
+    output_dir = prepared / "derived" / "radar_maps" / "rsu_1"
+    output_dir.mkdir(parents=True)
+    (output_dir / "sentinel.txt").write_text("old-output", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="exceeded max_failure_rate"):
+        generate_mmw_radar_maps(
+            data_root=root,
+            scenes=[scene],
+            progress=False,
+            materialize_split_columns=False,
+        )
+
+    assert (output_dir / "sentinel.txt").read_text(encoding="utf-8") == "old-output"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["sentinel.txt"]
+    assert not (root / "Prepared" / "mmw_radar_maps_report.json").exists()
+
+
+def test_mmw_radar_maps_rejects_prepared_root_escape(tmp_path: Path):
+    root = tmp_path / "MMW" / "sunny"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="direct child"):
+        generate_mmw_radar_maps(
+            data_root=root,
+            prepared_roots=[outside],
+            progress=False,
+        )
+
+
+def test_mmw_radar_materialization_rejects_source_output_overlap(tmp_path: Path):
+    root = tmp_path / "MMW" / "sunny"
+    source = root / "Prepared" / "Town10_test_seed0" / "splits" / "train.csv"
+    source.parent.mkdir(parents=True)
+    pd.DataFrame([{"beam1": "Prepared/Town10_test_seed0/beam_power/000001.txt"}]).to_csv(
+        source,
+        index=False,
+    )
+    original = source.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be disjoint"):
+        materialize_mmw_radar_split_csv(
+            root,
+            source,
+            "Town10_test_seed0",
+            output_path=source,
+            require_maps=False,
+        )
+
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_mmw_radar_materialization_publish_failure_restores_csv_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "MMW" / "sunny"
+    source = root / "Prepared" / "Town10_test_seed0" / "splits" / "train.csv"
+    source.parent.mkdir(parents=True)
+    pd.DataFrame([{"beam1": "Prepared/Town10_test_seed0/beam_power/000001.txt"}]).to_csv(
+        source,
+        index=False,
+    )
+    target = source.with_name("train_with_radar.csv")
+    metadata = source.with_name("train_with_radar_metadata.json")
+    target.write_text("legacy-target\n", encoding="utf-8")
+    metadata.write_text("legacy-metadata\n", encoding="utf-8")
+    real_replace = mmw_radar_module.os.replace
+    injected = False
+
+    def fail_metadata_publish(source_path, target_path):
+        nonlocal injected
+        if not injected and Path(target_path) == metadata and ".stage-" in Path(source_path).parent.name:
+            injected = True
+            raise OSError("injected metadata publish failure")
+        return real_replace(source_path, target_path)
+
+    monkeypatch.setattr(mmw_radar_module.os, "replace", fail_metadata_publish)
+
+    with pytest.raises(OSError, match="injected metadata publish failure"):
+        materialize_mmw_radar_split_csv(
+            root,
+            source,
+            "Town10_test_seed0",
+            require_maps=False,
+        )
+
+    assert target.read_text(encoding="utf-8") == "legacy-target\n"
+    assert metadata.read_text(encoding="utf-8") == "legacy-metadata\n"
 
 
 def test_mmw_dataset_loads_mmwave_only_and_image_fusion_lazily(tmp_path: Path):

@@ -42,6 +42,23 @@ class _HardLabelOnlyCriterion(torch.nn.Module):
         return torch.nn.functional.cross_entropy(inputs, targets)
 
 
+class _ZeroLogitModel(torch.nn.Module):
+    def __init__(self, *, num_pred: int):
+        super().__init__()
+        self.num_pred = int(num_pred)
+
+    def forward(self, gps_batch=None, **kwargs):  # noqa: ANN001, ARG002
+        return {"logits": torch.zeros(gps_batch.shape[0], self.num_pred, 4)}
+
+
+class _ValidTargetMeanCriterion(torch.nn.Module):
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        valid = targets.ne(-100)
+        if not bool(valid.any()):
+            return inputs.sum() * 0.0
+        return targets[valid].to(torch.float32).mean()
+
+
 def _cfg() -> dict:
     return {
         "experiment": {"task": "fusion", "objective": "beam"},
@@ -116,6 +133,24 @@ def _selection_dataloader():
     ]
 
 
+def _target_batches(targets: torch.Tensor, batch_sizes: list[int]):
+    batches = []
+    offset = 0
+    for batch_size in batch_sizes:
+        target = targets[offset : offset + batch_size]
+        offset += batch_size
+        batches.append(
+            {
+                "gps": torch.zeros(batch_size, 2, 3),
+                "mmwave": torch.zeros(batch_size, 2, 64),
+                "input_beam": torch.zeros(batch_size, 2, dtype=torch.long),
+                "target_beam": target,
+            }
+        )
+    assert offset == targets.shape[0]
+    return batches
+
+
 def test_evaluation_pass_matches_validator_and_records_runtime_metadata():
     cfg = _cfg()
     model = _MaskAwareFusionModel()
@@ -181,6 +216,57 @@ def test_evaluation_pass_force_mask_all_enabled_matches_normal_pass():
     assert masked["loss"] == pytest.approx(normal["loss"])
     assert masked["topk"] == normal["topk"]
     assert masked["available_metrics"] == normal["available_metrics"]
+
+
+def test_evaluation_loss_is_weighted_by_observations_across_uneven_batches():
+    cfg = _cfg()
+    targets = torch.tensor([[0], [1], [3]])
+    criterion = _ValidTargetMeanCriterion()
+
+    uneven = run_evaluation_pass(
+        _ZeroLogitModel(num_pred=1),
+        _target_batches(targets, [2, 1]),
+        cfg,
+        criterion,
+        torch.device("cpu"),
+    ).metrics
+    single = run_evaluation_pass(
+        _ZeroLogitModel(num_pred=1),
+        _target_batches(targets, [3]),
+        cfg,
+        criterion,
+        torch.device("cpu"),
+    ).metrics
+
+    assert uneven["loss"] == pytest.approx(4.0 / 3.0)
+    assert uneven["loss"] == pytest.approx(single["loss"])
+    assert uneven["loss_observation_count"] == 3
+
+
+def test_evaluation_loss_uses_valid_token_count_and_rejects_empty_batches():
+    cfg = _cfg()
+    cfg["model"]["num_pred"] = 2
+    targets = torch.tensor([[0, -100], [3, -100]])
+    criterion = _ValidTargetMeanCriterion()
+
+    metrics = run_evaluation_pass(
+        _ZeroLogitModel(num_pred=2),
+        _target_batches(targets, [1, 1]),
+        cfg,
+        criterion,
+        torch.device("cpu"),
+    ).metrics
+
+    assert metrics["loss"] == pytest.approx(1.5)
+    assert metrics["loss_observation_count"] == 2
+    with pytest.raises(ValueError, match="zero valid loss observations"):
+        run_evaluation_pass(
+            _ZeroLogitModel(num_pred=2),
+            _target_batches(torch.full((1, 2), -100), [1]),
+            cfg,
+            criterion,
+            torch.device("cpu"),
+        )
 
 
 @pytest.mark.parametrize(

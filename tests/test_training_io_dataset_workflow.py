@@ -14,8 +14,10 @@ from kd_sensing.cli.preprocess import _apply_scene_override_to_sequence_preproce
 from kd_sensing.data.beam_soft_targets import beam_power_to_distribution, gaussian_beam_distribution
 import kd_sensing.data.datasets.deepsense6g as deepsense6g_module
 import kd_sensing.data.datasets.deepsense6g_targets as deepsense6g_targets
+from kd_sensing.data.datasets.synthetic import SyntheticSequenceDataset
 import kd_sensing.data.transform_ops.io as io_transforms
 import kd_sensing.data.transform_ops.lidar as lidar_transforms
+from kd_sensing.data.transform_ops.gps import GPSStandardScaler
 import kd_sensing.preprocessing.lidar as lidar_preprocessing
 from kd_sensing.data.datasets.deepsense6g import DeepSense6GDataset
 from kd_sensing.data.layouts import (
@@ -30,6 +32,7 @@ from kd_sensing.losses.beam import FocalLoss, SoftTargetCrossEntropyLoss
 from kd_sensing.engine.batch import prepare_fusion_inputs, prepare_labels, prepare_soft_beam_targets
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.cache_policy import apply_cache_policy
+import kd_sensing.engine.data_factory as data_factory
 from kd_sensing.engine.data_factory import (
     build_dataloader,
     build_dataloaders,
@@ -44,7 +47,12 @@ from kd_sensing.engine.training_extensions import ExtensionContext, NoOpTraining
 from kd_sensing.engine.model_output import adapt_model_output, select_prediction_slots
 from kd_sensing.engine.runtime import resolve_amp_settings, transfer_non_blocking
 from kd_sensing.engine.evaluator import _evaluation_split_protocol_report
-from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setup_metadata, throughput_run_metadata
+from kd_sensing.engine.run_metadata import (
+    dataloaders_run_metadata,
+    dataset_run_metadata,
+    prediction_setup_metadata,
+    throughput_run_metadata,
+)
 from kd_sensing.engine.training_metrics import training_outputs_payload
 from kd_sensing.engine.trainer import (
     _configure_early_stopping,
@@ -706,8 +714,86 @@ def test_dataloader_uses_experiment_seed_for_generator_and_workers():
         experiment_seed=7,
     )
 
-    assert loader.generator.initial_seed() == 7
+    repeated = build_dataloader(
+        dataset,
+        {"train_batch_size": 2, "num_workers": 0},
+        split="train",
+        experiment_seed=7,
+    )
+    test_loader = build_dataloader(
+        dataset,
+        {"test_batch_size": 2, "num_workers": 0},
+        split="test",
+        experiment_seed=7,
+    )
+
+    assert loader.generator.initial_seed() == repeated.generator.initial_seed()
+    assert loader.generator.initial_seed() != test_loader.generator.initial_seed()
+    assert loader.generator_metadata["algorithm"] == "sha256-v1"
+    assert loader.generator_metadata["split"] == "train"
+    assert loader.generator_metadata["dataset_fingerprint"]
     assert loader.worker_init_fn is not None
+
+
+def test_dataloader_random_state_round_trip_restores_next_shuffle():
+    dataset = torch.utils.data.TensorDataset(torch.arange(8))
+    loader = build_dataloader(
+        dataset,
+        {"train_batch_size": 2, "num_workers": 0},
+        split="train",
+        experiment_seed=11,
+    )
+    state = data_factory.capture_dataloaders_random_state({"train": loader})
+    expected = torch.cat([batch[0] for batch in loader]).tolist()
+
+    data_factory.restore_dataloaders_random_state({"train": loader}, state)
+    restored = torch.cat([batch[0] for batch in loader]).tolist()
+
+    assert restored == expected
+    assert state["train"]["identity"] == loader.generator_metadata
+    assert dataloaders_run_metadata({"train": loader})["train"]["dataloader_generator"] == loader.generator_metadata
+
+
+def test_synthetic_samples_are_index_stable_and_split_separated():
+    kwargs = {
+        "length": 3,
+        "seq_len": 2,
+        "num_pred": 1,
+        "image_size": (2, 2),
+        "radar_size": (2, 2),
+        "lidar_size": (2, 2),
+        "use_gps": True,
+        "use_lidar": True,
+        "seed": 17,
+    }
+    train = SyntheticSequenceDataset(**kwargs, split="train")
+    repeated = train[1]
+    _ = train[0]
+    after_other_index = train[1]
+    validation = SyntheticSequenceDataset(**kwargs, split="validation")
+
+    assert repeated.keys() == after_other_index.keys()
+    assert all(torch.equal(repeated[key], after_other_index[key]) for key in repeated)
+    assert not torch.equal(repeated["image"], validation[1]["image"])
+
+
+def test_synthetic_index_content_is_independent_of_worker_count():
+    dataset = SyntheticSequenceDataset(
+        length=4,
+        seq_len=2,
+        num_pred=1,
+        image_size=(2, 2),
+        radar_size=(2, 2),
+        seed=23,
+        split="test",
+    )
+    single = DataLoader(dataset, batch_size=1, num_workers=0)
+    multi = DataLoader(dataset, batch_size=1, num_workers=2)
+
+    single_images = torch.cat([batch["image"] for batch in single])
+    multi_images = torch.cat([batch["image"] for batch in multi])
+
+    assert torch.equal(single_images, multi_images)
 
 def test_shutdown_dataloader_workers_clears_persistent_iterator():
     class FakeIterator:
@@ -839,6 +925,125 @@ def test_build_dataloaders_internal_validation_uses_train_subset_scaler(tmp_path
     assert first_train_base.gps_scaler is first_val_base.gps_scaler
     assert first_train_base.gps_scaler_metadata["source"] == "internal_train_subset_streaming_fit"
 
+
+def test_build_dataloaders_internal_validation_reuses_provided_normalizer(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_multirow_gps_sequence_fixture(tmp_path, csv_path, rows=4, seq_len=1, num_pred=1)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "validation_from_train": {"enabled": True, "fraction": 0.5, "seed": 3},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 1,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 2, "test_batch_size": 2, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+    provided = GPSStandardScaler(
+        mean_=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        scale_=np.array([4.0, 5.0, 6.0], dtype=np.float32),
+        feature_mode_="relative_polar",
+    )
+
+    loaders = build_dataloaders(cfg, normalization_overrides={"gps_scaler": provided})
+    train_leaf = loaders["train"].dataset.dataset
+    validation_leaf = loaders["validation"].dataset.dataset
+    test_leaf = loaders["test"].dataset
+
+    assert train_leaf.gps_scaler is provided
+    assert validation_leaf.gps_scaler is provided
+    assert test_leaf.gps_scaler is provided
+
+
+def test_direct_dataloaders_reuse_provided_normalizer(tmp_path: Path):
+    csv_path = tmp_path / "seq.csv"
+    _write_multirow_gps_sequence_fixture(tmp_path, csv_path, rows=4, seq_len=1, num_pred=1)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "data_root": str(tmp_path),
+                "train_csv_name": csv_path.name,
+                "val_csv_name": csv_path.name,
+                "test_csv_name": csv_path.name,
+                "seq_len": 1,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 2, "test_batch_size": 2, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+    provided = GPSStandardScaler(
+        mean_=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        scale_=np.array([4.0, 5.0, 6.0], dtype=np.float32),
+        feature_mode_="relative_polar",
+    )
+
+    loaders = build_dataloaders(cfg, normalization_overrides={"gps_scaler": provided})
+
+    assert all(loaders[split].dataset.gps_scaler is provided for split in ("train", "validation", "test"))
+
+
+def test_domain_dataloaders_reuse_provided_normalizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    marker = object()
+    for split in ("train", "val", "test"):
+        (tmp_path / f"{split}.csv").write_text("fixture\n", encoding="utf-8")
+
+    class FakeDataset(torch.utils.data.Dataset):
+        def __init__(self, split: str, scaler: object):
+            self.split = split
+            self.mmwave_scaler = scaler
+            self.mmwave_normalize = True
+            self.use_mmwave = True
+            self.enabled_modalities = ["mmwave"]
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, index):
+            return torch.tensor(index)
+
+    def fake_build_dataset(_cfg, split, **kwargs):
+        return FakeDataset(split, kwargs["mmwave_scaler"])
+
+    monkeypatch.setattr(data_factory, "build_dataset", fake_build_dataset)
+    domain = {
+        "id": "domain-a",
+        "condition": "sunny",
+        "scene": "scene1",
+        "data_root": str(tmp_path),
+        "train_csv_name": "train.csv",
+        "val_csv_name": "val.csv",
+        "test_csv_name": "test.csv",
+    }
+    cfg = {
+        "experiment": {"task": "mmwave", "seed": 7},
+        "data": {
+            "dataset": {"type": "mmw", "domains": [domain]},
+            "dataloader": {"train_batch_size": 2, "test_batch_size": 2, "num_workers": 0},
+        },
+        "model": {"modalities": ["mmwave"], "primary": {"modalities": ["mmwave"]}},
+    }
+
+    loaders = build_dataloaders(cfg, normalization_overrides={"mmwave_scaler": marker})
+
+    assert all(loaders[split].dataset.datasets[0].mmwave_scaler is marker for split in ("train", "validation", "test"))
+
 def test_build_dataloaders_deepsense_2604_stratified_split_uses_union_and_train_scaler(tmp_path: Path):
     train_csv = tmp_path / "train.csv"
     test_csv = tmp_path / "test.csv"
@@ -888,6 +1093,49 @@ def test_build_dataloaders_deepsense_2604_stratified_split_uses_union_and_train_
     assert first_train_leaf.gps_scaler is first_validation_leaf.gps_scaler
     assert first_train_leaf.gps_scaler is first_test_leaf.gps_scaler
     assert first_train_leaf.gps_scaler_metadata["source"] == "stratified_train_subset_streaming_fit"
+
+
+def test_protocol_dataloaders_reuse_provided_normalizer(tmp_path: Path):
+    train_csv = tmp_path / "train.csv"
+    test_csv = tmp_path / "test.csv"
+    _write_stratified_gps_sequence_fixture(tmp_path, train_csv, rows=10, offset=0)
+    _write_stratified_gps_sequence_fixture(tmp_path, test_csv, rows=10, offset=10)
+    cfg = {
+        "experiment": {"task": "fusion", "seed": 7},
+        "data": {
+            "cache": {"policy": "off"},
+            "dataset": {
+                "type": "deepsense6g",
+                "scene": 31,
+                "data_root": str(tmp_path),
+                "train_csv_name": train_csv.name,
+                "test_csv_name": test_csv.name,
+                "split_protocol": "stratified_80_10_10",
+                "split_seed": 11,
+                "split_fractions": {"train": 0.8, "validation": 0.1, "test": 0.1},
+                "seq_len": 5,
+                "num_pred": 1,
+                "use_gps": True,
+                "gps_normalize": True,
+            },
+            "dataloader": {"train_batch_size": 4, "test_batch_size": 4, "num_workers": 0},
+        },
+        "model": {"modalities": ["gps"], "primary": {"modalities": ["gps"]}},
+    }
+    provided = GPSStandardScaler(
+        mean_=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        scale_=np.array([4.0, 5.0, 6.0], dtype=np.float32),
+        feature_mode_="relative_polar",
+    )
+
+    loaders = build_dataloaders(cfg, normalization_overrides={"gps_scaler": provided})
+    leaves = [
+        loaders["train"].dataset.dataset.datasets[0],
+        loaders["validation"].dataset.dataset.datasets[0],
+        loaders["test"].dataset.dataset.datasets[0],
+    ]
+
+    assert all(leaf.gps_scaler is provided for leaf in leaves)
 
 def test_deepsense_2604_sequence_group_split_keeps_seq_index_exclusive(tmp_path: Path):
     train_csv = tmp_path / "train.csv"

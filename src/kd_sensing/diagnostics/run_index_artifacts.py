@@ -29,6 +29,11 @@ from kd_sensing.diagnostics.run_index_resources import (
     _run_resource_summary,
     match_run_process,
 )
+from kd_sensing.utils.checkpoint import (
+    CheckpointLoadError,
+    load_torch_payload,
+    validate_checkpoint_publication,
+)
 
 
 def summarize_run_dir(
@@ -213,11 +218,30 @@ def summarize_metrics(run_dir: Path, *, artifacts: dict[str, Any], warnings: lis
     scalar_metrics = _scalar_metrics(raw)
     primary_name = _primary_metric_name(raw)
     primary_value = _metric_value(raw, primary_name) if primary_name else None
+    final_test_path = (
+        Path(artifacts["final_test_metrics"]["path"])
+        if artifacts.get("final_test_metrics", {}).get("path")
+        else None
+    )
+    final_test_raw = _read_json(final_test_path, warnings=warnings) if final_test_path is not None else None
+    final_test = final_test_raw if isinstance(final_test_raw, dict) else {}
+    final_test_primary = _primary_metric_name(final_test)
     return {
         "path": str(source) if source is not None else None,
         "available": bool(raw),
         "primary": {"name": primary_name, "value": primary_value},
         "scalars": scalar_metrics,
+        "final_test": {
+            "path": str(final_test_path) if final_test_path is not None else None,
+            "available": bool(final_test),
+            "primary": {
+                "name": final_test_primary,
+                "value": _metric_value(final_test, final_test_primary) if final_test_primary else None,
+            },
+            "scalars": _scalar_metrics(final_test),
+            "evaluation_split": final_test.get("evaluation_split"),
+            "selected_checkpoint": final_test.get("selected_checkpoint"),
+        },
     }
 
 def summarize_run_provenance(
@@ -272,8 +296,15 @@ def summarize_run_provenance(
 def summarize_checkpoints(run_dir: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
     checkpoint_dir = run_dir / "checkpoints"
     paths = sorted(path for path in checkpoint_dir.glob("*") if path.is_file() and _is_checkpoint(path))
-    best = _best_checkpoint(paths)
-    items = [_checkpoint_item(path, best=best, warnings=warnings) for path in paths]
+    items = [_checkpoint_item(path, warnings=warnings) for path in paths]
+    best = _preferred_checkpoint(run_dir, items, warnings=warnings)
+    for item in items:
+        item["retention_role"] = _checkpoint_role(Path(item["path"]), best=best)
+        item["registry_default_candidate"] = item["retention_role"] in {"recoverable_last", "duplicate_probe"}
+        item["registry_protected"] = item["retention_role"] in {
+            "best_reproducible",
+            "best_top1_reproducible",
+        }
     sidecars = [item for item in items if item.get("sidecar_present")]
     best_sidecar = None
     for item in items:
@@ -627,25 +658,112 @@ def _best_checkpoint(paths: list[Path]) -> Path | None:
                 return path
     return paths[0] if paths else None
 
-def _checkpoint_item(path: Path, *, best: Path | None, warnings: list[str] | None = None) -> dict[str, Any]:
+def _checkpoint_item(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
     sidecar_path = path.with_suffix(path.suffix + ".json")
     sidecar = _read_json(sidecar_path, warnings=warnings) if sidecar_path.exists() else None
-    role = _checkpoint_role(path, best=best)
+    publication = _checkpoint_publication(path, sidecar=sidecar, warnings=warnings)
     return {
         "path": str(path),
         "name": path.name,
         "size_bytes": _path_size_bytes(path),
         "mtime": _format_dt(_mtime(path)),
         "source": "run_checkpoint_dir",
-        "retention_role": role,
+        "retention_role": "temporary_or_unclassified",
         "selection_metadata": _checkpoint_selection_metadata(sidecar),
         "sidecar_present": sidecar is not None,
         "sidecar_path": str(sidecar_path) if sidecar is not None else None,
         "sidecar_metadata": sidecar,
+        "publication": publication,
         "normalization_artifacts": _checkpoint_normalization_artifacts(sidecar),
-        "registry_default_candidate": role in {"recoverable_last", "duplicate_probe"},
-        "registry_protected": role in {"best_reproducible", "best_top1_reproducible"},
+        "registry_default_candidate": False,
+        "registry_protected": False,
     }
+
+
+def _checkpoint_publication(
+    path: Path,
+    *,
+    sidecar: dict[str, Any] | None,
+    warnings: list[str] | None,
+) -> dict[str, Any]:
+    """Verify current publications without treating legacy filenames as provenance."""
+    current_marker = isinstance(sidecar, dict) and (
+        "checkpoint_schema_version" in sidecar or "publish_complete" in sidecar
+    )
+    if not current_marker:
+        return {"current_schema": False, "integrity_verified": False, "legacy": True}
+    try:
+        payload = load_torch_payload(path, map_location="cpu")
+        metadata = validate_checkpoint_publication(path, payload=payload)
+    except (CheckpointLoadError, OSError, RuntimeError, ValueError) as exc:
+        if warnings is not None:
+            warnings.append(f"checkpoint provenance is not verified for {path}: {exc}")
+        return {"current_schema": True, "integrity_verified": False, "error": str(exc)}
+    return {
+        "current_schema": True,
+        "integrity_verified": bool(metadata.get("integrity_verified", False)),
+        "metadata": metadata,
+    }
+
+
+def _preferred_checkpoint(
+    run_dir: Path,
+    items: list[dict[str, Any]],
+    *,
+    warnings: list[str] | None,
+) -> Path | None:
+    """Prefer an explicitly selected, digest-verified local checkpoint.
+
+    Legacy runs retain the historical name-based display fallback, but callers
+    receive an explicit warning rather than a fabricated provenance claim.
+    """
+    by_path = {Path(str(item["path"])).resolve(): item for item in items}
+    for source, raw_path in _explicit_checkpoint_paths(run_dir):
+        path = _resolve_checkpoint_reference(run_dir, raw_path)
+        item = by_path.get(path)
+        if item is None:
+            if warnings is not None:
+                warnings.append(f"{source} references checkpoint outside this run or not present: {raw_path}")
+            continue
+        publication = item.get("publication", {})
+        if publication.get("integrity_verified"):
+            return path
+        if publication.get("current_schema"):
+            if warnings is not None:
+                warnings.append(f"{source} references an unverified current checkpoint: {path}")
+            continue
+        if warnings is not None:
+            warnings.append(f"{source} references legacy checkpoint without digest verification: {path}")
+    verified = [item for item in items if item.get("publication", {}).get("integrity_verified")]
+    if len(verified) == 1:
+        return Path(str(verified[0]["path"]))
+    if len(verified) > 1:
+        candidates = ", ".join(item["name"] for item in verified)
+        if warnings is not None:
+            warnings.append(f"multiple verified checkpoints lack selected provenance: {candidates}")
+        return None
+    legacy = _best_checkpoint([Path(str(item["path"])) for item in items])
+    if legacy is not None and warnings is not None:
+        warnings.append(f"checkpoint selection for legacy run falls back to filename: {legacy}")
+    return legacy
+
+
+def _explicit_checkpoint_paths(run_dir: Path) -> list[tuple[str, str]]:
+    references: list[tuple[str, str]] = []
+    final_test = _read_json(run_dir / "final_test_metrics.json")
+    selected = final_test.get("selected_checkpoint") if isinstance(final_test, dict) else None
+    if isinstance(selected, dict) and isinstance(selected.get("path"), str):
+        references.append(("final_test_metrics.json", selected["path"]))
+    status = _read_json(run_dir / RUN_STATUS_FILENAME)
+    selected = status.get("best_checkpoint") if isinstance(status, dict) else None
+    if isinstance(selected, str):
+        references.append((RUN_STATUS_FILENAME, selected))
+    return references
+
+
+def _resolve_checkpoint_reference(run_dir: Path, raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    return (path if path.is_absolute() else run_dir / path).resolve()
 
 def _checkpoint_role(path: Path, *, best: Path | None) -> str:
     if path.name == "best.pth":
@@ -710,6 +828,7 @@ def _checkpoint_retention_summary(items: list[dict[str, Any]]) -> dict[str, Any]
 def _checkpoint_selection_metadata(sidecar: dict[str, Any] | None) -> dict[str, Any]:
     if not sidecar:
         return {"available": False, "missing": True}
+    selection = sidecar.get("selection") if isinstance(sidecar.get("selection"), dict) else {}
     keys = (
         "selection_metric",
         "selected_metric",
@@ -721,6 +840,16 @@ def _checkpoint_selection_metadata(sidecar: dict[str, Any] | None) -> dict[str, 
         "epoch",
     )
     values = {key: sidecar.get(key) for key in keys if key in sidecar}
+    if selection:
+        values.update(
+            {
+                "selection_metric": selection.get("metric"),
+                "selection_mode": selection.get("mode"),
+                "selection_value": selection.get("value"),
+                "selected_epoch": selection.get("selected_epoch"),
+                "checkpoint_role": sidecar.get("checkpoint_role"),
+            }
+        )
     objective = sidecar.get("objective") if isinstance(sidecar.get("objective"), dict) else None
     if objective:
         values["objective"] = objective

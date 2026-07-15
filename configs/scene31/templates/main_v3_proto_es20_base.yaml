@@ -12,7 +12,8 @@ model:
 training:
   epochs: 20
   max_epochs: 20
-  use_early_stopping: true
+  use_early_stopping: false
+  model_selection: false
   early_stopping_metric: val_top1
   early_stopping_mode: max
   patience: 5

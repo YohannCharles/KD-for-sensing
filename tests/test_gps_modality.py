@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from torch.utils.data import TensorDataset
 
 ROOT = Path(__file__).resolve().parents[1]
 from kd_sensing.config import load_config
@@ -176,8 +177,21 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
     gps_paths, bs_paths = _write_gps_files(tmp_path, "test", 34.0, -112.0)
     _write_beam_files(tmp_path)
     _write_sequence_csv(test_csv, gps_paths, bs_paths, seq_index=2)
-    scaler_path = tmp_path / "artifacts" / "gps_scaler.npz"
-    GPSStandardScaler(mean_=np.zeros(3, dtype=np.float32), scale_=np.ones(3, dtype=np.float32)).save(scaler_path)
+    scaler = GPSStandardScaler(mean_=np.zeros(3, dtype=np.float32), scale_=np.ones(3, dtype=np.float32))
+    artifact_dataset = TensorDataset(torch.zeros(1))
+    artifact_dataset.use_gps = True
+    artifact_dataset.gps_normalize = True
+    artifact_dataset.gps_feature_mode = "relative_polar"
+    artifact_dataset.gps_angle_frame = "world"
+    artifact_dataset.gps_yaw_source = None
+    artifact_dataset.gps_yaw_validation_policy = "not_applicable"
+    artifact_dataset.gps_yaw_validation = "not_applicable"
+    artifact_dataset.gps_scaler = scaler
+    artifact_dataset.enabled_modalities = ["gps"]
+    normalization_artifacts = save_normalization_artifacts(
+        {"train": _Loader(artifact_dataset)},
+        tmp_path / "train_run",
+    )
     cfg = load_config(
         ROOT / "configs/gps/lightweight.yaml",
         [
@@ -201,7 +215,7 @@ def test_evaluate_loads_registry_gps_scaler_without_train_scan(tmp_path: Path):
         epoch=1,
         run_dir=tmp_path / "train_run",
         split_metadata={"train": {"csv_path": "missing_train.csv", "num_samples": 0}},
-        normalization_artifacts={"gps_scaler": str(scaler_path)},
+        normalization_artifacts=normalization_artifacts,
     )
 
     result = evaluate(cfg, output_dir=str(tmp_path / "eval"))

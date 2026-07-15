@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from torch.utils.data import TensorDataset
 
 ROOT = Path(__file__).resolve().parents[1]
 from kd_sensing.config import load_config
@@ -246,11 +247,19 @@ def test_mmwave_feature_extractor_batch_and_fusion_forward_contracts():
 def test_evaluate_loads_registry_mmwave_scaler_without_train_scan(tmp_path: Path):
     test_csv = tmp_path / "test.csv"
     _write_mmwave_sequence_fixture(tmp_path, test_csv, prefix="test", seq_index=2)
-    scaler_path = tmp_path / "artifacts" / "mmwave_scaler.npz"
-    MmWaveStandardScaler(
+    scaler = MmWaveStandardScaler(
         mean_=np.zeros(64, dtype=np.float32),
         scale_=np.ones(64, dtype=np.float32),
-    ).save(scaler_path)
+    )
+    artifact_dataset = TensorDataset(torch.zeros(1))
+    artifact_dataset.use_mmwave = True
+    artifact_dataset.mmwave_normalize = True
+    artifact_dataset.mmwave_scaler = scaler
+    artifact_dataset.enabled_modalities = ["mmwave"]
+    normalization_artifacts = save_normalization_artifacts(
+        {"train": _Loader(artifact_dataset)},
+        tmp_path / "train_run",
+    )
     cfg = load_config(
         ROOT / "configs/mmwave/lightweight.yaml",
         [
@@ -274,7 +283,7 @@ def test_evaluate_loads_registry_mmwave_scaler_without_train_scan(tmp_path: Path
         epoch=1,
         run_dir=tmp_path / "train_run",
         split_metadata={"train": {"csv_path": "missing_train.csv", "num_samples": 0}},
-        normalization_artifacts={"mmwave_scaler": str(scaler_path)},
+        normalization_artifacts=normalization_artifacts,
     )
 
     result = evaluate(cfg, output_dir=str(tmp_path / "eval"))

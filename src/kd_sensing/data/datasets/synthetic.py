@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 import torch
 from torch.utils.data import Dataset
 
@@ -35,6 +38,7 @@ class SyntheticSequenceDataset(Dataset):
         occlusion_target: bool | dict[str, object] | None = None,
         position_target: bool | dict[str, object] | None = None,
         seed: int = 0,
+        split: str = "train",
         **_: object,
     ):
         self.length = length
@@ -72,17 +76,46 @@ class SyntheticSequenceDataset(Dataset):
             else None
         )
         self.position_target_scaler = None
-        self.generator = torch.Generator().manual_seed(seed)
+        self.seed = int(seed)
+        self.split = str(split)
+        self.schema_identity = hashlib.sha256(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "seq_len": self.seq_len,
+                    "num_pred": self.num_pred,
+                    "num_classes": self.num_classes,
+                    "image_size": self.image_size,
+                    "image_channels": self.image_channels,
+                    "radar_size": self.radar_size,
+                    "lidar_size": self.lidar_size,
+                    "use_gps": self.use_gps,
+                    "gps_input_size": self.gps_input_size,
+                    "use_gps_bev_xy": self.use_gps_bev_xy,
+                    "use_lidar": self.use_lidar,
+                    "lidar_channels": self.lidar_channels,
+                    "use_mmwave": self.use_mmwave,
+                    "mmwave_input_size": self.mmwave_input_size,
+                    "use_csi": self.use_csi,
+                    "csi_shape": self.csi_shape,
+                    "occlusion_target": self.occlusion_target_enabled,
+                    "position_target": self.position_target_enabled,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
 
     def __len__(self) -> int:
         return self.length
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        image = torch.rand((self.seq_len, self.image_channels, *self.image_size), generator=self.generator)
-        radar_ra = torch.rand((self.seq_len, *self.radar_size), generator=self.generator)
-        radar_da = torch.rand((self.seq_len, *self.radar_size), generator=self.generator)
-        input_beam = torch.randint(0, self.num_classes, (self.seq_len,), generator=self.generator)
-        target_beam = torch.randint(0, self.num_classes, (self.num_pred,), generator=self.generator)
+        generator = self._generator_for_index(idx)
+        image = torch.rand((self.seq_len, self.image_channels, *self.image_size), generator=generator)
+        radar_ra = torch.rand((self.seq_len, *self.radar_size), generator=generator)
+        radar_da = torch.rand((self.seq_len, *self.radar_size), generator=generator)
+        input_beam = torch.randint(0, self.num_classes, (self.seq_len,), generator=generator)
+        target_beam = torch.randint(0, self.num_classes, (self.num_pred,), generator=generator)
         sample = {
             "image": image.float(),
             "radar_ra": radar_ra.float(),
@@ -93,34 +126,39 @@ class SyntheticSequenceDataset(Dataset):
             "target_index": torch.tensor(self.seq_len, dtype=torch.long),
         }
         if self.use_gps:
-            sample["gps"] = torch.rand((self.seq_len, self.gps_input_size), generator=self.generator)
+            sample["gps"] = torch.rand((self.seq_len, self.gps_input_size), generator=generator)
         if self.use_gps_bev_xy:
             x_min, x_max, y_min, y_max = self.gps_bev_roi
-            xy = torch.rand((self.seq_len, 2), generator=self.generator)
+            xy = torch.rand((self.seq_len, 2), generator=generator)
             xy[:, 0] = xy[:, 0] * (x_max - x_min) + x_min
             xy[:, 1] = xy[:, 1] * (y_max - y_min) + y_min
             sample["gps_bev_xy"] = xy.float()
         if self.use_lidar:
             sample["lidar"] = torch.rand(
                 (self.seq_len, self.lidar_channels, *self.lidar_size),
-                generator=self.generator,
+                generator=generator,
             )
         if self.use_mmwave:
-            sample["mmwave"] = torch.rand((self.seq_len, self.mmwave_input_size), generator=self.generator)
+            sample["mmwave"] = torch.rand((self.seq_len, self.mmwave_input_size), generator=generator)
         if self.use_csi:
-            sample["csi"] = torch.randn((self.seq_len, *self.csi_shape, 2), generator=self.generator).float()
+            sample["csi"] = torch.randn((self.seq_len, *self.csi_shape, 2), generator=generator).float()
         if self.occlusion_target_enabled:
             sample["occlusion_label"] = torch.randint(
                 0,
                 2,
                 (self.num_pred,),
-                generator=self.generator,
+                generator=generator,
             ).float()
             sample["occlusion_valid"] = torch.ones((self.num_pred,), dtype=torch.bool)
         if self.position_target_enabled:
-            sample["position_target"] = torch.rand((self.num_pred, 2), generator=self.generator).float()
+            sample["position_target"] = torch.rand((self.num_pred, 2), generator=generator).float()
             sample["position_valid"] = torch.ones((self.num_pred,), dtype=torch.bool)
         return sample
+
+    def _generator_for_index(self, index: int) -> torch.Generator:
+        payload = f"{self.seed}:{self.split}:{self.schema_identity}:{int(index)}".encode("utf-8")
+        seed = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") & ((1 << 63) - 1)
+        return torch.Generator().manual_seed(seed)
 
 
 def _enabled(value: bool | dict[str, object] | None) -> bool:

@@ -21,7 +21,6 @@ from kd_sensing.engine.prediction_objectives import (
     objective_tensorboard_scalars,
     resolve_prediction_objective,
 )
-from kd_sensing.engine.teacher_guidance import TeacherGuidanceTrainingExtension
 from kd_sensing.engine.training_extensions import BatchState, ExtensionContext, ForwardControls
 from kd_sensing.engine.trainer import train
 
@@ -380,62 +379,6 @@ def test_dba_aware_beam_loss_builds_circular_soft_targets_from_hard_labels():
     assert disabled_diag == {}
 
 
-def test_teacher_guidance_extension_uses_non_retired_loss_names_and_detaches_teacher(tmp_path: Path):
-    extension = TeacherGuidanceTrainingExtension()
-    cfg = {
-        "loss": {
-            "teacher_guidance": {
-                "enabled": True,
-                "weight": 0.5,
-                "temperature": 2.0,
-                "checkpoint_path": "outputs/teacher/image_resnet_gps/best.pth",
-                "checkpoint_provenance": "unit_test_teacher",
-                "enabled_splits": ["train"],
-            }
-        }
-    }
-    logits = torch.tensor([[[2.0, 0.0, -1.0], [0.0, 1.0, 2.0]]], requires_grad=True)
-    teacher_logits = torch.tensor([[[3.0, 0.0, -1.0], [0.0, 2.0, 3.0]]])
-    context = ExtensionContext(
-        cfg=cfg,
-        task="fusion",
-        model_cfg={"num_pred": 2, "num_classes": 3, "seq_length": 2, "primary": {}},
-        training_cfg={},
-        primary_model=torch.nn.Linear(1, 1),
-        task_criterion=torch.nn.CrossEntropyLoss(),
-        run_dir=tmp_path,
-        device=torch.device("cpu"),
-        num_pred=2,
-        num_classes=3,
-        seq_length=2,
-        non_blocking=False,
-    )
-    state = extension.setup(context)
-    batch_state = BatchState(
-        epoch=0,
-        step=0,
-        batch={"teacher_logits": teacher_logits},
-        labels=torch.tensor([[0, 2]]),
-        soft_beam_targets=None,
-        primary_output=ModelOutput(logits=logits, input_features=None, output_features=None, diagnostics={}),
-        primary_logits=logits,
-        controls=ForwardControls(),
-    )
-
-    bundle = extension.after_forward(context, state, batch_state)
-    loads = extension.checkpoint_loads(state)
-    epoch_meta = extension.after_epoch(context, state, epoch=0)
-
-    assert bundle is not None
-    assert bundle.total.item() > 0
-    assert "loss/teacher_guidance" in bundle.diagnostics
-    assert "loss/geometry_teacher_kl" in bundle.diagnostics
-    assert all("distillation" not in key and "kd_soft_label" not in key for key in bundle.diagnostics)
-    assert loads[0]["role"] == "teacher_guidance_stabilization"
-    assert loads[0]["provenance"] == "unit_test_teacher"
-    assert epoch_meta["teacher_guidance"]["mode"] == "opt_in_stabilization"
-
-
 @pytest.mark.parametrize("objective", ["beam", "occlusion", "position", "multitask"])
 def test_tiny_training_smoke_for_first_class_objectives(tmp_path: Path, objective: str):
     cfg = _tiny_objective_cfg(objective, tmp_path)
@@ -474,6 +417,7 @@ def _tiny_objective_cfg(objective: str, tmp_path: Path) -> dict:
     return {
         "experiment": {"name": f"tiny_{objective}", "task": "fusion", "objective": objective, "seed": 3, "device": "cpu"},
         "data": {
+            "validation_from_train": {"enabled": True, "fraction": 0.5, "seed": 3},
             "dataset": {
                 "type": "synthetic",
                 "scene": 31,
@@ -527,6 +471,7 @@ def _tiny_objective_cfg(objective: str, tmp_path: Path) -> dict:
             "grad_clip": None,
             "patience": 2,
             "use_early_stopping": False,
+            "model_selection": True,
             "early_stopping_metric": {
                 "beam": "val_adba",
                 "occlusion": "val_occlusion_blocked_f1",

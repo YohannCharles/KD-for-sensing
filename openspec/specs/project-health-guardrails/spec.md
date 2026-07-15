@@ -455,3 +455,65 @@ Post-C2 清理验收 MUST 只读取 tracked source、configs、docs、OpenSpec�
 - **WHEN** 训练命令只存在于正常 CLI、脚本、文档示例或测试 fixture
 - **THEN** guard MUST 不把它误报为系统配置污染
 - **AND** fixture MUST 覆盖危险与允许样例
+
+### Requirement: Checkpoint 反序列化必须显式区分信任级别
+项目中的 state-dict、tensor checkpoint 和 artifact metadata loader MUST 显式使用安全加载模式。需要任意 pickle object 的 legacy loader MUST 要求显式 trusted-local opt-in，并 MUST NOT 接受远程或来源不明输入。
+
+#### Scenario: 普通 state-dict checkpoint
+- **WHEN** runtime 加载模型、optimizer 或统计 artifact 的 tensor/dict checkpoint
+- **THEN** loader MUST 显式使用 `weights_only=True` 或等价安全模式
+- **AND** 安全模式失败 MUST 给出 schema 错误，而不是自动回退到 unsafe pickle
+
+#### Scenario: Legacy trusted-local 例外
+- **WHEN** 受保护历史 artifact 确实需要任意 pickle object
+- **THEN** 调用方 MUST 显式设置 trusted-local opt-in
+- **AND** metadata 或 warning MUST 记录 unsafe 模式与来源路径
+- **AND** 远程 URL、下载缓存或来源未知路径 MUST 被拒绝
+
+### Requirement: 批量预处理不得静默部分成功
+批量预处理 MUST 使用稳定资源 identity 避免 basename 碰撞，MUST 聚合有限失败样本，并 MUST 在零成功、碰撞或失败超过明确阈值时返回失败。最终 CSV、JSON 和 metadata MUST 使用原子写。
+
+#### Scenario: 不同目录同名输入
+- **WHEN** 两个输入资源 basename 相同但规范化相对路径不同
+- **THEN** preprocessor MUST 为它们生成不同 identity 或明确报告冲突
+- **AND** MUST NOT 静默覆盖同一输出
+
+#### Scenario: 全部样本失败
+- **WHEN** batch preprocessing 没有任何成功样本
+- **THEN** command MUST 返回失败并报告有限错误示例和总计数
+- **AND** MUST NOT 写出看似成功的空结果 artifact
+
+#### Scenario: 原子结果写出
+- **WHEN** preprocessor 完成 CSV、JSON 或 metadata 生成
+- **THEN** output MUST 先写入同文件系统临时路径并原子替换目标
+- **AND** 写入失败 MUST 保留原目标
+
+#### Scenario: 内部验证异常
+- **WHEN** config 或 label-space validation 遇到内部导入或编程错误
+- **THEN** validation MUST 暴露异常并阻止 workflow
+- **AND** MUST NOT 捕获宽泛异常后跳过验证
+
+### Requirement: Full 与 compile verification 必须覆盖真实 owner surface
+`verify-full` MUST 执行全量 pytest；script/package compile 与 lifecycle guard MUST 扫描受控 owner roots 的 on-disk Python/source entrypoints，而不是只读取 Git tracked 列表。扫描 MUST 排除 dataset、outputs、logs、cache、checkpoint 和其它本地产物。
+
+#### Scenario: 运行 verify-full
+- **WHEN** 开发者运行 `make verify-full`
+- **THEN** quick、CLI/config、compile 和 `conda run -n kd_mm_beam pytest -q` MUST 全部执行
+- **AND** 任一阶段失败 MUST 使命令非零退出
+
+#### Scenario: 未跟踪 owner script 语法错误
+- **WHEN** `scripts/` 中存在 on-disk 未跟踪 Python 文件且语法非法
+- **THEN** compile verification MUST 失败并报告路径
+
+#### Scenario: 本地产物不被扫描
+- **WHEN** outputs、logs、dataset 或 cache 中存在 Python/Markdown 运行产物
+- **THEN** source lifecycle/compile guard MUST 不把它们当作源码入口
+
+### Requirement: 最小 CI 必须复用仓库验证入口
+项目 MUST 提供最小 CI，在声明的 Python/conda 环境中安装当前 package，并复用 OpenSpec strict、quick、CLI/config、compile 和 full test 入口。CI 文档 MUST 与实际 workflow 一致。
+
+#### Scenario: CI workflow 存在
+- **WHEN** 维护者检查 CI 配置和环境文档
+- **THEN** workflow MUST 使用仓库现有验证入口而非复制测试清单
+- **AND** 文档 MUST 不声称不存在的 CI、coverage、lint 或 type gate 已启用
+

@@ -37,6 +37,10 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         "enabled_modalities": list(getattr(dataset, "enabled_modalities", [])),
         "split_family": split_family,
         "beam_target_source": getattr(dataset, "beam_target_source", None),
+        "domain_id": getattr(dataset, "domain_id", None),
+        "domain_condition": getattr(dataset, "domain_condition", None),
+        "domain_scene": getattr(dataset, "domain_scene", None),
+        "domain_split_path": getattr(dataset, "domain_split_path", None),
     }
     if csv_path is not None:
         split_metadata = split_metadata_summary_for_csv(
@@ -74,8 +78,25 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         if getattr(dataset, "mmwave_scaler_metadata", None):
             metadata["mmwave_scaler"] = dict(getattr(dataset, "mmwave_scaler_metadata"))
     if getattr(dataset, "use_gps", False):
+        yaw_validation_applicable = getattr(dataset, "gps_yaw_validation_policy", "not_applicable") != "not_applicable"
         metadata["gps_normalize"] = bool(getattr(dataset, "gps_normalize", False))
         metadata["gps_feature_mode"] = getattr(dataset, "gps_feature_mode", None)
+        metadata["gps_angle_frame"] = getattr(dataset, "gps_angle_frame", None)
+        metadata["gps_yaw_source"] = getattr(dataset, "gps_yaw_source", None)
+        metadata["gps_yaw_validation_policy"] = getattr(dataset, "gps_yaw_validation_policy", None)
+        metadata["gps_yaw_validation"] = getattr(dataset, "gps_yaw_validation", None)
+        metadata["gps_yaw_validated_window_count"] = int(
+            getattr(dataset, "gps_yaw_validated_window_count", 0) or 0
+        )
+        metadata["gps_yaw_validated_frame_count"] = int(
+            getattr(dataset, "gps_yaw_validated_frame_count", 0) or 0
+        )
+        metadata["gps_yaw_expected_window_count"] = len(dataset) if yaw_validation_applicable else 0
+        metadata["gps_yaw_expected_frame_count"] = (
+            len(dataset) * int(getattr(dataset, "gps_source_seq_len", getattr(dataset, "seq_len", 0)) or 0)
+            if yaw_validation_applicable
+            else 0
+        )
         metadata["gps_angle_offset_rad"] = getattr(dataset, "gps_angle_offset_rad", None)
         metadata["gps_angle_offset_source"] = getattr(dataset, "gps_angle_offset_source", None)
         if getattr(dataset, "gps_scaler_metadata", None):
@@ -140,6 +161,11 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
 def _concat_dataset_run_metadata(dataset: ConcatDataset) -> dict[str, Any]:
     components = [dataset_run_metadata(item) for item in getattr(dataset, "datasets", [])]
     first = components[0] if components else {}
+    gps_feature_mode = _consistent_component_value(components, "gps_feature_mode")
+    gps_angle_frame = _consistent_component_value(components, "gps_angle_frame")
+    gps_yaw_source = _consistent_component_value(components, "gps_yaw_source")
+    gps_yaw_validation_policy = _consistent_component_value(components, "gps_yaw_validation_policy")
+    gps_yaw_validation = _consistent_component_value(components, "gps_yaw_validation")
     scene_slugs = [item.get("scene_slug") for item in components if item.get("scene_slug") is not None]
     scene_ids = [item.get("scene_id") for item in components if item.get("scene_id") is not None]
     return {
@@ -152,9 +178,34 @@ def _concat_dataset_run_metadata(dataset: ConcatDataset) -> dict[str, Any]:
         "component_num_samples": [int(item.get("num_samples", 0) or 0) for item in components],
         "num_samples": len(dataset),
         "enabled_modalities": list(first.get("enabled_modalities", [])),
+        "gps_feature_mode": gps_feature_mode,
+        "gps_angle_frame": gps_angle_frame,
+        "gps_yaw_source": gps_yaw_source,
+        "gps_yaw_validation_policy": gps_yaw_validation_policy,
+        "gps_yaw_validation": gps_yaw_validation,
+        "gps_yaw_validated_window_count": sum(
+            int(item.get("gps_yaw_validated_window_count", 0) or 0) for item in components
+        ),
+        "gps_yaw_validated_frame_count": sum(
+            int(item.get("gps_yaw_validated_frame_count", 0) or 0) for item in components
+        ),
+        "gps_yaw_expected_window_count": sum(
+            int(item.get("gps_yaw_expected_window_count", 0) or 0) for item in components
+        ),
+        "gps_yaw_expected_frame_count": sum(
+            int(item.get("gps_yaw_expected_frame_count", 0) or 0) for item in components
+        ),
         "split_family": "multi_scene",
         "components": components,
+        "domain_inventory": list(getattr(dataset, "domain_inventory", [])),
     }
+
+
+def _consistent_component_value(components: list[dict[str, Any]], key: str) -> Any:
+    values = {item.get(key) for item in components if item.get(key) is not None}
+    if len(values) > 1:
+        raise ValueError(f"ConcatDataset components disagree on {key}: {sorted(str(value) for value in values)}.")
+    return next(iter(values)) if values else None
 
 
 def _subset_dataset_run_metadata(dataset: Subset) -> dict[str, Any]:
@@ -191,10 +242,16 @@ def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, An
     metadata = {}
     for split, loader in dataloaders.items():
         split_metadata = dataset_run_metadata(loader.dataset)
+        generator_metadata = getattr(loader, "generator_metadata", None)
+        if isinstance(generator_metadata, dict):
+            split_metadata["dataloader_generator"] = dict(generator_metadata)
         if split == "train":
             subsampling = epoch_subsampling_metadata_from_loader(loader)
             if subsampling:
                 split_metadata["epoch_subsampling"] = subsampling
+            sampler_metadata = getattr(getattr(loader, "sampler", None), "domain_balanced_metadata", None)
+            if isinstance(sampler_metadata, dict):
+                split_metadata["domain_balanced_sampling"] = dict(sampler_metadata)
         metadata[split] = split_metadata
     return metadata
 
@@ -250,7 +307,7 @@ def prediction_setup_metadata(
     if split_metadata:
         metadata["splits"] = _prediction_setup_splits(split_metadata)
         train_split = split_metadata.get("train", {})
-        eval_split = split_metadata.get("validation") or split_metadata.get("test") or split_metadata.get("val") or {}
+        eval_split = split_metadata.get("validation") or split_metadata.get("val") or {}
         metadata["train_num_samples"] = train_split.get("num_samples")
         metadata["validation_num_samples"] = eval_split.get("num_samples")
         split_protocol = train_split.get("split_protocol") or eval_split.get("split_protocol")
@@ -577,7 +634,7 @@ def _validation_source_name(cfg: dict[str, Any], dataset_cfg: dict[str, Any]) ->
         return "internal_train_split"
     if validation_from_train is True:
         return "internal_train_split"
-    return dataset_cfg.get("val_csv_name") or dataset_cfg.get("test_csv_name")
+    return dataset_cfg.get("val_csv_name")
 
 
 def throughput_run_metadata(

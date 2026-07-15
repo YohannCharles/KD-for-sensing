@@ -70,6 +70,7 @@ training:
   weight_decay: 0.0001
   grad_clip: 5.0
   use_early_stopping: false
+  model_selection: false
   transfer:
     non_blocking: false
   amp:

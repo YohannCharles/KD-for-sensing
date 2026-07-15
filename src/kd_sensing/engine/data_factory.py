@@ -1,3 +1,5 @@
+import hashlib
+import json
 import random
 from copy import deepcopy
 from pathlib import Path
@@ -5,13 +7,10 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
 from kd_sensing.config.lidar_normalization import canonicalize_lidar_dataset_config
 from kd_sensing.data.dataset_descriptors import dataset_descriptor, resolve_dataset_profiles
-from kd_sensing.data.scenes import (
-    normalize_deepsense_dataset_config,
-)
 from kd_sensing.engine.cache_policy import apply_cache_policy
 from kd_sensing.engine.data_factory_protocols import (
     build_protocol_split_datasets as _build_protocol_split_datasets,
@@ -19,9 +18,10 @@ from kd_sensing.engine.data_factory_protocols import (
     retarget_cfg_for_scene,
 )
 from kd_sensing.engine.data_factory_scalers import (
-    fit_internal_validation_gps_scaler,
-    first_dataset,
+    fit_internal_validation_normalizers,
+    fit_train_normalizers,
     harmonize_multi_scene_train_normalizers,
+    normalization_fit_placeholders,
     normalization_kwargs,
     prepare_lidar_normalizer,
 )
@@ -124,6 +124,13 @@ def validation_from_train_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def has_validation_csv(cfg: dict[str, Any]) -> bool:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    domains = dataset_cfg.get("domains") if isinstance(dataset_cfg, dict) else None
+    if isinstance(domains, list) and domains:
+        return all(
+            isinstance(domain, dict)
+            and bool(domain.get("val_csv_name") or domain.get("validation_csv_name"))
+            for domain in domains
+        )
     return bool(dataset_cfg.get("val_csv_name"))
 
 
@@ -131,12 +138,23 @@ def build_train_and_internal_validation_datasets(
     cfg: dict[str, Any],
     *,
     split_dataset_builder: Callable[..., Any],
+    provided: dict[str, Any] | None = None,
 ) -> tuple[Any, Any]:
-    raw_cfg = deepcopy(cfg)
-    raw_cfg.setdefault("data", {}).setdefault("dataset", {})["gps_normalize"] = False
-    full_train = split_dataset_builder(raw_cfg, "train")
+    full_train = split_dataset_builder(
+        cfg,
+        "train",
+        normalization_overrides=provided,
+    )
     train_dataset, validation_dataset = split_dataset_for_internal_validation(full_train, cfg)
-    fit_internal_validation_gps_scaler(train_dataset, validation_dataset)
+    if provided:
+        fit_train_normalizers(
+            train_dataset,
+            validation_dataset,
+            source="internal_train_subset_streaming_fit",
+            provided=provided,
+        )
+    else:
+        fit_internal_validation_normalizers(train_dataset, validation_dataset)
     return train_dataset, validation_dataset
 
 
@@ -194,8 +212,6 @@ def annotate_internal_subset(subset: Subset, *, role: str, source_dataset: Any, 
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     import_default_components()
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
-    _apply_top_level_csi_input_config(dataset_cfg, cfg.get("data", {}))
-    normalize_deepsense_dataset_config(dataset_cfg)
     dataset_type = dataset_cfg.get("type")
     descriptor = _optional_dataset_descriptor(dataset_type)
     if descriptor is not None and not dataset_cfg.get("data_root"):
@@ -208,7 +224,6 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
     apply_cache_policy(dataset_cfg, cfg, enabled_modalities)
     canonicalize_lidar_dataset_config(dataset_cfg)
-    _apply_csi_degradation_seed(dataset_cfg, cfg)
     if _uses_csv_split(dataset_type, descriptor):
         csv_name, dataset_split = _dataset_csv_for_split(dataset_cfg, split)
         dataset_cfg["csv_name"] = csv_name
@@ -218,39 +233,15 @@ def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
     return DATASETS.build(dataset_cfg)
 
 
-def _apply_top_level_csi_input_config(dataset_cfg: dict[str, Any], data_cfg: dict[str, Any]) -> None:
-    if not isinstance(data_cfg, dict):
-        return
-    keys = (
-        "use_csi_input",
-        "csi_input_mode",
-        "history_len",
-        "partial_subcarrier_ratio",
-        "partial_antenna_ratio",
-        "csi_noise_snr_db",
-        "allow_oracle_full_csi_input",
-    )
-    present = [key for key in keys if key in data_cfg]
-    if not present:
-        return
-    physics = dataset_cfg.get("physics_supervision")
-    if isinstance(physics, bool):
-        physics = {} if physics else None
-    if physics is None:
-        physics = {}
-    if not isinstance(physics, dict):
-        physics = {}
-    dataset_cfg["physics_supervision"] = physics
-    for key in keys:
-        if key in data_cfg:
-            dataset_cfg.setdefault(key, data_cfg[key])
-            physics.setdefault(key, data_cfg[key])
-
-
-def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
+def build_dataloaders(
+    cfg: dict[str, Any],
+    *,
+    normalization_overrides: dict[str, Any] | None = None,
+) -> dict[str, DataLoader]:
     loader_cfg = cfg["data"]["dataloader"]
     training_cfg = cfg.get("training", {})
-    protocol_splits = build_protocol_split_datasets(cfg)
+    provided = dict(normalization_overrides or {})
+    protocol_splits = build_protocol_split_datasets(cfg, **provided)
     if protocol_splits is not None:
         train_dataset = protocol_splits["train"]
         validation_dataset = protocol_splits.get("validation")
@@ -259,15 +250,46 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
         train_dataset, validation_dataset = build_train_and_internal_validation_datasets(
             cfg,
             split_dataset_builder=build_split_dataset,
+            provided=provided or None,
         )
-        dataset_kwargs = normalization_kwargs(train_dataset)
-        test_dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
+        dataset_kwargs = provided or normalization_kwargs(train_dataset)
+        test_dataset = build_split_dataset(
+            cfg,
+            "test",
+            normalization_overrides=provided or None,
+            **({} if provided else dataset_kwargs),
+        )
     else:
-        train_dataset = build_split_dataset(cfg, "train")
-        validation_dataset = build_split_dataset(cfg, "validation", **normalization_kwargs(train_dataset)) if has_validation_csv(cfg) else None
-        dataset_kwargs = normalization_kwargs(train_dataset)
-        test_dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
-    prepare_lidar_normalizer(cfg, first_dataset(train_dataset))
+        train_dataset = build_split_dataset(cfg, "train", normalization_overrides=provided or None)
+        if provided:
+            fit_train_normalizers(
+                train_dataset,
+                source="provided_train_artifact",
+                provided=provided,
+            )
+            train_normalization = provided
+        else:
+            prepare_lidar_normalizer(cfg, train_dataset)
+            train_normalization = normalization_kwargs(train_dataset)
+        validation_dataset = (
+            build_split_dataset(
+                cfg,
+                "validation",
+                normalization_overrides=provided or None,
+                **({} if provided else train_normalization),
+            )
+            if has_validation_csv(cfg)
+            else None
+        )
+        dataset_kwargs = provided or normalization_kwargs(train_dataset)
+        test_dataset = build_split_dataset(
+            cfg,
+            "test",
+            normalization_overrides=provided or None,
+            **({} if provided else dataset_kwargs),
+        )
+    if not provided:
+        prepare_lidar_normalizer(cfg, train_dataset)
     dataloaders = {
         "train": build_dataloader(
             train_dataset,
@@ -275,6 +297,7 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
             split="train",
             epoch_subsampling_cfg=training_cfg.get("epoch_subsampling"),
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
+            domain_balanced_sampling_cfg=cfg.get("data", {}).get("domain_balanced_sampling"),
         ),
         "test": build_dataloader(
             test_dataset,
@@ -293,21 +316,51 @@ def build_dataloaders(cfg: dict[str, Any]) -> dict[str, DataLoader]:
     return dataloaders
 
 
-def build_split_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any):
-    protocol_splits = build_protocol_split_datasets(cfg, **extra_dataset_kwargs)
+def build_split_dataset(
+    cfg: dict[str, Any],
+    split: str,
+    *,
+    normalization_overrides: dict[str, Any] | None = None,
+    **extra_dataset_kwargs: Any,
+):
+    provided = dict(normalization_overrides or {})
+    build_kwargs = dict(extra_dataset_kwargs)
+    if provided:
+        build_kwargs.update(provided)
+    protocol_splits = build_protocol_split_datasets(cfg, **build_kwargs)
     if protocol_splits is not None:
         split_key = "validation" if split == "val" else split
         if split_key not in protocol_splits:
             raise ValueError(f"Split protocol did not produce split '{split}'.")
         return protocol_splits[split_key]
+    domain_dataset = _build_mmw_domain_dataset(
+        cfg,
+        split,
+        normalization_overrides=provided or None,
+        **extra_dataset_kwargs,
+    )
+    if domain_dataset is not None:
+        return domain_dataset
     scenes = dataset_scenes_for_split(cfg, split)
     if not scenes:
-        return build_dataset(cfg, split, **extra_dataset_kwargs)
+        return build_dataset(cfg, split, **build_kwargs)
     if len(scenes) == 1:
         scene_cfg = retarget_cfg_for_scene(cfg, scenes[0])
-        return build_dataset(scene_cfg, split, **extra_dataset_kwargs)
-    datasets = [build_dataset(retarget_cfg_for_scene(cfg, scene), split, **extra_dataset_kwargs) for scene in scenes]
+        return build_dataset(scene_cfg, split, **build_kwargs)
     if split == "train":
+        train_kwargs = normalization_fit_placeholders(cfg)
+        train_kwargs.update(build_kwargs)
+        build_kwargs = train_kwargs
+    datasets = [build_dataset(retarget_cfg_for_scene(cfg, scene), split, **build_kwargs) for scene in scenes]
+    if split == "train":
+        if provided:
+            pooled = ConcatDataset(datasets)
+            fit_train_normalizers(
+                pooled,
+                source="provided_train_artifact",
+                provided=provided,
+            )
+            return pooled
         harmonize_multi_scene_train_normalizers(datasets)
     return ConcatDataset(datasets)
 
@@ -327,23 +380,298 @@ def build_dataloader(
     split: str,
     epoch_subsampling_cfg: dict[str, Any] | None = None,
     experiment_seed: int | None = None,
+    domain_balanced_sampling_cfg: dict[str, Any] | None = None,
 ) -> DataLoader:
     kwargs = build_dataloader_kwargs(loader_cfg, split=split)
+    generator_metadata = None
     if experiment_seed is not None:
+        generator_metadata = dataloader_generator_metadata(dataset, split=split, base_seed=experiment_seed)
         generator = torch.Generator()
-        generator.manual_seed(int(experiment_seed))
+        generator.manual_seed(int(generator_metadata["derived_seed"]))
         kwargs["generator"] = generator
         kwargs["worker_init_fn"] = _seed_dataloader_worker
     if split == "train":
+        domain_sampler = build_domain_balanced_sampler(
+            dataset,
+            domain_balanced_sampling_cfg,
+            experiment_seed=experiment_seed,
+        )
         sampler = build_epoch_subsample_sampler(
             dataset,
             epoch_subsampling_cfg,
             experiment_seed=experiment_seed,
         )
+        if domain_sampler is not None and sampler is not None:
+            raise ValueError("domain-balanced sampling cannot be combined with training.epoch_subsampling.")
+        if domain_sampler is not None:
+            kwargs["shuffle"] = False
+            kwargs["sampler"] = domain_sampler
         if sampler is not None:
             kwargs["shuffle"] = False
             kwargs["sampler"] = sampler
-    return DataLoader(dataset, **kwargs)
+    dataloader = DataLoader(dataset, **kwargs)
+    if generator_metadata is not None:
+        dataloader.generator_metadata = generator_metadata
+    return dataloader
+
+
+def dataloader_generator_metadata(dataset: Any, *, split: str, base_seed: int) -> dict[str, Any]:
+    normalized_split = "validation" if split == "val" else str(split)
+    dataset_fingerprint = _dataset_fingerprint(dataset)
+    identity = {
+        "algorithm": "sha256-v1",
+        "base_seed": int(base_seed),
+        "split": normalized_split,
+        "dataset_fingerprint": dataset_fingerprint,
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).digest()
+    identity["derived_seed"] = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    return identity
+
+
+def capture_dataloaders_random_state(dataloaders: dict[str, DataLoader]) -> dict[str, Any]:
+    return {split: _capture_dataloader_random_state(loader) for split, loader in dataloaders.items()}
+
+
+def restore_dataloaders_random_state(dataloaders: dict[str, DataLoader], state: dict[str, Any]) -> None:
+    if set(dataloaders) != set(state):
+        raise ValueError(
+            "DataLoader random-state splits do not match: "
+            f"current={sorted(dataloaders)}, checkpoint={sorted(state)}."
+        )
+    for split, loader in dataloaders.items():
+        _restore_dataloader_random_state(loader, state[split], split=split)
+
+
+def _capture_dataloader_random_state(dataloader: DataLoader) -> dict[str, Any]:
+    generator = getattr(dataloader, "generator", None)
+    sampler = getattr(dataloader, "sampler", None)
+    sampler_generator = getattr(sampler, "generator", None)
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "identity": dict(getattr(dataloader, "generator_metadata", {})),
+        "generator_state": generator.get_state().clone() if isinstance(generator, torch.Generator) else None,
+        "sampler": {
+            "type": type(sampler).__name__ if sampler is not None else None,
+            "epoch": int(getattr(sampler, "epoch")) if hasattr(sampler, "epoch") else None,
+            "generator_state": (
+                sampler_generator.get_state().clone()
+                if isinstance(sampler_generator, torch.Generator) and sampler_generator is not generator
+                else None
+            ),
+        },
+    }
+    return payload
+
+
+def _restore_dataloader_random_state(dataloader: DataLoader, state: dict[str, Any], *, split: str) -> None:
+    current_identity = dict(getattr(dataloader, "generator_metadata", {}))
+    if state.get("identity") != current_identity:
+        raise ValueError(
+            f"DataLoader generator identity mismatch for split '{split}': "
+            f"checkpoint={state.get('identity')}, current={current_identity}."
+        )
+    generator = getattr(dataloader, "generator", None)
+    generator_state = state.get("generator_state")
+    if generator_state is not None:
+        if not isinstance(generator, torch.Generator):
+            raise ValueError(f"DataLoader split '{split}' has no generator to restore.")
+        generator.set_state(generator_state)
+    sampler = getattr(dataloader, "sampler", None)
+    sampler_state = state.get("sampler") or {}
+    expected_type = sampler_state.get("type")
+    if expected_type != (type(sampler).__name__ if sampler is not None else None):
+        raise ValueError(
+            f"DataLoader sampler type mismatch for split '{split}': "
+            f"checkpoint={expected_type}, current={type(sampler).__name__ if sampler is not None else None}."
+        )
+    if sampler_state.get("epoch") is not None:
+        setter = getattr(sampler, "set_epoch", None)
+        if not callable(setter):
+            raise ValueError(f"DataLoader sampler for split '{split}' cannot restore epoch state.")
+        setter(int(sampler_state["epoch"]))
+    sampler_generator_state = sampler_state.get("generator_state")
+    if sampler_generator_state is not None:
+        sampler_generator = getattr(sampler, "generator", None)
+        if not isinstance(sampler_generator, torch.Generator):
+            raise ValueError(f"DataLoader sampler for split '{split}' has no generator to restore.")
+        sampler_generator.set_state(sampler_generator_state)
+
+
+def _dataset_fingerprint(dataset: Any) -> str:
+    if isinstance(dataset, Subset):
+        indices = np.asarray(dataset.indices, dtype=np.int64)
+        payload: Any = {
+            "kind": "subset",
+            "parent": _dataset_fingerprint(dataset.dataset),
+            "indices": hashlib.sha256(indices.tobytes()).hexdigest(),
+            "length": len(dataset),
+        }
+    elif isinstance(dataset, ConcatDataset):
+        payload = {
+            "kind": "concat",
+            "components": [_dataset_fingerprint(component) for component in dataset.datasets],
+            "length": len(dataset),
+        }
+    else:
+        payload = {
+            "kind": f"{type(dataset).__module__}.{type(dataset).__qualname__}",
+            "length": len(dataset),
+            "split": getattr(dataset, "split", None),
+            "root_csv": str(getattr(dataset, "root_csv", "")),
+            "scene_id": getattr(dataset, "scene_id", None),
+            "domain_id": getattr(dataset, "domain_id", None),
+            "schema_identity": getattr(dataset, "schema_identity", None),
+        }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_mmw_domain_dataset(
+    cfg: dict[str, Any],
+    split: str,
+    *,
+    normalization_overrides: dict[str, Any] | None = None,
+    **extra_dataset_kwargs: Any,
+):
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    domains = dataset_cfg.get("domains") if isinstance(dataset_cfg, dict) else None
+    if domains is None:
+        return None
+    if str(dataset_cfg.get("type", "")).strip().lower() != "mmw":
+        raise ValueError("data.dataset.domains is currently supported only for dataset type 'mmw'.")
+    if not isinstance(domains, list) or not domains:
+        raise ValueError("data.dataset.domains must be a non-empty list.")
+    seen_ids: set[str] = set()
+    for index, raw_domain in enumerate(domains):
+        if not isinstance(raw_domain, dict):
+            raise ValueError(f"MMW domain at index {index} must be a mapping.")
+        missing = [key for key in ("id", "condition", "scene", "data_root") if not raw_domain.get(key)]
+        if missing:
+            raise ValueError(f"MMW domain at index {index} is missing required fields: {', '.join(missing)}.")
+        domain_id = str(raw_domain["id"])
+        if domain_id in seen_ids:
+            raise ValueError(f"Duplicate MMW domain id: {domain_id}.")
+        seen_ids.add(domain_id)
+    datasets = []
+    inventory = []
+    provided = dict(normalization_overrides or {})
+    build_kwargs = dict(extra_dataset_kwargs)
+    build_kwargs.update(provided)
+    if split == "train":
+        build_kwargs = normalization_fit_placeholders(cfg)
+        build_kwargs.update(extra_dataset_kwargs)
+        build_kwargs.update(provided)
+    for index, raw_domain in enumerate(domains):
+        domain_id = str(raw_domain["id"])
+        csv_key, csv_name = _domain_csv_for_split(raw_domain, split)
+        csv_path = Path(str(csv_name))
+        if not csv_path.is_absolute():
+            csv_path = Path(str(raw_domain["data_root"])) / csv_path
+        if not csv_path.exists():
+            raise FileNotFoundError(f"MMW domain {domain_id} {split} CSV is missing: {csv_path}.")
+        leaf_cfg = deepcopy(cfg)
+        leaf_dataset_cfg = leaf_cfg["data"]["dataset"]
+        leaf_dataset_cfg.pop("domains", None)
+        leaf_dataset_cfg.update(
+            {
+                "condition": str(raw_domain["condition"]),
+                "scene": str(raw_domain["scene"]),
+                "data_root": str(raw_domain["data_root"]),
+                csv_key: str(csv_name),
+            }
+        )
+        if split in {"validation", "val"}:
+            leaf_dataset_cfg["val_csv_name"] = str(csv_name)
+        dataset = build_dataset(leaf_cfg, split, **build_kwargs)
+        dataset.domain_id = domain_id
+        dataset.domain_condition = str(raw_domain["condition"])
+        dataset.domain_scene = str(raw_domain["scene"])
+        dataset.domain_split_path = str(csv_path)
+        datasets.append(dataset)
+        inventory.append(
+            {
+                "id": domain_id,
+                "condition": str(raw_domain["condition"]),
+                "scene": str(raw_domain["scene"]),
+                "data_root": str(raw_domain["data_root"]),
+                "split": "validation" if split == "val" else split,
+                "split_path": str(csv_path),
+                "sample_count": int(len(dataset)),
+            }
+        )
+    pooled = ConcatDataset(datasets)
+    pooled.domain_inventory = inventory
+    if split == "train":
+        if provided:
+            fit_train_normalizers(
+                pooled,
+                source="provided_train_artifact",
+                provided=provided,
+            )
+        else:
+            harmonize_multi_scene_train_normalizers(datasets)
+    return pooled
+
+
+def _domain_csv_for_split(domain: dict[str, Any], split: str) -> tuple[str, str]:
+    if split == "train":
+        keys = ("train_csv_name",)
+    elif split in {"validation", "val"}:
+        keys = ("val_csv_name", "validation_csv_name")
+    else:
+        keys = ("test_csv_name",)
+    for key in keys:
+        if domain.get(key):
+            return ("val_csv_name" if split in {"validation", "val"} else key), str(domain[key])
+    raise ValueError(f"MMW domain {domain.get('id', '<unknown>')} is missing {split} CSV field ({', '.join(keys)}).")
+
+
+def build_domain_balanced_sampler(
+    dataset: Any,
+    config: dict[str, Any] | None,
+    *,
+    experiment_seed: int | None = None,
+) -> WeightedRandomSampler | None:
+    if not isinstance(config, dict) or not bool(config.get("enabled", False)):
+        return None
+    inventory = getattr(dataset, "domain_inventory", None)
+    components = getattr(dataset, "datasets", None)
+    if not isinstance(dataset, ConcatDataset) or not isinstance(inventory, list) or not components:
+        raise ValueError("domain-balanced sampling requires a pooled dataset built from data.dataset.domains.")
+    sample_counts = [len(component) for component in components]
+    if any(count <= 0 for count in sample_counts):
+        raise ValueError("domain-balanced sampling requires every domain to contain at least one sample.")
+    weights = torch.cat(
+        [torch.full((count,), 1.0 / float(count), dtype=torch.double) for count in sample_counts]
+    )
+    seed = int(config.get("seed", experiment_seed or 0))
+    generator = torch.Generator().manual_seed(seed)
+    replacement = bool(config.get("replacement", True))
+    num_samples = int(config.get("num_samples", len(dataset)))
+    sampler = WeightedRandomSampler(
+        weights,
+        num_samples=num_samples,
+        replacement=replacement,
+        generator=generator,
+    )
+    sampler.domain_balanced_metadata = {
+        "sampler": "WeightedRandomSampler",
+        "seed": seed,
+        "replacement": replacement,
+        "num_samples": num_samples,
+        "domains": [
+            {
+                "id": str(item["id"]),
+                "sample_count": int(count),
+                "sample_weight": 1.0 / float(count),
+                "total_weight": 1.0,
+            }
+            for item, count in zip(inventory, sample_counts)
+        ],
+    }
+    return sampler
 
 
 def _seed_dataloader_worker(_worker_id: int) -> None:
@@ -399,15 +727,6 @@ def _validate_snapshot_csv_exists(cfg: dict[str, Any], dataset_cfg: dict[str, An
         )
 
 
-def _apply_csi_degradation_seed(dataset_cfg: dict[str, Any], cfg: dict[str, Any]) -> None:
-    degradation = dataset_cfg.get("csi_degradation")
-    if not isinstance(degradation, dict) or "seed" in degradation:
-        return
-    experiment_seed = cfg.get("experiment", {}).get("seed")
-    if experiment_seed is not None:
-        degradation["seed"] = int(experiment_seed)
-
-
 __all__ = [
     "build_dataloader",
     "build_dataloader_kwargs",
@@ -415,7 +734,10 @@ __all__ = [
     "build_dataset",
     "build_protocol_split_datasets",
     "build_split_dataset",
+    "capture_dataloaders_random_state",
+    "dataloader_generator_metadata",
     "prepare_lidar_normalizer",
     "resolve_dataloader_split_config",
+    "restore_dataloaders_random_state",
     "shutdown_dataloader_workers",
 ]

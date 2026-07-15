@@ -51,7 +51,7 @@ class PCPGRadarBalanceTrainingExtension(TrainingExtension):
             return None
         zero = batch_state.primary_logits.sum() * 0.0
         total = zero
-        diagnostics: dict[str, float] = {}
+        diagnostics: dict[str, Any] = {}
 
         branch_total, branch_diag = _branch_aux_loss(context, cfg, batch_state, zero)
         total = total + branch_total
@@ -78,8 +78,11 @@ class PCPGRadarBalanceTrainingExtension(TrainingExtension):
 
 def pcpg_radar_balance_config(cfg: dict[str, Any]) -> dict[str, Any]:
     loss_cfg = cfg.get("loss", {}) if isinstance(cfg.get("loss"), dict) else {}
+    training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
     raw = loss_cfg.get("pcpg_radar_balance", {})
     base = dict(raw) if isinstance(raw, dict) else {"enabled": bool(raw)}
+    u_mask_cfg = loss_cfg.get("u_mask_beam_jepa", {})
+    u_mask_cfg = u_mask_cfg if isinstance(u_mask_cfg, dict) else {}
 
     branch = loss_cfg.get("branch_aux_loss", base.get("branch_aux_loss", False))
     radar = loss_cfg.get("radar_protect_loss", base.get("radar_protect_loss", False))
@@ -141,6 +144,21 @@ def pcpg_radar_balance_config(cfg: dict[str, Any]) -> dict[str, Any]:
     base["router_fuse_level"] = str(
         loss_cfg.get("router_fuse_level", base.get("router_fuse_level", model_cfg.get("router_fuse_level", "logits")))
     ).strip().lower()
+    base["circular_beam_distance"] = _bool_value(
+        loss_cfg.get(
+            "circular_beam_distance",
+            base.get(
+                "circular_beam_distance",
+                u_mask_cfg.get(
+                    "circular_beam_distance",
+                    training_cfg.get(
+                        "circular_beam_distance",
+                        training_cfg.get("beam_label_circular", True),
+                    ),
+                ),
+            ),
+        )
+    )
     for key in (
         "router_use_pattern_features",
         "router_use_reliability_features",
@@ -241,7 +259,15 @@ def missing_count_from_pattern_name(pattern_name: str) -> int | None:
 
 
 def pattern_name_from_available_mask(mask: torch.Tensor, modalities: list[str] | tuple[str, ...]) -> str:
-    values = [bool(item) for item in mask.detach().cpu().tolist()]
+    return pattern_names_from_available_mask(mask.reshape(1, -1), modalities)[0]
+
+
+def pattern_names_from_available_mask(mask: torch.Tensor, modalities: list[str] | tuple[str, ...]) -> list[str]:
+    values = mask.detach().to(device="cpu", dtype=torch.bool).tolist()
+    return [_pattern_name_from_values(row, modalities) for row in values]
+
+
+def _pattern_name_from_values(values: list[bool], modalities: list[str] | tuple[str, ...]) -> str:
     names = [str(item) for item in modalities]
     available = [name for name, keep in zip(names, values) if keep]
     missing = [name for name, keep in zip(names, values) if not keep]
@@ -261,7 +287,7 @@ def _branch_aux_loss(
     cfg: dict[str, Any],
     batch_state: BatchState,
     zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     diagnostics = batch_state.primary_output.diagnostics
     unimodal_logits = diagnostics.get("pcpg_unimodal_logits")
     if not torch.is_tensor(unimodal_logits):
@@ -270,46 +296,52 @@ def _branch_aux_loss(
         if bool(cfg.get("radar_protect_loss", False)) and float(cfg.get("radar_aux_weight", 0.0)) != 0.0:
             labels = batch_state.labels[:, 0] if batch_state.labels.ndim > 1 else batch_state.labels.reshape(-1)
             valid = labels.ne(-100)
-            if bool(valid.any().item()):
-                logits = batch_state.primary_logits[:, 0, :] if batch_state.primary_logits.ndim == 3 else batch_state.primary_logits
-                fallback = F.cross_entropy(logits, labels, reduction="none")[valid].mean()
-                return float(cfg.get("radar_aux_weight", 0.0)) * fallback, {
-                    "loss/radar_aux": float(fallback.detach().cpu().item()),
-                    "pcpg/radar_aux_fallback_used": 1.0,
-                    "pcpg/branch_aux_available": 0.0,
-                }
+            logits = batch_state.primary_logits[:, 0, :] if batch_state.primary_logits.ndim == 3 else batch_state.primary_logits
+            per_sample = F.cross_entropy(logits, labels, reduction="none")
+            valid_f = valid.to(dtype=per_sample.dtype)
+            valid_count = valid_f.sum()
+            fallback = (per_sample * valid_f).sum() / valid_count.clamp_min(1.0)
+            available = valid_count.gt(0).to(dtype=per_sample.dtype)
+            return float(cfg.get("radar_aux_weight", 0.0)) * fallback, {
+                "loss/radar_aux": fallback.detach(),
+                "pcpg/radar_aux_fallback_used": available.detach(),
+                "pcpg/branch_aux_available": zero.detach(),
+            }
         return zero, {"pcpg/branch_aux_available": 0.0}
     mask = _available_mask(diagnostics, batch_state, unimodal_logits)
     labels = batch_state.labels[:, 0] if batch_state.labels.ndim > 1 else batch_state.labels.reshape(-1)
     valid = labels.ne(-100)
-    if not bool(valid.any().item()):
-        return zero, {"pcpg/branch_aux_available": 0.0}
+    num_modalities = min(int(unimodal_logits.shape[1]), int(mask.shape[1]))
+    logits = unimodal_logits[:, :num_modalities, :]
+    active = valid.unsqueeze(1) & mask[:, :num_modalities].to(device=valid.device, dtype=torch.bool)
+    flat_labels = labels.unsqueeze(1).expand(-1, num_modalities).reshape(-1)
+    per_sample = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), flat_labels, reduction="none").reshape_as(active)
+    active_f = active.to(dtype=per_sample.dtype)
+    modality_counts = active_f.sum(dim=0)
+    modality_losses = (per_sample * active_f).sum(dim=0) / modality_counts.clamp_min(1.0)
+    active_modalities = modality_counts.gt(0).to(dtype=per_sample.dtype)
+    branch_loss = (modality_losses * active_modalities).sum() / active_modalities.sum().clamp_min(1.0)
 
-    modalities = list(getattr(context.primary_model, "modalities", ())) or [f"modality_{i}" for i in range(unimodal_logits.shape[1])]
-    losses: list[torch.Tensor] = []
+    modalities = list(getattr(context.primary_model, "modalities", ())) or [f"modality_{i}" for i in range(num_modalities)]
     radar_loss = zero
-    radar_acc = 0.0
-    for index, modality in enumerate(modalities[: int(unimodal_logits.shape[1])]):
-        active = valid & mask[:, index].to(device=valid.device, dtype=torch.bool)
-        if not bool(active.any().item()):
-            continue
-        per_sample = F.cross_entropy(unimodal_logits[:, index, :], labels, reduction="none")
-        loss = per_sample[active].mean()
-        losses.append(loss)
-        if modality == "radar":
-            radar_loss = loss
-            radar_acc = float(unimodal_logits[active, index, :].argmax(dim=-1).eq(labels[active]).float().mean().detach().cpu().item())
-    branch_loss = torch.stack(losses).mean() if losses else zero
+    radar_acc = zero
+    if "radar" in modalities[:num_modalities]:
+        radar_index = modalities.index("radar")
+        radar_loss = modality_losses[radar_index]
+        radar_active = active_f[:, radar_index]
+        radar_acc = (
+            logits[:, radar_index, :].argmax(dim=-1).eq(labels).to(dtype=per_sample.dtype) * radar_active
+        ).sum() / radar_active.sum().clamp_min(1.0)
     total = zero
     if bool(cfg.get("branch_aux_loss", False)) and float(cfg.get("unimodal_aux_weight", 0.0)) != 0.0:
         total = total + float(cfg.get("unimodal_aux_weight", 0.0)) * branch_loss
     if bool(cfg.get("radar_protect_loss", False)) and float(cfg.get("radar_aux_weight", 0.0)) != 0.0:
         total = total + float(cfg.get("radar_aux_weight", 0.0)) * radar_loss
     return total, {
-        "loss/unimodal_aux": float(branch_loss.detach().cpu().item()),
-        "loss/radar_aux": float(radar_loss.detach().cpu().item()),
-        "pcpg/radar_aux_accuracy": radar_acc,
-        "pcpg/branch_aux_available": 1.0,
+        "loss/unimodal_aux": branch_loss.detach(),
+        "loss/radar_aux": radar_loss.detach(),
+        "pcpg/radar_aux_accuracy": radar_acc.detach(),
+        "pcpg/branch_aux_available": valid.any().to(dtype=per_sample.dtype).detach(),
     }
 
 
@@ -318,14 +350,14 @@ def _hard_subset_extra(
     cfg: dict[str, Any],
     batch_state: BatchState,
     zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     hard_cfg = cfg.get("hard_subset_weighting", {})
     if not isinstance(hard_cfg, dict) or not bool(hard_cfg.get("enabled", False)) or batch_state.task_loss is None:
         return zero, {}
     diagnostics = batch_state.primary_output.diagnostics
     mask = _available_mask(diagnostics, batch_state, batch_state.primary_logits)
     modalities = list(getattr(context.primary_model, "modalities", ())) or [f"modality_{i}" for i in range(mask.shape[1])]
-    names = [pattern_name_from_available_mask(row, modalities) for row in mask]
+    names = pattern_names_from_available_mask(mask, modalities)
     weights = torch.tensor(
         [
             hard_subset_sample_weight(
@@ -344,12 +376,12 @@ def _hard_subset_extra(
     mean_weight = weights.mean()
     extra = batch_state.task_loss * (mean_weight - 1.0)
     return extra, {
-        "loss/hard_subset_extra": float(extra.detach().cpu().item()),
-        "pcpg/hard_subset_weight_mean": float(mean_weight.detach().cpu().item()),
+        "loss/hard_subset_extra": extra.detach(),
+        "pcpg/hard_subset_weight_mean": mean_weight.detach(),
     }
 
 
-def _jepa_alignment_loss(cfg: dict[str, Any], batch_state: BatchState, zero: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
+def _jepa_alignment_loss(cfg: dict[str, Any], batch_state: BatchState, zero: torch.Tensor) -> tuple[torch.Tensor, dict[str, Any]]:
     if not bool(cfg.get("use_jepa", False)) or float(cfg.get("jepa_weight", 0.0)) == 0.0:
         return zero, {}
     diagnostics = batch_state.primary_output.diagnostics
@@ -360,7 +392,7 @@ def _jepa_alignment_loss(cfg: dict[str, Any], batch_state: BatchState, zero: tor
     loss = F.mse_loss(F.normalize(student, dim=-1), F.normalize(target.to(device=student.device), dim=-1))
     weighted = float(cfg.get("jepa_weight", 0.0)) * loss
     return weighted, {
-        "loss/jepa_latent_alignment": float(loss.detach().cpu().item()),
+        "loss/jepa_latent_alignment": loss.detach(),
         "pcpg/jepa_alignment_available": 1.0,
     }
 
@@ -370,7 +402,7 @@ def _bprr_gate_extra(
     cfg: dict[str, Any],
     batch_state: BatchState,
     zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     balance_weight = float(cfg.get("bprr_gate_balance_weight", 0.0))
     radar_weight = float(cfg.get("bprr_radar_gate_reg_weight", 0.0))
     if balance_weight == 0.0 and radar_weight == 0.0:
@@ -394,9 +426,9 @@ def _bprr_gate_extra(
     )
     total = total if torch.is_tensor(total) else zero
     return total, {
-        "loss/bprr_gate_balance": float(raw["balance"].detach().cpu().item()),
-        "loss/bprr_radar_gate": float(raw["radar"].detach().cpu().item()),
-        "loss/bprr_gate_regularization": float(total.detach().cpu().item()),
+        "loss/bprr_gate_balance": raw["balance"].detach(),
+        "loss/bprr_radar_gate": raw["radar"].detach(),
+        "loss/bprr_gate_regularization": total.detach(),
         "bprr/gate_regularization_available": 1.0,
     }
 
@@ -406,7 +438,7 @@ def _supervised_router_extra(
     cfg: dict[str, Any],
     batch_state: BatchState,
     zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     diagnostics = batch_state.primary_output.diagnostics
     gate = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
     if not torch.is_tensor(gate):
@@ -423,7 +455,7 @@ def supervised_router_distill_extra(
     available_mask: torch.Tensor,
     modalities: list[str] | tuple[str, ...],
     zero: torch.Tensor,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     supervision = str(cfg.get("router_supervision", "none")).strip().lower()
     weight = float(cfg.get("router_distill_weight", 0.0))
     if supervision == "none" or weight == 0.0:
@@ -437,18 +469,24 @@ def supervised_router_distill_extra(
         return zero, {"router/supervision_available": 0.0}
     labels_flat = labels[:, 0] if labels.ndim > 1 else labels.reshape(-1)
     available = available_mask.to(device=gate_logits.device, dtype=torch.bool)
-    patterns = [pattern_name_from_available_mask(row, modalities) for row in available]
+    patterns = pattern_names_from_available_mask(available, modalities)
     focus = router_focus_mask(patterns, cfg.get("router_focus_patterns"), device=gate_logits.device)
     valid = labels_flat.to(device=gate_logits.device).ne(-100) & focus & (available.sum(dim=1) > 1)
-    if not bool(valid.any().item()):
-        return zero, {"router/supervision_available": 1.0, "router/distill_active_rate": 0.0}
     if supervision == "oracle" and torch.is_tensor(unimodal_logits):
-        targets = supervised_router_oracle_targets(unimodal_logits, labels_flat, available)
+        targets = supervised_router_oracle_targets(
+            unimodal_logits,
+            labels_flat,
+            available,
+            circular_beam_distance=bool(cfg.get("circular_beam_distance", True)),
+        )
     else:
         targets = pattern_best_router_targets(patterns, available, modalities)
     temperature = max(float(cfg.get("router_distill_temperature", 1.0)), 1e-6)
     masked_logits = gate_logits.to(dtype=torch.float32).masked_fill(~available, torch.finfo(torch.float32).min)
-    loss = F.cross_entropy(masked_logits[valid] / temperature, targets.to(device=gate_logits.device)[valid])
+    safe_logits = torch.where(available.any(dim=1, keepdim=True), masked_logits, torch.zeros_like(masked_logits))
+    per_sample = F.cross_entropy(safe_logits / temperature, targets.to(device=gate_logits.device), reduction="none")
+    valid_f = valid.to(dtype=per_sample.dtype)
+    loss = (per_sample * valid_f).sum() / valid_f.sum().clamp_min(1.0)
     predicted = gate_weights.argmax(dim=1)
     active_targets = targets.to(device=gate_logits.device)[valid]
     active_predicted = predicted[valid]
@@ -463,9 +501,9 @@ def supervised_router_distill_extra(
     )
     diagnostics_out.update(
         {
-            "loss/router_distill": float(loss.detach().cpu().item()),
+            "loss/router_distill": loss.detach(),
             "router/supervision_available": 1.0,
-            "router/distill_active_rate": float(valid.to(dtype=torch.float32).mean().detach().cpu().item()),
+            "router/distill_active_rate": valid_f.mean().detach(),
         }
     )
     return total, diagnostics_out
@@ -475,6 +513,8 @@ def supervised_router_oracle_targets(
     unimodal_logits: torch.Tensor,
     labels: torch.Tensor,
     available_mask: torch.Tensor,
+    *,
+    circular_beam_distance: bool = True,
 ) -> torch.Tensor:
     if unimodal_logits.ndim != 3:
         raise ValueError(f"unimodal_logits must have shape [B, M, C], got {tuple(unimodal_logits.shape)}.")
@@ -485,7 +525,8 @@ def supervised_router_oracle_targets(
     safe_labels = labels_flat.clamp_min(0)
     predictions = unimodal_logits.argmax(dim=-1)
     distance = (predictions - safe_labels.view(-1, 1)).abs()
-    distance = torch.minimum(distance, unimodal_logits.shape[-1] - distance)
+    if circular_beam_distance:
+        distance = torch.minimum(distance, unimodal_logits.shape[-1] - distance)
     ce = F.cross_entropy(
         unimodal_logits.reshape(-1, unimodal_logits.shape[-1]),
         safe_labels.repeat_interleave(unimodal_logits.shape[1]),
@@ -545,7 +586,7 @@ def pattern_best_router_targets(
         "drop2": ("radar", "lidar", "gps", "image"),
     }
     targets: list[int] = []
-    available = available_mask.detach().cpu().to(dtype=torch.bool)
+    available = available_mask.detach().to(device="cpu", dtype=torch.bool).tolist()
     for row, pattern in zip(available, pattern_names):
         canonical = _canonical_pattern_alias(pattern)
         priority = priorities.get(canonical)
@@ -556,11 +597,11 @@ def pattern_best_router_targets(
         for name in priority or names:
             if name in names:
                 index = names.index(name)
-                if bool(row[index].item()):
+                if row[index]:
                     selected = index
                     break
         if selected is None:
-            selected = int(row.to(dtype=torch.int64).argmax().item())
+            selected = next((index for index, enabled in enumerate(row) if enabled), 0)
         targets.append(selected)
     return torch.tensor(targets, device=available_mask.device, dtype=torch.long)
 
@@ -572,38 +613,46 @@ def router_diagnostics_from_targets(
     pattern_names: list[str],
     valid_mask: torch.Tensor,
     modalities: list[str] | tuple[str, ...],
-) -> dict[str, float]:
-    out: dict[str, float] = {}
-    if active_targets.numel() == 0:
-        return out
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     weights = gate_weights.detach()
     active = valid_mask.to(device=weights.device, dtype=torch.bool)
+    active_f = active.to(dtype=weights.dtype)
+    active_count = active_f.sum()
     names = [str(item) for item in modalities]
     correct = active_predicted.eq(active_targets).to(dtype=torch.float32)
-    out["router/oracle_acc"] = float(correct.mean().detach().cpu().item())
+    out["router/oracle_acc"] = (correct.sum() / active_count.clamp_min(1.0)).detach()
     out["router_oracle_acc"] = out["router/oracle_acc"]
     for modality in ROUTER_MODALITY_ORDER:
         if modality in names:
             index = names.index(modality)
-            out[f"oracle_target_{modality}_rate"] = float(active_targets.eq(index).to(dtype=torch.float32).mean().detach().cpu().item())
-            out[f"mean_gate_{modality}"] = float(weights[active, index].mean().detach().cpu().item())
+            out[f"oracle_target_{modality}_rate"] = (
+                active_targets.eq(index).to(dtype=weights.dtype).sum() / active_count.clamp_min(1.0)
+            ).detach()
+            out[f"mean_gate_{modality}"] = (
+                (weights[:, index] * active_f).sum() / active_count.clamp_min(1.0)
+            ).detach()
+    target_by_row = torch.zeros_like(weights.argmax(dim=1), dtype=torch.long)
+    target_by_row[active] = active_targets
+    prediction_by_row = weights.argmax(dim=1)
+    correct_by_row = prediction_by_row.eq(target_by_row).to(dtype=weights.dtype)
     pattern_tensor = {
         "missing_image": router_focus_mask(pattern_names, ["missing_image"], device=weights.device),
         "drop2": router_focus_mask(pattern_names, ["miss2", "drop2"], device=weights.device),
     }
     for key, mask in pattern_tensor.items():
         selected = active & mask
-        if bool(selected.any().item()):
-            pred = gate_weights.argmax(dim=1)[selected]
-            valid_indices = selected.nonzero(as_tuple=False).flatten()
-            active_indices = active.nonzero(as_tuple=False).flatten()
-            positions = torch.searchsorted(active_indices, valid_indices)
-            actual_targets = active_targets[positions]
-            out[f"router_oracle_acc_{key}"] = float(pred.eq(actual_targets).to(dtype=torch.float32).mean().detach().cpu().item())
-            if "radar" in names:
-                out[f"radar_gate_{key}"] = float(weights[selected, names.index("radar")].mean().detach().cpu().item())
-    gate_entropy = -(weights[active] * weights[active].clamp_min(1e-8).log()).sum(dim=-1)
-    out["gate_entropy"] = float(gate_entropy.mean().detach().cpu().item()) if gate_entropy.numel() else 0.0
+        selected_f = selected.to(dtype=weights.dtype)
+        selected_count = selected_f.sum()
+        out[f"router_oracle_acc_{key}"] = (
+            (correct_by_row * selected_f).sum() / selected_count.clamp_min(1.0)
+        ).detach()
+        if "radar" in names:
+            out[f"radar_gate_{key}"] = (
+                (weights[:, names.index("radar")] * selected_f).sum() / selected_count.clamp_min(1.0)
+            ).detach()
+    gate_entropy = -(weights * weights.clamp_min(1e-8).log()).sum(dim=-1)
+    out["gate_entropy"] = ((gate_entropy * active_f).sum() / active_count.clamp_min(1.0)).detach()
     return out
 
 
@@ -633,22 +682,15 @@ def bprr_gate_regularization(
     else:
         radar_index = names.index("radar")
         hard = _pattern_set(radar_patterns or ("radar_only", "missing_image", "miss3"))
-        row_patterns = [pattern_name_from_available_mask(row, names) for row in available]
-        active = torch.tensor(
-            [
-                bool(row[radar_index].item())
-                and int(row.sum().item()) > 1
-                and row_patterns[index] in hard
-                and row_patterns[index] != "radar_only"
-                for index, row in enumerate(available)
-            ],
+        row_patterns = pattern_names_from_available_mask(available, names)
+        hard_patterns = torch.tensor(
+            [pattern in hard and pattern != "radar_only" for pattern in row_patterns],
             device=gate.device,
             dtype=torch.bool,
         )
-        if bool(active.any().item()):
-            radar_loss = F.relu(float(radar_floor) - gate[active, radar_index]).mean()
-        else:
-            radar_loss = zero
+        active = available[:, radar_index] & available.sum(dim=1).gt(1) & hard_patterns
+        active_f = active.to(dtype=gate.dtype)
+        radar_loss = (F.relu(float(radar_floor) - gate[:, radar_index]) * active_f).sum() / active_f.sum().clamp_min(1.0)
     total = float(balance_weight) * balance_loss + float(radar_weight) * radar_loss
     return total, {"balance": balance_loss, "radar": radar_loss}
 

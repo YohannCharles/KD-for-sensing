@@ -4,6 +4,13 @@
 
 ## Quickstart
 
+先在既有 `kd_mm_beam` 环境中安装当前包及测试依赖，再运行无数据健康检查：
+
+```bash
+conda run -n kd_mm_beam python -m pip install -e ".[dev]"
+make verify-quick
+```
+
 所有项目 Python 命令都通过 `kd_mm_beam` 环境运行：
 
 ```bash
@@ -22,12 +29,20 @@ conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/u_mask_beam_jep
 conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --config configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml --checkpoint outputs/local/best.pth
 ```
 
-MMW/CSI 仍保留为 future/current supporting dataset workflow：
+MMW/CSI 是 current supporting dataset workflow；MMW 可作为当前数据实验 campaign，但不替代 final C2 默认主线：
 
 ```bash
 conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
 conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --help
 conda run -n kd_mm_beam pytest tests/test_mmw_town10_preparation.py tests/test_mmw_town_gps_adapter_v2.py tests/test_csi_modality.py tests/test_physics_informed_mmw.py -q
+```
+
+只读检查和 claim-gated 导出使用现有治理入口；dataset inspection 不移动数据，也不代表 official reproduction 已完成：
+
+```bash
+conda run -n kd_mm_beam python scripts/inspect_dataset.py --help
+conda run -n kd_mm_beam kd-sensing-runs --help
+conda run -n kd_mm_beam kd-sensing-paper-export --help
 ```
 
 ## Project Boundaries
@@ -50,6 +65,8 @@ conda run -n kd_mm_beam pytest tests/test_mmw_town10_preparation.py tests/test_m
 - scoped context：`docs/agent_context/README.md`、`docs/agent_context/models.md`、`docs/agent_context/data.md`、`docs/agent_context/configs.md`、`docs/agent_context/cli.md`、`docs/agent_context/diagnostics.md`、`docs/agent_context/openspec.md`、`docs/agent_context/documentation.md`、`docs/agent_context/claims.md`、`docs/agent_context/atlas.md`
 - 当前研究简报：`docs/current_research_brief.md`
 - Claim/protocol：`docs/result_claims_registry.md`、`docs/experiment_protocols.md`、`docs/experiment_matrix.md`、`docs/mainline_model_catalog.md`
+- 文献矩阵：`docs/literature_matrix.md`
+- 历史与环境：`docs/mainline_experiment_history.md`、`ENVIRONMENT.md`
 - 只读协作角色与记忆账本：`docs/readonly_agent_roles.md`、`docs/agent_memory_ledger.md`
 
 ## Verification
@@ -59,4 +76,5 @@ openspec validate --all --strict
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
 conda run -n kd_mm_beam python scripts/verify_compile.py
+make verify-full
 ```

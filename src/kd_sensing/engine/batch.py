@@ -244,6 +244,9 @@ def reliability_metadata_strict(model_cfg: Mapping[str, Any] | None) -> bool:
 def model_cfg_consumes_missing_modality_metadata(model_cfg: Mapping[str, Any] | None) -> bool:
     if not isinstance(model_cfg, Mapping):
         return False
+    temporal_pooling = model_cfg.get("temporal_pooling")
+    if isinstance(temporal_pooling, Mapping) and bool(temporal_pooling.get("enabled", False)):
+        return True
     if bool(model_cfg.get("consume_missing_modality_metadata", False)):
         return True
     raw = model_cfg.get("missing_modality_metadata")

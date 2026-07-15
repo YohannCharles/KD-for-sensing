@@ -9,16 +9,6 @@ import yaml
 
 from kd_sensing.config.canonical import build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
-from kd_sensing.config.migration_guards import (
-    reject_retired_bgam_viewer_config,
-    reject_removed_config_path,
-    reject_removed_image_path_config,
-    reject_removed_kd_config,
-    reject_removed_override_key,
-    reject_retired_hist_config,
-    reject_retired_priority_workflow_config,
-    reject_retired_raymobtime_config,
-)
 from kd_sensing.config.normalization import normalize_loaded_config
 from kd_sensing.config.parsing import parse_scalar, safe_load_yaml
 from kd_sensing.config.validation import validate_loaded_config
@@ -36,16 +26,12 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     file_cfg = {}
     if config_path:
-        reject_removed_config_path(config_path)
         source = load_config_source(config_path)
         file_cfg = _resolve_base_config(source)
         cfg = deep_merge(cfg, file_cfg)
     override_cfg = parse_overrides(overrides) if overrides else {}
     if override_cfg:
         cfg = deep_merge(cfg, override_cfg)
-    reject_retired_raymobtime_config(cfg)
-    reject_retired_bgam_viewer_config(cfg)
-    reject_retired_priority_workflow_config(cfg)
     file_cfg_for_keys = file_cfg if config_path else {}
     override_changes_objective = _has_dotted_key(override_cfg, "experiment.objective")
     explicit_early_metric = _has_dotted_key(override_cfg, "training.early_stopping_metric") or (
@@ -61,12 +47,6 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
         explicit_early_stopping_metric=explicit_early_metric,
         explicit_early_stopping_mode=explicit_early_mode,
     )
-    reject_removed_kd_config(cfg)
-    reject_retired_hist_config(cfg)
-    reject_retired_raymobtime_config(cfg)
-    reject_retired_bgam_viewer_config(cfg)
-    reject_retired_priority_workflow_config(cfg)
-    reject_removed_image_path_config(cfg)
     validate_loaded_config(cfg)
     return cfg
 
@@ -89,7 +69,6 @@ def _resolve_base_config(source: Any, stack: tuple[Path, ...] = ()) -> dict[str,
         base_path = Path(str(entry))
         if not base_path.is_absolute():
             base_path = source_path.parent / base_path
-        reject_removed_config_path(base_path)
         base_source = load_config_source(base_path)
         merged = deep_merge(merged, _resolve_base_config(base_source, (*stack, source_path)))
     return deep_merge(merged, file_cfg)
@@ -132,13 +111,11 @@ def parse_overrides(overrides: Iterable[str]) -> dict[str, Any]:
             raise ValueError(f"Override must use key=value format, got: {item}")
         key, raw_value = item.split("=", 1)
         key = key.strip()
-        reject_removed_override_key(key)
         set_by_dotted_key(result, key, parse_scalar(raw_value.strip()))
     return result
 
 
 def set_by_dotted_key(target: dict[str, Any], key: str, value: Any) -> None:
-    reject_removed_override_key(key)
     parts = key.split(".")
     if any(not part for part in parts):
         raise ValueError(f"Invalid dotted override key: {key}")

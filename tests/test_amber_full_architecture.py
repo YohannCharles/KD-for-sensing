@@ -139,7 +139,7 @@ def test_amber_full_loss_weighting_and_missing_payload_failure() -> None:
 
 
 def test_amber_full_config_metadata_and_architecture_summary() -> None:
-    cfg = load_config(ROOT / "configs/fusion/amber_full_architecture.yaml")
+    cfg = load_config(ROOT / "configs/mmw/amber_full.yaml")
     primary = cfg["model"]["primary"]
     build_primary = copy.deepcopy(primary)
     for modality in ("image", "radar", "lidar"):
@@ -152,18 +152,17 @@ def test_amber_full_config_metadata_and_architecture_summary() -> None:
 
     assert primary["representation_core"]["type"] == "amber_full_adaptive_mask_transformer"
     assert primary["representation_core"]["max_spatial_tokens"] == 4
-    assert cfg["data"]["dataset"]["seq_len"] == 2
-    assert cfg["model"]["seq_length"] == 2
+    assert cfg["data"]["dataset"]["seq_len"] == 5
+    assert cfg["model"]["seq_length"] == 5
     assert primary["modalities"] == ["image", "radar", "gps", "lidar"]
     assert primary["encoders"]["image"]["type"] == "resnet34_spatial_tokens"
     assert primary["encoders"]["radar"]["type"] == "resnet18_spatial_tokens"
     assert primary["encoders"]["lidar"]["type"] == "resnet18_spatial_tokens"
     for modality in ("image", "radar", "lidar"):
-        assert primary["encoders"][modality]["pretrained"] is True
-        assert primary["encoders"][modality]["weights"] == "DEFAULT"
+        assert primary["encoders"][modality]["pretrained"] is False
     assert isinstance(configured_model.representation_core, AmberFullAdaptiveMaskTransformerCore)
     assert primary["paper_metadata"]["reproduction_scope"] == "amber_full_local"
-    assert cfg["output"]["dir"].startswith("outputs/analysis/local_baselines/amber_full_architecture")
+    assert cfg["output"]["dir"].startswith("outputs/mmw_all_weather")
     assert metadata["reproduction_scope"] == "amber_full_local"
     assert metadata["representation_core"]["component_role"] == "representation_core"
     assert metadata["representation_core"]["history_beam_usage"] == "disabled"

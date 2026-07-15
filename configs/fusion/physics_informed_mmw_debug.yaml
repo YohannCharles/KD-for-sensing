@@ -91,6 +91,7 @@ training:
   weight_decay: 0.0
   grad_clip: 5.0
   use_early_stopping: false
+  model_selection: false
 output:
   dir: outputs
   run_name: physics_informed_mmw_debug

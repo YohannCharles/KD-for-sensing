@@ -177,13 +177,14 @@ MMW Town10 数据准备 MUST 提供公开 package utility、preprocessor 或 CLI
 - **AND** preflight MUST 不静默创建不完整或无 metadata 的 CSV
 
 ### Requirement: MMW split leakage diagnostics
-MMW Town10 split metadata MUST 包含可机器读取的泄漏诊断，用于判断当前 train/test CSV 是否可作为 strict validation 协议。诊断 MUST 至少覆盖 train/test frame overlap、test window 与 train window 的最大 frame overlap、相邻窗口跨 split 比例和未来标签序列复用比例。
+MMW Town10 split metadata MUST 包含可机器读取的泄漏诊断，用于判断当前 train/test CSV 是否可作为 strict validation 协议。诊断 MUST 至少覆盖 train/test frame overlap、test window 与 train window 的最大 frame overlap、相邻窗口跨 split 比例和未来标签序列复用比例。未来标签序列复用 MUST 作为标签分布诊断保留；当 `pred_len=1` 时，beam 类别重复本身 MUST NOT 被解释为 frame、window 或 trajectory 泄漏，也 MUST NOT 单独使 split strict-ineligible。
 
 #### Scenario: group-safe split 诊断通过
 - **WHEN** 系统使用默认 group-safe 协议生成 split
 - **THEN** leakage diagnostics MUST 记录 train/test frame overlap count 为 0
 - **AND** test window 与任一 train window 的最大 frame overlap MUST 小于完整窗口长度
 - **AND** summary MUST 包含 guard band frames、window length、train/test window counts 和 diagnostics 生成时间或版本
+- **AND** P1 future label class 在 train/test 重复时 MUST 继续报告 reuse ratio，但 strict eligibility MUST 由结构性 overlap diagnostics 决定
 
 #### Scenario: 诊断发现高重叠
 - **WHEN** leakage diagnostics 发现 test window 与 train window 共享完整或近完整历史+未来上下文
@@ -337,4 +338,35 @@ MMW 图像、LiDAR 和 sample LMDB 等可再生成缓存 MUST 默认写入 `outp
 - **WHEN** sunny、rainy 和 foggy 的 H5/P1 缓存同时存在
 - **THEN** 每种 condition MUST 使用独立的 `outputs/cache/MMW/<condition>/` 子树
 - **AND** 任一 condition 的缓存生成 MUST 不覆盖其它 condition 或其它窗口版本的产物
+
+### Requirement: H5/P1 metadata variants participate in readiness
+MMW preparation availability writer MUST 识别同一 prepared scenario 下由显式 split tag 生成的 `metadata_<tag>.json` 与 `sanity_report_<tag>.json`，并 MUST 根据其中 manifest、window count、split eligibility 和 artifact path 判定 readiness，而不是只检查无后缀文件。
+
+#### Scenario: rainy H5/P1 artifacts 已完整
+- **WHEN** rainy scenario 具有 `metadata_h5p1.json`、`sanity_report_h5p1.json`、有效 manifest 和 strict split
+- **THEN** condition availability MUST 将该 scenario 标记为可供对应 H5/P1 protocol 使用
+- **AND** availability MUST 记录实际 metadata/sanity 路径和 split tag
+
+### Requirement: MMW archive extraction 必须防止路径与资源逃逸
+MMW archive preparation MUST 在删除或覆盖任何目标目录前完成 member 路径、数量、解压总大小、压缩比和完整 archive digest 校验。解压结果 MUST 先写入受控临时目录，再原子替换目标。
+
+#### Scenario: ZIP member path traversal
+- **WHEN** archive member 是绝对路径、包含 `..`，或 resolved destination 位于 extraction root 之外
+- **THEN** preparation MUST 拒绝 archive
+- **AND** 现有目标目录 MUST 不被删除或修改
+
+#### Scenario: Archive 资源上限
+- **WHEN** member 数、声明解压总大小、单文件大小或压缩比超过受控上限
+- **THEN** preparation MUST 在写入 member 前失败
+- **AND** error MUST 记录命中的上限类型
+
+#### Scenario: 完整 digest 控制复用
+- **WHEN** archive SHA256、算法版本或目标 inventory 与 extraction marker 不一致
+- **THEN** runtime MUST 不复用旧 extraction
+- **AND** MUST 在安全预检通过后重新生成受控 extraction
+
+#### Scenario: 安全原子替换
+- **WHEN** archive 全部 member 校验和临时解压成功
+- **THEN** runtime MUST 原子发布新的 extraction root
+- **AND** 任一失败 MUST 清理临时目录并保留原目标
 

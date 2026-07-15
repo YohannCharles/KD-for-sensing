@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 from typing import Any
@@ -17,19 +19,21 @@ def collect_python_processes() -> list[dict[str, Any]]:
         pid = int(entry.name)
         if pid == current_pid:
             continue
-        cmdline = _read_proc_cmdline(entry / "cmdline")
-        if not cmdline or not _looks_like_kd_process(cmdline):
+        argv = _read_proc_argv(entry / "cmdline")
+        if not argv or not _looks_like_kd_process(argv):
             continue
+        public_argv = redact_argv(argv)
         records.append(
             {
                 "pid": pid,
-                "cmdline": cmdline,
+                "argv": public_argv,
+                "cmdline": shlex.join(public_argv),
                 "cwd": _read_proc_cwd(entry),
                 "rss_mb": _read_proc_rss_mb(entry / "status"),
-                "config_path": _arg_after(cmdline, "--config") or _arg_after(cmdline, "-c"),
-                "output_dir": _arg_after(cmdline, "--output-dir"),
-                "run_name": _override_value(cmdline, "output.run_name"),
-                "kind": _process_kind(cmdline),
+                "config_path": _arg_after(argv, "--config") or _arg_after(argv, "-c"),
+                "output_dir": _arg_after(argv, "--output-dir"),
+                "run_name": _override_value(argv, "output.run_name"),
+                "kind": _process_kind(argv),
             }
         )
     return records
@@ -37,7 +41,7 @@ def collect_python_processes() -> list[dict[str, Any]]:
 def collect_resource_snapshot(processes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     process_records = processes if processes is not None else collect_python_processes()
     gpu_snapshot = collect_gpu_snapshot()
-    process_records = _attach_gpu_usage(process_records, gpu_snapshot)
+    process_records = sanitize_process_records(_attach_gpu_usage(process_records, gpu_snapshot))
     return {
         "memory": collect_memory_snapshot(),
         "gpus": gpu_snapshot,
@@ -150,35 +154,37 @@ def _run_resource_summary(process: dict[str, Any] | None) -> dict[str, Any]:
 def _public_process(process: dict[str, Any] | None) -> dict[str, Any] | None:
     if process is None:
         return None
+    process = _sanitize_process_record(process)
     return {
         "pid": process.get("pid"),
         "config_path": process.get("config_path"),
         "run_name": process.get("run_name"),
         "gpu_indices": list(process.get("gpu_indices", [])),
         "kind": process.get("kind"),
+        "argv": list(process.get("argv", [])),
         "cmdline": process.get("cmdline"),
     }
 
-def _looks_like_kd_process(cmdline: str) -> bool:
-    lower = cmdline.lower()
+def _looks_like_kd_process(command: str | list[str] | tuple[str, ...]) -> bool:
+    lower = " ".join(_coerce_argv(command)).lower()
     if "kd_sensing.cli.train" in lower or "kd_sensing.cli.evaluate" in lower:
         return True
     if "kd-sensing-train" in lower or "kd-sensing-evaluate" in lower:
         return True
     return False
 
-def _process_kind(cmdline: str) -> str:
-    lower = cmdline.lower()
+def _process_kind(command: str | list[str] | tuple[str, ...]) -> str:
+    lower = " ".join(_coerce_argv(command)).lower()
     if "evaluate" in lower:
         return "evaluation"
     return "training"
 
-def _read_proc_cmdline(path: Path) -> str:
+def _read_proc_argv(path: Path) -> list[str]:
     try:
         raw = path.read_bytes()
     except OSError:
-        return ""
-    return " ".join(part for part in raw.decode("utf-8", errors="replace").split("\0") if part)
+        return []
+    return [part for part in raw.decode("utf-8", errors="replace").split("\0") if part]
 
 def _read_proc_cwd(proc_dir: Path) -> str | None:
     try:
@@ -197,8 +203,8 @@ def _read_proc_rss_mb(path: Path) -> float | None:
         return None
     return None
 
-def _arg_after(cmdline: str, flag: str) -> str | None:
-    parts = cmdline.split()
+def _arg_after(command: str | list[str] | tuple[str, ...], flag: str) -> str | None:
+    parts = _coerce_argv(command)
     for index, part in enumerate(parts):
         if part == flag and index + 1 < len(parts):
             return parts[index + 1]
@@ -206,11 +212,84 @@ def _arg_after(cmdline: str, flag: str) -> str | None:
             return part.split("=", 1)[1]
     return None
 
-def _override_value(cmdline: str, key: str) -> str | None:
-    for part in cmdline.split():
+def _override_value(command: str | list[str] | tuple[str, ...], key: str) -> str | None:
+    for part in _coerce_argv(command):
         if part.startswith(key + "="):
             return part.split("=", 1)[1]
     return None
+
+
+def redact_argv(command: str | list[str] | tuple[str, ...]) -> list[str]:
+    argv = _coerce_argv(command)
+    result: list[str] = []
+    redact_next = False
+    for part in argv:
+        if redact_next:
+            result.append("<redacted>")
+            redact_next = False
+            continue
+        if part.startswith("--") and "=" not in part and _is_sensitive_key(part[2:]):
+            result.append(part)
+            redact_next = True
+            continue
+        key, separator, value = part.partition("=")
+        if separator and _is_sensitive_key(key.lstrip("-")):
+            result.append(f"{key}=<redacted>")
+            continue
+        result.append(re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1<redacted>@", part))
+    return result
+
+
+def redact_command(command: Any) -> str | None:
+    if command in (None, ""):
+        return None
+    return shlex.join(redact_argv(command))
+
+
+def _sanitize_process_record(process: dict[str, Any]) -> dict[str, Any]:
+    public_fields = {
+        "pid",
+        "cwd",
+        "rss_mb",
+        "config_path",
+        "output_dir",
+        "run_name",
+        "kind",
+        "gpu_usage",
+        "gpu_indices",
+    }
+    copy = {key: value for key, value in process.items() if key in public_fields}
+    for key in ("cwd", "config_path", "output_dir", "run_name"):
+        if copy.get(key) is not None:
+            copy[key] = _redact_uri_userinfo(str(copy[key]))
+    argv = redact_argv(process.get("argv") or process.get("cmdline") or [])
+    copy["argv"] = argv
+    copy["cmdline"] = shlex.join(argv)
+    return copy
+
+
+def sanitize_process_records(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_sanitize_process_record(item) for item in processes]
+
+
+def _coerce_argv(command: Any) -> list[str]:
+    if command in (None, ""):
+        return []
+    if isinstance(command, (list, tuple)):
+        return [str(item) for item in command]
+    try:
+        return shlex.split(str(command))
+    except ValueError:
+        return str(command).split()
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return bool(re.search(r"(?:^|[._])(password|passwd|token|secret|credential|api_key)(?:$|[._])", normalized))
+
+
+def _redact_uri_userinfo(value: str) -> str:
+    return re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1<redacted>@", value)
 
 def _read_meminfo() -> dict[str, int]:
     path = Path("/proc/meminfo")
@@ -290,5 +369,5 @@ def _empty_resources(processes: list[dict[str, Any]] | None = None) -> dict[str,
     return {
         "memory": {"available": False, "reason": "resource snapshot disabled"},
         "gpus": {"available": False, "reason": "resource snapshot disabled", "devices": [], "processes": []},
-        "processes": processes or [],
+        "processes": sanitize_process_records(processes or []),
     }

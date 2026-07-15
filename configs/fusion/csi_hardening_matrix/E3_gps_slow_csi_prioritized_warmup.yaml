@@ -28,6 +28,8 @@ model:
         view_gate_warmup_mode: mean
         use_internal_gru: false
 training:
+  use_early_stopping: false
+  model_selection: false
   csi_prioritized_warmup:
     enabled: true
     epochs: 20

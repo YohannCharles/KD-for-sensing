@@ -15,6 +15,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = "outputs/h5_p1_temporal_models_v1"
 DEFAULT_METHODS = "ours_c2_main,ours_b4_nonrouter_soft_jepa,ours_e5_low_lr_pcpg,amber_full,rmbp_mm"
+S1_LIGHTWEIGHT_OUTPUT_ROOT = f"{DEFAULT_OUTPUT_ROOT}/s1_lightweight"
+S1_LIGHTWEIGHT_METHODS = "S1,T2,T1,A1,A2,A3,T1+T2,J1"
+PROFILE_METHODS = {"default": DEFAULT_METHODS, "s1_lightweight": S1_LIGHTWEIGHT_METHODS}
 DEFAULT_C2_CONFIG = "outputs/final_c2_ablation_v1/generated_configs/a0_c2_full_main_seed{seed}.yaml"
 DEFAULT_B4_CONFIG = "outputs/final_c2_ablation_v1/generated_configs/a1_b4_nonrouter_soft_jepa_seed{seed}.yaml"
 DEFAULT_E5_CONFIG = "outputs/pcpg_radar_balance_v1/generated_configs/e5_pcpg_low_encoder_lr_seed{seed}.yaml"
@@ -28,7 +31,8 @@ COMMON_DATASET_SPLIT = {
     "validation_scenes": COMMON_SCENES,
     "test_scenes": COMMON_SCENES,
     "split_protocol": "stratified_80_10_10",
-    "split_strategy": "stratified_by_target_beam_per_scene",
+    "split_strategy": "stratified_by_target_beam_per_scene_sequence_group",
+    "split_group_identity_policy": "scene_id:seq_index",
     "split_seed": 42,
     "split_source_splits": ["train", "test"],
     "split_fractions": {"train": 0.8, "validation": 0.1, "test": 0.1},
@@ -137,6 +141,148 @@ def method_specs() -> dict[str, dict[str, Any]]:
             }
         }
     }
+    no_jepa = {
+        "model": {"primary": {"use_jepa_loss": False}},
+        "loss": {"use_jepa": False, "jepa_weight": 0.0},
+    }
+    linear_geometry = {
+        "training": {
+            "beam_label_circular": False,
+            "circular_beam_distance": False,
+            "use_circular_soft_targets": False,
+            "use_gaussian_beam_targets": True,
+            "proto_target_type": "gaussian",
+        },
+        "evaluation": {
+            "beam_distance_circular": False,
+            "circular_beam_distance": False,
+            "dba_distance_mode": "linear",
+            "metric_profile": "64_beam_linear_topk",
+        },
+    }
+    classifier_head = {
+        "model": {
+            "primary": {
+                "head_type": "classifier",
+                "use_beam_prototype_alignment": False,
+                "router_use_prototype_margin": False,
+            }
+        },
+        "training": {
+            "use_beam_prototype_alignment": False,
+            "beam_proto_align_weight": 0.0,
+            "lambda_proto": 0.0,
+            "use_modality_prototype_loss": False,
+            "modality_proto_weight": 0.0,
+            "lambda_modality_proto": 0.0,
+            "beam_label_circular": False,
+            "circular_beam_distance": False,
+            "use_circular_soft_targets": False,
+            "use_gaussian_beam_targets": False,
+            "proto_target_type": "onehot",
+        },
+        "loss": {
+            "router_use_prototype_margin": False,
+            "u_mask_beam_jepa": {
+                "use_beam_prototype_alignment": False,
+                "lambda_proto": 0.0,
+                "lambda_modality_proto": 0.0,
+            },
+        },
+        "evaluation": {
+            "beam_distance_circular": False,
+            "circular_beam_distance": False,
+            "dba_distance_mode": "linear",
+            "metric_profile": "64_beam_linear_topk",
+        },
+    }
+
+    def s1_overrides(
+        *,
+        pooling_type: str = "masked_mean",
+        use_mask_statistics: bool = False,
+        confidence_gated_kl: bool = False,
+        beam_monotonic_rank: bool = False,
+    ) -> dict[str, Any]:
+        superset = {
+            "enabled": confidence_gated_kl or beam_monotonic_rank,
+            "confidence_gated_kl": confidence_gated_kl,
+            "kl_weight": 0.2 if confidence_gated_kl else 0.0,
+            "temperature": 2.0,
+            "beam_monotonic_rank": beam_monotonic_rank,
+            "rank_weight": 0.1 if beam_monotonic_rank else 0.0,
+            "rank_tolerance": 0.0,
+            "feature_l2_weight": 0.0,
+        }
+        return _merge(
+            proto,
+            c2,
+            soft_hard,
+            no_branch,
+            no_jepa,
+            temporal_only,
+            temporal,
+            {
+                "model": {
+                    "primary": {
+                        "fusion_type": "supervised_router",
+                        "consume_missing_modality_metadata": True,
+                        "use_mask_statistics": use_mask_statistics,
+                        "temporal_pooling": {
+                            "enabled": True,
+                            "type": pooling_type,
+                            "recency_decay": 1.0,
+                            "hidden_dim": 32,
+                        },
+                    }
+                },
+                "temporal_missing": {
+                    "preserve_unmasked_for_superset": confidence_gated_kl or beam_monotonic_rank,
+                },
+                "training": {"superset_consistency": superset},
+                "loss": {
+                    "u_mask_beam_jepa": {
+                        "enabled": True,
+                        "router_supervision": "oracle",
+                        "router_distill_weight": 0.1,
+                        "superset_consistency": superset,
+                    }
+                },
+            },
+        )
+
+    s1_specs = {
+        "S1": (s1_overrides(), "S1 masked temporal mean + supervised modality router"),
+        "T2": (s1_overrides(confidence_gated_kl=True), "S1 + confidence-gated temporal superset KL"),
+        "T1": (s1_overrides(beam_monotonic_rank=True), "S1 + circular beam-risk monotonic ranking"),
+        "A1": (s1_overrides(use_mask_statistics=True), "S1 + router mask statistics"),
+        "A2": (s1_overrides(pooling_type="fixed_recency"), "S1 + fixed-recency temporal pooling"),
+        "A3": (s1_overrides(pooling_type="gap_aware_residual"), "S1 + gap-aware residual temporal pooling"),
+        "T1+T2": (
+            s1_overrides(confidence_gated_kl=True, beam_monotonic_rank=True),
+            "S1 + temporal superset KL + circular beam-risk ranking",
+        ),
+        "J1": (
+            s1_overrides(pooling_type="gap_aware_residual", confidence_gated_kl=True, beam_monotonic_rank=True),
+            "S1 gap-aware residual pooling + temporal superset KL + circular beam-risk ranking",
+        ),
+        "S1-LG": (
+            _merge(s1_overrides(), linear_geometry),
+            "S1 + linear-Gaussian beam targets",
+        ),
+        "T2-LG": (
+            _merge(s1_overrides(confidence_gated_kl=True), linear_geometry),
+            "T2 + linear-Gaussian beam targets",
+        ),
+        "S1-CLS": (
+            _merge(s1_overrides(), classifier_head),
+            "S1 + classifier head without prototype losses",
+        ),
+        "T2-CLS": (
+            _merge(s1_overrides(confidence_gated_kl=True), classifier_head),
+            "T2 + classifier head without prototype losses",
+        ),
+    }
     return {
         "ours_c2_main": {
             "base_config": DEFAULT_C2_CONFIG,
@@ -163,6 +309,10 @@ def method_specs() -> dict[str, dict[str, Any]]:
             "overrides": _merge(temporal_only, temporal, rmbp_end_to_end),
             "mapping": "outputs/analysis/local_baselines/rmbp_mm/scene31/rmbp_mm/final_config.yaml + rmbp_channel_attention_fusion, end-to-end finetuned",
         },
+        **{
+            method: {"base_config": DEFAULT_C2_CONFIG, "overrides": overrides, "mapping": mapping}
+            for method, (overrides, mapping) in s1_specs.items()
+        },
     }
 
 
@@ -186,13 +336,19 @@ def plan_jobs(args: argparse.Namespace) -> list[dict[str, Any]]:
             output_dir = Path(args.output_root) / method / f"seed{seed}"
             config_path = Path(args.output_root) / "generated_configs" / f"{method}_seed{seed}.yaml"
             log_path = Path(args.output_root) / "logs" / f"{method}_seed{seed}.log"
-            command = ["conda", "run", "--no-capture-output", "-n", "kd_mm_beam", "kd-sensing-train", "--config", str(config_path)]
+            command = ["conda", "run", "-n", "kd_mm_beam", "--no-capture-output", "kd-sensing-train", "--config", str(config_path)]
             if bool(getattr(args, "auto_resume", False)):
                 command.append("--auto-resume")
             jobs.append({
                 "method": method,
+                "profile": str(getattr(args, "profile", "default")),
                 "seed": seed,
                 "gpu": gpu,
+                "max_jobs": int(args.max_jobs),
+                "per_gpu": int(args.per_gpu),
+                "mask_sampler": str(args.mask_sampler),
+                "torch_num_threads": int(args.torch_num_threads),
+                "persistent_workers": bool(args.persistent_workers),
                 "cmd": " ".join(command),
                 "command": command,
                 "status": "planned",
@@ -256,9 +412,9 @@ def write_generated_configs(jobs: list[dict[str, Any]], args: argparse.Namespace
                         "prefetch_factor": int(args.prefetch_factor),
                         "train_prefetch_factor": int(args.prefetch_factor),
                         "test_prefetch_factor": int(args.prefetch_factor),
-                        "persistent_workers": False,
-                        "train_persistent_workers": False,
-                        "test_persistent_workers": False,
+                        "persistent_workers": bool(args.persistent_workers),
+                        "train_persistent_workers": bool(args.persistent_workers),
+                        "test_persistent_workers": bool(args.persistent_workers),
                         "pin_memory": True,
                     },
                 },
@@ -275,6 +431,7 @@ def write_generated_configs(jobs: list[dict[str, Any]], args: argparse.Namespace
                 "temporal_missing": {
                     "history_window": int(args.history_window),
                     "prediction_window": int(args.prediction_window),
+                    "mask_sampler": str(args.mask_sampler),
                     "seed": int(args.temporal_missing_seed),
                 },
             },
@@ -289,7 +446,7 @@ def write_generated_configs(jobs: list[dict[str, Any]], args: argparse.Namespace
 
 
 def write_manifest(jobs: list[dict[str, Any]], output_root: str) -> None:
-    fields = ["method", "seed", "gpu", "cmd", "status", "start_time", "end_time", "return_code", "log_path", "output_dir", "history_window", "prediction_window", "config_path", "base_config", "mapping"]
+    fields = ["method", "profile", "seed", "gpu", "max_jobs", "per_gpu", "mask_sampler", "torch_num_threads", "persistent_workers", "cmd", "status", "start_time", "end_time", "return_code", "log_path", "output_dir", "history_window", "prediction_window", "config_path", "base_config", "mapping"]
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     with (root / "job_manifest.csv").open("w", encoding="utf-8", newline="") as handle:
@@ -345,29 +502,42 @@ def run_jobs(jobs: list[dict[str, Any]], args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Launch H5/P1 temporal missing matrix v1 experiments.")
+    parser.add_argument("--profile", choices=tuple(PROFILE_METHODS), default="default")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--max_jobs", "--max-jobs", type=int, default=8)
     parser.add_argument("--per_gpu", "--per-gpu", type=int, default=1)
-    parser.add_argument("--seeds", default="1,2,3")
-    parser.add_argument("--methods", default=DEFAULT_METHODS)
+    parser.add_argument("--seeds", default=None)
+    parser.add_argument("--methods", default=None)
     parser.add_argument("--history_window", "--history-window", type=int, default=5)
     parser.add_argument("--prediction_window", "--prediction-window", type=int, default=1)
     parser.add_argument("--mask_sampler", "--mask-sampler", default="stratified_modality_temporal")
-    parser.add_argument("--output_root", "--output-root", default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--output_root", "--output-root", default=None)
     parser.add_argument("--temporal_missing_seed", "--temporal-missing-seed", type=int, default=0)
     parser.add_argument("--umask_batch_size", "--umask-batch-size", type=int, default=64)
     parser.add_argument("--baseline_batch_size", "--baseline-batch-size", type=int, default=128)
     parser.add_argument("--num_workers", "--num-workers", type=int, default=4)
     parser.add_argument("--prefetch_factor", "--prefetch-factor", type=int, default=2)
-    parser.add_argument("--torch_num_threads", "--torch-num-threads", type=int, default=1)
+    parser.add_argument("--torch_num_threads", "--torch-num-threads", type=int, default=None)
     parser.add_argument("--torch_num_interop_threads", "--torch-num-interop-threads", type=int, default=1)
+    parser.add_argument("--persistent_workers", "--persistent-workers", dest="persistent_workers", action="store_true")
+    parser.add_argument("--no_persistent_workers", "--no-persistent-workers", dest="persistent_workers", action="store_false")
     parser.add_argument("--max_epochs", "--max-epochs", type=int, default=None)
     parser.add_argument("--method_config_overrides", "--method-config-overrides", default="")
     parser.add_argument("--dry_run", "--dry-run", action="store_true")
     parser.add_argument("--skip_completed", "--skip-completed", action="store_true")
     parser.add_argument("--auto_resume", "--auto-resume", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.set_defaults(persistent_workers=None)
     args = parser.parse_args(argv)
+    args.methods = args.methods or PROFILE_METHODS[args.profile]
+    args.seeds = args.seeds or ("1" if args.profile == "s1_lightweight" else "1,2,3")
+    args.output_root = args.output_root or (
+        S1_LIGHTWEIGHT_OUTPUT_ROOT if args.profile == "s1_lightweight" else DEFAULT_OUTPUT_ROOT
+    )
+    if args.torch_num_threads is None:
+        args.torch_num_threads = 12 if args.profile == "s1_lightweight" else 1
+    if args.persistent_workers is None:
+        args.persistent_workers = args.profile == "s1_lightweight"
     jobs = plan_jobs(args)
     write_generated_configs(jobs, args)
     write_manifest(jobs, args.output_root)

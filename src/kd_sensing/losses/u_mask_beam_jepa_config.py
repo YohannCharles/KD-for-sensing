@@ -35,6 +35,9 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
             0.0 if _is_false(use_modality_proto) else (0.0 if modality_proto_weight is None else modality_proto_weight),
         ),
         "lambda_supcon": training_cfg.get("lambda_supcon", 0.0),
+        "use_amber_cma_analogue": training_cfg.get("use_amber_cma_analogue", False),
+        "lambda_amber_cma": training_cfg.get("lambda_amber_cma", 0.2),
+        "amber_cma_temperature": training_cfg.get("amber_cma_temperature", 0.2),
         "lambda_teacher_proto": training_cfg.get("lambda_teacher_proto", 0.0),
         "beam_proto_temperature": training_cfg.get("beam_proto_temperature", primary_cfg.get("beam_proto_temperature", 0.2)),
         "use_beam_topology_proto": training_cfg.get(
@@ -55,14 +58,7 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "beam_label_circular",
             training_cfg.get("use_circular_soft_targets", primary_cfg.get("use_circular_soft_targets", True)),
         ),
-        "use_full_to_partial_kd": training_cfg.get(
-            "use_full_to_partial_kd", primary_cfg.get("use_full_to_partial_kd", False)
-        ),
-        "kd_teacher_mode": training_cfg.get("kd_teacher_mode", primary_cfg.get("kd_teacher_mode", "disabled")),
-        "lambda_full_to_partial_kd": training_cfg.get("lambda_full_to_partial_kd", 0.0),
-        "lambda_feature_kd": training_cfg.get("lambda_feature_kd", 0.0),
-        "lambda_prototype_kd": training_cfg.get("lambda_prototype_kd", 0.0),
-        "kd_temperature": training_cfg.get("kd_temperature", 1.0),
+        "prototype_target_circular": training_cfg.get("prototype_target_circular"),
         "use_full_aux_loss": training_cfg.get("use_full_aux_loss", False),
         "lambda_full_aux": training_cfg.get("lambda_full_aux", 0.0),
         "full_aux_proto": training_cfg.get("full_aux_proto", False),
@@ -92,14 +88,6 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "apply_pattern_weight_to_proto": training_cfg.get(
             "apply_pattern_weight_to_proto", training_cfg.get("hard_pattern_weight_apply_to_proto", False)
         ),
-        "use_weak_pattern_kd": training_cfg.get("use_weak_pattern_kd", False),
-        "kd_apply_patterns": training_cfg.get("kd_apply_patterns", ()),
-        "lambda_kd": training_cfg.get("lambda_kd", 0.0),
-        "use_light_latent_pred": training_cfg.get("use_light_latent_pred", False),
-        "latent_pred_target": training_cfg.get("latent_pred_target", "full_fused"),
-        "latent_pred_apply_patterns": training_cfg.get("latent_pred_apply_patterns", ()),
-        "lambda_latent_pred": training_cfg.get("lambda_latent_pred", 0.0),
-        "latent_pred_loss": training_cfg.get("latent_pred_loss", "cosine"),
         "mpdro": training_cfg.get("mpdro", {}),
         "router_supervision": training_cfg.get("router_supervision", primary_cfg.get("router_supervision", "none")),
         "router_distill_weight": training_cfg.get("router_distill_weight", primary_cfg.get("router_distill_weight", 0.0)),
@@ -129,8 +117,24 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         resolved["proto_target_type"] = "beam_soft" if bool(resolved.get("use_beam_topology_proto", False)) else "gaussian"
     if resolved.get("circular_beam_distance") is None:
         resolved["circular_beam_distance"] = bool(resolved.get("beam_label_circular", True))
+    if resolved.get("prototype_target_circular") is None:
+        resolved["prototype_target_circular"] = bool(resolved.get("beam_label_circular", True))
     if resolved.get("btapa_modality_weight") is None:
         resolved["btapa_modality_weight"] = resolved.get("lambda_modality_proto", 0.0)
+    if bool(resolved.get("use_beam_prototype_alignment", False)) and bool(
+        resolved.get("use_amber_cma_analogue", False)
+    ):
+        raise ValueError(
+            "use_beam_prototype_alignment and use_amber_cma_analogue are mutually exclusive; "
+            "disable BPA when replacing it with the AMBER CMA analogue."
+        )
+    if float(resolved.get("amber_cma_temperature", 0.2)) <= 0.0:
+        raise ValueError("amber_cma_temperature must be positive.")
+    if float(resolved.get("lambda_amber_cma", 0.2)) < 0.0:
+        raise ValueError("lambda_amber_cma must be non-negative.")
+    resolved["superset_consistency"] = _resolve_superset_consistency(
+        raw.get("superset_consistency", training_cfg.get("superset_consistency"))
+    )
     resolved["missing_mask"] = _resolve_missing_mask_config(resolved)
     return resolved
 
@@ -141,6 +145,39 @@ def _is_false(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"0", "false", "no", "off", "none", ""}
     return value is False
+
+
+def _resolve_superset_consistency(value: Any) -> dict[str, Any]:
+    if value in (None, False):
+        raw: dict[str, Any] = {}
+    elif value is True:
+        raw = {"enabled": True}
+    elif isinstance(value, dict):
+        raw = dict(value)
+    else:
+        raise ValueError("training.superset_consistency must be a mapping or boolean.")
+    if "rank_margin" in raw:
+        raise ValueError("training.superset_consistency.rank_margin is not supported; use rank_tolerance.")
+    resolved = {
+        "enabled": bool(raw.get("enabled", False)),
+        "mode": "same_primary_model_online_stop_gradient",
+        "confidence_gated_kl": bool(raw.get("confidence_gated_kl", False)),
+        "kl_weight": float(raw.get("kl_weight", 0.2)),
+        "temperature": float(raw.get("temperature", 2.0)),
+        "beam_monotonic_rank": bool(raw.get("beam_monotonic_rank", False)),
+        "rank_weight": float(raw.get("rank_weight", 0.1)),
+        "rank_tolerance": float(raw.get("rank_tolerance", 0.0)),
+        "feature_l2_weight": float(raw.get("feature_l2_weight", 0.0)),
+    }
+    if resolved["temperature"] <= 0.0:
+        raise ValueError("training.superset_consistency.temperature must be positive.")
+    if resolved["kl_weight"] < 0.0 or resolved["rank_weight"] < 0.0:
+        raise ValueError("training.superset_consistency loss weights must be non-negative.")
+    if resolved["rank_tolerance"] < 0.0:
+        raise ValueError("training.superset_consistency.rank_tolerance must be non-negative.")
+    if resolved["feature_l2_weight"] != 0.0:
+        raise ValueError("training.superset_consistency.feature_l2_weight must remain 0 for this profile.")
+    return resolved
 
 
 def _resolve_missing_mask_config(raw: dict[str, Any]) -> dict[str, Any]:

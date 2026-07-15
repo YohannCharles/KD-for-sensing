@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import datetime as dt
 import os
 from pathlib import Path
+import stat
 import subprocess
 from typing import Any, Iterable
 
@@ -9,7 +10,7 @@ from kd_sensing.utils.runtime_output_layout import PROTECTED_MAINLINE_PARTITIONS
 
 
 MANIFEST_SCHEMA_VERSION = 1
-RULES_VERSION = "runtime-artifact-cleanup.v1"
+RULES_VERSION = "runtime-artifact-cleanup.v2"
 ORGANIZE_RULES_VERSION = "runtime-output-organize.v1"
 DEFAULT_SCAN_ROOTS = ("outputs", "logs", "cache", ".pytest_cache")
 PROTECTED_ROOTS = ("dataset", "All_models", "src", "configs", "docs", "openspec", "tests")
@@ -48,6 +49,7 @@ class CleanupRecord:
     path: str
     relative_path: str
     artifact_type: str
+    filesystem_type: str
     size_bytes: int
     mtime: str | None
     rule_id: str
@@ -66,6 +68,7 @@ class CleanupRecord:
             "path": self.path,
             "relative_path": self.relative_path,
             "artifact_type": self.artifact_type,
+            "filesystem_type": self.filesystem_type,
             "size_bytes": self.size_bytes,
             "mtime": self.mtime,
             "rule_id": self.rule_id,
@@ -83,7 +86,7 @@ class CleanupRecord:
             record["checkpoint_summary"] = self.checkpoint_summary
         return record
 
-def collect_git_tracked_paths(project_root: str | Path) -> set[str]:
+def collect_git_tracked_paths(project_root: str | Path, *, required: bool = False) -> set[str]:
     root = Path(project_root).expanduser().resolve()
     try:
         result = subprocess.run(
@@ -91,9 +94,14 @@ def collect_git_tracked_paths(project_root: str | Path) -> set[str]:
             check=False,
             capture_output=True,
         )
-    except OSError:
+    except OSError as exc:
+        if required:
+            raise RuntimeError(f"Unable to inspect git tracked paths under {root}: {exc}") from exc
         return set()
     if result.returncode != 0:
+        if required:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Unable to inspect git tracked paths under {root}: {stderr or 'git ls-files failed'}")
         return set()
     return {path for path in result.stdout.decode("utf-8").split("\0") if path}
 
@@ -110,6 +118,8 @@ def evaluate_protection(
     rel = _relative_path(resolved, root)
     tracked = _is_git_tracked(rel, resolved, tracked_paths)
     top = rel.split("/", 1)[0] if rel and not rel.startswith("..") else ""
+    if resolved == root:
+        reasons.append("protected_root:project")
     if rel.startswith(".."):
         reasons.append("outside_project_root")
     if top in PROTECTED_ROOTS:
@@ -144,11 +154,27 @@ def _is_git_tracked(rel_path: str, path: Path, tracked_paths: set[str]) -> bool:
     return False
 
 def _manifest_state_compatible(record: dict[str, Any], path: Path) -> bool:
+    recorded_type = record.get("filesystem_type")
+    if recorded_type and recorded_type != _filesystem_type(path):
+        return False
     if int(record.get("size_bytes") or -1) != _path_size_bytes(path):
         return False
     recorded_mtime = record.get("mtime")
     current_mtime = _format_dt(_path_mtime(path))
     return not recorded_mtime or recorded_mtime == current_mtime
+
+def _filesystem_type(path: Path) -> str:
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return "missing"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISREG(mode):
+        return "regular_file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    return "other"
 
 def _skip(base: dict[str, Any], reason: str) -> dict[str, Any]:
     skipped = dict(base)

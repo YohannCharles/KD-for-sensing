@@ -42,6 +42,10 @@ def _write_started_run(root: Path, name: str) -> Path:
     return run_dir
 
 
+def _init_git(root: Path) -> None:
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+
+
 def _records_by_rule(manifest: dict, section: str) -> dict[str, list[dict]]:
     records: dict[str, list[dict]] = {}
     for record in manifest[section]:
@@ -78,7 +82,9 @@ def test_cleanup_manifest_records_outputs_other_and_checkpoint_retention(tmp_pat
     assert "checkpoint.last_recoverable" in candidates
     assert "checkpoint.reproducible_protected" in protected
     assert candidates["checkpoint.last_recoverable"][0]["path"].endswith("checkpoints/last.pth")
+    assert candidates["checkpoint.last_recoverable"][0]["filesystem_type"] == "regular_file"
     run_candidate = candidates["output.ambiguous_other"][0]
+    assert run_candidate["filesystem_type"] == "directory"
     assert run_candidate["run_summary"]["checkpoint_count"] == 2
     assert run_candidate["run_summary"]["checkpoint_total_size_bytes"] > 0
     assert manifest["summary"]["candidate_count"] >= 2
@@ -140,6 +146,7 @@ def test_cleanup_manifest_protects_tracked_files_and_protected_roots(tmp_path: P
 
 
 def test_cleanup_manifest_covers_caches_debug_plan_and_apply_requires_confirmation(tmp_path: Path):
+    _init_git(tmp_path)
     debug_dir = tmp_path / "outputs" / "_debug"
     debug_dir.mkdir(parents=True)
     (debug_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
@@ -194,9 +201,11 @@ def test_cleanup_apply_skips_candidate_containing_manifest_protected_path(tmp_pa
     best.write_bytes(b"best")
     manifest = {
         "metadata": {
+            "schema_version": 1,
             "project_root": str(tmp_path),
             "scan_roots": [str(outputs)],
-            "rules_version": "runtime-artifact-cleanup.v1",
+            "allowed_roots": [str(outputs)],
+            "rules_version": "runtime-artifact-cleanup.v2",
         },
         "candidates": [
             {
@@ -204,6 +213,7 @@ def test_cleanup_apply_skips_candidate_containing_manifest_protected_path(tmp_pa
                 "relative_path": "outputs/quick_smoke_run",
                 "rule_id": "transient.smoke",
                 "protected": False,
+                "filesystem_type": "directory",
                 "size_bytes": 4,
                 "mtime": None,
             }
@@ -220,6 +230,7 @@ def test_cleanup_apply_skips_candidate_containing_manifest_protected_path(tmp_pa
     }
     manifest_path = tmp_path / "cleanup_manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _init_git(tmp_path)
 
     report = apply_cleanup_manifest(
         manifest_path,
@@ -233,6 +244,96 @@ def test_cleanup_apply_skips_candidate_containing_manifest_protected_path(tmp_pa
     assert report["summary"]["deleted_count"] == 0
     assert report["summary"]["skipped_count"] == 1
     assert report["skipped"][0]["reason"] == "manifest_protected_path_overlap"
+
+
+def test_cleanup_apply_rejects_empty_path_before_deleting_any_candidate(tmp_path: Path):
+    _init_git(tmp_path)
+    outputs = tmp_path / "outputs"
+    candidate = outputs / "_debug"
+    candidate.mkdir(parents=True)
+    (candidate / "keep.txt").write_text("keep", encoding="utf-8")
+    manifest = build_cleanup_manifest(project_root=tmp_path, scan_roots=[outputs], include_resources=False, now=NOW)
+    manifest["candidates"].append({"path": "", "size_bytes": 0, "mtime": None})
+    manifest_path = tmp_path / "cleanup_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="empty path"):
+        apply_cleanup_manifest(manifest_path, project_root=tmp_path, confirm_delete=True)
+
+    assert candidate.exists()
+
+
+def test_cleanup_apply_refuses_scan_root_and_project_root(tmp_path: Path):
+    _init_git(tmp_path)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    manifest = build_cleanup_manifest(project_root=tmp_path, scan_roots=[outputs], include_resources=False, now=NOW)
+    manifest["candidates"] = [
+        {
+            "path": str(outputs),
+            "filesystem_type": "directory",
+            "size_bytes": 0,
+            "mtime": None,
+            "rule_id": "unsafe.scan_root",
+        },
+    ]
+    manifest_path = tmp_path / "cleanup_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = apply_cleanup_manifest(manifest_path, project_root=tmp_path, confirm_delete=True)
+
+    assert outputs.exists()
+    assert report["skipped"][0]["reason"] == "protected_root_candidate"
+
+    manifest["metadata"]["scan_roots"] = [str(tmp_path)]
+    manifest["metadata"]["allowed_roots"] = [str(tmp_path)]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsafe root"):
+        apply_cleanup_manifest(manifest_path, project_root=tmp_path, confirm_delete=True)
+
+
+def test_cleanup_apply_rejects_filesystem_type_drift_before_deletion(tmp_path: Path):
+    _init_git(tmp_path)
+    outputs = tmp_path / "outputs"
+    candidate = outputs / "_debug"
+    candidate.mkdir(parents=True)
+    (candidate / "old.txt").write_text("old", encoding="utf-8")
+    manifest = build_cleanup_manifest(project_root=tmp_path, scan_roots=[outputs], include_resources=False, now=NOW)
+    record = next(item for item in manifest["candidates"] if Path(item["path"]) == candidate)
+    assert record["filesystem_type"] == "directory"
+
+    shutil.rmtree(candidate)
+    candidate.write_text("replacement", encoding="utf-8")
+    manifest_path = tmp_path / "cleanup_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = apply_cleanup_manifest(manifest_path, project_root=tmp_path, confirm_delete=True)
+
+    assert candidate.is_file()
+    skipped = next(item for item in report["skipped"] if Path(item["path"]) == candidate)
+    assert skipped["reason"] == "filesystem_type_changed_since_manifest"
+    assert skipped["manifest_filesystem_type"] == "directory"
+    assert skipped["current_filesystem_type"] == "regular_file"
+
+
+def test_cleanup_apply_fails_closed_when_git_state_is_unavailable(tmp_path: Path, monkeypatch):
+    _init_git(tmp_path)
+    outputs = tmp_path / "outputs"
+    candidate = outputs / "_debug"
+    candidate.mkdir(parents=True)
+    (candidate / "keep.txt").write_text("keep", encoding="utf-8")
+    manifest = build_cleanup_manifest(project_root=tmp_path, scan_roots=[outputs], include_resources=False, now=NOW)
+    manifest_path = tmp_path / "cleanup_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "kd_sensing.diagnostics.runtime_artifact_cleanup_apply.collect_git_tracked_paths",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("git unavailable")),
+    )
+    with pytest.raises(RuntimeError, match="git unavailable"):
+        apply_cleanup_manifest(manifest_path, project_root=tmp_path, confirm_delete=True)
+
+    assert candidate.exists()
 
 
 def test_cleanup_manifest_covers_transient_outputs_and_current_partition_protection(tmp_path: Path):

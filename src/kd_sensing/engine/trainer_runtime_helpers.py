@@ -10,7 +10,6 @@ from typing import Any
 import torch
 from tqdm.auto import tqdm
 
-from kd_sensing.engine.checkpointing import CheckpointUpdate
 from kd_sensing.engine.checkpointing import checkpoint_strict as _checkpoint_strict
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
 from kd_sensing.engine.debug_diagnostics import consume_csi_debug_records
@@ -66,6 +65,7 @@ def run_training_epoch_loop(
     progress_enabled: bool,
     total_epochs: int,
     early_stopping_min_epoch: int,
+    model_selection_enabled: bool,
     validation_loader,
     validate_fn=validate,
 ) -> None:
@@ -76,9 +76,9 @@ def run_training_epoch_loop(
         disable=not progress_enabled,
     )
     validation_interval = _validation_interval_epochs(training_cfg)
-    last_val_metrics: dict[str, Any] | None = None
-    timing_logger = _TimingCsvLogger(cfg, run_dir)
-    for epoch in epoch_progress:
+    last_observed_validation: dict[str, Any] | None = None
+    timing_logger = _TimingCsvLogger(cfg, run_dir, device=device)
+    for epoch in _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):
         _set_epoch_recursive(primary_model, epoch)
         set_train_sampler_epoch(dataloaders["train"], epoch)
         primary_model.train()
@@ -101,12 +101,12 @@ def run_training_epoch_loop(
             )
         else:
             batch_progress = dataloaders["train"]
-        data_wait_start = time.perf_counter()
+        data_wait_start = timing_logger.host_now()
         for step, raw_batch in enumerate(batch_progress):
-            batch_start = time.perf_counter()
-            data_time = batch_start - data_wait_start
+            batch_start = timing_logger.start_step()
+            data_time = timing_logger.host_elapsed(data_wait_start)
             batch_result = batch_runner.run(raw_batch, epoch=epoch, step=step, current_alpha=current_alpha)
-            step_time = time.perf_counter() - batch_start
+            step_time = timing_logger.finish_step(batch_start)
             if "lidar" in batch_result.batch:
                 saw_train_lidar = True
                 train_lidar_quality.update(batch_result.batch["lidar"], raw_lidar=batch_result.batch.get("lidar_raw"))
@@ -127,31 +127,31 @@ def run_training_epoch_loop(
                     acc=f"{progress_metrics['acc']:.4f}",
                     lr=f"{current_lr:.2e}",
                 )
-            data_wait_start = time.perf_counter()
+            data_wait_start = timing_logger.host_now()
 
         if hasattr(batch_runner, "flush_epoch_artifacts"):
             batch_runner.flush_epoch_artifacts(run_dir, epoch)
 
         if scheduler is not None:
             scheduler.step()
-        validation_ran = _should_validate_epoch(epoch, total_epochs, validation_interval) or last_val_metrics is None
+        validation_ran = validation_loader is not None and (
+            _should_validate_epoch(epoch, total_epochs, validation_interval) or last_observed_validation is None
+        )
         if validation_ran:
-            try:
-                val_metrics = validate_fn(
-                    primary_model,
-                    validation_loader,
-                    cfg,
-                    task_criterion,
-                    device,
-                    output_dir=run_dir,
-                )
-            finally:
-                shutdown_dataloader_workers(validation_loader)
-            last_val_metrics = val_metrics
+            val_metrics = validate_fn(
+                primary_model,
+                validation_loader,
+                cfg,
+                task_criterion,
+                device,
+                output_dir=run_dir,
+            )
+            last_observed_validation = {"epoch": epoch + 1, "source": "validation"}
         else:
-            val_metrics = dict(last_val_metrics)
+            val_metrics = None
         csi_debug_records.extend(consume_csi_debug_records(primary_model))
-        _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
+        if model_selection_enabled and validation_ran:
+            _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
         extension_metrics = {}
         for extension, extension_state in zip(extensions, extension_states):
             extension_metrics.update(extension.after_epoch(extension_context, extension_state, epoch=epoch))
@@ -169,8 +169,9 @@ def run_training_epoch_loop(
             epoch_subsampling=epoch_subsampling_log,
             health_metrics=health_metrics,
             extension_metrics=extension_metrics,
+            model_selection_enabled=model_selection_enabled and validation_ran,
         )
-        if validation_ran:
+        if model_selection_enabled and validation_ran:
             checkpoint_update = checkpoint_manager.update_best_checkpoints(
                 state=state,
                 epoch=epoch,
@@ -180,34 +181,36 @@ def run_training_epoch_loop(
                 train_dataset=train_dataset,
             )
         else:
-            checkpoint_update = CheckpointUpdate(
-                early_stopping_value=float(epoch_log["val_primary_metric"]),
-                improved=False,
-                top1_improved=False,
-            )
+            checkpoint_update = None
         epoch_log.update(
             {
                 "validation_ran": bool(validation_ran),
                 "validation_interval_epochs": int(validation_interval),
-                "early_stopping_metric": early_stopping_metric,
-                "early_stopping_mode": early_stopping_mode,
-                "early_stopping_value": checkpoint_update.early_stopping_value,
-                "early_stopping_improved": bool(checkpoint_update.improved),
-                "best_early_stopping_value": state.best_early_stopping_value,
-                "best_early_stopping_epoch": state.best_early_stopping_epoch,
-                "epochs_without_improvement": state.epochs_without_improvement,
+                "model_selection_enabled": bool(model_selection_enabled),
+                "early_stopping_metric": early_stopping_metric if model_selection_enabled else None,
+                "early_stopping_mode": early_stopping_mode if model_selection_enabled else None,
+                "early_stopping_value": checkpoint_update.early_stopping_value if checkpoint_update else None,
+                "early_stopping_improved": bool(checkpoint_update.improved) if checkpoint_update else False,
+                "best_early_stopping_value": state.best_early_stopping_value if model_selection_enabled else None,
+                "best_early_stopping_epoch": state.best_early_stopping_epoch if model_selection_enabled else None,
+                "epochs_without_improvement": state.epochs_without_improvement if model_selection_enabled else None,
+                "last_observed_validation": (
+                    dict(last_observed_validation) if last_observed_validation is not None else None
+                ),
             }
         )
         _write_epoch_metrics_snapshot(run_dir, state.epoch_logs)
+        timing_logger.flush()
         if progress_enabled:
             metrics = recorder.progress_metrics()
-            epoch_progress.set_postfix(
-                train_loss=f"{metrics['loss']:.4f}",
-                val_loss=f"{float(val_loss):.4f}",
-                val_acc=f"{val_acc:.4f}",
-                early_stop=f"{early_stopping_metric}:{checkpoint_update.early_stopping_value:.4f}",
-                lr=f"{current_lr:.2e}",
-            )
+            postfix = {"train_loss": f"{metrics['loss']:.4f}", "lr": f"{current_lr:.2e}"}
+            if val_loss is not None:
+                postfix["val_loss"] = f"{float(val_loss):.4f}"
+            if val_acc is not None:
+                postfix["val_acc"] = f"{float(val_acc):.4f}"
+            if checkpoint_update is not None:
+                postfix["early_stop"] = f"{early_stopping_metric}:{checkpoint_update.early_stopping_value:.4f}"
+            epoch_progress.set_postfix(**postfix)
         _write_tensorboard_scalars(
             tensorboard_writer,
             state.history,
@@ -217,7 +220,9 @@ def run_training_epoch_loop(
         )
         checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
         if (
-            not checkpoint_update.improved
+            model_selection_enabled
+            and checkpoint_update is not None
+            and not checkpoint_update.improved
             and validation_ran
             and training_cfg.get("use_early_stopping", True)
             and epoch + 1 >= early_stopping_min_epoch
@@ -264,27 +269,30 @@ def _evaluate_final_test_split(
     *,
     run_dir: Path,
     validation_split_name: str,
+    model_selection_enabled: bool,
 ) -> tuple[dict, dict | None]:
-    checkpoint_load = None
-    best_path = run_dir / "checkpoints" / "best.pth"
-    if best_path.exists():
-        load_result = load_model_state(
-            best_path,
-            primary_model,
-            role="final-test-best",
-            map_location=device,
-            strict=_checkpoint_strict(cfg),
-        )
-        checkpoint_load = checkpoint_load_summary(load_result)
+    checkpoint_name = "best.pth" if model_selection_enabled else "last.pth"
+    checkpoint_path = run_dir / "checkpoints" / checkpoint_name
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Final test checkpoint not found: {checkpoint_path}")
+    load_result = load_model_state(
+        checkpoint_path,
+        primary_model,
+        role="final-test-best" if model_selection_enabled else "final-test-last",
+        map_location=device,
+        strict=_checkpoint_strict(cfg),
+    )
+    checkpoint_load = checkpoint_load_summary(load_result)
     primary_model.eval()
     try:
         metrics = validate(primary_model, test_loader, cfg, task_criterion, device, output_dir=run_dir)
         missing_pattern_results = _write_missing_pattern_eval(primary_model, test_loader, cfg, device, run_dir=run_dir)
     finally:
         shutdown_dataloader_workers(test_loader)
-    metrics["model_selection_split"] = str(validation_split_name)
+    metrics["model_selection_split"] = str(validation_split_name) if model_selection_enabled else "none"
+    metrics["model_selection_enabled"] = bool(model_selection_enabled)
     metrics["evaluation_split"] = "test"
-    metrics["checkpoint_for_test"] = str(best_path) if best_path.exists() else "last_in_memory"
+    metrics["checkpoint_for_test"] = str(checkpoint_path)
     if missing_pattern_results:
         metrics["missing_patterns"] = missing_pattern_results
     return metrics, checkpoint_load
@@ -319,18 +327,39 @@ def _set_epoch_recursive(module, epoch: int) -> None:
         _set_epoch_recursive(child, epoch)
 
 
+def _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):
+    try:
+        yield from epoch_progress
+    finally:
+        try:
+            timing_logger.flush()
+        except Exception:
+            # Timing is optional observability; it must not mask a training failure.
+            pass
+
+
 class _TimingCsvLogger:
-    def __init__(self, cfg: dict, run_dir: Path) -> None:
+    def __init__(self, cfg: dict, run_dir: Path, *, device: torch.device | None = None) -> None:
         timing_cfg = cfg.get("training", {}).get("timing", {})
         if not isinstance(timing_cfg, dict):
             timing_cfg = {}
-        self.enabled = bool(timing_cfg.get("enabled", True))
-        self.log_interval = max(1, int(timing_cfg.get("log_interval", cfg.get("output", {}).get("log_interval", 10)) or 10))
+        self.enabled = bool(timing_cfg.get("enabled", False))
+        self.profile: str | None = None
+        if self.enabled:
+            profile = str(timing_cfg.get("profile", "")).strip().lower()
+            if profile not in {"host", "cuda_event"}:
+                raise ValueError("training.timing.profile must be 'host' or 'cuda_event' when timing is enabled.")
+            if profile == "cuda_event" and (device is None or torch.device(device).type != "cuda"):
+                raise ValueError("training.timing.profile='cuda_event' requires a CUDA device.")
+            self.profile = profile
+        self.device = torch.device(device) if device is not None else None
+        self.log_interval = max(1, int(timing_cfg.get("log_interval", 1) or 1))
         self.slow_seconds = float(timing_cfg.get("slow_batch_seconds", 20.0))
-        exp_name = sanitize_slug(str(cfg.get("output", {}).get("run_name") or cfg.get("experiment", {}).get("name", "run")))
-        self.path = run_dir.parent / "logs" / f"{exp_name}_timing.csv"
+        self.path = run_dir / "timing.csv"
         self.global_step = 0
+        self.rows: list[dict[str, Any]] = []
         self.fieldnames = [
+            "profile",
             "epoch",
             "batch",
             "global_step",
@@ -347,29 +376,65 @@ class _TimingCsvLogger:
             "cpu_rss_mb",
             "slow_batch",
         ]
-        if self.enabled:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            if not self.path.exists():
-                with self.path.open("w", encoding="utf-8", newline="") as handle:
-                    csv.DictWriter(handle, fieldnames=self.fieldnames).writeheader()
 
-    def maybe_log(self, *, epoch: int, batch: int, data_time: float, step_time: float, batch_result, lr: float) -> None:
+    def host_now(self) -> float | None:
+        if self.profile != "host" or not self._sample_current_step():
+            return None
+        return time.perf_counter()
+
+    def host_elapsed(self, started_at: float | None) -> float | None:
+        if started_at is None:
+            return None
+        return time.perf_counter() - started_at
+
+    def start_step(self):
+        if not self._sample_current_step():
+            return None
+        if self.profile == "host":
+            return time.perf_counter()
+        if self.profile == "cuda_event":
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            return start, end
+        return None
+
+    def finish_step(self, token) -> float | None:
+        if token is None:
+            return None
+        if self.profile == "host":
+            return time.perf_counter() - float(token)
+        start, end = token
+        end.record()
+        torch.cuda.synchronize()
+        return float(start.elapsed_time(end)) / 1000.0
+
+    def maybe_log(
+        self,
+        *,
+        epoch: int,
+        batch: int,
+        data_time: float | None,
+        step_time: float | None,
+        batch_result,
+        lr: float,
+    ) -> None:
         if not self.enabled:
-            self.global_step += 1
             return
-        slow = data_time >= self.slow_seconds or step_time >= self.slow_seconds
-        should_log = self.global_step % self.log_interval == 0 or slow
-        if should_log:
+        if data_time is not None or step_time is not None:
+            slow = any(value is not None and value >= self.slow_seconds for value in (data_time, step_time))
+            timings = getattr(batch_result, "timings", {})
             row = {
+                "profile": self.profile,
                 "epoch": int(epoch) + 1,
                 "batch": int(batch),
                 "global_step": int(self.global_step),
-                "data_time": float(data_time),
-                "forward_time": float(batch_result.timings.get("forward_time", math.nan)),
-                "loss_time": float(batch_result.timings.get("loss_time", math.nan)),
-                "backward_time": float(batch_result.timings.get("backward_time", math.nan)),
-                "optimizer_step_time": float(batch_result.timings.get("optimizer_step_time", math.nan)),
-                "step_time": float(step_time),
+                "data_time": _timing_value(data_time),
+                "forward_time": _timing_value(timings.get("forward_time")),
+                "loss_time": _timing_value(timings.get("loss_time")),
+                "backward_time": _timing_value(timings.get("backward_time")),
+                "optimizer_step_time": _timing_value(timings.get("optimizer_step_time")),
+                "step_time": _timing_value(step_time),
                 "loss": float(batch_result.total_loss.detach().cpu().item()),
                 "lr": float(lr),
                 "gpu_mem_alloc_mb": _gpu_memory_mb("allocated"),
@@ -377,17 +442,27 @@ class _TimingCsvLogger:
                 "cpu_rss_mb": _cpu_rss_mb(),
                 "slow_batch": bool(slow),
             }
-            with self.path.open("a", encoding="utf-8", newline="") as handle:
-                csv.DictWriter(handle, fieldnames=self.fieldnames).writerow(row)
-            message = (
-                f"epoch={row['epoch']} batch={row['batch']} data_time={row['data_time']:.3f}s "
-                f"step_time={row['step_time']:.3f}s loss={row['loss']:.4f} "
-                f"gpu_reserved={row['gpu_mem_reserved_mb']:.1f}MB cpu_rss={row['cpu_rss_mb']:.1f}MB"
-            )
-            if slow:
-                message = "[SLOW_BATCH] " + message
-            tqdm.write(message)
+            self.rows.append(row)
         self.global_step += 1
+
+    def flush(self) -> None:
+        if not self.rows:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not self.path.exists() or self.path.stat().st_size == 0
+        with self.path.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerows(self.rows)
+        self.rows.clear()
+
+    def _sample_current_step(self) -> bool:
+        return self.enabled and self.global_step % self.log_interval == 0
+
+
+def _timing_value(value: float | None) -> float:
+    return float(value) if value is not None else math.nan
 
 
 def _gpu_memory_mb(kind: str) -> float:

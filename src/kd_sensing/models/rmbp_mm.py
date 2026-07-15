@@ -65,7 +65,12 @@ class RMBPChannelAttentionFusionCore(nn.Module):
         return {
             "type": "rmbp_channel_attention_fusion",
             "model_group": "RMBP-MM",
-            "paper_alignment": "channel_attention_fusion",
+            "reproduction_scope": "rmbp_mm_channel_attention_local",
+            "paper_equivalent": False,
+            "paper_alignment": "channel_attention_fusion_only",
+            "paper_temporal_model": False,
+            "omitted_paper_inputs": ["partial_beam_measurement"],
+            "omitted_paper_training_stages": ["unimodal_pretraining", "label_guided_similarity_imputation"],
             "fusion_type": "rmbp_channel_attention",
             "d_model": self.d_model,
             "output_dim": self.output_dim,

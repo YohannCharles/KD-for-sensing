@@ -3,6 +3,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from kd_sensing.engine.data_factory_scalers import shared_dataset_attribute
 from kd_sensing.engine.objectives.metadata import objective_available_metrics
 from kd_sensing.evaluation.horizon_selection import (
     horizon_indices,
@@ -134,7 +135,22 @@ def auxiliary_metrics_from_outputs(
     if occlusion_logits is not None and occlusion_labels is not None:
         metrics.update(calculate_occlusion_metrics(occlusion_logits, occlusion_labels, occlusion_valid))
     if position_outputs is not None and position_targets is not None:
-        scaler = getattr(getattr(dataloader, "dataset", None), "position_target_scaler", None)
+        dataset = getattr(dataloader, "dataset", None)
+        scaler = (
+            shared_dataset_attribute(
+                dataset,
+                "position_target_scaler",
+                enabled=lambda leaf: bool(
+                    getattr(leaf, "position_target_scaler", None) is not None
+                    or (
+                        getattr(leaf, "position_target_enabled", False)
+                        and getattr(leaf, "position_target_normalize", False)
+                    )
+                ),
+            )
+            if dataset is not None
+            else None
+        )
         mean = getattr(scaler, "mean_", None)
         scale = getattr(scaler, "scale_", None)
         metrics.update(
@@ -158,7 +174,6 @@ def attach_objective_metrics(
     auxiliary_metrics: dict[str, float],
     *,
     objective: str,
-    dataloader_len: int,
     val_occlusion_loss: float,
     val_position_loss: float,
     val_multitask_loss: float,
@@ -167,12 +182,11 @@ def attach_objective_metrics(
     val_selection_multitask_loss: float,
 ) -> None:
     auxiliary: dict[str, float] = dict(auxiliary_metrics)
-    batches = max(dataloader_len, 1)
     has_occlusion = int(auxiliary_metrics.get("occlusion_total", 0)) > 0
     has_position = int(auxiliary_metrics.get("position_total", 0)) > 0
 
     if has_occlusion:
-        auxiliary["loss_occlusion"] = float(val_occlusion_loss / batches)
+        auxiliary["loss_occlusion"] = float(val_occlusion_loss)
         metrics["loss/occlusion"] = auxiliary["loss_occlusion"]
         if "occlusion_accuracy" in auxiliary_metrics:
             metrics["val_occlusion_accuracy"] = float(auxiliary_metrics["occlusion_accuracy"])
@@ -180,7 +194,7 @@ def attach_objective_metrics(
             metrics["val_occlusion_blocked_f1"] = float(auxiliary_metrics["occlusion_blocked_f1"])
 
     if has_position:
-        auxiliary["loss_position"] = float(val_position_loss / batches)
+        auxiliary["loss_position"] = float(val_position_loss)
         metrics["loss/position"] = auxiliary["loss_position"]
         if "position_rmse" in auxiliary_metrics:
             metrics["val_position_rmse"] = float(auxiliary_metrics["position_rmse"])
@@ -188,7 +202,7 @@ def attach_objective_metrics(
             metrics["val_position_mae"] = float(auxiliary_metrics["position_mae"])
 
     if objective == "multitask":
-        auxiliary["loss_multitask_total"] = float(val_multitask_loss / batches)
+        auxiliary["loss_multitask_total"] = float(val_multitask_loss)
         metrics["loss/multitask_total"] = auxiliary["loss_multitask_total"]
         metrics["val_multitask_loss"] = auxiliary["loss_multitask_total"]
 
@@ -196,7 +210,7 @@ def attach_objective_metrics(
     has_link = int(auxiliary_metrics.get("link_total", 0)) > 0
     if has_los:
         if objective in {"current_los_classification", "selection_multitask"}:
-            auxiliary["loss_los"] = float(val_los_loss / batches)
+            auxiliary["loss_los"] = float(val_los_loss)
             metrics["loss/los"] = auxiliary["loss_los"]
             for key in ("los_accuracy", "los_f1", "los_auc"):
                 metrics[key] = auxiliary_metrics.get(key)
@@ -206,13 +220,13 @@ def attach_objective_metrics(
                 metrics["los_auc_unavailable_reason"] = auxiliary_metrics["los_auc_unavailable_reason"]
     if has_link:
         if objective in {"current_link_quality", "selection_multitask"}:
-            auxiliary["loss_link_quality"] = float(val_link_quality_loss / batches)
+            auxiliary["loss_link_quality"] = float(val_link_quality_loss)
             metrics["loss/link_quality"] = auxiliary["loss_link_quality"]
             for key in ("link_mae", "link_rmse", "link_r2"):
                 metrics[key] = float(auxiliary_metrics[key])
                 metrics[f"val_{key}"] = float(auxiliary_metrics[key])
     if objective == "selection_multitask":
-        auxiliary["loss_selection_multitask_total"] = float(val_selection_multitask_loss / batches)
+        auxiliary["loss_selection_multitask_total"] = float(val_selection_multitask_loss)
         metrics["loss/selection_multitask_total"] = auxiliary["loss_selection_multitask_total"]
         metrics["selection_multitask_loss"] = auxiliary["loss_selection_multitask_total"]
         metrics["val_selection_multitask_loss"] = auxiliary["loss_selection_multitask_total"]

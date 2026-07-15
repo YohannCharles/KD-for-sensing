@@ -3,15 +3,24 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import tempfile
 import time
 from typing import Any
 
 import torch
 
+from kd_sensing.data.datasets.deepsense6g_gps_contract import (
+    RSU_LOCAL_GPS_FEATURE_MODE,
+    normalize_gps_feature_mode,
+)
+from kd_sensing.engine.modality_resolution import config_uses_gps
 from kd_sensing.engine.run_lineage import model_capacity, run_lineage_metadata
 from kd_sensing.utils.paths import resolve_path
+from kd_sensing.utils.checkpoint import (
+    checkpoint_file_digest,
+    load_torch_payload,
+    publish_checkpoint_copy,
+)
 from kd_sensing.utils.runtime_output_layout import runtime_output_scope_from_config, runtime_scope_metadata_from_config
 
 
@@ -23,6 +32,8 @@ DEFAULT_REGISTRY = {
     "filename": "{slug}_{role}_acc_{acc}.pth",
 }
 LEGACY_DEFAULT_REGISTRY_DIR = "outputs/best_checkpoints"
+GPS_CHECKPOINT_PROVENANCE_KEYS = ("gps_feature_mode", "gps_angle_frame", "gps_yaw_source")
+RSU_YAW_SOURCE = "bs_yaml:sensors.rsu_pose.rotation.yaw"
 
 
 @dataclass
@@ -138,6 +149,58 @@ def write_sidecar(checkpoint_path: str | Path, metadata: dict[str, Any]) -> Path
     return sidecar
 
 
+def gps_checkpoint_provenance(cfg: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(cfg.get("data"), dict):
+        return {}
+    if not config_uses_gps(cfg):
+        return {}
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    mode = normalize_gps_feature_mode(dataset_cfg.get("gps_feature_mode"))
+    expected = {
+        "gps_feature_mode": mode,
+        "gps_angle_frame": "rsu_local" if mode == RSU_LOCAL_GPS_FEATURE_MODE else "world",
+        "gps_yaw_source": RSU_YAW_SOURCE if mode == RSU_LOCAL_GPS_FEATURE_MODE else None,
+    }
+    protocol = cfg.get("mmw_all_weather_protocol")
+    if isinstance(protocol, dict):
+        for key, value in expected.items():
+            if key in protocol and protocol[key] != value:
+                raise ValueError(
+                    f"mmw_all_weather_protocol.{key}={protocol[key]!r} does not match "
+                    f"data.dataset.gps_feature_mode={mode!r} ({value!r})."
+                )
+    return expected
+
+
+def validate_evaluation_gps_checkpoint_provenance(
+    cfg: dict[str, Any],
+    metadata: dict[str, Any] | None,
+) -> None:
+    expected = gps_checkpoint_provenance(cfg)
+    if not expected:
+        return
+    recorded = metadata if isinstance(metadata, dict) else {}
+    recorded_mode = recorded.get("gps_feature_mode")
+    if recorded_mode is None:
+        if expected["gps_feature_mode"] == RSU_LOCAL_GPS_FEATURE_MODE:
+            raise ValueError(
+                "rsu_local_relative_polar evaluation requires checkpoint GPS coordinate-frame provenance; "
+                "the checkpoint is legacy or missing gps_feature_mode."
+            )
+        return
+    required_keys = GPS_CHECKPOINT_PROVENANCE_KEYS if recorded_mode == RSU_LOCAL_GPS_FEATURE_MODE else ("gps_feature_mode",)
+    missing = [key for key in required_keys if key not in recorded]
+    if missing:
+        raise ValueError(f"Checkpoint GPS coordinate-frame provenance is incomplete; missing {missing}.")
+    mismatches = {
+        key: {"config": expected[key], "checkpoint": recorded.get(key)}
+        for key in GPS_CHECKPOINT_PROVENANCE_KEYS
+        if key in recorded and recorded.get(key) != expected[key]
+    }
+    if mismatches:
+        raise ValueError(f"Checkpoint GPS coordinate-frame provenance does not match evaluation config: {mismatches}.")
+
+
 def archive_best_checkpoint(
     cfg: dict[str, Any],
     *,
@@ -175,14 +238,14 @@ def archive_best_checkpoint(
                 "skipped_source_checkpoint": str(source),
                 "skipped_metric_value": float(val_top1),
             }
-    _remove_old_archives(target_dir, slug=slug, role=role, keep=target, scene_slug=_scope_slug_from_config(cfg))
-    shutil.copy2(source, target)
-
     lineage = run_lineage_metadata(cfg)
+    source_digest, source_size = checkpoint_file_digest(source)
     metadata = {
         "path": str(target),
         "source": "registry",
         "source_checkpoint": str(source),
+        "source_checkpoint_sha256": source_digest,
+        "source_checkpoint_size_bytes": int(source_size),
         "checkpoint_source": checkpoint_source
         or ("top1-checkpoint" if source.name == "best_top1.pth" else "objective-checkpoint"),
         "run_dir": str(run_dir),
@@ -212,12 +275,12 @@ def archive_best_checkpoint(
         "normalization_artifacts": normalization_artifacts or {},
         "updated": True,
         "lineage": lineage,
+        **gps_checkpoint_provenance(cfg),
     }
     metadata.update(runtime_scope_metadata_from_config(cfg))
-    sidecar = write_sidecar(target, metadata)
-    metadata["sidecar_path"] = str(sidecar)
-    write_sidecar(target, metadata)
-    return metadata
+    _, published = publish_checkpoint_copy(source, target, metadata=metadata)
+    _remove_old_archives(target_dir, slug=slug, role=role, keep=target, scene_slug=_scope_slug_from_config(cfg))
+    return published
 
 
 def checkpoint_filename(cfg: dict[str, Any], *, slug: str, role: str, val_top1: float) -> str:
@@ -400,18 +463,15 @@ def _metadata_from_checkpoint_payload(checkpoint_path: str | Path) -> dict[str, 
     if not path.exists():
         return None
     try:
-        try:
-            payload = torch.load(path, map_location="cpu", weights_only=False)
-        except TypeError:  # pragma: no cover - older torch
-            payload = torch.load(path, map_location="cpu")
+        payload = load_torch_payload(path, map_location="cpu")
     except Exception:
         return None
     if not isinstance(payload, dict):
         return None
     registry_metadata = payload.get("checkpoint_registry")
-    if isinstance(registry_metadata, dict):
-        return registry_metadata
+    metadata = dict(registry_metadata) if isinstance(registry_metadata, dict) else {}
     normalization_artifacts = payload.get("normalization_artifacts")
     if isinstance(normalization_artifacts, dict):
-        return {"normalization_artifacts": normalization_artifacts}
-    return None
+        metadata.setdefault("normalization_artifacts", normalization_artifacts)
+    metadata.update({key: payload[key] for key in GPS_CHECKPOINT_PROVENANCE_KEYS if key in payload})
+    return metadata or None

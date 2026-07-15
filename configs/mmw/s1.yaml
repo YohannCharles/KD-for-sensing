@@ -1,0 +1,16 @@
+_base_: t2.yaml
+experiment:
+  name: S1
+loss:
+  u_mask_beam_jepa:
+    superset_consistency:
+      enabled: false
+      confidence_gated_kl: false
+      kl_weight: 0.0
+training:
+  superset_consistency:
+    enabled: false
+    confidence_gated_kl: false
+    kl_weight: 0.0
+temporal_missing:
+  preserve_unmasked_for_superset: false

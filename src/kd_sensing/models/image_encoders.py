@@ -7,6 +7,7 @@ import torch.nn as nn
 from kd_sensing.modalities import validate_image_encoder_profile
 from kd_sensing.models.camera_autoencoder import CameraAutoEncoder
 from kd_sensing.registries import ENCODERS, MODELS
+from kd_sensing.utils.checkpoint import load_torch_payload
 
 
 RESNET18_STAGES = ("conv1", "bn1", "layer1", "layer2", "layer3", "layer4")
@@ -494,7 +495,7 @@ class CameraAEImageEncoder(nn.Module):
                     f"{checkpoint_file}. Provide a trained Camera AE checkpoint or set "
                     "require_checkpoint=false for mock/smoke runs."
                 )
-            payload = torch.load(self.checkpoint_path, map_location="cpu")
+            payload = load_torch_payload(self.checkpoint_path, map_location="cpu")
             state_dict = payload.get("model_state_dict", payload)
             self.autoencoder.load_state_dict(state_dict)
         elif self.require_checkpoint:

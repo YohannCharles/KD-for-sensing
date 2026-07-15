@@ -10,6 +10,7 @@ import scipy.io
 import torch
 
 from kd_sensing.data.transform_ops.io import atomic_save_npy, joined_resource
+from kd_sensing.utils.checkpoint import load_torch_payload
 
 
 DEFAULT_LIDAR_ROI = (-30.0, 30.0, -30.0, 30.0, -3.0, 5.0)
@@ -429,10 +430,7 @@ class LidarBEVNormalizer:
     def load(cls, path: str | Path) -> "LidarBEVNormalizer":
         source = Path(path)
         if source.suffix.lower() == ".pt":
-            try:
-                payload = torch.load(source, map_location="cpu", weights_only=True)
-            except TypeError:  # pragma: no cover - older torch
-                payload = torch.load(source, map_location="cpu")
+            payload = load_torch_payload(source, map_location="cpu")
             mean = np.asarray(payload["mean"], dtype=np.float32)
             scale_key = "scale" if "scale" in payload else "std"
             scale = np.asarray(payload[scale_key], dtype=np.float32)
