@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from kd_sensing.utils.paths import resolve_path
 
 
 GPS_CHECKPOINT_PROVENANCE_KEYS = ("gps_feature_mode",)
+TRAINING_PROFILE_CHECKPOINT_PROVENANCE_KEYS = ("training_profile", "t2_design_screening")
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ def load_checkpoint_metadata(checkpoint_path: str | Path | None) -> dict[str, An
     if isinstance(normalization, dict):
         metadata["normalization_artifacts"] = normalization
     metadata.update({key: payload[key] for key in GPS_CHECKPOINT_PROVENANCE_KEYS if key in payload})
+    metadata.update({key: payload[key] for key in TRAINING_PROFILE_CHECKPOINT_PROVENANCE_KEYS if key in payload})
     role = payload.get("checkpoint_role")
     if role is not None:
         metadata["checkpoint_role"] = role
@@ -82,6 +85,43 @@ def validate_evaluation_gps_checkpoint_provenance(cfg: dict[str, Any], metadata:
     recorded = metadata or {}
     if expected and recorded.get("gps_feature_mode") not in {None, expected["gps_feature_mode"]}:
         raise ValueError("Checkpoint gps_feature_mode does not match the evaluation recipe.")
+
+
+def training_profile_checkpoint_provenance(cfg: dict[str, Any]) -> dict[str, Any]:
+    protocol = cfg.get("mmw_all_weather_protocol")
+    if not isinstance(protocol, dict):
+        return {}
+    profile = protocol.get("training_profile")
+    if not isinstance(profile, dict):
+        return {}
+    if not profile.get("id") or not profile.get("sha256"):
+        raise ValueError("MMW training_profile provenance requires non-empty id and sha256.")
+    result: dict[str, Any] = {"training_profile": deepcopy(profile)}
+    design = cfg.get("mmw_t2_design_screening")
+    if isinstance(design, dict):
+        candidate = design.get("candidate_id")
+        fingerprint = design.get("config_sha256")
+        if not candidate or not fingerprint:
+            raise ValueError("T2 design-screening provenance requires candidate_id and config_sha256.")
+        result["t2_design_screening"] = {
+            "protocol": design.get("protocol"),
+            "candidate_id": candidate,
+            "wave": design.get("wave"),
+            "matched_control": design.get("matched_control"),
+            "config_sha256": fingerprint,
+        }
+    return result
+
+
+def validate_evaluation_training_profile_provenance(cfg: dict[str, Any], metadata: dict[str, Any] | None) -> None:
+    expected = training_profile_checkpoint_provenance(cfg)
+    if not expected:
+        return
+    recorded = metadata or {}
+    if recorded.get("training_profile") != expected["training_profile"]:
+        raise ValueError("Checkpoint training_profile provenance does not match the evaluation recipe.")
+    if "t2_design_screening" in expected and recorded.get("t2_design_screening") != expected["t2_design_screening"]:
+        raise ValueError("Checkpoint T2 design-screening provenance does not match the evaluation recipe.")
 
 
 def resolve_evaluation_checkpoint(cfg: dict[str, Any], weights: str | None = None) -> CheckpointResolution:

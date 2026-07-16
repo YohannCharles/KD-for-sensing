@@ -8,8 +8,10 @@ from kd_sensing.config import load_config
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
 from kd_sensing.losses.u_mask_beam_jepa import u_mask_beam_jepa_loss
 from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
+from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.registries import ENCODERS, MODELS
 
+import kd_sensing.models.modular  # noqa: F401
 import kd_sensing.models.u_mask_beam_jepa  # noqa: F401
 
 
@@ -84,6 +86,121 @@ def test_masked_mean_supervised_router_masks_missing_cells() -> None:
     assert torch.allclose(output["supervised_router_gate_weights"].sum(dim=1), torch.ones(1))
     assert output["metadata"]["temporal_pooling_type"] == "masked_mean"
     assert output["metadata"]["fusion_type"] == "supervised_router"
+
+
+def test_reliability_mean_ignores_temporally_empty_modalities_and_keeps_router_diagnostics() -> None:
+    config = _model_config()
+    config["fusion_type"] = "reliability_mean"
+    model = MODELS.build(config)
+    output = model(
+        image_batch=torch.tensor([[[1.0], [3.0], [5.0]]]),
+        radar_batch=torch.tensor([[[2.0], [4.0], [6.0]]]),
+        modality_temporal_mask=torch.tensor([[[1, 0], [1, 0], [0, 0]]], dtype=torch.bool),
+        missing_mask=torch.tensor([[True, True]]),
+    )
+
+    weights = output["reliability_fusion_weights"]
+    assert output["reliability_fusion_mode"] == "reliability_mean"
+    assert torch.allclose(weights.sum(dim=1), torch.ones(1))
+    assert torch.allclose(weights[0, 1], torch.tensor(0.0))
+    assert torch.is_tensor(output["router_gate_logits"])
+    assert torch.is_tensor(output["supervised_router_gate_weights"])
+
+    result = u_mask_beam_jepa_loss(output, torch.tensor([[0]]), router_oracle_weight=0.0)
+    result["loss"].backward()
+    assert torch.isfinite(result["loss"])
+
+
+def test_masked_attention_excludes_invalid_temporal_cells_and_has_query_gradient() -> None:
+    config = _model_config()
+    config["temporal_pooling"] = {"enabled": True, "type": "masked_attention"}
+    model = MODELS.build(config)
+    assert model.temporal_attention_query is not None
+    with torch.no_grad():
+        model.temporal_attention_query.zero_()
+
+    mask = torch.tensor([[[1, 1], [1, 0], [0, 0]]], dtype=torch.bool)
+    output = model(
+        image_batch=torch.tensor([[[1.0], [3.0], [5.0]]]),
+        radar_batch=torch.tensor([[[2.0], [4.0], [6.0]]]),
+        modality_temporal_mask=mask,
+        missing_mask=torch.tensor([[True, True]]),
+    )
+
+    weights = output["temporal_pooling_weights"]
+    assert output["temporal_pooling_type"] == "masked_attention"
+    assert output["temporal_pooling_param_count"] == 4
+    assert torch.equal(weights.masked_select(~mask), torch.zeros(3))
+    assert torch.allclose(weights.sum(dim=1), torch.tensor([[1.0, 1.0]]))
+    output["logits"].sum().backward()
+    assert model.temporal_attention_query.grad is not None
+    assert torch.isfinite(model.temporal_attention_query.grad).all()
+
+    with pytest.raises(ValueError, match="at least one available temporal cell"):
+        model(
+            image_batch=torch.ones(1, 3, 1),
+            radar_batch=torch.ones(1, 3, 1),
+            modality_temporal_mask=torch.zeros(1, 3, 2, dtype=torch.bool),
+            missing_mask=torch.tensor([[True, True]]),
+        )
+
+
+def test_reliability_mean_config_and_temporal_pooling_reject_invalid_variants() -> None:
+    with pytest.raises(ValueError, match="router_oracle_weight=0"):
+        u_mask_beam_jepa_config(
+            {
+                "model": {"primary": {"fusion_type": "reliability_mean"}},
+                "loss": {"u_mask_beam_jepa": {"router_oracle_weight": 0.1}},
+            }
+        )
+
+    config = _model_config()
+    config["fusion_type"] = "unknown"
+    with pytest.raises(ValueError, match="fusion_type"):
+        MODELS.build(config)
+
+    config = _model_config()
+    config["temporal_pooling"] = {"enabled": True, "type": "unknown"}
+    with pytest.raises(ValueError, match="masked_attention"):
+        MODELS.build(config)
+
+
+def test_gps_normalized_feature_jitter_is_training_only_and_recorded() -> None:
+    encoder = GpsFeatureExtractor(
+        n_feature=4,
+        gps_input_size=3,
+        hidden_size=8,
+        dropout=0.0,
+        normalized_feature_jitter_std=0.25,
+    )
+    values = torch.zeros(2, 3, 3)
+    encoder.eval()
+    assert torch.equal(encoder(values), encoder(values))
+    encoder.train()
+    torch.manual_seed(1)
+    jittered = encoder(values)
+    assert not torch.equal(jittered, encoder.eval()(values))
+
+    config = {
+        **_model_config(),
+        "modalities": ["image", "gps"],
+        "gps_input_size": 3,
+        "encoders": {
+            "image": {"type": "u_mask_test_sequence", "output_dim": 4},
+            "gps": {
+                "type": "gps_mlp",
+                "output_dim": 4,
+                "hidden_size": 8,
+                "dropout": 0.0,
+                "normalized_feature_jitter_std": 0.25,
+            },
+        },
+    }
+    metadata = MODELS.build(config).training_strategy_metadata()["gps_encoder"]
+    assert metadata["normalized_feature_jitter_std"] == pytest.approx(0.25)
+    assert metadata["jitter_mode"] == "training_only_normalized_features"
+    with pytest.raises(ValueError, match="non-negative"):
+        GpsFeatureExtractor(n_feature=4, normalized_feature_jitter_std=-0.1)
 
 
 def test_bpa_and_cma_are_separate_t2_ablation_terms() -> None:

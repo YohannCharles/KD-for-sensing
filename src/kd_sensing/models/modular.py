@@ -49,10 +49,17 @@ class GpsMLPEncoder(GpsFeatureExtractor):
         gps_input_size: int = 3,
         hidden_size: int = 64,
         dropout: float = 0.1,
+        normalized_feature_jitter_std: float = 0.0,
         **_: Any,
     ) -> None:
         self.output_dim = _resolve_dim(output_dim, feature_size, d_model)
-        super().__init__(self.output_dim, gps_input_size=gps_input_size, hidden_size=hidden_size, dropout=dropout)
+        super().__init__(
+            self.output_dim,
+            gps_input_size=gps_input_size,
+            hidden_size=hidden_size,
+            dropout=dropout,
+            normalized_feature_jitter_std=normalized_feature_jitter_std,
+        )
 
 
 @ENCODERS.register("lidar_cnn")

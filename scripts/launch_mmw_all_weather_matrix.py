@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -19,12 +20,36 @@ METHODS = ("S1", "T2", "amber_full", "rmbp_mm")
 T2_ABLATION_METHODS = ("T2-NoBPA", "T2-BPA2CMA", "T2-Linear", "T2-CLS", "T2-CLS-CMA")
 ALL_METHODS = (*METHODS, *T2_ABLATION_METHODS)
 T2_BASE_CONFIG = "configs/mmw/t2.yaml"
+UMASK_MAINLINE_METHODS = ("S1", "T2")
 METHOD_BASES = {
     "S1": "configs/mmw/s1.yaml",
     "T2": T2_BASE_CONFIG,
     "amber_full": "configs/mmw/amber_full.yaml",
     "rmbp_mm": "configs/mmw/rmbp_mm.yaml",
     **{method: T2_BASE_CONFIG for method in T2_ABLATION_METHODS},
+}
+UMASK_TRAINING_PROFILES = {
+    "legacy_h0_v1": {
+        "training": {
+            "optimizer": {"type": "adam"},
+            "lr": 5.0e-4,
+            "weight_decay": 1.0e-4,
+        },
+        "scheduler": {"type": "none"},
+    },
+    "umask_h4_v1": {
+        "training": {
+            "optimizer": {"type": "adamw"},
+            "lr": 5.0e-4,
+            "weight_decay": 3.0e-4,
+        },
+        "scheduler": {
+            "type": "cosine_warm_restarts",
+            "T_0": 40,
+            "T_mult": 1,
+            "eta_min": 1.0e-6,
+        },
+    },
 }
 WEATHERS = ("sunny", "rainy", "foggy")
 SCENES = (
@@ -152,6 +177,55 @@ def _apply_t2_ablation(payload: dict[str, Any], method: str) -> None:
         )
 
 
+def default_umask_training_profile(method: str) -> str | None:
+    if method in UMASK_MAINLINE_METHODS:
+        return "umask_h4_v1"
+    if method in T2_ABLATION_METHODS:
+        return "legacy_h0_v1"
+    return None
+
+
+def _profile_sha256(profile_id: str, canonical_values: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {"id": profile_id, "canonical_values": canonical_values},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _apply_umask_training_profile(
+    payload: dict[str, Any],
+    *,
+    method: str,
+    profile_id: str | None,
+) -> dict[str, Any] | None:
+    is_umask_method = method in {*UMASK_MAINLINE_METHODS, *T2_ABLATION_METHODS}
+    if not is_umask_method:
+        if profile_id is not None:
+            raise ValueError(f"{method} does not accept a U-Mask training profile.")
+        return None
+    if profile_id is None:
+        raise ValueError(f"{method} requires an explicit U-Mask training profile.")
+    if method in T2_ABLATION_METHODS and profile_id != "legacy_h0_v1":
+        raise ValueError(f"{method} must use the legacy_h0_v1 U-Mask training profile.")
+    try:
+        canonical_values = deepcopy(UMASK_TRAINING_PROFILES[profile_id])
+    except KeyError as exc:
+        supported = ", ".join(sorted(UMASK_TRAINING_PROFILES))
+        raise ValueError(f"Unknown U-Mask training profile {profile_id!r}; supported: {supported}.") from exc
+
+    training_values = canonical_values["training"]
+    payload.setdefault("training", {}).update(deepcopy(training_values))
+    payload["scheduler"] = deepcopy(canonical_values["scheduler"])
+    return {
+        "id": profile_id,
+        "canonical_values": canonical_values,
+        "sha256": _profile_sha256(profile_id, canonical_values),
+    }
+
+
 def domains() -> list[dict[str, str]]:
     result = []
     for weather in WEATHERS:
@@ -262,6 +336,7 @@ def build_config(
     smoke: bool,
     epochs: int,
     batch_size: int,
+    umask_training_profile: str | None = None,
 ) -> dict[str, Any]:
     selected_modalities = MODALITIES
     base_path = ROOT / METHOD_BASES[method]
@@ -320,13 +395,18 @@ def build_config(
             encoder["pretrained"] = False
             encoder["weights"] = None
             encoder["freeze_backbone"] = False
+    training_profile = _apply_umask_training_profile(
+        payload,
+        method=method,
+        profile_id=umask_training_profile,
+    )
+    if training_profile and training_profile["id"] == "umask_h4_v1" and not smoke and int(epochs) != 40:
+        raise ValueError("umask_h4_v1 is fixed to a 40-epoch budget outside smoke runs.")
     training = payload.setdefault("training", {})
     training.update(
         {
             "epochs": epochs,
             "max_epochs": epochs,
-            "lr": 5.0e-4,
-            "weight_decay": 1.0e-4,
             "resume": False,
             "amp": {"enabled": True, "dtype": "float16", "grad_scaler": True},
             "validation": {"interval_epochs": 1 if smoke else epochs},
@@ -334,7 +414,6 @@ def build_config(
             "cudnn_benchmark": True,
         }
     )
-    training.pop("optimizer", None)
     temporal = payload.get("temporal_missing")
     if not isinstance(temporal, dict):
         raise ValueError(f"Base config for {method} must define temporal_missing.")
@@ -360,20 +439,27 @@ def build_config(
         "progress": {"enabled": False},
         "tensorboard": {"enabled": False},
     }
-    payload["mmw_all_weather_protocol"] = {
-        "split_tag": SPLIT_TAG,
-        "screening_role": "local_validation",
-        "checkpoint_policy": "fixed_epoch_last_pth",
-        "domain_macro_primary": True,
-        "weather_label_used_as_input": False,
-        "enabled_modalities": list(selected_modalities),
-        "gps_feature_mode": "relative_polar",
-        "gps_angle_frame": "world",
-        "baseline_fidelity": deepcopy(BASELINE_FIDELITY.get(method, {"reproduction_scope": "project_mainline"})),
-        "seed": int(seed),
-    }
+    protocol = payload.setdefault("mmw_all_weather_protocol", {})
+    protocol.update(
+        {
+            "split_tag": SPLIT_TAG,
+            "screening_role": "local_validation",
+            "checkpoint_policy": "fixed_epoch_last_pth",
+            "domain_macro_primary": True,
+            "weather_label_used_as_input": False,
+            "enabled_modalities": list(selected_modalities),
+            "gps_feature_mode": "relative_polar",
+            "gps_angle_frame": "world",
+            "baseline_fidelity": deepcopy(BASELINE_FIDELITY.get(method, {"reproduction_scope": "project_mainline"})),
+            "seed": int(seed),
+        }
+    )
+    if training_profile is not None:
+        protocol["training_profile"] = training_profile
+    else:
+        protocol.pop("training_profile", None)
     if method in T2_ABLATION_PROTOCOL:
-        payload["mmw_all_weather_protocol"]["t2_ablation"] = {
+        protocol["t2_ablation"] = {
             "protocol": "mmw_t2_bpa_cma_ablation_v1",
             "paper_equivalent": False,
             "cma_scope": "pooled_feature_objective_analogue_not_full_amber_class_former",
@@ -495,6 +581,7 @@ def main() -> int:
             smoke=args.smoke,
             epochs=epochs,
             batch_size=args.batch_size,
+            umask_training_profile=default_umask_training_profile(method),
         )
         job["config_path"].write_text(
             yaml.safe_dump(

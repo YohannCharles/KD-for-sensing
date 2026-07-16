@@ -35,6 +35,12 @@ def test_t2_and_s1_only_differ_in_superset_consistency():
     assert s1["loss"]["u_mask_beam_jepa"]["superset_consistency"]["enabled"] is False
     assert t2["temporal_missing"]["preserve_unmasked_for_superset"] is True
     assert s1["temporal_missing"]["preserve_unmasked_for_superset"] is False
+    assert t2["training"]["weight_decay"] == 1.0e-4
+    assert s1["training"]["weight_decay"] == 1.0e-4
+    assert t2["scheduler"] == {"type": "none"}
+    assert s1["scheduler"] == {"type": "none"}
+    assert "training_profile" not in t2["mmw_all_weather_protocol"]
+    assert "training_profile" not in s1["mmw_all_weather_protocol"]
 
 
 def test_tracked_deepsense6g_t2_recipe_loads_without_runtime_input():

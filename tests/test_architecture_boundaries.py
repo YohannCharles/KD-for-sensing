@@ -16,6 +16,7 @@ RETAINED_SCRIPTS = {
     "analyze_mmw_fused_feature_geometry.py",
     "eval_mmw_all_weather_matrix.py",
     "launch_mmw_all_weather_matrix.py",
+    "launch_mmw_t2_design_screening.py",
     "launch_mmw_t2_hyperparameter_screening.py",
     "run_mmw_all_weather_eval_after_training.py",
     "run_mmw_t2_bpa_cma_ablation_after_training.py",

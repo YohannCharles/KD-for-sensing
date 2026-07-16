@@ -24,7 +24,7 @@ def _masked_softmax(logits: torch.Tensor, available: torch.Tensor) -> torch.Tens
 
 @MODELS.register("u_mask_beam_jepa")
 class UMaskBeamJEPA(nn.Module):
-    """T2/S1 temporal masked-mean model with a supervised modality router."""
+    """T2/S1 temporal masked-pooling model with a supervised modality router."""
 
     supports_modality_kwargs = True
     supports_force_modality_mask = True
@@ -72,8 +72,8 @@ class UMaskBeamJEPA(nn.Module):
 
         if self.d_model <= 0 or self.num_classes <= 0 or self.num_pred <= 0:
             raise ValueError("d_model, num_classes, and num_pred must be positive.")
-        if self.fusion_type != "supervised_router":
-            raise ValueError("T2 only supports fusion_type='supervised_router'.")
+        if self.fusion_type not in {"supervised_router", "reliability_mean"}:
+            raise ValueError("T2 fusion_type must be 'supervised_router' or 'reliability_mean'.")
         if self.head_type not in {"prototype", "classifier"}:
             raise ValueError("T2 head_type must be 'prototype' or 'classifier'.")
 
@@ -111,6 +111,10 @@ class UMaskBeamJEPA(nn.Module):
             nn.Linear(self.d_model, self.num_classes),
         )
         self.prototype_bank = BeamPrototypeBank(self.d_model, self.num_classes, temperature=float(beam_proto_temperature))
+        self.temporal_attention_query: nn.Parameter | None = None
+        if self.temporal_pooling["type"] == "masked_attention":
+            self.temporal_attention_query = nn.Parameter(torch.empty(self.d_model))
+            nn.init.normal_(self.temporal_attention_query, std=self.d_model**-0.5)
 
         self.router_feature_names = _router_feature_names(
             reliability=self.router_use_reliability_features,
@@ -161,7 +165,7 @@ class UMaskBeamJEPA(nn.Module):
             latent_sequence,
         )
         cell_mask = self._resolve_temporal_mask(latent_sequence, available, temporal_mask, modality_temporal_mask)
-        latent = _masked_mean(latent_sequence, cell_mask)
+        latent, temporal_pooling_weights = self._pool_temporal_sequence(latent_sequence, cell_mask)
         reliability = torch.stack(
             [torch.sigmoid(self.reliability_heads[name](latent[:, index])) for index, name in enumerate(self.modalities)],
             dim=1,
@@ -176,9 +180,14 @@ class UMaskBeamJEPA(nn.Module):
         if self.router_pattern_bias is not None:
             router_logits = router_logits + self.router_pattern_bias(available.to(dtype=latent.dtype))
         router_weights = _masked_softmax(router_logits, available)
-        fused_features = (router_weights.unsqueeze(-1) * latent).sum(dim=1)
-        fused_logits = (router_weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
-        return {
+        fusion_weights = (
+            router_weights
+            if self.fusion_type == "supervised_router"
+            else _reliability_mean_weights(reliability, cell_mask)
+        )
+        fused_features = (fusion_weights.unsqueeze(-1) * latent).sum(dim=1)
+        fused_logits = (fusion_weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
+        output = {
             "logits": fused_logits.unsqueeze(1).expand(-1, self.num_pred, -1),
             "input_features": latent,
             "output_features": fused_features,
@@ -187,8 +196,8 @@ class UMaskBeamJEPA(nn.Module):
             "available_modalities": available,
             "modality_temporal_mask": cell_mask,
             "temporal_mask": cell_mask.any(dim=2),
-            "temporal_pooling_type": "masked_mean",
-            "temporal_pooling_param_count": 0,
+            "temporal_pooling_type": self.temporal_pooling["type"],
+            "temporal_pooling_param_count": self._temporal_pooling_param_count(),
             "modality_reliability": reliability,
             "global_reliability": reliability.squeeze(-1).sum(dim=1) / available.sum(dim=1).clamp_min(1),
             "unimodal_logits": unimodal_logits,
@@ -198,10 +207,13 @@ class UMaskBeamJEPA(nn.Module):
             "supervised_router_gate_weights": router_weights,
             "supervised_router_reliability_features": router_features,
             "supervised_router_feature_names": self.router_feature_names,
-            "reliability_fusion_mode": "supervised_router",
-            "reliability_fusion_weights": router_weights,
+            "reliability_fusion_mode": self.fusion_type,
+            "reliability_fusion_weights": fusion_weights,
             "metadata": self.training_strategy_metadata(),
         }
+        if temporal_pooling_weights is not None:
+            output["temporal_pooling_weights"] = temporal_pooling_weights
+        return output
 
     def training_strategy_metadata(self) -> dict[str, Any]:
         total_params = sum(parameter.numel() for parameter in self.parameters())
@@ -217,11 +229,44 @@ class UMaskBeamJEPA(nn.Module):
             "head_type": self.head_type,
             "router_feature_names": list(self.router_feature_names),
             "temporal_pooling": dict(self.temporal_pooling),
-            "temporal_pooling_type": "masked_mean",
-            "temporal_pooling_param_count": 0,
+            "temporal_pooling_type": self.temporal_pooling["type"],
+            "temporal_pooling_param_count": self._temporal_pooling_param_count(),
             "encoder_configs": self.encoder_configs,
+            "gps_encoder": self._gps_encoder_metadata(),
             "total_params": total_params,
             "trainable_params": trainable_params,
+        }
+
+    def _pool_temporal_sequence(
+        self,
+        sequence: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if self.temporal_pooling["type"] == "masked_mean":
+            return _masked_mean(sequence, mask), None
+        if self.temporal_attention_query is None:
+            raise RuntimeError("masked_attention pooling requires a temporal attention query.")
+        return _masked_attention(sequence, mask, self.temporal_attention_query)
+
+    def _temporal_pooling_param_count(self) -> int:
+        return 0 if self.temporal_attention_query is None else int(self.temporal_attention_query.numel())
+
+    def _gps_encoder_metadata(self) -> dict[str, Any]:
+        if "gps" not in self.encoders:
+            return {"enabled": False}
+        config = self.encoder_configs["gps"]
+        encoder = self.encoders["gps"]
+        jitter_std = float(
+            getattr(encoder, "normalized_feature_jitter_std", config.get("normalized_feature_jitter_std", 0.0))
+        )
+        return {
+            "enabled": True,
+            "type": str(config.get("type", "")),
+            "output_dim": int(getattr(encoder, "output_dim", config.get("output_dim", self.d_model))),
+            "hidden_size": config.get("hidden_size"),
+            "dropout": config.get("dropout"),
+            "normalized_feature_jitter_std": jitter_std,
+            "jitter_mode": "training_only_normalized_features" if jitter_std else "disabled",
         }
 
     def _encode_sequence(self, modality: str, value: torch.Tensor | None) -> torch.Tensor:
@@ -315,11 +360,35 @@ def _masked_mean(sequence: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (sequence * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
 
 
+def _masked_attention(
+    sequence: torch.Tensor,
+    mask: torch.Tensor,
+    query: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    scores = torch.einsum("btmd,d->btm", sequence, query) * (sequence.shape[-1] ** -0.5)
+    valid = mask.to(device=sequence.device, dtype=scores.dtype)
+    weights = torch.softmax(scores.masked_fill(~mask, torch.finfo(scores.dtype).min), dim=1) * valid
+    weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+    return (sequence * weights.unsqueeze(-1)).sum(dim=1), weights
+
+
+def _reliability_mean_weights(reliability: torch.Tensor, cell_mask: torch.Tensor) -> torch.Tensor:
+    available = cell_mask.any(dim=1)
+    scores = reliability.squeeze(-1) * available.to(dtype=reliability.dtype)
+    total = scores.sum(dim=1, keepdim=True)
+    fallback = available.to(dtype=reliability.dtype)
+    fallback = fallback / fallback.sum(dim=1, keepdim=True).clamp_min(1.0)
+    return torch.where(total.gt(0), scores / total.clamp_min(torch.finfo(scores.dtype).tiny), fallback)
+
+
 def _temporal_pooling_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:
     config = dict(raw) if isinstance(raw, dict) else {"enabled": bool(raw)}
-    if not bool(config.get("enabled", False)) or str(config.get("type", "masked_mean")).strip().lower() != "masked_mean":
-        raise ValueError("T2 requires temporal_pooling.enabled=true and temporal_pooling.type='masked_mean'.")
-    return {"enabled": True, "type": "masked_mean"}
+    pooling_type = str(config.get("type", "masked_mean")).strip().lower()
+    if not bool(config.get("enabled", False)) or pooling_type not in {"masked_mean", "masked_attention"}:
+        raise ValueError(
+            "T2 requires temporal_pooling.enabled=true and temporal_pooling.type='masked_mean' or 'masked_attention'."
+        )
+    return {"enabled": True, "type": pooling_type}
 
 
 def _router_feature_names(

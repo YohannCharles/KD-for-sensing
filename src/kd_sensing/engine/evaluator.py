@@ -31,6 +31,7 @@ from kd_sensing.engine.validator import validate
 from kd_sensing.utils.artifact_registry import (
     resolve_evaluation_checkpoint,
     validate_evaluation_gps_checkpoint_provenance,
+    validate_evaluation_training_profile_provenance,
 )
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.seed import set_seed
@@ -60,6 +61,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             f"Resolution: {checkpoint_resolution.to_dict()}"
         )
     validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_resolution.metadata)
+    validate_evaluation_training_profile_provenance(cfg, checkpoint_resolution.metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_resolution.metadata)
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}

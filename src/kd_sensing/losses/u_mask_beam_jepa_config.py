@@ -12,6 +12,9 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
     head_type = str(primary.get("head_type", "prototype")).strip().lower()
     if head_type not in {"prototype", "classifier"}:
         raise ValueError("T2 head_type must be prototype or classifier.")
+    fusion_type = str(primary.get("fusion_type", "supervised_router")).strip().lower()
+    if fusion_type not in {"supervised_router", "reliability_mean"}:
+        raise ValueError("T2 fusion_type must be supervised_router or reliability_mean.")
     use_bpa = bool(raw.get("use_beam_prototype_alignment", False))
     lambda_proto = float(raw.get("lambda_proto", 0.0))
     lambda_modality_proto = float(raw.get("lambda_modality_proto", 0.0))
@@ -31,6 +34,9 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
     router_supervision = str(raw.get("router_supervision", "oracle")).strip().lower()
     if router_supervision != "oracle":
         raise ValueError("T2 supervised_router requires router_supervision='oracle'.")
+    router_oracle_weight = float(raw.get("router_oracle_weight", 0.1))
+    if fusion_type == "reliability_mean" and router_oracle_weight != 0.0:
+        raise ValueError("reliability_mean fusion requires router_oracle_weight=0.")
     superset = _resolve_superset(raw.get("superset_consistency"))
     missing_mask = raw.get("missing_mask", {"p_missing": 0.25, "ensure_at_least_one": True})
     if not isinstance(missing_mask, dict):
@@ -39,6 +45,7 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "enabled": bool(raw.get("enabled", False)),
         "head_type": head_type,
+        "fusion_type": fusion_type,
         "use_beam_prototype_alignment": use_bpa,
         "lambda_proto": lambda_proto,
         "lambda_modality_proto": lambda_modality_proto,
@@ -51,7 +58,7 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "superset_consistency": superset,
         "missing_mask": dict(missing_mask),
         "router_supervision": router_supervision,
-        "router_oracle_weight": float(raw.get("router_oracle_weight", 0.1)),
+        "router_oracle_weight": router_oracle_weight,
         "circular_beam_distance": router_circular,
     }
 

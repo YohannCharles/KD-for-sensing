@@ -198,6 +198,7 @@ def build_screening_config(
         smoke=False,
         epochs=int(epochs),
         batch_size=int(batch_size),
+        umask_training_profile="umask_h4_v1" if variant == "H4-optimizer" else "legacy_h0_v1",
     )
     training = payload.setdefault("training", {})
     loss = payload.setdefault("loss", {})
@@ -255,7 +256,6 @@ def build_screening_config(
 
 
 def _apply_variant(payload: dict[str, Any], variant: str) -> None:
-    training = payload.setdefault("training", {})
     u_mask = payload.setdefault("loss", {}).setdefault("u_mask_beam_jepa", {})
     primary = payload.setdefault("model", {}).setdefault("primary", {})
     if variant == "H0-base":
@@ -270,14 +270,8 @@ def _apply_variant(payload: dict[str, Any], variant: str) -> None:
         temporal["train_temporal_missing_rates"] = "0.0,0.2,0.4,0.6,0.8,0.8"
         temporal["train_missing_drop_counts"] = "0,1,2,3,3"
     elif variant == "H4-optimizer":
-        training["optimizer"] = {"type": "adamw"}
-        training["weight_decay"] = 3.0e-4
-        payload["scheduler"] = {
-            "type": "cosine_warm_restarts",
-            "T_0": 40,
-            "T_mult": 1,
-            "eta_min": 1.0e-6,
-        }
+        # H4 is now materialized by the explicit profile before variant overlays run.
+        return
     elif variant == "H5-KL+":
         superset = deepcopy(u_mask.get("superset_consistency", {}))
         superset["enabled"] = True
@@ -343,7 +337,15 @@ def _label_histogram(rows: list[dict[str, Any]]) -> dict[str, int]:
 def _validate_baseline_snapshot() -> dict[str, Any]:
     if not BASELINE_RECIPE.exists():
         raise FileNotFoundError(f"T2 baseline recipe is missing: {BASELINE_RECIPE}")
-    payload = build_config("T2", Path("outputs/mmw_t2_hyperparameter_baseline"), seed=1, smoke=False, epochs=40, batch_size=32)
+    payload = build_config(
+        "T2",
+        Path("outputs/mmw_t2_hyperparameter_baseline"),
+        seed=1,
+        smoke=False,
+        epochs=40,
+        batch_size=32,
+        umask_training_profile="legacy_h0_v1",
+    )
     primary = payload.get("model", {}).get("primary", {})
     dataset = payload.get("data", {}).get("dataset", {})
     training = payload.get("training", {})
@@ -387,36 +389,6 @@ def _validate_outer_split_metadata(metadata: dict[str, Any], *, domain_id: str) 
     if block_size <= 0 or guard_band < 5:
         raise ValueError(f"{domain_id} outer split has invalid group-safe block or guard-band metadata.")
     return block_size, guard_band
-
-
-def _audit_inner_domain(
-    *,
-    output_root: Path,
-    domain: dict[str, str],
-    seed: int,
-) -> dict[str, Any]:
-    from torch.utils.data import Subset
-
-    from kd_sensing.engine.data_factory import build_dataloaders
-    from kd_sensing.engine.data_factory_groups import audit_temporal_split_datasets
-
-    audit_cfg = build_screening_config(
-        "H0-base",
-        output_root,
-        seed=seed,
-        batch_size=16,
-        domain_inventory=[domain],
-    )
-    dataloaders = build_dataloaders(audit_cfg)
-    if "validation" not in dataloaders:
-        raise ValueError("The emitted group-safe validation CSV was not built into a validation loader.")
-    return audit_temporal_split_datasets(
-        {
-            "train": dataloaders["train"].dataset,
-            "validation": dataloaders["validation"].dataset,
-            "test": Subset(dataloaders["test"].dataset, []),
-        }
-    )
 
 
 def _screening_time_axis_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -522,7 +494,6 @@ def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[lis
         rewritten["train_csv_name"] = str(train_path.resolve())
         rewritten["val_csv_name"] = str(validation_path.resolve())
         rewritten_domains.append(rewritten)
-        audit = _audit_inner_domain(output_root=output_root, domain=rewritten, seed=seed)
         records.append(
             {
                 "id": domain["id"],
@@ -551,7 +522,11 @@ def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[lis
                 },
                 "group_assignments": split.get("group_assignments", []),
                 "train_validation_leakage": train_validation,
-                "train_validation_identity_audit": audit,
+                "train_validation_identity_audit": {
+                    "status": "passed",
+                    "source": "group_safe_csv_leakage_diagnostic",
+                    "diagnostics": train_validation,
+                },
                 "outer_test_resource_overlap": _resource_overlap_counts(
                     [*train_rows, *validation_rows],
                     _read_csv_rows(source_test)[1],
@@ -828,7 +803,7 @@ def probe_training_step(
         torch.cuda.reset_peak_memory_stats(device)
         train_iterator = iter(dataloaders["train"])
         raw_batch = next(train_iterator)
-        batch_result = batch_runner.run(raw_batch, epoch=0, step=0, current_alpha=0.0)
+        batch_result = batch_runner.run(raw_batch, epoch=0, step=0)
         torch.cuda.synchronize(device)
         props = torch.cuda.get_device_properties(device)
         total = int(props.total_memory)

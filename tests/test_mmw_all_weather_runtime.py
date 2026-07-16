@@ -28,16 +28,70 @@ def test_all_weather_launcher_uses_the_four_tracked_recipes(monkeypatch: pytest.
 
     assert launcher.METHODS == ("S1", "T2", "amber_full", "rmbp_mm")
     assert all(path.startswith("configs/mmw/") for path in launcher.METHOD_BASES.values())
-    cfg = launcher.build_config("T2", Path("outputs/test"), smoke=False, epochs=40, batch_size=32)
+    cfg = launcher.build_config(
+        "T2",
+        Path("outputs/test"),
+        smoke=False,
+        epochs=40,
+        batch_size=32,
+        umask_training_profile="umask_h4_v1",
+    )
 
     assert cfg["data"]["dataset"]["type"] == "mmw"
     assert cfg["data"]["dataset"]["gps_feature_mode"] == "relative_polar"
     assert cfg["model"]["primary"]["temporal_pooling"] == {"enabled": True, "type": "masked_mean"}
+    assert cfg["training"]["optimizer"] == {"type": "adamw"}
+    assert cfg["training"]["lr"] == 5.0e-4
+    assert cfg["training"]["weight_decay"] == 3.0e-4
+    assert cfg["scheduler"] == {"type": "cosine_warm_restarts", "T_0": 40, "T_mult": 1, "eta_min": 1.0e-6}
+    profile = cfg["mmw_all_weather_protocol"]["training_profile"]
+    assert profile["id"] == "umask_h4_v1"
+    assert profile["canonical_values"] == launcher.UMASK_TRAINING_PROFILES["umask_h4_v1"]
+    assert profile["sha256"] == launcher._profile_sha256(profile["id"], profile["canonical_values"])
+
+
+def test_umask_profiles_are_explicit_and_do_not_change_baselines(monkeypatch: pytest.MonkeyPatch) -> None:
+    launcher = _load_script("launch_mmw_all_weather_matrix.py", monkeypatch)
+    kwargs = {"smoke": False, "epochs": 40, "batch_size": 32}
+
+    assert launcher.default_umask_training_profile("T2") == "umask_h4_v1"
+    assert launcher.default_umask_training_profile("S1") == "umask_h4_v1"
+    assert launcher.default_umask_training_profile("T2-NoBPA") == "legacy_h0_v1"
+    assert launcher.default_umask_training_profile("amber_full") is None
+
+    s1 = launcher.build_config("S1", Path("outputs/profile"), umask_training_profile="umask_h4_v1", **kwargs)
+    ablation = launcher.build_config(
+        "T2-NoBPA",
+        Path("outputs/profile"),
+        umask_training_profile="legacy_h0_v1",
+        **kwargs,
+    )
+    amber = launcher.build_config("amber_full", Path("outputs/profile"), umask_training_profile=None, **kwargs)
+
+    assert s1["mmw_all_weather_protocol"]["training_profile"]["id"] == "umask_h4_v1"
+    assert s1["training"]["optimizer"] == {"type": "adamw"}
+    assert ablation["mmw_all_weather_protocol"]["training_profile"]["id"] == "legacy_h0_v1"
+    assert ablation["training"]["optimizer"] == {"type": "adam"}
+    assert ablation["training"]["weight_decay"] == 1.0e-4
+    assert ablation["scheduler"] == {"type": "none"}
+    assert "training_profile" not in amber["mmw_all_weather_protocol"]
+    assert amber["training"].get("optimizer", {"type": "adam"}) == {"type": "adam"}
+    assert amber["training"]["weight_decay"] == 1.0e-4
+    assert amber["scheduler"] == {"type": "none"}
+
+    with pytest.raises(ValueError, match="requires an explicit U-Mask training profile"):
+        launcher.build_config("T2", Path("outputs/profile"), umask_training_profile=None, **kwargs)
+    with pytest.raises(ValueError, match="does not accept a U-Mask training profile"):
+        launcher.build_config("amber_full", Path("outputs/profile"), umask_training_profile="umask_h4_v1", **kwargs)
+    with pytest.raises(ValueError, match="must use the legacy_h0_v1"):
+        launcher.build_config("T2-NoBPA", Path("outputs/profile"), umask_training_profile="umask_h4_v1", **kwargs)
+    with pytest.raises(ValueError, match="fixed to a 40-epoch budget"):
+        launcher.build_config("T2", Path("outputs/profile"), epochs=39, batch_size=32, smoke=False, umask_training_profile="umask_h4_v1")
 
 
 def test_t2_bpa_cma_ablation_configs_are_explicit_and_matched(monkeypatch: pytest.MonkeyPatch) -> None:
     launcher = _load_script("launch_mmw_all_weather_matrix.py", monkeypatch)
-    kwargs = {"smoke": False, "epochs": 40, "batch_size": 32}
+    kwargs = {"smoke": False, "epochs": 40, "batch_size": 32, "umask_training_profile": "legacy_h0_v1"}
     configs = {method: launcher.build_config(method, Path("outputs/ablation"), **kwargs) for method in launcher.T2_ABLATION_METHODS}
 
     no_bpa = u_mask_beam_jepa_config(configs["T2-NoBPA"])
@@ -54,7 +108,7 @@ def test_t2_bpa_cma_ablation_configs_are_explicit_and_matched(monkeypatch: pytes
 
 def test_multiseed_launcher_changes_only_seed_bound_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     launcher = _load_script("launch_mmw_all_weather_matrix.py", monkeypatch)
-    kwargs = {"smoke": False, "epochs": 40, "batch_size": 32}
+    kwargs = {"smoke": False, "epochs": 40, "batch_size": 32, "umask_training_profile": "umask_h4_v1"}
     seed1 = launcher.build_config("T2", Path("outputs/matrix"), seed=1, **kwargs)
     seed2 = launcher.build_config("T2", Path("outputs/matrix"), seed=2, **kwargs)
 

@@ -35,6 +35,10 @@ def test_screening_variants_keep_t2_protocol_and_apply_only_named_overrides(monk
     assert "model_selection" not in base["training"]
     assert base["training"]["validation"]["interval_epochs"] == 5
     assert base["mmw_t2_hyperparameter_screening"]["development_only"] is True
+    assert base["mmw_all_weather_protocol"]["training_profile"]["id"] == "legacy_h0_v1"
+    assert base["training"]["optimizer"] == {"type": "adam"}
+    assert base["training"]["weight_decay"] == 1.0e-4
+    assert base["scheduler"] == {"type": "none"}
     assert bpa["loss"]["u_mask_beam_jepa"]["lambda_proto"] == 0.25
     assert bpa["loss"]["u_mask_beam_jepa"]["lambda_modality_proto"] == 0.15
     assert bpa["temporal_missing"] == base["temporal_missing"]
@@ -42,8 +46,12 @@ def test_screening_variants_keep_t2_protocol_and_apply_only_named_overrides(monk
     assert sharp["model"]["primary"]["beam_proto_temperature"] == 0.08
     assert tail["temporal_missing"]["train_temporal_missing_rates"].endswith("0.8,0.8")
     assert tail["temporal_missing"]["train_missing_drop_counts"].endswith("3,3")
+    profile = optimizer["mmw_all_weather_protocol"]["training_profile"]
+    assert profile["id"] == "umask_h4_v1"
+    assert profile["sha256"]
     assert optimizer["training"]["optimizer"]["type"] == "adamw"
-    assert optimizer["scheduler"]["T_0"] == 40
+    assert optimizer["training"]["weight_decay"] == 3.0e-4
+    assert optimizer["scheduler"] == {"type": "cosine_warm_restarts", "T_0": 40, "T_mult": 1, "eta_min": 1.0e-6}
     assert kl["loss"]["u_mask_beam_jepa"]["superset_consistency"]["kl_weight"] == 0.5
 
 
