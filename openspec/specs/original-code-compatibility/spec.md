@@ -2,13 +2,13 @@
 
 ## Purpose
 
-明确 current MMW surface 不保留旧代码兼容层，并让 checkpoint resume、配置加载和 package import 在遇到过时输入时以普通、明确的错误失败。
+明确 current MMW T2/baseline 与受限 DeepSense6G T2 surface 不保留旧代码兼容层，并让 checkpoint resume、配置加载和 package import 在遇到过时输入时以普通、明确的错误失败。
 
 ## Requirements
 
 ### Requirement: 恢复训练
 
-current T2/baseline resume MUST 只接受 current schema 的 MMW checkpoint，并在 checkpoint 不存在或必要状态缺失时 fail closed；系统 MUST 不用旧字段、旧路径或 alias 伪造恢复。
+current T2/baseline resume MUST 只接受与当前 MMW 或受限 DeepSense6G recipe 身份匹配的 current-schema checkpoint，并在 checkpoint 不存在或必要状态缺失时 fail closed；系统 MUST 不用旧字段、旧路径或 alias 伪造恢复。
 
 #### Scenario: current checkpoint resume
 

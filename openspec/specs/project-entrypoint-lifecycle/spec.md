@@ -2,13 +2,13 @@
 
 ## Purpose
 
-定义 MMW T2/baseline 的 public CLI 与本地 helper 边界，防止研究脚本、结果汇总或历史工具重新扩展为额外 package console command。
+定义 MMW T2/baseline 与受限 DeepSense6G T2 的 public CLI 与本地 helper 边界，防止研究脚本、结果汇总或历史工具重新扩展为额外 package console command。
 
 ## Requirements
 
 ### Requirement: Public CLI 仅保留训练、评估和预处理
 
-`pyproject.toml` MUST 只声明 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。它们 MUST 是薄 parser/config glue，并调用包内 owner。
+`pyproject.toml` MUST 只声明 `kd-sensing-train`、`kd-sensing-evaluate` 和 `kd-sensing-preprocess`。它们 MUST 是薄 parser/config glue，并调用包内 owner；训练和评估入口 MUST 能消费 current MMW 或 DeepSense6G canonical config，且不得因支持 DeepSense6G 新增旧入口。
 
 #### Scenario: 安装后检查入口
 

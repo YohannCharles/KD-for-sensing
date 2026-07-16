@@ -37,6 +37,16 @@ def test_t2_and_s1_only_differ_in_superset_consistency():
     assert s1["temporal_missing"]["preserve_unmasked_for_superset"] is False
 
 
+def test_tracked_deepsense6g_t2_recipe_loads_without_runtime_input():
+    cfg = load_config(ROOT / "configs/deepsense6g/t2.yaml")
+
+    assert cfg["experiment"]["name"] == "T2"
+    assert cfg["data"]["dataset"]["type"] == "deepsense6g"
+    assert cfg["data"]["dataset"]["scene"] == 31
+    assert cfg["model"]["primary"]["type"] == "u_mask_beam_jepa"
+    assert cfg["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar"]
+
+
 def test_recipe_base_and_cli_overrides_keep_temporal_windows_in_sync():
     cfg = load_config(
         ROOT / "configs/mmw/t2.yaml",

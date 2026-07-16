@@ -47,11 +47,11 @@ def load_gps_feature_sequence(
 ) -> np.ndarray:
     normalize_gps_feature_mode(mode)
     if not bs_gps_paths:
-        raise ValueError("MMW GPS features require bs_gps1..bs_gpsN columns.")
+        raise ValueError("Four-modality GPS features require bs_gps1..bs_gpsN columns.")
     ue_paths = gps_paths[-seq_len:]
     bs_paths = bs_gps_paths[-seq_len:]
     if len(ue_paths) != int(seq_len) or len(bs_paths) != int(seq_len):
-        raise ValueError(f"MMW GPS features require {seq_len} UE and BS history paths.")
+        raise ValueError(f"Four-modality GPS features require {seq_len} UE and BS history paths.")
     ue = np.asarray([_cached_coordinates(data_root, path, frame_feature_cache) for path in ue_paths], dtype=np.float64)
     bs = np.asarray([_cached_coordinates(data_root, path, frame_feature_cache) for path in bs_paths], dtype=np.float64)
     if _all_yaml_paths(ue_paths) and _all_yaml_paths(bs_paths):
@@ -109,7 +109,7 @@ def _relative_polar_features(relative_xy: np.ndarray) -> np.ndarray:
 
 
 def latlon_to_utm_xy(lat: float, lon: float) -> tuple[float, float]:
-    """Small local projection used only when an MMW CSV stores lat/lon instead of YAML poses."""
+    """Small local projection used when a four-modality CSV stores lat/lon instead of XY poses."""
     if not (-80.0 <= lat <= 84.0):
         raise ValueError(f"Latitude {lat} is outside the supported UTM range [-80, 84].")
     radius = 6_378_137.0

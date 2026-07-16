@@ -5,7 +5,7 @@ import torch
 
 def normalize_batch(batch: Any) -> dict[str, Any]:
     if not isinstance(batch, dict):
-        raise TypeError(f"MMW training requires a mapping batch, got {type(batch).__name__}.")
+        raise TypeError(f"Four-modality training requires a mapping batch, got {type(batch).__name__}.")
     return batch
 
 
@@ -17,7 +17,7 @@ def prepare_labels(
     non_blocking: bool = False,
 ) -> torch.Tensor:
     if "target_beam" not in batch:
-        raise ValueError("MMW batch is missing target_beam.")
+        raise ValueError("Four-modality batch is missing target_beam.")
     labels = torch.as_tensor(batch["target_beam"], dtype=torch.long).to(device=device, non_blocking=non_blocking)
     if labels.ndim == 1:
         labels = labels.unsqueeze(1)
@@ -39,15 +39,15 @@ def prepare_fusion_inputs(
     gps = _sequence(batch, "gps", seq_length, device, non_blocking)
     lidar = _sequence(batch, "lidar", seq_length, device, non_blocking)
     if image.ndim != 5 or lidar.ndim != 5 or gps.ndim != 3:
-        raise ValueError("MMW image/lidar/gps inputs must have [B,T,C,H,W], [B,T,C,H,W], [B,T,F] shapes.")
+        raise ValueError("Four-modality image/lidar/gps inputs must have [B,T,C,H,W], [B,T,C,H,W], [B,T,F] shapes.")
     if radar_ra.ndim == 4:
         radar_ra = radar_ra.unsqueeze(2)
     if radar_da.ndim == 4:
         radar_da = radar_da.unsqueeze(2)
     if radar_ra.ndim != 5 or radar_da.ndim != 5 or radar_ra.shape != radar_da.shape:
-        raise ValueError("MMW radar RA/DA inputs must share shape [B,T,C,H,W].")
+        raise ValueError("Four-modality radar RA/DA inputs must share shape [B,T,C,H,W].")
     if tuple(radar_ra.shape[-2:]) != (128, 64):
-        raise ValueError("MMW radar maps must have spatial shape [128, 64].")
+        raise ValueError("Four-modality radar maps must have spatial shape [128, 64].")
     inputs: dict[str, Any] = {
         "image_batch": image,
         "radar_batch": torch.cat([radar_ra, radar_da], dim=2),
@@ -70,7 +70,7 @@ def forward_model(model, *, force_modality_mask: torch.Tensor | None = None, **i
 
 def _sequence(batch: dict[str, Any], key: str, seq_length: int, device: torch.device, non_blocking: bool) -> torch.Tensor:
     if key not in batch:
-        raise ValueError(f"MMW batch is missing {key}.")
+        raise ValueError(f"Four-modality batch is missing {key}.")
     value = torch.as_tensor(batch[key]).to(device=device, non_blocking=non_blocking)
     if value.ndim < 3:
         raise ValueError(f"{key} must include batch and time dimensions, got {tuple(value.shape)}.")

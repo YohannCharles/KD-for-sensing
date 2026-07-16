@@ -39,7 +39,12 @@ def dataset_run_metadata(dataset: Any) -> dict[str, Any]:
         return metadata
 
     csv_path = getattr(dataset, "root_csv", None)
+    schema_identity = getattr(dataset, "schema_identity", {})
+    dataset_family = schema_identity.get("dataset_family") if isinstance(schema_identity, dict) else None
     metadata: dict[str, Any] = {
+        "dataset_family": dataset_family,
+        "scene_id": getattr(dataset, "scene_id", None),
+        "scene_slug": getattr(dataset, "scene_slug", None),
         "split": getattr(dataset, "split", None),
         "csv_path": str(csv_path) if csv_path is not None else None,
         "csv_name": Path(csv_path).name if csv_path is not None else None,
@@ -117,6 +122,8 @@ def prediction_setup_metadata(
     num_pred = int(dataset_cfg.get("num_pred", model_cfg.get("num_pred", 0)) or 0)
     temporal_cfg = cfg.get("temporal_missing", {})
     metadata = {
+        "dataset_type": str(dataset_cfg.get("type", "")).strip().lower(),
+        "scene": dataset_cfg.get("scene"),
         "seq_len": seq_len,
         "num_pred": num_pred,
         "enabled_modalities": list(resolve_enabled_modalities(cfg)),

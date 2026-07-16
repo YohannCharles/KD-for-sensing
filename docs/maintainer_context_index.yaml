@@ -1,7 +1,7 @@
 schema_version: 4
 kind: maintainer_context_index
 purpose:
-  summary: 仅记录 MMW T2/baseline 的最小维护路由；不复制源码目录、历史路线或运行配置。
+  summary: 仅记录 MMW T2/baseline 与受限 DeepSense6G T2 的最小维护路由；不复制源码目录、历史路线或运行配置。
 agent_context:
   root: docs/agent_context/README.md
 task_routes:
@@ -24,7 +24,7 @@ task_routes:
       - src/kd_sensing/data/
       - src/kd_sensing/engine/batch.py
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py -q
+      - conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_all_weather_runtime.py -q
   - id: config
     context_path: docs/agent_context/configs.md
     authority_paths:
@@ -33,6 +33,7 @@ task_routes:
     owner_modules:
       - src/kd_sensing/config/
       - configs/mmw/
+      - configs/deepsense6g/
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q
   - id: cli

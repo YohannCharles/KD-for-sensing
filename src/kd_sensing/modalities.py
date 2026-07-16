@@ -1,4 +1,4 @@
-"""Fixed four-sensor contract for the retained MMW workflows."""
+"""Fixed four-sensor contract for the retained MMW and DeepSense6G workflows."""
 
 from dataclasses import dataclass
 

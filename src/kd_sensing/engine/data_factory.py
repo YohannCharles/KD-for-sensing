@@ -19,6 +19,7 @@ from kd_sensing.registries import DATASETS, import_default_components
 
 
 RETAINED_MODALITIES = frozenset(("image", "radar", "gps", "lidar"))
+RETAINED_DATASETS = frozenset(("mmw", "deepsense6g"))
 
 
 def build_dataloader_kwargs(loader_cfg: dict[str, Any], *, split: str) -> dict[str, Any]:
@@ -72,13 +73,15 @@ def has_validation_csv(cfg: dict[str, Any]) -> bool:
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any) -> Any:
     import_default_components()
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
-    if str(dataset_cfg.get("type", "mmw")).strip().lower() != "mmw":
-        raise ValueError("Only data.dataset.type='mmw' is retained.")
+    dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
+    if dataset_type not in RETAINED_DATASETS:
+        raise ValueError(f"Supported data.dataset.type values are {sorted(RETAINED_DATASETS)}, got {dataset_type!r}.")
     enabled_modalities = resolve_enabled_modalities(cfg)
-    retired = sorted(set(enabled_modalities) - RETAINED_MODALITIES)
-    if retired:
-        raise ValueError(f"The retained MMW surface supports only image/radar/gps/lidar, got {retired}.")
-    dataset_cfg.setdefault("data_root", "dataset/MMW/sunny")
+    if set(enabled_modalities) != RETAINED_MODALITIES:
+        raise ValueError(f"The retained data surface requires image/radar/gps/lidar, got {list(enabled_modalities)}.")
+    dataset_cfg["type"] = dataset_type
+    if dataset_type == "mmw":
+        dataset_cfg.setdefault("data_root", "dataset/MMW/sunny")
     dataset_cfg["split"] = split
     dataset_cfg["enabled_modalities"] = list(enabled_modalities)
     dataset_cfg.update(dataset_flags_for_modalities(enabled_modalities))
@@ -131,8 +134,10 @@ def build_split_dataset(
 ) -> Any:
     kwargs = dict(extra_dataset_kwargs)
     kwargs.update(normalization_overrides or {})
-    domains = cfg.get("data", {}).get("dataset", {}).get("domains")
-    return _build_mmw_domain_dataset(cfg, split, **kwargs) if domains is not None else build_dataset(cfg, split, **kwargs)
+    dataset_cfg = cfg.get("data", {}).get("dataset", {})
+    domains = dataset_cfg.get("domains")
+    dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
+    return _build_mmw_domain_dataset(cfg, split, **kwargs) if dataset_type == "mmw" and domains is not None else build_dataset(cfg, split, **kwargs)
 
 
 def build_dataloader(

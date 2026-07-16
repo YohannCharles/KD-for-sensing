@@ -8,13 +8,13 @@
 
 ### Requirement: U-MaskBeamJEPA 仅支持 T2/S1 active branches
 
-模型 MUST 支持 supervised router、prototype/BPA、embedded full-modal teacher CE、same-model temporal superset consistency 以及 active BPA/CMA ablation 消费的 head/fusion controls。模型 MUST 不提供外部 teacher、Gaussian JEPA、full-to-partial KD、legacy fusion 或 temporal-router compatibility fields。
+U-MaskBeamJEPA current contract MUST 只保留 T2/S1 所需的 supervised router、BPA/prototype、embedded full-modal teacher、same-model temporal superset consistency，以及 active BPA/CMA ablation 消费的 head/fusion controls。系统 MUST 删除不服务这些方法的 model、loss、router 与 compatibility fields。
 
-#### Scenario: 构建 T2、S1 或 BPA/CMA ablation
+#### Scenario: T2 active branches 保持可用
 
-- **WHEN** retained recipe 构建 U-Mask model
-- **THEN** forward、loss 与 metadata MUST 提供该 recipe 声明的 active branch
-- **AND** 任何 retained branch MUST 能追溯到 T2/S1 或 active T2 artifact
+- **WHEN** T2、S1 或 BPA/CMA ablation 构建其声明的 head、BPA、CMA、router 和 superset settings
+- **THEN** model forward、loss 和 metadata MUST 保持可用
+- **AND** 任何保留分支 MUST 能追溯到四方法或 active T2 artifact
 
 ### Requirement: 四模态输入与 mask 语义稳定
 

@@ -101,6 +101,7 @@ PREPROCESSORS = Registry("preprocessors")
 def import_default_components() -> None:
     """Import modules that register built-in components."""
 
+    import kd_sensing.data.datasets.deepsense6g  # noqa: F401
     import kd_sensing.data.datasets.mmw  # noqa: F401
     import kd_sensing.losses.beam  # noqa: F401
     import kd_sensing.losses.u_mask_beam_jepa  # noqa: F401

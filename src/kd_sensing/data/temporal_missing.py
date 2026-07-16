@@ -47,7 +47,7 @@ def sample_stratified_modality_temporal_mask(
 ) -> dict[str, Any]:
     names = tuple(str(item) for item in modalities)
     if names != DEFAULT_TEMPORAL_MODALITIES:
-        raise ValueError(f"MMW temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
+        raise ValueError(f"Four-modality temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     steps = int(history_window)
     if steps <= 0:
         raise ValueError("history_window must be positive.")
@@ -70,7 +70,7 @@ def sample_stratified_modality_temporal_mask(
     rate = max(0.0, min(float(fixed_rate if fixed_rate is not None else rng.choice(rates)), 1.0))
     mask_type = str(fixed_mask_type or rng.choice(types)).strip()
     if mask_type not in STRATIFIED_TEMPORAL_MISSING_TYPES:
-        raise ValueError(f"Unsupported MMW temporal mask type {mask_type!r}.")
+        raise ValueError(f"Unsupported four-modality temporal mask type {mask_type!r}.")
     mask = [[True] * len(names) for _ in range(steps)]
     for index in dropped_indices:
         for row in mask:
@@ -108,7 +108,7 @@ def apply_training_temporal_missing(
     batch_size, steps = _batch_time_shape(batch, modalities)
     base = _base_mask(batch, modalities, batch_size, steps)
     if not bool(base.any(dim=(1, 2)).all().item()):
-        raise ValueError("MMW temporal missing requires one source cell per sample.")
+        raise ValueError("Four-modality temporal missing requires one source cell per sample.")
     preserve_superset = bool(temporal.get("preserve_unmasked_for_superset", False))
     original_inputs = _input_tensors(batch, modalities) if preserve_superset else None
     seed = _training_seed(cfg, temporal, epoch=epoch, step=step)
@@ -155,7 +155,7 @@ def apply_modality_temporal_mask_to_batch(
 ) -> dict[str, Any]:
     names = tuple(str(item) for item in modalities)
     if names != DEFAULT_TEMPORAL_MODALITIES:
-        raise ValueError(f"MMW temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
+        raise ValueError(f"Four-modality temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     mask = torch.as_tensor(modality_temporal_mask, dtype=torch.bool)
     if mask.ndim == 2:
         mask = mask.unsqueeze(0)
@@ -169,7 +169,7 @@ def apply_modality_temporal_mask_to_batch(
     for index, modality in enumerate(names):
         keys = [key for key in _MODALITY_KEYS[modality] if torch.is_tensor(batch.get(key))]
         if not keys:
-            raise ValueError(f"MMW batch is missing {modality} inputs.")
+            raise ValueError(f"Four-modality batch is missing {modality} inputs.")
         keep = mask[:, :, index]
         for key in keys:
             tensor = batch[key]
@@ -189,7 +189,7 @@ def _configured_modalities(cfg: Mapping[str, Any]) -> tuple[str, ...]:
     primary = model.get("primary", {}) if isinstance(model, Mapping) else {}
     names = tuple(str(item) for item in primary.get("modalities", DEFAULT_TEMPORAL_MODALITIES))
     if names != DEFAULT_TEMPORAL_MODALITIES:
-        raise ValueError(f"MMW temporal missing requires modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
+        raise ValueError(f"Four-modality temporal missing requires modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     return names
 
 
@@ -199,7 +199,7 @@ def _batch_time_shape(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> 
             tensor = batch.get(key)
             if torch.is_tensor(tensor) and tensor.ndim >= 2:
                 return int(tensor.shape[0]), int(tensor.shape[1])
-    raise ValueError("MMW temporal missing requires a batched sequence input.")
+    raise ValueError("Four-modality temporal missing requires a batched sequence input.")
 
 
 def _batch_size(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> int:
@@ -281,7 +281,7 @@ def _restore_missing_samples(mask: torch.Tensor, base: torch.Tensor) -> tuple[to
     for row in (~result.any(dim=(1, 2))).nonzero(as_tuple=False).flatten().tolist():
         choices = base[row].nonzero(as_tuple=False)
         if not len(choices):
-            raise ValueError("MMW temporal missing requires one source cell per sample.")
+            raise ValueError("Four-modality temporal missing requires one source cell per sample.")
         time_index, modality_index = choices[-1].tolist()
         result[row, time_index, modality_index] = True
         fixes += 1

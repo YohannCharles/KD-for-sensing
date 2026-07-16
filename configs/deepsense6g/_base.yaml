@@ -1,0 +1,98 @@
+experiment:
+  task: fusion
+  objective: beam
+  seed: 1
+  device: auto
+data:
+  dataset:
+    type: deepsense6g
+    scene: 31
+    data_root: dataset/DeepSense6G/scenario31
+    train_csv_name: train_seqs_RA_GPS_LIDAR.csv
+    test_csv_name: test_seqs_RA_GPS_LIDAR.csv
+    seq_len: 5
+    num_pred: 1
+    portion: 1.0
+    portion_strategy: even
+    portion_seed: 42
+    image_profile: rgb_imagenet
+    image_size: [224, 224]
+    fft_tuple: [64, 256, 128]
+    clipped_range: 128
+    use_gps: true
+    gps_feature_mode: relative_polar
+    gps_normalize: true
+    use_lidar: true
+    lidar_bev_size: [224, 224]
+  dataloader:
+    train_batch_size: 32
+    test_batch_size: 32
+    validation_batch_size: 32
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+temporal_missing:
+  enabled: true
+  history_window: 5
+  prediction_window: 1
+  mode: stratified_modality_temporal
+  train_missing_drop_counts: 0,1,2,3
+  train_temporal_missing_rates: 0.0,0.2,0.4,0.6,0.8
+  train_temporal_missing_types: modality_level,frame_level,modality_frame,block
+  preserve_unmasked_for_superset: false
+model:
+  feature_size: 64
+  d_model: 64
+  num_classes: 64
+  seq_length: 5
+  num_pred: 1
+  modalities: [image, radar, gps, lidar]
+  image_profile: rgb_imagenet
+training:
+  epochs: 40
+  max_epochs: 40
+  lr: 0.0005
+  weight_decay: 0.0001
+  resume: false
+  amp:
+    enabled: true
+    dtype: float16
+    grad_scaler: true
+  validation:
+    interval_epochs: 40
+  allow_tf32: true
+  cudnn_benchmark: true
+scheduler:
+  type: none
+evaluation:
+  k_values: [1, 5]
+  dba_delta: 5
+  missing_patterns:
+    enabled: true
+    patterns:
+      - full
+      - missing_image
+      - missing_radar
+      - missing_gps
+      - missing_lidar
+      - image_only
+      - radar_only
+      - gps_only
+      - lidar_only
+      - missing_image_radar
+      - missing_image_gps
+      - missing_image_lidar
+      - missing_radar_gps
+      - missing_radar_lidar
+      - missing_gps_lidar
+    prediction_index: last
+output:
+  dir: outputs/deepsense6g
+  run_name: scene31_seed1
+  group_by_scene: false
+  overwrite: false
+  progress:
+    enabled: false
+  tensorboard:
+    enabled: false

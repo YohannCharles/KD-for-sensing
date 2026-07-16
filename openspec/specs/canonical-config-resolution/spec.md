@@ -2,19 +2,19 @@
 
 ## Purpose
 
-定义 MMW T2/baseline 的 tracked recipe 解析边界，保证干净 clone 只依赖版本控制中的输入，而不依赖任何本地训练输出或历史配置。
+定义 MMW T2/baseline 与受限 DeepSense6G T2 的 tracked recipe 解析边界，保证干净 clone 只依赖版本控制中的输入，而不依赖任何本地训练输出或历史配置。
 
 ## Requirements
 
-### Requirement: T2/baseline recipes 是唯一 canonical 配置面
+### Requirement: current recipes 是唯一 canonical 配置面
 
-配置加载 MUST 仅将 `configs/mmw/t2.yaml`、`s1.yaml`、`amber_full.yaml`、`rmbp_mm.yaml` 及其 tracked shared base 视为 current canonical inputs。
+配置加载 MUST 仅将 `configs/mmw/t2.yaml`、`s1.yaml`、`amber_full.yaml`、`rmbp_mm.yaml` 及其 tracked shared base，以及 `configs/deepsense6g/t2.yaml` 及其 tracked shared base 视为 current canonical inputs。
 
 #### Scenario: 干净 clone 解析 recipe
 
 - **WHEN** 用户加载任一 retained recipe
 - **THEN** loader MUST 在没有 `outputs/`、checkpoint 和本地数据时完成 parse、normalization 与 validation
-- **AND** 配置 MUST 声明 MMW 四模态协议
+- **AND** 配置 MUST 声明 MMW 或受限 DeepSense6G 四模态协议
 
 ### Requirement: 不提供退役配置兼容
 
