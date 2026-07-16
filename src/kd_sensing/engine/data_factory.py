@@ -70,6 +70,25 @@ def has_validation_csv(cfg: dict[str, Any]) -> bool:
     return bool(dataset_cfg.get("val_csv_name"))
 
 
+def final_test_enabled(cfg: dict[str, Any]) -> bool:
+    final_test = cfg.get("training", {}).get("final_test")
+    design_screen = cfg.get("mmw_t2_design_screening")
+    development_only = isinstance(design_screen, dict) and bool(design_screen.get("development_only", False))
+    if final_test is None:
+        if development_only:
+            raise ValueError("Development-only T2 design screening must explicitly disable training.final_test.")
+        return True
+    if isinstance(final_test, bool):
+        enabled = final_test
+    elif not isinstance(final_test, dict):
+        raise ValueError("training.final_test must be a mapping or boolean.")
+    else:
+        enabled = bool(final_test.get("enabled", True))
+    if development_only and enabled:
+        raise ValueError("Development-only T2 design screening must not enable final test.")
+    return enabled
+
+
 def build_dataset(cfg: dict[str, Any], split: str, **extra_dataset_kwargs: Any) -> Any:
     import_default_components()
     dataset_cfg = deepcopy(cfg["data"]["dataset"])
@@ -104,7 +123,6 @@ def build_dataloaders(
     )
     artifacts = gps_scaler_kwargs(train_dataset)
     validation_dataset = build_split_dataset(cfg, "validation", **artifacts) if has_validation_csv(cfg) else None
-    test_dataset = build_split_dataset(cfg, "test", **artifacts)
     dataloaders = {
         "train": build_dataloader(
             train_dataset,
@@ -113,13 +131,20 @@ def build_dataloaders(
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
             domain_balanced_sampling_cfg=cfg.get("data", {}).get("domain_balanced_sampling"),
         ),
-        "test": build_dataloader(test_dataset, loader_cfg, split="test", experiment_seed=cfg.get("experiment", {}).get("seed", 0)),
     }
     if validation_dataset is not None:
         dataloaders["validation"] = build_dataloader(
             validation_dataset,
             loader_cfg,
             split="validation",
+            experiment_seed=cfg.get("experiment", {}).get("seed", 0),
+        )
+    if final_test_enabled(cfg):
+        test_dataset = build_split_dataset(cfg, "test", **artifacts)
+        dataloaders["test"] = build_dataloader(
+            test_dataset,
+            loader_cfg,
+            split="test",
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
         )
     return dataloaders
@@ -159,10 +184,23 @@ def build_dataloader(
         domain_sampler = build_domain_balanced_sampler(dataset, domain_balanced_sampling_cfg, experiment_seed=experiment_seed)
         if domain_sampler is not None:
             kwargs.update(shuffle=False, sampler=domain_sampler)
+        if _dataset_uses_lidar_augmentation(dataset) and int(kwargs.get("num_workers", 0)) > 0:
+            # Worker dataset copies need the current epoch to derive reproducible augmentation RNGs.
+            kwargs["persistent_workers"] = False
     dataloader = DataLoader(dataset, **kwargs)
     if metadata is not None:
         dataloader.generator_metadata = metadata
     return dataloader
+
+
+def _dataset_uses_lidar_augmentation(dataset: Any) -> bool:
+    if bool(getattr(dataset, "lidar_augment", False)):
+        return True
+    nested = getattr(dataset, "datasets", None)
+    if isinstance(nested, (list, tuple)) and any(_dataset_uses_lidar_augmentation(item) for item in nested):
+        return True
+    parent = getattr(dataset, "dataset", None)
+    return _dataset_uses_lidar_augmentation(parent) if parent is not None else False
 
 
 def dataloader_generator_metadata(dataset: Any, *, split: str, base_seed: int) -> dict[str, Any]:
@@ -365,6 +403,7 @@ __all__ = [
     "build_split_dataset",
     "capture_dataloaders_random_state",
     "dataloader_generator_metadata",
+    "final_test_enabled",
     "has_validation_csv",
     "resolve_dataloader_split_config",
     "restore_dataloaders_random_state",

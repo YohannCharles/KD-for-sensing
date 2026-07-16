@@ -141,6 +141,10 @@ def build_lidar_bev(
     if raw_path.suffix.lower() == ".npy":
         array = np.load(raw_path)
         if array.ndim == 3 and array.shape[0] in {1, 3, 4}:
+            if augment:
+                raise ValueError(
+                    f"LiDAR augmentation requires raw point clouds; precomputed BEV input cannot be augmented equivalently: {raw_path}"
+                )
             return _resize_or_validate_lidar_bev(array, bev_size)
     points = read_lidar_point_cloud(data_root, rel_path)
     if augment and points.size:

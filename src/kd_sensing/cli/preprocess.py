@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from kd_sensing.cli.common import load_cli_config, print_result
+from kd_sensing.cli.common import load_cli_config, parse_cli_args, print_result
 from kd_sensing.registries import PREPROCESSORS, import_default_components
 
 
@@ -43,14 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args, unknown = parser.parse_known_args(argv)
+    args, unknown = parse_cli_args(parser, argv)
     action = args.action
     if action == "mmw_sequence_splits_from_manifest":
+        if args.override or unknown:
+            parser.error("--override and bare key=value overrides require a config-backed preprocessing action.")
         print_result(_run_mmw_sequence_splits(args, parser))
         return
     if not args.config:
         parser.error("--config is required unless --action mmw_sequence_splits_from_manifest is used.")
-    cfg = load_cli_config(args, unknown)
+    cfg = load_cli_config(args, unknown, parser=parser)
     import_default_components()
     pre_cfg = dict(cfg.get("preprocessing", {}))
     if args.action:

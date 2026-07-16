@@ -5,6 +5,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from kd_sensing.data.transform_ops.io import joined_resource
+
+
+MMW_BEAM_CLASS_COUNT = 64
+
 
 @dataclass
 class SequenceSamples:
@@ -21,6 +26,7 @@ def create_samples(
     csv_path: str | Path,
     portion: float = 1.0,
     *,
+    data_root: str | Path | None = None,
     enabled_modalities: list[str] | tuple[str, ...] | set[str] | None = None,
     seq_len: int | None = None,
     gps_source_seq_len: int | None = None,
@@ -29,7 +35,8 @@ def create_samples(
     portion_seed: int = 42,
 ) -> SequenceSamples:
     frame = pd.read_csv(csv_path, na_values="").fillna(-99)
-    selected, metadata = _select_portion(frame, portion=portion, strategy=portion_strategy, seed=portion_seed)
+    if frame.empty:
+        raise ValueError(f"MMW CSV {Path(csv_path)} has no rows.")
     modalities = tuple(enabled_modalities or ("image", "radar", "gps", "lidar"))
     columns = {
         name: _numbered_columns(frame.columns, name)
@@ -37,7 +44,7 @@ def create_samples(
     }
     row_columns = [
         column
-        for column in selected.columns
+        for column in frame.columns
         if column in {"condition", "town", "sensor_scenario", "sample_id", "target_sample_id"}
         or str(column).startswith("future_beam_label")
     ]
@@ -49,6 +56,14 @@ def create_samples(
         gps_seq_len=int(gps_source_seq_len or seq_len or 1),
         num_pred=int(num_pred or 1),
     )
+    _validate_rows(
+        csv_path,
+        frame,
+        modalities=modalities,
+        columns=columns,
+        data_root=data_root,
+    )
+    selected, metadata = _select_portion(frame, portion=portion, strategy=portion_strategy, seed=portion_seed)
     return SequenceSamples(
         rgb_paths=selected[columns["camera"]].values.tolist() if "image" in modalities else [],
         radar_paths=selected[columns["radar"]].values.tolist() if "radar" in modalities else [],
@@ -61,10 +76,17 @@ def create_samples(
 
 
 def _numbered_columns(columns, prefix: str) -> list[str]:
-    return sorted(
-        (str(column) for column in columns if str(column).startswith(prefix) and str(column)[len(prefix) :].isdigit()),
-        key=lambda name: int(name[len(prefix) :]),
+    indexed = sorted(
+        (
+            (int(text[len(prefix) :]), text)
+            for column in columns
+            if (text := str(column)).startswith(prefix) and text[len(prefix) :].isdigit()
+        ),
+        key=lambda item: item[0],
     )
+    if indexed and [number for number, _ in indexed] != list(range(1, len(indexed) + 1)):
+        raise ValueError(f"MMW CSV has non-contiguous {prefix}1..{prefix}N columns.")
+    return [name for _, name in indexed]
 
 
 def _validate_columns(
@@ -87,6 +109,67 @@ def _validate_columns(
                 f"MMW CSV {Path(csv_path)} needs at least {minimum} {name}1..{name}N columns, "
                 f"found {len(columns[name])}."
             )
+
+
+def _validate_rows(
+    csv_path: str | Path,
+    frame: pd.DataFrame,
+    *,
+    modalities: tuple[str, ...],
+    columns: dict[str, list[str]],
+    data_root: str | Path | None,
+) -> None:
+    resource_prefixes = []
+    if "image" in modalities:
+        resource_prefixes.append("camera")
+    if "radar" in modalities:
+        resource_prefixes.append("radar")
+    if "gps" in modalities:
+        resource_prefixes.extend(("gps", "bs_gps"))
+    if "lidar" in modalities:
+        resource_prefixes.append("lidar")
+    resource_columns = [column for prefix in resource_prefixes for column in columns[prefix]]
+    label_columns = columns["future_beam_label"]
+    for row_index, row in frame.iterrows():
+        for column in resource_columns:
+            value = _cell_text(row.get(column))
+            if value is None:
+                raise ValueError(f"MMW CSV {Path(csv_path)} row {row_index} is missing {column}.")
+            if data_root is not None:
+                _validate_resource(data_root, csv_path, row_index, column, value)
+                if column.startswith("radar"):
+                    if "_RA" not in value:
+                        raise ValueError(
+                            f"MMW CSV {Path(csv_path)} row {row_index} {column} must reference an _RA map so its _DA map can be verified."
+                        )
+                    _validate_resource(data_root, csv_path, row_index, f"{column} (_DA)", value.replace("_RA", "_DA"))
+        for column in label_columns:
+            _validate_beam_label(csv_path, row_index, column, row.get(column))
+
+
+def _validate_resource(data_root: str | Path, csv_path: str | Path, row_index: int, column: str, value: str) -> None:
+    try:
+        path = joined_resource(data_root, value)
+    except ValueError as exc:
+        raise ValueError(f"MMW CSV {Path(csv_path)} row {row_index} has invalid {column} path {value!r}: {exc}") from exc
+    if not path.is_file():
+        raise FileNotFoundError(f"MMW CSV {Path(csv_path)} row {row_index} {column} artifact is missing: {path}")
+
+
+def _validate_beam_label(csv_path: str | Path, row_index: int, column: str, value: object) -> None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"MMW CSV {Path(csv_path)} row {row_index} has invalid {column}={value!r}.") from exc
+    if not np.isfinite(numeric) or not numeric.is_integer() or not 0 <= numeric < MMW_BEAM_CLASS_COUNT:
+        raise ValueError(
+            f"MMW CSV {Path(csv_path)} row {row_index} {column} must be an integer in [0, {MMW_BEAM_CLASS_COUNT - 1}], got {value!r}."
+        )
+
+
+def _cell_text(value: object) -> str | None:
+    text = str(value).strip()
+    return text if text and text.lower() not in {"-99", "-99.0", "nan", "none"} else None
 
 
 def _select_portion(frame: pd.DataFrame, *, portion: float, strategy: str, seed: int) -> tuple[pd.DataFrame, dict]:

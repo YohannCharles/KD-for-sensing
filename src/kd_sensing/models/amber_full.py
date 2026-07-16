@@ -128,18 +128,19 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
         masked = torch.where(availability.unsqueeze(-1), features, self._mask_tokens(features.device, features.dtype))
         masked = masked * indicator.view(1, self.modality_count, 1, 1, 1)
         tokens = self._add_position(masked)
-        modality_features = torch.stack(
-            [
-                branch(tokens[:, index].reshape(batch_size, int(seq_len) * int(spatial_tokens), self.d_model)).view(
-                    batch_size,
-                    int(seq_len),
-                    int(spatial_tokens),
-                    self.d_model,
-                )
-                for index, branch in enumerate(self.modality_branches)
-            ],
-            dim=1,
-        )
+        modality_outputs = []
+        for index, branch in enumerate(self.modality_branches):
+            branch_padding = ~availability[:, index].reshape(batch_size, int(seq_len) * int(spatial_tokens))
+            # TransformerEncoder cannot attend an all-padding sequence; that output remains masked downstream.
+            branch_padding = branch_padding.clone()
+            branch_padding[branch_padding.all(dim=1), 0] = False
+            modality_outputs.append(
+                branch(
+                    tokens[:, index].reshape(batch_size, int(seq_len) * int(spatial_tokens), self.d_model),
+                    src_key_padding_mask=branch_padding,
+                ).view(batch_size, int(seq_len), int(spatial_tokens), self.d_model)
+            )
+        modality_features = torch.stack(modality_outputs, dim=1)
         modality_frame_tokens = modality_features.permute(0, 2, 1, 3, 4).reshape(
             batch_size,
             int(seq_len),
@@ -211,7 +212,7 @@ class AmberFullAdaptiveMaskTransformerCore(nn.Module):
     ) -> dict[str, Any] | None:
         if not (self.training and self.enable_auxiliary):
             return None
-        modality_bt = modality_features.mean(dim=3).permute(0, 2, 1, 3).contiguous()
+        modality_bt = _token_available_mean(modality_features, availability).permute(0, 2, 1, 3).contiguous()
         modality_available = availability.any(dim=3)
         indicator_l2 = (
             indicator.view(1, self.modality_count, 1).pow(2)
@@ -301,6 +302,11 @@ def _available_mean(features: torch.Tensor, availability: torch.Tensor) -> torch
     weights = availability.to(dtype=features.dtype).unsqueeze(-1)
     denom = weights.sum(dim=2).clamp_min(1.0)
     return (features * weights).sum(dim=2) / denom
+
+
+def _token_available_mean(features: torch.Tensor, availability: torch.Tensor) -> torch.Tensor:
+    weights = availability.to(dtype=features.dtype).unsqueeze(-1)
+    return (features * weights).sum(dim=3) / weights.sum(dim=3).clamp_min(1.0)
 
 
 __all__ = ["AmberFullAdaptiveMaskTransformerCore"]

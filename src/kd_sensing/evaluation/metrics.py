@@ -22,16 +22,33 @@ def circular_beam_distance(prediction, target, *, num_beams: int = 64):
     return int(distance.item()) if distance.ndim == 0 else distance
 
 
-def circular_topk_min_distance(outputs, target, *, k: int = 3, num_beams: int | None = None):
-    """Return each target's closest wrapped distance among its top-k logits."""
+def circular_topk_min_distance(
+    outputs,
+    target,
+    *,
+    k: int = 3,
+    num_beams: int | None = None,
+    distance_mode: str = "circular",
+):
+    """Return each target's closest top-k distance in the requested beam geometry."""
     if torch.is_tensor(outputs) or torch.is_tensor(target):
         scores = torch.as_tensor(outputs)
         labels = torch.as_tensor(target, device=scores.device)
         topk = scores.topk(max(1, min(int(k), scores.shape[-1])), dim=-1).indices
-        return circular_beam_distance(topk, labels.to(scores.device, torch.long).unsqueeze(-1), num_beams=num_beams or scores.shape[-1]).min(dim=-1).values
+        return _beam_distance(
+            topk,
+            labels.to(scores.device, torch.long).unsqueeze(-1),
+            int(num_beams or scores.shape[-1]),
+            distance_mode,
+        ).min(dim=-1).values
     scores = np.asarray(outputs)
     topk = np.argsort(scores, axis=-1)[..., -max(1, min(int(k), scores.shape[-1])) :]
-    return circular_beam_distance(topk, np.expand_dims(np.asarray(target, dtype=np.int64), -1), num_beams=num_beams or scores.shape[-1]).min(axis=-1)
+    labels = np.expand_dims(np.asarray(target, dtype=np.int64), -1)
+    if _normalized_distance_mode(distance_mode) == "circular":
+        distances = circular_beam_distance(topk, labels, num_beams=num_beams or scores.shape[-1])
+    else:
+        distances = np.abs(topk.astype(np.int64) - labels)
+    return distances.min(axis=-1)
 
 
 def beam_classification_circular_summary(
@@ -69,7 +86,13 @@ def beam_classification_circular_summary(
     )
     for k in topk:
         key = f"top{int(k)}"
-        result[key] = float(circular_topk_min_distance(scores, target, k=int(k), num_beams=beams).eq(0).float().mean().item())
+        result[key] = float(
+            circular_topk_min_distance(scores, target, k=int(k), num_beams=beams, distance_mode=distance_mode)
+            .eq(0)
+            .float()
+            .mean()
+            .item()
+        )
     return result
 
 
@@ -123,11 +146,17 @@ def _prediction_tensors(outputs: torch.Tensor, labels: torch.Tensor) -> tuple[to
 
 
 def _beam_distance(prediction: torch.Tensor, target: torch.Tensor, num_beams: int, mode: str) -> torch.Tensor:
+    if _normalized_distance_mode(mode) == "circular":
+        return circular_beam_distance(prediction, target, num_beams=num_beams)
+    return (prediction.to(torch.long) - target.to(torch.long)).abs()
+
+
+def _normalized_distance_mode(mode: str) -> str:
     normalized = str(mode).strip().lower().replace("-", "_")
     if normalized in {"circular", "wrap", "wrapped"}:
-        return circular_beam_distance(prediction, target, num_beams=num_beams)
+        return "circular"
     if normalized in {"linear", "official", "beambench", "non_circular", "noncircular"}:
-        return (prediction.to(torch.long) - target.to(torch.long)).abs()
+        return "linear"
     raise ValueError("distance_mode must be 'circular' or 'linear'.")
 
 

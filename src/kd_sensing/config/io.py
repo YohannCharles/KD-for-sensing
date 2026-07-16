@@ -25,7 +25,9 @@ def load_config(config_path: Optional[str | Path] = None, overrides: Optional[It
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if config_path:
         cfg = deep_merge(cfg, _resolve_base_config(load_config_source(config_path)))
-    override_cfg = parse_overrides(overrides) if overrides else {}
+    override_items = list(overrides or ())
+    override_cfg = parse_overrides(override_items) if override_items else {}
+    _validate_override_paths(cfg, override_items)
     if override_cfg:
         cfg = deep_merge(cfg, override_cfg)
     normalize_loaded_config(cfg)
@@ -92,6 +94,18 @@ def parse_overrides(overrides: Iterable[str]) -> dict[str, Any]:
         key = key.strip()
         set_by_dotted_key(result, key, parse_scalar(raw_value.strip()))
     return result
+
+
+def _validate_override_paths(cfg: dict[str, Any], overrides: Iterable[str]) -> None:
+    for item in overrides:
+        if not item:
+            continue
+        key = item.split("=", 1)[0].strip()
+        cursor: Any = cfg
+        for part in key.split("."):
+            if not isinstance(cursor, dict) or part not in cursor:
+                raise ValueError(f"Unknown config override path: {key}")
+            cursor = cursor[part]
 
 
 def set_by_dotted_key(target: dict[str, Any], key: str, value: Any) -> None:

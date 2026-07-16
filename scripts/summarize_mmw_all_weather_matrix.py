@@ -18,6 +18,34 @@ METRICS = (
     "gate_entropy",
     "mean_gate_gps",
 )
+_REQUIRED_EVIDENCE_FIELDS = (
+    "method",
+    "seed",
+    "domain_id",
+    "sample_csv_sha256",
+    "checkpoint_sha256",
+    "checkpoint_role",
+    "mask_digest",
+    "metric_profile",
+    "coverage_status",
+    "sample_count",
+    "expected_sample_count",
+    "expected_domain_count",
+    "training_profile_id",
+    "training_profile_sha256",
+    "design_candidate_id",
+    "design_config_sha256",
+)
+_NONEMPTY_EVIDENCE_FIELDS = (
+    "method",
+    "seed",
+    "domain_id",
+    "sample_csv_sha256",
+    "checkpoint_sha256",
+    "checkpoint_role",
+    "mask_digest",
+    "metric_profile",
+)
 
 
 def main() -> int:
@@ -30,9 +58,10 @@ def main() -> int:
     eval_dir = Path(args.eval_dir)
     methods = ("S1", "T2", "amber_full", "rmbp_mm")
     eval_dirs = [eval_dir, *(Path(item) for item in args.append_eval_dir)]
-    rows = [row for source in eval_dirs for method in methods for row in _read_csv(source / method / "metrics.csv")]
+    rows = [row for source in eval_dirs for method in methods for row in _read_method_rows(source, method)]
     if not rows:
         raise FileNotFoundError(f"No MMW evaluation rows under {eval_dir}")
+    _validate_complete_evidence(rows)
     cells = _domain_cells(rows)
     rollups = _rollups(cells)
     temporal = _temporal_rate_summary(rows)
@@ -48,9 +77,132 @@ def main() -> int:
     return 0
 
 
+def _validate_complete_evidence(rows: list[dict[str, str]]) -> None:
+    duplicate_identities: set[tuple[str, ...]] = set()
+    seen_identities: set[tuple[str, ...]] = set()
+    coverage_groups: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    comparison_profiles: dict[tuple[str, ...], set[str]] = defaultdict(set)
+    method_provenance: dict[tuple[str, str], set[tuple[str, str, str, str, str]]] = defaultdict(set)
+    for row in rows:
+        missing = [field for field in _REQUIRED_EVIDENCE_FIELDS if field not in row]
+        empty = [field for field in _NONEMPTY_EVIDENCE_FIELDS if not str(row.get(field, "")).strip()]
+        if missing or empty:
+            raise ValueError(
+                "MMW summary requires complete evidence identity fields: "
+                f"missing={missing}, empty={empty}, method={row.get('method', '')}, domain={row.get('domain_id', '')}."
+            )
+        if row.get("coverage_status") != "complete" or _truthy(row.get("partial_request")):
+            raise ValueError(
+                "MMW summary refuses partial evaluation evidence: "
+                f"method={row['method']}, domain={row['domain_id']}, coverage_status={row.get('coverage_status')}."
+            )
+        try:
+            sample_count = int(float(row["sample_count"]))
+            expected_sample_count = int(float(row["expected_sample_count"]))
+            expected_domain_count = int(float(row["expected_domain_count"]))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"MMW summary found an invalid coverage count in {row['method']}/{row['domain_id']}.") from exc
+        if sample_count <= 0 or expected_sample_count <= 0 or sample_count != expected_sample_count or expected_domain_count <= 0:
+            raise ValueError(
+                "MMW summary refuses incomplete sample coverage: "
+                f"method={row['method']}, domain={row['domain_id']}, observed={sample_count}, expected={expected_sample_count}."
+            )
+        identity = tuple(
+            str(row.get(field, ""))
+            for field in (
+                "method",
+                "seed",
+                "domain_id",
+                "eval_family",
+                "pattern",
+                "missing_rate",
+                "available_modalities",
+                "mask_digest",
+                "sample_csv_sha256",
+                "mask_cache_checksum",
+                "checkpoint_sha256",
+                "metric_profile",
+            )
+        )
+        if identity in seen_identities:
+            duplicate_identities.add(identity)
+        seen_identities.add(identity)
+        coverage_key = tuple(
+            str(row.get(field, ""))
+            for field in (
+                "method",
+                "seed",
+                "training_profile_id",
+                "training_profile_sha256",
+                "design_candidate_id",
+                "design_config_sha256",
+                "checkpoint_sha256",
+                "checkpoint_role",
+                "metric_profile",
+                "eval_family",
+                "pattern",
+                "missing_rate",
+                "available_modalities",
+                "mask_digest",
+                "mask_cache_checksum",
+            )
+        )
+        coverage_groups[coverage_key].append(row)
+        comparison_key = tuple(
+            str(row.get(field, ""))
+            for field in ("seed", "eval_family", "pattern", "missing_rate", "available_modalities", "mask_digest", "mask_cache_checksum")
+        )
+        comparison_profiles[comparison_key].add(str(row["metric_profile"]))
+        method_provenance[(str(row["method"]), str(row["seed"]))].add(
+            tuple(
+                str(row.get(field, ""))
+                for field in (
+                    "training_profile_id",
+                    "training_profile_sha256",
+                    "design_candidate_id",
+                    "design_config_sha256",
+                    "checkpoint_sha256",
+                )
+            )
+        )
+    if duplicate_identities:
+        raise ValueError(f"MMW summary found duplicate evidence rows: {sorted(duplicate_identities)[0]}.")
+    for key, items in coverage_groups.items():
+        expected_values = {int(float(item["expected_domain_count"])) for item in items}
+        domain_ids = {str(item["domain_id"]) for item in items}
+        if len(expected_values) != 1 or len(domain_ids) != next(iter(expected_values)):
+            raise ValueError(
+                "MMW summary refuses incomplete domain coverage for evidence cell: "
+                f"identity={key}, observed_domains={len(domain_ids)}, expected={sorted(expected_values)}."
+            )
+    for key, profiles in comparison_profiles.items():
+        if len(profiles) != 1:
+            raise ValueError(f"MMW summary cannot compare conflicting metric profiles {sorted(profiles)} for {key}.")
+    for key, identities in method_provenance.items():
+        if len(identities) != 1:
+            raise ValueError(f"MMW summary found mixed profile/candidate/checkpoint provenance for {key}.")
+
+
 def _domain_cells(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     grouped = defaultdict(list)
-    keys = ("method", "domain_id", "condition", "scene", "eval_family", "pattern", "missing_rate", "available_modalities")
+    keys = (
+        "method",
+        "seed",
+        "training_profile_id",
+        "training_profile_sha256",
+        "design_candidate_id",
+        "design_config_sha256",
+        "checkpoint_sha256",
+        "checkpoint_role",
+        "metric_profile",
+        "domain_id",
+        "condition",
+        "scene",
+        "eval_family",
+        "pattern",
+        "missing_rate",
+        "available_modalities",
+    )
     for row in rows:
         grouped[tuple(row.get(key, "") for key in keys)].append(row)
     result = []
@@ -70,7 +222,21 @@ def _domain_cells(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
 
 def _rollups(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
-    group_keys = ("method", "eval_family", "pattern", "missing_rate", "available_modalities")
+    group_keys = (
+        "method",
+        "seed",
+        "training_profile_id",
+        "training_profile_sha256",
+        "design_candidate_id",
+        "design_config_sha256",
+        "checkpoint_sha256",
+        "checkpoint_role",
+        "metric_profile",
+        "eval_family",
+        "pattern",
+        "missing_rate",
+        "available_modalities",
+    )
     grouped = defaultdict(list)
     for row in cells:
         grouped[tuple(row.get(key, "") for key in group_keys)].append(row)
@@ -89,13 +255,22 @@ def _temporal_rate_summary(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     for row in rows:
         if row.get("eval_family") != "temporal_missing":
             continue
-        key = (row.get("method", ""), row.get("missing_rate", ""), row.get("mask_type", ""), row.get("mask_digest", ""))
+        key = (
+            row.get("method", ""),
+            row.get("seed", ""),
+            row.get("metric_profile", ""),
+            row.get("missing_rate", ""),
+            row.get("mask_type", ""),
+            row.get("mask_digest", ""),
+        )
         mask_groups[key].append(row)
     mask_rows = []
     for key, items in mask_groups.items():
-        method, rate, mask_type, digest = key
+        method, seed, metric_profile, rate, mask_type, digest = key
         out = {
             "method": method,
+            "seed": seed,
+            "metric_profile": metric_profile,
             "missing_rate": rate,
             "mask_type": mask_type,
             "mask_digest": digest,
@@ -115,26 +290,28 @@ def _temporal_rate_summary(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
 
     type_groups = defaultdict(list)
     for row in mask_rows:
-        type_groups[(row["method"], row["missing_rate"], row["mask_type"])].append(row)
+        type_groups[(row["method"], row["seed"], row["metric_profile"], row["missing_rate"], row["mask_type"])].append(row)
     type_rows = []
-    for (method, rate, mask_type), items in type_groups.items():
-        type_rows.append(_summarize_mask_rows(method, rate, mask_type, items))
+    for (method, seed, metric_profile, rate, mask_type), items in type_groups.items():
+        type_rows.append(_summarize_mask_rows(method, seed, metric_profile, rate, mask_type, items))
 
     result = list(type_rows)
     terminal_groups = defaultdict(list)
     for row in mask_rows:
         terminal = "terminal_available" if row["last_frame_available"] else "terminal_missing"
-        terminal_groups[(row["method"], row["missing_rate"], terminal)].append(row)
-    for (method, rate, terminal), items in terminal_groups.items():
-        terminal_row = _summarize_mask_rows(method, rate, terminal, items)
+        terminal_groups[(row["method"], row["seed"], row["metric_profile"], row["missing_rate"], terminal)].append(row)
+    for (method, seed, metric_profile, rate, terminal), items in terminal_groups.items():
+        terminal_row = _summarize_mask_rows(method, seed, metric_profile, rate, terminal, items)
         terminal_row["aggregation"] = "terminal_state_stratified_after_domain_macro"
         result.append(terminal_row)
     rate_groups = defaultdict(list)
     for row in type_rows:
-        rate_groups[(row["method"], row["missing_rate"])].append(row)
-    for (method, rate), items in rate_groups.items():
+        rate_groups[(row["method"], row["seed"], row["metric_profile"], row["missing_rate"])].append(row)
+    for (method, seed, metric_profile, rate), items in rate_groups.items():
         out = {
             "method": method,
+            "seed": seed,
+            "metric_profile": metric_profile,
             "missing_rate": rate,
             "mask_type": "type_equal_all",
             "mask_count": sum(int(item["mask_count"]) for item in items),
@@ -155,12 +332,21 @@ def _temporal_rate_summary(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             out[f"{metric}_std_across_masks"] = ""
             out[f"{metric}_worst_mask"] = ""
         result.append(out)
-    return sorted(result, key=lambda row: (row["method"], float(row["missing_rate"]), row["mask_type"]))
+    return sorted(result, key=lambda row: (row["method"], int(row["seed"]), float(row["missing_rate"]), row["mask_type"]))
 
 
-def _summarize_mask_rows(method: str, rate: str, mask_type: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+def _summarize_mask_rows(
+    method: str,
+    seed: str,
+    metric_profile: str,
+    rate: str,
+    mask_type: str,
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
     out = {
         "method": method,
+        "seed": seed,
+        "metric_profile": metric_profile,
         "missing_rate": rate,
         "mask_type": mask_type,
         "mask_count": len(items),
@@ -217,7 +403,17 @@ def _aggregate(base: dict[str, Any], level: str, group: str, items: list[dict[st
 
 
 def _paired_deltas(rows: list[dict[str, str]], left: str, right: str) -> list[dict[str, Any]]:
-    keys = ("domain_id", "eval_family", "pattern", "missing_rate", "mask_digest", "sample_csv_sha256", "mask_cache_checksum")
+    keys = (
+        "seed",
+        "metric_profile",
+        "domain_id",
+        "eval_family",
+        "pattern",
+        "missing_rate",
+        "mask_digest",
+        "sample_csv_sha256",
+        "mask_cache_checksum",
+    )
     index = {(row.get("method"), *(row.get(key, "") for key in keys)): row for row in rows}
     result = []
     for identity, left_row in index.items():
@@ -314,6 +510,12 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return []
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _read_method_rows(eval_dir: Path, method: str) -> list[dict[str, str]]:
+    method_dir = eval_dir / method
+    paths = [method_dir / "metrics.csv", *sorted(method_dir.glob("seed*/metrics.csv"))]
+    return [row for path in paths for row in _read_csv(path)]
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:

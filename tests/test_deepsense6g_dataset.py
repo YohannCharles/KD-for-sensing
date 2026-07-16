@@ -105,7 +105,26 @@ def test_deepsense6g_rejects_unsupported_scene_and_non_64_beam_label(tmp_path: P
             num_pred=1,
         )
     with pytest.raises(ValueError):
-        _dataset(root, "train")[0]
+        _dataset(root, "train")
+
+
+def test_deepsense6g_caches_future_beam_labels_after_construction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _write_scene31(tmp_path / "scenario31")
+    calls = 0
+    original = np.loadtxt
+
+    def tracked_loadtxt(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("kd_sensing.data.datasets.deepsense6g.np.loadtxt", tracked_loadtxt)
+    dataset = _dataset(root, "train")
+
+    assert calls == len(dataset) * dataset.num_pred
+    assert dataset._target_beam_label(0, 0) == 37
+    assert dataset._target_beam_label(0, 0) == 37
+    assert calls == len(dataset) * dataset.num_pred
 
 
 def test_deepsense6g_test_split_reuses_train_gps_scaler(tmp_path: Path) -> None:

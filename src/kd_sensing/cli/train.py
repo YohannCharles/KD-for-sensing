@@ -1,6 +1,6 @@
 import argparse
 
-from kd_sensing.cli.common import load_cli_config, print_result
+from kd_sensing.cli.common import load_cli_config, parse_cli_args, print_result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,12 +19,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(argv: list[str] | None = None) -> dict:
-    args, unknown = build_parser().parse_known_args(argv)
-    from kd_sensing.engine.trainer import train
+    parser = build_parser()
+    args, unknown = parse_cli_args(parser, argv)
 
-    cfg = load_cli_config(args, unknown)
+    cfg = load_cli_config(args, unknown, parser=parser)
     _apply_runtime_args(cfg, args)
     cfg.setdefault("runtime", {})["cli_config_path"] = args.config
+    from kd_sensing.engine.trainer import train
+
     result = train(cfg)
     print_result(result)
     return result

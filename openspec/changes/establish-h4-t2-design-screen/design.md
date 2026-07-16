@@ -40,6 +40,10 @@ builder 的顺序为：加载 tracked recipe、选择并物化 profile、覆盖 
 
 每个候选只有同时满足 `delta J >= +0.5pp`，且 Clean、Drop1--3 均值、Drop80 相对 H4 均不低于 `-0.5pp` 才进入 seed2/3。未通过者不与其他候选组合。
 
+development-only config 还必须显式关闭 trainer 的 final test：它只构造 inner train/validation loader，既不迭代 outer test，也不发布任何 outer-test metric。final artifact 可以将 `final_test_metrics` 记录为明确的未执行状态，但该记录不得含测试证据。outer test 只属于候选晋级后的独立 evidence protocol；即使当前自动选择代码未读取 final-test 字段，预先暴露该指标也会破坏筛选盲性。
+
+候选的 full-config 与 candidate-recipe 指纹只覆盖生成 YAML 的可比较内容。CLI 注入的 `runtime` 字段（例如 config 路径、run dir）是运行定位信息，必须从两类指纹中排除；否则同一生成 YAML 会因启动方式而被错误拒绝。该豁免不适用于 model、data、training profile、candidate id 或 inner-split 身份。
+
 ### 3. 结构扩展保持最小且默认不变
 
 `u_mask_beam_jepa` 保留 `supervised_router` + `masked_mean` 为默认。新增 `reliability_mean` fusion：对可用模态的 learned reliability 归一化加权，router oracle weight 必须为零；新增 `masked_attention` pooling：以共享 learned query 在每模态历史帧内做 mask-aware softmax，任何不可用 temporal cell 均不参与权重归一化。两者输出保持现有 diagnostics keys，并额外声明 type/parameter count。
@@ -58,6 +62,7 @@ CMA 继续是 pooled-feature objective analogue，且配置层面保持与 BPA �
 - [GPU0--3 正在被其他作业使用] → 先做每卡真实 step probe，使用共同 16 倍数 batch，保留 10% reserved-memory headroom；probe 失败不启动该卡正式任务。
 - [单 seed 假阳性] → 首轮只做开发淘汰，所有晋级候选必须在相同 inner protocol 上补 seed2/3。
 - [新 fusion/pooling 破坏 router 或 mask 语义] → 单元测试覆盖 all-masked rejection、missing cell zero weight、默认输出兼容和 auxiliary loss diagnostics。
+- [development candidate 意外消费 outer test] → generated config 设置 `training.final_test.enabled=false`，dataloader 不构造 test split，trainer 不调用 final-test；测试断言 outer test loader 不被迭代。
 - [CMA 被误读为叠加收益] → 强制 BPA/CMA 互斥并在 manifest/summary 标注 matched control。
 - [H4 旧结果来自 pre-canonical 模型] → 当前 canonical T2 上的 H4 control 是所有新筛选和后续独立 evidence 的唯一基线。
 

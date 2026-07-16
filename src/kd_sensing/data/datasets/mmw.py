@@ -1,9 +1,10 @@
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, get_worker_info
 
 from kd_sensing.data.layouts import mmw_condition_layout
 from kd_sensing.data.samples import create_samples
@@ -107,10 +108,13 @@ class MMWDataset(Dataset):
         self.lidar_augment = bool(lidar_augment)
         self.lidar_point_dropout = float(lidar_point_dropout)
         self.lidar_jitter_std = float(lidar_jitter_std)
+        self._lidar_augmentation_seed = int(portion_seed)
+        self._lidar_epoch = 0
         self.lidar_stats_path = None
         self.samples = create_samples(
             self.root_csv,
             portion=float(portion),
+            data_root=self.data_root,
             portion_strategy=portion_strategy,
             portion_seed=int(portion_seed),
             enabled_modalities=self.enabled_modalities,
@@ -176,15 +180,21 @@ class MMWDataset(Dataset):
             for key in ("condition", "town", "sensor_scenario", "sample_id", "target_sample_id")
             if (text := _row_text(row, key)) is not None
         }
+        source_sample_id = str(
+            metadata.get("sample_id") or metadata.get("target_sample_id") or f"{self.scene_slug}:{idx}"
+        )
         metadata.update(dataset_family="MMW", condition=self.condition, scenario=self.scene_slug)
+        metadata["source_sample_id"] = source_sample_id
+        metadata["stable_sample_id"] = f"mmw:{self.condition}:{self.scene_slug}:{self.split}:{source_sample_id}"
         sample["metadata"] = metadata
-        sample["sample_id"] = str(metadata.get("sample_id", f"{self.scene_slug}:{idx}"))
+        sample["sample_id"] = source_sample_id
         sample["domain_metadata"] = {
             "dataset_family": "MMW",
             "condition": self.condition,
             "town": metadata.get("town", ""),
             "scenario": self.scene_slug,
             "scene_slug": self.scene_slug,
+            "split": self.split,
         }
         return sample
 
@@ -216,7 +226,18 @@ class MMWDataset(Dataset):
             augment=augment,
             point_dropout=self.lidar_point_dropout,
             jitter_std=self.lidar_jitter_std,
+            rng=self._lidar_rng(idx) if augment else None,
         )
+
+    def set_epoch(self, epoch: int) -> None:
+        self._lidar_epoch = int(epoch)
+
+    def _lidar_rng(self, idx: int) -> np.random.Generator:
+        worker = get_worker_info()
+        worker_id = worker.id if worker is not None else 0
+        sample_id = str(self.samples.rows[idx].get("sample_id") or self.samples.rows[idx].get("target_sample_id") or idx)
+        payload = f"{self._lidar_augmentation_seed}:{self._lidar_epoch}:{worker_id}:{self.split}:{sample_id}".encode("utf-8")
+        return np.random.default_rng(int.from_bytes(hashlib.sha256(payload).digest()[:8], "big"))
 
 
 def _row_label(row: dict[str, Any], key: str) -> int | None:
@@ -224,7 +245,7 @@ def _row_label(row: dict[str, Any], key: str) -> int | None:
         value = int(row.get(key))
     except (TypeError, ValueError):
         return None
-    return value if value >= 0 else None
+    return value if 0 <= value < 64 else None
 
 
 def _row_text(row: dict[str, Any], key: str) -> str | None:

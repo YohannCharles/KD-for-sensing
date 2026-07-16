@@ -357,8 +357,12 @@ def _frame_features(features: torch.Tensor) -> torch.Tensor:
 def _amber_input(
     projected: dict[str, torch.Tensor], availability: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    pieces = [projected[modality] if projected[modality].ndim == 4 else projected[modality].unsqueeze(2) for modality in MODALITY_ORDER]
+    pieces = [
+        projected[modality] if projected[modality].ndim == 4 else projected[modality].unsqueeze(2)
+        for modality in MODALITY_ORDER
+    ]
     max_tokens = max(int(piece.shape[2]) for piece in pieces)
+    token_counts = torch.tensor([int(piece.shape[2]) for piece in pieces], device=availability.device)
     padded = []
     for piece in pieces:
         if int(piece.shape[2]) < max_tokens:
@@ -366,9 +370,13 @@ def _amber_input(
             piece = torch.cat([piece, pad], dim=2)
         padded.append(piece)
     core_input = torch.stack(padded, dim=1)
-    core_availability = availability.unsqueeze(-1).expand(-1, -1, -1, max_tokens)
+    token_available = torch.arange(max_tokens, device=availability.device).view(1, 1, 1, -1) < token_counts.view(
+        1, -1, 1, 1
+    )
+    core_availability = availability.to(dtype=torch.bool).unsqueeze(-1) & token_available
     core_input = core_input * core_availability.unsqueeze(-1).to(dtype=core_input.dtype)
-    input_features = torch.cat([piece.mean(dim=2) for piece in padded], dim=-1)
+    pooled = core_input.sum(dim=3) / core_availability.sum(dim=3, keepdim=True).clamp_min(1).to(dtype=core_input.dtype)
+    input_features = torch.cat([pooled[:, index] for index in range(len(MODALITY_ORDER))], dim=-1)
     return core_input, core_availability, input_features
 
 

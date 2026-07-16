@@ -95,11 +95,22 @@ def u_mask_beam_jepa_loss(
             }
         )
 
-    loss_router_oracle, router_diagnostics = _router_oracle_loss(
-        output,
-        labels,
-        circular_beam_distance=bool(circular_beam_distance),
-    )
+    if float(router_oracle_weight) == 0.0:
+        loss_router_oracle = zero
+        router_diagnostics = {
+            "loss/router_oracle": 0.0,
+            "router_oracle_active_ratio": 0.0,
+            "router_oracle_enabled": 0.0,
+            "router_oracle_disabled": 1.0,
+        }
+    else:
+        loss_router_oracle, router_diagnostics = _router_oracle_loss(
+            output,
+            labels,
+            circular_beam_distance=bool(circular_beam_distance),
+        )
+        router_diagnostics["router_oracle_enabled"] = 1.0
+        router_diagnostics["router_oracle_disabled"] = 0.0
     loss = loss + float(router_oracle_weight) * loss_router_oracle
     diagnostics.update(router_diagnostics)
     diagnostics["loss/router_oracle_weighted"] = float(

@@ -19,15 +19,24 @@ from kd_sensing.data.temporal_missing import (
     sample_stratified_modality_temporal_mask,
 )
 from kd_sensing.engine.data_factory import build_dataloader, build_dataloaders
+from kd_sensing.engine.data_factory import shutdown_dataloader_workers
 from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
+from kd_sensing.engine.modality_resolution import config_uses_gps
+from kd_sensing.engine.normalization_artifacts import (
+    load_normalization_artifacts,
+    validate_normalization_artifact_fingerprint,
+)
 from kd_sensing.engine.optim import build_device, build_model
-from kd_sensing.engine.runtime import run_model_step
+from kd_sensing.engine.runtime import configure_cuda_performance_settings, run_model_step
+from kd_sensing.engine.trainer_runtime_helpers import shutdown_all_dataloaders
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import _beam_classification_metrics
 from kd_sensing.utils.artifact_registry import (
     load_checkpoint_metadata,
     validate_evaluation_gps_checkpoint_provenance,
+    validate_evaluation_training_profile_provenance,
 )
 from kd_sensing.utils.checkpoint import load_model_state
+from kd_sensing.utils.seed import set_seed
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,136 +153,172 @@ def evaluate_method(
     if not cfg_path.exists() or not checkpoint.exists():
         raise FileNotFoundError(f"{method}: missing config or fixed-epoch last checkpoint")
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    validate_evaluation_gps_checkpoint_provenance(cfg, load_checkpoint_metadata(checkpoint))
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{method}: generated config is not a mapping")
+    checkpoint_metadata = load_checkpoint_metadata(checkpoint)
+    validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_metadata)
+    validate_evaluation_training_profile_provenance(cfg, checkpoint_metadata)
+    validate_normalization_artifact_fingerprint(cfg, checkpoint_metadata)
+    normalization_overrides = load_normalization_artifacts(checkpoint_metadata)
+    if config_uses_gps(cfg) and "gps_scaler" not in normalization_overrides:
+        raise ValueError(f"{method}: fixed-mask evaluation requires the checkpoint's train-fit GPS normalization artifact.")
     cfg.setdefault("temporal_missing", {})["enabled"] = False
     cfg["temporal_missing"]["mode"] = "none"
+    cfg.setdefault("training", {})["final_test"] = {"enabled": False, "reason": "fixed_mask_validation_only"}
     loader_cfg = cfg.setdefault("data", {}).setdefault("dataloader", {})
     loader_cfg["validation_batch_size"] = int(args.batch_size)
     loader_cfg["test_batch_size"] = int(args.batch_size)
-    dataloaders = build_dataloaders(cfg)
-    validation = dataloaders["validation"].dataset
-    components = list(getattr(validation, "datasets", []))
-    inventory = list(getattr(validation, "domain_inventory", []))
-    if len(components) != 15 or len(inventory) != 15:
-        raise ValueError(f"{method}: expected 15 validation domains, got components={len(components)} inventory={len(inventory)}")
-    device = build_device(cfg)
-    model = build_model(cfg["model"]["primary"]).to(device)
-    load_model_state(checkpoint, model, role="MMW all-weather fixed-epoch last", map_location=device, strict=True)
-    model.eval()
-    rows = []
-    whole_masks = [] if args.skip_whole_modality else _whole_modality_masks()
-    provenance = {
-        **_evaluation_provenance(cfg),
-        **BASELINE_SCOPES[method],
-        "checkpoint": str(checkpoint),
-        "checkpoint_policy": "fixed_epoch_last_pth",
-        "enabled_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
-        "weather_label_used_as_input": False,
-        "screening_role": "local_validation",
-        "temporal_mask_protocol": "mmw_temporal_geometry_v2",
-        "temporal_rates": ",".join(str(rate) for rate in args.temporal_rates),
-        "temporal_mask_types": ",".join(args.temporal_mask_types),
-        "domain_shard_index": int(args.domain_shard_index),
-        "domain_shard_count": int(args.domain_shard_count),
-        "seed": int(seed),
-    }
-    selected = list(zip(components, inventory))[int(args.domain_shard_index) :: int(args.domain_shard_count)]
-    if args.max_domains is not None:
-        selected = selected[: int(args.max_domains)]
-    target = _seed_evaluation_target(output_dir, method, seed, seed_subdir=seed_subdir)
-    started = time.monotonic()
-    for domain_index, (component, domain) in enumerate(selected, start=1):
-        loader = build_dataloader(component, loader_cfg, split="validation", experiment_seed=int(seed))
-        split_path = Path(str(domain["split_path"]))
-        sample_checksum = _sha256(split_path)
-        base = {
-            "method": method,
+    dataloaders = None
+    try:
+        dataloaders = build_dataloaders(cfg, normalization_overrides=normalization_overrides)
+        validation = dataloaders["validation"].dataset
+        components = list(getattr(validation, "datasets", []))
+        inventory = list(getattr(validation, "domain_inventory", []))
+        if len(components) != 15 or len(inventory) != 15:
+            raise ValueError(f"{method}: expected 15 validation domains, got components={len(components)} inventory={len(inventory)}")
+        set_seed(int(seed))
+        device = build_device(cfg)
+        configure_cuda_performance_settings(cfg, device)
+        model = build_model(cfg["model"]["primary"]).to(device)
+        load_model_state(checkpoint, model, role="MMW all-weather fixed-epoch last", map_location=device, strict=True)
+        model.eval()
+        rows = []
+        whole_masks = [] if args.skip_whole_modality else _whole_modality_masks()
+        selected = list(zip(components, inventory))[int(args.domain_shard_index) :: int(args.domain_shard_count)]
+        if args.max_domains is not None:
+            selected = selected[: int(args.max_domains)]
+        is_partial = args.max_batches is not None or args.max_domains is not None
+        provenance = {
+            **_evaluation_provenance(cfg),
+            **_checkpoint_evidence_identity(cfg, checkpoint_metadata, checkpoint),
+            **BASELINE_SCOPES[method],
+            "checkpoint": str(checkpoint),
+            "checkpoint_policy": "fixed_epoch_last_pth",
+            "enabled_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
+            "weather_label_used_as_input": False,
+            "screening_role": "local_validation",
+            "temporal_mask_protocol": "mmw_temporal_geometry_v2",
+            "temporal_rates": ",".join(str(rate) for rate in args.temporal_rates),
+            "temporal_mask_types": ",".join(args.temporal_mask_types),
+            "domain_shard_index": int(args.domain_shard_index),
+            "domain_shard_count": int(args.domain_shard_count),
+            "expected_domain_count": len(inventory),
+            "selected_domain_count": len(selected),
+            "partial_request": bool(is_partial),
             "seed": int(seed),
-            "domain_id": domain["id"],
-            "condition": domain["condition"],
-            "scene": domain["scene"],
-            "sample_count": len(component),
-            "sample_csv": str(split_path),
-            "sample_csv_sha256": sample_checksum,
-            **provenance,
         }
-        specs = []
-        for pattern, mask_item in whole_masks:
-            identity = _mask_identity(
-                mask_item,
-                mask_index=0,
-                modalities=DEFAULT_TEMPORAL_MODALITIES,
-                cache_checksum="whole_modality_subsets_v1",
-                cache_seed=20260712,
-            )
-            specs.append(
-                (
-                    mask_item,
-                    {
-                        **base,
-                        "eval_family": "whole_modality",
-                        "pattern": pattern,
-                        "available_modalities": ",".join(mask_item["available_modalities"]),
-                        "missing_rate": 0.0,
-                        "drop_count": 4 - len(mask_item["available_modalities"]),
-                        **identity,
-                    },
-                )
-            )
-        for rate in args.temporal_rates:
-            payload = cache[(rate, 0)]
-            for index, mask_item in enumerate(payload["masks"]):
-                identity = _mask_identity(
-                    mask_item,
-                    mask_index=index,
-                    modalities=payload.get("modalities"),
-                    cache_checksum=payload.get("checksum"),
-                    cache_seed=payload.get("seed"),
-                )
-                specs.append(
-                    (
+        target = _seed_evaluation_target(output_dir, method, seed, seed_subdir=seed_subdir)
+        started = time.monotonic()
+        for domain_index, (component, domain) in enumerate(selected, start=1):
+            loader = build_dataloader(component, loader_cfg, split="validation", experiment_seed=int(seed))
+            try:
+                split_path = Path(str(domain["split_path"]))
+                sample_checksum = _sha256(split_path)
+                base = {
+                    "method": method,
+                    "seed": int(seed),
+                    "domain_id": domain["id"],
+                    "condition": domain["condition"],
+                    "scene": domain["scene"],
+                    "expected_sample_count": len(component),
+                    "sample_csv": str(split_path),
+                    "sample_csv_sha256": sample_checksum,
+                    **provenance,
+                }
+                specs = []
+                for pattern, mask_item in whole_masks:
+                    identity = _mask_identity(
                         mask_item,
-                        {
-                            **base,
-                            "eval_family": "temporal_missing",
-                            "pattern": str(mask_item.get("mask_type", "temporal")),
-                            "available_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
-                            "missing_rate": rate,
-                            "drop_count": 0,
-                            **identity,
-                        },
+                        mask_index=0,
+                        modalities=DEFAULT_TEMPORAL_MODALITIES,
+                        cache_checksum="whole_modality_subsets_v1",
+                        cache_seed=20260712,
                     )
+                    specs.append(
+                        (
+                            mask_item,
+                            {
+                                **base,
+                                "eval_family": "whole_modality",
+                                "pattern": pattern,
+                                "available_modalities": ",".join(mask_item["available_modalities"]),
+                                "missing_rate": 0.0,
+                                "drop_count": 4 - len(mask_item["available_modalities"]),
+                                **identity,
+                            },
+                        )
+                    )
+                for rate in args.temporal_rates:
+                    payload = cache[(rate, 0)]
+                    for index, mask_item in enumerate(payload["masks"]):
+                        identity = _mask_identity(
+                            mask_item,
+                            mask_index=index,
+                            modalities=payload.get("modalities"),
+                            cache_checksum=payload.get("checksum"),
+                            cache_seed=payload.get("seed"),
+                        )
+                        specs.append(
+                            (
+                                mask_item,
+                                {
+                                    **base,
+                                    "eval_family": "temporal_missing",
+                                    "pattern": str(mask_item.get("mask_type", "temporal")),
+                                    "available_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
+                                    "missing_rate": rate,
+                                    "drop_count": 0,
+                                    **identity,
+                                },
+                            )
+                        )
+                metrics_by_mask = _evaluate_masks(
+                    model,
+                    loader,
+                    cfg,
+                    device,
+                    [mask_item for mask_item, _ in specs],
+                    args.max_batches,
+                    mask_modalities=DEFAULT_TEMPORAL_MODALITIES,
                 )
-        metrics_by_mask = _evaluate_masks(
-            model,
-            loader,
-            cfg,
-            device,
-            [mask_item for mask_item, _ in specs],
-            args.max_batches,
-            mask_modalities=DEFAULT_TEMPORAL_MODALITIES,
+                for (_, row), metrics in zip(specs, metrics_by_mask):
+                    evaluated_count = int(metrics.pop("evaluated_sample_count"))
+                    evaluated_batches = int(metrics.pop("evaluated_batch_count"))
+                    complete = bool(metrics.pop("coverage_complete")) and not is_partial
+                    rows.append(
+                        {
+                            **row,
+                            **metrics,
+                            "sample_count": evaluated_count,
+                            "evaluated_batch_count": evaluated_batches,
+                            "coverage_status": "complete" if complete else "partial",
+                        }
+                    )
+                _write_csv(target, rows)
+                print(
+                    f"{method} shard {args.domain_shard_index}/{args.domain_shard_count}: "
+                    f"domain {domain_index}/{len(selected)} {domain['id']} complete, elapsed={time.monotonic() - started:.1f}s",
+                    flush=True,
+                )
+            finally:
+                shutdown_dataloader_workers(loader)
+        (target.parent / "provenance.json").write_text(
+            json.dumps(
+                {
+                    "method": method,
+                    "row_count": len(rows),
+                    "domain_count": len(selected),
+                    "temporal_cache_checksums": [cache[(rate, 0)]["checksum"] for rate in args.temporal_rates],
+                    **provenance,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        rows.extend({**row, **metrics} for (_, row), metrics in zip(specs, metrics_by_mask))
-        _write_csv(target, rows)
-        print(
-            f"{method} shard {args.domain_shard_index}/{args.domain_shard_count}: "
-            f"domain {domain_index}/{len(selected)} {domain['id']} complete, elapsed={time.monotonic() - started:.1f}s",
-            flush=True,
-        )
-    (target.parent / "provenance.json").write_text(
-        json.dumps(
-            {
-                "method": method,
-                "row_count": len(rows),
-                "domain_count": len(selected),
-                "temporal_cache_checksums": [cache[(rate, 0)]["checksum"] for rate in args.temporal_rates],
-                **provenance,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    finally:
+        if dataloaders is not None:
+            shutdown_all_dataloaders(dataloaders)
 
 
 def _mask_identity(
@@ -334,6 +379,16 @@ def _evaluation_provenance(cfg: dict[str, Any]) -> dict[str, Any]:
         value for value in (prototype_target_geometry, router_oracle_geometry) if value != "not_applicable"
     ]
     training_geometry = "+".join(dict.fromkeys(active_geometries)) if active_geometries else "not_applicable"
+    distance_mode = str(
+        evaluation.get("dba_distance_mode", "circular" if bool(evaluation.get("beam_distance_circular", True)) else "linear")
+    )
+    requested_metric_profile = str(evaluation.get("metric_profile", ""))
+    legacy_metric_profiles = {"", "64_beam_circular_topk", "64_beam_linear_topk"}
+    metric_profile = (
+        f"64_beam_{distance_mode}_topk_progressive_top3_dba_v1"
+        if requested_metric_profile in legacy_metric_profiles
+        else requested_metric_profile
+    )
     return {
         "ablation_id": str(experiment.get("ablation_id", "")),
         "training_beam_geometry": training_geometry,
@@ -346,8 +401,26 @@ def _evaluation_provenance(cfg: dict[str, Any]) -> dict[str, Any]:
         "use_amber_cma_analogue": bool(loss_cfg.get("use_amber_cma_analogue", False)),
         "lambda_amber_cma": float(loss_cfg.get("lambda_amber_cma", 0.0)),
         "amber_cma_temperature": float(loss_cfg.get("amber_cma_temperature", 0.2)),
-        "metric_profile": str(evaluation.get("metric_profile", "")),
-        "dba_distance_mode": str(evaluation.get("dba_distance_mode", "circular")),
+        "metric_profile": metric_profile,
+        "dba_distance_mode": distance_mode,
+    }
+
+
+def _checkpoint_evidence_identity(
+    cfg: dict[str, Any],
+    metadata: dict[str, Any] | None,
+    checkpoint: Path,
+) -> dict[str, str]:
+    protocol = cfg.get("mmw_all_weather_protocol")
+    profile = protocol.get("training_profile") if isinstance(protocol, dict) else None
+    screen = cfg.get("mmw_t2_design_screening")
+    return {
+        "checkpoint_sha256": _sha256(checkpoint),
+        "checkpoint_role": str((metadata or {}).get("checkpoint_role", "fixed_epoch_last_pth")),
+        "training_profile_id": str(profile.get("id", "")) if isinstance(profile, dict) else "",
+        "training_profile_sha256": str(profile.get("sha256", "")) if isinstance(profile, dict) else "",
+        "design_candidate_id": str(screen.get("candidate_id", "")) if isinstance(screen, dict) else "",
+        "design_config_sha256": str(screen.get("config_sha256", "")) if isinstance(screen, dict) else "",
     }
 
 
@@ -359,9 +432,9 @@ def _evaluate_masks(
     mask_items: list[dict[str, Any]],
     max_batches: int | None,
     mask_modalities: list[str] | tuple[str, ...] | None = None,
-) -> list[dict[str, float]]:
+) -> list[dict[str, float | int | bool]]:
     states = [
-        {"sums": {}, "count": 0, "mask": _mask_in_model_order(model, item, mask_modalities)[0]}
+        {"sums": {}, "count": 0, "batch_count": 0, "mask": _mask_in_model_order(model, item, mask_modalities)[0]}
         for item in mask_items
     ]
     model_modalities = tuple(str(item) for item in getattr(model, "modalities", mask_modalities or DEFAULT_TEMPORAL_MODALITIES))
@@ -390,11 +463,18 @@ def _evaluate_masks(
                 metrics.update(_router_metrics(step.model_output.diagnostics, getattr(model, "modalities", ())))
                 batch_count = int(target.numel())
                 state["count"] += batch_count
+                state["batch_count"] += 1
                 for key, value in metrics.items():
                     if isinstance(value, float) and math.isfinite(value):
                         state["sums"][key] = state["sums"].get(key, 0.0) + value * batch_count
+    expected_count = len(dataloader.dataset)
     return [
-        {key: (value / state["count"] if state["count"] else math.nan) for key, value in state["sums"].items()}
+        {
+            **{key: (value / state["count"] if state["count"] else math.nan) for key, value in state["sums"].items()},
+            "evaluated_sample_count": int(state["count"]),
+            "evaluated_batch_count": int(state["batch_count"]),
+            "coverage_complete": int(state["count"]) == int(expected_count),
+        }
         for state in states
     ]
 

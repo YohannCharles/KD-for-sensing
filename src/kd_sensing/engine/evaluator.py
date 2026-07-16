@@ -6,6 +6,7 @@ from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import (
     build_dataloader,
     build_split_dataset,
+    shutdown_dataloader_workers,
 )
 from kd_sensing.engine.data_factory_scalers import fit_gps_scaler
 from kd_sensing.engine.modality_resolution import (
@@ -25,7 +26,7 @@ from kd_sensing.engine.run_status import (
     write_failed_status_for_active_run,
     write_running_status,
 )
-from kd_sensing.engine.runtime import configure_torch_runtime_threads
+from kd_sensing.engine.runtime import configure_cuda_performance_settings, configure_torch_runtime_threads
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.artifact_registry import (
@@ -52,6 +53,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     device = build_device(cfg)
+    configure_cuda_performance_settings(cfg, device)
     run_dir = create_eval_run_dir(cfg, output_dir=output_dir)
     write_running_status(run_dir, cfg, kind="evaluation")
     checkpoint_resolution = resolve_evaluation_checkpoint(cfg, weights)
@@ -120,7 +122,10 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
                 }
             )
     criterion = build_task_criterion(cfg)
-    metrics = validate(model, dataloader, cfg, criterion, device, output_dir=run_dir)
+    try:
+        metrics = validate(model, dataloader, cfg, criterion, device, output_dir=run_dir)
+    finally:
+        shutdown_dataloader_workers(dataloader)
     report = {
         **metrics,
         "checkpoint_load": checkpoint_load,

@@ -26,6 +26,12 @@
 - **THEN** 只有满足预注册 J 与保护门槛的候选才可标记为晋级
 - **AND** 未晋级候选 MUST 不进入组合或 outer evaluation
 
+#### Scenario: development candidate 完成训练
+- **WHEN** H4 design candidate 完成其 40 epoch training
+- **THEN** trainer MUST NOT 构造或迭代 outer test loader，也不得发布任何 outer-test metrics
+- **AND** `final_test_metrics` 如存在，MUST 仅记录未执行状态而不能包含 test evidence
+- **AND** candidate 只能记录 inner train/validation 的 development evidence
+
 ### Requirement: BPA、CMA 与额外 loss 的比较边界明确
 设计筛选 MUST 将 BPA temperature、sigma、fused weight 与 modality weight 作为可单独变化的候选。CMA MUST 从 BPA-disabled matched control 出发并保持 BPA/CMA 互斥；same-model superset KL 可作为已有额外 loss 的候选，但系统 MUST 不在本 change 中临时引入无预注册假设的新 loss。
 

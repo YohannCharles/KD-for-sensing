@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import pytest
 import torch
 
 from kd_sensing.config import load_config
-from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import evaluate_missing_matrix
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import _beam_classification_metrics, evaluate_missing_matrix
+from kd_sensing.evaluation.metrics import calculate_dba_score
 from kd_sensing.utils.missing_patterns import get_default_missing_patterns, make_fixed_missing_mask
 
 
@@ -44,6 +46,20 @@ def test_eval_matrix_reports_fixed_current_patterns() -> None:
     names = {row["pattern"] for row in results}
     assert {"full", "missing_image", "gps_only", "avg_missing"} <= names
     assert all(row["num_samples"] == 2 for row in results)
+    assert all(row["metric_profile"] == "64_beam_circular_topk_progressive_top3_dba_v1" for row in results)
+
+
+def test_fixed_mask_adba_uses_progressive_top3_dba() -> None:
+    logits = torch.full((1, 64), -10.0)
+    logits[0, 4], logits[0, 63], logits[0, 2] = 8.0, 7.0, 6.0
+    target = torch.tensor([0])
+    cfg = {"evaluation": {"dba_delta": 5, "dba_distance_mode": "circular"}}
+
+    metrics = _beam_classification_metrics(logits, target, cfg)
+    expected = float(calculate_dba_score(logits, target, 5, distance_mode="circular")[0])
+
+    assert metrics["adba"] == pytest.approx(expected)
+    assert metrics["adba"] != pytest.approx(metrics["top1_proximity_dba"])
 
 
 class FakeUMaskModel(torch.nn.Module):

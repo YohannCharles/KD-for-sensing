@@ -7,7 +7,7 @@
 最小验证：
 
 ```bash
-conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_all_weather_runtime.py tests/test_s1_temporal_superset_training.py -q
+conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_prepared_sequence.py tests/test_mmw_all_weather_runtime.py tests/test_cli_strict_overrides.py tests/test_s1_temporal_superset_training.py -q
 make verify-quick
 ```
 

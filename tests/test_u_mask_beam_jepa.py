@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from kd_sensing.config import load_config
+from kd_sensing.engine.optim import build_optimizer
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
 from kd_sensing.losses.u_mask_beam_jepa import u_mask_beam_jepa_loss
 from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
@@ -105,10 +106,42 @@ def test_reliability_mean_ignores_temporally_empty_modalities_and_keeps_router_d
     assert torch.allclose(weights[0, 1], torch.tensor(0.0))
     assert torch.is_tensor(output["router_gate_logits"])
     assert torch.is_tensor(output["supervised_router_gate_weights"])
+    assert output["router_gate_logits"].requires_grad is False
+    assert all(not parameter.requires_grad for parameter in model.supervised_router.parameters())
 
     result = u_mask_beam_jepa_loss(output, torch.tensor([[0]]), router_oracle_weight=0.0)
     result["loss"].backward()
     assert torch.isfinite(result["loss"])
+    assert result["diagnostics"]["router_oracle_disabled"] == 1.0
+
+
+def test_inactive_t2_head_is_frozen_but_checkpoint_compatible() -> None:
+    classifier = MODELS.build(_model_config(head_type="classifier"))
+    optimizer = build_optimizer({"training": {"lr": 1.0e-3}}, classifier)
+    optimizer_parameters = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+
+    assert all(not parameter.requires_grad for parameter in classifier.prototype_bank.parameters())
+    assert all(parameter.requires_grad for parameter in classifier.classifier.parameters())
+    assert not {id(parameter) for parameter in classifier.prototype_bank.parameters()} & optimizer_parameters
+    assert "prototype_bank.prototypes" in classifier.state_dict()
+    metadata = classifier.training_strategy_metadata()
+    assert metadata["active_head"] == "classifier"
+    assert "prototype_bank" in metadata["frozen_branches"]
+
+    prototype = MODELS.build(_model_config(head_type="prototype"))
+    assert all(not parameter.requires_grad for parameter in prototype.classifier.parameters())
+    assert all(parameter.requires_grad for parameter in prototype.prototype_bank.parameters())
+
+
+def test_zero_router_oracle_weight_does_not_invoke_oracle_loss(monkeypatch) -> None:
+    def unexpected_oracle(*_args, **_kwargs):
+        raise AssertionError("router oracle loss must be skipped at zero weight")
+
+    monkeypatch.setitem(u_mask_beam_jepa_loss.__globals__, "_router_oracle_loss", unexpected_oracle)
+    result = u_mask_beam_jepa_loss(_loss_output(), torch.tensor([[0], [1], [2]]), router_oracle_weight=0.0)
+
+    assert result["diagnostics"]["router_oracle_enabled"] == 0.0
+    assert result["diagnostics"]["router_oracle_disabled"] == 1.0
 
 
 def test_masked_attention_excludes_invalid_temporal_cells_and_has_query_gradient() -> None:

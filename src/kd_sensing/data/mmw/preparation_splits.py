@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ import numpy as np
 
 GROUP_SAFE_TIME_BLOCK = "group_safe_time_block"
 MMW_SPLIT_PROTOCOL_VERSION = "mmw_sequence_split_v2"
+_RESOURCE_REFERENCE_PATTERN = re.compile(r"^(?:camera|radar|gps|bs_gps|lidar|beam|future_beam)\d+$")
 
 
 @dataclass
@@ -202,9 +204,16 @@ def compute_split_leakage_diagnostics(
         for test in test_rows
         if train.get("contiguous_segment_id") == test.get("contiguous_segment_id") and _interval_gap((_start(train), _end(train)), (_start(test), _end(test))) < guard
     )
+    adjacent = sum(
+        1
+        for train in train_rows
+        for test in test_rows
+        if train.get("contiguous_segment_id") == test.get("contiguous_segment_id")
+        and _interval_gap((_start(train), _end(train)), (_start(test), _end(test))) <= 0
+    )
     return {
         "generated_by": "compute_split_leakage_diagnostics",
-        "diagnostics_version": "mmw_split_leakage_v1",
+        "diagnostics_version": "mmw_split_leakage_v2",
         "guard_band_frames": guard,
         "train_window_count": len(train_rows),
         "test_window_count": len(test_rows),
@@ -213,7 +222,85 @@ def compute_split_leakage_diagnostics(
         "train_test_frame_overlap_count": len(overlap),
         "train_test_frame_overlap_examples": sorted(overlap)[:10],
         "guard_band_violations": violations,
+        "adjacent_window_cross_split_count": adjacent,
         "adjacent_window_cross_split_ratio": 0.0,
+    }
+
+
+def compute_split_identity_audit(
+    train_rows: list[dict[str, Any]],
+    test_rows: list[dict[str, Any]],
+    *,
+    train_group_ids: list[str] | tuple[str, ...] | set[str] = (),
+    test_group_ids: list[str] | tuple[str, ...] | set[str] = (),
+) -> dict[str, Any]:
+    """Verify stable sample, group, and resource identities do not cross a split."""
+    roles = {"train": train_rows, "test": test_rows}
+    missing_fields: dict[str, list[str]] = {}
+    stable_ids: dict[str, set[str]] = {}
+    resource_references: dict[str, set[str]] = {}
+    segment_ids: dict[str, set[str]] = {}
+    for role, rows in roles.items():
+        missing: set[str] = set()
+        ids: set[str] = set()
+        refs: set[str] = set()
+        segments: set[str] = set()
+        for row in rows:
+            for field in ("sample_id", "target_sample_id", "contiguous_segment_id"):
+                value = str(row.get(field, "")).strip()
+                if not value:
+                    missing.add(field)
+                elif field == "contiguous_segment_id":
+                    segments.add(value)
+                else:
+                    ids.add(value)
+            row_resource_keys = [key for key in row if _RESOURCE_REFERENCE_PATTERN.fullmatch(str(key))]
+            if not row_resource_keys:
+                missing.add("resource_reference")
+            for key in row_resource_keys:
+                value = str(row.get(key, "")).strip()
+                if not value or value == "-99":
+                    continue
+                refs.add(value)
+        if missing:
+            missing_fields[role] = sorted(missing)
+        stable_ids[role] = ids
+        resource_references[role] = refs
+        segment_ids[role] = segments
+    stable_overlap = stable_ids["train"] & stable_ids["test"]
+    resource_overlap = resource_references["train"] & resource_references["test"]
+    train_groups = {str(value).strip() for value in train_group_ids if str(value).strip()}
+    test_groups = {str(value).strip() for value in test_group_ids if str(value).strip()}
+    group_overlap = train_groups & test_groups
+    reasons = []
+    if missing_fields:
+        reasons.append("missing_identity_or_resource_fields")
+    if stable_overlap:
+        reasons.append("stable_sample_identity_overlap")
+    if resource_overlap:
+        reasons.append("resource_reference_overlap")
+    if group_overlap:
+        reasons.append("group_assignment_overlap")
+    return {
+        "generated_by": "compute_split_identity_audit",
+        "audit_version": "mmw_split_identity_v1",
+        "status": "passed" if not reasons else "failed",
+        "reasons": reasons,
+        "missing_fields": missing_fields,
+        "train_stable_identity_count": len(stable_ids["train"]),
+        "test_stable_identity_count": len(stable_ids["test"]),
+        "stable_identity_overlap_count": len(stable_overlap),
+        "stable_identity_overlap_examples": sorted(stable_overlap)[:10],
+        "train_resource_reference_count": len(resource_references["train"]),
+        "test_resource_reference_count": len(resource_references["test"]),
+        "resource_reference_overlap_count": len(resource_overlap),
+        "resource_reference_overlap_examples": sorted(resource_overlap)[:10],
+        "train_contiguous_segment_count": len(segment_ids["train"]),
+        "test_contiguous_segment_count": len(segment_ids["test"]),
+        "train_group_count": len(train_groups),
+        "test_group_count": len(test_groups),
+        "group_assignment_overlap_count": len(group_overlap),
+        "group_assignment_overlap_examples": sorted(group_overlap)[:10],
     }
 
 
@@ -310,4 +397,10 @@ def _safe_tag(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value).strip())
 
 
-__all__ = ["build_sequence_rows", "build_sequence_splits_from_manifest", "compute_split_leakage_diagnostics", "split_sequence_rows"]
+__all__ = [
+    "build_sequence_rows",
+    "build_sequence_splits_from_manifest",
+    "compute_split_identity_audit",
+    "compute_split_leakage_diagnostics",
+    "split_sequence_rows",
+]

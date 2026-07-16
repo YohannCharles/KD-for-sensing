@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -93,3 +94,44 @@ def test_probe_binding_and_common_batch_selection(monkeypatch: pytest.MonkeyPatc
         }
     )
     assert selected == 64
+
+
+def test_probe_collection_requires_candidate_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    launcher = _load_script(monkeypatch)
+    result = {
+        "status": "safe",
+        "physical_gpu": 0,
+        "requested_batch_size": 64,
+        "actual_batch_size": 64,
+        "peak_reserved_fraction": 0.5,
+        "cuda_visible_devices": "0",
+        "visible_cuda_device_count": 1,
+        "logical_cuda_device": 0,
+        "candidate": "H4-control",
+        "training_profile_id": "umask_h4_v1",
+        "training_profile_sha256": "profile",
+        "candidate_recipe_sha256": "recipe",
+    }
+    (tmp_path / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    expected = {
+        0: {
+            "candidate": "H4-control",
+            "training_profile_id": "umask_h4_v1",
+            "training_profile_sha256": "profile",
+            "candidate_recipe_sha256": "recipe",
+        }
+    }
+    collected = launcher.collect_probe_results(
+        [tmp_path],
+        gpus=(0,),
+        memory_fraction_limit=0.9,
+        required_identities=expected,
+    )
+    assert collected["required_identities"] == expected
+    with pytest.raises(RuntimeError, match="matching the required candidate identity"):
+        launcher.collect_probe_results(
+            [tmp_path],
+            gpus=(0,),
+            memory_fraction_limit=0.9,
+            required_identities={0: {**expected[0], "candidate": "D96"}},
+        )

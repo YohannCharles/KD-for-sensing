@@ -6,7 +6,7 @@ import torch
 from kd_sensing.engine.artifacts import ArtifactWriter, final_config_with_runtime
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.checkpointing import CheckpointManager
-from kd_sensing.engine.data_factory import build_dataloaders
+from kd_sensing.engine.data_factory import build_dataloaders, final_test_enabled
 from kd_sensing.engine.debug_diagnostics import (
     ModuleHealthTracker,
     build_startup_summary,
@@ -278,14 +278,24 @@ def _run_training_loop(context: TrainingRunContext) -> None:
 
 
 def _finalize_training_run(context: TrainingRunContext) -> dict:
-    context.final_test_metrics, context.final_test_checkpoint_load = _evaluate_final_test_split(
-        context.primary_model,
-        context.dataloaders["test"],
-        context.cfg,
-        context.task_criterion,
-        context.device,
-        run_dir=context.run_dir,
-    )
+    if final_test_enabled(context.cfg):
+        test_loader = context.dataloaders.get("test")
+        if test_loader is None:
+            raise RuntimeError("Final test is enabled but the test dataloader was not constructed.")
+        context.final_test_metrics, context.final_test_checkpoint_load = _evaluate_final_test_split(
+            context.primary_model,
+            test_loader,
+            context.cfg,
+            context.task_criterion,
+            context.device,
+            run_dir=context.run_dir,
+        )
+    else:
+        context.final_test_metrics = {
+            "status": "not_run",
+            "reason": "training.final_test.enabled=false",
+        }
+        context.final_test_checkpoint_load = None
     if context.final_test_checkpoint_load is not None:
         context.state.checkpoint_loads.append(context.final_test_checkpoint_load)
     context.final_artifacts = context.artifact_writer.write_final_artifacts(

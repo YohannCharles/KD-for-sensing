@@ -114,6 +114,7 @@ def collect_probe_results(
     *,
     gpus: tuple[int, ...],
     memory_fraction_limit: float,
+    required_identities: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     records_by_gpu: dict[int, list[dict[str, Any]]] = {int(gpu): [] for gpu in gpus}
     sources: list[str] = []
@@ -132,6 +133,21 @@ def collect_probe_results(
                 continue
             payload["report_path"] = str(path)
             records_by_gpu[physical_gpu].append(payload)
+    if required_identities is not None:
+        expected_gpus = set(int(gpu) for gpu in gpus)
+        if set(int(gpu) for gpu in required_identities) != expected_gpus:
+            raise ValueError("Probe identity requirements must contain exactly the requested physical GPUs.")
+        for physical_gpu, expected in required_identities.items():
+            matching = [
+                row
+                for row in records_by_gpu[int(physical_gpu)]
+                if all(str(row.get(key, "")) == str(value) for key, value in expected.items())
+            ]
+            if not matching:
+                raise RuntimeError(
+                    f"GPU{physical_gpu} has no trusted batch probe matching the required candidate identity: {expected}."
+                )
+            records_by_gpu[int(physical_gpu)] = matching
     selected = select_highest_common_safe_batch(
         records_by_gpu,
         memory_fraction_limit=memory_fraction_limit,
@@ -153,6 +169,11 @@ def collect_probe_results(
                     "visible_cuda_device_count",
                     "logical_cuda_device",
                     "probe_domain_id",
+                    "candidate",
+                    "training_profile_id",
+                    "training_profile_sha256",
+                    "candidate_recipe_sha256",
+                    "config_sha256",
                     "error",
                 )
                 if key in row
@@ -166,6 +187,7 @@ def collect_probe_results(
         "memory_fraction_limit": float(memory_fraction_limit),
         "selected_common_batch_size": int(selected),
         "records": compact_records,
+        "required_identities": deepcopy(required_identities) if required_identities is not None else None,
     }
 
 
@@ -438,7 +460,11 @@ def _resource_overlap_counts(left_rows: list[dict[str, str]], right_rows: list[d
 
 def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Derive a shared group-safe development validation split from each outer train CSV."""
-    from kd_sensing.data.mmw.preparation_splits import compute_split_leakage_diagnostics, split_sequence_rows
+    from kd_sensing.data.mmw.preparation_splits import (
+        compute_split_identity_audit,
+        compute_split_leakage_diagnostics,
+        split_sequence_rows,
+    )
 
     split_root = output_root / "inner_splits"
     if split_root.exists():
@@ -483,6 +509,16 @@ def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[lis
             for key in ("train_test_frame_overlap_count", "adjacent_window_cross_split_count", "guard_band_violations")
         ):
             raise ValueError(f"{domain['id']} group-safe inner split failed its train/validation leakage audit.")
+        identity_audit = compute_split_identity_audit(
+            train_rows,
+            validation_rows,
+            train_group_ids=split.get("train_groups", ()),
+            test_group_ids=split.get("test_groups", ()),
+        )
+        if identity_audit["status"] != "passed":
+            raise ValueError(
+                f"{domain['id']} group-safe inner split failed its identity/resource audit: {identity_audit['reasons']}."
+            )
         destination = _inner_split_dir(output_root, domain)
         if destination.exists():
             raise FileExistsError(f"Refusing to overwrite inner split directory: {destination}")
@@ -522,11 +558,7 @@ def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[lis
                 },
                 "group_assignments": split.get("group_assignments", []),
                 "train_validation_leakage": train_validation,
-                "train_validation_identity_audit": {
-                    "status": "passed",
-                    "source": "group_safe_csv_leakage_diagnostic",
-                    "diagnostics": train_validation,
-                },
+                "train_validation_identity_audit": identity_audit,
                 "outer_test_resource_overlap": _resource_overlap_counts(
                     [*train_rows, *validation_rows],
                     _read_csv_rows(source_test)[1],
@@ -884,9 +916,18 @@ def launch_jobs(manifest_path: Path, manifest: dict[str, Any]) -> int:
             job["config_path"],
         ]
         handle = Path(job["log_path"]).open("w", encoding="utf-8")
-        job.update({"status": "running", "start_time": _now(), "command": command})
-        running.append((subprocess.Popen(command, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT), job, handle))
-    _write_json(manifest_path, manifest)
+        job.update({"status": "starting", "start_time": _now(), "command": command})
+        _write_json(manifest_path, manifest)
+        try:
+            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            handle.close()
+            job.update({"status": "failed_to_start", "error": f"{type(exc).__name__}: {exc}", "end_time": _now()})
+            _abort_running_jobs(manifest_path, manifest, running, reason="sibling_start_failed")
+            return 1
+        running.append((process, job, handle))
+        job["status"] = "running"
+        _write_json(manifest_path, manifest)
     failed = False
     for process, job, handle in running:
         code = process.wait()
@@ -895,6 +936,28 @@ def launch_jobs(manifest_path: Path, manifest: dict[str, Any]) -> int:
         failed = failed or code != 0
         _write_json(manifest_path, manifest)
     return 1 if failed else 0
+
+
+def _abort_running_jobs(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    running: list[tuple[subprocess.Popen, dict[str, Any], Any]],
+    *,
+    reason: str,
+) -> None:
+    for process, _, _ in running:
+        if process.poll() is None:
+            process.terminate()
+    for process, job, handle in running:
+        try:
+            code = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            code = process.wait()
+        finally:
+            handle.close()
+        job.update({"status": "aborted", "return_code": code, "abort_reason": reason, "end_time": _now()})
+    _write_json(manifest_path, manifest)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1009,7 +1072,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def _now() -> str:

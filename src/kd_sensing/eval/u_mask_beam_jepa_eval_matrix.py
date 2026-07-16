@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
 from kd_sensing.engine.runtime import prepare_task_labels, run_model_step
 from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats
-from kd_sensing.evaluation.metrics import beam_classification_circular_summary
+from kd_sensing.evaluation.metrics import beam_classification_circular_summary, calculate_dba_score
 from kd_sensing.utils.missing_patterns import (
     canonical_missing_pattern_name,
     make_fixed_missing_mask,
@@ -40,6 +40,7 @@ DEFAULT_COLUMNS = [
     "top3",
     "top5",
     "adba",
+    "top1_proximity_dba",
     "mae",
     "mean_confidence",
     "mean_global_reliability",
@@ -358,6 +359,7 @@ class _Accumulator:
             "top5",
             "within_3",
             "adba",
+            "top1_proximity_dba",
             "mae",
             "mean_confidence",
             "mean_global_reliability",
@@ -387,22 +389,36 @@ class _Accumulator:
 
 def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any]) -> dict[str, float]:
     eval_cfg = cfg["evaluation"]
-    circular = bool(eval_cfg.get("beam_distance_circular", True))
+    distance_mode = _evaluation_distance_mode(cfg)
     summary = beam_classification_circular_summary(
         logits,
         target,
         num_beams=int(logits.shape[-1]),
         dba_delta=float(eval_cfg.get("dba_delta", 5)),
-        distance_mode="circular" if circular else "linear",
+        distance_mode=distance_mode,
+    )
+    adba = calculate_dba_score(
+        logits,
+        target,
+        float(eval_cfg.get("dba_delta", 5)),
+        distance_mode=distance_mode,
     )
     return {
         "top1": float(summary.get("top1", math.nan)),
         "top3": float(summary.get("top3", math.nan)),
         "top5": float(summary.get("top5", math.nan)),
         "within_3": float(summary.get("within_3", math.nan)),
-        "adba": float(summary.get("DBA", math.nan)),
+        "adba": float(adba[0]) if len(adba) else math.nan,
+        "top1_proximity_dba": float(summary.get("DBA", math.nan)),
         "mae": float(summary.get("mean_error", summary.get("mean_circular_error", math.nan))),
     }
+
+
+def _evaluation_distance_mode(cfg: dict[str, Any]) -> str:
+    evaluation = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
+    if "dba_distance_mode" in evaluation:
+        return str(evaluation["dba_distance_mode"])
+    return "circular" if bool(evaluation.get("beam_distance_circular", True)) else "linear"
 
 
 def _training_beam_distance_circular(cfg: dict[str, Any]) -> bool:
@@ -440,6 +456,7 @@ def _average_missing_results(results: list[dict[str, Any]]) -> dict[str, Any] | 
         "top5",
         "within_3",
         "adba",
+        "top1_proximity_dba",
         "mae",
         "mean_confidence",
         "mean_global_reliability",
@@ -520,11 +537,7 @@ def _base_comparability_metadata(cfg: dict[str, Any], modalities: list[str]) -> 
         "seed": experiment.get("seed", comparability.get("seed", "")),
         "split": str(comparability.get("split") or evaluation.get("split") or dataset.get("split") or ""),
         "label_space": label_space,
-        "metric_profile": str(
-            comparability.get("metric_profile")
-            or evaluation.get("metric_profile")
-            or "u_mask_beam_jepa_eval_matrix_topk_dba"
-        ),
+        "metric_profile": _metric_profile(comparability, evaluation, num_classes, cfg),
         "target_source": str(
             comparability.get("target_source")
             or dataset.get("beam_target_source")
@@ -532,6 +545,20 @@ def _base_comparability_metadata(cfg: dict[str, Any], modalities: list[str]) -> 
             or ""
         ),
     }
+
+
+def _metric_profile(
+    comparability: dict[str, Any],
+    evaluation: dict[str, Any],
+    num_classes: Any,
+    cfg: dict[str, Any],
+) -> str:
+    profile = str(comparability.get("metric_profile") or evaluation.get("metric_profile") or "")
+    legacy_profiles = {"64_beam_circular_topk", "64_beam_linear_topk", "u_mask_beam_jepa_eval_matrix_topk_dba"}
+    if profile and profile not in legacy_profiles:
+        return profile
+    beams = int(num_classes) if num_classes not in (None, "") else 64
+    return f"{beams}_beam_{_evaluation_distance_mode(cfg)}_topk_progressive_top3_dba_v1"
 
 
 def _pattern_group(pattern: str) -> str:

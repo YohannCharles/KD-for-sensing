@@ -3,6 +3,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import subprocess
 from copy import deepcopy
@@ -13,6 +14,7 @@ from typing import Any
 import yaml
 
 from kd_sensing.config import load_config
+from kd_sensing.data.transform_ops.io import joined_resource
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -256,10 +258,14 @@ def preflight(
         raise ValueError(f"Invalid MMW preflight modalities: {list(selected_modalities)}.")
     reports = []
     failures = []
-    prefix_by_modality = {"image": "camera", "radar": "radar", "gps": "gps", "lidar": "lidar"}
-    required = {"future_beam1"}
+    prefix_by_modality = {"image": ("camera",), "radar": ("radar",), "gps": ("gps", "bs_gps"), "lidar": ("lidar",)}
+    required = {"future_beam_label1"}
     for modality in selected_modalities:
-        required.update(f"{prefix_by_modality[modality]}{index}" for index in range(1, 6))
+        required.update(
+            f"{prefix}{index}"
+            for prefix in prefix_by_modality[modality]
+            for index in range(1, 6)
+        )
     for domain in domain_inventory:
         root = ROOT / domain["data_root"]
         split_root = root / "Prepared" / domain["scene"] / "splits" / SPLIT_TAG
@@ -308,24 +314,64 @@ def _inspect_csv(
         if missing_columns:
             failures.append(f"missing columns: {','.join(missing_columns)}")
         sample_count = 0
-        missing_paths = []
-        path_columns = sorted(required - {"future_beam1"}) + ["future_beam1"]
-        for row in reader:
+        invalid_entries = []
+        path_columns = sorted(column for column in required if not column.startswith("future_beam_label"))
+        label_columns = sorted(column for column in required if column.startswith("future_beam_label"))
+        for row_index, row in enumerate(reader):
             sample_count += 1
             for column in path_columns:
+                if column not in fields:
+                    continue
                 value = str(row.get(column, "")).strip()
-                if value and value != "-99" and not (root / value).exists() and len(missing_paths) < 20:
-                    missing_paths.append(f"{column}:{value}")
+                issue = _resource_issue(root, column, value)
+                if issue is not None and len(invalid_entries) < 20:
+                    invalid_entries.append(f"row {row_index} {issue}")
+                if column.startswith("radar") and issue is None:
+                    if "_RA" not in value:
+                        if len(invalid_entries) < 20:
+                            invalid_entries.append(f"row {row_index} {column} must reference an _RA map")
+                    else:
+                        da_issue = _resource_issue(root, f"{column} (_DA)", value.replace("_RA", "_DA"))
+                        if da_issue is not None and len(invalid_entries) < 20:
+                            invalid_entries.append(f"row {row_index} {da_issue}")
+            for column in label_columns:
+                if column not in fields:
+                    continue
+                issue = _label_issue(column, row.get(column))
+                if issue is not None and len(invalid_entries) < 20:
+                    invalid_entries.append(f"row {row_index} {issue}")
         if sample_count == 0:
             failures.append("empty CSV")
-        if missing_paths:
-            failures.append(f"missing artifacts: {missing_paths[:4]}")
+        if invalid_entries:
+            failures.append(f"invalid inputs: {invalid_entries[:4]}")
     return {
         "path": str(path.relative_to(ROOT)),
         "sample_count": sample_count,
         "columns": sorted(fields),
         "failures": failures,
     }
+
+
+def _resource_issue(root: Path, column: str, value: str) -> str | None:
+    if not value or value.lower() in {"-99", "nan", "none"}:
+        return f"is missing {column}"
+    try:
+        path = joined_resource(root, value)
+    except ValueError as exc:
+        return f"has invalid {column} path {value!r}: {exc}"
+    if not path.is_file():
+        return f"is missing {column} artifact {value!r}"
+    return None
+
+
+def _label_issue(column: str, value: object) -> str | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return f"has invalid {column}={value!r}"
+    if not math.isfinite(numeric) or not numeric.is_integer() or not 0 <= numeric < 64:
+        return f"has invalid {column}={value!r}; expected integer in [0, 63]"
+    return None
 
 
 def build_config(

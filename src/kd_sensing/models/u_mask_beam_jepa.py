@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -20,6 +21,12 @@ def _masked_softmax(logits: torch.Tensor, available: torch.Tensor) -> torch.Tens
         raise ValueError("u_mask_beam_jepa requires one available modality per sample.")
     masked = logits.masked_fill(~available, torch.finfo(logits.dtype).min)
     return torch.softmax(masked, dim=1) * available.to(dtype=logits.dtype)
+
+
+def _freeze_module(module: nn.Module | None) -> None:
+    if module is not None:
+        for parameter in module.parameters():
+            parameter.requires_grad_(False)
 
 
 @MODELS.register("u_mask_beam_jepa")
@@ -136,6 +143,20 @@ class UMaskBeamJEPA(nn.Module):
             if self.router_use_pattern_features
             else None
         )
+        frozen_branches: list[str] = []
+        if self.head_type == "prototype":
+            _freeze_module(self.classifier)
+            frozen_branches.append("classifier")
+        else:
+            _freeze_module(self.prototype_bank)
+            frozen_branches.append("prototype_bank")
+        if self.fusion_type == "reliability_mean":
+            _freeze_module(self.supervised_router)
+            frozen_branches.append("supervised_router")
+            if self.router_pattern_bias is not None:
+                _freeze_module(self.router_pattern_bias)
+                frozen_branches.append("router_pattern_bias")
+        self.frozen_branches = tuple(frozen_branches)
 
     def forward(
         self,
@@ -174,12 +195,15 @@ class UMaskBeamJEPA(nn.Module):
         unimodal_logits = self._head_logits(latent.reshape(-1, self.d_model)).reshape(
             latent.shape[0], len(self.modalities), self.num_classes
         )
-        router_features = self._router_features(unimodal_logits, reliability, available)
-        eye = torch.eye(len(self.modalities), device=latent.device, dtype=latent.dtype).unsqueeze(0).expand(latent.shape[0], -1, -1)
-        router_logits = self.supervised_router(torch.cat([router_features, eye], dim=-1)).squeeze(-1)
-        if self.router_pattern_bias is not None:
-            router_logits = router_logits + self.router_pattern_bias(available.to(dtype=latent.dtype))
-        router_weights = _masked_softmax(router_logits, available)
+        with (nullcontext() if self.fusion_type == "supervised_router" else torch.no_grad()):
+            router_features = self._router_features(unimodal_logits, reliability, available)
+            eye = torch.eye(len(self.modalities), device=latent.device, dtype=latent.dtype).unsqueeze(0).expand(
+                latent.shape[0], -1, -1
+            )
+            router_logits = self.supervised_router(torch.cat([router_features, eye], dim=-1)).squeeze(-1)
+            if self.router_pattern_bias is not None:
+                router_logits = router_logits + self.router_pattern_bias(available.to(dtype=latent.dtype))
+            router_weights = _masked_softmax(router_logits, available)
         fusion_weights = (
             router_weights
             if self.fusion_type == "supervised_router"
@@ -227,6 +251,9 @@ class UMaskBeamJEPA(nn.Module):
             "consumes_missing_modality_metadata": True,
             "fusion_type": self.fusion_type,
             "head_type": self.head_type,
+            "active_head": self.head_type,
+            "frozen_branches": list(self.frozen_branches),
+            "router_trainable": self.fusion_type == "supervised_router",
             "router_feature_names": list(self.router_feature_names),
             "temporal_pooling": dict(self.temporal_pooling),
             "temporal_pooling_type": self.temporal_pooling["type"],

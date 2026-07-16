@@ -86,6 +86,25 @@ def test_amber_full_attention_mask_blocks_missing_modalities() -> None:
     assert all_but_one["amber_full_attention_key_padding_mask"][0, 1 + 6].item() is True
 
 
+def test_amber_full_padding_tokens_are_unavailable_and_excluded_from_pooled_features() -> None:
+    model = _amber_full_test_model(token_counts={"image": 4, "radar": 4, "gps": 1, "lidar": 4})
+    batch = _synthetic_modalities()
+    batch["gps_batch"] = torch.full_like(batch["gps_batch"], 6.0)
+
+    model.train()
+    output = model(**batch)
+
+    gps_start = 1 + 2 * 4
+    key_padding = output["amber_full_attention_key_padding_mask"]
+    assert key_padding[0, gps_start].item() is False
+    assert torch.all(key_padding[:, gps_start + 1 : gps_start + 4])
+    assert torch.equal(output["token_features"][:, 2, :, 1:], torch.zeros_like(output["token_features"][:, 2, :, 1:]))
+    assert torch.equal(output["input_features"][:, :, 16:24], torch.full((2, 2, 8), 6.0))
+    auxiliary = output["amber_full_auxiliary"]
+    assert auxiliary is not None
+    assert torch.equal(auxiliary["token_availability_mask"][:, 2, :, 1:], torch.zeros(2, 2, 3, dtype=torch.bool))
+
+
 def test_amber_full_loss_weighting_and_missing_payload_failure() -> None:
     model = _amber_full_test_model()
     model.train()
@@ -171,11 +190,15 @@ def test_amber_full_config_metadata_and_architecture_summary() -> None:
     assert summary["components"]["representation_core"]["total_params"] > 0
 
 
-def _amber_full_test_model() -> ModularSequenceModel:
+def _amber_full_test_model(*, token_counts: dict[str, int] | None = None) -> ModularSequenceModel:
     modalities = ["image", "radar", "gps", "lidar"]
+    token_counts = token_counts or {}
     return ModularSequenceModel(
         modalities=modalities,
-        encoders={modality: {"type": "amber_full_test_identity", "output_dim": 8} for modality in modalities},
+        encoders={
+            modality: {"type": "amber_full_test_identity", "output_dim": 8, "token_count": token_counts.get(modality, 2)}
+            for modality in modalities
+        },
         projectors={modality: {"type": "identity"} for modality in modalities},
         representation_core={
             "type": "amber_full_adaptive_mask_transformer",

@@ -42,3 +42,14 @@ def test_matrix_summary_keeps_only_current_beam_fields():
     assert circular["within_3"] == 1.0
     assert linear["mean_error"] == 63.0
     assert linear["within_3"] == 0.0
+
+
+def test_topk_distance_respects_linear_mode_at_beam_wrap_boundary():
+    logits = torch.full((1, 64), -10.0)
+    logits[0, 63], logits[0, 2], logits[0, 3] = 8.0, 7.0, 6.0
+    labels = torch.tensor([0])
+
+    assert circular_topk_min_distance(logits, labels, k=3, num_beams=64, distance_mode="circular").tolist() == [1]
+    assert circular_topk_min_distance(logits, labels, k=3, num_beams=64, distance_mode="linear").tolist() == [2]
+    assert beam_classification_circular_summary(logits, labels, num_beams=64, distance_mode="circular")["top3"] == 0.0
+    assert beam_classification_circular_summary(logits, labels, num_beams=64, distance_mode="linear")["top3"] == 0.0

@@ -69,6 +69,7 @@ def run_training_epoch_loop(
     timing_logger = _TimingCsvLogger(cfg, run_dir, device=device)
     for epoch in _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):
         _set_epoch_recursive(primary_model, epoch)
+        _set_dataset_epoch_recursive(dataloaders["train"].dataset, epoch)
         sampler = getattr(dataloaders["train"], "sampler", None)
         if callable(getattr(sampler, "set_epoch", None)):
             sampler.set_epoch(epoch)
@@ -225,6 +226,19 @@ def _set_epoch_recursive(module, epoch: int) -> None:
         return
     for child in children():
         _set_epoch_recursive(child, epoch)
+
+
+def _set_dataset_epoch_recursive(dataset, epoch: int) -> None:
+    setter = getattr(dataset, "set_epoch", None)
+    if callable(setter):
+        setter(int(epoch))
+    nested = getattr(dataset, "datasets", None)
+    if isinstance(nested, (list, tuple)):
+        for child in nested:
+            _set_dataset_epoch_recursive(child, epoch)
+    parent = getattr(dataset, "dataset", None)
+    if parent is not None:
+        _set_dataset_epoch_recursive(parent, epoch)
 
 
 def _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):

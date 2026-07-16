@@ -53,6 +53,7 @@ def test_evaluation_provenance_separates_prototype_router_and_metric_geometry(mo
     assert provenance["router_oracle_geometry"] == "circular"
     assert provenance["training_beam_geometry"] == "linear+circular"
     assert provenance["dba_distance_mode"] == "circular"
+    assert provenance["metric_profile"] == "64_beam_circular_topk_progressive_top3_dba_v1"
 
 
 def test_evaluation_provenance_separates_prototype_head_from_bpa_auxiliary(monkeypatch):

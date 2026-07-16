@@ -25,7 +25,11 @@ def metadata_rows_from_batch(metadata: Any) -> list[dict[str, Any]]:
 
 def sample_ids_from_batch(batch: Mapping[str, Any]) -> list[str]:
     rows = metadata_rows_from_batch(batch.get("metadata"))
-    ids = [str(row["sample_id"]) for row in rows if row.get("sample_id") not in (None, "")]
+    ids = [
+        str(row.get("stable_sample_id") or row["sample_id"])
+        for row in rows
+        if (row.get("stable_sample_id") or row.get("sample_id")) not in (None, "")
+    ]
     if ids:
         return ids
     value = batch.get("sample_id")

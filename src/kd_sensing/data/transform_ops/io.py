@@ -6,7 +6,15 @@ import numpy as np
 
 
 def joined_resource(data_root: str | Path, rel_path: str) -> Path:
-    return Path(data_root) / str(rel_path).lstrip("/")
+    root = Path(data_root).resolve()
+    value = str(rel_path).strip().replace("\\", "/")
+    candidate = Path(value)
+    if not value or candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(f"Resource path must be relative to data_root: {rel_path!r}")
+    resolved = (root / candidate).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"Resource path escapes data_root: {rel_path!r}")
+    return resolved
 
 
 def atomic_save_npy(path: str | Path, array: np.ndarray) -> None:

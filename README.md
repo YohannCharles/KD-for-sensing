@@ -7,13 +7,19 @@
 所有项目命令使用 `kd_mm_beam` 环境：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/mmw/t2.yaml
+# MMW 会先校验 15 个 condition/scene/split，并由 launcher 写入带训练画像的 generated config。
+conda run -n kd_mm_beam python scripts/launch_mmw_all_weather_matrix.py \
+  --output-root outputs/mmw_t2_seed1 --methods T2 --seeds 1 --gpus 0 --preflight-only
+conda run -n kd_mm_beam python scripts/launch_mmw_all_weather_matrix.py \
+  --output-root outputs/mmw_t2_seed1 --methods T2 --seeds 1 --gpus 0
+
+# DeepSense6G 仍使用其 tracked T2 recipe；本地 CSV 和资源必须已准备完成。
 conda run -n kd_mm_beam kd-sensing-train --config configs/deepsense6g/t2.yaml
 conda run -n kd_mm_beam kd-sensing-evaluate --help
 conda run -n kd_mm_beam kd-sensing-preprocess --help
 ```
 
-MMW 主实验与受控消融通过 `scripts/launch_mmw_all_weather_matrix.py`、`scripts/eval_mmw_all_weather_matrix.py`、`scripts/launch_mmw_t2_hyperparameter_screening.py` 和 BPA/CMA runner 运行。它们只读取 `configs/mmw/` 下的 tracked recipe，不读取 `outputs/` 中的历史配置。
+`configs/mmw/t2.yaml` 是 architecture recipe，不包含 MMW 的 condition、scene、split 或训练画像，不能单独作为 MMW 训练命令。MMW 主实验与受控消融通过 `scripts/launch_mmw_all_weather_matrix.py`、`scripts/eval_mmw_all_weather_matrix.py`、`scripts/launch_mmw_t2_hyperparameter_screening.py` 和 BPA/CMA runner 运行。它们只读取 `configs/mmw/` 下的 tracked recipe，不读取 `outputs/` 中的历史配置。
 
 ## 范围
 

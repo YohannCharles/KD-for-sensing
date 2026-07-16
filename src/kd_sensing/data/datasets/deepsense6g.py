@@ -2,12 +2,13 @@
 
 import csv
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, get_worker_info
 
 from kd_sensing.data.transform_ops.gps import GPSStandardScaler, load_gps_feature_sequence, normalize_gps_feature_mode
 from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform, load_rgb_imagenet_frames
@@ -135,6 +136,8 @@ class DeepSense6GDataset(Dataset):
         self.lidar_augment = bool(lidar_augment)
         self.lidar_point_dropout = float(lidar_point_dropout)
         self.lidar_jitter_std = float(lidar_jitter_std)
+        self._lidar_augmentation_seed = int(portion_seed)
+        self._lidar_epoch = 0
 
         self.samples = _load_samples(
             self.root_csv,
@@ -143,6 +146,10 @@ class DeepSense6GDataset(Dataset):
             portion=float(portion),
             portion_strategy=portion_strategy,
             portion_seed=int(portion_seed),
+        )
+        self._future_beam_labels = _load_future_beam_labels(
+            self.data_root,
+            self.samples.future_beam_paths,
         )
         self.schema_identity = {
             "dataset_family": "DeepSense6G",
@@ -191,14 +198,7 @@ class DeepSense6GDataset(Dataset):
         return self._with_metadata(idx, sample)
 
     def _target_beam_label(self, idx: int, horizon: int) -> int:
-        path = joined_resource(self.data_root, self.samples.future_beam_paths[idx][horizon])
-        try:
-            powers = np.asarray(np.loadtxt(path, dtype=np.float64)).reshape(-1)
-        except Exception as exc:
-            raise ValueError(f"Failed to read DeepSense6G future beam power file {path}: {exc}") from exc
-        if powers.size != BEAM_POWER_SIZE or not np.isfinite(powers).all():
-            raise ValueError(f"DeepSense6G future beam power file {path} must contain {BEAM_POWER_SIZE} finite values.")
-        return int(np.argmax(powers))
+        return self._future_beam_labels[idx][horizon]
 
     def _gps_features_for_index(self, idx: int) -> np.ndarray:
         return load_gps_feature_sequence(
@@ -224,7 +224,18 @@ class DeepSense6GDataset(Dataset):
             augment=augment,
             point_dropout=self.lidar_point_dropout,
             jitter_std=self.lidar_jitter_std,
+            rng=self._lidar_rng(idx) if augment else None,
         )
+
+    def set_epoch(self, epoch: int) -> None:
+        self._lidar_epoch = int(epoch)
+
+    def _lidar_rng(self, idx: int) -> np.random.Generator:
+        worker = get_worker_info()
+        worker_id = worker.id if worker is not None else 0
+        sample_id = str(self.samples.rows[idx].get("sample_id") or self.samples.rows[idx].get("seq_index") or idx)
+        payload = f"{self._lidar_augmentation_seed}:{self._lidar_epoch}:{worker_id}:{self.split}:{sample_id}".encode("utf-8")
+        return np.random.default_rng(int.from_bytes(hashlib.sha256(payload).digest()[:8], "big"))
 
     def _with_metadata(self, idx: int, sample: dict[str, Any]) -> dict[str, Any]:
         row = self.samples.rows[idx]
@@ -348,6 +359,28 @@ def _paths_for_rows(csv_path: Path, rows: list[dict[str, str]], columns: list[st
             values.append(value)
         paths.append(values)
     return paths
+
+
+def _load_future_beam_labels(data_root: Path, paths_by_sample: list[list[str]]) -> list[list[int]]:
+    labels: list[list[int]] = []
+    for sample_index, paths in enumerate(paths_by_sample):
+        sample_labels = []
+        for horizon, rel_path in enumerate(paths):
+            path = joined_resource(data_root, rel_path)
+            try:
+                powers = np.asarray(np.loadtxt(path, dtype=np.float64)).reshape(-1)
+            except Exception as exc:
+                raise ValueError(
+                    f"Failed to read DeepSense6G future beam power file for row {sample_index}, horizon {horizon + 1}: {path}: {exc}"
+                ) from exc
+            if powers.size != BEAM_POWER_SIZE or not np.isfinite(powers).all():
+                raise ValueError(
+                    f"DeepSense6G future beam power file for row {sample_index}, horizon {horizon + 1} "
+                    f"must contain {BEAM_POWER_SIZE} finite values: {path}"
+                )
+            sample_labels.append(int(np.argmax(powers)))
+        labels.append(sample_labels)
+    return labels
 
 
 def _select_rows(

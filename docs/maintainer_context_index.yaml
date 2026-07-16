@@ -19,12 +19,13 @@ task_routes:
     context_path: docs/agent_context/data.md
     authority_paths:
       - openspec/specs/t2-baseline-surface/spec.md
+      - openspec/specs/dataset-loader-behavior/spec.md
       - openspec/specs/project-architecture/spec.md
     owner_modules:
       - src/kd_sensing/data/
       - src/kd_sensing/engine/batch.py
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_all_weather_runtime.py -q
+      - conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_prepared_sequence.py tests/test_mmw_all_weather_runtime.py -q
   - id: config
     context_path: docs/agent_context/configs.md
     authority_paths:
@@ -40,12 +41,13 @@ task_routes:
     context_path: docs/agent_context/cli.md
     authority_paths:
       - openspec/specs/project-entrypoint-lifecycle/spec.md
+      - openspec/specs/canonical-config-resolution/spec.md
       - pyproject.toml
     owner_modules:
       - src/kd_sensing/cli/
       - scripts/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q
+      - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_cli_strict_overrides.py tests/test_architecture_boundaries.py -q
   - id: runtime
     context_path: docs/agent_context/diagnostics.md
     authority_paths:

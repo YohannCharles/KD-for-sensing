@@ -60,7 +60,7 @@ training:
   validation:
     interval_epochs: 40
   allow_tf32: true
-  cudnn_benchmark: true
+  cudnn_benchmark: false
 scheduler:
   type: none
 evaluation:

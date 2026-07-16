@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 from copy import deepcopy
 from pathlib import Path
@@ -143,3 +144,37 @@ def test_domain_balanced_sampler_equalizes_mmw_domains() -> None:
     assert isinstance(sampler, WeightedRandomSampler)
     assert sampler.weights[:2].tolist() == [0.5, 0.5]
     assert sampler.weights[2:].tolist() == [0.125] * 8
+
+
+def test_all_weather_preflight_checks_future_label_bs_gps_and_derived_radar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = _load_script("launch_mmw_all_weather_matrix.py", monkeypatch)
+    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+    root = tmp_path / "dataset"
+    root.mkdir()
+    csv_path = root / "split.csv"
+    fields = ["camera1", "radar1", "gps1", "bs_gps1", "lidar1", "future_beam_label1"]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "camera1": "camera.png",
+                "radar1": "radar_RA.npy",
+                "gps1": "gps.yaml",
+                "bs_gps1": "",
+                "lidar1": "lidar.npy",
+                "future_beam_label1": 64,
+            }
+        )
+    for name in ("camera.png", "radar_RA.npy", "gps.yaml", "lidar.npy"):
+        (root / name).touch()
+
+    report = launcher._inspect_csv(csv_path, root, set(fields))
+    failures = "\n".join(report["failures"])
+
+    assert "bs_gps1" in failures
+    assert "radar1 (_DA)" in failures
+    assert "future_beam_label1" in failures

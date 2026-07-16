@@ -20,5 +20,6 @@ verify-docs:
 verify-compile:
 	$(PYTHON) scripts/verify_compile.py
 
-verify-full: verify-quick verify-cli-config verify-compile
+verify-full: verify-compile
+	$(OPENSPEC) validate --all --strict
 	$(PYTEST) -q
