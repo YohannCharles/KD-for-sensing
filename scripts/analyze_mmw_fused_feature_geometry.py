@@ -19,13 +19,14 @@ from matplotlib.colors import PowerNorm, TwoSlopeNorm
 from scipy.sparse.csgraph import connected_components, shortest_path
 from scipy.stats import spearmanr
 
-from eval_h5_p1_temporal_matrix_v1 import _clone_batch, _mask_in_model_order
 from eval_mmw_all_weather_matrix import (
     BASELINE_SCOPES,
     HISTORY_WINDOW,
     MASK_TYPES,
     RATES,
+    _clone_batch,
     _load_or_create_temporal_cache,
+    _mask_in_model_order,
     _matrix_digest,
 )
 from kd_sensing.data.temporal_missing import DEFAULT_TEMPORAL_MODALITIES, apply_modality_temporal_mask_to_batch
@@ -262,13 +263,7 @@ def extract_domain(
         for batch_index, raw_batch in enumerate(dataloader):
             if max_batches is not None and batch_index >= int(max_batches):
                 break
-            prepared = prepare_evaluation_batch(
-                raw_batch,
-                cfg=cfg,
-                split_name="validation",
-                difficulty_seed=int(cfg.get("experiment", {}).get("seed", 0)),
-                step_index=batch_index,
-            )
+            prepared = prepare_evaluation_batch(raw_batch)
             clean_labels = None
             clean_sample_ids = None
             for spec_index, mask in enumerate(masks):
@@ -280,10 +275,8 @@ def extract_domain(
                     model,
                     cfg.get("experiment", {}).get("task", "fusion"),
                     batch,
-                    model_cfg=model_cfg,
                     seq_length=int(model_cfg.get("seq_length", cfg.get("model", {}).get("seq_length", HISTORY_WINDOW))),
                     num_pred=int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1))),
-                    downsample_ratio=int(model_cfg.get("downsample_ratio", cfg.get("model", {}).get("downsample_ratio", 1))),
                     device=device,
                     extra_model_kwargs={"missing_mask": modality_mask},
                 )

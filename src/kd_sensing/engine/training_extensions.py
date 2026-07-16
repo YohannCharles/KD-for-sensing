@@ -46,14 +46,12 @@ class BatchState:
     step: int
     batch: dict[str, torch.Tensor]
     labels: torch.Tensor
-    soft_beam_targets: torch.Tensor | None
     primary_output: ModelOutput
     primary_logits: torch.Tensor
     controls: ForwardControls
     total_loss: torch.Tensor | None = None
     task_loss: torch.Tensor | None = None
     auxiliary_loss: torch.Tensor | None = None
-    active_modalities: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -62,7 +60,6 @@ class BaseLossResult:
     task_loss: torch.Tensor
     auxiliary_loss: torch.Tensor
     diagnostics: dict[str, float] = field(default_factory=dict)
-    active_modalities: list[str] | None = None
 
 
 @dataclass(frozen=True)

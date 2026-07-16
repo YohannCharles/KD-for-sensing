@@ -1,2 +1,1 @@
-def __dir__() -> list[str]:
-    return sorted(globals())
+"""Current public CLI surface metadata."""

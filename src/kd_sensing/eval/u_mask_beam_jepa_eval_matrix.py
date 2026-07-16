@@ -1,28 +1,19 @@
 import csv
-import hashlib
 import json
 import math
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 
-from kd_sensing.engine.model_output import adapt_model_output
 from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
-from kd_sensing.engine.runtime import prepare_task_batch, run_model_step
+from kd_sensing.engine.runtime import prepare_task_labels, run_model_step
 from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats
 from kd_sensing.evaluation.metrics import beam_classification_circular_summary
-from kd_sensing.eval.missing_patterns import (
+from kd_sensing.utils.missing_patterns import (
     canonical_missing_pattern_name,
-    get_default_missing_patterns,
     make_fixed_missing_mask,
-    sample_eval_random_missing_mask,
-)
-from kd_sensing.engine.pcpg_radar_balance import (
-    missing_count_from_pattern_name,
-    supervised_router_oracle_targets,
 )
 
 COMPARABILITY_FIELDS = (
@@ -36,7 +27,6 @@ COMPARABILITY_FIELDS = (
     "target_source",
     "modalities",
     "pattern_name",
-    "difficulty_digest",
 )
 
 DEFAULT_COLUMNS = [
@@ -124,19 +114,17 @@ def evaluate_missing_matrix(
     dataloader,
     device,
     modalities: list[str],
-    patterns: dict[str, list[int]] | None = None,
-    random_missing: list[float] | None = None,
+    patterns: dict[str, list[int]],
+    cfg: dict[str, Any],
     prediction_index: int | str = "last",
     max_batches: int | None = None,
-    cfg: dict[str, Any] | None = None,
 ) -> list[dict]:
     device = torch.device(device)
     model.to(device)
     model.eval()
-    fixed_patterns = patterns or get_default_missing_patterns(modalities)
     results = []
     with torch.no_grad():
-        for name, pattern in fixed_patterns.items():
+        for name, pattern in patterns.items():
             results.append(
                 _evaluate_pattern(
                     model,
@@ -150,119 +138,12 @@ def evaluate_missing_matrix(
                     modalities=modalities,
                 )
             )
-        for p_missing in random_missing or []:
-            pattern_name = f"random_{float(p_missing):g}"
-            results.append(
-                _evaluate_pattern(
-                    model,
-                    dataloader,
-                    device,
-                    pattern_name=pattern_name,
-                    pattern=None,
-                    num_modalities=len(modalities),
-                    random_p=float(p_missing),
-                    prediction_index=prediction_index,
-                    max_batches=max_batches,
-                    cfg=cfg,
-                    modalities=modalities,
-                )
-            )
     if "avg_missing" not in {row.get("pattern") for row in results}:
         avg = _average_missing_results(results)
         if avg is not None:
             results.append(avg)
     _attach_comparability_metadata(results, modalities, cfg)
     return results
-
-
-def evaluate_oracle_gate_matrix(
-    model,
-    dataloader,
-    device,
-    modalities: list[str],
-    patterns: dict[str, list[int]] | None = None,
-    random_missing: list[float] | None = None,
-    prediction_index: int | str = "last",
-    max_batches: int | None = None,
-    cfg: dict[str, Any] | None = None,
-) -> list[dict]:
-    device = torch.device(device)
-    model.to(device)
-    model.eval()
-    fixed_patterns = patterns or get_default_missing_patterns(modalities)
-    results = []
-    with torch.no_grad():
-        for name, pattern in fixed_patterns.items():
-            results.append(
-                _evaluate_pattern(
-                    model,
-                    dataloader,
-                    device,
-                    pattern_name=name,
-                    pattern=pattern,
-                    prediction_index=prediction_index,
-                    max_batches=max_batches,
-                    cfg=cfg,
-                    modalities=modalities,
-                    oracle_gate=True,
-                )
-            )
-        for p_missing in random_missing or []:
-            results.append(
-                _evaluate_pattern(
-                    model,
-                    dataloader,
-                    device,
-                    pattern_name=f"random_{float(p_missing):g}",
-                    pattern=None,
-                    num_modalities=len(modalities),
-                    random_p=float(p_missing),
-                    prediction_index=prediction_index,
-                    max_batches=max_batches,
-                    cfg=cfg,
-                    modalities=modalities,
-                    oracle_gate=True,
-                )
-            )
-    if "avg_missing" not in {row.get("pattern") for row in results}:
-        avg = _average_missing_results(results)
-        if avg is not None:
-            avg["oracle_chosen_modality_distribution"] = ""
-            results.append(avg)
-    _attach_comparability_metadata(results, modalities, cfg)
-    for row in results:
-        row["oracle_gate"] = "true"
-    return results
-
-
-def pattern_group_metadata(modalities: list[str], results: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    rows = results or []
-    groups: dict[str, list[str]] = {
-        "full": [],
-        "single_missing": [],
-        "multi_missing": [],
-        "only_modality": [],
-        "non_gps_only": [],
-        "random_missing": [],
-        "aggregate": [],
-    }
-    for row in rows:
-        pattern = str(row.get("pattern_name", row.get("pattern", "")))
-        group = _pattern_group(pattern)
-        groups.setdefault(group, []).append(pattern)
-    return {
-        "modalities": list(modalities),
-        "definitions": {
-            "full": "all modalities available",
-            "single_missing": "exactly one modality missing",
-            "multi_missing": "two or more modalities missing while at least one remains",
-            "only_modality": "exactly one modality available",
-            "non_gps_only": "GPS missing and all non-GPS modalities available",
-            "random_missing": "per-sample random missing mask",
-            "aggregate": "derived group metric",
-        },
-        "members": {key: sorted(set(value)) for key, value in groups.items()},
-    }
 
 
 def _evaluate_pattern(
@@ -271,28 +152,20 @@ def _evaluate_pattern(
     device: torch.device,
     *,
     pattern_name: str,
-    pattern: list[int] | None,
+    pattern: list[int],
     prediction_index: int | str,
     max_batches: int | None,
-    cfg: dict[str, Any] | None,
-    num_modalities: int | None = None,
-    random_p: float | None = None,
-    modalities: list[str] | None = None,
-    oracle_gate: bool = False,
+    cfg: dict[str, Any],
+    modalities: list[str],
 ) -> dict[str, Any]:
     accumulator = _Accumulator()
-    oracle_counts: Counter[str] = Counter()
-    mask_label = ",".join(str(int(value)) for value in pattern) if pattern is not None else f"random_{random_p:g}"
+    mask_label = ",".join(str(int(value)) for value in pattern)
     for batch_index, raw_batch in enumerate(dataloader):
         if max_batches is not None and batch_index >= int(max_batches):
             break
         batch_size = _batch_size(raw_batch)
-        metric_missing_mask = (
-            make_fixed_missing_mask(batch_size, pattern, device=device)
-            if pattern is not None
-            else sample_eval_random_missing_mask(batch_size, int(num_modalities), float(random_p), device=device)
-        )
-        forward_missing_mask = None if cfg is not None and _is_full_pattern(pattern) else metric_missing_mask
+        metric_missing_mask = make_fixed_missing_mask(batch_size, pattern, device=device)
+        forward_missing_mask = None if _is_full_pattern(pattern) else metric_missing_mask
         logits, target, diagnostics = _forward_batch(
             model,
             raw_batch,
@@ -300,18 +173,7 @@ def _evaluate_pattern(
             device,
             prediction_index=prediction_index,
             cfg=cfg,
-            step_index=batch_index,
         )
-        if oracle_gate:
-            logits, chosen = _oracle_logits_from_diagnostics(
-                diagnostics,
-                logits,
-                target,
-                metric_missing_mask,
-                modalities,
-                circular_beam_distance=_training_beam_distance_circular(cfg),
-            )
-            oracle_counts.update(chosen)
         metrics = {
             "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
             **_beam_classification_metrics(logits, target, cfg),
@@ -342,7 +204,6 @@ def _evaluate_pattern(
         "sample_count": accumulator.num_samples,
         "count": accumulator.num_samples,
         **accumulator.mean(),
-        **({"oracle_chosen_modality_distribution": _counter_payload(oracle_counts)} if oracle_gate else {}),
     }
 
 
@@ -353,56 +214,25 @@ def _forward_batch(
     device: torch.device,
     *,
     prediction_index: int | str,
-    cfg: dict[str, Any] | None,
-    step_index: int = 0,
+    cfg: dict[str, Any],
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-    if cfg is not None:
-        raw_batch = prepare_evaluation_batch(
-            raw_batch,
-            cfg=cfg,
-            split_name=str(cfg.get("evaluation", {}).get("split", "validation")),
-            difficulty_seed=int(cfg.get("experiment", {}).get("seed", 0)),
-            step_index=step_index,
-        )
-        model_cfg = cfg["model"]["primary"]
-        num_pred = int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1)))
-        step = run_model_step(
-            model,
-            cfg.get("experiment", {}).get("task", "image"),
-            raw_batch,
-            model_cfg=model_cfg,
-            seq_length=int(model_cfg.get("seq_length", cfg.get("model", {}).get("seq_length", 8))),
-            num_pred=num_pred,
-            downsample_ratio=int(model_cfg.get("downsample_ratio", cfg.get("model", {}).get("downsample_ratio", 1))),
-            device=device,
-            extra_model_kwargs={"missing_mask": missing_mask} if missing_mask is not None else {},
-        )
-        return (
-            _select_prediction(step.logits, prediction_index),
-            _select_target(step.labels, prediction_index),
-            step.model_output.diagnostics,
-        )
-
-    batch = _move_batch(prepare_task_batch(raw_batch), device)
-    output = _direct_model_call(model, batch, missing_mask)
-    model_output = adapt_model_output(output)
-    return (
-        _select_prediction(model_output.logits, prediction_index),
-        _select_target(_extract_target(batch), prediction_index),
-        model_output.diagnostics,
+    raw_batch = prepare_evaluation_batch(raw_batch)
+    model_cfg = cfg["model"]["primary"]
+    step = run_model_step(
+        model,
+        cfg["experiment"]["task"],
+        raw_batch,
+        seq_length=int(model_cfg["seq_length"]),
+        num_pred=int(model_cfg["num_pred"]),
+        device=device,
+        extra_model_kwargs={"missing_mask": missing_mask} if missing_mask is not None else {},
     )
-
-
-def _direct_model_call(model, batch: dict[str, Any], missing_mask: torch.Tensor | None):
-    if missing_mask is None:
-        try:
-            return model(batch)
-        except TypeError:
-            return model(**batch)
-    try:
-        return model(batch, missing_mask=missing_mask)
-    except TypeError:
-        return model(missing_mask=missing_mask, **batch)
+    labels = prepare_task_labels(step.batch, num_pred=int(model_cfg["num_pred"]), device=device)
+    return (
+        _select_prediction(step.logits, prediction_index),
+        _select_target(labels, prediction_index),
+        step.model_output.diagnostics,
+    )
 
 
 def _is_full_pattern(pattern: list[int] | None) -> bool:
@@ -441,41 +271,11 @@ def _prediction_index(value: int | str, length: int) -> int:
     return index
 
 
-def _oracle_logits_from_diagnostics(
-    diagnostics: dict[str, Any],
-    fallback_logits: torch.Tensor,
-    target: torch.Tensor,
-    available_mask: torch.Tensor,
-    modalities: list[str] | None,
-    *,
-    circular_beam_distance: bool = True,
-) -> tuple[torch.Tensor, list[str]]:
-    logits = diagnostics.get("pcpg_unimodal_logits")
-    if not torch.is_tensor(logits):
-        logits = diagnostics.get("unimodal_logits")
-    if not torch.is_tensor(logits) or logits.ndim != 3:
-        return fallback_logits, ["fused"] * int(fallback_logits.shape[0])
-    mask = available_mask.to(device=logits.device, dtype=torch.bool)
-    if mask.shape != logits.shape[:2]:
-        diag_mask = diagnostics.get("pcpg_available_mask", diagnostics.get("missing_mask"))
-        mask = diag_mask.to(device=logits.device, dtype=torch.bool) if torch.is_tensor(diag_mask) else torch.ones(logits.shape[:2], device=logits.device, dtype=torch.bool)
-    predictions = logits.argmax(dim=-1)
-    target = target.to(device=logits.device, dtype=torch.long).view(-1, 1)
-    distance = (predictions - target).abs()
-    if circular_beam_distance:
-        distance = torch.minimum(distance, logits.shape[-1] - distance)
-    distance = distance.masked_fill(~mask, torch.iinfo(distance.dtype).max)
-    chosen = distance.argmin(dim=1)
-    oracle_logits = logits[torch.arange(logits.shape[0], device=logits.device), chosen, :]
-    names = list(modalities or [f"modality_{index}" for index in range(logits.shape[1])])
-    return oracle_logits, [names[int(index)] if int(index) < len(names) else f"modality_{int(index)}" for index in chosen.detach().cpu()]
-
-
 def _supervised_router_diagnostic_metrics(
     diagnostics: dict[str, Any],
     target: torch.Tensor,
     available_mask: torch.Tensor,
-    modalities: list[str] | None,
+    modalities: list[str],
     pattern_name: str,
     *,
     circular_beam_distance: bool = True,
@@ -486,7 +286,7 @@ def _supervised_router_diagnostic_metrics(
     logits = diagnostics.get("unimodal_logits")
     if not torch.is_tensor(weights) or weights.ndim != 2:
         return {}
-    names = list(modalities or [f"modality_{index}" for index in range(weights.shape[1])])
+    names = list(modalities)
     out: dict[str, float] = {}
     for modality in ("image", "lidar", "radar", "gps"):
         if modality in names:
@@ -494,12 +294,7 @@ def _supervised_router_diagnostic_metrics(
     entropy = -(weights * weights.clamp_min(1e-8).log()).sum(dim=-1)
     out["gate_entropy"] = float(entropy.detach().mean().cpu().item())
     if torch.is_tensor(logits) and logits.ndim == 3:
-        targets = supervised_router_oracle_targets(
-            logits,
-            target,
-            available_mask,
-            circular_beam_distance=circular_beam_distance,
-        )
+        targets = _router_oracle_targets(logits, target, available_mask, circular_beam_distance)
         predicted = weights.argmax(dim=1)
         correct = predicted.eq(targets).to(dtype=torch.float32)
         out["router_oracle_acc"] = float(correct.detach().mean().cpu().item())
@@ -510,44 +305,33 @@ def _supervised_router_diagnostic_metrics(
                 )
         if str(pattern_name) == "missing_image":
             out["router_oracle_acc_missing_image"] = out["router_oracle_acc"]
-        if missing_count_from_pattern_name(str(pattern_name)) == 2:
-            out["router_oracle_acc_drop2"] = out["router_oracle_acc"]
     if "radar" in names:
         radar_gate = float(weights[:, names.index("radar")].detach().mean().cpu().item())
         if str(pattern_name) == "missing_image":
             out["radar_gate_missing_image"] = radar_gate
-        if missing_count_from_pattern_name(str(pattern_name)) == 2:
-            out["radar_gate_drop2"] = radar_gate
     return out
 
 
-def _counter_payload(counter: Counter[str]) -> str:
-    total = sum(counter.values())
-    if total <= 0:
-        return ""
-    return json.dumps({key: count / total for key, count in sorted(counter.items())}, sort_keys=True)
+def _router_oracle_targets(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    available_mask: torch.Tensor,
+    circular_beam_distance: bool,
+) -> torch.Tensor:
+    predictions = logits.argmax(dim=-1)
+    expected = target.to(device=logits.device, dtype=torch.long).view(-1, 1)
+    distance = (predictions - expected).abs()
+    if circular_beam_distance:
+        distance = torch.minimum(distance, logits.shape[-1] - distance)
+    available = available_mask.to(device=logits.device, dtype=torch.bool)
+    return distance.masked_fill(~available, torch.iinfo(distance.dtype).max).argmin(dim=1)
 
 
-def _extract_target(batch: dict[str, Any]) -> torch.Tensor:
-    for key in ("target", "target_beam", "beam_label", "label", "labels", "y"):
-        value = batch.get(key)
-        if torch.is_tensor(value):
-            return value
-    raise ValueError("Batch must contain one of target, target_beam, beam_label, label, labels, or y.")
-
-
-def _batch_size(batch: Any) -> int:
-    if isinstance(batch, dict):
-        for value in batch.values():
-            if torch.is_tensor(value) and value.ndim > 0:
-                return int(value.shape[0])
-    if isinstance(batch, (list, tuple)) and batch:
-        return _batch_size(batch[0])
-    raise ValueError("Could not infer batch size from dataloader batch.")
-
-
-def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    return {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
+def _batch_size(batch: dict[str, Any]) -> int:
+    labels = batch.get("target_beam")
+    if not torch.is_tensor(labels) or labels.ndim == 0:
+        raise ValueError("MMW evaluation batch is missing batched target_beam.")
+    return int(labels.shape[0])
 
 
 def _diagnostic_tensor(diagnostics: dict[str, Any], key: str) -> torch.Tensor | None:
@@ -589,13 +373,11 @@ class _Accumulator:
             "gate_entropy",
             "router_oracle_acc",
             "router_oracle_acc_missing_image",
-            "router_oracle_acc_drop2",
             "oracle_target_image_rate",
             "oracle_target_lidar_rate",
             "oracle_target_radar_rate",
             "oracle_target_gps_rate",
             "radar_gate_missing_image",
-            "radar_gate_drop2",
         ]
         return {
             key: (self.sums[key] / self.num_samples if self.num_samples and key in self.sums else math.nan)
@@ -603,10 +385,9 @@ class _Accumulator:
         }
 
 
-def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any] | None) -> dict[str, float]:
-    eval_cfg = (cfg or {}).get("evaluation", {}) if isinstance(cfg, dict) else {}
-    legacy_eval_cfg = (cfg or {}).get("eval", {}) if isinstance(cfg, dict) else {}
-    circular = bool(legacy_eval_cfg.get("beam_distance_circular", eval_cfg.get("beam_distance_circular", True)))
+def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg: dict[str, Any]) -> dict[str, float]:
+    eval_cfg = cfg["evaluation"]
+    circular = bool(eval_cfg.get("beam_distance_circular", True))
     summary = beam_classification_circular_summary(
         logits,
         target,
@@ -624,11 +405,9 @@ def _beam_classification_metrics(logits: torch.Tensor, target: torch.Tensor, cfg
     }
 
 
-def _training_beam_distance_circular(cfg: dict[str, Any] | None) -> bool:
-    training_cfg = (cfg or {}).get("training", {}) if isinstance(cfg, dict) else {}
-    if "circular_beam_distance" in training_cfg:
-        return bool(training_cfg["circular_beam_distance"])
-    return bool(training_cfg.get("beam_label_circular", True))
+def _training_beam_distance_circular(cfg: dict[str, Any]) -> bool:
+    u_mask_cfg = cfg["loss"].get("u_mask_beam_jepa", {})
+    return bool(u_mask_cfg.get("circular_beam_distance", True))
 
 
 def _average_missing_results(results: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -692,7 +471,7 @@ def _weighted_mean(rows: list[dict[str, Any]], key: str) -> float | None:
 def _attach_comparability_metadata(
     results: list[dict[str, Any]],
     modalities: list[str],
-    cfg: dict[str, Any] | None,
+    cfg: dict[str, Any],
 ) -> None:
     base = _base_comparability_metadata(cfg, modalities)
     for row in results:
@@ -707,14 +486,6 @@ def _attach_comparability_metadata(
         row["missing_modalities"] = "|".join(missing)
         for key, value in base.items():
             row.setdefault(key, value)
-        row["difficulty_digest"] = row.get("difficulty_digest") or _stable_digest(
-            {
-                "pattern": pattern,
-                "mask": row.get("mask"),
-                "modalities": modalities,
-                "difficulty": base.get("difficulty_digest", ""),
-            }
-        )
         missing_fields = [field for field in COMPARABILITY_FIELDS if row.get(field) in (None, "", [], {})]
         row["comparability_status"] = "strict" if not missing_fields else "incomplete"
         row["comparability_missing_fields"] = ";".join(missing_fields)
@@ -723,18 +494,7 @@ def _attach_comparability_metadata(
             row["warnings"] = ";".join(item for item in (str(row.get("warnings") or ""), warning) if item)
 
 
-def _base_comparability_metadata(cfg: dict[str, Any] | None, modalities: list[str]) -> dict[str, Any]:
-    if not isinstance(cfg, dict):
-        return {
-            "run_name": "",
-            "method": "",
-            "seed": "",
-            "split": "",
-            "label_space": "",
-            "metric_profile": "u_mask_beam_jepa_eval_matrix_topk_dba",
-            "target_source": "",
-            "difficulty_digest": "",
-        }
+def _base_comparability_metadata(cfg: dict[str, Any], modalities: list[str]) -> dict[str, Any]:
     experiment = cfg.get("experiment", {}) if isinstance(cfg.get("experiment"), dict) else {}
     output = cfg.get("output", {}) if isinstance(cfg.get("output"), dict) else {}
     evaluation = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
@@ -754,12 +514,6 @@ def _base_comparability_metadata(cfg: dict[str, Any] | None, modalities: list[st
     method = str(comparability.get("method") or paper_metadata.get("model_group") or paper_metadata.get("method") or run_name)
     num_classes = primary.get("num_classes", model.get("num_classes"))
     label_space = str(comparability.get("label_space") or (f"beam{int(num_classes)}" if num_classes not in (None, "") else ""))
-    difficulty = cfg.get("difficulty", {}) if isinstance(cfg.get("difficulty"), dict) else {}
-    difficulty_digest = "|".join(
-        str(profile.get("digest"))
-        for profile in difficulty.get("profiles", [])
-        if isinstance(profile, dict) and profile.get("digest")
-    )
     return {
         "run_name": run_name,
         "method": method,
@@ -777,33 +531,26 @@ def _base_comparability_metadata(cfg: dict[str, Any] | None, modalities: list[st
             or data.get("beam_target_source")
             or ""
         ),
-        "difficulty_digest": str(comparability.get("difficulty_digest") or difficulty_digest),
     }
 
 
 def _pattern_group(pattern: str) -> str:
-    try:
-        name = canonical_missing_pattern_name(pattern) if pattern else ""
-    except ValueError:
-        name = str(pattern)
+    name = canonical_missing_pattern_name(pattern)
     if name == "full":
         return "full"
-    if name in {"avg_missing", "overall_mean", "balanced"}:
+    if name == "avg_missing":
         return "aggregate"
     if name == "non_gps_only":
         return "non_gps_only"
-    if name.startswith("random_"):
-        return "random_missing"
     if name.endswith("_only"):
         return "only_modality"
     if name.startswith("missing_"):
-        missing = [item for item in name.removeprefix("missing_").split("_") if item]
-        return "single_missing" if len(missing) == 1 else "multi_missing"
+        return "single_missing" if name.count("_") == 1 else "multi_missing"
     return "custom"
 
 
 def _availability_from_mask(mask: Any, modalities: list[str]) -> tuple[list[str], list[str]]:
-    if not isinstance(mask, str) or mask in {"", "aggregate"} or mask.startswith("random_"):
+    if not isinstance(mask, str) or mask in {"", "aggregate"}:
         return ([], [])
     values = [item.strip() for item in mask.split(",") if item.strip() != ""]
     if len(values) != len(modalities):
@@ -811,8 +558,3 @@ def _availability_from_mask(mask: Any, modalities: list[str]) -> tuple[list[str]
     available = [modality for modality, keep in zip(modalities, values) if keep == "1"]
     missing = [modality for modality, keep in zip(modalities, values) if keep == "0"]
     return available, missing
-
-
-def _stable_digest(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]

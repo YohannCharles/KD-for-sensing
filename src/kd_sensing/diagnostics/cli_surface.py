@@ -41,78 +41,13 @@ PUBLIC_CLI_SURFACE: dict[str, PublicCli] = {
         "conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q",
         "--action",
     ),
-    "kd-sensing-runs": PublicCli(
-        "kd_sensing.cli.runs:console_main",
-        "core_workflow",
-        "kd_sensing.diagnostics.run_index",
-        "read-only local run index",
-        "stdout or explicit ignored analysis path",
-        "conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_runtime_artifact_cleanup.py -q",
-        "--outputs",
-    ),
-    "kd-sensing-clean-runtime-artifacts": PublicCli(
-        "kd_sensing.cli.cleanup_runtime_artifacts:main",
-        "current_diagnostic",
-        "kd_sensing.diagnostics.runtime_artifact_cleanup",
-        "runtime artifact cleanup manifest workflow",
-        "ignored outputs/cleanup_manifests/ or explicit manifest/report path",
-        "conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_cli_help.py -q",
-        "--manifest",
-    ),
-    "kd-sensing-organize-runtime-outputs": PublicCli(
-        "kd_sensing.cli.organize_runtime_outputs:main",
-        "current_diagnostic",
-        "kd_sensing.diagnostics.runtime_artifact_cleanup",
-        "runtime output organize manifest workflow",
-        "ignored outputs/cleanup_manifests/ or explicit manifest/report path",
-        "conda run -n kd_mm_beam pytest tests/test_runtime_artifact_cleanup.py tests/test_cli_help.py -q",
-        "--confirm-organize",
-    ),
-    "kd-sensing-paper-export": PublicCli(
-        "kd_sensing.cli.paper_artifact_export:main",
-        "paper_export",
-        "kd_sensing.diagnostics.paper_artifact_export",
-        "reviewed claim table and figure-data export",
-        "ignored outputs/paper_artifacts/ or explicit output dir",
-        "conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_architecture_boundaries.py -q",
-        "--input",
-    ),
-    "kd-sensing-eval-u-mask-matrix": PublicCli(
-        "kd_sensing.cli.eval_u_mask_beam_jepa_matrix:main",
-        "current_diagnostic",
-        "kd_sensing.eval.u_mask_beam_jepa_eval_matrix",
-        "U-MaskBeamJEPA missing-modality evaluation matrix",
-        "ignored outputs/eval/ or explicit output dir",
-        "conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa_eval_matrix.py tests/test_cli_help.py -q",
-        "--checkpoint",
-    ),
-    "kd-sensing-mmw-town-gps-v2": PublicCli(
-        "kd_sensing.cli.mmw_town_gps_v2:main",
-        "current_diagnostic",
-        "kd_sensing.engine.mmw_town_gps_v2",
-        "MMW Town GPS-only v2 run, plot and compare workflow",
-        "ignored outputs/analysis/mmw_town_gps_adapter_v2/ or explicit output dir",
-        "conda run -n kd_mm_beam pytest tests/test_mmw_town_gps_adapter_v2.py tests/test_cli_help.py -q",
-        "--mode",
-    ),
-    "kd-sensing-inspect-mmw-physics": PublicCli(
-        "kd_sensing.cli.inspect_mmw_physics:main",
-        "current_diagnostic",
-        "kd_sensing.models.physics",
-        "physics-informed MMW sample inspection",
-        "stdout only unless explicit output path is added by caller",
-        "conda run -n kd_mm_beam pytest tests/test_physics_informed_mmw.py tests/test_cli_help.py -q",
-        "--max-samples",
-    ),
 }
 
 PUBLIC_CLI_HELP_SMOKE: tuple[tuple[str, str], ...] = tuple(
     (command, spec.help_expected) for command, spec in PUBLIC_CLI_SURFACE.items()
 )
 
-PUBLIC_CLI_LIFECYCLES = tuple(
-    "core_workflow current_diagnostic paper_export baseline_reproduction local_manual internal_only delete".split()
-)
+PUBLIC_CLI_LIFECYCLES = ("core_workflow",)
 
 
 __all__ = ["PUBLIC_CLI_HELP_SMOKE", "PUBLIC_CLI_LIFECYCLES", "PUBLIC_CLI_SURFACE", "PublicCli"]

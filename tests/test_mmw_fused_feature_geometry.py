@@ -190,7 +190,7 @@ def test_circle_cosine_similarity_decreases_with_circular_distance(analysis):
     assert [row["pair_count"] for row in rows] == [64] * 32 + [32]
 
 
-def test_extract_domain_saves_paired_float32_task_outputs_and_old_bundle_stays_compatible(
+def test_extract_domain_saves_paired_float32_task_outputs(
     analysis,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -249,15 +249,6 @@ def test_extract_domain_saves_paired_float32_task_outputs_and_old_bundle_stays_c
     assert bundle["logits"].shape == (65, 2, 64)
     assert bundle["seed"] == 2
 
-    old_dir = tmp_path / "old"
-    old_target = old_dir / "T2" / "domains" / "domain.npz"
-    with np.load(target, allow_pickle=False) as payload:
-        legacy = {key: payload[key].copy() for key in payload.files if key not in analysis.TASK_OUTPUT_FIELDS}
-    analysis._atomic_save_npz(old_target, **legacy)
-    legacy_bundle = analysis.load_method_bundle(old_dir, "T2", allow_partial=True)
-    assert "logits" not in legacy_bundle
-    with pytest.raises(ValueError, match="task-output fields are required"):
-        analysis.load_method_bundle(old_dir, "T2", allow_partial=True, require_task_outputs=True)
 
 
 @pytest.mark.parametrize("mismatch", ["labels", "sample_ids"])

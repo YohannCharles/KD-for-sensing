@@ -63,30 +63,11 @@ def run_lineage_metadata(
     }
 
 
-def is_historical_kd_metadata(metadata: Mapping[str, Any]) -> bool:
-    return bool(metadata.get("distillation_enabled", False)) or str(metadata.get("method_family", "")) == "legacy_kd"
-
-
-def apply_lineage_to_row(row: dict[str, Any], metadata: Mapping[str, Any]) -> None:
-    if is_historical_kd_metadata(metadata):
-        row["historical_kd"] = True
-        row["method_family"] = "historical_kd"
-        row["main_conclusion_eligible"] = False
-        return
-    row.setdefault("training_mode", metadata.get("training_mode", "supervised"))
-    row.setdefault("method_family", metadata.get("method_family", "supervised"))
-    row.setdefault("model_capacity", metadata.get("model_capacity", "primary"))
-    row.setdefault("primary_model", metadata.get("primary_model"))
-    row.setdefault("main_conclusion_eligible", bool(metadata.get("main_conclusion_eligible", True)))
-
-
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
 __all__ = [
-    "apply_lineage_to_row",
-    "is_historical_kd_metadata",
     "main_conclusion_eligible",
     "method_family",
     "model_capacity",

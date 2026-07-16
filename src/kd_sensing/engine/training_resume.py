@@ -14,15 +14,12 @@ import json
 from pathlib import Path
 import random
 from typing import Any
-import warnings
 
 import numpy as np
 import torch
 
-from kd_sensing.engine.checkpoint_selection import model_selection_enabled
 from kd_sensing.utils.checkpoint import (
     CheckpointLoadError,
-    checkpoint_file_digest,
     load_torch_payload,
     validate_checkpoint_publication,
 )
@@ -46,16 +43,6 @@ class ResumePlan:
     next_epoch: int
     trajectory_equivalence: bool
     payload: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class SelectedCheckpoint:
-    path: Path
-    checkpoint_role: str
-    selection: dict[str, Any]
-    source_run: Path
-    checkpoint_sha256: str | None
-    metadata: dict[str, Any]
 
 
 def resolve_resume_path(cfg: Mapping[str, Any], run_dir: str | Path) -> Path | None:
@@ -155,8 +142,6 @@ def validate_resume_payload(
         "epoch",
         "runtime_state",
         "resume_contract",
-        "selection",
-        "selection_catalog",
     ):
         if field not in data:
             raise CheckpointLoadError(_resume_error(path, field, "is missing"))
@@ -176,49 +161,7 @@ def validate_resume_payload(
     if not isinstance(data["resume_contract"], Mapping):
         raise CheckpointLoadError(_resume_error(path, "resume_contract", "must be a mapping"))
     _validate_contract_shape(data["resume_contract"], label="checkpoint")
-    if not isinstance(data["selection"], Mapping):
-        raise CheckpointLoadError(_resume_error(path, "selection", "must be a mapping"))
-    if not isinstance(data["selection_catalog"], Mapping):
-        raise CheckpointLoadError(_resume_error(path, "selection_catalog", "must be a mapping"))
     return data
-
-
-def migrate_legacy_resume_payload(
-    payload: Mapping[str, Any],
-    *,
-    path: str | Path,
-    scheduler_enabled: bool,
-) -> dict[str, Any]:
-    """Mark an unversioned checkpoint as best-effort without mutating its source."""
-    if not isinstance(payload, Mapping):
-        raise CheckpointLoadError(_resume_error(path, "payload", "must be a mapping"))
-    if "checkpoint_schema_version" in payload:
-        raise CheckpointLoadError(_resume_error(path, "legacy migration", "cannot migrate a current-schema checkpoint"))
-    migrated = dict(payload)
-    for field in ("state_dict", "optimizer", "scheduler", "epoch"):
-        if field not in migrated:
-            raise CheckpointLoadError(_resume_error(path, field, "is missing"))
-    if not isinstance(migrated["state_dict"], Mapping):
-        raise CheckpointLoadError(_resume_error(path, "state_dict", "must be a mapping"))
-    if not isinstance(migrated["optimizer"], Mapping):
-        raise CheckpointLoadError(_resume_error(path, "optimizer", "must be a mapping"))
-    if scheduler_enabled and migrated["scheduler"] is None:
-        raise CheckpointLoadError(_resume_error(path, "scheduler", "is null while the current run enables a scheduler"))
-    if not isinstance(migrated["epoch"], int) or isinstance(migrated["epoch"], bool):
-        raise CheckpointLoadError(_resume_error(path, "epoch", "must be an integer"))
-    if "best_val_loss" not in migrated and "test_loss" in migrated:
-        migrated["best_val_loss"] = migrated["test_loss"]
-    warnings.warn(
-        f"Resuming legacy checkpoint without exact runtime state: {Path(path)}",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-    migrated["resume_migration"] = {
-        "source_schema": "legacy-unversioned",
-        "trajectory_equivalence": False,
-        "warning": "legacy checkpoint has no versioned runtime_state",
-    }
-    return migrated
 
 
 def preflight_resume(
@@ -236,18 +179,11 @@ def preflight_resume(
     raw_payload = load_torch_payload(path, map_location="cpu")
     if not isinstance(raw_payload, Mapping):
         raise CheckpointLoadError(_resume_error(path, "payload", "must be a mapping"))
-    if "checkpoint_schema_version" in raw_payload:
-        validate_checkpoint_publication(path, payload=raw_payload)
-        payload = validate_resume_payload(raw_payload, path=path, scheduler_enabled=scheduler_enabled)
-        schema = "current"
-        trajectory_equivalence = True
-        if split_metadata is not None and normalization_artifacts is not None:
-            current_contract = build_resume_contract(cfg, split_metadata, normalization_artifacts)
-            validate_resume_contract(payload["resume_contract"], current_contract, next_epoch=payload["epoch"])
-    else:
-        payload = migrate_legacy_resume_payload(raw_payload, path=path, scheduler_enabled=scheduler_enabled)
-        schema = "legacy"
-        trajectory_equivalence = False
+    validate_checkpoint_publication(path, payload=raw_payload)
+    payload = validate_resume_payload(raw_payload, path=path, scheduler_enabled=scheduler_enabled)
+    if split_metadata is not None and normalization_artifacts is not None:
+        current_contract = build_resume_contract(cfg, split_metadata, normalization_artifacts)
+        validate_resume_contract(payload["resume_contract"], current_contract, next_epoch=payload["epoch"])
     target_run = Path(run_dir)
     source_run = path.parent.parent if path.parent.name == "checkpoints" else path.parent
     return ResumePlan(
@@ -255,9 +191,9 @@ def preflight_resume(
         source_run=source_run,
         target_run=target_run,
         cross_run=source_run.resolve() != target_run.resolve(),
-        schema=schema,
+        schema="current",
         next_epoch=int(payload["epoch"]),
-        trajectory_equivalence=trajectory_equivalence,
+        trajectory_equivalence=True,
         payload=payload,
     )
 
@@ -308,60 +244,6 @@ def restore_runtime_state(
     _restore_extensions(runtime["extensions"], extensions or (), extension_states or ())
     _restore_training_state(runtime["training_state"], training_state)
     _restore_rng(runtime["rng"])
-
-
-def resolve_selected_checkpoint(
-    cfg: Mapping[str, Any],
-    run_dir: str | Path,
-    *,
-    catalog: Mapping[str, Any] | None = None,
-    resume_path: str | Path | None = None,
-) -> SelectedCheckpoint:
-    """Resolve and integrity-check the one checkpoint used for final test."""
-    key = _selection_catalog_key(cfg)
-    entries = dict(catalog or {})
-    candidate = entries.get(key)
-    if candidate is None and key == "objective_best":
-        candidate = entries.get("best")
-    if candidate is None and resume_path is not None and key == "last":
-        candidate = {"path": str(resume_path), "checkpoint_role": "last", "selection": {}}
-    if candidate is None:
-        filename = {
-            "objective_best": "best.pth",
-            "top1_best": "best_top1.pth",
-            "last": "last.pth",
-        }.get(key, f"best_{key}.pth")
-        candidate = {"path": str(Path(run_dir) / "checkpoints" / filename), "checkpoint_role": key, "selection": {}}
-    if not isinstance(candidate, Mapping) or not candidate.get("path"):
-        raise CheckpointLoadError(f"Selected checkpoint candidate for {key!r} is missing a path.")
-    path = Path(str(candidate["path"]))
-    payload = load_torch_payload(path, map_location="cpu")
-    metadata = validate_checkpoint_publication(path, payload=payload)
-    expected_digest = candidate.get("checkpoint_sha256")
-    if expected_digest is not None and metadata.get("checkpoint_sha256") != expected_digest:
-        raise CheckpointLoadError(
-            f"Selected checkpoint digest mismatch for {path}: catalog={expected_digest}, "
-            f"published={metadata.get('checkpoint_sha256')}"
-        )
-    role = str(candidate.get("checkpoint_role") or metadata.get("checkpoint_role") or "")
-    payload_role = payload.get("checkpoint_role") if isinstance(payload, Mapping) else None
-    if payload_role and role and payload_role != role:
-        raise CheckpointLoadError(
-            f"Selected checkpoint role mismatch for {path}: catalog={role!r}, payload={payload_role!r}."
-        )
-    selection = candidate.get("selection")
-    if not isinstance(selection, Mapping):
-        selection = metadata.get("selection") if isinstance(metadata.get("selection"), Mapping) else {}
-    selection = dict(selection)
-    source_value = selection.get("source_run") or candidate.get("source_run") or path.parent.parent
-    return SelectedCheckpoint(
-        path=path,
-        checkpoint_role=role or str(payload_role or "unknown"),
-        selection=selection,
-        source_run=Path(str(source_value)),
-        checkpoint_sha256=metadata.get("checkpoint_sha256"),
-        metadata=metadata,
-    )
 
 
 def _semantic_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -684,20 +566,6 @@ def _restore_rng(record: Mapping[str, Any]) -> None:
         if not all(torch.is_tensor(state) for state in cuda_states):
             raise CheckpointLoadError("Runtime CUDA RNG states must be tensors.")
         torch.cuda.set_rng_state_all([state.detach().cpu() for state in cuda_states])
-
-
-def _selection_catalog_key(cfg: Mapping[str, Any]) -> str:
-    if not model_selection_enabled(dict(cfg)):
-        return "last"
-    checkpoint_cfg = _mapping(cfg.get("checkpoint"))
-    training_cfg = _mapping(cfg.get("training"))
-    raw = checkpoint_cfg.get("selection_metric", training_cfg.get("selection_metric"))
-    if raw is None:
-        return "objective_best"
-    metric = str(raw).strip().lower()
-    if metric in {"val_acc", "val_acc_top1", "val_top1", "top1", "best_top1"}:
-        return "top1_best"
-    return metric
 
 
 def _safe_runtime_value(value: Any) -> Any:

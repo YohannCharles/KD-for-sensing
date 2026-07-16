@@ -5,7 +5,6 @@ from PIL import Image
 import torch
 
 from kd_sensing.data.transform_ops.io import joined_resource
-from kd_sensing.data.transform_ops.image_cache import ImageDerivedCache
 
 
 DEFAULT_IMAGE_PROFILE = "rgb_imagenet"
@@ -49,18 +48,13 @@ def load_rgb_imagenet_frames(
     transform=None,
     *,
     image_size: list[int] | tuple[int, int] = (224, 224),
-    image_cache: ImageDerivedCache | None = None,
 ) -> torch.Tensor:
     transform = transform or build_rgb_imagenet_transform(image_size)
     selected = list(rgb_paths[-seq_len:])
     frames = []
     for rel_path in selected:
-        frame = image_cache.load(data_root, rel_path) if image_cache is not None else None
-        if frame is None:
-            image = read_image_array(joined_resource(data_root, rel_path))
-            frame = transform(image)
-            if image_cache is not None:
-                image_cache.store(data_root, rel_path, frame)
+        image = read_image_array(joined_resource(data_root, rel_path))
+        frame = transform(image)
         if not torch.is_tensor(frame):
             raise TypeError("RGB/ImageNet transform must return a torch.Tensor.")
         if frame.shape != (3, int(image_size[0]), int(image_size[1])):

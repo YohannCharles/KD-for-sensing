@@ -1,10 +1,9 @@
-from copy import deepcopy
 from fnmatch import fnmatchcase
 from typing import Any
 
 import torch
 
-from kd_sensing.registries import LOSSES, METRICS, MODELS, import_default_components
+from kd_sensing.registries import LOSSES, MODELS, import_default_components
 
 
 def build_model(model_cfg: dict[str, Any]):
@@ -14,60 +13,11 @@ def build_model(model_cfg: dict[str, Any]):
 
 def build_task_criterion(cfg: dict[str, Any]):
     import_default_components()
-    loss_cfg = deepcopy(cfg["loss"])
-    for auxiliary_key in (
-        "beam_soft",
-        "soft_targets",
-        "unimodal_aux",
-        "auxiliary",
-        "multitask",
-        "multi_task",
-        "objective",
-        "selection",
-        "selection_multitask",
-        "occlusion",
-        "position",
-        "los",
-        "link_quality",
-        "dba_aware",
-        "beam_topology_smoothing",
-        "pcpg_radar_balance",
-        "branch_aux_loss",
-        "radar_protect_loss",
-        "unimodal_aux_weight",
-        "radar_aux_weight",
-        "radar_proto_weight",
-        "hard_subset_weighting",
-        "hard_subset_alpha",
-        "hard_subset_focus",
-        "use_jepa",
-        "jepa_weight",
-    ):
-        loss_cfg.pop(auxiliary_key, None)
-    if loss_cfg.get("type") == "cross_entropy":
-        loss_cfg.pop("alpha", None)
-        loss_cfg.pop("gamma", None)
+    configured = cfg["loss"]
+    loss_cfg = {"type": configured.get("type", "cross_entropy")}
+    if loss_cfg["type"] == "focal_loss":
+        loss_cfg.update({key: configured[key] for key in ("alpha", "gamma") if key in configured})
     return LOSSES.build(loss_cfg)
-
-
-def build_metrics(cfg: dict[str, Any]) -> dict[str, Any]:
-    import_default_components()
-    eval_cfg = cfg.get("evaluation", {})
-    return {
-        "topk": METRICS.build(
-            {
-                "type": "topk_accuracy",
-                "k_values": eval_cfg.get("k_values", [1, 2, 3, 5, 10]),
-            }
-        ),
-        "dba": METRICS.build(
-            {
-                "type": "dba",
-                "delta": eval_cfg.get("dba_delta", 5),
-                "distance_mode": eval_cfg.get("dba_distance_mode", "circular"),
-            }
-        ),
-    }
 
 
 def build_optimizer(cfg: dict[str, Any], model) -> torch.optim.Optimizer:
@@ -280,7 +230,6 @@ def build_device(cfg: dict[str, Any]) -> torch.device:
 
 __all__ = [
     "build_device",
-    "build_metrics",
     "build_model",
     "build_optimizer",
     "build_scheduler",

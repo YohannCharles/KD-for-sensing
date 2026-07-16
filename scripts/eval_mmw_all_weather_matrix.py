@@ -13,10 +13,16 @@ from typing import Any
 import torch
 import yaml
 
-from eval_h5_p1_temporal_matrix_v1 import _evaluate_masks, _evaluation_provenance, _mask_identity
-from kd_sensing.data.temporal_missing import DEFAULT_TEMPORAL_MODALITIES, sample_stratified_modality_temporal_mask
+from kd_sensing.data.temporal_missing import (
+    DEFAULT_TEMPORAL_MODALITIES,
+    apply_modality_temporal_mask_to_batch,
+    sample_stratified_modality_temporal_mask,
+)
 from kd_sensing.engine.data_factory import build_dataloader, build_dataloaders
+from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
 from kd_sensing.engine.optim import build_device, build_model
+from kd_sensing.engine.runtime import run_model_step
+from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import _beam_classification_metrics
 from kd_sensing.utils.artifact_registry import (
     load_checkpoint_metadata,
     validate_evaluation_gps_checkpoint_provenance,
@@ -162,7 +168,6 @@ def evaluate_method(
         "checkpoint": str(checkpoint),
         "checkpoint_policy": "fixed_epoch_last_pth",
         "enabled_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
-        "excluded_sensitive_fields": "csi,channel,mmwave,beam_power,path,radio_labels",
         "weather_label_used_as_input": False,
         "screening_role": "local_validation",
         "temporal_mask_protocol": "mmw_temporal_geometry_v2",
@@ -269,6 +274,228 @@ def evaluate_method(
         + "\n",
         encoding="utf-8",
     )
+
+
+def _mask_identity(
+    mask_item: dict[str, Any],
+    *,
+    mask_index: int,
+    modalities: list[str] | tuple[str, ...] | None,
+    cache_checksum: Any,
+    cache_seed: Any,
+) -> dict[str, Any]:
+    source_modalities = [str(item) for item in (modalities or mask_item.get("modalities") or DEFAULT_TEMPORAL_MODALITIES)]
+    mask = torch.as_tensor(mask_item["modality_temporal_mask"], dtype=torch.bool)
+    if mask.ndim != 2 or int(mask.shape[-1]) != len(source_modalities):
+        raise ValueError(
+            "Mask identity requires a [T,M] mask matching the cache modality order, "
+            f"got mask={tuple(mask.shape)} modalities={source_modalities}."
+        )
+    canonical = {
+        "modalities": source_modalities,
+        "modality_temporal_mask": mask.to(dtype=torch.int8).tolist(),
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    trailing_fully_missing_frames = 0
+    for row in reversed(mask):
+        if bool(row.any()):
+            break
+        trailing_fully_missing_frames += 1
+    return {
+        "mask_index": int(mask_index),
+        "mask_type": str(mask_item.get("mask_type", "unknown")),
+        "mask_digest": hashlib.sha256(encoded).hexdigest()[:16],
+        "mask_cache_checksum": str(cache_checksum or ""),
+        "mask_cache_seed": str(cache_seed if cache_seed not in {None, ""} else ""),
+        "observed_missing_rate": float((~mask).to(dtype=torch.float32).mean().item()),
+        "last_frame_available": bool(mask[-1].any()),
+        "last_frame_available_modalities": int(mask[-1].sum().item()),
+        "trailing_fully_missing_frames": trailing_fully_missing_frames,
+    }
+
+
+def _evaluation_provenance(cfg: dict[str, Any]) -> dict[str, Any]:
+    primary = cfg.get("model", {}).get("primary", {})
+    evaluation = cfg.get("evaluation", {})
+    experiment = cfg.get("experiment", {})
+    loss_cfg = cfg.get("loss", {}).get("u_mask_beam_jepa", {})
+    is_t2 = str(primary.get("type", "")) == "u_mask_beam_jepa" or bool(loss_cfg)
+    head_type = str(primary.get("head_type", "baseline"))
+    prototype_head_enabled = is_t2 and head_type == "prototype"
+    bpa_auxiliary_enabled = is_t2 and bool(loss_cfg.get("use_beam_prototype_alignment", False)) and head_type != "classifier"
+    circular = bool(loss_cfg.get("circular_beam_distance", True))
+    geometry = "circular" if circular else "linear"
+    prototype_circular = bool(loss_cfg.get("prototype_target_circular", True))
+    prototype_geometry = "circular" if prototype_circular else "linear"
+    router_supervision = str(loss_cfg.get("router_supervision", "none")).lower()
+    router_oracle_geometry = geometry if router_supervision == "oracle" else "not_applicable"
+    prototype_target_geometry = prototype_geometry if bpa_auxiliary_enabled else "not_applicable"
+    active_geometries = [
+        value for value in (prototype_target_geometry, router_oracle_geometry) if value != "not_applicable"
+    ]
+    training_geometry = "+".join(dict.fromkeys(active_geometries)) if active_geometries else "not_applicable"
+    return {
+        "ablation_id": str(experiment.get("ablation_id", "")),
+        "training_beam_geometry": training_geometry,
+        "prototype_target_geometry": prototype_target_geometry,
+        "router_oracle_geometry": router_oracle_geometry,
+        "head_type": head_type,
+        "prototype_enabled": bpa_auxiliary_enabled,
+        "prototype_head_enabled": prototype_head_enabled,
+        "bpa_auxiliary_enabled": bpa_auxiliary_enabled,
+        "use_amber_cma_analogue": bool(loss_cfg.get("use_amber_cma_analogue", False)),
+        "lambda_amber_cma": float(loss_cfg.get("lambda_amber_cma", 0.0)),
+        "amber_cma_temperature": float(loss_cfg.get("amber_cma_temperature", 0.2)),
+        "metric_profile": str(evaluation.get("metric_profile", "")),
+        "dba_distance_mode": str(evaluation.get("dba_distance_mode", "circular")),
+    }
+
+
+def _evaluate_masks(
+    model,
+    dataloader,
+    cfg: dict[str, Any],
+    device: torch.device,
+    mask_items: list[dict[str, Any]],
+    max_batches: int | None,
+    mask_modalities: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, float]]:
+    states = [
+        {"sums": {}, "count": 0, "mask": _mask_in_model_order(model, item, mask_modalities)[0]}
+        for item in mask_items
+    ]
+    model_modalities = tuple(str(item) for item in getattr(model, "modalities", mask_modalities or DEFAULT_TEMPORAL_MODALITIES))
+    with torch.no_grad():
+        for batch_index, raw_batch in enumerate(dataloader):
+            if max_batches is not None and batch_index >= int(max_batches):
+                break
+            prepared = prepare_evaluation_batch(raw_batch)
+            for state in states:
+                batch = _clone_batch(prepared)
+                apply_modality_temporal_mask_to_batch(batch, state["mask"], modalities=model_modalities)
+                modality_mask = batch["modality_mask"].to(device=device, dtype=torch.bool)
+                model_cfg = cfg["model"]["primary"]
+                step = run_model_step(
+                    model,
+                    cfg.get("experiment", {}).get("task", "fusion"),
+                    batch,
+                    seq_length=int(model_cfg.get("seq_length", cfg.get("model", {}).get("seq_length", 5))),
+                    num_pred=int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1))),
+                    device=device,
+                    extra_model_kwargs={"missing_mask": modality_mask},
+                )
+                logits = step.logits[:, -1, :] if step.logits.ndim == 3 else step.logits
+                target = step.labels[:, -1].reshape(-1) if step.labels.ndim > 1 else step.labels.reshape(-1)
+                metrics = _beam_classification_metrics(logits, target, cfg)
+                metrics.update(_router_metrics(step.model_output.diagnostics, getattr(model, "modalities", ())))
+                batch_count = int(target.numel())
+                state["count"] += batch_count
+                for key, value in metrics.items():
+                    if isinstance(value, float) and math.isfinite(value):
+                        state["sums"][key] = state["sums"].get(key, 0.0) + value * batch_count
+    return [
+        {key: (value / state["count"] if state["count"] else math.nan) for key, value in state["sums"].items()}
+        for state in states
+    ]
+
+
+def _clone_batch(value: Any) -> Any:
+    if torch.is_tensor(value):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: _clone_batch(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_batch(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_batch(item) for item in value)
+    return value
+
+
+def _mask_in_model_order(
+    model,
+    mask_item: dict[str, Any],
+    mask_modalities: list[str] | tuple[str, ...] | None = None,
+) -> tuple[torch.Tensor, tuple[str, ...]]:
+    source = tuple(str(item) for item in (mask_modalities or mask_item.get("modalities") or DEFAULT_TEMPORAL_MODALITIES))
+    target = tuple(str(item) for item in getattr(model, "modalities", source))
+    if len(set(source)) != len(source) or len(set(target)) != len(target):
+        raise ValueError(f"Modality order contains duplicates: cache={list(source)}, model={list(target)}.")
+    unknown = [name for name in target if name not in source]
+    if unknown:
+        raise ValueError(f"Eval mask cache is missing model modalities {unknown}; cache modalities={list(source)}.")
+    mask = torch.as_tensor(mask_item["modality_temporal_mask"], dtype=torch.bool)
+    if mask.ndim not in {2, 3} or int(mask.shape[-1]) != len(source):
+        raise ValueError(
+            f"Cached modality_temporal_mask must end with {len(source)} modality columns, got {tuple(mask.shape)}."
+        )
+    indices = torch.tensor([source.index(name) for name in target], dtype=torch.long, device=mask.device)
+    return mask.index_select(-1, indices), target
+
+
+def _router_metrics(diagnostics: dict[str, Any], modalities: tuple[str, ...] | list[str] = ()) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for key, value in diagnostics.items():
+        if key.startswith("mean_gate_") or key.startswith("mean_temporal_gate_") or key.startswith("router_oracle_acc"):
+            scalar = _as_float(value)
+            if scalar is not None:
+                result[key] = scalar
+    for key in (
+        "gate_entropy",
+        "global_gate_entropy",
+        "gate_entropy_temporal",
+        "gate_entropy_modality",
+        "coverage_shrinkage_rho",
+        "coverage_shrinkage_mean_coverage",
+        "coverage_shrinkage_gate_entropy",
+        "coverage_shrinkage_gate_margin",
+        "temporal_pooling_param_count",
+        "temporal_recency_decay",
+    ):
+        if key in diagnostics:
+            scalar = _as_float(diagnostics[key])
+            if scalar is not None:
+                result[key] = scalar
+    temporal_gate = diagnostics.get("temporal_gate")
+    if torch.is_tensor(temporal_gate) and temporal_gate.ndim == 2:
+        for index in range(int(temporal_gate.shape[1])):
+            result[f"mean_temporal_gate_t{index}"] = float(temporal_gate[:, index].detach().float().mean().cpu().item())
+    weights = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
+    if torch.is_tensor(weights) and weights.ndim == 2:
+        names = tuple(str(item) for item in modalities)
+        for index in range(int(weights.shape[1])):
+            name = names[index] if index < len(names) else f"modality_{index}"
+            result.setdefault(f"mean_gate_{name}", float(weights[:, index].detach().float().mean().cpu().item()))
+        entropy = -(weights.float() * weights.float().clamp_min(1e-8).log()).sum(dim=-1)
+        result.setdefault("gate_entropy", float(entropy.detach().mean().cpu().item()))
+    pooling_weights = diagnostics.get("temporal_pooling_weights")
+    if torch.is_tensor(pooling_weights) and pooling_weights.ndim >= 2:
+        for index in range(int(pooling_weights.shape[1])):
+            result[f"mean_temporal_pooling_weight_t{index}"] = float(
+                pooling_weights.select(1, index).detach().float().mean().cpu().item()
+            )
+    statistics = diagnostics.get("temporal_mask_statistics")
+    statistic_names = diagnostics.get("temporal_mask_statistic_names")
+    if torch.is_tensor(statistics) and statistics.ndim >= 1 and isinstance(statistic_names, (list, tuple)):
+        for index, name in enumerate(statistic_names):
+            if index < int(statistics.shape[-1]):
+                result[f"mean_mask_statistic_{name}"] = float(statistics[..., index].detach().float().mean().cpu().item())
+    residual_gate = diagnostics.get("temporal_residual_gate")
+    if torch.is_tensor(residual_gate) and residual_gate.ndim == 1:
+        names = tuple(str(item) for item in modalities)
+        for index in range(int(residual_gate.shape[0])):
+            name = names[index] if index < len(names) else f"modality_{index}"
+            result[f"temporal_residual_gate_{name}"] = float(residual_gate[index].detach().float().cpu().item())
+    return result
+
+
+def _as_float(value: Any) -> float | None:
+    if torch.is_tensor(value) and value.numel() > 0:
+        return float(value.detach().float().mean().cpu().item())
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _load_or_create_temporal_cache(

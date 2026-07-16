@@ -1,80 +1,31 @@
 # KD for Sensing
 
-当前默认主线是 final C2 / U-MaskBeamJEPA 缺失模态波束预测。仓库只把核心训练、评估、预处理、U-Mask eval matrix、MMW/CSI workflow 和必要治理入口作为 current public surface；Image+GPS JEPA、BeamBench、BEV-Fusion 2604、Vision-Position、旧 RBMA/KD/BTAPA/weakKD sweep 和一次性诊断入口已退役或降级为历史说明。
+本仓库只保留 MMW 四模态波束预测主线：T2、S1、AMBER-Full 与 RMBP-MM。T2 是唯一主方法；S1 是 temporal consistency 关闭的对照；AMBER-Full 和 RMBP-MM 是本地 baseline。
 
-## Quickstart
+## 入口
 
-先在既有 `kd_mm_beam` 环境中安装当前包及测试依赖，再运行无数据健康检查：
-
-```bash
-conda run -n kd_mm_beam python -m pip install -e ".[dev]"
-make verify-quick
-```
-
-所有项目 Python 命令都通过 `kd_mm_beam` 环境运行：
+所有项目命令使用 `kd_mm_beam` 环境：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --help
+conda run -n kd_mm_beam kd-sensing-train --config configs/mmw/t2.yaml
 conda run -n kd_mm_beam kd-sensing-evaluate --help
 conda run -n kd_mm_beam kd-sensing-preprocess --help
-conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --help
-conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
-conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --help
 ```
 
-常用主线 smoke：
+MMW 主实验与受控消融通过 `scripts/launch_mmw_all_weather_matrix.py`、`scripts/eval_mmw_all_weather_matrix.py`、`scripts/launch_mmw_t2_hyperparameter_screening.py` 和 BPA/CMA runner 运行。它们只读取 `configs/mmw/` 下的 tracked recipe，不读取 `outputs/` 中的历史配置。
+
+## 范围
+
+- 保留四模态 `image/radar/gps/lidar`、MMW prepared sequence dataset、T2 temporal masked-mean router、BPA/CMA、same-model superset consistency 和四方法评估。
+- 训练输出、数据、日志、cache 与 checkpoint 均为本地产物，不提交。
+- 已退役的蒸馏、CSI/mmWave、physics、DeepSense/Scene31/C2、预训练、GPS-only 和旧诊断路线见 [retired_routes.md](docs/retired_routes.md)。
+
+## 验证
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-train --config configs/fusion/u_mask_beam_jepa_smoke.yaml
-conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --config configs/eval/u_mask_beam_jepa_s32_eval_matrix.yaml --checkpoint outputs/local/best.pth
-```
-
-MMW/CSI 是 current supporting dataset workflow；MMW 可作为当前数据实验 campaign，但不替代 final C2 默认主线：
-
-```bash
-conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
-conda run -n kd_mm_beam kd-sensing-inspect-mmw-physics --help
-conda run -n kd_mm_beam pytest tests/test_mmw_town10_preparation.py tests/test_mmw_town_gps_adapter_v2.py tests/test_csi_modality.py tests/test_physics_informed_mmw.py -q
-```
-
-只读检查和 claim-gated 导出使用现有治理入口；dataset inspection 不移动数据，也不代表 official reproduction 已完成：
-
-```bash
-conda run -n kd_mm_beam python scripts/inspect_dataset.py --help
-conda run -n kd_mm_beam kd-sensing-runs --help
-conda run -n kd_mm_beam kd-sensing-paper-export --help
-```
-
-## Project Boundaries
-
-- 数据输入在 `dataset/`，默认不提交真实数据。
-- 训练输出、日志、cache、TensorBoard、checkpoint 和分析产物写入 ignored 的 `outputs/`、`outputs/cache/`、`logs/` 或显式本地路径，默认不提交。
-- 当前保留 YAML/manifest 以 final C2、U-MaskBeamJEPA、MMW/CSI、claim/evidence 和 focused tests 为准；无法确认是否主线使用的文件标为 `pending-confirmation` 或 `protected-until-next-audit`，本轮不删。
-- U-MaskBeamJEPA 的 `pcpg`、`bprr`、`raw_conf_gate`、`weighted_sum`、`concat_mlp`、`supervised_router` 及既有 loss/forward 开关本轮保留，后续若删必须另开 OpenSpec change。
-
-## Retired Surface
-
-已退役历史路线只保留防回流语境：HiST-Beam、Top8 selector、GPS residual、camera residual、Raymobtime s008、BGAM、viewer manifest、Gradio viewer、CRAF、MARF、Multimodal-NF、旧 KD、Image+GPS JEPA 诊断、BeamBench/BEV-Fusion 2604/Vision-Position 复现、旧 RBMA/KD/BTAPA/weakKD sweep 和相关一次性 CLI/runbook 不再作为 current 推荐入口，也不提供兼容 stub、alias、virtual config 或 package facade。
-
-## Documentation
-
-- 操作规则：`AGENTS.md`
-- AI 导航：`docs/agent_navigation.md`
-- 表面积 inventory：`docs/project_surface_inventory.md`
-- 最小机器索引：`docs/maintainer_context_index.yaml`
-- scoped context：`docs/agent_context/README.md`、`docs/agent_context/models.md`、`docs/agent_context/data.md`、`docs/agent_context/configs.md`、`docs/agent_context/cli.md`、`docs/agent_context/diagnostics.md`、`docs/agent_context/openspec.md`、`docs/agent_context/documentation.md`、`docs/agent_context/claims.md`、`docs/agent_context/atlas.md`
-- 当前研究简报：`docs/current_research_brief.md`
-- Claim/protocol：`docs/result_claims_registry.md`、`docs/experiment_protocols.md`、`docs/experiment_matrix.md`、`docs/mainline_model_catalog.md`
-- 文献矩阵：`docs/literature_matrix.md`
-- 历史与环境：`docs/mainline_experiment_history.md`、`ENVIRONMENT.md`
-- 只读协作角色与记忆账本：`docs/readonly_agent_roles.md`、`docs/agent_memory_ledger.md`
-
-## Verification
-
-```bash
+make verify-quick
+make verify-cli-config
+make verify-compile
 openspec validate --all --strict
-conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_config_load_characterization.py -q
-conda run -n kd_mm_beam python scripts/verify_compile.py
-make verify-full
+conda run -n kd_mm_beam pytest -q
 ```

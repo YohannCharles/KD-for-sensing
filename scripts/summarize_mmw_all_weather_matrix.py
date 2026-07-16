@@ -3,7 +3,6 @@ import argparse
 import csv
 import json
 import math
-import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -26,26 +25,8 @@ def main() -> int:
     parser.add_argument("--eval-dir", default="outputs/mmw_all_weather_h5p1_seed1_v2/eval_matrix_v2")
     parser.add_argument("--append-eval-dir", action="append", default=[])
     parser.add_argument("--output-dir", default="outputs/mmw_all_weather_h5p1_seed1_v2/final_summary_v2")
-    parser.add_argument("--coordinate-world-eval-dir", default=None)
-    parser.add_argument("--coordinate-local-eval-dir", default=None)
-    parser.add_argument("--wait-for-coordinate-pair", action="store_true")
-    parser.add_argument("--poll-seconds", type=int, default=30)
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
-    if bool(args.coordinate_world_eval_dir) != bool(args.coordinate_local_eval_dir):
-        parser.error("coordinate pair summary requires both world and local eval directories")
-    if args.coordinate_world_eval_dir:
-        if args.wait_for_coordinate_pair:
-            _wait_for_coordinate_pair(
-                Path(args.coordinate_world_eval_dir),
-                Path(args.coordinate_local_eval_dir),
-                poll_seconds=args.poll_seconds,
-            )
-        return _write_coordinate_pair_summary(
-            Path(args.coordinate_world_eval_dir),
-            Path(args.coordinate_local_eval_dir),
-            output_dir,
-        )
     eval_dir = Path(args.eval_dir)
     methods = ("S1", "T2", "amber_full", "rmbp_mm")
     eval_dirs = [eval_dir, *(Path(item) for item in args.append_eval_dir)]
@@ -65,132 +46,6 @@ def main() -> int:
     (output_dir / "decision.json").write_text(json.dumps(decision, indent=2) + "\n", encoding="utf-8")
     (output_dir / "summary.md").write_text(_markdown(rollups, temporal, decision), encoding="utf-8")
     return 0
-
-
-def _wait_for_coordinate_pair(world_dir: Path, local_dir: Path, *, poll_seconds: int) -> None:
-    targets = (world_dir / "T2" / "metrics.csv", local_dir / "T2" / "metrics.csv")
-    statuses = (world_dir.parent / "eval_orchestrator_status.json", local_dir.parent / "eval_orchestrator_status.json")
-    while not all(path.exists() for path in targets):
-        for path in statuses:
-            payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            state = str(payload.get("state", ""))
-            if state.startswith("blocked_"):
-                raise RuntimeError(f"Coordinate evaluation failed before summary: {path}: {payload}")
-        time.sleep(max(5, int(poll_seconds)))
-
-
-def _write_coordinate_pair_summary(world_dir: Path, local_dir: Path, output_dir: Path) -> int:
-    world_rows = _read_csv(world_dir / "T2" / "metrics.csv")
-    local_rows = _read_csv(local_dir / "T2" / "metrics.csv")
-    if not world_rows or not local_rows:
-        raise FileNotFoundError("Coordinate pair summary requires T2/metrics.csv under both eval directories.")
-    world = [{**row, "method": "T2_world"} for row in world_rows]
-    local = [{**row, "method": "T2_local"} for row in local_rows]
-    _validate_coordinate_pair_rows(world, local)
-    rows = [*world, *local]
-    cells = _domain_cells(rows)
-    rollups = _rollups(cells)
-    temporal = _temporal_rate_summary(rows)
-    paired = _paired_deltas(rows, "T2_local", "T2_world")
-    temporal_deltas = _paired_temporal_deltas(temporal, "T2_local", "T2_world")
-    gps_branches = _gps_branch_summary(rollups)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(output_dir / "coordinate_paired_deltas.csv", paired)
-    _write_csv(output_dir / "coordinate_rollups.csv", rollups)
-    _write_csv(output_dir / "coordinate_temporal_summary.csv", temporal)
-    _write_csv(output_dir / "coordinate_temporal_deltas.csv", temporal_deltas)
-    _write_csv(output_dir / "gps_branch_summary.csv", gps_branches)
-    summary = {
-        "status": "complete",
-        "world_row_count": len(world),
-        "local_row_count": len(local),
-        "paired_row_count": len(paired),
-        "domain_count": len({row.get("domain_id", "") for row in rows}),
-        "world_eval_dir": str(world_dir),
-        "local_eval_dir": str(local_dir),
-        "checkpoint_policy": "fixed_epoch_last_pth",
-        "claim_eligibility": "seed1_local_validation_only",
-    }
-    (output_dir / "coordinate_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    return 0
-
-
-def _validate_coordinate_pair_rows(world: list[dict[str, str]], local: list[dict[str, str]]) -> None:
-    keys = (
-        "domain_id",
-        "eval_family",
-        "pattern",
-        "missing_rate",
-        "mask_digest",
-        "sample_csv_sha256",
-        "mask_cache_checksum",
-    )
-    world_ids = [tuple(row.get(key, "") for key in keys) for row in world]
-    local_ids = [tuple(row.get(key, "") for key in keys) for row in local]
-    if len(world_ids) != len(set(world_ids)) or len(local_ids) != len(set(local_ids)):
-        raise ValueError("Coordinate pair evaluation contains duplicate sample/mask identities.")
-    if set(world_ids) != set(local_ids):
-        missing_local = len(set(world_ids) - set(local_ids))
-        missing_world = len(set(local_ids) - set(world_ids))
-        raise ValueError(
-            "Coordinate pair evaluation is not one-to-one paired; "
-            f"missing_local={missing_local}, missing_world={missing_world}."
-        )
-
-
-def _paired_temporal_deltas(
-    rows: list[dict[str, Any]],
-    left: str,
-    right: str,
-) -> list[dict[str, Any]]:
-    keys = ("missing_rate", "mask_type")
-    index = {(row.get("method"), *(row.get(key, "") for key in keys)): row for row in rows}
-    result = []
-    for identity, left_row in index.items():
-        if identity[0] != left:
-            continue
-        right_row = index.get((right, *identity[1:]))
-        if right_row is None:
-            continue
-        out = {"method": left, "baseline": right, **dict(zip(keys, identity[1:]))}
-        for metric in METRICS:
-            left_value = _float(left_row.get(metric))
-            right_value = _float(right_row.get(metric))
-            out[f"delta_{metric}"] = "" if left_value is None or right_value is None else left_value - right_value
-        result.append(out)
-    return sorted(result, key=lambda row: (float(row["missing_rate"]), row["mask_type"]))
-
-
-def _gps_branch_summary(rollups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    branch_patterns = {
-        "full": "full",
-        "gps_only": "available_gps",
-        "missing_gps": "available_image_radar_lidar",
-    }
-    index = {
-        (row.get("method"), row.get("pattern")): row
-        for row in rollups
-        if row.get("level") == "domain_macro" and row.get("eval_family") == "whole_modality"
-    }
-    result = []
-    for branch, pattern in branch_patterns.items():
-        world = index.get(("T2_world", pattern), {})
-        local = index.get(("T2_local", pattern), {})
-        out = {
-            "branch": branch,
-            "pattern": pattern,
-            "domain_count": local.get("domain_count", world.get("domain_count", 0)),
-        }
-        for metric in METRICS:
-            world_value = _float(world.get(metric))
-            local_value = _float(local.get(metric))
-            out[f"world_{metric}"] = "" if world_value is None else world_value
-            out[f"local_{metric}"] = "" if local_value is None else local_value
-            out[f"delta_{metric}"] = (
-                "" if world_value is None or local_value is None else local_value - world_value
-            )
-        result.append(out)
-    return result
 
 
 def _domain_cells(rows: list[dict[str, str]]) -> list[dict[str, Any]]:

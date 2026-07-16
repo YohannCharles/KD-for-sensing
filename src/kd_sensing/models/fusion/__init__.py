@@ -1,2 +1,0 @@
-from .cls_token_transformer import CLSTokenTransformerFusionNet
-from .token_transformer import TokenTransformerFusionNet

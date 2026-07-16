@@ -1,167 +1,83 @@
-import pytest
+from pathlib import Path
+
 import torch
 
-import kd_sensing.data.temporal_missing as temporal_runtime
-import kd_sensing.data.temporal_missing_contract as temporal_contract
 from kd_sensing.config import load_config
-from kd_sensing.data.difficulty.pipeline import apply_configured_difficulty
-from kd_sensing.data.difficulty.schema import DifficultyContext, normalize_config_difficulty
-from kd_sensing.data.temporal_missing import masked_temporal_mean
+from kd_sensing.engine.batch_step import _respect_temporal_availability
+from kd_sensing.engine.training_extensions import ForwardControls
+from kd_sensing.data.temporal_missing import (
+    TEMPORAL_SUPERSET_PAYLOAD_KEY,
+    apply_training_temporal_missing,
+    masked_temporal_mean,
+)
 
 
-def test_temporal_config_contract_is_the_runtime_single_source() -> None:
-    assert temporal_runtime.TEMPORAL_MISSING_MODES is temporal_contract.TEMPORAL_MISSING_MODES
-    assert temporal_runtime.TEMPORAL_AGGREGATION_MODES is temporal_contract.TEMPORAL_AGGREGATION_MODES
-    assert temporal_runtime.normalize_temporal_missing_mode is temporal_contract.normalize_temporal_missing_mode
-    assert temporal_runtime.normalize_temporal_aggregation is temporal_contract.normalize_temporal_aggregation
-    assert temporal_contract.normalize_temporal_missing_mode(" BLOCK ") == "block"
-    assert temporal_contract.normalize_temporal_aggregation(None) == "masked_mean"
-    with pytest.raises(ValueError, match="temporal_missing_mode must be one of"):
-        temporal_contract.normalize_temporal_missing_mode("invalid")
-    with pytest.raises(ValueError, match="temporal_aggregation must be one of"):
-        temporal_contract.normalize_temporal_aggregation("invalid")
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def _cfg(mode: str, *, prob: float = 1.0, block_len: int = 1, ensure_frame: bool = True) -> dict:
-    cfg = {
-        "experiment": {"seed": 7},
-        "model": {"primary": {"modalities": ["image", "radar", "lidar", "gps"]}},
-        "temporal_missing": {
-            "enabled": mode != "none",
-            "mode": mode,
-            "prob": prob,
-            "block_len": block_len,
-            "apply": "train",
-            "seed": 7,
-            "ensure_at_least_one_frame": ensure_frame,
-            "ensure_at_least_one_modality_per_frame": False,
-        },
-    }
-    normalize_config_difficulty(cfg)
-    return cfg
+def test_t2_recipe_declares_the_retained_temporal_protocol() -> None:
+    cfg = load_config(ROOT / "configs/mmw/t2.yaml")
+
+    assert cfg["temporal_missing"]["enabled"] is True
+    assert cfg["model"]["primary"]["temporal_pooling"] == {"enabled": True, "type": "masked_mean"}
 
 
-def _batch(batch_size: int = 3, steps: int = 5) -> dict[str, torch.Tensor]:
-    image = torch.ones(batch_size, steps, 3, 4, 4)
-    return {
-        "image": image.clone(),
-        "radar_ra": torch.ones(batch_size, steps, 2, 2),
-        "radar_da": torch.ones(batch_size, steps, 2, 2) * 2,
-        "lidar": torch.ones(batch_size, steps, 3, 4, 4) * 3,
-        "gps": torch.ones(batch_size, steps, 3) * 4,
-        "input_beam": torch.zeros(batch_size, steps, dtype=torch.long),
-        "target_beam": torch.ones(batch_size, 1, dtype=torch.long),
-        "history_indices": torch.arange(steps).view(1, steps).expand(batch_size, -1),
-        "target_index": torch.full((batch_size,), steps),
-    }
-
-
-def _apply(batch: dict[str, torch.Tensor], cfg: dict) -> dict:
-    return apply_configured_difficulty(
-        batch,
-        cfg,
-        DifficultyContext(stage="train", split="train", seed=7, step=0),
-    ).batch
-
-
-def test_history_prediction_window_aliases_sync_config_fields() -> None:
-    cfg = load_config(
-        None,
-        [
-            "temporal_missing.history_window=5",
-            "temporal_missing.prediction_window=1",
-            "temporal_missing.mode=none",
-        ],
-    )
-    assert cfg["temporal_missing"]["history_window"] == 5
-    assert cfg["temporal_missing"]["prediction_window"] == 1
-    assert cfg["data"]["dataset"]["seq_len"] == 5
-    assert cfg["model"]["seq_length"] == 5
-    assert cfg["data"]["dataset"]["num_pred"] == 1
-    assert cfg["model"]["primary"]["prediction_window"] == 1
-
-
-def test_default_temporal_window_missing_is_enabled_for_new_experiments() -> None:
-    cfg = load_config(None)
-    assert cfg["temporal_missing"]["history_window"] == 5
-    assert cfg["temporal_missing"]["prediction_window"] == 1
-    assert cfg["temporal_missing"]["mode"] == "modality_frame_bernoulli"
-    assert cfg["temporal_missing"]["prob"] == 0.2
-    assert cfg["data"]["dataset"]["seq_len"] == 5
-    assert cfg["model"]["primary"]["num_pred"] == 1
-
-
-def test_frame_bernoulli_masks_whole_frames_and_zero_fills_inputs() -> None:
-    out = _apply(_batch(batch_size=2, steps=5), _cfg("frame_bernoulli", prob=1.0, ensure_frame=True))
-    mask = out["modality_temporal_mask"]
-    assert mask.shape == (2, 5, 4)
-    assert out["temporal_mask"].shape == (2, 5)
-    assert bool(mask.any(dim=(1, 2)).all())
-    missing_frames = ~out["temporal_mask"]
-    assert bool((mask[missing_frames] == 0).all())
-    assert torch.equal(out["target_beam"], torch.ones(2, 1, dtype=torch.long))
-    assert out["image"][~out["temporal_mask"]].abs().sum().item() == 0.0
-
-
-def test_modality_frame_bernoulli_keeps_temporal_mask_as_any_modality_available() -> None:
-    out = _apply(_batch(batch_size=4, steps=5), _cfg("modality_frame_bernoulli", prob=0.5))
-    mtm = out["modality_temporal_mask"]
-    assert torch.equal(out["temporal_mask"], mtm.any(dim=2))
-    assert torch.equal(out["available_modalities"], mtm.any(dim=1))
-    assert mtm.shape == (4, 5, 4)
-
-
-def test_block_missing_has_contiguous_missing_region_when_no_fallback_needed() -> None:
-    out = _apply(_batch(batch_size=1, steps=5), _cfg("block", prob=1.0, block_len=2, ensure_frame=False))
-    missing = (~out["temporal_mask"][0]).nonzero(as_tuple=False).flatten().tolist()
-    assert len(missing) == 2
-    assert missing[1] == missing[0] + 1
-    assert out["temporal_missing_metadata"]["num_all_missing_fixed"] == 0
-
-
-def test_fallback_prevents_all_missing_and_records_fix_count() -> None:
-    out = _apply(_batch(batch_size=3, steps=5), _cfg("modality_frame_bernoulli", prob=1.0, ensure_frame=True))
-    assert bool(out["modality_temporal_mask"].any(dim=(1, 2)).all())
-    assert out["temporal_missing_metadata"]["num_all_missing_fixed"] == 3
-
-
-def test_existing_modality_mask_combines_with_temporal_missing() -> None:
-    batch = _batch(batch_size=2, steps=5)
-    batch["image_valid_mask"] = torch.zeros(2, 5, dtype=torch.bool)
-    out = _apply(batch, _cfg("modality_frame_bernoulli", prob=0.0))
-    assert not bool(out["modality_temporal_mask"][:, :, 0].any())
-    assert out["image"].abs().sum().item() == 0.0
-    assert bool(out["modality_temporal_mask"][:, :, 1:].any())
-
-
-def test_temporal_missing_supports_csi_modality() -> None:
-    batch = {
-        "csi": torch.ones(2, 5, 4, 2, 2),
-        "input_beam": torch.zeros(2, 5, dtype=torch.long),
-        "target_beam": torch.ones(2, 1, dtype=torch.long),
-    }
-    cfg = {
-        "experiment": {"seed": 7},
-        "model": {"primary": {"modalities": ["csi"]}},
-        "temporal_missing": {
-            "enabled": True,
-            "mode": "modality_frame_bernoulli",
-            "prob": 1.0,
-            "apply": "train",
-            "seed": 7,
-        },
-    }
-    normalize_config_difficulty(cfg)
-    out = _apply(batch, cfg)
-    assert out["modality_temporal_mask"].shape == (2, 5, 1)
-    assert out["csi_valid_mask"].shape == (2, 5)
-    assert bool(out["modality_temporal_mask"].any(dim=(1, 2)).all())
-    assert out["temporal_missing_metadata"]["modalities"] == ["csi"]
-
-
-def test_masked_temporal_mean_ignores_missing_frames() -> None:
+def test_masked_temporal_mean_ignores_unavailable_cells() -> None:
     values = torch.tensor([[[1.0], [10.0], [100.0]], [[5.0], [7.0], [9.0]]])
     mask = torch.tensor([[True, False, True], [False, True, False]])
-    result = masked_temporal_mean(values, mask)
-    assert torch.allclose(result, torch.tensor([[50.5], [7.0]]))
-    assert not torch.isnan(result).any()
+
+    assert torch.allclose(masked_temporal_mean(values, mask), torch.tensor([[50.5], [7.0]]))
+
+
+def test_t2_temporal_missing_preserves_only_the_same_model_superset_payload() -> None:
+    batch = {
+        "image": torch.ones(2, 5, 3, 2, 2),
+        "radar_ra": torch.ones(2, 5, 1, 2, 2),
+        "radar_da": torch.ones(2, 5, 1, 2, 2),
+        "gps": torch.ones(2, 5, 3),
+        "lidar": torch.ones(2, 5, 3, 2, 2),
+    }
+    cfg = {
+        "experiment": {"seed": 7},
+        "model": {"primary": {"modalities": ["image", "radar", "gps", "lidar"]}},
+        "temporal_missing": {
+            "enabled": True,
+            "mode": "stratified_modality_temporal",
+            "train_missing_drop_counts": "3",
+            "train_temporal_missing_rates": "0.8",
+            "train_temporal_missing_types": "modality_frame",
+            "preserve_unmasked_for_superset": True,
+        },
+    }
+
+    apply_training_temporal_missing(batch, cfg, epoch=0, step=0)
+
+    mask = batch["modality_temporal_mask"]
+    payload = batch[TEMPORAL_SUPERSET_PAYLOAD_KEY]
+    assert mask.shape == (2, 5, 4)
+    assert mask.any(dim=(1, 2)).all()
+    assert (~mask).any()
+    assert torch.equal(payload["inputs"]["image"], torch.ones_like(batch["image"]))
+    assert torch.equal(payload["base_mask"], torch.ones_like(mask))
+
+    s1_batch = {
+        key: value.clone()
+        for key, value in payload["inputs"].items()
+    }
+    cfg["temporal_missing"]["preserve_unmasked_for_superset"] = False
+    apply_training_temporal_missing(s1_batch, cfg, epoch=0, step=0)
+    assert TEMPORAL_SUPERSET_PAYLOAD_KEY not in s1_batch
+
+
+def test_t2_random_modality_mask_keeps_a_temporally_available_modality() -> None:
+    controls = ForwardControls(
+        model_kwargs={"missing_mask": torch.tensor([[0, 0, 0, 1], [1, 0, 0, 0]], dtype=torch.bool)}
+    )
+    batch = {"available_modalities": torch.tensor([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=torch.bool)}
+
+    result = _respect_temporal_availability(controls, batch)
+
+    assert torch.equal(
+        result.model_kwargs["missing_mask"],
+        torch.tensor([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=torch.bool),
+    )

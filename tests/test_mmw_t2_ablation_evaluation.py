@@ -26,20 +26,23 @@ def test_mmw_evaluator_supports_ablation_methods_without_changing_defaults(monke
 
 def test_evaluation_provenance_separates_prototype_router_and_metric_geometry(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
-    evaluation = _load_script("eval_h5_p1_temporal_matrix_v1.py")
+    evaluation = _load_script("eval_mmw_all_weather_matrix.py")
     cfg = {
         "experiment": {"ablation_id": "T2-Linear"},
         "model": {
             "primary": {
+                "type": "u_mask_beam_jepa",
                 "head_type": "prototype",
-                "use_beam_prototype_alignment": True,
-                "router_supervision": "oracle",
             }
         },
-        "training": {
-            "prototype_target_circular": False,
-            "circular_beam_distance": True,
-            "use_amber_cma_analogue": False,
+        "loss": {
+            "u_mask_beam_jepa": {
+                "use_beam_prototype_alignment": True,
+                "router_supervision": "oracle",
+                "prototype_target_circular": False,
+                "circular_beam_distance": True,
+                "use_amber_cma_analogue": False,
+            }
         },
         "evaluation": {"dba_distance_mode": "circular", "metric_profile": "64_beam_circular_topk"},
     }
@@ -54,17 +57,21 @@ def test_evaluation_provenance_separates_prototype_router_and_metric_geometry(mo
 
 def test_evaluation_provenance_separates_prototype_head_from_bpa_auxiliary(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
-    evaluation = _load_script("eval_h5_p1_temporal_matrix_v1.py")
+    evaluation = _load_script("eval_mmw_all_weather_matrix.py")
     cfg = {
         "model": {
             "primary": {
+                "type": "u_mask_beam_jepa",
                 "head_type": "prototype",
-                "use_beam_prototype_alignment": True,
-                "router_supervision": "oracle",
             }
         },
-        "training": {"use_beam_prototype_alignment": False, "circular_beam_distance": True},
-        "loss": {"u_mask_beam_jepa": {"use_beam_prototype_alignment": False}},
+        "loss": {
+            "u_mask_beam_jepa": {
+                "use_beam_prototype_alignment": False,
+                "router_supervision": "oracle",
+                "circular_beam_distance": True,
+            }
+        },
         "evaluation": {"dba_distance_mode": "circular"},
     }
 

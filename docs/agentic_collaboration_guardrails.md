@@ -1,10 +1,10 @@
-# Agentic Collaboration Guardrails
+# Codex 协作护栏
 
-本文件记录 Issue/PR、agent task 和 AI review 的协作提示。它只是一层协作护栏，不替代 OpenSpec、focused tests、CI 或 human review。
+本文件记录 Codex 任务和人工审查的协作提示。它只是一层本地协作护栏，不替代 OpenSpec、focused tests 或 human review。
 
 ## Agent Task Prompt
 
-发给 Codex、GitHub Copilot coding agent 或等价 agent 前，先补齐这些字段：
+发给 Codex 前，先补齐这些字段：
 
 - 目标：本次任务要交付什么。
 - 非目标：哪些问题本次不处理。
@@ -26,7 +26,7 @@
 请明确指出需要补跑的 focused validation，并区分 blocker、warning 和 optional cleanup。
 ```
 
-AI review 只能作为附加信号。PR 仍必须通过项目要求的 OpenSpec validate、focused tests/CI 和 human review；claim、paper table 或 dashboard candidate 的状态升级仍按 `docs/result_claims_registry.md` 与人工审阅执行。
+Codex review 只能作为附加信号。PR 仍必须通过项目要求的 OpenSpec validate、focused tests 和 human review；claim、paper table 或 dashboard candidate 的状态升级仍按 `docs/result_claims_registry.md` 与人工审阅执行。
 
 ## Expected Validation
 
@@ -35,6 +35,6 @@ AI review 只能作为附加信号。PR 仍必须通过项目要求的 OpenSpec 
 - 架构/入口/产物边界：`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
 - CLI/config：`make verify-cli-config`
 - compile：`make verify-compile`
-- 协作护栏：`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py tests/test_retired_routes.py -q`
+- 协作护栏：`conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
 
 这些检查默认不读取真实 `dataset/`、不启动训练、不加载 checkpoint，也不写入 `outputs/`、`logs/` 或 cache。

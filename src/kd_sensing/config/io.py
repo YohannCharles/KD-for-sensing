@@ -7,7 +7,6 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
-from kd_sensing.config.canonical import build_virtual_config
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.config.normalization import normalize_loaded_config
 from kd_sensing.config.parsing import parse_scalar, safe_load_yaml
@@ -24,29 +23,12 @@ class LoadedConfigSource:
 
 def load_config(config_path: Optional[str | Path] = None, overrides: Optional[Iterable[str]] = None) -> dict[str, Any]:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
-    file_cfg = {}
     if config_path:
-        source = load_config_source(config_path)
-        file_cfg = _resolve_base_config(source)
-        cfg = deep_merge(cfg, file_cfg)
+        cfg = deep_merge(cfg, _resolve_base_config(load_config_source(config_path)))
     override_cfg = parse_overrides(overrides) if overrides else {}
     if override_cfg:
         cfg = deep_merge(cfg, override_cfg)
-    file_cfg_for_keys = file_cfg if config_path else {}
-    override_changes_objective = _has_dotted_key(override_cfg, "experiment.objective")
-    explicit_early_metric = _has_dotted_key(override_cfg, "training.early_stopping_metric") or (
-        _has_dotted_key(file_cfg_for_keys, "training.early_stopping_metric") and not override_changes_objective
-    )
-    explicit_early_mode = _has_dotted_key(override_cfg, "training.early_stopping_mode") or (
-        _has_dotted_key(file_cfg_for_keys, "training.early_stopping_mode") and not override_changes_objective
-    )
-    normalize_loaded_config(
-        cfg,
-        file_cfg=file_cfg_for_keys,
-        override_cfg=override_cfg,
-        explicit_early_stopping_metric=explicit_early_metric,
-        explicit_early_stopping_mode=explicit_early_mode,
-    )
+    normalize_loaded_config(cfg)
     validate_loaded_config(cfg)
     return cfg
 
@@ -79,10 +61,7 @@ def load_config_source(config_path: str | Path) -> LoadedConfigSource:
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
             return LoadedConfigSource(path=path, data=safe_load_yaml(f.read()) or {}, source_type="file")
-    file_cfg = build_virtual_config(path)
-    if file_cfg is None:
-        raise FileNotFoundError(f"Config file not found: {path}")
-    return LoadedConfigSource(path=path, data=file_cfg, source_type="virtual")
+    raise FileNotFoundError(f"Config file not found: {path}")
 
 
 def dump_config(cfg: dict[str, Any], path: str | Path) -> None:
@@ -125,12 +104,3 @@ def set_by_dotted_key(target: dict[str, Any], key: str, value: Any) -> None:
         if not isinstance(cursor, dict):
             raise ValueError(f"Cannot set nested override through non-dict key: {key}")
     cursor[parts[-1]] = value
-
-
-def _has_dotted_key(target: dict[str, Any], key: str) -> bool:
-    cursor: Any = target
-    for part in key.split("."):
-        if not isinstance(cursor, dict) or part not in cursor:
-            return False
-        cursor = cursor[part]
-    return True

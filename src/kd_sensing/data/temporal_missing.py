@@ -1,31 +1,22 @@
-from dataclasses import dataclass
-import hashlib
-import itertools
-import json
 import random
-from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 
 from kd_sensing.data.temporal_missing_contract import (
-    TEMPORAL_AGGREGATION_MODES,
-    TEMPORAL_MISSING_MODES,
-    normalize_temporal_aggregation,
+    TEMPORAL_SUPERSET_PAYLOAD_KEY,
     normalize_temporal_missing_mode,
 )
 
-DEFAULT_TEMPORAL_MODALITIES = ("image", "radar", "lidar", "gps")
+
+DEFAULT_TEMPORAL_MODALITIES = ("image", "radar", "gps", "lidar")
 STRATIFIED_TEMPORAL_MISSING_TYPES = ("modality_level", "frame_level", "modality_frame", "block")
-
-
-@dataclass(frozen=True)
-class TemporalMissingConfig:
-    mode: str = "none"
-    prob: float = 0.0
-    block_len: int = 1
-    ensure_at_least_one_frame: bool = True
-    ensure_at_least_one_modality_per_frame: bool = False
+_MODALITY_KEYS = {
+    "image": ("image",),
+    "radar": ("radar_ra", "radar_da"),
+    "gps": ("gps",),
+    "lidar": ("lidar",),
+}
 
 
 def masked_temporal_mean(values: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
@@ -39,54 +30,7 @@ def masked_temporal_mean(values: torch.Tensor, mask: torch.Tensor | None) -> tor
     if valid.shape[:2] != values.shape[:2]:
         raise ValueError(f"mask shape {tuple(valid.shape)} does not match values batch/time {tuple(values.shape[:2])}.")
     weights = valid.to(dtype=values.dtype).view(*valid.shape, *([1] * (values.ndim - 2)))
-    denom = weights.sum(dim=1).clamp_min(1.0)
-    return (values * weights).sum(dim=1) / denom
-
-
-def aggregate_temporal(values: torch.Tensor, mask: torch.Tensor | None, mode: str = "masked_mean") -> torch.Tensor:
-    mode = normalize_temporal_aggregation(mode)
-    if mode == "mean":
-        return values.mean(dim=1)
-    if mode == "masked_mean":
-        return masked_temporal_mean(values, mask)
-    if mode == "last":
-        if mask is None:
-            return values[:, -1, ...]
-        valid = torch.as_tensor(mask, device=values.device, dtype=torch.bool)
-        if valid.ndim == 1:
-            valid = valid.unsqueeze(0)
-        if valid.shape[:2] != values.shape[:2]:
-            raise ValueError(f"mask shape {tuple(valid.shape)} does not match values batch/time {tuple(values.shape[:2])}.")
-        fallback = torch.full((valid.shape[0],), valid.shape[1] - 1, dtype=torch.long, device=values.device)
-        positions = torch.arange(valid.shape[1], device=values.device).view(1, -1).expand_as(valid)
-        last = torch.where(valid, positions, torch.full_like(positions, -1)).max(dim=1).values
-        last = torch.where(last.ge(0), last, fallback)
-        return values[torch.arange(values.shape[0], device=values.device), last]
-    raise NotImplementedError("temporal_aggregation='flatten' requires model-specific input dimension changes.")
-
-
-def parse_csv_ints(value: Any, default: tuple[int, ...]) -> tuple[int, ...]:
-    if value in (None, ""):
-        return default
-    if isinstance(value, (list, tuple)):
-        return tuple(int(item) for item in value)
-    return tuple(int(item.strip()) for item in str(value).split(",") if item.strip())
-
-
-def parse_csv_floats(value: Any, default: tuple[float, ...]) -> tuple[float, ...]:
-    if value in (None, ""):
-        return default
-    if isinstance(value, (list, tuple)):
-        return tuple(float(item) for item in value)
-    return tuple(float(item.strip()) for item in str(value).split(",") if item.strip())
-
-
-def parse_csv_strings(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
-    if value in (None, ""):
-        return default
-    if isinstance(value, (list, tuple)):
-        return tuple(str(item).strip() for item in value if str(item).strip())
-    return tuple(item.strip() for item in str(value).split(",") if item.strip())
+    return (values * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
 
 
 def sample_stratified_modality_temporal_mask(
@@ -100,44 +44,40 @@ def sample_stratified_modality_temporal_mask(
     fixed_drop_modalities: tuple[str, ...] | list[str] | None = None,
     fixed_rate: float | None = None,
     fixed_mask_type: str | None = None,
-    ensure_at_least_one_cell: bool = True,
-    ensure_at_least_one_frame: bool = True,
-    ensure_at_least_one_modality: bool = True,
 ) -> dict[str, Any]:
-    rng = rng or random.Random()
     names = tuple(str(item) for item in modalities)
-    if not names:
-        raise ValueError("modalities must not be empty.")
+    if names != DEFAULT_TEMPORAL_MODALITIES:
+        raise ValueError(f"MMW temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     steps = int(history_window)
     if steps <= 0:
         raise ValueError("history_window must be positive.")
-    max_drop = len(names) - 1
+    rng = rng or random.Random()
     if fixed_drop_modalities is None:
-        allowed_drop_counts = [min(max(int(item), 0), max_drop) for item in drop_counts]
-        drop_count = rng.choice(allowed_drop_counts)
+        choices = [min(max(int(value), 0), len(names) - 1) for value in drop_counts]
+        drop_count = rng.choice(choices)
         dropped_indices = tuple(sorted(rng.sample(range(len(names)), drop_count))) if drop_count else ()
     else:
         dropped = {str(item) for item in fixed_drop_modalities}
+        unknown = dropped - set(names)
+        if unknown:
+            raise ValueError(f"Unknown MMW modalities in fixed mask: {sorted(unknown)}.")
         dropped_indices = tuple(index for index, name in enumerate(names) if name in dropped)
         drop_count = len(dropped_indices)
-    rate = float(fixed_rate if fixed_rate is not None else rng.choice(tuple(float(item) for item in temporal_missing_rates)))
-    rate = max(0.0, min(rate, 1.0))
-    mask_type = str(fixed_mask_type or rng.choice(tuple(temporal_missing_types))).strip()
+    rates = tuple(float(value) for value in temporal_missing_rates)
+    types = tuple(str(value) for value in temporal_missing_types)
+    if not rates or not types:
+        raise ValueError("Temporal mask rates and types must be non-empty.")
+    rate = max(0.0, min(float(fixed_rate if fixed_rate is not None else rng.choice(rates)), 1.0))
+    mask_type = str(fixed_mask_type or rng.choice(types)).strip()
     if mask_type not in STRATIFIED_TEMPORAL_MISSING_TYPES:
-        raise ValueError(f"temporal missing type must be one of {STRATIFIED_TEMPORAL_MISSING_TYPES}, got {mask_type!r}.")
-    mask = [[True for _ in names] for _ in range(steps)]
-    for modality_index in dropped_indices:
-        for step in range(steps):
-            mask[step][modality_index] = False
+        raise ValueError(f"Unsupported MMW temporal mask type {mask_type!r}.")
+    mask = [[True] * len(names) for _ in range(steps)]
+    for index in dropped_indices:
+        for row in mask:
+            row[index] = False
     active = [index for index in range(len(names)) if index not in dropped_indices]
     _apply_temporal_type(mask, active, rate=rate, mask_type=mask_type, rng=rng)
-    fixed = _repair_stratified_mask(
-        mask,
-        active,
-        ensure_at_least_one_cell=ensure_at_least_one_cell,
-        ensure_at_least_one_frame=ensure_at_least_one_frame,
-        ensure_at_least_one_modality=ensure_at_least_one_modality,
-    )
+    fixes = _ensure_available(mask, active)
     tensor = torch.tensor(mask, dtype=torch.bool)
     return {
         "modality_temporal_mask": tensor,
@@ -146,52 +86,65 @@ def sample_stratified_modality_temporal_mask(
         "dropped_modalities": [names[index] for index in dropped_indices],
         "mask_type": mask_type,
         "rate": rate,
-        "drop_count": int(drop_count),
-        "num_fallback_fixes": int(fixed),
-        "history_window": steps,
-        "num_modalities": len(names),
-        "modalities": list(names),
+        "drop_count": drop_count,
+        "num_fallback_fixes": fixes,
     }
 
 
-def generate_fixed_eval_mask_cache(
-    cache_dir: str | Path,
+def apply_training_temporal_missing(
+    batch: dict[str, Any],
+    cfg: Mapping[str, Any],
     *,
-    rates: tuple[float, ...] | list[float] = (0.0, 0.2, 0.4, 0.6, 0.8),
-    drop_counts: tuple[int, ...] | list[int] = (0, 1, 2, 3),
-    mask_types: tuple[str, ...] | list[str] = ("modality_frame", "frame_level", "block"),
-    num_masks_per_cell: int = 16,
-    seed: int = 20260708,
-    history_window: int = 5,
-    modalities: tuple[str, ...] | list[str] = DEFAULT_TEMPORAL_MODALITIES,
-) -> dict[tuple[float, int], dict[str, Any]]:
-    root = Path(cache_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    result = {}
-    for rate in rates:
-        for drop_count in drop_counts:
-            path = eval_mask_cache_path(root, float(rate), int(drop_count))
-            if path.exists():
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                _validate_mask_cache(payload)
-            else:
-                payload = _build_eval_mask_payload(
-                    rate=float(rate),
-                    drop_count=int(drop_count),
-                    mask_types=tuple(mask_types),
-                    num_masks=int(num_masks_per_cell),
-                    seed=int(seed),
-                    history_window=int(history_window),
-                    modalities=tuple(modalities),
-                )
-                path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            result[(float(rate), int(drop_count))] = payload
-    return result
-
-
-def eval_mask_cache_path(cache_dir: str | Path, rate: float, drop_count: int) -> Path:
-    rate_token = f"{float(rate):.1f}"
-    return Path(cache_dir) / f"rate_{rate_token}_drop{int(drop_count)}.json"
+    epoch: int,
+    step: int,
+) -> dict[str, Any]:
+    temporal = cfg.get("temporal_missing", {})
+    if not isinstance(temporal, Mapping) or not temporal.get("enabled", False):
+        return batch
+    mode = normalize_temporal_missing_mode(temporal.get("mode"))
+    if mode == "none":
+        return batch
+    modalities = _configured_modalities(cfg)
+    batch_size, steps = _batch_time_shape(batch, modalities)
+    base = _base_mask(batch, modalities, batch_size, steps)
+    if not bool(base.any(dim=(1, 2)).all().item()):
+        raise ValueError("MMW temporal missing requires one source cell per sample.")
+    preserve_superset = bool(temporal.get("preserve_unmasked_for_superset", False))
+    original_inputs = _input_tensors(batch, modalities) if preserve_superset else None
+    seed = _training_seed(cfg, temporal, epoch=epoch, step=step)
+    rng = random.Random(seed)
+    sampled = torch.stack(
+        [
+            sample_stratified_modality_temporal_mask(
+                history_window=steps,
+                modalities=modalities,
+                drop_counts=_csv_values(temporal.get("train_missing_drop_counts"), int, (0, 1, 2, 3)),
+                temporal_missing_rates=_csv_values(
+                    temporal.get("train_temporal_missing_rates"), float, (0.0, 0.2, 0.4, 0.6, 0.8)
+                ),
+                temporal_missing_types=_csv_values(
+                    temporal.get("train_temporal_missing_types"), str, STRATIFIED_TEMPORAL_MISSING_TYPES
+                ),
+                rng=rng,
+            )["modality_temporal_mask"]
+            for _ in range(batch_size)
+        ]
+    )
+    mask, fixes = _restore_missing_samples(base & sampled, base)
+    apply_modality_temporal_mask_to_batch(batch, mask, modalities=modalities)
+    if original_inputs is not None:
+        batch[TEMPORAL_SUPERSET_PAYLOAD_KEY] = {
+            "inputs": original_inputs,
+            "base_mask": base,
+            "modalities": modalities,
+        }
+    batch["temporal_missing_metadata"] = {
+        "mode": mode,
+        "seed": seed,
+        "available_rate": float(mask.to(dtype=torch.float32).mean().item()),
+        "num_fallback_fixes": fixes,
+    }
+    return batch
 
 
 def apply_modality_temporal_mask_to_batch(
@@ -200,39 +153,94 @@ def apply_modality_temporal_mask_to_batch(
     *,
     modalities: tuple[str, ...] | list[str] = DEFAULT_TEMPORAL_MODALITIES,
 ) -> dict[str, Any]:
-    from kd_sensing.data.difficulty.operators.modality import MODALITY_BATCH_KEYS, _merge_valid_mask, _zero_fill
-
     names = tuple(str(item) for item in modalities)
+    if names != DEFAULT_TEMPORAL_MODALITIES:
+        raise ValueError(f"MMW temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     mask = torch.as_tensor(modality_temporal_mask, dtype=torch.bool)
     if mask.ndim == 2:
         mask = mask.unsqueeze(0)
     if mask.ndim != 3 or mask.shape[-1] != len(names):
-        raise ValueError(f"modality_temporal_mask must have shape [B,T,{len(names)}] or [T,{len(names)}], got {tuple(mask.shape)}.")
+        raise ValueError(f"modality_temporal_mask must have shape [B,T,{len(names)}] or [T,{len(names)}].")
+    batch_size = _batch_size(batch, names)
+    if mask.shape[0] == 1 and batch_size != 1:
+        mask = mask.expand(batch_size, -1, -1)
+    if mask.shape[0] != batch_size:
+        raise ValueError(f"temporal mask batch size {mask.shape[0]} does not match batch size {batch_size}.")
     for index, modality in enumerate(names):
-        missing = ~mask[:, :, index]
-        keys = [key for key in MODALITY_BATCH_KEYS.get(modality, (modality,)) if torch.is_tensor(batch.get(key))]
+        keys = [key for key in _MODALITY_KEYS[modality] if torch.is_tensor(batch.get(key))]
+        if not keys:
+            raise ValueError(f"MMW batch is missing {modality} inputs.")
+        keep = mask[:, :, index]
         for key in keys:
             tensor = batch[key]
-            local_missing = missing.to(device=tensor.device)
-            if local_missing.shape[0] == 1 and int(tensor.shape[0]) != 1:
-                local_missing = local_missing.expand(int(tensor.shape[0]), -1)
-            batch[key] = _zero_fill(tensor, local_missing)
-            batch[f"{modality}_valid_mask"] = _merge_valid_mask(
-                batch.get(f"{modality}_valid_mask"),
-                ~local_missing,
-                device=tensor.device,
-            )
-            batch[f"{modality}_dropout_mask"] = local_missing
-            batch[f"{modality}_missing_mask"] = local_missing
-    expanded = mask
-    first = next((value for value in batch.values() if torch.is_tensor(value) and value.ndim >= 2), None)
-    if first is not None and expanded.shape[0] == 1 and int(first.shape[0]) != 1:
-        expanded = expanded.expand(int(first.shape[0]), -1, -1)
-    batch["modality_temporal_mask"] = expanded
-    batch["temporal_mask"] = expanded.any(dim=2)
-    batch["modality_mask"] = expanded.any(dim=1)
-    batch["available_modalities"] = expanded.any(dim=1)
+            local_keep = keep.to(device=tensor.device)
+            batch[key] = tensor.masked_fill(_expand_mask(~local_keep, tensor.ndim), 0)
+        batch[f"{modality}_valid_mask"] = keep.to(device=batch[keys[0]].device)
+        batch[f"{modality}_dropout_mask"] = (~keep).to(device=batch[keys[0]].device)
+    batch["modality_temporal_mask"] = mask
+    batch["temporal_mask"] = mask.any(dim=2)
+    batch["modality_mask"] = mask.any(dim=1)
+    batch["available_modalities"] = mask.any(dim=1)
     return batch
+
+
+def _configured_modalities(cfg: Mapping[str, Any]) -> tuple[str, ...]:
+    model = cfg.get("model", {})
+    primary = model.get("primary", {}) if isinstance(model, Mapping) else {}
+    names = tuple(str(item) for item in primary.get("modalities", DEFAULT_TEMPORAL_MODALITIES))
+    if names != DEFAULT_TEMPORAL_MODALITIES:
+        raise ValueError(f"MMW temporal missing requires modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
+    return names
+
+
+def _batch_time_shape(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> tuple[int, int]:
+    for modality in modalities:
+        for key in _MODALITY_KEYS[modality]:
+            tensor = batch.get(key)
+            if torch.is_tensor(tensor) and tensor.ndim >= 2:
+                return int(tensor.shape[0]), int(tensor.shape[1])
+    raise ValueError("MMW temporal missing requires a batched sequence input.")
+
+
+def _batch_size(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> int:
+    return _batch_time_shape(batch, modalities)[0]
+
+
+def _base_mask(batch: Mapping[str, Any], modalities: tuple[str, ...], batch_size: int, steps: int) -> torch.Tensor:
+    base = torch.ones(batch_size, steps, len(modalities), dtype=torch.bool)
+    for index, modality in enumerate(modalities):
+        valid = batch.get(f"{modality}_valid_mask")
+        dropped = batch.get(f"{modality}_dropout_mask")
+        if torch.is_tensor(valid):
+            base[:, :, index] &= _coerce_temporal_mask(valid, batch_size, steps)
+        if torch.is_tensor(dropped):
+            base[:, :, index] &= ~_coerce_temporal_mask(dropped, batch_size, steps)
+    return base
+
+
+def _input_tensors(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> dict[str, torch.Tensor]:
+    return {
+        key: batch[key]
+        for modality in modalities
+        for key in _MODALITY_KEYS[modality]
+        if torch.is_tensor(batch.get(key))
+    }
+
+
+def _training_seed(cfg: Mapping[str, Any], temporal: Mapping[str, Any], *, epoch: int, step: int) -> int:
+    experiment = cfg.get("experiment", {})
+    base = int(temporal.get("seed") or (experiment.get("seed", 0) if isinstance(experiment, Mapping) else 0))
+    return base + int(epoch) * 1_000_003 + int(step)
+
+
+def _csv_values(value: Any, convert, default: tuple[Any, ...]) -> tuple[Any, ...]:
+    if value in (None, ""):
+        return default
+    values = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    result = tuple(convert(item.strip() if isinstance(item, str) else item) for item in values if str(item).strip())
+    if not result:
+        raise ValueError("Temporal mask configuration must not be empty.")
+    return result
 
 
 def _apply_temporal_type(mask: list[list[bool]], active: list[int], *, rate: float, mask_type: str, rng: random.Random) -> None:
@@ -240,129 +248,67 @@ def _apply_temporal_type(mask: list[list[bool]], active: list[int], *, rate: flo
         return
     steps = len(mask)
     if mask_type == "modality_level":
-        count = min(len(active) - 1 if len(active) > 1 else 0, int(round(rate * len(active))))
-        for modality in rng.sample(active, max(count, 0)):
-            for step in range(steps):
-                mask[step][modality] = False
-        return
-    if mask_type == "frame_level":
-        count = min(steps, int(round(rate * steps)))
-        for step in rng.sample(range(steps), max(count, 0)):
-            for modality in active:
-                mask[step][modality] = False
-        return
-    if mask_type == "block":
+        count = min(max(len(active) - 1, 0), int(round(rate * len(active))))
+        for index in rng.sample(active, count):
+            for row in mask:
+                row[index] = False
+    elif mask_type == "frame_level":
+        for row in rng.sample(range(steps), min(steps, int(round(rate * steps)))):
+            for index in active:
+                mask[row][index] = False
+    elif mask_type == "block":
         length = min(steps, max(1, int(round(rate * steps))))
         start = rng.randint(0, max(steps - length, 0))
-        for step in range(start, start + length):
-            for modality in active:
-                mask[step][modality] = False
-        return
-    cells = [(step, modality) for step in range(steps) for modality in active]
-    count = min(len(cells), int(round(rate * len(cells))))
-    for step, modality in rng.sample(cells, max(count, 0)):
-        mask[step][modality] = False
+        for row in range(start, start + length):
+            for index in active:
+                mask[row][index] = False
+    else:
+        cells = [(row, index) for row in range(steps) for index in active]
+        for row, index in rng.sample(cells, min(len(cells), int(round(rate * len(cells))))):
+            mask[row][index] = False
 
 
-def _repair_stratified_mask(
-    mask: list[list[bool]],
-    active: list[int],
-    *,
-    ensure_at_least_one_cell: bool,
-    ensure_at_least_one_frame: bool,
-    ensure_at_least_one_modality: bool,
-) -> int:
-    if not active:
+def _ensure_available(mask: list[list[bool]], active: list[int]) -> int:
+    if any(any(row) for row in mask) or not active:
         return 0
-    fixed = 0
-    if ensure_at_least_one_cell and not any(any(row) for row in mask):
-        mask[-1][active[-1]] = True
-        fixed += 1
-    if ensure_at_least_one_frame and not any(any(row) for row in mask):
-        mask[-1][active[-1]] = True
-        fixed += 1
-    if ensure_at_least_one_modality and not any(mask[step][modality] for step in range(len(mask)) for modality in active):
-        mask[-1][active[-1]] = True
-        fixed += 1
-    return fixed
+    mask[-1][active[-1]] = True
+    return 1
 
 
-def _build_eval_mask_payload(
-    *,
-    rate: float,
-    drop_count: int,
-    mask_types: tuple[str, ...],
-    num_masks: int,
-    seed: int,
-    history_window: int,
-    modalities: tuple[str, ...],
-) -> dict[str, Any]:
-    combos = list(itertools.combinations(modalities, int(drop_count)))
-    if not combos:
-        combos = [()]
-    rng = random.Random((int(seed) * 1009) + int(round(rate * 1000)) * 17 + int(drop_count))
-    masks = []
-    for index in range(int(num_masks)):
-        dropped = combos[index % len(combos)]
-        item = sample_stratified_modality_temporal_mask(
-            history_window=history_window,
-            modalities=modalities,
-            fixed_drop_modalities=dropped,
-            fixed_rate=rate,
-            fixed_mask_type=mask_types[index % len(mask_types)],
-            rng=rng,
-        )
-        masks.append(
-            {
-                "modality_temporal_mask": item["modality_temporal_mask"].int().tolist(),
-                "dropped_modalities": list(dropped),
-                "mask_type": item["mask_type"],
-                "num_fallback_fixes": item["num_fallback_fixes"],
-            }
-        )
-    payload = {
-        "version": "temporal_eval_masks_v1",
-        "rate": float(rate),
-        "drop_count": int(drop_count),
-        "num_masks": int(num_masks),
-        "history_window": int(history_window),
-        "num_modalities": len(modalities),
-        "modalities": list(modalities),
-        "seed": int(seed),
-        "masks": masks,
-    }
-    payload["checksum"] = _mask_payload_checksum(payload)
-    return payload
+def _restore_missing_samples(mask: torch.Tensor, base: torch.Tensor) -> tuple[torch.Tensor, int]:
+    result = mask.clone()
+    fixes = 0
+    for row in (~result.any(dim=(1, 2))).nonzero(as_tuple=False).flatten().tolist():
+        choices = base[row].nonzero(as_tuple=False)
+        if not len(choices):
+            raise ValueError("MMW temporal missing requires one source cell per sample.")
+        time_index, modality_index = choices[-1].tolist()
+        result[row, time_index, modality_index] = True
+        fixes += 1
+    return result, fixes
 
 
-def _validate_mask_cache(payload: dict[str, Any]) -> None:
-    expected = payload.get("checksum")
-    if not expected or expected != _mask_payload_checksum(payload):
-        raise ValueError("Temporal eval mask cache checksum mismatch.")
+def _coerce_temporal_mask(value: torch.Tensor, batch_size: int, steps: int) -> torch.Tensor:
+    mask = value.detach().to(device="cpu", dtype=torch.bool)
+    if mask.ndim == 1:
+        if mask.shape[0] != batch_size:
+            raise ValueError(f"Temporal mask must have {batch_size} rows.")
+        mask = mask.unsqueeze(1).expand(-1, steps)
+    if tuple(mask.shape) != (batch_size, steps):
+        raise ValueError(f"Temporal mask must have shape [{batch_size}, {steps}], got {tuple(mask.shape)}.")
+    return mask
 
 
-def _mask_payload_checksum(payload: dict[str, Any]) -> str:
-    clone = dict(payload)
-    clone.pop("checksum", None)
-    encoded = json.dumps(clone, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
+def _expand_mask(mask: torch.Tensor, dimensions: int) -> torch.Tensor:
+    return mask.view(*mask.shape, *([1] * (dimensions - mask.ndim)))
 
 
 __all__ = [
     "DEFAULT_TEMPORAL_MODALITIES",
     "STRATIFIED_TEMPORAL_MISSING_TYPES",
-    "TEMPORAL_AGGREGATION_MODES",
-    "TEMPORAL_MISSING_MODES",
-    "TemporalMissingConfig",
-    "aggregate_temporal",
+    "TEMPORAL_SUPERSET_PAYLOAD_KEY",
     "apply_modality_temporal_mask_to_batch",
-    "eval_mask_cache_path",
-    "generate_fixed_eval_mask_cache",
+    "apply_training_temporal_missing",
     "masked_temporal_mean",
-    "normalize_temporal_aggregation",
-    "normalize_temporal_missing_mode",
-    "parse_csv_floats",
-    "parse_csv_ints",
-    "parse_csv_strings",
     "sample_stratified_modality_temporal_mask",
 ]

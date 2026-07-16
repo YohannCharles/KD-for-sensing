@@ -6,14 +6,14 @@
 
 训练热路径还会对多个标量逐个 `.item()`/`.cpu()`，按 batch 等权平均指标，每轮验证后主动销毁 persistent worker，默认开启未同步的 `perf_counter` GPU 阶段计时并逐行同步写 CSV。Synthetic dataset 则持有一个共享可变 generator，使 `dataset[i]` 取值依赖此前访问顺序。
 
-本 change 必须保持现有 package CLI、objective、split、normalization 和 ignored runtime artifact 边界；历史 checkpoint 仍可通过明确的 legacy migration 分支读取，但不能继续污染新 schema。
+本 change 必须保持现有 package CLI、objective、split、normalization 和 ignored runtime artifact 边界；不符合 current schema 的 checkpoint 直接拒绝，不保留迁移分支。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
 - 让声明 resume 的运行在任何缺失、损坏或不兼容条件下尽早失败，不产生“其实从头训练”的假恢复。
-- 让 current schema 的中断恢复能重建下一 batch 所需的训练状态，并明确区分 exact resume 与 legacy best-effort resume。
+- 让 current schema 的中断恢复能重建下一 batch 所需的训练状态，并拒绝不完整或过时 checkpoint。
 - 让 checkpoint 文件、sidecar、选择策略、最终测试和 run status 对同一个实际文件形成可验证 provenance。
 - 消除默认训练热路径中不必要的设备同步、batch 等权偏差、worker 反复重建和默认 profiling 开销。
 - 用 synthetic/fixture 测试证明恢复等价性、指标加权、产物原子性和访问顺序确定性。
@@ -34,7 +34,7 @@
 1. 解析 `training.resume`、源 checkpoint、源 run 目录和目标 run 目录；
 2. 使用安全 checkpoint loader 在 CPU 上读取 payload；
 3. 校验 resume role schema 和配置 fingerprint；
-4. 生成跨 run、同 run、legacy/current schema 和预期 next epoch 的计划。
+4. 生成跨 run、同 run、current schema 和预期 next epoch 的计划。
 
 若 `resume=true`，默认路径必须是既有目标 run 的 `checkpoints/last.pth`，缺失立即报错，不创建时间戳目录也不写 running status。显式 checkpoint 可以来自另一 run；目标输出身份可以不同，但来源和目标必须同时记录。
 
@@ -42,13 +42,13 @@
 
 备选方案是保留现有顺序，在 `restore_if_needed()` 中补一个异常。该方案仍会在发现失败前拟合统计量并覆盖运行产物，不能满足 fail-closed，故拒绝。
 
-### 2. Resume role 使用版本化 schema，legacy 走显式迁移函数
+### 2. Resume role 只接受 current 版本化 schema
 
 current checkpoint 顶层记录 `checkpoint_schema_version`、`checkpoint_role`、`state_dict`、`optimizer`、`scheduler`、`epoch`、`runtime_state`、`resume_contract` 和该文件的 selection provenance。resume role 的 `optimizer`、`scheduler` 与 `epoch` 字段必须存在；当前训练没有 scheduler 时 `scheduler` 可以显式为 `null`，但不能省略。当前运行存在 scheduler 时，checkpoint 中的 `null` 也必须拒绝。
 
-没有 current schema version 的历史 payload 由独立 `migrate_legacy_resume_payload()`（名称可等价）识别、校验和标注，不能继续在通用状态代码中使用嵌套 `dict.get()` 猜测字段。legacy 核心 role 字段仍必须完整；缺少新 `runtime_state` 时允许 best-effort 恢复，但 checkpoint load 记录必须包含迁移版本、warning 和 `trajectory_equivalence: false`。历史 `test_loss` 只允许该迁移函数在缺少 `best_val_loss` 时解释为旧 validation-loss alias；新 payload 不写 `test_loss`。
+没有 current schema version、缺少 `runtime_state` 或包含过时 `test_loss` alias 的 payload MUST 在任何可变 artifact 写出前拒绝。通用状态代码不得通过嵌套 `dict.get()` 猜测旧字段；新 payload 不写 `test_loss`。
 
-这样保留“历史 checkpoint 缺少新 metadata 不被无条件拒绝”的现有要求，同时使 current schema 缺字段 fail-closed。
+这样使所有不完整或过时 checkpoint fail closed，避免在 resume 路径保留兼容分支。
 
 ### 3. `runtime_state` 在 epoch 边界形成一次一致快照
 
@@ -62,7 +62,7 @@ current checkpoint 顶层记录 `checkpoint_schema_version`、`checkpoint_role`�
 
 状态使用 `weights_only=True` 可读取的 tensor、标量、列表和 mapping 形式，不引入任意对象 pickle。所有 epoch 日志、extension hook 和 scheduler 更新完成后先冻结快照，再用同一快照发布该 epoch 产生的 `last`/`best` checkpoint，避免文件之间的 epoch 状态不一致。
 
-恢复时先构建并加载模型、optimizer、scheduler、GradScaler 与 extension state，最后恢复全局 RNG 和 loader/sampler generator，且必须发生在创建下一次 iterator 之前。extension 缺少所需状态或 CUDA RNG 拓扑不兼容时，current exact resume 明确失败；legacy 路径则标记非等价。
+恢复时先构建并加载模型、optimizer、scheduler、GradScaler 与 extension state，最后恢复全局 RNG 和 loader/sampler generator，且必须发生在创建下一次 iterator 之前。extension 缺少所需状态或 CUDA RNG 拓扑不兼容时，resume MUST 明确失败。
 
 备选方案只调用 `set_seed(seed + epoch)`。它不能还原 batch shuffle、dropout、AMP scale 或 extension 内部进度，故拒绝。
 
@@ -76,7 +76,7 @@ current checkpoint 顶层记录 `checkpoint_schema_version`、`checkpoint_role`�
 
 hash 使用标准库 SHA-256 和稳定 JSON 序列化，并同时保留足以生成结构化 diff 的 canonical metadata，错误不能只显示两个 hash。
 
-允许差异采用代码内封闭 allowlist，不接受用户提供任意 glob。首批只允许：`training.resume` 本身、`training.epochs` 增大且不低于 next epoch、目标 `output.dir/run_name/overwrite`、进度显示、TensorBoard 开关/legacy tag、日志频率和 timing profile。模型、数据/split、normalization、seed、worker/sampler、optimizer/scheduler、AMP 和 selection policy 的变化必须拒绝。跨 run 只放行目标输出身份，不放行训练语义。
+允许差异采用代码内封闭 allowlist，不接受用户提供任意 glob。首批只允许：`training.resume` 本身、`training.epochs` 增大且不低于 next epoch、目标 `output.dir/run_name/overwrite`、进度显示、TensorBoard 开关、日志频率和 timing profile。模型、数据/split、normalization、seed、worker/sampler、optimizer/scheduler、AMP 和 selection policy 的变化必须拒绝。跨 run 只放行目标输出身份，不放行训练语义。
 
 resume 时复用 checkpoint 引用的训练 normalization artifact；不得先对当前数据重新拟合再覆盖。源 artifact 缺失、摘要不符或与 split/feature mode 不匹配时 fail-closed。
 
@@ -91,7 +91,7 @@ resume 时复用 checkpoint 引用的训练 normalization artifact；不得先�
 
 文件系统无法把 checkpoint 与 sidecar 两个路径作为单事务替换。因此发布顺序选择“checkpoint 后 sidecar”，并把 sidecar 作为完成标记；崩溃留下的无 sidecar checkpoint会被 current reader 拒绝，而不是误选。临时文件在成功或异常后清理。
 
-registry copy 也复用同一发布器，不再先 `copy2` 到最终路径。legacy 文件允许缺 digest，但必须在 load provenance 中标记 unverified。
+registry copy 也复用同一发布器，不再先 `copy2` 到最终路径。不带 digest 的 checkpoint 不得作为 current resume、selection 或 final-test 输入。
 
 ### 6. 逐文件 selection catalog 是最终 checkpoint 的唯一来源
 
@@ -140,7 +140,7 @@ Synthetic dataset 不再把一个共享 generator 存在实例上。每次 `__ge
 
 - [Risk] current checkpoint 体积因 history、epoch logs 和 RNG state 增加。→ 只保存 epoch 级紧凑记录与状态，不复制 prediction artifact；focused test 监控 payload schema，后续若体积成为实测瓶颈再提出独立压缩 change。
 - [Risk] crash 发生在 checkpoint replace 与 sidecar replace 之间会留下孤立文件。→ sidecar 是 current schema 完成标记；reader fail-closed，下一次同名发布可原子覆盖，cleanup manifest 可识别孤立临时/未验证文件。
-- [Risk] legacy checkpoint 无法达到轨迹等价。→ 单独迁移分支、warning 和 `trajectory_equivalence: false`，不得把 legacy smoke 结果宣称为 exact resume。
+- [Risk] 过时 checkpoint 无法恢复。→ 在首次写出前明确拒绝；current recipe 可重新开始训练，不保留迁移分支。
 - [Risk] 严格 fingerprint 会拒绝过去被默许的配置漂移。→ 错误输出逐字段 diff；只对确定不影响训练轨迹的字段维护最小 allowlist，新增放行必须走代码与测试评审。
 - [Risk] CUDA event profiling仍会在采样点同步并改变性能。→ 默认关闭，profile metadata 明确标记观测开销；正式吞吐比较必须使用相同 profile/interval。
 - [Risk] extension state contract 暴露尚未实现序列化的扩展。→ extension 必须声明 stateless 或实现版本化 state；focused tests 覆盖所有 current extension，不能静默跳过。
@@ -148,7 +148,7 @@ Synthetic dataset 不再把一个共享 generator 存在实例上。每次 `__ge
 ## Migration Plan
 
 1. 先增加 schema/fingerprint/selection 数据结构和纯函数测试，不改变训练写出。
-2. 将 checkpoint 保存统一到原子 publisher，并为所有 role 生成 digest sidecar；保留 legacy reader。
+2. 将 checkpoint 保存统一到原子 publisher，并为所有 role 生成 digest sidecar；拒绝不符合 current schema 的 reader 输入。
 3. 调整训练 phase 顺序，加入两阶段 `ResumePlan` 与 staged normalization/split compatibility gate。
 4. 接入 runtime state capture/restore、extension/GradScaler/loader generator 状态，并增加 uninterrupted 与 interrupted-resume 等价测试。
 5. 统一 final checkpoint resolver 和独立 `final_test_metrics.json` 写出，再移除新 payload 的 `test_loss`。

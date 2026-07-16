@@ -10,6 +10,7 @@
 - 保留 T2 同一 primary model 的在线 no-grad full/superset consistency、BPA、prototype/router 与 CMA ablation；它们不是独立 teacher-student runtime。
 - 用一份集中历史说明和 OpenSpec archive 保留退役路线的目的与存在证据，不保留 stub、alias、迁移配置或拒绝兼容层。
 - 缩减 public CLI、registry、配置加载和架构测试，使它们只声明并验证 T2/baseline current surface。
+- **BREAKING** 停用 GitHub Actions，删除 GitHub、Cursor 和 Kiro 专属协作适配；验证与协作提示只保留本地 Codex 文档和命令。
 
 ## Capabilities
 
@@ -25,8 +26,8 @@
 - `u-mask-beam-jepa`: 将 retained U-Mask contract 明确限定为 T2 所需机制与 active BPA/CMA ablation。
 - `mmw-baseline-multiseed-robustness-evidence`: 将 T2/baseline matrix 绑定到 tracked canonical recipes。
 - `retired-route-summary`: 将退役范围扩展为所有非 T2/baseline source surface，并将历史信息集中到说明与 archive。
-- `project-health-guardrails`: 以 T2/baseline surface 验证取代历史路线的兼容 guard。
+- `project-health-guardrails`: 以 T2/baseline surface 验证取代历史路线的兼容 guard，并移除 GitHub Actions CI 要求。
 
 ## Impact
 
-影响 `src/kd_sensing/`、`configs/`、`scripts/`、`tests/`、`pyproject.toml`、README、研究/claim 文档和 current OpenSpec specs。现有 active T2 调参及 BPA/CMA change 的输入、实现和任务保持可达；其余 active runtime change 不会被作为本变更的兼容目标。
+影响 `src/kd_sensing/`、`configs/`、`scripts/`、`tests/`、`pyproject.toml`、`.github/`、`.cursor/`、`.kiro/`、`envs/smoke-dev.yml`、README、研究/claim 文档和 current OpenSpec specs。现有 active T2 调参及 BPA/CMA change 的输入、实现和任务保持可达；其余 active runtime change 不会被作为本变更的兼容目标。

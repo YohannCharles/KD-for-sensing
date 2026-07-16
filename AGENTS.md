@@ -33,9 +33,6 @@ conda run -n kd_mm_beam <command>
 conda run -n kd_mm_beam kd-sensing-train --help
 conda run -n kd_mm_beam kd-sensing-evaluate --help
 conda run -n kd_mm_beam kd-sensing-preprocess --help
-conda run -n kd_mm_beam kd-sensing-eval-u-mask-matrix --help
-conda run -n kd_mm_beam kd-sensing-mmw-town-gps-v2 --help
-conda run -n kd_mm_beam kd-sensing-runs --help
 ```
 
 ## 系统配置与启动项安全

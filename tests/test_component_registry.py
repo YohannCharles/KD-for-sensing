@@ -1,179 +1,36 @@
-import json
-import subprocess
-import sys
-from pathlib import Path
-
 import pytest
-import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-RETIREMENT_FIXTURE = ROOT / "tests" / "fixtures" / "legacy_model_registry_retirement.yaml"
+from kd_sensing.registries import ENCODERS, MODELS, REPRESENTATION_CORES, Registry, RegistryError, import_default_components
 
 
-def test_registry_core_errors_cover_build_unknown_duplicate_and_missing_parameter():
-    from kd_sensing.registries import Registry, RegistryError
-
+def test_registry_builds_components_and_reports_bad_configs() -> None:
     registry = Registry("tiny")
 
     @registry.register("example")
     class Example:
-        def __init__(self, value: int):
+        def __init__(self, value: int) -> None:
             self.value = value
 
     assert registry.build({"type": "example", "value": 7}).value == 7
     with pytest.raises(RegistryError, match="Unknown component 'missing'"):
         registry.build({"type": "missing"})
-    with pytest.raises(RegistryError, match="Duplicate registration 'example'"):
-        registry.register("example")(Example)
     with pytest.raises(RegistryError, match="Missing required parameters: value"):
         registry.build({"type": "example"})
 
 
-def test_import_default_components_registers_cls_token_transformer_without_hist_beam_fusion():
-    code = f"""
-import json
-import sys
-sys.path.insert(0, {str(SRC)!r})
-from kd_sensing.registries import MODELS, import_default_components
-before = "cls_token_transformer_fusion" in MODELS.list()
-import_default_components()
-after = "cls_token_transformer_fusion" in MODELS.list()
-hist_after = "hist_beam_fusion" in MODELS.list()
-model = MODELS.build({{
-    "type": "cls_token_transformer_fusion",
-    "modalities": ["gps", "mmwave"],
-    "feature_size": 16,
-    "d_model": 16,
-    "num_classes": 8,
-    "num_pred": 2,
-    "num_heads": 4,
-    "num_layers": 1,
-    "gps_input_size": 3,
-    "mmwave_input_size": 64,
-}})
-print(json.dumps({{
-    "before": before,
-    "after": after,
-    "hist_after": hist_after,
-    "class_name": type(model).__name__,
-    "modalities": list(model.modalities),
-}}, sort_keys=True))
-"""
-    result = subprocess.run([sys.executable, "-c", code], check=True, text=True, capture_output=True)
-    payload = json.loads(result.stdout)
+def test_registry_exposes_only_the_t2_baseline_components_needed_by_recipes() -> None:
+    import_default_components()
 
-    assert payload == {
-        "before": False,
-        "after": True,
-        "hist_after": False,
-        "class_name": "CLSTokenTransformerFusionNet",
-        "modalities": ["gps", "mmwave"],
-    }
-
-
-def test_registry_light_import_does_not_eager_import_cls_transformer_module():
-    code = f"""
-import json
-import sys
-sys.path.insert(0, {str(SRC)!r})
-import kd_sensing.registries
-print(json.dumps({{
-    "fusion_module": "kd_sensing.models.fusion.cls_token_transformer" in sys.modules,
-    "models_package": "kd_sensing.models" in sys.modules,
-}}, sort_keys=True))
-"""
-    result = subprocess.run([sys.executable, "-c", code], check=True, text=True, capture_output=True)
-    payload = json.loads(result.stdout)
-
-    assert payload == {"fusion_module": False, "models_package": False}
-
-
-@pytest.mark.parametrize(
-    ("registry_name", "cfg"),
-    [
-        ("MODELS", {"type": "craf_fusion"}),
-        ("MODELS", {"type": "marf_fusion"}),
-        ("MODELS", {"type": "hist_beam_fusion"}),
-        ("LOSSES", {"type": "g2d"}),
-        ("LOSSES", {"type": "logits_kd"}),
-        ("LOSSES", {"type": "rkd"}),
-        ("DATASETS", {"type": "multimodal_nf"}),
-        ("DATASETS", {"type": "raymobtime_s008"}),
-        ("MODELS", {"type": "simple_concat_multitask_selection"}),
-        ("MODELS", {"type": "task_aware_gated_multitask_selection"}),
-        ("ENCODERS", {"type": "coord_mlp"}),
-        ("ENCODERS", {"type": "ray_mlp"}),
-        ("ENCODERS", {"type": "raymobtime_lidar_3d_cnn"}),
-        ("PREPROCESSORS", {"type": "multimodal_nf_audit"}),
-        ("PREPROCESSORS", {"type": "multimodal_nf_index"}),
-        ("PREPROCESSORS", {"type": "multimodal_nf_derived_cache"}),
-        ("PREPROCESSORS", {"type": "raymobtime_s008_audit"}),
-        ("PREPROCESSORS", {"type": "raymobtime_s008_index"}),
-        ("PREPROCESSORS", {"type": "raymobtime_s008_ray_features"}),
-        ("PREPROCESSORS", {"type": "raymobtime_s008_cache"}),
-    ],
-)
-def test_retired_components_are_not_registered_or_redirected(registry_name: str, cfg: dict):
-    code = f"""
-import json
-import sys
-sys.path.insert(0, {str(SRC)!r})
-from kd_sensing import registries
-try:
-    getattr(registries, {registry_name!r}).build({cfg!r})
-except registries.RegistryError as exc:
-    print(json.dumps({{"message": str(exc)}}))
-else:
-    raise AssertionError("retired component unexpectedly built")
-"""
-    result = subprocess.run([sys.executable, "-c", code], check=True, text=True, capture_output=True)
-    message = json.loads(result.stdout)["message"]
-
-    assert cfg["type"] in message
-    assert registry_name.lower() in message
-
-
-def test_legacy_model_registry_retirement_fixture_names_are_not_current_entries():
-    from kd_sensing import registries
-
-    registries.import_default_components()
-    payload = yaml.safe_load(RETIREMENT_FIXTURE.read_text(encoding="utf-8"))
-    registry_map = {
-        "models": registries.MODELS,
-        "encoders": registries.ENCODERS,
-        "representation_cores": registries.REPRESENTATION_CORES,
-        "heads": registries.HEADS,
-    }
-
-    for entry in payload["retained_removed_guards"]:
-        registry = registry_map[entry["registry"]]
-        assert entry["name"] not in registry.list()
-        with pytest.raises(registries.RegistryError) as exc_info:
-            registry.build({"type": entry["name"]})
-        message = str(exc_info.value)
-        assert entry["name"] in message
-        assert f"registry '{registry.name}'" in message
-        assert "Unknown component" in message or "Removed component" in message
-        if "Removed component" in message:
-            assert entry["hint"] in message
-
-    for entry in payload["unknown_names"]:
-        registry = registry_map[entry["registry"]]
-        assert entry["name"] not in registry.list()
-        with pytest.raises(registries.RegistryError, match="Unknown component"):
-            registry.build({"type": entry["name"]})
-
-    for entry in payload["current_entries"]:
-        assert entry["name"] in registry_map[entry["registry"]].list()
-
-
-def test_retired_hist_config_path_and_overrides_fail_fast():
-    from kd_sensing.config.io import load_config
-
-    with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):
-        load_config(ROOT / "configs" / "hist_beam" / "quick_smoke.yaml")
-    with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):
-        load_config(overrides=["model.primary.type=hist_beam_fusion"])
-    with pytest.raises(ValueError, match="HiST-Beam/Hist research line has been retired"):
-        load_config(overrides=["hist_beam.enabled=true"])
+    assert {"u_mask_beam_jepa", "modular_sequence"} <= set(MODELS.list())
+    assert {
+        "tinyvit_5m_scratch_rgb",
+        "radar_cnn",
+        "gps_mlp",
+        "lidar_cnn",
+        "resnet18_imagenet_rgb",
+        "resnet18_spatial_tokens",
+        "resnet34_spatial_tokens",
+    } <= set(ENCODERS.list())
+    assert {"amber_full_adaptive_mask_transformer", "rmbp_channel_attention_fusion"} <= set(
+        REPRESENTATION_CORES.list()
+    )

@@ -67,11 +67,10 @@
 - **THEN** payload MUST 将 `validation_loss` 记录为 `null` 或 unavailable
 - **AND** payload MUST 不从历史 validation 或 final test 伪造该值
 
-#### Scenario: Legacy test_loss alias
-- **WHEN** unversioned legacy checkpoint 只有历史 `test_loss` 而没有 `best_val_loss`
-- **THEN** 只有 resume legacy migration owner MAY 将其迁移为旧 validation-loss state
-- **AND** current artifact reader、selection resolver 和 final-test writer MUST 不把它解释为真实 test evaluation
-- **AND** load provenance MUST 记录迁移 warning
+#### Scenario: 过时 test_loss payload 被拒绝
+- **WHEN** checkpoint 只有过时 `test_loss` 或缺少 current schema
+- **THEN** resume、selection resolver 和 final-test writer MUST 拒绝该文件
+- **AND** 系统 MUST 不提供迁移或 alias 解释
 
 ### Requirement: Final test artifact 必须具有独立 provenance 边界
 训练 run 的最终 test 结果 MUST 写入独立 `final_test_metrics.json` 或等价明确命名 artifact。该 artifact MUST 记录实际 checkpoint path/role/digest/source、selection policy、evaluation split 和 model-selection split，并由 run index/status 只读引用。
@@ -85,4 +84,3 @@
 - **WHEN** training run 同时存在 validation metrics 和 final test metrics
 - **THEN** 两类 artifact MUST 有不同文件边界和 split 标签
 - **AND** final test MUST 不覆盖或重命名 validation `metrics.json` 来冒充独立结果
-

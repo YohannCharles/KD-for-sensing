@@ -7,3 +7,9 @@
 - **WHEN** implementation 删除非 T2/baseline source、CLI、script、config 或测试
 - **THEN** focused validation MUST 至少覆盖 config load、T2/baseline import/forward、public CLI help 和 stale reference scan
 - **AND** 所有项目 Python 验证 MUST 使用 `conda run -n kd_mm_beam`
+
+## REMOVED Requirements
+
+### Requirement: 最小 CI 必须复用仓库验证入口
+**Reason**: 当前维护流程只使用本地 Codex 和 `kd_mm_beam` 验证，不保留 GitHub Actions 环境或 workflow。
+**Migration**: 使用 `make verify-quick`、`make verify-cli-config`、`make verify-compile`、`make verify-full` 和对应 OpenSpec/pytest focused checks。

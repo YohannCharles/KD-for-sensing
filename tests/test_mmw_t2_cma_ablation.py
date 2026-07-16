@@ -83,8 +83,6 @@ def test_u_mask_cma_is_label_independent_and_logs_raw_and_weighted_terms() -> No
         "missing_mask": torch.ones(2, 1, dtype=torch.bool),
     }
     kwargs = {
-        "use_teacher": False,
-        "use_jepa_loss": False,
         "use_amber_cma_analogue": True,
         "lambda_amber_cma": 0.2,
         "amber_cma_temperature": 0.2,
@@ -112,19 +110,19 @@ def test_cma_config_defaults_and_bpa_mutual_exclusion() -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         u_mask_beam_jepa_config(
             {
-                "training": {
-                    "use_beam_prototype_alignment": True,
-                    "use_amber_cma_analogue": True,
+                "loss": {
+                    "u_mask_beam_jepa": {
+                        "enabled": True,
+                        "use_beam_prototype_alignment": True,
+                        "use_amber_cma_analogue": True,
+                    }
                 },
-                "loss": {"u_mask_beam_jepa": {"enabled": True}},
             }
         )
     with pytest.raises(ValueError, match="mutually exclusive"):
         u_mask_beam_jepa_loss(
             {"logits": torch.zeros(1, 1, 2)},
             torch.zeros(1, 1, dtype=torch.long),
-            use_teacher=False,
-            use_jepa_loss=False,
             use_beam_prototype_alignment=True,
             use_amber_cma_analogue=True,
         )
@@ -144,8 +142,6 @@ def test_training_extension_passes_domain_qualified_sample_ids_to_cma() -> None:
     state = {
         "config": {
             "enabled": True,
-            "use_teacher": False,
-            "use_jepa_loss": False,
             "use_amber_cma_analogue": True,
             "lambda_amber_cma": 0.2,
             "amber_cma_temperature": 0.2,
@@ -156,7 +152,6 @@ def test_training_extension_passes_domain_qualified_sample_ids_to_cma() -> None:
         step=0,
         batch={"sample_id": ["sunny:Town03:scene:a:1", "rainy:Town03:scene:a:1"]},
         labels=torch.tensor([[0], [1]]),
-        soft_beam_targets=None,
         primary_output=output,
         primary_logits=logits,
         controls=ForwardControls(model_kwargs={"missing_mask": mask}),
@@ -174,26 +169,19 @@ def test_training_extension_passes_domain_qualified_sample_ids_to_cma() -> None:
     assert result.diagnostics["amber_cma/anchor_count"] == 2.0
 
 
-def test_prototype_target_circular_defaults_to_legacy_and_is_independent_of_router_geometry() -> None:
-    inherited = u_mask_beam_jepa_config(
-        {
-            "training": {"beam_label_circular": False},
-            "loss": {"u_mask_beam_jepa": {"enabled": True}},
-        }
-    )
+def test_prototype_target_geometry_is_independent_of_router_geometry() -> None:
     isolated = u_mask_beam_jepa_config(
         {
-            "training": {
-                "beam_label_circular": True,
-                "circular_beam_distance": True,
-                "prototype_target_circular": False,
+            "loss": {
+                "u_mask_beam_jepa": {
+                    "enabled": True,
+                    "circular_beam_distance": True,
+                    "prototype_target_circular": False,
+                }
             },
-            "loss": {"u_mask_beam_jepa": {"enabled": True}},
         }
     )
-    assert inherited["prototype_target_circular"] is False
     assert isolated["prototype_target_circular"] is False
-    assert isolated["beam_label_circular"] is True
     assert isolated["circular_beam_distance"] is True
 
     bank = BeamPrototypeBank(2, 4, temperature=0.5)
@@ -206,13 +194,10 @@ def test_prototype_target_circular_defaults_to_legacy_and_is_independent_of_rout
         "missing_mask": torch.ones(1, 1, dtype=torch.bool),
     }
     common = {
-        "use_teacher": False,
-        "use_jepa_loss": False,
         "prototype_bank": bank,
         "use_beam_prototype_alignment": True,
         "lambda_proto": 1.0,
         "lambda_modality_proto": 0.0,
-        "beam_label_circular": True,
         "circular_beam_distance": True,
     }
     circular = u_mask_beam_jepa_loss(

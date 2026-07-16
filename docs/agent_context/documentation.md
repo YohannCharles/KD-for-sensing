@@ -1,40 +1,7 @@
 # 文档任务上下文
 
-用于 README、AGENTS、agent navigation、inventory、maintainer context index、主线实验文档、文档生命周期和文档健康检查。
+当前文档只描述 MMW T2、S1、AMBER-Full、RMBP-MM。历史路线只写入 `docs/retired_routes.md`，不得在 current 文档中恢复成入口、配置或维护目标。
 
-## 先读
+先读 `AGENTS.md`、导航、维护索引和以下 current specs：`ai-maintainer-navigation`、`maintainer-context-index`、`openspec-document-health`。README 负责上手，OpenSpec 负责契约，inventory 负责当前路径，历史说明负责追溯。
 
-- `AGENTS.md`
-- README 的文档索引和数据/产物边界
-- `openspec/specs/ai-maintainer-navigation/spec.md`
-- `openspec/specs/maintainer-context-index/spec.md`
-- `openspec/specs/openspec-document-health/spec.md`
-- `docs/project_surface_inventory.md` 的文档生命周期分类
-
-## 分工
-
-| 文件 | 职责 |
-| --- | --- |
-| `AGENTS.md` | 操作规则、命令环境、本地产物边界和短入口 |
-| `docs/agent_navigation.md` | 修改前导航、权威来源、任务路由、误读边界和验证选择 |
-| `docs/maintainer_context_index.yaml` | 最小结构化事实和任务路由字段 |
-| `docs/project_surface_inventory.md` | lifecycle、入口分类、热点 rationale、文档生命周期和历史 caveat |
-| `docs/agent_context/` | 可按任务加载的 scoped context 和 atlas |
-| `CLAUDE.md`、`.github/copilot-instructions.md`、`.cursor/rules/*.mdc`、`.kiro/steering/*.md`、`docs/agent_project_knowledge.md` | 跨工具 agent context 薄适配，只做权威入口引用和短边界提醒 |
-| `docs/current_research_brief.md` | 当前研究方向一页简报，不替代 claim registry、experiment protocols 或 OpenSpec |
-| `docs/agent_memory_ledger.md` | 重复 agent 错误的人工审核候选，不自动改长期文档 |
-| `docs/readonly_agent_roles.md` | 只读分析角色说明，只输出建议，不直接写文件或运行训练 |
-
-## 边界
-
-- README 保留安装、quickstart、主要入口、数据/产物边界和文档索引。
-- OpenSpec 记录需求、架构约束、设计决策和变更历史。
-- Inventory 可以解释 lifecycle 和 caveat；maintainer context index 不复制完整 inventory。
-- 跨工具适配文件不得复制完整任务路由、完整 OpenSpec requirement、完整退役清单或完整 claim 表。
-- hook、agent、dashboard 或脚本不得自动重写 README、OpenSpec current specs、`AGENTS.md`、正式 claim 文档或实验协议。
-- 新增 context 或 skill 时，应在 AGENTS、agent navigation、inventory 或技能清单中可定位用途和适用范围。
-
-## 验证
-
-- `openspec validate --all --strict`
-- `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`
+验证：`openspec validate --all --strict` 与 `conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q`。

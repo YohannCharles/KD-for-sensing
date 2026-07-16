@@ -1,9 +1,0 @@
-_base_: u_mask_beam_jepa_smoke.yaml
-experiment:
-  name: u_mask_beam_jepa_no_uncertainty
-model:
-  primary:
-    use_modality_uncertainty: false
-    use_global_uncertainty: false
-output:
-  run_name: u_mask_beam_jepa_no_uncertainty

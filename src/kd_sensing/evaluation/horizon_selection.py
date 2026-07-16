@@ -4,7 +4,7 @@ from typing import Any
 
 def metric_horizons_from_config(cfg: dict[str, Any], *, num_pred: int) -> tuple[int, ...]:
     evaluation_cfg = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
-    raw = evaluation_cfg.get("metric_horizons", evaluation_cfg.get("aggregate_horizons"))
+    raw = evaluation_cfg.get("metric_horizons")
     return normalize_metric_horizons(raw, num_pred=num_pred, field_name="evaluation.metric_horizons")
 
 
@@ -84,8 +84,6 @@ def metric_horizon_source_from_config(cfg: dict[str, Any]) -> str:
     evaluation_cfg = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
     if "metric_horizons" in evaluation_cfg:
         return "evaluation.metric_horizons"
-    if "aggregate_horizons" in evaluation_cfg:
-        return "evaluation.aggregate_horizons"
     return "default_all_horizons"
 
 

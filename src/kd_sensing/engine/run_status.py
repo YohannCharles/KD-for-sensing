@@ -48,7 +48,7 @@ def write_complete_status(
     primary_metric: dict[str, Any] | None = None,
     metrics_path: str | Path | None = None,
     final_test_metrics_path: str | Path | None = None,
-    best_checkpoint: str | Path | None = None,
+    checkpoint: str | Path | None = None,
     completed_at: dt.datetime | None = None,
 ) -> dict[str, Any]:
     run_path = Path(run_dir)
@@ -68,7 +68,7 @@ def write_complete_status(
             "final_test_metrics_path": (
                 str(final_test_metrics_path) if final_test_metrics_path is not None else None
             ),
-            "best_checkpoint": str(best_checkpoint) if best_checkpoint is not None else None,
+            "checkpoint": str(checkpoint) if checkpoint is not None else None,
             "config_path": config_path,
         }
     )
@@ -123,9 +123,7 @@ def _base_payload(cfg: dict, run_dir: Path, *, kind: str, state: str) -> dict[st
     model_primary = _nested_dict(cfg, "model", "primary")
     runtime = cfg.get("runtime", {}) if isinstance(cfg.get("runtime"), dict) else {}
     objective_meta = runtime.get("prediction_objective") if isinstance(runtime.get("prediction_objective"), dict) else {}
-    modalities = model_primary.get("modalities") or model_cfg.get("modalities")
-    if modalities is None and experiment.get("task") in {"image", "radar", "gps", "lidar", "mmwave", "csi"}:
-        modalities = [experiment["task"]]
+    modalities = model_primary.get("modalities") or model_cfg.get("modalities") or []
     return {
         "schema_version": 1,
         "state": state,

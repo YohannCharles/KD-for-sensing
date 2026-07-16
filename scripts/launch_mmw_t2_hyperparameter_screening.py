@@ -31,8 +31,6 @@ VARIANTS = (
     "H3-mask-tail",
     "H4-optimizer",
     "H5-KL+",
-    "H6-teacher-low",
-    "H7-teacher-high",
 )
 SELECTION_RULE = {
     "score": "0.20*clean + 0.20*mean(drop1,drop2,drop3) + 0.25*temporal_auc + 0.35*temporal_drop80",
@@ -58,8 +56,6 @@ VARIANT_PROTOCOL = {
         "allowed_effective_fields": ["optimizer.type", "optimizer.weight_decay", "scheduler"],
     },
     "H5-KL+": {"matched_control": "H0-base", "allowed_effective_fields": ["superset_consistency.kl_weight"]},
-    "H6-teacher-low": {"matched_control": "H0-base", "allowed_effective_fields": ["u_mask.lambda_teacher"]},
-    "H7-teacher-high": {"matched_control": "H0-base", "allowed_effective_fields": ["u_mask.lambda_teacher"]},
 }
 
 
@@ -218,15 +214,11 @@ def build_screening_config(
         {
             "epochs": int(epochs),
             "max_epochs": int(epochs),
-            "model_selection": False,
-            "use_early_stopping": False,
             "validation": {"interval_epochs": 5},
         }
     )
-    data = payload.setdefault("data", {})
-    data["validation_from_train"] = {"enabled": False}
     if domain_inventory is not None:
-        data.setdefault("dataset", {})["domains"] = deepcopy(domain_inventory)
+        payload.setdefault("data", {}).setdefault("dataset", {})["domains"] = deepcopy(domain_inventory)
     payload["output"] = {
         "dir": str(output_root / variant),
         "run_name": f"seed{int(seed)}",
@@ -264,17 +256,13 @@ def build_screening_config(
 
 def _apply_variant(payload: dict[str, Any], variant: str) -> None:
     training = payload.setdefault("training", {})
-    loss = payload.setdefault("loss", {})
-    u_mask = loss.setdefault("u_mask_beam_jepa", {})
+    u_mask = payload.setdefault("loss", {}).setdefault("u_mask_beam_jepa", {})
     primary = payload.setdefault("model", {}).setdefault("primary", {})
     if variant == "H0-base":
         return
     if variant in {"H1-BPA+", "H2-BPA-sharp"}:
         _set_bpa_strength(payload, outer_weight=0.25, modality_weight=0.15)
     if variant == "H2-BPA-sharp":
-        training["beam_proto_temperature"] = 0.08
-        training["beam_label_sigma"] = 1.5
-        u_mask["beam_proto_temperature"] = 0.08
         u_mask["beam_label_sigma"] = 1.5
         primary["beam_proto_temperature"] = 0.08
     elif variant == "H3-mask-tail":
@@ -291,29 +279,23 @@ def _apply_variant(payload: dict[str, Any], variant: str) -> None:
             "eta_min": 1.0e-6,
         }
     elif variant == "H5-KL+":
-        superset = deepcopy(training.get("superset_consistency", {}))
+        superset = deepcopy(u_mask.get("superset_consistency", {}))
         superset["enabled"] = True
         superset["confidence_gated_kl"] = True
         superset["kl_weight"] = 0.5
         superset["temperature"] = 2.0
-        training["superset_consistency"] = deepcopy(superset)
-        u_mask["superset_consistency"] = deepcopy(superset)
-    elif variant == "H6-teacher-low":
-        u_mask["lambda_teacher"] = 0.25
-    elif variant == "H7-teacher-high":
-        u_mask["lambda_teacher"] = 0.75
+        u_mask["superset_consistency"] = superset
 
 
 def _set_bpa_strength(payload: dict[str, Any], *, outer_weight: float, modality_weight: float) -> None:
-    training = payload.setdefault("training", {})
     u_mask = payload.setdefault("loss", {}).setdefault("u_mask_beam_jepa", {})
-    for section in (training, u_mask):
-        section["use_beam_prototype_alignment"] = True
-        section["beam_proto_align_weight"] = float(outer_weight)
-        section["lambda_proto"] = float(outer_weight)
-        section["use_modality_prototype_loss"] = True
-        section["modality_proto_weight"] = float(modality_weight)
-        section["lambda_modality_proto"] = float(modality_weight)
+    u_mask.update(
+        {
+            "use_beam_prototype_alignment": True,
+            "lambda_proto": float(outer_weight),
+            "lambda_modality_proto": float(modality_weight),
+        }
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -428,8 +410,6 @@ def _audit_inner_domain(
     dataloaders = build_dataloaders(audit_cfg)
     if "validation" not in dataloaders:
         raise ValueError("The emitted group-safe validation CSV was not built into a validation loader.")
-    # The legacy outer test may intentionally reuse RSU-side context across CAVs.
-    # This audit is the strict train/development-validation gate; outer-test reuse is recorded separately.
     return audit_temporal_split_datasets(
         {
             "train": dataloaders["train"].dataset,
@@ -439,14 +419,13 @@ def _audit_inner_domain(
     )
 
 
-def _shared_rsu_time_axis_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Route all CAV windows through one RSU time axis before group-safe splitting."""
+def _screening_time_axis_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Route source windows through one shared time axis for the inner split."""
     routed: list[dict[str, str]] = []
     for index, row in enumerate(rows):
         item = dict(row)
         item["_screening_row_id"] = str(index)
-        item["agent"] = "__shared_rsu__"
-        item["contiguous_segment_id"] = "__shared_rsu_time_axis__"
+        item["contiguous_segment_id"] = "__screening_time_axis__"
         routed.append(item)
     return routed
 
@@ -466,7 +445,7 @@ def _rows_from_routed_split(
 
 
 def _resource_overlap_counts(left_rows: list[dict[str, str]], right_rows: list[dict[str, str]]) -> dict[str, int]:
-    prefixes = ("camera", "radar", "gps", "lidar", "beam", "future_beam", "bs_gps")
+    prefixes = ("camera", "radar", "gps", "lidar", "beam", "future_beam")
     counts: dict[str, int] = {}
     for prefix in prefixes:
         def values(rows: list[dict[str, str]]) -> set[str]:
@@ -507,7 +486,7 @@ def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[lis
         if not outer_train_rows:
             raise ValueError(f"{domain['id']} outer train CSV is empty.")
         split = split_sequence_rows(
-            _shared_rsu_time_axis_rows(outer_train_rows),
+            _screening_time_axis_rows(outer_train_rows),
             seed=int(seed),
             train_ratio=1.0 - INNER_VALIDATION_FRACTION,
             strategy=INNER_SPLIT_STRATEGY,
@@ -577,7 +556,7 @@ def build_inner_validation_domains(output_root: Path, *, seed: int) -> tuple[lis
                     [*train_rows, *validation_rows],
                     _read_csv_rows(source_test)[1],
                 ),
-                "outer_test_identity_policy": "legacy_outer_split_preserved; shared_rsu_context_recorded_not_claim_eligible",
+                "outer_test_identity_policy": "outer_test_preserved_not_claim_eligible",
             }
         )
     if len(rewritten_domains) != 15:
@@ -612,10 +591,6 @@ def _assert_screening_config_matches_baseline(
         raise ValueError("Screening config changed the frozen 15-domain inventory.")
     if int(training.get("epochs", 0)) != 40 or int(training.get("max_epochs", 0)) != 40:
         raise ValueError("Screening config changed the fixed 40-epoch budget.")
-    if bool(training.get("model_selection", True)) or bool(training.get("use_early_stopping", True)):
-        raise ValueError("Screening config must use fixed-epoch/no-selection training.")
-    if bool(config.get("data", {}).get("validation_from_train", {}).get("enabled", False)):
-        raise ValueError("Screening config must use the emitted group-safe validation CSV, not random internal splitting.")
 
 
 def _effective_hyperparameters(config: dict[str, Any]) -> dict[str, Any]:
@@ -623,14 +598,14 @@ def _effective_hyperparameters(config: dict[str, Any]) -> dict[str, Any]:
 
     resolved = u_mask_beam_jepa_config(config)
     superset = resolved.get("superset_consistency", {})
+    primary = config.get("model", {}).get("primary", {})
     return {
         "bpa": {
             "outer_weight": float(resolved.get("lambda_proto", 0.0)),
             "modality_weight": float(resolved.get("lambda_modality_proto", 0.0)),
-            "prototype_temperature": float(resolved.get("beam_proto_temperature", 0.0)),
+            "prototype_temperature": float(primary.get("beam_proto_temperature", 0.0)),
             "gaussian_sigma": float(resolved.get("beam_label_sigma", 0.0)),
         },
-        "u_mask": {"lambda_teacher": float(resolved.get("lambda_teacher", 0.0))},
         "superset_consistency": {"kl_weight": float(superset.get("kl_weight", 0.0))},
         "optimizer": config.get("training", {}).get("optimizer", {"type": "adam"}),
         "weight_decay": float(config.get("training", {}).get("weight_decay", 0.0)),
@@ -747,8 +722,6 @@ def probe_training_step(
     from kd_sensing.config import load_config
     from kd_sensing.engine.batch_step import BatchStepRunner
     from kd_sensing.engine.data_factory import build_dataloaders
-    from kd_sensing.engine.debug_diagnostics import configure_csi_debug
-    from kd_sensing.engine.epoch_subsampling import set_train_sampler_epoch
     from kd_sensing.engine.optim import build_device, build_model, build_optimizer, build_task_criterion
     from kd_sensing.engine.runtime import (
         configure_cuda_performance_settings,
@@ -817,7 +790,6 @@ def probe_training_step(
         primary_model.train()
         task_criterion = build_task_criterion(cfg)
         optimizer = build_optimizer(cfg, primary_model)
-        configure_csi_debug(primary_model, cfg)
         model_cfg = cfg["model"]
         extension_context = ExtensionContext(
             cfg=cfg,
@@ -851,7 +823,6 @@ def probe_training_step(
             extension_states=extension_states,
         )
 
-        set_train_sampler_epoch(dataloaders["train"], 0)
         torch.cuda.synchronize(device)
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)

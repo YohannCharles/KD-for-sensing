@@ -47,17 +47,10 @@ class Registry:
     def list(self) -> list[str]:
         return sorted(self._items.keys())
 
-    def build(self, cfg: Any = None, **extra_kwargs: Any) -> Any:
-        if cfg is None:
-            raise RegistryError(
-                f"Missing config for registry '{self.name}'. Available names: "
-                f"{', '.join(self.list()) or '<empty>'}"
-            )
-        if isinstance(cfg, str):
-            cfg = {"type": cfg}
+    def build(self, cfg: dict[str, Any], **extra_kwargs: Any) -> Any:
         if not isinstance(cfg, dict):
             raise RegistryError(
-                f"Registry '{self.name}' expected a dict or string config, got {type(cfg).__name__}."
+                f"Registry '{self.name}' expected a dict config, got {type(cfg).__name__}."
             )
         if "type" not in cfg:
             raise RegistryError(
@@ -103,16 +96,12 @@ REPRESENTATION_CORES = Registry("representation_cores")
 HEADS = Registry("heads")
 DATASETS = Registry("datasets")
 LOSSES = Registry("losses")
-METRICS = Registry("metrics")
 PREPROCESSORS = Registry("preprocessors")
-JEPA_VISUAL_TOKEN_ENCODERS = Registry("jepa_visual_token_encoders")
-DIFFICULTY_OPERATORS = Registry("difficulty_operators")
 
 def import_default_components() -> None:
     """Import modules that register built-in components."""
 
     import kd_sensing.data.datasets.mmw  # noqa: F401
-    import kd_sensing.evaluation.metrics  # noqa: F401
     import kd_sensing.losses.beam  # noqa: F401
     import kd_sensing.losses.u_mask_beam_jepa  # noqa: F401
     import kd_sensing.models.gps  # noqa: F401
@@ -123,17 +112,7 @@ def import_default_components() -> None:
     import kd_sensing.models.rmbp_mm  # noqa: F401
     import kd_sensing.models.tinyvit  # noqa: F401
     import kd_sensing.models.u_mask_beam_jepa  # noqa: F401
-    import kd_sensing.preprocessing.image_cache  # noqa: F401
-    import kd_sensing.preprocessing.lidar  # noqa: F401
     import kd_sensing.preprocessing.mmw_radar  # noqa: F401
-    import kd_sensing.preprocessing.sample_cache  # noqa: F401
-    import kd_sensing.preprocessing.sequences  # noqa: F401
-
-
-def import_default_difficulty_operators() -> None:
-    """Import built-in difficulty operators without pulling them into light registry imports."""
-
-    import kd_sensing.data.difficulty.operators  # noqa: F401
 
 
 __all__ = [
@@ -146,10 +125,6 @@ __all__ = [
     "HEADS",
     "DATASETS",
     "LOSSES",
-    "METRICS",
     "PREPROCESSORS",
-    "JEPA_VISUAL_TOKEN_ENCODERS",
-    "DIFFICULTY_OPERATORS",
     "import_default_components",
-    "import_default_difficulty_operators",
 ]

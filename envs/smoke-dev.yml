@@ -1,9 +1,0 @@
-name: kd_sensing_smoke_dev
-channels:
-  - conda-forge
-dependencies:
-  - python=3.11
-  - nodejs>=20
-  - pip
-  - pip:
-      - -e .[dev]

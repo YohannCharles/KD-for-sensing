@@ -1,19 +1,5 @@
 # U-MaskBeamJEPA Current Scope
 
-当前实现覆盖 U-MaskBeamJEPA 的核心训练机制：full-modal teacher、missing-mask student、global JEPA NLL、modality NLL 和 uncertainty-aware fusion。正式 Scenario 32 配置在 `configs/fusion/u_mask_beam_jepa_s32.yaml`，快速 smoke 配置仍保留 Scenario 31。
+U-MaskBeamJEPA 只服务 `configs/mmw/t2.yaml` 与 `s1.yaml`。保留 supervised router、prototype/BPA、embedded teacher CE、same-model temporal superset consistency 和 active CMA ablation；S1 仅关闭 superset consistency。
 
-当前预处理不是严格 JEPA-MSAC 复现口径：
-
-- image: RGB/ImageNet resize + normalize。
-- radar: RA/DA map。
-- LiDAR: BEV representation，不是 depth projection。
-- GPS: relative polar representation，不是 raw local XY。
-
-当前单模态 encoder 也是 simplified encoder：对输入做 mean pooling，再 Linear projection 到 `d_model`。它不是最终论文版 JEPA-MSAC modality backbone。
-
-后续正式论文版 TODO：
-
-- replace simplified encoders with stronger modality-specific encoders。
-- add missing-pattern evaluation matrix。
-- add corrupted-modality protocol。
-- add uncertainty calibration metrics。
+其余 branch 已退役，不提供兼容入口。四模态输入、训练和评估边界以 `openspec/specs/u-mask-beam-jepa/spec.md` 为准。

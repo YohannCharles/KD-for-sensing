@@ -19,7 +19,7 @@ from kd_sensing.utils.paths import resolve_path
 
 
 MMW_RADAR_PREPARATION_COMMAND = (
-    "conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/mmw_radar_maps.yaml"
+    "conda run -n kd_mm_beam kd-sensing-preprocess --config configs/preprocess/mmw_radar_maps_all_weather.yaml"
 )
 
 

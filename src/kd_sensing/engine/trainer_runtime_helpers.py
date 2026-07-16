@@ -12,14 +12,9 @@ from tqdm.auto import tqdm
 
 from kd_sensing.engine.checkpointing import checkpoint_strict as _checkpoint_strict
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
-from kd_sensing.engine.debug_diagnostics import consume_csi_debug_records
-from kd_sensing.engine.epoch_subsampling import epoch_subsampling_epoch_log, set_train_sampler_epoch
 from kd_sensing.engine.tensorboard_logging import write_tensorboard_scalars as _write_tensorboard_scalars
-from kd_sensing.engine.training_state import (
-    validate_early_stopping_source_available as _validate_early_stopping_source_available,
-)
 from kd_sensing.engine.validator import validate
-from kd_sensing.eval.missing_patterns import resolve_missing_patterns
+from kd_sensing.utils.missing_patterns import resolve_missing_patterns
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
     evaluate_missing_matrix,
     format_results_markdown,
@@ -27,7 +22,6 @@ from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
     save_results_json,
     save_results_markdown,
 )
-from kd_sensing.evaluation.lidar_diagnostics import LidarQualityAccumulator
 from kd_sensing.utils.artifact_registry import sanitize_slug
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 
@@ -52,20 +46,15 @@ def run_training_epoch_loop(
     extension_states,
     extension_context,
     health_tracker,
-    csi_debug_records: list[dict],
     tensorboard_writer,
     objective: str,
     task_criterion,
     device,
     run_dir: Path,
     training_cfg: dict,
-    early_stopping_metric: str,
-    early_stopping_mode: str,
     optimizer_groups,
     progress_enabled: bool,
     total_epochs: int,
-    early_stopping_min_epoch: int,
-    model_selection_enabled: bool,
     validation_loader,
     validate_fn=validate,
 ) -> None:
@@ -80,11 +69,10 @@ def run_training_epoch_loop(
     timing_logger = _TimingCsvLogger(cfg, run_dir, device=device)
     for epoch in _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):
         _set_epoch_recursive(primary_model, epoch)
-        set_train_sampler_epoch(dataloaders["train"], epoch)
+        sampler = getattr(dataloaders["train"], "sampler", None)
+        if callable(getattr(sampler, "set_epoch", None)):
+            sampler.set_epoch(epoch)
         primary_model.train()
-        train_lidar_quality = LidarQualityAccumulator()
-        saw_train_lidar = False
-        current_alpha = 0.0
         for extension, extension_state in zip(extensions, extension_states):
             extension.before_epoch(extension_context, extension_state, epoch=epoch)
         if health_tracker is not None:
@@ -105,12 +93,8 @@ def run_training_epoch_loop(
         for step, raw_batch in enumerate(batch_progress):
             batch_start = timing_logger.start_step()
             data_time = timing_logger.host_elapsed(data_wait_start)
-            batch_result = batch_runner.run(raw_batch, epoch=epoch, step=step, current_alpha=current_alpha)
+            batch_result = batch_runner.run(raw_batch, epoch=epoch, step=step)
             step_time = timing_logger.finish_step(batch_start)
-            if "lidar" in batch_result.batch:
-                saw_train_lidar = True
-                train_lidar_quality.update(batch_result.batch["lidar"], raw_lidar=batch_result.batch.get("lidar_raw"))
-            csi_debug_records.extend(consume_csi_debug_records(primary_model))
             progress_metrics = recorder.update_batch(batch_result, step)
             timing_logger.maybe_log(
                 epoch=epoch,
@@ -129,9 +113,6 @@ def run_training_epoch_loop(
                 )
             data_wait_start = timing_logger.host_now()
 
-        if hasattr(batch_runner, "flush_epoch_artifacts"):
-            batch_runner.flush_epoch_artifacts(run_dir, epoch)
-
         if scheduler is not None:
             scheduler.step()
         validation_ran = validation_loader is not None and (
@@ -149,51 +130,23 @@ def run_training_epoch_loop(
             last_observed_validation = {"epoch": epoch + 1, "source": "validation"}
         else:
             val_metrics = None
-        csi_debug_records.extend(consume_csi_debug_records(primary_model))
-        if model_selection_enabled and validation_ran:
-            _validate_early_stopping_source_available(val_metrics, early_stopping_metric)
         extension_metrics = {}
         for extension, extension_state in zip(extensions, extension_states):
             extension_metrics.update(extension.after_epoch(extension_context, extension_state, epoch=epoch))
         health_metrics = health_tracker.finish_epoch() if health_tracker is not None else None
-        train_dataset = getattr(dataloaders["train"], "dataset", None)
-        epoch_subsampling_log = epoch_subsampling_epoch_log(dataloaders["train"])
-        epoch_log, val_loss, val_acc, _ = recorder.finish_epoch(
+        epoch_log, val_loss, val_acc = recorder.finish_epoch(
             epoch=epoch,
             total_epochs=total_epochs,
             val_metrics=val_metrics,
             current_lr=current_lr,
             optimizer_groups=optimizer_groups,
-            train_lidar_quality=train_lidar_quality if saw_train_lidar else None,
-            train_dataset=train_dataset,
-            epoch_subsampling=epoch_subsampling_log,
             health_metrics=health_metrics,
             extension_metrics=extension_metrics,
-            model_selection_enabled=model_selection_enabled and validation_ran,
         )
-        if model_selection_enabled and validation_ran:
-            checkpoint_update = checkpoint_manager.update_best_checkpoints(
-                state=state,
-                epoch=epoch,
-                epoch_log=epoch_log,
-                val_loss=val_loss,
-                val_acc=val_acc,
-                train_dataset=train_dataset,
-            )
-        else:
-            checkpoint_update = None
         epoch_log.update(
             {
                 "validation_ran": bool(validation_ran),
                 "validation_interval_epochs": int(validation_interval),
-                "model_selection_enabled": bool(model_selection_enabled),
-                "early_stopping_metric": early_stopping_metric if model_selection_enabled else None,
-                "early_stopping_mode": early_stopping_mode if model_selection_enabled else None,
-                "early_stopping_value": checkpoint_update.early_stopping_value if checkpoint_update else None,
-                "early_stopping_improved": bool(checkpoint_update.improved) if checkpoint_update else False,
-                "best_early_stopping_value": state.best_early_stopping_value if model_selection_enabled else None,
-                "best_early_stopping_epoch": state.best_early_stopping_epoch if model_selection_enabled else None,
-                "epochs_without_improvement": state.epochs_without_improvement if model_selection_enabled else None,
                 "last_observed_validation": (
                     dict(last_observed_validation) if last_observed_validation is not None else None
                 ),
@@ -208,8 +161,6 @@ def run_training_epoch_loop(
                 postfix["val_loss"] = f"{float(val_loss):.4f}"
             if val_acc is not None:
                 postfix["val_acc"] = f"{float(val_acc):.4f}"
-            if checkpoint_update is not None:
-                postfix["early_stop"] = f"{early_stopping_metric}:{checkpoint_update.early_stopping_value:.4f}"
             epoch_progress.set_postfix(**postfix)
         _write_tensorboard_scalars(
             tensorboard_writer,
@@ -219,38 +170,10 @@ def run_training_epoch_loop(
             tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
         )
         checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
-        if (
-            model_selection_enabled
-            and checkpoint_update is not None
-            and not checkpoint_update.improved
-            and validation_ran
-            and training_cfg.get("use_early_stopping", True)
-            and epoch + 1 >= early_stopping_min_epoch
-            and state.epochs_without_improvement >= training_cfg.get("patience", 20)
-        ):
-            early_stop_payload = {
-                "early_stopped": True,
-                "early_stop_epoch": epoch + 1,
-                "early_stop_metric": early_stopping_metric,
-            }
-            epoch_log.update(early_stop_payload)
-            if state.epoch_logs:
-                state.epoch_logs[-1].update(early_stop_payload)
-            _write_epoch_metrics_snapshot(run_dir, state.epoch_logs)
-            tqdm.write(
-                f"Early stopping triggered at epoch {epoch + 1}: "
-                f"{early_stopping_metric} did not improve for {state.epochs_without_improvement} epochs."
-            )
-            break
 
 
 def _validation_interval_epochs(training_cfg: dict[str, Any]) -> int:
-    validation_cfg = training_cfg.get("validation")
-    if isinstance(validation_cfg, dict):
-        raw = validation_cfg.get("interval_epochs", 1)
-    else:
-        raw = training_cfg.get("validation_interval_epochs", 1)
-    return max(1, int(raw or 1))
+    return max(1, int(training_cfg["validation"]["interval_epochs"]))
 
 
 def _should_validate_epoch(epoch: int, total_epochs: int, interval_epochs: int) -> bool:
@@ -268,17 +191,14 @@ def _evaluate_final_test_split(
     device,
     *,
     run_dir: Path,
-    validation_split_name: str,
-    model_selection_enabled: bool,
 ) -> tuple[dict, dict | None]:
-    checkpoint_name = "best.pth" if model_selection_enabled else "last.pth"
-    checkpoint_path = run_dir / "checkpoints" / checkpoint_name
+    checkpoint_path = run_dir / "checkpoints" / "last.pth"
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Final test checkpoint not found: {checkpoint_path}")
     load_result = load_model_state(
         checkpoint_path,
         primary_model,
-        role="final-test-best" if model_selection_enabled else "final-test-last",
+        role="final-test-last",
         map_location=device,
         strict=_checkpoint_strict(cfg),
     )
@@ -289,32 +209,12 @@ def _evaluate_final_test_split(
         missing_pattern_results = _write_missing_pattern_eval(primary_model, test_loader, cfg, device, run_dir=run_dir)
     finally:
         shutdown_dataloader_workers(test_loader)
-    metrics["model_selection_split"] = str(validation_split_name) if model_selection_enabled else "none"
-    metrics["model_selection_enabled"] = bool(model_selection_enabled)
     metrics["evaluation_split"] = "test"
     metrics["checkpoint_for_test"] = str(checkpoint_path)
+    metrics["selected_checkpoint"] = {"path": str(checkpoint_path), "checkpoint_role": "last"}
     if missing_pattern_results:
         metrics["missing_patterns"] = missing_pattern_results
     return metrics, checkpoint_load
-
-def _apply_csi_rms_to_model_config(cfg: dict, dataloaders: dict) -> None:
-    train_loader = dataloaders.get("train")
-    dataset = getattr(train_loader, "dataset", None) if train_loader is not None else None
-    normalizer = getattr(dataset, "csi_rms_normalizer", None)
-    if normalizer is None:
-        return
-    rms = float(getattr(normalizer, "rms", normalizer))
-    model_cfg = cfg.setdefault("model", {})
-    model_cfg["csi_train_rms"] = rms
-    primary_cfg = model_cfg.get("primary")
-    if not isinstance(primary_cfg, dict) or "csi" not in primary_cfg.get("modalities", []):
-        return
-    primary_cfg["csi_train_rms"] = rms
-    encoders = primary_cfg.get("encoders")
-    if isinstance(encoders, dict):
-        csi_cfg = encoders.get("csi")
-        if isinstance(csi_cfg, dict):
-            csi_cfg.setdefault("train_rms", rms)
 
 def _set_epoch_recursive(module, epoch: int) -> None:
     setter = getattr(module, "set_epoch", None)
@@ -498,24 +398,13 @@ def _csv_scalar(value: Any) -> bool:
 
 
 def _write_missing_pattern_eval(model, dataloader, cfg: dict, device, *, run_dir: Path) -> list[dict]:
-    eval_cfg = cfg.get("evaluation", {}).get("missing_patterns", {})
-    if not isinstance(eval_cfg, dict) or not bool(eval_cfg.get("enabled", False)):
+    eval_cfg = cfg["evaluation"]["missing_patterns"]
+    if not eval_cfg["enabled"]:
         return []
     if not getattr(model, "supports_force_modality_mask", False):
         return []
-    modalities = list(cfg.get("model", {}).get("primary", {}).get("modalities") or ["image", "radar", "lidar", "gps"])
-    pattern_names = eval_cfg.get("patterns") or [
-        "full",
-        "missing_gps",
-        "missing_image",
-        "missing_radar",
-        "missing_lidar",
-        "non_gps_only",
-        "gps_only",
-        "image_only",
-        "radar_only",
-        "lidar_only",
-    ]
+    modalities = cfg["model"]["primary"]["modalities"]
+    pattern_names = eval_cfg["patterns"]
     patterns = resolve_missing_patterns(pattern_names, modalities)
     results = evaluate_missing_matrix(
         model,
@@ -523,8 +412,7 @@ def _write_missing_pattern_eval(model, dataloader, cfg: dict, device, *, run_dir
         device,
         modalities,
         patterns=patterns,
-        random_missing=eval_cfg.get("random_missing"),
-        prediction_index=eval_cfg.get("prediction_index", "last"),
+        prediction_index=eval_cfg["prediction_index"],
         max_batches=eval_cfg.get("max_batches"),
         cfg=cfg,
     )
@@ -543,7 +431,6 @@ def shutdown_all_dataloaders(dataloaders: dict[str, Any]) -> None:
 
 
 __all__ = [
-    "_apply_csi_rms_to_model_config",
     "_evaluate_final_test_split",
     "_set_epoch_recursive",
     "_should_validate_epoch",

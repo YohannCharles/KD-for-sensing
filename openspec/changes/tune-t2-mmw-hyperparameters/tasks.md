@@ -1,23 +1,23 @@
 ## 1. 基线、split 与筛选配置
 
-- [ ] 1.1 新增 scoped T2 hyperparameter screening launcher，读取本地 T2 resolved config、记录 SHA256，并复用现有 MMW T2 builder 生成 H0 基线。
-- [ ] 1.2 从 15-domain outer train 侧复用共享 RSU time-axis 的 `group_safe_time_block` owner 生成固定 10% development validation，写出 ignored split artifacts、inner train/validation 身份不相交审计与 legacy outer-test 资源重叠诊断。
-- [ ] 1.3 实现 H0-H7 的 matched-control overlays、canonical allowlist diff、mirrored alias 同步、固定 40-epoch/no-selection/每 5 epoch validation 和 development provenance。
+- [ ] 1.1 新增 scoped T2 hyperparameter screening launcher，读取 tracked T2 recipe、记录 SHA256，并复用现有 MMW T2 builder 生成 H0 基线。
+- [ ] 1.2 从 15-domain outer train 侧复用 `group_safe_time_block` owner 生成固定 10% development validation，写出 ignored split artifacts 和 inner train/validation 身份不相交审计。
+- [ ] 1.3 实现 H0-H5 的 matched-control overlays、canonical allowlist diff、固定 40-epoch/no-selection/每 5 epoch validation 和 development provenance。
 - [ ] 1.4 增加 launcher/split/config tests，覆盖缺少基线、非 15 domains、身份交集、未登记 resolved diff、独立 validation、固定 architecture 与 ignored output 边界。
 
 ## 2. 显存探测与并行运行面
 
 - [ ] 2.1 实现 fresh-process 真实 AMP train-step probe，记录每 GPU 的 candidate、设备、版本、退出状态、peak allocated/reserved 与总显存。
 - [ ] 2.2 实现预注册 16 倍数候选和 90% 门槛的全卡共同 batch 解析；验证 probe 只写共同 batch，不改变学习率、optimizer/scheduler、梯度累积、epoch、split、loss、AMP、mask 或 checkpoint policy。
-- [ ] 2.3 实现 H0-H7 到 GPU0-7 的确定性单进程映射、互不覆盖 run dirs、原子 manifest/status 更新和无共同 batch 时 fail-closed。
+- [ ] 2.3 实现 H0-H5 到请求 GPU 的确定性单进程映射、互不覆盖 run dirs、原子 manifest/status 更新和无共同 batch 时 fail-closed。
 - [ ] 2.4 使用 `conda run -n kd_mm_beam` 增加并运行 probe/orchestration tests，覆盖 OOM、非零退出、阈值超限、异卡结果、无共同候选和 probe state 不复用。
 
 ## 3. Development 筛选执行
 
-- [ ] 3.1 使用 `conda run -n kd_mm_beam` 完成 15-domain preflight、inner split dry-run、八行 config dry-run 和单 optimizer-step smoke，审计 resolved diffs 与 fingerprints。
-- [ ] 3.2 在 GPU0-7 运行预注册 batch probe，冻结共同 batch 与 probe manifest；不得根据 variant 结果改写候选集合或其它 protocol。
-- [ ] 3.3 在 GPU0-7 启动 H0-H7 八个 seed-1、40-epoch 任务，并记录每 5 epoch 独立 validation 观测与 run status。
-- [ ] 3.4 校验八行均完成 epoch 40、`last.pth` 可加载且 config/split fingerprint 匹配；失败行不得以私有 batch、较早 checkpoint 或不同 split 混入矩阵。
+- [ ] 3.1 使用 `conda run -n kd_mm_beam` 完成 15-domain preflight、inner split dry-run、六行 config dry-run 和单 optimizer-step smoke，审计 resolved diffs 与 fingerprints。
+- [ ] 3.2 在请求 GPU 上运行预注册 batch probe，冻结共同 batch 与 probe manifest；不得根据 variant 结果改写候选集合或其它 protocol。
+- [ ] 3.3 在请求 GPU 上启动 H0-H5 六个 seed-1、40-epoch 任务，并记录每 5 epoch 独立 validation 观测与 run status。
+- [ ] 3.4 校验六行均完成 epoch 40、`last.pth` 可加载且 config/split fingerprint 匹配；失败行不得以私有 batch、较早 checkpoint 或不同 split 混入矩阵。
 
 ## 4. 固定 checkpoint 评估与证据边界
 

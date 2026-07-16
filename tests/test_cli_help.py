@@ -39,44 +39,14 @@ def test_public_cli_help_smoke_covers_pyproject_console_scripts():
     assert {name for name, _expected in PUBLIC_CLI_HELP_SMOKE} == public_commands
 
 
-def test_retired_top8_residual_cli_scripts_are_not_declared():
-    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    retired_fragments = [
-        "gps-coarse-anchor",
-        "gps-window",
-        "top8",
-        "residual",
-        "camera-ae",
-        "bgam",
-        "viewer-manifest",
-        "visualize-modalities",
-        "run-amr-net-gps-image",
-        "run-jepa-msac",
-        "jepa-visual-analysis",
-        "jepa-gps-shortcut-benchmark",
-        "training-throughput",
-        "target-shot-split",
-        "distribution-shift",
-        "wcl2025-missing-modality-audit",
-        "dataset-audit",
-        "train-beambench-image-ae-gps",
-        "run-beambench-image-ae-gps-tableiii",
-        "tii-vlrg-transformer",
-        "model-architecture-summary",
-        "project-surface-doctor",
-    ]
-    violations = [fragment for fragment in retired_fragments if fragment in text]
+def test_only_core_cli_are_declared():
+    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
 
-    assert violations == []
-
-
-def test_organize_runtime_outputs_cli_help_declares_confirmation_flag():
-    from kd_sensing.cli.organize_runtime_outputs import build_parser
-
-    help_text = build_parser().format_help()
-
-    assert "--manifest" in help_text
-    assert "--confirm-organize" in help_text
+    assert scripts == {
+        "kd-sensing-train": "kd_sensing.cli.train:main",
+        "kd-sensing-evaluate": "kd_sensing.cli.evaluate:main",
+        "kd-sensing-preprocess": "kd_sensing.cli.preprocess:main",
+    }
 
 
 def _help_command(command: str) -> list[str]:

@@ -26,26 +26,25 @@ def test_screening_variants_keep_t2_protocol_and_apply_only_named_overrides(monk
     tail = launcher.build_screening_config("H3-mask-tail", Path("outputs/screen"), **kwargs)
     optimizer = launcher.build_screening_config("H4-optimizer", Path("outputs/screen"), **kwargs)
     kl = launcher.build_screening_config("H5-KL+", Path("outputs/screen"), **kwargs)
-    teacher = launcher.build_screening_config("H6-teacher-low", Path("outputs/screen"), **kwargs)
 
     assert base["model"]["primary"]["head_type"] == "prototype"
+    assert base["loss"]["u_mask_beam_jepa"]["router_supervision"] == "oracle"
+    assert base["loss"]["u_mask_beam_jepa"]["router_oracle_weight"] == 0.1
     assert base["training"]["epochs"] == 40
-    assert base["training"]["use_early_stopping"] is False
+    assert "use_early_stopping" not in base["training"]
+    assert "model_selection" not in base["training"]
     assert base["training"]["validation"]["interval_epochs"] == 5
     assert base["mmw_t2_hyperparameter_screening"]["development_only"] is True
-    assert bpa["training"]["beam_proto_align_weight"] == 0.25
-    assert bpa["training"]["modality_proto_weight"] == 0.15
     assert bpa["loss"]["u_mask_beam_jepa"]["lambda_proto"] == 0.25
+    assert bpa["loss"]["u_mask_beam_jepa"]["lambda_modality_proto"] == 0.15
     assert bpa["temporal_missing"] == base["temporal_missing"]
-    assert sharp["training"]["beam_label_sigma"] == 1.5
+    assert sharp["loss"]["u_mask_beam_jepa"]["beam_label_sigma"] == 1.5
     assert sharp["model"]["primary"]["beam_proto_temperature"] == 0.08
     assert tail["temporal_missing"]["train_temporal_missing_rates"].endswith("0.8,0.8")
     assert tail["temporal_missing"]["train_missing_drop_counts"].endswith("3,3")
     assert optimizer["training"]["optimizer"]["type"] == "adamw"
     assert optimizer["scheduler"]["T_0"] == 40
-    assert kl["training"]["superset_consistency"]["kl_weight"] == 0.5
     assert kl["loss"]["u_mask_beam_jepa"]["superset_consistency"]["kl_weight"] == 0.5
-    assert teacher["loss"]["u_mask_beam_jepa"]["lambda_teacher"] == 0.25
 
 
 def test_screening_batch_and_gpu_contract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

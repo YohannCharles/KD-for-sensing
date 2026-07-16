@@ -8,14 +8,7 @@ Licensed under the MIT License.
 """
 
 import itertools
-from dataclasses import dataclass
-import hashlib
-import os
-from pathlib import Path
-import re
-import tempfile
 from typing import Any
-from urllib.parse import urlparse
 
 import torch
 import torch.nn as nn
@@ -24,44 +17,14 @@ import torch.nn.functional as F
 from kd_sensing.modalities import validate_image_encoder_profile
 from kd_sensing.models.image_encoders import _resolve_output_dim
 from kd_sensing.registries import ENCODERS
-from kd_sensing.utils.checkpoint import load_torch_payload
 
 
 TINYVIT_IMAGE_SIZE = (224, 224)
-TINYVIT_STAGES = ("patch_embed", "layer0", "layer1", "layer2", "layer3", "norm_head")
-TINYVIT_CHECKPOINT_URL_FORMAT = (
-    "https://github.com/wkcn/TinyViT-model-zoo/releases/download/checkpoints/{}.pth"
-)
-
-
-@dataclass(frozen=True)
-class TinyViTVariantConfig:
-    embed_dims: tuple[int, int, int, int]
-    depths: tuple[int, int, int, int]
-    num_heads: tuple[int, int, int, int]
-    window_sizes: tuple[int, int, int, int]
-    drop_path_rate: float
-
-    @property
-    def backbone_dim(self) -> int:
-        return int(self.embed_dims[-1])
-
-
-TINYVIT_VARIANTS: dict[str, TinyViTVariantConfig] = {
-    "5m": TinyViTVariantConfig(
-        embed_dims=(64, 128, 160, 320),
-        depths=(2, 2, 6, 2),
-        num_heads=(2, 4, 5, 10),
-        window_sizes=(7, 7, 14, 7),
-        drop_path_rate=0.0,
-    ),
-    "11m": TinyViTVariantConfig(
-        embed_dims=(64, 128, 256, 448),
-        depths=(2, 2, 6, 2),
-        num_heads=(2, 4, 8, 14),
-        window_sizes=(7, 7, 14, 7),
-        drop_path_rate=0.1,
-    ),
+TINYVIT_5M = {
+    "embed_dims": (64, 128, 160, 320),
+    "depths": (2, 2, 6, 2),
+    "num_heads": (2, 4, 5, 10),
+    "window_sizes": (7, 7, 14, 7),
 }
 
 
@@ -443,7 +406,7 @@ class TinyViT(nn.Module):
         *,
         img_size: int = 224,
         in_chans: int = 3,
-        num_classes: int = 21841,
+        num_classes: int = 0,
         embed_dims: tuple[int, int, int, int] = (64, 128, 160, 320),
         depths: tuple[int, int, int, int] = (2, 2, 6, 2),
         num_heads: tuple[int, int, int, int] = (2, 4, 5, 10),
@@ -521,150 +484,18 @@ class TinyViT(nn.Module):
         return self.head(x)
 
 
-def _normalize_variant(variant: str) -> str:
-    key = str(variant).strip().lower().replace("tinyvit-", "").replace("tinyvit_", "")
-    key = key.replace("tiny_vit_", "").replace("tinyvit", "")
-    key = key.replace("-", "").replace("_", "")
-    if key in {"5m", "5"}:
-        return "5m"
-    if key in {"11m", "11"}:
-        return "11m"
-    available = ", ".join(sorted(TINYVIT_VARIANTS))
-    raise ValueError(f"Unknown TinyViT variant '{variant}'. Available variants: {available}.")
-
-
-def _checkpoint_url(variant: str) -> str:
-    return TINYVIT_CHECKPOINT_URL_FORMAT.format(f"tiny_vit_{variant}_22k_distill")
-
-
 def _build_tinyvit_backbone(variant: str, *, in_chans: int = 3) -> tuple[TinyViT, int]:
-    normalized = _normalize_variant(variant)
-    cfg = TINYVIT_VARIANTS[normalized]
+    if str(variant).strip().lower() not in {"5m", "tinyvit_5m", "tinyvit-5m"}:
+        raise ValueError("T2 only retains the TinyViT-5M scratch encoder.")
     model = TinyViT(
         img_size=TINYVIT_IMAGE_SIZE[0],
         in_chans=int(in_chans),
-        num_classes=21841,
-        embed_dims=cfg.embed_dims,
-        depths=cfg.depths,
-        num_heads=cfg.num_heads,
-        window_sizes=cfg.window_sizes,
-        drop_path_rate=cfg.drop_path_rate,
+        embed_dims=TINYVIT_5M["embed_dims"],
+        depths=TINYVIT_5M["depths"],
+        num_heads=TINYVIT_5M["num_heads"],
+        window_sizes=TINYVIT_5M["window_sizes"],
     )
-    return model, cfg.backbone_dim
-
-
-def _state_dict_from_payload(payload: Any) -> tuple[dict[str, torch.Tensor], str]:
-    if isinstance(payload, dict) and isinstance(payload.get("model"), dict):
-        return dict(payload["model"]), "model"
-    if isinstance(payload, dict) and all(isinstance(key, str) for key in payload):
-        return dict(payload), "state_dict"
-    raise RuntimeError("TinyViT checkpoint must be a state dict or a payload with a 'model' state dict.")
-
-
-def _filter_tinyvit_state_dict(
-    state_dict: dict[str, torch.Tensor],
-    reference: dict[str, torch.Tensor],
-) -> tuple[dict[str, torch.Tensor], list[str]]:
-    filtered: dict[str, torch.Tensor] = {}
-    filtered_keys: list[str] = []
-    for key, value in state_dict.items():
-        if key.startswith("head.") or key.endswith("attention_bias_idxs"):
-            filtered_keys.append(key)
-            continue
-        if key not in reference:
-            filtered[key] = value
-            continue
-        if tuple(value.shape) != tuple(reference[key].shape):
-            raise RuntimeError(
-                f"TinyViT checkpoint key '{key}' has shape {tuple(value.shape)}, "
-                f"expected {tuple(reference[key].shape)}."
-            )
-        filtered[key] = value
-    return filtered, filtered_keys
-
-
-def _load_checkpoint_payload(
-    path: str | Path | None,
-    url: str,
-    *,
-    allow_download: bool,
-    expected_sha256: str | None,
-) -> tuple[Any, dict[str, Any]]:
-    if path:
-        checkpoint_path = Path(path).expanduser()
-        if not checkpoint_path.exists():
-            raise RuntimeError(f"TinyViT checkpoint_path does not exist: {checkpoint_path}")
-        digest = _sha256_file(checkpoint_path)
-        if expected_sha256 and digest != _validated_sha256(expected_sha256):
-            raise RuntimeError(f"TinyViT local checkpoint SHA256 mismatch: {checkpoint_path}")
-        payload = load_torch_payload(checkpoint_path, map_location="cpu")
-        return payload, {
-            "checkpoint_source": "local",
-            "checkpoint_path": str(checkpoint_path),
-            "checkpoint_url": None,
-            "checkpoint_downloaded": False,
-            "checkpoint_sha256": digest,
-            "checkpoint_load_mode": "weights_only",
-        }
-    if not allow_download:
-        raise RuntimeError(
-            "TinyViT ImageNet-22k checkpoint requires checkpoint_path when allow_download=false. "
-            "Provide a local checkpoint_path or explicitly enable a SHA256-pinned download."
-        )
-    digest = _validated_sha256(expected_sha256)
-    if urlparse(url).scheme.lower() != "https":
-        raise RuntimeError("TinyViT checkpoint_url must use HTTPS.")
-    cache_dir = Path(torch.hub.get_dir()) / "checkpoints"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = Path(urlparse(url).path).name or "tinyvit_checkpoint.pth"
-    checkpoint_path = cache_dir / f"{digest[:12]}-{filename}"
-    downloaded = False
-    if checkpoint_path.exists() and _sha256_file(checkpoint_path) != digest:
-        checkpoint_path.unlink()
-    if not checkpoint_path.exists():
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix=".tinyvit-", suffix=".pth", dir=cache_dir, delete=False) as handle:
-                temporary = Path(handle.name)
-            torch.hub.download_url_to_file(url, str(temporary), progress=False)
-            if _sha256_file(temporary) != digest:
-                raise RuntimeError("TinyViT downloaded checkpoint SHA256 mismatch.")
-            os.replace(temporary, checkpoint_path)
-            temporary = None
-            downloaded = True
-        finally:
-            if temporary is not None and temporary.exists():
-                temporary.unlink()
-    try:
-        payload = load_torch_payload(checkpoint_path, map_location="cpu")
-    except Exception as exc:  # pragma: no cover - cache contents are environment dependent.
-        raise RuntimeError(
-            "Failed to safely load TinyViT ImageNet-22k checkpoint from verified URL/cache. "
-            f"URL: {url}. Provide a local checkpoint_path for offline runs."
-        ) from exc
-    return payload, {
-        "checkpoint_source": "url",
-        "checkpoint_path": str(checkpoint_path),
-        "checkpoint_url": url,
-        "checkpoint_downloaded": downloaded,
-        "checkpoint_sha256": digest,
-        "checkpoint_load_mode": "weights_only",
-    }
-
-
-def _validated_sha256(value: str | None) -> str:
-    digest = str(value or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise RuntimeError("TinyViT remote checkpoint download requires a full 64-character SHA256.")
-    return digest
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return model, 320
 
 
 class TinyViTImageEncoder(nn.Module):
@@ -678,17 +509,8 @@ class TinyViTImageEncoder(nn.Module):
         *,
         feature_size: int | None = None,
         d_model: int | None = None,
-        variant: str = "5m",
         pretrained: bool = False,
-        pretrained_source: str | None = None,
-        checkpoint_path: str | None = None,
-        checkpoint: str | None = None,
-        allow_download: bool = False,
-        checkpoint_url: str | None = None,
-        checkpoint_sha256: str | None = None,
         freeze_backbone: bool = True,
-        unfreeze_stages: list[str] | tuple[str, ...] | None = None,
-        unfreeze_last_n_stages: int = 0,
         dropout: float = 0.0,
         image_profile: str | None = "rgb_imagenet",
         image_channels: int = 3,
@@ -696,8 +518,10 @@ class TinyViTImageEncoder(nn.Module):
         **_: Any,
     ) -> None:
         super().__init__()
-        self.variant = _normalize_variant(variant)
-        self.registry_name = registry_name or f"tinyvit_{self.variant}_{'22k' if pretrained else 'scratch'}_rgb"
+        if pretrained:
+            raise ValueError("T2 only supports the scratch TinyViT encoder.")
+        self.variant = "5m"
+        self.registry_name = registry_name or "tinyvit_5m_scratch_rgb"
         validate_image_encoder_profile(
             encoder_name=self.registry_name,
             image_profile=image_profile,
@@ -707,36 +531,15 @@ class TinyViTImageEncoder(nn.Module):
         self.output_dim = _resolve_output_dim(output_dim, feature_size, d_model)
         self.image_profile = "rgb_imagenet"
         self.image_channels = int(image_channels)
-        self.pretrained = bool(pretrained)
-        self.pretrained_source = str(pretrained_source or ("imagenet22k_distill" if self.pretrained else "scratch"))
+        self.pretrained = False
         self.freeze_backbone = bool(freeze_backbone)
-        self.requested_unfreeze_stages = tuple(str(stage) for stage in (unfreeze_stages or ()))
-        self.unfreeze_last_n_stages = int(unfreeze_last_n_stages)
-        self.allow_download = bool(allow_download)
-        self.checkpoint_path = checkpoint_path or checkpoint
-        self.checkpoint_url = str(checkpoint_url or _checkpoint_url(self.variant))
-        self.checkpoint_sha256 = checkpoint_sha256
-
-        self.backbone, self.backbone_dim = _build_tinyvit_backbone(self.variant, in_chans=3)
+        self.backbone, self.backbone_dim = _build_tinyvit_backbone("5m", in_chans=3)
         self.projection = nn.Sequential(
             nn.Dropout(float(dropout)),
             nn.Linear(self.backbone_dim, self.output_dim),
         )
-        self.checkpoint_metadata: dict[str, Any] = {
-            "checkpoint_source": "none",
-            "checkpoint_path": None,
-            "checkpoint_url": None,
-            "checkpoint_downloaded": False,
-            "checkpoint_sha256": None,
-            "checkpoint_load_mode": None,
-            "checkpoint_schema": None,
-            "checkpoint_filtered_keys": [],
-            "checkpoint_missing_keys": [],
-            "checkpoint_unexpected_keys": [],
-        }
-        if self.pretrained:
-            self._load_pretrained_checkpoint()
-        self.trainable_stages = self._configure_trainable_backbone()
+        for parameter in self.backbone.parameters():
+            parameter.requires_grad = not self.freeze_backbone
 
     def forward(self, image_batch: torch.Tensor) -> torch.Tensor:
         if image_batch.ndim != 5:
@@ -757,23 +560,9 @@ class TinyViTImageEncoder(nn.Module):
         total_params = sum(param.numel() for param in self.parameters())
         return {
             "variant": self.variant,
-            "pretrained": self.pretrained,
-            "pretrained_source": self.pretrained_source,
-            "uses_external_checkpoint": self.pretrained,
-            "checkpoint_source": self.checkpoint_metadata["checkpoint_source"],
-            "checkpoint_path": self.checkpoint_metadata["checkpoint_path"],
-            "checkpoint_url": self.checkpoint_metadata["checkpoint_url"],
-            "checkpoint_downloaded": self.checkpoint_metadata["checkpoint_downloaded"],
-            "checkpoint_sha256": self.checkpoint_metadata["checkpoint_sha256"],
-            "checkpoint_load_mode": self.checkpoint_metadata["checkpoint_load_mode"],
-            "checkpoint_schema": self.checkpoint_metadata["checkpoint_schema"],
-            "checkpoint_filtered_keys": list(self.checkpoint_metadata["checkpoint_filtered_keys"]),
-            "checkpoint_missing_keys": list(self.checkpoint_metadata["checkpoint_missing_keys"]),
-            "checkpoint_unexpected_keys": list(self.checkpoint_metadata["checkpoint_unexpected_keys"]),
+            "pretrained": False,
             "freeze_backbone": self.freeze_backbone,
             "freeze_policy": "frozen_backbone" if self.freeze_backbone else "full_finetune",
-            "trainable_stages": list(self.trainable_stages),
-            "unfreeze_last_n_stages": self.unfreeze_last_n_stages,
             "backbone_dim": self.backbone_dim,
             "output_dim": self.output_dim,
             "consumes_reliability_metadata": False,
@@ -782,105 +571,9 @@ class TinyViTImageEncoder(nn.Module):
             "total_parameter_count": int(total_params),
         }
 
-    def _load_pretrained_checkpoint(self) -> None:
-        if self.pretrained_source not in {"imagenet22k_distill", "22k_distill", "22k"}:
-            raise RuntimeError(
-                "TinyViT pretrained_source must be 'imagenet22k_distill' for built-in 22k checkpoints, "
-                f"got {self.pretrained_source!r}."
-            )
-        payload, source_metadata = _load_checkpoint_payload(
-            self.checkpoint_path,
-            self.checkpoint_url,
-            allow_download=self.allow_download,
-            expected_sha256=self.checkpoint_sha256,
-        )
-        raw_state, schema = _state_dict_from_payload(payload)
-        reference = self.backbone.state_dict()
-        filtered_state, filtered_keys = _filter_tinyvit_state_dict(raw_state, reference)
-        unexpected = sorted(key for key in filtered_state if key not in reference)
-        if unexpected:
-            raise RuntimeError(f"TinyViT checkpoint contains unexpected keys after filtering: {unexpected}.")
-        result = self.backbone.load_state_dict(filtered_state, strict=False)
-        allowed_missing = {"head.weight", "head.bias"}
-        missing = sorted(str(key) for key in result.missing_keys if str(key) not in allowed_missing)
-        unexpected_after_load = sorted(str(key) for key in result.unexpected_keys)
-        if missing or unexpected_after_load:
-            raise RuntimeError(
-                "TinyViT checkpoint did not match the encoder backbone. "
-                f"Missing keys: {missing}; unexpected keys: {unexpected_after_load}."
-            )
-        self.checkpoint_metadata = {
-            **source_metadata,
-            "checkpoint_schema": schema,
-            "checkpoint_filtered_keys": sorted(filtered_keys),
-            "checkpoint_missing_keys": sorted(str(key) for key in result.missing_keys),
-            "checkpoint_unexpected_keys": unexpected_after_load,
-        }
-
-    def _configure_trainable_backbone(self) -> tuple[str, ...]:
-        if not self.freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = True
-            return TINYVIT_STAGES
-
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-        requested = set(self.requested_unfreeze_stages)
-        if self.unfreeze_last_n_stages > 0:
-            last_n = min(self.unfreeze_last_n_stages, len(TINYVIT_STAGES))
-            requested.update(TINYVIT_STAGES[-last_n:])
-        invalid = sorted(requested - set(TINYVIT_STAGES))
-        if invalid:
-            raise ValueError(f"Unknown TinyViT stages {invalid}. Available stages: {list(TINYVIT_STAGES)}.")
-        stage_modules: dict[str, nn.Module] = {
-            "patch_embed": self.backbone.patch_embed,
-            "layer0": self.backbone.layers[0],
-            "layer1": self.backbone.layers[1],
-            "layer2": self.backbone.layers[2],
-            "layer3": self.backbone.layers[3],
-            "norm_head": self.backbone.norm_head,
-        }
-        for stage in requested:
-            for param in stage_modules[stage].parameters():
-                param.requires_grad = True
-        return tuple(stage for stage in TINYVIT_STAGES if stage in requested)
+def _tinyvit_5m_scratch_rgb(**kwargs: Any) -> TinyViTImageEncoder:
+    kwargs.pop("variant", None)
+    return TinyViTImageEncoder(registry_name="tinyvit_5m_scratch_rgb", **kwargs)
 
 
-def _build_tinyvit_encoder_factory(
-    *,
-    variant: str,
-    pretrained: bool,
-    pretrained_source: str,
-    registry_name: str,
-):
-    def factory(**kwargs: Any) -> TinyViTImageEncoder:
-        kwargs.pop("variant", None)
-        kwargs.pop("pretrained", None)
-        kwargs.pop("pretrained_source", None)
-        return TinyViTImageEncoder(
-            variant=variant,
-            pretrained=pretrained,
-            pretrained_source=pretrained_source,
-            registry_name=registry_name,
-            **kwargs,
-        )
-
-    return factory
-
-
-_TINYVIT_ENCODER_PRESETS = (
-    ("tinyvit_5m_scratch_rgb", "5m", False, "scratch"),
-    ("tinyvit_5m_22k_rgb", "5m", True, "imagenet22k_distill"),
-    ("tinyvit_11m_scratch_rgb", "11m", False, "scratch"),
-    ("tinyvit_11m_22k_rgb", "11m", True, "imagenet22k_distill"),
-)
-
-for _registry_name, _variant, _pretrained, _pretrained_source in _TINYVIT_ENCODER_PRESETS:
-    ENCODERS.register(_registry_name)(
-        _build_tinyvit_encoder_factory(
-            variant=_variant,
-            pretrained=_pretrained,
-            pretrained_source=_pretrained_source,
-            registry_name=_registry_name,
-        )
-    )
+ENCODERS.register("tinyvit_5m_scratch_rgb")(_tinyvit_5m_scratch_rgb)

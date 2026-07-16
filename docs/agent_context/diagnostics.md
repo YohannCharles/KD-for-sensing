@@ -1,19 +1,7 @@
-# Diagnostics Context
+# Runtime 与证据任务上下文
 
-当前诊断面保留：
+训练与评估只服务固定 40 epoch、`last.pth`、MMW 15-domain 的 T2/baseline protocol。fixed-mask、多 seed、BPA/CMA 与 hyperparameter screening 的脚本只产生本地 evidence，不自动升级 claim。
 
-- `kd-sensing-eval-u-mask-matrix`：U-MaskBeamJEPA missing-modality evaluation matrix，输出到 ignored `outputs/eval/` 或显式本地目录。
-- `kd-sensing-runs`：只读 run index。
-- `kd-sensing-paper-export`：只消费 reviewed claim/ledger/summary。
-- `kd-sensing-mmw-town-gps-v2` 与 `kd-sensing-inspect-mmw-physics`：受保护 MMW workflow。
+先读 `openspec/specs/training-evaluation-runtime/spec.md`、`openspec/specs/mmw-baseline-multiseed-robustness-evidence/spec.md` 和相应 active change。不要恢复任何额外 diagnostic surface。
 
-历史 JEPA visual analysis、GPS shortcut benchmark、Scenario D/CxD 和 dataset audit CLI 已退役或删除；不要恢复 wrapper 或同名 console script。
-
-Research dashboard/preview 已退役；run provenance、人工 claim registry 和 paper export 是保留的证据 owner。
-
-Focused validation:
-
-```bash
-conda run -n kd_mm_beam pytest tests/test_run_index.py tests/test_cli_help.py -q
-conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa_eval_matrix.py -q
-```
+最小验证：`conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py tests/test_mmw_t2_hyperparameter_screening.py -q`。

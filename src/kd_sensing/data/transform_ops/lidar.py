@@ -1,16 +1,11 @@
-from dataclasses import dataclass
-import hashlib
 import io as text_io
-import json
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 import scipy.io
-import torch
 
-from kd_sensing.data.transform_ops.io import atomic_save_npy, joined_resource
-from kd_sensing.utils.checkpoint import load_torch_payload
+from kd_sensing.data.transform_ops.io import joined_resource
 
 
 DEFAULT_LIDAR_ROI = (-30.0, 30.0, -30.0, 30.0, -3.0, 5.0)
@@ -185,149 +180,6 @@ def augment_lidar_points(
     return points.astype(np.float32)
 
 
-def lidar_cache_path(cache_dir: str | Path, rel_path: str) -> Path:
-    rel = str(rel_path).lstrip("/").replace("\\", "/")
-    digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:10]
-    safe_name = rel.replace("/", "__").replace("..", "__")
-    stem = Path(safe_name).with_suffix("").name
-    return Path(cache_dir) / f"{stem}_{digest}.npy"
-
-
-def lidar_cache_config_hash(
-    *,
-    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
-    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
-    fov_degrees: list[float] | tuple[float, float] | None = None,
-    remove_ground: bool = False,
-    ground_z_threshold: float = 0.1,
-    background_path: str | None = None,
-    background_distance_threshold: float = 0.2,
-) -> str:
-    payload = {
-        "bev_size": [int(value) for value in bev_size],
-        "roi": [float(value) for value in roi],
-        "fov_degrees": None if fov_degrees is None else [float(value) for value in fov_degrees],
-        "remove_ground": bool(remove_ground),
-        "ground_z_threshold": float(ground_z_threshold),
-        "background_path": str(background_path) if background_path else None,
-        "background_distance_threshold": float(background_distance_threshold),
-    }
-    digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    return f"bev_{digest}"
-
-
-def parameterized_lidar_cache_dir(
-    cache_dir: str | Path,
-    *,
-    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
-    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
-    fov_degrees: list[float] | tuple[float, float] | None = None,
-    remove_ground: bool = False,
-    ground_z_threshold: float = 0.1,
-    background_path: str | None = None,
-    background_distance_threshold: float = 0.2,
-) -> Path:
-    return Path(cache_dir) / lidar_cache_config_hash(
-        bev_size=bev_size,
-        roi=roi,
-        fov_degrees=fov_degrees,
-        remove_ground=remove_ground,
-        ground_z_threshold=ground_z_threshold,
-        background_path=background_path,
-        background_distance_threshold=background_distance_threshold,
-    )
-
-
-def lidar_bev_grid_metadata(
-    *,
-    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
-    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
-    fov_degrees: list[float] | tuple[float, float] | None = None,
-    remove_ground: bool = False,
-    ground_z_threshold: float = 0.1,
-    background_path: str | None = None,
-    background_distance_threshold: float = 0.2,
-    cell_center_convention: str = "center",
-    cache_version: str = "lidar_bev_v1",
-) -> dict[str, object]:
-    height, width = int(bev_size[0]), int(bev_size[1])
-    roi_values = [float(value) for value in roi]
-    return {
-        "roi": roi_values,
-        "bev_size": [height, width],
-        "height": height,
-        "width": width,
-        "grid_size": [height, width],
-        "cell_center_convention": str(cell_center_convention or "center"),
-        "fov_degrees": None if fov_degrees is None else [float(value) for value in fov_degrees],
-        "remove_ground": bool(remove_ground),
-        "ground_z_threshold": float(ground_z_threshold),
-        "background_path": str(background_path or ""),
-        "background_distance_threshold": float(background_distance_threshold),
-        "cache_version": str(cache_version or "lidar_bev_v1"),
-        "parameter_hash": lidar_cache_config_hash(
-            bev_size=bev_size,
-            roi=roi,
-            fov_degrees=fov_degrees,
-            remove_ground=remove_ground,
-            ground_z_threshold=ground_z_threshold,
-            background_path=background_path,
-            background_distance_threshold=background_distance_threshold,
-        ),
-    }
-
-
-def write_lidar_bev_metadata(path: str | Path, metadata: dict[str, object]) -> Path:
-    target = Path(path)
-    if target.suffix.lower() != ".json":
-        target = target.with_suffix(target.suffix + ".metadata.json")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
-    return target
-
-
-def load_lidar_bev_metadata(path: str | Path) -> dict[str, object]:
-    source = Path(path)
-    candidates = [
-        source.with_suffix(source.suffix + ".metadata.json"),
-        source.with_suffix(".metadata.json"),
-        source.parent / f"{source.stem}_metadata.json",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, dict) else {}
-    return {}
-
-
-def validate_lidar_bev_metadata(
-    metadata: dict[str, object],
-    expected: dict[str, object],
-    *,
-    fields: tuple[str, ...] = ("roi", "bev_size", "cell_center_convention", "parameter_hash"),
-) -> None:
-    if not metadata:
-        return
-    mismatched: list[str] = []
-    for field in fields:
-        if field not in expected or field not in metadata:
-            continue
-        if _metadata_value(metadata[field]) != _metadata_value(expected[field]):
-            mismatched.append(field)
-    if mismatched:
-        names = ", ".join(mismatched)
-        raise ValueError(f"LiDAR BEV cache metadata mismatch for: {names}.")
-
-
-def load_lidar_background_points(data_root: str | Path, background_path: str | None) -> np.ndarray | None:
-    if not background_path:
-        return None
-    path = joined_resource(data_root, background_path)
-    if path.suffix.lower() == ".npy":
-        return _coerce_lidar_points(np.load(path), str(path))
-    return read_lidar_point_cloud(data_root, background_path)
-
-
 def load_lidar_bev_sequence(
     data_root: str | Path,
     lidar_paths: list[str],
@@ -340,9 +192,6 @@ def load_lidar_bev_sequence(
     ground_z_threshold: float = 0.1,
     background_points: np.ndarray | None = None,
     background_distance_threshold: float = 0.2,
-    cache_dir: str | Path | None = None,
-    use_cache: bool = False,
-    write_cache: bool = False,
     augment: bool = False,
     point_dropout: float = 0.0,
     jitter_std: float = 0.0,
@@ -350,148 +199,24 @@ def load_lidar_bev_sequence(
 ) -> np.ndarray:
     selected_lidar = lidar_paths[-seq_len:]
     frames = []
-    cache_root = Path(cache_dir) if cache_dir else None
-    if cache_root is not None and write_cache:
-        cache_root.mkdir(parents=True, exist_ok=True)
     for rel_path in selected_lidar:
-        cache_path = lidar_cache_path(cache_root, rel_path) if cache_root is not None else None
-        if use_cache and cache_path is not None and cache_path.exists():
-            bev = _resize_or_validate_lidar_bev(np.load(cache_path), bev_size)
-        else:
-            bev = build_lidar_bev(
-                data_root,
-                rel_path,
-                bev_size=bev_size,
-                roi=roi,
-                fov_degrees=fov_degrees,
-                remove_ground=remove_ground,
-                ground_z_threshold=ground_z_threshold,
-                background_points=background_points,
-                background_distance_threshold=background_distance_threshold,
-                augment=augment,
-                point_dropout=point_dropout,
-                jitter_std=jitter_std,
-                rng=rng,
-            )
-            if write_cache and cache_path is not None:
-                atomic_save_npy(cache_path, bev)
+        bev = build_lidar_bev(
+            data_root,
+            rel_path,
+            bev_size=bev_size,
+            roi=roi,
+            fov_degrees=fov_degrees,
+            remove_ground=remove_ground,
+            ground_z_threshold=ground_z_threshold,
+            background_points=background_points,
+            background_distance_threshold=background_distance_threshold,
+            augment=augment,
+            point_dropout=point_dropout,
+            jitter_std=jitter_std,
+            rng=rng,
+        )
         frames.append(bev.astype(np.float32))
     return np.stack(frames, axis=0).astype(np.float32)
-
-
-@dataclass
-class LidarBEVNormalizer:
-    mean_: np.ndarray | None = None
-    scale_: np.ndarray | None = None
-    count_: int | None = None
-
-    def fit(self, bev_sequences: np.ndarray) -> "LidarBEVNormalizer":
-        features = np.asarray(bev_sequences, dtype=np.float64)
-        if features.ndim == 3:
-            features = features[None, ...]
-        if features.ndim != 4:
-            raise ValueError(f"LiDAR normalizer fit expects [N, C, H, W] or [C, H, W], got {features.shape}.")
-        self.mean_ = features.mean(axis=(0, 2, 3), keepdims=True)
-        self.scale_ = features.std(axis=(0, 2, 3), keepdims=True)
-        self.scale_[self.scale_ < 1e-8] = 1.0
-        self.count_ = int(features.shape[0] * features.shape[2] * features.shape[3])
-        return self
-
-    def transform(self, bev_sequence: np.ndarray) -> np.ndarray:
-        if self.mean_ is None or self.scale_ is None:
-            raise ValueError("LiDAR normalizer has not been fit.")
-        features = np.asarray(bev_sequence, dtype=np.float64)
-        if features.ndim == 3:
-            return ((features - self.mean_[0]) / self.scale_[0]).astype(np.float32)
-        if features.ndim == 4:
-            return ((features - self.mean_) / self.scale_).astype(np.float32)
-        raise ValueError(f"LiDAR normalizer transform expects [T, C, H, W] or [C, H, W], got {features.shape}.")
-
-    def fit_transform(self, bev_sequences: np.ndarray) -> np.ndarray:
-        return self.fit(bev_sequences).transform(bev_sequences)
-
-    def save(self, path: str | Path) -> None:
-        if self.mean_ is None or self.scale_ is None:
-            raise ValueError("LiDAR normalizer has not been fit.")
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "mean": np.asarray(self.mean_, dtype=np.float32),
-            "scale": np.asarray(self.scale_, dtype=np.float32),
-            "std": np.asarray(self.scale_, dtype=np.float32),
-            "count": int(self.count_ or 0),
-        }
-        if target.suffix.lower() == ".pt":
-            torch.save(payload, target)
-        else:
-            np.savez(target, **payload)
-
-    @classmethod
-    def load(cls, path: str | Path) -> "LidarBEVNormalizer":
-        source = Path(path)
-        if source.suffix.lower() == ".pt":
-            payload = load_torch_payload(source, map_location="cpu")
-            mean = np.asarray(payload["mean"], dtype=np.float32)
-            scale_key = "scale" if "scale" in payload else "std"
-            scale = np.asarray(payload[scale_key], dtype=np.float32)
-            count = int(payload.get("count", 0) or 0)
-        else:
-            with np.load(source) as payload:
-                mean = np.asarray(payload["mean"], dtype=np.float32)
-                scale_key = "scale" if "scale" in payload else "std"
-                scale = np.asarray(payload[scale_key], dtype=np.float32)
-                count = int(np.asarray(payload["count"]).item()) if "count" in payload else 0
-        return cls(mean_=cls._coerce_channel_stats(mean), scale_=cls._coerce_channel_stats(scale), count_=count)
-
-    @staticmethod
-    def _coerce_channel_stats(values: np.ndarray) -> np.ndarray:
-        array = np.asarray(values, dtype=np.float32)
-        if array.ndim == 1:
-            return array.reshape(1, array.shape[0], 1, 1)
-        if array.ndim == 3:
-            return array[None, ...]
-        if array.ndim == 4:
-            return array
-        raise ValueError(f"LiDAR channel stats must be 1D, 3D, or 4D, got {array.shape}.")
-
-
-@dataclass
-class LidarBEVStreamingStats:
-    sum_: np.ndarray | None = None
-    sumsq_: np.ndarray | None = None
-    count_: int = 0
-
-    def update(self, bev_sequence: np.ndarray) -> "LidarBEVStreamingStats":
-        features = np.asarray(bev_sequence, dtype=np.float64)
-        if features.ndim == 3:
-            features = features[None, ...]
-        if features.ndim != 4:
-            raise ValueError(f"LiDAR streaming stats expects [T, C, H, W] or [C, H, W], got {features.shape}.")
-        channel_values = np.moveaxis(features, 1, 0).reshape(features.shape[1], -1)
-        if self.sum_ is None:
-            self.sum_ = np.zeros(channel_values.shape[0], dtype=np.float64)
-            self.sumsq_ = np.zeros(channel_values.shape[0], dtype=np.float64)
-        if self.sum_.shape[0] != channel_values.shape[0]:
-            raise ValueError(
-                f"LiDAR channel count changed from {self.sum_.shape[0]} to {channel_values.shape[0]}."
-            )
-        self.sum_ += channel_values.sum(axis=1)
-        self.sumsq_ += np.square(channel_values).sum(axis=1)
-        self.count_ += int(channel_values.shape[1])
-        return self
-
-    def finalize(self) -> LidarBEVNormalizer:
-        if self.sum_ is None or self.sumsq_ is None or self.count_ <= 0:
-            raise ValueError("Cannot finalize LiDAR stats without any samples.")
-        mean = self.sum_ / self.count_
-        variance = self.sumsq_ / self.count_ - np.square(mean)
-        scale = np.sqrt(np.maximum(variance, 1e-12))
-        scale[scale < 1e-8] = 1.0
-        return LidarBEVNormalizer(
-            mean_=mean.astype(np.float32).reshape(1, -1, 1, 1),
-            scale_=scale.astype(np.float32).reshape(1, -1, 1, 1),
-            count_=self.count_,
-        )
 
 
 def _read_ascii_pcd(path: Path) -> np.ndarray:
@@ -622,31 +347,13 @@ def _resize_or_validate_lidar_bev(array: np.ndarray, bev_size: list[int] | tuple
     return resized
 
 
-def _metadata_value(value: object) -> object:
-    if isinstance(value, (list, tuple)):
-        return [round(float(item), 8) if isinstance(item, (int, float)) else item for item in value]
-    if isinstance(value, (int, float)):
-        return round(float(value), 8)
-    return value
-
-
 __all__ = [
     "DEFAULT_LIDAR_BEV_SIZE",
     "DEFAULT_LIDAR_ROI",
-    "LidarBEVNormalizer",
-    "LidarBEVStreamingStats",
     "augment_lidar_points",
     "build_lidar_bev",
     "filter_lidar_points",
-    "lidar_cache_config_hash",
-    "lidar_cache_path",
-    "lidar_bev_grid_metadata",
     "lidar_points_to_bev",
-    "load_lidar_background_points",
-    "load_lidar_bev_metadata",
     "load_lidar_bev_sequence",
-    "parameterized_lidar_cache_dir",
     "read_lidar_point_cloud",
-    "validate_lidar_bev_metadata",
-    "write_lidar_bev_metadata",
 ]

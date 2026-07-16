@@ -5,12 +5,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from kd_sensing.data.datasets.mmw_family_adapter import MMWFamilyAdapter, prepare_mmw_family_init
+from kd_sensing.data.layouts import mmw_condition_layout
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.transform_ops.gps import GPSStandardScaler, load_gps_feature_sequence
 from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform, load_rgb_imagenet_frames
 from kd_sensing.data.transform_ops.io import joined_resource
-from kd_sensing.data.transform_ops.lidar import LidarBEVNormalizer, load_lidar_bev_sequence
+from kd_sensing.data.transform_ops.lidar import load_lidar_bev_sequence
 from kd_sensing.data.transform_ops.radar import load_radar_maps
 from kd_sensing.modalities import normalize_modalities, resolve_image_profile
 from kd_sensing.registries import DATASETS
@@ -23,10 +23,8 @@ class MMWDataset(Dataset):
     def __init__(
         self,
         *,
-        condition: str = "sunny",
-        scene: str | None = "town10_skybridge_seed24",
-        scene_id: str | None = None,
-        scene_slug: str | None = None,
+        condition: str | None = None,
+        scene: str | None = None,
         data_root: str | None = None,
         train_csv_name: str | None = None,
         test_csv_name: str | None = None,
@@ -52,42 +50,31 @@ class MMWDataset(Dataset):
         lidar_remove_ground: bool = False,
         lidar_ground_z_threshold: float = 0.1,
         lidar_background_distance_threshold: float = 0.2,
-        lidar_normalize: bool = False,
-        lidar_normalizer: LidarBEVNormalizer | None = None,
         lidar_augment: bool = False,
         lidar_point_dropout: float = 0.0,
         lidar_jitter_std: float = 0.0,
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
-        beam_label_calibration: bool | dict[str, Any] | None = None,
-        return_metadata: bool = False,
-        **extra: Any,
     ) -> None:
-        self._reject_retired_inputs(extra)
-        init = prepare_mmw_family_init(
-            condition=condition,
-            scene=scene,
-            scene_id=scene_id,
-            scene_slug=scene_slug,
-            data_root=data_root,
-            train_csv_name=train_csv_name,
-            test_csv_name=test_csv_name,
-            val_csv_name=val_csv_name,
-            beam_label_calibration=beam_label_calibration,
-            kwargs={},
-        )
-        self.condition = init.condition
-        self.scene_id = init.scenario
-        self.scene_slug = init.scenario
-        self.data_root = Path(init.root)
-        self.split = "validation" if split == "val" else str(split)
+        if not str(condition or "").strip() or not str(scene or "").strip():
+            raise ValueError("MMW condition and scene must be explicit.")
+        layout = mmw_condition_layout(str(condition))
+        self.condition = layout.condition
+        self.scene_slug = str(scene).strip()
+        self.scene_id = self.scene_slug
+        self.data_root = Path(data_root or layout.root)
+        self.split = str(split)
+        prepared = Path("Prepared") / self.scene_slug / "splits"
         csv_name = {
-            "train": init.train_csv_name,
-            "validation": init.val_csv_name or init.test_csv_name,
-            "test": init.test_csv_name,
+            "train": train_csv_name or str(prepared / "train.csv"),
+            "validation": val_csv_name,
+            "test": test_csv_name or str(prepared / "test.csv"),
         }.get(self.split)
         if csv_name is None:
             raise ValueError(f"Unsupported MMW split: {split}.")
-        self.root_csv = joined_resource(self.data_root, csv_name)
+        csv_path = Path(csv_name)
+        self.root_csv = csv_path if csv_path.is_absolute() else joined_resource(self.data_root, csv_name)
+        if not self.root_csv.exists():
+            raise FileNotFoundError(f"MMW prepared split CSV is missing: {self.root_csv}")
         self.seq_len = int(seq_len)
         self.num_pred = int(num_pred)
         if self.seq_len <= 0 or self.num_pred <= 0:
@@ -117,15 +104,10 @@ class MMWDataset(Dataset):
         self.lidar_remove_ground = bool(lidar_remove_ground)
         self.lidar_ground_z_threshold = float(lidar_ground_z_threshold)
         self.lidar_background_distance_threshold = float(lidar_background_distance_threshold)
-        self.lidar_normalize = bool(lidar_normalize)
-        self.lidar_normalizer = lidar_normalizer
         self.lidar_augment = bool(lidar_augment)
         self.lidar_point_dropout = float(lidar_point_dropout)
         self.lidar_jitter_std = float(lidar_jitter_std)
         self.lidar_stats_path = None
-        self.return_metadata = bool(return_metadata)
-        self.beam_label_mapping = init.beam_label_mapping
-        self._beam_label_cache: dict[str, int] = {}
         self.samples = create_samples(
             self.root_csv,
             portion=float(portion),
@@ -136,7 +118,6 @@ class MMWDataset(Dataset):
             gps_source_seq_len=self.seq_len,
             num_pred=self.num_pred,
         )
-        self.family_adapter = MMWFamilyAdapter(self, condition=init.condition, scenario=init.scenario)
         self.schema_identity = {
             "dataset_family": "MMW",
             "modalities": list(self.enabled_modalities),
@@ -144,34 +125,15 @@ class MMWDataset(Dataset):
             "num_pred": self.num_pred,
         }
 
-    @staticmethod
-    def _reject_retired_inputs(extra: dict[str, Any]) -> None:
-        retired = {
-            key: value
-            for key, value in extra.items()
-            if key in {"use_csi", "use_mmwave", "physics_supervision", "radio_semantic", "path_semantic", "physical_label"}
-            and bool(value)
-        }
-        if retired:
-            raise ValueError(f"Retired MMW inputs are not supported: {', '.join(sorted(retired))}.")
-
     def __len__(self) -> int:
-        return len(self.samples.input_beam_paths)
-
-    @property
-    def needs_lidar_streaming_stats(self) -> bool:
-        return bool(self.use_lidar and self.lidar_normalize and self.lidar_normalizer is None)
+        return len(self.samples.rows or [])
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        beam_paths = self.samples.input_beam_paths[idx][-self.seq_len :]
-        target_paths = self.samples.future_beam_paths[idx][: self.num_pred]
-        raw_input = [self._raw_beam_label(path) for path in beam_paths]
-        raw_target = [self.family_adapter.target_raw_beam_label_for_index(idx, horizon, path) for horizon, path in enumerate(target_paths)]
         sample: dict[str, Any] = {
-            "input_beam": torch.tensor([self._map_beam_label(value) for value in raw_input], dtype=torch.long),
-            "target_beam": torch.tensor([self._map_beam_label(value) for value in raw_target], dtype=torch.long),
-            "history_indices": torch.arange(len(beam_paths), dtype=torch.long),
-            "target_index": torch.tensor(len(beam_paths), dtype=torch.long),
+            "target_beam": torch.tensor(
+                [self._target_beam_label(idx, horizon) for horizon in range(self.num_pred)],
+                dtype=torch.long,
+            )
         }
         if "image" in self.enabled_modalities:
             sample["image"] = load_rgb_imagenet_frames(
@@ -194,27 +156,37 @@ class MMWDataset(Dataset):
             sample["gps"] = torch.tensor(self.gps_scaler.transform(gps) if self.gps_scaler is not None else gps, dtype=torch.float32)
         if self.use_lidar:
             lidar = self._lidar_bev_for_index(idx, augment=self.split == "train" and self.lidar_augment)
-            sample["lidar_raw"] = torch.tensor(lidar, dtype=torch.float32)
-            if self.lidar_normalizer is not None:
-                lidar = self.lidar_normalizer.transform(lidar)
             sample["lidar"] = torch.tensor(lidar, dtype=torch.float32)
-        return self.family_adapter.augment_sample(idx, sample)
+        return self._with_metadata(idx, sample)
 
-    def _raw_beam_label(self, beam_path: str) -> int:
-        key = str(beam_path)
-        if key not in self._beam_label_cache:
-            path = joined_resource(self.data_root, key)
-            try:
-                values = np.asarray(np.loadtxt(path))
-            except Exception as exc:
-                raise ValueError(f"Failed to read MMW beam label file {path}: {exc}") from exc
-            if values.size == 0:
-                raise ValueError(f"MMW beam label file {path} is empty.")
-            self._beam_label_cache[key] = int(np.argmax(values))
-        return self._beam_label_cache[key]
+    def _target_beam_label(self, idx: int, horizon: int) -> int:
+        label = _row_label(self._row(idx), f"future_beam_label{horizon + 1}")
+        if label is None:
+            raise ValueError(f"MMW prepared row {idx} is missing future_beam_label{horizon + 1}.")
+        return label
 
-    def _map_beam_label(self, raw_label: int) -> int:
-        return self.beam_label_mapping.map_label(int(raw_label))
+    def _row(self, idx: int) -> dict[str, Any]:
+        rows = self.samples.rows or []
+        return rows[idx] if 0 <= idx < len(rows) else {}
+
+    def _with_metadata(self, idx: int, sample: dict[str, Any]) -> dict[str, Any]:
+        row = self._row(idx)
+        metadata = {
+            key: text
+            for key in ("condition", "town", "sensor_scenario", "sample_id", "target_sample_id")
+            if (text := _row_text(row, key)) is not None
+        }
+        metadata.update(dataset_family="MMW", condition=self.condition, scenario=self.scene_slug)
+        sample["metadata"] = metadata
+        sample["sample_id"] = str(metadata.get("sample_id", f"{self.scene_slug}:{idx}"))
+        sample["domain_metadata"] = {
+            "dataset_family": "MMW",
+            "condition": self.condition,
+            "town": metadata.get("town", ""),
+            "scenario": self.scene_slug,
+            "scene_slug": self.scene_slug,
+        }
+        return sample
 
     def _gps_features_for_index(self, idx: int) -> np.ndarray:
         if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
@@ -245,6 +217,19 @@ class MMWDataset(Dataset):
             point_dropout=self.lidar_point_dropout,
             jitter_std=self.lidar_jitter_std,
         )
+
+
+def _row_label(row: dict[str, Any], key: str) -> int | None:
+    try:
+        value = int(row.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _row_text(row: dict[str, Any], key: str) -> str | None:
+    value = str(row.get(key, "")).strip()
+    return value if value and value not in {"-99", "nan", "None"} else None
 
 
 __all__ = ["MMWDataset"]

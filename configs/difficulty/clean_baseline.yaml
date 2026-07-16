@@ -1,7 +1,0 @@
-_base_: ../fusion/image_gps_supervised.yaml
-
-difficulty:
-  enabled: false
-
-output:
-  run_name: fusion_image_gps_clean_baseline

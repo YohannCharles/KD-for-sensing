@@ -10,24 +10,12 @@ model:
     radar_channels: 2
     lidar_channels: 3
     gps_input_size: 3
-    feature_size: 64
     d_model: 64
     num_classes: 64
-    num_heads: 4
-    num_layers: 1
     dropout: 0.1
-    context_type: set_transformer_simplified
     fusion_type: supervised_router
-    use_teacher: true
-    use_jepa_loss: false
-    use_modality_uncertainty: true
-    use_global_uncertainty: true
-    use_beam_prototype_alignment: true
     head_type: prototype
-    router_supervision: oracle
-    router_distill_weight: 0.1
-    router_focus_patterns: missing_image,miss2,drop2
-    router_fuse_level: logits
+    beam_proto_temperature: 0.1
     router_use_pattern_features: true
     router_use_reliability_features: true
     router_use_prototype_margin: true
@@ -38,7 +26,6 @@ model:
     temporal_pooling:
       enabled: true
       type: masked_mean
-      hidden_dim: 32
     encoders:
       image:
         type: tinyvit_5m_scratch_rgb
@@ -66,10 +53,17 @@ loss:
   type: cross_entropy
   u_mask_beam_jepa:
     enabled: true
-    lambda_teacher: 0.5
-    lambda_jepa: 0.0
-    use_jepa_loss: false
+    router_supervision: oracle
     use_beam_prototype_alignment: true
+    lambda_proto: 0.2
+    lambda_modality_proto: 0.1
+    beam_label_sigma: 2.0
+    prototype_target_circular: true
+    circular_beam_distance: true
+    use_amber_cma_analogue: false
+    lambda_amber_cma: 0.2
+    amber_cma_temperature: 0.2
+    router_oracle_weight: 0.1
     missing_mask:
       p_missing: [0.25, 0.25, 0.25, 0.1]
       ensure_at_least_one: true
@@ -78,33 +72,7 @@ loss:
       confidence_gated_kl: true
       kl_weight: 0.2
       temperature: 2.0
-      beam_monotonic_rank: false
-      feature_l2_weight: 0.0
-  pcpg_radar_balance:
-    enabled: true
-  router_supervision: oracle
-  router_distill_weight: 0.1
-  hard_subset_weighting:
-    enabled: true
-    mode: soft_static
-    unknown_weight: 1.0
-  hard_subset_focus: [radar_only, missing_image, miss2, miss3]
 training:
   grad_clip: 5.0
-  mask_sampler: default
-  use_beam_prototype_alignment: true
-  beam_proto_align_weight: 0.2
-  use_modality_prototype_loss: true
-  modality_proto_weight: 0.1
-  beam_proto_temperature: 0.1
-  beam_label_sigma: 2.0
-  beam_label_circular: true
-  superset_consistency:
-    enabled: true
-    confidence_gated_kl: true
-    kl_weight: 0.2
-    temperature: 2.0
-    beam_monotonic_rank: false
-    feature_l2_weight: 0.0
 temporal_missing:
   preserve_unmasked_for_superset: true

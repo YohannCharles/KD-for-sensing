@@ -1,6 +1,6 @@
 ## Context
 
-MMW T2 当前使用 15 个 `weather/scenario` domain、四个 sensing modalities、40 epoch 和 epoch-40 `last.pth`。本地基线快照位于 ignored 的 `outputs/mmw_all_weather_h5p1_seed1_v2/T2/seed1/resolved_config.yaml`；现有 MMW launcher 仍把每个 domain 的 `val_csv_name` 与 `test_csv_name` 指向同一 outer-test CSV，因此不能继续把该路径用于训练期 validation 观测。
+MMW T2 当前使用 15 个 `weather/scenario` domain、四个 sensing modalities、40 epoch 和 epoch-40 `last.pth`。tracked `configs/mmw/t2.yaml` 及其 shared base 是唯一基线输入；筛选从 outer train 侧派生独立 validation，不把 output 配置或 outer test 用作训练期输入。
 
 并行 active change `validate-t2-mmw-bpa-cma-ablation` 已冻结六方法、五个新增方法 x 三 seed、固定训练预算和正式 paired evaluation。该 change 回答 BPA、CMA、circular topology 与 prototype package 的机制问题；本 change 只在完整 T2 架构内做 seed-1 development screening，不能改写前者的配置、任务、运行目录或正式结论。
 
@@ -10,10 +10,10 @@ MMW T2 当前使用 15 个 `weather/scenario` domain、四个 sensing modalities
 
 **Goals:**
 
-- 从本地 T2 resolved config 和现有 MMW T2 builder 建立可审计的基线 fingerprint，生成八个具名 seed-1 development variants。
+- 从 tracked T2 recipe 和现有 MMW T2 builder 建立可审计的基线 fingerprint，生成六个具名 seed-1 development variants。
 - 保持四模态、T2 architecture、15 domains、outer train/test、40 epoch、评估 mask 和 epoch-40 `last.pth` 不变。
 - 从 outer train 侧生成所有 variants 共用、与 inner-train 资源身份不相交的独立 validation，用于每 5 epoch 的观测。
-- 以真实 AMP training step 解析 GPU0-7 都可用的最大预注册 16 倍数 batch，并保证 probe 不改变其余 protocol。
+- 以真实 AMP training step 解析请求 GPU 都可用的最大预注册 16 倍数 batch，并保证 probe 不改变其余 protocol。
 - 用固定选择分数和保护门槛只产生 development candidate 或 `no_change` 结论。
 
 **Non-Goals:**
@@ -25,13 +25,13 @@ MMW T2 当前使用 15 个 `weather/scenario` domain、四个 sensing modalities
 
 ## Decisions
 
-### 1. 本地 resolved config 提供基线事实，现有 builder 继续拥有配置生成
+### 1. Tracked T2 recipe 提供基线事实，现有 builder 继续拥有配置生成
 
-launcher 必须读取 `outputs/mmw_all_weather_h5p1_seed1_v2/T2/seed1/resolved_config.yaml`，记录其路径和 SHA256，并抽取 T2 architecture、loss、optimizer、domain、split、missing curriculum 与 evaluation fingerprint。随后复用 `scripts/launch_mmw_all_weather_matrix.py` 的 T2 config builder 生成 H0，再校验所有冻结字段与本地快照一致；缺少快照、字段不一致或不是 15 domains 时 fail closed。
+launcher 必须读取 tracked `configs/mmw/t2.yaml` 及其 shared base，记录 recipe SHA256，并抽取 T2 architecture、loss、optimizer、domain、split、missing curriculum 与 evaluation fingerprint。随后复用 `scripts/launch_mmw_all_weather_matrix.py` 的 T2 config builder 生成 H0；recipe 缺失、字段不一致或不是 15 domains 时 fail closed。
 
-这样既保留 proposal 指定的真实基线来源，又避免复制 MMW builder。直接复制整份 resolved config 的备选方案被拒绝，因为其中包含运行期 metadata 和旧输出路径，容易把历史状态带入新 run。
+这样既保留可审计基线来源，又避免复制 MMW builder。直接读取 output resolved config 的备选方案被拒绝，因为其中包含运行期 metadata 和本地路径，容易把历史状态带入新 run。
 
-所有 generated configs、inner split artifacts 和 manifest 写入单独的 ignored output root，例如 `outputs/mmw_t2_hyperparameter_screening_v1/`。源码只保留 launcher 与测试，不新增八份 tracked YAML。
+所有 generated configs、inner split artifacts 和 manifest 写入单独的 ignored output root，例如 `outputs/mmw_t2_hyperparameter_screening_v1/`。源码只保留 launcher 与测试，不新增六份 tracked YAML。
 
 ### 2. outer split 不变，validation 从 outer train 侧生成
 
@@ -41,7 +41,7 @@ split preflight 必须证明每个 domain 的 inner train/validation 在 stable 
 
 所有 variants 使用完全相同的 inner split artifacts。配置设置 `training.model_selection.enabled=false`、`training.use_early_stopping=false` 和 `training.validation.interval_epochs=5`。validation 可在 epoch 5、10、15、20、25、30、35、40 及 runtime 必需的首次观测时运行，但不得更新 best checkpoint、scheduler 选择或停止条件；test 只在训练结束后显式评估 epoch-40 `last.pth`。
 
-### 3. 八行矩阵使用具名 matched control 和严格 resolved diff
+### 3. 六行矩阵使用具名 matched control 和严格 resolved diff
 
 矩阵与 override 固定为：
 
@@ -50,11 +50,9 @@ split preflight 必须证明每个 domain 的 inner train/validation 在 stable 
 - `H2-BPA-sharp`：相对 H1 只把 prototype temperature 从 `0.1` 调为 `0.08`、Gaussian sigma 从 `2.0` 调为 `1.5`；
 - `H3-mask-tail`：相对 H0 只把 temporal rate 列表设为 `0.0,0.2,0.4,0.6,0.8,0.8`，drop-count 列表设为 `0,1,2,3,3`，保持 mask types 不变；重复值表示对 `0.8` 和 drop-3 进行预注册重加权；
 - `H4-optimizer`：相对 H0 只使用 AdamW、`weight_decay=3e-4`，并把现有 cosine-warm-restarts scheduler 固定为单个 40-epoch cycle (`T_0=40`, `T_mult=1`, `eta_min=1e-6`)；学习率保持 `5e-4`；
-- `H5-KL+`：相对 H0 只把 confidence-gated superset KL weight 从 `0.2` 调为 `0.5`；
-- `H6-teacher-low`：相对 H0 只把 `lambda_teacher` 从 `0.5` 调为 `0.25`；
-- `H7-teacher-high`：相对 H0 只把 `lambda_teacher` 从 `0.5` 调为 `0.75`。
+- `H5-KL+`：相对 H0 只把 confidence-gated superset KL weight 从 `0.2` 调为 `0.5`。
 
-launcher 必须为每行记录 `matched_control`、允许变化的 canonical field paths、resolved diff 和 effective values。配置中存在 mirrored alias 时必须同步写入并在 resolved diff 中折叠为同一语义字段；出现未登记差异时 fail closed。H2 以 H1 为 matched control，因此 BPA strength 与 sharpness 不会被错误描述为同一单因素差异。
+launcher 必须为每行记录 `matched_control`、允许变化的 canonical field paths、resolved diff 和 effective values。每个语义字段只有一个配置来源，不写入 mirrored alias；出现未登记差异时 fail closed。H2 以 H1 为 matched control，因此 BPA strength 与 sharpness 不会被错误描述为同一单因素差异。
 
 ### 4. probe 只解析共同 batch，不修改训练协议
 
@@ -66,7 +64,7 @@ probe report 记录 GPU identity、CUDA/PyTorch version、candidate、exit statu
 
 ### 5. 固定预算比较与选择规则
 
-八个任务按 H0-H7 映射到 GPU0-7，每卡一个进程，统一 seed `1`、共同 batch、40 epochs、相同 inner validation 和相同 outer test/mask artifacts。只有 `checkpoints/last.pth` 的 metadata 证明 `completed_epoch=40` 且 config/split fingerprint 匹配时，运行才可进入汇总。
+六个任务按 H0-H5 确定性映射到请求 GPU，每卡至多一个进程，统一 seed `1`、共同 batch、40 epochs、相同 inner validation 和相同 outer test/mask artifacts。只有 `checkpoints/last.pth` 的 metadata 证明 `completed_epoch=40` 且 config/split fingerprint 匹配时，运行才可进入汇总。
 
 复用现有 MMW all-weather evaluator，对每行 epoch-40 `last.pth` 计算相同的 Clean、Drop1/2/3、temporal missing AUC 与 temporal Drop80。预注册分数为：
 
@@ -76,24 +74,23 @@ probe report 记录 GPU identity、CUDA/PyTorch version、candidate、exit statu
 
 ### 6. development evidence 与 BPA/CMA formal change 永久隔离
 
-由于 outer test 被用于八行超参数比较，本 change 的全部指标都必须标记 `development_only=true`、`claim_eligible=false` 和 `screening_consumed_test=true`。validation 独立只解决训练期 test 泄漏，不会把筛选结果升级成正式证据。
+由于 outer test 被用于六行超参数比较，本 change 的全部指标都必须标记 `development_only=true`、`claim_eligible=false` 和 `screening_consumed_test=true`。validation 独立只解决训练期 test 泄漏，不会把筛选结果升级成正式证据。
 
 本 change 不修改 `validate-t2-mmw-bpa-cma-ablation` 的六方法定义、15 个待运行任务、固定 configs、batch protocol、checkpoint 或输出目录，也不得用筛选胜者替换其 T2 行或 CMA/BPA 权重。筛选胜者若需进入多 seed 正式比较，必须在本 change 之外先冻结配置，再通过独立 OpenSpec change 或明确扩展的 formal protocol 使用未参与调参的 evaluation evidence；不得复用本轮 test 指标作为论文 claim。
 
 ## Risks / Trade-offs
 
-- [inner validation 减少 development train 样本] -> H0-H7 共享同一 group-safe inner split；只做筛选，不与既有 full-train T2 数值直接比较。
-- [legacy outer test 复用 RSU context] -> 记录跨 outer-test 的 radar/BS-GPS 资源交集；本轮始终为 development-only，若需严格外测必须另行重建跨 CAV 全资源隔离的 outer split。
+- [inner validation 减少 development train 样本] -> H0-H5 共享同一 group-safe inner split；只做筛选，不与既有 full-train T2 数值直接比较。
 - [更大 batch 改变 optimizer step 数] -> batch 是全矩阵统一、预注册的 development hardware protocol；不做学习率缩放，也不写成单因素性能结论。
 - [单 step probe 不能预测长训练碎片化] -> 保留 10% 显存余量，正式 run 独立记录 OOM；失败行不得用更小私有 batch 重跑后混入矩阵。
-- [八行消费 outer test 导致调参偏置] -> 所有结果永久保持 development-only；正式证据必须使用冻结后的新多 seed 协议和未参与选择的 evidence。
-- [mirrored config aliases 产生隐性差异] -> 以 canonical semantic fields 做 allowlist diff，并同时记录原始 resolved paths。
+- [六行消费 outer test 导致调参偏置] -> 所有结果永久保持 development-only；正式证据必须使用冻结后的新多 seed 协议和未参与选择的 evidence。
+- [重复字段产生隐性差异] -> 每个语义字段只保留一个 canonical path，并以该 path 做 allowlist diff。
 
 ## Migration Plan
 
 1. 实现 launcher、inner split 生成、严格 config diff 与纯 dry-run manifest，先用 synthetic fixtures 覆盖 15-domain 和身份审计。
-2. 实现 fresh-process batch probe 和 focused tests；预注册 probe candidates 后再在 GPU0-7 运行。
-3. 生成 ignored configs/splits，完成八个 40-epoch 任务，并验证 epoch-40 `last.pth` 与 fingerprint。
+2. 实现 fresh-process batch probe 和 focused tests；预注册 probe candidates 后再在请求 GPU 上运行。
+3. 生成 ignored configs/splits，完成六个 40-epoch 任务，并验证 epoch-40 `last.pth` 与 fingerprint。
 4. 复用既有 evaluator 生成 development summary，只登记 candidate 或 `no_change`，不更新 claim registry。
 5. 回滚时删除本 change 新增的 launcher/tests 以及 ignored output root；现有 MMW builder、BPA/CMA formal change 和历史 T2 artifacts 不受影响。
 

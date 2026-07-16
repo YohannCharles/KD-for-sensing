@@ -75,7 +75,6 @@ def test_amber_full_attention_mask_blocks_missing_modalities() -> None:
     )
 
     per_step = 9
-    assert not hasattr(model.representation_core, "history_beam_token")
     assert single["amber_full_attention_key_padding_mask"][0, 1].item() is True
     assert single["amber_full_attention_key_padding_mask"][0, 2].item() is True
     assert single["amber_full_attention_key_padding_mask"][0, 0].item() is False
@@ -165,7 +164,6 @@ def test_amber_full_config_metadata_and_architecture_summary() -> None:
     assert cfg["output"]["dir"].startswith("outputs/mmw_all_weather")
     assert metadata["reproduction_scope"] == "amber_full_local"
     assert metadata["representation_core"]["component_role"] == "representation_core"
-    assert metadata["representation_core"]["history_beam_usage"] == "disabled"
     assert metadata["representation_core"]["cma_type"] == "class_query_cross_attention"
     assert metadata["representation_core"]["l2_regularization_source"] == "modality_indicator"
     assert metadata["consumes_missing_modality_metadata"] is True

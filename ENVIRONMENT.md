@@ -16,4 +16,4 @@ conda run -n kd_mm_beam <command>
 
 这些值只用于解释同日的本地验证上下文。真实训练仍需核对 driver、显存、数据布局和 checkpoint；所有输出继续写入 ignored 的 `outputs/`、`logs/` 或 `outputs/cache/`。
 
-源码级验证入口是 `make verify-quick`、`make verify-cli-config`、`make verify-compile` 和 `make verify-full`。CI 的权威定义在 `.github/workflows/verify.yml`；本文不额外声称 coverage、lint、type check 或 GPU training gate 已启用。
+源码级验证入口是 `make verify-quick`、`make verify-cli-config`、`make verify-compile` 和 `make verify-full`。本文不额外声称 coverage、lint、type check 或 GPU training gate 已启用。

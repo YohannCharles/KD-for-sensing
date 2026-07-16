@@ -22,7 +22,7 @@ def write_tensorboard_scalars(
     step: int,
     *,
     objective: str = "beam",
-    tensorboard_cfg: dict | None = None,
+    tensorboard_cfg: dict | None = None,  # noqa: ARG001
 ) -> None:
     if writer is None:
         return
@@ -32,8 +32,6 @@ def write_tensorboard_scalars(
     writer.add_scalar("loss/val", history["val_loss"][-1], step)
     for tag, history_key in objective_tensorboard_scalars(objective):
         add_latest_scalar(writer, tag, history, history_key, step)
-    if legacy_accuracy_tags_enabled(tensorboard_cfg):
-        write_tensorboard_legacy_accuracy_scalars(writer, history, step)
     writer.add_scalar("learning_rate/main", history["learning_rates"][-1], step)
     writer.flush()
 
@@ -70,20 +68,6 @@ def add_startup_scalar(writer, tag: str, value: object, step: int) -> None:
     if numeric is None:
         return
     writer.add_scalar(tag, numeric, step)
-
-
-def write_tensorboard_legacy_accuracy_scalars(writer, history: dict, step: int) -> None:
-    add_latest_scalar(writer, "accuracy/train", history, "train_acc", step)
-    add_latest_scalar(writer, "accuracy/val", history, "val_acc", step)
-    add_latest_scalar(writer, "accuracy/val_atop3", history, "val_atop3", step)
-    add_latest_scalar(writer, "accuracy/val_atop5", history, "val_atop5", step)
-    add_latest_scalar(writer, "dba/val_adba", history, "val_adba", step)
-
-
-def legacy_accuracy_tags_enabled(tensorboard_cfg: dict | None) -> bool:
-    if not isinstance(tensorboard_cfg, dict):
-        return False
-    return bool(tensorboard_cfg.get("legacy_accuracy_tags", False))
 
 
 def add_latest_scalar(writer, tag: str, history: dict, key: str, step: int) -> None:

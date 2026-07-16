@@ -2,7 +2,6 @@
 import argparse
 import csv
 import json
-import math
 import os
 import subprocess
 from copy import deepcopy
@@ -36,7 +35,6 @@ SCENES = (
     "Town03_roundabout_seed42",
 )
 MODALITIES = ("image", "radar", "gps", "lidar")
-SENSITIVE_FIELDS = ("csi", "channel", "mmwave", "beam_power", "path", "radio_labels")
 SPLIT_TAG = "h5p1_strict_v2"
 DEFAULT_OUTPUT_ROOT = "outputs/mmw_all_weather_h5p1_seed1_v2"
 BASELINE_FIDELITY = {
@@ -121,9 +119,7 @@ def _apply_t2_ablation(payload: dict[str, Any], method: str) -> None:
         return
 
     primary = payload.setdefault("model", {}).setdefault("primary", {})
-    training = payload.setdefault("training", {})
-    loss = payload.setdefault("loss", {})
-    u_mask = loss.setdefault("u_mask_beam_jepa", {})
+    u_mask = payload.setdefault("loss", {}).setdefault("u_mask_beam_jepa", {})
 
     cma_enabled = method in {"T2-BPA2CMA", "T2-CLS-CMA"}
     bpa_enabled = method == "T2-Linear"
@@ -132,32 +128,11 @@ def _apply_t2_ablation(payload: dict[str, Any], method: str) -> None:
     primary["head_type"] = "classifier" if classifier else "prototype"
     primary["router_use_prototype_margin"] = not classifier
     payload.setdefault("experiment", {})["ablation_id"] = method
-    training["router_use_prototype_margin"] = not classifier
-    loss["router_use_prototype_margin"] = not classifier
-    loss.setdefault("pcpg_radar_balance", {})["router_use_prototype_margin"] = not classifier
-    if classifier:
-        primary["use_beam_prototype_alignment"] = False
-
-    training.update(
-        {
-            "use_beam_prototype_alignment": bpa_enabled,
-            "beam_proto_align_weight": 0.2 if bpa_enabled else 0.0,
-            "lambda_proto": 0.2 if bpa_enabled else 0.0,
-            "use_modality_prototype_loss": bpa_enabled,
-            "modality_proto_weight": 0.1 if bpa_enabled else 0.0,
-            "lambda_modality_proto": 0.1 if bpa_enabled else 0.0,
-            "lambda_supcon": 0.0,
-            "use_amber_cma_analogue": cma_enabled,
-            "lambda_amber_cma": 0.2 if cma_enabled else 0.0,
-            "amber_cma_temperature": 0.2,
-        }
-    )
     u_mask.update(
         {
             "use_beam_prototype_alignment": bpa_enabled,
             "lambda_proto": 0.2 if bpa_enabled else 0.0,
             "lambda_modality_proto": 0.1 if bpa_enabled else 0.0,
-            "lambda_supcon": 0.0,
             "use_amber_cma_analogue": cma_enabled,
             "lambda_amber_cma": 0.2 if cma_enabled else 0.0,
             "amber_cma_temperature": 0.2,
@@ -166,16 +141,7 @@ def _apply_t2_ablation(payload: dict[str, Any], method: str) -> None:
 
     if method == "T2-Linear":
         # This counterfactual removes only the 0/63 wrap prior from BPA targets.
-        training.update(
-            {
-                "prototype_target_circular": False,
-                "beam_label_circular": True,
-                "use_circular_soft_targets": True,
-                "circular_beam_distance": True,
-            }
-        )
-        u_mask["circular_beam_distance"] = True
-        loss.setdefault("pcpg_radar_balance", {})["circular_beam_distance"] = True
+        u_mask.update({"prototype_target_circular": False, "circular_beam_distance": True})
         payload.setdefault("evaluation", {}).update(
             {
                 "beam_distance_circular": True,
@@ -208,7 +174,6 @@ def domains() -> list[dict[str, str]]:
 def preflight(
     domain_inventory: list[dict[str, str]],
     *,
-    gps_feature_mode: str = "relative_polar",
     enabled_modalities: tuple[str, ...] = MODALITIES,
 ) -> dict[str, Any]:
     selected_modalities = tuple(enabled_modalities)
@@ -221,10 +186,6 @@ def preflight(
     required = {"future_beam1"}
     for modality in selected_modalities:
         required.update(f"{prefix_by_modality[modality]}{index}" for index in range(1, 6))
-    validate_rsu_yaw = gps_feature_mode == "rsu_local_relative_polar"
-    if validate_rsu_yaw:
-        required.update(f"bs_gps{index}" for index in range(1, 6))
-    yaw_cache: dict[Path, float] = {}
     for domain in domain_inventory:
         root = ROOT / domain["data_root"]
         split_root = root / "Prepared" / domain["scene"] / "splits" / SPLIT_TAG
@@ -242,13 +203,7 @@ def preflight(
             failures.append(f"{domain['id']}: strict split metadata failed")
         for role, key in (("train", "train_csv_name"), ("validation", "val_csv_name")):
             csv_path = root / domain[key]
-            split_report = _inspect_csv(
-                csv_path,
-                root,
-                required,
-                validate_rsu_yaw=validate_rsu_yaw,
-                yaw_cache=yaw_cache,
-            )
+            split_report = _inspect_csv(csv_path, root, required)
             domain_report["splits"][role] = split_report
             failures.extend(f"{domain['id']}/{role}: {item}" for item in split_report["failures"])
         reports.append(domain_report)
@@ -256,42 +211,18 @@ def preflight(
         "status": "ready" if not failures and len(reports) == 15 else "blocked",
         "domain_count": len(reports),
         "enabled_modalities": list(selected_modalities),
-        "excluded_sensitive_fields": list(SENSITIVE_FIELDS),
         "split_tag": SPLIT_TAG,
-        "gps_feature_mode": gps_feature_mode,
-        "gps_angle_frame": "rsu_local" if validate_rsu_yaw else "world",
-        "gps_yaw_source": "bs_yaml:sensors.rsu_pose.rotation.yaw" if validate_rsu_yaw else None,
-        "gps_yaw_validation_policy": "finite_static_window_fail_closed" if validate_rsu_yaw else "not_applicable",
-        "gps_yaw_validation": _yaw_preflight_status(reports) if validate_rsu_yaw else "not_applicable",
-        "gps_yaw_validated_window_count": sum(
-            int(split.get("rsu_yaw_validated_window_count", 0))
-            for domain in reports
-            for split in domain["splits"].values()
-        ),
-        "gps_yaw_validated_frame_count": sum(
-            int(split.get("rsu_yaw_validated_frame_count", 0))
-            for domain in reports
-            for split in domain["splits"].values()
-        ),
+        "gps_feature_mode": "relative_polar",
+        "gps_angle_frame": "world",
         "domains": reports,
         "failures": failures,
     }
-
-
-def _yaw_preflight_status(reports: list[dict[str, Any]]) -> str:
-    splits = [split for domain in reports for split in domain["splits"].values()]
-    expected_windows = sum(int(split.get("sample_count", 0)) for split in splits)
-    validated_windows = sum(int(split.get("rsu_yaw_validated_window_count", 0)) for split in splits)
-    return "validated" if expected_windows > 0 and validated_windows == expected_windows else "failed"
 
 
 def _inspect_csv(
     path: Path,
     root: Path,
     required: set[str],
-    *,
-    validate_rsu_yaw: bool = False,
-    yaw_cache: dict[Path, float] | None = None,
 ) -> dict[str, Any]:
     failures = []
     if not path.exists():
@@ -304,110 +235,23 @@ def _inspect_csv(
             failures.append(f"missing columns: {','.join(missing_columns)}")
         sample_count = 0
         missing_paths = []
-        yaw_failures = []
-        yaw_values = set()
-        yaw_validated_window_count = 0
-        cache = yaw_cache if yaw_cache is not None else {}
         path_columns = sorted(required - {"future_beam1"}) + ["future_beam1"]
         for row in reader:
             sample_count += 1
             for column in path_columns:
-                if validate_rsu_yaw and column.startswith("bs_gps"):
-                    continue
                 value = str(row.get(column, "")).strip()
                 if value and value != "-99" and not (root / value).exists() and len(missing_paths) < 20:
                     missing_paths.append(f"{column}:{value}")
-            if validate_rsu_yaw:
-                row_yaws = []
-                for index in range(1, 6):
-                    column = f"bs_gps{index}"
-                    rel_path = str(row.get(column, "")).strip()
-                    if not rel_path:
-                        if len(yaw_failures) < 20:
-                            yaw_failures.append(
-                                f"row {reader.line_num} column {column} path '<empty>': reference is empty"
-                            )
-                        continue
-                    if rel_path == "-99":
-                        if len(yaw_failures) < 20:
-                            yaw_failures.append(
-                                f"row {reader.line_num} column {column} path '-99': missing-value sentinel is not allowed"
-                            )
-                        continue
-                    yaml_path = root / rel_path
-                    if not yaml_path.exists():
-                        if len(yaw_failures) < 20:
-                            yaw_failures.append(
-                                f"row {reader.line_num} column {column} path '{yaml_path}': file does not exist"
-                            )
-                        continue
-                    if yaml_path.suffix.lower() not in {".yaml", ".yml"}:
-                        if len(yaw_failures) < 20:
-                            yaw_failures.append(
-                                f"row {reader.line_num} column {column} path '{yaml_path}': expected a YAML file"
-                            )
-                        continue
-                    try:
-                        yaw = _read_rsu_yaw_degrees(yaml_path, cache)
-                    except ValueError as exc:
-                        if len(yaw_failures) < 20:
-                            yaw_failures.append(
-                                f"row {reader.line_num} column {column} path '{yaml_path}': {exc}"
-                            )
-                        continue
-                    row_yaws.append((column, yaml_path, yaw))
-                if len(row_yaws) == 5:
-                    yaw_values.update(yaw for _, _, yaw in row_yaws)
-                    reference_yaw = row_yaws[0][2]
-                    inconsistent = any(
-                        abs((yaw - reference_yaw + 180.0) % 360.0 - 180.0) > 1e-6
-                        for _, _, yaw in row_yaws
-                    )
-                else:
-                    inconsistent = False
-                if inconsistent:
-                    if len(yaw_failures) < 20:
-                        details = ", ".join(
-                            f"column {column} path '{yaml_path}' yaw={yaw}"
-                            for column, yaml_path, yaw in row_yaws
-                        )
-                        yaw_failures.append(
-                            f"row {reader.line_num} window has inconsistent RSU yaw values: {details}"
-                        )
-                elif len(row_yaws) == 5:
-                    yaw_validated_window_count += 1
         if sample_count == 0:
             failures.append("empty CSV")
         if missing_paths:
             failures.append(f"missing artifacts: {missing_paths[:4]}")
-        if yaw_failures:
-            failures.append(f"invalid RSU yaw: {yaw_failures[:4]}")
     return {
         "path": str(path.relative_to(ROOT)),
         "sample_count": sample_count,
         "columns": sorted(fields),
-        "rsu_yaw_degrees": sorted(float(value) for value in yaw_values),
-        "rsu_yaw_validated_window_count": yaw_validated_window_count,
-        "rsu_yaw_validated_frame_count": yaw_validated_window_count * 5,
         "failures": failures,
     }
-
-
-def _read_rsu_yaw_degrees(path: Path, cache: dict[Path, float]) -> float:
-    if path in cache:
-        return cache[path]
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception as exc:
-        raise ValueError(f"{path}: failed to parse BS YAML: {exc}") from exc
-    try:
-        yaw = float(payload["sensors"]["rsu_pose"]["rotation"]["yaw"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"{path}: missing or non-numeric sensors.rsu_pose.rotation.yaw") from exc
-    if not math.isfinite(yaw):
-        raise ValueError(f"{path}: non-finite sensors.rsu_pose.rotation.yaw={yaw!r}")
-    cache[path] = yaw
-    return yaw
 
 
 def build_config(
@@ -418,7 +262,6 @@ def build_config(
     smoke: bool,
     epochs: int,
     batch_size: int,
-    gps_feature_mode: str = "relative_polar",
 ) -> dict[str, Any]:
     selected_modalities = MODALITIES
     base_path = ROOT / METHOD_BASES[method]
@@ -437,26 +280,12 @@ def build_config(
             "seq_len": 5,
             "num_pred": 1,
             "portion": 0.002 if smoke else 1.0,
-            "use_csi": False,
-            "use_mmwave": False,
             "use_gps": "gps" in selected_modalities,
             "use_lidar": "lidar" in selected_modalities,
-            "gps_feature_mode": gps_feature_mode,
+            "gps_feature_mode": "relative_polar",
             "gps_normalize": True,
-            "sample_cache": {"enabled": False},
-            "input_profiles": {name: profile for name, profile in {
-                "image": "rgb_imagenet",
-                "radar": "ra_da_maps",
-                "gps": (
-                    "rsu_local_relative_polar_history"
-                    if gps_feature_mode == "rsu_local_relative_polar"
-                    else "relative_polar_history"
-                ),
-                "lidar": "bev_projection",
-            }.items() if name in selected_modalities},
         }
     )
-    payload["data"]["cache"] = {"policy": "read_only"}
     payload["data"]["domain_balanced_sampling"] = {
         "enabled": True,
         "seed": int(seed),
@@ -498,10 +327,8 @@ def build_config(
             "max_epochs": epochs,
             "lr": 5.0e-4,
             "weight_decay": 1.0e-4,
-            "use_early_stopping": False,
             "resume": False,
             "amp": {"enabled": True, "dtype": "float16", "grad_scaler": True},
-            "epoch_subsampling": {"enabled": False},
             "validation": {"interval_epochs": 1 if smoke else epochs},
             "allow_tf32": True,
             "cudnn_benchmark": True,
@@ -513,10 +340,6 @@ def build_config(
         raise ValueError(f"Base config for {method} must define temporal_missing.")
     payload["temporal_missing"] = deepcopy(temporal)
     payload["temporal_missing"]["seed"] = int(seed)
-    if isinstance(payload.get("final_c2_ablation_v1"), dict):
-        payload["final_c2_ablation_v1"]["seed"] = int(seed)
-    payload["difficulty"] = {"enabled": False, "profiles": []}
-    payload["random_modality_dropout"] = {"enabled": False}
     _apply_t2_ablation(payload, method)
     patterns = [
         "full", "missing_image", "missing_radar", "missing_gps", "missing_lidar",
@@ -537,7 +360,6 @@ def build_config(
         "progress": {"enabled": False},
         "tensorboard": {"enabled": False},
     }
-    payload.setdefault("checkpoint", {}).setdefault("registry", {})["enabled"] = False
     payload["mmw_all_weather_protocol"] = {
         "split_tag": SPLIT_TAG,
         "screening_role": "local_validation",
@@ -545,14 +367,8 @@ def build_config(
         "domain_macro_primary": True,
         "weather_label_used_as_input": False,
         "enabled_modalities": list(selected_modalities),
-        "excluded_sensitive_fields": list(SENSITIVE_FIELDS),
-        "gps_feature_mode": gps_feature_mode,
-        "gps_angle_frame": "rsu_local" if gps_feature_mode == "rsu_local_relative_polar" else "world",
-        "gps_yaw_source": (
-            "bs_yaml:sensors.rsu_pose.rotation.yaw"
-            if gps_feature_mode == "rsu_local_relative_polar"
-            else None
-        ),
+        "gps_feature_mode": "relative_polar",
+        "gps_angle_frame": "world",
         "baseline_fidelity": deepcopy(BASELINE_FIDELITY.get(method, {"reproduction_scope": "project_mainline"})),
         "seed": int(seed),
     }
@@ -632,11 +448,6 @@ def main() -> int:
     parser.add_argument("--methods", default=",".join(METHODS))
     parser.add_argument("--seeds", default="1")
     parser.add_argument("--gpus", default=None)
-    parser.add_argument(
-        "--gps-feature-mode",
-        choices=("relative_polar", "rsu_local_relative_polar"),
-        default="relative_polar",
-    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -650,16 +461,9 @@ def main() -> int:
         selected_gpus = None if args.gpus is None else tuple(int(item) for item in _csv(args.gpus))
     except ValueError as exc:
         parser.error(str(exc))
-    preflight_modalities = MODALITIES
-    if args.gps_feature_mode == "rsu_local_relative_polar" and args.output_root == DEFAULT_OUTPUT_ROOT:
-        args.output_root = "outputs/mmw_all_weather_h5p1_rsu_local_gps_seed1"
     output_root = ROOT / args.output_root
     output_root.mkdir(parents=True, exist_ok=True)
-    report = preflight(
-        domains(),
-        gps_feature_mode=args.gps_feature_mode,
-        enabled_modalities=preflight_modalities,
-    )
+    report = preflight(domains())
     (output_root / "preflight.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if report["status"] != "ready":
         print(json.dumps(report, indent=2))
@@ -691,17 +495,7 @@ def main() -> int:
             smoke=args.smoke,
             epochs=epochs,
             batch_size=args.batch_size,
-            gps_feature_mode=args.gps_feature_mode,
         )
-        config_payload["mmw_all_weather_protocol"]["gps_yaw_preflight"] = {
-            key: report[key]
-            for key in (
-                "gps_yaw_validation_policy",
-                "gps_yaw_validation",
-                "gps_yaw_validated_window_count",
-                "gps_yaw_validated_frame_count",
-            )
-        }
         job["config_path"].write_text(
             yaml.safe_dump(
                 config_payload,

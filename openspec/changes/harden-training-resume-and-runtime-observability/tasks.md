@@ -2,14 +2,14 @@
 
 - [x] 1.1 记录 `git status --short`、`openspec list --json`、本 change 的 apply instructions 和当前 focused baseline；运行 `conda run -n kd_mm_beam pytest tests/test_training_io_workflow.py tests/test_training_io_run_metadata.py tests/test_training_io_dataset_workflow.py tests/test_checkpoint_security.py -q`，只记录既有失败且不改动本地产物。
 - [ ] 1.2 为 A01（`resume=true` 缺 `last.pth`）、A02（resume role 缺 optimizer/scheduler/epoch）、A03（完整 runtime state）和 A04（预检/fingerprint/allowlist）增加 fail-first synthetic/fixture characterization tests。
-- [ ] 1.3 为 A05（跨 run/零剩余 epoch）、A06（best checkpoint 非原子）、A07（sidecar 无 digest）、A08（逐文件 selection provenance）、A09（`test_loss` alias）、A10（final test metrics 覆盖）和 A11（自定义 selection 未实际加载）增加临时目录 artifact tests。
+- [ ] 1.3 为 A05（跨 run/零剩余 epoch）、A06（best checkpoint 非原子）、A07（sidecar 无 digest）、A08（逐文件 selection provenance）、A09（过时 `test_loss` 字段拒绝）、A10（final test metrics 覆盖）和 A11（自定义 selection 未实际加载）增加临时目录 artifact tests。
 - [ ] 1.4 为 A12（逐标量设备同步）、A13（validation worker 每轮关闭）、A14（默认 timing 与共享同步写）、A15（训练指标 batch 等权）、A16（跳过 validation 复制旧值）和 A17（synthetic 共享 generator）增加无真实数据的 focused tests。
 
 ## 2. Resume 预检与不可变契约
 
 - [ ] 2.1 实现 A01 的只读 resume path preflight：在创建/覆盖 status、resolved/final config、normalization、model 或 optimizer 前解析同 run `last.pth`/显式路径，缺失时包含路径报错且不得返回 fresh-training sentinel。
 - [ ] 2.2 实现 A02 的版本化 resume role validator：`optimizer`、`scheduler`、`epoch` 必须存在，scheduler 启用状态必须兼容，错误包含 role/path/字段，`training.start_epoch` 不得补 resume 缺失 epoch。
-- [ ] 2.3 实现 A04 的 `ResumePlan` 或等价结构，区分 source/target run、current/legacy schema、next epoch 和 cross-run，并调整 training phases，确保兼容性闸门通过前没有目标 run 的可变 artifact 写出。
+- [ ] 2.3 实现 A04 的 `ResumePlan` 或等价结构，区分 source/target run、current schema、next epoch 和 cross-run，并调整 training phases，确保校验通过前没有目标 run 的可变 artifact 写出。
 - [ ] 2.4 实现 A04 的 canonical config/split/normalization SHA-256 fingerprint、结构化 diff 和封闭 allowlist；只允许合法增加总 epoch、目标 output identity 和 progress/TensorBoard/log/timing 等运行控制差异，拒绝用户自定义宽松通配。
 - [ ] 2.5 调整 normalization/split 恢复顺序：resume 必须先验证并复用源训练 artifact，不得先从当前 train/validation/test 重拟合或覆盖；增加 artifact 缺失、摘要不符、sample identity 和 feature/domain policy 漂移测试。
 
@@ -20,7 +20,7 @@
 - [ ] 3.3 实现 A03 的 GradScaler、TrainingState history/epoch logs、early-stopping/selection state 序列化与恢复；关闭 AMP 时也写明确 disabled state。
 - [ ] 3.4 为所有 current training extension 增加稳定 id、state schema 和 `state_dict`/`load_state_dict` 或显式 stateless 声明；current exact resume 遇到缺失/未知 extension state 必须失败。
 - [ ] 3.5 将 epoch checkpoint 快照移动到 epoch log、extension hook 和 scheduler 状态完成之后，保证同一 epoch 的 last/best 文件使用一致 runtime state。
-- [ ] 3.6 使用 `conda run -n kd_mm_beam pytest` 增加并运行连续 N epoch 与 K+resume 到 N 的 deterministic fixture 等价测试，比较下一 batch 顺序、模型/optimizer/scheduler/scaler/extension、history、epoch logs 和 selection provenance；legacy case 只标记 best-effort。
+- [ ] 3.6 使用 `conda run -n kd_mm_beam pytest` 增加并运行连续 N epoch 与 K+resume 到 N 的 deterministic fixture 等价测试，比较下一 batch 顺序、模型/optimizer/scheduler/scaler/extension、history、epoch logs 和 selection provenance；非 current schema case 必须拒绝。
 
 ## 4. Checkpoint 原子性、摘要与 schema
 
@@ -28,7 +28,7 @@
 - [ ] 4.2 为 A06 增加序列化、replace 和 registry copy 故障注入测试，证明异常不会留下可选择的半文件、不会损坏既有 checkpoint/sidecar，且临时文件被清理或明确不可选。
 - [ ] 4.3 实现 A07 的 SHA-256/size sidecar 完成标记与 reader 验证；current checkpoint 缺 sidecar、sidecar 未完成或摘要不符时，resume/registry/final test 全部 fail-closed。
 - [ ] 4.4 实现 A08 的逐文件 `checkpoint_role`/selection provenance 和 selection catalog；分别验证 objective-best、Top-1-best、自定义 best、last 的 metric/mode/value/epoch/source/final-candidate 不互相冒充。
-- [ ] 4.5 实现 A09 的 current checkpoint schema：只写真实 `validation_loss`，删除新 payload 的 `test_loss`；把旧 alias 读取收敛到独立 legacy migration helper，并记录版本、warning 与 `trajectory_equivalence: false`。
+- [ ] 4.5 实现 A09 的 current checkpoint schema：只写真实 `validation_loss`，删除新 payload 的 `test_loss`；包含旧 alias 或缺少 current schema 的 payload 必须被 resume reader 拒绝。
 
 ## 5. 实际选模与最终测试产物
 
@@ -51,7 +51,7 @@
 ## 7. 回归与收口
 
 - [ ] 7.1 运行 `conda run -n kd_mm_beam pytest tests/test_training_io_workflow.py tests/test_training_io_run_metadata.py tests/test_training_io_dataset_workflow.py tests/test_training_io_label_workflow.py tests/test_training_io_cache_workflow.py tests/test_checkpoint_security.py tests/test_evaluation_pass.py -q`，确认 A01-A17 focused regression 全部通过。
-- [ ] 7.2 运行 `make verify-quick`、`make verify-cli-config` 和 `make verify-compile`，确认训练 phase、配置 characterization、十个 retained CLI 与导入边界未回归。
+- [ ] 7.2 运行 `make verify-quick`、`make verify-cli-config` 和 `make verify-compile`，确认训练 phase、配置 characterization、三个 retained CLI 与导入边界未回归。
 - [ ] 7.3 运行 `openspec validate harden-training-resume-and-runtime-observability --strict` 和 `openspec validate --all --strict`，修正所有 artifact/spec 一致性问题。
 - [ ] 7.4 运行 `make verify-full` 和 `conda run -n kd_mm_beam pytest -q` 完成最终回归；不得启动真实训练、读取真实 `dataset/` 或生成需提交的 checkpoint。
 - [ ] 7.5 审计 `git status --short` 与 tracked 文件，确认没有纳入 `dataset/`、`outputs/`、`logs/`、cache、checkpoint、TensorBoard 或临时验证产物，并更新本清单实际完成状态。

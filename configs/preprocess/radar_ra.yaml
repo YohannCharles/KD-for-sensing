@@ -1,9 +1,0 @@
-preprocessing:
-  type: radar_fft_csv
-  csv_path: dataset/DeepSense6G/scenario31/scenario31.csv
-  data_root: dataset/DeepSense6G/scenario31
-  output_suffix: RA
-  test_mode: false
-  test_portion: 0.1
-  fft_tuple: [64, 256, 128]
-
