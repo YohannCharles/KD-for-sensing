@@ -30,11 +30,16 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     if len(fft) < 3 or int(fft[0]) != 64 or int(fft[2]) != 128 or int(data.get("clipped_range", 0)) != 128:
         raise ValueError("Retained radar inputs require fft_tuple [64, *, 128] and clipped_range=128.")
     if dataset_type == "deepsense6g":
-        scene = data.get("scene")
-        if type(scene) is not int or scene not in DEEPSENSE6G_SCENES:
-            raise ValueError(f"DeepSense6G scene must be one of {sorted(DEEPSENSE6G_SCENES)}, got {scene!r}.")
-        if data.get("domains"):
-            raise ValueError("DeepSense6G does not support data.dataset.domains.")
+        domains = data.get("domains")
+        if domains:
+            if not isinstance(domains, list) or {
+                item.get("scene") for item in domains if isinstance(item, dict)
+            } != DEEPSENSE6G_SCENES or len(domains) != len(DEEPSENSE6G_SCENES):
+                raise ValueError(f"Pooled DeepSense6G domains must contain exactly scenes {sorted(DEEPSENSE6G_SCENES)}.")
+        else:
+            scene = data.get("scene")
+            if type(scene) is not int or scene not in DEEPSENSE6G_SCENES:
+                raise ValueError(f"DeepSense6G scene must be one of {sorted(DEEPSENSE6G_SCENES)}, got {scene!r}.")
         if data.get("gps_normalize") is not True:
             raise ValueError("DeepSense6G requires train-fitted GPS normalization.")
         if int(data.get("num_pred", 0)) > 3:

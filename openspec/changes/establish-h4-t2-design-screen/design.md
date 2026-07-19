@@ -22,13 +22,13 @@
 
 ## Decisions
 
-### 1. H4 采用 canonical profile + legacy selector
+### 1. H4 采用 canonical training profile + router architecture selector
 
-`t2.yaml` 保持作为 tracked architecture/base recipe，避免其继承关系污染 S1、legacy H0 screening 和未完成的 BPA/CMA ablation。`launch_mmw_all_weather_matrix.py` 新增 profile selector：新的 T2/S1 mainline launcher 显式选择 `umask_h4_v1`，`legacy_h0_v1` 仅用于既有 H0 screening 与 BPA/CMA ablation。profile 只允许 U-Mask methods；AMBER-Full/RMBP-MM 始终保留自身 recipe。
+`t2.yaml` 保持作为 tracked architecture/base recipe，避免其继承关系污染 S1、legacy H0 screening 和未完成的 BPA/CMA ablation。`launch_mmw_all_weather_matrix.py` 新增两个独立 selector：新的 T2/S1 mainline launcher 显式选择 `umask_h4_v1` 和 `umask_router_nopattern_v1`；`legacy_h0_v1` 与 `umask_router_pattern_v1` 仅用于既有 H0 screening 与 BPA/CMA ablation。profile 只允许 U-Mask methods；AMBER-Full/RMBP-MM 始终保留自身 recipe。
 
-builder 的顺序为：加载 tracked recipe、选择并物化 profile、覆盖 seed/batch/epoch/output 等运行维度、应用预注册 ablation 或设计候选。它不得在 profile 之后静默重设 optimizer、weight decay 或 scheduler。每个生成配置和 `mmw_all_weather_protocol` 记录 profile id、canonical values 和 SHA256 指纹；profile 不一致的结果不得汇总。
+builder 的顺序为：加载 tracked recipe、选择并物化 training profile 与 router architecture profile、覆盖 seed/batch/epoch/output 等运行维度、应用预注册 ablation 或设计候选。它不得在 profile 之后静默重设 optimizer、weight decay、scheduler 或 router pattern setting。每个生成配置和 `mmw_all_weather_protocol` 记录两个 profile 的 id、canonical values 和 SHA256 指纹；任一 profile 不一致的结果不得汇总。
 
-将 H4 直接写入 `t2.yaml` 被拒绝，因为 S1、legacy H0 screening 和 active BPA/CMA config regeneration 都从它派生。直接改 `_base.yaml` 被拒绝，因为会污染 AMBER/RMBP；不提供 H0 selector 被拒绝，因为会改写 active ablation 的对照。package CLI 若需主线 H4，必须使用 generated H4 config 或新的 explicit profile launcher，而不是猜测 YAML 继承。
+将 H4 或 RouterNoPattern 直接写入 `t2.yaml` 被拒绝，因为 S1、legacy H0 screening 和 active BPA/CMA config regeneration 都从它派生。直接改 `_base.yaml` 被拒绝，因为会污染 AMBER/RMBP；不提供 H0/pattern-on selector 被拒绝，因为会改写 active ablation 的对照。RouterNoPattern 作为 T2/S1 共用 mainline profile，而非仅作用于 T2，避免最终 T2-vs-S1 比较同时混入 router pattern 差异和 T2 objective 差异。package CLI 若需主线 H4/RouterNoPattern，必须使用 generated config 或新的 explicit profile launcher，而不是猜测 YAML 继承。
 
 ### 2. 设计筛选使用固定 inner validation 与 8-GPU 分波
 
@@ -72,7 +72,7 @@ CMA 继续是 pooled-feature objective analogue，且配置层面保持与 BPA �
 2. 实现设计-screen launcher 与第一波 config-only variants，完成 config dry-run、single-step smoke 和 GPU0--7 common-batch probe。
 3. 启动第一波 seed1 训练；只使用 inner validation 决定晋级。
 4. 实现并测试 minimal fusion/pooling branches，再启动结构波与 BPA 单因素波；CMA/loss 波在 active BPA/CMA change 收口后运行。
-5. 对晋级项补 seed2/3，并在未消费的独立 outer evidence 上确认；失败时保留 H4 control 并删除仅本 change 新增的筛选入口即可回滚。
+5. 对晋级项补 seed2/3，并在未消费的独立 outer evidence 上确认；RouterNoPattern 在此之前仅是开发主线。失败时回退到 `umask_router_pattern_v1`，并删除仅本 change 新增的筛选入口即可回滚。
 
 ## Open Questions
 

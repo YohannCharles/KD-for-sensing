@@ -7,3 +7,4 @@ tracked MMW T2/S1 base recipe 与 tracked mainline launcher MUST 在没有 outpu
 - **WHEN** 用户从 tracked mainline launcher 请求 `umask_h4_v1`
 - **THEN** generated config MUST 解析为完整 H4 optimizer/scheduler fields
 - **AND** 不得读取本地训练产物以确定 profile
+- **AND** T2/S1 mainline generated config MUST 通过显式 `umask_router_nopattern_v1` router profile 设置 `router_use_pattern_features=false`，而不改写 shared base recipe

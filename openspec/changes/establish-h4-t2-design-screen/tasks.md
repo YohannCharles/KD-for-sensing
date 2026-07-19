@@ -25,8 +25,9 @@
 
 - [x] 4.1 使用 `conda run -n kd_mm_beam` 完成 H4/legacy config dry-run、8 个候选单 optimizer-step smoke 和相关 OpenSpec 校验。
 - [x] 4.2 在 GPU0--7 上完成实际 step batch probe，冻结所有成功卡共用的 16 倍数 batch 和 probe manifest。
-- [ ] 4.3 在 GPU0--7 并行启动第一波八个 seed1、40-epoch H4 design-screen 训练，并记录每个 run 的 profile、candidate、GPU、inner split 与完成状态。此前 `outputs/mmw_t2_design_screening_v1` 使用补丁前 YAML 并消费了 outer test，仅保留为失效审计产物；有效首波必须使用显式 `training.final_test.enabled=false` 的新 output root。
+- [x] 4.3 在 GPU0--7 并行启动第一波八个 seed1、40-epoch H4 design-screen 训练，并记录每个 run 的 profile、candidate、GPU、inner split 与完成状态。此前 `outputs/mmw_t2_design_screening_v1` 使用补丁前 YAML 并消费了 outer test，仅保留为失效审计产物；有效首波已在 `outputs/mmw_t2_design_capacity_v3` 使用显式 `training.final_test.enabled=false` 完成。
 - [ ] 4.4 训练完成后仅按 inner validation 的预注册保护门槛筛选最多两个候选；不消费 outer test。
+- [x] 4.5 将 RouterNoPattern 固化为 T2/S1 共用的开发 mainline router architecture profile，保持 tracked base、legacy H0 与 BPA/CMA ablation 的 pattern-on 配置不变，并使其 checkpoint/evaluation/summary provenance fail closed。
 
 ## 5. 后续波与收尾
 

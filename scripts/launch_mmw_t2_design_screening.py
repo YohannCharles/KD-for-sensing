@@ -76,7 +76,10 @@ VARIANT_PROTOCOL: dict[str, dict[str, Any]] = {
     ),
     "RouterNoPattern": _protocol(
         matched_control=CONTROL,
-        allowed_fields=["model.primary.router_use_pattern_features"],
+        allowed_fields=[
+            "model.primary.router_use_pattern_features",
+            "mmw_all_weather_protocol.router_architecture_profile",
+        ],
         wave="capacity",
     ),
     "GPSH32": _protocol(
@@ -271,6 +274,9 @@ def build_design_config(
         epochs=int(epochs),
         batch_size=int(batch_size),
         umask_training_profile=H4_PROFILE,
+        umask_router_architecture_profile=(
+            "umask_router_nopattern_v1" if candidate == "RouterNoPattern" else "umask_router_pattern_v1"
+        ),
     )
     if domain_inventory is not None:
         payload.setdefault("data", {}).setdefault("dataset", {})["domains"] = deepcopy(domain_inventory)

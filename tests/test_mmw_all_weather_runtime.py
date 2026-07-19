@@ -8,6 +8,8 @@ import torch
 from torch.utils.data import ConcatDataset, TensorDataset, WeightedRandomSampler
 
 from kd_sensing.engine.data_factory import build_domain_balanced_sampler
+from kd_sensing.engine.model_output import ModelOutput
+from kd_sensing.engine.runtime import TaskForwardResult
 from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
 
 
@@ -24,10 +26,10 @@ def _load_script(name: str, monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_all_weather_launcher_uses_the_four_tracked_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_all_weather_launcher_uses_the_six_tracked_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
     launcher = _load_script("launch_mmw_all_weather_matrix.py", monkeypatch)
 
-    assert launcher.METHODS == ("S1", "T2", "amber_full", "rmbp_mm")
+    assert launcher.METHODS == ("S1", "T2", "masktrain_cls", "amber_full", "rmbp_mm", "amr_net_4m")
     assert all(path.startswith("configs/mmw/") for path in launcher.METHOD_BASES.values())
     cfg = launcher.build_config(
         "T2",
@@ -49,6 +51,26 @@ def test_all_weather_launcher_uses_the_four_tracked_recipes(monkeypatch: pytest.
     assert profile["id"] == "umask_h4_v1"
     assert profile["canonical_values"] == launcher.UMASK_TRAINING_PROFILES["umask_h4_v1"]
     assert profile["sha256"] == launcher._profile_sha256(profile["id"], profile["canonical_values"])
+    router_profile = cfg["mmw_all_weather_protocol"]["router_architecture_profile"]
+    assert router_profile["id"] == "umask_router_nopattern_v1"
+    assert cfg["model"]["primary"]["router_use_pattern_features"] is False
+    assert router_profile["canonical_values"] == launcher.UMASK_ROUTER_ARCHITECTURE_PROFILES["umask_router_nopattern_v1"]
+
+
+def test_evaluator_registers_router_utility_seed1_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluator = _load_script("eval_mmw_all_weather_matrix.py", monkeypatch)
+
+    assert evaluator.ROUTER_UTILITY_METHODS == (
+        "CurrentControl",
+        "ExpectedMainT01",
+        "PairUngated",
+        "PairEntropy120",
+        "PairEntropy130",
+        "MonoW002",
+        "MonoW005",
+        "MonoW010",
+    )
+    assert set(evaluator.ROUTER_UTILITY_METHODS) <= set(evaluator.SUPPORTED_METHODS)
 
 
 def test_umask_profiles_are_explicit_and_do_not_change_baselines(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,6 +81,10 @@ def test_umask_profiles_are_explicit_and_do_not_change_baselines(monkeypatch: py
     assert launcher.default_umask_training_profile("S1") == "umask_h4_v1"
     assert launcher.default_umask_training_profile("T2-NoBPA") == "legacy_h0_v1"
     assert launcher.default_umask_training_profile("amber_full") is None
+    assert launcher.default_umask_router_architecture_profile("T2") == "umask_router_nopattern_v1"
+    assert launcher.default_umask_router_architecture_profile("S1") == "umask_router_nopattern_v1"
+    assert launcher.default_umask_router_architecture_profile("T2-NoBPA") == "umask_router_pattern_v1"
+    assert launcher.default_umask_router_architecture_profile("amber_full") is None
 
     s1 = launcher.build_config("S1", Path("outputs/profile"), umask_training_profile="umask_h4_v1", **kwargs)
     ablation = launcher.build_config(
@@ -70,12 +96,17 @@ def test_umask_profiles_are_explicit_and_do_not_change_baselines(monkeypatch: py
     amber = launcher.build_config("amber_full", Path("outputs/profile"), umask_training_profile=None, **kwargs)
 
     assert s1["mmw_all_weather_protocol"]["training_profile"]["id"] == "umask_h4_v1"
+    assert s1["mmw_all_weather_protocol"]["router_architecture_profile"]["id"] == "umask_router_nopattern_v1"
+    assert s1["model"]["primary"]["router_use_pattern_features"] is False
     assert s1["training"]["optimizer"] == {"type": "adamw"}
     assert ablation["mmw_all_weather_protocol"]["training_profile"]["id"] == "legacy_h0_v1"
+    assert ablation["mmw_all_weather_protocol"]["router_architecture_profile"]["id"] == "umask_router_pattern_v1"
+    assert ablation["model"]["primary"]["router_use_pattern_features"] is True
     assert ablation["training"]["optimizer"] == {"type": "adam"}
     assert ablation["training"]["weight_decay"] == 1.0e-4
     assert ablation["scheduler"] == {"type": "none"}
     assert "training_profile" not in amber["mmw_all_weather_protocol"]
+    assert "router_architecture_profile" not in amber["mmw_all_weather_protocol"]
     assert amber["training"].get("optimizer", {"type": "adam"}) == {"type": "adam"}
     assert amber["training"]["weight_decay"] == 1.0e-4
     assert amber["scheduler"] == {"type": "none"}
@@ -86,6 +117,14 @@ def test_umask_profiles_are_explicit_and_do_not_change_baselines(monkeypatch: py
         launcher.build_config("amber_full", Path("outputs/profile"), umask_training_profile="umask_h4_v1", **kwargs)
     with pytest.raises(ValueError, match="must use the legacy_h0_v1"):
         launcher.build_config("T2-NoBPA", Path("outputs/profile"), umask_training_profile="umask_h4_v1", **kwargs)
+    with pytest.raises(ValueError, match="must use the umask_router_pattern_v1"):
+        launcher.build_config(
+            "T2-NoBPA",
+            Path("outputs/profile"),
+            umask_training_profile="legacy_h0_v1",
+            umask_router_architecture_profile="umask_router_nopattern_v1",
+            **kwargs,
+        )
     with pytest.raises(ValueError, match="fixed to a 40-epoch budget"):
         launcher.build_config("T2", Path("outputs/profile"), epochs=39, batch_size=32, smoke=False, umask_training_profile="umask_h4_v1")
 
@@ -134,6 +173,60 @@ def test_temporal_matrix_cache_has_unique_masks_for_each_retained_rate(tmp_path:
             selected = [item for item in masks if item["mask_type"] == mask_type]
             digests = {evaluator._matrix_digest(item["modality_temporal_mask"]) for item in selected}
             assert selected and len(selected) == len(digests)
+
+
+def test_fixed_mask_evaluator_derives_labels_from_current_task_forward_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluator = _load_script("eval_mmw_all_weather_matrix.py", monkeypatch)
+    raw_batch = {
+        "target_beam": torch.tensor([[7, 1], [3, 2]], dtype=torch.long),
+        "modality_mask": torch.ones((2, 2, 4), dtype=torch.bool),
+    }
+
+    class _Loader:
+        dataset = [object(), object()]
+
+        def __iter__(self):
+            return iter([raw_batch])
+
+    class _Model:
+        modalities = ("image", "radar", "gps", "lidar")
+
+    captured_targets: list[torch.Tensor] = []
+    monkeypatch.setattr(evaluator, "prepare_evaluation_batch", lambda batch: batch)
+    monkeypatch.setattr(evaluator, "apply_modality_temporal_mask_to_batch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        evaluator,
+        "run_model_step",
+        lambda *args, **kwargs: TaskForwardResult(
+            batch=raw_batch,
+            model_output=ModelOutput(
+                logits=torch.zeros((2, 2, 4)),
+                input_features=None,
+                output_features=None,
+                diagnostics={},
+            ),
+            logits=torch.zeros((2, 2, 4)),
+        ),
+    )
+    monkeypatch.setattr(
+        evaluator,
+        "_beam_classification_metrics",
+        lambda _logits, target, _cfg: captured_targets.append(target.detach().cpu()) or {"top1": 1.0},
+    )
+    monkeypatch.setattr(evaluator, "_load_future_beam_power", lambda _batch: torch.ones(2, 4))
+    monkeypatch.setattr(evaluator, "beam_power_communication_summary", lambda _logits, _powers: {})
+
+    result = evaluator._evaluate_masks(
+        _Model(),
+        _Loader(),
+        {"experiment": {"task": "fusion"}, "model": {"primary": {"seq_length": 5, "num_pred": 2}}},
+        torch.device("cpu"),
+        [{"modality_temporal_mask": [[True, True, True, True], [True, True, True, True]]}],
+        max_batches=None,
+    )
+
+    assert [target.tolist() for target in captured_targets] == [[1, 2]]
+    assert result == [{"top1": 1.0, "evaluated_sample_count": 2, "evaluated_batch_count": 1, "coverage_complete": True}]
 
 
 def test_domain_balanced_sampler_equalizes_mmw_domains() -> None:

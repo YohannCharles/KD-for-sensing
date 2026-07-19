@@ -137,6 +137,7 @@ class TrainingExtension:
         labels: torch.Tensor,
         *,
         epoch: int,
+        step: int = 0,
     ) -> ForwardControls:
         return ForwardControls()
 

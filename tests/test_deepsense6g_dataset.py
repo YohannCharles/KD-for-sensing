@@ -91,6 +91,25 @@ def test_deepsense6g_scene31_emits_four_sensor_batch_for_current_runtime(tmp_pat
     assert metadata["scene_id"] == 31
 
 
+def test_deepsense6g_accepts_dataset_relative_paths_with_leading_slash(tmp_path: Path) -> None:
+    root = _write_scene31(tmp_path / "scenario31")
+    csv_path = root / "train.csv"
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+        fields = handle.seek(0) or next(csv.reader(handle))
+    for row in rows:
+        for field in ("camera1", "radar1", "gps1", "bs_gps1", "lidar1", "future_beam1"):
+            row[field] = "/" + row[field]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    dataset = _dataset(root, "train")
+
+    assert dataset[0]["target_beam"].tolist() == [37]
+
+
 def test_deepsense6g_rejects_unsupported_scene_and_non_64_beam_label(tmp_path: Path) -> None:
     root = _write_scene31(tmp_path / "scenario31", label_size=63)
 

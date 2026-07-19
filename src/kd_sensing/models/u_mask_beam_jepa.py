@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
 from kd_sensing.modalities import MODALITY_ORDER
+from kd_sensing.models.prototype_health_router import PrototypeReliabilityRouter
 from kd_sensing.registries import ENCODERS, MODELS
 
 
@@ -56,6 +57,9 @@ class UMaskBeamJEPA(nn.Module):
         router_use_confidence: bool = True,
         router_use_logit_norm: bool = True,
         router_hidden_dim: int = 64,
+        router_variant: str = "current",
+        router_variant_config: dict[str, Any] | None = None,
+        router_calibration_only: bool = False,
         image_channels: int = 3,
         radar_channels: int = 2,
         lidar_channels: int = 3,
@@ -75,14 +79,24 @@ class UMaskBeamJEPA(nn.Module):
         self.router_use_entropy = bool(router_use_entropy)
         self.router_use_confidence = bool(router_use_confidence)
         self.router_use_logit_norm = bool(router_use_logit_norm)
+        self.router_variant = str(router_variant).strip().lower()
+        self.router_calibration_only = bool(router_calibration_only)
         self.temporal_pooling = _temporal_pooling_config(temporal_pooling)
 
         if self.d_model <= 0 or self.num_classes <= 0 or self.num_pred <= 0:
             raise ValueError("d_model, num_classes, and num_pred must be positive.")
-        if self.fusion_type not in {"supervised_router", "reliability_mean"}:
-            raise ValueError("T2 fusion_type must be 'supervised_router' or 'reliability_mean'.")
+        if self.fusion_type not in {"supervised_router", "reliability_mean", "uniform_mean"}:
+            raise ValueError("T2 fusion_type must be supervised_router, reliability_mean, or uniform_mean.")
         if self.head_type not in {"prototype", "classifier"}:
             raise ValueError("T2 head_type must be 'prototype' or 'classifier'.")
+        if self.router_variant not in {"current", "patr", "h2r", "core", "unified_hpr"}:
+            raise ValueError("router_variant must be current, patr, h2r, core, or unified_hpr.")
+        if self.router_variant != "current" and (
+            self.fusion_type != "supervised_router" or self.head_type != "prototype"
+        ):
+            raise ValueError("Dynamic prototype Router variants require supervised_router fusion and prototype head.")
+        if self.router_calibration_only and self.router_variant == "current":
+            raise ValueError("router_calibration_only requires a dynamic Router variant.")
 
         encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.modalities}
         missing = [name for name, config in encoder_configs.items() if not config]
@@ -143,6 +157,28 @@ class UMaskBeamJEPA(nn.Module):
             if self.router_use_pattern_features
             else None
         )
+        variant_config = dict(router_variant_config or {})
+        self.prototype_reliability_router = (
+            PrototypeReliabilityRouter(
+                variant=self.router_variant,
+                modality_count=len(self.modalities),
+                num_classes=self.num_classes,
+                base_feature_dim=len(self.router_feature_names),
+                prior_weights=variant_config.pop("prior_weights", None),
+                topology_id=str(variant_config.pop("topology_id", "cyclic_index_v1")),
+                topology_permutation=variant_config.pop("topology_permutation", None),
+                circular=bool(variant_config.pop("circular", True)),
+                residual_hidden_dim=int(variant_config.pop("residual_hidden_dim", router_hidden_dim)),
+                health_hidden_dim=int(variant_config.pop("health_hidden_dim", 16)),
+                residual_scale=float(variant_config.pop("residual_scale", 1.0)),
+                top_k=int(variant_config.pop("top_k", 3)),
+                dropout=float(variant_config.pop("dropout", 0.0)),
+            )
+            if self.router_variant != "current"
+            else None
+        )
+        if variant_config:
+            raise ValueError(f"Unknown router_variant_config fields: {sorted(variant_config)}.")
         frozen_branches: list[str] = []
         if self.head_type == "prototype":
             _freeze_module(self.classifier)
@@ -150,12 +186,30 @@ class UMaskBeamJEPA(nn.Module):
         else:
             _freeze_module(self.prototype_bank)
             frozen_branches.append("prototype_bank")
-        if self.fusion_type == "reliability_mean":
+        if self.fusion_type in {"reliability_mean", "uniform_mean"}:
             _freeze_module(self.supervised_router)
             frozen_branches.append("supervised_router")
             if self.router_pattern_bias is not None:
                 _freeze_module(self.router_pattern_bias)
                 frozen_branches.append("router_pattern_bias")
+        if self.fusion_type == "uniform_mean":
+            _freeze_module(self.reliability_heads)
+            frozen_branches.append("reliability_heads")
+        if self.router_calibration_only:
+            for name in (
+                "encoders",
+                "encoder_projections",
+                "reliability_heads",
+                "classifier",
+                "prototype_bank",
+                "supervised_router",
+                "router_pattern_bias",
+            ):
+                _freeze_module(getattr(self, name, None))
+                frozen_branches.append(name)
+            if self.temporal_attention_query is not None:
+                self.temporal_attention_query.requires_grad_(False)
+                frozen_branches.append("temporal_attention_query")
         self.frozen_branches = tuple(frozen_branches)
 
     def forward(
@@ -170,6 +224,7 @@ class UMaskBeamJEPA(nn.Module):
         temporal_mask: torch.Tensor | None = None,
         modality_temporal_mask: torch.Tensor | None = None,
         available_modalities: torch.Tensor | None = None,
+        return_router_state: bool = False,
         **_: Any,
     ) -> dict[str, Any]:
         inputs = {
@@ -186,28 +241,44 @@ class UMaskBeamJEPA(nn.Module):
             latent_sequence,
         )
         cell_mask = self._resolve_temporal_mask(latent_sequence, available, temporal_mask, modality_temporal_mask)
-        latent, temporal_pooling_weights = self._pool_temporal_sequence(latent_sequence, cell_mask)
-        reliability = torch.stack(
-            [torch.sigmoid(self.reliability_heads[name](latent[:, index])) for index, name in enumerate(self.modalities)],
-            dim=1,
+        current_latent, temporal_pooling_weights = self._pool_temporal_sequence(latent_sequence, cell_mask)
+        current_reliability = self._modality_reliability(current_latent, available)
+        current_unimodal_logits = self._head_logits(current_latent.reshape(-1, self.d_model)).reshape(
+            current_latent.shape[0], len(self.modalities), self.num_classes
         )
-        reliability = reliability * available.unsqueeze(-1).to(dtype=reliability.dtype)
-        unimodal_logits = self._head_logits(latent.reshape(-1, self.d_model)).reshape(
-            latent.shape[0], len(self.modalities), self.num_classes
-        )
-        with (nullcontext() if self.fusion_type == "supervised_router" else torch.no_grad()):
-            router_features = self._router_features(unimodal_logits, reliability, available)
-            eye = torch.eye(len(self.modalities), device=latent.device, dtype=latent.dtype).unsqueeze(0).expand(
-                latent.shape[0], -1, -1
-            )
-            router_logits = self.supervised_router(torch.cat([router_features, eye], dim=-1)).squeeze(-1)
-            if self.router_pattern_bias is not None:
-                router_logits = router_logits + self.router_pattern_bias(available.to(dtype=latent.dtype))
-            router_weights = _masked_softmax(router_logits, available)
+        with (
+            nullcontext()
+            if self.fusion_type == "supervised_router" and self.router_variant == "current"
+            else torch.no_grad()
+        ):
+            current_router_features = self._router_features(current_unimodal_logits, current_reliability, available)
+            current_router_logits, current_router_weights = self.route_from_features(current_router_features, available)
+
+        dynamic: dict[str, Any] | None = None
+        if self.prototype_reliability_router is not None:
+            dynamic = self._dynamic_route(latent_sequence, cell_mask, available)
+            available = dynamic["available"]
+            latent = dynamic["latent"]
+            reliability = dynamic["reliability"]
+            unimodal_logits = dynamic["unimodal_logits"]
+            router_features = dynamic["router_features"]
+            router_logits = dynamic["router_gate_logits"]
+            router_weights = dynamic["router_gate_weights"]
+        else:
+            latent = current_latent
+            reliability = current_reliability
+            unimodal_logits = current_unimodal_logits
+            router_features = current_router_features
+            router_logits = current_router_logits
+            router_weights = current_router_weights
         fusion_weights = (
             router_weights
             if self.fusion_type == "supervised_router"
-            else _reliability_mean_weights(reliability, cell_mask)
+            else (
+                _reliability_mean_weights(reliability, cell_mask)
+                if self.fusion_type == "reliability_mean"
+                else _uniform_mean_weights(cell_mask)
+            )
         )
         fused_features = (fusion_weights.unsqueeze(-1) * latent).sum(dim=1)
         fused_logits = (fusion_weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
@@ -231,10 +302,32 @@ class UMaskBeamJEPA(nn.Module):
             "supervised_router_gate_weights": router_weights,
             "supervised_router_reliability_features": router_features,
             "supervised_router_feature_names": self.router_feature_names,
+            "router_variant": self.router_variant,
             "reliability_fusion_mode": self.fusion_type,
             "reliability_fusion_weights": fusion_weights,
             "metadata": self.training_strategy_metadata(),
         }
+        if dynamic is not None:
+            output.update(
+                {
+                    "reference_router_gate_logits": current_router_logits,
+                    "reference_router_gate_weights": current_router_weights,
+                    "reference_unimodal_logits": current_unimodal_logits,
+                    "router_static_prior_weights": dynamic["router_static_prior_weights"],
+                    "router_residual_logits": dynamic["router_residual_logits"],
+                    "router_temporal_weights": dynamic["router_temporal_weights"],
+                    "router_frame_health_logits": dynamic["frame_health_logits"],
+                    "router_effective_cell_weights": dynamic["effective_cell_weights"],
+                    "router_variant_features": dynamic["router_variant_features"],
+                    "router_consensus_features": dynamic["consensus_features"],
+                }
+            )
+            if return_router_state:
+                output["candidate_router_state"] = {
+                    "latent_sequence": latent_sequence.detach(),
+                    "cell_mask": cell_mask.detach(),
+                    "available": available.detach(),
+                }
         if temporal_pooling_weights is not None:
             output["temporal_pooling_weights"] = temporal_pooling_weights
         return output
@@ -252,8 +345,11 @@ class UMaskBeamJEPA(nn.Module):
             "fusion_type": self.fusion_type,
             "head_type": self.head_type,
             "active_head": self.head_type,
+            "router_variant": self.router_variant,
+            "router_calibration_only": self.router_calibration_only,
             "frozen_branches": list(self.frozen_branches),
-            "router_trainable": self.fusion_type == "supervised_router",
+            "router_trainable": self.fusion_type == "supervised_router" and not self.router_calibration_only,
+            "prototype_reliability_router_trainable": self.prototype_reliability_router is not None,
             "router_feature_names": list(self.router_feature_names),
             "temporal_pooling": dict(self.temporal_pooling),
             "temporal_pooling_type": self.temporal_pooling["type"],
@@ -263,6 +359,113 @@ class UMaskBeamJEPA(nn.Module):
             "total_params": total_params,
             "trainable_params": trainable_params,
         }
+
+    def train(self, mode: bool = True) -> "UMaskBeamJEPA":
+        super().train(mode)
+        if self.router_calibration_only:
+            for name in (
+                "encoders",
+                "encoder_projections",
+                "reliability_heads",
+                "classifier",
+                "prototype_bank",
+                "supervised_router",
+                "router_pattern_bias",
+            ):
+                module = getattr(self, name, None)
+                if module is not None:
+                    module.eval()
+        return self
+
+    def route_from_candidate_state(self, state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Rerun only the candidate Router on detached expert state."""
+
+        if self.prototype_reliability_router is None:
+            raise RuntimeError("route_from_candidate_state requires a dynamic Router variant.")
+        required = {"latent_sequence", "cell_mask", "available"}
+        if not isinstance(state, dict) or not required.issubset(state):
+            raise ValueError(f"Candidate Router state requires fields {sorted(required)}.")
+        dynamic = self._dynamic_route(
+            state["latent_sequence"].detach(),
+            state["cell_mask"].to(dtype=torch.bool),
+            state["available"].to(dtype=torch.bool),
+        )
+        return {
+            "router_gate_logits": dynamic["router_gate_logits"],
+            "router_gate_weights": dynamic["router_gate_weights"],
+            "router_static_prior_weights": dynamic["router_static_prior_weights"],
+            "router_residual_logits": dynamic["router_residual_logits"],
+            "unimodal_logits": dynamic["unimodal_logits"],
+            "fused_logits": dynamic["fused_logits"],
+            "available": dynamic["available"],
+            "frame_health_logits": dynamic["frame_health_logits"],
+            "frame_unimodal_logits": dynamic["frame_unimodal_logits"],
+            "cell_mask": dynamic["cell_mask"],
+            "router_temporal_weights": dynamic["router_temporal_weights"],
+            "effective_cell_weights": dynamic["effective_cell_weights"],
+        }
+
+    def _dynamic_route(
+        self,
+        latent_sequence: torch.Tensor,
+        cell_mask: torch.Tensor,
+        available: torch.Tensor,
+    ) -> dict[str, Any]:
+        router = self.prototype_reliability_router
+        if router is None:
+            raise RuntimeError("Dynamic routing requires prototype_reliability_router.")
+        batch_size, steps, modality_count, _ = latent_sequence.shape
+        detached_sequence = latent_sequence.detach()
+        frame_logits = self._head_logits(detached_sequence.reshape(-1, self.d_model)).reshape(
+            batch_size, steps, modality_count, self.num_classes
+        )
+        frame_reliability = torch.stack(
+            [
+                torch.sigmoid(self.reliability_heads[name](detached_sequence[:, :, index]))
+                for index, name in enumerate(self.modalities)
+            ],
+            dim=2,
+        )
+        frame_reliability = frame_reliability * cell_mask.unsqueeze(-1).to(dtype=frame_reliability.dtype)
+        evidence = router.prepare(detached_sequence, frame_logits, frame_reliability, cell_mask)
+        temporal = router.temporal_pool(latent_sequence, evidence)
+        effective_available = available & cell_mask.any(dim=1)
+        latent = temporal.features
+        reliability = self._modality_reliability(latent, effective_available)
+        unimodal_logits = self._head_logits(latent.reshape(-1, self.d_model)).reshape(
+            batch_size, modality_count, self.num_classes
+        )
+        base_features = self._router_features(unimodal_logits, reliability, effective_available)
+        route = router.route(base_features, unimodal_logits, evidence, temporal, effective_available)
+        fused_features = (route.weights.unsqueeze(-1) * latent).sum(dim=1)
+        fused_logits = (route.weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
+        return {
+            "latent": latent,
+            "reliability": reliability,
+            "router_features": base_features,
+            "unimodal_logits": unimodal_logits,
+            "fused_features": fused_features,
+            "fused_logits": fused_logits,
+            "available": effective_available,
+            "cell_mask": cell_mask,
+            "frame_unimodal_logits": frame_logits,
+            "frame_health_logits": temporal.logits,
+            "router_temporal_weights": temporal.weights,
+            "router_gate_logits": route.gate_logits,
+            "router_gate_weights": route.weights,
+            "router_static_prior_weights": route.prior_weights,
+            "router_residual_logits": route.residual_logits,
+            "router_variant_features": route.modality_features,
+            "consensus_features": route.consensus_features,
+            "effective_cell_weights": route.effective_cell_weights,
+        }
+
+    def _modality_reliability(self, latent: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
+        reliability = torch.stack(
+            [torch.sigmoid(self.reliability_heads[name](latent[:, index])) for index, name in enumerate(self.modalities)],
+            dim=1,
+        )
+        return reliability * available.unsqueeze(-1).to(dtype=reliability.dtype)
 
     def _pool_temporal_sequence(
         self,
@@ -381,6 +584,22 @@ class UMaskBeamJEPA(nn.Module):
             features.append(available.unsqueeze(-1).to(dtype=unimodal_logits.dtype))
         return torch.cat(features, dim=-1)
 
+    def route_from_features(
+        self,
+        router_features: torch.Tensor,
+        available: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run only the supervised Router on precomputed modality features."""
+        if router_features.ndim != 3 or router_features.shape[:2] != available.shape:
+            raise ValueError("router_features must be [B,M,F] and match available [B,M].")
+        eye = torch.eye(
+            len(self.modalities), device=router_features.device, dtype=router_features.dtype
+        ).unsqueeze(0).expand(router_features.shape[0], -1, -1)
+        logits = self.supervised_router(torch.cat([router_features, eye], dim=-1)).squeeze(-1)
+        if self.router_pattern_bias is not None:
+            logits = logits + self.router_pattern_bias(available.to(dtype=router_features.dtype))
+        return logits, _masked_softmax(logits, available)
+
 
 def _masked_mean(sequence: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     weights = mask.to(device=sequence.device, dtype=sequence.dtype).unsqueeze(-1)
@@ -406,6 +625,11 @@ def _reliability_mean_weights(reliability: torch.Tensor, cell_mask: torch.Tensor
     fallback = available.to(dtype=reliability.dtype)
     fallback = fallback / fallback.sum(dim=1, keepdim=True).clamp_min(1.0)
     return torch.where(total.gt(0), scores / total.clamp_min(torch.finfo(scores.dtype).tiny), fallback)
+
+
+def _uniform_mean_weights(cell_mask: torch.Tensor) -> torch.Tensor:
+    available = cell_mask.any(dim=1).to(dtype=torch.float32)
+    return available / available.sum(dim=1, keepdim=True).clamp_min(1.0)
 
 
 def _temporal_pooling_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:

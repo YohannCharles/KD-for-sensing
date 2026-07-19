@@ -7,7 +7,12 @@ import torch.nn as nn
 from kd_sensing.config import load_config
 from kd_sensing.engine.optim import build_optimizer
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
-from kd_sensing.losses.u_mask_beam_jepa import u_mask_beam_jepa_loss
+from kd_sensing.losses.u_mask_beam_jepa import (
+    _paired_router_quality_loss,
+    _router_oracle_targets,
+    _unimodal_normalized_utility,
+    u_mask_beam_jepa_loss,
+)
 from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.registries import ENCODERS, MODELS
@@ -68,7 +73,22 @@ def test_t2_and_s1_resolve_to_the_retained_surface() -> None:
     assert t2["superset_consistency"]["confidence_gated_kl"] is True
     assert t2["router_supervision"] == "oracle"
     assert t2["router_oracle_weight"] == pytest.approx(0.1)
+    assert t2["router_oracle_target_mode"] == "hard_first"
+    assert t2["router_oracle_temperature"] == pytest.approx(1.0)
+    assert t2["missing_mask"] == {"mode": "external"}
+    assert s1["missing_mask"] == {"mode": "external"}
     assert s1["superset_consistency"]["enabled"] is False
+
+    deepsense = u_mask_beam_jepa_config(load_config(ROOT / "configs/deepsense6g/t2.yaml"))
+    assert deepsense["missing_mask"]["mode"] == "random"
+    assert deepsense["missing_mask"]["p_missing"] == [0.25, 0.25, 0.25, 0.1]
+
+
+def test_external_missing_mask_rejects_random_fields() -> None:
+    with pytest.raises(ValueError, match="must not declare random fields"):
+        u_mask_beam_jepa_config(
+            {"loss": {"u_mask_beam_jepa": {"missing_mask": {"mode": "external", "p_missing": 0.1}}}}
+        )
 
 
 def test_masked_mean_supervised_router_masks_missing_cells() -> None:
@@ -115,6 +135,30 @@ def test_reliability_mean_ignores_temporally_empty_modalities_and_keeps_router_d
     assert result["diagnostics"]["router_oracle_disabled"] == 1.0
 
 
+def test_uniform_mean_is_a_router_and_reliability_free_control() -> None:
+    config = _model_config()
+    config["fusion_type"] = "uniform_mean"
+    model = MODELS.build(config)
+    output = model(
+        image_batch=torch.tensor([[[1.0], [3.0], [5.0]]]),
+        radar_batch=torch.tensor([[[2.0], [4.0], [6.0]]]),
+        modality_temporal_mask=torch.tensor([[[1, 1], [1, 1], [0, 0]]], dtype=torch.bool),
+        missing_mask=torch.tensor([[True, True]]),
+    )
+
+    assert output["reliability_fusion_mode"] == "uniform_mean"
+    assert torch.allclose(output["reliability_fusion_weights"], torch.tensor([[0.5, 0.5]]))
+    assert all(not parameter.requires_grad for parameter in model.supervised_router.parameters())
+    assert all(not parameter.requires_grad for parameter in model.reliability_heads.parameters())
+    with pytest.raises(ValueError, match="uniform_mean fusion requires router_oracle_weight=0"):
+        u_mask_beam_jepa_config(
+            {
+                "model": {"primary": {"fusion_type": "uniform_mean"}},
+                "loss": {"u_mask_beam_jepa": {"router_oracle_weight": 0.1}},
+            }
+        )
+
+
 def test_inactive_t2_head_is_frozen_but_checkpoint_compatible() -> None:
     classifier = MODELS.build(_model_config(head_type="classifier"))
     optimizer = build_optimizer({"training": {"lr": 1.0e-3}}, classifier)
@@ -142,6 +186,253 @@ def test_zero_router_oracle_weight_does_not_invoke_oracle_loss(monkeypatch) -> N
 
     assert result["diagnostics"]["router_oracle_enabled"] == 0.0
     assert result["diagnostics"]["router_oracle_disabled"] == 1.0
+
+
+def test_tie_aware_router_oracle_targets_avoid_first_modality_bias() -> None:
+    unimodal = torch.tensor(
+        [
+            [
+                [0.0, 2.0, 0.0, 0.0],
+                [1.5, 0.0, 0.0, 2.0],
+                [0.0, 0.0, 2.0, 0.0],
+                [0.5, 2.0, 0.0, 0.0],
+            ]
+        ]
+    )
+    target = torch.tensor([0])
+    available = torch.ones(1, 4, dtype=torch.bool)
+
+    hard_first, tied = _router_oracle_targets(
+        unimodal, target, available, circular_beam_distance=True, target_mode="hard_first", temperature=1.0
+    )
+    hard_confidence, _ = _router_oracle_targets(
+        unimodal,
+        target,
+        available,
+        circular_beam_distance=True,
+        target_mode="hard_confidence_tie",
+        temperature=1.0,
+    )
+    soft_uniform, _ = _router_oracle_targets(
+        unimodal,
+        target,
+        available,
+        circular_beam_distance=True,
+        target_mode="soft_uniform_tie",
+        temperature=1.0,
+    )
+    soft_confidence, _ = _router_oracle_targets(
+        unimodal,
+        target,
+        available,
+        circular_beam_distance=True,
+        target_mode="soft_confidence_tie",
+        temperature=1.0,
+    )
+
+    assert tied.item() is True
+    assert torch.equal(hard_first, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
+    assert torch.equal(hard_confidence, torch.tensor([[0.0, 1.0, 0.0, 0.0]]))
+    assert torch.allclose(soft_uniform, torch.tensor([[1 / 3, 1 / 3, 0.0, 1 / 3]]))
+    assert soft_confidence[0, 1] > soft_confidence[0, 3] > soft_confidence[0, 0]
+    assert torch.allclose(soft_confidence.sum(dim=1), torch.ones(1))
+
+
+def test_distance_soft_router_oracle_masks_missing_modalities_and_backpropagates() -> None:
+    output = _loss_output()
+    output["router_gate_logits"] = torch.randn(3, 2, requires_grad=True)
+    output["unimodal_logits"] = torch.randn(3, 2, 4, requires_grad=True)
+    result = u_mask_beam_jepa_loss(
+        output,
+        torch.tensor([[0], [1], [2]]),
+        router_oracle_target_mode="distance_confidence_soft",
+        router_oracle_temperature=1.0,
+    )
+    result["loss"].backward()
+
+    assert torch.isfinite(result["loss"])
+    assert output["router_gate_logits"].grad is not None
+    assert torch.isfinite(output["router_gate_logits"].grad).all()
+    assert result["diagnostics"]["router_oracle_target_entropy"] >= 0.0
+
+
+def test_router_oracle_config_rejects_unknown_mode_and_temperature() -> None:
+    with pytest.raises(ValueError, match="router_oracle_target_mode"):
+        u_mask_beam_jepa_config(
+            {"loss": {"u_mask_beam_jepa": {"router_oracle_target_mode": "unknown"}}}
+        )
+
+
+def test_beam_power_soft_router_target_uses_normalized_selected_power() -> None:
+    unimodal = torch.tensor([[[8.0, 0.0, 0.0], [0.0, 8.0, 0.0]]])
+    powers = torch.tensor([[1.0, 3.0, 2.0]])
+    target, tied = _router_oracle_targets(
+        unimodal,
+        torch.tensor([1]),
+        torch.tensor([[True, True]]),
+        circular_beam_distance=True,
+        target_mode="beam_power_soft",
+        temperature=0.1,
+        beam_powers=powers,
+    )
+    expected = torch.softmax(torch.tensor([[1.0 / 3.0, 1.0]]) / 0.1, dim=1)
+    assert torch.allclose(target, expected)
+    assert not bool(tied.item())
+
+
+def test_expected_beam_power_utility_changes_without_argmax_change() -> None:
+    clean = torch.tensor([[[4.0, 3.0, 0.0], [0.0, 4.0, 3.0]]])
+    corrupted = torch.tensor([[[4.0, 0.0, 3.0], [0.0, 4.0, 3.0]]])
+    powers = torch.tensor([[4.0, 3.0, 0.0]])
+
+    clean_utility = _unimodal_normalized_utility(
+        clean, powers, mode="expected", beam_temperature=0.5
+    )
+    corrupted_utility = _unimodal_normalized_utility(
+        corrupted, powers, mode="expected", beam_temperature=0.5
+    )
+
+    assert torch.equal(clean.argmax(dim=-1), corrupted.argmax(dim=-1))
+    assert clean_utility[0, 0] > corrupted_utility[0, 0]
+    assert clean_utility[0, 1] == pytest.approx(corrupted_utility[0, 1])
+
+
+def test_router_quality_pairing_updates_corrupt_router_and_gates_monotonic_loss() -> None:
+    corrupt_logits = torch.tensor([[3.0, 0.0], [0.0, 0.0]], requires_grad=True)
+    corrupt_weights = torch.softmax(corrupt_logits, dim=1)
+    pair = {
+        "clean_unimodal_logits": torch.tensor([[[9.0, 0.0], [0.0, 9.0]], [[9.0, 0.0], [0.0, 9.0]]]),
+        "corrupted_unimodal_logits": torch.tensor([[[0.0, 9.0], [0.0, 9.0]], [[9.0, 0.0], [0.0, 9.0]]]),
+        "available": torch.ones(2, 2, dtype=torch.bool),
+        "clean_router_logits": torch.zeros(2, 2),
+        "corrupted_router_logits": corrupt_logits,
+        "clean_router_weights": torch.tensor([[0.8, 0.2], [0.8, 0.2]]),
+        "corrupted_router_weights": corrupt_weights,
+        "affected_modality_index": 0,
+        "corruption_name": "image_occlusion",
+        "corruption_severity": 3,
+    }
+    loss, diagnostics = _paired_router_quality_loss(
+        pair,
+        torch.tensor([[0], [0]]),
+        torch.tensor([[4.0, 1.0], [4.0, 1.0]]),
+        temperature=0.1,
+        utility_mode="argmax",
+        beam_temperature=1.0,
+        max_target_entropy=None,
+        utility_weight=0.1,
+        monotonic_weight=0.05,
+        margin_scale=0.25,
+        quality_drop_epsilon=0.01,
+    )
+    loss.backward()
+    assert corrupt_logits.grad is not None and torch.isfinite(corrupt_logits.grad).all()
+    assert diagnostics["router_pair_active_ratio"] == pytest.approx(0.5)
+    assert diagnostics["loss/router_pair_monotonic"] > 0.0
+
+
+def test_expected_router_pair_activates_and_backpropagates_when_argmax_is_stable() -> None:
+    corrupt_logits = torch.tensor([[1.0, -1.0]], requires_grad=True)
+    pair = {
+        "clean_unimodal_logits": torch.tensor([[[4.0, 3.0, 0.0], [0.0, 4.0, 3.0]]]),
+        "corrupted_unimodal_logits": torch.tensor([[[4.0, 0.0, 3.0], [0.0, 4.0, 3.0]]]),
+        "available": torch.ones(1, 2, dtype=torch.bool),
+        "clean_router_logits": torch.zeros(1, 2),
+        "corrupted_router_logits": corrupt_logits,
+        "clean_router_weights": torch.tensor([[0.8, 0.2]]),
+        "corrupted_router_weights": torch.softmax(corrupt_logits, dim=1),
+        "affected_modality_index": 0,
+        "corruption_name": "image_occlusion",
+        "corruption_severity": 3,
+    }
+    loss, diagnostics = _paired_router_quality_loss(
+        pair,
+        torch.tensor([[0]]),
+        torch.tensor([[4.0, 3.0, 0.0]]),
+        temperature=0.1,
+        utility_mode="expected",
+        beam_temperature=0.5,
+        max_target_entropy=1.3,
+        utility_weight=0.1,
+        monotonic_weight=0.05,
+        margin_scale=0.25,
+        quality_drop_epsilon=0.001,
+    )
+    loss.backward()
+
+    assert diagnostics["router_pair_active_ratio"] == 1.0
+    assert diagnostics["router_pair_quality_drop_mean"] > 0.001
+    assert corrupt_logits.grad is not None
+    assert torch.isfinite(corrupt_logits.grad).all()
+    assert float(corrupt_logits.grad.abs().sum()) > 0.0
+
+
+def test_expected_router_pair_entropy_gate_blocks_uniform_target_ce() -> None:
+    corrupt_logits = torch.tensor([[1.0, 0.0, -1.0, -2.0]], requires_grad=True)
+    unimodal = torch.zeros(1, 4, 3)
+    pair = {
+        "clean_unimodal_logits": unimodal,
+        "corrupted_unimodal_logits": unimodal,
+        "available": torch.ones(1, 4, dtype=torch.bool),
+        "clean_router_logits": torch.zeros(1, 4),
+        "corrupted_router_logits": corrupt_logits,
+        "clean_router_weights": torch.full((1, 4), 0.25),
+        "corrupted_router_weights": torch.softmax(corrupt_logits, dim=1),
+        "affected_modality_index": 0,
+        "corruption_name": "image_occlusion",
+        "corruption_severity": 1,
+    }
+    loss, diagnostics = _paired_router_quality_loss(
+        pair,
+        torch.tensor([[0]]),
+        torch.tensor([[4.0, 2.0, 1.0]]),
+        temperature=0.1,
+        utility_mode="expected",
+        beam_temperature=0.5,
+        max_target_entropy=1.3,
+        utility_weight=0.1,
+        monotonic_weight=0.0,
+        margin_scale=0.25,
+        quality_drop_epsilon=0.001,
+    )
+    loss.backward()
+
+    assert diagnostics["router_pair_target_entropy"] == pytest.approx(torch.log(torch.tensor(4.0)).item())
+    assert diagnostics["router_pair_target_informative_ratio"] == 0.0
+    assert diagnostics["loss/router_pair_utility"] == 0.0
+    assert corrupt_logits.grad is not None
+    assert float(corrupt_logits.grad.abs().sum()) == 0.0
+
+
+def test_beam_power_pairing_config_is_explicit_and_fail_closed() -> None:
+    base = {
+        "model": {"primary": {"fusion_type": "supervised_router"}},
+        "data": {"dataset": {"include_router_utility_targets": True}},
+        "loss": {
+            "u_mask_beam_jepa": {
+                "router_oracle_target_mode": "soft_confidence_tie",
+                "router_quality_pairing": {
+                    "enabled": True,
+                    "utility_mode": "expected",
+                    "target_temperature": 0.1,
+                    "beam_temperature": 0.5,
+                    "utility_weight": 0.1,
+                },
+            }
+        },
+    }
+    resolved = u_mask_beam_jepa_config(base)
+    assert resolved["router_quality_pairing"]["corruption_seed"] == 20260719
+    assert resolved["router_quality_pairing"]["utility_mode"] == "expected"
+    assert resolved["router_quality_pairing"]["max_target_entropy"] is None
+    assert resolved["router_oracle_target_mode"] == "soft_confidence_tie"
+    base["data"]["dataset"]["include_router_utility_targets"] = False
+    with pytest.raises(ValueError, match="include_router_utility_targets"):
+        u_mask_beam_jepa_config(base)
+    with pytest.raises(ValueError, match="router_oracle_temperature"):
+        u_mask_beam_jepa_config(
+            {"loss": {"u_mask_beam_jepa": {"router_oracle_temperature": 0.0}}}
+        )
 
 
 def test_masked_attention_excludes_invalid_temporal_cells_and_has_query_gradient() -> None:

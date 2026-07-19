@@ -1,13 +1,27 @@
 import numpy as np
+import pytest
 import torch
 
 from kd_sensing.evaluation.metrics import (
     beam_classification_circular_summary,
+    beam_power_communication_summary,
     calculate_dba_score,
     calculate_topk_accuracy,
     circular_beam_distance,
     circular_topk_min_distance,
 )
+
+
+def test_beam_power_communication_summary_uses_full_power_vector() -> None:
+    logits = torch.tensor([[0.0, 2.0, 1.0], [3.0, 0.0, 1.0]])
+    powers = torch.tensor([[1.0, 4.0, 2.0], [1.0, 4.0, 2.0]])
+
+    metrics = beam_power_communication_summary(logits, powers)
+
+    assert metrics["normalized_gain"] == pytest.approx(0.625)
+    assert metrics["gain_loss_db"] == pytest.approx(3.0102999)
+    assert metrics["spectral_efficiency_ratio_10db"] < 1.0
+    assert metrics["spectral_efficiency_loss_10db"] > 0.0
 
 
 def test_circular_beam_distance_wraps_scalar_numpy_and_torch():
@@ -37,7 +51,7 @@ def test_matrix_summary_keeps_only_current_beam_fields():
 
     circular = beam_classification_circular_summary(logits, labels, num_beams=64)
     linear = beam_classification_circular_summary(logits, labels, num_beams=64, distance_mode="linear")
-    assert set(circular) == {"DBA", "mean_error", "within_3", "top1", "top3", "top5"}
+    assert set(circular) == {"DBA", "mean_error", "within_1", "within_3", "top1", "top3", "top5"}
     assert circular["mean_error"] == 1.0
     assert circular["within_3"] == 1.0
     assert linear["mean_error"] == 63.0

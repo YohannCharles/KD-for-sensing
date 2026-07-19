@@ -221,6 +221,7 @@ def build_screening_config(
         epochs=int(epochs),
         batch_size=int(batch_size),
         umask_training_profile="umask_h4_v1" if variant == "H4-optimizer" else "legacy_h0_v1",
+        umask_router_architecture_profile="umask_router_pattern_v1",
     )
     training = payload.setdefault("training", {})
     loss = payload.setdefault("loss", {})
@@ -367,6 +368,7 @@ def _validate_baseline_snapshot() -> dict[str, Any]:
         epochs=40,
         batch_size=32,
         umask_training_profile="legacy_h0_v1",
+        umask_router_architecture_profile="umask_router_pattern_v1",
     )
     primary = payload.get("model", {}).get("primary", {})
     dataset = payload.get("data", {}).get("dataset", {})

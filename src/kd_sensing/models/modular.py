@@ -6,6 +6,7 @@ import torch.nn as nn
 from kd_sensing.modalities import MODALITY_ORDER, image_profile_spec, normalize_modalities, resolve_image_profile
 import kd_sensing.models.amber_full  # noqa: F401
 import kd_sensing.models.rmbp_mm  # noqa: F401
+import kd_sensing.models.twc_baselines  # noqa: F401
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
 from kd_sensing.models.radar import RadarFeatureExtractor
@@ -195,7 +196,12 @@ class ModularSequenceModel(nn.Module):
             raise ValueError("modular_sequence requires representation_core for AMBER-Full or RMBP-MM.")
         core_cfg = dict(representation_core)
         core_type = str(core_cfg.get("type", ""))
-        if core_type not in {"amber_full_adaptive_mask_transformer", "rmbp_channel_attention_fusion"}:
+        if core_type not in {
+            "amber_full_adaptive_mask_transformer",
+            "rmbp_channel_attention_fusion",
+            "masktrain_mean_fusion",
+            "amr_gaussian_uncertainty_fusion",
+        }:
             raise ValueError(f"Unsupported baseline representation_core {core_type!r}.")
         core_cfg.setdefault("d_model", self.d_model)
         core_cfg.setdefault("modality_count", len(self.modalities))
@@ -306,6 +312,15 @@ class ModularSequenceModel(nn.Module):
             weights = getattr(self.representation_core, "last_attention_weights", None)
             if torch.is_tensor(weights):
                 output["rmbp_attention_weights"] = weights
+            fusion_weights = getattr(self.representation_core, "last_fusion_weights", None)
+            if torch.is_tensor(fusion_weights):
+                output["fusion_weights"] = fusion_weights
+            uncertainty = getattr(self.representation_core, "last_uncertainty", None)
+            if torch.is_tensor(uncertainty):
+                output["modality_uncertainty"] = uncertainty
+            amr_auxiliary = getattr(self.representation_core, "last_amr_auxiliary", None)
+            if isinstance(amr_auxiliary, dict):
+                output["amr_adapted_auxiliary"] = amr_auxiliary
         return output
 
     def training_strategy_metadata(self) -> dict[str, Any]:

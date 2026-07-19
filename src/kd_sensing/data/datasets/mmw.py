@@ -54,6 +54,8 @@ class MMWDataset(Dataset):
         lidar_augment: bool = False,
         lidar_point_dropout: float = 0.0,
         lidar_jitter_std: float = 0.0,
+        include_router_utility_targets: bool = False,
+        include_router_corruption_metadata: bool = False,
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         if not str(condition or "").strip() or not str(scene or "").strip():
@@ -99,6 +101,9 @@ class MMWDataset(Dataset):
         self.gps_normalize = bool(gps_normalize)
         self.gps_scaler = gps_scaler
         self._gps_feature_cache: dict[str, np.ndarray] = {}
+        self.include_router_utility_targets = bool(include_router_utility_targets)
+        self.include_router_corruption_metadata = bool(include_router_corruption_metadata)
+        self._beam_power_cache: dict[str, torch.Tensor] = {}
         self.lidar_bev_size = tuple(int(value) for value in lidar_bev_size)
         self.lidar_roi = tuple(float(value) for value in lidar_roi)
         self.lidar_fov_degrees = tuple(lidar_fov_degrees) if lidar_fov_degrees is not None else None
@@ -161,7 +166,31 @@ class MMWDataset(Dataset):
         if self.use_lidar:
             lidar = self._lidar_bev_for_index(idx, augment=self.split == "train" and self.lidar_augment)
             sample["lidar"] = torch.tensor(lidar, dtype=torch.float32)
+        if self.include_router_utility_targets:
+            sample["future_beam_power"] = self._future_beam_power(idx)
+        if self.include_router_utility_targets or self.include_router_corruption_metadata:
+            if self.gps_scaler is None or self.gps_scaler.mean_ is None or self.gps_scaler.scale_ is None:
+                raise ValueError("Router GPS metadata requires the train-fit GPS scaler.")
+            sample["gps_scaler_mean"] = torch.as_tensor(self.gps_scaler.mean_, dtype=torch.float32)
+            sample["gps_scaler_scale"] = torch.as_tensor(self.gps_scaler.scale_, dtype=torch.float32)
         return self._with_metadata(idx, sample)
+
+    def _future_beam_power(self, idx: int) -> torch.Tensor:
+        relative = _row_text(self._row(idx), "future_beam1")
+        if relative is None:
+            raise ValueError(f"MMW prepared row {idx} is missing future_beam1.")
+        path = str(joined_resource(self.data_root, relative).resolve())
+        cached = self._beam_power_cache.get(path)
+        if cached is None:
+            try:
+                values = torch.as_tensor(np.loadtxt(path), dtype=torch.float32).reshape(-1)
+            except Exception as exc:
+                raise ValueError(f"Failed to load future beam power vector {path}: {exc}") from exc
+            if values.numel() != 64 or not bool(torch.isfinite(values).all()) or bool((values < 0).any()):
+                raise ValueError(f"Future beam power must contain 64 finite non-negative values: {path}")
+            cached = values
+            self._beam_power_cache[path] = cached
+        return cached.clone()
 
     def _target_beam_label(self, idx: int, horizon: int) -> int:
         label = _row_label(self._row(idx), f"future_beam_label{horizon + 1}")
@@ -184,6 +213,9 @@ class MMWDataset(Dataset):
             metadata.get("sample_id") or metadata.get("target_sample_id") or f"{self.scene_slug}:{idx}"
         )
         metadata.update(dataset_family="MMW", condition=self.condition, scenario=self.scene_slug)
+        future_beam_path = _row_text(row, "future_beam1")
+        if future_beam_path is not None:
+            metadata["future_beam_path"] = str(joined_resource(self.data_root, future_beam_path).resolve())
         metadata["source_sample_id"] = source_sample_id
         metadata["stable_sample_id"] = f"mmw:{self.condition}:{self.scene_slug}:{self.split}:{source_sample_id}"
         sample["metadata"] = metadata

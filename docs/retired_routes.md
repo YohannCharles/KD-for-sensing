@@ -12,5 +12,6 @@
 | GPS-only v2、AMR、旧 fusion/PCPG/BPRR/RBMA | 单模态控制和旧 router/fusion 试验 | 当前基线集合固定为 S1、AMBER-Full、RMBP-MM，T2 router 只保留当前 supervised-router 路径。 |
 | Image+GPS JEPA、预训练和 snapshot/多任务目标 | 预训练、定位、遮挡等支线 | 不服务当前 beam 主任务与固定矩阵协议。 |
 | run index、paper export、viewer、一次性诊断 CLI | 本地管理和展示工具 | public workflow 收敛为 train/evaluate/preprocess，证据脚本保留为仓库内 MMW helpers。 |
+| T2-PatternWeighted / Pattern-weighted Beam CE | 按缺失条件对 Beam CE 重新加权的开发消融 | 2026-07-18 的 seed1 fixed-mask 内部筛选未显示稳定收益，Drop80/90 反而下降；停止补 seed，仅保留最小审计记录，不进入四方法 strict evidence。 |
 
 历史文档不构成当前支持承诺。重新引入任一族必须先创建新的 OpenSpec change，并恢复完整实现、配置、验证和文档，而不是增加 alias 或迁移层。

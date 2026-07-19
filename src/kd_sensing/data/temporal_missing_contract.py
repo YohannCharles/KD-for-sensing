@@ -2,7 +2,7 @@ from typing import Any
 
 
 TEMPORAL_SUPERSET_PAYLOAD_KEY = "temporal_superset_payload"
-TEMPORAL_MISSING_MODES = ("none", "stratified_modality_temporal")
+TEMPORAL_MISSING_MODES = ("none", "stratified_modality_temporal", "balanced_pattern_schedule")
 
 
 def normalize_temporal_missing_mode(value: Any) -> str:

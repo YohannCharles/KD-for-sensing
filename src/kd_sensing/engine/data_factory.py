@@ -161,8 +161,7 @@ def build_split_dataset(
     kwargs.update(normalization_overrides or {})
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     domains = dataset_cfg.get("domains")
-    dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
-    return _build_mmw_domain_dataset(cfg, split, **kwargs) if dataset_type == "mmw" and domains is not None else build_dataset(cfg, split, **kwargs)
+    return _build_pooled_domain_dataset(cfg, split, **kwargs) if domains is not None else build_dataset(cfg, split, **kwargs)
 
 
 def build_dataloader(
@@ -284,21 +283,23 @@ def _dataset_fingerprint(dataset: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
 
 
-def _build_mmw_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwargs: Any) -> ConcatDataset:
+def _build_pooled_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwargs: Any) -> ConcatDataset:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     domains = dataset_cfg.get("domains")
-    if str(dataset_cfg.get("type", "")).strip().lower() != "mmw" or not isinstance(domains, list) or not domains:
-        raise ValueError("data.dataset.domains must be a non-empty MMW domain list.")
+    dataset_type = str(dataset_cfg.get("type", "")).strip().lower()
+    if dataset_type not in RETAINED_DATASETS or not isinstance(domains, list) or not domains:
+        raise ValueError("data.dataset.domains must be a non-empty retained-dataset domain list.")
     seen: set[str] = set()
     for index, domain in enumerate(domains):
         if not isinstance(domain, dict):
-            raise ValueError(f"MMW domain at index {index} must be a mapping.")
-        missing = [key for key in ("id", "condition", "scene", "data_root") if not domain.get(key)]
+            raise ValueError(f"Pooled domain at index {index} must be a mapping.")
+        required = ("id", "scene", "data_root") if dataset_type == "deepsense6g" else ("id", "condition", "scene", "data_root")
+        missing = [key for key in required if domain.get(key) in (None, "")]
         if missing:
-            raise ValueError(f"MMW domain at index {index} is missing required fields: {', '.join(missing)}.")
+            raise ValueError(f"Pooled domain at index {index} is missing required fields: {', '.join(missing)}.")
         domain_id = str(domain["id"])
         if domain_id in seen:
-            raise ValueError(f"Duplicate MMW domain id: {domain_id}.")
+            raise ValueError(f"Duplicate pooled domain id: {domain_id}.")
         seen.add(domain_id)
     datasets = []
     inventory = []
@@ -310,26 +311,23 @@ def _build_mmw_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwargs:
         if not csv_path.is_absolute():
             csv_path = Path(str(domain["data_root"])) / csv_path
         if not csv_path.exists():
-            raise FileNotFoundError(f"MMW domain {domain_id} {split} CSV is missing: {csv_path}.")
+            raise FileNotFoundError(f"Pooled domain {domain_id} {split} CSV is missing: {csv_path}.")
         leaf_cfg = deepcopy(cfg)
         leaf_dataset_cfg = leaf_cfg["data"]["dataset"]
         leaf_dataset_cfg.pop("domains", None)
-        leaf_dataset_cfg.update(
-            condition=str(domain["condition"]),
-            scene=str(domain["scene"]),
-            data_root=str(domain["data_root"]),
-            **{csv_key: str(csv_name)},
-        )
+        leaf_dataset_cfg.update(scene=domain["scene"], data_root=str(domain["data_root"]), **{csv_key: str(csv_name)})
+        if dataset_type == "mmw":
+            leaf_dataset_cfg["condition"] = str(domain["condition"])
         dataset = build_dataset(leaf_cfg, split, **dataset_kwargs)
         dataset.domain_id = domain_id
-        dataset.domain_condition = str(domain["condition"])
+        dataset.domain_condition = str(domain.get("condition", ""))
         dataset.domain_scene = str(domain["scene"])
         dataset.domain_split_path = str(csv_path)
         datasets.append(dataset)
         inventory.append(
             {
                 "id": domain_id,
-                "condition": str(domain["condition"]),
+                "condition": str(domain.get("condition", "")),
                 "scene": str(domain["scene"]),
                 "data_root": str(domain["data_root"]),
                 "split": split,
@@ -345,10 +343,10 @@ def _build_mmw_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwargs:
 def _domain_csv_for_split(domain: dict[str, Any], split: str) -> tuple[str, str]:
     key = {"train": "train_csv_name", "validation": "val_csv_name", "test": "test_csv_name"}.get(split)
     if key is None:
-        raise ValueError(f"Unsupported MMW split: {split}.")
+        raise ValueError(f"Unsupported pooled-dataset split: {split}.")
     if domain.get(key):
         return key, str(domain[key])
-    raise ValueError(f"MMW domain {domain.get('id', '<unknown>')} is missing {split} CSV field ({key}).")
+    raise ValueError(f"Pooled domain {domain.get('id', '<unknown>')} is missing {split} CSV field ({key}).")
 
 
 def build_domain_balanced_sampler(

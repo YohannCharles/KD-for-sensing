@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from kd_sensing.engine.checkpointing import checkpoint_strict as _checkpoint_strict
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
+from kd_sensing.engine.model_initialization import enforce_frozen_module_eval
 from kd_sensing.engine.tensorboard_logging import write_tensorboard_scalars as _write_tensorboard_scalars
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.missing_patterns import resolve_missing_patterns
@@ -74,6 +75,7 @@ def run_training_epoch_loop(
         if callable(getattr(sampler, "set_epoch", None)):
             sampler.set_epoch(epoch)
         primary_model.train()
+        enforce_frozen_module_eval(primary_model)
         for extension, extension_state in zip(extensions, extension_states):
             extension.before_epoch(extension_context, extension_state, epoch=epoch)
         if health_tracker is not None:

@@ -30,6 +30,8 @@ def _rows(method: str, *, profile: str = "64_beam_circular_topk_progressive_top3
             "checkpoint_role": "fixed_epoch_last_pth",
             "training_profile_id": "umask_h4_v1",
             "training_profile_sha256": "profile",
+            "router_architecture_profile_id": "umask_router_nopattern_v1",
+            "router_architecture_profile_sha256": "router-profile",
             "design_candidate_id": "",
             "design_config_sha256": "",
             "metric_profile": profile,

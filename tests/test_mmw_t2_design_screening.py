@@ -32,6 +32,7 @@ def test_capacity_candidates_materialize_h4_and_change_only_the_declared_capacit
     control = launcher.build_design_config("H4-control", tmp_path, seed=1, batch_size=32)
     d96 = launcher.build_design_config("D96", tmp_path, seed=1, batch_size=32)
     router = launcher.build_design_config("RouterH32", tmp_path, seed=1, batch_size=32)
+    no_pattern = launcher.build_design_config("RouterNoPattern", tmp_path, seed=1, batch_size=32)
     gps = launcher.build_design_config("GPSH128", tmp_path, seed=1, batch_size=32)
 
     profile = control["mmw_all_weather_protocol"]["training_profile"]
@@ -50,6 +51,8 @@ def test_capacity_candidates_materialize_h4_and_change_only_the_declared_capacit
     assert d96["model"]["primary"]["d_model"] == 96
     assert {entry["output_dim"] for entry in d96["model"]["primary"]["encoders"].values()} == {96}
     assert router["model"]["primary"]["router_hidden_dim"] == 32
+    assert no_pattern["model"]["primary"]["router_use_pattern_features"] is False
+    assert no_pattern["mmw_all_weather_protocol"]["router_architecture_profile"]["id"] == "umask_router_nopattern_v1"
     assert gps["model"]["primary"]["encoders"]["gps"]["hidden_size"] == 128
     assert d96["mmw_t2_design_screening"]["matched_control"] == "H4-control"
     launcher._assert_candidate_matches_control("D96", d96, control)
@@ -104,12 +107,23 @@ def test_profile_and_candidate_checkpoint_provenance_fail_closed(monkeypatch, tm
     provenance = training_profile_checkpoint_provenance(config)
 
     assert provenance["training_profile"]["id"] == "umask_h4_v1"
+    assert provenance["router_architecture_profile"]["id"] == "umask_router_pattern_v1"
     assert provenance["t2_design_screening"]["candidate_id"] == "D48"
     validate_evaluation_training_profile_provenance(config, provenance)
 
     mismatched = {**provenance, "t2_design_screening": {**provenance["t2_design_screening"], "candidate_id": "D96"}}
     with pytest.raises(ValueError, match="design-screening provenance"):
         validate_evaluation_training_profile_provenance(config, mismatched)
+
+    mismatched_router = {
+        **provenance,
+        "router_architecture_profile": {
+            **provenance["router_architecture_profile"],
+            "id": "umask_router_nopattern_v1",
+        },
+    }
+    with pytest.raises(ValueError, match="router_architecture_profile provenance"):
+        validate_evaluation_training_profile_provenance(config, mismatched_router)
 
 
 def test_design_fingerprints_ignore_cli_runtime_metadata(monkeypatch, tmp_path) -> None:

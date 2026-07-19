@@ -3,11 +3,73 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
 from kd_sensing.data.datasets.mmw import MMWDataset
 from kd_sensing.data.mmw.preparation_splits import build_sequence_splits_from_manifest, compute_split_identity_audit
+from kd_sensing.data.transform_ops.gps import GPSStandardScaler
 from kd_sensing.engine.evaluation_pass_runtime import sample_ids_from_batch
+
+
+def _stub_router_metadata_dataset(
+    *,
+    include_utility: bool,
+    include_corruption_metadata: bool,
+    scaler: GPSStandardScaler | None,
+) -> MMWDataset:
+    dataset = object.__new__(MMWDataset)
+    dataset.num_pred = 1
+    dataset.enabled_modalities = ()
+    dataset.use_gps = False
+    dataset.use_lidar = False
+    dataset.include_router_utility_targets = include_utility
+    dataset.include_router_corruption_metadata = include_corruption_metadata
+    dataset.gps_scaler = scaler
+    dataset._target_beam_label = lambda _idx, _horizon: 3
+    dataset._future_beam_power = lambda _idx: torch.ones(64)
+    dataset._with_metadata = lambda _idx, sample: sample
+    return dataset
+
+
+@pytest.mark.parametrize(
+    ("include_utility", "include_corruption_metadata", "expects_power", "expects_scaler"),
+    [
+        (False, False, False, False),
+        (True, False, True, True),
+        (False, True, False, True),
+    ],
+)
+def test_mmw_router_corruption_metadata_is_independent_from_utility_targets(
+    include_utility: bool,
+    include_corruption_metadata: bool,
+    expects_power: bool,
+    expects_scaler: bool,
+) -> None:
+    scaler = GPSStandardScaler(
+        mean_=np.asarray([1.0, 2.0, 3.0]),
+        scale_=np.asarray([4.0, 5.0, 6.0]),
+        feature_mode_="relative_polar",
+    )
+    sample = _stub_router_metadata_dataset(
+        include_utility=include_utility,
+        include_corruption_metadata=include_corruption_metadata,
+        scaler=scaler,
+    )[0]
+
+    assert ("future_beam_power" in sample) is expects_power
+    assert ("gps_scaler_mean" in sample) is expects_scaler
+    assert ("gps_scaler_scale" in sample) is expects_scaler
+
+
+def test_mmw_router_corruption_metadata_requires_train_fit_scaler() -> None:
+    dataset = _stub_router_metadata_dataset(
+        include_utility=False,
+        include_corruption_metadata=True,
+        scaler=None,
+    )
+    with pytest.raises(ValueError, match="train-fit GPS scaler"):
+        dataset[0]
 
 
 def test_mmw_dataset_accepts_prepared_four_sensor_csv(tmp_path: Path):

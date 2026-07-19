@@ -8,6 +8,20 @@
 - **THEN** resolved config MUST 使用 `umask_h4_v1` 的 optimizer、weight decay 与 scheduler
 - **AND** 运行 profile MUST 在 protocol provenance 中完整记录
 
+### Requirement: RouterNoPattern 作为受控的 U-Mask 开发主线架构 profile
+系统 MUST 定义 `umask_router_nopattern_v1` 与 `umask_router_pattern_v1` 两个 router architecture profile。新的 T2/S1 mainline launcher MUST 显式选择 `umask_router_nopattern_v1`，它只将 `model.primary.router_use_pattern_features` 设为 `false`；legacy H0 screening、BPA/CMA ablation 和 tracked base recipe MUST 保持 `umask_router_pattern_v1`。该选择 MUST 记录 canonical values 和 SHA256，并随 checkpoint/evaluation provenance 传播。
+
+#### Scenario: T2/S1 mainline 使用同一 router profile
+- **WHEN** MMW mainline launcher 为 T2 或 S1 构建 H4 配置
+- **THEN** resolved config MUST 使用 `umask_router_nopattern_v1`
+- **AND** T2 与 S1 MUST 共享该 router architecture profile，避免配对比较混入 router pattern 差异
+- **AND** RouterNoPattern MUST 在固定 inner-mask 与多 seed/outer evidence 前保持 development-only 状态，不得升级为论文 claim
+
+#### Scenario: legacy ablation 保持 pattern-on
+- **WHEN** launcher 为 T2 BPA/CMA ablation 或 legacy hyperparameter screening 构建配置
+- **THEN** resolved config MUST 使用 `umask_router_pattern_v1`
+- **AND** 不得隐式继承 mainline RouterNoPattern setting
+
 #### Scenario: H0 mechanism control 保持不变
 - **WHEN** launcher 为 T2 BPA/CMA ablation 或 legacy hyperparameter screening 构建配置
 - **THEN** resolved config MUST 使用 `legacy_h0_v1`

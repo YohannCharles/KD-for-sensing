@@ -103,6 +103,45 @@ def test_same_model_superset_forward_restores_the_original_training_state(monkey
     assert state["online_superset"]["logits"].requires_grad is False
 
 
+def test_external_missing_mask_uses_batch_availability_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_sampler(*_args, **_kwargs):
+        raise AssertionError("external missing-mask mode must not call the random sampler")
+
+    monkeypatch.setitem(UMaskBeamJEPATrainingExtension.before_forward.__globals__, "sample_missing_mask", unexpected_sampler)
+    primary = SimpleNamespace(modalities=MODALITIES)
+    context = SimpleNamespace(primary_model=primary, device=torch.device("cpu"))
+    state = {
+        "config": {
+            "enabled": True,
+            "missing_mask": {"mode": "external"},
+            "superset_consistency": {"enabled": False},
+        }
+    }
+    extension = UMaskBeamJEPATrainingExtension()
+    labels = torch.tensor([[0], [1]])
+    available = torch.tensor([[True, False], [False, True]])
+
+    controls = extension.before_forward(
+        context,
+        state,
+        {"available_modalities": available},
+        labels,
+        epoch=0,
+    )
+    assert torch.equal(controls.model_kwargs["missing_mask"], available)
+
+    with pytest.raises(ValueError, match="requires batch.available_modalities"):
+        extension.before_forward(context, state, {}, labels, epoch=0)
+    with pytest.raises(ValueError, match="at least one available modality"):
+        extension.before_forward(
+            context,
+            state,
+            {"available_modalities": torch.tensor([[True, False], [False, False]])},
+            labels,
+            epoch=0,
+        )
+
+
 def test_superset_kl_backpropagates_only_to_the_masked_model_output() -> None:
     student = torch.tensor([[[2.0, 0.0]], [[0.0, 2.0]]], requires_grad=True)
     reference = torch.tensor([[[3.0, 0.0]], [[0.0, 3.0]]], requires_grad=True)

@@ -4,7 +4,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -159,6 +159,155 @@ def split_sequence_rows(
     }
 
 
+def partition_sequence_rows(
+    rows: list[dict[str, Any]],
+    *,
+    seed: int,
+    role_fractions: dict[str, float],
+    strategy: str = GROUP_SAFE_TIME_BLOCK,
+    seq_len: int | None = None,
+    pred_len: int | None = None,
+    block_size_frames: int | None = None,
+    guard_band_frames: int | None = None,
+    exclude_row: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> dict[str, Any]:
+    """Partition sequence windows into three or more group-safe, audited roles.
+
+    The existing two-way splitter is intentionally retained for prepared dataset
+    creation. Evidence protocols need one joint group assignment so their inner
+    train/validation and outer evidence roles never arise from sequential
+    resplitting decisions.
+    """
+    if strategy != GROUP_SAFE_TIME_BLOCK:
+        raise ValueError(f"Unsupported MMW split_strategy={strategy!r}; expected {GROUP_SAFE_TIME_BLOCK!r}.")
+    roles = tuple(str(name).strip() for name in role_fractions)
+    if len(roles) < 2 or any(not name for name in roles) or len(set(roles)) != len(roles):
+        raise ValueError("role_fractions must contain at least two distinct non-empty role names.")
+    fractions = tuple(float(role_fractions[name]) for name in roles)
+    if any(value <= 0.0 for value in fractions) or not np.isclose(sum(fractions), 1.0, rtol=0.0, atol=1e-9):
+        raise ValueError("role_fractions must be positive and sum to exactly 1.0.")
+    if not rows:
+        raise ValueError("Cannot partition an empty MMW sequence row set.")
+
+    window = int(seq_len or _row_window_length(rows) or 1) + int(pred_len or 0)
+    guard = max(int(guard_band_frames) if guard_band_frames is not None else window - 1, window - 1)
+    block = max(int(block_size_frames) if block_size_frames is not None else window * 2, window)
+    assignments = _time_blocks(rows, block_size=block, guard=guard)
+    excluded_group_ids = {
+        str(item["group_id"])
+        for item in assignments
+        if item["rows"] and exclude_row is not None and any(exclude_row(row) for row in item["rows"])
+    }
+    candidates = [item for item in assignments if item["rows"] and str(item["group_id"]) not in excluded_group_ids]
+    group_ids = [str(item["group_id"]) for item in candidates]
+    if len(group_ids) < len(roles):
+        raise ValueError(f"Need at least {len(roles)} non-empty group-safe blocks, got {len(group_ids)}.")
+
+    rng = np.random.default_rng(int(seed))
+    rng.shuffle(group_ids)
+    group_counts = _allocate_role_group_counts(len(group_ids), fractions)
+    role_groups: dict[str, list[str]] = {}
+    cursor = 0
+    for role, count in zip(roles, group_counts):
+        role_groups[role] = sorted(group_ids[cursor : cursor + count])
+        cursor += count
+    if cursor != len(group_ids):
+        raise RuntimeError("Role group allocation did not consume every group-safe block.")
+
+    group_roles = {group_id: role for role, groups in role_groups.items() for group_id in groups}
+    role_rows = {
+        role: [row for item in candidates if group_roles[str(item["group_id"])] == role for row in item["rows"]]
+        for role in roles
+    }
+    if any(not role_rows[role] for role in roles):
+        raise ValueError("A group-safe role has no sequence rows.")
+
+    pair_audits: dict[str, dict[str, Any]] = {}
+    strict_reasons: list[str] = []
+    for left_index, left_role in enumerate(roles):
+        for right_role in roles[left_index + 1 :]:
+            pair_name = f"{left_role}__{right_role}"
+            leakage = compute_split_leakage_diagnostics(
+                role_rows[left_role],
+                role_rows[right_role],
+                seq_len=seq_len,
+                pred_len=pred_len,
+                guard_band_frames=guard,
+            )
+            identity = compute_split_identity_audit(
+                role_rows[left_role],
+                role_rows[right_role],
+                train_group_ids=role_groups[left_role],
+                test_group_ids=role_groups[right_role],
+            )
+            leakage_keys = ("train_test_frame_overlap_count", "adjacent_window_cross_split_count", "guard_band_violations")
+            safe = all(int(leakage.get(key, 0)) == 0 for key in leakage_keys) and identity["status"] == "passed"
+            if not safe:
+                strict_reasons.append(pair_name)
+            pair_audits[pair_name] = {"leakage": leakage, "identity": identity, "passed": safe}
+
+    return {
+        "seed": int(seed),
+        "split_seed": int(seed),
+        "split_strategy": strategy,
+        "split_protocol": MMW_SPLIT_PROTOCOL_VERSION,
+        "split_protocol_version": MMW_SPLIT_PROTOCOL_VERSION,
+        "seq_len": int(seq_len or max(window - int(pred_len or 0), 1)),
+        "pred_len": int(pred_len or max(window - int(seq_len or window), 1)),
+        "num_pred": int(pred_len or max(window - int(seq_len or window), 1)),
+        "block_size_frames": block,
+        "guard_band_frames": guard,
+        "role_fractions": {role: fraction for role, fraction in zip(roles, fractions)},
+        "group_assignments": [
+            {key: value for key, value in item.items() if key != "rows"}
+            | {
+                "role": (
+                    "excluded_development"
+                    if str(item["group_id"]) in excluded_group_ids
+                    else group_roles.get(str(item["group_id"]), "unassigned_empty")
+                )
+            }
+            for item in assignments
+        ],
+        "role_groups": role_groups,
+        "role_window_counts": {role: len(role_rows[role]) for role in roles},
+        "excluded_group_count": len(excluded_group_ids),
+        "excluded_group_ids": sorted(excluded_group_ids),
+        "excluded_window_count": sum(
+            len(item["rows"]) for item in assignments if str(item["group_id"]) in excluded_group_ids
+        ),
+        "label_distribution": {role: _label_histogram(role_rows[role]) for role in roles},
+        "pair_audits": pair_audits,
+        "strict_validation_eligible": not strict_reasons,
+        "eligibility_reasons": strict_reasons,
+        "role_rows": role_rows,
+    }
+
+
+def _allocate_role_group_counts(total: int, fractions: tuple[float, ...]) -> tuple[int, ...]:
+    """Allocate every group once while ensuring each declared role is represented."""
+    if total < len(fractions):
+        raise ValueError("Not enough groups to assign every role.")
+    raw = [total * fraction for fraction in fractions]
+    counts = [max(1, int(np.floor(value))) for value in raw]
+    remainder = total - sum(counts)
+    if remainder > 0:
+        ranked = sorted(range(len(fractions)), key=lambda index: (raw[index] - np.floor(raw[index]), -index), reverse=True)
+        for index in ranked[:remainder]:
+            counts[index] += 1
+    elif remainder < 0:
+        ranked = sorted(range(len(fractions)), key=lambda index: (raw[index] - np.floor(raw[index]), index))
+        for index in ranked:
+            while remainder < 0 and counts[index] > 1:
+                counts[index] -= 1
+                remainder += 1
+            if remainder == 0:
+                break
+    if sum(counts) != total or any(count < 1 for count in counts):
+        raise RuntimeError("Could not allocate non-empty group counts for every role.")
+    return tuple(counts)
+
+
 def _time_blocks(rows: list[dict[str, Any]], *, block_size: int, guard: int) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -194,8 +343,10 @@ def compute_split_leakage_diagnostics(
     pred_len: int | None = None,  # noqa: ARG001
     guard_band_frames: int | None = None,
 ) -> dict[str, Any]:
-    train_frames = {frame for row in train_rows for frame in _frames(row)}
-    test_frames = {frame for row in test_rows for frame in _frames(row)}
+    # Raw CARLA frame numbers repeat across independent CAV/segment streams.
+    # A leakage identity therefore needs both its contiguous segment and frame.
+    train_frames = {_frame_identity(row, frame) for row in train_rows for frame in _frames(row)}
+    test_frames = {_frame_identity(row, frame) for row in test_rows for frame in _frames(row)}
     overlap = train_frames & test_frames
     guard = int(guard_band_frames or 0)
     violations = sum(
@@ -366,9 +517,17 @@ def _label_histogram(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 def _frames(row: dict[str, Any]) -> list[str]:
     try:
-        return [str(value) for value in json.loads(row.get("window_frame_ids_json", "[]"))]
+        values = [str(value) for value in json.loads(row.get("window_frame_ids_json", "[]"))]
+        if values:
+            return values
     except json.JSONDecodeError:
-        return [str(value) for value in range(_start(row), _end(row) + 1)]
+        pass
+    return [str(value) for value in range(_start(row), _end(row) + 1)]
+
+
+def _frame_identity(row: Mapping[str, Any], frame: str) -> str:
+    segment = str(row.get("contiguous_segment_id", "")).strip()
+    return f"{segment}:{frame}"
 
 
 def _start(row: dict[str, Any]) -> int:
@@ -402,5 +561,6 @@ __all__ = [
     "build_sequence_splits_from_manifest",
     "compute_split_identity_audit",
     "compute_split_leakage_diagnostics",
+    "partition_sequence_rows",
     "split_sequence_rows",
 ]

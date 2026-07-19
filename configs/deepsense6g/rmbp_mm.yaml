@@ -1,0 +1,45 @@
+_base_: _base.yaml
+experiment:
+  name: rmbp_mm
+model:
+  primary:
+    type: modular_sequence
+    modalities: [image, radar, gps, lidar]
+    image_profile: rgb_imagenet
+    image_channels: 3
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 1
+    encoders:
+      image: {type: resnet18_imagenet_rgb, output_dim: 64, pretrained: false, freeze_backbone: false}
+      radar: {type: radar_cnn, output_dim: 64, pretrained: false, freeze_backbone: false}
+      gps: {type: gps_mlp, output_dim: 64, pretrained: false, freeze_backbone: false}
+      lidar: {type: lidar_cnn, output_dim: 64, pretrained: false, freeze_backbone: false}
+    representation_core:
+      type: rmbp_channel_attention_fusion
+      d_model: 64
+      hidden_size: 64
+      num_layers: 1
+      modality_count: 4
+      bottleneck_dim: 2
+      dropout: 0.1
+    heads:
+      beam: {type: beam_head, dropout: 0.1, num_classes: 64}
+    paper_metadata:
+      model_group: RMBP-MM
+      baseline_scope: local_experimental_baseline
+      omitted_paper_inputs: [partial_beam_measurement]
+      omitted_paper_training_stages: [unimodal_pretraining, label_guided_similarity_imputation]
+loss:
+  type: focal_loss
+  alpha: 1
+  gamma: 2
+training:
+  grad_clip: 10.0
+comparability:
+  strict_ranking_allowed: false
+  claim_status: local_experimental_baseline

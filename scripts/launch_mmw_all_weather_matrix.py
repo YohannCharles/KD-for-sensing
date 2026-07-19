@@ -15,19 +15,23 @@ import yaml
 
 from kd_sensing.config import load_config
 from kd_sensing.data.transform_ops.io import joined_resource
+from kd_sensing.utils.artifact_registry import router_architecture_profile_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
-METHODS = ("S1", "T2", "amber_full", "rmbp_mm")
+METHODS = ("S1", "T2", "masktrain_cls", "amber_full", "rmbp_mm", "amr_net_4m")
 T2_ABLATION_METHODS = ("T2-NoBPA", "T2-BPA2CMA", "T2-Linear", "T2-CLS", "T2-CLS-CMA")
 ALL_METHODS = (*METHODS, *T2_ABLATION_METHODS)
 T2_BASE_CONFIG = "configs/mmw/t2.yaml"
 UMASK_MAINLINE_METHODS = ("S1", "T2")
+H4_MATCHED_BASELINES = ("masktrain_cls", "amr_net_4m")
 METHOD_BASES = {
     "S1": "configs/mmw/s1.yaml",
     "T2": T2_BASE_CONFIG,
+    "masktrain_cls": "configs/mmw/masktrain_cls.yaml",
     "amber_full": "configs/mmw/amber_full.yaml",
     "rmbp_mm": "configs/mmw/rmbp_mm.yaml",
+    "amr_net_4m": "configs/mmw/amr_net_4m.yaml",
     **{method: T2_BASE_CONFIG for method in T2_ABLATION_METHODS},
 }
 UMASK_TRAINING_PROFILES = {
@@ -53,6 +57,18 @@ UMASK_TRAINING_PROFILES = {
         },
     },
 }
+UMASK_ROUTER_ARCHITECTURE_PROFILES = {
+    "umask_router_pattern_v1": {
+        "model": {"primary": {"router_use_pattern_features": True}},
+        "selection_scope": "legacy_control",
+        "source_design_candidate": "base_t2_yaml",
+    },
+    "umask_router_nopattern_v1": {
+        "model": {"primary": {"router_use_pattern_features": False}},
+        "selection_scope": "development_mainline_pending_inner_mask_multiseed",
+        "source_design_candidate": "RouterNoPattern",
+    },
+}
 WEATHERS = ("sunny", "rainy", "foggy")
 SCENES = (
     "Town03_5wayroad_seed28",
@@ -65,6 +81,12 @@ MODALITIES = ("image", "radar", "gps", "lidar")
 SPLIT_TAG = "h5p1_strict_v2"
 DEFAULT_OUTPUT_ROOT = "outputs/mmw_all_weather_h5p1_seed1_v2"
 BASELINE_FIDELITY = {
+    "masktrain_cls": {
+        "reproduction_scope": "plain_mask_training_control",
+        "paper_equivalent": False,
+        "architecture_scope": "shared_encoders_availability_normalized_mean_classifier",
+        "temporal_result_scope": "fair_mask_training_control",
+    },
     "amber_full": {
         "reproduction_scope": "amber_full_local_adaptation",
         "paper_equivalent": False,
@@ -79,6 +101,13 @@ BASELINE_FIDELITY = {
         "omitted_paper_training_stages": ["unimodal_pretraining", "label_guided_similarity_imputation"],
         "architecture_scope": "channel_attention_fusion_only",
         "temporal_result_scope": "out_of_paper_scope_diagnostic",
+    },
+    "amr_net_4m": {
+        "reproduction_scope": "four_modality_window5_local_adaptation",
+        "paper_equivalent": False,
+        "architecture_scope": "gaussian_embedding_uncertainty_aware_feature_fusion",
+        "adaptations": ["add_radar", "window5", "shared_four_modality_encoders"],
+        "temporal_result_scope": "local_adaptation_diagnostic",
     },
 }
 
@@ -180,10 +209,18 @@ def _apply_t2_ablation(payload: dict[str, Any], method: str) -> None:
 
 
 def default_umask_training_profile(method: str) -> str | None:
-    if method in UMASK_MAINLINE_METHODS:
+    if method in {*UMASK_MAINLINE_METHODS, *H4_MATCHED_BASELINES}:
         return "umask_h4_v1"
     if method in T2_ABLATION_METHODS:
         return "legacy_h0_v1"
+    return None
+
+
+def default_umask_router_architecture_profile(method: str) -> str | None:
+    if method in UMASK_MAINLINE_METHODS:
+        return "umask_router_nopattern_v1"
+    if method in T2_ABLATION_METHODS:
+        return "umask_router_pattern_v1"
     return None
 
 
@@ -203,8 +240,8 @@ def _apply_umask_training_profile(
     method: str,
     profile_id: str | None,
 ) -> dict[str, Any] | None:
-    is_umask_method = method in {*UMASK_MAINLINE_METHODS, *T2_ABLATION_METHODS}
-    if not is_umask_method:
+    accepts_profile = method in {*UMASK_MAINLINE_METHODS, *T2_ABLATION_METHODS, *H4_MATCHED_BASELINES}
+    if not accepts_profile:
         if profile_id is not None:
             raise ValueError(f"{method} does not accept a U-Mask training profile.")
         return None
@@ -225,6 +262,37 @@ def _apply_umask_training_profile(
         "id": profile_id,
         "canonical_values": canonical_values,
         "sha256": _profile_sha256(profile_id, canonical_values),
+    }
+
+
+def _apply_umask_router_architecture_profile(
+    payload: dict[str, Any],
+    *,
+    method: str,
+    profile_id: str | None,
+) -> dict[str, Any] | None:
+    is_umask_method = method in {*UMASK_MAINLINE_METHODS, *T2_ABLATION_METHODS}
+    if not is_umask_method:
+        if profile_id is not None:
+            raise ValueError(f"{method} does not accept a U-Mask router architecture profile.")
+        return None
+    if profile_id is None:
+        raise ValueError(f"{method} requires an explicit U-Mask router architecture profile.")
+    if method in T2_ABLATION_METHODS and profile_id != "umask_router_pattern_v1":
+        raise ValueError(f"{method} must use the umask_router_pattern_v1 router architecture profile.")
+    try:
+        canonical_values = deepcopy(UMASK_ROUTER_ARCHITECTURE_PROFILES[profile_id])
+    except KeyError as exc:
+        supported = ", ".join(sorted(UMASK_ROUTER_ARCHITECTURE_PROFILES))
+        raise ValueError(
+            f"Unknown U-Mask router architecture profile {profile_id!r}; supported: {supported}."
+        ) from exc
+    primary_values = canonical_values["model"]["primary"]
+    payload.setdefault("model", {}).setdefault("primary", {}).update(deepcopy(primary_values))
+    return {
+        "id": profile_id,
+        "canonical_values": canonical_values,
+        "sha256": router_architecture_profile_sha256(profile_id, canonical_values),
     }
 
 
@@ -383,6 +451,7 @@ def build_config(
     epochs: int,
     batch_size: int,
     umask_training_profile: str | None = None,
+    umask_router_architecture_profile: str | None = None,
 ) -> dict[str, Any]:
     selected_modalities = MODALITIES
     base_path = ROOT / METHOD_BASES[method]
@@ -466,6 +535,13 @@ def build_config(
     payload["temporal_missing"] = deepcopy(temporal)
     payload["temporal_missing"]["seed"] = int(seed)
     _apply_t2_ablation(payload, method)
+    if umask_router_architecture_profile is None:
+        umask_router_architecture_profile = default_umask_router_architecture_profile(method)
+    router_architecture_profile = _apply_umask_router_architecture_profile(
+        payload,
+        method=method,
+        profile_id=umask_router_architecture_profile,
+    )
     patterns = [
         "full", "missing_image", "missing_radar", "missing_gps", "missing_lidar",
         "image_only", "radar_only", "gps_only", "lidar_only",
@@ -504,6 +580,10 @@ def build_config(
         protocol["training_profile"] = training_profile
     else:
         protocol.pop("training_profile", None)
+    if router_architecture_profile is not None:
+        protocol["router_architecture_profile"] = router_architecture_profile
+    else:
+        protocol.pop("router_architecture_profile", None)
     if method in T2_ABLATION_PROTOCOL:
         protocol["t2_ablation"] = {
             "protocol": "mmw_t2_bpa_cma_ablation_v1",
@@ -580,6 +660,12 @@ def main() -> int:
     parser.add_argument("--methods", default=",".join(METHODS))
     parser.add_argument("--seeds", default="1")
     parser.add_argument("--gpus", default=None)
+    parser.add_argument(
+        "--umask-router-architecture-profile",
+        choices=("auto", *sorted(UMASK_ROUTER_ARCHITECTURE_PROFILES)),
+        default="auto",
+        help="Router architecture profile for T2/S1; auto selects the current mainline or legacy control.",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -620,6 +706,13 @@ def main() -> int:
     for job in jobs:
         method = job["method"]
         seed = int(job["seed"])
+        router_profile = (
+            default_umask_router_architecture_profile(method)
+            if args.umask_router_architecture_profile == "auto"
+            else args.umask_router_architecture_profile
+        )
+        if method not in {*UMASK_MAINLINE_METHODS, *T2_ABLATION_METHODS}:
+            router_profile = None
         config_payload = build_config(
             method,
             Path(args.output_root),
@@ -628,6 +721,7 @@ def main() -> int:
             epochs=epochs,
             batch_size=args.batch_size,
             umask_training_profile=default_umask_training_profile(method),
+            umask_router_architecture_profile=router_profile,
         )
         job["config_path"].write_text(
             yaml.safe_dump(

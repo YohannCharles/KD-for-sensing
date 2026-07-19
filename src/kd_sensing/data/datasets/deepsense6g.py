@@ -252,7 +252,7 @@ class DeepSense6GDataset(Dataset):
             "root_csv": str(self.root_csv),
             "seq_len": self.seq_len,
             "prediction_window": self.num_pred,
-            "future_beam_path": self.samples.future_beam_paths[idx][0],
+            "future_beam_path": str(joined_resource(self.data_root, self.samples.future_beam_paths[idx][0]).resolve()),
             "target_label_source": "future_beam_power_argmax",
         }
         sample["sample_id"] = sample_id
@@ -312,7 +312,7 @@ def _load_samples(
         gps_paths=_paths_for_rows(csv_path, rows, columns["gps"]),
         bs_gps_paths=_paths_for_rows(csv_path, rows, columns["bs_gps"]),
         lidar_paths=_paths_for_rows(csv_path, rows, columns["lidar"]),
-        future_beam_paths=_paths_for_rows(csv_path, rows, columns["future_beam"]),
+        future_beam_paths=_paths_for_rows(csv_path, rows, columns["future_beam"][:num_pred]),
         metadata=metadata,
     )
 
@@ -356,7 +356,9 @@ def _paths_for_rows(csv_path: Path, rows: list[dict[str, str]], columns: list[st
             value = _row_text(row.get(column))
             if value is None:
                 raise ValueError(f"DeepSense6G CSV {csv_path} row {row_index} is missing {column}.")
-            values.append(value)
+            # Public DeepSense6G CSVs commonly encode paths as ``/unitN/...``;
+            # the leading slash is dataset-relative, not a filesystem root.
+            values.append(value.lstrip("/"))
         paths.append(values)
     return paths
 

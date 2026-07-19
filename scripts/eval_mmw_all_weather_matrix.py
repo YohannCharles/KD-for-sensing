@@ -9,7 +9,9 @@ import random
 import time
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
+import numpy as np
 import torch
 import yaml
 
@@ -20,16 +22,17 @@ from kd_sensing.data.temporal_missing import (
 )
 from kd_sensing.engine.data_factory import build_dataloader, build_dataloaders
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
-from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
+from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch, sample_ids_from_batch
 from kd_sensing.engine.modality_resolution import config_uses_gps
 from kd_sensing.engine.normalization_artifacts import (
     load_normalization_artifacts,
     validate_normalization_artifact_fingerprint,
 )
 from kd_sensing.engine.optim import build_device, build_model
-from kd_sensing.engine.runtime import configure_cuda_performance_settings, run_model_step
+from kd_sensing.engine.runtime import configure_cuda_performance_settings, prepare_task_labels, run_model_step
 from kd_sensing.engine.trainer_runtime_helpers import shutdown_all_dataloaders
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import _beam_classification_metrics
+from kd_sensing.evaluation.metrics import beam_power_communication_summary
 from kd_sensing.utils.artifact_registry import (
     load_checkpoint_metadata,
     validate_evaluation_gps_checkpoint_provenance,
@@ -41,8 +44,36 @@ from kd_sensing.utils.seed import set_seed
 
 ROOT = Path(__file__).resolve().parents[1]
 METHODS = ("S1", "T2", "amber_full", "rmbp_mm")
-T2_ABLATION_METHODS = ("T2-NoBPA", "T2-BPA2CMA", "T2-Linear", "T2-CLS", "T2-CLS-CMA")
-SUPPORTED_METHODS = (*METHODS, *T2_ABLATION_METHODS)
+T2_ABLATION_METHODS = (
+    "T2-NoBPA",
+    "T2-TopologyLinear",
+    "T2-TopologyPermuted",
+    "T2-CLS",
+    "T2-NoRouterOracle",
+    "T2-ReliabilityOnly",
+    "T2-Uniform",
+    "T2-WholeOnly",
+    "T2-BPA2CMA",
+    "HardFirstControl",
+    "HardConfidenceTie",
+    "SoftUniformTie",
+    "SoftConfidenceTie",
+    "DistanceSoftT05",
+    "DistanceSoftT10",
+    "DistanceConfidenceT10",
+    "UniformFusion",
+)
+ROUTER_UTILITY_METHODS = (
+    "CurrentControl",
+    "ExpectedMainT01",
+    "PairUngated",
+    "PairEntropy120",
+    "PairEntropy130",
+    "MonoW002",
+    "MonoW005",
+    "MonoW010",
+)
+SUPPORTED_METHODS = (*METHODS, *T2_ABLATION_METHODS, *ROUTER_UTILITY_METHODS)
 RATES = (0.0, 0.2, 0.4, 0.6, 0.8)
 MASK_TYPES = ("modality_frame", "frame_level", "block")
 MASK_CACHE_SEED = 20260713
@@ -75,6 +106,14 @@ BASELINE_SCOPES = {
             "temporal_result_scope": "paired_objective_topology_head_ablation",
         }
         for method in T2_ABLATION_METHODS
+    },
+    **{
+        method: {
+            "reproduction_scope": "router_utility_inner_screen",
+            "paper_equivalent": False,
+            "temporal_result_scope": "development_inner_validation",
+        }
+        for method in ROUTER_UTILITY_METHODS
     },
 }
 
@@ -413,14 +452,21 @@ def _checkpoint_evidence_identity(
 ) -> dict[str, str]:
     protocol = cfg.get("mmw_all_weather_protocol")
     profile = protocol.get("training_profile") if isinstance(protocol, dict) else None
-    screen = cfg.get("mmw_t2_design_screening")
+    router_profile = protocol.get("router_architecture_profile") if isinstance(protocol, dict) else None
+    screen = cfg.get("mmw_tie_aware_router_screen", cfg.get("mmw_t2_design_screening"))
     return {
         "checkpoint_sha256": _sha256(checkpoint),
         "checkpoint_role": str((metadata or {}).get("checkpoint_role", "fixed_epoch_last_pth")),
         "training_profile_id": str(profile.get("id", "")) if isinstance(profile, dict) else "",
         "training_profile_sha256": str(profile.get("sha256", "")) if isinstance(profile, dict) else "",
+        "router_architecture_profile_id": str(router_profile.get("id", "")) if isinstance(router_profile, dict) else "",
+        "router_architecture_profile_sha256": str(router_profile.get("sha256", "")) if isinstance(router_profile, dict) else "",
         "design_candidate_id": str(screen.get("candidate_id", "")) if isinstance(screen, dict) else "",
-        "design_config_sha256": str(screen.get("config_sha256", "")) if isinstance(screen, dict) else "",
+        "design_config_sha256": (
+            str(screen.get("config_sha256", screen.get("candidate_recipe_sha256", "")))
+            if isinstance(screen, dict)
+            else ""
+        ),
     }
 
 
@@ -432,10 +478,19 @@ def _evaluate_masks(
     mask_items: list[dict[str, Any]],
     max_batches: int | None,
     mask_modalities: list[str] | tuple[str, ...] | None = None,
+    batch_transform: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
+    trace_sink: list[dict[str, Any]] | None = None,
+    trace_condition_indices: set[int] | None = None,
 ) -> list[dict[str, float | int | bool]]:
     states = [
-        {"sums": {}, "count": 0, "batch_count": 0, "mask": _mask_in_model_order(model, item, mask_modalities)[0]}
-        for item in mask_items
+        {
+            "sums": {},
+            "count": 0,
+            "batch_count": 0,
+            "condition_index": index,
+            "mask": _mask_in_model_order(model, item, mask_modalities)[0],
+        }
+        for index, item in enumerate(mask_items)
     ]
     model_modalities = tuple(str(item) for item in getattr(model, "modalities", mask_modalities or DEFAULT_TEMPORAL_MODALITIES))
     with torch.no_grad():
@@ -443,6 +498,9 @@ def _evaluate_masks(
             if max_batches is not None and batch_index >= int(max_batches):
                 break
             prepared = prepare_evaluation_batch(raw_batch)
+            if batch_transform is not None:
+                prepared = batch_transform(_clone_batch(prepared), batch_index)
+            future_beam_power = _load_future_beam_power(prepared)
             for state in states:
                 batch = _clone_batch(prepared)
                 apply_modality_temporal_mask_to_batch(batch, state["mask"], modalities=model_modalities)
@@ -457,10 +515,24 @@ def _evaluate_masks(
                     device=device,
                     extra_model_kwargs={"missing_mask": modality_mask},
                 )
+                num_pred = int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1)))
                 logits = step.logits[:, -1, :] if step.logits.ndim == 3 else step.logits
-                target = step.labels[:, -1].reshape(-1) if step.labels.ndim > 1 else step.labels.reshape(-1)
+                labels = prepare_task_labels(step.batch, num_pred=num_pred, device=device)
+                target = labels[:, -1].reshape(-1) if labels.ndim > 1 else labels.reshape(-1)
                 metrics = _beam_classification_metrics(logits, target, cfg)
+                metrics.update(beam_power_communication_summary(logits, future_beam_power))
                 metrics.update(_router_metrics(step.model_output.diagnostics, getattr(model, "modalities", ())))
+                if trace_sink is not None and (
+                    trace_condition_indices is None or int(state["condition_index"]) in trace_condition_indices
+                ):
+                    _append_prediction_trace(
+                        trace_sink,
+                        condition_index=int(state["condition_index"]),
+                        batch=step.batch,
+                        logits=logits,
+                        target=target,
+                        model_output=step.model_output,
+                    )
                 batch_count = int(target.numel())
                 state["count"] += batch_count
                 state["batch_count"] += 1
@@ -477,6 +549,77 @@ def _evaluate_masks(
         }
         for state in states
     ]
+
+
+def _append_prediction_trace(
+    sink: list[dict[str, Any]],
+    *,
+    condition_index: int,
+    batch: dict[str, Any],
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    model_output,
+) -> None:
+    predictions = logits.detach().argmax(dim=-1).cpu()
+    labels = target.detach().cpu()
+    ids = sample_ids_from_batch(batch)
+    if len(ids) != int(labels.numel()):
+        ids = [f"batch_sample_{index}" for index in range(int(labels.numel()))]
+    features = model_output.output_features
+    if torch.is_tensor(features):
+        features = features.detach().float().cpu()
+    diagnostics = model_output.diagnostics
+    router = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
+    unimodal = diagnostics.get("unimodal_logits")
+    router = router.detach().float().cpu() if torch.is_tensor(router) else None
+    unimodal = unimodal.detach().float().cpu() if torch.is_tensor(unimodal) else None
+    top2 = logits.detach().float().topk(min(2, logits.shape[-1]), dim=-1).values.cpu()
+    score_rows = logits.detach().float().cpu()
+    for index, sample_id in enumerate(ids):
+        row: dict[str, Any] = {
+            "condition_index": int(condition_index),
+            "sample_id": str(sample_id),
+            "target": int(labels[index]),
+            "prediction": int(predictions[index]),
+            "prediction_margin": float(top2[index, 0] - top2[index, -1]) if top2.shape[1] > 1 else float(top2[index, 0]),
+        }
+        beam_ids = torch.arange(score_rows.shape[1])
+        near = torch.minimum((beam_ids - labels[index]).abs(), score_rows.shape[1] - (beam_ids - labels[index]).abs()).le(1)
+        row["prototype_neighbor_margin"] = float(score_rows[index, near].max() - score_rows[index, ~near].max())
+        if torch.is_tensor(features):
+            row["output_features"] = features[index].reshape(-1).tolist()
+        if torch.is_tensor(router):
+            row["router_weights"] = router[index].reshape(-1).tolist()
+        if torch.is_tensor(unimodal):
+            unimodal_predictions = unimodal[index].argmax(dim=-1).reshape(-1)
+            distances = torch.minimum(
+                (unimodal_predictions - labels[index]).abs(),
+                logits.shape[-1] - (unimodal_predictions - labels[index]).abs(),
+            )
+            row["unimodal_predictions"] = unimodal_predictions.tolist()
+            row["router_oracle_modality"] = int(distances.argmin())
+            if torch.is_tensor(router):
+                row["router_selected_modality"] = int(router[index].reshape(-1).argmax())
+                row["router_oracle_aligned"] = row["router_selected_modality"] == row["router_oracle_modality"]
+        sink.append(row)
+
+
+def _load_future_beam_power(batch: dict[str, Any]) -> torch.Tensor:
+    metadata = batch.get("metadata")
+    paths = metadata.get("future_beam_path") if isinstance(metadata, dict) else None
+    if not isinstance(paths, (list, tuple)) or not paths:
+        raise ValueError("Evaluation batch metadata is missing future_beam_path values.")
+    rows = []
+    for value in paths:
+        path = Path(str(value))
+        try:
+            powers = torch.as_tensor(np.loadtxt(path), dtype=torch.float32).reshape(-1)
+        except Exception as exc:
+            raise ValueError(f"Failed to load future beam power vector {path}: {exc}") from exc
+        if powers.numel() != 64:
+            raise ValueError(f"Future beam power vector must contain 64 values: {path}")
+        rows.append(powers)
+    return torch.stack(rows)
 
 
 def _clone_batch(value: Any) -> Any:

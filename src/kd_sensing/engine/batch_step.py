@@ -74,7 +74,9 @@ class BatchStepRunner:
         with autocast_context(self.amp_enabled, context.device, self.amp_dtype):
             controls = ForwardControls()
             for extension, state in zip(self.extensions, self.extension_states):
-                controls = controls.merge(extension.before_forward(context, state, batch, labels, epoch=epoch))
+                controls = controls.merge(
+                    extension.before_forward(context, state, batch, labels, epoch=epoch, step=step)
+                )
             controls = _respect_temporal_availability(controls, batch)
             started = time.perf_counter() if self.timing_enabled else None
             step_output = run_model_step(

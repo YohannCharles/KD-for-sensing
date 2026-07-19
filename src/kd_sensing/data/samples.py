@@ -46,7 +46,7 @@ def create_samples(
         column
         for column in frame.columns
         if column in {"condition", "town", "sensor_scenario", "sample_id", "target_sample_id"}
-        or str(column).startswith("future_beam_label")
+        or str(column).startswith("future_beam")
     ]
     _validate_columns(
         csv_path,

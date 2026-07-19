@@ -5,6 +5,7 @@ import torch
 
 
 DBA_TOP_K = 3
+COMMUNICATION_SNR_DB = (0, 10, 20)
 
 
 def circular_beam_distance(prediction, target, *, num_beams: int = 64):
@@ -73,7 +74,7 @@ def beam_classification_circular_summary(
 
     beams = int(num_beams or scores.shape[-1])
     valid = target.ne(ignore_index) & target.ge(0) & target.lt(beams)
-    result = {"DBA": 0.0, "mean_error": 0.0, "within_3": 0.0, "top1": 0.0, "top3": 0.0, "top5": 0.0}
+    result = {"DBA": 0.0, "mean_error": 0.0, "within_1": 0.0, "within_3": 0.0, "top1": 0.0, "top3": 0.0, "top5": 0.0}
     if not bool(valid.any()):
         return result
 
@@ -82,6 +83,7 @@ def beam_classification_circular_summary(
     result.update(
         DBA=float((1.0 - (distances / max(float(dba_delta), 1e-8)).clamp(max=1.0)).mean().item()),
         mean_error=float(distances.mean().item()),
+        within_1=float(distances.le(1).float().mean().item()),
         within_3=float(distances.le(3).float().mean().item()),
     )
     for k in topk:
@@ -93,6 +95,49 @@ def beam_classification_circular_summary(
             .mean()
             .item()
         )
+    return result
+
+
+def beam_power_communication_summary(
+    outputs,
+    beam_powers,
+    *,
+    snr_db: tuple[int, ...] = COMMUNICATION_SNR_DB,
+) -> dict[str, float]:
+    """Measure the communication loss of the predicted beam from full power vectors.
+
+    The best beam in each sample defines unit gain.  Reference SNR therefore
+    means the SNR achieved by the oracle beam, which avoids inventing an
+    unavailable absolute noise calibration for the simulator power files.
+    """
+    scores = torch.as_tensor(outputs).detach().cpu().float()
+    powers = torch.as_tensor(beam_powers).detach().cpu().float()
+    if scores.ndim == 3 and scores.shape[1] == 1:
+        scores = scores[:, 0]
+    if powers.ndim == 3 and powers.shape[1] == 1:
+        powers = powers[:, 0]
+    if scores.ndim != 2 or powers.ndim != 2 or scores.shape != powers.shape:
+        raise ValueError("outputs and beam_powers must have matching shapes [N, C].")
+    if scores.shape[0] == 0:
+        raise ValueError("communication metrics require at least one sample.")
+    if not bool(torch.isfinite(powers).all()) or bool((powers < 0).any()):
+        raise ValueError("beam_powers must contain finite non-negative values.")
+
+    best_power = powers.max(dim=-1).values
+    if bool((best_power <= 0).any()):
+        raise ValueError("each beam-power vector must contain a positive oracle power.")
+    predicted_power = powers.gather(1, scores.argmax(dim=-1, keepdim=True)).squeeze(1)
+    normalized_gain = (predicted_power / best_power).clamp(min=torch.finfo(torch.float32).tiny, max=1.0)
+    result = {
+        "normalized_gain": float(normalized_gain.mean().item()),
+        "gain_loss_db": float((-10.0 * torch.log10(normalized_gain)).mean().item()),
+    }
+    for value in snr_db:
+        reference_snr = 10.0 ** (float(value) / 10.0)
+        oracle_rate = torch.log2(torch.as_tensor(1.0 + reference_snr))
+        predicted_rate = torch.log2(1.0 + reference_snr * normalized_gain)
+        result[f"spectral_efficiency_ratio_{int(value)}db"] = float((predicted_rate / oracle_rate).mean().item())
+        result[f"spectral_efficiency_loss_{int(value)}db"] = float((oracle_rate - predicted_rate).mean().item())
     return result
 
 
@@ -161,7 +206,9 @@ def _normalized_distance_mode(mode: str) -> str:
 
 
 __all__ = [
+    "COMMUNICATION_SNR_DB",
     "beam_classification_circular_summary",
+    "beam_power_communication_summary",
     "calculate_dba_score",
     "calculate_topk_accuracy",
     "circular_beam_distance",

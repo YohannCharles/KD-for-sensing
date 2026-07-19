@@ -1,0 +1,46 @@
+_base_: _base.yaml
+experiment:
+  name: amr_net_4m
+model:
+  primary:
+    type: modular_sequence
+    modalities: [image, radar, gps, lidar]
+    image_profile: rgb_imagenet
+    image_channels: 3
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 1
+    encoders:
+      image: {type: tinyvit_5m_scratch_rgb, output_dim: 64, pretrained: false, freeze_backbone: false}
+      radar: {type: radar_cnn, output_dim: 64, pretrained: false, freeze_backbone: false}
+      gps: {type: gps_mlp, output_dim: 64, hidden_size: 64, dropout: 0.1, pretrained: false, freeze_backbone: false}
+      lidar: {type: tinyvit_5m_scratch_rgb, output_dim: 64, pretrained: false, freeze_backbone: false}
+    representation_core:
+      type: amr_gaussian_uncertainty_fusion
+      d_model: 64
+      modality_count: 4
+      latent_dim: 64
+      output_dim: 64
+      dropout: 0.1
+      deterministic_inference: true
+    heads:
+      beam: {type: beam_head, dropout: 0.1, num_classes: 64}
+    paper_metadata:
+      model_group: AMR-Net-4M-Adapted
+      reproduction_scope: four_modality_window5_local_adaptation
+      paper_equivalent: false
+loss:
+  type: cross_entropy
+  auxiliary:
+    amr_adapted:
+      enabled: true
+      kl_weight: 0.01
+      consistency_weight: 0.05
+training:
+  grad_clip: 5.0
+temporal_missing:
+  preserve_unmasked_for_superset: false

@@ -33,6 +33,8 @@ _REQUIRED_EVIDENCE_FIELDS = (
     "expected_domain_count",
     "training_profile_id",
     "training_profile_sha256",
+    "router_architecture_profile_id",
+    "router_architecture_profile_sha256",
     "design_candidate_id",
     "design_config_sha256",
 )
@@ -82,7 +84,7 @@ def _validate_complete_evidence(rows: list[dict[str, str]]) -> None:
     seen_identities: set[tuple[str, ...]] = set()
     coverage_groups: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     comparison_profiles: dict[tuple[str, ...], set[str]] = defaultdict(set)
-    method_provenance: dict[tuple[str, str], set[tuple[str, str, str, str, str]]] = defaultdict(set)
+    method_provenance: dict[tuple[str, str], set[tuple[str, ...]]] = defaultdict(set)
     for row in rows:
         missing = [field for field in _REQUIRED_EVIDENCE_FIELDS if field not in row]
         empty = [field for field in _NONEMPTY_EVIDENCE_FIELDS if not str(row.get(field, "")).strip()]
@@ -134,6 +136,8 @@ def _validate_complete_evidence(rows: list[dict[str, str]]) -> None:
                 "seed",
                 "training_profile_id",
                 "training_profile_sha256",
+                "router_architecture_profile_id",
+                "router_architecture_profile_sha256",
                 "design_candidate_id",
                 "design_config_sha256",
                 "checkpoint_sha256",
@@ -159,6 +163,8 @@ def _validate_complete_evidence(rows: list[dict[str, str]]) -> None:
                 for field in (
                     "training_profile_id",
                     "training_profile_sha256",
+                    "router_architecture_profile_id",
+                    "router_architecture_profile_sha256",
                     "design_candidate_id",
                     "design_config_sha256",
                     "checkpoint_sha256",
@@ -190,6 +196,8 @@ def _domain_cells(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         "seed",
         "training_profile_id",
         "training_profile_sha256",
+        "router_architecture_profile_id",
+        "router_architecture_profile_sha256",
         "design_candidate_id",
         "design_config_sha256",
         "checkpoint_sha256",
@@ -227,6 +235,8 @@ def _rollups(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "seed",
         "training_profile_id",
         "training_profile_sha256",
+        "router_architecture_profile_id",
+        "router_architecture_profile_sha256",
         "design_candidate_id",
         "design_config_sha256",
         "checkpoint_sha256",

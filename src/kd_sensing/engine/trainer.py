@@ -15,6 +15,7 @@ from kd_sensing.engine.debug_diagnostics import (
     write_config_diff_artifact,
     write_startup_summary,
 )
+from kd_sensing.engine.model_initialization import initialize_model_from_checkpoint
 from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata, resolve_prediction_objective
 from kd_sensing.engine.optim import (
@@ -169,7 +170,17 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
 
 def _build_training_resources(context: TrainingRunContext) -> None:
     context.primary_model = build_model(context.model_cfg["primary"]).to(context.device)
-    context.state = TrainingState(start_epoch=int(context.training_cfg.get("start_epoch", 0)))
+    initialization_load = initialize_model_from_checkpoint(
+        context.primary_model,
+        context.training_cfg,
+        map_location="cpu",
+    )
+    context.state = TrainingState(
+        start_epoch=0 if initialization_load is not None else int(context.training_cfg.get("start_epoch", 0))
+    )
+    if initialization_load is not None:
+        context.state.checkpoint_loads.append(initialization_load)
+        context.cfg.setdefault("runtime", {})["model_initialization"] = initialization_load
     context.task_criterion = build_task_criterion(context.cfg)
     context.optimizer = build_optimizer(context.cfg, context.primary_model)
     context.scheduler = build_scheduler(context.cfg, context.optimizer)
