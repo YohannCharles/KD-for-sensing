@@ -52,7 +52,7 @@ def _inputs() -> dict[str, torch.Tensor]:
     }
 
 
-def _candidate_config(variant: str) -> dict[str, object]:
+def _candidate_config(variant: str, *, evidence_profile: str = "full") -> dict[str, object]:
     config = _model_config()
     config.update(
         {
@@ -62,6 +62,7 @@ def _candidate_config(variant: str) -> dict[str, object]:
                 "topology_id": "cyclic_index_v1",
                 "circular": True,
                 "dropout": 0.0,
+                "evidence_profile": evidence_profile,
             },
         }
     )
@@ -121,6 +122,23 @@ def test_h2r_temporal_gate_receives_gradient_before_pooling() -> None:
     assert health is not None
     assert health[-1].weight.grad is not None
     assert health[-1].weight.grad.abs().sum().item() > 0.0
+
+
+def test_h2r_profiles_preserve_parameter_count_and_report_metadata() -> None:
+    models = [
+        MODELS.build(_candidate_config("h2r", evidence_profile=profile))
+        for profile in ("full", "generic_confidence", "prototype_topology")
+    ]
+    assert len({sum(parameter.numel() for parameter in model.parameters()) for model in models}) == 1
+    for model, profile in zip(models, ("full", "generic_confidence", "prototype_topology"), strict=True):
+        output = model(**_inputs())
+        assert output["router_evidence_profile"] == profile
+        assert output["metadata"]["router_evidence_profile"] == profile
+
+
+def test_h2r_rejects_unknown_evidence_profile() -> None:
+    with pytest.raises(ValueError, match="evidence_profile"):
+        MODELS.build(_candidate_config("h2r", evidence_profile="unknown"))
 
 
 def test_dynamic_router_rejects_independent_incompatible_modes() -> None:

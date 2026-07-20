@@ -110,3 +110,59 @@ def test_dynamic_power_evaluation_rejects_pre_ampfix_config(tmp_path: Path) -> N
         router_reliability_source_sha256=JOINT.sha256(JOINT.ROUTER_RELIABILITY_SOURCE),
     )
     assert JOINT.validate_router_screen_config(config, checkpoint) == "H2R-Power"
+
+
+def test_decision_alignment_config_requires_frozen_40_epoch_identity(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "last.pth"
+    checkpoint.touch()
+    config = {
+        "model": {"primary": {"router_variant": "h2r"}},
+        "training": {"epochs": 40},
+        "mmw_dynamic_router_decision_screen": {
+            "protocol": "mmw_dynamic_router_decision_alignment_v1",
+            "candidate": "H2R-PowerMargin",
+            "router_variant": "h2r",
+            "supervision": "beam_power",
+            "fused_decision_objective": "power_top1_margin",
+            "selection_split": "frozen_inner_validation_only",
+            "seed": 1,
+            "utility_numeric_policy": JOINT.UTILITY_NUMERIC_POLICY,
+            "router_reliability_source_sha256": JOINT.sha256(JOINT.ROUTER_RELIABILITY_SOURCE),
+            "claim_eligible": False,
+        },
+    }
+    assert JOINT.validate_router_screen_config(config, checkpoint) == "H2R-PowerMargin"
+    config["mmw_dynamic_router_decision_screen"]["fused_decision_objective"] = "unknown"
+    with pytest.raises(ValueError, match="decision-alignment"):
+        JOINT.validate_router_screen_config(config, checkpoint)
+
+
+def test_h2r_simplification_config_accepts_fixed_profile_and_epoch(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "last.pth"
+    checkpoint.touch()
+    config = {
+        "model": {
+            "primary": {
+                "router_variant": "h2r",
+                "router_variant_config": {"evidence_profile": "prototype_topology"},
+            }
+        },
+        "training": {"epochs": 10},
+        "mmw_h2r_simplification_screen": {
+            "protocol": "mmw_h2r_simplification_screen_v1",
+            "candidate": "PrototypeMono-10",
+            "router_variant": "h2r",
+            "evidence_profile": "prototype_topology",
+            "supervision": "label_topology",
+            "fused_decision_objective": "joint_hard_ce",
+            "calibration_epochs": 10,
+            "selection_split": "frozen_inner_validation_only",
+            "seed": 1,
+            "router_reliability_source_sha256": JOINT.sha256(JOINT.ROUTER_RELIABILITY_SOURCE),
+            "claim_eligible": False,
+        },
+    }
+    assert JOINT.validate_router_screen_config(config, checkpoint) == "PrototypeMono-10"
+    config["model"]["primary"]["router_variant_config"]["evidence_profile"] = "full"
+    with pytest.raises(ValueError, match="H2R simplification"):
+        JOINT.validate_router_screen_config(config, checkpoint)

@@ -85,9 +85,48 @@ class CheckpointManager:
         state.checkpoint_loads.append(checkpoint.get("_load_info"))
 
     def save_last_checkpoint(self, *, state: TrainingState, epoch: int, val_loss: float | None) -> Path:
+        return self._save_checkpoint(
+            state=state,
+            epoch=epoch,
+            val_loss=val_loss,
+            filename="last.pth",
+            role="last",
+            checkpoint_source="fixed-epoch-last",
+            checkpoint_policy="fixed_epoch_last_pth",
+        )
+
+    def save_best_checkpoint(self, *, state: TrainingState, epoch: int, val_loss: float) -> Path:
+        return self._save_checkpoint(
+            state=state,
+            epoch=epoch,
+            val_loss=float(val_loss),
+            filename="best.pth",
+            role="validation_best",
+            checkpoint_source="validation-best",
+            checkpoint_policy="best_validation_loss",
+            selection={
+                "metric": "validation_loss",
+                "mode": "min",
+                "value": float(val_loss),
+                "epoch": int(epoch) + 1,
+            },
+        )
+
+    def _save_checkpoint(
+        self,
+        *,
+        state: TrainingState,
+        epoch: int,
+        val_loss: float | None,
+        filename: str,
+        role: str,
+        checkpoint_source: str,
+        checkpoint_policy: str,
+        selection: dict[str, Any] | None = None,
+    ) -> Path:
         payload = {
             "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
-            "checkpoint_role": "last",
+            "checkpoint_role": role,
             "epoch": int(epoch) + 1,
             "state_dict": self.primary_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -104,14 +143,16 @@ class CheckpointManager:
             **gps_checkpoint_provenance(self.cfg),
             **training_profile_checkpoint_provenance(self.cfg),
         }
+        if selection is not None:
+            payload["selection"] = dict(selection)
         path, _ = publish_checkpoint(
             payload,
             self.run_dir / "checkpoints",
-            "last.pth",
+            filename,
             metadata={
                 "source": "local",
-                "checkpoint_source": "fixed-epoch-last",
-                "checkpoint_policy": "fixed_epoch_last_pth",
+                "checkpoint_source": checkpoint_source,
+                "checkpoint_policy": checkpoint_policy,
                 "run_dir": str(self.run_dir),
                 "normalization_artifacts": self.normalization_artifacts,
                 "split_metadata": self.split_metadata,

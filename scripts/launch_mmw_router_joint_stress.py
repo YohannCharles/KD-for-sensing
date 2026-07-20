@@ -48,6 +48,11 @@ DYNAMIC_FUSIONS = (
     "post_health_static_prior",
 )
 BRANCH_ALGORITHM = "availability_normalized_reference_controls_candidate_health_oracle_v3"
+DYNAMIC_SCREEN_KEYS = (
+    "mmw_dynamic_router_screen",
+    "mmw_dynamic_router_decision_screen",
+    "mmw_h2r_simplification_screen",
+)
 
 
 def main() -> int:
@@ -509,7 +514,7 @@ def _require_file(path: Path, label: str) -> None:
 
 def _config_fusion_branches(config: Path) -> tuple[str, ...]:
     payload = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
-    dynamic = payload.get("mmw_dynamic_router_screen")
+    dynamic = next((payload.get(key) for key in DYNAMIC_SCREEN_KEYS if payload.get(key)), None)
     if dynamic:
         if not isinstance(dynamic, Mapping) or dynamic.get("claim_eligible") is not False:
             raise ValueError("Dynamic Router joint stress requires an inner-only candidate config.")
@@ -519,7 +524,7 @@ def _config_fusion_branches(config: Path) -> tuple[str, ...]:
 
 def _config_router_provenance(config: Path) -> dict[str, Any]:
     payload = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
-    dynamic = payload.get("mmw_dynamic_router_screen")
+    dynamic = next((payload.get(key) for key in DYNAMIC_SCREEN_KEYS if payload.get(key)), None)
     if not dynamic:
         return {"router_family": "current_control"}
     if not isinstance(dynamic, Mapping):
@@ -528,6 +533,7 @@ def _config_router_provenance(config: Path) -> dict[str, Any]:
         "router_family": "dynamic_candidate",
         "candidate": dynamic.get("candidate"),
         "supervision": dynamic.get("supervision"),
+        "fused_decision_objective": dynamic.get("fused_decision_objective"),
         "utility_numeric_policy": dynamic.get("utility_numeric_policy"),
         "router_reliability_source_sha256": dynamic.get("router_reliability_source_sha256"),
         "claim_eligible": dynamic.get("claim_eligible"),

@@ -83,6 +83,8 @@ def test_candidate_matrix_resolves_fixed_components_and_supervision(variant: str
     }
     assert dynamic["frame_rank_weight"] == pytest.approx(0.1 if hierarchical else 0.0)
     assert dynamic["residual_anchor_weight"] == pytest.approx(0.01)
+    assert dynamic["fused_decision_objective"] == "expected_utility"
+    assert dynamic["fused_decision_margin"] == pytest.approx(0.5)
     assert dynamic["paired_joint"] == {
         "enabled": True,
         "panel_path": "outputs/cache/dynamic_router_joint/panel.json",
@@ -153,16 +155,17 @@ def test_candidate_routes_are_strictly_mutually_exclusive(case: str, match: str)
         ("bad_supervision", "supervision"),
         ("bad_sha", "panel_sha256"),
         ("paired_disabled", "paired_joint.enabled=true"),
-        ("zero_monotonic", "monotonic_weight.*positive"),
         ("zero_epsilon", "quality_drop_epsilon.*positive"),
         ("nonfinite_temperature", "utility_temperature.*finite"),
         ("zero_utility_losses", "positive quality or fused"),
-        ("missing_frame_rank", "positive .*frame_rank_weight"),
         ("unexpected_frame_rank", "only valid for H2R"),
         ("bad_corruption_seed", "corruption_seed"),
         ("boolean_weight", "quality_regression_weight.*finite"),
         ("non_string_panel_path", "panel_path"),
         ("non_boolean_power_flag", "include_router_utility_targets must be boolean"),
+        ("unknown_decision", "fused_decision_objective"),
+        ("power_decision_without_power", "requires .*supervision=beam_power"),
+        ("bad_decision_margin", "fused_decision_margin.*positive"),
     ),
 )
 def test_candidate_nested_config_fails_closed(case: str, match: str) -> None:
@@ -180,8 +183,6 @@ def test_candidate_nested_config_fails_closed(case: str, match: str) -> None:
         paired["panel_sha256"] = "abc"
     elif case == "paired_disabled":
         paired["enabled"] = False
-    elif case == "zero_monotonic":
-        paired["monotonic_weight"] = 0.0
     elif case == "zero_epsilon":
         paired["quality_drop_epsilon"] = 0.0
     elif case == "nonfinite_temperature":
@@ -189,8 +190,6 @@ def test_candidate_nested_config_fails_closed(case: str, match: str) -> None:
     elif case == "zero_utility_losses":
         dynamic["quality_regression_weight"] = 0.0
         dynamic["fused_utility_weight"] = 0.0
-    elif case == "missing_frame_rank":
-        dynamic["frame_rank_weight"] = 0.0
     elif case == "unexpected_frame_rank":
         cfg["model"]["primary"]["router_variant"] = "patr"
         dynamic["frame_rank_weight"] = 0.1
@@ -202,6 +201,32 @@ def test_candidate_nested_config_fails_closed(case: str, match: str) -> None:
         paired["panel_path"] = ["panel.json"]
     elif case == "non_boolean_power_flag":
         cfg["data"]["dataset"]["include_router_utility_targets"] = "false"
+    elif case == "unknown_decision":
+        dynamic["fused_decision_objective"] = "other"
+    elif case == "power_decision_without_power":
+        dynamic["fused_decision_objective"] = "power_soft_ce"
+        dynamic["supervision"] = "label_topology"
+        cfg["data"]["dataset"]["include_router_utility_targets"] = False
+    elif case == "bad_decision_margin":
+        dynamic["fused_decision_margin"] = 0.0
 
     with pytest.raises(ValueError, match=match):
         u_mask_beam_jepa_config(cfg)
+
+
+def test_joint_ce_only_h2r_allows_zero_monotonic_and_frame_rank() -> None:
+    cfg = _config("h2r")
+    dynamic = cfg["loss"]["u_mask_beam_jepa"]["dynamic_router"]
+    dynamic.update(
+        {
+            "fused_decision_objective": "joint_hard_ce",
+            "quality_regression_weight": 0.0,
+            "fused_utility_weight": 1.0,
+            "frame_rank_weight": 0.0,
+            "residual_anchor_weight": 0.0,
+        }
+    )
+    dynamic["paired_joint"]["monotonic_weight"] = 0.0
+    resolved = u_mask_beam_jepa_config(cfg)["dynamic_router"]
+    assert resolved["frame_rank_weight"] == 0.0
+    assert resolved["paired_joint"]["monotonic_weight"] == 0.0

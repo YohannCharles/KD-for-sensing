@@ -2,6 +2,7 @@ import math
 from typing import Any
 
 from kd_sensing.losses.beam_prototype_alignment import TOPOLOGY_IDS
+from kd_sensing.losses.pgcd_config import resolve_pgcd_config
 
 
 ROUTER_ORACLE_TARGET_MODES = frozenset(
@@ -19,10 +20,40 @@ ROUTER_ORACLE_TARGET_MODES = frozenset(
 
 ROUTER_VARIANTS = frozenset({"current", "patr", "h2r", "core", "unified_hpr"})
 DYNAMIC_ROUTER_SUPERVISION_MODES = frozenset({"label_topology", "beam_power"})
+DYNAMIC_ROUTER_DECISION_OBJECTIVES = frozenset(
+    {"expected_utility", "joint_hard_ce", "power_soft_ce", "power_top1_margin"}
+)
+PCER_MODES = frozenset(
+    {
+        "evidence_static",
+        "counterfactual_router",
+        "evidence_only",
+        "block_router",
+        "hierarchical_router",
+        "mask_residual_router",
+    }
+)
+PCER_ROUTE_TARGETS = frozenset({"none", "equal_coalition", "standalone_quality", "onpolicy_block", "onpolicy_modality"})
+_PCER_FIELDS = frozenset(
+    {
+        "lambda_mask",
+        "lambda_route",
+        "distill_temperature",
+        "contribution_temperature",
+        "contribution_clip",
+        "route_target",
+        "quality_temperature",
+        "modality_contribution_temperature",
+        "evidence_learning",
+    }
+)
+_PCER_EVIDENCE_FIELDS = frozenset({"enabled", "lambda_lomo", "lambda_unimodal", "distill_temperature"})
 _DYNAMIC_ROUTER_FIELDS = frozenset(
     {
         "supervision",
         "utility_temperature",
+        "fused_decision_objective",
+        "fused_decision_margin",
         "quality_regression_weight",
         "fused_utility_weight",
         "frame_rank_weight",
@@ -154,6 +185,28 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         router_quality_pairing=quality_pairing,
         include_router_utility_targets=raw_utility_targets,
     )
+    pcer = _resolve_pcer_config(
+        cfg,
+        raw=raw.get("pcer"),
+        primary=primary,
+        fusion_type=fusion_type,
+        head_type=head_type,
+        use_bpa=use_bpa,
+        router_oracle_weight=router_oracle_weight,
+        router_variant=router_variant,
+        superset=superset,
+    )
+    pgcd = resolve_pgcd_config(
+        cfg,
+        raw=raw.get("pgcd"),
+        primary=primary,
+        fusion_type=fusion_type,
+        head_type=head_type,
+        use_bpa=use_bpa,
+        router_oracle_weight=router_oracle_weight,
+        superset=superset,
+        pcer=pcer,
+    )
 
     return {
         "enabled": bool(raw.get("enabled", False)),
@@ -180,6 +233,131 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "router_quality_pairing": quality_pairing,
         "router_variant": router_variant,
         "dynamic_router": dynamic_router,
+        "pcer": pcer,
+        "pgcd": pgcd,
+    }
+
+
+def _resolve_pcer_config(
+    cfg: dict[str, Any],
+    *,
+    raw: Any,
+    primary: dict[str, Any],
+    fusion_type: str,
+    head_type: str,
+    use_bpa: bool,
+    router_oracle_weight: float,
+    router_variant: str,
+    superset: dict[str, Any],
+) -> dict[str, Any]:
+    model_raw = primary.get("pcer")
+    if model_raw is None and raw is None:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "lambda_mask": 0.0,
+            "lambda_route": 0.0,
+            "distill_temperature": 2.0,
+            "contribution_temperature": 0.5,
+            "contribution_clip": 5.0,
+            "route_target": "none",
+            "quality_temperature": 0.5,
+            "modality_contribution_temperature": 0.5,
+            "evidence_learning": {
+                "enabled": False,
+                "lambda_lomo": 0.0,
+                "lambda_unimodal": 0.0,
+                "distill_temperature": 2.0,
+            },
+        }
+    if not isinstance(model_raw, dict) or not isinstance(raw, dict):
+        raise ValueError("PCER requires both model.primary.pcer and loss.u_mask_beam_jepa.pcer mappings.")
+    unknown = sorted(set(raw) - set(_PCER_FIELDS))
+    if unknown:
+        raise ValueError(f"Unknown loss.u_mask_beam_jepa.pcer fields: {unknown}.")
+    mode = str(model_raw.get("mode", "")).strip().lower()
+    if mode not in PCER_MODES:
+        raise ValueError(f"model.primary.pcer.mode must be one of {sorted(PCER_MODES)}.")
+    if head_type != "prototype" or not use_bpa:
+        raise ValueError("PCER requires prototype head and use_beam_prototype_alignment=true.")
+    if mode == "evidence_only" and fusion_type != "supervised_router":
+        raise ValueError("evidence_only PCER requires supervised_router fusion.")
+    if mode != "evidence_only" and fusion_type != "uniform_mean":
+        raise ValueError("PCER fusion modes require uniform_mean fusion.")
+    if router_variant != "current" or float(router_oracle_weight) != 0.0:
+        raise ValueError("PCER requires router_variant=current and router_oracle_weight=0.")
+    if bool(superset.get("enabled", False)):
+        raise ValueError("PCER uses its own consistency loss; legacy superset_consistency must be disabled.")
+    temporal = cfg.get("temporal_missing", {})
+    if not isinstance(temporal, dict) or temporal.get("mode") != "pcer_curriculum":
+        raise ValueError("PCER requires temporal_missing.mode=pcer_curriculum.")
+    if not bool(temporal.get("preserve_unmasked_for_superset", False)):
+        raise ValueError("PCER requires temporal_missing.preserve_unmasked_for_superset=true.")
+
+    lambda_mask = _finite_float(raw.get("lambda_mask", 0.5), "pcer.lambda_mask", positive=True)
+    lambda_route = _finite_float(raw.get("lambda_route", 0.0), "pcer.lambda_route", non_negative=True)
+    distill = _finite_float(raw.get("distill_temperature", 2.0), "pcer.distill_temperature", positive=True)
+    contribution = _finite_float(
+        raw.get("contribution_temperature", 0.5), "pcer.contribution_temperature", positive=True
+    )
+    clip_value = raw.get("contribution_clip", 5.0)
+    clip = None if clip_value is None else _finite_float(clip_value, "pcer.contribution_clip", positive=True)
+    route_target = str(
+        raw.get("route_target", "equal_coalition" if mode == "counterfactual_router" else "none")
+    ).strip().lower()
+    if route_target not in PCER_ROUTE_TARGETS:
+        raise ValueError(f"pcer.route_target must be one of {sorted(PCER_ROUTE_TARGETS)}.")
+    quality_temperature = _finite_float(
+        raw.get("quality_temperature", 0.5), "pcer.quality_temperature", positive=True
+    )
+    modality_temperature = _finite_float(
+        raw.get("modality_contribution_temperature", 0.5),
+        "pcer.modality_contribution_temperature",
+        positive=True,
+    )
+    evidence_raw = raw.get("evidence_learning", {})
+    if not isinstance(evidence_raw, dict):
+        raise ValueError("pcer.evidence_learning must be a mapping.")
+    _reject_unknown_fields(evidence_raw, _PCER_EVIDENCE_FIELDS, "pcer.evidence_learning")
+    evidence_learning = {
+        "enabled": bool(evidence_raw.get("enabled", False)),
+        "lambda_lomo": _finite_float(evidence_raw.get("lambda_lomo", 0.0), "pcer.evidence_learning.lambda_lomo", non_negative=True),
+        "lambda_unimodal": _finite_float(evidence_raw.get("lambda_unimodal", 0.0), "pcer.evidence_learning.lambda_unimodal", non_negative=True),
+        "distill_temperature": _finite_float(
+            evidence_raw.get("distill_temperature", 2.0),
+            "pcer.evidence_learning.distill_temperature",
+            positive=True,
+        ),
+    }
+    if evidence_learning["enabled"] != (mode == "evidence_only" and (evidence_learning["lambda_lomo"] > 0 or evidence_learning["lambda_unimodal"] > 0)):
+        raise ValueError("PCER evidence learning is opt-in only for evidence_only mode with a positive loss weight.")
+    if mode == "evidence_static" and lambda_route != 0.0:
+        raise ValueError("evidence_static PCER requires lambda_route=0.")
+    allowed_targets = {
+        "evidence_static": {"none"},
+        "counterfactual_router": {"equal_coalition"},
+        "evidence_only": {"none"},
+        "block_router": {"none", "standalone_quality", "onpolicy_block"},
+        "hierarchical_router": {"none", "onpolicy_modality"},
+        "mask_residual_router": {"none"},
+    }
+    if route_target not in allowed_targets[mode]:
+        raise ValueError(f"PCER mode {mode!r} does not support route_target={route_target!r}.")
+    supervised_target = route_target != "none"
+    if supervised_target != (lambda_route > 0.0):
+        raise ValueError("PCER supervised route targets require positive lambda_route; target=none requires zero.")
+    return {
+        "enabled": True,
+        "mode": mode,
+        "lambda_mask": lambda_mask,
+        "lambda_route": lambda_route,
+        "distill_temperature": distill,
+        "contribution_temperature": contribution,
+        "contribution_clip": clip,
+        "route_target": route_target,
+        "quality_temperature": quality_temperature,
+        "modality_contribution_temperature": modality_temperature,
+        "evidence_learning": evidence_learning,
     }
 
 
@@ -280,6 +458,23 @@ def resolve_dynamic_router_config(
         "dynamic_router.utility_temperature",
         positive=True,
     )
+    decision_objective = str(
+        dynamic_raw.get("fused_decision_objective", "expected_utility")
+    ).strip().lower()
+    if decision_objective not in DYNAMIC_ROUTER_DECISION_OBJECTIVES:
+        raise ValueError(
+            "dynamic_router.fused_decision_objective must be one of "
+            f"{sorted(DYNAMIC_ROUTER_DECISION_OBJECTIVES)}."
+        )
+    decision_margin = _finite_float(
+        dynamic_raw.get("fused_decision_margin", 0.5),
+        "dynamic_router.fused_decision_margin",
+        positive=True,
+    )
+    if decision_objective.startswith("power_") and supervision != "beam_power":
+        raise ValueError(
+            f"{decision_objective} requires dynamic_router.supervision=beam_power."
+        )
     quality_weight = _finite_float(
         dynamic_raw.get("quality_regression_weight", 0.1),
         "dynamic_router.quality_regression_weight",
@@ -306,8 +501,6 @@ def resolve_dynamic_router_config(
     if quality_weight == 0.0 and fused_weight == 0.0:
         raise ValueError("Candidate dynamic Router requires a positive quality or fused utility weight.")
     hierarchical = _ROUTER_VARIANT_COMPONENTS[variant]["hierarchical_cell_gate"]
-    if hierarchical and frame_rank_weight == 0.0:
-        raise ValueError("H2R and Unified-HPR require a positive dynamic_router.frame_rank_weight.")
     if not hierarchical and frame_rank_weight != 0.0:
         raise ValueError("dynamic_router.frame_rank_weight is only valid for H2R and Unified-HPR.")
     paired_joint = _resolve_paired_joint(dynamic_raw.get("paired_joint"))
@@ -319,6 +512,8 @@ def resolve_dynamic_router_config(
         "supervision": supervision,
         "requires_beam_power": supervision == "beam_power",
         "utility_temperature": utility_temperature,
+        "fused_decision_objective": decision_objective,
+        "fused_decision_margin": decision_margin,
         "quality_regression_weight": quality_weight,
         "fused_utility_weight": fused_weight,
         "frame_rank_weight": frame_rank_weight,
@@ -335,6 +530,8 @@ def _disabled_dynamic_router_config() -> dict[str, Any]:
         "supervision": None,
         "requires_beam_power": False,
         "utility_temperature": 1.0,
+        "fused_decision_objective": "expected_utility",
+        "fused_decision_margin": 0.5,
         "quality_regression_weight": 0.0,
         "fused_utility_weight": 0.0,
         "frame_rank_weight": 0.0,
@@ -371,7 +568,7 @@ def _resolve_paired_joint(value: Any) -> dict[str, Any]:
     monotonic_weight = _finite_float(
         raw.get("monotonic_weight", 0.05),
         "paired_joint.monotonic_weight",
-        positive=True,
+        non_negative=True,
     )
     margin_scale = _finite_float(
         raw.get("monotonic_margin_scale", 0.25),

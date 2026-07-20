@@ -12,6 +12,7 @@ from kd_sensing.losses.beam_prototype_alignment import beam_topology_positions
 
 
 ROUTER_VARIANTS = frozenset(("patr", "h2r", "core", "unified_hpr"))
+EVIDENCE_PROFILES = frozenset(("full", "generic_confidence", "prototype_topology"))
 FRAME_FEATURE_DIM = 9
 TEMPORAL_FEATURE_DIM = FRAME_FEATURE_DIM * 3 + 3
 H2R_FEATURE_DIM = 4
@@ -22,6 +23,12 @@ _VARIANT_COMPONENTS = {
     "h2r": (False, True, False),
     "core": (False, False, True),
     "unified_hpr": (True, True, True),
+}
+
+_FRAME_EVIDENCE_MASKS = {
+    "full": (1, 1, 1, 1, 1, 1, 1, 1, 1),
+    "generic_confidence": (1, 1, 1, 1, 1, 0, 0, 0, 1),
+    "prototype_topology": (0, 0, 1, 1, 0, 1, 1, 1, 0),
 }
 
 
@@ -70,6 +77,7 @@ class PrototypeReliabilityRouter(nn.Module):
         residual_scale: float = 1.0,
         top_k: int = 3,
         dropout: float = 0.0,
+        evidence_profile: str = "full",
     ) -> None:
         super().__init__()
         self.variant = str(variant).strip().lower()
@@ -81,6 +89,7 @@ class PrototypeReliabilityRouter(nn.Module):
         self.residual_scale = float(residual_scale)
         self.top_k = int(top_k)
         self.circular = bool(circular)
+        self.evidence_profile = str(evidence_profile).strip().lower()
         if min(self.modality_count, self.num_classes, self.base_feature_dim) <= 0:
             raise ValueError("modality_count, num_classes, and base_feature_dim must be positive.")
         if min(int(residual_hidden_dim), int(health_hidden_dim), self.top_k) <= 0:
@@ -89,6 +98,10 @@ class PrototypeReliabilityRouter(nn.Module):
             raise ValueError("top_k must not exceed num_classes.")
         if not math.isfinite(self.residual_scale) or self.residual_scale < 0.0:
             raise ValueError("residual_scale must be finite and non-negative.")
+        if self.evidence_profile not in EVIDENCE_PROFILES:
+            raise ValueError(
+                f"evidence_profile must be one of {sorted(EVIDENCE_PROFILES)}, got {evidence_profile!r}."
+            )
         topology = str(topology_id).strip().lower()
         expected_circular = topology != "linear_index_v1"
         if self.circular != expected_circular:
@@ -99,6 +112,11 @@ class PrototypeReliabilityRouter(nn.Module):
             topology_permutation=topology_permutation,
         )
         self.register_buffer("topology_positions", positions, persistent=True)
+        self.register_buffer(
+            "frame_evidence_mask",
+            torch.tensor(_FRAME_EVIDENCE_MASKS[self.evidence_profile], dtype=torch.float32),
+            persistent=False,
+        )
 
         prior = _normalized_prior(prior_weights, self.modality_count)
         self.prior_logits = nn.Parameter(prior.log())
@@ -173,6 +191,10 @@ class PrototypeReliabilityRouter(nn.Module):
             ),
             dim=-1,
         )
+        frame_features = frame_features * self.frame_evidence_mask.to(
+            device=frame_features.device,
+            dtype=frame_features.dtype,
+        )
         frame_features = frame_features * mask.unsqueeze(-1).to(dtype=frame_features.dtype)
         mean, std, minimum = _masked_temporal_moments(frame_features, mask)
         distribution_divergence = _temporal_distribution_divergence(probabilities, mask)
@@ -193,6 +215,20 @@ class PrototypeReliabilityRouter(nn.Module):
             frame_features=frame_features,
             temporal_features=temporal_features,
         )
+
+    def filter_base_features(
+        self,
+        features: torch.Tensor,
+        feature_names: Sequence[str],
+    ) -> torch.Tensor:
+        """Apply the fixed-width window evidence ablation."""
+        names = tuple(str(name) for name in feature_names)
+        if features.ndim != 3 or int(features.shape[-1]) != len(names):
+            raise ValueError("base Router features and feature_names must share their final dimension.")
+        if self.evidence_profile != "prototype_topology":
+            return features
+        mask = features.new_tensor([name == "prototype_margin" for name in names])
+        return features * mask.view(1, 1, -1)
 
     def temporal_pool(
         self,
@@ -521,6 +557,7 @@ def _safe_log(values: torch.Tensor) -> torch.Tensor:
 
 
 __all__ = [
+    "EVIDENCE_PROFILES",
     "CONSENSUS_FEATURE_DIM",
     "FRAME_FEATURE_DIM",
     "H2R_FEATURE_DIM",

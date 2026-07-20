@@ -3,9 +3,45 @@ import torch
 
 from kd_sensing.losses.router_reliability import (
     expected_router_utility,
+    fused_router_decision_loss,
     paired_router_reliability_loss,
     pairwise_utility_ranking_loss,
 )
+
+
+@pytest.mark.parametrize("objective", ("joint_hard_ce", "power_soft_ce", "power_top1_margin"))
+def test_fused_decision_objectives_preserve_router_gradient(objective: str) -> None:
+    logits = torch.zeros(2, 4, requires_grad=True)
+    labels = torch.tensor([0, 1])
+    powers = torch.tensor(
+        [[3.0e-8, 2.0e-9, 1.0e-10, 1.0e-12], [1.0e-10, 4.0e-8, 2.0e-9, 1.0e-12]]
+    )
+    loss, active = fused_router_decision_loss(
+        logits,
+        labels,
+        objective=objective,
+        expected_utility=torch.ones(2),
+        beam_powers=powers,
+        margin_scale=0.5,
+        gap_epsilon=0.01,
+    )
+    loss.backward()
+    assert active.item() > 0.0
+    assert logits.grad is not None and torch.isfinite(logits.grad).all()
+    assert logits.grad.abs().sum().item() > 0.0
+
+
+def test_power_decision_objective_rejects_empty_power_row() -> None:
+    with pytest.raises(ValueError, match="at least one positive"):
+        fused_router_decision_loss(
+            torch.zeros(1, 4),
+            torch.tensor([0]),
+            objective="power_soft_ce",
+            expected_utility=torch.ones(1),
+            beam_powers=torch.zeros(1, 4),
+            margin_scale=0.5,
+            gap_epsilon=0.01,
+        )
 
 
 def test_label_topology_utility_respects_cycle_endpoint() -> None:
@@ -106,6 +142,8 @@ def test_paired_loss_does_not_require_corruption_metadata() -> None:
         circular=True,
         topology_id="cyclic_index_v1",
         topology_permutation=None,
+        fused_decision_objective="expected_utility",
+        fused_decision_margin=0.5,
         quality_weight=0.1,
         fused_utility_weight=0.2,
         monotonic_weight=0.1,

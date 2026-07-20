@@ -3,9 +3,7 @@
 ## Purpose
 
 定义 MMW T2/baseline 与受限 DeepSense6G T2 的 current 研究闭包，使代码、YAML、CLI、script、测试和文档均能追溯到当前 owner。
-
 ## Requirements
-
 ### Requirement: T2/baseline 与双数据集是唯一 current 研究 surface
 
 系统 MUST 将 MMW 的 T2、S1、AMBER-Full、RMBP-MM，以及 DeepSense6G Scene31–34 的 T2 四模态数据路径和其传递运行依赖视为 current source surface。无法追溯到这些训练、评估、预处理、fixed-mask 或 active T2 BPA/CMA/hyperparameter protocol 的项目项 MUST 退役。
@@ -35,3 +33,11 @@
 - **WHEN** 用户尝试加载已退役配置或导入已退役模块
 - **THEN** 普通文件不存在或普通 unknown-name 错误即可
 - **AND** 系统 MUST 不自动迁移、映射或构建替代运行路径
+
+### Requirement: AMBER-Full token padding 不得改变可用性语义
+AMBER-Full 在对齐 modality spatial-token 维度时 MUST 为 padding token 生成不可用 mask；fusion attention、auxiliary loss 和 pooled diagnostics MUST 忽略 padding token。
+
+#### Scenario: GPS token 少于 image spatial tokens
+- **WHEN** image/radar/lidar 有多个 spatial token 而 GPS 只有一个 token
+- **THEN** GPS 的补齐 token MUST 在 attention key-padding mask 中为 true
+- **AND** GPS pooled feature MUST 只平均其真实 token

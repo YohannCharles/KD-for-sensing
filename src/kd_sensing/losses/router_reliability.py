@@ -11,6 +11,9 @@ from kd_sensing.losses.beam_prototype_alignment import make_soft_beam_labels
 
 
 UTILITY_SOURCES = frozenset(("label_topology", "beam_power"))
+FUSED_DECISION_OBJECTIVES = frozenset(
+    ("expected_utility", "joint_hard_ce", "power_soft_ce", "power_top1_margin")
+)
 
 
 def expected_router_utility(
@@ -99,6 +102,72 @@ def pairwise_utility_ranking_loss(
     return penalties[active].mean(), active.to(dtype=scores.dtype).mean()
 
 
+def fused_router_decision_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    objective: str,
+    expected_utility: torch.Tensor,
+    beam_powers: torch.Tensor | None,
+    margin_scale: float,
+    gap_epsilon: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Align final fused logits with one declared communication decision target."""
+
+    objective = str(objective).strip().lower()
+    if objective not in FUSED_DECISION_OBJECTIVES:
+        raise ValueError(f"Fused Router objective must be one of {sorted(FUSED_DECISION_OBJECTIVES)}.")
+    if objective == "expected_utility":
+        return 1.0 - expected_utility.mean(), logits.new_ones(())
+
+    hard = labels.to(device=logits.device, dtype=torch.long)
+    if hard.ndim > 1:
+        hard = hard[:, 0]
+    hard = hard.reshape(-1)
+    if hard.shape != (int(logits.shape[0]),):
+        raise ValueError(f"Router decision labels must have shape [{int(logits.shape[0])}] or [B,H].")
+    if objective == "joint_hard_ce":
+        return F.cross_entropy(logits.float(), hard), logits.new_ones(())
+
+    reward = _normalized_beam_power(logits, beam_powers)
+    decision_logits = logits.float()
+    if objective == "power_soft_ce":
+        target = reward / reward.sum(dim=-1, keepdim=True)
+        loss = -(target * F.log_softmax(decision_logits, dim=-1)).sum(dim=-1).mean()
+        return loss, logits.new_ones(())
+
+    best = reward.argmax(dim=-1)
+    negative_scores = decision_logits.clone()
+    negative_scores.scatter_(1, best.unsqueeze(1), -torch.inf)
+    hard_negative = negative_scores.argmax(dim=-1)
+    best_score = decision_logits.gather(1, best.unsqueeze(1)).squeeze(1)
+    negative_score = decision_logits.gather(1, hard_negative.unsqueeze(1)).squeeze(1)
+    best_power = reward.gather(1, best.unsqueeze(1)).squeeze(1)
+    negative_power = reward.gather(1, hard_negative.unsqueeze(1)).squeeze(1)
+    power_gap = (best_power - negative_power).detach()
+    active = power_gap.gt(float(gap_epsilon))
+    if not bool(active.any().item()):
+        return decision_logits.sum() * 0.0, active.to(dtype=torch.float32).mean()
+    margin = float(margin_scale) * power_gap
+    loss = F.relu(margin - (best_score - negative_score))[active].mean()
+    return loss, active.to(dtype=torch.float32).mean()
+
+
+def _normalized_beam_power(logits: torch.Tensor, beam_powers: torch.Tensor | None) -> torch.Tensor:
+    if not torch.is_tensor(beam_powers):
+        raise ValueError("Beam-power fused Router objective requires future_beam_power.")
+    reward = beam_powers.to(device=logits.device, dtype=torch.float32).detach()
+    expected_shape = (int(logits.shape[0]), int(logits.shape[-1]))
+    if reward.shape != expected_shape:
+        raise ValueError(f"future_beam_power must have shape {expected_shape}, got {tuple(reward.shape)}.")
+    if not bool(torch.isfinite(reward).all().item()) or bool((reward < 0).any().item()):
+        raise ValueError("future_beam_power must contain finite non-negative values.")
+    maximum = reward.amax(dim=-1, keepdim=True)
+    if bool(maximum.le(0).any().item()):
+        raise ValueError("future_beam_power rows must contain at least one positive value.")
+    return reward / maximum
+
+
 def paired_router_reliability_loss(
     control: Mapping[str, torch.Tensor],
     joint: Mapping[str, torch.Tensor],
@@ -111,6 +180,8 @@ def paired_router_reliability_loss(
     circular: bool,
     topology_id: str | None,
     topology_permutation: list[int] | tuple[int, ...] | torch.Tensor | None,
+    fused_decision_objective: str,
+    fused_decision_margin: float,
     quality_weight: float,
     fused_utility_weight: float,
     monotonic_weight: float,
@@ -157,6 +228,15 @@ def paired_router_reliability_loss(
 
     fused_utility = expected_router_utility(joint["fused_logits"], labels, **utility_kwargs)
     fused_utility_loss = 1.0 - fused_utility.mean()
+    fused_decision_loss, fused_decision_active = fused_router_decision_loss(
+        joint["fused_logits"],
+        labels,
+        objective=fused_decision_objective,
+        expected_utility=fused_utility,
+        beam_powers=beam_powers,
+        margin_scale=float(fused_decision_margin),
+        gap_epsilon=float(quality_drop_epsilon),
+    )
 
     utility_drop = (control_utility - joint_utility).detach()
     active = joint_available & utility_drop.abs().gt(float(quality_drop_epsilon))
@@ -186,7 +266,7 @@ def paired_router_reliability_loss(
         residual_anchor = (residual.square() * available_float).sum() / available_float.sum().clamp_min(1.0)
 
     weighted_quality = float(quality_weight) * quality_loss
-    weighted_fused = float(fused_utility_weight) * fused_utility_loss
+    weighted_fused = float(fused_utility_weight) * fused_decision_loss
     weighted_monotonic = float(monotonic_weight) * monotonic_loss
     weighted_frame = float(frame_rank_weight) * frame_rank_loss
     weighted_anchor = float(residual_anchor_weight) * residual_anchor
@@ -194,6 +274,7 @@ def paired_router_reliability_loss(
     diagnostics = {
         "loss/router_reliability_quality": float(quality_loss.detach().cpu().item()),
         "loss/router_reliability_fused_utility": float(fused_utility_loss.detach().cpu().item()),
+        "loss/router_reliability_fused_decision": float(fused_decision_loss.detach().cpu().item()),
         "loss/router_reliability_monotonic": float(monotonic_loss.detach().cpu().item()),
         "loss/router_reliability_frame_rank": float(frame_rank_loss.detach().cpu().item()),
         "loss/router_reliability_residual_anchor": float(residual_anchor.detach().cpu().item()),
@@ -201,6 +282,7 @@ def paired_router_reliability_loss(
         "router_reliability_joint_utility": float(joint_utility.mean().cpu().item()),
         "router_reliability_control_utility": float(control_utility.mean().cpu().item()),
         "router_reliability_fused_utility": float(fused_utility.detach().mean().cpu().item()),
+        "router_reliability_fused_decision_active_ratio": float(fused_decision_active.detach().cpu().item()),
         "router_reliability_active_ratio": float(active.to(dtype=torch.float32).mean().cpu().item()),
         "router_reliability_violation_ratio": float(
             ((utility_drop.sign() * score_delta.detach()) > 0).logical_and(active).to(dtype=torch.float32).mean().cpu().item()
@@ -211,8 +293,10 @@ def paired_router_reliability_loss(
 
 
 __all__ = [
+    "FUSED_DECISION_OBJECTIVES",
     "UTILITY_SOURCES",
     "expected_router_utility",
+    "fused_router_decision_loss",
     "paired_router_reliability_loss",
     "pairwise_utility_ranking_loss",
 ]

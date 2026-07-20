@@ -66,6 +66,8 @@ def run_training_epoch_loop(
         disable=not progress_enabled,
     )
     validation_interval = _validation_interval_epochs(training_cfg)
+    checkpoint_selection = _checkpoint_selection(training_cfg)
+    best_validation_loss = _best_observed_validation_loss(state.epoch_logs)
     last_observed_validation: dict[str, Any] | None = None
     timing_logger = _TimingCsvLogger(cfg, run_dir, device=device)
     for epoch in _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):
@@ -155,7 +157,6 @@ def run_training_epoch_loop(
                 ),
             }
         )
-        _write_epoch_metrics_snapshot(run_dir, state.epoch_logs)
         timing_logger.flush()
         if progress_enabled:
             metrics = recorder.progress_metrics()
@@ -173,6 +174,21 @@ def run_training_epoch_loop(
             tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
         )
         checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
+        if (
+            checkpoint_selection == "best_validation_loss"
+            and val_loss is not None
+            and math.isfinite(float(val_loss))
+            and float(val_loss) < best_validation_loss
+        ):
+            best_validation_loss = float(val_loss)
+            checkpoint_manager.save_best_checkpoint(state=state, epoch=epoch, val_loss=best_validation_loss)
+            epoch_log["best_checkpoint_saved"] = True
+            epoch_log["best_validation_loss"] = best_validation_loss
+            epoch_log["best_checkpoint_epoch"] = int(epoch) + 1
+        elif checkpoint_selection == "best_validation_loss":
+            epoch_log["best_checkpoint_saved"] = False
+            epoch_log["best_validation_loss"] = best_validation_loss if math.isfinite(best_validation_loss) else None
+        _write_epoch_metrics_snapshot(run_dir, state.epoch_logs)
 
 
 def _validation_interval_epochs(training_cfg: dict[str, Any]) -> int:
@@ -186,6 +202,22 @@ def _should_validate_epoch(epoch: int, total_epochs: int, interval_epochs: int) 
     return epoch_number == 1 or epoch_number == int(total_epochs) or epoch_number % int(interval_epochs) == 0
 
 
+def _checkpoint_selection(training_cfg: dict[str, Any]) -> str:
+    value = str(training_cfg.get("checkpoint_selection", "last")).strip().lower()
+    if value not in {"last", "best_validation_loss"}:
+        raise ValueError("training.checkpoint_selection must be 'last' or 'best_validation_loss'.")
+    return value
+
+
+def _best_observed_validation_loss(epoch_logs: list[dict[str, Any]]) -> float:
+    values = []
+    for row in epoch_logs:
+        value = row.get("val_loss")
+        if value is not None and math.isfinite(float(value)):
+            values.append(float(value))
+    return min(values, default=math.inf)
+
+
 def _evaluate_final_test_split(
     primary_model,
     test_loader,
@@ -195,13 +227,15 @@ def _evaluate_final_test_split(
     *,
     run_dir: Path,
 ) -> tuple[dict, dict | None]:
-    checkpoint_path = run_dir / "checkpoints" / "last.pth"
+    selection = _checkpoint_selection(cfg.get("training", {}))
+    checkpoint_role = "validation_best" if selection == "best_validation_loss" else "last"
+    checkpoint_path = run_dir / "checkpoints" / ("best.pth" if selection == "best_validation_loss" else "last.pth")
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Final test checkpoint not found: {checkpoint_path}")
     load_result = load_model_state(
         checkpoint_path,
         primary_model,
-        role="final-test-last",
+        role=f"final-test-{checkpoint_role}",
         map_location=device,
         strict=_checkpoint_strict(cfg),
     )
@@ -214,7 +248,7 @@ def _evaluate_final_test_split(
         shutdown_dataloader_workers(test_loader)
     metrics["evaluation_split"] = "test"
     metrics["checkpoint_for_test"] = str(checkpoint_path)
-    metrics["selected_checkpoint"] = {"path": str(checkpoint_path), "checkpoint_role": "last"}
+    metrics["selected_checkpoint"] = {"path": str(checkpoint_path), "checkpoint_role": checkpoint_role}
     if missing_pattern_results:
         metrics["missing_patterns"] = missing_pattern_results
     return metrics, checkpoint_load

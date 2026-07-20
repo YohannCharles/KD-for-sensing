@@ -6,11 +6,22 @@ import torch.nn.functional as F
 from kd_sensing.data.mmw.twc_router_joint_stress import STATE_CORRUPT, STATE_DROP
 from kd_sensing.data.mmw.twc_router_joint_training import load_router_joint_training_panel
 from kd_sensing.data.missing_mask import sample_missing_mask
+from kd_sensing.data.sensor_degradation import SensorDegradationGenerator, assert_pgcd_channel_free
 from kd_sensing.data.temporal_missing import apply_modality_temporal_mask_to_batch
 from kd_sensing.data.temporal_missing_contract import TEMPORAL_SUPERSET_PAYLOAD_KEY
 from kd_sensing.engine.evaluation_pass_runtime import sample_ids_from_batch
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, ForwardControls, TrainingExtension
 from kd_sensing.losses.modality_alignment_contrastive import amber_cma_analogue_loss
+from kd_sensing.losses.beam_prototype_alignment import make_soft_beam_labels
+from kd_sensing.losses.pcer_temporal_fusion import (
+    counterfactual_router_loss,
+    counterfactual_router_targets,
+    onpolicy_block_router_targets,
+    onpolicy_modality_router_targets,
+    prototype_evidence_consistency_loss,
+    standalone_quality_router_targets,
+)
+from kd_sensing.losses.pgcd import pgcd_quality_loss
 from kd_sensing.losses.router_reliability import paired_router_reliability_loss
 from kd_sensing.losses.u_mask_beam_jepa_config import u_mask_beam_jepa_config
 from kd_sensing.losses.u_mask_beam_jepa_prototype import add_prototype_alignment_losses
@@ -157,6 +168,7 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
 
     def setup(self, context: ExtensionContext) -> dict[str, Any]:
         config = u_mask_beam_jepa_config(context.cfg)
+        pgcd = config.get("pgcd", {})
         return {
             "config": config,
             "online_superset": None,
@@ -164,6 +176,17 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             "router_quality_pair_scheduled": False,
             "dynamic_router_pair": None,
             "dynamic_router_panel": _load_dynamic_router_panel(config),
+            "online_lomo": None,
+            "lomo_counts": [0, 0, 0, 0],
+            "gradient_sums": {},
+            "gradient_count": 0,
+            "pgcd_generator": (
+                SensorDegradationGenerator(int(pgcd.get("global_seed", 20260720)))
+                if isinstance(pgcd, dict) and pgcd.get("enabled")
+                else None
+            ),
+            "pgcd_clean": None,
+            "pgcd_degradation": None,
         }
 
     def state_dict(self, state: Any) -> dict[str, Any]:
@@ -182,6 +205,17 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
                 "router_quality_pair_scheduled": False,
                 "dynamic_router_pair": None,
                 "dynamic_router_panel": _load_dynamic_router_panel(dict(payload.get("config", {}))),
+                "online_lomo": None,
+                "lomo_counts": [0, 0, 0, 0],
+                "gradient_sums": {},
+                "gradient_count": 0,
+                "pgcd_generator": (
+                    SensorDegradationGenerator(int(payload.get("config", {}).get("pgcd", {}).get("global_seed", 20260720)))
+                    if payload.get("config", {}).get("pgcd", {}).get("enabled")
+                    else None
+                ),
+                "pgcd_clean": None,
+                "pgcd_degradation": None,
             }
         )
 
@@ -201,6 +235,17 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         modalities = tuple(getattr(context.primary_model, "modalities", ()))
         if not modalities:
             raise ValueError("u_mask_beam_jepa requires primary_model.modalities.")
+        pgcd = config.get("pgcd", {})
+        if isinstance(pgcd, dict) and pgcd.get("enabled"):
+            return _prepare_pgcd_forward(
+                context,
+                state,
+                batch,
+                modalities,
+                epoch=epoch,
+                step=step,
+                config=pgcd,
+            )
         mask_config = config.get("missing_mask", {})
         if mask_config.get("mode", "random") == "external":
             mask = _external_missing_mask(batch, labels, modalities, context.device)
@@ -217,6 +262,7 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
         pairing = config.get("router_quality_pairing", {})
         dynamic = config.get("dynamic_router", {})
         dynamic_pairing = dynamic.get("paired_joint", {}) if isinstance(dynamic, dict) else {}
+        pcer = config.get("pcer", {})
         superset_active = bool(
             isinstance(superset, dict) and superset.get("enabled") and superset.get("confidence_gated_kl")
         )
@@ -232,7 +278,8 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             and isinstance(dynamic_pairing, dict)
             and dynamic_pairing.get("enabled")
         )
-        if superset_active or pairing_active:
+        pcer_consistency_active = bool(isinstance(pcer, dict) and pcer.get("enabled"))
+        if superset_active or pairing_active or pcer_consistency_active:
             state["online_superset"] = _online_superset(context, batch, modalities)
         else:
             state["online_superset"] = None
@@ -260,6 +307,15 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             )
         else:
             state["dynamic_router_pair"] = None
+        evidence_learning = pcer.get("evidence_learning", {}) if isinstance(pcer, dict) else {}
+        if isinstance(evidence_learning, dict) and evidence_learning.get("enabled"):
+            modality_index = _balanced_lomo_modality(epoch, step, len(modalities))
+            state["online_lomo"] = _online_lomo(
+                context, batch, modalities, modality_index=modality_index
+            )
+            state["lomo_counts"][modality_index] += int(labels.shape[0])
+        else:
+            state["online_lomo"] = None
         return ForwardControls(model_kwargs={"missing_mask": mask})
 
     def compute_base_loss(self, context: ExtensionContext, state: Any, batch_state: BatchState) -> BaseLossResult | None:
@@ -303,6 +359,68 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             beam_powers=beam_powers,
         )
         total = result["loss"]
+        pgcd = config.get("pgcd", {})
+        if isinstance(pgcd, dict) and pgcd.get("enabled"):
+            variant = str(pgcd.get("variant", ""))
+            if variant not in {"c0", "c2"}:
+                clean = state.get("pgcd_clean")
+                degradation = state.get("pgcd_degradation")
+                if not isinstance(clean, dict) or degradation is None:
+                    raise ValueError("PGCD supervised variants require clean evidence and degradation metadata.")
+                topology = config.get("prototype_topology", {})
+                pgcd_loss = pgcd_quality_loss(
+                    output["pgcd_predicted_degradation"],
+                    clean["pgcd_block_evidence_logits"],
+                    output["pgcd_block_evidence_logits"],
+                    batch_state.labels,
+                    output["pgcd_block_availability"],
+                    severity=degradation.severity.reshape(degradation.severity.shape[0], -1).to(context.device),
+                    corrupted_mask=degradation.corrupted_mask.reshape(degradation.corrupted_mask.shape[0], -1).to(context.device),
+                    variant=variant,
+                    topology_id=str(topology.get("id", "cyclic_index_v1")),
+                    topology_permutation=topology.get("permutation"),
+                    beam_label_sigma=float(config.get("beam_label_sigma", 2.0)),
+                    alpha_drift=float(pgcd.get("alpha_drift", 0.5)),
+                    alpha_task=float(pgcd.get("alpha_task", 0.5)),
+                    task_clip=float(pgcd.get("task_clip", 4.0)),
+                    lambda_quality=float(pgcd.get("lambda_quality", 0.2)),
+                    lambda_rank=float(pgcd.get("lambda_rank", 0.1)),
+                    lambda_consistency=float(pgcd.get("lambda_consistency", 0.2)),
+                    rank_margin=float(pgcd.get("rank_margin", 0.1)),
+                    rank_target_epsilon=float(pgcd.get("rank_target_epsilon", 0.02)),
+                )
+                total = total + pgcd_loss.total
+                result["diagnostics"].update(pgcd_loss.diagnostics)
+                quality_objective = pgcd_loss.regression + pgcd_loss.ranking
+                result["diagnostics"]["pgcd_quality_beam_gradient_cosine"] = _loss_gradient_cosine(
+                    quality_objective,
+                    result["loss_beam"],
+                    output["pgcd_quality_logits"],
+                )
+            else:
+                result["diagnostics"].update(
+                    {
+                        "loss/pgcd_quality": 0.0,
+                        "loss/pgcd_rank": 0.0,
+                        "loss/pgcd_consistency": 0.0,
+                        "loss/pgcd_total": 0.0,
+                        "pgcd_quality_beam_gradient_cosine": 0.0,
+                    }
+                )
+            result["diagnostics"].update(
+                {
+                    "pgcd/beta_reliability": float(output["pgcd_beta_reliability"].detach().float().cpu().item()),
+                    "pgcd/weight_entropy": float(
+                        -(output["pgcd_block_router_weights"].float() * output["pgcd_block_router_weights"].float().clamp_min(1e-12).log())
+                        .sum(dim=-1)
+                        .mean()
+                        .detach()
+                        .cpu()
+                        .item()
+                    ),
+                    "pgcd/dynamic_weight_std": float(output["pgcd_block_router_weights"].detach().float().std(dim=0).mean().cpu().item()),
+                }
+            )
         pairing = config.get("router_quality_pairing", {})
         if bool(state.get("router_quality_pair_scheduled")):
             paired_loss, paired_diagnostics = _paired_router_quality_loss(
@@ -350,6 +468,8 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
                 circular=bool(config.get("prototype_target_circular", True)),
                 topology_id=str(topology.get("id", "")) or None,
                 topology_permutation=topology.get("permutation"),
+                fused_decision_objective=str(dynamic.get("fused_decision_objective", "expected_utility")),
+                fused_decision_margin=float(dynamic.get("fused_decision_margin", 0.5)),
                 quality_weight=float(dynamic.get("quality_regression_weight", 0.1)),
                 fused_utility_weight=float(dynamic.get("fused_utility_weight", 0.1)),
                 monotonic_weight=float(paired.get("monotonic_weight", 0.05)),
@@ -360,12 +480,240 @@ class UMaskBeamJEPATrainingExtension(TrainingExtension):
             )
             total = total + dynamic_loss
             result["diagnostics"].update(dynamic_diagnostics)
+        pcer = config.get("pcer", {})
+        if isinstance(pcer, dict) and pcer.get("enabled"):
+            superset_output = state.get("online_superset")
+            if not isinstance(superset_output, dict):
+                raise ValueError("Enabled PCER requires a same-model full-view output.")
+            consistency, consistency_diagnostics = prototype_evidence_consistency_loss(
+                output["logits"],
+                superset_output["logits"],
+                output["modality_temporal_mask"],
+                superset_output["modality_temporal_mask"],
+                temperature=float(pcer.get("distill_temperature", 2.0)),
+            )
+            weighted_consistency = float(pcer.get("lambda_mask", 0.5)) * consistency
+            total = total + weighted_consistency
+            result["diagnostics"].update(consistency_diagnostics)
+            result["diagnostics"]["loss/pcer_mask_consistency_weighted"] = float(
+                weighted_consistency.detach().cpu().item()
+            )
+            route_target = str(pcer.get("route_target", "none"))
+            if route_target != "none":
+                target_kwargs = {
+                    "beam_label_sigma": float(config.get("beam_label_sigma", 1.0)),
+                    "circular": bool(config.get("prototype_target_circular", True)),
+                    "topology_id": str(config.get("prototype_topology", {}).get("id", "")) or None,
+                    "topology_permutation": config.get("prototype_topology", {}).get("permutation"),
+                }
+                model = getattr(context.primary_model, "module", context.primary_model)
+                route_fn = model.route_pcer_cached
+                with torch.no_grad():
+                    if route_target == "equal_coalition":
+                        target_weights, contribution = counterfactual_router_targets(
+                            output["pcer_block_evidence_logits"],
+                            output["pcer_block_availability"],
+                            batch_state.labels,
+                            **target_kwargs,
+                            contribution_temperature=float(pcer.get("contribution_temperature", 0.5)),
+                            contribution_clip=pcer.get("contribution_clip"),
+                        )
+                        predicted_weights = output["pcer_block_router_weights"]
+                        target_available = output["pcer_block_availability"]
+                        gradient_logits = output["pcer_block_router_logits"]
+                    elif route_target == "standalone_quality":
+                        target_weights, contribution = standalone_quality_router_targets(
+                            output["pcer_block_evidence_logits"],
+                            output["pcer_block_availability"],
+                            batch_state.labels,
+                            **target_kwargs,
+                            quality_temperature=float(pcer.get("quality_temperature", 0.5)),
+                        )
+                        predicted_weights = output["pcer_block_router_weights"]
+                        target_available = output["pcer_block_availability"]
+                        gradient_logits = output["pcer_block_router_logits"]
+                    elif route_target == "onpolicy_block":
+                        target_weights, contribution = onpolicy_block_router_targets(
+                            output["pcer_block_features"],
+                            output["pcer_block_evidence_logits"],
+                            output["pcer_block_availability"],
+                            output["pcer_block_router_weights"],
+                            batch_state.labels,
+                            route_fn=route_fn,
+                            **target_kwargs,
+                            contribution_temperature=float(pcer.get("contribution_temperature", 0.5)),
+                            contribution_clip=pcer.get("contribution_clip"),
+                        )
+                        predicted_weights = output["pcer_block_router_weights"]
+                        target_available = output["pcer_block_availability"]
+                        gradient_logits = output["pcer_block_router_logits"]
+                    elif route_target == "onpolicy_modality":
+                        target_weights, contribution = onpolicy_modality_router_targets(
+                            output["pcer_block_features"],
+                            output["pcer_block_evidence_logits"],
+                            output["pcer_block_availability"],
+                            output["pcer_block_router_weights"],
+                            batch_state.labels,
+                            num_timesteps=int(getattr(model, "seq_length")),
+                            num_modalities=len(getattr(model, "modalities")),
+                            route_fn=route_fn,
+                            **target_kwargs,
+                            contribution_temperature=float(pcer.get("modality_contribution_temperature", 0.5)),
+                            contribution_clip=pcer.get("contribution_clip"),
+                        )
+                        predicted_weights = output["pcer_alpha"]
+                        target_available = output["modality_temporal_mask"].any(dim=1)
+                        gradient_logits = output["pcer_alpha_logits"]
+                    else:
+                        raise ValueError(f"Unsupported PCER route target {route_target!r}.")
+                route_loss, route_diagnostics = counterfactual_router_loss(
+                    predicted_weights,
+                    target_weights,
+                    target_available,
+                )
+                gradient_cosine = _loss_gradient_cosine(result["loss_beam"], route_loss, gradient_logits)
+                weighted_route = float(pcer.get("lambda_route", 0.2)) * route_loss
+                total = total + weighted_route
+                result["diagnostics"].update(route_diagnostics)
+                result["diagnostics"].update(
+                    {
+                        "loss/pcer_route_weighted": float(weighted_route.detach().cpu().item()),
+                        "pcer_contribution_mean": float(
+                            contribution.masked_select(target_available).mean().detach().cpu().item()
+                        ),
+                        "pcer_route_beam_gradient_cosine": gradient_cosine,
+                    }
+                )
+            evidence_learning = pcer.get("evidence_learning", {})
+            if isinstance(evidence_learning, dict) and evidence_learning.get("enabled"):
+                lomo = state.get("online_lomo")
+                if not isinstance(lomo, dict):
+                    raise ValueError("Enabled PCER evidence learning requires a balanced LOMO view.")
+                lomo_loss, lomo_diagnostics = prototype_evidence_consistency_loss(
+                    lomo["logits"],
+                    superset_output["logits"],
+                    lomo["modality_temporal_mask"],
+                    superset_output["modality_temporal_mask"],
+                    temperature=float(evidence_learning.get("distill_temperature", 2.0)),
+                )
+                unimodal_loss = _unimodal_topology_loss(
+                    output["unimodal_logits"],
+                    output["available_modalities"],
+                    batch_state.labels,
+                    sigma=float(config.get("beam_label_sigma", 1.0)),
+                    circular=bool(config.get("prototype_target_circular", True)),
+                    topology_id=str(config.get("prototype_topology", {}).get("id", "")) or None,
+                    topology_permutation=config.get("prototype_topology", {}).get("permutation"),
+                )
+                weighted_lomo = float(evidence_learning.get("lambda_lomo", 0.0)) * lomo_loss
+                weighted_unimodal = float(evidence_learning.get("lambda_unimodal", 0.0)) * unimodal_loss
+                total = total + weighted_lomo + weighted_unimodal
+                result["diagnostics"].update(lomo_diagnostics)
+                result["diagnostics"].update(
+                    {
+                        "loss/pcer_lomo_weighted": float(weighted_lomo.detach().cpu().item()),
+                        "loss/pcer_unimodal_aux": float(unimodal_loss.detach().cpu().item()),
+                        "loss/pcer_unimodal_aux_weighted": float(weighted_unimodal.detach().cpu().item()),
+                        "pcer_lomo_modality_index": float(lomo["modality_index"]),
+                    }
+                )
         return BaseLossResult(
             total_loss=total,
             task_loss=result["loss_beam"],
             auxiliary_loss=total - result["loss_beam"],
             diagnostics=result["diagnostics"],
         )
+
+    def after_backward(self, context: ExtensionContext, state: Any, batch_state: BatchState) -> None:
+        del batch_state
+        model = getattr(context.primary_model, "module", context.primary_model)
+        groups = {
+            "router": [parameter for name, parameter in model.named_parameters() if "router" in name],
+            "quality": (
+                list(model.pgcd_router.quality_estimator.parameters())
+                if getattr(model, "pgcd_router", None) is not None
+                else []
+            ),
+            "backbone": list(model.encoders.parameters()),
+            "prototype": list(model.prototype_bank.parameters()),
+        }
+        sums = state.setdefault("gradient_sums", {})
+        for name, parameters in groups.items():
+            value = _gradient_norm(parameters)
+            sums[name] = float(sums.get(name, 0.0)) + value
+        state["gradient_count"] = int(state.get("gradient_count", 0)) + 1
+
+    def after_epoch(self, context: ExtensionContext, state: Any, *, epoch: int) -> dict[str, Any]:
+        del context, epoch
+        count = max(int(state.get("gradient_count", 0)), 1)
+        result = {
+            f"gradient/{name}": float(value) / count
+            for name, value in state.get("gradient_sums", {}).items()
+        }
+        for index, value in enumerate(state.get("lomo_counts", [])):
+            result[f"pcer_lomo_count_modality_{index}"] = float(value)
+        state["gradient_sums"] = {}
+        state["gradient_count"] = 0
+        state["lomo_counts"] = [0, 0, 0, 0]
+        return result
+
+
+def _prepare_pgcd_forward(
+    context: ExtensionContext,
+    state: dict[str, Any],
+    batch: dict[str, Any],
+    modalities: tuple[str, ...],
+    *,
+    epoch: int,
+    step: int,
+    config: dict[str, Any],
+) -> ForwardControls:
+    from kd_sensing.engine.runtime import run_model_step
+
+    assert_pgcd_channel_free(context.cfg, batch)
+    generator = state.get("pgcd_generator")
+    if not isinstance(generator, SensorDegradationGenerator):
+        raise ValueError("Enabled PGCD requires a SensorDegradationGenerator.")
+    first = next((batch.get(key) for key in ("image", "radar_ra", "gps", "lidar") if torch.is_tensor(batch.get(key))), None)
+    if not torch.is_tensor(first):
+        raise ValueError("PGCD requires a collated four-sensor batch.")
+    batch_size, timesteps = int(first.shape[0]), int(first.shape[1])
+    variant = str(config.get("variant", ""))
+    if variant not in {"c0", "c2"}:
+        clean_batch = {key: value.clone() if torch.is_tensor(value) else value for key, value in batch.items()}
+        clean_mask = torch.ones(batch_size, timesteps, len(modalities), dtype=torch.bool)
+        apply_modality_temporal_mask_to_batch(clean_batch, clean_mask, modalities=modalities)
+        module_states = [(module, module.training) for module in context.primary_model.modules()]
+        try:
+            context.primary_model.eval()
+            with torch.no_grad():
+                clean_step = run_model_step(
+                    context.primary_model,
+                    context.task,
+                    clean_batch,
+                    seq_length=context.seq_length,
+                    num_pred=context.num_pred,
+                    device=context.device,
+                    non_blocking=context.non_blocking,
+                    extra_model_kwargs={"missing_mask": clean_mask.any(dim=1).to(context.device)},
+                )
+        finally:
+            for module, training_mode in module_states:
+                module.training = training_mode
+        clean_evidence = clean_step.model_output.diagnostics.get("pgcd_block_evidence_logits")
+        if not torch.is_tensor(clean_evidence):
+            raise ValueError("PGCD clean forward did not return block prototype evidence.")
+        state["pgcd_clean"] = {"pgcd_block_evidence_logits": clean_evidence.detach()}
+    else:
+        state["pgcd_clean"] = None
+    degraded = generator.apply_batch(batch, training=True, epoch=epoch, step=step)
+    batch.clear()
+    batch.update(degraded.corrupted_batch)
+    apply_modality_temporal_mask_to_batch(batch, degraded.availability_mask, modalities=modalities)
+    assert_pgcd_channel_free(context.cfg, batch)
+    state["pgcd_degradation"] = degraded
+    missing_mask = degraded.availability_mask.any(dim=1).to(device=context.device)
+    return ForwardControls(model_kwargs={"missing_mask": missing_mask})
 
 
 def _load_dynamic_router_panel(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -521,9 +869,93 @@ def _online_superset(
                 "router_features": diagnostics["supervised_router_reliability_features"].detach(),
                 "unimodal_logits": diagnostics["unimodal_logits"].detach(),
                 "missing_mask": diagnostics["missing_mask"].detach(),
+                "modality_temporal_mask": diagnostics["modality_temporal_mask"].detach(),
             }
         )
     return result
+
+
+def _online_lomo(
+    context: ExtensionContext,
+    batch: dict[str, Any],
+    modalities: tuple[str, ...],
+    *,
+    modality_index: int,
+) -> dict[str, Any]:
+    from kd_sensing.engine.runtime import run_model_step
+
+    restored, _ = _restore_temporal_superset(batch, modalities, context.device)
+    mask = restored["modality_temporal_mask"].clone()
+    mask[:, :, int(modality_index)] = False
+    restored["modality_temporal_mask"] = mask
+    restored["temporal_mask"] = mask.any(dim=2)
+    restored["available_modalities"] = mask.any(dim=1)
+    step = run_model_step(
+        context.primary_model,
+        context.task,
+        restored,
+        seq_length=context.seq_length,
+        num_pred=context.num_pred,
+        device=context.device,
+        non_blocking=context.non_blocking,
+        extra_model_kwargs={"missing_mask": restored["available_modalities"].to(device=context.device)},
+    )
+    return {
+        "logits": step.logits,
+        "modality_temporal_mask": step.model_output.diagnostics["modality_temporal_mask"],
+        "modality_index": int(modality_index),
+    }
+
+
+def _balanced_lomo_modality(epoch: int, step: int, modality_count: int) -> int:
+    if int(modality_count) <= 0:
+        raise ValueError("Balanced LOMO requires at least one modality.")
+    return (int(epoch) + int(step)) % int(modality_count)
+
+
+def _unimodal_topology_loss(
+    logits: torch.Tensor,
+    available: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    sigma: float,
+    circular: bool,
+    topology_id: str | None,
+    topology_permutation: list[int] | tuple[int, ...] | None,
+) -> torch.Tensor:
+    mask = available.bool()
+    hard = labels.long()
+    if hard.ndim > 1:
+        hard = hard[:, 0]
+    target = make_soft_beam_labels(
+        hard,
+        logits.shape[-1],
+        float(sigma),
+        circular=bool(circular),
+        topology_id=topology_id,
+        topology_permutation=topology_permutation,
+    ).to(dtype=logits.dtype)
+    expanded = target.unsqueeze(1).expand_as(logits)
+    per_modality = -(expanded * F.log_softmax(logits, dim=-1)).sum(dim=-1)
+    return per_modality.masked_select(mask).mean()
+
+
+def _loss_gradient_cosine(first: torch.Tensor, second: torch.Tensor, logits: torch.Tensor) -> float:
+    first_gradient = torch.autograd.grad(first, logits, retain_graph=True, allow_unused=True)[0]
+    second_gradient = torch.autograd.grad(second, logits, retain_graph=True, allow_unused=True)[0]
+    if first_gradient is None or second_gradient is None:
+        return 0.0
+    first_flat = first_gradient.float().reshape(first_gradient.shape[0], -1)
+    second_flat = second_gradient.float().reshape(second_gradient.shape[0], -1)
+    cosine = F.cosine_similarity(first_flat, second_flat, dim=1)
+    return float(cosine.detach().mean().cpu().item())
+
+
+def _gradient_norm(parameters: list[torch.nn.Parameter]) -> float:
+    squared = [parameter.grad.detach().float().square().sum() for parameter in parameters if parameter.grad is not None]
+    if not squared:
+        return 0.0
+    return float(torch.stack(squared).sum().sqrt().cpu().item())
 
 
 def _online_router_quality_pair(

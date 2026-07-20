@@ -7,6 +7,14 @@ import torch.nn.functional as F
 
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank
 from kd_sensing.modalities import MODALITY_ORDER
+from kd_sensing.models.pcer_temporal_fusion import (
+    HierarchicalTemporalBlockRouter,
+    MaskConditionedResidualRouter,
+    PCER_MODES,
+    TemporalBlockEvidenceRouter,
+    static_block_weights,
+)
+from kd_sensing.models.pgcd import PGCD_VARIANTS, PrototypeGuidedDegradationRouter
 from kd_sensing.models.prototype_health_router import PrototypeReliabilityRouter
 from kd_sensing.registries import ENCODERS, MODELS
 
@@ -44,6 +52,7 @@ class UMaskBeamJEPA(nn.Module):
         d_model: int = 64,
         num_classes: int = 64,
         num_pred: int = 1,
+        seq_length: int = 5,
         dropout: float = 0.1,
         encoders: dict[str, dict[str, Any]] | None = None,
         temporal_pooling: dict[str, Any] | bool | None = None,
@@ -60,6 +69,8 @@ class UMaskBeamJEPA(nn.Module):
         router_variant: str = "current",
         router_variant_config: dict[str, Any] | None = None,
         router_calibration_only: bool = False,
+        pcer: dict[str, Any] | None = None,
+        pgcd: dict[str, Any] | None = None,
         image_channels: int = 3,
         radar_channels: int = 2,
         lidar_channels: int = 3,
@@ -71,6 +82,7 @@ class UMaskBeamJEPA(nn.Module):
         self.d_model = int(d_model)
         self.num_classes = int(num_classes)
         self.num_pred = int(num_pred)
+        self.seq_length = int(seq_length)
         self.fusion_type = str(fusion_type).strip().lower()
         self.head_type = str(head_type).strip().lower()
         self.router_use_pattern_features = bool(router_use_pattern_features)
@@ -82,6 +94,8 @@ class UMaskBeamJEPA(nn.Module):
         self.router_variant = str(router_variant).strip().lower()
         self.router_calibration_only = bool(router_calibration_only)
         self.temporal_pooling = _temporal_pooling_config(temporal_pooling)
+        self.pcer_config = _pcer_config(pcer, seq_length=self.seq_length)
+        self.pgcd_config = _pgcd_config(pgcd, seq_length=self.seq_length)
 
         if self.d_model <= 0 or self.num_classes <= 0 or self.num_pred <= 0:
             raise ValueError("d_model, num_classes, and num_pred must be positive.")
@@ -97,6 +111,16 @@ class UMaskBeamJEPA(nn.Module):
             raise ValueError("Dynamic prototype Router variants require supervised_router fusion and prototype head.")
         if self.router_calibration_only and self.router_variant == "current":
             raise ValueError("router_calibration_only requires a dynamic Router variant.")
+        if self.pcer_config["enabled"] and (self.router_variant != "current" or self.head_type != "prototype"):
+            raise ValueError("PCER requires router_variant=current and head_type=prototype.")
+        if self.pcer_config["enabled"] and self.pcer_config["mode"] != "evidence_only" and self.fusion_type != "uniform_mean":
+            raise ValueError("PCER fusion modes require fusion_type=uniform_mean.")
+        if self.pgcd_config["enabled"] and self.pcer_config["enabled"]:
+            raise ValueError("PGCD and PCER fusion modes are mutually exclusive.")
+        if self.pgcd_config["enabled"] and (
+            self.router_variant != "current" or self.head_type != "prototype" or self.fusion_type != "uniform_mean"
+        ):
+            raise ValueError("PGCD requires router_variant=current, head_type=prototype, and fusion_type=uniform_mean.")
 
         encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.modalities}
         missing = [name for name, config in encoder_configs.items() if not config]
@@ -132,6 +156,36 @@ class UMaskBeamJEPA(nn.Module):
             nn.Linear(self.d_model, self.num_classes),
         )
         self.prototype_bank = BeamPrototypeBank(self.d_model, self.num_classes, temperature=float(beam_proto_temperature))
+        pcer_kwargs = {
+            "d_model": self.d_model,
+            "num_modalities": len(self.modalities),
+            "num_timesteps": self.seq_length,
+            "hidden_dim": int(self.pcer_config["hidden_dim"]),
+            "embedding_dim": int(self.pcer_config["embedding_dim"]),
+            "dropout": float(self.pcer_config["dropout"]),
+        }
+        if self.pcer_config["mode"] in {"counterfactual_router", "block_router"}:
+            self.pcer_router: nn.Module | None = TemporalBlockEvidenceRouter(**pcer_kwargs)
+        elif self.pcer_config["mode"] == "hierarchical_router":
+            self.pcer_router = HierarchicalTemporalBlockRouter(**pcer_kwargs)
+        elif self.pcer_config["mode"] == "mask_residual_router":
+            self.pcer_router = MaskConditionedResidualRouter(**pcer_kwargs)
+        else:
+            self.pcer_router = None
+        self.pgcd_router = (
+            PrototypeGuidedDegradationRouter(
+                d_model=self.d_model,
+                num_modalities=len(self.modalities),
+                num_timesteps=self.seq_length,
+                variant=str(self.pgcd_config["variant"]),
+                hidden_dim=int(self.pgcd_config["hidden_dim"]),
+                embedding_dim=int(self.pgcd_config["embedding_dim"]),
+                dropout=float(self.pgcd_config["dropout"]),
+                beta_init=float(self.pgcd_config["beta_reliability_init"]),
+            )
+            if self.pgcd_config["enabled"]
+            else None
+        )
         self.temporal_attention_query: nn.Parameter | None = None
         if self.temporal_pooling["type"] == "masked_attention":
             self.temporal_attention_query = nn.Parameter(torch.empty(self.d_model))
@@ -173,6 +227,7 @@ class UMaskBeamJEPA(nn.Module):
                 residual_scale=float(variant_config.pop("residual_scale", 1.0)),
                 top_k=int(variant_config.pop("top_k", 3)),
                 dropout=float(variant_config.pop("dropout", 0.0)),
+                evidence_profile=str(variant_config.pop("evidence_profile", "full")),
             )
             if self.router_variant != "current"
             else None
@@ -271,17 +326,36 @@ class UMaskBeamJEPA(nn.Module):
             router_features = current_router_features
             router_logits = current_router_logits
             router_weights = current_router_weights
-        fusion_weights = (
-            router_weights
-            if self.fusion_type == "supervised_router"
-            else (
-                _reliability_mean_weights(reliability, cell_mask)
-                if self.fusion_type == "reliability_mean"
-                else _uniform_mean_weights(cell_mask)
+        pcer_output: dict[str, torch.Tensor] | None = None
+        if self.pcer_config["enabled"]:
+            pcer_output = self._pcer_fusion(latent_sequence, cell_mask)
+        pgcd_output: dict[str, torch.Tensor] | None = None
+        if self.pgcd_config["enabled"]:
+            pgcd_output = self._pgcd_fusion(latent_sequence, cell_mask)
+        if pgcd_output is not None:
+            fusion_weights = pgcd_output["modality_weights"]
+            router_logits = pgcd_output["modality_logits"]
+            router_weights = fusion_weights
+            fused_features = pgcd_output["fused_features"]
+            fused_logits = pgcd_output["fused_logits"]
+        elif pcer_output is not None and self.pcer_config["mode"] != "evidence_only":
+            fusion_weights = pcer_output["modality_weights"]
+            router_logits = pcer_output["modality_logits"]
+            router_weights = fusion_weights
+            fused_features = pcer_output["fused_features"]
+            fused_logits = pcer_output["fused_logits"]
+        else:
+            fusion_weights = (
+                router_weights
+                if self.fusion_type == "supervised_router"
+                else (
+                    _reliability_mean_weights(reliability, cell_mask)
+                    if self.fusion_type == "reliability_mean"
+                    else _uniform_mean_weights(cell_mask)
+                )
             )
-        )
-        fused_features = (fusion_weights.unsqueeze(-1) * latent).sum(dim=1)
-        fused_logits = (fusion_weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
+            fused_features = (fusion_weights.unsqueeze(-1) * latent).sum(dim=1)
+            fused_logits = (fusion_weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
         output = {
             "logits": fused_logits.unsqueeze(1).expand(-1, self.num_pred, -1),
             "input_features": latent,
@@ -303,6 +377,13 @@ class UMaskBeamJEPA(nn.Module):
             "supervised_router_reliability_features": router_features,
             "supervised_router_feature_names": self.router_feature_names,
             "router_variant": self.router_variant,
+            "pcer_mode": self.pcer_config["mode"],
+            "pgcd_variant": self.pgcd_config["variant"],
+            "router_evidence_profile": (
+                self.prototype_reliability_router.evidence_profile
+                if self.prototype_reliability_router is not None
+                else "current"
+            ),
             "reliability_fusion_mode": self.fusion_type,
             "reliability_fusion_weights": fusion_weights,
             "metadata": self.training_strategy_metadata(),
@@ -328,6 +409,22 @@ class UMaskBeamJEPA(nn.Module):
                     "cell_mask": cell_mask.detach(),
                     "available": available.detach(),
                 }
+        if pcer_output is not None:
+            output.update(
+                {
+                    key: value
+                    for key, value in pcer_output.items()
+                    if key not in {"modality_weights", "modality_logits", "fused_features", "fused_logits"}
+                }
+            )
+        if pgcd_output is not None:
+            output.update(
+                {
+                    key: value
+                    for key, value in pgcd_output.items()
+                    if key not in {"modality_weights", "modality_logits", "fused_features", "fused_logits"}
+                }
+            )
         if temporal_pooling_weights is not None:
             output["temporal_pooling_weights"] = temporal_pooling_weights
         return output
@@ -346,6 +443,17 @@ class UMaskBeamJEPA(nn.Module):
             "head_type": self.head_type,
             "active_head": self.head_type,
             "router_variant": self.router_variant,
+            "pcer": dict(self.pcer_config),
+            "pcer_mode": self.pcer_config["mode"],
+            "pcer_router_trainable": self.pcer_router is not None,
+            "pgcd": dict(self.pgcd_config),
+            "pgcd_variant": self.pgcd_config["variant"],
+            "pgcd_router_trainable": self.pgcd_router is not None,
+            "router_evidence_profile": (
+                self.prototype_reliability_router.evidence_profile
+                if self.prototype_reliability_router is not None
+                else "current"
+            ),
             "router_calibration_only": self.router_calibration_only,
             "frozen_branches": list(self.frozen_branches),
             "router_trainable": self.fusion_type == "supervised_router" and not self.router_calibration_only,
@@ -436,6 +544,7 @@ class UMaskBeamJEPA(nn.Module):
             batch_size, modality_count, self.num_classes
         )
         base_features = self._router_features(unimodal_logits, reliability, effective_available)
+        base_features = router.filter_base_features(base_features, self.router_feature_names)
         route = router.route(base_features, unimodal_logits, evidence, temporal, effective_available)
         fused_features = (route.weights.unsqueeze(-1) * latent).sum(dim=1)
         fused_logits = (route.weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
@@ -466,6 +575,153 @@ class UMaskBeamJEPA(nn.Module):
             dim=1,
         )
         return reliability * available.unsqueeze(-1).to(dtype=reliability.dtype)
+
+    def _pcer_fusion(
+        self,
+        latent_sequence: torch.Tensor,
+        cell_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        batch, timesteps, modalities, width = latent_sequence.shape
+        if (timesteps, modalities, width) != (self.seq_length, len(self.modalities), self.d_model):
+            raise ValueError(
+                f"PCER expected [B,{self.seq_length},{len(self.modalities)},{self.d_model}] block features, "
+                f"got {tuple(latent_sequence.shape)}."
+            )
+        block_features = latent_sequence.reshape(batch, timesteps * modalities, width)
+        block_evidence = self.prototype_bank(block_features.reshape(-1, width)).reshape(
+            batch, timesteps, modalities, self.num_classes
+        )
+        extra: dict[str, torch.Tensor] = {}
+        if self.pcer_router is None:
+            block_logits, block_weights = static_block_weights(cell_mask)
+            block_logits = block_logits.to(device=latent_sequence.device, dtype=latent_sequence.dtype)
+            block_weights = block_weights.to(device=latent_sequence.device, dtype=latent_sequence.dtype)
+        elif isinstance(self.pcer_router, TemporalBlockEvidenceRouter):
+            block_logits, block_weights = self.pcer_router(latent_sequence, block_evidence, cell_mask)
+        else:
+            routed = self.pcer_router(latent_sequence, block_evidence, cell_mask)
+            block_logits, block_weights = routed["logits"], routed["weights"]
+            extra = {f"pcer_{key}": value for key, value in routed.items() if key not in {"logits", "weights"}}
+        flat_evidence = block_evidence.reshape(batch, timesteps * modalities, self.num_classes)
+        fused_features = (block_weights.unsqueeze(-1) * block_features).sum(dim=1)
+        fused_logits = (block_weights.unsqueeze(-1) * flat_evidence).sum(dim=1)
+        cell_weights = block_weights.reshape(batch, timesteps, modalities)
+        modality_weights = cell_weights.sum(dim=1)
+        modality_available = cell_mask.any(dim=1)
+        modality_logits = modality_weights.clamp_min(torch.finfo(modality_weights.dtype).tiny).log()
+        modality_logits = modality_logits.masked_fill(~modality_available, -torch.inf)
+        return {
+            "pcer_block_features": block_features,
+            "pcer_block_evidence_logits": flat_evidence,
+            "pcer_block_router_logits": block_logits,
+            "pcer_block_router_weights": block_weights,
+            "pcer_block_availability": cell_mask.reshape(batch, timesteps * modalities),
+            "pcer_effective_cell_weights": cell_weights,
+            "modality_weights": modality_weights,
+            "modality_logits": modality_logits,
+            "fused_features": fused_features,
+            "fused_logits": fused_logits,
+            **extra,
+        }
+
+    def route_pcer_cached(
+        self,
+        block_features: torch.Tensor,
+        block_evidence_logits: torch.Tensor,
+        availability_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Rerun only the opt-in PCER router on cached block tensors."""
+
+        if self.pcer_router is None:
+            raise RuntimeError("route_pcer_cached requires a trainable PCER router.")
+        batch, blocks, width = block_features.shape
+        if blocks != self.seq_length * len(self.modalities) or width != self.d_model:
+            raise ValueError("Cached PCER features must have shape [B,T*M,D].")
+        features = block_features.reshape(batch, self.seq_length, len(self.modalities), self.d_model)
+        evidence = block_evidence_logits.reshape(batch, self.seq_length, len(self.modalities), self.num_classes)
+        available = availability_mask.reshape(batch, self.seq_length, len(self.modalities)).bool()
+        if isinstance(self.pcer_router, TemporalBlockEvidenceRouter):
+            logits, weights = self.pcer_router(features, evidence, available)
+            return {"logits": logits, "weights": weights}
+        return self.pcer_router(features, evidence, available)
+
+    def route_pgcd_cached(
+        self,
+        block_features: torch.Tensor,
+        block_evidence_logits: torch.Tensor,
+        availability_mask: torch.Tensor,
+        *,
+        degradation_override: torch.Tensor | None = None,
+        use_dynamic: bool | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Rerun PGCD weights on corrupted deployment-time block evidence only."""
+
+        if self.pgcd_router is None:
+            raise RuntimeError("route_pgcd_cached requires an enabled PGCD Router.")
+        batch, blocks, width = block_features.shape
+        expected = self.seq_length * len(self.modalities)
+        if (blocks, width) != (expected, self.d_model):
+            raise ValueError("Cached PGCD block features must have shape [B,T*M,D].")
+        features = block_features.reshape(batch, self.seq_length, len(self.modalities), self.d_model)
+        evidence = block_evidence_logits.reshape(batch, self.seq_length, len(self.modalities), self.num_classes)
+        available = availability_mask.reshape(batch, self.seq_length, len(self.modalities)).bool()
+        routed = self.pgcd_router(
+            features,
+            evidence,
+            available,
+            degradation_override=degradation_override,
+            use_dynamic=use_dynamic,
+        )
+        weights = routed["weights"]
+        return {
+            **routed,
+            "fused_features": (weights.unsqueeze(-1) * block_features).sum(dim=1),
+            "fused_logits": (weights.unsqueeze(-1) * block_evidence_logits).sum(dim=1),
+        }
+
+    def _pgcd_fusion(
+        self,
+        latent_sequence: torch.Tensor,
+        cell_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        if self.pgcd_router is None:
+            raise RuntimeError("PGCD fusion requires an enabled PGCD Router.")
+        batch, timesteps, modalities, width = latent_sequence.shape
+        block_features = latent_sequence.reshape(batch, timesteps * modalities, width)
+        block_evidence = self.prototype_bank(block_features.reshape(-1, width)).reshape(
+            batch, timesteps, modalities, self.num_classes
+        )
+        routed = self.pgcd_router(latent_sequence, block_evidence, cell_mask)
+        block_weights = routed["weights"]
+        flat_evidence = block_evidence.reshape(batch, timesteps * modalities, self.num_classes)
+        cell_weights = block_weights.reshape(batch, timesteps, modalities)
+        modality_weights = cell_weights.sum(dim=1)
+        modality_available = cell_mask.any(dim=1)
+        modality_logits = modality_weights.clamp_min(torch.finfo(modality_weights.dtype).tiny).log()
+        modality_logits = modality_logits.masked_fill(~modality_available, -torch.inf)
+        return {
+            "pgcd_block_features": block_features,
+            "pgcd_block_evidence_logits": flat_evidence,
+            "pgcd_block_availability": cell_mask.reshape(batch, -1),
+            "pgcd_quality_logits": routed["quality_logits"],
+            "pgcd_predicted_degradation": routed["predicted_degradation"],
+            "pgcd_predicted_reliability": routed["predicted_reliability"],
+            "pgcd_fusion_degradation": routed["fusion_degradation"],
+            "pgcd_fusion_reliability": routed["fusion_reliability"],
+            "pgcd_block_router_logits": routed["fusion_logits"],
+            "pgcd_block_router_weights": block_weights,
+            "pgcd_prior_logits": routed["prior_logits"],
+            "pgcd_prior_weights": routed["prior_weights"],
+            "pgcd_confidence": routed["confidence"],
+            "pgcd_entropy": routed["entropy"],
+            "pgcd_margin": routed["margin"],
+            "pgcd_beta_reliability": routed["beta_reliability"],
+            "pgcd_dynamic_enabled": routed["dynamic_enabled"],
+            "modality_weights": modality_weights,
+            "modality_logits": modality_logits,
+            "fused_features": (block_weights.unsqueeze(-1) * block_features).sum(dim=1),
+            "fused_logits": (block_weights.unsqueeze(-1) * flat_evidence).sum(dim=1),
+        }
 
     def _pool_temporal_sequence(
         self,
@@ -640,6 +896,75 @@ def _temporal_pooling_config(raw: dict[str, Any] | bool | None) -> dict[str, Any
             "T2 requires temporal_pooling.enabled=true and temporal_pooling.type='masked_mean' or 'masked_attention'."
         )
     return {"enabled": True, "type": pooling_type}
+
+
+def _pcer_config(raw: dict[str, Any] | None, *, seq_length: int) -> dict[str, Any]:
+    if raw is None:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "hidden_dim": 64,
+            "embedding_dim": 8,
+            "dropout": 0.0,
+        }
+    if not isinstance(raw, dict):
+        raise ValueError("model.primary.pcer must be a mapping when declared.")
+    unknown = sorted(set(raw) - {"mode", "hidden_dim", "embedding_dim", "dropout"})
+    if unknown:
+        raise ValueError(f"Unknown model.primary.pcer fields: {unknown}.")
+    mode = str(raw.get("mode", "")).strip().lower()
+    if mode not in PCER_MODES:
+        raise ValueError(f"model.primary.pcer.mode must be one of {sorted(PCER_MODES)}.")
+    if int(seq_length) <= 0:
+        raise ValueError("PCER seq_length must be positive.")
+    hidden = int(raw.get("hidden_dim", 64))
+    embedding = int(raw.get("embedding_dim", 8))
+    dropout = float(raw.get("dropout", 0.0))
+    if min(hidden, embedding) <= 0 or not 0.0 <= dropout < 1.0:
+        raise ValueError("PCER hidden/embedding dimensions must be positive and dropout must be in [0,1).")
+    return {
+        "enabled": True,
+        "mode": mode,
+        "hidden_dim": hidden,
+        "embedding_dim": embedding,
+        "dropout": dropout,
+    }
+
+
+def _pgcd_config(raw: dict[str, Any] | None, *, seq_length: int) -> dict[str, Any]:
+    if raw is None:
+        return {
+            "enabled": False,
+            "variant": "disabled",
+            "hidden_dim": 64,
+            "embedding_dim": 8,
+            "dropout": 0.0,
+            "beta_reliability_init": 1.0,
+        }
+    if not isinstance(raw, dict):
+        raise ValueError("model.primary.pgcd must be a mapping when declared.")
+    unknown = sorted(set(raw) - {"variant", "hidden_dim", "embedding_dim", "dropout", "beta_reliability_init"})
+    if unknown:
+        raise ValueError(f"Unknown model.primary.pgcd fields: {unknown}.")
+    variant = str(raw.get("variant", "")).strip().lower()
+    if variant not in PGCD_VARIANTS:
+        raise ValueError(f"model.primary.pgcd.variant must be one of {sorted(PGCD_VARIANTS)}.")
+    if int(seq_length) <= 0:
+        raise ValueError("PGCD seq_length must be positive.")
+    hidden = int(raw.get("hidden_dim", 64))
+    embedding = int(raw.get("embedding_dim", 8))
+    dropout = float(raw.get("dropout", 0.0))
+    beta = float(raw.get("beta_reliability_init", 1.0))
+    if min(hidden, embedding) <= 0 or not 0.0 <= dropout < 1.0 or beta <= 0.0:
+        raise ValueError("PGCD dimensions/beta must be positive and dropout must be in [0,1).")
+    return {
+        "enabled": True,
+        "variant": variant,
+        "hidden_dim": hidden,
+        "embedding_dim": embedding,
+        "dropout": dropout,
+        "beta_reliability_init": beta,
+    }
 
 
 def _router_feature_names(

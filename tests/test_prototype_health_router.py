@@ -30,7 +30,7 @@ def _inputs(
     return latent, logits, reliability, mask, base
 
 
-def _router(variant: str) -> PrototypeReliabilityRouter:
+def _router(variant: str, *, evidence_profile: str = "full") -> PrototypeReliabilityRouter:
     return PrototypeReliabilityRouter(
         variant=variant,
         modality_count=3,
@@ -40,6 +40,7 @@ def _router(variant: str) -> PrototypeReliabilityRouter:
         topology_id="cyclic_index_v1",
         circular=True,
         dropout=0.0,
+        evidence_profile=evidence_profile,
     )
 
 
@@ -104,6 +105,31 @@ def test_h2r_masks_empty_modalities_and_health_head_receives_gradient() -> None:
         if parameter.grad is not None
     )
     assert gradient > 0.0
+
+
+def test_h2r_evidence_profiles_keep_parameters_fixed_and_mask_declared_groups() -> None:
+    latent, logits, reliability, mask, base = _inputs()
+    routers = {
+        profile: _router("h2r", evidence_profile=profile)
+        for profile in ("full", "generic_confidence", "prototype_topology")
+    }
+    counts = {sum(parameter.numel() for parameter in router.parameters()) for router in routers.values()}
+    assert len(counts) == 1
+    assert len({tuple(router.state_dict()) for router in routers.values()}) == 1
+
+    generic = routers["generic_confidence"].prepare(latent, logits, reliability, mask).frame_features
+    prototype = routers["prototype_topology"].prepare(latent, logits, reliability, mask).frame_features
+    assert torch.equal(generic[..., 5:8], torch.zeros_like(generic[..., 5:8]))
+    assert torch.equal(prototype[..., [0, 1, 4, 8]], torch.zeros_like(prototype[..., [0, 1, 4, 8]]))
+
+    names = ("reliability", "prototype_margin", "entropy", "confidence", "logit_norm")
+    filtered = routers["prototype_topology"].filter_base_features(base, names)
+    assert torch.equal(filtered[..., 0], torch.zeros_like(filtered[..., 0]))
+    assert torch.equal(filtered[..., 2:], torch.zeros_like(filtered[..., 2:]))
+    assert torch.equal(filtered[..., 1], base[..., 1])
+
+    with pytest.raises(ValueError, match="evidence_profile"):
+        _router("h2r", evidence_profile="unknown")
 
 
 def test_core_marks_an_outlier_and_safely_disables_single_modality_consensus() -> None:

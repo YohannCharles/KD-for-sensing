@@ -591,6 +591,61 @@ def validate_current_control_config(cfg: Mapping[str, Any], checkpoint: Path) ->
 
 def validate_router_screen_config(cfg: Mapping[str, Any], checkpoint: Path) -> str:
     dynamic = cfg.get("mmw_dynamic_router_screen", {})
+    decision_alignment = cfg.get("mmw_dynamic_router_decision_screen", {})
+    simplification = cfg.get("mmw_h2r_simplification_screen", {})
+    if isinstance(simplification, Mapping) and simplification:
+        candidate = str(simplification.get("candidate", "")).strip()
+        supervision = str(simplification.get("supervision", "")).strip()
+        profile = str(simplification.get("evidence_profile", "")).strip()
+        epochs = int(simplification.get("calibration_epochs", -1))
+        primary = cfg.get("model", {}).get("primary", {})
+        primary_profile = primary.get("router_variant_config", {}).get("evidence_profile", "full")
+        if (
+            not candidate
+            or simplification.get("protocol") != "mmw_h2r_simplification_screen_v1"
+            or simplification.get("selection_split") != "frozen_inner_validation_only"
+            or int(simplification.get("seed", -1)) != 1
+            or bool(simplification.get("claim_eligible", True))
+            or str(primary.get("router_variant", "")) != "h2r"
+            or str(primary_profile) != profile
+            or profile not in {"full", "generic_confidence", "prototype_topology"}
+            or supervision not in {"label_topology", "beam_power"}
+            or str(simplification.get("fused_decision_objective", "")) != "joint_hard_ce"
+            or epochs not in {10, 40}
+            or int(cfg.get("training", {}).get("epochs", -1)) != epochs
+            or checkpoint.name != "last.pth"
+        ):
+            raise ValueError("Joint stress requires a claim-ineligible H2R simplification config.")
+        if simplification.get("router_reliability_source_sha256") != sha256(ROUTER_RELIABILITY_SOURCE):
+            raise ValueError("H2R simplification evaluation rejects a changed Router loss source.")
+        return candidate
+    if isinstance(decision_alignment, Mapping) and decision_alignment:
+        candidate = str(decision_alignment.get("candidate", "")).strip()
+        variant = str(decision_alignment.get("router_variant", "")).strip()
+        supervision = str(decision_alignment.get("supervision", "")).strip()
+        objective = str(decision_alignment.get("fused_decision_objective", "")).strip()
+        primary = cfg.get("model", {}).get("primary", {})
+        if (
+            not candidate
+            or decision_alignment.get("protocol") != "mmw_dynamic_router_decision_alignment_v1"
+            or decision_alignment.get("selection_split") != "frozen_inner_validation_only"
+            or int(decision_alignment.get("seed", -1)) != 1
+            or bool(decision_alignment.get("claim_eligible", True))
+            or str(primary.get("router_variant", "")) != variant
+            or variant not in {"patr", "h2r"}
+            or supervision != "beam_power"
+            or objective
+            not in {"expected_utility", "joint_hard_ce", "power_soft_ce", "power_top1_margin"}
+        ):
+            raise ValueError("Joint stress requires a claim-ineligible decision-alignment Router config.")
+        if int(cfg.get("training", {}).get("epochs", -1)) != 40 or checkpoint.name != "last.pth":
+            raise ValueError("Decision-alignment Router joint stress requires the fixed 40-epoch last.pth checkpoint.")
+        if (
+            decision_alignment.get("utility_numeric_policy") != UTILITY_NUMERIC_POLICY
+            or decision_alignment.get("router_reliability_source_sha256") != sha256(ROUTER_RELIABILITY_SOURCE)
+        ):
+            raise ValueError("Decision-alignment Router evaluation rejects unproven numeric/source policy configs.")
+        return candidate
     if not isinstance(dynamic, Mapping) or not dynamic:
         return validate_current_control_config(cfg, checkpoint)
     candidate = str(dynamic.get("candidate", "")).strip()
