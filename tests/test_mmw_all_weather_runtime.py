@@ -57,22 +57,6 @@ def test_all_weather_launcher_uses_the_six_tracked_recipes(monkeypatch: pytest.M
     assert router_profile["canonical_values"] == launcher.UMASK_ROUTER_ARCHITECTURE_PROFILES["umask_router_nopattern_v1"]
 
 
-def test_evaluator_registers_router_utility_seed1_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
-    evaluator = _load_script("eval_mmw_all_weather_matrix.py", monkeypatch)
-
-    assert evaluator.ROUTER_UTILITY_METHODS == (
-        "CurrentControl",
-        "ExpectedMainT01",
-        "PairUngated",
-        "PairEntropy120",
-        "PairEntropy130",
-        "MonoW002",
-        "MonoW005",
-        "MonoW010",
-    )
-    assert set(evaluator.ROUTER_UTILITY_METHODS) <= set(evaluator.SUPPORTED_METHODS)
-
-
 def test_umask_profiles_are_explicit_and_do_not_change_baselines(monkeypatch: pytest.MonkeyPatch) -> None:
     launcher = _load_script("launch_mmw_all_weather_matrix.py", monkeypatch)
     kwargs = {"smoke": False, "epochs": 40, "batch_size": 32}

@@ -4,14 +4,14 @@
 
 定义 MMW T2/baseline 与受限 DeepSense6G T2 的 current 研究闭包，使代码、YAML、CLI、script、测试和文档均能追溯到当前 owner。
 ## Requirements
-### Requirement: T2/baseline 与双数据集是唯一 current 研究 surface
+### Requirement: CMSBL 是唯一 active T2 研究扩展
 
-系统 MUST 将 MMW 的 T2、S1、AMBER-Full、RMBP-MM，以及 DeepSense6G Scene31–34 的 T2 四模态数据路径和其传递运行依赖视为 current source surface。无法追溯到这些训练、评估、预处理、fixed-mask 或 active T2 BPA/CMA/hyperparameter protocol 的项目项 MUST 退役。
+系统 MUST 将 MMW 的 T2、S1、AMBER-Full、RMBP-MM、DeepSense6G Scene31--34 T2，以及 BCACL U2/CMSBL 视为 current source surface。PCER、PGCD、动态 Router、PR-SQDF、missing residual、feature/prototype fusion、availability fallback、prototype diagnostics 和 BT-SCL MUST 只保留历史说明与 archive。
 
 #### Scenario: 标记 current 路径
 
 - **WHEN** 代码、YAML、CLI、script、测试或文档被标记为 current
-- **THEN** inventory MUST 能说明其 MMW T2/baseline owner、DeepSense6G T2 owner 或 active T2 task
+- **THEN** inventory MUST 能说明其 T2/baseline、BCACL U2 或 CMSBL owner
 - **AND** 无法建立该路径时该项 MUST 从 current surface 删除
 
 ### Requirement: current 方法必须有 tracked canonical recipe

@@ -74,6 +74,64 @@ loss:
       confidence_gated_kl: true
       kl_weight: 0.2
       temperature: 2.0
+bcacl:
+  enabled: false
+  training_regime: aux_joint
+  stage: aux_joint
+  projection:
+    dim: 256
+    layer_norm: true
+    dropout: 0.0
+  private_heads:
+    enabled: true
+  shared_head:
+    enabled: true
+  lambda_shared: 1.0
+  distill_from_pre_dropout_modalities: true
+  diagnostics:
+    enabled: true
+cmsbl:
+  enabled: false
+  aux_schedule:
+    enabled: false
+    private:
+      start_weight: 1.0
+      end_weight: 0.2
+      start_epoch: 5
+      end_epoch: 20
+    shared:
+      start_weight: 1.0
+      end_weight: 0.2
+      start_epoch: 5
+      end_epoch: 20
+  capacity_reference:
+    stats_path: null
+    source_split: inner_train
+  capacity_gap:
+    enabled: false
+    ema_momentum: 0.9
+    warmup_epochs: 3
+    update_interval: 1
+    alpha: 1.0
+    gamma: 1.0
+    min_weight: 1.0
+    max_weight: 2.0
+    apply_to: [private, shared]
+    eps: 1.0e-6
+  hard_mask:
+    enabled: false
+    ema_momentum: 0.9
+    warmup_epochs: 3
+    update_interval: 1
+    min_count: 8
+    gamma: 0.5
+    min_weight: 0.75
+    max_weight: 1.75
+    normalize_mean_to_one: true
+    full_mask_min_weight: 1.0
+    eps: 1.0e-6
+  diagnostics:
+    enabled: true
 training:
   grad_clip: 5.0
 temporal_missing:

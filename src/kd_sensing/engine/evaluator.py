@@ -29,6 +29,7 @@ from kd_sensing.engine.run_status import (
 from kd_sensing.engine.runtime import configure_cuda_performance_settings, configure_torch_runtime_threads
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
+from kd_sensing.losses.bcacl_config import primary_model_config_with_bcacl
 from kd_sensing.utils.artifact_registry import (
     resolve_evaluation_checkpoint,
     validate_evaluation_gps_checkpoint_provenance,
@@ -101,7 +102,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     )
     loader_cfg = cfg["data"]["dataloader"]
     dataloader = build_dataloader(dataset, loader_cfg, split="test")
-    model = build_model(cfg["model"]["primary"]).to(device)
+    model = build_model(primary_model_config_with_bcacl(cfg)).to(device)
     checkpoint_load = None
     if checkpoint_resolution.path is not None:
         if not checkpoint_resolution.path.exists():

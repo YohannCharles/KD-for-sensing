@@ -34,8 +34,6 @@ def test_registry_exposes_only_the_t2_baseline_components_needed_by_recipes() ->
     assert {
         "amber_full_adaptive_mask_transformer",
         "rmbp_channel_attention_fusion",
-        "masktrain_mean_fusion",
-        "amr_gaussian_uncertainty_fusion",
     } <= set(
         REPRESENTATION_CORES.list()
     )

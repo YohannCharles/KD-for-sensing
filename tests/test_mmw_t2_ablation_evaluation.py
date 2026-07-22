@@ -83,13 +83,3 @@ def test_evaluation_provenance_separates_prototype_head_from_bpa_auxiliary(monke
     assert provenance["prototype_enabled"] is False
     assert provenance["prototype_target_geometry"] == "not_applicable"
     assert provenance["router_oracle_geometry"] == "circular"
-
-
-def test_feature_extractor_accepts_all_t2_ablation_methods(monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
-    analysis = _load_script("analyze_mmw_fused_feature_geometry.py")
-    parser = analysis.build_parser()
-
-    for method in analysis.T2_ABLATION_METHODS:
-        args = parser.parse_args(["extract", "--method", method])
-        assert args.method == method

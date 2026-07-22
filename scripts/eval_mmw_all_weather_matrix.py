@@ -46,34 +46,12 @@ ROOT = Path(__file__).resolve().parents[1]
 METHODS = ("S1", "T2", "amber_full", "rmbp_mm")
 T2_ABLATION_METHODS = (
     "T2-NoBPA",
-    "T2-TopologyLinear",
-    "T2-TopologyPermuted",
-    "T2-CLS",
-    "T2-NoRouterOracle",
-    "T2-ReliabilityOnly",
-    "T2-Uniform",
-    "T2-WholeOnly",
     "T2-BPA2CMA",
-    "HardFirstControl",
-    "HardConfidenceTie",
-    "SoftUniformTie",
-    "SoftConfidenceTie",
-    "DistanceSoftT05",
-    "DistanceSoftT10",
-    "DistanceConfidenceT10",
-    "UniformFusion",
+    "T2-Linear",
+    "T2-CLS",
+    "T2-CLS-CMA",
 )
-ROUTER_UTILITY_METHODS = (
-    "CurrentControl",
-    "ExpectedMainT01",
-    "PairUngated",
-    "PairEntropy120",
-    "PairEntropy130",
-    "MonoW002",
-    "MonoW005",
-    "MonoW010",
-)
-SUPPORTED_METHODS = (*METHODS, *T2_ABLATION_METHODS, *ROUTER_UTILITY_METHODS)
+SUPPORTED_METHODS = (*METHODS, *T2_ABLATION_METHODS)
 RATES = (0.0, 0.2, 0.4, 0.6, 0.8)
 MASK_TYPES = ("modality_frame", "frame_level", "block")
 MASK_CACHE_SEED = 20260713
@@ -106,14 +84,6 @@ BASELINE_SCOPES = {
             "temporal_result_scope": "paired_objective_topology_head_ablation",
         }
         for method in T2_ABLATION_METHODS
-    },
-    **{
-        method: {
-            "reproduction_scope": "router_utility_inner_screen",
-            "paper_equivalent": False,
-            "temporal_result_scope": "development_inner_validation",
-        }
-        for method in ROUTER_UTILITY_METHODS
     },
 }
 

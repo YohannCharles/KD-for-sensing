@@ -109,8 +109,74 @@ def prototype_alignment_loss(
     }
 
 
+def prototype_alignment_loss_per_sample(
+    prototype_bank: BeamPrototypeBank,
+    labels: torch.Tensor,
+    *,
+    fused_features: torch.Tensor,
+    modality_features: torch.Tensor | None = None,
+    mask: torch.Tensor | None = None,
+    beam_label_sigma: float = 1.0,
+    circular: bool = True,
+    topology_id: str | None = None,
+    topology_permutation: torch.Tensor | list[int] | tuple[int, ...] | None = None,
+    lambda_proto: float = 1.0,
+    lambda_modality_proto: float = 0.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    hard = labels.to(device=fused_features.device, dtype=torch.long)
+    if hard.ndim > 1:
+        hard = hard[:, 0]
+    resolved_topology, _, _ = _resolve_topology(
+        prototype_bank.num_beams,
+        circular=bool(circular),
+        topology_id=topology_id,
+        topology_permutation=topology_permutation,
+        device=fused_features.device,
+    )
+    target = make_soft_beam_labels(
+        hard,
+        prototype_bank.num_beams,
+        beam_label_sigma,
+        circular=circular,
+        topology_id=resolved_topology,
+        topology_permutation=topology_permutation,
+    ).to(dtype=fused_features.dtype)
+    fused_loss = _soft_ce_per_sample(prototype_bank(fused_features), target)
+    modality_loss = torch.zeros_like(fused_loss)
+    modality_count = 0
+    if modality_features is not None and mask is not None:
+        available = mask.to(device=modality_features.device, dtype=torch.bool)
+        if modality_features.ndim != 3 or tuple(available.shape) != tuple(modality_features.shape[:2]):
+            raise ValueError("modality_features and mask must have shapes [B, M, D] and [B, M].")
+        rows = available.nonzero(as_tuple=False)
+        modality_count = int(rows.shape[0])
+        if modality_count:
+            item_loss = _soft_ce_per_sample(
+                prototype_bank(modality_features[available]),
+                target[rows[:, 0]],
+            )
+            modality_loss.index_add_(0, rows[:, 0], item_loss)
+            modality_loss = modality_loss / available.sum(dim=1).clamp_min(1).to(modality_loss)
+    total = float(lambda_proto) * fused_loss + float(lambda_modality_proto) * modality_loss
+    return total, {
+        "loss/prototype_alignment": float(fused_loss.mean().detach().cpu().item()),
+        "loss/prototype_modality": float(modality_loss.mean().detach().cpu().item()),
+        "loss/prototype_total": float(total.mean().detach().cpu().item()),
+        "prototype/sample_count": float(hard.numel()),
+        "prototype/modality_sample_count": float(modality_count),
+        "prototype/topology_is_cyclic": float(
+            resolved_topology in {"cyclic_index_v1", "permuted_index_v1", "ula_dft_phase_cycle_v1"}
+        ),
+        "prototype/topology_is_permuted": float(resolved_topology == "permuted_index_v1"),
+    }
+
+
 def _soft_ce(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    return -(target * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+    return _soft_ce_per_sample(logits, target).mean()
+
+
+def _soft_ce_per_sample(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return -(target * F.log_softmax(logits, dim=-1)).sum(dim=-1)
 
 
 def beam_topology_positions(
@@ -173,4 +239,5 @@ __all__ = [
     "beam_topology_positions",
     "make_soft_beam_labels",
     "prototype_alignment_loss",
+    "prototype_alignment_loss_per_sample",
 ]

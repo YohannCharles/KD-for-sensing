@@ -6,7 +6,6 @@ TEMPORAL_MISSING_MODES = (
     "none",
     "stratified_modality_temporal",
     "balanced_pattern_schedule",
-    "pcer_curriculum",
 )
 
 

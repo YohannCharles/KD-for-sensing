@@ -13,7 +13,10 @@ from tqdm.auto import tqdm
 from kd_sensing.engine.checkpointing import checkpoint_strict as _checkpoint_strict
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
 from kd_sensing.engine.model_initialization import enforce_frozen_module_eval
-from kd_sensing.engine.tensorboard_logging import write_tensorboard_scalars as _write_tensorboard_scalars
+from kd_sensing.engine.tensorboard_logging import (
+    write_tensorboard_method_scalars as _write_tensorboard_method_scalars,
+    write_tensorboard_scalars as _write_tensorboard_scalars,
+)
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.missing_patterns import resolve_missing_patterns
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
@@ -23,6 +26,7 @@ from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
     save_results_json,
     save_results_markdown,
 )
+from kd_sensing.eval.bcacl_missing_summary import save_missing_summary, summarize_missing_patterns
 from kd_sensing.utils.artifact_registry import sanitize_slug
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 
@@ -173,6 +177,7 @@ def run_training_epoch_loop(
             objective=objective,
             tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
         )
+        _write_tensorboard_method_scalars(tensorboard_writer, epoch_log, epoch + 1)
         checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
         if (
             checkpoint_selection == "best_validation_loss"
@@ -471,6 +476,8 @@ def _write_missing_pattern_eval(model, dataloader, cfg: dict, device, *, run_dir
     save_results_csv(results, output_dir / f"{exp_name}_missing_patterns.csv")
     save_results_json(results, output_dir / f"{exp_name}_missing_patterns.json")
     save_results_markdown(results, output_dir / f"{exp_name}_missing_patterns.md")
+    summary = summarize_missing_patterns(results, modality_count=len(modalities))
+    save_missing_summary(summary, output_dir / f"{exp_name}_missing_summary")
     tqdm.write(format_results_markdown(results))
     return results
 

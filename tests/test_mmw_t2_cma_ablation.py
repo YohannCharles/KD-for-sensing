@@ -139,14 +139,6 @@ def test_training_extension_passes_domain_qualified_sample_ids_to_cma() -> None:
         output_features=fused,
         diagnostics={"modality_features": modality, "missing_mask": mask},
     )
-    state = {
-        "config": {
-            "enabled": True,
-            "use_amber_cma_analogue": True,
-            "lambda_amber_cma": 0.2,
-            "amber_cma_temperature": 0.2,
-        }
-    }
     batch_state = BatchState(
         epoch=0,
         step=0,
@@ -157,12 +149,31 @@ def test_training_extension_passes_domain_qualified_sample_ids_to_cma() -> None:
         controls=ForwardControls(model_kwargs={"missing_mask": mask}),
     )
     context = SimpleNamespace(
-        cfg={"loss": {}},
+        cfg={
+            "model": {
+                "primary": {
+                    "modalities": ["gps"],
+                    "head_type": "classifier",
+                    "fusion_type": "supervised_router",
+                }
+            },
+            "loss": {
+                "u_mask_beam_jepa": {
+                    "enabled": True,
+                    "use_amber_cma_analogue": True,
+                    "lambda_amber_cma": 0.2,
+                    "amber_cma_temperature": 0.2,
+                    "router_oracle_weight": 0.0,
+                }
+            },
+        },
         primary_model=SimpleNamespace(prototype_bank=None, modalities=("gps",)),
         task_criterion=None,
+        device=torch.device("cpu"),
     )
 
-    result = UMaskBeamJEPATrainingExtension().compute_base_loss(context, state, batch_state)
+    extension = UMaskBeamJEPATrainingExtension()
+    result = extension.compute_base_loss(context, extension.setup(context), batch_state)
 
     assert result is not None
     assert result.diagnostics["amber_cma/unique_sample_count"] == 2.0

@@ -1,7 +1,7 @@
 # 模型任务上下文
 
-维护 `u_mask_beam_jepa` 的 T2/S1 路径，以及 `modular_sequence` 的 AMBER-Full、RMBP-MM baseline。T2 同时服务 MMW 与 DeepSense6G；S1 和两个 baseline 保持 MMW 比较协议。四模态固定为 image、radar、gps、lidar；BPA、CMA 和 same-model consistency 仅在 active T2 protocol 中保留。
+维护 `u_mask_beam_jepa` 的 T2/S1、BCACL U2/CMSBL 路径，以及 `modular_sequence` 的 AMBER-Full、RMBP-MM baseline。四模态固定为 image、radar、gps、lidar；CMSBL 只改变训练 objective，不改变 T2 推理。
 
-先读 `openspec/specs/t2-baseline-surface/spec.md`、`openspec/specs/u-mask-beam-jepa/spec.md` 和 active T2 change。不要新增任何不属于这四方法的模型或兼容分支。
+先读 `openspec/specs/t2-baseline-surface/spec.md`、`openspec/specs/u-mask-beam-jepa/spec.md` 和 active CMSBL change。不要恢复 PCER、PGCD、动态 Router、BCACL U3--U5 或其他兼容分支。
 
-最小验证：`conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_s1_temporal_superset_training.py -q`。
+最小验证：`conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_bcacl.py tests/test_cmsbl.py tests/test_s1_temporal_superset_training.py -q`。

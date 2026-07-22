@@ -8,7 +8,7 @@
 
 ### Requirement: 健康护栏验证受限 current surface
 
-架构、config 与 CLI 检查 MUST 从 tracked recipes、`pyproject.toml`、inventory 与 active T2 artifacts 验证 current surface 只包含 MMW T2、S1、AMBER-Full、RMBP-MM 以及 DeepSense6G Scene31–34 T2。检查 MUST 拒绝 tracked runtime artifacts、已删除路线的 current import/reference 和任何从 `outputs/` 读取 canonical recipe 的 launcher。
+架构、config 与 CLI 检查 MUST 从 tracked recipes、`pyproject.toml`、inventory 与 active CMSBL artifact 验证 current surface 只包含 MMW T2、S1、AMBER-Full、RMBP-MM、DeepSense6G Scene31--34 T2、BCACL U2 和 CMSBL。检查 MUST 拒绝 retired route import/reference 和任何从 `outputs/` 读取 canonical recipe 的 launcher。
 
 #### Scenario: 删除批次验收
 

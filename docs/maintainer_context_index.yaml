@@ -14,7 +14,7 @@ task_routes:
       - src/kd_sensing/models/
       - src/kd_sensing/losses/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_s1_temporal_superset_training.py -q
+      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_bcacl.py tests/test_cmsbl.py tests/test_s1_temporal_superset_training.py -q
   - id: data
     context_path: docs/agent_context/data.md
     authority_paths:
@@ -57,7 +57,7 @@ task_routes:
       - src/kd_sensing/engine/
       - src/kd_sensing/eval/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py tests/test_mmw_t2_hyperparameter_screening.py -q
+      - conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py tests/test_cmsbl.py -q
   - id: openspec
     context_path: docs/agent_context/openspec.md
     authority_paths:

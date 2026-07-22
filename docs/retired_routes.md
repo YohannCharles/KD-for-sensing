@@ -13,5 +13,10 @@
 | Image+GPS JEPA、预训练和 snapshot/多任务目标 | 预训练、定位、遮挡等支线 | 不服务当前 beam 主任务与固定矩阵协议。 |
 | run index、paper export、viewer、一次性诊断 CLI | 本地管理和展示工具 | public workflow 收敛为 train/evaluate/preprocess，证据脚本保留为仓库内 MMW helpers。 |
 | T2-PatternWeighted / Pattern-weighted Beam CE | 按缺失条件对 Beam CE 重新加权的开发消融 | 2026-07-18 的 seed1 fixed-mask 内部筛选未显示稳定收益，Drop80/90 反而下降；停止补 seed，仅保留最小审计记录，不进入四方法 strict evidence。 |
+| PCER、候选动态 Router、PGCD 与 PR-SQDF | 逐时间块/模态动态可靠性、连续传感器退化和质量预测 | PGCD 仅通过 1/4 quick gates，PR-SQDF batch-256 仅通过 1/5 gates；动态权重未稳定超过 train-fit global prior，源码与 current specs 退役。 |
+| missing-evidence probe 与 missing residual adapter | 预测 full-minus-missing evidence/residual 并修复单模态缺失 | probe 只证明局部可预测性，后续 adapter 仅通过 2/6 gates且 Missing LiDAR 恶化，停止该路线。 |
+| feature/prototype fusion、topology-anchored query 与 availability fallback | 冻结特征上的 concat/query/fallback 适配 | F1 是冻结特征强基线，但 prototype-query 后续无候选达到 5/6 gates，fallback 无候选晋级；不作为 current 模型。 |
+| BT-SCL | encoder-tail subset specialist、AER/NTM/SCFC 与 repair | Stage B V0--V5 从未启动；CMSBL 已成为模态失衡与模态缺失交叉主线，因此终止而不补跑。 |
+| BCACL U3--U5 | relation prototype teacher、quality teacher 与 detached two-stage | U2 private/shared supervision 已成为 CMSBL 基线；其余机制不进入 current 推理或训练闭包。 |
 
 历史文档不构成当前支持承诺。重新引入任一族必须先创建新的 OpenSpec change，并恢复完整实现、配置、验证和文档，而不是增加 alias 或迁移层。

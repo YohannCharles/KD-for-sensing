@@ -1,8 +1,8 @@
 # AI / Maintainer Navigation
 
-当前支持面包含 MMW T2/baseline（`configs/mmw/`）与 DeepSense6G Scene31–34 T2（`configs/deepsense6g/t2.yaml`），以及训练、评估、预处理三个 package CLI。
+当前支持面包含 MMW T2/baseline、DeepSense6G Scene31--34 T2、BCACL U2/CMSBL 训练 objective，以及训练、评估、预处理三个 package CLI。
 
-非平凡改动先读 `AGENTS.md`、active OpenSpec 和 `docs/maintainer_context_index.yaml`。模型改动聚焦 T2、BPA/CMA 与 MMW baseline；数据改动聚焦 MMW prepared sequence 或 DeepSense6G 标准 CSV 的 image/radar/gps/lidar sequence；脚本改动仍聚焦 MMW all-weather matrix、T2 screening 和 BPA/CMA evidence。
+非平凡改动先读 `AGENTS.md`、active OpenSpec 和 `docs/maintainer_context_index.yaml`。模型改动聚焦 T2、BCACL U2、CMSBL、BPA/CMA 与 MMW baseline；数据改动聚焦 MMW prepared sequence 或 DeepSense6G 标准 CSV 的四模态 sequence；脚本改动只聚焦 MMW all-weather、BPA/CMA、summary 和验证。
 
 最小验证：
 

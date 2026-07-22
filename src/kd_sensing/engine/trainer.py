@@ -169,7 +169,10 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
 
 
 def _build_training_resources(context: TrainingRunContext) -> None:
-    context.primary_model = build_model(context.model_cfg["primary"]).to(context.device)
+    from kd_sensing.losses.bcacl_config import primary_model_config_with_bcacl
+
+    primary_cfg = primary_model_config_with_bcacl(context.cfg)
+    context.primary_model = build_model(primary_cfg).to(context.device)
     initialization_load = initialize_model_from_checkpoint(
         context.primary_model,
         context.training_cfg,

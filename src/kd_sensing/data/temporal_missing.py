@@ -12,10 +12,6 @@ from kd_sensing.data.temporal_missing_contract import (
     TEMPORAL_SUPERSET_PAYLOAD_KEY,
     normalize_temporal_missing_mode,
 )
-from kd_sensing.data.temporal_block_mask import (
-    TemporalBlockMaskGenerator,
-    sample_pcer_curriculum_mask_types,
-)
 
 
 DEFAULT_TEMPORAL_MODALITIES = ("image", "radar", "gps", "lidar")
@@ -206,14 +202,11 @@ def apply_training_temporal_missing(
         schedule_id = _validate_balanced_pattern_config(temporal, actual_history_window=steps)
         schedule_spec = _balanced_schedule_spec(schedule_id)
         seed = _derived_seed(base_seed, schedule_spec["seed_label"], int(epoch))
-    elif mode == "pcer_curriculum":
-        seed = base_seed
     else:
         seed = _training_seed(cfg, temporal, epoch=epoch, step=step)
     condition_ids: list[str] | None = None
     panel_indices: list[int] | None = None
     panel_sha256: str | None = None
-    pcer_metadata: list[dict[str, Any]] | None = None
     if mode == "balanced_pattern_schedule":
         if steps != 5:
             raise ValueError("balanced_pattern_schedule requires the MMW 5-frame history window.")
@@ -225,29 +218,6 @@ def apply_training_temporal_missing(
         selected = [panel[index] for index in panel_indices]
         condition_ids = [item[0] for item in selected]
         sampled = torch.tensor([item[1] for item in selected], dtype=torch.bool)
-    elif mode == "pcer_curriculum":
-        sample_ids = _batch_sample_ids(batch, batch_size, epoch=epoch, step=step)
-        total_epochs = int(cfg.get("training", {}).get("epochs", cfg.get("training", {}).get("max_epochs", 1)))
-        condition_ids = sample_pcer_curriculum_mask_types(
-            sample_ids,
-            seed=base_seed,
-            epoch=int(epoch),
-            total_epochs=total_epochs,
-        )
-        generated = TemporalBlockMaskGenerator(base_seed)(
-            batch_size=batch_size,
-            num_modalities=len(modalities),
-            num_timesteps=steps,
-            sample_ids=sample_ids,
-            mask_type=condition_ids,
-            severity=None,
-            seed=base_seed + int(epoch) * 1_000_003,
-            training=True,
-            source_frame_ids=batch.get("source_frame_ids"),
-            variant_ids=int(step),
-        )
-        sampled = generated["availability_mask"].permute(0, 2, 1).contiguous()
-        pcer_metadata = generated["mask_metadata"]
     else:
         rng = random.Random(seed)
         sampled = torch.stack(
@@ -298,8 +268,6 @@ def apply_training_temporal_missing(
                     "seed_algorithm": str(schedule_spec["seed_algorithm"]),
                 }
             )
-    if pcer_metadata is not None:
-        metadata["mask_metadata"] = pcer_metadata
     batch["temporal_missing_metadata"] = metadata
     return batch
 
@@ -348,21 +316,6 @@ def _configured_modalities(cfg: Mapping[str, Any]) -> tuple[str, ...]:
     if names != DEFAULT_TEMPORAL_MODALITIES:
         raise ValueError(f"Four-modality temporal missing requires modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     return names
-
-
-def _batch_sample_ids(batch: Mapping[str, Any], batch_size: int, *, epoch: int, step: int) -> list[str]:
-    value = batch.get("sample_id")
-    if torch.is_tensor(value):
-        result = [str(item.item()) for item in value.reshape(-1)]
-    elif isinstance(value, (list, tuple)):
-        result = [str(item) for item in value]
-    elif value is not None:
-        result = [str(value)]
-    else:
-        result = []
-    if len(result) == batch_size and all(result):
-        return result
-    return [f"fallback:{int(epoch)}:{int(step)}:{index}" for index in range(batch_size)]
 
 
 def _batch_time_shape(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> tuple[int, int]:
